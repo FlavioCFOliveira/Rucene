@@ -208,7 +208,7 @@ impl ConstantScoreWeightImpl for FieldExistsWeight {
             // The field indexes doc values.
             FieldExistsQuery::get_doc_values_doc_id_set_iterator(&self.field, reader.as_ref())?
         } else {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 FieldExistsQuery::build_error_msg(&field_info.name),
             ));
         };
@@ -269,7 +269,7 @@ impl ConstantScoreWeightImpl for FieldExistsWeight {
                 }
             }
         } else {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 FieldExistsQuery::build_error_msg(&field_info.name),
             ));
         }
@@ -375,7 +375,7 @@ impl Query for FieldExistsQuery {
                     break;
                 }
             } else {
-                return Err(LuceneError::IllegalState(
+                return Err(LuceneError::illegal_state(
                     FieldExistsQuery::build_error_msg(&field_info.name),
                 ));
             }

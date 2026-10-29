@@ -595,7 +595,7 @@ impl SortingTermVectorsConsumer {
         for field_name in vectors.iterator() {
             field_count += 1;
             let field_info = field_infos.field_info(&field_name).ok_or_else(|| {
-                LuceneError::IllegalState(format!(
+                LuceneError::illegal_state(format!(
                     "term vectors name field \"{field_name}\", which the field infos do not know"
                 ))
             })?;

@@ -198,7 +198,7 @@ impl FieldUpdatesBuffer {
 
     fn check_not_finished(&self) -> Result<()> {
         if self.finished {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "buffer was finished already".to_string(),
             ));
         }
@@ -293,7 +293,7 @@ impl FieldUpdatesBuffer {
     /// term raises.
     pub fn add_numeric_update(&mut self, term: &Term, value: i64, doc_up_to: i32) -> Result<()> {
         if !self.is_numeric {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "cannot add a numeric update to a binary FieldUpdatesBuffer".to_string(),
             ));
         }
@@ -357,7 +357,7 @@ impl FieldUpdatesBuffer {
         doc_up_to: i32,
     ) -> Result<()> {
         if self.is_numeric {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "cannot add a binary update to a numeric FieldUpdatesBuffer".to_string(),
             ));
         }
@@ -394,7 +394,7 @@ impl FieldUpdatesBuffer {
     /// already, with Java's message.
     pub fn finish(&mut self) -> Result<()> {
         if self.finished {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "buffer was finished already".to_string(),
             ));
         }
@@ -449,7 +449,7 @@ impl FieldUpdatesBuffer {
     /// yet, with Java's message.
     pub fn iterator(&self) -> Result<BufferedUpdateIterator<'_>> {
         if !self.finished {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "buffer is not finished yet".to_string(),
             ));
         }

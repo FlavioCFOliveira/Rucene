@@ -728,7 +728,7 @@ impl<'a, O: Outputs> FSTCompiler<'a, O> {
     pub fn fst_reader(&self) -> Result<&dyn FSTReader> {
         match &self.data_output {
             FstOutputSink::OnHeap(output) => Ok(output),
-            FstOutputSink::Streaming(_) => Err(LuceneError::IllegalState(
+            FstOutputSink::Streaming(_) => Err(LuceneError::illegal_state(
                 "The DataOutput must implement FSTReader".to_string(),
             )),
         }
@@ -748,7 +748,7 @@ impl<'a, O: Outputs> FSTCompiler<'a, O> {
     pub fn into_fst_reader(self) -> Result<Box<dyn FSTReader>> {
         match self.data_output {
             FstOutputSink::OnHeap(output) => Ok(Box::new(output)),
-            FstOutputSink::Streaming(_) => Err(LuceneError::IllegalState(
+            FstOutputSink::Streaming(_) => Err(LuceneError::illegal_state(
                 "The DataOutput must implement FSTReader".to_string(),
             )),
         }
@@ -1501,7 +1501,7 @@ impl<'a, O: Outputs> FSTCompiler<'a, O> {
     fn finish(&mut self, new_start_node: i64) -> Result<()> {
         debug_assert!(new_start_node <= self.num_bytes_written);
         if self.fst.metadata.start_node != -1 {
-            return Err(LuceneError::IllegalState("already finished".to_string()));
+            return Err(LuceneError::illegal_state("already finished".to_string()));
         }
         let new_start_node =
             if new_start_node == FINAL_END_NODE && self.fst.metadata.empty_output.is_some() {

@@ -789,7 +789,7 @@ impl LRUQueryCache {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         if self.state.requires_eviction(&queries) {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "requires evictions: size={}, maxSize={}, ramBytesUsed={}, maxRamBytesUsed={}",
                 queries.len(),
                 self.state.max_size,
@@ -800,7 +800,7 @@ impl LRUQueryCache {
         for leaf_cache in cache.values() {
             for key in leaf_cache.cache.keys() {
                 if !queries.entries.contains_key(key) {
-                    return Err(LuceneError::IllegalState(
+                    return Err(LuceneError::illegal_state(
                         "One leaf cache contains more keys than the top-level cache".to_string(),
                     ));
                 }
@@ -818,7 +818,7 @@ impl LRUQueryCache {
             }
         }
         if recomputed_ram_bytes_used != self.ram_bytes_used() {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "ramBytesUsed mismatch : {} != {recomputed_ram_bytes_used}",
                 self.ram_bytes_used()
             )));
@@ -829,7 +829,7 @@ impl LRUQueryCache {
             .map(|leaf_cache| leaf_cache.cache.len() as i64)
             .sum();
         if recomputed_cache_size != self.get_cache_size() {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "cacheSize mismatch : {} != {recomputed_cache_size}",
                 self.get_cache_size()
             )));
@@ -1282,7 +1282,7 @@ fn collection_outcome(outcome: CollectionResult<i32>) -> Result<()> {
     match outcome {
         Ok(_) => Ok(()),
         Err(CollectionError::Lucene(error)) => Err(error),
-        Err(other) => Err(LuceneError::IllegalState(other.to_string())),
+        Err(other) => Err(LuceneError::illegal_state(other.to_string())),
     }
 }
 

@@ -1480,7 +1480,7 @@ mod tests {
         assert!(mr.core().is_closed_by_child());
         let err = mr.ensure_open().unwrap_err();
         assert!(
-            matches!(err, LuceneError::AlreadyClosed(_)),
+            matches!(err, LuceneError::AlreadyClosed { .. }),
             "expected AlreadyClosed, got {err:?}"
         );
         // The poisoning reaches the public API, not just ensure_open().

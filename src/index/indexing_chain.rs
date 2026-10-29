@@ -983,7 +983,7 @@ impl DefaultIndexingChain {
         }
         let info = self.per_fields[per_field].field_info.clone();
         let Some(consumer) = self.stored_fields_consumer.as_mut() else {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "the indexing chain is not bound to a segment, so the stored field \"{}\" \
                  cannot be written; call bind_segment first",
                 field.name()
@@ -1069,7 +1069,7 @@ impl DefaultIndexingChain {
     ) -> Result<()> {
         for sort_field in index_sort.fields() {
             if sort_field.get_index_sorter().is_none() {
-                return Err(LuceneError::IllegalState(format!(
+                return Err(LuceneError::illegal_state(format!(
                     "Cannot sort index with sort order {sort_field}"
                 )));
             }
@@ -1359,7 +1359,7 @@ impl DefaultIndexingChain {
                 // Without a bound segment there is nowhere to write vectors.
                 // The term-vectors path raises the same kind of error for the
                 // same reason.
-                return Err(LuceneError::IllegalState(format!(
+                return Err(LuceneError::illegal_state(format!(
                     "the indexing chain is not bound to a segment, so the vectors of field \"{}\" cannot be written",
                     field_info.name
                 )));
@@ -1551,7 +1551,7 @@ impl DefaultIndexingChain {
         {
             Some(NumericValue::Long(value)) => value,
             other => {
-                return Err(LuceneError::IllegalState(format!(
+                return Err(LuceneError::illegal_state(format!(
                     "the parent field must carry a long value, but it carries {other:?}"
                 )))
             }
@@ -1560,7 +1560,7 @@ impl DefaultIndexingChain {
             Some(DocValuesWriter::Numeric(writer)) => {
                 writer.add_repeat_values(base_doc_id, value, num_docs)
             }
-            _ => Err(LuceneError::IllegalState(
+            _ => Err(LuceneError::illegal_state(
                 "the parent field must be a numeric doc-values field".to_string(),
             )),
         }
@@ -1775,13 +1775,14 @@ impl DefaultIndexingChain {
             has_term_freq_attribute: false,
         };
         let writer_index = per_field.writer_index.ok_or_else(|| {
-            LuceneError::IllegalState(format!("field \"{}\" has no postings writer", field.name()))
+            LuceneError::illegal_state(format!("field \"{}\" has no postings writer", field.name()))
         })?;
         Self::start_vectors(term_vectors.as_deref_mut(), per_field, field, first)?;
-        let (pool, writer) = terms_writer.pool_and_field(writer_index);
+        let (pool, int_pool, writer) = terms_writer.pool_and_field(writer_index);
         let text_start = writer
             .add(
                 pool,
+                int_pool,
                 &mut per_field.invert_state,
                 binary_value.slice(),
                 doc_id,
@@ -1892,7 +1893,7 @@ impl DefaultIndexingChain {
             // Without a bound segment there is nowhere to write vectors, so a
             // field asking for them must not be silently dropped.
             if field.field_type().store_term_vectors() {
-                return Err(LuceneError::IllegalState(format!(
+                return Err(LuceneError::illegal_state(format!(
                     "the indexing chain is not bound to a segment, so the term vectors of \
                      field \"{}\" cannot be written; call bind_segment first",
                     field.name()
@@ -2023,15 +2024,16 @@ impl DefaultIndexingChain {
                     has_term_freq_attribute: token.has_term_freq_attribute,
                 };
                 let writer_index = per_field.writer_index.ok_or_else(|| {
-                    LuceneError::IllegalState(format!(
+                    LuceneError::illegal_state(format!(
                         "field \"{}\" has no postings writer",
                         field.name()
                     ))
                 })?;
-                let (pool, writer) = terms_writer.pool_and_field(writer_index);
+                let (pool, int_pool, writer) = terms_writer.pool_and_field(writer_index);
                 let text_start = writer
                     .add(
                         pool,
+                        int_pool,
                         &mut per_field.invert_state,
                         token.term.slice(),
                         doc_id,
@@ -2119,13 +2121,13 @@ impl DefaultIndexingChain {
                     continue;
                 }
                 let index = *self.per_field_index.get(&info.name).ok_or_else(|| {
-                    LuceneError::IllegalState(format!(
+                    LuceneError::illegal_state(format!(
                         "field \"{}\" has norms but was never seen by the indexing chain",
                         info.name
                     ))
                 })?;
                 let norms = self.per_fields[index].norms.as_mut().ok_or_else(|| {
-                    LuceneError::IllegalState(format!(
+                    LuceneError::illegal_state(format!(
                         "field \"{}\" has norms but no norms buffer",
                         info.name
                     ))
@@ -2182,7 +2184,7 @@ impl DefaultIndexingChain {
                 let per_field = &mut self.per_fields[index];
                 let Some(writer) = per_field.doc_values.as_mut() else {
                     if per_field.field_info.doc_values_type != DocValuesType::NONE {
-                        return Err(LuceneError::IllegalState(format!(
+                        return Err(LuceneError::illegal_state(format!(
                             "segment={}: field=\"{}\" has docValues but did not write them",
                             state.segment_info.name, per_field.field_info.name
                         )));
@@ -2190,7 +2192,7 @@ impl DefaultIndexingChain {
                     continue;
                 };
                 if per_field.field_info.doc_values_type == DocValuesType::NONE {
-                    return Err(LuceneError::IllegalState(format!(
+                    return Err(LuceneError::illegal_state(format!(
                         "segment={}: field=\"{}\" has no docValues but wrote them",
                         state.segment_info.name, per_field.field_info.name
                     )));
@@ -2223,13 +2225,13 @@ impl DefaultIndexingChain {
         let wrote_values = consumer.is_some();
         if !state.field_infos.has_doc_values() {
             if wrote_values {
-                return Err(LuceneError::IllegalState(format!(
+                return Err(LuceneError::illegal_state(format!(
                     "segment={}: fieldInfos has no docValues but wrote them",
                     state.segment_info.name
                 )));
             }
         } else if !wrote_values {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "segment={}: fieldInfos has docValues but did not write them",
                 state.segment_info.name
             )));
@@ -2332,7 +2334,7 @@ impl DefaultIndexingChain {
     ) -> Result<()> {
         let name = field.name();
         let Some(writer) = per_field.knn_field_vectors_writer.as_mut() else {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "field=\"{name}\" declares vector dimensions but has no vectors writer"
             )));
         };
@@ -2391,7 +2393,7 @@ impl DefaultIndexingChain {
         } else {
             let value = similarity.compute_norm(&per_field.invert_state)?;
             if value == 0 {
-                return Err(LuceneError::IllegalState(format!(
+                return Err(LuceneError::illegal_state(format!(
                     "Similarity {similarity:?} return 0 for non-empty field"
                 )));
             }
@@ -2722,7 +2724,7 @@ impl DefaultIndexingChain {
             Self::encode_sortable_point_bytes(raw, kind, &mut point_scratch);
             let value = BytesRef::new(point_scratch.clone());
             let Some(point_writer) = self.per_fields[pf].point_values.as_mut() else {
-                return Err(LuceneError::IllegalState(format!(
+                return Err(LuceneError::illegal_state(format!(
                     "field=\"{name}\" declares point dimensions but has no points writer"
                 )));
             };
@@ -2794,7 +2796,7 @@ impl DefaultIndexingChain {
             ColumnValidation::check_dense_count(&name, points_cursor.size(), num_docs)?;
             let kind = column.numeric_kind();
             let Some(point_writer) = self.per_fields[pf].point_values.as_mut() else {
-                return Err(LuceneError::IllegalState(format!(
+                return Err(LuceneError::illegal_state(format!(
                     "field=\"{name}\" declares point dimensions but has no points writer"
                 )));
             };
@@ -2854,7 +2856,7 @@ impl DefaultIndexingChain {
                 ColumnValidation::check_doc_id(&name, batch_doc_id, num_docs)?;
                 let value = cursor.value();
                 let Some(point_writer) = self.per_fields[pf].point_values.as_mut() else {
-                    return Err(LuceneError::IllegalState(format!(
+                    return Err(LuceneError::illegal_state(format!(
                         "field=\"{name}\" declares point dimensions but has no points writer"
                     )));
                 };
@@ -2885,7 +2887,7 @@ impl DefaultIndexingChain {
             }
             if has_points {
                 let Some(point_writer) = self.per_fields[pf].point_values.as_mut() else {
-                    return Err(LuceneError::IllegalState(format!(
+                    return Err(LuceneError::illegal_state(format!(
                         "field=\"{name}\" declares point dimensions but has no points writer"
                     )));
                 };
@@ -2940,7 +2942,7 @@ impl DefaultIndexingChain {
             let mut pc = column.values()?;
             ColumnValidation::check_dense_count(&name, pc.size(), num_docs)?;
             let Some(point_writer) = self.per_fields[pf].point_values.as_mut() else {
-                return Err(LuceneError::IllegalState(format!(
+                return Err(LuceneError::illegal_state(format!(
                     "field=\"{name}\" declares point dimensions but has no points writer"
                 )));
             };
@@ -3069,7 +3071,7 @@ impl DefaultIndexingChain {
                     writer.add_value(base_doc_id + batch_doc_id, vec.clone())?;
                 }
                 _ => {
-                    return Err(LuceneError::IllegalState(format!(
+                    return Err(LuceneError::illegal_state(format!(
                         "field=\"{name}\" is indexed with FLOAT32 vectors but has no float vectors \
                          writer"
                     )))
@@ -3128,7 +3130,7 @@ impl DefaultIndexingChain {
                     writer.add_value(base_doc_id + batch_doc_id, vec.clone())?;
                 }
                 _ => {
-                    return Err(LuceneError::IllegalState(format!(
+                    return Err(LuceneError::illegal_state(format!(
                         "field=\"{name}\" is indexed with BYTE vectors but has no byte vectors \
                          writer"
                     )))
@@ -3698,7 +3700,7 @@ impl IndexingChain for DefaultIndexingChain {
                     // writer are recoverable.
                     if !matches!(
                         error,
-                        LuceneError::IllegalArgument(_) | LuceneError::IllegalState(_)
+                        LuceneError::IllegalArgument(_) | LuceneError::IllegalState { .. }
                     ) {
                         self.on_aborting_exception(LuceneError::CorruptIndex(format!(
                             "indexing chain buffers may be corrupt after field \"{}\": {error}",
@@ -3728,7 +3730,7 @@ impl IndexingChain for DefaultIndexingChain {
                 if let Err(error) = result {
                     if !matches!(
                         error,
-                        LuceneError::IllegalArgument(_) | LuceneError::IllegalState(_)
+                        LuceneError::IllegalArgument(_) | LuceneError::IllegalState { .. }
                     ) {
                         self.on_aborting_exception(LuceneError::CorruptIndex(format!(
                             "indexing chain buffers may be corrupt after field \"{}\": {error}",
@@ -3763,7 +3765,7 @@ impl IndexingChain for DefaultIndexingChain {
                 if let Err(error) = result {
                     if !matches!(
                         error,
-                        LuceneError::IllegalArgument(_) | LuceneError::IllegalState(_)
+                        LuceneError::IllegalArgument(_) | LuceneError::IllegalState { .. }
                     ) {
                         self.on_aborting_exception(LuceneError::CorruptIndex(format!(
                             "indexing chain buffers may be corrupt after field \"{}\": {error}",
@@ -3790,7 +3792,7 @@ impl IndexingChain for DefaultIndexingChain {
                 if let Err(error) = result {
                     if !matches!(
                         error,
-                        LuceneError::IllegalArgument(_) | LuceneError::IllegalState(_)
+                        LuceneError::IllegalArgument(_) | LuceneError::IllegalState { .. }
                     ) {
                         self.on_aborting_exception(LuceneError::CorruptIndex(format!(
                             "the vectors of segment may be corrupt after field \"{}\": {error}",
@@ -3884,7 +3886,7 @@ impl IndexingChain for DefaultIndexingChain {
         segment_info: &SegmentInfo,
     ) -> Result<()> {
         if self.stored_fields_consumer.is_some() {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "the indexing chain is already bound to segment {}",
                 segment_info.name
             )));
@@ -4873,7 +4875,7 @@ mod tests {
             .process_document(0, &document, true, &mut field_infos)
             .expect_err("an unbound chain must refuse a vector field");
         assert!(
-            matches!(&error, LuceneError::IllegalState(message)
+            matches!(&error, LuceneError::IllegalState { message, .. }
                 if message.contains("not bound to a segment")),
             "unexpected error: {error:?}"
         );
@@ -5381,7 +5383,7 @@ mod tests {
             .process_document(0, &document, true, &mut field_infos)
             .expect_err("a zero norm for a non-empty field must be refused");
         assert!(
-            matches!(error, LuceneError::IllegalState(ref m)
+            matches!(error, LuceneError::IllegalState { message: ref m, .. }
                 if m.contains("return 0 for non-empty field")),
             "unexpected error: {error:?}"
         );
@@ -5798,7 +5800,10 @@ mod tests {
         let (mut chain, tracking, info) = bound_chain(1);
         let error = IndexingChain::bind_segment(&mut chain, tracking, &info)
             .expect_err("a chain writes exactly one segment");
-        assert!(matches!(error, LuceneError::IllegalState(_)), "{error:?}");
+        assert!(
+            matches!(error, LuceneError::IllegalState { .. }),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -5810,7 +5815,10 @@ mod tests {
         let error = chain
             .process_document(0, &document, true, &mut field_infos)
             .expect_err("silently dropping stored data would corrupt the segment");
-        assert!(matches!(error, LuceneError::IllegalState(_)), "{error:?}");
+        assert!(
+            matches!(error, LuceneError::IllegalState { .. }),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -6616,7 +6624,10 @@ mod tests {
         let error = chain
             .process_document(0, &document, true, &mut field_infos)
             .expect_err("silently dropping term vectors would corrupt the segment");
-        assert!(matches!(error, LuceneError::IllegalState(_)), "{error:?}");
+        assert!(
+            matches!(error, LuceneError::IllegalState { .. }),
+            "{error:?}"
+        );
     }
 
     #[test]

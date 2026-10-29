@@ -804,7 +804,7 @@ impl LowercaseAsciiCompression {
                 }
             }
             if num_exceptions != num_exceptions2 {
-                return Err(LuceneError::IllegalState(format!(
+                return Err(LuceneError::illegal_state(format!(
                     "{num_exceptions} <> {num_exceptions2}"
                 )));
             }

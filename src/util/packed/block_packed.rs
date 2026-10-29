@@ -128,7 +128,7 @@ impl<'a> AbstractBlockPackedWriter<'a> {
     /// Returns [`LuceneError::IllegalState`] once [`Self::finished`] holds.
     pub fn check_not_finished(&self) -> Result<()> {
         if self.finished {
-            return Err(LuceneError::IllegalState("Already finished".to_string()));
+            return Err(LuceneError::illegal_state("Already finished".to_string()));
         }
         Ok(())
     }
@@ -226,7 +226,7 @@ pub trait AbstractBlockPackedWriterOps<'a> {
         let off = self.base().off;
         let block_size = self.base().values.len();
         if off != 0 && off != block_size {
-            return Err(LuceneError::IllegalState(off.to_string()));
+            return Err(LuceneError::illegal_state(off.to_string()));
         }
         if off == block_size {
             self.flush()?;

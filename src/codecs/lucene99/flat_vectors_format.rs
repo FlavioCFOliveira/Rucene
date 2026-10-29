@@ -211,7 +211,7 @@ struct SharedFieldWriter<T> {
 impl<T: Clone + Send + Sync + 'static> KnnFieldVectorsWriter<T> for SharedFieldWriter<T> {
     fn add_value(&mut self, doc_id: i32, vector_value: T) -> Result<()> {
         let mut guard = self.inner.lock().map_err(|_| {
-            LuceneError::IllegalState("FlatFieldVectorsWriter mutex was poisoned".to_string())
+            LuceneError::illegal_state("FlatFieldVectorsWriter mutex was poisoned".to_string())
         })?;
         guard.add_value(doc_id, vector_value)
     }
@@ -256,10 +256,10 @@ impl Lucene99FlatVectorsWriter {
         let mut vector_data_opt = Some(vector_data);
         let result = (|| -> Result<Self> {
             let meta = meta_opt.as_mut().ok_or_else(|| {
-                LuceneError::IllegalState("meta output missing during writer creation".to_string())
+                LuceneError::illegal_state("meta output missing during writer creation".to_string())
             })?;
             let vector_data = vector_data_opt.as_mut().ok_or_else(|| {
-                LuceneError::IllegalState(
+                LuceneError::illegal_state(
                     "vector data output missing during writer creation".to_string(),
                 )
             })?;
@@ -300,7 +300,7 @@ impl Lucene99FlatVectorsWriter {
         max_doc: i32,
     ) -> Result<()> {
         let vector_data = self.vector_data.as_mut().ok_or_else(|| {
-            LuceneError::IllegalState("Lucene99FlatVectorsWriter is already closed".to_string())
+            LuceneError::illegal_state("Lucene99FlatVectorsWriter is already closed".to_string())
         })?;
         let vector_data_offset = align_output(vector_data.as_mut(), VectorEncoding::FLOAT32)?;
         Self::write_float32_vectors(vector_data.as_mut(), field_writer, field_info)?;
@@ -308,7 +308,7 @@ impl Lucene99FlatVectorsWriter {
         let docs_with_field = field_writer.docs_with_field_set().clone();
 
         let meta = self.meta.as_mut().ok_or_else(|| {
-            LuceneError::IllegalState("Lucene99FlatVectorsWriter is already closed".to_string())
+            LuceneError::illegal_state("Lucene99FlatVectorsWriter is already closed".to_string())
         })?;
         write_meta(
             meta.as_mut(),
@@ -340,14 +340,14 @@ impl Lucene99FlatVectorsWriter {
         let new_docs_with_field = new_docs_with_field(&old_doc_ids, sort_map)?;
 
         let vector_data = self.vector_data.as_mut().ok_or_else(|| {
-            LuceneError::IllegalState("Lucene99FlatVectorsWriter is already closed".to_string())
+            LuceneError::illegal_state("Lucene99FlatVectorsWriter is already closed".to_string())
         })?;
         let vector_data_offset = align_output(vector_data.as_mut(), VectorEncoding::FLOAT32)?;
         Self::write_sorted_float32_vectors(vector_data.as_mut(), field_writer, &ord_map)?;
         let vector_data_length = vector_data.file_pointer() - vector_data_offset;
 
         let meta = self.meta.as_mut().ok_or_else(|| {
-            LuceneError::IllegalState("Lucene99FlatVectorsWriter is already closed".to_string())
+            LuceneError::illegal_state("Lucene99FlatVectorsWriter is already closed".to_string())
         })?;
         write_meta(
             meta.as_mut(),
@@ -377,14 +377,14 @@ impl Lucene99FlatVectorsWriter {
         let new_docs_with_field = new_docs_with_field(&old_doc_ids, sort_map)?;
 
         let vector_data = self.vector_data.as_mut().ok_or_else(|| {
-            LuceneError::IllegalState("Lucene99FlatVectorsWriter is already closed".to_string())
+            LuceneError::illegal_state("Lucene99FlatVectorsWriter is already closed".to_string())
         })?;
         let vector_data_offset = align_output(vector_data.as_mut(), VectorEncoding::BYTE)?;
         Self::write_sorted_byte_vectors(vector_data.as_mut(), field_writer, &ord_map)?;
         let vector_data_length = vector_data.file_pointer() - vector_data_offset;
 
         let meta = self.meta.as_mut().ok_or_else(|| {
-            LuceneError::IllegalState("Lucene99FlatVectorsWriter is already closed".to_string())
+            LuceneError::illegal_state("Lucene99FlatVectorsWriter is already closed".to_string())
         })?;
         write_meta(
             meta.as_mut(),
@@ -536,7 +536,7 @@ impl Lucene99FlatVectorsWriter {
         max_doc: i32,
     ) -> Result<()> {
         let vector_data = self.vector_data.as_mut().ok_or_else(|| {
-            LuceneError::IllegalState("Lucene99FlatVectorsWriter is already closed".to_string())
+            LuceneError::illegal_state("Lucene99FlatVectorsWriter is already closed".to_string())
         })?;
         let vector_data_offset = align_output(vector_data.as_mut(), VectorEncoding::BYTE)?;
         Self::write_byte_vectors(vector_data.as_mut(), field_writer)?;
@@ -544,7 +544,7 @@ impl Lucene99FlatVectorsWriter {
         let docs_with_field = field_writer.docs_with_field_set().clone();
 
         let meta = self.meta.as_mut().ok_or_else(|| {
-            LuceneError::IllegalState("Lucene99FlatVectorsWriter is already closed".to_string())
+            LuceneError::illegal_state("Lucene99FlatVectorsWriter is already closed".to_string())
         })?;
         write_meta(
             meta.as_mut(),
@@ -561,7 +561,7 @@ impl Lucene99FlatVectorsWriter {
 impl KnnVectorsWriter for Lucene99FlatVectorsWriter {
     fn add_field(&mut self, field_info: &FieldInfo) -> Result<FieldVectorWriter> {
         if self.finished {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "Lucene99FlatVectorsWriter is already finished".to_string(),
             ));
         }
@@ -599,7 +599,7 @@ impl KnnVectorsWriter for Lucene99FlatVectorsWriter {
             match entry {
                 FieldWriterEntry::Float(writer, info) => {
                     let mut guard = writer.lock().map_err(|_| {
-                        LuceneError::IllegalState(
+                        LuceneError::illegal_state(
                             "FlatFieldVectorsWriter mutex was poisoned".to_string(),
                         )
                     })?;
@@ -613,7 +613,7 @@ impl KnnVectorsWriter for Lucene99FlatVectorsWriter {
                 }
                 FieldWriterEntry::Byte(writer, info) => {
                     let mut guard = writer.lock().map_err(|_| {
-                        LuceneError::IllegalState(
+                        LuceneError::illegal_state(
                             "FlatFieldVectorsWriter mutex was poisoned".to_string(),
                         )
                     })?;
@@ -632,7 +632,7 @@ impl KnnVectorsWriter for Lucene99FlatVectorsWriter {
 
     fn finish(&mut self) -> Result<()> {
         if self.finished {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "Lucene99FlatVectorsWriter is already finished".to_string(),
             ));
         }
@@ -741,7 +741,7 @@ impl FlatVectorsWriter for Lucene99FlatVectorsWriter {
         merge_state: &MergeState,
     ) -> Result<()> {
         let vector_data = self.vector_data.as_mut().ok_or_else(|| {
-            LuceneError::IllegalState("Lucene99FlatVectorsWriter is already closed".to_string())
+            LuceneError::illegal_state("Lucene99FlatVectorsWriter is already closed".to_string())
         })?;
         let encoding = field_info.vector_encoding;
         let vector_data_offset = align_output(vector_data.as_mut(), encoding)?;
@@ -758,14 +758,14 @@ impl FlatVectorsWriter for Lucene99FlatVectorsWriter {
         };
         let vector_data_length = vector_data.file_pointer() - vector_data_offset;
         let meta = self.meta.as_mut().ok_or_else(|| {
-            LuceneError::IllegalState("Lucene99FlatVectorsWriter is already closed".to_string())
+            LuceneError::illegal_state("Lucene99FlatVectorsWriter is already closed".to_string())
         })?;
         // Java reads `segmentWriteState.segmentInfo.maxDoc()` here, which
         // raises `IllegalStateException("maxDoc isn't set yet")` when it was
         // never set; this reproduces that error at the same place.
         let segment_max_doc = self
             .segment_max_doc
-            .ok_or_else(|| LuceneError::IllegalState("maxDoc isn't set yet".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_state("maxDoc isn't set yet".to_string()))?;
         write_meta(
             meta.as_mut(),
             vector_data.as_mut(),
@@ -1377,7 +1377,7 @@ impl OffHeapFloatVectorValues {
             self.slice
                 .lock()
                 .map_err(|_| {
-                    LuceneError::IllegalState(
+                    LuceneError::illegal_state(
                         "off-heap vector slice mutex was poisoned".to_string(),
                     )
                 })?
@@ -1481,7 +1481,7 @@ impl OffHeapFloatVectorValues {
     /// `org.apache.lucene.codecs.lucene95.OffHeapFloatVectorValues#getSlice`.
     fn get_slice(&self) -> Result<MutexGuard<'_, Box<dyn IndexInput>>> {
         self.slice.lock().map_err(|_| {
-            LuceneError::IllegalState("off-heap vector slice mutex was poisoned".to_string())
+            LuceneError::illegal_state("off-heap vector slice mutex was poisoned".to_string())
         })
     }
 }
@@ -1679,7 +1679,7 @@ impl OffHeapByteVectorValues {
             self.slice
                 .lock()
                 .map_err(|_| {
-                    LuceneError::IllegalState(
+                    LuceneError::illegal_state(
                         "off-heap vector slice mutex was poisoned".to_string(),
                     )
                 })?
@@ -1783,7 +1783,7 @@ impl OffHeapByteVectorValues {
     /// `org.apache.lucene.codecs.lucene95.OffHeapByteVectorValues#getSlice`.
     fn get_slice(&self) -> Result<MutexGuard<'_, Box<dyn IndexInput>>> {
         self.slice.lock().map_err(|_| {
-            LuceneError::IllegalState("off-heap vector slice mutex was poisoned".to_string())
+            LuceneError::illegal_state("off-heap vector slice mutex was poisoned".to_string())
         })
     }
 

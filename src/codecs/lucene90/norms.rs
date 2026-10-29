@@ -732,7 +732,7 @@ impl DocValuesIterator for DenseConstantNormsIterator {
 impl NumericDocValues for DenseConstantNormsIterator {
     fn long_value(&self) -> Result<i64> {
         if self.doc < 0 || self.doc >= self.max_doc {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "long_value called with no current document".to_string(),
             ));
         }
@@ -823,7 +823,7 @@ impl DocValuesIterator for DenseNormsIterator {
 impl NumericDocValues for DenseNormsIterator {
     fn long_value(&self) -> Result<i64> {
         if self.doc < 0 || self.doc >= self.max_doc {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "long_value called with no current document".to_string(),
             ));
         }
@@ -896,7 +896,7 @@ impl NumericDocValues for SparseConstantNormsIterator {
         // on a document that has a norm has to be remembered rather than read
         // back off the iterator.
         if !self.positioned {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "long_value called with no current document".to_string(),
             ));
         }
@@ -983,7 +983,7 @@ impl DocValuesIterator for SparseNormsIterator {
 impl NumericDocValues for SparseNormsIterator {
     fn long_value(&self) -> Result<i64> {
         if !self.positioned {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "long_value called with no current document".to_string(),
             ));
         }
@@ -1131,7 +1131,7 @@ mod tests {
     impl NumericDocValues for VecNumericDocValues {
         fn long_value(&self) -> Result<i64> {
             if self.idx < 0 || self.idx as usize >= self.docs.len() {
-                return Err(LuceneError::IllegalState(
+                return Err(LuceneError::illegal_state(
                     "long_value called with no current document".to_string(),
                 ));
             }

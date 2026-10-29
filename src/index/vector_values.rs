@@ -723,7 +723,7 @@ fn check_field_encoding(
         if info.has_vector_values() && info.get_vector_encoding() != expected {
             // Message verbatim from Lucene, including the missing space before
             // "(expected=".
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "Unexpected vector encoding ({:?}) for field {}(expected={:?})",
                 info.get_vector_encoding(),
                 field,

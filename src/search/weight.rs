@@ -231,7 +231,7 @@ impl DefaultScorerSupplier {
 impl ScorerSupplier for DefaultScorerSupplier {
     fn get(&mut self, _lead_cost: i64) -> Result<Box<dyn Scorer>> {
         self.scorer.take().ok_or_else(|| {
-            LuceneError::IllegalState(
+            LuceneError::illegal_state(
                 "ScorerSupplier.get(long) must be called at most once".to_string(),
             )
         })

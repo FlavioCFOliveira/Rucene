@@ -49,12 +49,13 @@
 //!   line instead of spreading them across six arrays. It also removes the
 //!   lockstep-growth machinery entirely: term ids are dense and increasing, so
 //!   a new term is one `Vec::push`.
-//! * **`IntBlockPool` is gone.** Lucene stores the per-term stream addresses in
-//!   a second pool because `ParallelPostingsArray` cannot hold a variable-length
-//!   `int[]` per term without allocating. A term has at most two streams, fixed
-//!   by its index options, so this port inlines them as
-//!   [`FreqProxPosting::stream_address`]. One whole pool, its buffer bookkeeping
-//!   and one level of indirection per written byte disappear.
+//! * **The stream addresses live in an [`IntBlockPool`], as in Lucene.** Each
+//!   [`TermsHash`] owns one, whose 8192-`int` blocks are charged to the
+//!   chain's RAM counter (`IndexingChain.IntBlockAllocator`,
+//!   `IndexingChain.java:2114-2134`); a term's
+//!   [`address_offset`](FreqProxPosting::address_offset) points at its
+//!   `streamCount` consecutive addresses there
+//!   (`TermsHashPerField.initStreamSlices`, `TermsHashPerField.java:126-153`).
 //! * **The template method becomes a returned enum.** `TermsHashPerField.add`
 //!   calls back into the abstract `newTerm`/`addTerm` of its subclass. This port
 //!   has [`TermsHashPerField::intern`] return a [`TermSlot`] and lets the caller
@@ -107,6 +108,9 @@ use crate::store::{ByteBuffersDataInput, ByteBuffersDataOutput, DataInput, DataO
 use crate::util::automaton::CompiledAutomaton;
 use crate::util::byte_block_pool::{ByteBlockPool, BYTE_BLOCK_MASK, BYTE_BLOCK_SHIFT};
 use crate::util::bytes_ref_hash::BytesRefHash;
+use crate::util::int_block_pool::{
+    IntBlockAllocator, IntBlockPool, INT_BLOCK_MASK, INT_BLOCK_SHIFT, INT_BLOCK_SIZE,
+};
 use crate::util::IOBooleanSupplier;
 use crate::util::{compare_utf16, ArrayUtil, AttributeSource, BytesRef, FixedBitSet};
 
@@ -501,9 +505,12 @@ impl DataInput for PooledSliceReader<'_> {
 /// `TermVectorsConsumerPerField.java:242`).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct FreqProxPosting {
-    /// Next free global pool offset of each of the term's streams. Replaces
-    /// Lucene's `addressOffset` indirection through the `IntBlockPool`.
-    pub stream_address: [i32; 2],
+    /// Global offset, in the [`IntBlockPool`] of the term's [`TermsHash`], of
+    /// the term's first stream address; the next free byte offset of stream
+    /// `i` is the `int` at `address_offset + i`.
+    ///
+    /// Equivalent to `ParallelPostingsArray.addressOffset`.
+    pub address_offset: i32,
     /// Global pool offset of the term's first stream slice.
     ///
     /// Equivalent to `ParallelPostingsArray.byteStarts`.
@@ -520,24 +527,43 @@ pub struct FreqProxPosting {
     pub last_offset: i32,
 }
 
-/// Heap cost of one buffered term slot, used for the RAM-driven flush triggers.
+/// `ParallelPostingsArray.BYTES_PER_POSTING`: the `textStarts`,
+/// `addressOffset` and `byteStarts` columns (`ParallelPostingsArray.java:22`).
+const PARALLEL_BYTES_PER_POSTING: i64 = 3 * 4;
+
+/// The RAM one postings slot of a field indexed with `index_options` is
+/// charged.
 ///
-/// Plays the role of `FreqProxPostingsArray.bytesPerPosting()`: the columns of
-/// one posting plus the `bytesStart`/`textStarts` entry the term hash keeps for
-/// the same term id.
+/// Equivalent to `FreqProxPostingsArray.bytesPerPosting()`
+/// (`FreqProxTermsWriterPerField.java:292-305`): the three base columns,
+/// `lastDocIDs` and `lastDocCodes`, and one more `int` for each of
+/// `lastPositions`, `lastOffsets` and `termFreqs` the index options allocate.
 ///
-/// **Divergence from Lucene 10.5.0.** Java's value varies with the field's
-/// index options, because `FreqProxPostingsArray` allocates `lastPositions`,
-/// `lastOffsets` and `termFreqs` only when they are needed: it is
-/// `ParallelPostingsArray.BYTES_PER_POSTING` (`3 * Integer.BYTES` = 12) plus
-/// `2 * Integer.BYTES`, plus four more for each of those three arrays, so 20 for
-/// a docs-only field and 32 for a field with freqs, positions and offsets
-/// (`FreqProxTermsWriterPerField.java:292-305`). This port stores one
-/// [`FreqProxPosting`] struct per term with every column present whatever the
-/// index options are, so the cost really is the same for every field, and the
-/// constant reports what this port actually allocates rather than what Java
-/// would have.
-const BYTES_PER_POSTING: i64 = std::mem::size_of::<FreqProxPosting>() as i64 + 4;
+/// **Divergence from Lucene 10.5.0.** The columns are fields of one
+/// [`FreqProxPosting`] struct per term (see the module notes), which holds
+/// every column whatever the index options are; the counter is charged the
+/// bytes Java's arrays occupy, so the RAM-driven flushes happen where Lucene's
+/// do.
+fn freq_prox_bytes_per_posting(index_options: IndexOptions) -> i64 {
+    let mut bytes = PARALLEL_BYTES_PER_POSTING + 2 * 4;
+    if index_options.subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS) {
+        bytes += 4;
+    }
+    if index_options.subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS) {
+        bytes += 4;
+    }
+    if index_options.subsumes(IndexOptions::DOCS_AND_FREQS) {
+        bytes += 4;
+    }
+    bytes
+}
+
+/// The RAM one postings slot of a term-vectors field is charged.
+///
+/// Equivalent to `TermVectorsPostingsArray.bytesPerPosting()`
+/// (`TermVectorsConsumerPerField.java:349-351`): the three base columns plus
+/// `freqs`, `lastOffsets` and `lastPositions`.
+const TERM_VECTORS_BYTES_PER_POSTING: i64 = PARALLEL_BYTES_PER_POSTING + 3 * 4;
 
 /// Number of term slots the first allocation reserves.
 ///
@@ -573,16 +599,76 @@ pub struct TermSlot {
 #[derive(Debug)]
 pub struct TermsHash {
     pool: ByteBlockPool,
+    int_pool: IntBlockPool,
     bytes_used: Arc<AtomicI64>,
+}
+
+/// Allocator of the `int` blocks of a [`TermsHash`]'s [`IntBlockPool`],
+/// charging every block to the indexing chain's RAM counter.
+///
+/// Equivalent to the private `IndexingChain.IntBlockAllocator`
+/// (`IndexingChain.java:2114-2134`): `getIntBlock()` adds
+/// `INT_BLOCK_SIZE * Integer.BYTES`, and `recycleIntBlocks(blocks, offset,
+/// length)` subtracts `length * INT_BLOCK_SIZE * Integer.BYTES` and drops the
+/// blocks. `IntBlockPool.reset` passes `1 + bufferUpto` as that third argument
+/// (`IntBlockPool.java:124`), the *end* of the recycled range, so with
+/// `reuseFirst` the first, kept block is subtracted too; this port subtracts
+/// exactly what Java does.
+#[derive(Debug)]
+pub struct TrackingIntBlockAllocator {
+    bytes_used: Arc<AtomicI64>,
+}
+
+impl TrackingIntBlockAllocator {
+    /// Creates an allocator charging `bytes_used`.
+    pub fn new(bytes_used: Arc<AtomicI64>) -> Self {
+        Self { bytes_used }
+    }
+}
+
+impl IntBlockAllocator for TrackingIntBlockAllocator {
+    fn block_size(&self) -> usize {
+        INT_BLOCK_SIZE
+    }
+
+    /// `recycleIntBlocks(int[][] blocks, int offset, int length)`
+    /// (`IndexingChain.java:2130-2133`), whose `length` is the `end` the pool
+    /// passes.
+    fn recycle_int_blocks(&mut self, _blocks: &mut [Option<Vec<i32>>], _start: usize, end: usize) {
+        self.bytes_used.fetch_sub(
+            (end * INT_BLOCK_SIZE * std::mem::size_of::<i32>()) as i64,
+            Ordering::AcqRel,
+        );
+    }
+
+    fn get_int_block(&mut self) -> Vec<i32> {
+        self.bytes_used.fetch_add(
+            (INT_BLOCK_SIZE * std::mem::size_of::<i32>()) as i64,
+            Ordering::AcqRel,
+        );
+        vec![0; INT_BLOCK_SIZE]
+    }
 }
 
 impl TermsHash {
     /// Creates the shared buffers, charging their blocks to `bytes_used`.
+    ///
+    /// Equivalent to `TermsHash(IntBlockPool.Allocator,
+    /// ByteBlockPool.Allocator, Counter, TermsHash)` given the chain's
+    /// `IntBlockAllocator` and `DirectTrackingAllocator`, which both charge the
+    /// chain's counter (`IndexingChain.java:127-128`).
     pub fn new(bytes_used: Arc<AtomicI64>) -> Self {
         Self {
             pool: ByteBlockPool::new(Arc::clone(&bytes_used)),
+            int_pool: Self::new_int_pool(&bytes_used),
             bytes_used,
         }
+    }
+
+    fn new_int_pool(bytes_used: &Arc<AtomicI64>) -> IntBlockPool {
+        IntBlockPool::with_allocator(Box::new(TrackingIntBlockAllocator::new(Arc::clone(
+            bytes_used,
+        ))))
     }
 
     /// Returns the shared byte pool.
@@ -595,15 +681,30 @@ impl TermsHash {
         &mut self.pool
     }
 
+    /// Returns the pool of stream addresses.
+    ///
+    /// Equivalent to `TermsHash.intPool`.
+    pub fn int_pool(&self) -> &IntBlockPool {
+        &self.int_pool
+    }
+
+    /// Returns the byte pool and the pool of stream addresses at the same time.
+    pub fn pools_mut(&mut self) -> (&mut ByteBlockPool, &mut IntBlockPool) {
+        (&mut self.pool, &mut self.int_pool)
+    }
+
     /// Returns the shared RAM counter.
     pub fn bytes_used(&self) -> &Arc<AtomicI64> {
         &self.bytes_used
     }
 
-    /// Discards every buffered byte.
+    /// Discards every buffered byte and stream address.
     ///
-    /// Equivalent to `TermsHash.reset()`.
+    /// Equivalent to `TermsHash.reset()` (`TermsHash.java:70-73`):
+    /// `intPool.reset(false, false)` and `bytePool.reset(false, false)`, which
+    /// hand every block back to the allocators.
     pub fn reset(&mut self) {
+        self.int_pool.reset(false, false);
         self.pool.reset();
     }
 
@@ -632,6 +733,13 @@ impl TermsHash {
             ByteBlockPool::new(Arc::clone(&self.bytes_used)),
         )
     }
+
+    /// Moves the pool of stream addresses out, leaving an empty one behind,
+    /// for the same reason as [`take_pool`](Self::take_pool).
+    fn take_int_pool(&mut self) -> IntBlockPool {
+        let empty = Self::new_int_pool(&self.bytes_used);
+        std::mem::replace(&mut self.int_pool, empty)
+    }
 }
 
 /// Per-field term table and stream writer.
@@ -643,7 +751,11 @@ pub struct TermsHashPerField {
     field_name: String,
     index_options: IndexOptions,
     bytes_hash: BytesRefHash,
+    /// The postings slots; empty when Java's `postingsArray` is `null`.
     postings: Vec<FreqProxPosting>,
+    /// What one slot of [`Self::postings`] is charged, Java's
+    /// `postingsArray.bytesPerPosting()`.
+    bytes_per_posting: i64,
     bytes_used: Arc<AtomicI64>,
     /// Highest document id passed to [`Self::intern`], checked in debug builds
     /// the way Lucene's `assertDocId` does.
@@ -658,7 +770,14 @@ pub struct TermsHashPerField {
 }
 
 impl TermsHashPerField {
-    /// Creates a table for `field_name` writing `stream_count` streams per term.
+    /// Creates a postings table for `field_name` writing `stream_count`
+    /// streams per term, whose slots are `FreqProxPostingsArray`'s.
+    ///
+    /// Equivalent to the `TermsHashPerField` constructor
+    /// (`TermsHashPerField.java:65-84`) as `FreqProxTermsWriterPerField` calls
+    /// it: the `BytesRefHash` it builds charges its `HASH_INIT_SIZE` slots and
+    /// calls `PostingsBytesStartArray.init()`, which allocates two postings
+    /// slots and charges them.
     ///
     /// # Panics
     ///
@@ -670,21 +789,43 @@ impl TermsHashPerField {
         index_options: IndexOptions,
         bytes_used: Arc<AtomicI64>,
     ) -> Self {
+        let bytes_hash = BytesRefHash::for_postings(Arc::clone(&bytes_used));
+        Self::with_hash(
+            stream_count,
+            field_name,
+            index_options,
+            freq_prox_bytes_per_posting(index_options),
+            bytes_hash,
+            bytes_used,
+        )
+    }
+
+    fn with_hash(
+        stream_count: usize,
+        field_name: String,
+        index_options: IndexOptions,
+        bytes_per_posting: i64,
+        bytes_hash: BytesRefHash,
+        bytes_used: Arc<AtomicI64>,
+    ) -> Self {
         assert_ne!(index_options, IndexOptions::NONE);
         assert!(
             stream_count == 1 || stream_count == 2,
             "a term has one or two streams, got {stream_count}"
         );
-        Self {
+        let mut field = Self {
             stream_count,
             field_name,
             index_options,
-            bytes_hash: BytesRefHash::new(Arc::clone(&bytes_used)),
+            bytes_hash,
             postings: Vec::new(),
+            bytes_per_posting,
             bytes_used,
             last_doc_id: 0,
             sorted_term_ids: None,
-        }
+        };
+        field.init_postings();
+        field
     }
 
     /// Creates a table for the *second* term hash of the chain.
@@ -700,21 +841,54 @@ impl TermsHashPerField {
     ///
     /// Panics if `index_options` is [`IndexOptions::NONE`] or if `stream_count`
     /// is not 1 or 2.
+    ///
+    /// Its slots are `TermVectorsPostingsArray`'s, the one consumer of the
+    /// second hash.
     pub fn new_chained(
         stream_count: usize,
         field_name: String,
         index_options: IndexOptions,
         bytes_used: Arc<AtomicI64>,
     ) -> Self {
-        let mut field = Self::new(
+        let bytes_hash = BytesRefHash::for_postings_by_pool_offset(Arc::clone(&bytes_used));
+        Self::with_hash(
             stream_count,
             field_name,
             index_options,
-            Arc::clone(&bytes_used),
-        );
-        field.bytes_hash.release_accounting();
-        field.bytes_hash = BytesRefHash::new_by_pool_offset(bytes_used);
-        field
+            TERM_VECTORS_BYTES_PER_POSTING,
+            bytes_hash,
+            bytes_used,
+        )
+    }
+
+    /// Allocates the first two postings slots when there are none.
+    ///
+    /// Equivalent to `TermsHashPerField.PostingsBytesStartArray.init()`
+    /// (`TermsHashPerField.java:290-299`): `createPostingsArray(2)`, charged
+    /// `size * bytesPerPosting()`.
+    fn init_postings(&mut self) {
+        if self.postings.is_empty() {
+            self.postings
+                .resize(INITIAL_POSTINGS_SLOTS, FreqProxPosting::default());
+            self.bytes_used.fetch_add(
+                INITIAL_POSTINGS_SLOTS as i64 * self.bytes_per_posting,
+                Ordering::AcqRel,
+            );
+        }
+    }
+
+    /// Drops the postings slots and their charge.
+    ///
+    /// Equivalent to `TermsHashPerField.PostingsBytesStartArray.clear()`
+    /// (`TermsHashPerField.java:311-318`).
+    fn clear_postings(&mut self) {
+        if !self.postings.is_empty() {
+            self.bytes_used.fetch_sub(
+                self.postings.len() as i64 * self.bytes_per_posting,
+                Ordering::AcqRel,
+            );
+            self.postings = Vec::new();
+        }
     }
 
     /// Checks that document ids arrive in order, and records the latest.
@@ -758,9 +932,13 @@ impl TermsHashPerField {
 
     /// Drops the sort and reinitialises the hash table.
     ///
-    /// Equivalent to `TermsHashPerField.reinitHash()`.
+    /// Equivalent to `TermsHashPerField.reinitHash()`
+    /// (`TermsHashPerField.java:123-126`): `BytesRefHash.reinit()` re-creates
+    /// the postings slots through `PostingsBytesStartArray.init()` when a
+    /// [`reset`](Self::reset) dropped them.
     pub fn reinit_hash(&mut self) {
         self.sorted_term_ids = None;
+        self.init_postings();
         self.bytes_hash.reinit();
     }
 
@@ -832,41 +1010,44 @@ impl TermsHashPerField {
     ///
     /// Panics if `stream` is not below this table's stream count, or if
     /// `term_id` was never interned.
-    pub fn init_reader(&self, reader: &mut ByteSliceReader, term_id: i32, stream: usize) {
+    pub fn init_reader(
+        &self,
+        int_pool: &IntBlockPool,
+        reader: &mut ByteSliceReader,
+        term_id: i32,
+        stream: usize,
+    ) {
         assert!(stream < self.stream_count);
         let slot = &self.postings[term_id as usize];
         reader.init(
             slot.byte_start + (stream * FIRST_LEVEL_SIZE) as i32,
-            slot.stream_address[stream],
+            stream_address(int_pool, slot.address_offset, stream),
         );
     }
 
     /// Hands every byte this table charged back to the shared counter.
     ///
     /// The table keeps its contents but must not be charged again; callers
-    /// either discard it or re-create it right after.
+    /// either discard it or re-create it right after. Java's tables are
+    /// reclaimed by the garbage collector with no change to the counter; this
+    /// port's callers release them where they drop them.
     pub fn release_accounting(&mut self) {
-        self.bytes_used.fetch_sub(
-            self.postings.len() as i64 * BYTES_PER_POSTING,
-            Ordering::AcqRel,
-        );
-        self.postings = Vec::new();
+        self.clear_postings();
         self.bytes_hash.release_accounting();
     }
 
     /// Discards every buffered term.
     ///
-    /// Equivalent to `TermsHashPerField.reset()`. The byte pool is owned by
-    /// [`TermsHash`] and is reset separately.
+    /// Equivalent to `TermsHashPerField.reset()` (`TermsHashPerField.java:86-92`):
+    /// `bytesHash.clear(false)`, which drops the postings slots through
+    /// `PostingsBytesStartArray.clear()` and shrinks the hash table towards the
+    /// previous term count, and `sortedTermIDs = null`. The table is used
+    /// again only after [`reinit_hash`](Self::reinit_hash). The byte and int
+    /// pools are owned by [`TermsHash`] and are reset separately.
     pub fn reset(&mut self) {
-        let keyed_by_pool_offset = self.bytes_hash.is_keyed_by_pool_offset();
-        self.release_accounting();
-        self.bytes_hash = if keyed_by_pool_offset {
-            BytesRefHash::new_by_pool_offset(Arc::clone(&self.bytes_used))
-        } else {
-            BytesRefHash::new(Arc::clone(&self.bytes_used))
-        };
-        self.last_doc_id = 0;
+        self.bytes_hash.clear();
+        self.clear_postings();
+        self.sorted_term_ids = None;
     }
 
     /// Interns `term_bytes` and, for a new term, allocates its stream slices.
@@ -882,6 +1063,7 @@ impl TermsHashPerField {
     pub fn intern(
         &mut self,
         pool: &mut ByteBlockPool,
+        int_pool: &mut IntBlockPool,
         term_bytes: &[u8],
         doc_id: i32,
     ) -> Result<TermSlot> {
@@ -889,7 +1071,7 @@ impl TermsHashPerField {
 
         let raw = self.bytes_hash.add(pool, term_bytes)?;
         if raw >= 0 {
-            self.init_stream_slices(pool, raw)?;
+            self.init_stream_slices(pool, int_pool, raw)?;
             Ok(TermSlot {
                 term_id: raw,
                 is_new: true,
@@ -924,11 +1106,12 @@ impl TermsHashPerField {
     pub fn intern_by_text_start(
         &mut self,
         streams: &mut ByteBlockPool,
+        int_pool: &mut IntBlockPool,
         text_start: i32,
     ) -> Result<TermSlot> {
         let raw = self.bytes_hash.add_by_pool_offset(text_start);
         if raw >= 0 {
-            self.init_stream_slices(streams, raw)?;
+            self.init_stream_slices(streams, int_pool, raw)?;
             Ok(TermSlot {
                 term_id: raw,
                 is_new: true,
@@ -946,34 +1129,55 @@ impl TermsHashPerField {
     ///
     /// Equivalent to `org.apache.lucene.index.TermsHashPerField#positionStreamSlice`.
     ///
-    /// Lucene also reloads `termStreamAddressBuffer` and `streamAddressOffset`
-    /// from the `IntBlockPool` here, and dispatches to `addTerm`. This port
-    /// needs neither: the stream addresses live in the term's own
-    /// [`FreqProxPosting`] slot, and the `newTerm`/`addTerm` dispatch is the
-    /// caller's, on the returned [`TermSlot`].
+    /// Lucene also caches `termStreamAddressBuffer` and `streamAddressOffset`
+    /// from the `IntBlockPool` here, and dispatches to `addTerm`. This port's
+    /// write methods take the term id and find its addresses through
+    /// [`FreqProxPosting::address_offset`] instead, and the `newTerm`/`addTerm`
+    /// dispatch is the caller's, on the returned [`TermSlot`].
     fn position_stream_slice(&self, term_id: i32) -> i32 {
         let term_id = -term_id - 1;
         debug_assert!((term_id as usize) < self.postings.len());
         term_id
     }
 
-    /// Reserves one slice per stream for a freshly interned term.
+    /// Reserves `streamCount` addresses and one slice per stream for a freshly
+    /// interned term.
     ///
-    /// Equivalent to `TermsHashPerField.initStreamSlices(int, int)` minus the
-    /// `IntBlockPool` reservation, which this port inlines into the slot.
-    fn init_stream_slices(&mut self, pool: &mut ByteBlockPool, term_id: i32) -> Result<()> {
+    /// Equivalent to `TermsHashPerField.initStreamSlices(int, int)`
+    /// (`TermsHashPerField.java:150-176`) up to the `newTerm` call, which is
+    /// the caller's.
+    fn init_stream_slices(
+        &mut self,
+        pool: &mut ByteBlockPool,
+        int_pool: &mut IntBlockPool,
+        term_id: i32,
+    ) -> Result<()> {
         debug_assert_eq!(term_id, self.num_terms() - 1);
         self.grow_postings(term_id as usize);
+        if self.stream_count + int_pool.int_upto() > INT_BLOCK_SIZE {
+            // Not enough space remaining in this buffer: jump to the next one
+            // and lose this remaining piece.
+            int_pool.next_buffer();
+        }
         // Make sure at least one byte per stream fits in the current block, so
         // that the streams of a term stay close together.
         pool.ensure_capacity(2 * self.stream_count * FIRST_LEVEL_SIZE)?;
 
-        let mut slot = FreqProxPosting::default();
+        let block = int_pool.buffer_upto() as usize;
+        let stream_address_offset = int_pool.int_upto();
+        // Advance the pool to reserve the streams of this term.
+        int_pool.set_int_upto(stream_address_offset + self.stream_count);
+
+        let mut slot = FreqProxPosting {
+            address_offset: stream_address_offset as i32 + int_pool.int_offset(),
+            ..FreqProxPosting::default()
+        };
         for stream in 0..self.stream_count {
             let upto = ByteSlicePool::new_slice(pool, FIRST_LEVEL_SIZE)?;
-            slot.stream_address[stream] = upto as i32 + pool.byte_offset();
+            int_pool.buffer_mut(block)[stream_address_offset + stream] =
+                upto as i32 + pool.byte_offset();
         }
-        slot.byte_start = slot.stream_address[0];
+        slot.byte_start = int_pool.buffer(block)[stream_address_offset];
         self.postings[term_id as usize] = slot;
         Ok(())
     }
@@ -981,10 +1185,9 @@ impl TermsHashPerField {
     /// Makes room for `term_id`, charging the shared counter for every slot the
     /// table allocates.
     ///
-    /// Equivalent to `ParallelPostingsArray.grow()` together with the two
-    /// `TermsHashPerField.PostingsBytesStartArray` methods that drive it:
-    /// `init()` allocates the first two slots and charges
-    /// `size * bytesPerPosting()`, and `grow()` replaces the array with one of
+    /// Equivalent to `ParallelPostingsArray.grow()` together with
+    /// `TermsHashPerField.PostingsBytesStartArray.grow()`
+    /// (`TermsHashPerField.java:301-308`), which replaces the array with one of
     /// `ArrayUtil.oversize(size + 1, bytesPerPosting())` slots and charges the
     /// difference. Charging the *allocated* slots rather than the used ones is
     /// what makes the RAM-driven flush trigger fire where Lucene's does.
@@ -997,22 +1200,20 @@ impl TermsHashPerField {
             return;
         }
         let old_size = self.postings.len();
-        let new_size = if old_size == 0 {
-            INITIAL_POSTINGS_SLOTS
-        } else {
-            ArrayUtil::oversize(old_size + 1, BYTES_PER_POSTING as usize)
-        };
+        debug_assert!(old_size > 0, "the postings slots are initialised first");
+        let new_size = ArrayUtil::oversize(old_size + 1, self.bytes_per_posting as usize);
         debug_assert!(new_size > term_id);
         self.postings.resize(new_size, FreqProxPosting::default());
         self.bytes_used.fetch_add(
-            BYTES_PER_POSTING * (new_size - old_size) as i64,
+            self.bytes_per_posting * (new_size - old_size) as i64,
             Ordering::AcqRel,
         );
     }
 
     /// Appends one byte to `stream` of `term_id`.
     ///
-    /// Equivalent to `TermsHashPerField.writeByte(int, byte)`.
+    /// Equivalent to `TermsHashPerField.writeByte(int, byte)`
+    /// (`TermsHashPerField.java:220-234`).
     ///
     /// # Errors
     ///
@@ -1020,13 +1221,14 @@ impl TermsHashPerField {
     pub fn write_byte(
         &mut self,
         pool: &mut ByteBlockPool,
+        int_pool: &mut IntBlockPool,
         term_id: i32,
         stream: usize,
         value: u8,
     ) -> Result<()> {
         debug_assert!(stream < self.stream_count);
-        let slot = &mut self.postings[term_id as usize];
-        let address = slot.stream_address[stream] as usize;
+        let address_offset = self.postings[term_id as usize].address_offset;
+        let address = stream_address(int_pool, address_offset, stream) as usize;
         let block = address >> BYTE_BLOCK_SHIFT;
         let offset = address & BYTE_BLOCK_MASK;
 
@@ -1035,18 +1237,23 @@ impl TermsHashPerField {
             let new_offset = ByteSlicePool::alloc_slice(pool, block, offset)?;
             let new_block = pool.buffer_upto() as usize;
             pool.buffer_mut(new_block)[new_offset] = value;
-            self.postings[term_id as usize].stream_address[stream] =
-                new_offset as i32 + pool.byte_offset() + 1;
+            set_stream_address(
+                int_pool,
+                address_offset,
+                stream,
+                new_offset as i32 + pool.byte_offset() + 1,
+            );
         } else {
             pool.buffer_mut(block)[offset] = value;
-            slot.stream_address[stream] += 1;
+            set_stream_address(int_pool, address_offset, stream, address as i32 + 1);
         }
         Ok(())
     }
 
     /// Appends `value` to `stream` of `term_id`.
     ///
-    /// Equivalent to `TermsHashPerField.writeBytes(int, byte[], int, int)`.
+    /// Equivalent to `TermsHashPerField.writeBytes(int, byte[], int, int)`
+    /// (`TermsHashPerField.java:236-260`).
     ///
     /// # Errors
     ///
@@ -1054,14 +1261,17 @@ impl TermsHashPerField {
     pub fn write_bytes(
         &mut self,
         pool: &mut ByteBlockPool,
+        int_pool: &mut IntBlockPool,
         term_id: i32,
         stream: usize,
         value: &[u8],
     ) -> Result<()> {
         debug_assert!(stream < self.stream_count);
-        let address = self.postings[term_id as usize].stream_address[stream] as usize;
+        let address_offset = self.postings[term_id as usize].address_offset;
+        let address = stream_address(int_pool, address_offset, stream) as usize;
         let mut block = address >> BYTE_BLOCK_SHIFT;
         let mut offset = address & BYTE_BLOCK_MASK;
+        let mut upto = address as i32;
         let mut written = 0usize;
 
         // Fill the remainder of the current slice, one byte at a time, until we
@@ -1070,8 +1280,9 @@ impl TermsHashPerField {
             pool.buffer_mut(block)[offset] = value[written];
             offset += 1;
             written += 1;
-            self.postings[term_id as usize].stream_address[stream] += 1;
+            upto += 1;
         }
+        set_stream_address(int_pool, address_offset, stream, upto);
 
         while written < value.len() {
             let (new_offset, slice_len) =
@@ -1084,8 +1295,12 @@ impl TermsHashPerField {
                 .copy_from_slice(&value[written..written + chunk]);
             offset += chunk;
             written += chunk;
-            self.postings[term_id as usize].stream_address[stream] =
-                offset as i32 + pool.byte_offset();
+            set_stream_address(
+                int_pool,
+                address_offset,
+                stream,
+                offset as i32 + pool.byte_offset(),
+            );
         }
         Ok(())
     }
@@ -1100,17 +1315,43 @@ impl TermsHashPerField {
     pub fn write_v_int(
         &mut self,
         pool: &mut ByteBlockPool,
+        int_pool: &mut IntBlockPool,
         term_id: i32,
         stream: usize,
         value: i32,
     ) -> Result<()> {
         let mut remaining = value as u32;
         while remaining & !0x7F != 0 {
-            self.write_byte(pool, term_id, stream, ((remaining & 0x7F) | 0x80) as u8)?;
+            self.write_byte(
+                pool,
+                int_pool,
+                term_id,
+                stream,
+                ((remaining & 0x7F) | 0x80) as u8,
+            )?;
             remaining >>= 7;
         }
-        self.write_byte(pool, term_id, stream, remaining as u8)
+        self.write_byte(pool, int_pool, term_id, stream, remaining as u8)
     }
+}
+
+/// The next free byte offset of `stream` of the term whose addresses start at
+/// the global offset `address_offset` of `int_pool`.
+///
+/// Equivalent to Java's
+/// `intPool.buffers[addressOffset >> INT_BLOCK_SHIFT][(addressOffset & INT_BLOCK_MASK) + stream]`
+/// (`TermsHashPerField.java:94-104, 211-218`).
+fn stream_address(int_pool: &IntBlockPool, address_offset: i32, stream: usize) -> i32 {
+    let address_offset = address_offset as usize;
+    int_pool.buffer(address_offset >> INT_BLOCK_SHIFT)[(address_offset & INT_BLOCK_MASK) + stream]
+}
+
+/// Sets the next free byte offset of `stream` of the term whose addresses
+/// start at `address_offset`; see [`stream_address`].
+fn set_stream_address(int_pool: &mut IntBlockPool, address_offset: i32, stream: usize, value: i32) {
+    let address_offset = address_offset as usize;
+    int_pool.buffer_mut(address_offset >> INT_BLOCK_SHIFT)
+        [(address_offset & INT_BLOCK_MASK) + stream] = value;
 }
 
 // ---------------------------------------------------------------------------
@@ -1241,16 +1482,17 @@ impl FreqProxTermsWriterPerField {
     pub fn add(
         &mut self,
         pool: &mut ByteBlockPool,
+        int_pool: &mut IntBlockPool,
         field_state: &mut FieldInvertState,
         term_bytes: &[u8],
         doc_id: i32,
         token: &InvertedToken<'_>,
     ) -> Result<i32> {
-        let slot = self.base.intern(pool, term_bytes, doc_id)?;
+        let slot = self.base.intern(pool, int_pool, term_bytes, doc_id)?;
         if slot.is_new {
-            self.new_term(pool, field_state, slot.term_id, doc_id, token)?;
+            self.new_term(pool, int_pool, field_state, slot.term_id, doc_id, token)?;
         } else {
-            self.add_term(pool, field_state, slot.term_id, doc_id, token)?;
+            self.add_term(pool, int_pool, field_state, slot.term_id, doc_id, token)?;
         }
         Ok(self.base.text_start(slot.term_id))
     }
@@ -1265,7 +1507,7 @@ impl FreqProxTermsWriterPerField {
             1
         };
         if freq != 1 && self.has_prox {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "field \"{}\": cannot index positions while using custom TermFrequencyAttribute",
                 self.field_name()
             )));
@@ -1279,6 +1521,7 @@ impl FreqProxTermsWriterPerField {
     fn write_prox(
         &mut self,
         pool: &mut ByteBlockPool,
+        int_pool: &mut IntBlockPool,
         field_state: &FieldInvertState,
         term_id: i32,
         prox_code: i32,
@@ -1287,14 +1530,15 @@ impl FreqProxTermsWriterPerField {
         match token.payload {
             Some(payload) if !payload.is_empty() => {
                 self.base
-                    .write_v_int(pool, term_id, 1, (prox_code << 1) | 1)?;
+                    .write_v_int(pool, int_pool, term_id, 1, (prox_code << 1) | 1)?;
                 self.base
-                    .write_v_int(pool, term_id, 1, payload.len() as i32)?;
-                self.base.write_bytes(pool, term_id, 1, payload)?;
+                    .write_v_int(pool, int_pool, term_id, 1, payload.len() as i32)?;
+                self.base.write_bytes(pool, int_pool, term_id, 1, payload)?;
                 self.saw_payloads = true;
             }
             _ => {
-                self.base.write_v_int(pool, term_id, 1, prox_code << 1)?;
+                self.base
+                    .write_v_int(pool, int_pool, term_id, 1, prox_code << 1)?;
             }
         }
         self.base.postings[term_id as usize].last_position = field_state.position();
@@ -1307,6 +1551,7 @@ impl FreqProxTermsWriterPerField {
     fn write_offsets(
         &mut self,
         pool: &mut ByteBlockPool,
+        int_pool: &mut IntBlockPool,
         term_id: i32,
         offset_accum: i32,
         token: &InvertedToken<'_>,
@@ -1316,9 +1561,9 @@ impl FreqProxTermsWriterPerField {
         let last_offset = self.base.postings[term_id as usize].last_offset;
         debug_assert!(start_offset - last_offset >= 0);
         self.base
-            .write_v_int(pool, term_id, 1, start_offset - last_offset)?;
+            .write_v_int(pool, int_pool, term_id, 1, start_offset - last_offset)?;
         self.base
-            .write_v_int(pool, term_id, 1, end_offset - start_offset)?;
+            .write_v_int(pool, int_pool, term_id, 1, end_offset - start_offset)?;
         self.base.postings[term_id as usize].last_offset = start_offset;
         Ok(())
     }
@@ -1329,6 +1574,7 @@ impl FreqProxTermsWriterPerField {
     fn new_term(
         &mut self,
         pool: &mut ByteBlockPool,
+        int_pool: &mut IntBlockPool,
         field_state: &mut FieldInvertState,
         term_id: i32,
         doc_id: i32,
@@ -1344,9 +1590,9 @@ impl FreqProxTermsWriterPerField {
             self.base.postings[term_id as usize].term_freq = freq;
             if self.has_prox {
                 let position = field_state.position();
-                self.write_prox(pool, field_state, term_id, position, token)?;
+                self.write_prox(pool, int_pool, field_state, term_id, position, token)?;
                 if self.has_offsets {
-                    self.write_offsets(pool, term_id, field_state.offset(), token)?;
+                    self.write_offsets(pool, int_pool, term_id, field_state.offset(), token)?;
                 }
             }
             field_state
@@ -1362,6 +1608,7 @@ impl FreqProxTermsWriterPerField {
     fn add_term(
         &mut self,
         pool: &mut ByteBlockPool,
+        int_pool: &mut IntBlockPool,
         field_state: &mut FieldInvertState,
         term_id: i32,
         doc_id: i32,
@@ -1370,7 +1617,7 @@ impl FreqProxTermsWriterPerField {
         let index = term_id as usize;
         if !self.has_freq {
             if token.has_term_freq_attribute && token.term_freq != 1 {
-                return Err(LuceneError::IllegalState(format!(
+                return Err(LuceneError::illegal_state(format!(
                     "field \"{}\": must index term freq while using custom TermFrequencyAttribute",
                     self.field_name()
                 )));
@@ -1379,7 +1626,7 @@ impl FreqProxTermsWriterPerField {
                 debug_assert!(doc_id > self.base.postings[index].last_doc_id);
                 // The previous document is complete; flush its doc code.
                 let code = self.base.postings[index].last_doc_code;
-                self.base.write_v_int(pool, term_id, 0, code)?;
+                self.base.write_v_int(pool, int_pool, term_id, 0, code)?;
                 self.base.postings[index].last_doc_code =
                     doc_id - self.base.postings[index].last_doc_id;
                 self.base.postings[index].last_doc_id = doc_id;
@@ -1397,12 +1644,12 @@ impl FreqProxTermsWriterPerField {
             // Now that the previous document's frequency is final, write it.
             if self.base.postings[index].term_freq == 1 {
                 let code = self.base.postings[index].last_doc_code | 1;
-                self.base.write_v_int(pool, term_id, 0, code)?;
+                self.base.write_v_int(pool, int_pool, term_id, 0, code)?;
             } else {
                 let code = self.base.postings[index].last_doc_code;
                 let freq = self.base.postings[index].term_freq;
-                self.base.write_v_int(pool, term_id, 0, code)?;
-                self.base.write_v_int(pool, term_id, 0, freq)?;
+                self.base.write_v_int(pool, int_pool, term_id, 0, code)?;
+                self.base.write_v_int(pool, int_pool, term_id, 0, freq)?;
             }
 
             let freq = self.term_freq(token)?;
@@ -1414,10 +1661,10 @@ impl FreqProxTermsWriterPerField {
             self.base.postings[index].last_doc_id = doc_id;
             if self.has_prox {
                 let position = field_state.position();
-                self.write_prox(pool, field_state, term_id, position, token)?;
+                self.write_prox(pool, int_pool, field_state, term_id, position, token)?;
                 if self.has_offsets {
                     self.base.postings[index].last_offset = 0;
-                    self.write_offsets(pool, term_id, field_state.offset(), token)?;
+                    self.write_offsets(pool, int_pool, term_id, field_state.offset(), token)?;
                 }
             }
             field_state.increment_unique_term_count();
@@ -1444,9 +1691,9 @@ impl FreqProxTermsWriterPerField {
             ));
             if self.has_prox {
                 let delta = field_state.position() - self.base.postings[index].last_position;
-                self.write_prox(pool, field_state, term_id, delta, token)?;
+                self.write_prox(pool, int_pool, field_state, term_id, delta, token)?;
                 if self.has_offsets {
-                    self.write_offsets(pool, term_id, field_state.offset(), token)?;
+                    self.write_offsets(pool, int_pool, term_id, field_state.offset(), token)?;
                 }
             }
         }
@@ -1473,6 +1720,9 @@ struct FieldPostings {
     bytes_start: Vec<i32>,
     postings: Vec<FreqProxPosting>,
     pool: Arc<ByteBlockPool>,
+    /// The stream addresses the postings point into; Java's `intPool`, which
+    /// `initReader` reads at flush.
+    int_pool: Arc<IntBlockPool>,
 }
 
 impl FieldPostings {
@@ -1488,7 +1738,7 @@ impl FieldPostings {
         let slot = &self.postings[term_id as usize];
         reader.init(
             slot.byte_start + (stream * FIRST_LEVEL_SIZE) as i32,
-            slot.stream_address[stream],
+            stream_address(&self.int_pool, slot.address_offset, stream),
         );
     }
 }
@@ -1628,7 +1878,7 @@ impl FreqProxTermsEnum {
 
     fn current_term(&self) -> Result<&[u8]> {
         if self.ord < 0 || self.ord as usize >= self.num_terms {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "terms enum is not positioned on a term".to_string(),
             ));
         }
@@ -1721,7 +1971,7 @@ impl TermsEnum for FreqProxTermsEnum {
         flags: i32,
     ) -> Result<Box<dyn PostingsEnum>> {
         if self.ord < 0 || self.ord as usize >= self.num_terms {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "terms enum is not positioned on a term".to_string(),
             ));
         }
@@ -1876,7 +2126,7 @@ impl PostingsEnum for FreqProxDocsEnum {
         if self.read_term_freq {
             Ok(self.freq)
         } else {
-            Err(LuceneError::IllegalState(
+            Err(LuceneError::illegal_state(
                 "freq was not indexed".to_string(),
             ))
         }
@@ -2119,15 +2369,21 @@ impl FreqProxTermsWriter {
         self.terms_hash.pool()
     }
 
-    /// Returns the byte pool and the writer of `index` at the same time.
+    /// Returns the byte pool, the pool of stream addresses and the writer of
+    /// `index` at the same time.
     ///
-    /// Splitting the borrow this way is what lets one shared pool serve every
+    /// Splitting the borrow this way is what lets the shared pools serve every
     /// per-field writer, which is exactly Lucene's arrangement.
     pub fn pool_and_field(
         &mut self,
         index: usize,
-    ) -> (&mut ByteBlockPool, &mut FreqProxTermsWriterPerField) {
-        (self.terms_hash.pool_mut(), &mut self.fields[index])
+    ) -> (
+        &mut ByteBlockPool,
+        &mut IntBlockPool,
+        &mut FreqProxTermsWriterPerField,
+    ) {
+        let (pool, int_pool) = self.terms_hash.pools_mut();
+        (pool, int_pool, &mut self.fields[index])
     }
 
     /// Returns the per-field writer of `index`.
@@ -2167,6 +2423,7 @@ impl FreqProxTermsWriter {
     /// included, and they are sorted by name.
     fn freeze(&mut self) -> FreqProxFields {
         let pool = Arc::new(self.terms_hash.take_pool());
+        let int_pool = Arc::new(self.terms_hash.take_int_pool());
         let mut frozen: Vec<Arc<FieldPostings>> = Vec::new();
         for mut field in std::mem::take(&mut self.fields) {
             if field.num_terms() == 0 {
@@ -2192,6 +2449,7 @@ impl FreqProxTermsWriter {
                 bytes_start,
                 postings,
                 pool: Arc::clone(&pool),
+                int_pool: Arc::clone(&int_pool),
             }));
         }
         self.field_index.clear();
@@ -2237,7 +2495,7 @@ impl FreqProxTermsWriter {
         apply_deletes(state, &fields, delete_terms)?;
 
         let codec = state.segment_info.codec().ok_or_else(|| {
-            LuceneError::IllegalState(format!(
+            LuceneError::illegal_state(format!(
                 "segment {} has no codec; cannot write postings",
                 state.segment_info.name
             ))
@@ -2295,7 +2553,7 @@ impl Fields for SortingFields<'_> {
             .infos
             .field_info(field)
             .ok_or_else(|| {
-                LuceneError::IllegalState(format!(
+                LuceneError::illegal_state(format!(
                     "field \"{field}\" has postings but no field info"
                 ))
             })?
@@ -2830,7 +3088,7 @@ impl SortingPostingsEnum {
 
     fn posting_input(&mut self) -> Result<&mut ByteBuffersDataInput> {
         self.posting_input.as_mut().ok_or_else(|| {
-            LuceneError::IllegalState("SortingPostingsEnum was not reset".to_string())
+            LuceneError::illegal_state("SortingPostingsEnum was not reset".to_string())
         })
     }
 }
@@ -2897,7 +3155,7 @@ impl PostingsEnum for SortingPostingsEnum {
             return Ok(-1);
         }
         let input = self.posting_input.as_mut().ok_or_else(|| {
-            LuceneError::IllegalState("SortingPostingsEnum was not reset".to_string())
+            LuceneError::illegal_state("SortingPostingsEnum was not reset".to_string())
         })?;
         let token = input.read_v_int()?;
         // `pos += token >>> 1`.
@@ -3164,9 +3422,10 @@ mod tests {
                     term_freq: token.term_freq,
                     has_term_freq_attribute: token.has_term_freq_attribute,
                 };
-                let (pool, field) = self.writer.pool_and_field(self.index);
+                let (pool, int_pool, field) = self.writer.pool_and_field(self.index);
                 field.add(
                     pool,
+                    int_pool,
                     &mut self.field_state,
                     token.term.as_bytes(),
                     doc_id,
@@ -3275,25 +3534,31 @@ mod tests {
         // LEVEL_SIZE_ARRAY and several block boundaries.
         let bytes_used = Arc::new(AtomicI64::new(0));
         let mut pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut ints = IntBlockPool::new();
         let mut field = TermsHashPerField::new(
             1,
             "body".to_string(),
             IndexOptions::DOCS,
             Arc::clone(&bytes_used),
         );
-        let slot = field.intern(&mut pool, b"term", 0).expect("intern");
+        let slot = field
+            .intern(&mut pool, &mut ints, b"term", 0)
+            .expect("intern");
         assert!(slot.is_new);
 
         let expected: Vec<u8> = (0..4000u32).map(|i| (i % 251) as u8).collect();
         for byte in &expected {
             field
-                .write_byte(&mut pool, slot.term_id, 0, *byte)
+                .write_byte(&mut pool, &mut ints, slot.term_id, 0, *byte)
                 .expect("write byte");
         }
 
         let mut reader = ByteSliceReader::new();
         let posting = *field.posting(slot.term_id);
-        reader.init(posting.byte_start, posting.stream_address[0]);
+        reader.init(
+            posting.byte_start,
+            stream_address(&ints, posting.address_offset, 0),
+        );
         let mut actual = Vec::with_capacity(expected.len());
         while !reader.eof() {
             actual.push(reader.read_byte(&pool));
@@ -3305,13 +3570,16 @@ mod tests {
     fn write_bytes_spans_several_slices_and_reads_back_identically() {
         let bytes_used = Arc::new(AtomicI64::new(0));
         let mut pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut ints = IntBlockPool::new();
         let mut field = TermsHashPerField::new(
             1,
             "body".to_string(),
             IndexOptions::DOCS,
             Arc::clone(&bytes_used),
         );
-        let slot = field.intern(&mut pool, b"term", 0).expect("intern");
+        let slot = field
+            .intern(&mut pool, &mut ints, b"term", 0)
+            .expect("intern");
 
         // Each chunk is far longer than the first slice level, so `write_bytes`
         // must chain slices in its second loop.
@@ -3320,13 +3588,16 @@ mod tests {
             .collect();
         for chunk in &chunks {
             field
-                .write_bytes(&mut pool, slot.term_id, 0, chunk)
+                .write_bytes(&mut pool, &mut ints, slot.term_id, 0, chunk)
                 .expect("write bytes");
         }
 
         let mut reader = ByteSliceReader::new();
         let posting = *field.posting(slot.term_id);
-        reader.init(posting.byte_start, posting.stream_address[0]);
+        reader.init(
+            posting.byte_start,
+            stream_address(&ints, posting.address_offset, 0),
+        );
         for chunk in &chunks {
             let mut actual = vec![0u8; chunk.len()];
             reader.read_bytes(&pool, &mut actual);
@@ -3339,21 +3610,24 @@ mod tests {
     fn v_ints_round_trip_across_slice_boundaries() {
         let bytes_used = Arc::new(AtomicI64::new(0));
         let mut pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut ints = IntBlockPool::new();
         let mut field = TermsHashPerField::new(
             2,
             "body".to_string(),
             IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
             Arc::clone(&bytes_used),
         );
-        let slot = field.intern(&mut pool, b"term", 0).expect("intern");
+        let slot = field
+            .intern(&mut pool, &mut ints, b"term", 0)
+            .expect("intern");
         let values: Vec<i32> = vec![0, 1, 127, 128, 300, 16_383, 16_384, 1 << 20, i32::MAX];
         // Interleave the two streams to prove they stay independent.
         for value in &values {
             field
-                .write_v_int(&mut pool, slot.term_id, 0, *value)
+                .write_v_int(&mut pool, &mut ints, slot.term_id, 0, *value)
                 .expect("stream 0");
             field
-                .write_v_int(&mut pool, slot.term_id, 1, *value / 2)
+                .write_v_int(&mut pool, &mut ints, slot.term_id, 1, *value / 2)
                 .expect("stream 1");
         }
 
@@ -3362,7 +3636,7 @@ mod tests {
             let mut reader = ByteSliceReader::new();
             reader.init(
                 posting.byte_start + (stream * FIRST_LEVEL_SIZE) as i32,
-                posting.stream_address[stream],
+                stream_address(&ints, posting.address_offset, stream),
             );
             for value in &values {
                 let expected = if stream == 0 { *value } else { *value / 2 };
@@ -3378,15 +3652,22 @@ mod tests {
     fn interning_returns_the_same_id_for_a_repeated_term() {
         let bytes_used = Arc::new(AtomicI64::new(0));
         let mut pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut ints = IntBlockPool::new();
         let mut field = TermsHashPerField::new(
             1,
             "body".to_string(),
             IndexOptions::DOCS,
             Arc::clone(&bytes_used),
         );
-        let first = field.intern(&mut pool, b"alpha", 0).expect("alpha");
-        let second = field.intern(&mut pool, b"beta", 0).expect("beta");
-        let again = field.intern(&mut pool, b"alpha", 1).expect("alpha again");
+        let first = field
+            .intern(&mut pool, &mut ints, b"alpha", 0)
+            .expect("alpha");
+        let second = field
+            .intern(&mut pool, &mut ints, b"beta", 0)
+            .expect("beta");
+        let again = field
+            .intern(&mut pool, &mut ints, b"alpha", 1)
+            .expect("alpha again");
         assert_eq!((first.term_id, first.is_new), (0, true));
         assert_eq!((second.term_id, second.is_new), (1, true));
         assert_eq!((again.term_id, again.is_new), (0, false));
@@ -3404,10 +3685,11 @@ mod tests {
         for i in 0..500u32 {
             let term = format!("term{i}");
             state.set_position(state.position() + 1);
-            let (pool, field) = writer.pool_and_field(index);
+            let (pool, int_pool, field) = writer.pool_and_field(index);
             field
                 .add(
                     pool,
+                    int_pool,
                     &mut state,
                     term.as_bytes(),
                     0,
@@ -3680,7 +3962,10 @@ mod tests {
         let error = harness
             .add_doc(0, &[Token::new("alpha", 1).with_term_freq(4)])
             .expect_err("must be rejected");
-        assert!(matches!(error, LuceneError::IllegalState(_)), "{error:?}");
+        assert!(
+            matches!(error, LuceneError::IllegalState { .. }),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -3692,7 +3977,10 @@ mod tests {
         let error = harness
             .add_doc(1, &[Token::new("alpha", 1).with_term_freq(4)])
             .expect_err("must be rejected");
-        assert!(matches!(error, LuceneError::IllegalState(_)), "{error:?}");
+        assert!(
+            matches!(error, LuceneError::IllegalState { .. }),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -3731,6 +4019,7 @@ mod tests {
     fn a_term_longer_than_the_block_size_is_rejected() {
         let bytes_used = Arc::new(AtomicI64::new(0));
         let mut pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut ints = IntBlockPool::new();
         let mut field = TermsHashPerField::new(
             1,
             "body".to_string(),
@@ -3738,7 +4027,9 @@ mod tests {
             Arc::clone(&bytes_used),
         );
         let huge = vec![b'a'; crate::util::MAX_TERM_LENGTH + 1];
-        let error = field.intern(&mut pool, &huge, 0).expect_err("too long");
+        let error = field
+            .intern(&mut pool, &mut ints, &huge, 0)
+            .expect_err("too long");
         assert!(
             matches!(error, LuceneError::IllegalArgument(_)),
             "{error:?}"
@@ -3907,6 +4198,7 @@ mod tests {
     fn a_chained_table_keys_on_the_offset_the_primary_interned_the_term_at() {
         let bytes_used = Arc::new(AtomicI64::new(0));
         let mut term_pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut ints = IntBlockPool::new();
         let mut streams = ByteBlockPool::new(Arc::clone(&bytes_used));
         let mut primary = TermsHashPerField::new(
             2,
@@ -3924,7 +4216,7 @@ mod tests {
         let mut text_starts = Vec::new();
         for term in ["gamma", "alpha", "gamma", "beta"] {
             let slot = primary
-                .intern(&mut term_pool, term.as_bytes(), 0)
+                .intern(&mut term_pool, &mut ints, term.as_bytes(), 0)
                 .expect("intern");
             text_starts.push(primary.text_start(slot.term_id));
         }
@@ -3935,7 +4227,7 @@ mod tests {
             .iter()
             .map(|start| {
                 chained
-                    .intern_by_text_start(&mut streams, *start)
+                    .intern_by_text_start(&mut streams, &mut ints, *start)
                     .expect("chained intern")
             })
             .collect();
@@ -3981,6 +4273,7 @@ mod tests {
     fn a_chained_table_writes_its_streams_into_its_own_pool() {
         let bytes_used = Arc::new(AtomicI64::new(0));
         let mut term_pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut ints = IntBlockPool::new();
         let mut streams = ByteBlockPool::new(Arc::clone(&bytes_used));
         let mut primary = TermsHashPerField::new(
             1,
@@ -3994,17 +4287,19 @@ mod tests {
             IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
             Arc::clone(&bytes_used),
         );
-        let slot = primary.intern(&mut term_pool, b"alpha", 0).expect("intern");
+        let slot = primary
+            .intern(&mut term_pool, &mut ints, b"alpha", 0)
+            .expect("intern");
         let text_start = primary.text_start(slot.term_id);
         let term_pool_len_before = term_pool.byte_upto();
 
         let chained_slot = chained
-            .intern_by_text_start(&mut streams, text_start)
+            .intern_by_text_start(&mut streams, &mut ints, text_start)
             .expect("chained intern");
         for stream in 0..2 {
             for value in [0, 1, 300, 70_000] {
                 chained
-                    .write_v_int(&mut streams, chained_slot.term_id, stream, value)
+                    .write_v_int(&mut streams, &mut ints, chained_slot.term_id, stream, value)
                     .expect("write");
             }
         }
@@ -4015,7 +4310,7 @@ mod tests {
         );
         for stream in 0..2 {
             let mut reader = ByteSliceReader::new();
-            chained.init_reader(&mut reader, chained_slot.term_id, stream);
+            chained.init_reader(&ints, &mut reader, chained_slot.term_id, stream);
             for value in [0, 1, 300, 70_000] {
                 assert_eq!(reader.read_v_int(&streams).expect("read"), value);
             }
@@ -4027,6 +4322,7 @@ mod tests {
     fn resetting_a_chained_table_keeps_it_keyed_on_pool_offsets() {
         let bytes_used = Arc::new(AtomicI64::new(0));
         let mut term_pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut ints = IntBlockPool::new();
         let mut streams = ByteBlockPool::new(Arc::clone(&bytes_used));
         let text_start = term_pool.add_bytes_ref(b"alpha").expect("intern");
         let mut chained = TermsHashPerField::new_chained(
@@ -4036,12 +4332,15 @@ mod tests {
             bytes_used,
         );
         chained
-            .intern_by_text_start(&mut streams, text_start)
+            .intern_by_text_start(&mut streams, &mut ints, text_start)
             .expect("first document");
         chained.reset();
         assert_eq!(chained.num_terms(), 0);
+        // `reinitHash()` precedes the next document, as
+        // `TermVectorsConsumerPerField.start` calls it.
+        chained.reinit_hash();
         let slot = chained
-            .intern_by_text_start(&mut streams, text_start)
+            .intern_by_text_start(&mut streams, &mut ints, text_start)
             .expect("second document");
         assert!(slot.is_new, "the reset dropped the previous document's ids");
     }
@@ -4049,11 +4348,13 @@ mod tests {
     // -- PooledSliceReader --------------------------------------------------
 
     /// Java charges the term hash for the *slots it allocated*, not for the
-    /// terms it used: `PostingsBytesStartArray.init()` allocates two slots and
-    /// charges both, and `grow()` replaces the array with
+    /// terms it used: the `BytesRefHash` constructor calls
+    /// `PostingsBytesStartArray.init()`, which allocates two slots and charges
+    /// both, and `grow()` replaces the array with
     /// `ArrayUtil.oversize(size + 1, bytesPerPosting())` slots and charges the
-    /// difference. This port did neither — it charged one slot per interned
-    /// term — so its RAM-driven flush trigger fired later than Lucene's.
+    /// difference, at `FreqProxPostingsArray.bytesPerPosting()` — 20 bytes for
+    /// a docs-only field (`TermsHashPerField.java:290-308`,
+    /// `FreqProxTermsWriterPerField.java:292-305`).
     #[test]
     fn the_postings_table_charges_every_slot_it_allocates() {
         let bytes_used = Arc::new(AtomicI64::new(0));
@@ -4063,19 +4364,15 @@ mod tests {
             IndexOptions::DOCS,
             Arc::clone(&bytes_used),
         );
+        let bytes_per_posting = freq_prox_bytes_per_posting(IndexOptions::DOCS);
+        assert_eq!(bytes_per_posting, 20);
 
-        // No term is interned in this test, so whatever the hash charged at
-        // construction is all it will ever charge, and the rest of the counter
-        // movement belongs to the postings table.
-        let hash_baseline = bytes_used.load(Ordering::Acquire);
-
-        // The first term allocates two slots, like `createPostingsArray(2)`.
-        let before = bytes_used.load(Ordering::Acquire);
-        field.grow_postings(0);
+        // The constructor charges the hash's `HASH_INIT_SIZE` slots and the two
+        // postings slots of `createPostingsArray(2)`.
         assert_eq!(field.postings.len(), INITIAL_POSTINGS_SLOTS);
         assert_eq!(
-            bytes_used.load(Ordering::Acquire) - before,
-            INITIAL_POSTINGS_SLOTS as i64 * BYTES_PER_POSTING
+            bytes_used.load(Ordering::Acquire),
+            4 * 4 + INITIAL_POSTINGS_SLOTS as i64 * bytes_per_posting
         );
 
         // A term that fits in the slots already allocated charges nothing.
@@ -4086,24 +4383,19 @@ mod tests {
 
         // The next one grows to `oversize(size + 1, bytesPerPosting)` and
         // charges exactly the slots it added.
-        let grown = ArrayUtil::oversize(INITIAL_POSTINGS_SLOTS + 1, BYTES_PER_POSTING as usize);
+        let grown = ArrayUtil::oversize(INITIAL_POSTINGS_SLOTS + 1, bytes_per_posting as usize);
         assert!(grown > INITIAL_POSTINGS_SLOTS);
         let before = bytes_used.load(Ordering::Acquire);
         field.grow_postings(INITIAL_POSTINGS_SLOTS);
         assert_eq!(field.postings.len(), grown);
         assert_eq!(
             bytes_used.load(Ordering::Acquire) - before,
-            (grown - INITIAL_POSTINGS_SLOTS) as i64 * BYTES_PER_POSTING
+            (grown - INITIAL_POSTINGS_SLOTS) as i64 * bytes_per_posting
         );
 
-        // And releasing hands every allocated slot back.
-        let allocated = field.postings.len() as i64 * BYTES_PER_POSTING;
-        let before = bytes_used.load(Ordering::Acquire);
+        // And releasing hands every allocated slot and the hash back.
         field.release_accounting();
-        assert_eq!(
-            before - bytes_used.load(Ordering::Acquire),
-            allocated + hash_baseline
-        );
+        assert_eq!(bytes_used.load(Ordering::Acquire), 0);
         assert!(field.postings.is_empty());
     }
 
@@ -4113,6 +4405,7 @@ mod tests {
     fn interning_terms_allocates_slots_ahead_of_the_terms_that_need_them() {
         let bytes_used = Arc::new(AtomicI64::new(0));
         let mut pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut ints = IntBlockPool::new();
         let mut field = TermsHashPerField::new(
             1,
             "body".to_string(),
@@ -4120,18 +4413,42 @@ mod tests {
             Arc::clone(&bytes_used),
         );
         for term in [&b"a"[..], b"b", b"c"] {
-            field.intern(&mut pool, term, 0).expect("intern");
+            field.intern(&mut pool, &mut ints, term, 0).expect("intern");
         }
         assert_eq!(field.num_terms(), 3);
         assert_eq!(
             field.postings.len(),
-            ArrayUtil::oversize(INITIAL_POSTINGS_SLOTS + 1, BYTES_PER_POSTING as usize)
+            ArrayUtil::oversize(
+                INITIAL_POSTINGS_SLOTS + 1,
+                freq_prox_bytes_per_posting(IndexOptions::DOCS) as usize
+            )
         );
         assert!(field.postings.len() > field.num_terms() as usize);
         // Every term still reads back its own slot.
         for term_id in 0..3 {
             assert!(field.posting(term_id).byte_start >= 0);
         }
+    }
+
+    /// `IndexingChain.IntBlockAllocator.recycleIntBlocks(blocks, offset,
+    /// length)` subtracts `length` blocks, and `IntBlockPool.reset` passes the
+    /// end of the recycled range as `length` (`IndexingChain.java:2130-2133`,
+    /// `IntBlockPool.java:124`): with `reuseFirst` the kept first block is
+    /// subtracted too.
+    #[test]
+    fn recycling_int_blocks_subtracts_what_lucene_does() {
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut pool = TermsHash::new_int_pool(&bytes_used);
+        for _ in 0..3 {
+            pool.next_buffer();
+        }
+        let block = (INT_BLOCK_SIZE * std::mem::size_of::<i32>()) as i64;
+        assert_eq!(bytes_used.load(Ordering::Acquire), 3 * block);
+        pool.reset(false, true);
+        assert_eq!(bytes_used.load(Ordering::Acquire), 0);
+        pool.next_buffer();
+        pool.reset(false, false);
+        assert_eq!(bytes_used.load(Ordering::Acquire), -block);
     }
 
     /// `TermsHash.abort()` drops every buffered byte and gives the counter back
@@ -4152,23 +4469,26 @@ mod tests {
     fn a_pooled_slice_reader_reads_the_stream_as_a_data_input() {
         let bytes_used = Arc::new(AtomicI64::new(0));
         let mut pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut ints = IntBlockPool::new();
         let mut field = TermsHashPerField::new(
             1,
             "body".to_string(),
             IndexOptions::DOCS,
             Arc::clone(&bytes_used),
         );
-        let slot = field.intern(&mut pool, b"term", 0).expect("intern");
+        let slot = field
+            .intern(&mut pool, &mut ints, b"term", 0)
+            .expect("intern");
         let payload: Vec<u8> = (0..300u32).map(|i| (i % 251) as u8).collect();
         field
-            .write_v_int(&mut pool, slot.term_id, 0, 12_345)
+            .write_v_int(&mut pool, &mut ints, slot.term_id, 0, 12_345)
             .expect("v int");
         field
-            .write_bytes(&mut pool, slot.term_id, 0, &payload)
+            .write_bytes(&mut pool, &mut ints, slot.term_id, 0, &payload)
             .expect("bytes");
 
         let mut reader = ByteSliceReader::new();
-        field.init_reader(&mut reader, slot.term_id, 0);
+        field.init_reader(&ints, &mut reader, slot.term_id, 0);
         let mut input = PooledSliceReader::new(reader, &pool);
         assert_eq!(input.read_v_int().expect("v int"), 12_345);
         let mut read_back = vec![0u8; payload.len()];
@@ -4183,26 +4503,29 @@ mod tests {
     fn a_pooled_slice_reader_reports_an_over_read_instead_of_panicking() {
         let bytes_used = Arc::new(AtomicI64::new(0));
         let mut pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut ints = IntBlockPool::new();
         let mut field = TermsHashPerField::new(
             1,
             "body".to_string(),
             IndexOptions::DOCS,
             Arc::clone(&bytes_used),
         );
-        let slot = field.intern(&mut pool, b"term", 0).expect("intern");
+        let slot = field
+            .intern(&mut pool, &mut ints, b"term", 0)
+            .expect("intern");
         field
-            .write_byte(&mut pool, slot.term_id, 0, 7)
+            .write_byte(&mut pool, &mut ints, slot.term_id, 0, 7)
             .expect("byte");
 
         let mut reader = ByteSliceReader::new();
-        field.init_reader(&mut reader, slot.term_id, 0);
+        field.init_reader(&ints, &mut reader, slot.term_id, 0);
         let mut input = PooledSliceReader::new(reader, &pool);
         assert_eq!(input.read_byte().expect("byte"), 7);
         let error = input.read_byte().expect_err("the stream held one byte");
         assert!(matches!(error, LuceneError::CorruptIndex(_)), "{error:?}");
 
         let mut reader = ByteSliceReader::new();
-        field.init_reader(&mut reader, slot.term_id, 0);
+        field.init_reader(&ints, &mut reader, slot.term_id, 0);
         let mut input = PooledSliceReader::new(reader, &pool);
         let mut buffer = [0u8; 4];
         let error = input
@@ -4211,7 +4534,7 @@ mod tests {
         assert!(matches!(error, LuceneError::CorruptIndex(_)), "{error:?}");
 
         let mut reader = ByteSliceReader::new();
-        field.init_reader(&mut reader, slot.term_id, 0);
+        field.init_reader(&ints, &mut reader, slot.term_id, 0);
         let mut input = PooledSliceReader::new(reader, &pool);
         let error = input.skip_bytes(-1).expect_err("negative skip");
         assert!(
@@ -4236,10 +4559,11 @@ mod tests {
             info.index_options = IndexOptions::DOCS;
             let index = writer.add_field(&info);
             let mut state = FieldInvertState::new(10, (*name).to_string(), IndexOptions::DOCS);
-            let (pool, field) = writer.pool_and_field(index);
+            let (pool, int_pool, field) = writer.pool_and_field(index);
             field
                 .add(
                     pool,
+                    int_pool,
                     &mut state,
                     b"token",
                     0,

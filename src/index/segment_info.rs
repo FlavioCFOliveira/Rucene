@@ -201,7 +201,7 @@ impl SegmentInfo {
     /// Returns `LuceneError::IllegalState` if `max_doc` has not been set.
     pub fn max_doc(&self) -> Result<i32> {
         if self.max_doc < 0 {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "maxDoc isn't set yet".to_string(),
             ));
         }
@@ -215,7 +215,7 @@ impl SegmentInfo {
     /// Returns `LuceneError::IllegalState` if `max_doc` was already set.
     pub fn set_max_doc(&mut self, max_doc: i32) -> Result<()> {
         if self.max_doc >= 0 {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "maxDoc was already set: this.maxDoc={} vs maxDoc={max_doc}",
                 self.max_doc
             )));
@@ -381,7 +381,7 @@ impl SegmentInfo {
         let files = self.files.read().unwrap();
         match files.as_ref() {
             Some(f) => Ok(f.clone()),
-            None => Err(LuceneError::IllegalState(format!(
+            None => Err(LuceneError::illegal_state(format!(
                 "files were not computed yet; segment={} maxDoc={}",
                 self.name, self.max_doc
             ))),
@@ -979,7 +979,7 @@ impl SegmentCommitInfo {
     /// Sets the buffered deletes generation.
     pub fn set_buffered_deletes_gen(&mut self, gen: i64) -> Result<()> {
         if self.buffered_deletes_gen != -1 {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "buffered deletes gen should only be set once".to_string(),
             ));
         }

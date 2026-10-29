@@ -627,7 +627,7 @@ impl<O: Outputs> FSTMetadata<O> {
 
             empty_output_bytes.reverse();
             meta_out.write_v_int(i32::try_from(empty_len).map_err(|_| {
-                LuceneError::IllegalState(format!("empty output too long: {empty_len}"))
+                LuceneError::illegal_state(format!("empty output too long: {empty_len}"))
             })?)?;
             meta_out.write_bytes(&empty_output_bytes, 0, empty_len)?;
         } else {

@@ -453,13 +453,13 @@ mod tests {
         fn term(&self) -> Result<BytesRef> {
             self.pos
                 .map(|idx| self.terms[idx].clone())
-                .ok_or_else(|| LuceneError::IllegalState("not positioned".to_string()))
+                .ok_or_else(|| LuceneError::illegal_state("not positioned".to_string()))
         }
 
         fn ord(&self) -> Result<i64> {
             self.pos
                 .map(|idx| idx as i64)
-                .ok_or_else(|| LuceneError::IllegalState("not positioned".to_string()))
+                .ok_or_else(|| LuceneError::illegal_state("not positioned".to_string()))
         }
 
         fn doc_freq(&mut self) -> Result<i32> {

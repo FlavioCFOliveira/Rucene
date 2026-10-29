@@ -491,7 +491,7 @@ impl CombinedFieldWeightState {
                     .get(term.field())
                     .cloned()
                     .ok_or_else(|| {
-                        LuceneError::IllegalState(format!(
+                        LuceneError::illegal_state(format!(
                             "field {} has a term but no weight",
                             term.field()
                         ))
@@ -593,7 +593,7 @@ impl CombinedFieldWeight {
                 .get(term.field())
                 .cloned()
                 .ok_or_else(|| {
-                    LuceneError::IllegalState(format!(
+                    LuceneError::illegal_state(format!(
                         "field {} has a term but no weight",
                         term.field()
                     ))

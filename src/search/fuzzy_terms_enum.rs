@@ -172,7 +172,7 @@ pub fn shared_automata(
         let mut aa = atts
             .get_attribute_mut::<AutomatonAttributeImpl>()
             .ok_or_else(|| {
-                LuceneError::IllegalState(
+                LuceneError::illegal_state(
                     "the AutomatonAttribute was just installed and must be present".to_string(),
                 )
             })?;
@@ -181,12 +181,12 @@ pub fn shared_automata(
     let aa = atts
         .get_attribute::<AutomatonAttributeImpl>()
         .ok_or_else(|| {
-            LuceneError::IllegalState(
+            LuceneError::illegal_state(
                 "the AutomatonAttribute was just installed and must be present".to_string(),
             )
         })?;
     aa.get_automaton_set().ok_or_else(|| {
-        LuceneError::IllegalState("the AutomatonAttribute was just initialised".to_string())
+        LuceneError::illegal_state("the AutomatonAttribute was just initialised".to_string())
     })
 }
 

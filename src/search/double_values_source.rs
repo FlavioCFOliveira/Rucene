@@ -299,7 +299,7 @@ impl DoubleValuesSource for ScoresValuesSource {
         scores: Option<Box<dyn DoubleValues + 'a>>,
     ) -> Result<Box<dyn DoubleValues + 'a>> {
         scores.ok_or_else(|| {
-            LuceneError::IllegalState("DoubleValuesSource.SCORES requires scores".to_string())
+            LuceneError::illegal_state("DoubleValuesSource.SCORES requires scores".to_string())
         })
     }
 

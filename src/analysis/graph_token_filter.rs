@@ -119,7 +119,7 @@ impl GraphTokenFilter {
         let (state, pos_inc, pos_length) = {
             let source = self.input.attribute_source();
             let state = source.capture_state().ok_or_else(|| {
-                LuceneError::IllegalState("token stream has no attributes to capture".to_string())
+                LuceneError::illegal_state("token stream has no attributes to capture".to_string())
             })?;
             match source.get_attribute::<PackedTokenAttributeImpl>() {
                 Some(att) => (
@@ -143,7 +143,7 @@ impl GraphTokenFilter {
 
         self.cache_size += 1;
         if self.cache_size > MAX_TOKEN_CACHE_SIZE {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "Too many cached tokens (> {MAX_TOKEN_CACHE_SIZE})"
             )));
         }
@@ -304,7 +304,7 @@ impl GraphTokenFilter {
                 }
                 self.stack_size += 1;
                 if self.stack_size > MAX_GRAPH_STACK_SIZE {
-                    return Err(LuceneError::IllegalState(format!(
+                    return Err(LuceneError::illegal_state(format!(
                         "Too many graph paths (> {MAX_GRAPH_STACK_SIZE})"
                     )));
                 }
@@ -574,7 +574,7 @@ mod tests {
             }
         };
         match err {
-            LuceneError::IllegalState(message) => {
+            LuceneError::IllegalState { message, .. } => {
                 assert_eq!(message, "Too many cached tokens (> 100)")
             }
             other => panic!("expected IllegalStateException, got {other:?}"),

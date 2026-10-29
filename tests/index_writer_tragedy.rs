@@ -25,6 +25,21 @@
 //!   holds exactly the files Lucene leaves. `IndexWriter.handleMergeException`
 //!   rethrows the merge's own exception (`IndexWriter.java:4808-4835`), so
 //!   `forceMerge` raises the `IOException` and message the directory threw.
+//! * `oversize-delete` (same oracle, over `commit`, `flush`, an NRT reader
+//!   and `addIndexes(Directory...)`, which flushes first, run with `-ea` when this test is a debug build and without it
+//!   otherwise): a 32767-byte delete term leaves the delete queue open, so the
+//!   full flush cannot close it. Without assertions the call raises that
+//!   `IllegalStateException` and the writer stays open; with them
+//!   `finishFullFlush`'s `assert setFlushingDeleteQueue(null)`
+//!   (`DocumentsWriter.java:645-651, 732`) is the writer's tragedy
+//!   (`IndexWriter.java:713-715, 3858-3860, 4412-4414`), the close's own
+//!   `pendingNumDocs` assertion (`IndexWriter.java:2545-2556`) is what the
+//!   call raises when documents were buffered, and every later call fails
+//!   with `AlreadyClosedException`.
+//! * `add-indexes-release-failure` (same oracle): `addIndexes(Directory...)`
+//!   succeeds but the source's write lock cannot be released; Java's
+//!   `IOUtils.close(locks)` throws that failure (`IndexWriter.java:3205-3211`)
+//!   and the writer keeps the copied segment.
 //! * `deleteAll` aborts the running merges before it drops every segment
 //!   (`IndexWriter.java:2726-2785`), so a merge of the deleted segments cannot
 //!   bring their documents back.
@@ -40,6 +55,7 @@ use std::time::Duration;
 use rucene::codecs::Lucene104Codec;
 use rucene::document::{Document, Field, FieldType, Store, StringField, TextField};
 use rucene::error::{LuceneError, Result};
+use rucene::index::directory_reader;
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::{IndexWriterConfig, MergedSegmentWarmer};
 use rucene::index::leaf_reader::LeafReader;
@@ -49,6 +65,7 @@ use rucene::index::merge_policy::{
 use rucene::index::merge_scheduler::{
     ConcurrentMergeScheduler, MergeScheduler, SerialMergeScheduler,
 };
+use rucene::index::terms::Term;
 use rucene::index::{IndexOptions, SegmentInfos};
 use rucene::store::{
     BufferedChecksumIndexInput, Directory, IOContext, IndexInput, IndexOutput, Lock, RamDirectory,
@@ -79,6 +96,33 @@ fn run_java(case: &str) -> String {
          WriterTragedyFixture.java",
     );
     let output = Command::new("java")
+        .arg("-cp")
+        .arg(lucene_jar())
+        .arg(fixture)
+        .args(case.split(' '))
+        .output()
+        .expect("a JDK is required to run the Lucene oracle");
+    assert!(
+        output.status.success(),
+        "WriterTragedyFixture {case} failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+/// Runs `case` of `WriterTragedyFixture` with Java assertions enabled when
+/// this test is a debug build, so the oracle runs Lucene's `assert`s exactly
+/// when this port runs its `debug_assertions` checks.
+fn run_java_matching_assertions(case: &str) -> String {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join(
+        "tests/fixtures/java-codec-harness/src/main/java/org/apache/lucene/rucene/codec/\
+         WriterTragedyFixture.java",
+    );
+    let mut command = Command::new("java");
+    if cfg!(debug_assertions) {
+        command.arg("-ea");
+    }
+    let output = command
         .arg("-cp")
         .arg(lucene_jar())
         .arg(fixture)
@@ -131,8 +175,8 @@ fn outcome<T>(result: &Result<T>) -> &'static str {
     match result {
         Ok(_) => "ok",
         Err(LuceneError::Io(_)) => "IOException",
-        Err(LuceneError::AlreadyClosed(_)) => "AlreadyClosedException",
-        Err(LuceneError::IllegalState(_)) => "IllegalStateException",
+        Err(LuceneError::AlreadyClosed { .. }) => "AlreadyClosedException",
+        Err(LuceneError::IllegalState { .. }) => "IllegalStateException",
         Err(_) => "other",
     }
 }
@@ -753,4 +797,255 @@ fn a_merge_that_cannot_create_the_stored_fields_index_leaves_lucenes_files() {
 #[test]
 fn a_merge_that_cannot_create_the_term_vectors_index_leaves_lucenes_files() {
     merge_index_failure(".tvx");
+}
+
+/// `WriterTragedyFixture.describe(Throwable)`: the `<SimpleName>: <message>`
+/// of the Java throwable this port raises `error` in place of.
+fn describe(error: &LuceneError) -> String {
+    match error {
+        LuceneError::IllegalArgument(message) if message.starts_with("bytes can be at most") => {
+            format!("MaxBytesLengthExceededException: {message}")
+        }
+        LuceneError::IllegalArgument(message) => format!("IllegalArgumentException: {message}"),
+        LuceneError::IllegalState { message, .. } => format!("IllegalStateException: {message}"),
+        LuceneError::AlreadyClosed { message, .. } => format!("AlreadyClosedException: {message}"),
+        LuceneError::AssertionError(message) => format!("AssertionError: {message}"),
+        LuceneError::Io(error) => format!("IOException: {error}"),
+        other => format!("{other:?}"),
+    }
+}
+
+/// `WriterTragedyFixture.described(ThrowingRunnable)`: the error, then its
+/// cause as [`std::error::Error::source`] returns it.
+fn described<T>(result: &Result<T>) -> String {
+    match result {
+        Ok(_) => "ok".to_string(),
+        Err(error) => {
+            // `Throwable.getCause()`: the error's own source, which for a
+            // closed writer is its tragedy (`IndexWriter.java:917-921`).
+            let cause = std::error::Error::source(error)
+                .and_then(|source| source.downcast_ref::<Arc<LuceneError>>())
+                .map_or_else(|| "none".to_string(), |cause| describe(cause));
+            format!("{} cause={cause}", describe(error))
+        }
+    }
+}
+
+/// The writer's tragedy as `WriterTragedyFixture.describe` prints it, or
+/// `none`: [`IndexWriter::get_tragic_exception`] returns the error itself, as
+/// Java's `getTragicException()` returns the `Throwable`.
+fn tragedy(writer: &IndexWriter) -> String {
+    writer
+        .get_tragic_exception()
+        .map_or_else(|| "none".to_string(), |tragedy| describe(&tragedy))
+}
+
+/// `WriterTragedyFixture.oversizeDelete`'s `InfoStream`: keeps the
+/// `hit tragic <SimpleName> inside <location>` lines
+/// `IndexWriter.onTragicEvent` logs (`IndexWriter.java:5857-5860`).
+#[derive(Default)]
+struct TragicLog(Mutex<Vec<String>>);
+
+impl InfoStream for TragicLog {
+    fn java_class_name(&self) -> &'static str {
+        "TragicLog"
+    }
+    fn message(&self, component: &str, message: &str) {
+        if message.starts_with("hit tragic ") {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("{component}: {message}"));
+        }
+    }
+    fn is_enabled(&self, component: &str) -> bool {
+        component == "IW"
+    }
+    fn close(&self) {}
+}
+
+/// `WriterTragedyFixture.committedIndex()`: a directory holding one committed
+/// document, for `addIndexes(Directory...)`.
+fn committed_index() -> Arc<dyn Directory> {
+    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let mut config = IndexWriterConfig::new();
+    config
+        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .unwrap();
+    let source = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+    source.add_document(&id_doc(100)).unwrap();
+    source.close().unwrap();
+    dir
+}
+
+/// `oversize-delete <op> <docs>`, run on `op` and `docs` across a grid: in a
+/// debug build the failed assertion of the full flush is a tragedy that
+/// closes the writer, as Java's `AssertionError` under `-ea`; in a release
+/// build `op` fails with Java's `IllegalStateException` and the writer stays
+/// usable.
+#[test]
+fn an_assertion_failure_in_a_full_flush_is_a_writer_tragedy_as_lucene_under_ea() {
+    ensure_codec();
+    for op in ["commit", "flush", "reader", "add-indexes"] {
+        for docs in [0, 1, 3] {
+            let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+            let mut config = IndexWriterConfig::new();
+            config
+                .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+                .unwrap();
+            let log = Arc::new(TragicLog::default());
+            config
+                .set_info_stream(Arc::clone(&log) as Arc<dyn InfoStream>)
+                .unwrap();
+            let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+            for id in 0..docs {
+                writer.add_document(&id_doc(id)).unwrap();
+            }
+            let big = Term::new("id", rucene::util::BytesRef::new(vec![b'x'; 32767]));
+            let mut lines = vec![format!(
+                "delete={}",
+                described(&writer.delete_documents_by_terms(vec![big]))
+            )];
+            let run = |writer: &Arc<IndexWriter>| -> Result<()> {
+                match op {
+                    "commit" => writer.commit().map(|_| ()),
+                    "flush" => writer.flush(),
+                    "add-indexes" => writer.add_indexes_dirs(&[committed_index()]).map(|_| ()),
+                    _ => directory_reader::open_with_writer(writer.as_ref())
+                        .and_then(|reader| reader.close()),
+                }
+            };
+            lines.push(format!("{op}1={}", described(&run(&writer))));
+            lines.push(format!("{op}2={}", described(&run(&writer))));
+            lines.push(format!(
+                "add={}",
+                described(&writer.add_document(&id_doc(docs)))
+            ));
+            lines.push(format!("tragic={}", tragedy(&writer)));
+            lines.push(format!("open={}", writer.is_open()));
+            lines.push(format!("files={}", files(&dir)));
+            lines.push(format!(
+                "tragic-messages={}",
+                log.0.lock().unwrap().join(" | ")
+            ));
+            writer.rollback().unwrap();
+            assert_eq!(
+                lines.join("\n"),
+                run_java_matching_assertions(&format!("oversize-delete {op} {docs}")).trim(),
+                "{op} after {docs} documents"
+            );
+        }
+    }
+}
+
+/// `WriterTragedyFixture.UnreleasableLockDirectory`: its write lock is
+/// released and then reports a failure.
+struct UnreleasableLockDirectory {
+    inner: Arc<dyn Directory>,
+}
+
+/// The lock [`UnreleasableLockDirectory`] hands out.
+struct UnreleasableLock {
+    inner: Box<dyn Lock>,
+    name: String,
+}
+
+impl Lock for UnreleasableLock {
+    fn close(&mut self) -> Result<()> {
+        self.inner.close()?;
+        Err(LuceneError::Io(std::io::Error::other(format!(
+            "cannot release {}",
+            self.name
+        ))))
+    }
+    fn ensure_valid(&self) -> Result<()> {
+        self.inner.ensure_valid()
+    }
+}
+
+impl Directory for UnreleasableLockDirectory {
+    fn list_all(&self) -> Result<Vec<String>> {
+        self.inner.list_all()
+    }
+    fn delete_file(&self, name: &str) -> Result<()> {
+        self.inner.delete_file(name)
+    }
+    fn file_length(&self, name: &str) -> Result<i64> {
+        self.inner.file_length(name)
+    }
+    fn create_output(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexOutput>> {
+        self.inner.create_output(name, context)
+    }
+    fn create_temp_output(
+        &self,
+        prefix: &str,
+        suffix: &str,
+        context: &dyn IOContext,
+    ) -> Result<Box<dyn IndexOutput>> {
+        self.inner.create_temp_output(prefix, suffix, context)
+    }
+    fn sync(&self, names: &[String]) -> Result<()> {
+        self.inner.sync(names)
+    }
+    fn sync_metadata(&self) -> Result<()> {
+        self.inner.sync_metadata()
+    }
+    fn rename(&self, source: &str, dest: &str) -> Result<()> {
+        self.inner.rename(source, dest)
+    }
+    fn open_input(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
+        self.inner.open_input(name, context)
+    }
+    fn open_checksum_input(&self, name: &str) -> Result<Box<BufferedChecksumIndexInput>> {
+        self.inner.open_checksum_input(name)
+    }
+    fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
+        Ok(Box::new(UnreleasableLock {
+            inner: self.inner.obtain_lock(name)?,
+            name: name.to_string(),
+        }))
+    }
+    fn close(&mut self) -> Result<()> {
+        Ok(())
+    }
+    fn get_pending_deletions(&self) -> Result<std::collections::HashSet<String>> {
+        self.inner.get_pending_deletions()
+    }
+    fn ensure_open(&self) -> Result<()> {
+        self.inner.ensure_open()
+    }
+}
+
+/// `add-indexes-release-failure`: the copy succeeds, so the failure to release
+/// the source's write lock is what `addIndexes(Directory...)` raises.
+#[test]
+fn a_lock_release_failure_after_add_indexes_is_raised_as_lucene_does() {
+    ensure_codec();
+    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let mut config = IndexWriterConfig::new();
+    config
+        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .unwrap();
+    let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+    writer.add_document(&id_doc(0)).unwrap();
+    let source: Arc<dyn Directory> = Arc::new(UnreleasableLockDirectory {
+        inner: committed_index(),
+    });
+    let mut lines = vec![format!(
+        "addIndexes={}",
+        described(&writer.add_indexes_dirs(&[source]))
+    )];
+    lines.push(format!("open={}", writer.is_open()));
+    lines.push(format!(
+        "tragic={}",
+        writer.get_tragic_exception().is_some()
+    ));
+    writer.commit().unwrap();
+    let infos = SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
+    lines.push(format!("committed_max_doc={}", infos.total_max_doc()));
+    writer.close().unwrap();
+    assert_eq!(
+        lines.join("\n"),
+        run_java("add-indexes-release-failure").trim()
+    );
 }

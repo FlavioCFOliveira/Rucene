@@ -71,10 +71,10 @@ impl StartingGun {
         let mut fired = self
             .fired
             .lock()
-            .map_err(|_| LuceneError::IllegalState("starting gun mutex poisoned".to_string()))?;
+            .map_err(|_| LuceneError::illegal_state("starting gun mutex poisoned".to_string()))?;
         while !*fired {
             fired = self.condition.wait(fired).map_err(|_| {
-                LuceneError::IllegalState("starting gun mutex poisoned".to_string())
+                LuceneError::illegal_state("starting gun mutex poisoned".to_string())
             })?;
         }
         Ok(())
@@ -85,7 +85,7 @@ impl StartingGun {
         let mut fired = self
             .fired
             .lock()
-            .map_err(|_| LuceneError::IllegalState("starting gun mutex poisoned".to_string()))?;
+            .map_err(|_| LuceneError::illegal_state("starting gun mutex poisoned".to_string()))?;
         *fired = true;
         self.condition.notify_all();
         Ok(())
@@ -170,7 +170,7 @@ impl LockVerifyServer {
                 }
                 Err(_) => {
                     if first_failure.is_none() {
-                        first_failure = Some(LuceneError::IllegalState(
+                        first_failure = Some(LuceneError::illegal_state(
                             "lock verify client thread panicked".to_string(),
                         ));
                     }
@@ -257,7 +257,7 @@ impl LockVerifyServer {
             let mut holder = locked_id
                 .0
                 .lock()
-                .map_err(|_| LuceneError::IllegalState("locked id mutex poisoned".to_string()))?;
+                .map_err(|_| LuceneError::illegal_state("locked id mutex poisoned".to_string()))?;
             let current_lock = *holder;
             if current_lock == VIOLATION {
                 return Ok(()); // another thread got an error, so we exit too
@@ -266,7 +266,7 @@ impl LockVerifyServer {
                 MSG_LOCK_ACQUIRED => {
                     if current_lock != NO_HOLDER {
                         *holder = VIOLATION;
-                        return Err(LuceneError::IllegalState(format!(
+                        return Err(LuceneError::illegal_state(format!(
                             "id {id} got lock, but {current_lock} already holds the lock"
                         )));
                     }
@@ -275,7 +275,7 @@ impl LockVerifyServer {
                 MSG_LOCK_RELEASED => {
                     if current_lock != id {
                         *holder = VIOLATION;
-                        return Err(LuceneError::IllegalState(format!(
+                        return Err(LuceneError::illegal_state(format!(
                             "id {id} released the lock, but {current_lock} is the one holding the lock"
                         )));
                     }

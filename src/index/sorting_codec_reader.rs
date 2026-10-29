@@ -674,7 +674,7 @@ impl SortingCodecReaderState {
                 .expect("INVARIANT: the slot was just filled unless it already held this field"),
         );
         cached.downcast::<T>().map_err(|_| {
-            crate::error::LuceneError::IllegalState(format!(
+            crate::error::LuceneError::illegal_state(format!(
                 "the cached sorted view of field \"{field}\" has a different type"
             ))
         })
@@ -973,7 +973,7 @@ impl SlowCompositeCodecReaderWrapper {
                 }
                 // Java's `minVersion.onOrAfter(null)` dereferences null.
                 (Some(_), None) => {
-                    return Err(LuceneError::IllegalState(
+                    return Err(LuceneError::illegal_state(
                         "cannot combine a reader that has no minimum version with one that has"
                             .to_string(),
                     ))
@@ -1055,7 +1055,7 @@ fn doc_id_to_reader_id(doc_starts: &[i32], doc: i32) -> Result<usize> {
 /// reader reports was merged into them, so this cannot happen.
 fn remap(field_infos: &FieldInfos, info: &FieldInfo) -> Result<FieldInfo> {
     field_infos.field_info(&info.name).cloned().ok_or_else(|| {
-        LuceneError::IllegalState(format!(
+        LuceneError::illegal_state(format!(
             "field \"{}\" is missing from the merged field infos",
             info.name
         ))
@@ -1344,7 +1344,7 @@ impl SlowCompositeStoredFieldsReader {
     fn locate(&self, doc_id: i32) -> Result<(&dyn StoredFieldsReader, i32)> {
         let reader_id = doc_id_to_reader_id(&self.doc_starts, doc_id)?;
         let reader = self.readers[reader_id].as_deref().ok_or_else(|| {
-            LuceneError::IllegalState(format!(
+            LuceneError::illegal_state(format!(
                 "reader {reader_id} of the composite has no stored fields reader"
             ))
         })?;
@@ -1871,7 +1871,7 @@ impl PointsReader for SlowCompositePointsReader {
                 .is_some_and(|fi| fi.point_dimension_count > 0);
             if has_points {
                 let points_reader = self.points_readers[i].as_ref().ok_or_else(|| {
-                    LuceneError::IllegalState(format!(
+                    LuceneError::illegal_state(format!(
                         "reader {i} indexes points for field \"{field}\" but has no points reader"
                     ))
                 })?;
@@ -2022,7 +2022,7 @@ impl SlowCompositePointTree {
                 sub.sub.max_packed_value()?
             };
             bound.ok_or_else(|| {
-                LuceneError::IllegalState(
+                LuceneError::illegal_state(
                     "a reader with point values reports no packed bound".to_string(),
                 )
             })
@@ -2045,7 +2045,7 @@ impl SlowCompositePointTree {
             }
         }
         packed.ok_or_else(|| {
-            LuceneError::IllegalState("a composite point tree needs a sub".to_string())
+            LuceneError::illegal_state("a composite point tree needs a sub".to_string())
         })
     }
 }
@@ -2504,7 +2504,7 @@ impl MergedFloatVectorValues {
                     sub.sub
                         .as_ref()
                         .ok_or_else(|| {
-                            LuceneError::IllegalState(
+                            LuceneError::illegal_state(
                                 "cannot copy merged vector values over a reader without vectors"
                                     .to_string(),
                             )
@@ -2557,7 +2557,7 @@ impl FloatVectorValues for MergedFloatVectorValues {
         self.last_sub_index.store(last, Ordering::Relaxed);
         let sub = &self.subs[last];
         let values = sub.sub.as_ref().ok_or_else(|| {
-            LuceneError::IllegalState(format!("ordinal {ord} falls in a sub without vectors"))
+            LuceneError::illegal_state(format!("ordinal {ord} falls in a sub without vectors"))
         })?;
         values.vector_value(ord - sub.ord_start)
     }
@@ -2613,7 +2613,7 @@ impl MergedByteVectorValues {
                     sub.sub
                         .as_ref()
                         .ok_or_else(|| {
-                            LuceneError::IllegalState(
+                            LuceneError::illegal_state(
                                 "cannot copy merged vector values over a reader without vectors"
                                     .to_string(),
                             )
@@ -2664,7 +2664,7 @@ impl ByteVectorValues for MergedByteVectorValues {
         self.last_sub_index.store(last, Ordering::Relaxed);
         let sub = &self.subs[last];
         let values = sub.sub.as_ref().ok_or_else(|| {
-            LuceneError::IllegalState(format!("ordinal {ord} falls in a sub without vectors"))
+            LuceneError::illegal_state(format!("ordinal {ord} falls in a sub without vectors"))
         })?;
         values.vector_value(ord - sub.ord_start)
     }
@@ -3592,7 +3592,7 @@ impl Fields for SortingFieldsProducer {
             .field_infos
             .field_info(field)
             .ok_or_else(|| {
-                crate::error::LuceneError::IllegalState(format!(
+                crate::error::LuceneError::illegal_state(format!(
                     "field \"{field}\" has terms but no FieldInfo"
                 ))
             })?
@@ -4521,7 +4521,7 @@ mod tests {
 
     impl PointValues for NoBounds {
         fn point_tree(&self) -> Result<Box<dyn PointTree>> {
-            Err(LuceneError::IllegalState("no tree".to_string()))
+            Err(LuceneError::illegal_state("no tree".to_string()))
         }
 
         fn size(&self) -> Result<i64> {
@@ -4533,11 +4533,11 @@ mod tests {
         }
 
         fn min_packed_value(&self) -> Result<Option<Vec<u8>>> {
-            Err(LuceneError::IllegalState("no bounds".to_string()))
+            Err(LuceneError::illegal_state("no bounds".to_string()))
         }
 
         fn max_packed_value(&self) -> Result<Option<Vec<u8>>> {
-            Err(LuceneError::IllegalState("no bounds".to_string()))
+            Err(LuceneError::illegal_state("no bounds".to_string()))
         }
 
         fn num_dimensions(&self) -> Result<i32> {

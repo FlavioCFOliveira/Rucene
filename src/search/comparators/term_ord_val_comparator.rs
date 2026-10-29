@@ -696,13 +696,13 @@ fn init_postings(
     if size > 0 {
         let min_term = terms_index.lookup_ord(min_ord)?;
         let Some(terms) = reader.terms(field)? else {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "Term {min_term:?} exists in doc values but not in the terms index"
             )));
         };
         let mut terms_enum = terms.iterator()?;
         if !terms_enum.seek_exact(&min_term)? {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "Term {min_term:?} exists in doc values but not in the terms index"
             )));
         }
@@ -713,7 +713,7 @@ fn init_postings(
         for ord in min_ord + 1..=max_ord {
             let next = terms_enum.next()?;
             if next.is_none() {
-                return Err(LuceneError::IllegalState(format!(
+                return Err(LuceneError::illegal_state(format!(
                     "Terms have more than {ord} unique terms while doc values have exactly {ord} terms"
                 )));
             }
@@ -807,7 +807,7 @@ impl SlotComparator for TermOrdValComparator {
                 None => {
                     let value_count = leaf.terms_index.get_value_count()?;
                     if value_count != 0 {
-                        return Err(LuceneError::IllegalState(format!(
+                        return Err(LuceneError::illegal_state(format!(
                             "Field [{}] cannot be found in field infos",
                             self.field
                         )));

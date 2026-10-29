@@ -267,7 +267,7 @@ impl PointValuesWriter {
     /// [`LuceneError::IllegalState`] when the field has already been flushed.
     pub fn add_packed_value(&mut self, doc_id: i32, value: &BytesRef) -> Result<()> {
         if self.flushed {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "the point values of field \"{}\" have already been flushed",
                 self.field_info.name
             )));
@@ -427,7 +427,7 @@ impl PointValuesWriter {
     /// start after the last document written.
     fn reserve_dense_range(&mut self, first_doc_id: i32, size: i32) -> Result<()> {
         if self.flushed {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "the point values of field \"{}\" have already been flushed",
                 self.field_info.name
             )));
@@ -536,7 +536,7 @@ impl PointValuesWriter {
         sort_map: Option<&SorterDocMap>,
     ) -> Result<()> {
         if self.flushed {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "the point values of field \"{}\" have already been flushed",
                 self.field_info.name
             )));
@@ -1095,11 +1095,17 @@ mod tests {
         let error = writer
             .flush(&mut points_writer, None)
             .expect_err("two entries for one field would corrupt the .kdm");
-        assert!(matches!(error, LuceneError::IllegalState(_)), "{error:?}");
+        assert!(
+            matches!(error, LuceneError::IllegalState { .. }),
+            "{error:?}"
+        );
         let error = writer
             .add_packed_value(1, &packed(&[0, 0, 0, 2]))
             .expect_err("a value added after the flush would be lost");
-        assert!(matches!(error, LuceneError::IllegalState(_)), "{error:?}");
+        assert!(
+            matches!(error, LuceneError::IllegalState { .. }),
+            "{error:?}"
+        );
     }
 
     #[test]

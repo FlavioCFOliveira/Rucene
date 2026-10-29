@@ -483,7 +483,7 @@ fn owned_context(
         .filter(|leaf| leaf.id() == context.id());
     match candidate {
         Some(leaf) => Ok(Arc::clone(leaf)),
-        None => Err(LuceneError::IllegalState(format!(
+        None => Err(LuceneError::illegal_state(format!(
             "leaf context with ord {ord} does not belong to the searcher this weight was built for"
         ))),
     }

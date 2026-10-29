@@ -587,7 +587,7 @@ impl FieldType {
 
     fn check_if_frozen(&self) -> Result<()> {
         if self.frozen {
-            Err(LuceneError::IllegalState(
+            Err(LuceneError::illegal_state(
                 "this FieldType is already frozen and cannot be changed".to_string(),
             ))
         } else {

@@ -218,7 +218,7 @@ impl SegmentMerger {
     /// norms, postings, doc values, points, vectors, then the field infos.
     pub fn merge(&mut self) -> Result<()> {
         if !self.should_merge()? {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "Merge would result in 0 document segment".to_string(),
             ));
         }

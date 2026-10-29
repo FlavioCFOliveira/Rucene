@@ -267,7 +267,7 @@ impl BufferedUpdatesStream {
     /// Equivalent to `BufferedUpdatesStream.push`.
     pub fn push(&self, packet: Arc<FrozenBufferedUpdates>) -> Result<i64> {
         let mut guard = self.updates.lock().map_err(|_| {
-            LuceneError::IllegalState("buffered updates stream lock poisoned".to_string())
+            LuceneError::illegal_state("buffered updates stream lock poisoned".to_string())
         })?;
         // The insert operation must be atomic: letting threads increment the
         // generation and push afterwards risks packets landing out of order,
@@ -334,7 +334,7 @@ impl BufferedUpdatesStream {
     /// rollback calls.
     pub fn clear(&self) -> Result<()> {
         let mut guard = self.updates.lock().map_err(|_| {
-            LuceneError::IllegalState("buffered updates stream lock poisoned".to_string())
+            LuceneError::illegal_state("buffered updates stream lock poisoned".to_string())
         })?;
         guard.clear();
         self.next_gen.store(1, Ordering::Release);
@@ -410,7 +410,7 @@ impl BufferedUpdatesStream {
     /// generation through [`finished_segment`](Self::finished_segment).
     pub fn take_packets(&self) -> Result<Vec<Arc<FrozenBufferedUpdates>>> {
         let mut guard = self.updates.lock().map_err(|_| {
-            LuceneError::IllegalState("buffered updates stream lock poisoned".to_string())
+            LuceneError::illegal_state("buffered updates stream lock poisoned".to_string())
         })?;
         let taken = std::mem::take(&mut *guard);
         self.bytes_used.store(0, Ordering::Release);
@@ -429,7 +429,7 @@ impl BufferedUpdatesStream {
     pub fn finished(&self, packet: &Arc<FrozenBufferedUpdates>) -> Result<()> {
         {
             let mut guard = self.updates.lock().map_err(|_| {
-                LuceneError::IllegalState("buffered updates stream lock poisoned".to_string())
+                LuceneError::illegal_state("buffered updates stream lock poisoned".to_string())
             })?;
             guard.retain(|held| !Arc::ptr_eq(held, packet));
             self.bytes_used
@@ -461,7 +461,7 @@ impl BufferedUpdatesStream {
     pub fn wait_apply_all(&self, writer: &IndexWriter) -> Result<()> {
         let wait_for = {
             let guard = self.updates.lock().map_err(|_| {
-                LuceneError::IllegalState("buffered updates stream lock poisoned".to_string())
+                LuceneError::illegal_state("buffered updates stream lock poisoned".to_string())
             })?;
             guard.clone()
         };
@@ -491,7 +491,7 @@ impl BufferedUpdatesStream {
 
         let wait_for: Vec<Arc<FrozenBufferedUpdates>> = {
             let guard = self.updates.lock().map_err(|_| {
-                LuceneError::IllegalState("buffered updates stream lock poisoned".to_string())
+                LuceneError::illegal_state("buffered updates stream lock poisoned".to_string())
             })?;
             guard
                 .iter()

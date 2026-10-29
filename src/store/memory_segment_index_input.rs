@@ -217,7 +217,7 @@ impl MemorySegmentIndexInput {
 
     /// Returns the error Java's `alreadyClosed` produces.
     fn already_closed(&self) -> LuceneError {
-        LuceneError::AlreadyClosed(format!("Already closed: {self}"))
+        LuceneError::already_closed(format!("Already closed: {self}"))
     }
 
     /// Returns the error Java's `handlePositionalIOOBE` produces, for a
@@ -268,7 +268,7 @@ impl MemorySegmentIndexInput {
     /// Equivalent to `MemorySegmentIndexInput.ensureAccessible()`.
     fn ensure_accessible(&self) -> Result<()> {
         if self.confined && !self.scope.is_accessible_by(std::thread::current().id()) {
-            return Err(LuceneError::IllegalState("confined".to_string()));
+            return Err(LuceneError::illegal_state("confined".to_string()));
         }
         Ok(())
     }

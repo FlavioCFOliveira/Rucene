@@ -193,14 +193,14 @@ impl MappingMultiPostingsEnum {
         }
         let field = self.field.clone();
         self.doc_id_merger.current_sub_mut().ok_or_else(|| {
-            LuceneError::IllegalState(format!(
+            LuceneError::illegal_state(format!(
                 "MappingMultiPostingsEnum for field '{field}' is not positioned on a document"
             ))
         })
     }
 
     fn not_positioned(&self) -> LuceneError {
-        LuceneError::IllegalState(format!(
+        LuceneError::illegal_state(format!(
             "MappingMultiPostingsEnum for field '{}' is not positioned on a document",
             self.field
         ))
@@ -691,12 +691,15 @@ mod tests {
             ReaderSlice::new(0, 3, 0),
         )];
         let mut postings = MappingMultiPostingsEnum::new("body", state, merged(subs)).unwrap();
-        assert!(matches!(postings.freq(), Err(LuceneError::IllegalState(_))));
+        assert!(matches!(
+            postings.freq(),
+            Err(LuceneError::IllegalState { .. })
+        ));
         assert_eq!(postings.start_offset(), -1);
         assert_eq!(postings.end_offset(), -1);
         assert!(matches!(
             postings.next_position(),
-            Err(LuceneError::IllegalState(_))
+            Err(LuceneError::IllegalState { .. })
         ));
     }
 

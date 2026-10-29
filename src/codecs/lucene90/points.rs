@@ -314,7 +314,7 @@ impl PointsWriter for Lucene90PointsWriter {
         // Java dereferences `reader.getValues(fieldInfo.name)` unguarded; every
         // caller hands it a reader that has values for the field.
         let values = reader.get_values(&field_info.name)?.ok_or_else(|| {
-            LuceneError::IllegalState(format!(
+            LuceneError::illegal_state(format!(
                 "field=\"{}\" has no point values to write",
                 field_info.name
             ))
@@ -463,7 +463,7 @@ impl PointsWriter for Lucene90PointsWriter {
 
     fn finish(&mut self) -> Result<()> {
         if self.finished {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "Lucene90PointsWriter already finished".to_string(),
             ));
         }
@@ -810,7 +810,7 @@ struct AddToBkdWriter<'a> {
 
 impl IntersectVisitor for AddToBkdWriter<'_> {
     fn visit(&mut self, _doc_id: i32) -> Result<()> {
-        Err(LuceneError::IllegalState(String::new()))
+        Err(LuceneError::illegal_state(String::new()))
     }
 
     fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
@@ -1061,7 +1061,7 @@ mod tests {
             if self.n > 600 {
                 // What the directory holds when the source fails: the spill file.
                 *self.seen.lock().unwrap() = self.dir.list_all()?;
-                return Err(LuceneError::IllegalState("probe: source failed".into()));
+                return Err(LuceneError::illegal_state("probe: source failed"));
             }
             self.inner.visit_with_value(doc_id, packed_value)
         }

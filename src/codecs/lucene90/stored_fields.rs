@@ -78,6 +78,7 @@ use crate::store::{
 };
 use crate::util::packed::{DirectMonotonicMeta, DirectMonotonicReader, DirectMonotonicWriter};
 use crate::util::Accountable;
+use crate::util::ArrayUtil;
 use crate::util::BitUtil;
 use crate::util::BytesRef;
 
@@ -891,7 +892,7 @@ impl FieldsIndexWriter {
     ) -> Result<&mut (dyn IndexOutput + 'static)> {
         output
             .as_deref_mut()
-            .ok_or_else(|| LuceneError::AlreadyClosed("this FieldsIndexWriter is closed".into()))
+            .ok_or_else(|| LuceneError::already_closed("this FieldsIndexWriter is closed"))
     }
 
     /// Writes the index file from the two temporary outputs, then deletes
@@ -912,7 +913,7 @@ impl FieldsIndexWriter {
         meta_out: &mut dyn IndexOutput,
     ) -> Result<()> {
         if num_docs != self.total_docs {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "Expected {num_docs} docs, but got {}",
                 self.total_docs
             )));
@@ -1187,7 +1188,7 @@ fn next_stored_fields_step(
         return Ok(None);
     }
     let sub_index = merger.current_index().ok_or_else(|| {
-        LuceneError::IllegalState("DocIDMerger returned a sub it cannot locate".to_string())
+        LuceneError::illegal_state("DocIDMerger returned a sub it cannot locate".to_string())
     })?;
     let sub = merger.sub(sub_index);
     Ok(Some(StoredFieldsMergeStep {
@@ -1512,7 +1513,7 @@ impl Lucene90CompressingStoredFieldsWriter {
             .and_then(|reader| reader.as_any())
             .and_then(|any| any.downcast_ref::<Lucene90CompressingStoredFieldsReader>())
             .ok_or_else(|| {
-                LuceneError::IllegalState(
+                LuceneError::illegal_state(
                     "bulk merge needs a Lucene90CompressingStoredFieldsReader".to_string(),
                 )
             })?;
@@ -1691,16 +1692,14 @@ impl fmt::Debug for Lucene90CompressingStoredFieldsWriter {
 impl Accountable for Lucene90CompressingStoredFieldsWriter {
     /// Bytes buffered for the documents of the chunk being built.
     ///
-    /// Equivalent to `Lucene90CompressingStoredFieldsWriter.ramBytesUsed()`.
-    /// Java adds `bufferedDocs.ramBytesUsed()`, the *allocated* size of the
-    /// byte blocks; `ByteBuffersDataOutput` here reports the bytes actually
-    /// written, so the estimate is slightly lower than Lucene's for a
-    /// partially filled block. Both are estimates feeding the same
-    /// flush-by-RAM decision, and neither reaches the index files.
+    /// Equivalent to `Lucene90CompressingStoredFieldsWriter.ramBytesUsed()`
+    /// (`Lucene90CompressingStoredFieldsWriter.java:729-733`): the *allocated*
+    /// blocks of `bufferedDocs` with their references, plus the length of the
+    /// two per-document `int` arrays.
     fn ram_bytes_used(&self) -> i64 {
-        self.buffered_docs.size() as i64
-            + (self.num_stored_fields.capacity() as i64) * 4
-            + (self.end_offsets.capacity() as i64) * 4
+        Accountable::ram_bytes_used(&self.buffered_docs)
+            + (self.num_stored_fields.len() as i64) * 4
+            + (self.end_offsets.len() as i64) * 4
     }
 }
 
@@ -1711,7 +1710,9 @@ impl StoredFieldsWriter for Lucene90CompressingStoredFieldsWriter {
 
     fn finish_document(&mut self) -> Result<()> {
         if self.num_buffered_docs == self.num_stored_fields.len() {
-            let new_len = self.num_stored_fields.len() * 2;
+            // `ArrayUtil.oversize(numBufferedDocs + 1, 4)` and `growExact`
+            // (`Lucene90CompressingStoredFieldsWriter.java:185-189`).
+            let new_len = ArrayUtil::oversize(self.num_buffered_docs + 1, 4);
             self.num_stored_fields.resize(new_len, 0);
             self.end_offsets.resize(new_len, 0);
         }
@@ -1789,7 +1790,7 @@ impl StoredFieldsWriter for Lucene90CompressingStoredFieldsWriter {
             self.flush(true)?;
         }
         if self.doc_base != num_docs {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "Wrote {} docs, finish called with numDocs={num_docs}",
                 self.doc_base
             )));
@@ -1847,7 +1848,7 @@ impl StoredFieldsWriter for Lucene90CompressingStoredFieldsWriter {
                 // Java dereferences the reader unconditionally, so a missing
                 // one is a broken merge state either way; this reports it
                 // instead of dropping the segment's documents silently.
-                return Err(LuceneError::IllegalState(format!(
+                return Err(LuceneError::illegal_state(format!(
                     "segment {i} of the merge has no stored-fields reader"
                 )));
             };
@@ -1904,7 +1905,7 @@ impl StoredFieldsWriter for Lucene90CompressingStoredFieldsWriter {
                         .and_then(|reader| reader.as_any())
                         .and_then(|any| any.downcast_ref::<Lucene90CompressingStoredFieldsReader>())
                         .ok_or_else(|| {
-                            LuceneError::IllegalState(
+                            LuceneError::illegal_state(
                                 "document-by-document merge needs a \
                                  Lucene90CompressingStoredFieldsReader"
                                     .to_string(),
@@ -1918,7 +1919,7 @@ impl StoredFieldsWriter for Lucene90CompressingStoredFieldsWriter {
                     let Some(reader) =
                         merge_state.stored_fields_readers[current.reader_index].as_ref()
                     else {
-                        return Err(LuceneError::IllegalState(format!(
+                        return Err(LuceneError::illegal_state(format!(
                             "segment {} of the merge has no stored-fields reader",
                             current.reader_index
                         )));
@@ -2230,7 +2231,7 @@ impl BlockState {
             self.bytes[offset..offset + length].to_vec()
         } else {
             let input = fields_stream
-                .ok_or_else(|| LuceneError::IllegalState("missing fields input".to_string()))?;
+                .ok_or_else(|| LuceneError::illegal_state("missing fields input".to_string()))?;
             let total_length = self.offsets[self.chunk_docs as usize] as usize;
             input.seek(self.start_pointer)?;
             // A known deviation, tracked as its own task: Java returns a lazy
@@ -2573,7 +2574,7 @@ impl Lucene90CompressingStoredFieldsReader {
     /// message.
     fn ensure_open(&self) -> Result<()> {
         if self.closed {
-            return Err(LuceneError::AlreadyClosed(
+            return Err(LuceneError::already_closed(
                 "this FieldsReader is closed".to_string(),
             ));
         }
@@ -2668,12 +2669,12 @@ impl Lucene90CompressingStoredFieldsReader {
     /// not a merge instance, or when the reader is not on the current version.
     fn is_loaded(&self, doc_id: i32) -> Result<bool> {
         if !self.merging {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "isLoaded should only ever get called on a merge instance".to_string(),
             ));
         }
         if self.version != DATA_VERSION_CURRENT {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "isLoaded should only ever get called when the reader is on the current version"
                     .to_string(),
             ));
@@ -3057,7 +3058,7 @@ impl StoredFieldsFormat for Lucene90StoredFieldsFormat {
                 }
             },
             None => {
-                return Err(LuceneError::IllegalState(format!(
+                return Err(LuceneError::illegal_state(format!(
                     "missing value for {} for segment: {}",
                     Self::MODE_KEY,
                     segment_info.name
@@ -3078,7 +3079,7 @@ impl StoredFieldsFormat for Lucene90StoredFieldsFormat {
         let previous = segment_info.put_attribute(Self::MODE_KEY.to_string(), mode_name);
         if let Some(prev) = previous {
             if prev != format!("{}", self.mode) {
-                return Err(LuceneError::IllegalState(format!(
+                return Err(LuceneError::illegal_state(format!(
                     "found existing value for {} for segment: {} old={prev}, new={}",
                     Self::MODE_KEY,
                     segment_info.name,
@@ -5083,7 +5084,7 @@ mod tests {
         );
 
         match search.is_loaded(0) {
-            Err(LuceneError::IllegalState(message)) => assert_eq!(
+            Err(LuceneError::IllegalState { message, .. }) => assert_eq!(
                 message,
                 "isLoaded should only ever get called on a merge instance"
             ),
@@ -5094,7 +5095,7 @@ mod tests {
         old_version.merging = true;
         old_version.version = DATA_VERSION_CURRENT - 1;
         match old_version.is_loaded(0) {
-            Err(LuceneError::IllegalState(message)) => assert_eq!(
+            Err(LuceneError::IllegalState { message, .. }) => assert_eq!(
                 message,
                 "isLoaded should only ever get called when the reader is on the current version"
             ),

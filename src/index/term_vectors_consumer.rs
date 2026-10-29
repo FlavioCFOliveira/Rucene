@@ -168,6 +168,7 @@ use crate::index::indexing_chain::FieldInvertState;
 use crate::index::{FieldInfo, IndexableField, SegmentInfo};
 use crate::store::{flush_io_context, DataInput, Directory, FlushInfo};
 use crate::util::byte_block_pool::ByteBlockPool;
+use crate::util::int_block_pool::IntBlockPool;
 use crate::util::{compare_utf16, BytesRef};
 
 /// Stream carrying the positions and payloads of a term.
@@ -316,6 +317,10 @@ impl TermVectorsConsumerPerField {
                 // (`TermVectorsConsumerPerField.java:138-143`).
                 self.base.reset();
             }
+            // `reinitHash()` (`TermVectorsConsumerPerField.java:145`): the
+            // postings slots the previous document's `reset()` dropped are
+            // allocated again.
+            self.base.reinit_hash();
             self.has_payloads = false;
             self.do_vectors = field_type.store_term_vectors();
 
@@ -411,11 +416,14 @@ impl TermVectorsConsumerPerField {
     pub fn add(
         &mut self,
         streams: &mut ByteBlockPool,
+        int_pool: &mut IntBlockPool,
         field_state: &FieldInvertState,
         text_start: i32,
         token: &InvertedToken<'_>,
     ) -> Result<()> {
-        let slot = self.base.intern_by_text_start(streams, text_start)?;
+        let slot = self
+            .base
+            .intern_by_text_start(streams, int_pool, text_start)?;
         let freq = self.term_freq(token)?;
         if slot.is_new {
             let posting = self.base.posting_mut(slot.term_id);
@@ -434,7 +442,7 @@ impl TermVectorsConsumerPerField {
                 ))
             })?;
         }
-        self.write_prox(streams, field_state, slot.term_id, token)
+        self.write_prox(streams, int_pool, field_state, slot.term_id, token)
     }
 
     /// Returns the frequency to record for the current token.
@@ -470,6 +478,7 @@ impl TermVectorsConsumerPerField {
     fn write_prox(
         &mut self,
         streams: &mut ByteBlockPool,
+        int_pool: &mut IntBlockPool,
         field_state: &FieldInvertState,
         term_id: i32,
         token: &InvertedToken<'_>,
@@ -483,10 +492,20 @@ impl TermVectorsConsumerPerField {
             // (`TermVectorsConsumerPerField.java:240-242`, decoded back by
             // `TermVectorsWriter.addProx`).
             let last_offset = self.base.posting(term_id).last_offset;
-            self.base
-                .write_v_int(streams, term_id, OFFSETS_STREAM, start_offset - last_offset)?;
-            self.base
-                .write_v_int(streams, term_id, OFFSETS_STREAM, end_offset - start_offset)?;
+            self.base.write_v_int(
+                streams,
+                int_pool,
+                term_id,
+                OFFSETS_STREAM,
+                start_offset - last_offset,
+            )?;
+            self.base.write_v_int(
+                streams,
+                int_pool,
+                term_id,
+                OFFSETS_STREAM,
+                end_offset - start_offset,
+            )?;
             self.base.posting_mut(term_id).last_offset = end_offset;
         }
 
@@ -509,21 +528,32 @@ impl TermVectorsConsumerPerField {
             let code = (delta as u32) << 1;
             match payload {
                 Some(payload) if !payload.is_empty() => {
-                    self.base
-                        .write_v_int(streams, term_id, POSITIONS_STREAM, (code | 1) as i32)?;
                     self.base.write_v_int(
                         streams,
+                        int_pool,
+                        term_id,
+                        POSITIONS_STREAM,
+                        (code | 1) as i32,
+                    )?;
+                    self.base.write_v_int(
+                        streams,
+                        int_pool,
                         term_id,
                         POSITIONS_STREAM,
                         payload.len() as i32,
                     )?;
                     self.base
-                        .write_bytes(streams, term_id, POSITIONS_STREAM, payload)?;
+                        .write_bytes(streams, int_pool, term_id, POSITIONS_STREAM, payload)?;
                     self.has_payloads = true;
                 }
                 _ => {
-                    self.base
-                        .write_v_int(streams, term_id, POSITIONS_STREAM, code as i32)?;
+                    self.base.write_v_int(
+                        streams,
+                        int_pool,
+                        term_id,
+                        POSITIONS_STREAM,
+                        code as i32,
+                    )?;
                 }
             }
             self.base.posting_mut(term_id).last_position = position;
@@ -554,6 +584,7 @@ impl TermVectorsConsumerPerField {
         &mut self,
         writer: &mut dyn TermVectorsWriter,
         streams: &ByteBlockPool,
+        int_pool: &IntBlockPool,
         term_pool: &ByteBlockPool,
         scratch: &mut BytesRef,
     ) -> Result<()> {
@@ -586,12 +617,13 @@ impl TermVectorsConsumerPerField {
                 let mut positions = self.do_vector_positions.then(|| {
                     let mut reader = ByteSliceReader::new();
                     self.base
-                        .init_reader(&mut reader, term_id, POSITIONS_STREAM);
+                        .init_reader(int_pool, &mut reader, term_id, POSITIONS_STREAM);
                     PooledSliceReader::new(reader, streams)
                 });
                 let mut offsets = self.do_vector_offsets.then(|| {
                     let mut reader = ByteSliceReader::new();
-                    self.base.init_reader(&mut reader, term_id, OFFSETS_STREAM);
+                    self.base
+                        .init_reader(int_pool, &mut reader, term_id, OFFSETS_STREAM);
                     PooledSliceReader::new(reader, streams)
                 });
                 writer.add_prox(
@@ -850,7 +882,8 @@ impl TermVectorsConsumer {
         let Self {
             terms_hash, fields, ..
         } = self;
-        fields[index].add(terms_hash.pool_mut(), field_state, text_start, token)
+        let (streams, int_pool) = terms_hash.pools_mut();
+        fields[index].add(streams, int_pool, field_state, text_start, token)
     }
 
     /// Closes the field at `index` for the current document, queueing its
@@ -886,7 +919,7 @@ impl TermVectorsConsumer {
             // has to release the writer in order to close it, so without this
             // guard the lazy initialisation would build a second set of
             // `.tvd`/`.tvx`/`.tvm` files for a discarded segment.
-            return Err(LuceneError::AlreadyClosed(format!(
+            return Err(LuceneError::already_closed(format!(
                 "the term vectors of segment {} were aborted",
                 self.info.name
             )));
@@ -977,22 +1010,29 @@ impl TermVectorsConsumer {
             ..
         } = self;
         let writer = writer.as_mut().ok_or_else(|| {
-            LuceneError::IllegalState(
+            LuceneError::illegal_state(
                 "the term-vectors writer was not created by initTermVectorsWriter".to_string(),
             )
         })?;
 
         Self::fill(writer.as_mut(), last_doc_id, doc_id)?;
         if *last_doc_id != doc_id {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "term vectors must be written in increasing doc order: lastDocID={last_doc_id} docID={doc_id}"
             )));
         }
 
         writer.start_document(pending_fields.len() as i32)?;
         let streams = terms_hash.pool();
+        let int_pool = terms_hash.int_pool();
         for index in pending_fields.iter() {
-            fields[*index].finish_document(writer.as_mut(), streams, term_pool, flush_term)?;
+            fields[*index].finish_document(
+                writer.as_mut(),
+                streams,
+                int_pool,
+                term_pool,
+                flush_term,
+            )?;
         }
         writer.finish_document()?;
         *last_doc_id += 1;
@@ -1173,7 +1213,10 @@ mod tests {
         let error = consumer
             .finish_document(2, &term_pool)
             .expect_err("doc 2 was already covered by the back-fill");
-        assert!(matches!(error, LuceneError::IllegalState(_)), "{error:?}");
+        assert!(
+            matches!(error, LuceneError::IllegalState { .. }),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -1192,7 +1235,10 @@ mod tests {
         let error = consumer
             .init_term_vectors_writer()
             .expect_err("a discarded segment must not grow a second set of files");
-        assert!(matches!(error, LuceneError::AlreadyClosed(_)), "{error:?}");
+        assert!(
+            matches!(error, LuceneError::AlreadyClosed { .. }),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -1351,17 +1397,20 @@ mod tests {
         // `TermVectorsWriter.addProx` decodes it that way. Writing the postings
         // convention here would silently shift every offset but the first.
         let (mut field, mut streams, mut term_pool, mut state) = buffered_field(false, true, false);
+        let mut ints = IntBlockPool::new();
         let text_start = term_pool.add_bytes_ref(b"alpha").expect("intern");
         field
-            .add(&mut streams, &state, text_start, &token(0, 5))
+            .add(&mut streams, &mut ints, &state, text_start, &token(0, 5))
             .expect("first occurrence");
         state.set_position(1);
         field
-            .add(&mut streams, &state, text_start, &token(20, 25))
+            .add(&mut streams, &mut ints, &state, text_start, &token(20, 25))
             .expect("second occurrence");
 
         let mut reader = ByteSliceReader::new();
-        field.base.init_reader(&mut reader, 0, OFFSETS_STREAM);
+        field
+            .base
+            .init_reader(&ints, &mut reader, 0, OFFSETS_STREAM);
         let mut input = PooledSliceReader::new(reader, &streams);
         assert_eq!(input.read_v_int().expect("start gap"), 0);
         assert_eq!(input.read_v_int().expect("length"), 5);
@@ -1377,21 +1426,24 @@ mod tests {
     #[test]
     fn positions_are_written_as_a_shifted_delta_with_a_payload_bit() {
         let (mut field, mut streams, mut term_pool, mut state) = buffered_field(true, false, true);
+        let mut ints = IntBlockPool::new();
         let text_start = term_pool.add_bytes_ref(b"alpha").expect("intern");
         let payload = InvertedToken {
             payload: Some(b"pay"),
             ..token(0, 5)
         };
         field
-            .add(&mut streams, &state, text_start, &payload)
+            .add(&mut streams, &mut ints, &state, text_start, &payload)
             .expect("first occurrence");
         state.set_position(7);
         field
-            .add(&mut streams, &state, text_start, &token(0, 5))
+            .add(&mut streams, &mut ints, &state, text_start, &token(0, 5))
             .expect("second occurrence");
 
         let mut reader = ByteSliceReader::new();
-        field.base.init_reader(&mut reader, 0, POSITIONS_STREAM);
+        field
+            .base
+            .init_reader(&ints, &mut reader, 0, POSITIONS_STREAM);
         let mut input = PooledSliceReader::new(reader, &streams);
         assert_eq!(input.read_v_int().expect("code"), 1, "(0 << 1) | 1");
         assert_eq!(input.read_v_int().expect("payload length"), 3);
@@ -1406,16 +1458,19 @@ mod tests {
     #[test]
     fn an_empty_payload_does_not_set_the_payload_bit() {
         let (mut field, mut streams, mut term_pool, state) = buffered_field(true, false, true);
+        let mut ints = IntBlockPool::new();
         let text_start = term_pool.add_bytes_ref(b"alpha").expect("intern");
         let empty = InvertedToken {
             payload: Some(b""),
             ..token(0, 5)
         };
         field
-            .add(&mut streams, &state, text_start, &empty)
+            .add(&mut streams, &mut ints, &state, text_start, &empty)
             .expect("occurrence");
         let mut reader = ByteSliceReader::new();
-        field.base.init_reader(&mut reader, 0, POSITIONS_STREAM);
+        field
+            .base
+            .init_reader(&ints, &mut reader, 0, POSITIONS_STREAM);
         let mut input = PooledSliceReader::new(reader, &streams);
         assert_eq!(input.read_v_int().expect("code"), 0);
         assert!(input.eof());
@@ -1427,18 +1482,21 @@ mod tests {
         // `IndexWriter.MAX_POSITION` allows a delta whose `delta << 1`
         // overflows an `i32`; Java wraps and recovers it with `>>>`.
         let (mut field, mut streams, mut term_pool, mut state) = buffered_field(true, false, false);
+        let mut ints = IntBlockPool::new();
         let text_start = term_pool.add_bytes_ref(b"alpha").expect("intern");
         let far = i32::MAX - 128;
         field
-            .add(&mut streams, &state, text_start, &token(0, 5))
+            .add(&mut streams, &mut ints, &state, text_start, &token(0, 5))
             .expect("first occurrence");
         state.set_position(far);
         field
-            .add(&mut streams, &state, text_start, &token(0, 5))
+            .add(&mut streams, &mut ints, &state, text_start, &token(0, 5))
             .expect("second occurrence");
 
         let mut reader = ByteSliceReader::new();
-        field.base.init_reader(&mut reader, 0, POSITIONS_STREAM);
+        field
+            .base
+            .init_reader(&ints, &mut reader, 0, POSITIONS_STREAM);
         let mut input = PooledSliceReader::new(reader, &streams);
         assert_eq!(input.read_v_int().expect("code"), 0);
         let code = input.read_v_int().expect("code");
@@ -1452,11 +1510,12 @@ mod tests {
     #[test]
     fn repeated_occurrences_accumulate_the_frequency() {
         let (mut field, mut streams, mut term_pool, mut state) = buffered_field(true, false, false);
+        let mut ints = IntBlockPool::new();
         let text_start = term_pool.add_bytes_ref(b"alpha").expect("intern");
         for position in 0..5 {
             state.set_position(position);
             field
-                .add(&mut streams, &state, text_start, &token(0, 5))
+                .add(&mut streams, &mut ints, &state, text_start, &token(0, 5))
                 .expect("occurrence");
         }
         assert_eq!(field.num_terms(), 1);
@@ -1469,6 +1528,7 @@ mod tests {
         {
             let (mut field, mut streams, mut term_pool, state) =
                 buffered_field(positions, offsets, false);
+            let mut ints = IntBlockPool::new();
             let text_start = term_pool.add_bytes_ref(b"alpha").expect("intern");
             let custom = InvertedToken {
                 term_freq: 4,
@@ -1476,7 +1536,7 @@ mod tests {
                 ..token(0, 5)
             };
             let error = field
-                .add(&mut streams, &state, text_start, &custom)
+                .add(&mut streams, &mut ints, &state, text_start, &custom)
                 .expect_err("a custom frequency has no positions to go with");
             assert!(
                 matches!(&error, LuceneError::IllegalArgument(message)
@@ -1489,6 +1549,7 @@ mod tests {
     #[test]
     fn a_custom_term_frequency_is_accepted_without_positions_and_offsets() {
         let (mut field, mut streams, mut term_pool, state) = buffered_field(false, false, false);
+        let mut ints = IntBlockPool::new();
         let text_start = term_pool.add_bytes_ref(b"alpha").expect("intern");
         let custom = InvertedToken {
             term_freq: 4,
@@ -1496,7 +1557,7 @@ mod tests {
             ..token(0, 5)
         };
         field
-            .add(&mut streams, &state, text_start, &custom)
+            .add(&mut streams, &mut ints, &state, text_start, &custom)
             .expect("a bare frequency is fine");
         assert_eq!(field.base.posting(0).term_freq, 4);
     }
@@ -1504,10 +1565,11 @@ mod tests {
     #[test]
     fn a_field_is_only_pending_when_it_has_both_vectors_and_terms() {
         let (mut field, mut streams, mut term_pool, state) = buffered_field(false, false, false);
+        let mut ints = IntBlockPool::new();
         assert!(!field.finish(), "no term was buffered yet");
         let text_start = term_pool.add_bytes_ref(b"alpha").expect("intern");
         field
-            .add(&mut streams, &state, text_start, &token(0, 5))
+            .add(&mut streams, &mut ints, &state, text_start, &token(0, 5))
             .expect("occurrence");
         assert!(field.finish());
         field.do_vectors = false;

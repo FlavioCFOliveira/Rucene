@@ -3169,7 +3169,7 @@ impl<M: SpatialMatcher> crate::search::ConstantScoreIteratorSupplier
         // Java's supplier may be asked for its scorer only once; the iterator
         // is taken here for the same reason.
         let iterator = self.iterator.take().ok_or_else(|| {
-            LuceneError::IllegalState(
+            LuceneError::illegal_state(
                 "a spatial scorer supplier may be asked for its scorer only once".to_string(),
             )
         })?;

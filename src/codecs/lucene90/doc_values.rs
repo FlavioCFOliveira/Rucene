@@ -648,13 +648,13 @@ impl NumericStats {
 
         if ords && min_max.num_values > 0 {
             if min_max.min != 0 {
-                return Err(LuceneError::IllegalState(format!(
+                return Err(LuceneError::illegal_state(format!(
                     "The min value for ordinals should always be 0, got {}",
                     min_max.min
                 )));
             }
             if min_max.max != 0 && gcd != 1 {
-                return Err(LuceneError::IllegalState(format!(
+                return Err(LuceneError::illegal_state(format!(
                     "GCD compression should never be used on ordinals, found gcd={gcd}"
                 )));
             }
@@ -3535,7 +3535,7 @@ fn check_ordinals_entry(ords: &NumericEntry) -> Result<()> {
         && ords.bits_per_value > 0
         && (ords.gcd != 1 || ords.min_value != 0 || ords.table.is_some())
     {
-        return Err(LuceneError::IllegalState(
+        return Err(LuceneError::illegal_state(
             "Ordinals shouldn't use GCD, offset or table compression".to_string(),
         ));
     }
@@ -4062,7 +4062,7 @@ impl DocValuesProducer for Lucene90DocValuesProducer {
     /// The port fails the same call, with an error instead of a panic.
     fn get_skipper(&self, field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
         let Some(entry) = self.skippers.get(&field.number).copied() else {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "field \"{}\" has no doc-values skip-index entry",
                 field.name
             )));
@@ -4151,7 +4151,7 @@ mod tests {
         ];
         for entry in refused {
             match super::check_ordinals_entry(&entry) {
-                Err(LuceneError::IllegalState(message)) => assert_eq!(
+                Err(LuceneError::IllegalState { message, .. }) => assert_eq!(
                     message,
                     "Ordinals shouldn't use GCD, offset or table compression"
                 ),

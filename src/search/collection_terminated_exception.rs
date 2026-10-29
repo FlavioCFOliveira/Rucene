@@ -164,9 +164,9 @@ impl CollectionError {
     pub fn into_lucene_error(self) -> LuceneError {
         match self {
             Self::CollectionTerminated => {
-                LuceneError::IllegalState(CollectionTerminatedException.to_string())
+                LuceneError::illegal_state(CollectionTerminatedException.to_string())
             }
-            Self::TimeExceeded => LuceneError::IllegalState(TimeExceededException.to_string()),
+            Self::TimeExceeded => LuceneError::illegal_state(TimeExceededException.to_string()),
             Self::Lucene(err) => err,
         }
     }

@@ -164,7 +164,7 @@ impl ConcurrentHnswMerger {
                 .map(|values| values as Box<dyn KnnVectorValues>),
         }
         .ok_or_else(|| {
-            LuceneError::IllegalState(format!(
+            LuceneError::illegal_state(format!(
                 "the initializing reader has no vectors for field \"{}\"",
                 field_info.name
             ))

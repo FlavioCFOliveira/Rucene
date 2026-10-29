@@ -47,7 +47,7 @@ impl VerifyChannel {
         let read = self.input.read(&mut byte)?;
         if read == 0 {
             // Java detects this as `in.read() < 0`, i.e. end of stream.
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "Lock server died because of locking error.".to_string(),
             ));
         }
@@ -82,7 +82,7 @@ impl CheckedLock {
     fn new(lock: Box<dyn Lock>, channel: Arc<Mutex<VerifyChannel>>) -> Result<Self> {
         channel
             .lock()
-            .map_err(|_| LuceneError::IllegalState("verify channel mutex poisoned".to_string()))?
+            .map_err(|_| LuceneError::illegal_state("verify channel mutex poisoned".to_string()))?
             .verify(MSG_LOCK_ACQUIRED)?;
         Ok(Self {
             lock: Some(lock),
@@ -95,7 +95,7 @@ impl Lock for CheckedLock {
     fn ensure_valid(&self) -> Result<()> {
         match &self.lock {
             Some(lock) => lock.ensure_valid(),
-            None => Err(LuceneError::AlreadyClosed(
+            None => Err(LuceneError::already_closed(
                 "Lock instance already released".to_string(),
             )),
         }
@@ -113,7 +113,7 @@ impl Lock for CheckedLock {
             self.channel
                 .lock()
                 .map_err(|_| {
-                    LuceneError::IllegalState("verify channel mutex poisoned".to_string())
+                    LuceneError::illegal_state("verify channel mutex poisoned".to_string())
                 })?
                 .verify(MSG_LOCK_RELEASED)
         })();

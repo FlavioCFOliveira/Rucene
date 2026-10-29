@@ -37,7 +37,7 @@ fn check_field(reader: &dyn LeafReader, field: &str, expected: &[DocValuesType])
     } else {
         format!("(expected one of {expected:?}")
     };
-    Err(LuceneError::IllegalState(format!(
+    Err(LuceneError::illegal_state(format!(
         "unexpected docvalues type {actual:?} for field '{field}' {expectation}). \
          Re-index with correct docvalues type."
     )))

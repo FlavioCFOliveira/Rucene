@@ -292,7 +292,7 @@ struct SharedFieldWriter<T> {
 impl<T: Clone + Send + Sync + 'static> KnnFieldVectorsWriter<T> for SharedFieldWriter<T> {
     fn add_value(&mut self, doc_id: i32, vector_value: T) -> Result<()> {
         let mut guard = self.inner.lock().map_err(|_| {
-            LuceneError::IllegalState("FlatFieldVectorsWriter mutex was poisoned".to_string())
+            LuceneError::illegal_state("FlatFieldVectorsWriter mutex was poisoned".to_string())
         })?;
         guard.add_value(doc_id, vector_value)
     }
@@ -369,7 +369,7 @@ impl Lucene99HnswVectorsWriter {
     /// Locks the writer's state for one operation.
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, HnswWriterState>> {
         self.state.lock().map_err(|_| {
-            LuceneError::IllegalState("Lucene99HnswVectorsWriter state lock poisoned".to_string())
+            LuceneError::illegal_state("Lucene99HnswVectorsWriter state lock poisoned".to_string())
         })
     }
 }
@@ -412,10 +412,10 @@ impl HnswWriterState {
         let mut vector_index_opt = Some(vector_index);
         let result = (|| -> Result<Self> {
             let meta = meta_opt.as_mut().ok_or_else(|| {
-                LuceneError::IllegalState("meta output missing during writer creation".to_string())
+                LuceneError::illegal_state("meta output missing during writer creation".to_string())
             })?;
             let vector_index = vector_index_opt.as_mut().ok_or_else(|| {
-                LuceneError::IllegalState(
+                LuceneError::illegal_state(
                     "vector index output missing during writer creation".to_string(),
                 )
             })?;
@@ -514,7 +514,7 @@ impl HnswWriterState {
         graph_level_node_offsets: &[Vec<i32>],
     ) -> Result<()> {
         let meta = self.meta.as_mut().ok_or_else(|| {
-            LuceneError::IllegalState("Lucene99HnswVectorsWriter is already closed".to_string())
+            LuceneError::illegal_state("Lucene99HnswVectorsWriter is already closed".to_string())
         })?;
         meta.write_int(field_info.number)?;
         meta.write_int(vector_encoding_ordinal(field_info.vector_encoding))?;
@@ -552,7 +552,9 @@ impl HnswWriterState {
             }
 
             let vector_index = self.vector_index.as_mut().ok_or_else(|| {
-                LuceneError::IllegalState("Lucene99HnswVectorsWriter is already closed".to_string())
+                LuceneError::illegal_state(
+                    "Lucene99HnswVectorsWriter is already closed".to_string(),
+                )
             })?;
             let start = vector_index.file_pointer();
             meta.write_long(start)?;
@@ -597,7 +599,9 @@ impl HnswWriterState {
 
         let vector_index_offset = {
             let vector_index = self.vector_index.as_ref().ok_or_else(|| {
-                LuceneError::IllegalState("Lucene99HnswVectorsWriter is already closed".to_string())
+                LuceneError::illegal_state(
+                    "Lucene99HnswVectorsWriter is already closed".to_string(),
+                )
             })?;
             vector_index.file_pointer()
         };
@@ -605,7 +609,9 @@ impl HnswWriterState {
             self.reconstruct_and_write_graph(graph, &new_to_old_map, &old_to_new_map)?;
         let vector_index_length = {
             let vector_index = self.vector_index.as_ref().ok_or_else(|| {
-                LuceneError::IllegalState("Lucene99HnswVectorsWriter is already closed".to_string())
+                LuceneError::illegal_state(
+                    "Lucene99HnswVectorsWriter is already closed".to_string(),
+                )
             })?;
             vector_index.file_pointer() - vector_index_offset
         };
@@ -725,7 +731,7 @@ impl HnswWriterState {
 
         let version = self.version;
         let vector_index = self.vector_index.as_mut().ok_or_else(|| {
-            LuceneError::IllegalState("Lucene99HnswVectorsWriter is already closed".to_string())
+            LuceneError::illegal_state("Lucene99HnswVectorsWriter is already closed".to_string())
         })?;
         let start = vector_index.file_pointer();
         vector_index.write_v_int(scratch.len() as i32)?;
@@ -771,7 +777,9 @@ impl HnswWriterState {
             .vector_index
             .as_ref()
             .ok_or_else(|| {
-                LuceneError::IllegalState("Lucene99HnswVectorsWriter is already closed".to_string())
+                LuceneError::illegal_state(
+                    "Lucene99HnswVectorsWriter is already closed".to_string(),
+                )
             })?
             .file_pointer();
         let mut merger =
@@ -797,7 +805,9 @@ impl HnswWriterState {
             .vector_index
             .as_ref()
             .ok_or_else(|| {
-                LuceneError::IllegalState("Lucene99HnswVectorsWriter is already closed".to_string())
+                LuceneError::illegal_state(
+                    "Lucene99HnswVectorsWriter is already closed".to_string(),
+                )
             })?
             .file_pointer()
             - vector_index_offset;
@@ -890,7 +900,7 @@ impl HnswWriterState {
                 let node = sorted_nodes.next_int();
                 let neighbors = graph.get_neighbors(level, node)?;
                 let vector_index = self.vector_index.as_mut().ok_or_else(|| {
-                    LuceneError::IllegalState(
+                    LuceneError::illegal_state(
                         "Lucene99HnswVectorsWriter is already closed".to_string(),
                     )
                 })?;
@@ -912,7 +922,7 @@ impl HnswWriterState {
 impl HnswWriterState {
     fn add_field(&mut self, field_info: &FieldInfo) -> Result<FieldVectorWriter> {
         if self.finished {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "Lucene99HnswVectorsWriter is already finished".to_string(),
             ));
         }
@@ -966,7 +976,7 @@ impl HnswWriterState {
                         .vector_index
                         .as_ref()
                         .ok_or_else(|| {
-                            LuceneError::IllegalState(
+                            LuceneError::illegal_state(
                                 "Lucene99HnswVectorsWriter is already closed".to_string(),
                             )
                         })?
@@ -1017,7 +1027,7 @@ impl HnswWriterState {
                         .vector_index
                         .as_ref()
                         .ok_or_else(|| {
-                            LuceneError::IllegalState(
+                            LuceneError::illegal_state(
                                 "Lucene99HnswVectorsWriter is already closed".to_string(),
                             )
                         })?
@@ -1064,7 +1074,7 @@ impl HnswWriterState {
     /// closed it to reopen its vectors.
     fn finish(&mut self) -> Result<()> {
         if self.finished {
-            return Err(LuceneError::IllegalState("already finished".to_string()));
+            return Err(LuceneError::illegal_state("already finished".to_string()));
         }
         self.finished = true;
         if !self.flat_writer_closed {
@@ -1132,7 +1142,7 @@ impl HnswWriterState {
                             &self.segment_write_state.borrow(),
                         )?
                         .ok_or_else(|| {
-                            LuceneError::IllegalState(format!(
+                            LuceneError::illegal_state(format!(
                                 "the quantized reader has no vectors for merged field \"{}\"",
                                 field_info.name
                             ))
@@ -1151,7 +1161,7 @@ impl HnswWriterState {
                 // that shared it is gone by now.
                 let closed = match Arc::get_mut(&mut scorer_supplier) {
                     Some(supplier) => supplier.close(),
-                    None => Err(LuceneError::IllegalState(
+                    None => Err(LuceneError::illegal_state(
                         "the merge's scorer supplier is still shared after the graph was built"
                             .to_string(),
                     )),
@@ -1188,7 +1198,7 @@ impl HnswWriterState {
                 .vector_index
                 .as_ref()
                 .ok_or_else(|| {
-                    LuceneError::IllegalState(
+                    LuceneError::illegal_state(
                         "Lucene99HnswVectorsWriter is already closed".to_string(),
                     )
                 })?
@@ -1272,7 +1282,7 @@ impl HnswWriterState {
 /// The error for flat vectors that vanished between counting them and scoring
 /// them, where Java would dereference `null`.
 fn missing_vectors(field_info: &FieldInfo) -> LuceneError {
-    LuceneError::IllegalState(format!(
+    LuceneError::illegal_state(format!(
         "the merged flat vectors of field \"{}\" are missing",
         field_info.name
     ))
@@ -1341,7 +1351,7 @@ impl crate::codecs::knn_vectors::IORunnable for HnswDeferredMerge<'_> {
         self.state
             .lock()
             .map_err(|_| {
-                LuceneError::IllegalState(
+                LuceneError::illegal_state(
                     "Lucene99HnswVectorsWriter state lock poisoned".to_string(),
                 )
             })?
@@ -1562,7 +1572,7 @@ impl BufferedFloatVectorValues {
         writer: Arc<Mutex<DefaultFlatFieldVectorsWriter<Vec<f32>>>>,
     ) -> Result<Self> {
         let guard = writer.lock().map_err(|_| {
-            LuceneError::IllegalState("FlatFieldVectorsWriter mutex was poisoned".to_string())
+            LuceneError::illegal_state("FlatFieldVectorsWriter mutex was poisoned".to_string())
         })?;
         let vectors = guard.vectors().to_vec();
         let ord_to_doc = build_ord_to_doc(guard.docs_with_field_set())?;
@@ -1645,7 +1655,7 @@ impl BufferedByteVectorValues {
         writer: Arc<Mutex<DefaultFlatFieldVectorsWriter<Vec<u8>>>>,
     ) -> Result<Self> {
         let guard = writer.lock().map_err(|_| {
-            LuceneError::IllegalState("FlatFieldVectorsWriter mutex was poisoned".to_string())
+            LuceneError::illegal_state("FlatFieldVectorsWriter mutex was poisoned".to_string())
         })?;
         let vectors = guard.vectors().to_vec();
         let ord_to_doc = build_ord_to_doc(guard.docs_with_field_set())?;

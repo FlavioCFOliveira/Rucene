@@ -230,21 +230,21 @@ impl CharsRef {
     /// Returns [`LuceneError::IllegalState`] when a check fails.
     pub fn is_valid(&self) -> Result<(), LuceneError> {
         if self.length > self.chars.len() {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "length {} out of bounds (chars.len() = {})",
                 self.length,
                 self.chars.len()
             )));
         }
         if self.offset > self.chars.len() {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "offset {} out of bounds (chars.len() = {})",
                 self.offset,
                 self.chars.len()
             )));
         }
         if self.offset + self.length > self.chars.len() {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "offset + length out of bounds: offset={}, length={}, chars.len()={}",
                 self.offset,
                 self.length,

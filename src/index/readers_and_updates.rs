@@ -319,7 +319,7 @@ impl PendingDeletes {
         let codec = info
             .info
             .codec()
-            .ok_or_else(|| LuceneError::IllegalState("segment has no codec".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_state("segment has no codec".to_string()))?;
         let live_docs_format = codec.live_docs_format();
 
         let write_result = live_docs_format.write_live_docs(
@@ -1051,7 +1051,7 @@ impl PendingSoftDeletes {
     pub fn read_field_infos(info: &SegmentCommitInfo) -> Result<FieldInfos> {
         let seg_info = &info.info;
         let codec = seg_info.codec().ok_or_else(|| {
-            LuceneError::IllegalState(format!("segment {} has no codec", seg_info.name))
+            LuceneError::illegal_state(format!("segment {} has no codec", seg_info.name))
         })?;
         let fis_format = codec.field_infos_format();
         let context = &*READONCE_IO_CONTEXT;
@@ -1816,7 +1816,7 @@ impl ReadersAndUpdates {
             .info
             .info
             .codec()
-            .ok_or_else(|| LuceneError::IllegalState("segment has no codec".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_state("segment has no codec".to_string()))?;
 
         // Open a reader if we don't have one.  We clone the Arc so `reader`
         // does not borrow `state`, allowing later `state.info` mutations.
@@ -1868,7 +1868,7 @@ impl ReadersAndUpdates {
                     let fi = field_numbers
                         .construct_field_info(&update.field, update.dv_type, max_field_number + 1)?
                         .ok_or_else(|| {
-                            LuceneError::IllegalState(format!(
+                            LuceneError::illegal_state(format!(
                                 "field [{}] with doc-values type {:?} is not in the global \
                                  field numbers",
                                 update.field, update.dv_type
@@ -2000,7 +2000,7 @@ impl ReadersAndUpdates {
             let field_info = field_infos
                 .field_info(&fd.field)
                 .ok_or_else(|| {
-                    LuceneError::IllegalState(format!("missing FieldInfo for field: {}", fd.field))
+                    LuceneError::illegal_state(format!("missing FieldInfo for field: {}", fd.field))
                 })?
                 .clone();
             let mut field_info_mut = field_info;
@@ -2125,7 +2125,10 @@ impl ReadersAndUpdates {
             let mut kept = Vec::new();
             for update in original {
                 if update.del_gen > max_del_gen {
-                    kept.push(update.clone_for_merge());
+                    // The update itself stays pending, as Java's list keeps
+                    // the same object (`ReadersAndUpdates.java:715-736`), so
+                    // the RAM it was charged is the RAM later freed.
+                    kept.push(update);
                 } else {
                     bytes_freed += update.ram_bytes_used();
                 }
@@ -2143,7 +2146,13 @@ impl ReadersAndUpdates {
             .ram_bytes_used
             .fetch_sub(bytes_freed, Ordering::Relaxed)
             - bytes_freed;
-        assert!(new_ram >= 0, "ram_bytes_used went negative: {new_ram}");
+        // `assert bytes >= 0` (`ReadersAndUpdates.java:739`): evaluated only
+        // in builds with `debug_assertions`, this port's `-ea`, where it fails
+        // as Java's `AssertionError` (no message), which the writer's `catch
+        // (Error)` sites turn into a tragedy.
+        if cfg!(debug_assertions) && new_ram < 0 {
+            return Err(LuceneError::AssertionError(String::new()));
+        }
 
         // Reopen the reader if one is open.
         if state.reader.is_some() {
@@ -2177,7 +2186,7 @@ impl ReadersAndUpdates {
     ) -> Result<bool> {
         for old_update in field_updates {
             if old_update.del_gen == update.del_gen {
-                return Err(LuceneError::IllegalState(format!(
+                return Err(LuceneError::illegal_state(format!(
                     "duplicate delGen={} for seg={segment_name}",
                     update.del_gen
                 )));
@@ -2258,7 +2267,7 @@ impl ReadersAndUpdates {
             state
                 .reader
                 .as_ref()
-                .ok_or_else(|| LuceneError::IllegalState("no reader to swap".to_string()))?,
+                .ok_or_else(|| LuceneError::illegal_state("no reader to swap".to_string()))?,
         );
         let new_reader = Self::create_new_reader_with_latest_live_docs(state, &old_reader)?;
         state.reader = Some(new_reader);
@@ -2908,7 +2917,7 @@ impl ReaderPool {
 
     fn ensure_open(&self) -> Result<()> {
         if self.closed.load(Ordering::Relaxed) {
-            return Err(LuceneError::AlreadyClosed(
+            return Err(LuceneError::already_closed(
                 "ReaderPool is already closed".to_string(),
             ));
         }
@@ -3252,12 +3261,39 @@ impl ReaderPool {
 
     /// Returns readers sorted by RAM usage (descending).
     ///
-    /// Equivalent to `ReaderPool.getReadersByRam()`.
+    /// Equivalent to `ReaderPool.getReadersByRam()` (`ReaderPool.java:280-306`).
+    ///
+    /// **Divergence from Lucene 10.5.0.** Readers of equal RAM keep the order
+    /// in which the pool's map yields them, in both implementations. Java's
+    /// `readerMap` is a `HashMap` keyed by `SegmentCommitInfo`, whose
+    /// `hashCode` is the JVM identity hash (`ReaderPool.java:47`), and it sorts
+    /// with the unstable `CollectionUtil.introSort`; that order changes with
+    /// any unrelated allocation in the JVM, so no other process can reproduce
+    /// it. This port's map is keyed by segment name with a randomly seeded
+    /// hasher. When `IndexWriter.writeSomeDocValuesUpdates` stops part-way
+    /// through a run of equal-RAM readers, which segments get their updates
+    /// written — and so their doc-values generations — therefore depends on
+    /// that order in Lucene as here.
+    ///
+    /// Each reader's RAM is read once, under the pool's lock, and the sort
+    /// then compares those recorded figures outside it, as Java's
+    /// `RamRecordingHolder` does: the RAM of a reader can change concurrently,
+    /// and a sort over a moving key is not well defined.
     pub fn get_readers_by_ram(&self) -> Vec<Arc<ReadersAndUpdates>> {
-        let map = self.reader_map.lock().expect("reader_map mutex poisoned");
-        let mut readers: Vec<Arc<ReadersAndUpdates>> = map.values().cloned().collect();
-        readers.sort_by_key(|r| std::cmp::Reverse(r.ram_bytes_used()));
-        readers
+        // `RamRecordingHolder(ReadersAndUpdates)`: the reader and the RAM it
+        // used when it was recorded.
+        let mut readers_by_ram: Vec<(Arc<ReadersAndUpdates>, i64)> = {
+            let map = self.reader_map.lock().expect("reader_map mutex poisoned");
+            if map.is_empty() {
+                return Vec::new();
+            }
+            map.values()
+                .map(|rld| (Arc::clone(rld), rld.ram_bytes_used()))
+                .collect()
+        };
+        // Sort this outside of the lock by largest recorded RAM.
+        readers_by_ram.sort_by_key(|(_, ram)| std::cmp::Reverse(*ram));
+        readers_by_ram.into_iter().map(|(rld, _)| rld).collect()
     }
 
     /// Drops the reader for `info` if it is pooled, and returns whether it was.

@@ -587,7 +587,7 @@ impl SynonymWeight {
                 total_term_freq,
             )?;
             let collection_stats = collection_stats.ok_or_else(|| {
-                LuceneError::IllegalState(format!(
+                LuceneError::illegal_state(format!(
                     "field {field} has term statistics but no collection statistics"
                 ))
             })?;
@@ -669,7 +669,7 @@ impl Weight for SynonymWeight {
                     }
                 }
                 let sim_weight = self.state.sim_weight.as_ref().ok_or_else(|| {
-                    LuceneError::IllegalState(
+                    LuceneError::illegal_state(
                         "a matching document requires a term to exist, and therefore a scorer"
                             .to_string(),
                     )
@@ -749,7 +749,7 @@ impl std::fmt::Debug for SynonymScorerSupplier {
 impl ScorerSupplier for SynonymScorerSupplier {
     fn get(&mut self, lead_cost: i64) -> Result<Box<dyn Scorer>> {
         let init = self.init.take().ok_or_else(|| {
-            LuceneError::IllegalState(
+            LuceneError::illegal_state(
                 "ScorerSupplier.get(long) must be called at most once".to_string(),
             )
         })?;

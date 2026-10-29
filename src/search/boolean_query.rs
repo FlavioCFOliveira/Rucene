@@ -329,7 +329,7 @@ impl BooleanQuery {
                 .as_any()
                 .downcast_ref::<TermQuery>()
                 .ok_or_else(|| {
-                    LuceneError::IllegalState(
+                    LuceneError::illegal_state(
                         "rewriteTwoClauseDisjunctionWithTermsForCount requires TermQuery clauses"
                             .to_string(),
                     )

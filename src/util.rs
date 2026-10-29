@@ -273,21 +273,21 @@ impl BytesRef {
     /// Returns `LuceneError::IllegalState` if any invariant is violated.
     pub fn is_valid(&self) -> Result<(), LuceneError> {
         if self.length > self.bytes.len() {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "length {} out of bounds (bytes.len() = {})",
                 self.length,
                 self.bytes.len()
             )));
         }
         if self.offset > self.bytes.len() {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "offset {} out of bounds (bytes.len() = {})",
                 self.offset,
                 self.bytes.len()
             )));
         }
         if self.offset + self.length > self.bytes.len() {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "offset + length out of bounds: offset={}, length={}, bytes.len()={}",
                 self.offset,
                 self.length,
@@ -4159,7 +4159,7 @@ impl<T> RefCount<T> {
                 return Err(e);
             }
         } else if rc < 0 {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "too many decRef calls: refCount is {rc} after decrement"
             )));
         }

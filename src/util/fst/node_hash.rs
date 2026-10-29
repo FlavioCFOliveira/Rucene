@@ -568,7 +568,7 @@ impl PagedGrowableHash {
                     }
                 }
                 other => {
-                    return Err(LuceneError::IllegalState(format!(
+                    return Err(LuceneError::illegal_state(format!(
                         "unhandled scratchArc.nodeFlags() {other}"
                     )));
                 }
@@ -594,7 +594,7 @@ impl PagedGrowableHash {
                     // The position is one index past the starting address, as
                     // the node is read backwards.
                     i32::try_from(address - input.position()).map_err(|_| {
-                        LuceneError::IllegalState(format!(
+                        LuceneError::illegal_state(format!(
                             "node length {} does not fit in an i32",
                             address - input.position()
                         ))

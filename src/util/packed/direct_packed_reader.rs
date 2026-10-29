@@ -147,7 +147,7 @@ impl DirectPackedReader {
                 value as i64
             }
             other => {
-                return Err(LuceneError::IllegalState(format!(
+                return Err(LuceneError::illegal_state(format!(
                     "bitsPerValue too large: {} (needs {other} bytes)",
                     self.bits_per_value
                 )))

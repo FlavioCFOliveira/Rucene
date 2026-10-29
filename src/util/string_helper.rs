@@ -98,21 +98,21 @@ impl IntsRef {
     /// Equivalent to `org.apache.lucene.util.IntsRef#isValid`.
     pub fn is_valid(&self) -> Result<(), LuceneError> {
         if self.length > self.ints.len() {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "length is out of bounds: {},ints.length={}",
                 self.length,
                 self.ints.len()
             )));
         }
         if self.offset > self.ints.len() {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "offset out of bounds: {},ints.length={}",
                 self.offset,
                 self.ints.len()
             )));
         }
         if self.offset + self.length > self.ints.len() {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "offset+length out of bounds: offset={},length={},ints.length={}",
                 self.offset,
                 self.length,
@@ -200,7 +200,7 @@ impl StringHelper {
         }
         mismatch
             .try_into()
-            .map_err(|_| LuceneError::IllegalState("mismatch index overflow".to_string()))
+            .map_err(|_| LuceneError::illegal_state("mismatch index overflow".to_string()))
     }
 
     /// Returns the length of `current_term` needed as a sort key so that byte

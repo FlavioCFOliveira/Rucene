@@ -412,7 +412,7 @@ impl SegmentInfos {
     /// Sets the generation to be used for the next commit.
     pub fn set_next_write_generation(&mut self, generation: i64) -> Result<()> {
         if generation < self.generation {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "cannot decrease generation to {generation} from current generation {}",
                 self.generation
             )));
@@ -970,7 +970,7 @@ impl SegmentInfos {
                 last_gen = gen;
                 let segment_file_name =
                     file_name_from_generation(SEGMENTS, "", gen).ok_or_else(|| {
-                        LuceneError::IllegalState(format!(
+                        LuceneError::illegal_state(format!(
                             "could not build segments file name for generation {gen}"
                         ))
                     })?;
@@ -1023,7 +1023,7 @@ impl SegmentInfos {
     /// Equivalent to `SegmentInfos.prepareCommit(Directory)`.
     pub fn prepare_commit(&mut self, directory: &dyn Directory) -> Result<()> {
         if self.pending_commit {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "prepareCommit was already called".to_string(),
             ));
         }
@@ -1035,7 +1035,7 @@ impl SegmentInfos {
         let next_generation = self.next_pending_generation();
         let segment_file_name = file_name_from_generation(PENDING_SEGMENTS, "", next_generation)
             .ok_or_else(|| {
-                LuceneError::IllegalState(format!(
+                LuceneError::illegal_state(format!(
                     "could not build pending segments file name for generation {next_generation}"
                 ))
             })?;
@@ -1104,7 +1104,7 @@ impl SegmentInfos {
         for si_per_commit in &self.segments {
             let si = &si_per_commit.info;
             if self.index_created_version_major >= 7 && si.min_version().is_none() {
-                return Err(LuceneError::IllegalState(format!(
+                return Err(LuceneError::illegal_state(format!(
                     "Segments must record minVersion if they have been created on or after Lucene 7: {si:?}"
                 )));
             }
@@ -1112,7 +1112,7 @@ impl SegmentInfos {
             out.write_string(&si.name)?;
             let segment_id = si.id();
             if segment_id.len() != ID_LENGTH {
-                return Err(LuceneError::IllegalState(format!(
+                return Err(LuceneError::illegal_state(format!(
                     "cannot write segment: invalid id segment={} id={:?}",
                     si.name, segment_id
                 )));
@@ -1121,7 +1121,7 @@ impl SegmentInfos {
             let codec_name = si
                 .codec()
                 .ok_or_else(|| {
-                    LuceneError::IllegalState(format!(
+                    LuceneError::illegal_state(format!(
                         "cannot write segment: codec not set for {si:?}"
                     ))
                 })?
@@ -1133,7 +1133,7 @@ impl SegmentInfos {
             let del_count = si_per_commit.get_del_count();
             let max_doc = si.max_doc()?;
             if del_count < 0 || del_count > max_doc {
-                return Err(LuceneError::IllegalState(format!(
+                return Err(LuceneError::illegal_state(format!(
                     "cannot write segment: invalid maxDoc segment={} maxDoc={max_doc} delCount={del_count}",
                     si.name
                 )));
@@ -1143,7 +1143,7 @@ impl SegmentInfos {
             codec_util::write_be_long(out, si_per_commit.get_doc_values_gen())?;
             let soft_del_count = si_per_commit.get_soft_del_count();
             if soft_del_count < 0 || soft_del_count > max_doc {
-                return Err(LuceneError::IllegalState(format!(
+                return Err(LuceneError::illegal_state(format!(
                     "cannot write segment: invalid maxDoc segment={} maxDoc={max_doc} softDelCount={soft_del_count}",
                     si.name
                 )));
@@ -1177,20 +1177,20 @@ impl SegmentInfos {
     /// Equivalent to `SegmentInfos.finishCommit(Directory)`.
     pub fn finish_commit(&mut self, directory: &dyn Directory) -> Result<String> {
         if !self.pending_commit {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "prepareCommit was not called".to_string(),
             ));
         }
 
         let src =
             file_name_from_generation(PENDING_SEGMENTS, "", self.generation).ok_or_else(|| {
-                LuceneError::IllegalState(format!(
+                LuceneError::illegal_state(format!(
                     "could not build pending segments file name for generation {}",
                     self.generation
                 ))
             })?;
         let dest = file_name_from_generation(SEGMENTS, "", self.generation).ok_or_else(|| {
-            LuceneError::IllegalState(format!(
+            LuceneError::illegal_state(format!(
                 "could not build segments file name for generation {}",
                 self.generation
             ))

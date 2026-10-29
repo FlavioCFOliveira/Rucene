@@ -481,7 +481,7 @@ impl TermsEnum for FilteredTermsEnum {
     }
 
     fn seek_exact(&mut self, _text: &BytesRef) -> Result<bool> {
-        Err(LuceneError::IllegalState(
+        Err(LuceneError::illegal_state(
             "FilteredTermsEnum does not support seeking".to_string(),
         ))
     }
@@ -501,19 +501,19 @@ impl TermsEnum for FilteredTermsEnum {
     }
 
     fn seek_ceil(&mut self, _text: &BytesRef) -> Result<SeekStatus> {
-        Err(LuceneError::IllegalState(
+        Err(LuceneError::illegal_state(
             "FilteredTermsEnum does not support seeking".to_string(),
         ))
     }
 
     fn seek_ord(&mut self, _ord: i64) -> Result<()> {
-        Err(LuceneError::IllegalState(
+        Err(LuceneError::illegal_state(
             "FilteredTermsEnum does not support seeking".to_string(),
         ))
     }
 
     fn seek_term_state(&mut self, _text: &BytesRef, _state: &dyn TermState) -> Result<()> {
-        Err(LuceneError::IllegalState(
+        Err(LuceneError::illegal_state(
             "FilteredTermsEnum does not support seeking".to_string(),
         ))
     }
@@ -1294,7 +1294,7 @@ impl TermStates {
     /// `needs_stats = false`, which is the `IllegalStateException` Java throws.
     pub fn doc_freq(&self) -> Result<i32> {
         if self.term.is_some() {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "Cannot call docFreq() when needsStats=false".to_string(),
             ));
         }
@@ -1312,7 +1312,7 @@ impl TermStates {
     /// `needs_stats = false`, which is the `IllegalStateException` Java throws.
     pub fn total_term_freq(&self) -> Result<i64> {
         if self.term.is_some() {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "Cannot call totalTermFreq() when needsStats=false".to_string(),
             ));
         }
@@ -1384,31 +1384,31 @@ impl TermsEnum for EmptyTermsEnum {
     }
 
     fn seek_term_state(&mut self, _text: &BytesRef, _state: &dyn TermState) -> Result<()> {
-        Err(LuceneError::IllegalState(
+        Err(LuceneError::illegal_state(
             "seek_term_state should never be called on EmptyTermsEnum".to_string(),
         ))
     }
 
     fn term(&self) -> Result<BytesRef> {
-        Err(LuceneError::IllegalState(
+        Err(LuceneError::illegal_state(
             "term should never be called on EmptyTermsEnum".to_string(),
         ))
     }
 
     fn ord(&self) -> Result<i64> {
-        Err(LuceneError::IllegalState(
+        Err(LuceneError::illegal_state(
             "ord should never be called on EmptyTermsEnum".to_string(),
         ))
     }
 
     fn doc_freq(&mut self) -> Result<i32> {
-        Err(LuceneError::IllegalState(
+        Err(LuceneError::illegal_state(
             "doc_freq should never be called on EmptyTermsEnum".to_string(),
         ))
     }
 
     fn total_term_freq(&mut self) -> Result<i64> {
-        Err(LuceneError::IllegalState(
+        Err(LuceneError::illegal_state(
             "total_term_freq should never be called on EmptyTermsEnum".to_string(),
         ))
     }
@@ -1418,19 +1418,19 @@ impl TermsEnum for EmptyTermsEnum {
         _reuse: Option<Box<dyn PostingsEnum>>,
         _flags: i32,
     ) -> Result<Box<dyn PostingsEnum>> {
-        Err(LuceneError::IllegalState(
+        Err(LuceneError::illegal_state(
             "postings should never be called on EmptyTermsEnum".to_string(),
         ))
     }
 
     fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
-        Err(LuceneError::IllegalState(
+        Err(LuceneError::illegal_state(
             "impacts should never be called on EmptyTermsEnum".to_string(),
         ))
     }
 
     fn term_state(&mut self) -> Result<Box<dyn TermState>> {
-        Err(LuceneError::IllegalState(
+        Err(LuceneError::illegal_state(
             "term_state should never be called on EmptyTermsEnum".to_string(),
         ))
     }
@@ -1796,7 +1796,7 @@ mod tests {
         }
 
         fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
-            Err(LuceneError::IllegalState(
+            Err(LuceneError::illegal_state(
                 "impacts not supported in VecTermsEnum".to_string(),
             ))
         }

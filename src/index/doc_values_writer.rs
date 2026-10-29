@@ -352,7 +352,7 @@ fn java_long_value(value: &crate::document::NumericValue) -> i64 {
 const PAGE_SIZE: usize = PackedLongValues::DEFAULT_PAGE_SIZE as usize;
 
 /// `PackedLongValues.deltaPackedBuilder(PackedInts.COMPACT)`.
-fn delta_packed_builder() -> DeltaPackedLongValuesBuilder {
+pub(crate) fn delta_packed_builder() -> DeltaPackedLongValuesBuilder {
     PackedLongValues::delta_packed_builder(PAGE_SIZE, PackedInts::COMPACT)
         .expect("INVARIANT: the default page size is a legal page size")
 }
@@ -367,12 +367,12 @@ fn packed_builder(acceptable_overhead_ratio: f32) -> PackedLongValuesBuilder {
 /// been built, which is what Java's `Builder.add` throws once `pending` is
 /// `null`.
 fn already_built() -> LuceneError {
-    LuceneError::IllegalState("Cannot be reused after build()".to_string())
+    LuceneError::illegal_state("Cannot be reused after build()".to_string())
 }
 
 /// The error a writer reports when it is used after its field was flushed.
 fn already_flushed(field_info: &FieldInfo) -> LuceneError {
-    LuceneError::IllegalState(format!(
+    LuceneError::illegal_state(format!(
         "the doc values of field \"{}\" have already been flushed",
         field_info.name
     ))
@@ -1407,7 +1407,7 @@ impl DocIdSetIterator for BufferedBinary {
         let doc_id = self.docs_with_field.next_doc()?;
         if doc_id != NO_MORE_DOCS {
             let length = usize::try_from(self.lengths_iterator.next_value()).map_err(|_| {
-                LuceneError::IllegalState("integer overflow in a binary value length".to_string())
+                LuceneError::illegal_state("integer overflow in a binary value length".to_string())
             })?;
             self.length = length;
             self.bytes_iterator.read_bytes(&mut self.value, 0, length)?;
@@ -1632,7 +1632,9 @@ fn hash_mut(hash: &mut Arc<BytesRefHash>) -> Result<&mut BytesRefHash> {
 /// alive (see the module documentation).
 fn pool_mut(pool: &mut Arc<ByteBlockPool>) -> Result<&mut ByteBlockPool> {
     Arc::get_mut(pool).ok_or_else(|| {
-        LuceneError::IllegalState("the doc-values byte pool is read by a live producer".to_string())
+        LuceneError::illegal_state(
+            "the doc-values byte pool is read by a live producer".to_string(),
+        )
     })
 }
 
@@ -2298,7 +2300,7 @@ impl<V: PackedLongValuesAccess> SortedDocValues for BufferedSorted<V> {
 
 /// `Math.toIntExact(long)`.
 fn to_int_exact(value: i64) -> Result<i32> {
-    i32::try_from(value).map_err(|_| LuceneError::IllegalState("integer overflow".to_string()))
+    i32::try_from(value).map_err(|_| LuceneError::illegal_state("integer overflow".to_string()))
 }
 
 /// Iterates the sorted doc values of a field after an index sort has
@@ -4305,7 +4307,7 @@ mod tests {
         with_state(0, |state| writer.flush(state, None, &mut consumer)).unwrap();
         let error = with_state(0, |state| writer.flush(state, None, &mut consumer)).unwrap_err();
         assert!(
-            matches!(error, LuceneError::IllegalState(ref m) if m.contains("already been flushed")),
+            matches!(error, LuceneError::IllegalState { message: ref m, .. } if m.contains("already been flushed")),
             "unexpected error: {error:?}"
         );
         assert_eq!(consumer.fields.len(), 1);
@@ -4966,7 +4968,7 @@ mod tests {
         let error =
             with_state(0, |state| writer.flush(state, None, &mut consumer, &pool)).unwrap_err();
         assert!(
-            matches!(error, LuceneError::IllegalState(ref m) if m.contains("already been flushed")),
+            matches!(error, LuceneError::IllegalState { message: ref m, .. } if m.contains("already been flushed")),
             "unexpected error: {error:?}"
         );
         assert!(writer

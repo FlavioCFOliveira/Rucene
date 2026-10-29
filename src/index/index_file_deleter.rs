@@ -141,7 +141,7 @@ impl CommitPoint {
     ) -> Result<Arc<Self>> {
         let user_data = segment_infos.user_data().clone();
         let segments_file_name = segment_infos.segments_file_name().ok_or_else(|| {
-            LuceneError::IllegalState(
+            LuceneError::illegal_state(
                 "cannot build a commit point from SegmentInfos with no segments file name"
                     .to_string(),
             )
@@ -489,7 +489,7 @@ impl IndexFileDeleter {
         let to_delete = this.file_deleter.get_unrefed_files();
         for file_name in &to_delete {
             if file_name.starts_with(SEGMENTS) {
-                return Err(LuceneError::IllegalState(format!(
+                return Err(LuceneError::illegal_state(format!(
                     "file \"{file_name}\" has refCount=0, which should never happen on init"
                 )));
             }
@@ -786,16 +786,18 @@ impl IndexFileDeleter {
     ///
     /// # Errors
     ///
-    /// [`LuceneError::AlreadyClosed`] when the writer is closed, and
-    /// [`LuceneError::IllegalState`] carrying the recorded cause when it hit a
-    /// tragic error.
+    /// [`LuceneError::AlreadyClosed`] when the writer is closed, and also when
+    /// it hit a tragic error, with that error as its cause.
     pub fn ensure_open(&self, writer: &IndexWriter) -> Result<()> {
         writer.ensure_open_with(false)?;
+        // `new AlreadyClosedException("refusing to delete any files: this
+        // IndexWriter hit an unrecoverable exception",
+        // writer.getTragicException())` (`IndexFileDeleter.java:386-390`).
         match writer.get_tragic_exception() {
-            Some(tragedy) => Err(LuceneError::IllegalState(format!(
-                "refusing to delete any files: this IndexWriter hit an unrecoverable exception: \
-                 {tragedy}"
-            ))),
+            Some(tragedy) => Err(LuceneError::already_closed_with_cause(
+                "refusing to delete any files: this IndexWriter hit an unrecoverable exception",
+                tragedy,
+            )),
             None => Ok(()),
         }
     }

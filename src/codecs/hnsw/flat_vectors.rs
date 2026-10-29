@@ -488,7 +488,7 @@ impl<T: Clone> DefaultFlatFieldVectorsWriter<T> {
     /// offers a second value for this field, or when doc ids do not increase.
     pub fn add_value(&mut self, doc_id: i32, vector_value: T) -> Result<()> {
         if self.finished {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "already finished, cannot add more values".to_string(),
             ));
         }
@@ -514,7 +514,7 @@ impl<T: Clone> DefaultFlatFieldVectorsWriter<T> {
     /// Adds a contiguous doc-id range without a vector.
     pub fn add_docs_with_no_vector(&mut self, from: i32, to_exclusive: i32) -> Result<()> {
         if self.finished {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "already finished, cannot add more values".to_string(),
             ));
         }

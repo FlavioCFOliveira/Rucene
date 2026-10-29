@@ -142,7 +142,7 @@ pub(crate) mod final_members {
                 )));
             }
             self.reader.as_deref().ok_or_else(|| {
-                LuceneError::IllegalState("this reader has no stored fields reader".to_string())
+                LuceneError::illegal_state("this reader has no stored fields reader".to_string())
             })
         }
     }

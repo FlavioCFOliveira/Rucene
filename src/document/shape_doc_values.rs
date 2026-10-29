@@ -1628,7 +1628,7 @@ impl ShapeDocValuesField {
     ///
     /// Always returns [`LuceneError::IllegalState`].
     pub fn new_geometry_query(field: &str) -> Result<()> {
-        Err(LuceneError::IllegalState(format!(
+        Err(LuceneError::illegal_state(format!(
             "geometry queries not yet supported on shape doc values for field [{field}]"
         )))
     }

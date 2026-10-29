@@ -236,7 +236,7 @@ impl TrieReader {
     /// hold the input across a later seek.
     pub fn floor_data(&mut self, node: &Node, len: usize) -> Result<Vec<u8>> {
         if !node.is_floor() {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "node has no floor data".to_string(),
             ));
         }

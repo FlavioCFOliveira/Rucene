@@ -569,7 +569,7 @@ impl PackedLongValuesBuilderState {
     fn pending_mut(&mut self) -> Result<&mut Vec<i64>> {
         self.pending
             .as_mut()
-            .ok_or_else(|| LuceneError::IllegalState("Cannot be reused after build()".to_string()))
+            .ok_or_else(|| LuceneError::illegal_state("Cannot be reused after build()".to_string()))
     }
 }
 
@@ -586,7 +586,7 @@ fn base_pack(
     let pending = state
         .pending
         .as_ref()
-        .ok_or_else(|| LuceneError::IllegalState("Cannot be reused after build()".to_string()))?;
+        .ok_or_else(|| LuceneError::illegal_state("Cannot be reused after build()".to_string()))?;
 
     // compute max delta
     let mut min_value = pending[0];
@@ -706,7 +706,7 @@ pub trait PackedLongValuesBuilderOps {
     /// Returns the error [`Self::pack_block`] raises.
     fn pack_if_full(&mut self) -> Result<()> {
         let pending_len = self.state().pending.as_ref().map(Vec::len).ok_or_else(|| {
-            LuceneError::IllegalState("Cannot be reused after build()".to_string())
+            LuceneError::illegal_state("Cannot be reused after build()".to_string())
         })?;
         if self.state().pending_off == pending_len {
             if self.state().values.len() == self.state().values_off {
@@ -768,7 +768,7 @@ pub trait PackedLongValuesBuilderOps {
     /// consumed by `build`, or the error [`Self::pack_block`] raises.
     fn add(&mut self, l: i64) -> Result<()> {
         if self.state().pending.is_none() {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "Cannot be reused after build()".to_string(),
             ));
         }
@@ -794,7 +794,7 @@ pub trait PackedLongValuesBuilderOps {
     /// consumed by `build`, or the error [`Self::pack_block`] raises.
     fn add_repeated(&mut self, value: i64, count: i32) -> Result<()> {
         if self.state().pending.is_none() {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "Cannot be reused after build()".to_string(),
             ));
         }
@@ -828,7 +828,7 @@ pub trait PackedLongValuesBuilderOps {
     /// the cursor raises.
     fn add_cursor(&mut self, cursor: &mut dyn LongValuesCursor) -> Result<()> {
         if self.state().pending.is_none() {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "Cannot be reused after build()".to_string(),
             ));
         }

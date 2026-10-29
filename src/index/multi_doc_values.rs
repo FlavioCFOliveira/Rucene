@@ -468,7 +468,7 @@ fn any_leaf_has(leaves: &[Arc<LeafReaderContext>], field: &str, wanted: DocValue
 /// ordinal-space corruption.
 fn second_instance<T: ?Sized>(values: Option<Box<T>>, field: &str, kind: &str) -> Result<Box<T>> {
     values.ok_or_else(|| {
-        LuceneError::IllegalState(format!(
+        LuceneError::illegal_state(format!(
             "leaf reader returned {kind} doc values for field '{field}' on the first call \
              but not on the second"
         ))
@@ -528,7 +528,7 @@ impl MultiNumericDocValues {
     fn values_mut(&mut self) -> Result<&mut Box<dyn NumericDocValues>> {
         self.current_values
             .as_mut()
-            .ok_or_else(|| LuceneError::IllegalState(no_current("numeric")))
+            .ok_or_else(|| LuceneError::illegal_state(no_current("numeric")))
     }
 }
 
@@ -624,7 +624,7 @@ impl NumericDocValues for MultiNumericDocValues {
     fn long_value(&self) -> Result<i64> {
         self.current_values
             .as_ref()
-            .ok_or_else(|| LuceneError::IllegalState(no_current("numeric")))?
+            .ok_or_else(|| LuceneError::illegal_state(no_current("numeric")))?
             .long_value()
     }
 }
@@ -670,7 +670,7 @@ impl MultiBinaryDocValues {
     fn values_mut(&mut self) -> Result<&mut Box<dyn BinaryDocValues>> {
         self.current_values
             .as_mut()
-            .ok_or_else(|| LuceneError::IllegalState(no_current("binary")))
+            .ok_or_else(|| LuceneError::illegal_state(no_current("binary")))
     }
 }
 
@@ -762,7 +762,7 @@ impl BinaryDocValues for MultiBinaryDocValues {
     fn binary_value(&self) -> Result<BytesRef> {
         self.current_values
             .as_ref()
-            .ok_or_else(|| LuceneError::IllegalState(no_current("binary")))?
+            .ok_or_else(|| LuceneError::illegal_state(no_current("binary")))?
             .binary_value()
     }
 }
@@ -810,7 +810,7 @@ impl MultiSortedNumericDocValues {
 
     fn current_index(&self) -> Result<usize> {
         self.current
-            .ok_or_else(|| LuceneError::IllegalState(no_current("sorted-numeric")))
+            .ok_or_else(|| LuceneError::illegal_state(no_current("sorted-numeric")))
     }
 }
 
@@ -1000,7 +1000,7 @@ impl MultiSortedDocValues {
 
     fn current_index(&self) -> Result<usize> {
         self.current
-            .ok_or_else(|| LuceneError::IllegalState(no_current("sorted")))
+            .ok_or_else(|| LuceneError::illegal_state(no_current("sorted")))
     }
 }
 
@@ -1181,7 +1181,7 @@ impl MultiSortedSetDocValues {
 
     fn current_index(&self) -> Result<usize> {
         self.current
-            .ok_or_else(|| LuceneError::IllegalState(no_current("sorted-set")))
+            .ok_or_else(|| LuceneError::illegal_state(no_current("sorted-set")))
     }
 }
 
@@ -1422,7 +1422,7 @@ mod tests {
 
         fn index(&self) -> Result<usize> {
             self.current
-                .ok_or_else(|| LuceneError::IllegalState("no value at current doc".to_string()))
+                .ok_or_else(|| LuceneError::illegal_state("no value at current doc".to_string()))
         }
     }
 
@@ -2396,7 +2396,7 @@ mod tests {
         assert_eq!(values.doc_id(), -1);
         assert!(matches!(
             values.long_value(),
-            Err(LuceneError::IllegalState(_))
+            Err(LuceneError::IllegalState { .. })
         ));
     }
 

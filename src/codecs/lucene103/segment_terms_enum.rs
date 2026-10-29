@@ -1512,7 +1512,7 @@ impl SegmentTermsEnum {
 
             if frame_prefix_length > 0 && is_seek_frame {
                 let node = frame_node.ok_or_else(|| {
-                    LuceneError::IllegalState(format!(
+                    LuceneError::illegal_state(format!(
                         "seek state is broken: seek frame {ord} has no index node"
                     ))
                 })?;
@@ -1523,7 +1523,7 @@ impl SegmentTermsEnum {
                         node.label,
                         self.term[frame_prefix_length - 1]
                     )?;
-                    return Err(LuceneError::IllegalState(
+                    return Err(LuceneError::illegal_state(
                         "seek state is broken".to_string(),
                     ));
                 }
@@ -1534,7 +1534,7 @@ impl SegmentTermsEnum {
                 match self.trie.lookup_child(i32::from(label), &node)? {
                     Some(child) => node = child,
                     None => {
-                        return Err(LuceneError::IllegalState(
+                        return Err(LuceneError::illegal_state(
                             "seek state is broken, prefix not exist in index".to_string(),
                         ))
                     }
@@ -1542,7 +1542,7 @@ impl SegmentTermsEnum {
             }
             if !node.has_output() {
                 writeln!(out, "      broken seek state: prefix is not final in index")?;
-                return Err(LuceneError::IllegalState(
+                return Err(LuceneError::illegal_state(
                     "seek state is broken".to_string(),
                 ));
             } else if is_seek_frame
@@ -1561,7 +1561,7 @@ impl SegmentTermsEnum {
                     frame_has_terms,
                     frame_is_floor
                 )?;
-                return Err(LuceneError::IllegalState(
+                return Err(LuceneError::illegal_state(
                     "seek state is broken".to_string(),
                 ));
             }

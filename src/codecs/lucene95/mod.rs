@@ -224,7 +224,7 @@ impl OrdToDocDISIReaderConfiguration {
     /// `OrdToDocDISIReaderConfiguration.getIndexedDISI(IndexInput)`.
     pub fn get_indexed_disi(&self, data_in: &dyn IndexInput) -> Result<IndexedDISI> {
         if self.docs_with_field_offset <= -1 {
-            return Err(crate::error::LuceneError::IllegalState(format!(
+            return Err(crate::error::LuceneError::illegal_state(format!(
                 "docsWithFieldOffset must be > -1 to read an IndexedDISI, but was {}",
                 self.docs_with_field_offset
             )));
@@ -259,7 +259,7 @@ impl OrdToDocDISIReaderConfiguration {
         data_in: &dyn IndexInput,
     ) -> Result<DirectMonotonicReader> {
         if self.docs_with_field_offset <= -1 {
-            return Err(crate::error::LuceneError::IllegalState(format!(
+            return Err(crate::error::LuceneError::illegal_state(format!(
                 "docsWithFieldOffset must be > -1 to read an ord-to-doc mapping, but was {}",
                 self.docs_with_field_offset
             )));

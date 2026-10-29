@@ -521,7 +521,7 @@ impl std::fmt::Debug for VectorSimilarityScorerSupplier {
 impl ScorerSupplier for VectorSimilarityScorerSupplier {
     fn get(&mut self, _lead_cost: i64) -> Result<Box<dyn Scorer>> {
         let iterator = self.iterator.take().ok_or_else(|| {
-            LuceneError::IllegalState(
+            LuceneError::illegal_state(
                 "ScorerSupplier.get(long) must be called at most once".to_string(),
             )
         })?;

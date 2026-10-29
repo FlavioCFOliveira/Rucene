@@ -366,7 +366,7 @@ impl Lz4WithPresetDictCompressor {
         )?;
         let written = self.compressed.size() - before;
         let written = i32::try_from(written).map_err(|_| {
-            LuceneError::IllegalState(format!(
+            LuceneError::illegal_state(format!(
                 "compressed block does not fit in an int: {written}"
             ))
         })?;
@@ -384,13 +384,11 @@ impl Compressor for Lz4WithPresetDictCompressor {
         self.buffer.clear();
         self.buffer.resize(dict_length + block_length, 0);
         out.write_v_int(i32::try_from(dict_length).map_err(|_| {
-            LuceneError::IllegalState(format!("dictionary too large: {dict_length}"))
+            LuceneError::illegal_state(format!("dictionary too large: {dict_length}"))
         })?)?;
-        out.write_v_int(
-            i32::try_from(block_length).map_err(|_| {
-                LuceneError::IllegalState(format!("block too large: {block_length}"))
-            })?,
-        )?;
+        out.write_v_int(i32::try_from(block_length).map_err(|_| {
+            LuceneError::illegal_state(format!("block too large: {block_length}"))
+        })?)?;
 
         self.compressed.reset();
         // The dictionary first, compressed against nothing.
@@ -641,7 +639,7 @@ fn write_deflate_block(
     }
     deflate_to(compressor, input, scratch)?;
     let length = i32::try_from(scratch.len()).map_err(|_| {
-        LuceneError::IllegalState(format!("compressed block too large: {}", scratch.len()))
+        LuceneError::illegal_state(format!("compressed block too large: {}", scratch.len()))
     })?;
     out.write_v_int(length)?;
     out.write_bytes(scratch, 0, scratch.len())
@@ -832,13 +830,11 @@ impl Compressor for DeflateWithPresetDictCompressor {
         let dict_length = len / (NUM_SUB_BLOCKS * DEFLATE_DICT_SIZE_FACTOR);
         let block_length = (len - dict_length).div_ceil(NUM_SUB_BLOCKS);
         out.write_v_int(i32::try_from(dict_length).map_err(|_| {
-            LuceneError::IllegalState(format!("dictionary too large: {dict_length}"))
+            LuceneError::illegal_state(format!("dictionary too large: {dict_length}"))
         })?)?;
-        out.write_v_int(
-            i32::try_from(block_length).map_err(|_| {
-                LuceneError::IllegalState(format!("block too large: {block_length}"))
-            })?,
-        )?;
+        out.write_v_int(i32::try_from(block_length).map_err(|_| {
+            LuceneError::illegal_state(format!("block too large: {block_length}"))
+        })?)?;
 
         self.buffer.clear();
         self.buffer.resize(dict_length + block_length, 0);

@@ -198,7 +198,7 @@ impl TokenStreamToAutomaton {
                 pos_inc = 1;
             }
             if pos == -1 && pos_inc <= 0 {
-                return Err(LuceneError::IllegalState(
+                return Err(LuceneError::illegal_state(
                     "the first token must have a positive position increment".to_string(),
                 ));
             }

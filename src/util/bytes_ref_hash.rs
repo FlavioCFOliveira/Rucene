@@ -322,6 +322,29 @@ impl BytesRefHash {
         hash
     }
 
+    /// Creates the term table of a `TermsHashPerField`, keyed by the term
+    /// bytes, whose term start offsets are not charged to `bytes_used`.
+    ///
+    /// Equivalent to `new BytesRefHash(termBytePool, HASH_INIT_SIZE,
+    /// PostingsBytesStartArray)` (`TermsHashPerField.java:82-83`): the
+    /// constructor charges the `HASH_INIT_SIZE` slots, and the start offsets
+    /// are the `textStarts` column of the postings array, which the
+    /// `TermsHashPerField` charges as part of `bytesPerPosting()`.
+    pub fn for_postings(bytes_used: Arc<AtomicI64>) -> Self {
+        let mut hash = Self::with_capacity(HASH_INIT_SIZE, bytes_used);
+        hash.charges_bytes_start = false;
+        hash
+    }
+
+    /// [`for_postings`](Self::for_postings), keyed by the pool offset of
+    /// bytes the primary hash already interned, as
+    /// [`new_by_pool_offset`](Self::new_by_pool_offset) is.
+    pub fn for_postings_by_pool_offset(bytes_used: Arc<AtomicI64>) -> Self {
+        let mut hash = Self::for_postings(bytes_used);
+        hash.keyed_by_pool_offset = true;
+        hash
+    }
+
     /// Returns `true` when this table is keyed by pool offset.
     pub fn is_keyed_by_pool_offset(&self) -> bool {
         self.keyed_by_pool_offset
@@ -417,8 +440,10 @@ impl BytesRefHash {
 
         let term_id = self.count;
         self.bytes_start.push(text_start);
-        self.bytes_used
-            .fetch_add(std::mem::size_of::<i32>() as i64, Ordering::AcqRel);
+        if self.charges_bytes_start {
+            self.bytes_used
+                .fetch_add(std::mem::size_of::<i32>() as i64, Ordering::AcqRel);
+        }
         // Unlike the bytes-keyed path the slot holds the bare term id: the
         // probe compares `bytes_start[id]` with the offset, so there are no
         // high bits to shortcut it with (`BytesRefHash.java`, the `hashOnData
@@ -582,12 +607,21 @@ impl BytesRefHash {
     /// whereas the JVM reclaims a discarded `BytesRefHash` on its own. The
     /// table is empty and unusable afterwards, and calling this twice is
     /// harmless.
+    ///
+    /// It goes through the same steps as `close()` (`BytesRefHash.java:313-318`):
+    /// `clear` records `lastCount` and shrinks the table towards it, and the
+    /// remaining slots are handed back, so a later [`reinit`](Self::reinit)
+    /// allocates the table size, and the next `clear` shrinks towards the
+    /// count, that Java's would.
     pub fn release_accounting(&mut self) {
-        self.bytes_used
-            .fetch_sub(self.charged_bytes(), Ordering::AcqRel);
+        self.clear();
+        let hash_size = self.ids.len();
+        self.bytes_used.fetch_sub(
+            (hash_size * std::mem::size_of::<i32>()) as i64,
+            Ordering::AcqRel,
+        );
         self.ids = Vec::new();
         self.bytes_start = Vec::new();
-        self.count = 0;
     }
 
     /// Restores the table's buffers after a [`close`](Self::clear) that
@@ -602,8 +636,8 @@ impl BytesRefHash {
     /// emptiness, which is the state [`close`](Self::close) and
     /// [`release_accounting`](Self::release_accounting) leave them in. The
     /// slot count comes from `hash_mask`, which those methods do not disturb,
-    /// and is Java's `hashSize` field. Whichever way the table got here, it is
-    /// left empty, sized, and ready to intern again.
+    /// and is Java's `hashSize` field. A table whose arrays are still there is
+    /// left exactly as it is, as Java's is.
     pub fn reinit(&mut self) {
         if self.ids.is_empty() {
             let hash_size = (self.hash_mask as usize) + 1;
@@ -612,10 +646,6 @@ impl BytesRefHash {
                 (hash_size * std::mem::size_of::<i32>()) as i64,
                 Ordering::AcqRel,
             );
-            self.count = 0;
-            self.last_count = -1;
-        } else {
-            self.clear();
         }
     }
 
@@ -1157,5 +1187,47 @@ mod tests {
         hash.reinit();
         assert_eq!(hash.add(&mut pool, b"again").expect("again"), 0);
         assert_eq!(hash.get(&pool, 0), b"again");
+    }
+
+    /// Releasing a table's accounting leaves it as Java's `close()` does: the
+    /// table shrank towards the count it held and remembers that count, so a
+    /// `reinit` allocates the same slots and later clears shrink alike.
+    #[test]
+    fn releasing_accounting_leaves_the_table_as_close_does() {
+        let fill = |hash: &mut BytesRefHash, pool: &mut ByteBlockPool| {
+            for i in 0..3 {
+                hash.add(pool, format!("t{i}").as_bytes()).expect("add");
+            }
+        };
+        let (mut closed_pool, mut closed) = fixture();
+        let (mut released_pool, mut released) = fixture();
+        for _ in 0..2 {
+            for i in 0..200 {
+                closed
+                    .add(&mut closed_pool, format!("x{i}").as_bytes())
+                    .unwrap();
+                released
+                    .add(&mut released_pool, format!("x{i}").as_bytes())
+                    .unwrap();
+            }
+            closed.clear();
+            released.clear();
+        }
+        fill(&mut closed, &mut closed_pool);
+        fill(&mut released, &mut released_pool);
+
+        closed.close(&mut closed_pool);
+        released.release_accounting();
+        assert_eq!(released.last_count, closed.last_count);
+        assert_eq!(released.hash_mask, closed.hash_mask);
+
+        closed.reinit();
+        released.reinit();
+        assert_eq!(released.ids.len(), closed.ids.len());
+        fill(&mut closed, &mut closed_pool);
+        fill(&mut released, &mut released_pool);
+        closed.clear();
+        released.clear();
+        assert_eq!(released.ids.len(), closed.ids.len());
     }
 }

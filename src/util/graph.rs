@@ -307,7 +307,7 @@ impl GraphTokenStreamFiniteStrings {
             };
 
             if pos == -1 && current_incr < 1 {
-                return Err(LuceneError::IllegalState(
+                return Err(LuceneError::illegal_state(
                     "Malformed TokenStream, start token can't have increment less than 1"
                         .to_string(),
                 ));

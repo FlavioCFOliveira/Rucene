@@ -493,16 +493,30 @@ impl OptimizedScalarQuantizer {
         }
     }
 
-    /// Packs the vector as a binary array: bit `7 - i % 8` of byte `i / 8` is
-    /// set when `vector[i]` is non-zero.
+    /// Packs the vector as a binary array: bit `7 - i % 8` of byte `i / 8`
+    /// is the low bit of `vector[i]`.
     ///
-    /// Equivalent to `OptimizedScalarQuantizer.packAsBinary(byte[], byte[])`.
+    /// Only the `ceil(vector.len() / 8)` leading bytes of `packed` are
+    /// written; any byte after them is left untouched. `vector` must hold
+    /// only `0` and `1` (checked in debug builds, as Java's `assert`).
+    ///
+    /// Equivalent to `OptimizedScalarQuantizer.packAsBinary(byte[], byte[])`
+    /// (`OptimizedScalarQuantizer.java:410-422`).
     pub fn pack_as_binary(vector: &[u8], packed: &mut [u8]) {
-        packed.fill(0);
-        for (i, &v) in vector.iter().enumerate() {
-            if v != 0 {
-                packed[i / 8] |= 1 << (7 - (i % 8));
+        let mut i = 0usize;
+        while i < vector.len() {
+            let mut result = 0u8;
+            let mut j = 8u32;
+            while j > 0 && i < vector.len() {
+                j -= 1;
+                debug_assert!(vector[i] == 0 || vector[i] == 1);
+                result |= (vector[i] & 1) << j;
+                i += 1;
             }
+            // `((i + 7) / 8) - 1`.
+            let index = i.div_ceil(8) - 1;
+            debug_assert!(index < packed.len());
+            packed[index] = result;
         }
     }
 
@@ -513,5 +527,31 @@ impl OptimizedScalarQuantizer {
         for (i, slot) in vector.iter_mut().enumerate() {
             *slot = (packed[i / 8] >> (7 - (i % 8))) & 1;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OptimizedScalarQuantizer;
+
+    /// `packAsBinary` (`OptimizedScalarQuantizer.java:410-422`) writes only
+    /// the bytes that cover `vector` and leaves the rest of `packed` as it
+    /// was.
+    #[test]
+    fn pack_as_binary_leaves_trailing_bytes_untouched() {
+        let vector = [1u8, 0, 1, 1, 0, 0, 0, 1, 1, 1, 0];
+        let mut packed = [0xAAu8; 4];
+        OptimizedScalarQuantizer::pack_as_binary(&vector, &mut packed);
+        assert_eq!(packed, [0b1011_0001, 0b1100_0000, 0xAA, 0xAA]);
+    }
+
+    /// Each packed byte is assigned, not or-ed into, so a stale bit in a
+    /// covered byte does not survive.
+    #[test]
+    fn pack_as_binary_overwrites_covered_bytes() {
+        let vector = [0u8; 9];
+        let mut packed = [0xFFu8; 3];
+        OptimizedScalarQuantizer::pack_as_binary(&vector, &mut packed);
+        assert_eq!(packed, [0, 0, 0xFF]);
     }
 }

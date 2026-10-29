@@ -337,7 +337,7 @@ impl RandomVectorScorer for CompressedInt4DotProduct {
             ..
         } = self;
         let slice = values.get_slice_mut().ok_or_else(|| {
-            LuceneError::IllegalState(
+            LuceneError::illegal_state(
                 "compressed int4 scoring needs the values' index slice".to_string(),
             )
         })?;

@@ -143,7 +143,7 @@ fn writer_state_queries_match_lucene() {
         w.close().unwrap();
         let closed = match w.has_deletions() {
             Ok(_) => "ok",
-            Err(LuceneError::AlreadyClosed(_)) => "AlreadyClosedException",
+            Err(LuceneError::AlreadyClosed { .. }) => "AlreadyClosedException",
             Err(_) => "other",
         };
         lines.push(format!("closed={closed}"));

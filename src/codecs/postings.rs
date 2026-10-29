@@ -376,11 +376,11 @@ impl PostingsFormatRegistry {
         super::validate_service_name(&name)?;
 
         let mut formats = self.formats.write().map_err(|_| {
-            LuceneError::IllegalState("postings format registry lock was poisoned".to_string())
+            LuceneError::illegal_state("postings format registry lock was poisoned".to_string())
         })?;
 
         if formats.lookup(&name).is_ok() {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "postings format already registered: {name}"
             )));
         }
@@ -402,7 +402,7 @@ impl PostingsFormatRegistry {
         let name = format.name().to_string();
         crate::codecs::validate_service_name(&name)?;
         let mut formats = self.formats.write().map_err(|_| {
-            LuceneError::IllegalState("postings format registry lock was poisoned".to_string())
+            LuceneError::illegal_state("postings format registry lock was poisoned".to_string())
         })?;
         // Only new providers are added; an existing one is never replaced
         // (`NamedSPILoader.reload`, `NamedSPILoader.java:59-79`).
@@ -417,7 +417,7 @@ impl PostingsFormatRegistry {
         self.formats
             .read()
             .map_err(|_| {
-                LuceneError::IllegalState("postings format registry lock was poisoned".to_string())
+                LuceneError::illegal_state("postings format registry lock was poisoned".to_string())
             })
             .ok()?
             .lookup(name)
@@ -739,7 +739,7 @@ pub trait PushPostingsWriterBase {
             .push_state()
             .field_info
             .as_ref()
-            .ok_or_else(|| LuceneError::IllegalState("set_field not called".to_string()))?
+            .ok_or_else(|| LuceneError::illegal_state("set_field not called".to_string()))?
             .clone();
 
         // A fresh, forward-only iterator over the field's norms for every term
@@ -749,7 +749,7 @@ pub trait PushPostingsWriterBase {
             None
         } else {
             let norms = norms.ok_or_else(|| {
-                LuceneError::IllegalState(format!(
+                LuceneError::illegal_state(format!(
                     "field \"{}\" has norms, but no norms producer was given",
                     field_info.name
                 ))
@@ -1608,7 +1608,7 @@ mod tests {
         let err = registry
             .register("Stub", StubPostingsFormat)
             .expect_err("duplicate should fail");
-        assert!(matches!(err, LuceneError::IllegalState(_)));
+        assert!(matches!(err, LuceneError::IllegalState { .. }));
 
         let err = registry
             .register("", StubPostingsFormat)

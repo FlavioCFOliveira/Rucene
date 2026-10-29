@@ -124,7 +124,7 @@ impl LongHeap {
             self.down_heap(1);
             Ok(result)
         } else {
-            Err(LuceneError::IllegalState("The heap is empty".to_string()))
+            Err(LuceneError::illegal_state("The heap is empty".to_string()))
         }
     }
 
@@ -309,7 +309,7 @@ impl TernaryLongHeap {
             Self::down_heap(&mut self.heap, 1, self.size, ARITY);
             Ok(result)
         } else {
-            Err(LuceneError::IllegalState("The heap is empty".to_string()))
+            Err(LuceneError::illegal_state("The heap is empty".to_string()))
         }
     }
 

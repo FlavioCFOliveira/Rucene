@@ -41,7 +41,7 @@ impl ScalarQuantizer {
     /// Fails on a non-finite quantile, as Java's `IllegalStateException` does.
     pub fn new(min_quantile: f32, max_quantile: f32, bits: u8) -> Result<Self> {
         if !min_quantile.is_finite() || !max_quantile.is_finite() {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "Scalar quantizer does not support infinite or NaN values".to_string(),
             ));
         }
@@ -521,7 +521,7 @@ impl ScalarQuantizer {
         let au = lower_sum[0] as f32 / count as f32;
         let bl = upper_sum[0] as f32 / count as f32;
         if !al.is_finite() || !au.is_finite() || !bl.is_finite() || !bu.is_finite() {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "Quantile calculation resulted in NaN or infinite values".to_string(),
             ));
         }

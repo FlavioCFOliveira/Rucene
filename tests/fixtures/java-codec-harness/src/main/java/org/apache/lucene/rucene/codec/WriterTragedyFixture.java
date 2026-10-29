@@ -36,6 +36,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FilterDirectory;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexOutput;
+import org.apache.lucene.store.Lock;
 
 /**
  * Reference tool for how a real Apache Lucene Core 10.5.0 {@link IndexWriter}
@@ -73,6 +74,27 @@ import org.apache.lucene.store.IndexOutput;
  *       temporary files ({@code FieldsIndexWriter.java:183-201}). The case prints whether the
  *       merge failed, whether the writer has a tragedy and is open, and the files left in the
  *       directory.
+ *   <li>{@code oversize-delete <op> <docs>}: {@code <docs>} buffered documents, then a delete term
+ *       of 32767 bytes,
+ *       which {@code BytesRefHash.add} rejects ({@code BytesRefHash.java:279-284}) after the delete
+ *       queue recorded it, so the full flush of the following {@code <op>} ({@code commit}, {@code
+ *       flush}, {@code reader}, an NRT {@code DirectoryReader.open(IndexWriter)}, or {@code
+ *       add-indexes}, {@code addIndexes(Directory...)} of a one-document index, which flushes
+ *       first ({@code IndexWriter.java:3099})) cannot close
+ *       the queue ({@code DocumentsWriterDeleteQueue.java:316-325}). Without {@code -ea} it throws
+ *       that {@code IllegalStateException} and the writer stays usable. With {@code -ea}, {@code
+ *       finishFullFlush}'s {@code assert setFlushingDeleteQueue(null)} throws {@code
+ *       AssertionError} ({@code DocumentsWriter.java:645-651, 732}), which the caller records as
+ *       the tragedy and closes the writer on ({@code IndexWriter.java:713-715, 3858-3863,
+ *       4412-4414}); the close's own {@code assert} on {@code pendingNumDocs} ({@code
+ *       IndexWriter.java:2545-2556}) may then replace the thrown error. The case prints the outcome
+ *       of the delete, of {@code <op>} twice and of an {@code addDocument}, each with its cause,
+ *       then the tragedy, whether the writer is open, and the files in the directory.
+ *   <li>{@code add-indexes-release-failure}: {@code addIndexes(Directory...)} of a one-document
+ *       index whose write lock cannot be released. On success {@code IOUtils.close(locks)}
+ *       throws that failure ({@code IndexWriter.java:3205-3211}); the copied segment stays in
+ *       the writer. The case prints the outcome, whether the writer is open and has a tragedy,
+ *       and the documents of the following commit.
  * </ul>
  */
 public final class WriterTragedyFixture {
@@ -261,12 +283,135 @@ public final class WriterTragedyFixture {
     writer.rollback();
   }
 
+  /** {@code <SimpleName>: <message>} of the throwable {@code body} raised, then its cause. */
+  static String described(ThrowingRunnable body) {
+    try {
+      body.run();
+      return "ok";
+    } catch (Throwable t) {
+      return describe(t) + " cause=" + (t.getCause() == null ? "none" : describe(t.getCause()));
+    }
+  }
+
+  static String describe(Throwable t) {
+    return t.getClass().getSimpleName() + ": " + t.getMessage();
+  }
+
+  /** A directory holding one committed document, for {@code addIndexes(Directory...)}. */
+  static Directory committedIndex() throws IOException {
+    ByteBuffersDirectory dir = new ByteBuffersDirectory();
+    IndexWriterConfig config = new IndexWriterConfig();
+    config.setMergeScheduler(new SerialMergeScheduler());
+    try (IndexWriter source = new IndexWriter(dir, config)) {
+      source.addDocument(idDoc(100));
+    }
+    return dir;
+  }
+
+  /** A directory whose write lock fails to release, after releasing it. */
+  static final class UnreleasableLockDirectory extends FilterDirectory {
+    UnreleasableLockDirectory(Directory in) {
+      super(in);
+    }
+
+    @Override
+    public Lock obtainLock(String name) throws IOException {
+      Lock lock = super.obtainLock(name);
+      return new Lock() {
+        @Override
+        public void close() throws IOException {
+          lock.close();
+          throw new IOException("cannot release " + name);
+        }
+
+        @Override
+        public void ensureValid() throws IOException {
+          lock.ensureValid();
+        }
+      };
+    }
+  }
+
+  static void addIndexesReleaseFailure() throws Exception {
+    ByteBuffersDirectory dir = new ByteBuffersDirectory();
+    IndexWriterConfig config = new IndexWriterConfig();
+    config.setMergeScheduler(new SerialMergeScheduler());
+    IndexWriter writer = new IndexWriter(dir, config);
+    writer.addDocument(idDoc(0));
+    System.out.println(
+        "addIndexes="
+            + described(() -> writer.addIndexes(new UnreleasableLockDirectory(committedIndex()))));
+    System.out.println("open=" + writer.isOpen());
+    System.out.println("tragic=" + (writer.getTragicException() != null));
+    writer.commit();
+    System.out.println("committed_max_doc=" + SegmentInfos.readLatestCommit(dir).totalMaxDoc());
+    writer.close();
+  }
+
+  static void oversizeDelete(String op, int docs) throws Exception {
+    ByteBuffersDirectory dir = new ByteBuffersDirectory();
+    IndexWriterConfig config = new IndexWriterConfig();
+    config.setMergeScheduler(new SerialMergeScheduler());
+    // The "hit tragic <SimpleName> inside <location>" lines onTragicEvent logs
+    // (IndexWriter.java:5857-5860).
+    List<String> tragicMessages = new ArrayList<>();
+    config.setInfoStream(
+        new org.apache.lucene.util.InfoStream() {
+          @Override
+          public void message(String component, String message) {
+            if (message.startsWith("hit tragic ")) {
+              tragicMessages.add(component + ": " + message);
+            }
+          }
+
+          @Override
+          public boolean isEnabled(String component) {
+            return component.equals("IW");
+          }
+
+          @Override
+          public void close() {}
+        });
+    IndexWriter writer = new IndexWriter(dir, config);
+    for (int i = 0; i < docs; i++) {
+      writer.addDocument(idDoc(i));
+    }
+    byte[] big = new byte[32767];
+    java.util.Arrays.fill(big, (byte) 'x');
+    System.out.println(
+        "delete="
+            + described(
+                () ->
+                    writer.deleteDocuments(
+                        new org.apache.lucene.index.Term(
+                            "id", new org.apache.lucene.util.BytesRef(big)))));
+    ThrowingRunnable run =
+        switch (op) {
+          case "commit" -> writer::commit;
+          case "flush" -> writer::flush;
+          case "reader" -> () -> org.apache.lucene.index.DirectoryReader.open(writer).close();
+          case "add-indexes" -> () -> writer.addIndexes(committedIndex());
+          default -> throw new IllegalArgumentException(op);
+        };
+    System.out.println(op + "1=" + described(run));
+    System.out.println(op + "2=" + described(run));
+    System.out.println("add=" + described(() -> writer.addDocument(idDoc(docs))));
+    Throwable tragedy = writer.getTragicException();
+    System.out.println("tragic=" + (tragedy == null ? "none" : describe(tragedy)));
+    System.out.println("open=" + writer.isOpen());
+    System.out.println("files=" + files(dir));
+    System.out.println("tragic-messages=" + String.join(" | ", tragicMessages));
+    writer.rollback();
+  }
+
   public static void main(String[] args) throws Exception {
     switch (args[0]) {
       case "merge-index-failure" -> mergeIndexFailure(args[1]);
       case "flush-failure" -> flushFailure();
       case "auto-flush-failure" -> autoFlushFailure();
       case "flush-next-buffer-failure" -> flushNextBufferFailure();
+      case "add-indexes-release-failure" -> addIndexesReleaseFailure();
+      case "oversize-delete" -> oversizeDelete(args[1], Integer.parseInt(args[2]));
       default -> throw new IllegalArgumentException("unknown case " + args[0]);
     }
   }

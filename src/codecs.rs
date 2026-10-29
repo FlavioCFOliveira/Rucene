@@ -256,11 +256,11 @@ impl CodecRegistry {
         validate_service_name(&name)?;
 
         let mut codecs = self.codecs.write().map_err(|_| {
-            LuceneError::IllegalState("codec registry lock was poisoned".to_string())
+            LuceneError::illegal_state("codec registry lock was poisoned".to_string())
         })?;
 
         if codecs.lookup(&name).is_ok() {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "codec already registered: {name}"
             )));
         }
@@ -285,7 +285,7 @@ impl CodecRegistry {
         validate_service_name(&name)?;
 
         let mut codecs = self.codecs.write().map_err(|_| {
-            LuceneError::IllegalState("codec registry lock was poisoned".to_string())
+            LuceneError::illegal_state("codec registry lock was poisoned".to_string())
         })?;
 
         // Only new providers are added; an existing one is never replaced
@@ -300,7 +300,7 @@ impl CodecRegistry {
     pub fn for_name(&self, name: &str) -> Option<Arc<dyn Codec>> {
         self.codecs
             .read()
-            .map_err(|_| LuceneError::IllegalState("codec registry lock was poisoned".to_string()))
+            .map_err(|_| LuceneError::illegal_state("codec registry lock was poisoned".to_string()))
             .ok()?
             .lookup(name)
             .ok()
@@ -1143,7 +1143,7 @@ pub(crate) mod tests {
         let err = registry
             .register("Dummy", DummyCodec::new("Dummy2"))
             .expect_err("duplicate registration should fail");
-        assert!(matches!(err, LuceneError::IllegalState(_)));
+        assert!(matches!(err, LuceneError::IllegalState { .. }));
     }
 
     #[test]

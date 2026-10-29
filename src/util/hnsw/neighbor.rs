@@ -157,7 +157,7 @@ impl NeighborArray {
             "cannot call add_in_order after add_out_of_order"
         );
         if self.size == self.max_size {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "No growth is allowed".to_string(),
             ));
         }
@@ -181,7 +181,7 @@ impl NeighborArray {
     /// Adds a node without preserving sorted order.
     pub fn add_out_of_order(&mut self, new_node: i32, new_score: f32) -> Result<()> {
         if self.size == self.max_size {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "No growth is allowed".to_string(),
             ));
         }

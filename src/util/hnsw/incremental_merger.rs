@@ -132,7 +132,7 @@ impl IncrementalHnswGraphMerger {
                 .map(|values| values as Box<dyn KnnVectorValues>),
         };
         values.ok_or_else(|| {
-            LuceneError::IllegalState(format!(
+            LuceneError::illegal_state(format!(
                 "the merged reader has no vectors for field \"{}\"",
                 self.field_info.name
             ))
@@ -179,7 +179,7 @@ impl IncrementalHnswGraphMerger {
                 .graph_provider
                 .get_graph(&self.field_info.name)?;
             if graph.size() == 0 {
-                return Err(LuceneError::IllegalState(
+                return Err(LuceneError::illegal_state(
                     "Graph should not be empty".to_string(),
                 ));
             }

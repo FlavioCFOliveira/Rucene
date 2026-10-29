@@ -232,7 +232,7 @@ impl IndexReaderCore {
     /// Increments the reference count, or returns an error if the reader is closed.
     pub fn inc_ref(&self) -> Result<()> {
         if !self.try_inc_ref() {
-            return Err(LuceneError::AlreadyClosed(
+            return Err(LuceneError::already_closed(
                 "this IndexReader is closed".to_string(),
             ));
         }
@@ -257,7 +257,7 @@ impl IndexReaderCore {
         F: FnOnce() -> Result<()>,
     {
         if self.ref_count.load(Ordering::SeqCst) <= 0 {
-            return Err(LuceneError::AlreadyClosed(
+            return Err(LuceneError::already_closed(
                 "this IndexReader is closed".to_string(),
             ));
         }
@@ -268,7 +268,7 @@ impl IndexReaderCore {
             self.report_close_to_parent_readers();
             close_result
         } else if rc < 0 {
-            Err(LuceneError::IllegalState(format!(
+            Err(LuceneError::illegal_state(format!(
                 "too many decRef calls: refCount is {rc} after decrement"
             )))
         } else {
@@ -279,12 +279,12 @@ impl IndexReaderCore {
     /// Throws an error if this reader or any of its child readers is closed.
     pub fn ensure_open(&self) -> Result<()> {
         if self.ref_count.load(Ordering::SeqCst) <= 0 {
-            return Err(LuceneError::AlreadyClosed(
+            return Err(LuceneError::already_closed(
                 "this IndexReader is closed".to_string(),
             ));
         }
         if self.link.closed_by_child.load(Ordering::SeqCst) {
-            return Err(LuceneError::AlreadyClosed(
+            return Err(LuceneError::already_closed(
                 "this IndexReader cannot be used anymore as one of its child readers was closed"
                     .to_string(),
             ));
@@ -439,7 +439,7 @@ pub trait IndexReader: Send + Sync + Debug + Display + 'static {
     /// succeeded, the first finalizer's exception propagates.
     fn dec_ref(&self) -> Result<()> {
         if self.core().ref_count() <= 0 {
-            return Err(LuceneError::AlreadyClosed(
+            return Err(LuceneError::already_closed(
                 "this IndexReader is closed".to_string(),
             ));
         }
@@ -451,7 +451,7 @@ pub trait IndexReader: Send + Sync + Debug + Display + 'static {
             self.core().report_close_to_parent_readers();
             close_result.and(notify_result)
         } else if rc < 0 {
-            Err(LuceneError::IllegalState(format!(
+            Err(LuceneError::illegal_state(format!(
                 "too many decRef calls: refCount is {rc} after decrement"
             )))
         } else {

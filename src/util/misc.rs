@@ -166,7 +166,7 @@ impl StrictStringTokenizer {
     /// is Java's `IllegalStateException("no more tokens")`.
     pub fn next_token(&mut self) -> Result<String> {
         let Some(pos) = self.pos else {
-            return Err(LuceneError::IllegalState("no more tokens".to_string()));
+            return Err(LuceneError::illegal_state("no more tokens".to_string()));
         };
 
         match self.s[pos..].iter().position(|&c| c == self.delimiter) {

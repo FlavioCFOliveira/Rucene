@@ -850,7 +850,7 @@ impl LatLonPointSortField {
     /// field name, which its constructor rules out.
     pub fn get_comparator(&self, num_hits: usize) -> Result<LatLonPointDistanceComparator> {
         let field = self.get_field().ok_or_else(|| {
-            LuceneError::IllegalState("a distance sort field always names a field".to_string())
+            LuceneError::illegal_state("a distance sort field always names a field".to_string())
         })?;
         Ok(LatLonPointDistanceComparator::new(
             field,
@@ -975,7 +975,7 @@ impl XYPointSortField {
     /// field name, which its constructor rules out.
     pub fn get_comparator(&self, num_hits: usize) -> Result<XYPointDistanceComparator> {
         let field = self.get_field().ok_or_else(|| {
-            LuceneError::IllegalState("a distance sort field always names a field".to_string())
+            LuceneError::illegal_state("a distance sort field always names a field".to_string())
         })?;
         Ok(XYPointDistanceComparator::new(
             field, self.x, self.y, num_hits,

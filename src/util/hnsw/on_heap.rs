@@ -360,7 +360,7 @@ impl HnswGraph for OnHeapHnswGraph {
         let cur = self
             .cur
             .as_ref()
-            .ok_or_else(|| LuceneError::IllegalState("seek not called".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_state("seek not called".to_string()))?;
         self.upto += 1;
         if self.upto < cur.size() {
             Ok(cur.nodes()[self.upto as usize])
@@ -383,7 +383,7 @@ impl HnswGraph for OnHeapHnswGraph {
 
     fn get_nodes_on_level(&self, level: i32) -> Result<Box<dyn NodesIterator>> {
         if self.size != self.max_node_id() + 1 {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "graph build not complete, size={} max_node_id={}",
                 self.size,
                 self.max_node_id()

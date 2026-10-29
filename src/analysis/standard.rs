@@ -423,7 +423,9 @@ impl TokenizerLogic for StandardTokenizerLogic {
     ) -> Result<bool> {
         let mut att = source
             .get_attribute_mut::<crate::analysis::PackedTokenAttributeImpl>()
-            .ok_or_else(|| LuceneError::IllegalState("missing PackedTokenAttribute".to_string()))?;
+            .ok_or_else(|| {
+                LuceneError::illegal_state("missing PackedTokenAttribute".to_string())
+            })?;
 
         att.clear();
 
@@ -479,7 +481,9 @@ impl TokenizerLogic for StandardTokenizerLogic {
     fn end(&mut self, source: &mut AttributeSource) -> Result<()> {
         let mut att = source
             .get_attribute_mut::<crate::analysis::PackedTokenAttributeImpl>()
-            .ok_or_else(|| LuceneError::IllegalState("missing PackedTokenAttribute".to_string()))?;
+            .ok_or_else(|| {
+                LuceneError::illegal_state("missing PackedTokenAttribute".to_string())
+            })?;
 
         let final_offset = self.scanner.yychar() + self.scanner.yylength() as i32;
         att.set_offset(final_offset, final_offset);

@@ -177,7 +177,7 @@ pub trait KnnVectorsWriter: Send + Sync + fmt::Debug {
         match field_info.vector_encoding {
             VectorEncoding::BYTE => {
                 let FieldVectorWriter::Byte(mut byte_writer) = self.add_field(field_info)? else {
-                    return Err(LuceneError::IllegalState(format!(
+                    return Err(LuceneError::illegal_state(format!(
                         "the writer for byte vector field \"{}\" does not accept byte vectors",
                         field_info.name
                     )));
@@ -193,7 +193,7 @@ pub trait KnnVectorsWriter: Send + Sync + fmt::Debug {
             }
             VectorEncoding::FLOAT32 => {
                 let FieldVectorWriter::Float(mut float_writer) = self.add_field(field_info)? else {
-                    return Err(LuceneError::IllegalState(format!(
+                    return Err(LuceneError::illegal_state(format!(
                         "the writer for float vector field \"{}\" does not accept float vectors",
                         field_info.name
                     )));
@@ -315,7 +315,7 @@ fn lock_merged<S: DocIDMergerSub>(
     state: &std::sync::Mutex<MergedIterationState<S>>,
 ) -> Result<std::sync::MutexGuard<'_, MergedIterationState<S>>> {
     state.lock().map_err(|_| {
-        LuceneError::IllegalState("merged vector values state lock poisoned".to_string())
+        LuceneError::illegal_state("merged vector values state lock poisoned".to_string())
     })
 }
 
@@ -815,13 +815,13 @@ impl FloatVectorValues for MergedFloat32VectorValues {
     fn vector_value(&self, ord: i32) -> Result<Vec<f32>> {
         let state = lock_merged(&self.state)?;
         if ord != state.last_ord {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "only supports forward iteration with a single iterator: ord={ord}, lastOrd={}",
                 state.last_ord
             )));
         }
         let current = state.current.ok_or_else(|| {
-            LuceneError::IllegalState(
+            LuceneError::illegal_state(
                 "MergedFloat32VectorValues is not positioned on a document".to_string(),
             )
         })?;
@@ -974,13 +974,13 @@ impl ByteVectorValues for MergedByteVectorValues {
     fn vector_value(&self, ord: i32) -> Result<Vec<u8>> {
         let state = lock_merged(&self.state)?;
         if ord != state.last_ord {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "only supports forward iteration: ord={ord}, lastOrd={}",
                 state.last_ord
             )));
         }
         let current = state.current.ok_or_else(|| {
-            LuceneError::IllegalState(
+            LuceneError::illegal_state(
                 "MergedByteVectorValues is not positioned on a document".to_string(),
             )
         })?;
@@ -1240,11 +1240,11 @@ impl KnnVectorsFormatRegistry {
         super::validate_service_name(&name)?;
 
         let mut formats = self.formats.write().map_err(|_| {
-            LuceneError::IllegalState("KNN-vectors format registry lock was poisoned".to_string())
+            LuceneError::illegal_state("KNN-vectors format registry lock was poisoned".to_string())
         })?;
 
         if formats.lookup(&name).is_ok() {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "KNN-vectors format already registered: {name}"
             )));
         }
@@ -1266,7 +1266,7 @@ impl KnnVectorsFormatRegistry {
         let name = format.name().to_string();
         crate::codecs::validate_service_name(&name)?;
         let mut formats = self.formats.write().map_err(|_| {
-            LuceneError::IllegalState("KNN vectors format registry lock was poisoned".to_string())
+            LuceneError::illegal_state("KNN vectors format registry lock was poisoned".to_string())
         })?;
         // Only new providers are added; an existing one is never replaced
         // (`NamedSPILoader.reload`, `NamedSPILoader.java:59-79`).
@@ -1281,7 +1281,7 @@ impl KnnVectorsFormatRegistry {
         self.formats
             .read()
             .map_err(|_| {
-                LuceneError::IllegalState(
+                LuceneError::illegal_state(
                     "KNN-vectors format registry lock was poisoned".to_string(),
                 )
             })
@@ -1893,7 +1893,7 @@ mod tests {
         ));
         assert_eq!(iterator.next_doc().unwrap(), 0);
         match floats.vector_value(1) {
-            Err(LuceneError::IllegalState(message)) => assert_eq!(
+            Err(LuceneError::IllegalState { message, .. }) => assert_eq!(
                 message,
                 "only supports forward iteration with a single iterator: ord=1, lastOrd=0"
             ),
@@ -1924,7 +1924,7 @@ mod tests {
         let bytes = MergedByteVectorValues::new(vec![byte_sub], &state).unwrap();
         bytes.iterator().unwrap().next_doc().unwrap();
         match bytes.vector_value(1) {
-            Err(LuceneError::IllegalState(message)) => {
+            Err(LuceneError::IllegalState { message, .. }) => {
                 assert_eq!(message, "only supports forward iteration: ord=1, lastOrd=0")
             }
             other => panic!("expected the forward-only refusal, got {other:?}"),

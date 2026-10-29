@@ -213,7 +213,7 @@ macro_rules! range_field {
                     )));
                 }
                 let FieldData::Bytes(bytes) = &self.fields_data else {
-                    return Err(LuceneError::IllegalState(
+                    return Err(LuceneError::illegal_state(
                         "range field has no packed value".to_string(),
                     ));
                 };
@@ -230,7 +230,7 @@ macro_rules! range_field {
                     )));
                 }
                 let FieldData::Bytes(bytes) = &self.fields_data else {
-                    return Err(LuceneError::IllegalState(
+                    return Err(LuceneError::illegal_state(
                         "range field has no packed value".to_string(),
                     ));
                 };

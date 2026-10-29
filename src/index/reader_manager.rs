@@ -304,7 +304,10 @@ mod tests {
         manager.close().unwrap();
         assert!(manager.is_closed());
         let err = manager.acquire().unwrap_err();
-        assert!(matches!(err, LuceneError::AlreadyClosed(_)), "got {err:?}");
+        assert!(
+            matches!(err, LuceneError::AlreadyClosed { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]

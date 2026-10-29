@@ -376,7 +376,7 @@ impl ScorerSupplier for DocValuesScorerSupplier {
         // Create a terms enum that provides the intersection of the terms the
         // query specifies with the values present in the doc values.
         let mut terms_enum = self.terms_enum.take().ok_or_else(|| {
-            LuceneError::IllegalState(
+            LuceneError::illegal_state(
                 "ScorerSupplier.get(long) must be called at most once".to_string(),
             )
         })?;

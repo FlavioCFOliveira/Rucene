@@ -230,7 +230,7 @@ impl EarlyTerminatedCell {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
         state.ok_or_else(|| {
-            LuceneError::IllegalState("early-termination decision is missing".to_string())
+            LuceneError::illegal_state("early-termination decision is missing".to_string())
         })
     }
 }

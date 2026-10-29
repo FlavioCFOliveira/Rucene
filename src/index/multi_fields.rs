@@ -1171,7 +1171,7 @@ impl TermsEnum for MultiTermsEnum {
 
     fn term(&self) -> Result<BytesRef> {
         self.current.clone().ok_or_else(|| {
-            LuceneError::IllegalState(
+            LuceneError::illegal_state(
                 "MultiTermsEnum.term() called with no current term".to_string(),
             )
         })
@@ -1383,7 +1383,7 @@ impl MultiPostingsEnum {
         if self.upto >= 0 && (self.upto as usize) < self.subs.len() {
             Ok(self.upto as usize)
         } else {
-            Err(LuceneError::IllegalState(
+            Err(LuceneError::illegal_state(
                 "MultiPostingsEnum: no current postings enum".to_string(),
             ))
         }
@@ -1806,7 +1806,7 @@ mod tests {
         }
 
         fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
-            Err(LuceneError::IllegalState("not used".to_string()))
+            Err(LuceneError::illegal_state("not used".to_string()))
         }
 
         fn next(&mut self) -> Result<Option<BytesRef>> {

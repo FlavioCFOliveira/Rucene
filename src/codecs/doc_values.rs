@@ -139,7 +139,7 @@ pub trait DocValuesProducer: Send + Sync + fmt::Debug {
 /// Returns [`LuceneError::IllegalState`] when `values` is `None`.
 pub(crate) fn non_null<T>(values: Option<T>, field: &FieldInfo) -> Result<T> {
     values.ok_or_else(|| {
-        LuceneError::IllegalState(format!(
+        LuceneError::illegal_state(format!(
             "the producer has no values for field \"{}\"",
             field.name
         ))
@@ -361,11 +361,11 @@ impl DocValuesFormatRegistry {
         super::validate_service_name(&name)?;
 
         let mut formats = self.formats.write().map_err(|_| {
-            LuceneError::IllegalState("doc-values format registry lock was poisoned".to_string())
+            LuceneError::illegal_state("doc-values format registry lock was poisoned".to_string())
         })?;
 
         if formats.lookup(&name).is_ok() {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "doc-values format already registered: {name}"
             )));
         }
@@ -387,7 +387,7 @@ impl DocValuesFormatRegistry {
         let name = format.name().to_string();
         crate::codecs::validate_service_name(&name)?;
         let mut formats = self.formats.write().map_err(|_| {
-            LuceneError::IllegalState("doc-values format registry lock was poisoned".to_string())
+            LuceneError::illegal_state("doc-values format registry lock was poisoned".to_string())
         })?;
         // Only new providers are added; an existing one is never replaced
         // (`NamedSPILoader.reload`, `NamedSPILoader.java:59-79`).
@@ -402,7 +402,7 @@ impl DocValuesFormatRegistry {
         self.formats
             .read()
             .map_err(|_| {
-                LuceneError::IllegalState(
+                LuceneError::illegal_state(
                     "doc-values format registry lock was poisoned".to_string(),
                 )
             })
@@ -940,7 +940,7 @@ impl NumericDocValues for MergedNumericDocValues {
     fn long_value(&self) -> Result<i64> {
         match self.merger.current_sub() {
             Some(sub) if !self.exhausted => sub.values.long_value(),
-            _ => Err(LuceneError::IllegalState(
+            _ => Err(LuceneError::illegal_state(
                 "no current document in the merged numeric doc values".to_string(),
             )),
         }
@@ -1029,7 +1029,7 @@ impl BinaryDocValues for MergedBinaryDocValues {
     fn binary_value(&self) -> Result<BytesRef> {
         match self.merger.current_sub() {
             Some(sub) if !self.exhausted => sub.values.binary_value(),
-            _ => Err(LuceneError::IllegalState(
+            _ => Err(LuceneError::illegal_state(
                 "no current document in the merged binary doc values".to_string(),
             )),
         }
@@ -1104,13 +1104,13 @@ impl DocValuesIterator for MergedSortedNumericDocValues {
 impl SortedNumericDocValues for MergedSortedNumericDocValues {
     fn next_value(&mut self) -> Result<i64> {
         if self.exhausted {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "no current document in the merged sorted numeric doc values".to_string(),
             ));
         }
         match self.merger.current_sub_mut() {
             Some(sub) => sub.values.next_value(),
-            None => Err(LuceneError::IllegalState(
+            None => Err(LuceneError::illegal_state(
                 "no current document in the merged sorted numeric doc values".to_string(),
             )),
         }
@@ -1119,7 +1119,7 @@ impl SortedNumericDocValues for MergedSortedNumericDocValues {
     fn doc_value_count(&self) -> Result<i32> {
         match self.merger.current_sub() {
             Some(sub) if !self.exhausted => sub.values.doc_value_count(),
-            _ => Err(LuceneError::IllegalState(
+            _ => Err(LuceneError::illegal_state(
                 "no current document in the merged sorted numeric doc values".to_string(),
             )),
         }
@@ -1171,7 +1171,7 @@ pub fn get_merged_sorted_numeric_doc_values(
         let mut single_valued_subs = Vec::with_capacity(subs.len());
         for sub in subs {
             let single = sub.values.into_singleton().ok_or_else(|| {
-                LuceneError::IllegalState(
+                LuceneError::illegal_state(
                     "sorted numeric doc values reported singleton but did not unwrap".to_string(),
                 )
             })?;
@@ -1231,7 +1231,7 @@ impl SortedDocValues for MergedSortedDocValues {
                 debug_assert_ne!(sub_ord, -1);
                 Ok(sub.map.get_global_ords(sub.segment).get(i64::from(sub_ord)) as i32)
             }
-            _ => Err(LuceneError::IllegalState(
+            _ => Err(LuceneError::illegal_state(
                 "no current document in the merged sorted doc values".to_string(),
             )),
         }
@@ -1394,12 +1394,12 @@ impl DocValuesIterator for MergedSortedSetDocValues {
 impl SortedSetDocValues for MergedSortedSetDocValues {
     fn next_ord(&mut self) -> Result<i64> {
         if self.exhausted {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "no current document in the merged sorted set doc values".to_string(),
             ));
         }
         let Some(sub) = self.merger.current_sub_mut() else {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "no current document in the merged sorted set doc values".to_string(),
             ));
         };
@@ -1411,7 +1411,7 @@ impl SortedSetDocValues for MergedSortedSetDocValues {
     fn doc_value_count(&self) -> Result<i32> {
         match self.merger.current_sub() {
             Some(sub) if !self.exhausted => sub.values.doc_value_count(),
-            _ => Err(LuceneError::IllegalState(
+            _ => Err(LuceneError::illegal_state(
                 "no current document in the merged sorted set doc values".to_string(),
             )),
         }
@@ -1536,7 +1536,7 @@ pub fn get_merged_sorted_set_doc_values(
         let mut single_valued_subs = Vec::with_capacity(subs.len());
         for sub in subs {
             let single = sub.values.into_singleton().ok_or_else(|| {
-                LuceneError::IllegalState(
+                LuceneError::illegal_state(
                     "sorted set doc values reported singleton but did not unwrap".to_string(),
                 )
             })?;
@@ -1725,7 +1725,7 @@ impl<'a> MergedDocValuesProducer<'a> {
     /// Returns the ordinal map, which the two dictionary kinds always carry.
     fn map(&self) -> Result<Arc<OrdinalMap>> {
         self.map.clone().ok_or_else(|| {
-            LuceneError::IllegalState(
+            LuceneError::illegal_state(
                 "a sorted or sorted-set merge needs an ordinal map".to_string(),
             )
         })

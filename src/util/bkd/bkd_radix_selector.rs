@@ -244,7 +244,7 @@ impl BKDRadixSelector {
             let mut reader = points.get_reader(from as usize, (to - from) as usize)?;
             debug_assert!(common_prefix_position > dim_common_prefix);
             if !reader.next()? {
-                return Err(LuceneError::IllegalState(
+                return Err(LuceneError::illegal_state(
                     "BKDRadixSelector: no points to read".to_string(),
                 ));
             }

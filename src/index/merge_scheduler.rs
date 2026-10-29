@@ -205,7 +205,7 @@ impl MergeScheduler for SerialMergeScheduler {
         let _guard = self
             .lock
             .lock()
-            .map_err(|_| LuceneError::IllegalState("merge scheduler lock poisoned".to_string()))?;
+            .map_err(|_| LuceneError::illegal_state("merge scheduler lock poisoned".to_string()))?;
         while let Some(merge) = merge_source.get_next_merge()? {
             merge_source.merge(merge)?;
         }
@@ -1275,7 +1275,7 @@ impl ConcurrentMergeScheduler {
         let (mut state, outcome) =
             self.merge_locked(state, Arc::clone(merge_source), MergeTrigger::MergeFinished);
         let outcome = match outcome {
-            Err(LuceneError::AlreadyClosed(_)) => Ok(()),
+            Err(LuceneError::AlreadyClosed { .. }) => Ok(()),
             other => other,
         };
         Self::remove_merge_thread_locked(&mut state);
@@ -1693,7 +1693,7 @@ impl MergeScheduler for ConcurrentMergeScheduler {
                 inner: directory,
                 rate_limiter,
             })),
-            None => Err(LuceneError::IllegalState(format!(
+            None => Err(LuceneError::illegal_state(format!(
                 "wrapForMerge should be called from MergeThread. Current thread: {}",
                 std::thread::current().name().unwrap_or("<unnamed>")
             ))),
@@ -2397,7 +2397,7 @@ impl CombinedMergeScheduler {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
             if singleton.1 < 1 {
-                return Err(LuceneError::IllegalState(
+                return Err(LuceneError::illegal_state(
                     "decrementSingletonReference() called too many times".to_string(),
                 ));
             }

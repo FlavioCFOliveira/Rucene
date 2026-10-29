@@ -243,7 +243,7 @@ pub trait SortedDocValues: DocValuesIterator {
             AutomatonType::All => Ok(terms),
             AutomatonType::Single => {
                 let term = automaton.term.as_ref().ok_or_else(|| {
-                    LuceneError::IllegalState(
+                    LuceneError::illegal_state(
                         "CompiledAutomaton of type Single carries no term".to_string(),
                     )
                 })?;
@@ -415,7 +415,7 @@ pub trait SortedSetDocValues: DocValuesIterator {
             AutomatonType::All => Ok(terms),
             AutomatonType::Single => {
                 let term = automaton.term.as_ref().ok_or_else(|| {
-                    LuceneError::IllegalState(
+                    LuceneError::illegal_state(
                         "CompiledAutomaton of type Single carries no term".to_string(),
                     )
                 })?;
@@ -620,7 +620,7 @@ impl DocValues {
         } else {
             format!("(expected one of {expected:?}")
         };
-        Err(LuceneError::IllegalState(format!(
+        Err(LuceneError::illegal_state(format!(
             "unexpected docvalues type {actual:?} for field '{field}' {expectation}).              Re-index with correct docvalues type."
         )))
     }
@@ -840,7 +840,7 @@ impl DocValuesIterator for EmptyNumericDocValues {
 
 impl NumericDocValues for EmptyNumericDocValues {
     fn long_value(&self) -> Result<i64> {
-        Err(LuceneError::IllegalState(
+        Err(LuceneError::illegal_state(
             "long_value called on empty numeric doc values".to_string(),
         ))
     }
@@ -885,7 +885,7 @@ impl DocValuesIterator for EmptyBinaryDocValues {
 
 impl BinaryDocValues for EmptyBinaryDocValues {
     fn binary_value(&self) -> Result<BytesRef> {
-        Err(LuceneError::IllegalState(
+        Err(LuceneError::illegal_state(
             "binary_value called on empty binary doc values".to_string(),
         ))
     }
@@ -930,7 +930,7 @@ impl DocValuesIterator for EmptySortedDocValues {
 
 impl SortedDocValues for EmptySortedDocValues {
     fn ord_value(&self) -> Result<i32> {
-        Err(LuceneError::IllegalState(
+        Err(LuceneError::illegal_state(
             "ord_value called on empty sorted doc values".to_string(),
         ))
     }
@@ -984,7 +984,7 @@ impl DocValuesIterator for EmptySortedNumericDocValues {
 
 impl SortedNumericDocValues for EmptySortedNumericDocValues {
     fn next_value(&mut self) -> Result<i64> {
-        Err(LuceneError::IllegalState(
+        Err(LuceneError::illegal_state(
             "next_value called on empty sorted numeric doc values".to_string(),
         ))
     }
@@ -1809,7 +1809,7 @@ impl OrdinalMap {
         for i in 0..num_subs {
             let old_index = segment_map.new_to_old(i);
             let terms_enum = subs[old_index].take().ok_or_else(|| {
-                LuceneError::IllegalState("duplicate use of a terms enum".to_string())
+                LuceneError::illegal_state("duplicate use of a terms enum".to_string())
             })?;
             let mut tei = TermsEnumIndex::new(terms_enum, i);
             if tei.next()?.is_some() {
@@ -2450,7 +2450,7 @@ mod tests {
     impl NumericDocValues for VecNumericDocValues {
         fn long_value(&self) -> Result<i64> {
             if self.idx < 0 || self.idx as usize >= self.docs.len() {
-                return Err(LuceneError::IllegalState(
+                return Err(LuceneError::illegal_state(
                     "long_value called with no current document".to_string(),
                 ));
             }
@@ -2514,7 +2514,7 @@ mod tests {
     impl BinaryDocValues for VecBinaryDocValues {
         fn binary_value(&self) -> Result<BytesRef> {
             if self.idx < 0 || self.idx as usize >= self.docs.len() {
-                return Err(LuceneError::IllegalState(
+                return Err(LuceneError::illegal_state(
                     "binary_value called with no current document".to_string(),
                 ));
             }
@@ -2582,7 +2582,7 @@ mod tests {
     impl SortedDocValues for VecSortedDocValues {
         fn ord_value(&self) -> Result<i32> {
             if self.idx < 0 || self.idx as usize >= self.ords.len() {
-                return Err(LuceneError::IllegalState(
+                return Err(LuceneError::illegal_state(
                     "ord_value called with no current document".to_string(),
                 ));
             }
@@ -2671,12 +2671,12 @@ mod tests {
     impl SortedNumericDocValues for VecSortedNumericDocValues {
         fn next_value(&mut self) -> Result<i64> {
             if self.idx < 0 || self.idx as usize >= self.values.len() {
-                return Err(LuceneError::IllegalState(
+                return Err(LuceneError::illegal_state(
                     "next_value called with no current document".to_string(),
                 ));
             }
             if self.value_idx >= self.values[self.idx as usize].len() {
-                return Err(LuceneError::IllegalState(
+                return Err(LuceneError::illegal_state(
                     "next_value called more than doc_value_count times".to_string(),
                 ));
             }
@@ -2687,7 +2687,7 @@ mod tests {
 
         fn doc_value_count(&self) -> Result<i32> {
             if self.idx < 0 || self.idx as usize >= self.values.len() {
-                return Err(LuceneError::IllegalState(
+                return Err(LuceneError::illegal_state(
                     "doc_value_count called with no current document".to_string(),
                 ));
             }
@@ -2764,12 +2764,12 @@ mod tests {
     impl SortedSetDocValues for VecSortedSetDocValues {
         fn next_ord(&mut self) -> Result<i64> {
             if self.idx < 0 || self.idx as usize >= self.ords.len() {
-                return Err(LuceneError::IllegalState(
+                return Err(LuceneError::illegal_state(
                     "next_ord called with no current document".to_string(),
                 ));
             }
             if self.ord_idx >= self.ords[self.idx as usize].len() {
-                return Err(LuceneError::IllegalState(
+                return Err(LuceneError::illegal_state(
                     "next_ord called more than doc_value_count times".to_string(),
                 ));
             }
@@ -2780,7 +2780,7 @@ mod tests {
 
         fn doc_value_count(&self) -> Result<i32> {
             if self.idx < 0 || self.idx as usize >= self.ords.len() {
-                return Err(LuceneError::IllegalState(
+                return Err(LuceneError::illegal_state(
                     "doc_value_count called with no current document".to_string(),
                 ));
             }

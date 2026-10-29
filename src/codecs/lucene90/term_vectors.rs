@@ -512,7 +512,7 @@ fn next_term_vectors_step(
         return Ok(None);
     }
     let sub_index = merger.current_index().ok_or_else(|| {
-        LuceneError::IllegalState("DocIDMerger returned a sub it cannot locate".to_string())
+        LuceneError::illegal_state("DocIDMerger returned a sub it cannot locate".to_string())
     })?;
     let sub = merger.sub(sub_index);
     Ok(Some(TermVectorsMergeStep {
@@ -773,7 +773,7 @@ impl Lucene90CompressingTermVectorsWriter {
             .and_then(|reader| reader.as_any())
             .and_then(|any| any.downcast_ref::<Lucene90CompressingTermVectorsReader>())
             .ok_or_else(|| {
-                LuceneError::IllegalState(
+                LuceneError::illegal_state(
                     "bulk merge needs a Lucene90CompressingTermVectorsReader".to_string(),
                 )
             })?;
@@ -1318,7 +1318,7 @@ impl TermVectorsWriter for Lucene90CompressingTermVectorsWriter {
         payloads: bool,
     ) -> Result<()> {
         let doc = self.cur_doc.as_mut().ok_or_else(|| {
-            LuceneError::IllegalState("start_field called without active document".to_string())
+            LuceneError::illegal_state("start_field called without active document".to_string())
         })?;
         let _field = doc.add_field(field_info.number, num_terms, positions, offsets, payloads);
         self.cur_field = Some(doc.fields.len() - 1);
@@ -1338,7 +1338,7 @@ impl TermVectorsWriter for Lucene90CompressingTermVectorsWriter {
             )));
         }
         let cur_field_idx = self.cur_field.ok_or_else(|| {
-            LuceneError::IllegalState("start_term called without active field".to_string())
+            LuceneError::illegal_state("start_term called without active field".to_string())
         })?;
         let doc = self.cur_doc.as_mut().unwrap();
         let field = &mut doc.fields[cur_field_idx];
@@ -1375,14 +1375,14 @@ impl TermVectorsWriter for Lucene90CompressingTermVectorsWriter {
         payload: Option<&BytesRef>,
     ) -> Result<()> {
         let cur_field_idx = self.cur_field.ok_or_else(|| {
-            LuceneError::IllegalState("add_position called without active field".to_string())
+            LuceneError::illegal_state("add_position called without active field".to_string())
         })?;
         let doc = self.cur_doc.as_mut().unwrap();
         let field = &doc.fields[cur_field_idx];
 
         let payload_length = if let Some(p) = payload {
             if !field.has_payloads {
-                return Err(LuceneError::IllegalState(
+                return Err(LuceneError::illegal_state(
                     "payload provided but field does not store payloads".to_string(),
                 ));
             }
@@ -1429,7 +1429,7 @@ impl TermVectorsWriter for Lucene90CompressingTermVectorsWriter {
 
     fn finish(&mut self, num_docs: i32) -> Result<()> {
         if self.finished {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "Lucene90CompressingTermVectorsWriter already finished".to_string(),
             ));
         }
@@ -1441,7 +1441,7 @@ impl TermVectorsWriter for Lucene90CompressingTermVectorsWriter {
             self.flush(true)?;
         }
         if num_docs != self.num_docs {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "Wrote {} docs, finish called with numDocs={num_docs}",
                 self.num_docs
             )));
@@ -2548,7 +2548,7 @@ impl Lucene90CompressingTermVectorsReader {
     /// message.
     fn ensure_open(&self) -> Result<()> {
         if self.closed {
-            return Err(LuceneError::AlreadyClosed(
+            return Err(LuceneError::already_closed(
                 "this FieldsReader is closed".to_string(),
             ));
         }
@@ -3069,7 +3069,7 @@ impl TermsEnum for TVTermsEnum {
 
     fn total_term_freq(&mut self) -> Result<i64> {
         if self.ord < 0 || self.ord >= self.num_terms {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "total_term_freq called before first term".to_string(),
             ));
         }
@@ -3083,7 +3083,7 @@ impl TermsEnum for TVTermsEnum {
     ) -> Result<Box<dyn PostingsEnum>> {
         let mut postings = TVPostingsEnum::new();
         if self.ord < 0 || self.ord >= self.num_terms {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "postings called before first term".to_string(),
             ));
         }
@@ -3267,7 +3267,7 @@ impl std::fmt::Display for TVPostingsEnum {
 impl PostingsEnum for TVPostingsEnum {
     fn freq(&self) -> Result<i32> {
         if self.doc == NO_MORE_DOCS || self.doc == -1 {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "freq called on unpositioned postings enum".to_string(),
             ));
         }
@@ -3276,12 +3276,12 @@ impl PostingsEnum for TVPostingsEnum {
 
     fn next_position(&mut self) -> Result<i32> {
         if self.doc != 0 {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "next_position called on unpositioned postings enum".to_string(),
             ));
         }
         if self.i >= self.term_freq - 1 {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "read past last position".to_string(),
             ));
         }

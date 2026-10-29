@@ -211,7 +211,7 @@ impl<T> TaskGroup<T> {
                 Slot::Cancelled => {}
                 Slot::Pending(_) | Slot::Running => {
                     if first_error.is_none() {
-                        first_error = Some(LuceneError::IllegalState(
+                        first_error = Some(LuceneError::illegal_state(
                             "some tasks are still running".to_string(),
                         ));
                     }

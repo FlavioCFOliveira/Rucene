@@ -973,7 +973,7 @@ impl FrozenBufferedUpdates {
     /// Returns [`LuceneError::IllegalState`] when the lock is poisoned.
     pub fn lock_apply(&self) -> Result<MutexGuard<'_, ()>> {
         self.apply_lock.lock().map_err(|_| {
-            LuceneError::IllegalState("frozen buffered updates apply lock poisoned".to_string())
+            LuceneError::illegal_state("frozen buffered updates apply lock poisoned".to_string())
         })
     }
 
@@ -1392,17 +1392,27 @@ impl FrozenBufferedUpdates {
                                 max_doc,
                                 value.get_numeric_value(0),
                             )
+                        } else if is_numeric {
+                            // `new NumericDocValuesFieldUpdates(delGen,
+                            // updateField, value.getMinNumeric(),
+                            // value.getMaxNumeric(), maxDoc)`; both getters
+                            // answer 0 for a buffer that holds only resets
+                            // (`FieldUpdatesBuffer.java:108-122`).
+                            let min_value = value.min_numeric_value().unwrap_or(0);
+                            let max_value = value.max_numeric_value().unwrap_or(0);
+                            DocValuesFieldUpdates::new_numeric_with_range(
+                                del_gen,
+                                update_field.clone(),
+                                min_value,
+                                max_value,
+                                max_doc,
+                            )
                         } else {
-                            let dv_type = if is_numeric {
-                                DocValuesType::NUMERIC
-                            } else {
-                                DocValuesType::BINARY
-                            };
                             DocValuesFieldUpdates::new(
                                 max_doc,
                                 del_gen,
                                 update_field.clone(),
-                                dv_type,
+                                DocValuesType::BINARY,
                             )
                         };
                         resolved_updates.push(updates);
@@ -1594,7 +1604,7 @@ impl<'a> TermDocsIterator<'a> {
     fn docs(&mut self) -> Result<&mut dyn PostingsEnum> {
         match self.postings_enum.as_mut() {
             Some(postings) => Ok(postings.as_mut()),
-            None => Err(LuceneError::IllegalState(
+            None => Err(LuceneError::illegal_state(
                 "no term is positioned on this TermDocsIterator".to_string(),
             )),
         }
@@ -2454,7 +2464,7 @@ impl DocumentsWriterDeleteQueue {
     pub fn close(&self) -> Result<()> {
         let mut global = self.lock_global();
         if self.any_changes_locked(&mut global) {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "Can't close queue unless all changes are applied".to_string(),
             ));
         }
@@ -2500,7 +2510,7 @@ impl DocumentsWriterDeleteQueue {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if *advanced {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "queue was already advanced".to_string(),
             ));
         }
@@ -2530,7 +2540,7 @@ impl DocumentsWriterDeleteQueue {
 
     fn ensure_open(&self) -> Result<()> {
         if self.closed.load(Ordering::Acquire) {
-            Err(LuceneError::AlreadyClosed(
+            Err(LuceneError::already_closed(
                 "This DocumentsWriterDeleteQueue is already closed".to_string(),
             ))
         } else {
@@ -4549,7 +4559,7 @@ impl DwptGuard {
                 );
             }
             let codec = flushed_segment.segment_info.info.codec().ok_or_else(|| {
-                LuceneError::IllegalState(format!(
+                LuceneError::illegal_state(format!(
                     "segment {} has no codec",
                     flushed_segment.segment_info.info.name
                 ))
@@ -4867,7 +4877,7 @@ impl DocumentsWriterPerThreadPool {
 
     fn ensure_open(&self) -> Result<()> {
         if self.closed.load(Ordering::Acquire) {
-            Err(LuceneError::AlreadyClosed(
+            Err(LuceneError::already_closed(
                 "DWPTPool is already closed".to_string(),
             ))
         } else {
@@ -5424,7 +5434,7 @@ impl DocumentsWriterFlushControl {
             );
             drop(guard);
         }
-        Err(LuceneError::AlreadyClosed(
+        Err(LuceneError::already_closed(
             "flush control is closed".to_string(),
         ))
     }
@@ -5443,7 +5453,7 @@ impl DocumentsWriterFlushControl {
         let (flushing_queue, seq_no) = {
             let mut inner = self.lock();
             if inner.full_flush {
-                return Err(LuceneError::IllegalState(
+                return Err(LuceneError::illegal_state(
                     "called markForFullFlush() while full flush is still running".to_string(),
                 ));
             }
@@ -6348,10 +6358,9 @@ impl DocumentsWriter {
                 .store(self.any_changes(), Ordering::Release);
             let flushing_delete_queue = self.shared.delete_queue();
             let seq_no = self.flush_control.mark_for_full_flush()?;
-            debug_assert!(
-                self.set_flushing_delete_queue(Some(Arc::clone(&flushing_delete_queue))),
-                "Can not replace a full flush queue if the queue is not closed"
-            );
+            // `assert setFlushingDeleteQueue(flushingDeleteQueue)`
+            // (`DocumentsWriter.java:680`).
+            self.assert_set_flushing_delete_queue(Some(Arc::clone(&flushing_delete_queue)))?;
             (flushing_delete_queue, seq_no)
         };
 
@@ -6366,7 +6375,14 @@ impl DocumentsWriter {
                 self.ticket_queue
                     .add_ticket(|| Ok(Self::maybe_freeze_global_buffer(&flushing_delete_queue)))?;
             }
-            debug_assert!(!flushing_delete_queue.any_changes());
+            // `assert !flushingDeleteQueue.anyChanges()`
+            // (`DocumentsWriter.java:702`), which a delete the queue recorded
+            // but could not apply fails; see
+            // `assert_set_flushing_delete_queue` for why a debug build returns
+            // the failure. Java's `AssertionError` has no message here.
+            if cfg!(debug_assertions) && flushing_delete_queue.any_changes() {
+                return Err(LuceneError::AssertionError(String::new()));
+            }
             Ok(anything_flushed)
         })();
 
@@ -6390,24 +6406,30 @@ impl DocumentsWriter {
     /// Propagates errors raised while applying the deletes held back during the
     /// full flush.
     pub fn finish_full_flush(&self, success: bool) -> Result<()> {
-        if self.info_stream.is_enabled("DW") {
-            self.info_stream
-                .message("DW", &format!("finishFullFlush success={success}"));
-        }
-        debug_assert!(
-            self.set_flushing_delete_queue(None),
-            "Can not replace a full flush queue if the queue is not closed"
-        );
-        if success {
-            self.flush_control.finish_full_flush();
-        } else {
-            self.flush_control.abort_full_flushes();
-        }
+        // The `try` block of `DocumentsWriter.java:726-740`.
+        let outcome = (|| -> Result<()> {
+            if self.info_stream.is_enabled("DW") {
+                self.info_stream
+                    .message("DW", &format!("finishFullFlush success={success}"));
+            }
+            // `assert setFlushingDeleteQueue(null)` (`DocumentsWriter.java:732`):
+            // when it fails, the flush control is neither released nor aborted.
+            self.assert_set_flushing_delete_queue(None)?;
+            if success {
+                // Release the flush lock.
+                self.flush_control.finish_full_flush();
+            } else {
+                self.flush_control.abort_full_flushes();
+            }
+            Ok(())
+        })();
+        // The `finally` block: a failure to apply the deletes replaces the
+        // original one, as an exception thrown from `finally` does.
         self.pending_changes_in_current_full_flush
             .store(false, Ordering::Release);
         let delete_queue = self.shared.delete_queue();
         self.apply_all_deletes(&delete_queue)?;
-        Ok(())
+        outcome
     }
 
     /// Aborts every buffered document.
@@ -6552,7 +6574,7 @@ impl DocumentsWriter {
 
     fn ensure_open(&self) -> Result<()> {
         if self.closed.load(Ordering::Acquire) {
-            Err(LuceneError::AlreadyClosed(
+            Err(LuceneError::already_closed(
                 "this DocumentsWriter is closed".to_string(),
             ))
         } else {
@@ -6563,26 +6585,19 @@ impl DocumentsWriter {
     /// Records which delete queue the running full flush belongs to.
     ///
     /// Equivalent to `DocumentsWriter.setFlushingDeleteQueue(
-    /// DocumentsWriterDeleteQueue)`. Lucene calls it only from
-    /// `assert setFlushingDeleteQueue(...)`, so the field it writes — and the
+    /// DocumentsWriterDeleteQueue)` (`DocumentsWriter.java:645-651`). Lucene
+    /// calls it only from `assert setFlushingDeleteQueue(...)`, so the field it
+    /// writes — and the
     /// [`assert_ticket_queue_modification`](Self::assert_ticket_queue_modification)
     /// check that reads it — exist only when assertions are enabled; this port
-    /// calls it from `debug_assert!` for the same reason.
+    /// calls it through
+    /// [`assert_set_flushing_delete_queue`](Self::assert_set_flushing_delete_queue),
+    /// which runs it only in builds with `debug_assertions`.
     ///
     /// Java's body holds its own `assert` that the queue being replaced is
-    /// closed (`DocumentsWriter.java:645-651`); with assertions enabled a
-    /// violation throws `AssertionError` before the field is written. Here the
-    /// check is the return value instead of an inner `assert!`: a violation
-    /// returns `false` without writing the field, so the caller's
-    /// `debug_assert!` fails in a debug build exactly where Java's `assert`
-    /// does under `-ea`, and a release build — which never calls this — runs as
-    /// Java does without `-ea`. A full flush that failed, for example on a
-    /// delete term longer than 32766 bytes, leaves the queue open and reaches
-    /// this case: Java 10.5.0 under `-ea` reports `AssertionError` from
-    /// `commit()` and without `-ea` an `IllegalStateException`. The one
-    /// remaining difference is that Java's `AssertionError` is a `Throwable`
-    /// the writer records as its tragic exception, while a failed
-    /// `debug_assert!` panics; Rust has no recoverable assertion failure.
+    /// closed; a violation throws `AssertionError` before the field is written.
+    /// Here the check is the return value: a violation returns `false` without
+    /// writing the field.
     fn set_flushing_delete_queue(&self, session: Option<Arc<DocumentsWriterDeleteQueue>>) -> bool {
         let mut current = self.lock_full_flush_queue();
         if current.as_ref().is_some_and(|queue| queue.is_open()) {
@@ -6591,6 +6606,34 @@ impl DocumentsWriter {
         }
         *current = session;
         true
+    }
+
+    /// `assert setFlushingDeleteQueue(session)` (`DocumentsWriter.java:680,
+    /// 732`).
+    ///
+    /// In a build with `debug_assertions` — this port's counterpart of Java's
+    /// `-ea` — a queue that is still open fails the assertion with
+    /// [`LuceneError::AssertionError`], the `Error` the writer records as its
+    /// tragic exception and closes on, as Java's `AssertionError` is under
+    /// `-ea`. A full flush that failed, for example on a delete term longer
+    /// than 32766 bytes, leaves the queue open and reaches this case. A
+    /// release build does nothing, as Java without `-ea` does not evaluate the
+    /// `assert`; the commit then fails with the `IllegalStateException` the
+    /// queue's `close()` raised.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::AssertionError`] when the assertion fails.
+    fn assert_set_flushing_delete_queue(
+        &self,
+        session: Option<Arc<DocumentsWriterDeleteQueue>>,
+    ) -> Result<()> {
+        if cfg!(debug_assertions) && !self.set_flushing_delete_queue(session) {
+            return Err(LuceneError::AssertionError(
+                "Can not replace a full flush queue if the queue is not closed".to_string(),
+            ));
+        }
+        Ok(())
     }
 
     fn assert_ticket_queue_modification(
@@ -7140,9 +7183,9 @@ mod tests {
         assert_eq!(queue.ticket_count(), 0);
 
         let error = queue
-            .add_ticket(|| Err(LuceneError::IllegalState("boom".to_string())))
+            .add_ticket(|| Err(LuceneError::illegal_state("boom".to_string())))
             .unwrap_err();
-        assert!(matches!(error, LuceneError::IllegalState(_)));
+        assert!(matches!(error, LuceneError::IllegalState { .. }));
         assert_eq!(queue.ticket_count(), 0);
     }
 
@@ -7908,7 +7951,7 @@ mod tests {
         let fixture = new_writer(config(1_000_000, 16.0));
         fixture.writer.close();
         let error = fixture.writer.update_document(&doc("a"), None).unwrap_err();
-        assert!(matches!(error, LuceneError::AlreadyClosed(_)));
+        assert!(matches!(error, LuceneError::AlreadyClosed { .. }));
     }
 
     #[test]

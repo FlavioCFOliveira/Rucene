@@ -134,7 +134,7 @@ impl<T> SetOnce<T> {
     /// which is Java's `AlreadySetException`.
     pub fn set(&self, obj: T) -> Result<()> {
         if !self.try_set(obj) {
-            return Err(LuceneError::IllegalState(ALREADY_SET_MESSAGE.to_string()));
+            return Err(LuceneError::illegal_state(ALREADY_SET_MESSAGE.to_string()));
         }
         Ok(())
     }
@@ -240,7 +240,7 @@ impl SameThreadExecutorService {
 
     fn check_shutdown(&self) -> Result<()> {
         if self.shutdown.load(Ordering::SeqCst) {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "Executor is shut down.".to_string(),
             ));
         }

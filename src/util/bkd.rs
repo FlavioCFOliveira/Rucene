@@ -595,7 +595,7 @@ impl HeapPointWriter {
 
     fn ensure_open(&self) -> Result<()> {
         if self.closed {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "HeapPointWriter is already closed".to_string(),
             ));
         }
@@ -604,7 +604,7 @@ impl HeapPointWriter {
 
     fn assert_space(&self) -> Result<()> {
         if self.next_write >= self.size {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "HeapPointWriter is full".to_string(),
             ));
         }
@@ -931,7 +931,7 @@ impl OfflinePointWriter {
 
     fn ensure_open(&self) -> Result<()> {
         if self.closed {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "OfflinePointWriter is already closed".to_string(),
             ));
         }
@@ -1808,7 +1808,7 @@ impl IntersectVisitor for LastLeafDocIdCounter {
     }
 
     fn visit_with_value(&mut self, _doc_id: i32, _packed_value: &[u8]) -> Result<()> {
-        Err(LuceneError::IllegalState(
+        Err(LuceneError::illegal_state(
             "BKDReader.isTreeBalanced never visits values".to_string(),
         ))
     }
@@ -3690,7 +3690,7 @@ impl BKDWriter {
     /// Adds a new point to the writer.
     pub fn add(&mut self, packed_value: &[u8], doc_id: i32) -> Result<()> {
         if self.finished {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "BKDWriter is already finished".to_string(),
             ));
         }
@@ -3702,7 +3702,7 @@ impl BKDWriter {
             )));
         }
         if self.point_count >= self.total_point_count {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "totalPointCount exceeded".to_string(),
             ));
         }
@@ -3822,12 +3822,12 @@ impl BKDWriter {
         tree: &mut dyn MutablePointTree,
     ) -> Result<Option<BKDFinalizer>> {
         if self.point_count != 0 {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "cannot mix add and writeField".to_string(),
             ));
         }
         if self.finished {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "BKDWriter is already finished".to_string(),
             ));
         }
@@ -4027,7 +4027,7 @@ impl BKDWriter {
     /// no point was added, writing nothing at all.
     pub fn finish(&mut self, data_out: &mut dyn IndexOutput) -> Result<Option<BKDFinalizer>> {
         if self.finished {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "BKDWriter is already finished".to_string(),
             ));
         }
@@ -4049,7 +4049,7 @@ impl BKDWriter {
             (self.point_count + i64::from(self.config.max_points_in_leaf_node) - 1)
                 / i64::from(self.config.max_points_in_leaf_node),
         )
-        .map_err(|_| LuceneError::IllegalState("integer overflow: numLeaves".to_string()))?;
+        .map_err(|_| LuceneError::illegal_state("integer overflow: numLeaves".to_string()))?;
         let num_splits = num_leaves - 1;
         check_max_leaf_node_count(num_leaves, &self.config)?;
 
@@ -5036,7 +5036,7 @@ fn check_max_leaf_node_count(num_leaves: i32, config: &BKDConfig) -> Result<()> 
     if config.bytes_per_dim as i64 * num_leaves as i64
         > crate::util::ArrayUtil::MAX_ARRAY_LENGTH as i64
     {
-        return Err(LuceneError::IllegalState(
+        return Err(LuceneError::illegal_state(
             "too many nodes; increase maxPointsInLeafNode".to_string(),
         ));
     }
@@ -5281,12 +5281,12 @@ impl OneDimensionBKDWriter {
             )));
         }
         if writer.point_count != 0 {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "cannot mix add and merge".to_string(),
             ));
         }
         if writer.finished {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "BKDWriter is already finished".to_string(),
             ));
         }
@@ -5343,7 +5343,7 @@ impl OneDimensionBKDWriter {
         self.leaf_count += 1;
 
         if self.value_count + self.leaf_count as i64 > total_point_count {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "totalPointCount={total_point_count} was passed when we were created, \
                  but we just hit {} values",
                 self.value_count + self.leaf_count as i64
@@ -6469,10 +6469,10 @@ mod tests {
             offline.get_reader(5, 6).err(),
             Some(LuceneError::IllegalArgument(_))
         ));
-        let prior = || LuceneError::IllegalState("prior".to_string());
+        let prior = || LuceneError::illegal_state("prior".to_string());
         assert!(matches!(
             writer.verify_checksum(prior(), &mut offline),
-            LuceneError::IllegalState(ref m) if m == "prior"
+            LuceneError::IllegalState { message: ref m, .. } if m == "prior"
         ));
 
         // Flip one record byte behind the tracking wrapper's back.

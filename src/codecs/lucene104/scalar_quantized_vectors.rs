@@ -121,7 +121,7 @@ impl FieldEntry {
         if size > 0 {
             let wire_number = input.read_v_int()?;
             scalar_encoding = ScalarEncoding::from_wire_number(wire_number).ok_or_else(|| {
-                LuceneError::IllegalState(format!(
+                LuceneError::illegal_state(format!(
                     "Could not get ScalarEncoding from wire number: {wire_number}"
                 ))
             })?;
@@ -714,7 +714,9 @@ impl OffHeapScalarQuantizedFloatVectorValues {
 
     fn lock_slice(&self) -> Result<MutexGuard<'_, Box<dyn IndexInput>>> {
         self.slice.lock().map_err(|_| {
-            LuceneError::IllegalState("quantized float vector slice mutex was poisoned".to_string())
+            LuceneError::illegal_state(
+                "quantized float vector slice mutex was poisoned".to_string(),
+            )
         })
     }
 }
@@ -1054,7 +1056,7 @@ impl Lucene104ScalarQuantizedVectorScorer {
         let centroid = vector_values
             .get_centroid()
             .ok_or_else(|| {
-                LuceneError::IllegalState(
+                LuceneError::illegal_state(
                     "quantized vectors have no centroid to quantize the query against".to_string(),
                 )
             })?
@@ -1339,7 +1341,7 @@ impl ScalarQuantizedVectorScorerSupplier {
         similarity: VectorSimilarityFunction,
     ) -> Result<Self> {
         if values.get_scalar_encoding().is_asymmetric() {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "{} encoding is not supported for symmetric quantization",
                 values.get_scalar_encoding().name()
             )));
@@ -1410,7 +1412,7 @@ impl AsymmetricQuantizedRandomVectorScorerSupplier {
         similarity_function: VectorSimilarityFunction,
     ) -> Result<Self> {
         if !target_vectors.get_scalar_encoding().is_asymmetric() {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "{} encoding is not asymmetric",
                 target_vectors.get_scalar_encoding().name()
             )));
@@ -1460,7 +1462,7 @@ impl RandomVectorScorer for AsymmetricQuantizedUpdateableScorer {
         let (Some(vector), Some(query_corrections)) =
             (self.vector.as_ref(), self.query_corrections)
         else {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "setScoringOrdinal was not called".to_string(),
             ));
         };
@@ -1515,7 +1517,7 @@ impl RandomVectorScorer for ScalarQuantizedUpdateableScorer {
         let (Some(target_vector), Some(target_corrective_terms)) =
             (self.target_vector.as_ref(), self.target_corrective_terms)
         else {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "setScoringOrdinal was not called".to_string(),
             ));
         };
@@ -1565,7 +1567,7 @@ impl UpdateableRandomVectorScorer for ScalarQuantizedUpdateableScorer {
             }
             encoding
             @ (ScalarEncoding::SingleBitQueryNibble | ScalarEncoding::DibitQueryNibble) => {
-                return Err(LuceneError::IllegalState(format!(
+                return Err(LuceneError::illegal_state(format!(
                     "{} encoding is not supported for symmetric quantization",
                     encoding.name()
                 )));
@@ -1937,7 +1939,7 @@ impl Lucene104ScalarQuantizedVectorsReader {
             }
         };
         if similarity_function != info.vector_similarity_function {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "Inconsistent vector similarity function for field=\"{}\"; {:?} != {:?}",
                 info.name, similarity_function, info.vector_similarity_function
             )));
@@ -1959,7 +1961,7 @@ impl Lucene104ScalarQuantizedVectorsReader {
     pub fn validate_field_entry(info: &FieldInfo, field_entry: &FieldEntry) -> Result<()> {
         let dimension = info.vector_dimension;
         if dimension != field_entry.dimension {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "Inconsistent vector dimension for field=\"{}\"; {} != {}",
                 info.name, dimension, field_entry.dimension
             )));
@@ -1971,13 +1973,13 @@ impl Lucene104ScalarQuantizedVectorsReader {
         let num_quantized_vector_bytes = stride
             .checked_mul(i64::from(field_entry.size))
             .ok_or_else(|| {
-                LuceneError::IllegalState(format!(
+                LuceneError::illegal_state(format!(
                     "vector data length overflows for field=\"{}\"",
                     info.name
                 ))
             })?;
         if num_quantized_vector_bytes != field_entry.vector_data_length {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "vector data length {} not matching size = {} * (dims={} + 16) = {}",
                 field_entry.vector_data_length,
                 field_entry.size,
@@ -2101,7 +2103,7 @@ impl Lucene104ScalarQuantizedVectorsReader {
         let float_vector_values =
             self.get_float_vector_values(&field_info.name)?
                 .ok_or_else(|| {
-                    LuceneError::IllegalState(format!(
+                    LuceneError::illegal_state(format!(
                         "field=\"{}\" has quantized vectors but no float vectors",
                         field_info.name
                     ))
@@ -2201,7 +2203,7 @@ impl Lucene104ScalarQuantizedVectorsReader {
             ));
         }
         let centroid = quantized_byte_vector_values.get_centroid().ok_or_else(|| {
-            LuceneError::IllegalState(
+            LuceneError::illegal_state(
                 "quantized vectors have no centroid to quantize the queries against".to_string(),
             )
         })?;
@@ -2288,7 +2290,7 @@ impl KnnVectorsReader for Lucene104ScalarQuantizedVectorsReader {
             .raw_vectors_reader
             .get_float_vector_values(field)?
             .ok_or_else(|| {
-                LuceneError::IllegalState(format!(
+                LuceneError::illegal_state(format!(
                     "the raw vectors of field \"{field}\" are missing"
                 ))
             })?;
@@ -3122,7 +3124,7 @@ impl Lucene104ScalarQuantizedVectorsWriter {
         let encoding = self.encoding;
         let count = docs_with_field.cardinality();
         let vector_data = self.vector_data.as_mut().ok_or_else(|| {
-            LuceneError::IllegalState(
+            LuceneError::illegal_state(
                 "Lucene104ScalarQuantizedVectorsWriter is already closed".to_string(),
             )
         })?;
@@ -3162,7 +3164,7 @@ impl Lucene104ScalarQuantizedVectorsWriter {
     fn delegate(&mut self) -> Result<&mut (dyn FlatVectorsWriter + 'static)> {
         match self.raw_vector_delegate.as_deref_mut() {
             Some(delegate) => Ok(delegate),
-            None => Err(LuceneError::IllegalState(
+            None => Err(LuceneError::illegal_state(
                 "Lucene104ScalarQuantizedVectorsWriter has no raw vector delegate".to_string(),
             )),
         }
@@ -3172,7 +3174,7 @@ impl Lucene104ScalarQuantizedVectorsWriter {
     fn outputs(&mut self) -> Result<(&mut dyn IndexOutput, &mut dyn IndexOutput)> {
         match (self.meta.as_mut(), self.vector_data.as_mut()) {
             (Some(meta), Some(data)) => Ok((meta.as_mut(), data.as_mut())),
-            _ => Err(LuceneError::IllegalState(
+            _ => Err(LuceneError::illegal_state(
                 "Lucene104ScalarQuantizedVectorsWriter is already closed".to_string(),
             )),
         }
@@ -3684,7 +3686,7 @@ impl KnnVectorsWriter for Lucene104ScalarQuantizedVectorsWriter {
     /// Equivalent to `Lucene104ScalarQuantizedVectorsWriter.finish()`.
     fn finish(&mut self) -> Result<()> {
         if self.finished {
-            return Err(LuceneError::IllegalState("already finished".to_string()));
+            return Err(LuceneError::illegal_state("already finished".to_string()));
         }
         self.finished = true;
         if self.raw_vector_delegate.is_some() {
@@ -3845,7 +3847,7 @@ impl FlatVectorsWriter for Lucene104ScalarQuantizedVectorsWriter {
         )?;
         let max_doc = self
             .segment_max_doc
-            .ok_or_else(|| LuceneError::IllegalState("maxDoc isn't set yet".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_state("maxDoc isn't set yet".to_string()))?;
         let encoding = self.encoding;
         let (meta, vector_data) = self.outputs()?;
         let vector_data_offset =
@@ -3998,7 +4000,7 @@ impl QuantizedByteVectorValues for QuantizedFloatVectorValues {
     fn get_corrective_terms(&mut self, ord: i32) -> Result<QuantizationResult> {
         match self.corrections {
             Some(corrections) if ord == self.last_ord => Ok(corrections),
-            _ => Err(LuceneError::IllegalState(format!(
+            _ => Err(LuceneError::illegal_state(format!(
                 "attempt to retrieve corrective terms for different ord {ord} than the \
                  quantization was done for: {}",
                 self.last_ord
@@ -4279,14 +4281,14 @@ fn lock_field<T>(
     writer: &Arc<Mutex<DefaultFlatFieldVectorsWriter<T>>>,
 ) -> Result<std::sync::MutexGuard<'_, DefaultFlatFieldVectorsWriter<T>>> {
     writer.lock().map_err(|_| {
-        LuceneError::IllegalState("FlatFieldVectorsWriter mutex was poisoned".to_string())
+        LuceneError::illegal_state("FlatFieldVectorsWriter mutex was poisoned".to_string())
     })
 }
 
 /// Locks a shared float field's buffer and running sums.
 fn lock_state(state: &Arc<Mutex<SqFieldState>>) -> Result<std::sync::MutexGuard<'_, SqFieldState>> {
     state.lock().map_err(|_| {
-        LuceneError::IllegalState("FlatFieldVectorsWriter mutex was poisoned".to_string())
+        LuceneError::illegal_state("FlatFieldVectorsWriter mutex was poisoned".to_string())
     })
 }
 

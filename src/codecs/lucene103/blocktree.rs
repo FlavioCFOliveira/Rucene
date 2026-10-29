@@ -701,7 +701,7 @@ impl TrieBuilder {
         if children_num == 0 {
             let bottom_fp = index.file_pointer() - start_fp;
             let output = node.output.as_ref().ok_or_else(|| {
-                LuceneError::IllegalState("leaf nodes should have output".to_string())
+                LuceneError::illegal_state("leaf nodes should have output".to_string())
             })?;
             let output_fp_bytes = Self::bytes_required_v_long(output.fp);
             let header = trie_reader::SIGN_NO_CHILDREN
@@ -882,7 +882,7 @@ impl TrieBuilder {
             iter.read_header()?;
             iter.read_body()?;
             let output = iter.output.as_ref().ok_or_else(|| {
-                LuceneError::IllegalState("trie entry read without an output".to_string())
+                LuceneError::illegal_state("trie entry read without an output".to_string())
             })?;
             consumer(BytesRef::new(iter.key[..iter.key_len].to_vec()), output);
         }
@@ -960,7 +960,7 @@ impl<'a> EntryIterator<'a> {
         let input = self
             .input
             .as_mut()
-            .ok_or_else(|| LuceneError::IllegalState("no more trie entries".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_state("no more trie entries".to_string()))?;
         self.prefix_len = input.read_v_int()?.max(0) as usize;
         self.suffix_len = input.read_v_int()?.max(0) as usize;
         Ok(())
@@ -984,7 +984,7 @@ impl<'a> EntryIterator<'a> {
         let input = self
             .input
             .as_mut()
-            .ok_or_else(|| LuceneError::IllegalState("no more trie entries".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_state("no more trie entries".to_string()))?;
         self.key_len = self.prefix_len + self.suffix_len;
         if self.key.len() < self.key_len {
             self.key.resize(self.key_len, 0);
@@ -1804,7 +1804,7 @@ impl<'a> TermsWriter<'a> {
 
             let first_term = self.first_pending_term.take().unwrap();
             let root_index = root.index.ok_or_else(|| {
-                LuceneError::IllegalState(
+                LuceneError::illegal_state(
                     "the root block of a field must carry a compiled trie index".to_string(),
                 )
             })?;
@@ -2704,7 +2704,7 @@ mod tests {
         fn close(&mut self) -> Result<()> {
             self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
             if self.fail_close {
-                return Err(LuceneError::IllegalState(
+                return Err(LuceneError::illegal_state(
                     "postings writer close".to_string(),
                 ));
             }
@@ -2728,7 +2728,7 @@ mod tests {
     impl IndexOutput for FailOnClose {
         fn close(&mut self) -> Result<()> {
             self.0.close()?;
-            Err(LuceneError::IllegalState(format!(
+            Err(LuceneError::illegal_state(format!(
                 "closing {}",
                 self.0.name()
             )))
@@ -2780,7 +2780,7 @@ mod tests {
                 return self.inner.create_output(name, context);
             }
             if self.fail_create {
-                return Err(LuceneError::IllegalState(format!("creating {name}")));
+                return Err(LuceneError::illegal_state(format!("creating {name}")));
             }
             Ok(Box::new(FailOnClose(
                 self.inner.create_output(name, context)?,

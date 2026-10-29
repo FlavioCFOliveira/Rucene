@@ -374,7 +374,7 @@ impl FieldInfo {
     /// Returns [`LuceneError::IllegalState`] if the field is not indexed.
     pub fn set_store_term_vectors(&mut self) -> Result<()> {
         if self.index_options == IndexOptions::NONE {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "non-indexed field '{}' cannot store term vectors",
                 self.name
             )));
@@ -395,7 +395,7 @@ impl FieldInfo {
     /// Returns [`LuceneError::IllegalState`] if the field is not indexed.
     pub fn set_omits_norms(&mut self) -> Result<()> {
         if self.index_options == IndexOptions::NONE {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "cannot omit norms: field '{}' is not indexed",
                 self.name
             )));
@@ -1376,7 +1376,7 @@ impl FieldInfos {
                 .get_parent_field()
                 .map(str::to_string);
             if set && field != the_field {
-                return Err(LuceneError::IllegalState(format!(
+                return Err(LuceneError::illegal_state(format!(
                     "expected parent doc field to be \"{} \" across all segments but found a \
                      segment with different field \"{}\"",
                     the_field.as_deref().unwrap_or("null"),
@@ -2032,7 +2032,7 @@ impl FieldInfosBuilder {
         }
 
         if self.finished {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "FieldInfos.Builder was already finished; cannot add new fields".to_string(),
             ));
         }
@@ -2652,7 +2652,7 @@ mod tests {
         // Re-adding a known field is still fine; a new one is not.
         assert!(builder.add(&indexed_field("a")).is_ok());
         let error = builder.add(&indexed_field("b")).unwrap_err();
-        assert!(matches!(error, LuceneError::IllegalState(_)));
+        assert!(matches!(error, LuceneError::IllegalState { .. }));
     }
 
     #[test]

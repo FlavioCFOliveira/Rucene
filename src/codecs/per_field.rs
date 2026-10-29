@@ -136,7 +136,7 @@ fn get_full_segment_suffix_postings(
     if outer_segment_suffix.is_empty() {
         Ok(segment_suffix.to_string())
     } else {
-        Err(LuceneError::IllegalState(format!(
+        Err(LuceneError::illegal_state(format!(
             "cannot embed PerFieldPostingsFormat inside itself (field \"{}\" returned PerFieldPostingsFormat)",
             field_name
         )))
@@ -413,7 +413,7 @@ impl FieldsReader {
                     let format_name =
                         fi.get_attribute(PER_FIELD_POSTINGS_FORMAT_KEY)
                             .ok_or_else(|| {
-                                LuceneError::IllegalState(format!(
+                                LuceneError::illegal_state(format!(
                             "missing attribute: {PER_FIELD_POSTINGS_FORMAT_KEY} for field: {}",
                             fi.name
                         ))
@@ -421,16 +421,18 @@ impl FieldsReader {
                     let suffix =
                         fi.get_attribute(PER_FIELD_POSTINGS_SUFFIX_KEY)
                             .ok_or_else(|| {
-                                LuceneError::IllegalState(format!(
+                                LuceneError::illegal_state(format!(
                             "missing attribute: {PER_FIELD_POSTINGS_SUFFIX_KEY} for field: {}",
                             fi.name
                         ))
                             })?;
                     let format = postings_for_name(&format_name).ok_or_else(|| {
-                        LuceneError::IllegalState(format!("unknown postings format: {format_name}"))
+                        LuceneError::illegal_state(format!(
+                            "unknown postings format: {format_name}"
+                        ))
                     })?;
                     let suffix_num = suffix.parse::<i32>().map_err(|_| {
-                        LuceneError::IllegalState(format!(
+                        LuceneError::illegal_state(format!(
                             "invalid postings suffix for field \"{}\": {suffix}",
                             fi.name
                         ))
@@ -478,7 +480,7 @@ impl Fields for FieldsReader {
         self.formats
             .get(suffix)
             .ok_or_else(|| {
-                LuceneError::IllegalState(format!("missing producer for suffix {suffix}"))
+                LuceneError::illegal_state(format!("missing producer for suffix {suffix}"))
             })
             .and_then(|p| p.terms(field))
     }
@@ -702,7 +704,7 @@ impl<'a> DvFieldsWriter<'a> {
             Some((self.resolver)(&field.name))
         }
         .ok_or_else(|| {
-            LuceneError::IllegalState(format!(
+            LuceneError::illegal_state(format!(
                 "invalid null DocValuesFormat for field=\"{}\"",
                 field.name
             ))
@@ -818,13 +820,13 @@ impl<'a> DocValuesConsumer for DvFieldsWriter<'a> {
                 let format_name = fi
                     .get_attribute(PER_FIELD_DOC_VALUES_FORMAT_KEY)
                     .ok_or_else(|| {
-                        LuceneError::IllegalState(format!(
+                        LuceneError::illegal_state(format!(
                             "missing attribute: {PER_FIELD_DOC_VALUES_FORMAT_KEY} for field: {}",
                             fi.name
                         ))
                     })?;
                 if !self.formats.contains_key(&format_name) {
-                    return Err(LuceneError::IllegalState(format!(
+                    return Err(LuceneError::illegal_state(format!(
                         "consumer missing for format {format_name}"
                     )));
                 }
@@ -872,7 +874,7 @@ impl DvFieldsReader {
                     let format_name = fi
                         .get_attribute(PER_FIELD_DOC_VALUES_FORMAT_KEY)
                         .ok_or_else(|| {
-                            LuceneError::IllegalState(format!(
+                            LuceneError::illegal_state(format!(
                             "missing attribute: {PER_FIELD_DOC_VALUES_FORMAT_KEY} for field: {}",
                             fi.name
                         ))
@@ -880,18 +882,18 @@ impl DvFieldsReader {
                     let suffix = fi
                         .get_attribute(PER_FIELD_DOC_VALUES_SUFFIX_KEY)
                         .ok_or_else(|| {
-                            LuceneError::IllegalState(format!(
+                            LuceneError::illegal_state(format!(
                             "missing attribute: {PER_FIELD_DOC_VALUES_SUFFIX_KEY} for field: {}",
                             fi.name
                         ))
                         })?;
                     let format = doc_values_for_name(&format_name).ok_or_else(|| {
-                        LuceneError::IllegalState(format!(
+                        LuceneError::illegal_state(format!(
                             "unknown doc-values format: {format_name}"
                         ))
                     })?;
                     let suffix_num = suffix.parse::<i32>().map_err(|_| {
-                        LuceneError::IllegalState(format!(
+                        LuceneError::illegal_state(format!(
                             "invalid doc-values suffix for field \"{}\": {suffix}",
                             fi.name
                         ))
@@ -928,7 +930,7 @@ impl DvFieldsReader {
             ))
         })?;
         self.formats.get(suffix).map(|b| b.as_ref()).ok_or_else(|| {
-            LuceneError::IllegalState(format!("missing doc-values producer for suffix {suffix}"))
+            LuceneError::illegal_state(format!("missing doc-values producer for suffix {suffix}"))
         })
     }
 }
@@ -1289,7 +1291,7 @@ impl KnnFieldsReader {
                     let format_name = fi
                         .get_attribute(PER_FIELD_KNN_VECTORS_FORMAT_KEY)
                         .ok_or_else(|| {
-                            LuceneError::IllegalState(format!(
+                            LuceneError::illegal_state(format!(
                             "missing attribute: {PER_FIELD_KNN_VECTORS_FORMAT_KEY} for field: {}",
                             fi.name
                         ))
@@ -1297,18 +1299,18 @@ impl KnnFieldsReader {
                     let suffix = fi
                         .get_attribute(PER_FIELD_KNN_VECTORS_SUFFIX_KEY)
                         .ok_or_else(|| {
-                            LuceneError::IllegalState(format!(
+                            LuceneError::illegal_state(format!(
                             "missing attribute: {PER_FIELD_KNN_VECTORS_SUFFIX_KEY} for field: {}",
                             fi.name
                         ))
                         })?;
                     let format = knn_vectors_for_name(&format_name).ok_or_else(|| {
-                        LuceneError::IllegalState(format!(
+                        LuceneError::illegal_state(format!(
                             "unknown KNN-vectors format: {format_name}"
                         ))
                     })?;
                     let suffix_num = suffix.parse::<i32>().map_err(|_| {
-                        LuceneError::IllegalState(format!(
+                        LuceneError::illegal_state(format!(
                             "invalid KNN-vectors suffix for field \"{}\": {suffix}",
                             fi.name
                         ))
@@ -1352,7 +1354,7 @@ impl KnnFieldsReader {
             ))
         })?;
         self.formats.get(suffix).map(|b| b.as_ref()).ok_or_else(|| {
-            LuceneError::IllegalState(format!("missing KNN-vectors reader for suffix {suffix}"))
+            LuceneError::illegal_state(format!("missing KNN-vectors reader for suffix {suffix}"))
         })
     }
 }
@@ -1456,7 +1458,9 @@ impl KnnVectorsReader for KnnFieldsReader {
                 continue;
             };
             let reader = self.formats.get(suffix).ok_or_else(|| {
-                LuceneError::IllegalState(format!("missing KNN-vectors reader for suffix {suffix}"))
+                LuceneError::illegal_state(format!(
+                    "missing KNN-vectors reader for suffix {suffix}"
+                ))
             })?;
             formats.insert(name.clone(), reader.get_merge_instance()?);
             fields.insert(number, name.clone());
@@ -1750,7 +1754,7 @@ mod tests {
             _norms: Option<&dyn NormsProducer>,
         ) -> Result<()> {
             if self.0.fail_write {
-                return Err(LuceneError::IllegalState(format!("{} write", self.0.name)));
+                return Err(LuceneError::illegal_state(format!("{} write", self.0.name)));
             }
             Ok(())
         }
@@ -1760,7 +1764,7 @@ mod tests {
                 .closed
                 .store(true, std::sync::atomic::Ordering::SeqCst);
             if self.0.fail_close {
-                return Err(LuceneError::IllegalState(format!("{} close", self.0.name)));
+                return Err(LuceneError::illegal_state(format!("{} close", self.0.name)));
             }
             Ok(())
         }

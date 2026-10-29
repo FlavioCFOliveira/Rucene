@@ -443,7 +443,7 @@ impl PushPostingsWriterBase for Lucene104PostingsWriter {
             // `Lucene104PostingsWriter.java:282-299`.
             let norm = if self.field_has_norms {
                 let norms = self.norms.as_mut().ok_or_else(|| {
-                    LuceneError::IllegalState(
+                    LuceneError::illegal_state(
                         "a field with norms started a term without them".to_string(),
                     )
                 })?;

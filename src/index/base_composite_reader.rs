@@ -284,7 +284,7 @@ mod tests {
             doc_id: i32,
             _visitor: &mut dyn StoredFieldVisitor,
         ) -> Result<()> {
-            Err(LuceneError::IllegalState(format!("local doc {doc_id}")))
+            Err(LuceneError::illegal_state(format!("local doc {doc_id}")))
         }
     }
 
@@ -296,7 +296,7 @@ mod tests {
             if doc == 0 {
                 Ok(Some(Box::new(EmptyFields)))
             } else {
-                Err(LuceneError::IllegalState(format!("local doc {doc}")))
+                Err(LuceneError::illegal_state(format!("local doc {doc}")))
             }
         }
     }

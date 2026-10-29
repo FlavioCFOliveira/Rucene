@@ -124,21 +124,21 @@ impl LongsRef {
     /// mirroring Java's `IllegalStateException` messages.
     pub fn is_valid(&self) -> Result<()> {
         if self.length > self.longs.len() {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "length is out of bounds: {},longs.length={}",
                 self.length,
                 self.longs.len()
             )));
         }
         if self.offset > self.longs.len() {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "offset out of bounds: {},longs.length={}",
                 self.offset,
                 self.longs.len()
             )));
         }
         if self.offset + self.length > self.longs.len() {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "offset+length out of bounds: offset={},length={},longs.length={}",
                 self.offset,
                 self.length,

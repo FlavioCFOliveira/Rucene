@@ -470,7 +470,7 @@ impl CheckIndex {
     /// Equivalent to `CheckIndex.ensureOpen`.
     fn ensure_open(&self) -> Result<()> {
         if self.closed {
-            return Err(LuceneError::AlreadyClosed(
+            return Err(LuceneError::already_closed(
                 "this instance is closed".to_string(),
             ));
         }
@@ -2588,7 +2588,7 @@ fn check_doc_values(
         // Java dereferences the result unchecked (`CheckIndex.java:3910-3912`,
         // `:3397-3400`), so a missing skipper is Java's `NullPointerException`.
         let mut skipper = dv_reader.get_skipper(fi)?.ok_or_else(|| {
-            LuceneError::IllegalState(format!(
+            LuceneError::illegal_state(format!(
                 "field \"{}\" declares a skip index but its producer returned none",
                 fi.name
             ))
@@ -2645,7 +2645,7 @@ fn check_doc_values(
             check_bulk_fetch_numeric_doc_values(a.as_mut(), b.as_mut(), max_doc)?;
         }
         DocValuesType::NONE => {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "checkDocValues called on field {} which has no doc values",
                 fi.get_name()
             )));
@@ -2811,7 +2811,7 @@ fn check_terms_intersect(
     let automaton = match Operations::determinize(automaton, DEFAULT_DETERMINIZE_WORK_LIMIT) {
         Ok(a) => a,
         Err(e) => {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "could not determinize the CheckIndex probe automaton: {e:?}"
             )))
         }
@@ -5318,7 +5318,7 @@ pub fn test_sort(
         .leaves()
         .into_iter()
         .next()
-        .ok_or_else(|| LuceneError::IllegalState("a leaf reader has one leaf".to_string()))?;
+        .ok_or_else(|| LuceneError::illegal_state("a leaf reader has one leaf".to_string()))?;
     // The field comparators outlive the leaf comparators they hand out only
     // through the state they share, so they are kept for the whole check.
     let mut field_comparators = Vec::with_capacity(fields.len());
@@ -5336,7 +5336,7 @@ pub fn test_sort(
             && field_infos.get_parent_field().is_none()
             && meta_data.created_version_major() >= 10
         {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "parent field is not set but the index has document blocks and was created with \
                  version: {}",
                 meta_data.created_version_major()
@@ -5349,7 +5349,7 @@ pub fn test_sort(
                     // Java hands `iter` the null this returns, and the first
                     // `nextDoc()` dereferences it.
                     None => {
-                        return Err(LuceneError::IllegalState(format!(
+                        return Err(LuceneError::illegal_state(format!(
                             "the parent field \"{parent_field}\" has no numeric doc values"
                         )))
                     }
@@ -5408,7 +5408,7 @@ struct NoScorer;
 
 impl crate::search::Scorable for NoScorer {
     fn score(&mut self) -> Result<f32> {
-        Err(LuceneError::IllegalState(
+        Err(LuceneError::illegal_state(
             "CheckIndex.testSort compares documents without a scorer".to_string(),
         ))
     }

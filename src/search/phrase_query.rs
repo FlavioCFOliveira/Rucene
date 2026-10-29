@@ -591,7 +591,7 @@ impl Query for PhraseQuery {
         boost: f32,
     ) -> Result<Arc<dyn Weight>> {
         let field = self.field.clone().ok_or_else(|| {
-            LuceneError::IllegalState(
+            LuceneError::illegal_state(
                 "PhraseWeight does not support less than 2 terms, call rewrite first".to_string(),
             )
         })?;
@@ -663,12 +663,12 @@ impl PhraseWeightImpl for PhraseQueryWeightImpl {
     fn get_stats(&self, searcher: &IndexSearcher) -> Result<Option<SharedSimScorer>> {
         let positions = self.query.get_positions();
         if positions.len() < 2 {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "PhraseWeight does not support less than 2 terms, call rewrite first".to_string(),
             ));
         }
         if positions[0] != 0 {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "PhraseWeight requires that the first position is 0, call rewrite first"
                     .to_string(),
             ));
@@ -699,7 +699,7 @@ impl PhraseWeightImpl for PhraseQueryWeightImpl {
         let collection_stats = searcher
             .collection_statistics(&self.field)?
             .ok_or_else(|| {
-                LuceneError::IllegalState(format!(
+                LuceneError::illegal_state(format!(
                     "field {} has term statistics but no collection statistics",
                     self.field
                 ))
@@ -727,7 +727,7 @@ impl PhraseWeightImpl for PhraseQueryWeightImpl {
         };
 
         if !field_terms.has_positions() {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "field \"{}\" was indexed without position data; cannot run PhraseQuery (phrase={})",
                 self.field,
                 self.query.to_query_string("")
@@ -735,7 +735,7 @@ impl PhraseWeightImpl for PhraseQueryWeightImpl {
         }
 
         let states = self.states.get().ok_or_else(|| {
-            LuceneError::IllegalState(
+            LuceneError::illegal_state(
                 "PhraseWeight.getStats must run before getPhraseMatcher".to_string(),
             )
         })?;

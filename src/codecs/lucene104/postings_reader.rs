@@ -707,7 +707,7 @@ impl BlockPostingsEnum {
         if self.doc_freq > 1 {
             if self.doc_in.is_none() {
                 // doc_in is lazily initialized by the parent reader in postings().
-                return Err(LuceneError::IllegalState(
+                return Err(LuceneError::illegal_state(
                     "BlockPostingsEnum.doc_in must be initialized by the reader".to_string(),
                 ));
             }
@@ -788,21 +788,21 @@ impl BlockPostingsEnum {
         self.doc_in
             .as_mut()
             .map(|b| b.as_mut() as *mut dyn IndexInput)
-            .ok_or_else(|| LuceneError::IllegalState("doc_in is not open".to_string()))
+            .ok_or_else(|| LuceneError::illegal_state("doc_in is not open".to_string()))
     }
 
     fn pos_in_ptr(&mut self) -> Result<*mut dyn IndexInput> {
         self.pos_in
             .as_mut()
             .map(|b| b.as_mut() as *mut dyn IndexInput)
-            .ok_or_else(|| LuceneError::IllegalState("pos_in is not open".to_string()))
+            .ok_or_else(|| LuceneError::illegal_state("pos_in is not open".to_string()))
     }
 
     fn pay_in_ptr(&mut self) -> Result<*mut dyn IndexInput> {
         self.pay_in
             .as_mut()
             .map(|b| b.as_mut() as *mut dyn IndexInput)
-            .ok_or_else(|| LuceneError::IllegalState("pay_in is not open".to_string()))
+            .ok_or_else(|| LuceneError::illegal_state("pay_in is not open".to_string()))
     }
 
     /// # Safety
@@ -1049,7 +1049,7 @@ impl BlockPostingsEnum {
                 let doc_in = self
                     .doc_in
                     .as_mut()
-                    .ok_or_else(|| LuceneError::IllegalState("doc_in is not open".to_string()))?;
+                    .ok_or_else(|| LuceneError::illegal_state("doc_in is not open".to_string()))?;
                 let level0_num_bytes = doc_in.read_v_long()?;
                 let level0_end = doc_in.file_pointer() + level0_num_bytes;
                 let doc_delta = read_v_int15(doc_in.as_mut())?;
@@ -1074,7 +1074,7 @@ impl BlockPostingsEnum {
         let doc_in = self
             .doc_in
             .as_mut()
-            .ok_or_else(|| LuceneError::IllegalState("doc_in is not open".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_state("doc_in is not open".to_string()))?;
         let pos_delta = doc_in.read_v_long()?;
         let block_pos_upto = i32::from(doc_in.read_byte()?);
         let pay = if index_has_offsets_or_payloads {
@@ -1527,7 +1527,7 @@ impl PostingsEnum for BlockPostingsEnum {
             let mut freq_in = self.freq_in.borrow_mut();
             if freq_in.is_none() {
                 let doc_in = self.doc_in.as_ref().ok_or_else(|| {
-                    LuceneError::IllegalState("BlockPostingsEnum has no doc input".to_string())
+                    LuceneError::illegal_state("BlockPostingsEnum has no doc input".to_string())
                 })?;
                 *freq_in = Some(doc_in.clone_input()?);
             }

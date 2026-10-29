@@ -476,7 +476,7 @@ impl StandardDirectoryReader {
         };
         let old_reader = &old_readers[index];
         if commit_info.info.id() != old_reader.get_segment_info().info.id() {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "same segment {} has invalid doc count change; likely you are re-opening a reader \
                  after illegally removing index files yourself and building a new index in their \
                  place.  Use IndexWriter.deleteAll or open a new IndexWriter using OpenMode.CREATE \
@@ -553,7 +553,10 @@ impl StandardDirectoryReader {
         // docs live in memory: both must be read from disk.
         let live_docs: Option<Box<dyn crate::util::Bits>> = if commit_info.has_deletions() {
             let codec = commit_info.info.codec().ok_or_else(|| {
-                LuceneError::IllegalState(format!("segment {} has no codec", commit_info.info.name))
+                LuceneError::illegal_state(format!(
+                    "segment {} has no codec",
+                    commit_info.info.name
+                ))
             })?;
             Some(codec.live_docs_format().read_live_docs(
                 commit_info.info.directory.as_ref(),
@@ -767,10 +770,9 @@ impl CompositeTermVectors {
         body: impl FnOnce(&mut dyn TermVectors, i32) -> Result<T>,
     ) -> Result<T> {
         let index = self.reader_index(doc_id)?;
-        let mut cache = self
-            .sub_vectors
-            .lock()
-            .map_err(|_| LuceneError::IllegalState("term vectors lock was poisoned".to_string()))?;
+        let mut cache = self.sub_vectors.lock().map_err(|_| {
+            LuceneError::illegal_state("term vectors lock was poisoned".to_string())
+        })?;
         if cache[index].is_none() {
             cache[index] = Some(LeafReader::term_vectors(self.sub_readers[index].as_ref())?);
         }
@@ -832,7 +834,7 @@ impl CompositeStoredFields {
     ) -> Result<T> {
         let index = self.reader_index(doc_id)?;
         let mut cache = self.sub_fields.lock().map_err(|_| {
-            LuceneError::IllegalState("stored fields lock was poisoned".to_string())
+            LuceneError::illegal_state("stored fields lock was poisoned".to_string())
         })?;
         if cache[index].is_none() {
             cache[index] = Some(LeafReader::stored_fields(self.sub_readers[index].as_ref())?);
@@ -1233,7 +1235,7 @@ impl DirectoryReaderCacheHelper {
 
     fn notify_closed_listeners(&self) -> Result<()> {
         let guard = self.listeners.lock().map_err(|_| {
-            LuceneError::IllegalState("reader closed listeners lock poisoned".to_string())
+            LuceneError::illegal_state("reader closed listeners lock poisoned".to_string())
         })?;
         for l in guard.iter() {
             // `CacheKey` is a unit struct, so we can pass a fresh instance.

@@ -293,7 +293,7 @@ fn max_merge_count_stalls_the_producer() {
                     let outcome = (|| {
                         if count > max_merge_count {
                             failed.store(true, Ordering::SeqCst);
-                            return Err(LuceneError::IllegalState(format!(
+                            return Err(LuceneError::illegal_state(format!(
                                 "count={count} vs maxMergeCount={max_merge_count}"
                             )));
                         }
@@ -573,7 +573,7 @@ fn a_merge_exception_reaches_the_writer_and_the_merge_thread() {
     // the writer the tragedy closed.
     if let Err(error) = writer.commit() {
         assert!(
-            matches!(error, LuceneError::AlreadyClosed(_))
+            matches!(error, LuceneError::AlreadyClosed { .. })
                 || error.to_string().contains("unrecoverable"),
             "{error}"
         );
@@ -586,7 +586,10 @@ fn a_merge_exception_reaches_the_writer_and_the_merge_thread() {
     let tragedy = writer
         .get_tragic_exception()
         .expect("the failed merge is a tragic event on the writer");
-    assert!(tragedy.contains("warmer failed on purpose"), "{tragedy}");
+    assert!(
+        tragedy.to_string().contains("warmer failed on purpose"),
+        "{tragedy}"
+    );
     assert!(writer.ensure_open().is_err(), "a tragic writer is closed");
     // `maybeCloseOnTragicEvent` rolled the writer back: it is closed, not
     // merely refusing work (`IndexWriter.java:5876-5884`).
@@ -594,10 +597,21 @@ fn a_merge_exception_reaches_the_writer_and_the_merge_thread() {
     // `hasPendingMerges` and `getNextMerge` refuse to hand out merges once
     // the writer is tragic (`IndexWriter.java:2498-2524`).
     match writer.has_pending_merges_pub() {
-        Err(LuceneError::IllegalState(message)) => assert!(
-            message.starts_with("this writer hit an unrecoverable error; cannot merge"),
-            "{message}"
-        ),
+        // `new IllegalStateException("this writer hit an unrecoverable error;
+        // cannot merge", tragedy.get())`: Java's message, and the tragedy as
+        // the cause.
+        Err(LuceneError::IllegalState { message, cause }) => {
+            assert_eq!(
+                message,
+                "this writer hit an unrecoverable error; cannot merge"
+            );
+            assert!(
+                cause
+                    .as_ref()
+                    .is_some_and(|cause| Arc::ptr_eq(cause, &tragedy)),
+                "the cause is the tragedy: {cause:?}"
+            );
+        }
         other => panic!("expected IllegalStateException, got {other:?}"),
     }
     {

@@ -47,7 +47,7 @@ impl LiveDocsFormat for Lucene90LiveDocsFormat {
         let gen = info.get_del_gen();
         let name = file_name_from_generation(&info.info.name, LIVE_DOCS_EXTENSION, gen)
             .ok_or_else(|| {
-                LuceneError::IllegalState(format!(
+                LuceneError::illegal_state(format!(
                     "missing live docs generation for segment: {}",
                     info.info.name
                 ))
@@ -88,7 +88,7 @@ impl LiveDocsFormat for Lucene90LiveDocsFormat {
         let gen = info.get_next_del_gen();
         let name = file_name_from_generation(&info.info.name, LIVE_DOCS_EXTENSION, gen)
             .ok_or_else(|| {
-                LuceneError::IllegalState(format!(
+                LuceneError::illegal_state(format!(
                     "missing live docs generation for segment: {}",
                     info.info.name
                 ))

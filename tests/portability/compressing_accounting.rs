@@ -222,12 +222,12 @@ fn compressing_readers_report_already_closed() {
     // An open reader may answer nothing for a segment with no documents, but it
     // must not answer `AlreadyClosed`.
     assert!(
-        !matches!(reader.get(0), Err(LuceneError::AlreadyClosed(_))),
+        !matches!(reader.get(0), Err(LuceneError::AlreadyClosed { .. })),
         "an open reader must not report itself closed"
     );
     reader.close().expect("close");
     match reader.get(0) {
-        Err(LuceneError::AlreadyClosed(message)) => assert_eq!(
+        Err(LuceneError::AlreadyClosed { message, .. }) => assert_eq!(
             message, "this FieldsReader is closed",
             "the message is Lucene's own"
         ),

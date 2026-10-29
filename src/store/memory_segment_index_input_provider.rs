@@ -246,7 +246,7 @@ impl MemorySegmentIndexInputProvider {
         };
 
         let mut map = arenas.lock().map_err(|_| {
-            LuceneError::IllegalState("shared arena map mutex poisoned".to_string())
+            LuceneError::illegal_state("shared arena map mutex poisoned".to_string())
         })?;
 
         // `computeIfAbsent`.

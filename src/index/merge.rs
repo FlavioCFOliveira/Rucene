@@ -699,7 +699,7 @@ impl<T: DocIDMergerSub> DocIDMerger<T> {
                 next_index,
             } => loop {
                 let idx = current.ok_or_else(|| {
-                    LuceneError::IllegalState("DocIDMerger is exhausted".to_string())
+                    LuceneError::illegal_state("DocIDMerger is exhausted".to_string())
                 })?;
                 if self.subs[idx].next_mapped_doc()? != NO_MORE_DOCS {
                     return Ok(Some(&mut self.subs[idx]));

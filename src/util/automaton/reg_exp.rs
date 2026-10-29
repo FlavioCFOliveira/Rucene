@@ -978,7 +978,7 @@ impl RegExp {
 
     fn make_char_class(flags: i32, from: Vec<i32>, to: Vec<i32>) -> Result<RegExp> {
         if from.len() != to.len() {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "invalid class: from.length ({}) != to.length ({})",
                 from.len(),
                 to.len()

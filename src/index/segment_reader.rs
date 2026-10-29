@@ -94,7 +94,7 @@ impl SegmentCoreReaders {
         let codec = si
             .info
             .codec()
-            .ok_or_else(|| LuceneError::IllegalState("segment has no codec".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_state("segment has no codec".to_string()))?;
 
         let cfs_reader: Option<Box<dyn CompoundDirectory>> = if si.info.get_use_compound_file() {
             Some(codec.compound_format().get_compound_reader(dir, &si.info)?)
@@ -119,7 +119,7 @@ impl SegmentCoreReaders {
 
         let result: Result<()> = (|| {
             let cfs_dir_guard = core.cfs_reader.read().map_err(|_| {
-                LuceneError::IllegalState("compound file reader lock poisoned".to_string())
+                LuceneError::illegal_state("compound file reader lock poisoned".to_string())
             })?;
             let cfs_dir: &dyn Directory = if let Some(cfs) = cfs_dir_guard.as_ref() {
                 cfs.as_ref()
@@ -140,7 +140,7 @@ impl SegmentCoreReaders {
 
             if core.core_field_infos.has_postings() {
                 *core.fields.write().map_err(|_| {
-                    LuceneError::IllegalState("fields producer lock poisoned".to_string())
+                    LuceneError::illegal_state("fields producer lock poisoned".to_string())
                 })? = Some(Arc::from(
                     codec
                         .postings_format()
@@ -150,14 +150,14 @@ impl SegmentCoreReaders {
 
             if core.core_field_infos.has_norms() {
                 *core.norms_producer.write().map_err(|_| {
-                    LuceneError::IllegalState("norms producer lock poisoned".to_string())
+                    LuceneError::illegal_state("norms producer lock poisoned".to_string())
                 })? = Some(Arc::from(
                     codec.norms_format().norms_producer(&segment_read_state)?,
                 ));
             }
 
             *core.fields_reader_orig.write().map_err(|_| {
-                LuceneError::IllegalState("stored fields reader lock poisoned".to_string())
+                LuceneError::illegal_state("stored fields reader lock poisoned".to_string())
             })? = Some(codec.stored_fields_format().fields_reader(
                 cfs_dir,
                 &si.info,
@@ -167,7 +167,7 @@ impl SegmentCoreReaders {
 
             if core.core_field_infos.has_term_vectors() {
                 *core.term_vectors_reader_orig.write().map_err(|_| {
-                    LuceneError::IllegalState("term vectors reader lock poisoned".to_string())
+                    LuceneError::illegal_state("term vectors reader lock poisoned".to_string())
                 })? = Some(codec.term_vectors_format().vectors_reader(
                     cfs_dir,
                     &si.info,
@@ -178,7 +178,7 @@ impl SegmentCoreReaders {
 
             if core.core_field_infos.has_point_values() {
                 *core.points_reader.write().map_err(|_| {
-                    LuceneError::IllegalState("points reader lock poisoned".to_string())
+                    LuceneError::illegal_state("points reader lock poisoned".to_string())
                 })? = Some(Arc::from(
                     codec.points_format().fields_reader(&segment_read_state)?,
                 ));
@@ -186,7 +186,7 @@ impl SegmentCoreReaders {
 
             if core.core_field_infos.has_vector_values() {
                 *core.knn_vectors_reader.write().map_err(|_| {
-                    LuceneError::IllegalState("knn vectors reader lock poisoned".to_string())
+                    LuceneError::illegal_state("knn vectors reader lock poisoned".to_string())
                 })? = Some(Arc::from(
                     codec
                         .knn_vectors_format()
@@ -236,7 +236,7 @@ impl SegmentCoreReaders {
                 Err(actual) => count = actual,
             }
         }
-        Err(LuceneError::AlreadyClosed(
+        Err(LuceneError::already_closed(
             "SegmentCoreReaders is already closed".to_string(),
         ))
     }
@@ -251,7 +251,7 @@ impl SegmentCoreReaders {
             listener_result?;
             return close_result;
         } else if rc < 0 {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "too many decRef calls: refCount is {rc} after decrement"
             )));
         }
@@ -300,7 +300,7 @@ impl SegmentCoreReaders {
 
     fn notify_core_closed_listeners(&self) -> Result<()> {
         let guard = self.core_closed_listeners.lock().map_err(|_| {
-            LuceneError::IllegalState("core closed listeners lock poisoned".to_string())
+            LuceneError::illegal_state("core closed listeners lock poisoned".to_string())
         })?;
         for listener in guard.iter() {
             listener.on_close(CacheKey)?;
@@ -320,7 +320,7 @@ fn close_lock<T>(
 ) -> Result<()> {
     let mut guard = lock
         .write()
-        .map_err(|_| LuceneError::IllegalState("codec reader lock poisoned".to_string()))?;
+        .map_err(|_| LuceneError::illegal_state("codec reader lock poisoned".to_string()))?;
     if let Some(mut value) = guard.take() {
         close(&mut value)?;
     }
@@ -340,7 +340,7 @@ fn close_lock_arc<T: ?Sized>(
 ) -> Result<()> {
     let mut guard = lock
         .write()
-        .map_err(|_| LuceneError::IllegalState("codec reader lock poisoned".to_string()))?;
+        .map_err(|_| LuceneError::illegal_state("codec reader lock poisoned".to_string()))?;
     if let Some(mut value) = guard.take() {
         if let Some(inner) = Arc::get_mut(&mut value) {
             close(inner)?;
@@ -353,7 +353,7 @@ fn close_lock_arc<T: ?Sized>(
 fn check_lock<T>(lock: &RwLock<Option<T>>, mut check: impl FnMut(&T) -> Result<()>) -> Result<()> {
     let guard = lock
         .read()
-        .map_err(|_| LuceneError::IllegalState("codec reader lock poisoned".to_string()))?;
+        .map_err(|_| LuceneError::illegal_state("codec reader lock poisoned".to_string()))?;
     if let Some(ref value) = *guard {
         check(value)?;
     }
@@ -423,7 +423,7 @@ impl SegmentDocValues {
         infos: &FieldInfos,
     ) -> Result<Arc<dyn DocValuesProducer>> {
         let mut map = self.gen_producers.lock().map_err(|_| {
-            LuceneError::IllegalState("segment doc-values producer map lock poisoned".to_string())
+            LuceneError::illegal_state("segment doc-values producer map lock poisoned".to_string())
         })?;
 
         if let Some(holder) = map.get(&gen) {
@@ -484,7 +484,7 @@ impl SegmentDocValues {
         let codec = si
             .info
             .codec()
-            .ok_or_else(|| LuceneError::IllegalState("segment has no codec".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_state("segment has no codec".to_string()))?;
         let producer = codec.doc_values_format().fields_producer(&state)?;
         Ok(Arc::new(DocValuesProducerHolder::new(producer)?))
     }
@@ -494,7 +494,7 @@ impl SegmentDocValues {
     /// closed and removed from the cache.
     pub fn dec_ref(&self, gens: &[i64]) -> Result<()> {
         let mut map = self.gen_producers.lock().map_err(|_| {
-            LuceneError::IllegalState("segment doc-values producer map lock poisoned".to_string())
+            LuceneError::illegal_state("segment doc-values producer map lock poisoned".to_string())
         })?;
 
         for gen in gens {
@@ -548,7 +548,7 @@ impl DocValuesProducerHolder {
                 Err(actual) => count = actual,
             }
         }
-        Err(LuceneError::AlreadyClosed(
+        Err(LuceneError::already_closed(
             "DocValuesProducer is already closed".to_string(),
         ))
     }
@@ -556,7 +556,7 @@ impl DocValuesProducerHolder {
     fn dec_ref(&self) -> Result<i32> {
         let rc = self.ref_count.fetch_sub(1, Ordering::SeqCst) - 1;
         if rc < 0 {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "too many decRef calls on DocValuesProducer".to_string(),
             ));
         }
@@ -584,12 +584,12 @@ impl DocValuesProducer for DocValuesProducerHolder {
     fn get_numeric(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
         {
             let guard = self.producer.lock().map_err(|_| {
-                LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
+                LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
             })?;
             if let Some(producer) = guard.as_ref() {
                 producer.get_numeric(field)
             } else {
-                Err(LuceneError::AlreadyClosed(
+                Err(LuceneError::already_closed(
                     "doc-values producer is closed".to_string(),
                 ))
             }
@@ -599,12 +599,12 @@ impl DocValuesProducer for DocValuesProducerHolder {
     fn get_binary(&self, field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
         {
             let guard = self.producer.lock().map_err(|_| {
-                LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
+                LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
             })?;
             if let Some(producer) = guard.as_ref() {
                 producer.get_binary(field)
             } else {
-                Err(LuceneError::AlreadyClosed(
+                Err(LuceneError::already_closed(
                     "doc-values producer is closed".to_string(),
                 ))
             }
@@ -614,12 +614,12 @@ impl DocValuesProducer for DocValuesProducerHolder {
     fn get_sorted(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
         {
             let guard = self.producer.lock().map_err(|_| {
-                LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
+                LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
             })?;
             if let Some(producer) = guard.as_ref() {
                 producer.get_sorted(field)
             } else {
-                Err(LuceneError::AlreadyClosed(
+                Err(LuceneError::already_closed(
                     "doc-values producer is closed".to_string(),
                 ))
             }
@@ -632,12 +632,12 @@ impl DocValuesProducer for DocValuesProducerHolder {
     ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
         {
             let guard = self.producer.lock().map_err(|_| {
-                LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
+                LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
             })?;
             if let Some(producer) = guard.as_ref() {
                 producer.get_sorted_numeric(field)
             } else {
-                Err(LuceneError::AlreadyClosed(
+                Err(LuceneError::already_closed(
                     "doc-values producer is closed".to_string(),
                 ))
             }
@@ -647,12 +647,12 @@ impl DocValuesProducer for DocValuesProducerHolder {
     fn get_sorted_set(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
         {
             let guard = self.producer.lock().map_err(|_| {
-                LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
+                LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
             })?;
             if let Some(producer) = guard.as_ref() {
                 producer.get_sorted_set(field)
             } else {
-                Err(LuceneError::AlreadyClosed(
+                Err(LuceneError::already_closed(
                     "doc-values producer is closed".to_string(),
                 ))
             }
@@ -661,12 +661,12 @@ impl DocValuesProducer for DocValuesProducerHolder {
 
     fn get_skipper(&self, field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
         let guard = self.producer.lock().map_err(|_| {
-            LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
+            LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
         })?;
         if let Some(producer) = guard.as_ref() {
             producer.get_skipper(field)
         } else {
-            Err(LuceneError::AlreadyClosed(
+            Err(LuceneError::already_closed(
                 "doc-values producer is closed".to_string(),
             ))
         }
@@ -674,12 +674,12 @@ impl DocValuesProducer for DocValuesProducerHolder {
 
     fn check_integrity(&self) -> Result<()> {
         let guard = self.producer.lock().map_err(|_| {
-            LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
+            LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
         })?;
         if let Some(producer) = guard.as_ref() {
             producer.check_integrity()
         } else {
-            Err(LuceneError::AlreadyClosed(
+            Err(LuceneError::already_closed(
                 "doc-values producer is closed".to_string(),
             ))
         }
@@ -687,12 +687,12 @@ impl DocValuesProducer for DocValuesProducerHolder {
 
     fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
         let guard = self.producer.lock().map_err(|_| {
-            LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
+            LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
         })?;
         if let Some(producer) = guard.as_ref() {
             producer.get_merge_instance()
         } else {
-            Err(LuceneError::AlreadyClosed(
+            Err(LuceneError::already_closed(
                 "doc-values producer is closed".to_string(),
             ))
         }
@@ -700,7 +700,7 @@ impl DocValuesProducer for DocValuesProducerHolder {
 
     fn close(&mut self) -> Result<()> {
         let mut guard = self.producer.lock().map_err(|_| {
-            LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
+            LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
         })?;
         if let Some(mut producer) = guard.take() {
             producer.close()?;
@@ -1216,7 +1216,7 @@ impl SegmentReader {
 
                 let live_docs = if original_si_for_closure.has_deletions() {
                     let codec = original_si_for_closure.info.codec().ok_or_else(|| {
-                        LuceneError::IllegalState("segment has no codec".to_string())
+                        LuceneError::illegal_state("segment has no codec".to_string())
                     })?;
                     Some(SharedBits::new(codec.live_docs_format().read_live_docs(
                         dir,
@@ -1239,7 +1239,7 @@ impl SegmentReader {
                 ));
 
                 let cfs_dir_guard = core_readers.cfs_reader.read().map_err(|_| {
-                    LuceneError::IllegalState("compound file reader lock poisoned".to_string())
+                    LuceneError::illegal_state("compound file reader lock poisoned".to_string())
                 })?;
                 let cfs_dir: &dyn Directory = if let Some(cfs) = cfs_dir_guard.as_ref() {
                     cfs.as_ref()
@@ -1349,7 +1349,7 @@ impl SegmentReader {
 
                 let dir: &dyn Directory = &*original_si_for_closure.info.directory;
                 let cfs_dir_guard = core_readers.cfs_reader.read().map_err(|_| {
-                    LuceneError::IllegalState("compound file reader lock poisoned".to_string())
+                    LuceneError::illegal_state("compound file reader lock poisoned".to_string())
                 })?;
                 let cfs_dir: &dyn Directory = if let Some(cfs) = cfs_dir_guard.as_ref() {
                     cfs.as_ref()
@@ -1410,7 +1410,7 @@ impl SegmentReader {
             let codec = si
                 .info
                 .codec()
-                .ok_or_else(|| LuceneError::IllegalState("segment has no codec".to_string()))?;
+                .ok_or_else(|| LuceneError::illegal_state("segment has no codec".to_string()))?;
             let segment_suffix = radix36(si.get_field_infos_gen());
             codec
                 .field_infos_format()
@@ -1505,7 +1505,7 @@ impl SegmentReader {
         self.ensure_open()?;
         let guard =
             self.core_readers.fields.read().map_err(|_| {
-                LuceneError::IllegalState("fields producer lock poisoned".to_string())
+                LuceneError::illegal_state("fields producer lock poisoned".to_string())
             })?;
         Ok(guard.as_ref().map(Arc::clone))
     }
@@ -1514,7 +1514,7 @@ impl SegmentReader {
     pub fn get_fields_reader(&self) -> Result<Option<Box<dyn StoredFieldsReader>>> {
         self.ensure_open()?;
         let guard = self.core_readers.fields_reader_orig.read().map_err(|_| {
-            LuceneError::IllegalState("stored fields reader lock poisoned".to_string())
+            LuceneError::illegal_state("stored fields reader lock poisoned".to_string())
         })?;
         Ok(guard.as_ref().map(|reader| reader.clone_reader()))
     }
@@ -1527,7 +1527,7 @@ impl SegmentReader {
             .term_vectors_reader_orig
             .read()
             .map_err(|_| {
-                LuceneError::IllegalState("term vectors reader lock poisoned".to_string())
+                LuceneError::illegal_state("term vectors reader lock poisoned".to_string())
             })?;
         Ok(guard.as_ref().map(|reader| reader.clone_reader()))
     }
@@ -1537,7 +1537,7 @@ impl SegmentReader {
         self.ensure_open()?;
         let guard =
             self.core_readers.norms_producer.read().map_err(|_| {
-                LuceneError::IllegalState("norms producer lock poisoned".to_string())
+                LuceneError::illegal_state("norms producer lock poisoned".to_string())
             })?;
         Ok(guard.as_ref().map(Arc::clone))
     }
@@ -1553,7 +1553,7 @@ impl SegmentReader {
         self.ensure_open()?;
         let guard =
             self.core_readers.points_reader.read().map_err(|_| {
-                LuceneError::IllegalState("points reader lock poisoned".to_string())
+                LuceneError::illegal_state("points reader lock poisoned".to_string())
             })?;
         Ok(guard.as_ref().map(Arc::clone))
     }
@@ -1562,7 +1562,7 @@ impl SegmentReader {
     pub fn get_vector_reader(&self) -> Result<Option<Arc<dyn KnnVectorsReader>>> {
         self.ensure_open()?;
         let guard = self.core_readers.knn_vectors_reader.read().map_err(|_| {
-            LuceneError::IllegalState("knn vectors reader lock poisoned".to_string())
+            LuceneError::illegal_state("knn vectors reader lock poisoned".to_string())
         })?;
         Ok(guard.as_ref().map(Arc::clone))
     }
@@ -1584,7 +1584,7 @@ impl LeafReader for SegmentReader {
             .term_vectors_reader_orig
             .read()
             .map_err(|_| {
-                LuceneError::IllegalState("term vectors reader lock poisoned".to_string())
+                LuceneError::illegal_state("term vectors reader lock poisoned".to_string())
             })?;
         if let Some(reader) = guard.as_ref() {
             // `TermVectorsReader` extends `TermVectors`, so the codec reader
@@ -1606,7 +1606,7 @@ impl LeafReader for SegmentReader {
     fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
         self.ensure_open()?;
         let guard = self.core_readers.fields_reader_orig.read().map_err(|_| {
-            LuceneError::IllegalState("stored fields reader lock poisoned".to_string())
+            LuceneError::illegal_state("stored fields reader lock poisoned".to_string())
         })?;
         if let Some(_reader) = guard.as_ref() {
             Ok(Box::new(CodecStoredFields {
@@ -1614,7 +1614,7 @@ impl LeafReader for SegmentReader {
                 max_doc: self.max_doc,
             }))
         } else {
-            Err(LuceneError::AlreadyClosed(
+            Err(LuceneError::already_closed(
                 "stored fields reader is closed".to_string(),
             ))
         }
@@ -1660,7 +1660,7 @@ impl LeafReader for SegmentReader {
         }
         let guard =
             self.core_readers.fields.read().map_err(|_| {
-                LuceneError::IllegalState("fields producer lock poisoned".to_string())
+                LuceneError::illegal_state("fields producer lock poisoned".to_string())
             })?;
         if let Some(fields) = guard.as_ref() {
             fields.terms(field)
@@ -1751,7 +1751,7 @@ impl LeafReader for SegmentReader {
         }
         let guard =
             self.core_readers.norms_producer.read().map_err(|_| {
-                LuceneError::IllegalState("norms producer lock poisoned".to_string())
+                LuceneError::illegal_state("norms producer lock poisoned".to_string())
             })?;
         if let Some(producer) = guard.as_ref() {
             producer.get_norms(fi.unwrap())
@@ -1788,7 +1788,7 @@ impl LeafReader for SegmentReader {
             return Ok(None);
         }
         let guard = self.core_readers.knn_vectors_reader.read().map_err(|_| {
-            LuceneError::IllegalState("knn vectors reader lock poisoned".to_string())
+            LuceneError::illegal_state("knn vectors reader lock poisoned".to_string())
         })?;
         if let Some(reader) = guard.as_ref() {
             reader.get_float_vector_values(field)
@@ -1807,7 +1807,7 @@ impl LeafReader for SegmentReader {
             return Ok(None);
         }
         let guard = self.core_readers.knn_vectors_reader.read().map_err(|_| {
-            LuceneError::IllegalState("knn vectors reader lock poisoned".to_string())
+            LuceneError::illegal_state("knn vectors reader lock poisoned".to_string())
         })?;
         if let Some(reader) = guard.as_ref() {
             reader.get_byte_vector_values(field)
@@ -1832,7 +1832,7 @@ impl LeafReader for SegmentReader {
             return Ok(());
         }
         let mut guard = self.core_readers.knn_vectors_reader.write().map_err(|_| {
-            LuceneError::IllegalState("knn vectors reader lock poisoned".to_string())
+            LuceneError::illegal_state("knn vectors reader lock poisoned".to_string())
         })?;
         if let Some(reader) = guard.as_mut() {
             reader.search(field, target, collector, accept_docs)
@@ -1857,7 +1857,7 @@ impl LeafReader for SegmentReader {
             return Ok(());
         }
         let mut guard = self.core_readers.knn_vectors_reader.write().map_err(|_| {
-            LuceneError::IllegalState("knn vectors reader lock poisoned".to_string())
+            LuceneError::illegal_state("knn vectors reader lock poisoned".to_string())
         })?;
         if let Some(reader) = guard.as_mut() {
             reader.search_byte(field, target, collector, accept_docs)
@@ -2081,12 +2081,12 @@ impl StoredFields for CodecStoredFields {
     fn prefetch(&mut self, doc_id: i32) -> Result<()> {
         check_index(doc_id, self.max_doc)?;
         let guard = self.core.fields_reader_orig.read().map_err(|_| {
-            LuceneError::IllegalState("stored fields reader lock poisoned".to_string())
+            LuceneError::illegal_state("stored fields reader lock poisoned".to_string())
         })?;
         if let Some(reader) = guard.as_ref() {
             reader.prefetch(doc_id)
         } else {
-            Err(LuceneError::AlreadyClosed(
+            Err(LuceneError::already_closed(
                 "stored fields reader is closed".to_string(),
             ))
         }
@@ -2099,12 +2099,12 @@ impl StoredFields for CodecStoredFields {
     ) -> Result<()> {
         check_index(doc_id, self.max_doc)?;
         let guard = self.core.fields_reader_orig.read().map_err(|_| {
-            LuceneError::IllegalState("stored fields reader lock poisoned".to_string())
+            LuceneError::illegal_state("stored fields reader lock poisoned".to_string())
         })?;
         if let Some(reader) = guard.as_ref() {
             reader.document(doc_id, visitor)
         } else {
-            Err(LuceneError::AlreadyClosed(
+            Err(LuceneError::already_closed(
                 "stored fields reader is closed".to_string(),
             ))
         }
@@ -2155,7 +2155,7 @@ impl SegmentReaderCacheHelper {
             return Ok(());
         }
         let guard = self.listeners.lock().map_err(|_| {
-            LuceneError::IllegalState("reader closed listeners lock poisoned".to_string())
+            LuceneError::illegal_state("reader closed listeners lock poisoned".to_string())
         })?;
         for listener in guard.iter() {
             listener.on_close(CacheKey)?;

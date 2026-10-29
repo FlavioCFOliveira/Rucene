@@ -64,14 +64,14 @@ static FILTER_INDEX_INPUT_ACCESS: OnceLock<Arc<dyn FilterIndexInputAccess>> = On
 /// Builds the error Java raises from `Objects.requireNonNull` when an accessor
 /// was never registered.
 fn missing(accessor: &str) -> LuceneError {
-    LuceneError::IllegalState(format!(
+    LuceneError::illegal_state(format!(
         "{accessor} has not been registered with TestSecrets."
     ))
 }
 
 /// Builds the message Java uses in `ensureCallerForSetter`.
 fn already_set(owner: &str) -> LuceneError {
-    LuceneError::IllegalState(format!("The accessor can only be set once by {owner}."))
+    LuceneError::illegal_state(format!("The accessor can only be set once by {owner}."))
 }
 
 /// Stands in for the `Class<?>` Lucene hands to `ensureCallerForSetter` and to
@@ -191,7 +191,7 @@ impl TestSecrets {
     fn ensure_caller_for_getter() -> Result<()> {
         let valid_caller = caller_file(Location::caller()).starts_with(TEST_FRAMEWORK_DIR);
         if !valid_caller {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "Lucene TestSecrets can only be used by the test-framework.".to_string(),
             ));
         }

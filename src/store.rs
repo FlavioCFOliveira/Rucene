@@ -2905,7 +2905,7 @@ impl MockIndexInput {
 
     fn ensure_open(&self) -> Result<()> {
         if self.closed {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "Already closed: {}",
                 self.resource_description
             )));
@@ -3076,7 +3076,7 @@ impl MockIndexOutput {
 
     fn ensure_open(&self) -> Result<()> {
         if self.closed {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "Already closed: {}",
                 self.resource_description
             )));
@@ -3779,7 +3779,7 @@ impl Lock for SingleInstanceLock {
             .lock()
             .expect("single-instance locks mutex poisoned");
         if !locks.remove(&self.lock_name) {
-            return Err(LuceneError::AlreadyClosed(format!(
+            return Err(LuceneError::already_closed(format!(
                 "Lock instance was invalidated from map: {:?}",
                 self
             )));
@@ -3789,7 +3789,7 @@ impl Lock for SingleInstanceLock {
 
     fn ensure_valid(&self) -> Result<()> {
         if self.closed.load(Ordering::SeqCst) {
-            return Err(LuceneError::AlreadyClosed(format!(
+            return Err(LuceneError::already_closed(format!(
                 "Lock was already released: {:?}",
                 self
             )));
@@ -3799,7 +3799,7 @@ impl Lock for SingleInstanceLock {
             .lock()
             .expect("single-instance locks mutex poisoned");
         if !locks.contains(&self.lock_name) {
-            return Err(LuceneError::AlreadyClosed(format!(
+            return Err(LuceneError::already_closed(format!(
                 "Lock instance was invalidated from map: {:?}",
                 self
             )));
@@ -3832,7 +3832,7 @@ impl NativeFSLockFactory {
             .expect("native held locks mutex poisoned")
             .remove(path);
         if !removed {
-            return Err(LuceneError::AlreadyClosed(format!(
+            return Err(LuceneError::already_closed(format!(
                 "Lock path was cleared but never marked as held: {path}"
             )));
         }
@@ -3952,7 +3952,7 @@ impl Lock for NativeFSLock {
 
     fn ensure_valid(&self) -> Result<()> {
         if self.closed.load(Ordering::SeqCst) {
-            return Err(LuceneError::AlreadyClosed(format!(
+            return Err(LuceneError::already_closed(format!(
                 "Lock instance already released: {self}"
             )));
         }
@@ -3961,7 +3961,7 @@ impl Lock for NativeFSLock {
             .lock()
             .expect("native held locks mutex poisoned");
         if !held.contains(&self.path_str) {
-            return Err(LuceneError::AlreadyClosed(format!(
+            return Err(LuceneError::already_closed(format!(
                 "Lock path unexpectedly cleared from map: {self}"
             )));
         }
@@ -3969,7 +3969,7 @@ impl Lock for NativeFSLock {
 
         let lock = self.lock.lock().expect("native lock mutex poisoned");
         if !lock.owns_lock() {
-            return Err(LuceneError::AlreadyClosed(format!(
+            return Err(LuceneError::already_closed(format!(
                 "FileLock invalidated by an external force: {self}"
             )));
         }
@@ -3978,14 +3978,14 @@ impl Lock for NativeFSLock {
         let metadata = std::fs::metadata(&self.path)?;
         let size = metadata.len() as i64;
         if size != 0 {
-            return Err(LuceneError::AlreadyClosed(format!(
+            return Err(LuceneError::already_closed(format!(
                 "Unexpected lock file size: {size}, (lock={self})"
             )));
         }
 
         let ctime = metadata.created().unwrap_or(SystemTime::UNIX_EPOCH);
         if ctime != self.creation_time {
-            return Err(LuceneError::AlreadyClosed(format!(
+            return Err(LuceneError::already_closed(format!(
                 "Underlying file changed by an external force at {ctime:?}, (lock={self})"
             )));
         }
@@ -4086,7 +4086,7 @@ impl Lock for SimpleFSLock {
 
     fn ensure_valid(&self) -> Result<()> {
         if self.closed.load(Ordering::SeqCst) {
-            return Err(LuceneError::AlreadyClosed(format!(
+            return Err(LuceneError::already_closed(format!(
                 "Lock was already released: {self}"
             )));
         }
@@ -4094,7 +4094,7 @@ impl Lock for SimpleFSLock {
         let metadata = std::fs::metadata(&self.path)?;
         let ctime = metadata.created().unwrap_or(SystemTime::UNIX_EPOCH);
         if ctime != self.creation_time {
-            return Err(LuceneError::AlreadyClosed(format!(
+            return Err(LuceneError::already_closed(format!(
                 "Underlying file changed by an external force at {ctime:?}, (lock={self})"
             )));
         }
@@ -4333,7 +4333,7 @@ pub trait ChecksumIndexInput: IndexInput {
     fn seek(&mut self, pos: i64) -> Result<()> {
         let cur = self.file_pointer();
         if pos < cur {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "{} cannot seek backwards (pos={pos}, file_pointer={cur})",
                 std::any::type_name::<Self>()
             )));
@@ -4493,13 +4493,13 @@ impl IndexInput for BufferedChecksumIndexInput {
         _offset: i64,
         _length: i64,
     ) -> Result<Box<dyn IndexInput>> {
-        Err(LuceneError::IllegalState(
+        Err(LuceneError::illegal_state(
             "BufferedChecksumIndexInput does not support slicing".to_string(),
         ))
     }
 
     fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
-        Err(LuceneError::IllegalState(
+        Err(LuceneError::illegal_state(
             "BufferedChecksumIndexInput does not support cloning".to_string(),
         ))
     }
@@ -4812,7 +4812,7 @@ impl<D: Directory> Directory for BaseDirectory<D> {
 
     fn ensure_open(&self) -> Result<()> {
         if !self.is_open() {
-            return Err(LuceneError::AlreadyClosed(
+            return Err(LuceneError::already_closed(
                 "this Directory is closed".to_string(),
             ));
         }
@@ -5719,7 +5719,7 @@ impl RamDirectory {
 
     fn ensure_open(&self) -> Result<()> {
         if *self.closed.lock().expect("closed mutex poisoned") {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "this Directory is closed".to_string(),
             ));
         }
@@ -5873,7 +5873,7 @@ impl RamIndexOutput {
 
     fn ensure_open(&self) -> Result<()> {
         if self.closed {
-            return Err(LuceneError::IllegalState("Already closed".to_string()));
+            return Err(LuceneError::illegal_state("Already closed".to_string()));
         }
         Ok(())
     }
@@ -7341,7 +7341,7 @@ impl Directory for ByteBuffersDirectory {
         }
         files.insert(dest.to_string(), source_entry);
         if files.remove(source).is_none() {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "File was unexpectedly replaced: {source}"
             )));
         }
@@ -7376,7 +7376,7 @@ impl Directory for ByteBuffersDirectory {
 
     fn ensure_open(&self) -> Result<()> {
         if !self.is_open.load(Ordering::Acquire) {
-            return Err(LuceneError::AlreadyClosed(
+            return Err(LuceneError::already_closed(
                 "this Directory is closed".to_string(),
             ));
         }
@@ -7458,7 +7458,7 @@ impl ByteBuffersIndexInput {
 
     fn ensure_open(&self) -> Result<()> {
         if self.input.is_none() {
-            return Err(LuceneError::AlreadyClosed("Already closed.".to_string()));
+            return Err(LuceneError::already_closed("Already closed.".to_string()));
         }
         Ok(())
     }
@@ -7746,7 +7746,7 @@ impl ByteBuffersIndexOutput {
 
     fn ensure_open(&self) -> Result<()> {
         if self.delegate.is_none() {
-            return Err(LuceneError::AlreadyClosed("Already closed.".to_string()));
+            return Err(LuceneError::already_closed("Already closed.".to_string()));
         }
         Ok(())
     }
@@ -8264,7 +8264,7 @@ impl FSDirectory {
 
     fn check_open(&self) -> Result<()> {
         if !self.is_open.load(Ordering::Acquire) {
-            return Err(LuceneError::AlreadyClosed(
+            return Err(LuceneError::already_closed(
                 "this Directory is closed".to_string(),
             ));
         }
@@ -11015,7 +11015,7 @@ mod tests {
 
         IndexInput::seek(&mut input, 16).unwrap();
         let err = IndexInput::seek(&mut input, 8).unwrap_err();
-        assert!(matches!(err, LuceneError::IllegalState(_)));
+        assert!(matches!(err, LuceneError::IllegalState { .. }));
         assert!(err.to_string().contains("cannot seek backwards"));
         assert!(err.to_string().contains("BufferedChecksumIndexInput"));
     }
@@ -11031,7 +11031,7 @@ mod tests {
             Err(e) => e,
             Ok(_) => panic!("expected clone to be unsupported"),
         };
-        assert!(matches!(err, LuceneError::IllegalState(_)));
+        assert!(matches!(err, LuceneError::IllegalState { .. }));
     }
 
     /// Verifies that `BufferedChecksumIndexInput` does not support slicing.
@@ -11045,7 +11045,7 @@ mod tests {
             Err(e) => e,
             Ok(_) => panic!("expected slice to be unsupported"),
         };
-        assert!(matches!(err, LuceneError::IllegalState(_)));
+        assert!(matches!(err, LuceneError::IllegalState { .. }));
     }
 
     // -------------------------------------------------------------------------

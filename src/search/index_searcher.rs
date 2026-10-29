@@ -948,7 +948,7 @@ impl IndexSearcher {
         let cached = self.compute_and_cache_slices();
         match cached {
             Ok(slices) => Ok(slices),
-            Err(message) => Err(LuceneError::IllegalState(message.clone())),
+            Err(message) => Err(LuceneError::illegal_state(message.clone())),
         }
     }
 
@@ -990,7 +990,7 @@ impl IndexSearcher {
         let mut distinct_leaves = std::collections::HashSet::new();
         for leaf_partition in &leaf_slice.partitions {
             if !distinct_leaves.insert(leaf_partition.ctx.id()) {
-                return Err(LuceneError::IllegalState(
+                return Err(LuceneError::illegal_state(
                     "The same slice targets multiple leaf partitions of the same leaf reader context. A physical segment should rather get partitioned to be searched concurrently from as many slices as the number of leaf partitions it is split into."
                         .to_string(),
                 ));
@@ -1195,7 +1195,7 @@ impl IndexSearcher {
         for _ in 1..leaf_slices.len() {
             let collector = manager.new_collector()?;
             if score_mode != collector.score_mode() {
-                return Err(LuceneError::IllegalState(
+                return Err(LuceneError::illegal_state(
                     "CollectorManager does not always produce collectors with the same score mode"
                         .to_string(),
                 ));

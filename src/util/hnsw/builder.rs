@@ -424,7 +424,7 @@ impl HnswGraphBuilder {
 impl HnswBuilder for HnswGraphBuilder {
     fn build(&mut self, max_ord: i32) -> Result<&OnHeapHnswGraph> {
         if self.frozen {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "This HnswGraphBuilder is frozen and cannot be updated".to_string(),
             ));
         }
@@ -491,7 +491,7 @@ impl HnswGraphBuilder {
         skip: Option<&FixedBitSet>,
     ) -> Result<()> {
         if self.frozen {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "This HnswGraphBuilder is frozen and cannot be updated".to_string(),
             ));
         }
@@ -531,7 +531,7 @@ impl HnswGraphBuilder {
 
     fn add_graph_node_internal(&mut self, node: i32, eps0: Option<&IntHashSet>) -> Result<()> {
         if self.frozen {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "Graph builder is already frozen".to_string(),
             ));
         }
@@ -633,7 +633,7 @@ impl HnswGraphBuilder {
                 return Ok(());
             }
             if self.hnsw.num_levels()? == cur_max_level + 1 {
-                return Err(LuceneError::IllegalState(format!(
+                return Err(LuceneError::illegal_state(format!(
                     "We're not able to promote node {} at level {} as entry node",
                     node, node_level
                 )));

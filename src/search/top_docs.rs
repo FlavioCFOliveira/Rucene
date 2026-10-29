@@ -306,9 +306,9 @@ impl TopDocs {
             let num_iter_on_hits = avail_hit_count.min(requested_result_window);
             let mut hit_upto = 0usize;
             while hit_upto < num_iter_on_hits {
-                let mut shard_ref = *queue
-                    .top()
-                    .ok_or_else(|| LuceneError::IllegalState("merge queue is empty".to_string()))?;
+                let mut shard_ref = *queue.top().ok_or_else(|| {
+                    LuceneError::illegal_state("merge queue is empty".to_string())
+                })?;
                 let hit = shard_hits[shard_ref.shard_index].score_docs[shard_ref.hit_index];
                 shard_ref.hit_index += 1;
 
@@ -455,9 +455,9 @@ impl TopDocs {
             let num_iter_on_hits = avail_hit_count.min(requested_result_window);
             let mut hit_upto = 0usize;
             while hit_upto < num_iter_on_hits {
-                let mut shard_ref = *queue
-                    .top()
-                    .ok_or_else(|| LuceneError::IllegalState("merge queue is empty".to_string()))?;
+                let mut shard_ref = *queue.top().ok_or_else(|| {
+                    LuceneError::illegal_state("merge queue is empty".to_string())
+                })?;
                 let hit = shard_hits[shard_ref.shard_index].score_docs[shard_ref.hit_index].clone();
                 shard_ref.hit_index += 1;
 

@@ -17,27 +17,100 @@ use crate::search::doc_id_set_iterator::NO_MORE_DOCS;
 use crate::search::DocIdSetIterator;
 use crate::util::bit_set::BitSet;
 use crate::util::bit_sets::SparseFixedBitSet;
-use crate::util::{Accountable, BytesRef, RamUsageEstimator};
+use crate::util::packed::{AbstractPagedMutableOps, PackedInts, PagedGrowableWriter, PagedMutable};
+use crate::util::{Accountable, BytesRef, BytesRefBuilder, RamUsageEstimator};
 
-/// Page size for the internal doc-ID storage, matching Lucene's
+/// Page size of the packed doc and value arrays, Lucene's
 /// `DocValuesFieldUpdates.PAGE_SIZE`.
 const PAGE_SIZE: usize = 1024;
 
 /// Mask stored in the low bit of each packed doc entry: `1` = has value,
 /// `0` = reset (no value).
-const HAS_VALUE_MASK: u64 = 1;
-const HAS_NO_VALUE_MASK: u64 = 0;
+const HAS_VALUE_MASK: i64 = 1;
+const HAS_NO_VALUE_MASK: i64 = 0;
 const SHIFT: u32 = 1;
 
-/// A single update value: either a long, a binary blob, or a reset.
-#[derive(Clone, Debug)]
-enum UpdateValue {
-    /// Numeric update.
-    Long(i64),
-    /// Binary update.
-    Binary(Vec<u8>),
-    /// Reset (clear the field for this doc).
-    Reset,
+/// The values of the numeric subclass: a `PagedGrowableWriter` when the value
+/// range is not known up front, a `PagedMutable` sized for it otherwise
+/// (`NumericDocValuesFieldUpdates.java:66-84`).
+enum NumericValues {
+    Growable(PagedGrowableWriter),
+    Fixed(PagedMutable),
+}
+
+impl NumericValues {
+    fn get(&self, index: i64) -> i64 {
+        match self {
+            Self::Growable(values) => values.get(index),
+            Self::Fixed(values) => values.get(index),
+        }
+    }
+
+    fn set(&mut self, index: i64, value: i64) {
+        match self {
+            Self::Growable(values) => values.set(index, value),
+            Self::Fixed(values) => values.set(index, value),
+        }
+    }
+
+    fn resize(&mut self, size: i64) {
+        match self {
+            Self::Growable(values) => *values = resized(values, size),
+            Self::Fixed(values) => *values = resized(values, size),
+        }
+    }
+
+    fn copy(&self) -> Self {
+        match self {
+            Self::Growable(values) => Self::Growable(resized(values, values.size())),
+            Self::Fixed(values) => Self::Fixed(resized(values, values.size())),
+        }
+    }
+
+    fn ram_bytes_used(&self) -> i64 {
+        match self {
+            Self::Growable(values) => values.ram_bytes_used(),
+            Self::Fixed(values) => values.ram_bytes_used(),
+        }
+    }
+}
+
+/// The state each `DocValuesFieldUpdates` subclass adds to the base class.
+enum Values {
+    /// `NumericDocValuesFieldUpdates`: `values` and `minValue`.
+    Numeric {
+        values: NumericValues,
+        min_value: i64,
+    },
+    /// `BinaryDocValuesFieldUpdates`: `offsets`, `lengths` and `values`.
+    Binary {
+        offsets: PagedGrowableWriter,
+        lengths: PagedGrowableWriter,
+        values: BytesRefBuilder,
+    },
+    /// `SingleValueNumericDocValuesFieldUpdates`, whose state is
+    /// [`DocValuesFieldUpdates::single_value`].
+    SingleValue,
+}
+
+/// `AbstractPagedMutable.resize(long)`, which copies the array into one of
+/// `size` values.
+fn resized<T: AbstractPagedMutableOps>(values: &T, size: i64) -> T {
+    values
+        .resize(size)
+        .expect("INVARIANT: an update buffer never exceeds Integer.MAX_VALUE entries")
+}
+
+/// The size `AbstractPagedMutable.grow(long)` gives an array of `current`
+/// values that must hold `min_size`, or `None` when it already does: the
+/// requested size plus an eighth of it, and at least three values more
+/// (`AbstractPagedMutable.java:142-156`).
+fn grown_size(current: i64, min_size: i64) -> Option<i64> {
+    if min_size <= current {
+        return None;
+    }
+    let extra = std::cmp::max(((min_size as u64) >> 3) as i64, 3);
+    Some(min_size + extra)
 }
 
 /// Holds updates of a single DocValues field for a set of documents within one
@@ -53,11 +126,11 @@ pub struct DocValuesFieldUpdates {
     pub del_gen: i64,
     /// Maximum document ID for this segment.
     max_doc: i32,
-
-    // Packed doc entries: (doc_id << SHIFT) | has_value_mask
-    docs: Vec<u64>,
-    /// Per-entry values, indexed by position (0..size).
-    values: Vec<UpdateValue>,
+    /// Packed doc entries, `(doc << SHIFT) | hasValueMask`, in a `PagedMutable`
+    /// of `bitsRequired(maxDoc - 1) + SHIFT` bits (`DocValuesFieldUpdates.java:252-262`).
+    docs: PagedMutable,
+    /// The subclass's own arrays.
+    values: Values,
     /// Number of updates currently buffered.
     size: usize,
     /// Whether `finish()` has been called.
@@ -158,22 +231,102 @@ impl fmt::Debug for DocValuesFieldUpdates {
 }
 
 impl DocValuesFieldUpdates {
-    /// Creates a new, empty update buffer.
+    /// Creates a new, empty update buffer of a numeric field whose value range
+    /// is not known, or of a binary field.
     ///
-    /// Equivalent to `DocValuesFieldUpdates(maxDoc, delGen, field, type)`.
+    /// Equivalent to `new NumericDocValuesFieldUpdates(long delGen, String
+    /// field, int maxDoc)` for [`DocValuesType::NUMERIC`]
+    /// (`NumericDocValuesFieldUpdates.java:69-74`) and to `new
+    /// BinaryDocValuesFieldUpdates(long delGen, String field, int maxDoc)` for
+    /// [`DocValuesType::BINARY`] (`BinaryDocValuesFieldUpdates.java:76-81`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `dv_type` is neither of the two, or `max_doc` is not
+    /// positive, where Java's constructors throw.
     pub fn new(
         max_doc: i32,
         del_gen: i64,
         field: impl Into<String>,
         dv_type: DocValuesType,
     ) -> Self {
+        let values = match dv_type {
+            DocValuesType::NUMERIC => Values::Numeric {
+                values: NumericValues::Growable(
+                    PagedGrowableWriter::new(1, PAGE_SIZE, 1, PackedInts::DEFAULT)
+                        .expect("INVARIANT: one 1-bit value is a legal paged writer"),
+                ),
+                min_value: 0,
+            },
+            DocValuesType::BINARY => Values::Binary {
+                offsets: PagedGrowableWriter::new(1, PAGE_SIZE, 1, PackedInts::FAST)
+                    .expect("INVARIANT: one 1-bit value is a legal paged writer"),
+                lengths: PagedGrowableWriter::new(1, PAGE_SIZE, 1, PackedInts::FAST)
+                    .expect("INVARIANT: one 1-bit value is a legal paged writer"),
+                values: BytesRefBuilder::new(),
+            },
+            other => panic!("doc-values updates are numeric or binary, got {other:?}"),
+        };
+        Self::with_values(max_doc, del_gen, field, dv_type, values)
+    }
+
+    /// Creates a new, empty update buffer of a numeric field whose values all
+    /// lie in `[min_value, max_value]`.
+    ///
+    /// Equivalent to `new NumericDocValuesFieldUpdates(long delGen, String
+    /// field, long minValue, long maxValue, int maxDoc)`
+    /// (`NumericDocValuesFieldUpdates.java:76-84`), which
+    /// `FrozenBufferedUpdates.applyDocValuesUpdates` builds for buffered
+    /// updates of more than one value (`FrozenBufferedUpdates.java:291-298`):
+    /// the values are stored as `value - minValue` in a `PagedMutable` of
+    /// `unsignedBitsRequired(maxValue - minValue)` bits.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `max_doc` is not positive.
+    pub fn new_numeric_with_range(
+        del_gen: i64,
+        field: impl Into<String>,
+        min_value: i64,
+        max_value: i64,
+        max_doc: i32,
+    ) -> Self {
+        debug_assert!(
+            min_value <= max_value,
+            "minValue must be <= maxValue [{min_value} > {max_value}]"
+        );
+        let bits_per_value = PackedInts::unsigned_bits_required(max_value.wrapping_sub(min_value));
+        let values = Values::Numeric {
+            values: NumericValues::Fixed(
+                PagedMutable::new(1, PAGE_SIZE, bits_per_value, PackedInts::DEFAULT)
+                    .expect("INVARIANT: a 1-64 bit width is a legal paged array"),
+            ),
+            min_value,
+        };
+        Self::with_values(max_doc, del_gen, field, DocValuesType::NUMERIC, values)
+    }
+
+    /// The base class constructor, `DocValuesFieldUpdates(int maxDoc, long
+    /// delGen, String field, DocValuesType type)` (`DocValuesFieldUpdates.java:252-262`).
+    fn with_values(
+        max_doc: i32,
+        del_gen: i64,
+        field: impl Into<String>,
+        dv_type: DocValuesType,
+        values: Values,
+    ) -> Self {
+        let bits_per_value = PackedInts::bits_required(i64::from(max_doc) - 1)
+            .expect("INVARIANT: an updated segment has at least one document")
+            + SHIFT as i32;
+        let docs = PagedMutable::new(1, PAGE_SIZE, bits_per_value, PackedInts::DEFAULT)
+            .expect("INVARIANT: a 2-33 bit width is a legal paged array");
         Self {
             field: field.into(),
             dv_type,
             del_gen,
             max_doc,
-            docs: Vec::with_capacity(PAGE_SIZE),
-            values: Vec::with_capacity(PAGE_SIZE),
+            docs,
+            values,
             size: 0,
             finished: false,
             single_value: None,
@@ -192,7 +345,13 @@ impl DocValuesFieldUpdates {
         max_doc: i32,
         value: i64,
     ) -> Self {
-        let mut updates = Self::new(max_doc, del_gen, field, DocValuesType::NUMERIC);
+        let mut updates = Self::with_values(
+            max_doc,
+            del_gen,
+            field,
+            DocValuesType::NUMERIC,
+            Values::SingleValue,
+        );
         updates.single_value = Some(SingleValueNumericDocValuesFieldUpdates::new(max_doc, value));
         updates
     }
@@ -242,8 +401,15 @@ impl DocValuesFieldUpdates {
         }
         assert!(!self.finished, "already finished");
         assert!(doc < self.max_doc, "doc {doc} >= maxDoc {}", self.max_doc);
-        let idx = self.add_internal(doc, HAS_VALUE_MASK);
-        self.values[idx] = UpdateValue::Long(value);
+        // `NumericDocValuesFieldUpdates.add(int, long)`
+        // (`NumericDocValuesFieldUpdates.java:97-100`).
+        let idx = self.add_internal(doc, HAS_VALUE_MASK) as i64;
+        match &mut self.values {
+            Values::Numeric { values, min_value } => {
+                values.set(idx, value.wrapping_sub(*min_value))
+            }
+            _ => panic!("a binary update cannot take a numeric value"),
+        }
     }
 
     /// Adds a binary update for `doc`.
@@ -260,8 +426,21 @@ impl DocValuesFieldUpdates {
         );
         assert!(!self.finished, "already finished");
         assert!(doc < self.max_doc, "doc {doc} >= maxDoc {}", self.max_doc);
-        let idx = self.add_internal(doc, HAS_VALUE_MASK);
-        self.values[idx] = UpdateValue::Binary(value.slice().to_vec());
+        // `BinaryDocValuesFieldUpdates.add(int, BytesRef)`
+        // (`BinaryDocValuesFieldUpdates.java:94-99`).
+        let index = self.add_internal(doc, HAS_VALUE_MASK) as i64;
+        match &mut self.values {
+            Values::Binary {
+                offsets,
+                lengths,
+                values,
+            } => {
+                offsets.set(index, values.length() as i64);
+                lengths.set(index, value.length as i64);
+                values.append_ref(value);
+            }
+            _ => panic!("a numeric update cannot take a binary value"),
+        }
     }
 
     /// Resets (clears) the value for `doc`.
@@ -281,56 +460,86 @@ impl DocValuesFieldUpdates {
         }
         assert!(!self.finished, "already finished");
         assert!(doc < self.max_doc, "doc {doc} >= maxDoc {}", self.max_doc);
-        let idx = self.add_internal(doc, HAS_NO_VALUE_MASK);
-        self.values[idx] = UpdateValue::Reset;
+        self.add_internal(doc, HAS_NO_VALUE_MASK);
     }
 
-    fn add_internal(&mut self, doc: i32, has_value_mask: u64) -> usize {
-        // `DocValuesFieldUpdates.addInternal` grows the structures only when the
-        // buffer is full, and grows them through `grow(size + 1)`.
-        if self.size == self.docs.len() {
+    /// Equivalent to `DocValuesFieldUpdates.addInternal(int, long)`
+    /// (`DocValuesFieldUpdates.java:370-388`): the structures grow only when
+    /// they are full, through `grow(size + 1)`.
+    fn add_internal(&mut self, doc: i32, has_value_mask: i64) -> usize {
+        if self.docs.size() == self.size as i64 {
             self.grow(self.size + 1);
         }
-        let packed = ((doc as u64) << SHIFT) | has_value_mask;
-        self.docs[self.size] = packed;
-        let idx = self.size;
+        self.docs
+            .set(self.size as i64, (i64::from(doc) << SHIFT) | has_value_mask);
         self.size += 1;
-        idx
+        self.size - 1
     }
 
     /// Makes room for at least `size` entries.
     ///
     /// Equivalent to `DocValuesFieldUpdates.grow(int)` together with the
-    /// `BinaryDocValuesFieldUpdates.grow(int)` and
-    /// `NumericDocValuesFieldUpdates.grow(int)` overrides: Java splits the
-    /// entries across a `PagedMutable docs` on the base class and the value
-    /// arrays on each subclass, and every override grows its own arrays after
-    /// calling `super.grow(size)`. This port keeps one buffer per concern in a
-    /// single type, so the one method grows both.
-    ///
-    /// The growth policy is `AbstractPagedMutable.grow(long)`'s: nothing happens
-    /// when the buffer is already long enough, and otherwise it becomes
-    /// `size + max(size >> 3, 3)` entries. Charging that shape matters because
-    /// [`ram_bytes_used`](Accountable::ram_bytes_used) counts the buffer, and
-    /// that figure drives when buffered updates are written to disk.
+    /// `NumericDocValuesFieldUpdates.grow(int)` and
+    /// `BinaryDocValuesFieldUpdates.grow(int)` overrides, which grow their own
+    /// arrays after `super.grow(size)`: each array goes through
+    /// `AbstractPagedMutable.grow(long)` on its own size.
     fn grow(&mut self, size: usize) {
-        if size <= self.docs.len() {
-            return;
+        let size = size as i64;
+        if let Some(new_size) = grown_size(self.docs.size(), size) {
+            self.docs = resized(&self.docs, new_size);
         }
-        let extra = std::cmp::max(size >> 3, 3);
-        self.resize(size + extra);
+        match &mut self.values {
+            Values::Numeric { values, .. } => {
+                let current = match values {
+                    NumericValues::Growable(v) => v.size(),
+                    NumericValues::Fixed(v) => v.size(),
+                };
+                if let Some(new_size) = grown_size(current, size) {
+                    values.resize(new_size);
+                }
+            }
+            Values::Binary {
+                offsets, lengths, ..
+            } => {
+                if let Some(new_size) = grown_size(offsets.size(), size) {
+                    *offsets = resized(offsets, new_size);
+                }
+                if let Some(new_size) = grown_size(lengths.size(), size) {
+                    *lengths = resized(lengths, new_size);
+                }
+            }
+            Values::SingleValue => {}
+        }
     }
 
     /// Exchanges the entries at `i` and `j`.
     ///
     /// Equivalent to `DocValuesFieldUpdates.swap(int, int)` together with the
-    /// `BinaryDocValuesFieldUpdates` and `NumericDocValuesFieldUpdates`
-    /// overrides, which swap their own value columns after calling
-    /// `super.swap(i, j)`. One method covers both columns here for the same
-    /// reason [`grow`](Self::grow) does.
+    /// `NumericDocValuesFieldUpdates` and `BinaryDocValuesFieldUpdates`
+    /// overrides, which swap their own value columns after `super.swap(i, j)`.
     fn swap(&mut self, i: usize, j: usize) {
-        self.docs.swap(i, j);
-        self.values.swap(i, j);
+        let (i, j) = (i as i64, j as i64);
+        let tmp_doc = self.docs.get(j);
+        self.docs.set(j, self.docs.get(i));
+        self.docs.set(i, tmp_doc);
+        match &mut self.values {
+            Values::Numeric { values, .. } => {
+                let tmp = values.get(j);
+                values.set(j, values.get(i));
+                values.set(i, tmp);
+            }
+            Values::Binary {
+                offsets, lengths, ..
+            } => {
+                let tmp = offsets.get(j);
+                offsets.set(j, offsets.get(i));
+                offsets.set(i, tmp);
+                let tmp = lengths.get(j);
+                lengths.set(j, lengths.get(i));
+                lengths.set(i, tmp);
+            }
+            Values::SingleValue => {}
+        }
     }
 
     /// Freezes internal data structures and sorts updates by docID for
@@ -343,13 +552,13 @@ impl DocValuesFieldUpdates {
     /// Returns `IllegalState` if called twice.
     pub fn finish(&mut self) -> Result<()> {
         if self.finished {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "DocValuesFieldUpdates already finished".to_string(),
             ));
         }
         self.finished = true;
         // shrink wrap
-        if self.size < self.docs.len() {
+        if (self.size as i64) < self.docs.size() {
             self.resize(self.size);
         }
         if self.size > 1 {
@@ -362,16 +571,22 @@ impl DocValuesFieldUpdates {
     /// updates.
     ///
     /// Equivalent to `DocValuesFieldUpdates.resize(int)` together with the
-    /// `BinaryDocValuesFieldUpdates.resize(int)` and
-    /// `NumericDocValuesFieldUpdates.resize(int)` overrides: Java splits the
-    /// entries across a `PagedMutable docs` on the base class and the value
-    /// arrays on each subclass, and every override resizes its own arrays after
-    /// calling `super.resize(size)`. This port keeps one buffer per concern in a
-    /// single type, so the one method resizes both. Growing leaves the new
-    /// entries zeroed, as `PagedMutable.resize` does.
+    /// `NumericDocValuesFieldUpdates.resize(int)` and
+    /// `BinaryDocValuesFieldUpdates.resize(int)` overrides, which resize their
+    /// own arrays after `super.resize(size)`.
     fn resize(&mut self, size: usize) {
-        self.docs.resize(size, 0);
-        self.values.resize(size, UpdateValue::Reset);
+        let size = size as i64;
+        self.docs = resized(&self.docs, size);
+        match &mut self.values {
+            Values::Numeric { values, .. } => values.resize(size),
+            Values::Binary {
+                offsets, lengths, ..
+            } => {
+                *offsets = resized(offsets, size);
+                *lengths = resized(lengths, size);
+            }
+            Values::SingleValue => {}
+        }
     }
 
     /// Checks that [`finish`](Self::finish) has already run.
@@ -383,7 +598,7 @@ impl DocValuesFieldUpdates {
     /// Returns [`LuceneError::IllegalState`] when the buffer is not finished.
     pub fn ensure_finished(&self) -> Result<()> {
         if !self.finished {
-            return Err(LuceneError::IllegalState("call finish first".to_string()));
+            return Err(LuceneError::illegal_state("call finish first".to_string()));
         }
         Ok(())
     }
@@ -399,7 +614,7 @@ impl DocValuesFieldUpdates {
         // [`swap`](Self::swap), which is where Java's `swap` override does its
         // work.
         let mut ords: Vec<usize> = (0..self.size).collect();
-        ords.sort_by_key(|&i| self.docs[i] >> SHIFT);
+        ords.sort_by_key(|&i| (self.docs.get(i as i64) as u64) >> SHIFT);
 
         // `ords[new] = old`; invert it into "the entry at `old` belongs at
         // `new`", which is the form the in-place swap loop consumes.
@@ -443,8 +658,27 @@ impl DocValuesFieldUpdates {
             dv_type: self.dv_type,
             del_gen: self.del_gen,
             max_doc: self.max_doc,
-            docs: self.docs.clone(),
-            values: self.values.clone(),
+            docs: resized(&self.docs, self.docs.size()),
+            values: match &self.values {
+                Values::Numeric { values, min_value } => Values::Numeric {
+                    values: values.copy(),
+                    min_value: *min_value,
+                },
+                Values::Binary {
+                    offsets,
+                    lengths,
+                    values,
+                } => {
+                    let mut copy = BytesRefBuilder::new();
+                    copy.copy_bytes(values.bytes(), 0, values.length());
+                    Values::Binary {
+                        offsets: resized(offsets, offsets.size()),
+                        lengths: resized(lengths, lengths.size()),
+                        values: copy,
+                    }
+                }
+                Values::SingleValue => Values::SingleValue,
+            },
             size: self.size,
             finished: true,
             single_value: self.single_value.clone(),
@@ -453,41 +687,41 @@ impl DocValuesFieldUpdates {
 }
 
 impl Accountable for DocValuesFieldUpdates {
+    /// Equivalent to `ramBytesUsed()` of the concrete subclass:
+    /// `NumericDocValuesFieldUpdates.java:129-134`,
+    /// `BinaryDocValuesFieldUpdates.java:135-143` and
+    /// `NumericDocValuesFieldUpdates.java:190-194`, each adding its own arrays
+    /// to the base class's `DocValuesFieldUpdates.java:411-418`.
     fn ram_bytes_used(&self) -> i64 {
-        // Rough estimate: docs vec (u64 per entry) + values vec (header + per-entry).
-        let docs_size = (self.docs.capacity() * std::mem::size_of::<u64>()) as i64;
-        let values_header = RamUsageEstimator::NUM_BYTES_OBJECT_HEADER;
-        let values_per_entry = std::mem::size_of::<UpdateValue>() as i64;
-        let values_size = values_header + (self.values.capacity() as i64 * values_per_entry);
-        // Add binary content sizes.
-        let binary_size: i64 = self
-            .values
-            .iter()
-            .map(|v| match v {
-                UpdateValue::Binary(b) => b.len() as i64,
-                _ => 0,
-            })
-            .sum();
-        // Java's tail is
-        // `NUM_BYTES_OBJECT_HEADER + 2 * Integer.BYTES + 2 + Long.BYTES +
-        // NUM_BYTES_OBJECT_REF` (`DocValuesFieldUpdates.java:416-423`); it is
-        // written out literally here so the constant does not drift with Rust's
-        // own type sizes.
-        // `SingleValueNumericDocValuesFieldUpdates.ramBytesUsed()` adds its
-        // bitsets to the base class's figure.
-        let single_size = self
-            .single_value
-            .as_ref()
-            .map_or(0, SingleValueNumericDocValuesFieldUpdates::ram_bytes_used);
-        docs_size
-            + values_size
-            + binary_size
-            + single_size
+        let base = self.docs.ram_bytes_used()
             + RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
             + 2 * 4
             + 2
             + 8
-            + RamUsageEstimator::NUM_BYTES_OBJECT_REF
+            + RamUsageEstimator::NUM_BYTES_OBJECT_REF;
+        match &self.values {
+            Values::Numeric { values, .. } => {
+                values.ram_bytes_used() + base + 8 + RamUsageEstimator::NUM_BYTES_OBJECT_REF
+            }
+            Values::Binary {
+                offsets,
+                lengths,
+                values,
+            } => {
+                base + offsets.ram_bytes_used()
+                    + lengths.ram_bytes_used()
+                    + RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
+                    + 2 * 4
+                    + 3 * RamUsageEstimator::NUM_BYTES_OBJECT_REF
+                    + values.bytes().len() as i64
+            }
+            Values::SingleValue => {
+                base + self
+                    .single_value
+                    .as_ref()
+                    .map_or(0, SingleValueNumericDocValuesFieldUpdates::ram_bytes_used)
+            }
+        }
     }
 }
 
@@ -504,8 +738,8 @@ pub struct DocValuesFieldUpdatesIterator<'a> {
     /// `BitSetIterator(bitSet, maxDoc)` that it returns.
     single: Option<(&'a SingleValueNumericDocValuesFieldUpdates, i32)>,
     size: usize,
-    docs: &'a [u64],
-    values: &'a [UpdateValue],
+    docs: Option<&'a PagedMutable>,
+    values: Option<&'a Values>,
     del_gen: i64,
     idx: usize,
     doc: i32,
@@ -517,7 +751,16 @@ pub struct DocValuesFieldUpdatesIterator<'a> {
 }
 
 impl<'a> DocValuesFieldUpdatesIterator<'a> {
-    fn new(size: usize, docs: &'a [u64], values: &'a [UpdateValue], del_gen: i64) -> Self {
+    fn new(size: usize, docs: &'a PagedMutable, values: &'a Values, del_gen: i64) -> Self {
+        Self::with_arrays(size, Some(docs), Some(values), del_gen)
+    }
+
+    fn with_arrays(
+        size: usize,
+        docs: Option<&'a PagedMutable>,
+        values: Option<&'a Values>,
+        del_gen: i64,
+    ) -> Self {
         Self {
             single: None,
             size,
@@ -541,7 +784,7 @@ impl<'a> DocValuesFieldUpdatesIterator<'a> {
         max_doc: i32,
         del_gen: i64,
     ) -> Self {
-        let mut iterator = Self::new(0, &[], &[], del_gen);
+        let mut iterator = Self::with_arrays(0, None, None, del_gen);
         iterator.single = Some((single, max_doc));
         iterator.current_long = single.value;
         iterator
@@ -613,12 +856,18 @@ impl<'a> DocIdSetIterator for DocValuesFieldUpdatesIterator<'a> {
             self.doc = NO_MORE_DOCS;
             return Ok(NO_MORE_DOCS);
         }
-        let mut long_doc = self.docs[self.idx];
+        let (Some(docs), Some(values)) = (self.docs, self.values) else {
+            self.doc = NO_MORE_DOCS;
+            return Ok(NO_MORE_DOCS);
+        };
+        // `DocValuesFieldUpdates.AbstractIterator.nextDoc()`
+        // (`DocValuesFieldUpdates.java:436-460`).
+        let mut long_doc = docs.get(self.idx as i64);
         self.idx += 1;
         // Scan forward to the last update for this doc.
         while self.idx < self.size {
-            let next = self.docs[self.idx];
-            if (long_doc >> SHIFT) != (next >> SHIFT) {
+            let next = docs.get(self.idx as i64);
+            if ((long_doc as u64) >> SHIFT) != ((next as u64) >> SHIFT) {
                 break;
             }
             long_doc = next;
@@ -626,25 +875,28 @@ impl<'a> DocIdSetIterator for DocValuesFieldUpdatesIterator<'a> {
         }
         self.has_value = (long_doc & HAS_VALUE_MASK) > 0;
         if self.has_value {
-            let value_idx = self.idx - 1;
-            match &self.values[value_idx] {
-                UpdateValue::Long(v) => {
-                    self.current_long = *v;
+            // `set(idx - 1)` of the subclass's iterator.
+            let value_idx = (self.idx - 1) as i64;
+            match values {
+                Values::Numeric { values, min_value } => {
+                    self.current_long = values.get(value_idx).wrapping_add(*min_value);
                     self.current_is_binary = false;
                 }
-                UpdateValue::Binary(b) => {
-                    self.current_binary = BytesRef::new(b.clone());
+                Values::Binary {
+                    offsets,
+                    lengths,
+                    values,
+                } => {
+                    let offset = offsets.get(value_idx) as usize;
+                    let length = lengths.get(value_idx) as usize;
+                    self.current_binary =
+                        BytesRef::new(values.bytes()[offset..offset + length].to_vec());
                     self.current_is_binary = true;
                 }
-                UpdateValue::Reset => {
-                    // Should not happen: has_value is true but value is Reset.
-                    // This means the packed entry had HAS_VALUE_MASK but the
-                    // value slot was Reset.  Treat as no value.
-                    self.has_value = false;
-                }
+                Values::SingleValue => {}
             }
         }
-        self.doc = (long_doc >> SHIFT) as i32;
+        self.doc = ((long_doc as u64) >> SHIFT) as i32;
         Ok(self.doc)
     }
 
@@ -980,29 +1232,37 @@ mod tests {
         assert_eq!(merged.next_doc().unwrap(), NO_MORE_DOCS);
     }
 
-    /// `grow` follows `AbstractPagedMutable.grow(long)`: a buffer that is
+    /// `grow` follows `AbstractPagedMutable.grow(long)`
+    /// (`AbstractPagedMutable.java:142-156`) on every array: one that is
     /// already long enough is left alone, and otherwise it becomes
-    /// `size + max(size >> 3, 3)` entries. The port previously added a fixed
-    /// 1024 entries at a time, which charged RAM in the wrong steps.
+    /// `size + max(size >> 3, 3)` entries. The arrays start with one entry
+    /// (`DocValuesFieldUpdates.java:261`, `NumericDocValuesFieldUpdates.java:72`).
     #[test]
     fn grow_follows_lucenes_paged_mutable_growth() {
         let mut updates = DocValuesFieldUpdates::new(1_000, -1, "f", DocValuesType::NUMERIC);
-        // Start from an empty buffer so the policy is visible.
-        updates.docs.clear();
-        updates.values.clear();
+        assert_eq!(updates.docs.size(), 1);
 
         updates.grow(1);
-        assert_eq!(updates.docs.len(), 4, "1 + max(0, 3)");
-        assert_eq!(updates.values.len(), updates.docs.len());
+        assert_eq!(updates.docs.size(), 1, "already long enough");
 
-        updates.grow(4);
-        assert_eq!(updates.docs.len(), 4, "already long enough");
+        updates.grow(2);
+        assert_eq!(updates.docs.size(), 5, "2 + max(0, 3)");
+        let Values::Numeric { values, .. } = &updates.values else {
+            panic!("a numeric buffer");
+        };
+        let NumericValues::Growable(values) = values else {
+            panic!("a growable writer");
+        };
+        assert_eq!(values.size(), updates.docs.size());
 
         updates.grow(5);
-        assert_eq!(updates.docs.len(), 8, "5 + max(0, 3)");
+        assert_eq!(updates.docs.size(), 5, "already long enough");
+
+        updates.grow(6);
+        assert_eq!(updates.docs.size(), 9, "6 + max(0, 3)");
 
         updates.grow(64);
-        assert_eq!(updates.docs.len(), 72, "64 + max(8, 3)");
+        assert_eq!(updates.docs.size(), 72, "64 + max(8, 3)");
     }
 
     /// `swap` exchanges the doc entry and its value together, which is what
@@ -1013,10 +1273,13 @@ mod tests {
         updates.add_long(1, 100);
         updates.add_long(2, 200);
         updates.swap(0, 1);
-        assert_eq!(updates.docs[0] >> SHIFT, 2);
-        assert_eq!(updates.docs[1] >> SHIFT, 1);
-        assert!(matches!(updates.values[0], UpdateValue::Long(200)));
-        assert!(matches!(updates.values[1], UpdateValue::Long(100)));
+        assert_eq!(updates.docs.get(0) >> SHIFT, 2);
+        assert_eq!(updates.docs.get(1) >> SHIFT, 1);
+        let Values::Numeric { values, .. } = &updates.values else {
+            panic!("a numeric buffer");
+        };
+        assert_eq!(values.get(0), 200);
+        assert_eq!(values.get(1), 100);
     }
 
     /// The in-place sort must still be stable: with several updates to the same

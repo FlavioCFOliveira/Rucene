@@ -443,7 +443,7 @@ impl SnapshotDeletionPolicy {
             Some(commit) => commit,
             // No commit yet, e.g. this is a new IndexWriter.
             None => {
-                return Err(LuceneError::IllegalState(
+                return Err(LuceneError::illegal_state(
                     "No index commit to snapshot".to_string(),
                 ))
             }
@@ -611,7 +611,7 @@ impl SnapshotDeletionPolicy {
         if state.init_called {
             return Ok(());
         }
-        Err(LuceneError::IllegalState(
+        Err(LuceneError::illegal_state(
             "this instance is not being used by IndexWriter; keep your own \
              Arc<SnapshotDeletionPolicy> and hand a clone of it to \
              IndexWriterConfig::set_index_deletion_policy, then snapshot through \
@@ -910,7 +910,7 @@ impl PersistentSnapshotDeletionPolicy {
             policy.load_prior_snapshots(&mut next_write_gen)?;
 
             if mode == OpenMode::APPEND && *next_write_gen == 0 {
-                return Err(LuceneError::IllegalState(
+                return Err(LuceneError::illegal_state(
                     "no snapshots stored in this directory".to_string(),
                 ));
             }
@@ -1482,7 +1482,7 @@ mod tests {
         // `IndexWriterConfig::index_deletion_policy` returns, so — unlike Java —
         // the message must point at keeping the concrete `Arc`.
         assert!(
-            matches!(err, LuceneError::IllegalState(ref m)
+            matches!(err, LuceneError::IllegalState { message: ref m, .. }
                 if m.contains("not being used by IndexWriter")
                     && m.contains("Arc<SnapshotDeletionPolicy>")
                     && m.contains("set_index_deletion_policy")),
@@ -1490,7 +1490,7 @@ mod tests {
         );
 
         let err = policy.release_gen(1).unwrap_err();
-        assert!(matches!(err, LuceneError::IllegalState(_)), "{err}");
+        assert!(matches!(err, LuceneError::IllegalState { .. }), "{err}");
     }
 
     #[test]
@@ -1500,7 +1500,7 @@ mod tests {
 
         let err = policy.snapshot().unwrap_err();
         assert!(
-            matches!(err, LuceneError::IllegalState(ref m)
+            matches!(err, LuceneError::IllegalState { message: ref m, .. }
                 if m == "No index commit to snapshot"),
             "{err}"
         );
@@ -2334,7 +2334,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            matches!(err, LuceneError::IllegalState(ref m)
+            matches!(err, LuceneError::IllegalState { message: ref m, .. }
                 if m == "no snapshots stored in this directory"),
             "{err}"
         );

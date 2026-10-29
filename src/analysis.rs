@@ -367,7 +367,7 @@ impl<T: TokenizerLogic> Tokenizer<T> {
     /// closed.
     pub fn set_reader(&mut self, reader: Box<dyn CharReader>) -> Result<()> {
         if self.input.is_some() {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "TokenStream contract violation: close() call missing".to_string(),
             ));
         }
@@ -420,7 +420,7 @@ impl<T: TokenizerLogic> TokenStream for Tokenizer<T> {
         let reader = self
             .input
             .as_mut()
-            .ok_or_else(|| LuceneError::IllegalState(illegal_state_message()))?;
+            .ok_or_else(|| LuceneError::illegal_state(illegal_state_message()))?;
         self.logic
             .increment_token(&mut self.source, reader.as_mut())
     }
@@ -437,7 +437,7 @@ impl<T: TokenizerLogic> TokenStream for Tokenizer<T> {
         let reader = self
             .input_pending
             .take()
-            .ok_or_else(|| LuceneError::IllegalState(illegal_state_message()))?;
+            .ok_or_else(|| LuceneError::illegal_state(illegal_state_message()))?;
         self.input = Some(reader);
         let reader = self.input.as_mut().unwrap();
         self.logic.reset(&mut self.source, reader.as_mut())
@@ -1042,7 +1042,7 @@ pub trait Analyzer: Debug + Send + Sync {
         reader: Box<dyn CharReader>,
     ) -> Result<Rc<RefCell<dyn TokenStream>>> {
         if self.analyzer_state().is_closed() {
-            return Err(LuceneError::AlreadyClosed(
+            return Err(LuceneError::already_closed(
                 "this Analyzer is closed".to_string(),
             ));
         }
@@ -1078,7 +1078,7 @@ pub trait Analyzer: Debug + Send + Sync {
         text: &str,
     ) -> Result<Rc<RefCell<dyn TokenStream>>> {
         if self.analyzer_state().is_closed() {
-            return Err(LuceneError::AlreadyClosed(
+            return Err(LuceneError::already_closed(
                 "this Analyzer is closed".to_string(),
             ));
         }
@@ -1112,7 +1112,7 @@ pub trait Analyzer: Debug + Send + Sync {
     /// Equivalent to `Analyzer.normalize(String, String)`.
     fn normalize(&self, field_name: &str, text: &str) -> Result<BytesRef> {
         if self.analyzer_state().is_closed() {
-            return Err(LuceneError::AlreadyClosed(
+            return Err(LuceneError::already_closed(
                 "this Analyzer is closed".to_string(),
             ));
         }
@@ -1139,7 +1139,7 @@ pub trait Analyzer: Debug + Send + Sync {
 
         token_stream.reset()?;
         if !token_stream.increment_token()? {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "The normalization token stream is expected to produce exactly 1 token, but got 0 for analyzer and input \"{}\"",
                 text
             )));
@@ -1148,12 +1148,12 @@ pub trait Analyzer: Debug + Send + Sync {
             .attribute_source()
             .get_attribute::<PackedTokenAttributeImpl>()
             .ok_or_else(|| {
-                LuceneError::IllegalState("missing TermToBytesRefAttribute".to_string())
+                LuceneError::illegal_state("missing TermToBytesRefAttribute".to_string())
             })?
             .get_bytes_ref();
         let term = BytesRef::deep_copy_of(&term);
         if token_stream.increment_token()? {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "The normalization token stream is expected to produce exactly 1 token, but got 2+ for analyzer and input \"{}\"",
                 text
             )));
@@ -1641,7 +1641,7 @@ mod tests {
         tokenizer.reset().unwrap();
         // Without close, set_reader must be rejected.
         let result = tokenizer.set_reader(Box::new(StringCharReader::new("b")));
-        assert!(matches!(result, Err(LuceneError::IllegalState(_))));
+        assert!(matches!(result, Err(LuceneError::IllegalState { .. })));
     }
 
     #[test]

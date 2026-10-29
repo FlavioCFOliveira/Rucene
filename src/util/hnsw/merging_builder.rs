@@ -141,7 +141,7 @@ impl HnswBuilder for MergingHnswGraphBuilder {
 
     fn build(&mut self, max_ord: i32) -> Result<&OnHeapHnswGraph> {
         if self.inner.frozen {
-            return Err(crate::error::LuceneError::IllegalState(
+            return Err(crate::error::LuceneError::illegal_state(
                 "This HnswGraphBuilder is frozen and cannot be updated".to_string(),
             ));
         }

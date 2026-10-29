@@ -195,7 +195,7 @@ impl TermWeight {
         term_states: Option<Arc<TermStates>>,
     ) -> Result<Self> {
         if score_mode.needs_scores() && term_states.is_none() {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "termStates are required when scores are needed".to_string(),
             ));
         }
@@ -232,7 +232,7 @@ impl TermWeight {
             Some(term_stats) => {
                 if score_mode.needs_scores() {
                     let collection_stats = collection_stats.ok_or_else(|| {
-                        LuceneError::IllegalState(format!(
+                        LuceneError::illegal_state(format!(
                             "field {} has term statistics but no collection statistics",
                             term.field()
                         ))
@@ -270,7 +270,7 @@ impl TermWeight {
     /// term is not present in that reader.
     fn term_state(&self, context: &LeafReaderContext) -> Result<Option<Box<dyn TermState>>> {
         let states = self.term_states.as_ref().ok_or_else(|| {
-            LuceneError::IllegalState(
+            LuceneError::illegal_state(
                 "TermWeight was built without termStates and cannot produce scorers".to_string(),
             )
         })?;
@@ -411,7 +411,7 @@ impl Weight for TermWeight {
                     Vec::new(),
                 );
                 let sim_scorer = self.sim_scorer.as_ref().ok_or_else(|| {
-                    LuceneError::IllegalState(
+                    LuceneError::illegal_state(
                         "a matching document requires the term to exist, and therefore a scorer"
                             .to_string(),
                     )
@@ -514,7 +514,7 @@ impl TermScorerSupplier {
     /// `ScorerSupplier.get(long)` forbids, and propagates any I/O error.
     pub fn term_scorer(&mut self) -> Result<TermScorer> {
         let mut terms_enum = self.terms_enum.take().ok_or_else(|| {
-            LuceneError::IllegalState(
+            LuceneError::illegal_state(
                 "ScorerSupplier.get(long) must be called at most once".to_string(),
             )
         })?;
@@ -555,7 +555,7 @@ impl TermScorerSupplier {
 impl ScorerSupplier for TermScorerSupplier {
     fn get(&mut self, _lead_cost: i64) -> Result<Box<dyn Scorer>> {
         if self.terms_enum.is_none() {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "ScorerSupplier.get(long) must be called at most once".to_string(),
             ));
         }

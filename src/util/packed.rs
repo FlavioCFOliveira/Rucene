@@ -603,7 +603,7 @@ impl<'a> DirectWriter<'a> {
 
     pub fn add(&mut self, value: i64) -> Result<()> {
         if self.finished {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "DirectWriter is already finished".to_string(),
             ));
         }
@@ -697,12 +697,12 @@ impl<'a> DirectWriter<'a> {
 
     pub fn finish(&mut self) -> Result<()> {
         if self.finished {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "DirectWriter is already finished".to_string(),
             ));
         }
         if self.count != self.num_values {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "wrong number of values added: expected {}, got {}",
                 self.num_values, self.count
             )));
@@ -1163,12 +1163,12 @@ impl<'a> DirectMonotonicWriter<'a> {
 
     pub fn finish(&mut self) -> Result<()> {
         if self.finished {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "DirectMonotonicWriter is already finished".to_string(),
             ));
         }
         if self.count != self.num_values {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "wrong number of values added: expected {}, got {}",
                 self.num_values, self.count
             )));

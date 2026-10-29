@@ -350,7 +350,7 @@ struct DocMapVisitor<'a> {
 impl IntersectVisitor for DocMapVisitor<'_> {
     fn visit(&mut self, _doc_id: i32) -> Result<()> {
         // Should never be called during `visit_doc_values`.
-        Err(LuceneError::IllegalState(String::new()))
+        Err(LuceneError::illegal_state(String::new()))
     }
 
     fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {

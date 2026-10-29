@@ -158,7 +158,7 @@ impl HnswConcurrentMergeBuilder {
 impl HnswBuilder for HnswConcurrentMergeBuilder {
     fn build(&mut self, max_ord: i32) -> Result<&OnHeapHnswGraph> {
         if self.frozen {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "graph has already been built".to_string(),
             ));
         }

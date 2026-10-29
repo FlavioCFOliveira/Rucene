@@ -47,7 +47,7 @@ use crate::store::{
 };
 use crate::util::extra::Version;
 use crate::util::string_helper::StringHelper;
-use crate::util::{Bits, InfoStream};
+use crate::util::{Accountable, Bits, InfoStream};
 
 /// Component name used in info-stream messages, as Java does.
 const IW: &str = "IW";
@@ -193,7 +193,7 @@ pub struct IndexWriter {
     /// observes equals Java's.
     pending_segment_infos_changes: Arc<AtomicI64>,
     /// Set when an unrecoverable error forces the writer closed.
-    tragedy: Mutex<Option<String>>,
+    tragedy: Mutex<Option<Arc<LuceneError>>>,
     /// Bumped on every change that must be written at close.
     ///
     /// Equivalent to `IndexWriter.changeCount`.
@@ -460,7 +460,7 @@ impl EventQueue {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if permits.closed {
-            return Err(LuceneError::AlreadyClosed("queue is closed".to_string()));
+            return Err(LuceneError::already_closed("queue is closed".to_string()));
         }
         permits.held += 1;
         Ok(EventPermit { queue: self })
@@ -568,8 +568,10 @@ impl FlushNotifications for WriterFlushNotifications {
             // The writer is being dropped: no one is left to close.
             None => {
                 if self.info_stream.is_enabled(IW) {
-                    self.info_stream
-                        .message(IW, &format!("hit tragic error inside {message}: {error}"));
+                    self.info_stream.message(
+                        IW,
+                        &format!("hit tragic {} inside {message}", error.java_simple_name()),
+                    );
                 }
             }
         }
@@ -698,7 +700,7 @@ impl IndexWriter {
 
         let files: Vec<String> = directory.list_all()?;
 
-        let tragedy: Mutex<Option<String>> = Mutex::new(None);
+        let tragedy: Mutex<Option<Arc<LuceneError>>> = Mutex::new(None);
         let notifications = Arc::new(WriterFlushNotifications {
             writer: OnceLock::new(),
             info_stream: Arc::clone(&info_stream),
@@ -876,7 +878,7 @@ impl IndexWriter {
     /// writer is being dropped, so no new reference can be made.
     fn shared_self(&self) -> Result<Arc<IndexWriter>> {
         self.self_ref.get().and_then(Weak::upgrade).ok_or_else(|| {
-            LuceneError::AlreadyClosed("this IndexWriter is being dropped".to_string())
+            LuceneError::already_closed("this IndexWriter is being dropped".to_string())
         })
     }
 
@@ -909,17 +911,12 @@ impl IndexWriter {
 
     /// Returns the tragic error that forced this writer closed, if any.
     ///
-    /// Equivalent to `IndexWriter.getTragicException()`.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java returns the `Throwable` itself.
-    /// A [`LuceneError`] is not clonable and the writer must keep its own copy,
-    /// so the port records and returns the rendered message. It answers the same
-    /// question — whether a tragedy happened and what it was.
-    pub fn get_tragic_exception(&self) -> Option<String> {
-        self.tragedy
-            .lock()
-            .ok()
-            .and_then(|guard| guard.as_ref().cloned())
+    /// Equivalent to `IndexWriter.getTragicException()`
+    /// (`IndexWriter.java:5891-5893`): the error that was recorded, shared with
+    /// the `AlreadyClosed` and `IllegalState` errors that carry it as their
+    /// cause.
+    pub fn get_tragic_exception(&self) -> Option<Arc<LuceneError>> {
+        self.tragedy.lock().ok().and_then(|guard| guard.clone())
     }
 
     /// Records a tragic error, closing the writer to further work.
@@ -928,12 +925,18 @@ impl IndexWriter {
     /// the tragedy exactly once and leaves the first cause in place.
     pub fn on_tragic_event(&self, error: &LuceneError, location: &str) {
         if self.info_stream.is_enabled(IW) {
-            self.info_stream
-                .message(IW, &format!("hit tragic error inside {location}: {error}"));
+            // `"hit tragic " + tragedy.getClass().getSimpleName() + " inside "
+            // + location` (`IndexWriter.java:5857-5860`).
+            self.info_stream.message(
+                IW,
+                &format!("hit tragic {} inside {location}", error.java_simple_name()),
+            );
         }
         if let Ok(mut guard) = self.tragedy.lock() {
+            // `this.tragedy.compareAndSet(null, tragedy)`: only set it once.
+            // The writer keeps a copy, as a `LuceneError` has one owner.
             if guard.is_none() {
-                *guard = Some(format!("{location}: {error}"));
+                *guard = Some(Arc::new(error.duplicate()));
             }
         }
     }
@@ -949,9 +952,14 @@ impl IndexWriter {
         if self.closed.load(Ordering::Acquire)
             || (fail_if_closing && self.closing.load(Ordering::Acquire))
         {
-            return Err(LuceneError::AlreadyClosed(
-                "this IndexWriter is closed".to_string(),
-            ));
+            // `new AlreadyClosedException("this IndexWriter is closed",
+            // tragedy.get())` (`IndexWriter.java:917-921`).
+            return Err(match self.get_tragic_exception() {
+                Some(tragedy) => {
+                    LuceneError::already_closed_with_cause("this IndexWriter is closed", tragedy)
+                }
+                None => LuceneError::already_closed("this IndexWriter is closed"),
+            });
         }
         Ok(())
     }
@@ -960,13 +968,16 @@ impl IndexWriter {
     // RAM and document accounting
     // -------------------------------------------------------------------------
 
-    /// Returns the RAM the buffered documents occupy.
+    /// Returns the RAM the buffered documents and deletes occupy, including
+    /// the per-thread writers being flushed.
     ///
-    /// Equivalent to `IndexWriter.ramBytesUsed()`.
+    /// Equivalent to `IndexWriter.ramBytesUsed()` (`IndexWriter.java:799-802`),
+    /// which is `DocumentsWriterFlushControl.ramBytesUsed()`:
+    /// `getDeleteBytesUsed() + netBytes()`, with `netBytes()` the flushing and
+    /// the active bytes (`DocumentsWriterFlushControl.java:100-102, 499-502`).
     pub fn ram_bytes_used(&self) -> Result<i64> {
         self.ensure_open()?;
-        Ok(self.documents_writer.flush_control().active_bytes()
-            + self.documents_writer.flush_control().delete_bytes_used())
+        Ok(Accountable::ram_bytes_used(self.documents_writer.as_ref()))
     }
 
     /// Returns how many bytes are being flushed right now.
@@ -1348,7 +1359,7 @@ impl IndexWriter {
 
     fn state(&self) -> Result<MutexGuard<'_, WriterState>> {
         let mut state = self.state.lock().map_err(|_| {
-            LuceneError::IllegalState("IndexWriter state lock poisoned".to_string())
+            LuceneError::illegal_state("IndexWriter state lock poisoned".to_string())
         })?;
         // Absorb the `segmentInfos.changed()` calls the segment-name supplier
         // made since the last lock; see `pending_segment_infos_changes`.
@@ -1383,11 +1394,11 @@ impl IndexWriter {
     /// `FlushNotifications.onTragicEvent` — and a failure to close replaces
     /// the original one, as an exception thrown from `finally` does.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java's `catch (Error tragedy)`
-    /// records a JVM `Error` as a tragic event (`IndexWriter.java:1643-1645`);
-    /// [`LuceneError`] has no counterpart of `Error`, so only the `finally`
-    /// remains.
+    /// Java's `catch (Error tragedy)` (`IndexWriter.java:1643-1645`) records
+    /// [`LuceneError::AssertionError`], this port's only counterpart of a Java
+    /// `Error`, as the tragedy and closes the writer before the `finally`.
     fn finish_update_documents(&self, outcome: Result<i64>) -> Result<i64> {
+        let outcome = self.catch_error_as_tragedy(outcome, "updateDocuments");
         if outcome.is_err() {
             if self.info_stream.is_enabled(IW) {
                 self.info_stream
@@ -1490,10 +1501,16 @@ impl IndexWriter {
     /// Deletes every document matching any of `terms`.
     ///
     /// Equivalent to `IndexWriter.deleteDocuments(Term...)`.
+    ///
+    /// Java's `catch (Error tragedy)` (`IndexWriter.java:1878-1884`) records
+    /// [`LuceneError::AssertionError`] as the tragedy and closes the writer.
     pub fn delete_documents_by_terms(&self, terms: Vec<Term>) -> Result<i64> {
         self.ensure_open()?;
-        let seq_no = self.documents_writer.delete_terms(terms)?;
-        self.maybe_process_events(seq_no)
+        let outcome = self
+            .documents_writer
+            .delete_terms(terms)
+            .and_then(|seq_no| self.maybe_process_events(seq_no));
+        self.catch_error_as_tragedy(outcome, "deleteDocuments(Term..)")
     }
 
     /// Deletes every document matching any of `queries`.
@@ -1504,13 +1521,19 @@ impl IndexWriter {
     /// does; a query is never evaluated against documents still buffered in
     /// RAM, so the returned sequence number orders the delete but does not mean
     /// it has already run.
+    ///
+    /// Java's `catch (Error tragedy)` (`IndexWriter.java:1905-1911`) records
+    /// [`LuceneError::AssertionError`] as the tragedy and closes the writer.
     pub fn delete_documents_by_queries(
         &self,
         queries: Vec<Arc<dyn crate::search::Query>>,
     ) -> Result<i64> {
         self.ensure_open()?;
-        let seq_no = self.documents_writer.delete_queries(queries)?;
-        self.maybe_process_events(seq_no)
+        let outcome = self
+            .documents_writer
+            .delete_queries(queries)
+            .and_then(|seq_no| self.maybe_process_events(seq_no));
+        self.catch_error_as_tragedy(outcome, "deleteDocuments(Query..)")
     }
 
     /// Replaces every document matching `term` with `doc`, marking the old ones
@@ -1593,8 +1616,12 @@ impl IndexWriter {
         )?;
         self.reject_index_sort_field(field)?;
         let update = DocValuesUpdate::numeric(term, field, value);
-        let seq_no = self.documents_writer.update_doc_values(vec![update])?;
-        self.maybe_process_events(seq_no)
+        let outcome = self
+            .documents_writer
+            .update_doc_values(vec![update])
+            .and_then(|seq_no| self.maybe_process_events(seq_no));
+        // `catch (Error tragedy)` (`IndexWriter.java:1983-1990`).
+        self.catch_error_as_tragedy(outcome, "updateNumericDocValue")
     }
 
     /// Sets the binary doc-values of `field` to `value` on every document `term`
@@ -1619,8 +1646,12 @@ impl IndexWriter {
             true,
         )?;
         let update = DocValuesUpdate::binary(term, field, value);
-        let seq_no = self.documents_writer.update_doc_values(vec![update])?;
-        self.maybe_process_events(seq_no)
+        let outcome = self
+            .documents_writer
+            .update_doc_values(vec![update])
+            .and_then(|seq_no| self.maybe_process_events(seq_no));
+        // `catch (Error tragedy)` (`IndexWriter.java:2013-2020`).
+        self.catch_error_as_tragedy(outcome, "updateBinaryDocValue")
     }
 
     /// Applies `updates` to every document `term` matches, atomically.
@@ -1635,8 +1666,12 @@ impl IndexWriter {
     pub fn update_doc_values(&self, term: Term, updates: &[Field]) -> Result<i64> {
         self.ensure_open()?;
         let dv_updates = self.build_doc_values_update(&term, updates)?;
-        let seq_no = self.documents_writer.update_doc_values(dv_updates)?;
-        self.maybe_process_events(seq_no)
+        let outcome = self
+            .documents_writer
+            .update_doc_values(dv_updates)
+            .and_then(|seq_no| self.maybe_process_events(seq_no));
+        // `catch (Error tragedy)` (`IndexWriter.java:2036-2042`).
+        self.catch_error_as_tragedy(outcome, "updateDocValues")
     }
 
     /// Turns `updates` into the doc-values updates the delete queue carries.
@@ -1726,10 +1761,10 @@ impl IndexWriter {
     /// dropped segments cannot bring their documents back; another thread
     /// running such a merge may see it aborted.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java's `catch (Error tragedy)`
-    /// records a JVM `Error` as a tragic event (`IndexWriter.java:2778-2781`);
-    /// [`LuceneError`] has no counterpart of `Error`, so there is nothing to
-    /// record.
+    /// Java's `catch (Error tragedy)` (`IndexWriter.java:2778-2781`) records
+    /// [`LuceneError::AssertionError`], this port's only counterpart of a Java
+    /// `Error`, as the tragedy and closes the writer, once the full-flush lock
+    /// is released.
     ///
     /// # Errors
     ///
@@ -1738,6 +1773,12 @@ impl IndexWriter {
     /// checkpointing the empty index, raised.
     pub fn delete_all(&self) -> Result<i64> {
         self.ensure_open()?;
+        let outcome = self.delete_all_under_full_flush_lock();
+        self.catch_error_as_tragedy(outcome, "deleteAll")
+    }
+
+    /// The `try` block of `IndexWriter.deleteAll()` (`IndexWriter.java:2726-2777`).
+    fn delete_all_under_full_flush_lock(&self) -> Result<i64> {
         // Hold the full flush lock to prevent concurrent commits / NRT
         // reopens from getting in our way and doing unnecessary work.
         let _full_flush = self.lock_full_flush()?;
@@ -2083,12 +2124,13 @@ impl IndexWriter {
                 .message(IW, &format!("  index before flush {}", self.seg_string()?));
         }
         if let Some(tragedy) = self.get_tragic_exception() {
-            return Err(LuceneError::IllegalState(format!(
-                "this writer hit an unrecoverable error; cannot commit: {tragedy}"
-            )));
+            return Err(LuceneError::illegal_state_with_cause(
+                "this writer hit an unrecoverable error; cannot commit",
+                tragedy,
+            ));
         }
         if self.state()?.pending_commit.is_some() {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "prepareCommit was already called with no corresponding call to commit".to_string(),
             ));
         }
@@ -2189,15 +2231,17 @@ impl IndexWriter {
                 self.info_stream
                     .message(IW, "hit exception during prepareCommit");
             }
-            // Done: finish the full flush!
-            let finished = self.documents_writer.finish_full_flush(flush_success);
-            let after = self.do_after_flush();
-            outcome.and_then(|prepared| {
-                finished?;
-                after?;
-                Ok(prepared)
-            })
+            // Done: finish the full flush! The `finally` of
+            // `IndexWriter.java:3846-3856`: a failure of `finishFullFlush`
+            // replaces the original one and skips `doAfterFlush`, as an
+            // exception thrown from `finally` does.
+            self.documents_writer
+                .finish_full_flush(flush_success)
+                .and_then(|()| self.do_after_flush())
+                .and(outcome)
         };
+        // `catch (Error tragedy)` (`IndexWriter.java:3858-3860`).
+        let prepared = self.catch_error_as_tragedy(prepared, "prepareCommit");
         // Java's `finally { maybeCloseOnTragicEvent(); }`
         // (`IndexWriter.java:3861-3863`): a failure to close replaces the
         // original one, as an exception thrown from `finally` does.
@@ -2231,7 +2275,7 @@ impl IndexWriter {
         // have changed if any merges did complete (`IndexWriter.java:3884-3889`).
         let to_commit = to_commit
             .lock()
-            .map_err(|_| LuceneError::IllegalState("toCommit mutex poisoned".to_string()))?
+            .map_err(|_| LuceneError::illegal_state("toCommit mutex poisoned".to_string()))?
             .clone();
         {
             let mut state = self.state()?;
@@ -2268,9 +2312,10 @@ impl IndexWriter {
     fn start_commit(&self, mut to_sync: SegmentInfos) -> Result<()> {
         self.test_point("startStartCommit");
         if let Some(tragedy) = self.get_tragic_exception() {
-            return Err(LuceneError::IllegalState(format!(
-                "this writer hit an unrecoverable error; cannot commit: {tragedy}"
-            )));
+            return Err(LuceneError::illegal_state_with_cause(
+                "this writer hit an unrecoverable error; cannot commit",
+                tragedy,
+            ));
         }
         if self.info_stream.is_enabled(IW) {
             self.info_stream.message(IW, "startCommit(): start");
@@ -2280,7 +2325,7 @@ impl IndexWriter {
             debug_assert!(state.pending_commit.is_none());
             let last_commit_change_count = self.last_commit_change_count.load(Ordering::Acquire);
             if last_commit_change_count > self.change_count.load(Ordering::Acquire) {
-                return Err(LuceneError::IllegalState(format!(
+                return Err(LuceneError::illegal_state(format!(
                     "lastCommitChangeCount={last_commit_change_count},changeCount={}",
                     self.change_count.load(Ordering::Acquire)
                 )));
@@ -2385,7 +2430,9 @@ impl IndexWriter {
             .segment_infos
             .update_generation(prepared_generations.as_ref().unwrap_or(&to_sync));
         drop(state);
-        outcome?;
+        // `catch (Error tragedy)` (`IndexWriter.java:5815-5818`), around the
+        // whole `try`/`finally`.
+        self.catch_error_as_tragedy(outcome, "startCommit")?;
         self.test_point("finishStartCommit");
         Ok(())
     }
@@ -2452,9 +2499,10 @@ impl IndexWriter {
             let mut state = self.state()?;
             self.ensure_open_with(false)?;
             if let Some(tragedy) = self.get_tragic_exception() {
-                return Err(LuceneError::IllegalState(format!(
-                    "this writer hit an unrecoverable error; cannot complete commit: {tragedy}"
-                )));
+                return Err(LuceneError::illegal_state_with_cause(
+                    "this writer hit an unrecoverable error; cannot complete commit",
+                    tragedy,
+                ));
             }
             let Some(mut pending) = state.pending_commit.take() else {
                 debug_assert!(state.files_to_commit.is_none());
@@ -2595,9 +2643,10 @@ impl IndexWriter {
     /// the deleter and the write lock are released while the failure is
     /// handled, and the first error is returned, as Java's `catch` block does.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java's `catch` block also records a
-    /// JVM `Error` as a tragic event; [`LuceneError`] has no counterpart of
-    /// `Error`, so there is nothing to record.
+    /// Java's `catch` block also records an `Error` as a tragic event
+    /// (`IndexWriter.java:2675-2683`), suppressing whatever that raises; this
+    /// port does so for [`LuceneError::AssertionError`], its only counterpart
+    /// of `Error`.
     fn rollback_internal_no_commit(&self) -> Result<()> {
         if self.info_stream.is_enabled(IW) {
             self.info_stream.message(IW, "rollback");
@@ -2606,6 +2655,10 @@ impl IndexWriter {
             Ok(()) => Ok(()),
             Err(error) => {
                 self.close_after_failed_rollback();
+                if matches!(error, LuceneError::AssertionError(_)) {
+                    // `throwable.addSuppressed(t1)`: the original error wins.
+                    let _ = self.tragic_event(&error, "rollbackInternal");
+                }
                 Err(error)
             }
         }
@@ -2741,7 +2794,7 @@ impl IndexWriter {
         let taken = self
             .write_lock
             .lock()
-            .map_err(|_| LuceneError::IllegalState("write lock mutex poisoned".to_string()))?
+            .map_err(|_| LuceneError::illegal_state("write lock mutex poisoned".to_string()))?
             .take();
         match taken {
             Some(mut lock) => lock.close(),
@@ -2754,9 +2807,25 @@ impl IndexWriter {
     /// Equivalent to `IndexWriter.rollbackInternal()`
     /// (`IndexWriter.java:2545-2550`): make sure no commit is running, else
     /// e.g. we can close while another thread is still fsync'ing.
+    ///
+    /// Java then asserts that `pendingNumDocs` equals the documents of the
+    /// rolled-back `segmentInfos` (`IndexWriter.java:2551-2556`); a build with
+    /// `debug_assertions` checks it and fails with
+    /// [`LuceneError::AssertionError`], as Java under `-ea` throws
+    /// `AssertionError`.
     fn rollback_internal(&self) -> Result<()> {
         let _commit = self.lock_commit()?;
-        self.rollback_internal_no_commit()
+        self.rollback_internal_no_commit()?;
+        if cfg!(debug_assertions) {
+            let pending_num_docs = self.pending_num_docs.load(Ordering::Acquire);
+            let total_max_doc = self.state()?.segment_infos.total_max_doc();
+            if pending_num_docs != i64::from(total_max_doc) {
+                return Err(LuceneError::AssertionError(format!(
+                    "pendingNumDocs {pending_num_docs} != {total_max_doc} totalMaxDoc"
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// Commits if the configuration says to, then closes the writer.
@@ -2781,7 +2850,7 @@ impl IndexWriter {
     /// the commit, whose files the deleter's checkpoint then removes.
     fn shutdown(&self) -> Result<()> {
         if self.state()?.pending_commit.is_some() {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "cannot close: prepareCommit was already called with no corresponding call to commit"
                     .to_string(),
             ));
@@ -2980,7 +3049,7 @@ impl IndexWriter {
                         merge_policy.find_full_flush_merges(trigger, infos, &caching)?
                     }
                     MergeTrigger::AddIndexes => {
-                        return Err(LuceneError::IllegalState(
+                        return Err(LuceneError::illegal_state(
                             "Merges with ADD_INDEXES trigger should be called from within the \
                              addIndexes() API flow"
                                 .to_string(),
@@ -3141,9 +3210,10 @@ impl IndexWriter {
         );
 
         if let Some(tragedy) = self.get_tragic_exception() {
-            return Err(LuceneError::IllegalState(format!(
-                "this writer hit an unrecoverable error; cannot merge: {tragedy}"
-            )));
+            return Err(LuceneError::illegal_state_with_cause(
+                "this writer hit an unrecoverable error; cannot merge",
+                tragedy,
+            ));
         }
         if merge.info().is_some() {
             // `merge_init` already ran.
@@ -3245,9 +3315,10 @@ impl IndexWriter {
         merge.on_merge_complete()?;
         self.test_point("startCommitMerge");
         if let Some(tragedy) = self.get_tragic_exception() {
-            return Err(LuceneError::IllegalState(format!(
-                "this writer hit an unrecoverable error; cannot complete merge: {tragedy}"
-            )));
+            return Err(LuceneError::illegal_state_with_cause(
+                "this writer hit an unrecoverable error; cannot complete merge",
+                tragedy,
+            ));
         }
         if self.info_stream.is_enabled(IW) {
             self.info_stream.message(
@@ -3459,7 +3530,10 @@ impl IndexWriter {
 
         merge.init_merge_readers(|sci| {
             let rld = self.get_pooled_instance(sci, true)?.ok_or_else(|| {
-                LuceneError::IllegalState(format!("segment {} has no pooled reader", sci.info.name))
+                LuceneError::illegal_state(format!(
+                    "segment {} has no pooled reader",
+                    sci.info.name
+                ))
             })?;
             rld.set_is_merging();
             let mut state = self.state()?;
@@ -3634,7 +3708,7 @@ impl IndexWriter {
         let merged_info = {
             let mut merge_info = merge.info();
             let commit_info = merge_info.as_mut().ok_or_else(|| {
-                LuceneError::IllegalState("mergeMiddle ran before mergeInit".to_string())
+                LuceneError::illegal_state("mergeMiddle ran before mergeInit".to_string())
             })?;
             commit_info.info.set_max_doc(merged_max_doc)?;
             commit_info.info.clone()
@@ -3654,7 +3728,7 @@ impl IndexWriter {
         )?;
         if let Some(info) = merge.info().as_mut() {
             info.set_soft_del_count(i32::try_from(soft_delete_count).map_err(|_| {
-                LuceneError::IllegalState(format!(
+                LuceneError::illegal_state(format!(
                     "soft-delete count {soft_delete_count} overflows"
                 ))
             })?)?;
@@ -3859,7 +3933,7 @@ impl IndexWriter {
                 let rld = self
                     .get_pooled_instance(&merged_info, true)?
                     .ok_or_else(|| {
-                        LuceneError::IllegalState(format!(
+                        LuceneError::illegal_state(format!(
                             "segment {} has no pooled reader",
                             merged_info.info.name
                         ))
@@ -4216,7 +4290,7 @@ impl IndexWriter {
         let merged_info = merge
             .info()
             .as_ref()
-            .ok_or_else(|| LuceneError::IllegalState("merge has no merged segment".to_string()))?
+            .ok_or_else(|| LuceneError::illegal_state("merge has no merged segment".to_string()))?
             .clone();
         let Some(merged_deletes_and_updates) =
             self.get_pooled_instance_with(state, &merged_info, true)?
@@ -4242,7 +4316,10 @@ impl IndexWriter {
             let rld = self
                 .get_pooled_instance_with(state, info, false)?
                 .ok_or_else(|| {
-                    LuceneError::IllegalState(format!("seg={} is no longer pooled", info.info.name))
+                    LuceneError::illegal_state(format!(
+                        "seg={} is no longer pooled",
+                        info.info.name
+                    ))
                 })?;
 
             let seg_doc_map = &doc_maps[i];
@@ -4565,9 +4642,10 @@ impl IndexWriter {
     /// unrecoverable error; cannot merge", tragedy)`.
     fn ensure_no_tragedy_for_merge(&self) -> Result<()> {
         match self.get_tragic_exception() {
-            Some(tragedy) => Err(LuceneError::IllegalState(format!(
-                "this writer hit an unrecoverable error; cannot merge: {tragedy}"
-            ))),
+            Some(tragedy) => Err(LuceneError::illegal_state_with_cause(
+                "this writer hit an unrecoverable error; cannot merge",
+                tragedy,
+            )),
             None => Ok(()),
         }
     }
@@ -5278,7 +5356,7 @@ impl IndexWriter {
             )));
         }
         if created >= 7 && meta.min_version().is_none() {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "Indexes created on or after Lucene 7 must record the created version major, but the reader hides it".to_string(),
             ));
         }
@@ -5639,15 +5717,15 @@ impl IndexWriter {
     ///
     /// Equivalent to `IndexWriter.doFlush(boolean)` (`IndexWriter.java:4363-4423`).
     ///
-    /// **Divergence from Lucene 10.5.0.** Java's `catch (Error tragedy)`
-    /// records a JVM `Error` as a tragic event (`IndexWriter.java:4412-4414`);
-    /// [`LuceneError`] has no counterpart of `Error`, so only the `finally`
-    /// remains.
+    /// Java's `catch (Error tragedy)` (`IndexWriter.java:4412-4414`) records
+    /// [`LuceneError::AssertionError`], this port's counterpart of a Java
+    /// `Error`, as the tragedy and closes the writer.
     fn do_flush_internal(&self, apply_all_deletes: bool) -> Result<bool> {
         if let Some(tragedy) = self.get_tragic_exception() {
-            return Err(LuceneError::IllegalState(format!(
-                "this writer hit an unrecoverable error; cannot flush: {tragedy}"
-            )));
+            return Err(LuceneError::illegal_state_with_cause(
+                "this writer hit an unrecoverable error; cannot flush",
+                tragedy,
+            ));
         }
         self.do_before_flush()?;
         self.test_point("startDoFlush");
@@ -5673,6 +5751,8 @@ impl IndexWriter {
             self.do_after_flush()?;
             Ok(any_changes)
         })();
+        // `catch (Error tragedy)` (`IndexWriter.java:4412-4414`).
+        let outcome = self.catch_error_as_tragedy(outcome, "doFlush");
         // The `finally` of `IndexWriter.java:4415-4421`: a failed flush closes
         // the writer when it recorded a tragedy — the aborting failure of a
         // per-thread writer does, through
@@ -5691,11 +5771,11 @@ impl IndexWriter {
     ///
     /// Equivalent to `IndexWriter.flushNextBuffer()`.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java's `catch (Error tragedy)`
-    /// records a JVM `Error` as a tragic event (`IndexWriter.java:3742-3744`);
-    /// [`LuceneError`] has no counterpart of `Error`, so only the `finally`
-    /// remains. An aborting failure of the flushed per-thread writer is still
-    /// the writer's tragedy: the per-thread writer reports it through
+    /// Java's `catch (Error tragedy)` (`IndexWriter.java:3742-3744`) records
+    /// [`LuceneError::AssertionError`], this port's only counterpart of a Java
+    /// `Error`, as the tragedy and closes the writer. An aborting failure of
+    /// the flushed per-thread writer is still the writer's tragedy: the
+    /// per-thread writer reports it through
     /// [`FlushNotifications::on_tragic_event`] before the error reaches here.
     pub fn flush_next_buffer(&self) -> Result<bool> {
         let outcome = match self.documents_writer.flush_one_dwpt() {
@@ -5703,6 +5783,7 @@ impl IndexWriter {
             Ok(true) => self.process_events(true).map(|()| true),
             other => other,
         };
+        let outcome = self.catch_error_as_tragedy(outcome, "flushNextBuffer");
         // The `finally { maybeCloseOnTragicEvent(); }` of
         // `IndexWriter.java:3745-3747`: a failure to close replaces the
         // original one, as an exception thrown from `finally` does.
@@ -5982,6 +6063,24 @@ impl IndexWriter {
         self.maybe_close_on_tragic_event()
     }
 
+    /// Java's `catch (Error tragedy) { tragicEvent(tragedy, location); throw
+    /// tragedy; }`.
+    ///
+    /// [`LuceneError::AssertionError`] is this port's only counterpart of a
+    /// Java `Error`: it is recorded as the tragedy, the writer is closed, and
+    /// it is returned again — unless closing failed, whose error replaces it,
+    /// as an exception thrown from `tragicEvent`'s `finally` does. Every other
+    /// outcome is returned unchanged.
+    fn catch_error_as_tragedy<T>(&self, outcome: Result<T>, location: &str) -> Result<T> {
+        match outcome {
+            Err(error @ LuceneError::AssertionError(_)) => {
+                self.tragic_event(&error, location)?;
+                Err(error)
+            }
+            other => other,
+        }
+    }
+
     /// Closes the writer once a tragedy has been recorded, unless it is
     /// already closed or another thread is closing it.
     ///
@@ -6173,7 +6272,7 @@ impl IndexWriter {
         si: &SegmentCommitInfo,
     ) -> Result<crate::index::field_infos::FieldInfos> {
         let codec = si.info.codec().ok_or_else(|| {
-            LuceneError::IllegalState(format!("segment {} has no codec", si.info.name))
+            LuceneError::illegal_state(format!("segment {} has no codec", si.info.name))
         })?;
         let reader = codec.field_infos_format();
         let context = &*crate::store::READONCE_IO_CONTEXT;
@@ -6442,10 +6541,37 @@ impl IndexWriter {
     /// analysed or re-encoded: each source segment's files are copied verbatim
     /// under a fresh segment name, so the operation costs one file copy per
     /// file and preserves the source codec exactly.
+    ///
+    /// Java's `catch (Error tragedy)` (`IndexWriter.java:3202-3204`) records
+    /// [`LuceneError::AssertionError`] as the tragedy and closes the writer
+    /// before its `finally` releases the source directories' write locks.
     pub fn add_indexes_dirs(&self, dirs: &[Arc<dyn Directory>]) -> Result<i64> {
         self.ensure_open()?;
         Self::no_dup_dirs(dirs)?;
-        let _locks = Self::acquire_write_locks(dirs)?;
+        let locks = Self::acquire_write_locks(dirs)?;
+        let outcome = self.add_indexes_dirs_locked(dirs);
+        let outcome = self.catch_error_as_tragedy(outcome, "addIndexes(Directory...)");
+        // The `finally` (`IndexWriter.java:3204-3211`): on success
+        // `IOUtils.close(locks)` closes every lock and then throws the first
+        // failure; otherwise `IOUtils.closeWhileHandlingException(locks)`
+        // ignores them, so the original error wins.
+        let mut release_failure: Option<LuceneError> = None;
+        for mut lock in locks {
+            if let Err(error) = lock.close() {
+                release_failure.get_or_insert(error);
+            }
+        }
+        let seq_no = outcome?;
+        if let Some(error) = release_failure {
+            return Err(error);
+        }
+        self.maybe_merge()?;
+        Ok(seq_no)
+    }
+
+    /// The `try` block of `IndexWriter.addIndexes(Directory...)`
+    /// (`IndexWriter.java:3094-3201`).
+    fn add_indexes_dirs_locked(&self, dirs: &[Arc<dyn Directory>]) -> Result<i64> {
         let index_sort = self.config.index_sort().cloned();
 
         if self.info_stream.is_enabled(IW) {
@@ -6538,8 +6664,6 @@ impl IndexWriter {
             self.checkpoint(&mut state)?;
             seq_no
         };
-
-        self.maybe_merge()?;
         Ok(seq_no)
     }
 
@@ -6563,7 +6687,7 @@ impl IndexWriter {
             info.info.get_use_compound_file(),
             info.info.get_has_blocks(),
             info.info.codec().ok_or_else(|| {
-                LuceneError::IllegalState(format!("segment {} has no codec", info.info.name))
+                LuceneError::illegal_state(format!("segment {} has no codec", info.info.name))
             })?,
             info.info.get_diagnostics().to_std(),
             info.info.id(),
@@ -6623,7 +6747,7 @@ impl IndexWriter {
     ) -> Result<()> {
         // Maybe this check is not needed, but why take the risk?
         if !directory.get_created_files().is_empty() {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "pass a clean trackingdir for CFS creation".to_string(),
             ));
         }
@@ -6631,7 +6755,7 @@ impl IndexWriter {
             info_stream.message(IW, "create compound file");
         }
         let codec = info.codec().ok_or_else(|| {
-            LuceneError::IllegalState(format!("segment {} has no codec", info.name))
+            LuceneError::illegal_state(format!("segment {} has no codec", info.name))
         })?;
         if let Err(error) = codec.compound_format().write(directory, info, context) {
             // Safe: these files must exist.
@@ -6722,10 +6846,10 @@ impl IndexWriter {
             loop {
                 {
                     if let Some(tragedy) = self.get_tragic_exception() {
-                        return Err(LuceneError::IllegalState(format!(
-                            "this writer hit an unrecoverable error; cannot complete \
-                             forceMerge: {tragedy}"
-                        )));
+                        return Err(LuceneError::illegal_state_with_cause(
+                            "this writer hit an unrecoverable error; cannot complete forceMerge",
+                            tragedy,
+                        ));
                     }
                     // Forward any exceptions in background merge threads to the
                     // current thread.
@@ -6821,10 +6945,10 @@ impl IndexWriter {
             let mut state = self.state()?;
             loop {
                 if let Some(tragedy) = self.get_tragic_exception() {
-                    return Err(LuceneError::IllegalState(format!(
-                        "this writer hit an unrecoverable error; cannot complete \
-                         forceMergeDeletes: {tragedy}"
-                    )));
+                    return Err(LuceneError::illegal_state_with_cause(
+                        "this writer hit an unrecoverable error; cannot complete forceMergeDeletes",
+                        tragedy,
+                    ));
                 }
                 // Check each merge the policy asked for: whether any of them
                 // is still pending or running, and whether any failed.
@@ -6923,7 +7047,7 @@ impl IndexWriter {
         self.state_changed
             .wait_timeout(state, std::time::Duration::from_secs(1))
             .map(|(state, _)| state)
-            .map_err(|_| LuceneError::IllegalState("IndexWriter state lock poisoned".to_string()))
+            .map_err(|_| LuceneError::illegal_state("IndexWriter state lock poisoned".to_string()))
     }
 
     /// Counts the soft and hard deletions a reader carries.
@@ -7087,7 +7211,7 @@ impl IndexWriter {
                     let rld = self
                         .get_pooled_instance_with(state, sr.get_original_segment_info(), false)?
                         .ok_or_else(|| {
-                            LuceneError::IllegalState(format!(
+                            LuceneError::illegal_state(format!(
                                 "seg={} is no longer pooled",
                                 sr.get_segment_name()
                             ))
@@ -7749,7 +7873,7 @@ fn lock_reader_map<'a>(
     name: &str,
 ) -> Result<MutexGuard<'a, HashMap<String, Arc<SegmentReader>>>> {
     map.lock()
-        .map_err(|_| LuceneError::IllegalState(format!("{name} mutex poisoned")))
+        .map_err(|_| LuceneError::illegal_state(format!("{name} mutex poisoned")))
 }
 
 impl IndexWriter {
@@ -7768,7 +7892,7 @@ impl IndexWriter {
     fn lock_full_flush(&self) -> Result<MutexGuard<'_, ()>> {
         self.full_flush_lock
             .lock()
-            .map_err(|_| LuceneError::IllegalState("full flush lock poisoned".to_string()))
+            .map_err(|_| LuceneError::illegal_state("full flush lock poisoned".to_string()))
     }
 
     /// Opens the read-only clone of `sci` a near-real-time reader is built from.
@@ -7811,7 +7935,10 @@ impl IndexWriter {
         let rld = self
             .get_pooled_instance_with(state, sci, true)?
             .ok_or_else(|| {
-                LuceneError::IllegalState(format!("segment {} has no pooled reader", sci.info.name))
+                LuceneError::illegal_state(format!(
+                    "segment {} has no pooled reader",
+                    sci.info.name
+                ))
             })?;
         // Java releases the pooled entry from a `finally`, whatever the clone
         // did, so both outcomes are collected before either is reported.
@@ -7989,7 +8116,7 @@ impl IndexWriter {
         let infos = opening_segment_infos
             .lock()
             .map_err(|_| {
-                LuceneError::IllegalState("openingSegmentInfos mutex poisoned".to_string())
+                LuceneError::illegal_state("openingSegmentInfos mutex poisoned".to_string())
             })?
             .clone();
         let reader = self.maybe_reopen_merged_nrt_reader_with(
@@ -8060,7 +8187,9 @@ impl IndexWriter {
                         files
                             .lock()
                             .map_err(|_| {
-                                LuceneError::IllegalState("merged files mutex poisoned".to_string())
+                                LuceneError::illegal_state(
+                                    "merged files mutex poisoned".to_string(),
+                                )
                             })?
                             .extend(reader.get_segment_info().files()?);
                         Ok(reader)
@@ -8070,7 +8199,7 @@ impl IndexWriter {
                             lock_reader_map(opened_read_only_clones, "openedReadOnlyClones")?
                                 .remove(&sci.info.name)
                                 .ok_or_else(|| {
-                                    LuceneError::IllegalState(format!(
+                                    LuceneError::illegal_state(format!(
                                         "segment {} has neither a merged reader nor an opened \
                                          read-only clone",
                                         sci.info.name
@@ -8092,7 +8221,7 @@ impl IndexWriter {
         // Now the SDR#open call has incRef'd the files so we can let them go.
         let files = files
             .into_inner()
-            .map_err(|_| LuceneError::IllegalState("merged files mutex poisoned".to_string()))?;
+            .map_err(|_| LuceneError::illegal_state("merged files mutex poisoned".to_string()))?;
         let released = held.into_inner().deleter.dec_ref_files(files.iter());
         let opened = opened?;
         released?;
@@ -8230,7 +8359,7 @@ impl IndexWriter {
                         // Clone the target info to make sure we have the
                         // original info without the updated del and update gens.
                         *orig_info.lock().map_err(|_| {
-                            LuceneError::IllegalState("origInfo mutex poisoned".to_string())
+                            LuceneError::illegal_state("origInfo mutex poisoned".to_string())
                         })? = Some(info.clone());
                     }
                     Ok(())
@@ -8269,11 +8398,11 @@ impl IndexWriter {
                         let orig_info = orig_info
                             .lock()
                             .map_err(|_| {
-                                LuceneError::IllegalState("origInfo mutex poisoned".to_string())
+                                LuceneError::illegal_state("origInfo mutex poisoned".to_string())
                             })?
                             .clone()
                             .ok_or_else(|| {
-                                LuceneError::IllegalState(
+                                LuceneError::illegal_state(
                                     "onMergeComplete was not called before mergeFinished"
                                         .to_string(),
                                 )
@@ -8287,7 +8416,7 @@ impl IndexWriter {
                         }
 
                         let mut infos = merging_segment_infos.lock().map_err(|_| {
-                            LuceneError::IllegalState(
+                            LuceneError::illegal_state(
                                 "mergingSegmentInfos mutex poisoned".to_string(),
                             )
                         })?;
@@ -8320,7 +8449,7 @@ impl IndexWriter {
 
                         let segment_counter = i64::from_str_radix(&orig_info.info.name[1..], 36)
                             .map_err(|_| {
-                                LuceneError::IllegalState(format!(
+                                LuceneError::illegal_state(format!(
                                     "segment name {} is not a base-36 counter",
                                     orig_info.info.name
                                 ))
@@ -8363,7 +8492,7 @@ impl IndexWriter {
                     let rld = self
                         .get_pooled_instance_with(state, sci, true)?
                         .ok_or_else(|| {
-                            LuceneError::IllegalState(format!(
+                            LuceneError::illegal_state(format!(
                                 "segment {} has no pooled reader",
                                 sci.info.name
                             ))
@@ -8446,9 +8575,11 @@ impl IndexWriterTrait for IndexWriter {
     /// whether to merge.
     ///
     /// Java additionally catches `Error` — a JVM-level failure, as opposed to
-    /// an `IOException` — to record it as a tragedy before rethrowing.
-    /// [`LuceneError`] draws no such line, so the tragedy is only acted on
-    /// through [`maybe_close_on_tragic_event`](IndexWriter::maybe_close_on_tragic_event),
+    /// an `IOException` — to record it as a tragedy before rethrowing
+    /// (`IndexWriter.java:713-715`); this port does so for
+    /// [`LuceneError::AssertionError`], its only counterpart of `Error`. Every
+    /// other failure is acted on through
+    /// [`maybe_close_on_tragic_event`](IndexWriter::maybe_close_on_tragic_event),
     /// which is what Java's `finally` does on every failing path.
     ///
     /// # Errors
@@ -8501,8 +8632,11 @@ impl IndexWriterTrait for IndexWriter {
                 let flushed =
                     self.get_reader_full_flush(apply_all_deletes, write_all_deletes, &mut nrt);
                 let success = flushed.is_ok();
-                // Done: finish the full flush!
-                let finished = self.documents_writer.finish_full_flush(success);
+                // Done: finish the full flush! The `finally` of
+                // `IndexWriter.java:671-683`: a failure of `finishFullFlush`
+                // replaces the original one and skips the rest of the block,
+                // as an exception thrown from `finally` does.
+                self.documents_writer.finish_full_flush(success)?;
                 if success {
                     self.process_events(false)?;
                     self.do_after_flush()?;
@@ -8511,14 +8645,13 @@ impl IndexWriterTrait for IndexWriter {
                         .message(IW, "hit exception during NRT reader");
                 }
                 flushed?;
-                finished?;
             }
 
             // Only relevant if we do merge on getReader.
             if let Some(point_in_time_merges) = nrt.on_get_reader_merges.take() {
                 let opening_segment_infos =
                     Arc::clone(nrt.opening_segment_infos.as_ref().ok_or_else(|| {
-                        LuceneError::IllegalState(
+                        LuceneError::illegal_state(
                             "point-in-time merges were prepared without opening segment infos"
                                 .to_string(),
                         )
@@ -8560,6 +8693,9 @@ impl IndexWriterTrait for IndexWriter {
             }
             Ok(())
         })();
+        // `catch (Error tragedy)` (`IndexWriter.java:713-715`), before the
+        // `finally` releases the reader.
+        let outcome = self.catch_error_as_tragedy(outcome, "getReader");
 
         match outcome {
             Ok(()) => {
@@ -8570,7 +8706,7 @@ impl IndexWriterTrait for IndexWriter {
                     )?;
                 }
                 let reader = nrt.reader.take().ok_or_else(|| {
-                    LuceneError::IllegalState("getReader produced no reader".to_string())
+                    LuceneError::illegal_state("getReader produced no reader".to_string())
                 })?;
                 Ok(reader as Arc<dyn DirectoryReader>)
             }
@@ -9138,7 +9274,7 @@ mod tests {
         // `IndexWriter.ensureOpen` runs it.
         let raced = writer.documents_writer.update_document(&doc, None);
         assert!(
-            matches!(raced, Err(LuceneError::AlreadyClosed(_))),
+            matches!(raced, Err(LuceneError::AlreadyClosed { .. })),
             "an add racing the rollback must fail with AlreadyClosed: {raced:?}"
         );
         assert_eq!(writer.documents_writer.num_docs(), 0);
@@ -9185,7 +9321,7 @@ mod tests {
         let added = writer
             .event_queue
             .add(WriterEvent::PublishFlushedSegments { count_flush: false });
-        assert!(matches!(added, Err(LuceneError::AlreadyClosed(_))));
+        assert!(matches!(added, Err(LuceneError::AlreadyClosed { .. })));
     }
 
     /// `rollbackInternalNoCommit` restores the segments the writer recorded
@@ -9250,7 +9386,7 @@ mod tests {
             writer.closing.store(true, Ordering::Release);
             let refused = writer.enable_merges(&mut state);
             assert!(
-                matches!(refused, Err(LuceneError::AlreadyClosed(_))),
+                matches!(refused, Err(LuceneError::AlreadyClosed { .. })),
                 "{refused:?}"
             );
             assert!(
@@ -9276,7 +9412,7 @@ mod tests {
         let files: HashSet<String> = HashSet::from(["_0.fdt".to_string()]);
         let refused = writer.flush_notifications.delete_unused_files(&files);
         assert!(
-            matches!(refused, Err(LuceneError::AlreadyClosed(_))),
+            matches!(refused, Err(LuceneError::AlreadyClosed { .. })),
             "{refused:?}"
         );
         assert!(

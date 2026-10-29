@@ -4073,7 +4073,7 @@ impl TemporalMergePolicy {
     ) -> Result<Option<SegmentDateRange>> {
         let si = &segment_info.info;
         let codec = si.codec().ok_or_else(|| {
-            crate::error::LuceneError::IllegalState(format!("segment {} has no codec", si.name))
+            crate::error::LuceneError::illegal_state(format!("segment {} has no codec", si.name))
         })?;
         let context = &*crate::store::READONCE_IO_CONTEXT;
 
@@ -5407,7 +5407,7 @@ mod reader_variant_forwarding_tests {
 
     /// A supplier the hooks under test must not need.
     fn no_reader() -> Result<Arc<dyn CodecReader>> {
-        Err(LuceneError::IllegalState(
+        Err(LuceneError::illegal_state(
             "no reader in this test".to_string(),
         ))
     }

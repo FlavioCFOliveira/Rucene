@@ -373,13 +373,13 @@ impl NumericComparator {
             let info = field_infos.field_info(&self.field);
             match info {
                 None => {
-                    return Err(LuceneError::IllegalState(format!(
+                    return Err(LuceneError::illegal_state(format!(
                         "Field {} doesn't index points according to FieldInfos yet returns non-null PointValues",
                         self.field
                     )));
                 }
                 Some(info) if info.get_point_dimension_count() == 0 => {
-                    return Err(LuceneError::IllegalState(format!(
+                    return Err(LuceneError::illegal_state(format!(
                         "Field {} doesn't index points according to FieldInfos yet returns non-null PointValues",
                         self.field
                     )));

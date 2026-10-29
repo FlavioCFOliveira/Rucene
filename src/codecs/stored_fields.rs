@@ -199,7 +199,7 @@ pub trait StoredFieldsWriter: Accountable + Send + fmt::Debug {
         for (i, reader) in merge_state.stored_fields_readers.iter().enumerate() {
             merge_state.check_aborted()?;
             let Some(reader) = reader.as_deref() else {
-                return Err(crate::error::LuceneError::IllegalState(format!(
+                return Err(crate::error::LuceneError::illegal_state(format!(
                     "source segment {i} of the merge has no stored-fields reader"
                 )));
             };
@@ -519,7 +519,7 @@ mod tests {
         let merge_state = two_segment_merge_state(vec![Some(Box::new(reader)), None], vec![3, 2]);
         let mut writer = RecordingStoredFieldsWriter::default();
         match writer.merge(&merge_state) {
-            Err(crate::error::LuceneError::IllegalState(message)) => assert_eq!(
+            Err(crate::error::LuceneError::IllegalState { message, .. }) => assert_eq!(
                 message,
                 "source segment 1 of the merge has no stored-fields reader"
             ),
@@ -666,7 +666,7 @@ impl<W: StoredFieldsWriter + ?Sized> MergeVisitor<'_, W> {
         match self.remapper {
             None => Ok(field),
             Some(remapper) => remapper.field_info(&field.name).ok_or_else(|| {
-                crate::error::LuceneError::IllegalState(format!(
+                crate::error::LuceneError::illegal_state(format!(
                     "field \"{}\" is absent from the merged field infos",
                     field.name
                 ))

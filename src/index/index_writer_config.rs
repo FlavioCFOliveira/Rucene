@@ -638,7 +638,7 @@ impl IndexWriterConfig {
         writer: Weak<dyn IndexWriterTrait>,
     ) -> Result<&mut Self> {
         if self.writer.is_some() {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "do not share IndexWriterConfig instances across IndexWriters".to_string(),
             ));
         }
@@ -1464,7 +1464,7 @@ mod tests {
             _apply_all_deletes: bool,
             _write_all_deletes: bool,
         ) -> Result<Arc<dyn crate::index::DirectoryReader>> {
-            Err(LuceneError::IllegalState("dummy".to_string()))
+            Err(LuceneError::illegal_state("dummy".to_string()))
         }
 
         fn is_closed(&self) -> bool {

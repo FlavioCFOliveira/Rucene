@@ -160,7 +160,7 @@ impl SearcherLifetimeManager {
     /// Equivalent to `SearcherLifetimeManager.ensureOpen()`.
     fn ensure_open(&self) -> Result<()> {
         if self.closed.load(Ordering::Acquire) {
-            return Err(LuceneError::AlreadyClosed(
+            return Err(LuceneError::already_closed(
                 "this SearcherLifetimeManager instance is closed".to_string(),
             ));
         }
@@ -347,7 +347,7 @@ impl SearcherLifetimeManager {
             .unwrap_or_else(PoisonError::into_inner)
             .is_empty()
         {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "another thread called record while this SearcherLifetimeManager instance was \
                  being closed; not all searchers were closed"
                     .to_string(),

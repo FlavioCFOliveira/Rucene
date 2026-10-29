@@ -91,7 +91,7 @@ impl<I: DoubleValuesSourceRescorerImpl> Rescorer for DoubleValuesSourceRescorer<
 
         let leaves = searcher.get_leaf_contexts();
         if leaves.is_empty() {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "the provided searcher has no leaf".to_string(),
             ));
         }
@@ -102,7 +102,7 @@ impl<I: DoubleValuesSourceRescorerImpl> Rescorer for DoubleValuesSourceRescorer<
         for hit in hits.iter_mut() {
             while hit.doc >= leaf_end {
                 if curr_leaf == leaves.len() - 1 {
-                    return Err(LuceneError::IllegalState(format!(
+                    return Err(LuceneError::illegal_state(format!(
                         "hit docId={}greater than last searcher leaf maxDoc={leaf_end} Ensure \
                          firstPassTopDocs were produced by the searcher provided to rescore.",
                         hit.doc

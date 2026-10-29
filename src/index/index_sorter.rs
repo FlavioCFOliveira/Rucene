@@ -1083,7 +1083,7 @@ impl MultiSorter {
                         let mut parent_docs = reader
                             .get_numeric_doc_values(parent_field)?
                             .ok_or_else(|| {
-                                LuceneError::IllegalState(format!(
+                                LuceneError::illegal_state(format!(
                                     "parent field: {parent_field} must be present if index \
                                      sorting is used with blocks"
                                 ))

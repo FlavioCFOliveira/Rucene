@@ -244,7 +244,7 @@ pub trait TermVectorsWriter: Send + Sync + fmt::Debug + Accountable {
 
         for field_name in &field_names {
             let field_info = merge_field_infos.field_info(field_name).ok_or_else(|| {
-                crate::error::LuceneError::IllegalState(format!(
+                crate::error::LuceneError::illegal_state(format!(
                     "field \"{field_name}\" carries term vectors but is absent from the merged \
                      field infos"
                 ))

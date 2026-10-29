@@ -106,7 +106,7 @@ impl PackedIntsWriter for PackedWriter<'_> {
     fn add(&mut self, v: i64) -> Result<()> {
         debug_assert!(PackedInts::unsigned_bits_required(v) <= self.bits_per_value);
         if self.finished {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "PackedWriter is already finished".to_string(),
             ));
         }
@@ -117,7 +117,7 @@ impl PackedIntsWriter for PackedWriter<'_> {
             // Java would fail with an `ArrayIndexOutOfBoundsException` here,
             // which only happens when `computeIterations` returned zero for an
             // unknown value count paired with a non-zero memory budget.
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "PackedWriter has no buffer capacity; use mem = 0 with an unknown value count"
                     .to_string(),
             ));
@@ -137,7 +137,7 @@ impl PackedIntsWriter for PackedWriter<'_> {
 
     fn finish(&mut self) -> Result<()> {
         if self.finished {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "PackedWriter is already finished".to_string(),
             ));
         }

@@ -134,7 +134,7 @@ pub trait BitSet: Bits + Accountable + std::fmt::Display {
 /// Java's `IllegalStateException`.
 pub fn check_unpositioned(iter: &dyn DocIdSetIterator) -> Result<()> {
     if iter.doc_id() != -1 {
-        return Err(LuceneError::IllegalState(format!(
+        return Err(LuceneError::illegal_state(format!(
             "This operation only works with an unpositioned iterator, got current position = {}",
             iter.doc_id()
         )));

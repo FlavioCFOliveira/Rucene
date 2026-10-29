@@ -584,7 +584,7 @@ fn read_crc(input: &mut dyn DataInput) -> Result<i64> {
 fn write_crc(out: &mut dyn IndexOutput) -> Result<()> {
     let value = out.checksum()?;
     if (value as u64) > 0xFFFFFFFFu64 {
-        return Err(LuceneError::IllegalState(format!(
+        return Err(LuceneError::illegal_state(format!(
             "Illegal CRC-32 checksum: {} (resource={})",
             value,
             out.resource_description()

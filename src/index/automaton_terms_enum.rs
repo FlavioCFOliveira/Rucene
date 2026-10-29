@@ -90,13 +90,13 @@ impl AutomatonTermsEnum {
         let byte_runnable = compiled
             .run_automaton
             .ok_or_else(|| {
-                LuceneError::IllegalState("compiled automaton has no byte runnable".to_string())
+                LuceneError::illegal_state("compiled automaton has no byte runnable".to_string())
             })?
             .clone();
         let transition_accessor = compiled
             .automaton
             .ok_or_else(|| {
-                LuceneError::IllegalState(
+                LuceneError::illegal_state(
                     "compiled automaton has no transition accessor".to_string(),
                 )
             })?
@@ -436,7 +436,7 @@ mod tests {
         }
 
         fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
-            Err(LuceneError::IllegalState(
+            Err(LuceneError::illegal_state(
                 "impacts not supported".to_string(),
             ))
         }
