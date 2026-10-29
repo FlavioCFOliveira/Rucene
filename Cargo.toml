@@ -241,3 +241,7 @@ path = "tests/portability/java_collections.rs"
 [[test]]
 name = "portability_prefix_coded_terms"
 path = "tests/portability/prefix_coded_terms.rs"
+
+[[test]]
+name = "portability_index_interop"
+path = "tests/portability/index_interop.rs"

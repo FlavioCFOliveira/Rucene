@@ -2520,61 +2520,284 @@ impl MergePolicy for TieredMergePolicy {
         )
     }
 
+    /// Selects the merges of a forced merge down to `max_num_segments`.
+    ///
+    /// Equivalent to `TieredMergePolicy.findForcedMerges`
+    /// (`TieredMergePolicy.java:785-962`): only the segments of
+    /// `segments_to_merge` take part; segments already merging stop the
+    /// selection; segments with deletions always take part; segments without
+    /// deletions larger than the target size are left alone; and the
+    /// remaining segments are packed, smallest first, into bins of at most
+    /// `maxMergeBytes` until the forced merge would leave `max_num_segments`
+    /// segments.
+    ///
+    /// The `eligible=` message names the segments, where Java prints the
+    /// identity strings of its private `SegmentSizeAndDocs` objects
+    /// (`TieredMergePolicy.java:892`), which no port can reproduce.
     fn find_forced_merges(
         &self,
         segment_infos: &SegmentInfos,
         max_num_segments: i32,
-        _segments_to_merge: &HashMap<String, bool>,
+        segments_to_merge: &HashMap<String, bool>,
         merge_context: &dyn MergeContext,
     ) -> Result<Option<MergeSpecification>> {
-        let sorted = self.sorted_by_segment_size(segment_infos, merge_context)?;
-        if sorted.len() as i32 <= max_num_segments {
+        if mp_verbose(merge_context) {
+            // `segmentsToMerge` renders as Java's `Map<SegmentCommitInfo,
+            // Boolean>.toString()`: `{info=true, ...}`, each key by
+            // `SegmentCommitInfo.toString()`, which is `SegmentInfo.toString()`
+            // with no deletion count (`SegmentCommitInfo.java:357-359`); the
+            // order is a hash order in Java too. The map is keyed by name, so a
+            // key no longer in `segment_infos` (a segment already merged away)
+            // renders as its name, where Java still holds the object.
+            let entries: Vec<String> = segments_to_merge
+                .iter()
+                .map(|(name, is_original)| {
+                    let key = segment_infos
+                        .iter()
+                        .find(|info| &info.info.name == name)
+                        .map_or_else(
+                            || name.clone(),
+                            |info| info.info.to_string_with_del_count(0),
+                        );
+                    format!("{key}={is_original}")
+                })
+                .collect();
+            mp_message(
+                &format!(
+                    "findForcedMerges maxSegmentCount={max_num_segments} infos={} \
+                     segmentsToMerge={{{}}}",
+                    seg_string(merge_context, segment_infos.iter()),
+                    entries.join(", ")
+                ),
+                merge_context,
+            );
+        }
+
+        let mut sorted = self.sorted_by_segment_size(segment_infos, merge_context)?;
+
+        let mut total_merge_bytes = 0i64;
+        let merging = merge_context.get_merging_segments();
+
+        // Trim the list down, remove if we're respecting max segment size and
+        // it's not original. Presumably it's been merged before and is close
+        // enough to the max segment size we shouldn't add it in again.
+        let mut force_merge_running = false;
+        sorted.retain(|seg| {
+            if !segments_to_merge.contains_key(&seg.name) {
+                false
+            } else if merging.contains(&seg.name) {
+                force_merge_running = true;
+                false
+            } else {
+                total_merge_bytes += seg.size_in_bytes;
+                true
+            }
+        });
+
+        let mut max_merge_bytes = self.max_merged_segment_bytes;
+
+        // Set the maximum segment size based on how many segments have been
+        // specified.
+        if max_num_segments == 1 {
+            max_merge_bytes = i64::MAX;
+        } else if max_num_segments != i32::MAX {
+            max_merge_bytes = ((total_merge_bytes as f64 / f64::from(max_num_segments)) as i64)
+                .max(self.max_merged_segment_bytes);
+            // Fudge this up a bit so we have a better chance of not having to
+            // do a second pass of merging to get down to the requested target
+            // segment count.
+            max_merge_bytes = (max_merge_bytes as f64 * 1.25) as i64;
+        }
+
+        let mut found_deletes = false;
+        sorted.retain(|seg| {
+            let is_original = segments_to_merge.get(&seg.name).copied();
+            if seg.del_count != 0 {
+                // This is forceMerge; all segments with deleted docs should be
+                // merged.
+                if is_original == Some(true) {
+                    found_deletes = true;
+                }
+                return true;
+            }
+            // Let the scoring handle whether to merge large segments.
+            if max_num_segments == i32::MAX && is_original == Some(false) {
+                return false;
+            }
+            // Don't try to merge a segment with no deleted docs that's over
+            // the max size.
+            !(max_num_segments != i32::MAX && seg.size_in_bytes >= max_merge_bytes)
+        });
+
+        // Nothing to merge this round.
+        if sorted.is_empty() {
             return Ok(None);
         }
-        let total_del_count: i32 = sorted.iter().map(|s| s.del_count).sum();
-        let total_max_doc: i32 = sorted.iter().map(|s| s.max_doc).sum();
-        let merge_factor = (self.max_merge_at_once as f64).min(self.segs_per_tier) as i32;
-        self.do_find_merges(
-            segment_infos,
-            merge_context,
-            &sorted,
-            merge_factor,
-            max_num_segments,
-            0,
-            self.max_allowed_docs(total_max_doc, total_del_count),
-            false,
-            false,
-        )
+
+        // We only bail if there are no deletions.
+        if !found_deletes {
+            let info_zero = segment_infos.info(sorted[0].index);
+            if (max_num_segments != i32::MAX
+                && max_num_segments > 1
+                && sorted.len() as i32 <= max_num_segments)
+                || (max_num_segments == 1
+                    && sorted.len() == 1
+                    && (segments_to_merge.contains_key(&info_zero.info.name)
+                        || self.is_merged(segment_infos, info_zero, merge_context)?))
+            {
+                if mp_verbose(merge_context) {
+                    mp_message("already merged", merge_context);
+                }
+                return Ok(None);
+            }
+        }
+
+        if mp_verbose(merge_context) {
+            let names: Vec<&str> = sorted.iter().map(|s| s.name.as_str()).collect();
+            mp_message(&format!("eligible=[{}]", names.join(", ")), merge_context);
+        }
+
+        let starting_segment_count = sorted.len();
+        if force_merge_running {
+            return Ok(None);
+        }
+
+        // This is the special case of merging down to one segment.
+        if max_num_segments == 1 && total_merge_bytes < max_merge_bytes {
+            let all_of_them: Vec<SegmentCommitInfo> = sorted
+                .iter()
+                .map(|s| segment_infos.info(s.index).clone())
+                .collect();
+            let mut spec = MergeSpecification::new();
+            spec.add(OneMerge::new(all_of_them)?);
+            return Ok(Some(spec));
+        }
+
+        let mut spec: Option<MergeSpecification> = None;
+
+        let mut index = starting_segment_count as isize - 1;
+        let mut resulting_segments = starting_segment_count as i32;
+        loop {
+            let mut candidate: Vec<SegmentCommitInfo> = Vec::new();
+            let mut current_candidate_bytes = 0i64;
+            while index >= 0 && resulting_segments > max_num_segments {
+                let current = segment_infos.info(sorted[index as usize].index);
+                let initial_candidate_size = candidate.len();
+                let current_segment_size = current.size_in_bytes_uncached()?;
+                // We either add to the bin because there's space or because it
+                // is the smallest possible bin since decrementing the index
+                // will move us to even larger segments.
+                if current_candidate_bytes + current_segment_size <= max_merge_bytes
+                    || initial_candidate_size < 2
+                {
+                    candidate.push(current.clone());
+                    index -= 1;
+                    current_candidate_bytes += current_segment_size;
+                    if initial_candidate_size > 0 {
+                        // Any merge that handles two or more segments reduces
+                        // the resulting number of segments by the number of
+                        // segments handled - 1.
+                        resulting_segments -= 1;
+                    }
+                } else {
+                    break;
+                }
+            }
+            // While a force merge is running, only merges that cover the
+            // maximum allowed number of segments or that create a segment
+            // close to the maximum allowed segment size are permitted.
+            if candidate.len() > 1
+                && (!force_merge_running
+                    || current_candidate_bytes as f64 > 0.7 * max_merge_bytes as f64)
+            {
+                let merge = OneMerge::new(candidate)?;
+                if mp_verbose(merge_context) {
+                    mp_message(
+                        &format!(
+                            "add merge={}",
+                            seg_string(merge_context, merge.segments.iter())
+                        ),
+                        merge_context,
+                    );
+                }
+                spec.get_or_insert_with(MergeSpecification::new).add(merge);
+            } else {
+                return Ok(spec);
+            }
+        }
     }
 
+    /// Selects the merges of a forced merge of deletes.
+    ///
+    /// Equivalent to `TieredMergePolicy.findForcedDeletesMerges`
+    /// (`TieredMergePolicy.java:964-1018`): nothing is merged unless some
+    /// segment not already merging has more than
+    /// `forceMergeDeletesPctAllowed` percent of its documents deleted; the
+    /// segments over that threshold and not merging are then handed to
+    /// `doFindMerges` with no merge-factor or segment-count limit, and with the
+    /// document budget of the whole index.
+    ///
+    /// The `eligible=` message names the segments, where Java prints the
+    /// identity strings of its private `SegmentSizeAndDocs` objects
+    /// (`TieredMergePolicy.java:1006`), which no port can reproduce.
     fn find_forced_deletes_merges(
         &self,
         segment_infos: &SegmentInfos,
         merge_context: &dyn MergeContext,
     ) -> Result<Option<MergeSpecification>> {
-        let sorted: Vec<SegmentSizeAndDocs> = self
-            .sorted_by_segment_size(segment_infos, merge_context)?
-            .into_iter()
-            .filter(|s| {
-                s.max_doc > 0
-                    && 100.0 * f64::from(s.del_count) / f64::from(s.max_doc)
-                        > self.force_merge_deletes_pct_allowed
-            })
-            .collect();
-        if sorted.is_empty() {
+        if mp_verbose(merge_context) {
+            mp_message(
+                &format!(
+                    "findForcedDeletesMerges infos={} forceMergeDeletesPctAllowed={}",
+                    seg_string(merge_context, segment_infos.iter()),
+                    double_to_string(self.force_merge_deletes_pct_allowed)
+                ),
+                merge_context,
+            );
+        }
+
+        // First do a quick check that there's any work to do.
+        let merging = merge_context.get_merging_segments();
+
+        let mut have_work = false;
+        let mut total_del_count = 0i32;
+        for info in segment_infos.iter() {
+            let del_count = merge_context.num_deletes_to_merge(info)?;
+            debug_assert!(self.assert_del_count(del_count, info)?);
+            total_del_count += del_count;
+            // `100. * ((double) delCount) / info.info.maxDoc()`: the product
+            // first, then the quotient, as Java evaluates it.
+            let pct_deletes = 100.0 * f64::from(del_count) / f64::from(info.info.max_doc()?);
+            have_work = have_work
+                || (pct_deletes > self.force_merge_deletes_pct_allowed
+                    && !merging.contains(&info.info.name));
+        }
+
+        if !have_work {
             return Ok(None);
         }
-        let total_del_count: i32 = sorted.iter().map(|s| s.del_count).sum();
-        let total_max_doc: i32 = sorted.iter().map(|s| s.max_doc).sum();
-        let merge_factor = (self.max_merge_at_once as f64).min(self.segs_per_tier) as i32;
+
+        let mut sorted_infos = self.sorted_by_segment_size(segment_infos, merge_context)?;
+        sorted_infos.retain(|seg| {
+            // `100. * ((double) delCount / (double) maxDoc)`: here the
+            // quotient comes first. A segment with `maxDoc == 0` yields NaN and
+            // stays, as in Java.
+            let pct_deletes = 100.0 * (f64::from(seg.del_count) / f64::from(seg.max_doc));
+            !(merging.contains(&seg.name) || pct_deletes <= self.force_merge_deletes_pct_allowed)
+        });
+
+        if mp_verbose(merge_context) {
+            let names: Vec<&str> = sorted_infos.iter().map(|s| s.name.as_str()).collect();
+            mp_message(&format!("eligible=[{}]", names.join(", ")), merge_context);
+        }
         self.do_find_merges(
             segment_infos,
             merge_context,
-            &sorted,
-            merge_factor,
+            &sorted_infos,
+            i32::MAX,
             i32::MAX,
             0,
-            self.max_allowed_docs(total_max_doc, total_del_count),
+            self.max_allowed_docs(segment_infos.total_max_doc(), total_del_count),
             false,
             false,
         )
