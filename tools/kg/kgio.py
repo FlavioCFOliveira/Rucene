@@ -172,17 +172,45 @@ def read_dicts(roadmap, query):
     return [dict(zip(doc["columns"], row)) for row in doc["rows"]]
 
 
+def counters_of(stdout: str) -> dict:
+    """The write counters of one `rmp graph client` result, `{}` when none.
+
+    A statement that changed the graph carries a `counters` map
+    (`relationshipsCreated`, `relationshipsDeleted`, `propertiesWritten`, ...;
+    Groadmap v1.19.0 `internal/graphjson/counters.go`), each key left out when
+    zero; one that changed nothing carries none.
+    """
+    try:
+        doc = json.loads(stdout)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return dict(doc.get("counters") or {}) if isinstance(doc, dict) else {}
+
+
+def format_counters(counters: dict) -> str:
+    return ", ".join(f"{k}={v}" for k, v in sorted(counters.items())) or "no change"
+
+
 def unwind(roadmap, mode, rows, body, label, batch=300):
-    """`UNWIND [<rows>] AS row <body>`, in batches."""
+    """`UNWIND [<rows>] AS row <body>`, in batches.
+
+    Returns the engine's write counters summed over the batches. The line it
+    prints gives the rows *sent* and what the engine reports it changed: the
+    row count is the input, never a result.
+    """
+    total = {}
     if not rows:
-        print(f"  {label}: 0", file=sys.stderr)
-        return
+        print(f"  {label}: 0 rows sent", file=sys.stderr)
+        return total
     for i in range(0, len(rows), batch):
         chunk = rows[i : i + batch]
         maps = ", ".join(
             "{" + ", ".join(f"{k}:{esc(v)}" for k, v in r.items()) + "}"
             for r in chunk
         )
-        client(roadmap, f"UNWIND [{maps}] AS row\n{body}",
-               label=f"{label} ({mode}, rows {i + 1}-{i + len(chunk)})")
-    print(f"  {label}: {len(rows)}", file=sys.stderr)
+        out = client(roadmap, f"UNWIND [{maps}] AS row\n{body}",
+                     label=f"{label} ({mode}, rows {i + 1}-{i + len(chunk)})")
+        for k, v in counters_of(out).items():
+            total[k] = total.get(k, 0) + v
+    print(f"  {label}: {len(rows)} rows sent; {format_counters(total)}", file=sys.stderr)
+    return total

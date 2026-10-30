@@ -11,7 +11,7 @@ use crate::index::merge::DocMap;
 use crate::index::vector_values::KnnVectorValues;
 use crate::index::VectorEncoding;
 use crate::search::NO_MORE_DOCS;
-use crate::util::{Bits, FixedBitSet};
+use crate::util::{Bits, FixedBitSet, InfoStream};
 
 use super::builder::{HnswBuilder, HnswGraphBuilder, DEFAULT_RAND_SEED};
 use super::merger::HnswGraphMerger;
@@ -61,8 +61,6 @@ pub struct GraphReader {
 ///   takes the provider explicitly; passing `None` is the counterpart of a reader
 ///   that is not an `HnswGraphProvider`, and the reader is then skipped exactly as
 ///   Java skips it.
-/// * `merge` takes no `InfoStream`: the port's [`HnswGraphBuilder`] has no info
-///   stream to set.
 pub struct IncrementalHnswGraphMerger {
     field_info: FieldInfo,
     scorer_supplier: Arc<dyn RandomVectorScorerSupplier>,
@@ -334,9 +332,11 @@ impl HnswGraphMerger for IncrementalHnswGraphMerger {
     fn merge(
         &mut self,
         merged_vector_values: &dyn KnnVectorValues,
+        info_stream: Arc<dyn InfoStream>,
         max_ord: i32,
     ) -> Result<OnHeapHnswGraph> {
         let mut builder = self.create_builder(merged_vector_values, max_ord)?;
+        builder.set_info_stream(info_stream);
         builder.build(max_ord)?;
         builder.into_completed_graph()
     }

@@ -548,6 +548,99 @@ mod tests {
         );
     }
 
+    /// Vector values that only report a size: the mergers under test have no
+    /// source readers, so `merge` never reads the merged vectors.
+    struct SizedValues(i32);
+
+    impl crate::index::vector_values::KnnVectorValues for SizedValues {
+        fn dimension(&self) -> i32 {
+            3
+        }
+
+        fn size(&self) -> i32 {
+            self.0
+        }
+
+        fn encoding(&self) -> crate::index::VectorEncoding {
+            crate::index::VectorEncoding::FLOAT32
+        }
+
+        fn copy(&self) -> Result<Box<dyn crate::index::vector_values::KnnVectorValues>> {
+            Ok(Box::new(SizedValues(self.0)))
+        }
+    }
+
+    fn merger_field_info() -> crate::index::field_infos::FieldInfo {
+        use crate::index::{
+            DocValuesSkipIndexType, DocValuesType, IndexOptions, VectorEncoding,
+            VectorSimilarityFunction,
+        };
+        crate::index::field_infos::FieldInfo::new_full(
+            "v",
+            0,
+            false,
+            false,
+            false,
+            IndexOptions::NONE,
+            DocValuesType::NONE,
+            DocValuesSkipIndexType::NONE,
+            -1,
+            crate::util::java_collections::JavaStringMap::default(),
+            0,
+            0,
+            0,
+            3,
+            VectorEncoding::FLOAT32,
+            VectorSimilarityFunction::DOT_PRODUCT,
+            false,
+            false,
+        )
+        .expect("field info")
+    }
+
+    /// `IncrementalHnswGraphMerger.merge(values, infoStream, maxOrd)` sets the
+    /// stream on the builder before `build` (`IncrementalHnswGraphMerger.java:214-219`),
+    /// and `ConcurrentHnswMerger` inherits that method; the stream must see the
+    /// builder's `HNSW` messages. Positive control: without `set_info_stream`
+    /// the recording stream stays empty (checked by the builder-level control
+    /// below), so a merger that dropped the stream fails these assertions.
+    #[test]
+    fn mergers_pass_the_info_stream_to_the_builder() {
+        use super::incremental_merger::IncrementalHnswGraphMerger;
+        use super::merger::{ConcurrentHnswMerger, HnswGraphMerger};
+        let vectors = vec![
+            vec![1.0f32, 0.0, 0.0],
+            vec![0.0, 1.0, 0.0],
+            vec![0.0, 0.0, 1.0],
+            vec![0.7, 0.7, 0.0],
+        ];
+        let n = vectors.len() as i32;
+        let supplier = || std::sync::Arc::new(TestVectorScorerSupplier::new(vectors.clone()));
+        let values = SizedValues(n);
+
+        let mut incremental =
+            IncrementalHnswGraphMerger::new(merger_field_info(), supplier(), 4, 20);
+        let stream = std::sync::Arc::new(RecordingInfoStream::default());
+        incremental
+            .merge(&values, stream.clone(), n)
+            .expect("merge");
+        let got = stream.messages.lock().expect("lock").clone();
+        assert!(
+            got.iter().any(|m| m.starts_with("HNSW")),
+            "incremental merger must hand the stream to its builder, got {got:?}"
+        );
+
+        let mut concurrent =
+            ConcurrentHnswMerger::new(merger_field_info(), supplier(), 4, 20, same_thread(), 1);
+        let stream = std::sync::Arc::new(RecordingInfoStream::default());
+        concurrent.merge(&values, stream.clone(), n).expect("merge");
+        let got = stream.messages.lock().expect("lock").clone();
+        assert!(
+            got.iter().any(|m| m.starts_with("HNSW")),
+            "concurrent merger must forward the stream to its builder, got {got:?}"
+        );
+    }
+
     /// `finish()` is what `getCompletedGraph()` calls to freeze the workers'
     /// builder, so the graph must be complete and the builder must refuse
     /// further work afterwards.

@@ -29,6 +29,17 @@ in that file is closed by exactly the commit the file names, whatever any
 message says; where a message claims a different closing commit for such a task,
 the disagreement is printed on stderr. The tool never calls `rmp` itself.
 
+A task is closed once. For a task the file does not list, when several commits'
+messages claim to close it, only the newest commit keeps `CLOSES_TASK`; each
+older claim is printed as `SUPERSEDED_MESSAGE_CLOSING`. In the graph, a
+`CLOSES_TASK` a task holds from any commit other than its closer (the file's,
+or the newest message's) is deleted and printed as `RETIRED CLOSES_TASK`.
+
+A sync leaves only facts it derives: for every commit in the processed range,
+a `CLOSES_TASK` or `REFERENCES_TASK` edge this run does not derive is deleted
+and printed as `RETIRED <edge> <hash> -> task #N: not derived`. A `--since` run
+touches no commit outside its range.
+
 The messages decide only for a task the closings file does not list (the tasks
 closed before `rmp` recorded hashes, or every task when no file is given). A
 task number is then read from:
@@ -221,6 +232,36 @@ def classify(rows, closings):
     return disagreements
 
 
+def pick_newest_message_closings(rows, closings):
+    """Keep one message-derived closing per task: the newest commit's.
+
+    For a task the closings file does not list, several commits' messages may
+    claim to close it (a checkpoint, then the commit that finished it). A task is
+    closed once, so only the newest claim -- the first in `rows`, which is `git
+    log` order, newest first -- keeps `CLOSES_TASK`; each older one is printed as
+    `SUPERSEDED_MESSAGE_CLOSING` and taken off its row. Run after `classify`.
+    Returns `(closers, superseded)`: `{task: kept hash}` and `(task, kept hash,
+    dropped hash)` triples.
+    """
+    closers, superseded = {}, []
+    for r in rows:
+        keep = []
+        for task in r["tasks"]:
+            if task in closings:
+                keep.append(task)
+            elif task not in closers:
+                closers[task] = r["hash"]
+                keep.append(task)
+            else:
+                superseded.append((task, closers[task], r["hash"]))
+        r["tasks"] = keep
+        r["task_id"] = min(keep) if keep else None
+    for task, kept, dropped in superseded:
+        print(f"  SUPERSEDED_MESSAGE_CLOSING task=#{task} kept={kept[:7]} "
+              f"dropped={dropped[:7]}", file=sys.stderr)
+    return closers, superseded
+
+
 def sh(*args):
     r = subprocess.run(args, capture_output=True, text=True)
     if r.returncode != 0:
@@ -289,44 +330,51 @@ def write_task_edges(roadmap, edge, links, batch, unwind, read_rows):
     pair the other type already holds creates nothing. So the other type's edge
     for each pair is deleted first (a commit never both closes and references
     the same task), then the edge is merged and stamped, then read back; a pair
-    still without it is reported on stderr. Returns the missing pairs.
+    still without it is reported on stderr. The summary line gives the engine's
+    own counts, never the number of rows sent. Returns the missing pairs.
     """
     other = next(e for e in TASK_EDGES if e != edge)
     pairs = [{"hash": r["hash"], "task": r["task"]} for r in links]
-    unwind("delete", pairs,
-           f"MATCH (c:Commit {{hash: row.hash}})-[r:{other}]->(t:Task {{id: row.task}}) "
-           "DELETE r",
-           f"{other} cleared under {edge}")
-    unwind("create", links,
-           "MATCH (c:Commit {hash: row.hash}) WITH c, row "
-           f"MATCH (t:Task {{id: row.task}}) MERGE (c)-[:{edge}]->(t)",
-           f"{edge} edges")
+    cleared = unwind("delete", pairs,
+                     f"MATCH (c:Commit {{hash: row.hash}})-[r:{other}]->"
+                     "(t:Task {id: row.task}) DELETE r",
+                     f"{other} cleared under {edge}") or {}
+    created = unwind("create", links,
+                     "MATCH (c:Commit {hash: row.hash}) WITH c, row "
+                     f"MATCH (t:Task {{id: row.task}}) MERGE (c)-[:{edge}]->(t)",
+                     f"{edge} edges") or {}
     unwind("update", links,
            f"MATCH (c:Commit {{hash: row.hash}})-[e:{edge}]->(t:Task {{id: row.task}}) "
            "SET e.gitCommit = row.hash, e.gitDate = row.gitDate",
            f"{edge} stamped")
-    if not pairs:
-        return []
-    found = {(r["hash"], r["task"]) for r in read_rows(
-        pairs,
-        f"MATCH (c:Commit {{hash: row.hash}})-[e:{edge}]->(t:Task {{id: row.task}}) "
-        "RETURN c.hash AS hash, t.id AS task")}
-    missing = [(p_["hash"], p_["task"]) for p_ in pairs
-               if (p_["hash"], p_["task"]) not in found]
+    missing = []
+    if pairs:
+        found = {(r["hash"], r["task"]) for r in read_rows(
+            pairs,
+            f"MATCH (c:Commit {{hash: row.hash}})-[e:{edge}]->(t:Task {{id: row.task}}) "
+            "RETURN c.hash AS hash, t.id AS task")}
+        missing = [(p_["hash"], p_["task"]) for p_ in pairs
+                   if (p_["hash"], p_["task"]) not in found]
     for h, task in missing:
         print(f"  MISSING {edge}: {h[:7]} -> task #{task} (no Commit or Task node, "
               "or another edge holds the pair)", file=sys.stderr)
+    print(f"{edge}: {len(pairs)} wanted, {len(pairs) - len(missing)} present after "
+          f"the write ({created.get('relationshipsCreated', 0)} created), "
+          f"{cleared.get('relationshipsDeleted', 0)} {other} cleared, "
+          f"{len(missing)} missing", file=sys.stderr)
     return missing
 
 
-def retire_superseded_closings(closings, unwind, read_rows):
-    """Delete each `CLOSES_TASK` of a closings-file task from any other commit.
+def retire_superseded_closings(closers, unwind, read_rows, source="the closings file"):
+    """Delete each `CLOSES_TASK` of a task in `closers` from any other commit.
 
-    An earlier run may have derived such an edge from a message; the closings
-    file is the authority, so it goes. Each deletion is printed. Returns the
-    deleted `(hash, task)` pairs.
+    `closers` is `{task: hash}` from an authority -- the closings file, or the
+    newest closing message of a task the file does not list. An edge an earlier
+    run wrote from another commit's message goes. Each deletion is printed, and
+    the summary gives the engine's deleted count, which must equal the edges
+    read. Returns the deleted `(hash, task)` pairs.
     """
-    rows = [{"task": t, "hash": h} for t, h in sorted(closings.items())]
+    rows = [{"task": t, "hash": h} for t, h in sorted(closers.items())]
     if not rows:
         return []
     body = ("MATCH (c:Commit)-[r:CLOSES_TASK]->(t:Task {id: row.task}) "
@@ -334,11 +382,56 @@ def retire_superseded_closings(closings, unwind, read_rows):
     stale = [(r["hash"], r["task"])
              for r in read_rows(rows, body + "RETURN c.hash AS hash, t.id AS task")]
     for h, task in stale:
-        print(f"  RETIRED CLOSES_TASK {h[:7]} -> task #{task}: the closings file "
-              f"says {closings[task][:7]}", file=sys.stderr)
+        print(f"  RETIRED CLOSES_TASK {h[:7]} -> task #{task}: {source} "
+              f"says {closers[task][:7]}", file=sys.stderr)
+    deleted = 0
     if stale:
-        unwind("delete", rows, body + "DELETE r", "superseded CLOSES_TASK retired")
+        deleted = (unwind("delete", rows, body + "DELETE r",
+                          f"CLOSES_TASK superseded by {source}") or {}).get(
+                              "relationshipsDeleted", 0)
+    print(f"CLOSES_TASK superseded by {source}: {len(stale)} found, {deleted} deleted",
+          file=sys.stderr)
+    if deleted != len(stale):
+        print(f"  WARNING: {len(stale)} superseded CLOSES_TASK edges were read but the "
+              f"engine deleted {deleted}", file=sys.stderr)
     return stale
+
+
+def retire_underived(rows, unwind, read_rows):
+    """Delete every Commit -> Task edge of the processed commits this run did not derive.
+
+    A sync leaves only facts it derives: for each commit in `rows` (the processed
+    range, so a `--since` run touches nothing older), a `CLOSES_TASK` whose task
+    is not in the row's `tasks`, or a `REFERENCES_TASK` whose task is not in its
+    `refs`, was written by an earlier run under rules that no longer hold. Each
+    is printed as `RETIRED <edge> <hash> -> task #N: not derived`, and the
+    summary gives the engine's deleted count. Returns the deleted
+    `(edge, hash, task)` triples.
+    """
+    hashes = [{"hash": r["hash"]} for r in rows]
+    retired = []
+    for edge, key in (("CLOSES_TASK", "tasks"), ("REFERENCES_TASK", "refs")):
+        if not hashes:
+            break
+        derived = {(r["hash"], t) for r in rows for t in r[key]}
+        present = [(x["hash"], x["task"]) for x in read_rows(
+            hashes, f"MATCH (c:Commit {{hash: row.hash}})-[e:{edge}]->(t:Task) "
+                    "RETURN c.hash AS hash, t.id AS task")]
+        stale = sorted(set(present) - derived)
+        for h, task in stale:
+            print(f"  RETIRED {edge} {h[:7]} -> task #{task}: not derived", file=sys.stderr)
+        deleted = 0
+        if stale:
+            deleted = (unwind("delete", [{"hash": h, "task": task} for h, task in stale],
+                              f"MATCH (c:Commit {{hash: row.hash}})-[r:{edge}]->"
+                              "(t:Task {id: row.task}) DELETE r",
+                              f"{edge} not derived") or {}).get("relationshipsDeleted", 0)
+        print(f"{edge} not derived: {len(stale)} found, {deleted} deleted", file=sys.stderr)
+        if deleted != len(stale):
+            print(f"  WARNING: {len(stale)} underived {edge} edges were read but the "
+                  f"engine deleted {deleted}", file=sys.stderr)
+        retired += [(edge, h, task) for h, task in stale]
+    return retired
 
 
 def main(argv=None):
@@ -365,6 +458,7 @@ def main(argv=None):
     write_bad_closings(args.bad_closings_report, bad)
     rows = list(commits(since))
     disagreements = classify(rows, closings)
+    message_closers, _superseded = pick_newest_message_closings(rows, closings)
     for task, file_hash, msg_hash in disagreements:
         print(f"  DISAGREEMENT task #{task}: the closings file says {file_hash[:7]}, "
               f"the message of {msg_hash[:7]} claims it; the file wins", file=sys.stderr)
@@ -380,7 +474,7 @@ def main(argv=None):
           f"{sum(1 for r in rows if r['refs'])} referencing one", file=sys.stderr)
 
     def unwind(mode, data, body, label):
-        kg_unwind(args.roadmap, mode, data, body, label, args.batch_size)
+        return kg_unwind(args.roadmap, mode, data, body, label, args.batch_size)
 
     unwind("create", [{"hash": r["hash"]} for r in rows],
            "MERGE (c:Commit {hash: row.hash})", "Commit nodes")
@@ -408,6 +502,9 @@ def main(argv=None):
         return unwind_read(args.roadmap, data, body, args.batch_size)
 
     retire_superseded_closings(closings, unwind, read_rows)
+    retire_superseded_closings(message_closers, unwind, read_rows,
+                               source="the newest closing message")
+    retire_underived(rows, unwind, read_rows)
     for edge, key in (("CLOSES_TASK", "tasks"), ("REFERENCES_TASK", "refs")):
         links = [{"hash": r["hash"], "task": t, "gitDate": date_of[r["hash"]]}
                  for r in rows for t in r[key]]

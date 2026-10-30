@@ -919,7 +919,11 @@ impl HnswWriterState {
             let doc_map = Arc::new(merge_state.doc_maps[i].clone());
             merger.add_reader(reader, None, doc_map, merge_state.live_docs[i].as_deref())?;
         }
-        let graph = merger.merge(vector_values, total_vector_count)?;
+        let graph = merger.merge(
+            vector_values,
+            Arc::clone(&merge_state.info_stream),
+            total_vector_count,
+        )?;
         let vector_index_node_offsets = self.write_graph(&graph)?;
         let vector_index_length = self
             .vector_index

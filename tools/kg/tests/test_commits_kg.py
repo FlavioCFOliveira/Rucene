@@ -186,7 +186,8 @@ def run(monkeypatch):
     monkeypatch.setattr(ck, "sh", fake_sh)
     monkeypatch.setattr(ck, "resolve_since", lambda rev: C)
     monkeypatch.setattr(ck, "unwind_read", lambda roadmap, rows, body, batch: (
-        [] if "<>" in body else [{"hash": r["hash"], "task": r["task"]} for r in rows]))
+        [] if "<>" in body or "{id: row.task}" not in body
+        else [{"hash": r["hash"], "task": r["task"]} for r in rows]))
     monkeypatch.setattr(ck, "kg_unwind", lambda roadmap, mode, rows, body, label, batch:
                         writes.append((label, body, [dict(r) for r in rows])))
 
@@ -300,6 +301,16 @@ class CommitGraph:
 
     def unwind(self, mode, rows, body, label):
         self.log.append((label, body))
+        before = dict(self.edges)
+        props_before = sum(len(v[1]) for v in self.edges.values())
+        self._apply(rows, body)
+        c = {"relationshipsCreated": len(set(self.edges) - set(before)),
+             "relationshipsDeleted": len(set(before) - set(self.edges)),
+             "propertiesWritten": max(0, sum(len(v[1]) for v in self.edges.values())
+                                      - props_before)}
+        return {k: v for k, v in c.items() if v}
+
+    def _apply(self, rows, body):
         m = re.search(r"-\[r:(\w+)\]->", body)
         for row in rows:
             key = (row.get("hash"), row["task"])
@@ -327,6 +338,10 @@ class CommitGraph:
             return [{"hash": h, "task": t} for (h, t), (typ, _p) in sorted(self.edges.items())
                     if typ == "CLOSES_TASK" and t in tasks and h != tasks[t]]
         typ = re.search(r"-\[e:(\w+)\]->", body).group(1)
+        if "{id: row.task}" not in body:  # every edge of that type from these commits
+            hashes = {r["hash"] for r in rows}
+            return [{"hash": h, "task": t} for (h, t), (ty, _p) in sorted(self.edges.items())
+                    if ty == typ and h in hashes]
         return [{"hash": r["hash"], "task": r["task"]} for r in rows
                 if self.edges.get((r["hash"], r["task"]), [None])[0] == typ]
 
@@ -389,3 +404,149 @@ def test_b2_nothing_to_retire_writes_nothing():
     g.edges[(A, 92)] = ["CLOSES_TASK", {}]
     assert ck.retire_superseded_closings({92: A}, g.unwind, g.read_rows) == []
     assert g.log == []
+
+
+def test_item2_counts_are_the_engines_not_the_rows_sent(capsys):
+    """105 tasks sent, 2 edges actually superseded: the summary says 2."""
+    closings = {task: A for task in range(1, 106)}
+    g = CommitGraph([A, B], set(range(1, 106)))
+    g.edges[(A, 5)] = ["CLOSES_TASK", {}]
+    g.edges[(B, 5)] = ["CLOSES_TASK", {}]
+    g.edges[(B, 9)] = ["CLOSES_TASK", {}]
+    stale = ck.retire_superseded_closings(closings, g.unwind, g.read_rows)
+    err = capsys.readouterr().err
+    assert len(stale) == 2
+    assert "CLOSES_TASK superseded by the closings file: 2 found, 2 deleted" in err
+    assert "105" not in err.split("superseded by the closings file:")[1].split("\n")[0]
+
+
+def test_item2_write_summary_counts_created_cleared_and_missing(capsys):
+    g = CommitGraph([A, B], [7, 8])
+    g.edges[(A, 7)] = ["REFERENCES_TASK", {}]     # cleared, then closed
+    g.edges[(B, 8)] = ["CLOSES_TASK", {}]         # already there: not created again
+    links = [link(A, 7), link(B, 8), link(B, 9)]  # #9 has no Task node
+    ck.write_task_edges("rucene", "CLOSES_TASK", links, 100, g.unwind, g.read_rows)
+    assert ("CLOSES_TASK: 3 wanted, 2 present after the write (1 created), "
+            "1 REFERENCES_TASK cleared, 1 missing") in capsys.readouterr().err
+
+
+def test_kgio_unwind_sums_the_engine_counters(monkeypatch, capsys):
+    import kgio
+    outs = iter(['{"ok": true, "counters": {"relationshipsDeleted": 3}}',
+                 '{"ok": true}',
+                 '{"ok": true, "counters": {"relationshipsDeleted": 2, '
+                 '"propertiesWritten": 4}}'])
+    monkeypatch.setattr(kgio, "client", lambda roadmap, q, label: next(outs))
+    got = kgio.unwind("rucene", "delete", [{"x": i} for i in range(5)],
+                      "MATCH (n) DELETE n", "lbl", batch=2)
+    assert got == {"relationshipsDeleted": 5, "propertiesWritten": 4}
+    assert "lbl: 5 rows sent; propertiesWritten=4, relationshipsDeleted=5" in \
+        capsys.readouterr().err
+    assert kgio.counters_of("not json") == {} and kgio.counters_of('{"ok": true}') == {}
+
+
+def test_item3_only_the_newest_message_closing_survives(capsys):
+    newest, middle, oldest = "1" * 40, "2" * 40, "3" * 40   # `git log` order
+    rows = [{"hash": newest, "msg_closes": [74], "msg_refs": []},
+            {"hash": middle, "msg_closes": [74, 80], "msg_refs": []},
+            {"hash": oldest, "msg_closes": [74, 92], "msg_refs": []}]
+    ck.classify(rows, {92: newest})
+    closers, superseded = ck.pick_newest_message_closings(rows, {92: newest})
+    assert closers == {74: newest, 80: middle}
+    assert superseded == [(74, newest, middle), (74, newest, oldest)]
+    assert [r["tasks"] for r in rows] == [[74, 92], [80], []]
+    assert [r["task_id"] for r in rows] == [74, 80, None]
+    err = capsys.readouterr().err
+    assert "SUPERSEDED_MESSAGE_CLOSING task=#74 kept=1111111 dropped=2222222" in err
+    assert "SUPERSEDED_MESSAGE_CLOSING task=#74 kept=1111111 dropped=3333333" in err
+
+
+def test_item3_older_message_closings_are_retired_from_the_graph(capsys):
+    g = CommitGraph([A, B, C], [74])
+    g.edges[(B, 74)] = ["CLOSES_TASK", {}]   # an earlier run kept every claim
+    g.edges[(C, 74)] = ["CLOSES_TASK", {}]
+    g.edges[(A, 74)] = ["CLOSES_TASK", {}]
+    stale = ck.retire_superseded_closings({74: A}, g.unwind, g.read_rows,
+                                          source="the newest closing message")
+    assert sorted(stale) == [(B, 74), (C, 74)] and set(g.edges) == {(A, 74)}
+    assert ("RETIRED CLOSES_TASK bbbbbbb -> task #74: the newest closing message "
+            "says aaaaaaa") in capsys.readouterr().err
+
+
+def test_item3_main_writes_one_closing_per_message_task(monkeypatch, capsys):
+    log = fake_log(
+        (A, "feat: done", "2026-10-30T10:00:00+00:00", "Task #74: finish\n"),
+        (B, "feat: wip", "2026-10-29T10:00:00+00:00", "Task #74 checkpoint: start\n"))
+    writes, reads = [], []
+    monkeypatch.setattr(ck, "sh", lambda *a: "" if "--name-only" in a else log)
+    monkeypatch.setattr(ck, "kg_unwind", lambda roadmap, mode, rows, body, label, batch:
+                        writes.append((label, [dict(r) for r in rows])) or {})
+    monkeypatch.setattr(ck, "unwind_read", lambda roadmap, rows, body, batch:
+                        reads.append(body) or ([] if "<>" in body
+                                               or "{id: row.task}" not in body else
+                                               [{"hash": r["hash"], "task": r["task"]}
+                                                for r in rows]))
+    ck.main(["rucene"])
+    w = dict(writes)
+    assert [(r["hash"], r["task"]) for r in w["CLOSES_TASK edges"]] == [(A, 74)]
+    assert any("<>" in b for b in reads)  # the graph is checked for older closings
+    assert "SUPERSEDED_MESSAGE_CLOSING task=#74 kept=aaaaaaa dropped=bbbbbbb" in \
+        capsys.readouterr().err
+
+
+def derived_row(h, tasks=(), refs=()):
+    return {"hash": h, "tasks": list(tasks), "refs": list(refs)}
+
+
+def test_underived_edges_of_processed_commits_are_retired(capsys):
+    g = CommitGraph([A, B, C], [137, 113, 7, 8])
+    g.edges[(A, 137)] = ["CLOSES_TASK", {}]      # old prose closing: not derived
+    g.edges[(B, 137)] = ["CLOSES_TASK", {}]      # old prose closing: not derived
+    g.edges[(B, 113)] = ["REFERENCES_TASK", {}]  # derived: kept
+    g.edges[(A, 7)] = ["CLOSES_TASK", {}]        # derived: kept
+    g.edges[(A, 8)] = ["REFERENCES_TASK", {}]    # not derived
+    rows = [derived_row(A, tasks=[7]), derived_row(B, refs=[113])]
+    retired = ck.retire_underived(rows, g.unwind, g.read_rows)
+    assert sorted(retired) == [("CLOSES_TASK", A, 137), ("CLOSES_TASK", B, 137),
+                               ("REFERENCES_TASK", A, 8)]
+    assert set(g.edges) == {(B, 113), (A, 7)}
+    err = capsys.readouterr().err
+    assert "RETIRED CLOSES_TASK aaaaaaa -> task #137: not derived" in err
+    assert "RETIRED REFERENCES_TASK aaaaaaa -> task #8: not derived" in err
+    assert "CLOSES_TASK not derived: 2 found, 2 deleted" in err
+    assert "REFERENCES_TASK not derived: 1 found, 1 deleted" in err
+
+
+def test_retire_underived_touches_only_commits_in_range(capsys):
+    g = CommitGraph([A, B, C], [137])
+    g.edges[(C, 137)] = ["CLOSES_TASK", {}]      # C is outside a `--since` range
+    g.edges[(A, 137)] = ["CLOSES_TASK", {}]
+    retired = ck.retire_underived([derived_row(A), derived_row(B)], g.unwind, g.read_rows)
+    assert retired == [("CLOSES_TASK", A, 137)]
+    assert (C, 137) in g.edges
+
+
+def test_retire_underived_with_nothing_stale_writes_nothing(capsys):
+    g = CommitGraph([A], [7])
+    g.edges[(A, 7)] = ["CLOSES_TASK", {}]
+    assert ck.retire_underived([derived_row(A, tasks=[7])], g.unwind, g.read_rows) == []
+    assert g.log == [] and "CLOSES_TASK not derived: 0 found, 0 deleted" in \
+        capsys.readouterr().err
+
+
+def test_main_since_retires_only_in_range(monkeypatch, capsys):
+    """A `--since` run over A and B leaves C's stale edge alone."""
+    g = CommitGraph([A, B, C], [7, 9, 137, 192, 209])
+    g.edges[(A, 137)] = ["CLOSES_TASK", {}]   # in range, not derived: retired
+    g.edges[(C, 137)] = ["CLOSES_TASK", {}]   # outside the range: untouched
+    monkeypatch.setattr(ck, "sh", lambda *a: NAMES if "--name-only" in a else LOG)
+    monkeypatch.setattr(ck, "resolve_since", lambda rev: C)
+    monkeypatch.setattr(ck, "kg_unwind", lambda roadmap, mode, rows, body, label, batch:
+                        g.unwind(mode, rows, body, label)
+                        if ":Task" in body or "DELETE r" in body else {})
+    monkeypatch.setattr(ck, "unwind_read", lambda roadmap, rows, body, batch:
+                        g.read_rows(rows, body))
+    ck.main(["rucene", "--since", "HEAD~2"])
+    assert (C, 137) in g.edges and (A, 137) not in g.edges
+    assert g.edges[(B, 7)][0] == "CLOSES_TASK" and g.edges[(A, 192)][0] == "REFERENCES_TASK"
+    assert "RETIRED CLOSES_TASK aaaaaaa -> task #137: not derived" in capsys.readouterr().err

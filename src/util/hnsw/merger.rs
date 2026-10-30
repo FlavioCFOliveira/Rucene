@@ -14,7 +14,7 @@ use crate::index::merge::DocMap;
 use crate::index::vector_values::KnnVectorValues;
 use crate::index::VectorEncoding;
 use crate::search::{TaskExecutor, NO_MORE_DOCS};
-use crate::util::{Bits, FixedBitSet};
+use crate::util::{Bits, FixedBitSet, InfoStream};
 
 use super::builder::{HnswBuilder, DEFAULT_RAND_SEED};
 use super::concurrent_merge_builder::HnswConcurrentMergeBuilder;
@@ -32,7 +32,6 @@ use super::scorer::RandomVectorScorerSupplier;
 /// * `add_reader` takes the [`HnswGraphProvider`] explicitly, because Rust cannot
 ///   cast a `dyn KnnVectorsReader` to a `dyn HnswGraphProvider` the way Java's
 ///   `instanceof` does. `None` stands for a reader that is not a graph provider.
-/// * `merge` takes no `InfoStream`: the port's builders have none.
 pub trait HnswGraphMerger {
     /// Adds a reader to the graph merger, recording its state.
     ///
@@ -49,8 +48,10 @@ pub trait HnswGraphMerger {
 
     /// Merges the added readers and produces the on-heap graph.
     ///
-    /// `merged_vector_values` is the view of the vectors in the merged segment and
-    /// `max_ord` the number of vectors that will be added to the graph.
+    /// `merged_vector_values` is the view of the vectors in the merged segment,
+    /// `info_stream` receives the builder's progress messages (Java's
+    /// `HnswBuilder.setInfoStream`) and `max_ord` is the number of vectors that
+    /// will be added to the graph.
     ///
     /// # Errors
     ///
@@ -58,6 +59,7 @@ pub trait HnswGraphMerger {
     fn merge(
         &mut self,
         merged_vector_values: &dyn KnnVectorValues,
+        info_stream: Arc<dyn InfoStream>,
         max_ord: i32,
     ) -> Result<OnHeapHnswGraph>;
 }
@@ -235,9 +237,11 @@ impl HnswGraphMerger for ConcurrentHnswMerger {
     fn merge(
         &mut self,
         merged_vector_values: &dyn KnnVectorValues,
+        info_stream: Arc<dyn InfoStream>,
         max_ord: i32,
     ) -> Result<OnHeapHnswGraph> {
         let mut builder = self.create_builder(merged_vector_values, max_ord)?;
+        builder.set_info_stream(info_stream);
         builder.build(max_ord)?;
         builder.into_completed_graph()
     }

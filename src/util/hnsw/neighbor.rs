@@ -510,10 +510,18 @@ impl NeighborQueue {
 
     /// Removes and returns the top node id.
     ///
+    /// Equivalent to `NeighborQueue.pop()`.
+    ///
+    /// # Divergence from Lucene 10.5.0
+    ///
+    /// On an empty queue Java's `TernaryLongHeap.pop()` throws the unchecked
+    /// `IllegalStateException("The heap is empty")`. Rust has no unchecked
+    /// exceptions and the signature returns a bare `i32`, as in Java, so this
+    /// panics with the same message instead of returning a `Result`.
+    ///
     /// # Panics
     ///
-    /// Panics when the queue is empty, where Java's `TernaryLongHeap.pop`
-    /// throws `IllegalStateException`.
+    /// Panics when the queue is empty.
     pub fn pop(&mut self) -> i32 {
         let top = self.heap.pop().unwrap_or_else(|e| panic!("{e}"));
         self.decode_node(top)

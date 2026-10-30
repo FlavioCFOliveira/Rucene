@@ -94,9 +94,14 @@ _CI = lambda pat: "(?i:" + pat + ")"
 # Lead-ins that assert "this item is the port of that Lucene type". Ordered
 # most specific first; each is anchored at the start of the doc text.
 CLAIM_PATTERNS = [
+    # `public`/`protected` and `functional interface` are spellings the crate
+    # writes for a type claim (`Equivalent to the protected abstract class
+    # ...TieredMergePolicy.MergeScore`, `Equivalent to the functional interface
+    # ...IndexWriter.IndexReaderWarmer`); a functional interface is an interface.
     re.compile("^" + _CI(r"Equivalent to (?:the )?"
-               r"(?:abstract |final |sealed |package-private |private |static |nested |inner )*"
-               r"(?:class |interface |enum |record |annotation )?") + FQN),
+               r"(?:abstract |final |sealed |package-private |private |protected |public "
+               r"|static |nested |inner )*"
+               r"(?:class |functional interface |interface |enum |record |annotation )?") + FQN),
     re.compile("^" + _CI(r"Port of (?:the )?"
                r"(?:abstract |final |sealed |package-private |private |static |nested |inner )*"
                r"(?:class |interface |enum |record |annotation )?") + FQN),
@@ -359,6 +364,12 @@ def _item_paragraph_claims(block, item_name):
     as routinely states the subject before the assertion. Reading the paragraph
     recovers both. What keeps this from becoming a guess is the name guard: only
     an FQN whose simple name is the documented declaration's own name counts.
+
+    A paragraph that *opens* with an explicit lead-in (`CLAIM_PATTERNS`) is
+    the one-line claim wrapped after the lead-in -- "Equivalent to the
+    functional interface" / "`org.apache.lucene.index.IndexWriter.IndexReaderWarmer`"
+    -- and is read exactly as `claim_in` reads one line: the anchored lead-in is
+    the assertion, so no name guard applies, as none applies on one line.
     """
     out, para, para_line = [], [], None
     for ln, text in list(block) + [(None, "")]:
@@ -369,7 +380,11 @@ def _item_paragraph_claims(block, item_name):
                 para_line = ln
             continue
         joined = " ".join(para)
-        if joined:
+        lead = next((m.group(1) for pat in CLAIM_PATTERNS
+                     if (m := pat.match(joined))), None) if joined else None
+        if lead:
+            out.append((para_line, lead))
+        elif joined:
             for m in RE_FQN.finditer(joined):
                 fqn = m.group(1)
                 if re.split(r"[.$]", fqn)[-1] != item_name:

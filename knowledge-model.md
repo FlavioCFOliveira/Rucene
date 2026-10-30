@@ -534,9 +534,13 @@ A commit of the local repository. Identity is `hash` (full 40-char).
 | `task_id` | `rmp` task the commit closes, when there is one. |
 | `gitCommit` / `gitDate` | Same provenance stamp carried by every other node. |
 
-**Every commit of the repository is mirrored** — 276 at `1fa3e92`, reproduced by
-`tools/kg/commits_kg.py`, which also derives `CLOSES_TASK` from the conventions
-the history actually uses (`Task #N`, `Tasks #N and #M`, `Closes rmp task #N`).
+**Every commit of the repository is mirrored** by `tools/kg/commits_kg.py`, which
+also writes the commit's `COMMITTED_IN`, `CLOSES_TASK` and `REFERENCES_TASK`
+edges by the rules in the relationship table: `rmp` decides which commit closed a
+task (`--closings`, its export of `task`/`commit_close`, each hash resolved with
+`git rev-parse`), and the message decides only for a task the export does not
+list, from line-start `Closes`/`Fixes` footers, the first body line's task tag, a
+`Task:` trailer, or a task tag in the subject; body prose never counts.
 Until this pass only 23 existed, so most `gitCommit` stamps pointed at a commit
 with no node — a provenance trail that could not be followed. The two legacy nodes
 that carried `commitHash` or an abbreviated hash have been merged into the
@@ -709,8 +713,9 @@ and conservative for the rest.
 | `SPECIFIED_IN` | `Feature` → `File` (specification document). |
 | `REFERENCES` | `Project` → `Project` (Rucene references Apache Lucene Core 10.5.0), `Project` → `Feature` (the project specification), and `Feature` → `Package` (the Lucene packages a Rucene capability covers). It is **not** a port relation: two `RustEnum` → `Class` edges written this way by an early sync were converted to `PORTS` at `2855d29`, their claim verified against the `Equivalent to …` doc comments in `src/index/mod.rs`. |
 | `IMPLEMENTED_IN` | `Component`/`Task`/`Decision`/`Defect` → `File`/`Commit` (where the thing lives, landed, or was fixed). |
-| `COMMITTED_IN` | `File`/`Feature`/`Component`/`Decision`/`Defect` → `Commit`. |
-| `CLOSES_TASK` | `Commit` → `Task`. |
+| `COMMITTED_IN` | `File`/`Feature`/`Component`/`Decision`/`Defect` → `Commit`. `tools/kg/commits_kg.py` writes it for every file a commit changed (`git log --name-only --no-renames`), matched by `File.path`; it creates no `File` node, so a changed file without one gets no edge, and a merge commit lists no files. Carries `gitCommit`/`gitDate`. |
+| `CLOSES_TASK` | `Commit` → `Task`: the commit that closed the task, as decided by `rmp`. `commits_kg.py --closings` reads the `rmp` export (`task`, `commit_close`) and resolves each hash with `git rev-parse`; an unresolvable hash is reported as `BAD_CLOSING` and its task falls back to the messages. For a task the export does not list, the commit is read from the message: a line-start `Closes`/`Fixes` footer, the task tag of the first body line, a `Task:` trailer, or a task tag in the subject; body prose never counts. A `CLOSES_TASK` an exported task holds from any other commit is retired. Carries `gitCommit`/`gitDate`. |
+| `REFERENCES_TASK` | `Commit` → `Task`: the commit message carries a `Refs #N` footer, so the commit contributes to the task without closing it. Derived by `tools/kg/commits_kg.py` from footer lines only; a task the same commit closes gets `CLOSES_TASK` instead (the engine keeps one edge per node pair). Carries `gitCommit`/`gitDate`. |
 | `DELIVERS` | `Task` → `Feature`: the capability the task delivered. |
 | `TESTED_BY` / `MODIFIES` / `FULFILLS` / `IMPLEMENTED_BY` | Legacy provenance edges from the first syncs; not used by new work. |
 
@@ -1208,7 +1213,7 @@ The loaders under `tools/kg/` rebuild the whole graph from a clean store; see
    curated `PORTS` edges its verdict file carries, and the `Decision` that records
    why the exclusion is now a measurement. It must run **after** step 5, since a
    nested type is `ported` on the strength of the edges step 5 writes.
-6. `commits_kg.py` — the full commit history and `CLOSES_TASK`.
+6. `commits_kg.py --closings <rmp export>` — the full commit history, `COMMITTED_IN`, `CLOSES_TASK` and `REFERENCES_TASK`.
 7. `lucene_tests_kg.py` — the Lucene test surface and its correspondence with the crate.
 
 Steps 3 and 5 both need a **clean** tree: never survey a dirty working directory,
@@ -1271,7 +1276,7 @@ verified against the two real code trees by an audit that reads the Apache Lucen
 | `TestClass` | populated (971: 759 from `lucene/core/src/test`, 212 from `lucene/test-framework/src/java`), every one carrying a `role` and a `ruceneCoverage` |
 | `TestMethod` | populated (5,746) |
 | `COVERED_BY` | populated (208 edges from a `TestClass` to the Rust file that tests its subject) |
-| `CLOSES_TASK` | populated (122 edges over 107 commits), derived from the commit messages; the `1fa3e92` sync re-derived 109 of them and left the rest, written by earlier syncs, in place |
+| `CLOSES_TASK` / `REFERENCES_TASK` | populated; `CLOSES_TASK` is decided by the `rmp` closings export, and by the messages only for tasks the export does not list (see the relationship table) |
 | `REFERENCES` | populated (13) |
 | `IMPLEMENTED_IN` / `COMMITTED_IN` / `DELIVERS` | populated (139 / 200 / 4) |
 

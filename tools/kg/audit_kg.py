@@ -71,6 +71,20 @@ def java_census(lucene_root: Path):
     return files, top, nested
 
 
+def nested_ported_without_ports(q, ported_ids):
+    """Nested types whose `portState` says `ported` while no `PORTS` edge reaches them.
+
+    `portState = 'ported'` asserts that a Rucene item is the port, and the only
+    thing that asserts it is a `PORTS` edge (`knowledge-model.md`, `portState`).
+    A nested type left `ported` after its last edge was retired is a stale
+    claim, which the per-state counts above cannot show. `ported_ids` is the set
+    of `id(c)` some `PORTS` edge reaches. Returns their qualified names, sorted.
+    """
+    return sorted(qn for cid, qn in q(
+        "MATCH (c:Class) WHERE c.portScope='nested' AND c.portState='ported' "
+        "RETURN id(c), c.qualifiedName") if cid not in ported_ids)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("roadmap")
@@ -201,6 +215,9 @@ def main():
                                  "RETURN DISTINCT id(c)")}
     both = len(ported & candidate)
     check("types with both PORTS and PORTS_CANDIDATE", both, 0)
+    stale_ported = nested_ported_without_ports(q, ported)
+    check("nested types 'ported' without a PORTS edge", len(stale_ported), 0,
+          f"{stale_ported[:3]}" if stale_ported else "")
 
     # Every PORTS edge must start at a node the survey confirms -- as a type or
     # as a function, since a free function can be the port of a Lucene class.
