@@ -361,38 +361,10 @@ impl PostingsFormatRegistry {
         Self::default()
     }
 
-    /// Registers a postings format under the given short name.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalArgument`] if `name` is empty, contains
-    /// characters other than ASCII alphanumerics, or is longer than 127 bytes.
-    /// Returns [`LuceneError::IllegalState`] if the name is already registered.
-    pub fn register<F>(&self, name: impl Into<String>, format: F) -> Result<()>
-    where
-        F: PostingsFormat + 'static,
-    {
-        let name = name.into();
-        super::validate_service_name(&name)?;
-
-        let mut formats = self.formats.write().map_err(|_| {
-            LuceneError::illegal_state("postings format registry lock was poisoned".to_string())
-        })?;
-
-        if formats.lookup(&name).is_ok() {
-            return Err(LuceneError::illegal_state(format!(
-                "postings format already registered: {name}"
-            )));
-        }
-        formats.register_as(&name, Arc::new(format))?;
-        Ok(())
-    }
-
     /// Registers an already-shared format under its own name.
     ///
-    /// The counterpart of [`register`](Self::register) for a format the caller
-    /// already holds behind an `Arc`. As in Lucene's `reload`, a name that is
-    /// already taken is left alone rather than replaced.
+    /// As in Lucene's `reload`, a name that is already taken is left alone
+    /// rather than replaced.
     ///
     /// # Errors
     ///
@@ -1587,38 +1559,6 @@ mod tests {
             )
             .unwrap();
         writer.close().unwrap();
-    }
-
-    #[test]
-    fn postings_format_registry_registers_and_looks_up() {
-        let registry = PostingsFormatRegistry::new();
-        registry.register("Stub", StubPostingsFormat).unwrap();
-        let looked_up = registry.for_name("Stub").expect("format should be present");
-        assert_eq!(looked_up.name(), "StubPostingsFormat");
-        assert_eq!(
-            registry.available_postings_formats(),
-            vec!["Stub".to_string()]
-        );
-    }
-
-    #[test]
-    fn postings_format_registry_rejects_duplicates_and_invalid_names() {
-        let registry = PostingsFormatRegistry::new();
-        registry.register("Stub", StubPostingsFormat).unwrap();
-        let err = registry
-            .register("Stub", StubPostingsFormat)
-            .expect_err("duplicate should fail");
-        assert!(matches!(err, LuceneError::IllegalState { .. }));
-
-        let err = registry
-            .register("", StubPostingsFormat)
-            .expect_err("empty name should fail");
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
-
-        let err = registry
-            .register("Bad Name", StubPostingsFormat)
-            .expect_err("space should fail");
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
     }
 
     #[test]

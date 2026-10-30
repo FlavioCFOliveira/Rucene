@@ -85,16 +85,6 @@ impl fmt::Debug for FieldVectorWriter {
     }
 }
 
-impl FieldVectorWriter {
-    /// Returns the RAM the underlying field writer holds.
-    pub fn ram_bytes_used(&self) -> i64 {
-        match self {
-            Self::Float(writer) => writer.ram_bytes_used(),
-            Self::Byte(writer) => writer.ram_bytes_used(),
-        }
-    }
-}
-
 /// Builds the two ordinal maps a sorted segment needs, from the documents a
 /// field carries and the sort's document map.
 ///
@@ -1555,11 +1545,11 @@ impl BufferingKnnVectorsWriter for EmptyBufferingKnnVectorsWriter {
 
 /// A KNN vectors reader over a segment that supports no vectors.
 ///
-/// The value accessors are equivalent to those of the anonymous
-/// `KnnVectorsReader` that `KnnVectorsFormat.EMPTY`'s
-/// `fieldsReader(SegmentReadState)` returns
-/// (`codecs/KnnVectorsFormat.java:125-140`), which throw
-/// `UnsupportedOperationException`.
+/// Equivalent to the anonymous `KnnVectorsReader` that
+/// `KnnVectorsFormat.EMPTY.fieldsReader(SegmentReadState)` returns
+/// (`codecs/KnnVectorsFormat.java:125-161`): `checkIntegrity` and `close` do
+/// nothing, `getOffHeapByteSize` is empty, and the value accessors and both
+/// searches throw `UnsupportedOperationException`.
 #[derive(Debug, Default, Clone)]
 pub struct EmptyKnnVectorsReader;
 

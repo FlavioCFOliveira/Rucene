@@ -157,11 +157,6 @@ impl VerifyingLockFactory {
             channel: Arc::new(Mutex::new(VerifyChannel { input, output })),
         }
     }
-
-    /// Returns the factory being verified.
-    pub fn get_delegate(&self) -> &dyn LockFactory {
-        self.lf.as_ref()
-    }
 }
 
 impl LockFactory for VerifyingLockFactory {

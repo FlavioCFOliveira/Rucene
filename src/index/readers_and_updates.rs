@@ -1065,10 +1065,17 @@ impl PendingSoftDeletes {
                 context,
             )
         } else if seg_info.get_use_compound_file() {
-            let cfs = codec
+            // `try (Directory cfs = codec.compoundFormat().getCompoundReader(...))`
+            // (`IndexWriter.java:1262-1264`): closed whatever the read did; a
+            // failure to close is reported only when the read succeeded.
+            let mut cfs = codec
                 .compound_format()
                 .get_compound_reader(seg_info.directory.as_ref(), seg_info)?;
-            fis_format.read(&*cfs, seg_info, "", context)
+            let read = fis_format.read(&*cfs, seg_info, "", context);
+            let closed = cfs.close();
+            let field_infos = read?;
+            closed?;
+            Ok(field_infos)
         } else {
             fis_format.read(seg_info.directory.as_ref(), seg_info, "", context)
         }

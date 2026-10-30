@@ -626,3 +626,29 @@ fn legacy_quantized_query_scorer_prefetches_the_batch_and_keeps_scores() {
     assert_eq!(wrapped_scores, plain_scores, "the wrapper changes no score");
     assert_eq!(wrapped_max, plain_max);
 }
+
+/// `Lucene99ScalarQuantizedVectorScorer.fromVectorSimilarity` checks the
+/// target through `FlatVectorsScorer.checkDimensions(values.dimension(),
+/// targetBytes.length)` (`Lucene99ScalarQuantizedVectorScorer.java:99`), so
+/// the message names the field's dimension first, in Java's argument order.
+#[test]
+fn legacy_scorer_rejects_a_mismatched_target_through_check_dimensions() {
+    let err = match rucene::codecs::lucene99::scalar_quantized_scorer::Lucene99ScalarQuantizedVectorScorer::from_vector_similarity(
+        vec![1, 2, 3],
+        0.0,
+        VectorSimilarityFunction::DOT_PRODUCT,
+        1.0,
+        Box::new(MemoryQuantizedVectorValues::new()),
+    ) {
+        Ok(_) => panic!("a three-byte target against a four-dimension field must fail"),
+        Err(err) => err,
+    };
+    assert!(
+        matches!(
+            &err,
+            rucene::error::LuceneError::IllegalArgument(message)
+                if message == "vector query dimension: 4 differs from field dimension: 3"
+        ),
+        "{err:?}"
+    );
+}

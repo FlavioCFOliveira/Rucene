@@ -1985,7 +1985,16 @@ impl Lucene99HnswVectorsReader {
         let fields = read_fields(meta_checksum.as_mut(), state.field_infos)?;
         check_footer(meta_checksum.as_mut())?;
 
-        let data_context = state.context.with_hints(state.context.hints());
+        // Even though this input is referred to as `indexIn`, it does not
+        // qualify as `FileTypeHint.INDEX` since it is a large file
+        // (`Lucene99HnswVectorsReader.java:115-127`).
+        let hints: [Arc<dyn crate::store::FileOpenHint>; 4] = [
+            Arc::new(crate::store::FileTypeHint::Data),
+            Arc::new(crate::store::FileDataHint::KnnVectors),
+            Arc::new(crate::store::DataAccessHint::Random),
+            Arc::new(crate::store::PreloadHint::instance()),
+        ];
+        let data_context = state.context.with_hints(&hints);
         let vector_index = Self::open_data_input(
             state,
             version_meta,
@@ -2282,6 +2291,40 @@ impl Lucene99HnswVectorsReader {
     }
 }
 
+/// Hands out the quantized form of the vectors when the flat reader holds
+/// one.
+///
+/// Equivalent to `Lucene99HnswVectorsReader implements QuantizedVectorsReader`
+/// (`Lucene99HnswVectorsReader.java:74, 428-452`); each method forwards to the
+/// inherent one of the same name.
+impl crate::util::quantization::QuantizedVectorsReader for Lucene99HnswVectorsReader {
+    fn get_quantized_vector_values(
+        &self,
+        field: &str,
+    ) -> Result<Option<Box<dyn crate::util::quantization::QuantizedByteVectorValues>>> {
+        Lucene99HnswVectorsReader::get_quantized_vector_values(self, field)
+    }
+
+    fn get_quantization_state(
+        &self,
+        field: &str,
+    ) -> Result<Option<crate::util::quantization::ScalarQuantizer>> {
+        Lucene99HnswVectorsReader::get_quantization_state(self, field)
+    }
+
+    fn get_random_vector_scorer_supplier_for_merge(
+        &self,
+        field_info: &FieldInfo,
+        segment_write_state: &SegmentWriteState<'_>,
+    ) -> Result<Option<Box<dyn CloseableRandomVectorScorerSupplier>>> {
+        Lucene99HnswVectorsReader::get_random_vector_scorer_supplier_for_merge(
+            self,
+            field_info,
+            segment_write_state,
+        )
+    }
+}
+
 /// Hands out the HNSW graph a field stored, so that a merge can reuse it
 /// instead of rebuilding one.
 ///
@@ -2347,6 +2390,12 @@ impl KnnVectorsReader for Lucene99HnswVectorsReader {
 
     fn get_merge_instance(&self) -> Result<Box<dyn KnnVectorsReader>> {
         Ok(Box::new(self.clone_reader()?))
+    }
+
+    /// Equivalent to `Lucene99HnswVectorsReader.finishMerge()`
+    /// (`Lucene99HnswVectorsReader.java:150-153`): the flat reader's.
+    fn finish_merge(&mut self) -> Result<()> {
+        self.flat_vectors_reader.finish_merge()
     }
 
     fn close(&mut self) -> Result<()> {
@@ -3019,6 +3068,144 @@ mod tests {
             ),
             other => panic!("expected IllegalArgumentException, got {other:?}"),
         }
+        Ok(())
+    }
+
+    /// The graph file is opened with `FileTypeHint.DATA`,
+    /// `FileDataHint.KNN_VECTORS`, `DataAccessHint.RANDOM` and
+    /// `PreloadHint.INSTANCE` (`Lucene99HnswVectorsReader.java:115-127`).
+    #[test]
+    fn vector_index_is_opened_with_the_hints_lucene_gives_it() -> Result<()> {
+        use crate::codecs::lucene99::flat_vectors_format::tests::RecordingDirectory;
+
+        let recording = Arc::new(RecordingDirectory::default());
+        let dir = Arc::clone(&recording) as Arc<dyn crate::store::Directory>;
+        let seg_info = make_segment_info(&dir, 2)?;
+        let field_info = float_field_info("float_field", 0, 2)?;
+        let field_infos = FieldInfos::new(vec![field_info.clone()])?;
+        let seg_updates = BufferedUpdates::default();
+        let io_ctx = DefaultIOContext::default();
+        let (write_state, read_state) =
+            make_states(&dir, &seg_info, &field_infos, &seg_updates, &io_ctx);
+
+        let format = Lucene99HnswVectorsFormat::new();
+        {
+            let mut writer = format.fields_writer(&write_state)?;
+            let mut float_writer = match writer.add_field(&field_info)? {
+                FieldVectorWriter::Float(w) => w,
+                _ => panic!("expected float field writer"),
+            };
+            float_writer.add_value(0, vec![1.0, 0.0])?;
+            float_writer.add_value(1, vec![0.0, 1.0])?;
+            writer.flush(2, None)?;
+            writer.finish()?;
+            writer.close()?;
+        }
+
+        let _reader = format.fields_reader(&read_state)?;
+        assert_eq!(
+            recording.events(".vex", "open"),
+            vec![vec![
+                "Data".to_string(),
+                "KnnVectors".to_string(),
+                "PreloadHint".to_string(),
+                "Random".to_string(),
+            ]]
+        );
+        Ok(())
+    }
+
+    /// `Lucene99HnswVectorsReader.getMergeInstance()` asks the flat reader for
+    /// its merge instance, which advises the raw `.vec` sequential, and
+    /// `finishMerge()` forwards to the flat reader, which reverts it
+    /// (`Lucene99HnswVectorsReader.java:145-153`).
+    #[test]
+    fn finish_merge_reaches_the_flat_reader() -> Result<()> {
+        use crate::codecs::lucene99::flat_vectors_format::tests::RecordingDirectory;
+
+        let recording = Arc::new(RecordingDirectory::default());
+        let dir = Arc::clone(&recording) as Arc<dyn crate::store::Directory>;
+        let seg_info = make_segment_info(&dir, 2)?;
+        let field_info = float_field_info("float_field", 0, 2)?;
+        let field_infos = FieldInfos::new(vec![field_info.clone()])?;
+        let seg_updates = BufferedUpdates::default();
+        let io_ctx = DefaultIOContext::default();
+        let (write_state, read_state) =
+            make_states(&dir, &seg_info, &field_infos, &seg_updates, &io_ctx);
+        let format = Lucene99HnswVectorsFormat::new();
+        {
+            let mut writer = format.fields_writer(&write_state)?;
+            let mut float_writer = match writer.add_field(&field_info)? {
+                FieldVectorWriter::Float(w) => w,
+                _ => panic!("expected float field writer"),
+            };
+            float_writer.add_value(0, vec![1.0, 0.0])?;
+            float_writer.add_value(1, vec![0.0, 1.0])?;
+            writer.flush(2, None)?;
+            writer.finish()?;
+            writer.close()?;
+        }
+
+        let reader = format.fields_reader(&read_state)?;
+        let mut merge_instance = reader.get_merge_instance()?;
+        assert_eq!(
+            recording.events(".vec", "update"),
+            vec![vec!["Sequential".to_string()]]
+        );
+        merge_instance.finish_merge()?;
+        let updates = recording.events(".vec", "update");
+        assert_eq!(updates.len(), 2, "finishMerge reaches the flat reader");
+        let mut reverted = updates[1].clone();
+        let mut opened = recording.events(".vec", "open")[0].clone();
+        reverted.sort();
+        opened.sort();
+        assert_eq!(reverted, opened);
+        Ok(())
+    }
+
+    /// The reader is a `QuantizedVectorsReader` whose methods forward to the
+    /// flat reader when it is a quantized one, and answer `null` otherwise
+    /// (`Lucene99HnswVectorsReader.java:74, 428-452`).
+    #[test]
+    fn the_reader_is_a_quantized_vectors_reader_over_its_flat_reader() -> Result<()> {
+        use crate::codecs::lucene104::scalar_quantized_vectors::{
+            Lucene104HnswScalarQuantizedVectorsFormat, Lucene104ScalarQuantizedVectorsFormat,
+        };
+        use crate::codecs::FlatVectorsFormat;
+        use crate::util::quantization::QuantizedVectorsReader;
+
+        let dir = Arc::new(RamDirectory::new()) as Arc<dyn crate::store::Directory>;
+        let seg_info = make_segment_info(&dir, 2)?;
+        let field_info = float_field_info("float_field", 0, 2)?;
+        let field_infos = FieldInfos::new(vec![field_info.clone()])?;
+        let seg_updates = BufferedUpdates::default();
+        let io_ctx = DefaultIOContext::default();
+        let (write_state, read_state) =
+            make_states(&dir, &seg_info, &field_infos, &seg_updates, &io_ctx);
+        {
+            let mut writer =
+                Lucene104HnswScalarQuantizedVectorsFormat::new().fields_writer(&write_state)?;
+            let mut float_writer = match writer.add_field(&field_info)? {
+                FieldVectorWriter::Float(w) => w,
+                _ => panic!("expected float field writer"),
+            };
+            float_writer.add_value(0, vec![1.0, 0.0])?;
+            float_writer.add_value(1, vec![0.0, 1.0])?;
+            writer.flush(2, None)?;
+            writer.finish()?;
+            writer.close()?;
+        }
+
+        let quantized = Lucene99HnswVectorsReader::new(
+            &read_state,
+            Lucene104ScalarQuantizedVectorsFormat::new().fields_reader_flat(&read_state)?,
+        )?;
+        let reader: &dyn QuantizedVectorsReader = &quantized;
+        let values = reader
+            .get_quantized_vector_values("float_field")?
+            .expect("the flat reader is quantized");
+        assert_eq!(values.size(), 2);
+        assert!(reader.get_quantization_state("float_field")?.is_none());
         Ok(())
     }
 

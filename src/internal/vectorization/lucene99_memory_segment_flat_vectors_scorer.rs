@@ -5,8 +5,9 @@
 
 use std::sync::{Arc, LazyLock};
 
+use crate::codecs::hnsw::flat_vectors::check_dimensions;
 use crate::codecs::hnsw::{DefaultFlatVectorScorer, FlatVectorsScorer};
-use crate::error::{LuceneError, Result};
+use crate::error::Result;
 use crate::index::vector_values::{ByteVectorValues, FloatVectorValues};
 use crate::index::VectorSimilarityFunction;
 use crate::internal::vectorization::{
@@ -222,7 +223,7 @@ impl Lucene99MemorySegmentFlatVectorsScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `target` does not match
+    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument) when `target` does not match
     /// the field dimension, and propagates whatever
     /// [`Lucene99MemorySegmentFloatVectorScorer::create`] returns.
     pub fn random_vector_scorer_float(
@@ -232,7 +233,7 @@ impl Lucene99MemorySegmentFlatVectorsScorer {
         vector_values: Arc<dyn FloatVectorValues>,
         target: &[f32],
     ) -> Result<Option<Box<dyn RandomVectorScorer>>> {
-        check_dimensions(target.len(), vector_values.dimension())?;
+        check_dimensions(target.len() as i32, vector_values.dimension())?;
         Ok(Lucene99MemorySegmentFloatVectorScorer::create(
             similarity_function,
             input,
@@ -250,7 +251,7 @@ impl Lucene99MemorySegmentFlatVectorsScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `target` does not match
+    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument) when `target` does not match
     /// the field dimension, and propagates whatever
     /// [`Lucene99MemorySegmentByteVectorScorer::create`] returns.
     pub fn random_vector_scorer_byte(
@@ -260,7 +261,7 @@ impl Lucene99MemorySegmentFlatVectorsScorer {
         vector_values: Arc<dyn ByteVectorValues>,
         target: &[u8],
     ) -> Result<Box<dyn RandomVectorScorer>> {
-        check_dimensions(target.len(), vector_values.dimension())?;
+        check_dimensions(target.len() as i32, vector_values.dimension())?;
         Ok(Box::new(Lucene99MemorySegmentByteVectorScorer::create(
             similarity_function,
             input,
@@ -268,18 +269,6 @@ impl Lucene99MemorySegmentFlatVectorsScorer {
             target,
         )?))
     }
-}
-
-/// Fails when the query and the field disagree on dimension.
-///
-/// Equivalent to `FlatVectorsScorer.checkDimensions(int, int)`.
-fn check_dimensions(query_len: usize, field_dimension: i32) -> Result<()> {
-    if query_len as i32 != field_dimension {
-        return Err(LuceneError::IllegalArgument(format!(
-            "vector query dimension: {query_len} differs from field dimension: {field_dimension}"
-        )));
-    }
-    Ok(())
 }
 
 impl FlatVectorsScorer for Lucene99MemorySegmentFlatVectorsScorer {

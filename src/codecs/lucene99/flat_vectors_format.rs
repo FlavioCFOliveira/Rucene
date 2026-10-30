@@ -41,7 +41,7 @@ use crate::index::vector_values::{
 use crate::index::{segment_file_name, FieldInfos, VectorEncoding, VectorSimilarityFunction};
 use crate::search::vector_scorer::OffHeapVectorScorer;
 use crate::search::{AcceptDocs, DocIdSetIterator, VectorScorer, NO_MORE_DOCS};
-use crate::store::{DataInput, IndexInput, IndexOutput};
+use crate::store::{DataAccessHint, DataInput, FileOpenHint, IndexInput, IndexOutput};
 use crate::util::extra::LongValues;
 use crate::util::hnsw::scorer::BorrowedBits;
 use crate::util::hnsw::RandomVectorScorer;
@@ -910,13 +910,43 @@ struct FieldEntry {
 }
 
 impl Lucene99FlatVectorsReader {
-    /// Creates a new reader for the given segment read state.
+    /// Creates a new reader for the given segment read state, reading the
+    /// vectors randomly.
+    ///
+    /// Equivalent to `Lucene99FlatVectorsReader(SegmentReadState,
+    /// FlatVectorsScorer)` (`Lucene99FlatVectorsReader.java:70-73`), which
+    /// passes `DataAccessHint.RANDOM`.
     pub fn new(
         state: &SegmentReadState<'_>,
         vectors_scorer: DefaultFlatVectorScorer,
     ) -> Result<Self> {
+        Self::with_access_hint(state, vectors_scorer, Some(DataAccessHint::Random))
+    }
+
+    /// Creates a new reader whose data file is opened with
+    /// `FileTypeHint.DATA`, `FileDataHint.KNN_VECTORS` and `access_hint`, when
+    /// one is given.
+    ///
+    /// Equivalent to `Lucene99FlatVectorsReader(SegmentReadState,
+    /// FlatVectorsScorer, DataAccessHint)` (`Lucene99FlatVectorsReader.java:82-93`).
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever reading the metadata or opening the data file raises.
+    pub fn with_access_hint(
+        state: &SegmentReadState<'_>,
+        vectors_scorer: DefaultFlatVectorScorer,
+        access_hint: Option<DataAccessHint>,
+    ) -> Result<Self> {
         let (version_meta, fields) = Self::read_metadata(state)?;
-        let data_context = state.context.with_hints(state.context.hints());
+        let mut hints: Vec<Arc<dyn FileOpenHint>> = vec![
+            Arc::new(crate::store::FileTypeHint::Data),
+            Arc::new(crate::store::FileDataHint::KnnVectors),
+        ];
+        if let Some(access_hint) = access_hint {
+            hints.push(Arc::new(access_hint));
+        }
+        let data_context = state.context.with_hints(&hints);
         let vector_data = Self::open_data_input(
             state,
             version_meta,
@@ -998,6 +1028,14 @@ impl Lucene99FlatVectorsReader {
         }
         retrieve_checksum(input.as_mut())?;
         Ok(input)
+    }
+
+    /// `vectorData.updateIOContext(dataContext.withHints(DataAccessHint.SEQUENTIAL))`
+    /// (`Lucene99FlatVectorsReader.java:206`).
+    fn update_io_context_for_merge(&self) -> Result<()> {
+        let sequential: Arc<dyn FileOpenHint> = Arc::new(DataAccessHint::Sequential);
+        self.vector_data
+            .update_io_context(self.data_context.with_hints(&[sequential]).as_ref())
     }
 
     fn clone_reader(&self) -> Result<Self> {
@@ -1103,8 +1141,25 @@ impl KnnVectorsReader for Lucene99FlatVectorsReader {
         Ok(())
     }
 
+    /// Equivalent to `Lucene99FlatVectorsReader.getMergeInstance()`
+    /// (`Lucene99FlatVectorsReader.java:203-208`): the vectors are read
+    /// sequentially during a merge, so the data input is re-advised with
+    /// `DataAccessHint.SEQUENTIAL` first.
+    ///
+    /// Java returns `this`; this port returns a clone over the same mapped
+    /// data, which the advice reaches because it applies to the mapping.
     fn get_merge_instance(&self) -> Result<Box<dyn KnnVectorsReader>> {
+        self.update_io_context_for_merge()?;
         Ok(Box::new(self.clone_reader()?))
+    }
+
+    /// Equivalent to `Lucene99FlatVectorsReader.finishMerge()`
+    /// (`Lucene99FlatVectorsReader.java:300-305`): reverts the data input to
+    /// the access pattern of the reader's own context, which the HNSW search
+    /// needs.
+    fn finish_merge(&mut self) -> Result<()> {
+        self.vector_data
+            .update_io_context(self.data_context.as_ref())
     }
 
     fn close(&mut self) -> Result<()> {
@@ -1205,7 +1260,13 @@ impl FlatVectorsReader for Lucene99FlatVectorsReader {
             .get_random_vector_scorer_byte(entry.similarity_function, values, target)
     }
 
+    /// See [`KnnVectorsReader::get_merge_instance`] for this reader.
     fn get_merge_instance_flat(&self) -> Result<Box<dyn FlatVectorsReader>> {
+        self.update_io_context_for_merge()?;
+        Ok(Box::new(self.clone_reader()?))
+    }
+
+    fn clone_flat_reader(&self) -> Result<Box<dyn FlatVectorsReader>> {
         Ok(Box::new(self.clone_reader()?))
     }
 }
@@ -1359,7 +1420,7 @@ impl OffHeapFloatVectorValues {
                 data_input: Some(vector_data.clone_input()?),
                 // Built only for a sparse field, as Java builds it only in the
                 // sparse constructor (`OffHeapFloatVectorValues.java:225`).
-                ord_to_doc: Some(read_ord_to_doc_reader(vector_data, config)?),
+                ord_to_doc: Some(config.get_direct_monotonic_reader(vector_data)?),
                 similarity_function,
                 flat_vectors_scorer: Arc::clone(&flat_vectors_scorer),
             }))
@@ -1448,15 +1509,13 @@ impl KnnVectorValues for OffHeapFloatVectorValues {
                     .data_input
                     .as_ref()
                     .expect("INVARIANT: sparse values have a data input");
-                let disi = IndexedDISI::new(
-                    data_input.as_ref(),
-                    config.docs_with_field_offset,
-                    config.docs_with_field_length,
-                    config.jump_table_entry_count as i32,
-                    config.dense_rank_power,
-                    config.size as i64,
-                )?;
-                Ok(Box::new(disi))
+                // `IndexedDISI.asDocIndexIterator(disi)` over
+                // `configuration.getIndexedDISI(dataIn)`
+                // (`OffHeapFloatVectorValues.java:273`,
+                // `OffHeapByteVectorValues.java:259`).
+                Ok(IndexedDISI::as_doc_index_iterator(
+                    config.get_indexed_disi(data_input.as_ref())?,
+                ))
             }
             None => Ok(Box::new(DenseDocIndexIterator::new(self.size))),
         }
@@ -1661,7 +1720,7 @@ impl OffHeapByteVectorValues {
                 data_input: Some(vector_data.clone_input()?),
                 // Built only for a sparse field, as Java builds it only in the
                 // sparse constructor (`OffHeapFloatVectorValues.java:225`).
-                ord_to_doc: Some(read_ord_to_doc_reader(vector_data, config)?),
+                ord_to_doc: Some(config.get_direct_monotonic_reader(vector_data)?),
                 similarity_function,
                 flat_vectors_scorer: Arc::clone(&flat_vectors_scorer),
             }))
@@ -1750,15 +1809,13 @@ impl KnnVectorValues for OffHeapByteVectorValues {
                     .data_input
                     .as_ref()
                     .expect("INVARIANT: sparse values have a data input");
-                let disi = IndexedDISI::new(
-                    data_input.as_ref(),
-                    config.docs_with_field_offset,
-                    config.docs_with_field_length,
-                    config.jump_table_entry_count as i32,
-                    config.dense_rank_power,
-                    config.size as i64,
-                )?;
-                Ok(Box::new(disi))
+                // `IndexedDISI.asDocIndexIterator(disi)` over
+                // `configuration.getIndexedDISI(dataIn)`
+                // (`OffHeapFloatVectorValues.java:273`,
+                // `OffHeapByteVectorValues.java:259`).
+                Ok(IndexedDISI::as_doc_index_iterator(
+                    config.get_indexed_disi(data_input.as_ref())?,
+                ))
             }
             None => Ok(Box::new(DenseDocIndexIterator::new(self.size))),
         }
@@ -1907,30 +1964,6 @@ impl ByteVectorValues for EmptyOffHeapByteVectorValues {
     }
 }
 
-/// Builds a sparse field's ordinal-to-document reader, once per values object
-/// as Java's constructors do, to be shared by every copy.
-///
-/// Equivalent to `OrdToDocDISIReaderConfiguration.getDirectMonotonicReader`.
-///
-/// **Divergence from Lucene 10.5.0.** Java's reader reads the addresses
-/// through a `RandomAccessInput` slice of the file. A file input cannot be
-/// shared across threads here, while vector values must be, so the addresses
-/// are copied into memory once, at load, and the shared
-/// [`SharedDirectMonotonicReader`] decodes them from there.
-///
-/// # Errors
-///
-/// Returns whatever reading the addresses raises.
-pub(crate) fn read_ord_to_doc_reader(
-    vector_data: &dyn IndexInput,
-    config: &OrdToDocDISIReaderConfiguration,
-) -> Result<Arc<SharedDirectMonotonicReader>> {
-    Ok(Arc::new(SharedDirectMonotonicReader::new(
-        config.meta.clone(),
-        Arc::from(read_ord_to_doc_data(vector_data, config)?),
-    )?))
-}
-
 /// The `getAcceptOrds(Bits)` of an off-heap values class: `acceptDocs` itself
 /// for a dense field, and for a sparse one a lazy view that asks
 /// `acceptDocs.get(ordToDoc(ord))` through a shared handle on the field's
@@ -1957,32 +1990,288 @@ pub(crate) fn sparse_accept_ords<'a>(
     }
 }
 
-/// Reads the ordinal-to-document addresses of a sparse field into memory.
-///
-/// # Errors
-///
-/// Returns whatever reading the addresses raises.
-pub(crate) fn read_ord_to_doc_data(
-    vector_data: &dyn IndexInput,
-    config: &OrdToDocDISIReaderConfiguration,
-) -> Result<Vec<u8>> {
-    if config.addresses_length <= 0 {
-        return Ok(Vec::new());
-    }
-    let mut random_access =
-        vector_data.random_access_slice(config.addresses_offset, config.addresses_length)?;
-    let mut data = vec![0u8; config.addresses_length as usize];
-    let len = data.len();
-    random_access.read_bytes_at(0, &mut data, 0, len)?;
-    Ok(data)
-}
-
 // -----------------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
+    /// The events a [`RecordingDirectory`] records: `(file name, event,
+    /// hints)`, where the event is `"open"` or `"update"`.
+    pub(crate) type EventLog = Arc<std::sync::Mutex<Vec<(String, &'static str, Vec<String>)>>>;
+
+    /// A directory over a [`RamDirectory`] that records how the files it
+    /// opens are advised: the hints of the context each input is opened with,
+    /// and the hints of every context an input is later updated to through
+    /// [`IndexInput::update_io_context`].
+    #[derive(Debug, Default)]
+    pub(crate) struct RecordingDirectory {
+        inner: RamDirectory,
+        /// Every recorded event.
+        pub(crate) log: EventLog,
+    }
+
+    fn hint_names(context: &dyn crate::store::IOContext) -> Vec<String> {
+        context
+            .hints()
+            .iter()
+            .map(|hint| format!("{hint:?}"))
+            .collect()
+    }
+
+    impl RecordingDirectory {
+        /// Returns the hints of every recorded event of `event` on files whose
+        /// name ends with `suffix`, each sorted: an `IOContext`'s hints are a
+        /// set, so only membership is compared.
+        pub(crate) fn events(&self, suffix: &str, event: &str) -> Vec<Vec<String>> {
+            self.log
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(name, kind, _)| name.ends_with(suffix) && *kind == event)
+                .map(|(_, _, hints)| {
+                    let mut hints = hints.clone();
+                    hints.sort();
+                    hints
+                })
+                .collect()
+        }
+    }
+
+    impl crate::store::Directory for RecordingDirectory {
+        fn list_all(&self) -> Result<Vec<String>> {
+            self.inner.list_all()
+        }
+
+        fn delete_file(&self, name: &str) -> Result<()> {
+            self.inner.delete_file(name)
+        }
+
+        fn file_length(&self, name: &str) -> Result<i64> {
+            self.inner.file_length(name)
+        }
+
+        fn create_output(
+            &self,
+            name: &str,
+            context: &dyn crate::store::IOContext,
+        ) -> Result<Box<dyn IndexOutput>> {
+            self.inner.create_output(name, context)
+        }
+
+        fn create_temp_output(
+            &self,
+            prefix: &str,
+            suffix: &str,
+            context: &dyn crate::store::IOContext,
+        ) -> Result<Box<dyn IndexOutput>> {
+            self.inner.create_temp_output(prefix, suffix, context)
+        }
+
+        fn sync(&self, names: &[String]) -> Result<()> {
+            self.inner.sync(names)
+        }
+
+        fn sync_metadata(&self) -> Result<()> {
+            self.inner.sync_metadata()
+        }
+
+        fn rename(&self, source: &str, dest: &str) -> Result<()> {
+            self.inner.rename(source, dest)
+        }
+
+        fn open_input(
+            &self,
+            name: &str,
+            context: &dyn crate::store::IOContext,
+        ) -> Result<Box<dyn IndexInput>> {
+            self.log
+                .lock()
+                .unwrap()
+                .push((name.to_string(), "open", hint_names(context)));
+            Ok(Box::new(RecordingInput {
+                name: name.to_string(),
+                inner: self.inner.open_input(name, context)?,
+                log: Arc::clone(&self.log),
+            }))
+        }
+
+        fn obtain_lock(&self, name: &str) -> Result<Box<dyn crate::store::Lock>> {
+            self.inner.obtain_lock(name)
+        }
+
+        fn close(&mut self) -> Result<()> {
+            self.inner.close()
+        }
+
+        fn get_pending_deletions(&self) -> Result<std::collections::HashSet<String>> {
+            self.inner.get_pending_deletions()
+        }
+    }
+
+    /// The input [`RecordingDirectory`] hands out.
+    struct RecordingInput {
+        name: String,
+        inner: Box<dyn IndexInput>,
+        log: EventLog,
+    }
+
+    impl DataInput for RecordingInput {
+        fn read_byte(&mut self) -> Result<u8> {
+            self.inner.read_byte()
+        }
+
+        fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+            self.inner.read_bytes(b, offset, len)
+        }
+
+        fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
+            self.inner.skip_bytes(num_bytes)
+        }
+    }
+
+    impl IndexInput for RecordingInput {
+        fn close(&mut self) -> Result<()> {
+            self.inner.close()
+        }
+
+        fn file_pointer(&self) -> i64 {
+            self.inner.file_pointer()
+        }
+
+        fn length(&self) -> i64 {
+            self.inner.length()
+        }
+
+        fn seek(&mut self, pos: i64) -> Result<()> {
+            self.inner.seek(pos)
+        }
+
+        fn slice(
+            &self,
+            slice_description: &str,
+            offset: i64,
+            length: i64,
+        ) -> Result<Box<dyn IndexInput>> {
+            self.inner.slice(slice_description, offset, length)
+        }
+
+        fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
+            Ok(Box::new(RecordingInput {
+                name: self.name.clone(),
+                inner: self.inner.clone_input()?,
+                log: Arc::clone(&self.log),
+            }))
+        }
+
+        fn resource_description(&self) -> &str {
+            self.inner.resource_description()
+        }
+
+        fn update_io_context(&self, context: &dyn crate::store::IOContext) -> Result<()> {
+            self.log
+                .lock()
+                .unwrap()
+                .push((self.name.clone(), "update", hint_names(context)));
+            self.inner.update_io_context(context)
+        }
+
+        fn random_access_slice(
+            &self,
+            offset: i64,
+            length: i64,
+        ) -> Result<Box<dyn crate::store::RandomAccessInput>> {
+            self.inner.random_access_slice(offset, length)
+        }
+    }
+
+    /// The data file is opened with `FileTypeHint.DATA`,
+    /// `FileDataHint.KNN_VECTORS` and `DataAccessHint.RANDOM`
+    /// (`Lucene99FlatVectorsReader.java:70-93`).
+    #[test]
+    fn vector_data_is_opened_with_the_hints_lucene_gives_it() -> Result<()> {
+        let recording = Arc::new(RecordingDirectory::default());
+        let dir = Arc::clone(&recording) as Arc<dyn crate::store::Directory>;
+        let seg_info = make_segment_info(&dir, 1)?;
+        let field_info = float_field_info("float_field", 0, 2)?;
+        let field_infos = FieldInfos::new(vec![field_info.clone()])?;
+        let seg_updates = BufferedUpdates::default();
+        let io_ctx = DefaultIOContext::default();
+        let (write_state, read_state) =
+            make_states(&dir, &seg_info, &field_infos, &seg_updates, &io_ctx);
+        let format = Lucene99FlatVectorsFormat::new(DefaultFlatVectorScorer::INSTANCE);
+        {
+            let mut writer = format.fields_writer_flat(&write_state)?;
+            let mut float_writer = match writer.add_field(&field_info)? {
+                FieldVectorWriter::Float(w) => w,
+                _ => panic!("expected float field writer"),
+            };
+            float_writer.add_value(0, vec![1.0, 2.0])?;
+            writer.flush(1, None)?;
+            writer.finish()?;
+            writer.close()?;
+        }
+        let _reader = format.fields_reader_flat(&read_state)?;
+        assert_eq!(
+            recording.events(".vec", "open"),
+            vec![vec![
+                "Data".to_string(),
+                "KnnVectors".to_string(),
+                "Random".to_string()
+            ]]
+        );
+        Ok(())
+    }
+
+    /// A merge reads the vectors sequentially, so
+    /// `Lucene99FlatVectorsReader.getMergeInstance()` re-advises the data
+    /// input with `DataAccessHint.SEQUENTIAL`, and `finishMerge()` reverts it
+    /// to the reader's own context (`Lucene99FlatVectorsReader.java:203-208,
+    /// 300-305`).
+    #[test]
+    fn merge_instance_advises_the_vector_data_sequential_and_finish_merge_reverts_it() -> Result<()>
+    {
+        let recording = Arc::new(RecordingDirectory::default());
+        let dir = Arc::clone(&recording) as Arc<dyn crate::store::Directory>;
+        let seg_info = make_segment_info(&dir, 2)?;
+        let field_info = float_field_info("float_field", 0, 2)?;
+        let field_infos = FieldInfos::new(vec![field_info.clone()])?;
+        let seg_updates = BufferedUpdates::default();
+        let io_ctx = DefaultIOContext::default();
+        let (write_state, read_state) =
+            make_states(&dir, &seg_info, &field_infos, &seg_updates, &io_ctx);
+
+        let format = Lucene99FlatVectorsFormat::new(DefaultFlatVectorScorer::INSTANCE);
+        {
+            let mut writer = format.fields_writer_flat(&write_state)?;
+            let mut float_writer = match writer.add_field(&field_info)? {
+                FieldVectorWriter::Float(w) => w,
+                _ => panic!("expected float field writer"),
+            };
+            float_writer.add_value(0, vec![1.0, 2.0])?;
+            float_writer.add_value(1, vec![3.0, 4.0])?;
+            writer.flush(2, None)?;
+            writer.finish()?;
+            writer.close()?;
+        }
+
+        let reader = format.fields_reader_flat(&read_state)?;
+        assert!(recording.events(".vec", "update").is_empty());
+        let mut merge_instance = reader.get_merge_instance()?;
+        assert_eq!(
+            recording.events(".vec", "update"),
+            vec![vec!["Sequential".to_string()]],
+            "getMergeInstance advises the data input sequential"
+        );
+        merge_instance.finish_merge()?;
+        assert_eq!(
+            recording.events(".vec", "update")[1],
+            recording.events(".vec", "open")[0],
+            "finishMerge reverts to the context the data input was opened with"
+        );
+        Ok(())
+    }
+
     /// The four serialization sites for `VectorEncoding` and
     /// `VectorSimilarityFunction` each carry their own ordinal table. Java has
     /// one, `Enum.ordinal()`, so the tables must agree with the declaration

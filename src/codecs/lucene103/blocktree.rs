@@ -30,7 +30,8 @@ use crate::index::index_file_names::segment_file_name;
 use crate::index::IndexOptions;
 use crate::index::SegmentInfo;
 use crate::store::{
-    ByteBuffersDataInput, ByteBuffersDataOutput, DataInput, DataOutput, IndexOutput,
+    ByteArrayDataOutput, ByteBuffersDataInput, ByteBuffersDataOutput, DataInput, DataOutput,
+    IndexOutput,
 };
 use crate::util::compress::{
     HighCompressionHashTable, LowercaseAsciiCompression, Lz4, Lz4HashTable,
@@ -1686,13 +1687,11 @@ impl<'a> TermsWriter<'a> {
         // Suffix lengths
         let num_suffix_bytes = self.suffix_lengths_writer.size();
         self.spare_bytes.resize(num_suffix_bytes, 0);
-        let mut suffix_lengths_out = crate::store::VecDataOutput::new();
+        // `suffixLengthsWriter.copyTo(new ByteArrayDataOutput(spareBytes))`
+        // (`Lucene103BlockTreeTermsWriter.java:939`).
         self.suffix_lengths_writer
-            .copy_to(&mut suffix_lengths_out)?;
+            .copy_to(&mut ByteArrayDataOutput::new(&mut self.spare_bytes))?;
         self.suffix_lengths_writer.reset();
-        self.spare_bytes.resize(suffix_lengths_out.len(), 0);
-        self.spare_bytes
-            .copy_from_slice(suffix_lengths_out.as_inner());
         // Java tests `allEqual(spareBytes, 1, numSuffixBytes, spareBytes[0])`,
         // which is vacuously true for a single length byte — the common case of
         // a block holding one term. Requiring more than one byte here produced
@@ -1784,6 +1783,12 @@ impl<'a> TermsWriter<'a> {
                 _ => panic!("expected single root block"),
             };
             debug_assert!(root.prefix.length == 0);
+            // `assert root.index.getEmptyOutput() != null`
+            // (`Lucene103BlockTreeTermsWriter.java:1079`).
+            debug_assert!(root
+                .index
+                .as_ref()
+                .is_some_and(|index| index.get_empty_output().is_some()));
 
             let mut meta = ByteBuffersDataOutput::new();
             meta.write_v_int(self.field_info.number)?;
@@ -2353,19 +2358,9 @@ impl Lucene103BlockTreeTermsReader {
         &self.segment
     }
 
-    /// Returns the segment suffix used when opening this reader.
-    pub fn segment_suffix(&self) -> &str {
-        &self.segment_suffix
-    }
-
     /// Returns the format version of the underlying files.
     pub fn version(&self) -> i32 {
         self.version
-    }
-
-    /// Returns the shared file handles the field readers use.
-    pub fn shared(&self) -> &Arc<BlockTreeShared> {
-        &self.shared
     }
 
     /// Returns the postings reader that decodes each term's metadata.
@@ -3345,6 +3340,90 @@ mod tests {
             terms.index_input_initialized(),
             "loading the first block clones the terms input"
         );
+    }
+
+    /// Writes `a`, `ab`, `b` into field `body` and opens its `FieldReader`.
+    fn three_term_field(dir: &Arc<dyn Directory>, segment_info: &SegmentInfo) -> FieldReader {
+        let field_infos =
+            FieldInfos::new(vec![FieldInfo::new("body", 0)]).expect("valid field infos");
+        {
+            let state = test_write_state(dir, segment_info, &field_infos);
+            let fields = TestFields {
+                field: "body".to_string(),
+                terms: vec![
+                    BytesRef::new(b"a".to_vec()),
+                    BytesRef::new(b"ab".to_vec()),
+                    BytesRef::new(b"b".to_vec()),
+                ],
+            };
+            let mut writer = Lucene103BlockTreeTermsWriter::new(
+                &state,
+                Box::new(CountingPostingsWriter),
+                DEFAULT_MIN_BLOCK_SIZE,
+                DEFAULT_MAX_BLOCK_SIZE,
+            )
+            .expect("writer should be created");
+            writer.write(&fields, None).expect("write should succeed");
+            writer.close().expect("close should succeed");
+        }
+        let read_state = SegmentReadState::new(
+            &**dir,
+            segment_info,
+            &field_infos,
+            &*crate::store::DEFAULT_IO_CONTEXT,
+        );
+        let reader = Lucene103BlockTreeTermsReader::new(Box::new(StubPostingsReader), &read_state)
+            .expect("reader should open");
+        reader
+            .fields
+            .get("body")
+            .expect("the field was written")
+            .clone()
+    }
+
+    /// `TermStates` and the other callers holding a plain `TermsEnum` reach
+    /// `SegmentTermsEnum.prepareSeekExact`, which answers `null` without any
+    /// I/O for a term outside the field's `[min, max]` range
+    /// (`SegmentTermsEnum.java:253-254`, reached from the override at
+    /// `SegmentTermsEnum.java:503-506`), rather than the default
+    /// `TermsEnum.prepareSeekExact` supplier, which would always answer.
+    #[test]
+    fn prepare_seek_exact_through_terms_enum_rules_out_terms_beyond_the_range() {
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let segment_info = test_segment_info("_0", 10);
+        let field = three_term_field(&dir, &segment_info);
+
+        let mut terms: Box<dyn TermsEnum> = Terms::iterator(&field).expect("cursor should open");
+        assert!(
+            terms
+                .prepare_seek_exact(&BytesRef::new(b"z".to_vec()))
+                .expect("prepare should succeed")
+                .is_none(),
+            "a term past the field's max is ruled out by the index"
+        );
+        let mut supplier = terms
+            .prepare_seek_exact(&BytesRef::new(b"ab".to_vec()))
+            .expect("prepare should succeed")
+            .expect("a term inside the range needs the block");
+        assert!(supplier.get().expect("the block should load"));
+    }
+
+    /// `CheckIndex` reaches `SegmentTermsEnum.computeBlockStats` through
+    /// `Terms.getStats()`, which `FieldReader` overrides
+    /// (`FieldReader.java:110-114`); the default would report the generic
+    /// `impl=...` line instead of the block-tree statistics.
+    #[test]
+    fn field_reader_stats_are_the_block_tree_stats() {
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let segment_info = test_segment_info("_0", 10);
+        let field = three_term_field(&dir, &segment_info);
+
+        let stats = Terms::stats(&field).expect("stats should compute");
+        assert!(
+            stats.starts_with("  index trie:\n"),
+            "expected the block-tree statistics, got: {stats}"
+        );
+        assert!(stats.contains("    3 terms\n"), "{stats}");
     }
 }
 

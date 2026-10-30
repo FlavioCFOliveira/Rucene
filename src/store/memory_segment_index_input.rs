@@ -825,6 +825,35 @@ impl IndexInput for MemorySegmentIndexInput {
         Some(self)
     }
 
+    /// Re-advises the kernel for the access pattern `context` describes.
+    ///
+    /// Equivalent to `MemorySegmentIndexInput.updateIOContext(IOContext)`,
+    /// which overrides `IndexInput.updateIOContext`, so that a caller holding
+    /// a plain `IndexInput` — `Lucene99FlatVectorsReader.getMergeInstance` and
+    /// `finishMerge` — reaches it.
+    fn update_io_context(&self, context: &dyn IOContext) -> Result<()> {
+        MemorySegmentIndexInput::update_io_context(self, context)
+    }
+
+    /// Equivalent to `MemorySegmentIndexInput.slice(String, long, long,
+    /// IOContext)`, which overrides the `IndexInput` overload so that
+    /// `Lucene90CompoundReader.openInput` reaches it.
+    fn slice_with_context(
+        &self,
+        slice_description: &str,
+        offset: i64,
+        length: i64,
+        context: &dyn IOContext,
+    ) -> Result<Box<dyn IndexInput>> {
+        Ok(Box::new(MemorySegmentIndexInput::slice_with_context(
+            self,
+            slice_description,
+            offset,
+            length,
+            context,
+        )?))
+    }
+
     fn close(&mut self) -> Result<()> {
         if self.cur_segment.is_none() {
             return Ok(());

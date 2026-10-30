@@ -239,35 +239,6 @@ pub trait StoredFieldsWriter: Accountable + Send + fmt::Debug {
     fn close(&mut self) -> Result<()>;
 }
 
-/// A minimal no-op stored-fields format.
-#[derive(Debug, Copy, Clone, Default)]
-pub struct EmptyStoredFieldsFormat;
-
-impl StoredFieldsFormat for EmptyStoredFieldsFormat {
-    fn name(&self) -> &str {
-        "EmptyStoredFields"
-    }
-
-    fn fields_reader(
-        &self,
-        _directory: &dyn Directory,
-        _segment_info: &SegmentInfo,
-        _field_infos: &FieldInfos,
-        _context: &dyn IOContext,
-    ) -> Result<Box<dyn StoredFieldsReader>> {
-        Ok(Box::new(EmptyStoredFieldsReader))
-    }
-
-    fn fields_writer(
-        &self,
-        _directory: &std::sync::Arc<dyn Directory>,
-        _segment_info: &SegmentInfo,
-        _context: &dyn IOContext,
-    ) -> Result<Box<dyn StoredFieldsWriter>> {
-        Ok(Box::new(EmptyStoredFieldsWriter))
-    }
-}
-
 /// A minimal no-op stored-fields reader.
 #[derive(Debug, Copy, Clone, Default)]
 pub struct EmptyStoredFieldsReader;
@@ -337,12 +308,6 @@ impl StoredFieldsWriter for EmptyStoredFieldsWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn empty_stored_fields_format_name() {
-        let format = EmptyStoredFieldsFormat;
-        assert_eq!(format.name(), "EmptyStoredFields");
-    }
 
     #[test]
     fn empty_stored_fields_reader_methods() {

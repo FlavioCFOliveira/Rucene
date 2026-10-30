@@ -173,11 +173,6 @@ impl ScalarQuantizedVectorScorer {
             non_quantized_delegate: delegate,
         }
     }
-
-    /// Returns the scorer used for unquantized fields.
-    pub fn get_non_quantized_delegate(&self) -> &dyn FlatVectorsScorer {
-        self.non_quantized_delegate.as_ref()
-    }
 }
 
 impl FlatVectorsScorer for ScalarQuantizedVectorScorer {

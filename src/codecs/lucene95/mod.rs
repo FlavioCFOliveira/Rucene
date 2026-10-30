@@ -3,8 +3,7 @@
 //! Holds the doc-id encoding shared by every vector format since Lucene 9.5,
 //! and the slice accessor a reader exposes so a caller can prefetch its data.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::codecs::hnsw::flat_vectors::DocsWithFieldSet;
 use crate::codecs::lucene90::indexed_disi::{write_bit_set, IndexedDISI, DEFAULT_DENSE_RANK_POWER};
@@ -17,7 +16,9 @@ use crate::store::{DataInput, IndexInput, IndexOutput, RandomAccessInput};
 ///
 /// Equivalent to `Lucene99FlatVectorsFormat.DIRECT_MONOTONIC_BLOCK_SHIFT`.
 pub const DIRECT_MONOTONIC_BLOCK_SHIFT: i32 = 16;
-use crate::util::packed::{DirectMonotonicMeta, DirectMonotonicReader, DirectMonotonicWriter};
+use crate::util::packed::{
+    DirectMonotonicMeta, DirectMonotonicWriter, SharedDirectMonotonicReader,
+};
 
 /// A reader that can hand out the input slice holding its data.
 ///
@@ -240,35 +241,52 @@ impl OrdToDocDISIReaderConfiguration {
     }
 
     /// Returns the reader that maps a vector ordinal back to its document id,
-    /// for a field whose documents are sparse.
+    /// for a field whose documents are sparse. The off-heap vector values
+    /// build it once, in their sparse constructor, and share it with every
+    /// copy.
     ///
     /// The caller must have checked that the field is neither empty nor dense,
     /// which is Java's `assert docsWithFieldOffset > -1`.
     ///
+    /// **Divergence from Lucene 10.5.0.** Java returns a
+    /// `DirectMonotonicReader` that reads the addresses through a
+    /// `RandomAccessInput` slice of `dataIn`. A file input cannot be shared
+    /// across threads here, while vector values must be, so the addresses are
+    /// copied into memory once and the shared
+    /// [`SharedDirectMonotonicReader`] decodes them from there with the same
+    /// arithmetic.
+    ///
     /// # Errors
     ///
     /// Returns [`LuceneError::IllegalState`] when the field is empty or dense,
-    /// and an I/O error when the addresses cannot be sliced or decoded.
+    /// and an I/O error when the addresses cannot be sliced or read.
     ///
     /// [`LuceneError::IllegalState`]: crate::error::LuceneError::IllegalState
     ///
     /// Equivalent to
-    /// `OrdToDocDISIReaderConfiguration.getDirectMonotonicReader(IndexInput)`.
+    /// `OrdToDocDISIReaderConfiguration.getDirectMonotonicReader(IndexInput)`
+    /// (`OrdToDocDISIReaderConfiguration.java:207-212`).
     pub fn get_direct_monotonic_reader(
         &self,
         data_in: &dyn IndexInput,
-    ) -> Result<DirectMonotonicReader> {
+    ) -> Result<Arc<SharedDirectMonotonicReader>> {
         if self.docs_with_field_offset <= -1 {
             return Err(crate::error::LuceneError::illegal_state(format!(
                 "docsWithFieldOffset must be > -1 to read an ord-to-doc mapping, but was {}",
                 self.docs_with_field_offset
             )));
         }
-        let addresses_data: Box<dyn RandomAccessInput> =
-            data_in.random_access_slice(self.addresses_offset, self.addresses_length)?;
-        DirectMonotonicReader::with_random_access(
+        let mut addresses = Vec::new();
+        if self.addresses_length > 0 {
+            let mut addresses_data: Box<dyn RandomAccessInput> =
+                data_in.random_access_slice(self.addresses_offset, self.addresses_length)?;
+            addresses = vec![0u8; self.addresses_length as usize];
+            let len = addresses.len();
+            addresses_data.read_bytes_at(0, &mut addresses, 0, len)?;
+        }
+        Ok(Arc::new(SharedDirectMonotonicReader::new(
             self.meta.clone(),
-            Rc::new(RefCell::new(addresses_data)),
-        )
+            Arc::from(addresses),
+        )?))
     }
 }

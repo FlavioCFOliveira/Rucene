@@ -19,7 +19,7 @@ use std::fmt::{self, Debug, Formatter};
 use std::sync::{Arc, Weak};
 
 use crate::analysis::{Analyzer, StandardAnalyzer};
-use crate::codecs::{default_codec, Codec};
+use crate::codecs::{get_default, Codec};
 use crate::error::{LuceneError, Result};
 use crate::index::directory_reader::IndexWriter as IndexWriterTrait;
 use crate::index::documents_writer::{FlushByRamOrCountsPolicy, FlushPolicy};
@@ -221,7 +221,8 @@ impl LiveIndexWriterConfig {
     }
 
     fn with_defaults(analyzer: Arc<dyn Analyzer>) -> Self {
-        let codec = default_codec().unwrap_or_else(|| {
+        // `codec = Codec.getDefault()` (`LiveIndexWriterConfig.java:131`).
+        let codec = get_default().unwrap_or_else(|| {
             panic!(
                 "default codec '{}' is not registered in the global codec registry",
                 crate::codecs::DEFAULT_CODEC_NAME
@@ -1192,6 +1193,47 @@ mod tests {
     fn new_config() -> IndexWriterConfig {
         ensure_default_codec();
         IndexWriterConfig::new()
+    }
+
+    /// A new config takes the codec `Codec.setDefault` installed, because
+    /// `LiveIndexWriterConfig(Analyzer)` reads `Codec.getDefault()`
+    /// (`LiveIndexWriterConfig.java:131`) rather than looking the default name
+    /// up in the registry.
+    ///
+    /// The installed codec delegates everything to the registered `Lucene104`
+    /// under the same name, so a config another test creates meanwhile writes
+    /// exactly what it would have written. The tests that install a default
+    /// are serialised, and the exact prior state — unset included — is
+    /// restored even when an assertion fails.
+    #[test]
+    fn a_new_config_takes_the_codec_set_as_the_default() {
+        /// Puts the prior default back when dropped, panicking or not.
+        struct Restore(Option<Option<Arc<dyn Codec>>>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                if let Some(prior) = self.0.take() {
+                    crate::codecs::swap_default(prior);
+                }
+            }
+        }
+
+        ensure_default_codec();
+        let _serial = crate::codecs::DEFAULT_CODEC_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let registered = crate::codecs::for_name("Lucene104").expect("Lucene104 is registered");
+        let installed: Arc<dyn Codec> = Arc::new(crate::codecs::FilterCodec::new(
+            "Lucene104",
+            Arc::clone(&registered),
+        ));
+        let _restore = Restore(Some(crate::codecs::swap_default(Some(Arc::clone(
+            &installed,
+        )))));
+        let picked = IndexWriterConfig::new().codec();
+        assert!(
+            std::ptr::addr_eq(Arc::as_ptr(&picked), Arc::as_ptr(&installed)),
+            "the config must take the codec set as the default"
+        );
     }
 
     #[test]

@@ -672,6 +672,28 @@ pub trait IndexInput: DataInput + Send + Sync {
         length: i64,
     ) -> Result<Box<dyn IndexInput>>;
 
+    /// Creates a slice with a new [`IOContext`]. Compound formats use this to
+    /// give each file inside the compound file its own context.
+    ///
+    /// The default implementation delegates to [`slice`](Self::slice) and
+    /// ignores the context.
+    ///
+    /// Equivalent to `IndexInput.slice(String, long, long, IOContext)`
+    /// (`IndexInput.java:126-139`); Rust has no overloading, hence the name.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever [`slice`](Self::slice) returns.
+    fn slice_with_context(
+        &self,
+        slice_description: &str,
+        offset: i64,
+        length: i64,
+        _context: &dyn IOContext,
+    ) -> Result<Box<dyn IndexInput>> {
+        self.slice(slice_description, offset, length)
+    }
+
     /// Returns an independent clone of this input, positioned at the same
     /// location.
     ///
@@ -734,6 +756,10 @@ pub trait IndexInput: DataInput + Send + Sync {
     /// of a values object's slice. Rust cannot narrow a `dyn IndexInput` to
     /// another trait, so the question is asked of the input itself; the
     /// default answers `None`, the `false` branch of `instanceof`.
+    ///
+    /// Only with the `mmap` feature, which provides
+    /// [`MemorySegmentAccessInput`].
+    #[cfg(feature = "mmap")]
     fn as_memory_segment_access_input(&self) -> Option<&dyn MemorySegmentAccessInput> {
         None
     }
@@ -1071,8 +1097,42 @@ impl BufferedIndexInput {
     }
 
     /// Returns the configured buffer size.
+    ///
+    /// Equivalent to `BufferedIndexInput.getBufferSize()`.
     pub fn buffer_size(&self) -> usize {
         self.buffer_size
+    }
+
+    /// Returns the default buffer size for `context`: [`MERGE_BUFFER_SIZE`]
+    /// for a merge, [`BUFFER_SIZE`] otherwise.
+    ///
+    /// Equivalent to the static `BufferedIndexInput.bufferSize(IOContext)`
+    /// (`BufferedIndexInput.java:359-369`).
+    pub fn buffer_size_for_context(context: &dyn IOContext) -> usize {
+        match context.context() {
+            Context::Merge => MERGE_BUFFER_SIZE,
+            _ => BUFFER_SIZE,
+        }
+    }
+
+    /// Returns an independent clone positioned where this input is, with an
+    /// empty buffer of the same size.
+    ///
+    /// Equivalent to `BufferedIndexInput.clone()`, typed so that an input that
+    /// holds one (`NIOFSIndexInput`) can clone itself as Java's `super.clone()`
+    /// does.
+    pub(crate) fn clone_buffered(&self) -> Result<Self> {
+        let mut source_clone = self.source.clone_input()?;
+        source_clone.seek(self.file_pointer())?;
+        Ok(Self {
+            source: source_clone,
+            buffer: vec![0u8; self.buffer_size],
+            buffer_start: self.file_pointer(),
+            buffer_position: 0,
+            buffer_limit: 0,
+            buffer_size: self.buffer_size,
+            resource_description: self.resource_description.clone(),
+        })
     }
 
     /// Rejects a buffer size smaller than [`MIN_BUFFER_SIZE`].
@@ -1470,8 +1530,10 @@ impl IndexInput for BufferedIndexInput {
         offset: i64,
         length: i64,
     ) -> Result<Box<dyn IndexInput>> {
+        // `return wrap(sliceDescription, this, offset, length)`
+        // (`BufferedIndexInput.java:355-357`).
         let base = self.source.clone_input()?;
-        Ok(Box::new(SlicedIndexInput::new(
+        Ok(Box::new(Self::wrap(
             slice_description,
             base,
             offset,
@@ -1480,17 +1542,7 @@ impl IndexInput for BufferedIndexInput {
     }
 
     fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
-        let mut source_clone = self.source.clone_input()?;
-        source_clone.seek(self.file_pointer())?;
-        Ok(Box::new(Self {
-            source: source_clone,
-            buffer: vec![0u8; self.buffer_size],
-            buffer_start: self.file_pointer(),
-            buffer_position: 0,
-            buffer_limit: 0,
-            buffer_size: self.buffer_size,
-            resource_description: self.resource_description.clone(),
-        }))
+        Ok(Box::new(self.clone_buffered()?))
     }
 
     fn resource_description(&self) -> &str {
@@ -2699,11 +2751,6 @@ impl<R: Read> InputStreamDataInput<R> {
         Self { input }
     }
 
-    /// Consumes this wrapper and returns the underlying stream.
-    pub fn into_inner(self) -> R {
-        self.input
-    }
-
     /// Closes the underlying stream.
     ///
     /// Equivalent to `InputStreamDataInput.close()`, which is the whole of the
@@ -3035,20 +3082,6 @@ impl MockIndexOutput {
         }
     }
 
-    /// Creates a new empty output with the given initial capacity.
-    pub fn with_capacity(
-        resource_description: impl Into<String>,
-        name: impl Into<String>,
-        capacity: usize,
-    ) -> Self {
-        Self {
-            resource_description: resource_description.into(),
-            name: name.into(),
-            data: VecDataOutput::with_capacity(capacity),
-            closed: false,
-        }
-    }
-
     /// Consumes the output and returns the written bytes.
     pub fn into_inner(self) -> Vec<u8> {
         self.data.into_inner()
@@ -3057,11 +3090,6 @@ impl MockIndexOutput {
     /// Returns a reference to the written bytes.
     pub fn as_inner(&self) -> &[u8] {
         self.data.as_inner()
-    }
-
-    /// Returns the number of bytes written so far.
-    pub fn len(&self) -> usize {
-        self.data.len()
     }
 
     /// Returns `true` if no bytes have been written yet.
@@ -8188,13 +8216,18 @@ impl IndexOutput for FSIndexOutput {
 
 /// Filesystem-based [`Directory`] implementation.
 ///
-/// Equivalent to `org.apache.lucene.store.FSDirectory`. In Lucene this is an
-/// abstract base class with concrete subclasses `MMapDirectory` and
-/// `NIOFSDirectory`; in Rucene it is currently a concrete struct. The
-/// `open_input` implementation provided here is a minimal placeholder that uses
-/// `std::fs::File` + [`BufferedIndexInput`]. It will be superseded by the
-/// platform-specific implementations in tasks #7 (`MMapDirectory`) and #8
-/// (`NIOFSDirectory`).
+/// Equivalent to `org.apache.lucene.store.FSDirectory`: the state and the
+/// write, delete, sync and lock paths that `MMapDirectory` and
+/// `NIOFSDirectory` share.
+///
+/// **Divergence from Lucene 10.5.0.** Java's `FSDirectory` is abstract, and its
+/// subclasses supply `openInput`. Rust has no abstract classes and a
+/// [`Directory`] implementation must provide every method, so this struct is
+/// concrete: the two subclasses compose it and delegate everything but
+/// `open_input` to it, and its own `open_input` reads the file through a plain
+/// buffered [`IndexInput`] that has no Java counterpart. Nothing in the crate
+/// reads through that path except `CommandLineUtil`'s `FSDirectory` kind;
+/// [`FSDirectory::open`] returns the subclass Java would.
 pub struct FSDirectory {
     directory: PathBuf,
     pending_deletes: Mutex<HashSet<String>>,
@@ -8213,28 +8246,59 @@ impl std::fmt::Debug for FSDirectory {
     }
 }
 
+/// The [`Directory`] implementation [`FSDirectory::open`] picks for this
+/// platform: [`MMapDirectory`](mmap::MMapDirectory) on 64-bit targets, and
+/// [`NIOFSDirectory`] otherwise.
+///
+/// **Divergence from Lucene 10.5.0.** Java's `FSDirectory.open` returns the
+/// abstract `FSDirectory`, of which both are subclasses. Rust cannot return an
+/// abstract base class by value, and this port's `FSDirectory` is the concrete
+/// state the two compose, so the return type is the one implementation the
+/// target selects at compile time — the same choice
+/// `Constants.JRE_IS_64BIT` makes at run time (`FSDirectory.java:156-162`).
+/// Without the `mmap` feature there is no `MMapDirectory`, so
+/// `NIOFSDirectory` is selected.
+#[cfg(all(feature = "mmap", target_pointer_width = "64"))]
+pub type FSDirectoryImpl = mmap::MMapDirectory;
+
+/// See the 64-bit definition.
+#[cfg(not(all(feature = "mmap", target_pointer_width = "64")))]
+pub type FSDirectoryImpl = NIOFSDirectory;
+
 impl FSDirectory {
-    /// Opens an FSDirectory at `path` using the default lock factory.
+    /// Creates an FSDirectory for the named location, picking the best
+    /// implementation for the platform, with the default lock factory.
     ///
-    /// Equivalent to `FSDirectory.open(Path)` in Lucene 10.5.0.
+    /// Equivalent to `FSDirectory.open(Path)` (`FSDirectory.java:151-153`);
+    /// see [`FSDirectoryImpl`] for the selection.
     ///
-    /// # Note
+    /// # Errors
     ///
-    /// Lucene 10.5.0 returns an `MMapDirectory` on 64-bit JREs and an
-    /// `NIOFSDirectory` otherwise. Rucene currently returns a plain
-    /// `FSDirectory`; the subclass selection will be completed in tasks #7 and
-    /// #8.
-    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        Self::with_lock_factory(path, None)
+    /// Propagates any I/O error creating or canonicalizing the directory.
+    pub fn open(path: impl AsRef<Path>) -> Result<FSDirectoryImpl> {
+        Self::open_with_lock_factory(path, None)
     }
 
-    /// Opens an FSDirectory at `path` with the supplied lock factory.
+    /// Just like [`open`](Self::open), but with the supplied lock factory,
+    /// or the default one when `None`.
     ///
-    /// Equivalent to `FSDirectory.open(Path, LockFactory)` in Lucene 10.5.0.
+    /// Equivalent to `FSDirectory.open(Path, LockFactory)`
+    /// (`FSDirectory.java:155-162`).
     ///
-    /// # Note
+    /// # Errors
     ///
-    /// See [`FSDirectory::open`] for the current subclass-selection status.
+    /// Propagates any I/O error creating or canonicalizing the directory.
+    pub fn open_with_lock_factory(
+        path: impl AsRef<Path>,
+        lock_factory: Option<Box<dyn LockFactory>>,
+    ) -> Result<FSDirectoryImpl> {
+        FSDirectoryImpl::with_lock_factory(path, lock_factory)
+    }
+
+    /// Creates the state shared by the filesystem directories at `path`.
+    ///
+    /// Equivalent to the protected `FSDirectory(Path, LockFactory)`
+    /// constructor that `MMapDirectory` and `NIOFSDirectory` call.
     pub fn with_lock_factory(
         path: impl AsRef<Path>,
         lock_factory: Option<Box<dyn LockFactory>>,
@@ -8581,10 +8645,10 @@ impl std::fmt::Display for FSDirectory {
     }
 }
 
-/// Minimal file-based [`IndexInput`] used by [`FSDirectory::open_input`].
+/// File-based [`IndexInput`] used by [`FSDirectory`]'s own `open_input`.
 ///
-/// This is a placeholder implementation that will be superseded by the
-/// `MMapDirectory` and `NIOFSDirectory` input strategies in tasks #7 and #8.
+/// No Java counterpart: Java's abstract `FSDirectory` opens no inputs (see the
+/// divergence on [`FSDirectory`]). A clone reopens the file by path.
 struct FileIndexInput {
     file: fs::File,
     path: PathBuf,
@@ -8726,7 +8790,7 @@ impl NIOFSDirectory {
     ///
     /// Equivalent to `NIOFSDirectory(Path)` in Lucene 10.5.0.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let inner = FSDirectory::open(path)?;
+        let inner = FSDirectory::with_lock_factory(path, None)?;
         Ok(Self { inner })
     }
 
@@ -8789,12 +8853,13 @@ impl Directory for NIOFSDirectory {
         self.inner.ensure_open()?;
         self.inner.ensure_can_read(name)?;
         let path = self.inner.directory_path().join(name);
-        let file = fs::OpenOptions::new().read(true).open(&path)?;
-        let metadata = file.metadata()?;
-        let len = metadata.len() as i64;
-        let raw = RawNioFsIndexInput::new(file, path, len)?;
-        let buffered = BufferedIndexInput::new(Box::new(raw), Self::buffer_size(context))?;
-        Ok(Box::new(NIOFSIndexInput::new(buffered)))
+        // `new NIOFSIndexInput("NIOFSIndexInput(path=\"" + path + "\")", fc, context)`
+        // (`NIOFSDirectory.java:79-89`).
+        Ok(Box::new(NIOFSIndexInput::new(
+            format!("NIOFSIndexInput(path=\"{}\")", path.display()),
+            path,
+            context,
+        )?))
     }
 
     fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
@@ -8840,47 +8905,122 @@ impl std::fmt::Debug for NIOFSDirectory {
     }
 }
 
-impl NIOFSDirectory {
-    fn buffer_size(context: &dyn IOContext) -> usize {
-        let hint = context.merge_info().map(|m| m.total_max_doc as usize * 8);
-        match hint {
-            Some(size) if size > 0 => size.clamp(MIN_BUFFER_SIZE, 128 * 1024 * 1024),
-            _ => BUFFER_SIZE,
+/// The file one [`NIOFSDirectory`] input and all its clones and slices read.
+///
+/// Equivalent to the `FileChannel` that `NIOFSIndexInput` shares with every
+/// clone and slice (`NIOFSDirectory.java:95-123`): reads are positional, so
+/// the inputs never disturb each other, and closing the input that opened the
+/// file closes it for all of them. `None` once closed.
+type NioChannel = Arc<std::sync::RwLock<Option<fs::File>>>;
+
+/// Reads `buf.len()` bytes of `file` at `position`, without moving any file
+/// position.
+///
+/// Equivalent to the `channel.read(ByteBuffer, long)` loop of
+/// `NIOFSIndexInput.readInternal` (`NIOFSDirectory.java:182-210`).
+fn read_channel_at(file: &fs::File, buf: &mut [u8], position: u64) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::FileExt::read_exact_at(file, buf, position)
+    }
+    #[cfg(windows)]
+    {
+        let mut done = 0usize;
+        while done < buf.len() {
+            let read = std::os::windows::fs::FileExt::seek_read(
+                file,
+                &mut buf[done..],
+                position + done as u64,
+            )?;
+            if read == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "failed to fill whole buffer",
+                ));
+            }
+            done += read;
         }
+        Ok(())
     }
 }
 
-/// Raw unbuffered file input used by [`NIOFSDirectory`].
-///
-/// Each instance owns an independent file descriptor; clones open the file
-/// again so that concurrent reads do not interfere with each other's position.
+/// Raw unbuffered file input used by [`NIOFSDirectory`]: the
+/// `readInternal`/`seekInternal` half of `NIOFSIndexInput`, below its
+/// `BufferedIndexInput` buffer.
 struct RawNioFsIndexInput {
-    file: fs::File,
-    path: PathBuf,
+    channel: NioChannel,
+    /// Equivalent to `NIOFSIndexInput.isClone`: only the input that opened
+    /// the file closes it.
+    is_clone: bool,
+    /// Equivalent to `NIOFSIndexInput.off`: the start offset in the file,
+    /// non-zero for a slice. `pos` is relative to it.
+    off: u64,
     pos: u64,
+    /// Equivalent to `NIOFSIndexInput.end - off`.
     len: i64,
     resource_description: String,
 }
 
 impl RawNioFsIndexInput {
-    fn new(file: fs::File, path: PathBuf, len: i64) -> Result<Self> {
-        let resource_description = format!("NIOFSIndexInput(path=\"{}\")", path.display());
-        Ok(Self {
-            file,
-            path,
+    fn new(
+        channel: NioChannel,
+        is_clone: bool,
+        off: i64,
+        len: i64,
+        resource_description: String,
+    ) -> Self {
+        Self {
+            channel,
+            is_clone,
+            off: off as u64,
             pos: 0,
             len,
             resource_description,
-        })
+        }
+    }
+
+    /// Reads into `buf` at the current position, failing past `end` as
+    /// `NIOFSIndexInput.readInternal` does.
+    fn read_internal(&mut self, buf: &mut [u8]) -> Result<()> {
+        // `if (pos + b.remaining() > end) throw new EOFException("read past EOF: " + this)`
+        if self.pos as i64 + buf.len() as i64 > self.len {
+            return Err(LuceneError::Io(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!("read past EOF: {}", self.resource_description),
+            )));
+        }
+        let guard = self
+            .channel
+            .read()
+            .map_err(|_| LuceneError::illegal_state("NIOFS channel lock poisoned".to_string()))?;
+        let Some(file) = guard.as_ref() else {
+            return Err(LuceneError::already_closed(format!(
+                "Already closed: {}",
+                self.resource_description
+            )));
+        };
+        read_channel_at(file, buf, self.off + self.pos).map_err(|e| {
+            if e.kind() == io::ErrorKind::UnexpectedEof {
+                LuceneError::Io(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    format!("read past EOF: {}", self.resource_description),
+                ))
+            } else {
+                LuceneError::Io(io::Error::new(
+                    e.kind(),
+                    format!("{}: {e}", self.resource_description),
+                ))
+            }
+        })?;
+        self.pos += buf.len() as u64;
+        Ok(())
     }
 }
 
 impl DataInput for RawNioFsIndexInput {
     fn read_byte(&mut self) -> Result<u8> {
-        self.file.seek(SeekFrom::Start(self.pos))?;
         let mut buf = [0u8; 1];
-        self.file.read_exact(&mut buf).map_err(LuceneError::from)?;
-        self.pos += 1;
+        self.read_internal(&mut buf)?;
         Ok(buf[0])
     }
 
@@ -8894,12 +9034,7 @@ impl DataInput for RawNioFsIndexInput {
                 b.len()
             )));
         }
-        self.file.seek(SeekFrom::Start(self.pos))?;
-        self.file
-            .read_exact(&mut b[offset..end])
-            .map_err(LuceneError::from)?;
-        self.pos += len as u64;
-        Ok(())
+        self.read_internal(&mut b[offset..end])
     }
 
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
@@ -8921,7 +9056,13 @@ impl DataInput for RawNioFsIndexInput {
 }
 
 impl IndexInput for RawNioFsIndexInput {
+    /// Equivalent to `NIOFSIndexInput.close()`: `if (!isClone) channel.close()`.
     fn close(&mut self) -> Result<()> {
+        if !self.is_clone {
+            if let Ok(mut file) = self.channel.write() {
+                file.take();
+            }
+        }
         Ok(())
     }
 
@@ -8960,18 +9101,25 @@ impl IndexInput for RawNioFsIndexInput {
                 "slice({slice_description}) out of bounds"
             )));
         }
-        let clone = self.clone_input()?;
-        Ok(Box::new(SlicedIndexInput::new(
-            slice_description,
-            clone,
-            offset,
+        Ok(Box::new(RawNioFsIndexInput::new(
+            Arc::clone(&self.channel),
+            true,
+            self.off as i64 + offset,
             length,
-        )?))
+            self.full_slice_description(slice_description),
+        )))
     }
 
+    /// A clone shares the channel and never closes it, as
+    /// `NIOFSIndexInput.clone()` sets `isClone`.
     fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
-        let file = fs::OpenOptions::new().read(true).open(&self.path)?;
-        let mut clone = RawNioFsIndexInput::new(file, self.path.clone(), self.len)?;
+        let mut clone = RawNioFsIndexInput::new(
+            Arc::clone(&self.channel),
+            true,
+            self.off as i64,
+            self.len,
+            self.resource_description.clone(),
+        );
         clone.pos = self.pos;
         Ok(Box::new(clone))
     }
@@ -8988,17 +9136,77 @@ impl IndexInput for RawNioFsIndexInput {
 /// [`BufferedIndexInput`] over a raw file descriptor.
 pub struct NIOFSIndexInput {
     inner: BufferedIndexInput,
+    /// Equivalent to `NIOFSIndexInput.channel`, shared with every clone and
+    /// slice.
+    channel: NioChannel,
+    /// Equivalent to `NIOFSIndexInput.off`.
+    off: i64,
 }
 
 impl NIOFSIndexInput {
-    /// Creates a new buffered NIO file input around `inner`.
-    pub fn new(inner: BufferedIndexInput) -> Self {
-        Self { inner }
+    /// Opens `path` as a whole-file input buffered for `context`.
+    ///
+    /// Equivalent to `NIOFSIndexInput(String, FileChannel, IOContext)`
+    /// (`NIOFSDirectory.java:108-114`), whose buffer size is
+    /// `BufferedIndexInput.bufferSize(context)`; the channel is opened here,
+    /// as `NIOFSDirectory.openInput` opens it for the constructor.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error opening the file.
+    pub fn new(resource_desc: String, path: PathBuf, context: &dyn IOContext) -> Result<Self> {
+        let file = fs::OpenOptions::new().read(true).open(&path)?;
+        let len = file.metadata()?.len() as i64;
+        Self::with_channel(
+            resource_desc,
+            Arc::new(std::sync::RwLock::new(Some(file))),
+            false,
+            0,
+            len,
+            BufferedIndexInput::buffer_size_for_context(context),
+        )
     }
 
-    /// Returns the wrapped buffered input.
-    pub fn get_delegate(&self) -> &BufferedIndexInput {
-        &self.inner
+    /// Equivalent to both constructors of `NIOFSIndexInput`: the whole-file
+    /// one when `is_clone` is `false`, and the slice one
+    /// (`NIOFSIndexInput(String, FileChannel, long, long, int)`,
+    /// `NIOFSDirectory.java:116-123`), which marks the input a clone.
+    fn with_channel(
+        resource_desc: String,
+        channel: NioChannel,
+        is_clone: bool,
+        off: i64,
+        length: i64,
+        buffer_size: usize,
+    ) -> Result<Self> {
+        let raw =
+            RawNioFsIndexInput::new(Arc::clone(&channel), is_clone, off, length, resource_desc);
+        Ok(Self {
+            inner: BufferedIndexInput::new(Box::new(raw), buffer_size)?,
+            channel,
+            off,
+        })
+    }
+
+    /// Equivalent to `NIOFSIndexInput.slice(String, long, long)`
+    /// (`NIOFSDirectory.java:140-160`): a new input over the same channel,
+    /// starting at `off + offset`, buffered with `getBufferSize()`.
+    fn slice_nio(&self, slice_description: &str, offset: i64, length: i64) -> Result<Self> {
+        if (length | offset) < 0 || length > self.length() - offset {
+            return Err(LuceneError::IllegalArgument(format!(
+                "slice() {slice_description} out of bounds: offset={offset},length={length},fileLength={}: {}",
+                self.length(),
+                self.resource_description()
+            )));
+        }
+        Self::with_channel(
+            self.full_slice_description(slice_description),
+            Arc::clone(&self.channel),
+            true,
+            self.off + offset,
+            length,
+            self.inner.buffer_size(),
+        )
     }
 }
 
@@ -9049,11 +9257,20 @@ impl IndexInput for NIOFSIndexInput {
         offset: i64,
         length: i64,
     ) -> Result<Box<dyn IndexInput>> {
-        self.inner.slice(slice_description, offset, length)
+        Ok(Box::new(self.slice_nio(
+            slice_description,
+            offset,
+            length,
+        )?))
     }
 
+    /// Equivalent to `NIOFSIndexInput.clone()`, a `NIOFSIndexInput` too.
     fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
-        self.inner.clone_input()
+        Ok(Box::new(Self {
+            inner: self.inner.clone_buffered()?,
+            channel: Arc::clone(&self.channel),
+            off: self.off,
+        }))
     }
 
     fn resource_description(&self) -> &str {
@@ -11518,6 +11735,81 @@ mod tests {
         let mut clone = input.clone_input().unwrap();
         assert_eq!(clone.length(), 16);
         assert_eq!(clone.read_long().unwrap(), 0x1111_2222_3333_4444_i64);
+    }
+
+    /// `NIOFSIndexInput.slice` builds a new `NIOFSIndexInput` over the same
+    /// file at `off + offset` with `getBufferSize()`
+    /// (`NIOFSDirectory.java:140-160`), and the whole-file input takes
+    /// `BufferedIndexInput.bufferSize(context)`, `MERGE_BUFFER_SIZE` for a
+    /// merge (`BufferedIndexInput.java:359-369`); a slice of a slice keeps
+    /// both.
+    #[test]
+    fn niofs_slice_is_a_niofs_input_with_the_parent_buffer_size() {
+        let temp = TempDir::new().unwrap();
+        let dir = NIOFSDirectory::open(&temp).unwrap();
+        {
+            let mut out = dir.create_output("data.bin", &*DEFAULT_IO_CONTEXT).unwrap();
+            for i in 0..64i64 {
+                out.write_long(i).unwrap();
+            }
+            out.close().unwrap();
+        }
+        let path = dir.directory_path().join("data.bin");
+        let merge = merge_io_context(MergeInfo::new(100, 1024, false, 1));
+        let input = NIOFSIndexInput::new(
+            format!("NIOFSIndexInput(path=\"{}\")", path.display()),
+            path.clone(),
+            merge.as_ref(),
+        )
+        .unwrap();
+        assert_eq!(input.inner.buffer_size(), MERGE_BUFFER_SIZE);
+
+        let mut slice = input.slice_nio("s", 80, 400).unwrap();
+        assert_eq!(slice.inner.buffer_size(), MERGE_BUFFER_SIZE);
+        assert_eq!(slice.off, 80);
+        assert_eq!(
+            slice.resource_description(),
+            format!("NIOFSIndexInput(path=\"{}\") [slice=s]", path.display())
+        );
+        assert_eq!(slice.length(), 400);
+        assert_eq!(slice.read_long().unwrap(), 10);
+
+        let mut nested = slice.slice_nio("t", 8, 16).unwrap();
+        assert_eq!(nested.off, 88);
+        assert_eq!(nested.inner.buffer_size(), MERGE_BUFFER_SIZE);
+        assert_eq!(nested.read_long().unwrap(), 11);
+        assert_eq!(nested.read_long().unwrap(), 12);
+        assert!(nested.read_byte().is_err(), "a slice ends at off + length");
+
+        let default = dir.open_input("data.bin", &*DEFAULT_IO_CONTEXT).unwrap();
+        assert!(matches!(
+            default.slice("u", 500, 100),
+            Err(LuceneError::IllegalArgument(_))
+        ));
+    }
+
+    /// `FSDirectory.open` picks `MMapDirectory` on a 64-bit platform
+    /// (`FSDirectory.java:155-162`).
+    #[cfg(all(feature = "mmap", target_pointer_width = "64"))]
+    #[test]
+    fn fs_directory_open_picks_mmap_directory_on_64_bit() {
+        let temp = TempDir::new().unwrap();
+        let dir = FSDirectory::open(&temp).unwrap();
+        assert_eq!(dir.directory_type_name(), "MMapDirectory");
+        {
+            let mut out = dir.create_output("data.bin", &*DEFAULT_IO_CONTEXT).unwrap();
+            out.write_long(0x0102_0304_0506_0708).unwrap();
+            out.close().unwrap();
+        }
+        let mut input = dir.open_input("data.bin", &*DEFAULT_IO_CONTEXT).unwrap();
+        assert!(
+            input.as_memory_segment_access_input().is_some(),
+            "the input is read through MMapDirectory's provider"
+        );
+        assert_eq!(input.read_long().unwrap(), 0x0102_0304_0506_0708);
+        let dir = FSDirectory::open_with_lock_factory(&temp, Some(Box::new(SimpleFSLockFactory)))
+            .unwrap();
+        assert_eq!(dir.directory_type_name(), "MMapDirectory");
     }
 
     /// `SimpleRateLimiter` computes a positive pause time when the requested

@@ -18,7 +18,7 @@ use crate::error::{LuceneError, Result};
 use super::postings::MergeState;
 use super::state::{SegmentReadState, SegmentWriteState};
 use super::stub::FieldInfo;
-use crate::index::doc_values::{EmptyNumericDocValues, NumericDocValues};
+use crate::index::doc_values::NumericDocValues;
 
 // -----------------------------------------------------------------------------
 // Producer
@@ -127,13 +127,6 @@ pub trait NormsFormat: Send + Sync + fmt::Debug {
 // No-op implementations
 // -----------------------------------------------------------------------------
 
-/// A no-op numeric doc-values iterator that returns no documents.
-///
-/// This is an alias for [`EmptyNumericDocValues`] from the `index` module so
-/// that the norms API uses the same iterator-based [`NumericDocValues`] trait
-/// as the rest of the doc-values stack.
-pub type EmptyNormsDocValues = EmptyNumericDocValues;
-
 /// A no-op norms producer.
 ///
 /// Test-only: Lucene has no such class.
@@ -222,18 +215,6 @@ mod tests {
     use crate::codecs::stub::BufferedUpdates;
     use crate::index::FieldInfos;
     use std::sync::Arc;
-
-    #[test]
-    fn empty_norms_doc_values_is_exhausted() {
-        use crate::index::doc_values::DocValuesIterator;
-        use crate::search::DocIdSetIterator;
-
-        let mut norms = EmptyNormsDocValues::default();
-        assert_eq!(norms.doc_id(), -1);
-        assert_eq!(norms.next_doc().unwrap(), crate::search::NO_MORE_DOCS);
-        assert!(!norms.advance_exact(0).unwrap());
-        assert_eq!(norms.cost(), 0);
-    }
 
     #[test]
     fn empty_norms_producer_returns_empty_values() {

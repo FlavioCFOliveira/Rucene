@@ -1601,20 +1601,6 @@ impl SegmentTermsEnum {
         &self.field
     }
 
-    /// Returns the term state of the current term, decoding its metadata first.
-    ///
-    /// Equivalent to `SegmentTermsEnum.decodeMetaData` followed by reading the
-    /// frame's state.
-    pub fn block_term_state(
-        &mut self,
-        postings_reader: &dyn crate::codecs::postings::PostingsReaderBase,
-    ) -> Result<BlockTermState> {
-        let field_info = self.field.field_info().clone();
-        let frame = &mut self.stack[self.current];
-        frame.decode_meta_data(&field_info, postings_reader)?;
-        Ok(frame.state.clone())
-    }
-
     /// Catches the current frame up on the metadata decode it defers.
     ///
     /// Equivalent to `SegmentTermsEnum.decodeMetaData`, which every accessor of
@@ -1720,6 +1706,19 @@ impl TermsEnum for SegmentTermsEnum {
                 return Ok(Some(BytesRef::new(self.term.clone())));
             }
         }
+    }
+
+    /// Two-phase [`TermsEnum::seek_exact`] that walks the term index first.
+    ///
+    /// Equivalent to `SegmentTermsEnum.prepareSeekExact(BytesRef)`, which
+    /// overrides `TermsEnum.prepareSeekExact`, so that `TermStates` and the
+    /// other callers that hold a plain `TermsEnum` reach the block-tree walk
+    /// and its prefetch instead of the default supplier.
+    fn prepare_seek_exact<'a>(
+        &'a mut self,
+        text: &BytesRef,
+    ) -> Result<Option<Box<dyn IOBooleanSupplier + 'a>>> {
+        SegmentTermsEnum::prepare_seek_exact(self, text)
     }
 
     fn seek_exact(&mut self, text: &BytesRef) -> Result<bool> {

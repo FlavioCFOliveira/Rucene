@@ -444,11 +444,6 @@ impl<T> DefaultFlatFieldVectorsWriter<T> {
         }
     }
 
-    /// Returns the field this writer buffers.
-    pub fn field_info(&self) -> &FieldInfo {
-        &self.field_info
-    }
-
     /// Returns the RAM this writer currently holds.
     ///
     /// Equivalent to `Lucene99FlatVectorsWriter.FieldWriter.ramBytesUsed()`
@@ -508,20 +503,6 @@ impl<T: Clone> DefaultFlatFieldVectorsWriter<T> {
         self.docs_with_field_set.add(doc_id)?;
         self.vectors.push(vector_value);
         self.last_doc_id = doc_id;
-        Ok(())
-    }
-
-    /// Adds a contiguous doc-id range without a vector.
-    pub fn add_docs_with_no_vector(&mut self, from: i32, to_exclusive: i32) -> Result<()> {
-        if self.finished {
-            return Err(LuceneError::illegal_state(
-                "already finished, cannot add more values".to_string(),
-            ));
-        }
-        self.docs_with_field_set.add_range(from, to_exclusive)?;
-        if to_exclusive > from {
-            self.last_doc_id = to_exclusive - 1;
-        }
         Ok(())
     }
 }
@@ -1077,6 +1058,23 @@ pub trait FlatVectorsReader: KnnVectorsReader + crate::util::Accountable {
 
     /// Returns an instance optimized for merging.
     fn get_merge_instance_flat(&self) -> Result<Box<dyn FlatVectorsReader>>;
+
+    /// Returns an independent reader over the same files, leaving the read
+    /// advice of every input as it is.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java has no such method: a reader
+    /// that does not override `getMergeInstance()` answers `this`
+    /// (`FlatVectorsReader.java:90-93`) and keeps sharing the flat reader it
+    /// wraps, untouched. A Rust `&self` cannot hand out a second owning handle
+    /// to itself, so such a reader clones itself, and clones the reader it
+    /// wraps with this method rather than with
+    /// [`get_merge_instance_flat`](Self::get_merge_instance_flat), which in
+    /// `Lucene99FlatVectorsReader` also re-advises the data file for a merge.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever cloning the inputs raises.
+    fn clone_flat_reader(&self) -> Result<Box<dyn FlatVectorsReader>>;
 
     /// Returns this reader as a [`QuantizedVectorsReader`] when it stores
     /// quantized vectors, and `None` when it does not.

@@ -356,11 +356,6 @@ impl IntersectTermsEnumFrame {
         }
     }
 
-    /// Returns the bytes of the current entry's suffix.
-    pub fn suffix_slice(&self) -> &[u8] {
-        &self.suffix_bytes[self.start_byte_pos..self.start_byte_pos + self.suffix]
-    }
-
     /// Returns the byte at `index` of the suffix buffer.
     pub fn suffix_byte(&self, index: usize) -> u8 {
         self.suffix_bytes[index]

@@ -69,7 +69,12 @@ impl Lucene99ScalarQuantizedVectorScorer {
         const_multiplier: f32,
         values: Box<dyn LegacyQuantizedByteVectorValues>,
     ) -> Result<Box<dyn UpdateableRandomVectorScorer>> {
-        check_dimensions(values.dimension(), target_bytes.len())?;
+        // `FlatVectorsScorer.checkDimensions(values.dimension(), targetBytes.length)`
+        // (`Lucene99ScalarQuantizedVectorScorer.java:99`), arguments in Java's order.
+        crate::codecs::hnsw::flat_vectors::check_dimensions(
+            values.dimension(),
+            target_bytes.len() as i32,
+        )?;
         match sim {
             VectorSimilarityFunction::EUCLIDEAN => Ok(Box::new(Euclidean::new(
                 values,
@@ -139,18 +144,6 @@ impl Lucene99ScalarQuantizedVectorScorer {
             score_adjustment_function,
         )))
     }
-}
-
-/// Fails when the query and the field disagree on dimension.
-///
-/// Equivalent to `FlatVectorsScorer.checkDimensions(int, int)`.
-fn check_dimensions(field_dimension: i32, query_len: usize) -> Result<()> {
-    if query_len as i32 != field_dimension {
-        return Err(LuceneError::IllegalArgument(format!(
-            "vector query dimension: {query_len} differs from field dimension: {field_dimension}"
-        )));
-    }
-    Ok(())
 }
 
 /// `Math.max(float, float)` as specified by the JLS, which propagates NaN where

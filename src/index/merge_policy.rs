@@ -4449,33 +4449,57 @@ impl TemporalMergePolicy {
         })?;
         let context = &*crate::store::READONCE_IO_CONTEXT;
 
-        // The compound reader is dropped — Java closes it — when this returns;
-        // `si.directory` itself is never closed.
-        let compound;
-        let reader_dir: &dyn crate::store::Directory = if si.get_use_compound_file() {
-            compound = codec
-                .compound_format()
-                .get_compound_reader(si.directory.as_ref(), si)?;
-            &*compound
+        let mut compound_dir = if si.get_use_compound_file() {
+            Some(
+                codec
+                    .compound_format()
+                    .get_compound_reader(si.directory.as_ref(), si)?,
+            )
         } else {
-            si.directory.as_ref()
+            None
         };
+        let range = (|| -> crate::error::Result<Option<SegmentDateRange>> {
+            let reader_dir: &dyn crate::store::Directory = match compound_dir.as_deref() {
+                Some(compound) => compound,
+                None => si.directory.as_ref(),
+            };
+            let field_infos = codec
+                .field_infos_format()
+                .read(reader_dir, si, "", context)?;
+            // Validate that the temporal field exists and is a point field.
+            let Some(field_info) = field_infos.field_info(&self.temporal_field) else {
+                return Ok(None);
+            };
+            if field_info.point_dimension_count == 0 {
+                return Ok(None);
+            }
 
-        let field_infos = codec
-            .field_infos_format()
-            .read(reader_dir, si, "", context)?;
-        // Validate that the temporal field exists and is a point field.
-        let Some(field_info) = field_infos.field_info(&self.temporal_field) else {
-            return Ok(None);
-        };
-        if field_info.point_dimension_count == 0 {
-            return Ok(None);
+            // Read point values using the codec, in Java's
+            // `try (PointsReader pointsReader = ...)` (`TemporalMergePolicy.java:695-731`).
+            let read_state =
+                crate::codecs::state::SegmentReadState::new(reader_dir, si, &field_infos, context);
+            let mut points_reader = codec.points_format().fields_reader(&read_state)?;
+            let range = self.date_range_from_points(points_reader.as_ref());
+            let closed = points_reader.close();
+            let range = range?;
+            closed?;
+            Ok(range)
+        })();
+        // Close compound directory if we opened it (never close si.dir); as in
+        // Java's `finally`, a failure to close replaces the outcome
+        // (`TemporalMergePolicy.java:732-736`).
+        if let Some(mut compound_dir) = compound_dir.take() {
+            compound_dir.close()?;
         }
+        range
+    }
 
-        // Read point values using the codec.
-        let read_state =
-            crate::codecs::state::SegmentReadState::new(reader_dir, si, &field_infos, context);
-        let points_reader = codec.points_format().fields_reader(&read_state)?;
+    /// The body of `extractDateRangeFromSegment`'s `try (PointsReader ...)`
+    /// block (`TemporalMergePolicy.java:698-730`).
+    fn date_range_from_points(
+        &self,
+        points_reader: &dyn crate::codecs::PointsReader,
+    ) -> crate::error::Result<Option<SegmentDateRange>> {
         let Some(point_values) = points_reader.get_values(&self.temporal_field)? else {
             return Ok(None);
         };
@@ -5908,5 +5932,56 @@ mod log_merge_policy_size_tests {
         policy.set_calibrate_size_by_deletes(false);
         assert_eq!(policy.size_docs(&info, &Deletes(4)).unwrap(), 10);
         assert_eq!(MergePolicy::size(&policy, &info, &Deletes(4)).unwrap(), 10);
+    }
+}
+
+#[cfg(test)]
+mod compound_reader_close_tests {
+    //! The compound readers opened to read a segment's field infos or points
+    //! are closed, as Java's `try (Directory cfs = ...)`
+    //! (`IndexWriter.java:1262-1264`) and `finally { compoundDir.close(); }`
+    //! (`TemporalMergePolicy.java:732-736`) close them: a memory-mapped `.cfs`
+    //! holds a permit on its segment's shared arena until it is closed.
+    use super::*;
+    use crate::document::{Document, LongPoint};
+    use crate::index::index_writer::IndexWriter;
+    use crate::index::readers_and_updates::PendingSoftDeletes;
+    use crate::index::{IndexWriterConfig, SegmentInfos};
+    use crate::store::Directory;
+
+    #[test]
+    fn reading_a_compound_segment_leaves_no_shared_arena_behind() {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let tmp = tempfile::tempdir().unwrap();
+        let mmap = Arc::new(crate::store::FSDirectory::open(tmp.path()).unwrap());
+        let dir = Arc::clone(&mmap) as Arc<dyn Directory>;
+        {
+            let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+            let mut doc = Document::new();
+            doc.add(Box::new(
+                LongPoint::new("ts", &[1_700_000_000_000]).unwrap(),
+            ));
+            writer.add_document(&doc).unwrap();
+            writer.commit().unwrap();
+            writer.rollback().unwrap();
+        }
+        let infos = SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
+        let segment = infos.iter().next().expect("one segment");
+        assert!(segment.info.get_use_compound_file());
+        let mut policy = TemporalMergePolicy::new();
+        policy.set_temporal_field("ts").unwrap();
+        for _ in 0..8 {
+            IndexWriter::read_field_infos(segment).unwrap();
+            PendingSoftDeletes::read_field_infos(segment).unwrap();
+            assert!(policy
+                .extract_date_range_from_segment(segment)
+                .unwrap()
+                .is_some());
+            assert_eq!(
+                mmap.shared_arena_count(),
+                0,
+                "a compound reader was left open"
+            );
+        }
     }
 }

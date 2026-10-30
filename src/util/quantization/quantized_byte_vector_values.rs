@@ -273,6 +273,19 @@ pub trait QuantizedByteVectorValues: Send + Sync {
     /// Returns how many components each vector has.
     fn dimension(&self) -> i32;
 
+    /// Returns how many bytes one stored vector occupies, which is smaller
+    /// than the dimension when components are packed several to a byte.
+    ///
+    /// Equivalent to `KnnVectorValues.getVectorByteLength()`
+    /// (`KnnVectorValues.java:66-69`), which `QuantizedByteVectorValues` and
+    /// `LegacyQuantizedByteVectorValues` inherit through `ByteVectorValues`:
+    /// `dimension() * VectorEncoding.BYTE.byteSize`, one byte per dimension.
+    /// `OffHeapScalarQuantizedVectorValues` overrides it with the packed
+    /// length (`OffHeapScalarQuantizedVectorValues.java:176-178`).
+    fn vector_byte_length(&self) -> i32 {
+        self.dimension()
+    }
+
     /// Returns the document carrying the vector at `ord`.
     ///
     /// Equivalent to `KnnVectorValues.ordToDoc(int)`, which
@@ -556,15 +569,6 @@ pub trait LegacyQuantizedByteVectorValues: QuantizedByteVectorValues {
     ///
     /// Propagates whatever duplicating the underlying input raises.
     fn copy_legacy(&self) -> Result<Box<dyn LegacyQuantizedByteVectorValues>>;
-
-    /// Returns how many bytes one stored vector occupies, which is smaller
-    /// than the dimension when four-bit components are packed two to a byte.
-    ///
-    /// Equivalent to `KnnVectorValues.getVectorByteLength()`, whose default for
-    /// a byte-encoded field is one byte per dimension.
-    fn vector_byte_length(&self) -> i32 {
-        self.dimension()
-    }
 
     /// Returns the input the vectors are read from, when there is one.
     ///

@@ -412,11 +412,6 @@ impl PrefetchableFlatVectorScorer {
     pub fn new(inner: Box<dyn FlatVectorsScorer>) -> Self {
         Self { inner }
     }
-
-    /// Returns the wrapped scorer.
-    pub fn get_delegate(&self) -> &dyn FlatVectorsScorer {
-        self.inner.as_ref()
-    }
 }
 
 impl FlatVectorsScorer for PrefetchableFlatVectorScorer {

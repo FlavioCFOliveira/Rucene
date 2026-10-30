@@ -51,10 +51,7 @@ pub use codec_util::{
 };
 pub use compressing::{CompressionMode, Compressor, Decompressor, MatchingReaders};
 
-pub use compound::{
-    CompoundDirectory, CompoundFileDirectory, CompoundFileEntry, CompoundFormat,
-    EmptyCompoundDirectory, EmptyCompoundFormat,
-};
+pub use compound::{CompoundDirectory, CompoundFileEntry, CompoundFormat, EmptyCompoundDirectory};
 pub use doc_values::{
     available_doc_values_formats, doc_values_for_name, register_doc_values_format, BinaryDocValues,
     DocValuesConsumer, DocValuesFormat, DocValuesFormatRegistry, DocValuesProducer,
@@ -62,7 +59,7 @@ pub use doc_values::{
     EmptySortedDocValues, EmptySortedNumericDocValues, EmptySortedSetDocValues, NumericDocValues,
     SortedDocValues, SortedNumericDocValues, SortedSetDocValues,
 };
-pub use field_infos::{EmptyFieldInfosFormat, FieldInfosFormat};
+pub use field_infos::FieldInfosFormat;
 pub use hnsw::{
     DefaultFlatVectorScorer, DocsWithFieldSet, FlatFieldVectorsWriter, FlatVectorScorerUtil,
     FlatVectorsFormat, FlatVectorsReader, FlatVectorsScorer, FlatVectorsWriter,
@@ -74,7 +71,7 @@ pub use knn_vectors::{
     KnnFieldVectorsWriter, KnnSearchStrategy, KnnVectorsFormat, KnnVectorsFormatRegistry,
     KnnVectorsReader, KnnVectorsWriter, SorterDocMap, TopDocs,
 };
-pub use live_docs::{EmptyLiveDocsFormat, LiveDocsFormat};
+pub use live_docs::LiveDocsFormat;
 pub use lucene103::{
     Lucene103BlockTreeTermsReader, Lucene103BlockTreeTermsWriter, TrieBuilder, TrieReader,
 };
@@ -96,7 +93,7 @@ pub use lucene99::{
     Lucene99HnswVectorsFormat, Lucene99HnswVectorsReader, Lucene99HnswVectorsWriter,
     Lucene99SegmentInfoFormat,
 };
-pub use norms::{EmptyNormsDocValues, NormsConsumer, NormsFormat, NormsProducer};
+pub use norms::{NormsConsumer, NormsFormat, NormsProducer};
 pub use per_field::{
     PerFieldDocValuesFormat, PerFieldKnnVectorsFormat, PerFieldMergeState, PerFieldPostingsFormat,
 };
@@ -110,14 +107,14 @@ pub use postings::{
     PushPostingsWriterBase, POSTINGS_ENUM_ALL, POSTINGS_ENUM_FREQS, POSTINGS_ENUM_NONE,
     POSTINGS_ENUM_OFFSETS, POSTINGS_ENUM_PAYLOADS, POSTINGS_ENUM_POSITIONS,
 };
-pub use segment_info::{EmptySegmentInfoFormat, SegmentInfoFormat};
+pub use segment_info::SegmentInfoFormat;
 pub use skip_list::{
     MultiLevelSkipListReader, MultiLevelSkipListWriter, SkipDataReader, SkipDataWriter,
 };
 pub use state::{SegmentReadState, SegmentWriteState};
 pub use stored_fields::{
-    EmptyStoredFieldsFormat, EmptyStoredFieldsReader, EmptyStoredFieldsWriter, StoredFieldsFormat,
-    StoredFieldsReader, StoredFieldsWriter,
+    EmptyStoredFieldsReader, EmptyStoredFieldsWriter, StoredFieldsFormat, StoredFieldsReader,
+    StoredFieldsWriter,
 };
 pub use term_state::{BlockTermState, CompetitiveImpactAccumulator, Impact, TermStats};
 pub use term_vectors::{
@@ -385,6 +382,21 @@ pub fn set_default(codec: Arc<dyn Codec>) {
     if let Ok(mut slot) = DEFAULT_CODEC.write() {
         *slot = Some(codec);
     }
+}
+
+/// Serialises the tests that install a default codec, so that one test's
+/// installation and restoration never interleave with another's.
+#[cfg(test)]
+pub(crate) static DEFAULT_CODEC_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Replaces what [`set_default`] installed — `None` when it was never called —
+/// and returns the previous state, so that a test can restore it exactly.
+#[cfg(test)]
+pub(crate) fn swap_default(codec: Option<Arc<dyn Codec>>) -> Option<Arc<dyn Codec>> {
+    let mut slot = DEFAULT_CODEC
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    std::mem::replace(&mut *slot, codec)
 }
 
 /// Returns the codec newly created `IndexWriterConfig`s use.

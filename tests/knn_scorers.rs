@@ -1055,6 +1055,14 @@ impl QuantizedByteVectorValues for MemoryValues {
     fn copy(&self) -> Result<Box<dyn QuantizedByteVectorValues>> {
         Ok(Box::new(self.duplicate()))
     }
+
+    fn vector_byte_length(&self) -> i32 {
+        if self.packed {
+            ((DIMENSION + 1) >> 1) as i32
+        } else {
+            DIMENSION as i32
+        }
+    }
 }
 
 impl LegacyQuantizedByteVectorValues for MemoryValues {
@@ -1064,14 +1072,6 @@ impl LegacyQuantizedByteVectorValues for MemoryValues {
 
     fn copy_legacy(&self) -> Result<Box<dyn LegacyQuantizedByteVectorValues>> {
         Ok(Box::new(self.duplicate()))
-    }
-
-    fn vector_byte_length(&self) -> i32 {
-        if self.packed {
-            ((DIMENSION + 1) >> 1) as i32
-        } else {
-            DIMENSION as i32
-        }
     }
 
     fn get_slice(&self) -> Option<&dyn IndexInput> {
@@ -1238,9 +1238,9 @@ fn the_memory_segment_quantized_path_reads_the_mapped_nodes() {
         .map(|line| format!("{line}\n"))
         .collect();
     let tmp = tempfile::tempdir().unwrap();
-    // `MMapDirectory` itself hands out `MMapIndexInput`, which is not a
-    // `MemorySegmentAccessInput` (see the finding reported with this test);
-    // the provider Lucene's `MMapDirectory` delegates to is used directly.
+    // The provider Lucene's `MMapDirectory` delegates to is used directly,
+    // so that each file is opened with the exact chunk size and read advice
+    // the oracle used.
     let provider = MMapDirectory::lookup_provider();
     let arenas = provider.attachment();
     let scorer = Lucene99MemorySegmentScalarQuantizedVectorScorer::INSTANCE;

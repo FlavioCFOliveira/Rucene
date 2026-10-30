@@ -6301,10 +6301,17 @@ impl IndexWriter {
                 context,
             )
         } else if si.info.get_use_compound_file() {
-            let cfs = codec
+            // `try (Directory cfs = codec.compoundFormat().getCompoundReader(...))`
+            // (`IndexWriter.java:1262-1264`): closed whatever the read did; a
+            // failure to close is reported only when the read succeeded.
+            let mut cfs = codec
                 .compound_format()
                 .get_compound_reader(si.info.directory.as_ref(), &si.info)?;
-            reader.read(&*cfs, &si.info, "", context)
+            let read = reader.read(&*cfs, &si.info, "", context);
+            let closed = cfs.close();
+            let field_infos = read?;
+            closed?;
+            Ok(field_infos)
         } else {
             reader.read(si.info.directory.as_ref(), &si.info, "", context)
         }

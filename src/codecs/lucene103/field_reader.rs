@@ -279,6 +279,24 @@ impl Terms for FieldReader {
     fn max(&self) -> Result<Option<BytesRef>> {
         Ok(Some(self.max_term.clone()))
     }
+
+    /// Walks every block of the field and reports the statistics `CheckIndex`
+    /// prints for it.
+    ///
+    /// Equivalent to `FieldReader.getStats()` (`FieldReader.java:110-114`):
+    /// `new SegmentTermsEnum(this, newReader()).computeBlockStats()`. Java
+    /// returns the `Stats` object and `CheckIndex` keeps it as an `Object`;
+    /// [`Terms::stats`] returns its `toString()`, which is what `CheckIndex`
+    /// prints.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever opening the cursor or reading a block raises.
+    fn stats(&self) -> Result<String> {
+        let mut terms_enum =
+            crate::codecs::lucene103::segment_terms_enum::SegmentTermsEnum::new(self.clone())?;
+        Ok(terms_enum.compute_block_stats()?.to_string())
+    }
 }
 
 impl std::fmt::Display for FieldReader {
