@@ -18,7 +18,7 @@ therefore re-derives both sides from primary sources --
 -- and reports every divergence. `problems: 0` is the pass condition.
 
 Usage:
-    python3 tools/kg/audit_kg.py rucene --survey /tmp/rucene_kg/survey.json \
+    python3 tools/kg/audit_kg.py rucene --survey <kg-target>/rucene_kg/survey.json \
         [--lucene-root /tmp/lucene1050] [--source-root .] [--expanded-file FILE]
 """
 import argparse

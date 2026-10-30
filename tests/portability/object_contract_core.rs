@@ -659,11 +659,11 @@ fn util_hnsw(m: &Measured) {
     assert_eq!(array.to_string(), m.get("NeighborArray.toString/two"));
 
     assert_eq!(
-        NeighborQueue::new(4, true).to_string(),
+        NeighborQueue::new(4, true).unwrap().to_string(),
         m.get("NeighborQueue.toString/empty"),
         "NeighborQueue names itself Neighbors, not after its own class"
     );
-    let mut queue = NeighborQueue::new(4, true);
+    let mut queue = NeighborQueue::new(4, true).unwrap();
     queue.add(1, 0.5);
     queue.add(2, 0.6);
     queue.add(3, 0.7);

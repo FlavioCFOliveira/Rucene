@@ -96,6 +96,16 @@ impl MultiDocValues {
     /// This is a slow way to read norms; prefer
     /// [`LeafReader::get_norm_values`] per leaf.
     ///
+    /// **Divergence from Lucene 10.5.0.** The `advance` of Java's merged view
+    /// opens the leaf holding the target and, when that leaf has no norms,
+    /// falls back to `nextDoc()` *before* setting `nextLeaf = readerIndex + 1`
+    /// (`MultiDocValues.java:117-128`). `nextDoc()` then resumes from the stale
+    /// `nextLeaf`, an earlier leaf, and can return a document before the
+    /// target, which breaks the `DocIdSetIterator.advance` contract. The
+    /// sibling `getNumericValues` sets `nextLeaf` first; this port shares one
+    /// cursor between the two and does the bookkeeping in that order for both,
+    /// so `advance` past a leaf without norms lands at or after the target.
+    ///
     /// # Errors
     ///
     /// Propagates any error raised while reading a leaf's norms.
@@ -2440,15 +2450,9 @@ mod tests {
             .is_none());
     }
 
-    /// Regression test for a deliberate divergence from Lucene 10.5.0.
-    ///
-    /// `MultiDocValues.getNormValues(...).advance(target)` updates `nextLeaf`
-    /// *after* checking whether the target leaf has norms, so a leaf without
-    /// norms leaves `nextLeaf` pointing at an already-consumed leaf and the
-    /// fallback `nextDoc()` restarts from there — returning a document *before*
-    /// `target` and breaking the `DocIdSetIterator` contract. The sibling
-    /// `getNumericValues` does the bookkeeping in the other order and is
-    /// correct; this port follows the correct order in both.
+    /// Regression test for the divergence declared on
+    /// [`MultiDocValues::get_norm_values`]: `advance` over a leaf without norms
+    /// never moves backwards.
     #[test]
     fn norm_values_advance_over_a_leaf_without_norms_never_moves_backwards() {
         let reader = composite(vec![

@@ -3801,6 +3801,16 @@ macro_rules! define_max_sized_array_list {
                 }
             }
 
+            /// Returns the internal buffer for in-place writes.
+            ///
+            /// Java's `buffer` is a public field its subclasses inherit, which
+            /// callers such as `NeighborArray.insertSortedInternal` shift with
+            /// `System.arraycopy`; this hands out the same storage without
+            /// letting its length change.
+            pub fn buffer_mut(&mut self) -> &mut [$et] {
+                &mut self.list.buffer
+            }
+
             /// Appends an element to the list.
             pub fn add(&mut self, e1: $et) {
                 self.ensure_buffer_space(1);

@@ -131,7 +131,12 @@ pub trait UpdateableRandomVectorScorer: RandomVectorScorer {
 /// Creates `UpdateableRandomVectorScorer` instances.
 ///
 /// Equivalent to `org.apache.lucene.util.hnsw.RandomVectorScorerSupplier`.
-pub trait RandomVectorScorerSupplier {
+///
+/// The [`Send`] bound states what Java's `copy()` contract promises — "a copy
+/// of the supplier that is safe to use on another thread" — in the type
+/// system: `HnswConcurrentMergeBuilder` moves one copy into each worker task
+/// it hands the `TaskExecutor`.
+pub trait RandomVectorScorerSupplier: Send {
     /// Creates a new scorer.
     fn scorer(&self) -> Result<Box<dyn UpdateableRandomVectorScorer>>;
 

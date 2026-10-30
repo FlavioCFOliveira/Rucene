@@ -506,6 +506,10 @@ impl TopKnnCollector {
     /// Creates a collector with no search strategy.
     ///
     /// Equivalent to `new TopKnnCollector(int, int)`.
+    ///
+    /// # Panics
+    ///
+    /// As [`with_strategy`](Self::with_strategy).
     pub fn new(k: i32, visit_limit: i64) -> Self {
         Self::with_strategy(k, visit_limit, None)
     }
@@ -514,6 +518,11 @@ impl TopKnnCollector {
     ///
     /// Equivalent to
     /// `new TopKnnCollector(int, int, KnnSearchStrategy)`.
+    ///
+    /// # Panics
+    ///
+    /// Panics with Java's message when `k < 1`, where the `NeighborQueue`
+    /// constructor throws the unchecked `IllegalArgumentException`.
     pub fn with_strategy(
         k: i32,
         visit_limit: i64,
@@ -521,7 +530,7 @@ impl TopKnnCollector {
     ) -> Self {
         Self {
             base: AbstractKnnCollectorState::new(k, visit_limit, search_strategy),
-            queue: NeighborQueue::new(k, false),
+            queue: NeighborQueue::new(k, false).unwrap_or_else(|e| panic!("{e}")),
         }
     }
 

@@ -833,7 +833,7 @@ per-package breakdown of `candidate` this section used to carry is empty in ever
 row and has been dropped. The two per-package questions still worth asking are the
 depth one above and the member one below.
 
-**165 ports carry a `note` on their `PORTS` edge recording a declared divergence,
+**A port may carry a `note` on its `PORTS` edge recording a declared divergence,
 a partial port or a deliberate adaptation** — read them before assuming a type is
 complete:
 

@@ -121,7 +121,7 @@ impl HnswGraphSearcher {
             )?)
         } else {
             Box::new(HnswGraphSearcher::new(
-                NeighborQueue::new(knn_collector.k(), true),
+                NeighborQueue::new(knn_collector.k(), true)?,
                 create_bit_set(knn_collector.k(), get_graph_size(graph)),
             ))
         };
@@ -152,7 +152,7 @@ impl HnswGraphSearcher {
     ) -> Result<TopKnnCollector> {
         let mut collector = TopKnnCollector::new(top_k, visited_limit);
         let mut searcher = OnHeapSearcher::new(
-            NeighborQueue::new(top_k, true),
+            NeighborQueue::new(top_k, true)?,
             create_bit_set(top_k, get_graph_size(graph)),
         );
         searcher.search(&mut collector, scorer, graph, accept_ords)?;

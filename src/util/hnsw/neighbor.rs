@@ -5,15 +5,28 @@
 
 #![deny(unsafe_code)]
 
-use std::collections::BinaryHeap;
 use std::fmt::{self, Debug, Formatter};
 use std::sync::Arc;
 
 use crate::error::LuceneError;
-use crate::util::{NumericUtils, RamUsageEstimator};
+use crate::internal::hppc::max_sized_float_array_list::MaxSizedFloatArrayList;
+use crate::internal::hppc::max_sized_int_array_list::MaxSizedIntArrayList;
+use crate::util::{Accountable, NumericUtils, TernaryLongHeap};
 
 use super::scorer::{RandomVectorScorer, UpdateableRandomVectorScorer};
 use super::Result;
+
+/// Shallow size of a `NeighborArray` instance, Java's
+/// `NeighborArray.BASE_RAM_BYTES_USED`.
+///
+/// `RamUsageEstimator.shallowSizeOfInstance(NeighborArray.class)` on a 64-bit
+/// JVM with compressed oops (`RamUsageEstimator.java:535-597`): the 12-byte
+/// object header, plus the `boolean scoresDescOrder` (1), the `int`s `size`,
+/// `maxSize` and `sortedNodeSize` (3 × 4), the `long ramBytesUsed` (8), and the
+/// references `scores`, `nodes` and `onHeapMemoryUsageListener` (3 × 4) — 45
+/// bytes, aligned to 8. It is a literal, as the hppc lists' are, because the
+/// figure is Java's object layout, not this struct's.
+const BASE_RAM_BYTES_USED: i64 = 48;
 
 /// Growable array of neighbor node ids and their scores.
 ///
@@ -27,10 +40,12 @@ pub struct NeighborArray {
     scores_desc_order: bool,
     size: usize,
     max_size: usize,
-    nodes: Vec<i32>,
-    scores: Vec<f32>,
+    /// Equivalent to `NeighborArray.nodes`, a `MaxSizedIntArrayList` that
+    /// starts at `maxSize / 8` slots and grows with `ArrayUtil.growInRange`.
+    nodes: MaxSizedIntArrayList,
+    /// Equivalent to `NeighborArray.scores`, sized as `nodes`.
+    scores: MaxSizedFloatArrayList,
     sorted_node_size: usize,
-    ram_bytes_used: i64,
     on_heap_memory_usage_listener: Option<OnHeapMemoryUsageListener>,
 }
 
@@ -81,14 +96,12 @@ impl NeighborArray {
         desc_order: bool,
         on_heap_memory_usage_listener: Option<OnHeapMemoryUsageListener>,
     ) -> Self {
+        let nodes = MaxSizedIntArrayList::with_expected_elements(max_size, max_size / 8);
+        let scores = MaxSizedFloatArrayList::with_expected_elements(max_size, max_size / 8);
         let max_size = max_size.max(0) as usize;
-        let nodes: Vec<i32> = Vec::with_capacity(max_size);
-        let scores: Vec<f32> = Vec::with_capacity(max_size);
-        // Shallow estimate of the statically used on-heap memory, equivalent to
-        // `NeighborArray.BASE_RAM_BYTES_USED`, plus the two backing buffers.
-        let ram_bytes_used = RamUsageEstimator::shallow_size_of_instance::<Self>()
-            + RamUsageEstimator::shallow_size_of_array::<i32>(nodes.capacity())
-            + RamUsageEstimator::shallow_size_of_array::<f32>(scores.capacity());
+        // `BASE_RAM_BYTES_USED + nodes.ramBytesUsed() + scores.ramBytesUsed()`
+        // (`NeighborArray.java:45,56`).
+        let ram_bytes_used = BASE_RAM_BYTES_USED + nodes.ram_bytes_used() + scores.ram_bytes_used();
         if let Some(listener) = &on_heap_memory_usage_listener {
             listener.accept(ram_bytes_used);
         }
@@ -99,17 +112,18 @@ impl NeighborArray {
             nodes,
             scores,
             sorted_node_size: 0,
-            ram_bytes_used,
             on_heap_memory_usage_listener,
         }
     }
 
     /// Reports the growth of the node and score buffers to the listener.
     ///
-    /// `new_length` and `previous_length` are the buffer capacities after and
-    /// before the insertion; the delta is charged once for the node `i32` and
-    /// once for the score `f32`, exactly as Java charges `Integer.BYTES` and
-    /// `Float.BYTES`.
+    /// `new_length` and `previous_length` are the node buffer's lengths after
+    /// and before the insertion; the delta is charged once for the node `i32`
+    /// and once for the score `f32`, exactly as Java charges `Integer.BYTES`
+    /// and `Float.BYTES`. Like Java, this tells the listener only: Java's
+    /// `ramBytesUsed` field is read only by the constructor, so this port keeps
+    /// that value as a constructor local.
     ///
     /// Equivalent to the private
     /// `org.apache.lucene.util.hnsw.NeighborArray#alertOnHeapMemoryUsageChange`.
@@ -120,7 +134,6 @@ impl NeighborArray {
                 let delta = length_delta * i64::from(std::mem::size_of::<i32>() as i32)
                     + length_delta * i64::from(std::mem::size_of::<f32>() as i32);
                 listener.accept(delta);
-                self.ram_bytes_used += delta;
             }
         }
     }
@@ -138,14 +151,14 @@ impl NeighborArray {
     /// Returns a reference to the internal node buffer (only the first
     /// `size()` entries are valid).
     pub fn nodes(&self) -> &[i32] {
-        &self.nodes[..self.size]
+        &self.nodes.buffer[..self.size]
     }
 
     /// Returns the score at index `i`.
     ///
     /// Equivalent to `org.apache.lucene.util.hnsw.NeighborArray#getScores`.
     pub fn score(&self, i: i32) -> f32 {
-        self.scores[i as usize]
+        self.scores.buffer[i as usize]
     }
 
     /// Adds a node that is known to be worse than all previously stored
@@ -162,17 +175,17 @@ impl NeighborArray {
             ));
         }
         if self.size > 0 {
-            let previous_score = self.scores[self.size - 1];
+            let previous_score = self.scores.buffer[self.size - 1];
             debug_assert!(
                 (self.scores_desc_order && previous_score >= new_score)
                     || (!self.scores_desc_order && previous_score <= new_score),
                 "nodes are added in incorrect order"
             );
         }
-        let previous_length = self.nodes.capacity();
-        self.nodes.push(new_node);
-        self.scores.push(new_score);
-        self.alert_on_heap_memory_usage_change(self.nodes.capacity(), previous_length);
+        let previous_length = self.nodes.buffer.len();
+        self.nodes.add(new_node);
+        self.scores.add(new_score);
+        self.alert_on_heap_memory_usage_change(self.nodes.buffer.len(), previous_length);
         self.size += 1;
         self.sorted_node_size += 1;
         Ok(())
@@ -185,10 +198,10 @@ impl NeighborArray {
                 "No growth is allowed".to_string(),
             ));
         }
-        let previous_length = self.nodes.capacity();
-        self.nodes.push(new_node);
-        self.scores.push(new_score);
-        self.alert_on_heap_memory_usage_change(self.nodes.capacity(), previous_length);
+        let previous_length = self.nodes.buffer.len();
+        self.nodes.add(new_node);
+        self.scores.add(new_score);
+        self.alert_on_heap_memory_usage_change(self.nodes.buffer.len(), previous_length);
         self.size += 1;
         Ok(())
     }
@@ -246,8 +259,8 @@ impl NeighborArray {
 
     fn insert_sorted_internal(&mut self, scorer: &mut dyn RandomVectorScorer) -> Result<i32> {
         debug_assert!(self.sorted_node_size < self.size);
-        let tmp_node = self.nodes[self.sorted_node_size];
-        let mut tmp_score = self.scores[self.sorted_node_size];
+        let tmp_node = self.nodes.buffer[self.sorted_node_size];
+        let mut tmp_score = self.scores.buffer[self.sorted_node_size];
 
         if tmp_score.is_nan() {
             tmp_score = scorer.score(tmp_node)?;
@@ -263,18 +276,20 @@ impl NeighborArray {
         // `System.arraycopy`, then write the new element at the insertion point.
         if insertion_point < self.sorted_node_size {
             self.nodes
+                .buffer_mut()
                 .copy_within(insertion_point..self.sorted_node_size, insertion_point + 1);
             self.scores
+                .buffer_mut()
                 .copy_within(insertion_point..self.sorted_node_size, insertion_point + 1);
         }
-        self.nodes[insertion_point] = tmp_node;
-        self.scores[insertion_point] = tmp_score;
+        self.nodes.buffer_mut()[insertion_point] = tmp_node;
+        self.scores.buffer_mut()[insertion_point] = tmp_score;
         self.sorted_node_size += 1;
         Ok(insertion_point as i32)
     }
 
     fn asc_sort_find_rightmost_insertion_point(&self, new_score: f32, sorted_size: usize) -> usize {
-        self.scores[..sorted_size].partition_point(|s| *s <= new_score)
+        self.scores.buffer[..sorted_size].partition_point(|s| *s <= new_score)
     }
 
     fn desc_sort_find_rightmost_insertion_point(
@@ -282,7 +297,7 @@ impl NeighborArray {
         new_score: f32,
         sorted_size: usize,
     ) -> usize {
-        self.scores[..sorted_size].partition_point(|s| *s >= new_score)
+        self.scores.buffer[..sorted_size].partition_point(|s| *s >= new_score)
     }
 
     /// Clears all entries.
@@ -297,8 +312,8 @@ impl NeighborArray {
     pub fn remove_last(&mut self) {
         if self.size > 0 {
             self.size -= 1;
-            self.nodes.pop();
-            self.scores.pop();
+            self.nodes.remove_last();
+            self.scores.remove_last();
             self.sorted_node_size = self.sorted_node_size.min(self.size);
         }
     }
@@ -309,8 +324,8 @@ impl NeighborArray {
             self.remove_last();
             return;
         }
-        self.nodes.remove(idx);
-        self.scores.remove(idx);
+        self.nodes.remove_at(idx as i32);
+        self.scores.remove_at(idx as i32);
         if idx < self.sorted_node_size {
             self.sorted_node_size -= 1;
         }
@@ -330,7 +345,7 @@ impl NeighborArray {
                 break;
             }
             let unchecked_idx = unchecked_indexes[unchecked_cursor as usize] as usize;
-            scorer.set_scoring_ordinal(self.nodes[i])?;
+            scorer.set_scoring_ordinal(self.nodes.buffer[i])?;
             if self.is_worst_non_diverse(
                 i,
                 &unchecked_indexes,
@@ -353,12 +368,12 @@ impl NeighborArray {
         unchecked_cursor: usize,
         scorer: &mut dyn RandomVectorScorer,
     ) -> Result<bool> {
-        let min_accepted_similarity = self.scores[candidate_index];
+        let min_accepted_similarity = self.scores.buffer[candidate_index];
         let candidate_is_unchecked =
             candidate_index == unchecked_indexes[unchecked_cursor] as usize;
         if candidate_is_unchecked {
             for i in (0..candidate_index).rev() {
-                let neighbor_similarity = scorer.score(self.nodes[i])?;
+                let neighbor_similarity = scorer.score(self.nodes.buffer[i])?;
                 if neighbor_similarity >= min_accepted_similarity {
                     return Ok(true);
                 }
@@ -367,7 +382,7 @@ impl NeighborArray {
             debug_assert!(candidate_index > unchecked_indexes[unchecked_cursor] as usize);
             for i in (0..=unchecked_cursor).rev() {
                 let unchecked_idx = unchecked_indexes[i] as usize;
-                let neighbor_similarity = scorer.score(self.nodes[unchecked_idx])?;
+                let neighbor_similarity = scorer.score(self.nodes.buffer[unchecked_idx])?;
                 if neighbor_similarity >= min_accepted_similarity {
                     return Ok(true);
                 }
@@ -398,128 +413,135 @@ impl RandomVectorScorer for DummyScorer {
 
 /// Priority queue of graph arcs encoded as a single packed long.
 ///
-/// The queue supports both unbounded growth and bounded insertion with
-/// overflow. A min-heap keeps the worst score on top; a max-heap keeps the
-/// best score on top.
-///
-/// Equivalent to `org.apache.lucene.util.hnsw.NeighborQueue`.
+/// Equivalent to `org.apache.lucene.util.hnsw.NeighborQueue`: each arc is the
+/// `long` `floatToSortableInt(score) << 32 | (0xFFFFFFFF & ~node)`, held in a
+/// [`TernaryLongHeap`] — a min-heap of signed `i64`s — after the heap order's
+/// transform (`v` for a min-heap, `-1 - v` for a max-heap). A min-heap keeps
+/// the worst score on top; a max-heap keeps the best score on top; among equal
+/// scores the lower node id ranks better.
 #[derive(Clone, Debug)]
 pub struct NeighborQueue {
-    heap: BinaryHeap<u64>,
+    heap: TernaryLongHeap,
+    /// `Order.MAX_HEAP` when set, `Order.MIN_HEAP` otherwise.
     max_heap: bool,
     visited_count: i32,
     incomplete: bool,
-    capacity: usize,
 }
 
 impl NeighborQueue {
     /// Creates a new queue. `max_heap` selects whether the top element is the
     /// best score (true) or the worst score (false).
-    pub fn new(initial_size: i32, max_heap: bool) -> Self {
-        let capacity = initial_size.max(1) as usize;
-        Self {
-            heap: BinaryHeap::with_capacity(capacity),
+    ///
+    /// Equivalent to `NeighborQueue(int, boolean)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] with Java's message when
+    /// `initial_size` is not in `1..ArrayUtil.MAX_ARRAY_LENGTH`, where the
+    /// `TernaryLongHeap` constructor throws `IllegalArgumentException`
+    /// (`TernaryLongHeap.java:55-63`).
+    pub fn new(initial_size: i32, max_heap: bool) -> Result<Self> {
+        // `TernaryLongHeap::new` takes a `usize`; a negative size is rejected
+        // here with the message Java's heap gives for it.
+        if initial_size < 1 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "initialCapacity must be > 0 and < {}; got: {initial_size}",
+                crate::util::ArrayUtil::MAX_ARRAY_LENGTH - 1
+            )));
+        }
+        let heap = TernaryLongHeap::new(initial_size as usize)?;
+        Ok(Self {
+            heap,
             max_heap,
             visited_count: 0,
             incomplete: false,
-            capacity,
-        }
+        })
     }
 
     /// Returns the number of elements in the queue.
     pub fn size(&self) -> i32 {
-        self.heap.len() as i32
+        self.heap.size() as i32
     }
 
     /// Adds a new graph arc, extending storage as needed.
     pub fn add(&mut self, new_node: i32, new_score: f32) {
-        self.heap.push(self.encode(new_node, new_score));
+        let encoded = self.encode(new_node, new_score);
+        self.heap.push(encoded);
     }
 
-    /// Bounded insertion: if the queue is full, the new arc is kept only if it
-    /// is better than the current top. Returns whether it was kept.
+    /// Bounded insertion: once the queue holds its initial size, the new arc
+    /// replaces the top only if it does not rank below it. Returns whether it
+    /// was kept.
+    ///
+    /// Equivalent to `NeighborQueue.insertWithOverflow`, which is
+    /// `TernaryLongHeap.insertWithOverflow` on the encoded arc.
     pub fn insert_with_overflow(&mut self, new_node: i32, new_score: f32) -> bool {
         let encoded = self.encode(new_node, new_score);
-        if self.heap.len() >= self.capacity {
-            if self.is_better(encoded, self.top_raw()) {
-                // Replace top and sift down is handled by popping then pushing.
-                self.heap.pop();
-                self.heap.push(encoded);
-                return true;
-            }
-            return false;
-        }
-        self.heap.push(encoded);
-        true
+        self.heap.insert_with_overflow(encoded)
     }
 
-    fn encode(&self, node: i32, score: f32) -> u64 {
-        let sortable = (NumericUtils::float_to_sortable_int(score) as u64) << 32;
-        let node_bits = (0xFFFF_FFFFu64) & (!(node as u64));
-        let packed = sortable | node_bits;
-        self.apply_order(packed)
-    }
-
-    fn decode_score(&self, heap_value: u64) -> f32 {
-        let raw = self.apply_order(heap_value);
-        let sortable = (raw >> 32) as i32;
-        NumericUtils::sortable_int_to_float(sortable)
-    }
-
-    /// Recovers the node id from a heap value.
-    ///
-    /// Equivalent to the private
-    /// `org.apache.lucene.util.hnsw.NeighborQueue#decodeNodeId`. Java
-    /// complements the whole `long` and then narrows it; narrowing first and
-    /// complementing the `i32` gives the same bits.
-    fn decode_node(&self, heap_value: u64) -> i32 {
-        let raw = self.apply_order(heap_value);
-        !(raw as i32)
-    }
-
-    /// Maps a raw encoded value to the value stored in the heap. Rust's
-    /// `BinaryHeap` is a max-heap by default, so min-heap semantics require
-    /// the raw order to be inverted. The transformation is its own inverse,
-    /// matching Lucene's `Order.MIN_HEAP`/`MAX_HEAP`.
-    fn apply_order(&self, v: u64) -> u64 {
+    /// `Order.apply`: the identity for a min-heap, `-1 - v` for a max-heap,
+    /// which maps `Long.MIN_VALUE` and `Long.MAX_VALUE` onto each other.
+    fn apply_order(&self, v: i64) -> i64 {
         if self.max_heap {
+            -1 - v
+        } else {
             v
-        } else {
-            u64::MAX - v
         }
     }
 
-    fn is_better(&self, candidate: u64, top: u64) -> bool {
-        if self.max_heap {
-            candidate > top
-        } else {
-            candidate < top
-        }
+    /// Equivalent to the private `NeighborQueue.encode`.
+    fn encode(&self, node: i32, score: f32) -> i64 {
+        let sortable = i64::from(NumericUtils::float_to_sortable_int(score)) << 32;
+        // `0xFFFFFFFFL & ~node`: the complemented id in the low 32 bits.
+        let node_bits = i64::from((!node) as u32);
+        self.apply_order(sortable | node_bits)
+    }
+
+    /// Equivalent to the private `NeighborQueue.decodeScore`.
+    fn decode_score(&self, heap_value: i64) -> f32 {
+        NumericUtils::sortable_int_to_float((self.apply_order(heap_value) >> 32) as i32)
+    }
+
+    /// Equivalent to the private `NeighborQueue.decodeNodeId`.
+    fn decode_node(&self, heap_value: i64) -> i32 {
+        (!self.apply_order(heap_value)) as i32
     }
 
     /// Removes and returns the top node id.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the queue is empty, where Java's `TernaryLongHeap.pop`
+    /// throws `IllegalStateException`.
     pub fn pop(&mut self) -> i32 {
-        let top = self.heap.pop().expect("queue is empty");
+        let top = self.heap.pop().unwrap_or_else(|e| panic!("{e}"));
         self.decode_node(top)
     }
 
-    /// Returns all node ids currently stored (order is unspecified).
+    /// Returns all node ids currently stored, in heap-array order.
+    ///
+    /// Equivalent to `NeighborQueue.nodes()`, which reads `heap.get(i + 1)`.
     pub fn nodes(&self) -> Vec<i32> {
-        self.heap.iter().map(|&v| self.decode_node(v)).collect()
+        (1..=self.heap.size())
+            .map(|i| self.decode_node(self.heap.get(i)))
+            .collect()
     }
 
     /// Returns the top node id.
+    ///
+    /// Equivalent to `NeighborQueue.topNode()`; like Java, an empty queue
+    /// decodes whatever the heap's first slot holds.
     pub fn top_node(&self) -> i32 {
-        self.decode_node(*self.heap.peek().expect("queue is empty"))
-    }
-
-    fn top_raw(&self) -> u64 {
-        *self.heap.peek().expect("queue is empty")
+        self.decode_node(self.heap.top())
     }
 
     /// Returns the top score.
+    ///
+    /// Equivalent to `NeighborQueue.topScore()`; like Java, an empty queue
+    /// decodes whatever the heap's first slot holds.
     pub fn top_score(&self) -> f32 {
-        self.decode_score(*self.heap.peek().expect("queue is empty"))
+        self.decode_score(self.heap.top())
     }
 
     /// Clears the queue.
@@ -557,7 +579,7 @@ mod tests {
 
     #[test]
     fn neighbor_queue_min_heap_ordering() {
-        let mut q = NeighborQueue::new(3, false);
+        let mut q = NeighborQueue::new(3, false).unwrap();
         q.add(1, 0.5);
         q.add(2, 0.9);
         q.add(3, 0.1);
@@ -568,7 +590,7 @@ mod tests {
 
     #[test]
     fn neighbor_queue_max_heap_ordering() {
-        let mut q = NeighborQueue::new(3, true);
+        let mut q = NeighborQueue::new(3, true).unwrap();
         q.add(1, 0.5);
         q.add(2, 0.9);
         q.add(3, 0.1);
@@ -579,7 +601,7 @@ mod tests {
 
     #[test]
     fn neighbor_queue_insert_with_overflow() {
-        let mut q = NeighborQueue::new(2, false);
+        let mut q = NeighborQueue::new(2, false).unwrap();
         assert!(q.insert_with_overflow(1, 0.5));
         assert!(q.insert_with_overflow(2, 0.9));
         // 0.1 is worse than the current worst (0.5), so it is rejected.
@@ -589,6 +611,104 @@ mod tests {
         assert_eq!(q.nodes().len(), 2);
         assert!(q.nodes().contains(&2));
         assert!(q.nodes().contains(&4));
+    }
+
+    /// Java orders the encoded arcs as signed `long`s, so a negative score
+    /// ranks below every non-negative one (`NeighborQueue.java` `encode`).
+    #[test]
+    fn neighbor_queue_orders_negative_scores_as_java() {
+        let scores = [(1, -0.5f32), (2, -0.1), (3, 0.3), (4, -2.0), (5, 0.0)];
+        let mut min = NeighborQueue::new(2, false).unwrap();
+        let mut max = NeighborQueue::new(2, true).unwrap();
+        for (node, score) in scores {
+            min.add(node, score);
+            max.add(node, score);
+        }
+        assert_eq!(min.top_score(), -2.0);
+        assert_eq!(max.top_score(), 0.3);
+        let min_order: Vec<i32> = (0..5).map(|_| min.pop()).collect();
+        let max_order: Vec<i32> = (0..5).map(|_| max.pop()).collect();
+        assert_eq!(min_order, vec![4, 1, 2, 5, 3]);
+        assert_eq!(max_order, vec![3, 5, 2, 1, 4]);
+    }
+
+    /// Among equal scores the lower node id ranks better, because the low
+    /// word holds `~node`.
+    #[test]
+    fn neighbor_queue_breaks_score_ties_by_node_id() {
+        let mut min = NeighborQueue::new(3, false).unwrap();
+        let mut max = NeighborQueue::new(3, true).unwrap();
+        for node in [7, 3, 5] {
+            min.add(node, -1.0);
+            max.add(node, -1.0);
+        }
+        assert_eq!((0..3).map(|_| min.pop()).collect::<Vec<_>>(), vec![7, 5, 3]);
+        assert_eq!((0..3).map(|_| max.pop()).collect::<Vec<_>>(), vec![3, 5, 7]);
+    }
+
+    /// A bounded min-heap keeps the best arcs when the scores are negative.
+    #[test]
+    fn neighbor_queue_insert_with_overflow_keeps_the_best_negative_scores() {
+        let mut q = NeighborQueue::new(2, false).unwrap();
+        assert!(q.insert_with_overflow(1, -0.9));
+        assert!(q.insert_with_overflow(2, -0.2));
+        assert!(!q.insert_with_overflow(3, -1.5));
+        assert!(q.insert_with_overflow(4, -0.1));
+        let mut kept = q.nodes();
+        kept.sort_unstable();
+        assert_eq!(kept, vec![2, 4]);
+        assert_eq!(q.top_score(), -0.2);
+    }
+
+    /// Java's queue throws `IllegalArgumentException` for a non-positive
+    /// initial size (`TernaryLongHeap(int)`).
+    #[test]
+    fn neighbor_queue_rejects_a_zero_initial_size() {
+        match NeighborQueue::new(0, false) {
+            Err(LuceneError::IllegalArgument(message)) => assert_eq!(
+                message,
+                format!(
+                    "initialCapacity must be > 0 and < {}; got: 0",
+                    crate::util::ArrayUtil::MAX_ARRAY_LENGTH - 1
+                )
+            ),
+            other => panic!("expected IllegalArgumentException, got {other:?}"),
+        }
+    }
+
+    /// The buffers start at `maxSize / 8` slots and grow through
+    /// `ArrayUtil.growInRange` (`NeighborArray.java:52-61`,
+    /// `MaxSizedIntArrayList.ensureBufferSpace`); the listener is told the
+    /// construction size, then `8` bytes per added slot. For `maxSize = 33`
+    /// the node buffer goes 4, 8, 12, 16, 20, 24, 28, 32, 33 slots: Java's
+    /// `oversize(n, 4)` is `(n + max(n >> 3, 3) + 1) & ~1`, capped at 33.
+    #[test]
+    fn neighbor_array_grows_and_reports_memory_as_java() {
+        let reported = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&reported);
+        let mut arr = NeighborArray::with_listener(
+            33,
+            true,
+            Some(OnHeapMemoryUsageListener::new(Arc::new(move |bytes| {
+                sink.lock().expect("log").push(bytes);
+            }))),
+        );
+        // `NeighborArray` is 48 bytes, `MaxSizedIntArrayList` and
+        // `MaxSizedFloatArrayList` 24 each, and a 4-slot int or float array
+        // `align(16 + 16)` = 32.
+        let initial = 48 + 2 * (24 + 32);
+        assert_eq!(*reported.lock().expect("log"), vec![initial]);
+        let mut growth_at = Vec::new();
+        for node in 0..33 {
+            let before = reported.lock().expect("log").len();
+            arr.add_out_of_order(node, 1.0).expect("add");
+            if reported.lock().expect("log").len() > before {
+                growth_at.push(node + 1);
+            }
+        }
+        assert_eq!(growth_at, vec![5, 9, 13, 17, 21, 25, 29, 33]);
+        let log = reported.lock().expect("log").clone();
+        assert_eq!(&log[1..], &[32, 32, 32, 32, 32, 32, 32, 8]);
     }
 
     #[test]
@@ -629,6 +749,6 @@ impl std::fmt::Display for NeighborQueue {
     /// rather than after its own class and reports the size of the backing
     /// heap.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Neighbors[{}]", self.heap.len())
+        write!(f, "Neighbors[{}]", self.heap.size())
     }
 }

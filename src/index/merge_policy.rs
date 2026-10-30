@@ -189,14 +189,32 @@ pub type MergeCompleteHook = Arc<dyn Fn(&OneMerge) -> Result<()> + Send + Sync>;
 
 /// One merge the policy wants performed.
 ///
-/// Equivalent to `MergePolicy.OneMerge`.
+/// Equivalent to `MergePolicy.OneMerge` (`MergePolicy.java:183-479`),
+/// including the `MergeReader` list `IndexWriter` fills in
+/// ([`merge_readers`](Self::get_merge_reader)), the abort flag and the pause
+/// lock the rate limiter drives, and the completion the caller awaits.
 ///
-/// **Divergence from Lucene 10.5.0.** Java's `OneMerge` also carries the
-/// `CompletableFuture` the caller awaits, the `OneMergeProgress` the rate
-/// limiter drives, and the `MergeReader` list `IndexWriter` fills in. Those
-/// belong to the scheduler and the writer, which are separate tasks, so this
-/// port carries only the segment selection and the accounting fields a policy
-/// itself sets and reads.
+/// # Divergences from Lucene 10.5.0
+///
+/// * Java's `OneMerge` is one object every holder shares. It is `Clone` here,
+///   and every field a holder may change after the policy built it lives
+///   behind an `Arc`, so a clone observes the change; the field docs say which.
+/// * There is no `OneMergeProgress` object and no `getMergeProgress()`. Its
+///   abort flag and its `pauseLock`/`pausing` pair are fields of this merge,
+///   shared with the merge's
+///   [`MergeRateLimiter`](crate::index::merge_scheduler::MergeRateLimiter),
+///   which keeps the per-reason pause totals Java's `getPauseTimes()` reports.
+///   Nothing records the owning thread, which Java's progress uses only in
+///   assertions, so [`merge_init`](Self::merge_init) records nothing.
+/// * Java completes the `mergeCompleted` future with the merge's success flag.
+///   This merge records only that it finished
+///   ([`has_finished`](Self::has_finished)), so `hasCompletedSuccessfully()`
+///   and the package-private `await(long, TimeUnit)` are not ported;
+///   [`MergeSpecification`] waits on the finished flags.
+/// * `error` keeps the rendered message rather than the `Throwable`, and the
+///   overridable methods (`wrapForMerge`, `reorder`, `mergeFinished`,
+///   `onMergeComplete`) are closures a policy installs rather than subclass
+///   overrides; the field docs give the reasons.
 #[derive(Clone)]
 pub struct OneMerge {
     /// The segments to merge, in the order the policy chose.
@@ -629,10 +647,10 @@ impl OneMerge {
     /// Marks the merge as started on the calling thread.
     ///
     /// Equivalent to `OneMerge.mergeInit()`, which records the merge thread on
-    /// the merge's `OneMergeProgress` so that only that thread may pause. This
-    /// port has no progress object on `OneMerge` (see the type's divergence
-    /// note), so there is no owner to record and the call is a no-op kept for
-    /// the sequence `IndexWriter` performs.
+    /// the merge's `OneMergeProgress`, where only assertions read it. This
+    /// port has no progress object (see the type's divergences), so there is
+    /// no owner to record and the call is a no-op kept for the sequence
+    /// `IndexWriter` performs.
     pub fn merge_init(&self) {}
 
     /// Returns when the merge started, in nanoseconds on

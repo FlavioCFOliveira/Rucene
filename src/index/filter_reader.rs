@@ -544,6 +544,18 @@ impl TermsEnum for FilterTermsEnum {
 /// A [`CodecReader`] that forwards every call to a wrapped codec reader.
 ///
 /// Equivalent to `org.apache.lucene.index.FilterCodecReader`.
+///
+/// **Divergence from Lucene 10.5.0.** Java's `FilterCodecReader` is
+/// abstract: a filter extends it and overrides the calls it changes,
+/// inheriting the forwarding of the rest. Rust has no implementation
+/// inheritance, so this is a concrete struct that forwards every call to
+/// [`inner`](Self::get_delegate) and can be used on its own as the identity
+/// filter; the filters Java writes as subclasses — the reader
+/// [`wrap_live_docs`](Self::wrap_live_docs) returns, `SortingCodecReader` —
+/// are types of their own that implement [`CodecReader`], forward the calls
+/// they do not change themselves, and report their delegate through
+/// [`CodecReader::filter_codec_reader_delegate`] so that
+/// [`unwrap`](Self::unwrap) sees through them as Java's `instanceof` does.
 pub struct FilterCodecReader {
     /// The wrapped codec reader.
     pub(crate) inner: Arc<dyn CodecReader>,
@@ -602,9 +614,16 @@ impl FilterCodecReader {
 
     /// Unwraps nested filters and returns the innermost codec reader.
     ///
-    /// Equivalent to `FilterCodecReader.unwrap(CodecReader)`.
+    /// Equivalent to `FilterCodecReader.unwrap(CodecReader)`
+    /// (`FilterCodecReader.java:44-49`): while the reader is a
+    /// `FilterCodecReader`, step to its delegate.
     pub fn unwrap(reader: &Arc<dyn CodecReader>) -> Arc<dyn CodecReader> {
-        Arc::clone(reader)
+        let mut reader = Arc::clone(reader);
+        while let Some(delegate) = reader.filter_codec_reader_delegate() {
+            let delegate = Arc::clone(delegate);
+            reader = delegate;
+        }
+        reader
     }
 }
 
@@ -733,6 +752,12 @@ impl LeafReader for FilterCodecReader {
 impl CodecReader for FilterCodecReader {
     fn get_fields_reader(&self) -> Result<Option<Box<dyn StoredFieldsReader>>> {
         self.inner.get_fields_reader()
+    }
+
+    /// A `FilterCodecReader` (Java: the class itself) answers its
+    /// delegate, `getDelegate()`.
+    fn filter_codec_reader_delegate(&self) -> Option<&Arc<dyn CodecReader>> {
+        Some(&self.inner)
     }
 
     fn get_term_vectors_reader(&self) -> Result<Option<Box<dyn TermVectorsReader>>> {
@@ -944,6 +969,12 @@ impl LeafReader for LiveDocsCodecReader {
 impl CodecReader for LiveDocsCodecReader {
     fn get_fields_reader(&self) -> Result<Option<Box<dyn StoredFieldsReader>>> {
         self.inner.get_fields_reader()
+    }
+
+    /// A `FilterCodecReader` (Java: the anonymous subclass `wrapLiveDocs` returns) answers its
+    /// delegate, `getDelegate()`.
+    fn filter_codec_reader_delegate(&self) -> Option<&Arc<dyn CodecReader>> {
+        Some(&self.inner)
     }
 
     fn get_term_vectors_reader(&self) -> Result<Option<Box<dyn TermVectorsReader>>> {

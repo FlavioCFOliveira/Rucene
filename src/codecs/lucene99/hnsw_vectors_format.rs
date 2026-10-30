@@ -773,7 +773,7 @@ impl HnswWriterState {
             level0_nodes.push(node);
             let neighbors = graph.get_neighbors(0, new_to_old_map[node as usize])?;
             let written = self.reconstruct_and_write_neighbours(
-                neighbors,
+                &neighbors,
                 old_to_new_map,
                 scratch_capacity,
                 max_ord,
@@ -794,7 +794,7 @@ impl HnswWriterState {
             for &node in &new_nodes {
                 let neighbors = graph.get_neighbors(level, new_to_old_map[node as usize])?;
                 offsets.push(self.reconstruct_and_write_neighbours(
-                    neighbors,
+                    &neighbors,
                     old_to_new_map,
                     scratch_capacity,
                     max_ord,
@@ -950,12 +950,6 @@ impl HnswWriterState {
     /// `MergeState.intraMergeTaskExecutor`, `None` where Java passes `null`
     /// (`Lucene99HnswVectorsWriter.java:477-479`); see
     /// [`choose_graph_merger`] for the selection.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java hands the chosen
-    /// `TaskExecutor` to `ConcurrentHnswMerger`, whose builder runs its workers
-    /// on it. [`HnswConcurrentMergeBuilder`](crate::util::hnsw::HnswConcurrentMergeBuilder)
-    /// runs them on the calling thread (see its type-level note), so the
-    /// executor decides which merger is built but runs none of its work.
     fn create_graph_merger(
         &self,
         field_info: &FieldInfo,
@@ -969,12 +963,25 @@ impl HnswWriterState {
             num_parallel_merge_workers,
         ) == GraphMergerChoice::Concurrent
         {
+            // `mergeExec` with `numMergeWorkers` when the writer has one, and
+            // otherwise a `TaskExecutor` over the merge's intra-merge executor
+            // with `numParallelMergeWorkers` (`Lucene99HnswVectorsWriter.java:628-647`).
+            let (task_executor, num_worker) = match (&self.merge_exec, parallel_merge_task_executor)
+            {
+                (Some(merge_exec), _) => (Arc::clone(merge_exec), self.num_merge_workers),
+                (None, Some(executor)) => (
+                    Arc::new(TaskExecutor::new(Arc::clone(executor))),
+                    num_parallel_merge_workers,
+                ),
+                (None, None) => unreachable!("INVARIANT: choose_graph_merger needs an executor"),
+            };
             Box::new(ConcurrentHnswMerger::new(
                 field_info.clone(),
                 scorer_supplier,
                 self.m,
                 self.beam_width,
-                num_parallel_merge_workers,
+                task_executor,
+                num_worker,
             ))
         } else {
             Box::new(IncrementalHnswGraphMerger::new(
@@ -1035,7 +1042,7 @@ impl HnswWriterState {
                 let offset_start = vector_index.file_pointer();
                 write_neighbors(
                     vector_index.as_mut(),
-                    neighbors,
+                    &neighbors,
                     scratch_capacity,
                     self.version,
                 )?;
@@ -1574,7 +1581,7 @@ fn build_hnsw_graph_float(
             .get_random_vector_scorer_supplier_float(similarity, Box::new(values.clone()))?;
         let mut builder = HnswGraphBuilder::create(&*supplier, m, beam_width, 42, count)?;
         builder.build(count)?;
-        Ok(Some(builder.into_graph()))
+        Ok(Some(builder.into_graph()?))
     } else {
         Ok(None)
     }
@@ -1593,7 +1600,7 @@ fn build_hnsw_graph_byte(
             .get_random_vector_scorer_supplier_byte(similarity, Box::new(values.clone()))?;
         let mut builder = HnswGraphBuilder::create(&*supplier, m, beam_width, 42, count)?;
         builder.build(count)?;
-        Ok(Some(builder.into_graph()))
+        Ok(Some(builder.into_graph()?))
     } else {
         Ok(None)
     }
@@ -2969,6 +2976,46 @@ mod tests {
             false,
             false,
         )
+    }
+
+    /// A beam width of 1 passes the format's own check, but
+    /// `HnswGraphBuilder`'s constructor then builds a
+    /// `GraphBuilderKnnCollector(min(beamWidth / 2, M * 3))` = `(0)`, whose
+    /// `NeighborQueue` throws `IllegalArgumentException` from
+    /// `TernaryLongHeap(0)` (`HnswGraphBuilder.java:211-213`,
+    /// `TernaryLongHeap.java:55-63`). With no tiny-segments threshold the graph
+    /// is built, so writing the segment fails with that error.
+    #[test]
+    fn a_beam_width_of_one_fails_the_graph_build_as_lucene_does() -> Result<()> {
+        let dir = Arc::new(RamDirectory::new()) as Arc<dyn crate::store::Directory>;
+        let seg_info = make_segment_info(&dir, 3)?;
+        let field_info = float_field_info("float_field", 0, 2)?;
+        let field_infos = FieldInfos::new(vec![field_info.clone()])?;
+        let seg_updates = BufferedUpdates::default();
+        let io_ctx = DefaultIOContext::default();
+        let (write_state, _read_state) =
+            make_states(&dir, &seg_info, &field_infos, &seg_updates, &io_ctx);
+
+        let format = Lucene99HnswVectorsFormat::with_merge_exec_and_threshold(16, 1, 1, None, 0);
+        let mut writer = format.fields_writer(&write_state)?;
+        let mut float_writer = match writer.add_field(&field_info)? {
+            FieldVectorWriter::Float(w) => w,
+            _ => panic!("expected float field writer"),
+        };
+        float_writer.add_value(0, vec![1.0, 0.0])?;
+        float_writer.add_value(1, vec![0.0, 1.0])?;
+        float_writer.add_value(2, vec![1.0, 1.0])?;
+        match writer.flush(3, None) {
+            Err(LuceneError::IllegalArgument(message)) => assert_eq!(
+                message,
+                format!(
+                    "initialCapacity must be > 0 and < {}; got: 0",
+                    crate::util::ArrayUtil::MAX_ARRAY_LENGTH - 1
+                )
+            ),
+            other => panic!("expected IllegalArgumentException, got {other:?}"),
+        }
+        Ok(())
     }
 
     #[test]

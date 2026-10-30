@@ -93,6 +93,18 @@ pub trait CodecReader: LeafReader {
     ///
     /// Equivalent to `CodecReader.getVectorReader()`.
     fn get_vector_reader(&self) -> Result<Option<Arc<dyn KnnVectorsReader>>>;
+
+    /// Returns the reader this one wraps when it is a `FilterCodecReader`, and
+    /// `None` otherwise.
+    ///
+    /// Equivalent to `reader instanceof FilterCodecReader` followed by
+    /// `getDelegate()`, which is how `FilterCodecReader.unwrap` walks a chain
+    /// of filters (`FilterCodecReader.java:44-49`). Rust cannot test a
+    /// `dyn CodecReader` for a type, so each port of a `FilterCodecReader`
+    /// subclass answers for itself; every other reader keeps this default.
+    fn filter_codec_reader_delegate(&self) -> Option<&Arc<dyn CodecReader>> {
+        None
+    }
 }
 
 // -----------------------------------------------------------------------------

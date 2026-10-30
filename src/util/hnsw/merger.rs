@@ -13,7 +13,7 @@ use crate::index::field_infos::FieldInfo;
 use crate::index::merge::DocMap;
 use crate::index::vector_values::KnnVectorValues;
 use crate::index::VectorEncoding;
-use crate::search::NO_MORE_DOCS;
+use crate::search::{TaskExecutor, NO_MORE_DOCS};
 use crate::util::{Bits, FixedBitSet};
 
 use super::builder::{HnswBuilder, DEFAULT_RAND_SEED};
@@ -66,24 +66,31 @@ pub trait HnswGraphMerger {
 ///
 /// Equivalent to `org.apache.lucene.util.hnsw.ConcurrentHnswMerger`, which extends
 /// `IncrementalHnswGraphMerger`; this port holds one instead, because Rust has no
-/// implementation inheritance. See [`HnswConcurrentMergeBuilder`] for how the
-/// workers are executed.
+/// implementation inheritance. The builder runs its workers on the merger's
+/// [`TaskExecutor`].
 pub struct ConcurrentHnswMerger {
     inner: IncrementalHnswGraphMerger,
+    /// Equivalent to `ConcurrentHnswMerger.taskExecutor`.
+    task_executor: Arc<TaskExecutor>,
     num_worker: i32,
 }
 
 impl ConcurrentHnswMerger {
-    /// Creates a merger driving `num_worker` merge workers.
+    /// Creates a merger driving `num_worker` merge workers on `task_executor`.
+    ///
+    /// Equivalent to `ConcurrentHnswMerger(FieldInfo, RandomVectorScorerSupplier,
+    /// int, int, TaskExecutor, int)`.
     pub fn new(
         field_info: FieldInfo,
         scorer_supplier: Arc<dyn RandomVectorScorerSupplier>,
         m: i32,
         beam_width: i32,
+        task_executor: Arc<TaskExecutor>,
         num_worker: i32,
     ) -> Self {
         Self {
             inner: IncrementalHnswGraphMerger::new(field_info, scorer_supplier, m, beam_width),
+            task_executor,
             num_worker,
         }
     }
@@ -134,6 +141,7 @@ impl ConcurrentHnswMerger {
             }
         };
         Ok(Box::new(HnswConcurrentMergeBuilder::new(
+            Arc::clone(&self.task_executor),
             self.num_worker,
             self.inner.scorer_supplier().as_ref(),
             m,

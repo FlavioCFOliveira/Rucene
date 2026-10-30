@@ -38,16 +38,16 @@ Run it:
 
     python3 tools/kg/member_extraction_check.py
 
-`failures: 0` is the pass condition. It writes nothing outside a temporary
-directory and never touches the graph.
+`failures: 0` is the pass condition. It writes nothing outside its own
+scratch directory under `kgio.kg_target()` and never touches the graph.
 """
 import shutil
 import sys
-import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import enrich_lucene_kg as en
+from kgio import kg_target
 
 FAILURES = []
 
@@ -356,7 +356,9 @@ public enum ShapeType {
 
 
 def run():
-    root = Path(tempfile.mkdtemp(prefix="rucene-member-check-"))
+    root = kg_target() / "member_extraction_check"
+    if root.exists():
+        shutil.rmtree(root)
     pkgdir = root / "lucene/core/src/java/org/apache/lucene/fixture"
     pkgdir.mkdir(parents=True)
     for name, text in SOURCES.items():

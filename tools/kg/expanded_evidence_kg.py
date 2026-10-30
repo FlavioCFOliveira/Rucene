@@ -59,7 +59,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import extract_rucene_kg as ex
 import port_evidence_kg as pe
-from kgio import PER_ROW_SCAN_BATCH, read as kg_read, unwind
+from kgio import PER_ROW_SCAN_BATCH, kg_target, read as kg_read, unwind
 
 # `#[doc = "…"]`, as the pretty-printer prints it: it wraps after the `=`, so
 # the string routinely starts on the next line, and `concat!` has already been
@@ -273,7 +273,7 @@ def main():
     ap.add_argument("--expanded-file",
                     help="a captured `-Zunpretty=expanded` dump; without it the "
                          "compiler is run, which needs the nightly toolchain")
-    ap.add_argument("--out", default="/tmp/rucene_kg/expanded_evidence.json")
+    ap.add_argument("--out", default=str(kg_target() / "rucene_kg" / "expanded_evidence.json"))
     ap.add_argument("--commit")
     ap.add_argument("--date")
     ap.add_argument("--dry-run", action="store_true",

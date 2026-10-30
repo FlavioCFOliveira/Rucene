@@ -25,10 +25,31 @@ Four things every loader here needs and must not get wrong:
   budget whole. See `PER_ROW_SCAN_BATCH`.
 """
 import json
+import os
 import re
 import subprocess
 import sys
 import time
+from pathlib import Path
+
+# Where every KG tool writes by default: its JSON surveys, generated Cypher, the
+# cargo target of `--expand`, and its reports. `/tmp` is tmpfs (RAM) on the
+# development machine, and the large outputs of a sync written there have filled
+# swap, so no tool here defaults to `/tmp` or to a `tempfile` directory.
+#
+# The default is `.rucene-kg-target`, a sibling of the repository checkout
+# (beside `.rucene-dev-target`): `/data/dev/github.com/FlavioCFOliveira/
+# .rucene-kg-target` for the canonical clone. `RUCENE_KG_TARGET` overrides it,
+# and each tool's own output flag overrides both.
+KG_TARGET_ENV = "RUCENE_KG_TARGET"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_KG_TARGET = REPO_ROOT.parent / ".rucene-kg-target"
+
+
+def kg_target() -> Path:
+    """The directory KG tool outputs default to (`RUCENE_KG_TARGET` overrides)."""
+    env = os.environ.get(KG_TARGET_ENV)
+    return Path(env) if env else DEFAULT_KG_TARGET
 
 # The largest `UNWIND` batch for a statement the engine runs once per row over a
 # whole label or the whole graph, instead of one scan plus a hash join. In rmp

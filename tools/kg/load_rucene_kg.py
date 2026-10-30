@@ -20,15 +20,17 @@ Fases (executadas por omissao pela ordem indicada):
 Cada no e cada aresta escritos levam `gitCommit` e `gitDate` do levantamento.
 
 Uso:
-    python3 tools/kg/load_rucene_kg.py rucene --survey /tmp/rucene_kg/survey.json
+    python3 tools/kg/load_rucene_kg.py rucene --survey <kg-target>/rucene_kg/survey.json
 """
 
 import argparse
 import json
+import re
 import sys
+from pathlib import Path
 from collections import defaultdict
 
-from kgio import PER_ROW_SCAN_BATCH, client as kg_client
+from kgio import PER_ROW_SCAN_BATCH, client as kg_client, kg_target
 
 TYPE_LABEL = {
     "struct": "RustStruct",
@@ -692,49 +694,173 @@ def phase_stamp(roadmap, s: Survey):
 # ---------------------------------------------------------------------------
 
 
-def _transfer_edges(roadmap, stale_id, canon_id, batch_size):
-    """Move todas as arestas de `stale_id` para `canon_id`."""
-    out = read(
-        roadmap,
-        f"MATCH (a)-[r]->(b) WHERE id(a) = {stale_id} "
-        "RETURN type(r) AS t, id(b) AS other",
+_PROP_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _lit(v) -> str:
+    """A Cypher literal for a property value read back from the graph."""
+    if v is None:
+        return "null"
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return repr(v)
+    if isinstance(v, str):
+        return esc(v)
+    if isinstance(v, list):
+        return "[" + ", ".join(_lit(x) for x in v) + "]"
+    raise ValueError(f"unsupported property value: {v!r}")
+
+
+def _prop_key(k: str) -> str:
+    return k if _PROP_KEY.match(k) else "`" + k.replace("`", "``") + "`"
+
+
+def report_dropped_edge(dropped, phase, node, edge, direction, other, props, reason):
+    """Record one edge that is about to be lost, on stderr and in `dropped`.
+
+    `node` is the Rust node's identity (`label`, `name`, `file`, and
+    `qualifiedName` for a `RustFn`); `other` names the node at the far end
+    (the Lucene type for a `PORTS` edge); `direction` is `"out"` or `"in"`
+    relative to `node`; `props` are the edge's properties.
+    """
+    props = props or {}
+    rec = {
+        "phase": phase,
+        "node": node,
+        "edgeType": edge,
+        "direction": direction,
+        "other": other,
+        "lucene": other if edge == "PORTS" else None,
+        "note": props.get("note"),
+        "evidence": props.get("evidence"),
+        "declaredAt": props.get("declaredAt"),
+        "properties": props,
+        "reason": reason,
+    }
+    who = node.get("qualifiedName") or f"{node.get('name')} @ {node.get('file')}"
+    ends = f"{who} -> {other}" if direction == "out" else f"{other} -> {who}"
+    print(
+        f"  DROPPED {edge}: {node.get('label')} {ends} "
+        f"[{reason}] note: {rec['note'] if rec['note'] is not None else '(none)'}",
+        file=sys.stderr,
     )
-    inn = read(
+    dropped.append(rec)
+
+
+def report_dropped_port(dropped, phase, node, lucene, props, reason):
+    """`report_dropped_edge` for a `PORTS` edge leaving `node` for `lucene`."""
+    report_dropped_edge(dropped, phase, node, "PORTS", "out", lucene, props, reason)
+
+
+def _move_edge(roadmap, src, dst, edge, props) -> bool:
+    """Create `(src)-[:edge]->(dst)` and give it the properties in `props` it lacks.
+
+    When the surviving node already has that edge, its values are canonical and
+    are kept: each property is written as `coalesce(e.k, <stale value>)`, so a
+    stale value only fills a key the edge does not have.
+
+    Returns whether the edge now exists and holds every key of `props`. The engine
+    lets a `MERGE` match an edge of another type between the same ordered pair
+    and then create nothing (`knowledge-model.md`, provenance convention), so
+    the move is read back rather than assumed.
+    """
+    props = {k: v for k, v in (props or {}).items() if v is not None}
+    typ = _prop_key(edge)
+    rmp(
+        "create",
         roadmap,
-        f"MATCH (b)-[r]->(a) WHERE id(a) = {stale_id} "
-        "RETURN type(r) AS t, id(b) AS other",
+        f"MATCH (x) WHERE id(x) = {src} WITH x "
+        f"MATCH (y) WHERE id(y) = {dst} MERGE (x)-[:{typ}]->(y)",
+        f"move-{edge}",
     )
+    if props:
+        sets = ", ".join(f"e.{_prop_key(k)} = coalesce(e.{_prop_key(k)}, {_lit(v)})"
+                         for k, v in sorted(props.items()))
+        rmp(
+            "update",
+            roadmap,
+            f"MATCH (x)-[e:{typ}]->(y) WHERE id(x) = {src} AND id(y) = {dst} "
+            f"SET {sets}",
+            f"move-{edge}-properties",
+        )
+    back = read(
+        roadmap,
+        f"MATCH (x)-[e:{typ}]->(y) WHERE id(x) = {src} AND id(y) = {dst} "
+        "RETURN properties(e) AS props",
+    )
+    if not back:
+        return False
+    got = back[0].get("props") or {}
+    return all(got.get(k) is not None for k in props)
+
+
+def _move_port(roadmap, canon_id, port) -> bool:
+    """`_move_edge` for one `PORTS` edge (`port` carries `cid` and `props`)."""
+    return _move_edge(roadmap, canon_id, port["cid"], "PORTS", port.get("props"))
+
+
+def _far_end(e):
+    return e.get("qn") or e.get("path") or e.get("name") or f"id {e['other']}"
+
+
+def _transfer_edges(roadmap, stale_id, canon_id, batch_size, stale_node=None,
+                    dropped=None):
+    """Move todas as arestas de `stale_id` para `canon_id`.
+
+    Every edge, of every type and in both directions, is re-created with **all
+    its properties** (`evidence`, `note`, `declaredAt`, `gitCommit`, ...) and
+    read back. It used to be re-created by type alone, which dropped every
+    property -- the `note` of a re-kinded type's `PORTS` among them. An edge that
+    cannot be re-created is reported through `report_dropped_edge` instead of
+    vanishing with the stale node. A self-loop becomes a self-loop on
+    `canon_id`.
+    """
+    if dropped is None:
+        dropped = []
+    node = stale_node or {"id": stale_id}
+    cols = ("RETURN type(r) AS t, id(b) AS other, properties(r) AS props, "
+            "b.qualifiedName AS qn, b.path AS path, b.name AS name")
+    out = read(roadmap, f"MATCH (a)-[r]->(b) WHERE id(a) = {stale_id} {cols}")
+    inn = read(roadmap, f"MATCH (b)-[r]->(a) WHERE id(a) = {stale_id} {cols}")
     moved = 0
     # Uma aresta por consulta, ancorando cada extremo com `WITH`: um
     # `MATCH (x), (y)` produziria o produto cartesiano de todos os nos.
-    for e in out:
-        rmp(
-            "create",
-            roadmap,
-            f"MATCH (x) WHERE id(x) = {canon_id} WITH x "
-            f"MATCH (y) WHERE id(y) = {e['other']} "
-            f"MERGE (x)-[:{e['t']}]->(y)",
-            "transfer-edge-out",
-        )
-        moved += 1
-    for e in inn:
-        rmp(
-            "create",
-            roadmap,
-            f"MATCH (x) WHERE id(x) = {canon_id} WITH x "
-            f"MATCH (y) WHERE id(y) = {e['other']} "
-            f"MERGE (y)-[:{e['t']}]->(x)",
-            "transfer-edge-in",
-        )
-        moved += 1
+    for direction, edges in (("out", out), ("in", inn)):
+        for e in edges:
+            other = canon_id if e["other"] == stale_id else e["other"]
+            if direction == "in" and e["other"] == stale_id:
+                continue  # the self-loop, already moved as an outgoing edge
+            src, dst = (canon_id, other) if direction == "out" else (other, canon_id)
+            if _move_edge(roadmap, src, dst, e["t"], e.get("props")):
+                moved += 1
+            else:
+                report_dropped_edge(
+                    dropped, "reconcile", node, e["t"], direction, _far_end(e),
+                    e.get("props"), "could not be re-created on the surviving node")
     return moved
 
 
-def phase_reconcile(roadmap, s: Survey, batch_size):
+def _type_identity(r):
+    labels = [lb for lb in r.get("labels") or [] if lb in ALL_TYPE_LABELS]
+    return {"label": labels[0] if labels else (r.get("labels") or [None])[0],
+            "name": r.get("name"), "file": r.get("file")}
+
+
+def phase_reconcile(roadmap, s: Survey, batch_size, dropped=None):
     """Funde os nos Rust pre-existentes que o levantamento mostra serem o mesmo
     conceito de um no canonico (mesmo tipo, `file` em falta ou errado, ou
-    etiqueta errada), preservando as arestas."""
+    etiqueta errada), preservando as arestas.
+
+    This is where a re-kinded item lands: an `enum` that became a `trait` keeps
+    its `{name, file}` identity, `phase_nodes` creates the `RustTrait`, and the
+    old `RustEnum` is merged into it here. Its edges -- `PORTS` and every other
+    type -- move with their properties (`_transfer_edges`); one that cannot be
+    moved is appended to `dropped` and printed, never lost silently.
+    """
     print("phase: reconcile", file=sys.stderr)
+    if dropped is None:
+        dropped = []
     rows = read(
         roadmap,
         "MATCH (n) WHERE n:RustStruct OR n:RustTrait OR n:RustEnum OR n:RustAlias "
@@ -756,7 +882,8 @@ def phase_reconcile(roadmap, s: Survey, batch_size):
     merged = deleted = unresolved = 0
     for r in dupes:
         cid = canon[s.by_key[(r["name"], r["file"])]["qualifiedName"]]
-        merged += _transfer_edges(roadmap, r["id"], cid, batch_size)
+        merged += _transfer_edges(roadmap, r["id"], cid, batch_size,
+                                  _type_identity(r), dropped)
         rmp(
             "delete",
             roadmap,
@@ -782,7 +909,8 @@ def phase_reconcile(roadmap, s: Survey, batch_size):
         cid = canon[target["qualifiedName"]]
         if cid == r["id"]:
             continue
-        merged += _transfer_edges(roadmap, r["id"], cid, batch_size)
+        merged += _transfer_edges(roadmap, r["id"], cid, batch_size,
+                                  _type_identity(r), dropped)
         rmp(
             "delete",
             roadmap,
@@ -856,7 +984,7 @@ def phase_audit(roadmap, s: Survey):
     return problems
 
 
-def phase_prune(roadmap, s: Survey, batch_size):
+def phase_prune(roadmap, s: Survey, batch_size, dropped=None):
     """Delete the files and nodes the survey no longer confirms.
 
     `phase_audit` reports them; without this phase they accumulate, and a node
@@ -901,8 +1029,21 @@ def phase_prune(roadmap, s: Survey, batch_size):
     The remaining safeguard is unchanged and unconditional: an empty survey is
     refused, so a failed extraction can never be read as "the crate has no
     types".
+
+    **No `PORTS` edge is lost silently.** Before a node carrying `PORTS` is
+    deleted, a surviving node with the same identity takes the edge with all
+    its properties: for a `RustFn` (identity `qualifiedName`), the one surviving
+    `RustFn` with the same `file` and `name`, when exactly one exists -- the fn
+    whose kind or owner changed. A type cannot have such a survivor here: a
+    stale type's `{name, file}` is by definition absent from the survey, and a
+    re-kinded type keeps its `{name, file}` and is merged by `phase_reconcile`.
+    Every edge that is not moved is printed with the node's identity, the
+    Lucene target and its `note`, and appended to `dropped`, which `main`
+    writes to the dropped-ports report.
     """
     print("phase: prune", file=sys.stderr)
+    if dropped is None:
+        dropped = []
     if not s.types or not s.fns or not s.files:
         print("  survey is empty; refusing to prune", file=sys.stderr)
         return
@@ -915,7 +1056,8 @@ def phase_prune(roadmap, s: Survey, batch_size):
         "MATCH (t) WHERE t:RustStruct OR t:RustTrait OR t:RustEnum OR t:RustAlias "
         "RETURN t.name AS name, t.file AS file",
     )
-    graph_fns = read(roadmap, "MATCH (f:RustFn) RETURN f.qualifiedName AS qn")
+    graph_fns = read(roadmap, "MATCH (f:RustFn) RETURN f.qualifiedName AS qn, "
+                              "id(f) AS id, f.name AS name, f.file AS file")
 
     stale_types = [
         {"name": r["name"], "file": r["file"]}
@@ -953,13 +1095,48 @@ def phase_prune(roadmap, s: Survey, batch_size):
         print(f"  KEPT (carries a curated or macro-expansion PORTS): {t}",
               file=sys.stderr)
     if stale_types:
-        ported = {(r["name"], r["file"]) for r in read(
+        doomed = {(t["name"], t["file"]) for t in stale_types}
+        for r in read(
             roadmap,
-            "MATCH (t)-[:PORTS]->(:Class) RETURN t.name AS name, t.file AS file")}
-        for t in stale_types:
-            if (t["name"], t["file"]) in ported:
-                print("  RETIRING a doc-comment PORTS with its deleted node: "
-                      f"{t}", file=sys.stderr)
+            "MATCH (t)-[e:PORTS]->(c:Class) "
+            "WHERE t:RustStruct OR t:RustTrait OR t:RustEnum OR t:RustAlias "
+            "RETURN t.name AS name, t.file AS file, labels(t) AS labels, "
+            "c.qualifiedName AS lucene, properties(e) AS props",
+        ):
+            if (r["name"], r["file"]) in doomed:
+                report_dropped_port(
+                    dropped, "prune", _type_identity(r), r["lucene"], r.get("props"),
+                    "node deleted: the survey no longer declares it")
+    if stale_fns:
+        doomed_qn = {f["qn"] for f in stale_fns}
+        survivors = defaultdict(list)
+        for r in graph_fns:
+            if r["qn"] not in doomed_qn and r.get("name") is not None:
+                survivors[(r.get("file"), r["name"])].append(r)
+        for r in read(
+            roadmap,
+            "MATCH (f:RustFn)-[e:PORTS]->(c:Class) "
+            "RETURN f.qualifiedName AS qn, f.name AS name, f.file AS file, "
+            "id(c) AS cid, c.qualifiedName AS lucene, properties(e) AS props",
+        ):
+            if r["qn"] not in doomed_qn:
+                continue
+            node = {"label": "RustFn", "qualifiedName": r["qn"],
+                    "name": r["name"], "file": r["file"]}
+            heirs = survivors.get((r["file"], r["name"]), [])
+            if len(heirs) == 1:
+                if _move_port(roadmap, heirs[0]["id"], r):
+                    print(f"  MOVED PORTS {r['qn']} -> {heirs[0]['qn']} "
+                          f"({r['lucene']})", file=sys.stderr)
+                    continue
+                reason = "could not be re-created on the surviving node"
+            elif heirs:
+                reason = (f"node deleted: {len(heirs)} surviving RustFn share its "
+                          "file and name, none is its unique successor")
+            else:
+                reason = "node deleted: the survey no longer declares it"
+            report_dropped_port(dropped, "prune", node, r["lucene"],
+                                r.get("props"), reason)
 
     survey_files = {f["path"] for f in s.files}
     stale_files = [
@@ -1001,6 +1178,13 @@ def main():
     ap.add_argument("--survey", required=True)
     ap.add_argument("--batch-size", type=int, default=200)
     ap.add_argument(
+        "--dropped-ports-report",
+        default=str(kg_target() / "rucene_kg" / "dropped_ports.jsonl"),
+        help="JSON-lines file each edge the reconcile phase could not move, "
+        "and each PORTS edge the prune phase could not keep, is appended to "
+        "(default: %(default)s)",
+    )
+    ap.add_argument(
         "--phase",
         default="all",
         choices=[
@@ -1016,6 +1200,7 @@ def main():
     )
     args = ap.parse_args()
     s = Survey(args.survey)
+    dropped = []
     if args.phase in ("all", "repair"):
         phase_repair(args.roadmap, s, args.batch_size)
     if args.phase in ("all", "nodes"):
@@ -1023,13 +1208,25 @@ def main():
     if args.phase in ("all", "edges"):
         phase_edges(args.roadmap, s, args.batch_size)
     if args.phase in ("all", "reconcile"):
-        phase_reconcile(args.roadmap, s, args.batch_size)
+        phase_reconcile(args.roadmap, s, args.batch_size, dropped)
     if args.phase in ("all", "prune"):
-        phase_prune(args.roadmap, s, args.batch_size)
+        phase_prune(args.roadmap, s, args.batch_size, dropped)
     if args.phase in ("all", "stamp"):
         phase_stamp(args.roadmap, s)
     if args.phase in ("all", "audit"):
         phase_audit(args.roadmap, s)
+    if dropped:
+        write_dropped_report(args.dropped_ports_report, s.commit, dropped)
+
+
+def write_dropped_report(path, commit, dropped):
+    """Append the dropped `PORTS` edges to `path`, one JSON object per line."""
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open("a", encoding="utf-8") as fh:
+        for rec in dropped:
+            fh.write(json.dumps({"surveyCommit": commit, **rec}, sort_keys=True) + "\n")
+    print(f"  dropped PORTS edges: {len(dropped)}, reported in {out}", file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@ A class with no unmatched member is written as three zeros rather than left
 null: "nothing absent" and "never measured" must not look alike.
 
 Usage:
-    python3 tools/kg/triage_load.py rucene /tmp/triage/triaged.json \
+    python3 tools/kg/triage_load.py rucene <kg-target>/triage/triaged.json \
         --commit "$COMMIT" --date "$DATE"
 """
 import argparse

@@ -10,7 +10,7 @@ import re
 import sys
 import argparse
 
-from kgio import PER_ROW_SCAN_BATCH, client
+from kgio import PER_ROW_SCAN_BATCH, client, kg_target
 
 
 def cypher_escape(value: str) -> str:
@@ -162,9 +162,14 @@ def main():
         default=["methods", "constructors", "fields"],
         help="Tipos de membros a carregar",
     )
+    parser.add_argument(
+        "--input-dir",
+        default=str(kg_target() / "lucene_kg_enrich"),
+        help="the `--output-dir` of enrich_lucene_kg.py (default: %(default)s)",
+    )
     args = parser.parse_args()
 
-    base = "/tmp/lucene_kg_enrich"
+    base = args.input_dir
     for kind in args.members:
         create_path = f"{base}/{kind}_create.cypher"
         update_path = f"{base}/{kind}_update.cypher"

@@ -52,6 +52,16 @@ impl std::fmt::Debug for BlockTreeShared {
 /// One field of the block-tree terms dictionary.
 ///
 /// Equivalent to `org.apache.lucene.codecs.lucene103.blocktree.FieldReader`.
+///
+/// **Divergence from Lucene 10.5.0.** Java's `FieldReader` keeps a reference
+/// to its parent `Lucene103BlockTreeTermsReader` (`parent`) and the `.tip`
+/// input it is handed (`indexIn`), and its terms enums reach the `.tim` input,
+/// the postings reader and the segment name through `parent`
+/// (`FieldReader.java:47-88`). The parent owns its field readers, so a back
+/// reference would be an ownership cycle in Rust; the state the field and its
+/// enums read is instead held in one [`BlockTreeShared`], which the terms
+/// reader and every field reader share through an [`Arc`]. The same inputs
+/// and the same postings reader are reached; only the path to them differs.
 #[derive(Clone)]
 pub struct FieldReader {
     shared: Arc<BlockTreeShared>,

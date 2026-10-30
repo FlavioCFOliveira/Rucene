@@ -46,7 +46,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from load_rucene_kg import esc, read, rmp, run_unwind  # noqa: E402
-from kgio import PER_ROW_SCAN_BATCH  # noqa: E402
+from kgio import PER_ROW_SCAN_BATCH, kg_target  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Extraccao
@@ -774,7 +774,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("roadmap")
     ap.add_argument("--lucene-root", default="/tmp/lucene1050")
-    ap.add_argument("--out", default="/tmp/lucene_tests_kg/survey.json")
+    ap.add_argument("--out", default=str(kg_target() / "lucene_tests_kg" / "survey.json"))
     ap.add_argument("--repo-root", default=".")
     ap.add_argument("--commit", required=True)
     ap.add_argument("--date", required=True)

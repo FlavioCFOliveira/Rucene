@@ -45,7 +45,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from kgio import PER_ROW_SCAN_BATCH, read as kg_read, unwind
+from kgio import PER_ROW_SCAN_BATCH, kg_target, read as kg_read, unwind
 
 # A Lucene type named in full, and the short Java spelling the crate uses for a
 # *nested* one. `CLAUDE.md` 14.1 asks each item to name its Lucene equivalent; it
@@ -755,7 +755,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("roadmap")
     ap.add_argument("--source-root", default=".")
-    ap.add_argument("--out", default="/tmp/rucene_kg/port_evidence.json")
+    ap.add_argument("--out", default=str(kg_target() / "rucene_kg" / "port_evidence.json"))
     ap.add_argument("--commit")
     ap.add_argument("--date")
     ap.add_argument("--phase", default="extract",

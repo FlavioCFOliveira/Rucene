@@ -11,12 +11,15 @@ from collections import defaultdict
 
 import argparse
 
+sys.path.insert(0, str(Path(__file__).parent))
+from kgio import kg_target
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--source-root',
                     default='/tmp/lucene1050/lucene/core/src/java/org/apache/lucene')
 parser.add_argument('--lucene-root', default='/tmp/lucene1050',
                     help='clone root the file paths are made relative to')
-parser.add_argument('--output-dir', default='/tmp/lucene_kg')
+parser.add_argument('--output-dir', default=str(kg_target() / 'lucene_kg'))
 parser.add_argument('--commit', default='UNKNOWN')
 parser.add_argument('--date', default='UNKNOWN')
 
@@ -351,7 +354,7 @@ if __name__ == '__main__':
         commit = args.commit
         gdate = args.date
         out_dir = pathlib.Path(args.output_dir)
-        out_dir.mkdir(exist_ok=True)
+        out_dir.mkdir(parents=True, exist_ok=True)
         sections, updates = emit_cypher(data, commit, gdate)
         for name, lines in sections.items():
             (out_dir / f'{name}.cypher').write_text('\n'.join(lines), encoding='utf-8')

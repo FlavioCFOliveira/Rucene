@@ -366,6 +366,12 @@ impl LeafReader for SortingCodecReader {
 }
 
 impl CodecReader for SortingCodecReader {
+    /// `SortingCodecReader` extends `FilterCodecReader`, whose `getDelegate()`
+    /// is the reader it sorts.
+    fn filter_codec_reader_delegate(&self) -> Option<&Arc<dyn CodecReader>> {
+        Some(&self.inner)
+    }
+
     /// Equivalent to `SortingCodecReader.getFieldsReader()`
     /// (`SortingCodecReader.java:486-493`).
     fn get_fields_reader(&self) -> Result<Option<Box<dyn StoredFieldsReader>>> {
@@ -4280,6 +4286,35 @@ mod tests {
         assert_eq!(points.size().unwrap(), 5);
         assert_eq!(points.doc_count().unwrap(), 5);
         composite.check_integrity().unwrap();
+    }
+
+    /// `FilterCodecReader.unwrap` steps through every `FilterCodecReader` —
+    /// the class itself, the `wrapLiveDocs` reader and `SortingCodecReader` —
+    /// down to the first reader that is not one (`FilterCodecReader.java:44-49`).
+    #[test]
+    fn filter_codec_reader_unwrap_reaches_the_innermost_reader() {
+        use crate::index::filter_reader::FilterCodecReader;
+        let segment = two_segments().remove(0);
+        let max_doc = segment.max_doc();
+        let live: Arc<dyn CodecReader> = Arc::new(FilterCodecReader::wrap_live_docs(
+            Arc::clone(&segment),
+            None,
+            max_doc,
+        ));
+        let doubly: Arc<dyn CodecReader> = Arc::new(FilterCodecReader::new(live));
+        assert!(Arc::ptr_eq(&FilterCodecReader::unwrap(&doubly), &segment));
+        assert!(Arc::ptr_eq(&FilterCodecReader::unwrap(&segment), &segment));
+
+        let composite = SlowCompositeCodecReaderWrapper::wrap(two_segments()).unwrap();
+        let reverse: crate::index::index_sorter::DocComparator = Box::new(|a, b| b.cmp(&a));
+        let doc_map = Arc::new(Sorter::sort(5, &reverse).unwrap());
+        let sorted: Arc<dyn CodecReader> =
+            Arc::new(SortingCodecReader::wrap(Arc::clone(&composite), doc_map, None).unwrap());
+        let wrapped: Arc<dyn CodecReader> = Arc::new(FilterCodecReader::new(sorted));
+        assert!(Arc::ptr_eq(
+            &FilterCodecReader::unwrap(&wrapped),
+            &composite
+        ));
     }
 
     /// A sorted view over the merged view answers postings, points and

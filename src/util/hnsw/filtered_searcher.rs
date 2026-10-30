@@ -66,13 +66,7 @@ impl FilteredHnswGraphSearcher {
             ));
         }
         let visited = Self::bit_set_for(i64::from(filter_size), graph_size, k);
-        Ok(Self::new(
-            k,
-            NeighborQueue::new(k, true),
-            visited,
-            filter_size,
-            graph,
-        ))
+        Self::new(k, NeighborQueue::new(k, true)?, visited, filter_size, graph)
     }
 
     fn new(
@@ -81,7 +75,7 @@ impl FilteredHnswGraphSearcher {
         visited: Box<dyn BitSet>,
         filter_size: i32,
         graph: &dyn HnswGraph,
-    ) -> Self {
+    ) -> Result<Self> {
         debug_assert!(
             graph.max_conn() > 0,
             "graph must have known max connections"
@@ -101,17 +95,17 @@ impl FilteredHnswGraphSearcher {
             f64::from(graph.max_conn()),
         )) as i32;
         let entry_point_searcher = HnswGraphSearcher::new(
-            NeighborQueue::new(k, true),
+            NeighborQueue::new(k, true)?,
             Box::new(FixedBitSet::new(graph.max_node_id().max(0) as usize + 1)),
         );
-        Self {
+        Ok(Self {
             entry_point_searcher,
             candidates,
             visited,
             bulk_scores: Vec::new(),
             max_exploration_multiplier,
             min_to_score,
-        }
+        })
     }
 
     fn bit_set_for(filter_size: i64, graph_size: i32, topk: i32) -> Box<dyn BitSet> {

@@ -30,7 +30,7 @@ reachable, a script stops with a message that says how to start one.
 | `lucene_modules_kg.py` | Registers all 35 modules of the Lucene distribution with their size and an explicit `inScope` flag, so port coverage is quoted against a stated denominator (`CLAUDE.md` §6.1). |
 | `lucene_tests_kg.py` | Loads the Lucene test surface (`TestClass`, `TestMethod`) and its correspondence with the crate. |
 | `lucene_structure_kg.py` | Loads the Lucene nested types and members in `UNWIND` batches, calling `enrich_lucene_kg.py`'s extractors directly. Replaces feeding its generated Cypher through `run_kg_batches.py`, which cost one process launch per statement — about 23,000 for the member surface. `--prune` removes nested types the reference tree no longer declares; the member phase never prunes. |
-| `commits_kg.py` | Mirrors the full commit history and derives `CLOSES_TASK` from the message conventions the history actually uses. |
+| `commits_kg.py` | Mirrors the commit history and writes, as `knowledge-model.md` defines them, `COMMITTED_IN` (`File` → `Commit`, for each file the commit changed, matched by `path`; no `File` node is created, and a merge commit lists no files), `CLOSES_TASK` (`Commit` → `Task`) and `REFERENCES_TASK` (`Commit` → `Task`, from a `Refs` footer). **`rmp` decides closings:** `--closings FILE` takes an `rmp` export, a JSON list of `{"task": N, "commit_close": "<hash>"}`; each hash is resolved with `git rev-parse`. A malformed file (not JSON, wrong shape, a task listed twice) stops the tool; an entry whose hash is not hex or names no single commit is printed as `BAD_CLOSING task=N hash=H reason=…`, appended to `--bad-closings-report` (default `rucene_kg/bad_closings.jsonl` under the KG target directory), and its task falls back to the messages. Every other listed task is closed by exactly that commit, and a message claiming another closing commit for it is printed as a `DISAGREEMENT`. The tool never calls `rmp`. Messages decide only for unlisted tasks, read from a line-start `Closes` / `Fixes` footer, a `Task: #15` trailer, the task tag of the first body line (`tasks #202, #203 and #204. …`, not `Task #12, which …`) or a task tag anywhere in the subject line (`Task 99: …`, `fix(index): task 93 …`, `Sprint 1 Task #2: …`); body prose never counts, and a number must end at a word boundary (`task 10x faster`, `tasks 3 ways`, `tasks 2.5` are not tags). Because the engine keeps one edge per node pair, writing `CLOSES_TASK` or `REFERENCES_TASK` first deletes the other type's edge on that pair, and every written edge is read back (a missing one prints `MISSING …`). A `CLOSES_TASK` a closings-file task holds from any other commit is deleted and printed (`RETIRED CLOSES_TASK …`). Every number of a list is read. `--since <commit>` limits all three edges to the commits after `<commit>`. |
 | `rust_surface.py` | Parses the crate's Rust surface the way the member triage needs it: every `impl` and `trait` block with the functions inside it, the doc comment above each one, the `#[derive]`s on each type declaration, its enum variants with their own doc comments, and the `macro_rules!` bodies that `extract_rucene_kg.py` deliberately blanks. A scanner, not a compiler — brace depth over masked text. |
 | `triage_dump.py` | Snapshots, once, the graph facts the triage reads, so the classification runs against a fixed graph state instead of a moving one. Writes one JSON file per query into the output directory, `supers_all.json` among them — the Lucene type hierarchy without the `portScope` filter, which `triage_members.py` loads separately for the `doc-comment` and `related` rules. It is a required input: without it the re-derivation aborts with `FileNotFoundError` before it classifies anything. |
 | `triage_repro.py` | Reproduces `measure_depth` exactly and emits the `(Lucene type, Java method)` pairs it could not match. Fails if its own per-type counts differ from the `memberMatched` the graph holds — the guard that keeps the triage attached to the floor it classifies. |
@@ -56,12 +56,28 @@ path `CLAUDE.md` §16.1 names. They used to hard-code `/tmp/lucene-10.5.0`, whic
 left the Lucene half of the pipeline unable to run at all against a clone at the
 documented path.
 
+### Where the outputs go
+
+Every output a script writes by default — JSON surveys, generated Cypher, the
+cargo target of `--expand`, the dropped-ports report, the self-checks' scratch
+files and pytest's temporary directories — goes under
+`/data/dev/github.com/FlavioCFOliveira/.rucene-kg-target`, the sibling of the
+checkout that `kgio.DEFAULT_KG_TARGET` names. `/tmp` is tmpfs (RAM) on the
+development machine, and the large outputs of a sync written there have filled
+swap, so no script defaults to `/tmp` or to a `tempfile` directory.
+`RUCENE_KG_TARGET` overrides the directory for every script at once, and each
+script's own output flag (`--out`, `--output`, `--output-dir`, `--input-dir`,
+`--dropped-ports-report`) overrides it for that script. The only `/tmp` default
+left is `--lucene-root /tmp/lucene1050`, an input: the clone path `CLAUDE.md`
+§16.1 names.
+
 Then, with `COMMIT` and `DATE` set to the Rucene commit being surveyed
 (`git rev-parse HEAD` and `git show -s --format=%cs HEAD`):
 
 ```bash
 COMMIT=$(git rev-parse HEAD)
 DATE=$(git show -s --format=%cs HEAD)
+KG=${RUCENE_KG_TARGET:-/data/dev/github.com/FlavioCFOliveira/.rucene-kg-target}
 
 # 0. Lucene: the module inventory that states the port's denominator
 python3 tools/kg/lucene_modules_kg.py rucene --lucene-root /tmp/lucene1050 \
@@ -70,11 +86,11 @@ python3 tools/kg/lucene_modules_kg.py rucene --lucene-root /tmp/lucene1050 \
 # 1. Lucene: packages, files, top-level types, dependencies
 python3 tools/kg/extract_lucene_kg.py \
     --source-root /tmp/lucene1050/lucene/core/src/java/org/apache/lucene \
-    --output-dir /tmp/lucene_kg --commit "$COMMIT" --date "$DATE"
-for f in /tmp/lucene_kg/nodes_*.cypher /tmp/lucene_kg/edges_*.cypher; do
+    --output-dir "$KG"/lucene_kg --commit "$COMMIT" --date "$DATE"
+for f in "$KG"/lucene_kg/nodes_*.cypher "$KG"/lucene_kg/edges_*.cypher; do
     python3 tools/kg/run_kg_batches.py create rucene "$f"
 done
-python3 tools/kg/run_kg_batches.py update rucene /tmp/lucene_kg/update.cypher
+python3 tools/kg/run_kg_batches.py update rucene "$KG"/lucene_kg/update.cypher
 
 # 2. Lucene: inner types, members and the JPMS descriptor
 python3 tools/kg/lucene_structure_kg.py rucene --lucene-root /tmp/lucene1050 \
@@ -82,11 +98,11 @@ python3 tools/kg/lucene_structure_kg.py rucene --lucene-root /tmp/lucene1050 \
 
 # 3. Rucene: the crate survey
 python3 tools/kg/extract_rucene_kg.py --source-root . --expand \
-    --commit "$COMMIT" --date "$DATE" --output /tmp/rucene_kg/survey.json
-python3 tools/kg/load_rucene_kg.py rucene --survey /tmp/rucene_kg/survey.json
+    --commit "$COMMIT" --date "$DATE" --output "$KG"/rucene_kg/survey.json
+python3 tools/kg/load_rucene_kg.py rucene --survey "$KG"/rucene_kg/survey.json
 
 # 4. Port coverage, tasks and the scope decision
-python3 tools/kg/port_coverage_kg.py rucene --survey /tmp/rucene_kg/survey.json \
+python3 tools/kg/port_coverage_kg.py rucene --survey "$KG"/rucene_kg/survey.json \
     --lucene-root /tmp/lucene1050 --commit "$COMMIT" --date "$DATE"
 
 # 5. The port evidence the crate states about itself
@@ -106,15 +122,16 @@ python3 tools/kg/port_evidence_kg.py rucene --source-root . --phase depth \
 python3 tools/kg/nested_port_kg.py rucene --lucene-root /tmp/lucene1050 \
     --commit "$COMMIT" --date "$DATE"
 
-# 6. The commit history
-python3 tools/kg/commits_kg.py rucene
+# 6. The commit history (`--since <commit>` mirrors only the commits after it);
+#    the closings file is an `rmp` export of {task, commit_close}
+python3 tools/kg/commits_kg.py rucene --closings "$KG"/rmp_closings.json
 
 # 7. The Lucene test surface
 python3 tools/kg/lucene_tests_kg.py rucene --lucene-root /tmp/lucene1050 \
     --repo-root . --commit "$COMMIT" --date "$DATE"
 
 # 8. Prove it: the audit must end in `problems: 0`
-python3 tools/kg/audit_kg.py rucene --survey /tmp/rucene_kg/survey.json
+python3 tools/kg/audit_kg.py rucene --survey "$KG"/rucene_kg/survey.json
 ```
 
 Step 5 must run after step 4: it supersedes `PORTS_CANDIDATE` edges with the
@@ -128,9 +145,9 @@ edges steps 5 and 5b wrote — as **two** invocations, because `--phase` is a
 single-choice argument and rejects a comma-separated list:
 
 ```bash
-python3 tools/kg/port_coverage_kg.py rucene --survey /tmp/rucene_kg/survey.json \
+python3 tools/kg/port_coverage_kg.py rucene --survey "$KG"/rucene_kg/survey.json \
     --lucene-root /tmp/lucene1050 --commit "$COMMIT" --date "$DATE" --phase scope
-python3 tools/kg/port_coverage_kg.py rucene --survey /tmp/rucene_kg/survey.json \
+python3 tools/kg/port_coverage_kg.py rucene --survey "$KG"/rucene_kg/survey.json \
     --lucene-root /tmp/lucene1050 --commit "$COMMIT" --date "$DATE" --phase candidates
 ```
 
@@ -142,7 +159,8 @@ after macro expansion. Without it the survey misses 118 real types — the 24
 `BulkOperationPackedN`, the `internal::hppc` containers, the range fields and the
 doc-values iterators — and `load_rucene_kg.py --phase audit` reports them as
 stale nodes to delete, which would silently drop their `PORTS` edges. The flag
-needs the nightly toolchain; `--expanded-file` reuses a captured dump instead.
+needs the nightly toolchain, and builds in the KG target directory (see *Where the
+outputs go*); `--expanded-file` reuses a captured dump instead.
 
 `expanded_evidence_kg.py` reads the same dump for the second thing only the
 compiler can show: the *doc comment* printed above each of those types, which is
@@ -152,7 +170,7 @@ where their `Equivalent to \`org.apache.lucene…\`` claim lives — a claim wri
 `audit_kg.py` alike:
 
 ```bash
-cargo +nightly rustc --lib -- -Zunpretty=expanded > /tmp/rucene_kg/expanded.rs
+cargo +nightly rustc --lib -- -Zunpretty=expanded > "$KG"/rucene_kg/expanded.rs
 ```
 
 Step 4 must run after step 3: the candidate detection reads the crate survey, and
@@ -164,10 +182,10 @@ Never survey a dirty working tree — another task's half-finished work would en
 the graph as fact. Use a detached worktree:
 
 ```bash
-git worktree add --detach /tmp/rucene-survey <commit>
-python3 tools/kg/extract_rucene_kg.py --source-root /tmp/rucene-survey --expand \
-    --commit <full-sha> --date <YYYY-MM-DD> --output /tmp/rucene_kg/survey.json
-git worktree remove /tmp/rucene-survey
+git worktree add --detach "$KG"/rucene-survey <commit>
+python3 tools/kg/extract_rucene_kg.py --source-root "$KG"/rucene-survey --expand \
+    --commit <full-sha> --date <YYYY-MM-DD> --output "$KG"/rucene_kg/survey.json
+git worktree remove "$KG"/rucene-survey
 ```
 
 ## `load_rucene_kg.py` phases
@@ -179,10 +197,30 @@ git worktree remove /tmp/rucene-survey
 | `repair` | Hygiene, using the survey as ground truth: deletes unlabelled nodes and the Lucene stub duplicates (re-linking their `PORTS` to the canonical type), re-points a `PORTS` that aimed at a Java *file* to the type, lifts `TestSuite` edges to file level, and collapses `Struct`/`Trait`/`Enum`/`Interface`/`Test`/`Component` and Rust-side `Class` nodes onto `RustStruct`/`RustTrait`/`RustEnum`/`RustAlias`/`RustFn`. Nodes are matched by `id(n)`, the only unambiguous key while legacy labels coexist. |
 | `nodes` | Creates the crate root, then the `File`, `RustStruct`, `RustTrait`, `RustEnum`, `RustAlias` and `RustFn` nodes. |
 | `edges` | `CONTAINS`, `DECLARES`, `IMPLEMENTS`, `DEPENDS_ON`. |
-| `reconcile` | Merges pre-existing nodes that the survey shows to be the same type as a canonical one (missing or wrong `file`, wrong label, or an outright duplicate), moving their edges first so nothing is lost. |
+| `reconcile` | Merges pre-existing nodes that the survey shows to be the same type as a canonical one (missing or wrong `file`, wrong label, or an outright duplicate), moving their edges first so nothing is lost. A re-kinded item (an `enum` that became a `trait`, same `name` and `file`) is merged here. Every edge, of every type and in both directions, moves with **all** its properties (`evidence`, `note`, `declaredAt`, `gitCommit`, …) and is read back; when the survivor already has the edge, its own values are kept and the stale ones only fill missing keys (`coalesce`); edges used to be re-created by type alone, which dropped every property, a `PORTS` edge's `note` among them. An edge the engine will not re-create (the survivor already has another edge to the same node) is reported as dropped. |
 | `stamp` | Stamps `gitCommit`/`gitDate` on every edge shape this loader owns. It runs after `reconcile` because moving an edge creates a new one. It never touches the Lucene side. |
-| `prune` | Deletes the `File` nodes and the type/function nodes the survey no longer confirms. Two safeguards: an empty survey is refused, so a failed extraction can never be read as "the crate has no types"; and a node is spared when its `PORTS` edge is one the crate survey is not the authority on — `evidence: "curated"` (asserted by hand, with no source site) or `declarationSource: "macro-expansion"` (declared by a type no source line contains, invisible to a survey run without `--expand`). It used to spare *every* node carrying `PORTS`, which — with nothing retiring a stale edge — left a deleted file's port in the graph for ever. |
+| `prune` | Deletes the `File` nodes and the type/function nodes the survey no longer confirms. Two safeguards: an empty survey is refused, so a failed extraction can never be read as "the crate has no types"; and a node is spared when its `PORTS` edge is one the crate survey is not the authority on — `evidence: "curated"` (asserted by hand, with no source site) or `declarationSource: "macro-expansion"` (declared by a type no source line contains, invisible to a survey run without `--expand`). It used to spare *every* node carrying `PORTS`, which — with nothing retiring a stale edge — left a deleted file's port in the graph for ever. No `PORTS` edge goes silently: a stale `RustFn` whose `file` and `name` match exactly one surviving `RustFn` (its kind or owner changed) hands the edge, with its properties, to that survivor; every other edge on a deleted node is printed to stderr with the node's identity, the Lucene target and its `note`. |
 | `audit` | Compares the graph against the survey: every `.rs` file has exactly one node, every type node matches the survey's `(name, file)` and label, no stale node, no duplicate. Exits with a report; `audit problems: 0` is the pass condition. |
+
+Every edge `reconcile` could not move, and every `PORTS` edge `prune` could not
+keep, is also appended, one JSON object per line (`surveyCommit`, `phase`,
+`node`, `edgeType`, `direction`, `other`, `lucene` for a `PORTS` edge, `note`,
+`evidence`, `declaredAt`, `properties`, `reason`), to `--dropped-ports-report`, by default
+`rucene_kg/dropped_ports.jsonl` under the KG target directory. The file is only
+written when an edge was dropped.
+
+## Unit tests
+
+`tests/` holds pytest unit tests that run against an in-memory fake of the graph
+client and need no graph server:
+
+```bash
+python3 -m pytest -q -p no:cacheprovider tools/kg/tests
+```
+
+pytest is not a dependency of the crate; install it wherever suits (for example
+`pip install --target "$KG"/pydeps pytest` and `PYTHONPATH="$KG"/pydeps`). The
+tests keep pytest's temporary directories under the KG target directory.
 
 ## `port_coverage_kg.py` phases
 

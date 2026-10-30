@@ -10,9 +10,14 @@ const NUM_LOCKS: usize = 512;
 /// Provides read-and-write striped locks for access to the nodes of an
 /// [`OnHeapHnswGraph`](super::on_heap::OnHeapHnswGraph).
 ///
-/// Equivalent to `org.apache.lucene.util.hnsw.HnswLock`. For use by
-/// [`HnswConcurrentMergeBuilder`](super::concurrent_merge_builder::HnswConcurrentMergeBuilder)
-/// and its graph builders.
+/// Equivalent to `org.apache.lucene.util.hnsw.HnswLock`.
+///
+/// **Divergence from Lucene 10.5.0.** Lucene's `HnswConcurrentMergeBuilder`
+/// and its workers guard a neighbour's array with these stripes. This port's
+/// [`OnHeapHnswGraph`](super::on_heap::OnHeapHnswGraph) locks every neighbour
+/// array itself, which Rust needs because Lucene's workers also write without
+/// a lock (see that type's documentation), so the port's concurrent merge
+/// takes no stripe and the type is kept only as the port of Lucene's class.
 #[derive(Debug)]
 pub struct HnswLock {
     locks: Vec<RwLock<()>>,
