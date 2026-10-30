@@ -95,7 +95,7 @@ Identity is `qualifiedName`.
 | `portScopeRule` | The mechanical rule that assigned `portScope`. |
 | `portState` | For a top-level type: `"ported"`, `"candidate"`, `"unported"`. For a nested one: `"ported"`, `"absorbed"`, `"unported"` — see below. |
 | `portStateEvidence` | On a nested type, on what basis its `portState` was decided: `"doc-comment"`, `"curated"`, `"not-nameable"`, `"verified-absorption"`, `"verified-absent"`. Never absent. |
-| `javaVisibility` / `javaPublished` / `javaUsedAcrossFiles` | On a nested type, the Java facts the classification turns on: its effective visibility, whether it and every enclosing type are `public`/`protected`, and whether another `lucene/core` file names it as `Outer.Inner`. |
+| `javaVisibility` / `javaPublished` / `javaUsedAcrossFiles` | On a nested type, the Java facts the classification turns on: its effective visibility, whether it and every enclosing type are `public`/`protected`, and whether another `lucene/core` file names it as `Outer.Inner`. On a **top-level** type only `javaVisibility` is set, to `"public"` or `"package"`, read from the `ACC_PUBLIC` flag of its class file in `lucene-core-10.5.0.jar` by `tools/kg/lucene_calls_kg.py`. |
 | `nestedHost` / `nestedHostFiles` | On a nested type, the nearest enclosing type that has a port, and the crate file(s) that port it. |
 | `portDestination` | On an `unported` nested type, the crate file its port belongs in. |
 | `portStateNote` | Why the mechanical `portState` was overridden by hand. Present only on the types where the heuristic was verified wrong. **A type carrying this note is skipped by the mechanical pass**, so a hand verification survives the next sync — see below. |
@@ -354,6 +354,7 @@ A Java method, constructor, or field member of a `lucene/core` type. Identity is
 | `modifiers` | Access and other modifiers (`public`, `protected`, `static`, `final`, etc.). |
 | `returnType` | Return/field type string (when available). |
 | `parentQualifiedName` | Enclosing class qualified name. |
+| `overridesExternal` | List of strings, `"<jdk type>#<name>(<param types>)"` (e.g. `"java.io.Closeable#close()"`): the JDK members this method overrides or implements, read from the bytecode by `tools/kg/lucene_calls_kg.py`. Absent when there is none. Callers that dispatch through such a JDK type are outside the jar and have no `CALLS` edge. |
 | `gitCommit` / `gitDate` | Provenance stamp. |
 
 ### `File`
@@ -712,10 +713,14 @@ and conservative for the rest.
 | `COVERED_BY` | `TestClass` → `File`. The Rust file that declares the port of the type this Lucene test exercises, and that declares at least one `#[test]`. `evidence` is `ported-type-file-has-tests`, which is exactly what it proves — see `ruceneCoverage` above. |
 | `SPECIFIED_IN` | `Feature` → `File` (specification document). |
 | `REFERENCES` | `Project` → `Project` (Rucene references Apache Lucene Core 10.5.0), `Project` → `Feature` (the project specification), and `Feature` → `Package` (the Lucene packages a Rucene capability covers). It is **not** a port relation: two `RustEnum` → `Class` edges written this way by an early sync were converted to `PORTS` at `2855d29`, their claim verified against the `Equivalent to …` doc comments in `src/index/mod.rs`. |
+| `REFERENCES` (crate) | Rust item (`RustStruct`/`RustEnum`/`RustTrait`/`RustAlias`/`RustFn`) or `File` → Rust item. The source's code names the target: one edge per (referrer, target) pair. Written whole by `tools/kg/rust_refs_kg.py`, which owns every edge carrying one of its two `evidence` values and replaces them on each run. `evidence: "rust-analyzer-scip"` — the name was resolved by rust-analyzer (`rust-analyzer scip`); the referrer is the innermost KG item whose span contains the occurrence (a closure or nested fn credits its enclosing fn, an `impl Trait for Type` method its self type, a module-level `const`/`static` or macro invocation the `File`); `use` declarations and self references are not references. `evidence: "macro-body-lexical"` — a `macro_rules!` body **names** the target in its text and the referrer is the `File` of an invocation; rust-analyzer reports nothing inside generated code, so this is the only evidence there is for it, and it is weaker. `prodRefs` / `testRefs` (integers) count the occurrences at production sites and at test sites (a file outside `src/`, or a span gated by `#[cfg(test)]`, marked `#[test]`/`#[tokio::test]`, in a `mod tests`/`mod test`, or in a `#[cfg(test)] impl`). Carries `gitCommit`/`gitDate`. |
+| `CALLS` | Lucene `Method` or `Class` → Lucene `Method`. The source's bytecode in the released `lucene-core-10.5.0.jar` (SHA-1 checked against Maven Central) uses the target: `kind: "invoke"` for an `invoke*` instruction or the method handle a lambda or method reference binds, `kind: "field"` for `get`/`put` `field`/`static`. The target is the member javac named, resolved up the class hierarchy to its declaring class — so a virtual call reaches the static receiver's declaration, and its overriders are reached through `OVERRIDES`. The source is a `Class` when the code belongs to no modelled member (a static initialiser). A lambda body is credited to the member that wrote it, an anonymous or local class's code to its `EnclosingMethod`; bridge methods are never sources; recursion is not recorded. `sites` (integer) counts the instructions; `resolution` says how the bytecode member was matched to the `Method` node: `"exact"` (name and parameter types, a type variable matching its erasure), `"synthetic"` (a constructor once the outer-instance or enum name/ordinal parameters are dropped), `"arity"`, `"name"`, `"ambiguous"`. `evidence: "bytecode"`. Written whole by `tools/kg/lucene_calls_kg.py`. Implicit members with no `Method` node — default constructors, record accessors, enum `values`/`valueOf` — are never targets. Carries `gitCommit`/`gitDate`. |
+| `OVERRIDES` | Lucene `Method` → Lucene `Method`: the source overrides or implements the target, a declaration of an ancestor type — **transitively**, so one hop reaches every declaration a virtual call can dispatch from. Generic overrides are found through their bridge methods. `evidence: "bytecode"`; written whole by `tools/kg/lucene_calls_kg.py`. Carries `gitCommit`/`gitDate`. |
+| `PORTS_MEMBER` | `RustFn` → Lucene `Method`: the fn is, by name, the port of that member. `evidence: "name-mapping"` — the rule `port_evidence_kg.py`'s depth measure uses (`fooBar` → `foo_bar`; `getBar`/`isBar`/`hasBar`/`setBar` → `bar`; a constructor → `new`; an acronym kept whole, `getUTF8` → `get_utf8`). `via` says where the member was looked for: `"declared"` (a member-level `PORTS` claim on the fn names it), `"owner"` (the class the fn's declaring Rust type `PORTS`), `"inherited"` (an ancestor of that class, only when the class itself has no match), `"free-fn"` (for a free fn, the classes ported by types of its own file). A fn matching several overloads has one edge to each. Evidence, not proof. Written whole by `tools/kg/no_caller_kg.py --phase members`. Carries `gitCommit`/`gitDate`. |
 | `IMPLEMENTED_IN` | `Component`/`Task`/`Decision`/`Defect` → `File`/`Commit` (where the thing lives, landed, or was fixed). |
 | `COMMITTED_IN` | `File`/`Feature`/`Component`/`Decision`/`Defect` → `Commit`. `tools/kg/commits_kg.py` writes it for every file a commit changed (`git log --name-only --no-renames`), matched by `File.path`; it creates no `File` node, so a changed file without one gets no edge, and a merge commit lists no files. Carries `gitCommit`/`gitDate`. |
 | `CLOSES_TASK` | `Commit` → `Task`: the commit that closed the task, as decided by `rmp`. `commits_kg.py --closings` reads the `rmp` export (`task`, `commit_close`) and resolves each hash with `git rev-parse`; an unresolvable hash is reported as `BAD_CLOSING` and its task falls back to the messages. For a task the export does not list, the commit is read from the message: a line-start `Closes`/`Fixes` footer, the task tag of the first body line, a `Task:` trailer, or a task tag in the subject; body prose never counts. A `CLOSES_TASK` an exported task holds from any other commit is retired. Carries `gitCommit`/`gitDate`. |
-| `REFERENCES_TASK` | `Commit` → `Task`: the commit message carries a `Refs #N` footer, so the commit contributes to the task without closing it. Derived by `tools/kg/commits_kg.py` from footer lines only; a task the same commit closes gets `CLOSES_TASK` instead (the engine keeps one edge per node pair). Carries `gitCommit`/`gitDate`. |
+| `REFERENCES_TASK` | `Commit` → `Task`: the commit message carries a `Refs #N` footer, so the commit contributes to the task without closing it. Derived by `tools/kg/commits_kg.py` from footer lines only; a task the same commit closes gets `CLOSES_TASK` instead: the model allows one task edge per (`Commit`, `Task`) pair, and `commits_kg.py` deletes the other type's edge before writing. Carries `gitCommit`/`gitDate`. |
 | `DELIVERS` | `Task` → `Feature`: the capability the task delivered. |
 | `TESTED_BY` / `MODIFIES` / `FULFILLS` / `IMPLEMENTED_BY` | Legacy provenance edges from the first syncs; not used by new work. |
 
@@ -1098,6 +1103,145 @@ MATCH (a:File {path:'src/index/point_values_writer.rs'})-[:DEPENDS_ON]->(b:File)
 RETURN b.path
 ```
 
+### Who reaches a ported item — `pub` items no production code references
+
+The question: which `pub` items of the crate does no production code reference,
+what is each one's Lucene counterpart, and who calls that counterpart in Lucene
+10.5.0? It joins four edge sets, each written whole by its tool and stamped with
+the commit it was derived at (`tools/kg/README.md`, *No-production-reference
+items*): `REFERENCES` (crate) from rust-analyzer, `CALLS` and `OVERRIDES` from the
+10.5.0 bytecode, and `PORTS_MEMBER` from the name mapping.
+
+* **`pub` item** — a `RustFn` or Rust type node with `visibility = "pub"`,
+  `scope = "crate"`, `file` under `src/`, and not a test. `visibility` is what the
+  survey reads off the declaration, so `pub(crate)` counts as `pub`, and a
+  trait's methods — which carry no `pub` keyword — are `private` and out of the
+  list.
+* **No production reference** — no incoming `REFERENCES` with
+  `evidence = "rust-analyzer-scip"` and `prodRefs > 0`; for a type, a reference
+  from a fn the type itself `DECLARES` does not count. A `macro-body-lexical`
+  edge is reported (`macroBodyMentions`) and never counted, because the compiler
+  did not resolve it.
+* **Counterpart** — for a fn, the `Method`s it `PORTS_MEMBER`, plus the `Class` it
+  `PORTS` directly; for a type, the `Class` it `PORTS`.
+* **Lucene callers** — of a member, every source of a `CALLS` edge into it or into
+  a declaration it `OVERRIDES` (the dispatch a virtual call takes); of a type,
+  every other `Class` that `DEPENDS_ON` it.
+* **Triage class** — `W?`: the counterpart has Lucene callers, so the port lacks
+  a link Lucene has. `P?`: no Lucene caller, and the counterpart is public API (a
+  public or protected member — or a non-private interface member — of a type that
+  is a public top-level type or a nested type with `javaPublished = true`; for a
+  type, the type itself is). `D?`: no counterpart, or a counterpart that is
+  neither called nor API — the item may not need to exist. `reason` refines it.
+  A `W?` is *blocked* when none of its callers' classes has `portState` `ported`
+  or `absorbed`, which `no_caller_kg.py --phase report` computes from the
+  `callerClasses` column. The classes are a triage aid, not a verdict: the name
+  mapping is evidence, and dispatch through a trait on the Rust side, or through
+  a JDK type on the Lucene side, hides real references.
+
+Functions:
+
+```cypher
+MATCH (x:RustFn)
+WHERE x.visibility = 'pub' AND x.scope = 'crate' AND x.kind <> 'test'
+  AND x.file STARTS WITH 'src/'
+OPTIONAL MATCH (x)<-[e:REFERENCES]-() WHERE e.evidence = 'rust-analyzer-scip' AND e.prodRefs > 0
+WITH x, count(e) AS prodReferrers
+WHERE prodReferrers = 0
+OPTIONAL MATCH (x)<-[lx:REFERENCES]-() WHERE lx.evidence = 'macro-body-lexical' AND lx.prodRefs > 0
+WITH x, count(lx) AS macroBodyMentions
+OPTIONAL MATCH (x)-[:PORTS_MEMBER]->(m:Method)<-[:DECLARES]-(mc:Class)
+OPTIONAL MATCH (m)<-[:CALLS]-(c1)
+OPTIONAL MATCH (m)-[:OVERRIDES]->(:Method)<-[:CALLS]-(c2)
+WITH x, macroBodyMentions, m, mc, collect(DISTINCT c1) + collect(DISTINCT c2) AS cs
+OPTIONAL MATCH (m)-[ov:OVERRIDES]->(:Method)
+WITH x, macroBodyMentions, m, mc, cs, count(ov) AS overrides
+WITH x, macroBodyMentions, collect(CASE WHEN m IS NULL THEN null ELSE {
+       member: m.qualifiedName,
+       api: (m.modifiers CONTAINS 'public' OR m.modifiers CONTAINS 'protected'
+             OR (mc.kind = 'interface' AND NOT m.modifiers CONTAINS 'private'))
+            AND (mc.javaPublished = true
+                 OR (mc.javaPublished IS NULL AND mc.javaVisibility = 'public')),
+       inherited: overrides > 0 OR m.overridesExternal IS NOT NULL,
+       callers: [c IN cs | c.qualifiedName],
+       callerClasses: [c IN cs | coalesce(c.parentQualifiedName, c.qualifiedName)]
+     } END) AS cps
+OPTIONAL MATCH (x)-[:PORTS]->(pc:Class)
+WITH x, macroBodyMentions, cps, collect(pc.qualifiedName) AS portsClass
+WITH x, macroBodyMentions, cps, portsClass,
+     reduce(a = [], cp IN cps | a + cp.callers) AS callers,
+     reduce(a = [], cp IN cps | a + cp.callerClasses) AS callerClasses
+RETURN x.qualifiedName AS item, 'RustFn' AS label, x.file AS file,
+       split(x.qualifiedName, '::')[1] AS subsystem,
+       [cp IN cps | cp.member] + portsClass AS counterparts,
+       callers, callerClasses, macroBodyMentions,
+       CASE
+         WHEN size(cps) = 0 AND size(portsClass) = 0 THEN 'D?'
+         WHEN size(callers) > 0 THEN 'W?'
+         WHEN any(cp IN cps WHERE cp.api) OR size(portsClass) > 0 THEN 'P?'
+         ELSE 'D?'
+       END AS class,
+       CASE
+         WHEN size(cps) = 0 AND size(portsClass) = 0 THEN 'no-counterpart'
+         WHEN size(callers) > 0 THEN 'lucene-calls-counterpart'
+         WHEN any(cp IN cps WHERE cp.api AND cp.inherited) THEN 'inherited-api'
+         WHEN any(cp IN cps WHERE cp.api) OR size(portsClass) > 0 THEN 'public-api'
+         ELSE 'counterpart-not-api-and-uncalled'
+       END AS reason
+```
+
+Types — the same shape over the `PORTS` class and its `DEPENDS_ON` dependants;
+run it once per label, with `{label}` replaced by `RustStruct`, `RustEnum`,
+`RustTrait` and `RustAlias`:
+
+```cypher
+MATCH (x:{label})
+WHERE x.visibility = 'pub' AND x.scope = 'crate' AND x.file STARTS WITH 'src/'
+OPTIONAL MATCH (x)<-[e:REFERENCES]-(r)
+  WHERE e.evidence = 'rust-analyzer-scip' AND e.prodRefs > 0 AND NOT (x)-[:DECLARES]->(r)
+WITH x, count(e) AS prodReferrers
+WHERE prodReferrers = 0
+OPTIONAL MATCH (x)<-[lx:REFERENCES]-() WHERE lx.evidence = 'macro-body-lexical' AND lx.prodRefs > 0
+WITH x, count(lx) AS macroBodyMentions
+OPTIONAL MATCH (x)-[:PORTS]->(pc:Class)
+OPTIONAL MATCH (pc)<-[:DEPENDS_ON]-(dc:Class) WHERE dc <> pc
+WITH x, macroBodyMentions, pc, collect(DISTINCT dc.qualifiedName) AS deps
+WITH x, macroBodyMentions, collect(CASE WHEN pc IS NULL THEN null ELSE {
+       cls: pc.qualifiedName,
+       api: pc.javaPublished = true
+            OR (pc.javaPublished IS NULL AND pc.javaVisibility = 'public'),
+       callers: deps } END) AS cps
+WITH x, macroBodyMentions, cps, reduce(a = [], cp IN cps | a + cp.callers) AS callers
+RETURN x.qualifiedName AS item, '{label}' AS label, x.file AS file,
+       split(x.qualifiedName, '::')[1] AS subsystem,
+       [cp IN cps | cp.cls] AS counterparts,
+       callers, callers AS callerClasses, macroBodyMentions,
+       CASE
+         WHEN size(cps) = 0 THEN 'D?'
+         WHEN size(callers) > 0 THEN 'W?'
+         WHEN any(cp IN cps WHERE cp.api) THEN 'P?'
+         ELSE 'D?'
+       END AS class,
+       CASE
+         WHEN size(cps) = 0 THEN 'no-counterpart'
+         WHEN size(callers) > 0 THEN 'lucene-depends-on-counterpart'
+         WHEN any(cp IN cps WHERE cp.api) THEN 'public-api'
+         ELSE 'counterpart-not-api-and-unused'
+       END AS reason
+```
+
+By subsystem (the crate's top-level module) and class: replace the final
+`RETURN` of either query by `WITH` and append
+
+```cypher
+WITH subsystem, class, count(*) AS items
+RETURN subsystem, class, items ORDER BY subsystem, class
+```
+
+`no_caller_kg.py --phase report` runs exactly these statements, checks the
+grouped variant against the list, and writes every row to
+`<kg-target>/no_caller/list_<commit>.jsonl`.
+
 ---
 
 ## Query pitfalls
@@ -1142,14 +1286,32 @@ Every node and edge carries `gitCommit` (full 40-char hash) and `gitDate`
 external Apache Lucene source, the provenance records the **local Rucene commit** at
 the time of discovery/registration.
 
-**Engine quirk that shapes the graph.** `MERGE (a)-[:X]->(b)` matches an existing
-relationship of a *different* type between the same ordered pair and creates
-nothing. Two node pairs may therefore hold only one edge, and a second edge type
-between an already-connected pair has to be added by deleting the first. This is
-what hid the `DocValuesType` and `IndexOptions` ports behind their `REFERENCES`
-edges until `2855d29`. Undirected patterns are affected too: they report the
-forward edge's type for a reverse traversal, so every read must be written
-outgoing.
+**A pair may hold edges of several types.** On rmp 1.19.0, `MERGE (a)-[:X]->(b)`
+over a pair already joined by an edge of another type creates the `X` edge, and
+a `MERGE` of a type the pair already holds creates nothing. Measured on
+2026-10-30 against throwaway `ZzProbe` nodes in the `rucene` graph, deleted
+afterwards (`nodesDeleted: 2, relationshipsDeleted: 3`):
+
+```
+CREATE (a:ZzProbe {k:1}), (b:ZzProbe {k:2}), (a)-[:R1]->(b)
+  -> counters {nodesCreated: 2, relationshipsCreated: 1, propertiesWritten: 2, labelsAdded: 2}
+MATCH (a:ZzProbe {k:1}) MATCH (b:ZzProbe {k:2}) MERGE (a)-[:R2]->(b)
+  -> counters {relationshipsCreated: 1}
+MATCH (a:ZzProbe {k:1}) MATCH (b:ZzProbe {k:2}) MERGE (a)-[:R1]->(b)
+  -> {"ok": true}, no counters
+MATCH (a:ZzProbe {k:1}) MATCH (b:ZzProbe {k:2}) MERGE (a)-[:R3]->(b)
+  -> counters {relationshipsCreated: 1}
+MATCH (a:ZzProbe {k:1})-[e]->(b:ZzProbe {k:2}) RETURN type(e)
+  -> R1, R2, R3
+```
+
+Earlier engines behaved otherwise: there, such a `MERGE` matched the other type's
+edge and created nothing, which is what hid the `DocValuesType` and
+`IndexOptions` ports behind their `REFERENCES` edges until `2855d29`. Where a pair
+is joined by more than one edge, set or delete an edge's properties only after
+re-binding it with `MATCH (a)-[e:X]->(b)`, never through a matched `MERGE`.
+Undirected patterns report the forward edge's type for a reverse traversal, so
+every read must be written outgoing.
 
 **Edges written by the first (2026-07-30) Lucene survey were never stamped, and
 most still are not.** `rmp` task #136 tracks repairing them. Each sync stamps what it
@@ -1215,6 +1377,12 @@ The loaders under `tools/kg/` rebuild the whole graph from a clean store; see
    nested type is `ported` on the strength of the edges step 5 writes.
 6. `commits_kg.py --closings <rmp export>` — the full commit history, `COMMITTED_IN`, `CLOSES_TASK` and `REFERENCES_TASK`.
 7. `lucene_tests_kg.py` — the Lucene test surface and its correspondence with the crate.
+8. `rust_refs_kg.py` (rust-analyzer SCIP, crate `REFERENCES`), `lucene_calls_kg.py`
+   (the 10.5.0 bytecode, `CALLS` / `OVERRIDES` / `Method.overridesExternal` / a
+   top-level `Class.javaVisibility`), then `no_caller_kg.py` (`PORTS_MEMBER` and the
+   no-production-reference report). `no_caller_kg.py` must run after steps 3, 5
+   and both of the others, since it reads `DECLARES`, `PORTS` and the edges they
+   write.
 
 Steps 3 and 5 both need a **clean** tree: never survey a dirty working directory,
 or another task's half-finished work enters the graph as fact. Use

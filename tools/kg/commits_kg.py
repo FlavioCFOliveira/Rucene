@@ -326,10 +326,10 @@ TASK_EDGES = ("CLOSES_TASK", "REFERENCES_TASK")
 def write_task_edges(roadmap, edge, links, batch, unwind, read_rows):
     """Write one Commit -> Task edge type for `links` (`hash`, `task`, `gitDate`).
 
-    The engine keeps one edge per ordered node pair: a `MERGE` of one type over a
-    pair the other type already holds creates nothing. So the other type's edge
-    for each pair is deleted first (a commit never both closes and references
-    the same task), then the edge is merged and stamped, then read back; a pair
+    The model allows one task edge per (Commit, Task) pair: a commit either
+    closes a task or references it, never both (`knowledge-model.md`,
+    `REFERENCES_TASK`). So the other type's edge for each pair is deleted first,
+    then the edge is merged and stamped, then read back; a pair
     still without it is reported on stderr. The summary line gives the engine's
     own counts, never the number of rows sent. Returns the missing pairs.
     """
