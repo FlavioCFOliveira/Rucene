@@ -146,8 +146,9 @@ pub enum LuceneError {
     ///
     /// Equivalent to `org.apache.lucene.index.MergePolicy.MergeAbortedException`,
     /// which extends `IOException` and is thrown by `OneMerge.checkAborted()`
-    /// once `IndexWriter.rollback` or `deleteAll` has stopped the merges.
-    #[error("merge aborted: {0}")]
+    /// once `IndexWriter.rollback` or `deleteAll` has stopped the merges. It
+    /// displays exactly its message, Java's `getMessage()`.
+    #[error("{0}")]
     MergeAborted(String),
 
     /// A merge failed.

@@ -54,7 +54,6 @@ use std::sync::{Arc, Mutex};
 
 use rucene::codecs::{register_codec, Lucene104Codec};
 use rucene::document::{Document, Store, StringField, TextField};
-use rucene::index::index_reader::StoredFields as _;
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::IndexWriterConfig;
 use rucene::index::merge_policy::NoMergePolicy;

@@ -41,16 +41,20 @@ use std::sync::Arc;
 
 use rucene::codecs::Lucene104Codec;
 use rucene::document::{Document, NumericDocValuesField, Store, StringField};
+use rucene::error::LuceneError;
 use rucene::index::index_reader::IndexReader;
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::{IndexWriterConfig, OpenMode};
-use rucene::index::merge_policy::{LogMergePolicy, NoMergePolicy, SoftDeletesRetentionMergePolicy};
+use rucene::index::merge_policy::{
+    LogMergePolicy, LogMergeSize, MergeContext, NoMergePolicy, SoftDeletesRetentionMergePolicy,
+};
 use rucene::index::merge_scheduler::SerialMergeScheduler;
 use rucene::index::terms::Term;
+use rucene::index::SegmentCommitInfo;
 use rucene::index::{directory_reader, SegmentInfos};
 use rucene::search::{MatchAllDocsQuery, Query, Sort, SortField, SortFieldType, NO_MORE_DOCS};
 use rucene::store::{Directory, FSDirectory, RamDirectory};
-use rucene::util::BytesRef;
+use rucene::util::{BytesRef, InfoStream};
 
 fn ensure_codec() {
     let _ = rucene::codecs::register_codec("Lucene104", Lucene104Codec::new());
@@ -467,6 +471,13 @@ fn segments_flushed_by_add_document_are_published_and_merged_as_lucene_does() {
 /// `WriterMergeTriggersFixture.logMerge`: segments of `sizes` documents written
 /// without merging, then one `maybeMerge` with a `LogDocMergePolicy`.
 fn log_merge(case: &str, merge_factor: i32, sizes: &[i32]) -> String {
+    let mut policy = LogMergePolicy::by_doc_count();
+    policy.set_merge_factor(merge_factor).unwrap();
+    log_merge_with(case, policy, sizes)
+}
+
+/// `WriterMergeTriggersFixture.logMerge(String, LogMergePolicy, int[])`.
+fn log_merge_with(case: &str, policy: LogMergePolicy, sizes: &[i32]) -> String {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
     let mut initial = IndexWriterConfig::new();
@@ -485,8 +496,6 @@ fn log_merge(case: &str, merge_factor: i32, sizes: &[i32]) -> String {
     writer.commit().unwrap();
     writer.close().unwrap();
     let mut config = IndexWriterConfig::new();
-    let mut policy = LogMergePolicy::by_doc_count();
-    policy.set_merge_factor(merge_factor).unwrap();
     config.set_merge_policy(Arc::new(policy)).unwrap();
     config
         .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
@@ -508,6 +517,42 @@ fn a_log_merge_packs_only_up_to_the_minimum_merge_size_as_lucene_does() {
 fn log_merge_levels_are_quantized_in_float_as_lucene_does() {
     let rucene = log_merge("log-levels", 4, &[24, 3, 3, 3]);
     assert_eq!(rucene, run_java(&["log-levels"]).trim());
+}
+
+/// The fixture's anonymous subclass of the abstract `LogMergePolicy`, whose
+/// `size` override measures a segment as `maxDoc^4`.
+#[derive(Debug)]
+struct FourthPowerSize;
+
+impl LogMergeSize for FourthPowerSize {
+    fn size(
+        &self,
+        _policy: &LogMergePolicy,
+        info: &SegmentCommitInfo,
+        _merge_context: &dyn MergeContext,
+    ) -> rucene::error::Result<i64> {
+        let max_doc = i64::from(info.info.max_doc()?);
+        Ok(max_doc * max_doc * max_doc * max_doc)
+    }
+
+    fn simple_name(&self) -> &str {
+        ""
+    }
+}
+
+/// A user's `size` override drives the selection, as a Java subclass's does
+/// (`LogMergePolicy.java:42`; `LogDocMergePolicy.java:41` and
+/// `LogByteSizeMergePolicy.java:52` are Lucene's own overrides).
+#[test]
+fn a_log_merge_measures_segments_with_the_user_size_as_lucene_does() {
+    let mut policy = LogMergePolicy::new(Arc::new(FourthPowerSize));
+    // The fixture's instance initialiser: `minMergeSize = 1;
+    // maxMergeSize = Long.MAX_VALUE;`.
+    policy.set_min_merge_docs(1);
+    policy.set_max_merge_mb(f64::INFINITY);
+    policy.set_merge_factor(4).unwrap();
+    let rucene = log_merge_with("log-custom-size", policy, &[24, 3, 3, 3]);
+    assert_eq!(rucene, run_java(&["log-custom-size"]).trim());
 }
 
 /// Each point-in-time merge on getReader keeps its own merged segment
@@ -554,4 +599,123 @@ fn concurrent_merges_on_get_reader_each_keep_their_own_segment() {
         IndexReader::close(reader.as_ref()).unwrap();
         writer.close().unwrap();
     }
+}
+
+/// `WriterMergeTriggersFixture`'s `merge-abort` hook: records the merge phases
+/// `SM` reports and, once the stored fields are merged, rolls the writer back
+/// from another thread and waits until that rollback has aborted the merge.
+struct AbortingInfoStream {
+    writer: std::sync::OnceLock<Arc<IndexWriter>>,
+    phases: std::sync::Mutex<Vec<String>>,
+    aborted: (std::sync::Mutex<bool>, std::sync::Condvar),
+    rollback_thread: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+impl InfoStream for AbortingInfoStream {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.rucene.codec.WriterMergeTriggersFixture$1"
+    }
+
+    fn message(&self, component: &str, message: &str) {
+        if component == "IW" && message.starts_with("now wait for") {
+            let (lock, cond) = &self.aborted;
+            *lock.lock().unwrap() = true;
+            cond.notify_all();
+        }
+        if component == "SM" {
+            if let Some(at) = message.find(" to merge ") {
+                let phase = &message[at + " to merge ".len()..];
+                let phase = &phase[..phase.find(" [").unwrap()];
+                self.phases.lock().unwrap().push(phase.to_string());
+                if phase == "stored fields" {
+                    let writer = Arc::clone(self.writer.get().unwrap());
+                    *self.rollback_thread.lock().unwrap() =
+                        Some(std::thread::spawn(move || writer.rollback().unwrap()));
+                    let (lock, cond) = &self.aborted;
+                    let mut aborted = lock.lock().unwrap();
+                    while !*aborted {
+                        aborted = cond.wait(aborted).unwrap();
+                    }
+                }
+            }
+        }
+    }
+
+    fn is_enabled(&self, component: &str) -> bool {
+        component == "SM" || component == "IW"
+    }
+
+    fn close(&self) {}
+}
+
+/// A running merge that the writer aborts stops at the next
+/// `MergeState.checkAborted()` (`MergeState.java:247-251`), here the postings
+/// merge's (`FieldsConsumer.java:83`), instead of running its remaining
+/// phases; `forceMerge` then reports the aborted merge, and the rollback
+/// leaves the last commit, as Lucene does.
+#[test]
+fn an_aborted_merge_stops_at_the_next_check_as_lucene_does() {
+    ensure_codec();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let hook = Arc::new(AbortingInfoStream {
+            writer: std::sync::OnceLock::new(),
+            phases: std::sync::Mutex::new(Vec::new()),
+            aborted: (std::sync::Mutex::new(false), std::sync::Condvar::new()),
+            rollback_thread: std::sync::Mutex::new(None),
+        });
+        let mut config = IndexWriterConfig::new();
+        config
+            .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+            .unwrap();
+        config
+            .set_info_stream(Arc::clone(&hook) as Arc<dyn InfoStream>)
+            .unwrap();
+        let writer = Arc::new(IndexWriter::new(Arc::clone(&dir), config).unwrap());
+        assert!(hook.writer.set(Arc::clone(&writer)).is_ok());
+        let mut id = 0;
+        for _ in 0..2 {
+            for _ in 0..50 {
+                let mut d = Document::new();
+                d.add(Box::new(
+                    StringField::new("id", format!("id{id}"), Store::YES).unwrap(),
+                ));
+                writer.add_document(&d).unwrap();
+                id += 1;
+            }
+            writer.commit().unwrap();
+        }
+        let (outcome, message) = match writer.force_merge(1) {
+            Ok(()) => ("ok".to_string(), String::new()),
+            Err(LuceneError::Io(error)) => ("IOException".to_string(), error.to_string()),
+            Err(error) => (error.java_simple_name().to_string(), error.to_string()),
+        };
+        let rollback = hook.rollback_thread.lock().unwrap().take().unwrap();
+        rollback.join().unwrap();
+        let line = format!(
+            "merge-abort phases={} forceMerge={outcome} segments={}",
+            hook.phases.lock().unwrap().join("|"),
+            segments(&dir)
+        );
+        let _ = tx.send((line, message));
+    });
+    let (rucene, message) = rx
+        .recv_timeout(std::time::Duration::from_secs(60))
+        .expect("the aborted merge never finished");
+    let java = run_java(&["merge-abort"]);
+    let mut java = java.lines();
+    assert_eq!(rucene, java.next().unwrap());
+    let java_message = java
+        .next()
+        .unwrap()
+        .strip_prefix("merge-abort message=")
+        .unwrap();
+    // `IndexWriter.forceMerge` keeps the merge's exception as the cause
+    // (`IndexWriter.java:2259-2260`); this port appends it to the message,
+    // which therefore starts with Lucene's.
+    assert!(
+        message.starts_with(java_message),
+        "{message:?} must start with Lucene's {java_message:?}"
+    );
 }

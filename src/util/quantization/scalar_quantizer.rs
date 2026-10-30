@@ -796,9 +796,11 @@ impl<'a> ScoreErrorCorrelator<'a> {
     fn score_error_correlation(&mut self, lower_quantile: f32, upper_quantile: f32) -> Result<f64> {
         self.corr.reset();
         let quantizer = ScalarQuantizer::new(lower_quantile, upper_quantile, self.bits)?;
-        let similarity =
-            ScalarQuantizedVectorSimilarity::from_vector_similarity(self.function, self.bits);
-        let const_multiplier = quantizer.get_constant_multiplier();
+        let similarity = <dyn ScalarQuantizedVectorSimilarity>::from_vector_similarity(
+            self.function,
+            quantizer.get_constant_multiplier(),
+            quantizer.get_bits(),
+        );
         for i in 0..self.nearest_neighbors.len() {
             let query_correction =
                 quantizer.quantize(&self.vectors[i], &mut self.query, self.function)?;
@@ -818,7 +820,6 @@ impl<'a> ScoreErrorCorrelator<'a> {
                     query_correction,
                     &self.vector,
                     vector_correction,
-                    const_multiplier,
                 )?;
                 self.errors.add(f64::from(q_score - score_doc.score));
             }

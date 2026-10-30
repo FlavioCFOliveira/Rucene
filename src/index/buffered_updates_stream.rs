@@ -188,14 +188,6 @@ impl FinishedSegments {
 /// The queue of frozen delete packets waiting to reach their segments.
 ///
 /// Equivalent to `org.apache.lucene.index.BufferedUpdatesStream`.
-///
-/// **Divergence from Lucene 10.5.0.** Java's `waitApply` opens a
-/// `SegmentReader` per affected segment and resolves the deletes there, through
-/// `ReadersAndUpdates` and the writer's reader pool. Applying a packet is
-/// therefore part of the writer, not of the stream; this port keeps the stream's
-/// own responsibilities — ordering the packets by generation, tracking which
-/// generations are still running, and selecting the segments a packet reaches —
-/// and leaves resolution to the caller that owns the readers.
 pub struct BufferedUpdatesStream {
     /// The packets still waiting to be applied.
     ///

@@ -491,7 +491,7 @@ pub use synonym_query::{
     merge_impacts as merge_synonym_impacts, Builder as SynonymQueryBuilder, FreqBoostTermScorer,
     SynonymImpactsSource, SynonymQuery, SynonymWeight, TermAndBoost,
 };
-pub use task_executor::{Executor, TaskExecutor};
+pub use task_executor::{Command, Executor, RejectedExecutionException, TaskExecutor};
 pub use term_collecting_rewrite::{
     collect_terms as collect_multi_term_terms, TermCollectingRewrite, TermCollector,
     TopLevelBuilder,

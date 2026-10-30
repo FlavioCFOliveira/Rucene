@@ -3307,7 +3307,7 @@ impl RadixSelectorOps for PartitionOps<'_> {
         self.points.swap(i, j);
     }
 
-    fn fallback_select(&mut self, from: usize, to: usize, k: usize, d: usize) {
+    fn fallback_select(&mut self, from: usize, to: usize, k: usize, d: usize, _max_length: usize) {
         self.fallback_d = d;
         intro_select(self, from, to, k);
     }
@@ -6705,7 +6705,7 @@ mod tests {
         let mut meta_in = MockIndexInput::new(meta_bytes, "meta.bin");
         let mut index_in = MockIndexInput::new(index_bytes, "index.bin");
         let mut data_in = MockIndexInput::new(data_bytes, "data.bin");
-        let mut reader = BKDReader::new(&mut meta_in, &mut index_in, &mut data_in).unwrap();
+        let reader = BKDReader::new(&mut meta_in, &mut index_in, &mut data_in).unwrap();
 
         // Range visitor: [50, 150]
         let mut visitor = RangeVisitor {
@@ -6772,7 +6772,7 @@ mod tests {
         let mut meta_in = MockIndexInput::new(meta.into_inner(), "meta.bin");
         let mut index_in = MockIndexInput::new(index.into_inner(), "index.bin");
         let mut data_in = MockIndexInput::new(data.into_inner(), "data.bin");
-        let mut reader = BKDReader::new(&mut meta_in, &mut index_in, &mut data_in).unwrap();
+        let reader = BKDReader::new(&mut meta_in, &mut index_in, &mut data_in).unwrap();
 
         let mut visitor = Box2DVisitor {
             min_x: 10,
@@ -7182,7 +7182,7 @@ mod tests {
             (0, vec![0x00, 0x00, 0x00, 0x7F, 0x10, 0x00, 0x00, 0x00]),
             (1, vec![0x00, 0x00, 0x00, 0x7F, 0x20, 0x00, 0x00, 0x00]),
         ];
-        let mut reader = build_bkd_reader(2, 2, 4, 512, &points);
+        let reader = build_bkd_reader(2, 2, 4, 512, &points);
 
         // Query that CROSSES the cell in dim1 so both the tree-level and the
         // leaf-level refinement `compare` fire, and every point is visited
@@ -7273,7 +7273,7 @@ mod tests {
         // Refinement: value [10,10]×[10,40] vs [5,15]×[50,60] →
         //   dim0: 10 ∈ [5,15] → INSIDE; dim1: 40 < 50 → OUTSIDE → OUTSIDE.
         {
-            let mut reader = build_bkd_reader(2, 2, 1, 4, &points);
+            let reader = build_bkd_reader(2, 2, 1, 4, &points);
             let query_min = vec![5u8, 50u8];
             let query_max = vec![15u8, 60u8];
             let mut visitor = RecordingVisitor::new(&query_min, &query_max, 2, 1);
@@ -7316,7 +7316,7 @@ mod tests {
         // Refinement: value [10,10]×[10,40] vs [5,15]×[5,50] →
         //   dim0: 10 ∈ [5,15] → INSIDE; dim1: [10,40] ⊆ [5,50] → INSIDE → INSIDE.
         {
-            let mut reader = build_bkd_reader(2, 2, 1, 4, &points);
+            let reader = build_bkd_reader(2, 2, 1, 4, &points);
             let query_min = vec![5u8, 5u8];
             let query_max = vec![15u8, 50u8];
             let mut visitor = RecordingVisitor::new(&query_min, &query_max, 2, 1);
@@ -7363,7 +7363,7 @@ mod tests {
         // Refinement: value [10,10]×[10,40] vs [5,15]×[25,35] →
         //   dim0: 10 ∈ [5,15] → INSIDE; dim1: 10 < 25, 40 > 35 → CROSSES → CROSSES.
         {
-            let mut reader = build_bkd_reader(2, 2, 1, 4, &points);
+            let reader = build_bkd_reader(2, 2, 1, 4, &points);
             let query_min = vec![5u8, 25u8];
             let query_max = vec![15u8, 35u8];
             let mut visitor = RecordingVisitor::new(&query_min, &query_max, 2, 1);
@@ -7446,7 +7446,7 @@ mod tests {
             (6, vec![100, 100]),
             (7, vec![100, 100]),
         ];
-        let mut reader = build_bkd_reader(2, 2, 1, 4, &points);
+        let reader = build_bkd_reader(2, 2, 1, 4, &points);
 
         // Query dim0=[50,60] × dim1=[0,255].
         // Tree-level: left cell [42,100]×[42,100] vs [50,60]×[0,255] →
@@ -7708,7 +7708,7 @@ mod tests {
             .collect();
         // maxPoints = 4 forces a 4-leaf tree (3 internal levels), so an
         // internal node can prune the whole left subtree.
-        let mut reader = build_bkd_reader(1, 1, 4, 4, &points);
+        let reader = build_bkd_reader(1, 1, 4, 4, &points);
 
         // Query [80, 120]: the left half of the tree (values 0..49) is
         // `CellOutsideQuery` at an internal node, so it is pruned before its

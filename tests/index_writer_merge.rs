@@ -679,6 +679,8 @@ fn merge_without_deleted(
             rucene::store::MergeInfo::new(0, -1, false, -1),
         )),
         Arc::new(rucene::util::NoOutputInfoStream),
+        None,
+        None,
     )
     .unwrap();
     merger.merge().unwrap();

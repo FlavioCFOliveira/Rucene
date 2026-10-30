@@ -9,32 +9,71 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use crate::error::{LuceneError, Result};
 use crate::util::SameThreadExecutorService;
 
+/// A unit of work handed to an [`Executor`].
+///
+/// Equivalent to `java.lang.Runnable`.
+pub type Command = Box<dyn FnOnce() + Send + 'static>;
+
+/// An [`Executor`] refused a command.
+///
+/// Equivalent to `java.util.concurrent.RejectedExecutionException`. Java's
+/// caller still holds the `Runnable` it submitted and may run it itself, as
+/// `TaskExecutor` does (`TaskExecutor.java:55-69`); a Rust command is moved
+/// into [`Executor::execute`], so the rejection hands it back in
+/// [`command`](Self::command).
+pub struct RejectedExecutionException {
+    /// The command that was not accepted.
+    pub command: Command,
+    /// The exception's message, Java's `getMessage()`.
+    pub message: String,
+}
+
+impl std::fmt::Debug for RejectedExecutionException {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RejectedExecutionException")
+            .field("message", &self.message)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for RejectedExecutionException {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for RejectedExecutionException {}
+
 /// Runs submitted work, possibly on another thread.
 ///
 /// Equivalent to `java.util.concurrent.Executor`, which Lucene's
-/// [`TaskExecutor`] is built on. An implementation that cannot accept a command
-/// must run it on the calling thread, so that a rejecting executor only reduces
-/// parallelism and never loses work — that is exactly the guarantee Java's
-/// `TaskExecutor` constructor installs by catching `RejectedExecutionException`.
+/// [`TaskExecutor`] is built on.
 pub trait Executor: Send + Sync {
     /// Runs the given command at some point, on this executor's threads or on
     /// the calling thread.
     ///
     /// Equivalent to `Executor.execute(Runnable)`.
-    fn execute(&self, command: Box<dyn FnOnce() + Send + 'static>);
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RejectedExecutionException`], carrying the command back, when
+    /// the executor cannot accept it — for example once it is shut down.
+    fn execute(&self, command: Command) -> std::result::Result<(), RejectedExecutionException>;
 }
 
 impl Executor for SameThreadExecutorService {
-    fn execute(&self, command: Box<dyn FnOnce() + Send + 'static>) {
+    /// Equivalent to `SameThreadExecutorService.execute(Runnable)`
+    /// (`SameThreadExecutorService.java:34-37,68-72`): once shut down, the
+    /// command is rejected with `"Executor is shut down."`.
+    fn execute(&self, command: Command) -> std::result::Result<(), RejectedExecutionException> {
         if self.is_shutdown() {
-            // A shut-down service rejects the command without running it. Java's
-            // TaskExecutor wrapper reacts to a rejection by running the command
-            // on the calling thread, which is what this service would have done
-            // anyway.
-            command();
-        } else {
-            let _ = SameThreadExecutorService::execute(self, command);
+            return Err(RejectedExecutionException {
+                command,
+                message: "Executor is shut down.".to_string(),
+            });
         }
+        command();
+        Ok(())
     }
 }
 
@@ -274,9 +313,16 @@ impl TaskExecutor {
         Self { executor: None }
     }
 
-    fn submit(&self, command: Box<dyn FnOnce() + Send + 'static>) {
+    /// Equivalent to the executor `new TaskExecutor(Executor)` installs
+    /// (`TaskExecutor.java:55-69`): a rejected command runs on the current
+    /// thread, so a rejecting executor only reduces parallelism.
+    fn submit(&self, command: Command) {
         match self.executor.as_ref() {
-            Some(executor) => executor.execute(command),
+            Some(executor) => {
+                if let Err(rejected) = executor.execute(command) {
+                    (rejected.command)();
+                }
+            }
             None => command(),
         }
     }

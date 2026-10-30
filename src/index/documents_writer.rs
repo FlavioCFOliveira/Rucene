@@ -1707,8 +1707,8 @@ pub(crate) fn copy_of_created_files(
 
 /// The result of flushing one [`DocumentsWriterPerThread`].
 ///
-/// Equivalent to `DocumentsWriterPerThread.FlushedSegment`. Lucene also carries
-/// a `Sorter.DocMap`; index sorting is not ported yet, so that field is absent.
+/// Equivalent to `DocumentsWriterPerThread.FlushedSegment`
+/// (`DocumentsWriterPerThread.java:66`).
 #[derive(Debug)]
 pub struct FlushedSegment {
     /// Commit info describing the new segment.

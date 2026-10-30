@@ -721,15 +721,17 @@ impl OneMerge {
 
     /// Fails with `MergeAborted` once this merge has been aborted.
     ///
-    /// Equivalent to `OneMerge.checkAborted()`, which throws
-    /// `MergePolicy.MergeAbortedException`. Merge loops call it periodically so
+    /// Equivalent to `OneMerge.checkAborted()` (`MergePolicy.java:406-410`),
+    /// which throws `MergePolicy.MergeAbortedException` with the message
+    /// `"merge is aborted: " + segString()`. Merge loops call it periodically so
     /// that `IndexWriter.rollback` and `deleteAll` do not have to wait for a
     /// long merge to finish.
     pub fn check_aborted(&self) -> Result<()> {
         if self.is_aborted() {
-            return Err(crate::error::LuceneError::MergeAborted(
-                "merge is aborted".to_string(),
-            ));
+            return Err(crate::error::LuceneError::MergeAborted(format!(
+                "merge is aborted: {}",
+                self.seg_string()
+            )));
         }
         Ok(())
     }
@@ -1332,16 +1334,11 @@ pub trait MergePolicy: Send + Sync + std::fmt::Display {
     /// Returns the byte size of `info`, prorated by the fraction of its
     /// documents that are not deleted.
     ///
-    /// Equivalent to `MergePolicy.size(SegmentCommitInfo, MergeContext)`.
+    /// Equivalent to `MergePolicy.size(SegmentCommitInfo, MergeContext)`
+    /// (`MergePolicy.java:761-769`); the body is [`merge_policy_size`], which
+    /// an override reaches where Java calls `super.size`.
     fn size(&self, info: &SegmentCommitInfo, merge_context: &dyn MergeContext) -> Result<i64> {
-        let byte_size = info.size_in_bytes_uncached()?;
-        let del_count = merge_context.num_deletes_to_merge(info)?;
-        let max_doc = info.info.max_doc()?;
-        if max_doc <= 0 {
-            return Ok(byte_size);
-        }
-        let del_ratio = f64::from(del_count) / f64::from(max_doc);
-        Ok((byte_size as f64 * (1.0 - del_ratio)) as i64)
+        merge_policy_size(self, info, merge_context)
     }
 
     /// Returns the largest segment size a full-flush merge may include.
@@ -1495,6 +1492,41 @@ pub trait MergePolicy: Send + Sync + std::fmt::Display {
         );
         Ok(true)
     }
+}
+
+/// Returns the byte size of `info`, prorated by the fraction of its documents
+/// that are not deleted.
+///
+/// The body of `MergePolicy.size(SegmentCommitInfo, MergeContext)`
+/// (`MergePolicy.java:761-769`), which the trait's default
+/// [`MergePolicy::size`] runs. It is a free function so that an override can
+/// reach it where Java calls `super.size(info, mergeContext)`, as
+/// `LogMergePolicy.sizeBytes` does (`LogMergePolicy.java:180-185`).
+///
+/// # Errors
+///
+/// Propagates whatever reading the segment's files, `max_doc` or delete count
+/// raises.
+pub fn merge_policy_size<P: MergePolicy + ?Sized>(
+    policy: &P,
+    info: &SegmentCommitInfo,
+    merge_context: &dyn MergeContext,
+) -> Result<i64> {
+    let byte_size = info.size_in_bytes_uncached()?;
+    let del_count = merge_context.num_deletes_to_merge(info)?;
+    debug_assert!(policy.assert_del_count(del_count, info)?);
+    let max_doc = info.info.max_doc()?;
+    let del_ratio = if max_doc <= 0 {
+        0.0
+    } else {
+        f64::from(del_count) / f64::from(max_doc)
+    };
+    debug_assert!(del_ratio <= 1.0);
+    Ok(if max_doc <= 0 {
+        byte_size
+    } else {
+        (byte_size as f64 * (1.0 - del_ratio)) as i64
+    })
 }
 
 /// Renders `infos` the way `MergePolicy.segString(MergeContext, Iterable)` does.
@@ -2842,13 +2874,84 @@ pub const LOG_DEFAULT_NO_CFS_RATIO: f64 = 0.1;
 /// smallest segment of a merge differ by at most about 5.6x.
 pub const LEVEL_LOG_SPAN: f64 = 0.75;
 
-/// How a [`LogMergePolicy`] measures a segment.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LogSizeKind {
-    /// Measure by bytes on disk, as `LogByteSizeMergePolicy` does.
-    Bytes,
-    /// Measure by document count, as `LogDocMergePolicy` does.
-    Docs,
+/// How a [`LogMergePolicy`] measures a segment: the method a Java subclass of
+/// the abstract `LogMergePolicy` supplies.
+///
+/// Equivalent to the protected `size(SegmentCommitInfo, MergeContext)` that a
+/// subclass of the abstract `LogMergePolicy` (`LogMergePolicy.java:42`)
+/// overrides, as `LogDocMergePolicy.java:41` and `LogByteSizeMergePolicy.java:52`
+/// do. Lucene's two implementations are [`LogByteSize`] and [`LogDocSize`]; a
+/// user implements this trait where Java code would subclass `LogMergePolicy`
+/// and override `size`, and builds the policy with [`LogMergePolicy::new`].
+///
+/// **Divergence from Lucene 10.5.0.** Rust has no implementation inheritance,
+/// so the overridable method lives on this strategy object, which receives the
+/// policy whose protected helpers ([`LogMergePolicy::size_bytes`],
+/// [`LogMergePolicy::size_docs`]) and settings Java's override reaches through
+/// `this`. The level arithmetic and merge selection are unchanged.
+pub trait LogMergeSize: Send + Sync + std::fmt::Debug {
+    /// Returns the size of `info` in this policy's unit.
+    ///
+    /// Equivalent to `LogMergePolicy.size(SegmentCommitInfo, MergeContext)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading the segment's size raises.
+    fn size(
+        &self,
+        policy: &LogMergePolicy,
+        info: &SegmentCommitInfo,
+        merge_context: &dyn MergeContext,
+    ) -> Result<i64>;
+
+    /// The simple name of the Java class this measurement stands for, which
+    /// `LogMergePolicy.toString()` prints as `getClass().getSimpleName()`
+    /// (`LogMergePolicy.java:726`).
+    fn simple_name(&self) -> &str;
+}
+
+/// Measures a segment by bytes on disk.
+///
+/// Equivalent to `LogByteSizeMergePolicy.size`, which returns `sizeBytes`
+/// (`LogByteSizeMergePolicy.java:51-54`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LogByteSize;
+
+impl LogMergeSize for LogByteSize {
+    fn size(
+        &self,
+        policy: &LogMergePolicy,
+        info: &SegmentCommitInfo,
+        merge_context: &dyn MergeContext,
+    ) -> Result<i64> {
+        policy.size_bytes(info, merge_context)
+    }
+
+    fn simple_name(&self) -> &str {
+        "LogByteSizeMergePolicy"
+    }
+}
+
+/// Measures a segment by document count.
+///
+/// Equivalent to `LogDocMergePolicy.size`, which returns `sizeDocs`
+/// (`LogDocMergePolicy.java:40-43`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LogDocSize;
+
+impl LogMergeSize for LogDocSize {
+    fn size(
+        &self,
+        policy: &LogMergePolicy,
+        info: &SegmentCommitInfo,
+        merge_context: &dyn MergeContext,
+    ) -> Result<i64> {
+        policy.size_docs(info, merge_context)
+    }
+
+    fn simple_name(&self) -> &str {
+        "LogDocMergePolicy"
+    }
 }
 
 /// A segment paired with its quantised level.
@@ -2867,8 +2970,10 @@ struct SegmentInfoAndLevel {
 /// **Divergence from Lucene 10.5.0.** Java splits this into the abstract
 /// `LogMergePolicy` plus `LogByteSizeMergePolicy` and `LogDocMergePolicy`, which
 /// override the single method `size`. Rust has no implementation inheritance, so
-/// the measurement is selected by [`LogSizeKind`] and the two subclasses are
-/// constructors. The level arithmetic and merge selection are unchanged.
+/// the overridable `size` is the [`LogMergeSize`] the policy holds, and the two
+/// subclasses are the constructors [`by_byte_size`](Self::by_byte_size) and
+/// [`by_doc_count`](Self::by_doc_count). The level arithmetic and merge
+/// selection are unchanged.
 #[derive(Debug, Clone)]
 pub struct LogMergePolicy {
     merge_factor: i32,
@@ -2878,37 +2983,55 @@ pub struct LogMergePolicy {
     max_merge_docs: i32,
     calibrate_size_by_deletes: bool,
     target_search_concurrency: i32,
-    size_kind: LogSizeKind,
+    size: Arc<dyn LogMergeSize>,
     cfs: CfsSettings,
 }
 
 impl LogMergePolicy {
-    /// Creates a policy measuring segments by bytes.
+    /// Creates a policy that measures segments with `size`, every other
+    /// setting at `LogMergePolicy`'s own default.
     ///
-    /// Equivalent to `org.apache.lucene.index.LogByteSizeMergePolicy`.
-    pub fn by_byte_size() -> Self {
+    /// Equivalent to the `LogMergePolicy()` constructor a Java subclass calls
+    /// (`LogMergePolicy.java:100-102` and the field initialisers above it):
+    /// `minMergeSize` and `maxMergeSize` start at `0`, as Java's uninitialised
+    /// `long` fields do, and a subclass sets them.
+    pub fn new(size: Arc<dyn LogMergeSize>) -> Self {
         Self {
             merge_factor: DEFAULT_MERGE_FACTOR,
-            min_merge_size: 16 * 1024 * 1024,
-            max_merge_size: 2048 * 1024 * 1024,
+            min_merge_size: 0,
+            max_merge_size: 0,
             max_merge_size_for_forced_merge: i64::MAX,
             max_merge_docs: DEFAULT_MAX_MERGE_DOCS,
             calibrate_size_by_deletes: true,
             target_search_concurrency: 1,
-            size_kind: LogSizeKind::Bytes,
+            size,
             cfs: CfsSettings::new(LOG_DEFAULT_NO_CFS_RATIO, DEFAULT_MAX_CFS_SEGMENT_SIZE),
+        }
+    }
+
+    /// Creates a policy measuring segments by bytes.
+    ///
+    /// Equivalent to `org.apache.lucene.index.LogByteSizeMergePolicy()`
+    /// (`LogByteSizeMergePolicy.java:43-50`).
+    pub fn by_byte_size() -> Self {
+        Self {
+            min_merge_size: 16 * 1024 * 1024,
+            max_merge_size: 2048 * 1024 * 1024,
+            max_merge_size_for_forced_merge: i64::MAX,
+            ..Self::new(Arc::new(LogByteSize))
         }
     }
 
     /// Creates a policy measuring segments by document count.
     ///
-    /// Equivalent to `org.apache.lucene.index.LogDocMergePolicy`.
+    /// Equivalent to `org.apache.lucene.index.LogDocMergePolicy()`
+    /// (`LogDocMergePolicy.java:31-38`).
     pub fn by_doc_count() -> Self {
         Self {
             min_merge_size: 1000,
             max_merge_size: i64::MAX,
-            size_kind: LogSizeKind::Docs,
-            ..Self::by_byte_size()
+            max_merge_size_for_forced_merge: i64::MAX,
+            ..Self::new(Arc::new(LogDocSize))
         }
     }
 
@@ -3073,46 +3196,54 @@ impl LogMergePolicy {
     /// Returns the live document count of `info`, or its full `max_doc` when
     /// deletes are not calibrated.
     ///
-    /// Equivalent to `LogMergePolicy.sizeDocs`.
-    fn size_docs(&self, info: &SegmentCommitInfo, merge_context: &dyn MergeContext) -> Result<i64> {
-        let max_doc = i64::from(info.info.max_doc()?);
+    /// Equivalent to the protected `LogMergePolicy.sizeDocs`
+    /// (`LogMergePolicy.java:166-174`), which a [`LogMergeSize`] may call.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading `max_doc` or the delete count raises.
+    pub fn size_docs(
+        &self,
+        info: &SegmentCommitInfo,
+        merge_context: &dyn MergeContext,
+    ) -> Result<i64> {
         if self.calibrate_size_by_deletes {
-            Ok(max_doc - i64::from(merge_context.num_deletes_to_merge(info)?))
+            let del_count = merge_context.num_deletes_to_merge(info)?;
+            debug_assert!(MergePolicy::assert_del_count(self, del_count, info)?);
+            Ok(i64::from(info.info.max_doc()?) - i64::from(del_count))
         } else {
-            Ok(max_doc)
+            Ok(i64::from(info.info.max_doc()?))
         }
     }
 
     /// Returns the on-disk size of `info`, pro-rated by live documents when
     /// deletes are calibrated.
     ///
-    /// Equivalent to `LogMergePolicy.sizeBytes`.
-    fn size_bytes(
+    /// Equivalent to the protected `LogMergePolicy.sizeBytes`
+    /// (`LogMergePolicy.java:180-185`), which a [`LogMergeSize`] may call.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading the segment's files or delete count raises.
+    pub fn size_bytes(
         &self,
         info: &SegmentCommitInfo,
         merge_context: &dyn MergeContext,
     ) -> Result<i64> {
-        let bytes = info.size_in_bytes_uncached()?;
-        if !self.calibrate_size_by_deletes {
-            return Ok(bytes);
+        if self.calibrate_size_by_deletes {
+            // `super.size(info, mergeContext)`: `MergePolicy.size`, not this
+            // policy's override.
+            return merge_policy_size(self, info, merge_context);
         }
-        let max_doc = info.info.max_doc()?;
-        if max_doc <= 0 {
-            return Ok(bytes);
-        }
-        let del_count = merge_context.num_deletes_to_merge(info)?;
-        let live_ratio = f64::from((max_doc - del_count).max(0)) / f64::from(max_doc);
-        Ok((bytes as f64 * live_ratio) as i64)
+        info.size_in_bytes_uncached()
     }
 
     /// Returns the size of `info` in this policy's unit.
     ///
-    /// Equivalent to `LogMergePolicy.size`, which each subclass overrides.
+    /// Equivalent to `LogMergePolicy.size`, which each subclass overrides;
+    /// the override is the policy's [`LogMergeSize`].
     fn size(&self, info: &SegmentCommitInfo, merge_context: &dyn MergeContext) -> Result<i64> {
-        match self.size_kind {
-            LogSizeKind::Bytes => self.size_bytes(info, merge_context),
-            LogSizeKind::Docs => self.size_docs(info, merge_context),
-        }
+        self.size.size(self, info, merge_context)
     }
 
     /// Returns whether the number of segments eligible for merging is at most
@@ -5436,18 +5567,15 @@ impl std::fmt::Display for LogMergePolicy {
     /// Port of `LogMergePolicy.toString()`.
     ///
     /// Java's `getClass().getSimpleName()` resolves to the concrete subclass,
-    /// `LogByteSizeMergePolicy` or `LogDocMergePolicy`. This port models the two
-    /// as one struct discriminated by [`LogSizeKind`], so the name is taken from
-    /// that field.
+    /// `LogByteSizeMergePolicy` or `LogDocMergePolicy`. This port models the
+    /// subclass as the policy's [`LogMergeSize`], so the name is taken from
+    /// [`LogMergeSize::simple_name`].
     ///
     /// `maxCFSSegmentSizeMB` and `noCFSRatio` are Java `double`s, rendered by
     /// `Double.toString`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use crate::util::java_fmt::double_to_string;
-        let simple_name = match self.size_kind {
-            LogSizeKind::Bytes => "LogByteSizeMergePolicy",
-            LogSizeKind::Docs => "LogDocMergePolicy",
-        };
+        let simple_name = self.size.simple_name();
         write!(
             f,
             "[{simple_name}: minMergeSize={}, mergeFactor={}, maxMergeSize={}, \
@@ -5678,5 +5806,89 @@ mod reader_variant_forwarding_tests {
             7
         );
         assert_eq!(policy.max_full_flush_merge_size(), 11);
+    }
+}
+
+#[cfg(test)]
+mod log_merge_policy_size_tests {
+    //! `LogMergePolicy.sizeDocs` and `sizeBytes` (`LogMergePolicy.java:166-185`)
+    //! and the `MergePolicy.size` they defer to (`MergePolicy.java:761-769`).
+    use super::*;
+    use crate::codecs::Lucene104Codec;
+    use crate::store::{Directory, RamDirectory, DEFAULT_IO_CONTEXT};
+    use crate::util::{NoOutputInfoStream, Version};
+
+    /// A merge context that reports a fixed number of deletes to merge.
+    struct Deletes(i32);
+
+    impl MergeContext for Deletes {
+        fn num_deletes_to_merge(&self, _info: &SegmentCommitInfo) -> Result<i32> {
+            Ok(self.0)
+        }
+
+        fn num_deleted_docs(&self, _info: &SegmentCommitInfo) -> i32 {
+            self.0
+        }
+
+        fn get_merging_segments(&self) -> HashSet<String> {
+            HashSet::new()
+        }
+
+        fn get_info_stream(&self) -> Arc<dyn InfoStream> {
+            Arc::new(NoOutputInfoStream)
+        }
+    }
+
+    /// A segment of `max_doc` documents whose only file holds `bytes` bytes.
+    fn segment(max_doc: i32, bytes: usize) -> SegmentCommitInfo {
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let mut out = dir.create_output("_0.dat", &*DEFAULT_IO_CONTEXT).unwrap();
+        out.write_bytes(&vec![0u8; bytes], 0, bytes).unwrap();
+        out.close().unwrap();
+        let info = crate::index::SegmentInfo::new(
+            dir,
+            Version::LUCENE_10_5_0,
+            Some(Version::LUCENE_10_5_0),
+            "_0".to_string(),
+            max_doc,
+            false,
+            false,
+            Arc::new(Lucene104Codec::new()),
+            HashMap::new(),
+            [0u8; crate::util::string_helper::ID_LENGTH],
+            HashMap::new(),
+            crate::search::Sort::default(),
+        )
+        .unwrap();
+        info.set_files(["_0.dat".to_string()]).unwrap();
+        SegmentCommitInfo::new(info, 0, 0, -1, -1, -1, [0u8; 16]).unwrap()
+    }
+
+    /// `sizeBytes` with calibration is `super.size`, which computes
+    /// `(long) (byteSize * (1.0 - delCount / maxDoc))`. For 10 bytes, 10
+    /// documents and 9 deletes that is `(long) 0.9999999999999998 == 0`;
+    /// pro-rating by the live ratio `(maxDoc - delCount) / maxDoc` gives 1.
+    #[test]
+    fn size_bytes_prorates_as_merge_policy_size_does() {
+        let info = segment(10, 10);
+        let mut policy = LogMergePolicy::by_byte_size();
+        assert_eq!(policy.size_bytes(&info, &Deletes(9)).unwrap(), 0);
+        assert_eq!(MergePolicy::size(&policy, &info, &Deletes(9)).unwrap(), 0);
+        assert_eq!(policy.size_bytes(&info, &Deletes(0)).unwrap(), 10);
+        // Without calibration the deletes are ignored: `info.sizeInBytes()`.
+        policy.set_calibrate_size_by_deletes(false);
+        assert_eq!(policy.size_bytes(&info, &Deletes(9)).unwrap(), 10);
+    }
+
+    /// `sizeDocs` subtracts the deletes to merge only when calibrating.
+    #[test]
+    fn size_docs_subtracts_deletes_only_when_calibrating() {
+        let info = segment(10, 1);
+        let mut policy = LogMergePolicy::by_doc_count();
+        assert_eq!(policy.size_docs(&info, &Deletes(4)).unwrap(), 6);
+        assert_eq!(MergePolicy::size(&policy, &info, &Deletes(4)).unwrap(), 6);
+        policy.set_calibrate_size_by_deletes(false);
+        assert_eq!(policy.size_docs(&info, &Deletes(4)).unwrap(), 10);
+        assert_eq!(MergePolicy::size(&policy, &info, &Deletes(4)).unwrap(), 10);
     }
 }

@@ -42,12 +42,15 @@ use std::sync::Arc;
 
 use rucene::analysis::char_array_set::CharArraySet;
 use rucene::analysis::tokenattributes::{CharTermAttribute, CharTermAttributeImpl};
-use rucene::codecs::compressing::CompressionMode;
+use rucene::codecs::compressing::{self, CompressionMode as _};
 use rucene::codecs::hnsw::flat_vectors::DefaultFlatVectorScorer;
 use rucene::codecs::hnsw::scalar_quantized_scorer::ScalarQuantizedVectorScorer;
 use rucene::codecs::lucene104::scalar_quantized_vectors::Lucene104HnswScalarQuantizedVectorsFormat;
 use rucene::codecs::lucene90::stored_fields::Lucene90CompressingStoredFieldsFormat;
 use rucene::codecs::lucene90::term_vectors::Lucene90CompressingTermVectorsFormat;
+use rucene::codecs::lucene90::{
+    DeflateWithPresetDictCompressionMode, LZ4WithPresetDictCompressionMode,
+};
 use rucene::codecs::lucene99::flat_vectors_format::Lucene99FlatVectorsFormat;
 use rucene::codecs::lucene99::hnsw_vectors_format::Lucene99HnswVectorsFormat;
 use rucene::codecs::term_state::{BlockTermState, CompetitiveImpactAccumulator, Impact};
@@ -404,7 +407,7 @@ fn writer_configs(m: &Measured) {
     tuned
         .set_max_buffered_docs(1000)
         .expect("a valid doc count");
-    tuned.set_use_compound_file(false);
+    tuned.set_use_compound_file(false).unwrap();
     tuned.set_commit_on_close(false);
     tuned.set_soft_deletes_field(Some("__soft_deletes".to_string()));
     tuned
@@ -876,7 +879,7 @@ fn codecs(m: &Measured) {
     assert_eq!(
         Lucene90CompressingStoredFieldsFormat::new(
             "Lucene90StoredFieldsFastData",
-            CompressionMode::FAST,
+            Arc::clone(&compressing::FAST),
             1 << 14,
             128,
             10,
@@ -889,7 +892,7 @@ fn codecs(m: &Measured) {
         Lucene90CompressingTermVectorsFormat::new(
             "Lucene90TermVectorsData",
             "",
-            CompressionMode::FAST,
+            Arc::clone(&compressing::FAST),
             1 << 12,
             128,
             10,
@@ -901,12 +904,12 @@ fn codecs(m: &Measured) {
     );
 
     assert_eq!(
-        CompressionMode::DEFLATE_WITH_PRESET_DICT.to_string(),
+        DeflateWithPresetDictCompressionMode::new().to_string(),
         m.get("DeflateWithPresetDictCompressionMode.toString"),
         "Lucene's DeflateWithPresetDictCompressionMode calls itself BEST_COMPRESSION"
     );
     assert_eq!(
-        CompressionMode::LZ4_WITH_PRESET_DICT.to_string(),
+        LZ4WithPresetDictCompressionMode::new().to_string(),
         m.get("LZ4WithPresetDictCompressionMode.toString")
     );
 

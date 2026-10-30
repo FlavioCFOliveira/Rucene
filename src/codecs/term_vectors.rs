@@ -312,6 +312,8 @@ pub trait TermVectorsWriter: Send + Sync + fmt::Debug + Accountable {
         let mut subs: Vec<TermVectorsMergeSub> = Vec::new();
         for (i, reader) in merge_state.term_vectors_readers.iter().enumerate() {
             if let Some(reader) = reader.as_ref() {
+                // `TermVectorsWriter.java:203`.
+                merge_state.check_aborted()?;
                 reader.check_integrity()?;
                 readers.push(Some(reader.clone_reader()));
             } else {

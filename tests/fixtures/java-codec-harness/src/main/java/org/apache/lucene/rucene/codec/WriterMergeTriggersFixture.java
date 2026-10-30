@@ -23,6 +23,8 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicReference;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.NumericDocValuesField;
@@ -33,6 +35,8 @@ import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.LogDocMergePolicy;
+import org.apache.lucene.index.LogMergePolicy;
+import org.apache.lucene.index.MergePolicy;
 import org.apache.lucene.index.NoMergePolicy;
 import org.apache.lucene.index.NumericDocValues;
 import org.apache.lucene.index.SegmentCommitInfo;
@@ -47,6 +51,7 @@ import org.apache.lucene.search.SortField;
 import org.apache.lucene.store.ByteBuffersDirectory;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
+import org.apache.lucene.util.InfoStream;
 
 /**
  * Reference tool for what triggers, keeps and orders merges in a real Apache
@@ -84,6 +89,23 @@ import org.apache.lucene.store.FSDirectory;
  *   <li>{@code log-levels}: segments of 24, 3, 3 and 3 documents, then {@code
  *       maybeMerge()} with merge factor 4: the 3-document segments sit exactly
  *       on the level boundary, which Lucene computes in {@code float}.
+ *   <li>{@code log-custom-size}: the {@code log-levels} segments, merged by a
+ *       direct subclass of the abstract {@link LogMergePolicy} whose {@code
+ *       size} override measures a segment as {@code maxDoc^4}, with
+ *       {@code minMergeSize = 1} and {@code maxMergeSize = Long.MAX_VALUE}:
+ *       the 24-document segment then sits six levels above the others, so
+ *       the three left on the bottom level are too few to merge, where
+ *       {@code log-levels} merges all four.
+ *   <li>{@code merge-abort}: two committed segments of 50 documents with a
+ *       stored field, then {@code forceMerge(1)} under a {@link
+ *       SerialMergeScheduler}. When the merge reports its stored fields done,
+ *       an info-stream hook starts {@code rollback()} on another thread and
+ *       waits until the rollback has aborted the running merge ({@code now
+ *       wait for}); the merge then stops at the next {@code
+ *       MergeState.checkAborted()} ({@code FieldsConsumer.java:83}). Prints
+ *       the merge phases {@code SM} reported, the exception class {@code
+ *       forceMerge} throws, and the last commit's segments; then, on a line
+ *       of its own, that exception's message.
  *   <li>{@code counts}: the package-private {@code getFlushCount()} and {@code
  *       getFlushDeletesCount()}, read by reflection, after flushes with and
  *       without changes and after a delete.
@@ -270,6 +292,13 @@ public final class WriterMergeTriggersFixture {
 
   static void logMerge(String kase, int mergeFactor, int[] sizes)
       throws IOException {
+    LogDocMergePolicy policy = new LogDocMergePolicy();
+    policy.setMergeFactor(mergeFactor);
+    logMerge(kase, policy, sizes);
+  }
+
+  static void logMerge(String kase, LogMergePolicy policy, int[] sizes)
+      throws IOException {
     try (FSDirectory dir = FSDirectory.open(Files.createTempDirectory(kase))) {
       IndexWriterConfig initial = new IndexWriterConfig();
       initial.setMergePolicy(NoMergePolicy.INSTANCE);
@@ -284,8 +313,6 @@ public final class WriterMergeTriggersFixture {
         writer.commit();
       }
       IndexWriterConfig config = new IndexWriterConfig();
-      LogDocMergePolicy policy = new LogDocMergePolicy();
-      policy.setMergeFactor(mergeFactor);
       config.setMergePolicy(policy);
       config.setMergeScheduler(new SerialMergeScheduler());
       try (IndexWriter writer = new IndexWriter(dir, config)) {
@@ -378,8 +405,88 @@ public final class WriterMergeTriggersFixture {
     }
   }
 
+  static void mergeAbort() throws Exception {
+    try (Directory dir = new ByteBuffersDirectory()) {
+      List<String> phases = new ArrayList<>();
+      AtomicReference<IndexWriter> writerRef = new AtomicReference<>();
+      CountDownLatch aborted = new CountDownLatch(1);
+      AtomicReference<Thread> rollbackThread = new AtomicReference<>();
+      InfoStream hook =
+          new InfoStream() {
+            @Override
+            public void message(String component, String message) {
+              if (component.equals("IW") && message.startsWith("now wait for")) {
+                aborted.countDown();
+              }
+              if (component.equals("SM") && message.contains(" to merge ")) {
+                String phase = message.substring(message.indexOf(" to merge ") + 10);
+                phases.add(phase.substring(0, phase.indexOf(" [")));
+                if (phase.startsWith("stored fields")) {
+                  Thread t =
+                      new Thread(
+                          () -> {
+                            try {
+                              writerRef.get().rollback();
+                            } catch (IOException e) {
+                              throw new RuntimeException(e);
+                            }
+                          });
+                  rollbackThread.set(t);
+                  t.start();
+                  try {
+                    aborted.await();
+                  } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                  }
+                }
+              }
+            }
+
+            @Override
+            public boolean isEnabled(String component) {
+              return component.equals("SM") || component.equals("IW");
+            }
+
+            @Override
+            public void close() {}
+          };
+      IndexWriterConfig config = new IndexWriterConfig();
+      config.setMergeScheduler(new SerialMergeScheduler());
+      config.setInfoStream(hook);
+      IndexWriter writer = new IndexWriter(dir, config);
+      writerRef.set(writer);
+      int id = 0;
+      for (int segment = 0; segment < 2; segment++) {
+        for (int i = 0; i < 50; i++) {
+          Document d = new Document();
+          d.add(new StringField("id", "id" + id++, Field.Store.YES));
+          writer.addDocument(d);
+        }
+        writer.commit();
+      }
+      String outcome;
+      String message = "";
+      try {
+        writer.forceMerge(1);
+        outcome = "ok";
+      } catch (Exception e) {
+        outcome = e.getClass().getSimpleName();
+        message = e.getMessage();
+      }
+      rollbackThread.get().join();
+      System.out.println(
+          "merge-abort phases="
+              + String.join("|", phases)
+              + " forceMerge="
+              + outcome
+              + " segments="
+              + segments(dir));
+      System.out.println("merge-abort message=" + message);
+    }
+  }
+
   /** Runs one case. */
-  public static void main(String[] args) throws IOException, ReflectiveOperationException {
+  public static void main(String[] args) throws Exception {
     switch (args[0]) {
       case "retain" -> retain();
       case "commit-merge", "commit-merge-nowait" -> {
@@ -405,6 +512,25 @@ public final class WriterMergeTriggersFixture {
       case "deletes-applied" -> deletesApplied();
       case "log-packing" -> logMerge("log-packing", 2, new int[] {400, 400, 400, 400});
       case "log-levels" -> logMerge("log-levels", 4, new int[] {24, 3, 3, 3});
+      case "merge-abort" -> mergeAbort();
+      case "log-custom-size" -> {
+        LogMergePolicy policy =
+            new LogMergePolicy() {
+              {
+                minMergeSize = 1;
+                maxMergeSize = Long.MAX_VALUE;
+              }
+
+              @Override
+              protected long size(SegmentCommitInfo info, MergePolicy.MergeContext context)
+                  throws IOException {
+                long maxDoc = info.info.maxDoc();
+                return maxDoc * maxDoc * maxDoc * maxDoc;
+              }
+            };
+        policy.setMergeFactor(4);
+        logMerge("log-custom-size", policy, new int[] {24, 3, 3, 3});
+      }
       default -> throw new IllegalArgumentException("unknown case: " + args[0]);
     }
   }

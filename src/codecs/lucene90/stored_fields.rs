@@ -14,12 +14,12 @@
 //! Two compression modes are supported, matching Lucene's `Mode`:
 //!
 //! * `Mode::BestSpeed` – LZ4 over a preset dictionary
-//!   ([`CompressionMode::LZ4_WITH_PRESET_DICT`]), 80 KiB target chunks, 1024
+//!   ([`BEST_SPEED_MODE`]), 80 KiB target chunks, 1024
 //!   documents per chunk. This is what `Lucene104Codec` selects, and its bytes
 //!   are verified against Lucene 10.5.0 in
 //!   `tests/portability/stored_fields.rs`.
 //! * `Mode::BestCompression` – raw deflate over a preset dictionary
-//!   ([`CompressionMode::DEFLATE_WITH_PRESET_DICT`]), 480 KiB target chunks,
+//!   ([`BEST_COMPRESSION_MODE`]), 480 KiB target chunks,
 //!   4096 documents per chunk. Reachable through `Lucene104Codec::with_mode`.
 //!
 //! # What "compatible" means per mode
@@ -60,7 +60,9 @@ use crate::codecs::codec_util::{
     check_footer, check_footer_with_prior, check_header, check_index_header, checksum_entire_file,
     retrieve_checksum, write_footer, write_header, write_index_header,
 };
-use crate::codecs::compressing::{CompressionMode, Compressor, Decompressor, MatchingReaders};
+use crate::codecs::compressing::{
+    self, CompressionMode, Compressor, Decompressor, MatchingReaders,
+};
 use crate::codecs::stored_fields::{
     merge_visitor_remapper, MergeVisitor, StoredFieldsFormat, StoredFieldsReader,
     StoredFieldsWriter,
@@ -1206,7 +1208,7 @@ pub struct Lucene90CompressingStoredFieldsWriter {
     meta_stream: Box<dyn IndexOutput>,
     fields_stream: Box<dyn IndexOutput>,
     compressor: Box<dyn Compressor>,
-    compression_mode: CompressionMode,
+    compression_mode: Arc<dyn CompressionMode>,
     chunk_size: usize,
     max_docs_per_chunk: usize,
     buffered_docs: ByteBuffersDataOutput,
@@ -1227,7 +1229,7 @@ impl Lucene90CompressingStoredFieldsWriter {
         segment_suffix: &str,
         context: &dyn IOContext,
         format_name: &str,
-        compression_mode: CompressionMode,
+        compression_mode: Arc<dyn CompressionMode>,
         chunk_size: usize,
         max_docs_per_chunk: usize,
         block_shift: i32,
@@ -1446,7 +1448,7 @@ impl Lucene90CompressingStoredFieldsWriter {
             return MergeStrategy::Visitor;
         }
         if BULK_MERGE_ENABLED
-            && reader.compression_mode() == self.compression_mode
+            && compressing::same_mode(reader.compression_mode(), &self.compression_mode)
             && reader.chunk_size() == self.chunk_size
             // it's not worth fine-graining this if there are deletions.
             && merge_state.live_docs[reader_index].is_none()
@@ -1519,7 +1521,10 @@ impl Lucene90CompressingStoredFieldsWriter {
             })?;
         debug_assert_eq!(reader.version(), DATA_VERSION_CURRENT);
         debug_assert_eq!(reader.chunk_size(), self.chunk_size);
-        debug_assert_eq!(reader.compression_mode(), self.compression_mode);
+        debug_assert!(compressing::same_mode(
+            reader.compression_mode(),
+            &self.compression_mode
+        ));
         debug_assert!(!self.too_dirty(reader));
         debug_assert!(merge_state.live_docs[sub.reader_index].is_none());
 
@@ -1680,7 +1685,7 @@ impl Lucene90CompressingStoredFieldsWriter {
 impl fmt::Debug for Lucene90CompressingStoredFieldsWriter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Lucene90CompressingStoredFieldsWriter")
-            .field("compression_mode", &format!("{}", self.compression_mode))
+            .field("compression_mode", &self.compression_mode.to_string())
             .field("chunk_size", &self.chunk_size)
             .field("max_docs_per_chunk", &self.max_docs_per_chunk)
             .field("doc_base", &self.doc_base)
@@ -1971,7 +1976,7 @@ pub struct Lucene90CompressingStoredFieldsReader {
     index_reader: Box<dyn FieldsIndex>,
     max_pointer: i64,
     chunk_size: usize,
-    compression_mode: CompressionMode,
+    compression_mode: Arc<dyn CompressionMode>,
     decompressor: Mutex<Box<dyn Decompressor>>,
     num_docs: i32,
     num_chunks: i64,
@@ -2308,7 +2313,7 @@ impl Lucene90CompressingStoredFieldsReader {
         field_infos: &FieldInfos,
         io_context: &dyn IOContext,
         format_name: &str,
-        compression_mode: CompressionMode,
+        compression_mode: Arc<dyn CompressionMode>,
     ) -> Result<Self> {
         let segment = segment_info.name.clone();
         let id = segment_info.id();
@@ -2383,8 +2388,8 @@ impl Lucene90CompressingStoredFieldsReader {
             index_reader: Box::new(index_reader),
             max_pointer,
             chunk_size,
-            compression_mode,
             decompressor: Mutex::new(compression_mode.new_decompressor()),
+            compression_mode,
             num_docs,
             num_chunks,
             num_dirty_chunks,
@@ -2403,7 +2408,7 @@ impl fmt::Debug for Lucene90CompressingStoredFieldsReader {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Lucene90CompressingStoredFieldsReader")
             .field("version", &self.version)
-            .field("compression_mode", &format!("{}", self.compression_mode))
+            .field("compression_mode", &self.compression_mode.to_string())
             .field("chunk_size", &self.chunk_size)
             .field("num_docs", &self.num_docs)
             .field("num_chunks", &self.num_chunks)
@@ -2467,7 +2472,7 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
             index_reader: self.index_reader.clone_index().expect("clone failed"),
             max_pointer: self.max_pointer,
             chunk_size: self.chunk_size,
-            compression_mode: self.compression_mode,
+            compression_mode: Arc::clone(&self.compression_mode),
             decompressor: Mutex::new(self.compression_mode.new_decompressor()),
             num_docs: self.num_docs,
             num_chunks: self.num_chunks,
@@ -2493,7 +2498,7 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
             index_reader: self.index_reader.clone_index().expect("clone failed"),
             max_pointer: self.max_pointer,
             chunk_size: self.chunk_size,
-            compression_mode: self.compression_mode,
+            compression_mode: Arc::clone(&self.compression_mode),
             decompressor: Mutex::new(self.compression_mode.new_decompressor()),
             num_docs: self.num_docs,
             num_chunks: self.num_chunks,
@@ -2598,8 +2603,8 @@ impl Lucene90CompressingStoredFieldsReader {
     /// Returns the compression mode the chunks were written with.
     ///
     /// Equivalent to `Lucene90CompressingStoredFieldsReader.getCompressionMode`.
-    fn compression_mode(&self) -> CompressionMode {
-        self.compression_mode
+    fn compression_mode(&self) -> &Arc<dyn CompressionMode> {
+        &self.compression_mode
     }
 
     /// Returns the number of chunks in this segment.
@@ -2855,10 +2860,10 @@ impl Lucene90CompressingStoredFieldsReader {
 // -----------------------------------------------------------------------------
 
 /// Concrete stored-fields format that writes compressed chunks.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Lucene90CompressingStoredFieldsFormat {
     format_name: &'static str,
-    compression_mode: CompressionMode,
+    compression_mode: Arc<dyn CompressionMode>,
     chunk_size: usize,
     max_docs_per_chunk: usize,
     block_shift: i32,
@@ -2868,7 +2873,7 @@ impl Lucene90CompressingStoredFieldsFormat {
     /// Creates a new format instance.
     pub fn new(
         format_name: &'static str,
-        compression_mode: CompressionMode,
+        compression_mode: Arc<dyn CompressionMode>,
         chunk_size: usize,
         max_docs_per_chunk: usize,
         block_shift: i32,
@@ -2921,7 +2926,7 @@ impl StoredFieldsFormat for Lucene90CompressingStoredFieldsFormat {
             field_infos,
             context,
             self.format_name,
-            self.compression_mode,
+            Arc::clone(&self.compression_mode),
         )?))
     }
 
@@ -2937,7 +2942,7 @@ impl StoredFieldsFormat for Lucene90CompressingStoredFieldsFormat {
             "",
             context,
             self.format_name,
-            self.compression_mode,
+            Arc::clone(&self.compression_mode),
             self.chunk_size,
             self.max_docs_per_chunk,
             self.block_shift,
@@ -2948,6 +2953,22 @@ impl StoredFieldsFormat for Lucene90CompressingStoredFieldsFormat {
 // -----------------------------------------------------------------------------
 // Lucene90StoredFieldsFormat
 // -----------------------------------------------------------------------------
+
+/// Compression mode for [`Mode::BestCompression`].
+///
+/// Equivalent to `Lucene90StoredFieldsFormat.BEST_COMPRESSION_MODE`
+/// (`Lucene90StoredFieldsFormat.java:178-179`), a
+/// [`DeflateWithPresetDictCompressionMode`](crate::codecs::lucene90::DeflateWithPresetDictCompressionMode).
+pub static BEST_COMPRESSION_MODE: std::sync::LazyLock<Arc<dyn CompressionMode>> =
+    std::sync::LazyLock::new(|| Arc::new(compressing::DeflateWithPresetDictCompressionMode::new()));
+
+/// Compression mode for [`Mode::BestSpeed`].
+///
+/// Equivalent to `Lucene90StoredFieldsFormat.BEST_SPEED_MODE`
+/// (`Lucene90StoredFieldsFormat.java:185`), an
+/// [`LZ4WithPresetDictCompressionMode`](crate::codecs::lucene90::LZ4WithPresetDictCompressionMode).
+pub static BEST_SPEED_MODE: std::sync::LazyLock<Arc<dyn CompressionMode>> =
+    std::sync::LazyLock::new(|| Arc::new(compressing::LZ4WithPresetDictCompressionMode::new()));
 
 /// Stored-fields mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3016,7 +3037,7 @@ impl Lucene90StoredFieldsFormat {
                 // `Lucene90StoredFieldsFormat.BEST_SPEED_MODE` is
                 // `LZ4WithPresetDictCompressionMode`, not plain LZ4: the chunk
                 // is split into ten sub blocks sharing one dictionary.
-                compression_mode: CompressionMode::LZ4_WITH_PRESET_DICT,
+                compression_mode: Arc::clone(&BEST_SPEED_MODE),
                 chunk_size: 10 * 8 * 1024,
                 max_docs_per_chunk: 1024,
                 block_shift: 10,
@@ -3025,7 +3046,7 @@ impl Lucene90StoredFieldsFormat {
                 format_name: "Lucene90StoredFieldsHighData",
                 // `Lucene90StoredFieldsFormat.BEST_COMPRESSION_MODE` is
                 // `DeflateWithPresetDictCompressionMode`, not plain deflate.
-                compression_mode: CompressionMode::DEFLATE_WITH_PRESET_DICT,
+                compression_mode: Arc::clone(&BEST_COMPRESSION_MODE),
                 chunk_size: 10 * 48 * 1024,
                 max_docs_per_chunk: 4096,
                 block_shift: 10,
@@ -4181,7 +4202,7 @@ mod tests {
         state.start_pointer = 0;
         state.bytes = vec![0u8; 32];
 
-        let mut decompressor = CompressionMode::LZ4_WITH_PRESET_DICT.new_decompressor();
+        let mut decompressor = BEST_SPEED_MODE.new_decompressor();
         let error = match state.document(1, None, 1024, &mut *decompressor, true) {
             Ok(_) => panic!("a document cannot have a negative length"),
             Err(error) => error,
@@ -4220,7 +4241,7 @@ mod tests {
     fn compressing_format_validates_parameters() {
         assert!(Lucene90CompressingStoredFieldsFormat::new(
             "Test",
-            CompressionMode::FAST,
+            Arc::clone(&compressing::FAST),
             0,
             1,
             10
@@ -4228,7 +4249,7 @@ mod tests {
         .is_err());
         assert!(Lucene90CompressingStoredFieldsFormat::new(
             "Test",
-            CompressionMode::FAST,
+            Arc::clone(&compressing::FAST),
             1,
             0,
             10
@@ -4236,7 +4257,7 @@ mod tests {
         .is_err());
         assert!(Lucene90CompressingStoredFieldsFormat::new(
             "Test",
-            CompressionMode::FAST,
+            Arc::clone(&compressing::FAST),
             1,
             1,
             10
@@ -4259,7 +4280,7 @@ mod tests {
     fn merge_test_format() -> Lucene90CompressingStoredFieldsFormat {
         Lucene90CompressingStoredFieldsFormat::new(
             MERGE_TEST_FORMAT_NAME,
-            CompressionMode::FAST,
+            Arc::clone(&compressing::FAST),
             MERGE_TEST_CHUNK_SIZE,
             MERGE_TEST_DOCS_PER_CHUNK,
             10,
@@ -4272,7 +4293,7 @@ mod tests {
     fn merge_test_writer(
         dir: &Arc<dyn Directory>,
         name: &str,
-        compression_mode: CompressionMode,
+        compression_mode: Arc<dyn CompressionMode>,
         chunk_size: usize,
     ) -> Lucene90CompressingStoredFieldsWriter {
         Lucene90CompressingStoredFieldsWriter::new(
@@ -4389,7 +4410,7 @@ mod tests {
             &make_field_infos(),
             &*DEFAULT_IO_CONTEXT,
             MERGE_TEST_FORMAT_NAME,
-            CompressionMode::FAST,
+            Arc::clone(&compressing::FAST),
         )
         .unwrap()
     }
@@ -4508,7 +4529,9 @@ mod tests {
             (0..n).map(|_| None).collect(),
             (0..n).map(|_| None).collect(),
             max_docs,
+            None,
             needs_index_sort,
+            None,
         )
     }
 
@@ -4613,7 +4636,12 @@ mod tests {
         let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
         let source = write_merge_source(&dir, "_0", 0, 10);
         let out: Arc<dyn Directory> = Arc::new(RamDirectory::new());
-        let writer = merge_test_writer(&out, "_w0", CompressionMode::FAST, MERGE_TEST_CHUNK_SIZE);
+        let writer = merge_test_writer(
+            &out,
+            "_w0",
+            Arc::clone(&compressing::FAST),
+            MERGE_TEST_CHUNK_SIZE,
+        );
         let strategy_for = |writer: &Lucene90CompressingStoredFieldsWriter,
                             reader: Box<dyn StoredFieldsReader>,
                             live_docs: Option<Box<dyn Bits>>| {
@@ -4646,7 +4674,7 @@ mod tests {
         let other_mode = merge_test_writer(
             &out,
             "_w1",
-            CompressionMode::HIGH_COMPRESSION,
+            Arc::clone(&compressing::HIGH_COMPRESSION),
             MERGE_TEST_CHUNK_SIZE,
         );
         assert_eq!(
@@ -4657,7 +4685,7 @@ mod tests {
         let other_chunk_size = merge_test_writer(
             &out,
             "_w2",
-            CompressionMode::FAST,
+            Arc::clone(&compressing::FAST),
             MERGE_TEST_CHUNK_SIZE * 2,
         );
         assert_eq!(
@@ -4812,8 +4840,12 @@ mod tests {
                 max_docs.clone(),
             );
             let out: Arc<dyn Directory> = Arc::new(RamDirectory::new());
-            let writer =
-                merge_test_writer(&out, "_w", CompressionMode::FAST, MERGE_TEST_CHUNK_SIZE);
+            let writer = merge_test_writer(
+                &out,
+                "_w",
+                Arc::clone(&compressing::FAST),
+                MERGE_TEST_CHUNK_SIZE,
+            );
             let matching = MatchingReaders::new(&bulk_state);
             for i in 0..infos.len() {
                 assert_eq!(
@@ -4897,7 +4929,12 @@ mod tests {
         };
 
         let out: Arc<dyn Directory> = Arc::new(RamDirectory::new());
-        let writer = merge_test_writer(&out, "_w", CompressionMode::FAST, MERGE_TEST_CHUNK_SIZE);
+        let writer = merge_test_writer(
+            &out,
+            "_w",
+            Arc::clone(&compressing::FAST),
+            MERGE_TEST_CHUNK_SIZE,
+        );
         let probe = state();
         let matching = MatchingReaders::new(&probe);
         assert_eq!(
@@ -4951,7 +4988,12 @@ mod tests {
         assert_eq!(dirty.counters, (3, 3, 6), "each tiny chunk is carried over");
         assert_eq!(dirty.documents, expected);
         let out: Arc<dyn Directory> = Arc::new(RamDirectory::new());
-        let writer = merge_test_writer(&out, "_w", CompressionMode::FAST, MERGE_TEST_CHUNK_SIZE);
+        let writer = merge_test_writer(
+            &out,
+            "_w",
+            Arc::clone(&compressing::FAST),
+            MERGE_TEST_CHUNK_SIZE,
+        );
         assert!(writer.too_dirty(&concrete_merge_source(&dirty.dir, &dirty.info)));
 
         let recompressed = run_stored_fields_merge(&stored_fields_merge_state(
@@ -5278,8 +5320,12 @@ mod tests {
     #[should_panic(expected = "self.trigger_flush() != force")]
     fn forcing_the_flush_of_a_full_chunk_trips_the_assertion() {
         let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
-        let mut writer =
-            merge_test_writer(&dir, "_f", CompressionMode::FAST, MERGE_TEST_CHUNK_SIZE);
+        let mut writer = merge_test_writer(
+            &dir,
+            "_f",
+            Arc::clone(&compressing::FAST),
+            MERGE_TEST_CHUNK_SIZE,
+        );
         let field_infos = make_field_infos();
         let info = field_infos.field_info("text").unwrap();
         writer.start_document().unwrap();
@@ -5297,8 +5343,12 @@ mod tests {
     #[should_panic(expected = "self.trigger_flush() != force")]
     fn an_unforced_flush_of_a_partial_chunk_trips_the_assertion() {
         let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
-        let mut writer =
-            merge_test_writer(&dir, "_g", CompressionMode::FAST, MERGE_TEST_CHUNK_SIZE);
+        let mut writer = merge_test_writer(
+            &dir,
+            "_g",
+            Arc::clone(&compressing::FAST),
+            MERGE_TEST_CHUNK_SIZE,
+        );
         let field_infos = make_field_infos();
         writer.start_document().unwrap();
         writer
@@ -5316,7 +5366,7 @@ impl fmt::Display for Lucene90CompressingStoredFieldsFormat {
         write!(
             f,
             "Lucene90CompressingStoredFieldsFormat(compressionMode={}, chunkSize={}, maxDocsPerChunk={}, blockShift={})",
-            self.compression_mode, self.chunk_size, self.max_docs_per_chunk, self.block_shift
+            self.compression_mode.to_string(), self.chunk_size, self.max_docs_per_chunk, self.block_shift
         )
     }
 }
@@ -5329,7 +5379,8 @@ impl fmt::Display for Lucene90CompressingStoredFieldsReader {
         write!(
             f,
             "Lucene90CompressingStoredFieldsReader(mode={},chunksize={})",
-            self.compression_mode, self.chunk_size
+            self.compression_mode.to_string(),
+            self.chunk_size
         )
     }
 }

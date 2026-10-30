@@ -810,7 +810,7 @@ impl RadixSelectorOps for HeapPointOps<'_> {
         self.points.swap(i, j);
     }
 
-    fn fallback_select(&mut self, from: usize, to: usize, k: usize, d: usize) {
+    fn fallback_select(&mut self, from: usize, to: usize, k: usize, d: usize, _max_length: usize) {
         self.fallback_d = d;
         intro_select(self, from, to, k);
     }

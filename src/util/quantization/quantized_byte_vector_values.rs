@@ -338,6 +338,22 @@ pub trait QuantizedByteVectorValues: Send + Sync {
         ))
     }
 
+    /// Hints that `num_ords` of `ords_to_prefetch` are about to be read.
+    ///
+    /// Equivalent to `KnnVectorValues.prefetch(int[], int)`
+    /// (`KnnVectorValues.java:58`), which `QuantizedByteVectorValues` and
+    /// `LegacyQuantizedByteVectorValues` inherit through `ByteVectorValues`. The
+    /// default is Java's empty body; no quantized class in Lucene 10.5.0
+    /// overrides it.
+    ///
+    /// # Errors
+    ///
+    /// The default never fails; an override propagates its own I/O errors.
+    fn prefetch(&self, ords_to_prefetch: &[i32], num_ords: i32) -> Result<()> {
+        let _ = (ords_to_prefetch, num_ords);
+        Ok(())
+    }
+
     /// Returns the quantizer these vectors were compressed with, or `None`
     /// when the implementation does not hold one.
     ///

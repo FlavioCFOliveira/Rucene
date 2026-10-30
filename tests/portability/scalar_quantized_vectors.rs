@@ -248,7 +248,9 @@ fn merge_with_rucene(
         vec![None],
         vec![Some(source)],
         vec![MAX_DOC],
+        None,
         false,
+        None,
     );
     let field_info = infos.field_info_by_number(0).expect("field info").clone();
     let mut writer = format

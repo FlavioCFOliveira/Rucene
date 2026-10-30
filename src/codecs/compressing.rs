@@ -5,13 +5,23 @@
 //! the shared engine used by `Lucene90CompressingStoredFieldsFormat` and
 //! `Lucene90CompressingTermVectorsFormat`.
 //!
-//! [`CompressionMode`] also carries the mode Lucene declares outside that
-//! package, `org.apache.lucene.codecs.lucene90.LZ4WithPresetDictCompressionMode`
-//! ([`CompressionMode::LZ4_WITH_PRESET_DICT`]), because a Rust enum cannot be
-//! extended from another module the way an abstract Java class can be
-//! subclassed.
+//! **Divergence from Lucene 10.5.0.** Lucene declares two more modes outside
+//! this package: `org.apache.lucene.codecs.lucene90.LZ4WithPresetDictCompressionMode`
+//! and `DeflateWithPresetDictCompressionMode`, each a file of its own, and the
+//! anonymous `SortingStoredFieldsConsumer.NO_COMPRESSION`
+//! (`SortingStoredFieldsConsumer.java:42-79`). Their compressors share this
+//! module's LZ4 and deflate framing helpers, so their implementations live
+//! here; the public types are re-exported from
+//! [`codecs::lucene90`](crate::codecs::lucene90), and the singletons Java
+//! declares elsewhere are declared where Java declares them
+//! ([`BEST_SPEED_MODE`](crate::codecs::lucene90::stored_fields::BEST_SPEED_MODE),
+//! [`BEST_COMPRESSION_MODE`](crate::codecs::lucene90::stored_fields::BEST_COMPRESSION_MODE),
+//! and `sorting_consumers::NO_COMPRESSION`). Only the location of the code
+//! differs; the types, constants and bytes are Lucene's.
 
 #![deny(unsafe_code)]
+
+use std::sync::{Arc, LazyLock};
 
 use flate2::{Compress, Compression, Decompress, FlushCompress, FlushDecompress, Status};
 
@@ -25,106 +35,226 @@ use crate::util::BytesRef;
 
 /// A compression mode describing the speed/ratio trade-off.
 ///
-/// Equivalent to `org.apache.lucene.codecs.compressing.CompressionMode`, which
-/// is an **abstract class** with three public constants, not a closed set:
-/// Lucene adds modes by subclassing it, and does so in the codebase —
-/// `DeflateWithPresetDictCompressionMode`, `LZ4WithPresetDictCompressionMode`
-/// and the anonymous `SortingStoredFieldsConsumer.NO_COMPRESSION`. This port
-/// models it as an enum because every mode it needs is known to the crate, but
-/// the set is expected to grow: [`Self::LZ4_WITH_PRESET_DICT`] is already a
-/// variant Java has no constant for, and index sorting will need a
-/// `NO_COMPRESSION`. `#[non_exhaustive]` keeps that growth from breaking a
-/// downstream `match`; inside this crate it changes nothing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(non_camel_case_types)]
-#[non_exhaustive]
-pub enum CompressionMode {
-    /// LZ4 fast compressor with LZ4 decompressor.
-    FAST,
-    /// Deflate compressor with Deflate decompressor.
-    HIGH_COMPRESSION,
-    /// LZ4 high-compression compressor with LZ4 decompressor.
-    FAST_DECOMPRESSION,
-    /// Raw deflate over a preset dictionary, splitting each chunk into sub
-    /// blocks.
-    ///
-    /// Equivalent to
-    /// `org.apache.lucene.codecs.lucene90.DeflateWithPresetDictCompressionMode`,
-    /// which is what `Lucene90StoredFieldsFormat` uses for
-    /// [`Mode::BestCompression`](crate::codecs::lucene90::stored_fields::Mode).
-    /// It is **not** interchangeable with [`Self::HIGH_COMPRESSION`].
-    DEFLATE_WITH_PRESET_DICT,
-    /// LZ4 over a preset dictionary, splitting each chunk into sub blocks.
-    ///
-    /// Equivalent to
-    /// `org.apache.lucene.codecs.lucene90.LZ4WithPresetDictCompressionMode`,
-    /// which is what `Lucene90StoredFieldsFormat` uses for
-    /// [`Mode::BestSpeed`](crate::codecs::lucene90::stored_fields::Mode). It is
-    /// **not** interchangeable with [`Self::FAST`]: the bytes it writes have a
-    /// different framing, so a segment written with one cannot be read with the
-    /// other.
-    LZ4_WITH_PRESET_DICT,
-    /// No compression at all: the compressor copies its input, the decompressor
-    /// reads the requested slice.
-    ///
-    /// Equivalent to the anonymous `CompressionMode`
-    /// `SortingStoredFieldsConsumer.NO_COMPRESSION`
-    /// (`SortingStoredFieldsConsumer.java:40-79`), which the temporary
-    /// stored-fields and term-vectors formats of an index-sorted flush use,
-    /// since their files are read back once and deleted.
-    NO_COMPRESSION,
-}
-
-impl CompressionMode {
+/// Equivalent to the abstract class
+/// `org.apache.lucene.codecs.compressing.CompressionMode`
+/// (`CompressionMode.java:37,118,121`): a mode is anything that hands out a
+/// [`Compressor`] and a matching [`Decompressor`], and a user may implement it
+/// for a mode of their own. Lucene's constants are [`FAST`],
+/// [`HIGH_COMPRESSION`] and [`FAST_DECOMPRESSION`].
+///
+/// Holders keep a mode as an `Arc<dyn CompressionMode>`, Java's reference;
+/// [`same_mode`] is Java's `==` between two of them.
+///
+/// [`to_string`](Self::to_string) is Java's `toString()`: a mode that does
+/// not override it inherits `Object.toString()`, and Lucene's own modes
+/// override it exactly where Java's do.
+pub trait CompressionMode: Send + Sync + std::fmt::Debug {
     /// Creates a new compressor for this mode.
-    pub fn new_compressor(self) -> Box<dyn Compressor> {
-        match self {
-            Self::FAST => Box::new(Lz4FastCompressor::new()),
-            Self::HIGH_COMPRESSION => Box::new(DeflateCompressor::new(6)),
-            Self::FAST_DECOMPRESSION => Box::new(Lz4HighCompressor::new()),
-            Self::LZ4_WITH_PRESET_DICT => Box::new(Lz4WithPresetDictCompressor::new()),
-            Self::DEFLATE_WITH_PRESET_DICT => Box::new(DeflateWithPresetDictCompressor::new(
-                DEFLATE_PRESET_DICT_LEVEL,
-            )),
-            Self::NO_COMPRESSION => Box::new(NoCompressionCompressor),
-        }
-    }
+    ///
+    /// Equivalent to `CompressionMode.newCompressor()`.
+    fn new_compressor(&self) -> Box<dyn Compressor>;
 
     /// Creates a new decompressor for this mode.
-    pub fn new_decompressor(self) -> Box<dyn Decompressor> {
-        match self {
-            Self::FAST | Self::FAST_DECOMPRESSION => Box::new(Lz4Decompressor),
-            Self::HIGH_COMPRESSION => Box::new(DeflateDecompressor::new()),
-            Self::LZ4_WITH_PRESET_DICT => Box::new(Lz4WithPresetDictDecompressor::new()),
-            Self::DEFLATE_WITH_PRESET_DICT => Box::new(DeflateWithPresetDictDecompressor::new()),
-            Self::NO_COMPRESSION => Box::new(NoCompressionDecompressor),
-        }
+    ///
+    /// Equivalent to `CompressionMode.newDecompressor()`.
+    fn new_decompressor(&self) -> Box<dyn Decompressor>;
+
+    /// Returns this mode's string form.
+    ///
+    /// Equivalent to `toString()`. The default is the `Object.toString()` a
+    /// Java mode inherits when it declares none:
+    /// `getClass().getName() + "@" + hex identity`, rendered by
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// with the implementing type's name standing in for the Java class name,
+    /// since a Rust type has no Java binary name.
+    fn to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string(std::any::type_name::<Self>(), self)
     }
 }
 
-impl std::fmt::Display for CompressionMode {
-    /// Equivalent to `LZ4WithPresetDictCompressionMode.toString()`, which
-    /// returns `BEST_SPEED`, and to
-    /// `DeflateWithPresetDictCompressionMode.toString()`, which returns
-    /// `BEST_COMPRESSION`. Java declares each on its own subclass of
-    /// `CompressionMode`; the port folds the modes into one enum, so the two
-    /// overrides are two arms of one `Display`.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::FAST => write!(f, "FAST"),
-            Self::HIGH_COMPRESSION => write!(f, "HIGH_COMPRESSION"),
-            Self::FAST_DECOMPRESSION => write!(f, "FAST_DECOMPRESSION"),
-            Self::LZ4_WITH_PRESET_DICT => write!(f, "BEST_SPEED"),
-            Self::DEFLATE_WITH_PRESET_DICT => write!(f, "BEST_COMPRESSION"),
-            // The anonymous class declares no `toString()`, so `Object`'s
-            // applies; see `java_object_to_string` for the identity suffix.
-            Self::NO_COMPRESSION => {
-                f.write_str(&crate::index::index_reader::java_object_to_string(
-                    "org.apache.lucene.index.SortingStoredFieldsConsumer$1",
-                    self,
-                ))
-            }
-        }
+/// Whether `a` and `b` are the same mode object, Java's `a == b`.
+///
+/// The writers compare the reader's mode with their own by reference
+/// (`Lucene90CompressingStoredFieldsWriter.java:531,692`,
+/// `Lucene90CompressingTermVectorsWriter.java:819,964`); the singletons below make
+/// that hold for the same constant, as Java's `static final` fields do.
+pub fn same_mode(a: &Arc<dyn CompressionMode>, b: &Arc<dyn CompressionMode>) -> bool {
+    std::ptr::addr_eq(Arc::as_ptr(a), Arc::as_ptr(b))
+}
+
+/// The anonymous mode behind [`FAST`] (`CompressionMode.java:44-62`).
+#[derive(Debug)]
+struct FastMode;
+
+impl CompressionMode for FastMode {
+    fn new_compressor(&self) -> Box<dyn Compressor> {
+        Box::new(Lz4FastCompressor::new())
+    }
+
+    fn new_decompressor(&self) -> Box<dyn Decompressor> {
+        Box::new(Lz4Decompressor)
+    }
+
+    /// Equivalent to `toString()`.
+    fn to_string(&self) -> String {
+        "FAST".to_string()
+    }
+}
+
+/// The anonymous mode behind [`HIGH_COMPRESSION`] (`CompressionMode.java:68-89`).
+#[derive(Debug)]
+struct HighCompressionMode;
+
+impl CompressionMode for HighCompressionMode {
+    fn new_compressor(&self) -> Box<dyn Compressor> {
+        // 3 is the highest level that doesn't have lazy match evaluation;
+        // 6 is the default, higher than that is just a waste of cpu.
+        Box::new(DeflateCompressor::new(6))
+    }
+
+    fn new_decompressor(&self) -> Box<dyn Decompressor> {
+        Box::new(DeflateDecompressor::new())
+    }
+
+    /// Equivalent to `toString()`.
+    fn to_string(&self) -> String {
+        "HIGH_COMPRESSION".to_string()
+    }
+}
+
+/// The anonymous mode behind [`FAST_DECOMPRESSION`] (`CompressionMode.java:95-113`).
+#[derive(Debug)]
+struct FastDecompressionMode;
+
+impl CompressionMode for FastDecompressionMode {
+    fn new_compressor(&self) -> Box<dyn Compressor> {
+        Box::new(Lz4HighCompressor::new())
+    }
+
+    fn new_decompressor(&self) -> Box<dyn Decompressor> {
+        Box::new(Lz4Decompressor)
+    }
+
+    /// Equivalent to `toString()`.
+    fn to_string(&self) -> String {
+        "FAST_DECOMPRESSION".to_string()
+    }
+}
+
+/// A compression mode that compresses and decompresses fast, at a lower ratio.
+///
+/// Equivalent to `CompressionMode.FAST` (`CompressionMode.java:44`): LZ4 fast
+/// compressor with LZ4 decompressor.
+pub static FAST: LazyLock<Arc<dyn CompressionMode>> = LazyLock::new(|| Arc::new(FastMode));
+
+/// A compression mode that trades speed for compression ratio.
+///
+/// Equivalent to `CompressionMode.HIGH_COMPRESSION` (`CompressionMode.java:68`):
+/// deflate compressor with deflate decompressor.
+pub static HIGH_COMPRESSION: LazyLock<Arc<dyn CompressionMode>> =
+    LazyLock::new(|| Arc::new(HighCompressionMode));
+
+/// A compression mode that compresses slowly but decompresses fast.
+///
+/// Equivalent to `CompressionMode.FAST_DECOMPRESSION` (`CompressionMode.java:95`):
+/// LZ4 high-compression compressor with LZ4 decompressor.
+pub static FAST_DECOMPRESSION: LazyLock<Arc<dyn CompressionMode>> =
+    LazyLock::new(|| Arc::new(FastDecompressionMode));
+
+/// LZ4 over a preset dictionary, splitting each chunk into sub blocks.
+///
+/// Equivalent to `org.apache.lucene.codecs.lucene90.LZ4WithPresetDictCompressionMode`,
+/// which is what `Lucene90StoredFieldsFormat` uses for
+/// [`Mode::BestSpeed`](crate::codecs::lucene90::stored_fields::Mode). It is
+/// **not** interchangeable with [`FAST`]: the bytes it writes have a different
+/// framing, so a segment written with one cannot be read with the other.
+#[derive(Debug, Default)]
+#[allow(clippy::upper_case_acronyms)]
+pub struct LZ4WithPresetDictCompressionMode;
+
+impl LZ4WithPresetDictCompressionMode {
+    /// Equivalent to `LZ4WithPresetDictCompressionMode()`.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl CompressionMode for LZ4WithPresetDictCompressionMode {
+    fn new_compressor(&self) -> Box<dyn Compressor> {
+        Box::new(Lz4WithPresetDictCompressor::new())
+    }
+
+    fn new_decompressor(&self) -> Box<dyn Decompressor> {
+        Box::new(Lz4WithPresetDictDecompressor::new())
+    }
+
+    /// Equivalent to `LZ4WithPresetDictCompressionMode.toString()`.
+    fn to_string(&self) -> String {
+        "BEST_SPEED".to_string()
+    }
+}
+
+/// Raw deflate over a preset dictionary, splitting each chunk into sub blocks.
+///
+/// Equivalent to `org.apache.lucene.codecs.lucene90.DeflateWithPresetDictCompressionMode`,
+/// which is what `Lucene90StoredFieldsFormat` uses for
+/// [`Mode::BestCompression`](crate::codecs::lucene90::stored_fields::Mode).
+/// It is **not** interchangeable with [`HIGH_COMPRESSION`].
+#[derive(Debug, Default)]
+pub struct DeflateWithPresetDictCompressionMode;
+
+impl DeflateWithPresetDictCompressionMode {
+    /// Equivalent to `DeflateWithPresetDictCompressionMode()`.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl CompressionMode for DeflateWithPresetDictCompressionMode {
+    fn new_compressor(&self) -> Box<dyn Compressor> {
+        Box::new(DeflateWithPresetDictCompressor::new(
+            DEFLATE_PRESET_DICT_LEVEL,
+        ))
+    }
+
+    fn new_decompressor(&self) -> Box<dyn Decompressor> {
+        Box::new(DeflateWithPresetDictDecompressor::new())
+    }
+
+    /// Equivalent to `DeflateWithPresetDictCompressionMode.toString()`.
+    fn to_string(&self) -> String {
+        "BEST_COMPRESSION".to_string()
+    }
+}
+
+/// No compression at all: the compressor copies its input, the decompressor
+/// reads the requested slice.
+///
+/// Equivalent to the anonymous `CompressionMode` behind
+/// `SortingStoredFieldsConsumer.NO_COMPRESSION`
+/// (`SortingStoredFieldsConsumer.java:42-79`), which the temporary
+/// stored-fields and term-vectors formats of an index-sorted flush use, since
+/// their files are read back once and deleted. The singleton is
+/// `sorting_consumers::NO_COMPRESSION`.
+#[derive(Debug)]
+pub(crate) struct NoCompressionMode;
+
+impl CompressionMode for NoCompressionMode {
+    fn new_compressor(&self) -> Box<dyn Compressor> {
+        Box::new(NoCompressionCompressor)
+    }
+
+    fn new_decompressor(&self) -> Box<dyn Decompressor> {
+        Box::new(NoCompressionDecompressor)
+    }
+
+    /// The anonymous class declares no `toString()`, so `Object`'s applies;
+    /// see `java_object_to_string` for the identity suffix.
+    fn to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.SortingStoredFieldsConsumer$1",
+            self,
+        )
     }
 }
 
@@ -223,7 +353,7 @@ impl Compressor for Lz4HighCompressor {
     }
 }
 
-/// The compressor of [`CompressionMode::NO_COMPRESSION`]: `out.copyBytes(buffersInput,
+/// The compressor of [`NoCompressionMode`]: `out.copyBytes(buffersInput,
 /// buffersInput.length())`.
 #[derive(Debug, Default, Clone, Copy)]
 struct NoCompressionCompressor;
@@ -234,7 +364,7 @@ impl Compressor for NoCompressionCompressor {
     }
 }
 
-/// The decompressor of [`CompressionMode::NO_COMPRESSION`]: skip `offset`
+/// The decompressor of [`NoCompressionMode`]: skip `offset`
 /// bytes and read `length`; `originalLength` is not needed.
 #[derive(Debug, Default, Clone, Copy)]
 struct NoCompressionDecompressor;
@@ -701,7 +831,7 @@ fn read_deflate_block(
 /// wrapper** — so the bytes are a bare RFC 1951 stream, not RFC 1950.
 ///
 /// This one keeps Lucene's level 6 on every backend: no format in Lucene 10.5.0
-/// selects [`CompressionMode::HIGH_COMPRESSION`] — only `FAST`, from
+/// selects [`HIGH_COMPRESSION`] — only `FAST`, from
 /// `Lucene90TermVectorsFormat.java:170` — so it writes no index file this port
 /// produces, and the faithful constant is the useful one.
 #[derive(Debug)]
@@ -1057,7 +1187,7 @@ mod tests {
     use crate::store::ByteArrayDataInput;
     use crate::store::VecDataOutput;
 
-    fn round_trip(mode: CompressionMode, data: &[u8], offset: usize, length: usize) {
+    fn round_trip(mode: &dyn CompressionMode, data: &[u8], offset: usize, length: usize) {
         let mut compressor = mode.new_compressor();
         let mut output = VecDataOutput::new();
         let mut bbo = ByteBuffersDataOutput::with_expected_size(data.len());
@@ -1080,44 +1210,39 @@ mod tests {
     #[test]
     fn lz4_fast_round_trips_random_data() {
         let data: Vec<u8> = (0..1024).map(|i| (i % 251) as u8).collect();
-        round_trip(CompressionMode::FAST, &data, 0, data.len());
-        round_trip(CompressionMode::FAST, &data, 100, 200);
+        round_trip(&**FAST, &data, 0, data.len());
+        round_trip(&**FAST, &data, 100, 200);
     }
 
     #[test]
     fn lz4_fast_decompresses_slice() {
         let data = b"the quick brown fox jumps over the lazy dog";
-        round_trip(CompressionMode::FAST, data, 4, 15);
+        round_trip(&**FAST, data, 4, 15);
     }
 
     #[test]
     fn fast_decompression_round_trips() {
         let data = vec![0u8; 512];
-        round_trip(CompressionMode::FAST_DECOMPRESSION, &data, 0, data.len());
+        round_trip(&**FAST_DECOMPRESSION, &data, 0, data.len());
 
         let mut varied = vec![0u8; 256];
         for (i, b) in varied.iter_mut().enumerate() {
             *b = (i * 7) as u8;
         }
-        round_trip(
-            CompressionMode::FAST_DECOMPRESSION,
-            &varied,
-            0,
-            varied.len(),
-        );
+        round_trip(&**FAST_DECOMPRESSION, &varied, 0, varied.len());
     }
 
     #[test]
     fn deflate_high_compression_round_trips() {
         let data: Vec<u8> = (0..2048).map(|i| (i % 127) as u8).collect();
-        round_trip(CompressionMode::HIGH_COMPRESSION, &data, 0, data.len());
-        round_trip(CompressionMode::HIGH_COMPRESSION, &data, 500, 1000);
+        round_trip(&**HIGH_COMPRESSION, &data, 0, data.len());
+        round_trip(&**HIGH_COMPRESSION, &data, 500, 1000);
     }
 
     #[test]
     fn deflate_empty_payload() {
         let data: Vec<u8> = vec![];
-        round_trip(CompressionMode::HIGH_COMPRESSION, &data, 0, 0);
+        round_trip(&**HIGH_COMPRESSION, &data, 0, 0);
     }
 
     #[test]
@@ -1125,16 +1250,16 @@ mod tests {
         // Long enough to be split into ten sub blocks plus a dictionary, so the
         // block-skipping path in the decompressor is exercised.
         let data: Vec<u8> = (0..40_000).map(|i| ((i * 31) % 251) as u8).collect();
-        round_trip(CompressionMode::LZ4_WITH_PRESET_DICT, &data, 0, data.len());
+        round_trip(&LZ4WithPresetDictCompressionMode, &data, 0, data.len());
         // A slice entirely inside the dictionary.
-        round_trip(CompressionMode::LZ4_WITH_PRESET_DICT, &data, 0, 100);
+        round_trip(&LZ4WithPresetDictCompressionMode, &data, 0, 100);
         // A slice that starts in the dictionary and runs into the blocks.
-        round_trip(CompressionMode::LZ4_WITH_PRESET_DICT, &data, 500, 5_000);
+        round_trip(&LZ4WithPresetDictCompressionMode, &data, 500, 5_000);
         // A slice deep inside the blocks, so leading blocks must be skipped.
-        round_trip(CompressionMode::LZ4_WITH_PRESET_DICT, &data, 30_000, 5_000);
+        round_trip(&LZ4WithPresetDictCompressionMode, &data, 30_000, 5_000);
         // The tail.
         round_trip(
-            CompressionMode::LZ4_WITH_PRESET_DICT,
+            &LZ4WithPresetDictCompressionMode,
             &data,
             data.len() - 10,
             10,
@@ -1144,21 +1269,16 @@ mod tests {
     #[test]
     fn lz4_with_preset_dict_handles_short_and_repetitive_payloads() {
         // Short enough that the dictionary is empty.
-        round_trip(CompressionMode::LZ4_WITH_PRESET_DICT, b"abc", 0, 3);
-        round_trip(CompressionMode::LZ4_WITH_PRESET_DICT, b"", 0, 0);
+        round_trip(&LZ4WithPresetDictCompressionMode, b"abc", 0, 3);
+        round_trip(&LZ4WithPresetDictCompressionMode, b"", 0, 0);
         let repetitive = vec![7u8; 5_000];
         round_trip(
-            CompressionMode::LZ4_WITH_PRESET_DICT,
+            &LZ4WithPresetDictCompressionMode,
             &repetitive,
             0,
             repetitive.len(),
         );
-        round_trip(
-            CompressionMode::LZ4_WITH_PRESET_DICT,
-            &repetitive,
-            1_000,
-            2_000,
-        );
+        round_trip(&LZ4WithPresetDictCompressionMode, &repetitive, 1_000, 2_000);
     }
 
     #[test]
@@ -1167,7 +1287,7 @@ mod tests {
         // uses the preset-dict one for BEST_SPEED, and a segment written with
         // one cannot be read with the other.
         let data: Vec<u8> = (0..4_000).map(|i| (i % 97) as u8).collect();
-        let compress = |mode: CompressionMode| {
+        let compress = |mode: &dyn CompressionMode| {
             let mut compressor = mode.new_compressor();
             let mut output = VecDataOutput::new();
             let mut buffered = ByteBuffersDataOutput::with_expected_size(data.len());
@@ -1176,34 +1296,24 @@ mod tests {
             output.into_inner()
         };
         assert_ne!(
-            compress(CompressionMode::FAST),
-            compress(CompressionMode::LZ4_WITH_PRESET_DICT)
+            compress(&**FAST),
+            compress(&LZ4WithPresetDictCompressionMode)
         );
     }
 
     #[test]
     fn deflate_with_preset_dict_round_trips_and_decompresses_slices() {
         let data: Vec<u8> = (0..60_000).map(|i| ((i * 17) % 233) as u8).collect();
-        round_trip(
-            CompressionMode::DEFLATE_WITH_PRESET_DICT,
-            &data,
-            0,
-            data.len(),
-        );
+        round_trip(&DeflateWithPresetDictCompressionMode, &data, 0, data.len());
         // Inside the dictionary only.
-        round_trip(CompressionMode::DEFLATE_WITH_PRESET_DICT, &data, 0, 50);
+        round_trip(&DeflateWithPresetDictCompressionMode, &data, 0, 50);
         // Across the dictionary and into the blocks.
-        round_trip(CompressionMode::DEFLATE_WITH_PRESET_DICT, &data, 100, 8_000);
+        round_trip(&DeflateWithPresetDictCompressionMode, &data, 100, 8_000);
         // Deep inside, so leading blocks must be skipped without inflating.
-        round_trip(
-            CompressionMode::DEFLATE_WITH_PRESET_DICT,
-            &data,
-            45_000,
-            8_000,
-        );
+        round_trip(&DeflateWithPresetDictCompressionMode, &data, 45_000, 8_000);
         // The tail.
         round_trip(
-            CompressionMode::DEFLATE_WITH_PRESET_DICT,
+            &DeflateWithPresetDictCompressionMode,
             &data,
             data.len() - 10,
             10,
@@ -1212,17 +1322,17 @@ mod tests {
 
     #[test]
     fn deflate_with_preset_dict_handles_short_and_repetitive_payloads() {
-        round_trip(CompressionMode::DEFLATE_WITH_PRESET_DICT, b"abc", 0, 3);
-        round_trip(CompressionMode::DEFLATE_WITH_PRESET_DICT, b"", 0, 0);
+        round_trip(&DeflateWithPresetDictCompressionMode, b"abc", 0, 3);
+        round_trip(&DeflateWithPresetDictCompressionMode, b"", 0, 0);
         let repetitive = vec![3u8; 9_000];
         round_trip(
-            CompressionMode::DEFLATE_WITH_PRESET_DICT,
+            &DeflateWithPresetDictCompressionMode,
             &repetitive,
             0,
             repetitive.len(),
         );
         round_trip(
-            CompressionMode::DEFLATE_WITH_PRESET_DICT,
+            &DeflateWithPresetDictCompressionMode,
             &repetitive,
             2_000,
             3_000,
@@ -1235,10 +1345,7 @@ mod tests {
         // means **no zlib wrapper**: the payload must not start with the RFC
         // 1950 header bytes `78 9c`.
         let data: Vec<u8> = (0..4_000).map(|i| (i % 251) as u8).collect();
-        for mode in [
-            CompressionMode::HIGH_COMPRESSION,
-            CompressionMode::DEFLATE_WITH_PRESET_DICT,
-        ] {
+        for mode in [&**HIGH_COMPRESSION, &DeflateWithPresetDictCompressionMode] {
             let mut compressor = mode.new_compressor();
             let mut output = VecDataOutput::new();
             let mut buffered = ByteBuffersDataOutput::with_expected_size(data.len());
@@ -1247,7 +1354,8 @@ mod tests {
             let bytes = output.into_inner();
             assert!(
                 !bytes.windows(2).any(|window| window == [0x78, 0x9c]),
-                "{mode} must not emit a zlib header"
+                "{} must not emit a zlib header",
+                mode.to_string()
             );
         }
     }
@@ -1255,7 +1363,7 @@ mod tests {
     #[test]
     fn the_two_deflate_modes_are_different_formats() {
         let data: Vec<u8> = (0..9_000).map(|i| (i % 97) as u8).collect();
-        let compress = |mode: CompressionMode| {
+        let compress = |mode: &dyn CompressionMode| {
             let mut compressor = mode.new_compressor();
             let mut output = VecDataOutput::new();
             let mut buffered = ByteBuffersDataOutput::with_expected_size(data.len());
@@ -1264,29 +1372,99 @@ mod tests {
             output.into_inner()
         };
         assert_ne!(
-            compress(CompressionMode::HIGH_COMPRESSION),
-            compress(CompressionMode::DEFLATE_WITH_PRESET_DICT)
+            compress(&**HIGH_COMPRESSION),
+            compress(&DeflateWithPresetDictCompressionMode)
+        );
+    }
+
+    /// `CompressionMode` is open, as Java's abstract class is
+    /// (`CompressionMode.java:37,118,121`): a user mode supplies its own
+    /// compressor and decompressor, and a format built with it uses them.
+    #[test]
+    fn a_user_compression_mode_round_trips() {
+        /// Stores every byte inverted, framed as `NO_COMPRESSION` frames it.
+        #[derive(Debug)]
+        struct Inverting;
+
+        #[derive(Debug, Clone, Copy)]
+        struct InvertingCompressor;
+
+        impl Compressor for InvertingCompressor {
+            fn compress(
+                &mut self,
+                input: &ByteBuffersDataOutput,
+                out: &mut dyn DataOutput,
+            ) -> Result<()> {
+                let bytes: Vec<u8> = input.to_array_copy().iter().map(|b| !b).collect();
+                out.write_bytes(&bytes, 0, bytes.len())
+            }
+        }
+
+        #[derive(Debug, Clone, Copy)]
+        struct InvertingDecompressor;
+
+        impl Decompressor for InvertingDecompressor {
+            fn decompress(
+                &mut self,
+                input: &mut dyn DataInput,
+                _original_length: usize,
+                offset: usize,
+                length: usize,
+                bytes: &mut BytesRef,
+            ) -> Result<()> {
+                input.skip_bytes(offset as i64)?;
+                let mut raw = vec![0u8; length];
+                input.read_bytes(&mut raw, 0, length)?;
+                *bytes = BytesRef::new(raw.iter().map(|b| !b).collect());
+                Ok(())
+            }
+
+            fn clone_decompressor(&self) -> Box<dyn Decompressor> {
+                Box::new(*self)
+            }
+        }
+
+        impl CompressionMode for Inverting {
+            fn new_compressor(&self) -> Box<dyn Compressor> {
+                Box::new(InvertingCompressor)
+            }
+
+            fn new_decompressor(&self) -> Box<dyn Decompressor> {
+                Box::new(InvertingDecompressor)
+            }
+        }
+
+        let data: Vec<u8> = (0..1_000).map(|i| (i % 251) as u8).collect();
+        round_trip(&Inverting, &data, 0, data.len());
+        round_trip(&Inverting, &data, 100, 300);
+
+        let mode: Arc<dyn CompressionMode> = Arc::new(Inverting);
+        assert!(same_mode(&mode, &Arc::clone(&mode)));
+        assert!(!same_mode(&mode, &FAST));
+        assert!(same_mode(&FAST, &FAST));
+
+        // A mode that declares no `toString()` inherits `Object.toString()`:
+        // its class name, `@`, and its identity in hexadecimal.
+        let rendered = mode.to_string();
+        let identity = format!("{:x}", Arc::as_ptr(&mode).cast::<()>() as usize);
+        assert_eq!(
+            rendered,
+            format!("{}@{identity}", std::any::type_name::<Inverting>())
         );
     }
 
     #[test]
     fn compression_mode_names_match_the_java_to_string() {
-        assert_eq!(CompressionMode::FAST.to_string(), "FAST");
+        assert_eq!(FAST.to_string(), "FAST");
+        assert_eq!(HIGH_COMPRESSION.to_string(), "HIGH_COMPRESSION");
+        assert_eq!(FAST_DECOMPRESSION.to_string(), "FAST_DECOMPRESSION");
         assert_eq!(
-            CompressionMode::HIGH_COMPRESSION.to_string(),
-            "HIGH_COMPRESSION"
-        );
-        assert_eq!(
-            CompressionMode::FAST_DECOMPRESSION.to_string(),
-            "FAST_DECOMPRESSION"
-        );
-        assert_eq!(
-            CompressionMode::LZ4_WITH_PRESET_DICT.to_string(),
+            &LZ4WithPresetDictCompressionMode.to_string(),
             "BEST_SPEED",
             "LZ4WithPresetDictCompressionMode.toString() returns BEST_SPEED"
         );
         assert_eq!(
-            CompressionMode::DEFLATE_WITH_PRESET_DICT.to_string(),
+            &DeflateWithPresetDictCompressionMode.to_string(),
             "BEST_COMPRESSION",
             "DeflateWithPresetDictCompressionMode.toString() returns BEST_COMPRESSION"
         );

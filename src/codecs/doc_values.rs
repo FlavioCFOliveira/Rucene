@@ -188,6 +188,8 @@ pub trait DocValuesConsumer: Send + Sync + fmt::Debug {
     /// siblings.
     fn merge(&mut self, merge_state: &MergeState) -> Result<()> {
         for producer in merge_state.doc_values_producers.iter().flatten() {
+            // `DocValuesConsumer.java:135`.
+            merge_state.check_aborted()?;
             producer.check_integrity()?;
         }
         for merge_field_info in merge_state.merge_field_infos.iter() {

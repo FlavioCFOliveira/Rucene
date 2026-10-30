@@ -14,8 +14,9 @@ use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
 use crate::index::codec_reader::CodecReader;
+use crate::index::merge_policy::OneMerge;
 use crate::index::{FieldInfos, SegmentInfo};
-use crate::search::NO_MORE_DOCS;
+use crate::search::{Executor, NO_MORE_DOCS};
 use crate::util::{Bits, InfoStream, NoOutputInfoStream};
 
 /// Maps document IDs from an old segment to the merged segment.
@@ -76,13 +77,10 @@ pub fn deletion_doc_map(max_doc: i32, live_docs: Box<dyn Bits>, doc_base: i32) -
 /// public all-arrays `MergeState(DocMap[], SegmentInfo, FieldInfos, …)`
 /// (`MergeState.java:291-326`) is [`new`](Self::new).
 ///
-/// **Divergence from Lucene 10.5.0.** Java's state also carries the
-/// `intraMergeTaskExecutor` and the `oneMerge` it belongs to
-/// (`MergeState.java:88-89`, `:94-100`), through which a codec can parallelise
-/// a merge and `checkAborted()` can stop it. This port carries neither: the
-/// merge runs on the calling thread, and [`check_aborted`](Self::check_aborted)
-/// never fails. The sequence of consumer calls and the files written are
-/// unchanged.
+/// Like Java's, the state carries the `intraMergeTaskExecutor` and the
+/// `oneMerge` it belongs to (`MergeState.java:88-89,94-100`), through which a
+/// codec can parallelise a merge and [`check_aborted`](Self::check_aborted)
+/// stops it once the writer aborts the merge.
 #[derive(Clone)]
 pub struct MergeState {
     /// Maps document IDs from each source segment to the merged segment.
@@ -122,6 +120,18 @@ pub struct MergeState {
     /// with `isEnabled` before every diagnostic message — for example
     /// `MatchingReaders` and `KnnVectorsWriter.merge`.
     pub info_stream: Arc<dyn InfoStream>,
+    /// The executor for intra-merge activity.
+    ///
+    /// Equivalent to `MergeState.intraMergeTaskExecutor`
+    /// (`MergeState.java:88-89`); `None` is Java's `null`.
+    pub intra_merge_task_executor: Option<Arc<dyn Executor>>,
+    /// The merge this state belongs to, or `None` when it is not an
+    /// `IndexWriter` merge.
+    ///
+    /// Equivalent to `MergeState.oneMerge` (`MergeState.java:94-100`). A
+    /// [`OneMerge`] clone shares its abort flag with the writer's, so an abort
+    /// the writer sets is the one [`check_aborted`](Self::check_aborted) sees.
+    pub one_merge: Option<OneMerge>,
 }
 
 impl MergeState {
@@ -131,8 +141,8 @@ impl MergeState {
     /// StoredFieldsReader[], TermVectorsReader[], NormsProducer[],
     /// DocValuesProducer[], FieldInfos[], Bits[], FieldsProducer[],
     /// PointsReader[], KnnVectorsReader[], int[], InfoStream, Executor,
-    /// boolean, OneMerge)` (`MergeState.java:291-326`), less the executor and
-    /// the merge (see the type-level note).
+    /// boolean, OneMerge)` (`MergeState.java:291-326`), less the info stream,
+    /// which this constructor sets to [`NoOutputInfoStream`].
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         doc_maps: Vec<DocMap>,
@@ -148,7 +158,9 @@ impl MergeState {
         points_readers: Vec<Option<Arc<dyn PointsReader>>>,
         knn_vectors_readers: Vec<Option<Arc<dyn KnnVectorsReader>>>,
         max_docs: Vec<i32>,
+        intra_merge_task_executor: Option<Arc<dyn Executor>>,
         needs_index_sort: bool,
+        one_merge: Option<OneMerge>,
     ) -> Self {
         Self {
             doc_maps,
@@ -175,6 +187,8 @@ impl MergeState {
             max_docs,
             needs_index_sort,
             info_stream: Arc::new(NoOutputInfoStream),
+            intra_merge_task_executor,
+            one_merge,
         }
     }
 
@@ -385,6 +399,8 @@ impl MergeState {
             max_docs,
             needs_index_sort: false,
             info_stream: Arc::new(NoOutputInfoStream),
+            intra_merge_task_executor: None,
+            one_merge: None,
         }
     }
 
@@ -401,10 +417,19 @@ impl MergeState {
 
     /// Called periodically by a long-running merge so it can stop early.
     ///
-    /// Equivalent to `MergeState.checkAborted()`, which raises
-    /// `MergePolicy.MergeAbortedException` once the writer has aborted the
-    /// merge. Nothing aborts a merge yet, so this always succeeds.
+    /// Equivalent to `MergeState.checkAborted()` (`MergeState.java:247-251`):
+    /// once the writer has aborted [`one_merge`](Self::one_merge), this fails
+    /// with [`LuceneError::MergeAborted`], Java's
+    /// `MergePolicy.MergeAbortedException`. It is a no-op when the state
+    /// belongs to no merge.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::MergeAborted`] once the merge was aborted.
     pub fn check_aborted(&self) -> Result<()> {
+        if let Some(one_merge) = &self.one_merge {
+            one_merge.check_aborted()?;
+        }
         Ok(())
     }
 
@@ -425,6 +450,7 @@ impl MergeState {
     ///
     /// Propagates whatever pulling a reader or building its merge instance
     /// raises.
+    #[allow(clippy::too_many_arguments)]
     pub fn from_readers(
         readers: &[Arc<dyn CodecReader>],
         doc_maps: Vec<DocMap>,
@@ -432,6 +458,8 @@ impl MergeState {
         merge_field_infos: FieldInfos,
         needs_index_sort: bool,
         info_stream: Arc<dyn InfoStream>,
+        intra_merge_task_executor: Option<Arc<dyn Executor>>,
+        one_merge: Option<OneMerge>,
     ) -> Result<Self> {
         let n = readers.len();
         let mut stored_fields_readers = Vec::with_capacity(n);
@@ -498,6 +526,8 @@ impl MergeState {
             max_docs,
             needs_index_sort,
             info_stream,
+            intra_merge_task_executor,
+            one_merge,
         })
     }
 
@@ -973,5 +1003,53 @@ mod tests {
         assert_eq!(map(2), 11);
         assert_eq!(map(3), 12);
         assert_eq!(map(4), -1);
+    }
+
+    /// `MergeState.checkAborted()` (`MergeState.java:247-251`) is a no-op
+    /// without a `oneMerge`, and otherwise throws once the writer has aborted
+    /// that merge (`MergePolicy.java:406-410`), even through a clone of it.
+    #[test]
+    fn check_aborted_fails_once_the_merge_is_aborted() {
+        use crate::index::SegmentCommitInfo;
+        use crate::store::{Directory, RamDirectory};
+        use crate::util::Version;
+
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let info = SegmentInfo::new(
+            dir,
+            Version::LUCENE_10_5_0,
+            Some(Version::LUCENE_10_5_0),
+            "_0".to_string(),
+            1,
+            false,
+            false,
+            Arc::new(crate::codecs::Lucene104Codec::new()),
+            std::collections::HashMap::new(),
+            [0u8; crate::util::string_helper::ID_LENGTH],
+            std::collections::HashMap::new(),
+            crate::search::Sort::default(),
+        )
+        .unwrap();
+        let commit = SegmentCommitInfo::new(info, 0, 0, -1, -1, -1, [0u8; 16]).unwrap();
+        let merge = OneMerge::new(vec![commit]).unwrap();
+
+        let mut state = MergeState::from_fields_producers(vec![None], vec![1]);
+        state.check_aborted().unwrap();
+        state.one_merge = Some(merge.clone());
+        state.check_aborted().unwrap();
+
+        merge.set_aborted();
+        match state.check_aborted() {
+            Err(error @ LuceneError::MergeAborted(_)) => {
+                // `MergeAbortedException.getMessage()`, with nothing added.
+                let message = error.to_string();
+                assert_eq!(message, format!("merge is aborted: {}", merge.seg_string()));
+                assert!(message.ends_with(" [ABORTED]"), "{message}");
+            }
+            other => panic!("expected MergeAborted, got {other:?}"),
+        }
+
+        state.one_merge = None;
+        state.check_aborted().unwrap();
     }
 }

@@ -14,11 +14,12 @@ use std::time::Duration;
 
 use crate::error::{LuceneError, Result};
 use crate::index::merge_policy::{MergeTrigger, OneMerge};
+use crate::search::Executor;
 use crate::store::{
     BufferedChecksumIndexInput, Directory, IOContext, IndexInput, IndexOutput, Lock,
     RateLimitedIndexOutput,
 };
-use crate::util::InfoStream;
+use crate::util::{InfoStream, SameThreadExecutorService};
 
 /// Where a scheduler gets its merges and how it runs them.
 ///
@@ -102,15 +103,48 @@ pub trait MergeScheduler: Send + Sync + fmt::Display {
         Ok(directory)
     }
 
+    /// Returns this scheduler's own `SameThreadExecutorService`.
+    ///
+    /// Equivalent to the private field `MergeScheduler.executor`
+    /// (`MergeScheduler.java:38`), which every scheduler instance creates. A
+    /// Rust trait holds no fields, so each implementation stores the service
+    /// and returns it here; the base methods
+    /// [`get_intra_merge_executor`](Self::get_intra_merge_executor) and
+    /// [`close`](Self::close) use it exactly as Java's do.
+    fn same_thread_executor(&self) -> &Arc<SameThreadExecutorService>;
+
+    /// Returns the executor `merge` runs its intra-merge work on, or `None`
+    /// where Java returns `null`.
+    ///
+    /// Equivalent to `MergeScheduler.getIntraMergeExecutor(OneMerge)`
+    /// (`MergeScheduler.java:60-67`), whose default is this scheduler's
+    /// [`same_thread_executor`](Self::same_thread_executor): every intra-merge
+    /// action runs on its calling thread.
+    ///
+    /// # Errors
+    ///
+    /// [`NoMergeScheduler`] fails with
+    /// [`LuceneError::UnsupportedOperation`], as Java's throws
+    /// `UnsupportedOperationException`.
+    fn get_intra_merge_executor(&self, merge: &OneMerge) -> Result<Option<Arc<dyn Executor>>> {
+        let _ = merge;
+        Ok(Some(
+            Arc::clone(self.same_thread_executor()) as Arc<dyn Executor>
+        ))
+    }
+
     /// Releases the scheduler's resources.
     ///
-    /// Equivalent to `MergeScheduler.close()`.
+    /// Equivalent to `MergeScheduler.close()` (`MergeScheduler.java:71-73`),
+    /// which shuts [`same_thread_executor`](Self::same_thread_executor) down;
+    /// an override reaches it through [`merge_scheduler_close`], Java's
+    /// `super.close()`.
     ///
     /// # Errors
     ///
     /// Propagates whatever closing the scheduler raises.
     fn close(&self) -> Result<()> {
-        Ok(())
+        merge_scheduler_close(self)
     }
 
     /// Hands the scheduler the writer's info stream and directory.
@@ -176,6 +210,20 @@ pub trait MergeScheduler: Send + Sync + fmt::Display {
     }
 }
 
+/// The body of `MergeScheduler.close()` (`MergeScheduler.java:71-73`): shuts
+/// the scheduler's own `SameThreadExecutorService` down.
+///
+/// The default [`MergeScheduler::close`] runs it; an override calls it where
+/// Java calls `super.close()`, as `ConcurrentMergeScheduler.close()` does.
+///
+/// # Errors
+///
+/// Never fails; the `Result` is `close()`'s `IOException`.
+pub fn merge_scheduler_close<S: MergeScheduler + ?Sized>(scheduler: &S) -> Result<()> {
+    scheduler.same_thread_executor().shutdown();
+    Ok(())
+}
+
 /// The info-stream component name Lucene logs merge scheduling under.
 ///
 /// Equivalent to the `"MS"` literal `MergeScheduler.verbose()` and
@@ -189,6 +237,8 @@ pub const MS: &str = "MS";
 pub struct SerialMergeScheduler {
     /// Serialises callers, as Java's `synchronized merge` does.
     lock: Mutex<()>,
+    /// Equivalent to the inherited `MergeScheduler.executor`.
+    executor: Arc<SameThreadExecutorService>,
 }
 
 impl SerialMergeScheduler {
@@ -211,6 +261,17 @@ impl MergeScheduler for SerialMergeScheduler {
         }
         Ok(())
     }
+
+    fn same_thread_executor(&self) -> &Arc<SameThreadExecutorService> {
+        &self.executor
+    }
+
+    /// Equivalent to `SerialMergeScheduler.close()`
+    /// (`SerialMergeScheduler.java:43`), which does nothing: unlike the base
+    /// `close()`, it leaves the executor running.
+    fn close(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// A scheduler that never runs a merge.
@@ -222,6 +283,28 @@ pub struct NoMergeScheduler;
 impl MergeScheduler for NoMergeScheduler {
     fn merge(&self, _merge_source: Arc<dyn MergeSource>, _trigger: MergeTrigger) -> Result<()> {
         Ok(())
+    }
+
+    /// The executor of `NoMergeScheduler.INSTANCE`, Java's only instance
+    /// (`NoMergeScheduler.java:31-36`), so one process-wide service is that
+    /// instance's field.
+    fn same_thread_executor(&self) -> &Arc<SameThreadExecutorService> {
+        static EXECUTOR: OnceLock<Arc<SameThreadExecutorService>> = OnceLock::new();
+        EXECUTOR.get_or_init(|| Arc::new(SameThreadExecutorService::new()))
+    }
+
+    /// Equivalent to `NoMergeScheduler.close()` (`NoMergeScheduler.java:42`),
+    /// which does nothing.
+    fn close(&self) -> Result<()> {
+        Ok(())
+    }
+
+    /// Equivalent to `NoMergeScheduler.getIntraMergeExecutor(OneMerge)`
+    /// (`NoMergeScheduler.java:57-60`), which throws.
+    fn get_intra_merge_executor(&self, _merge: &OneMerge) -> Result<Option<Arc<dyn Executor>>> {
+        Err(LuceneError::UnsupportedOperation(
+            "NoMergeScheduler does not support merges".to_string(),
+        ))
     }
 }
 
@@ -295,9 +378,6 @@ pub type HandleMergeExceptionOverride = Arc<dyn Fn(LuceneError) + Send + Sync>;
 ///   subclassing; here they are overridden with
 ///   [`set_do_merge_override`](Self::set_do_merge_override) and
 ///   [`set_handle_merge_exception_override`](Self::set_handle_merge_exception_override).
-/// * `getIntraMergeExecutor` and its `CachedExecutor` are not ported:
-///   `SegmentMerger` takes no executor in this port, so a merge always runs on
-///   its own thread (see [`get_intra_merge_executor`](Self::get_intra_merge_executor)).
 /// * The `lucene.cms.override_core_count` system property Java's tests use to
 ///   override the core count has no counterpart.
 pub struct ConcurrentMergeScheduler {
@@ -327,6 +407,14 @@ struct CmsShared {
     do_merge_override: Mutex<Option<DoMergeOverride>>,
     /// The `handleMergeException` override, if one was installed.
     handle_merge_exception_override: Mutex<Option<HandleMergeExceptionOverride>>,
+    /// The executor big merges run their intra-merge work on, created by
+    /// `initialize` and shut down by `close`.
+    ///
+    /// Equivalent to `ConcurrentMergeScheduler.intraMergeExecutor`
+    /// (`ConcurrentMergeScheduler.java:116`).
+    intra_merge_executor: Mutex<Option<Arc<CachedExecutor>>>,
+    /// Equivalent to the inherited `MergeScheduler.executor`.
+    executor: Arc<SameThreadExecutorService>,
 }
 
 /// The fields of `ConcurrentMergeScheduler` Java guards with its monitor.
@@ -561,6 +649,8 @@ impl ConcurrentMergeScheduler {
                 suppress_exceptions: AtomicBool::new(false),
                 do_merge_override: Mutex::new(None),
                 handle_merge_exception_override: Mutex::new(None),
+                intra_merge_executor: Mutex::new(None),
+                executor: Arc::new(SameThreadExecutorService::new()),
             }),
         }
     }
@@ -855,17 +945,6 @@ impl ConcurrentMergeScheduler {
         if let Some(index) = index {
             state.merge_threads.remove(index);
         }
-    }
-
-    /// Returns whether a merge should be parallelised internally.
-    ///
-    /// Equivalent to the size test of
-    /// `ConcurrentMergeScheduler.getIntraMergeExecutor(OneMerge)`, which hands
-    /// merges below [`MIN_BIG_MERGE_MB`] the caller's thread and bigger ones
-    /// the intra-merge pool. This port's `SegmentMerger` takes no executor, so
-    /// only the predicate is kept.
-    pub fn get_intra_merge_executor(&self, merge: &OneMerge) -> bool {
-        (merge.estimated_merge_bytes as f64) >= MIN_BIG_MERGE_MB * 1024.0 * 1024.0
     }
 
     /// Re-rates the running merges whenever the set of merges changes.
@@ -1700,16 +1779,64 @@ impl MergeScheduler for ConcurrentMergeScheduler {
         }
     }
 
-    /// Equivalent to `ConcurrentMergeScheduler.close()`: waits for the merge
-    /// threads with [`sync`](ConcurrentMergeScheduler::sync).
+    fn same_thread_executor(&self) -> &Arc<SameThreadExecutorService> {
+        &self.shared.executor
+    }
+
+    /// Equivalent to `ConcurrentMergeScheduler.getIntraMergeExecutor(OneMerge)`
+    /// (`ConcurrentMergeScheduler.java:276-284`): a merge estimated below
+    /// [`MIN_BIG_MERGE_MB`] gets the base same-thread executor, a bigger one
+    /// the scheduler's [`CachedExecutor`].
+    ///
+    /// Java asserts `intraMergeExecutor != null` (`scaledExecutor is not
+    /// initialized`); the assertion is a `debug_assert!`, the port's form of a
+    /// Java `assert`. With assertions off, Java returns the `null` field for a
+    /// big merge, which is `None` here.
+    ///
+    /// # Errors
+    ///
+    /// Never fails; the `Result` is the base method's.
+    fn get_intra_merge_executor(&self, merge: &OneMerge) -> Result<Option<Arc<dyn Executor>>> {
+        let executor = self
+            .shared
+            .intra_merge_executor
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        debug_assert!(executor.is_some(), "scaledExecutor is not initialized");
+        // don't do multithreaded merges for small merges
+        if (merge.estimated_merge_bytes as f64) < MIN_BIG_MERGE_MB * 1024.0 * 1024.0 {
+            return Ok(Some(
+                Arc::clone(self.same_thread_executor()) as Arc<dyn Executor>
+            ));
+        }
+        Ok(executor.map(|executor| executor as Arc<dyn Executor>))
+    }
+
+    /// Equivalent to `ConcurrentMergeScheduler.close()`
+    /// (`ConcurrentMergeScheduler.java:466-476`): `super.close()` shuts the
+    /// base executor down, [`sync`](ConcurrentMergeScheduler::sync) waits for
+    /// the merge threads, and, even when that fails, the intra-merge executor
+    /// is shut down.
     fn close(&self) -> Result<()> {
+        merge_scheduler_close(self)?;
         self.sync();
+        if let Some(executor) = self
+            .shared
+            .intra_merge_executor
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+        {
+            executor.shutdown();
+        }
         Ok(())
     }
 
     /// Equivalent to `ConcurrentMergeScheduler.initialize(InfoStream, Directory)`
-    /// (`ConcurrentMergeScheduler.java:532-538`): records the info stream and
-    /// resolves the auto-detected thread and merge counts.
+    /// (`ConcurrentMergeScheduler.java:535-542`): records the info stream,
+    /// resolves the auto-detected thread and merge counts, and creates the
+    /// intra-merge executor once.
     fn initialize(
         &self,
         info_stream: Arc<dyn InfoStream>,
@@ -1718,6 +1845,14 @@ impl MergeScheduler for ConcurrentMergeScheduler {
         let _ = directory;
         self.set_info_stream(info_stream);
         self.init_dynamic_defaults();
+        let mut executor = self
+            .shared
+            .intra_merge_executor
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if executor.is_none() {
+            *executor = Some(Arc::new(CachedExecutor::new(Arc::downgrade(&self.shared))));
+        }
         Ok(())
     }
 
@@ -1727,6 +1862,413 @@ impl MergeScheduler for ConcurrentMergeScheduler {
 
     fn get_info_stream(&self) -> Option<Arc<dyn InfoStream>> {
         ConcurrentMergeScheduler::get_info_stream(self)
+    }
+}
+
+/// A pool that hands each command to an idle thread, or starts one, up to a
+/// maximum, and lets an idle thread exit after a keep-alive.
+///
+/// Equivalent to the `java.util.concurrent.ThreadPoolExecutor` that
+/// `ConcurrentMergeScheduler.CachedExecutor` constructs
+/// (`ConcurrentMergeScheduler.java:960-963`):
+/// `new ThreadPoolExecutor(0, 1024, 1L, TimeUnit.MINUTES, new SynchronousQueue<>())`
+/// with the default `AbortPolicy`. With no core threads and a
+/// `SynchronousQueue`, `execute` hands the command to a thread waiting for
+/// work (the most recent one, as the non-fair queue does), otherwise starts a
+/// thread while fewer than `maximumPoolSize` exist, and otherwise rejects it;
+/// a thread that waits `keepAliveTime` without work exits. After
+/// [`shutdown`](Self::shutdown) every command is rejected and the idle threads
+/// exit; running commands finish. A command that panics ends its thread, as a
+/// Java task that throws ends its worker.
+///
+/// **Divergence from Lucene 10.5.0.** `AbortPolicy`'s message is
+/// `"Task " + r + " rejected from " + executor`, built from the
+/// `toString()` of the task and of the pool; neither object exists here, so
+/// the message names the cause (shut down, or at the maximum pool size)
+/// instead. The rejection itself, and when it happens, are Java's.
+struct CachedThreadPool {
+    state: Arc<Mutex<PoolState>>,
+    maximum_pool_size: usize,
+    keep_alive: Duration,
+}
+
+/// The pool's bookkeeping, guarded as Java's `mainLock` and `ctl` guard it.
+struct PoolState {
+    /// The threads waiting for work, each with the slot a command is handed
+    /// through; the last one waited most recently.
+    idle: Vec<(u64, std::sync::mpsc::SyncSender<crate::search::Command>)>,
+    /// The number of live pool threads, Java's `workerCount`.
+    pool_size: usize,
+    /// Set by `shutdown`, Java's `SHUTDOWN` run state.
+    shut_down: bool,
+    /// The identity of the next idle slot.
+    next_id: u64,
+    /// Test hook: the next thread start fails, as `Thread.start` can.
+    #[cfg(test)]
+    fail_spawn: bool,
+    /// Test hook: a thread that has decided to exit after its keep-alive
+    /// waits here twice before it returns.
+    #[cfg(test)]
+    exit_pause: Option<Arc<std::sync::Barrier>>,
+}
+
+impl CachedThreadPool {
+    /// Equivalent to `new ThreadPoolExecutor(0, maximumPoolSize, keepAlive,
+    /// …, new SynchronousQueue<>())`.
+    fn new(maximum_pool_size: usize, keep_alive: Duration) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(PoolState {
+                idle: Vec::new(),
+                pool_size: 0,
+                shut_down: false,
+                next_id: 0,
+                #[cfg(test)]
+                fail_spawn: false,
+                #[cfg(test)]
+                exit_pause: None,
+            })),
+            maximum_pool_size,
+            keep_alive,
+        }
+    }
+
+    /// Equivalent to `ThreadPoolExecutor.execute(Runnable)`.
+    fn execute(
+        &self,
+        command: crate::search::Command,
+    ) -> std::result::Result<(), crate::search::RejectedExecutionException> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.shut_down {
+            return Err(crate::search::RejectedExecutionException {
+                command,
+                message: "Task rejected from a shut-down ThreadPoolExecutor".to_string(),
+            });
+        }
+        // `SynchronousQueue.offer`: succeeds only when a thread is waiting.
+        if let Some((_, slot)) = state.idle.pop() {
+            drop(state);
+            // The thread was taken off the idle list under the lock, so it
+            // still holds its receiver and will take this command.
+            if let Err(std::sync::mpsc::TrySendError::Full(command))
+            | Err(std::sync::mpsc::TrySendError::Disconnected(command)) = slot.try_send(command)
+            {
+                // Unreachable: a slot carries at most one command and its
+                // thread leaves the idle list before it drops the receiver.
+                return Err(crate::search::RejectedExecutionException {
+                    command,
+                    message: "Task rejected: idle worker vanished".to_string(),
+                });
+            }
+            return Ok(());
+        }
+        // `addWorker(command, false)`.
+        if state.pool_size >= self.maximum_pool_size {
+            return Err(crate::search::RejectedExecutionException {
+                command,
+                message: format!(
+                    "Task rejected from a ThreadPoolExecutor at its maximum pool size {}",
+                    self.maximum_pool_size
+                ),
+            });
+        }
+        state.pool_size += 1;
+        #[cfg(test)]
+        let fail_spawn = std::mem::take(&mut state.fail_spawn);
+        drop(state);
+        // The first command rides in a slot so that a thread that cannot be
+        // started hands it back, as Java's caller still holds it.
+        let first = Arc::new(Mutex::new(Some(command)));
+        let worker_first = Arc::clone(&first);
+        let pool = Arc::clone(&self.state);
+        let keep_alive = self.keep_alive;
+        let worker = move || {
+            let command = worker_first
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            if let Some(command) = command {
+                Self::run_worker(&pool, command, keep_alive);
+            }
+        };
+        #[cfg(test)]
+        let started = if fail_spawn {
+            drop(worker);
+            Err(std::io::Error::other("injected thread start failure"))
+        } else {
+            std::thread::Builder::new().spawn(worker)
+        };
+        #[cfg(not(test))]
+        let started = std::thread::Builder::new().spawn(worker);
+        if let Err(error) = started {
+            // `addWorkerFailed`, then `reject(command)`.
+            self.state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .pool_size -= 1;
+            let command = first
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take()
+                .expect("a thread that never started never took its command");
+            return Err(crate::search::RejectedExecutionException {
+                command,
+                message: format!("Task rejected: a pool thread could not be started: {error}"),
+            });
+        }
+        Ok(())
+    }
+
+    /// Equivalent to `ThreadPoolExecutor.runWorker`: runs the first command,
+    /// then waits up to `keep_alive` for each next one.
+    ///
+    /// A thread that decides to exit lowers the pool size in the same
+    /// critical section as that decision, as `getTask` does with
+    /// `compareAndDecrementWorkerCount`; a panicking command lowers it while
+    /// unwinding, as `processWorkerExit` does for a worker that completed
+    /// abruptly.
+    ///
+    /// **Divergence from Lucene 10.5.0.** After a task that throws, Java's
+    /// `processWorkerExit` starts a replacement worker with no first task,
+    /// which waits out the keep-alive and exits. This port starts none: the
+    /// replacement takes no command it would not otherwise have been given a
+    /// fresh thread for, so no command runs differently.
+    fn run_worker(pool: &Mutex<PoolState>, first: crate::search::Command, keep_alive: Duration) {
+        /// Lowers the pool size when a command panics.
+        struct AbruptExit<'a>(&'a Mutex<PoolState>);
+        impl Drop for AbruptExit<'_> {
+            fn drop(&mut self) {
+                if std::thread::panicking() {
+                    self.0
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .pool_size -= 1;
+                }
+            }
+        }
+        let _abrupt_exit = AbruptExit(pool);
+        let mut task = Some(first);
+        while let Some(command) = task.take() {
+            command();
+            // `getTask()`: wait on the queue for the keep-alive time.
+            let (slot, receiver) = std::sync::mpsc::sync_channel(1);
+            let id = {
+                let mut state = pool.lock().unwrap_or_else(PoisonError::into_inner);
+                if state.shut_down {
+                    state.pool_size -= 1;
+                    return;
+                }
+                let id = state.next_id;
+                state.next_id += 1;
+                state.idle.push((id, slot));
+                id
+            };
+            task = match receiver.recv_timeout(keep_alive) {
+                Ok(command) => Some(command),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    // `shutdown` dropped this thread's slot.
+                    pool.lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .pool_size -= 1;
+                    None
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    let mut state = pool.lock().unwrap_or_else(PoisonError::into_inner);
+                    match state.idle.iter().position(|(slot_id, _)| *slot_id == id) {
+                        Some(position) => {
+                            state.idle.remove(position);
+                            state.pool_size -= 1;
+                            #[cfg(test)]
+                            {
+                                let pause = state.exit_pause.clone();
+                                drop(state);
+                                if let Some(pause) = pause {
+                                    pause.wait();
+                                    pause.wait();
+                                }
+                            }
+                            None
+                        }
+                        // `execute` took this thread off the idle list and is
+                        // handing it a command.
+                        None => {
+                            drop(state);
+                            let next = receiver.recv().ok();
+                            if next.is_none() {
+                                pool.lock()
+                                    .unwrap_or_else(PoisonError::into_inner)
+                                    .pool_size -= 1;
+                            }
+                            next
+                        }
+                    }
+                }
+            };
+        }
+    }
+
+    /// Equivalent to `ThreadPoolExecutor.shutdown()`: no new command is
+    /// accepted and the idle threads exit.
+    fn shutdown(&self) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.shut_down = true;
+        // Dropping the slots wakes every idle thread, as Java's
+        // `interruptIdleWorkers` does.
+        state.idle.clear();
+    }
+
+    /// The number of live pool threads, Java's `getPoolSize()`.
+    #[cfg(test)]
+    fn pool_size(&self) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pool_size
+    }
+}
+
+/// The executor a [`ConcurrentMergeScheduler`] gives big merges for their
+/// intra-merge work.
+///
+/// Equivalent to the private `ConcurrentMergeScheduler.CachedExecutor`
+/// (`ConcurrentMergeScheduler.java:954-1004`): a command runs on a pool thread
+/// while fewer pool threads are active than `maxThreadCount - mergeThreads - 1`,
+/// and on the calling thread otherwise. A pool command that fails is handed to
+/// `handleMergeException` unless exceptions are suppressed.
+///
+/// **Divergence from Lucene 10.5.0.** A Java command fails by throwing a
+/// `Throwable`, which `CachedExecutor` catches and hands to
+/// `handleMergeException`; a Rust command fails by panicking, so the panic is
+/// caught and handed on as a [`LuceneError::Merge`] carrying its message.
+/// Rust has no other way for an infallible command to fail.
+struct CachedExecutor {
+    /// Equivalent to `CachedExecutor.activeCount`.
+    active_count: Arc<std::sync::atomic::AtomicI32>,
+    /// Equivalent to `CachedExecutor.executor`.
+    executor: CachedThreadPool,
+    /// The scheduler whose monitor admits a command, as Java synchronises on
+    /// `ConcurrentMergeScheduler.this`.
+    scheduler: std::sync::Weak<CmsShared>,
+}
+
+impl CachedExecutor {
+    /// Equivalent to `CachedExecutor()` (`ConcurrentMergeScheduler.java:960-963`).
+    fn new(scheduler: std::sync::Weak<CmsShared>) -> Self {
+        Self {
+            active_count: Arc::new(std::sync::atomic::AtomicI32::new(0)),
+            executor: CachedThreadPool::new(1024, Duration::from_secs(60)),
+            scheduler,
+        }
+    }
+
+    /// Equivalent to `CachedExecutor.shutdown()`.
+    fn shutdown(&self) {
+        self.executor.shutdown();
+    }
+}
+
+impl Executor for CachedExecutor {
+    /// Equivalent to `CachedExecutor.execute(Runnable)`
+    /// (`ConcurrentMergeScheduler.java:970-1002`).
+    ///
+    /// # Errors
+    ///
+    /// Returns the pool's [`RejectedExecutionException`](crate::search::RejectedExecutionException)
+    /// once the scheduler has shut it down, as Java's `executor.execute`
+    /// throws it; as in Java, the admission count taken for the command is
+    /// not given back.
+    fn execute(
+        &self,
+        command: crate::search::Command,
+    ) -> std::result::Result<(), crate::search::RejectedExecutionException> {
+        // **Divergence from Lucene 10.5.0.** Java's inner class holds a strong
+        // reference to its `ConcurrentMergeScheduler`, which therefore cannot
+        // be gone. The port's scheduler state owns this executor, so the
+        // executor refers back through a `Weak` to avoid an `Arc` cycle; once
+        // the scheduler is dropped no thread can be admitted against its
+        // monitor, and the command runs on the calling thread, as Java's
+        // `else` branch runs it when no thread is available.
+        let Some(shared) = self.scheduler.upgrade() else {
+            command();
+            return Ok(());
+        };
+        // we need to check if a thread is available before submitting the task
+        // to the executor; synchronize on CMS to get an accurate count of
+        // current threads
+        let is_thread_available = {
+            let state = shared
+                .monitor
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let max = state.max_thread_count - state.merge_threads.len() as i32 - 1;
+            let value = self.active_count.load(Ordering::Acquire);
+            if value < max {
+                self.active_count.fetch_add(1, Ordering::AcqRel);
+                debug_assert!(
+                    self.active_count.load(Ordering::Acquire) > 0,
+                    "active count must be greater than 0 after increment"
+                );
+                true
+            } else {
+                false
+            }
+        };
+        if !is_thread_available {
+            command();
+            return Ok(());
+        }
+        // The command rides in a slot so that a rejection hands back the
+        // caller's own command, which Java's caller still holds.
+        let slot = Arc::new(Mutex::new(Some(command)));
+        let task_slot = Arc::clone(&slot);
+        let active_count = Arc::clone(&self.active_count);
+        let scheduler = ConcurrentMergeScheduler { shared };
+        let task: crate::search::Command = Box::new(move || {
+            /// Java's `finally { activeCount.decrementAndGet(); }`, which runs
+            /// even when `handleMergeException` throws.
+            struct Release(Arc<std::sync::atomic::AtomicI32>);
+            impl Drop for Release {
+                fn drop(&mut self) {
+                    self.0.fetch_sub(1, Ordering::AcqRel);
+                    debug_assert!(
+                        self.0.load(Ordering::Acquire) >= 0,
+                        "unexpected negative active count"
+                    );
+                }
+            }
+            let _release = Release(active_count);
+            let command = task_slot
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            let Some(command) = command else {
+                return;
+            };
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(command));
+            if let Err(payload) = outcome {
+                // suppressExceptions is normally only set during testing.
+                if !scheduler.shared.suppress_exceptions.load(Ordering::Acquire) {
+                    let message = payload
+                        .downcast_ref::<String>()
+                        .cloned()
+                        .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
+                        .unwrap_or_else(|| "intra-merge task panicked".to_string());
+                    // Panics as Java's `handleMergeException` throws, ending
+                    // this pool thread.
+                    scheduler.handle_merge_exception(LuceneError::Merge(message));
+                }
+            }
+        });
+        self.executor.execute(task).map_err(|rejected| {
+            let command = slot
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take()
+                .expect("a rejected command was never run");
+            crate::search::RejectedExecutionException {
+                command,
+                message: rejected.message,
+            }
+        })
     }
 }
 
@@ -2223,6 +2765,8 @@ pub struct MultiIndexMergeScheduler {
     /// itself, which the base `initialize` fills in; the combined scheduler
     /// keeps its own, set through [`set_info_stream`](Self::set_info_stream).
     info_stream: Mutex<Option<Arc<dyn InfoStream>>>,
+    /// Equivalent to the inherited `MergeScheduler.executor`.
+    executor: Arc<SameThreadExecutorService>,
 }
 
 impl MultiIndexMergeScheduler {
@@ -2238,6 +2782,7 @@ impl MultiIndexMergeScheduler {
             combined_merge_scheduler: CombinedMergeScheduler::acquire_singleton(),
             manage_singleton: true,
             info_stream: Mutex::new(None),
+            executor: Arc::new(SameThreadExecutorService::new()),
         }
     }
 
@@ -2257,6 +2802,7 @@ impl MultiIndexMergeScheduler {
             combined_merge_scheduler,
             manage_singleton: false,
             info_stream: Mutex::new(None),
+            executor: Arc::new(SameThreadExecutorService::new()),
         }
     }
 
@@ -2285,6 +2831,10 @@ impl MultiIndexMergeScheduler {
 }
 
 impl MergeScheduler for MultiIndexMergeScheduler {
+    fn same_thread_executor(&self) -> &Arc<SameThreadExecutorService> {
+        &self.executor
+    }
+
     /// Equivalent to `MultiIndexMergeScheduler.merge(MergeSource, MergeTrigger)`
     /// (`MultiIndexMergeScheduler.java:65-70`): tags the source with this
     /// index's directory and hands it to the combined scheduler.
@@ -2311,7 +2861,7 @@ impl MergeScheduler for MultiIndexMergeScheduler {
     }
 
     /// Equivalent to `MultiIndexMergeScheduler.close()`
-    /// (`MultiIndexMergeScheduler.java:73-79`): waits for this index's merge
+    /// (`MultiIndexMergeScheduler.java:75-81`): waits for this index's merge
     /// threads, then releases the singleton reference when this scheduler
     /// took one.
     fn close(&self) -> Result<()> {
@@ -2478,6 +3028,14 @@ impl MergeScheduler for CombinedMergeScheduler {
         self.cms.wrap_for_merge(merge, directory)
     }
 
+    fn same_thread_executor(&self) -> &Arc<SameThreadExecutorService> {
+        MergeScheduler::same_thread_executor(&self.cms)
+    }
+
+    fn get_intra_merge_executor(&self, merge: &OneMerge) -> Result<Option<Arc<dyn Executor>>> {
+        MergeScheduler::get_intra_merge_executor(&self.cms, merge)
+    }
+
     fn close(&self) -> Result<()> {
         MergeScheduler::close(&self.cms)
     }
@@ -2621,4 +3179,337 @@ pub(crate) fn register_test_secrets() {
             "INVARIANT: ConcurrentMergeScheduler's static initializer runs once, from this file",
         );
     });
+}
+
+#[cfg(test)]
+mod intra_merge_executor_tests {
+    //! `MergeScheduler.getIntraMergeExecutor`/`close` (`MergeScheduler.java:38,60-73`),
+    //! `ConcurrentMergeScheduler.getIntraMergeExecutor`/`close`/`CachedExecutor`
+    //! (`ConcurrentMergeScheduler.java:276-284,466-476,954-1004`) and the
+    //! `ThreadPoolExecutor` the latter constructs.
+    use super::*;
+    use crate::index::SegmentCommitInfo;
+    use crate::util::Version;
+    use std::sync::mpsc;
+
+    fn one_merge(estimated_merge_bytes: i64) -> OneMerge {
+        let dir: Arc<dyn Directory> = Arc::new(crate::store::RamDirectory::default());
+        let info = crate::index::SegmentInfo::new(
+            dir,
+            Version::LUCENE_10_5_0,
+            Some(Version::LUCENE_10_5_0),
+            "_0".to_string(),
+            1,
+            false,
+            false,
+            Arc::new(crate::codecs::Lucene104Codec::new()),
+            std::collections::HashMap::new(),
+            [0u8; crate::util::string_helper::ID_LENGTH],
+            std::collections::HashMap::new(),
+            crate::search::Sort::default(),
+        )
+        .unwrap();
+        let commit = SegmentCommitInfo::new(info, 0, 0, -1, -1, -1, [0u8; 16]).unwrap();
+        let mut merge = OneMerge::new(vec![commit]).unwrap();
+        merge.estimated_merge_bytes = estimated_merge_bytes;
+        merge
+    }
+
+    const BIG: i64 = (MIN_BIG_MERGE_MB * 1024.0 * 1024.0) as i64;
+
+    /// Runs `command` through `executor`, reporting whether it was accepted.
+    fn accepts(executor: &dyn Executor) -> bool {
+        let (tx, rx) = mpsc::channel();
+        match executor.execute(Box::new(move || tx.send(()).unwrap())) {
+            Ok(()) => {
+                rx.recv_timeout(Duration::from_secs(10)).unwrap();
+                true
+            }
+            Err(rejected) => {
+                assert_eq!(rx.try_recv(), Err(mpsc::TryRecvError::Empty));
+                // The rejection hands the caller's command back.
+                (rejected.command)();
+                rx.try_recv().unwrap();
+                false
+            }
+        }
+    }
+
+    /// Each scheduler owns its `SameThreadExecutorService`, which the base
+    /// `close()` shuts down; a shut-down service rejects
+    /// (`SameThreadExecutorService.java:34-37,68-72`).
+    /// `SerialMergeScheduler.close()` and `NoMergeScheduler.close()` are
+    /// empty and leave it running.
+    #[test]
+    fn each_scheduler_owns_its_executor_and_close_shuts_it_as_lucene_does() {
+        let merge = one_merge(0);
+        let a = SerialMergeScheduler::new();
+        let b = SerialMergeScheduler::new();
+        assert!(!Arc::ptr_eq(
+            a.same_thread_executor(),
+            b.same_thread_executor()
+        ));
+        let executor = a.get_intra_merge_executor(&merge).unwrap().unwrap();
+        assert!(accepts(executor.as_ref()));
+        a.close().unwrap();
+        assert!(
+            accepts(executor.as_ref()),
+            "SerialMergeScheduler.close() is empty"
+        );
+
+        let cms = ConcurrentMergeScheduler::new();
+        cms.initialize(
+            Arc::new(crate::util::NoOutputInfoStream),
+            &(Arc::new(crate::store::RamDirectory::default()) as Arc<dyn Directory>),
+        )
+        .unwrap();
+        let small = cms.get_intra_merge_executor(&merge).unwrap().unwrap();
+        assert!(Arc::ptr_eq(
+            &(Arc::clone(cms.same_thread_executor()) as Arc<dyn Executor>),
+            &small
+        ));
+        assert!(accepts(small.as_ref()));
+        MergeScheduler::close(&cms).unwrap();
+        assert!(
+            !accepts(small.as_ref()),
+            "super.close() shut the base executor"
+        );
+
+        // The default close of a scheduler that does not override it.
+        let multi = MultiIndexMergeScheduler::with_combined_merge_scheduler(
+            Arc::new(crate::store::RamDirectory::default()),
+            Arc::new(CombinedMergeScheduler::new()),
+        );
+        assert!(!Arc::ptr_eq(
+            multi.same_thread_executor(),
+            a.same_thread_executor()
+        ));
+    }
+
+    /// Runs a command through `executor` and returns the thread it ran on.
+    fn thread_of(executor: &dyn Executor) -> std::thread::ThreadId {
+        let (tx, rx) = mpsc::channel();
+        executor
+            .execute(Box::new(move || {
+                tx.send(std::thread::current().id()).unwrap();
+            }))
+            .unwrap();
+        rx.recv_timeout(Duration::from_secs(10)).unwrap()
+    }
+
+    /// A big merge gets the `CachedExecutor`, which runs an admitted command
+    /// on a pool thread (`ConcurrentMergeScheduler.java:983-996`) and whose
+    /// pool rejects once the scheduler is closed (`:466-476`).
+    #[test]
+    fn a_big_merge_gets_the_cached_executor_which_rejects_after_close() {
+        let cms = ConcurrentMergeScheduler::new();
+        cms.set_max_merges_and_threads(6, 4).unwrap();
+        cms.initialize(
+            Arc::new(crate::util::NoOutputInfoStream),
+            &(Arc::new(crate::store::RamDirectory::default()) as Arc<dyn Directory>),
+        )
+        .unwrap();
+        let big = cms
+            .get_intra_merge_executor(&one_merge(BIG))
+            .unwrap()
+            .unwrap();
+        assert!(!Arc::ptr_eq(
+            &(Arc::clone(cms.same_thread_executor()) as Arc<dyn Executor>),
+            &big
+        ));
+        assert_ne!(thread_of(big.as_ref()), std::thread::current().id());
+        MergeScheduler::close(&cms).unwrap();
+        assert!(!accepts(big.as_ref()));
+    }
+
+    /// With no thread to spare — `maxThreadCount - mergeThreads - 1` active
+    /// pool commands already — the command runs on the calling thread
+    /// (`ConcurrentMergeScheduler.java:973-984,998-1000`).
+    #[test]
+    fn at_the_thread_limit_the_cached_executor_runs_on_the_caller() {
+        let cms = ConcurrentMergeScheduler::new();
+        // One thread: `1 - 0 - 1 == 0` pool threads may be active.
+        cms.set_max_merges_and_threads(6, 1).unwrap();
+        cms.initialize(
+            Arc::new(crate::util::NoOutputInfoStream),
+            &(Arc::new(crate::store::RamDirectory::default()) as Arc<dyn Directory>),
+        )
+        .unwrap();
+        let big = cms
+            .get_intra_merge_executor(&one_merge(BIG))
+            .unwrap()
+            .unwrap();
+        assert_eq!(thread_of(big.as_ref()), std::thread::current().id());
+        MergeScheduler::close(&cms).unwrap();
+    }
+
+    /// A pool command that fails reaches `handleMergeException`
+    /// (`ConcurrentMergeScheduler.java:986-993`).
+    #[test]
+    fn a_failing_pool_command_reaches_handle_merge_exception() {
+        let cms = ConcurrentMergeScheduler::new();
+        cms.set_max_merges_and_threads(6, 4).unwrap();
+        cms.initialize(
+            Arc::new(crate::util::NoOutputInfoStream),
+            &(Arc::new(crate::store::RamDirectory::default()) as Arc<dyn Directory>),
+        )
+        .unwrap();
+        let (tx, rx) = mpsc::channel();
+        let tx = Mutex::new(tx);
+        cms.set_handle_merge_exception_override(Some(Arc::new(move |error| {
+            tx.lock().unwrap().send(error.to_string()).unwrap();
+        })));
+        let big = cms
+            .get_intra_merge_executor(&one_merge(BIG))
+            .unwrap()
+            .unwrap();
+        big.execute(Box::new(|| panic!("intra-merge boom")))
+            .unwrap();
+        let reported = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(reported.contains("intra-merge boom"), "{reported}");
+        MergeScheduler::close(&cms).unwrap();
+    }
+
+    /// Java asserts the executor exists (`ConcurrentMergeScheduler.java:278`).
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "scaledExecutor is not initialized")]
+    fn an_uninitialized_scheduler_trips_the_assertion() {
+        let cms = ConcurrentMergeScheduler::new();
+        let _ = cms.get_intra_merge_executor(&one_merge(BIG));
+    }
+
+    /// `ThreadPoolExecutor(0, max, keepAlive, SynchronousQueue)`: an idle
+    /// thread takes the next command, an idle thread exits after the
+    /// keep-alive, the pool never grows past its maximum, and a shut-down pool
+    /// rejects.
+    #[test]
+    fn the_cached_pool_reuses_expires_caps_and_rejects_as_java_does() {
+        let pool = CachedThreadPool::new(1, Duration::from_millis(300));
+        let (tx, rx) = mpsc::channel();
+        let first = tx.clone();
+        pool.execute(Box::new(move || {
+            first.send(std::thread::current().id()).unwrap()
+        }))
+        .unwrap();
+        let first_thread = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        // Wait until the thread waits for work again.
+        let started = std::time::Instant::now();
+        while pool.state.lock().unwrap().idle.is_empty() {
+            assert!(started.elapsed() < Duration::from_secs(10));
+            std::thread::yield_now();
+        }
+        let second = tx.clone();
+        pool.execute(Box::new(move || {
+            second.send(std::thread::current().id()).unwrap()
+        }))
+        .unwrap();
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(10)).unwrap(),
+            first_thread
+        );
+        assert_eq!(pool.pool_size(), 1);
+
+        // Hand the only thread a command that blocks, once it waits for work
+        // again; `execute` takes it off the idle list, so it is busy and the
+        // pool, at its maximum of one, must reject the next command.
+        let (release, wait) = mpsc::channel::<()>();
+        while pool.state.lock().unwrap().idle.is_empty() {
+            std::thread::yield_now();
+        }
+        pool.execute(Box::new(move || wait.recv().unwrap()))
+            .unwrap();
+        assert!(pool.state.lock().unwrap().idle.is_empty());
+        assert!(pool.execute(Box::new(|| {})).is_err());
+        release.send(()).unwrap();
+
+        // The idle thread exits after the keep-alive.
+        let started = std::time::Instant::now();
+        while pool.pool_size() != 0 {
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "idle thread never expired"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        pool.shutdown();
+        let rejected = pool.execute(Box::new(|| {})).unwrap_err();
+        assert!(
+            rejected.message.contains("rejected"),
+            "{}",
+            rejected.message
+        );
+    }
+
+    /// `shutdown()` wakes an idle thread, which exits at once
+    /// (`interruptIdleWorkers`), not after its keep-alive.
+    #[test]
+    fn shutdown_ends_an_idle_thread_before_its_keep_alive() {
+        let keep_alive = Duration::from_secs(60);
+        let pool = CachedThreadPool::new(4, keep_alive);
+        pool.execute(Box::new(|| {})).unwrap();
+        let started = std::time::Instant::now();
+        while pool.state.lock().unwrap().idle.is_empty() {
+            assert!(started.elapsed() < Duration::from_secs(10));
+            std::thread::yield_now();
+        }
+        assert_eq!(pool.pool_size(), 1);
+        pool.shutdown();
+        let started = std::time::Instant::now();
+        while pool.pool_size() != 0 {
+            assert!(
+                started.elapsed() < keep_alive / 12,
+                "the idle thread outlived shutdown"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// A thread that cannot be started is given back: `addWorkerFailed`
+    /// lowers the worker count and the command is rejected
+    /// (`ThreadPoolExecutor.addWorker`, `reject`).
+    #[test]
+    fn a_thread_that_cannot_start_rejects_and_returns_the_command() {
+        let pool = CachedThreadPool::new(4, Duration::from_secs(60));
+        pool.state.lock().unwrap().fail_spawn = true;
+        let (tx, rx) = mpsc::channel();
+        let rejected = pool
+            .execute(Box::new(move || tx.send(()).unwrap()))
+            .unwrap_err();
+        assert_eq!(pool.pool_size(), 0);
+        assert!(rx.try_recv().is_err(), "the command must not have run");
+        (rejected.command)();
+        rx.try_recv().unwrap();
+        // The pool is usable afterwards.
+        assert!(accepts(&PoolAsExecutor(&pool)));
+        pool.shutdown();
+    }
+
+    /// A thread that times out lowers the pool size in the same critical
+    /// section as its decision to exit (`getTask`,
+    /// `compareAndDecrementWorkerCount`), before it returns.
+    #[test]
+    fn an_expiring_thread_leaves_the_count_when_it_decides_to_exit() {
+        let pool = CachedThreadPool::new(4, Duration::from_millis(50));
+        let pause = Arc::new(std::sync::Barrier::new(2));
+        pool.state.lock().unwrap().exit_pause = Some(Arc::clone(&pause));
+        pool.execute(Box::new(|| {})).unwrap();
+        // The thread times out, decides to exit and parks before returning.
+        pause.wait();
+        assert_eq!(pool.pool_size(), 0);
+        pause.wait();
+    }
+
+    /// Lets a `CachedThreadPool` be driven through [`accepts`].
+    struct PoolAsExecutor<'a>(&'a CachedThreadPool);
+
+    impl Executor for PoolAsExecutor<'_> {
+        fn execute(
+            &self,
+            command: crate::search::Command,
+        ) -> std::result::Result<(), crate::search::RejectedExecutionException> {
+            self.0.execute(command)
+        }
+    }
 }

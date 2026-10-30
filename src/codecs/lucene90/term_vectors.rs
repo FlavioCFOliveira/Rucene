@@ -28,7 +28,9 @@ use crate::codecs::codec_util::{
     check_footer, check_index_header, checksum_entire_file, retrieve_checksum, write_footer,
     write_index_header,
 };
-use crate::codecs::compressing::{CompressionMode, Compressor, Decompressor, MatchingReaders};
+use crate::codecs::compressing::{
+    self, CompressionMode, Compressor, Decompressor, MatchingReaders,
+};
 use crate::codecs::lucene90::stored_fields::{FieldsIndex, FieldsIndexReader, FieldsIndexWriter};
 use crate::codecs::stub::{FieldInfo, FieldInfos, SegmentInfo};
 use crate::codecs::term_vectors::{TermVectorsFormat, TermVectorsReader, TermVectorsWriter};
@@ -130,7 +132,7 @@ impl TermVectorsFormat for Lucene90TermVectorsFormat {
         Lucene90CompressingTermVectorsFormat::new(
             VECTORS_CODEC_NAME,
             "",
-            CompressionMode::FAST,
+            Arc::clone(&compressing::FAST),
             DEFAULT_CHUNK_SIZE,
             DEFAULT_MAX_DOCS_PER_CHUNK,
             DEFAULT_BLOCK_SHIFT,
@@ -147,7 +149,7 @@ impl TermVectorsFormat for Lucene90TermVectorsFormat {
         Lucene90CompressingTermVectorsFormat::new(
             VECTORS_CODEC_NAME,
             "",
-            CompressionMode::FAST,
+            Arc::clone(&compressing::FAST),
             DEFAULT_CHUNK_SIZE,
             DEFAULT_MAX_DOCS_PER_CHUNK,
             DEFAULT_BLOCK_SHIFT,
@@ -168,7 +170,7 @@ impl TermVectorsFormat for Lucene90TermVectorsFormat {
 pub struct Lucene90CompressingTermVectorsFormat {
     format_name: String,
     segment_suffix: String,
-    compression_mode: CompressionMode,
+    compression_mode: Arc<dyn CompressionMode>,
     chunk_size: i32,
     max_docs_per_chunk: i32,
     block_shift: i32,
@@ -179,7 +181,7 @@ impl Lucene90CompressingTermVectorsFormat {
     pub fn new(
         format_name: &str,
         segment_suffix: &str,
-        compression_mode: CompressionMode,
+        compression_mode: Arc<dyn CompressionMode>,
         chunk_size: i32,
         max_docs_per_chunk: i32,
         block_shift: i32,
@@ -229,7 +231,7 @@ impl TermVectorsFormat for Lucene90CompressingTermVectorsFormat {
             field_infos,
             context,
             &self.format_name,
-            self.compression_mode,
+            Arc::clone(&self.compression_mode),
             self.chunk_size,
             self.block_shift,
         )?))
@@ -247,7 +249,7 @@ impl TermVectorsFormat for Lucene90CompressingTermVectorsFormat {
             &self.segment_suffix,
             context,
             &self.format_name,
-            self.compression_mode,
+            Arc::clone(&self.compression_mode),
             self.chunk_size,
             self.max_docs_per_chunk,
             self.block_shift,
@@ -401,7 +403,7 @@ pub struct Lucene90CompressingTermVectorsWriter {
     meta_stream: Box<dyn IndexOutput>,
     vectors_stream: Box<dyn IndexOutput>,
     compressor: Box<dyn Compressor>,
-    compression_mode: CompressionMode,
+    compression_mode: Arc<dyn CompressionMode>,
     chunk_size: usize,
     max_docs_per_chunk: usize,
     num_docs: i32,
@@ -532,7 +534,7 @@ impl Lucene90CompressingTermVectorsWriter {
         segment_suffix: &str,
         context: &dyn IOContext,
         format_name: &str,
-        compression_mode: CompressionMode,
+        compression_mode: Arc<dyn CompressionMode>,
         chunk_size: i32,
         max_docs_per_chunk: i32,
         block_shift: i32,
@@ -723,7 +725,7 @@ impl Lucene90CompressingTermVectorsWriter {
             Some(reader) => {
                 BULK_MERGE_ENABLED
                     && matching_readers.matching_readers[reader_index]
-                    && reader.compression_mode() == self.compression_mode
+                    && compressing::same_mode(reader.compression_mode(), &self.compression_mode)
                     && reader.chunk_size() == self.chunk_size as i32
                     && reader.version() == VERSION_CURRENT
                     && reader.packed_ints_version() == PackedInts::VERSION_CURRENT
@@ -779,7 +781,10 @@ impl Lucene90CompressingTermVectorsWriter {
             })?;
         debug_assert_eq!(reader.version(), VERSION_CURRENT);
         debug_assert_eq!(reader.chunk_size(), self.chunk_size as i32);
-        debug_assert_eq!(reader.compression_mode(), self.compression_mode);
+        debug_assert!(compressing::same_mode(
+            reader.compression_mode(),
+            &self.compression_mode
+        ));
         debug_assert!(!self.too_dirty(reader));
         debug_assert!(merge_state.live_docs[sub.reader_index].is_none());
 
@@ -1241,7 +1246,7 @@ impl fmt::Debug for Lucene90CompressingTermVectorsWriter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Lucene90CompressingTermVectorsWriter")
             .field("segment", &self.segment)
-            .field("compression_mode", &format!("{}", self.compression_mode))
+            .field("compression_mode", &self.compression_mode.to_string())
             .field("chunk_size", &self.chunk_size)
             .field("max_docs_per_chunk", &self.max_docs_per_chunk)
             .field("num_docs", &self.num_docs)
@@ -1673,7 +1678,7 @@ pub struct Lucene90CompressingTermVectorsReader {
     index_reader: Box<dyn FieldsIndex>,
     version: i32,
     packed_ints_version: i32,
-    compression_mode: CompressionMode,
+    compression_mode: Arc<dyn CompressionMode>,
     decompressor: Mutex<Box<dyn Decompressor>>,
     chunk_size: i32,
     num_docs: i32,
@@ -1742,7 +1747,7 @@ impl Lucene90CompressingTermVectorsReader {
         field_infos: &FieldInfos,
         context: &dyn IOContext,
         format_name: &str,
-        compression_mode: CompressionMode,
+        compression_mode: Arc<dyn CompressionMode>,
         _chunk_size: i32,
         _block_shift: i32,
     ) -> Result<Self> {
@@ -1815,8 +1820,8 @@ impl Lucene90CompressingTermVectorsReader {
             index_reader: index_reader.clone_index()?,
             version,
             packed_ints_version,
-            compression_mode,
             decompressor: Mutex::new(compression_mode.new_decompressor()),
+            compression_mode,
             chunk_size,
             num_docs,
             num_chunks,
@@ -1836,7 +1841,7 @@ impl fmt::Debug for Lucene90CompressingTermVectorsReader {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Lucene90CompressingTermVectorsReader")
             .field("version", &self.version)
-            .field("compression_mode", &format!("{}", self.compression_mode))
+            .field("compression_mode", &self.compression_mode.to_string())
             .field("chunk_size", &self.chunk_size)
             .field("num_docs", &self.num_docs)
             .field("num_chunks", &self.num_chunks)
@@ -1853,7 +1858,7 @@ impl Clone for Lucene90CompressingTermVectorsReader {
             index_reader: self.index_reader.clone_index().expect("clone index"),
             version: self.version,
             packed_ints_version: self.packed_ints_version,
-            compression_mode: self.compression_mode,
+            compression_mode: Arc::clone(&self.compression_mode),
             decompressor: Mutex::new(self.compression_mode.new_decompressor()),
             chunk_size: self.chunk_size,
             num_docs: self.num_docs,
@@ -2611,8 +2616,8 @@ impl Lucene90CompressingTermVectorsReader {
     /// Returns the compression mode the chunks were written with.
     ///
     /// Equivalent to `Lucene90CompressingTermVectorsReader.getCompressionMode`.
-    fn compression_mode(&self) -> CompressionMode {
-        self.compression_mode
+    fn compression_mode(&self) -> &Arc<dyn CompressionMode> {
+        &self.compression_mode
     }
 
     /// Returns the number of chunks in this segment.
@@ -3503,7 +3508,7 @@ mod tests {
         FieldInfos::new(vec![body, title]).unwrap()
     }
 
-    fn write_read_round_trip(compression_mode: CompressionMode) {
+    fn write_read_round_trip(compression_mode: Arc<dyn CompressionMode>) {
         let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
         let field_infos = make_field_infos();
         let segment_info = test_segment_info(Arc::clone(&dir), "_0", 3);
@@ -3644,12 +3649,12 @@ mod tests {
 
     #[test]
     fn round_trip_fast() {
-        write_read_round_trip(CompressionMode::FAST);
+        write_read_round_trip(Arc::clone(&compressing::FAST));
     }
 
     #[test]
     fn round_trip_high_compression() {
-        write_read_round_trip(CompressionMode::HIGH_COMPRESSION);
+        write_read_round_trip(Arc::clone(&compressing::HIGH_COMPRESSION));
     }
 
     #[test]
@@ -3663,7 +3668,7 @@ mod tests {
         let format = Lucene90CompressingTermVectorsFormat::new(
             VECTORS_CODEC_NAME,
             "",
-            CompressionMode::FAST,
+            Arc::clone(&compressing::FAST),
             1 << 12,
             128,
             10,
@@ -4011,12 +4016,15 @@ mod tests {
         let field_infos = FieldInfos::new(vec![body]).unwrap();
         let segment_info = test_segment_info(Arc::clone(&dir), "_0", 2);
 
-        for mode in [CompressionMode::FAST, CompressionMode::HIGH_COMPRESSION] {
+        for mode in [
+            Arc::clone(&compressing::FAST),
+            Arc::clone(&compressing::HIGH_COMPRESSION),
+        ] {
             let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
             let format = Lucene90CompressingTermVectorsFormat::new(
                 VECTORS_CODEC_NAME,
                 "",
-                mode,
+                Arc::clone(&mode),
                 1 << 12,
                 128,
                 10,
@@ -4061,7 +4069,7 @@ mod tests {
             for doc in 0..2u8 {
                 let fields = reader
                     .get(doc as i32)
-                    .unwrap_or_else(|error| panic!("{mode} doc {doc}: {error}"))
+                    .unwrap_or_else(|error| panic!("{} doc {doc}: {error}", mode.to_string()))
                     .expect("vectors");
                 let terms = fields.terms("body").unwrap().expect("body terms");
                 let mut iterator = terms.iterator().unwrap();
@@ -4072,7 +4080,8 @@ mod tests {
                 assert_eq!(
                     postings.get_payload().unwrap(),
                     Some(&vec![doc; 32][..]),
-                    "{mode} doc {doc}"
+                    "{} doc {doc}",
+                    mode.to_string()
                 );
             }
         }
@@ -4215,7 +4224,7 @@ mod tests {
         Lucene90CompressingTermVectorsFormat::new(
             VECTORS_CODEC_NAME,
             "",
-            CompressionMode::FAST,
+            Arc::clone(&compressing::FAST),
             MERGE_TEST_CHUNK_SIZE,
             MERGE_TEST_DOCS_PER_CHUNK,
             10,
@@ -4228,7 +4237,7 @@ mod tests {
     fn merge_test_writer(
         dir: &Arc<dyn Directory>,
         name: &str,
-        compression_mode: CompressionMode,
+        compression_mode: Arc<dyn CompressionMode>,
         chunk_size: i32,
     ) -> Lucene90CompressingTermVectorsWriter {
         Lucene90CompressingTermVectorsWriter::new(
@@ -4589,7 +4598,9 @@ mod tests {
             (0..n).map(|_| None).collect(),
             (0..n).map(|_| None).collect(),
             max_docs,
+            None,
             needs_index_sort,
+            None,
         )
     }
 
@@ -4689,7 +4700,12 @@ mod tests {
         let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
         let source = write_tv_merge_source(&dir, "_0", 0, 10);
         let out: Arc<dyn Directory> = Arc::new(RamDirectory::new());
-        let writer = merge_test_writer(&out, "_w0", CompressionMode::FAST, MERGE_TEST_CHUNK_SIZE);
+        let writer = merge_test_writer(
+            &out,
+            "_w0",
+            Arc::clone(&compressing::FAST),
+            MERGE_TEST_CHUNK_SIZE,
+        );
         let bulk_for = |writer: &Lucene90CompressingTermVectorsWriter,
                         reader: Box<dyn TermVectorsReader>,
                         live_docs: Option<Box<dyn Bits>>| {
@@ -4719,7 +4735,7 @@ mod tests {
         let other_mode = merge_test_writer(
             &out,
             "_w1",
-            CompressionMode::HIGH_COMPRESSION,
+            Arc::clone(&compressing::HIGH_COMPRESSION),
             MERGE_TEST_CHUNK_SIZE,
         );
         assert!(
@@ -4729,7 +4745,7 @@ mod tests {
         let other_chunk_size = merge_test_writer(
             &out,
             "_w2",
-            CompressionMode::FAST,
+            Arc::clone(&compressing::FAST),
             MERGE_TEST_CHUNK_SIZE * 2,
         );
         assert!(
@@ -4881,8 +4897,12 @@ mod tests {
                 max_docs.clone(),
             );
             let out: Arc<dyn Directory> = Arc::new(RamDirectory::new());
-            let writer =
-                merge_test_writer(&out, "_w", CompressionMode::FAST, MERGE_TEST_CHUNK_SIZE);
+            let writer = merge_test_writer(
+                &out,
+                "_w",
+                Arc::clone(&compressing::FAST),
+                MERGE_TEST_CHUNK_SIZE,
+            );
             let matching = MatchingReaders::new(&bulk_state);
             for i in 0..infos.len() {
                 assert!(
@@ -4966,7 +4986,12 @@ mod tests {
         };
 
         let out: Arc<dyn Directory> = Arc::new(RamDirectory::new());
-        let writer = merge_test_writer(&out, "_w", CompressionMode::FAST, MERGE_TEST_CHUNK_SIZE);
+        let writer = merge_test_writer(
+            &out,
+            "_w",
+            Arc::clone(&compressing::FAST),
+            MERGE_TEST_CHUNK_SIZE,
+        );
         let probe = state();
         let matching = MatchingReaders::new(&probe);
         assert_eq!(
@@ -5015,7 +5040,12 @@ mod tests {
         assert_eq!(dirty.counters, (3, 3, 6), "each tiny chunk is carried over");
         assert_eq!(dirty.documents, expected);
         let out: Arc<dyn Directory> = Arc::new(RamDirectory::new());
-        let writer = merge_test_writer(&out, "_w", CompressionMode::FAST, MERGE_TEST_CHUNK_SIZE);
+        let writer = merge_test_writer(
+            &out,
+            "_w",
+            Arc::clone(&compressing::FAST),
+            MERGE_TEST_CHUNK_SIZE,
+        );
         assert!(writer.too_dirty(&concrete_tv_merge_source(&dirty.dir, &dirty.info)));
 
         let recompressed = run_term_vectors_merge(&term_vectors_merge_state(
@@ -5243,7 +5273,7 @@ impl fmt::Display for Lucene90CompressingTermVectorsFormat {
         write!(
             f,
             "Lucene90CompressingTermVectorsFormat(compressionMode={}, chunkSize={}, maxDocsPerChunk={}, blockSize={})",
-            self.compression_mode, self.chunk_size, self.max_docs_per_chunk, self.block_shift
+            self.compression_mode.to_string(), self.chunk_size, self.max_docs_per_chunk, self.block_shift
         )
     }
 }
@@ -5254,7 +5284,8 @@ impl fmt::Display for Lucene90CompressingTermVectorsReader {
         write!(
             f,
             "Lucene90CompressingTermVectorsReader(mode={},chunksize={})",
-            self.compression_mode, self.chunk_size
+            self.compression_mode.to_string(),
+            self.chunk_size
         )
     }
 }

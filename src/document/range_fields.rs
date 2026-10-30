@@ -1645,7 +1645,6 @@ impl Query for RangeFieldQuery {
 mod tests {
     use super::*;
     use crate::document::IntRangeSlowRangeQuery;
-    use crate::index::IntersectVisitor as _;
     use crate::search::query_visitor::QueryVisitor;
     use crate::search::NO_MORE_DOCS;
 
@@ -1973,7 +1972,7 @@ mod tests {
                 query,
                 result: &mut result,
             };
-            visitor.grow(docs.len() as i32);
+            visitor.grow(docs.len() as i32).unwrap();
             for (doc, packed) in docs {
                 visitor.visit_with_value(*doc, packed).unwrap();
             }

@@ -39,7 +39,7 @@ use crate::index::{
     accept_ords_with, segment_file_name, FieldInfos, VectorEncoding, VectorSimilarityFunction,
 };
 use crate::search::knn::{KnnCollector, TopKnnCollector};
-use crate::search::{AcceptDocs, DocIdSetIterator, NO_MORE_DOCS};
+use crate::search::{AcceptDocs, DocIdSetIterator, TaskExecutor, NO_MORE_DOCS};
 use crate::store::{DataInput, IndexInput, IndexOutput};
 use crate::util::hnsw::{
     ArrayNodesIterator, CloseableRandomVectorScorerSupplier, ConcurrentHnswMerger,
@@ -95,11 +95,17 @@ fn ensure_registered() {
 /// Lucene 9.9 HNSW vector format.
 ///
 /// Equivalent to `org.apache.lucene.codecs.lucene99.Lucene99HnswVectorsFormat`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Lucene99HnswVectorsFormat {
     max_conn: i32,
     beam_width: i32,
     num_merge_workers: i32,
+    /// The executor every writer of this format merges on, or `None`.
+    ///
+    /// Equivalent to `Lucene99HnswVectorsFormat.mergeExec`, the
+    /// `TaskExecutor` the constructor wraps around the `ExecutorService` it is
+    /// given (`Lucene99HnswVectorsFormat.java:291-295`).
+    merge_exec: Option<Arc<TaskExecutor>>,
     tiny_segments_threshold: i32,
     write_version: i32,
 }
@@ -111,6 +117,7 @@ impl Lucene99HnswVectorsFormat {
             DEFAULT_MAX_CONN,
             DEFAULT_BEAM_WIDTH,
             DEFAULT_NUM_MERGE_WORKER,
+            None,
             HNSW_GRAPH_THRESHOLD,
             VERSION_CURRENT,
         )
@@ -122,16 +129,81 @@ impl Lucene99HnswVectorsFormat {
             max_conn,
             beam_width,
             DEFAULT_NUM_MERGE_WORKER,
+            None,
             HNSW_GRAPH_THRESHOLD,
             VERSION_CURRENT,
         )
     }
 
+    /// Creates a format whose writers merge with `num_merge_workers` workers,
+    /// on `merge_exec` when one is given and otherwise on the merge
+    /// scheduler's intra-merge executor.
+    ///
+    /// Equivalent to `Lucene99HnswVectorsFormat(int, int, int, ExecutorService)`
+    /// (`Lucene99HnswVectorsFormat.java:218-221`); an `ExecutorService` is an
+    /// [`Executor`](crate::search::Executor) here.
+    ///
+    /// # Panics
+    ///
+    /// As [`with_params`](Self::with_params).
+    pub fn with_merge_exec(
+        max_conn: i32,
+        beam_width: i32,
+        num_merge_workers: i32,
+        merge_exec: Option<Arc<dyn crate::search::Executor>>,
+    ) -> Self {
+        Self::with_params(
+            max_conn,
+            beam_width,
+            num_merge_workers,
+            merge_exec,
+            HNSW_GRAPH_THRESHOLD,
+            VERSION_CURRENT,
+        )
+    }
+
+    /// As [`with_merge_exec`](Self::with_merge_exec), with a tiny-segments
+    /// threshold.
+    ///
+    /// Equivalent to `Lucene99HnswVectorsFormat(int, int, int, ExecutorService, int)`
+    /// (`Lucene99HnswVectorsFormat.java:237-244`).
+    ///
+    /// # Panics
+    ///
+    /// As [`with_params`](Self::with_params).
+    pub fn with_merge_exec_and_threshold(
+        max_conn: i32,
+        beam_width: i32,
+        num_merge_workers: i32,
+        merge_exec: Option<Arc<dyn crate::search::Executor>>,
+        tiny_segments_threshold: i32,
+    ) -> Self {
+        Self::with_params(
+            max_conn,
+            beam_width,
+            num_merge_workers,
+            merge_exec,
+            tiny_segments_threshold,
+            VERSION_CURRENT,
+        )
+    }
+
     /// Creates a format with the given graph construction parameters.
+    ///
+    /// Equivalent to the package-private
+    /// `Lucene99HnswVectorsFormat(int, int, int, ExecutorService, int, int)`
+    /// (`Lucene99HnswVectorsFormat.java:261-296`).
+    ///
+    /// # Panics
+    ///
+    /// Panics with Java's `IllegalArgumentException` message when `max_conn`
+    /// or `beam_width` is out of range, or when `num_merge_workers` is `1` and
+    /// a `merge_exec` is given.
     pub fn with_params(
         max_conn: i32,
         beam_width: i32,
         num_merge_workers: i32,
+        merge_exec: Option<Arc<dyn crate::search::Executor>>,
         tiny_segments_threshold: i32,
         write_version: i32,
     ) -> Self {
@@ -143,10 +215,14 @@ impl Lucene99HnswVectorsFormat {
                 "beamWidth must be positive and <= {MAXIMUM_BEAM_WIDTH}; beamWidth={beam_width}"
             );
         }
+        if num_merge_workers == 1 && merge_exec.is_some() {
+            panic!("No executor service is needed as we'll use single thread to merge");
+        }
         Self {
             max_conn,
             beam_width,
             num_merge_workers,
+            merge_exec: merge_exec.map(|executor| Arc::new(TaskExecutor::new(executor))),
             tiny_segments_threshold,
             write_version,
         }
@@ -175,6 +251,7 @@ impl KnnVectorsFormat for Lucene99HnswVectorsFormat {
             self.max_conn,
             self.beam_width,
             self.num_merge_workers,
+            self.merge_exec.clone(),
             self.tiny_segments_threshold,
             self.write_version,
         )?))
@@ -197,6 +274,35 @@ impl KnnVectorsFormat for Lucene99HnswVectorsFormat {
 // -----------------------------------------------------------------------------
 // Lucene99HnswVectorsWriter
 // -----------------------------------------------------------------------------
+
+/// Which graph merger `Lucene99HnswVectorsWriter.createGraphMerger` builds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GraphMergerChoice {
+    /// A `ConcurrentHnswMerger`.
+    Concurrent,
+    /// An `IncrementalHnswGraphMerger`.
+    Incremental,
+}
+
+/// The selection of `Lucene99HnswVectorsWriter.createGraphMerger`
+/// (`Lucene99HnswVectorsWriter.java:628-647`): a `ConcurrentHnswMerger` when
+/// the writer has its own `mergeExec`, or when the merge has an intra-merge
+/// executor and more than one worker was asked for; otherwise an
+/// `IncrementalHnswGraphMerger`.
+fn choose_graph_merger(
+    merge_exec: Option<&Arc<TaskExecutor>>,
+    parallel_merge_task_executor: Option<&Arc<dyn crate::search::Executor>>,
+    num_parallel_merge_workers: i32,
+) -> GraphMergerChoice {
+    if merge_exec.is_some() {
+        return GraphMergerChoice::Concurrent;
+    }
+    if parallel_merge_task_executor.is_some() && num_parallel_merge_workers > 1 {
+        GraphMergerChoice::Concurrent
+    } else {
+        GraphMergerChoice::Incremental
+    }
+}
 
 /// Writer for the Lucene 9.9 HNSW vector format.
 ///
@@ -244,6 +350,8 @@ struct HnswWriterState {
     m: i32,
     beam_width: i32,
     num_merge_workers: i32,
+    /// Equivalent to `Lucene99HnswVectorsWriter.mergeExec`.
+    merge_exec: Option<Arc<TaskExecutor>>,
     tiny_segments_threshold: i32,
     version: i32,
     fields: Vec<FieldWriterEntry>,
@@ -317,6 +425,7 @@ impl Lucene99HnswVectorsWriter {
         m: i32,
         beam_width: i32,
         num_merge_workers: i32,
+        merge_exec: Option<Arc<TaskExecutor>>,
         tiny_segments_threshold: i32,
         version: i32,
     ) -> Result<Self> {
@@ -327,6 +436,7 @@ impl Lucene99HnswVectorsWriter {
             m,
             beam_width,
             num_merge_workers,
+            merge_exec,
             tiny_segments_threshold,
             version,
             Box::new(flat_vectors_format),
@@ -347,6 +457,7 @@ impl Lucene99HnswVectorsWriter {
         m: i32,
         beam_width: i32,
         num_merge_workers: i32,
+        merge_exec: Option<Arc<TaskExecutor>>,
         tiny_segments_threshold: i32,
         version: i32,
         flat_vectors_format: Box<dyn FlatVectorsFormat>,
@@ -358,6 +469,7 @@ impl Lucene99HnswVectorsWriter {
                 m,
                 beam_width,
                 num_merge_workers,
+                merge_exec,
                 tiny_segments_threshold,
                 version,
                 flat_vectors_format,
@@ -384,6 +496,7 @@ impl HnswWriterState {
         m: i32,
         beam_width: i32,
         num_merge_workers: i32,
+        merge_exec: Option<Arc<TaskExecutor>>,
         tiny_segments_threshold: i32,
         version: i32,
         flat_vectors_format: Box<dyn FlatVectorsFormat>,
@@ -445,6 +558,7 @@ impl HnswWriterState {
                 m,
                 beam_width,
                 num_merge_workers,
+                merge_exec,
                 tiny_segments_threshold,
                 version,
                 fields: Vec::new(),
@@ -783,7 +897,13 @@ impl HnswWriterState {
             })?
             .file_pointer();
         let mut merger =
-            self.create_graph_merger(field_info, scorer_supplier, self.num_merge_workers);
+            // `Lucene99HnswVectorsWriter.java:474-480`.
+            self.create_graph_merger(
+                field_info,
+                scorer_supplier,
+                merge_state.intra_merge_task_executor.as_ref(),
+                self.num_merge_workers,
+            );
         for i in 0..merge_state.live_docs.len() {
             if !MergedVectorValues::has_vector_values(&merge_state.field_infos[i], &field_info.name)
             {
@@ -826,21 +946,29 @@ impl HnswWriterState {
     /// Equivalent to
     /// `org.apache.lucene.codecs.lucene99.Lucene99HnswVectorsWriter#createGraphMerger`.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java chooses between three cases: a
-    /// `ConcurrentHnswMerger` on the writer's own `mergeExec`, a
-    /// `ConcurrentHnswMerger` on the merge's `TaskExecutor` when more than one
-    /// worker was asked for, and an `IncrementalHnswGraphMerger` otherwise
-    /// (`Lucene99HnswVectorsWriter.java:628-646`). This port has no
-    /// `TaskExecutor`: [`ConcurrentHnswMerger`] runs its own workers, so the
-    /// first two cases are the same one, selected by the worker count exactly
-    /// as Java selects the second.
+    /// `parallel_merge_task_executor` is the merge's
+    /// `MergeState.intraMergeTaskExecutor`, `None` where Java passes `null`
+    /// (`Lucene99HnswVectorsWriter.java:477-479`); see
+    /// [`choose_graph_merger`] for the selection.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java hands the chosen
+    /// `TaskExecutor` to `ConcurrentHnswMerger`, whose builder runs its workers
+    /// on it. [`HnswConcurrentMergeBuilder`](crate::util::hnsw::HnswConcurrentMergeBuilder)
+    /// runs them on the calling thread (see its type-level note), so the
+    /// executor decides which merger is built but runs none of its work.
     fn create_graph_merger(
         &self,
         field_info: &FieldInfo,
         scorer_supplier: Arc<dyn crate::util::hnsw::RandomVectorScorerSupplier>,
+        parallel_merge_task_executor: Option<&Arc<dyn crate::search::Executor>>,
         num_parallel_merge_workers: i32,
     ) -> Box<dyn HnswGraphMerger> {
-        if num_parallel_merge_workers > 1 {
+        if choose_graph_merger(
+            self.merge_exec.as_ref(),
+            parallel_merge_task_executor,
+            num_parallel_merge_workers,
+        ) == GraphMergerChoice::Concurrent
+        {
             Box::new(ConcurrentHnswMerger::new(
                 field_info.clone(),
                 scorer_supplier,
@@ -2754,7 +2882,6 @@ mod tests {
     };
     use crate::search::from_live_docs;
     use crate::store::{DefaultIOContext, RamDirectory};
-    use crate::util::default_info_stream;
     use crate::util::string_helper::ID_LENGTH;
     use crate::util::Version;
     use std::collections::HashMap;
@@ -3033,6 +3160,7 @@ mod tests {
             DEFAULT_MAX_CONN,
             DEFAULT_BEAM_WIDTH,
             DEFAULT_NUM_MERGE_WORKER,
+            None,
             1,
             VERSION_CURRENT,
         );
@@ -3237,5 +3365,56 @@ impl std::fmt::Display for Lucene99HnswVectorsFormat {
             self.tiny_segments_threshold,
             self.flat_format()
         )
+    }
+}
+
+#[cfg(test)]
+mod graph_merger_choice_tests {
+    use super::*;
+
+    /// `Lucene99HnswVectorsWriter.createGraphMerger`
+    /// (`Lucene99HnswVectorsWriter.java:628-647`): concurrent with the
+    /// writer's `mergeExec`, or with an intra-merge executor and more than one
+    /// worker.
+    #[test]
+    fn graph_merger_choice_follows_the_merge_executor_as_lucene_does() {
+        let executor: Arc<dyn crate::search::Executor> =
+            Arc::new(crate::util::SameThreadExecutorService::new());
+        assert_eq!(
+            choose_graph_merger(None, Some(&executor), 2),
+            GraphMergerChoice::Concurrent
+        );
+        assert_eq!(
+            choose_graph_merger(None, Some(&executor), 1),
+            GraphMergerChoice::Incremental
+        );
+        assert_eq!(
+            choose_graph_merger(None, None, 4),
+            GraphMergerChoice::Incremental
+        );
+        // The writer's own `mergeExec` wins whatever the merge offers
+        // (`Lucene99HnswVectorsWriter.java:633-636`).
+        let merge_exec = Arc::new(TaskExecutor::new(Arc::clone(&executor)));
+        assert_eq!(
+            choose_graph_merger(Some(&merge_exec), None, 4),
+            GraphMergerChoice::Concurrent
+        );
+    }
+
+    /// `Lucene99HnswVectorsFormat(int, int, int, ExecutorService)` rejects an
+    /// executor for a single worker (`Lucene99HnswVectorsFormat.java:286-289`)
+    /// and keeps one for several (`:291-295`).
+    #[test]
+    #[should_panic(expected = "No executor service is needed as we'll use single thread to merge")]
+    fn a_single_worker_format_rejects_a_merge_executor() {
+        let executor: Arc<dyn crate::search::Executor> =
+            Arc::new(crate::util::SameThreadExecutorService::new());
+        let format =
+            Lucene99HnswVectorsFormat::with_merge_exec(16, 100, 2, Some(Arc::clone(&executor)));
+        assert!(format.merge_exec.is_some());
+        assert!(Lucene99HnswVectorsFormat::with_merge_exec(16, 100, 2, None)
+            .merge_exec
+            .is_none());
+        let _ = Lucene99HnswVectorsFormat::with_merge_exec(16, 100, 1, Some(executor));
     }
 }

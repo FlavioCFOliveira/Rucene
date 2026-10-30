@@ -3,6 +3,8 @@
 //! Scores against quantized vectors, quantizing the query the same way the
 //! stored vectors were quantized so the comparison is like for like.
 
+use std::sync::Arc;
+
 use crate::codecs::hnsw::flat_vectors::FlatVectorsScorer;
 use crate::error::Result;
 use crate::index::{ByteVectorValues, FloatVectorValues, VectorSimilarityFunction};
@@ -45,13 +47,8 @@ pub fn quantize_query(
 /// Like it, the scorer reads each stored vector and its corrective offset
 /// through the values when it is asked to score it, and forwards `ordToDoc`,
 /// `maxOrd` and `getAcceptOrds` to those values.
-///
-/// The constant multiplier is kept beside the similarity because this port's
-/// [`ScalarQuantizedVectorSimilarity`] takes it at scoring time rather than
-/// binding it into the object, as its own documentation records.
 pub struct ScalarQuantizedRandomVectorScorer {
-    similarity: ScalarQuantizedVectorSimilarity,
-    const_multiplier: f32,
+    similarity: Arc<dyn ScalarQuantizedVectorSimilarity>,
     target_bytes: Vec<u8>,
     offset_correction: f32,
     values: Box<dyn LegacyQuantizedByteVectorValues>,
@@ -92,11 +89,13 @@ impl ScalarQuantizedRandomVectorScorer {
             &scalar_quantizer,
         )?;
         Ok(Self {
-            similarity: ScalarQuantizedVectorSimilarity::from_vector_similarity(
-                similarity_function,
-                scalar_quantizer.get_bits(),
+            similarity: Arc::from(
+                <dyn ScalarQuantizedVectorSimilarity>::from_vector_similarity(
+                    similarity_function,
+                    scalar_quantizer.get_constant_multiplier(),
+                    scalar_quantizer.get_bits(),
+                ),
             ),
-            const_multiplier: scalar_quantizer.get_constant_multiplier(),
             target_bytes,
             offset_correction,
             values,
@@ -120,7 +119,6 @@ impl RandomVectorScorer for ScalarQuantizedRandomVectorScorer {
             self.offset_correction,
             node_vector,
             node_offset,
-            self.const_multiplier,
         )
     }
 
@@ -278,14 +276,9 @@ impl std::fmt::Display for ScalarQuantizedVectorScorer {
 /// Equivalent to
 /// `org.apache.lucene.codecs.hnsw.ScalarQuantizedVectorScorer.ScalarQuantizedRandomVectorScorerSupplier`,
 /// the supplier Java's quantized branch returns.
-///
-/// The constant multiplier is kept beside the similarity because this port's
-/// [`ScalarQuantizedVectorSimilarity`] takes it at scoring time rather than
-/// binding it into the object, as its own documentation records.
 pub struct ScalarQuantizedRandomVectorScorerSupplier {
     values: Box<dyn LegacyQuantizedByteVectorValues>,
-    similarity: ScalarQuantizedVectorSimilarity,
-    const_multiplier: f32,
+    similarity: Arc<dyn ScalarQuantizedVectorSimilarity>,
     vector_similarity_function: VectorSimilarityFunction,
 }
 
@@ -315,11 +308,13 @@ impl ScalarQuantizedRandomVectorScorerSupplier {
     ) -> Self {
         Self {
             values,
-            similarity: ScalarQuantizedVectorSimilarity::from_vector_similarity(
-                similarity_function,
-                scalar_quantizer.get_bits(),
+            similarity: Arc::from(
+                <dyn ScalarQuantizedVectorSimilarity>::from_vector_similarity(
+                    similarity_function,
+                    scalar_quantizer.get_constant_multiplier(),
+                    scalar_quantizer.get_bits(),
+                ),
             ),
-            const_multiplier: scalar_quantizer.get_constant_multiplier(),
             vector_similarity_function: similarity_function,
         }
     }
@@ -331,15 +326,13 @@ impl ScalarQuantizedRandomVectorScorerSupplier {
     /// VectorSimilarityFunction, LegacyQuantizedByteVectorValues)` constructor,
     /// which only `copy()` calls.
     fn with_similarity(
-        similarity: ScalarQuantizedVectorSimilarity,
-        const_multiplier: f32,
+        similarity: Arc<dyn ScalarQuantizedVectorSimilarity>,
         vector_similarity_function: VectorSimilarityFunction,
         values: Box<dyn LegacyQuantizedByteVectorValues>,
     ) -> Self {
         Self {
             values,
             similarity,
-            const_multiplier,
             vector_similarity_function,
         }
     }
@@ -354,8 +347,7 @@ impl RandomVectorScorerSupplier for ScalarQuantizedRandomVectorScorerSupplier {
         let query_vector = vec![0u8; self.values.dimension() as usize];
         Ok(Box::new(ScalarQuantizedUpdateableRandomVectorScorer {
             vectors_copy,
-            similarity: self.similarity,
-            const_multiplier: self.const_multiplier,
+            similarity: Arc::clone(&self.similarity),
             query_vector,
             query_offset: 0.0,
         }))
@@ -365,8 +357,7 @@ impl RandomVectorScorerSupplier for ScalarQuantizedRandomVectorScorerSupplier {
     /// keeps the derived similarity and copies only the values.
     fn copy(&self) -> Result<Box<dyn RandomVectorScorerSupplier>> {
         Ok(Box::new(Self::with_similarity(
-            self.similarity,
-            self.const_multiplier,
+            Arc::clone(&self.similarity),
             self.vector_similarity_function,
             self.values.copy_legacy()?,
         )))
@@ -394,8 +385,7 @@ impl std::fmt::Display for ScalarQuantizedRandomVectorScorerSupplier {
 /// `ScalarQuantizedRandomVectorScorerSupplier.scorer()` returns.
 struct ScalarQuantizedUpdateableRandomVectorScorer {
     vectors_copy: Box<dyn LegacyQuantizedByteVectorValues>,
-    similarity: ScalarQuantizedVectorSimilarity,
-    const_multiplier: f32,
+    similarity: Arc<dyn ScalarQuantizedVectorSimilarity>,
     query_vector: Vec<u8>,
     query_offset: f32,
 }
@@ -416,7 +406,6 @@ impl RandomVectorScorer for ScalarQuantizedUpdateableRandomVectorScorer {
             self.query_offset,
             node_vector,
             node_offset,
-            self.const_multiplier,
         )
     }
 

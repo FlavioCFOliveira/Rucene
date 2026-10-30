@@ -294,7 +294,6 @@ pub trait HnswGraph {
 #[cfg(test)]
 mod tests {
     use super::builder::{HnswBuilder, HnswGraphBuilder};
-    use super::merger::{ConcurrentHnswMerger, HnswGraphMerger};
     use super::on_heap::OnHeapHnswGraph;
     use super::scorer::{
         RandomVectorScorer, RandomVectorScorerSupplier, UpdateableRandomVectorScorer,

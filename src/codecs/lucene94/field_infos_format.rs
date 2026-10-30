@@ -432,7 +432,6 @@ mod tests {
     use super::*;
     use crate::codecs::tests::test_segment_info;
     use crate::store::RamDirectory;
-    use std::collections::HashMap;
 
     /// `getDistFunc` names the input in its `CorruptIndexException`
     /// (`Lucene94FieldInfosFormat.java:328-334`), and prints the byte signed.

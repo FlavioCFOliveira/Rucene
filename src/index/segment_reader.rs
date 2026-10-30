@@ -3387,6 +3387,8 @@ mod tests {
             LeafReader::get_field_infos(reader.as_ref()).clone(),
             false,
             Arc::new(crate::util::NoOutputInfoStream),
+            None,
+            None,
         )
         .expect("merge state");
 

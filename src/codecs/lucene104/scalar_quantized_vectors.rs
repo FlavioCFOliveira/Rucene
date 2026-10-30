@@ -2689,10 +2689,19 @@ fn raw_vector_format() -> crate::codecs::lucene99::flat_vectors_format::Lucene99
 /// `org.apache.lucene.codecs.lucene104.Lucene104HnswScalarQuantizedVectorsFormat`,
 /// which pairs the graph parameters of the HNSW format with the quantized flat
 /// format above.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Lucene104HnswScalarQuantizedVectorsFormat {
     max_conn: i32,
     beam_width: i32,
+    /// Equivalent to `Lucene104HnswScalarQuantizedVectorsFormat.numMergeWorkers`.
+    num_merge_workers: i32,
+    /// Equivalent to `Lucene104HnswScalarQuantizedVectorsFormat.mergeExec`,
+    /// the `TaskExecutor` wrapped around the `ExecutorService` the constructor
+    /// is given (`Lucene104HnswScalarQuantizedVectorsFormat.java:183-187`).
+    merge_exec: Option<Arc<crate::search::TaskExecutor>>,
+    /// Equivalent to
+    /// `Lucene104HnswScalarQuantizedVectorsFormat.tinySegmentsThreshold`.
+    tiny_segments_threshold: i32,
     flat: Lucene104ScalarQuantizedVectorsFormat,
 }
 
@@ -2713,8 +2722,48 @@ impl Lucene104HnswScalarQuantizedVectorsFormat {
         Self {
             max_conn: DEFAULT_MAX_CONN,
             beam_width: DEFAULT_BEAM_WIDTH,
+            num_merge_workers:
+                crate::codecs::lucene99::hnsw_vectors_format::DEFAULT_NUM_MERGE_WORKER,
+            merge_exec: None,
+            tiny_segments_threshold:
+                crate::codecs::lucene99::hnsw_vectors_format::HNSW_GRAPH_THRESHOLD,
             flat: Lucene104ScalarQuantizedVectorsFormat::new(),
         }
+    }
+
+    /// Creates the format with explicit graph parameters, encoding, merge
+    /// workers and merge executor.
+    ///
+    /// Equivalent to `Lucene104HnswScalarQuantizedVectorsFormat(ScalarEncoding,
+    /// int, int, int, ExecutorService)` (`:133-140`) when
+    /// `tiny_segments_threshold` is `HNSW_GRAPH_THRESHOLD`, and to the
+    /// six-argument constructor (`:152-188`) otherwise; an `ExecutorService`
+    /// is an [`Executor`](crate::search::Executor) here.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `max_conn` or
+    /// `beam_width` is out of range, or when `num_merge_workers` is `1` and a
+    /// `merge_exec` is given, as Java throws `IllegalArgumentException`.
+    pub fn with_merge_exec(
+        encoding: ScalarEncoding,
+        max_conn: i32,
+        beam_width: i32,
+        num_merge_workers: i32,
+        merge_exec: Option<Arc<dyn crate::search::Executor>>,
+        tiny_segments_threshold: i32,
+    ) -> Result<Self> {
+        let mut format = Self::with_params(max_conn, beam_width, encoding)?;
+        format.tiny_segments_threshold = tiny_segments_threshold;
+        if num_merge_workers == 1 && merge_exec.is_some() {
+            return Err(LuceneError::IllegalArgument(
+                "No executor service is needed as we'll use single thread to merge".to_string(),
+            ));
+        }
+        format.num_merge_workers = num_merge_workers;
+        format.merge_exec =
+            merge_exec.map(|executor| Arc::new(crate::search::TaskExecutor::new(executor)));
+        Ok(format)
     }
 
     /// Creates the format with explicit graph parameters and encoding.
@@ -2732,6 +2781,11 @@ impl Lucene104HnswScalarQuantizedVectorsFormat {
         Ok(Self {
             max_conn,
             beam_width,
+            num_merge_workers:
+                crate::codecs::lucene99::hnsw_vectors_format::DEFAULT_NUM_MERGE_WORKER,
+            merge_exec: None,
+            tiny_segments_threshold:
+                crate::codecs::lucene99::hnsw_vectors_format::HNSW_GRAPH_THRESHOLD,
             flat: Lucene104ScalarQuantizedVectorsFormat::with_encoding(encoding),
         })
     }
@@ -2836,8 +2890,10 @@ impl KnnVectorsFormat for Lucene104HnswScalarQuantizedVectorsFormat {
                 state,
                 self.max_conn,
                 self.beam_width,
-                crate::codecs::lucene99::hnsw_vectors_format::DEFAULT_NUM_MERGE_WORKER,
-                crate::codecs::lucene99::hnsw_vectors_format::HNSW_GRAPH_THRESHOLD,
+                // `Lucene104HnswScalarQuantizedVectorsFormat.java:190-200`.
+                self.num_merge_workers,
+                self.merge_exec.clone(),
+                self.tiny_segments_threshold,
                 crate::codecs::lucene99::hnsw_vectors_format::VERSION_CURRENT,
                 Box::new(self.flat),
                 flat_writer,
@@ -4517,18 +4573,13 @@ impl std::fmt::Display for Lucene104HnswScalarQuantizedVectorsFormat {
     ///
     /// The `name=` is a literal in Java, not `getName()`, and the flat format
     /// is rendered by its own `toString()`.
-    ///
-    /// Java keeps `tinySegmentsThreshold` in a field; this port models only the
-    /// constructors that leave it at `HNSW_GRAPH_THRESHOLD` — which is every
-    /// public constructor except the six-argument one — so the constant is
-    /// printed directly.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "Lucene104HnswScalarQuantizedVectorsFormat(name=Lucene104HnswScalarQuantizedVectorsFormat, maxConn={}, beamWidth={}, tinySegmentsThreshold={}, flatVectorFormat={})",
             self.max_conn,
             self.beam_width,
-            crate::codecs::lucene99::hnsw_vectors_format::HNSW_GRAPH_THRESHOLD,
+            self.tiny_segments_threshold,
             self.flat
         )
     }
@@ -4740,5 +4791,45 @@ mod tests {
         vector_util::l2normalize(&mut expected, true).unwrap();
         assert_eq!(normalized.vector_value(0).unwrap(), expected);
         assert_eq!(quantize(values()).unwrap().dimension(), 2);
+    }
+
+    /// `Lucene104HnswScalarQuantizedVectorsFormat(ScalarEncoding, int, int,
+    /// int, ExecutorService, int)` (`:152-188`) rejects an executor for a
+    /// single worker, keeps one for several, and prints its threshold.
+    #[test]
+    fn hnsw_sq_format_takes_merge_workers_and_executor_as_lucene_does() {
+        let executor: Arc<dyn crate::search::Executor> =
+            Arc::new(crate::util::SameThreadExecutorService::new());
+        let error = Lucene104HnswScalarQuantizedVectorsFormat::with_merge_exec(
+            ScalarEncoding::UnsignedByte,
+            16,
+            100,
+            1,
+            Some(Arc::clone(&executor)),
+            100,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            LuceneError::IllegalArgument(
+                "No executor service is needed as we'll use single thread to merge".to_string()
+            )
+            .to_string()
+        );
+        let format = Lucene104HnswScalarQuantizedVectorsFormat::with_merge_exec(
+            ScalarEncoding::UnsignedByte,
+            16,
+            100,
+            2,
+            Some(executor),
+            7,
+        )
+        .unwrap();
+        assert_eq!(format.num_merge_workers, 2);
+        assert!(format.merge_exec.is_some());
+        assert!(format.to_string().contains("tinySegmentsThreshold=7,"));
+        assert!(Lucene104HnswScalarQuantizedVectorsFormat::new()
+            .to_string()
+            .contains("tinySegmentsThreshold=100,"));
     }
 }

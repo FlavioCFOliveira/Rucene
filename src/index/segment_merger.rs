@@ -11,9 +11,10 @@ use crate::codecs::Codec;
 use crate::error::{LuceneError, Result};
 use crate::index::codec_reader::CodecReader;
 use crate::index::merge::{DocMap, MergeState};
+use crate::index::merge_policy::OneMerge;
 use crate::index::segment_info::SegmentInfo;
 use crate::index::FieldInfos;
-use crate::search::Sort;
+use crate::search::{Executor, Sort};
 use crate::store::{Context, Directory, IOContext};
 use crate::util::{InfoStream, Version};
 
@@ -33,21 +34,17 @@ const SM: &str = "SM";
 /// and reads from, the same object; [`into_segment_info`](Self::into_segment_info)
 /// hands it back to the caller.
 ///
-/// **Divergence from Lucene 10.5.0.** Two things differ, both confined to this
-/// type:
+/// Like Java's constructor (`SegmentMerger.java:55-75`), this one takes the
+/// intra-merge `Executor` and the `OneMerge` and stores them on the
+/// [`MergeState`], so a codec can parallelise a merge and check for an abort.
 ///
-/// * Java's constructor also takes an intra-merge `Executor` and the
-///   `OneMerge` (`SegmentMerger.java:55-75`), storing them on the `MergeState`
-///   so a codec can parallelise a merge and check for an abort. This port's
-///   [`MergeState`](crate::index::merge::MergeState) carries neither (see its
-///   note), so the merge runs on the calling thread; the sequence of consumer
-///   calls and the files written are unchanged. Its `InfoStream` is carried.
-/// * The vectors writer receives an [`OwnedSegmentWriteState`], whose
-///   `SegmentInfo` is a copy taken when the vectors phase starts, because
-///   [`KnnVectorsFormat::fields_writer`](crate::codecs::KnnVectorsFormat::fields_writer)
-///   takes an owned state: its writer outlives the call that creates it. No
-///   vectors writer mutates the `SegmentInfo` — Lucene's only read `maxDoc` —
-///   so nothing that writer could do is lost with the copy.
+/// **Divergence from Lucene 10.5.0.** The vectors writer receives an
+/// [`OwnedSegmentWriteState`], whose `SegmentInfo` is a copy taken when the
+/// vectors phase starts, because
+/// [`KnnVectorsFormat::fields_writer`](crate::codecs::KnnVectorsFormat::fields_writer)
+/// takes an owned state: its writer outlives the call that creates it. No
+/// vectors writer mutates the `SegmentInfo` — Lucene's only read `maxDoc` —
+/// so nothing that writer could do is lost with the copy.
 pub struct SegmentMerger {
     codec: Arc<dyn Codec>,
     /// The info stream every phase reports to.
@@ -91,6 +88,8 @@ impl SegmentMerger {
         directory: Arc<dyn Directory>,
         context: Arc<dyn IOContext>,
         info_stream: Arc<dyn InfoStream>,
+        intra_merge_task_executor: Option<Arc<dyn Executor>>,
+        one_merge: Option<OneMerge>,
     ) -> Result<Self> {
         // `SegmentMerger.java:65-68`.
         if context.context() != Context::Merge {
@@ -110,6 +109,8 @@ impl SegmentMerger {
             merge_field_infos,
             needs_index_sort,
             Arc::clone(&info_stream),
+            intra_merge_task_executor,
+            one_merge,
         )?;
 
         // `SegmentMerger.java:76-89`: the merged segment's minimum version is
@@ -592,6 +593,8 @@ mod tests {
             Arc::clone(target),
             context,
             info_stream,
+            None,
+            None,
         )
     }
 

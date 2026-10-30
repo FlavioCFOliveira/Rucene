@@ -768,7 +768,7 @@ fn two_dimensional_single_leaf_results_match_java() {
     // BKDReader issues an extra `compare` against the leaf's narrowed bounds
     // before visiting — the in-memory reference tree does not, so its trace
     // cannot match Java's for the 2D case.
-    let mut bkd_reader = bkd_reader_from_java_points(&java);
+    let bkd_reader = bkd_reader_from_java_points(&java);
 
     for (name, min, max) in &java.queries {
         // Trace comparison through the BKD reader.

@@ -18,7 +18,9 @@
 use std::sync::{Arc, Mutex};
 
 use rucene::codecs::hnsw::graph_provider::PrefetchableFlatVectorScorer;
-use rucene::codecs::hnsw::scalar_quantized_scorer::ScalarQuantizedRandomVectorScorerSupplier;
+use rucene::codecs::hnsw::scalar_quantized_scorer::{
+    ScalarQuantizedRandomVectorScorerSupplier, ScalarQuantizedVectorScorer,
+};
 use rucene::codecs::hnsw::{DefaultFlatVectorScorer, FlatVectorsScorer};
 use rucene::error::Result;
 use rucene::index::{FloatVectorValues, KnnVectorValues, VectorEncoding, VectorSimilarityFunction};
@@ -406,8 +408,9 @@ fn quantized_supplier_scores_through_the_quantized_representation() {
         .expect("ordinal 0 is in range");
     let scored = scorer.score(1).expect("ordinal 1 is in range");
 
-    let expected = ScalarQuantizedVectorSimilarity::from_vector_similarity(
+    let expected = <dyn ScalarQuantizedVectorSimilarity>::from_vector_similarity(
         similarity_function,
+        quantizer.get_constant_multiplier(),
         quantizer.get_bits(),
     )
     .score(
@@ -415,7 +418,6 @@ fn quantized_supplier_scores_through_the_quantized_representation() {
         values.offsets[0],
         &values.vectors[1],
         values.offsets[1],
-        quantizer.get_constant_multiplier(),
     )
     .expect("the quantized similarity scores");
     assert_eq!(
@@ -480,4 +482,147 @@ fn quantized_supplier_to_string_matches_lucene() {
         supplier.to_string(),
         "ScalarQuantizedRandomVectorScorerSupplier(vectorSimilarityFunction=COSINE)"
     );
+}
+
+// -----------------------------------------------------------------------------
+// 3. Prefetching on the legacy-quantized path
+// -----------------------------------------------------------------------------
+
+/// Legacy quantized vectors that write down every `prefetch` they are asked
+/// for, in a log every copy shares.
+#[derive(Clone)]
+struct RecordingLegacyValues {
+    inner: MemoryQuantizedVectorValues,
+    prefetched: Arc<Mutex<Vec<Vec<i32>>>>,
+}
+
+impl RecordingLegacyValues {
+    fn new() -> (Self, Arc<Mutex<Vec<Vec<i32>>>>) {
+        let prefetched = Arc::new(Mutex::new(Vec::new()));
+        let values = Self {
+            inner: MemoryQuantizedVectorValues::new(),
+            prefetched: Arc::clone(&prefetched),
+        };
+        (values, prefetched)
+    }
+}
+
+impl QuantizedByteVectorValues for RecordingLegacyValues {
+    fn vector_value(&mut self, ord: i32) -> Result<&[u8]> {
+        self.inner.vector_value(ord)
+    }
+
+    fn get_score_correction_constant(&mut self, ord: i32) -> Result<f32> {
+        self.inner.get_score_correction_constant(ord)
+    }
+
+    fn size(&self) -> i32 {
+        self.inner.size()
+    }
+
+    fn dimension(&self) -> i32 {
+        self.inner.dimension()
+    }
+
+    fn prefetch(&self, ords_to_prefetch: &[i32], num_ords: i32) -> Result<()> {
+        self.prefetched
+            .lock()
+            .expect("the prefetch log is not poisoned")
+            .push(ords_to_prefetch[..num_ords as usize].to_vec());
+        Ok(())
+    }
+
+    fn copy(&self) -> Result<Box<dyn QuantizedByteVectorValues>> {
+        Ok(Box::new(self.clone()))
+    }
+}
+
+impl LegacyQuantizedByteVectorValues for RecordingLegacyValues {
+    fn scalar_quantizer(&self) -> &ScalarQuantizer {
+        self.inner.scalar_quantizer()
+    }
+
+    fn copy_legacy(&self) -> Result<Box<dyn LegacyQuantizedByteVectorValues>> {
+        Ok(Box::new(self.clone()))
+    }
+}
+
+fn legacy_scorer() -> ScalarQuantizedVectorScorer {
+    ScalarQuantizedVectorScorer::new(Box::new(DefaultFlatVectorScorer::INSTANCE))
+}
+
+/// `PrefetchableFlatVectorScorer.getRandomVectorScorerSupplier` wraps whatever
+/// the delegate returns, legacy quantized values included
+/// (`PrefetchableFlatVectorScorer.java:53-59`), and the supplier's scorers
+/// prefetch each batch (`PrefetchableFlatVectorScorer.java:230-233`). The
+/// scores are the unwrapped delegate's.
+#[test]
+fn legacy_quantized_supplier_prefetches_the_batch_and_keeps_scores() {
+    let (values, prefetched) = RecordingLegacyValues::new();
+    let similarity = VectorSimilarityFunction::DOT_PRODUCT;
+    let wrapped = PrefetchableFlatVectorScorer::new(Box::new(legacy_scorer()))
+        .get_random_vector_scorer_supplier_legacy_quantized(similarity, Box::new(values.clone()))
+        .expect("the wrapped supplier");
+    let plain = legacy_scorer()
+        .get_random_vector_scorer_supplier_legacy_quantized(similarity, Box::new(values))
+        .expect("the plain supplier");
+
+    let nodes = [3i32, 1, 2];
+    let mut wrapped_scores = [0.0f32; 3];
+    let mut plain_scores = [0.0f32; 3];
+    let mut scorer = wrapped.scorer().expect("a wrapped scorer");
+    scorer
+        .set_scoring_ordinal(0)
+        .expect("ordinal 0 is in range");
+    scorer
+        .bulk_score(&nodes, &mut wrapped_scores, 3)
+        .expect("the wrapped scorer scores");
+    let mut scorer = plain.scorer().expect("a plain scorer");
+    scorer
+        .set_scoring_ordinal(0)
+        .expect("ordinal 0 is in range");
+    scorer
+        .bulk_score(&nodes, &mut plain_scores, 3)
+        .expect("the plain scorer scores");
+
+    assert_eq!(
+        &*prefetched.lock().expect("the prefetch log is not poisoned"),
+        &[vec![3i32, 1, 2]],
+        "the wrapper must prefetch exactly the nodes it is about to score"
+    );
+    assert_eq!(wrapped_scores, plain_scores, "the wrapper changes no score");
+}
+
+/// `PrefetchableFlatVectorScorer.getRandomVectorScorer(…, float[])` wraps the
+/// delegate's legacy-quantized query scorer too
+/// (`PrefetchableFlatVectorScorer.java:61-67,159-162`).
+#[test]
+fn legacy_quantized_query_scorer_prefetches_the_batch_and_keeps_scores() {
+    let (values, prefetched) = RecordingLegacyValues::new();
+    let similarity = VectorSimilarityFunction::DOT_PRODUCT;
+    let target = [0.5f32, -0.25, 0.75, 0.125];
+    let mut wrapped = PrefetchableFlatVectorScorer::new(Box::new(legacy_scorer()))
+        .get_random_vector_scorer_legacy_quantized(similarity, Box::new(values.clone()), &target)
+        .expect("the wrapped scorer");
+    let mut plain = legacy_scorer()
+        .get_random_vector_scorer_legacy_quantized(similarity, Box::new(values), &target)
+        .expect("the plain scorer");
+
+    let nodes = [2i32, 0];
+    let mut wrapped_scores = [0.0f32; 2];
+    let mut plain_scores = [0.0f32; 2];
+    let wrapped_max = wrapped
+        .bulk_score(&nodes, &mut wrapped_scores, 2)
+        .expect("the wrapped scorer scores");
+    let plain_max = plain
+        .bulk_score(&nodes, &mut plain_scores, 2)
+        .expect("the plain scorer scores");
+
+    assert_eq!(
+        &*prefetched.lock().expect("the prefetch log is not poisoned"),
+        &[vec![2i32, 0]],
+        "the wrapper must prefetch exactly the nodes it is about to score"
+    );
+    assert_eq!(wrapped_scores, plain_scores, "the wrapper changes no score");
+    assert_eq!(wrapped_max, plain_max);
 }

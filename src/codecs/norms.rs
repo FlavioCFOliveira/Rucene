@@ -68,6 +68,8 @@ pub trait NormsConsumer: fmt::Debug {
     /// Propagates whatever the integrity check or the per-field merge raises.
     fn merge(&mut self, merge_state: &MergeState) -> Result<()> {
         for norms_producer in merge_state.norms_producers.iter().flatten() {
+            // `NormsConsumer.java:69`.
+            merge_state.check_aborted()?;
             norms_producer.check_integrity()?;
         }
         for merge_field_info in merge_state.merge_field_infos.iter() {

@@ -189,18 +189,67 @@ impl ByteVectorValues for SharedByteVectorValues {
     }
 }
 
+/// Legacy scalar-quantized vectors seen as the [`KnnVectorValues`] they are
+/// in Java, where `LegacyQuantizedByteVectorValues` extends
+/// `QuantizedByteVectorValues extends ByteVectorValues extends KnnVectorValues`.
+///
+/// Every `KnnVectorValues` method forwards to the legacy values; the encoding
+/// is `BYTE`, as `ByteVectorValues.getEncoding()` returns.
+struct LegacyKnnVectorValues {
+    inner: Arc<dyn LegacyQuantizedByteVectorValues>,
+}
+
+impl KnnVectorValues for LegacyKnnVectorValues {
+    fn dimension(&self) -> i32 {
+        self.inner.dimension()
+    }
+
+    fn size(&self) -> i32 {
+        self.inner.size()
+    }
+
+    fn ord_to_doc(&self, ord: i32) -> i32 {
+        self.inner.ord_to_doc(ord)
+    }
+
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        self.inner.get_accept_ords(accept_docs)
+    }
+
+    fn prefetch(&self, ords_to_prefetch: &[i32], num_ords: i32) -> Result<()> {
+        self.inner.prefetch(ords_to_prefetch, num_ords)
+    }
+
+    /// `LegacyQuantizedByteVectorValues.copy()`.
+    fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
+        Ok(Box::new(LegacyKnnVectorValues {
+            inner: Arc::from(self.inner.copy_legacy()?),
+        }))
+    }
+
+    fn vector_byte_length(&self) -> i32 {
+        self.inner.vector_byte_length()
+    }
+
+    fn encoding(&self) -> VectorEncoding {
+        VectorEncoding::BYTE
+    }
+}
+
 /// The shared handle on one field's vectors that the prefetching wrappers keep.
 ///
 /// Java holds a `KnnVectorValues`, which is the common supertype of both
-/// encodings. This port keeps the encoding in the variant because `prefetch`
-/// has to be reached through the encoding-specific trait: `dyn
-/// FloatVectorValues` cannot be coerced to `dyn KnnVectorValues` at the crate's
-/// minimum supported Rust version.
+/// encodings and of `LegacyQuantizedByteVectorValues`. This port keeps the kind
+/// in the variant because `prefetch` has to be reached through the
+/// kind-specific trait: `dyn FloatVectorValues` cannot be coerced to `dyn
+/// KnnVectorValues` at the crate's minimum supported Rust version.
 enum SharedVectorValues {
     /// Float vectors.
     Float(Arc<SharedFloatVectorValues>),
     /// Byte vectors.
     Byte(Arc<SharedByteVectorValues>),
+    /// Legacy scalar-quantized vectors.
+    Legacy(Arc<LegacyKnnVectorValues>),
 }
 
 impl SharedVectorValues {
@@ -230,11 +279,44 @@ impl SharedVectorValues {
         )
     }
 
+    /// Returns a handle for the prefetching wrapper and the values to hand
+    /// the wrapped scorer, for legacy scalar-quantized vectors.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java hands the one
+    /// `LegacyQuantizedByteVectorValues` object to the delegate and to the
+    /// wrapper (`PrefetchableFlatVectorScorer.java:53-59,61-67`), whose
+    /// `values()` and `prefetch` then reach that object. The legacy trait
+    /// lends its data out — `vector_value(&mut self)` returns `&[u8]` and
+    /// `get_slice()` returns `&dyn IndexInput` — so one object cannot be held
+    /// by both: a lock around it could not lend those borrows, and hiding the
+    /// slice would move `Lucene99ScalarQuantizedVectorScorer` off its
+    /// compressed-int4 path and change its scores. The delegate therefore gets
+    /// the original, so every score is the one Java computes, and the wrapper
+    /// keeps a second view taken with
+    /// [`copy_legacy`](LegacyQuantizedByteVectorValues::copy_legacy), the
+    /// port's `copy()`, over the same stored vectors. `values()` and
+    /// `prefetch` answer from that view: only the object identity differs, and
+    /// `prefetch` is a hint that no quantized class in Lucene 10.5.0 overrides
+    /// (`KnnVectorValues.java:58`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever copying `values` raises.
+    fn from_legacy(
+        values: Box<dyn LegacyQuantizedByteVectorValues>,
+    ) -> Result<(Self, Box<dyn LegacyQuantizedByteVectorValues>)> {
+        let shared = Arc::new(LegacyKnnVectorValues {
+            inner: Arc::from(values.copy_legacy()?),
+        });
+        Ok((Self::Legacy(shared), values))
+    }
+
     /// Returns the values as the base type Java's `values()` returns.
     fn as_knn_vector_values(&self) -> &dyn KnnVectorValues {
         match self {
             Self::Float(values) => values.as_ref(),
             Self::Byte(values) => values.as_ref(),
+            Self::Legacy(values) => values.as_ref(),
         }
     }
 
@@ -246,6 +328,7 @@ impl SharedVectorValues {
         match self {
             Self::Float(values) => Self::Float(Arc::clone(values)),
             Self::Byte(values) => Self::Byte(Arc::clone(values)),
+            Self::Legacy(values) => Self::Legacy(Arc::clone(values)),
         }
     }
 
@@ -265,6 +348,9 @@ impl SharedVectorValues {
             Self::Byte(values) => Self::Byte(Arc::new(SharedByteVectorValues {
                 inner: Arc::from(values.copy_byte()?),
             })),
+            Self::Legacy(values) => Self::Legacy(Arc::new(LegacyKnnVectorValues {
+                inner: Arc::from(values.inner.copy_legacy()?),
+            })),
         })
     }
 
@@ -274,16 +360,20 @@ impl SharedVectorValues {
     ///
     /// Propagates whatever the underlying values raise.
     fn prefetch(&self, ords_to_prefetch: &[i32], num_ords: i32) -> Result<()> {
-        self.as_knn_vector_values()
-            .prefetch(ords_to_prefetch, num_ords)
+        match self {
+            Self::Float(values) => values.prefetch(ords_to_prefetch, num_ords),
+            Self::Byte(values) => values.prefetch(ords_to_prefetch, num_ords),
+            Self::Legacy(values) => values.prefetch(ords_to_prefetch, num_ords),
+        }
     }
 }
 
 impl std::fmt::Debug for SharedVectorValues {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let values = self.as_knn_vector_values();
         f.debug_struct("SharedVectorValues")
-            .field("encoding", &self.as_knn_vector_values().encoding())
-            .field("size", &self.as_knn_vector_values().size())
+            .field("encoding", &values.encoding())
+            .field("size", &values.size())
             .finish_non_exhaustive()
     }
 }
@@ -389,39 +479,44 @@ impl FlatVectorsScorer for PrefetchableFlatVectorScorer {
     }
 
     /// Equivalent to `getRandomVectorScorerSupplier` called with a
-    /// `LegacyQuantizedByteVectorValues`.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java wraps whatever the delegate
-    /// returns in a `PrefetchableRandomVectorScorerSupplier` that prefetches
-    /// through the values (`PrefetchableFlatVectorScorer.java:53-59`). This
-    /// port's [`LegacyQuantizedByteVectorValues`] has no `prefetch`, which is a
-    /// no-op hint in `KnnVectorValues` and changes no score, so the delegate's
-    /// supplier is returned unwrapped. Lucene 10.5.0 constructs this scorer
-    /// only in its tests.
+    /// `LegacyQuantizedByteVectorValues`
+    /// (`PrefetchableFlatVectorScorer.java:53-59`): the delegate's supplier is
+    /// wrapped in a [`PrefetchableRandomVectorScorerSupplier`] that prefetches
+    /// through the values. See [`SharedVectorValues::from_legacy`] for the
+    /// handle the wrapper keeps.
     fn get_random_vector_scorer_supplier_legacy_quantized(
         &self,
         similarity_function: VectorSimilarityFunction,
         vector_values: Box<dyn LegacyQuantizedByteVectorValues>,
     ) -> Result<Box<dyn RandomVectorScorerSupplier>> {
-        self.inner
-            .get_random_vector_scorer_supplier_legacy_quantized(similarity_function, vector_values)
+        let (shared, values) = SharedVectorValues::from_legacy(vector_values)?;
+        let delegate = self
+            .inner
+            .get_random_vector_scorer_supplier_legacy_quantized(similarity_function, values)?;
+        Ok(Box::new(PrefetchableRandomVectorScorerSupplier::new(
+            delegate, shared,
+        )))
     }
 
     /// Equivalent to `getRandomVectorScorer(…, float[])` called with a
-    /// `LegacyQuantizedByteVectorValues`; the delegate's scorer is returned
-    /// unwrapped, for the reason given on
-    /// [`get_random_vector_scorer_supplier_legacy_quantized`](Self::get_random_vector_scorer_supplier_legacy_quantized).
+    /// `LegacyQuantizedByteVectorValues`
+    /// (`PrefetchableFlatVectorScorer.java:61-67`): the delegate's scorer is
+    /// wrapped in a [`PrefetchableRandomVectorScorer`].
     fn get_random_vector_scorer_legacy_quantized(
         &self,
         similarity_function: VectorSimilarityFunction,
         vector_values: Box<dyn LegacyQuantizedByteVectorValues>,
         target: &[f32],
     ) -> Result<Box<dyn RandomVectorScorer>> {
-        self.inner.get_random_vector_scorer_legacy_quantized(
+        let (shared, values) = SharedVectorValues::from_legacy(vector_values)?;
+        let delegate = self.inner.get_random_vector_scorer_legacy_quantized(
             similarity_function,
-            vector_values,
+            values,
             target,
-        )
+        )?;
+        Ok(Box::new(PrefetchableRandomVectorScorer::new(
+            delegate, shared,
+        )))
     }
 }
 
@@ -651,5 +746,84 @@ impl HasKnnVectorValues for PrefetchableUpdatableRandomVectorScorer {
     /// wrapped scorer's.
     fn values(&self) -> Option<&dyn KnnVectorValues> {
         Some(self.vector_values.as_knn_vector_values())
+    }
+}
+
+#[cfg(test)]
+mod legacy_values_tests {
+    //! `PrefetchableFlatVectorScorer` over `LegacyQuantizedByteVectorValues`
+    //! (`PrefetchableFlatVectorScorer.java:53-67,135-139`): the wrapper's
+    //! `values()` is the legacy values as a `KnnVectorValues`.
+    use super::*;
+    use crate::util::quantization::{QuantizedByteVectorValues, ScalarQuantizer};
+    use std::sync::Mutex;
+
+    /// Three two-dimensional legacy vectors that log every prefetch.
+    #[derive(Clone)]
+    struct Logged {
+        quantizer: ScalarQuantizer,
+        vector: Vec<u8>,
+        prefetched: Arc<Mutex<Vec<Vec<i32>>>>,
+    }
+
+    impl QuantizedByteVectorValues for Logged {
+        fn vector_value(&mut self, _ord: i32) -> Result<&[u8]> {
+            Ok(&self.vector)
+        }
+
+        fn get_score_correction_constant(&mut self, _ord: i32) -> Result<f32> {
+            Ok(0.0)
+        }
+
+        fn size(&self) -> i32 {
+            3
+        }
+
+        fn dimension(&self) -> i32 {
+            2
+        }
+
+        fn prefetch(&self, ords_to_prefetch: &[i32], num_ords: i32) -> Result<()> {
+            self.prefetched
+                .lock()
+                .unwrap()
+                .push(ords_to_prefetch[..num_ords as usize].to_vec());
+            Ok(())
+        }
+    }
+
+    impl LegacyQuantizedByteVectorValues for Logged {
+        fn scalar_quantizer(&self) -> &ScalarQuantizer {
+            &self.quantizer
+        }
+
+        fn copy_legacy(&self) -> Result<Box<dyn LegacyQuantizedByteVectorValues>> {
+            Ok(Box::new(self.clone()))
+        }
+    }
+
+    #[test]
+    fn legacy_values_are_the_wrappers_knn_vector_values() {
+        let prefetched = Arc::new(Mutex::new(Vec::new()));
+        let legacy = Logged {
+            quantizer: ScalarQuantizer::new(-1.0, 1.0, 7).unwrap(),
+            vector: vec![1, 2],
+            prefetched: Arc::clone(&prefetched),
+        };
+        let (shared, delegate_values) = SharedVectorValues::from_legacy(Box::new(legacy)).unwrap();
+        assert_eq!(delegate_values.size(), 3);
+
+        let values = shared.as_knn_vector_values();
+        assert_eq!(values.size(), 3);
+        assert_eq!(values.dimension(), 2);
+        assert_eq!(values.encoding(), VectorEncoding::BYTE);
+        assert_eq!(values.ord_to_doc(2), 2);
+        assert_eq!(values.vector_byte_length(), 2);
+        values.prefetch(&[2, 0, 1], 2).unwrap();
+        assert_eq!(&*prefetched.lock().unwrap(), &[vec![2, 0]]);
+
+        let copy = values.copy().unwrap();
+        assert_eq!(copy.size(), 3);
+        assert_eq!(copy.encoding(), VectorEncoding::BYTE);
     }
 }

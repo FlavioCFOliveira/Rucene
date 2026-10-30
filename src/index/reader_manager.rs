@@ -145,7 +145,7 @@ mod tests {
     use crate::store::{Directory, RamDirectory};
     use crate::util::string_helper::StringHelper;
     use crate::util::Version;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashSet;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex as StdMutex;
 

@@ -16,7 +16,6 @@ use crate::index::{
     DocValuesSkipIndexType, DocValuesType, IndexOptions, VectorEncoding, VectorSimilarityFunction,
     MAX_INDEX_DIMENSIONS, MAX_NUM_BYTES,
 };
-use crate::store::DataOutput;
 use crate::util::java_collections::JavaStringMap;
 
 // -----------------------------------------------------------------------------
@@ -748,62 +747,7 @@ impl FieldInfo {
         )?;
         Ok(())
     }
-
-    /// Writes this field using the Lucene94 FieldInfos per-field payload.
-    ///
-    /// This does not include the file header, footer or field count; those are
-    /// the responsibility of the enclosing format.
-    pub fn write(&self, output: &mut dyn DataOutput) -> Result<()> {
-        self.check_consistency()?;
-
-        output.write_string(&self.name)?;
-        output.write_v_int(self.number)?;
-
-        let mut bits = 0u8;
-        if self.store_term_vector {
-            bits |= STORE_TERMVECTOR;
-        }
-        if self.omit_norms {
-            bits |= OMIT_NORMS;
-        }
-        if self.store_payloads {
-            bits |= STORE_PAYLOADS;
-        }
-        if self.soft_deletes_field {
-            bits |= SOFT_DELETES_FIELD;
-        }
-        if self.is_parent_field {
-            bits |= PARENT_FIELD_FIELD;
-        }
-        output.write_byte(bits)?;
-
-        output.write_byte(index_options_to_byte(self.index_options))?;
-        output.write_byte(doc_values_type_to_byte(self.doc_values_type))?;
-        output.write_byte(doc_values_skip_index_type_to_byte(
-            self.doc_values_skip_index_type,
-        ))?;
-        output.write_long(self.doc_values_gen)?;
-        output.write_map_of_strings(&*self.attributes.read().unwrap())?;
-        output.write_v_int(self.point_dimension_count)?;
-        if self.point_dimension_count != 0 {
-            output.write_v_int(self.point_index_dimension_count)?;
-            output.write_v_int(self.point_num_bytes)?;
-        }
-        output.write_v_int(self.vector_dimension)?;
-        output.write_byte(vector_encoding_to_byte(self.vector_encoding))?;
-        output.write_byte(vector_similarity_function_to_byte(
-            self.vector_similarity_function,
-        ))?;
-        Ok(())
-    }
 }
-
-// Field bits used by Lucene94FieldInfosFormat.
-const STORE_TERMVECTOR: u8 = 0x1;
-const OMIT_NORMS: u8 = 0x2;
-const STORE_PAYLOADS: u8 = 0x4;
-const SOFT_DELETES_FIELD: u8 = 0x8;
-const PARENT_FIELD_FIELD: u8 = 0x10;
 
 fn verify_same_index_options(
     field_name: &str,
@@ -910,115 +854,6 @@ fn verify_same_vector_options(
         )))
     } else {
         Ok(())
-    }
-}
-
-// -----------------------------------------------------------------------------
-// Byte encoding helpers matching Lucene94FieldInfosFormat
-// -----------------------------------------------------------------------------
-
-fn index_options_to_byte(options: IndexOptions) -> u8 {
-    match options {
-        IndexOptions::NONE => 0,
-        IndexOptions::DOCS => 1,
-        IndexOptions::DOCS_AND_FREQS => 2,
-        IndexOptions::DOCS_AND_FREQS_AND_POSITIONS => 3,
-        IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS => 4,
-        IndexOptions::DOCS_AND_CUSTOM_FREQS => 5,
-    }
-}
-
-fn index_options_from_byte(b: u8) -> Result<IndexOptions> {
-    match b {
-        0 => Ok(IndexOptions::NONE),
-        1 => Ok(IndexOptions::DOCS),
-        2 => Ok(IndexOptions::DOCS_AND_FREQS),
-        3 => Ok(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS),
-        4 => Ok(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS),
-        5 => Ok(IndexOptions::DOCS_AND_CUSTOM_FREQS),
-        _ => Err(LuceneError::CorruptIndex(format!(
-            "invalid IndexOptions byte: {b}"
-        ))),
-    }
-}
-
-fn doc_values_type_to_byte(dv_type: DocValuesType) -> u8 {
-    match dv_type {
-        DocValuesType::NONE => 0,
-        DocValuesType::NUMERIC => 1,
-        DocValuesType::BINARY => 2,
-        DocValuesType::SORTED => 3,
-        DocValuesType::SORTED_SET => 4,
-        DocValuesType::SORTED_NUMERIC => 5,
-    }
-}
-
-fn doc_values_type_from_byte(b: u8) -> Result<DocValuesType> {
-    match b {
-        0 => Ok(DocValuesType::NONE),
-        1 => Ok(DocValuesType::NUMERIC),
-        2 => Ok(DocValuesType::BINARY),
-        3 => Ok(DocValuesType::SORTED),
-        4 => Ok(DocValuesType::SORTED_SET),
-        5 => Ok(DocValuesType::SORTED_NUMERIC),
-        _ => Err(LuceneError::CorruptIndex(format!(
-            "invalid docvalues byte: {b}"
-        ))),
-    }
-}
-
-fn doc_values_skip_index_type_to_byte(skip_index: DocValuesSkipIndexType) -> u8 {
-    match skip_index {
-        DocValuesSkipIndexType::NONE => 0,
-        DocValuesSkipIndexType::RANGE => 1,
-    }
-}
-
-fn doc_values_skip_index_type_from_byte(b: u8) -> Result<DocValuesSkipIndexType> {
-    match b {
-        0 => Ok(DocValuesSkipIndexType::NONE),
-        1 => Ok(DocValuesSkipIndexType::RANGE),
-        _ => Err(LuceneError::CorruptIndex(format!(
-            "invalid docvaluesskipindex byte: {b}"
-        ))),
-    }
-}
-
-fn vector_encoding_to_byte(encoding: VectorEncoding) -> u8 {
-    match encoding {
-        VectorEncoding::BYTE => 0,
-        VectorEncoding::FLOAT32 => 1,
-    }
-}
-
-fn vector_encoding_from_byte(b: u8) -> Result<VectorEncoding> {
-    match b {
-        0 => Ok(VectorEncoding::BYTE),
-        1 => Ok(VectorEncoding::FLOAT32),
-        _ => Err(LuceneError::CorruptIndex(format!(
-            "invalid vector encoding: {b}"
-        ))),
-    }
-}
-
-fn vector_similarity_function_to_byte(func: VectorSimilarityFunction) -> u8 {
-    match func {
-        VectorSimilarityFunction::EUCLIDEAN => 0,
-        VectorSimilarityFunction::DOT_PRODUCT => 1,
-        VectorSimilarityFunction::COSINE => 2,
-        VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT => 3,
-    }
-}
-
-fn vector_similarity_function_from_byte(b: u8) -> Result<VectorSimilarityFunction> {
-    match b {
-        0 => Ok(VectorSimilarityFunction::EUCLIDEAN),
-        1 => Ok(VectorSimilarityFunction::DOT_PRODUCT),
-        2 => Ok(VectorSimilarityFunction::COSINE),
-        3 => Ok(VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT),
-        _ => Err(LuceneError::CorruptIndex(format!(
-            "invalid vector similarity function: {b}"
-        ))),
     }
 }
 
@@ -1479,91 +1314,6 @@ impl FieldInfos {
         }
 
         result
-    }
-
-    /// The caller is responsible for the file header and footer.
-    pub fn write(&self, output: &mut dyn DataOutput) -> Result<()> {
-        let visible: Vec<&FieldInfo> = self.iter().collect();
-        output.write_v_int(visible.len() as i32)?;
-        for info in visible {
-            info.write(output)?;
-        }
-        Ok(())
-    }
-
-    /// Reads the field count and every field from the input and returns a new
-    /// `FieldInfos`.
-    pub fn read(input: &mut dyn crate::store::DataInput) -> Result<Self> {
-        let size = input.read_v_int()? as usize;
-        let mut infos = Vec::with_capacity(size);
-        for _ in 0..size {
-            infos.push(FieldInfo::read(input)?);
-        }
-        Self::new(infos)
-    }
-}
-
-impl FieldInfo {
-    /// Reads a single field from the Lucene94 FieldInfos per-field payload.
-    fn read(input: &mut dyn crate::store::DataInput) -> Result<Self> {
-        let name = input.read_string()?;
-        let number = input.read_v_int()?;
-        if number < 0 {
-            return Err(LuceneError::CorruptIndex(format!(
-                "invalid field number for field: {name}, fieldNumber={number}"
-            )));
-        }
-
-        let bits = input.read_byte()?;
-        let store_term_vector = (bits & STORE_TERMVECTOR) != 0;
-        let omit_norms = (bits & OMIT_NORMS) != 0;
-        let store_payloads = (bits & STORE_PAYLOADS) != 0;
-        let is_soft_deletes_field = (bits & SOFT_DELETES_FIELD) != 0;
-        let is_parent_field = (bits & PARENT_FIELD_FIELD) != 0;
-
-        if (bits & 0xC0) != 0 {
-            return Err(LuceneError::CorruptIndex(format!(
-                "unused bits are set \"{bits:b}\""
-            )));
-        }
-
-        let index_options = index_options_from_byte(input.read_byte()?)?;
-        let doc_values_type = doc_values_type_from_byte(input.read_byte()?)?;
-        let doc_values_skip_index_type = doc_values_skip_index_type_from_byte(input.read_byte()?)?;
-        let doc_values_gen = input.read_long()?;
-        let attributes = input.read_map_of_strings()?;
-
-        let point_dimension_count = input.read_v_int()?;
-        let (point_index_dimension_count, point_num_bytes) = if point_dimension_count != 0 {
-            (input.read_v_int()?, input.read_v_int()?)
-        } else {
-            (0, 0)
-        };
-
-        let vector_dimension = input.read_v_int()?;
-        let vector_encoding = vector_encoding_from_byte(input.read_byte()?)?;
-        let vector_similarity_function = vector_similarity_function_from_byte(input.read_byte()?)?;
-
-        FieldInfo::new_full(
-            name,
-            number,
-            store_term_vector,
-            omit_norms,
-            store_payloads,
-            index_options,
-            doc_values_type,
-            doc_values_skip_index_type,
-            doc_values_gen,
-            attributes,
-            point_dimension_count,
-            point_index_dimension_count,
-            point_num_bytes,
-            vector_dimension,
-            vector_encoding,
-            vector_similarity_function,
-            is_soft_deletes_field,
-            is_parent_field,
-        )
     }
 }
 
@@ -2103,44 +1853,7 @@ impl FieldInfosBuilder {
 
 #[cfg(test)]
 mod tests {
-    /// The four serialization sites for `VectorEncoding` and
-    /// `VectorSimilarityFunction` each carry their own ordinal table. Java has
-    /// one, `Enum.ordinal()`, so the tables must agree with the declaration
-    /// order of the Rust enums and therefore with each other; a divergence here
-    /// silently writes an unreadable index.
-    #[test]
-    fn vector_ordinals_match_the_enum_declaration_order() {
-        use crate::index::{VectorEncoding, VectorSimilarityFunction};
-
-        for encoding in [VectorEncoding::BYTE, VectorEncoding::FLOAT32] {
-            let ordinal = encoding as i32;
-            assert_eq!(super::vector_encoding_to_byte(encoding) as i32, ordinal);
-            assert_eq!(
-                super::vector_encoding_from_byte(ordinal as u8).unwrap(),
-                encoding
-            );
-        }
-
-        for similarity in [
-            VectorSimilarityFunction::EUCLIDEAN,
-            VectorSimilarityFunction::DOT_PRODUCT,
-            VectorSimilarityFunction::COSINE,
-            VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT,
-        ] {
-            let ordinal = similarity as i32;
-            assert_eq!(
-                super::vector_similarity_function_to_byte(similarity) as i32,
-                ordinal
-            );
-            assert_eq!(
-                super::vector_similarity_function_from_byte(ordinal as u8).unwrap(),
-                similarity
-            );
-        }
-    }
-
     use super::*;
-    use crate::store::{ByteArrayDataInput, IndexInput, RamDirectory, VecDataOutput};
 
     #[test]
     fn field_info_default_is_empty() {
@@ -2301,43 +2014,6 @@ mod tests {
     }
 
     #[test]
-    fn field_info_write_read_round_trip() {
-        let mut out = VecDataOutput::new();
-        let mut fi = FieldInfo::new("body", 0);
-        fi.index_options = IndexOptions::DOCS_AND_FREQS_AND_POSITIONS;
-        fi.store_term_vector = true;
-        fi.store_payloads = true;
-        fi.doc_values_type = DocValuesType::SORTED;
-        fi.put_attribute("fmt", "Lucene90");
-        fi.set_point_dimensions(2, 1, 8).unwrap();
-        fi.vector_dimension = 3;
-        fi.vector_encoding = VectorEncoding::FLOAT32;
-        fi.vector_similarity_function = VectorSimilarityFunction::COSINE;
-        fi.write(&mut out).unwrap();
-
-        let input_src = out.into_inner();
-        let mut input = ByteArrayDataInput::new(&input_src);
-        let read = FieldInfo::read(&mut input).unwrap();
-        assert_eq!(read.name, "body");
-        assert_eq!(read.number, 0);
-        assert_eq!(
-            read.index_options,
-            IndexOptions::DOCS_AND_FREQS_AND_POSITIONS
-        );
-        assert!(read.has_term_vectors());
-        assert!(read.has_payloads());
-        assert_eq!(read.doc_values_type, DocValuesType::SORTED);
-        assert_eq!(read.get_attribute("fmt"), Some("Lucene90".to_string()));
-        assert_eq!(read.get_point_dimension_count(), 2);
-        assert_eq!(read.vector_dimension, 3);
-        assert_eq!(read.vector_encoding, VectorEncoding::FLOAT32);
-        assert_eq!(
-            read.vector_similarity_function,
-            VectorSimilarityFunction::COSINE
-        );
-    }
-
-    #[test]
     fn field_infos_empty() {
         let fis = FieldInfos::default();
         assert!(fis.is_empty());
@@ -2396,32 +2072,6 @@ mod tests {
     }
 
     #[test]
-    fn field_infos_write_read_round_trip() {
-        let mut body = FieldInfo::new("body", 0);
-        body.index_options = IndexOptions::DOCS_AND_FREQS;
-        let mut title = FieldInfo::new("title", 1);
-        title.doc_values_type = DocValuesType::SORTED;
-        let mut vector = FieldInfo::new("vector", 2);
-        vector.vector_dimension = 3;
-        vector.vector_encoding = VectorEncoding::BYTE;
-        vector.vector_similarity_function = VectorSimilarityFunction::DOT_PRODUCT;
-        let fis = FieldInfos::new(vec![body, title, vector]).unwrap();
-
-        let mut out = VecDataOutput::new();
-        fis.write(&mut out).unwrap();
-
-        let input_src = out.into_inner();
-        let mut input = ByteArrayDataInput::new(&input_src);
-        let read = FieldInfos::read(&mut input).unwrap();
-        assert_eq!(read.size(), 3);
-        assert!(read.has_postings());
-        assert!(read.has_doc_values());
-        assert!(read.has_vector_values());
-        assert_eq!(read.field_info("vector").unwrap().vector_dimension, 3);
-        assert_eq!(read, fis);
-    }
-
-    #[test]
     fn field_infos_handles_non_dense_numbers() {
         let a = FieldInfo::new("a", 5);
         let b = FieldInfo::new("b", 2);
@@ -2432,80 +2082,6 @@ mod tests {
         assert_eq!(fis.field_info_by_number(0), None);
         let names: Vec<&str> = fis.iter().map(|fi| fi.name.as_str()).collect();
         assert_eq!(names, vec!["b", "a"]);
-    }
-
-    /// A mock format that wraps [`FieldInfos::write`] and [`FieldInfos::read`]
-    /// with a Lucene-style index header and footer.
-    struct MockFieldInfosFormat;
-
-    impl MockFieldInfosFormat {
-        const FILE_NAME: &'static str = "_0.mock-fnm";
-        const CODEC_NAME: &'static str = "MockFieldInfos";
-        const VERSION: i32 = 0;
-
-        fn write(&self, directory: &dyn crate::store::Directory, infos: &FieldInfos) -> Result<()> {
-            let ctx: &dyn crate::store::IOContext = &*crate::store::DEFAULT_IO_CONTEXT;
-            let mut output = directory.create_output(Self::FILE_NAME, ctx)?;
-            crate::codecs::codec_util::write_index_header(
-                &mut *output,
-                Self::CODEC_NAME,
-                Self::VERSION,
-                &[0u8; 16],
-                "",
-            )?;
-            infos.write(&mut *output)?;
-            crate::codecs::codec_util::write_footer(&mut *output)?;
-            output.close()
-        }
-
-        fn read(&self, directory: &dyn crate::store::Directory) -> Result<FieldInfos> {
-            let mut input = directory.open_checksum_input(Self::FILE_NAME)?;
-            let _version = crate::codecs::codec_util::check_index_header(
-                &mut *input,
-                Self::CODEC_NAME,
-                Self::VERSION,
-                Self::VERSION,
-                &[0u8; 16],
-                "",
-            )?;
-            let infos = FieldInfos::read(&mut *input)?;
-            crate::codecs::codec_util::check_footer(&mut *input)?;
-            input.close()?;
-            Ok(infos)
-        }
-    }
-
-    #[test]
-    fn mock_field_infos_format_round_trip() {
-        let dir = RamDirectory::default();
-        let mut body = FieldInfo::new("body", 0);
-        body.index_options = IndexOptions::DOCS_AND_FREQS_AND_POSITIONS;
-        body.store_term_vector = true;
-        body.doc_values_type = DocValuesType::SORTED;
-        let mut title = FieldInfo::new("title", 1);
-        title.index_options = IndexOptions::DOCS;
-        title.put_attribute("fmt", "MockPostings");
-        let mut point = FieldInfo::new("point", 2);
-        point.set_point_dimensions(3, 2, 8).unwrap();
-        let mut vec = FieldInfo::new("vec", 3);
-        vec.vector_dimension = 10;
-        vec.vector_encoding = VectorEncoding::FLOAT32;
-        vec.vector_similarity_function = VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT;
-        let infos = FieldInfos::new(vec![body, title, point, vec]).unwrap();
-
-        let format = MockFieldInfosFormat;
-        format.write(&dir, &infos).unwrap();
-        let read = format.read(&dir).unwrap();
-
-        assert_eq!(read, infos);
-        assert!(read.has_term_vectors());
-        assert!(read.has_doc_values());
-        assert!(read.has_point_values());
-        assert!(read.has_vector_values());
-        assert_eq!(
-            read.field_info("title").unwrap().get_attribute("fmt"),
-            Some("MockPostings".to_string())
-        );
     }
 
     // -- FieldNumbers / FieldInfos.Builder ---------------------------------

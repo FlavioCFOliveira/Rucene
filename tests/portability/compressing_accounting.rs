@@ -31,7 +31,6 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 
-use rucene::codecs::term_vectors::TermVectorsWriter;
 use rucene::codecs::{register_codec, Codec, Lucene104Codec};
 use rucene::error::LuceneError;
 use rucene::index::SegmentInfo;

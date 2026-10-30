@@ -180,6 +180,14 @@ impl Directory for TrackingTmpOutputDirectoryWrapper {
     }
 }
 
+/// A compression mode that does no compression at all.
+///
+/// Equivalent to `SortingStoredFieldsConsumer.NO_COMPRESSION`
+/// (`SortingStoredFieldsConsumer.java:42-79`), which
+/// `SortingTermVectorsConsumer` uses too.
+static NO_COMPRESSION: std::sync::LazyLock<Arc<dyn CompressionMode>> =
+    std::sync::LazyLock::new(|| Arc::new(crate::codecs::compressing::NoCompressionMode));
+
 /// The format the stored fields of an index-sorted segment are buffered in.
 ///
 /// Equivalent to `SortingStoredFieldsConsumer.TEMP_STORED_FIELDS_FORMAT`
@@ -189,7 +197,7 @@ impl Directory for TrackingTmpOutputDirectoryWrapper {
 fn temp_stored_fields_format() -> Result<Lucene90CompressingStoredFieldsFormat> {
     Lucene90CompressingStoredFieldsFormat::new(
         "TempStoredFields",
-        CompressionMode::NO_COMPRESSION,
+        Arc::clone(&NO_COMPRESSION),
         128 * 1024,
         1,
         10,
@@ -204,7 +212,7 @@ fn temp_term_vectors_format() -> Result<Lucene90CompressingTermVectorsFormat> {
     Lucene90CompressingTermVectorsFormat::new(
         "TempTermVectors",
         "",
-        CompressionMode::NO_COMPRESSION,
+        Arc::clone(&NO_COMPRESSION),
         8 * 1024,
         128,
         10,

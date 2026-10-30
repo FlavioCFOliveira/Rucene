@@ -687,7 +687,9 @@ mod tests {
             (0..count).map(|_| None).collect(),
             (0..count).map(|_| None).collect(),
             max_docs,
+            None,
             false,
+            None,
         ))
     }
 

@@ -151,8 +151,12 @@ fn sorts() -> Vec<(&'static str, Sort)> {
 struct ThreadPerTask;
 
 impl Executor for ThreadPerTask {
-    fn execute(&self, command: Box<dyn FnOnce() + Send + 'static>) {
+    fn execute(
+        &self,
+        command: Box<dyn FnOnce() + Send + 'static>,
+    ) -> Result<(), rucene::search::RejectedExecutionException> {
         std::thread::spawn(command);
+        Ok(())
     }
 }
 

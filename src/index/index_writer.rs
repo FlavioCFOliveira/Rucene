@@ -3616,6 +3616,12 @@ impl IndexWriter {
             merge_readers.push(wrapped_reader);
         }
 
+        // `IndexWriter.java:5327`.
+        let intra_merge_executor = self
+            .config
+            .merge_scheduler()
+            .get_intra_merge_executor(merge)?;
+
         // Don't reorder if an explicit sort is configured, and don't reorder if
         // blocks cannot be identified through the parent field.
         let has_index_sort = self.config.index_sort().is_some();
@@ -3725,6 +3731,8 @@ impl IndexWriter {
             Arc::clone(dir_wrapper) as Arc<dyn Directory>,
             Arc::clone(context),
             Arc::clone(&self.info_stream),
+            intra_merge_executor,
+            Some(merge.clone()),
         )?;
         if let Some(info) = merge.info().as_mut() {
             info.set_soft_del_count(i32::try_from(soft_delete_count).map_err(|_| {
@@ -4070,6 +4078,12 @@ impl IndexWriter {
                 .iter()
                 .any(|r| r.get_field_infos().get_parent_field().is_none());
 
+        // `IndexWriter.java:3547`.
+        let intra_merge_executor = self
+            .config
+            .merge_scheduler()
+            .get_intra_merge_executor(merge)?;
+
         if !has_index_sort && !has_blocks_but_no_parent_field && !readers.is_empty() {
             let merged_reader =
                 crate::index::sorting_codec_reader::SlowCompositeCodecReaderWrapper::wrap(
@@ -4123,6 +4137,8 @@ impl IndexWriter {
             Arc::clone(&tracking_dir) as Arc<dyn Directory>,
             Arc::clone(&context),
             Arc::clone(&self.info_stream),
+            intra_merge_executor,
+            Some(merge.clone()),
         )?;
 
         if !merger.should_merge()? {
