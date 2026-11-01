@@ -470,6 +470,21 @@ pub trait IndexableFieldType: std::fmt::Display {
 
     /// Attributes for the field type.
     fn attributes(&self) -> &crate::util::java_collections::JavaHashMap<String>;
+
+    /// The identity of this type when it is a frozen
+    /// [`FieldType`](crate::document::FieldType), or `None` for any other type.
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** `IndexingChain` skips
+    /// re-validating a field whose type is the very frozen `FieldType` it
+    /// validated last: it tests `candidateFieldType instanceof FieldType ft &&
+    /// ft.isFrozen()` and compares types by reference
+    /// (`IndexingChain.java:1803-1825`). A Rust field owns a clone of its type,
+    /// so neither the downcast nor the reference is available; two types are
+    /// the same Java object exactly when this returns the same `Some` for both.
+    /// Only `FieldType` overrides it.
+    fn frozen_field_type_identity(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// Represents a single field for indexing.

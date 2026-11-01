@@ -1579,3 +1579,1092 @@ fn handle_merge_exception_logs_the_writers_rendering_of_the_merged_segments() {
     assert!(logged[0].starts_with(&expected), "{logged:?} vs {expected}");
     writer.rollback().unwrap();
 }
+
+// ---------------------------------------------------------------------------
+// Errors the merge path propagates (`WriterTragedyFixture` cases
+// `pit-rollback`, `merge-close-failure`, `merge-middle-failure`,
+// `register-failure` and `merging-after-rollback`)
+// ---------------------------------------------------------------------------
+
+/// `WriterTragedyFixture.hookedPolicy`: a `LogDocMergePolicy` of merge factor
+/// `merge_factor` whose merges record `mergeFinished` in `finished` and fail it
+/// when `fails` names the merge's first segment, or always for `"*"`; their
+/// `wrapForMerge` fails when `fail_wrap`.
+fn hooked_policy(
+    finished: &Arc<Mutex<Vec<String>>>,
+    fails: Option<&'static str>,
+    fail_wrap: bool,
+    merge_factor: i32,
+) -> Arc<dyn MergePolicy> {
+    let mut inner = LogMergePolicy::by_doc_count();
+    inner.set_merge_factor(merge_factor).unwrap();
+    let finished = Arc::clone(finished);
+    Arc::new(OneMergeWrappingMergePolicy::new(
+        Arc::new(inner),
+        Arc::new(move |mut merge: OneMerge| {
+            if fail_wrap {
+                merge.set_wrap_for_merge(Arc::new(|_reader| {
+                    Err(LuceneError::Io(std::io::Error::other(
+                        "wrapForMerge failure",
+                    )))
+                }));
+            }
+            let finished = Arc::clone(&finished);
+            merge.set_merge_finished(Arc::new(
+                move |merge: &OneMerge,
+                      success: bool,
+                      _dropped: bool,
+                      _deleter: Option<&mut rucene::index::IndexFileDeleter>| {
+                    let names: Vec<String> = merge
+                        .segments
+                        .iter()
+                        .map(|segment| segment.info.name.clone())
+                        .collect();
+                    let joined = names.join(",");
+                    finished
+                        .lock()
+                        .unwrap()
+                        .push(format!("{joined} success={success}"));
+                    if fails.is_some_and(|fails| fails == "*" || fails == names[0]) {
+                        return Err(LuceneError::Io(std::io::Error::other(format!(
+                            "injected failure finishing {joined}"
+                        ))));
+                    }
+                    Ok(())
+                },
+            ));
+            merge
+        }),
+    ))
+}
+
+/// `java.util.List.toString()` of the finished merges.
+fn finished_list(finished: &Arc<Mutex<Vec<String>>>) -> String {
+    format!("[{}]", finished.lock().unwrap().join(", "))
+}
+
+/// `WriterTragedyFixture.sortedNames`: `getMergingSegments()`, each segment's
+/// `toString()`, sorted.
+fn merging_names(writer: &IndexWriter) -> String {
+    let mut names: Vec<String> = writer
+        .get_merging_segments_pub()
+        .unwrap()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    names.sort();
+    names.join(" ")
+}
+
+/// `pit-rollback`. With commit merges on, `preparePointInTimeMerge` wraps each
+/// commit merge in a `OneMerge` whose `mergeFinished` does its own part and
+/// then calls the wrapped merge's (`IndexWriter.java:3947-4008`). The policy's
+/// failing hook must therefore still fail `rollback()`, which aborts the two
+/// pending merges; and `getMergingSegments()` reports the merge whose abort
+/// failed on the closed writer, as Java's does without `ensureOpen`
+/// (`IndexWriter.java:2488-2490`).
+#[test]
+fn a_point_in_time_merge_calls_the_hook_of_the_merge_it_wraps() {
+    ensure_codec();
+    let finished: Arc<Mutex<Vec<String>>> = Arc::default();
+    let mut config = IndexWriterConfig::new();
+    config
+        .set_merge_policy(hooked_policy(&finished, Some("_0"), false, 2))
+        .unwrap();
+    config
+        .set_merge_scheduler(Arc::new(NoMergeScheduler))
+        .unwrap();
+    let writer = IndexWriter::new(Arc::new(RamDirectory::new()), config).unwrap();
+    for id in 0..4 {
+        writer.add_document(&id_doc(id)).unwrap();
+        writer.commit().unwrap();
+    }
+    writer.force_merge_with(1, false).unwrap();
+    let mut out = String::new();
+    out.push_str(&format!(
+        "pending-before={}\n",
+        writer.has_pending_merges_pub().unwrap()
+    ));
+    out.push_str(&format!("rollback={}\n", described(&writer.rollback())));
+    out.push_str(&format!("finished={}\n", finished_list(&finished)));
+    out.push_str(&format!(
+        "pending-after={}\n",
+        writer.has_pending_merges_pub().unwrap()
+    ));
+    out.push_str(&format!("merging={}\n", merging_names(&writer)));
+    out.push_str(&format!("open={}\n", writer.is_open()));
+    assert_eq!(out, run_java("pit-rollback"));
+}
+
+/// A `SerialMergeScheduler` whose `wrapForMerge` fails, as the fixture's
+/// anonymous subclass does.
+struct WrapFailingScheduler(SerialMergeScheduler);
+
+impl std::fmt::Display for WrapFailingScheduler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("WrapFailingScheduler")
+    }
+}
+
+impl MergeScheduler for WrapFailingScheduler {
+    fn merge(
+        &self,
+        merge_source: Arc<dyn rucene::index::merge_scheduler::MergeSource>,
+        trigger: MergeTrigger,
+    ) -> Result<()> {
+        self.0.merge(merge_source, trigger)
+    }
+
+    fn wrap_for_merge(
+        &self,
+        _merge: &OneMerge,
+        _directory: Arc<dyn Directory>,
+    ) -> Result<Arc<dyn Directory>> {
+        Err(LuceneError::illegal_state("wrap failure".to_string()))
+    }
+
+    fn same_thread_executor(&self) -> &Arc<rucene::util::SameThreadExecutorService> {
+        self.0.same_thread_executor()
+    }
+}
+
+/// The lines `WriterTragedyFixture.mergeFailure` prints, for a writer of three
+/// committed one-document segments whose `forceMerge(1)` fails.
+fn merge_failure(in_middle: bool, hook_throws: bool) -> String {
+    ensure_codec();
+    let finished: Arc<Mutex<Vec<String>>> = Arc::default();
+    let mut config = IndexWriterConfig::new();
+    config.set_max_full_flush_merge_wait_millis(0);
+    if in_middle {
+        config
+            .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+            .unwrap();
+    } else {
+        config
+            .set_merge_scheduler(Arc::new(WrapFailingScheduler(SerialMergeScheduler::new())))
+            .unwrap();
+    }
+    config
+        .set_merge_policy(hooked_policy(
+            &finished,
+            hook_throws.then_some("*"),
+            in_middle,
+            10,
+        ))
+        .unwrap();
+    let writer = IndexWriter::new(Arc::new(RamDirectory::new()), config).unwrap();
+    for id in 0..3 {
+        writer.add_document(&id_doc(id)).unwrap();
+        writer.commit().unwrap();
+    }
+    let merging = Arc::clone(&writer);
+    let force_merge = watchdog(60, move || described(&merging.force_merge(1)));
+    let mut out = String::new();
+    out.push_str(&format!("forceMerge={force_merge}\n"));
+    out.push_str(&format!("finished={}\n", finished_list(&finished)));
+    out.push_str(&format!("tragic={}\n", tragedy(&writer)));
+    out.push_str(&format!("open={}\n", writer.is_open()));
+    out
+}
+
+/// `merge-close-failure keep`: the scheduler's `wrapForMerge` fails before
+/// `mergeMiddle`'s `try`, so `merge`'s `finally` is what closes the merge
+/// readers (`IndexWriter.java:4866-4872`); the failure is the tragedy.
+#[test]
+fn a_merge_failing_before_its_readers_is_a_tragedy_as_lucene_does() {
+    assert_eq!(
+        merge_failure(false, false),
+        run_java("merge-close-failure keep")
+    );
+}
+
+/// `merge-close-failure throw`: closing the readers in `merge`'s `finally`
+/// fails too, and that failure replaces the merge's own and becomes the
+/// tragedy, as in Java. The failure leaves the `finally` before `mergeFinish`
+/// (`IndexWriter.java:4869-4872`), so the merge stays in `runningMerges`; the
+/// tragedy's rollback (`tragicEvent` at `IndexWriter.java:4890` →
+/// `rollbackInternal`, `:2550`) then waits in `abortMerges` for the running
+/// merges to finish (`:2816-2828`), on the very thread that would have to
+/// finish this one, so `forceMerge` never returns — Lucene's behaviour, which
+/// this port reproduces. The fixture reports `HUNG` after eight seconds.
+///
+/// The merge thread is left blocked for ever, as Java's is. It holds only
+/// this writer and its `RamDirectory`, whose lock factory is per directory,
+/// so it keeps no lock another test needs; and a Rust test binary exits when
+/// its tests are done, whatever other threads are still running.
+#[test]
+fn a_failure_closing_the_merge_readers_hangs_the_merge_thread_as_lucene_does() {
+    let java = run_java("merge-close-failure throw");
+    let mut java_lines: Vec<&str> = java.lines().collect();
+    assert_eq!(java_lines.remove(0), "forceMerge=HUNG", "{java}");
+
+    ensure_codec();
+    let finished: Arc<Mutex<Vec<String>>> = Arc::default();
+    let log = Arc::new(IwLog::default());
+    let mut config = IndexWriterConfig::new();
+    config.set_max_full_flush_merge_wait_millis(0);
+    config
+        .set_merge_scheduler(Arc::new(WrapFailingScheduler(SerialMergeScheduler::new())))
+        .unwrap();
+    config
+        .set_merge_policy(hooked_policy(&finished, Some("*"), false, 10))
+        .unwrap();
+    config
+        .set_info_stream(Arc::clone(&log) as Arc<dyn InfoStream>)
+        .unwrap();
+    let writer = IndexWriter::new(Arc::new(RamDirectory::new()), config).unwrap();
+    for id in 0..3 {
+        writer.add_document(&id_doc(id)).unwrap();
+        writer.commit().unwrap();
+    }
+    let (merged_tx, merged_rx) = mpsc::channel();
+    let merging = Arc::clone(&writer);
+    // Deliberately detached: the thread blocks for ever, as Java's does.
+    let _merge_thread = thread::spawn(move || {
+        let _ = merged_tx.send(described(&merging.force_merge(1)));
+    });
+    // The tragedy's rollback waits for the running merge, logging each round
+    // of `abortMerges`' loop (`IndexWriter.java:2816-2828`); two rounds,
+    // each at least the one-second `doWait`, show it is looping, not passing
+    // through.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let waiting = "now wait for 1 running merge/s to abort; currently running addIndexes: 0";
+    loop {
+        let rounds = log
+            .messages
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|message| *message == waiting)
+            .count();
+        if rounds >= 2 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the rollback never waited for the merge: {:?}",
+            log.messages.lock().unwrap()
+        );
+        let messages = log.messages.lock().unwrap();
+        let _ = log
+            .changed
+            .wait_timeout(messages, Duration::from_millis(200))
+            .unwrap();
+    }
+    match merged_rx.recv_timeout(Duration::from_secs(2)) {
+        Err(mpsc::RecvTimeoutError::Timeout) => {}
+        other => panic!("forceMerge returned instead of hanging: {other:?}"),
+    }
+    let rust = format!(
+        "finished={}\ntragic={}\nopen={}\n",
+        finished_list(&finished),
+        tragedy(&writer),
+        writer.is_open()
+    );
+    assert_eq!(rust, format!("{}\n", java_lines.join("\n")));
+}
+
+/// `merge-middle-failure keep` and `throw`: a failure inside `mergeMiddle`'s
+/// `try` closes the readers in its `finally` (`IndexWriter.java:5588-5594`);
+/// a failure to close them replaces the merge's own failure and becomes the
+/// tragedy.
+#[test]
+fn merge_middle_closes_its_readers_and_propagates_the_failure_as_lucene_does() {
+    assert_eq!(
+        merge_failure(true, false),
+        run_java("merge-middle-failure keep")
+    );
+    assert_eq!(
+        merge_failure(true, true),
+        run_java("merge-middle-failure throw")
+    );
+}
+
+/// Keeps the `IW` messages that start with one of its prefixes, as
+/// `WriterTragedyFixture.recordingInfoStream` does.
+struct PrefixLog {
+    prefixes: &'static [&'static str],
+    messages: Mutex<Vec<String>>,
+}
+
+impl InfoStream for PrefixLog {
+    fn java_class_name(&self) -> &'static str {
+        "PrefixLog"
+    }
+    fn message(&self, component: &str, message: &str) {
+        if component == "IW" && self.prefixes.iter().any(|p| message.starts_with(p)) {
+            self.messages.lock().unwrap().push(message.to_string());
+        }
+    }
+    fn is_enabled(&self, component: &str) -> bool {
+        component == "IW"
+    }
+    fn close(&self) {}
+}
+
+/// `register-failure`: `registerMerge` fails sizing a merge whose segment lost
+/// a file (`IndexWriter.java:5022`), and `updatePendingMerges` propagates the
+/// failure (`IndexWriter.java:2471-2477`). Lucene reports it as
+/// `NoSuchFileException: _0.fdt`; this port's `RamDirectory` raises an
+/// `io::ErrorKind::NotFound` naming the same file.
+///
+/// The sizing comes after the merge was added to `pendingMerges`, logged, and
+/// its segments added to `mergingSegments`, and before `registerDone`
+/// (`IndexWriter.java:4984-5025`): the merge is pending and its segments
+/// merging. `mergeFinish` only releases the segments of a registered merge
+/// (`IndexWriter.java:5164-5170`), so the rollback's `assert
+/// mergingSegments.isEmpty()` (`IndexWriter.java:2582-2583`) fails under
+/// `-ea`, and this port's `debug_assert!` panics in a debug build; without
+/// assertions both roll back cleanly. The oracle runs with `-ea` exactly when
+/// this test is a debug build. The assertion renders the merging segments in
+/// each implementation's own form, so only its text up to them is compared.
+#[test]
+fn a_failure_registering_a_merge_propagates_as_lucene_does() {
+    ensure_codec();
+    let java = run_java_matching_assertions("register-failure");
+    let mut java_lines: Vec<&str> = java.lines().collect();
+    assert_eq!(
+        java_lines.remove(0),
+        "maybeMerge=NoSuchFileException: _0.fdt cause=none",
+        "{java}"
+    );
+    let log = Arc::new(PrefixLog {
+        prefixes: &["add merge to pendingMerges", "registerMerge"],
+        messages: Mutex::new(Vec::new()),
+    });
+    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let mut config = IndexWriterConfig::new();
+    config.set_max_full_flush_merge_wait_millis(0);
+    config
+        .set_merge_scheduler(Arc::new(NoMergeScheduler))
+        .unwrap();
+    config
+        .set_merge_policy(Arc::new(rucene::index::merge_policy::NoMergePolicy::new()))
+        .unwrap();
+    config.set_use_compound_file(false).unwrap();
+    config
+        .set_info_stream(Arc::clone(&log) as Arc<dyn InfoStream>)
+        .unwrap();
+    let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+    for id in 0..2 {
+        writer.add_document(&id_doc(id)).unwrap();
+        writer.commit().unwrap();
+    }
+    dir.delete_file("_0.fdt").unwrap();
+    let mut policy = LogMergePolicy::by_doc_count();
+    policy.set_merge_factor(2).unwrap();
+    let policy: Arc<dyn MergePolicy> = Arc::new(policy);
+    let merged = writer.maybe_merge_with(&policy, MergeTrigger::Explicit, -1);
+    assert!(
+        matches!(&merged, Err(LuceneError::Io(error))
+            if error.kind() == std::io::ErrorKind::NotFound && error.to_string().contains("_0.fdt")),
+        "{merged:?}"
+    );
+    let mut rust_lines: Vec<String> = log
+        .messages
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|message| format!("IW {message}"))
+        .collect();
+    rust_lines.push(format!(
+        "pending={}",
+        writer.has_pending_merges_pub().unwrap()
+    ));
+    rust_lines.push(format!("merging={}", merging_names(&writer)));
+    let java_rollback = java_lines.pop().expect("the rollback line");
+    assert_eq!(rust_lines, java_lines, "{java}");
+
+    let rolled_back = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| writer.rollback()));
+    match (rolled_back, cfg!(debug_assertions)) {
+        (Ok(result), false) => {
+            assert_eq!(format!("rollback={}", described(&result)), java_rollback);
+        }
+        (Err(panic), true) => {
+            let message = panic
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| panic.downcast_ref::<&str>().map(ToString::to_string))
+                .unwrap_or_default();
+            let prefix = "we aborted all merges but still have merging segments: ";
+            assert!(message.starts_with(prefix), "{message}");
+            assert!(
+                java_rollback.starts_with(&format!("rollback=AssertionError: {prefix}")),
+                "{java_rollback}"
+            );
+        }
+        (Ok(result), true) => panic!("the debug assertion did not fire: {result:?}"),
+        (Err(_), false) => panic!("the rollback panicked without debug assertions"),
+    }
+}
+
+/// `merging-after-rollback`: the merge of `_0` and `_1` whose abort fails
+/// keeps its segments merging, and `getMergingSegments()` reports both on the
+/// closed writer even though the rollback restored a commit holding `_0`
+/// only (`IndexWriter.java:2488-2490`).
+#[test]
+fn merging_segments_survive_a_rollback_as_lucene_reports_them() {
+    ensure_codec();
+    let finished: Arc<Mutex<Vec<String>>> = Arc::default();
+    let mut config = IndexWriterConfig::new();
+    config.set_max_full_flush_merge_wait_millis(0);
+    config
+        .set_merge_scheduler(Arc::new(NoMergeScheduler))
+        .unwrap();
+    config
+        .set_merge_policy(hooked_policy(&finished, Some("*"), false, 2))
+        .unwrap();
+    let writer = IndexWriter::new(Arc::new(RamDirectory::new()), config).unwrap();
+    writer.add_document(&id_doc(0)).unwrap();
+    writer.commit().unwrap();
+    writer.add_document(&id_doc(1)).unwrap();
+    writer.flush().unwrap();
+    writer.add_document(&id_doc(2)).unwrap();
+    writer.flush().unwrap();
+    let mut out = String::new();
+    out.push_str(&format!("merging-before={}\n", merging_names(&writer)));
+    out.push_str(&format!("rollback={}\n", described(&writer.rollback())));
+    out.push_str(&format!("open={}\n", writer.is_open()));
+    out.push_str(&format!("merging-after={}\n", merging_names(&writer)));
+    assert_eq!(out, run_java("merging-after-rollback"));
+}
+
+// ---------------------------------------------------------------------------
+// Rollback during a merge, reader closes, and the hooks a wrapping merge chains
+// ---------------------------------------------------------------------------
+
+/// An input whose `close()` fails after closing the input it wraps, as the
+/// anonymous `FilterIndexInput` of `WriterTragedyFixture.CloseFailingDirectory`
+/// does.
+struct CloseFailingInput {
+    inner: Box<dyn IndexInput>,
+}
+
+impl rucene::store::DataInput for CloseFailingInput {
+    /// `IndexInput.toString()` returns the resource description.
+    fn to_java_string(&self) -> String {
+        IndexInput::resource_description(self).to_string()
+    }
+    fn read_byte(&mut self) -> Result<u8> {
+        self.inner.read_byte()
+    }
+    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+        self.inner.read_bytes(b, offset, len)
+    }
+    fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
+        self.inner.skip_bytes(num_bytes)
+    }
+}
+
+impl IndexInput for CloseFailingInput {
+    fn close(&mut self) -> Result<()> {
+        self.inner.close()?;
+        Err(LuceneError::Io(std::io::Error::other(
+            "injected failure closing an input",
+        )))
+    }
+    fn file_pointer(&self) -> i64 {
+        self.inner.file_pointer()
+    }
+    fn length(&self) -> i64 {
+        self.inner.length()
+    }
+    fn seek(&mut self, pos: i64) -> Result<()> {
+        self.inner.seek(pos)
+    }
+    fn slice(
+        &self,
+        slice_description: &str,
+        offset: i64,
+        length: i64,
+    ) -> Result<Box<dyn IndexInput>> {
+        self.inner.slice(slice_description, offset, length)
+    }
+    fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
+        self.inner.clone_input()
+    }
+    fn resource_description(&self) -> &str {
+        self.inner.resource_description()
+    }
+}
+
+/// The hook [`CloseFailingDirectory`] runs, once armed, when the first `.cfs`
+/// is created.
+type CfsHook = Box<dyn Fn() + Send + Sync>;
+
+/// `WriterTragedyFixture.CloseFailingDirectory`: opens the input named
+/// `failing_name` so that its `close()` fails, records the files deleted on
+/// `recorded_thread`, and — the `cfs-rollback` subclass — once `cfs_armed`,
+/// runs `cfs_hook` at the first `.cfs` it is asked for, starts recording the
+/// thread that asked, and refuses the file.
+struct CloseFailingDirectory {
+    inner: Arc<dyn Directory>,
+    failing_name: Mutex<Option<String>>,
+    recorded_thread: Mutex<Option<thread::ThreadId>>,
+    deleted_on_recorded_thread: Mutex<Vec<String>>,
+    cfs_armed: AtomicBool,
+    cfs_hook: Mutex<Option<CfsHook>>,
+}
+
+impl CloseFailingDirectory {
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(RamDirectory::new()),
+            failing_name: Mutex::new(None),
+            recorded_thread: Mutex::new(None),
+            deleted_on_recorded_thread: Mutex::new(Vec::new()),
+            cfs_armed: AtomicBool::new(false),
+            cfs_hook: Mutex::new(None),
+        }
+    }
+}
+
+impl Directory for CloseFailingDirectory {
+    fn list_all(&self) -> Result<Vec<String>> {
+        self.inner.list_all()
+    }
+    fn delete_file(&self, name: &str) -> Result<()> {
+        if *self.recorded_thread.lock().unwrap() == Some(thread::current().id()) {
+            self.deleted_on_recorded_thread
+                .lock()
+                .unwrap()
+                .push(name.to_string());
+        }
+        self.inner.delete_file(name)
+    }
+    fn file_length(&self, name: &str) -> Result<i64> {
+        self.inner.file_length(name)
+    }
+    fn create_output(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexOutput>> {
+        if name.ends_with(".cfs")
+            && self
+                .cfs_armed
+                .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        {
+            if let Some(hook) = self.cfs_hook.lock().unwrap().as_ref() {
+                hook();
+            }
+            // Record what the merge thread deletes from here on.
+            *self.recorded_thread.lock().unwrap() = Some(thread::current().id());
+            return Err(LuceneError::Io(std::io::Error::other(format!(
+                "injected failure creating {name}"
+            ))));
+        }
+        self.inner.create_output(name, context)
+    }
+    fn create_temp_output(
+        &self,
+        prefix: &str,
+        suffix: &str,
+        context: &dyn IOContext,
+    ) -> Result<Box<dyn IndexOutput>> {
+        self.inner.create_temp_output(prefix, suffix, context)
+    }
+    fn sync(&self, names: &[String]) -> Result<()> {
+        self.inner.sync(names)
+    }
+    fn sync_metadata(&self) -> Result<()> {
+        self.inner.sync_metadata()
+    }
+    fn rename(&self, source: &str, dest: &str) -> Result<()> {
+        self.inner.rename(source, dest)
+    }
+    fn open_input(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
+        let input = self.inner.open_input(name, context)?;
+        if self.failing_name.lock().unwrap().as_deref() == Some(name) {
+            return Ok(Box::new(CloseFailingInput { inner: input }));
+        }
+        Ok(input)
+    }
+    fn open_checksum_input(&self, name: &str) -> Result<Box<BufferedChecksumIndexInput>> {
+        self.inner.open_checksum_input(name)
+    }
+    fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
+        self.inner.obtain_lock(name)
+    }
+    fn close(&mut self) -> Result<()> {
+        Ok(())
+    }
+    fn get_pending_deletions(&self) -> Result<std::collections::HashSet<String>> {
+        self.inner.get_pending_deletions()
+    }
+    fn ensure_open(&self) -> Result<()> {
+        self.inner.ensure_open()
+    }
+}
+
+/// `WriterTragedyFixture.await(condition, what)`: waits up to thirty seconds
+/// for `condition`, failing if it never holds.
+fn await_condition(condition: impl Fn() -> bool, what: &str) -> Result<()> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !condition() {
+        if std::time::Instant::now() > deadline {
+            return Err(LuceneError::illegal_state(format!(
+                "timed out waiting for {what}"
+            )));
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    Ok(())
+}
+
+/// `WriterTragedyFixture.startRollback`: `writer.rollback()` on its own
+/// thread, which sends its outcome.
+fn start_rollback(writer: &Arc<IndexWriter>) -> mpsc::Receiver<String> {
+    let (tx, rx) = mpsc::channel();
+    let rolling_back = Arc::clone(writer);
+    thread::spawn(move || {
+        let _ = tx.send(described(&rolling_back.rollback()));
+    });
+    rx
+}
+
+/// The rollback's outcome, or `HUNG` if it did not finish within thirty
+/// seconds, as the fixture's bounded `join` reports it.
+fn rollback_outcome(rx: &Mutex<Option<mpsc::Receiver<String>>>) -> String {
+    let rx = rx.lock().unwrap().take().expect("the rollback was started");
+    rx.recv_timeout(Duration::from_secs(30))
+        .unwrap_or_else(|_| "HUNG".to_string())
+}
+
+/// `cfs-rollback`: another thread's `rollback()` aborts a merge while it
+/// creates its compound file, which then fails. The merge returns 0, and the
+/// `finally` of that step reports the failure and deletes the merged
+/// segment's non-compound files on the merge thread (`IndexWriter.java:
+/// 5480-5503`), before the rollback goes on.
+#[test]
+fn a_merge_aborted_while_building_its_compound_file_deletes_its_files_as_lucene_does() {
+    let out = watchdog(120, || {
+        ensure_codec();
+        let dir = Arc::new(CloseFailingDirectory::new());
+        let captured: Arc<Mutex<Option<OneMerge>>> = Arc::default();
+        let messages = Arc::new(PrefixLog {
+            prefixes: &[
+                "hit merge abort exception creating compound file",
+                "hit exception creating compound file",
+            ],
+            messages: Mutex::new(Vec::new()),
+        });
+        let mut config = IndexWriterConfig::new();
+        config.set_max_full_flush_merge_wait_millis(0);
+        config
+            .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+            .unwrap();
+        // Flushed segments without compound files: only the merge builds one.
+        config.set_use_compound_file(false).unwrap();
+        config
+            .set_info_stream(Arc::clone(&messages) as Arc<dyn InfoStream>)
+            .unwrap();
+        let inner = LogMergePolicy::by_doc_count();
+        inner.set_no_cfs_ratio(1.0).unwrap();
+        let capturing = Arc::clone(&captured);
+        config
+            .set_merge_policy(Arc::new(OneMergeWrappingMergePolicy::new(
+                Arc::new(inner),
+                Arc::new(move |merge: OneMerge| {
+                    *capturing.lock().unwrap() = Some(merge.clone());
+                    merge
+                }),
+            )))
+            .unwrap();
+        let writer = IndexWriter::new(Arc::clone(&dir) as Arc<dyn Directory>, config).unwrap();
+        for id in 0..3 {
+            writer.add_document(&id_doc(id)).unwrap();
+            writer.commit().unwrap();
+        }
+        let rollback: Arc<Mutex<Option<mpsc::Receiver<String>>>> = Arc::default();
+        {
+            let writer = Arc::clone(&writer);
+            let captured = Arc::clone(&captured);
+            let rollback = Arc::clone(&rollback);
+            *dir.cfs_hook.lock().unwrap() = Some(Box::new(move || {
+                *rollback.lock().unwrap() = Some(start_rollback(&writer));
+                let merge = captured.lock().unwrap().clone().expect("the merge");
+                await_condition(|| merge.is_aborted(), "the merge to abort").unwrap();
+            }));
+        }
+        dir.cfs_armed.store(true, Ordering::SeqCst);
+        let mut out = String::new();
+        out.push_str(&format!(
+            "forceMerge={}\n",
+            described(&writer.force_merge(1))
+        ));
+        *dir.recorded_thread.lock().unwrap() = None;
+        out.push_str(&format!("rollback={}\n", rollback_outcome(&rollback)));
+        out.push_str(&format!(
+            "messages=[{}]\n",
+            messages.messages.lock().unwrap().join(", ")
+        ));
+        let mut deleted = dir.deleted_on_recorded_thread.lock().unwrap().clone();
+        deleted.sort();
+        out.push_str(&format!(
+            "deleted-on-merge-thread-after-failure=[{}]\n",
+            deleted.join(", ")
+        ));
+        out.push_str(&format!("open={}\n", writer.is_open()));
+        // The hook holds the writer; release it.
+        *dir.cfs_hook.lock().unwrap() = None;
+        out
+    });
+    assert_eq!(out, run_java("cfs-rollback"));
+}
+
+/// `WriterTragedyFixture.cfsFailure`'s `InfoStream`: keeps the `IW` lines
+/// that start with one of its prefixes, and stops recording the merge
+/// thread's deletions at `merge`'s own `hit exception during merge`, before
+/// the tragedy's rollback.
+///
+/// `handleMergeException` logs `t.toString()`, which for the `IOException`
+/// the fixture's directory throws is `java.io.IOException: <message>`; this
+/// port's `Display` of the [`LuceneError::Io`] it raises in its place is
+/// `I/O error: <message>`, which is mapped to Java's.
+struct CfsFailureLog {
+    dir: Arc<CloseFailingDirectory>,
+    messages: Mutex<Vec<String>>,
+}
+
+impl InfoStream for CfsFailureLog {
+    fn java_class_name(&self) -> &'static str {
+        "CfsFailureLog"
+    }
+    fn message(&self, component: &str, message: &str) {
+        const PREFIXES: [&str; 4] = [
+            "handleMergeException",
+            "hit merge abort exception creating compound file",
+            "hit exception creating compound file",
+            "hit exception during merge",
+        ];
+        if message == "hit exception during merge" {
+            *self.dir.recorded_thread.lock().unwrap() = None;
+        }
+        if component == "IW" && PREFIXES.iter().any(|p| message.starts_with(p)) {
+            self.messages
+                .lock()
+                .unwrap()
+                .push(message.replace(" exc=I/O error: ", " exc=java.io.IOException: "));
+        }
+    }
+    fn is_enabled(&self, component: &str) -> bool {
+        component == "IW"
+    }
+    fn close(&self) {}
+}
+
+/// `cfs-failure`: a merge cannot create its compound file, and nothing
+/// aborted it. Under the writer's lock, `mergeMiddle`'s `catch` hands the
+/// failure to `handleMergeException`, which logs it, sets it on the merge and
+/// rethrows it; the `finally` then reports it and deletes the merged
+/// segment's non-compound files (`IndexWriter.java:5481-5503`). `merge` hands
+/// it to `handleMergeException` again, logs `hit exception during merge` and
+/// records the tragedy (`IndexWriter.java:4850-4892`).
+#[test]
+fn a_compound_file_failure_is_handled_inside_merge_middle_as_lucene_does() {
+    let out = watchdog(120, || {
+        ensure_codec();
+        let dir = Arc::new(CloseFailingDirectory::new());
+        let log = Arc::new(CfsFailureLog {
+            dir: Arc::clone(&dir),
+            messages: Mutex::new(Vec::new()),
+        });
+        let mut config = IndexWriterConfig::new();
+        config.set_max_full_flush_merge_wait_millis(0);
+        config
+            .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+            .unwrap();
+        // Flushed segments without compound files: only the merge builds one.
+        config.set_use_compound_file(false).unwrap();
+        config
+            .set_info_stream(Arc::clone(&log) as Arc<dyn InfoStream>)
+            .unwrap();
+        let policy = LogMergePolicy::by_doc_count();
+        policy.set_no_cfs_ratio(1.0).unwrap();
+        config.set_merge_policy(Arc::new(policy)).unwrap();
+        let writer = IndexWriter::new(Arc::clone(&dir) as Arc<dyn Directory>, config).unwrap();
+        for id in 0..3 {
+            writer.add_document(&id_doc(id)).unwrap();
+            writer.commit().unwrap();
+        }
+        dir.cfs_armed.store(true, Ordering::SeqCst);
+        let mut out = String::new();
+        out.push_str(&format!(
+            "forceMerge={}\n",
+            described(&writer.force_merge(1))
+        ));
+        *dir.recorded_thread.lock().unwrap() = None;
+        out.push_str(&format!(
+            "messages=[{}]\n",
+            log.messages.lock().unwrap().join(", ")
+        ));
+        let mut deleted = dir.deleted_on_recorded_thread.lock().unwrap().clone();
+        deleted.sort();
+        out.push_str(&format!(
+            "deleted-on-merge-thread-before-merge-finished=[{}]\n",
+            deleted.join(", ")
+        ));
+        out.push_str(&format!("tragic={}\n", tragedy(&writer)));
+        out.push_str(&format!("open={}\n", writer.is_open()));
+        out
+    });
+    assert_eq!(out, run_java("cfs-failure"));
+}
+
+/// A merged-segment warmer that starts a rollback on another thread and waits
+/// until the merge it warms is aborted, as `WriterTragedyFixture
+/// .warmerRollback`'s does.
+struct RollbackWarmer {
+    writer: Mutex<Option<Arc<IndexWriter>>>,
+    captured: Arc<Mutex<Option<OneMerge>>>,
+    rollback: Arc<Mutex<Option<mpsc::Receiver<String>>>>,
+}
+
+impl std::fmt::Debug for RollbackWarmer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RollbackWarmer")
+    }
+}
+
+impl std::fmt::Display for RollbackWarmer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RollbackWarmer")
+    }
+}
+
+impl MergedSegmentWarmer for RollbackWarmer {
+    fn warm(&self, _reader: &dyn LeafReader) -> Result<()> {
+        let writer = self.writer.lock().unwrap().clone().expect("the writer");
+        *self.rollback.lock().unwrap() = Some(start_rollback(&writer));
+        let merge = self.captured.lock().unwrap().clone().expect("the merge");
+        await_condition(|| merge.is_aborted(), "the merge to abort")
+    }
+}
+
+/// `WriterTragedyFixture.warmerRollback(dropFails)`.
+fn warmer_rollback(drop_fails: bool) -> String {
+    ensure_codec();
+    let dir = Arc::new(CloseFailingDirectory::new());
+    let captured: Arc<Mutex<Option<OneMerge>>> = Arc::default();
+    let rollback: Arc<Mutex<Option<mpsc::Receiver<String>>>> = Arc::default();
+    let finished: Arc<Mutex<Vec<String>>> = Arc::default();
+    let warmer = Arc::new(RollbackWarmer {
+        writer: Mutex::new(None),
+        captured: Arc::clone(&captured),
+        rollback: Arc::clone(&rollback),
+    });
+    let mut config = IndexWriterConfig::new();
+    config.set_max_full_flush_merge_wait_millis(0);
+    config
+        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .unwrap();
+    config.set_use_compound_file(false).unwrap();
+    config.set_reader_pooling(true);
+    config
+        .set_merged_segment_warmer(Some(Arc::clone(&warmer) as Arc<dyn MergedSegmentWarmer>))
+        .unwrap();
+    let inner = LogMergePolicy::by_doc_count();
+    inner.set_no_cfs_ratio(0.0).unwrap();
+    let capturing = Arc::clone(&captured);
+    let recording = Arc::clone(&finished);
+    config
+        .set_merge_policy(Arc::new(OneMergeWrappingMergePolicy::new(
+            Arc::new(inner),
+            Arc::new(move |mut merge: OneMerge| {
+                let recording = Arc::clone(&recording);
+                merge.set_merge_finished(Arc::new(
+                    move |merge: &OneMerge,
+                          success: bool,
+                          _dropped: bool,
+                          _deleter: Option<&mut rucene::index::IndexFileDeleter>| {
+                        let names: Vec<String> = merge
+                            .segments
+                            .iter()
+                            .map(|segment| segment.info.name.clone())
+                            .collect();
+                        recording
+                            .lock()
+                            .unwrap()
+                            .push(format!("{} success={success}", names.join(",")));
+                        Ok(())
+                    },
+                ));
+                *capturing.lock().unwrap() = Some(merge.clone());
+                merge
+            }),
+        )))
+        .unwrap();
+    let writer = IndexWriter::new(Arc::clone(&dir) as Arc<dyn Directory>, config).unwrap();
+    *warmer.writer.lock().unwrap() = Some(Arc::clone(&writer));
+    for id in 0..3 {
+        writer.add_document(&id_doc(id)).unwrap();
+        writer.commit().unwrap();
+    }
+    if drop_fails {
+        // The stored-fields data of the merged segment, which the warmer's
+        // pooled reader keeps open until `readerPool.drop` closes it.
+        *dir.failing_name.lock().unwrap() = Some("_3.fdt".to_string());
+    }
+    let mut out = String::new();
+    out.push_str(&format!(
+        "forceMerge={}\n",
+        described(&writer.force_merge(1))
+    ));
+    out.push_str(&format!("rollback={}\n", rollback_outcome(&rollback)));
+    out.push_str(&format!("finished={}\n", finished_list(&finished)));
+    out.push_str(&format!("tragic={}\n", tragedy(&writer)));
+    out.push_str(&format!("open={}\n", writer.is_open()));
+    *warmer.writer.lock().unwrap() = None;
+    out
+}
+
+/// `warmer-rollback keep`: a merge aborted while its merged segment is warmed
+/// is skipped by `commitMerge`, which returns false (`IndexWriter.java:
+/// 4692-4708`), and `mergeMiddle` returns 0; its `finally` still closes the
+/// merge readers (`IndexWriter.java:5580-5594`), finishing the merge with
+/// `success=false`.
+#[test]
+fn a_merge_aborted_after_warming_closes_its_readers_as_lucene_does() {
+    let out = watchdog(120, || warmer_rollback(false));
+    assert_eq!(out, run_java("warmer-rollback keep"));
+}
+
+/// `warmer-rollback drop-fails`: the skipped merge's pooled reader is dropped
+/// by `readerPool.drop(merge.info)` (`IndexWriter.java:4705`), whose failure
+/// to close the merged segment's input propagates out of `commitMerge` and
+/// becomes the merge's tragedy.
+#[test]
+fn a_failure_dropping_an_aborted_merges_reader_propagates_as_lucene_does() {
+    let out = watchdog(120, || warmer_rollback(true));
+    assert_eq!(out, run_java("warmer-rollback drop-fails"));
+}
+
+/// A merge policy whose commit merges record their `onMergeComplete` and
+/// `mergeFinished` hooks, as `PitHookProbe`'s does.
+struct HookedCommitPolicy {
+    events: Arc<Mutex<Vec<String>>>,
+}
+
+impl std::fmt::Display for HookedCommitPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HookedCommitPolicy")
+    }
+}
+
+impl MergePolicy for HookedCommitPolicy {
+    fn find_merges(
+        &self,
+        _trigger: MergeTrigger,
+        _infos: &SegmentInfos,
+        _context: &dyn MergeContext,
+    ) -> Result<Option<MergeSpecification>> {
+        Ok(None)
+    }
+    fn find_forced_merges(
+        &self,
+        _infos: &SegmentInfos,
+        _max_segment_count: i32,
+        _segments_to_merge: &HashMap<String, bool>,
+        _context: &dyn MergeContext,
+    ) -> Result<Option<MergeSpecification>> {
+        Ok(None)
+    }
+    fn find_forced_deletes_merges(
+        &self,
+        _infos: &SegmentInfos,
+        _context: &dyn MergeContext,
+    ) -> Result<Option<MergeSpecification>> {
+        Ok(None)
+    }
+    fn find_full_flush_merges(
+        &self,
+        trigger: MergeTrigger,
+        infos: &SegmentInfos,
+        context: &dyn MergeContext,
+    ) -> Result<Option<MergeSpecification>> {
+        let merging = context.get_merging_segments();
+        let segments: Vec<_> = infos
+            .iter()
+            .filter(|info| !merging.contains(&info.info.name))
+            .cloned()
+            .collect();
+        if trigger != MergeTrigger::Commit || segments.len() < 2 {
+            return Ok(None);
+        }
+        let mut merge = OneMerge::new(segments)?;
+        let events = Arc::clone(&self.events);
+        merge.set_on_merge_complete(Arc::new(move |merge: &OneMerge| {
+            events
+                .lock()
+                .unwrap()
+                .push(format!("onMergeComplete {}", merge.seg_string()));
+            Ok(())
+        }));
+        let events = Arc::clone(&self.events);
+        merge.set_merge_finished(Arc::new(
+            move |merge: &OneMerge,
+                  success: bool,
+                  _dropped: bool,
+                  _deleter: Option<&mut rucene::index::IndexFileDeleter>| {
+                events.lock().unwrap().push(format!(
+                    "mergeFinished {} success={success}",
+                    merge.seg_string()
+                ));
+                Ok(())
+            },
+        ));
+        let mut spec = MergeSpecification::new();
+        spec.add(merge);
+        Ok(Some(spec))
+    }
+}
+
+/// A commit merge's own `onMergeComplete` still runs when
+/// `preparePointInTimeMerge` wraps it: the wrapper does its part and then
+/// calls `toWrap.onMergeComplete()` (`IndexWriter.java:4011-4024`).
+///
+/// `onMergeComplete` is package-private, so the oracle is a probe compiled
+/// into `org.apache.lucene.index` (`PitHookProbe`), measured against
+/// `lucene-core-10.5.0.jar`: a commit merge of `_0` and `_1` records
+/// `[onMergeComplete _0(10.5.0):c1 _1(10.5.0):c1 into _2, mergeFinished
+/// _0(10.5.0):c1 _1(10.5.0):c1 into _2 success=true]`, and the commit holds
+/// `[_2(10.5.0):c2]`.
+#[test]
+fn a_point_in_time_merge_calls_the_on_merge_complete_of_the_merge_it_wraps() {
+    let (events, committed) = watchdog(120, || {
+        ensure_codec();
+        let events: Arc<Mutex<Vec<String>>> = Arc::default();
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let mut config = IndexWriterConfig::new();
+        config
+            .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+            .unwrap();
+        config.set_max_full_flush_merge_wait_millis(30_000);
+        config
+            .set_merge_policy(Arc::new(HookedCommitPolicy {
+                events: Arc::clone(&events),
+            }))
+            .unwrap();
+        let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+        for id in 0..2 {
+            let mut doc = Document::new();
+            doc.add(Box::new(
+                StringField::new("id", id.to_string(), Store::YES).unwrap(),
+            ));
+            writer.add_document(&doc).unwrap();
+            writer.commit().unwrap();
+        }
+        let events = format!("[{}]", events.lock().unwrap().join(", "));
+        let committed: Vec<String> = SegmentInfos::read_latest_commit(Arc::clone(&dir))
+            .unwrap()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        writer.close().unwrap();
+        (events, format!("[{}]", committed.join(", ")))
+    });
+    assert_eq!(
+        events,
+        "[onMergeComplete _0(10.5.0):c1 _1(10.5.0):c1 into _2, \
+         mergeFinished _0(10.5.0):c1 _1(10.5.0):c1 into _2 success=true]"
+    );
+    assert_eq!(committed, "[_2(10.5.0):c2]");
+}

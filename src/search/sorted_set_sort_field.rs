@@ -115,10 +115,13 @@ impl SortedSetSortField {
                 Some(crate::search::MissingValue::StringLast)
             ),
             self.sort_field.reverse(),
+            // `this::getValues`: `SortedSetSelector.wrap(DocValues.getSortedSet(
+            // reader, getField()), selector)` (`SortedSetSortField.java:
+            // 199-201`). A single-valued sorted field is promoted, a field the
+            // reader knows with another type is refused, and an absent one
+            // reads as empty values (`DocValues.java:317-329`).
             std::sync::Arc::new(move |reader: &dyn crate::index::LeafReader| {
-                let Some(values) = reader.get_sorted_set_doc_values(&field)? else {
-                    return Ok(None);
-                };
+                let values = crate::index::DocValues::get_sorted_set(reader, &field)?;
                 Ok(Some(
                     crate::search::sorted_set_selector::SortedSetSelector::wrap(values, selector)?,
                 ))

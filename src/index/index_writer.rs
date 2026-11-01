@@ -134,8 +134,16 @@ struct WriterState {
     /// Equivalent to `IndexWriter.segmentsToMerge`, keyed by segment name, the
     /// identity `SegmentInfos` uses in this port.
     segments_to_merge: HashMap<String, bool>,
-    /// Segments taking part in a running merge, by name.
-    merging_segments: HashSet<String>,
+    /// Segments taking part in a running merge, by name, each with the
+    /// `SegmentCommitInfo` its merge registered.
+    ///
+    /// Equivalent to `IndexWriter.mergingSegments`, a `HashSet` of the
+    /// `SegmentCommitInfo` objects themselves. Names are the identity
+    /// `SegmentInfos` uses in this port; the registered infos are kept because
+    /// `getMergingSegments()` returns them even once they have left the live
+    /// infos, as they do when a rollback restores an older commit
+    /// (`IndexWriter.java:2488-2490`).
+    merging_segments: HashMap<String, SegmentCommitInfo>,
     /// The generation of [`merge_exceptions`](Self::merge_exceptions): bumped
     /// only when they are reset, and stamped on every merge registered since,
     /// so that only the failures of merges registered after the last reset
@@ -1060,7 +1068,7 @@ impl IndexWriter {
                 pending_merges: Vec::new(),
                 running_merges: Vec::new(),
                 segments_to_merge: HashMap::new(),
-                merging_segments: HashSet::new(),
+                merging_segments: HashMap::new(),
                 merge_gen: 0,
                 commit_user_data,
                 merge_exceptions: Vec::new(),
@@ -1816,7 +1824,7 @@ impl IndexWriter {
     /// Atomically deletes the documents matching `query` and adds a batch of
     /// documents presented column by column.
     ///
-    /// Equivalent to `IndexWriter.updateDocuments(Query, ColumnBatch)`
+    /// Equivalent to `org.apache.lucene.index.IndexWriter.updateDocuments(Query, ColumnBatch)`
     /// (`IndexWriter.java:1578-1581`): `updateBatch(delQuery == null ? null :
     /// DocumentsWriterDeleteQueue.newNode(delQuery), columnBatch)`. `None` is
     /// Java's `null` query, which only adds the batch.
@@ -1886,7 +1894,7 @@ impl IndexWriter {
     /// Replaces every document matching `query` with the block `docs`, so an
     /// external reader sees either the old documents or the new block.
     ///
-    /// Equivalent to `IndexWriter.updateDocuments(Query, Iterable)`
+    /// Equivalent to `org.apache.lucene.index.IndexWriter.updateDocuments(Query, Iterable)`
     /// (`IndexWriter.java:1626-1631`): `updateDocuments(delQuery == null ?
     /// null : DocumentsWriterDeleteQueue.newNode(delQuery), docs)`. `None` is
     /// Java's `null` query, which only adds the block.
@@ -2236,7 +2244,7 @@ impl IndexWriter {
                 debug_assert!(
                     state.merging_segments.is_empty(),
                     "found merging segments but merges are disabled: {:?}",
-                    state.merging_segments
+                    state.merging_segments.keys().collect::<Vec<_>>()
                 );
                 if let Err(error) = self.enable_merges(&mut state) {
                     self.log_delete_all_failure();
@@ -3116,7 +3124,7 @@ impl IndexWriter {
             debug_assert!(
                 state.merging_segments.is_empty(),
                 "we aborted all merges but still have merging segments: {:?}",
-                state.merging_segments
+                state.merging_segments.keys().collect::<Vec<_>>()
             );
         }
         if self.info_stream.is_enabled(IW) {
@@ -3406,16 +3414,19 @@ impl IndexWriter {
     /// `OneMerge` objects that `registerMerge` mutated and `getNextMerge` hands
     /// to the scheduler. This port's [`OneMerge`] is a value that
     /// `register_merge` moves into the pending list, so the returned
-    /// specification holds clones taken *after* registration; every piece of
-    /// state a caller observes afterwards — the readers, the aborted and
-    /// finished flags, the error and the hooks — is shared through `Arc`s, so
-    /// a clone sees exactly what Java's single object would have seen.
+    /// specification holds, for a merge it registered, a clone taken *after*
+    /// registration, and for one it refused, a clone of the merge as the policy
+    /// produced it; every piece of state a caller observes afterwards — the
+    /// readers, the aborted and finished flags, the error and the hooks — is
+    /// shared through `Arc`s, so a clone sees exactly what Java's single object
+    /// would have seen.
     ///
     /// # Errors
     ///
-    /// Propagates whatever asking the policy raises. As in Java's loop over
-    /// `registerMerge`, a merge the writer refuses to register is skipped
-    /// rather than reported.
+    /// Propagates whatever asking the policy or registering one of its merges
+    /// raises (`IndexWriter.java:2471-2477`). A merge the writer refuses to
+    /// register — because one of its segments is already merging or is gone —
+    /// is not an error: it stays in the returned specification, as in Java.
     fn update_pending_merges_with_policy(
         &self,
         merge_policy: &dyn MergePolicy,
@@ -3507,17 +3518,26 @@ impl IndexWriter {
         };
 
         let Some(spec) = spec else { return Ok(None) };
-        let mut registered = MergeSpecification::new();
+        // `for (...) registerMerge(spec.merges.get(i)); return spec;`
+        // (`IndexWriter.java:2471-2477`): every merge the policy produced is
+        // handed back, whether `registerMerge` took it or not, and a failure
+        // to register one propagates — leaving the merges registered before it
+        // pending, as Java does.
+        let mut returned = MergeSpecification::new();
         for merge in spec.merges {
             let before = state.pending_merges.len();
-            // `register_merge` reports whether the merge was taken; a rejected
-            // one is simply skipped, as Java's loop does.
-            let taken = self.register_merge(state, merge).unwrap_or(false);
-            if taken && state.pending_merges.len() == before + 1 {
-                registered.add(state.pending_merges[before].clone());
+            // `register_merge` moves the merge it takes into the pending list
+            // and mutates it there; one it does not take is handed back as the
+            // policy produced it, which is the object Java's spec still holds.
+            let unregistered = merge.clone();
+            self.register_merge(state, merge)?;
+            if state.pending_merges.len() == before + 1 {
+                returned.add(state.pending_merges[before].clone());
+            } else {
+                returned.add(unregistered);
             }
         }
-        Ok(Some(registered))
+        Ok(Some(returned))
     }
 
     /// Registers one merge as pending and marks its segments as merging.
@@ -3549,8 +3569,9 @@ impl IndexWriter {
         }
 
         let mut is_external = false;
+        let mut in_segments_to_merge = false;
         for info in &merge.segments {
-            if state.merging_segments.contains(&info.info.name) {
+            if state.merging_segments.contains_key(&info.info.name) {
                 if self.info_stream.is_enabled(IW) {
                     self.info_stream.message(
                         IW,
@@ -3580,44 +3601,90 @@ impl IndexWriter {
             if !Arc::ptr_eq(&info.info.directory, &self.directory_orig) {
                 is_external = true;
             }
+            // `if (segmentsToMerge.containsKey(info)) merge.maxNumSegments =
+            // mergeMaxNumSegments;` (`IndexWriter.java:4977-4979`).
+            if state.segments_to_merge.contains_key(&info.info.name) {
+                in_segments_to_merge = true;
+            }
+        }
+        // Applied once the loop is done, since it borrows the merge's
+        // segments; nothing reads the field before this point.
+        if in_segments_to_merge {
+            merge.set_max_num_segments(state.merge_max_num_segments);
         }
 
         self.ensure_valid_merge(state, &merge)?;
 
-        // `merge.mergeGen = mergeGen;` (`IndexWriter.java:4996`): the
-        // generation is only bumped by `resetMergeExceptions`.
+        // The rest follows Java's order (`IndexWriter.java:4984-5024`), which a
+        // failure sizing the merge makes observable: the merge is pending and
+        // its segments are merging, but it is not registered.
+        let segments = merge.segments.clone();
+        // `merge.mergeGen = mergeGen; merge.isExternal = isExternal;`
+        // (`IndexWriter.java:4996-4997`): set on the merge object Java has just
+        // added to `pendingMerges`; set here before the move, which nothing
+        // between the two observes.
         merge.merge_gen = state.merge_gen;
-        merge.register_done = true;
         merge.is_external = is_external;
-        // `if (segmentsToMerge.containsKey(info)) merge.maxNumSegments =
-        // mergeMaxNumSegments;` (`IndexWriter.java:4977-4979`).
-        if merge
-            .segments
-            .iter()
-            .any(|info| state.segments_to_merge.contains_key(&info.info.name))
-        {
-            merge.set_max_num_segments(state.merge_max_num_segments);
-        }
-        for segment in &merge.segments {
-            state.merging_segments.insert(segment.info.name.clone());
-        }
-
-        // `registerMerge` fills the two byte figures in before the merge is
-        // handed to the scheduler (`IndexWriter.java:5022`); they are what
-        // `ConcurrentMergeScheduler` sorts, throttles and paces merges by.
-        self.add_estimated_bytes_to_merge_with(state, &mut merge)?;
-
+        state.pending_merges.push(merge);
         if self.info_stream.is_enabled(IW) {
             self.info_stream.message(
                 IW,
                 &format!(
                     "add merge to pendingMerges: {} [total {} pending]",
-                    self.seg_string_of(state, &merge.segments)?,
-                    state.pending_merges.len() + 1
+                    self.seg_string_of(state, &segments)?,
+                    state.pending_merges.len()
                 ),
             );
         }
+
+        // OK it does not conflict; now record that this merge is running (while
+        // synchronized) to avoid race condition where two conflicting merges
+        // from different threads, start.
+        if self.info_stream.is_enabled(IW) {
+            // `"registerMerge merging= [" + name + ", " ... + "]"`
+            // (`IndexWriter.java:5003-5013`). Java iterates a `HashSet` of
+            // `SegmentCommitInfo`, whose order follows identity hash codes; this
+            // port iterates its own map, so the order is equally unspecified.
+            let mut builder = String::from("registerMerge merging= [");
+            for name in state.merging_segments.keys() {
+                builder.push_str(name);
+                builder.push_str(", ");
+            }
+            builder.push(']');
+            self.info_stream.message(IW, &builder);
+        }
+        for info in &segments {
+            if self.info_stream.is_enabled(IW) {
+                self.info_stream.message(
+                    IW,
+                    &format!(
+                        "registerMerge info={}",
+                        self.seg_string_of(state, std::slice::from_ref(info))?
+                    ),
+                );
+            }
+            state
+                .merging_segments
+                .insert(info.info.name.clone(), info.clone());
+        }
+
+        // `addEstimatedBytesToMerge(merge)` (`IndexWriter.java:5022`) fills the
+        // two byte figures that `ConcurrentMergeScheduler` sorts, throttles and
+        // paces merges by. The merge is sized through `&mut` while the writer's
+        // state is borrowed, so it leaves `pendingMerges` for the call and goes
+        // back at once, under the same hold of the lock: no thread can observe
+        // it gone. A failure leaves it pending and not registered, as in Java.
+        let mut merge = state
+            .pending_merges
+            .pop()
+            .expect("INVARIANT: the merge was pushed above under the same lock");
+        let sized = self.add_estimated_bytes_to_merge_with(state, &mut merge);
+        if sized.is_ok() {
+            // Merge is now registered (`IndexWriter.java:5024-5025`).
+            merge.register_done = true;
+        }
         state.pending_merges.push(merge);
+        sized?;
         Ok(true)
     }
 
@@ -3798,8 +3865,9 @@ impl IndexWriter {
             // `OneMerge::info`).
             if let Some(info) = merge.get_merge_info() {
                 // Drop any reader pooled for this segment before its files are
-                // deleted.
-                let _ = ReaderPool::drop(&self.reader_pool, &info);
+                // deleted: `readerPool.drop(merge.info)` (`IndexWriter.java:4705`),
+                // whose failure propagates out of `commitMerge`.
+                ReaderPool::drop(&self.reader_pool, &info)?;
                 self.delete_new_files(info.files()?)?;
             }
             return Ok(false);
@@ -4046,27 +4114,35 @@ impl IndexWriter {
         }
 
         // This is try/finally in Java, to make sure the merger's readers are
-        // closed; the same guard is spelled out at every early return below.
-        match self.merge_middle_inner(merge, merge_policy, &context, &dir_wrapper) {
-            Ok(doc_count) => Ok(doc_count),
-            Err(err) => {
-                // Readers are already closed in `commit_merge` when no exception
-                // was hit.
-                let _ = self.close_merge_readers(merge, true, false);
-                Err(err)
-            }
+        // closed (`IndexWriter.java:5266-5594`). Java's `success` is only
+        // true once the merge was committed, so the readers are also closed
+        // on the paths that return 0 for an aborted merge; and an exception
+        // the `finally` raises replaces whatever the `try` was about to throw
+        // or return.
+        let (outcome, success) =
+            match self.merge_middle_inner(merge, merge_policy, &context, &dir_wrapper) {
+                Ok((doc_count, success)) => (Ok(doc_count), success),
+                Err(err) => (Err(err), false),
+            };
+        if !success {
+            // Readers are already closed in `commit_merge` if we didn't hit an
+            // exception.
+            self.close_merge_readers(merge, true, false)?;
         }
+        outcome
     }
 
     /// The body of [`merge_middle`](Self::merge_middle), split out so that the
-    /// reader cleanup Java performs in its `finally` has one place to run.
+    /// reader cleanup Java performs in its `finally` has one place to run. It
+    /// answers the merged segment's document count together with Java's
+    /// `success` flag: `true` once the merge was committed.
     fn merge_middle_inner(
         &self,
         merge: &mut OneMerge,
         merge_policy: &dyn MergePolicy,
         context: &Arc<dyn IOContext>,
         dir_wrapper: &Arc<crate::store::TrackingDirectoryWrapper>,
-    ) -> Result<i32> {
+    ) -> Result<(i32, bool)> {
         let created_version_major = { self.state()?.segment_infos.index_created_version_major() };
         let _ = created_version_major;
 
@@ -4332,8 +4408,8 @@ impl IndexWriter {
             // The merge would produce a 0-doc segment, so do nothing except
             // commit the merge, which removes all the 0-doc segments we merged.
             debug_assert_eq!(merged_max_doc, 0);
-            self.commit_merge(merge, &doc_maps)?;
-            return Ok(0);
+            let committed = self.commit_merge(merge, &doc_maps)?;
+            return Ok((0, committed));
         }
         debug_assert!(merged_max_doc > 0);
 
@@ -4403,17 +4479,32 @@ impl IndexWriter {
                     .set_files(compound.files_ordered()?)?;
             }
             if let Err(err) = outcome {
-                if merge.is_aborted() {
-                    // Rollback was called while we were building the compound
-                    // file; fall through to remove the non-compound files.
-                    if self.info_stream.is_enabled(IW) {
-                        self.info_stream.message(
-                            IW,
-                            "hit merge abort exception creating compound file during merge",
-                        );
+                // `catch (Throwable t) { synchronized (this) { ... } }`
+                // (`IndexWriter.java:5481-5495`): under the writer's lock, an
+                // aborted merge returns 0, and any other failure goes to
+                // `handleMergeException`, which logs it, sets it on the merge
+                // and rethrows it unless it is an abort of a merge that is not
+                // external.
+                let caught = {
+                    let mut state = self.state()?;
+                    if merge.is_aborted() {
+                        if self.info_stream.is_enabled(IW) {
+                            // This can happen if rollback is called while we
+                            // were building our CFS -- fall through to logic
+                            // below to remove the non-CFS merged files.
+                            self.info_stream.message(
+                                IW,
+                                "hit merge abort exception creating compound file during merge",
+                            );
+                        }
+                        None
+                    } else {
+                        Some(self.handle_merge_exception_with(Some(&mut state), err, merge))
                     }
-                    return Ok(0);
-                }
+                };
+                // `finally` (`IndexWriter.java:5496-5503`), outside the lock: on
+                // every path it reports the failure and deletes the merged
+                // segment's non-compound files.
                 if self.info_stream.is_enabled(IW) {
                     self.info_stream
                         .message(IW, "hit exception creating compound file during merge");
@@ -4425,7 +4516,14 @@ impl IndexWriter {
                     .expect("merge info was set by mergeInit")
                     .files()?;
                 self.delete_new_files(files)?;
-                return Err(err);
+                match caught {
+                    None => return Ok((0, false)),
+                    Some(Err(error)) => return Err(error),
+                    // `handleMergeException` swallowed an abort: Java's `catch`
+                    // completes normally and the merge goes on past the
+                    // `finally`.
+                    Some(Ok(())) => {}
+                }
             }
 
             // Delete the new non-compound files directly: they were never
@@ -4444,7 +4542,7 @@ impl IndexWriter {
                     .expect("merge info was set by mergeInit")
                     .files()?;
                 self.delete_new_files(files)?;
-                return Ok(0);
+                return Ok((0, false));
             }
 
             merge
@@ -4516,10 +4614,10 @@ impl IndexWriter {
 
         if !self.commit_merge(merge, &doc_maps)? {
             // `commit_merge` returns false when the merge was aborted.
-            return Ok(0);
+            return Ok((0, false));
         }
 
-        Ok(merged_max_doc)
+        Ok((merged_max_doc, true))
     }
 
     /// Runs a single merge for `addIndexes(CodecReader...)`.
@@ -5070,7 +5168,7 @@ impl MergeContext for LockedMergeContext<'_> {
 
     /// `IndexWriter.getMergingSegments()`, read through the held guard.
     fn get_merging_segments(&self) -> HashSet<String> {
-        self.state.merging_segments.clone()
+        self.state.merging_segments.keys().cloned().collect()
     }
 
     fn get_info_stream(&self) -> Arc<dyn InfoStream> {
@@ -5095,7 +5193,7 @@ impl MergeContext for IndexWriter {
 
     fn get_merging_segments(&self) -> HashSet<String> {
         self.state()
-            .map(|state| state.merging_segments.clone())
+            .map(|state| state.merging_segments.keys().cloned().collect())
             .unwrap_or_default()
     }
 
@@ -5105,22 +5203,43 @@ impl MergeContext for IndexWriter {
 }
 
 impl IndexWriter {
-    /// Returns the segments currently taking part in a running merge.
+    /// Returns the segments currently taking part in a running merge, in no
+    /// particular order.
     ///
-    /// Equivalent to `IndexWriter.getMergingSegments()`.
+    /// Equivalent to `IndexWriter.getMergingSegments()`
+    /// (`IndexWriter.java:2488-2490`), which neither checks that the writer is
+    /// open nor filters the set against the live infos: a segment whose merge
+    /// was never finished is reported even after a rollback took it out of the
+    /// index.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java returns a `Set`; `SegmentCommitInfo`
-    /// does not implement `Hash` in this port (see its own doc comment), so the
-    /// result is a `Vec`. `segment_infos` never holds the same segment twice, so
-    /// the contents are the same set either way.
+    /// **Divergence from Lucene 10.5.0.** Java returns a `Set` of the very
+    /// `SegmentCommitInfo` objects the merges registered. `SegmentCommitInfo`
+    /// is a value in this port and does not implement `Hash` (see its own doc
+    /// comment), so the result is a `Vec`, one entry per segment name. For a
+    /// segment still in the live infos it is the live entry, which is the
+    /// object Java's set holds; for any other it is the info the merge
+    /// registered. The one case the two differ in is a segment a rollback
+    /// restored from the last commit: Java's set still holds the pre-rollback
+    /// object, and this returns the restored entry, whose per-commit state is
+    /// the commit's.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] only when the writer's lock is
+    /// poisoned.
     pub fn get_merging_segments_pub(&self) -> Result<Vec<SegmentCommitInfo>> {
-        self.ensure_open()?;
         let state = self.state()?;
         Ok(state
-            .segment_infos
+            .merging_segments
             .iter()
-            .filter(|info| state.merging_segments.contains(&info.info.name))
-            .cloned()
+            .map(|(name, registered)| {
+                state
+                    .segment_infos
+                    .iter()
+                    .find(|info| info.info.name == *name)
+                    .unwrap_or(registered)
+                    .clone()
+            })
             .collect())
     }
 
@@ -5256,7 +5375,7 @@ impl MergeSource for AddIndexesMergeSource {
 impl IndexWriter {
     /// Merges the provided readers into this index.
     ///
-    /// Equivalent to `IndexWriter.addIndexes(CodecReader...)`
+    /// Equivalent to `org.apache.lucene.index.IndexWriter.addIndexes(CodecReader...)`
     /// (`IndexWriter.java:3264-3386`); the name differs because Rust has no
     /// overloading. The readers are not closed. Empty segments are dropped.
     /// The readers are merged as
@@ -5680,40 +5799,50 @@ impl IndexWriter {
         };
         let success = result.is_ok();
 
-        // Readers are already closed in `commit_merge` when no exception was
-        // hit, so they are only closed here on the failing path.
-        if !success {
-            let _ = self.close_merge_readers(&merge, true, false);
-        }
-        // `synchronized (this)` (`IndexWriter.java:4866-4885`): finishing the
-        // merge and asking the policy for the merges it enables happen under one
-        // hold of the writer's lock, so a thread waiting for merges — `forceMerge`,
-        // `waitForMerges` — never sees the moment in between, when this merge has
-        // left the running set and its successors are not pending yet.
+        // `synchronized (this)` (`IndexWriter.java:4866-4885`): closing the
+        // readers, finishing the merge and asking the policy for the merges it
+        // enables happen under one hold of the writer's lock, so a thread
+        // waiting for merges — `forceMerge`, `waitForMerges` — never sees the
+        // moment in between, when this merge has left the running set and its
+        // successors are not pending yet.
         match self.state() {
             Ok(mut state) => {
-                self.merge_finish(&mut state, &mut merge);
-                self.on_merge_finished_with(&mut state, &merge);
-                if !success {
-                    if self.info_stream.is_enabled(IW) {
-                        self.info_stream.message(IW, "hit exception during merge");
+                // Readers are already closed in `commit_merge` when no
+                // exception was hit, so they are only closed here on the
+                // failing path. A failure to close them leaves Java's `finally`
+                // at once (`IndexWriter.java:4869-4871`): it replaces the
+                // merge's own failure and skips the rest of the block, so the
+                // merge is not finished and the tragedy below is about the
+                // close.
+                let closed = if success {
+                    Ok(())
+                } else {
+                    self.close_merge_readers_with(&mut state, &merge, true, false)
+                };
+                match closed {
+                    Err(close_error) => {
+                        // The failure leaves Java's `finally` at once
+                        // (`IndexWriter.java:4869-4871`), skipping
+                        // `mergeFinish` (`:4872`) and the rest of the block,
+                        // so the merge stays in `runningMerges` and its
+                        // segments stay merging. This is Lucene's behaviour,
+                        // reproduced as is: the `tragicEvent` below
+                        // (`:4887-4891`) rolls the writer back
+                        // (`rollbackInternal`, `:2550`), and `abortMerges`
+                        // then waits for `runningMerges` to empty
+                        // (`:2816-2828`) — on this very thread, which is the
+                        // one that would have to finish the merge — so the
+                        // merge thread blocks for ever. Observed against
+                        // `lucene-core-10.5.0.jar` (a merge whose
+                        // `MergeScheduler.wrapForMerge` and
+                        // `OneMerge.mergeFinished` both throw): the merge
+                        // thread's stack is `merge:4890` → `tragicEvent` →
+                        // `rollbackInternal:2550` → `abortMerges:2827`
+                        // `doWait`.
+                        result = Err(close_error);
                     }
-                } else if !merge.is_aborted()
-                    && (merge.max_num_segments() != UNBOUNDED_MAX_MERGE_SEGMENTS
-                        || (!self.is_closed() && !self.closing.load(Ordering::Acquire)))
-                {
-                    // This merge — and, generally, any change to the segments —
-                    // may now enable new merges, so ask the policy again.
-                    let merge_policy = self.config.merge_policy();
-                    if let Err(error) = self.update_pending_merges_with_policy_with(
-                        &mut state,
-                        merge_policy.as_ref(),
-                        MergeTrigger::MergeFinished,
-                        merge.max_num_segments(),
-                    ) {
-                        if result.is_ok() {
-                            result = Err(error);
-                        }
+                    Ok(()) => {
+                        self.finish_merge_under_lock(&mut state, &mut merge, success, &mut result)
                     }
                 }
             }
@@ -5729,6 +5858,42 @@ impl IndexWriter {
             self.tragic_event(error, "merge")?;
         }
         result
+    }
+
+    /// The rest of `merge`'s `synchronized` `finally` once the readers are
+    /// closed (`IndexWriter.java:4872-4884`): finish the merge, and either
+    /// report the failure or ask the policy for the merges it enables.
+    fn finish_merge_under_lock(
+        &self,
+        state: &mut WriterState,
+        merge: &mut OneMerge,
+        success: bool,
+        result: &mut Result<()>,
+    ) {
+        self.merge_finish(state, merge);
+        self.on_merge_finished_with(state, merge);
+        if !success {
+            if self.info_stream.is_enabled(IW) {
+                self.info_stream.message(IW, "hit exception during merge");
+            }
+        } else if !merge.is_aborted()
+            && (merge.max_num_segments() != UNBOUNDED_MAX_MERGE_SEGMENTS
+                || (!self.is_closed() && !self.closing.load(Ordering::Acquire)))
+        {
+            // This merge — and, generally, any change to the segments — may
+            // now enable new merges, so ask the policy again.
+            let merge_policy = self.config.merge_policy();
+            if let Err(error) = self.update_pending_merges_with_policy_with(
+                state,
+                merge_policy.as_ref(),
+                MergeTrigger::MergeFinished,
+                merge.max_num_segments(),
+            ) {
+                if result.is_ok() {
+                    *result = Err(error);
+                }
+            }
+        }
     }
 }
 
@@ -6074,7 +6239,7 @@ impl IndexWriter {
         state: &mut WriterState,
         info: &SegmentCommitInfo,
     ) -> Result<()> {
-        if state.merging_segments.contains(&info.info.name) {
+        if state.merging_segments.contains_key(&info.info.name) {
             return Ok(());
         }
         // It's possible that we invoke this method more than once for the same
@@ -6695,22 +6860,44 @@ impl IndexWriter {
     /// throwable (`IndexWriter.java:4808-4835`): the caller sees the class and
     /// message the merge itself raised.
     fn handle_merge_exception(&self, error: LuceneError, merge: &mut OneMerge) -> Result<()> {
+        self.handle_merge_exception_with(None, error, merge)
+    }
+
+    /// [`handle_merge_exception`](Self::handle_merge_exception), for a caller
+    /// that may already hold the writer's lock.
+    ///
+    /// Java's `segString` and `addMergeException` are `synchronized`
+    /// (`IndexWriter.java:5625, 5599`), and its monitor is reentrant: a caller
+    /// inside `synchronized (this)` — the compound-file `catch` of
+    /// `mergeMiddle` (`IndexWriter.java:5482-5495`) — runs both under its own
+    /// hold. With `Some(state)` they use the hold passed in; with `None` each
+    /// takes the lock for itself, as an unsynchronized caller's do.
+    fn handle_merge_exception_with(
+        &self,
+        held: Option<&mut WriterState>,
+        error: LuceneError,
+        merge: &mut OneMerge,
+    ) -> Result<()> {
         if self.info_stream.is_enabled(IW) {
             // `"handleMergeException: merge=" + segString(merge.segments) +
             // " exc=" + t` (`IndexWriter.java:4810-4813`): the writer's
             // rendering of the merged segments, which takes its lock.
+            let segments = match held.as_deref() {
+                Some(state) => self.seg_string_of(state, &merge.segments)?,
+                None => self.seg_string_infos(&merge.segments)?,
+            };
             self.info_stream.message(
                 IW,
-                &format!(
-                    "handleMergeException: merge={} exc={error}",
-                    self.seg_string_infos(&merge.segments)?
-                ),
+                &format!("handleMergeException: merge={segments} exc={error}"),
             );
         }
         merge.set_error(&error);
-        {
-            let mut state = self.state()?;
-            self.add_merge_exception(&mut state, merge);
+        match held {
+            Some(state) => self.add_merge_exception(state, merge),
+            None => {
+                let mut state = self.state()?;
+                self.add_merge_exception(&mut state, merge);
+            }
         }
         if matches!(error, LuceneError::MergeAborted(_)) && !merge.is_external {
             return Ok(());
@@ -8359,7 +8546,6 @@ impl IndexWriter {
         // just left the index; on the failing path the merging doc-values
         // updates are dropped but the pooled entry survives.
         let drop = !suppress_exceptions;
-        let mut first_error: Option<LuceneError> = None;
         // Java's `OneMerge.close(success, segmentDropped, consumer)` completes
         // the merge and calls `mergeFinished` *before* it applies the consumer
         // to the readers, so a second caller sees a finished merge with no
@@ -8368,13 +8554,12 @@ impl IndexWriter {
         // consumer from the `finally` of the same `try`. The merge completes
         // with Java's success flag, `!suppressExceptions`.
         merge.complete(!suppress_exceptions);
-        if let Err(error) = merge.merge_finished(
+        let hook_outcome = merge.merge_finished(
             !suppress_exceptions,
             dropped_segment,
             Some(&mut state.deleter),
-        ) {
-            first_error = Some(error);
-        }
+        );
+        let mut first_error: Option<LuceneError> = None;
         let readers = merge.take_merge_readers();
         for merge_reader in readers {
             let Some(sr) = merge_reader.reader.as_ref() else {
@@ -8414,13 +8599,16 @@ impl IndexWriter {
         }
         // Java's `IOUtils.applyToAll` runs the consumer for every reader and
         // then rethrows the first failure, and `OneMerge.close` rethrows it
-        // from its `finally` (`MergePolicy.java:277-291`). `closeMergeReaders`
-        // catches nothing whatever `suppressExceptions` says
-        // (`IndexWriter.java:5176-5209`): the flag only picks the merge's
+        // from its `finally` (`MergePolicy.java:277-291`): an exception thrown
+        // by a `finally` block replaces the one its `try` was propagating, so a
+        // reader failure wins over the hook's, which is lost. Only when the
+        // readers all close does the hook's failure propagate.
+        // `closeMergeReaders` catches nothing whatever `suppressExceptions`
+        // says (`IndexWriter.java:5176-5209`): the flag only picks the merge's
         // success and whether the pooled state is dropped.
         match first_error {
             Some(err) => Err(err),
-            None => Ok(()),
+            None => hook_outcome,
         }
     }
 
@@ -9452,6 +9640,87 @@ impl IndexWriter {
         }
     }
 
+    /// The part of the point-in-time merge's `mergeFinished` that applies a
+    /// committed merge to the to-be-committed `SegmentInfos`.
+    ///
+    /// Equivalent to the `if` branch of the anonymous `OneMerge.mergeFinished`
+    /// override `IndexWriter.preparePointInTimeMerge` installs
+    /// (`IndexWriter.java:3957-4000`). Java's override reaches the writer's
+    /// deleter as a field; here the writer hands it in, borrowed from the guard
+    /// it holds, and it is `None` when the merge is finished outside the writer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when `onMergeComplete` never
+    /// recorded the merged segment (Java's `assert origInfo != null`), and
+    /// propagates whatever changing the file references or the infos raises.
+    fn apply_point_in_time_merge(
+        merge: &OneMerge,
+        orig_info: &Mutex<Option<SegmentCommitInfo>>,
+        merging_segment_infos: &Mutex<SegmentInfos>,
+        info_stream: &Arc<dyn InfoStream>,
+        trigger: MergeTrigger,
+        deleter: Option<&mut IndexFileDeleter>,
+    ) -> Result<()> {
+        // Make sure onMergeComplete really was called.
+        let orig_info = orig_info
+            .lock()
+            .map_err(|_| LuceneError::illegal_state("origInfo mutex poisoned".to_string()))?
+            .clone()
+            .ok_or_else(|| {
+                LuceneError::illegal_state(
+                    "onMergeComplete was not called before mergeFinished".to_string(),
+                )
+            })?;
+
+        if info_stream.is_enabled(IW) {
+            info_stream.message(
+                IW,
+                &format!("now apply merge during commit: {}", merge.seg_string()),
+            );
+        }
+
+        let mut infos = merging_segment_infos.lock().map_err(|_| {
+            LuceneError::illegal_state("mergingSegmentInfos mutex poisoned".to_string())
+        })?;
+
+        let merged_segment_names: HashSet<&str> = merge
+            .segments
+            .iter()
+            .map(|sci| sci.info.name.as_str())
+            .collect();
+        let to_commit_merged_away_segments: Vec<SegmentCommitInfo> = infos
+            .iter()
+            .filter(|sci| merged_segment_names.contains(sci.info.name.as_str()))
+            .cloned()
+            .collect();
+
+        // If we do this in a getReader call the file references
+        // are obsolete, since we already hold a reader that has
+        // incRef'd these files and will decRef them when it is
+        // closed.
+        if matches!(trigger, MergeTrigger::Commit) {
+            // Java runs `mergeFinished` under the writer's
+            // monitor; the writer hands its deleter in.
+            if let Some(deleter) = deleter {
+                deleter.inc_ref_files(orig_info.files()?.iter());
+                for sci in &to_commit_merged_away_segments {
+                    deleter.dec_ref_files(sci.files()?.iter())?;
+                }
+            }
+        }
+
+        let segment_counter = i64::from_str_radix(&orig_info.info.name[1..], 36).map_err(|_| {
+            LuceneError::illegal_state(format!(
+                "segment name {} is not a base-36 counter",
+                orig_info.info.name
+            ))
+        })?;
+        infos.counter = infos.counter.max(segment_counter + 1);
+        infos.apply_merge_changes(&orig_info, &to_commit_merged_away_segments, false)?;
+        Ok(())
+    }
+
     /// Prepares merges over the segments a commit or a near-real-time reader is
     /// about to be opened on.
     ///
@@ -9524,22 +9793,32 @@ impl IndexWriter {
                 let stop = Arc::clone(&stop_collecting_merge_results);
                 let consumer = Arc::clone(&merge_finished);
                 let orig_info = Arc::clone(&orig_info);
+                // The wrapped merge's own `onMergeComplete`, which Java's
+                // override calls once it has done its part
+                // (`IndexWriter.java:4022`): replacing the hook would silently
+                // drop it.
+                let to_wrap_on_merge_complete = to_wrap.on_merge_complete_hook();
                 to_wrap.set_on_merge_complete(Arc::new(move |merge: &OneMerge| {
-                    let Some(info) = merge.get_merge_info() else {
-                        return Ok(());
-                    };
-                    // Never do this if the segment is dropped / empty.
-                    if !stop.load(Ordering::Acquire)
-                        && !merge.is_aborted()
-                        && info.info.max_doc()? > 0
-                    {
-                        consumer(&info)?;
-                        // Clone the target info to make sure we have the
-                        // original info without the updated del and update gens.
-                        *orig_info.lock().map_err(|_| {
-                            LuceneError::illegal_state("origInfo mutex poisoned".to_string())
-                        })? = Some(info.clone());
+                    if let Some(info) = merge.get_merge_info() {
+                        // Never do this if the segment is dropped / empty.
+                        if !stop.load(Ordering::Acquire)
+                            && !merge.is_aborted()
+                            && info.info.max_doc()? > 0
+                        {
+                            consumer(&info)?;
+                            // Clone the target info to make sure we have the
+                            // original info without the updated del and update
+                            // gens.
+                            *orig_info.lock().map_err(|_| {
+                                LuceneError::illegal_state("origInfo mutex poisoned".to_string())
+                            })? = Some(info.clone());
+                        }
                     }
+                    if let Some(to_wrap_on_merge_complete) = to_wrap_on_merge_complete.as_ref() {
+                        to_wrap_on_merge_complete(merge)?;
+                    }
+                    // `super.onMergeComplete()` (`IndexWriter.java:4023`):
+                    // `OneMerge`'s own implementation does nothing.
                     Ok(())
                 }));
             }
@@ -9549,11 +9828,16 @@ impl IndexWriter {
                 let orig_info = Arc::clone(&orig_info);
                 let merging_segment_infos = Arc::clone(&merging_segment_infos);
                 let info_stream = Arc::clone(&info_stream);
+                // The wrapped merge's own `mergeFinished`, which Java's
+                // override calls once it has done its part
+                // (`IndexWriter.java:4006`): a merge policy's `OneMerge` may
+                // override it, and replacing the hook would silently drop it.
+                let to_wrap_merge_finished = to_wrap.merge_finished_hook();
                 to_wrap.set_merge_finished(Arc::new(
                     move |merge: &OneMerge,
                           committed: bool,
                           segment_dropped: bool,
-                          deleter: Option<&mut IndexFileDeleter>| {
+                          mut deleter: Option<&mut IndexFileDeleter>| {
                         // `committed` is set to false by our caller if the
                         // allowed max wall clock time
                         // (IWC.getMaxCommitMergeWaitMillis()) has elapsed, which
@@ -9569,75 +9853,21 @@ impl IndexWriter {
                                     ),
                                 );
                             }
-                            return Ok(());
+                        } else {
+                            Self::apply_point_in_time_merge(
+                                merge,
+                                &orig_info,
+                                &merging_segment_infos,
+                                &info_stream,
+                                trigger,
+                                deleter.as_deref_mut(),
+                            )?;
                         }
-
-                        // Make sure onMergeComplete really was called.
-                        let orig_info = orig_info
-                            .lock()
-                            .map_err(|_| {
-                                LuceneError::illegal_state("origInfo mutex poisoned".to_string())
-                            })?
-                            .clone()
-                            .ok_or_else(|| {
-                                LuceneError::illegal_state(
-                                    "onMergeComplete was not called before mergeFinished"
-                                        .to_string(),
-                                )
-                            })?;
-
-                        if info_stream.is_enabled(IW) {
-                            info_stream.message(
-                                IW,
-                                &format!("now apply merge during commit: {}", merge.seg_string()),
-                            );
+                        if let Some(to_wrap_merge_finished) = to_wrap_merge_finished.as_ref() {
+                            to_wrap_merge_finished(merge, committed, segment_dropped, deleter)?;
                         }
-
-                        let mut infos = merging_segment_infos.lock().map_err(|_| {
-                            LuceneError::illegal_state(
-                                "mergingSegmentInfos mutex poisoned".to_string(),
-                            )
-                        })?;
-
-                        let merged_segment_names: HashSet<&str> = merge
-                            .segments
-                            .iter()
-                            .map(|sci| sci.info.name.as_str())
-                            .collect();
-                        let to_commit_merged_away_segments: Vec<SegmentCommitInfo> = infos
-                            .iter()
-                            .filter(|sci| merged_segment_names.contains(sci.info.name.as_str()))
-                            .cloned()
-                            .collect();
-
-                        // If we do this in a getReader call the file references
-                        // are obsolete, since we already hold a reader that has
-                        // incRef'd these files and will decRef them when it is
-                        // closed.
-                        if matches!(trigger, MergeTrigger::Commit) {
-                            // Java runs `mergeFinished` under the writer's
-                            // monitor; the writer hands its deleter in.
-                            if let Some(deleter) = deleter {
-                                deleter.inc_ref_files(orig_info.files()?.iter());
-                                for sci in &to_commit_merged_away_segments {
-                                    deleter.dec_ref_files(sci.files()?.iter())?;
-                                }
-                            }
-                        }
-
-                        let segment_counter = i64::from_str_radix(&orig_info.info.name[1..], 36)
-                            .map_err(|_| {
-                                LuceneError::illegal_state(format!(
-                                    "segment name {} is not a base-36 counter",
-                                    orig_info.info.name
-                                ))
-                            })?;
-                        infos.counter = infos.counter.max(segment_counter + 1);
-                        infos.apply_merge_changes(
-                            &orig_info,
-                            &to_commit_merged_away_segments,
-                            false,
-                        )?;
+                        // `super.mergeFinished(committed, segmentDropped)`:
+                        // `OneMerge`'s own implementation does nothing.
                         Ok(())
                     },
                 ));
@@ -11630,6 +11860,163 @@ mod tests {
         writer.close().unwrap();
     }
 
+    /// A policy whose `findMerges` returns two merges sharing segment `_1`:
+    /// `[_0, _1]` and `[_1, _2]`.
+    #[derive(Debug, Default)]
+    struct OverlappingMergesPolicy;
+
+    impl std::fmt::Display for OverlappingMergesPolicy {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("OverlappingMergesPolicy")
+        }
+    }
+
+    impl MergePolicy for OverlappingMergesPolicy {
+        fn find_merges(
+            &self,
+            _merge_trigger: MergeTrigger,
+            segment_infos: &SegmentInfos,
+            _merge_context: &dyn MergeContext,
+        ) -> Result<Option<MergeSpecification>> {
+            let mut spec = MergeSpecification::new();
+            spec.add(OneMerge::new(vec![
+                segment_infos.info(0).clone(),
+                segment_infos.info(1).clone(),
+            ])?);
+            spec.add(OneMerge::new(vec![
+                segment_infos.info(1).clone(),
+                segment_infos.info(2).clone(),
+            ])?);
+            Ok(Some(spec))
+        }
+
+        fn find_forced_merges(
+            &self,
+            _segment_infos: &SegmentInfos,
+            _max_num_segments: i32,
+            _segments_to_merge: &HashMap<String, bool>,
+            _merge_context: &dyn MergeContext,
+        ) -> Result<Option<MergeSpecification>> {
+            Ok(None)
+        }
+
+        fn find_forced_deletes_merges(
+            &self,
+            _segment_infos: &SegmentInfos,
+            _merge_context: &dyn MergeContext,
+        ) -> Result<Option<MergeSpecification>> {
+            Ok(None)
+        }
+    }
+
+    /// `updatePendingMerges` registers every merge the policy returns and
+    /// returns the policy's specification, merges `registerMerge` refused
+    /// included (`IndexWriter.java:2471-2477`). Measured against
+    /// `lucene-core-10.5.0.jar` (`oracle8/Probe22.java`, case S, the private
+    /// method reached by reflection): for `[_0, _1]` and `[_1, _2]` the spec
+    /// holds both merges, the first is added to the pending merges and the
+    /// second is rejected because `_1` "is already marked for merge".
+    #[test]
+    fn update_pending_merges_returns_the_policys_specification() {
+        crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new()).ok();
+        let mut config = IndexWriterConfig::new();
+        config.set_max_full_flush_merge_wait_millis(0);
+        config
+            .set_merge_scheduler(Arc::new(crate::index::merge_scheduler::NoMergeScheduler))
+            .unwrap();
+        config
+            .set_merge_policy(Arc::new(crate::index::merge_policy::NoMergePolicy::new()))
+            .unwrap();
+        let writer = IndexWriter::new(Arc::new(RamDirectory::new()), config).unwrap();
+        for id in 0..3 {
+            let mut doc = Document::new();
+            doc.add(Box::new(
+                StringField::new("id", id.to_string(), Store::YES).unwrap(),
+            ));
+            writer.add_document(&doc).unwrap();
+            writer.commit().unwrap();
+        }
+        let spec = writer
+            .update_pending_merges_with_policy(
+                &OverlappingMergesPolicy,
+                MergeTrigger::Explicit,
+                UNBOUNDED_MAX_MERGE_SEGMENTS,
+            )
+            .unwrap()
+            .expect("the policy returned merges");
+        let merges: Vec<String> = spec.merges.iter().map(OneMerge::seg_string).collect();
+        assert_eq!(
+            merges,
+            vec![
+                "_0(10.5.0):c1 _1(10.5.0):c1".to_string(),
+                "_1(10.5.0):c1 _2(10.5.0):c1".to_string()
+            ]
+        );
+        assert_eq!(writer.state().unwrap().pending_merges.len(), 1);
+        writer.rollback().unwrap();
+    }
+
+    /// `getMergingSegments()` returns `mergingSegments` as it stands
+    /// (`IndexWriter.java:2488-2490`), with no filter against the live infos.
+    /// The two differ between `commitMerge`, which takes the merged-away
+    /// segments out of the live infos (`IndexWriter.java:4764`), and the
+    /// `mergeFinish` of `merge`'s `finally` (`IndexWriter.java:4872`), which
+    /// runs under a later hold of the lock. That window has no hook, so the
+    /// test builds its state: a registered merge of `_0` and `_1` whose `_1`
+    /// has left the live infos.
+    #[test]
+    fn get_merging_segments_reports_segments_that_left_the_live_infos() {
+        crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new()).ok();
+        let mut config = IndexWriterConfig::new();
+        config.set_max_full_flush_merge_wait_millis(0);
+        config
+            .set_merge_scheduler(Arc::new(crate::index::merge_scheduler::NoMergeScheduler))
+            .unwrap();
+        config
+            .set_merge_policy(Arc::new(crate::index::merge_policy::NoMergePolicy::new()))
+            .unwrap();
+        let writer = IndexWriter::new(Arc::new(RamDirectory::new()), config).unwrap();
+        for id in 0..2 {
+            let mut doc = Document::new();
+            doc.add(Box::new(
+                StringField::new("id", id.to_string(), Store::YES).unwrap(),
+            ));
+            writer.add_document(&doc).unwrap();
+            writer.commit().unwrap();
+        }
+        let mut policy = crate::index::merge_policy::LogMergePolicy::by_doc_count();
+        policy.set_merge_factor(2).unwrap();
+        writer
+            .update_pending_merges_with_policy(
+                &policy,
+                MergeTrigger::Explicit,
+                UNBOUNDED_MAX_MERGE_SEGMENTS,
+            )
+            .unwrap()
+            .expect("the policy merges the two segments");
+        let left = {
+            let mut state = writer.state().unwrap();
+            let position = state
+                .segment_infos
+                .iter()
+                .position(|info| info.info.name == "_1")
+                .unwrap();
+            state.segment_infos.remove_at(position)
+        };
+        let mut merging: Vec<String> = writer
+            .get_merging_segments_pub()
+            .unwrap()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        merging.sort();
+        assert_eq!(merging, vec!["_0(10.5.0):c1", "_1(10.5.0):c1"]);
+        // Put the infos back as they were, so the rollback sees a writer
+        // whose document count adds up.
+        writer.state().unwrap().segment_infos.add(left).unwrap();
+        writer.rollback().unwrap();
+    }
+
     /// Records what `MergePolicy.numDeletesToMerge` receives: the delete
     /// count and the live document count of the reader its supplier hands
     /// out. Merges nothing.
@@ -13204,6 +13591,120 @@ mod tests {
         fn columns(&self) -> Vec<crate::document::column::TypedColumn<'_>> {
             vec![crate::document::column::TypedColumn::Long(&self.value)]
         }
+    }
+
+    /// `processBatch` checks a column's own validity before it refuses the
+    /// reserved parent field (`IndexingChain.java:733-754`). Measured against
+    /// `lucene-core-10.5.0.jar` (scratch `BatchOrderProbe`): a `LongColumn`
+    /// named as the parent field whose type has two point dimensions fails
+    /// with the column's message, and a valid one with the reserved-field
+    /// message.
+    #[test]
+    fn a_batch_column_named_as_the_parent_field_is_validated_first() {
+        crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new()).ok();
+        for (point_dimensions, expected) in [
+            (
+                2,
+                "LongColumn \"_parent\" only supports 1-dimensional point fields, got \
+                 pointDimensionCount=2",
+            ),
+            (
+                0,
+                "\"_parent\" is a reserved field and should not be added to any document",
+            ),
+        ] {
+            let mut config = IndexWriterConfig::new();
+            config.set_parent_field(Some("_parent".to_string()));
+            let writer = IndexWriter::new(Arc::new(RamDirectory::new()), config).unwrap();
+            let mut field_type = crate::document::FieldType::new();
+            if point_dimensions > 0 {
+                field_type.set_dimensions(point_dimensions, 8).unwrap();
+            }
+            field_type
+                .set_doc_values_type(DocValuesType::NUMERIC)
+                .unwrap();
+            field_type.freeze();
+            let batch = FailingBatch {
+                value: FailingLongValues {
+                    column: crate::document::column::Column::new(
+                        "_parent",
+                        Arc::new(field_type),
+                        crate::document::column::Density::Sparse,
+                    )
+                    .unwrap(),
+                },
+            };
+            let error = writer.add_batch(&batch).unwrap_err();
+            assert!(
+                matches!(&error, LuceneError::IllegalArgument(message) if message == expected),
+                "{error:?}"
+            );
+            writer.rollback().unwrap();
+        }
+    }
+
+    /// `OneMerge.close` applies the reader consumer in the `finally` of the
+    /// `try` that calls `mergeFinished` (`MergePolicy.java:277-291`), so a
+    /// failure of the consumer replaces the hook's, which is lost. Here the
+    /// consumer fails because a merged segment left the reader pool: Java's
+    /// `assert rld != null` (`IndexWriter.java:5188-5190`), this port's
+    /// `IllegalState`.
+    #[test]
+    fn a_reader_failure_closing_a_merge_replaces_the_hooks_failure() {
+        crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new()).ok();
+        let mut config = IndexWriterConfig::new();
+        config.set_max_full_flush_merge_wait_millis(0);
+        config
+            .set_merge_scheduler(Arc::new(crate::index::merge_scheduler::NoMergeScheduler))
+            .unwrap();
+        config
+            .set_merge_policy(Arc::new(crate::index::merge_policy::NoMergePolicy::new()))
+            .unwrap();
+        let writer = IndexWriter::new(Arc::new(RamDirectory::new()), config).unwrap();
+        for id in 0..2 {
+            let mut doc = Document::new();
+            doc.add(Box::new(
+                StringField::new("id", id.to_string(), Store::YES).unwrap(),
+            ));
+            writer.add_document(&doc).unwrap();
+            writer.commit().unwrap();
+        }
+        let segments: Vec<SegmentCommitInfo> = writer
+            .state()
+            .unwrap()
+            .segment_infos
+            .iter()
+            .cloned()
+            .collect();
+        let mut merge = OneMerge::new(segments.clone()).unwrap();
+        merge.set_merge_finished(Arc::new(|_merge, _success, _dropped, _deleter| {
+            Err(LuceneError::Io(std::io::Error::other("hook failure")))
+        }));
+        let context: Arc<dyn IOContext> =
+            Arc::from(crate::store::merge_io_context(merge.get_store_merge_info()));
+        // `mergeMiddle`'s `initMergeReaders` (`IndexWriter.java:5268-5275`).
+        merge
+            .init_merge_readers(|sci| {
+                let rld = writer.get_pooled_instance(sci, true)?.unwrap();
+                rld.set_is_merging();
+                let mut state = writer.state()?;
+                rld.get_reader_for_merge(context.as_ref(), |mr| {
+                    if let Some(reader) = mr.reader.as_ref() {
+                        state
+                            .deleter
+                            .inc_ref_files(reader.get_segment_info().files()?.iter());
+                    }
+                    Ok(())
+                })
+            })
+            .unwrap();
+        ReaderPool::drop(&writer.reader_pool, &segments[0]).unwrap();
+        let error = writer.close_merge_readers(&merge, true, false).unwrap_err();
+        assert!(
+            matches!(&error, LuceneError::IllegalState { message, .. }
+                if message == "seg=_0 is no longer pooled"),
+            "{error:?}"
+        );
     }
 
     /// `updateBatch` records an `Error` as the writer's tragedy before it

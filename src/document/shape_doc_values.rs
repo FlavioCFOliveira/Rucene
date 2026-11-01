@@ -208,6 +208,14 @@ impl<'a> SliceDataInput<'a> {
 }
 
 impl DataInput for SliceDataInput<'_> {
+    /// `Object.toString()` of `org.apache.lucene.document.ShapeDocValues$Reader`, which declares no `toString()`.
+    fn to_java_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.document.ShapeDocValues$Reader",
+            self,
+        )
+    }
+
     fn read_byte(&mut self) -> Result<u8> {
         let b = *self.bytes.get(self.pos).ok_or_else(|| self.eof())?;
         self.pos += 1;
@@ -1509,20 +1517,25 @@ impl XYShapeDocValues {
 // ShapeDocValuesField
 // -----------------------------------------------------------------------------
 
-/// Builds the field type a shape doc-values field uses: binary doc values with
-/// norms omitted.
+/// Returns the one frozen type every shape doc-values field uses: binary doc
+/// values with norms omitted.
 ///
-/// Equivalent to the static `ShapeDocValuesField.FIELD_TYPE` initialiser.
-///
-/// # Errors
-///
-/// Propagates the error [`FieldType`] raises when a property cannot be set.
-pub fn shape_doc_values_field_type() -> Result<FieldType> {
-    let mut ft = FieldType::new();
-    ft.set_doc_values_type(DocValuesType::BINARY)?;
-    ft.set_omit_norms(true)?;
-    ft.freeze();
-    Ok(ft)
+/// Equivalent to the static `ShapeDocValuesField.FIELD_TYPE`
+/// (`ShapeDocValuesField.java:46-52`), which every `LatLonShapeDocValuesField`
+/// and `XYShapeDocValuesField` shares. Each field holds a clone, which keeps
+/// the frozen identity, so the fields share one type as Java's share one
+/// object (see [`FieldType`]).
+pub fn shape_doc_values_field_type() -> &'static FieldType {
+    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    TYPE.get_or_init(|| {
+        let mut ft = FieldType::new();
+        ft.set_doc_values_type(DocValuesType::BINARY)
+            .expect("INVARIANT: a new type is mutable");
+        ft.set_omit_norms(true)
+            .expect("INVARIANT: a new type is mutable");
+        ft.freeze();
+        ft
+    })
 }
 
 /// A shape as an indexable doc-values field.
@@ -1565,11 +1578,11 @@ impl ShapeDocValuesField {
     ///
     /// # Errors
     ///
-    /// Propagates the error [`shape_doc_values_field_type`] raises.
+    /// Never returns an error: the shared type is built once, infallibly.
     pub fn new(name: impl Into<String>, shape_doc_values: ShapeDocValues) -> Result<Self> {
         Ok(Self {
             name: name.into(),
-            field_type: shape_doc_values_field_type()?,
+            field_type: shape_doc_values_field_type().clone(),
             shape_doc_values,
         })
     }

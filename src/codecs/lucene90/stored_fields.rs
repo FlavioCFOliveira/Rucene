@@ -5160,6 +5160,11 @@ mod tests {
     }
 
     impl DataInput for PrefetchRecordingInput {
+        /// `IndexInput.toString()` returns the resource description.
+        fn to_java_string(&self) -> String {
+            crate::store::IndexInput::resource_description(self).to_string()
+        }
+
         fn read_byte(&mut self) -> Result<u8> {
             self.inner.read_byte()
         }

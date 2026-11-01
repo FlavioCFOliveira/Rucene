@@ -91,14 +91,15 @@ impl SortingCodecReader {
     /// reports `sort` as its index sort.
     ///
     /// Equivalent to `SortingCodecReader.wrap(CodecReader, Sorter.DocMap, Sort)`
-    /// (`SortingCodecReader.java:396-433`).
+    /// (`SortingCodecReader.java:398-436`) for a non-null doc map.
     ///
     /// **Divergence from Lucene 10.5.0.** Java accepts a `null` doc map, meaning
     /// the reader is already sorted, and then returns a plain
     /// `FilterCodecReader` that only replaces the metadata and drops the cache
     /// helpers (`SortingCodecReader.java:403-425`). `doc_map` is not optional
-    /// here: no caller of this port holds a reader that is already in order
-    /// when it wraps, so that branch has no counterpart.
+    /// here, because this function returns the sorting reader itself; the
+    /// `null` branch is ported in [`wrap_sort`](Self::wrap_sort), the one
+    /// entry point at which `Sorter.sort` can hand Java's `wrap` a `null` map.
     ///
     /// # Errors
     ///
@@ -136,6 +137,46 @@ impl SortingCodecReader {
             meta_data,
             state,
         })
+    }
+
+    /// Returns a view of `reader` in the order `sort` defines, which is `reader`
+    /// itself under the new metadata when it is already in that order.
+    ///
+    /// Equivalent to `SortingCodecReader.wrap(CodecReader, Sort)`
+    /// (`SortingCodecReader.java:390-392`): `wrap(reader, new
+    /// Sorter(sort).sort(reader), sort)`. When `Sorter.sort` answers `null`,
+    /// Java's `wrap(CodecReader, Sorter.DocMap, Sort)` returns the anonymous
+    /// `FilterCodecReader` of `SortingCodecReader.java:403-425`, ported as
+    /// [`AlreadySortedCodecReader`]; otherwise it returns a
+    /// `SortingCodecReader` built by [`wrap`](Self::wrap). The name differs
+    /// because Rust has no overloading.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `sort` refers to the
+    /// relevance score or names a field that cannot sort an index, and
+    /// propagates whatever reading the sort values or building the metadata
+    /// raises.
+    pub fn wrap_sort(reader: Arc<dyn CodecReader>, sort: Sort) -> Result<Arc<dyn CodecReader>> {
+        let doc_map =
+            crate::index::index_sorter::Sorter::new(sort.clone())?.sort_reader(reader.as_ref())?;
+        match doc_map {
+            Some(doc_map) => Ok(Arc::new(Self::wrap(reader, Arc::new(doc_map), Some(sort))?)),
+            None => {
+                // the reader is already sorted
+                let meta_data = reader.get_meta_data();
+                let meta_data = LeafMetaData::new(
+                    meta_data.created_version_major(),
+                    meta_data.min_version(),
+                    Some(sort),
+                    meta_data.has_blocks(),
+                )?;
+                Ok(Arc::new(AlreadySortedCodecReader {
+                    inner: reader,
+                    meta_data,
+                }))
+            }
+        }
     }
 
     /// Returns the doc map this reader applies.
@@ -452,6 +493,214 @@ impl CodecReader for SortingCodecReader {
                 doc_map: Arc::clone(&self.doc_map),
             }))),
         }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// The view of a reader that is already sorted
+// -----------------------------------------------------------------------------
+
+/// A reader that is already in the order of the sort it is wrapped with: the
+/// reader itself, reporting that sort in its metadata and no cache helpers.
+///
+/// Equivalent to the anonymous `FilterCodecReader` that
+/// `SortingCodecReader.wrap(CodecReader, Sorter.DocMap, Sort)` returns for a
+/// `null` doc map (`SortingCodecReader.java:403-425`), which overrides
+/// `getCoreCacheHelper()`, `getReaderCacheHelper()`, `getMetaData()` and
+/// `toString()`. Everything else is `FilterCodecReader`'s: the codec readers
+/// come from the delegate, and the leaf view is `CodecReader`'s `final` one
+/// over them. javac names the class `org.apache.lucene.index.SortingCodecReader$1`
+/// (measured from `lucene-core-10.5.0.jar`).
+pub struct AlreadySortedCodecReader {
+    inner: Arc<dyn CodecReader>,
+    meta_data: LeafMetaData,
+}
+
+impl std::fmt::Debug for AlreadySortedCodecReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AlreadySortedCodecReader")
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for AlreadySortedCodecReader {
+    /// Port of the anonymous class's `toString()`
+    /// (`SortingCodecReader.java:421-424`), the same text as
+    /// `SortingCodecReader.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SortingCodecReader({})", self.inner)
+    }
+}
+
+impl LeafReader for AlreadySortedCodecReader {
+    fn core(&self) -> &IndexReaderCore {
+        self.inner.core()
+    }
+
+    fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
+        final_members::term_vectors(self)
+    }
+
+    /// Equivalent to `FilterCodecReader.numDocs()`.
+    fn num_docs(&self) -> i32 {
+        self.inner.num_docs()
+    }
+
+    /// Equivalent to `FilterCodecReader.maxDoc()`.
+    fn max_doc(&self) -> i32 {
+        self.inner.max_doc()
+    }
+
+    fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
+        final_members::stored_fields(self)
+    }
+
+    /// Equivalent to `FilterCodecReader.doClose()`.
+    fn do_close(&self) -> Result<()> {
+        self.inner.do_close()
+    }
+
+    /// `SortingCodecReader.java:411-414`: `return null`.
+    fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
+        None
+    }
+
+    /// `SortingCodecReader.java:406-409`: `return null`.
+    fn get_core_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
+        None
+    }
+
+    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+        final_members::terms(self, field)
+    }
+
+    fn get_numeric_doc_values(&self, field: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
+        final_members::numeric_doc_values(self, field)
+    }
+
+    fn get_binary_doc_values(&self, field: &str) -> Result<Option<Box<dyn BinaryDocValues>>> {
+        final_members::binary_doc_values(self, field)
+    }
+
+    fn get_sorted_doc_values(&self, field: &str) -> Result<Option<Box<dyn SortedDocValues>>> {
+        final_members::sorted_doc_values(self, field)
+    }
+
+    fn get_sorted_numeric_doc_values(
+        &self,
+        field: &str,
+    ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+        final_members::sorted_numeric_doc_values(self, field)
+    }
+
+    fn get_sorted_set_doc_values(
+        &self,
+        field: &str,
+    ) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+        final_members::sorted_set_doc_values(self, field)
+    }
+
+    fn get_norm_values(&self, field: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
+        final_members::norm_values(self, field)
+    }
+
+    fn get_doc_values_skipper(&self, field: &str) -> Result<Option<Box<dyn DocValuesSkipper>>> {
+        final_members::doc_values_skipper(self, field)
+    }
+
+    fn get_float_vector_values(&self, field: &str) -> Result<Option<Box<dyn FloatVectorValues>>> {
+        final_members::float_vector_values(self, field)
+    }
+
+    fn get_byte_vector_values(&self, field: &str) -> Result<Option<Box<dyn ByteVectorValues>>> {
+        final_members::byte_vector_values(self, field)
+    }
+
+    fn search_nearest_vectors(
+        &self,
+        field: &str,
+        target: &[f32],
+        collector: &mut dyn KnnCollector,
+        accept_docs: &mut dyn AcceptDocs,
+    ) -> Result<()> {
+        final_members::search_nearest_vectors(self, field, target, collector, accept_docs)
+    }
+
+    fn search_nearest_vectors_byte(
+        &self,
+        field: &str,
+        target: &[u8],
+        collector: &mut dyn KnnCollector,
+        accept_docs: &mut dyn AcceptDocs,
+    ) -> Result<()> {
+        final_members::search_nearest_vectors_byte(self, field, target, collector, accept_docs)
+    }
+
+    /// Equivalent to `FilterCodecReader.getFieldInfos()`.
+    fn get_field_infos(&self) -> FieldInfos {
+        self.inner.get_field_infos()
+    }
+
+    /// Equivalent to `FilterCodecReader.getLiveDocs()`.
+    fn get_live_docs(&self) -> Option<Box<dyn Bits>> {
+        self.inner.get_live_docs()
+    }
+
+    fn get_point_values(&self, field: &str) -> Result<Option<Box<dyn PointValues>>> {
+        final_members::point_values(self, field)
+    }
+
+    /// Equivalent to `FilterCodecReader.checkIntegrity()`.
+    fn check_integrity(&self) -> Result<()> {
+        self.inner.check_integrity()
+    }
+
+    /// `SortingCodecReader.java:416-419`: the metadata carrying the sort.
+    fn get_meta_data(&self) -> LeafMetaData {
+        self.meta_data.clone()
+    }
+}
+
+impl CodecReader for AlreadySortedCodecReader {
+    /// The anonymous class extends `FilterCodecReader`, whose `getDelegate()`
+    /// is the reader it wraps.
+    fn filter_codec_reader_delegate(&self) -> Option<&Arc<dyn CodecReader>> {
+        Some(&self.inner)
+    }
+
+    /// Equivalent to `FilterCodecReader.getFieldsReader()`.
+    fn get_fields_reader(&self) -> Result<Option<Box<dyn StoredFieldsReader>>> {
+        self.inner.get_fields_reader()
+    }
+
+    /// Equivalent to `FilterCodecReader.getTermVectorsReader()`.
+    fn get_term_vectors_reader(&self) -> Result<Option<Box<dyn TermVectorsReader>>> {
+        self.inner.get_term_vectors_reader()
+    }
+
+    /// Equivalent to `FilterCodecReader.getNormsReader()`.
+    fn get_norms_reader(&self) -> Result<Option<Arc<dyn NormsProducer>>> {
+        self.inner.get_norms_reader()
+    }
+
+    /// Equivalent to `FilterCodecReader.getDocValuesReader()`.
+    fn get_doc_values_reader(&self) -> Result<Option<Arc<dyn DocValuesProducer>>> {
+        self.inner.get_doc_values_reader()
+    }
+
+    /// Equivalent to `FilterCodecReader.getPostingsReader()`.
+    fn get_postings_reader(&self) -> Result<Option<Arc<dyn FieldsProducer>>> {
+        self.inner.get_postings_reader()
+    }
+
+    /// Equivalent to `FilterCodecReader.getPointsReader()`.
+    fn get_points_reader(&self) -> Result<Option<Arc<dyn PointsReader>>> {
+        self.inner.get_points_reader()
+    }
+
+    /// Equivalent to `FilterCodecReader.getVectorReader()`.
+    fn get_vector_reader(&self) -> Result<Option<Arc<dyn KnnVectorsReader>>> {
+        self.inner.get_vector_reader()
     }
 }
 

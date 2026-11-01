@@ -20,23 +20,40 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.FieldType;
 import org.apache.lucene.document.StringField;
 import org.apache.lucene.document.TextField;
+import org.apache.lucene.index.CodecReader;
 import org.apache.lucene.index.IndexOptions;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.index.LogDocMergePolicy;
+import org.apache.lucene.index.MergePolicy;
+import org.apache.lucene.index.NoMergePolicy;
+import org.apache.lucene.index.NoMergeScheduler;
+import org.apache.lucene.index.OneMergeWrappingMergePolicy;
+import org.apache.lucene.index.SegmentCommitInfo;
 import org.apache.lucene.index.SegmentInfos;
 import org.apache.lucene.index.SerialMergeScheduler;
 import org.apache.lucene.store.ByteBuffersDirectory;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FilterDirectory;
+import org.apache.lucene.store.FilterIndexInput;
 import org.apache.lucene.store.IOContext;
+import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.Lock;
+import org.apache.lucene.util.InfoStream;
 
 /**
  * Reference tool for how a real Apache Lucene Core 10.5.0 {@link IndexWriter}
@@ -95,6 +112,58 @@ import org.apache.lucene.store.Lock;
  *       throws that failure ({@code IndexWriter.java:3205-3211}); the copied segment stays in
  *       the writer. The case prints the outcome, whether the writer is open and has a tragedy,
  *       and the documents of the following commit.
+ *   <li>{@code pit-rollback}: commit merges on (the default {@code maxFullFlushMergeWaitMillis}),
+ *       a scheduler that runs nothing, and a {@code LogDocMergePolicy} of merge factor 2 whose
+ *       merges' {@code mergeFinished} fails for the merge of {@code _0}. Four committed documents
+ *       and a {@code forceMerge(1, false)} leave the commit merges pending, each wrapped by
+ *       {@code preparePointInTimeMerge}, whose {@code mergeFinished} calls the wrapped one's
+ *       ({@code IndexWriter.java:4006}); {@code rollback()} aborts them. The case prints the
+ *       outcome of the rollback, the merges finished, whether merges are pending, the merging
+ *       segments and whether the writer is open.
+ *   <li>{@code merge-close-failure <hook>}: a {@code SerialMergeScheduler} whose {@code
+ *       wrapForMerge} fails, under a policy whose merges' {@code mergeFinished} fails too when
+ *       {@code <hook>} is {@code throw}. {@code merge}'s {@code finally} closes the merge readers
+ *       ({@code IndexWriter.java:4866-4872}); a failure there replaces the merge's own and skips
+ *       {@code mergeFinish}, and the tragedy's rollback then waits for ever on the merge thread.
+ *       The case prints the outcome of {@code forceMerge(1)} — {@code HUNG} when it does not
+ *       return within eight seconds — the merges finished, the tragedy and whether the writer is
+ *       open.
+ *   <li>{@code merge-middle-failure <hook>}: a merge whose {@code OneMerge.wrapForMerge} fails
+ *       inside {@code mergeMiddle}, and whose {@code mergeFinished} fails too when {@code <hook>}
+ *       is {@code throw}; {@code mergeMiddle}'s {@code finally} closes the readers ({@code
+ *       IndexWriter.java:5588-5594}). The case prints the same lines as {@code
+ *       merge-close-failure}.
+ *   <li>{@code register-failure}: two committed segments without compound files, then {@code
+ *       _0.fdt} is deleted and {@code maybeMerge} asks a {@code LogDocMergePolicy} of merge factor
+ *       2 for merges; {@code registerMerge} fails sizing the merge ({@code IndexWriter.java:
+ *       5022}), and {@code updatePendingMerges} propagates it ({@code IndexWriter.java:
+ *       2471-2477}). The case prints the outcome of the private {@code maybeMerge(MergePolicy,
+ *       MergeTrigger, int)}, reached by reflection, the {@code IW} messages of {@code
+ *       registerMerge} ({@code IndexWriter.java:4984-5017}), whether merges are pending, the
+ *       merging segments, and the outcome of {@code rollback()}: the merge is pending but not
+ *       registered, so its segments stay merging and, under {@code -ea}, the rollback trips
+ *       {@code assert mergingSegments.isEmpty()} ({@code IndexWriter.java:2582-2583}).
+ *   <li>{@code merging-after-rollback}: one committed and two flushed segments, the flushes
+ *       registering the merge of {@code _0} and {@code _1} under a scheduler that runs nothing
+ *       and a policy whose merges' {@code mergeFinished} fails. The case prints the merging
+ *       segments before the rollback, its outcome, whether the writer is open, and the merging
+ *       segments after it — which {@code getMergingSegments()} returns without checking the
+ *       writer or the live infos ({@code IndexWriter.java:2488-2490}).
+ *   <li>{@code cfs-rollback}: a {@code forceMerge(1)} of three segments into a compound file
+ *       whose {@code .cfs} cannot be created until another thread's {@code rollback()} aborted
+ *       the merge. The aborted merge returns 0 and the {@code finally} deletes the merged
+ *       segment's non-compound files on the merge thread ({@code IndexWriter.java:5480-5503}).
+ *       The case prints the outcome of the {@code forceMerge} and of the rollback, the
+ *       compound-file {@code IW} messages, and the files the merge thread deletes after the failure.
+ *   <li>{@code warmer-rollback <keep|drop-fails>}: reader pooling and a merged-segment warmer
+ *       ({@code IndexWriter.java:5567-5578}) that waits until another thread's {@code
+ *       rollback()} aborted the merge; {@code commitMerge} then skips it and returns false
+ *       ({@code IndexWriter.java:4692-4708}), and {@code mergeMiddle}'s {@code finally} closes
+ *       the readers, finishing the merge with {@code success=false}. With {@code drop-fails}
+ *       the merged segment's {@code _3.fdt}, which the pooled reader holds, fails to close, so {@code readerPool.drop(merge.info)}
+ *       ({@code IndexWriter.java:4705}) throws out of {@code commitMerge}. The case prints the
+ *       outcome of the {@code forceMerge} and of the rollback, the merges finished, the tragedy
+ *       and whether the writer is open.
  * </ul>
  */
 public final class WriterTragedyFixture {
@@ -404,6 +473,467 @@ public final class WriterTragedyFixture {
     writer.rollback();
   }
 
+  /**
+   * A {@code LogDocMergePolicy} of merge factor {@code mergeFactor} whose merges record {@code
+   * mergeFinished} in {@code finished} and fail it when {@code fails} names the merge's first
+   * segment, or always when {@code fails} is {@code "*"}; their {@code wrapForMerge} fails when
+   * {@code failWrap}.
+   */
+  static MergePolicy hookedPolicy(
+      List<String> finished, String fails, boolean failWrap, int mergeFactor) {
+    LogDocMergePolicy inner = new LogDocMergePolicy();
+    inner.setMergeFactor(mergeFactor);
+    return new OneMergeWrappingMergePolicy(
+        inner,
+        merge ->
+            new MergePolicy.OneMerge(merge.segments) {
+              @Override
+              public CodecReader wrapForMerge(CodecReader reader) throws IOException {
+                if (failWrap) {
+                  throw new IOException("wrapForMerge failure");
+                }
+                return reader;
+              }
+
+              @Override
+              public void mergeFinished(boolean success, boolean segmentDropped)
+                  throws IOException {
+                List<String> names = new ArrayList<>();
+                for (SegmentCommitInfo info : segments) {
+                  names.add(info.info.name);
+                }
+                String joined = String.join(",", names);
+                finished.add(joined + " success=" + success);
+                if (fails != null && (fails.equals("*") || fails.equals(names.get(0)))) {
+                  throw new IOException("injected failure finishing " + joined);
+                }
+              }
+            });
+  }
+
+  static void pitRollback() throws Exception {
+    IndexWriterConfig config = new IndexWriterConfig();
+    config.setMergeScheduler(NoMergeScheduler.INSTANCE);
+    List<String> finished = Collections.synchronizedList(new ArrayList<>());
+    config.setMergePolicy(hookedPolicy(finished, "_0", false, 2));
+    IndexWriter writer = new IndexWriter(new ByteBuffersDirectory(), config);
+    for (int i = 0; i < 4; i++) {
+      writer.addDocument(idDoc(i));
+      writer.commit();
+    }
+    writer.forceMerge(1, false);
+    System.out.println("pending-before=" + writer.hasPendingMerges());
+    System.out.println("rollback=" + described(writer::rollback));
+    System.out.println("finished=" + finished);
+    System.out.println("pending-after=" + writer.hasPendingMerges());
+    System.out.println("merging=" + sortedNames(writer.getMergingSegments()));
+    System.out.println("open=" + writer.isOpen());
+  }
+
+  static String sortedNames(java.util.Collection<SegmentCommitInfo> infos) {
+    List<String> names = new ArrayList<>();
+    for (SegmentCommitInfo info : infos) {
+      names.add(info.toString());
+    }
+    Collections.sort(names);
+    return String.join(" ", names);
+  }
+
+  /** Runs {@code forceMerge(1)} on its own thread, reporting {@code HUNG} after eight seconds. */
+  static String forceMergeOrHang(IndexWriter writer) throws Exception {
+    ExecutorService executor =
+        Executors.newSingleThreadExecutor(
+            r -> {
+              Thread t = new Thread(r);
+              t.setDaemon(true);
+              return t;
+            });
+    Future<String> merged = executor.submit(() -> described(() -> writer.forceMerge(1)));
+    try {
+      return merged.get(8, TimeUnit.SECONDS);
+    } catch (TimeoutException e) {
+      return "HUNG";
+    } finally {
+      executor.shutdown();
+    }
+  }
+
+  static void mergeFailure(boolean inMiddle, boolean hookThrows) throws Exception {
+    IndexWriterConfig config = new IndexWriterConfig();
+    config.setMaxFullFlushMergeWaitMillis(0);
+    if (inMiddle) {
+      config.setMergeScheduler(new SerialMergeScheduler());
+    } else {
+      config.setMergeScheduler(
+          new SerialMergeScheduler() {
+            @Override
+            public Directory wrapForMerge(MergePolicy.OneMerge merge, Directory in) {
+              throw new IllegalStateException("wrap failure");
+            }
+          });
+    }
+    List<String> finished = Collections.synchronizedList(new ArrayList<>());
+    // The default merge factor (10): only the forceMerge merges.
+    config.setMergePolicy(hookedPolicy(finished, hookThrows ? "*" : null, inMiddle, 10));
+    IndexWriter writer = new IndexWriter(new ByteBuffersDirectory(), config);
+    for (int i = 0; i < 3; i++) {
+      writer.addDocument(idDoc(i));
+      writer.commit();
+    }
+    System.out.println("forceMerge=" + forceMergeOrHang(writer));
+    System.out.println("finished=" + finished);
+    Throwable tragedy = writer.getTragicException();
+    System.out.println("tragic=" + (tragedy == null ? "none" : describe(tragedy)));
+    System.out.println("open=" + writer.isOpen());
+  }
+
+  static void registerFailure() throws Exception {
+    ByteBuffersDirectory dir = new ByteBuffersDirectory();
+    IndexWriterConfig config = new IndexWriterConfig();
+    List<String> registerMessages = Collections.synchronizedList(new ArrayList<>());
+    config.setInfoStream(
+        recordingInfoStream(
+            registerMessages, "add merge to pendingMerges", "registerMerge"));
+    config.setMaxFullFlushMergeWaitMillis(0);
+    config.setMergeScheduler(NoMergeScheduler.INSTANCE);
+    config.setMergePolicy(NoMergePolicy.INSTANCE);
+    config.setUseCompoundFile(false);
+    IndexWriter writer = new IndexWriter(dir, config);
+    for (int i = 0; i < 2; i++) {
+      writer.addDocument(idDoc(i));
+      writer.commit();
+    }
+    dir.deleteFile("_0.fdt");
+    LogDocMergePolicy policy = new LogDocMergePolicy();
+    policy.setMergeFactor(2);
+    java.lang.reflect.Method maybeMerge =
+        IndexWriter.class.getDeclaredMethod(
+            "maybeMerge",
+            MergePolicy.class,
+            org.apache.lucene.index.MergeTrigger.class,
+            int.class);
+    maybeMerge.setAccessible(true);
+    System.out.println(
+        "maybeMerge="
+            + described(
+                () -> {
+                  try {
+                    maybeMerge.invoke(
+                        writer, policy, org.apache.lucene.index.MergeTrigger.EXPLICIT, -1);
+                  } catch (java.lang.reflect.InvocationTargetException e) {
+                    if (e.getCause() instanceof Exception cause) {
+                      throw cause;
+                    }
+                    throw e;
+                  }
+                }));
+    for (String message : registerMessages) {
+      System.out.println("IW " + message);
+    }
+    System.out.println("pending=" + writer.hasPendingMerges());
+    System.out.println("merging=" + sortedNames(writer.getMergingSegments()));
+    System.out.println("rollback=" + described(writer::rollback));
+  }
+
+  static void mergingAfterRollback() throws Exception {
+    IndexWriterConfig config = new IndexWriterConfig();
+    config.setMaxFullFlushMergeWaitMillis(0);
+    config.setMergeScheduler(NoMergeScheduler.INSTANCE);
+    List<String> finished = Collections.synchronizedList(new ArrayList<>());
+    config.setMergePolicy(hookedPolicy(finished, "*", false, 2));
+    IndexWriter writer = new IndexWriter(new ByteBuffersDirectory(), config);
+    writer.addDocument(idDoc(0));
+    writer.commit();
+    writer.addDocument(idDoc(1));
+    writer.flush();
+    writer.addDocument(idDoc(2));
+    writer.flush();
+    System.out.println("merging-before=" + sortedNames(writer.getMergingSegments()));
+    System.out.println("rollback=" + described(writer::rollback));
+    System.out.println("open=" + writer.isOpen());
+    System.out.println("merging-after=" + sortedNames(writer.getMergingSegments()));
+  }
+
+  /** An {@link InfoStream} keeping the {@code IW} messages that start with one of {@code prefixes}. */
+  static InfoStream recordingInfoStream(List<String> sink, String... prefixes) {
+    return new InfoStream() {
+      @Override
+      public void message(String component, String message) {
+        for (String prefix : prefixes) {
+          if (message.startsWith(prefix)) {
+            sink.add(message);
+            return;
+          }
+        }
+      }
+
+      @Override
+      public boolean isEnabled(String component) {
+        return component.equals("IW");
+      }
+
+      @Override
+      public void close() {}
+    };
+  }
+
+  /**
+   * Opens the input named {@code failingName} so that its {@code close()} fails, and records the
+   * files deleted on {@code recordedThread}.
+   */
+  static class CloseFailingDirectory extends FilterDirectory {
+    final AtomicReference<String> failingName = new AtomicReference<>();
+    final AtomicReference<Thread> recordedThread = new AtomicReference<>();
+    final List<String> deletedOnRecordedThread = Collections.synchronizedList(new ArrayList<>());
+
+    CloseFailingDirectory(Directory in) {
+      super(in);
+    }
+
+    @Override
+    public IndexInput openInput(String name, IOContext context) throws IOException {
+      IndexInput input = super.openInput(name, context);
+      if (name.equals(failingName.get()) == false) {
+        return input;
+      }
+      return new FilterIndexInput("CloseFailing(" + input + ")", input) {
+        @Override
+        public void close() throws IOException {
+          in.close();
+          throw new IOException("injected failure closing an input");
+        }
+      };
+    }
+
+    @Override
+    public void deleteFile(String name) throws IOException {
+      if (Thread.currentThread() == recordedThread.get()) {
+        deletedOnRecordedThread.add(name);
+      }
+      super.deleteFile(name);
+    }
+  }
+
+  /** Waits up to thirty seconds for {@code condition}, failing if it never holds. */
+  static void await(BooleanSupplier condition, String what) throws InterruptedException {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+    while (condition.getAsBoolean() == false) {
+      if (System.nanoTime() > deadline) {
+        throw new IllegalStateException("timed out waiting for " + what);
+      }
+      Thread.sleep(5);
+    }
+  }
+
+  /** Starts {@code writer.rollback()} on its own thread, which records its outcome. */
+  static Thread startRollback(IndexWriter writer, AtomicReference<String> outcome) {
+    Thread thread = new Thread(() -> outcome.set(described(writer::rollback)));
+    thread.setDaemon(true);
+    thread.start();
+    return thread;
+  }
+
+  static void cfsRollback() throws Exception {
+    CloseFailingDirectory dir;
+    AtomicReference<IndexWriter> writerRef = new AtomicReference<>();
+    AtomicReference<MergePolicy.OneMerge> captured = new AtomicReference<>();
+    AtomicBoolean armed = new AtomicBoolean();
+    AtomicReference<String> rollbackOutcome = new AtomicReference<>();
+    AtomicReference<Thread> rollbackThread = new AtomicReference<>();
+    dir =
+        new CloseFailingDirectory(new ByteBuffersDirectory()) {
+          @Override
+          public IndexOutput createOutput(String name, IOContext context) throws IOException {
+            if (name.endsWith(".cfs") && armed.compareAndSet(true, false)) {
+              rollbackThread.set(startRollback(writerRef.get(), rollbackOutcome));
+              try {
+                await(() -> captured.get().isAborted(), "the merge to abort");
+              } catch (InterruptedException e) {
+                throw new IOException(e);
+              }
+              // Record what the merge thread deletes from here on.
+              recordedThread.set(Thread.currentThread());
+              throw new IOException("injected failure creating " + name);
+            }
+            return super.createOutput(name, context);
+          }
+        };
+    IndexWriterConfig config = new IndexWriterConfig();
+    config.setMaxFullFlushMergeWaitMillis(0);
+    config.setMergeScheduler(new SerialMergeScheduler());
+    // Flushed segments without compound files: only the merge builds one.
+    config.setUseCompoundFile(false);
+    List<String> messages = Collections.synchronizedList(new ArrayList<>());
+    config.setInfoStream(
+        recordingInfoStream(
+            messages,
+            "hit merge abort exception creating compound file",
+            "hit exception creating compound file"));
+    LogDocMergePolicy inner = new LogDocMergePolicy();
+    inner.setNoCFSRatio(1.0);
+    config.setMergePolicy(
+        new OneMergeWrappingMergePolicy(
+            inner,
+            merge -> {
+              captured.set(merge);
+              return merge;
+            }));
+    IndexWriter writer = new IndexWriter(dir, config);
+    writerRef.set(writer);
+    for (int i = 0; i < 3; i++) {
+      writer.addDocument(idDoc(i));
+      writer.commit();
+    }
+    armed.set(true);
+    System.out.println("forceMerge=" + described(() -> writer.forceMerge(1)));
+    dir.recordedThread.set(null);
+    Thread rollback = rollbackThread.get();
+    rollback.join(TimeUnit.SECONDS.toMillis(30));
+    System.out.println("rollback=" + (rollback.isAlive() ? "HUNG" : rollbackOutcome.get()));
+    System.out.println("messages=" + messages);
+    List<String> deleted = new ArrayList<>(dir.deletedOnRecordedThread);
+    Collections.sort(deleted);
+    System.out.println("deleted-on-merge-thread-after-failure=" + deleted);
+    System.out.println("open=" + writer.isOpen());
+  }
+
+  /**
+   * {@code cfs-failure}: a merge cannot create its compound file, and nothing aborted it. Under the
+   * writer's lock, {@code mergeMiddle}'s {@code catch} hands the failure to {@code
+   * handleMergeException}, which logs it, sets it on the merge and rethrows it; the {@code finally}
+   * then reports it and deletes the merged segment's non-compound files ({@code
+   * IndexWriter.java:5481-5503}). {@code merge} hands it to {@code handleMergeException} again,
+   * logs {@code hit exception during merge} and records the tragedy ({@code
+   * IndexWriter.java:4850-4892}). The merge thread's deletions are recorded from the failure to
+   * that log line, before the tragedy's rollback.
+   */
+  static void cfsFailure() throws Exception {
+    AtomicBoolean armed = new AtomicBoolean();
+    CloseFailingDirectory dir =
+        new CloseFailingDirectory(new ByteBuffersDirectory()) {
+          @Override
+          public IndexOutput createOutput(String name, IOContext context) throws IOException {
+            if (name.endsWith(".cfs") && armed.compareAndSet(true, false)) {
+              // Record what the merge thread deletes from here on.
+              recordedThread.set(Thread.currentThread());
+              throw new IOException("injected failure creating " + name);
+            }
+            return super.createOutput(name, context);
+          }
+        };
+    IndexWriterConfig config = new IndexWriterConfig();
+    config.setMaxFullFlushMergeWaitMillis(0);
+    config.setMergeScheduler(new SerialMergeScheduler());
+    // Flushed segments without compound files: only the merge builds one.
+    config.setUseCompoundFile(false);
+    List<String> messages = Collections.synchronizedList(new ArrayList<>());
+    InfoStream recording =
+        recordingInfoStream(
+            messages,
+            "handleMergeException",
+            "hit merge abort exception creating compound file",
+            "hit exception creating compound file",
+            "hit exception during merge");
+    config.setInfoStream(
+        new InfoStream() {
+          @Override
+          public void message(String component, String message) {
+            if (message.equals("hit exception during merge")) {
+              dir.recordedThread.set(null);
+            }
+            recording.message(component, message);
+          }
+
+          @Override
+          public boolean isEnabled(String component) {
+            return recording.isEnabled(component);
+          }
+
+          @Override
+          public void close() {}
+        });
+    LogDocMergePolicy policy = new LogDocMergePolicy();
+    policy.setNoCFSRatio(1.0);
+    config.setMergePolicy(policy);
+    IndexWriter writer = new IndexWriter(dir, config);
+    for (int i = 0; i < 3; i++) {
+      writer.addDocument(idDoc(i));
+      writer.commit();
+    }
+    armed.set(true);
+    System.out.println("forceMerge=" + described(() -> writer.forceMerge(1)));
+    dir.recordedThread.set(null);
+    System.out.println("messages=" + messages);
+    List<String> deleted = new ArrayList<>(dir.deletedOnRecordedThread);
+    Collections.sort(deleted);
+    System.out.println("deleted-on-merge-thread-before-merge-finished=" + deleted);
+    Throwable tragedy = writer.getTragicException();
+    System.out.println("tragic=" + (tragedy == null ? "none" : describe(tragedy)));
+    System.out.println("open=" + writer.isOpen());
+  }
+
+  static void warmerRollback(boolean dropFails) throws Exception {
+    CloseFailingDirectory dir = new CloseFailingDirectory(new ByteBuffersDirectory());
+    AtomicReference<IndexWriter> writerRef = new AtomicReference<>();
+    AtomicReference<MergePolicy.OneMerge> captured = new AtomicReference<>();
+    AtomicReference<String> rollbackOutcome = new AtomicReference<>();
+    AtomicReference<Thread> rollbackThread = new AtomicReference<>();
+    List<String> finished = Collections.synchronizedList(new ArrayList<>());
+    IndexWriterConfig config = new IndexWriterConfig();
+    config.setMaxFullFlushMergeWaitMillis(0);
+    config.setMergeScheduler(new SerialMergeScheduler());
+    config.setUseCompoundFile(false);
+    config.setReaderPooling(true);
+    config.setMergedSegmentWarmer(
+        reader -> {
+          rollbackThread.set(startRollback(writerRef.get(), rollbackOutcome));
+          try {
+            await(() -> captured.get().isAborted(), "the merge to abort");
+          } catch (InterruptedException e) {
+            throw new IOException(e);
+          }
+        });
+    LogDocMergePolicy inner = new LogDocMergePolicy();
+    inner.setNoCFSRatio(0.0);
+    config.setMergePolicy(
+        new OneMergeWrappingMergePolicy(
+            inner,
+            merge -> {
+              MergePolicy.OneMerge wrapped =
+                  new MergePolicy.OneMerge(merge.segments) {
+                    @Override
+                    public void mergeFinished(boolean success, boolean segmentDropped) {
+                      List<String> names = new ArrayList<>();
+                      for (SegmentCommitInfo info : segments) {
+                        names.add(info.info.name);
+                      }
+                      finished.add(String.join(",", names) + " success=" + success);
+                    }
+                  };
+              captured.set(wrapped);
+              return wrapped;
+            }));
+    IndexWriter writer = new IndexWriter(dir, config);
+    writerRef.set(writer);
+    for (int i = 0; i < 3; i++) {
+      writer.addDocument(idDoc(i));
+      writer.commit();
+    }
+    if (dropFails) {
+      // The stored-fields data of the merged segment, which the warmer's pooled reader keeps
+      // open until `readerPool.drop` closes it.
+      dir.failingName.set("_3.fdt");
+    }
+    System.out.println("forceMerge=" + described(() -> writer.forceMerge(1)));
+    Thread rollback = rollbackThread.get();
+    rollback.join(TimeUnit.SECONDS.toMillis(30));
+    System.out.println("rollback=" + (rollback.isAlive() ? "HUNG" : rollbackOutcome.get()));
+    System.out.println("finished=" + finished);
+    Throwable tragedy = writer.getTragicException();
+    System.out.println("tragic=" + (tragedy == null ? "none" : describe(tragedy)));
+    System.out.println("open=" + writer.isOpen());
+  }
+
   public static void main(String[] args) throws Exception {
     switch (args[0]) {
       case "merge-index-failure" -> mergeIndexFailure(args[1]);
@@ -412,7 +942,17 @@ public final class WriterTragedyFixture {
       case "flush-next-buffer-failure" -> flushNextBufferFailure();
       case "add-indexes-release-failure" -> addIndexesReleaseFailure();
       case "oversize-delete" -> oversizeDelete(args[1], Integer.parseInt(args[2]));
+      case "pit-rollback" -> pitRollback();
+      case "merge-close-failure" -> mergeFailure(false, args[1].equals("throw"));
+      case "merge-middle-failure" -> mergeFailure(true, args[1].equals("throw"));
+      case "cfs-rollback" -> cfsRollback();
+      case "cfs-failure" -> cfsFailure();
+      case "warmer-rollback" -> warmerRollback(args[1].equals("drop-fails"));
+      case "register-failure" -> registerFailure();
+      case "merging-after-rollback" -> mergingAfterRollback();
       default -> throw new IllegalArgumentException("unknown case " + args[0]);
     }
+    // A case that left a merge thread blocked must still end the JVM.
+    System.exit(0);
   }
 }

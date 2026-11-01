@@ -527,6 +527,14 @@ impl PagedBytesDataInput<'_> {
 }
 
 impl DataInput for PagedBytesDataInput<'_> {
+    /// `Object.toString()` of `org.apache.lucene.util.PagedBytes$PagedBytesDataInput`, which declares no `toString()`.
+    fn to_java_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.util.PagedBytes$PagedBytesDataInput",
+            self,
+        )
+    }
+
     fn read_byte(&mut self) -> Result<u8> {
         if self.current_block_upto == self.block_size {
             self.next_block();

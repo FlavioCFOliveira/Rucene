@@ -23,7 +23,7 @@ pub mod shape_field;
 pub mod spatial_query;
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
 use std::io::Read;
 use std::rc::Rc;
@@ -532,7 +532,26 @@ pub struct FieldType {
     /// (`FieldType.java`), whose iteration order the `FieldInfo` built from it
     /// inherits and a `.fnm` therefore records.
     attributes: JavaHashMap<String>,
+    /// The identity of this type once it is frozen, shared by every clone of
+    /// it; `None` while it is mutable.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java fields hold a *reference* to
+    /// their `FieldType`, so every `StoredField` shares the one frozen
+    /// `StoredField.TYPE`, and `IndexingChain` tells two types apart by
+    /// reference (`fieldType == validatedFrozenFieldType`,
+    /// `IndexingChain.java:1806,1816`). A Rust field owns a clone of its type,
+    /// so no reference can identify it. The identity is drawn when the type is
+    /// frozen and copied by `Clone`, so the clones of one frozen type — which
+    /// is how this port shares Java's one object — compare equal, and two
+    /// types frozen separately never do, even when equal by value, exactly as
+    /// two Java objects do not. It takes no part in [`PartialEq`] or
+    /// [`Hash`](std::hash::Hash), which `FieldType.equals` defines by value.
+    frozen_identity: Option<u64>,
 }
+
+/// The source of [`FieldType`] frozen identities: each [`FieldType::freeze`]
+/// of a mutable type draws the next one.
+static NEXT_FROZEN_IDENTITY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl FieldType {
     /// Creates a new mutable `FieldType` with default properties.
@@ -556,6 +575,7 @@ impl FieldType {
             vector_encoding: VectorEncoding::FLOAT32,
             vector_similarity_function: VectorSimilarityFunction::EUCLIDEAN,
             attributes: JavaHashMap::new(),
+            frozen_identity: None,
         }
     }
 
@@ -582,6 +602,7 @@ impl FieldType {
             vector_encoding: other.vector_encoding(),
             vector_similarity_function: other.vector_similarity_function(),
             attributes: other.attributes().clone(),
+            frozen_identity: None,
         }
     }
 
@@ -596,7 +617,14 @@ impl FieldType {
     }
 
     /// Prevents future changes.
+    ///
+    /// Freezing a mutable type also gives it its identity (see
+    /// `frozen_identity`); freezing a frozen type changes nothing, as in Java.
     pub fn freeze(&mut self) {
+        if !self.frozen {
+            self.frozen_identity =
+                Some(NEXT_FROZEN_IDENTITY.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+        }
         self.frozen = true;
     }
 
@@ -849,6 +877,10 @@ impl IndexableFieldType for FieldType {
 
     fn attributes(&self) -> &JavaHashMap<String> {
         &self.attributes
+    }
+
+    fn frozen_field_type_identity(&self) -> Option<u64> {
+        self.frozen_identity
     }
 }
 
@@ -2337,68 +2369,42 @@ impl IndexableField for KeywordField {
 // Point fields
 // -----------------------------------------------------------------------------
 
-fn int_point_field_type(num_dims: usize) -> FieldType {
-    static CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<usize, FieldType>>> =
-        std::sync::OnceLock::new();
-    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
-    let mut guard = cache.lock().unwrap();
-    guard
-        .entry(num_dims)
-        .or_insert_with(|| {
-            let mut ft = FieldType::new();
-            ft.set_dimensions(num_dims as i32, 4).unwrap();
-            ft.freeze();
-            ft
-        })
-        .clone()
+/// Builds and freezes a new point type of `num_dims` dimensions of
+/// `bytes_per_dim` bytes each.
+///
+/// Equivalent to the private static `getType(int numDims)` of `IntPoint`,
+/// `LongPoint`, `FloatPoint` and `DoublePoint` (`IntPoint.java:48-53`,
+/// `LongPoint.java:48-53`, `FloatPoint.java:72-77`, `DoublePoint.java:72-77`),
+/// which build a new `FieldType` for every field. Each call therefore draws a
+/// new frozen identity, so two point fields never share a type, as two Java
+/// instances never do; `IndexingChain` compares types by that identity
+/// (`IndexingChain.java:1803-1825`).
+///
+/// # Errors
+///
+/// Propagates [`FieldType::set_dimensions`]' refusal of a dimension count
+/// above the maximum, as Java's `setDimensions` throws.
+fn point_field_type(num_dims: usize, bytes_per_dim: i32) -> Result<FieldType> {
+    let mut ft = FieldType::new();
+    ft.set_dimensions(num_dims as i32, bytes_per_dim)?;
+    ft.freeze();
+    Ok(ft)
 }
 
-fn long_point_field_type(num_dims: usize) -> FieldType {
-    static CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<usize, FieldType>>> =
-        std::sync::OnceLock::new();
-    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
-    let mut guard = cache.lock().unwrap();
-    guard
-        .entry(num_dims)
-        .or_insert_with(|| {
-            let mut ft = FieldType::new();
-            ft.set_dimensions(num_dims as i32, 8).unwrap();
-            ft.freeze();
-            ft
-        })
-        .clone()
+fn int_point_field_type(num_dims: usize) -> Result<FieldType> {
+    point_field_type(num_dims, 4)
 }
 
-fn float_point_field_type(num_dims: usize) -> FieldType {
-    static CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<usize, FieldType>>> =
-        std::sync::OnceLock::new();
-    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
-    let mut guard = cache.lock().unwrap();
-    guard
-        .entry(num_dims)
-        .or_insert_with(|| {
-            let mut ft = FieldType::new();
-            ft.set_dimensions(num_dims as i32, 4).unwrap();
-            ft.freeze();
-            ft
-        })
-        .clone()
+fn long_point_field_type(num_dims: usize) -> Result<FieldType> {
+    point_field_type(num_dims, 8)
 }
 
-fn double_point_field_type(num_dims: usize) -> FieldType {
-    static CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<usize, FieldType>>> =
-        std::sync::OnceLock::new();
-    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
-    let mut guard = cache.lock().unwrap();
-    guard
-        .entry(num_dims)
-        .or_insert_with(|| {
-            let mut ft = FieldType::new();
-            ft.set_dimensions(num_dims as i32, 8).unwrap();
-            ft.freeze();
-            ft
-        })
-        .clone()
+fn float_point_field_type(num_dims: usize) -> Result<FieldType> {
+    point_field_type(num_dims, 4)
+}
+
+fn double_point_field_type(num_dims: usize) -> Result<FieldType> {
+    point_field_type(num_dims, 8)
 }
 
 /// Packs one or more `i32` point dimensions into a [`BytesRef`].
@@ -2490,8 +2496,11 @@ pub struct IntPoint {
 impl IntPoint {
     /// Creates a new IntPoint.
     pub fn new(name: &str, point: &[i32]) -> Result<Self> {
-        let field_type = int_point_field_type(point.len()).clone();
+        // `super(name, pack(point), getType(point.length))`: Java evaluates
+        // the arguments in order, so an empty point is refused by `pack`
+        // before `getType` sees it.
         let packed = pack_int_point(point)?;
+        let field_type = int_point_field_type(point.len())?;
         Ok(Self {
             name: name.to_string(),
             field_type,
@@ -2704,8 +2713,11 @@ pub struct LongPoint {
 impl LongPoint {
     /// Creates a new LongPoint.
     pub fn new(name: &str, point: &[i64]) -> Result<Self> {
-        let field_type = long_point_field_type(point.len()).clone();
+        // `super(name, pack(point), getType(point.length))`: Java evaluates
+        // the arguments in order, so an empty point is refused by `pack`
+        // before `getType` sees it.
         let packed = pack_long_point(point)?;
+        let field_type = long_point_field_type(point.len())?;
         Ok(Self {
             name: name.to_string(),
             field_type,
@@ -3039,8 +3051,11 @@ impl FloatPoint {
 
     /// Creates a new FloatPoint.
     pub fn new(name: &str, point: &[f32]) -> Result<Self> {
-        let field_type = float_point_field_type(point.len()).clone();
+        // `super(name, pack(point), getType(point.length))`: Java evaluates
+        // the arguments in order, so an empty point is refused by `pack`
+        // before `getType` sees it.
         let packed = pack_float_point(point)?;
+        let field_type = float_point_field_type(point.len())?;
         Ok(Self {
             name: name.to_string(),
             field_type,
@@ -3283,8 +3298,11 @@ impl DoublePoint {
 
     /// Creates a new DoublePoint.
     pub fn new(name: &str, point: &[f64]) -> Result<Self> {
-        let field_type = double_point_field_type(point.len()).clone();
+        // `super(name, pack(point), getType(point.length))`: Java evaluates
+        // the arguments in order, so an empty point is refused by `pack`
+        // before `getType` sees it.
         let packed = pack_double_point(point)?;
+        let field_type = double_point_field_type(point.len())?;
         Ok(Self {
             name: name.to_string(),
             field_type,

@@ -103,6 +103,21 @@ pub trait DataInput {
     /// Reads and returns a single byte.
     fn read_byte(&mut self) -> Result<u8>;
 
+    /// Java's `toString()` of this input, which an exception quotes as its
+    /// resource: `CorruptIndexException(String, DataInput)` and the
+    /// `IndexFormatTooOldException` / `IndexFormatTooNewException`
+    /// constructors that take a `DataInput` all use `Objects.toString(in)`.
+    ///
+    /// Every [`IndexInput`] returns its resource description, which is what
+    /// Java's `IndexInput.toString()` returns, and every other input the
+    /// `toString()` of its Java class.
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** It stands for the
+    /// `toString()` every Java object inherits; Rust has no such method on a
+    /// trait object, so the trait carries it. It has no default, so that every
+    /// input states the text of its Java class rather than inherit one.
+    fn to_java_string(&self) -> String;
+
     /// Reads `len` bytes into `b[offset..offset + len]`.
     fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()>;
 
@@ -230,7 +245,11 @@ pub trait DataInput {
 
     /// Reads a string written as a VInt length followed by UTF-8 bytes.
     ///
-    /// Equivalent to `DataInput.readString()`.
+    /// Equivalent to `DataInput.readString()` (`DataInput.java:230-235`). The
+    /// bytes are decoded as `new String(bytes, 0, length, UTF_8)` does: every
+    /// malformed sequence becomes U+FFFD, by the JDK's rules rather than
+    /// [`String::from_utf8_lossy`]'s (see `codec_util::java_utf8_to_string`),
+    /// and bytes that are not valid UTF-8 are never a failure.
     ///
     /// # Errors
     ///
@@ -265,8 +284,7 @@ pub trait DataInput {
             self.read_bytes(&mut bytes, filled, take)?;
             remaining -= take;
         }
-        String::from_utf8(bytes)
-            .map_err(|e| LuceneError::IllegalArgument(format!("invalid UTF-8 reading string: {e}")))
+        Ok(crate::codecs::codec_util::java_utf8_to_string(&bytes))
     }
 
     /// Reads the map previously written with
@@ -793,6 +811,11 @@ impl RandomAccessInputAdapter {
 }
 
 impl DataInput for RandomAccessInputAdapter {
+    /// `IndexInput.toString()` returns the resource description.
+    fn to_java_string(&self) -> String {
+        crate::store::IndexInput::resource_description(self).to_string()
+    }
+
     fn read_byte(&mut self) -> Result<u8> {
         self.input.read_byte()
     }
@@ -967,6 +990,11 @@ impl FilterIndexInput {
 }
 
 impl DataInput for FilterIndexInput {
+    /// `IndexInput.toString()` returns the resource description.
+    fn to_java_string(&self) -> String {
+        crate::store::IndexInput::resource_description(self).to_string()
+    }
+
     fn read_byte(&mut self) -> Result<u8> {
         self.inner.read_byte()
     }
@@ -1285,6 +1313,11 @@ impl BufferedIndexInput {
 }
 
 impl DataInput for BufferedIndexInput {
+    /// `IndexInput.toString()` returns the resource description.
+    fn to_java_string(&self) -> String {
+        crate::store::IndexInput::resource_description(self).to_string()
+    }
+
     fn read_byte(&mut self) -> Result<u8> {
         if self.buffer_position >= self.buffer_limit {
             self.refill()?;
@@ -1739,6 +1772,11 @@ impl SlicedIndexInput {
 }
 
 impl DataInput for SlicedIndexInput {
+    /// `IndexInput.toString()` returns the resource description.
+    fn to_java_string(&self) -> String {
+        crate::store::IndexInput::resource_description(self).to_string()
+    }
+
     fn read_byte(&mut self) -> Result<u8> {
         if self.buffer_position >= self.buffer_limit {
             self.refill()?;
@@ -2393,6 +2431,14 @@ impl<'a> ByteArrayDataInput<'a> {
 }
 
 impl DataInput for ByteArrayDataInput<'_> {
+    /// `ByteArrayDataInput` overrides no `toString()`, so `Object`'s applies.
+    fn to_java_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.store.ByteArrayDataInput",
+            self,
+        )
+    }
+
     fn read_byte(&mut self) -> Result<u8> {
         if self.pos >= self.bytes.len() {
             return Err(LuceneError::Io(io::Error::new(
@@ -2777,6 +2823,14 @@ impl<R: Read> InputStreamDataInput<R> {
 }
 
 impl<R: Read> DataInput for InputStreamDataInput<R> {
+    /// `InputStreamDataInput` overrides no `toString()`, so `Object`'s applies.
+    fn to_java_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.store.InputStreamDataInput",
+            self,
+        )
+    }
+
     fn read_byte(&mut self) -> Result<u8> {
         let mut buf = [0u8; 1];
         self.input.read_exact(&mut buf).map_err(|e| {
@@ -2962,6 +3016,11 @@ impl MockIndexInput {
 }
 
 impl DataInput for MockIndexInput {
+    /// `IndexInput.toString()` returns the resource description.
+    fn to_java_string(&self) -> String {
+        crate::store::IndexInput::resource_description(self).to_string()
+    }
+
     fn read_byte(&mut self) -> Result<u8> {
         self.ensure_open()?;
         let mut view = self.view();
@@ -4615,6 +4674,11 @@ impl BufferedChecksumIndexInput {
 }
 
 impl DataInput for BufferedChecksumIndexInput {
+    /// `IndexInput.toString()` returns the resource description.
+    fn to_java_string(&self) -> String {
+        crate::store::IndexInput::resource_description(self).to_string()
+    }
+
     fn read_byte(&mut self) -> Result<u8> {
         let b = self.main.read_byte()?;
         self.digest.update(b);
@@ -6502,6 +6566,11 @@ fn read_long_byte_by_byte(input: &mut dyn DataInput) -> Result<i64> {
 }
 
 impl DataInput for ByteBuffersDataInput {
+    /// `ByteBuffersDataInput.toString()`, ported as this type's `Display`.
+    fn to_java_string(&self) -> String {
+        self.to_string()
+    }
+
     fn read_byte(&mut self) -> Result<u8> {
         if self.pos >= self.length {
             return Err(LuceneError::Io(io::Error::new(
@@ -7610,8 +7679,11 @@ impl std::fmt::Display for ByteBuffersDirectory {
 pub fn output_as_many_buffers() -> OutputToInputFn {
     Arc::new(|file_name: &str, output: &ByteBuffersDataOutput| {
         let data_input = output.to_data_input()?;
+        // `String.format("%s (file=%s, buffers=%s)", ..., dataInput.toString())`
+        // (`ByteBuffersDirectory.java:54-60`): the input's `toString()`, which
+        // its `Display` ports.
         let desc = format!(
-            "ByteBuffersIndexInput (file={}, buffers={:?})",
+            "ByteBuffersIndexInput (file={}, buffers={})",
             file_name, data_input
         );
         Ok(Box::new(ByteBuffersIndexInput::new(data_input, desc)) as Box<dyn IndexInput + Send>)
@@ -7625,8 +7697,9 @@ pub fn output_as_one_buffer() -> OutputToInputFn {
     Arc::new(|file_name: &str, output: &ByteBuffersDataOutput| {
         let bytes = output.to_array_copy();
         let data_input = ByteBuffersDataInput::new(vec![bytes])?;
+        // `dataInput.toString()` (`ByteBuffersDirectory.java:70-76`), as above.
         let desc = format!(
-            "ByteBuffersIndexInput (file={}, buffers={:?})",
+            "ByteBuffersIndexInput (file={}, buffers={})",
             file_name, data_input
         );
         Ok(Box::new(ByteBuffersIndexInput::new(data_input, desc)) as Box<dyn IndexInput + Send>)
@@ -7676,6 +7749,11 @@ impl ByteBuffersIndexInput {
 }
 
 impl DataInput for ByteBuffersIndexInput {
+    /// `IndexInput.toString()` returns the resource description.
+    fn to_java_string(&self) -> String {
+        crate::store::IndexInput::resource_description(self).to_string()
+    }
+
     fn read_byte(&mut self) -> Result<u8> {
         self.input_mut()?.read_byte()
     }
@@ -8844,6 +8922,11 @@ impl FileIndexInput {
 }
 
 impl DataInput for FileIndexInput {
+    /// `IndexInput.toString()` returns the resource description.
+    fn to_java_string(&self) -> String {
+        crate::store::IndexInput::resource_description(self).to_string()
+    }
+
     fn read_byte(&mut self) -> Result<u8> {
         let mut buf = [0u8; 1];
         self.file.read_exact(&mut buf).map_err(LuceneError::from)?;
@@ -9191,6 +9274,11 @@ impl RawNioFsIndexInput {
 }
 
 impl DataInput for RawNioFsIndexInput {
+    /// `IndexInput.toString()` returns the resource description.
+    fn to_java_string(&self) -> String {
+        crate::store::IndexInput::resource_description(self).to_string()
+    }
+
     fn read_byte(&mut self) -> Result<u8> {
         let mut buf = [0u8; 1];
         self.read_internal(&mut buf)?;
@@ -9384,6 +9472,11 @@ impl NIOFSIndexInput {
 }
 
 impl DataInput for NIOFSIndexInput {
+    /// `IndexInput.toString()` returns the resource description.
+    fn to_java_string(&self) -> String {
+        crate::store::IndexInput::resource_description(self).to_string()
+    }
+
     fn read_byte(&mut self) -> Result<u8> {
         self.inner.read_byte()
     }
@@ -12533,6 +12626,58 @@ mod tests {
         }
         out.push(i as u8);
         out
+    }
+
+    /// `DataInput.readString` decodes with `new String(bytes, 0, length,
+    /// UTF_8)` (`DataInput.java:230-235`), which never fails: each malformed
+    /// sequence is U+FFFD by the JDK's rules. The expected strings are what
+    /// Lucene 10.5.0's `ByteArrayDataInput.readString()` returned for the same
+    /// bytes on OpenJDK 25.0.4.1, as UTF-16 units.
+    #[test]
+    fn read_string_decodes_invalid_utf8_as_lucene_does() {
+        let cases: [(&[u8], &[u16]); 11] = [
+            (
+                &[
+                    0x61, 0xFF, 0xC3, 0x28, 0xE2, 0x82, 0x41, 0xF0, 0x9F, 0x98, 0x80, 0xED, 0xA0,
+                    0x80,
+                ],
+                &[
+                    0x61, 0xFFFD, 0xFFFD, 0x28, 0xFFFD, 0x41, 0xD83D, 0xDE00, 0xFFFD,
+                ],
+            ),
+            (&[0x80], &[0xFFFD]),
+            (&[0x61, 0xC3], &[0x61, 0xFFFD]),
+            (&[0xC0, 0x80], &[0xFFFD, 0xFFFD]),
+            (&[0xE0, 0x80, 0x80], &[0xFFFD, 0xFFFD, 0xFFFD]),
+            (&[0xF4, 0x90, 0x80, 0x80], &[0xFFFD, 0xFFFD, 0xFFFD, 0xFFFD]),
+            (&[0xF5, 0xFE, 0xFF], &[0xFFFD, 0xFFFD, 0xFFFD]),
+            (&[0xF0, 0x9F, 0x98], &[0xFFFD]),
+            (&[0xED, 0xA0, 0xBD, 0xED, 0xB8, 0x80], &[0xFFFD, 0xFFFD]),
+            (
+                &[0xE2, 0x82, 0xAC, 0xE2, 0x28, 0xA1],
+                &[0x20AC, 0xFFFD, 0x28, 0xFFFD],
+            ),
+            (
+                &[
+                    0x68, 0xC3, 0xA9, 0x20, 0xE2, 0x82, 0xAC, 0x20, 0xF0, 0x9F, 0x98, 0x80,
+                ],
+                &[0x68, 0xE9, 0x20, 0x20AC, 0x20, 0xD83D, 0xDE00],
+            ),
+        ];
+        for (bytes, expected) in cases {
+            let mut encoded = v_int(bytes.len() as i32);
+            encoded.extend_from_slice(bytes);
+            let mut input = ByteArrayDataInput::new(&encoded);
+            let decoded = input
+                .read_string()
+                .expect("readString never rejects the bytes");
+            assert_eq!(
+                decoded.encode_utf16().collect::<Vec<u16>>(),
+                expected,
+                "{bytes:02X?}"
+            );
+            assert!(input.eof());
+        }
     }
 
     #[test]

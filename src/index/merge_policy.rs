@@ -681,6 +681,16 @@ impl OneMerge {
         self.merge_finished = Some(hook);
     }
 
+    /// Returns the hook installed by [`set_merge_finished`](Self::set_merge_finished),
+    /// if any.
+    ///
+    /// A wrapping `OneMerge` calls the `mergeFinished` of the merge it wraps
+    /// (`IndexWriter.java:4006`); since the wrapper here is the same merge with
+    /// a new hook, it reads the old one first so that it can still call it.
+    pub(crate) fn merge_finished_hook(&self) -> Option<MergeFinishedHook> {
+        self.merge_finished.clone()
+    }
+
     /// Reports that the merge is done and every reader it held is closed.
     ///
     /// Equivalent to `OneMerge.mergeFinished(boolean success, boolean
@@ -708,6 +718,16 @@ impl OneMerge {
     /// [`MergeCompleteHook`].
     pub fn set_on_merge_complete(&mut self, hook: MergeCompleteHook) {
         self.on_merge_complete = Some(hook);
+    }
+
+    /// Returns the hook installed by
+    /// [`set_on_merge_complete`](Self::set_on_merge_complete), if any.
+    ///
+    /// A wrapping `OneMerge` calls the `onMergeComplete` of the merge it wraps
+    /// (`IndexWriter.java:4022`); since the wrapper here is the same merge with
+    /// a new hook, it reads the old one first so that it can still call it.
+    pub(crate) fn on_merge_complete_hook(&self) -> Option<MergeCompleteHook> {
+        self.on_merge_complete.clone()
     }
 
     /// Reports that the merged segment is about to be applied to the writer's

@@ -11,6 +11,7 @@ use crate::index::leaf_reader::LeafReader;
 use crate::index::{BinaryDocValues, NumericDocValues, SortedDocValues};
 use crate::search::SortField;
 use crate::search::NO_MORE_DOCS;
+use crate::util::bit_set::{bit_set_of, BitSet};
 use crate::util::packed::{
     MonotonicLongValues, PackedInts, PackedLongValues, PackedLongValuesBuilderOps,
 };
@@ -850,23 +851,127 @@ impl TimSorter for DocValueSorter<'_> {
 
 /// Sorts the documents of a segment.
 ///
-/// Equivalent to `org.apache.lucene.index.Sorter`.
+/// Equivalent to `org.apache.lucene.index.Sorter`, which holds the [`Sort`]
+/// it applies (`Sorter.java:34-44`).
+///
+/// [`Sort`]: crate::search::Sort
+#[derive(Debug, Clone)]
 pub struct Sorter {
-    id: String,
+    sort: crate::search::Sort,
+}
+
+impl std::fmt::Display for Sorter {
+    /// Equivalent to `Sorter.toString()`, which returns
+    /// [`get_id`](Sorter::get_id) (`Sorter.java:252-255`).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.get_id())
+    }
 }
 
 impl Sorter {
-    /// Creates a sorter identified by `id`, which is the string form of the sort
-    /// it applies.
-    pub fn new(id: impl Into<String>) -> Self {
-        Self { id: id.into() }
+    /// Creates a sorter that sorts an index with `sort`.
+    ///
+    /// Equivalent to the package-private constructor `Sorter(Sort)`
+    /// (`Sorter.java:37-44`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `sort` refers to the
+    /// relevance score, which no index can be sorted by.
+    pub fn new(sort: crate::search::Sort) -> Result<Self> {
+        if sort.needs_scores() {
+            return Err(LuceneError::IllegalArgument(
+                "Cannot sort an index with a Sort that refers to the relevance score".to_string(),
+            ));
+        }
+        Ok(Self { sort })
     }
 
-    /// Returns the identifier of the sort this sorter applies.
+    /// Returns the identifier of this sorter: the string form of its sort, so
+    /// that two sorters that sort documents likewise share it.
     ///
-    /// Equivalent to `Sorter.getID()`.
-    pub fn get_id(&self) -> &str {
-        &self.id
+    /// Equivalent to `Sorter.getID()`, which returns `sort.toString()`
+    /// (`Sorter.java:248-250`).
+    pub fn get_id(&self) -> String {
+        self.sort.to_string()
+    }
+
+    /// Returns a mapping from the documents of `reader` to their position in
+    /// the sorted order, or `None` when `reader` is already sorted. Deleted
+    /// documents take part in the mapping like any other.
+    ///
+    /// Equivalent to the package-private `Sorter.sort(LeafReader)`
+    /// (`Sorter.java:185-218`): when the segment has document blocks, a
+    /// document's sort value is the value of the parent (last) document of its
+    /// block, found through the parent field. The name differs because Rust has
+    /// no overloading.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::CorruptIndex`] when a segment created by Lucene
+    /// 10 or later has blocks but the index declares no parent field,
+    /// [`LuceneError::IllegalArgument`] when a sort field cannot sort an
+    /// index, [`LuceneError::IllegalState`] when a segment with blocks has no
+    /// values for its parent field — Java's `BitSet.of` dereferences the null
+    /// it is handed and throws `NullPointerException` — and propagates
+    /// whatever reading the sort values raises.
+    pub fn sort_reader(&self, reader: &dyn LeafReader) -> Result<Option<SorterDocMap>> {
+        let fields = self.sort.fields();
+        let meta_data = reader.get_meta_data();
+        let field_infos = reader.get_field_infos();
+        let max_doc = reader.max_doc();
+        let mut parents: Option<Arc<dyn BitSet>> = None;
+        if meta_data.has_blocks() {
+            if let Some(parent_field) = field_infos.get_parent_field() {
+                // `BitSet.of(reader.getNumericDocValues(parentField), maxDoc)`
+                // (`Sorter.java:193-194`): a sparse set when the values are
+                // fewer than `maxDoc >>> 7`, a fixed one otherwise.
+                let Some(mut values) = reader.get_numeric_doc_values(parent_field)? else {
+                    return Err(LuceneError::illegal_state(format!(
+                        "the segment has blocks but no doc values for its parent field \
+                         \"{parent_field}\""
+                    )));
+                };
+                parents = Some(Arc::from(bit_set_of(values.as_mut(), max_doc)?));
+            }
+        }
+        if meta_data.has_blocks()
+            && field_infos.get_parent_field().is_none()
+            && meta_data.created_version_major() >= crate::util::Version::LUCENE_10_0_0.major as i32
+        {
+            return Err(LuceneError::corrupt_index(
+                format!(
+                    "parent field is not set but the index has blocks. indexCreatedVersionMajor: {}",
+                    meta_data.created_version_major()
+                ),
+                "Sorter",
+            ));
+        }
+
+        let mut comparators: Vec<DocComparator> = Vec::with_capacity(fields.len());
+        for field in fields {
+            let sorter = field.get_index_sorter().ok_or_else(|| {
+                LuceneError::IllegalArgument(format!(
+                    "Cannot use sortfield + {field} to sort indexes"
+                ))
+            })?;
+            let comparator = sorter.get_doc_comparator(reader, max_doc)?;
+            // `comparatorWrapper.apply(...)`: compare the parents of the two
+            // documents' blocks.
+            comparators.push(match &parents {
+                None => comparator,
+                Some(parents) => {
+                    let parents = Arc::clone(parents);
+                    Box::new(move |doc_id1: i32, doc_id2: i32| {
+                        comparator(
+                            crate::util::bit_set::BitSet::next_set_bit(parents.as_ref(), doc_id1),
+                            crate::util::bit_set::BitSet::next_set_bit(parents.as_ref(), doc_id2),
+                        )
+                    })
+                }
+            });
+        }
+        self.sort_multi(max_doc, comparators)
     }
 
     /// Sorts `max_doc` documents by `comparator`, returning `None` when they are
@@ -922,16 +1027,18 @@ impl Sorter {
     /// returning `None` when they are already in order. The map is returned
     /// packed.
     ///
-    /// Equivalent to `Sorter.sort(int, DocComparator[])` (`Sorter.java:213-216`).
+    /// Equivalent to the package-private instance method `Sorter.sort(int,
+    /// DocComparator[])` (`Sorter.java:220-223`).
     ///
     /// # Errors
     ///
     /// Propagates the error packing the map raises.
     pub fn sort_multi(
+        &self,
         max_doc: i32,
         comparators: Vec<DocComparator>,
     ) -> Result<Option<SorterDocMap>> {
-        Self::sort_and_leave_unpacked(max_doc, comparators)
+        self.sort_and_leave_unpacked(max_doc, comparators)
             .map(SorterDocMap::pack)
             .transpose()
     }
@@ -940,10 +1047,12 @@ impl Sorter {
     /// by document id, returning `None` when they are already in order. The
     /// map is returned unpacked.
     ///
-    /// Equivalent to `Sorter.sortAndLeaveUnpacked(int, DocComparator[])`
-    /// (`Sorter.java:218-231`), which `IndexingChain.maybeSortSegment` calls so
+    /// Equivalent to the package-private instance method
+    /// `Sorter.sortAndLeaveUnpacked(int, DocComparator[])`
+    /// (`Sorter.java:225-239`), which `IndexingChain.maybeSortSegment` calls so
     /// that the flush can read `oldToNew` from the `int[]`.
     pub fn sort_and_leave_unpacked(
+        &self,
         max_doc: i32,
         comparators: Vec<DocComparator>,
     ) -> Option<SorterDocMap> {
@@ -1084,7 +1193,7 @@ impl MultiSorter {
         // blocks). Shared across all sort fields; `None` when the reader does
         // not use blocks. A document's sort value is the value of the parent
         // (last) document of its block.
-        let mut parents: Vec<Option<crate::util::FixedBitSet>> = Vec::with_capacity(leaf_count);
+        let mut parents: Vec<Option<Box<dyn BitSet>>> = Vec::with_capacity(leaf_count);
         for reader in readers {
             let field_infos = reader.get_field_infos();
             let meta_data = reader.get_meta_data();
@@ -1100,16 +1209,11 @@ impl MultiSorter {
                                      sorting is used with blocks"
                                 ))
                             })?;
-                        // `BitSet.of(parentDocs, codecReader.maxDoc())`.
-                        let mut bits = crate::util::FixedBitSet::new(reader.max_doc() as usize);
-                        loop {
-                            let doc = parent_docs.next_doc()?;
-                            if doc == NO_MORE_DOCS {
-                                break;
-                            }
-                            bits.set(doc as usize);
-                        }
-                        reader_parents = Some(bits);
+                        // `BitSet.of(parentDocs, codecReader.maxDoc())`
+                        // (`MultiSorter.java:62`): a sparse set when the
+                        // values are fewer than `maxDoc >>> 7`, a fixed one
+                        // otherwise.
+                        reader_parents = Some(bit_set_of(parent_docs.as_mut(), reader.max_doc())?);
                     }
                     None if meta_data.created_version_major() >= 10 => {
                         return Err(LuceneError::corrupt_index(
@@ -1152,9 +1256,7 @@ impl MultiSorter {
                 // with `leaf.docID` still 0, then `queue.add(leaf)`.
                 Self::set_comparable_values(
                     &mut comparables.borrow_mut(),
-                    parents[reader_index]
-                        .as_ref()
-                        .map(|bits| bits as &dyn crate::util::bit_set::BitSet),
+                    parents[reader_index].as_deref(),
                     reader_index,
                     0,
                 )?;
@@ -1195,9 +1297,7 @@ impl MultiSorter {
                 let (reader_index, next) = (top.reader_index, top.doc_id);
                 Self::set_comparable_values(
                     &mut comparables.borrow_mut(),
-                    parents[reader_index]
-                        .as_ref()
-                        .map(|bits| bits as &dyn crate::util::bit_set::BitSet),
+                    parents[reader_index].as_deref(),
                     reader_index,
                     next,
                 )?;
@@ -1375,13 +1475,6 @@ pub fn write_sort_field(
     provider.write_sort_field(sort_field, output)
 }
 
-impl std::fmt::Display for Sorter {
-    /// Port of `Sorter.toString()`, which is `getID()`.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.get_id())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1391,12 +1484,46 @@ mod tests {
         Box::new(move |a: i32, b: i32| values[a as usize].cmp(&values[b as usize]))
     }
 
+    /// A sorter over one long field; the comparators the tests hand it decide
+    /// the order, as they do for Java's `sort(int, DocComparator[])`.
+    fn long_sorter() -> Sorter {
+        Sorter::new(
+            crate::search::Sort::new_fields(vec![SortField::new(
+                Some("n".to_string()),
+                crate::search::SortFieldType::Long,
+            )
+            .unwrap()])
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn sorted_documents_need_no_map() {
-        assert!(Sorter::sort_and_leave_unpacked(5, vec![by_value(vec![1, 1, 2, 3, 3])]).is_none());
-        assert!(Sorter::sort_multi(0, vec![by_value(vec![])])
+        let sorter = long_sorter();
+        assert!(sorter
+            .sort_and_leave_unpacked(5, vec![by_value(vec![1, 1, 2, 3, 3])])
+            .is_none());
+        assert!(sorter
+            .sort_multi(0, vec![by_value(vec![])])
             .unwrap()
             .is_none());
+    }
+
+    /// `Sorter(Sort)` refuses a sort that needs scores, with Java's message,
+    /// and `getID()` is the sort's string form (`Sorter.java:38-44, 247-249`;
+    /// the message is the one `lucene-core-10.5.0.jar` throws).
+    #[test]
+    fn a_sorter_holds_its_sort_and_refuses_a_score_sort() {
+        let error = Sorter::new(crate::search::Sort::new()).unwrap_err();
+        assert!(
+            matches!(&error, LuceneError::IllegalArgument(message)
+                if message == "Cannot sort an index with a Sort that refers to the relevance score"),
+            "{error:?}"
+        );
+        let sorter = long_sorter();
+        assert_eq!(sorter.get_id(), "<long: \"n\">");
+        assert_eq!(sorter.to_string(), sorter.get_id());
     }
 
     #[test]
@@ -1405,8 +1532,10 @@ mod tests {
         // runs with its temporary slots (`maxDoc / 64` of them).
         let max_doc = 1_000;
         let values: Vec<i64> = (0..max_doc).map(|doc| ((doc * 7919) % 13) as i64).collect();
-        let unpacked =
-            Sorter::sort_and_leave_unpacked(max_doc, vec![by_value(values.clone())]).unwrap();
+        let sorter = long_sorter();
+        let unpacked = sorter
+            .sort_and_leave_unpacked(max_doc, vec![by_value(values.clone())])
+            .unwrap();
         assert!(!unpacked.is_packed());
         assert!(unpacked.is_consistent());
         let mut expected: Vec<i32> = (0..max_doc).collect();
@@ -1416,7 +1545,8 @@ mod tests {
             assert_eq!(unpacked.old_to_new(old_doc), new_doc as i32);
         }
 
-        let packed = Sorter::sort_multi(max_doc, vec![by_value(values)])
+        let packed = sorter
+            .sort_multi(max_doc, vec![by_value(values)])
             .unwrap()
             .unwrap();
         assert!(packed.is_packed());

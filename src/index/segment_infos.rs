@@ -1829,9 +1829,9 @@ mod tests {
     /// `lucene-core-10.5.0.jar` (`oracle7/Probe16.java`, cases C1 and C2, the
     /// checksum left stale): `IndexFormatTooOldException` with `1071082518
     /// (needs to be between 1071082519 and 1071082519)` and with `8 (needs to
-    /// be between 9 and 10)`, resource aside. The second is raised by
-    /// `codec_util::check_header_no_magic`, which reports it with its own
-    /// class and text, so only the skipped footer check is asserted for it.
+    /// be between 9 and 10)`, both naming the checksum input as the resource.
+    /// The second is raised by `codec_util::check_header_no_magic`
+    /// (`CodecUtil.java:209-212`).
     #[test]
     fn a_header_refused_before_its_format_is_known_skips_the_footer_check() {
         let (dir, original) = committed_single_segment();
@@ -1857,13 +1857,18 @@ mod tests {
         let mut bytes = original;
         assert_eq!(bytes[13..17], [0, 0, 0, 10]);
         bytes[16] = 8;
-        let (error, _) = read_as_written(&dir, bytes);
+        let (error, resource) = read_as_written(&dir, bytes);
         assert!(
-            matches!(
-                error,
-                LuceneError::IndexFormatTooOld { .. } | LuceneError::IndexFormatNotSupported(_)
-            ),
+            matches!(error, LuceneError::IndexFormatTooOld { .. }),
             "the header's refusal, not the footer's checksum failure: {error:?}"
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "Format version is not supported (resource {resource}): 8 (needs to be between 9 \
+                 and 10). This version of Lucene only supports indexes created with release 9.0 \
+                 and later."
+            )
         );
     }
 

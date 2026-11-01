@@ -668,6 +668,11 @@ fn check_dst(offset: usize, length: usize, len: usize) -> Result<()> {
 }
 
 impl DataInput for MemorySegmentIndexInput {
+    /// `IndexInput.toString()` returns the resource description.
+    fn to_java_string(&self) -> String {
+        crate::store::IndexInput::resource_description(self).to_string()
+    }
+
     fn read_byte(&mut self) -> Result<u8> {
         self.ensure_open()?;
         let pos = self.cur_position;

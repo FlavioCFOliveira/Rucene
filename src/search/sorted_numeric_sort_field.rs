@@ -157,10 +157,14 @@ impl SortedNumericSortField {
             kind,
             missing,
             self.sort_field.reverse(),
+            // `this::getValue`: `SortedNumericSelector.wrap(DocValues.
+            // getSortedNumeric(reader, getField()), selector, type)`
+            // (`SortedNumericSortField.java:373-376`). A single-valued numeric
+            // field is promoted, a field the reader knows with another type is
+            // refused, and an absent one reads as empty values
+            // (`DocValues.java:293-305`).
             std::sync::Arc::new(move |reader: &dyn crate::index::LeafReader| {
-                let Some(values) = reader.get_sorted_numeric_doc_values(&field)? else {
-                    return Ok(None);
-                };
+                let values = crate::index::DocValues::get_sorted_numeric(reader, &field)?;
                 Ok(Some(
                     crate::search::sorted_numeric_selector::SortedNumericSelector::wrap(
                         values,

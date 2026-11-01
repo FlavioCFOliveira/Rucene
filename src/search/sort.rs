@@ -516,13 +516,18 @@ impl SortField {
                     _ => None,
                 };
                 let name = field.clone();
+                // `reader -> DocValues.getNumeric(reader, field)`
+                // (`SortField.java:607-630`; `DocValues.java:234-242`): a
+                // field the reader knows without numeric doc values is refused
+                // with `IllegalStateException`, and an absent one reads as
+                // empty values.
                 Some(Arc::new(NumericSorter::new(
                     Self::NAME,
                     kind,
                     missing,
                     self.reverse,
                     Arc::new(move |reader: &dyn crate::index::LeafReader| {
-                        reader.get_numeric_doc_values(&name)
+                        crate::index::DocValues::get_numeric(reader, &name).map(Some)
                     }),
                 )))
             }

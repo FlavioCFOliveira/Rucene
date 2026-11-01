@@ -20,7 +20,7 @@ use crate::{
         BufferedChecksumIndexInput, ChecksumIndexInput, DataInput, DataOutput, IndexInput,
         IndexOutput,
     },
-    util::string_helper::ID_LENGTH,
+    util::string_helper::{StringHelper, ID_LENGTH},
     Result,
 };
 
@@ -162,29 +162,46 @@ fn validate_suffix(suffix: &str) -> Result<()> {
 /// # Errors
 ///
 /// Returns `LuceneError::CorruptIndex` if the magic or codec name do not match,
-/// and `LuceneError::IndexFormatNotSupported` if the version is outside the
-/// supported range.
+/// and `LuceneError::IndexFormatTooOld` or `LuceneError::IndexFormatTooNew` if
+/// the version is outside the supported range.
 ///
-/// Equivalent to `CodecUtil.checkHeader`.
+/// Equivalent to `CodecUtil.checkHeader` (`CodecUtil.java:182-194`): a magic
+/// mismatch raises `CorruptIndexException(String, DataInput)`, whose resource
+/// is the input's `toString()`.
 pub fn check_header(
     input: &mut dyn DataInput,
     codec: &str,
     min_version: i32,
     max_version: i32,
 ) -> Result<i32> {
+    // Safety to guard against reading a bogus string:
     let actual_header = read_be_int(input)?;
     if actual_header != CODEC_MAGIC {
-        return Err(LuceneError::CorruptIndex(format!(
-            "codec header mismatch: actual header={} vs expected header={}",
-            actual_header, CODEC_MAGIC
-        )));
+        return Err(LuceneError::corrupt_index(
+            format!(
+                "codec header mismatch: actual header={actual_header} vs expected header={CODEC_MAGIC}"
+            ),
+            input.to_java_string(),
+        ));
     }
     check_header_no_magic(input, codec, min_version, max_version)
 }
 
 /// Like [`check_header`], but assumes the magic int has already been consumed.
 ///
-/// Equivalent to `CodecUtil.checkHeaderNoMagic`.
+/// Equivalent to `CodecUtil.checkHeaderNoMagic` (`CodecUtil.java:201-218`).
+/// Each failure raises Java's exception with the input's `toString()` as its
+/// resource, taken when the failure is detected, as Java's constructors take
+/// it.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::CorruptIndex`] when the codec name differs from
+/// `codec` (`CorruptIndexException(String, DataInput)`),
+/// [`LuceneError::IndexFormatTooOld`] when the version is below
+/// `min_version` and [`LuceneError::IndexFormatTooNew`] when it is above
+/// `max_version` (their `(DataInput, int, int, int)` constructors), and
+/// propagates any I/O error.
 pub fn check_header_no_magic(
     input: &mut dyn DataInput,
     codec: &str,
@@ -193,24 +210,28 @@ pub fn check_header_no_magic(
 ) -> Result<i32> {
     let actual_codec = input.read_string()?;
     if actual_codec != codec {
-        return Err(LuceneError::CorruptIndex(format!(
-            "codec mismatch: actual codec={} vs expected codec={}",
-            actual_codec, codec
-        )));
+        return Err(LuceneError::corrupt_index(
+            format!("codec mismatch: actual codec={actual_codec} vs expected codec={codec}"),
+            input.to_java_string(),
+        ));
     }
 
     let actual_version = read_be_int(input)?;
     if actual_version < min_version {
-        return Err(LuceneError::IndexFormatNotSupported(format!(
-            "index format too old: version={} minVersion={} maxVersion={}",
-            actual_version, min_version, max_version
-        )));
+        return Err(LuceneError::index_format_too_old(
+            input.to_java_string(),
+            actual_version,
+            min_version,
+            max_version,
+        ));
     }
     if actual_version > max_version {
-        return Err(LuceneError::IndexFormatNotSupported(format!(
-            "index format too new: version={} minVersion={} maxVersion={}",
-            actual_version, min_version, max_version
-        )));
+        return Err(LuceneError::index_format_too_new(
+            input.to_java_string(),
+            actual_version,
+            min_version,
+            max_version,
+        ));
     }
 
     Ok(actual_version)
@@ -246,8 +267,11 @@ pub fn check_index_header(
 /// Returns [`LuceneError::CorruptIndex`] when `input` is too small to hold a
 /// header and a footer, when the first four bytes are not [`CODEC_MAGIC`], or
 /// when the object id does not match `expected_id`; propagates any I/O error.
+/// Each failure is Java's `CorruptIndexException(String, DataInput)`, whose
+/// resource is the input's `toString()`.
 ///
-/// Equivalent to `org.apache.lucene.codecs.CodecUtil#verifyAndCopyIndexHeader`.
+/// Equivalent to `org.apache.lucene.codecs.CodecUtil#verifyAndCopyIndexHeader`
+/// (`CodecUtil.java:274-314`).
 pub fn verify_and_copy_index_header(
     input: &mut dyn IndexInput,
     out: &mut dyn DataOutput,
@@ -255,17 +279,25 @@ pub fn verify_and_copy_index_header(
 ) -> Result<()> {
     // make sure it's large enough to have a header and footer
     if input.length() < (footer_length() + header_length("")) as i64 {
-        return Err(LuceneError::CorruptIndex(format!(
-            "compound sub-files must have a valid codec header and footer: file is too small ({} bytes)",
-            input.length()
-        )));
+        // `CodecUtil.java:277-283`.
+        return Err(LuceneError::corrupt_index(
+            format!(
+                "compound sub-files must have a valid codec header and footer: file is too small ({} bytes)",
+                input.length()
+            ),
+            input.to_java_string(),
+        ));
     }
 
     let actual_header = read_be_int(input)?;
     if actual_header != CODEC_MAGIC {
-        return Err(LuceneError::CorruptIndex(format!(
-            "compound sub-files must have a valid codec header and footer: codec header mismatch: actual header={actual_header} vs expected header={CODEC_MAGIC}"
-        )));
+        // `CodecUtil.java:286-293`.
+        return Err(LuceneError::corrupt_index(
+            format!(
+                "compound sub-files must have a valid codec header and footer: codec header mismatch: actual header={actual_header} vs expected header={CODEC_MAGIC}"
+            ),
+            input.to_java_string(),
+        ));
     }
 
     // we can't verify these, so we pass-through:
@@ -292,42 +324,199 @@ pub fn verify_and_copy_index_header(
 
 /// Reads and validates the 16-byte object id of an index header.
 ///
-/// Equivalent to `CodecUtil.checkIndexHeaderID`.
+/// Equivalent to `CodecUtil.checkIndexHeaderID` (`CodecUtil.java:363-375`):
+/// the id is read first and compared with `Arrays.equals`, so an expected id
+/// of the wrong length is simply a mismatch, rendered by
+/// `StringHelper.idToString` with its `(INVALID FORMAT)` mark.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::CorruptIndex`] when the id differs from
+/// `expected_id` (`CorruptIndexException(String, DataInput)`, whose resource
+/// is the input's `toString()`), and propagates any I/O error.
 pub fn check_index_header_id(input: &mut dyn DataInput, expected_id: &[u8]) -> Result<()> {
-    if expected_id.len() != ID_LENGTH {
-        return Err(LuceneError::IllegalArgument(format!(
-            "expected id must be {} bytes, got {}",
-            ID_LENGTH,
-            expected_id.len()
-        )));
-    }
     let mut id = [0u8; ID_LENGTH];
     input.read_bytes(&mut id, 0, ID_LENGTH)?;
     if id != expected_id {
-        return Err(LuceneError::CorruptIndex(format!(
-            "file mismatch, expected id={:02x?}, got={:02x?}",
-            expected_id, id
-        )));
+        return Err(LuceneError::corrupt_index(
+            format!(
+                "file mismatch, expected id={}, got={}",
+                StringHelper::id_to_string(Some(expected_id)),
+                StringHelper::id_to_string(Some(&id))
+            ),
+            input.to_java_string(),
+        ));
     }
     Ok(())
 }
 
 /// Reads and validates the suffix of an index header.
 ///
-/// Equivalent to `CodecUtil.checkIndexHeaderSuffix`.
+/// Equivalent to `CodecUtil.checkIndexHeaderSuffix` (`CodecUtil.java:378-389`).
+/// The suffix bytes are decoded as `new String(suffixBytes, UTF_8)` does,
+/// replacing each malformed sequence with U+FFFD rather than failing.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::CorruptIndex`] when the suffix differs from
+/// `expected_suffix` (`CorruptIndexException(String, DataInput)`, whose
+/// resource is the input's `toString()`), and propagates any I/O error.
 pub fn check_index_header_suffix(input: &mut dyn DataInput, expected_suffix: &str) -> Result<()> {
     let suffix_length = input.read_byte()? as usize;
     let mut suffix_bytes = vec![0u8; suffix_length];
     input.read_bytes(&mut suffix_bytes, 0, suffix_length)?;
-    let suffix = String::from_utf8(suffix_bytes)
-        .map_err(|e| LuceneError::IllegalArgument(format!("invalid UTF-8 reading suffix: {e}")))?;
+    let suffix = java_utf8_to_string(&suffix_bytes);
     if suffix != expected_suffix {
-        return Err(LuceneError::CorruptIndex(format!(
-            "file mismatch, expected suffix={:?}, got={:?}",
-            expected_suffix, suffix
-        )));
+        return Err(LuceneError::corrupt_index(
+            format!("file mismatch, expected suffix={expected_suffix}, got={suffix}"),
+            input.to_java_string(),
+        ));
     }
     Ok(())
+}
+
+/// Decodes `bytes` as `new String(bytes, StandardCharsets.UTF_8)` does.
+///
+/// **This has no counterpart in Lucene 10.5.0**: Java delegates to the JDK,
+/// whose decoder replaces every malformed sequence with U+FFFD and never
+/// fails. Its notion of a malformed sequence is not Unicode's "maximal
+/// subpart" that [`String::from_utf8_lossy`] follows — an encoded surrogate
+/// such as `ED A0 80` is one replacement in Java and three in Rust — so the
+/// JDK's rules (`java.lang.String.decodeUTF8_UTF16` and its `malformed3` /
+/// `malformed4` helpers in OpenJDK 21-25) are reproduced here, and checked
+/// against JDK 25 by the codec-header portability test.
+///
+/// Used by [`check_index_header_suffix`] and by
+/// [`DataInput::read_string`](crate::store::DataInput::read_string), whose
+/// Java counterparts both build the string with that constructor
+/// (`CodecUtil.java:383`, `DataInput.java:234`).
+pub(crate) fn java_utf8_to_string(bytes: &[u8]) -> String {
+    const REPL: u16 = 0xFFFD;
+    fn is_not_continuation(b: u8) -> bool {
+        b & 0xC0 != 0x80
+    }
+    fn is_malformed3(b1: u8, b2: u8, b3: u8) -> bool {
+        (b1 == 0xE0 && b2 & 0xE0 == 0x80) || is_not_continuation(b2) || is_not_continuation(b3)
+    }
+    fn is_malformed3_2(b1: u8, b2: u8) -> bool {
+        (b1 == 0xE0 && b2 & 0xE0 == 0x80) || is_not_continuation(b2)
+    }
+    fn is_malformed4(b2: u8, b3: u8, b4: u8) -> bool {
+        is_not_continuation(b2) || is_not_continuation(b3) || is_not_continuation(b4)
+    }
+    fn is_malformed4_2(b1: u8, b2: u8) -> bool {
+        (b1 == 0xF0 && !(0x90..=0xBF).contains(&b2))
+            || (b1 == 0xF4 && b2 & 0xF0 != 0x80)
+            || is_not_continuation(b2)
+    }
+    /// How many bytes of a malformed three-byte sequence are skipped.
+    fn malformed3(src: &[u8], sp: usize) -> usize {
+        let (b1, b2) = (src[sp], src[sp + 1]);
+        if (b1 == 0xE0 && b2 & 0xE0 == 0x80) || is_not_continuation(b2) {
+            1
+        } else {
+            2
+        }
+    }
+    /// How many bytes of a malformed four-byte sequence are skipped.
+    fn malformed4(src: &[u8], sp: usize) -> usize {
+        let (b1, b2) = (src[sp], src[sp + 1]);
+        if b1 > 0xF4
+            || (b1 == 0xF0 && !(0x90..=0xBF).contains(&b2))
+            || (b1 == 0xF4 && b2 & 0xF0 != 0x80)
+            || is_not_continuation(b2)
+        {
+            1
+        } else if is_not_continuation(src[sp + 2]) {
+            2
+        } else {
+            3
+        }
+    }
+
+    let mut out: Vec<u16> = Vec::with_capacity(bytes.len());
+    let (mut sp, sl) = (0usize, bytes.len());
+    while sp < sl {
+        let b1 = bytes[sp];
+        sp += 1;
+        if b1 < 0x80 {
+            out.push(u16::from(b1));
+        } else if b1 >> 5 == 0b110 && b1 & 0x1E != 0 {
+            if sp < sl {
+                let b2 = bytes[sp];
+                sp += 1;
+                if is_not_continuation(b2) {
+                    out.push(REPL);
+                    sp -= 1;
+                } else {
+                    out.push((u16::from(b1 & 0x1F) << 6) | u16::from(b2 & 0x3F));
+                }
+                continue;
+            }
+            out.push(REPL);
+            break;
+        } else if b1 >> 4 == 0b1110 {
+            if sp + 1 < sl {
+                let (b2, b3) = (bytes[sp], bytes[sp + 1]);
+                sp += 2;
+                if is_malformed3(b1, b2, b3) {
+                    out.push(REPL);
+                    sp -= 3;
+                    sp += malformed3(bytes, sp);
+                } else {
+                    let c = (u16::from(b1 & 0x0F) << 12)
+                        | (u16::from(b2 & 0x3F) << 6)
+                        | u16::from(b3 & 0x3F);
+                    // An encoded surrogate is one replacement.
+                    out.push(if (0xD800..=0xDFFF).contains(&c) {
+                        REPL
+                    } else {
+                        c
+                    });
+                }
+                continue;
+            }
+            if sp < sl && is_malformed3_2(b1, bytes[sp]) {
+                out.push(REPL);
+                continue;
+            }
+            out.push(REPL);
+            break;
+        } else if b1 >> 3 == 0b11110 {
+            if sp + 2 < sl {
+                let (b2, b3, b4) = (bytes[sp], bytes[sp + 1], bytes[sp + 2]);
+                sp += 3;
+                let uc = (u32::from(b1 & 0x07) << 18)
+                    | (u32::from(b2 & 0x3F) << 12)
+                    | (u32::from(b3 & 0x3F) << 6)
+                    | u32::from(b4 & 0x3F);
+                if is_malformed4(b2, b3, b4) || !(0x10000..=0x10FFFF).contains(&uc) {
+                    out.push(REPL);
+                    sp -= 4;
+                    sp += malformed4(bytes, sp);
+                } else {
+                    let v = uc - 0x10000;
+                    out.push(0xD800 | (v >> 10) as u16);
+                    out.push(0xDC00 | (v & 0x3FF) as u16);
+                }
+                continue;
+            }
+            if b1 > 0xF4 || (sp < sl && is_malformed4_2(b1, bytes[sp])) {
+                out.push(REPL);
+                continue;
+            }
+            sp += 1;
+            out.push(REPL);
+            if sp < sl && is_not_continuation(bytes[sp]) {
+                continue;
+            }
+            break;
+        } else {
+            out.push(REPL);
+        }
+    }
+    // Every surrogate pushed above is half of a well-formed pair.
+    String::from_utf16_lossy(&out)
 }
 
 // -----------------------------------------------------------------------------
@@ -425,20 +614,26 @@ pub fn check_footer_with_prior(
 
 /// Returns the bytes of the index header at the start of `input`.
 ///
-/// Equivalent to `CodecUtil.readIndexHeader(IndexInput)`, which an
-/// `IndexOutput` copies verbatim when it re-emits a header it did not write.
+/// Equivalent to `CodecUtil.readIndexHeader(IndexInput)`
+/// (`CodecUtil.java:320-339`), which an `IndexOutput` copies verbatim when it
+/// re-emits a header it did not write.
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`] when the magic does not match, and
-/// propagates any I/O error.
+/// Returns [`LuceneError::CorruptIndex`] when the magic does not match —
+/// Java's `CorruptIndexException(String, DataInput)`, whose resource is the
+/// input's `toString()` (`CodecUtil.java:323-330`) — and propagates any I/O
+/// error.
 pub fn read_index_header(input: &mut dyn IndexInput) -> Result<Vec<u8>> {
     input.seek(0)?;
     let actual_header = read_be_int(input)?;
     if actual_header != CODEC_MAGIC {
-        return Err(LuceneError::CorruptIndex(format!(
-            "codec header mismatch: actual header={actual_header} vs expected header={CODEC_MAGIC}"
-        )));
+        return Err(LuceneError::corrupt_index(
+            format!(
+                "codec header mismatch: actual header={actual_header} vs expected header={CODEC_MAGIC}"
+            ),
+            input.to_java_string(),
+        ));
     }
     let codec = input.read_string()?;
     read_be_int(input)?;
@@ -766,6 +961,9 @@ mod tests {
         assert!(err.to_string().contains("codec header mismatch"));
     }
 
+    /// `CorruptIndexException(String, DataInput)` names the input:
+    /// `Objects.toString(in)`, which for a `ByteArrayDataInput` is
+    /// `Object.toString()` (`CodecUtil.java:204-207`).
     #[test]
     fn header_rejects_wrong_codec() {
         let mut out = MockIndexOutput::new("test", "test.bin");
@@ -774,10 +972,21 @@ mod tests {
 
         let mut input = ByteArrayDataInput::new(&bytes);
         let err = check_header(&mut input, "WrongCodec", 1, 10).unwrap_err();
-        assert!(matches!(err, LuceneError::CorruptIndex(_)));
-        assert!(err.to_string().contains("codec mismatch"));
+        let LuceneError::CorruptIndex(message) = &err else {
+            panic!("{err:?}");
+        };
+        assert!(
+            message.starts_with(
+                "codec mismatch: actual codec=RightCodec vs expected codec=WrongCodec \
+                 (resource=org.apache.lucene.store.ByteArrayDataInput@"
+            ),
+            "{message}"
+        );
     }
 
+    /// `IndexFormatTooOldException(in, version, min, max)` and
+    /// `IndexFormatTooNewException(in, version, min, max)`
+    /// (`CodecUtil.java:209-215`), with the input as resource.
     #[test]
     fn header_rejects_version_out_of_range() {
         let mut out = MockIndexOutput::new("test", "test.bin");
@@ -786,13 +995,38 @@ mod tests {
 
         let mut input = ByteArrayDataInput::new(&bytes);
         let err = check_header(&mut input, "TestCodec", 6, 10).unwrap_err();
-        assert!(matches!(err, LuceneError::IndexFormatNotSupported(_)));
-        assert!(err.to_string().contains("too old"));
+        assert!(
+            matches!(err, LuceneError::IndexFormatTooOld { .. }),
+            "{err:?}"
+        );
+        assert_eq!(
+            (
+                err.version(),
+                err.min_version(),
+                err.max_version(),
+                err.reason()
+            ),
+            (Some(5), Some(6), Some(10), None)
+        );
+        assert!(err
+            .resource_description()
+            .unwrap()
+            .starts_with("org.apache.lucene.store.ByteArrayDataInput@"));
 
         let mut input = ByteArrayDataInput::new(&bytes);
         let err = check_header(&mut input, "TestCodec", 1, 4).unwrap_err();
-        assert!(matches!(err, LuceneError::IndexFormatNotSupported(_)));
-        assert!(err.to_string().contains("too new"));
+        assert!(
+            matches!(err, LuceneError::IndexFormatTooNew { .. }),
+            "{err:?}"
+        );
+        assert_eq!(
+            (err.version(), err.min_version(), err.max_version()),
+            (Some(5), Some(1), Some(4))
+        );
+        assert!(err
+            .resource_description()
+            .unwrap()
+            .starts_with("org.apache.lucene.store.ByteArrayDataInput@"));
     }
 
     #[test]

@@ -210,13 +210,24 @@ const MINY_MINX_Y_MAXX_MAXY_X: i32 = 7;
 pub struct ShapeField;
 
 impl ShapeField {
-    /// Builds the field type a shape's triangles are indexed with: seven
-    /// dimensions, of which the first four are indexed as the bounding box.
-    pub fn field_type() -> Result<FieldType> {
-        let mut ft = FieldType::new();
-        ft.set_dimensions_with_index_count(7, 4, BYTES as i32)?;
-        ft.freeze();
-        Ok(ft)
+    /// Returns the one frozen type every shape's triangles are indexed with:
+    /// seven dimensions, of which the first four are indexed as the bounding
+    /// box.
+    ///
+    /// Equivalent to the static `ShapeField.TYPE` (`ShapeField.java:49-54`),
+    /// which every `Triangle` of every `LatLonShape` and `XYShape` shares.
+    /// Each triangle holds a clone, which keeps the frozen identity, so the
+    /// triangles share one type as Java's share one object (see
+    /// [`FieldType`]).
+    pub fn field_type() -> &'static FieldType {
+        static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+        TYPE.get_or_init(|| {
+            let mut ft = FieldType::new();
+            ft.set_dimensions_with_index_count(7, 4, BYTES as i32)
+                .expect("INVARIANT: seven dimensions, four indexed, fit a new, mutable type");
+            ft.freeze();
+            ft
+        })
     }
 
     /// Packs one triangle into `bytes`.
@@ -507,7 +518,7 @@ impl Triangle {
         ShapeField::encode_triangle(&mut bytes, a_y, a_x, true, b_y, b_x, true, c_y, c_x, true)?;
         Ok(Self {
             name: name.into(),
-            field_type: ShapeField::field_type()?,
+            field_type: ShapeField::field_type().clone(),
             fields_data: FieldData::Bytes(BytesRef::new(bytes)),
         })
     }
@@ -549,7 +560,7 @@ impl Triangle {
         )?;
         Ok(Self {
             name: name.into(),
-            field_type: ShapeField::field_type()?,
+            field_type: ShapeField::field_type().clone(),
             fields_data: FieldData::Bytes(BytesRef::new(bytes)),
         })
     }

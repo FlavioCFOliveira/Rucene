@@ -1010,12 +1010,19 @@ fn index(m: &Measured) {
     );
     assert_ne!(hash_of(&first), hash_of(&other_gen));
 
-    // Sorter.toString() is getID() verbatim; this port takes the id directly.
-    let java_id = m.get("Sorter.getID/price-long");
-    assert_eq!(
-        rucene::index::index_sorter::Sorter::new(java_id).to_string(),
-        m.get("Sorter.toString/price-long")
-    );
+    // `new Sorter(new Sort(new SortField("price", LONG)))`: `getID()` is the
+    // sort's `toString()`, and `toString()` is `getID()` verbatim.
+    let sorter = rucene::index::index_sorter::Sorter::new(
+        rucene::search::Sort::new_fields(vec![rucene::search::SortField::new(
+            Some("price".to_string()),
+            rucene::search::SortFieldType::Long,
+        )
+        .unwrap()])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(sorter.get_id(), m.get("Sorter.getID/price-long"));
+    assert_eq!(sorter.to_string(), m.get("Sorter.toString/price-long"));
 }
 
 fn analysis(m: &Measured) {

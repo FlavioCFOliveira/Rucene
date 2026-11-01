@@ -48,6 +48,14 @@ impl<'a> ReverseBytesReader<'a> {
 }
 
 impl DataInput for ReverseBytesReader<'_> {
+    /// `Object.toString()` of `org.apache.lucene.util.fst.ReverseBytesReader`, which declares no `toString()`.
+    fn to_java_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.util.fst.ReverseBytesReader",
+            self,
+        )
+    }
+
     fn read_byte(&mut self) -> Result<u8> {
         self.next()
     }

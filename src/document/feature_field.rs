@@ -372,6 +372,50 @@ impl std::fmt::Display for FeatureField {
 }
 
 impl FeatureField {
+    /// The type every feature field without term vectors is created with.
+    ///
+    /// Equivalent to the private static `FeatureField.FIELD_TYPE`
+    /// (`FeatureField.java:108, 112-114`), which Java never freezes: a field
+    /// built on it is therefore validated by `IndexingChain` for every
+    /// document, since only a frozen type takes the validated-type shortcut
+    /// (`IndexingChain.java:1819-1825`). Each field holds a clone, which, like
+    /// Java's shared unfrozen object, has no frozen identity.
+    fn field_type_static() -> &'static FieldType {
+        static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+        TYPE.get_or_init(|| Self::new_field_type(false))
+    }
+
+    /// The type every feature field with term vectors is created with.
+    ///
+    /// Equivalent to the private static
+    /// `FeatureField.FIELD_TYPE_STORE_TERM_VECTORS` (`FeatureField.java:109,
+    /// 116-119`), never frozen either.
+    fn field_type_store_term_vectors() -> &'static FieldType {
+        static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+        TYPE.get_or_init(|| Self::new_field_type(true))
+    }
+
+    /// The body of `FeatureField`'s static initialiser for one of its two
+    /// types (`FeatureField.java:111-120`).
+    fn new_field_type(store_term_vectors: bool) -> FieldType {
+        let mut field_type = FieldType::new();
+        field_type
+            .set_tokenized(false)
+            .expect("INVARIANT: a new type is mutable");
+        field_type
+            .set_omit_norms(true)
+            .expect("INVARIANT: a new type is mutable");
+        field_type
+            .set_index_options(IndexOptions::DOCS_AND_FREQS)
+            .expect("INVARIANT: a new type is mutable");
+        if store_term_vectors {
+            field_type
+                .set_store_term_vectors(true)
+                .expect("INVARIANT: a new type is mutable");
+        }
+        field_type
+    }
+
     /// Creates the field.
     ///
     /// The value must be a positive normal float, because the encoding drops
@@ -393,14 +437,13 @@ impl FeatureField {
     ) -> Result<Self> {
         let name = field_name.into();
         let feature_name = feature_name.into();
-        let mut field_type = FieldType::new();
-        field_type.set_tokenized(false)?;
-        field_type.set_omit_norms(true)?;
-        field_type.set_index_options(IndexOptions::DOCS_AND_FREQS)?;
-        if store_term_vectors {
-            field_type.set_store_term_vectors(true)?;
-        }
-        field_type.freeze();
+        // `storeTermVectors ? FIELD_TYPE_STORE_TERM_VECTORS : FIELD_TYPE`
+        // (`FeatureField.java:147`).
+        let field_type = if store_term_vectors {
+            Self::field_type_store_term_vectors().clone()
+        } else {
+            Self::field_type_static().clone()
+        };
 
         let mut field = Self {
             name,

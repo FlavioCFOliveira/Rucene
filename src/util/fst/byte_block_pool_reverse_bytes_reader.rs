@@ -71,6 +71,14 @@ impl std::fmt::Debug for ByteBlockPoolReverseBytesReader<'_> {
 }
 
 impl DataInput for ByteBlockPoolReverseBytesReader<'_> {
+    /// `Object.toString()` of `org.apache.lucene.util.fst.ByteBlockPoolReverseBytesReader`, which declares no `toString()`.
+    fn to_java_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.util.fst.ByteBlockPoolReverseBytesReader",
+            self,
+        )
+    }
+
     fn read_byte(&mut self) -> Result<u8> {
         self.next()
     }

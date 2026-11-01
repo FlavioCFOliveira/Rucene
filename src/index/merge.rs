@@ -252,7 +252,7 @@ impl MergeState {
     /// merged segment needs its documents reordered by the index sort.
     ///
     /// Equivalent to the private `MergeState.buildDocMaps(List<CodecReader>,
-    /// Sort)` (`MergeState.java:212-240`), together with the `needsIndexSort`
+    /// Sort)` (`MergeState.java:214-241`), together with the `needsIndexSort`
     /// flag it sets. Without an index sort the readers are only remapped around
     /// their deletions. With one, `MultiSorter.sort` merge-sorts the incoming
     /// leaves; when concatenating them already yields the sorted order it

@@ -76,7 +76,6 @@ use crate::analysis::tokenattributes::{
     TermToBytesRefAttribute,
 };
 use crate::analysis::Analyzer;
-use crate::analysis::TokenStream;
 use crate::codecs::doc_values::DocValuesConsumer;
 use crate::codecs::knn_vectors::FieldVectorWriter;
 use crate::codecs::points::PointsWriter;
@@ -161,7 +160,7 @@ fn field_hash_flush_order(fields: &[PerField], parent_field: Option<&str>) -> Ve
     let parent_index = parent_field.and_then(|name| {
         fields
             .iter()
-            .position(|per_field| per_field.field_info.name == name)
+            .position(|per_field| per_field.field_name == name)
     });
     let mut names: Vec<&str> = Vec::with_capacity(fields.len() + 1);
     let mut indices: Vec<Option<usize>> = Vec::with_capacity(fields.len() + 1);
@@ -173,7 +172,7 @@ fn field_hash_flush_order(fields: &[PerField], parent_field: Option<&str>) -> Ve
         if Some(index) == parent_index {
             continue;
         }
-        names.push(per_field.field_info.name.as_str());
+        names.push(per_field.field_name.as_str());
         indices.push(Some(index));
     }
     field_hash_order(&names)
@@ -495,7 +494,44 @@ impl crate::codecs::norms::NormsProducer for EmptyNormsProducer {
 /// path.
 #[derive(Debug)]
 struct PerField {
-    field_info: FieldInfo,
+    /// Equivalent to `PerField.fieldName`.
+    field_name: String,
+    /// The field's `FieldInfo`, `None` until
+    /// [`initialize_field_info`](DefaultIndexingChain::initialize_field_info)
+    /// creates it the first time a document of the segment carries the field.
+    ///
+    /// Equivalent to `PerField.fieldInfo`, which Java also leaves `null` until
+    /// `initializeFieldInfo` calls `setFieldInfo` (`IndexingChain.java:1344`).
+    field_info: Option<FieldInfo>,
+    /// The schema the current document declares for this field.
+    ///
+    /// Equivalent to `PerField.schema`.
+    schema: FieldSchema,
+    /// The frozen identity of the field type this field was last validated
+    /// with, which lets a document using that very type skip the schema check.
+    ///
+    /// Equivalent to `PerField.validatedFrozenFieldType`
+    /// (`IndexingChain.java:1780-1784`); see
+    /// [`IndexableFieldType::frozen_field_type_identity`] for why an identity
+    /// stands for Java's reference.
+    validated_frozen_field_type: Option<u64>,
+    /// The frozen identity of the type of the field's first instance in the
+    /// current document, `None` when there is none or it is not a frozen
+    /// `FieldType`.
+    ///
+    /// Equivalent to `PerField.candidateFieldType`. Java keeps the reference
+    /// and tests `instanceof FieldType ft && ft.isFrozen()` when it is
+    /// promoted; a type that fails that test is never promoted, so recording
+    /// `None` for it is the same thing.
+    candidate_field_type: Option<u64>,
+    /// The field's inversion statistics.
+    ///
+    /// Java creates `PerField.invertState` in `setInvertState()`, for indexed
+    /// fields only, and leaves it `null` otherwise. This port holds a
+    /// placeholder over `IndexOptions::NONE` until
+    /// [`initialize_field_info`](DefaultIndexingChain::initialize_field_info)
+    /// replaces it for an indexed field; only an indexed field is inverted, so
+    /// the placeholder only ever reports a field that was never inverted.
     invert_state: FieldInvertState,
     /// Index of this field's writer inside [`FreqProxTermsWriter`], or `None`
     /// for a field that is stored but not indexed.
@@ -557,6 +593,343 @@ struct PerField {
     /// `processBatch` uses to refuse two columns of one field claiming the same
     /// feature.
     column_features: u8,
+}
+
+impl PerField {
+    /// Starts the field's first instance in a document.
+    ///
+    /// Equivalent to `PerField.reset(int, IndexableFieldType)`
+    /// (`IndexingChain.java:1803-1813`): a field whose type is the frozen
+    /// type it was validated with keeps its schema and only moves to the new
+    /// document; any other type drops the validation shortcut and starts the
+    /// schema afresh.
+    fn reset(&mut self, doc_id: i32, field_type: &dyn IndexableFieldType) {
+        self.first = true;
+        let identity = field_type.frozen_field_type_identity();
+        self.candidate_field_type = identity;
+        if identity.is_some() && identity == self.validated_frozen_field_type {
+            self.schema.reset_just_doc_id(doc_id);
+        } else {
+            // Encountered new FieldType. Deoptimize the schema validation skip.
+            self.validated_frozen_field_type = None;
+            self.schema.reset(doc_id);
+        }
+    }
+
+    /// Whether a further instance of the field in the same document has a type
+    /// other than the frozen one validated, which forces the schema check.
+    ///
+    /// Equivalent to `PerField.multiValueForcesDeoptimize(IndexableFieldType)`
+    /// (`IndexingChain.java:1815-1817`).
+    fn multi_value_forces_deoptimize(&self, field_type: &dyn IndexableFieldType) -> bool {
+        self.validated_frozen_field_type.is_some()
+            && field_type.frozen_field_type_identity() != self.validated_frozen_field_type
+    }
+
+    /// Records the candidate type as validated when it is a frozen
+    /// `FieldType`, and clears the candidate.
+    ///
+    /// Equivalent to `PerField.trySetValidatedFrozenFieldType()`
+    /// (`IndexingChain.java:1819-1825`).
+    fn try_set_validated_frozen_field_type(&mut self) {
+        debug_assert!(self.field_info.is_some());
+        if let Some(identity) = self.candidate_field_type.take() {
+            self.validated_frozen_field_type = Some(identity);
+        }
+    }
+
+    /// The field's `FieldInfo`, which every document-processing step after
+    /// [`initialize_field_info`](DefaultIndexingChain::initialize_field_info)
+    /// can rely on.
+    ///
+    /// # Panics
+    ///
+    /// When the field info was never initialized, which the indexing chain
+    /// rules out by initializing every field of a document before processing
+    /// it, as Java's `initAndValidateFields` does.
+    fn field_info(&self) -> &FieldInfo {
+        initialized(&self.field_info)
+    }
+}
+
+/// The `FieldInfo` of a field the chain has initialized; see
+/// [`PerField::field_info`]. A free function so that it can borrow the one
+/// member while another member of the same `PerField` is borrowed mutably.
+///
+/// # Panics
+///
+/// When the field info was never initialized.
+fn initialized(field_info: &Option<FieldInfo>) -> &FieldInfo {
+    field_info
+        .as_ref()
+        .expect("INVARIANT: initAndValidateFields initializes a field before it is processed")
+}
+
+// ---------------------------------------------------------------------------
+// FieldSchema
+// ---------------------------------------------------------------------------
+
+/// The schema the instances of one field name declare in one document.
+///
+/// Equivalent to `IndexingChain.FieldSchema` (`IndexingChain.java:2136-2287`).
+/// The first pass of `processDocument` folds every instance of a field name
+/// into the field's schema; a field seen for the first time in the segment
+/// then gets its `FieldInfo` built from the schema, and any other is checked
+/// against its `FieldInfo`. Accumulating first is what lets one document
+/// carry, say, a stored field and a sorted doc-values field under one name.
+///
+/// As in Java, [`reset`](Self::reset) leaves `doc_values_skip_index` and
+/// `attributes` alone: the skip index is only ever set together with a
+/// doc-values type, and the attributes accumulate for the whole segment.
+#[derive(Debug)]
+struct FieldSchema {
+    name: String,
+    doc_id: i32,
+    attributes: crate::util::java_collections::JavaHashMap<String>,
+    omit_norms: bool,
+    store_term_vector: bool,
+    index_options: IndexOptions,
+    doc_values_type: DocValuesType,
+    doc_values_skip_index: crate::index::DocValuesSkipIndexType,
+    point_dimension_count: i32,
+    point_index_dimension_count: i32,
+    point_num_bytes: i32,
+    vector_dimension: i32,
+    vector_encoding: crate::index::VectorEncoding,
+    vector_similarity_function: crate::index::VectorSimilarityFunction,
+}
+
+impl FieldSchema {
+    /// Equivalent to `FieldSchema(String)`.
+    fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            doc_id: 0,
+            attributes: crate::util::java_collections::JavaHashMap::new(),
+            omit_norms: false,
+            store_term_vector: false,
+            index_options: IndexOptions::NONE,
+            doc_values_type: DocValuesType::NONE,
+            doc_values_skip_index: crate::index::DocValuesSkipIndexType::NONE,
+            point_dimension_count: 0,
+            point_index_dimension_count: 0,
+            point_num_bytes: 0,
+            vector_dimension: 0,
+            vector_encoding: crate::index::VectorEncoding::FLOAT32,
+            vector_similarity_function: crate::index::VectorSimilarityFunction::EUCLIDEAN,
+        }
+    }
+
+    /// Fails when `expected` and `given` differ.
+    ///
+    /// Equivalent to the three `FieldSchema.assertSame` overloads, which
+    /// render booleans, ints and enum constants the way `Debug` renders their
+    /// Rust counterparts.
+    fn assert_same<T: PartialEq + std::fmt::Debug>(
+        &self,
+        label: &str,
+        expected: T,
+        given: T,
+    ) -> Result<()> {
+        if expected != given {
+            return Err(self.raise_not_same(label, &expected, &given));
+        }
+        Ok(())
+    }
+
+    /// Equivalent to `FieldSchema.raiseNotSame(String, Object, Object)`; the
+    /// message is Java's, verbatim.
+    fn raise_not_same(
+        &self,
+        label: &str,
+        expected: &dyn std::fmt::Debug,
+        given: &dyn std::fmt::Debug,
+    ) -> LuceneError {
+        LuceneError::IllegalArgument(format!(
+            "Inconsistency of field data structures across documents for field [{}] of doc \
+             [{}]. {label}: expected '{expected:?}', but it has '{given:?}'.",
+            self.name, self.doc_id
+        ))
+    }
+
+    /// Equivalent to `FieldSchema.updateAttributes(Map)`.
+    fn update_attributes(&mut self, attrs: &crate::util::java_collections::JavaHashMap<String>) {
+        for (key, value) in attrs.iter() {
+            self.attributes.insert(key.clone(), value.clone());
+        }
+    }
+
+    /// Equivalent to `FieldSchema.setIndexOptions(IndexOptions, boolean,
+    /// boolean)`.
+    fn set_index_options(
+        &mut self,
+        new_index_options: IndexOptions,
+        new_omit_norms: bool,
+        new_store_term_vector: bool,
+    ) -> Result<()> {
+        if self.index_options == IndexOptions::NONE {
+            self.index_options = new_index_options;
+            self.omit_norms = new_omit_norms;
+            self.store_term_vector = new_store_term_vector;
+        } else {
+            self.assert_same("index options", self.index_options, new_index_options)?;
+            self.assert_same("omit norms", self.omit_norms, new_omit_norms)?;
+            self.assert_same(
+                "store term vector",
+                self.store_term_vector,
+                new_store_term_vector,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Equivalent to `FieldSchema.setDocValues(DocValuesType,
+    /// DocValuesSkipIndexType)`.
+    fn set_doc_values(
+        &mut self,
+        new_doc_values_type: DocValuesType,
+        new_doc_values_skip_index: crate::index::DocValuesSkipIndexType,
+    ) -> Result<()> {
+        if self.doc_values_type == DocValuesType::NONE {
+            self.doc_values_type = new_doc_values_type;
+            self.doc_values_skip_index = new_doc_values_skip_index;
+        } else {
+            self.assert_same("doc values type", self.doc_values_type, new_doc_values_type)?;
+            self.assert_same(
+                "doc values skip index type",
+                self.doc_values_skip_index,
+                new_doc_values_skip_index,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Equivalent to `FieldSchema.setPoints(int, int, int)`.
+    fn set_points(
+        &mut self,
+        dimension_count: i32,
+        index_dimension_count: i32,
+        num_bytes: i32,
+    ) -> Result<()> {
+        if self.point_index_dimension_count == 0 {
+            self.point_dimension_count = dimension_count;
+            self.point_index_dimension_count = index_dimension_count;
+            self.point_num_bytes = num_bytes;
+        } else {
+            self.assert_same(
+                "point dimension",
+                self.point_dimension_count,
+                dimension_count,
+            )?;
+            self.assert_same(
+                "point index dimension",
+                self.point_index_dimension_count,
+                index_dimension_count,
+            )?;
+            self.assert_same("point num bytes", self.point_num_bytes, num_bytes)?;
+        }
+        Ok(())
+    }
+
+    /// Equivalent to `FieldSchema.setVectors(VectorEncoding,
+    /// VectorSimilarityFunction, int)`.
+    fn set_vectors(
+        &mut self,
+        encoding: crate::index::VectorEncoding,
+        similarity_function: crate::index::VectorSimilarityFunction,
+        dimension: i32,
+    ) -> Result<()> {
+        if self.vector_dimension == 0 {
+            self.vector_encoding = encoding;
+            self.vector_similarity_function = similarity_function;
+            self.vector_dimension = dimension;
+        } else {
+            self.assert_same("vector encoding", self.vector_encoding, encoding)?;
+            self.assert_same(
+                "vector similarity function",
+                self.vector_similarity_function,
+                similarity_function,
+            )?;
+            self.assert_same("vector dimension", self.vector_dimension, dimension)?;
+        }
+        Ok(())
+    }
+
+    /// Equivalent to `FieldSchema.resetJustDocId(int)`.
+    fn reset_just_doc_id(&mut self, doc: i32) {
+        self.doc_id = doc;
+    }
+
+    /// Equivalent to `FieldSchema.reset(int)`.
+    fn reset(&mut self, doc: i32) {
+        self.reset_just_doc_id(doc);
+        self.omit_norms = false;
+        self.store_term_vector = false;
+        self.index_options = IndexOptions::NONE;
+        self.doc_values_type = DocValuesType::NONE;
+        self.point_dimension_count = 0;
+        self.point_index_dimension_count = 0;
+        self.point_num_bytes = 0;
+        self.vector_dimension = 0;
+        self.vector_encoding = crate::index::VectorEncoding::FLOAT32;
+        self.vector_similarity_function = crate::index::VectorSimilarityFunction::EUCLIDEAN;
+    }
+
+    /// Checks the schema the current document declares against the field's
+    /// `FieldInfo`.
+    ///
+    /// Equivalent to `FieldSchema.assertSameSchema(FieldInfo)`
+    /// (`IndexingChain.java:2272-2286`), in Java's order.
+    fn assert_same_schema(&self, fi: &FieldInfo) -> Result<()> {
+        self.assert_same("index options", fi.get_index_options(), self.index_options)?;
+        self.assert_same("omit norms", fi.omits_norms(), self.omit_norms)?;
+        self.assert_same(
+            "store term vector",
+            fi.has_term_vectors(),
+            self.store_term_vector,
+        )?;
+        self.assert_same(
+            "doc values type",
+            fi.get_doc_values_type(),
+            self.doc_values_type,
+        )?;
+        self.assert_same(
+            "doc values skip index type",
+            fi.doc_values_skip_index_type(),
+            self.doc_values_skip_index,
+        )?;
+        self.assert_same(
+            "vector similarity function",
+            fi.get_vector_similarity_function(),
+            self.vector_similarity_function,
+        )?;
+        self.assert_same(
+            "vector encoding",
+            fi.get_vector_encoding(),
+            self.vector_encoding,
+        )?;
+        self.assert_same(
+            "vector dimension",
+            fi.get_vector_dimension(),
+            self.vector_dimension,
+        )?;
+        self.assert_same(
+            "point dimension",
+            fi.get_point_dimension_count(),
+            self.point_dimension_count,
+        )?;
+        self.assert_same(
+            "point index dimension",
+            fi.get_point_index_dimension_count(),
+            self.point_index_dimension_count,
+        )?;
+        self.assert_same(
+            "point num bytes",
+            fi.get_point_num_bytes(),
+            self.point_num_bytes,
+        )?;
+        Ok(())
+    }
 }
 
 /// Which attributes a field instance's token stream actually carries.
@@ -774,80 +1147,6 @@ pub struct DefaultIndexingChain {
     parent_pf: Option<usize>,
 }
 
-/// Presents a column's name and field type as an
-/// [`IndexableField`](crate::index::IndexableField), so that `describe_field`
-/// can build the column's `FieldInfo`.
-///
-/// Java's `processBatch` reads `column.name()` and `column.fieldType()`
-/// straight off the column and hands them to `initializeFieldInfo`, which takes
-/// a `PerField`. This port's `describe_field` takes an `IndexableField`, as
-/// `process_document` gives it, so the two members are carried in one.
-struct ColumnFieldTypeCarrier {
-    name: String,
-    field_type: Arc<dyn IndexableFieldType>,
-}
-
-impl std::fmt::Debug for ColumnFieldTypeCarrier {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ColumnFieldTypeCarrier")
-            .field("name", &self.name)
-            .finish_non_exhaustive()
-    }
-}
-
-impl std::fmt::Display for ColumnFieldTypeCarrier {
-    /// Port-only carrier with no Lucene counterpart: Java passes the column's
-    /// name and field type as two arguments, so there is no object whose
-    /// `toString()` could be reproduced. It renders in the inherited
-    /// `Field.toString()` shape with an empty value, which is what a `Field`
-    /// carrying no `fieldsData` renders as.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}<{}:>", self.field_type, self.name)
-    }
-}
-
-impl IndexableField for ColumnFieldTypeCarrier {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn field_type(&self) -> &dyn IndexableFieldType {
-        self.field_type.as_ref()
-    }
-
-    fn token_stream(
-        &self,
-        _analyzer: &dyn Analyzer,
-        _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
-        unreachable!("INVARIANT: the carrier only ever answers name() and field_type()")
-    }
-
-    fn binary_value(&self) -> Option<BytesRef> {
-        None
-    }
-
-    fn string_value(&self) -> Option<String> {
-        None
-    }
-
-    fn reader_value(&mut self) -> Option<&mut dyn std::io::Read> {
-        None
-    }
-
-    fn numeric_value(&self) -> Option<NumericValue> {
-        None
-    }
-
-    fn stored_value(&self) -> Result<Option<StoredValue>> {
-        Ok(None)
-    }
-
-    fn invertable_type(&self) -> Option<InvertableType> {
-        None
-    }
-}
-
 impl DefaultIndexingChain {
     /// Creates a chain bound to the given live configuration.
     pub fn new(config: Arc<LiveIndexWriterConfig>) -> Self {
@@ -981,7 +1280,7 @@ impl DefaultIndexingChain {
                 }
             }
         }
-        let info = self.per_fields[per_field].field_info.clone();
+        let info = self.per_fields[per_field].field_info().clone();
         let Some(consumer) = self.stored_fields_consumer.as_mut() else {
             return Err(LuceneError::illegal_state(format!(
                 "the indexing chain is not bound to a segment, so the stored field \"{}\" \
@@ -1136,19 +1435,40 @@ impl DefaultIndexingChain {
     /// [`LeafReader`](crate::index::LeafReader) owns what it reads; the caller
     /// hands them back with
     /// [`restore_doc_values_writers`](Self::restore_doc_values_writers).
-    fn get_doc_values_leaf_reader(&mut self, max_doc: i32) -> BufferedDocValuesReader {
+    ///
+    /// The reader answers `getFieldInfos()` with `field_infos`, the flush
+    /// state's: Java's returns `fieldInfos.finish()` (`IndexingChain.java:243`),
+    /// and the flush state was built from that same builder's `finish()`
+    /// (`DocumentsWriterPerThread.java:452`), with no field added since.
+    /// `DocValues.checkField` reads them, so a sort over a field indexed
+    /// without doc values fails the flush (`DocValues.java:206-222`).
+    fn get_doc_values_leaf_reader(
+        &mut self,
+        max_doc: i32,
+        field_infos: &crate::index::FieldInfos,
+    ) -> BufferedDocValuesReader {
         let mut writers = HashMap::new();
+        let mut without_field_info = std::collections::HashSet::new();
         for (index, per_field) in self.per_fields.iter_mut().enumerate() {
+            if per_field.field_info.is_none() {
+                // A field whose only document failed validation keeps its
+                // `PerField`, without a `FieldInfo` (`IndexingChain.java:
+                // 1449-1481`); Java's reader dereferences it.
+                without_field_info.insert(per_field.field_name.clone());
+                continue;
+            }
             if let Some(writer) = per_field.doc_values.take() {
                 writers.insert(
-                    per_field.field_info.name.clone(),
-                    (index, per_field.field_info.clone(), writer),
+                    per_field.field_name.clone(),
+                    (index, per_field.field_info().clone(), writer),
                 );
             }
         }
         BufferedDocValuesReader {
             max_doc,
             writers: std::sync::Mutex::new(writers),
+            without_field_info,
+            field_infos: field_infos.clone(),
             pool: Arc::clone(&self.doc_values_byte_pool),
         }
     }
@@ -1197,7 +1517,7 @@ impl DefaultIndexingChain {
         }
 
         let max_doc = state.segment_info.max_doc()?;
-        let doc_values_reader = self.get_doc_values_leaf_reader(max_doc);
+        let doc_values_reader = self.get_doc_values_leaf_reader(max_doc, state.field_infos);
         let sorted = self.sort_buffered_segment(state, &doc_values_reader, max_doc);
         self.restore_doc_values_writers(doc_values_reader);
         sorted
@@ -1212,7 +1532,7 @@ impl DefaultIndexingChain {
         max_doc: i32,
     ) -> Result<Option<SorterDocMap>> {
         let index_sort = state.segment_info.index_sort();
-        let mut parents: Option<Arc<crate::util::FixedBitSet>> = None;
+        let mut parents: Option<Arc<dyn crate::util::bit_set::BitSet>> = None;
 
         if state.segment_info.get_has_blocks() {
             if let Some(parent_field) = state.field_infos.get_parent_field() {
@@ -1226,16 +1546,13 @@ impl DefaultIndexingChain {
                         "IndexingChain",
                     ));
                 };
-                // `BitSet.of(readerValues, maxDoc)`.
-                let mut bits = crate::util::FixedBitSet::new(max_doc as usize);
-                loop {
-                    let doc = reader_values.next_doc()?;
-                    if doc == NO_MORE_DOCS {
-                        break;
-                    }
-                    bits.set(doc as usize);
-                }
-                parents = Some(Arc::new(bits));
+                // `BitSet.of(readerValues, maxDoc)` (`IndexingChain.java:266`):
+                // a sparse set when the values are fewer than `maxDoc >>> 7`, a
+                // fixed one otherwise.
+                parents = Some(Arc::from(crate::util::bit_set::bit_set_of(
+                    reader_values.as_mut(),
+                    max_doc,
+                )?));
             }
         }
         let index_created_version_major = self.config.index_created_version_major();
@@ -1274,63 +1591,203 @@ impl DefaultIndexingChain {
                 }
             });
         }
+        // `Sorter sorter = new Sorter(indexSort)` (`IndexingChain.java:292`);
         // returns null if the documents are already sorted
-        Ok(Sorter::sort_and_leave_unpacked(max_doc, comparators))
+        let sorter = Sorter::new(index_sort.clone())?;
+        Ok(sorter.sort_and_leave_unpacked(max_doc, comparators))
     }
 
-    fn get_or_add_per_field(&mut self, field_info: &FieldInfo) -> Result<usize> {
-        if let Some(index) = self.per_field_index.get(&field_info.name) {
-            return Ok(*index);
+    /// Returns the per-field state of `field_name`, creating it — without a
+    /// `FieldInfo` — the first time the segment sees the name.
+    ///
+    /// Equivalent to `IndexingChain.getOrAddPerField(String)`
+    /// (`IndexingChain.java:1449-1481`). The `FieldInfo` and the per-field
+    /// writers are created later, by
+    /// [`initialize_field_info`](Self::initialize_field_info), once the whole
+    /// document has declared the field's schema.
+    fn get_or_add_per_field(&mut self, field_name: &str) -> usize {
+        if let Some(index) = self.per_field_index.get(field_name) {
+            return *index;
         }
-        let indexed = field_info.index_options != IndexOptions::NONE;
-        let writer_index = indexed.then(|| self.terms_writer.add_field(field_info));
-        // `PerField.setInvertState()` builds *both* per-field consumers through
-        // `TermsHash.addField`, and tells the term-vectors consumer that the
-        // segment has vectors as soon as a field says so
-        // (`IndexingChain.java:1836-1845`).
-        let vectors_index = match self.term_vectors_consumer.as_mut() {
-            Some(consumer) if indexed => {
-                let index = consumer.add_field(field_info);
-                if field_info.has_term_vectors() {
-                    consumer.set_has_vectors();
-                }
-                Some(index)
+        // first time we encounter field with this name in this segment
+        let index = self.per_fields.len();
+        self.per_fields.push(PerField {
+            field_name: field_name.to_string(),
+            field_info: None,
+            schema: FieldSchema::new(field_name),
+            validated_frozen_field_type: None,
+            candidate_field_type: None,
+            invert_state: FieldInvertState::new(
+                self.config.index_created_version_major(),
+                field_name.to_string(),
+                IndexOptions::NONE,
+            ),
+            writer_index: None,
+            vectors_index: None,
+            do_vectors: false,
+            field_gen: -1,
+            first: false,
+            norms: None,
+            doc_values: None,
+            point_values: None,
+            knn_field_vectors_writer: None,
+            column_features: 0,
+        });
+        self.per_field_index.insert(field_name.to_string(), index);
+        index
+    }
+
+    /// Initializes the `FieldInfo` of each field in `fields` seen for the
+    /// first time in this segment, and checks the schema of every other one
+    /// against its `FieldInfo`.
+    ///
+    /// Equivalent to `IndexingChain.initAndValidateFields(int)`
+    /// (`IndexingChain.java:688-702`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever initializing a field raises, and returns
+    /// [`LuceneError::IllegalArgument`] when a schema differs from the field's
+    /// `FieldInfo`.
+    fn init_and_validate_fields(
+        &mut self,
+        fields: &[usize],
+        field_infos: &mut FieldInfosBuilder,
+    ) -> Result<()> {
+        for &pf in fields {
+            if self.per_fields[pf].field_info.is_none() {
+                self.initialize_field_info(pf, field_infos)?;
+            } else {
+                let per_field = &self.per_fields[pf];
+                per_field
+                    .schema
+                    .assert_same_schema(per_field.field_info())?;
             }
-            _ => None,
+            self.per_fields[pf].try_set_validated_frozen_field_type();
+        }
+        Ok(())
+    }
+
+    /// Creates the field's `FieldInfo` from its accumulated schema, registers
+    /// it with the segment, and builds the per-field writers it calls for.
+    ///
+    /// Equivalent to `IndexingChain.initializeFieldInfo(PerField)`
+    /// (`IndexingChain.java:1302-1383`): the index-sort and vector-dimension
+    /// checks run before the `FieldInfo` is registered, so a refused field
+    /// takes no field number.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the index sort or the
+    /// codec refuses the schema, and propagates whatever registering the
+    /// `FieldInfo` or creating the vectors writer raises.
+    fn initialize_field_info(
+        &mut self,
+        pf: usize,
+        field_infos: &mut FieldInfosBuilder,
+    ) -> Result<()> {
+        let field_name = self.per_fields[pf].field_name.clone();
+        let described = {
+            let s = &self.per_fields[pf].schema;
+            // Java validates the field against the index sort here, the first
+            // time it is seen with a doc-values type: a sort that names a field
+            // indexed with the wrong kind cannot order the segment, and finding
+            // that out at flush would waste the whole segment
+            // (`IndexingChain.java:1312-1315`).
+            if s.doc_values_type != DocValuesType::NONE {
+                if let Some(index_sort) = self.config.index_sort() {
+                    Self::validate_index_sort_dv_type(index_sort, &field_name, s.doc_values_type)?;
+                }
+            }
+            // `initializeFieldInfo` asks the codec how many dimensions it can
+            // take for this field name and rejects anything larger, *before*
+            // the `FieldInfo` is built and registered
+            // (`IndexingChain.java:1316-1321`).
+            if s.vector_dimension != 0 {
+                Self::validate_max_vector_dimension(
+                    &field_name,
+                    s.vector_dimension,
+                    self.config
+                        .codec()
+                        .knn_vectors_format()
+                        .get_max_dimensions(&field_name),
+                )?;
+            }
+            let soft_deletes = field_infos.soft_deletes_field_name() == Some(field_name.as_str());
+            let parent = field_infos.parent_field_name() == Some(field_name.as_str());
+            FieldInfo::new_full(
+                field_name.clone(),
+                -1,
+                s.store_term_vector,
+                s.omit_norms,
+                // storePayloads is set up during indexing, if payloads were seen
+                false,
+                s.index_options,
+                s.doc_values_type,
+                s.doc_values_skip_index,
+                -1,
+                JavaStringMap::Hash(s.attributes.clone()),
+                s.point_dimension_count,
+                s.point_index_dimension_count,
+                s.point_num_bytes,
+                s.vector_dimension,
+                s.vector_encoding,
+                s.vector_similarity_function,
+                soft_deletes,
+                parent,
+            )?
         };
-        let invert_state = FieldInvertState::new(
-            self.config.index_created_version_major(),
-            field_info.name.clone(),
-            field_info.index_options,
-        );
-        // `PerField.setInvertState()` creates the norms buffer for every
-        // indexed field that does not omit norms, *before* any document is
-        // seen: "Even if no documents actually succeed in setting a norm, we
-        // still write norms for this segment"
-        // (`IndexingChain.java:1837-1841`). `has_norms()` is exactly Java's
-        // `indexOptions != NONE && omitNorms == false`.
-        let norms = field_info
-            .has_norms()
-            .then(|| NormValuesWriter::new(field_info.clone(), Arc::clone(&self.bytes_used)));
+        // The *live* entry of the builder, not a copy of it. Java's
+        // `initializeFieldInfo` hands `pf.setFieldInfo` the very object
+        // `fieldInfos.add` returned (`IndexingChain.java:1324-1345`), and the
+        // codec writes into it: `PerFieldKnnVectorsFormat.FieldsWriter` stamps
+        // `PerFieldKnnVectorsFormat.format` and `.suffix` onto the field info
+        // it is given, and the reader refuses a segment whose `.fnm` lacks
+        // them. Handing the codec a clone would leave those attributes on a
+        // copy nobody writes out, and produce an index Lucene cannot open.
+        let field_info = field_infos.add(&described)?;
+        // `pf.setFieldInfo(fi)`.
+        self.per_fields[pf].field_info = Some(field_info.clone());
+        let indexed = field_info.index_options != IndexOptions::NONE;
+        if indexed {
+            // `PerField.setInvertState()` builds *both* per-field consumers
+            // through `TermsHash.addField`, and tells the term-vectors consumer
+            // that the segment has vectors as soon as a field says so
+            // (`IndexingChain.java:1836-1845`).
+            let writer_index = self.terms_writer.add_field(field_info);
+            let vectors_index = match self.term_vectors_consumer.as_mut() {
+                Some(consumer) => {
+                    let index = consumer.add_field(field_info);
+                    if field_info.has_term_vectors() {
+                        consumer.set_has_vectors();
+                    }
+                    Some(index)
+                }
+                None => None,
+            };
+            let per_field = &mut self.per_fields[pf];
+            per_field.invert_state = FieldInvertState::new(
+                self.config.index_created_version_major(),
+                field_info.name.clone(),
+                field_info.index_options,
+            );
+            per_field.writer_index = Some(writer_index);
+            per_field.vectors_index = vectors_index;
+            // `PerField.setInvertState()` creates the norms buffer for every
+            // indexed field that does not omit norms, *before* any document is
+            // seen: "Even if no documents actually succeed in setting a norm,
+            // we still write norms for this segment"
+            // (`IndexingChain.java:1837-1841`). `has_norms()` is exactly Java's
+            // `indexOptions != NONE && omitNorms == false`.
+            per_field.norms = field_info
+                .has_norms()
+                .then(|| NormValuesWriter::new(field_info.clone(), Arc::clone(&self.bytes_used)));
+        }
         // `initializeFieldInfo`'s `DocValuesType` switch creates the doc-values
         // writer of every field that declares one, indexed or not
         // (`IndexingChain.java:1351-1369`); the `NONE` arm creates nothing and
         // the `default` arm is unreachable for a valid [`DocValuesType`].
-        // Java validates the field against the index sort here, the first time
-        // it is seen with a doc-values type: a sort that names a field indexed
-        // with the wrong kind cannot order the segment, and finding that out at
-        // flush would waste the whole segment
-        // (`IndexingChain.java:1345-1350`).
-        if field_info.doc_values_type != DocValuesType::NONE {
-            if let Some(index_sort) = self.config.index_sort() {
-                Self::validate_index_sort_dv_type(
-                    index_sort,
-                    &field_info.name,
-                    field_info.doc_values_type,
-                )?;
-            }
-        }
-        let doc_values = match field_info.doc_values_type {
+        self.per_fields[pf].doc_values = match field_info.doc_values_type {
             DocValuesType::NONE => None,
             _ => Some(DocValuesWriter::new(
                 field_info.clone(),
@@ -1340,21 +1797,19 @@ impl DefaultIndexingChain {
         // `initializeFieldInfo` creates the point-values writer for every field
         // that declares point dimensions, indexed or not
         // (`IndexingChain.java:1372-1374`).
-        let point_values = if field_info.point_dimension_count != 0 {
-            Some(PointValuesWriter::new(
+        if field_info.point_dimension_count != 0 {
+            self.per_fields[pf].point_values = Some(PointValuesWriter::new(
                 field_info.clone(),
                 Arc::clone(&self.bytes_used),
-            ))
-        } else {
-            None
-        };
+            ));
+        }
         // `initializeFieldInfo` ends by asking the vectors consumer for this
         // field's writer, which creates the codec's vectors writer — and with
         // it the segment's vector files — the first time any field asks
         // (`IndexingChain.java:1375-1382`). A failure here is aborting: the
         // consumer may have created and half-written a `.vec`, `.vemf`, `.vex`
         // or `.vem` that only `abort()` can remove.
-        let knn_field_vectors_writer = if field_info.vector_dimension != 0 {
+        if field_info.vector_dimension != 0 {
             let Some(consumer) = self.vector_values_consumer.as_mut() else {
                 // Without a bound segment there is nowhere to write vectors.
                 // The term-vectors path raises the same kind of error for the
@@ -1365,7 +1820,7 @@ impl DefaultIndexingChain {
                 )));
             };
             match consumer.add_field(field_info) {
-                Ok(writer) => Some(writer),
+                Ok(writer) => self.per_fields[pf].knn_field_vectors_writer = Some(writer),
                 Err(error) => {
                     self.on_aborting_exception(LuceneError::CorruptIndex(format!(
                         "the vectors of segment may be corrupt after field \"{}\": {error}",
@@ -1374,67 +1829,115 @@ impl DefaultIndexingChain {
                     return Err(error);
                 }
             }
-        } else {
-            None
-        };
-        let index = self.per_fields.len();
-        self.per_fields.push(PerField {
-            field_info: field_info.clone(),
-            invert_state,
-            writer_index,
-            vectors_index,
-            do_vectors: false,
-            field_gen: -1,
-            first: true,
-            norms,
-            doc_values,
-            point_values,
-            knn_field_vectors_writer,
-            column_features: 0,
-        });
-        self.per_field_index.insert(field_info.name.clone(), index);
-        Ok(index)
+        }
+        Ok(())
     }
 
     /// Returns the per-field state of the reserved parent field, creating it
-    /// the first time the segment needs it.
+    /// the first time the segment needs it, or `None` when the configuration
+    /// names no parent field.
     ///
     /// Equivalent to the tail of the `IndexingChain` constructor
-    /// (`IndexingChain.java:163-167`) together with
-    /// `IndexingChain.initializeFieldInfo(parentPf)`, which Java runs from
-    /// `initAndValidateFields` or `processParentFieldForColumnBatch` the first
-    /// time a document in this segment needs the field.
+    /// (`IndexingChain.java:163-167`), which creates `parentPf` and seeds its
+    /// schema from the parent field's type once; the parent's `FieldInfo` is
+    /// initialized later, like any other field's, the first time a document
+    /// carries it.
     ///
-    /// Java can create the `PerField` in the constructor because its
-    /// `getOrAddPerField` only needs the field *name* there and leaves
-    /// `pf.fieldInfo` null until a document arrives. This port's
-    /// [`get_or_add_per_field`](Self::get_or_add_per_field) registers the
-    /// `FieldInfo` and builds every per-field writer in one step, so it needs
-    /// the segment's [`FieldInfosBuilder`], which the constructor does not
-    /// have. Deferring the whole step to the first document that needs the
-    /// field keeps the segment's field infos identical: Java also registers the
-    /// parent field only when `initializeFieldInfo(parentPf)` runs, so a
-    /// segment that never saw a document block never records it.
+    /// **Divergence from Lucene 10.5.0.** Java creates the `PerField` in the
+    /// constructor, so it is the first entry of the per-field hash even in a
+    /// segment that never sees a document block; this port creates it with
+    /// the first document that needs it. [`field_hash_flush_order`] replays
+    /// Java's table with the parent field inserted first, so the flush still
+    /// visits the fields in Java's order.
     ///
     /// # Errors
     ///
-    /// Propagates whatever registering the field info raises.
-    fn get_or_add_parent_per_field(
-        &mut self,
-        field_infos: &mut FieldInfosBuilder,
-    ) -> Result<Option<usize>> {
+    /// None in practice: the parent field's schema is a single numeric
+    /// doc-values type, which [`update_doc_field_schema`](Self::update_doc_field_schema)
+    /// always accepts; its result is propagated all the same.
+    fn get_or_add_parent_per_field(&mut self) -> Result<Option<usize>> {
         if let Some(index) = self.parent_pf {
             return Ok(Some(index));
         }
-        let codec = self.config.codec();
-        let described = match self.parent_field.as_ref() {
-            Some(parent_field) => Self::describe_field(parent_field, field_infos, codec.as_ref())?,
-            None => return Ok(None),
+        let Some(name) = self
+            .parent_field
+            .as_ref()
+            .map(|field| field.name().to_string())
+        else {
+            return Ok(None);
         };
-        let registered = field_infos.add(&described)?;
-        let index = self.get_or_add_per_field(registered)?;
+        let index = self.get_or_add_per_field(&name);
+        let parent_field = self
+            .parent_field
+            .as_ref()
+            .expect("INVARIANT: the parent field was just read");
+        Self::update_doc_field_schema(
+            &name,
+            &mut self.per_fields[index].schema,
+            parent_field.field_type(),
+        )?;
         self.parent_pf = Some(index);
         Ok(Some(index))
+    }
+
+    /// Folds one field instance's type into the schema of its field.
+    ///
+    /// Equivalent to `IndexingChain.updateDocFieldSchema(String, FieldSchema,
+    /// IndexableFieldType)` (`IndexingChain.java:1484-1519`); the messages are
+    /// Java's.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the instance contradicts
+    /// another instance of the same field in the document, asks for term
+    /// vectors without being indexed, or asks for a doc-values skip index
+    /// without doc values.
+    fn update_doc_field_schema(
+        field_name: &str,
+        schema: &mut FieldSchema,
+        field_type: &dyn IndexableFieldType,
+    ) -> Result<()> {
+        if field_type.index_options() != IndexOptions::NONE {
+            schema.set_index_options(
+                field_type.index_options(),
+                field_type.omit_norms(),
+                field_type.store_term_vectors(),
+            )?;
+        } else {
+            Self::verify_un_indexed_field_type(field_name, field_type)?;
+        }
+        if field_type.doc_values_type() != DocValuesType::NONE {
+            schema.set_doc_values(
+                field_type.doc_values_type(),
+                field_type.doc_values_skip_index_type(),
+            )?;
+        } else if field_type.doc_values_skip_index_type()
+            != crate::index::DocValuesSkipIndexType::NONE
+        {
+            return Err(LuceneError::IllegalArgument(format!(
+                "field '{}' cannot have docValuesSkipIndexType={:?} without doc values",
+                schema.name,
+                field_type.doc_values_skip_index_type()
+            )));
+        }
+        if field_type.point_dimension_count() != 0 {
+            schema.set_points(
+                field_type.point_dimension_count(),
+                field_type.point_index_dimension_count(),
+                field_type.point_num_bytes(),
+            )?;
+        }
+        if field_type.vector_dimension() != 0 {
+            schema.set_vectors(
+                field_type.vector_encoding(),
+                field_type.vector_similarity_function(),
+                field_type.vector_dimension(),
+            )?;
+        }
+        if !field_type.attributes().is_empty() {
+            schema.update_attributes(field_type.attributes());
+        }
+        Ok(())
     }
 
     /// Rejects a document field that carries the reserved parent field's name.
@@ -1540,9 +2043,13 @@ impl DefaultIndexingChain {
         num_docs: i32,
         field_infos: &mut FieldInfosBuilder,
     ) -> Result<()> {
-        let Some(parent_pf) = self.get_or_add_parent_per_field(field_infos)? else {
+        let Some(parent_pf) = self.get_or_add_parent_per_field()? else {
             return Ok(());
         };
+        if self.per_fields[parent_pf].field_info.is_none() {
+            self.initialize_field_info(parent_pf, field_infos)?;
+            self.per_fields[parent_pf].try_set_validated_frozen_field_type();
+        }
         let value = match self
             .parent_field
             .as_ref()
@@ -1564,59 +2071,6 @@ impl DefaultIndexingChain {
                 "the parent field must be a numeric doc-values field".to_string(),
             )),
         }
-    }
-
-    /// Builds the [`FieldInfo`] a document field implies.
-    ///
-    /// Equivalent to `IndexingChain.initializeFieldInfo` restricted to the
-    /// attributes the inverted-index path needs.
-    fn describe_field(
-        field: &dyn IndexableField,
-        field_infos: &FieldInfosBuilder,
-        codec: &dyn crate::codecs::Codec,
-    ) -> Result<FieldInfo> {
-        let field_type = field.field_type();
-        let name = field.name().to_string();
-        if field_type.index_options() == IndexOptions::NONE {
-            Self::verify_un_indexed_field_type(&name, field_type)?;
-        }
-        // `initializeFieldInfo` asks the codec how many dimensions it can take
-        // for this field name and rejects anything larger, *before* the
-        // `FieldInfo` is built and registered (`IndexingChain.java:1316-1321`).
-        // Java runs it once per field per segment and this runs it once per
-        // field instance; the predicate reads only the field type, which is
-        // fixed for a given instance, and a multi-valued field whose instances
-        // disagree is rejected by the schema check either way, so the two
-        // reject exactly the same documents.
-        if field_type.vector_dimension() != 0 {
-            Self::validate_max_vector_dimension(
-                &name,
-                field_type.vector_dimension(),
-                codec.knn_vectors_format().get_max_dimensions(&name),
-            )?;
-        }
-        let soft_deletes = field_infos.soft_deletes_field_name() == Some(name.as_str());
-        let parent = field_infos.parent_field_name() == Some(name.as_str());
-        FieldInfo::new_full(
-            name,
-            -1,
-            field_type.store_term_vectors(),
-            field_type.omit_norms(),
-            false,
-            field_type.index_options(),
-            field_type.doc_values_type(),
-            field_type.doc_values_skip_index_type(),
-            -1,
-            JavaStringMap::Hash(field_type.attributes().clone()),
-            field_type.point_dimension_count(),
-            field_type.point_index_dimension_count(),
-            field_type.point_num_bytes(),
-            field_type.vector_dimension(),
-            field_type.vector_encoding(),
-            field_type.vector_similarity_function(),
-            soft_deletes,
-            parent,
-        )
     }
 
     /// Rejects a vector field whose dimension count the codec cannot store.
@@ -1947,7 +2401,7 @@ impl DefaultIndexingChain {
         first: bool,
     ) -> Result<()> {
         let analyzed = field.field_type().tokenized();
-        let is_term_doc = per_field.field_info.is_term_doc_field();
+        let is_term_doc = per_field.field_info().is_term_doc_field();
         let mut stream = field.token_stream(analyzer, None);
         let mut term_vectors = term_vectors;
 
@@ -2070,7 +2524,7 @@ impl DefaultIndexingChain {
                 "DW",
                 &format!(
                     "An exception was thrown while processing field {}",
-                    per_field.field_info.name
+                    per_field.field_name
                 ),
             );
         }
@@ -2079,8 +2533,8 @@ impl DefaultIndexingChain {
 
         if analyzed {
             per_field.invert_state.position +=
-                analyzer.get_position_increment_gap(&per_field.field_info.name);
-            per_field.invert_state.offset += analyzer.get_offset_gap(&per_field.field_info.name);
+                analyzer.get_position_increment_gap(&per_field.field_name);
+            per_field.invert_state.offset += analyzer.get_offset_gap(&per_field.field_name);
         }
         Ok(())
     }
@@ -2183,18 +2637,25 @@ impl DefaultIndexingChain {
             ) {
                 let per_field = &mut self.per_fields[index];
                 let Some(writer) = per_field.doc_values.as_mut() else {
-                    if per_field.field_info.doc_values_type != DocValuesType::NONE {
+                    // `perField.fieldInfo != null && ...`
+                    // (`IndexingChain.java:463-464`): a field whose `FieldInfo`
+                    // was never initialized has no writer and nothing to say.
+                    if per_field
+                        .field_info
+                        .as_ref()
+                        .is_some_and(|info| info.doc_values_type != DocValuesType::NONE)
+                    {
                         return Err(LuceneError::illegal_state(format!(
                             "segment={}: field=\"{}\" has docValues but did not write them",
-                            state.segment_info.name, per_field.field_info.name
+                            state.segment_info.name, per_field.field_name
                         )));
                     }
                     continue;
                 };
-                if per_field.field_info.doc_values_type == DocValuesType::NONE {
+                if initialized(&per_field.field_info).doc_values_type == DocValuesType::NONE {
                     return Err(LuceneError::illegal_state(format!(
                         "segment={}: field=\"{}\" has no docValues but wrote them",
-                        state.segment_info.name, per_field.field_info.name
+                        state.segment_info.name, per_field.field_name
                     )));
                 }
                 if consumer.is_none() {
@@ -2289,7 +2750,7 @@ impl DefaultIndexingChain {
                 // Lucene re-reads the *field info*, not the writer: a field
                 // that was registered with points but never got a value can
                 // still end the segment with no dimensions.
-                if per_field.field_info.point_dimension_count == 0 {
+                if initialized(&per_field.field_info).point_dimension_count == 0 {
                     continue;
                 }
                 if writer.is_none() {
@@ -2530,9 +2991,7 @@ impl DefaultIndexingChain {
                     let per_field = &self.per_fields[pf];
                     if let Some(writer_index) = per_field.writer_index {
                         if self.terms_writer.field(writer_index).saw_payloads() {
-                            if let Some(info) =
-                                field_infos.field_info_mut(&per_field.field_info.name)
-                            {
+                            if let Some(info) = field_infos.field_info_mut(&per_field.field_name) {
                                 info.set_store_payloads();
                             }
                         }
@@ -2564,7 +3023,7 @@ impl DefaultIndexingChain {
                             };
                             if consumer.field(vectors_index).wrote_vectors() {
                                 if let Some(info) =
-                                    field_infos.field_info_mut(&per_field.field_info.name)
+                                    field_infos.field_info_mut(&per_field.field_name)
                                 {
                                     info.set_store_term_vectors()?;
                                 }
@@ -3357,7 +3816,7 @@ impl IndexingChain for DefaultIndexingChain {
         let Some(writer) = per_field.doc_values.as_mut() else {
             return Ok(None);
         };
-        let info = &per_field.field_info;
+        let info = initialized(&per_field.field_info);
         if info.doc_values_type == DocValuesType::NONE {
             return Ok(None);
         }
@@ -3415,12 +3874,12 @@ impl IndexingChain for DefaultIndexingChain {
         let mut has_row_columns = false;
         let batch_gen = self.next_field_gen;
         self.next_field_gen += 1;
-        let codec = self.config.codec();
 
         // First pass: validate every column and accumulate each field's
         // schema. A batch may carry more than one column for a field name, to
         // combine distinct features — see `ColumnValidation::feature_mask`.
         let mut doc_fields: Vec<usize> = Vec::with_capacity(columns.len());
+        let mut unique_fields: Vec<usize> = Vec::new();
         for column in &columns {
             let field_name = column.column().name();
             let field_type = Arc::clone(column.column().field_type());
@@ -3429,7 +3888,6 @@ impl IndexingChain for DefaultIndexingChain {
                 field_name,
                 field_type.as_ref(),
             )?;
-            self.reject_reserved_parent_field(field_name)?;
 
             match column {
                 TypedColumn::Binary(bc) => ColumnValidation::validate_binary_column(
@@ -3463,24 +3921,24 @@ impl IndexingChain for DefaultIndexingChain {
                 has_row_columns = true;
             }
 
-            // Java looks the `PerField` up by name and initialises its
-            // `FieldInfo` after the loop; this port's `get_or_add_per_field`
-            // does both at once, over the `FieldInfo` the builder registers —
-            // the same arrangement `process_document` uses.
-            let adapter = ColumnFieldTypeCarrier {
-                name: field_name.to_string(),
-                field_type: Arc::clone(&field_type),
-            };
-            let described = Self::describe_field(&adapter, field_infos, codec.as_ref())?;
-            let registered = field_infos.add(&described)?;
-            let index = self.get_or_add_per_field(registered)?;
+            // `pf == parentPf` (`IndexingChain.java:750-754`), after the
+            // column's own validation, as Java orders it. The name is checked
+            // before the lookup, because this port creates the parent's
+            // `PerField` lazily (see `get_or_add_parent_per_field`); in Java
+            // the lookup of the parent's name only finds the existing one, so
+            // the outcome is the same.
+            self.reject_reserved_parent_field(field_name)?;
+            let index = self.get_or_add_per_field(field_name);
 
             let column_features = ColumnValidation::feature_mask(field_type.as_ref());
             if self.per_fields[index].field_gen != batch_gen {
-                // The first column for this field name in this batch: start a
-                // fresh feature set.
+                // First column for this field name in this batch: start a fresh
+                // schema and feature set, and collect the field once so its
+                // `FieldInfo` is initialized or validated after the loop.
                 self.per_fields[index].field_gen = batch_gen;
                 self.per_fields[index].column_features = column_features as u8;
+                self.per_fields[index].schema.reset(base_doc_id);
+                unique_fields.push(index);
             } else {
                 // Each indexing feature must come from a single column for a
                 // given field name.
@@ -3496,6 +3954,17 @@ impl IndexingChain for DefaultIndexingChain {
             }
 
             doc_fields.push(index);
+            Self::update_doc_field_schema(
+                field_name,
+                &mut self.per_fields[index].schema,
+                field_type.as_ref(),
+            )?;
+        }
+
+        // Initialize field infos / validate schemas once per unique field name
+        // in the batch (`IndexingChain.java:785-788`).
+        if !unique_fields.is_empty() {
+            self.init_and_validate_fields(&unique_fields, field_infos)?;
         }
 
         // Every document of a batch is an individual document rather than part
@@ -3587,44 +4056,66 @@ impl IndexingChain for DefaultIndexingChain {
     ) -> Result<()> {
         let analyzer = self.config.analyzer_arc();
         let info_stream = self.config.info_stream();
-        let codec = self.config.codec();
         let field_gen = self.next_field_gen;
         self.next_field_gen += 1;
+        // The unique fields of the document whose `FieldInfo` must be
+        // initialized or whose schema must be validated
+        // (`IndexingChain.java:592-593`).
+        let mut fields_need_init_or_validate: Vec<usize> = Vec::new();
 
         // Handle the parent field first, before the document's own fields: only
-        // the last document of a block carries it
-        // (`IndexingChain.java:607-614`). Java only has to create its
-        // `FieldInfo` here, because the `PerField` already exists; this port
-        // creates both, which is the same step deferred to the same moment.
+        // the last document of a block carries it. Its schema was set up when
+        // its per-field state was created, so only the doc id moves on, and its
+        // `FieldInfo` is initialized the first time the segment needs it
+        // (`IndexingChain.java:607-614`).
         let parent_pf = if is_last_doc {
-            self.get_or_add_parent_per_field(field_infos)?
+            self.get_or_add_parent_per_field()?
         } else {
             None
         };
+        if let Some(parent_pf) = parent_pf {
+            self.per_fields[parent_pf].schema.reset_just_doc_id(doc_id);
+            if self.per_fields[parent_pf].field_info.is_none() {
+                fields_need_init_or_validate.push(parent_pf);
+            }
+        }
 
         // Two passes, as in Lucene: every instance of a multi-valued field must
         // be inverted together, because the analyzer may reuse one TokenStream
         // across fields.
+        //
+        // 1st pass over doc fields – verify that doc schema matches the index
+        // schema; build schema for each unique doc field
+        // (`IndexingChain.java:617-644`).
         let mut doc_fields: Vec<usize> = Vec::with_capacity(doc.get_fields().len());
         for field in doc.get_fields() {
-            self.reject_reserved_parent_field(field.name())?;
-            let described = Self::describe_field(field.as_ref(), field_infos, codec.as_ref())?;
-            // The *live* entry of the builder, not a copy of it. Java's
-            // `initializeFieldInfo` hands `pf.setFieldInfo` the very object
-            // `fieldInfos.add` returned (`IndexingChain.java:1324-1345`), and
-            // the codec writes into it: `PerFieldKnnVectorsFormat.FieldsWriter`
-            // stamps `PerFieldKnnVectorsFormat.format` and `.suffix` onto the
-            // field info it is given, and the reader refuses a segment whose
-            // `.fnm` lacks them. Registering a clone here would leave those
-            // attributes on a copy nobody writes out, and produce an index
-            // Lucene cannot open.
-            let registered = field_infos.add(&described)?;
-            let index = self.get_or_add_per_field(registered)?;
-            if self.per_fields[index].field_gen != field_gen {
-                self.per_fields[index].field_gen = field_gen;
-                self.per_fields[index].first = true;
+            let field_name = field.name();
+            let field_type = field.field_type();
+            self.reject_reserved_parent_field(field_name)?;
+            let pf = self.get_or_add_per_field(field_name);
+            let per_field = &mut self.per_fields[pf];
+            if per_field.field_gen != field_gen {
+                // first time we see this field in this document
+                per_field.field_gen = field_gen;
+                per_field.reset(doc_id, field_type);
+                if per_field.validated_frozen_field_type.is_none() {
+                    fields_need_init_or_validate.push(pf);
+                }
+            } else if per_field.multi_value_forces_deoptimize(field_type) {
+                // Multi-valued field with a different field type than the
+                // cached frozen type. Drop the validated frozen field type to
+                // force the validation path.
+                per_field.validated_frozen_field_type = None;
+                fields_need_init_or_validate.push(pf);
             }
-            doc_fields.push(index);
+            doc_fields.push(pf);
+            if per_field.validated_frozen_field_type.is_none() {
+                Self::update_doc_field_schema(field_name, &mut per_field.schema, field_type)?;
+            }
+        }
+
+        if !fields_need_init_or_validate.is_empty() {
+            self.init_and_validate_fields(&fields_need_init_or_validate, field_infos)?;
         }
 
         // `termsHash.startDocument()` runs before the stored-fields frame is
@@ -3845,7 +4336,7 @@ impl IndexingChain for DefaultIndexingChain {
                 let per_field = &self.per_fields[index];
                 if let Some(writer_index) = per_field.writer_index {
                     if self.terms_writer.field(writer_index).saw_payloads() {
-                        if let Some(info) = field_infos.field_info_mut(&per_field.field_info.name) {
+                        if let Some(info) = field_infos.field_info_mut(&per_field.field_name) {
                             info.set_store_payloads();
                         }
                     }
@@ -3878,7 +4369,7 @@ impl IndexingChain for DefaultIndexingChain {
                         continue;
                     };
                     if consumer.field(vectors_index).wrote_vectors() {
-                        if let Some(info) = field_infos.field_info_mut(&per_field.field_info.name) {
+                        if let Some(info) = field_infos.field_info_mut(&per_field.field_name) {
                             info.set_store_term_vectors()?;
                         }
                     }
@@ -4331,7 +4822,8 @@ mod tests {
                 .expect("process document");
         }
 
-        let reader = chain.get_doc_values_leaf_reader(2);
+        let finished = field_infos.finish().expect("finish the field infos");
+        let reader = chain.get_doc_values_leaf_reader(2, &finished);
         assert!(
             crate::index::LeafReader::get_numeric_doc_values(&reader, "n")
                 .expect("read the sort field")
@@ -6728,6 +7220,14 @@ struct BufferedDocValuesReader {
     /// The doc-values writer of each field, with its slot in the chain's
     /// per-field list and the field info it answers for.
     writers: std::sync::Mutex<HashMap<String, (usize, FieldInfo, DocValuesWriter)>>,
+    /// The fields the chain knows without a `FieldInfo`: those whose only
+    /// document failed validation. Java's getters dereference `pf.fieldInfo`
+    /// for them and throw `NullPointerException` (`IndexingChain.java:187,
+    /// 199, 211, 223, 235`).
+    without_field_info: std::collections::HashSet<String>,
+    /// What `getFieldInfos()` answers: the flush state's field infos, Java's
+    /// `fieldInfos.finish()` (`IndexingChain.java:242-244`).
+    field_infos: crate::index::FieldInfos,
     /// The chain's `docValuesBytePool`, which the sorted writers read.
     pool: Arc<ByteBlockPool>,
 }
@@ -6746,6 +7246,17 @@ impl BufferedDocValuesReader {
             Arc<dyn crate::codecs::doc_values::DocValuesProducer>,
         )>,
     > {
+        if self.without_field_info.contains(field) {
+            // `pf.fieldInfo.getDocValuesType()` on a `PerField` without a
+            // `FieldInfo` throws `NullPointerException`, which this port
+            // reports as `IllegalState` with the JVM's message; the flush that
+            // asked fails, and `DocumentsWriterPerThread.flush` aborts on it.
+            return Err(LuceneError::illegal_state(
+                "Cannot invoke \"org.apache.lucene.index.FieldInfo.getDocValuesType()\" \
+                 because \"pf.fieldInfo\" is null"
+                    .to_string(),
+            ));
+        }
         let mut writers = self
             .writers
             .lock()
@@ -6902,7 +7413,7 @@ impl crate::index::LeafReader for BufferedDocValuesReader {
     }
 
     fn get_field_infos(&self) -> crate::index::FieldInfos {
-        crate::index::FieldInfos::default()
+        self.field_infos.clone()
     }
 
     fn get_live_docs(&self) -> Option<Box<dyn crate::util::Bits>> {
