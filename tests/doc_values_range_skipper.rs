@@ -22,7 +22,7 @@ use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::IndexWriterConfig;
 use rucene::index::IndexReader;
 use rucene::search::{IndexSearcher, Query, ScoreMode, Sort, SortField, SortFieldType};
-use rucene::store::{Directory, RamDirectory};
+use rucene::store::{ByteBuffersDirectory, Directory};
 use rucene::util::BytesRef;
 
 const DOC_COUNT: i32 = 3000;
@@ -37,7 +37,7 @@ fn tag(i: i32) -> String {
 
 fn searcher(sort: Option<Sort>) -> IndexSearcher {
     let _ = register_codec("Lucene104", Lucene104Codec::new());
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     if let Some(sort) = sort {
         config.set_index_sort(sort).expect("index sort");

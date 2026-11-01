@@ -193,8 +193,7 @@ impl LockStressTest {
         let lock_factory = Self::get_new_lock_factory(lock_factory_class_name)?;
         // We test the lock factory directly, so we don't need it on the
         // directory itself (the directory is just for testing).
-        let lock_dir =
-            NIOFSDirectory::with_lock_factory(lock_dir_path, Some(Box::new(NoLockFactory)))?;
+        let lock_dir = NIOFSDirectory::with_lock_factory(lock_dir_path, Box::new(NoLockFactory))?;
 
         let addr = (verifier_host, verifier_port)
             .to_socket_addrs()?

@@ -75,7 +75,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::{self, Debug, Display, Formatter};
 use std::ops::Deref;
-use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, RwLock};
 use std::time::Duration;
@@ -206,8 +205,12 @@ impl Directory for SharedDirectory {
         self.0.get_pending_deletions()
     }
 
-    fn fs_directory_path(&self) -> Option<&Path> {
-        self.0.fs_directory_path()
+    fn as_fs_directory(&self) -> Option<&crate::store::FSDirectory> {
+        self.0.as_fs_directory()
+    }
+
+    fn as_filter_directory(&self) -> Option<&dyn Directory> {
+        self.0.as_filter_directory()
     }
 
     fn directory_type_name(&self) -> &'static str {
@@ -216,6 +219,12 @@ impl Directory for SharedDirectory {
 
     fn ensure_open(&self) -> Result<()> {
         self.0.ensure_open()
+    }
+
+    /// The shared directory's own `toString()`: Java holds that directory
+    /// itself, not an adapter.
+    fn directory_to_string(&self) -> String {
+        self.0.directory_to_string()
     }
 }
 

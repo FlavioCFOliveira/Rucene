@@ -1021,10 +1021,10 @@ mod tests {
     #[test]
     fn check_aborted_fails_once_the_merge_is_aborted() {
         use crate::index::SegmentCommitInfo;
-        use crate::store::{Directory, RamDirectory};
+        use crate::store::{ByteBuffersDirectory, Directory};
         use crate::util::Version;
 
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let info = SegmentInfo::new(
             dir,
             Version::LUCENE_10_5_0,

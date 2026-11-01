@@ -2205,7 +2205,7 @@ mod tests {
         let mut reference_live = FixedBitSet::new(max_doc);
         let mut deleted_count = 0;
         for d in 0..max_doc {
-            if rng.next() % 5 == 0 {
+            if rng.next().is_multiple_of(5) {
                 deleted_count += 1;
             } else {
                 reference_live.set(d);

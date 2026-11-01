@@ -36,7 +36,7 @@ use rucene::index::merge_policy::{
 };
 use rucene::index::{directory_reader, SegmentInfos};
 use rucene::search::NO_MORE_DOCS;
-use rucene::store::{Directory, RamDirectory, DEFAULT_IO_CONTEXT};
+use rucene::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT};
 use rucene::util::BytesRef;
 
 /// `ReorderMergeFixture.SIZES`.
@@ -113,7 +113,7 @@ fn reversing_policy() -> Arc<dyn MergePolicy> {
 
 fn rust_merge() -> Arc<dyn Directory> {
     let _ = rucene::codecs::register_codec("Lucene104", Lucene104Codec::new());
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut initial = IndexWriterConfig::new();
     initial
         .set_merge_policy(Arc::new(NoMergePolicy::new()))

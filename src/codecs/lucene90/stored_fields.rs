@@ -3122,7 +3122,7 @@ mod tests {
     use super::*;
     use crate::index::FieldInfo as RealFieldInfo;
     use crate::search::Sort;
-    use crate::store::RamDirectory;
+    use crate::store::ByteBuffersDirectory;
     use crate::store::DEFAULT_IO_CONTEXT;
     use crate::util::string_helper::ID_LENGTH;
     use crate::util::Bits;
@@ -3216,7 +3216,7 @@ mod tests {
     }
 
     fn write_read_round_trip(mode: Mode) {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let field_infos = make_field_infos();
         let segment_info = make_segment_info(Arc::clone(&dir), "_0", 4);
 
@@ -3388,7 +3388,7 @@ mod tests {
     /// longs could not be stored at all.
     #[test]
     fn stored_longs_beyond_two_to_the_sixty_two_round_trip() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let field_infos = make_field_infos();
         let value_field = field_infos.field_info("value").unwrap();
 
@@ -3455,7 +3455,7 @@ mod tests {
         let payload: Vec<u8> = (0..=255u8).collect();
 
         let write = |streamed: bool| -> Vec<u8> {
-            let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+            let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
             let field_infos = make_field_infos();
             let text_field = field_infos.field_info("text").unwrap();
             let segment_info = make_segment_info(Arc::clone(&dir), "_0", 1);
@@ -3531,7 +3531,7 @@ mod tests {
             }
         }
 
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let field_infos = make_field_infos();
         let text_field = field_infos.field_info("text").unwrap();
         let segment_info = make_segment_info(Arc::clone(&dir), "_0", 1);
@@ -3671,7 +3671,7 @@ mod tests {
     /// through the directory passed to the format.
     #[test]
     fn the_reader_uses_the_directory_it_is_given_not_the_one_on_the_segment_info() {
-        let data_dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let data_dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let field_infos = make_field_infos();
         let segment_info = make_segment_info(Arc::clone(&data_dir), "_0", 1);
         let format = Lucene90StoredFieldsFormat::new();
@@ -3690,7 +3690,7 @@ mod tests {
 
         // The segment info now points at an unrelated, empty directory, exactly
         // as it does after `SegmentInfos.readLatestCommit`.
-        let elsewhere: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let elsewhere: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let detached = make_segment_info(Arc::clone(&elsewhere), "_0", 1);
         detached.put_attribute(
             Lucene90StoredFieldsFormat::MODE_KEY.to_string(),
@@ -3732,7 +3732,7 @@ mod tests {
         // header records them one byte each and the sequence can be located
         // unambiguously in the uncompressed part of the `.fdt`.
         let values: Vec<String> = (0..5).map(|i| "x".repeat(10 + i)).collect();
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let field_infos = make_field_infos();
         let id_field = field_infos.field_info("id").unwrap();
         let segment_info = make_segment_info(Arc::clone(&dir), "_0", 5);
@@ -3779,7 +3779,7 @@ mod tests {
         let last = position + needle.len() - 1;
         bytes[last] = 0;
 
-        let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         {
             let mut output = corrupt
                 .create_output("_0.fdt", &*DEFAULT_IO_CONTEXT)
@@ -3841,7 +3841,7 @@ mod tests {
     /// is left behind.
     #[test]
     fn closing_the_writer_releases_every_stream() {
-        let dir = Arc::new(CountingDirectory::new(RamDirectory::new()));
+        let dir = Arc::new(CountingDirectory::new(ByteBuffersDirectory::new()));
         let field_infos = make_field_infos();
         let segment_info = make_segment_info(Arc::clone(&dir) as Arc<dyn Directory>, "_0", 1);
         let format = Lucene90StoredFieldsFormat::new();
@@ -3885,13 +3885,13 @@ mod tests {
     /// of them were closed.
     #[derive(Debug)]
     struct CountingDirectory {
-        inner: RamDirectory,
+        inner: ByteBuffersDirectory,
         opened: Arc<std::sync::atomic::AtomicUsize>,
         closed: Arc<std::sync::atomic::AtomicUsize>,
     }
 
     impl CountingDirectory {
-        fn new(inner: RamDirectory) -> Self {
+        fn new(inner: ByteBuffersDirectory) -> Self {
             Self {
                 inner,
                 opened: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -4069,7 +4069,7 @@ mod tests {
             let payload: String = (0..1_500_000 / 12)
                 .map(|i: usize| format!("slice{:06} ", i % 99991))
                 .collect();
-            let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+            let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
             let field_infos = make_field_infos();
             let id_field = field_infos.field_info("id").unwrap();
             let segment_info = make_segment_info(Arc::clone(&dir), "_0", 3);
@@ -4513,8 +4513,11 @@ mod tests {
     ) -> MergeState {
         let n = readers.len();
         let field_infos = make_field_infos();
-        let merged_info =
-            make_segment_info(Arc::new(RamDirectory::new()), "_m", max_docs.iter().sum());
+        let merged_info = make_segment_info(
+            Arc::new(ByteBuffersDirectory::new()),
+            "_m",
+            max_docs.iter().sum(),
+        );
         MergeState::new(
             doc_maps,
             merged_info,
@@ -4577,7 +4580,7 @@ mod tests {
                 Some(live) => (0..max_doc).filter(|&doc| live.get(doc as usize)).count() as i32,
             })
             .sum();
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let info = make_segment_info(Arc::clone(&dir), "_m", total_docs);
         let stored_fields = merge_test_format();
         {
@@ -4633,9 +4636,9 @@ mod tests {
     /// (`Lucene90CompressingStoredFieldsWriter.java:681-701`, `663-668`).
     #[test]
     fn the_stored_fields_merge_strategy_is_lucenes() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let source = write_merge_source(&dir, "_0", 0, 10);
-        let out: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let out: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = merge_test_writer(
             &out,
             "_w0",
@@ -4760,7 +4763,7 @@ mod tests {
     /// exactly the same documents.
     #[test]
     fn a_bulk_stored_fields_merge_copies_the_source_chunks_verbatim() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let first = write_merge_source(&dir, "_0", 0, 10);
         let second = write_merge_source(&dir, "_1", 100, 6);
         assert_eq!(
@@ -4815,7 +4818,7 @@ mod tests {
     #[test]
     fn bulk_and_visitor_stored_fields_merges_produce_the_same_index() {
         for sources in [vec![(0i32, 10i32)], vec![(0i32, 8i32), (100i32, 8i32)]] {
-            let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+            let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
             let infos: Vec<SegmentInfo> = sources
                 .iter()
                 .enumerate()
@@ -4839,7 +4842,7 @@ mod tests {
                     .collect(),
                 max_docs.clone(),
             );
-            let out: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+            let out: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
             let writer = merge_test_writer(
                 &out,
                 "_w",
@@ -4903,7 +4906,7 @@ mod tests {
     /// three of them dirty, holding 2 + 3 + 2 documents.
     #[test]
     fn a_stored_fields_merge_picks_a_strategy_per_segment() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let a = write_merge_source(&dir, "_0", 0, 10);
         let b = write_merge_source(&dir, "_1", 100, 6);
         let c = write_merge_source(&dir, "_2", 200, 6);
@@ -4928,7 +4931,7 @@ mod tests {
             )
         };
 
-        let out: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let out: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = merge_test_writer(
             &out,
             "_w",
@@ -4972,7 +4975,7 @@ mod tests {
     /// which repacks the six documents as `[4][2]`.
     #[test]
     fn a_too_dirty_stored_fields_segment_is_recompressed() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let sources: Vec<SegmentInfo> = (0..3)
             .map(|i| write_merge_source(&dir, &format!("_{i}"), 10 * i, 2))
             .collect();
@@ -4987,7 +4990,7 @@ mod tests {
         ));
         assert_eq!(dirty.counters, (3, 3, 6), "each tiny chunk is carried over");
         assert_eq!(dirty.documents, expected);
-        let out: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let out: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = merge_test_writer(
             &out,
             "_w",
@@ -5025,7 +5028,7 @@ mod tests {
     /// chunks.
     #[test]
     fn an_index_sorted_stored_fields_merge_copies_interleaved_runs() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let a = write_merge_source(&dir, "_0", 0, 10);
         let b = write_merge_source(&dir, "_1", 100, 10);
         let state = |wrap: fn(Box<dyn StoredFieldsReader>) -> Box<dyn StoredFieldsReader>| {
@@ -5080,7 +5083,7 @@ mod tests {
     /// counts straddle the test format's chunk of four documents.
     #[test]
     fn get_num_docs_is_the_segment_max_doc() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let per_chunk = MERGE_TEST_DOCS_PER_CHUNK as i32;
         for (name, count) in [("_n1", 1), ("_n4", per_chunk), ("_n5", per_chunk + 1)] {
             let source = write_merge_source(&dir, name, 0, count);
@@ -5103,7 +5106,7 @@ mod tests {
     /// two guards (`Lucene90CompressingStoredFieldsReader.java:655-664`).
     #[test]
     fn is_loaded_answers_only_a_merge_instance_on_the_current_version() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let source = write_merge_source(&dir, "_a", 0, 10);
 
         let search = concrete_merge_source(&dir, &source);
@@ -5230,7 +5233,7 @@ mod tests {
     /// patched index: "open ok", "prefetch ok", "document threw").
     #[test]
     fn a_fields_index_without_chunks_is_a_corrupt_index_not_a_panic() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let source = write_merge_source(&dir, "_h", 0, 3);
         // Positive control: the intact index serves the same calls.
         {
@@ -5271,7 +5274,7 @@ mod tests {
     /// so the round-robin overwrite is pinned too.
     #[test]
     fn prefetch_asks_for_the_whole_block_once_while_it_is_cached() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let per_block = MERGE_TEST_DOCS_PER_CHUNK as i32;
         // Seventeen full blocks and a last partial one.
         let source = write_merge_source(&dir, "_p", 0, 17 * per_block + 1);
@@ -5324,7 +5327,7 @@ mod tests {
     #[cfg(debug_assertions)]
     #[should_panic(expected = "self.trigger_flush() != force")]
     fn forcing_the_flush_of_a_full_chunk_trips_the_assertion() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut writer = merge_test_writer(
             &dir,
             "_f",
@@ -5347,7 +5350,7 @@ mod tests {
     #[cfg(debug_assertions)]
     #[should_panic(expected = "self.trigger_flush() != force")]
     fn an_unforced_flush_of_a_partial_chunk_trips_the_assertion() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut writer = merge_test_writer(
             &dir,
             "_g",

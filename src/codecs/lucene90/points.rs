@@ -834,7 +834,7 @@ mod tests {
     use crate::codecs::tests::test_segment_info;
     use crate::index::point_values::DocValuesVisitor;
     use crate::index::{FieldInfo, FieldInfos};
-    use crate::store::RamDirectory;
+    use crate::store::ByteBuffersDirectory;
     use crate::util::bkd::BKDUtil;
     use crate::util::BitUtil;
 
@@ -1272,7 +1272,7 @@ mod tests {
     /// 98`); the version only picks the BKD encoding.
     #[test]
     fn headers_carry_version_current_whatever_the_writer_version() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let segment_info = test_segment_info("points_version", 10);
         let field_infos = FieldInfos::new(vec![int_point_field("p", 0, 1)]).unwrap();
         let write_state = SegmentWriteState::new(
@@ -1310,7 +1310,7 @@ mod tests {
 
     #[test]
     fn writer_reader_round_trip_single_1d_field() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let dir_ref: &dyn Directory = &*dir;
         let segment_info = test_segment_info("points_test", 10);
         let field = int_point_field("int_point", 0, 1);
@@ -1359,7 +1359,7 @@ mod tests {
 
     #[test]
     fn writer_reader_round_trip_multiple_fields() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let dir_ref: &dyn Directory = &*dir;
         let segment_info = test_segment_info("points_test", 10);
 
@@ -1434,7 +1434,7 @@ mod tests {
         use crate::index::index_writer_config::IndexWriterConfig;
 
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         for segment in 0..2 {
             for i in 0..600 {
@@ -1481,7 +1481,7 @@ mod tests {
 
     #[test]
     fn empty_point_field_skips_metadata_entry() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let dir_ref: &dyn Directory = &*dir;
         let segment_info = test_segment_info("points_test", 10);
         let field = int_point_field("int_point", 0, 1);
@@ -1516,7 +1516,7 @@ mod tests {
 
     #[test]
     fn single_point_round_trip() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let dir_ref: &dyn Directory = &*dir;
         let segment_info = test_segment_info("points_test", 5);
         let field = int_point_field("int_point", 0, 1);
@@ -1561,7 +1561,7 @@ mod tests {
 
     #[test]
     fn single_field_min_max_and_doc_count() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let dir_ref: &dyn Directory = &*dir;
         let segment_info = test_segment_info("points_test", 10);
         let field = int_point_field("int_point", 0, 1);
@@ -1612,7 +1612,7 @@ mod tests {
 
     #[test]
     fn get_values_rejects_non_point_field() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let dir_ref: &dyn Directory = &*dir;
         let segment_info = test_segment_info("points_test", 5);
         let field = FieldInfo::new("text", 0);
@@ -1657,7 +1657,7 @@ mod tests {
     fn range_query_1d_round_trip() {
         use crate::codecs::points::{IntersectVisitor, Relation};
 
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let dir_ref: &dyn Directory = &*dir;
         let segment_info = test_segment_info("points_test", 20);
         let field = int_point_field("int_point", 0, 1);
@@ -1735,7 +1735,7 @@ mod tests {
     fn box_query_2d_round_trip() {
         use crate::codecs::points::{IntersectVisitor, Relation};
 
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let dir_ref: &dyn Directory = &*dir;
         let segment_info = test_segment_info("points_test", 20);
         let field = point_field("box_point", 0, 2, 2, 4);

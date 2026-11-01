@@ -62,7 +62,7 @@ use rucene::index::merge_scheduler::SerialMergeScheduler;
 use rucene::index::terms::Term;
 use rucene::index::{SegmentCommitInfo, SegmentInfos};
 use rucene::search::{Sort, SortField, SortFieldType};
-use rucene::store::{Directory, RamDirectory};
+use rucene::store::{ByteBuffersDirectory, Directory};
 use rucene::util::BytesRef;
 
 const INDEXERS: usize = 4;
@@ -92,7 +92,7 @@ fn doc(id: usize, rank: i64) -> Document {
 /// ids.
 fn scenario(sorted: bool) {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config.set_max_buffered_docs(10).unwrap();
     if sorted {
@@ -200,7 +200,7 @@ fn run_with_watchdog(what: &str, body: impl FnOnce() + Send + std::panic::Unwind
 fn an_nrt_reopen_over_changes_asks_for_merges_without_deadlocking() {
     run_with_watchdog("an NRT reopen", || {
         ensure_codec();
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         writer.add_document(&doc(0, 0)).unwrap();
         let reader = directory_reader::open_with_writer(writer.as_ref()).unwrap();
@@ -232,7 +232,7 @@ fn concurrent_updates_commits_merges_and_nrt_reopens_finish_with_an_index_sort()
 #[test]
 fn a_merge_between_prepare_commit_and_commit_keeps_the_pending_commits_files() {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config
         .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
@@ -338,7 +338,7 @@ impl MergePolicy for LockProbePolicy {
 #[test]
 fn the_merge_asks_use_compound_file_under_the_writers_lock() {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let writer_slot: Arc<OnceLock<Weak<IndexWriter>>> = Arc::new(OnceLock::new());
     let policy = Arc::new(LockProbePolicy {
         inner: TieredMergePolicy::new(),
@@ -371,9 +371,9 @@ fn the_merge_asks_use_compound_file_under_the_writers_lock() {
     writer.close().unwrap();
 }
 
-/// A `RamDirectory` that records every file name it is asked to sync.
+/// A `ByteBuffersDirectory` that records every file name it is asked to sync.
 struct SyncRecordingDirectory {
-    inner: RamDirectory,
+    inner: ByteBuffersDirectory,
     synced: std::sync::Mutex<HashSet<String>>,
 }
 
@@ -440,7 +440,7 @@ impl Directory for SyncRecordingDirectory {
 fn a_commit_syncs_every_file_of_its_segments() {
     ensure_codec();
     let recording = Arc::new(SyncRecordingDirectory {
-        inner: RamDirectory::new(),
+        inner: ByteBuffersDirectory::new(),
         synced: std::sync::Mutex::new(HashSet::new()),
     });
     let dir: Arc<dyn Directory> = Arc::clone(&recording) as Arc<dyn Directory>;
@@ -471,7 +471,7 @@ fn a_commit_syncs_every_file_of_its_segments() {
 fn concurrent_commits_are_serialised() {
     run_with_watchdog("concurrent commits", || {
         ensure_codec();
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         let threads: Vec<_> = (0..4)
             .map(|t| {

@@ -8,7 +8,7 @@
 //! `BKDRadixSelector`, writing every partition that does not fit in heap to a
 //! further temporary file and deleting each one once consumed
 //! (`BKDWriter.java:930-1034, 1922-2126`). The port handed the writer a
-//! private `RamDirectory` and kept every point in heap.
+//! private in-memory directory and kept every point in heap.
 //!
 //! * `bkd_writer_spills_and_writes_what_lucene_writes` drives `BKDWriter`
 //!   directly against `BkdSpillFixture` from
@@ -38,7 +38,7 @@ use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::IndexWriterConfig;
 use rucene::index::SegmentInfos;
 use rucene::store::{
-    Directory, FSDirectory, IOContext, IndexInput, IndexOutput, Lock, RamDirectory,
+    ByteBuffersDirectory, Directory, FSDirectory, IOContext, IndexInput, IndexOutput, Lock,
     DEFAULT_IO_CONTEXT,
 };
 use rucene::util::bkd::{BKDConfig, BKDWriter};
@@ -372,7 +372,7 @@ type MergeOutcome = (Vec<String>, Vec<(String, Vec<u8>)>, Vec<String>);
 
 fn merge_points(max_mb: f64, value: fn(i32) -> [i32; 2]) -> MergeOutcome {
     let _ = register_codec("Lucene104", Lucene104Codec::new());
-    let (dir, events) = RecordingDirectory::new(Box::new(RamDirectory::new()));
+    let (dir, events) = RecordingDirectory::new(Box::new(ByteBuffersDirectory::new()));
     let dir: Arc<dyn Directory> = Arc::new(dir);
     let codec: Arc<dyn Codec> = Arc::new(
         FilterCodec::new("Lucene104", Arc::new(Lucene104Codec::new())).with_points_format(

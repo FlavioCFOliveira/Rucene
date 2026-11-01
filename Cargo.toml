@@ -2,7 +2,7 @@
 name = "rucene"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.86"
+rust-version = "1.89"
 authors = ["Flavio CF Oliveira"]
 license = "Apache-2.0"
 description = "A Rust port of Apache Lucene Core 10.5.0 with functional parity and index-file compatibility."
@@ -46,8 +46,6 @@ thiserror = "1"
 memmap2 = { version = "0.9", optional = true }
 # CRC-32 implementation matching Java's `java.util.zip.CRC32`.
 crc32fast = "1.4"
-# Cross-platform advisory file locks for NativeFSLockFactory.
-fslock = "0.2"
 # Deflate for the compressing stored-fields/term-vectors formats.
 #
 # The `zlib-rs` backend (pure Rust, no C toolchain) is required, not the default
@@ -67,6 +65,21 @@ chrono = { version = "0.4", default-features = false, features = ["std"] }
 # deliberately does not; the remaining dialect differences are declared on
 # `AbstractAnalysisFactory::get_pattern`.
 fancy-regex = "0.19"
+
+# `fcntl(F_SETLK)` record locks for `NativeFSLockFactory` on Unix.
+#
+# The JDK's `FileChannel.tryLock()`, which Lucene's `NativeFSLockFactory`
+# takes `write.lock` with, is a POSIX `fcntl` record lock over the whole file
+# (`UnixFileDispatcherImpl.c`, `lock0`). The standard library's
+# `File::try_lock` is `flock`, which Linux does not make exclude `fcntl`
+# locks, so a Rucene writer and a Lucene writer could both hold one index.
+# `rustix::fs::fcntl_lock` issues the same `F_SETLK` with `l_len = 0` the JDK
+# issues, without `unsafe` in this crate. The predicate below is the gate of
+# `fcntl_lock` in rustix 1.1.4 (`src/fs/fcntl.rs:93-101`), restricted to Unix;
+# `src/store.rs` (`channel_lock`) compiles the `fcntl` calls under the same
+# predicate and falls back to `File::try_lock` on every other target.
+[target.'cfg(all(unix, not(any(target_os = "emscripten", target_os = "espidf", target_os = "fuchsia", target_os = "horizon", target_os = "redox", target_os = "vita", target_os = "wasi"))))'.dependencies]
+rustix = { version = "1.1.4", default-features = false, features = ["std", "fs"] }
 
 [dev-dependencies]
 tokio-test = "0.4"

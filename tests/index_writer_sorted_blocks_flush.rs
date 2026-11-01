@@ -40,7 +40,9 @@ use rucene::index::index_writer_config::IndexWriterConfig;
 use rucene::index::merge_policy::NoMergePolicy;
 use rucene::index::SegmentInfos;
 use rucene::search::{Sort, SortField, SortFieldType};
-use rucene::store::{ByteArrayDataInput, DataInput, Directory, RamDirectory, DEFAULT_IO_CONTEXT};
+use rucene::store::{
+    ByteArrayDataInput, ByteBuffersDirectory, DataInput, Directory, DEFAULT_IO_CONTEXT,
+};
 use rucene::util::BytesRef;
 
 /// `SortedBlocksFlushFixture.BLOCKS`.
@@ -101,7 +103,7 @@ fn block(b: i32) -> Vec<Document> {
 
 fn rust_flush() -> Arc<dyn Directory> {
     let _ = rucene::codecs::register_codec("Lucene104", Lucene104Codec::new());
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config
         .set_index_sort(

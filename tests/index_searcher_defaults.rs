@@ -16,7 +16,7 @@ use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::IndexWriterConfig;
 use rucene::index::IndexReader;
 use rucene::search::IndexSearcher;
-use rucene::store::{Directory, RamDirectory};
+use rucene::store::{ByteBuffersDirectory, Directory};
 
 #[test]
 fn a_new_searcher_starts_with_the_default_cache_and_policy() {
@@ -37,7 +37,7 @@ fn a_new_searcher_starts_with_the_default_cache_and_policy() {
     );
 
     let _ = register_codec("Lucene104", Lucene104Codec::new());
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).expect("writer");
     writer.commit().expect("commit");
     writer.close().expect("close");

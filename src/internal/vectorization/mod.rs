@@ -14,6 +14,14 @@
 //! provider indirection and the scalar backends, `src/java21` holds the Panama
 //! implementations and the memory-segment scorers.
 //!
+//! The memory-segment scorers, the memory-segment postings and bulk vector
+//! operations, and [`PanamaVectorizationProvider`], which registers them, read
+//! a [`MemorySegment`](crate::store::MemorySegment) and exist only with the
+//! `mmap` feature, which provides it. Without it the crate has no Panama
+//! provider, and [`lookup`] returns [`DefaultVectorizationProvider`] — the
+//! fallback Lucene's `VectorizationProvider.lookup` takes when the Panama
+//! implementation is unavailable.
+//!
 //! | Rucene | Apache Lucene Core 10.5.0 (`src/java`) |
 //! | --- | --- |
 //! | [`VectorizationProvider`], [`get_instance`], [`ensure_caller`], [`lookup`], [`lookup_vector_module`], [`get_upper_java_feature_version`], [`VALID_CALLERS`], [`VALID_CALLER_FILES`] | `VectorizationProvider` |
@@ -106,18 +114,27 @@ pub mod default_vector_util_support;
 pub mod default_vectorization_provider;
 pub mod doc_values_bulk_decode_support;
 pub mod doc_values_range_support;
+#[cfg(feature = "mmap")]
 pub mod lucene99_memory_segment_byte_vector_scorer;
+#[cfg(feature = "mmap")]
 pub mod lucene99_memory_segment_byte_vector_scorer_supplier;
+#[cfg(feature = "mmap")]
 pub mod lucene99_memory_segment_flat_vectors_scorer;
+#[cfg(feature = "mmap")]
 pub mod lucene99_memory_segment_float_vector_scorer;
+#[cfg(feature = "mmap")]
 pub mod lucene99_memory_segment_float_vector_scorer_supplier;
+#[cfg(feature = "mmap")]
 pub mod lucene99_memory_segment_scalar_quantized_vector_scorer;
+#[cfg(feature = "mmap")]
 pub mod memory_segment_bulk_vector_ops;
+#[cfg(feature = "mmap")]
 pub mod memory_segment_posting_decoding_util;
 pub mod panama_doc_values_bulk_decode_support;
 pub mod panama_doc_values_range_support;
 pub mod panama_vector_constants;
 pub mod panama_vector_util_support;
+#[cfg(feature = "mmap")]
 pub mod panama_vectorization_provider;
 pub mod posting_decoding_util;
 pub mod vector_util_support;
@@ -129,18 +146,27 @@ pub use default_vector_util_support::DefaultVectorUtilSupport;
 pub use default_vectorization_provider::DefaultVectorizationProvider;
 pub use doc_values_bulk_decode_support::DocValuesBulkDecodeSupport;
 pub use doc_values_range_support::DocValuesRangeSupport;
+#[cfg(feature = "mmap")]
 pub use lucene99_memory_segment_byte_vector_scorer::Lucene99MemorySegmentByteVectorScorer;
+#[cfg(feature = "mmap")]
 pub use lucene99_memory_segment_byte_vector_scorer_supplier::Lucene99MemorySegmentByteVectorScorerSupplier;
+#[cfg(feature = "mmap")]
 pub use lucene99_memory_segment_flat_vectors_scorer::Lucene99MemorySegmentFlatVectorsScorer;
+#[cfg(feature = "mmap")]
 pub use lucene99_memory_segment_float_vector_scorer::Lucene99MemorySegmentFloatVectorScorer;
+#[cfg(feature = "mmap")]
 pub use lucene99_memory_segment_float_vector_scorer_supplier::Lucene99MemorySegmentFloatVectorScorerSupplier;
+#[cfg(feature = "mmap")]
 pub use lucene99_memory_segment_scalar_quantized_vector_scorer::Lucene99MemorySegmentScalarQuantizedVectorScorer;
+#[cfg(feature = "mmap")]
 pub use memory_segment_bulk_vector_ops::MemorySegmentBulkVectorOps;
+#[cfg(feature = "mmap")]
 pub use memory_segment_posting_decoding_util::MemorySegmentPostingDecodingUtil;
 pub use panama_doc_values_bulk_decode_support::PanamaDocValuesBulkDecodeSupport;
 pub use panama_doc_values_range_support::PanamaDocValuesRangeSupport;
 pub use panama_vector_constants::PanamaVectorConstants;
 pub use panama_vector_util_support::PanamaVectorUtilSupport;
+#[cfg(feature = "mmap")]
 pub use panama_vectorization_provider::PanamaVectorizationProvider;
 pub use posting_decoding_util::PostingDecodingUtil;
 pub use vector_util_support::VectorUtilSupport;

@@ -6,7 +6,6 @@
 //! scheduler.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::Instant;
@@ -5967,8 +5966,12 @@ impl Directory for SharedDirectory {
         self.0.get_pending_deletions()
     }
 
-    fn fs_directory_path(&self) -> Option<&Path> {
-        self.0.fs_directory_path()
+    fn as_fs_directory(&self) -> Option<&crate::store::FSDirectory> {
+        self.0.as_fs_directory()
+    }
+
+    fn as_filter_directory(&self) -> Option<&dyn Directory> {
+        self.0.as_filter_directory()
     }
 
     fn directory_type_name(&self) -> &'static str {
@@ -10340,7 +10343,7 @@ pub(crate) fn register_test_secrets() {
 mod tests {
     use super::*;
     use crate::document::{Document, NumericDocValuesField, Store, StringField};
-    use crate::store::RamDirectory;
+    use crate::store::ByteBuffersDirectory;
     use crate::util::InfoStream;
 
     /// A merge prepared during a commit is registered and its readers are
@@ -10390,7 +10393,7 @@ mod tests {
 
     fn recording_writer() -> (Arc<RecordingInfoStream>, Arc<IndexWriter>) {
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let stream = Arc::new(RecordingInfoStream::default());
         let mut config = IndexWriterConfig::new();
         config
@@ -10416,7 +10419,7 @@ mod tests {
     #[test]
     fn a_new_writer_keeps_the_commit_user_data_it_opened() {
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let first = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         first.add_document(&id_body_doc("a")).unwrap();
         first
@@ -10567,7 +10570,7 @@ mod tests {
     #[test]
     fn a_point_in_time_merge_is_not_taken_before_its_readers_are_open() {
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut config = IndexWriterConfig::new();
         config
             .set_merge_scheduler(Arc::new(
@@ -10634,7 +10637,7 @@ mod tests {
     /// resolves them against `_0`.
     fn resolve_price_updates(values: [i64; 2]) -> Vec<bool> {
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         for i in 0..10 {
             let mut doc = Document::new();
@@ -10743,7 +10746,7 @@ mod tests {
     #[test]
     fn a_private_packet_is_not_lost_to_a_concurrent_apply_during_publication() {
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let stream = Arc::new(ApplyOnPublish {
             writer: std::sync::OnceLock::new(),
             fired: std::sync::atomic::AtomicBool::new(false),
@@ -10797,7 +10800,7 @@ mod tests {
     #[test]
     fn a_forced_deletes_merge_is_not_dropped_by_a_concurrent_commit() {
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer_slot: Arc<std::sync::OnceLock<Arc<IndexWriter>>> =
             Arc::new(std::sync::OnceLock::new());
         let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -10875,7 +10878,7 @@ mod tests {
 
     fn one_doc_writer() -> (Arc<dyn Directory>, Arc<IndexWriter>, Document) {
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut config = IndexWriterConfig::new();
         config
             .set_merge_scheduler(Arc::new(
@@ -11015,7 +11018,7 @@ mod tests {
     #[test]
     fn merges_are_reenabled_only_on_an_open_writer() {
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         {
             let mut state = writer.state().unwrap();
@@ -11043,7 +11046,7 @@ mod tests {
     #[test]
     fn flush_notifications_refuse_files_once_the_event_queue_is_closed() {
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         writer.close().unwrap();
         let files: HashSet<String> = HashSet::from(["_0.fdt".to_string()]);
@@ -11066,7 +11069,7 @@ mod tests {
 
     /// A writer over a fresh `FSDirectory` (whose default lock factory is
     /// `NativeFSLockFactory`), with nothing written yet.
-    fn fs_writer(path: &Path) -> (Arc<dyn Directory>, Arc<IndexWriter>) {
+    fn fs_writer(path: &std::path::Path) -> (Arc<dyn Directory>, Arc<IndexWriter>) {
         register_default_codec();
         let dir: Arc<dyn Directory> = Arc::new(crate::store::FSDirectory::open(path).unwrap());
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
@@ -11172,20 +11175,74 @@ mod tests {
         let mut config = IndexWriterConfig::new();
         config.set_open_mode(OpenMode::APPEND).unwrap();
         let error = IndexWriter::new(Arc::clone(&dir), config).unwrap_err();
+        // Java oracle (`oracle9/Probe23.java locks`, "append empty"):
+        // `IndexNotFoundException: no segments* file found in
+        // LockValidatingDirectoryWrapper(MMapDirectory@<path>
+        // lockFactory=org.apache.lucene.store.NativeFSLockFactory@67427b69):
+        // files: [write.lock]`. `FSDirectory.open` picks `NIOFSDirectory`
+        // where this crate has no `MMapDirectory`.
+        let class = if cfg!(all(feature = "mmap", target_pointer_width = "64")) {
+            "MMapDirectory"
+        } else {
+            "NIOFSDirectory"
+        };
+        let java = format!(
+            "no segments* file found in LockValidatingDirectoryWrapper({class}@{} \
+             lockFactory=org.apache.lucene.store.NativeFSLockFactory@{{hash}}): files: [write.lock]",
+            tmp.path().canonicalize().unwrap().display()
+        );
         match &error {
-            LuceneError::IndexNotFound(message) => assert_eq!(
-                message,
-                &format!(
-                    "no segments* file found in LockValidatingDirectoryWrapper({}): files: [write.lock]",
-                    dir.directory_to_string()
-                )
-            ),
+            LuceneError::IndexNotFound(message) => {
+                assert!(crate::store::matches_java_text(message, &java), "{message}")
+            }
             other => panic!("an IndexNotFoundException, got {other:?}"),
         }
         let relock = dir
             .obtain_lock(WRITE_LOCK_NAME)
             .expect("the failed constructor released the write lock");
         relock.close().unwrap();
+    }
+
+    /// A second `IndexWriter` on a `ByteBuffersDirectory` already locked by a
+    /// writer fails with `LockObtainFailedException`, whose
+    /// `SingleInstanceLockFactory` names the directory and the lock; once the
+    /// first writer closes, a new one opens. Java oracle
+    /// (`oracle9/Probe23.java locks`): "second writer:
+    /// LockObtainFailedException: lock instance already obtained:
+    /// (dir=ByteBuffersDirectory@3d8bbcdc
+    /// lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@52500920,
+    /// lockName=write.lock)", "third writer after close: ok".
+    #[test]
+    fn a_second_writer_on_a_locked_byte_buffers_directory_fails_as_lucene() {
+        register_default_codec();
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let first = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        match IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()) {
+            Err(LuceneError::LockObtainFailed { message, .. }) => {
+                assert_eq!(
+                    message,
+                    format!(
+                        "lock instance already obtained: (dir={}, lockName=write.lock)",
+                        dir.directory_to_string()
+                    )
+                );
+                assert!(
+                    crate::store::matches_java_text(
+                        &message,
+                        "lock instance already obtained: (dir=ByteBuffersDirectory@{hash} \
+                         lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@{hash}, \
+                         lockName=write.lock)"
+                    ),
+                    "{message}"
+                );
+            }
+            other => panic!("expected LockObtainFailedException, got {:?}", other.err()),
+        }
+        first.close().unwrap();
+        IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new())
+            .expect("the first writer released the write lock")
+            .close()
+            .unwrap();
     }
 
     /// A writer configured with `setIndexCommit` opens on that commit: it reads
@@ -11195,7 +11252,7 @@ mod tests {
     #[test]
     fn a_writer_opens_on_the_commit_its_configuration_names() {
         register_default_codec();
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let keep_all = || {
             let mut config = IndexWriterConfig::new();
             config
@@ -11248,7 +11305,7 @@ mod tests {
     #[test]
     fn a_create_writer_refuses_a_configured_commit() {
         register_default_codec();
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         writer.add_document(&id_body_doc("a")).unwrap();
         writer.commit().unwrap();
@@ -11275,7 +11332,7 @@ mod tests {
     #[test]
     fn a_writer_opens_on_an_nrt_readers_uncommitted_segments() {
         register_default_codec();
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let no_merges = || {
             let mut config = IndexWriterConfig::new();
             config
@@ -11329,7 +11386,7 @@ mod tests {
     #[test]
     fn a_writer_opens_on_an_nrt_readers_uncommitted_deletes() {
         register_default_codec();
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let no_merges = || {
             let mut config = IndexWriterConfig::new();
             config
@@ -11370,7 +11427,7 @@ mod tests {
     #[test]
     fn a_writer_opens_on_an_nrt_reader_pulled_right_after_a_commit() {
         register_default_codec();
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         writer.add_document(&Document::new()).unwrap();
         writer.commit().unwrap();
@@ -11395,7 +11452,7 @@ mod tests {
     #[test]
     fn a_writer_opens_on_a_non_nrt_readers_commit() {
         register_default_codec();
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         writer.add_document(&Document::new()).unwrap();
         writer.close().unwrap();
@@ -11420,7 +11477,7 @@ mod tests {
     #[test]
     fn a_writer_refuses_an_nrt_reader_of_an_index_with_no_commit() {
         register_default_codec();
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         writer.add_document(&Document::new()).unwrap();
         let reader = IndexWriterTrait::get_reader(writer.as_ref(), true, false).unwrap();
@@ -11444,7 +11501,7 @@ mod tests {
     fn a_writer_refuses_a_stale_nrt_reader() {
         register_default_codec();
         for add_before_reader in [true, false] {
-            let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+            let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
             let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
             writer.add_document(&Document::new()).unwrap();
             writer.commit().unwrap();
@@ -11495,7 +11552,7 @@ mod tests {
 
     /// A merged segment of one empty file, `_9`, in its own directory.
     fn merge_finished_segment() -> (Arc<dyn Directory>, SegmentCommitInfo) {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         dir.create_output("_9.cfs", &*DEFAULT_IO_CONTEXT)
             .unwrap()
             .close()
@@ -11602,7 +11659,7 @@ mod tests {
     #[test]
     fn a_commit_checkpoint_describes_the_live_segments_with_their_deletes() {
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let stream = Arc::new(RecordingInfoStream::default());
         let mut config = IndexWriterConfig::new();
         config
@@ -11652,7 +11709,7 @@ mod tests {
     fn num_deleted_docs_counts_committed_soft_deletes() {
         use crate::document::{Field, FieldType};
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let soft_config = || {
             let mut config = IndexWriterConfig::new();
             config.set_soft_deletes_field(Some("soft".to_string()));
@@ -11766,8 +11823,11 @@ mod tests {
         let d2: Arc<dyn Directory> =
             Arc::new(crate::store::FSDirectory::open(tmp.path().join("d2")).unwrap());
         let held = d2.obtain_lock(WRITE_LOCK_NAME).unwrap();
-        let writer =
-            IndexWriter::new(Arc::new(RamDirectory::new()), IndexWriterConfig::new()).unwrap();
+        let writer = IndexWriter::new(
+            Arc::new(ByteBuffersDirectory::new()),
+            IndexWriterConfig::new(),
+        )
+        .unwrap();
 
         let error = writer
             .add_indexes_dirs(&[Arc::clone(&d1), Arc::clone(&d2)])
@@ -11790,9 +11850,12 @@ mod tests {
     #[test]
     fn adding_a_directory_twice_names_it() {
         register_default_codec();
-        let source: Arc<dyn Directory> = Arc::new(RamDirectory::new());
-        let writer =
-            IndexWriter::new(Arc::new(RamDirectory::new()), IndexWriterConfig::new()).unwrap();
+        let source: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = IndexWriter::new(
+            Arc::new(ByteBuffersDirectory::new()),
+            IndexWriterConfig::new(),
+        )
+        .unwrap();
         let error = writer
             .add_indexes_dirs(&[Arc::clone(&source), Arc::clone(&source)])
             .unwrap_err();
@@ -11817,7 +11880,7 @@ mod tests {
     #[test]
     fn doc_stats_subtract_each_segments_deleted_docs() {
         register_default_codec();
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = IndexWriter::new(Arc::clone(&dir), no_merge_config(None)).unwrap();
         writer.add_document(&id_body_doc("a")).unwrap();
         writer.add_document(&id_body_doc("b")).unwrap();
@@ -11840,7 +11903,7 @@ mod tests {
         IndexReader::close(reader.as_ref()).unwrap();
         writer.close().unwrap();
 
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = IndexWriter::new(Arc::clone(&dir), no_merge_config(Some("soft"))).unwrap();
         writer.add_document(&id_body_doc("a")).unwrap();
         writer.add_document(&id_body_doc("b")).unwrap();
@@ -11927,7 +11990,7 @@ mod tests {
         config
             .set_merge_policy(Arc::new(crate::index::merge_policy::NoMergePolicy::new()))
             .unwrap();
-        let writer = IndexWriter::new(Arc::new(RamDirectory::new()), config).unwrap();
+        let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
         for id in 0..3 {
             let mut doc = Document::new();
             doc.add(Box::new(
@@ -11975,7 +12038,7 @@ mod tests {
         config
             .set_merge_policy(Arc::new(crate::index::merge_policy::NoMergePolicy::new()))
             .unwrap();
-        let writer = IndexWriter::new(Arc::new(RamDirectory::new()), config).unwrap();
+        let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
         for id in 0..2 {
             let mut doc = Document::new();
             doc.add(Box::new(
@@ -12095,7 +12158,7 @@ mod tests {
                     .unwrap();
                 config
             };
-            let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+            let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
             let policy = Arc::new(DeletesToMergeRecorder::default());
             let writer = IndexWriter::new(Arc::clone(&dir), config(&policy)).unwrap();
             writer.add_document(&id_body_doc("a")).unwrap();
@@ -12153,7 +12216,7 @@ mod tests {
         IndexWriterConfig,
     ) {
         register_default_codec();
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = IndexWriter::new(Arc::clone(&dir), no_merge_config(Some("soft"))).unwrap();
         writer.add_document(&id_body_doc("a")).unwrap();
         writer.add_document(&id_body_doc("b")).unwrap();
@@ -12254,7 +12317,7 @@ mod tests {
     #[test]
     fn a_writer_refuses_a_closed_reader() {
         register_default_codec();
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         writer.add_document(&Document::new()).unwrap();
         writer.commit().unwrap();
@@ -12284,7 +12347,7 @@ mod tests {
     #[test]
     fn a_writer_refuses_an_nrt_reader_taken_before_the_first_commit() {
         register_default_codec();
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         writer.add_document(&Document::new()).unwrap();
         let reader = IndexWriterTrait::get_reader(writer.as_ref(), true, false).unwrap();
@@ -12305,7 +12368,7 @@ mod tests {
     /// A directory with one committed document.
     fn one_doc_index() -> Arc<dyn Directory> {
         register_default_codec();
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         writer.add_document(&id_body_doc("a")).unwrap();
         writer.close().unwrap();
@@ -12439,8 +12502,11 @@ mod tests {
     /// closed.
     fn reader_over(docs: &[Document]) -> Arc<dyn DirectoryReader> {
         register_default_codec();
-        let writer =
-            IndexWriter::new(Arc::new(RamDirectory::new()), IndexWriterConfig::new()).unwrap();
+        let writer = IndexWriter::new(
+            Arc::new(ByteBuffersDirectory::new()),
+            IndexWriterConfig::new(),
+        )
+        .unwrap();
         for doc in docs {
             writer.add_document(doc).unwrap();
         }
@@ -12458,8 +12524,11 @@ mod tests {
     fn add_indexes_codec_readers_merges_the_readers_documents_and_fields() {
         let r1 = reader_over(&[stored_doc("1", "f1", "doc1 field1")]);
         let r2 = reader_over(&[stored_doc("2", "f2", "doc2 field2")]);
-        let writer =
-            IndexWriter::new(Arc::new(RamDirectory::new()), IndexWriterConfig::new()).unwrap();
+        let writer = IndexWriter::new(
+            Arc::new(ByteBuffersDirectory::new()),
+            IndexWriterConfig::new(),
+        )
+        .unwrap();
         let mut readers = codec_leaves(&r1);
         readers.extend(codec_leaves(&r2));
         writer.add_indexes_codec_readers(&readers).unwrap();
@@ -12501,8 +12570,11 @@ mod tests {
     #[test]
     fn add_indexes_codec_readers_of_no_reader_adds_no_segment() {
         register_default_codec();
-        let writer =
-            IndexWriter::new(Arc::new(RamDirectory::new()), IndexWriterConfig::new()).unwrap();
+        let writer = IndexWriter::new(
+            Arc::new(ByteBuffersDirectory::new()),
+            IndexWriterConfig::new(),
+        )
+        .unwrap();
         writer.add_indexes_codec_readers(&[]).unwrap();
         assert_eq!(writer.get_doc_stats().unwrap().max_doc, 0);
         assert_eq!(writer.get_segment_count().unwrap(), 0);
@@ -12523,7 +12595,7 @@ mod tests {
             ));
             doc
         };
-        let target: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let target: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = IndexWriter::new(Arc::clone(&target), IndexWriterConfig::new()).unwrap();
         writer.add_document(&my_id()).unwrap();
         writer.close().unwrap();
@@ -12547,7 +12619,7 @@ mod tests {
 
         // An incoming reader with a deleted document, which no merge folds
         // away first.
-        let source_dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let source_dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let source_writer =
             IndexWriter::new(Arc::clone(&source_dir), no_merge_config(None)).unwrap();
         for id in ["a", "b", "c"] {
@@ -12560,8 +12632,11 @@ mod tests {
         source_writer.close().unwrap();
         let source = crate::index::directory_reader::open(Arc::clone(&source_dir)).unwrap();
         assert_eq!((source.num_docs(), source.max_doc()), (2, 3));
-        let writer =
-            IndexWriter::new(Arc::new(RamDirectory::new()), IndexWriterConfig::new()).unwrap();
+        let writer = IndexWriter::new(
+            Arc::new(ByteBuffersDirectory::new()),
+            IndexWriterConfig::new(),
+        )
+        .unwrap();
         writer
             .add_indexes_codec_readers(&codec_leaves(&source))
             .unwrap();
@@ -12585,7 +12660,7 @@ mod tests {
     #[test]
     fn add_indexes_codec_readers_refuses_an_incompatible_field() {
         register_default_codec();
-        let target: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let target: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let scheduler = Arc::new(TrackingWrapScheduler::default());
         let mut config = IndexWriterConfig::new();
         config
@@ -12636,7 +12711,7 @@ mod tests {
         let source = reader_over(&[doc]);
         let mut config = IndexWriterConfig::new();
         config.set_parent_field(Some("foo".to_string()));
-        let writer = IndexWriter::new(Arc::new(RamDirectory::new()), config).unwrap();
+        let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
         let error = writer
             .add_indexes_codec_readers(&codec_leaves(&source))
             .unwrap_err();
@@ -12813,8 +12888,8 @@ mod tests {
             self.inner.get_pending_deletions()
         }
 
-        fn fs_directory_path(&self) -> Option<&Path> {
-            self.inner.fs_directory_path()
+        fn as_fs_directory(&self) -> Option<&crate::store::FSDirectory> {
+            self.inner.as_fs_directory()
         }
 
         fn directory_type_name(&self) -> &'static str {
@@ -12886,7 +12961,7 @@ mod tests {
         config
             .set_info_stream(Arc::clone(&stream) as Arc<dyn InfoStream>)
             .unwrap();
-        let writer = IndexWriter::new(Arc::new(RamDirectory::new()), config).unwrap();
+        let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
 
         let leaves = codec_leaves(&source);
         let adder = {
@@ -12929,7 +13004,7 @@ mod tests {
         config
             .set_info_stream(Arc::clone(&stream) as Arc<dyn InfoStream>)
             .unwrap();
-        let writer = IndexWriter::new(Arc::new(RamDirectory::new()), config).unwrap();
+        let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
 
         let leaves = codec_leaves(&source);
         let (done, outcome) = std::sync::mpsc::channel();
@@ -13058,7 +13133,7 @@ mod tests {
         config
             .set_merge_scheduler(Arc::new(FailureSwallowingScheduler::default()))
             .unwrap();
-        let writer = IndexWriter::new(Arc::new(RamDirectory::new()), config).unwrap();
+        let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
         let error = writer
             .add_indexes_codec_readers(&codec_leaves(&source))
             .unwrap_err();
@@ -13091,7 +13166,7 @@ mod tests {
                 .set_merge_scheduler(Arc::clone(&scheduler)
                     as Arc<dyn crate::index::merge_scheduler::MergeScheduler>)
                 .unwrap();
-            let target: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+            let target: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
             let writer = IndexWriter::new(Arc::clone(&target), config).unwrap();
             writer
                 .add_indexes_codec_readers(&codec_leaves(&source))
@@ -13136,8 +13211,11 @@ mod tests {
     #[test]
     fn update_documents_by_query_deletes_and_adds_atomically() {
         register_default_codec();
-        let writer =
-            IndexWriter::new(Arc::new(RamDirectory::new()), IndexWriterConfig::new()).unwrap();
+        let writer = IndexWriter::new(
+            Arc::new(ByteBuffersDirectory::new()),
+            IndexWriterConfig::new(),
+        )
+        .unwrap();
         writer.add_document(&id_body_doc("1")).unwrap();
         writer.add_document(&id_body_doc("2")).unwrap();
         writer.commit().unwrap();
@@ -13326,8 +13404,11 @@ mod tests {
     #[test]
     fn update_documents_batch_by_query_deletes_and_adds_atomically() {
         register_default_codec();
-        let writer =
-            IndexWriter::new(Arc::new(RamDirectory::new()), IndexWriterConfig::new()).unwrap();
+        let writer = IndexWriter::new(
+            Arc::new(ByteBuffersDirectory::new()),
+            IndexWriterConfig::new(),
+        )
+        .unwrap();
         writer
             .add_batch(&IdValueBatch::new(&["1", "2"], &[100, 200]))
             .unwrap();
@@ -13369,8 +13450,11 @@ mod tests {
         register_default_codec();
         let (done, outcome) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let writer =
-                IndexWriter::new(Arc::new(RamDirectory::new()), IndexWriterConfig::new()).unwrap();
+            let writer = IndexWriter::new(
+                Arc::new(ByteBuffersDirectory::new()),
+                IndexWriterConfig::new(),
+            )
+            .unwrap();
             writer.add_document(&id_body_doc("a")).unwrap();
             writer.commit().unwrap();
             let segment = writer.state().unwrap().segment_infos.info(0).clone();
@@ -13446,8 +13530,11 @@ mod tests {
             ),
         );
         for add_stored_f in [true, false] {
-            let writer =
-                IndexWriter::new(Arc::new(RamDirectory::new()), IndexWriterConfig::new()).unwrap();
+            let writer = IndexWriter::new(
+                Arc::new(ByteBuffersDirectory::new()),
+                IndexWriterConfig::new(),
+            )
+            .unwrap();
             writer
                 .add_indexes_codec_readers(&[Arc::clone(&no_live_document)])
                 .unwrap();
@@ -13506,7 +13593,7 @@ mod tests {
             .unwrap()
         };
         let index = |index_sort: Option<Sort>, force_merge: bool| -> Arc<dyn Directory> {
-            let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+            let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
             let mut config = IndexWriterConfig::new();
             if let Some(index_sort) = index_sort {
                 config.set_index_sort(index_sort).unwrap();
@@ -13529,7 +13616,7 @@ mod tests {
         config
             .set_index_sort(sort(crate::search::SortFieldType::String))
             .unwrap();
-        let writer = IndexWriter::new(Arc::new(RamDirectory::new()), config).unwrap();
+        let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
         for (source, from) in [(&int_sorted, "<int: \"foo\">"), (&unsorted, "null")] {
             let expected = LuceneError::IllegalArgument(format!(
                 "cannot change index sort from {from} to <string: \"foo\">"
@@ -13615,7 +13702,7 @@ mod tests {
         ] {
             let mut config = IndexWriterConfig::new();
             config.set_parent_field(Some("_parent".to_string()));
-            let writer = IndexWriter::new(Arc::new(RamDirectory::new()), config).unwrap();
+            let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
             let mut field_type = crate::document::FieldType::new();
             if point_dimensions > 0 {
                 field_type.set_dimensions(point_dimensions, 8).unwrap();
@@ -13660,7 +13747,7 @@ mod tests {
         config
             .set_merge_policy(Arc::new(crate::index::merge_policy::NoMergePolicy::new()))
             .unwrap();
-        let writer = IndexWriter::new(Arc::new(RamDirectory::new()), config).unwrap();
+        let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
         for id in 0..2 {
             let mut doc = Document::new();
             doc.add(Box::new(
@@ -13820,7 +13907,7 @@ mod tests {
         config
             .set_info_stream(Arc::clone(&stream) as Arc<dyn InfoStream>)
             .unwrap();
-        let writer = IndexWriter::new(Arc::new(RamDirectory::new()), config).unwrap();
+        let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
         writer.add_document(&id_body_doc("0")).unwrap();
         writer.commit().unwrap();
         writer.add_document(&id_body_doc("1")).unwrap();

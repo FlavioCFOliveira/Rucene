@@ -6002,7 +6002,7 @@ mod reader_variant_forwarding_tests {
     }
 
     fn sci() -> SegmentCommitInfo {
-        let dir: Arc<dyn Directory> = Arc::new(crate::store::RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(crate::store::ByteBuffersDirectory::default());
         let info = crate::index::SegmentInfo::new(
             dir,
             Version::LUCENE_10_5_0,
@@ -6080,7 +6080,7 @@ mod log_merge_policy_size_tests {
     //! and the `MergePolicy.size` they defer to (`MergePolicy.java:761-769`).
     use super::*;
     use crate::codecs::Lucene104Codec;
-    use crate::store::{Directory, RamDirectory, DEFAULT_IO_CONTEXT};
+    use crate::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT};
     use crate::util::{NoOutputInfoStream, Version};
 
     /// A merge context that reports a fixed number of deletes to merge.
@@ -6106,7 +6106,7 @@ mod log_merge_policy_size_tests {
 
     /// A segment of `max_doc` documents whose only file holds `bytes` bytes.
     fn segment(max_doc: i32, bytes: usize) -> SegmentCommitInfo {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let mut out = dir.create_output("_0.dat", &*DEFAULT_IO_CONTEXT).unwrap();
         out.write_bytes(&vec![0u8; bytes], 0, bytes).unwrap();
         out.close().unwrap();

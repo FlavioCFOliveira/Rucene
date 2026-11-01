@@ -2941,7 +2941,7 @@ mod tests {
         VectorEncoding, VectorSimilarityFunction,
     };
     use crate::search::from_live_docs;
-    use crate::store::{DefaultIOContext, RamDirectory};
+    use crate::store::{ByteBuffersDirectory, DefaultIOContext};
     use crate::util::string_helper::ID_LENGTH;
     use crate::util::Version;
     use std::collections::HashMap;
@@ -3040,7 +3040,7 @@ mod tests {
     /// is built, so writing the segment fails with that error.
     #[test]
     fn a_beam_width_of_one_fails_the_graph_build_as_lucene_does() -> Result<()> {
-        let dir = Arc::new(RamDirectory::new()) as Arc<dyn crate::store::Directory>;
+        let dir = Arc::new(ByteBuffersDirectory::new()) as Arc<dyn crate::store::Directory>;
         let seg_info = make_segment_info(&dir, 3)?;
         let field_info = float_field_info("float_field", 0, 2)?;
         let field_infos = FieldInfos::new(vec![field_info.clone()])?;
@@ -3174,7 +3174,7 @@ mod tests {
         use crate::codecs::FlatVectorsFormat;
         use crate::util::quantization::QuantizedVectorsReader;
 
-        let dir = Arc::new(RamDirectory::new()) as Arc<dyn crate::store::Directory>;
+        let dir = Arc::new(ByteBuffersDirectory::new()) as Arc<dyn crate::store::Directory>;
         let seg_info = make_segment_info(&dir, 2)?;
         let field_info = float_field_info("float_field", 0, 2)?;
         let field_infos = FieldInfos::new(vec![field_info.clone()])?;
@@ -3218,7 +3218,7 @@ mod tests {
 
     #[test]
     fn round_trip_float_vectors_and_search() -> Result<()> {
-        let dir = Arc::new(RamDirectory::new()) as Arc<dyn crate::store::Directory>;
+        let dir = Arc::new(ByteBuffersDirectory::new()) as Arc<dyn crate::store::Directory>;
         let seg_info = make_segment_info(&dir, 3)?;
         let field_info = float_field_info("float_field", 0, 2)?;
         let field_infos = FieldInfos::new(vec![field_info.clone()])?;
@@ -3264,7 +3264,7 @@ mod tests {
 
     #[test]
     fn round_trip_byte_vectors() -> Result<()> {
-        let dir = Arc::new(RamDirectory::new()) as Arc<dyn crate::store::Directory>;
+        let dir = Arc::new(ByteBuffersDirectory::new()) as Arc<dyn crate::store::Directory>;
         let seg_info = make_segment_info(&dir, 3)?;
         let field_info = byte_field_info("byte_field", 0, 2)?;
         let field_infos = FieldInfos::new(vec![field_info.clone()])?;
@@ -3303,7 +3303,7 @@ mod tests {
 
     #[test]
     fn written_files_have_codec_headers() -> Result<()> {
-        let dir = Arc::new(RamDirectory::new()) as Arc<dyn crate::store::Directory>;
+        let dir = Arc::new(ByteBuffersDirectory::new()) as Arc<dyn crate::store::Directory>;
         let seg_info = make_segment_info(&dir, 1)?;
         let field_info = float_field_info("f", 0, 1)?;
         let field_infos = FieldInfos::new(vec![field_info.clone()])?;
@@ -3445,7 +3445,7 @@ mod tests {
 
     #[test]
     fn the_graph_path_does_not_return_deleted_documents() -> Result<()> {
-        let dir = Arc::new(RamDirectory::new()) as Arc<dyn crate::store::Directory>;
+        let dir = Arc::new(ByteBuffersDirectory::new()) as Arc<dyn crate::store::Directory>;
         let seg_info = make_segment_info(&dir, ACCEPT_DOCS_SIZE)?;
         let field_info = float_field_info("float_field", 0, 2)?;
         let field_infos = FieldInfos::new(vec![field_info.clone()])?;
@@ -3478,7 +3478,7 @@ mod tests {
 
     #[test]
     fn the_graph_path_honours_a_caller_filter() -> Result<()> {
-        let dir = Arc::new(RamDirectory::new()) as Arc<dyn crate::store::Directory>;
+        let dir = Arc::new(ByteBuffersDirectory::new()) as Arc<dyn crate::store::Directory>;
         let seg_info = make_segment_info(&dir, ACCEPT_DOCS_SIZE)?;
         let field_info = float_field_info("float_field", 0, 2)?;
         let field_infos = FieldInfos::new(vec![field_info.clone()])?;
@@ -3512,7 +3512,7 @@ mod tests {
 
     #[test]
     fn the_exhaustive_path_does_not_return_deleted_documents() -> Result<()> {
-        let dir = Arc::new(RamDirectory::new()) as Arc<dyn crate::store::Directory>;
+        let dir = Arc::new(ByteBuffersDirectory::new()) as Arc<dyn crate::store::Directory>;
         let seg_info = make_segment_info(&dir, ACCEPT_DOCS_SIZE)?;
         let field_info = float_field_info("float_field", 0, 2)?;
         let field_infos = FieldInfos::new(vec![field_info.clone()])?;
@@ -3551,7 +3551,7 @@ mod tests {
 
     #[test]
     fn a_restrictive_filter_sends_the_search_down_the_exhaustive_path() -> Result<()> {
-        let dir = Arc::new(RamDirectory::new()) as Arc<dyn crate::store::Directory>;
+        let dir = Arc::new(ByteBuffersDirectory::new()) as Arc<dyn crate::store::Directory>;
         let seg_info = make_segment_info(&dir, ACCEPT_DOCS_SIZE)?;
         let field_info = float_field_info("float_field", 0, 2)?;
         let field_infos = FieldInfos::new(vec![field_info.clone()])?;

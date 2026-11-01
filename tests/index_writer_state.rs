@@ -34,7 +34,8 @@ use rucene::index::merge_scheduler::SerialMergeScheduler;
 use rucene::index::segment_infos::SegmentInfos;
 use rucene::index::terms::Term;
 use rucene::store::{
-    BufferedChecksumIndexInput, Directory, IOContext, IndexInput, IndexOutput, Lock, RamDirectory,
+    BufferedChecksumIndexInput, ByteBuffersDirectory, Directory, IOContext, IndexInput,
+    IndexOutput, Lock,
 };
 
 fn ensure_codec() {
@@ -100,7 +101,7 @@ fn writer_state_queries_match_lucene() {
     ensure_codec();
     let mut lines = Vec::new();
     {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let w = IndexWriter::new(Arc::clone(&dir), config()).unwrap();
         w.add_document(&doc(0)).unwrap();
         w.commit().unwrap();
@@ -112,7 +113,7 @@ fn writer_state_queries_match_lucene() {
         w.rollback().unwrap();
     }
     {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let w = IndexWriter::new(Arc::clone(&dir), config()).unwrap();
         w.add_document(&doc(0)).unwrap();
         w.add_document(&doc(1)).unwrap();
@@ -149,7 +150,7 @@ fn writer_state_queries_match_lucene() {
         lines.push(format!("closed={closed}"));
     }
     {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut pooling = config();
         pooling.set_reader_pooling(true);
         // No merge may fold the deletion away before the question is asked.
@@ -171,7 +172,7 @@ fn writer_state_queries_match_lucene() {
         w.rollback().unwrap();
     }
     {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let w = IndexWriter::new(Arc::clone(&dir), config()).unwrap();
         w.add_document(&doc(0)).unwrap();
         w.add_document(&doc(1)).unwrap();
@@ -189,7 +190,7 @@ fn writer_state_queries_match_lucene() {
         reopened.close().unwrap();
     }
     {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let w = IndexWriter::new(Arc::clone(&dir), config()).unwrap();
         w.add_document(&doc(0)).unwrap();
         w.commit().unwrap();
@@ -329,7 +330,7 @@ fn rollback_closes_the_writer_before_it_releases_the_write_lock() {
     let writer_slot = Arc::new(OnceLock::new());
     let closed_at_release = Arc::new(Mutex::new(None));
     let dir: Arc<dyn Directory> = Arc::new(ObservingDirectory {
-        inner: Arc::new(RamDirectory::new()),
+        inner: Arc::new(ByteBuffersDirectory::new()),
         writer: Arc::clone(&writer_slot),
         closed_at_release: Arc::clone(&closed_at_release),
     });

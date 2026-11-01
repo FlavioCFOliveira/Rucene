@@ -252,12 +252,12 @@ mod tests {
     use super::*;
     use crate::codecs::tests::test_segment_info;
     use crate::search::{Sort, SortField, SortFieldType};
-    use crate::store::RamDirectory;
+    use crate::store::ByteBuffersDirectory;
     use std::collections::HashSet;
 
     #[test]
     fn round_trip_segment_info() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let format = Lucene99SegmentInfoFormat::new();
         let mut info = test_segment_info("_0", 42);
         info.set_diagnostics(

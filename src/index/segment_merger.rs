@@ -555,7 +555,7 @@ mod tests {
     use crate::index::segment_reader::SegmentReader;
     use crate::index::{FieldNumbers, SegmentCommitInfo};
     use crate::search::NO_MORE_DOCS;
-    use crate::store::{RamDirectory, DEFAULT_IO_CONTEXT};
+    use crate::store::{ByteBuffersDirectory, DEFAULT_IO_CONTEXT};
     use crate::util::BytesRef;
     use std::sync::Mutex;
 
@@ -563,7 +563,7 @@ mod tests {
     /// and returns the directory with their commit infos.
     fn stored_only_segments(segments: usize) -> (Arc<dyn Directory>, Vec<SegmentCommitInfo>) {
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         for i in 0..segments {
             let mut doc = Document::new();
@@ -584,7 +584,7 @@ mod tests {
     /// the directory with their commit infos.
     fn segments_sorted_by_id(segments: usize) -> (Arc<dyn Directory>, Vec<SegmentCommitInfo>) {
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut config = IndexWriterConfig::new();
         config.set_index_sort(id_sort()).unwrap();
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
@@ -704,7 +704,7 @@ mod tests {
             reader_with_min_version(&infos[0], Some(Version::LUCENE_10_5_0), 10),
             reader_with_min_version(&infos[1], Some(Version::LUCENE_10_5_0), 10),
         ];
-        let target: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let target: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let no_output = || Arc::new(crate::util::NoOutputInfoStream) as Arc<dyn InfoStream>;
         let refused = |context: Arc<dyn IOContext>| match merger_with(
             &readers,
@@ -747,7 +747,7 @@ mod tests {
             .iter()
             .map(|info| reader_with_min_version(info, Some(Version::LUCENE_10_5_0), 10))
             .collect();
-        let target: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let target: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut merger = merger_over(&readers, &target);
         let state = &merger.merge_state;
         assert_eq!(state.segment_info.as_ref().unwrap().max_doc().unwrap(), 3);
@@ -784,7 +784,7 @@ mod tests {
     #[test]
     fn a_sorted_merge_reports_its_index_sort() {
         let (_dir, infos) = segments_sorted_by_id(2);
-        let target: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let target: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let messages = |index_sort: Sort| {
             let readers: Vec<Arc<dyn CodecReader>> = infos
                 .iter()
@@ -826,7 +826,7 @@ mod tests {
     #[test]
     fn a_sorted_merge_refuses_sources_without_the_index_sort() {
         let (_dir, infos) = stored_only_segments(2);
-        let target: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let target: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let readers: Vec<Arc<dyn CodecReader>> = infos
             .iter()
             .map(|info| reader_with_min_version(info, Some(Version::LUCENE_10_5_0), 10))
@@ -873,7 +873,7 @@ mod tests {
     #[test]
     fn a_string_index_sorter_refuses_a_field_without_sorted_doc_values() {
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         let mut doc = Document::new();
         doc.add(Box::new(
@@ -931,7 +931,7 @@ mod tests {
             reader_with_min_version(&infos[1], Some(Version::LUCENE_9_12_1), 10),
             reader_with_min_version(&infos[2], Some(Version::LUCENE_10_5_0), 10),
         ];
-        let target: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let target: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut merger = merger_over(&readers, &target);
         assert_eq!(
             merger
@@ -964,7 +964,7 @@ mod tests {
             reader_with_min_version(&infos[0], Some(Version::LATEST), 10),
             reader_with_min_version(&infos[1], Some(Version::LATEST), 10),
         ];
-        let target: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let target: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut merger = merger_over(&readers, &target);
         let mode_key = crate::codecs::lucene90::stored_fields::Lucene90StoredFieldsFormat::MODE_KEY;
         assert_eq!(
@@ -1008,7 +1008,7 @@ mod tests {
             reader_with_min_version(&infos[0], Some(Version::LUCENE_10_0_0), 6),
             reader_with_min_version(&infos[1], None, 6),
         ];
-        let target: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let target: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let merger = merger_over(&readers, &target);
         assert_eq!(merger.into_segment_info().min_version(), None);
     }
@@ -1022,7 +1022,7 @@ mod tests {
     #[test]
     fn a_segment_without_a_vector_field_answers_absent_for_it() {
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         let mut doc = Document::new();
         doc.add(Box::new(
@@ -1092,7 +1092,7 @@ mod tests {
     #[test]
     fn every_merge_instance_reads_what_its_search_instance_reads() {
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         for i in 0..5i32 {
             let mut doc = Document::new();

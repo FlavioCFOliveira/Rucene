@@ -1228,13 +1228,13 @@ impl IndexDeletionPolicy for PersistentSnapshotDeletionPolicy {
 mod tests {
     use super::*;
     use crate::index::index_commit::test_support::TestCommit;
-    use crate::store::RamDirectory;
+    use crate::store::ByteBuffersDirectory;
     use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
     use std::sync::Condvar;
     use std::time::{Duration, Instant};
 
     fn ram_directory() -> Arc<dyn Directory> {
-        Arc::new(RamDirectory::default())
+        Arc::new(ByteBuffersDirectory::default())
     }
 
     fn commits(dir: &Arc<dyn Directory>, generations: &[i64]) -> Vec<Arc<dyn IndexCommit>> {

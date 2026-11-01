@@ -178,6 +178,22 @@ impl Directory for TrackingTmpOutputDirectoryWrapper {
     fn ensure_open(&self) -> Result<()> {
         self.inner.ensure_open()
     }
+
+    /// The `FilterDirectory.toString()` it inherits
+    /// (`FilterDirectory.java:114-117`): its simple class name around the
+    /// delegate's `toString()`.
+    fn directory_to_string(&self) -> String {
+        format!(
+            "TrackingTmpOutputDirectoryWrapper({})",
+            self.inner.directory_to_string()
+        )
+    }
+
+    /// A `FilterDirectory` subclass (`TrackingTmpOutputDirectoryWrapper.java:29`),
+    /// over its `in`.
+    fn as_filter_directory(&self) -> Option<&dyn Directory> {
+        Some(self.inner.as_ref())
+    }
 }
 
 /// A compression mode that does no compression at all.

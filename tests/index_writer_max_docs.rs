@@ -30,7 +30,7 @@ use rucene::index::index_writer::{get_actual_max_docs, set_max_docs, IndexWriter
 use rucene::index::index_writer_config::IndexWriterConfig;
 use rucene::index::merge_policy::{MergeTrigger, NoMergePolicy};
 use rucene::index::merge_scheduler::{MergeScheduler, MergeSource, SerialMergeScheduler};
-use rucene::store::{Directory, RamDirectory};
+use rucene::store::{ByteBuffersDirectory, Directory};
 use rucene::util::SameThreadExecutorService;
 use rucene::util::Version;
 
@@ -89,7 +89,7 @@ fn id_doc(id: &str) -> Document {
 /// A directory with `count` committed documents.
 fn index_with(count: usize) -> Arc<dyn Directory> {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
     for i in 0..count {
         writer.add_document(&id_doc(&i.to_string())).unwrap();
@@ -156,7 +156,7 @@ fn an_nrt_reader_over_too_many_documents_is_corrupt() {
     config
         .set_merge_policy(Arc::new(NoMergePolicy::new()))
         .unwrap();
-    let writer = IndexWriter::new(Arc::new(RamDirectory::new()), config).unwrap();
+    let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
     writer.add_document(&id_doc("a")).unwrap();
     writer.add_document(&id_doc("b")).unwrap();
 
@@ -227,7 +227,7 @@ fn add_indexes_codec_readers_refuses_readers_over_the_limit() {
     guard.lower(writer_max_docs);
 
     // Create the destination writer.
-    let dest_dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dest_dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let scheduler = Arc::new(CountingSerialMergeScheduler::default());
     let mut config = IndexWriterConfig::new();
     config

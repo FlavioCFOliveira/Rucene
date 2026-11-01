@@ -2358,12 +2358,23 @@ impl Directory for RateLimitedMergeDirectory {
         self.inner.get_pending_deletions()
     }
 
-    fn fs_directory_path(&self) -> Option<&std::path::Path> {
-        self.inner.fs_directory_path()
-    }
-
     fn ensure_open(&self) -> Result<()> {
         self.inner.ensure_open()
+    }
+
+    /// The `FilterDirectory.toString()` the anonymous class inherits
+    /// (`FilterDirectory.java:114-117`): `getClass().getSimpleName() + "(" +
+    /// in + ")"`, whose simple name is empty for an anonymous class, so the
+    /// delegate is rendered in bare parentheses.
+    fn directory_to_string(&self) -> String {
+        format!("({})", self.inner.directory_to_string())
+    }
+
+    /// The anonymous class extends `FilterDirectory`
+    /// (`ConcurrentMergeScheduler.java:299`): over its `in`. It is not an
+    /// `FSDirectory`, so [`Directory::as_fs_directory`] keeps its default.
+    fn as_filter_directory(&self) -> Option<&dyn Directory> {
+        Some(self.inner.as_ref())
     }
 }
 
@@ -3238,8 +3249,32 @@ mod intra_merge_executor_tests {
     use crate::util::Version;
     use std::sync::mpsc;
 
+    /// The anonymous `FilterDirectory` subclass `wrapForMerge` returns renders
+    /// as `getClass().getSimpleName() + "(" + in + ")"` with an empty simple
+    /// name. Java oracle (`oracle9/Probe23.java tostring`, an anonymous
+    /// `FilterDirectory` over a `ByteBuffersDirectory`): "filter anon:
+    /// (ByteBuffersDirectory@320de594
+    /// lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@3dd1dc90)".
+    #[test]
+    fn the_merge_directory_renders_as_an_anonymous_filter_directory() {
+        let inner: Arc<dyn Directory> = Arc::new(crate::store::ByteBuffersDirectory::new());
+        let wrapped = RateLimitedMergeDirectory {
+            inner: Arc::clone(&inner),
+            rate_limiter: Arc::new(MergeRateLimiter::new()),
+        };
+        assert_eq!(
+            wrapped.directory_to_string(),
+            format!("({})", inner.directory_to_string())
+        );
+        assert!(crate::store::matches_java_text(
+            &wrapped.directory_to_string(),
+            "(ByteBuffersDirectory@{hash} \
+             lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@{hash})"
+        ));
+    }
+
     fn one_merge(estimated_merge_bytes: i64) -> OneMerge {
-        let dir: Arc<dyn Directory> = Arc::new(crate::store::RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(crate::store::ByteBuffersDirectory::default());
         let info = crate::index::SegmentInfo::new(
             dir,
             Version::LUCENE_10_5_0,
@@ -3306,7 +3341,7 @@ mod intra_merge_executor_tests {
         let cms = ConcurrentMergeScheduler::new();
         cms.initialize(
             Arc::new(crate::util::NoOutputInfoStream),
-            &(Arc::new(crate::store::RamDirectory::default()) as Arc<dyn Directory>),
+            &(Arc::new(crate::store::ByteBuffersDirectory::default()) as Arc<dyn Directory>),
         )
         .unwrap();
         let small = cms.get_intra_merge_executor(&merge).unwrap().unwrap();
@@ -3323,7 +3358,7 @@ mod intra_merge_executor_tests {
 
         // The default close of a scheduler that does not override it.
         let multi = MultiIndexMergeScheduler::with_combined_merge_scheduler(
-            Arc::new(crate::store::RamDirectory::default()),
+            Arc::new(crate::store::ByteBuffersDirectory::default()),
             Arc::new(CombinedMergeScheduler::new()),
         );
         assert!(!Arc::ptr_eq(
@@ -3352,7 +3387,7 @@ mod intra_merge_executor_tests {
         cms.set_max_merges_and_threads(6, 4).unwrap();
         cms.initialize(
             Arc::new(crate::util::NoOutputInfoStream),
-            &(Arc::new(crate::store::RamDirectory::default()) as Arc<dyn Directory>),
+            &(Arc::new(crate::store::ByteBuffersDirectory::default()) as Arc<dyn Directory>),
         )
         .unwrap();
         let big = cms
@@ -3378,7 +3413,7 @@ mod intra_merge_executor_tests {
         cms.set_max_merges_and_threads(6, 1).unwrap();
         cms.initialize(
             Arc::new(crate::util::NoOutputInfoStream),
-            &(Arc::new(crate::store::RamDirectory::default()) as Arc<dyn Directory>),
+            &(Arc::new(crate::store::ByteBuffersDirectory::default()) as Arc<dyn Directory>),
         )
         .unwrap();
         let big = cms
@@ -3397,7 +3432,7 @@ mod intra_merge_executor_tests {
         cms.set_max_merges_and_threads(6, 4).unwrap();
         cms.initialize(
             Arc::new(crate::util::NoOutputInfoStream),
-            &(Arc::new(crate::store::RamDirectory::default()) as Arc<dyn Directory>),
+            &(Arc::new(crate::store::ByteBuffersDirectory::default()) as Arc<dyn Directory>),
         )
         .unwrap();
         let (tx, rx) = mpsc::channel();

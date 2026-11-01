@@ -22,11 +22,11 @@ use rucene::index::index_writer_config::IndexWriterConfig;
 use rucene::index::merge_scheduler::ConcurrentMergeScheduler;
 use rucene::index::FieldInfo;
 use rucene::internal::tests_hooks::TestSecrets;
-use rucene::store::{Directory, RamDirectory};
+use rucene::store::{ByteBuffersDirectory, Directory};
 
 fn writer_with_one_segment() -> (Arc<dyn Directory>, Arc<IndexWriter>) {
     let _ = register_codec("Lucene104", Lucene104Codec::new());
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
     let mut doc = Document::new();
     doc.add(Box::new(

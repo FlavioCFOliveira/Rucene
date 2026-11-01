@@ -1547,7 +1547,7 @@ mod tests {
     use crate::index::segment_infos::OLD_SEGMENTS_GEN;
     use crate::index::{SegmentCommitInfo, SegmentInfos};
     use crate::search::{Sort, SortField, SortFieldType};
-    use crate::store::{Directory, RamDirectory};
+    use crate::store::{ByteBuffersDirectory, Directory};
     use crate::util::string_helper::StringHelper;
     use crate::util::Version;
     use std::collections::HashSet;
@@ -1629,7 +1629,7 @@ mod tests {
 
     #[test]
     fn opens_empty_directory() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let mut sis = SegmentInfos::new(Version::LATEST.major as i32).unwrap();
         sis.commit(dir.as_ref()).unwrap();
         let reader = open(Arc::clone(&dir)).unwrap();
@@ -1642,7 +1642,7 @@ mod tests {
 
     #[test]
     fn opens_single_segment_directory() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let reader = commit_single_segment(Arc::clone(&dir));
         assert_eq!(reader.max_doc(), 42);
         assert_eq!(reader.num_docs(), 42);
@@ -1653,7 +1653,7 @@ mod tests {
 
     #[test]
     fn open_if_changed_detects_new_commit() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let reader = commit_single_segment(Arc::clone(&dir));
         let first_version = reader.version().unwrap();
         assert!(reader.is_current().unwrap());
@@ -1682,7 +1682,7 @@ mod tests {
 
     #[test]
     fn open_if_changed_returns_none_when_unchanged() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let reader = commit_single_segment(Arc::clone(&dir));
         let same = open_if_changed(reader).unwrap();
         assert!(same.is_none());
@@ -1690,7 +1690,7 @@ mod tests {
 
     #[test]
     fn open_if_changed_from_commit() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let reader = commit_single_segment(Arc::clone(&dir));
 
         // Read the first commit back and reopen from it: should be a no-op.
@@ -1734,7 +1734,7 @@ mod tests {
 
     #[test]
     fn index_commit_matches_reader() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let reader = commit_single_segment(Arc::clone(&dir));
         let commit = reader.index_commit().unwrap();
         assert_eq!(commit.get_segment_count(), 1);
@@ -1753,7 +1753,7 @@ mod tests {
 
     #[test]
     fn list_commits_returns_sorted_commits() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let _reader = commit_single_segment(Arc::clone(&dir));
 
         // Write a second commit.
@@ -1776,7 +1776,7 @@ mod tests {
 
     #[test]
     fn list_commits_rejects_a_legacy_segments_gen_file() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let _reader = commit_single_segment(Arc::clone(&dir));
         assert_eq!(list_commits(Arc::clone(&dir)).unwrap().len(), 1);
 
@@ -1805,7 +1805,7 @@ mod tests {
 
     #[test]
     fn index_exists_matches_java_semantics() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         assert!(!index_exists(dir.as_ref()).unwrap());
 
         let mut sis = SegmentInfos::new(Version::LATEST.major as i32).unwrap();
@@ -1823,7 +1823,7 @@ mod tests {
 
     #[test]
     fn directory_reader_to_string_is_debuggable() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let reader = commit_single_segment(dir);
         let s = format!("{:?}", reader);
         assert!(s.contains("StandardDirectoryReader"));
@@ -1895,7 +1895,7 @@ mod tests {
 
     #[test]
     fn is_current_with_mock_writer() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let mut sis = SegmentInfos::new(Version::LATEST.major as i32).unwrap();
         sis.counter = 1;
         sis.changed();
@@ -1963,7 +1963,7 @@ mod tests {
         use crate::index::index_writer_config::IndexWriterConfig;
 
         let _ = register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut config = IndexWriterConfig::new();
         config
             .set_merge_policy(Arc::new(crate::index::merge_policy::NoMergePolicy::new()))
@@ -2020,7 +2020,7 @@ mod tests {
         use crate::index::index_writer_config::IndexWriterConfig;
 
         let _ = register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut config = IndexWriterConfig::new();
         config
             .set_merge_policy(Arc::new(crate::index::merge_policy::NoMergePolicy::new()))
@@ -2138,7 +2138,7 @@ mod tests {
         Arc<dyn DirectoryReader>,
         Arc<SegmentReader>,
     ) {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let mut sis = SegmentInfos::new(Version::LATEST.major as i32).unwrap();
         sis.counter = 1;
         sis.changed();
@@ -2225,7 +2225,7 @@ mod tests {
     /// documents with the `SegmentInfos` it is handed.
     #[test]
     fn the_constructor_does_not_compare_the_readers_with_the_segment_infos() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let reader = commit_single_segment(Arc::clone(&dir));
         let segment_reader = Arc::clone(
             &reader

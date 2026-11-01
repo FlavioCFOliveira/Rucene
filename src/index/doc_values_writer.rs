@@ -3923,7 +3923,7 @@ mod tests {
     /// documents, which is all a doc-values writer reads off the state.
     fn with_state<R>(max_doc: i32, f: impl FnOnce(&SegmentWriteState<'_>) -> R) -> R {
         let directory: Arc<dyn crate::store::Directory> =
-            Arc::new(crate::store::RamDirectory::default());
+            Arc::new(crate::store::ByteBuffersDirectory::default());
         let segment_info = crate::index::SegmentInfo::new(
             Arc::clone(&directory),
             crate::util::Version::LATEST,

@@ -28,7 +28,7 @@ use rucene::index::{
     directory_reader, DirectoryReader, DocValuesType, SegmentCommitInfo, SegmentInfos,
 };
 use rucene::search::NO_MORE_DOCS;
-use rucene::store::{Directory, RamDirectory};
+use rucene::store::{ByteBuffersDirectory, Directory};
 use rucene::util::BytesRef;
 
 fn ensure_codec() {
@@ -70,7 +70,7 @@ fn numeric_values(reader: &Arc<dyn DirectoryReader>, field: &str) -> Vec<i64> {
 #[test]
 fn a_reopened_writer_updates_doc_values_of_an_existing_field() {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
     writer.add_document(&doc("a", 1)).unwrap();
     writer.add_document(&doc("b", 2)).unwrap();
@@ -97,7 +97,7 @@ fn a_reopened_writer_updates_doc_values_of_an_existing_field() {
 #[test]
 fn soft_update_document_commits_and_leaves_one_live_document() {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config.set_soft_deletes_field(Some("soft".to_string()));
     // No merge, so the soft-deleted version cannot be merged away before the
@@ -146,7 +146,7 @@ fn soft_update_document_commits_and_leaves_one_live_document() {
 #[test]
 fn a_flushed_segment_of_self_soft_deleted_documents_is_dropped() {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config.set_soft_deletes_field(Some("soft".to_string()));
     config
@@ -298,7 +298,7 @@ fn lucene_num_deletes_to_merge() -> Vec<(String, i32)> {
 #[test]
 fn num_deletes_to_merge_excludes_the_soft_deletes_the_retention_query_keeps() {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let answers = Arc::new(std::sync::Mutex::new(Vec::new()));
     let retention = Arc::new(
         rucene::index::merge_policy::SoftDeletesRetentionMergePolicy::new(

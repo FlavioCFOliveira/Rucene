@@ -219,15 +219,28 @@ impl Directory for SleepingLockWrapper {
     fn ensure_open(&self) -> Result<()> {
         self.inner.ensure_open()
     }
+
+    /// `SleepingLockWrapper.toString()` (`SleepingLockWrapper.java:104-107`):
+    /// `"SleepingLockWrapper(" + in + ")"`.
+    fn directory_to_string(&self) -> String {
+        format!(
+            "SleepingLockWrapper({})",
+            self.inner.get_delegate().directory_to_string()
+        )
+    }
+
+    /// A `FilterDirectory` subclass (`SleepingLockWrapper.java:28`), over its
+    /// `in`.
+    fn as_filter_directory(&self) -> Option<&dyn Directory> {
+        Some(self.inner.get_delegate())
+    }
 }
 
 impl std::fmt::Display for SleepingLockWrapper {
+    /// Port of `SleepingLockWrapper.toString()`, which
+    /// [`Directory::directory_to_string`] renders.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "SleepingLockWrapper({})",
-            self.inner.get_delegate().directory_type_name()
-        )
+        f.write_str(&self.directory_to_string())
     }
 }
 

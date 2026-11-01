@@ -4,7 +4,7 @@ use rucene::document::{Document, Store, StringField, TextField};
 use rucene::index::check_index::{CheckIndex, Level};
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::IndexWriterConfig;
-use rucene::store::{Directory, RamDirectory};
+use rucene::store::{ByteBuffersDirectory, Directory};
 
 /// The integration crate does not share the library's test-time codec registry,
 /// so every entry point registers the default codec before writing an index.
@@ -49,7 +49,7 @@ fn build(dir: Arc<dyn Directory>, segments: usize) {
 #[test]
 fn sequential_and_concurrent_checks_agree() {
     for threads in [1i32, 4] {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         build(Arc::clone(&dir), 3);
 
         let mut checker = CheckIndex::with_write_lock(Arc::clone(&dir), None);
@@ -73,7 +73,7 @@ fn sequential_and_concurrent_checks_agree() {
 
 #[test]
 fn only_segments_marks_the_status_partial() {
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     build(Arc::clone(&dir), 2);
 
     let mut checker = CheckIndex::with_write_lock(Arc::clone(&dir), None);
@@ -134,7 +134,7 @@ fn upgrader_parse_args_rejects_a_missing_directory() {
 #[test]
 fn a_segment_whose_fields_have_a_single_term_can_be_read_back() {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
     let mut doc = Document::new();
     doc.add(Box::new(
@@ -214,7 +214,7 @@ fn upgrader_do_main_parses_then_upgrades() {
 #[test]
 fn the_upgrader_rewrites_the_writers_live_commit_data() {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
     let mut doc = Document::new();
     doc.add(Box::new(

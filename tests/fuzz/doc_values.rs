@@ -153,7 +153,7 @@ use rucene::index::{
     SegmentInfo, SortedDocValuesWriter, SortedNumericDocValuesWriter, SortedSetDocValuesWriter,
 };
 use rucene::search::{DocIdSetIterator, NO_MORE_DOCS};
-use rucene::store::{Directory, RamDirectory, DEFAULT_IO_CONTEXT};
+use rucene::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT};
 use rucene::util::string_helper::StringHelper;
 use rucene::util::{default_info_stream, ByteBlockPool, BytesRef, Version};
 
@@ -1234,7 +1234,7 @@ fn corrupt_copy(
     at: usize,
     value: u8,
 ) -> Arc<dyn Directory> {
-    let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     for extension in ALL_EXTENSIONS {
         let name = format!("_0.{extension}");
         let mut bytes = read_file(original, &name);
@@ -1248,7 +1248,7 @@ fn corrupt_copy(
 
 /// Builds a valid segment for `fixture` in a fresh directory.
 fn build(fixture: &Fixture) -> (Arc<dyn Directory>, SegmentInfo, [u8; 16]) {
-    let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let id = StringHelper::random_id();
     let info = segment_info(&directory, fixture.max_doc, id);
     write_segment(&directory, &info, fixture);
@@ -1334,7 +1334,7 @@ fn hostile_values(width: usize) -> Vec<i64> {
 /// reached, so every offset, length, count and width in the metadata would go
 /// untested against them.
 fn resign(body: &[u8]) -> Vec<u8> {
-    let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     {
         let mut output = directory
             .create_output("resigned", &*DEFAULT_IO_CONTEXT)
@@ -1453,7 +1453,7 @@ fn a_truncated_data_file_is_survived_at_every_length() {
         let skip = read_file(&directory, "_0.dvs");
         let step = if original.len() > 1_024 { 17 } else { 1 };
         for length in (0..original.len()).step_by(step) {
-            let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+            let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
             write_file(&corrupt, "_0.dvd", &original[..length]);
             write_file(&corrupt, "_0.dvm", &meta);
             write_file(&corrupt, "_0.dvs", &skip);
@@ -1472,7 +1472,7 @@ fn a_truncated_metadata_file_is_survived_at_every_length() {
         let skip = read_file(&directory, "_0.dvs");
         let step = if original.len() > 1_024 { 17 } else { 1 };
         for length in (0..original.len()).step_by(step) {
-            let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+            let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
             write_file(&corrupt, "_0.dvd", &data);
             write_file(&corrupt, "_0.dvm", &original[..length]);
             write_file(&corrupt, "_0.dvs", &skip);
@@ -1520,7 +1520,7 @@ fn hostile_metadata_that_passes_its_checksum_is_survived() {
                     patch(&mut patched, at, width, value);
                     let signed = resign(&patched);
 
-                    let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+                    let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
                     write_file(&corrupt, "_0.dvd", &data);
                     write_file(&corrupt, "_0.dvm", &signed);
                     write_file(&corrupt, "_0.dvs", &skip);
@@ -1581,7 +1581,7 @@ fn a_metadata_entry_naming_an_unknown_field_is_refused() {
         let mut patched = body.to_vec();
         patch(&mut patched, entry_start, 4, i64::from(number));
         let signed = resign(&patched);
-        let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         write_file(&corrupt, "_0.dvd", &data);
         write_file(&corrupt, "_0.dvm", &signed);
         write_file(&corrupt, "_0.dvs", &skip);
@@ -1839,7 +1839,7 @@ fn a_value_count_off_disk_sizes_nothing() {
             let mut patched = body.to_vec();
             patch(&mut patched, entry.at + NUM_VALUES_OFFSET, 8, count);
             let signed = resign(&patched);
-            let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+            let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
             write_file(&corrupt, "_0.dvd", &data);
             write_file(&corrupt, "_0.dvm", &signed);
             write_file(&corrupt, "_0.dvs", &skip);

@@ -431,13 +431,13 @@ mod tests {
 
     use super::*;
     use crate::codecs::tests::test_segment_info;
-    use crate::store::RamDirectory;
+    use crate::store::ByteBuffersDirectory;
 
     /// `getDistFunc` names the input in its `CorruptIndexException`
     /// (`Lucene94FieldInfosFormat.java:328-334`), and prints the byte signed.
     #[test]
     fn get_dist_func_names_the_resource() {
-        let dir = RamDirectory::default();
+        let dir = ByteBuffersDirectory::default();
         {
             let mut out = dir
                 .create_output("_0.fnm", &*crate::store::DEFAULT_IO_CONTEXT)
@@ -463,7 +463,7 @@ mod tests {
 
     #[test]
     fn round_trip_field_infos() {
-        let dir = RamDirectory::default();
+        let dir = ByteBuffersDirectory::default();
         let format = Lucene94FieldInfosFormat::new();
         let info = test_segment_info("_0", 10);
 

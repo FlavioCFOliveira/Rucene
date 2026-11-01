@@ -52,7 +52,7 @@ use rucene::index::merge_policy::NoMergePolicy;
 use rucene::index::merge_scheduler::SerialMergeScheduler;
 use rucene::index::terms::Term;
 use rucene::index::{DocValuesFieldUpdates, DocValuesType, IndexOptions, SegmentInfos};
-use rucene::store::{Directory, RamDirectory};
+use rucene::store::{ByteBuffersDirectory, Directory};
 use rucene::util::{Accountable, BytesRef, InfoStream};
 
 fn ensure_codec() {
@@ -216,7 +216,7 @@ fn doc(kind: &str, id: i32) -> Document {
 
 /// `IndexingRamFixture.trace(String, int)`.
 fn trace(kind: &str, docs: i32) -> String {
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config
         .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
@@ -340,7 +340,7 @@ fn doc_values_field_updates_ram_is_lucenes() {
 /// `IndexingRamFixture.files(double, int, long)`; with `trace`, the line the
 /// fixture prints after every operation when `TRACE` is set comes first.
 fn files(ram_mb: f64, ops: i32, seed: i64, trace: bool) -> String {
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config
         .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
@@ -527,7 +527,7 @@ impl InfoStream for FlushProbe {
 
 /// `IndexingRamFixture.flushing(int, int)`.
 fn flushing(docs: i32, max_buffered_docs: i32) -> String {
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let probe = Arc::new(FlushProbe::default());
     let mut config = IndexWriterConfig::new();
     config

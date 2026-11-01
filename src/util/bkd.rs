@@ -82,7 +82,7 @@ use crate::{
 };
 
 #[cfg(test)]
-use crate::store::{MockIndexInput, MockIndexOutput, RamDirectory};
+use crate::store::{ByteBuffersDirectory, MockIndexInput, MockIndexOutput};
 
 // -----------------------------------------------------------------------------
 // Constants
@@ -5008,7 +5008,7 @@ fn subtree_point_count(
 ) -> usize {
     let mut count = 0;
     for i in leaf_start..leaf_end {
-        let leaf_count = if i == total_leaves - 1 && total_points % max_per_leaf != 0 {
+        let leaf_count = if i == total_leaves - 1 && !total_points.is_multiple_of(max_per_leaf) {
             total_points % max_per_leaf
         } else {
             max_per_leaf
@@ -6433,7 +6433,7 @@ mod tests {
         // and `BKDWriter.verifyChecksum` folds a corrupt checksum into the
         // error it reports (`BKDWriter.java:1563-1583`).
         let config = BKDConfig::of(2, 2, 4, 8).unwrap();
-        let raw = Arc::new(RamDirectory::new());
+        let raw = Arc::new(ByteBuffersDirectory::new());
         let writer = BKDWriter::new_default(
             100,
             Arc::clone(&raw) as Arc<dyn Directory>,
@@ -6504,7 +6504,7 @@ mod tests {
     /// A directory whose `delete_file` fails while `refuse` is set, to prove
     /// that a failed delete reaches the caller (rmp #266).
     struct RefusingDeleteDirectory {
-        inner: RamDirectory,
+        inner: ByteBuffersDirectory,
         refuse: std::sync::atomic::AtomicBool,
     }
 
@@ -6582,7 +6582,7 @@ mod tests {
 
     fn refusing_directory(refuse: bool) -> Arc<RefusingDeleteDirectory> {
         Arc::new(RefusingDeleteDirectory {
-            inner: RamDirectory::new(),
+            inner: ByteBuffersDirectory::new(),
             refuse: std::sync::atomic::AtomicBool::new(refuse),
         })
     }
@@ -6652,7 +6652,7 @@ mod tests {
 
     #[test]
     fn offline_point_writer_sorted_reader() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let config = BKDConfig::of(1, 1, 4, 512).unwrap();
         let mut writer = OfflinePointWriter::new(config.clone(), dir, "test", "unsorted").unwrap();
         let values = vec![(30, 1), (10, 2), (20, 0), (10, 5), (40, 3)];
@@ -6672,7 +6672,7 @@ mod tests {
 
     #[test]
     fn bkd_writer_reader_round_trip_1d() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let config = BKDConfig::of(1, 1, 4, 16).unwrap();
         let mut writer = BKDWriter::new_default(100, dir, "bkd", config.clone(), 16.0, 50).unwrap();
         let mut expected = Vec::new();
@@ -6747,7 +6747,7 @@ mod tests {
 
     #[test]
     fn bkd_writer_reader_round_trip_2d() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let config = BKDConfig::of(2, 2, 4, 16).unwrap();
         let mut writer = BKDWriter::new_default(100, dir, "bkd", config.clone(), 16.0, 60).unwrap();
         let mut expected = Vec::new();
@@ -7129,7 +7129,7 @@ mod tests {
         max_points_in_leaf_node: i32,
         points: &[(i32, Vec<u8>)],
     ) -> BKDReader {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let config = BKDConfig::of(
             num_dims,
             num_index_dims,

@@ -29,7 +29,7 @@ use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::IndexWriterConfig;
 use rucene::index::{directory_reader, SegmentInfos};
 use rucene::search::{Sort, SortField, SortFieldType, NO_MORE_DOCS};
-use rucene::store::{Directory, RamDirectory, DEFAULT_IO_CONTEXT};
+use rucene::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT};
 
 /// `SortedMergeFixture.SIZES`.
 const SIZES: [i32; 3] = [300, 300, 300];
@@ -64,7 +64,7 @@ fn rank_sort() -> Sort {
 
 fn rust_merge() -> Arc<dyn Directory> {
     let _ = rucene::codecs::register_codec("Lucene104", Lucene104Codec::new());
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config.set_index_sort(rank_sort()).unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();

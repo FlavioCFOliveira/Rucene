@@ -60,7 +60,7 @@ use std::sync::Arc;
 
 use rucene::codecs::{register_codec, Codec, Lucene104Codec};
 use rucene::index::{FieldInfo, FieldInfos, IndexOptions, SegmentInfo, POSTINGS_ENUM_ALL};
-use rucene::store::{Directory, RamDirectory, DEFAULT_IO_CONTEXT};
+use rucene::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT};
 use rucene::util::string_helper::StringHelper;
 use rucene::util::{BytesRef, Version};
 
@@ -399,7 +399,7 @@ fn corrupt_copy(
     at: usize,
     value: u8,
 ) -> Arc<dyn Directory> {
-    let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     for extension in EXTENSIONS {
         let name = format!("_0.{extension}");
         let mut bytes = read_file(original, &name);
@@ -439,7 +439,7 @@ fn documents_of(shape: &str, uniform_docs: i32) -> i32 {
 fn every_value_at_every_byte_of_the_data_file_is_survived() {
     for (shape, write) in FIXTURES {
         let docs = documents_of(shape, 12);
-        let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let id = StringHelper::random_id();
         let info = segment_info(&directory, docs, id);
         write(&directory, &info, docs);
@@ -484,7 +484,7 @@ fn every_value_at_every_byte_of_the_data_file_is_survived() {
 fn every_value_at_every_byte_of_the_index_files_is_survived() {
     for (shape, write) in FIXTURES {
         let docs = documents_of(shape, 8);
-        let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let id = StringHelper::random_id();
         let info = segment_info(&directory, docs, id);
         write(&directory, &info, docs);
@@ -523,14 +523,14 @@ fn every_value_at_every_byte_of_the_index_files_is_survived() {
 #[test]
 fn a_truncated_data_file_is_survived_at_every_length() {
     const DOCS: i32 = 8;
-    let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let id = StringHelper::random_id();
     let info = segment_info(&directory, DOCS, id);
     write_segment(&directory, &info, DOCS);
 
     let original = read_file(&directory, "_0.tvd");
     for length in (0..original.len()).step_by(3) {
-        let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         write_file(&corrupt, "_0.tvd", &original[..length]);
         for extension in ["tvx", "tvm"] {
             let name = format!("_0.{extension}");
@@ -545,7 +545,7 @@ fn a_truncated_data_file_is_survived_at_every_length() {
 #[test]
 fn a_truncated_index_file_is_survived_at_every_length() {
     const DOCS: i32 = 8;
-    let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let id = StringHelper::random_id();
     let info = segment_info(&directory, DOCS, id);
     write_segment(&directory, &info, DOCS);
@@ -554,7 +554,7 @@ fn a_truncated_index_file_is_survived_at_every_length() {
         let name = format!("_0.{extension}");
         let original = read_file(&directory, &name);
         for length in 0..original.len() {
-            let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+            let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
             write_file(&corrupt, &name, &original[..length]);
             for other in EXTENSIONS {
                 let other_name = format!("_0.{other}");
@@ -573,7 +573,7 @@ fn a_truncated_index_file_is_survived_at_every_length() {
 #[test]
 fn a_document_id_outside_the_segment_is_rejected() {
     const DOCS: i32 = 4;
-    let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let id = StringHelper::random_id();
     let info = segment_info(&directory, DOCS, id);
     write_segment(&directory, &info, DOCS);

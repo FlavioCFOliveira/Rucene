@@ -69,7 +69,8 @@ use rucene::index::merge_scheduler::{
 use rucene::index::terms::Term;
 use rucene::index::{IndexOptions, SegmentInfos};
 use rucene::store::{
-    BufferedChecksumIndexInput, Directory, IOContext, IndexInput, IndexOutput, Lock, RamDirectory,
+    BufferedChecksumIndexInput, ByteBuffersDirectory, Directory, IOContext, IndexInput,
+    IndexOutput, Lock,
 };
 use rucene::util::InfoStream;
 
@@ -270,7 +271,7 @@ impl Directory for FailingDirectory {
 #[test]
 fn a_failed_flush_is_a_writer_tragedy_as_lucene_does() {
     ensure_codec();
-    let ram: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let ram: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let armed = Arc::new(AtomicBool::new(false));
     let dir: Arc<dyn Directory> = Arc::new(FailingDirectory {
         inner: Arc::clone(&ram),
@@ -324,7 +325,7 @@ fn files(dir: &Arc<dyn Directory>) -> String {
 #[test]
 fn a_failed_auto_flush_is_a_writer_tragedy_as_lucene_does() {
     ensure_codec();
-    let ram: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let ram: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let armed = Arc::new(AtomicBool::new(false));
     let dir: Arc<dyn Directory> = Arc::new(FailingDirectory {
         inner: Arc::clone(&ram),
@@ -368,7 +369,7 @@ fn a_failed_auto_flush_is_a_writer_tragedy_as_lucene_does() {
 #[test]
 fn a_failed_flush_next_buffer_is_a_writer_tragedy_as_lucene_does() {
     ensure_codec();
-    let ram: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let ram: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let armed = Arc::new(AtomicBool::new(false));
     let dir: Arc<dyn Directory> = Arc::new(FailingDirectory {
         inner: Arc::clone(&ram),
@@ -501,7 +502,7 @@ impl MergePolicy for CommitOnlyMergePolicy {
 fn a_tragedy_inside_commit_reenters_the_commit_lock() {
     ensure_codec();
     let log = Arc::new(ThreadLog::default());
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config
         .set_merge_policy(Arc::new(CommitOnlyMergePolicy))
@@ -623,7 +624,7 @@ fn delete_all_aborts_a_running_merge() {
         messages: Mutex::new(Vec::new()),
         on_wait: Arc::clone(&gate),
     });
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     let mut policy = LogMergePolicy::by_doc_count();
     policy.set_merge_factor(2).unwrap();
@@ -764,7 +765,7 @@ fn tv_doc(id: i32) -> Document {
 /// exactly what Lucene leaves.
 fn merge_index_failure(extension: &'static str) {
     ensure_codec();
-    let ram: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let ram: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let armed = Arc::new(AtomicBool::new(false));
     let dir: Arc<dyn Directory> = Arc::new(RefusingDirectory {
         inner: Arc::clone(&ram),
@@ -874,7 +875,7 @@ impl InfoStream for TragicLog {
 /// `WriterTragedyFixture.committedIndex()`: a directory holding one committed
 /// document, for `addIndexes(Directory...)`.
 fn committed_index() -> Arc<dyn Directory> {
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config
         .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
@@ -895,7 +896,7 @@ fn an_assertion_failure_in_a_full_flush_is_a_writer_tragedy_as_lucene_under_ea()
     ensure_codec();
     for op in ["commit", "flush", "reader", "add-indexes"] {
         for docs in [0, 1, 3] {
-            let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+            let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
             let mut config = IndexWriterConfig::new();
             config
                 .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
@@ -1028,7 +1029,7 @@ impl Directory for UnreleasableLockDirectory {
 #[test]
 fn a_lock_release_failure_after_add_indexes_is_raised_as_lucene_does() {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config
         .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
@@ -1076,7 +1077,7 @@ struct GatedFailingDirectory {
 impl GatedFailingDirectory {
     fn new(suffix: &'static str) -> Self {
         Self {
-            inner: Arc::new(RamDirectory::new()),
+            inner: Arc::new(ByteBuffersDirectory::new()),
             suffix,
             armed: AtomicBool::new(false),
             entered: (Mutex::new(false), Condvar::new()),
@@ -1390,7 +1391,7 @@ fn a_rollback_logs_each_pending_merge_as_the_writer_renders_its_segments() {
     config
         .set_info_stream(Arc::clone(&log) as Arc<dyn InfoStream>)
         .unwrap();
-    let writer = IndexWriter::new(Arc::new(RamDirectory::new()), config).unwrap();
+    let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
     writer.add_document(&id_doc(0)).unwrap();
     writer.commit().unwrap();
     writer.add_document(&id_doc(1)).unwrap();
@@ -1471,7 +1472,7 @@ fn a_rollback_aborts_every_pending_merge_and_raises_the_first_failure() {
     config
         .set_info_stream(Arc::clone(&log) as Arc<dyn InfoStream>)
         .unwrap();
-    let writer = IndexWriter::new(Arc::new(RamDirectory::new()), config).unwrap();
+    let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
     for id in 0..4 {
         writer.add_document(&id_doc(id)).unwrap();
         writer.commit().unwrap();
@@ -1534,7 +1535,7 @@ fn a_rollback_aborts_every_pending_merge_and_raises_the_first_failure() {
 #[test]
 fn handle_merge_exception_logs_the_writers_rendering_of_the_merged_segments() {
     ensure_codec();
-    let ram: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let ram: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let armed = Arc::new(AtomicBool::new(false));
     let dir: Arc<dyn Directory> = Arc::new(RefusingDirectory {
         inner: Arc::clone(&ram),
@@ -1674,7 +1675,7 @@ fn a_point_in_time_merge_calls_the_hook_of_the_merge_it_wraps() {
     config
         .set_merge_scheduler(Arc::new(NoMergeScheduler))
         .unwrap();
-    let writer = IndexWriter::new(Arc::new(RamDirectory::new()), config).unwrap();
+    let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
     for id in 0..4 {
         writer.add_document(&id_doc(id)).unwrap();
         writer.commit().unwrap();
@@ -1752,7 +1753,7 @@ fn merge_failure(in_middle: bool, hook_throws: bool) -> String {
             10,
         ))
         .unwrap();
-    let writer = IndexWriter::new(Arc::new(RamDirectory::new()), config).unwrap();
+    let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
     for id in 0..3 {
         writer.add_document(&id_doc(id)).unwrap();
         writer.commit().unwrap();
@@ -1789,7 +1790,7 @@ fn a_merge_failing_before_its_readers_is_a_tragedy_as_lucene_does() {
 /// this port reproduces. The fixture reports `HUNG` after eight seconds.
 ///
 /// The merge thread is left blocked for ever, as Java's is. It holds only
-/// this writer and its `RamDirectory`, whose lock factory is per directory,
+/// this writer and its `ByteBuffersDirectory`, whose lock factory is per directory,
 /// so it keeps no lock another test needs; and a Rust test binary exits when
 /// its tests are done, whatever other threads are still running.
 #[test]
@@ -1812,7 +1813,7 @@ fn a_failure_closing_the_merge_readers_hangs_the_merge_thread_as_lucene_does() {
     config
         .set_info_stream(Arc::clone(&log) as Arc<dyn InfoStream>)
         .unwrap();
-    let writer = IndexWriter::new(Arc::new(RamDirectory::new()), config).unwrap();
+    let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
     for id in 0..3 {
         writer.add_document(&id_doc(id)).unwrap();
         writer.commit().unwrap();
@@ -1905,7 +1906,7 @@ impl InfoStream for PrefixLog {
 /// `register-failure`: `registerMerge` fails sizing a merge whose segment lost
 /// a file (`IndexWriter.java:5022`), and `updatePendingMerges` propagates the
 /// failure (`IndexWriter.java:2471-2477`). Lucene reports it as
-/// `NoSuchFileException: _0.fdt`; this port's `RamDirectory` raises an
+/// `NoSuchFileException: _0.fdt`; this port's `ByteBuffersDirectory` raises an
 /// `io::ErrorKind::NotFound` naming the same file.
 ///
 /// The sizing comes after the merge was added to `pendingMerges`, logged, and
@@ -1932,7 +1933,7 @@ fn a_failure_registering_a_merge_propagates_as_lucene_does() {
         prefixes: &["add merge to pendingMerges", "registerMerge"],
         messages: Mutex::new(Vec::new()),
     });
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config.set_max_full_flush_merge_wait_millis(0);
     config
@@ -2014,7 +2015,7 @@ fn merging_segments_survive_a_rollback_as_lucene_reports_them() {
     config
         .set_merge_policy(hooked_policy(&finished, Some("*"), false, 2))
         .unwrap();
-    let writer = IndexWriter::new(Arc::new(RamDirectory::new()), config).unwrap();
+    let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
     writer.add_document(&id_doc(0)).unwrap();
     writer.commit().unwrap();
     writer.add_document(&id_doc(1)).unwrap();
@@ -2109,7 +2110,7 @@ struct CloseFailingDirectory {
 impl CloseFailingDirectory {
     fn new() -> Self {
         Self {
-            inner: Arc::new(RamDirectory::new()),
+            inner: Arc::new(ByteBuffersDirectory::new()),
             failing_name: Mutex::new(None),
             recorded_thread: Mutex::new(None),
             deleted_on_recorded_thread: Mutex::new(Vec::new()),
@@ -2632,7 +2633,7 @@ fn a_point_in_time_merge_calls_the_on_merge_complete_of_the_merge_it_wraps() {
     let (events, committed) = watchdog(120, || {
         ensure_codec();
         let events: Arc<Mutex<Vec<String>>> = Arc::default();
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut config = IndexWriterConfig::new();
         config
             .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))

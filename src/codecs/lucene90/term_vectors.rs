@@ -3474,7 +3474,7 @@ mod tests {
     use crate::index::postings_enum::{POSTINGS_ENUM_PAYLOADS, POSTINGS_ENUM_POSITIONS};
     use crate::index::{FieldInfo as RealFieldInfo, IndexOptions};
     use crate::search::Sort;
-    use crate::store::RamDirectory;
+    use crate::store::ByteBuffersDirectory;
     use crate::store::DEFAULT_IO_CONTEXT;
     use crate::util::string_helper::ID_LENGTH;
     use crate::util::Bits;
@@ -3509,7 +3509,7 @@ mod tests {
     }
 
     fn write_read_round_trip(compression_mode: Arc<dyn CompressionMode>) {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let field_infos = make_field_infos();
         let segment_info = test_segment_info(Arc::clone(&dir), "_0", 3);
 
@@ -3659,7 +3659,7 @@ mod tests {
 
     #[test]
     fn round_trip_payloads() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut tags = RealFieldInfo::new("tags", 0);
         tags.index_options = IndexOptions::DOCS_AND_FREQS_AND_POSITIONS;
         let field_infos = FieldInfos::new(vec![tags]).unwrap();
@@ -3816,7 +3816,7 @@ mod tests {
         // positions only after the offsets are reconstructed. Doing it earlier
         // leaves every occurrence but the first two shifted by one
         // `charsPerTerm`.
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let field_infos = make_field_infos();
         let segment_info = test_segment_info(Arc::clone(&dir), "_0", 1);
         let occurrences: Vec<(i32, i32, i32, Option<&[u8]>)> = vec![
@@ -3864,7 +3864,7 @@ mod tests {
         // Every payload-bearing field of a document shares one payload buffer,
         // so a field's payload index starts where the previous field's ended.
         // Starting it at zero hands the second field the first field's bytes.
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut first = RealFieldInfo::new("aaa", 0);
         first.index_options = IndexOptions::DOCS_AND_FREQS_AND_POSITIONS;
         let mut second = RealFieldInfo::new("bbb", 1);
@@ -3927,7 +3927,7 @@ mod tests {
         // stores `PackedInts.bitsRequired(maxFieldNum)`. Rounding that up to a
         // width `DirectWriter` supports — 3 becomes 4 — still round-trips but
         // writes bytes Lucene never would.
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let infos: Vec<RealFieldInfo> = (0..6)
             .map(|number| {
                 let mut info = RealFieldInfo::new(format!("f{number}"), number);
@@ -4010,7 +4010,7 @@ mod tests {
         // (`Lucene90CompressingTermVectorsReader.java:688-700`). Leaving that
         // third term out understates the buffer the codec is allowed to
         // produce.
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut body = RealFieldInfo::new("body", 0);
         body.index_options = IndexOptions::DOCS_AND_FREQS_AND_POSITIONS;
         let field_infos = FieldInfos::new(vec![body]).unwrap();
@@ -4020,7 +4020,7 @@ mod tests {
             Arc::clone(&compressing::FAST),
             Arc::clone(&compressing::HIGH_COMPRESSION),
         ] {
-            let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+            let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
             let format = Lucene90CompressingTermVectorsFormat::new(
                 VECTORS_CODEC_NAME,
                 "",
@@ -4146,8 +4146,8 @@ mod tests {
         // parses a `.si`, and a compound segment's files exist only inside the
         // `.cfs`. Both halves of the format must therefore go through their
         // `directory` argument.
-        let files: Arc<dyn Directory> = Arc::new(RamDirectory::new());
-        let placeholder: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let files: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let placeholder: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let segment_info = test_segment_info(Arc::clone(&placeholder), "_0", 1);
 
         let field_infos = write_one_document(&files, &segment_info);
@@ -4170,7 +4170,7 @@ mod tests {
 
     #[test]
     fn term_vectors_are_readable_from_a_compound_file_segment() {
-        let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let segment_info = test_segment_info(Arc::clone(&directory), "_0", 1);
         let field_infos = write_one_document(&directory, &segment_info);
 
@@ -4471,7 +4471,7 @@ mod tests {
     /// (`Lucene90CompressingTermVectorsReader.java:116,143,301-303`).
     #[test]
     fn get_num_docs_is_the_segment_max_doc() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         for (name, count) in [("_t1", 1), ("_t3", 3), ("_t9", 9)] {
             let source = write_tv_merge_source(&dir, name, 0, count);
             let reader = concrete_tv_merge_source(&dir, &source);
@@ -4582,8 +4582,11 @@ mod tests {
     ) -> MergeState {
         let n = readers.len();
         let field_infos = make_field_infos();
-        let merged_info =
-            test_segment_info(Arc::new(RamDirectory::new()), "_m", max_docs.iter().sum());
+        let merged_info = test_segment_info(
+            Arc::new(ByteBuffersDirectory::new()),
+            "_m",
+            max_docs.iter().sum(),
+        );
         MergeState::new(
             doc_maps,
             merged_info,
@@ -4646,7 +4649,7 @@ mod tests {
                 Some(live) => (0..max_doc).filter(|&doc| live.get(doc as usize)).count() as i32,
             })
             .sum();
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let info = test_segment_info(Arc::clone(&dir), "_m", total_docs);
         {
             let mut writer = merge_test_format()
@@ -4697,9 +4700,9 @@ mod tests {
     /// `949-954`).
     #[test]
     fn the_term_vectors_bulk_merge_conditions_are_lucenes() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let source = write_tv_merge_source(&dir, "_0", 0, 10);
-        let out: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let out: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = merge_test_writer(
             &out,
             "_w0",
@@ -4824,7 +4827,7 @@ mod tests {
     /// exactly the same vectors.
     #[test]
     fn a_bulk_term_vectors_merge_copies_the_source_chunks_verbatim() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let first = write_tv_merge_source(&dir, "_0", 0, 10);
         let second = write_tv_merge_source(&dir, "_1", 100, 6);
         assert_eq!(
@@ -4872,7 +4875,7 @@ mod tests {
     #[test]
     fn bulk_and_reencoded_term_vectors_merges_produce_the_same_index() {
         for sources in [vec![(0i32, 10i32)], vec![(0i32, 8i32), (100i32, 8i32)]] {
-            let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+            let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
             let infos: Vec<SegmentInfo> = sources
                 .iter()
                 .enumerate()
@@ -4896,7 +4899,7 @@ mod tests {
                     .collect(),
                 max_docs.clone(),
             );
-            let out: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+            let out: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
             let writer = merge_test_writer(
                 &out,
                 "_w",
@@ -4960,7 +4963,7 @@ mod tests {
     /// three of them dirty, holding 2 + 3 + 2 documents.
     #[test]
     fn a_term_vectors_merge_decides_the_route_per_segment() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let a = write_tv_merge_source(&dir, "_0", 0, 10);
         let b = write_tv_merge_source(&dir, "_1", 100, 6);
         let c = write_tv_merge_source(&dir, "_2", 200, 6);
@@ -4985,7 +4988,7 @@ mod tests {
             )
         };
 
-        let out: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let out: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = merge_test_writer(
             &out,
             "_w",
@@ -5024,7 +5027,7 @@ mod tests {
     /// repacks the six documents as `[4][2]`.
     #[test]
     fn a_too_dirty_term_vectors_segment_is_recompressed() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let sources: Vec<SegmentInfo> = (0..3)
             .map(|i| write_tv_merge_source(&dir, &format!("_{i}"), 10 * i + 1, 2))
             .collect();
@@ -5039,7 +5042,7 @@ mod tests {
         ));
         assert_eq!(dirty.counters, (3, 3, 6), "each tiny chunk is carried over");
         assert_eq!(dirty.documents, expected);
-        let out: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let out: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = merge_test_writer(
             &out,
             "_w",
@@ -5082,7 +5085,7 @@ mod tests {
     /// chunks.
     #[test]
     fn an_index_sorted_term_vectors_merge_copies_interleaved_runs() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let a = write_tv_merge_source(&dir, "_0", 1, 10);
         let b = write_tv_merge_source(&dir, "_1", 101, 10);
         let state = |wrap: fn(Box<dyn TermVectorsReader>) -> Box<dyn TermVectorsReader>| {
@@ -5205,7 +5208,7 @@ mod tests {
     /// throws from `getBlockStartPointer(-1)`.
     #[test]
     fn a_term_vectors_index_without_chunks_is_a_corrupt_index_not_a_panic() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let source = write_tv_merge_source(&dir, "_h", 0, 3);
         // Positive control: the intact index serves the same calls.
         {
@@ -5233,7 +5236,7 @@ mod tests {
     /// (`Lucene90CompressingTermVectorsReader.java:347-361`).
     #[test]
     fn term_vectors_prefetch_asks_for_the_whole_block_once_while_it_is_cached() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         // Two full blocks and a last partial one.
         let source = write_tv_merge_source(&dir, "_p", 0, 2 * MERGE_TEST_DOCS_PER_CHUNK + 1);
         let mut reader = concrete_tv_merge_source(&dir, &source);

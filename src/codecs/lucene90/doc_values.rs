@@ -333,7 +333,7 @@ fn get_levels(index: usize, size: usize) -> usize {
         let left = size - index;
         for level in (1..SKIP_INDEX_MAX_LEVEL).rev() {
             let number_intervals = 1usize << (SKIP_INDEX_LEVEL_SHIFT as usize * level);
-            if left >= number_intervals && index % number_intervals == 0 {
+            if left >= number_intervals && index.is_multiple_of(number_intervals) {
                 return level + 1;
             }
         }
@@ -4178,7 +4178,7 @@ mod tests {
     use crate::codecs::tests::DummyCodec;
     use crate::index::FieldInfos;
     use crate::search::Sort;
-    use crate::store::{Directory, RamDirectory, DEFAULT_IO_CONTEXT};
+    use crate::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT};
     use crate::util::default_info_stream;
     use crate::util::string_helper::ID_LENGTH;
     use crate::util::Version;
@@ -4578,7 +4578,7 @@ mod tests {
     where
         F: FnOnce(&mut dyn DocValuesConsumer),
     {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let field_infos = FieldInfos::new(vec![field.clone()]).unwrap();
         let segment_info = make_segment_info(Arc::clone(&dir), "_0", max_doc);
         let seg_updates = BufferedUpdates::default();
@@ -4605,7 +4605,7 @@ mod tests {
     /// buffering the files until `close`.
     #[test]
     fn the_consumer_creates_its_files_when_it_opens() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let field_infos = FieldInfos::default();
         let segment_info = make_segment_info(Arc::clone(&dir), "_0", 1);
         let write_state = SegmentWriteState::new(
@@ -4640,7 +4640,7 @@ mod tests {
     where
         F: FnOnce(&mut dyn DocValuesConsumer),
     {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let field_infos = FieldInfos::new(vec![field.clone()]).unwrap();
         let segment_info = make_segment_info(Arc::clone(&dir), "_0", max_doc);
         let seg_updates = BufferedUpdates::default();
@@ -4943,7 +4943,7 @@ mod tests {
     #[test]
     fn skipper_refuses_out_of_range_level_byte() {
         for level in [5u8, 0x7f, 0xff, 0x80] {
-            let dir = RamDirectory::new();
+            let dir = ByteBuffersDirectory::new();
             {
                 let mut out = dir
                     .create_output("crafted.dvs", &*DEFAULT_IO_CONTEXT)

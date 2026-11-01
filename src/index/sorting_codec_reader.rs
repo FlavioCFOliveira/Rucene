@@ -4300,7 +4300,7 @@ mod tests {
     use crate::index::index_writer_config::IndexWriterConfig;
     use crate::index::segment_reader::SegmentReader;
     use crate::index::SegmentInfos;
-    use crate::store::{Directory, RamDirectory, DEFAULT_IO_CONTEXT};
+    use crate::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT};
 
     /// One document per global number `doc`, every kind of data keyed by it.
     fn doc(doc: i32) -> Document {
@@ -4330,7 +4330,7 @@ mod tests {
     /// readers in segment order.
     fn two_segments() -> Vec<Arc<dyn CodecReader>> {
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         for d in 0..2 {
             writer.add_document(&doc(d)).unwrap();

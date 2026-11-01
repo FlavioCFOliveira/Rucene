@@ -496,11 +496,11 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::TestCommit;
     use super::*;
-    use crate::store::RamDirectory;
+    use crate::store::ByteBuffersDirectory;
     use std::cell::RefCell;
 
     fn ram_directory() -> Arc<dyn Directory> {
-        Arc::new(RamDirectory::default())
+        Arc::new(ByteBuffersDirectory::default())
     }
 
     // -------------------------------------------------------------------------

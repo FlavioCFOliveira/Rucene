@@ -143,7 +143,7 @@ impl PointRangeQuery {
                 "lowerPoint has length of zero".to_string(),
             ));
         }
-        if lower_point.len() % (num_dims as usize) != 0 {
+        if !lower_point.len().is_multiple_of(num_dims as usize) {
             return Err(LuceneError::IllegalArgument(
                 "lowerPoint is not a fixed multiple of numDims".to_string(),
             ));

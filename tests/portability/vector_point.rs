@@ -57,7 +57,7 @@ use rucene::index::vector_values::{
 };
 use rucene::index::VectorSimilarityFunction;
 use rucene::search::{DocIdSetIterator, NO_MORE_DOCS};
-use rucene::store::{Directory, RamDirectory, DEFAULT_IO_CONTEXT};
+use rucene::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT};
 use rucene::util::bkd::{BKDConfig, BKDReader, BKDWriter};
 use rucene::util::vector_util;
 
@@ -173,8 +173,10 @@ fn decode_floats(value: &str) -> Vec<f32> {
     let bytes = decode_b64(value);
     assert_eq!(bytes.len() % 4, 0, "float payload must be a multiple of 4");
     bytes
-        .chunks_exact(4)
-        .map(|chunk| f32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|chunk| f32::from_be_bytes(*chunk))
         .collect()
 }
 
@@ -595,7 +597,7 @@ fn rust_values(java: &JavaPoints) -> InMemoryPointValues {
 /// code path Lucene uses — so the trace includes the refinement `compare` against
 /// the leaf's narrowed bounds that the in-memory reference tree does not emit.
 fn bkd_reader_from_java_points(java: &JavaPoints) -> BKDReader {
-    let dir = RamDirectory::default();
+    let dir = ByteBuffersDirectory::default();
     let config = BKDConfig::of(
         java.num_dims,
         java.num_index_dims,
@@ -606,7 +608,7 @@ fn bkd_reader_from_java_points(java: &JavaPoints) -> BKDReader {
 
     let mut writer = BKDWriter::new(
         java.doc_count,
-        Arc::new(RamDirectory::default()),
+        Arc::new(ByteBuffersDirectory::default()),
         "_0",
         config.clone(),
         16.0,

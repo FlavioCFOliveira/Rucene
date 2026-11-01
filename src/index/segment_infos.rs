@@ -1057,13 +1057,14 @@ impl SegmentInfos {
             }
 
             if gen == -1 {
-                return Err(LuceneError::Io(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!(
-                        "no segments* file found in {}: files: {:?}",
-                        directory.directory_type_name(),
-                        files
-                    ),
+                // `throw new IndexNotFoundException("no segments* file found in
+                // " + directory + ": files: " + Arrays.toString(files))`
+                // (`SegmentInfos.java:825-827`): the directory's `toString()`
+                // and the sorted listing as `Arrays.toString` renders it.
+                return Err(LuceneError::index_not_found(format!(
+                    "no segments* file found in {}: files: [{}]",
+                    directory.directory_to_string(),
+                    files.join(", ")
                 )));
             }
 
@@ -1406,10 +1407,45 @@ mod tests {
     use crate::index::index_file_names::{file_name_from_generation, SEGMENTS};
     use crate::index::SegmentCommitInfo;
     use crate::search::{Sort, SortField, SortFieldType};
-    use crate::store::{Directory, RamDirectory};
+    use crate::store::{ByteBuffersDirectory, Directory};
     use crate::util::string_helper::StringHelper;
     use std::collections::HashSet;
     use std::sync::Arc;
+
+    /// A directory with no commit fails `readLatestCommit` with
+    /// `IndexNotFoundException("no segments* file found in " + directory +
+    /// ": files: " + Arrays.toString(files))` (`SegmentInfos.java:825-827`).
+    /// Java oracle (`fp/SisOracle.java`): "empty: IndexNotFoundException: no
+    /// segments* file found in ByteBuffersDirectory@3bd40a57
+    /// lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@a4102b8:
+    /// files: []", "files: ...: files: [a, b]".
+    #[test]
+    fn read_latest_commit_without_a_commit_raises_index_not_found() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let in_dir = "no segments* file found in ByteBuffersDirectory@{hash} \
+                      lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@{hash}";
+        let message =
+            |dir: &Arc<dyn Directory>| match SegmentInfos::read_latest_commit(Arc::clone(dir)) {
+                Err(LuceneError::IndexNotFound(message)) => message,
+                other => panic!("expected IndexNotFoundException, got {:?}", other.err()),
+            };
+        let empty = message(&dir);
+        assert!(
+            crate::store::matches_java_text(&empty, &format!("{in_dir}: files: []")),
+            "{empty}"
+        );
+        for name in ["b", "a"] {
+            dir.create_output(name, &*crate::store::DEFAULT_IO_CONTEXT)
+                .unwrap()
+                .close()
+                .unwrap();
+        }
+        let files = message(&dir);
+        assert!(
+            crate::store::matches_java_text(&files, &format!("{in_dir}: files: [a, b]")),
+            "{files}"
+        );
+    }
 
     fn test_codec() -> Arc<dyn Codec> {
         static REGISTER: std::sync::Once = std::sync::Once::new();
@@ -1535,7 +1571,7 @@ mod tests {
 
     #[test]
     fn round_trip_empty_segments_file() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let mut sis = SegmentInfos::new(10).unwrap();
         sis.user_data = [("foo".to_string(), "bar".to_string())]
             .into_iter()
@@ -1554,7 +1590,7 @@ mod tests {
 
     #[test]
     fn round_trip_single_segment() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let mut info = test_segment_info("_0", 42);
         info.set_codec(test_codec());
         info.set_index_sort(
@@ -1604,7 +1640,7 @@ mod tests {
 
     #[test]
     fn pending_commit_rollback_cleans_up() {
-        let dir = RamDirectory::default();
+        let dir = ByteBuffersDirectory::default();
         let mut sis = SegmentInfos::new(10).unwrap();
         sis.prepare_commit(&dir).unwrap();
         assert!(dir.file_length("pending_segments_1").is_ok());
@@ -1653,7 +1689,7 @@ mod tests {
     /// Commits `_0`, a segment of 42 documents, and returns the directory and
     /// the bytes of its `segments_1`.
     fn committed_single_segment() -> (Arc<dyn Directory>, Vec<u8>) {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let mut info = test_segment_info("_0", 42);
         info.set_codec(test_codec());
         info.set_files(HashSet::from(["_0.fnm".to_string()]))

@@ -12,7 +12,7 @@ use crate::internal::vectorization::lucene99_memory_segment_byte_vector_scorer::
     check_invariants, check_ordinal, load_vector, VectorBytes,
 };
 use crate::internal::vectorization::PanamaVectorUtilSupport;
-use crate::store::{IndexInput, MemorySegmentAccessInput};
+use crate::store::{FilterIndexInput, IndexInput, MemorySegmentAccessInput};
 use crate::util::hnsw::{
     RandomVectorScorer, RandomVectorScorerSupplier, UpdateableRandomVectorScorer,
 };
@@ -32,8 +32,6 @@ use crate::util::Bits;
 /// * **One type instead of a sealed hierarchy**, as in
 ///   [`Lucene99MemorySegmentByteVectorScorer`](super::Lucene99MemorySegmentByteVectorScorer):
 ///   Java's four suppliers become a match on [`VectorSimilarityFunction`].
-/// * **The caller narrows the input**, for the same reason as the scorer:
-///   Rust cannot test a `dyn IndexInput` for [`MemorySegmentAccessInput`].
 /// * **The scratch buffers belong to the scorer, not the supplier.** Java keeps
 ///   `scratch1` and `scratch2` on the supplier and lets the anonymous scorer
 ///   mutate them through the enclosing instance. `scorer()` takes `&self` here,
@@ -59,11 +57,15 @@ impl std::fmt::Debug for Lucene99MemorySegmentByteVectorScorerSupplier {
 }
 
 impl Lucene99MemorySegmentByteVectorScorerSupplier {
-    /// Creates the supplier.
+    /// Creates the supplier, or returns `None` when the input is not a
+    /// memory-segment input.
     ///
     /// Equivalent to
-    /// `Lucene99MemorySegmentByteVectorScorerSupplier.create(VectorSimilarityFunction, IndexInput, KnnVectorValues)`,
-    /// minus the `instanceof` narrowing described on the type.
+    /// `Lucene99MemorySegmentByteVectorScorerSupplier.create(VectorSimilarityFunction, IndexInput, KnnVectorValues)`
+    /// (`Lucene99MemorySegmentByteVectorScorerSupplier.java:45-59`): the input
+    /// is unwrapped with [`FilterIndexInput::unwrap_only_test`], then narrowed
+    /// to a [`MemorySegmentAccessInput`], Java's `instanceof`, through
+    /// [`IndexInput::as_memory_segment_access_input`].
     ///
     /// # Errors
     ///
@@ -72,19 +74,47 @@ impl Lucene99MemorySegmentByteVectorScorerSupplier {
     /// error raised while cloning the input.
     pub fn create(
         similarity: VectorSimilarityFunction,
-        input: &dyn MemorySegmentAccessInput,
+        input: &dyn IndexInput,
         values: Arc<dyn ByteVectorValues>,
-    ) -> Result<Self> {
+    ) -> Result<Option<Self>> {
+        Ok(Self::create_or_decline(similarity, input, values)?.ok())
+    }
+
+    /// The body of [`create`](Self::create), which hands `values` back when
+    /// it declines — Java's `Optional.empty()` — instead of dropping them.
+    ///
+    /// Java's caller, `Lucene99MemorySegmentFlatVectorsScorer.getByteScorerSupplier`
+    /// (`Lucene99MemorySegmentFlatVectorsScorer.java:65-81`), then passes the
+    /// same `vectorValues` to its delegate. `create` declines before it reads
+    /// the values, so the caller can hand over the values it owns and receive
+    /// them back unchanged; they are moved behind an [`Arc`] only when the
+    /// supplier is built.
+    ///
+    /// # Errors
+    ///
+    /// As [`create`](Self::create).
+    pub(crate) fn create_or_decline<V>(
+        similarity: VectorSimilarityFunction,
+        input: &dyn IndexInput,
+        values: V,
+    ) -> Result<std::result::Result<Self, V>>
+    where
+        V: std::ops::Deref<Target = dyn ByteVectorValues> + Into<Arc<dyn ByteVectorValues>>,
+    {
+        let input = FilterIndexInput::unwrap_only_test(input);
+        let Some(ms_input) = input.as_memory_segment_access_input() else {
+            return Ok(Err(values));
+        };
         let vector_byte_size = values.vector_byte_length() as usize;
         Self::check_invariants(values.size(), vector_byte_size, input)?;
-        Ok(Self {
+        Ok(Ok(Self {
             similarity,
             vector_byte_size,
             max_ord: values.size(),
             dimension: values.dimension(),
-            input: input.clone_access_input()?,
-            values,
-        })
+            input: ms_input.clone_access_input()?,
+            values: values.into(),
+        }))
     }
 
     /// Fails when `input` is shorter than the vector data it is supposed to

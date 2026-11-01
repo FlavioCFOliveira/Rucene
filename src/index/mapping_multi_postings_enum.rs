@@ -332,7 +332,7 @@ mod tests {
     use crate::index::merge::{deletion_doc_map, identity_doc_map};
     use crate::index::multi_fields::EnumWithSlice;
     use crate::index::{FieldInfos, ReaderSlice, SegmentInfo};
-    use crate::store::{Directory, RamDirectory};
+    use crate::store::{ByteBuffersDirectory, Directory};
     use crate::util::{Bits, StringHelper, Version};
 
     // -----------------------------------------------------------------------
@@ -471,7 +471,7 @@ mod tests {
     }
 
     fn segment_info(name: &str, max_doc: i32) -> SegmentInfo {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         SegmentInfo::new_without_codec(
             dir,
             Version::LUCENE_10_5_0,

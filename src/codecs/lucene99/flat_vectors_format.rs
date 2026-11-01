@@ -2000,13 +2000,13 @@ pub(crate) mod tests {
     /// hints)`, where the event is `"open"` or `"update"`.
     pub(crate) type EventLog = Arc<std::sync::Mutex<Vec<(String, &'static str, Vec<String>)>>>;
 
-    /// A directory over a [`RamDirectory`] that records how the files it
+    /// A directory over a [`ByteBuffersDirectory`] that records how the files it
     /// opens are advised: the hints of the context each input is opened with,
     /// and the hints of every context an input is later updated to through
     /// [`IndexInput::update_io_context`].
     #[derive(Debug, Default)]
     pub(crate) struct RecordingDirectory {
-        inner: RamDirectory,
+        inner: ByteBuffersDirectory,
         /// Every recorded event.
         pub(crate) log: EventLog,
     }
@@ -2294,7 +2294,7 @@ pub(crate) mod tests {
         use crate::index::vector_values::from_floats;
         use crate::store::Directory;
 
-        let dir = RamDirectory::new();
+        let dir = ByteBuffersDirectory::new();
         let context = DefaultIOContext::new(Vec::new()).unwrap();
         let mut output = dir.create_output("data", &context).unwrap();
         let state = MergeState::from_fields_producers(Vec::new(), Vec::new());
@@ -2348,7 +2348,7 @@ pub(crate) mod tests {
         VectorEncoding, VectorSimilarityFunction,
     };
     use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
-    use crate::store::{DefaultIOContext, RamDirectory};
+    use crate::store::{ByteBuffersDirectory, DefaultIOContext};
     use crate::util::default_info_stream;
     use crate::util::string_helper::ID_LENGTH;
     use crate::util::Version;
@@ -2449,7 +2449,7 @@ pub(crate) mod tests {
 
     #[test]
     fn round_trip_dense_float_vectors() -> Result<()> {
-        let dir = Arc::new(RamDirectory::new()) as Arc<dyn crate::store::Directory>;
+        let dir = Arc::new(ByteBuffersDirectory::new()) as Arc<dyn crate::store::Directory>;
         let seg_info = make_segment_info(&dir, 3)?;
         let field_info = float_field_info("float_field", 0, 2)?;
         let field_infos = FieldInfos::new(vec![field_info.clone()])?;
@@ -2501,7 +2501,7 @@ pub(crate) mod tests {
 
     #[test]
     fn round_trip_sparse_byte_vectors() -> Result<()> {
-        let dir = Arc::new(RamDirectory::new()) as Arc<dyn crate::store::Directory>;
+        let dir = Arc::new(ByteBuffersDirectory::new()) as Arc<dyn crate::store::Directory>;
         let seg_info = make_segment_info(&dir, 5)?;
         let field_info = byte_field_info("byte_field", 0, 2)?;
         let field_infos = FieldInfos::new(vec![field_info.clone()])?;
@@ -2545,7 +2545,7 @@ pub(crate) mod tests {
 
     #[test]
     fn written_files_match_segment_name() -> Result<()> {
-        let dir = Arc::new(RamDirectory::new()) as Arc<dyn crate::store::Directory>;
+        let dir = Arc::new(ByteBuffersDirectory::new()) as Arc<dyn crate::store::Directory>;
         let seg_info = make_segment_info(&dir, 1)?;
         let field_info = float_field_info("f", 0, 1)?;
         let field_infos = FieldInfos::new(vec![field_info.clone()])?;

@@ -3761,7 +3761,7 @@ mod reader_pool_accounting_tests {
     use super::*;
     use crate::index::doc_values_field_updates::DocValuesFieldUpdates;
     use crate::index::{DocValuesType, FieldNumbers};
-    use crate::store::{Directory, RamDirectory};
+    use crate::store::{ByteBuffersDirectory, Directory};
     use crate::util::{Accountable, NoOutputInfoStream};
 
     /// An empty pool over `dir`, the directory its segments belong to
@@ -3785,7 +3785,7 @@ mod reader_pool_accounting_tests {
     /// exactly once.
     #[test]
     fn reader_pool_ram_bytes_used_sums_its_pooled_readers() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let pool = empty_pool(&dir);
         assert_eq!(pool.ram_bytes_used(), 0);
 
@@ -3829,7 +3829,7 @@ mod reader_pool_accounting_tests {
             let completed = Arc::clone(&completed);
             Arc::new(move || completed.load(Ordering::Acquire))
         };
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let pool = ReaderPool::new(
             Arc::clone(&dir),
             Arc::clone(&dir),
@@ -3885,7 +3885,7 @@ mod tests {
     /// Builds a `SegmentCommitInfo` backed by a real `Lucene104Codec` so that
     /// `write_live_docs` uses the on-disk `Lucene90LiveDocsFormat`.
     pub(super) fn make_sci(name: &str, max_doc: i32) -> SegmentCommitInfo {
-        let dir: Arc<dyn Directory> = Arc::new(crate::store::RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(crate::store::ByteBuffersDirectory::default());
         make_sci_in(&dir, name, max_doc)
     }
 
@@ -4265,7 +4265,7 @@ mod tests {
         let format = crate::codecs::Lucene90LiveDocsFormat::new();
         let read_info = {
             // Construct a SegmentCommitInfo that mirrors the post-write state.
-            let dir2: Arc<dyn Directory> = Arc::new(crate::store::RamDirectory::default());
+            let dir2: Arc<dyn Directory> = Arc::new(crate::store::ByteBuffersDirectory::default());
             let codec: Arc<dyn crate::codecs::Codec> = Arc::new(Lucene104Codec::new());
             let si = crate::index::SegmentInfo::new(
                 dir2,
@@ -4696,12 +4696,12 @@ mod needs_refresh_tests {
     use crate::document::{Document, Store, StringField};
     use crate::index::index_writer::IndexWriter;
     use crate::index::index_writer_config::IndexWriterConfig;
-    use crate::store::{Directory, RamDirectory, READONCE_IO_CONTEXT};
+    use crate::store::{ByteBuffersDirectory, Directory, READONCE_IO_CONTEXT};
 
     /// A committed segment of three documents and a reader over it.
     fn segment() -> (SegmentCommitInfo, SegmentReader) {
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         for i in 0..3 {
             let mut d = Document::new();
@@ -4776,7 +4776,7 @@ mod needs_refresh_tests {
         use crate::index::index_writer::IndexWriter;
         use crate::index::index_writer_config::IndexWriterConfig;
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
-        let dir: Arc<dyn Directory> = Arc::new(crate::store::RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(crate::store::ByteBuffersDirectory::new());
         // No merge may fold the deleted document away before the reader sees it.
         let mut config = IndexWriterConfig::new();
         config

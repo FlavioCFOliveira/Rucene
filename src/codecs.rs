@@ -878,7 +878,7 @@ pub(crate) mod tests {
             id[..len].copy_from_slice(&segment_id[..len]);
             SegmentInfo::new(
                 Arc::new(crate::store::FilterDirectory::new(Box::new(
-                    crate::store::RamDirectory::default(),
+                    crate::store::ByteBuffersDirectory::default(),
                 ))),
                 crate::util::Version::LUCENE_10_5_0,
                 Some(crate::util::Version::LUCENE_10_5_0),
@@ -1115,7 +1115,7 @@ pub(crate) mod tests {
     /// Returns a minimal `SegmentInfo` for use in cross-module codec tests.
     pub(crate) fn test_segment_info(name: &str, max_doc: i32) -> SegmentInfo {
         SegmentInfo::new(
-            std::sync::Arc::new(crate::store::RamDirectory::default()),
+            std::sync::Arc::new(crate::store::ByteBuffersDirectory::default()),
             crate::util::Version::LUCENE_10_5_0,
             Some(crate::util::Version::LUCENE_10_5_0),
             name.to_string(),

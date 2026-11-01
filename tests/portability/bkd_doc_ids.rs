@@ -41,7 +41,7 @@ use std::sync::Mutex;
 use rucene::document::IntPoint;
 use rucene::index::point_values::{IntersectVisitor, Relation};
 use rucene::store::{
-    Directory, FSDirectory, RamDirectory, DEFAULT_IO_CONTEXT, READONCE_IO_CONTEXT,
+    ByteBuffersDirectory, Directory, FSDirectory, DEFAULT_IO_CONTEXT, READONCE_IO_CONTEXT,
 };
 use rucene::util::bkd::{BKDConfig, BKDReader, BKDWriter};
 
@@ -195,7 +195,7 @@ fn write_corpus(dir: &Path) {
 
         // The writer's temp directory is never touched for this corpus: 512
         // points fit in the heap budget, so the point writer stays in memory.
-        let temp_dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let temp_dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut writer = BKDWriter::new_default(
             MAX_DOC,
             temp_dir,

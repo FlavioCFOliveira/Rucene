@@ -34,7 +34,7 @@ use rucene::search::sorted_set_selector::SortedSetSelectorType;
 use rucene::search::{
     MissingValue, Sort, SortField, SortFieldType, SortedNumericSortField, SortedSetSortField,
 };
-use rucene::store::{Directory, RamDirectory, DEFAULT_IO_CONTEXT};
+use rucene::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT};
 use rucene::util::BytesRef;
 use rucene::LuceneError;
 
@@ -48,7 +48,7 @@ fn bytes(text: &str) -> BytesRef {
 /// The segment of `SortingCodecReaderWrapFixture.main`, read as a codec reader.
 fn segment() -> Arc<dyn CodecReader> {
     let _ = register_codec("Lucene104", Lucene104Codec::new());
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
     for (i, &l) in LS.iter().enumerate() {
         let mut doc = Document::new();
@@ -95,7 +95,7 @@ fn segment() -> Arc<dyn CodecReader> {
 /// blocks of a child and its parent, the parents' values `7, 2, 5`.
 fn block_segment(with_parent: bool) -> Arc<dyn CodecReader> {
     let _ = register_codec("Lucene104", Lucene104Codec::new());
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     if with_parent {
         config.set_parent_field(Some("parent".to_string()));

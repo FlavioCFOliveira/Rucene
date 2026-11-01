@@ -134,6 +134,12 @@ impl IndexOutput for RateLimitedIndexOutput {
     fn name(&self) -> &str {
         self.inner.name()
     }
+
+    /// A `FilterIndexOutput` subclass (`RateLimitedIndexOutput.java:26`), over
+    /// its `out`.
+    fn as_filter_index_output(&self) -> Option<&dyn IndexOutput> {
+        Some(self.inner.get_delegate())
+    }
 }
 
 impl std::fmt::Debug for RateLimitedIndexOutput {

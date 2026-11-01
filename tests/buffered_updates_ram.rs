@@ -38,7 +38,7 @@ use rucene::index::merge_scheduler::SerialMergeScheduler;
 use rucene::index::terms::Term;
 use rucene::index::SegmentInfos;
 use rucene::search::{Query, TermQuery};
-use rucene::store::{Directory, RamDirectory};
+use rucene::store::{ByteBuffersDirectory, Directory};
 use rucene::util::BytesRef;
 
 fn ensure_codec() {
@@ -122,7 +122,7 @@ type Op = Box<dyn Fn(&IndexWriter) -> Result<i64>>;
 #[test]
 fn buffered_deletes_ram_matches_lucene() {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config
         .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
@@ -212,7 +212,7 @@ fn buffered_deletes_ram_matches_lucene() {
 #[test]
 fn ram_flushes_with_buffered_deletes_cut_segments_as_lucene() {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config
         .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))

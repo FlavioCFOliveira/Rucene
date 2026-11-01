@@ -45,7 +45,7 @@ pub use sleeping_lock_wrapper::SleepingLockWrapper;
 pub use verifying_lock_factory::VerifyingLockFactory;
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     fs,
     io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
@@ -57,7 +57,6 @@ use std::{
 };
 
 use crc32fast;
-use fslock::LockFile;
 
 use crate::{
     error::{LuceneError, Result},
@@ -248,7 +247,7 @@ pub trait DataInput {
     /// Equivalent to `DataInput.readString()` (`DataInput.java:230-235`). The
     /// bytes are decoded as `new String(bytes, 0, length, UTF_8)` does: every
     /// malformed sequence becomes U+FFFD, by the JDK's rules rather than
-    /// [`String::from_utf8_lossy`]'s (see `codec_util::java_utf8_to_string`),
+    /// [`String::from_utf8_lossy`]'s (see `util::java_fmt::java_utf8_to_string`),
     /// and bytes that are not valid UTF-8 are never a failure.
     ///
     /// # Errors
@@ -284,7 +283,7 @@ pub trait DataInput {
             self.read_bytes(&mut bytes, filled, take)?;
             remaining -= take;
         }
-        Ok(crate::codecs::codec_util::java_utf8_to_string(&bytes))
+        Ok(crate::util::java_fmt::java_utf8_to_string(&bytes))
     }
 
     /// Reads the map previously written with
@@ -782,6 +781,22 @@ pub trait IndexInput: DataInput + Send + Sync {
         None
     }
 
+    /// Returns this input's runtime class and its delegate when it is a
+    /// [`FilterIndexInput`], and `None` otherwise.
+    ///
+    /// Equivalent to what `FilterIndexInput.unwrapOnlyTest` asks of an input
+    /// (`FilterIndexInput.java:55-60`): `in instanceof FilterIndexInput`,
+    /// `in.getClass()` and `((FilterIndexInput) in).in`. Rust cannot narrow a
+    /// `dyn IndexInput` to a concrete type, so the question is asked of the
+    /// input itself; the default answers `None`, the `false` branch of
+    /// `instanceof`. A type that extends `FilterIndexInput` — a struct that
+    /// composes one — answers with its own [`TypeId`](std::any::TypeId),
+    /// which is what the test framework registers through
+    /// [`FilterIndexInputAccess`](crate::internal::tests_hooks::FilterIndexInputAccess).
+    fn as_filter_index_input(&self) -> Option<(std::any::TypeId, &dyn IndexInput)> {
+        None
+    }
+
     /// Builds the resource description for a slice of this input.
     fn full_slice_description(&self, slice_description: &str) -> String {
         if slice_description.is_empty() {
@@ -960,31 +975,39 @@ impl FilterIndexInput {
         self.inner.as_ref()
     }
 
-    /// Unwraps nested `FilterIndexInput` wrappers and returns the first
-    /// non-filter input.
+    /// Unwraps all `FilterIndexInput`s until the first input that is not one,
+    /// and returns it.
     ///
-    /// Since Rust trait objects cannot be downcast without additional runtime
-    /// type information, this helper simply returns the provided input; callers
-    /// with a concrete `FilterIndexInput` value should inspect its delegate
-    /// directly.
+    /// Equivalent to `org.apache.lucene.store.FilterIndexInput#unwrap`
+    /// (`FilterIndexInput.java:44-49`): while the input is a
+    /// `FilterIndexInput`, step into its `in`. Each input reports whether it
+    /// is one, and its delegate, through
+    /// [`IndexInput::as_filter_index_input`].
     pub fn unwrap(input: &dyn IndexInput) -> &dyn IndexInput {
+        let mut input = input;
+        while let Some((_, delegate)) = input.as_filter_index_input() {
+            input = delegate;
+        }
         input
     }
 
     /// Unwraps all test `FilterIndexInput` wrappers until the first non-test
     /// input and returns it.
     ///
-    /// Divergence: Java keeps the set of test wrapper classes in the static
-    /// `TEST_FILTER_INPUTS` list, which `TestSecrets` fills in, and walks the
-    /// chain with `instanceof` plus `getClass()` membership
-    /// (`FilterIndexInput.java:33-59`). The list is kept here too
-    /// ([`is_test_filter_input`]), but a `&dyn IndexInput` carries no runtime
-    /// type to test against it, so, exactly as [`unwrap`](Self::unwrap)
-    /// already does, this helper returns the input unchanged; callers holding
-    /// a concrete `FilterIndexInput` should inspect its delegate directly.
-    ///
-    /// Equivalent to `org.apache.lucene.store.FilterIndexInput#unwrapOnlyTest`.
+    /// Equivalent to `org.apache.lucene.store.FilterIndexInput#unwrapOnlyTest`
+    /// (`FilterIndexInput.java:51-60`): while the input is a
+    /// `FilterIndexInput` whose class the test framework registered in
+    /// `TEST_FILTER_INPUTS` ([`is_test_filter_input`]), step into its
+    /// delegate. Each input reports its class and delegate through
+    /// [`IndexInput::as_filter_index_input`].
     pub fn unwrap_only_test(input: &dyn IndexInput) -> &dyn IndexInput {
+        let mut input = input;
+        while let Some((class, delegate)) = input.as_filter_index_input() {
+            if !is_test_filter_input(class) {
+                break;
+            }
+            input = delegate;
+        }
         input
     }
 }
@@ -1062,6 +1085,14 @@ impl IndexInput for FilterIndexInput {
 
     fn random_access_slice(&self, offset: i64, length: i64) -> Result<Box<dyn RandomAccessInput>> {
         self.inner.random_access_slice(offset, length)
+    }
+
+    /// A `FilterIndexInput` of class `FilterIndexInput` itself, over its `in`.
+    fn as_filter_index_input(&self) -> Option<(std::any::TypeId, &dyn IndexInput)> {
+        Some((
+            std::any::TypeId::of::<FilterIndexInput>(),
+            self.inner.as_ref(),
+        ))
     }
 }
 
@@ -2069,6 +2100,22 @@ pub trait IndexOutput: DataOutput + Send + Sync {
     /// Returns the name used to create this output.
     fn name(&self) -> &str;
 
+    /// Returns this output's delegate when it is a [`FilterIndexOutput`], and
+    /// `None` otherwise.
+    ///
+    /// Equivalent to what `FilterIndexOutput.unwrap` asks of an output
+    /// (`FilterIndexOutput.java:38-43`): `out instanceof FilterIndexOutput`
+    /// and `((FilterIndexOutput) out).out`. Rust cannot narrow a
+    /// `dyn IndexOutput` to a concrete type, so the question is asked of the
+    /// output itself; the default answers `None`, the `false` branch of
+    /// `instanceof`. A type that extends `FilterIndexOutput` — a struct that
+    /// composes one, such as
+    /// [`RateLimitedIndexOutput`] —
+    /// answers with that `out`.
+    fn as_filter_index_output(&self) -> Option<&dyn IndexOutput> {
+        None
+    }
+
     /// Aligns the file pointer to the next multiple of `alignment_bytes` by
     /// writing zero bytes, and returns the aligned position.
     ///
@@ -2166,14 +2213,19 @@ impl FilterIndexOutput {
         self.inner.as_mut()
     }
 
-    /// Unwraps nested `FilterIndexOutput` wrappers and returns the first
-    /// non-filter output.
+    /// Unwraps all `FilterIndexOutput`s until the first output that is not
+    /// one, and returns it.
     ///
-    /// Since Rust trait objects cannot be downcast without additional runtime
-    /// type information, this helper simply returns the provided output; callers
-    /// with a concrete `FilterIndexOutput` value should inspect its delegate
-    /// directly.
+    /// Equivalent to `org.apache.lucene.store.FilterIndexOutput#unwrap`
+    /// (`FilterIndexOutput.java:38-43`): while the output is a
+    /// `FilterIndexOutput`, step into its `out`. Each output reports whether
+    /// it is one, and its delegate, through
+    /// [`IndexOutput::as_filter_index_output`].
     pub fn unwrap(output: &dyn IndexOutput) -> &dyn IndexOutput {
+        let mut output = output;
+        while let Some(delegate) = output.as_filter_index_output() {
+            output = delegate;
+        }
         output
     }
 }
@@ -2207,6 +2259,11 @@ impl IndexOutput for FilterIndexOutput {
 
     fn name(&self) -> &str {
         &self.name
+    }
+
+    /// A `FilterIndexOutput`, over its `out`.
+    fn as_filter_index_output(&self) -> Option<&dyn IndexOutput> {
+        Some(self.inner.as_ref())
     }
 }
 
@@ -3749,6 +3806,54 @@ pub trait LockFactory: Send + Sync {
     fn directory_type_name(&self) -> &'static str {
         std::any::type_name::<Self>()
     }
+
+    /// Port of `Object.toString()`, which no Lucene lock factory overrides:
+    /// `getClass().getName() + "@" + Integer.toHexString(hashCode())`.
+    ///
+    /// `BaseDirectory.toString()` appends it after ` lockFactory=`
+    /// (`BaseDirectory.java:55-57`). Every lock factory of this crate is the
+    /// port of an `org.apache.lucene.store` class, so the binary name is that
+    /// package followed by the simple name
+    /// [`directory_type_name`](Self::directory_type_name) ends with; a factory
+    /// declared elsewhere overrides this method.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Rust has no identity hash; the
+    /// address of the value stands in for it, as in
+    /// [`Directory::directory_to_string`]. A stateless factory is a
+    /// zero-sized value, whose boxes all share one address, so every such
+    /// factory prints the same digits — as every user of one of Java's
+    /// singleton factories (`NativeFSLockFactory.INSTANCE`) does.
+    fn lock_factory_to_string(&self) -> String {
+        format!(
+            "org.apache.lucene.store.{}@{}",
+            java_simple_name(self.directory_type_name()),
+            crate::util::java_fmt::to_hex_string(self as *const Self as *const () as usize as i32)
+        )
+    }
+}
+
+/// Narrows `dir` to the [`FSDirectory`] it is, or refuses it.
+///
+/// Equivalent to the check that opens the final `FSLockFactory.obtainLock`
+/// (`FSLockFactory.java:36-43`): `if (!(dir instanceof FSDirectory)) throw new
+/// UnsupportedOperationException(getClass().getSimpleName() + " can only be
+/// used with FSDirectory subclasses, got: " + dir)`, then the cast
+/// `(FSDirectory) dir`. `dir` renders as its `toString()`; `F` is the lock
+/// factory whose simple name the message carries.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::UnsupportedOperation`] when `dir` is not an
+/// `FSDirectory` subclass ([`Directory::as_fs_directory`] answers `None`).
+fn fs_directory_of<F: ?Sized>(dir: &dyn Directory) -> Result<&FSDirectory> {
+    dir.as_fs_directory().ok_or_else(|| {
+        let full_name = std::any::type_name::<F>();
+        let simple_name = full_name.split("::").last().unwrap_or("FSLockFactory");
+        LuceneError::UnsupportedOperation(format!(
+            "{simple_name} can only be used with FSDirectory subclasses, got: {}",
+            dir.directory_to_string()
+        ))
+    })
 }
 
 /// Abstract base for filesystem-based lock factories.
@@ -3756,7 +3861,7 @@ pub trait LockFactory: Send + Sync {
 /// Equivalent to `org.apache.lucene.store.FSLockFactory`. Concrete subclasses
 /// implement [`obtain_fs_lock`](FSLockFactory::obtain_fs_lock); the blanket
 /// [`LockFactory`] implementation validates that the directory is an
-/// `FSDirectory` subclass (i.e. it has a filesystem path) before delegating.
+/// `FSDirectory` subclass before delegating (`FSLockFactory.java:36-43`).
 pub trait FSLockFactory: LockFactory {
     /// Returns the default filesystem lock factory, which is
     /// [`NativeFSLockFactory`].
@@ -3771,21 +3876,22 @@ pub trait FSLockFactory: LockFactory {
 
     /// Obtains a filesystem lock for the given lock name.
     ///
-    /// Implementations should use `dir.fs_directory_path()` to locate the lock
-    /// file.
+    /// Equivalent to the protected abstract `FSLockFactory.obtainFSLock(
+    /// FSDirectory, String)` (`FSLockFactory.java:51`). Java's parameter is
+    /// typed `FSDirectory`; this one is a `&dyn Directory` that the
+    /// implementations narrow themselves, so a directory that is not an
+    /// `FSDirectory` subclass is refused with the
+    /// [`LuceneError::UnsupportedOperation`] that
+    /// [`LockFactory::obtain_lock`] raises for it. The lock directory is
+    /// [`FSDirectory::get_directory`].
     fn obtain_fs_lock(&self, dir: &dyn Directory, lock_name: &str) -> Result<Box<dyn Lock>>;
 }
 
 impl<T: FSLockFactory + ?Sized> LockFactory for T {
+    /// Equivalent to the final `FSLockFactory.obtainLock(Directory, String)`
+    /// (`FSLockFactory.java:36-43`).
     fn obtain_lock(&self, dir: &dyn Directory, lock_name: &str) -> Result<Box<dyn Lock>> {
-        let _ = dir.fs_directory_path().ok_or_else(|| {
-            let full_name = std::any::type_name::<T>();
-            let simple_name = full_name.split("::").last().unwrap_or("FSLockFactory");
-            LuceneError::UnsupportedOperation(format!(
-                "{simple_name} can only be used with FSDirectory subclasses, got: {}",
-                dir.directory_type_name()
-            ))
-        })?;
+        fs_directory_of::<T>(dir)?;
         self.obtain_fs_lock(dir, lock_name)
     }
 }
@@ -3844,60 +3950,99 @@ impl LockFactory for SingleInstanceLockFactory {
             .lock()
             .expect("single-instance locks mutex poisoned");
         if !locks.insert(lock_name.to_string()) {
+            // `"lock instance already obtained: (dir=" + dir + ", lockName=" +
+            // lockName + ")"` (`SingleInstanceLockFactory.java:41-42`): `dir`
+            // is the directory's `toString()`.
             return Err(LuceneError::lock_obtain_failed(format!(
                 "lock instance already obtained: (dir={}, lockName={lock_name})",
-                dir.directory_type_name()
+                dir.directory_to_string()
             )));
         }
         Ok(Box::new(SingleInstanceLock {
             lock_name: lock_name.to_string(),
             locks: Arc::clone(&self.locks),
             closed: AtomicBool::new(false),
+            monitor: Mutex::new(()),
         }))
     }
 }
 
 /// A lock held only in-process by a [`SingleInstanceLockFactory`].
+///
+/// Equivalent to the private inner class
+/// `SingleInstanceLockFactory.SingleInstanceLock`
+/// (`SingleInstanceLockFactory.java:45-86`).
 #[derive(Debug)]
 struct SingleInstanceLock {
     lock_name: String,
     locks: Arc<Mutex<HashSet<String>>>,
     closed: AtomicBool,
+    /// The monitor of Java's `synchronized close()`.
+    monitor: Mutex<()>,
+}
+
+impl std::fmt::Display for SingleInstanceLock {
+    /// Equivalent to `SingleInstanceLock.toString()`
+    /// (`SingleInstanceLockFactory.java:83-85`): `super.toString() + ": " +
+    /// lockName`, where `super.toString()` is `Object.toString()` of the inner
+    /// class, `org.apache.lucene.store.SingleInstanceLockFactory$SingleInstanceLock@`
+    /// and the identity hash in hexadecimal. The address of the lock stands in
+    /// for the identity hash, as in [`Directory::directory_to_string`].
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "org.apache.lucene.store.SingleInstanceLockFactory$SingleInstanceLock@{}: {}",
+            crate::util::java_fmt::to_hex_string(self as *const Self as usize as i32),
+            self.lock_name
+        )
+    }
 }
 
 impl Lock for SingleInstanceLock {
+    /// Equivalent to `SingleInstanceLock.close()`
+    /// (`SingleInstanceLockFactory.java:67-79`): a closed lock returns at
+    /// once; otherwise its name leaves the factory's set — failing with
+    /// "Lock was already released" when it is no longer there — and the lock
+    /// is marked closed in a `finally`, whatever the removal raised.
     fn close(&self) -> Result<()> {
-        if self.closed.swap(true, Ordering::SeqCst) {
+        let _monitor = self
+            .monitor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.closed.load(Ordering::SeqCst) {
             return Ok(());
         }
-        let mut locks = self
+        let removed = self
             .locks
             .lock()
-            .expect("single-instance locks mutex poisoned");
-        if !locks.remove(&self.lock_name) {
+            .expect("single-instance locks mutex poisoned")
+            .remove(&self.lock_name);
+        self.closed.store(true, Ordering::SeqCst);
+        if !removed {
             return Err(LuceneError::already_closed(format!(
-                "Lock instance was invalidated from map: {:?}",
-                self
+                "Lock was already released: {self}"
             )));
         }
         Ok(())
     }
 
+    /// Equivalent to `SingleInstanceLock.ensureValid()`
+    /// (`SingleInstanceLockFactory.java:54-63`).
     fn ensure_valid(&self) -> Result<()> {
         if self.closed.load(Ordering::SeqCst) {
             return Err(LuceneError::already_closed(format!(
-                "Lock was already released: {:?}",
-                self
+                "Lock instance already released: {self}"
             )));
         }
+        // Check we are still in the locks map (some debugger or something
+        // crazy didn't remove us).
         let locks = self
             .locks
             .lock()
             .expect("single-instance locks mutex poisoned");
         if !locks.contains(&self.lock_name) {
             return Err(LuceneError::already_closed(format!(
-                "Lock instance was invalidated from map: {:?}",
-                self
+                "Lock instance was invalidated from map: {self}"
             )));
         }
         Ok(())
@@ -3906,8 +4051,29 @@ impl Lock for SingleInstanceLock {
 
 /// Native OS-level filesystem lock factory.
 ///
-/// Equivalent to `org.apache.lucene.store.NativeFSLockFactory`. Uses the
-/// `fslock` crate to acquire advisory locks on a file inside the directory.
+/// Equivalent to `org.apache.lucene.store.NativeFSLockFactory`. The lock is
+/// taken on one open handle of the lock file, as Java takes it with
+/// `FileChannel.tryLock()` on the channel it keeps
+/// (`try_lock_channel`).
+///
+/// On Unix — every Unix target but Emscripten, ESP-IDF, Fuchsia, Horizon,
+/// Redox and Vita, where rustix has no `fcntl_lock` — that lock is the JDK's
+/// own: `FileChannel.tryLock()` is a POSIX `fcntl(F_SETLK)` write lock over
+/// the whole file (OpenJDK 25 `UnixFileDispatcherImpl.c`, `lock0`), so a
+/// Lucene process and a Rucene process exclude each other on one
+/// `write.lock`; an `EINTR` from it is answered, as the JDK answers it, with
+/// a lock. On those six targets and off Unix the lock is the standard
+/// library's `File::try_lock`, a declared divergence (the `channel_lock`
+/// fallback). A POSIX record lock belongs
+/// to the process, not to the descriptor: closing *any* descriptor of the
+/// file in the process releases it, which is why the JDK documents that a
+/// program should acquire all its locks on a file through one channel. This
+/// port opens the lock file only through the handle the lock is taken on; the
+/// other reads of it — its canonical path, its creation time, and the
+/// `Files.createFile` that fails once it exists — go through the path and
+/// open no descriptor of a file a lock is held on. Java's `LOCK_HELD` set
+/// (`NATIVE_HELD_LOCKS`) refuses a second lock of one path in the process,
+/// which the record lock, held per process, would grant.
 #[derive(Debug, Clone, Copy)]
 pub struct NativeFSLockFactory;
 
@@ -3944,64 +4110,251 @@ impl NativeFSLockFactory {
 }
 
 impl FSLockFactory for NativeFSLockFactory {
+    /// Equivalent to `NativeFSLockFactory.obtainFSLock(FSDirectory, String)`
+    /// (`NativeFSLockFactory.java:73-128`).
     fn obtain_fs_lock(&self, dir: &dyn Directory, lock_name: &str) -> Result<Box<dyn Lock>> {
-        let lock_dir = dir
-            .fs_directory_path()
-            .expect("FSLockFactory validated directory path");
+        let lock_dir = fs_directory_of::<Self>(dir)?.get_directory()?;
 
+        // Ensure that lockDir exists and is a directory.
         std::fs::create_dir_all(lock_dir)?;
         let lock_file = lock_dir.join(lock_name);
 
-        // Create the lock file if it does not already exist, matching Lucene's
-        // Files.createFile with FileAlreadyExistsException ignored.
+        // `Files.createFile(lockFile)`: "we must create the file to have a
+        // truly canonical path. if it's already created, we don't care. if it
+        // cant be created, it will fail below." Java keeps the failure only to
+        // attach it, suppressed, to a failing `toRealPath`. An existing file is
+        // not opened (`O_CREAT | O_EXCL`), so no descriptor of a file this
+        // process may hold locked is opened and closed here.
         let _ = std::fs::OpenOptions::new()
-            .create(true)
             .write(true)
-            .truncate(false)
-            .open(&lock_file)?;
+            .create_new(true)
+            .open(&lock_file);
 
+        // Fails if the lock file does not exist.
         let real_path = lock_file.canonicalize()?;
-        let real_path_str = real_path.to_string_lossy().to_string();
 
-        let mut held = NATIVE_HELD_LOCKS
+        // Used as a best-effort check, to see if the underlying file has
+        // changed: read before the path is marked held
+        // (`NativeFSLockFactory.java:104-106`).
+        let creation_time = file_creation_time(&std::fs::metadata(&real_path)?)?;
+
+        let real_path_str = real_path.to_string_lossy().to_string();
+        let added = NATIVE_HELD_LOCKS
             .lock()
-            .expect("native held locks mutex poisoned");
-        if held.contains(&real_path_str) {
+            .expect("native held locks mutex poisoned")
+            .insert(real_path_str.clone());
+        if !added {
             return Err(LuceneError::lock_obtain_failed(format!(
                 "Lock held by this virtual machine: {real_path_str}"
             )));
         }
 
-        // `FileChannel.open(realPath, StandardOpenOption.CREATE,
-        // StandardOpenOption.WRITE)` (`NativeFSLockFactory.java:112`): the
-        // handle `NativeFSLock.ensureValid` reads the file size through.
-        let channel = std::fs::OpenOptions::new()
+        // `channel = FileChannel.open(realPath, CREATE, WRITE); lock =
+        // channel.tryLock();`. When no lock results, the `finally` closes the
+        // channel and clears the held path last; an exception it raises
+        // replaces the one in flight, as a Java `finally` does.
+        let channel = match std::fs::OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(false)
-            .open(&real_path)?;
-        let mut lock_file = LockFile::open(&real_path)?;
-        if !lock_file.try_lock()? {
-            return Err(LuceneError::lock_obtain_failed(format!(
-                "Lock held by another program: {real_path_str}"
-            )));
+            .open(&real_path)
+        {
+            Ok(channel) => channel,
+            Err(error) => {
+                Self::clear_lock_held(&real_path_str)?;
+                return Err(error.into());
+            }
+        };
+        match try_lock_channel(&channel) {
+            Ok(true) => Ok(Box::new(NativeFSLock {
+                channel: Mutex::new(Some(channel)),
+                path: real_path,
+                path_str: real_path_str,
+                creation_time,
+                closed: AtomicBool::new(false),
+            })),
+            Ok(false) => {
+                drop(channel);
+                Self::clear_lock_held(&real_path_str)?;
+                Err(LuceneError::lock_obtain_failed(format!(
+                    "Lock held by another program: {real_path_str}"
+                )))
+            }
+            Err(error) => {
+                drop(channel);
+                Self::clear_lock_held(&real_path_str)?;
+                Err(error.into())
+            }
         }
-
-        held.insert(real_path_str.clone());
-        drop(held);
-
-        let metadata = std::fs::metadata(&real_path)?;
-        let creation_time = metadata.created().unwrap_or(SystemTime::UNIX_EPOCH);
-
-        Ok(Box::new(NativeFSLock {
-            lock: Mutex::new(lock_file),
-            channel,
-            path: real_path,
-            path_str: real_path_str,
-            creation_time,
-            closed: AtomicBool::new(false),
-        }))
     }
+}
+
+/// The JDK's `FileChannel` lock calls on Unix: POSIX `fcntl` record locks.
+///
+/// Compiled on the Unix targets where [`rustix::fs::fcntl_lock`] exists — the
+/// gate of rustix 1.1.4 (`src/fs/fcntl.rs:93-101`), which leaves out
+/// Emscripten, ESP-IDF, Fuchsia, Horizon, Redox, Vita and WASI; `Cargo.toml`
+/// depends on rustix under the same predicate. The other targets compile the
+/// fallback below.
+#[cfg(all(
+    unix,
+    not(any(
+        target_os = "emscripten",
+        target_os = "espidf",
+        target_os = "fuchsia",
+        target_os = "horizon",
+        target_os = "redox",
+        target_os = "vita",
+        target_os = "wasi"
+    ))
+))]
+mod channel_lock {
+    use std::io;
+
+    use rustix::{fs::FlockOperation, io::Errno};
+
+    /// `channel.tryLock()`: takes an exclusive lock over the whole of
+    /// `channel`'s file without waiting, answering `true` when `tryLock`
+    /// returns a lock and `false` when it returns `null`, because another
+    /// program holds a conflicting one.
+    ///
+    /// This is the JDK's call: `tryLock()` is `tryLock(0, Long.MAX_VALUE,
+    /// false)`, which `UnixFileDispatcherImpl.lock0` issues as `fcntl(fd,
+    /// F_SETLK, {F_WRLCK, SEEK_SET, 0, 0})` — `Long.MAX_VALUE` becomes
+    /// `l_len = 0`, the whole file (OpenJDK 25 `UnixFileDispatcherImpl.c:235-271`).
+    /// [`rustix::fs::fcntl_lock`] with
+    /// [`NonBlockingLockExclusive`](FlockOperation::NonBlockingLockExclusive)
+    /// issues that same `F_SETLK`. A failure is answered by
+    /// [`try_lock_failure`].
+    pub(super) fn try_lock_channel(channel: &std::fs::File) -> io::Result<bool> {
+        match rustix::fs::fcntl_lock(channel, FlockOperation::NonBlockingLockExclusive) {
+            Ok(()) => Ok(true),
+            Err(errno) => try_lock_failure(errno),
+        }
+    }
+
+    /// What `FileChannel.tryLock()` answers when `lock0`'s `fcntl(F_SETLK)`
+    /// fails with `errno`.
+    ///
+    /// `lock0` (OpenJDK 25 `UnixFileDispatcherImpl.c:264-268`) returns
+    /// `NO_LOCK` (`-1`) for `EAGAIN` and `EACCES`, returns `INTERRUPTED`
+    /// (`2`) for `EINTR`, and throws `IOException` for any other `errno`.
+    /// `UnixFileDispatcherImpl.lock` returns `lock0`'s value unchanged, and
+    /// `FileChannelImpl.tryLock` (`FileChannelImpl.java:1746-1757`) returns
+    /// `null` for `NO_LOCK`, tests `RET_EX_LOCK` (`1`), and otherwise returns
+    /// the `FileLockImpl` it registered: `INTERRUPTED` is answered as a lock
+    /// taken, although `fcntl` took none. This port answers the same:
+    ///
+    /// - `EAGAIN`, `EACCES` → `Ok(false)`, Java's `null`;
+    /// - `EINTR` → `Ok(true)`, the `FileLock` Java returns;
+    /// - any other → `Err`, Java's `IOException`.
+    ///
+    /// The constants are `sun.nio.ch.FileDispatcher`'s, and both `lock` and
+    /// `tryLock` were read in the bytecode of OpenJDK 25.0.4.1 as well as in
+    /// the sources. Linux returns `EINTR` for `F_SETLK` only when a signal
+    /// arrives before the lock is checked, "most likely when locking a remote
+    /// file (e.g., locking over NFS), but can sometimes happen locally"
+    /// (`fcntl_locking(2)`).
+    pub(super) fn try_lock_failure(errno: Errno) -> io::Result<bool> {
+        if errno == Errno::AGAIN || errno == Errno::ACCESS {
+            Ok(false)
+        } else if errno == Errno::INTR {
+            Ok(true)
+        } else {
+            Err(errno.into())
+        }
+    }
+
+    /// `FileLock.release()`, which `NativeFSLock.close()` runs before it
+    /// closes the channel: the JDK's `UnixFileDispatcherImpl.release0`,
+    /// `fcntl(fd, F_SETLK, {F_UNLCK, SEEK_SET, 0, 0})`.
+    pub(super) fn release_channel_lock(channel: &std::fs::File) -> io::Result<()> {
+        rustix::fs::fcntl_lock(channel, FlockOperation::NonBlockingUnlock).map_err(io::Error::from)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// `EINTR` cannot be provoked from a non-blocking `F_SETLK` in a
+        /// test, so the decision is checked on its own: `lock0` answers
+        /// `EAGAIN` and `EACCES` with `NO_LOCK` (`tryLock` returns `null`),
+        /// `EINTR` with `INTERRUPTED` (`tryLock` returns a lock), and throws
+        /// `IOException` for the rest — here `EBADF`, one of the errors
+        /// `fcntl(2)` lists for `F_SETLK`.
+        #[test]
+        fn try_lock_failure_answers_as_the_jdk_try_lock() {
+            assert!(!try_lock_failure(Errno::AGAIN).unwrap());
+            assert!(!try_lock_failure(Errno::ACCESS).unwrap());
+            assert!(try_lock_failure(Errno::INTR).unwrap());
+            let error = try_lock_failure(Errno::BADF).unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(Errno::BADF.raw_os_error()));
+        }
+    }
+}
+
+/// The lock calls on the targets `rustix::fs::fcntl_lock` does not reach:
+/// Windows and the other non-Unix targets, and the Unix targets Emscripten,
+/// ESP-IDF, Fuchsia, Horizon, Redox and Vita.
+///
+/// **Divergence from Lucene 10.5.0.** The JDK takes `FileChannel.tryLock()`
+/// with its platform's own call; this port falls back to the standard
+/// library's [`File::try_lock`](std::fs::File::try_lock) and
+/// [`File::unlock`](std::fs::File::unlock). In the Rust 1.99.1 standard
+/// library (`library/std/src/sys/fs/unix.rs`, `try_lock`) that is, on
+/// Fuchsia, `flock(LOCK_EX | LOCK_NB)`, a lock of another kind than the JDK's
+/// `fcntl` record lock; on the other five Unix targets and on WASI, an
+/// [`io::ErrorKind::Unsupported`] error, so no `NativeFSLock` is obtained
+/// there; on Windows, the platform's exclusive file lock, which has not been
+/// measured against the JDK's.
+#[cfg(not(all(
+    unix,
+    not(any(
+        target_os = "emscripten",
+        target_os = "espidf",
+        target_os = "fuchsia",
+        target_os = "horizon",
+        target_os = "redox",
+        target_os = "vita",
+        target_os = "wasi"
+    ))
+)))]
+mod channel_lock {
+    use std::io;
+
+    /// `channel.tryLock()`; see the module.
+    pub(super) fn try_lock_channel(channel: &std::fs::File) -> io::Result<bool> {
+        match channel.try_lock() {
+            Ok(()) => Ok(true),
+            Err(std::fs::TryLockError::WouldBlock) => Ok(false),
+            Err(std::fs::TryLockError::Error(error)) => Err(error),
+        }
+    }
+
+    /// `FileLock.release()`; see the module.
+    pub(super) fn release_channel_lock(channel: &std::fs::File) -> io::Result<()> {
+        channel.unlock()
+    }
+}
+
+use channel_lock::{release_channel_lock, try_lock_channel};
+
+/// Returns a file's `BasicFileAttributes.creationTime()`, as the two
+/// filesystem lock factories read it to detect a lock file replaced behind
+/// their back.
+///
+/// The birth time when the platform reports one, and the last-modified time
+/// otherwise, as the JDK answers: on Unix, `UnixFileAttributes.creationTime()`
+/// returns the birth time only when `statx` reported one, and
+/// `lastModifiedTime()` otherwise (measured on OpenJDK 25 by clearing
+/// `birthtime_available`: `creationTime` became the `lastModifiedTime`).
+///
+/// # Errors
+///
+/// Propagates the error of [`std::fs::Metadata::modified`] when the platform
+/// reports neither time.
+fn file_creation_time(metadata: &std::fs::Metadata) -> io::Result<SystemTime> {
+    metadata.created().or_else(|_| metadata.modified())
 }
 
 /// Per-process set of canonical paths currently held by
@@ -4018,23 +4371,18 @@ static NATIVE_HELD_LOCKS: std::sync::LazyLock<Mutex<HashSet<String>>> =
 /// `org.apache.lucene.store.NativeFSLockFactory`.
 #[derive(Debug)]
 struct NativeFSLock {
-    lock: Mutex<LockFile>,
-    /// The open handle on the lock file whose size
-    /// [`ensure_valid`](Lock::ensure_valid) reads.
+    /// The open handle on the lock file, which holds the lock; `None` once
+    /// [`close`](Lock::close) has released the lock and closed the handle.
     ///
-    /// Equivalent to `NativeFSLock.channel` (`NativeFSLockFactory.java:142`),
-    /// which `ensureValid` asks for `channel.size()`
-    /// (`NativeFSLockFactory.java:169`): the size of the file the lock was
-    /// taken on, still readable after the path was deleted.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java takes the `FileLock` on that
-    /// same channel. `fslock::LockFile` keeps its descriptor private, so this
-    /// is a second descriptor on the same file, opened alongside it with
-    /// Java's options (`CREATE`, `WRITE`). The lock is an `flock` on the
-    /// `LockFile`'s own open file description, which a second descriptor
-    /// neither takes nor releases, and both descriptors see the same file, so
-    /// the size read is the one Java reads.
-    channel: std::fs::File,
+    /// Equivalent to `NativeFSLock.channel` together with `NativeFSLock.lock`
+    /// (`NativeFSLockFactory.java:141-142`): Java's `FileLock` is taken on that
+    /// same channel by `channel.tryLock()`, and is valid until it is released
+    /// or the channel is closed, so `lock.isValid()` is the handle still being
+    /// held. `ensureValid` reads the file size through it, `channel.size()`
+    /// (`NativeFSLockFactory.java:169`), which still answers after the path was
+    /// deleted. The mutex also serves as the monitor of Java's `synchronized
+    /// close()`.
+    channel: Mutex<Option<std::fs::File>>,
     path: PathBuf,
     path_str: String,
     creation_time: SystemTime,
@@ -4053,9 +4401,9 @@ impl std::fmt::Display for NativeFSLock {
     /// valid until `close()` releases it; on the JDK the class is
     /// `sun.nio.ch.FileLockImpl`. Measured against `lucene-core-10.5.0.jar`
     /// on OpenJDK 25: `impl=sun.nio.ch.FileLockImpl[0:9223372036854775807
-    /// exclusive valid]`, and `invalid` once the lock is closed. The `fslock`
-    /// lock this port holds has no such string, so Java's is rendered from the
-    /// same facts. `creationTime` is a `FileTime`, rendered as
+    /// exclusive valid]`, and `invalid` once the lock is closed. The record
+    /// lock this port holds has no such string, so Java's is rendered from
+    /// the same facts. `creationTime` is a `FileTime`, rendered as
     /// [`file_time_to_string`] does.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let validity = if self.closed.load(Ordering::SeqCst) {
@@ -4157,29 +4505,36 @@ fn file_time_to_string(time: SystemTime) -> String {
 }
 
 impl Lock for NativeFSLock {
+    /// Equivalent to `NativeFSLock.close()` (`NativeFSLockFactory.java:185-199`):
+    /// release the lock, then close the channel, and — in a `finally` — mark
+    /// the lock closed and clear the held path last, whose failure replaces
+    /// any failure to release. "we don't validate, as unlike
+    /// SimpleFSLockFactory, we can't break others locks".
     fn close(&self) -> Result<()> {
-        if self.closed.swap(true, Ordering::SeqCst) {
+        let mut channel = self.channel.lock().expect("native lock mutex poisoned");
+        if self.closed.load(Ordering::SeqCst) {
             return Ok(());
         }
-
-        let mut lock = self.lock.lock().expect("native lock mutex poisoned");
-        let unlock_result = lock.unlock();
-        drop(lock);
-
-        // `clearLockHeld` runs last, as in Java, so a failure to unlock still
-        // leaves the path marked held.
+        // `try (FileChannel channel = this.channel; FileLock lock = this.lock)
+        // {}`: the lock is released first, then the channel is closed.
+        let released = match channel.take() {
+            Some(file) => {
+                let released = release_channel_lock(&file);
+                drop(file);
+                released
+            }
+            None => Ok(()),
+        };
+        self.closed.store(true, Ordering::SeqCst);
         let cleared = NativeFSLockFactory::clear_lock_held(&self.path_str);
-
-        unlock_result.map_err(|e| {
-            LuceneError::Io(std::io::Error::other(format!(
-                "failed to release native lock {}: {e}",
-                self.path.display()
-            )))
-        })?;
-
-        cleared
+        drop(channel);
+        cleared?;
+        released?;
+        Ok(())
     }
 
+    /// Equivalent to `NativeFSLock.ensureValid()`
+    /// (`NativeFSLockFactory.java:155-182`).
     fn ensure_valid(&self) -> Result<()> {
         if self.closed.load(Ordering::SeqCst) {
             return Err(LuceneError::already_closed(format!(
@@ -4187,6 +4542,8 @@ impl Lock for NativeFSLock {
             )));
         }
 
+        // Check we are still in the locks map (some debugger or something
+        // crazy didn't remove us).
         let held = NATIVE_HELD_LOCKS
             .lock()
             .expect("native held locks mutex poisoned");
@@ -4197,28 +4554,33 @@ impl Lock for NativeFSLock {
         }
         drop(held);
 
-        let lock = self.lock.lock().expect("native lock mutex poisoned");
-        if !lock.owns_lock() {
-            return Err(LuceneError::already_closed(format!(
-                "FileLock invalidated by an external force: {self}"
-            )));
-        }
-        drop(lock);
-
-        // Try to validate the underlying file descriptor: `channel.size()`
-        // (`NativeFSLockFactory.java:167-173`) throws if something is wrong.
-        let size = self.channel.metadata()?.len() as i64;
+        // Check our lock wasn't invalidated, then try to validate the
+        // underlying file descriptor: `channel.size()` throws if something is
+        // wrong. Both go through the one handle the lock is held on.
+        let channel = self.channel.lock().expect("native lock mutex poisoned");
+        let size = match channel.as_ref() {
+            Some(file) => file.metadata().map(|metadata| metadata.len() as i64),
+            None => {
+                drop(channel);
+                return Err(LuceneError::already_closed(format!(
+                    "FileLock invalidated by an external force: {self}"
+                )));
+            }
+        };
+        drop(channel);
+        let size = size?;
         if size != 0 {
             return Err(LuceneError::already_closed(format!(
                 "Unexpected lock file size: {size}, (lock={self})"
             )));
         }
 
-        // Try to validate the backing file name, that it still exists and has
-        // the same creation time as when the lock was obtained:
-        // `Files.readAttributes(path, BasicFileAttributes.class)`
-        // (`NativeFSLockFactory.java:174-177`), whose `NoSuchFileException`
-        // carries the path as its message.
+        // Try to validate the backing file name, that it still exists, and has
+        // the same creation time as when we obtained the lock: Java reads it
+        // through the path, `Files.readAttributes(path,
+        // BasicFileAttributes.class)` (`NativeFSLockFactory.java:174-177`), so
+        // that a lock file deleted or replaced behind our back is detected;
+        // its `NoSuchFileException` carries the path as its message.
         let metadata = match std::fs::metadata(&self.path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -4229,7 +4591,7 @@ impl Lock for NativeFSLock {
             }
             Err(error) => return Err(error.into()),
         };
-        let ctime = metadata.created().unwrap_or(SystemTime::UNIX_EPOCH);
+        let ctime = file_creation_time(&metadata)?;
         if ctime != self.creation_time {
             // `"... at " + ctime + ...` renders the `FileTime`
             // (`NativeFSLockFactory.java:178-181`).
@@ -4260,10 +4622,10 @@ impl SimpleFSLockFactory {
 }
 
 impl FSLockFactory for SimpleFSLockFactory {
+    /// Equivalent to `SimpleFSLockFactory.obtainFSLock(FSDirectory, String)`
+    /// (`SimpleFSLockFactory.java:60-82`).
     fn obtain_fs_lock(&self, dir: &dyn Directory, lock_name: &str) -> Result<Box<dyn Lock>> {
-        let lock_dir = dir
-            .fs_directory_path()
-            .expect("FSLockFactory validated directory path");
+        let lock_dir = fs_directory_of::<Self>(dir)?.get_directory()?;
 
         std::fs::create_dir_all(lock_dir)?;
         let lock_file = lock_dir.join(lock_name);
@@ -4282,13 +4644,15 @@ impl FSLockFactory for SimpleFSLockFactory {
             Err(e) => return Err(LuceneError::from(e)),
         }
 
-        let metadata = std::fs::metadata(&lock_file)?;
-        let creation_time = metadata.created().unwrap_or(SystemTime::UNIX_EPOCH);
+        // Used as a best-effort check, to see if the underlying file has
+        // changed.
+        let creation_time = file_creation_time(&std::fs::metadata(&lock_file)?)?;
 
         Ok(Box::new(SimpleFSLock {
             path: lock_file,
             creation_time,
             closed: AtomicBool::new(false),
+            monitor: Mutex::new(()),
         }))
     }
 }
@@ -4302,6 +4666,8 @@ struct SimpleFSLock {
     path: PathBuf,
     creation_time: SystemTime,
     closed: AtomicBool,
+    /// The monitor of Java's `synchronized close()`.
+    monitor: Mutex<()>,
 }
 
 impl std::fmt::Display for SimpleFSLock {
@@ -4319,37 +4685,53 @@ impl std::fmt::Display for SimpleFSLock {
 }
 
 impl Lock for SimpleFSLock {
+    /// Equivalent to `SimpleFSLock.close()` (`SimpleFSLockFactory.java:110-135`).
+    ///
+    /// A closed lock returns at once. Otherwise the lock is validated
+    /// before its file is deleted — "unlike NativeFSLockFactory, we can
+    /// potentially delete someone else's lock if things have gone wrong" — and
+    /// it is marked closed in a `finally`, whatever either step raised, so a
+    /// failed close is not retried.
     fn close(&self) -> Result<()> {
-        // Validate the lock *before* marking it closed, matching Lucene's
-        // SimpleFSLock.close() contract.
-        if let Err(exc) = self.ensure_valid() {
-            return Err(LuceneError::lock_release_failed_with_source(
-                "Lock file cannot be safely removed. Manual intervention is recommended.",
-                std::io::Error::other(exc.to_string()),
-            ));
-        }
-
-        if self.closed.swap(true, Ordering::SeqCst) {
+        let _monitor = self
+            .monitor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.closed.load(Ordering::SeqCst) {
             return Ok(());
         }
-
-        std::fs::remove_file(&self.path).map_err(|e| {
-            LuceneError::lock_release_failed_with_source(
-                "Unable to remove lock file. Manual intervention is recommended",
-                e,
-            )
-        })
+        let result = match self.ensure_valid() {
+            // Notify the user they may need to intervene.
+            Err(exc) => Err(LuceneError::lock_release_failed_with_source(
+                "Lock file cannot be safely removed. Manual intervention is recommended.",
+                std::io::Error::other(exc.to_string()),
+            )),
+            // We did a best effort check, now try to remove the file. If
+            // something goes wrong, we need to make it clear to the user that
+            // the directory may still remain locked.
+            Ok(()) => std::fs::remove_file(&self.path).map_err(|e| {
+                LuceneError::lock_release_failed_with_source(
+                    "Unable to remove lock file. Manual intervention is recommended",
+                    e,
+                )
+            }),
+        };
+        self.closed.store(true, Ordering::SeqCst);
+        result
     }
 
+    /// Equivalent to `SimpleFSLock.ensureValid()` (`SimpleFSLockFactory.java:95-107`).
     fn ensure_valid(&self) -> Result<()> {
         if self.closed.load(Ordering::SeqCst) {
             return Err(LuceneError::already_closed(format!(
-                "Lock was already released: {self}"
+                "Lock instance already released: {self}"
             )));
         }
 
-        let metadata = std::fs::metadata(&self.path)?;
-        let ctime = metadata.created().unwrap_or(SystemTime::UNIX_EPOCH);
+        // Try to validate the backing file name, that it still exists, and has
+        // the same creation time as when we obtained the lock. If it differs,
+        // someone deleted our lock file (and we are ineffective).
+        let ctime = file_creation_time(&std::fs::metadata(&self.path)?)?;
         if ctime != self.creation_time {
             // `"... at " + ctime + ...`: the `FileTime`'s `toString()`
             // (`SimpleFSLockFactory.java:102-106`).
@@ -4904,12 +5286,35 @@ pub trait Directory: Send + Sync {
         format!("{}_{}_{}.tmp", prefix, suffix, radix_36(counter))
     }
 
-    /// Returns the filesystem path backing this directory, if it is an
-    /// `FSDirectory` subclass.
+    /// Returns the [`FSDirectory`] this directory is, when it is an
+    /// `FSDirectory` subclass, and `None` otherwise.
     ///
-    /// Equivalent to `FSDirectory.getDirectory` in Lucene 10.5.0. In-memory
-    /// directories return `None`.
-    fn fs_directory_path(&self) -> Option<&Path> {
+    /// Equivalent to Java's `dir instanceof FSDirectory` and the cast
+    /// `(FSDirectory) dir`, which `FSLockFactory.obtainLock` performs
+    /// (`FSLockFactory.java:37-43`). Rust cannot narrow a `dyn Directory` to
+    /// a concrete type, so the question is asked of the directory itself; the
+    /// default answers `None`, the `false` branch of `instanceof`.
+    /// [`FSDirectory`] answers itself, and its subclasses — `MMapDirectory`
+    /// and [`NIOFSDirectory`], which compose one — the `FSDirectory` they
+    /// compose, whose open state is theirs.
+    fn as_fs_directory(&self) -> Option<&FSDirectory> {
+        None
+    }
+
+    /// Returns this directory's `in` when it is a [`FilterDirectory`], and
+    /// `None` otherwise.
+    ///
+    /// Equivalent to what `FilterDirectory.unwrap` asks of a directory
+    /// (`FilterDirectory.java:39-44`): `dir instanceof FilterDirectory` and
+    /// `((FilterDirectory) dir).in`. Rust cannot narrow a `dyn Directory` to
+    /// a concrete type, so the question is asked of the directory itself; the
+    /// default answers `None`, the `false` branch of `instanceof`. Every type
+    /// whose Java class extends `FilterDirectory` — [`FilterDirectory`],
+    /// [`TrackingDirectoryWrapper`], [`NRTCachingDirectory`],
+    /// `LockValidatingDirectoryWrapper`, `SleepingLockWrapper`,
+    /// `TrackingTmpOutputDirectoryWrapper` and the anonymous directory of
+    /// `ConcurrentMergeScheduler.wrapForMerge` — answers with its `in`.
+    fn as_filter_directory(&self) -> Option<&dyn Directory> {
         None
     }
 
@@ -4921,29 +5326,33 @@ pub trait Directory: Send + Sync {
         std::any::type_name::<Self>()
     }
 
-    /// Port of the concrete `Directory.toString()`, which every subclass that
-    /// does not override it inherits: the simple class name, `@`, and the
-    /// identity hash in hexadecimal.
+    /// Port of `toString()`, the one dynamic rendering of a directory.
     ///
-    /// Rust cannot express "a default body for `Display::fmt`", so the body of
-    /// Java's base-class method lives here as a provided trait method, next to
-    /// [`Directory::directory_type_name`], which follows the same pattern. The
-    /// subclasses that *do* override `toString()` — `FSDirectory`,
-    /// `MMapDirectory`, `ByteBuffersDirectory`, `FilterDirectory`,
-    /// `NRTCachingDirectory` — implement [`std::fmt::Display`] instead, exactly
-    /// as Java overrides the method.
+    /// The default is the concrete `Directory.toString()` that every subclass
+    /// which does not override it inherits: the simple class name, `@`, and
+    /// the identity hash in hexadecimal (`Directory.java:191-194`), rendered by
+    /// [`directory_object_to_string`].
+    ///
+    /// Rust cannot express "a default body for `Display::fmt`", so Java's
+    /// method lives here as a provided trait method, next to
+    /// [`Directory::directory_type_name`], which follows the same pattern, and
+    /// is reached through `dyn Directory`. Every type whose Java class
+    /// overrides `toString()`, or inherits an override from a class other than
+    /// `Directory`, overrides this method with that body: `BaseDirectory`
+    /// (through [`ByteBuffersDirectory`]), `FSDirectory` (through
+    /// [`FSDirectory`], `MMapDirectory` and [`NIOFSDirectory`]),
+    /// `FilterDirectory` (through [`FilterDirectory`],
+    /// [`TrackingDirectoryWrapper`], `LockValidatingDirectoryWrapper` and the
+    /// other filters), `NRTCachingDirectory`, `SleepingLockWrapper` and
+    /// `Lucene90CompoundReader`. Their [`std::fmt::Display`] implementations
+    /// write what this method returns.
     ///
     /// **Divergence from Lucene 10.5.0.** Rust has no identity hash; the
     /// address of the value stands in for it, the convention this port already
     /// uses for `Object.hashCode()` (see `IndexCommit`). The digits therefore
     /// differ from a JVM's, exactly as two JVM runs differ from each other.
     fn directory_to_string(&self) -> String {
-        let path = self.directory_type_name();
-        let simple_name = path.rsplit("::").next().unwrap_or(path);
-        format!(
-            "{simple_name}@{}",
-            crate::util::java_fmt::to_hex_string(self as *const Self as *const () as usize as i32)
-        )
+        directory_object_to_string(self)
     }
 
     /// Default validation that this directory is still open.
@@ -4953,6 +5362,29 @@ pub trait Directory: Send + Sync {
     fn ensure_open(&self) -> Result<()> {
         Ok(())
     }
+}
+
+/// Renders `dir` as the concrete `Directory.toString()` does:
+/// `getClass().getSimpleName() + '@' + Integer.toHexString(hashCode())`
+/// (`Directory.java:191-194`).
+///
+/// It is the default [`Directory::directory_to_string`], and the
+/// `super.toString()` that `BaseDirectory.toString()` extends
+/// ([`BaseDirectory::directory_to_string`]). The simple name is the last
+/// segment of [`Directory::directory_type_name`]; the address of `dir` stands
+/// in for the identity hash (see [`Directory::directory_to_string`]).
+pub fn directory_object_to_string<D: Directory + ?Sized>(dir: &D) -> String {
+    format!(
+        "{}@{}",
+        java_simple_name(dir.directory_type_name()),
+        crate::util::java_fmt::to_hex_string(dir as *const D as *const () as usize as i32)
+    )
+}
+
+/// The simple class name a Rust type path ends with, as
+/// `Class.getSimpleName()` returns it.
+fn java_simple_name(type_name: &str) -> &str {
+    type_name.rsplit("::").next().unwrap_or(type_name)
 }
 
 /// Formats a non-negative integer in base-36, matching Java's
@@ -4973,109 +5405,86 @@ fn radix_36(value: u64) -> String {
     }
 }
 
-/// Base implementation of a [`Directory`] that owns a [`LockFactory`] and an
-/// open/closed flag.
+/// Base implementation for a concrete [`Directory`] that uses a
+/// [`LockFactory`] for locking.
 ///
-/// Equivalent to `org.apache.lucene.store.BaseDirectory`. Concrete directory
-/// implementations can wrap their storage backend with this type to inherit the
-/// standard lock acquisition and lifecycle behavior without re-implementing it.
-pub struct BaseDirectory<D: Directory> {
-    inner: D,
-    lock_factory: Box<dyn LockFactory>,
-    lock_factory_type_name: &'static str,
+/// Equivalent to `org.apache.lucene.store.BaseDirectory`
+/// (`BaseDirectory.java:26-58`), the abstract class that `FSDirectory` and
+/// `ByteBuffersDirectory` extend (`FSDirectory.java:90`,
+/// `ByteBuffersDirectory.java:50`). It holds the `isOpen` flag and the lock
+/// factory, and implements `obtainLock`, `ensureOpen` and `toString` for its
+/// subclasses.
+///
+/// Rust has no inheritance, so this struct is that state and those members:
+/// every subclass — [`FSDirectory`] (and through it `MMapDirectory` and
+/// [`NIOFSDirectory`]) and [`ByteBuffersDirectory`] — holds one, built by
+/// [`BaseDirectory::new`] from its own constructor as Java's
+/// `super(lockFactory)`, and its [`Directory`] implementation forwards those
+/// members here. The members whose Java body uses `this` take the subclass
+/// instance as `dir`.
+pub struct BaseDirectory {
+    /// `protected volatile boolean isOpen = true;`
     is_open: AtomicBool,
+    /// `protected final LockFactory lockFactory;`
+    lock_factory: Box<dyn LockFactory>,
 }
 
-impl<D: Directory> BaseDirectory<D> {
-    /// Creates a new base directory around `inner` using the given lock factory.
+impl BaseDirectory {
+    /// Sole constructor, `BaseDirectory(LockFactory)`
+    /// (`BaseDirectory.java:34-40`).
     ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalArgument`] if `lock_factory` is `None`,
-    /// matching Lucene's `NullPointerException("LockFactory must not be null,
-    /// use an explicit instance!")`.
-    pub fn new(inner: D, lock_factory: Option<Box<dyn LockFactory>>) -> Result<Self> {
-        let lock_factory = lock_factory.ok_or_else(|| {
-            LuceneError::IllegalArgument(
-                "LockFactory must not be null, use an explicit instance!".to_string(),
-            )
-        })?;
-        let lock_factory_type_name = lock_factory.directory_type_name();
-        Ok(Self {
-            inner,
-            lock_factory,
-            lock_factory_type_name,
+    /// Java's `NullPointerException("LockFactory must not be null, use an
+    /// explicit instance!")` for a null lock factory has no counterpart: the
+    /// port takes the factory by value, so there is nothing to be null.
+    pub fn new(lock_factory: Box<dyn LockFactory>) -> Self {
+        Self {
             is_open: AtomicBool::new(true),
-        })
+            lock_factory,
+        }
     }
 
-    /// Returns the configured lock factory.
+    /// Returns the configured lock factory, the protected `lockFactory`
+    /// field.
     pub fn lock_factory(&self) -> &dyn LockFactory {
         self.lock_factory.as_ref()
     }
 
-    /// Returns `true` if this directory is still open.
+    /// Returns `true` if this directory is still open: reads the protected
+    /// `isOpen` field.
     pub fn is_open(&self) -> bool {
-        self.is_open.load(Ordering::Acquire)
-    }
-}
-
-impl<D: Directory> Directory for BaseDirectory<D> {
-    fn list_all(&self) -> Result<Vec<String>> {
-        self.inner.list_all()
+        self.is_open.load(Ordering::SeqCst)
     }
 
-    fn delete_file(&self, name: &str) -> Result<()> {
-        self.inner.delete_file(name)
+    /// Writes the protected `isOpen` field, as the subclasses' `close()`
+    /// methods do with `isOpen = false`.
+    pub fn set_open(&self, open: bool) {
+        self.is_open.store(open, Ordering::SeqCst);
     }
 
-    fn file_length(&self, name: &str) -> Result<i64> {
-        self.inner.file_length(name)
+    /// Acquires the named lock for `dir`, the subclass instance this base
+    /// belongs to.
+    ///
+    /// Equivalent to the final `BaseDirectory.obtainLock(String)`
+    /// (`BaseDirectory.java:42-45`), `lockFactory.obtainLock(this, name)`:
+    /// the directory itself does not check that it is open, its lock factory
+    /// decides.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever the lock factory raises.
+    pub fn obtain_lock(&self, dir: &dyn Directory, name: &str) -> Result<Box<dyn Lock>> {
+        self.lock_factory.obtain_lock(dir, name)
     }
 
-    fn create_output(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexOutput>> {
-        self.inner.create_output(name, context)
-    }
-
-    fn create_temp_output(
-        &self,
-        prefix: &str,
-        suffix: &str,
-        context: &dyn IOContext,
-    ) -> Result<Box<dyn IndexOutput>> {
-        self.inner.create_temp_output(prefix, suffix, context)
-    }
-
-    fn sync(&self, names: &[String]) -> Result<()> {
-        self.inner.sync(names)
-    }
-
-    fn sync_metadata(&self) -> Result<()> {
-        self.inner.sync_metadata()
-    }
-
-    fn rename(&self, source: &str, dest: &str) -> Result<()> {
-        self.inner.rename(source, dest)
-    }
-
-    fn open_input(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
-        self.inner.open_input(name, context)
-    }
-
-    fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
-        self.lock_factory.obtain_lock(self, name)
-    }
-
-    fn close(&mut self) -> Result<()> {
-        self.is_open.store(false, Ordering::Release);
-        self.inner.close()
-    }
-
-    fn get_pending_deletions(&self) -> Result<HashSet<String>> {
-        self.inner.get_pending_deletions()
-    }
-
-    fn ensure_open(&self) -> Result<()> {
+    /// Fails once the directory is closed.
+    ///
+    /// Equivalent to the final `BaseDirectory.ensureOpen()`
+    /// (`BaseDirectory.java:47-52`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::AlreadyClosed`] "this Directory is closed".
+    pub fn ensure_open(&self) -> Result<()> {
         if !self.is_open() {
             return Err(LuceneError::already_closed(
                 "this Directory is closed".to_string(),
@@ -5083,16 +5492,27 @@ impl<D: Directory> Directory for BaseDirectory<D> {
         }
         Ok(())
     }
+
+    /// Renders `dir`, the subclass instance this base belongs to, as
+    /// `BaseDirectory.toString()` does (`BaseDirectory.java:55-57`):
+    /// `super.toString() + " lockFactory=" + lockFactory`, the concrete
+    /// `Directory.toString()` of `dir` followed by the lock factory's
+    /// `Object.toString()`.
+    pub fn directory_to_string(&self, dir: &dyn Directory) -> String {
+        format!(
+            "{} lockFactory={}",
+            directory_object_to_string(dir),
+            self.lock_factory.lock_factory_to_string()
+        )
+    }
 }
 
-impl<D: Directory> std::fmt::Display for BaseDirectory<D> {
+impl std::fmt::Debug for BaseDirectory {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}, lockFactory={}",
-            self.inner.directory_type_name(),
-            self.lock_factory_type_name
-        )
+        f.debug_struct("BaseDirectory")
+            .field("is_open", &self.is_open())
+            .field("lock_factory", &self.lock_factory.lock_factory_to_string())
+            .finish()
     }
 }
 
@@ -5122,14 +5542,19 @@ impl FilterDirectory {
         self.inner.as_ref()
     }
 
-    /// Unwraps nested `FilterDirectory` wrappers and returns the first
-    /// non-filter directory.
+    /// Returns the wrapped directory as long as `dir` is a
+    /// `FilterDirectory`: unwraps every `FilterDirectory` until the first
+    /// directory that is not one.
     ///
-    /// Because Rust trait objects cannot be safely downcast by default, callers
-    /// that own a concrete `FilterDirectory` value should inspect its delegate
-    /// directly. This helper exists to mirror Lucene's
-    /// `FilterDirectory.unwrap(Directory)` API shape.
+    /// Equivalent to `org.apache.lucene.store.FilterDirectory#unwrap`
+    /// (`FilterDirectory.java:39-44`): while the directory is a
+    /// `FilterDirectory`, step into its `in`. Each directory reports whether it
+    /// is one, and its delegate, through [`Directory::as_filter_directory`].
     pub fn unwrap(dir: &dyn Directory) -> &dyn Directory {
+        let mut dir = dir;
+        while let Some(delegate) = dir.as_filter_directory() {
+            dir = delegate;
+        }
         dir
     }
 }
@@ -5191,11 +5616,22 @@ impl Directory for FilterDirectory {
     fn ensure_open(&self) -> Result<()> {
         self.inner.ensure_open()
     }
+
+    /// `FilterDirectory.toString()` (`FilterDirectory.java:114-117`):
+    /// `getClass().getSimpleName() + "(" + in.toString() + ")"`.
+    fn directory_to_string(&self) -> String {
+        format!("FilterDirectory({})", self.inner.directory_to_string())
+    }
+
+    /// A `FilterDirectory`, over its `in`.
+    fn as_filter_directory(&self) -> Option<&dyn Directory> {
+        Some(self.inner.as_ref())
+    }
 }
 
 impl std::fmt::Display for FilterDirectory {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "FilterDirectory({})", self.inner.directory_type_name())
+        f.write_str(&self.directory_to_string())
     }
 }
 
@@ -5486,6 +5922,22 @@ impl Directory for TrackingDirectoryWrapper {
     fn ensure_open(&self) -> Result<()> {
         self.inner.ensure_open()
     }
+
+    /// The `FilterDirectory.toString()` it inherits
+    /// (`FilterDirectory.java:114-117`): its simple class name around the
+    /// delegate's `toString()`.
+    fn directory_to_string(&self) -> String {
+        format!(
+            "TrackingDirectoryWrapper({})",
+            self.inner.get_delegate().directory_to_string()
+        )
+    }
+
+    /// A `FilterDirectory` subclass (`TrackingDirectoryWrapper.java:25`), over
+    /// its `in`.
+    fn as_filter_directory(&self) -> Option<&dyn Directory> {
+        Some(self.inner.get_delegate())
+    }
 }
 
 impl std::fmt::Debug for TrackingDirectoryWrapper {
@@ -5737,11 +6189,49 @@ impl std::fmt::Debug for FileSwitchDirectory {
 /// Equivalent to `org.apache.lucene.store.NRTCachingDirectory`. Small newly
 /// flushed or merged segments are kept in a [`ByteBuffersDirectory`] cache; larger
 /// files and all files at `sync` time are written through to the delegate.
+///
+/// The total size of the cached files is kept in a counter, `cacheSize`, which
+/// the cache directory raises when one of its outputs closes, and which
+/// deleting, uncaching and [`ram_bytes_used`](crate::util::Accountable::ram_bytes_used)
+/// read (`NRTCachingDirectory.java:67-84, 129, 243, 307-334`). The members
+/// Java declares `synchronized` hold this directory's monitor, which the
+/// cache directory's callback takes too, through `isCachedFile`; here the
+/// monitor is a mutex the callback shares with the directory, together with
+/// the counter.
 pub struct NRTCachingDirectory {
     inner: FilterDirectory,
-    cache: ByteBuffersDirectory,
+    /// `closed` (`NRTCachingDirectory.java:65`), which `close()` sets with
+    /// `getAndSet` so that the cached files are moved to the delegate once.
+    closed: AtomicBool,
+    /// `cacheDirectory` (`NRTCachingDirectory.java:70-84`), a
+    /// [`ByteBuffersDirectory`] whose output-to-input conversion updates the
+    /// counter. Its callback reaches the directory weakly, so that the two do
+    /// not keep each other alive.
+    cache: Arc<ByteBuffersDirectory>,
+    /// The monitor and the counter, shared with the cache's callback.
+    shared: Arc<NrtCacheShared>,
     max_merge_size_bytes: i64,
     max_cached_bytes: i64,
+}
+
+/// The part of an [`NRTCachingDirectory`] its cache directory's output-close
+/// callback reads and writes.
+#[derive(Debug, Default)]
+struct NrtCacheShared {
+    /// The monitor of Java's `synchronized` members and blocks.
+    monitor: Mutex<()>,
+    /// `cacheSize` (`NRTCachingDirectory.java:67-68`): "Current total size of
+    /// files in the cache is maintained separately for faster access."
+    cache_size: AtomicI64,
+}
+
+impl NrtCacheShared {
+    /// Enters the directory's monitor.
+    fn enter(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.monitor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 }
 
 impl NRTCachingDirectory {
@@ -5749,10 +6239,50 @@ impl NRTCachingDirectory {
     ///
     /// `max_merge_size_mb` is the maximum estimated merge/flush size that will
     /// be cached; `max_cached_mb` is the total cache budget.
+    ///
+    /// Equivalent to `NRTCachingDirectory(Directory, double, double)`
+    /// (`NRTCachingDirectory.java:96-100`), with the `cacheDirectory` field
+    /// initializer (`NRTCachingDirectory.java:70-84`): a
+    /// [`ByteBuffersDirectory`] over a [`SingleInstanceLockFactory`], whose
+    /// output-to-input conversion returns no input for a file that is no
+    /// longer cached — "the file has been deleted before this lambda is called
+    /// when the IndexOutput is closed" — and otherwise adds the output's size
+    /// to the counter and converts it as
+    /// [`output_as_many_buffers`] does.
     pub fn new(inner: Box<dyn Directory>, max_merge_size_mb: f64, max_cached_mb: f64) -> Self {
+        let shared = Arc::new(NrtCacheShared::default());
+        let cache = Arc::new_cyclic(|cache: &std::sync::Weak<ByteBuffersDirectory>| {
+            let cache = cache.clone();
+            let shared = Arc::clone(&shared);
+            let as_many_buffers = output_as_many_buffers();
+            let output_to_input: OutputToInputFn =
+                Arc::new(move |file_name: &str, content: &ByteBuffersDataOutput| {
+                    // Defensive check to handle the case the file has been
+                    // deleted before this lambda is called when the
+                    // IndexOutput is closed. A cache directory that is gone
+                    // holds no file either.
+                    let Some(cache) = cache.upgrade() else {
+                        return Ok(None);
+                    };
+                    if !Self::is_cached_file(&shared, &cache, file_name)? {
+                        return Ok(None);
+                    }
+                    shared
+                        .cache_size
+                        .fetch_add(content.size() as i64, Ordering::SeqCst);
+                    as_many_buffers(file_name, content)
+                });
+            ByteBuffersDirectory::with_config(
+                Box::new(SingleInstanceLockFactory::new()),
+                Arc::new(ByteBuffersDataOutput::new),
+                output_to_input,
+            )
+        });
         Self {
             inner: FilterDirectory::new(inner),
-            cache: ByteBuffersDirectory::new(),
+            closed: AtomicBool::new(false),
+            cache,
+            shared,
             max_merge_size_bytes: (max_merge_size_mb * 1024.0 * 1024.0) as i64,
             max_cached_bytes: (max_cached_mb * 1024.0 * 1024.0) as i64,
         }
@@ -5764,6 +6294,13 @@ impl NRTCachingDirectory {
     }
 
     /// Returns the names of files currently held in the cache.
+    ///
+    /// Equivalent to `NRTCachingDirectory.listCachedFiles()`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever listing the cache directory raises, which Java
+    /// wraps in an `UncheckedIOException`.
     pub fn list_cached_files(&self) -> Result<Vec<String>> {
         self.cache.list_all()
     }
@@ -5771,53 +6308,112 @@ impl NRTCachingDirectory {
     /// Returns whether `file_name` is currently held in the cache.
     ///
     /// Equivalent to the private synchronized
-    /// `NRTCachingDirectory.isCachedFile(String)`.
+    /// `NRTCachingDirectory.isCachedFile(String)`
+    /// (`NRTCachingDirectory.java:307-309`): `cacheDirectory.fileExists`,
+    /// under the directory's monitor. Its caller is the cache directory's
+    /// output-close callback (`NRTCachingDirectory.java:79`).
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's callback is a lambda over
+    /// `this`, the directory under construction. Rust cannot hand a callback
+    /// the value it is being built into, so the method takes the two parts of
+    /// `this` it reads — the shared monitor and the cache directory — instead
+    /// of `&self`.
     ///
     /// # Errors
     ///
-    /// Propagates whatever consulting the cache directory raises.
-    pub fn is_cached_file(&self, file_name: &str) -> Result<bool> {
-        self.cache.file_exists(file_name)
+    /// Returns [`LuceneError::AlreadyClosed`] once the cache directory is
+    /// closed, as `fileExists` throws `AlreadyClosedException`.
+    fn is_cached_file(
+        shared: &NrtCacheShared,
+        cache: &ByteBuffersDirectory,
+        file_name: &str,
+    ) -> Result<bool> {
+        let _monitor = shared.enter();
+        cache.file_exists(file_name)
     }
 
-    /// Returns the total number of bytes currently cached.
+    /// Returns whether a newly created output should be written to the cache
+    /// first.
     ///
-    /// This iterates the cached files to compute the current size.
-    pub fn ram_bytes_used(&self) -> Result<i64> {
-        let mut total = 0i64;
-        for name in self.cache.list_all()? {
-            total += self.cache.file_length(&name)?;
-        }
-        Ok(total)
-    }
-
+    /// Equivalent to `NRTCachingDirectory.doCacheWrite(String, IOContext)`
+    /// (`NRTCachingDirectory.java:230-244`): only a merge or a flush is
+    /// cached, when its estimated size is at most `maxMergeSizeBytes` and the
+    /// cache, with it, stays within `maxCachedBytes`. Java's `long` addition
+    /// wraps, as here.
     fn do_cache_write(&self, _name: &str, context: &dyn IOContext) -> bool {
-        let estimated_bytes = context
-            .merge_info()
-            .map(|m| m.estimated_merge_bytes)
-            .or_else(|| context.flush_info().map(|f| f.estimated_segment_size))
-            .unwrap_or(0);
-
-        estimated_bytes <= self.max_merge_size_bytes
-            && estimated_bytes + self.ram_bytes_used().unwrap_or(0) <= self.max_cached_bytes
+        let bytes = if let Some(merge_info) = context.merge_info() {
+            merge_info.estimated_merge_bytes
+        } else if let Some(flush_info) = context.flush_info() {
+            flush_info.estimated_segment_size
+        } else {
+            return false;
+        };
+        bytes <= self.max_merge_size_bytes
+            && bytes.wrapping_add(self.shared.cache_size.load(Ordering::SeqCst))
+                <= self.max_cached_bytes
     }
 
-    fn uncache(&self, name: &str, context: &dyn IOContext) -> Result<()> {
-        if !self.cache.file_exists(name)? {
+    /// Moves `file_name` from the cache to the delegate.
+    ///
+    /// Equivalent to the private `NRTCachingDirectory.unCache(String)`
+    /// (`NRTCachingDirectory.java:311-329`), which runs under the directory's
+    /// monitor: "other sync methods have if (cache.fileNameExists(name)) {
+    /// ... } else { ... }".
+    fn un_cache(&self, file_name: &str) -> Result<()> {
+        let _monitor = self.shared.enter();
+        if !self.cache.file_exists(file_name)? {
+            // Another thread beat us...
             return Ok(());
         }
-        self.inner.copy_from(&self.cache, name, name, context)?;
-        self.cache.delete_file(name)?;
+        debug_assert!(
+            !Self::slow_file_exists(self.inner.get_delegate(), file_name)?,
+            "fileName={file_name} exists both in cache and in delegate"
+        );
+        self.inner.get_delegate().copy_from(
+            &*self.cache,
+            file_name,
+            file_name,
+            &*DEFAULT_IO_CONTEXT,
+        )?;
+        let length = self.cache.file_length(file_name)?;
+        self.shared.cache_size.fetch_sub(length, Ordering::SeqCst);
+        self.cache.delete_file(file_name)?;
         Ok(())
     }
 
-    fn slow_file_exists(&self, dir: &dyn Directory, name: &str) -> bool {
-        dir.file_length(name).is_ok()
+    /// Returns `true` if the file exists (can be opened), `false` if it
+    /// cannot be opened, and — unlike Java's `File.exists` — fails if there
+    /// is some unexpected error.
+    ///
+    /// Equivalent to the package-private static
+    /// `NRTCachingDirectory.slowFileExists(Directory, String)`
+    /// (`NRTCachingDirectory.java:294-305`): `dir.fileLength(fileName)`, where
+    /// only `NoSuchFileException` and `FileNotFoundException` — this port's
+    /// [`LuceneError::Io`] of kind [`io::ErrorKind::NotFound`] — mean `false`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates every other error `file_length` raises.
+    fn slow_file_exists(dir: &dyn Directory, name: &str) -> Result<bool> {
+        match dir.file_length(name) {
+            Ok(_) => Ok(true),
+            Err(LuceneError::Io(error)) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+impl crate::util::Accountable for NRTCachingDirectory {
+    /// Equivalent to `NRTCachingDirectory.ramBytesUsed()`
+    /// (`NRTCachingDirectory.java:332-334`): the `cacheSize` counter.
+    fn ram_bytes_used(&self) -> i64 {
+        self.shared.cache_size.load(Ordering::SeqCst)
     }
 }
 
 impl Directory for NRTCachingDirectory {
     fn list_all(&self) -> Result<Vec<String>> {
+        let _monitor = self.shared.enter();
         let mut files: BTreeSet<String> = BTreeSet::new();
         for name in self.cache.list_all()? {
             files.insert(name);
@@ -5828,9 +6424,16 @@ impl Directory for NRTCachingDirectory {
         Ok(files.into_iter().collect())
     }
 
+    /// Equivalent to `NRTCachingDirectory.deleteFile(String)`
+    /// (`NRTCachingDirectory.java:122-134`): a cached file's length leaves
+    /// the counter with it.
     fn delete_file(&self, name: &str) -> Result<()> {
+        let _monitor = self.shared.enter();
         if self.cache.file_exists(name)? {
+            let size = self.cache.file_length(name)?;
             self.cache.delete_file(name)?;
+            let new_size = self.shared.cache_size.fetch_sub(size, Ordering::SeqCst) - size;
+            debug_assert!(new_size >= 0);
             Ok(())
         } else {
             self.inner.delete_file(name)
@@ -5838,6 +6441,7 @@ impl Directory for NRTCachingDirectory {
     }
 
     fn file_length(&self, name: &str) -> Result<i64> {
+        let _monitor = self.shared.enter();
         if self.cache.file_exists(name)? {
             self.cache.file_length(name)
         } else {
@@ -5853,6 +6457,16 @@ impl Directory for NRTCachingDirectory {
         }
     }
 
+    /// Equivalent to `NRTCachingDirectory.createTempOutput(String, String,
+    /// IOContext)` (`NRTCachingDirectory.java:246-292`).
+    ///
+    /// A temporary output is created in the directory the context selects,
+    /// `first`, until its name does not exist in the other one, `second`;
+    /// every colliding output is closed, and its name is deleted from `first`
+    /// once the search ends (`toDelete`). On success the deletion is
+    /// `IOUtils.deleteFiles`, which tries every name and throws the first
+    /// failure; on failure the last output is closed and the names are deleted
+    /// ignoring errors, and the failure is rethrown.
     fn create_temp_output(
         &self,
         prefix: &str,
@@ -5860,26 +6474,65 @@ impl Directory for NRTCachingDirectory {
         context: &dyn IOContext,
     ) -> Result<Box<dyn IndexOutput>> {
         let (first, second) = if self.do_cache_write(prefix, context) {
-            (&self.cache as &dyn Directory, self.inner.get_delegate())
+            (&*self.cache as &dyn Directory, self.inner.get_delegate())
         } else {
-            (self.inner.get_delegate(), &self.cache as &dyn Directory)
+            (self.inner.get_delegate(), &*self.cache as &dyn Directory)
         };
 
-        loop {
-            let mut out = first.create_temp_output(prefix, suffix, context)?;
-            let name = out.name().to_string();
-            if self.slow_file_exists(second, &name) {
-                // Name collision with the other directory; close and retry.
-                let _ = out.close();
-            } else {
-                return Ok(out);
+        // `toDelete`, a `java.util.HashSet`, whose iteration order decides
+        // which of several failed deletions is rethrown.
+        let mut to_delete = JavaHashSet::new();
+        let mut out: Option<Box<dyn IndexOutput>> = None;
+        let outcome: Result<()> = loop {
+            let created = match first.create_temp_output(prefix, suffix, context) {
+                Ok(created) => out.insert(created),
+                Err(error) => break Err(error),
+            };
+            let name = created.name().to_string();
+            to_delete.insert(name.clone());
+            match Self::slow_file_exists(second, &name) {
+                Ok(true) => {
+                    if let Err(error) = created.close() {
+                        break Err(error);
+                    }
+                }
+                Ok(false) => {
+                    to_delete.remove(&name);
+                    break Ok(());
+                }
+                Err(error) => break Err(error),
+            }
+        };
+
+        match outcome {
+            Ok(()) => {
+                // `IOUtils.deleteFiles(first, toDelete)`.
+                to_delete
+                    .iter()
+                    .map(|name| first.delete_file(name))
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .find(Result::is_err)
+                    .unwrap_or(Ok(()))?;
+                Ok(out.expect("INVARIANT: the search ends with the output it created last"))
+            }
+            Err(error) => {
+                // `IOUtils.closeWhileHandlingException(out);
+                // IOUtils.deleteFilesIgnoringExceptions(first, toDelete);`
+                if let Some(mut out) = out {
+                    let _ = out.close();
+                }
+                for name in to_delete.iter() {
+                    let _ = first.delete_file(name);
+                }
+                Err(error)
             }
         }
     }
 
     fn sync(&self, names: &[String]) -> Result<()> {
         for name in names {
-            self.uncache(name, &*DEFAULT_IO_CONTEXT)?;
+            self.un_cache(name)?;
         }
         self.inner.sync(names)
     }
@@ -5888,17 +6541,20 @@ impl Directory for NRTCachingDirectory {
         self.inner.sync_metadata()
     }
 
+    /// Equivalent to `NRTCachingDirectory.rename(String, String)`
+    /// (`NRTCachingDirectory.java:180-186`).
     fn rename(&self, source: &str, dest: &str) -> Result<()> {
-        self.uncache(source, &*DEFAULT_IO_CONTEXT)?;
+        self.un_cache(source)?;
         if self.cache.file_exists(dest)? {
             return Err(LuceneError::IllegalArgument(format!(
-                "target file {dest} already exists in cache"
+                "target file {dest} already exists"
             )));
         }
         self.inner.rename(source, dest)
     }
 
     fn open_input(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
+        let _monitor = self.shared.enter();
         if self.cache.file_exists(name)? {
             self.cache.open_input(name, context)
         } else {
@@ -5910,23 +6566,55 @@ impl Directory for NRTCachingDirectory {
         self.inner.obtain_lock(name)
     }
 
+    /// Equivalent to `NRTCachingDirectory.close()`
+    /// (`NRTCachingDirectory.java:208-224`): `IOUtils.close(lambda,
+    /// cacheDirectory, in)`. The lambda moves every cached file to the
+    /// delegate, the first time only (`closed.getAndSet(true)`); the cache
+    /// directory and the delegate are then closed whatever it raised, and the
+    /// first failure is rethrown. Closing again is therefore allowed: it
+    /// closes the two directories again.
     fn close(&mut self) -> Result<()> {
-        let cached = self.cache.list_all()?;
-        for name in &cached {
-            self.uncache(name, &*DEFAULT_IO_CONTEXT)?;
-        }
-        self.cache.close()?;
-        self.inner.close()
+        let un_cached = if self.closed.swap(true, Ordering::SeqCst) {
+            Ok(())
+        } else {
+            self.cache
+                .list_all()
+                .and_then(|cached| cached.iter().try_for_each(|name| self.un_cache(name)))
+        };
+        // `ByteBuffersDirectory.close()` raises nothing.
+        self.cache.close_shared();
+        let closed = self.inner.close();
+        un_cached.and(closed)
     }
 
+    /// The `FilterDirectory.getPendingDeletions()` it inherits
+    /// (`FilterDirectory.java:119-122`): the delegate's.
     fn get_pending_deletions(&self) -> Result<HashSet<String>> {
-        let mut pending = self.inner.get_pending_deletions()?;
-        pending.extend(self.cache.get_pending_deletions()?);
-        Ok(pending)
+        self.inner.get_pending_deletions()
     }
 
     fn ensure_open(&self) -> Result<()> {
         self.inner.ensure_open()
+    }
+
+    /// `NRTCachingDirectory.toString()` (`NRTCachingDirectory.java:103-111`).
+    ///
+    /// The two megabyte figures are Java `double` divisions rendered by
+    /// `Double.toString`, so `48` prints as `48.0` rather than `48`.
+    fn directory_to_string(&self) -> String {
+        use crate::util::java_fmt::double_to_string;
+        format!(
+            "NRTCachingDirectory({}; maxCacheMB={} maxMergeSizeMB={})",
+            self.get_delegate().directory_to_string(),
+            double_to_string(self.max_cached_bytes as f64 / 1024.0 / 1024.0),
+            double_to_string(self.max_merge_size_bytes as f64 / 1024.0 / 1024.0),
+        )
+    }
+
+    /// A `FilterDirectory` subclass (`NRTCachingDirectory.java:64`), over its
+    /// `in`.
+    fn as_filter_directory(&self) -> Option<&dyn Directory> {
+        Some(self.inner.get_delegate())
     }
 }
 
@@ -5935,253 +6623,8 @@ impl std::fmt::Debug for NRTCachingDirectory {
         f.debug_struct("NRTCachingDirectory")
             .field("max_merge_size_bytes", &self.max_merge_size_bytes)
             .field("max_cached_bytes", &self.max_cached_bytes)
-            .field("cache_size", &self.ram_bytes_used().unwrap_or(0))
+            .field("cache_size", &self.shared.cache_size.load(Ordering::SeqCst))
             .finish_non_exhaustive()
-    }
-}
-
-/// A minimal in-memory [`Directory`] implementation used for tests.
-///
-/// This is not a full `ByteBuffersDirectory`; that is the subject of task #5.
-/// `RamDirectory` proves that the [`Directory`] trait compiles and behaves
-/// correctly for the operations required by task #18.
-///
-/// Like `ByteBuffersDirectory`, a file is registered when its output is
-/// created, not when it is closed (`ByteBuffersDirectory.java:153-162`): it is
-/// listed and counted from `create_output` on, reports a length of zero until
-/// its output closes, and cannot be opened while it is still being written.
-#[derive(Debug)]
-pub struct RamDirectory {
-    files: Arc<Mutex<BTreeMap<String, RamFileEntry>>>,
-    temp_counter: AtomicU64,
-    closed: Mutex<bool>,
-}
-
-/// One file of a [`RamDirectory`]: its content, `None` while its output is
-/// still open.
-///
-/// Equivalent to `ByteBuffersDirectory.FileEntry`, whose `content` stays null
-/// until the output closes (`ByteBuffersDirectory.java:226-288`). The entry is
-/// shared with the output, so a rename before the close moves the file the
-/// close then fills, as in Java.
-type RamFileEntry = Arc<Mutex<Option<Vec<u8>>>>;
-
-impl Default for RamDirectory {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl RamDirectory {
-    /// Creates a new empty in-memory directory.
-    pub fn new() -> Self {
-        Self {
-            files: Arc::new(Mutex::new(BTreeMap::new())),
-            temp_counter: AtomicU64::new(0),
-            closed: Mutex::new(false),
-        }
-    }
-
-    fn ensure_open(&self) -> Result<()> {
-        if *self.closed.lock().expect("closed mutex poisoned") {
-            return Err(LuceneError::illegal_state(
-                "this Directory is closed".to_string(),
-            ));
-        }
-        Ok(())
-    }
-
-    fn not_found(name: &str) -> LuceneError {
-        LuceneError::Io(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("file not found: {name}"),
-        ))
-    }
-
-    fn still_open_for_writing(name: &str) -> LuceneError {
-        LuceneError::Io(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            format!("Can't open a file still open for writing: {name}"),
-        ))
-    }
-
-    fn already_exists(name: &str) -> LuceneError {
-        LuceneError::Io(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            format!("file already exists: {name}"),
-        ))
-    }
-}
-
-impl Directory for RamDirectory {
-    fn list_all(&self) -> Result<Vec<String>> {
-        self.ensure_open()?;
-        let files = self.files.lock().expect("files mutex poisoned");
-        Ok(files.keys().cloned().collect())
-    }
-
-    fn delete_file(&self, name: &str) -> Result<()> {
-        self.ensure_open()?;
-        let mut files = self.files.lock().expect("files mutex poisoned");
-        if files.remove(name).is_none() {
-            return Err(Self::not_found(name));
-        }
-        Ok(())
-    }
-
-    fn file_length(&self, name: &str) -> Result<i64> {
-        self.ensure_open()?;
-        let files = self.files.lock().expect("files mutex poisoned");
-        let entry = files.get(name).ok_or_else(|| Self::not_found(name))?;
-        // "We return 0 length until the IndexOutput is closed and flushed."
-        let content = entry.lock().expect("file entry mutex poisoned");
-        Ok(content.as_ref().map_or(0, |data| data.len() as i64))
-    }
-
-    fn create_output(&self, name: &str, _context: &dyn IOContext) -> Result<Box<dyn IndexOutput>> {
-        self.ensure_open()?;
-        let mut files = self.files.lock().expect("files mutex poisoned");
-        if files.contains_key(name) {
-            return Err(Self::already_exists(name));
-        }
-        let entry: RamFileEntry = Arc::new(Mutex::new(None));
-        files.insert(name.to_string(), Arc::clone(&entry));
-        Ok(Box::new(RamIndexOutput::new(name.to_string(), entry)))
-    }
-
-    fn create_temp_output(
-        &self,
-        prefix: &str,
-        suffix: &str,
-        context: &dyn IOContext,
-    ) -> Result<Box<dyn IndexOutput>> {
-        self.ensure_open()?;
-        let counter = self.temp_counter.fetch_add(1, Ordering::Relaxed);
-        let name = Self::get_temp_file_name(prefix, suffix, counter);
-        self.create_output(&name, context)
-    }
-
-    fn sync(&self, _names: &[String]) -> Result<()> {
-        self.ensure_open()?;
-        // In-memory store is already durable.
-        Ok(())
-    }
-
-    fn sync_metadata(&self) -> Result<()> {
-        self.ensure_open()?;
-        Ok(())
-    }
-
-    fn rename(&self, source: &str, dest: &str) -> Result<()> {
-        self.ensure_open()?;
-        let mut files = self.files.lock().expect("files mutex poisoned");
-        if files.contains_key(dest) {
-            return Err(Self::already_exists(dest));
-        }
-        let data = files
-            .remove(source)
-            .ok_or_else(|| Self::not_found(source))?;
-        files.insert(dest.to_string(), data);
-        Ok(())
-    }
-
-    fn open_input(&self, name: &str, _context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
-        self.ensure_open()?;
-        let files = self.files.lock().expect("files mutex poisoned");
-        let entry = files.get(name).ok_or_else(|| Self::not_found(name))?;
-        let content = entry.lock().expect("file entry mutex poisoned");
-        let data = content
-            .as_ref()
-            .ok_or_else(|| Self::still_open_for_writing(name))?;
-        Ok(Box::new(MockIndexInput::new(
-            data.clone(),
-            format!("RamDirectory({})", name),
-        )))
-    }
-
-    fn obtain_lock(&self, _name: &str) -> Result<Box<dyn Lock>> {
-        self.ensure_open()?;
-        Ok(Box::new(NoOpLock))
-    }
-
-    fn close(&mut self) -> Result<()> {
-        let mut closed = self.closed.lock().expect("closed mutex poisoned");
-        *closed = true;
-        Ok(())
-    }
-
-    fn get_pending_deletions(&self) -> Result<HashSet<String>> {
-        self.ensure_open()?;
-        Ok(HashSet::new())
-    }
-}
-
-/// An in-memory [`IndexOutput`] that publishes its bytes to its file entry on
-/// close.
-#[derive(Debug)]
-struct RamIndexOutput {
-    name: String,
-    data: VecDataOutput,
-    closed: bool,
-    entry: RamFileEntry,
-}
-
-impl RamIndexOutput {
-    fn new(name: String, entry: RamFileEntry) -> Self {
-        Self {
-            name,
-            data: VecDataOutput::new(),
-            closed: false,
-            entry,
-        }
-    }
-
-    fn ensure_open(&self) -> Result<()> {
-        if self.closed {
-            return Err(LuceneError::illegal_state("Already closed".to_string()));
-        }
-        Ok(())
-    }
-}
-
-impl DataOutput for RamIndexOutput {
-    fn write_byte(&mut self, b: u8) -> Result<()> {
-        self.ensure_open()?;
-        self.data.write_byte(b)
-    }
-
-    fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()> {
-        self.ensure_open()?;
-        self.data.write_bytes(b, offset, len)
-    }
-}
-
-impl IndexOutput for RamIndexOutput {
-    fn close(&mut self) -> Result<()> {
-        if self.closed {
-            return Ok(());
-        }
-        self.closed = true;
-        let mut content = self.entry.lock().expect("file entry mutex poisoned");
-        *content = Some(self.data.as_inner().to_vec());
-        Ok(())
-    }
-
-    fn file_pointer(&self) -> i64 {
-        self.data.len() as i64
-    }
-
-    fn checksum(&self) -> Result<i64> {
-        self.ensure_open()?;
-        Ok(crc32fast::hash(self.data.as_inner()) as i64)
-    }
-
-    fn resource_description(&self) -> &str {
-        &self.name
-    }
-
-    fn name(&self) -> &str {
-        &self.name
     }
 }
 
@@ -7370,9 +7813,17 @@ fn compute_block_size_bits_for(bytes: usize) -> usize {
 ///
 /// This is the Rust equivalent of Lucene's
 /// `BiFunction<String, ByteBuffersDataOutput, IndexInput>` output-to-input
-/// strategy used by [`ByteBuffersDirectory`].
-pub type OutputToInputFn =
-    Arc<dyn Fn(&str, &ByteBuffersDataOutput) -> Result<Box<dyn IndexInput + Send>> + Send + Sync>;
+/// strategy used by [`ByteBuffersDirectory`]. `None` is Java's `null`: the
+/// file keeps no content, and opening it fails as if it were still being
+/// written (`ByteBuffersDirectory.java:241-248`), which is what
+/// `NRTCachingDirectory`'s strategy returns for a file deleted before its
+/// output closed (`NRTCachingDirectory.java:79-81`). An error is whatever the
+/// function raises, which the closing output propagates.
+pub type OutputToInputFn = Arc<
+    dyn Fn(&str, &ByteBuffersDataOutput) -> Result<Option<Box<dyn IndexInput + Send>>>
+        + Send
+        + Sync,
+>;
 
 /// A function that supplies fresh [`ByteBuffersDataOutput`] instances.
 ///
@@ -7386,9 +7837,10 @@ pub type BbOutputSupplierFn = Arc<dyn Fn() -> ByteBuffersDataOutput + Send + Syn
 /// written through [`ByteBuffersIndexOutput`] and read back through
 /// [`ByteBuffersIndexInput`].
 pub struct ByteBuffersDirectory {
+    /// The `BaseDirectory` state this class extends
+    /// (`ByteBuffersDirectory.java:50`).
+    base: BaseDirectory,
     files: Mutex<HashMap<String, Arc<FileEntry>>>,
-    lock_factory: Box<dyn LockFactory>,
-    is_open: AtomicBool,
     temp_counter: AtomicU64,
     output_to_input: OutputToInputFn,
     bb_output_supplier: BbOutputSupplierFn,
@@ -7421,18 +7873,21 @@ impl FileEntry {
         let file_name = self_arc.file_name.clone();
         let output_to_input = Arc::clone(output_to_input);
         let entry_for_close = Arc::clone(&self_arc);
-        let on_close: Option<Box<dyn FnOnce(ByteBuffersDataOutput) + Send + Sync>> =
+        // `content = outputToInput.apply(fileName, output); cachedLength =
+        // output.size();` (`ByteBuffersDirectory.java:264-267`): a failure of
+        // the conversion leaves both unset and reaches the output's `close()`.
+        let on_close: Option<ByteBuffersOnClose> =
             Some(Box::new(move |output: ByteBuffersDataOutput| {
-                let input = output_to_input(&file_name, &output)
-                    .expect("output-to-input conversion must not fail");
+                let input = output_to_input(&file_name, &output)?;
                 let mut content = entry_for_close
                     .content
                     .lock()
                     .expect("content mutex poisoned");
-                *content = Some(input);
+                *content = input;
                 entry_for_close
                     .cached_length
                     .store(output.size() as i64, Ordering::Release);
+                Ok(())
             }));
         Ok(ByteBuffersIndexOutput::with_checksum(
             delegate,
@@ -7464,6 +7919,8 @@ impl FileEntry {
 
 impl ByteBuffersDirectory {
     /// Creates a new directory using a [`SingleInstanceLockFactory`].
+    ///
+    /// Equivalent to `ByteBuffersDirectory()` (`ByteBuffersDirectory.java:106-108`).
     pub fn new() -> Self {
         Self::with_lock_factory(Box::new(SingleInstanceLockFactory::new()))
     }
@@ -7480,15 +7937,18 @@ impl ByteBuffersDirectory {
 
     /// Creates a new directory with full control over output buffering and the
     /// output-to-input conversion strategy.
+    ///
+    /// Equivalent to `ByteBuffersDirectory(LockFactory, Supplier, BiFunction)`
+    /// (`ByteBuffersDirectory.java:114-121`), which passes the lock factory to
+    /// `super(factory)`.
     pub fn with_config(
         lock_factory: Box<dyn LockFactory>,
         bb_output_supplier: BbOutputSupplierFn,
         output_to_input: OutputToInputFn,
     ) -> Self {
         Self {
+            base: BaseDirectory::new(lock_factory),
             files: Mutex::new(HashMap::new()),
-            lock_factory,
-            is_open: AtomicBool::new(true),
             temp_counter: AtomicU64::new(0),
             output_to_input,
             bb_output_supplier,
@@ -7502,9 +7962,22 @@ impl ByteBuffersDirectory {
         Ok(files.contains_key(name))
     }
 
-    /// Returns the lock factory configured for this directory.
+    /// Returns the lock factory configured for this directory, the
+    /// `lockFactory` it inherits from `BaseDirectory`.
     pub fn lock_factory(&self) -> &dyn LockFactory {
-        self.lock_factory.as_ref()
+        self.base.lock_factory()
+    }
+
+    /// The body of `ByteBuffersDirectory.close()`
+    /// (`ByteBuffersDirectory.java:216-219`): `isOpen = false;
+    /// files.clear();`.
+    ///
+    /// [`Directory::close`] takes `&mut self`; this needs only shared access,
+    /// which an owner that shares the directory — `NRTCachingDirectory`, whose
+    /// cache directory its own callback reaches — closes it through.
+    fn close_shared(&self) {
+        self.base.set_open(false);
+        self.files.lock().expect("files mutex poisoned").clear();
     }
 }
 
@@ -7627,48 +8100,50 @@ impl Directory for ByteBuffersDirectory {
         entry.open_input()
     }
 
+    /// The final `BaseDirectory.obtainLock(String)` this class inherits
+    /// (`BaseDirectory.java:42-45`).
     fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
-        self.ensure_open()?;
-        self.lock_factory.obtain_lock(self, name)
+        self.base.obtain_lock(self, name)
     }
 
     fn close(&mut self) -> Result<()> {
-        self.is_open.store(false, Ordering::Release);
-        let mut files = self.files.lock().expect("files mutex poisoned");
-        files.clear();
+        self.close_shared();
         Ok(())
     }
 
+    /// Equivalent to `ByteBuffersDirectory.getPendingDeletions()`
+    /// (`ByteBuffersDirectory.java:221-224`): `Collections.emptySet()`, with
+    /// no `ensureOpen`, so a closed directory answers it too.
     fn get_pending_deletions(&self) -> Result<HashSet<String>> {
-        self.ensure_open()?;
         Ok(HashSet::new())
     }
 
+    /// The final `BaseDirectory.ensureOpen()` this class inherits
+    /// (`BaseDirectory.java:47-52`).
     fn ensure_open(&self) -> Result<()> {
-        if !self.is_open.load(Ordering::Acquire) {
-            return Err(LuceneError::already_closed(
-                "this Directory is closed".to_string(),
-            ));
-        }
-        Ok(())
+        self.base.ensure_open()
+    }
+
+    /// The `BaseDirectory.toString()` this class inherits
+    /// (`BaseDirectory.java:55-57`).
+    fn directory_to_string(&self) -> String {
+        self.base.directory_to_string(self)
     }
 }
 
 impl std::fmt::Debug for ByteBuffersDirectory {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ByteBuffersDirectory")
-            .field("is_open", &self.is_open.load(Ordering::Acquire))
+            .field("is_open", &self.base.is_open())
             .finish()
     }
 }
 
 impl std::fmt::Display for ByteBuffersDirectory {
+    /// Port of the `toString()` it inherits from `BaseDirectory`, which
+    /// [`Directory::directory_to_string`] renders.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "ByteBuffersDirectory, lockFactory={}",
-            self.lock_factory.directory_type_name()
-        )
+        f.write_str(&self.directory_to_string())
     }
 }
 
@@ -7686,7 +8161,9 @@ pub fn output_as_many_buffers() -> OutputToInputFn {
             "ByteBuffersIndexInput (file={}, buffers={})",
             file_name, data_input
         );
-        Ok(Box::new(ByteBuffersIndexInput::new(data_input, desc)) as Box<dyn IndexInput + Send>)
+        Ok(Some(
+            Box::new(ByteBuffersIndexInput::new(data_input, desc)) as Box<dyn IndexInput + Send>
+        ))
     })
 }
 
@@ -7702,7 +8179,9 @@ pub fn output_as_one_buffer() -> OutputToInputFn {
             "ByteBuffersIndexInput (file={}, buffers={})",
             file_name, data_input
         );
-        Ok(Box::new(ByteBuffersIndexInput::new(data_input, desc)) as Box<dyn IndexInput + Send>)
+        Ok(Some(
+            Box::new(ByteBuffersIndexInput::new(data_input, desc)) as Box<dyn IndexInput + Send>
+        ))
     })
 }
 
@@ -7983,10 +8462,18 @@ pub struct ByteBuffersIndexOutput {
     checksum: Option<crc32fast::Hasher>,
     last_checksum_position: AtomicI64,
     last_checksum: AtomicI64,
-    on_close: Option<Box<dyn FnOnce(ByteBuffersDataOutput) + Send + Sync>>,
+    on_close: Option<ByteBuffersOnClose>,
     resource_description: String,
     name: String,
 }
+
+/// The callback a [`ByteBuffersIndexOutput`] hands its buffered content to
+/// when it closes.
+///
+/// Equivalent to the `Consumer<ByteBuffersDataOutput> onClose` of
+/// `ByteBuffersIndexOutput`; an error it returns is what the Java consumer
+/// throws, which `close()` propagates (`ByteBuffersIndexOutput.java:55-63`).
+pub type ByteBuffersOnClose = Box<dyn FnOnce(ByteBuffersDataOutput) -> Result<()> + Send + Sync>;
 
 impl ByteBuffersIndexOutput {
     /// Creates a new output with the default CRC-32 checksum and no close callback.
@@ -8010,7 +8497,7 @@ impl ByteBuffersIndexOutput {
         resource_description: impl Into<String>,
         name: impl Into<String>,
         checksum: Option<crc32fast::Hasher>,
-        on_close: Option<Box<dyn FnOnce(ByteBuffersDataOutput) + Send + Sync>>,
+        on_close: Option<ByteBuffersOnClose>,
     ) -> Self {
         Self {
             delegate: Some(delegate),
@@ -8134,7 +8621,7 @@ impl IndexOutput for ByteBuffersIndexOutput {
     fn close(&mut self) -> Result<()> {
         let delegate = self.delegate.take();
         if let (Some(local), Some(on_close)) = (delegate, self.on_close.take()) {
-            on_close(local);
+            on_close(local)?;
         }
         Ok(())
     }
@@ -8469,7 +8956,8 @@ impl IndexOutput for FSIndexOutput {
 ///
 /// Equivalent to `org.apache.lucene.store.FSDirectory`: the state and the
 /// write, delete, sync and lock paths that `MMapDirectory` and
-/// `NIOFSDirectory` share.
+/// `NIOFSDirectory` share. It extends `BaseDirectory` (`FSDirectory.java:90`),
+/// whose state it holds as a [`BaseDirectory`].
 ///
 /// **Divergence from Lucene 10.5.0.** Java's `FSDirectory` is abstract, and its
 /// subclasses supply `openInput`. Rust has no abstract classes and a
@@ -8477,22 +8965,23 @@ impl IndexOutput for FSIndexOutput {
 /// concrete: the two subclasses compose it and delegate everything but
 /// `open_input` to it, and its own `open_input` reads the file through a plain
 /// buffered [`IndexInput`] that has no Java counterpart. Nothing in the crate
-/// reads through that path except `CommandLineUtil`'s `FSDirectory` kind;
-/// [`FSDirectory::open`] returns the subclass Java would.
+/// reads through that path: `CommandLineUtil` refuses to instantiate an
+/// `FSDirectory`, as Java does, and [`FSDirectory::open`] returns the subclass
+/// Java would.
 pub struct FSDirectory {
+    /// The `BaseDirectory` state this class extends.
+    base: BaseDirectory,
     directory: PathBuf,
     pending_deletes: Mutex<HashSet<String>>,
     ops_since_last_delete: AtomicU64,
     next_temp_file_counter: AtomicU64,
-    is_open: AtomicBool,
-    lock_factory: Box<dyn LockFactory>,
 }
 
 impl std::fmt::Debug for FSDirectory {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FSDirectory")
             .field("directory", &self.directory)
-            .field("is_open", &self.is_open.load(Ordering::Acquire))
+            .field("is_open", &self.base.is_open())
             .finish()
     }
 }
@@ -8527,11 +9016,11 @@ impl FSDirectory {
     ///
     /// Propagates any I/O error creating or canonicalizing the directory.
     pub fn open(path: impl AsRef<Path>) -> Result<FSDirectoryImpl> {
-        Self::open_with_lock_factory(path, None)
+        // `open(path, FSLockFactory.getDefault())`
+        Self::open_with_lock_factory(path, Box::new(NativeFSLockFactory))
     }
 
-    /// Just like [`open`](Self::open), but with the supplied lock factory,
-    /// or the default one when `None`.
+    /// Just like [`open`](Self::open), but with the supplied lock factory.
     ///
     /// Equivalent to `FSDirectory.open(Path, LockFactory)`
     /// (`FSDirectory.java:155-162`).
@@ -8541,7 +9030,7 @@ impl FSDirectory {
     /// Propagates any I/O error creating or canonicalizing the directory.
     pub fn open_with_lock_factory(
         path: impl AsRef<Path>,
-        lock_factory: Option<Box<dyn LockFactory>>,
+        lock_factory: Box<dyn LockFactory>,
     ) -> Result<FSDirectoryImpl> {
         FSDirectoryImpl::with_lock_factory(path, lock_factory)
     }
@@ -8549,41 +9038,72 @@ impl FSDirectory {
     /// Creates the state shared by the filesystem directories at `path`.
     ///
     /// Equivalent to the protected `FSDirectory(Path, LockFactory)`
-    /// constructor that `MMapDirectory` and `NIOFSDirectory` call.
+    /// constructor that `MMapDirectory` and `NIOFSDirectory` call
+    /// (`FSDirectory.java:119-127`), which starts with `super(lockFactory)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error creating or canonicalizing the directory.
     pub fn with_lock_factory(
         path: impl AsRef<Path>,
-        lock_factory: Option<Box<dyn LockFactory>>,
+        lock_factory: Box<dyn LockFactory>,
     ) -> Result<Self> {
-        let lock_factory = lock_factory.unwrap_or_else(|| Box::new(NativeFSLockFactory));
+        let base = BaseDirectory::new(lock_factory);
         let path = path.as_ref();
         if !path.is_dir() {
             fs::create_dir_all(path)?;
         }
         let directory = path.canonicalize()?;
         Ok(Self {
+            base,
             directory,
             pending_deletes: Mutex::new(HashSet::new()),
             ops_since_last_delete: AtomicU64::new(0),
             next_temp_file_counter: AtomicU64::new(0),
-            is_open: AtomicBool::new(true),
-            lock_factory,
         })
     }
 
-    /// Returns the canonical filesystem path backing this directory.
+    /// Returns the underlying filesystem directory.
     ///
-    /// Equivalent to `FSDirectory.getDirectory()` in Lucene 10.5.0.
-    pub fn directory_path(&self) -> &Path {
+    /// Equivalent to `FSDirectory.getDirectory()` (`FSDirectory.java:288-291`):
+    /// `ensureOpen()`, then the canonical path the constructor resolved.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::AlreadyClosed`] "this Directory is closed" once
+    /// the directory is closed.
+    pub fn get_directory(&self) -> Result<&Path> {
+        self.base.ensure_open()?;
+        Ok(&self.directory)
+    }
+
+    /// The protected `directory` field (`FSDirectory.java:92`), which the
+    /// subclasses and this class read without `ensureOpen`. The public reader
+    /// is [`get_directory`](Self::get_directory).
+    pub(crate) fn directory_path(&self) -> &Path {
         &self.directory
     }
 
+    /// Returns the `BaseDirectory` state this directory extends.
+    pub fn base(&self) -> &BaseDirectory {
+        &self.base
+    }
+
+    /// Renders `dir`, the subclass instance this state belongs to, as
+    /// `FSDirectory.toString()` does (`FSDirectory.java:293-295`):
+    /// `this.getClass().getSimpleName() + "@" + directory + " lockFactory=" +
+    /// lockFactory`.
+    pub fn directory_to_string_of(&self, dir: &dyn Directory) -> String {
+        format!(
+            "{}@{} lockFactory={}",
+            java_simple_name(dir.directory_type_name()),
+            self.directory.display(),
+            self.base.lock_factory().lock_factory_to_string()
+        )
+    }
+
     fn check_open(&self) -> Result<()> {
-        if !self.is_open.load(Ordering::Acquire) {
-            return Err(LuceneError::already_closed(
-                "this Directory is closed".to_string(),
-            ));
-        }
-        Ok(())
+        self.base.ensure_open()
     }
 
     fn ensure_can_read(&self, name: &str) -> Result<()> {
@@ -8851,13 +9371,15 @@ impl Directory for FSDirectory {
         ))?))
     }
 
+    /// The final `BaseDirectory.obtainLock(String)` this class inherits
+    /// (`BaseDirectory.java:42-45`); a filesystem lock factory checks that
+    /// the directory is open, through `getDirectory()`.
     fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
-        self.check_open()?;
-        self.lock_factory.obtain_lock(self, name)
+        self.base.obtain_lock(self, name)
     }
 
     fn close(&mut self) -> Result<()> {
-        self.is_open.store(false, Ordering::Release);
+        self.base.set_open(false);
         self.delete_pending_files()?;
         Ok(())
     }
@@ -8872,8 +9394,9 @@ impl Directory for FSDirectory {
         Ok(pending.clone())
     }
 
-    fn fs_directory_path(&self) -> Option<&Path> {
-        Some(&self.directory)
+    /// An `FSDirectory`.
+    fn as_fs_directory(&self) -> Option<&FSDirectory> {
+        Some(self)
     }
 
     fn directory_type_name(&self) -> &'static str {
@@ -8883,16 +9406,18 @@ impl Directory for FSDirectory {
     fn ensure_open(&self) -> Result<()> {
         self.check_open()
     }
+
+    /// `FSDirectory.toString()` (`FSDirectory.java:293-295`).
+    fn directory_to_string(&self) -> String {
+        self.directory_to_string_of(self)
+    }
 }
 
 impl std::fmt::Display for FSDirectory {
+    /// Port of `FSDirectory.toString()`, which
+    /// [`Directory::directory_to_string`] renders.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "FSDirectory@{} lockFactory={}",
-            self.directory.display(),
-            self.lock_factory.directory_type_name()
-        )
+        f.write_str(&self.directory_to_string())
     }
 }
 
@@ -9046,24 +9571,33 @@ impl NIOFSDirectory {
     ///
     /// Equivalent to `NIOFSDirectory(Path)` in Lucene 10.5.0.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let inner = FSDirectory::with_lock_factory(path, None)?;
-        Ok(Self { inner })
+        // `this(path, FSLockFactory.getDefault())`
+        Self::with_lock_factory(path, Box::new(NativeFSLockFactory))
     }
 
     /// Opens a new `NIOFSDirectory` at `path` with the supplied lock factory.
     ///
     /// Equivalent to `NIOFSDirectory(Path, LockFactory)` in Lucene 10.5.0.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error creating or canonicalizing the directory.
     pub fn with_lock_factory(
         path: impl AsRef<Path>,
-        lock_factory: Option<Box<dyn LockFactory>>,
+        lock_factory: Box<dyn LockFactory>,
     ) -> Result<Self> {
         let inner = FSDirectory::with_lock_factory(path, lock_factory)?;
         Ok(Self { inner })
     }
 
-    /// Returns the canonical filesystem path backing this directory.
-    pub fn directory_path(&self) -> &Path {
-        self.inner.directory_path()
+    /// The `FSDirectory.getDirectory()` it inherits (`FSDirectory.java:288-291`):
+    /// see [`FSDirectory::get_directory`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::AlreadyClosed`] once the directory is closed.
+    pub fn get_directory(&self) -> Result<&Path> {
+        self.inner.get_directory()
     }
 }
 
@@ -9118,8 +9652,11 @@ impl Directory for NIOFSDirectory {
         )?))
     }
 
+    /// The final `BaseDirectory.obtainLock(String)` it inherits
+    /// (`BaseDirectory.java:42-45`), with this directory as the lock
+    /// factory's `dir`.
     fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
-        self.inner.obtain_lock(name)
+        self.inner.base().obtain_lock(self, name)
     }
 
     fn close(&mut self) -> Result<()> {
@@ -9130,8 +9667,9 @@ impl Directory for NIOFSDirectory {
         self.inner.get_pending_deletions()
     }
 
-    fn fs_directory_path(&self) -> Option<&Path> {
-        self.inner.fs_directory_path()
+    /// An `FSDirectory` subclass: the `FSDirectory` it composes.
+    fn as_fs_directory(&self) -> Option<&FSDirectory> {
+        Some(&self.inner)
     }
 
     fn directory_type_name(&self) -> &'static str {
@@ -9141,15 +9679,18 @@ impl Directory for NIOFSDirectory {
     fn ensure_open(&self) -> Result<()> {
         self.inner.ensure_open()
     }
+
+    /// The `FSDirectory.toString()` it inherits (`FSDirectory.java:293-295`).
+    fn directory_to_string(&self) -> String {
+        self.inner.directory_to_string_of(self)
+    }
 }
 
 impl std::fmt::Display for NIOFSDirectory {
+    /// Port of the `toString()` it inherits from `FSDirectory`, which
+    /// [`Directory::directory_to_string`] renders.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "NIOFSDirectory@{}",
-            self.inner.directory_path().display()
-        )
+        f.write_str(&self.directory_to_string())
     }
 }
 
@@ -9604,6 +10145,36 @@ pub fn is_test_filter_input(type_id: std::any::TypeId) -> bool {
         .contains(&type_id)
 }
 
+/// A test filtering-input type registered for the life of a test.
+///
+/// Registers through the accessor `FilterIndexInput` hands the test framework
+/// (`TEST_FILTER_INPUTS::add`) and removes the registration again on drop, so
+/// that a test leaves the process-wide list as it found it.
+#[cfg(test)]
+pub(crate) struct TestFilterInputRegistration(std::any::TypeId);
+
+#[cfg(test)]
+impl TestFilterInputRegistration {
+    /// Registers `type_id` as a test filtering input.
+    pub(crate) fn register(type_id: std::any::TypeId) -> Self {
+        use crate::internal::tests_hooks::FilterIndexInputAccess as _;
+        FilterIndexInputAccessImpl.add_test_filter_type(type_id);
+        Self(type_id)
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestFilterInputRegistration {
+    fn drop(&mut self) {
+        let mut inputs = TEST_FILTER_INPUTS
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(index) = inputs.iter().position(|id| *id == self.0) {
+            inputs.remove(index);
+        }
+    }
+}
+
 /// Registers `FilterIndexInput`'s accessor with
 /// [`TestSecrets`](crate::internal::tests_hooks::TestSecrets), once.
 ///
@@ -9618,6 +10189,29 @@ pub(crate) fn register_test_secrets() {
         )
         .expect("INVARIANT: FilterIndexInput's static initializer runs once, from this file");
     });
+}
+
+#[cfg(test)]
+/// Whether `actual` is `pattern` with each `{hash}` standing for a Java
+/// identity hash: one or more lowercase hexadecimal digits.
+pub(crate) fn matches_java_text(actual: &str, pattern: &str) -> bool {
+    let mut rest = actual;
+    for (i, part) in pattern.split("{hash}").enumerate() {
+        if i > 0 {
+            let digits = rest
+                .find(|c: char| !c.is_ascii_hexdigit() || c.is_ascii_uppercase())
+                .unwrap_or(rest.len());
+            if digits == 0 {
+                return false;
+            }
+            rest = &rest[digits..];
+        }
+        match rest.strip_prefix(part) {
+            Some(after) => rest = after,
+            None => return false,
+        }
+    }
+    rest.is_empty()
 }
 
 #[cfg(test)]
@@ -10919,7 +11513,7 @@ mod tests {
     /// lifecycle of create, open, read, write, rename, delete, list and close.
     #[test]
     fn directory_basic_operations() {
-        let mut dir = RamDirectory::new();
+        let mut dir = ByteBuffersDirectory::new();
         let ctx: &dyn IOContext = &*DEFAULT_IO_CONTEXT;
 
         // Empty directory.
@@ -10989,8 +11583,8 @@ mod tests {
     /// Verifies that [`Directory::copy_from`] copies bytes between directories.
     #[test]
     fn directory_copy_from() {
-        let src = RamDirectory::new();
-        let dst = RamDirectory::new();
+        let src = ByteBuffersDirectory::new();
+        let dst = ByteBuffersDirectory::new();
         let ctx: &dyn IOContext = &*DEFAULT_IO_CONTEXT;
 
         {
@@ -11072,159 +11666,236 @@ mod tests {
     // BaseDirectory tests
     // -------------------------------------------------------------------------
 
-    /// Verifies that [`BaseDirectory`] rejects a `None` lock factory with the
-    /// same message Lucene uses for a `null` lock factory.
+    /// `ByteBuffersDirectory` inherits `BaseDirectory`'s final members: its
+    /// `ensureOpen` refuses a closed directory, while `obtainLock` asks only
+    /// the lock factory, so a closed directory still hands out a lock; its
+    /// `SingleInstanceLockFactory` refuses a second lock of one name, naming
+    /// the directory by its `toString()`. Java oracle (`Probe23 locks`):
+    /// "bb relock: LockObtainFailedException: lock instance already obtained:
+    /// (dir=ByteBuffersDirectory@3d8bbcdc
+    /// lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@52500920,
+    /// lockName=x)", "bb closed obtainLock: ok".
     #[test]
-    fn base_directory_rejects_null_lock_factory() {
-        let result = BaseDirectory::new(RamDirectory::new(), None);
-        let err = match result {
-            Err(e) => e,
-            Ok(_) => panic!("expected null lock factory to be rejected"),
-        };
-        assert!(err
-            .to_string()
-            .contains("LockFactory must not be null, use an explicit instance!"));
-    }
-
-    /// Verifies that [`BaseDirectory::obtain_lock`] delegates to the configured
-    /// lock factory.
-    #[test]
-    fn base_directory_obtain_lock_delegates_to_factory() {
-        let factory = SingleInstanceLockFactory::new();
-        let dir = BaseDirectory::new(RamDirectory::new(), Some(Box::new(factory))).unwrap();
-
-        let lock = dir.obtain_lock("test.lock").unwrap();
-        lock.ensure_valid().unwrap();
-
-        // The same factory rejects double acquisition in-process.
-        let result = dir.obtain_lock("test.lock");
-        let err = match result {
-            Err(e) => e,
-            Ok(_) => panic!("expected double acquisition to fail"),
-        };
-        assert!(err.to_string().contains("lock instance already obtained"));
-
+    fn byte_buffers_directory_inherits_base_directory_members() {
+        let mut dir = ByteBuffersDirectory::new();
+        let lock = dir.obtain_lock("x").unwrap();
+        match dir.obtain_lock("x") {
+            Err(LuceneError::LockObtainFailed { message, .. }) => {
+                assert_eq!(
+                    message,
+                    format!(
+                        "lock instance already obtained: (dir={}, lockName=x)",
+                        dir.directory_to_string()
+                    )
+                );
+                assert!(
+                    matches_java_text(
+                        &message,
+                        "lock instance already obtained: (dir=ByteBuffersDirectory@{hash} \
+                         lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@{hash}, \
+                         lockName=x)"
+                    ),
+                    "{message}"
+                );
+            }
+            other => panic!("expected LockObtainFailedException, got {:?}", other.err()),
+        }
         lock.close().unwrap();
 
-        // After release the lock name can be acquired again.
-        let lock2 = dir.obtain_lock("test.lock").unwrap();
-        lock2.ensure_valid().unwrap();
-        lock2.close().unwrap();
-    }
-
-    /// Verifies that [`BaseDirectory::ensure_open`] succeeds while open and
-    /// returns [`LuceneError::AlreadyClosed`] after [`Directory::close`].
-    #[test]
-    fn base_directory_ensure_open_throws_after_close() {
-        let mut dir =
-            BaseDirectory::new(RamDirectory::new(), Some(Box::new(NoLockFactory))).unwrap();
-        assert!(dir.ensure_open().is_ok());
-        assert!(dir.is_open());
-
         dir.close().unwrap();
-        assert!(!dir.is_open());
-
-        let result = dir.ensure_open();
-        let err = match result {
-            Err(e) => e,
-            Ok(_) => panic!("expected AlreadyClosed after close"),
-        };
-        assert!(err.to_string().contains("this Directory is closed"));
+        match dir.ensure_open() {
+            Err(LuceneError::AlreadyClosed { message, .. }) => {
+                assert_eq!(message, "this Directory is closed")
+            }
+            other => panic!("expected AlreadyClosedException, got {other:?}"),
+        }
+        let after_close = dir
+            .obtain_lock("y")
+            .expect("obtainLock does not check that the directory is open");
+        after_close.close().unwrap();
     }
 
-    /// Verifies that the [`Display`] representation includes the configured
-    /// lock factory, matching Lucene's `BaseDirectory.toString()`.
+    /// A filesystem directory inherits the same final `obtainLock`: a
+    /// filesystem lock factory refuses a closed directory through
+    /// `getDirectory()`'s `ensureOpen()`, any other factory does not. Java
+    /// oracle (`Probe23 locks`): "mmap closed obtainLock:
+    /// AlreadyClosedException: this Directory is closed", "mmap single closed
+    /// obtainLock: ok", "mmap nolock closed obtainLock: ok NoLock".
     #[test]
-    fn base_directory_display_includes_lock_factory() {
-        let dir = BaseDirectory::new(RamDirectory::new(), Some(Box::new(NoLockFactory))).unwrap();
-        let repr = dir.to_string();
-        assert!(repr.contains("lockFactory="));
-        assert!(repr.contains("NoLockFactory"));
+    fn a_closed_fs_directory_hands_out_only_non_fs_locks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut native = NIOFSDirectory::open(tmp.path().join("closed")).unwrap();
+        native.close().unwrap();
+        match native.obtain_lock("y") {
+            Err(LuceneError::AlreadyClosed { message, .. }) => {
+                assert_eq!(message, "this Directory is closed")
+            }
+            other => panic!("expected AlreadyClosedException, got {:?}", other.err()),
+        }
+        let mut single = NIOFSDirectory::with_lock_factory(
+            tmp.path().join("closed2"),
+            Box::new(SingleInstanceLockFactory::new()),
+        )
+        .unwrap();
+        single.close().unwrap();
+        single.obtain_lock("y").unwrap().close().unwrap();
+        let mut none =
+            NIOFSDirectory::with_lock_factory(tmp.path().join("closed3"), Box::new(NoLockFactory))
+                .unwrap();
+        none.close().unwrap();
+        none.obtain_lock("y").unwrap().close().unwrap();
+    }
+
+    /// The lock factory a filesystem directory hands its lock to is the
+    /// directory itself, not the `FSDirectory` state it composes: a
+    /// `SingleInstanceLockFactory` names it `NIOFSDirectory@...` in its
+    /// refusal, as Java's `lockFactory.obtainLock(this, name)` does.
+    #[test]
+    fn a_fs_directory_passes_itself_to_its_lock_factory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = NIOFSDirectory::with_lock_factory(
+            tmp.path(),
+            Box::new(SingleInstanceLockFactory::new()),
+        )
+        .unwrap();
+        let lock = dir.obtain_lock("x").unwrap();
+        match dir.obtain_lock("x") {
+            Err(LuceneError::LockObtainFailed { message, .. }) => assert!(
+                matches_java_text(
+                    &message,
+                    &format!(
+                        "lock instance already obtained: (dir=NIOFSDirectory@{} \
+                         lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@{{hash}}, \
+                         lockName=x)",
+                        dir.get_directory().unwrap().display()
+                    )
+                ),
+                "{message}"
+            ),
+            other => panic!("expected LockObtainFailedException, got {:?}", other.err()),
+        }
+        lock.close().unwrap();
+    }
+
+    /// Every directory's `toString()` is Java's, reached through
+    /// [`Directory::directory_to_string`] and printed by `Display`. Java
+    /// oracle (`Probe23 tostring`, identity hashes elided):
+    ///
+    /// ```text
+    /// nio: NIOFSDirectory@<path> lockFactory=org.apache.lucene.store.NativeFSLockFactory@655f7ea
+    /// bb: ByteBuffersDirectory@320de594 lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@3dd1dc90
+    /// bb nolock: ByteBuffersDirectory@686449f9 lockFactory=org.apache.lucene.store.NoLockFactory@665df3c6
+    /// tracking: TrackingDirectoryWrapper(ByteBuffersDirectory@... lockFactory=...)
+    /// nrt: NRTCachingDirectory(ByteBuffersDirectory@... lockFactory=...; maxCacheMB=60.0 maxMergeSizeMB=5.0)
+    /// sleeping: SleepingLockWrapper(ByteBuffersDirectory@... lockFactory=...)
+    /// fileswitch: FileSwitchDirectory@29df4d43
+    /// nativefs on bb: UnsupportedOperationException: NativeFSLockFactory can only be used with FSDirectory subclasses, got: ByteBuffersDirectory@... lockFactory=...
+    /// ```
+    #[test]
+    fn directories_render_as_java_to_string() {
+        let tmp = tempfile::tempdir().unwrap();
+        let nio = NIOFSDirectory::open(tmp.path().join("nio")).unwrap();
+        let nio_text = format!(
+            "NIOFSDirectory@{} lockFactory=org.apache.lucene.store.NativeFSLockFactory@{{hash}}",
+            nio.get_directory().unwrap().display()
+        );
+        assert!(
+            matches_java_text(&nio.directory_to_string(), &nio_text),
+            "{}",
+            nio.directory_to_string()
+        );
+        assert_eq!(nio.to_string(), nio.directory_to_string());
+        let simple = NIOFSDirectory::with_lock_factory(
+            tmp.path().join("simple"),
+            Box::new(SimpleFSLockFactory),
+        )
+        .unwrap();
+        assert!(matches_java_text(
+            &simple.directory_to_string(),
+            &format!(
+                "NIOFSDirectory@{} lockFactory=org.apache.lucene.store.SimpleFSLockFactory@{{hash}}",
+                simple.get_directory().unwrap().display()
+            )
+        ));
+        let fs =
+            FSDirectory::with_lock_factory(tmp.path().join("fs"), Box::new(NativeFSLockFactory))
+                .unwrap();
+        assert!(matches_java_text(
+            &fs.directory_to_string(),
+            &format!(
+                "FSDirectory@{} lockFactory=org.apache.lucene.store.NativeFSLockFactory@{{hash}}",
+                fs.get_directory().unwrap().display()
+            )
+        ));
+
+        let bb_text = "ByteBuffersDirectory@{hash} \
+                       lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@{hash}";
+        let bb = ByteBuffersDirectory::new();
+        assert!(
+            matches_java_text(&bb.directory_to_string(), bb_text),
+            "{}",
+            bb.directory_to_string()
+        );
+        assert_eq!(bb.to_string(), bb.directory_to_string());
+        let no_lock = ByteBuffersDirectory::with_lock_factory(Box::new(NoLockFactory));
+        assert!(matches_java_text(
+            &no_lock.directory_to_string(),
+            "ByteBuffersDirectory@{hash} lockFactory=org.apache.lucene.store.NoLockFactory@{hash}"
+        ));
+
+        let tracking = TrackingDirectoryWrapper::new(Box::new(ByteBuffersDirectory::new()));
+        assert!(matches_java_text(
+            &tracking.directory_to_string(),
+            &format!("TrackingDirectoryWrapper({bb_text})")
+        ));
+        let filter = FilterDirectory::new(Box::new(ByteBuffersDirectory::new()));
+        assert!(matches_java_text(
+            &filter.directory_to_string(),
+            &format!("FilterDirectory({bb_text})")
+        ));
+        assert_eq!(filter.to_string(), filter.directory_to_string());
+        let nrt = NRTCachingDirectory::new(Box::new(ByteBuffersDirectory::new()), 5.0, 60.0);
+        assert!(matches_java_text(
+            &nrt.directory_to_string(),
+            &format!("NRTCachingDirectory({bb_text}; maxCacheMB=60.0 maxMergeSizeMB=5.0)")
+        ));
+        assert_eq!(nrt.to_string(), nrt.directory_to_string());
+        let sleeping = SleepingLockWrapper::new(Box::new(ByteBuffersDirectory::new()), 10).unwrap();
+        assert!(matches_java_text(
+            &sleeping.directory_to_string(),
+            &format!("SleepingLockWrapper({bb_text})")
+        ));
+        assert_eq!(sleeping.to_string(), sleeping.directory_to_string());
+        let switch = FileSwitchDirectory::new(
+            HashSet::from(["x".to_string()]),
+            Box::new(ByteBuffersDirectory::new()),
+            Box::new(ByteBuffersDirectory::new()),
+            false,
+        )
+        .unwrap();
+        assert!(matches_java_text(
+            &switch.directory_to_string(),
+            "FileSwitchDirectory@{hash}"
+        ));
+
+        match NativeFSLockFactory.obtain_lock(&bb, "x") {
+            Err(LuceneError::UnsupportedOperation(message)) => assert_eq!(
+                message,
+                format!(
+                    "NativeFSLockFactory can only be used with FSDirectory subclasses, got: {}",
+                    bb.directory_to_string()
+                )
+            ),
+            other => panic!(
+                "expected UnsupportedOperationException, got {:?}",
+                other.err()
+            ),
+        }
     }
 
     // -------------------------------------------------------------------------
     // Lock factory tests
     // -------------------------------------------------------------------------
-
-    /// A mock filesystem-backed directory that delegates file operations to an
-    /// in-memory directory but reports a real filesystem path.
-    #[derive(Debug)]
-    struct MockFSDirectory {
-        path: PathBuf,
-        inner: RamDirectory,
-    }
-
-    impl MockFSDirectory {
-        fn new(path: PathBuf) -> Self {
-            Self {
-                path,
-                inner: RamDirectory::new(),
-            }
-        }
-    }
-
-    impl Directory for MockFSDirectory {
-        fn list_all(&self) -> Result<Vec<String>> {
-            self.inner.list_all()
-        }
-
-        fn delete_file(&self, name: &str) -> Result<()> {
-            self.inner.delete_file(name)
-        }
-
-        fn file_length(&self, name: &str) -> Result<i64> {
-            self.inner.file_length(name)
-        }
-
-        fn create_output(
-            &self,
-            name: &str,
-            context: &dyn IOContext,
-        ) -> Result<Box<dyn IndexOutput>> {
-            self.inner.create_output(name, context)
-        }
-
-        fn create_temp_output(
-            &self,
-            prefix: &str,
-            suffix: &str,
-            context: &dyn IOContext,
-        ) -> Result<Box<dyn IndexOutput>> {
-            self.inner.create_temp_output(prefix, suffix, context)
-        }
-
-        fn sync(&self, names: &[String]) -> Result<()> {
-            self.inner.sync(names)
-        }
-
-        fn sync_metadata(&self) -> Result<()> {
-            self.inner.sync_metadata()
-        }
-
-        fn rename(&self, source: &str, dest: &str) -> Result<()> {
-            self.inner.rename(source, dest)
-        }
-
-        fn open_input(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
-            self.inner.open_input(name, context)
-        }
-
-        fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
-            self.inner.obtain_lock(name)
-        }
-
-        fn close(&mut self) -> Result<()> {
-            self.inner.close()
-        }
-
-        fn get_pending_deletions(&self) -> Result<HashSet<String>> {
-            self.inner.get_pending_deletions()
-        }
-
-        fn fs_directory_path(&self) -> Option<&Path> {
-            Some(&self.path)
-        }
-    }
 
     /// A file is registered when its output is created, as
     /// `ByteBuffersDirectory.createOutput` puts its `FileEntry`
@@ -11233,7 +11904,7 @@ mod tests {
     /// carries the content the close writes.
     #[test]
     fn ram_directory_lists_a_file_from_create_output() {
-        let dir = RamDirectory::new();
+        let dir = ByteBuffersDirectory::new();
         let mut out = dir.create_output("a", &*DEFAULT_IO_CONTEXT).unwrap();
         assert_eq!(dir.list_all().unwrap(), vec!["a".to_string()]);
         assert_eq!(dir.file_length("a").unwrap(), 0);
@@ -11253,7 +11924,7 @@ mod tests {
     #[test]
     fn no_lock_factory_returns_shared_no_op_lock() {
         let factory = NoLockFactory::instance();
-        let dir = RamDirectory::new();
+        let dir = ByteBuffersDirectory::new();
         let lock1 = factory.obtain_lock(&dir, "any.lock").unwrap();
         let lock2 = factory.obtain_lock(&dir, "any.lock").unwrap();
         lock1.ensure_valid().unwrap();
@@ -11267,7 +11938,7 @@ mod tests {
     #[test]
     fn single_instance_lock_factory_rejects_double_acquisition() {
         let factory = SingleInstanceLockFactory::new();
-        let dir = RamDirectory::new();
+        let dir = ByteBuffersDirectory::new();
 
         let lock = factory.obtain_lock(&dir, "test.lock").unwrap();
         lock.ensure_valid().unwrap();
@@ -11291,7 +11962,7 @@ mod tests {
     #[test]
     fn native_fs_lock_factory_acquires_and_releases() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = MockFSDirectory::new(tmp.path().to_path_buf());
+        let dir = NIOFSDirectory::open(tmp.path()).unwrap();
         let factory = NativeFSLockFactory::instance();
 
         let lock = factory.obtain_lock(&dir, "test.lock").unwrap();
@@ -11350,17 +12021,13 @@ mod tests {
     #[test]
     fn native_fs_lock_renders_as_lucene() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = MockFSDirectory::new(tmp.path().to_path_buf());
+        let dir = NIOFSDirectory::open(tmp.path()).unwrap();
         let lock = NativeFSLockFactory::instance()
             .obtain_lock(&dir, "write.lock")
             .unwrap();
         let path = tmp.path().join("write.lock").canonicalize().unwrap();
-        let creation_time = file_time_to_string(
-            std::fs::metadata(&path)
-                .unwrap()
-                .created()
-                .unwrap_or(SystemTime::UNIX_EPOCH),
-        );
+        let creation_time =
+            file_time_to_string(file_creation_time(&std::fs::metadata(&path).unwrap()).unwrap());
         let rendered = |validity: &str| {
             format!(
                 "NativeFSLock(path={},impl=sun.nio.ch.FileLockImpl[0:9223372036854775807 \
@@ -11409,7 +12076,7 @@ mod tests {
     #[test]
     fn a_recreated_lock_file_is_reported_with_its_file_time() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = MockFSDirectory::new(tmp.path().to_path_buf());
+        let dir = NIOFSDirectory::open(tmp.path()).unwrap();
         let lock = NativeFSLockFactory::instance()
             .obtain_lock(&dir, "write.lock")
             .unwrap();
@@ -11463,11 +12130,11 @@ mod tests {
     #[test]
     fn a_recreated_simple_fs_lock_file_is_reported_with_its_file_time() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = MockFSDirectory::new(tmp.path().to_path_buf());
+        let dir = NIOFSDirectory::open(tmp.path()).unwrap();
         let lock = SimpleFSLockFactory::instance()
             .obtain_lock(&dir, "write.lock")
             .unwrap();
-        let path = dir.fs_directory_path().unwrap().join("write.lock");
+        let path = dir.get_directory().unwrap().join("write.lock");
         let created = |path: &std::path::Path| {
             std::fs::metadata(path)
                 .unwrap()
@@ -11507,7 +12174,7 @@ mod tests {
     #[test]
     fn simple_fs_lock_factory_acquires_and_releases() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = MockFSDirectory::new(tmp.path().to_path_buf());
+        let dir = NIOFSDirectory::open(tmp.path()).unwrap();
         let factory = SimpleFSLockFactory::instance();
 
         let lock = factory.obtain_lock(&dir, "test.lock").unwrap();
@@ -11527,13 +12194,285 @@ mod tests {
         lock2.close().unwrap();
     }
 
+    /// `SimpleFSLock.close()` returns at once on a closed lock, validates
+    /// before deleting, and marks the lock closed in a `finally`, so a close
+    /// that failed is not retried; `ensureValid` on a closed lock reports
+    /// "Lock instance already released". Java oracle (`oracle9/Probe23.java
+    /// simple`): "close twice: ok closed", "ensureValid after close:
+    /// AlreadyClosedException: Lock instance already released:
+    /// SimpleFSLock(path=...,creationTime=...)", "close deleted:
+    /// LockReleaseFailedException: Lock file cannot be safely removed. Manual
+    /// intervention is recommended.", "close deleted again: ok closed",
+    /// "ensureValid after failed close: AlreadyClosedException: Lock instance
+    /// already released: ...".
+    #[test]
+    fn simple_fs_lock_closes_once_as_lucene() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = NIOFSDirectory::with_lock_factory(
+            tmp.path().join("simple"),
+            Box::new(SimpleFSLockFactory),
+        )
+        .unwrap();
+        let released = |lock: &dyn Lock, path: &Path, creation_time: &str| {
+            match lock.ensure_valid() {
+            Err(LuceneError::AlreadyClosed { message, .. }) => assert_eq!(
+                message,
+                format!(
+                    "Lock instance already released: SimpleFSLock(path={},creationTime={creation_time})",
+                    path.display()
+                )
+            ),
+            other => panic!("expected AlreadyClosedException, got {other:?}"),
+        }
+        };
+        let creation_time = |path: &Path| {
+            file_time_to_string(file_creation_time(&std::fs::metadata(path).unwrap()).unwrap())
+        };
+
+        let a_path = dir.get_directory().unwrap().join("a.lock");
+        let a = dir.obtain_lock("a.lock").unwrap();
+        let a_created = creation_time(&a_path);
+        a.close().unwrap();
+        a.close().expect("a second close is a no-op");
+        released(a.as_ref(), &a_path, &a_created);
+
+        let b_path = dir.get_directory().unwrap().join("b.lock");
+        let b = dir.obtain_lock("b.lock").unwrap();
+        let b_created = creation_time(&b_path);
+        std::fs::remove_file(&b_path).unwrap();
+        match b.close() {
+            Err(LuceneError::LockReleaseFailed { message, .. }) => assert_eq!(
+                message,
+                "Lock file cannot be safely removed. Manual intervention is recommended."
+            ),
+            other => panic!("expected LockReleaseFailedException, got {other:?}"),
+        }
+        b.close()
+            .expect("the failed close marked the lock closed, in its finally");
+        released(b.as_ref(), &b_path, &b_created);
+    }
+
+    /// The environment variable that turns
+    /// [`native_fs_lock_excludes_another_process`] into its own child: it
+    /// names the directory whose `a.lock` the child tries to lock.
+    #[cfg(all(
+        unix,
+        not(any(
+            target_os = "emscripten",
+            target_os = "espidf",
+            target_os = "fuchsia",
+            target_os = "horizon",
+            target_os = "redox",
+            target_os = "vita",
+            target_os = "wasi"
+        ))
+    ))]
+    const NATIVE_LOCK_CHILD_DIR: &str = "RUCENE_NATIVE_LOCK_CHILD_DIR";
+
+    /// The child half of [`native_fs_lock_excludes_another_process`]: tries
+    /// `a.lock` once as the JDK's `FileChannel.tryLock()` does — `fcntl(F_SETLK,
+    /// F_WRLCK)` over the whole file on its own descriptor — and once through
+    /// Rucene's `NativeFSLockFactory`, and prints what each answered.
+    #[cfg(all(
+        unix,
+        not(any(
+            target_os = "emscripten",
+            target_os = "espidf",
+            target_os = "fuchsia",
+            target_os = "horizon",
+            target_os = "redox",
+            target_os = "vita",
+            target_os = "wasi"
+        ))
+    ))]
+    fn native_lock_child(dir: &Path) {
+        use rustix::fs::FlockOperation;
+        let lock_file = dir.join("a.lock");
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&lock_file)
+            .unwrap();
+        match rustix::fs::fcntl_lock(&file, FlockOperation::NonBlockingLockExclusive) {
+            Ok(()) => {
+                println!("child fcntl: acquired");
+                rustix::fs::fcntl_lock(&file, FlockOperation::NonBlockingUnlock).unwrap();
+            }
+            Err(errno) => println!("child fcntl: refused ({errno:?})"),
+        }
+        drop(file);
+        let dir = NIOFSDirectory::open(dir).unwrap();
+        match dir.obtain_lock("a.lock") {
+            Ok(lock) => {
+                println!("child obtain: ok");
+                lock.close().unwrap();
+            }
+            Err(LuceneError::LockObtainFailed { message, .. }) => {
+                println!("child obtain: LockObtainFailedException: {message}")
+            }
+            Err(other) => println!("child obtain: {other:?}"),
+        }
+    }
+
+    /// A `NativeFSLock` excludes another process, which takes the lock as the
+    /// JDK does: `FileChannel.tryLock()` is a POSIX `fcntl(F_SETLK)` write
+    /// lock over the whole file (OpenJDK 25 `UnixFileDispatcherImpl.c`,
+    /// `lock0`), so while this process holds `a.lock` the child's own
+    /// `fcntl` is refused and its `NativeFSLockFactory` reports "Lock held by
+    /// another program: " + realPath (`NativeFSLockFactory.java:117`); once
+    /// `close()` releases it, both succeed. The child is this test binary run
+    /// again on this one test, with [`NATIVE_LOCK_CHILD_DIR`] set. The
+    /// exclusion between Rucene and a Lucene process is
+    /// `tests/native_fs_lock_interop.rs`.
+    #[cfg(all(
+        unix,
+        not(any(
+            target_os = "emscripten",
+            target_os = "espidf",
+            target_os = "fuchsia",
+            target_os = "horizon",
+            target_os = "redox",
+            target_os = "vita",
+            target_os = "wasi"
+        ))
+    ))]
+    #[test]
+    fn native_fs_lock_excludes_another_process() {
+        if let Some(dir) = std::env::var_os(NATIVE_LOCK_CHILD_DIR) {
+            native_lock_child(Path::new(&dir));
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = NIOFSDirectory::open(tmp.path().join("native")).unwrap();
+        let a_path = dir.get_directory().unwrap().join("a.lock");
+        let test_name = concat!(module_path!(), "::native_fs_lock_excludes_another_process")
+            .split_once("::")
+            .expect("INVARIANT: module_path! starts with the crate name")
+            .1;
+        let child = || -> Vec<String> {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([test_name, "--exact", "--nocapture", "--test-threads=1"])
+                .env(NATIVE_LOCK_CHILD_DIR, dir.get_directory().unwrap())
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            // With `--nocapture` the harness writes `test <name> ... ` before
+            // the test's own output, on the same line.
+            String::from_utf8(output.stdout)
+                .unwrap()
+                .lines()
+                .filter_map(|line| line.find("child ").map(|at| line[at..].to_string()))
+                .collect()
+        };
+
+        let a = dir.obtain_lock("a.lock").unwrap();
+        let held = child();
+        assert_eq!(held.len(), 2, "{held:?}");
+        assert!(
+            held[0].starts_with("child fcntl: refused"),
+            "the JDK's lock is refused while the NativeFSLock is held: {held:?}"
+        );
+        assert_eq!(
+            held[1],
+            format!(
+                "child obtain: LockObtainFailedException: Lock held by another program: {}",
+                a_path.display()
+            )
+        );
+        a.close().unwrap();
+        assert_eq!(
+            child(),
+            ["child fcntl: acquired", "child obtain: ok"],
+            "close() released the lock"
+        );
+    }
+
+    /// `NativeFSLock` keeps the lock on its one handle and validates through
+    /// it and through the path: a second lock of the path in this process is
+    /// refused by `LOCK_HELD`, a second close is a no-op, `ensureValid` reads
+    /// the size through the handle, `channel.size()`
+    /// (`NativeFSLockFactory.java:169`) — the size of the file the lock was
+    /// taken on — but the creation time through the path
+    /// (`NativeFSLockFactory.java:177`). A deleted lock file is reported with
+    /// `NoSuchFileException(path)`, and one replaced by a non-empty file for
+    /// its creation time, not its size, as Java reports it. Java oracle
+    /// (`oracle9/Probe23.java native`): "relock: LockObtainFailedException:
+    /// Lock held by this virtual machine: ...", "close twice: ok closed",
+    /// "ensureValid deleted: NoSuchFileException: <path>", "relock after
+    /// delete+close: ok".
+    #[test]
+    fn native_fs_lock_validates_through_its_handle_and_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = NIOFSDirectory::open(tmp.path().join("native")).unwrap();
+        let a = dir.obtain_lock("a.lock").unwrap();
+        let a_path = dir.get_directory().unwrap().join("a.lock");
+        match dir.obtain_lock("a.lock") {
+            Err(LuceneError::LockObtainFailed { message, .. }) => assert_eq!(
+                message,
+                format!("Lock held by this virtual machine: {}", a_path.display())
+            ),
+            other => panic!("expected LockObtainFailedException, got {:?}", other.err()),
+        }
+        a.close().unwrap();
+        a.close().expect("a second close is a no-op");
+        dir.obtain_lock("a.lock")
+            .expect("close() cleared the held path")
+            .close()
+            .unwrap();
+
+        let b = dir.obtain_lock("b.lock").unwrap();
+        let b_path = dir.get_directory().unwrap().join("b.lock");
+        std::fs::remove_file(&b_path).unwrap();
+        match b.ensure_valid() {
+            Err(LuceneError::Io(error)) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+                assert_eq!(error.to_string(), b_path.display().to_string());
+            }
+            other => panic!("expected NoSuchFileException, got {other:?}"),
+        }
+        b.close().unwrap();
+        dir.obtain_lock("b.lock")
+            .expect("the path is no longer held")
+            .close()
+            .unwrap();
+
+        // A lock file replaced by a non-empty one: the handle still sees the
+        // empty file the lock was taken on, the path sees the new file.
+        let c = dir.obtain_lock("c.lock").unwrap();
+        let c_path = dir.get_directory().unwrap().join("c.lock");
+        let created = |path: &Path| file_creation_time(&std::fs::metadata(path).unwrap()).unwrap();
+        let original = created(&c_path);
+        let mut ctime = original;
+        for _ in 0..100 {
+            std::fs::remove_file(&c_path).unwrap();
+            std::fs::write(&c_path, [1u8, 2, 3]).unwrap();
+            ctime = created(&c_path);
+            if ctime != original {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_ne!(ctime, original, "the recreated file kept its creation time");
+        let result = c.ensure_valid();
+        c.close().unwrap();
+        match result {
+            Err(LuceneError::AlreadyClosed { message, .. }) => assert!(
+                message.starts_with(&format!(
+                    "Underlying file changed by an external force at {}, (lock=NativeFSLock(",
+                    file_time_to_string(ctime)
+                )),
+                "{message}"
+            ),
+            other => panic!("expected AlreadyClosedException, got {other:?}"),
+        }
+    }
+
     /// Verifies that [`FSLockFactory::get_default`] returns the native
     /// filesystem lock factory.
     #[test]
     fn fs_lock_factory_get_default_returns_native() {
         let factory = <NativeFSLockFactory as FSLockFactory>::get_default();
         let tmp = tempfile::tempdir().unwrap();
-        let dir = MockFSDirectory::new(tmp.path().to_path_buf());
+        let dir = NIOFSDirectory::open(tmp.path()).unwrap();
 
         let lock = factory.obtain_lock(&dir, "default.lock").unwrap();
         lock.ensure_valid().unwrap();
@@ -11557,7 +12496,7 @@ mod tests {
     #[test]
     fn fs_lock_factory_rejects_non_fs_directory() {
         let factory = NativeFSLockFactory::instance();
-        let dir = RamDirectory::new();
+        let dir = ByteBuffersDirectory::new();
         let err = match factory.obtain_lock(&dir, "test.lock") {
             Err(e) => e,
             Ok(_) => panic!("expected non-FSDirectory to be rejected"),
@@ -11566,6 +12505,405 @@ mod tests {
         assert!(
             msg.contains("NativeFSLockFactory can only be used with FSDirectory subclasses, got:")
         );
+    }
+
+    /// `obtain_fs_lock`, called directly with a directory that is not an
+    /// `FSDirectory` subclass, refuses it with the
+    /// `UnsupportedOperationException` `FSLockFactory.obtainLock` raises
+    /// (`FSLockFactory.java:37-42`) — Java's `obtainFSLock` takes an
+    /// `FSDirectory`, so no other directory reaches it — and does not panic.
+    #[test]
+    fn obtain_fs_lock_refuses_a_non_fs_directory_as_obtain_lock() {
+        let dir = ByteBuffersDirectory::new();
+        let expected = |factory: &str| {
+            format!(
+                "{factory} can only be used with FSDirectory subclasses, got: {}",
+                dir.directory_to_string()
+            )
+        };
+        let refused = |result: Result<Box<dyn Lock>>| match result {
+            Err(LuceneError::UnsupportedOperation(message)) => message,
+            other => panic!(
+                "expected UnsupportedOperationException, got {:?}",
+                other.err()
+            ),
+        };
+        assert_eq!(
+            refused(NativeFSLockFactory.obtain_fs_lock(&dir, "x")),
+            expected("NativeFSLockFactory")
+        );
+        assert_eq!(
+            refused(NativeFSLockFactory.obtain_lock(&dir, "x")),
+            expected("NativeFSLockFactory")
+        );
+        assert_eq!(
+            refused(SimpleFSLockFactory.obtain_fs_lock(&dir, "x")),
+            expected("SimpleFSLockFactory")
+        );
+        assert_eq!(
+            refused(SimpleFSLockFactory.obtain_lock(&dir, "x")),
+            expected("SimpleFSLockFactory")
+        );
+    }
+
+    /// `FSDirectory.getDirectory()` runs `ensureOpen()` before it returns the
+    /// path (`FSDirectory.java:288-291`); the subclasses inherit it.
+    #[test]
+    fn get_directory_refuses_a_closed_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let closed = |result: Result<&Path>| match result {
+            Err(LuceneError::AlreadyClosed { message, .. }) => {
+                assert_eq!(message, "this Directory is closed")
+            }
+            other => panic!("expected AlreadyClosedException, got {other:?}"),
+        };
+        let canonical = tmp.path().canonicalize().unwrap();
+
+        let mut fs = FSDirectory::with_lock_factory(tmp.path(), Box::new(NoLockFactory)).unwrap();
+        assert_eq!(fs.get_directory().unwrap(), canonical);
+        fs.close().unwrap();
+        closed(fs.get_directory());
+
+        let mut nio = NIOFSDirectory::open(tmp.path()).unwrap();
+        assert_eq!(nio.get_directory().unwrap(), canonical);
+        nio.close().unwrap();
+        closed(nio.get_directory());
+
+        #[cfg(feature = "mmap")]
+        {
+            let mut mmap = mmap::MMapDirectory::open(tmp.path()).unwrap();
+            assert_eq!(mmap.get_directory().unwrap(), canonical);
+            mmap.close().unwrap();
+            closed(mmap.get_directory());
+        }
+    }
+
+    /// Without a birth time, `BasicFileAttributes.creationTime()` is the
+    /// last-modified time on the JDK (`UnixFileAttributes.creationTime()`;
+    /// measured on OpenJDK 25 by clearing `birthtime_available`:
+    /// "no btime: creationTime=2026-11-01T20:50:22.849278103Z
+    /// lastModified=2026-11-01T20:50:22.849278103Z"). Linux reports no birth
+    /// time for a `procfs` file.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_missing_birth_time_falls_back_to_the_modification_time() {
+        let metadata = std::fs::metadata("/proc/self/status").unwrap();
+        assert!(
+            metadata.created().is_err(),
+            "procfs reports no birth time, which this test relies on"
+        );
+        assert_eq!(
+            file_creation_time(&metadata).unwrap(),
+            metadata.modified().unwrap()
+        );
+    }
+
+    /// `SingleInstanceLock` renders as `Object.toString() + ": " + lockName`
+    /// (`SingleInstanceLockFactory.java:83-85`); a lock whose name left the
+    /// factory's set fails `ensureValid` with "Lock instance was invalidated
+    /// from map" and `close` with "Lock was already released", which still
+    /// marks it closed, so a second close is a no-op and `ensureValid` then
+    /// reports "Lock instance already released". Java oracle
+    /// (`fp/FixOracle.java`, the set cleared by reflection):
+    ///
+    /// ```text
+    /// single toString: org.apache.lucene.store.SingleInstanceLockFactory$SingleInstanceLock@298a5e20: x
+    /// single invalidated ensureValid: AlreadyClosedException: Lock instance was invalidated from map: <lock>
+    /// single invalidated close: AlreadyClosedException: Lock was already released: <lock>
+    /// single invalidated close again: ok
+    /// single closed ensureValid: AlreadyClosedException: Lock instance already released: <lock>
+    /// ```
+    #[test]
+    fn single_instance_lock_reports_as_lucene() {
+        let factory = SingleInstanceLockFactory::new();
+        let dir = ByteBuffersDirectory::new();
+        let lock = factory.obtain_lock(&dir, "x").unwrap();
+        let rendered =
+            "org.apache.lucene.store.SingleInstanceLockFactory$SingleInstanceLock@{hash}: x";
+        let message = |result: Result<()>| match result {
+            Err(LuceneError::AlreadyClosed { message, .. }) => message,
+            other => panic!("expected AlreadyClosedException, got {other:?}"),
+        };
+        factory.locks.lock().unwrap().clear();
+        let invalidated = message(lock.ensure_valid());
+        assert!(
+            matches_java_text(
+                &invalidated,
+                &format!("Lock instance was invalidated from map: {rendered}")
+            ),
+            "{invalidated}"
+        );
+        let released = message(lock.close());
+        assert!(
+            matches_java_text(&released, &format!("Lock was already released: {rendered}")),
+            "{released}"
+        );
+        lock.close()
+            .expect("the failed close marked the lock closed");
+        let closed = message(lock.ensure_valid());
+        assert!(
+            matches_java_text(
+                &closed,
+                &format!("Lock instance already released: {rendered}")
+            ),
+            "{closed}"
+        );
+        assert_eq!(
+            invalidated.trim_start_matches("Lock instance was invalidated from map: "),
+            closed.trim_start_matches("Lock instance already released: "),
+            "one lock renders the same identity in every message"
+        );
+    }
+
+    /// `FilterDirectory.unwrap`, `FilterIndexOutput.unwrap` and
+    /// `FilterIndexInput.unwrap` step through every filter to the first
+    /// object that is not one (`FilterDirectory.java:39-44`,
+    /// `FilterIndexOutput.java:38-43`, `FilterIndexInput.java:44-49`). Java
+    /// oracle (`fp/FixOracle.java`): "unwrap dir is inner: true" for a
+    /// `TrackingDirectoryWrapper` over an `NRTCachingDirectory` over an
+    /// anonymous `FilterDirectory`.
+    #[test]
+    fn unwrap_steps_through_every_filter() {
+        let inner = Box::new(ByteBuffersDirectory::new());
+        let inner_address = &*inner as *const ByteBuffersDirectory as *const ();
+        let wrapped = SleepingLockWrapper::new(
+            Box::new(LockValidatingDirectoryWrapper::new(
+                Box::new(TrackingDirectoryWrapper::new(Box::new(
+                    NRTCachingDirectory::new(Box::new(FilterDirectory::new(inner)), 5.0, 60.0),
+                ))),
+                Arc::new(NoOpLock),
+            )),
+            0,
+        )
+        .unwrap();
+        let unwrapped = FilterDirectory::unwrap(&wrapped);
+        assert!(
+            std::ptr::eq(
+                unwrapped as *const dyn Directory as *const (),
+                inner_address
+            ),
+            "unwrapped to {}",
+            unwrapped.directory_to_string()
+        );
+        let plain = ByteBuffersDirectory::new();
+        assert!(std::ptr::eq(
+            FilterDirectory::unwrap(&plain) as *const dyn Directory as *const (),
+            &plain as *const ByteBuffersDirectory as *const ()
+        ));
+
+        let bb = ByteBuffersDirectory::new();
+        let out = bb.create_output("o", &*DEFAULT_IO_CONTEXT).unwrap();
+        let out_address = &*out as *const dyn IndexOutput as *const ();
+        let wrapped_out = FilterIndexOutput::new(
+            "outer",
+            "o",
+            Box::new(RateLimitedIndexOutput::new(
+                Arc::new(SimpleRateLimiter::new(1.0)),
+                Box::new(FilterIndexOutput::new("inner", "o", out)),
+            )),
+        );
+        assert!(std::ptr::eq(
+            FilterIndexOutput::unwrap(&wrapped_out) as *const dyn IndexOutput as *const (),
+            out_address
+        ));
+
+        let mut written = bb.create_output("i", &*DEFAULT_IO_CONTEXT).unwrap();
+        written.write_byte(1).unwrap();
+        written.close().unwrap();
+        let input = bb.open_input("i", &*DEFAULT_IO_CONTEXT).unwrap();
+        let input_address = &*input as *const dyn IndexInput as *const ();
+        let wrapped_in =
+            FilterIndexInput::new("outer", Box::new(FilterIndexInput::new("inner", input)));
+        assert!(std::ptr::eq(
+            FilterIndexInput::unwrap(&wrapped_in) as *const dyn IndexInput as *const (),
+            input_address
+        ));
+    }
+
+    /// A delegate whose `fileLength` or `createOutput` fails with a plain
+    /// `IOException`, as `Faulty` in `fp/FixOracle.java` does: a
+    /// `FilterDirectory` over a `ByteBuffersDirectory`.
+    struct FaultyDirectory {
+        inner: FilterDirectory,
+        fault: &'static str,
+    }
+
+    impl FaultyDirectory {
+        fn new(fault: &'static str) -> Self {
+            Self {
+                inner: FilterDirectory::new(Box::new(ByteBuffersDirectory::new())),
+                fault,
+            }
+        }
+    }
+
+    impl Directory for FaultyDirectory {
+        fn list_all(&self) -> Result<Vec<String>> {
+            self.inner.list_all()
+        }
+
+        fn delete_file(&self, name: &str) -> Result<()> {
+            self.inner.delete_file(name)
+        }
+
+        fn file_length(&self, name: &str) -> Result<i64> {
+            if self.fault == "length" {
+                return Err(LuceneError::Io(io::Error::other(format!(
+                    "fileLength refused: {name}"
+                ))));
+            }
+            self.inner.file_length(name)
+        }
+
+        fn create_output(
+            &self,
+            name: &str,
+            context: &dyn IOContext,
+        ) -> Result<Box<dyn IndexOutput>> {
+            if self.fault == "create" {
+                return Err(LuceneError::Io(io::Error::other(format!(
+                    "createOutput refused: {name}"
+                ))));
+            }
+            self.inner.create_output(name, context)
+        }
+
+        fn create_temp_output(
+            &self,
+            prefix: &str,
+            suffix: &str,
+            context: &dyn IOContext,
+        ) -> Result<Box<dyn IndexOutput>> {
+            self.inner.create_temp_output(prefix, suffix, context)
+        }
+
+        fn sync(&self, names: &[String]) -> Result<()> {
+            self.inner.sync(names)
+        }
+
+        fn sync_metadata(&self) -> Result<()> {
+            self.inner.sync_metadata()
+        }
+
+        fn rename(&self, source: &str, dest: &str) -> Result<()> {
+            self.inner.rename(source, dest)
+        }
+
+        fn open_input(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
+            self.inner.open_input(name, context)
+        }
+
+        fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
+            self.inner.obtain_lock(name)
+        }
+
+        fn close(&mut self) -> Result<()> {
+            self.inner.close()
+        }
+
+        fn get_pending_deletions(&self) -> Result<HashSet<String>> {
+            self.inner.get_pending_deletions()
+        }
+
+        fn ensure_open(&self) -> Result<()> {
+            self.inner.ensure_open()
+        }
+
+        fn as_filter_directory(&self) -> Option<&dyn Directory> {
+            Some(self.inner.get_delegate())
+        }
+    }
+
+    /// `NRTCachingDirectory` as Lucene closes it, picks temporary names and
+    /// reports pending deletions, and `ByteBuffersDirectory` answers its
+    /// pending deletions once closed. Java oracles (`aud/i6/Item6.java`,
+    /// `fp/FixOracle.java`):
+    ///
+    /// ```text
+    /// bb pending after close: ok []
+    /// nrt close twice: ok
+    /// nrt pending after close: ok []
+    /// collision temp name: t_x_1.tmp
+    /// collision cached: [t_x_1.tmp]
+    /// collision ram: 0
+    /// close cached: [c]
+    /// close failing unCache: IOException: createOutput refused: c
+    /// close cache listed after: AlreadyClosedException: this Directory is closed
+    /// close delegate listed after: AlreadyClosedException: this Directory is closed
+    /// close again: ok
+    /// temp output, delegate length fails: IOException: fileLength refused: t_x_0.tmp
+    /// temp output cached after: []
+    /// ```
+    #[test]
+    fn nrt_caching_directory_closes_and_names_temp_files_as_lucene() {
+        let closed_dir = |result: Result<Vec<String>>| match result {
+            Err(LuceneError::AlreadyClosed { message, .. }) => {
+                assert_eq!(message, "this Directory is closed")
+            }
+            other => panic!("expected AlreadyClosedException, got {other:?}"),
+        };
+        let io_message = |error: LuceneError| match error {
+            LuceneError::Io(error) if error.kind() == io::ErrorKind::Other => error.to_string(),
+            other => panic!("expected an IOException, got {other:?}"),
+        };
+        let flush = flush_io_context(FlushInfo::new(1, 10));
+
+        // `ByteBuffersDirectory.getPendingDeletions()` has no `ensureOpen`
+        // (`ByteBuffersDirectory.java:221-224`).
+        let mut bb = ByteBuffersDirectory::new();
+        bb.close().unwrap();
+        assert!(bb.get_pending_deletions().unwrap().is_empty());
+
+        // `close()` twice: the second only closes the directories again; the
+        // pending deletions are the delegate's (`FilterDirectory.java:119-122`).
+        let mut nrt = NRTCachingDirectory::new(Box::new(ByteBuffersDirectory::new()), 5.0, 60.0);
+        nrt.close().unwrap();
+        nrt.close().expect("nrt close twice: ok");
+        assert!(nrt.get_pending_deletions().unwrap().is_empty());
+
+        // A temporary name that exists in the other directory is skipped and
+        // deleted from the one it was created in (`NRTCachingDirectory.java:284`).
+        let del = ByteBuffersDirectory::new();
+        del.create_output("t_x_0.tmp", &*DEFAULT_IO_CONTEXT)
+            .unwrap()
+            .close()
+            .unwrap();
+        let collision = NRTCachingDirectory::new(Box::new(del), 5.0, 60.0);
+        let mut out = collision
+            .create_temp_output("t", "x", flush.as_ref())
+            .unwrap();
+        assert_eq!(out.name(), "t_x_1.tmp");
+        out.close().unwrap();
+        assert_eq!(collision.list_cached_files().unwrap(), ["t_x_1.tmp"]);
+        assert_eq!(crate::util::Accountable::ram_bytes_used(&collision), 0);
+
+        // `IOUtils.close(lambda, cacheDirectory, in)`: a failing `unCache`
+        // does not stop the two directories from closing, and its failure is
+        // the one rethrown; a second close skips the lambda.
+        let mut failing =
+            NRTCachingDirectory::new(Box::new(FaultyDirectory::new("create")), 5.0, 60.0);
+        let mut cached = failing.create_output("c", flush.as_ref()).unwrap();
+        cached.write_byte(7).unwrap();
+        cached.close().unwrap();
+        assert_eq!(failing.list_cached_files().unwrap(), ["c"]);
+        assert_eq!(
+            io_message(failing.close().unwrap_err()),
+            "createOutput refused: c"
+        );
+        closed_dir(failing.list_cached_files());
+        closed_dir(failing.get_delegate().list_all());
+        failing.close().expect("close again: ok");
+
+        // `slowFileExists` propagates a failure other than a missing file
+        // (`NRTCachingDirectory.java:298-305`); the output created first is
+        // closed and its name deleted from the cache.
+        let length = NRTCachingDirectory::new(Box::new(FaultyDirectory::new("length")), 5.0, 60.0);
+        let error = match length.create_temp_output("t", "x", flush.as_ref()) {
+            Err(error) => error,
+            Ok(out) => panic!("expected an IOException, got {}", out.name()),
+        };
+        assert_eq!(io_message(error), "fileLength refused: t_x_0.tmp");
+        assert!(length.list_cached_files().unwrap().is_empty());
     }
 
     // -------------------------------------------------------------------------
@@ -11928,7 +13266,7 @@ mod tests {
         let path = temp.path().join("index");
         let dir = FSDirectory::open(&path).unwrap();
         assert!(path.is_dir());
-        assert_eq!(dir.directory_path(), path.canonicalize().unwrap());
+        assert_eq!(dir.get_directory().unwrap(), path.canonicalize().unwrap());
     }
 
     /// Writing through `create_output` and reading back with `open_input` round-trips
@@ -12066,7 +13404,7 @@ mod tests {
     /// `FilterDirectory` delegates all operations to its inner directory.
     #[test]
     fn filter_directory_delegates_directory_operations() {
-        let inner = RamDirectory::new();
+        let inner = ByteBuffersDirectory::new();
         let context = &*DEFAULT_IO_CONTEXT;
 
         {
@@ -12131,14 +13469,14 @@ mod tests {
     /// `FilterDirectory::get_delegate` returns the wrapped directory.
     #[test]
     fn filter_directory_exposes_delegate() {
-        let inner = RamDirectory::new();
+        let inner = ByteBuffersDirectory::new();
         let filter = FilterDirectory::new(Box::new(inner));
         assert!(
             filter
                 .get_delegate()
                 .directory_type_name()
-                .contains("RamDirectory"),
-            "delegate type name should identify RamDirectory"
+                .contains("ByteBuffersDirectory"),
+            "delegate type name should identify ByteBuffersDirectory"
         );
     }
 
@@ -12208,7 +13546,7 @@ mod tests {
             }
             out.close().unwrap();
         }
-        let path = dir.directory_path().join("data.bin");
+        let path = dir.get_directory().unwrap().join("data.bin");
         let merge = merge_io_context(MergeInfo::new(100, 1024, false, 1));
         let input = NIOFSIndexInput::new(
             format!("NIOFSIndexInput(path=\"{}\")", path.display()),
@@ -12261,8 +13599,8 @@ mod tests {
             "the input is read through MMapDirectory's provider"
         );
         assert_eq!(input.read_long().unwrap(), 0x0102_0304_0506_0708);
-        let dir = FSDirectory::open_with_lock_factory(&temp, Some(Box::new(SimpleFSLockFactory)))
-            .unwrap();
+        let dir =
+            FSDirectory::open_with_lock_factory(&temp, Box::new(SimpleFSLockFactory)).unwrap();
         assert_eq!(dir.directory_type_name(), "MMapDirectory");
     }
 
@@ -12355,8 +13693,8 @@ mod tests {
     /// extension.
     #[test]
     fn file_switch_directory_routes_by_extension() {
-        let primary = RamDirectory::new();
-        let secondary = RamDirectory::new();
+        let primary = ByteBuffersDirectory::new();
+        let secondary = ByteBuffersDirectory::new();
         let mut extensions = HashSet::new();
         extensions.insert("hot".to_string());
         let switch =
@@ -12411,8 +13749,8 @@ mod tests {
         extensions.insert("tmp".to_string());
         let result = FileSwitchDirectory::new(
             extensions,
-            Box::new(RamDirectory::new()),
-            Box::new(RamDirectory::new()),
+            Box::new(ByteBuffersDirectory::new()),
+            Box::new(ByteBuffersDirectory::new()),
             false,
         );
         assert!(result.is_err());
@@ -12422,7 +13760,7 @@ mod tests {
     /// large ones through to the delegate.
     #[test]
     fn nrt_caching_directory_caches_small_writes() {
-        let inner = RamDirectory::new();
+        let inner = ByteBuffersDirectory::new();
         let cache = NRTCachingDirectory::new(Box::new(inner), 5.0, 60.0);
         let context = &*DEFAULT_IO_CONTEXT;
 
@@ -12440,7 +13778,7 @@ mod tests {
             .any(|n| n == "small.bin"));
         assert!(cache.file_length("small.bin").unwrap() > 0);
         assert_eq!(
-            cache.ram_bytes_used().unwrap(),
+            crate::util::Accountable::ram_bytes_used(&cache),
             cache.file_length("small.bin").unwrap()
         );
 
@@ -12481,7 +13819,7 @@ mod tests {
     /// `NRTCachingDirectory` deletes cached and delegated files correctly.
     #[test]
     fn nrt_caching_directory_deletes_files() {
-        let inner = RamDirectory::new();
+        let inner = ByteBuffersDirectory::new();
         let cache = NRTCachingDirectory::new(Box::new(inner), 5.0, 60.0);
         let flush = flush_io_context(FlushInfo::new(1, 1024));
 
@@ -12499,11 +13837,109 @@ mod tests {
         assert!(cache.file_length("a.bin").is_err());
     }
 
+    /// `NRTCachingDirectory` keeps its `cacheSize` counter as Java does: an
+    /// output closing in the cache adds its size, unless its file was deleted
+    /// while it was open — the callback's `isCachedFile` check — while delete,
+    /// rename and sync take the file's length off; `doCacheWrite` admits only
+    /// a merge or a flush, and only while the cache, with it, stays within
+    /// `maxCachedBytes`. Every line is the Java oracle's (`oracle9/Probe23.java
+    /// nrt`, Lucene 10.5.0), for the same sequence.
+    #[test]
+    fn nrt_caching_directory_counts_its_cache_as_lucene() {
+        use crate::util::Accountable;
+        let dir = NRTCachingDirectory::new(
+            Box::new(ByteBuffersDirectory::new()),
+            1.0 / 1024.0,
+            3.0 / 1024.0,
+        );
+        let mut log = Vec::new();
+        let state = |dir: &NRTCachingDirectory, label: &str, log: &mut Vec<String>| {
+            log.push(format!(
+                "{label}: ram={} cached=[{}] all=[{}]",
+                dir.ram_bytes_used(),
+                dir.list_cached_files().unwrap().join(", "),
+                dir.list_all().unwrap().join(", ")
+            ));
+        };
+        let flush = |size: i64| flush_io_context(FlushInfo::new(1, size));
+        let write = |dir: &NRTCachingDirectory, name: &str, len: usize, context: &dyn IOContext| {
+            let mut out = dir.create_output(name, context).unwrap();
+            out.write_bytes(&vec![0u8; len], 0, len).unwrap();
+            out.close().unwrap();
+        };
+
+        state(&dir, "start", &mut log);
+        write(&dir, "a", 1000, flush(1000).as_ref());
+        state(&dir, "a flush 1000", &mut log);
+        write(&dir, "b", 1000, flush(1000).as_ref());
+        state(&dir, "b flush 1000", &mut log);
+        write(&dir, "c", 1000, flush(1000).as_ref());
+        state(&dir, "c flush 1000", &mut log);
+        write(&dir, "d", 10, flush(10).as_ref());
+        state(&dir, "d flush 10 (cache full)", &mut log);
+        write(&dir, "e", 10, &*DEFAULT_IO_CONTEXT);
+        state(&dir, "e DEFAULT", &mut log);
+        write(&dir, "f", 10, flush(2000).as_ref());
+        state(&dir, "f flush 2000 (too big)", &mut log);
+        dir.delete_file("a").unwrap();
+        state(&dir, "delete a", &mut log);
+        write(&dir, "g", 500, flush(500).as_ref());
+        state(&dir, "g flush 500", &mut log);
+        dir.rename("b", "b2").unwrap();
+        state(&dir, "rename b->b2", &mut log);
+        dir.sync(&["c".to_string()]).unwrap();
+        state(&dir, "sync c", &mut log);
+        // The output closes after its file was deleted: the callback returns
+        // no input and leaves the counter alone.
+        let mut out = dir.create_output("h", flush(100).as_ref()).unwrap();
+        out.write_bytes(&[0u8; 100], 0, 100).unwrap();
+        dir.delete_file("h").unwrap();
+        state(&dir, "delete h while open", &mut log);
+        out.close().unwrap();
+        state(&dir, "close h after delete", &mut log);
+        let mut tmp = dir
+            .create_temp_output("t", "x", flush(10).as_ref())
+            .unwrap();
+        tmp.write_bytes(&[0u8; 10], 0, 10).unwrap();
+        tmp.close().unwrap();
+        log.push(format!("temp name: {}", tmp.name()));
+        state(&dir, "temp", &mut log);
+        match dir.rename("g", "t_x_0.tmp") {
+            Err(LuceneError::IllegalArgument(message)) => log.push(format!(
+                "rename onto cached: IllegalArgumentException: {message}"
+            )),
+            other => panic!("expected IllegalArgumentException, got {other:?}"),
+        }
+        state(&dir, "after rename onto cached", &mut log);
+
+        let java = [
+            "start: ram=0 cached=[] all=[]",
+            "a flush 1000: ram=1000 cached=[a] all=[a]",
+            "b flush 1000: ram=2000 cached=[a, b] all=[a, b]",
+            "c flush 1000: ram=3000 cached=[a, b, c] all=[a, b, c]",
+            "d flush 10 (cache full): ram=3010 cached=[a, b, c, d] all=[a, b, c, d]",
+            "e DEFAULT: ram=3010 cached=[a, b, c, d] all=[a, b, c, d, e]",
+            "f flush 2000 (too big): ram=3010 cached=[a, b, c, d] all=[a, b, c, d, e, f]",
+            "delete a: ram=2010 cached=[b, c, d] all=[b, c, d, e, f]",
+            "g flush 500: ram=2510 cached=[b, c, d, g] all=[b, c, d, e, f, g]",
+            "rename b->b2: ram=1510 cached=[c, d, g] all=[b2, c, d, e, f, g]",
+            "sync c: ram=510 cached=[d, g] all=[b2, c, d, e, f, g]",
+            "delete h while open: ram=510 cached=[d, g] all=[b2, c, d, e, f, g]",
+            "close h after delete: ram=510 cached=[d, g] all=[b2, c, d, e, f, g]",
+            "temp name: t_x_0.tmp",
+            "temp: ram=520 cached=[d, g, t_x_0.tmp] all=[b2, c, d, e, f, g, t_x_0.tmp]",
+            "rename onto cached: IllegalArgumentException: target file t_x_0.tmp already exists",
+            "after rename onto cached: ram=20 cached=[d, t_x_0.tmp] \
+             all=[b2, c, d, e, f, g, t_x_0.tmp]",
+        ];
+        assert_eq!(log, java);
+    }
+
     /// `TrackingDirectoryWrapper` records created files and removes them on
     /// delete/rename.
     #[test]
     fn tracking_directory_wrapper_tracks_created_files() {
-        let inner = RamDirectory::new();
+        let inner = ByteBuffersDirectory::new();
         let tracker = TrackingDirectoryWrapper::new(Box::new(inner));
         let context = &*DEFAULT_IO_CONTEXT;
 
@@ -13226,18 +14662,9 @@ impl std::fmt::Display for ByteBuffersDataOutput {
 }
 
 impl std::fmt::Display for NRTCachingDirectory {
-    /// Port of `NRTCachingDirectory.toString()`.
-    ///
-    /// The two megabyte figures are Java `double` divisions rendered by
-    /// `Double.toString`, so `48` prints as `48.0` rather than `48`.
+    /// Port of `NRTCachingDirectory.toString()`, which
+    /// [`Directory::directory_to_string`] renders.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use crate::util::java_fmt::double_to_string;
-        write!(
-            f,
-            "NRTCachingDirectory({}; maxCacheMB={} maxMergeSizeMB={})",
-            self.get_delegate().directory_to_string(),
-            double_to_string(self.max_cached_bytes as f64 / 1024.0 / 1024.0),
-            double_to_string(self.max_merge_size_bytes as f64 / 1024.0 / 1024.0),
-        )
+        f.write_str(&self.directory_to_string())
     }
 }

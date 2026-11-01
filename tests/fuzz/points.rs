@@ -100,7 +100,7 @@ use rucene::codecs::{register_codec, Codec, Lucene104Codec};
 use rucene::index::point_values::IntersectVisitor;
 use rucene::index::point_values_writer::PointValuesWriter;
 use rucene::index::{FieldInfo, FieldInfos, SegmentInfo};
-use rucene::store::{Directory, RamDirectory, DEFAULT_IO_CONTEXT};
+use rucene::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT};
 use rucene::util::string_helper::StringHelper;
 use rucene::util::{default_info_stream, BytesRef, Version};
 
@@ -490,7 +490,7 @@ fn corrupt_copy(
     at: usize,
     value: u8,
 ) -> Arc<dyn Directory> {
-    let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     for extension in EXTENSIONS {
         let name = format!("_0.{extension}");
         let mut bytes = read_file(original, &name);
@@ -504,7 +504,7 @@ fn corrupt_copy(
 
 /// Builds a fresh directory holding a truncated copy of a valid segment.
 fn truncated_copy(original: &Arc<dyn Directory>, file: &str, length: usize) -> Arc<dyn Directory> {
-    let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     for extension in EXTENSIONS {
         let name = format!("_0.{extension}");
         let mut bytes = read_file(original, &name);
@@ -518,7 +518,7 @@ fn truncated_copy(original: &Arc<dyn Directory>, file: &str, length: usize) -> A
 
 /// Builds a valid segment for `fixture` in a fresh directory.
 fn build(fixture: &Fixture) -> (Arc<dyn Directory>, SegmentInfo, [u8; 16]) {
-    let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let id = StringHelper::random_id();
     let info = segment_info(&directory, fixture.max_doc, id);
     write_segment(&directory, &info, fixture);
@@ -648,7 +648,7 @@ fn a_truncated_file_is_survived_at_every_length() {
 /// afterwards, so the decoder still sees the garbage — but it does mean the
 /// patched value never reaches the tree. Re-signing closes that gap.
 fn resign(body: &[u8]) -> Vec<u8> {
-    let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     {
         let mut output = directory
             .create_output("resigned", &*DEFAULT_IO_CONTEXT)
@@ -709,7 +709,7 @@ fn hostile_metadata_that_passes_its_checksum_is_survived() {
                         patched[at..at + 8].copy_from_slice(&value.to_le_bytes());
                     }
                     let signed = resign(&patched[..body_end]);
-                    let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+                    let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
                     for extension in EXTENSIONS {
                         let file = format!("_0.{extension}");
                         if file == name {
@@ -806,7 +806,7 @@ fn patched_copy(
     at: usize,
     patch: &[u8],
 ) -> Arc<dyn Directory> {
-    let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     for extension in EXTENSIONS {
         let name = format!("_0.{extension}");
         let mut bytes = read_file(original, &name);

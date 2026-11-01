@@ -937,7 +937,7 @@ mod tests {
     use crate::codecs::state::SegmentWriteState;
     use crate::index::{FieldInfo, FieldInfos, Fields, PostingsEnum, SeekStatus, Terms, TermsEnum};
     use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
-    use crate::store::{Directory, RamDirectory};
+    use crate::store::{ByteBuffersDirectory, Directory};
     use crate::util::{AttributeSource, BytesRef};
     use base64::Engine as _;
     use std::sync::Arc;
@@ -1364,7 +1364,7 @@ mod tests {
     /// Θ(terms × maxDoc).
     #[test]
     fn norms_are_read_only_for_each_terms_documents() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let max_doc = 1_000_000;
         let segment_info = test_segment_info("_0", max_doc);
         let field_infos = FieldInfos::new(vec![FieldInfo::new("body", 0).with_postings_options(
@@ -1421,7 +1421,7 @@ mod tests {
 
     #[test]
     fn writes_postings_files_with_headers_and_footers() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let dir_ref: &dyn Directory = &*dir;
         let segment_info = test_segment_info("_0", 10);
         let field_infos = field_infos_with_positions();
@@ -1553,7 +1553,7 @@ mod tests {
         const DOC_B64: &str = "P9dsFxpMdWNlbmUxMDRQb3N0aW5nc1dyaXRlckRvYwAAAAAAAAAAAAAAAAAAAAAAAAAAAMAok+gAAAAAAAAAAMeH+LI=";
         const PSM_B64: &str = "P9dsFxtMdWNlbmUxMDRQb3N0aW5nc1dyaXRlck1ldGEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARAAAAAAAAADAKJPoAAAAAAAAAACdve11";
 
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let dir_ref: &dyn Directory = &*dir;
         let field_infos = field_infos_with_freqs();
         let postings = TestPostingsEnum::new(vec![0], vec![1], vec![vec![]]);
@@ -1575,7 +1575,7 @@ mod tests {
         const DOC_B64: &str = "P9dsFxpMdWNlbmUxMDRQb3N0aW5nc1dyaXRlckRvYwAAAAAAAAAAAAAAAAAAAAAAAAAAAAACBQYFAwLAKJPoAAAAAAAAAAAELOIl";
         const PSM_B64: &str = "P9dsFxtMdWNlbmUxMDRQb3N0aW5nc1dyaXRlck1ldGEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAASwAAAAAAAADAKJPoAAAAAAAAAAATV4pP";
 
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let dir_ref: &dyn Directory = &*dir;
         let field_infos = field_infos_with_freqs();
         let postings = TestPostingsEnum::new(
@@ -1603,7 +1603,7 @@ mod tests {
         const PAY_B64: &str = "P9dsFxpMdWNlbmUxMDRQb3N0aW5nc1dyaXRlclBheQAAAAAAAAAAAAAAAAAAAAAAAAAAAMAok+gAAAAAAAAAAMpgXAw=";
         const PSM_B64: &str = "P9dsFxtMdWNlbmUxMDRQb3N0aW5nc1dyaXRlck1ldGEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAASQAAAAAAAABgAAAAAAAAAEQAAAAAAAAAwCiT6AAAAAAAAAAA872Nug==";
 
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let dir_ref: &dyn Directory = &*dir;
         let field_infos = field_infos_with_positions();
         let postings = TestPostingsEnum::new(
@@ -1637,7 +1637,7 @@ mod tests {
         const DOC_B64: &str = "P9dsFxpMdWNlbmUxMDRQb3N0aW5nc1dyaXRlckRvYwAAAAAAAAAAAAAAAAAAAAAAAAAAAAYAAQUAAQAAAAHAKJPoAAAAAAAAAADESAyS";
         const PSM_B64: &str = "P9dsFxtMdWNlbmUxMDRQb3N0aW5nc1dyaXRlck1ldGEAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAQAAAAAAAAAAAAAATgAAAAAAAADAKJPoAAAAAAAAAACZYa/u";
 
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let dir_ref: &dyn Directory = &*dir;
         let field_infos = field_infos_with_freqs();
         let postings = TestPostingsEnum::new((0..256).collect(), vec![1; 256], vec![vec![]; 256]);
@@ -1659,7 +1659,7 @@ mod tests {
         const DOC_B64: &str = "P9dsFxpMdWNlbmUxMDRQb3N0aW5nc1dyaXRlckRvYwAAAAAAAAAAAAAAAAAAAAAAAAAAAIBAxQIDAAEAAAYAAQUAAQAAAAEGAAEFAAEAAAABBgABBQABAAAAAQYAAQUAAQAAAAEGAAEFAAEAAAABBgABBQABAAAAAQYAAQUAAQAAAAEGAAEFAAEAAAABBgABBQABAAAAAQYAAQUAAQAAAAEGAAEFAAEAAAABBgABBQABAAAAAQYAAQUAAQAAAAEGAAEFAAEAAAABBgABBQABAAAAAQYAAQUAAQAAAAEGAAEFAAEAAAABBgABBQABAAAAAQYAAQUAAQAAAAEGAAEFAAEAAAABBgABBQABAAAAAQYAAQUAAQAAAAEGAAEFAAEAAAABBgABBQABAAAAAQYAAQUAAQAAAAEGAAEFAAEAAAABBgABBQABAAAAAQYAAQUAAQAAAAEGAAEFAAEAAAABBgABBQABAAAAAQYAAQUAAQAAAAEGAAEFAAEAAAABA8Aok+gAAAAAAAAAAA5oVTQ=";
         const PSM_B64: &str = "P9dsFxtMdWNlbmUxMDRQb3N0aW5nc1dyaXRlck1ldGEAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAQAAAAEAAAABAAAAjgEAAAAAAADAKJPoAAAAAAAAAAC2WzFp";
 
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let dir_ref: &dyn Directory = &*dir;
         let field_infos = field_infos_with_freqs();
         let postings =

@@ -243,7 +243,8 @@ mod tests {
         let format = EmptyNormsFormat::new("EmptyNorms");
         assert_eq!(format.name(), "EmptyNorms");
 
-        let dir: Arc<dyn crate::store::Directory> = Arc::new(crate::store::RamDirectory::default());
+        let dir: Arc<dyn crate::store::Directory> =
+            Arc::new(crate::store::ByteBuffersDirectory::default());
         let dir_ref: &dyn crate::store::Directory = &*dir;
         let context = &*crate::store::DEFAULT_IO_CONTEXT;
         let field_infos = FieldInfos::default();

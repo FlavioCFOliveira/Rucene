@@ -55,7 +55,7 @@ use rucene::index::merge_scheduler::{
 use rucene::index::sorting_codec_reader::SimpleMergedSegmentWarmer;
 use rucene::index::terms::Term;
 use rucene::index::SegmentInfos;
-use rucene::store::{Directory, FSDirectory, RamDirectory};
+use rucene::store::{ByteBuffersDirectory, Directory, FSDirectory};
 use rucene::util::{BytesRef, InfoStream};
 
 fn ensure_codec() {
@@ -153,7 +153,7 @@ fn writer_with_a_queued_merge(
     scheduler: Arc<dyn MergeScheduler>,
 ) -> (Arc<dyn Directory>, Arc<IndexWriter>) {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config.set_merge_policy(log_doc_policy(2)).unwrap();
     config.set_merge_scheduler(scheduler).unwrap();
@@ -224,7 +224,7 @@ fn force_merge_without_waiting_returns_and_wait_for_merges_waits() {
     let finished = Arc::new(AtomicUsize::new(0));
     let cms = gated_cms(&gate, &started, &finished);
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config.set_merge_policy(log_doc_policy(10)).unwrap();
     config
@@ -276,7 +276,7 @@ fn max_merge_count_stalls_the_producer() {
     ensure_codec();
     for (max_merge_count, max_merge_threads) in [(1, 1), (2, 1), (3, 2), (5, 5)] {
         watchdog(120, move || {
-            let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+            let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
             let enough_merges_waiting = Arc::new(AtomicI32::new(max_merge_count));
             let running_merge_count = Arc::new(AtomicI32::new(0));
             let failed = Arc::new(AtomicBool::new(false));
@@ -377,7 +377,7 @@ fn auto_detected_counts_resolve_at_initialize_and_reset_to_the_sentinel() {
     let cms = Arc::new(ConcurrentMergeScheduler::new());
     assert_eq!(cms.get_max_merge_count(), AUTO_DETECT_MERGES_AND_THREADS);
     assert_eq!(cms.get_max_thread_count(), AUTO_DETECT_MERGES_AND_THREADS);
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config
         .set_merge_scheduler(Arc::clone(&cms) as Arc<dyn MergeScheduler>)
@@ -409,7 +409,7 @@ fn auto_detected_counts_resolve_at_initialize_and_reset_to_the_sentinel() {
 fn deletes_survive_background_merges() {
     ensure_codec();
     watchdog(120, || {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut policy = LogMergePolicy::by_doc_count();
         // Force degenerate merging so we can get a mix of merging of segments
         // with and without deletes at the start.
@@ -451,7 +451,7 @@ fn deletes_survive_background_merges() {
 fn rollback_aborts_running_merges_and_keeps_the_last_commit() {
     ensure_codec();
     watchdog(180, || {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let held_started = Arc::new(AtomicBool::new(false));
         let aborted = Arc::new(AtomicUsize::new(0));
         let config = |open_mode: OpenMode| {
@@ -818,8 +818,8 @@ fn multi_index_close_waits_only_for_its_own_index() {
     // auto-detect sentinel.
     combined.set_default_max_merges_and_threads(false);
     let gate_b = Arc::new(Gate::default());
-    let dir_a: Arc<dyn Directory> = Arc::new(RamDirectory::new());
-    let dir_b: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir_a: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+    let dir_b: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let b_started = Arc::new(AtomicUsize::new(0));
     {
         let gate_b = Arc::clone(&gate_b);
@@ -915,7 +915,7 @@ fn the_warmer_runs_once_per_merged_segment_when_readers_are_pooled() {
             false,
         ),
     ] {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         // Four one-document segments, written without merging.
         {
             let mut config = IndexWriterConfig::new();
@@ -968,7 +968,7 @@ fn the_warmer_runs_once_per_merged_segment_when_readers_are_pooled() {
 fn force_merge_waits_for_background_merges() {
     ensure_codec();
     watchdog(120, || {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut config = IndexWriterConfig::new();
         config.set_merge_policy(log_doc_policy(2)).unwrap();
         config.set_max_buffered_docs(2).unwrap();
@@ -1006,7 +1006,7 @@ fn force_merge_marks_a_running_merge_which_then_cascades() {
     let finished = Arc::new(AtomicUsize::new(0));
     let cms = gated_cms(&gate, &started, &finished);
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     // Merge factor 2 and no minimum merge size: `_0` and `_1` merge, and the
     // merged two-document segment and `_2` sit on different levels, so no
@@ -1123,7 +1123,7 @@ fn a_concurrent_close_waits_for_the_first_close() {
 #[test]
 fn an_aborted_forced_merge_surfaces_background_merge_hit_exception() {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     {
         // Four one-document segments, written without merging.
         let mut config = IndexWriterConfig::new();
@@ -1319,7 +1319,7 @@ impl MergePolicy for CommitOnlyMergePolicy {
 fn close_removes_the_files_of_a_merge_aborted_after_the_final_commit() {
     ensure_codec();
     const PARTIAL: &str = "_zz.fdt";
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let started = Arc::new(AtomicBool::new(false));
     let cms = Arc::new(ConcurrentMergeScheduler::new());
     {

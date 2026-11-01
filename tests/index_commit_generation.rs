@@ -28,7 +28,7 @@ use rucene::error::{LuceneError, Result};
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::IndexWriterConfig;
 use rucene::index::{NoDeletionPolicy, SegmentInfos, WRITE_LOCK_NAME};
-use rucene::store::{Directory, IOContext, IndexOutput, Lock, RamDirectory};
+use rucene::store::{ByteBuffersDirectory, Directory, IOContext, IndexOutput, Lock};
 
 /// The integration crate does not share the library's test-time codec registry,
 /// so every entry point registers the default codec before writing an index.
@@ -75,7 +75,7 @@ fn pending_commit_files(dir: &dyn Directory) -> Vec<String> {
 #[test]
 fn every_commit_writes_the_next_generation() {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config
         .set_index_deletion_policy(NoDeletionPolicy::instance())
@@ -106,7 +106,7 @@ fn every_commit_writes_the_next_generation() {
 #[test]
 fn the_default_policy_keeps_only_the_newest_commit_but_still_advances() {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     // `IndexWriterConfig::new()` installs `KeepOnlyLastCommitDeletionPolicy`,
     // the same default as Lucene 10.5.0.
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
@@ -217,7 +217,7 @@ impl Directory for FailingRenameDirectory {
 #[test]
 fn a_failed_rename_leaves_the_previous_commit_point_intact() {
     ensure_codec();
-    let ram: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let ram: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let dir = Arc::new(FailingRenameDirectory::new(Arc::clone(&ram)));
     let as_dir: Arc<dyn Directory> = Arc::clone(&dir) as Arc<dyn Directory>;
 

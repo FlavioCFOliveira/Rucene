@@ -1638,7 +1638,8 @@ mod tests {
         use crate::store::DEFAULT_IO_CONTEXT;
         use crate::util::default_info_stream;
 
-        let dir: Arc<dyn crate::store::Directory> = Arc::new(crate::store::RamDirectory::default());
+        let dir: Arc<dyn crate::store::Directory> =
+            Arc::new(crate::store::ByteBuffersDirectory::default());
         let info_stream: &'static dyn crate::util::InfoStream = default_info_stream();
         let segment_info: &'static SegmentInfo = Box::leak(Box::new(
             crate::codecs::tests::test_segment_info("test", 10),
@@ -1660,7 +1661,7 @@ mod tests {
     fn read_state() -> SegmentReadState<'static> {
         use crate::store::DEFAULT_IO_CONTEXT;
 
-        let dir = crate::store::RamDirectory::default();
+        let dir = crate::store::ByteBuffersDirectory::default();
         let dir_ref: &'static dyn crate::store::Directory = Box::leak(Box::new(dir));
         let segment_info: &'static SegmentInfo = Box::leak(Box::new(
             crate::codecs::tests::test_segment_info("test", 10),

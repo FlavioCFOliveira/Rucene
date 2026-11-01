@@ -4529,12 +4529,12 @@ mod tests {
         use crate::codecs::knn_vectors::FieldVectorWriter;
         use crate::codecs::stub::BufferedUpdates;
         use crate::index::{FieldInfos, SegmentInfo};
-        use crate::store::{Directory, RamDirectory, DEFAULT_IO_CONTEXT};
+        use crate::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT};
         use crate::util::{default_info_stream, Version};
 
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
         let similarity = VectorSimilarityFunction::EUCLIDEAN;
-        let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let info = SegmentInfo::new(
             Arc::clone(&directory),
             Version::LATEST,
@@ -4609,11 +4609,11 @@ mod tests {
         use crate::codecs::knn_vectors::FieldVectorWriter;
         use crate::codecs::stub::BufferedUpdates;
         use crate::index::{FieldInfos, SegmentInfo};
-        use crate::store::{Directory, RamDirectory, DEFAULT_IO_CONTEXT};
+        use crate::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT};
         use crate::util::{default_info_stream, Version};
 
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
-        let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let info = SegmentInfo::new(
             Arc::clone(&directory),
             Version::LATEST,

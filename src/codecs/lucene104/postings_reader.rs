@@ -1692,7 +1692,8 @@ mod tests {
     use crate::index::{FieldInfo, FieldInfos, IndexOptions};
     use crate::search::DocIdSetIterator;
     use crate::store::{
-        ByteBuffersDataOutput, ByteBuffersIndexOutput, Directory, MockIndexInput, RamDirectory,
+        ByteBuffersDataOutput, ByteBuffersDirectory, ByteBuffersIndexOutput, Directory,
+        MockIndexInput,
     };
     use std::sync::Arc;
 
@@ -1825,7 +1826,7 @@ mod tests {
 
     #[test]
     fn singleton_doc_round_trip() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let field_infos = field_infos_with_freqs();
         let field_info = field_infos.field_info("body").unwrap();
         let postings = TestPostingsEnum::new(vec![0], vec![1], vec![vec![]]);
@@ -1846,7 +1847,7 @@ mod tests {
 
     #[test]
     fn multi_doc_round_trip() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let field_infos = field_infos_with_freqs();
         let field_info = field_infos.field_info("body").unwrap();
         let postings = TestPostingsEnum::new(
@@ -1883,7 +1884,7 @@ mod tests {
 
     #[test]
     fn positions_payloads_offsets_round_trip() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let field_infos = field_infos_with_positions();
         let field_info = field_infos.field_info("body").unwrap();
         let postings = TestPostingsEnum::new(
@@ -1947,7 +1948,7 @@ mod tests {
 
     #[test]
     fn full_block_256_round_trip() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let field_infos = field_infos_with_freqs();
         let field_info = field_infos.field_info("body").unwrap();
         let postings = TestPostingsEnum::new((0..256).collect(), vec![1; 256], vec![vec![]; 256]);
@@ -1981,7 +1982,7 @@ mod tests {
     /// (`Lucene104PostingsReader.java:594-597`) — instead of panicking.
     #[test]
     fn a_corrupt_full_block_width_is_an_error_not_a_panic() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let field_infos = field_infos_with_freqs();
         let field_info = field_infos.field_info("body").unwrap();
         // Deltas of 1000 pack in 10 bits, so the block is PACKED, not a bit set.
@@ -2042,7 +2043,7 @@ mod tests {
 
     #[test]
     fn level1_skip_8193_round_trip() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let field_infos = field_infos_with_freqs();
         let field_info = field_infos.field_info("body").unwrap();
         let postings =

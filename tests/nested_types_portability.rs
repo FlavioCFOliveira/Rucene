@@ -63,7 +63,7 @@ use rucene::search::{
     MissingValue, Query, Sort, SortField, SortFieldType, SortValue, TopFieldCollector,
     TopFieldCollectorManager, TopFieldDocs, NO_MORE_DOCS,
 };
-use rucene::store::{Directory, RamDirectory, DEFAULT_IO_CONTEXT};
+use rucene::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT};
 use rucene::util::{BytesRef, InfoStream, StringHelper, Version};
 
 // ---------------------------------------------------------------------------
@@ -346,7 +346,7 @@ fn binary_sort_field(variant: &str) -> SortField {
 /// Flushes the 600 documents into one segment under the binary index sort.
 fn rust_sorted_flush(variant: &str) -> Arc<dyn Directory> {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config.set_use_compound_file(false).unwrap();
     config
@@ -457,7 +457,7 @@ fn binary_index_sort_descending_missing_last_matches_lucene() {
 fn binary_index_sort_segment_private_delete_matches_lucene() {
     let java = run_java("sorted-private-delete", "");
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config.set_use_compound_file(false).unwrap();
     config
@@ -541,7 +541,7 @@ fn binary_index_sort_is_accepted_and_feature_sort_refused() {
 #[test]
 fn binary_index_sort_refuses_a_numeric_key() {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config
         .set_index_sort(Sort::new_fields(vec![binary_sort_field("asc")]).unwrap())
@@ -669,7 +669,7 @@ fn search_page(
 fn feature_sort_orders_and_pages_as_lucene() {
     let java = run_java("feature-sort", "");
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config
         .set_merge_policy(Arc::new(NoMergePolicy::new()))
@@ -807,7 +807,7 @@ impl MergeContext for ScoreContext {
 fn tiered_merge_score_and_explanation_match_lucene() {
     let java = run_java("merge-score", "");
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut infos = SegmentInfos::new(i32::from(Version::LATEST.major)).unwrap();
     let codec: Arc<dyn Codec> = Arc::new(Lucene104Codec::new());
     for (k, &(max_doc, del_count, size)) in SCORE_SEGMENTS.iter().enumerate() {
@@ -903,7 +903,7 @@ fn numeric_reset(name: &str) -> Field {
 
 fn rust_dv_update(variant: &str) -> Arc<dyn Directory> {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config.set_use_compound_file(false).unwrap();
     config
@@ -1033,7 +1033,7 @@ const MULTI_NUMERIC: [&str; 5] = ["weight", "views", "stock", "rating", "price"]
 
 fn rust_dv_update_multi_field() -> Arc<dyn Directory> {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config.set_use_compound_file(false).unwrap();
     config
@@ -1253,7 +1253,7 @@ fn add_full_docs(writer: &IndexWriter, from: i32, to: i32) {
 /// `NestedTypesFixture.sortedFull(Path, String, boolean)`.
 fn rust_sorted_full(variant: &str, merge: bool) -> Arc<dyn Directory> {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config.set_use_compound_file(false).unwrap();
     if merge {
@@ -1662,7 +1662,7 @@ fn binary_index_sort_merge_keeps_every_document_consistent() {
 
 fn rust_merge_observer(variant: &str) -> Vec<String> {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     if variant == "pending" {
         config
@@ -1775,7 +1775,7 @@ impl ClosedListener for CountingListener {
 fn delegating_cache_helper_matches_lucene() {
     let java = run_java("cache-helper", "");
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config.set_soft_deletes_field(Some("soft".to_string()));
     config
@@ -1989,7 +1989,7 @@ fn dump_fields(fields: &dyn Fields, wrap: bool) -> Vec<String> {
 /// A segment whose postings carry every feature a `PostingsEnum` reports.
 fn postings_segment() -> Arc<dyn DirectoryReader> {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
     for i in 0..300 {
         writer.add_document(&sorted_doc(i)).unwrap();

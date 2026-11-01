@@ -56,7 +56,7 @@ use rucene::search::{
 };
 use rucene::store::{
     BufferedChecksum, BufferedChecksumIndexInput, ByteBuffersDirectory, ChecksumIndexInput,
-    DataInput, Directory, IndexOutput, RamDirectory, DEFAULT_IO_CONTEXT,
+    DataInput, Directory, IndexOutput, DEFAULT_IO_CONTEXT,
 };
 use rucene::util::byte_block_pool::{ByteBlockPool, BYTE_BLOCK_SHIFT, BYTE_BLOCK_SIZE};
 use rucene::util::{BytesRef, BytesRefBuilder};
@@ -379,7 +379,7 @@ fn buffered_checksum_updates_match_java() {
 #[test]
 fn buffered_checksum_index_input_reads_and_checksums_as_java() {
     let java = rows("bcii").remove(0);
-    let dir = RamDirectory::default();
+    let dir = ByteBuffersDirectory::default();
     {
         let mut out: Box<dyn IndexOutput> =
             dir.create_output("fixture", &*DEFAULT_IO_CONTEXT).unwrap();
@@ -437,7 +437,7 @@ fn buffered_checksum_index_input_reads_and_checksums_as_java() {
 /// partial bytes, which is what this observes.
 #[test]
 fn buffered_checksum_index_input_checksums_only_whole_values() {
-    let dir = RamDirectory::default();
+    let dir = ByteBuffersDirectory::default();
     for r in rows("bcii_eof") {
         let (kind, partial): (&str, u8) = (&r[1], r[2].parse().unwrap());
         let name = format!("eof-{kind}");

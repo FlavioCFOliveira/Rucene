@@ -2494,7 +2494,7 @@ mod tests {
     use crate::codecs::term_state::BlockTermState;
     use crate::index::terms::EmptyFields;
     use crate::index::{PostingsEnum, SeekStatus, SegmentInfo, TermState};
-    use crate::store::{Directory, IndexInput, IndexOutput, RamDirectory};
+    use crate::store::{ByteBuffersDirectory, Directory, IndexInput, IndexOutput};
     use crate::util::default_info_stream;
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -2624,7 +2624,7 @@ mod tests {
 
     fn test_segment_info(name: &str, max_doc: i32) -> SegmentInfo {
         SegmentInfo::new(
-            Arc::new(RamDirectory::default()),
+            Arc::new(ByteBuffersDirectory::default()),
             crate::util::Version::LUCENE_10_5_0,
             Some(crate::util::Version::LUCENE_10_5_0),
             name.to_string(),
@@ -2746,10 +2746,10 @@ mod tests {
         }
     }
 
-    /// A [`RamDirectory`] whose `.tmd` output either cannot be created or
+    /// A [`ByteBuffersDirectory`] whose `.tmd` output either cannot be created or
     /// fails when it is closed.
     struct FailingTmdDirectory {
-        inner: RamDirectory,
+        inner: ByteBuffersDirectory,
         fail_create: bool,
     }
 
@@ -2844,7 +2844,7 @@ mod tests {
     /// it had opened (`Lucene103BlockTreeTermsWriter.java:338-341`).
     #[test]
     fn a_failed_constructor_closes_the_postings_writer_and_its_outputs() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let segment_info = test_segment_info("_0", 10);
         let field_infos = FieldInfos::default();
         let state = test_write_state(&dir, &segment_info, &field_infos);
@@ -2856,7 +2856,7 @@ mod tests {
         );
 
         let failing = Arc::new(FailingTmdDirectory {
-            inner: RamDirectory::default(),
+            inner: ByteBuffersDirectory::default(),
             fail_create: true,
         });
         let failing_dir: Arc<dyn Directory> = Arc::clone(&failing) as Arc<dyn Directory>;
@@ -2882,7 +2882,7 @@ mod tests {
     #[test]
     fn close_closes_everything_and_raises_the_first_failure() {
         let failing = Arc::new(FailingTmdDirectory {
-            inner: RamDirectory::default(),
+            inner: ByteBuffersDirectory::default(),
             fail_create: false,
         });
         let segment_info = test_segment_info("_0", 10);
@@ -2909,7 +2909,7 @@ mod tests {
 
     #[test]
     fn writer_creates_empty_terms_files_with_valid_headers_and_footers() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let segment_info = test_segment_info("_0", 10);
         let field_infos = FieldInfos::default();
         let state = test_write_state(&dir, &segment_info, &field_infos);
@@ -3176,7 +3176,7 @@ mod tests {
 
     #[test]
     fn writer_writes_nonempty_terms_file_for_small_field() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let segment_info = test_segment_info("_0", 10);
         let field = FieldInfo::new("body", 0);
         let field_infos = FieldInfos::new(vec![field.clone()]).expect("valid field infos");
@@ -3286,7 +3286,7 @@ mod tests {
     /// never reads a block never pays for the clone.
     #[test]
     fn segment_terms_enum_clones_the_terms_input_lazily() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let dir_ref: &dyn Directory = &*dir;
         let segment_info = test_segment_info("_0", 10);
         let field_infos =
@@ -3389,7 +3389,7 @@ mod tests {
     /// `TermsEnum.prepareSeekExact` supplier, which would always answer.
     #[test]
     fn prepare_seek_exact_through_terms_enum_rules_out_terms_beyond_the_range() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let segment_info = test_segment_info("_0", 10);
         let field = three_term_field(&dir, &segment_info);
 
@@ -3414,7 +3414,7 @@ mod tests {
     /// `impl=...` line instead of the block-tree statistics.
     #[test]
     fn field_reader_stats_are_the_block_tree_stats() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let segment_info = test_segment_info("_0", 10);
         let field = three_term_field(&dir, &segment_info);
 

@@ -33,7 +33,7 @@ use rucene::index::merge_scheduler::SerialMergeScheduler;
 use rucene::index::terms::Term;
 use rucene::index::{directory_reader, DirectoryReader, SegmentCommitInfo, SegmentInfos};
 use rucene::search::NO_MORE_DOCS;
-use rucene::store::{Directory, RamDirectory};
+use rucene::store::{ByteBuffersDirectory, Directory};
 use rucene::util::BytesRef;
 
 fn ensure_codec() {
@@ -93,7 +93,7 @@ fn prices(reader: &Arc<dyn DirectoryReader>) -> Vec<i64> {
 #[test]
 fn a_segment_emptied_over_two_commits_is_dropped_with_both_deletes() {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let writer = IndexWriter::new(Arc::clone(&dir), no_merges()).unwrap();
     writer.add_document(&doc("a", 1)).unwrap();
     writer.add_document(&doc("b", 2)).unwrap();
@@ -119,7 +119,7 @@ fn a_segment_emptied_over_two_commits_is_dropped_with_both_deletes() {
 #[test]
 fn without_reader_pooling_a_resolved_delete_is_written_when_released() {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = no_merges();
     config.set_reader_pooling(false);
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
@@ -151,7 +151,7 @@ fn without_reader_pooling_a_resolved_delete_is_written_when_released() {
 #[test]
 fn write_reader_pool_drops_a_segment_its_writes_emptied() {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = no_merges();
     config.set_soft_deletes_field(Some("soft".to_string()));
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
@@ -187,7 +187,7 @@ fn write_reader_pool_drops_a_segment_its_writes_emptied() {
 /// `writeSomeDocValuesUpdates` to decide.
 fn doc_values_gen_after_write_some(ram_buffer_size_mb: f64) -> i64 {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = no_merges();
     config.set_ram_buffer_size_mb(ram_buffer_size_mb).unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
@@ -302,7 +302,7 @@ impl MergePolicy for HookPolicy {
 #[test]
 fn updates_carried_over_by_a_merge_keep_the_value_of_the_highest_generation() {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let writer_slot: Arc<OnceLock<Weak<IndexWriter>>> = Arc::new(OnceLock::new());
     let ran = Arc::new(Mutex::new(false));
     let hook: Arc<dyn Fn() + Send + Sync> = {

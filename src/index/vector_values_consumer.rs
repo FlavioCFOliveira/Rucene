@@ -284,7 +284,7 @@ mod tests {
         DocValuesSkipIndexType, DocValuesType, IndexOptions, VectorEncoding,
         VectorSimilarityFunction,
     };
-    use crate::store::{Directory, RamDirectory, TrackingDirectoryWrapper};
+    use crate::store::{ByteBuffersDirectory, Directory, TrackingDirectoryWrapper};
     use crate::util::{NoOutputInfoStream, Version};
 
     fn vector_field(name: &str, number: i32, dim: i32, encoding: VectorEncoding) -> FieldInfo {
@@ -315,12 +315,13 @@ mod tests {
     /// around it so a test can see which files it created.
     ///
     /// The wrapper, not the directory's own listing, is what answers "which
-    /// files does this segment own": `RamDirectory` publishes a file only once
-    /// its output is closed, and the whole point of these tests is that the
-    /// consumer opens its files while documents are still being indexed.
+    /// files does this segment own": `ByteBuffersDirectory` publishes a file's
+    /// content only once its output is closed, and the whole point of these
+    /// tests is that the consumer opens its files while documents are still
+    /// being indexed.
     fn consumer() -> (VectorValuesConsumer, Arc<TrackingDirectoryWrapper>) {
         let directory = Arc::new(TrackingDirectoryWrapper::new(Box::new(
-            RamDirectory::default(),
+            ByteBuffersDirectory::default(),
         )));
         let codec: Arc<dyn crate::codecs::Codec> = Arc::new(Lucene104Codec::new());
         // `maxDoc` is deliberately unset, exactly as it is while a

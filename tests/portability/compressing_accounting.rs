@@ -35,7 +35,7 @@ use rucene::codecs::{register_codec, Codec, Lucene104Codec};
 use rucene::error::LuceneError;
 use rucene::index::SegmentInfo;
 use rucene::store::{
-    ByteBuffersDataOutput, DataOutput, Directory, RamDirectory, DEFAULT_IO_CONTEXT,
+    ByteBuffersDataOutput, ByteBuffersDirectory, DataOutput, Directory, DEFAULT_IO_CONTEXT,
 };
 use rucene::util::{Accountable, ArrayUtil, RamUsageEstimator, Version};
 
@@ -140,7 +140,7 @@ fn compressing_accounting_matches_lucene() {
     );
 
     // 2. A fresh Lucene90CompressingTermVectorsWriter.
-    let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let info = SegmentInfo::new(
         Arc::clone(&directory),
         Version::LATEST,
@@ -183,7 +183,7 @@ fn compressing_accounting_matches_lucene() {
 /// (!closed)` guard both `close()` methods carry.
 #[test]
 fn compressing_readers_report_already_closed() {
-    let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let info = SegmentInfo::new(
         Arc::clone(&directory),
         Version::LATEST,

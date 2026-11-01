@@ -41,7 +41,7 @@ use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::IndexWriterConfig;
 use rucene::index::IndexableField;
 use rucene::search::{SortField, SortFieldType, SortedNumericSortField, SortedSetSortField};
-use rucene::store::{Directory, FSDirectory, RamDirectory};
+use rucene::store::{ByteBuffersDirectory, Directory, FSDirectory};
 use rucene::util::BytesRef;
 use rucene::LuceneError;
 
@@ -240,7 +240,7 @@ fn memory_writer(sort: Option<rucene::search::Sort>) -> Arc<IndexWriter> {
     if let Some(sort) = sort {
         config.set_index_sort(sort).unwrap();
     }
-    IndexWriter::new(Arc::new(RamDirectory::new()), config).unwrap()
+    IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap()
 }
 
 fn stored(name: &str, value: &str) -> Box<dyn IndexableField> {

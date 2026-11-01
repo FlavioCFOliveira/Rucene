@@ -5851,10 +5851,10 @@ mod tests {
         use crate::document::{Document, NumericDocValuesField};
         use crate::index::index_writer_config::IndexWriterConfig;
         use crate::search::{SortField, SortFieldType};
-        use crate::store::{Directory, RamDirectory};
+        use crate::store::{ByteBuffersDirectory, Directory};
 
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         for value in [30, 20, 10] {
             let mut doc = Document::new();

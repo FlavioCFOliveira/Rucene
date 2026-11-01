@@ -365,7 +365,7 @@ pub fn check_index_header_suffix(input: &mut dyn DataInput, expected_suffix: &st
     let suffix_length = input.read_byte()? as usize;
     let mut suffix_bytes = vec![0u8; suffix_length];
     input.read_bytes(&mut suffix_bytes, 0, suffix_length)?;
-    let suffix = java_utf8_to_string(&suffix_bytes);
+    let suffix = crate::util::java_fmt::java_utf8_to_string(&suffix_bytes);
     if suffix != expected_suffix {
         return Err(LuceneError::corrupt_index(
             format!("file mismatch, expected suffix={expected_suffix}, got={suffix}"),
@@ -373,150 +373,6 @@ pub fn check_index_header_suffix(input: &mut dyn DataInput, expected_suffix: &st
         ));
     }
     Ok(())
-}
-
-/// Decodes `bytes` as `new String(bytes, StandardCharsets.UTF_8)` does.
-///
-/// **This has no counterpart in Lucene 10.5.0**: Java delegates to the JDK,
-/// whose decoder replaces every malformed sequence with U+FFFD and never
-/// fails. Its notion of a malformed sequence is not Unicode's "maximal
-/// subpart" that [`String::from_utf8_lossy`] follows — an encoded surrogate
-/// such as `ED A0 80` is one replacement in Java and three in Rust — so the
-/// JDK's rules (`java.lang.String.decodeUTF8_UTF16` and its `malformed3` /
-/// `malformed4` helpers in OpenJDK 21-25) are reproduced here, and checked
-/// against JDK 25 by the codec-header portability test.
-///
-/// Used by [`check_index_header_suffix`] and by
-/// [`DataInput::read_string`](crate::store::DataInput::read_string), whose
-/// Java counterparts both build the string with that constructor
-/// (`CodecUtil.java:383`, `DataInput.java:234`).
-pub(crate) fn java_utf8_to_string(bytes: &[u8]) -> String {
-    const REPL: u16 = 0xFFFD;
-    fn is_not_continuation(b: u8) -> bool {
-        b & 0xC0 != 0x80
-    }
-    fn is_malformed3(b1: u8, b2: u8, b3: u8) -> bool {
-        (b1 == 0xE0 && b2 & 0xE0 == 0x80) || is_not_continuation(b2) || is_not_continuation(b3)
-    }
-    fn is_malformed3_2(b1: u8, b2: u8) -> bool {
-        (b1 == 0xE0 && b2 & 0xE0 == 0x80) || is_not_continuation(b2)
-    }
-    fn is_malformed4(b2: u8, b3: u8, b4: u8) -> bool {
-        is_not_continuation(b2) || is_not_continuation(b3) || is_not_continuation(b4)
-    }
-    fn is_malformed4_2(b1: u8, b2: u8) -> bool {
-        (b1 == 0xF0 && !(0x90..=0xBF).contains(&b2))
-            || (b1 == 0xF4 && b2 & 0xF0 != 0x80)
-            || is_not_continuation(b2)
-    }
-    /// How many bytes of a malformed three-byte sequence are skipped.
-    fn malformed3(src: &[u8], sp: usize) -> usize {
-        let (b1, b2) = (src[sp], src[sp + 1]);
-        if (b1 == 0xE0 && b2 & 0xE0 == 0x80) || is_not_continuation(b2) {
-            1
-        } else {
-            2
-        }
-    }
-    /// How many bytes of a malformed four-byte sequence are skipped.
-    fn malformed4(src: &[u8], sp: usize) -> usize {
-        let (b1, b2) = (src[sp], src[sp + 1]);
-        if b1 > 0xF4
-            || (b1 == 0xF0 && !(0x90..=0xBF).contains(&b2))
-            || (b1 == 0xF4 && b2 & 0xF0 != 0x80)
-            || is_not_continuation(b2)
-        {
-            1
-        } else if is_not_continuation(src[sp + 2]) {
-            2
-        } else {
-            3
-        }
-    }
-
-    let mut out: Vec<u16> = Vec::with_capacity(bytes.len());
-    let (mut sp, sl) = (0usize, bytes.len());
-    while sp < sl {
-        let b1 = bytes[sp];
-        sp += 1;
-        if b1 < 0x80 {
-            out.push(u16::from(b1));
-        } else if b1 >> 5 == 0b110 && b1 & 0x1E != 0 {
-            if sp < sl {
-                let b2 = bytes[sp];
-                sp += 1;
-                if is_not_continuation(b2) {
-                    out.push(REPL);
-                    sp -= 1;
-                } else {
-                    out.push((u16::from(b1 & 0x1F) << 6) | u16::from(b2 & 0x3F));
-                }
-                continue;
-            }
-            out.push(REPL);
-            break;
-        } else if b1 >> 4 == 0b1110 {
-            if sp + 1 < sl {
-                let (b2, b3) = (bytes[sp], bytes[sp + 1]);
-                sp += 2;
-                if is_malformed3(b1, b2, b3) {
-                    out.push(REPL);
-                    sp -= 3;
-                    sp += malformed3(bytes, sp);
-                } else {
-                    let c = (u16::from(b1 & 0x0F) << 12)
-                        | (u16::from(b2 & 0x3F) << 6)
-                        | u16::from(b3 & 0x3F);
-                    // An encoded surrogate is one replacement.
-                    out.push(if (0xD800..=0xDFFF).contains(&c) {
-                        REPL
-                    } else {
-                        c
-                    });
-                }
-                continue;
-            }
-            if sp < sl && is_malformed3_2(b1, bytes[sp]) {
-                out.push(REPL);
-                continue;
-            }
-            out.push(REPL);
-            break;
-        } else if b1 >> 3 == 0b11110 {
-            if sp + 2 < sl {
-                let (b2, b3, b4) = (bytes[sp], bytes[sp + 1], bytes[sp + 2]);
-                sp += 3;
-                let uc = (u32::from(b1 & 0x07) << 18)
-                    | (u32::from(b2 & 0x3F) << 12)
-                    | (u32::from(b3 & 0x3F) << 6)
-                    | u32::from(b4 & 0x3F);
-                if is_malformed4(b2, b3, b4) || !(0x10000..=0x10FFFF).contains(&uc) {
-                    out.push(REPL);
-                    sp -= 4;
-                    sp += malformed4(bytes, sp);
-                } else {
-                    let v = uc - 0x10000;
-                    out.push(0xD800 | (v >> 10) as u16);
-                    out.push(0xDC00 | (v & 0x3FF) as u16);
-                }
-                continue;
-            }
-            if b1 > 0xF4 || (sp < sl && is_malformed4_2(b1, bytes[sp])) {
-                out.push(REPL);
-                continue;
-            }
-            sp += 1;
-            out.push(REPL);
-            if sp < sl && is_not_continuation(bytes[sp]) {
-                continue;
-            }
-            break;
-        } else {
-            out.push(REPL);
-        }
-    }
-    // Every surrogate pushed above is half of a well-formed pair.
-    String::from_utf16_lossy(&out)
 }
 
 // -----------------------------------------------------------------------------
@@ -549,10 +405,14 @@ pub fn check_footer(input: &mut dyn ChecksumIndexInput) -> Result<i64> {
     let actual_checksum = input.get_checksum()?;
     let expected_checksum = read_crc(input)?;
     if expected_checksum != actual_checksum {
-        return Err(LuceneError::CorruptIndex(format!(
-            "checksum failed (hardware problem?) : expected={:x} actual={:x}",
-            expected_checksum, actual_checksum
-        )));
+        // `CorruptIndexException(..., in)` (`CodecUtil.java:436-442`).
+        return Err(LuceneError::corrupt_index(
+            format!(
+                "checksum failed (hardware problem?) : expected={:x} actual={:x}",
+                expected_checksum, actual_checksum
+            ),
+            input.to_java_string(),
+        ));
     }
     Ok(actual_checksum)
 }
@@ -649,19 +509,25 @@ pub fn read_index_header(input: &mut dyn IndexInput) -> Result<Vec<u8>> {
 
 /// Returns the bytes of the footer at the end of `input`, having validated it.
 ///
-/// Equivalent to `CodecUtil.readFooter(IndexInput)`.
+/// Equivalent to `CodecUtil.readFooter(IndexInput)` (`CodecUtil.java:345-360`).
 ///
 /// # Errors
 ///
 /// Returns [`LuceneError::CorruptIndex`] when the file is too short to hold a
-/// footer or the footer is not valid, and propagates any I/O error.
+/// footer or the footer is not valid — Java's `CorruptIndexException(String,
+/// DataInput)`, whose resource is the input's `toString()` — and propagates
+/// any I/O error.
 pub fn read_footer(input: &mut dyn IndexInput) -> Result<Vec<u8>> {
     if input.length() < footer_length() as i64 {
-        return Err(LuceneError::CorruptIndex(format!(
-            "misplaced codec footer (file truncated?): length={} but footerLength={}",
-            input.length(),
-            footer_length()
-        )));
+        // `CodecUtil.java:346-352`: Java prints `footerLength==`.
+        return Err(LuceneError::corrupt_index(
+            format!(
+                "misplaced codec footer (file truncated?): length={} but footerLength=={}",
+                input.length(),
+                footer_length()
+            ),
+            input.to_java_string(),
+        ));
     }
     input.seek(input.length() - footer_length() as i64)?;
     validate_footer(input)?;
@@ -674,14 +540,25 @@ pub fn read_footer(input: &mut dyn IndexInput) -> Result<Vec<u8>> {
 
 /// Returns the checksum stored in the footer without validating it.
 ///
-/// Equivalent to `CodecUtil.retrieveChecksum(IndexInput)`.
+/// Equivalent to `CodecUtil.retrieveChecksum(IndexInput)`
+/// (`CodecUtil.java:525-537`).
+///
+/// # Errors
+///
+/// Returns [`LuceneError::CorruptIndex`], naming the input as its resource,
+/// when the file is too short to hold a footer or the footer is not valid, and
+/// propagates any I/O error.
 pub fn retrieve_checksum(input: &mut dyn IndexInput) -> Result<i64> {
     if input.length() < footer_length() as i64 {
-        return Err(LuceneError::CorruptIndex(format!(
-            "misplaced codec footer (file truncated?): length={} but footerLength={}",
-            input.length(),
-            footer_length()
-        )));
+        // `CodecUtil.java:526-532`: Java prints `footerLength==`.
+        return Err(LuceneError::corrupt_index(
+            format!(
+                "misplaced codec footer (file truncated?): length={} but footerLength=={}",
+                input.length(),
+                footer_length()
+            ),
+            input.to_java_string(),
+        ));
     }
     input.seek(input.length() - footer_length() as i64)?;
     validate_footer(input)?;
@@ -690,7 +567,15 @@ pub fn retrieve_checksum(input: &mut dyn IndexInput) -> Result<i64> {
 
 /// Returns the checksum stored in the footer, verifying the file length first.
 ///
-/// Equivalent to `CodecUtil.retrieveChecksum(IndexInput, long)`.
+/// Equivalent to `CodecUtil.retrieveChecksum(IndexInput, long)`
+/// (`CodecUtil.java:545-558`).
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] when `expected_length` is below the
+/// footer length, [`LuceneError::CorruptIndex`], naming the input as its
+/// resource, when the file is not `expected_length` bytes long, and whatever
+/// [`retrieve_checksum`] returns.
 pub fn retrieve_checksum_expected_length(
     input: &mut dyn IndexInput,
     expected_length: i64,
@@ -700,88 +585,123 @@ pub fn retrieve_checksum_expected_length(
             "expectedLength cannot be less than the footer length".to_string(),
         ));
     }
+    // `CodecUtil.java:549-554`: Java prints `expectedLength==`.
     if input.length() < expected_length {
-        return Err(LuceneError::CorruptIndex(format!(
-            "truncated file: length={} but expectedLength={}",
-            input.length(),
-            expected_length
-        )));
+        return Err(LuceneError::corrupt_index(
+            format!(
+                "truncated file: length={} but expectedLength=={}",
+                input.length(),
+                expected_length
+            ),
+            input.to_java_string(),
+        ));
     }
     if input.length() > expected_length {
-        return Err(LuceneError::CorruptIndex(format!(
-            "file too long: length={} but expectedLength={}",
-            input.length(),
-            expected_length
-        )));
+        return Err(LuceneError::corrupt_index(
+            format!(
+                "file too long: length={} but expectedLength=={}",
+                input.length(),
+                expected_length
+            ),
+            input.to_java_string(),
+        ));
     }
     retrieve_checksum(input)
 }
 
 /// Clones `input`, reads all bytes, and validates the footer checksum.
 ///
-/// Equivalent to `CodecUtil.checksumEntireFile`.
+/// Equivalent to `CodecUtil.checksumEntireFile` (`CodecUtil.java:606-621`).
+///
+/// # Errors
+///
+/// Returns [`LuceneError::CorruptIndex`] when the file is too short to hold a
+/// footer — naming `input` itself, not its clone, as Java does — or when the
+/// footer or the checksum is not valid, and propagates any I/O error.
 pub fn checksum_entire_file(input: &mut dyn IndexInput) -> Result<i64> {
     let mut clone = input.clone_input()?;
     clone.seek(0)?;
     let mut checksum_input = BufferedChecksumIndexInput::new(clone);
     if checksum_input.length() < footer_length() as i64 {
-        return Err(LuceneError::CorruptIndex(format!(
-            "misplaced codec footer (file truncated?): length={} but footerLength={}",
-            checksum_input.length(),
-            footer_length()
-        )));
+        // `CodecUtil.java:611-617`: Java prints `footerLength==`.
+        return Err(LuceneError::corrupt_index(
+            format!(
+                "misplaced codec footer (file truncated?): length={} but footerLength=={}",
+                checksum_input.length(),
+                footer_length()
+            ),
+            input.to_java_string(),
+        ));
     }
     let target = checksum_input.length() - footer_length() as i64;
     ChecksumIndexInput::seek(&mut checksum_input, target)?;
     check_footer(&mut checksum_input)
 }
 
+/// Equivalent to the private `CodecUtil.validateFooter(IndexInput)`
+/// (`CodecUtil.java:560-598`): every failure is a
+/// `CorruptIndexException(String, DataInput)` naming the input.
 fn validate_footer(input: &mut dyn IndexInput) -> Result<()> {
     let remaining = input.length() - input.file_pointer();
     let expected = footer_length() as i64;
     if remaining < expected {
-        return Err(LuceneError::CorruptIndex(format!(
-            "misplaced codec footer (file truncated?): remaining={}, expected={}, fp={}",
-            remaining,
-            expected,
-            input.file_pointer()
-        )));
+        return Err(LuceneError::corrupt_index(
+            format!(
+                "misplaced codec footer (file truncated?): remaining={}, expected={}, fp={}",
+                remaining,
+                expected,
+                input.file_pointer()
+            ),
+            input.to_java_string(),
+        ));
     }
     if remaining > expected {
-        return Err(LuceneError::CorruptIndex(format!(
-            "misplaced codec footer (file extended?): remaining={}, expected={}, fp={}",
-            remaining,
-            expected,
-            input.file_pointer()
-        )));
+        return Err(LuceneError::corrupt_index(
+            format!(
+                "misplaced codec footer (file extended?): remaining={}, expected={}, fp={}",
+                remaining,
+                expected,
+                input.file_pointer()
+            ),
+            input.to_java_string(),
+        ));
     }
 
     let magic = read_be_int(input)?;
     if magic != FOOTER_MAGIC {
-        return Err(LuceneError::CorruptIndex(format!(
-            "codec footer mismatch (file truncated?): actual footer={} vs expected footer={}",
-            magic, FOOTER_MAGIC
-        )));
+        return Err(LuceneError::corrupt_index(
+            format!(
+                "codec footer mismatch (file truncated?): actual footer={} vs expected footer={}",
+                magic, FOOTER_MAGIC
+            ),
+            input.to_java_string(),
+        ));
     }
 
     let algorithm_id = read_be_int(input)?;
     if algorithm_id != 0 {
-        return Err(LuceneError::CorruptIndex(format!(
-            "codec footer mismatch: unknown algorithmID: {}",
-            algorithm_id
-        )));
+        return Err(LuceneError::corrupt_index(
+            format!(
+                "codec footer mismatch: unknown algorithmID: {}",
+                algorithm_id
+            ),
+            input.to_java_string(),
+        ));
     }
 
     Ok(())
 }
 
+/// Equivalent to the package-private `CodecUtil.readCRC(IndexInput)`
+/// (`CodecUtil.java:629-635`): a value with any of its upper 32 bits set is a
+/// `CorruptIndexException(String, DataInput)` naming the input.
 fn read_crc(input: &mut dyn DataInput) -> Result<i64> {
     let value = read_be_long(input)?;
     if (value as u64) > 0xFFFFFFFFu64 {
-        return Err(LuceneError::CorruptIndex(format!(
-            "Illegal CRC-32 checksum: {}",
-            value
-        )));
+        return Err(LuceneError::corrupt_index(
+            format!("Illegal CRC-32 checksum: {}", value),
+            input.to_java_string(),
+        ));
     }
     Ok(value)
 }
@@ -891,15 +811,14 @@ mod tests {
             const ALPHABET: &[u8] =
                 b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
             let mut output = String::with_capacity(input.len().div_ceil(3) * 4);
-            let mut chunks = input.chunks_exact(3);
-            for chunk in chunks.by_ref() {
+            let (chunks, rem) = input.as_chunks::<3>();
+            for chunk in chunks {
                 let n = ((chunk[0] as u32) << 16) | ((chunk[1] as u32) << 8) | (chunk[2] as u32);
                 output.push(ALPHABET[((n >> 18) & 0x3F) as usize] as char);
                 output.push(ALPHABET[((n >> 12) & 0x3F) as usize] as char);
                 output.push(ALPHABET[((n >> 6) & 0x3F) as usize] as char);
                 output.push(ALPHABET[(n & 0x3F) as usize] as char);
             }
-            let rem = chunks.remainder();
             match rem.len() {
                 0 => {}
                 1 => {

@@ -250,7 +250,7 @@ fn replay_commits(
     created: &[i64],
     mut after_commit: impl FnMut(i64),
 ) -> Vec<i64> {
-    let directory: Arc<dyn Directory> = Arc::new(rucene::store::RamDirectory::default());
+    let directory: Arc<dyn Directory> = Arc::new(rucene::store::ByteBuffersDirectory::default());
     let mut live: Vec<Arc<dyn IndexCommit>> = Vec::new();
 
     policy.on_init(&live).expect("on_init must succeed");
@@ -353,7 +353,7 @@ fn keep_last_n_larger_than_the_history_matches_lucene() {
 fn rucene_commit_sequence(commits: usize) -> (Vec<i64>, Vec<i64>) {
     let _ = register_codec("Lucene104", Lucene104Codec::new());
 
-    let directory: Arc<dyn Directory> = Arc::new(rucene::store::RamDirectory::default());
+    let directory: Arc<dyn Directory> = Arc::new(rucene::store::ByteBuffersDirectory::default());
     let mut config = IndexWriterConfig::new();
     config
         .set_index_deletion_policy(NoDeletionPolicy::instance())
@@ -576,7 +576,7 @@ fn snapshot_pins_survive_a_writer_reopen_like_lucene() {
 
     // --- Phase 1: build the index and pin its last commit. -------------------
     let snapshots_dir = scratch_dir("reopen-snapshot-rucene");
-    let directory: Arc<dyn Directory> = Arc::new(rucene::store::RamDirectory::default());
+    let directory: Arc<dyn Directory> = Arc::new(rucene::store::ByteBuffersDirectory::default());
 
     let mut live: Vec<Arc<dyn IndexCommit>> = Vec::new();
     {
@@ -676,7 +676,7 @@ fn release_unpins_the_same_commits_as_lucene() {
     assert_eq!(snapshots_after, vec![4]);
 
     let policy = SnapshotDeletionPolicy::new(Arc::new(KeepOnlyLastCommitDeletionPolicy::new()));
-    let directory: Arc<dyn Directory> = Arc::new(rucene::store::RamDirectory::default());
+    let directory: Arc<dyn Directory> = Arc::new(rucene::store::ByteBuffersDirectory::default());
     let mut live: Vec<Arc<dyn IndexCommit>> = Vec::new();
     policy.on_init(&live).unwrap();
 
@@ -1126,7 +1126,7 @@ fn persist_close_failure_recovers_as_lucene_does() {
     )
     .unwrap();
 
-    let index: Arc<dyn Directory> = Arc::new(rucene::store::RamDirectory::default());
+    let index: Arc<dyn Directory> = Arc::new(rucene::store::ByteBuffersDirectory::default());
     let live = vec![RecordingCommit::at_generation(Arc::clone(&index), 1)];
     policy.on_init(&live).unwrap();
 

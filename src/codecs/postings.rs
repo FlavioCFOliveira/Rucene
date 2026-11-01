@@ -1325,10 +1325,11 @@ mod tests {
         let format = StubPostingsFormat;
         assert_eq!(format.name(), "StubPostingsFormat");
 
-        let dir: Arc<dyn crate::store::Directory> = Arc::new(crate::store::RamDirectory::default());
+        let dir: Arc<dyn crate::store::Directory> =
+            Arc::new(crate::store::ByteBuffersDirectory::default());
         let dir_ref: &dyn crate::store::Directory = &*dir;
         let segment_info = crate::index::SegmentInfo::new(
-            std::sync::Arc::new(crate::store::RamDirectory::default()),
+            std::sync::Arc::new(crate::store::ByteBuffersDirectory::default()),
             crate::util::Version::LUCENE_10_5_0,
             Some(crate::util::Version::LUCENE_10_5_0),
             "_0".to_string(),
@@ -1375,10 +1376,11 @@ mod tests {
 
     #[test]
     fn stub_postings_reader_base_compiles_and_runs() {
-        let dir: Arc<dyn crate::store::Directory> = Arc::new(crate::store::RamDirectory::default());
+        let dir: Arc<dyn crate::store::Directory> =
+            Arc::new(crate::store::ByteBuffersDirectory::default());
         let dir_ref: &dyn crate::store::Directory = &*dir;
         let segment_info = crate::index::SegmentInfo::new(
-            std::sync::Arc::new(crate::store::RamDirectory::default()),
+            std::sync::Arc::new(crate::store::ByteBuffersDirectory::default()),
             crate::util::Version::LUCENE_10_5_0,
             Some(crate::util::Version::LUCENE_10_5_0),
             "_0".to_string(),
@@ -1434,9 +1436,10 @@ mod tests {
 
     #[test]
     fn stub_push_postings_writer_blanket_impl_runs() {
-        let dir: Arc<dyn crate::store::Directory> = Arc::new(crate::store::RamDirectory::default());
+        let dir: Arc<dyn crate::store::Directory> =
+            Arc::new(crate::store::ByteBuffersDirectory::default());
         let segment_info = crate::index::SegmentInfo::new(
-            std::sync::Arc::new(crate::store::RamDirectory::default()),
+            std::sync::Arc::new(crate::store::ByteBuffersDirectory::default()),
             crate::util::Version::LUCENE_10_5_0,
             Some(crate::util::Version::LUCENE_10_5_0),
             "_0".to_string(),
@@ -1501,9 +1504,10 @@ mod tests {
 
     #[test]
     fn stub_postings_writer_base_compiles_and_runs() {
-        let dir: Arc<dyn crate::store::Directory> = Arc::new(crate::store::RamDirectory::default());
+        let dir: Arc<dyn crate::store::Directory> =
+            Arc::new(crate::store::ByteBuffersDirectory::default());
         let segment_info = crate::index::SegmentInfo::new(
-            std::sync::Arc::new(crate::store::RamDirectory::default()),
+            std::sync::Arc::new(crate::store::ByteBuffersDirectory::default()),
             crate::util::Version::LUCENE_10_5_0,
             Some(crate::util::Version::LUCENE_10_5_0),
             "_0".to_string(),

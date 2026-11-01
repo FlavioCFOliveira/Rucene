@@ -11,8 +11,8 @@
 use std::collections::HashSet;
 
 use rucene::store::{
-    BufferedChecksum, ByteArrayDataInput, DataInput, Directory, FSDirectory, IndexInput,
-    IndexOutput, RamDirectory, DEFAULT_IO_CONTEXT,
+    BufferedChecksum, ByteArrayDataInput, ByteBuffersDirectory, DataInput, Directory, FSDirectory,
+    IndexInput, IndexOutput, DEFAULT_IO_CONTEXT,
 };
 use rucene::Result;
 
@@ -96,7 +96,7 @@ fn java_hello_payload_bytes_match_reference_crc32() {
 
 #[test]
 fn ram_directory_writes_java_compatible_payload() -> Result<()> {
-    let dir = RamDirectory::new();
+    let dir = ByteBuffersDirectory::new();
     {
         let mut out = dir.create_output("test.bin", &*DEFAULT_IO_CONTEXT)?;
         write_portability_payload(out.as_mut())?;
@@ -155,7 +155,7 @@ fn rucene_crc32_matches_java_reference_for_known_payloads() -> Result<()> {
     assert_eq!(crc32_of(&hello), JAVA_HELLO_CRC32);
 
     // Ensure a fresh payload written through a Rucene output also matches.
-    let dir = RamDirectory::new();
+    let dir = ByteBuffersDirectory::new();
     {
         let mut out = dir.create_output("crc.bin", &*DEFAULT_IO_CONTEXT)?;
         out.write_bytes(&payload, 0, payload.len())?;

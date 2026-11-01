@@ -53,7 +53,7 @@ use rucene::index::terms::Term;
 use rucene::index::SegmentCommitInfo;
 use rucene::index::{directory_reader, SegmentInfos};
 use rucene::search::{MatchAllDocsQuery, Query, Sort, SortField, SortFieldType, NO_MORE_DOCS};
-use rucene::store::{Directory, FSDirectory, RamDirectory};
+use rucene::store::{ByteBuffersDirectory, Directory, FSDirectory};
 use rucene::util::{BytesRef, InfoStream};
 
 fn ensure_codec() {
@@ -114,7 +114,7 @@ fn id_doc(i: i32) -> Document {
 #[test]
 fn a_retention_policy_keeps_a_fully_soft_deleted_segment_it_still_matches() {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config.set_soft_deletes_field(Some("soft".to_string()));
     config
@@ -160,7 +160,7 @@ fn a_retention_policy_keeps_a_fully_soft_deleted_segment_it_still_matches() {
 
 /// Runs `count` single-document commits and renders each commit point.
 fn commits(case: &str, config: IndexWriterConfig, count: i32) -> String {
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     let mut lines = Vec::new();
     for i in 0..count {
@@ -324,7 +324,7 @@ fn a_forced_merge_cascades_under_the_concurrent_scheduler_as_lucene_does() {
 /// for the forced merge.
 fn forced_merge_cascade(config: IndexWriterConfig) -> String {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut initial = IndexWriterConfig::new();
     initial
         .set_merge_policy(Arc::new(NoMergePolicy::new()))
@@ -352,7 +352,7 @@ fn forced_merge_cascade(config: IndexWriterConfig) -> String {
 #[test]
 fn flush_counters_move_as_lucene_does() {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config
         .set_merge_policy(Arc::new(NoMergePolicy::new()))
@@ -391,7 +391,7 @@ fn flush_counters_move_as_lucene_does() {
 #[test]
 fn applied_deletes_publish_and_count_a_flush_as_lucene_does() {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config.set_ram_buffer_size_mb(0.01).unwrap();
     config
@@ -435,7 +435,7 @@ fn segments_flushed_by_add_document_are_published_and_merged_as_lucene_does() {
     ensure_codec();
     let mut lines = Vec::new();
     for case in ["none", "logdoc2"] {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut config = IndexWriterConfig::new();
         config.set_max_buffered_docs(2).unwrap();
         config
@@ -479,7 +479,7 @@ fn log_merge(case: &str, merge_factor: i32, sizes: &[i32]) -> String {
 /// `WriterMergeTriggersFixture.logMerge(String, LogMergePolicy, int[])`.
 fn log_merge_with(case: &str, policy: LogMergePolicy, sizes: &[i32]) -> String {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut initial = IndexWriterConfig::new();
     initial
         .set_merge_policy(Arc::new(NoMergePolicy::new()))
@@ -564,7 +564,7 @@ fn a_log_merge_measures_segments_with_the_user_size_as_lucene_does() {
 fn concurrent_merges_on_get_reader_each_keep_their_own_segment() {
     ensure_codec();
     for _ in 0..20 {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut initial = IndexWriterConfig::new();
         initial
             .set_merge_policy(Arc::new(NoMergePolicy::new()))
@@ -658,7 +658,7 @@ fn an_aborted_merge_stops_at_the_next_check_as_lucene_does() {
     ensure_codec();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let hook = Arc::new(AbortingInfoStream {
             writer: std::sync::OnceLock::new(),
             phases: std::sync::Mutex::new(Vec::new()),

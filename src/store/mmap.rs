@@ -29,7 +29,7 @@ use memmap2::Mmap;
 use super::memory_segment_index_input_provider::{MemorySegmentIndexInputProvider, SharedArenas};
 use super::{
     hints_of, DataAccessHint, Directory, FSDirectory, IOContext, IndexInput, IndexOutput, Lock,
-    LockFactory, PreloadHint, ReadAdvice, ReadOnceHint,
+    LockFactory, NativeFSLockFactory, PreloadHint, ReadAdvice, ReadOnceHint,
 };
 use crate::error::{LuceneError, Result};
 use std::collections::HashSet;
@@ -128,13 +128,21 @@ impl MMapDirectory {
     ///
     /// Equivalent to `MMapDirectory(Path)` in Lucene 10.5.0.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        Self::with_options(path, None, *DEFAULT_MAX_CHUNK_SIZE)
+        // `this(path, FSLockFactory.getDefault())`
+        Self::with_lock_factory(path, Box::new(NativeFSLockFactory))
     }
 
     /// Opens a new `MMapDirectory` at `path` with the supplied lock factory.
+    ///
+    /// Equivalent to `MMapDirectory(Path, LockFactory)`
+    /// (`MMapDirectory.java:201-203`).
+    ///
+    /// # Errors
+    ///
+    /// As [`with_options`](Self::with_options).
     pub fn with_lock_factory(
         path: impl AsRef<Path>,
-        lock_factory: Option<Box<dyn LockFactory>>,
+        lock_factory: Box<dyn LockFactory>,
     ) -> Result<Self> {
         Self::with_options(path, lock_factory, *DEFAULT_MAX_CHUNK_SIZE)
     }
@@ -143,12 +151,20 @@ impl MMapDirectory {
     /// rounded down to a power of two.
     ///
     /// Equivalent to `MMapDirectory(Path, LockFactory, long)`
-    /// (`MMapDirectory.java:250-258`).
+    /// (`MMapDirectory.java:250-257`), which calls `super(path, lockFactory)`
+    /// before it checks the chunk size.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] for a chunk size of zero or
+    /// beyond a Java `long`, and propagates any I/O error creating or
+    /// canonicalizing the directory.
     pub fn with_options(
         path: impl AsRef<Path>,
-        lock_factory: Option<Box<dyn LockFactory>>,
+        lock_factory: Box<dyn LockFactory>,
         max_chunk_size: usize,
     ) -> Result<Self> {
+        let inner = FSDirectory::with_lock_factory(path, lock_factory)?;
         if max_chunk_size == 0 {
             return Err(LuceneError::IllegalArgument(
                 "Maximum chunk size for mmap must be >0".to_string(),
@@ -162,7 +178,6 @@ impl MMapDirectory {
                 i64::MAX
             )));
         }
-        let inner = FSDirectory::with_lock_factory(path, lock_factory)?;
         // `Long.SIZE - 1 - Long.numberOfLeadingZeros(maxChunkSize)`
         let chunk_size_power = (u64::BITS - 1 - (max_chunk_size as u64).leading_zeros()) as i32;
         Ok(Self {
@@ -175,9 +190,14 @@ impl MMapDirectory {
         })
     }
 
-    /// Returns the canonical filesystem path backing this directory.
-    pub fn directory_path(&self) -> &Path {
-        self.inner.directory_path()
+    /// The `FSDirectory.getDirectory()` it inherits (`FSDirectory.java:288-291`):
+    /// see [`FSDirectory::get_directory`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::AlreadyClosed`] once the directory is closed.
+    pub fn get_directory(&self) -> Result<&Path> {
+        self.inner.get_directory()
     }
 
     /// Returns how many shared arenas the directory currently keeps, one per
@@ -417,8 +437,11 @@ impl Directory for MMapDirectory {
         Ok(Box::new(input))
     }
 
+    /// The final `BaseDirectory.obtainLock(String)` it inherits
+    /// (`BaseDirectory.java:42-45`), with this directory as the lock
+    /// factory's `dir`.
     fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
-        self.inner.obtain_lock(name)
+        self.inner.base().obtain_lock(self, name)
     }
 
     fn close(&mut self) -> Result<()> {
@@ -429,8 +452,9 @@ impl Directory for MMapDirectory {
         self.inner.get_pending_deletions()
     }
 
-    fn fs_directory_path(&self) -> Option<&Path> {
-        self.inner.fs_directory_path()
+    /// An `FSDirectory` subclass: the `FSDirectory` it composes.
+    fn as_fs_directory(&self) -> Option<&FSDirectory> {
+        Some(&self.inner)
     }
 
     fn directory_type_name(&self) -> &'static str {
@@ -440,16 +464,19 @@ impl Directory for MMapDirectory {
     fn ensure_open(&self) -> Result<()> {
         self.inner.ensure_open()
     }
+
+    /// The `FSDirectory.toString()` it inherits (`FSDirectory.java:293-295`):
+    /// `MMapDirectory@` + path + ` lockFactory=` + the lock factory.
+    fn directory_to_string(&self) -> String {
+        self.inner.directory_to_string_of(self)
+    }
 }
 
 impl std::fmt::Display for MMapDirectory {
+    /// Port of the `toString()` it inherits from `FSDirectory`, which
+    /// [`Directory::directory_to_string`] renders.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "MMapDirectory@{} maxChunkSize={}",
-            self.inner.directory_path().display(),
-            self.max_chunk_size()
-        )
+        f.write_str(&self.directory_to_string())
     }
 }
 
@@ -522,7 +549,7 @@ mod tests {
     #[test]
     fn open_input_maps_through_the_provider_in_chunks() {
         let temp = TempDir::new().unwrap();
-        let dir = MMapDirectory::with_options(&temp, None, 1000).unwrap();
+        let dir = MMapDirectory::with_options(&temp, Box::new(NativeFSLockFactory), 1000).unwrap();
         assert_eq!(dir.max_chunk_size(), 512);
         let context = &*DEFAULT_IO_CONTEXT;
         {
@@ -565,7 +592,7 @@ mod tests {
     #[test]
     fn reads_seeks_and_slices_cross_chunk_boundaries() {
         let temp = TempDir::new().unwrap();
-        let dir = MMapDirectory::with_options(&temp, None, 16).unwrap();
+        let dir = MMapDirectory::with_options(&temp, Box::new(NativeFSLockFactory), 16).unwrap();
         assert_eq!(dir.max_chunk_size(), 16);
         write_counting_bytes(&dir, "data.bin", 200);
         let mut input = dir.open_input("data.bin", &*DEFAULT_IO_CONTEXT).unwrap();
@@ -644,15 +671,15 @@ mod tests {
     fn a_chunk_size_beyond_a_java_long_is_rejected() {
         let temp = TempDir::new().unwrap();
         assert!(matches!(
-            MMapDirectory::with_options(&temp, None, usize::MAX),
+            MMapDirectory::with_options(&temp, Box::new(NativeFSLockFactory), usize::MAX),
             Err(LuceneError::IllegalArgument(_))
         ));
         assert!(matches!(
-            MMapDirectory::with_options(&temp, None, 0),
+            MMapDirectory::with_options(&temp, Box::new(NativeFSLockFactory), 0),
             Err(LuceneError::IllegalArgument(_))
         ));
         assert_eq!(
-            MMapDirectory::with_options(&temp, None, i64::MAX as usize)
+            MMapDirectory::with_options(&temp, Box::new(NativeFSLockFactory), i64::MAX as usize)
                 .unwrap()
                 .max_chunk_size(),
             1usize << 62

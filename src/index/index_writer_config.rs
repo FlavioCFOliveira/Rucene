@@ -1258,10 +1258,10 @@ mod tests {
     fn default_deletion_policy_keeps_only_the_last_commit() {
         use crate::index::index_commit::test_support::TestCommit;
         use crate::index::IndexCommit;
-        use crate::store::{Directory, RamDirectory};
+        use crate::store::{ByteBuffersDirectory, Directory};
 
         let config = new_config();
-        let directory: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let commits: Vec<Arc<dyn IndexCommit>> = (1..=3)
             .map(|generation| TestCommit::at_generation(Arc::clone(&directory), generation))
             .collect();
@@ -1281,14 +1281,14 @@ mod tests {
         use crate::index::index_commit::test_support::TestCommit;
         use crate::index::index_deletion_policy::KeepLastNCommitsDeletionPolicy;
         use crate::index::IndexCommit;
-        use crate::store::{Directory, RamDirectory};
+        use crate::store::{ByteBuffersDirectory, Directory};
 
         let mut config = new_config();
         config
             .set_index_deletion_policy(Arc::new(KeepLastNCommitsDeletionPolicy::new(2).unwrap()))
             .unwrap();
 
-        let directory: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let commits: Vec<Arc<dyn IndexCommit>> = (1..=3)
             .map(|generation| TestCommit::at_generation(Arc::clone(&directory), generation))
             .collect();
@@ -1541,7 +1541,7 @@ mod tests {
         }
 
         fn get_directory(&self) -> Arc<dyn crate::store::Directory> {
-            Arc::new(crate::store::RamDirectory::default())
+            Arc::new(crate::store::ByteBuffersDirectory::default())
         }
     }
 }

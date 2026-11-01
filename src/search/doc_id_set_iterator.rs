@@ -781,7 +781,7 @@ mod tests {
 
     impl Bits for EvenBits {
         fn get(&self, index: usize) -> bool {
-            index % 2 == 0
+            index.is_multiple_of(2)
         }
 
         fn length(&self) -> usize {

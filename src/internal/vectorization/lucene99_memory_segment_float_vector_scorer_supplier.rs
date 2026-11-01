@@ -15,7 +15,7 @@ use crate::internal::vectorization::lucene99_memory_segment_float_vector_scorer:
     java_math_max, normalize_raw_score,
 };
 use crate::internal::vectorization::MemorySegmentBulkVectorOps;
-use crate::store::{IndexInput, MemorySegment, MemorySegmentAccessInput};
+use crate::store::{FilterIndexInput, IndexInput, MemorySegment};
 use crate::util::hnsw::{
     RandomVectorScorer, RandomVectorScorerSupplier, UpdateableRandomVectorScorer,
 };
@@ -34,9 +34,6 @@ use crate::util::Bits;
 ///
 /// * **One type instead of a sealed hierarchy**, matching on
 ///   [`VectorSimilarityFunction`] where Java has four subclasses.
-/// * **The caller narrows the input**, because Rust cannot test a
-///   `dyn IndexInput` for [`MemorySegmentAccessInput`]. `None` is still
-///   returned for Lucene's other reason: the data does not fit one segment.
 /// * **The kernels are scalar**, as explained on
 ///   [`MemorySegmentBulkVectorOps`].
 pub struct Lucene99MemorySegmentFloatVectorScorerSupplier {
@@ -60,12 +57,18 @@ impl std::fmt::Debug for Lucene99MemorySegmentFloatVectorScorerSupplier {
 }
 
 impl Lucene99MemorySegmentFloatVectorScorerSupplier {
-    /// Creates the supplier, or returns `None` when the vector data does not
-    /// fit in a single mapped segment.
+    /// Creates the supplier, or returns `None` when the input is not a
+    /// memory-segment input or its vector data does not fit in a single
+    /// mapped segment.
     ///
     /// Equivalent to
-    /// `Lucene99MemorySegmentFloatVectorScorerSupplier.create(VectorSimilarityFunction, IndexInput, FloatVectorValues)`,
-    /// minus the `instanceof` narrowing described on the type.
+    /// `Lucene99MemorySegmentFloatVectorScorerSupplier.create(VectorSimilarityFunction, IndexInput, FloatVectorValues)`
+    /// (`Lucene99MemorySegmentFloatVectorScorerSupplier.java:45-61`): the
+    /// input is unwrapped with [`FilterIndexInput::unwrap_only_test`], then
+    /// narrowed to a
+    /// [`MemorySegmentAccessInput`](crate::store::MemorySegmentAccessInput),
+    /// Java's `instanceof`, through
+    /// [`IndexInput::as_memory_segment_access_input`].
     ///
     /// # Errors
     ///
@@ -74,20 +77,48 @@ impl Lucene99MemorySegmentFloatVectorScorerSupplier {
     /// error raised while slicing the input.
     pub fn create(
         similarity: VectorSimilarityFunction,
-        input: &dyn MemorySegmentAccessInput,
+        input: &dyn IndexInput,
         values: Arc<dyn FloatVectorValues>,
     ) -> Result<Option<Self>> {
-        let Some(seg) = input.segment_slice_or_null(0, input.length())? else {
-            return Ok(None);
+        Ok(Self::create_or_decline(similarity, input, values)?.ok())
+    }
+
+    /// The body of [`create`](Self::create), which hands `values` back when
+    /// it declines — Java's `Optional.empty()` — instead of dropping them.
+    ///
+    /// Java's caller, `Lucene99MemorySegmentFlatVectorsScorer.getFloatScoringSupplier`
+    /// (`Lucene99MemorySegmentFlatVectorsScorer.java:51-63`), then passes the
+    /// same `vectorValues` to its delegate. `create` declines before it reads
+    /// the values, so the caller can hand over the values it owns and receive
+    /// them back unchanged; they are moved behind an [`Arc`] only when the
+    /// supplier is built.
+    ///
+    /// # Errors
+    ///
+    /// As [`create`](Self::create).
+    pub(crate) fn create_or_decline<V>(
+        similarity: VectorSimilarityFunction,
+        input: &dyn IndexInput,
+        values: V,
+    ) -> Result<std::result::Result<Self, V>>
+    where
+        V: std::ops::Deref<Target = dyn FloatVectorValues> + Into<Arc<dyn FloatVectorValues>>,
+    {
+        let input = FilterIndexInput::unwrap_only_test(input);
+        let Some(ms_input) = input.as_memory_segment_access_input() else {
+            return Ok(Err(values));
+        };
+        let Some(seg) = ms_input.segment_slice_or_null(0, ms_input.length())? else {
+            return Ok(Err(values));
         };
         Self::check_invariants(values.size(), values.vector_byte_length() as usize, input)?;
-        Ok(Some(Self {
+        Ok(Ok(Self {
             similarity,
             vector_byte_size: i64::from(values.vector_byte_length()),
             max_ord: values.size(),
             dims: values.dimension() as usize,
             seg,
-            values,
+            values: values.into(),
         }))
     }
 

@@ -23,6 +23,7 @@ import org.apache.lucene.index.IndexFormatTooOldException;
 import java.nio.file.Paths;
 import org.apache.lucene.store.ByteBuffersDataOutput;
 import org.apache.lucene.store.ByteBuffersDirectory;
+import org.apache.lucene.store.ChecksumIndexInput;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
@@ -52,6 +53,15 @@ import org.apache.lucene.store.NIOFSDirectory;
  * the index header through the plain input. A header whose codec name is not valid UTF-8 ({@code
  * badcodec.bin}) is read by {@code checkHeader}, whose {@code readString} decodes it leniently
  * ({@code DataInput.java:230-235}).
+ *
+ * <p>The footer checks read files that are too short for a footer ({@code tiny.bin}), a valid
+ * footer ({@code footer.bin}) against a wrong expected length and from a misplaced position, and
+ * footers whose magic ({@code badfooter.bin}), algorithm id ({@code badalgo.bin}), CRC bits
+ * ({@code badcrc.bin}) or checksum ({@code badsum.bin}) is wrong: {@code readFooter} ({@code
+ * CodecUtil.java:345-360}), {@code retrieveChecksum} ({@code CodecUtil.java:525-558}), {@code
+ * validateFooter} ({@code CodecUtil.java:560-598}), {@code checksumEntireFile} ({@code
+ * CodecUtil.java:606-621}), {@code readCRC} ({@code CodecUtil.java:629-635}) and {@code
+ * checkFooter} ({@code CodecUtil.java:432-445}), each naming its input as the resource.
  *
  * <p>{@code tests/codec_header_exceptions.rs} writes the two files, has this tool read them, and
  * reads them with Rucene. {@code write <dir>} writes them with Lucene instead.
@@ -173,6 +183,76 @@ public final class CodecHeaderFixture {
       out.writeByte((byte) BAD_SUFFIX.length);
       out.writeBytes(BAD_SUFFIX, BAD_SUFFIX.length);
     }
+    writeFooters(dir);
+  }
+
+  /** The files the footer checks read. */
+  static void writeFooters(Directory dir) throws Exception {
+    try (IndexOutput out = dir.createOutput("tiny.bin", IOContext.DEFAULT)) {
+      out.writeBytes(new byte[] {1, 2, 3, 4}, 4);
+    }
+    try (IndexOutput out = dir.createOutput("footer.bin", IOContext.DEFAULT)) {
+      CodecUtil.writeHeader(out, "TestCodec", 5);
+      out.writeBytes(new byte[] {7, 7, 7}, 3);
+      CodecUtil.writeFooter(out);
+    }
+    try (IndexOutput out = dir.createOutput("badfooter.bin", IOContext.DEFAULT)) {
+      out.writeBytes(new byte[20], 20);
+    }
+    try (IndexOutput out = dir.createOutput("badalgo.bin", IOContext.DEFAULT)) {
+      out.writeBytes(new byte[4], 4);
+      CodecUtil.writeBEInt(out, CodecUtil.FOOTER_MAGIC);
+      CodecUtil.writeBEInt(out, 1);
+      CodecUtil.writeBELong(out, 0L);
+    }
+    try (IndexOutput out = dir.createOutput("badcrc.bin", IOContext.DEFAULT)) {
+      out.writeBytes(new byte[4], 4);
+      CodecUtil.writeBEInt(out, CodecUtil.FOOTER_MAGIC);
+      CodecUtil.writeBEInt(out, 0);
+      CodecUtil.writeBELong(out, 0x100000000L);
+    }
+    try (IndexOutput out = dir.createOutput("badsum.bin", IOContext.DEFAULT)) {
+      out.writeBytes(new byte[4], 4);
+      CodecUtil.writeBEInt(out, CodecUtil.FOOTER_MAGIC);
+      CodecUtil.writeBEInt(out, 0);
+      CodecUtil.writeBELong(out, 12345L);
+    }
+  }
+
+  /**
+   * The footer checks. A checksum input seeks only forwards and cannot be cloned, so every check
+   * but {@code checkFooter} reads through the plain input.
+   */
+  static void readFooters(Directory dir) throws Exception {
+    report(dir, "tiny.bin", false, "read footer short", in -> CodecUtil.readFooter(in));
+    report(dir, "tiny.bin", false, "retrieve short", in -> CodecUtil.retrieveChecksum(in));
+    report(dir, "tiny.bin", false, "entire short", in -> CodecUtil.checksumEntireFile(in));
+    report(
+        dir,
+        "footer.bin",
+        false,
+        "expected longer",
+        in -> CodecUtil.retrieveChecksum(in, in.length() + 1));
+    report(
+        dir,
+        "footer.bin",
+        false,
+        "expected shorter",
+        in -> CodecUtil.retrieveChecksum(in, in.length() - 1));
+    report(dir, "badfooter.bin", false, "footer magic", in -> CodecUtil.retrieveChecksum(in));
+    report(dir, "badalgo.bin", false, "footer algorithm", in -> CodecUtil.readFooter(in));
+    report(dir, "badcrc.bin", false, "footer crc", in -> CodecUtil.retrieveChecksum(in));
+    report(dir, "badsum.bin", false, "entire checksum", in -> CodecUtil.checksumEntireFile(in));
+    report(dir, "footer.bin", true, "check footer extended", in -> CodecUtil.checkFooter((ChecksumIndexInput) in));
+    report(
+        dir,
+        "footer.bin",
+        true,
+        "check footer truncated",
+        in -> {
+          in.seek(in.length() - 10);
+          CodecUtil.checkFooter((ChecksumIndexInput) in);
+        });
   }
 
   static void read(Directory dir) throws Exception {
@@ -188,6 +268,7 @@ public final class CodecHeaderFixture {
         report(memory, "big.bin", checksum, p + "codec", in -> CodecUtil.checkHeader(in, "OtherCodec", 1, 10));
       }
     }
+    readFooters(dir);
     for (boolean checksum : new boolean[] {false, true}) {
       String p = checksum ? "checksum " : "plain ";
       report(dir, "plain.bin", checksum, p + "too-old", in -> CodecUtil.checkHeader(in, "TestCodec", 6, 10));

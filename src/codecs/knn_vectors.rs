@@ -1759,7 +1759,8 @@ mod tests {
         assert_eq!(format.name(), "EmptyKnn");
         assert_eq!(format.get_max_dimensions("field"), 0);
 
-        let dir: Arc<dyn crate::store::Directory> = Arc::new(crate::store::RamDirectory::default());
+        let dir: Arc<dyn crate::store::Directory> =
+            Arc::new(crate::store::ByteBuffersDirectory::default());
         let context = &*crate::store::DEFAULT_IO_CONTEXT;
         let field_infos = FieldInfos::default();
         let segment_info = crate::codecs::tests::test_segment_info("test", 10);

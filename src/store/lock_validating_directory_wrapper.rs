@@ -138,6 +138,12 @@ impl Directory for LockValidatingDirectoryWrapper {
         )
     }
 
+    /// A `FilterDirectory` subclass (`LockValidatingDirectoryWrapper.java:26`),
+    /// over its `in`.
+    fn as_filter_directory(&self) -> Option<&dyn Directory> {
+        Some(self.inner.get_delegate())
+    }
+
     fn ensure_open(&self) -> Result<()> {
         self.inner.ensure_open()
     }

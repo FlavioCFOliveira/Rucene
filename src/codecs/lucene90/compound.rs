@@ -465,6 +465,13 @@ impl Directory for Lucene90CompoundReader {
     fn get_pending_deletions(&self) -> Result<HashSet<String>> {
         Ok(HashSet::new())
     }
+
+    /// `Lucene90CompoundReader.toString()`
+    /// (`Lucene90CompoundReader.java:200-203`), which its [`std::fmt::Display`]
+    /// renders.
+    fn directory_to_string(&self) -> String {
+        self.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -472,7 +479,7 @@ mod tests {
     use super::*;
     use crate::codecs::codec_util;
     use crate::codecs::tests::test_segment_info;
-    use crate::store::RamDirectory;
+    use crate::store::ByteBuffersDirectory;
 
     fn write_dummy_file(
         dir: &dyn Directory,
@@ -507,7 +514,7 @@ mod tests {
     }
 
     /// Replaces `name` in `dir` with `bytes`.
-    fn overwrite(dir: &RamDirectory, name: &str, bytes: &[u8]) {
+    fn overwrite(dir: &ByteBuffersDirectory, name: &str, bytes: &[u8]) {
         dir.delete_file(name).unwrap();
         let mut out = dir
             .create_output(name, &*crate::store::DEFAULT_IO_CONTEXT)
@@ -516,7 +523,7 @@ mod tests {
         out.close().unwrap();
     }
 
-    fn read_all(dir: &RamDirectory, name: &str) -> Vec<u8> {
+    fn read_all(dir: &ByteBuffersDirectory, name: &str) -> Vec<u8> {
         let mut input = dir
             .open_input(name, &*crate::store::DEFAULT_IO_CONTEXT)
             .unwrap();
@@ -531,7 +538,7 @@ mod tests {
     /// (`Lucene90CompoundReader.java:86-94`).
     #[test]
     fn a_truncated_data_file_is_rejected_on_open() {
-        let dir = RamDirectory::default();
+        let dir = ByteBuffersDirectory::default();
         let info = write_compound(&dir);
         let mut cfs = read_all(&dir, "_0.cfs");
         // Drop sixteen bytes before the footer, keeping a well-formed footer.
@@ -572,7 +579,7 @@ mod tests {
     /// (`Lucene90CompoundReader.java:131-145`).
     #[test]
     fn a_duplicate_entry_id_is_rejected() {
-        let dir = RamDirectory::default();
+        let dir = ByteBuffersDirectory::default();
         let info = write_compound(&dir);
         dir.delete_file("_0.cfe").unwrap();
         let mut out = dir
@@ -610,7 +617,7 @@ mod tests {
     /// different order from the file's.
     #[test]
     fn a_missing_sub_file_lists_the_ids_in_java_order() {
-        let dir = RamDirectory::default();
+        let dir = ByteBuffersDirectory::default();
         let info = test_segment_info("_0", 10);
         info.set_files(HashSet::from([
             "_0.fdt".to_string(),
@@ -648,7 +655,7 @@ mod tests {
     /// the whole data file (`Lucene90CompoundReader.java:248-251`).
     #[test]
     fn sub_files_are_slices_of_the_data_file() {
-        let dir = RamDirectory::default();
+        let dir = ByteBuffersDirectory::default();
         let info = write_compound(&dir);
         let reader = Lucene90CompoundReader::new(&dir, &info).unwrap();
         reader.check_integrity().unwrap();
@@ -673,7 +680,7 @@ mod tests {
 
     #[test]
     fn round_trip_small_files() {
-        let dir = RamDirectory::default();
+        let dir = ByteBuffersDirectory::default();
         let format = Lucene90CompoundFormat::new();
         let info = test_segment_info("_0", 10);
         info.set_files(HashSet::from([

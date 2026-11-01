@@ -72,7 +72,7 @@ use rucene::index::{directory_reader, DirectoryReader, FieldNumbers, SegmentInfo
 use rucene::search::{
     FieldExistsQuery, IndexSearcher, KnnByteVectorQuery, KnnFloatVectorQuery, Query, NO_MORE_DOCS,
 };
-use rucene::store::{Directory, RamDirectory, DEFAULT_IO_CONTEXT};
+use rucene::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT};
 use rucene::util::Version;
 
 fn ensure_codec() {
@@ -495,7 +495,7 @@ fn two_segments(
     deletable: bool,
 ) -> (Arc<dyn Directory>, Arc<IndexWriter>) {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     if let Some(codec) = codec {
         config.set_codec(codec).unwrap();
@@ -639,7 +639,7 @@ fn merge_without_deleted(
     let id_at = segment_id_offset(&reference_file);
     let id: [u8; 16] = reference_file[id_at..id_at + 16].try_into().unwrap();
 
-    let target: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let target: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let segment_info = SegmentInfo::new(
         Arc::clone(&target),
         Version::LATEST,
@@ -687,7 +687,7 @@ fn merge_without_deleted(
 #[test]
 fn force_merge_turns_two_commits_into_one_segment_with_every_document() {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
     for id in ["a", "b"] {
         let mut doc = Document::new();
@@ -749,7 +749,7 @@ fn force_merge_turns_two_commits_into_one_segment_with_every_document() {
 #[test]
 fn the_committed_segment_info_carries_every_change_the_merge_made() {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
     for id in ["a", "b"] {
         let mut doc = Document::new();
@@ -999,7 +999,7 @@ fn force_merge_graph(
     doc: fn(i32) -> Document,
 ) -> Arc<dyn Directory> {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     if let Some(codec) = codec {
         config.set_codec(codec).unwrap();
@@ -1149,7 +1149,7 @@ fn a_merged_field_no_source_holds_fails_the_merge_without_a_panic() {
         "Lucene104HnswBinaryQuantizedVectorsFormat",
     ] {
         ensure_codec();
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let merging = Arc::new(AtomicBool::new(false));
         let config = || {
             let mut config = IndexWriterConfig::new();
@@ -1261,7 +1261,7 @@ fn the_quantized_merge_reports_each_fields_vector_count() {
         component: "QVEC",
         messages: std::sync::Mutex::new(Vec::new()),
     });
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config.set_codec(Arc::new(QuantizedCodec::new())).unwrap();
     config
@@ -1303,7 +1303,7 @@ fn segments_that_do_not_share_their_vector_fields_merge() {
         Some(Arc::new(QuantizedCodec::new()) as Arc<dyn Codec>),
     ] {
         ensure_codec();
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut config = IndexWriterConfig::new();
         if let Some(codec) = codec.clone() {
             config.set_codec(codec).unwrap();

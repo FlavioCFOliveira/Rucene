@@ -246,14 +246,14 @@ mod tests {
     use super::*;
     use crate::codecs::stub::FieldInfos;
     use crate::index::SegmentInfo;
-    use crate::store::RamDirectory;
+    use crate::store::ByteBuffersDirectory;
     use crate::util::{StringHelper, Version};
     use std::collections::HashMap;
     use std::sync::Arc;
 
     fn test_segment_info(name: &str, max_doc: i32) -> SegmentInfo {
         SegmentInfo::new(
-            Arc::new(RamDirectory::default()),
+            Arc::new(ByteBuffersDirectory::default()),
             Version::LUCENE_10_5_0,
             Some(Version::LUCENE_10_5_0),
             name.to_string(),
@@ -355,7 +355,7 @@ mod tests {
 
     #[test]
     fn fields_consumer_returns_writer() {
-        let dir: Arc<dyn crate::store::Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn crate::store::Directory> = Arc::new(ByteBuffersDirectory::default());
         let segment_info = test_segment_info("_0", 10);
         let field_infos = FieldInfos::default();
         let write_state = test_write_state(&dir, &segment_info, &field_infos);
@@ -379,7 +379,7 @@ mod tests {
 
     #[test]
     fn fields_producer_returns_reader_after_writing_empty_fields() {
-        let dir: Arc<dyn crate::store::Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn crate::store::Directory> = Arc::new(ByteBuffersDirectory::default());
         let dir_ref: &dyn crate::store::Directory = &*dir;
         let segment_info = test_segment_info("_0", 10);
         let field_infos = FieldInfos::default();

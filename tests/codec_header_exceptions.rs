@@ -26,6 +26,15 @@
 //! is read by `checkHeader`, whose `DataInput.readString` decodes it as the
 //! JDK does, never failing (`DataInput.java:230-235`); the codec mismatch it
 //! then raises carries the decoded name.
+//!
+//! The footer checks raise `CorruptIndexException(String, DataInput)` naming
+//! their input too: `readFooter` (`CodecUtil.java:345-360`),
+//! `retrieveChecksum` with and without an expected length
+//! (`CodecUtil.java:525-558`, whose messages print `expectedLength==`),
+//! `validateFooter` (`CodecUtil.java:560-598`), `checksumEntireFile`
+//! (`CodecUtil.java:606-621`, naming the input it was given, not its clone),
+//! `readCRC` (`CodecUtil.java:629-635`) and `checkFooter`
+//! (`CodecUtil.java:432-445`).
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -33,8 +42,8 @@ use std::process::Command;
 
 use rucene::codecs::codec_util;
 use rucene::store::{
-    ByteBuffersDataOutput, ByteBuffersDirectory, Directory, IndexInput, NIOFSDirectory,
-    DEFAULT_IO_CONTEXT,
+    BufferedChecksumIndexInput, ByteBuffersDataOutput, ByteBuffersDirectory, Directory, IndexInput,
+    NIOFSDirectory, DEFAULT_IO_CONTEXT,
 };
 use rucene::LuceneError;
 
@@ -115,6 +124,101 @@ fn report(
     }
 }
 
+/// [`report`] over a checksum input kept as one, for `checkFooter`.
+fn report_checksum(
+    out: &mut String,
+    dir: &dyn Directory,
+    file: &str,
+    label: &str,
+    check: impl Fn(&mut BufferedChecksumIndexInput) -> rucene::Result<i64>,
+) {
+    let mut input = dir.open_checksum_input(file).unwrap();
+    let outcome = check(&mut input);
+    input.close().unwrap();
+    match outcome {
+        Ok(_) => writeln!(out, "{label}: ok").unwrap(),
+        Err(LuceneError::CorruptIndex(message)) => {
+            writeln!(out, "{label}: CorruptIndexException: {}", escaped(&message)).unwrap();
+        }
+        Err(other) => panic!("{label}: unexpected {other:?}"),
+    }
+}
+
+/// `CodecHeaderFixture.writeFooters(dir)`.
+fn write_footers(dir: &dyn Directory) {
+    let write = |name: &str, fill: &dyn Fn(&mut dyn rucene::store::IndexOutput)| {
+        let mut output = dir.create_output(name, &*DEFAULT_IO_CONTEXT).unwrap();
+        fill(output.as_mut());
+        output.close().unwrap();
+    };
+    write("tiny.bin", &|out| {
+        out.write_bytes(&[1, 2, 3, 4], 0, 4).unwrap()
+    });
+    write("footer.bin", &|out| {
+        codec_util::write_header(out, "TestCodec", 5).unwrap();
+        out.write_bytes(&[7, 7, 7], 0, 3).unwrap();
+        codec_util::write_footer(out).unwrap();
+    });
+    write("badfooter.bin", &|out| {
+        out.write_bytes(&[0; 20], 0, 20).unwrap()
+    });
+    let footer = |out: &mut dyn rucene::store::IndexOutput, algorithm: i32, crc: i64| {
+        out.write_bytes(&[0; 4], 0, 4).unwrap();
+        codec_util::write_be_int(out, codec_util::FOOTER_MAGIC).unwrap();
+        codec_util::write_be_int(out, algorithm).unwrap();
+        codec_util::write_be_long(out, crc).unwrap();
+    };
+    write("badalgo.bin", &|out| footer(out, 1, 0));
+    write("badcrc.bin", &|out| footer(out, 0, 0x1_0000_0000));
+    write("badsum.bin", &|out| footer(out, 0, 12345));
+}
+
+/// `CodecHeaderFixture.readFooters(dir)`.
+fn read_footers(out: &mut String, dir: &dyn Directory) {
+    report(out, dir, "tiny.bin", false, "read footer short", |input| {
+        codec_util::read_footer(input).map(|_| 0)
+    });
+    report(out, dir, "tiny.bin", false, "retrieve short", |input| {
+        codec_util::retrieve_checksum(input).map(|_| 0)
+    });
+    report(out, dir, "tiny.bin", false, "entire short", |input| {
+        codec_util::checksum_entire_file(input).map(|_| 0)
+    });
+    report(out, dir, "footer.bin", false, "expected longer", |input| {
+        let length = input.length();
+        codec_util::retrieve_checksum_expected_length(input, length + 1).map(|_| 0)
+    });
+    report(out, dir, "footer.bin", false, "expected shorter", |input| {
+        let length = input.length();
+        codec_util::retrieve_checksum_expected_length(input, length - 1).map(|_| 0)
+    });
+    report(out, dir, "badfooter.bin", false, "footer magic", |input| {
+        codec_util::retrieve_checksum(input).map(|_| 0)
+    });
+    report(
+        out,
+        dir,
+        "badalgo.bin",
+        false,
+        "footer algorithm",
+        |input| codec_util::read_footer(input).map(|_| 0),
+    );
+    report(out, dir, "badcrc.bin", false, "footer crc", |input| {
+        codec_util::retrieve_checksum(input).map(|_| 0)
+    });
+    report(out, dir, "badsum.bin", false, "entire checksum", |input| {
+        codec_util::checksum_entire_file(input).map(|_| 0)
+    });
+    report_checksum(out, dir, "footer.bin", "check footer extended", |input| {
+        codec_util::check_footer(input)
+    });
+    report_checksum(out, dir, "footer.bin", "check footer truncated", |input| {
+        let target = IndexInput::length(input) - 10;
+        rucene::store::ChecksumIndexInput::seek(input, target)?;
+        codec_util::check_footer(input)
+    });
+}
+
 fn rucene_report(path: &Path) -> String {
     let dir = NIOFSDirectory::open(path).unwrap();
     let mut output = dir
@@ -159,6 +263,7 @@ fn rucene_report(path: &Path) -> String {
         .unwrap();
     codec_util::write_be_int(output.as_mut(), 5).unwrap();
     output.close().unwrap();
+    write_footers(&dir);
 
     let mut out = String::new();
     read_extra(&mut out, &dir);
@@ -192,6 +297,7 @@ fn rucene_report(path: &Path) -> String {
             |input| codec_util::check_header(input, "OtherCodec", 1, 10),
         );
     }
+    read_footers(&mut out, &dir);
     for checksum in [false, true] {
         let p = if checksum { "checksum " } else { "plain " };
         report(

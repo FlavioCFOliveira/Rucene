@@ -11,7 +11,7 @@ use crate::internal::vectorization::lucene99_memory_segment_byte_vector_scorer::
     check_invariants, check_ordinal,
 };
 use crate::internal::vectorization::MemorySegmentBulkVectorOps;
-use crate::store::{IndexInput, MemorySegment, MemorySegmentAccessInput};
+use crate::store::{FilterIndexInput, IndexInput, MemorySegment};
 use crate::util::hnsw::RandomVectorScorer;
 use crate::util::vector_util;
 use crate::util::Bits;
@@ -130,11 +130,6 @@ pub(crate) fn vector_op(
 ///   the port matches on [`VectorSimilarityFunction`] instead, in the
 ///   crate-private `vector_op` and `normalize_raw_score` helpers of this
 ///   module.
-/// * **The caller narrows the input.** Java's `create` takes an `IndexInput`,
-///   unwraps test filters and tests `instanceof MemorySegmentAccessInput`. Rust
-///   cannot test a trait object for another trait, so [`create`](Self::create)
-///   takes the narrowed [`MemorySegmentAccessInput`]. It still returns `None`
-///   for the other reason Lucene does: the file does not fit in one segment.
 /// * **The kernels are scalar**, as explained on
 ///   [`MemorySegmentBulkVectorOps`].
 pub struct Lucene99MemorySegmentFloatVectorScorer {
@@ -158,12 +153,17 @@ impl std::fmt::Debug for Lucene99MemorySegmentFloatVectorScorer {
 }
 
 impl Lucene99MemorySegmentFloatVectorScorer {
-    /// Creates the scorer, or returns `None` when the vector data does not fit
-    /// in a single mapped segment.
+    /// Creates the scorer, or returns `None` when the input is not a
+    /// memory-segment input or its vector data does not fit in a single
+    /// mapped segment.
     ///
     /// Equivalent to
-    /// `Lucene99MemorySegmentFloatVectorScorer.create(VectorSimilarityFunction, IndexInput, FloatVectorValues, float[])`,
-    /// minus the `instanceof` narrowing described on the type.
+    /// `Lucene99MemorySegmentFloatVectorScorer.create(VectorSimilarityFunction, IndexInput, FloatVectorValues, float[])`
+    /// (`Lucene99MemorySegmentFloatVectorScorer.java:44-60`): the input is
+    /// unwrapped with [`FilterIndexInput::unwrap_only_test`], then narrowed to
+    /// a [`MemorySegmentAccessInput`](crate::store::MemorySegmentAccessInput),
+    /// Java's `instanceof`, through
+    /// [`IndexInput::as_memory_segment_access_input`].
     ///
     /// # Errors
     ///
@@ -172,11 +172,15 @@ impl Lucene99MemorySegmentFloatVectorScorer {
     /// error raised while slicing the input.
     pub fn create(
         similarity: VectorSimilarityFunction,
-        input: &dyn MemorySegmentAccessInput,
+        input: &dyn IndexInput,
         values: Arc<dyn FloatVectorValues>,
         query: &[f32],
     ) -> Result<Option<Self>> {
-        let Some(seg) = input.segment_slice_or_null(0, input.length())? else {
+        let input = FilterIndexInput::unwrap_only_test(input);
+        let Some(ms_input) = input.as_memory_segment_access_input() else {
+            return Ok(None);
+        };
+        let Some(seg) = ms_input.segment_slice_or_null(0, ms_input.length())? else {
             return Ok(None);
         };
         Self::check_invariants(values.size(), values.vector_byte_length() as usize, input)?;

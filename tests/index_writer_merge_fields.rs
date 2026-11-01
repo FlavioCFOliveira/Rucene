@@ -54,7 +54,7 @@ use rucene::index::index_writer_config::IndexWriterConfig;
 use rucene::index::terms::Term;
 use rucene::index::{directory_reader, DirectoryReader, IndexOptions, SegmentInfos};
 use rucene::search::{IndexSearcher, Query, TermQuery, NO_MORE_DOCS};
-use rucene::store::{Directory, RamDirectory, DEFAULT_IO_CONTEXT};
+use rucene::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT};
 use rucene::util::BytesRef;
 
 // ---------------------------------------------------------------------------
@@ -285,7 +285,7 @@ fn ensure_codec() {
 /// deletions, and force-merges them into one segment, as the fixture does.
 fn rust_merge(case: Case) -> Arc<dyn Directory> {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
     let mut i = 0;
     for (seg, &size) in case.sizes.iter().enumerate() {
@@ -894,7 +894,7 @@ fn a_merge_of_every_kind_of_field_with_deletions_is_lucenes() {
 /// multiples of six — preceded by its negative word count.
 fn index_with_patched_bit_set_block(patch: impl Fn(&mut [u8])) -> Arc<dyn Directory> {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
     for i in 0..3000 {
         let mut doc = Document::new();
@@ -912,7 +912,7 @@ fn index_with_patched_bit_set_block(patch: impl Fn(&mut [u8])) -> Arc<dyn Direct
         first_word |= 1 << bit;
     }
     let pattern = first_word.to_le_bytes();
-    let copy: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let copy: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut patched = 0;
     for name in dir.list_all().unwrap() {
         let mut bytes = read_file(dir.as_ref(), &name);
@@ -1000,7 +1000,7 @@ fn a_corrupt_bit_set_postings_block_is_an_error_not_a_panic() {
 #[test]
 fn advance_into_a_bit_set_block_reads_each_documents_frequency() {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
     for i in 0..3000 {
         let mut doc = Document::new();

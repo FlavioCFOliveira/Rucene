@@ -26,7 +26,7 @@ use rucene::codecs::{register_codec, Codec, Lucene104Codec};
 use rucene::index::{
     FieldInfo, FieldInfos, SegmentInfo, StoredFieldVisitor, StoredFieldVisitorStatus,
 };
-use rucene::store::{Directory, RamDirectory, DEFAULT_IO_CONTEXT};
+use rucene::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT};
 use rucene::util::string_helper::StringHelper;
 use rucene::util::Version;
 
@@ -168,7 +168,7 @@ fn corrupt_copy(
     at: usize,
     value: u8,
 ) -> Arc<dyn Directory> {
-    let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     for extension in EXTENSIONS {
         let name = format!("_0.{extension}");
         let mut bytes = read_file(original, &name);
@@ -183,7 +183,7 @@ fn corrupt_copy(
 #[test]
 fn every_value_at_every_byte_of_the_data_file_is_survived() {
     const DOCS: i32 = 12;
-    let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let info = segment_info(&directory, DOCS);
     write_segment(&directory, &info, DOCS);
 
@@ -235,7 +235,7 @@ fn every_value_at_every_byte_of_the_data_file_is_survived() {
 #[test]
 fn every_value_at_every_byte_of_the_index_files_is_survived() {
     const DOCS: i32 = 8;
-    let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let info = segment_info(&directory, DOCS);
     write_segment(&directory, &info, DOCS);
 
@@ -282,13 +282,13 @@ fn every_value_at_every_byte_of_the_index_files_is_survived() {
 #[test]
 fn a_truncated_data_file_is_survived_at_every_length() {
     const DOCS: i32 = 8;
-    let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let info = segment_info(&directory, DOCS);
     write_segment(&directory, &info, DOCS);
 
     let original = read_file(&directory, "_0.fdt");
     for length in (0..original.len()).step_by(3) {
-        let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         write_file(&corrupt, "_0.fdt", &original[..length]);
         for extension in ["fdx", "fdm"] {
             let name = format!("_0.{extension}");
@@ -324,7 +324,7 @@ fn a_valid_segment_still_reads_after_all_that() {
     // producing a readable segment, every corruption would be "survived" by
     // failing to open, and the tests would prove nothing.
     const DOCS: i32 = 8;
-    let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let info = segment_info(&directory, DOCS);
     write_segment(&directory, &info, DOCS);
 

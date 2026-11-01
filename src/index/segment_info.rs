@@ -1408,7 +1408,7 @@ mod tests {
     use crate::codecs::tests::DummyCodec;
     use crate::codecs::FilterCodec;
     use crate::index::FieldInfos;
-    use crate::store::{DefaultIOContext, Directory, RamDirectory};
+    use crate::store::{ByteBuffersDirectory, DefaultIOContext, Directory};
     use crate::util::Version;
     use std::sync::Arc;
 
@@ -1420,7 +1420,7 @@ mod tests {
     }
 
     fn test_segment_info(name: &str, max_doc: i32) -> SegmentInfo {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         SegmentInfo::new(
             dir,
             Version::LUCENE_10_5_0,
@@ -1453,7 +1453,7 @@ mod tests {
         assert_eq!(info.max_doc().unwrap(), 7);
         assert!(info.set_max_doc(8).is_err(), "maxDoc may only be set once");
 
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let error = SegmentInfo::new(
             dir,
             Version::LUCENE_10_5_0,
@@ -1569,7 +1569,7 @@ mod tests {
         let info = test_segment_info("_0", UNSET_MAX_DOC);
         assert!(info.max_doc().is_err());
 
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let result = SegmentInfo::new(
             dir,
             Version::LUCENE_10_5_0,
@@ -1629,7 +1629,7 @@ mod tests {
 
     #[test]
     fn segment_read_state_new() {
-        let dir: &dyn Directory = &RamDirectory::default();
+        let dir: &dyn Directory = &ByteBuffersDirectory::default();
         let info = test_segment_info("_0", 10);
         let field_infos = FieldInfos::default();
         let ctx: &dyn crate::store::IOContext = &DefaultIOContext::default();
@@ -1645,7 +1645,7 @@ mod tests {
     #[test]
     fn segment_write_state_new() {
         let info_stream: &dyn crate::util::InfoStream = crate::util::default_info_stream();
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let info = test_segment_info("_0", 10);
         let field_infos = FieldInfos::default();
         let seg_updates = crate::codecs::stub::BufferedUpdates::default();

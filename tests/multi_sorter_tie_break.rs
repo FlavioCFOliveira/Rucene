@@ -20,13 +20,13 @@ use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::IndexWriterConfig;
 use rucene::index::LeafReader;
 use rucene::search::{SortField, SortFieldType};
-use rucene::store::{Directory, RamDirectory};
+use rucene::store::{ByteBuffersDirectory, Directory};
 
 /// `MultiSorterTieFixture.READERS`.
 const READERS: [&[i64]; 3] = [&[1, 2], &[1, 2], &[2]];
 
 fn reader(values: &[i64]) -> Arc<dyn LeafReader> {
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
     for &value in values {
         let mut document = Document::new();

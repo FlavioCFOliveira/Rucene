@@ -11,14 +11,14 @@ use std::sync::Arc;
 use rucene::index::merge_scheduler::{
     CombinedMergeScheduler, MergeScheduler, MultiIndexMergeScheduler,
 };
-use rucene::store::{Directory, RamDirectory};
+use rucene::store::{ByteBuffersDirectory, Directory};
 
 /// The singleton is created on first use and closed and dropped with its last
 /// user.
 #[test]
 fn the_combined_singleton_lives_while_a_scheduler_uses_it() {
     assert!(CombinedMergeScheduler::peek_singleton().is_none());
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let first = MultiIndexMergeScheduler::new(Arc::clone(&dir));
     let second = MultiIndexMergeScheduler::new(Arc::clone(&dir));
     assert!(Arc::ptr_eq(

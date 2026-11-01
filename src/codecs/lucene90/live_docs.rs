@@ -255,7 +255,7 @@ fn radix36(value: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::RamDirectory;
+    use crate::store::ByteBuffersDirectory;
 
     fn make_info(name: &str, max_doc: i32, del_count: i32, del_gen: i64) -> SegmentCommitInfo {
         let info = crate::codecs::tests::test_segment_info(name, max_doc);
@@ -271,7 +271,7 @@ mod tests {
 
     #[test]
     fn round_trip_dense_live_docs() {
-        let dir = RamDirectory::default();
+        let dir = ByteBuffersDirectory::default();
         let format = Lucene90LiveDocsFormat::new();
         let info = make_info("_0", 100, 0, -1);
 
@@ -303,7 +303,7 @@ mod tests {
 
     #[test]
     fn round_trip_sparse_live_docs() {
-        let dir = RamDirectory::default();
+        let dir = ByteBuffersDirectory::default();
         let format = Lucene90LiveDocsFormat::new();
         let info = make_info("_0", 1000, 0, -1);
 
