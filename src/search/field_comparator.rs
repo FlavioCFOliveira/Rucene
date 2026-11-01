@@ -9,9 +9,8 @@ use std::fmt::Debug;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::error::Result;
-use crate::index::{BinaryDocValues, LeafReaderContext};
+use crate::index::{BinaryDocValues, DocValues, LeafReaderContext};
 use crate::search::doc_id_set_iterator::DocIdSetIterator;
-use crate::search::doc_values_access::get_binary;
 use crate::search::leaf_field_comparator::LeafFieldComparator;
 use crate::search::scorable::Scorable;
 use crate::util::BytesRef;
@@ -779,7 +778,7 @@ impl SlotComparator for TermValComparator {
 
     fn new_leaf(&mut self, context: &LeafReaderContext) -> Result<Box<dyn BinaryDocValues>> {
         let reader = context.leaf_reader();
-        get_binary(reader.as_ref(), &self.field)
+        DocValues::get_binary(reader.as_ref(), &self.field)
     }
 
     fn set_bottom(&mut self, _leaf: &mut Self::Leaf, slot: i32) -> Result<()> {

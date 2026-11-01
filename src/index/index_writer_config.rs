@@ -16,7 +16,7 @@
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::fmt::{self, Debug, Formatter};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, OnceLock, Weak};
 
 use crate::analysis::{Analyzer, StandardAnalyzer};
 use crate::codecs::{get_default, Codec};
@@ -179,6 +179,24 @@ pub struct LiveIndexWriterConfig {
     max_full_flush_merge_wait_millis: i64,
     event_listener: Arc<dyn IndexWriterEventListener>,
     parent_field: Option<String>,
+    /// The writer this configuration is attached to.
+    ///
+    /// Equivalent to `IndexWriterConfig.writer`, a `SetOnce<IndexWriter>`
+    /// (`IndexWriterConfig.java:110-112`) that `IndexWriter`'s constructor
+    /// sets through `setIndexWriter` (`IndexWriter.java:951`) and
+    /// `IndexWriterConfig.toString()` prints (`IndexWriterConfig.java:499-504`).
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java keeps the field on
+    /// `IndexWriterConfig`, and `IndexWriter` keeps that `IndexWriterConfig`
+    /// object itself in its `LiveIndexWriterConfig config` field, so
+    /// `writer.getConfig().toString()` and `messageState` dispatch to
+    /// `IndexWriterConfig.toString()` and print the `writer=` line. This
+    /// port's `IndexWriter` keeps the `LiveIndexWriterConfig`
+    /// [`IndexWriterConfig::into_live`] unwraps, so the field travels with it:
+    /// `None` for a configuration built as a plain `LiveIndexWriterConfig`
+    /// (whose Java `toString()` has no `writer=` line), `Some` for one built
+    /// by an [`IndexWriterConfig`], whose `toString()` it reproduces.
+    index_writer: Option<OnceLock<Weak<dyn IndexWriterTrait>>>,
 }
 
 impl LiveIndexWriterConfig {
@@ -256,6 +274,31 @@ impl LiveIndexWriterConfig {
             max_full_flush_merge_wait_millis: Self::DEFAULT_MAX_FULL_FLUSH_MERGE_WAIT_MILLIS,
             event_listener: Arc::new(NoOpIndexWriterEventListener),
             parent_field: None,
+            index_writer: None,
+        }
+    }
+
+    /// Records the writer this configuration is attached to.
+    ///
+    /// Equivalent to the package-private `IndexWriterConfig.setIndexWriter`
+    /// (`IndexWriterConfig.java:119-125`), which `IndexWriter`'s constructor
+    /// calls (`IndexWriter.java:951`) and which refuses a configuration that is
+    /// already attached, so one configuration cannot serve two writers. A
+    /// configuration built as a plain `LiveIndexWriterConfig` has no such field
+    /// in Java and records nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] if the configuration is already
+    /// attached to a writer.
+    pub(crate) fn attach_writer(&self, writer: Weak<dyn IndexWriterTrait>) -> Result<()> {
+        match &self.index_writer {
+            Some(slot) => slot.set(writer).map_err(|_| {
+                LuceneError::illegal_state(
+                    "do not share IndexWriterConfig instances across IndexWriters".to_string(),
+                )
+            }),
+            None => Ok(()),
         }
     }
 
@@ -589,7 +632,25 @@ impl fmt::Display for LiveIndexWriterConfig {
             f,
             "parentField={}",
             self.parent_field.as_deref().unwrap_or("null")
-        )
+        )?;
+        // `IndexWriterConfig.toString()` appends one `writer=` line carrying
+        // `writer.get()` (`IndexWriterConfig.java:499-504`); see the note on
+        // `index_writer`. `IndexWriter` declares no `toString()`, so an
+        // attached writer renders as `Object.toString()` does.
+        if let Some(slot) = &self.index_writer {
+            match slot.get().and_then(Weak::upgrade) {
+                Some(writer) => writeln!(
+                    f,
+                    "writer={}",
+                    crate::index::index_reader::java_object_to_string(
+                        "org.apache.lucene.index.IndexWriter",
+                        writer.as_ref(),
+                    )
+                )?,
+                None => writeln!(f, "writer=null")?,
+            }
+        }
+        Ok(())
     }
 }
 
@@ -605,8 +666,9 @@ impl fmt::Display for LiveIndexWriterConfig {
 ///
 /// Equivalent to `org.apache.lucene.index.IndexWriterConfig`.
 pub struct IndexWriterConfig {
+    /// The live settings, and the `writer` field Java keeps on this class
+    /// (see the note on that field of [`LiveIndexWriterConfig`]).
     live: LiveIndexWriterConfig,
-    writer: Option<Weak<dyn IndexWriterTrait>>,
 }
 
 impl IndexWriterConfig {
@@ -618,50 +680,19 @@ impl IndexWriterConfig {
 
     /// Creates a new config using the provided analyzer and the default codec.
     pub fn with_analyzer(analyzer: Arc<dyn Analyzer>) -> Self {
-        Self {
-            live: LiveIndexWriterConfig::new(analyzer),
-            writer: None,
-        }
-    }
-
-    /// Records that this config is attached to a writer.
-    ///
-    /// This is the Rust equivalent of the package-private Java
-    /// `IndexWriterConfig.setIndexWriter`.  It prevents a single config from
-    /// being shared across writers.
-    ///
-    /// # Errors
-    ///
-    /// Returns `LuceneError::IllegalState` if the config is already attached.
-    #[allow(dead_code)]
-    pub(crate) fn attach_writer(
-        &mut self,
-        writer: Weak<dyn IndexWriterTrait>,
-    ) -> Result<&mut Self> {
-        if self.writer.is_some() {
-            return Err(LuceneError::illegal_state(
-                "do not share IndexWriterConfig instances across IndexWriters".to_string(),
-            ));
-        }
-        self.writer = Some(writer);
-        Ok(self)
-    }
-
-    /// Returns the live config wrapped by this configuration.
-    pub fn live(&self) -> &LiveIndexWriterConfig {
-        &self.live
-    }
-
-    /// Returns a mutable reference to the live config.
-    pub fn live_mut(&mut self) -> &mut LiveIndexWriterConfig {
-        &mut self.live
+        let mut live = LiveIndexWriterConfig::new(analyzer);
+        // `private SetOnce<IndexWriter> writer = new SetOnce<>()`
+        // (`IndexWriterConfig.java:112`).
+        live.index_writer = Some(OnceLock::new());
+        Self { live }
     }
 
     /// Consumes this config and returns the live config it wraps.
     ///
-    /// `IndexWriter` takes ownership of the live config at construction, which
-    /// is what makes a config unusable with a second writer, as Java enforces
-    /// through its `writer` field.
+    /// `IndexWriter` takes ownership of the live config at construction and
+    /// attaches itself to it
+    /// (`LiveIndexWriterConfig::attach_writer`, Java's `setIndexWriter`), so
+    /// the `writer=` line of `toString()` follows the configuration.
     pub fn into_live(self) -> LiveIndexWriterConfig {
         self.live
     }
@@ -1082,25 +1113,13 @@ impl fmt::Display for IndexWriterConfig {
     /// Equivalent to `IndexWriterConfig.toString()`
     /// (`IndexWriterConfig.java:499-504`): everything
     /// [`LiveIndexWriterConfig`]'s own `toString()` writes, then one
-    /// `writer=` line carrying `writer.get()`.
+    /// `writer=` line carrying `writer.get()`, which the live configuration
+    /// this one wraps renders (see the note on its `index_writer` field).
     ///
     /// Java's `writer` is a `SetOnce<IndexWriter>` whose `get()` is `null`
-    /// until [`attach_writer`](Self::attach_writer) is called, and `IndexWriter`
-    /// declares no `toString()`, so an attached writer renders as
-    /// `Object.toString()` does.
+    /// until an `IndexWriter` attaches itself.
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.live, f)?;
-        match self.writer.as_ref().and_then(std::sync::Weak::upgrade) {
-            Some(writer) => writeln!(
-                f,
-                "writer={}",
-                crate::index::index_reader::java_object_to_string(
-                    "org.apache.lucene.index.IndexWriter",
-                    writer.as_ref(),
-                )
-            ),
-            None => writeln!(f, "writer=null"),
-        }
+        fmt::Display::fmt(&self.live, f)
     }
 }
 
@@ -1161,7 +1180,6 @@ impl Debug for IndexWriterConfig {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IndexWriterConfig")
             .field("live", &self.live)
-            .field("writer", &self.writer.as_ref().map(|_| "<weak>"))
             .finish()
     }
 }
@@ -1466,10 +1484,15 @@ mod tests {
 
     #[test]
     fn attach_writer_prevents_reuse() {
-        let mut config = new_config();
+        let live = new_config().into_live();
         let writer: Arc<dyn IndexWriterTrait> = Arc::new(DummyIndexWriter);
-        assert!(config.attach_writer(Arc::downgrade(&writer)).is_ok());
-        assert!(config.attach_writer(Arc::downgrade(&writer)).is_err());
+        assert!(live.attach_writer(Arc::downgrade(&writer)).is_ok());
+        let error = live.attach_writer(Arc::downgrade(&writer)).unwrap_err();
+        assert!(
+            matches!(&error, LuceneError::IllegalState { message, .. }
+                if message == "do not share IndexWriterConfig instances across IndexWriters"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -1511,6 +1534,10 @@ mod tests {
 
         fn is_closed(&self) -> bool {
             false
+        }
+
+        fn segment_infos(&self) -> Result<crate::index::SegmentInfos> {
+            Err(LuceneError::illegal_state("dummy".to_string()))
         }
 
         fn get_directory(&self) -> Arc<dyn crate::store::Directory> {

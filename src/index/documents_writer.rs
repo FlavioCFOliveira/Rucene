@@ -510,16 +510,6 @@ impl BufferedUpdates {
         }
     }
 
-    /// Returns the segment name this buffer belongs to.
-    pub fn segment_name(&self) -> &str {
-        &self.segment_name
-    }
-
-    /// Returns the delete-queue generation assigned to this buffer.
-    pub fn generation(&self) -> i64 {
-        self.gen
-    }
-
     /// Sets the delete-queue generation of this buffer.
     pub fn set_generation(&mut self, gen: i64) {
         self.gen = gen;
@@ -830,7 +820,6 @@ pub struct FrozenBufferedUpdates {
     /// what `FieldUpdatesBuffer.finish()` charged — narrowed to an `int`.
     bytes_used: i64,
     private_segment_name: Option<String>,
-    delete_queue_generation: i64,
     /// The generation `BufferedUpdatesStream.push` assigned to this packet, or
     /// `-1` while it has not been pushed.
     ///
@@ -898,15 +887,11 @@ impl std::fmt::Display for FrozenBufferedUpdates {
 }
 
 impl FrozenBufferedUpdates {
-    /// Freezes `updates`, recording the delete-queue generation they came from.
+    /// Freezes `updates`.
     ///
     /// `private_segment_name` is `Some` for segment-private deletes and `None`
     /// for a global packet.
-    pub fn new(
-        mut updates: BufferedUpdates,
-        private_segment_name: Option<String>,
-        delete_queue_generation: i64,
-    ) -> Self {
+    pub fn new(mut updates: BufferedUpdates, private_segment_name: Option<String>) -> Self {
         // `PrefixCodedTerms.Builder builder = ...;
         // updates.deleteTerms.forEachOrdered((term, doc) -> builder.add(term));`
         // (`FrozenBufferedUpdates.java:87-89`).
@@ -948,7 +933,6 @@ impl FrozenBufferedUpdates {
             delete_terms: Mutex::new(delete_terms),
             bytes_used,
             private_segment_name,
-            delete_queue_generation,
             del_gen: AtomicI64::new(-1),
             total_del_count: AtomicI64::new(0),
             apply_lock: Mutex::new(()),
@@ -1000,11 +984,6 @@ impl FrozenBufferedUpdates {
     /// Returns the segment these deletes are private to, if any.
     pub fn private_segment_name(&self) -> Option<&str> {
         self.private_segment_name.as_deref()
-    }
-
-    /// Returns the generation of the delete queue that produced this packet.
-    pub fn delete_queue_generation(&self) -> i64 {
-        self.delete_queue_generation
     }
 
     /// Returns `true` when the packet carries no deletes at all.
@@ -2392,7 +2371,6 @@ impl DocumentsWriterDeleteQueue {
             Ok(Some(FrozenBufferedUpdates::new(
                 global.updates.take(),
                 None,
-                self.generation,
             )))
         } else {
             Ok(None)
@@ -3349,7 +3327,6 @@ pub struct DocumentsWriterPerThread {
     index_writer_config: Arc<LiveIndexWriterConfig>,
     info_stream: Arc<dyn InfoStream>,
     pending_num_docs: Arc<AtomicI64>,
-    max_docs: Arc<AtomicI32>,
     enable_test_points: bool,
     index_major_version_created: i32,
     has_parent_field: bool,
@@ -3522,7 +3499,6 @@ impl DocumentsWriterPerThread {
         delete_queue: Arc<DocumentsWriterDeleteQueue>,
         field_infos: FieldInfosBuilder,
         pending_num_docs: Arc<AtomicI64>,
-        max_docs: Arc<AtomicI32>,
         enable_test_points: bool,
         indexing_chain: Box<dyn IndexingChain>,
     ) -> Result<Self> {
@@ -3567,7 +3543,6 @@ impl DocumentsWriterPerThread {
             info_stream,
             index_writer_config,
             pending_num_docs,
-            max_docs,
             enable_test_points,
             index_major_version_created,
             has_parent_field,
@@ -3759,7 +3734,9 @@ impl DocumentsWriterPerThread {
         if n == 0 {
             return Ok(());
         }
-        let max_docs = i64::from(self.max_docs.load(Ordering::Acquire));
+        // `final int maxDocs = IndexWriter.getActualMaxDocs()`
+        // (`DocumentsWriterPerThread.java:231`).
+        let max_docs = i64::from(crate::index::index_writer::get_actual_max_docs());
         loop {
             let current = self.pending_num_docs.load(Ordering::Acquire);
             let next = current + i64::from(n);
@@ -3778,12 +3755,19 @@ impl DocumentsWriterPerThread {
         }
     }
 
+    /// Equivalent to the private `DocumentsWriterPerThread.reserveOneDoc()`
+    /// (`DocumentsWriterPerThread.java:211-218`), which checks the reservation
+    /// against `IndexWriter.getActualMaxDocs()` and reads that limit again for
+    /// the message.
     fn reserve_one_doc(&self) -> Result<()> {
-        let max_docs = i64::from(self.max_docs.load(Ordering::Acquire));
-        if self.pending_num_docs.fetch_add(1, Ordering::AcqRel) + 1 > max_docs {
+        if self.pending_num_docs.fetch_add(1, Ordering::AcqRel) + 1
+            > i64::from(crate::index::index_writer::get_actual_max_docs())
+        {
+            // Reserve failed: put the one doc back and throw exc.
             self.pending_num_docs.fetch_sub(1, Ordering::AcqRel);
             return Err(LuceneError::IllegalArgument(format!(
-                "number of documents in the index cannot exceed {max_docs}"
+                "number of documents in the index cannot exceed {}",
+                crate::index::index_writer::get_actual_max_docs()
             )));
         }
         Ok(())
@@ -3868,16 +3852,6 @@ impl DwptGuard {
         self.state
             .as_mut()
             .expect("INVARIANT: state is only taken in Drop")
-    }
-
-    /// Returns the indexing chain of this DWPT.
-    pub fn indexing_chain(&self) -> &dyn IndexingChain {
-        self.state().indexing_chain.as_ref()
-    }
-
-    /// Returns the segment's field-info builder.
-    pub fn field_infos(&self) -> &FieldInfosBuilder {
-        &self.state().field_infos
     }
 
     /// Returns the deletes buffered for this segment.
@@ -4434,15 +4408,62 @@ impl DwptGuard {
                 Some(FrozenBufferedUpdates::new(
                     updates.take(),
                     Some(segment_name),
-                    self.dwpt.delete_queue.generation(),
                 ))
             }
         };
 
+        // `DocumentsWriterPerThread.java:515-537`.
         if self.dwpt.info_stream.is_enabled("DWPT") {
-            self.dwpt
-                .info_stream
-                .message("DWPT", &format!("new segment has {del_count} deleted docs"));
+            let info_stream = &self.dwpt.info_stream;
+            info_stream.message("DWPT", &format!("new segment has {del_count} deleted docs"));
+            info_stream.message(
+                "DWPT",
+                &format!("new segment has {soft_del_count} soft-deleted docs"),
+            );
+            info_stream.message(
+                "DWPT",
+                &format!(
+                    "new segment has {}; {}; {}; {}; {}",
+                    if field_infos.has_term_vectors() {
+                        "vectors"
+                    } else {
+                        "no vectors"
+                    },
+                    if field_infos.has_norms() {
+                        "norms"
+                    } else {
+                        "no norms"
+                    },
+                    if field_infos.has_doc_values() {
+                        "docValues"
+                    } else {
+                        "no docValues"
+                    },
+                    if field_infos.has_prox() {
+                        "prox"
+                    } else {
+                        "no prox"
+                    },
+                    if field_infos.has_freq() {
+                        "freqs"
+                    } else {
+                        "no freqs"
+                    }
+                ),
+            );
+            // `"flushedFiles=" + segmentInfoPerCommit.files()`: the
+            // `java.util.HashSet` rendered in its own iteration order.
+            let flushed_files: Vec<String> = segment_commit_info
+                .files_ordered()?
+                .iter()
+                .cloned()
+                .collect();
+            info_stream.message(
+                "DWPT",
+                &format!("flushedFiles=[{}]", flushed_files.join(", ")),
+            );
+            // `"flushed codec=" + codec`: `Codec.toString()` is its name.
+            info_stream.message("DWPT", &format!("flushed codec={}", self.dwpt.codec.name()));
         }
 
         // `packableSortMap != null ? packableSortMap.pack() : null`: use a
@@ -4836,6 +4857,12 @@ impl DocumentsWriterPerThreadPool {
             .iter()
             .position(|d| Arc::ptr_eq(d, guard.dwpt()))
         else {
+            // `assert freeList.contains(perThread) == false`
+            // (`DocumentsWriterPerThreadPool.java:197`).
+            debug_assert!(
+                !self.free_list.contains(guard.dwpt()),
+                "a DWPT that left the pool must not stay in the free list"
+            );
             return false;
         };
         state.dwpts.swap_remove(position);
@@ -5147,11 +5174,6 @@ impl DocumentsWriterFlushControl {
         self.closed.store(true, Ordering::Release);
         let mut inner = self.lock();
         self.update_stall_state_locked(&mut inner);
-    }
-
-    /// Returns `true` once the flush control has been closed.
-    pub fn is_closed(&self) -> bool {
-        self.closed.load(Ordering::Acquire)
     }
 
     /// Accounts a freshly indexed document and returns a DWPT to flush, if the
@@ -5833,7 +5855,6 @@ pub struct DocumentsWriter {
     config: Arc<LiveIndexWriterConfig>,
     info_stream: Arc<dyn InfoStream>,
     pending_num_docs: Arc<AtomicI64>,
-    max_docs: Arc<AtomicI32>,
     flush_notifications: Arc<dyn FlushNotifications>,
     ticket_queue: DocumentsWriterFlushQueue,
     per_thread_pool: Arc<DocumentsWriterPerThreadPool>,
@@ -5881,13 +5902,11 @@ impl DocumentsWriter {
         let info_stream = config.info_stream();
         let delete_queue = Arc::new(DocumentsWriterDeleteQueue::new(Arc::clone(&info_stream)));
         let shared = Arc::new(DocumentsWriterShared::new(delete_queue));
-        let max_docs = Arc::new(AtomicI32::new(MAX_DOCS));
 
         let per_thread_pool = {
             let shared = Arc::clone(&shared);
             let config = Arc::clone(&config);
             let pending_num_docs = Arc::clone(&pending_num_docs);
-            let max_docs = Arc::clone(&max_docs);
             Arc::new(DocumentsWriterPerThreadPool::new(move || {
                 DocumentsWriterPerThread::new(
                     index_created_version_major,
@@ -5898,7 +5917,6 @@ impl DocumentsWriter {
                     shared.delete_queue(),
                     FieldInfosBuilder::new(Arc::clone(&global_field_numbers)),
                     Arc::clone(&pending_num_docs),
-                    Arc::clone(&max_docs),
                     enable_test_points,
                     indexing_chain_factory(&config),
                 )
@@ -5916,7 +5934,6 @@ impl DocumentsWriter {
             info_stream,
             config,
             pending_num_docs,
-            max_docs,
             flush_notifications,
             ticket_queue: DocumentsWriterFlushQueue::new(),
             per_thread_pool,
@@ -5972,24 +5989,6 @@ impl DocumentsWriter {
     /// Returns the ticket queue holding flushed segments awaiting publication.
     pub fn ticket_queue(&self) -> &DocumentsWriterFlushQueue {
         &self.ticket_queue
-    }
-
-    /// Lowers the per-index document limit; intended for tests.
-    ///
-    /// Equivalent to `IndexWriter.setMaxDocs(int)`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalArgument`] if `max_docs` exceeds
-    /// [`MAX_DOCS`].
-    pub fn set_max_docs(&self, max_docs: i32) -> Result<()> {
-        if max_docs > MAX_DOCS {
-            return Err(LuceneError::IllegalArgument(format!(
-                "maxDocs must be <= {MAX_DOCS}; got: {max_docs}"
-            )));
-        }
-        self.max_docs.store(max_docs, Ordering::Release);
-        Ok(())
     }
 
     /// Number of documents buffered in RAM.
@@ -7020,7 +7019,7 @@ mod tests {
         builder.add(&term("id", "b")).unwrap();
         let frozen_terms_ram = builder.finish().ram_bytes_used();
 
-        let frozen = FrozenBufferedUpdates::new(updates, None, 1);
+        let frozen = FrozenBufferedUpdates::new(updates, None);
         let finished = frozen.updates().field_updates_bytes_used;
         assert!(
             finished > field_updates_before_finish,
@@ -7045,7 +7044,6 @@ mod tests {
             .expect("a packet is produced");
         assert_eq!(frozen.updates().terms_size(), 1);
         assert_eq!(frozen.updates().queries_size(), 1);
-        assert_eq!(frozen.delete_queue_generation(), 0);
         assert!(frozen.private_segment_name().is_none());
 
         assert!(!queue.any_changes(), "the buffer was drained");
@@ -7139,7 +7137,6 @@ mod tests {
                             updates
                         },
                         None,
-                        0,
                     )),
                     false,
                 )))
@@ -7564,11 +7561,35 @@ mod tests {
         );
     }
 
+    /// `DocumentsWriterPerThreadPool.checkout` asserts that a DWPT it no longer
+    /// holds is not in the free list either
+    /// (`DocumentsWriterPerThreadPool.java:194-198`).
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "a DWPT that left the pool must not stay in the free list")]
+    fn checking_out_a_dwpt_left_in_the_free_list_trips_the_assertion() {
+        let fixture = new_writer(config(1_000_000, 16.0));
+        let pool = Arc::clone(fixture.writer.flush_control().per_thread_pool());
+        let guard = pool.get_and_lock().unwrap();
+        assert!(pool.checkout(&guard));
+        // Back into the free list without going through the pool: the test
+        // still holds the DWPT's lock, which `unlock_entry` leaves alone.
+        pool.free_list.add_and_unlock(Arc::clone(guard.dwpt()), 0);
+        let _ = pool.checkout(&guard);
+    }
+
+    /// The DWPT checks its reservations against the index-wide limit
+    /// `IndexWriter.getActualMaxDocs()` (`DocumentsWriterPerThread.java:211-218,
+    /// 231`), not against a limit of its own: with all but two documents of
+    /// that limit already pending, two documents fit and the third is refused
+    /// with Java's message.
     #[test]
     fn dwpt_refuses_to_exceed_the_document_limit() {
         let fixture = new_writer(config(1_000_000, 16.0));
-        fixture.writer.set_max_docs(2).unwrap();
-        assert!(fixture.writer.set_max_docs(MAX_DOCS + 1).is_err());
+        let limit = crate::index::index_writer::get_actual_max_docs();
+        fixture
+            .pending_num_docs
+            .store(i64::from(limit) - 2, Ordering::Release);
 
         let mut guard = fixture.writer.flush_control().obtain_and_lock().unwrap();
         guard
@@ -7580,10 +7601,16 @@ mod tests {
         let error = guard
             .update_documents(&[doc("c")], None, &NoOpFlushNotifications, || {})
             .unwrap_err();
-        assert!(matches!(error, LuceneError::IllegalArgument(_)));
+        assert_eq!(
+            error.to_string(),
+            LuceneError::IllegalArgument(format!(
+                "number of documents in the index cannot exceed {limit}"
+            ))
+            .to_string()
+        );
         assert_eq!(
             fixture.pending_num_docs.load(Ordering::Acquire),
-            2,
+            i64::from(limit),
             "the rejected document must not stay reserved"
         );
     }

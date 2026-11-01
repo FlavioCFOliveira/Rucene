@@ -5,7 +5,7 @@
 //! of sub-`IndexReader`s, together with the doc-ID mapping helpers shared by
 //! all composite readers.
 //!
-//! # Decision on `BaseCompositeReader`
+//! # `MultiReader` and `BaseCompositeReader`
 //!
 //! Lucene models the shared behaviour of every array-backed composite reader
 //! in an abstract `BaseCompositeReader<R extends IndexReader>` base class: it
@@ -15,19 +15,14 @@
 //! `getSumDocFreq`, `getDocCount`, and `getSumTotalTermFreq` that dispatch to
 //! (or aggregate across) the sub-readers.
 //!
-//! This port does **not** introduce a separate `BaseCompositeReader` type.
-//! Rust expresses the same sharing through the [`CompositeReader`] trait +
-//! the [`build_composite_context`] helper (already used by
-//! [`StandardDirectoryReader`](crate::index::StandardDirectoryReader)), plus
-//! the [`reader_util`] free functions for doc-ID mapping. Each concrete
-//! composite reader in this crate is thin enough that the small amount of
-//! duplicated aggregation arithmetic is preferable to an extra abstract layer
-//! that would fight the trait-based design (there is no `R extends IndexReader`
-//! generic parameter to carry in Rust, and `numDocs`/`maxDoc` are already
-//! trait methods). The `starts[]` table and the dispatch/aggregation logic that
-//! would live in `BaseCompositeReader` instead live here, in
-//! [`MultiReader`] and in [`reader_util`]; a future `ParallelLeafReader`/
-//! `ParallelCompositeReader` port will reuse [`reader_util`] directly.
+//! That base class is ported as the
+//! [`BaseCompositeReader`](crate::index::base_composite_reader::BaseCompositeReader)
+//! struct, which a concrete reader holds and delegates to
+//! (`FilterDirectoryReader` does). [`MultiReader`] does not hold one: it keeps
+//! its own `starts[]` table, `maxDoc` and lazily computed `numDocs`, and
+//! dispatches through the [`reader_util`] free functions and the
+//! [`CompositeReader`] trait with the [`build_composite_context`] helper, as
+//! [`StandardDirectoryReader`](crate::index::StandardDirectoryReader) does.
 
 #![deny(unsafe_code)]
 
@@ -490,10 +485,11 @@ impl MultiReader {
             r.core().register_parent_core(&core);
         }
 
-        // Guard against overflow / the IndexWriter.MAX_DOCS ceiling, matching
+        // Guard against the `IndexWriter.getActualMaxDocs()` ceiling, matching
         // BaseCompositeReader, which throws IllegalArgumentException for
-        // non-DirectoryReader composites that exceed the limit.
-        let actual_max_docs = i64::from(crate::index::documents_writer::MAX_DOCS);
+        // non-DirectoryReader composites that exceed the limit
+        // (`BaseCompositeReader.java:90-109`).
+        let actual_max_docs = i64::from(crate::index::index_writer::get_actual_max_docs());
         if max_doc > actual_max_docs {
             return Err(LuceneError::IllegalArgument(format!(
                 "Too many documents: composite IndexReaders cannot exceed {actual_max_docs} \
@@ -705,10 +701,15 @@ impl CompositeReader for MultiReader {
 // ---------------------------------------------------------------------------
 
 /// Resolves a global `doc_id` to `(sub-reader index, local doc_id)`, validating
-/// that `doc_id` is within `0..max_doc`. Mirrors the bounds check in
-/// `BaseCompositeReader.readerIndex(int)` and the per-doc dispatch in its
-/// anonymous `TermVectors` / `StoredFields`.
-fn resolve_sub(doc_id: i32, max_doc: i32, starts: &[i32]) -> Result<(usize, i32)> {
+/// that `doc_id` is within `0..max_doc`.
+///
+/// The index half is `BaseCompositeReader.readerIndex(int)`
+/// (`BaseCompositeReader.java:262-268`): the bounds check, then
+/// `ReaderUtil.subIndex(docID, starts)`. The local id is the `docID -
+/// starts[i]` of the per-document dispatch in its anonymous `TermVectors` /
+/// `StoredFields`. [`BaseCompositeReader::reader_index`](crate::index::base_composite_reader::BaseCompositeReader::reader_index)
+/// and [`MultiReader::reader_index`] answer through this function too.
+pub(crate) fn resolve_sub(doc_id: i32, max_doc: i32, starts: &[i32]) -> Result<(usize, i32)> {
     if doc_id < 0 || doc_id >= max_doc {
         return Err(LuceneError::IllegalArgument(format!(
             "docID must be >= 0 and < maxDoc={max_doc} (got docID={doc_id})"

@@ -291,7 +291,6 @@ fn delegating_cache_helper(
 /// Equivalent to `org.apache.lucene.index.FilterDirectoryReader`.
 pub struct FilterDirectoryReader {
     inner: Arc<dyn DirectoryReader>,
-    wrapper: Arc<dyn SubReaderWrapper>,
     directory_wrapper: Arc<dyn DirectoryReaderWrapper>,
     wrapped_leaves: Vec<Arc<dyn LeafReader>>,
     /// The composite state over the **wrapped** leaves.
@@ -378,7 +377,6 @@ impl FilterDirectoryReader {
         };
         Ok(Self {
             inner,
-            wrapper,
             directory_wrapper,
             wrapped_leaves,
             base,
@@ -392,16 +390,6 @@ impl FilterDirectoryReader {
     /// Equivalent to `FilterDirectoryReader.getDelegate()`.
     pub fn get_delegate(&self) -> &Arc<dyn DirectoryReader> {
         &self.inner
-    }
-
-    /// Returns the sub-reader wrapper.
-    pub fn get_sub_reader_wrapper(&self) -> &Arc<dyn SubReaderWrapper> {
-        &self.wrapper
-    }
-
-    /// Returns the wrapped leaves.
-    pub fn wrapped_leaves(&self) -> &[Arc<dyn LeafReader>] {
-        &self.wrapped_leaves
     }
 
     /// Returns the reader this one wraps.
@@ -893,6 +881,12 @@ impl ExitableFilterLeafReader {
 impl LeafReader for ExitableFilterLeafReader {
     fn core(&self) -> &IndexReaderCore {
         LeafReader::core(&self.inner)
+    }
+
+    /// `ExitableFilterAtomicReader extends FilterLeafReader`: the delegate its
+    /// inherited `getDelegate()` returns.
+    fn filter_leaf_reader_delegate(&self) -> Option<&Arc<dyn LeafReader>> {
+        Some(self.inner.get_delegate())
     }
 
     fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
@@ -2541,9 +2535,15 @@ pub struct SlowCodecReaderWrapper;
 impl SlowCodecReaderWrapper {
     /// Returns a codec-reader view of `reader`.
     ///
-    /// Equivalent to `SlowCodecReaderWrapper.wrap(LeafReader)`: a reader that
-    /// is already a codec reader is returned directly, and any other is checked
-    /// for integrity once and then served slowly over its own leaf-reader API.
+    /// Equivalent to `SlowCodecReaderWrapper.wrap(LeafReader)`
+    /// (`SlowCodecReaderWrapper.java:51-60`): the reader is checked for
+    /// integrity once and then served slowly over its own leaf-reader API.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java first returns a reader that
+    /// already is a `CodecReader` unchanged (`reader instanceof CodecReader`).
+    /// A `dyn LeafReader` cannot be asked that, so this always builds the slow
+    /// view; a caller that holds a [`CodecReader`] uses it as it is, which is
+    /// what that branch returns.
     ///
     /// # Errors
     ///
@@ -2552,21 +2552,6 @@ impl SlowCodecReaderWrapper {
         // Simulate it slowly, over the leaf-reader API.
         reader.check_integrity()?;
         Ok(Arc::new(SlowCodecReader::new(reader)))
-    }
-
-    /// Returns a codec-reader view of a reader that already is one.
-    ///
-    /// This is the branch Java takes with `reader instanceof CodecReader`; Rust
-    /// cannot downcast a `dyn LeafReader` to a `dyn CodecReader`, so the caller
-    /// that holds the codec reader calls this instead of
-    /// [`wrap`](Self::wrap).
-    ///
-    /// # Errors
-    ///
-    /// Propagates whatever the integrity check raises.
-    pub fn wrap_codec_reader(reader: Arc<dyn CodecReader>) -> Result<Arc<dyn CodecReader>> {
-        reader.check_integrity()?;
-        Ok(reader)
     }
 
     /// Equivalent to the private
@@ -2911,9 +2896,14 @@ impl KnnVectorsReader for SlowKnnVectorsReader {
     fn get_off_heap_byte_size(&self, field_info: &FieldInfo) -> HashMap<String, i64> {
         // Java unwraps the reader down to its SegmentReader and asks its own
         // vectors reader, going through PerFieldKnnVectorsFormat when one is in
-        // the way. `as_segment_reader` is this port's unwrap, and it answers
-        // for the same reader Java reaches.
-        match self.reader.as_segment_reader() {
+        // the way. `segmentReader(LeafReader)` (`SlowCodecReaderWrapper.java:
+        // 207-216`) steps through `FilterLeafReader.unwrap` and tests for a
+        // `SegmentReader` (`as_segment_reader`). Its `FilterCodecReader` branch
+        // has no counterpart: a `dyn LeafReader` cannot be asked whether it is a
+        // `FilterCodecReader`, so such a reader reaches the fallback below,
+        // which answers an empty map where Java throws `AssertionError`.
+        let reader = crate::index::filter_reader::FilterLeafReader::unwrap(&self.reader);
+        match reader.as_segment_reader() {
             Some(segment_reader) => match segment_reader.get_vector_reader() {
                 Ok(Some(vectors_reader)) => vectors_reader.get_off_heap_byte_size(field_info),
                 _ => HashMap::new(),
@@ -3210,8 +3200,8 @@ impl SoftDeletesSubReaderWrapper {
     /// `SoftDeletesFilterCodecReader` when `reader instanceof CodecReader`, to
     /// keep the wrapped reader's codec-level accessors available to merges.
     /// Rust cannot downcast a `dyn LeafReader` to a `dyn CodecReader` — the
-    /// same constraint `SlowCodecReaderWrapper::wrap`/`wrap_codec_reader`
-    /// already document in this file — so this always returns a
+    /// same constraint `SlowCodecReaderWrapper::wrap` meets in this file — so
+    /// this always returns a
     /// [`SoftDeletesFilterLeafReader`]; reads are identical either way.
     ///
     /// # Errors
@@ -3376,6 +3366,12 @@ impl std::fmt::Debug for SoftDeletesFilterLeafReader {
 impl LeafReader for SoftDeletesFilterLeafReader {
     fn core(&self) -> &IndexReaderCore {
         LeafReader::core(&self.inner)
+    }
+
+    /// `SoftDeletesFilterLeafReader extends FilterLeafReader`: the delegate its
+    /// inherited `getDelegate()` returns.
+    fn filter_leaf_reader_delegate(&self) -> Option<&Arc<dyn LeafReader>> {
+        Some(self.inner.get_delegate())
     }
 
     fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {

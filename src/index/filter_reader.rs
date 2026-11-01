@@ -82,15 +82,27 @@ impl FilterLeafReader {
 
     /// Unwraps nested filters and returns the innermost reader.
     ///
-    /// Equivalent to `FilterLeafReader.unwrap(LeafReader)`.
+    /// Equivalent to `FilterLeafReader.unwrap(LeafReader)`
+    /// (`FilterLeafReader.java:50-55`): while the reader is a
+    /// `FilterLeafReader`, step to its delegate.
     pub fn unwrap(reader: &Arc<dyn LeafReader>) -> Arc<dyn LeafReader> {
-        Arc::clone(reader)
+        let mut reader = Arc::clone(reader);
+        while let Some(delegate) = reader.filter_leaf_reader_delegate() {
+            let delegate = Arc::clone(delegate);
+            reader = delegate;
+        }
+        reader
     }
 }
 
 impl LeafReader for FilterLeafReader {
     fn core(&self) -> &IndexReaderCore {
         self.inner.core()
+    }
+
+    /// `this instanceof FilterLeafReader`: the delegate `getDelegate()` returns.
+    fn filter_leaf_reader_delegate(&self) -> Option<&Arc<dyn LeafReader>> {
+        Some(&self.inner)
     }
 
     fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {

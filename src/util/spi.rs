@@ -167,19 +167,22 @@ impl<S: NamedSPI + ?Sized> NamedSPILoader<S> {
 
     /// Returns the provider registered under `name`.
     ///
+    /// Equivalent to `NamedSPILoader.lookup(String)` (`NamedSPILoader.java:102-114`).
+    ///
     /// # Errors
     ///
     /// Returns [`LuceneError::IllegalArgument`] listing the available names,
-    /// reproducing Lucene's message.
+    /// with Lucene's message: two spaces open each of its last two sentences,
+    /// and the names are the key set's `toString()`, `[a, b]`.
     pub fn lookup(&self, name: &str) -> Result<Arc<S>> {
         match self.index.get(name) {
             Some(&i) => Ok(Arc::clone(&self.services[i])),
             None => Err(LuceneError::IllegalArgument(format!(
-                "An SPI class of type {} with name '{name}' does not exist. \
-                 You need to add the corresponding JAR file supporting this SPI to your classpath. \
-                 The current classpath supports the following names: {:?}",
+                "An SPI class of type {} with name '{name}' does not exist.  You need to add \
+                 the corresponding JAR file supporting this SPI to your classpath.  The current \
+                 classpath supports the following names: [{}]",
                 self.clazz_name,
-                self.available_services()
+                self.available_services().join(", ")
             ))),
         }
     }

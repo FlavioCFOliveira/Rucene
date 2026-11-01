@@ -1612,7 +1612,6 @@ fn buffered_updates(m: &Measured, index_dir: &std::path::Path) {
         Arc::clone(&queue),
         rucene::index::field_infos::FieldInfosBuilder::new(field_numbers),
         Arc::new(std::sync::atomic::AtomicI64::new(0)),
-        Arc::new(std::sync::atomic::AtomicI32::new(rucene::index::MAX_DOCS)),
         false,
         Box::new(rucene::index::indexing_chain::DefaultIndexingChain::new(
             Arc::clone(&config),
@@ -1659,7 +1658,7 @@ fn buffered_updates(m: &Measured, index_dir: &std::path::Path) {
     // updates as `bytesUsed=` (`FrozenBufferedUpdates.java:87-111`), so the
     // whole rendering is compared — an empty packet already reports
     // `bytesUsed=16` for its empty `PrefixCodedTerms`.
-    let frozen_empty = FrozenBufferedUpdates::new(BufferedUpdates::new("_0"), None, 0);
+    let frozen_empty = FrozenBufferedUpdates::new(BufferedUpdates::new("_0"), None);
     assert_eq!(
         frozen_empty.to_string(),
         m.get("FrozenBufferedUpdates.toString/empty"),
@@ -1685,7 +1684,7 @@ fn buffered_updates(m: &Measured, index_dir: &std::path::Path) {
             4,
         )
         .expect("buffer a numeric update");
-    let frozen = FrozenBufferedUpdates::new(source, None, 0);
+    let frozen = FrozenBufferedUpdates::new(source, None);
     frozen.set_del_gen(7);
     assert_eq!(
         frozen.to_string(),
@@ -1696,7 +1695,7 @@ fn buffered_updates(m: &Measured, index_dir: &std::path::Path) {
 
     let mut private_source = BufferedUpdates::new("_0");
     private_source.add_query(Arc::new(MatchAllDocsQuery::instance()), 3);
-    let private_frozen = FrozenBufferedUpdates::new(private_source, Some("_0".to_string()), 0);
+    let private_frozen = FrozenBufferedUpdates::new(private_source, Some("_0".to_string()));
     let rendered = private_frozen.to_string();
     let expected = m
         .get("FrozenBufferedUpdates.toString/private-segment")

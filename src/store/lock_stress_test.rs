@@ -228,7 +228,7 @@ impl LockStressTest {
 
         for i in 0..count {
             match verify_lf.obtain_lock(&lock_dir, LOCK_FILE_NAME) {
-                Ok(mut held) => {
+                Ok(held) => {
                     let outcome = Self::hold_lock(
                         &mut verify_lf,
                         &lock_dir,
@@ -284,7 +284,7 @@ impl LockStressTest {
                 );
             }
             match verify_lf.obtain_lock(lock_dir, LOCK_FILE_NAME) {
-                Ok(mut second_lock) => {
+                Ok(second_lock) => {
                     // Java: `try (Lock secondLock = …) { throw new
                     // IOException("Double obtain"); }` — the resource is closed
                     // and the exception from the body propagates.

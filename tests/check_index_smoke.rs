@@ -205,3 +205,39 @@ fn upgrader_do_main_parses_then_upgrades() {
     drop(dir);
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+/// `IndexUpgrader.upgrade()` forces its final commit with
+/// `w.setLiveCommitData(w.getLiveCommitData())` and asserts
+/// `w.hasUncommittedChanges()` (`IndexUpgrader.java:201-203`): the writer's
+/// own live commit data — the user data of the commit it opened — is written
+/// again, so the upgraded commit keeps it.
+#[test]
+fn the_upgrader_rewrites_the_writers_live_commit_data() {
+    ensure_codec();
+    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+    let mut doc = Document::new();
+    doc.add(Box::new(
+        StringField::new("id", "a".to_string(), Store::YES).unwrap(),
+    ));
+    writer.add_document(&doc).unwrap();
+    writer
+        .set_live_commit_data([("origin".to_string(), "test".to_string())])
+        .unwrap();
+    writer.commit().unwrap();
+    writer.close().unwrap();
+    let before = rucene::index::SegmentInfos::read_latest_commit(Arc::clone(&dir))
+        .unwrap()
+        .generation();
+
+    rucene::index::check_index::IndexUpgrader::new(Arc::clone(&dir))
+        .upgrade()
+        .unwrap();
+
+    let after = rucene::index::SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
+    assert!(after.generation() > before, "the upgrade committed");
+    assert_eq!(
+        after.user_data().get("origin").map(String::as_str),
+        Some("test")
+    );
+}

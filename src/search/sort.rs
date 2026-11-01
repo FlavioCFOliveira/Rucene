@@ -481,12 +481,17 @@ impl SortField {
         match self.field_type {
             SortFieldType::String => {
                 let name = field.clone();
+                // `reader -> DocValues.getSorted(reader, field)`
+                // (`SortField.java:604-606`; `DocValues.java:206-222, 273-281`):
+                // a field the reader knows without sorted doc values is
+                // refused with `IllegalStateException`, and an absent one
+                // reads as empty values.
                 Some(Arc::new(StringSorter::new(
                     Self::NAME,
                     matches!(self.missing_value, Some(MissingValue::StringLast)),
                     self.reverse,
                     Arc::new(move |reader: &dyn crate::index::LeafReader| {
-                        reader.get_sorted_doc_values(&name)
+                        crate::index::DocValues::get_sorted(reader, &name).map(Some)
                     }),
                 )))
             }
@@ -783,7 +788,7 @@ impl SortField {
                           field: &str|
                           -> Result<Box<dyn crate::index::NumericDocValues>> {
                         SortedNumericSelector::wrap(
-                            crate::search::doc_values_access::get_sorted_numeric(reader, field)?,
+                            crate::index::DocValues::get_sorted_numeric(reader, field)?,
                             selector,
                             numeric_type,
                         )
@@ -870,7 +875,7 @@ impl SortField {
                 comparator.set_sorted_doc_values_source(Arc::new(
                     move |reader: &dyn crate::index::LeafReader, field: &str| {
                         SortedSetSelector::wrap(
-                            crate::search::doc_values_access::get_sorted_set(reader, field)?,
+                            crate::index::DocValues::get_sorted_set(reader, field)?,
                             selector,
                         )
                     },

@@ -11,7 +11,6 @@ use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
 use crate::index::LeafReaderContext;
-use crate::search::doc_values_access::get_numeric;
 use crate::search::double_values::{DoubleValues, EmptyDoubleValues};
 use crate::search::field_comparator::{
     java_double_compare, FieldComparator, SharedFieldComparator, SlotComparator, SortValue,
@@ -466,7 +465,7 @@ impl DoubleValuesSource for FieldValuesSource {
         _scores: Option<Box<dyn DoubleValues + 'a>>,
     ) -> Result<Box<dyn DoubleValues + 'a>> {
         let reader = ctx.leaf_reader();
-        let values = get_numeric(reader.as_ref(), &self.field)?;
+        let values = crate::index::DocValues::get_numeric(reader.as_ref(), &self.field)?;
         Ok(Box::new(FieldDoubleValues {
             values,
             decoder: self.decoder,

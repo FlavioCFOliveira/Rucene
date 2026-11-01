@@ -234,7 +234,7 @@ struct ObservingLock {
 }
 
 impl Lock for ObservingLock {
-    fn close(&mut self) -> rucene::error::Result<()> {
+    fn close(&self) -> rucene::error::Result<()> {
         let closed = self
             .writer
             .get()

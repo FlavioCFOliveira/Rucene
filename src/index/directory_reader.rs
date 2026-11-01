@@ -15,7 +15,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Display, Formatter};
 use std::io;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use crate::error::{LuceneError, Result};
 use crate::index::index_commit::IndexCommit;
@@ -37,11 +37,13 @@ use crate::util::java_collections::JavaHashSet;
 // IndexWriter (minimal trait for NRT signatures)
 // -----------------------------------------------------------------------------
 
-/// Minimal trait used by `DirectoryReader` for near-real-time interactions.
+/// The members of `IndexWriter` that a near-real-time `DirectoryReader` calls.
 ///
-/// This is **not** a port of `IndexWriter`; it exists only to let
-/// `StandardDirectoryReader` express the NRT API contract. The real
-/// `IndexWriter` port will implement this trait in a later task.
+/// This is **not** a port of `IndexWriter`: it names the part of
+/// `IndexWriter` that `StandardDirectoryReader` and its `ReaderCommit` reach
+/// through their `writer` field, so that this module does not depend on the
+/// writer's own module. The port of `IndexWriter`,
+/// [`crate::index::index_writer::IndexWriter`], implements it.
 pub trait IndexWriter: Send + Sync + Debug {
     /// Returns `true` if the reader opened from this writer is up to date with
     /// the provided `SegmentInfos`.
@@ -56,6 +58,19 @@ pub trait IndexWriter: Send + Sync + Debug {
 
     /// Returns `true` if the writer is closed.
     fn is_closed(&self) -> bool;
+
+    /// Returns a copy of the writer's own `SegmentInfos`.
+    ///
+    /// Equivalent to reading the package-private field
+    /// `IndexWriter.segmentInfos`, which a new writer opened from this reader's
+    /// commit reads off the reader's (closed) writer so that its generation,
+    /// version and counter stay ahead of everything that writer wrote
+    /// (`IndexWriter.java:1067-1076`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates a poisoned writer state.
+    fn segment_infos(&self) -> Result<SegmentInfos>;
 
     /// Returns the directory the writer is indexing into.
     fn get_directory(&self) -> Arc<dyn Directory>;
@@ -166,6 +181,16 @@ pub struct StandardDirectoryReader {
     apply_all_deletes: bool,
     write_all_deletes: bool,
     cache_helper: Arc<DirectoryReaderCacheHelper>,
+    /// A weak handle on this reader, recorded when it is put inside its `Arc`.
+    ///
+    /// Java's `getIndexCommit()` hands `this` to the `ReaderCommit` it builds
+    /// (`StandardDirectoryReader.java:574-577`), which is how `IndexWriter`
+    /// opens on an NRT reader's commit (`IndexCommit.getReader()`,
+    /// `IndexWriter.java:990-995`). A Rust `&self` cannot be turned into the
+    /// shared handle that needs, so the reader keeps a weak reference to
+    /// itself; it is weak because a strong one would keep the reader alive
+    /// for ever.
+    self_ref: OnceLock<Weak<StandardDirectoryReader>>,
 }
 
 impl Debug for StandardDirectoryReader {
@@ -225,15 +250,28 @@ impl StandardDirectoryReader {
         if let Some(sorter) = leaf_sorter.as_ref() {
             segment_readers.sort_by(|a, b| sorter.compare(a.as_ref(), b.as_ref()));
         }
-        let total_max_doc: i32 = segment_readers
+        // `if (maxDoc > IndexWriter.getActualMaxDocs())`, which `super(...)`
+        // runs in `BaseCompositeReader`'s constructor (`BaseCompositeReader.java:90-109`)
+        // with `this instanceof DirectoryReader`: a single index with too many
+        // documents is corrupt, and the resource is
+        // `Arrays.toString(subReaders)`.
+        let max_doc: i64 = segment_readers
             .iter()
-            .map(|r| LeafReader::max_doc(r.as_ref()))
+            .map(|r| i64::from(LeafReader::max_doc(r.as_ref())))
             .sum();
-        let expected = segment_infos.total_max_doc();
-        if total_max_doc != expected {
-            return Err(LuceneError::CorruptIndex(format!(
-                "SegmentReaders total maxDoc {total_max_doc} does not match SegmentInfos total maxDoc {expected}"
-            )));
+        let actual_max_docs = crate::index::index_writer::get_actual_max_docs();
+        if max_doc > i64::from(actual_max_docs) {
+            let sub_readers = segment_readers
+                .iter()
+                .map(|r| r.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(LuceneError::corrupt_index(
+                format!(
+                    "Too many documents: an index cannot exceed {actual_max_docs} but readers have total maxDoc={max_doc}"
+                ),
+                format!("[{sub_readers}]"),
+            ));
         }
         Ok(Self {
             core: IndexReaderCore::new(),
@@ -245,7 +283,18 @@ impl StandardDirectoryReader {
             apply_all_deletes,
             write_all_deletes,
             cache_helper: Arc::new(DirectoryReaderCacheHelper::new()),
+            self_ref: OnceLock::new(),
         })
+    }
+
+    /// Puts a freshly built reader inside its `Arc` and records the weak
+    /// handle [`DirectoryReader::index_commit`] hands to its commit.
+    fn into_shared(self) -> Arc<Self> {
+        let reader = Arc::new(self);
+        // `OnceLock::set` fails only when the cell is already filled, which
+        // cannot happen for a reader that has just been moved into this `Arc`.
+        let _ = reader.self_ref.set(Arc::downgrade(&reader));
+        reader
     }
 
     /// Opens a reader from an already-loaded `SegmentInfos`.
@@ -265,7 +314,7 @@ impl StandardDirectoryReader {
         leaf_sorter: Option<Arc<dyn LeafComparator>>,
     ) -> Result<Arc<dyn DirectoryReader>> {
         let segment_readers = Self::create_segment_readers(&infos, old_readers)?;
-        Ok(Arc::new(StandardDirectoryReader::new(
+        Ok(StandardDirectoryReader::new(
             directory,
             segment_readers,
             infos,
@@ -273,7 +322,8 @@ impl StandardDirectoryReader {
             leaf_sorter,
             false,
             false,
-        )?))
+        )?
+        .into_shared())
     }
 
     /// Opens a near-real-time reader over the segments a writer has just
@@ -362,7 +412,7 @@ impl StandardDirectoryReader {
             apply_all_deletes,
             write_all_deletes,
         ) {
-            Ok(reader) => Ok(Arc::new(reader)),
+            Ok(reader) => Ok(reader.into_shared()),
             Err(error) => Err(Self::dec_ref_while_suppressing_exception(error, &readers)),
         }
     }
@@ -589,6 +639,24 @@ impl StandardDirectoryReader {
     pub fn segment_infos(&self) -> &SegmentInfos {
         &self.segment_infos
     }
+
+    /// Returns the writer this near-real-time reader was opened from, if any.
+    ///
+    /// Equivalent to reading the package-private field
+    /// `StandardDirectoryReader.writer`, as `IndexWriter`'s constructor does
+    /// when it opens on this reader's commit (`IndexWriter.java:1067-1076`).
+    pub(crate) fn writer(&self) -> Option<&Arc<dyn IndexWriter>> {
+        self.writer.as_ref()
+    }
+
+    /// Returns the segment readers, in the order of [`leaves`](IndexReader::leaves).
+    ///
+    /// Equivalent to the `SegmentReader`s behind `reader.leaves()` that
+    /// `ReaderPool`'s constructor enrols when a writer opens on this reader's
+    /// commit (`ReaderPool.java:87-111`).
+    pub(crate) fn segment_readers(&self) -> &[Arc<SegmentReader>] {
+        &self.segment_readers
+    }
 }
 
 impl IndexReader for StandardDirectoryReader {
@@ -642,14 +710,41 @@ impl IndexReader for StandardDirectoryReader {
         }))
     }
 
+    /// Equivalent to `StandardDirectoryReader.doClose()`
+    /// (`StandardDirectoryReader.java:549-571`): every sub-reader is
+    /// dereferenced, even when one fails, and the first failure is raised
+    /// (`IOUtils.applyToAll`); then, as the `try`-with-resources finalizer,
+    /// the writer's deleter lets go of this reader's files. That finalizer
+    /// swallows only `AlreadyClosedException` — the writer was closed first,
+    /// and its next open deletes the files left behind — and any other
+    /// failure of it is raised when the sub-readers closed cleanly.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java attaches the later failures to
+    /// the one it raises through `Throwable.addSuppressed`; [`LuceneError`]
+    /// has no suppressed list, so they are dropped.
     fn do_close(&self) -> Result<()> {
-        if let Some(ref writer) = self.writer {
-            let _ = writer.dec_ref_deleter(&self.segment_infos);
-        }
+        // Try to close each reader, even if an exception is thrown.
+        let mut first_failure: Option<LuceneError> = None;
         for reader in &self.segment_readers {
-            let _ = reader.dec_ref();
+            if let Err(error) = reader.dec_ref() {
+                first_failure.get_or_insert(error);
+            }
         }
-        Ok(())
+        let dec_ref_deleter = match self.writer.as_ref() {
+            Some(writer) => match writer.dec_ref_deleter(&self.segment_infos) {
+                // This is OK, it just means our original writer was closed
+                // before we were, and this may leave some un-referenced files
+                // in the index, which is harmless. The next time IW is opened
+                // on the index, it will delete them.
+                Err(LuceneError::AlreadyClosed { .. }) => Ok(()),
+                other => other,
+            },
+            None => Ok(()),
+        };
+        match first_failure {
+            Some(error) => Err(error),
+            None => dec_ref_deleter,
+        }
     }
 
     fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
@@ -898,10 +993,10 @@ impl DirectoryReader for StandardDirectoryReader {
 
     fn index_commit(&self) -> Result<Box<dyn IndexCommit>> {
         self.ensure_open()?;
-        // TODO: when this reader is held in an Arc, store a weak self-reference
-        // so that `IndexCommit::get_reader()` can return the producing reader.
+        // `return new ReaderCommit(this, segmentInfos, directory)`
+        // (`StandardDirectoryReader.java:574-577`).
         Ok(Box::new(ReaderCommit::new(
-            None,
+            self.self_ref.get().and_then(Weak::upgrade),
             self.segment_infos.clone(),
             Arc::clone(&self.directory),
         )?))
@@ -1085,7 +1180,11 @@ struct ReaderCommit {
     generation: i64,
     user_data: HashMap<String, String>,
     segment_count: i32,
-    reader: Option<Weak<StandardDirectoryReader>>,
+    /// The reader this commit was taken from, if any.
+    ///
+    /// Equivalent to `ReaderCommit.reader` (`StandardDirectoryReader.java:586`),
+    /// a strong reference: the commit keeps its reader alive, as Java's does.
+    reader: Option<Arc<StandardDirectoryReader>>,
 }
 
 impl Debug for ReaderCommit {
@@ -1123,7 +1222,7 @@ impl ReaderCommit {
     /// default to `0` (`SegmentInfos.java:132-133`, no initialiser) where
     /// Rucene's [`SegmentInfos::new`] starts them at `-1`.
     fn new(
-        reader: Option<Weak<StandardDirectoryReader>>,
+        reader: Option<Arc<StandardDirectoryReader>>,
         infos: SegmentInfos,
         directory: Arc<dyn Directory>,
     ) -> Result<Self> {
@@ -1199,7 +1298,7 @@ impl IndexCommit for ReaderCommit {
     }
 
     fn get_reader(&self) -> Option<Arc<StandardDirectoryReader>> {
-        self.reader.as_ref().and_then(Weak::upgrade)
+        self.reader.clone()
     }
 }
 
@@ -1777,6 +1876,10 @@ mod tests {
             self.closed.load(std::sync::atomic::Ordering::SeqCst)
         }
 
+        fn segment_infos(&self) -> Result<SegmentInfos> {
+            Ok(self.current.lock().unwrap().clone())
+        }
+
         fn get_directory(&self) -> Arc<dyn Directory> {
             Arc::clone(&self.directory)
         }
@@ -1948,5 +2051,211 @@ mod tests {
         IndexReader::close(new.as_ref()).unwrap();
         IndexReader::close(old.as_ref()).unwrap();
         writer.close().unwrap();
+    }
+
+    /// What the writer of the `doClose` tests answers to `decRefDeleter`.
+    #[derive(Debug, Clone, Copy)]
+    enum DeleterOutcome {
+        Released,
+        AlreadyClosed,
+        Failed,
+    }
+
+    /// A writer whose `decRefDeleter` answers as the test chose, and records
+    /// how many references the reader's segment reader still held when it
+    /// was called.
+    struct DeleterOutcomeWriter {
+        directory: Arc<dyn Directory>,
+        infos: SegmentInfos,
+        outcome: DeleterOutcome,
+        segment_reader: Mutex<Option<Arc<SegmentReader>>>,
+        segment_ref_count_at_release: Mutex<Option<i32>>,
+    }
+
+    impl Debug for DeleterOutcomeWriter {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("DeleterOutcomeWriter")
+                .field("outcome", &self.outcome)
+                .finish_non_exhaustive()
+        }
+    }
+
+    impl IndexWriter for DeleterOutcomeWriter {
+        fn nrt_is_current(&self, _infos: &SegmentInfos) -> bool {
+            true
+        }
+
+        fn get_reader(
+            &self,
+            _apply_all_deletes: bool,
+            _write_all_deletes: bool,
+        ) -> Result<Arc<dyn DirectoryReader>> {
+            Err(LuceneError::UnsupportedOperation(
+                "not used by these tests".to_string(),
+            ))
+        }
+
+        fn is_closed(&self) -> bool {
+            false
+        }
+
+        fn segment_infos(&self) -> Result<SegmentInfos> {
+            Ok(self.infos.clone())
+        }
+
+        fn get_directory(&self) -> Arc<dyn Directory> {
+            Arc::clone(&self.directory)
+        }
+
+        fn inc_ref_deleter(&self, _infos: &SegmentInfos) -> Result<()> {
+            Ok(())
+        }
+
+        fn dec_ref_deleter(&self, _infos: &SegmentInfos) -> Result<()> {
+            let ref_count = self
+                .segment_reader
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|reader| reader.get_ref_count());
+            *self.segment_ref_count_at_release.lock().unwrap() = ref_count;
+            match self.outcome {
+                DeleterOutcome::Released => Ok(()),
+                DeleterOutcome::AlreadyClosed => Err(LuceneError::already_closed(
+                    "this IndexWriter is closed".to_string(),
+                )),
+                DeleterOutcome::Failed => Err(LuceneError::Io(io::Error::other("decRef failed"))),
+            }
+        }
+    }
+
+    /// An NRT-style reader over a one-segment commit whose writer answers
+    /// `decRefDeleter` with `outcome`, and its segment reader.
+    fn reader_with_deleter(
+        outcome: DeleterOutcome,
+    ) -> (
+        Arc<DeleterOutcomeWriter>,
+        Arc<dyn DirectoryReader>,
+        Arc<SegmentReader>,
+    ) {
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let mut sis = SegmentInfos::new(Version::LATEST.major as i32).unwrap();
+        sis.counter = 1;
+        sis.changed();
+        sis.add(make_sci(dir.as_ref(), "_0", 10)).unwrap();
+        sis.commit(dir.as_ref()).unwrap();
+        let writer = Arc::new(DeleterOutcomeWriter {
+            directory: Arc::clone(&dir),
+            infos: sis,
+            outcome,
+            segment_reader: Mutex::new(None),
+            segment_ref_count_at_release: Mutex::new(None),
+        });
+        let reader = StandardDirectoryReader::open_from_infos(
+            Arc::clone(&dir),
+            SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap(),
+            None,
+            Some(Arc::clone(&writer) as Arc<dyn IndexWriter>),
+            None,
+        )
+        .unwrap();
+        let segment_reader = Arc::clone(
+            &reader
+                .as_any()
+                .downcast_ref::<StandardDirectoryReader>()
+                .unwrap()
+                .segment_readers()[0],
+        );
+        *writer.segment_reader.lock().unwrap() = Some(Arc::clone(&segment_reader));
+        (writer, reader, segment_reader)
+    }
+
+    /// `doClose` dereferences the sub-readers in its `try` body and releases
+    /// the writer's deleter in the finalizer (`StandardDirectoryReader.java:549-571`),
+    /// so the segment reader is already closed when `decRefDeleter` runs.
+    #[test]
+    fn closing_releases_the_segment_readers_before_the_writers_deleter() {
+        let (writer, reader, segment_reader) = reader_with_deleter(DeleterOutcome::Released);
+        assert_eq!(segment_reader.get_ref_count(), 1);
+        IndexReader::close(reader.as_ref()).unwrap();
+        assert_eq!(
+            *writer.segment_ref_count_at_release.lock().unwrap(),
+            Some(0)
+        );
+    }
+
+    /// The finalizer swallows `AlreadyClosedException` from `decRefDeleter` —
+    /// the writer closed first — and nothing else
+    /// (`StandardDirectoryReader.java:550-565`).
+    #[test]
+    fn closing_swallows_only_an_already_closed_deleter() {
+        let (_writer, reader, _segment_reader) = reader_with_deleter(DeleterOutcome::AlreadyClosed);
+        IndexReader::close(reader.as_ref()).unwrap();
+
+        let (_writer, reader, _segment_reader) = reader_with_deleter(DeleterOutcome::Failed);
+        let error = IndexReader::close(reader.as_ref()).unwrap_err();
+        assert!(
+            matches!(&error, LuceneError::Io(io) if io.to_string() == "decRef failed"),
+            "{error:?}"
+        );
+    }
+
+    /// A sub-reader that fails to close is reported — `IOUtils.applyToAll`
+    /// rethrows its first failure (`StandardDirectoryReader.java:569`) — and
+    /// the writer's deleter is still released by the finalizer.
+    #[test]
+    fn a_failing_segment_reader_is_reported_and_the_deleter_still_released() {
+        let (writer, reader, segment_reader) = reader_with_deleter(DeleterOutcome::Released);
+        segment_reader.dec_ref().unwrap();
+        let error = IndexReader::close(reader.as_ref()).unwrap_err();
+        assert!(
+            matches!(&error, LuceneError::AlreadyClosed { message, .. }
+                if message == "this IndexReader is closed"),
+            "{error:?}"
+        );
+        assert_eq!(
+            *writer.segment_ref_count_at_release.lock().unwrap(),
+            Some(0)
+        );
+    }
+
+    /// `StandardDirectoryReader`'s constructor checks nothing beyond what
+    /// `BaseCompositeReader`'s does (`StandardDirectoryReader.java:51-64`,
+    /// `BaseCompositeReader.java:72-112`): it does not compare the readers'
+    /// documents with the `SegmentInfos` it is handed.
+    #[test]
+    fn the_constructor_does_not_compare_the_readers_with_the_segment_infos() {
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let reader = commit_single_segment(Arc::clone(&dir));
+        let segment_reader = Arc::clone(
+            &reader
+                .as_any()
+                .downcast_ref::<StandardDirectoryReader>()
+                .unwrap()
+                .segment_readers()[0],
+        );
+        assert_eq!(LeafReader::max_doc(segment_reader.as_ref()), 42);
+        // The new reader takes its own reference on the segment reader.
+        segment_reader.inc_ref().unwrap();
+        let built = StandardDirectoryReader::new(
+            Arc::clone(&dir),
+            vec![Arc::clone(&segment_reader)],
+            SegmentInfos::new(Version::LATEST.major as i32).unwrap(),
+            None,
+            None,
+            false,
+            false,
+        );
+        let built = match built {
+            Ok(built) => built,
+            Err(error) => {
+                segment_reader.dec_ref().unwrap();
+                IndexReader::close(reader.as_ref()).unwrap();
+                panic!("{error:?}");
+            }
+        };
+        assert_eq!(IndexReader::max_doc(&built), 42);
+        IndexReader::close(&built).unwrap();
+        IndexReader::close(reader.as_ref()).unwrap();
     }
 }

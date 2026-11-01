@@ -206,6 +206,20 @@ pub trait LeafReader: AsIndexReader + Send + Sync + Debug + Display + 'static {
         None
     }
 
+    /// Returns the reader this one wraps when it is a `FilterLeafReader`, and
+    /// `None` otherwise.
+    ///
+    /// Equivalent to `reader instanceof FilterLeafReader` followed by
+    /// `getDelegate()`, which is how `FilterLeafReader.unwrap` walks a chain of
+    /// filters (`FilterLeafReader.java:50-55`). Rust cannot test a
+    /// `dyn LeafReader` for a type, so each port of `FilterLeafReader` or of
+    /// one of its subclasses answers for itself, as
+    /// [`CodecReader::filter_codec_reader_delegate`](crate::index::codec_reader::CodecReader::filter_codec_reader_delegate)
+    /// does for `FilterCodecReader`; every other reader keeps this default.
+    fn filter_leaf_reader_delegate(&self) -> Option<&Arc<dyn LeafReader>> {
+        None
+    }
+
     /// Returns a [`TermVectors`] reader for this leaf.
     fn term_vectors(&self) -> Result<Box<dyn TermVectors>>;
 

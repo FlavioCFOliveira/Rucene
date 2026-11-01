@@ -2382,7 +2382,8 @@ const MAX_PAUSE: Duration = Duration::from_millis(250);
 
 /// Why a merge thread was paused.
 ///
-/// Equivalent to `org.apache.lucene.index.MergePolicy.OneMergeProgress.PauseReason`.
+/// Equivalent to `org.apache.lucene.index.MergePolicy.OneMergeProgress.PauseReason`
+/// (`MergePolicy.java:81-88`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PauseReason {
     /// Stopped, because the throughput rate was set to zero.
@@ -2392,6 +2393,44 @@ pub enum PauseReason {
     /// Any other reason.
     Other,
 }
+
+impl PauseReason {
+    /// Every reason, in declaration order.
+    ///
+    /// Equivalent to `PauseReason.values()`.
+    pub const VALUES: [PauseReason; 3] = [Self::Stopped, Self::Paused, Self::Other];
+
+    /// Returns the constant's name.
+    ///
+    /// Equivalent to `Enum.name()`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Stopped => "STOPPED",
+            Self::Paused => "PAUSED",
+            Self::Other => "OTHER",
+        }
+    }
+
+    /// Returns the constant's position in [`VALUES`](Self::VALUES).
+    ///
+    /// Equivalent to `Enum.ordinal()`, the key order of the `EnumMap`
+    /// `OneMergeProgress.pauseTimesNS` (`MergePolicy.java:94, 108-111`).
+    pub fn ordinal(self) -> usize {
+        match self {
+            Self::Stopped => 0,
+            Self::Paused => 1,
+            Self::Other => 2,
+        }
+    }
+}
+
+/// The nanoseconds a merge spent paused, one counter per [`PauseReason`],
+/// indexed by [`PauseReason::ordinal`].
+///
+/// Equivalent to `OneMergeProgress.pauseTimesNS`, an
+/// `EnumMap<PauseReason, AtomicLong>` filled with one counter per reason when
+/// the progress is created (`MergePolicy.java:94, 106-111`).
+pub type PauseTimes = [AtomicI64; 3];
 
 /// Throttles the bytes one merge writes, and lets the writer abort it.
 ///
@@ -2403,8 +2442,14 @@ pub struct MergeRateLimiter {
     /// How many bytes may pass before the limiter checks again.
     min_pause_check_bytes: AtomicI64,
     total_bytes_written: AtomicI64,
-    total_paused_ns: AtomicI64,
-    total_stopped_ns: AtomicI64,
+    /// The pause time per reason of the merge this limiter throttles.
+    ///
+    /// Equivalent to the `OneMergeProgress.pauseTimesNS` Java's limiter
+    /// records into through `mergeProgress.pauseNanos` and reads back through
+    /// `mergeProgress.getPauseTimes()` (`MergeRateLimiter.java:101-108,
+    /// 160-165`). A limiter built with [`for_merge`](Self::for_merge) shares
+    /// the merge's own counters, so `OneMerge::get_pause_times` reports them.
+    pause_times_ns: Arc<PauseTimes>,
     /// The instant, on [`now_ns`]'s clock, that the merge may next write at.
     ///
     /// Equivalent to `MergeRateLimiter.lastNS`, an `AtomicLong` seeded with
@@ -2420,10 +2465,10 @@ pub struct MergeRateLimiter {
     ///
     /// Equivalent to `OneMergeProgress.pauseLock` and `pausing`, which Java's
     /// limiter reaches through its `mergeProgress`. `OneMerge` carries no
-    /// progress object in this port (see the note on [`OneMerge`]), so the
-    /// per-reason pause totals live on the limiter; the lock and condition are
-    /// shared with the merge, so that `OneMerge::set_aborted` wakes a paused
-    /// merge as `OneMergeProgress.abort()` does. A waiter sleeps on the
+    /// progress object in this port (see the note on [`OneMerge`]); the lock
+    /// and condition are shared with the merge, so that
+    /// `OneMerge::set_aborted` wakes a paused merge as
+    /// `OneMergeProgress.abort()` does. A waiter sleeps on the
     /// condition until its time expires, the merge is aborted, or the rate
     /// changes.
     pausing: Arc<(Mutex<()>, Condvar)>,
@@ -2436,11 +2481,13 @@ impl Default for MergeRateLimiter {
 }
 
 impl MergeRateLimiter {
-    /// Creates an unthrottled limiter with an abort flag of its own.
+    /// Creates an unthrottled limiter with an abort flag and pause counters of
+    /// its own.
     pub fn new() -> Self {
         Self::with_progress(
             Arc::new(AtomicBool::new(false)),
             Arc::new((Mutex::new(()), Condvar::new())),
+            Arc::new(Default::default()),
         )
     }
 
@@ -2449,18 +2496,25 @@ impl MergeRateLimiter {
     /// Equivalent to `MergeRateLimiter(OneMergeProgress)`, which
     /// `MergeThread` calls with `merge.getMergeProgress()`
     /// (`ConcurrentMergeScheduler.java:719`): the limiter observes the merge's
-    /// abort flag.
+    /// abort flag and records its pauses into the merge's pause times.
     pub fn for_merge(merge: &OneMerge) -> Self {
-        Self::with_progress(merge.aborted_flag(), merge.pause_signal())
+        Self::with_progress(
+            merge.aborted_flag(),
+            merge.pause_signal(),
+            merge.pause_times_ns(),
+        )
     }
 
-    fn with_progress(aborted: Arc<AtomicBool>, pausing: Arc<(Mutex<()>, Condvar)>) -> Self {
+    fn with_progress(
+        aborted: Arc<AtomicBool>,
+        pausing: Arc<(Mutex<()>, Condvar)>,
+        pause_times_ns: Arc<PauseTimes>,
+    ) -> Self {
         let limiter = Self {
             mb_per_sec: Mutex::new(f64::INFINITY),
             min_pause_check_bytes: AtomicI64::new(0),
             total_bytes_written: AtomicI64::new(0),
-            total_paused_ns: AtomicI64::new(0),
-            total_stopped_ns: AtomicI64::new(0),
+            pause_times_ns,
             last_ns: Mutex::new(0),
             aborted,
             pausing,
@@ -2554,27 +2608,26 @@ impl MergeRateLimiter {
     }
 
     /// Returns how long the merge spent paused.
+    ///
+    /// Equivalent to `MergeRateLimiter.getTotalPausedNS()`
+    /// (`MergeRateLimiter.java:106-108`), which reads the `PAUSED` entry of
+    /// the merge's pause times.
     pub fn get_total_paused_ns(&self) -> i64 {
-        self.total_paused_ns.load(Ordering::Relaxed)
+        self.pause_times_ns[PauseReason::Paused.ordinal()].load(Ordering::Relaxed)
     }
 
     /// Returns how long the merge spent fully stopped.
+    ///
+    /// Equivalent to `MergeRateLimiter.getTotalStoppedNS()`
+    /// (`MergeRateLimiter.java:101-103`), which reads the `STOPPED` entry of
+    /// the merge's pause times.
     pub fn get_total_stopped_ns(&self) -> i64 {
-        self.total_stopped_ns.load(Ordering::Relaxed)
+        self.pause_times_ns[PauseReason::Stopped.ordinal()].load(Ordering::Relaxed)
     }
 
     /// Returns how many bytes may pass before the next check.
     pub fn get_min_pause_check_bytes(&self) -> i64 {
         self.min_pause_check_bytes.load(Ordering::Relaxed)
-    }
-
-    /// Marks the merge aborted, so the next `pause` fails.
-    ///
-    /// Equivalent to `MergePolicy.OneMergeProgress.abort()`, which sets the flag
-    /// and then wakes any paused merge thread.
-    pub fn set_aborted(&self) {
-        self.aborted.store(true, Ordering::Release);
-        self.wakeup();
     }
 
     /// Returns whether the merge was aborted.
@@ -2711,16 +2764,9 @@ impl MergeRateLimiter {
             };
         }
         drop(guard);
-        let elapsed = now_ns() - start;
-        match reason {
-            PauseReason::Stopped => {
-                self.total_stopped_ns.fetch_add(elapsed, Ordering::Relaxed);
-            }
-            PauseReason::Paused => {
-                self.total_paused_ns.fetch_add(elapsed, Ordering::Relaxed);
-            }
-            PauseReason::Other => {}
-        }
+        // `timeUpdate.addAndGet(System.nanoTime() - start)`, where `timeUpdate`
+        // is `pauseTimesNS.get(reason)` (`MergePolicy.java:142, 150`).
+        self.pause_times_ns[reason.ordinal()].fetch_add(now_ns() - start, Ordering::Relaxed);
     }
 }
 

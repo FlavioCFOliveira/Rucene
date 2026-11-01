@@ -124,6 +124,8 @@ impl SortingCodecReader {
                 doc_map.size()
             )));
         }
+        // `assert Sorter.isConsistent(docMap)` (`SortingCodecReader.java:434`).
+        debug_assert!(doc_map.is_consistent(), "the doc map must be consistent");
         let state = Arc::new(SortingCodecReaderState {
             sort: meta_data.sort().cloned(),
             cache: Mutex::new(SortedViewCache::default()),
@@ -1009,11 +1011,6 @@ impl SlowCompositeCodecReaderWrapper {
             multi_reader,
             num_docs: OnceLock::new(),
         })
-    }
-
-    /// Returns the wrapped readers.
-    pub fn readers(&self) -> &[Arc<dyn CodecReader>] {
-        &self.readers
     }
 
     /// Returns the first document number of each reader, plus a trailing
@@ -4315,6 +4312,21 @@ mod tests {
             &FilterCodecReader::unwrap(&wrapped),
             &composite
         ));
+    }
+
+    /// `SortingCodecReader.wrap(CodecReader, Sorter.DocMap, Sort)` asserts
+    /// `Sorter.isConsistent(docMap)` once the sizes agree
+    /// (`SortingCodecReader.java:434`); a map whose directions do not invert
+    /// each other trips it.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "the doc map must be consistent")]
+    fn wrapping_with_an_inconsistent_doc_map_trips_the_is_consistent_assertion() {
+        let composite = SlowCompositeCodecReaderWrapper::wrap(two_segments()).unwrap();
+        let doc_map = Arc::new(
+            crate::index::index_sorter::SorterDocMap::inconsistent_for_tests(composite.max_doc()),
+        );
+        let _ = SortingCodecReader::wrap(composite, doc_map, None);
     }
 
     /// A sorted view over the merged view answers postings, points and

@@ -621,7 +621,8 @@ impl DocValues {
             format!("(expected one of {expected:?}")
         };
         Err(LuceneError::illegal_state(format!(
-            "unexpected docvalues type {actual:?} for field '{field}' {expectation}).              Re-index with correct docvalues type."
+            "unexpected docvalues type {actual:?} for field '{field}' {expectation}). \
+             Re-index with correct docvalues type."
         )))
     }
 

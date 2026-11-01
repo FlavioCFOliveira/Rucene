@@ -72,10 +72,6 @@
 //!   document numbers in the frozen buffer instead of mapping on every read;
 //!   every value, every swap and every document number the codec sees is the
 //!   same.
-//! * Java stages the dense batch paths through the writer's shared
-//!   `SharedIndexingScratch.bytesScratch()` buffer; this port allocates the
-//!   staging buffer per call. The buffer never leaves the call, and its size
-//!   and the chunking over it are Lucene's.
 //! * Java's anonymous `PointsReader.getValues` returns a `PointValues` that
 //!   throws `UnsupportedOperationException` for everything except
 //!   `getPointTree()`, because the codec calls nothing else
@@ -166,6 +162,7 @@ use std::sync::{Arc, OnceLock};
 use crate::codecs::points::{PointsReader, PointsWriter};
 use crate::document::column::{BytesRefValuesCursor, LongValuesCursor};
 use crate::error::{LuceneError, Result};
+use crate::index::documents_writer::SharedIndexingScratch;
 use crate::index::index_sorter::SorterDocMap;
 use crate::index::point_values::{
     IntersectVisitor, MutablePointTree, PointTree, PointValues, Relation,
@@ -222,8 +219,10 @@ impl PointValuesWriter {
     /// `iw_bytes_used`.
     ///
     /// Equivalent to `PointValuesWriter(Counter, FieldInfo,
-    /// SharedIndexingScratch)`; the scratch is only used by the dense batch
-    /// paths, which are not ported (see the module documentation).
+    /// SharedIndexingScratch)`. The chain's scratch is not held here: it is
+    /// lent to the dense batch paths, the only ones that use it, by the
+    /// [`IndexingChain`](crate::index::indexing_chain) that owns it, as the
+    /// sorted doc-values writers already receive it.
     ///
     /// Like Java's constructor this validates nothing: `initializeFieldInfo`
     /// only builds a writer for a field whose `pointDimensionCount != 0`, and
@@ -305,6 +304,7 @@ impl PointValuesWriter {
         &mut self,
         first_doc_id: i32,
         cursor: &mut dyn LongValuesCursor,
+        scratch: &mut SharedIndexingScratch,
     ) -> Result<()> {
         self.validate_1d_packed(4)?;
         let size = cursor.size();
@@ -312,11 +312,13 @@ impl PointValuesWriter {
             return Ok(());
         }
         self.reserve_dense_range(first_doc_id, size)?;
-        let mut buffer = vec![0u8; BYTES_SCRATCH_SIZE];
+        // `final byte[] buffer = sharedScratch.bytesScratch()`
+        // (`PointValuesWriter.java:111, 129, 148`).
+        let buffer = scratch.bytes_scratch();
         let mut remaining = size as usize;
         while remaining > 0 {
             let chunk = POINTS_BUFFER_INT_VALUES.min(remaining);
-            cursor.fill_int_points(&mut buffer, 0, chunk)?;
+            cursor.fill_int_points(buffer, 0, chunk)?;
             self.values.extend_from_slice(&buffer[..chunk * 4]);
             remaining -= chunk;
         }
@@ -339,6 +341,7 @@ impl PointValuesWriter {
         &mut self,
         first_doc_id: i32,
         cursor: &mut dyn LongValuesCursor,
+        scratch: &mut SharedIndexingScratch,
     ) -> Result<()> {
         self.validate_1d_packed(8)?;
         let size = cursor.size();
@@ -346,11 +349,13 @@ impl PointValuesWriter {
             return Ok(());
         }
         self.reserve_dense_range(first_doc_id, size)?;
-        let mut buffer = vec![0u8; BYTES_SCRATCH_SIZE];
+        // `final byte[] buffer = sharedScratch.bytesScratch()`
+        // (`PointValuesWriter.java:111, 129, 148`).
+        let buffer = scratch.bytes_scratch();
         let mut remaining = size as usize;
         while remaining > 0 {
             let chunk = POINTS_BUFFER_LONG_VALUES.min(remaining);
-            cursor.fill_long_points(&mut buffer, 0, chunk)?;
+            cursor.fill_long_points(buffer, 0, chunk)?;
             self.values.extend_from_slice(&buffer[..chunk * 8]);
             remaining -= chunk;
         }
@@ -374,6 +379,7 @@ impl PointValuesWriter {
         &mut self,
         first_doc_id: i32,
         cursor: &mut dyn BytesRefValuesCursor,
+        scratch: &mut SharedIndexingScratch,
     ) -> Result<()> {
         let size = cursor.size();
         if size == 0 {
@@ -382,11 +388,13 @@ impl PointValuesWriter {
         self.reserve_dense_range(first_doc_id, size)?;
         let width = self.packed_bytes_length;
         let per_chunk = BYTES_SCRATCH_SIZE / width;
-        let mut buffer = vec![0u8; BYTES_SCRATCH_SIZE];
+        // `final byte[] buffer = sharedScratch.bytesScratch()`
+        // (`PointValuesWriter.java:111, 129, 148`).
+        let buffer = scratch.bytes_scratch();
         let mut remaining = size as usize;
         while remaining > 0 {
             let chunk = per_chunk.min(remaining);
-            cursor.fill_packed_points(&mut buffer, 0, chunk, width)?;
+            cursor.fill_packed_points(buffer, 0, chunk, width)?;
             self.values.extend_from_slice(&buffer[..chunk * width]);
             remaining -= chunk;
         }
@@ -978,6 +986,68 @@ mod tests {
     }
 
     // -- buffering and bookkeeping -----------------------------------------
+
+    /// A dense run of `long` values.
+    struct Longs {
+        values: Vec<i64>,
+        upto: usize,
+    }
+
+    impl LongValuesCursor for Longs {
+        fn size(&self) -> i32 {
+            self.values.len() as i32
+        }
+
+        fn next_long(&mut self) -> Result<i64> {
+            let value = self.values[self.upto];
+            self.upto += 1;
+            Ok(value)
+        }
+    }
+
+    /// The dense paths stage every chunk through the chain's shared
+    /// `SharedIndexingScratch.bytesScratch()` (`PointValuesWriter.java:111,
+    /// 129, 148`): the scratch is allocated and charged to the chain's counter
+    /// once, on the first dense batch, and every later batch reuses it.
+    #[test]
+    fn dense_batches_stage_through_the_shared_scratch_charged_once() {
+        let bytes_used = counter();
+        let mut scratch = SharedIndexingScratch::new(Arc::clone(&bytes_used));
+        let mut writer = PointValuesWriter::new(field("p", 1, 1, 8), counter());
+
+        writer
+            .add_dense_1d_long_values(
+                0,
+                &mut Longs {
+                    values: vec![3, 1, 2],
+                    upto: 0,
+                },
+                &mut scratch,
+            )
+            .unwrap();
+        assert_eq!(
+            bytes_used.load(Ordering::Acquire),
+            BYTES_SCRATCH_SIZE as i64,
+            "the first dense batch allocates the shared scratch"
+        );
+        writer
+            .add_dense_1d_long_values(
+                3,
+                &mut Longs {
+                    values: vec![5],
+                    upto: 0,
+                },
+                &mut scratch,
+            )
+            .unwrap();
+        assert_eq!(
+            bytes_used.load(Ordering::Acquire),
+            BYTES_SCRATCH_SIZE as i64,
+            "later batches reuse it"
+        );
+        assert_eq!(writer.num_points(), 4);
+        assert_eq!(writer.num_docs(), 4);
+    }
 
     #[test]
     fn several_values_in_one_document_count_once_as_a_document() {

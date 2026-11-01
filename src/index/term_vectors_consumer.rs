@@ -253,13 +253,6 @@ impl TermVectorsConsumerPerField {
         self.base.num_terms()
     }
 
-    /// Returns `true` when the current document's tokens are being collected.
-    ///
-    /// Equivalent to reading the private `doVectors` field.
-    pub fn collects_vectors(&self) -> bool {
-        self.do_vectors
-    }
-
     /// Returns `true` when the field's vector reached the writer for the
     /// document that was just finished.
     pub fn wrote_vectors(&self) -> bool {

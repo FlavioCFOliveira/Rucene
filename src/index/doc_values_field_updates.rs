@@ -940,6 +940,10 @@ pub struct MergedIterator<'a> {
     doc: i32,
     // Index into `subs` for the current top.
     top_idx: usize,
+    /// Whether this is the anonymous merged view Java builds over several
+    /// subs, whose `delGen()` throws; over one sub Java returns that sub
+    /// itself, whose `delGen()` answers (`DocValuesFieldUpdates.java:158-160`).
+    merged: bool,
 }
 
 struct MergedSub<'a> {
@@ -953,6 +957,7 @@ impl<'a> MergedIterator<'a> {
             subs: Vec::new(),
             doc: NO_MORE_DOCS,
             top_idx: 0,
+            merged: false,
         }
     }
 
@@ -966,6 +971,7 @@ impl<'a> MergedIterator<'a> {
             subs: vec![MergedSub { it, doc }],
             doc: -1,
             top_idx: 0,
+            merged: false,
         }
     }
 
@@ -982,15 +988,30 @@ impl<'a> MergedIterator<'a> {
             subs: merged_subs,
             doc: -1,
             top_idx: 0,
+            merged: true,
         }
     }
 
-    /// Returns the delGen of the current top sub-iterator.
-    pub fn del_gen(&self) -> i64 {
-        if self.top_idx < self.subs.len() {
-            self.subs[self.top_idx].it.del_gen()
-        } else {
-            -1
+    /// Returns the delGen of the iterator when it stands for a single sub.
+    ///
+    /// Equivalent to `Iterator.delGen()` on what
+    /// `DocValuesFieldUpdates.mergedIterator(Iterator[])` returns: over one sub
+    /// Java hands back that sub, whose generation answers; over several it
+    /// builds a merged view whose `delGen()` throws
+    /// `UnsupportedOperationException` (`DocValuesFieldUpdates.java:231-234`),
+    /// because the merged documents come from several generations. Over no
+    /// live sub Java returns `null`, on which nothing can be asked; this port
+    /// answers the same error.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::UnsupportedOperation`] for the merged view.
+    pub fn del_gen(&self) -> Result<i64> {
+        match self.subs.first() {
+            Some(sub) if !self.merged => Ok(sub.it.del_gen()),
+            _ => Err(LuceneError::UnsupportedOperation(
+                "delGen() of a merged DocValuesFieldUpdates iterator".to_string(),
+            )),
         }
     }
 
@@ -1211,10 +1232,23 @@ mod tests {
             .collect();
         let mut merged = merged_iterator(updates.iter().map(|u| u.iterator()).collect());
         assert_eq!(merged.next_doc().unwrap(), 0);
-        assert_eq!((merged.del_gen(), merged.long_value()), (7, 70));
+        // Generation 7 wrote `gen * 10`.
+        assert_eq!(merged.long_value(), 70);
+        // The merged view's `delGen()` throws in Java, positioned or not
+        // (`DocValuesFieldUpdates.java:231-234`).
+        assert!(matches!(
+            merged.del_gen(),
+            Err(LuceneError::UnsupportedOperation(_))
+        ));
         assert_eq!(merged.next_doc().unwrap(), 1);
-        assert_eq!((merged.del_gen(), merged.long_value()), (7, 71));
+        assert_eq!(merged.long_value(), 71);
         assert_eq!(merged.next_doc().unwrap(), NO_MORE_DOCS);
+        // The merged view's `delGen()` throws in Java
+        // (`DocValuesFieldUpdates.java:231-234`).
+        assert!(matches!(
+            merged.del_gen(),
+            Err(LuceneError::UnsupportedOperation(_))
+        ));
     }
 
     #[test]
@@ -1225,6 +1259,8 @@ mod tests {
         u.finish().unwrap();
 
         let mut merged = merged_iterator(vec![u.iterator()]);
+        // One sub: Java returns the sub itself, whose generation answers.
+        assert_eq!(merged.del_gen().unwrap(), 1);
         assert_eq!(merged.next_doc().unwrap(), 3);
         assert_eq!(merged.long_value(), 30);
         assert_eq!(merged.next_doc().unwrap(), 7);

@@ -11,7 +11,6 @@ use std::sync::Arc;
 
 use crate::error::Result;
 use crate::index::LeafReaderContext;
-use crate::search::doc_values_access::get_numeric;
 use crate::search::double_values::DoubleValues;
 use crate::search::double_values_source::{hash_of, DoubleValuesSource};
 use crate::search::field_comparator::{
@@ -329,7 +328,7 @@ impl LongValuesSource for FieldValuesSource {
         _scores: Option<Box<dyn DoubleValues + 'a>>,
     ) -> Result<Box<dyn LongValues + 'a>> {
         let reader = ctx.leaf_reader();
-        let values = get_numeric(reader.as_ref(), &self.field)?;
+        let values = crate::index::DocValues::get_numeric(reader.as_ref(), &self.field)?;
         Ok(Box::new(FieldLongValues { values }))
     }
 

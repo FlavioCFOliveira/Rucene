@@ -472,11 +472,15 @@ impl Fields for FieldsReader {
         self.fields.len() as i32
     }
 
+    /// Equivalent to `PerFieldPostingsFormat.FieldsReader.terms(String)`
+    /// (`PerFieldPostingsFormat.java:340-343`): `fieldsProducer == null ?
+    /// null : fieldsProducer.terms(field)`, so a field this segment does not
+    /// index has no terms. A merge asks every reader for every merged field
+    /// (`MultiFields.terms`), including readers that lack it.
     fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
-        let suffix = self
-            .fields
-            .get(field)
-            .ok_or_else(|| LuceneError::IllegalArgument(format!("field not found: {field}")))?;
+        let Some(suffix) = self.fields.get(field) else {
+            return Ok(None);
+        };
         self.formats
             .get(suffix)
             .ok_or_else(|| {

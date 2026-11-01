@@ -743,6 +743,18 @@ impl SorterDocMap {
     }
 }
 
+#[cfg(test)]
+impl SorterDocMap {
+    /// Builds a map of `max_doc` documents whose `oldToNew` sends every
+    /// document to 0 while `newToOld` is the identity: no sort produces it, so
+    /// it serves the tests of the assertions that call `isConsistent`.
+    pub(crate) fn inconsistent_for_tests(max_doc: i32) -> Self {
+        let new_to_old = build_monotonic((0..max_doc).map(i64::from))
+            .expect("INVARIANT: an ascending run builds");
+        Self::unpacked(vec![0; max_doc as usize], new_to_old, max_doc)
+    }
+}
+
 /// Fills `PackedLongValues.monotonicBuilder(PackedInts.COMPACT)` with `values`
 /// and builds it.
 fn build_monotonic(values: impl Iterator<Item = i64>) -> Result<MonotonicLongValues> {

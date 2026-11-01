@@ -146,3 +146,54 @@ fn a_segment_with_no_soft_deletes_field_configured_records_none() {
          exactly as `DocumentsWriterPerThread.flush` decides"
     );
 }
+
+/// The search package reaches a leaf's numeric and sorted doc values through
+/// `DocValues.getNumeric` / `DocValues.getSorted`
+/// (`LongValuesSource.java` `FieldValuesSource.getValues`,
+/// `TermOrdValComparator.getSortedDocValues`), whose private `checkField`
+/// refuses a field indexed with another doc-values type with exactly this
+/// message (`DocValues.java:206-222`). Both routes go through
+/// `rucene::index::DocValues`, so the message is the one it builds.
+#[test]
+fn search_reads_doc_values_through_doc_values_get_numeric_and_get_sorted() {
+    use rucene::document::SortedDocValuesField;
+    use rucene::index::DocValues;
+    use rucene::util::BytesRef;
+
+    let dir = fresh_directory("rucene-269-dv-check-field");
+    let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).expect("writer");
+    let mut document = Document::new();
+    document.add(Box::new(SortedDocValuesField::new(
+        "sorted",
+        BytesRef::new(b"x".to_vec()),
+    )));
+    document.add(Box::new(NumericDocValuesField::new("num", 7)));
+    writer.add_document(&document).expect("add document");
+    writer.commit().expect("commit");
+    writer.close().expect("close");
+
+    let reader = directory_reader::open(Arc::clone(&dir)).expect("open");
+    let leaves = Arc::clone(&reader).leaves();
+
+    let source = rucene::search::long_values_source::from_long_field("sorted");
+    let error = match source.get_values(&leaves[0], None) {
+        Err(error) => error,
+        Ok(_) => panic!("a SORTED field must not be read as NUMERIC"),
+    };
+    assert_eq!(
+        error.to_string(),
+        "illegal state: unexpected docvalues type SORTED for field 'sorted' (expected=NUMERIC). \
+         Re-index with correct docvalues type."
+    );
+
+    let leaf = leaves[0].leaf_reader();
+    let error = match DocValues::get_sorted(leaf.as_ref(), "num") {
+        Err(error) => error,
+        Ok(_) => panic!("a NUMERIC field must not be read as SORTED"),
+    };
+    assert_eq!(
+        error.to_string(),
+        "illegal state: unexpected docvalues type NUMERIC for field 'num' (expected=SORTED). \
+         Re-index with correct docvalues type."
+    );
+}

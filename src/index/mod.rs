@@ -87,9 +87,9 @@ pub use doc_values::{
 pub use field_infos::{FieldInfo, FieldInfos, FieldInfosBuilder, FieldNumbers};
 pub use index_file_names::{
     file_name_from_generation, get_extension, is_codec_file, matches_extension, parse_generation,
-    parse_segment_name, segment_file_name, standard_extensions, strip_extension,
-    strip_segment_name, COMPOUND_FILE_ENTRIES_EXTENSION, COMPOUND_FILE_EXTENSION,
-    DOC_VALUES_EXTENSION, DOC_VALUES_META_EXTENSION, FIELD_INFO_EXTENSION, KNN_VECTORS_EXTENSION,
+    parse_segment_name, segment_file_name, strip_extension, strip_segment_name,
+    COMPOUND_FILE_ENTRIES_EXTENSION, COMPOUND_FILE_EXTENSION, DOC_VALUES_EXTENSION,
+    DOC_VALUES_META_EXTENSION, FIELD_INFO_EXTENSION, KNN_VECTORS_EXTENSION,
     KNN_VECTORS_FORMAT_META_EXTENSION, KNN_VECTORS_INDEX_EXTENSION, KNN_VECTORS_META_EXTENSION,
     LIVE_DOCS_EXTENSION, NORMS_EXTENSION, NORMS_META_EXTENSION, OLD_LIVE_DOCS_EXTENSION,
     PAYLOADS_EXTENSION, PENDING_SEGMENTS, POINTS_EXTENSION, POINTS_INDEX_EXTENSION,
@@ -105,8 +105,7 @@ pub use index_reader::{
 };
 pub use index_utilities::{
     ApproximatePriorityQueue, ConcurrentApproximatePriorityQueue,
-    LockableConcurrentApproximatePriorityQueue, QueryTimeout, QueryTimeoutImpl,
-    TrackingTmpOutputDirectoryWrapper, TryLockable,
+    LockableConcurrentApproximatePriorityQueue, QueryTimeout, QueryTimeoutImpl, TryLockable,
 };
 pub use leaf_reader::{AsIndexReader, EmptyTermVectors, LeafMetaData, LeafReader, TermVectors};
 pub use merge::{

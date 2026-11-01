@@ -72,7 +72,9 @@ impl SegmentInfoFormat for Lucene99SegmentInfoFormat {
     ) -> Result<()> {
         let file_name = segment_file_name(&info.name, "", SEGMENT_INFO_EXTENSION);
         let mut output = directory.create_output(&file_name, context)?;
-        info.add_files(std::slice::from_ref(&file_name))?;
+        // Only add the file once we've successfully created it, else IFD
+        // assert can trip (`Lucene99SegmentInfoFormat.java:175-176`).
+        info.add_file(file_name.clone())?;
 
         codec_util::write_index_header(
             output.as_mut(),

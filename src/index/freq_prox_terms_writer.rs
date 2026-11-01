@@ -1449,9 +1449,12 @@ impl FreqProxTermsWriterPerField {
     }
 
     /// Discards every buffered term, keeping the writer usable.
+    ///
+    /// Equivalent to the `TermsHashPerField.reset()` this class inherits
+    /// without overriding (`TermsHashPerField.java:86-92`), so `sawPayloads`
+    /// is left as it is.
     pub fn reset(&mut self) {
         self.base.reset();
-        self.saw_payloads = false;
     }
 
     /// Hands every accounted byte back to the shared counter.

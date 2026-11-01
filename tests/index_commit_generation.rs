@@ -284,7 +284,7 @@ fn closing_the_writer_releases_the_write_lock() {
     // Java closes `writeLock` and sets it to `null` inside
     // `IndexWriter.rollbackInternalNoCommit()`, so the directory is free as
     // soon as the writer is closed rather than whenever it is finally dropped.
-    let mut reclaimed = dir
+    let reclaimed = dir
         .obtain_lock(WRITE_LOCK_NAME)
         .expect("close() must release write.lock");
     reclaimed.close().unwrap();

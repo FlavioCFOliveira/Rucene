@@ -575,24 +575,17 @@ impl FieldInfo {
         old_value
     }
 
-    /// Returns a copy of the internal codec attributes map, without its
-    /// iteration order.
-    ///
-    /// For the callers that only look attributes up. The order-carrying map is
-    /// [`attributes_ordered`](Self::attributes_ordered), which is what
-    /// `Lucene94FieldInfosFormat.write` needs.
-    pub fn attributes(&self) -> HashMap<String, String> {
-        self.attributes.read().unwrap().to_std()
-    }
-
     /// Returns a copy of the internal codec attributes map, iteration order
     /// included.
     ///
     /// Equivalent to `FieldInfo.attributes()` (`FieldInfo.java:682-685`), which
-    /// returns the internal map itself. This port returns a copy, as
-    /// [`attributes`](Self::attributes) already did, because the map is behind
-    /// a lock.
-    pub fn attributes_ordered(&self) -> JavaStringMap {
+    /// returns the internal map itself. Its iteration order is observable:
+    /// `Lucene94FieldInfosFormat.write` serialises the map in that order
+    /// (`writeMapOfStrings(fi.attributes())`, `Lucene94FieldInfosFormat.java:448`),
+    /// and `FieldInfos.Builder.add` re-puts the attributes in it
+    /// (`FieldInfos.java:775-776, 801`). This port returns a copy because the
+    /// map is behind a lock.
+    pub fn attributes(&self) -> JavaStringMap {
         self.attributes.read().unwrap().clone()
     }
 
@@ -1766,7 +1759,7 @@ impl FieldInfosBuilder {
             // `FieldInfos.Builder.add` walks `fi.attributes().keySet()`, so
             // the order the attributes are re-put in is the source map's
             // iteration order and the merged map's own order follows from it.
-            let attributes = info.attributes_ordered();
+            let attributes = info.attributes();
             let has_payloads = info.has_payloads();
             let current = self
                 .by_name
@@ -1798,7 +1791,7 @@ impl FieldInfosBuilder {
             info.get_doc_values_type(),
             info.doc_values_skip_index_type(),
             dv_gen,
-            info.attributes_ordered(),
+            info.attributes(),
             info.get_point_dimension_count(),
             info.get_point_index_dimension_count(),
             info.get_point_num_bytes(),

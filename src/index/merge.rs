@@ -325,19 +325,6 @@ impl MergeState {
         Ok((doc_maps, true))
     }
 
-    /// Builds the doc maps of a merge that has no index sort.
-    ///
-    /// Equivalent to `MergeState.buildDocMaps(List, Sort)` with a null sort:
-    /// the readers only need remapping around deletions; see
-    /// [`build_doc_maps_for`](Self::build_doc_maps_for) for the sorted case.
-    pub fn build_doc_maps(
-        live_docs: &[Option<Box<dyn Bits>>],
-        max_docs: &[i32],
-        num_docs: &[i32],
-    ) -> Vec<DocMap> {
-        Self::build_deletion_doc_maps(live_docs, max_docs, num_docs)
-    }
-
     /// Refuses a merge whose readers do not all carry a sort congruent with
     /// the merged segment's.
     ///
@@ -437,30 +424,48 @@ impl MergeState {
     ///
     /// Equivalent to Lucene 10.5.0's package-private
     /// `MergeState(List<CodecReader> readers, SegmentInfo segmentInfo, InfoStream
-    /// infoStream, Executor intraMergeTaskExecutor, OneMerge oneMerge)`: it pulls
-    /// each producer off the reader rather than making the caller thread
-    /// fourteen parallel vectors through by hand, and keeps the *merge
-    /// instance* of each one — the stored-fields, term-vectors, norms,
-    /// doc-values, postings, points and vectors readers alike — exactly as
-    /// `MergeState.java:134-168` replaces every non-null reader with its
-    /// `getMergeInstance()`. A merge therefore reads through instances built
-    /// for one sequential pass, never through the ones searches share.
+    /// infoStream, Executor intraMergeTaskExecutor, OneMerge oneMerge)`
+    /// (`MergeState.java:103-177`): it checks the readers' index sorts, keeps
+    /// the *merge instance* of each producer — the stored-fields,
+    /// term-vectors, norms, doc-values, postings, points and vectors readers
+    /// alike — exactly as `MergeState.java:134-168` replaces every non-null
+    /// reader with its `getMergeInstance()`, stamps the merged segment's
+    /// `maxDoc` as the sum of the readers' live documents
+    /// (`MergeState.java:170-173`), and builds the doc maps from the merged
+    /// segment's index sort (`MergeState.java:176, 214-241`), which also sets
+    /// [`needs_index_sort`](Self::needs_index_sort). A merge therefore reads
+    /// through instances built for one sequential pass, never through the
+    /// ones searches share. The merged field infos are left empty — Java's
+    /// `mergeFieldInfos` is `null` here — until `SegmentMerger` builds them
+    /// (`SegmentMerger.java:230-237`).
     ///
     /// # Errors
     ///
-    /// Propagates whatever pulling a reader or building its merge instance
-    /// raises.
-    #[allow(clippy::too_many_arguments)]
+    /// Returns [`LuceneError::IllegalArgument`] when a reader's index sort is
+    /// not congruent with the merged segment's, or a sort field cannot sort an
+    /// index; [`LuceneError::IllegalState`] when `segment_info`'s `maxDoc` is
+    /// already set; and propagates whatever pulling a reader, building its
+    /// merge instance or reading the sort values raises.
     pub fn from_readers(
         readers: &[Arc<dyn CodecReader>],
-        doc_maps: Vec<DocMap>,
-        segment_info: Option<SegmentInfo>,
-        merge_field_infos: FieldInfos,
-        needs_index_sort: bool,
+        mut segment_info: SegmentInfo,
         info_stream: Arc<dyn InfoStream>,
         intra_merge_task_executor: Option<Arc<dyn Executor>>,
         one_merge: Option<OneMerge>,
     ) -> Result<Self> {
+        // `SegmentInfo` spells "no index sort" — Java's `null` — as the
+        // relevance `Sort::new()` (or an empty sort), as `SegmentReader` reads
+        // it for its metadata.
+        let index_sort = Some(segment_info.index_sort())
+            .filter(|sort| !sort.fields().is_empty() && **sort != crate::search::Sort::new())
+            .cloned();
+        // `verifyIndexSort(readers, segmentInfo)`, the constructor's first
+        // statement (`MergeState.java:110`).
+        let segment_sorts: Vec<Option<crate::search::Sort>> = readers
+            .iter()
+            .map(|reader| reader.get_meta_data().sort().cloned())
+            .collect();
+        Self::verify_index_sort(index_sort.as_ref(), &segment_sorts)?;
         let n = readers.len();
         let mut stored_fields_readers = Vec::with_capacity(n);
         let mut term_vectors_readers = Vec::with_capacity(n);
@@ -473,6 +478,7 @@ impl MergeState {
         let mut knn_vectors_readers = Vec::with_capacity(n);
         let mut max_docs = Vec::with_capacity(n);
 
+        let mut num_docs = 0i32;
         for reader in readers {
             max_docs.push(reader.max_doc());
             live_docs.push(reader.get_live_docs().map(Arc::from));
@@ -508,12 +514,22 @@ impl MergeState {
                 Some(vectors_reader) => Some(Arc::from(vectors_reader.get_merge_instance()?)),
                 None => None,
             });
+
+            num_docs += reader.num_docs();
         }
+
+        // `segmentInfo.setMaxDoc(numDocs)` (`MergeState.java:173`).
+        segment_info.set_max_doc(num_docs)?;
+        // `this.docMaps = buildDocMaps(readers, segmentInfo.getIndexSort())`
+        // (`MergeState.java:176`).
+        let (doc_maps, needs_index_sort) =
+            Self::build_doc_maps_for(readers, index_sort.as_ref(), info_stream.as_ref())?;
 
         Ok(Self {
             doc_maps,
-            segment_info: segment_info.map(Arc::new),
-            merge_field_infos,
+            segment_info: Some(Arc::new(segment_info)),
+            // Java's `null` until `SegmentMerger.mergeFieldInfos()` sets it.
+            merge_field_infos: FieldInfos::default(),
             stored_fields_readers,
             term_vectors_readers,
             norms_producers,
@@ -798,12 +814,6 @@ impl<T: DocIDMergerSub> DocIDMerger<T> {
             MergerState::Sequential { current, .. } => *current,
             MergerState::Sorted { current, .. } => *current,
         }
-    }
-
-    /// Returns the sub at `index`, which a caller obtains from
-    /// [`current_index`](Self::current_index).
-    pub fn sub_mut(&mut self, index: usize) -> &mut T {
-        &mut self.subs[index]
     }
 
     /// Returns the sub at `index` for reading.

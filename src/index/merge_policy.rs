@@ -187,6 +187,80 @@ pub type MergeFinishedHook = Arc<
 /// merged segment the writer has just built.
 pub type MergeCompleteHook = Arc<dyn Fn(&OneMerge) -> Result<()> + Send + Sync>;
 
+/// The completion of a [`OneMerge`]: Java's `mergeCompleted`, the
+/// `CompletableFuture<Boolean>` that `OneMerge.close(success, ...)` completes
+/// once with the merge's success flag (`MergePolicy.java:184, 281`).
+///
+/// The value is `None` until the merge is completed, then the success flag
+/// for ever after: `CompletableFuture.complete` sets a value only once. A
+/// waiter blocks on the condition variable until the value is set, as
+/// `CompletableFuture.get` blocks until the future is completed; nothing
+/// polls.
+#[derive(Debug, Default)]
+struct MergeCompletion {
+    /// `None` while the future is not done; the value it was completed with
+    /// afterwards.
+    value: Mutex<Option<bool>>,
+    /// Signalled, to every waiter, when [`value`](Self::value) is set.
+    done: std::sync::Condvar,
+}
+
+impl MergeCompletion {
+    /// Locks the value. Every critical section only reads or sets an
+    /// `Option<bool>`, so a poisoned lock still holds a consistent value.
+    fn value(&self) -> std::sync::MutexGuard<'_, Option<bool>> {
+        self.value
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// `CompletableFuture.complete(value)`: sets the value and wakes every
+    /// waiter when the future was not done, and returns whether this call
+    /// completed it.
+    fn complete(&self, success: bool) -> bool {
+        let mut value = self.value();
+        if value.is_some() {
+            return false;
+        }
+        *value = Some(success);
+        self.done.notify_all();
+        true
+    }
+
+    /// `CompletableFuture.getNow(null)`: the value, or `None` while the future
+    /// is not done.
+    fn get_now(&self) -> Option<bool> {
+        *self.value()
+    }
+
+    /// `CompletableFuture.get()`: blocks until the future is done.
+    fn join(&self) {
+        let value = self.value();
+        let _done = self
+            .done
+            .wait_while(value, |value| value.is_none())
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    }
+
+    /// `CompletableFuture.get(timeout, unit)`: blocks until the future is
+    /// done or `deadline` passes, and returns whether it is done.
+    fn join_until(&self, deadline: std::time::Instant) -> bool {
+        let mut value = self.value();
+        while value.is_none() {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            value = self
+                .done
+                .wait_timeout(value, deadline - now)
+                .map(|(value, _)| value)
+                .unwrap_or_else(|poisoned| poisoned.into_inner().0);
+        }
+        true
+    }
+}
+
 /// One merge the policy wants performed.
 ///
 /// Equivalent to `MergePolicy.OneMerge` (`MergePolicy.java:183-479`),
@@ -200,21 +274,25 @@ pub type MergeCompleteHook = Arc<dyn Fn(&OneMerge) -> Result<()> + Send + Sync>;
 ///   and every field a holder may change after the policy built it lives
 ///   behind an `Arc`, so a clone observes the change; the field docs say which.
 /// * There is no `OneMergeProgress` object and no `getMergeProgress()`. Its
-///   abort flag and its `pauseLock`/`pausing` pair are fields of this merge,
-///   shared with the merge's
+///   abort flag, its `pauseLock`/`pausing` pair and its per-reason pause
+///   times are fields of this merge, shared with the merge's
 ///   [`MergeRateLimiter`](crate::index::merge_scheduler::MergeRateLimiter),
-///   which keeps the per-reason pause totals Java's `getPauseTimes()` reports.
-///   Nothing records the owning thread, which Java's progress uses only in
-///   assertions, so [`merge_init`](Self::merge_init) records nothing.
+///   which records the pauses; [`get_pause_times`](Self::get_pause_times) is
+///   `getMergeProgress().getPauseTimes()`. Nothing records the owning thread,
+///   which Java's progress uses only in assertions, so
+///   [`merge_init`](Self::merge_init) records nothing.
 /// * Java completes the `mergeCompleted` future with the merge's success flag.
-///   This merge records only that it finished
-///   ([`has_finished`](Self::has_finished)), so `hasCompletedSuccessfully()`
-///   and the package-private `await(long, TimeUnit)` are not ported;
-///   [`MergeSpecification`] waits on the finished flags.
-/// * `error` keeps the rendered message rather than the `Throwable`, and the
-///   overridable methods (`wrapForMerge`, `reorder`, `mergeFinished`,
-///   `onMergeComplete`) are closures a policy installs rather than subclass
-///   overrides; the field docs give the reasons.
+///   There is no `CompletableFuture` in Rust's standard library, so the
+///   future is a value behind a mutex and a condition variable
+///   ([`complete`](Self::complete), [`has_finished`](Self::has_finished),
+///   [`has_completed_successfully`](Self::has_completed_successfully),
+///   `r#await`): it is set once, and a waiter blocks until it is set, as on
+///   the future.
+/// * `error` keeps a [duplicate](crate::error::LuceneError::duplicate) of the
+///   error rather than the `Throwable` itself, and the overridable methods
+///   (`wrapForMerge`, `reorder`, `mergeFinished`, `onMergeComplete`) are
+///   closures a policy installs rather than subclass overrides; the field docs
+///   give the reasons.
 #[derive(Clone)]
 pub struct OneMerge {
     /// The segments to merge, in the order the policy chose.
@@ -260,17 +338,32 @@ pub struct OneMerge {
     /// built for this merge, so that [`set_aborted`](Self::set_aborted) wakes a
     /// paused merge, as `OneMergeProgress.abort()` does.
     pause_signal: Arc<(Mutex<()>, std::sync::Condvar)>,
-    /// Set once the merge has run to completion, successfully or not.
+    /// The nanoseconds this merge spent paused, per reason.
     ///
-    /// Equivalent to the `mergeCompleted` future's completion in Java.
-    merged: Arc<AtomicBool>,
-    /// The error that stopped this merge, rendered.
+    /// Equivalent to `OneMergeProgress.pauseTimesNS` (`MergePolicy.java:94,
+    /// 106-111`): shared with the
+    /// [`MergeRateLimiter`](crate::index::merge_scheduler::MergeRateLimiter)
+    /// built for this merge, which records into it as
+    /// `OneMergeProgress.pauseNanos` does, and shared through an `Arc` so a
+    /// clone observes the same totals.
+    pause_times_ns: Arc<crate::index::merge_scheduler::PauseTimes>,
+    /// Whether the merge has run to completion, and if so whether it
+    /// succeeded.
     ///
-    /// Equivalent to `OneMerge.error`. Java keeps the `Throwable`; a
-    /// [`LuceneError`](crate::error::LuceneError) is not clonable and the merge
-    /// must be shared, so the port keeps the rendered message, which answers
-    /// the same question.
-    error: Arc<Mutex<Option<String>>>,
+    /// Equivalent to `OneMerge.mergeCompleted` (`MergePolicy.java:184`), the
+    /// `CompletableFuture<Boolean>` that `close(success, ...)` completes once
+    /// with the merge's success flag (`MergePolicy.java:281`); see
+    /// [`MergeCompletion`]. Shared through an `Arc` so every clone of the
+    /// merge sees, and waits for, the same completion.
+    merged: Arc<MergeCompletion>,
+    /// The error that stopped this merge.
+    ///
+    /// Equivalent to `OneMerge.error`, which `setException` records and
+    /// `getException` hands back (`MergePolicy.java:339-346`).
+    /// A [`LuceneError`](crate::error::LuceneError) has a single owner, so the
+    /// merge keeps a [duplicate](crate::error::LuceneError::duplicate) — the
+    /// same variant, message and cause — and hands out duplicates of it.
+    error: Arc<Mutex<Option<crate::error::LuceneError>>>,
     /// The merged segment, once the writer has built it.
     ///
     /// Equivalent to `OneMerge.info`. Java sets and mutates it on the one
@@ -379,7 +472,8 @@ impl OneMerge {
             is_external: false,
             aborted: Arc::new(AtomicBool::new(false)),
             pause_signal: Arc::new((Mutex::new(()), std::sync::Condvar::new())),
-            merged: Arc::new(AtomicBool::new(false)),
+            pause_times_ns: Arc::new(Default::default()),
+            merged: Arc::new(MergeCompletion::default()),
             error: Arc::new(Mutex::new(None)),
             info: Arc::new(Mutex::new(None)),
             merge_start_ns: Arc::new(AtomicI64::new(-1)),
@@ -421,7 +515,8 @@ impl OneMerge {
             is_external: false,
             aborted: Arc::new(AtomicBool::new(false)),
             pause_signal: Arc::new((Mutex::new(()), std::sync::Condvar::new())),
-            merged: Arc::new(AtomicBool::new(false)),
+            pause_times_ns: Arc::new(Default::default()),
+            merged: Arc::new(MergeCompletion::default()),
             error: Arc::new(Mutex::new(None)),
             info: Arc::new(Mutex::new(None)),
             merge_start_ns: Arc::new(AtomicI64::new(-1)),
@@ -730,6 +825,34 @@ impl OneMerge {
         Arc::clone(&self.pause_signal)
     }
 
+    /// Returns the per-reason pause counters, shared with every clone of this
+    /// merge, for the rate limiter that records into them.
+    pub(crate) fn pause_times_ns(&self) -> Arc<crate::index::merge_scheduler::PauseTimes> {
+        Arc::clone(&self.pause_times_ns)
+    }
+
+    /// Returns how long this merge was paused, per reason, in nanoseconds.
+    ///
+    /// Equivalent to `OneMerge.getMergeProgress().getPauseTimes()`
+    /// (`MergePolicy.java:165-168, 416-418`).
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java collects the `EnumMap` into a
+    /// `HashMap` (`Collectors.toMap`), whose iteration order follows the
+    /// identity hash codes of the enum constants and so is not fixed from one
+    /// JVM run to the next. This port returns the entries in declaration
+    /// order, which is one of the orders Java can produce.
+    pub fn get_pause_times(&self) -> Vec<(crate::index::merge_scheduler::PauseReason, i64)> {
+        crate::index::merge_scheduler::PauseReason::VALUES
+            .iter()
+            .map(|reason| {
+                (
+                    *reason,
+                    self.pause_times_ns[reason.ordinal()].load(Ordering::Relaxed),
+                )
+            })
+            .collect()
+    }
+
     /// Returns whether this merge was aborted.
     ///
     /// Equivalent to `OneMerge.isAborted()`.
@@ -756,32 +879,72 @@ impl OneMerge {
 
     /// Records the error that stopped this merge.
     ///
-    /// Equivalent to `OneMerge.setException(Throwable)`.
-    pub fn set_error(&self, error: &str) {
+    /// Equivalent to `OneMerge.setException(Throwable)`
+    /// (`MergePolicy.java:339-341`).
+    pub fn set_error(&self, error: &crate::error::LuceneError) {
         if let Ok(mut guard) = self.error.lock() {
-            *guard = Some(error.to_string());
+            *guard = Some(error.duplicate());
         }
+    }
+
+    /// Returns the error that stopped this merge, rendered, if any.
+    ///
+    /// The message of [`get_exception`](Self::get_exception).
+    pub fn get_error(&self) -> Option<String> {
+        self.error
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(ToString::to_string))
     }
 
     /// Returns the error that stopped this merge, if any.
     ///
-    /// Equivalent to `OneMerge.getException()`.
-    pub fn get_error(&self) -> Option<String> {
-        self.error.lock().ok().and_then(|g| g.clone())
+    /// Equivalent to `OneMerge.getException()` (`MergePolicy.java:344-346`):
+    /// an equal error, the same variant, message and cause.
+    pub fn get_exception(&self) -> Option<crate::error::LuceneError> {
+        self.error
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(crate::error::LuceneError::duplicate))
     }
 
-    /// Marks the merge finished, whatever its outcome.
+    /// Completes the merge with its success flag, and returns whether this
+    /// call completed it — `false` when it was already complete, which is left
+    /// unchanged.
     ///
-    /// Equivalent to completing `OneMerge.mergeCompleted`.
-    pub fn set_finished(&self) {
-        self.merged.store(true, Ordering::Release);
+    /// Equivalent to `mergeCompleted.complete(success)`, which
+    /// `OneMerge.close(boolean, boolean, IOConsumer)` calls first
+    /// (`MergePolicy.java:281`).
+    pub fn complete(&self, success: bool) -> bool {
+        self.merged.complete(success)
     }
 
-    /// Returns whether the merge has run to completion.
+    /// Returns whether the merge has run to completion. Never blocks.
     ///
-    /// Equivalent to `OneMerge.hasFinished()`.
+    /// Equivalent to `OneMerge.hasFinished()` (`MergePolicy.java:440-442`):
+    /// `mergeCompleted.isDone()`.
     pub fn has_finished(&self) -> bool {
-        self.merged.load(Ordering::Acquire)
+        self.merged.get_now().is_some()
+    }
+
+    /// Returns whether the merge completed successfully, or `None` while it
+    /// has not completed. Never blocks.
+    ///
+    /// Equivalent to the package-private `OneMerge.hasCompletedSuccessfully()`
+    /// (`MergePolicy.java:449-451`): `Optional.ofNullable(mergeCompleted.getNow(null))`.
+    pub fn has_completed_successfully(&self) -> Option<bool> {
+        self.merged.get_now()
+    }
+
+    /// Waits at most `timeout` for this merge to be completed, and returns
+    /// whether it was.
+    ///
+    /// Equivalent to the package-private `OneMerge.await(long, TimeUnit)`
+    /// (`MergePolicy.java:425-434`): `mergeCompleted.get(timeout, timeUnit)`,
+    /// whose `TimeoutException` is the `false` answer. The `long` and
+    /// `TimeUnit` pair becomes a [`Duration`](std::time::Duration).
+    pub fn r#await(&self, timeout: std::time::Duration) -> bool {
+        self.merged.join_until(std::time::Instant::now() + timeout)
     }
 
     /// Returns the total number of documents the merge inputs hold, deletions
@@ -823,8 +986,18 @@ impl OneMerge {
     /// Locks the shared merged-segment slot: Java's package-private
     /// `OneMerge.info` field, which `IndexWriter` reads and mutates in place.
     ///
-    /// The guard must not be held across a call that renders or locks this
-    /// merge again, such as [`seg_string`](Self::seg_string).
+    /// Java's field is a plain reference that `segString()` reads without a
+    /// lock (`MergePolicy.java:349-368`); this slot is a mutex, which gives it
+    /// a place in the writer's lock order. The writer reads it while it holds
+    /// its own lock — `forceMerge` marks every pending and running merge's
+    /// segment (`IndexWriter.java:2229-2237`) and renders a failed one
+    /// (`IndexWriter.java:2243-2261`) — and so may any code the writer calls
+    /// under that lock, such as an `InfoStream` that renders a merge with
+    /// [`seg_string`](Self::seg_string). The guard must therefore never be
+    /// held while the writer's lock is taken — a failure that deletes files
+    /// through the writer is one such call — and must not be held across a
+    /// call that renders or locks this merge again, such as
+    /// [`seg_string`](Self::seg_string).
     pub(crate) fn info(&self) -> std::sync::MutexGuard<'_, Option<SegmentCommitInfo>> {
         self.info.lock().expect("OneMerge info mutex poisoned")
     }
@@ -894,36 +1067,15 @@ impl MergeSpecification {
     /// finish, and returns whether they all did.
     ///
     /// Equivalent to the package-private
-    /// `MergePolicy.MergeSpecification.await(long timeout, TimeUnit unit)`.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java composes the `mergeCompleted`
-    /// `CompletableFuture` of every merge and blocks on the composite
-    /// (`MergePolicy.java:520-549`). This port's [`OneMerge`] records
-    /// completion in an `AtomicBool` rather than a future — the divergence the
-    /// type's own note records — so there is nothing to block on and the wait
-    /// polls [`OneMerge::has_finished`] until the deadline. The contract is
-    /// unchanged: it returns `true` only when every merge has finished, and
-    /// `false` when the deadline passed first.
+    /// `MergePolicy.MergeSpecification.await(long timeout, TimeUnit unit)`
+    /// (`MergePolicy.java:539-549`), called with milliseconds: it blocks on
+    /// [`get_merge_completed_futures`](Self::get_merge_completed_futures)
+    /// for at most the timeout, whose `TimeoutException` is the `false`
+    /// answer. A timeout that is not positive does not wait, as
+    /// `CompletableFuture.get` with such a timeout does not.
     pub fn r#await(&self, timeout_millis: i64) -> bool {
-        /// How long the poll sleeps between two checks, as Java's future-based
-        /// wait has no equivalent knob.
-        const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1);
-
-        if timeout_millis <= 0 {
-            return self.merges.iter().all(OneMerge::has_finished);
-        }
-        let deadline = std::time::Instant::now()
-            + std::time::Duration::from_millis(timeout_millis.unsigned_abs());
-        loop {
-            if self.merges.iter().all(OneMerge::has_finished) {
-                return true;
-            }
-            let now = std::time::Instant::now();
-            if now >= deadline {
-                return false;
-            }
-            std::thread::sleep(POLL_INTERVAL.min(deadline - now));
-        }
+        let timeout = std::time::Duration::from_millis(timeout_millis.max(0).unsigned_abs());
+        self.get_merge_completed_futures().join_timeout(timeout)
     }
 }
 
@@ -961,12 +1113,12 @@ impl MergeSpecification {
 /// `CompletableFuture<Void>` that
 /// `MergeSpecification.getMergeCompletedFutures()` builds with
 /// `CompletableFuture.allOf` over each merge's `mergeCompleted` future, and
-/// that `MergeObserver.awaitAsync()` hands out. This port's [`OneMerge`]
-/// records its completion in a shared flag rather than in a future — the
-/// divergence its own documentation records — so this handle offers the
-/// operations a holder of that future uses, `isDone()`, `join()` and the timed
-/// `get`, over those flags, polling them as
-/// [`MergeSpecification::r#await`] does.
+/// that `MergeObserver.awaitAsync()` hands out. Rust's standard library has
+/// no `CompletableFuture`, so this handle offers the operations a holder of
+/// that future uses, `isDone()`, `join()` and the timed `get`, over the
+/// merges' own completions: it is done once every one of them is, and a wait
+/// blocks on each in turn, as the composite future completes only after its
+/// last component.
 #[derive(Debug, Clone)]
 pub struct MergeCompletedFuture {
     merges: Vec<OneMerge>,
@@ -984,8 +1136,8 @@ impl MergeCompletedFuture {
     ///
     /// Equivalent to `CompletableFuture.join()`.
     pub fn join(&self) {
-        while !self.is_done() {
-            std::thread::sleep(MERGE_COMPLETION_POLL_INTERVAL);
+        for merge in &self.merges {
+            merge.merged.join();
         }
     }
 
@@ -993,25 +1145,15 @@ impl MergeCompletedFuture {
     /// returns whether they all did.
     ///
     /// Equivalent to `CompletableFuture.get(long, TimeUnit)`, whose
-    /// `TimeoutException` is the `false` answer.
+    /// `TimeoutException` is the `false` answer. The deadline is shared by
+    /// every merge, so the whole wait lasts at most `timeout`.
     pub fn join_timeout(&self, timeout: std::time::Duration) -> bool {
         let deadline = std::time::Instant::now() + timeout;
-        loop {
-            if self.is_done() {
-                return true;
-            }
-            let now = std::time::Instant::now();
-            if now >= deadline {
-                return false;
-            }
-            std::thread::sleep(MERGE_COMPLETION_POLL_INTERVAL.min(deadline - now));
-        }
+        self.merges
+            .iter()
+            .all(|merge| merge.merged.join_until(deadline))
     }
 }
-
-/// How long a wait on merge completion sleeps between two checks, as the
-/// future-based waits Java performs have no equivalent knob.
-const MERGE_COMPLETION_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1);
 
 /// Monitors the merges a call to `IndexWriter::force_merge_deletes` started,
 /// and waits for them.
@@ -1265,6 +1407,28 @@ pub trait MergePolicy: Send + Sync + std::fmt::Display {
         segment_infos: &SegmentInfos,
         merge_context: &dyn MergeContext,
     ) -> Result<Option<MergeSpecification>>;
+
+    /// Returns the merges that turn the readers handed to
+    /// [`IndexWriter::add_indexes_codec_readers`](crate::index::index_writer::IndexWriter::add_indexes_codec_readers)
+    /// into segments of the index, or `None` when there are none.
+    ///
+    /// Equivalent to `MergePolicy.findMerges(CodecReader...)`
+    /// (`MergePolicy.java:642-646`); the name differs because Rust has no
+    /// overloading. The default creates a single merge over every reader —
+    /// the lowest concurrency; a policy may override it to merge each reader
+    /// on its own.
+    ///
+    /// # Errors
+    ///
+    /// An override may fail; the default does not.
+    fn find_merges_for_readers(
+        &self,
+        readers: &[Arc<dyn CodecReader>],
+    ) -> Result<Option<MergeSpecification>> {
+        let mut merge_spec = MergeSpecification::new();
+        merge_spec.add(OneMerge::from_codec_readers(readers.to_vec()));
+        Ok(Some(merge_spec))
+    }
 
     /// Returns the merges that bring the index down to `max_num_segments`.
     ///
@@ -1710,6 +1874,15 @@ impl MergePolicy for FilterMergePolicy {
             .find_merges(merge_trigger, segment_infos, merge_context)
     }
 
+    /// Equivalent to `FilterMergePolicy.findMerges(CodecReader...)`
+    /// (`FilterMergePolicy.java:50-53`): `in.findMerges(readers)`.
+    fn find_merges_for_readers(
+        &self,
+        readers: &[Arc<dyn CodecReader>],
+    ) -> Result<Option<MergeSpecification>> {
+        self.inner.find_merges_for_readers(readers)
+    }
+
     fn find_forced_merges(
         &self,
         segment_infos: &SegmentInfos,
@@ -1840,6 +2013,16 @@ impl MergePolicy for OneMergeWrappingMergePolicy {
             self.inner
                 .find_merges(merge_trigger, segment_infos, merge_context)?,
         ))
+    }
+
+    /// Inherited from `FilterMergePolicy.findMerges(CodecReader...)`
+    /// (`FilterMergePolicy.java:50-53`), which `OneMergeWrappingMergePolicy` does not
+    /// override: `in.findMerges(readers)`, unwrapped.
+    fn find_merges_for_readers(
+        &self,
+        readers: &[Arc<dyn CodecReader>],
+    ) -> Result<Option<MergeSpecification>> {
+        self.inner.find_merges_for_readers(readers)
     }
 
     fn find_forced_merges(
@@ -2847,7 +3030,7 @@ impl MergePolicy for TieredMergePolicy {
             i32::MAX,
             i32::MAX,
             0,
-            self.max_allowed_docs(segment_infos.total_max_doc(), total_del_count),
+            self.max_allowed_docs(segment_infos.total_max_doc()?, total_del_count),
             false,
             false,
         )
@@ -3794,6 +3977,16 @@ impl MergePolicy for UpgradeIndexMergePolicy {
     ) -> Result<Option<MergeSpecification>> {
         self.inner
             .find_merges(merge_trigger, segment_infos, merge_context)
+    }
+
+    /// Inherited from `FilterMergePolicy.findMerges(CodecReader...)`
+    /// (`FilterMergePolicy.java:50-53`), which `UpgradeIndexMergePolicy` does not
+    /// override: `in.findMerges(readers)`, unwrapped.
+    fn find_merges_for_readers(
+        &self,
+        readers: &[Arc<dyn CodecReader>],
+    ) -> Result<Option<MergeSpecification>> {
+        self.inner.find_merges_for_readers(readers)
     }
 
     fn find_forced_merges(
@@ -5158,6 +5351,16 @@ impl MergePolicy for SoftDeletesRetentionMergePolicy {
         ))
     }
 
+    /// Inherited from `FilterMergePolicy.findMerges(CodecReader...)`
+    /// (`FilterMergePolicy.java:50-53`), which `SoftDeletesRetentionMergePolicy` does not
+    /// override: `in.findMerges(readers)`, unwrapped.
+    fn find_merges_for_readers(
+        &self,
+        readers: &[Arc<dyn CodecReader>],
+    ) -> Result<Option<MergeSpecification>> {
+        self.inner.find_merges_for_readers(readers)
+    }
+
     fn find_forced_merges(
         &self,
         segment_infos: &SegmentInfos,
@@ -5983,5 +6186,78 @@ mod compound_reader_close_tests {
                 "a compound reader was left open"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod merge_completion_tests {
+    //! `OneMerge.mergeCompleted` is a `CompletableFuture<Boolean>` completed
+    //! once with the merge's success flag (`MergePolicy.java:184, 281`); the
+    //! waits block on it (`MergePolicy.java:425-451, 520-549`).
+    use super::*;
+    use std::time::Duration;
+
+    fn merge() -> OneMerge {
+        OneMerge::new(vec![crate::codecs::tests::test_segment_commit_info(
+            "_0", 1,
+        )])
+        .unwrap()
+    }
+
+    /// `complete` sets the value once; `hasFinished`, `hasCompletedSuccessfully`
+    /// and `await` read it without blocking once it is set.
+    #[test]
+    fn a_merge_is_completed_once_with_its_success_flag() {
+        let merge = merge();
+        assert!(!merge.has_finished());
+        assert_eq!(merge.has_completed_successfully(), None);
+        assert!(
+            !merge.r#await(Duration::ZERO),
+            "not done: the wait times out"
+        );
+        assert!(merge.complete(false));
+        assert!(!merge.complete(true), "the value is set only once");
+        assert!(merge.has_finished());
+        assert_eq!(merge.has_completed_successfully(), Some(false));
+        assert!(merge.r#await(Duration::ZERO));
+    }
+
+    /// The specification's waits return once another thread completes the
+    /// last of its merges, and time out while one is pending.
+    #[test]
+    fn the_waits_return_once_another_thread_completes_every_merge() {
+        let first = merge();
+        let second = merge();
+        let mut spec = MergeSpecification::new();
+        spec.add(first.clone());
+        spec.add(second.clone());
+        assert!(!spec.r#await(0));
+        assert!(!spec.r#await(-5));
+        assert!(!spec
+            .get_merge_completed_futures()
+            .join_timeout(Duration::from_millis(20)));
+
+        let completer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(first.complete(true));
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(second.complete(false));
+        });
+        assert!(spec.r#await(30_000));
+        completer.join().unwrap();
+        assert!(spec.await_completion());
+        spec.get_merge_completed_futures().join();
+        assert!(spec.get_merge_completed_futures().is_done());
+        assert_eq!(
+            spec.merges
+                .iter()
+                .map(OneMerge::has_completed_successfully)
+                .collect::<Vec<_>>(),
+            vec![Some(true), Some(false)]
+        );
+        let observer = MergeObserver::new(Some(spec));
+        assert_eq!(observer.num_completed_merges(), 2);
+        assert!(observer.await_timeout(Duration::ZERO));
+        assert!(observer.r#await());
     }
 }

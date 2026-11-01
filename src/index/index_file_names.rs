@@ -2,8 +2,6 @@
 
 #![deny(unsafe_code)]
 
-use std::collections::HashSet;
-
 use crate::error::{LuceneError, Result};
 
 /// Name of the index segment file.
@@ -105,47 +103,6 @@ pub const COMPOUND_FILE_ENTRIES_EXTENSION: &str = "cfe";
 
 /// Old, pre-Lucene-8.6 live-docs extension.
 pub const OLD_LIVE_DOCS_EXTENSION: &str = "del";
-
-/// All well-known codec file extensions.
-///
-/// This is the Rust equivalent of the set of extensions used by the bundled
-/// Lucene codecs; it is not exhaustive because custom codecs may add more.
-pub fn standard_extensions() -> HashSet<&'static str> {
-    [
-        SEGMENT_INFO_EXTENSION,
-        FIELD_INFO_EXTENSION,
-        STORED_FIELDS_EXTENSION,
-        STORED_FIELDS_INDEX_EXTENSION,
-        STORED_FIELDS_META_EXTENSION,
-        VECTORS_FIELDS_EXTENSION,
-        VECTORS_INDEX_EXTENSION,
-        VECTORS_META_EXTENSION,
-        POSTINGS_EXTENSION,
-        POSITIONS_EXTENSION,
-        PAYLOADS_EXTENSION,
-        TERMS_POSTINGS_EXTENSION,
-        TERMS_EXTENSION,
-        TERMS_INDEX_EXTENSION,
-        TERMS_META_EXTENSION,
-        DOC_VALUES_EXTENSION,
-        DOC_VALUES_META_EXTENSION,
-        NORMS_EXTENSION,
-        NORMS_META_EXTENSION,
-        POINTS_EXTENSION,
-        POINTS_INDEX_EXTENSION,
-        POINTS_META_EXTENSION,
-        KNN_VECTORS_EXTENSION,
-        KNN_VECTORS_INDEX_EXTENSION,
-        KNN_VECTORS_META_EXTENSION,
-        KNN_VECTORS_FORMAT_META_EXTENSION,
-        LIVE_DOCS_EXTENSION,
-        COMPOUND_FILE_EXTENSION,
-        COMPOUND_FILE_ENTRIES_EXTENSION,
-        OLD_LIVE_DOCS_EXTENSION,
-    ]
-    .into_iter()
-    .collect()
-}
 
 /// Computes the full file name from base, extension and generation.
 ///

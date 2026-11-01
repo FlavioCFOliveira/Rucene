@@ -303,6 +303,25 @@ impl CodecRegistry {
             .ok()
     }
 
+    /// Looks up a codec by name, failing as Lucene does.
+    ///
+    /// Equivalent to `Codec.forName(String)` (`Codec.java:117-120`), which is
+    /// `NamedSPILoader.lookup(String)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] with the loader's message,
+    /// listing the available names, when no codec is registered under `name`,
+    /// and [`LuceneError::IllegalState`] when the registry lock is poisoned.
+    pub(crate) fn lookup(&self, name: &str) -> Result<Arc<dyn Codec>> {
+        self.codecs
+            .read()
+            .map_err(|_| {
+                LuceneError::illegal_state("codec registry lock was poisoned".to_string())
+            })?
+            .lookup(name)
+    }
+
     /// Returns the names of all registered codecs, in registration order.
     ///
     /// Equivalent to `NamedSPILoader.availableServices()`, the key set of
@@ -353,6 +372,18 @@ static GLOBAL_REGISTRY: LazyLock<CodecRegistry> = LazyLock::new(CodecRegistry::n
 /// Returns `None` if no codec has been registered under the given name.
 pub fn for_name(name: &str) -> Option<Arc<dyn Codec>> {
     GLOBAL_REGISTRY.for_name(name)
+}
+
+/// Looks up a codec by name from the global registry, failing as Lucene does.
+///
+/// Equivalent to `Codec.forName(String)` (`Codec.java:117-120`).
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] with the loader's message when no
+/// codec is registered under `name`.
+pub(crate) fn lookup(name: &str) -> Result<Arc<dyn Codec>> {
+    GLOBAL_REGISTRY.lookup(name)
 }
 
 /// Returns the names of all codecs registered in the global registry.

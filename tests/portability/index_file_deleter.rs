@@ -212,6 +212,7 @@ fn open_deleter(
         policy,
         &mut sis,
         Arc::new(NoOutputInfoStream),
+        &|_| Ok(String::new()),
         true,
         false,
     )
@@ -423,6 +424,7 @@ fn a_persisted_snapshot_pins_its_commit_in_rucene_as_in_lucene() {
         Arc::new(policy),
         &mut sis,
         Arc::new(NoOutputInfoStream),
+        &|_| Ok(String::new()),
         true,
         false,
     )

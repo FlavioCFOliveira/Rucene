@@ -61,9 +61,10 @@ use rucene::index::index_writer_config::{IndexWriterConfig, MergedSegmentWarmer}
 use rucene::index::leaf_reader::LeafReader;
 use rucene::index::merge_policy::{
     LogMergePolicy, MergeContext, MergePolicy, MergeSpecification, MergeTrigger, OneMerge,
+    OneMergeWrappingMergePolicy,
 };
 use rucene::index::merge_scheduler::{
-    ConcurrentMergeScheduler, MergeScheduler, SerialMergeScheduler,
+    ConcurrentMergeScheduler, MergeScheduler, NoMergeScheduler, SerialMergeScheduler,
 };
 use rucene::index::terms::Term;
 use rucene::index::{IndexOptions, SegmentInfos};
@@ -295,7 +296,10 @@ fn a_failed_flush_is_a_writer_tragedy_as_lucene_does() {
     let committed = writer.commit();
     lines.push(format!("commit={}", outcome(&committed)));
     let infos = SegmentInfos::read_latest_commit(Arc::clone(&ram)).unwrap();
-    lines.push(format!("committed_max_doc={}", infos.total_max_doc()));
+    lines.push(format!(
+        "committed_max_doc={}",
+        infos.total_max_doc().unwrap()
+    ));
     assert_eq!(lines.join("\n"), run_java("flush-failure").trim());
 }
 
@@ -350,7 +354,10 @@ fn a_failed_auto_flush_is_a_writer_tragedy_as_lucene_does() {
         outcome(&writer.add_document(&id_doc(3)))
     ));
     let infos = SegmentInfos::read_latest_commit(Arc::clone(&ram)).unwrap();
-    lines.push(format!("committed_max_doc={}", infos.total_max_doc()));
+    lines.push(format!(
+        "committed_max_doc={}",
+        infos.total_max_doc().unwrap()
+    ));
     lines.push(format!("files={}", files(&ram)));
     assert_eq!(lines.join("\n"), run_java("auto-flush-failure").trim());
 }
@@ -655,7 +662,7 @@ fn delete_all_aborts_a_running_merge() {
     writer.commit().unwrap();
     let infos = SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
     assert_eq!(
-        infos.total_max_doc(),
+        infos.total_max_doc().unwrap(),
         0,
         "a merge brought back the documents deleteAll dropped"
     );
@@ -951,7 +958,7 @@ struct UnreleasableLock {
 }
 
 impl Lock for UnreleasableLock {
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         self.inner.close()?;
         Err(LuceneError::Io(std::io::Error::other(format!(
             "cannot release {}",
@@ -1042,10 +1049,533 @@ fn a_lock_release_failure_after_add_indexes_is_raised_as_lucene_does() {
     ));
     writer.commit().unwrap();
     let infos = SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
-    lines.push(format!("committed_max_doc={}", infos.total_max_doc()));
+    lines.push(format!(
+        "committed_max_doc={}",
+        infos.total_max_doc().unwrap()
+    ));
     writer.close().unwrap();
     assert_eq!(
         lines.join("\n"),
         run_java("add-indexes-release-failure").trim()
     );
+}
+
+/// A directory whose first `create_output` of a file ending in `suffix`, once
+/// armed, waits at a gate until released and then fails: the merge thread
+/// stops inside the compound-file or `.si` write while another thread runs.
+struct GatedFailingDirectory {
+    inner: Arc<dyn Directory>,
+    suffix: &'static str,
+    armed: AtomicBool,
+    /// Set once the gated `create_output` was reached.
+    entered: (Mutex<bool>, Condvar),
+    /// Set to let the gated `create_output` fail.
+    released: (Mutex<bool>, Condvar),
+}
+
+impl GatedFailingDirectory {
+    fn new(suffix: &'static str) -> Self {
+        Self {
+            inner: Arc::new(RamDirectory::new()),
+            suffix,
+            armed: AtomicBool::new(false),
+            entered: (Mutex::new(false), Condvar::new()),
+            released: (Mutex::new(false), Condvar::new()),
+        }
+    }
+
+    /// Waits until the gated `create_output` was reached.
+    fn await_entered(&self) {
+        let entered = self.entered.0.lock().unwrap();
+        let (entered, timeout) = self
+            .entered
+            .1
+            .wait_timeout_while(entered, Duration::from_secs(30), |entered| !*entered)
+            .unwrap();
+        assert!(
+            *entered && !timeout.timed_out(),
+            "the merge reached the gate"
+        );
+    }
+
+    fn release(&self) {
+        *self.released.0.lock().unwrap() = true;
+        self.released.1.notify_all();
+    }
+}
+
+impl Directory for GatedFailingDirectory {
+    fn list_all(&self) -> Result<Vec<String>> {
+        self.inner.list_all()
+    }
+    fn delete_file(&self, name: &str) -> Result<()> {
+        self.inner.delete_file(name)
+    }
+    fn file_length(&self, name: &str) -> Result<i64> {
+        self.inner.file_length(name)
+    }
+    fn create_output(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexOutput>> {
+        if self.armed.load(Ordering::SeqCst) && name.ends_with(self.suffix) {
+            {
+                let mut entered = self.entered.0.lock().unwrap();
+                if !*entered {
+                    *entered = true;
+                    self.entered.1.notify_all();
+                    drop(entered);
+                    let released = self.released.0.lock().unwrap();
+                    let _released = self
+                        .released
+                        .1
+                        .wait_while(released, |released| !*released)
+                        .unwrap();
+                    return Err(LuceneError::Io(std::io::Error::other(format!(
+                        "injected failure creating {name}"
+                    ))));
+                }
+            }
+        }
+        self.inner.create_output(name, context)
+    }
+    fn create_temp_output(
+        &self,
+        prefix: &str,
+        suffix: &str,
+        context: &dyn IOContext,
+    ) -> Result<Box<dyn IndexOutput>> {
+        self.inner.create_temp_output(prefix, suffix, context)
+    }
+    fn sync(&self, names: &[String]) -> Result<()> {
+        self.inner.sync(names)
+    }
+    fn sync_metadata(&self) -> Result<()> {
+        self.inner.sync_metadata()
+    }
+    fn rename(&self, source: &str, dest: &str) -> Result<()> {
+        self.inner.rename(source, dest)
+    }
+    fn open_input(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
+        self.inner.open_input(name, context)
+    }
+    fn open_checksum_input(&self, name: &str) -> Result<Box<BufferedChecksumIndexInput>> {
+        self.inner.open_checksum_input(name)
+    }
+    fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
+        self.inner.obtain_lock(name)
+    }
+    fn close(&mut self) -> Result<()> {
+        Ok(())
+    }
+    fn get_pending_deletions(&self) -> Result<std::collections::HashSet<String>> {
+        self.inner.get_pending_deletions()
+    }
+    fn ensure_open(&self) -> Result<()> {
+        self.inner.ensure_open()
+    }
+}
+
+/// Records every `IW` message and wakes whoever waits for one.
+///
+/// When [`abort_target`](Self::abort_target) holds a merge, every
+/// `"now abort running merge "` message also renders that merge with
+/// `OneMerge::seg_string()` — Java's `OneMerge.segString()` — before it is
+/// recorded. `abortMerges` logs that message while it holds the writer's lock
+/// (`IndexWriter.java:2788, 2806-2809`), and Java's `segString()` takes no
+/// lock (`MergePolicy.java:349-368`), so an info stream may call it there.
+#[derive(Default)]
+struct IwLog {
+    messages: Mutex<Vec<String>>,
+    changed: Condvar,
+    abort_target: Mutex<Option<OneMerge>>,
+    rendered_on_abort: Mutex<Vec<String>>,
+}
+
+impl IwLog {
+    /// Waits at most `timeout` for a message starting with `prefix`, and
+    /// returns whether one arrived.
+    fn await_message(&self, prefix: &str, timeout: Duration) -> bool {
+        let messages = self.messages.lock().unwrap();
+        let (messages, _) = self
+            .changed
+            .wait_timeout_while(messages, timeout, |messages| {
+                !messages.iter().any(|message| message.starts_with(prefix))
+            })
+            .unwrap();
+        messages.iter().any(|message| message.starts_with(prefix))
+    }
+
+    fn contains(&self, message: &str) -> bool {
+        self.messages.lock().unwrap().iter().any(|m| m == message)
+    }
+}
+
+impl InfoStream for IwLog {
+    fn java_class_name(&self) -> &'static str {
+        "IwLog"
+    }
+    fn message(&self, component: &str, message: &str) {
+        if component == "IW" {
+            if message.starts_with("now abort running merge ") {
+                let target = self.abort_target.lock().unwrap().clone();
+                if let Some(merge) = target {
+                    let rendered = merge.seg_string();
+                    self.rendered_on_abort.lock().unwrap().push(rendered);
+                }
+            }
+            self.messages.lock().unwrap().push(message.to_string());
+            self.changed.notify_all();
+        }
+    }
+    fn is_enabled(&self, component: &str) -> bool {
+        component == "IW"
+    }
+    fn close(&self) {}
+}
+
+/// What [`rollback_during_a_failing_merge_write`] observed.
+struct RollbackDuringMerge {
+    log: Arc<IwLog>,
+    /// The writer's rendering of the merged segments, `segString()` of the
+    /// whole index taken before the merge: both segments take part in it.
+    merged_segments: String,
+    merged: Result<()>,
+    rolled_back: Result<()>,
+    closed: bool,
+}
+
+impl RollbackDuringMerge {
+    /// The checks both rollback tests share: the rollback succeeded and
+    /// closed the writer, `abortMerges` logged the running merge as
+    /// `segString(merge.segments)` (`IndexWriter.java:2806-2809`), and the
+    /// info stream rendered the merge's `OneMerge::seg_string()` while the
+    /// rollback held the writer's lock.
+    fn assert_rolled_back(&self) {
+        assert!(self.rolled_back.is_ok(), "{:?}", self.rolled_back);
+        assert!(self.closed);
+        let expected = format!("now abort running merge {}", self.merged_segments);
+        assert!(
+            self.log.contains(&expected),
+            "{expected} not in {:?}",
+            self.log.messages.lock().unwrap()
+        );
+        let rendered = self.log.rendered_on_abort.lock().unwrap();
+        assert_eq!(rendered.len(), 1, "{rendered:?}");
+        assert!(
+            rendered[0].ends_with(" into _2 [maxNumSegments=1]"),
+            "{rendered:?}"
+        );
+    }
+}
+
+/// Runs a forced merge whose write of the first file ending in `suffix`
+/// stops at a gate, rolls the writer back from another thread while it
+/// waits, then lets the write fail.
+///
+/// The rollback's `abortMerges` holds the writer's lock while it logs each
+/// running merge (`IndexWriter.java:2788, 2806-2809`), and the info stream
+/// renders that merge there with `OneMerge::seg_string()`: Java's
+/// `OneMerge.segString()` takes no lock (`MergePolicy.java:349-368`), this
+/// port's reads the merged segment through `OneMerge::info`'s mutex. A merge
+/// thread that held that mutex while its failure deleted files under the
+/// writer's lock deadlocked against the rollback; the merge is captured from
+/// the policy by a `OneMergeWrappingMergePolicy`.
+fn rollback_during_a_failing_merge_write(
+    suffix: &'static str,
+    no_cfs_ratio: f64,
+) -> RollbackDuringMerge {
+    ensure_codec();
+    let dir = Arc::new(GatedFailingDirectory::new(suffix));
+    let policy = rucene::index::merge_policy::TieredMergePolicy::new();
+    policy.set_no_cfs_ratio(no_cfs_ratio).unwrap();
+    let log = Arc::new(IwLog::default());
+    let capturing = Arc::clone(&log);
+    let policy = OneMergeWrappingMergePolicy::new(
+        Arc::new(policy),
+        Arc::new(move |merge: OneMerge| {
+            *capturing.abort_target.lock().unwrap() = Some(merge.clone());
+            merge
+        }),
+    );
+    let mut config = IndexWriterConfig::new();
+    config.set_merge_policy(Arc::new(policy)).unwrap();
+    config
+        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .unwrap();
+    config
+        .set_info_stream(Arc::clone(&log) as Arc<dyn InfoStream>)
+        .unwrap();
+    let writer = IndexWriter::new(Arc::clone(&dir) as Arc<dyn Directory>, config).unwrap();
+    writer.add_document(&id_doc(0)).unwrap();
+    writer.commit().unwrap();
+    writer.add_document(&id_doc(1)).unwrap();
+    writer.commit().unwrap();
+    let merged_segments = writer.seg_string().unwrap();
+    assert!(merged_segments.starts_with("_0(") && merged_segments.contains(" _1("));
+    dir.armed.store(true, Ordering::SeqCst);
+
+    let (merged_tx, merged_rx) = mpsc::channel();
+    let merging = Arc::clone(&writer);
+    let merge_thread = thread::spawn(move || {
+        let _ = merged_tx.send(merging.force_merge(1));
+    });
+    dir.await_entered();
+
+    let (rolled_back_tx, rolled_back_rx) = mpsc::channel();
+    let rolling_back = Arc::clone(&writer);
+    let rollback_thread = thread::spawn(move || {
+        let _ = rolled_back_tx.send(rolling_back.rollback());
+    });
+    // The rollback either reaches its wait for the running merge, or is held
+    // rendering it until the write is released; two seconds is enough for the
+    // former, and the latter must not deadlock once the write fails.
+    let _ = log.await_message("now wait for", Duration::from_secs(2));
+    dir.release();
+
+    let merged = merged_rx.recv().unwrap();
+    let rolled_back = rolled_back_rx.recv().unwrap();
+    merge_thread.join().unwrap();
+    rollback_thread.join().unwrap();
+    let closed = writer.is_closed();
+    RollbackDuringMerge {
+        log,
+        merged_segments,
+        merged,
+        rolled_back,
+        closed,
+    }
+}
+
+/// A rollback while a merge builds its compound file, which then fails: the
+/// merge sees it was aborted and gives up (`IndexWriter.java:5481-5491`), and
+/// the rollback completes. The compound file is built on a copy of the
+/// merged segment, so the merge holds no lock the rollback needs while the
+/// failure deletes the partial files under the writer's lock.
+#[test]
+fn a_rollback_during_a_failing_compound_file_write_does_not_deadlock() {
+    let outcome = watchdog(60, || rollback_during_a_failing_merge_write(".cfs", 1.0));
+    outcome.assert_rolled_back();
+    assert!(outcome
+        .log
+        .contains("hit merge abort exception creating compound file during merge"));
+}
+
+/// A rollback while a merge writes its `.si`, which then fails: the merge
+/// deletes its files and fails (`IndexWriter.java:5541-5551`), and the
+/// rollback completes. The merged segment's files are read under the merge's
+/// slot, which is released before they are deleted under the writer's lock.
+#[test]
+fn a_rollback_during_a_failing_segment_info_write_does_not_deadlock() {
+    let outcome = watchdog(60, || rollback_during_a_failing_merge_write(".si", 0.0));
+    outcome.assert_rolled_back();
+    assert!(
+        matches!(&outcome.merged, Err(LuceneError::Io(error)) if error.to_string() == "injected failure creating _2.si"),
+        "{:?}",
+        outcome.merged
+    );
+}
+
+/// `abortMerges` logs each pending merge as `segString(merge.segments)`, the
+/// writer's rendering of the merge's segments (`IndexWriter.java:2794-2797`),
+/// not `OneMerge.segString()`: no `" [maxNumSegments=1]"`. A scheduler that
+/// runs nothing leaves the forced merge pending until the rollback aborts it.
+/// Measured against `lucene-core-10.5.0.jar` (`oracle6/Probe15.java`): `now
+/// abort pending merge _0(10.5.0):c1 _1(10.5.0):c1`.
+#[test]
+fn a_rollback_logs_each_pending_merge_as_the_writer_renders_its_segments() {
+    ensure_codec();
+    let log = Arc::new(IwLog::default());
+    let mut config = IndexWriterConfig::new();
+    config
+        .set_merge_scheduler(Arc::new(NoMergeScheduler))
+        .unwrap();
+    config
+        .set_info_stream(Arc::clone(&log) as Arc<dyn InfoStream>)
+        .unwrap();
+    let writer = IndexWriter::new(Arc::new(RamDirectory::new()), config).unwrap();
+    writer.add_document(&id_doc(0)).unwrap();
+    writer.commit().unwrap();
+    writer.add_document(&id_doc(1)).unwrap();
+    writer.commit().unwrap();
+    writer.force_merge_with(1, false).unwrap();
+    writer.rollback().unwrap();
+    let aborted: Vec<String> = log
+        .messages
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|message| message.starts_with("now abort pending merge "))
+        .cloned()
+        .collect();
+    assert_eq!(
+        aborted,
+        vec!["now abort pending merge _0(10.5.0):c1 _1(10.5.0):c1".to_string()]
+    );
+}
+
+/// `abortMerges` aborts the pending merges with `IOUtils.applyToAll`
+/// (`IndexWriter.java:2792-2801`): a merge whose abort fails — here its
+/// `mergeFinished` hook, which `abortOneMerge` runs through
+/// `closeMergeReaders` (`IndexWriter.java:4911-4914, 5176-5209`) — does not
+/// stop the others from being logged, aborted and finished; the first failure
+/// is raised once all were tried, and `pendingMerges.clear()` is not reached.
+/// Measured against `lucene-core-10.5.0.jar` (`oracle7/Probe17.java`, case
+/// B1): with a `LogDocMergePolicy` of merge factor 2 over four committed
+/// segments, a scheduler that runs nothing and no merge on commit, the
+/// commits leave `_0 _1` and `_2 _3` pending; `rollback()` throws
+/// `IOException: injected failure finishing _0,_1`, both merges are logged
+/// and finished with `success=false`, `_0,_1` first, and afterwards
+/// `hasPendingMerges()` is `true` and the writer is closed.
+#[test]
+fn a_rollback_aborts_every_pending_merge_and_raises_the_first_failure() {
+    ensure_codec();
+    let log = Arc::new(IwLog::default());
+    let finished: Arc<Mutex<Vec<String>>> = Arc::default();
+    let mut inner = LogMergePolicy::by_doc_count();
+    inner.set_merge_factor(2).unwrap();
+    let recorded = Arc::clone(&finished);
+    let policy = OneMergeWrappingMergePolicy::new(
+        Arc::new(inner),
+        Arc::new(move |mut merge: OneMerge| {
+            let recorded = Arc::clone(&recorded);
+            merge.set_merge_finished(Arc::new(
+                move |merge: &OneMerge,
+                      success: bool,
+                      _dropped: bool,
+                      _deleter: Option<&mut rucene::index::IndexFileDeleter>| {
+                    let names = merge
+                        .segments
+                        .iter()
+                        .map(|segment| segment.info.name.clone())
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    recorded
+                        .lock()
+                        .unwrap()
+                        .push(format!("{names} success={success}"));
+                    if names == "_0,_1" {
+                        return Err(LuceneError::Io(std::io::Error::other(format!(
+                            "injected failure finishing {names}"
+                        ))));
+                    }
+                    Ok(())
+                },
+            ));
+            merge
+        }),
+    );
+    let mut config = IndexWriterConfig::new();
+    config.set_merge_policy(Arc::new(policy)).unwrap();
+    config
+        .set_merge_scheduler(Arc::new(NoMergeScheduler))
+        .unwrap();
+    config.set_max_full_flush_merge_wait_millis(0);
+    config
+        .set_info_stream(Arc::clone(&log) as Arc<dyn InfoStream>)
+        .unwrap();
+    let writer = IndexWriter::new(Arc::new(RamDirectory::new()), config).unwrap();
+    for id in 0..4 {
+        writer.add_document(&id_doc(id)).unwrap();
+        writer.commit().unwrap();
+    }
+    let registered: Vec<String> = log
+        .messages
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|message| message.starts_with("add merge to pendingMerges: "))
+        .cloned()
+        .collect();
+    assert_eq!(
+        registered,
+        vec![
+            "add merge to pendingMerges: _0(10.5.0):c1 _1(10.5.0):c1 [total 1 pending]".to_string(),
+            "add merge to pendingMerges: _2(10.5.0):c1 _3(10.5.0):c1 [total 2 pending]".to_string(),
+        ]
+    );
+    assert!(writer.has_pending_merges_pub().unwrap());
+
+    let rolled_back = writer.rollback();
+    assert!(
+        matches!(&rolled_back, Err(LuceneError::Io(error)) if error.to_string() == "injected failure finishing _0,_1"),
+        "{rolled_back:?}"
+    );
+    let aborted: Vec<String> = log
+        .messages
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|message| message.starts_with("now abort pending merge "))
+        .cloned()
+        .collect();
+    assert_eq!(
+        aborted,
+        vec![
+            "now abort pending merge _0(10.5.0):c1 _1(10.5.0):c1".to_string(),
+            "now abort pending merge _2(10.5.0):c1 _3(10.5.0):c1".to_string(),
+        ]
+    );
+    assert_eq!(
+        *finished.lock().unwrap(),
+        vec![
+            "_0,_1 success=false".to_string(),
+            "_2,_3 success=false".to_string()
+        ]
+    );
+    assert!(
+        writer.has_pending_merges_pub().unwrap(),
+        "the pending merges are not cleared"
+    );
+    assert!(writer.is_closed());
+}
+
+/// `handleMergeException` logs `segString(merge.segments)`, the writer's
+/// rendering of the merged segments, not `OneMerge.segString()`
+/// (`IndexWriter.java:4810-4813`): no `" into _2"`, no
+/// `" [maxNumSegments=1]"`.
+#[test]
+fn handle_merge_exception_logs_the_writers_rendering_of_the_merged_segments() {
+    ensure_codec();
+    let ram: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let armed = Arc::new(AtomicBool::new(false));
+    let dir: Arc<dyn Directory> = Arc::new(RefusingDirectory {
+        inner: Arc::clone(&ram),
+        extension: ".fdx",
+        armed: Arc::clone(&armed),
+    });
+    let log = Arc::new(IwLog::default());
+    let mut config = IndexWriterConfig::new();
+    config
+        .set_merge_policy(Arc::new(LogMergePolicy::by_doc_count()))
+        .unwrap();
+    config
+        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .unwrap();
+    config
+        .set_info_stream(Arc::clone(&log) as Arc<dyn InfoStream>)
+        .unwrap();
+    let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+    writer.add_document(&id_doc(0)).unwrap();
+    writer.commit().unwrap();
+    writer.add_document(&id_doc(1)).unwrap();
+    writer.commit().unwrap();
+    // Both segments take part in the merge, so the writer's rendering of the
+    // index is its rendering of the merged segments. It is taken before the
+    // merge: the failed merge is a tragedy that closes the writer, and
+    // nothing changes the two segments in between.
+    let merged_segments = writer.seg_string().unwrap();
+    assert!(merged_segments.starts_with("_0(") && merged_segments.contains(" _1("));
+    armed.store(true, Ordering::SeqCst);
+    assert!(writer.force_merge(1).is_err());
+    armed.store(false, Ordering::SeqCst);
+    let expected = format!("handleMergeException: merge={merged_segments} exc=");
+    let logged: Vec<String> = log
+        .messages
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|message| message.starts_with("handleMergeException: "))
+        .cloned()
+        .collect();
+    assert_eq!(logged.len(), 1, "{logged:?}");
+    assert!(logged[0].starts_with(&expected), "{logged:?} vs {expected}");
+    writer.rollback().unwrap();
 }

@@ -370,45 +370,6 @@ impl BufferedUpdatesStream {
         self.finished_segments.finished_segment(del_gen);
     }
 
-    /// Returns the segments a packet of generation `del_gen` applies to.
-    ///
-    /// A packet reaches every segment flushed **before** it, which is what the
-    /// per-segment `buffered_deletes_gen` records. A segment-private packet
-    /// reaches only the segment it was frozen for.
-    ///
-    /// Equivalent to the segment selection inside
-    /// `BufferedUpdatesStream.openSegmentStates`.
-    pub fn segments_for<'a>(
-        &self,
-        packet: &FrozenBufferedUpdates,
-        del_gen: i64,
-        segments: &'a [SegmentCommitInfo],
-    ) -> Vec<&'a SegmentCommitInfo> {
-        match packet.private_segment_name() {
-            Some(name) => segments
-                .iter()
-                .filter(|info| info.info.name == name)
-                .collect(),
-            None => segments
-                .iter()
-                .filter(|info| info.get_buffered_deletes_gen() < del_gen)
-                .collect(),
-        }
-    }
-
-    /// Removes and returns every buffered packet, oldest first.
-    ///
-    /// The caller resolves them against its readers and then reports each
-    /// generation through [`finished_segment`](Self::finished_segment).
-    pub fn take_packets(&self) -> Result<Vec<Arc<FrozenBufferedUpdates>>> {
-        let mut guard = self.updates.lock().map_err(|_| {
-            LuceneError::illegal_state("buffered updates stream lock poisoned".to_string())
-        })?;
-        let taken = std::mem::take(&mut *guard);
-        self.bytes_used.store(0, Ordering::Release);
-        Ok(taken)
-    }
-
     /// Records that `packet` has finished being resolved, and drops it.
     ///
     /// Equivalent to `BufferedUpdatesStream.finished(FrozenBufferedUpdates)`,

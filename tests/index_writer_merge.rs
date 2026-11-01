@@ -64,14 +64,11 @@ use rucene::document::{Document, KnnByteVectorField, KnnFloatVectorField, Stored
 use rucene::index::codec_reader::CodecReader;
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::IndexWriterConfig;
-use rucene::index::merge::MergeState;
 use rucene::index::merge_policy::NoMergePolicy;
 use rucene::index::merge_scheduler::SerialMergeScheduler;
 use rucene::index::segment_merger::SegmentMerger;
 use rucene::index::segment_reader::SegmentReader;
-use rucene::index::{
-    directory_reader, DirectoryReader, FieldInfosBuilder, FieldNumbers, SegmentInfo, SegmentInfos,
-};
+use rucene::index::{directory_reader, DirectoryReader, FieldNumbers, SegmentInfo, SegmentInfos};
 use rucene::search::{
     FieldExistsQuery, IndexSearcher, KnnByteVectorQuery, KnnFloatVectorQuery, Query, NO_MORE_DOCS,
 };
@@ -638,15 +635,6 @@ fn merge_without_deleted(
         "documents 1 and 4 are deleted"
     );
 
-    let mut builder = FieldInfosBuilder::new(Arc::new(FieldNumbers::new(None, None).unwrap()));
-    for reader in &readers {
-        for field in reader.get_field_infos().iter() {
-            builder.add(field).unwrap();
-        }
-    }
-    let live_docs: Vec<_> = readers.iter().map(|r| r.get_live_docs()).collect();
-    let max_docs: Vec<i32> = readers.iter().map(|r| r.max_doc()).collect();
-    let num_docs: Vec<i32> = readers.iter().map(|r| r.num_docs()).collect();
     let reference_file = from_hex(reference[0].1);
     let id_at = segment_id_offset(&reference_file);
     let id: [u8; 16] = reference_file[id_at..id_at + 16].try_into().unwrap();
@@ -657,7 +645,8 @@ fn merge_without_deleted(
         Version::LATEST,
         None,
         "_2".to_string(),
-        num_docs.iter().sum(),
+        // Unset: `MergeState` stamps it (`MergeState.java:173`).
+        -1,
         false,
         false,
         Arc::clone(&codec),
@@ -670,9 +659,7 @@ fn merge_without_deleted(
     let mut merger = SegmentMerger::new(
         &readers,
         segment_info,
-        builder.finish().unwrap(),
-        MergeState::build_doc_maps(&live_docs, &max_docs, &num_docs),
-        false,
+        Arc::new(FieldNumbers::new(None, None).unwrap()),
         codec,
         Arc::clone(&target),
         Arc::from(rucene::store::merge_io_context(

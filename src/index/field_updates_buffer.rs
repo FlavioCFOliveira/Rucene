@@ -114,7 +114,8 @@ impl FieldUpdatesBuffer {
                 initial_value.doc_values_type != crate::index::DocValuesType::BINARY
             }
         };
-        let has_value = !matches!(initial_value.value, DocValuesUpdateValue::None);
+        // `initialValue.hasValue()` (`FieldUpdatesBuffer.java:76, 91, 103`).
+        let has_value = initial_value.has_value();
         let bytes_used = Arc::new(Counter::new_counter());
         bytes_used.add_and_get(SELF_SHALLOW_SIZE);
         let mut term_values = BytesRefArray::new(Arc::clone(&bytes_used));
@@ -772,6 +773,22 @@ mod tests {
         assert_eq!(buffer.max_numeric_value(), Some(2));
         assert_eq!(buffer.get_numeric_value(2), 0);
         assert_eq!(buffer.get_numeric_value(3), 1);
+    }
+
+    /// The constructor asks the first update `hasValue()`
+    /// (`FieldUpdatesBuffer.java:76, 91`): a first update without a value
+    /// starts the `hasValues` bits, so the iterator reports it as a reset, and
+    /// a later update with a value as a value.
+    #[test]
+    fn a_first_update_without_a_value_is_iterated_as_a_reset() {
+        let mut buffer = FieldUpdatesBuffer::new(numeric(term("id", "a"), None, 4), 4).unwrap();
+        buffer.add_numeric_update(&term("id", "b"), 9, 4).unwrap();
+        buffer.finish().unwrap();
+        let seen: Vec<(Vec<u8>, bool)> = drain(&buffer)
+            .into_iter()
+            .map(|u| (u.term_value.bytes, u.has_value))
+            .collect();
+        assert_eq!(seen, vec![(b"a".to_vec(), false), (b"b".to_vec(), true)]);
     }
 
     #[test]

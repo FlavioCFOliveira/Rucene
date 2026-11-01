@@ -391,9 +391,12 @@ fn msg(info_stream: Option<&dyn InfoStream>, text: &str) {
     }
 }
 
-/// Formats an elapsed duration the way Java's `nsToSec` plus `%.3f` does.
+/// Formats an elapsed duration the way Java's `nsToSec` plus `%.3f` does:
+/// every "took %.3f sec" message converts `System.nanoTime() - startNS`
+/// through `nsToSec` (`CheckIndex.java:909, 1006, 1016, 1230, ...`).
 fn took(start: Instant) -> String {
-    format!("{:.3} sec", start.elapsed().as_secs_f64())
+    let elapsed_ns = i64::try_from(start.elapsed().as_nanos()).unwrap_or(i64::MAX);
+    format!("{:.3} sec", ns_to_sec(elapsed_ns))
 }
 
 /// Returns the number of set bits in `bits`.
@@ -487,7 +490,7 @@ impl CheckIndex {
     pub fn close(&mut self) -> Result<()> {
         self.closed = true;
         match self.write_lock.take() {
-            Some(mut lock) => lock.close(),
+            Some(lock) => lock.close(),
             None => Ok(()),
         }
     }
@@ -4411,23 +4414,6 @@ impl IndexUpgrader {
             }
         }
 
-        // Java reads the writer's live commit data back and writes it out again
-        // to force a commit even when nothing else changed. This port cannot do
-        // that literally, because `IndexWriter` here exposes no
-        // `get_live_commit_data`; it reads the same value from the commit the
-        // writer is about to open on, which is exactly what Java's writer
-        // initialises its `commitUserData` from (`IndexWriter.java:1122`).
-        let commit_user_data: Vec<(String, String)> =
-            SegmentInfos::read_latest_commit(Arc::clone(&self.dir))
-                .map(|infos| {
-                    infos
-                        .user_data()
-                        .iter()
-                        .map(|(key, value)| (key.clone(), value.clone()))
-                        .collect()
-                })
-                .unwrap_or_default();
-
         let inner_policy = self.iwc.merge_policy();
         self.iwc
             .set_merge_policy(Arc::new(UpgradeIndexMergePolicy::new(inner_policy)))?;
@@ -4462,9 +4448,11 @@ impl IndexUpgrader {
                     "Enforcing commit to rewrite all index metadata...",
                 );
             }
-            // Fake change, so that a commit happens even when the index has no
-            // segments at all.
-            writer.set_live_commit_data(commit_user_data)?;
+            // `w.setLiveCommitData(w.getLiveCommitData())`: fake change to
+            // enforce a commit (e.g. if index has no segments), then
+            // `assert w.hasUncommittedChanges()` (`IndexUpgrader.java:201-203`).
+            writer.set_live_commit_data(writer.get_live_commit_data()?)?;
+            debug_assert!(writer.has_uncommitted_changes()?);
             writer.commit()?;
             if info_stream.is_enabled(UPGRADER_LOG_PREFIX) {
                 info_stream.message(UPGRADER_LOG_PREFIX, "Committed upgraded metadata to index.");
@@ -5773,6 +5761,19 @@ mod tests {
     use crate::index::point_values::{
         InMemoryPointValues, IntersectVisitor, PointValues, Relation,
     };
+
+    /// Every "took %.3f sec" message converts the elapsed nanoseconds through
+    /// `nsToSec` (`CheckIndex.java:909, 1006, 4643-4645`), so five seconds
+    /// render as `5.000 sec`.
+    #[test]
+    fn elapsed_time_is_converted_through_ns_to_sec() {
+        let start = Instant::now()
+            .checked_sub(std::time::Duration::from_secs(5))
+            .expect("the clock reaches five seconds back");
+        let text = took(start);
+        assert!(text.starts_with("5.00") && text.ends_with(" sec"), "{text}");
+        assert_eq!(ns_to_sec(1_500_000_000), 1.5);
+    }
 
     /// One-byte points 10, 20 and 30, on documents 0 to 2.
     fn points() -> InMemoryPointValues {

@@ -2802,10 +2802,18 @@ impl DefaultIndexingChain {
             };
             match kind {
                 NumericKind::Int | NumericKind::Float => {
-                    point_writer.add_dense_1d_int_values(base_doc_id, points_cursor.as_mut())?;
+                    point_writer.add_dense_1d_int_values(
+                        base_doc_id,
+                        points_cursor.as_mut(),
+                        &mut self.scratch,
+                    )?;
                 }
                 NumericKind::Long | NumericKind::Double => {
-                    point_writer.add_dense_1d_long_values(base_doc_id, points_cursor.as_mut())?;
+                    point_writer.add_dense_1d_long_values(
+                        base_doc_id,
+                        points_cursor.as_mut(),
+                        &mut self.scratch,
+                    )?;
                 }
             }
         }
@@ -2946,7 +2954,7 @@ impl DefaultIndexingChain {
                     "field=\"{name}\" declares point dimensions but has no points writer"
                 )));
             };
-            point_writer.add_dense_nd_values(base_doc_id, pc.as_mut())?;
+            point_writer.add_dense_nd_values(base_doc_id, pc.as_mut(), &mut self.scratch)?;
         }
         Ok(())
     }
@@ -3296,7 +3304,7 @@ impl Accountable for DefaultIndexingChain {
             + self
                 .vector_values_consumer
                 .as_ref()
-                .map_or(0, VectorValuesConsumer::ram_bytes_used)
+                .map_or(0, |consumer| consumer.get_accountable().ram_bytes_used())
     }
 
     /// Returns the three consumers whose bytes
@@ -4879,6 +4887,36 @@ mod tests {
                 if message.contains("not bound to a segment")),
             "unexpected error: {error:?}"
         );
+    }
+
+    /// `IndexingChain.ramBytesUsed()` ends with
+    /// `vectorValuesConsumer.getAccountable().ramBytesUsed()`
+    /// (`IndexingChain.java:1719-1724`): once a vector field is buffered, the
+    /// codec writer's bytes are part of the chain's total.
+    #[test]
+    fn the_chain_counts_the_vector_writer_through_get_accountable() {
+        let (mut chain, _tracking, _info) = bound_chain(1);
+        let mut field_infos = builder();
+        let mut document = Document::new();
+        document.add(Box::new(
+            KnnFloatVectorField::with_euclidean("v", &[1.0, 2.0, 3.0]).expect("vector field"),
+        ));
+        chain
+            .process_document(0, &document, true, &mut field_infos)
+            .expect("index the vector");
+        let consumer = chain.vector_values_consumer.as_ref().expect("bound chain");
+        let vector_bytes = consumer.ram_bytes_used();
+        assert!(vector_bytes > 0, "the codec writer buffers the vector");
+        let others = chain.bytes_used.load(Ordering::Acquire)
+            + chain
+                .stored_fields_consumer
+                .as_deref()
+                .map_or(0, StoredFieldsConsumer::ram_bytes_used)
+            + chain
+                .term_vectors_consumer
+                .as_deref()
+                .map_or(0, TermVectorsConsumer::ram_bytes_used);
+        assert_eq!(Accountable::ram_bytes_used(&chain), others + vector_bytes);
     }
 
     // -- Flush -------------------------------------------------------------
@@ -6919,27 +6957,5 @@ impl crate::index::LeafReader for BufferedDocValuesReader {
         _accept_docs: &mut dyn crate::search::AcceptDocs,
     ) -> Result<()> {
         Ok(())
-    }
-}
-
-/// Writes one numeric value into `scratch` in the sortable byte encoding its
-/// kind uses.
-///
-/// Equivalent to `IndexingChain.encodeSortablePointBytes(long, LongColumn.NumericKind, byte[])`:
-/// the four- and eight-byte kinds encode differently, and a point field's bytes
-/// must match the width its field type declares.
-pub fn encode_sortable_point_bytes(
-    raw: i64,
-    kind: crate::document::column::NumericKind,
-    scratch: &mut [u8],
-) {
-    use crate::document::column::NumericKind;
-    match kind {
-        NumericKind::Int | NumericKind::Float => {
-            crate::util::NumericUtils::int_to_sortable_bytes(raw as i32, scratch, 0)
-        }
-        NumericKind::Long | NumericKind::Double => {
-            crate::util::NumericUtils::long_to_sortable_bytes(raw, scratch, 0)
-        }
     }
 }

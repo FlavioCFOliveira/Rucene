@@ -14,7 +14,6 @@ use crate::index::{
 };
 use crate::search::comparators::updateable_doc_id_set_iterator::UpdateableDocIdSetIterator;
 use crate::search::doc_id_set_iterator::{all, DocIdSetIterator, NO_MORE_DOCS};
-use crate::search::doc_values_access::get_numeric;
 use crate::search::doc_values_iteration::numeric_as_iterator;
 use crate::search::field_comparator::java_long_compare;
 use crate::search::pruning::Pruning;
@@ -265,7 +264,7 @@ impl NumericComparator {
     fn open_doc_values(&self, reader: &dyn LeafReader) -> Result<Box<dyn NumericDocValues>> {
         match self.doc_values_source.as_ref() {
             Some(source) => source(reader, &self.field),
-            None => get_numeric(reader, &self.field),
+            None => crate::index::DocValues::get_numeric(reader, &self.field),
         }
     }
 
@@ -828,7 +827,7 @@ impl NumericComparator {
                         // iteration.
                         let doc_values = match doc_values_source.as_ref() {
                             Some(source) => source(reader.as_ref(), &field)?,
-                            None => get_numeric(reader.as_ref(), &field)?,
+                            None => crate::index::DocValues::get_numeric(reader.as_ref(), &field)?,
                         };
                         builder
                             .common

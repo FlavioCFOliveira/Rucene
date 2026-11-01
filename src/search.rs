@@ -62,7 +62,6 @@ pub mod doc_id_set;
 pub mod doc_id_set_bulk_iterator;
 pub mod doc_id_set_iterator;
 pub mod doc_id_stream;
-mod doc_values_access;
 pub(crate) mod doc_values_iteration;
 pub mod doc_values_range_iterator;
 pub mod doc_values_rewrite_method;

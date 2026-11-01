@@ -305,17 +305,6 @@ impl DocValuesWriter {
             Self::SortedSet(writer) => writer.flush(state, sort_map, consumer, pool),
         }
     }
-
-    /// The bytes this writer has charged to the shared counter.
-    pub fn ram_bytes_used(&self) -> i64 {
-        match self {
-            Self::Numeric(writer) => writer.ram_bytes_used(),
-            Self::Binary(writer) => writer.ram_bytes_used(),
-            Self::Sorted(writer) => writer.ram_bytes_used(),
-            Self::SortedNumeric(writer) => writer.ram_bytes_used(),
-            Self::SortedSet(writer) => writer.ram_bytes_used(),
-        }
-    }
 }
 
 /// The error a flush-time producer answers to `get_skipper`.
@@ -639,11 +628,6 @@ impl NumericDocValuesWriter {
             return Err(appears_more_than_once(&self.field_info));
         }
         Ok(())
-    }
-
-    /// Number of documents that have a value buffered.
-    pub fn num_docs_with_field(&self) -> i32 {
-        self.docs_with_field.cardinality()
     }
 
     /// Equivalent to `NumericDocValuesWriter.updateBytesUsed`
@@ -1966,11 +1950,6 @@ impl SortedDocValuesWriter {
         self.bytes_used + self.direct_charges
     }
 
-    /// Number of documents that have a value buffered.
-    pub fn num_docs_with_field(&self) -> i32 {
-        self.docs_with_field.cardinality()
-    }
-
     /// Builds the final ordinals and the dictionary, once.
     ///
     /// Equivalent to `SortedDocValuesWriter.finish()`
@@ -2789,11 +2768,6 @@ impl SortedNumericDocValuesWriter {
         self.bytes_used
     }
 
-    /// Number of documents that have values buffered.
-    pub fn num_docs_with_field(&self) -> i32 {
-        self.docs_with_field.cardinality()
-    }
-
     /// Builds `finalValues` and `finalValuesCount` the first time they are
     /// needed: the current document is finished, then both builders built.
     fn finish(&mut self) -> Result<()> {
@@ -3482,11 +3456,6 @@ impl SortedSetDocValuesWriter {
     /// hash's own slot array.
     pub fn ram_bytes_used(&self) -> i64 {
         self.bytes_used + self.direct_charges
-    }
-
-    /// Number of documents that have values buffered.
-    pub fn num_docs_with_field(&self) -> i32 {
-        self.docs_with_field.cardinality()
     }
 
     /// Builds the final term ids, counts and dictionary, once.

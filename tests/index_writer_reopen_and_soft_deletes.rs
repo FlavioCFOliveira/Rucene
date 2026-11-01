@@ -84,7 +84,7 @@ fn a_reopened_writer_updates_doc_values_of_an_existing_field() {
     writer
         .update_numeric_doc_value(id_term("b"), "price", 42)
         .expect("the reopened writer knows the field");
-    let names = writer.get_field_number_map().get_field_names();
+    let names = writer.global_field_number_map().get_field_names();
     assert!(names.contains("id") && names.contains("price"));
     writer.commit().unwrap();
     writer.close().unwrap();

@@ -21,8 +21,10 @@ use crate::error::Result;
 /// the caller (`IndexWriter`'s write lock). Rust has no inheritance and no bare
 /// references across owners, so this type *contains* a [`FilterDirectory`] and
 /// holds the write lock behind an [`Arc`], which is the closest safe model of
-/// the shared, caller-owned lock. Only [`Lock::ensure_valid`] is ever called on
-/// it, exactly as in Java; the wrapper never releases the lock.
+/// the shared, caller-owned lock: `IndexWriter` holds a clone of the same
+/// `Arc` and closes it (`IndexWriter.java:958-963, 2645`). Only
+/// [`Lock::ensure_valid`] is ever called on it here, exactly as in Java; the
+/// wrapper never releases the lock.
 pub struct LockValidatingDirectoryWrapper {
     inner: FilterDirectory,
     write_lock: Arc<dyn Lock>,
@@ -126,18 +128,27 @@ impl Directory for LockValidatingDirectoryWrapper {
         "LockValidatingDirectoryWrapper"
     }
 
+    /// Equivalent to the inherited `FilterDirectory.toString()`
+    /// (`FilterDirectory.java:115-117`):
+    /// `getClass().getSimpleName() + "(" + in.toString() + ")"`.
+    fn directory_to_string(&self) -> String {
+        format!(
+            "LockValidatingDirectoryWrapper({})",
+            self.inner.get_delegate().directory_to_string()
+        )
+    }
+
     fn ensure_open(&self) -> Result<()> {
         self.inner.ensure_open()
     }
 }
 
 impl std::fmt::Display for LockValidatingDirectoryWrapper {
+    /// Java's single `toString()`, the inherited `FilterDirectory.toString()`
+    /// (`FilterDirectory.java:115-117`): the same rendering as
+    /// [`directory_to_string`](Directory::directory_to_string).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "LockValidatingDirectoryWrapper({})",
-            self.inner.get_delegate().directory_type_name()
-        )
+        f.write_str(&self.directory_to_string())
     }
 }
 
@@ -146,5 +157,36 @@ impl std::fmt::Debug for LockValidatingDirectoryWrapper {
         f.debug_struct("LockValidatingDirectoryWrapper")
             .field("inner", &self.inner.get_delegate().directory_type_name())
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::{ByteBuffersDirectory, NoOpLock};
+
+    /// Java has one rendering, the inherited `FilterDirectory.toString()`:
+    /// `getClass().getSimpleName() + "(" + in + ")"`
+    /// (`FilterDirectory.java:115-117`), so `Display` and
+    /// `directory_to_string` agree and both carry the delegate's own rendering,
+    /// not its type name.
+    #[test]
+    fn display_is_filter_directory_to_string() {
+        let wrapper = LockValidatingDirectoryWrapper::new(
+            Box::new(ByteBuffersDirectory::new()),
+            Arc::new(NoOpLock),
+        );
+        // The delegate's rendering is taken once it sits in the wrapper, as
+        // the default one carries the instance's address.
+        let expected = format!(
+            "LockValidatingDirectoryWrapper({})",
+            wrapper.get_delegate().directory_to_string()
+        );
+        assert_ne!(
+            wrapper.get_delegate().directory_to_string(),
+            wrapper.get_delegate().directory_type_name()
+        );
+        assert_eq!(wrapper.directory_to_string(), expected);
+        assert_eq!(wrapper.to_string(), expected);
     }
 }

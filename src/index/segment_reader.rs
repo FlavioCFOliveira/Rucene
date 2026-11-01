@@ -1453,11 +1453,6 @@ impl SegmentReader {
         self.core.ensure_open()
     }
 
-    /// Returns the field infos for this segment.
-    pub fn get_field_infos_ref(&self) -> &FieldInfos {
-        &self.field_infos
-    }
-
     /// Returns the name of the segment this reader is reading.
     pub fn get_segment_name(&self) -> &str {
         &self.segment_info.info.name
@@ -3371,7 +3366,7 @@ mod tests {
     #[test]
     fn merge_state_holds_the_merge_instance_of_every_reader() {
         use crate::index::codec_reader::CodecReader;
-        use crate::index::merge::{identity_doc_map, MergeState};
+        use crate::index::merge::MergeState;
 
         let recorder = CloseRecorder::default();
         let info = recording_segment_commit_info("_0", 5, &recorder);
@@ -3382,10 +3377,7 @@ mod tests {
         let readers: Vec<Arc<dyn CodecReader>> = vec![reader.clone()];
         let merge_state = MergeState::from_readers(
             &readers,
-            vec![identity_doc_map(5, 0)],
-            None,
-            LeafReader::get_field_infos(reader.as_ref()).clone(),
-            false,
+            test_segment_info("_1", -1),
             Arc::new(crate::util::NoOutputInfoStream),
             None,
             None,

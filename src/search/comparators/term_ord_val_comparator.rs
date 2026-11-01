@@ -18,7 +18,6 @@ use crate::index::{
 use crate::search::abstract_doc_id_set_iterator::AbstractDocIdSetIterator;
 use crate::search::comparators::updateable_doc_id_set_iterator::UpdateableDocIdSetIterator;
 use crate::search::doc_id_set_iterator::{all, empty, DocIdSetIterator, NO_MORE_DOCS};
-use crate::search::doc_values_access::get_sorted;
 use crate::search::doc_values_iteration::sorted_as_iterator;
 use crate::search::field_comparator::{SlotComparator, SortValue};
 use crate::search::index_searcher::IndexSearcher;
@@ -431,7 +430,7 @@ impl TermOrdValComparator {
     fn open_sorted_doc_values(&self, reader: &dyn LeafReader) -> Result<Box<dyn SortedDocValues>> {
         match self.doc_values_source.as_ref() {
             Some(source) => source(reader, &self.field),
-            None => get_sorted(reader, &self.field),
+            None => crate::index::DocValues::get_sorted(reader, &self.field),
         }
     }
 
@@ -627,7 +626,7 @@ impl TermOrdValComparator {
                     if !*dense && !*docs_with_field_installed {
                         let docs_with_field = match doc_values_source.as_ref() {
                             Some(source) => source(reader.as_ref(), field)?,
-                            None => get_sorted(reader.as_ref(), field)?,
+                            None => crate::index::DocValues::get_sorted(reader.as_ref(), field)?,
                         };
                         competitive
                             .iterator

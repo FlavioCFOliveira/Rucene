@@ -3613,13 +3613,22 @@ pub fn flush_io_context(flush_info: FlushInfo) -> Box<dyn IOContext> {
 ///
 /// Equivalent to `org.apache.lucene.store.Lock`. The lock is released when
 /// [`close`](Lock::close) is called.
+///
+/// Java's `Lock` is one object several holders reference at once: `IndexWriter`
+/// keeps its `writeLock` and hands the same object to the
+/// `LockValidatingDirectoryWrapper` it writes through
+/// (`IndexWriter.java:958-963`); the writer closes it while the wrapper keeps
+/// calling `ensureValid` on it, which then reports the released lock. Both
+/// methods therefore take `&self`, so that one lock can be shared behind an
+/// `Arc`, and every implementation keeps its closed state behind interior
+/// mutability.
 pub trait Lock: Send + Sync {
     /// Releases exclusive access.
     ///
     /// # Errors
     ///
     /// Returns [`LuceneError::Io`] if the lock could not be released cleanly.
-    fn close(&mut self) -> Result<()>;
+    fn close(&self) -> Result<()>;
 
     /// Best-effort check that this lock is still valid.
     ///
@@ -3639,7 +3648,7 @@ pub trait Lock: Send + Sync {
 pub struct NoOpLock;
 
 impl Lock for NoOpLock {
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 
@@ -3652,7 +3661,7 @@ impl Lock for NoOpLock {
 pub type NoLock = NoOpLock;
 
 impl Lock for Arc<NoLock> {
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 
@@ -3798,7 +3807,7 @@ struct SingleInstanceLock {
 }
 
 impl Lock for SingleInstanceLock {
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         if self.closed.swap(true, Ordering::SeqCst) {
             return Ok(());
         }
@@ -3904,6 +3913,14 @@ impl FSLockFactory for NativeFSLockFactory {
             )));
         }
 
+        // `FileChannel.open(realPath, StandardOpenOption.CREATE,
+        // StandardOpenOption.WRITE)` (`NativeFSLockFactory.java:112`): the
+        // handle `NativeFSLock.ensureValid` reads the file size through.
+        let channel = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&real_path)?;
         let mut lock_file = LockFile::open(&real_path)?;
         if !lock_file.try_lock()? {
             return Err(LuceneError::lock_obtain_failed(format!(
@@ -3919,6 +3936,7 @@ impl FSLockFactory for NativeFSLockFactory {
 
         Ok(Box::new(NativeFSLock {
             lock: Mutex::new(lock_file),
+            channel,
             path: real_path,
             path_str: real_path_str,
             creation_time,
@@ -3942,6 +3960,22 @@ static NATIVE_HELD_LOCKS: std::sync::LazyLock<Mutex<HashSet<String>>> =
 #[derive(Debug)]
 struct NativeFSLock {
     lock: Mutex<LockFile>,
+    /// The open handle on the lock file whose size
+    /// [`ensure_valid`](Lock::ensure_valid) reads.
+    ///
+    /// Equivalent to `NativeFSLock.channel` (`NativeFSLockFactory.java:142`),
+    /// which `ensureValid` asks for `channel.size()`
+    /// (`NativeFSLockFactory.java:169`): the size of the file the lock was
+    /// taken on, still readable after the path was deleted.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java takes the `FileLock` on that
+    /// same channel. `fslock::LockFile` keeps its descriptor private, so this
+    /// is a second descriptor on the same file, opened alongside it with
+    /// Java's options (`CREATE`, `WRITE`). The lock is an `flock` on the
+    /// `LockFile`'s own open file description, which a second descriptor
+    /// neither takes nor releases, and both descriptors see the same file, so
+    /// the size read is the one Java reads.
+    channel: std::fs::File,
     path: PathBuf,
     path_str: String,
     creation_time: SystemTime,
@@ -3949,13 +3983,122 @@ struct NativeFSLock {
 }
 
 impl std::fmt::Display for NativeFSLock {
+    /// Equivalent to `NativeFSLock.toString()` (`NativeFSLockFactory.java:201-204`):
+    /// `"NativeFSLock(path=" + path + ",impl=" + lock + ",creationTime=" +
+    /// creationTime + ")"`.
+    ///
+    /// `lock` is the `java.nio.channels.FileLock` that `channel.tryLock()`
+    /// returns, whose `toString()` is its class name, `[position:size`, the
+    /// mode and whether it is still valid, `]`. `tryLock()` locks the whole
+    /// file — position `0`, size `Long.MAX_VALUE`, exclusive — and the lock is
+    /// valid until `close()` releases it; on the JDK the class is
+    /// `sun.nio.ch.FileLockImpl`. Measured against `lucene-core-10.5.0.jar`
+    /// on OpenJDK 25: `impl=sun.nio.ch.FileLockImpl[0:9223372036854775807
+    /// exclusive valid]`, and `invalid` once the lock is closed. The `fslock`
+    /// lock this port holds has no such string, so Java's is rendered from the
+    /// same facts. `creationTime` is a `FileTime`, rendered as
+    /// [`file_time_to_string`] does.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "NativeFSLock(path={})", self.path.display())
+        let validity = if self.closed.load(Ordering::SeqCst) {
+            "invalid"
+        } else {
+            "valid"
+        };
+        write!(
+            f,
+            "NativeFSLock(path={},impl=sun.nio.ch.FileLockImpl[0:{} exclusive {validity}],creationTime={})",
+            self.path.display(),
+            i64::MAX,
+            file_time_to_string(self.creation_time)
+        )
     }
 }
 
+/// Renders a point in time as `java.nio.file.attribute.FileTime.toString()`
+/// does.
+///
+/// The ISO-8601 form in UTC, `yyyy-MM-ddTHH:mm:ss[.fraction]Z`: the year has
+/// at least four digits, a year before 1 is written as Java writes it — the
+/// proleptic year minus one, signed, so year 0 is `-0001` — and the fraction
+/// is the nanoseconds with their trailing zeros removed, omitted when they are
+/// zero. The calendar fields come from the same split into 10 000-year cycles
+/// `FileTime.toString()` performs before handing a value to
+/// `LocalDateTime.ofEpochSecond`, so every value renders as on the JDK.
+/// Measured against OpenJDK 25: `1970-01-01T00:00:00Z`,
+/// `1970-01-01T00:00:01.12Z`, `-0002-12-31T23:59:59Z` for one second before
+/// year 0, and `10000-01-01T00:00:00.000000005Z`.
+fn file_time_to_string(time: SystemTime) -> String {
+    use chrono::{Datelike, Timelike};
+
+    /// `FileTime.SECONDS_PER_10000_YEARS`.
+    const SECONDS_PER_10000_YEARS: i64 = 146_097 * 25 * 86_400;
+    /// `FileTime.SECONDS_0000_TO_1970`.
+    const SECONDS_0000_TO_1970: i64 = ((146_097 * 5) - (30 * 365 + 7)) * 86_400;
+
+    // `toInstant().getEpochSecond()` and `getNano()`: the seconds are floored,
+    // and the nanoseconds are never negative.
+    let (secs, nanos) = match time.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(after) => (after.as_secs() as i64, after.subsec_nanos()),
+        Err(before) => {
+            let before = before.duration();
+            let secs = -(before.as_secs() as i64);
+            match before.subsec_nanos() {
+                0 => (secs, 0),
+                nanos => (secs - 1, 1_000_000_000 - nanos),
+            }
+        }
+    };
+    let (hi, lo) = if secs >= -SECONDS_0000_TO_1970 {
+        // Current era.
+        let zero_secs = secs - SECONDS_PER_10000_YEARS + SECONDS_0000_TO_1970;
+        (
+            zero_secs.div_euclid(SECONDS_PER_10000_YEARS) + 1,
+            zero_secs.rem_euclid(SECONDS_PER_10000_YEARS),
+        )
+    } else {
+        // Before the current era.
+        let zero_secs = secs + SECONDS_0000_TO_1970;
+        (
+            zero_secs / SECONDS_PER_10000_YEARS,
+            zero_secs % SECONDS_PER_10000_YEARS,
+        )
+    };
+    let ldt = chrono::DateTime::from_timestamp(lo - SECONDS_0000_TO_1970, nanos)
+        .expect("INVARIANT: a second within one 10 000-year cycle of year 0 is representable")
+        .naive_utc();
+    let mut year = i64::from(ldt.year()) + hi * 10_000;
+    if year <= 0 {
+        year -= 1;
+    }
+    let mut out = String::with_capacity(32);
+    if year < 0 {
+        out.push('-');
+    }
+    let year = year.unsigned_abs();
+    if year < 10_000 {
+        out.push_str(&format!("{year:04}"));
+    } else {
+        out.push_str(&year.to_string());
+    }
+    out.push_str(&format!(
+        "-{:02}-{:02}T{:02}:{:02}:{:02}",
+        ldt.month(),
+        ldt.day(),
+        ldt.hour(),
+        ldt.minute(),
+        ldt.second()
+    ));
+    if nanos != 0 {
+        let fraction = format!("{nanos:09}");
+        out.push('.');
+        out.push_str(fraction.trim_end_matches('0'));
+    }
+    out.push('Z');
+    out
+}
+
 impl Lock for NativeFSLock {
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         if self.closed.swap(true, Ordering::SeqCst) {
             return Ok(());
         }
@@ -4003,18 +4146,37 @@ impl Lock for NativeFSLock {
         }
         drop(lock);
 
-        let metadata = std::fs::metadata(&self.path)?;
-        let size = metadata.len() as i64;
+        // Try to validate the underlying file descriptor: `channel.size()`
+        // (`NativeFSLockFactory.java:167-173`) throws if something is wrong.
+        let size = self.channel.metadata()?.len() as i64;
         if size != 0 {
             return Err(LuceneError::already_closed(format!(
                 "Unexpected lock file size: {size}, (lock={self})"
             )));
         }
 
+        // Try to validate the backing file name, that it still exists and has
+        // the same creation time as when the lock was obtained:
+        // `Files.readAttributes(path, BasicFileAttributes.class)`
+        // (`NativeFSLockFactory.java:174-177`), whose `NoSuchFileException`
+        // carries the path as its message.
+        let metadata = match std::fs::metadata(&self.path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(LuceneError::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    self.path.display().to_string(),
+                )));
+            }
+            Err(error) => return Err(error.into()),
+        };
         let ctime = metadata.created().unwrap_or(SystemTime::UNIX_EPOCH);
         if ctime != self.creation_time {
+            // `"... at " + ctime + ...` renders the `FileTime`
+            // (`NativeFSLockFactory.java:178-181`).
             return Err(LuceneError::already_closed(format!(
-                "Underlying file changed by an external force at {ctime:?}, (lock={self})"
+                "Underlying file changed by an external force at {}, (lock={self})",
+                file_time_to_string(ctime)
             )));
         }
 
@@ -4084,13 +4246,21 @@ struct SimpleFSLock {
 }
 
 impl std::fmt::Display for SimpleFSLock {
+    /// Equivalent to `SimpleFSLock.toString()` (`SimpleFSLockFactory.java:138-141`):
+    /// `"SimpleFSLock(path=" + path + ",creationTime=" + creationTime + ")"`,
+    /// the creation time rendered as Java's `FileTime`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "SimpleFSLock(path={})", self.path.display())
+        write!(
+            f,
+            "SimpleFSLock(path={},creationTime={})",
+            self.path.display(),
+            file_time_to_string(self.creation_time)
+        )
     }
 }
 
 impl Lock for SimpleFSLock {
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         // Validate the lock *before* marking it closed, matching Lucene's
         // SimpleFSLock.close() contract.
         if let Err(exc) = self.ensure_valid() {
@@ -4122,8 +4292,11 @@ impl Lock for SimpleFSLock {
         let metadata = std::fs::metadata(&self.path)?;
         let ctime = metadata.created().unwrap_or(SystemTime::UNIX_EPOCH);
         if ctime != self.creation_time {
+            // `"... at " + ctime + ...`: the `FileTime`'s `toString()`
+            // (`SimpleFSLockFactory.java:102-106`).
             return Err(LuceneError::already_closed(format!(
-                "Underlying file changed by an external force at {ctime:?}, (lock={self})"
+                "Underlying file changed by an external force at {}, (lock={self})",
+                file_time_to_string(ctime)
             )));
         }
 
@@ -10827,7 +11000,7 @@ mod tests {
         let factory = SingleInstanceLockFactory::new();
         let dir = BaseDirectory::new(RamDirectory::new(), Some(Box::new(factory))).unwrap();
 
-        let mut lock = dir.obtain_lock("test.lock").unwrap();
+        let lock = dir.obtain_lock("test.lock").unwrap();
         lock.ensure_valid().unwrap();
 
         // The same factory rejects double acquisition in-process.
@@ -10841,7 +11014,7 @@ mod tests {
         lock.close().unwrap();
 
         // After release the lock name can be acquired again.
-        let mut lock2 = dir.obtain_lock("test.lock").unwrap();
+        let lock2 = dir.obtain_lock("test.lock").unwrap();
         lock2.ensure_valid().unwrap();
         lock2.close().unwrap();
     }
@@ -10988,8 +11161,8 @@ mod tests {
     fn no_lock_factory_returns_shared_no_op_lock() {
         let factory = NoLockFactory::instance();
         let dir = RamDirectory::new();
-        let mut lock1 = factory.obtain_lock(&dir, "any.lock").unwrap();
-        let mut lock2 = factory.obtain_lock(&dir, "any.lock").unwrap();
+        let lock1 = factory.obtain_lock(&dir, "any.lock").unwrap();
+        let lock2 = factory.obtain_lock(&dir, "any.lock").unwrap();
         lock1.ensure_valid().unwrap();
         lock2.ensure_valid().unwrap();
         lock1.close().unwrap();
@@ -11003,7 +11176,7 @@ mod tests {
         let factory = SingleInstanceLockFactory::new();
         let dir = RamDirectory::new();
 
-        let mut lock = factory.obtain_lock(&dir, "test.lock").unwrap();
+        let lock = factory.obtain_lock(&dir, "test.lock").unwrap();
         lock.ensure_valid().unwrap();
 
         let err = match factory.obtain_lock(&dir, "test.lock") {
@@ -11015,7 +11188,7 @@ mod tests {
         lock.close().unwrap();
 
         // After release, the same lock name can be acquired again.
-        let mut lock2 = factory.obtain_lock(&dir, "test.lock").unwrap();
+        let lock2 = factory.obtain_lock(&dir, "test.lock").unwrap();
         lock2.ensure_valid().unwrap();
         lock2.close().unwrap();
     }
@@ -11028,7 +11201,7 @@ mod tests {
         let dir = MockFSDirectory::new(tmp.path().to_path_buf());
         let factory = NativeFSLockFactory::instance();
 
-        let mut lock = factory.obtain_lock(&dir, "test.lock").unwrap();
+        let lock = factory.obtain_lock(&dir, "test.lock").unwrap();
         lock.ensure_valid().unwrap();
 
         // Double acquisition from the same process fails cleanly.
@@ -11043,9 +11216,197 @@ mod tests {
         lock.close().unwrap();
 
         // After release, the lock can be re-acquired.
-        let mut lock2 = factory.obtain_lock(&dir, "test.lock").unwrap();
+        let lock2 = factory.obtain_lock(&dir, "test.lock").unwrap();
         lock2.ensure_valid().unwrap();
         lock2.close().unwrap();
+    }
+
+    /// `FileTime.toString()`, measured against OpenJDK 25 (`Probe10`).
+    #[test]
+    fn file_time_renders_as_java_file_time() {
+        use std::time::Duration;
+        let at = |secs: i64, nanos: u32| {
+            if secs >= 0 {
+                SystemTime::UNIX_EPOCH + Duration::new(secs as u64, nanos)
+            } else {
+                SystemTime::UNIX_EPOCH - Duration::from_secs(secs.unsigned_abs())
+                    + Duration::from_nanos(u64::from(nanos))
+            }
+        };
+        assert_eq!(file_time_to_string(at(0, 0)), "1970-01-01T00:00:00Z");
+        assert_eq!(
+            file_time_to_string(at(1, 120_000_000)),
+            "1970-01-01T00:00:01.12Z"
+        );
+        assert_eq!(
+            file_time_to_string(at(-62_167_219_200 - 1, 0)),
+            "-0002-12-31T23:59:59Z"
+        );
+        assert_eq!(
+            file_time_to_string(at(253_402_300_800, 5)),
+            "10000-01-01T00:00:00.000000005Z"
+        );
+    }
+
+    /// `NativeFSLock.toString()` is `"NativeFSLock(path=" + path + ",impl=" +
+    /// lock + ",creationTime=" + creationTime + ")"`
+    /// (`NativeFSLockFactory.java:201-204`), and the lock is `invalid` once
+    /// released. Measured against `lucene-core-10.5.0.jar` on OpenJDK 25
+    /// (`Probe10`): `impl=sun.nio.ch.FileLockImpl[0:9223372036854775807
+    /// exclusive valid]`, then `invalid` after `close()`.
+    #[test]
+    fn native_fs_lock_renders_as_lucene() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = MockFSDirectory::new(tmp.path().to_path_buf());
+        let lock = NativeFSLockFactory::instance()
+            .obtain_lock(&dir, "write.lock")
+            .unwrap();
+        let path = tmp.path().join("write.lock").canonicalize().unwrap();
+        let creation_time = file_time_to_string(
+            std::fs::metadata(&path)
+                .unwrap()
+                .created()
+                .unwrap_or(SystemTime::UNIX_EPOCH),
+        );
+        let rendered = |validity: &str| {
+            format!(
+                "NativeFSLock(path={},impl=sun.nio.ch.FileLockImpl[0:9223372036854775807 \
+                 exclusive {validity}],creationTime={creation_time})",
+                path.display()
+            )
+        };
+
+        // `ensureValid` renders the lock in its "Unexpected lock file size"
+        // message (`NativeFSLockFactory.java:169-173`).
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            file.write_all(b"x").unwrap();
+        }
+        match lock.ensure_valid() {
+            Err(LuceneError::AlreadyClosed { message, .. }) => assert_eq!(
+                message,
+                format!("Unexpected lock file size: 1, (lock={})", rendered("valid"))
+            ),
+            other => {
+                lock.close().unwrap();
+                panic!("an AlreadyClosedException, got {other:?}");
+            }
+        }
+
+        lock.close().unwrap();
+        match lock.ensure_valid() {
+            Err(LuceneError::AlreadyClosed { message, .. }) => assert_eq!(
+                message,
+                format!("Lock instance already released: {}", rendered("invalid"))
+            ),
+            other => panic!("an AlreadyClosedException, got {other:?}"),
+        }
+    }
+
+    /// A lock file deleted and created again under the lock fails
+    /// `NativeFSLock.ensureValid`'s creation-time check with
+    /// `AlreadyClosedException("Underlying file changed by an external force
+    /// at " + ctime + ", (lock=" + this + ")")`, `ctime` the new file's
+    /// `FileTime` (`NativeFSLockFactory.java:177-181`). Measured against
+    /// `lucene-core-10.5.0.jar` on OpenJDK 25 (`oracle6/Probe13.java`, case B):
+    /// `... external force at 2026-10-31T09:39:47.440034294Z, (lock=...)`.
+    #[test]
+    fn a_recreated_lock_file_is_reported_with_its_file_time() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = MockFSDirectory::new(tmp.path().to_path_buf());
+        let lock = NativeFSLockFactory::instance()
+            .obtain_lock(&dir, "write.lock")
+            .unwrap();
+        let path = tmp.path().join("write.lock");
+        let created = |path: &std::path::Path| {
+            std::fs::metadata(path)
+                .unwrap()
+                .created()
+                .expect("the file system records creation times")
+        };
+        let original = created(&path);
+        // Create the file again until its creation time differs, which the
+        // file system's timestamp granularity may delay.
+        let mut ctime = original;
+        for _ in 0..100 {
+            std::fs::remove_file(&path).unwrap();
+            std::fs::File::create(&path).unwrap();
+            ctime = created(&path);
+            if ctime != original {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_ne!(ctime, original, "the recreated file kept its creation time");
+
+        let result = lock.ensure_valid();
+        lock.close().unwrap();
+        let expected = format!(
+            "Underlying file changed by an external force at {}, (lock=NativeFSLock(path={},\
+             impl=sun.nio.ch.FileLockImpl[0:9223372036854775807 exclusive valid],\
+             creationTime={}))",
+            file_time_to_string(ctime),
+            path.canonicalize().unwrap().display(),
+            file_time_to_string(original)
+        );
+        match result {
+            Err(LuceneError::AlreadyClosed { message, .. }) => assert_eq!(message, expected),
+            other => panic!("an AlreadyClosedException, got {other:?}"),
+        }
+    }
+
+    /// A `SimpleFSLock` whose file was deleted and created again fails
+    /// `ensureValid` with `AlreadyClosedException("Underlying file changed by
+    /// an external force at " + ctime + ", (lock=" + this + ")")`, `ctime` the
+    /// new file's `FileTime` and the lock rendered as `"SimpleFSLock(path=" +
+    /// path + ",creationTime=" + creationTime + ")"`
+    /// (`SimpleFSLockFactory.java:102-106, 138-141`). Measured against
+    /// `lucene-core-10.5.0.jar` on OpenJDK 25 (`oracle7/Probe16.java`, case
+    /// G): `... external force at 2026-11-01T13:50:39.93536018Z,
+    /// (lock=SimpleFSLock(path=.../write.lock,creationTime=2026-11-01T13:50:39.907335303Z))`.
+    #[test]
+    fn a_recreated_simple_fs_lock_file_is_reported_with_its_file_time() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = MockFSDirectory::new(tmp.path().to_path_buf());
+        let lock = SimpleFSLockFactory::instance()
+            .obtain_lock(&dir, "write.lock")
+            .unwrap();
+        let path = dir.fs_directory_path().unwrap().join("write.lock");
+        let created = |path: &std::path::Path| {
+            std::fs::metadata(path)
+                .unwrap()
+                .created()
+                .expect("the file system records creation times")
+        };
+        let original = created(&path);
+        // Create the file again until its creation time differs, which the
+        // file system's timestamp granularity may delay.
+        let mut ctime = original;
+        for _ in 0..100 {
+            std::fs::remove_file(&path).unwrap();
+            std::fs::File::create(&path).unwrap();
+            ctime = created(&path);
+            if ctime != original {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_ne!(ctime, original, "the recreated file kept its creation time");
+
+        let expected = format!(
+            "Underlying file changed by an external force at {}, (lock=SimpleFSLock(path={},\
+             creationTime={}))",
+            file_time_to_string(ctime),
+            path.display(),
+            file_time_to_string(original)
+        );
+        match lock.ensure_valid() {
+            Err(LuceneError::AlreadyClosed { message, .. }) => assert_eq!(message, expected),
+            other => panic!("an AlreadyClosedException, got {other:?}"),
+        }
     }
 
     /// Verifies that [`SimpleFSLockFactory`] acquires and releases locks by
@@ -11056,7 +11417,7 @@ mod tests {
         let dir = MockFSDirectory::new(tmp.path().to_path_buf());
         let factory = SimpleFSLockFactory::instance();
 
-        let mut lock = factory.obtain_lock(&dir, "test.lock").unwrap();
+        let lock = factory.obtain_lock(&dir, "test.lock").unwrap();
         lock.ensure_valid().unwrap();
 
         let err = match factory.obtain_lock(&dir, "test.lock") {
@@ -11068,7 +11429,7 @@ mod tests {
         lock.close().unwrap();
 
         // After release, the lock can be re-acquired.
-        let mut lock2 = factory.obtain_lock(&dir, "test.lock").unwrap();
+        let lock2 = factory.obtain_lock(&dir, "test.lock").unwrap();
         lock2.ensure_valid().unwrap();
         lock2.close().unwrap();
     }
@@ -11081,7 +11442,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = MockFSDirectory::new(tmp.path().to_path_buf());
 
-        let mut lock = factory.obtain_lock(&dir, "default.lock").unwrap();
+        let lock = factory.obtain_lock(&dir, "default.lock").unwrap();
         lock.ensure_valid().unwrap();
 
         // The default factory behaves like NativeFSLockFactory: a second

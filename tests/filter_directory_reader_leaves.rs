@@ -231,3 +231,28 @@ fn soft_deletes_directory_reader_wrapper_filters_the_soft_deleted_documents() {
         "the soft-deleted documents must not be searchable through the wrapper"
     );
 }
+
+/// `FilterLeafReader.unwrap(LeafReader)` steps through every
+/// `FilterLeafReader` — the plain one and its subclasses such as
+/// `ExitableDirectoryReader.ExitableFilterAtomicReader` — down to the reader
+/// they wrap (`FilterLeafReader.java:50-55`).
+#[test]
+fn filter_leaf_reader_unwrap_reaches_the_wrapped_segment_reader() {
+    use rucene::index::filter_reader::FilterLeafReader;
+    use rucene::index::LeafReader;
+
+    let reader = build_index("rucene-269-filter-unwrap", 3, false);
+    let segment = Arc::clone(&reader).leaves()[0].leaf_reader();
+    assert!(Arc::ptr_eq(&FilterLeafReader::unwrap(&segment), &segment));
+
+    let once: Arc<dyn LeafReader> = Arc::new(FilterLeafReader::new(Arc::clone(&segment)));
+    let twice: Arc<dyn LeafReader> = Arc::new(FilterLeafReader::new(once));
+    assert!(Arc::ptr_eq(&FilterLeafReader::unwrap(&twice), &segment));
+
+    let exitable = ExitableDirectoryReaderWrapper::new(Arc::new(NeverTimesOut))
+        .wrap(Arc::clone(&reader))
+        .expect("wrap as an exitable reader");
+    let exitable_leaf = Arc::clone(&exitable).leaves()[0].leaf_reader();
+    let wrapped: Arc<dyn LeafReader> = Arc::new(FilterLeafReader::new(exitable_leaf));
+    assert!(Arc::ptr_eq(&FilterLeafReader::unwrap(&wrapped), &segment));
+}

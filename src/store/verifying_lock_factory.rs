@@ -66,8 +66,10 @@ impl VerifyChannel {
 /// Equivalent to the private inner class `VerifyingLockFactory.CheckedLock`.
 struct CheckedLock {
     /// `None` once the lock has been closed, so that closing twice is a no-op
-    /// the way Java's try-with-resources idiom makes it.
-    lock: Option<Box<dyn Lock>>,
+    /// the way Java's try-with-resources idiom makes it. Behind a mutex because
+    /// [`Lock::close`] takes `&self`, so that one lock can be shared as Java
+    /// shares it.
+    lock: Mutex<Option<Box<dyn Lock>>>,
     channel: Arc<Mutex<VerifyChannel>>,
 }
 
@@ -85,7 +87,7 @@ impl CheckedLock {
             .map_err(|_| LuceneError::illegal_state("verify channel mutex poisoned".to_string()))?
             .verify(MSG_LOCK_ACQUIRED)?;
         Ok(Self {
-            lock: Some(lock),
+            lock: Mutex::new(Some(lock)),
             channel,
         })
     }
@@ -93,7 +95,11 @@ impl CheckedLock {
 
 impl Lock for CheckedLock {
     fn ensure_valid(&self) -> Result<()> {
-        match &self.lock {
+        let guard = self
+            .lock
+            .lock()
+            .map_err(|_| LuceneError::illegal_state("checked lock mutex poisoned".to_string()))?;
+        match guard.as_ref() {
             Some(lock) => lock.ensure_valid(),
             None => Err(LuceneError::already_closed(
                 "Lock instance already released".to_string(),
@@ -101,8 +107,13 @@ impl Lock for CheckedLock {
         }
     }
 
-    fn close(&mut self) -> Result<()> {
-        let Some(mut lock) = self.lock.take() else {
+    fn close(&self) -> Result<()> {
+        let taken = self
+            .lock
+            .lock()
+            .map_err(|_| LuceneError::illegal_state("checked lock mutex poisoned".to_string()))?
+            .take();
+        let Some(lock) = taken else {
             return Ok(());
         };
         // Java: `try (Lock l = lock) { l.ensureValid(); verify(MSG_LOCK_RELEASED); }`
