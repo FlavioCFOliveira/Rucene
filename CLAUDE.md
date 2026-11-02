@@ -59,7 +59,7 @@ Internal module organization should mirror the Lucene Core Java structure as clo
    - **test the code of all those tasks at once**, in a single run;
    - **audit, commit, and document them together**, once.
 
-   Developing converging tasks one by one is a **defect in how the work is done**, not a style choice. See section 5.3.
+   Developing converging tasks one by one is a **defect in how the work is done**, not a style choice. Grouping is bound only by the quality bar of 5.3: it must deliver better work than task-by-task development, never worse. See section 5.3.
 
 ---
 
@@ -151,15 +151,17 @@ This is the default way of working for all project work, both `rmp` tasks and ad
 
 - **Convergence.** Always look for tasks whose objectives are complementary, or whose functional or technical proximity can be verified (use the Knowledge Graph). Turn every such convergence into synergy.
 - **Synergy between tasks.** Join converging tasks into a single development effort.
-- **Synergy within the effort.** Group work of the same type: write all the code at once, then run the tests for all the changed code at once, then write all the documentation at once, instead of writing and testing small pieces one by one. When the scope is too large for one pass, split it into the largest blocks that can each be handled in one pass. Apply this principle to all work.
+- **Synergy within each task and each effort.** Inside a single task as well as inside a shared effort, group work of the same type: write all the code at once, then run the tests for all the changed code at once, then write all the documentation at once, instead of writing and testing small pieces one by one. When the scope is too large for one pass, split it into the largest blocks that can each be handled in one pass. Apply this principle to all work.
 - **Fewest iterations.** Reach the objectives with the fewest tasks and iterations possible.
-- **Quality bar.** Group work only when grouping makes delivery faster without lowering its quality. A shared effort must deliver better work than task-by-task development, never worse.
+- **Quality bar.** Aggregate tasks and work of the same type only when grouping makes delivery faster without lowering its quality. A shared effort must deliver better work than task-by-task development, never worse.
 - **Resources.** Make full use of the internal resources available (subagents, skills, local CLIs, and the Knowledge Graph), so that deliveries are faster and cost the user less.
 - **Tasks stay separate.** Grouping joins only the work effort, during development and testing. In `rmp`, each task keeps its own definition, status, acceptance criteria, and closing summary.
 
 ### 5.4 Work log — `rmp` comments
 
-Use the `rmp` comment feature to track the progress of the work **as it happens**. Comment **both the sprints and the tasks**, always with the comment type whose meaning fits. Write each entry at the moment it happens, never reconstructed at closing time.
+Use the `rmp` comment feature to track the progress of the work **as it happens**. Comment **both the sprints and the tasks**, always with the comment type whose meaning fits: sprint comments report the progress of the sprint in progress; task comments report the progress of that task. Write each entry at the moment it happens, never reconstructed at closing time.
+
+The log serves two purposes: to **report** what is done, and to **find out** what was done. Read it before resuming, revisiting, or reporting on a task or sprint.
 
 **Comment types and their meaning:**
 
@@ -232,7 +234,7 @@ Whenever performance, completeness, or correctness needs to be evaluated, always
 
 **Trace, never guess.** Whenever it is needed, use profiling and tracing to determine **exactly and empirically** what must be implemented or fixed. Never fix by trial and error; evaluate directly what needs to be done.
 
-- **Choose the diagnostic technique deliberately.** Whenever you investigate the cause of a problem in the code, first decide which technique, or which combination of techniques, will identify and locate it: profiling, tracing, metrics, logs, differential runs against the Java oracle, or others. Use them alone or together, and keep dissecting the problem until its cause is absolutely clear.
+- **Choose the diagnostic technique deliberately.** Whenever you investigate the cause of a problem in the code, or optimize a component, first decide which technique, or which combination of techniques, will identify and locate it: profiling, tracing, metrics, logs, differential runs against the Java oracle, or others. Use them alone or together, and keep dissecting the problem until its cause is absolutely clear.
 - **Find the cause before the fix.** Instrument the failing path: trace logs, differential traces of Rucene against the Java oracle, and profilers (`perf`, flame graphs, `dhat`) for cost questions.
 - **Prove the cause.** A positive control must show the defect with the cause present and its absence with the fix applied.
 - **Observed, not inferred.** Every report states, per cause, whether it was **observed** (with the trace or command that shows it) or **inferred**. An inferred cause is traced before it is acted on.
