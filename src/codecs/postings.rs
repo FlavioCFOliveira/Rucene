@@ -569,8 +569,15 @@ pub trait PostingsWriterBase {
 /// Concrete push writers embed this struct and expose it through
 /// [`PushPostingsWriterBase::push_state`] /
 /// [`PushPostingsWriterBase::push_state_mut`].
-#[derive(Debug, Default, Clone)]
+#[derive(Default)]
 pub struct PushPostingsWriterState {
+    /// The postings enum the last [`write_term`](PushPostingsWriterBase::write_term)
+    /// pulled the postings from, offered to the next one as `reuse`.
+    ///
+    /// Equivalent to `PushPostingsWriterBase.postingsEnum` ("Reused in
+    /// writeTerm", `PushPostingsWriterBase.java:41-42`), which no method ever
+    /// resets: it is kept across terms and fields alike.
+    postings_enum: Option<Box<dyn PostingsEnum>>,
     /// The field currently being written.
     pub field_info: Option<FieldInfo>,
     /// Index options of the current field.
@@ -591,6 +598,27 @@ impl PushPostingsWriterState {
     /// Creates an empty push writer state.
     pub fn new() -> Self {
         Self::default()
+    }
+}
+
+impl fmt::Debug for PushPostingsWriterState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PushPostingsWriterState")
+            .field(
+                "postings_enum",
+                &self
+                    .postings_enum
+                    .as_ref()
+                    .map(|postings_enum| postings_enum.to_string()),
+            )
+            .field("field_info", &self.field_info)
+            .field("index_options", &self.index_options)
+            .field("write_freqs", &self.write_freqs)
+            .field("write_positions", &self.write_positions)
+            .field("write_payloads", &self.write_payloads)
+            .field("write_offsets", &self.write_offsets)
+            .field("enum_flags", &self.enum_flags)
+            .finish()
     }
 }
 
@@ -700,6 +728,13 @@ pub trait PushPostingsWriterBase {
     /// The default implementation mirrors `PushPostingsWriterBase.writeTerm` in
     /// Java: it calls `start_term`, iterates over the postings, calls
     /// `start_doc` / `add_position` / `finish_doc`, and finally `finish_term`.
+    ///
+    /// The postings enum is Java's: `postingsEnum = termsEnum.postings(postingsEnum,
+    /// enumFlags)` (`PushPostingsWriterBase.java:125`) offers the enum of the
+    /// previous term, whatever its field, and keeps the one returned for the
+    /// next term — also when walking it fails, as Java's field keeps it.
+    /// Rust moves the offered enum into `postings`, so an error raised by
+    /// `postings` itself drops it, where Java's field would still hold it.
     fn write_term(
         &mut self,
         _term: &BytesRef,
@@ -736,46 +771,19 @@ pub trait PushPostingsWriterBase {
         let write_payloads = self.push_state().write_payloads;
         let write_offsets = self.push_state().write_offsets;
 
-        let mut postings_enum = terms_enum.postings(None, enum_flags)?;
-        let mut doc_freq = 0i32;
-        let mut total_term_freq = 0i64;
-        loop {
-            let doc_id = postings_enum.next_doc()?;
-            if doc_id == NO_MORE_DOCS {
-                break;
-            }
-            doc_freq += 1;
-            if (doc_id as usize) < docs_seen.length() {
-                docs_seen.set(doc_id as usize);
-            }
-            let freq = if write_freqs {
-                postings_enum.freq()?
-            } else {
-                -1
-            };
-            if freq >= 0 {
-                total_term_freq += freq as i64;
-            }
-            self.start_doc(doc_id, freq)?;
-
-            if write_positions {
-                for _ in 0..freq {
-                    let position = postings_enum.next_position()?;
-                    let payload = if write_payloads {
-                        postings_enum.get_payload()?
-                    } else {
-                        None
-                    };
-                    let (start_offset, end_offset) = if write_offsets {
-                        (postings_enum.start_offset(), postings_enum.end_offset())
-                    } else {
-                        (-1, -1)
-                    };
-                    self.add_position(position, payload, start_offset, end_offset)?;
-                }
-            }
-            self.finish_doc()?;
-        }
+        let reuse = self.push_state_mut().postings_enum.take();
+        let mut postings_enum = terms_enum.postings(reuse, enum_flags)?;
+        let walked = push_postings(
+            self,
+            postings_enum.as_mut(),
+            docs_seen,
+            write_freqs,
+            write_positions,
+            write_payloads,
+            write_offsets,
+        );
+        self.push_state_mut().postings_enum = Some(postings_enum);
+        let (doc_freq, total_term_freq) = walked?;
 
         if doc_freq == 0 {
             Ok(None)
@@ -787,6 +795,64 @@ pub trait PushPostingsWriterBase {
             Ok(Some(state))
         }
     }
+}
+
+/// Pushes every document, frequency and position of `postings_enum` and
+/// returns the term's `docFreq` and `totalTermFreq`.
+///
+/// The `while (true)` loop of `PushPostingsWriterBase.writeTerm`
+/// (`PushPostingsWriterBase.java:130-164`), split out so that
+/// [`write_term`](PushPostingsWriterBase::write_term) keeps the enum whether or not the
+/// loop fails.
+fn push_postings<W: PushPostingsWriterBase + ?Sized>(
+    writer: &mut W,
+    postings_enum: &mut dyn PostingsEnum,
+    docs_seen: &mut FixedBitSet,
+    write_freqs: bool,
+    write_positions: bool,
+    write_payloads: bool,
+    write_offsets: bool,
+) -> Result<(i32, i64)> {
+    let mut doc_freq = 0i32;
+    let mut total_term_freq = 0i64;
+    loop {
+        let doc_id = postings_enum.next_doc()?;
+        if doc_id == NO_MORE_DOCS {
+            break;
+        }
+        doc_freq += 1;
+        if (doc_id as usize) < docs_seen.length() {
+            docs_seen.set(doc_id as usize);
+        }
+        let freq = if write_freqs {
+            postings_enum.freq()?
+        } else {
+            -1
+        };
+        if freq >= 0 {
+            total_term_freq += freq as i64;
+        }
+        writer.start_doc(doc_id, freq)?;
+
+        if write_positions {
+            for _ in 0..freq {
+                let position = postings_enum.next_position()?;
+                let payload = if write_payloads {
+                    postings_enum.get_payload()?
+                } else {
+                    None
+                };
+                let (start_offset, end_offset) = if write_offsets {
+                    (postings_enum.start_offset(), postings_enum.end_offset())
+                } else {
+                    (-1, -1)
+                };
+                writer.add_position(position, payload, start_offset, end_offset)?;
+            }
+        }
+        writer.finish_doc()?;
+    }
+    Ok((doc_freq, total_term_freq))
 }
 
 impl<T: PushPostingsWriterBase + ?Sized> PostingsWriterBase for T {
@@ -1211,7 +1277,7 @@ mod tests {
     }
 
     // Stub PushPostingsWriterBase -------------------------------------------
-    #[derive(Debug, Default, Clone)]
+    #[derive(Debug, Default)]
     struct StubPushWriter {
         state: PushPostingsWriterState,
     }
@@ -1563,6 +1629,119 @@ mod tests {
             )
             .unwrap();
         writer.close().unwrap();
+    }
+
+    /// A terms enum whose `postings` records the enum it is offered and
+    /// answers a new one, keeping every offered enum alive so that no address
+    /// is handed out twice.
+    #[derive(Default)]
+    struct OfferRecordingTermsEnum {
+        atts: crate::util::attribute::AttributeSource,
+        offered: Vec<Option<usize>>,
+        returned: Vec<usize>,
+        kept: Vec<Box<dyn PostingsEnum>>,
+    }
+
+    fn identity(postings: &dyn PostingsEnum) -> usize {
+        postings as *const dyn PostingsEnum as *const () as usize
+    }
+
+    impl std::fmt::Display for OfferRecordingTermsEnum {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("OfferRecordingTermsEnum")
+        }
+    }
+
+    impl TermsEnum for OfferRecordingTermsEnum {
+        fn attributes(&mut self) -> &mut crate::util::attribute::AttributeSource {
+            &mut self.atts
+        }
+
+        fn term(&self) -> Result<BytesRef> {
+            Ok(BytesRef::default())
+        }
+
+        fn postings(
+            &mut self,
+            reuse: Option<Box<dyn PostingsEnum>>,
+            _flags: i32,
+        ) -> Result<Box<dyn PostingsEnum>> {
+            self.offered.push(reuse.as_deref().map(identity));
+            self.kept.extend(reuse);
+            let postings: Box<dyn PostingsEnum> = Box::new(StubPostingsEnum::default());
+            self.returned.push(identity(postings.as_ref()));
+            Ok(postings)
+        }
+
+        fn seek_ceil(&mut self, _text: &BytesRef) -> Result<SeekStatus> {
+            Ok(SeekStatus::END)
+        }
+
+        fn seek_ord(&mut self, _ord: i64) -> Result<()> {
+            Ok(())
+        }
+
+        fn ord(&self) -> Result<i64> {
+            Ok(-1)
+        }
+
+        fn doc_freq(&mut self) -> Result<i32> {
+            Ok(0)
+        }
+
+        fn total_term_freq(&mut self) -> Result<i64> {
+            Ok(0)
+        }
+
+        fn impacts(&mut self, _flags: i32) -> Result<Box<dyn crate::index::ImpactsEnum>> {
+            Ok(Box::new(StubImpactsEnum))
+        }
+
+        fn next(&mut self) -> Result<Option<BytesRef>> {
+            Ok(None)
+        }
+    }
+
+    /// `PushPostingsWriterBase.writeTerm` offers each term the enum the
+    /// previous term got — `postingsEnum = termsEnum.postings(postingsEnum,
+    /// enumFlags)` (`PushPostingsWriterBase.java:125`) — across fields too:
+    /// nothing ever resets the field.
+    #[test]
+    fn write_term_offers_each_term_the_enum_the_previous_term_got() {
+        let mut writer = StubPushWriter::default();
+        let mut terms = OfferRecordingTermsEnum::default();
+        let mut docs_seen = FixedBitSet::new(8);
+        let docs =
+            FieldInfo::new("docs", 0).with_postings_options(IndexOptions::DOCS, false, false);
+        let freqs = FieldInfo::new("freqs", 1).with_postings_options(
+            IndexOptions::DOCS_AND_FREQS,
+            false,
+            false,
+        );
+        PushPostingsWriterBase::set_field(&mut writer, &docs).unwrap();
+        for _ in 0..2 {
+            PostingsWriterBase::write_term(
+                &mut writer,
+                &BytesRef::default(),
+                &mut terms,
+                &mut docs_seen,
+                None,
+            )
+            .unwrap();
+        }
+        PushPostingsWriterBase::set_field(&mut writer, &freqs).unwrap();
+        PostingsWriterBase::write_term(
+            &mut writer,
+            &BytesRef::default(),
+            &mut terms,
+            &mut docs_seen,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            terms.offered,
+            vec![None, Some(terms.returned[0]), Some(terms.returned[1])]
+        );
     }
 
     #[test]

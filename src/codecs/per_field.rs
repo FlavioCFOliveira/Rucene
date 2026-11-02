@@ -1268,7 +1268,15 @@ impl KnnVectorsWriter for KnnFieldsWriter {
     }
 }
 
-struct KnnFieldsReader {
+/// The KNN-vectors reader that dispatches every field to the reader of the
+/// format it was written with.
+///
+/// Equivalent to `org.apache.lucene.codecs.perfield.PerFieldKnnVectorsFormat.FieldsReader`,
+/// which Java declares `public static` (`PerFieldKnnVectorsFormat.java:193`).
+/// `Lucene104ScalarQuantizedVectorsWriter.getCentroid` tests for it with
+/// `instanceof` (`Lucene104ScalarQuantizedVectorsWriter.java:389`), which
+/// [`KnnVectorsReader::as_any`] stands for.
+pub struct KnnFieldsReader {
     formats: HashMap<String, Box<dyn KnnVectorsReader>>,
     fields: HashMap<i32, String>,
     /// Field *name* to segment suffix, so that a field can be resolved without
@@ -1363,6 +1371,36 @@ impl KnnFieldsReader {
     }
 }
 
+#[cfg(test)]
+impl KnnFieldsReader {
+    /// A reader that dispatches every field of `fields` — `(number, name)`
+    /// pairs — to `reader`, as a segment written with one per-field format
+    /// does.
+    pub(crate) fn with_one_format_for_tests(
+        fields: &[(i32, &str)],
+        reader: Box<dyn KnnVectorsReader>,
+    ) -> Self {
+        let suffix = "Test_0".to_string();
+        let mut formats = HashMap::new();
+        formats.insert(suffix.clone(), reader);
+        Self {
+            formats,
+            fields: fields
+                .iter()
+                .map(|&(number, _)| (number, suffix.clone()))
+                .collect(),
+            field_names: fields
+                .iter()
+                .map(|&(_, name)| (name.to_string(), suffix.clone()))
+                .collect(),
+            names: fields
+                .iter()
+                .map(|&(number, name)| (number, name.to_string()))
+                .collect(),
+        }
+    }
+}
+
 impl std::fmt::Debug for KnnFieldsReader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PerFieldKnnVectorsReader")
@@ -1372,6 +1410,13 @@ impl std::fmt::Debug for KnnFieldsReader {
 }
 
 impl KnnVectorsReader for KnnFieldsReader {
+    /// This reader answers with itself: it is the `true` arm of Java's
+    /// `vectorsReader instanceof PerFieldKnnVectorsFormat.FieldsReader`
+    /// (`Lucene104ScalarQuantizedVectorsWriter.java:389`).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     /// Returns the underlying vectors reader `field` is dispatched to, or
     /// `None` when this reader does not know the field.
     ///

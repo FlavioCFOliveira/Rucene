@@ -35,6 +35,7 @@ use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::store::{DataInput, IndexInput};
 use crate::util::{BitUtil, FixedBitSet};
 use std::cell::{Cell, RefCell};
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 use crate::index::index_file_names::segment_file_name;
 
@@ -42,6 +43,10 @@ use crate::index::index_file_names::segment_file_name;
 const BS: usize = FOR_BLOCK_SIZE;
 /// `BLOCK_SIZE` as `i32`.
 const BS_I32: i32 = BS as i32;
+
+/// Source of the number each [`Lucene104PostingsReader`] takes to stand for
+/// the identity of its `docIn`; see [`Lucene104PostingsReader::doc_in_identity`].
+static NEXT_DOC_IN_IDENTITY: AtomicU64 = AtomicU64::new(0);
 
 // ---------------------------------------------------------------------------
 // VInt15 / VLong15 helpers (mirrors Lucene104PostingsReader.readVInt15 /
@@ -148,6 +153,15 @@ fn next_set_bit(bits: &FixedBitSet, from_index: i32) -> Option<i32> {
 pub struct Lucene104PostingsReader {
     version: i32,
     doc_in: Option<Box<dyn IndexInput>>,
+    /// Stands for the identity of `doc_in`, which
+    /// `BlockPostingsEnum.canReuse` compares by reference
+    /// (`docIn == Lucene104PostingsReader.this.docIn`,
+    /// `Lucene104PostingsReader.java:493-500`). A Rust value has no address it
+    /// keeps across moves, and every reader opens its own `docIn`, so each
+    /// reader takes a number no other reader of the process takes, and the two
+    /// are compared on that instead; the comparison answers exactly what the
+    /// reference comparison answers.
+    doc_in_identity: u64,
     pos_in: Option<Box<dyn IndexInput>>,
     pay_in: Option<Box<dyn IndexInput>>,
     max_num_impacts_at_level0: i32,
@@ -240,6 +254,7 @@ impl Lucene104PostingsReader {
         Ok(Self {
             version,
             doc_in,
+            doc_in_identity: NEXT_DOC_IN_IDENTITY.fetch_add(1, AtomicOrdering::Relaxed),
             pos_in,
             pay_in,
             max_num_impacts_at_level0,
@@ -247,6 +262,29 @@ impl Lucene104PostingsReader {
             max_num_impacts_at_level1,
             max_impact_num_bytes_at_level1,
         })
+    }
+
+    /// Equivalent to `new BlockPostingsEnum(fieldInfo, flags, needsImpacts)`,
+    /// the inner class's constructor, which clones the inputs of this reader.
+    fn new_block_postings_enum(
+        &self,
+        field_info: &FieldInfo,
+        flags: i32,
+        needs_impacts: bool,
+    ) -> Result<BlockPostingsEnum> {
+        BlockPostingsEnum::new(
+            field_info,
+            flags,
+            needs_impacts,
+            self.doc_in.as_deref(),
+            self.doc_in_identity,
+            self.pos_in.as_deref(),
+            self.pay_in.as_deref(),
+            self.max_num_impacts_at_level0,
+            self.max_impact_num_bytes_at_level0,
+            self.max_num_impacts_at_level1,
+            self.max_impact_num_bytes_at_level1,
+        )
     }
 }
 
@@ -322,27 +360,43 @@ impl PostingsReaderBase for Lucene104PostingsReader {
         Ok(())
     }
 
+    /// Equivalent to `Lucene104PostingsReader.postings(FieldInfo, BlockTermState, PostingsEnum, int)`
+    /// (`Lucene104PostingsReader.java:256-264`): `reuse` is reset in place and
+    /// handed back exactly when it is a [`BlockPostingsEnum`]
+    /// ([`PostingsEnum::as_any_mut`] standing for `instanceof`) that
+    /// `BlockPostingsEnum::can_reuse` accepts for this reader's `docIn`, the
+    /// field and `flags`; otherwise a new enum is built.
     fn postings(
         &self,
         field_info: &FieldInfo,
         state: &BlockTermState,
-        _reuse: Option<Box<dyn PostingsEnum>>,
+        mut reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
     ) -> Result<Box<dyn PostingsEnum>> {
-        let mut enum_ = BlockPostingsEnum::new(
-            field_info,
-            flags,
-            false,
-            self.doc_in.as_deref(),
-            self.pos_in.as_deref(),
-            self.pay_in.as_deref(),
-            self.max_num_impacts_at_level0,
-            self.max_impact_num_bytes_at_level0,
-            self.max_num_impacts_at_level1,
-            self.max_impact_num_bytes_at_level1,
-        )?;
-        enum_.reset(state)?;
-        Ok(Box::new(enum_))
+        // `reuse instanceof BlockPostingsEnum everythingEnum
+        //     && everythingEnum.canReuse(docIn, fieldInfo, flags, false)`
+        let can_reuse = reuse
+            .as_mut()
+            .and_then(|reuse| reuse.as_any_mut())
+            .and_then(|any| any.downcast_mut::<BlockPostingsEnum>())
+            .is_some_and(|everything_enum| {
+                everything_enum.can_reuse(self.doc_in_identity, field_info, flags, false)
+            });
+        let mut postings: Box<dyn PostingsEnum> = match reuse {
+            Some(everything_enum) if can_reuse => everything_enum,
+            _ => Box::new(self.new_block_postings_enum(field_info, flags, false)?),
+        };
+        postings
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<BlockPostingsEnum>())
+            .ok_or_else(|| {
+                LuceneError::illegal_state(
+                    "INVARIANT: the enum was just checked or built as a BlockPostingsEnum"
+                        .to_string(),
+                )
+            })?
+            .reset(state)?;
+        Ok(postings)
     }
 
     fn impacts(
@@ -351,18 +405,7 @@ impl PostingsReaderBase for Lucene104PostingsReader {
         state: &BlockTermState,
         flags: i32,
     ) -> Result<Box<dyn ImpactsEnum>> {
-        let mut enum_ = BlockPostingsEnum::new(
-            field_info,
-            flags,
-            true,
-            self.doc_in.as_deref(),
-            self.pos_in.as_deref(),
-            self.pay_in.as_deref(),
-            self.max_num_impacts_at_level0,
-            self.max_impact_num_bytes_at_level0,
-            self.max_num_impacts_at_level1,
-            self.max_impact_num_bytes_at_level1,
-        )?;
+        let mut enum_ = self.new_block_postings_enum(field_info, flags, true)?;
         enum_.reset(state)?;
         Ok(Box::new(enum_))
     }
@@ -466,6 +509,17 @@ pub struct BlockPostingsEnum {
     index_has_offsets: bool,
     index_has_payloads: bool,
     index_has_offsets_or_payloads: bool,
+    /// Java's `final IndexOptions options`, which
+    /// [`can_reuse`](Self::can_reuse) compares.
+    options: IndexOptions,
+    /// Java's `final int flags`, which [`can_reuse`](Self::can_reuse)
+    /// compares.
+    flags: i32,
+    /// The identity of the `docIn` of the reader that built this enum: Java
+    /// reaches it as `Lucene104PostingsReader.this.docIn`, through the inner
+    /// class's enclosing instance. See
+    /// [`Lucene104PostingsReader::doc_in_identity`].
+    parent_doc_in_identity: u64,
 
     needs_freq: bool,
     needs_pos: bool,
@@ -521,6 +575,7 @@ impl BlockPostingsEnum {
         flags: i32,
         needs_impacts: bool,
         parent_doc_in: Option<&dyn IndexInput>,
+        parent_doc_in_identity: u64,
         parent_pos_in: Option<&dyn IndexInput>,
         parent_pay_in: Option<&dyn IndexInput>,
         max_num_impacts_at_level0: i32,
@@ -645,6 +700,9 @@ impl BlockPostingsEnum {
             index_has_offsets,
             index_has_payloads,
             index_has_offsets_or_payloads,
+            options: index_options,
+            flags,
+            parent_doc_in_identity,
             needs_freq,
             needs_pos,
             needs_offsets,
@@ -671,6 +729,25 @@ impl BlockPostingsEnum {
             impacts,
             needs_refilling: false,
         })
+    }
+
+    /// Equivalent to `BlockPostingsEnum.canReuse(IndexInput, FieldInfo, int, boolean)`
+    /// (`Lucene104PostingsReader.java:493-500`): this enum serves the next term
+    /// exactly when the reader asking built it — its `docIn` is the one this
+    /// enum cloned — for the same index options, payloads, flags and need for
+    /// impacts.
+    fn can_reuse(
+        &self,
+        doc_in_identity: u64,
+        field_info: &FieldInfo,
+        flags: i32,
+        needs_impacts: bool,
+    ) -> bool {
+        doc_in_identity == self.parent_doc_in_identity
+            && self.options == field_info.index_options
+            && self.index_has_payloads == field_info.has_payloads()
+            && self.flags == flags
+            && self.needs_impacts == needs_impacts
     }
 
     fn reset(&mut self, term_state: &BlockTermState) -> Result<()> {
@@ -1600,6 +1677,12 @@ impl PostingsEnum for BlockPostingsEnum {
             let end = self.payload_byte_upto as usize;
             Ok(Some(&self.payload_bytes[start..end]))
         }
+    }
+
+    /// This enum answers with itself: it is the `true` arm of Java's
+    /// `reuse instanceof BlockPostingsEnum` (`Lucene104PostingsReader.java:259`).
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 }
 

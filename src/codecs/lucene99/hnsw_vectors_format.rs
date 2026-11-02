@@ -18,14 +18,13 @@ use crate::codecs::codec_util::{
     write_index_header,
 };
 use crate::codecs::hnsw::flat_vectors::{
-    DefaultFlatFieldVectorsWriter, DefaultFlatVectorScorer, DocsWithFieldSet,
-    FlatFieldVectorsWriter, FlatVectorsFormat, FlatVectorsReader, FlatVectorsScorer,
-    FlatVectorsWriter,
+    DefaultFlatVectorScorer, DocsWithFieldSet, FlatFieldVectorWriter, FlatVectorsFormat,
+    FlatVectorsReader, FlatVectorsScorer, FlatVectorsWriter, SharedFlatFieldVectorsWriter,
 };
 use crate::codecs::hnsw::graph_provider::HnswGraphProvider;
 use crate::codecs::knn_vectors::{
-    FieldVectorWriter, KnnFieldVectorsWriter, KnnVectorsFormat, KnnVectorsReader, KnnVectorsWriter,
-    MergedVectorValues, SorterDocMap,
+    FieldVectorWriter, KnnVectorsFormat, KnnVectorsReader, KnnVectorsWriter, MergedVectorValues,
+    SorterDocMap,
 };
 use crate::codecs::lucene99::flat_vectors_format::Lucene99FlatVectorsFormat;
 use crate::codecs::postings::MergeState;
@@ -373,15 +372,17 @@ impl fmt::Debug for Lucene99HnswVectorsWriter {
     }
 }
 
+/// One field this writer indexes: the field writer the flat writer returned
+/// for it, and the field.
+///
+/// Equivalent to `Lucene99HnswVectorsWriter.FieldWriter`
+/// (`Lucene99HnswVectorsWriter.java:675-814`), which keeps the
+/// `FlatFieldVectorsWriter` that `flatVectorWriter.addField` returned. Java's
+/// also builds the graph as values arrive; this port builds it in
+/// [`flush`](KnnVectorsWriter::flush), from the same vectors.
 enum FieldWriterEntry {
-    Float(
-        Arc<Mutex<DefaultFlatFieldVectorsWriter<Vec<f32>>>>,
-        FieldInfo,
-    ),
-    Byte(
-        Arc<Mutex<DefaultFlatFieldVectorsWriter<Vec<u8>>>>,
-        FieldInfo,
-    ),
+    Float(SharedFlatFieldVectorsWriter<Vec<f32>>, FieldInfo),
+    Byte(SharedFlatFieldVectorsWriter<Vec<u8>>, FieldInfo),
 }
 
 impl fmt::Debug for FieldWriterEntry {
@@ -390,30 +391,6 @@ impl fmt::Debug for FieldWriterEntry {
             FieldWriterEntry::Float(_, info) => f.debug_tuple("Float").field(&info.name).finish(),
             FieldWriterEntry::Byte(_, info) => f.debug_tuple("Byte").field(&info.name).finish(),
         }
-    }
-}
-
-struct SharedFieldWriter<T> {
-    inner: Arc<Mutex<DefaultFlatFieldVectorsWriter<T>>>,
-}
-
-impl<T: Clone + Send + Sync + 'static> KnnFieldVectorsWriter<T> for SharedFieldWriter<T> {
-    fn add_value(&mut self, doc_id: i32, vector_value: T) -> Result<()> {
-        let mut guard = self.inner.lock().map_err(|_| {
-            LuceneError::illegal_state("FlatFieldVectorsWriter mutex was poisoned".to_string())
-        })?;
-        guard.add_value(doc_id, vector_value)
-    }
-
-    fn copy_value(&self, vector_value: T) -> T {
-        vector_value
-    }
-
-    fn ram_bytes_used(&self) -> i64 {
-        // The shared handle owns nothing: the buffer it locks is accounted by
-        // the writer that also holds it, and counting it here would count it
-        // twice in `KnnVectorsWriter::ram_bytes_used`.
-        0
     }
 }
 
@@ -1059,51 +1036,50 @@ impl HnswWriterState {
 }
 
 impl HnswWriterState {
+    /// Equivalent to `Lucene99HnswVectorsWriter.addField(FieldInfo)`
+    /// (`Lucene99HnswVectorsWriter.java:194-207`): the flat writer adds the
+    /// field and returns its writer, which this writer keeps for
+    /// [`flush`](Self::flush) and hands out. Java hands out its own
+    /// `FieldWriter`, which forwards each value to that flat field writer after
+    /// the same duplicate-document check the flat writer makes, and feeds its
+    /// graph builder; this port builds the graph at flush.
     fn add_field(&mut self, field_info: &FieldInfo) -> Result<FieldVectorWriter> {
         if self.finished {
             return Err(LuceneError::illegal_state(
                 "Lucene99HnswVectorsWriter is already finished".to_string(),
             ));
         }
-        match field_info.vector_encoding {
-            VectorEncoding::FLOAT32 => {
-                let writer = Arc::new(Mutex::new(DefaultFlatFieldVectorsWriter::<Vec<f32>>::new(
-                    field_info.clone(),
-                )));
-                self.fields.push(FieldWriterEntry::Float(
-                    Arc::clone(&writer),
-                    field_info.clone(),
-                ));
-                Ok(FieldVectorWriter::Float(Box::new(SharedFieldWriter {
-                    inner: writer,
-                })))
+        let flat_field_vectors_writer =
+            FlatVectorsWriter::add_field(self.flat_vector_writer.as_mut(), field_info)?;
+        self.fields.push(match &flat_field_vectors_writer {
+            FlatFieldVectorWriter::Float(writer) => {
+                FieldWriterEntry::Float(Arc::clone(writer), field_info.clone())
             }
-            VectorEncoding::BYTE => {
-                let writer = Arc::new(Mutex::new(DefaultFlatFieldVectorsWriter::<Vec<u8>>::new(
-                    field_info.clone(),
-                )));
-                self.fields.push(FieldWriterEntry::Byte(
-                    Arc::clone(&writer),
-                    field_info.clone(),
-                ));
-                Ok(FieldVectorWriter::Byte(Box::new(SharedFieldWriter {
-                    inner: writer,
-                })))
+            FlatFieldVectorWriter::Byte(writer) => {
+                FieldWriterEntry::Byte(Arc::clone(writer), field_info.clone())
             }
-        }
+        });
+        Ok(FieldVectorWriter::from(flat_field_vectors_writer))
     }
 
+    /// Equivalent to `Lucene99HnswVectorsWriter.flush(int, Sorter.DocMap)`
+    /// (`Lucene99HnswVectorsWriter.java:209-219`): the flat writer writes every
+    /// field's vectors, then each field's graph and metadata are written.
+    ///
+    /// Java's `FieldWriter` builds the graph while the values arrive, before
+    /// this flush; a quantizing flat writer then normalises cosine vectors in
+    /// place during its own flush
+    /// (`Lucene104ScalarQuantizedVectorsWriter.java:135-138`), and the graph
+    /// builder's `finish` scores nothing (`HnswGraphBuilder.java:551-557`).
+    /// The graphs are therefore built here before the flat writer flushes,
+    /// over the vectors as they were added.
     fn flush(&mut self, max_doc: i32, sort_map: Option<&SorterDocMap>) -> Result<()> {
-        self.flat_vector_writer.flush(max_doc, sort_map)?;
         let entries = std::mem::take(&mut self.fields);
-        for entry in entries {
-            match entry {
+        let mut graphs = Vec::with_capacity(entries.len());
+        for entry in &entries {
+            graphs.push(match entry {
                 FieldWriterEntry::Float(writer, info) => {
-                    let values =
-                        BufferedFloatVectorValues::new(info.vector_dimension, Arc::clone(&writer))?;
-                    self.flat_vector_writer
-                        .write_field_float(&info, &values, max_doc)?;
-                    let count = values.size();
+                    let values = BufferedFloatVectorValues::new(info.vector_dimension, writer)?;
                     let graph = build_hnsw_graph_float(
                         &values,
                         info.vector_similarity_function,
@@ -1111,50 +1087,10 @@ impl HnswWriterState {
                         self.beam_width,
                         self.tiny_segments_threshold,
                     )?;
-                    let vector_index_offset = self
-                        .vector_index
-                        .as_ref()
-                        .ok_or_else(|| {
-                            LuceneError::illegal_state(
-                                "Lucene99HnswVectorsWriter is already closed".to_string(),
-                            )
-                        })?
-                        .file_pointer();
-                    if let Some(sort_map) = sort_map {
-                        // A sorted segment renumbers the vector ordinals, so
-                        // the graph is rebuilt under the new numbering.
-                        let _ = vector_index_offset;
-                        self.write_sorting_field(
-                            &info,
-                            values.ord_to_doc(),
-                            graph.as_ref(),
-                            sort_map,
-                        )?;
-                    } else {
-                        let graph_level_offsets = if let Some(ref g) = graph {
-                            self.write_graph(g)?
-                        } else {
-                            Vec::new()
-                        };
-                        let vector_index_length =
-                            self.vector_index.as_ref().unwrap().file_pointer()
-                                - vector_index_offset;
-                        self.write_meta(
-                            &info,
-                            vector_index_offset,
-                            vector_index_length,
-                            count,
-                            graph.as_ref(),
-                            &graph_level_offsets,
-                        )?;
-                    }
+                    (values.ord_to_doc().to_vec(), graph)
                 }
                 FieldWriterEntry::Byte(writer, info) => {
-                    let values =
-                        BufferedByteVectorValues::new(info.vector_dimension, Arc::clone(&writer))?;
-                    self.flat_vector_writer
-                        .write_field_byte(&info, &values, max_doc)?;
-                    let count = values.size();
+                    let values = BufferedByteVectorValues::new(info.vector_dimension, writer)?;
                     let graph = build_hnsw_graph_byte(
                         &values,
                         info.vector_similarity_function,
@@ -1162,47 +1098,70 @@ impl HnswWriterState {
                         self.beam_width,
                         self.tiny_segments_threshold,
                     )?;
-                    let vector_index_offset = self
-                        .vector_index
-                        .as_ref()
-                        .ok_or_else(|| {
-                            LuceneError::illegal_state(
-                                "Lucene99HnswVectorsWriter is already closed".to_string(),
-                            )
-                        })?
-                        .file_pointer();
-                    if let Some(sort_map) = sort_map {
-                        // A sorted segment renumbers the vector ordinals, so
-                        // the graph is rebuilt under the new numbering.
-                        let _ = vector_index_offset;
-                        self.write_sorting_field(
-                            &info,
-                            values.ord_to_doc(),
-                            graph.as_ref(),
-                            sort_map,
-                        )?;
-                    } else {
-                        let graph_level_offsets = if let Some(ref g) = graph {
-                            self.write_graph(g)?
-                        } else {
-                            Vec::new()
-                        };
-                        let vector_index_length =
-                            self.vector_index.as_ref().unwrap().file_pointer()
-                                - vector_index_offset;
-                        self.write_meta(
-                            &info,
-                            vector_index_offset,
-                            vector_index_length,
-                            count,
-                            graph.as_ref(),
-                            &graph_level_offsets,
-                        )?;
-                    }
+                    (values.ord_to_doc().to_vec(), graph)
+                }
+            });
+        }
+
+        self.flat_vector_writer.flush(max_doc, sort_map)?;
+        for (entry, (ord_to_doc, graph)) in entries.iter().zip(graphs) {
+            let info = match entry {
+                FieldWriterEntry::Float(_, info) | FieldWriterEntry::Byte(_, info) => info,
+            };
+            match sort_map {
+                None => self.write_field(info, ord_to_doc.len() as i32, graph.as_ref())?,
+                // A sorted segment renumbers the vector ordinals, so the graph
+                // is rebuilt under the new numbering.
+                Some(sort_map) => {
+                    self.write_sorting_field(info, &ord_to_doc, graph.as_ref(), sort_map)?
                 }
             }
         }
         Ok(())
+    }
+
+    /// Writes one field's graph and metadata.
+    ///
+    /// Equivalent to `Lucene99HnswVectorsWriter.writeField(FieldWriter)`
+    /// (`Lucene99HnswVectorsWriter.java:251-265`), with the field's vector
+    /// count and its graph, `None` when the field has none.
+    fn write_field(
+        &mut self,
+        info: &FieldInfo,
+        count: i32,
+        graph: Option<&OnHeapHnswGraph>,
+    ) -> Result<()> {
+        let vector_index_offset = self
+            .vector_index
+            .as_ref()
+            .ok_or_else(|| {
+                LuceneError::illegal_state(
+                    "Lucene99HnswVectorsWriter is already closed".to_string(),
+                )
+            })?
+            .file_pointer();
+        let graph_level_offsets = match graph {
+            Some(graph) => self.write_graph(graph)?,
+            None => Vec::new(),
+        };
+        let vector_index_length = self
+            .vector_index
+            .as_ref()
+            .ok_or_else(|| {
+                LuceneError::illegal_state(
+                    "Lucene99HnswVectorsWriter is already closed".to_string(),
+                )
+            })?
+            .file_pointer()
+            - vector_index_offset;
+        self.write_meta(
+            info,
+            vector_index_offset,
+            vector_index_length,
+            count,
+            graph,
+            &graph_level_offsets,
+        )
     }
 
     /// Writes the end-of-fields marker and both footers.
@@ -1355,22 +1314,25 @@ impl HnswWriterState {
     }
 
     /// Equivalent to `Lucene99HnswVectorsWriter.ramBytesUsed()`
-    /// (`Lucene99HnswVectorsWriter.java:245-252`), which sums a shallow size
-    /// and every field's footprint.
+    /// (`Lucene99HnswVectorsWriter.java:241-249`), which sums a shallow size
+    /// and every field's footprint: the flat field writer the field delegates
+    /// to, which holds the buffered vectors (`Lucene99HnswVectorsWriter.java:806-813`).
+    /// As in Java, the flat writer itself is not counted.
     ///
     /// **Divergence:** Java's per-field total also carries the partially built
     /// HNSW graph, because `Lucene99HnswVectorsWriter.FieldWriter.addValue`
     /// feeds `hnswGraphBuilder.addGraphNode` as each vector arrives
-    /// (`Lucene99HnswVectorsWriter.java:800-813`). This port builds the graph
+    /// (`Lucene99HnswVectorsWriter.java:766-785`). This port builds the graph
     /// in `flush`, from the buffered vectors, so no graph exists while
-    /// documents are being indexed and there is nothing to add here. The
-    /// buffered vectors — the term that grows with the data — are accounted
-    /// exactly as Java accounts them.
+    /// documents are being indexed and there is nothing to add here; nor is
+    /// the per-field `FieldWriter` shallow size, which only Java's object
+    /// layout has. The buffered vectors — the term that grows with the data —
+    /// are accounted exactly as Java accounts them.
     fn ram_bytes_used(&self) -> i64 {
         let mut total = crate::util::RamUsageEstimator::align_object_size(
             crate::util::RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
                 + 10 * crate::util::RamUsageEstimator::NUM_BYTES_OBJECT_REF,
-        ) + self.flat_vector_writer.ram_bytes_used();
+        );
         for entry in &self.fields {
             total += match entry {
                 FieldWriterEntry::Float(writer, _) => writer
@@ -1706,15 +1668,12 @@ impl BufferedFloatVectorValues {
         &self.ord_to_doc
     }
 
-    fn new(
-        dimension: i32,
-        writer: Arc<Mutex<DefaultFlatFieldVectorsWriter<Vec<f32>>>>,
-    ) -> Result<Self> {
+    fn new(dimension: i32, writer: &SharedFlatFieldVectorsWriter<Vec<f32>>) -> Result<Self> {
         let guard = writer.lock().map_err(|_| {
             LuceneError::illegal_state("FlatFieldVectorsWriter mutex was poisoned".to_string())
         })?;
-        let vectors = guard.vectors().to_vec();
-        let ord_to_doc = build_ord_to_doc(guard.docs_with_field_set())?;
+        let vectors = guard.vectors().into_owned();
+        let ord_to_doc = build_ord_to_doc(&guard.docs_with_field_set())?;
         Ok(Self {
             dimension,
             vectors,
@@ -1789,15 +1748,12 @@ impl BufferedByteVectorValues {
         &self.ord_to_doc
     }
 
-    fn new(
-        dimension: i32,
-        writer: Arc<Mutex<DefaultFlatFieldVectorsWriter<Vec<u8>>>>,
-    ) -> Result<Self> {
+    fn new(dimension: i32, writer: &SharedFlatFieldVectorsWriter<Vec<u8>>) -> Result<Self> {
         let guard = writer.lock().map_err(|_| {
             LuceneError::illegal_state("FlatFieldVectorsWriter mutex was poisoned".to_string())
         })?;
-        let vectors = guard.vectors().to_vec();
-        let ord_to_doc = build_ord_to_doc(guard.docs_with_field_set())?;
+        let vectors = guard.vectors().into_owned();
+        let ord_to_doc = build_ord_to_doc(&guard.docs_with_field_set())?;
         Ok(Self {
             dimension,
             vectors,

@@ -10,12 +10,13 @@
 
 #![deny(unsafe_code)]
 
+use std::borrow::Cow;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::codecs::knn_vectors::{
-    BufferingKnnVectorsWriter, ByteVectorValues, FloatVectorValues, KnnFieldVectorsWriter,
-    KnnVectorsFormat, KnnVectorsReader,
+    ByteVectorValues, FieldVectorWriter, FloatVectorValues, KnnFieldVectorsWriter,
+    KnnVectorsFormat, KnnVectorsReader, KnnVectorsWriter,
 };
 use crate::codecs::lucene99::scalar_quantized_scorer::Lucene99ScalarQuantizedVectorScorer;
 use crate::codecs::postings::MergeState;
@@ -329,9 +330,23 @@ impl crate::search::DocIdSetIterator for FixedBitSetIterator<'_> {
 /// Writer for a single vector field.
 ///
 /// Equivalent to `org.apache.lucene.codecs.hnsw.FlatFieldVectorsWriter`.
+///
+/// **Divergence from Lucene 10.5.0.** Java's `getVectors()` and
+/// `getDocsWithFieldSet()` return the writer's own objects. A writer that
+/// wraps another flat field writer answers with the wrapped writer's objects
+/// (`Lucene104ScalarQuantizedVectorsWriter.FieldWriter`,
+/// `Lucene104ScalarQuantizedVectorsWriter.java:507-525`), which here sit behind
+/// the lock of a [`SharedFlatFieldVectorsWriter`] and cannot be lent past it.
+/// [`vectors`](Self::vectors) and [`docs_with_field_set`](Self::docs_with_field_set)
+/// therefore answer a [`Cow`]: the writer's own objects when it holds them,
+/// and a copy of the same values when it wraps another writer.
 pub trait FlatFieldVectorsWriter<T>: KnnFieldVectorsWriter<T> {
     /// Returns the buffered vectors to be written.
-    fn vectors(&self) -> &[T];
+    ///
+    /// Equivalent to `FlatFieldVectorsWriter.getVectors()`.
+    fn vectors(&self) -> Cow<'_, [T]>
+    where
+        T: Clone;
 
     /// Returns a [`KnnVectorValues`] view over the vectors to be written.
     ///
@@ -367,6 +382,7 @@ pub trait FlatFieldVectorsWriter<T>: KnnFieldVectorsWriter<T> {
         T: std::any::Any + Clone,
     {
         let vectors = self.vectors();
+        let vectors: &[T] = &vectors;
         match encoding {
             VectorEncoding::FLOAT32 => {
                 let mut floats = Vec::with_capacity(vectors.len());
@@ -400,13 +416,79 @@ pub trait FlatFieldVectorsWriter<T>: KnnFieldVectorsWriter<T> {
     }
 
     /// Returns the set of documents that have a value for this field.
-    fn docs_with_field_set(&self) -> &DocsWithFieldSet;
+    ///
+    /// Equivalent to `FlatFieldVectorsWriter.getDocsWithFieldSet()`.
+    fn docs_with_field_set(&self) -> Cow<'_, DocsWithFieldSet>;
 
     /// Marks this writer as finished; no new vectors may be added afterwards.
     fn finish(&mut self) -> Result<()>;
 
     /// Returns `true` if this writer is finished.
     fn is_finished(&self) -> bool;
+}
+
+/// A [`FlatFieldVectorsWriter`] that the flat writer which created it and the
+/// writer which added the field both hold.
+///
+/// Java's `FlatVectorsWriter.addField` keeps the field writer it creates in its
+/// own field list, which it writes at `flush`, and returns that same object to
+/// the caller, which adds the values and reads them back
+/// (`Lucene99HnswVectorsWriter.java:194-207`,
+/// `Lucene104ScalarQuantizedVectorsWriter.java:118-129`). Both references are
+/// this handle here; the lock is what lets the two share one buffer.
+pub type SharedFlatFieldVectorsWriter<T> = Arc<Mutex<dyn FlatFieldVectorsWriter<T>>>;
+
+/// The field writer [`FlatVectorsWriter::add_field`] returns: Java's
+/// `FlatFieldVectorsWriter<?>`, whose element type follows the field's
+/// [`VectorEncoding`].
+pub enum FlatFieldVectorWriter {
+    /// The writer of a `FLOAT32` field.
+    Float(SharedFlatFieldVectorsWriter<Vec<f32>>),
+    /// The writer of a `BYTE` field.
+    Byte(SharedFlatFieldVectorsWriter<Vec<u8>>),
+}
+
+impl fmt::Debug for FlatFieldVectorWriter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Float(_) => f.write_str("FlatFieldVectorWriter::Float"),
+            Self::Byte(_) => f.write_str("FlatFieldVectorWriter::Byte"),
+        }
+    }
+}
+
+impl From<FlatFieldVectorWriter> for FieldVectorWriter {
+    /// The same field writer, as [`KnnVectorsWriter::add_field`] hands it out:
+    /// Java's covariant `addField` returns one object to both callers.
+    fn from(writer: FlatFieldVectorWriter) -> Self {
+        match writer {
+            FlatFieldVectorWriter::Float(writer) => FieldVectorWriter::Float(Box::new(writer)),
+            FlatFieldVectorWriter::Byte(writer) => FieldVectorWriter::Byte(Box::new(writer)),
+        }
+    }
+}
+
+/// The shared field writer, reached through its lock.
+impl<T: Send + 'static> KnnFieldVectorsWriter<T> for SharedFlatFieldVectorsWriter<T> {
+    fn add_value(&mut self, doc_id: i32, vector_value: T) -> Result<()> {
+        self.lock()
+            .map_err(|_| {
+                LuceneError::illegal_state("FlatFieldVectorsWriter mutex was poisoned".to_string())
+            })?
+            .add_value(doc_id, vector_value)
+    }
+
+    fn copy_value(&self, vector_value: T) -> T {
+        self.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .copy_value(vector_value)
+    }
+
+    fn ram_bytes_used(&self) -> i64 {
+        self.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .ram_bytes_used()
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -523,15 +605,30 @@ impl<T: Clone + Send + Sync + 'static> KnnFieldVectorsWriter<T>
     }
 }
 
-impl<T: Clone + Send + Sync + 'static> FlatFieldVectorsWriter<T>
-    for DefaultFlatFieldVectorsWriter<T>
-{
-    fn vectors(&self) -> &[T] {
+impl<T> DefaultFlatFieldVectorsWriter<T> {
+    /// Returns the buffered vectors, borrowed: the writer's own list, which
+    /// [`FlatFieldVectorsWriter::vectors`] lends as a [`Cow::Borrowed`].
+    pub fn vectors(&self) -> &[T] {
         &self.vectors
     }
 
-    fn docs_with_field_set(&self) -> &DocsWithFieldSet {
+    /// Returns the documents that have a value, borrowed: the writer's own
+    /// set, which [`FlatFieldVectorsWriter::docs_with_field_set`] lends as a
+    /// [`Cow::Borrowed`].
+    pub fn docs_with_field_set(&self) -> &DocsWithFieldSet {
         &self.docs_with_field_set
+    }
+}
+
+impl<T: Clone + Send + Sync + 'static> FlatFieldVectorsWriter<T>
+    for DefaultFlatFieldVectorsWriter<T>
+{
+    fn vectors(&self) -> Cow<'_, [T]> {
+        Cow::Borrowed(&self.vectors)
+    }
+
+    fn docs_with_field_set(&self) -> Cow<'_, DocsWithFieldSet> {
+        Cow::Borrowed(&self.docs_with_field_set)
     }
 
     fn finish(&mut self) -> Result<()> {
@@ -1098,8 +1195,27 @@ pub trait FlatVectorsReader: KnnVectorsReader + crate::util::Accountable {
 
 /// Writes flat vectors to an index.
 ///
-/// Equivalent to `org.apache.lucene.codecs.hnsw.FlatVectorsWriter`.
-pub trait FlatVectorsWriter: BufferingKnnVectorsWriter {
+/// Equivalent to `org.apache.lucene.codecs.hnsw.FlatVectorsWriter`, which
+/// extends `KnnVectorsWriter` (`FlatVectorsWriter.java:31`).
+pub trait FlatVectorsWriter: KnnVectorsWriter {
+    /// Adds a new field for indexing and returns its writer, which this writer
+    /// also keeps and writes at [`flush`](KnnVectorsWriter::flush).
+    ///
+    /// Equivalent to `FlatVectorsWriter.addField(FieldInfo)`
+    /// (`FlatVectorsWriter.java:47-55`), which narrows the return type of
+    /// `KnnVectorsWriter.addField` to `FlatFieldVectorsWriter<?>`. A Rust trait
+    /// cannot narrow the return type of a supertrait method, so this is a
+    /// second method under the same name, called as
+    /// `FlatVectorsWriter::add_field(writer, field_info)`; every flat writer
+    /// answers [`KnnVectorsWriter::add_field`] with this method's writer,
+    /// converted ([`From<FlatFieldVectorWriter>`](FieldVectorWriter)), so both
+    /// callers get the same object, as in Java.
+    ///
+    /// # Errors
+    ///
+    /// Whatever creating the field writer raises.
+    fn add_field(&mut self, field_info: &FieldInfo) -> Result<FlatFieldVectorWriter>;
+
     /// Returns the scorer this writer scores vectors with.
     ///
     /// Equivalent to `FlatVectorsWriter.getFlatVectorScorer()`, which reads the

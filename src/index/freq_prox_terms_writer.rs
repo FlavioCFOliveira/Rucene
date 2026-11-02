@@ -1976,9 +1976,20 @@ impl TermsEnum for FreqProxTermsEnum {
         ))
     }
 
+    /// Equivalent to `FreqProxTermsEnum.postings(PostingsEnum, int)`
+    /// (`FreqProxFields.java:226-272`).
+    ///
+    /// `reuse` is reset in place and handed back exactly when Java reuses it:
+    /// when it is a `FreqProxPostingsEnum` (positions requested) or a
+    /// `FreqProxDocsEnum` (otherwise) — [`PostingsEnum::as_any_mut`] standing
+    /// for `instanceof` — over this field's postings array
+    /// (`posEnum.postingsArray != postingsArray`, `FreqProxFields.java:242-249`,
+    /// `:262-269`). The postings array is the field's frozen buffers, shared
+    /// through one [`Arc`] by every enum of the field, so the reference
+    /// comparison is [`Arc::ptr_eq`].
     fn postings(
         &mut self,
-        _reuse: Option<Box<dyn PostingsEnum>>,
+        mut reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
     ) -> Result<Box<dyn PostingsEnum>> {
         if self.ord < 0 || self.ord as usize >= self.num_terms {
@@ -2001,16 +2012,53 @@ impl TermsEnum for FreqProxTermsEnum {
                     "did not index offsets".to_string(),
                 ));
             }
-            return Ok(Box::new(FreqProxPostingsEnum::new(
-                Arc::clone(&self.field),
-                term_id,
-            )));
+
+            // `reuse instanceof FreqProxPostingsEnum`, and
+            // `posEnum.postingsArray == postingsArray`.
+            let can_reuse = reuse
+                .as_mut()
+                .and_then(|reuse| reuse.as_any_mut())
+                .and_then(|any| any.downcast_mut::<FreqProxPostingsEnum>())
+                .is_some_and(|pos_enum| Arc::ptr_eq(&pos_enum.field, &self.field));
+            let mut pos_enum: Box<dyn PostingsEnum> = match reuse {
+                Some(pos_enum) if can_reuse => pos_enum,
+                _ => Box::new(FreqProxPostingsEnum::new(Arc::clone(&self.field))),
+            };
+            pos_enum
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<FreqProxPostingsEnum>())
+                .ok_or_else(|| {
+                    LuceneError::illegal_state(
+                        "INVARIANT: the enum was just checked or built as a FreqProxPostingsEnum"
+                            .to_string(),
+                    )
+                })?
+                .reset(term_id);
+            return Ok(pos_enum);
         }
 
-        Ok(Box::new(FreqProxDocsEnum::new(
-            Arc::clone(&self.field),
-            term_id,
-        )))
+        // `reuse instanceof FreqProxDocsEnum`, and
+        // `docsEnum.postingsArray == postingsArray`.
+        let can_reuse = reuse
+            .as_mut()
+            .and_then(|reuse| reuse.as_any_mut())
+            .and_then(|any| any.downcast_mut::<FreqProxDocsEnum>())
+            .is_some_and(|docs_enum| Arc::ptr_eq(&docs_enum.field, &self.field));
+        let mut docs_enum: Box<dyn PostingsEnum> = match reuse {
+            Some(docs_enum) if can_reuse => docs_enum,
+            _ => Box::new(FreqProxDocsEnum::new(Arc::clone(&self.field))),
+        };
+        docs_enum
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<FreqProxDocsEnum>())
+            .ok_or_else(|| {
+                LuceneError::illegal_state(
+                    "INVARIANT: the enum was just checked or built as a FreqProxDocsEnum"
+                        .to_string(),
+                )
+            })?
+            .reset(term_id);
+        Ok(docs_enum)
     }
 
     /// Always fails: impacts require the on-disk postings format.
@@ -2049,19 +2097,28 @@ struct FreqProxDocsEnum {
 }
 
 impl FreqProxDocsEnum {
-    fn new(field: Arc<FieldPostings>, term_id: i32) -> Self {
+    /// Equivalent to `FreqProxDocsEnum(FreqProxTermsWriterPerField, FreqProxPostingsArray)`
+    /// (`FreqProxFields.java:311-316`); [`reset`](Self::reset) positions it on
+    /// a term.
+    fn new(field: Arc<FieldPostings>) -> Self {
         let read_term_freq = field.has_freq;
-        let mut reader = ByteSliceReader::new();
-        field.init_reader(&mut reader, term_id, 0);
         Self {
             field,
-            reader,
+            reader: ByteSliceReader::new(),
             read_term_freq,
             doc_id: -1,
             freq: 0,
             ended: false,
-            term_id,
+            term_id: 0,
         }
+    }
+
+    /// Equivalent to `FreqProxDocsEnum.reset(int)` (`FreqProxFields.java:318-323`).
+    fn reset(&mut self, term_id: i32) {
+        self.term_id = term_id;
+        self.field.init_reader(&mut self.reader, term_id, 0);
+        self.ended = false;
+        self.doc_id = -1;
     }
 }
 
@@ -2158,6 +2215,12 @@ impl PostingsEnum for FreqProxDocsEnum {
     fn get_payload(&self) -> Result<Option<&[u8]>> {
         Ok(None)
     }
+
+    /// This enum answers with itself: it is the `true` arm of Java's
+    /// `reuse instanceof FreqProxDocsEnum` (`FreqProxFields.java:262`).
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
 }
 
 /// Doc/freq/position iterator over one buffered term.
@@ -2182,17 +2245,16 @@ struct FreqProxPostingsEnum {
 }
 
 impl FreqProxPostingsEnum {
-    fn new(field: Arc<FieldPostings>, term_id: i32) -> Self {
+    /// Equivalent to `FreqProxPostingsEnum(FreqProxTermsWriterPerField, FreqProxPostingsArray)`
+    /// (`FreqProxFields.java:424-431`); [`reset`](Self::reset) positions it on
+    /// a term.
+    fn new(field: Arc<FieldPostings>) -> Self {
         debug_assert!(field.has_prox && field.has_freq);
         let read_offsets = field.has_offsets;
-        let mut reader = ByteSliceReader::new();
-        let mut pos_reader = ByteSliceReader::new();
-        field.init_reader(&mut reader, term_id, 0);
-        field.init_reader(&mut pos_reader, term_id, 1);
         Self {
             field,
-            reader,
-            pos_reader,
+            reader: ByteSliceReader::new(),
+            pos_reader: ByteSliceReader::new(),
             read_offsets,
             doc_id: -1,
             freq: 0,
@@ -2200,11 +2262,24 @@ impl FreqProxPostingsEnum {
             start_offset: 0,
             end_offset: 0,
             positions_left: 0,
-            term_id,
+            term_id: 0,
             ended: false,
             payload: Vec::new(),
             has_payload: false,
         }
+    }
+
+    /// Equivalent to `FreqProxPostingsEnum.reset(int)`
+    /// (`FreqProxFields.java:433-440`): the position, offsets and payload of
+    /// the previous term stay until the first document moves them, as in
+    /// Java.
+    fn reset(&mut self, term_id: i32) {
+        self.term_id = term_id;
+        self.field.init_reader(&mut self.reader, term_id, 0);
+        self.field.init_reader(&mut self.pos_reader, term_id, 1);
+        self.ended = false;
+        self.doc_id = -1;
+        self.positions_left = 0;
     }
 }
 
@@ -2326,6 +2401,12 @@ impl PostingsEnum for FreqProxPostingsEnum {
         } else {
             Ok(None)
         }
+    }
+
+    /// This enum answers with itself: it is the `true` arm of Java's
+    /// `reuse instanceof FreqProxPostingsEnum` (`FreqProxFields.java:242`).
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 }
 
@@ -2750,17 +2831,19 @@ impl TermsEnum for SortingTermsEnum {
         self.base.total_term_freq()
     }
 
-    /// Equivalent to `SortingTermsEnum.postings(PostingsEnum, int)`: a field
-    /// that indexes frequencies, asked for them, gets a
-    /// [`SortingPostingsEnum`] that buffers frequencies, positions, offsets
-    /// and payloads per document; anything else gets a [`SortingDocsEnum`].
+    /// Equivalent to `SortingTermsEnum.postings(PostingsEnum, int)`
+    /// (`FreqProxTermsWriter.java:176-222`): a field that indexes
+    /// frequencies, asked for them, gets a [`SortingPostingsEnum`] that buffers
+    /// frequencies, positions, offsets and payloads per document; anything else
+    /// gets a [`SortingDocsEnum`].
     ///
-    /// **Divergence from Lucene 10.5.0.** Java reuses `reuse` when it is the
-    /// matching `Sorting*Enum`, handing the enum it wraps back to the delegate.
-    /// A `Box<dyn PostingsEnum>` cannot be downcast, so a fresh wrapper is
-    /// built for every term and `reuse` is passed to the delegate as is — the
-    /// branch Java takes for any other `reuse`. The postings returned are the
-    /// same; only the allocation differs.
+    /// `reuse` is reused exactly when Java reuses it: when it is the matching
+    /// `Sorting*Enum` ([`PostingsEnum::as_any_mut`] standing for
+    /// `instanceof`), the box handed back is the one that came in, and the
+    /// enum it wraps ([`SortingPostingsEnum::get_wrapped`] /
+    /// [`SortingDocsEnum::get_wrapped`]) is what the delegate is offered as
+    /// `reuse`, "since some Codecs expect it". Any other `reuse` is offered to
+    /// the delegate as is, and a new wrapper is built.
     fn postings(
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
@@ -2769,30 +2852,88 @@ impl TermsEnum for SortingTermsEnum {
         if self.index_options.subsumes(IndexOptions::DOCS_AND_FREQS)
             && crate::index::feature_requested(flags, POSTINGS_ENUM_FREQS)
         {
-            let in_docs_and_positions = self.base.postings(reuse, flags)?;
-            // We ignore the fact that positions/offsets may be stored but not
+            let (mut wrap_reuse, in_reuse): (Box<dyn PostingsEnum>, Option<Box<dyn PostingsEnum>>) =
+                match reuse {
+                    Some(mut reuse) => {
+                        match reuse
+                            .as_any_mut()
+                            .and_then(|any| any.downcast_mut::<SortingPostingsEnum>())
+                        {
+                            // if we're asked to reuse the given DocsEnum and it
+                            // is Sorting, return the wrapped one, since some
+                            // Codecs expect it.
+                            Some(wrap_reuse) => {
+                                let in_reuse = wrap_reuse.get_wrapped();
+                                (reuse, in_reuse)
+                            }
+                            None => (Box::new(SortingPostingsEnum::new()), Some(reuse)),
+                        }
+                    }
+                    None => (Box::new(SortingPostingsEnum::new()), None),
+                };
+
+            let in_docs_and_positions = self.base.postings(in_reuse, flags)?;
+            // we ignore the fact that positions/offsets may be stored but not
             // asked for, since this code is expected to be used during
-            // addIndexes which will ask for everything.
+            // addIndexes which will ask for everything. if that assumption
+            // changes in the future, we can factor in whether 'flags' says
+            // offsets are not required.
             let store_positions = self
                 .index_options
                 .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS);
             let store_offsets = self
                 .index_options
                 .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS);
-            let mut wrap = SortingPostingsEnum::new();
-            wrap.reset(
-                &self.doc_map,
-                in_docs_and_positions,
-                store_positions,
-                store_offsets,
-            )?;
-            return Ok(Box::new(wrap));
+            wrap_reuse
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<SortingPostingsEnum>())
+                .ok_or_else(|| {
+                    LuceneError::illegal_state(
+                        "INVARIANT: the wrapper was just checked or built as a SortingPostingsEnum"
+                            .to_string(),
+                    )
+                })?
+                .reset(
+                    &self.doc_map,
+                    in_docs_and_positions,
+                    store_positions,
+                    store_offsets,
+                )?;
+            return Ok(wrap_reuse);
         }
 
-        let in_docs = self.base.postings(reuse, flags)?;
-        let mut wrap = SortingDocsEnum::new();
-        wrap.reset(&self.doc_map, in_docs)?;
-        Ok(Box::new(wrap))
+        let (mut wrap_reuse, in_reuse): (Box<dyn PostingsEnum>, Option<Box<dyn PostingsEnum>>) =
+            match reuse {
+                Some(mut reuse) => {
+                    match reuse
+                        .as_any_mut()
+                        .and_then(|any| any.downcast_mut::<SortingDocsEnum>())
+                    {
+                        // if we're asked to reuse the given DocsEnum and it is
+                        // Sorting, return the wrapped one, since some Codecs
+                        // expect it.
+                        Some(wrap_reuse) => {
+                            let in_reuse = wrap_reuse.get_wrapped();
+                            (reuse, in_reuse)
+                        }
+                        None => (Box::new(SortingDocsEnum::new()), Some(reuse)),
+                    }
+                }
+                None => (Box::new(SortingDocsEnum::new()), None),
+            };
+
+        let in_docs = self.base.postings(in_reuse, flags)?;
+        wrap_reuse
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<SortingDocsEnum>())
+            .ok_or_else(|| {
+                LuceneError::illegal_state(
+                    "INVARIANT: the wrapper was just checked or built as a SortingDocsEnum"
+                        .to_string(),
+                )
+            })?
+            .reset(&self.doc_map, in_docs)?;
+        Ok(wrap_reuse)
     }
 
     fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {
@@ -2873,11 +3014,17 @@ impl SortingDocsEnum {
         Ok(())
     }
 
-    /// Returns the wrapped enum.
+    /// Hands the wrapped enum to the caller, or `None` before the first
+    /// [`reset`](Self::reset).
     ///
-    /// Equivalent to `SortingDocsEnum.getWrapped()`.
-    pub fn get_wrapped(&self) -> Option<&dyn PostingsEnum> {
-        self.in_.as_deref()
+    /// Equivalent to `SortingDocsEnum.getWrapped()`
+    /// (`FreqProxTermsWriter.java:258-260`), whose one caller,
+    /// `SortingTermsEnum.postings`, passes the result straight to the delegate
+    /// as `reuse` and then resets this enum on what the delegate answers. Java
+    /// returns a second reference to the wrapped enum; Rust moves it out,
+    /// which leaves this enum without one until that `reset`.
+    pub fn get_wrapped(&mut self) -> Option<Box<dyn PostingsEnum>> {
+        self.in_.take()
     }
 }
 
@@ -2926,6 +3073,12 @@ impl DocIdSetIterator for SortingDocsEnum {
 impl PostingsEnum for SortingDocsEnum {
     fn freq(&self) -> Result<i32> {
         Ok(1)
+    }
+
+    /// This enum answers with itself: it is the `true` arm of Java's
+    /// `reuse instanceof SortingDocsEnum` (`FreqProxTermsWriter.java:208`).
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn next_position(&mut self) -> Result<i32> {
@@ -3090,11 +3243,14 @@ impl SortingPostingsEnum {
         Ok(())
     }
 
-    /// Returns the wrapped enum.
+    /// Hands the wrapped enum to the caller, or `None` before the first
+    /// [`reset`](Self::reset).
     ///
-    /// Equivalent to `SortingPostingsEnum.getWrapped()`.
-    pub fn get_wrapped(&self) -> Option<&dyn PostingsEnum> {
-        self.in_.as_deref()
+    /// Equivalent to `SortingPostingsEnum.getWrapped()`
+    /// (`FreqProxTermsWriter.java:527-529`); see
+    /// [`SortingDocsEnum::get_wrapped`] for why the enum is moved out.
+    pub fn get_wrapped(&mut self) -> Option<Box<dyn PostingsEnum>> {
+        self.in_.take()
     }
 
     fn posting_input(&mut self) -> Result<&mut ByteBuffersDataInput> {
@@ -3158,6 +3314,12 @@ impl DocIdSetIterator for SortingPostingsEnum {
 impl PostingsEnum for SortingPostingsEnum {
     fn freq(&self) -> Result<i32> {
         Ok(self.curr_freq)
+    }
+
+    /// This enum answers with itself: it is the `true` arm of Java's
+    /// `reuse instanceof SortingPostingsEnum` (`FreqProxTermsWriter.java:183`).
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     /// Equivalent to `SortingPostingsEnum.nextPosition()`.
@@ -4116,6 +4278,137 @@ mod tests {
         ));
     }
 
+    fn drain_positions(postings: &mut dyn PostingsEnum) -> Vec<(i32, Vec<i32>)> {
+        let mut out = Vec::new();
+        loop {
+            let doc = postings.next_doc().expect("next doc");
+            if doc == NO_MORE_DOCS {
+                return out;
+            }
+            let freq = postings.freq().expect("freq");
+            let positions = (0..freq)
+                .map(|_| postings.next_position().expect("position"))
+                .collect();
+            out.push((doc, positions));
+        }
+    }
+
+    /// `FreqProxTermsEnum.postings` resets and hands back the
+    /// `FreqProxPostingsEnum` it is offered exactly when it reads the same
+    /// postings array (`FreqProxFields.java:242-249`): a later term of the
+    /// field, or another iterator over the field, reuses it; another field's
+    /// enum, or a `FreqProxDocsEnum`, does not.
+    #[test]
+    fn freq_prox_postings_enum_is_reused_over_the_same_postings_array() {
+        let mut harness = Harness::new(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS);
+        harness
+            .add_doc(0, &[Token::new("alpha", 1), Token::new("beta", 1)])
+            .expect("doc 0");
+        harness.add_doc(1, &[Token::new("beta", 1)]).expect("doc 1");
+        let fields = harness.freeze();
+        let terms = fields.terms("body").expect("terms").expect("present");
+        let mut enumerator = terms.iterator().expect("iterator");
+
+        enumerator.next().expect("alpha");
+        let alpha = enumerator
+            .postings(None, POSTINGS_ENUM_POSITIONS)
+            .expect("alpha");
+        let alpha_identity = identity(alpha.as_ref());
+        enumerator.next().expect("beta");
+        let mut beta = enumerator
+            .postings(Some(alpha), POSTINGS_ENUM_POSITIONS)
+            .expect("beta");
+        assert_eq!(identity(beta.as_ref()), alpha_identity, "a later term");
+        assert_eq!(
+            drain_positions(beta.as_mut()),
+            vec![(0, vec![1]), (1, vec![0])]
+        );
+
+        let mut again = terms.iterator().expect("iterator");
+        again.next().expect("alpha");
+        let mut alpha = again
+            .postings(Some(beta), POSTINGS_ENUM_POSITIONS)
+            .expect("alpha");
+        assert_eq!(identity(alpha.as_ref()), alpha_identity, "another iterator");
+        assert_eq!(drain_positions(alpha.as_mut()), vec![(0, vec![0])]);
+
+        let mut docs = again
+            .postings(Some(alpha), POSTINGS_ENUM_FREQS)
+            .expect("docs");
+        assert_ne!(identity(docs.as_ref()), alpha_identity, "a docs request");
+        assert!(docs
+            .as_any_mut()
+            .is_some_and(|any| any.is::<FreqProxDocsEnum>()));
+
+        let mut other = Harness::new(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS);
+        other.add_doc(0, &[Token::new("alpha", 1)]).expect("doc 0");
+        let other_fields = other.freeze();
+        let other_terms = other_fields.terms("body").expect("terms").expect("present");
+        let mut other_enumerator = other_terms.iterator().expect("iterator");
+        other_enumerator.next().expect("alpha");
+        let foreign = other_enumerator
+            .postings(None, POSTINGS_ENUM_POSITIONS)
+            .expect("alpha");
+        let foreign_identity = identity(foreign.as_ref());
+        let mine = again
+            .postings(Some(foreign), POSTINGS_ENUM_POSITIONS)
+            .expect("alpha");
+        assert_ne!(
+            identity(mine.as_ref()),
+            foreign_identity,
+            "another postings array"
+        );
+    }
+
+    /// The `FreqProxDocsEnum` counterpart (`FreqProxFields.java:262-269`).
+    #[test]
+    fn freq_prox_docs_enum_is_reused_over_the_same_postings_array() {
+        let mut harness = Harness::new(IndexOptions::DOCS);
+        harness
+            .add_doc(0, &[Token::new("alpha", 1), Token::new("beta", 1)])
+            .expect("doc 0");
+        harness.add_doc(2, &[Token::new("beta", 1)]).expect("doc 2");
+        let fields = harness.freeze();
+        let terms = fields.terms("body").expect("terms").expect("present");
+        let mut enumerator = terms.iterator().expect("iterator");
+
+        enumerator.next().expect("alpha");
+        let alpha = enumerator
+            .postings(None, crate::index::POSTINGS_ENUM_NONE)
+            .expect("alpha");
+        let alpha_identity = identity(alpha.as_ref());
+        enumerator.next().expect("beta");
+        let mut beta = enumerator
+            .postings(Some(alpha), crate::index::POSTINGS_ENUM_NONE)
+            .expect("beta");
+        assert_eq!(identity(beta.as_ref()), alpha_identity, "a later term");
+        let mut docs = Vec::new();
+        loop {
+            let doc = beta.next_doc().expect("next doc");
+            if doc == NO_MORE_DOCS {
+                break;
+            }
+            docs.push(doc);
+        }
+        assert_eq!(docs, vec![0, 2]);
+
+        let mut other = Harness::new(IndexOptions::DOCS);
+        other.add_doc(0, &[Token::new("alpha", 1)]).expect("doc 0");
+        let other_fields = other.freeze();
+        let other_terms = other_fields.terms("body").expect("terms").expect("present");
+        let mut other_enumerator = other_terms.iterator().expect("iterator");
+        other_enumerator.next().expect("alpha");
+        let beta_identity = identity(beta.as_ref());
+        let foreign = other_enumerator
+            .postings(Some(beta), crate::index::POSTINGS_ENUM_NONE)
+            .expect("alpha");
+        assert_ne!(
+            identity(foreign.as_ref()),
+            beta_identity,
+            "another postings array"
+        );
+    }
+
     #[test]
     fn requesting_positions_from_a_docs_only_field_is_refused() {
         let mut harness = Harness::new(IndexOptions::DOCS);
@@ -4591,6 +4884,306 @@ mod tests {
         let fields = writer.freeze();
         let frozen: Vec<String> = fields.iterator().collect();
         assert_eq!(frozen, vec!["a", "\u{10000}", "\u{FFFF}"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // #276: `SortingTermsEnum.postings` reuses as Java does
+    // -----------------------------------------------------------------------
+
+    use std::sync::Mutex;
+
+    fn identity<T: ?Sized>(object: &T) -> usize {
+        object as *const T as *const () as usize
+    }
+
+    /// Postings over a fixed list of documents, each with frequency 1.
+    struct ListPostings {
+        docs: Vec<i32>,
+        upto: usize,
+        doc: i32,
+    }
+
+    impl ListPostings {
+        fn new(docs: Vec<i32>) -> Self {
+            Self {
+                docs,
+                upto: 0,
+                doc: -1,
+            }
+        }
+    }
+
+    impl std::fmt::Display for ListPostings {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("ListPostings")
+        }
+    }
+
+    impl DocIdSetIterator for ListPostings {
+        fn doc_id(&self) -> i32 {
+            self.doc
+        }
+
+        fn next_doc(&mut self) -> Result<i32> {
+            self.doc = match self.docs.get(self.upto) {
+                Some(&doc) => doc,
+                None => NO_MORE_DOCS,
+            };
+            self.upto += 1;
+            Ok(self.doc)
+        }
+
+        fn advance(&mut self, target: i32) -> Result<i32> {
+            self.slow_advance(target)
+        }
+
+        fn cost(&self) -> i64 {
+            self.docs.len() as i64
+        }
+    }
+
+    impl PostingsEnum for ListPostings {
+        fn freq(&self) -> Result<i32> {
+            Ok(1)
+        }
+
+        fn next_position(&mut self) -> Result<i32> {
+            Ok(-1)
+        }
+
+        fn start_offset(&self) -> i32 {
+            -1
+        }
+
+        fn end_offset(&self) -> i32 {
+            -1
+        }
+
+        fn get_payload(&self) -> Result<Option<&[u8]>> {
+            Ok(None)
+        }
+
+        fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+            Some(self)
+        }
+    }
+
+    /// The delegate of a [`SortingTermsEnum`]: it records the identity of
+    /// every `reuse` it is offered (`None` for none) and reuses a
+    /// [`ListPostings`] in place, as a codec reuses its own enum.
+    struct RecordingTermsEnum {
+        terms: Vec<(BytesRef, Vec<i32>)>,
+        pos: usize,
+        offered: Arc<Mutex<Vec<Option<usize>>>>,
+        atts: AttributeSource,
+    }
+
+    impl std::fmt::Display for RecordingTermsEnum {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("RecordingTermsEnum")
+        }
+    }
+
+    impl TermsEnum for RecordingTermsEnum {
+        fn attributes(&mut self) -> &mut AttributeSource {
+            &mut self.atts
+        }
+
+        fn seek_ceil(&mut self, _text: &BytesRef) -> Result<SeekStatus> {
+            Err(LuceneError::UnsupportedOperation("not used".to_string()))
+        }
+
+        fn seek_ord(&mut self, _ord: i64) -> Result<()> {
+            Err(LuceneError::UnsupportedOperation("not used".to_string()))
+        }
+
+        fn term(&self) -> Result<BytesRef> {
+            Ok(self.terms[self.pos - 1].0.clone())
+        }
+
+        fn ord(&self) -> Result<i64> {
+            Err(LuceneError::UnsupportedOperation("not used".to_string()))
+        }
+
+        fn doc_freq(&mut self) -> Result<i32> {
+            Ok(self.terms[self.pos - 1].1.len() as i32)
+        }
+
+        fn total_term_freq(&mut self) -> Result<i64> {
+            Ok(self.terms[self.pos - 1].1.len() as i64)
+        }
+
+        fn postings(
+            &mut self,
+            reuse: Option<Box<dyn PostingsEnum>>,
+            _flags: i32,
+        ) -> Result<Box<dyn PostingsEnum>> {
+            self.offered
+                .lock()
+                .unwrap()
+                .push(reuse.as_deref().map(identity));
+            let docs = self.terms[self.pos - 1].1.clone();
+            if let Some(mut reuse) = reuse {
+                if let Some(postings) = reuse
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<ListPostings>())
+                {
+                    *postings = ListPostings::new(docs);
+                    return Ok(reuse);
+                }
+            }
+            Ok(Box::new(ListPostings::new(docs)))
+        }
+
+        fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
+            Err(LuceneError::UnsupportedOperation("not used".to_string()))
+        }
+
+        fn next(&mut self) -> Result<Option<BytesRef>> {
+            self.pos += 1;
+            Ok(self.terms.get(self.pos - 1).map(|(term, _)| term.clone()))
+        }
+    }
+
+    type Offered = Arc<Mutex<Vec<Option<usize>>>>;
+
+    /// A `SortingTermsEnum` over terms `a` (docs 0, 1) and `b` (doc 2) of a
+    /// four-document segment whose sort reverses the documents.
+    fn sorting_terms_enum(index_options: IndexOptions) -> (SortingTermsEnum, Offered) {
+        let offered: Offered = Arc::new(Mutex::new(Vec::new()));
+        let delegate = RecordingTermsEnum {
+            terms: vec![
+                (BytesRef::new(b"a".to_vec()), vec![0, 1]),
+                (BytesRef::new(b"b".to_vec()), vec![2]),
+            ],
+            pos: 0,
+            offered: Arc::clone(&offered),
+            atts: AttributeSource::new(),
+        };
+        let reverse: crate::index::index_sorter::DocComparator = Box::new(|a, b| b.cmp(&a));
+        let doc_map = crate::index::index_sorter::Sorter::sort(4, &reverse).unwrap();
+        (
+            SortingTermsEnum::new(Box::new(delegate), Arc::new(doc_map), index_options),
+            offered,
+        )
+    }
+
+    fn drain_sorted(postings: &mut dyn PostingsEnum) -> Vec<i32> {
+        let mut docs = Vec::new();
+        loop {
+            let doc = postings.next_doc().unwrap();
+            if doc == NO_MORE_DOCS {
+                return docs;
+            }
+            docs.push(doc);
+        }
+    }
+
+    #[test]
+    fn sorting_postings_enum_is_reused_and_hands_its_wrapped_enum_to_the_delegate() {
+        let (mut terms_enum, offered) = sorting_terms_enum(IndexOptions::DOCS_AND_FREQS);
+        assert!(terms_enum.next().unwrap().is_some());
+        let mut postings = terms_enum.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let outer = identity(postings.as_ref());
+        assert!(postings
+            .as_any_mut()
+            .is_some_and(|any| any.is::<SortingPostingsEnum>()));
+        assert_eq!(drain_sorted(postings.as_mut()), vec![2, 3]);
+
+        assert!(terms_enum.next().unwrap().is_some());
+        let mut postings = terms_enum
+            .postings(Some(postings), POSTINGS_ENUM_FREQS)
+            .unwrap();
+        assert_eq!(
+            identity(postings.as_ref()),
+            outer,
+            "`reuse instanceof SortingPostingsEnum`: the same object comes back"
+        );
+        assert_eq!(drain_sorted(postings.as_mut()), vec![1]);
+
+        let offered = offered.lock().unwrap();
+        assert_eq!(offered.len(), 2);
+        assert_eq!(offered[0], None);
+        assert!(
+            offered[1].is_some(),
+            "`inReuse = wrapReuse.getWrapped()` is offered to the delegate"
+        );
+    }
+
+    #[test]
+    fn sorting_docs_enum_is_reused_and_hands_its_wrapped_enum_to_the_delegate() {
+        let (mut terms_enum, offered) = sorting_terms_enum(IndexOptions::DOCS);
+        assert!(terms_enum.next().unwrap().is_some());
+        let mut postings = terms_enum.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let outer = identity(postings.as_ref());
+        assert!(postings
+            .as_any_mut()
+            .is_some_and(|any| any.is::<SortingDocsEnum>()));
+        assert_eq!(drain_sorted(postings.as_mut()), vec![2, 3]);
+
+        assert!(terms_enum.next().unwrap().is_some());
+        let mut postings = terms_enum
+            .postings(Some(postings), POSTINGS_ENUM_FREQS)
+            .unwrap();
+        assert_eq!(
+            identity(postings.as_ref()),
+            outer,
+            "`reuse instanceof SortingDocsEnum`: the same object comes back"
+        );
+        assert_eq!(drain_sorted(postings.as_mut()), vec![1]);
+        let offered = offered.lock().unwrap();
+        assert_eq!(offered[0], None);
+        assert!(offered[1].is_some());
+    }
+
+    #[test]
+    fn the_wrapped_enum_offered_to_the_delegate_is_the_one_it_returned_last() {
+        // The delegate reuses its own enum, so the enum the wrapper holds after
+        // the second call is the very one it got from the first.
+        let (mut terms_enum, offered) = sorting_terms_enum(IndexOptions::DOCS_AND_FREQS);
+        assert!(terms_enum.next().unwrap().is_some());
+        let mut postings = terms_enum.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let wrapped = postings
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<SortingPostingsEnum>())
+            .unwrap()
+            .get_wrapped()
+            .unwrap();
+        let wrapped_identity = identity(wrapped.as_ref());
+        // Put it back, as `reset` would have left it.
+        postings
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<SortingPostingsEnum>())
+            .unwrap()
+            .in_ = Some(wrapped);
+
+        assert!(terms_enum.next().unwrap().is_some());
+        let _postings = terms_enum
+            .postings(Some(postings), POSTINGS_ENUM_FREQS)
+            .unwrap();
+        assert_eq!(offered.lock().unwrap()[1], Some(wrapped_identity));
+    }
+
+    #[test]
+    fn a_reuse_of_another_type_goes_to_the_delegate_and_a_new_wrapper_is_built() {
+        // A SortingDocsEnum offered where a SortingPostingsEnum is wanted is
+        // neither reused nor unwrapped: `inReuse = reuse`.
+        let (mut docs_terms_enum, _) = sorting_terms_enum(IndexOptions::DOCS);
+        assert!(docs_terms_enum.next().unwrap().is_some());
+        let docs_enum = docs_terms_enum.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let docs_enum_identity = identity(docs_enum.as_ref());
+
+        let (mut terms_enum, offered) = sorting_terms_enum(IndexOptions::DOCS_AND_FREQS);
+        assert!(terms_enum.next().unwrap().is_some());
+        let mut postings = terms_enum
+            .postings(Some(docs_enum), POSTINGS_ENUM_FREQS)
+            .unwrap();
+        assert_ne!(identity(postings.as_ref()), docs_enum_identity);
+        assert!(postings
+            .as_any_mut()
+            .is_some_and(|any| any.is::<SortingPostingsEnum>()));
+        assert_eq!(offered.lock().unwrap()[0], Some(docs_enum_identity));
+        assert_eq!(drain_sorted(postings.as_mut()), vec![2, 3]);
     }
 }
 

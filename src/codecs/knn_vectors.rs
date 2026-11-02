@@ -3,7 +3,8 @@
 //! Equivalent to `org.apache.lucene.codecs.KnnVectorsFormat`,
 //! `KnnVectorsReader`, `KnnVectorsWriter` — with the merged view its nested
 //! `MergedVectorValues` builds over the segments of a merge —
-//! `KnnFieldVectorsWriter` and `BufferingKnnVectorsWriter`.
+//! `KnnFieldVectorsWriter` and `BufferingKnnVectorsWriter`, whose abstract
+//! members are [`BufferingKnnVectorsWriterImpl`].
 //!
 //! These traits provide the abstract read/write API for numeric vector fields
 //! used for nearest-neighbor search. Concrete codecs implement the
@@ -14,12 +15,13 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::{Arc, LazyLock, RwLock};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, RwLock};
 
 use crate::util::spi::{NamedSPI, NamedSPILoader};
 
 use crate::error::{LuceneError, Result};
 use crate::index::merge::{DocIDMerger, DocIDMergerSub, DocMap};
+use crate::index::sorting_codec_reader::{SortingCodecReader, SortingIteratorSupplier};
 pub use crate::index::vector_values::{
     accept_ords, from_bytes, from_floats, ByteVectorValues, DenseDocIndexIterator,
     DocIndexIterator, FloatVectorValues, FromDisiDocIndexIterator, KnnVectorValues,
@@ -29,7 +31,9 @@ use crate::index::VectorEncoding;
 pub use crate::search::knn::{KnnCollector, KnnSearchStrategy, TopDocs};
 use crate::search::AcceptDocs;
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
-use crate::util::FixedBitSet;
+use crate::util::{FixedBitSet, RamUsageEstimator};
+
+use super::hnsw::flat_vectors::DocsWithFieldSet;
 
 use super::postings::MergeState;
 use super::state::{OwnedSegmentWriteState, SegmentReadState};
@@ -990,27 +994,819 @@ impl ByteVectorValues for MergedByteVectorValues {
 // Buffering writer
 // -----------------------------------------------------------------------------
 
-/// Buffers pending vector values per doc and flushes when the segment flushes.
+/// What a Java subclass of `BufferingKnnVectorsWriter` supplies.
 ///
-/// Equivalent to `org.apache.lucene.codecs.BufferingKnnVectorsWriter`.
-///
-/// Concrete implementations provide `write_field_float` and `write_field_byte`.
-pub trait BufferingKnnVectorsWriter: KnnVectorsWriter {
+/// Equivalent to the abstract members of
+/// `org.apache.lucene.codecs.BufferingKnnVectorsWriter`: its two
+/// `protected abstract void writeField(...)` overloads
+/// (`BufferingKnnVectorsWriter.java:215-221`), and the `finish()` and
+/// `close()` it leaves abstract from `KnnVectorsWriter`. Rust has no
+/// implementation inheritance, so the abstract part of the class becomes this
+/// trait and [`BufferingKnnVectorsWriter`] wraps an implementation of it, as
+/// [`ConstantScoreWeight`](crate::search::ConstantScoreWeight) wraps a
+/// [`ConstantScoreWeightImpl`](crate::search::ConstantScoreWeightImpl).
+pub trait BufferingKnnVectorsWriterImpl: Send + Sync + fmt::Debug {
     /// Writes the provided float vector field.
+    ///
+    /// Equivalent to
+    /// `BufferingKnnVectorsWriter.writeField(FieldInfo, FloatVectorValues, int)`.
+    ///
+    /// # Errors
+    ///
+    /// Whatever writing the field raises.
     fn write_field_float(
         &mut self,
         field_info: &FieldInfo,
-        values: &dyn FloatVectorValues,
+        float_vector_values: &dyn FloatVectorValues,
         max_doc: i32,
     ) -> Result<()>;
 
     /// Writes the provided byte vector field.
+    ///
+    /// Equivalent to
+    /// `BufferingKnnVectorsWriter.writeField(FieldInfo, ByteVectorValues, int)`.
+    ///
+    /// # Errors
+    ///
+    /// Whatever writing the field raises.
     fn write_field_byte(
         &mut self,
         field_info: &FieldInfo,
-        values: &dyn ByteVectorValues,
+        byte_vector_values: &dyn ByteVectorValues,
         max_doc: i32,
     ) -> Result<()>;
+
+    /// Called once at the end before close.
+    ///
+    /// Equivalent to `KnnVectorsWriter.finish()`.
+    ///
+    /// # Errors
+    ///
+    /// Whatever finishing raises.
+    fn finish(&mut self) -> Result<()>;
+
+    /// Closes the writer.
+    ///
+    /// Equivalent to `KnnVectorsWriter.close()`.
+    ///
+    /// # Errors
+    ///
+    /// Whatever closing raises.
+    fn close(&mut self) -> Result<()>;
+}
+
+/// Buffers up pending vector value(s) per doc, then flushes when segment
+/// flushes. Used for `SimpleTextKnnVectorsWriter` and for vectors writers
+/// before v 9.3.
+///
+/// Equivalent to the abstract class
+/// `org.apache.lucene.codecs.BufferingKnnVectorsWriter`
+/// (`BufferingKnnVectorsWriter.java:42-355`): it keeps one field writer per
+/// field added, in the order added; [`flush`](KnnVectorsWriter::flush) hands
+/// each field's buffered vectors — re-ordered by the sort map, when there is
+/// one — to the subclass's `writeField`, and
+/// [`merge_one_field`](KnnVectorsWriter::merge_one_field) hands it the merged
+/// view of the segments being merged. Supply the subclass as a
+/// [`BufferingKnnVectorsWriterImpl`] and wrap it here.
+#[derive(Debug)]
+pub struct BufferingKnnVectorsWriter<I: BufferingKnnVectorsWriterImpl> {
+    /// Java's `private final List<FieldWriter<?>> fields`. Each writer is
+    /// shared with the handle [`add_field`](KnnVectorsWriter::add_field)
+    /// returns, as Java returns the very object it keeps.
+    fields: Vec<BufferingFieldWriter>,
+    /// The subclass.
+    inner: I,
+}
+
+/// One of the `FieldWriter<?>`s of [`BufferingKnnVectorsWriter`], by
+/// encoding.
+#[derive(Debug)]
+enum BufferingFieldWriter {
+    Float(Arc<Mutex<FieldWriter<Vec<f32>>>>),
+    Byte(Arc<Mutex<FieldWriter<Vec<u8>>>>),
+}
+
+/// Locks a field writer shared with the indexing chain. The writer is only
+/// touched by the one thread that indexes or flushes its segment; a poisoned
+/// lock means that thread already panicked inside it, and is reported as an
+/// error rather than propagated as a second panic.
+fn lock_field_writer<T: BufferedVector>(
+    writer: &Mutex<FieldWriter<T>>,
+) -> Result<MutexGuard<'_, FieldWriter<T>>> {
+    writer.lock().map_err(|_| {
+        LuceneError::illegal_state("buffering vectors field writer lock poisoned".to_string())
+    })
+}
+
+impl<I: BufferingKnnVectorsWriterImpl> BufferingKnnVectorsWriter<I> {
+    /// Sole constructor.
+    ///
+    /// Equivalent to the protected `BufferingKnnVectorsWriter()`, with
+    /// `inner` the subclass.
+    pub fn new(inner: I) -> Self {
+        Self {
+            fields: Vec::new(),
+            inner,
+        }
+    }
+
+    /// Returns the subclass.
+    pub fn inner(&self) -> &I {
+        &self.inner
+    }
+
+    /// Returns the subclass mutably.
+    pub fn inner_mut(&mut self) -> &mut I {
+        &mut self.inner
+    }
+}
+
+impl<I: BufferingKnnVectorsWriterImpl> KnnVectorsWriter for BufferingKnnVectorsWriter<I> {
+    /// Equivalent to `BufferingKnnVectorsWriter.addField(FieldInfo)`
+    /// (`BufferingKnnVectorsWriter.java:49-76`): a new field writer for the
+    /// field's encoding, kept and returned.
+    fn add_field(&mut self, field_info: &FieldInfo) -> Result<FieldVectorWriter> {
+        Ok(match field_info.vector_encoding {
+            VectorEncoding::FLOAT32 => {
+                let new_field = Arc::new(Mutex::new(FieldWriter::<Vec<f32>>::new(field_info)));
+                self.fields
+                    .push(BufferingFieldWriter::Float(Arc::clone(&new_field)));
+                FieldVectorWriter::Float(Box::new(SharedFieldWriter(new_field)))
+            }
+            VectorEncoding::BYTE => {
+                let new_field = Arc::new(Mutex::new(FieldWriter::<Vec<u8>>::new(field_info)));
+                self.fields
+                    .push(BufferingFieldWriter::Byte(Arc::clone(&new_field)));
+                FieldVectorWriter::Byte(Box::new(SharedFieldWriter(new_field)))
+            }
+        })
+    }
+
+    /// Equivalent to `BufferingKnnVectorsWriter.flush(int, Sorter.DocMap)`
+    /// (`BufferingKnnVectorsWriter.java:79-111`): every field, in the order
+    /// added, is written from a `BufferedFloatVectorValues` /
+    /// `BufferedByteVectorValues` over its buffer, wrapped in a
+    /// `SortingFloatVectorValues` / `SortingByteVectorValues` when there is a
+    /// sort map.
+    fn flush(&mut self, max_doc: i32, sort_map: Option<&SorterDocMap>) -> Result<()> {
+        for field_data in &self.fields {
+            match field_data {
+                BufferingFieldWriter::Float(field_data) => {
+                    let field_data = lock_field_writer(field_data)?;
+                    let buffered_float_vector_values = BufferedFloatVectorValues::new(
+                        Arc::clone(&field_data.vectors),
+                        field_data.field_info.vector_dimension,
+                        Arc::clone(&field_data.docs_with_field),
+                    );
+                    match sort_map {
+                        Some(sort_map) => {
+                            let float_vector_values = SortingFloatVectorValues::new(
+                                buffered_float_vector_values,
+                                &field_data.docs_with_field,
+                                sort_map,
+                            )?;
+                            self.inner.write_field_float(
+                                &field_data.field_info,
+                                &float_vector_values,
+                                max_doc,
+                            )?;
+                        }
+                        None => self.inner.write_field_float(
+                            &field_data.field_info,
+                            &buffered_float_vector_values,
+                            max_doc,
+                        )?,
+                    }
+                }
+                BufferingFieldWriter::Byte(field_data) => {
+                    let field_data = lock_field_writer(field_data)?;
+                    let buffered_byte_vector_values = BufferedByteVectorValues::new(
+                        Arc::clone(&field_data.vectors),
+                        field_data.field_info.vector_dimension,
+                        Arc::clone(&field_data.docs_with_field),
+                    );
+                    match sort_map {
+                        Some(sort_map) => {
+                            let byte_vector_values = SortingByteVectorValues::new(
+                                buffered_byte_vector_values,
+                                &field_data.docs_with_field,
+                                sort_map,
+                            )?;
+                            self.inner.write_field_byte(
+                                &field_data.field_info,
+                                &byte_vector_values,
+                                max_doc,
+                            )?;
+                        }
+                        None => self.inner.write_field_byte(
+                            &field_data.field_info,
+                            &buffered_byte_vector_values,
+                            max_doc,
+                        )?,
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The subclass's `finish()`.
+    fn finish(&mut self) -> Result<()> {
+        self.inner.finish()
+    }
+
+    /// Equivalent to `BufferingKnnVectorsWriter.mergeOneField(FieldInfo, MergeState)`
+    /// (`BufferingKnnVectorsWriter.java:198-213`): the field is written from
+    /// the merged view of every segment, under the merged segment's `maxDoc`,
+    /// and there is no deferred work.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] — Java's `NullPointerException`
+    /// — when the merge state has no segment info, and propagates whatever
+    /// building the merged view or writing the field raises.
+    fn merge_one_field<'m>(
+        &mut self,
+        field_info: &FieldInfo,
+        merge_state: &'m MergeState,
+    ) -> Result<Option<Box<dyn IORunnable + 'm>>> {
+        let max_doc = || -> Result<i32> {
+            merge_state
+                .segment_info
+                .as_ref()
+                .ok_or_else(|| {
+                    LuceneError::illegal_state(
+                        "Cannot invoke \"org.apache.lucene.index.SegmentInfo.maxDoc()\" because \"mergeState.segmentInfo\" is null"
+                            .to_string(),
+                    )
+                })?
+                .max_doc()
+        };
+        match field_info.vector_encoding {
+            VectorEncoding::FLOAT32 => {
+                let float_vector_values =
+                    MergedVectorValues::merge_float_vector_values(field_info, merge_state)?;
+                self.inner.write_field_float(
+                    field_info,
+                    float_vector_values.as_ref(),
+                    max_doc()?,
+                )?;
+            }
+            VectorEncoding::BYTE => {
+                let byte_vector_values =
+                    MergedVectorValues::merge_byte_vector_values(field_info, merge_state)?;
+                self.inner
+                    .write_field_byte(field_info, byte_vector_values.as_ref(), max_doc()?)?;
+            }
+        }
+        Ok(None)
+    }
+
+    /// The subclass's `close()`.
+    fn close(&mut self) -> Result<()> {
+        self.inner.close()
+    }
+
+    /// Equivalent to `BufferingKnnVectorsWriter.ramBytesUsed()`
+    /// (`BufferingKnnVectorsWriter.java:189-196`): the sum over the field
+    /// writers.
+    fn ram_bytes_used(&self) -> i64 {
+        let mut total = 0;
+        for field in &self.fields {
+            total += match field {
+                BufferingFieldWriter::Float(field) => match field.lock() {
+                    Ok(field) => field.ram_bytes_used(),
+                    Err(poisoned) => poisoned.into_inner().ram_bytes_used(),
+                },
+                BufferingFieldWriter::Byte(field) => match field.lock() {
+                    Ok(field) => field.ram_bytes_used(),
+                    Err(poisoned) => poisoned.into_inner().ram_bytes_used(),
+                },
+            };
+        }
+        total
+    }
+}
+
+/// A vector type [`BufferingKnnVectorsWriter`] buffers: `float[]` or `byte[]`.
+trait BufferedVector: Clone + Send + Sync + 'static {
+    /// Java's name for the array type, for `System.arraycopy`'s message.
+    const JAVA_ARRAY: &'static str;
+
+    /// The number of components.
+    fn len(&self) -> usize;
+
+    /// Keeps the first `dim` components.
+    fn truncate(&mut self, dim: usize);
+}
+
+impl BufferedVector for Vec<f32> {
+    const JAVA_ARRAY: &'static str = "float";
+
+    fn len(&self) -> usize {
+        Vec::len(self)
+    }
+
+    fn truncate(&mut self, dim: usize) {
+        Vec::truncate(self, dim);
+    }
+}
+
+impl BufferedVector for Vec<u8> {
+    const JAVA_ARRAY: &'static str = "byte";
+
+    fn len(&self) -> usize {
+        Vec::len(self)
+    }
+
+    fn truncate(&mut self, dim: usize) {
+        Vec::truncate(self, dim);
+    }
+}
+
+/// The buffer of one field.
+///
+/// Equivalent to `BufferingKnnVectorsWriter.FieldWriter<T>`
+/// (`BufferingKnnVectorsWriter.java:223-267`), with the two anonymous
+/// subclasses `addField` creates folded in: their `copyValue` is
+/// `ArrayUtil.copyOfSubArray(vectorValue, 0, fieldInfo.getVectorDimension())`
+/// for both encodings.
+///
+/// Java's flush hands the field's `vectors` list and `docsWithField` set to the
+/// buffered values by reference. Both are shared here through an [`Arc`], made
+/// unique again with [`Arc::make_mut`] when a value is added; a field is only
+/// added to before its segment flushes, so that never copies.
+#[derive(Debug)]
+struct FieldWriter<T: BufferedVector> {
+    field_info: FieldInfo,
+    dim: i32,
+    docs_with_field: Arc<DocsWithFieldSet>,
+    vectors: Arc<Vec<T>>,
+    last_doc_id: i32,
+}
+
+impl<T: BufferedVector> FieldWriter<T> {
+    /// Equivalent to `FieldWriter(FieldInfo)`.
+    fn new(field_info: &FieldInfo) -> Self {
+        Self {
+            field_info: field_info.clone(),
+            dim: field_info.vector_dimension,
+            docs_with_field: Arc::new(DocsWithFieldSet::new()),
+            vectors: Arc::new(Vec::new()),
+            last_doc_id: -1,
+        }
+    }
+}
+
+impl<T: BufferedVector> KnnFieldVectorsWriter<T> for FieldWriter<T> {
+    /// Equivalent to the `final` `FieldWriter.addValue(int, T)`
+    /// (`BufferingKnnVectorsWriter.java:238-250`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] with Java's message when the
+    /// document already has a value for the field, or when `doc_id` is out of
+    /// order — the `DocsWithFieldSet.add` failure — and, after recording the
+    /// document as Java does, Java's `ArrayIndexOutOfBoundsException` from
+    /// `copyValue` when the vector has fewer components than the field's
+    /// dimension.
+    fn add_value(&mut self, doc_id: i32, value: T) -> Result<()> {
+        if doc_id == self.last_doc_id {
+            return Err(LuceneError::IllegalArgument(format!(
+                "VectorValuesField \"{}\" appears more than once in this document (only one value is allowed per field)",
+                self.field_info.name
+            )));
+        }
+        debug_assert!(doc_id > self.last_doc_id);
+        Arc::make_mut(&mut self.docs_with_field).add(doc_id)?;
+        let dim = self.dim.max(0) as usize;
+        if value.len() < dim {
+            // `System.arraycopy` inside `ArrayUtil.copyOfSubArray`.
+            return Err(LuceneError::IllegalArgument(format!(
+                "arraycopy: last source index {dim} out of bounds for {}[{}]",
+                T::JAVA_ARRAY,
+                value.len()
+            )));
+        }
+        let copy = self.copy_value(value);
+        Arc::make_mut(&mut self.vectors).push(copy);
+        self.last_doc_id = doc_id;
+        Ok(())
+    }
+
+    /// Equivalent to the `copyValue` of the anonymous `FieldWriter`s
+    /// (`BufferingKnnVectorsWriter.java:57-58`, `66-67`): the first
+    /// `dimension` components. The value already arrives owned, so it is
+    /// truncated in place; a shorter value, for which Java's
+    /// `System.arraycopy` throws, is returned as it is — this method has no
+    /// error channel, and [`add_value`](Self::add_value) reports that error.
+    fn copy_value(&self, mut vector_value: T) -> T {
+        vector_value.truncate(self.dim.max(0) as usize);
+        vector_value
+    }
+
+    /// Equivalent to the `final` `FieldWriter.ramBytesUsed()`
+    /// (`BufferingKnnVectorsWriter.java:255-266`).
+    fn ram_bytes_used(&self) -> i64 {
+        if self.vectors.is_empty() {
+            return 0;
+        }
+        let size = self.vectors.len() as i64;
+        self.docs_with_field.ram_bytes_used()
+            + size
+                * (RamUsageEstimator::NUM_BYTES_OBJECT_REF
+                    + RamUsageEstimator::NUM_BYTES_ARRAY_HEADER)
+            + size * i64::from(self.dim) * i64::from(self.field_info.vector_encoding.byte_size())
+    }
+}
+
+/// The handle [`BufferingKnnVectorsWriter::add_field`] returns: the field
+/// writer it keeps, shared with the caller, as Java returns the very object.
+struct SharedFieldWriter<T: BufferedVector>(Arc<Mutex<FieldWriter<T>>>);
+
+impl<T: BufferedVector> KnnFieldVectorsWriter<T> for SharedFieldWriter<T> {
+    fn add_value(&mut self, doc_id: i32, vector_value: T) -> Result<()> {
+        lock_field_writer(&self.0)?.add_value(doc_id, vector_value)
+    }
+
+    fn copy_value(&self, vector_value: T) -> T {
+        match self.0.lock() {
+            Ok(field) => field.copy_value(vector_value),
+            Err(poisoned) => poisoned.into_inner().copy_value(vector_value),
+        }
+    }
+
+    fn ram_bytes_used(&self) -> i64 {
+        match self.0.lock() {
+            Ok(field) => field.ram_bytes_used(),
+            Err(poisoned) => poisoned.into_inner().ram_bytes_used(),
+        }
+    }
+}
+
+/// The one iterator a buffered values object hands out from every
+/// `iterator()` call.
+///
+/// Java's `BufferedFloatVectorValues` and `BufferedByteVectorValues` create a
+/// single `fromDISI(docsWithField.iterator())` in their constructor and return
+/// that same object from `iterator()` (`BufferingKnnVectorsWriter.java:281, 305-307`,
+/// `327, 346-348`), so a second caller continues where the first stopped. Every
+/// handle here moves the one shared [`FromDisiDocIndexIterator`].
+struct SharedDocIndexIterator(Arc<Mutex<FromDisiDocIndexIterator>>);
+
+impl SharedDocIndexIterator {
+    fn lock(&self) -> Result<MutexGuard<'_, FromDisiDocIndexIterator>> {
+        self.0.lock().map_err(|_| {
+            LuceneError::illegal_state("buffered vector values iterator lock poisoned".to_string())
+        })
+    }
+}
+
+impl DocIdSetIterator for SharedDocIndexIterator {
+    fn doc_id(&self) -> i32 {
+        match self.0.lock() {
+            Ok(iterator) => iterator.doc_id(),
+            Err(poisoned) => poisoned.into_inner().doc_id(),
+        }
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        self.lock()?.next_doc()
+    }
+
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        self.lock()?.advance(target)
+    }
+
+    fn cost(&self) -> i64 {
+        match self.0.lock() {
+            Ok(iterator) => iterator.cost(),
+            Err(poisoned) => poisoned.into_inner().cost(),
+        }
+    }
+}
+
+impl DocIndexIterator for SharedDocIndexIterator {
+    fn index(&self) -> i32 {
+        match self.0.lock() {
+            Ok(iterator) => iterator.index(),
+            Err(poisoned) => poisoned.into_inner().index(),
+        }
+    }
+}
+
+/// Builds the iterator of a buffered values object:
+/// `fromDISI(docsWithField.iterator())`.
+fn from_disi(docs_with_field: &Arc<DocsWithFieldSet>) -> Arc<Mutex<FromDisiDocIndexIterator>> {
+    Arc::new(Mutex::new(FromDisiDocIndexIterator::new(
+        DocsWithFieldSet::shared_iterator(docs_with_field),
+    )))
+}
+
+/// Returns the vector at `ord` of a buffer, or Java's
+/// `IndexOutOfBoundsException` from `List.get`.
+fn buffered_vector<T: Clone>(vectors: &[T], ord: i32) -> Result<T> {
+    usize::try_from(ord)
+        .ok()
+        .and_then(|ord| vectors.get(ord))
+        .cloned()
+        .ok_or_else(|| {
+            LuceneError::IllegalArgument(format!(
+                "Index {ord} out of bounds for length {}",
+                vectors.len()
+            ))
+        })
+}
+
+/// The buffered float vectors of one field.
+///
+/// Equivalent to `BufferingKnnVectorsWriter.BufferedFloatVectorValues`
+/// (`BufferingKnnVectorsWriter.java:269-313`): ordinals follow the order the
+/// vectors were added in, and the documents come from the field's
+/// `DocsWithFieldSet` through one `fromDISI` iterator.
+struct BufferedFloatVectorValues {
+    // These are always the vectors of a VectorValuesWriter, which are copied
+    // when added to it
+    vectors: Arc<Vec<Vec<f32>>>,
+    dimension: i32,
+    docs_with_field: Arc<DocsWithFieldSet>,
+    iterator: Arc<Mutex<FromDisiDocIndexIterator>>,
+}
+
+impl BufferedFloatVectorValues {
+    /// Equivalent to `BufferedFloatVectorValues(List<float[]>, int, DocIdSet)`.
+    fn new(
+        vectors: Arc<Vec<Vec<f32>>>,
+        dimension: i32,
+        docs_with_field: Arc<DocsWithFieldSet>,
+    ) -> Self {
+        let iterator = from_disi(&docs_with_field);
+        Self {
+            vectors,
+            dimension,
+            docs_with_field,
+            iterator,
+        }
+    }
+
+    /// Equivalent to `BufferedFloatVectorValues.copy()`: a new instance over
+    /// the same vectors and documents, with a fresh iterator.
+    fn copy_buffered(&self) -> Self {
+        Self::new(
+            Arc::clone(&self.vectors),
+            self.dimension,
+            Arc::clone(&self.docs_with_field),
+        )
+    }
+}
+
+impl KnnVectorValues for BufferedFloatVectorValues {
+    fn dimension(&self) -> i32 {
+        self.dimension
+    }
+
+    fn size(&self) -> i32 {
+        self.vectors.len() as i32
+    }
+
+    /// Equivalent to `BufferedFloatVectorValues.ordToDoc(int)`, which answers
+    /// the ordinal itself.
+    fn ord_to_doc(&self, ord: i32) -> i32 {
+        ord
+    }
+
+    fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
+        Ok(Box::new(self.copy_buffered()))
+    }
+
+    fn encoding(&self) -> VectorEncoding {
+        VectorEncoding::FLOAT32
+    }
+
+    /// Returns the one iterator this instance created; see
+    /// [`SharedDocIndexIterator`].
+    fn iterator(&self) -> Result<Box<dyn DocIndexIterator>> {
+        Ok(Box::new(SharedDocIndexIterator(Arc::clone(&self.iterator))))
+    }
+}
+
+impl FloatVectorValues for BufferedFloatVectorValues {
+    fn vector_value(&self, target_ord: i32) -> Result<Vec<f32>> {
+        buffered_vector(&self.vectors, target_ord)
+    }
+
+    fn copy_float(&self) -> Result<Box<dyn FloatVectorValues>> {
+        Ok(Box::new(self.copy_buffered()))
+    }
+}
+
+/// The buffered byte vectors of one field.
+///
+/// Equivalent to `BufferingKnnVectorsWriter.BufferedByteVectorValues`
+/// (`BufferingKnnVectorsWriter.java:315-354`), which, unlike its float twin,
+/// does not override `ordToDoc`.
+struct BufferedByteVectorValues {
+    // These are always the vectors of a VectorValuesWriter, which are copied
+    // when added to it
+    vectors: Arc<Vec<Vec<u8>>>,
+    dimension: i32,
+    docs_with_field: Arc<DocsWithFieldSet>,
+    iterator: Arc<Mutex<FromDisiDocIndexIterator>>,
+}
+
+impl BufferedByteVectorValues {
+    /// Equivalent to `BufferedByteVectorValues(List<byte[]>, int, DocIdSet)`.
+    fn new(
+        vectors: Arc<Vec<Vec<u8>>>,
+        dimension: i32,
+        docs_with_field: Arc<DocsWithFieldSet>,
+    ) -> Self {
+        let iterator = from_disi(&docs_with_field);
+        Self {
+            vectors,
+            dimension,
+            docs_with_field,
+            iterator,
+        }
+    }
+
+    /// Equivalent to `BufferedByteVectorValues.copy()`.
+    fn copy_buffered(&self) -> Self {
+        Self::new(
+            Arc::clone(&self.vectors),
+            self.dimension,
+            Arc::clone(&self.docs_with_field),
+        )
+    }
+}
+
+impl KnnVectorValues for BufferedByteVectorValues {
+    fn dimension(&self) -> i32 {
+        self.dimension
+    }
+
+    fn size(&self) -> i32 {
+        self.vectors.len() as i32
+    }
+
+    fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
+        Ok(Box::new(self.copy_buffered()))
+    }
+
+    fn encoding(&self) -> VectorEncoding {
+        VectorEncoding::BYTE
+    }
+
+    /// Returns the one iterator this instance created; see
+    /// [`SharedDocIndexIterator`].
+    fn iterator(&self) -> Result<Box<dyn DocIndexIterator>> {
+        Ok(Box::new(SharedDocIndexIterator(Arc::clone(&self.iterator))))
+    }
+}
+
+impl ByteVectorValues for BufferedByteVectorValues {
+    fn vector_value(&self, target_ord: i32) -> Result<Vec<u8>> {
+        buffered_vector(&self.vectors, target_ord)
+    }
+
+    fn copy_byte(&self) -> Result<Box<dyn ByteVectorValues>> {
+        Ok(Box::new(self.copy_buffered()))
+    }
+}
+
+/// Sorting float vector values that iterate over documents in the order of the
+/// provided sort map.
+///
+/// Equivalent to `BufferingKnnVectorsWriter.SortingFloatVectorValues`
+/// (`BufferingKnnVectorsWriter.java:113-149`): the delegate is a `copy()` of the
+/// buffered values, and the documents come from a
+/// `SortingCodecReader.iteratorSupplier` built over the original, whose
+/// iterator it consumes. `size()` is the delegate's.
+struct SortingFloatVectorValues {
+    delegate: BufferedFloatVectorValues,
+    iterator_supplier: SortingIteratorSupplier,
+}
+
+impl SortingFloatVectorValues {
+    /// Equivalent to
+    /// `SortingFloatVectorValues(BufferedFloatVectorValues, DocsWithFieldSet, Sorter.DocMap)`,
+    /// which ignores its `docsWithField` argument.
+    fn new(
+        delegate: BufferedFloatVectorValues,
+        _docs_with_field: &DocsWithFieldSet,
+        sort_map: &SorterDocMap,
+    ) -> Result<Self> {
+        let copy = delegate.copy_buffered();
+        let iterator_supplier = SortingCodecReader::iterator_supplier(&delegate, sort_map)?;
+        Ok(Self {
+            delegate: copy,
+            iterator_supplier,
+        })
+    }
+}
+
+impl KnnVectorValues for SortingFloatVectorValues {
+    fn dimension(&self) -> i32 {
+        self.delegate.dimension()
+    }
+
+    fn size(&self) -> i32 {
+        self.delegate.size()
+    }
+
+    /// Java's `copy()` throws `UnsupportedOperationException`.
+    fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
+        Err(LuceneError::UnsupportedOperation(
+            "SortingFloatVectorValues::copy".to_string(),
+        ))
+    }
+
+    fn encoding(&self) -> VectorEncoding {
+        VectorEncoding::FLOAT32
+    }
+
+    fn iterator(&self) -> Result<Box<dyn DocIndexIterator>> {
+        Ok(Box::new(self.iterator_supplier.get()))
+    }
+}
+
+impl FloatVectorValues for SortingFloatVectorValues {
+    fn vector_value(&self, ord: i32) -> Result<Vec<f32>> {
+        self.delegate.vector_value(ord)
+    }
+
+    /// Java's `copy()` throws `UnsupportedOperationException`.
+    fn copy_float(&self) -> Result<Box<dyn FloatVectorValues>> {
+        Err(LuceneError::UnsupportedOperation(
+            "SortingFloatVectorValues::copy".to_string(),
+        ))
+    }
+}
+
+/// Sorting byte vector values that iterate over documents in the order of the
+/// provided sort map.
+///
+/// Equivalent to `BufferingKnnVectorsWriter.SortingByteVectorValues`
+/// (`BufferingKnnVectorsWriter.java:151-187`), whose delegate — unlike the
+/// float twin's — is the buffered values themselves, not a copy.
+struct SortingByteVectorValues {
+    delegate: BufferedByteVectorValues,
+    iterator_supplier: SortingIteratorSupplier,
+}
+
+impl SortingByteVectorValues {
+    /// Equivalent to
+    /// `SortingByteVectorValues(BufferedByteVectorValues, DocsWithFieldSet, Sorter.DocMap)`,
+    /// which ignores its `docsWithField` argument.
+    fn new(
+        delegate: BufferedByteVectorValues,
+        _docs_with_field: &DocsWithFieldSet,
+        sort_map: &SorterDocMap,
+    ) -> Result<Self> {
+        let iterator_supplier = SortingCodecReader::iterator_supplier(&delegate, sort_map)?;
+        Ok(Self {
+            delegate,
+            iterator_supplier,
+        })
+    }
+}
+
+impl KnnVectorValues for SortingByteVectorValues {
+    fn dimension(&self) -> i32 {
+        self.delegate.dimension()
+    }
+
+    fn size(&self) -> i32 {
+        self.delegate.size()
+    }
+
+    /// Java's `copy()` throws `UnsupportedOperationException`.
+    fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
+        Err(LuceneError::UnsupportedOperation(
+            "SortingByteVectorValues::copy".to_string(),
+        ))
+    }
+
+    fn encoding(&self) -> VectorEncoding {
+        VectorEncoding::BYTE
+    }
+
+    fn iterator(&self) -> Result<Box<dyn DocIndexIterator>> {
+        Ok(Box::new(self.iterator_supplier.get()))
+    }
+}
+
+impl ByteVectorValues for SortingByteVectorValues {
+    fn vector_value(&self, ord: i32) -> Result<Vec<u8>> {
+        self.delegate.vector_value(ord)
+    }
+
+    /// Java's `copy()` throws `UnsupportedOperationException`.
+    fn copy_byte(&self) -> Result<Box<dyn ByteVectorValues>> {
+        Err(LuceneError::UnsupportedOperation(
+            "SortingByteVectorValues::copy".to_string(),
+        ))
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -1101,6 +1897,27 @@ pub trait KnnVectorsReader: Send + Sync + fmt::Debug {
     fn as_flat_vectors_reader(
         &self,
     ) -> Option<&dyn crate::codecs::hnsw::flat_vectors::FlatVectorsReader> {
+        None
+    }
+
+    /// Returns this reader as [`std::any::Any`], so that a caller can test it
+    /// for a concrete type and reach that type's members.
+    ///
+    /// This hook stands for Java's `instanceof` and cast on a
+    /// `KnnVectorsReader`, in the same shape as
+    /// [`PostingsEnum::as_any_mut`](crate::index::PostingsEnum::as_any_mut) and
+    /// [`StoredFieldsReader::as_any`](crate::codecs::stored_fields::StoredFieldsReader::as_any).
+    /// Its caller is `Lucene104ScalarQuantizedVectorsWriter.getCentroid`
+    /// (`Lucene104ScalarQuantizedVectorsWriter.java:388-396`), which narrows the
+    /// reader to `PerFieldKnnVectorsFormat.FieldsReader` and then to
+    /// `Lucene104ScalarQuantizedVectorsReader`. Rust cannot narrow a
+    /// `dyn KnnVectorsReader` to a concrete type, so the question is asked of
+    /// the reader itself.
+    ///
+    /// The default answers `None`, which is the `false` branch of every
+    /// `instanceof`; only the readers some Lucene `instanceof` names override
+    /// it, with `Some(self)`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         None
     }
 
@@ -1485,64 +2302,6 @@ impl KnnFieldVectorsWriter<Vec<u8>> for EmptyByteKnnFieldVectorsWriter {
     }
 }
 
-/// A no-op buffering KNN vectors writer.
-///
-/// Test-only: Lucene has no such class.
-#[cfg(test)]
-#[derive(Debug, Default, Clone)]
-pub(crate) struct EmptyBufferingKnnVectorsWriter;
-
-#[cfg(test)]
-impl KnnVectorsWriter for EmptyBufferingKnnVectorsWriter {
-    fn add_field(&mut self, field_info: &FieldInfo) -> Result<FieldVectorWriter> {
-        Ok(match field_info.vector_encoding {
-            crate::index::VectorEncoding::FLOAT32 => {
-                FieldVectorWriter::Float(Box::new(EmptyKnnFieldVectorsWriter))
-            }
-            crate::index::VectorEncoding::BYTE => {
-                FieldVectorWriter::Byte(Box::new(EmptyByteKnnFieldVectorsWriter))
-            }
-        })
-    }
-
-    fn flush(&mut self, _max_doc: i32, _sort_map: Option<&SorterDocMap>) -> Result<()> {
-        Ok(())
-    }
-
-    fn finish(&mut self) -> Result<()> {
-        Ok(())
-    }
-
-    fn close(&mut self) -> Result<()> {
-        Ok(())
-    }
-
-    fn ram_bytes_used(&self) -> i64 {
-        0
-    }
-}
-
-#[cfg(test)]
-impl BufferingKnnVectorsWriter for EmptyBufferingKnnVectorsWriter {
-    fn write_field_float(
-        &mut self,
-        _field_info: &FieldInfo,
-        _values: &dyn FloatVectorValues,
-        _max_doc: i32,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn write_field_byte(
-        &mut self,
-        _field_info: &FieldInfo,
-        _values: &dyn ByteVectorValues,
-        _max_doc: i32,
-    ) -> Result<()> {
-        Ok(())
-    }
-}
-
 /// A KNN vectors reader over a segment that supports no vectors.
 ///
 /// Equivalent to the anonymous `KnnVectorsReader` that
@@ -1703,21 +2462,6 @@ mod tests {
             writer.add_field(&field),
             Err(LuceneError::UnsupportedOperation(_))
         ));
-        writer.flush(10, None).unwrap();
-        writer.finish().unwrap();
-        writer.close().unwrap();
-    }
-
-    #[test]
-    fn empty_buffering_knn_vectors_writer_lifecycle() {
-        let mut writer = EmptyBufferingKnnVectorsWriter;
-        let field = FieldInfo::default();
-        writer
-            .write_field_float(&field, &from_floats(Vec::new(), 0), 10)
-            .unwrap();
-        writer
-            .write_field_byte(&field, &from_bytes(Vec::new(), 0), 10)
-            .unwrap();
         writer.flush(10, None).unwrap();
         writer.finish().unwrap();
         writer.close().unwrap();
@@ -2377,5 +3121,279 @@ mod tests {
                 format!("merge deferred work done {segment}"),
             ]
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // #278: BufferingKnnVectorsWriter
+    // -----------------------------------------------------------------------
+
+    /// A Java subclass of `BufferingKnnVectorsWriter`: it records, for every
+    /// `writeField`, the field, `maxDoc`, `size()`, `dimension()`, every
+    /// `(doc, index(), vectorValue(index()))` its iterator walks, and the
+    /// `docID()` of a second `iterator()` — in the format of the oracle below.
+    #[derive(Debug, Default)]
+    struct RecordingBufferingWriter {
+        out: String,
+        finished: bool,
+        closed: bool,
+    }
+
+    impl BufferingKnnVectorsWriterImpl for RecordingBufferingWriter {
+        fn write_field_float(
+            &mut self,
+            field_info: &FieldInfo,
+            values: &dyn FloatVectorValues,
+            max_doc: i32,
+        ) -> Result<()> {
+            self.out.push_str(&format!(
+                "float {} maxDoc={max_doc} size={} dim={}",
+                field_info.name,
+                values.size(),
+                values.dimension()
+            ));
+            let mut iterator = values.iterator()?;
+            let mut doc = iterator.next_doc()?;
+            while doc != NO_MORE_DOCS {
+                let vector: Vec<String> = values
+                    .vector_value(iterator.index())?
+                    .iter()
+                    .map(|v| format!("{v:.1}"))
+                    .collect();
+                self.out.push_str(&format!(
+                    " ({doc},{},[{}])",
+                    iterator.index(),
+                    vector.join(", ")
+                ));
+                doc = iterator.next_doc()?;
+            }
+            self.out
+                .push_str(&format!(" again={}\n", values.iterator()?.doc_id()));
+            Ok(())
+        }
+
+        fn write_field_byte(
+            &mut self,
+            field_info: &FieldInfo,
+            values: &dyn ByteVectorValues,
+            max_doc: i32,
+        ) -> Result<()> {
+            self.out.push_str(&format!(
+                "byte {} maxDoc={max_doc} size={} dim={}",
+                field_info.name,
+                values.size(),
+                values.dimension()
+            ));
+            let mut iterator = values.iterator()?;
+            let mut doc = iterator.next_doc()?;
+            while doc != NO_MORE_DOCS {
+                let vector: Vec<String> = values
+                    .vector_value(iterator.index())?
+                    .iter()
+                    .map(|&v| (v as i8).to_string())
+                    .collect();
+                self.out.push_str(&format!(
+                    " ({doc},{},[{}])",
+                    iterator.index(),
+                    vector.join(", ")
+                ));
+                doc = iterator.next_doc()?;
+            }
+            self.out
+                .push_str(&format!(" again={}\n", values.iterator()?.doc_id()));
+            Ok(())
+        }
+
+        fn finish(&mut self) -> Result<()> {
+            self.finished = true;
+            Ok(())
+        }
+
+        fn close(&mut self) -> Result<()> {
+            self.closed = true;
+            Ok(())
+        }
+    }
+
+    fn buffered_vector_field(
+        name: &str,
+        number: i32,
+        dim: i32,
+        encoding: VectorEncoding,
+    ) -> FieldInfo {
+        let mut field = FieldInfo::new(name, number);
+        field.vector_dimension = dim;
+        field.vector_encoding = encoding;
+        field
+    }
+
+    fn float_writer(writer: FieldVectorWriter) -> Box<dyn KnnFieldVectorsWriter<Vec<f32>>> {
+        match writer {
+            FieldVectorWriter::Float(writer) => writer,
+            FieldVectorWriter::Byte(_) => panic!("a float field gets a float writer"),
+        }
+    }
+
+    fn byte_writer(writer: FieldVectorWriter) -> Box<dyn KnnFieldVectorsWriter<Vec<u8>>> {
+        match writer {
+            FieldVectorWriter::Byte(writer) => writer,
+            FieldVectorWriter::Float(_) => panic!("a byte field gets a byte writer"),
+        }
+    }
+
+    /// The scenario of `BufferingOracle.java`: a three-dimensional float field
+    /// `f` with vectors on documents 0, 2 and 5 — the first one longer than
+    /// the dimension — and a two-dimensional byte field `b` on documents 1 and
+    /// 2, flushed as a six-document segment, without and with a sort that
+    /// reverses the documents. Returns the transcript the oracle prints.
+    fn buffer_and_flush(sorted: bool) -> String {
+        let mut writer = BufferingKnnVectorsWriter::new(RecordingBufferingWriter::default());
+        let f = buffered_vector_field("f", 0, 3, VectorEncoding::FLOAT32);
+        let b = buffered_vector_field("b", 1, 2, VectorEncoding::BYTE);
+        let mut out = format!("== sorted={sorted}\n");
+        let mut fw = float_writer(writer.add_field(&f).unwrap());
+        let mut bw = byte_writer(writer.add_field(&b).unwrap());
+        out.push_str(&format!("ram0={}\n", writer.ram_bytes_used()));
+        fw.add_value(0, vec![1.0, 2.0, 3.0, 99.0]).unwrap();
+        out.push_str(&format!(
+            "ram1={} f={}\n",
+            writer.ram_bytes_used(),
+            fw.ram_bytes_used()
+        ));
+        bw.add_value(1, vec![7, 8, 9]).unwrap();
+        out.push_str(&format!(
+            "ram2={} b={}\n",
+            writer.ram_bytes_used(),
+            bw.ram_bytes_used()
+        ));
+        fw.add_value(2, vec![4.0, 5.0, 6.0]).unwrap();
+        bw.add_value(2, vec![10, 11]).unwrap();
+        fw.add_value(5, vec![7.0, 8.0, 9.0]).unwrap();
+        out.push_str(&format!(
+            "ram3={} f={} b={}\n",
+            writer.ram_bytes_used(),
+            fw.ram_bytes_used(),
+            bw.ram_bytes_used()
+        ));
+        let reverse: crate::index::index_sorter::DocComparator = Box::new(|a, b| b.cmp(&a));
+        let sort_map = crate::index::index_sorter::Sorter::sort(6, &reverse).unwrap();
+        writer
+            .flush(6, if sorted { Some(&sort_map) } else { None })
+            .unwrap();
+        out.push_str(&writer.inner().out);
+        out
+    }
+
+    /// Measured with `lucene-core-10.5.0.jar` (`BufferingOracle.java`).
+    #[test]
+    fn buffers_and_flushes_float_and_byte_vectors_as_lucene_does() {
+        assert_eq!(
+            buffer_and_flush(false),
+            "== sorted=false\n\
+             ram0=0\n\
+             ram1=56 f=56\n\
+             ram2=150 b=94\n\
+             ram3=348 f=200 b=148\n\
+             float f maxDoc=6 size=3 dim=3 (0,0,[1.0, 2.0, 3.0]) (2,1,[4.0, 5.0, 6.0]) (5,2,[7.0, 8.0, 9.0]) again=2147483647\n\
+             byte b maxDoc=6 size=2 dim=2 (1,0,[7, 8]) (2,1,[10, 11]) again=2147483647\n",
+            "the documents come from `fromDISI(docsWithField.iterator())`, the one \
+             iterator every `iterator()` call returns"
+        );
+    }
+
+    /// Measured with `lucene-core-10.5.0.jar` (`BufferingOracle.java`).
+    #[test]
+    fn a_sorted_flush_iterates_the_documents_in_their_new_order_as_lucene_does() {
+        assert_eq!(
+            buffer_and_flush(true),
+            "== sorted=true\n\
+             ram0=0\n\
+             ram1=56 f=56\n\
+             ram2=150 b=94\n\
+             ram3=348 f=200 b=148\n\
+             float f maxDoc=6 size=3 dim=3 (0,2,[7.0, 8.0, 9.0]) (3,1,[4.0, 5.0, 6.0]) (5,0,[1.0, 2.0, 3.0]) again=-1\n\
+             byte b maxDoc=6 size=2 dim=2 (3,1,[10, 11]) (4,0,[7, 8]) again=-1\n",
+            "a sorted field iterates a fresh `SortingValuesIterator` per `iterator()`"
+        );
+    }
+
+    /// Measured with `lucene-core-10.5.0.jar` (`BufferingOracle.java`): the
+    /// failed `copyValue` has already recorded the document, so the retry is
+    /// out of order rather than a duplicate.
+    #[test]
+    fn add_value_fails_as_lucene_does() {
+        let mut writer = BufferingKnnVectorsWriter::new(RecordingBufferingWriter::default());
+        let f = buffered_vector_field("f", 0, 3, VectorEncoding::FLOAT32);
+        let mut fw = float_writer(writer.add_field(&f).unwrap());
+        let mut out = Vec::new();
+        for (doc, len) in [(0, 2), (0, 3), (1, 3), (1, 3)] {
+            out.push(match fw.add_value(doc, vec![0.0; len]) {
+                Ok(()) => format!("add {doc} ok"),
+                Err(LuceneError::IllegalArgument(message)) => format!("add {doc} {message}"),
+                Err(other) => panic!("unexpected error {other:?}"),
+            });
+        }
+        out.push(format!("ram={}", writer.ram_bytes_used()));
+        assert_eq!(
+            out,
+            vec![
+                "add 0 arraycopy: last source index 3 out of bounds for float[2]",
+                "add 0 Out of order doc ids: last=0, next=0",
+                "add 1 ok",
+                "add 1 VectorValuesField \"f\" appears more than once in this document (only one value is allowed per field)",
+                "ram=56",
+            ]
+        );
+    }
+
+    /// `mergeOneField` writes the merged view of every segment under the
+    /// merged segment's `maxDoc`, and `merge` then finishes the subclass.
+    #[test]
+    fn merges_float_and_byte_vectors_through_the_subclass() {
+        let f = buffered_vector_field("f", 0, 1, VectorEncoding::FLOAT32);
+        let b = buffered_vector_field("b", 1, 1, VectorEncoding::BYTE);
+        let infos = FieldInfos::new(vec![f, b]).unwrap();
+        let reader = |floats: Vec<f32>, bytes: Vec<u8>| {
+            let mut reader = ListVectorsReader::default();
+            reader.floats.insert(
+                "f".to_string(),
+                floats.into_iter().map(|v| vec![v]).collect(),
+            );
+            reader.bytes.insert(
+                "b".to_string(),
+                bytes.into_iter().map(|v| vec![v]).collect(),
+            );
+            Some(Arc::new(reader) as Arc<dyn KnnVectorsReader>)
+        };
+        // Segment 0 keeps docs 0 and 2 of three; segment 1's two documents follow.
+        let doc_maps: Vec<DocMap> = vec![
+            Arc::new(|doc: i32| match doc {
+                0 => 0,
+                2 => 1,
+                _ => -1,
+            }),
+            Arc::new(|doc: i32| 2 + doc),
+        ];
+        let mut state = vectors_merge_state(
+            vec![
+                reader(vec![1.0, 2.0, 3.0], vec![1, 2, 3]),
+                reader(vec![4.0, 5.0], vec![4, 5]),
+            ],
+            doc_maps,
+            vec![infos.clone(), infos.clone()],
+            infos,
+            false,
+        );
+        state.segment_info = Some(Arc::new(crate::codecs::tests::test_segment_info("_m", 4)));
+
+        let mut writer = BufferingKnnVectorsWriter::new(RecordingBufferingWriter::default());
+        writer.merge(&state).unwrap();
+        assert_eq!(
+            writer.inner().out,
+            "float f maxDoc=4 size=5 dim=1 (0,0,[1.0]) (1,1,[3.0]) (2,2,[4.0]) (3,3,[5.0]) again=2147483647\n\
+             byte b maxDoc=4 size=5 dim=1 (0,0,[1]) (1,1,[3]) (2,2,[4]) (3,3,[5]) again=2147483647\n"
+        );
+        assert!(writer.inner().finished, "`merge` ends with `finish()`");
+        writer.close().unwrap();
+        assert!(writer.inner().closed);
     }
 }

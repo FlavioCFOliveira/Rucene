@@ -99,6 +99,31 @@ pub trait PostingsEnum: DocIdSetIterator + std::fmt::Display {
         buffer.size = size;
         Ok(())
     }
+
+    /// Returns this enum as [`std::any::Any`], so that a caller can test it for
+    /// a concrete type and reach that type's members.
+    ///
+    /// This hook stands for Java's `instanceof` and cast on a `PostingsEnum`.
+    /// Lucene's `postings(PostingsEnum reuse, int flags)` implementations test
+    /// `reuse instanceof X` and, when it is, cast it and reset it in place:
+    /// `FreqProxTermsWriter.SortingTermsEnum` (`FreqProxTermsWriter.java:176-222`),
+    /// `MappedMultiFields.MappedMultiTermsEnum` (`MappedMultiFields.java:116-134`),
+    /// `MultiTermsEnum` (`MultiTermsEnum.java:315-350`),
+    /// `FreqProxFields.FreqProxTermsEnum` (`FreqProxFields.java:226-272`) and
+    /// `Lucene104PostingsReader` (`Lucene104PostingsReader.java:256-264`). Rust cannot narrow
+    /// a `dyn PostingsEnum` to a concrete type, so the question is asked of the
+    /// enum itself, in the same shape as
+    /// [`StoredFieldsReader::as_any`](crate::codecs::stored_fields::StoredFieldsReader::as_any).
+    ///
+    /// The default answers `None`, which is the `false` branch of every
+    /// `instanceof`; only the types some Lucene `postings` method tests for
+    /// override it, with `Some(self)`. The reference is mutable because every
+    /// one of those callers resets the enum it narrowed, and the boxed enum it
+    /// came in keeps its allocation: the enum handed back is the very object
+    /// that was offered for reuse, exactly as in Java.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
 }
 
 /// Buffer of doc IDs paired with float-valued features.

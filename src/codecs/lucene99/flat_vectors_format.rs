@@ -21,12 +21,12 @@ use crate::codecs::codec_util::{
 };
 use crate::codecs::hnsw::flat_vectors::{
     DefaultFlatFieldVectorsWriter, DefaultFlatVectorScorer, DocsWithFieldSet,
-    FlatFieldVectorsWriter, FlatVectorsFormat, FlatVectorsReader, FlatVectorsScorer,
-    FlatVectorsWriter,
+    FlatFieldVectorWriter, FlatFieldVectorsWriter, FlatVectorsFormat, FlatVectorsReader,
+    FlatVectorsScorer, FlatVectorsWriter,
 };
 use crate::codecs::knn_vectors::{
-    BufferingKnnVectorsWriter, FieldVectorWriter, KnnFieldVectorsWriter, KnnVectorsFormat,
-    KnnVectorsReader, KnnVectorsWriter, MergedVectorValues, SorterDocMap,
+    FieldVectorWriter, KnnVectorsFormat, KnnVectorsReader, KnnVectorsWriter, MergedVectorValues,
+    SorterDocMap,
 };
 use crate::codecs::lucene90::indexed_disi::IndexedDISI;
 use crate::codecs::lucene95::OrdToDocDISIReaderConfiguration;
@@ -201,30 +201,6 @@ impl fmt::Debug for FieldWriterEntry {
             FieldWriterEntry::Float(_, info) => f.debug_tuple("Float").field(&info.name).finish(),
             FieldWriterEntry::Byte(_, info) => f.debug_tuple("Byte").field(&info.name).finish(),
         }
-    }
-}
-
-struct SharedFieldWriter<T> {
-    inner: Arc<Mutex<DefaultFlatFieldVectorsWriter<T>>>,
-}
-
-impl<T: Clone + Send + Sync + 'static> KnnFieldVectorsWriter<T> for SharedFieldWriter<T> {
-    fn add_value(&mut self, doc_id: i32, vector_value: T) -> Result<()> {
-        let mut guard = self.inner.lock().map_err(|_| {
-            LuceneError::illegal_state("FlatFieldVectorsWriter mutex was poisoned".to_string())
-        })?;
-        guard.add_value(doc_id, vector_value)
-    }
-
-    fn copy_value(&self, vector_value: T) -> T {
-        vector_value
-    }
-
-    fn ram_bytes_used(&self) -> i64 {
-        // The shared handle owns nothing: the buffer it locks is accounted by
-        // the writer that also holds it, and counting it here would count it
-        // twice in `KnnVectorsWriter::ram_bytes_used`.
-        0
     }
 }
 
@@ -559,38 +535,10 @@ impl Lucene99FlatVectorsWriter {
 }
 
 impl KnnVectorsWriter for Lucene99FlatVectorsWriter {
+    /// The writer [`FlatVectorsWriter::add_field`] returns, as Java's
+    /// covariant override hands out the same object.
     fn add_field(&mut self, field_info: &FieldInfo) -> Result<FieldVectorWriter> {
-        if self.finished {
-            return Err(LuceneError::illegal_state(
-                "Lucene99FlatVectorsWriter is already finished".to_string(),
-            ));
-        }
-        match field_info.vector_encoding {
-            VectorEncoding::FLOAT32 => {
-                let writer = Arc::new(Mutex::new(DefaultFlatFieldVectorsWriter::<Vec<f32>>::new(
-                    field_info.clone(),
-                )));
-                self.fields.push(FieldWriterEntry::Float(
-                    Arc::clone(&writer),
-                    field_info.clone(),
-                ));
-                Ok(FieldVectorWriter::Float(Box::new(SharedFieldWriter {
-                    inner: writer,
-                })))
-            }
-            VectorEncoding::BYTE => {
-                let writer = Arc::new(Mutex::new(DefaultFlatFieldVectorsWriter::<Vec<u8>>::new(
-                    field_info.clone(),
-                )));
-                self.fields.push(FieldWriterEntry::Byte(
-                    Arc::clone(&writer),
-                    field_info.clone(),
-                ));
-                Ok(FieldVectorWriter::Byte(Box::new(SharedFieldWriter {
-                    inner: writer,
-                })))
-            }
-        }
+        FlatVectorsWriter::add_field(self, field_info).map(FieldVectorWriter::from)
     }
 
     fn flush(&mut self, max_doc: i32, sort_map: Option<&SorterDocMap>) -> Result<()> {
@@ -684,45 +632,43 @@ impl KnnVectorsWriter for Lucene99FlatVectorsWriter {
     }
 }
 
-impl BufferingKnnVectorsWriter for Lucene99FlatVectorsWriter {
-    fn write_field_float(
-        &mut self,
-        field_info: &FieldInfo,
-        values: &dyn FloatVectorValues,
-        max_doc: i32,
-    ) -> Result<()> {
-        let mut writer = DefaultFlatFieldVectorsWriter::<Vec<f32>>::new(field_info.clone());
-        let mut iter = values.iterator()?;
-        while iter.next_doc()? != NO_MORE_DOCS {
-            let ord = iter.index();
-            let vector = values.vector_value(ord)?;
-            writer.add_value(iter.doc_id(), vector)?;
-        }
-        self.write_field_float(&mut writer, field_info, max_doc)?;
-        writer.finish()?;
-        Ok(())
-    }
-
-    fn write_field_byte(
-        &mut self,
-        field_info: &FieldInfo,
-        values: &dyn ByteVectorValues,
-        max_doc: i32,
-    ) -> Result<()> {
-        let mut writer = DefaultFlatFieldVectorsWriter::<Vec<u8>>::new(field_info.clone());
-        let mut iter = values.iterator()?;
-        while iter.next_doc()? != NO_MORE_DOCS {
-            let ord = iter.index();
-            let vector = values.vector_value(ord)?;
-            writer.add_value(iter.doc_id(), vector)?;
-        }
-        self.write_field_byte(&mut writer, field_info, max_doc)?;
-        writer.finish()?;
-        Ok(())
-    }
-}
-
 impl FlatVectorsWriter for Lucene99FlatVectorsWriter {
+    /// Creates the field's buffer, keeps it to write at
+    /// [`flush`](KnnVectorsWriter::flush), and returns it.
+    ///
+    /// Equivalent to `Lucene99FlatVectorsWriter.addField(FieldInfo)`
+    /// (`Lucene99FlatVectorsWriter.java:139-144`), which adds the new
+    /// `FieldWriter` to its `fields` and returns it.
+    fn add_field(&mut self, field_info: &FieldInfo) -> Result<FlatFieldVectorWriter> {
+        if self.finished {
+            return Err(LuceneError::illegal_state(
+                "Lucene99FlatVectorsWriter is already finished".to_string(),
+            ));
+        }
+        match field_info.vector_encoding {
+            VectorEncoding::FLOAT32 => {
+                let writer = Arc::new(Mutex::new(DefaultFlatFieldVectorsWriter::<Vec<f32>>::new(
+                    field_info.clone(),
+                )));
+                self.fields.push(FieldWriterEntry::Float(
+                    Arc::clone(&writer),
+                    field_info.clone(),
+                ));
+                Ok(FlatFieldVectorWriter::Float(writer))
+            }
+            VectorEncoding::BYTE => {
+                let writer = Arc::new(Mutex::new(DefaultFlatFieldVectorsWriter::<Vec<u8>>::new(
+                    field_info.clone(),
+                )));
+                self.fields.push(FieldWriterEntry::Byte(
+                    Arc::clone(&writer),
+                    field_info.clone(),
+                ));
+                Ok(FlatFieldVectorWriter::Byte(writer))
+            }
+        }
+    }
+
     fn get_flat_vector_scorer(&self) -> &dyn FlatVectorsScorer {
         &self.vector_scorer
     }
@@ -2207,7 +2153,8 @@ pub(crate) mod tests {
         let format = Lucene99FlatVectorsFormat::new(DefaultFlatVectorScorer::INSTANCE);
         {
             let mut writer = format.fields_writer_flat(&write_state)?;
-            let mut float_writer = match writer.add_field(&field_info)? {
+            let mut float_writer = match KnnVectorsWriter::add_field(writer.as_mut(), &field_info)?
+            {
                 FieldVectorWriter::Float(w) => w,
                 _ => panic!("expected float field writer"),
             };
@@ -2249,7 +2196,8 @@ pub(crate) mod tests {
         let format = Lucene99FlatVectorsFormat::new(DefaultFlatVectorScorer::INSTANCE);
         {
             let mut writer = format.fields_writer_flat(&write_state)?;
-            let mut float_writer = match writer.add_field(&field_info)? {
+            let mut float_writer = match KnnVectorsWriter::add_field(writer.as_mut(), &field_info)?
+            {
                 FieldVectorWriter::Float(w) => w,
                 _ => panic!("expected float field writer"),
             };
@@ -2461,7 +2409,7 @@ pub(crate) mod tests {
         let format = Lucene99FlatVectorsFormat::new(DefaultFlatVectorScorer::INSTANCE);
         {
             let mut writer = format.fields_writer_flat(&write_state)?;
-            let field_writer = writer.add_field(&field_info)?;
+            let field_writer = KnnVectorsWriter::add_field(writer.as_mut(), &field_info)?;
             let mut float_writer = match field_writer {
                 FieldVectorWriter::Float(w) => w,
                 _ => panic!("expected float field writer"),
@@ -2513,7 +2461,7 @@ pub(crate) mod tests {
         let format = Lucene99FlatVectorsFormat::new(DefaultFlatVectorScorer::INSTANCE);
         {
             let mut writer = format.fields_writer_flat(&write_state)?;
-            let field_writer = writer.add_field(&field_info)?;
+            let field_writer = KnnVectorsWriter::add_field(writer.as_mut(), &field_info)?;
             let mut byte_writer = match field_writer {
                 FieldVectorWriter::Byte(w) => w,
                 _ => panic!("expected byte field writer"),
@@ -2557,7 +2505,7 @@ pub(crate) mod tests {
         let format = Lucene99FlatVectorsFormat::new(DefaultFlatVectorScorer::INSTANCE);
         {
             let mut writer = format.fields_writer_flat(&write_state)?;
-            let field_writer = writer.add_field(&field_info)?;
+            let field_writer = KnnVectorsWriter::add_field(writer.as_mut(), &field_info)?;
             let mut float_writer = match field_writer {
                 FieldVectorWriter::Float(w) => w,
                 _ => panic!("expected float field writer"),

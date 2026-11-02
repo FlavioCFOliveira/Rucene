@@ -159,8 +159,11 @@ def main():
     for x in sorted(ct_r - gt_r)[:5]:
         print("   MISSING:", x)
 
+    # A `RustFn` node is keyed by `qualifiedName` (`load_rucene_kg.py`), so a fn
+    # declared twice under mutually exclusive `#[cfg]`s is one node; count the
+    # survey by the same key, as the type check above counts by `(name, file)`.
     gfn = q("MATCH (f:RustFn) RETURN count(f)")[0][0]
-    check("crate functions", gfn, len(survey["fns"]))
+    check("crate functions", gfn, len({f["qualifiedName"] for f in survey["fns"]}))
 
     # The compiler's own view, which is what makes the macro-generated types
     # checkable at all.

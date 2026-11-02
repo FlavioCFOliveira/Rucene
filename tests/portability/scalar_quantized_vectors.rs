@@ -46,7 +46,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 use rucene::codecs::hnsw::flat_vectors::FlatVectorsFormat;
-use rucene::codecs::knn_vectors::KnnVectorsFormat;
+use rucene::codecs::knn_vectors::{KnnVectorsFormat, KnnVectorsWriter};
 use rucene::codecs::lucene104::scalar_quantized_vectors::Lucene104ScalarQuantizedVectorsFormat;
 use rucene::codecs::state::{SegmentReadState, SegmentWriteState};
 use rucene::codecs::stub::BufferedUpdates;
@@ -169,10 +169,11 @@ fn write_with_rucene(
         .fields_writer_flat(&write_state)
         .expect("scalar-quantized writer");
     let field_info = infos.field_info_by_number(0).expect("field info").clone();
-    let mut field_writer = match writer.add_field(&field_info).expect("add field") {
-        rucene::codecs::knn_vectors::FieldVectorWriter::Float(writer) => writer,
-        other => panic!("expected a float field writer, got {other:?}"),
-    };
+    let mut field_writer =
+        match KnnVectorsWriter::add_field(writer.as_mut(), &field_info).expect("add field") {
+            rucene::codecs::knn_vectors::FieldVectorWriter::Float(writer) => writer,
+            other => panic!("expected a float field writer, got {other:?}"),
+        };
     for doc in 0..MAX_DOC {
         if let Some(v) = vector_for(doc, dim, dense) {
             field_writer.add_value(doc, v).expect("add value");

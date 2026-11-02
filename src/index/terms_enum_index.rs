@@ -36,7 +36,7 @@ use std::{
     fmt::{Debug, Formatter},
 };
 
-use crate::error::Result;
+use crate::error::{LuceneError, Result};
 use crate::index::terms::{SeekStatus, TermsEnum};
 use crate::util::BytesRef;
 
@@ -110,8 +110,15 @@ pub fn prefix8_to_comparable_unsigned_long(term: &BytesRef) -> u64 {
 /// [`seek_ceil`](Self::seek_ceil), [`seek_exact`](Self::seek_exact),
 /// [`seek_ord`](Self::seek_ord)); moving the wrapped enum directly through
 /// [`terms_enum_mut`](Self::terms_enum_mut) would leave the cached term stale.
+///
+/// Java's `termsEnum` field may be `null`: `MultiTermsEnum.TermsEnumWithSlice`
+/// is built with `super(null, index)` and only receives an enum on
+/// [`reset`](Self::reset) (`MultiTermsEnum.java:361-364`). The field is
+/// therefore an `Option`, and every operation that would dereference a `null`
+/// enum in Java reports the `NullPointerException` as
+/// [`LuceneError::IllegalState`] with the JDK's message.
 pub struct TermsEnumIndex {
-    terms_enum: Box<dyn TermsEnum>,
+    terms_enum: Option<Box<dyn TermsEnum>>,
     sub_index: usize,
     current_term: Option<BytesRef>,
     current_term_prefix8: u64,
@@ -120,17 +127,24 @@ pub struct TermsEnumIndex {
 impl std::fmt::Display for TermsEnumIndex {
     /// Port of `TermsEnumIndex.toString()`
     /// (`TermsEnumIndex.java:153-156`), which is `Objects.toString(termsEnum)`
-    /// — the wrapped enumeration's own rendering, and nothing else. Measured
-    /// against `lucene-core-10.5.0.jar`, where a wrapper over a segment's terms
+    /// — the wrapped enumeration's own rendering, and nothing else, or the
+    /// four characters `null` when there is no enumeration. Measured against
+    /// `lucene-core-10.5.0.jar`, where a wrapper over a segment's terms
     /// renders exactly the same string as that enumeration does on its own.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java allows a `null` `termsEnum` and
-    /// `Objects.toString` then yields the four characters `null`; this port's
-    /// field is a non-optional `Box<dyn TermsEnum>`, so that case cannot arise
-    /// and is not reproduced.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.terms_enum, f)
+        match &self.terms_enum {
+            Some(terms_enum) => std::fmt::Display::fmt(terms_enum, f),
+            None => f.write_str("null"),
+        }
     }
+}
+
+/// The error Java raises when a method is invoked on the `null` `termsEnum`
+/// field: `NullPointerException` with the JDK's helpful message.
+fn null_terms_enum(method: &str) -> LuceneError {
+    LuceneError::illegal_state(format!(
+        "Cannot invoke \"org.apache.lucene.index.TermsEnum.{method}\" because \"this.termsEnum\" is null"
+    ))
 }
 
 impl TermsEnumIndex {
@@ -141,6 +155,15 @@ impl TermsEnumIndex {
     ///
     /// Equivalent to `TermsEnumIndex(TermsEnum, int)`.
     pub fn new(terms_enum: Box<dyn TermsEnum>, sub_index: usize) -> Self {
+        Self::with_optional_enum(Some(terms_enum), sub_index)
+    }
+
+    /// Equivalent to `TermsEnumIndex(TermsEnum, int)` called with a `termsEnum`
+    /// that may be `null`, as `MultiTermsEnum.TermsEnumWithSlice` calls it.
+    pub(crate) fn with_optional_enum(
+        terms_enum: Option<Box<dyn TermsEnum>>,
+        sub_index: usize,
+    ) -> Self {
         Self {
             terms_enum,
             sub_index,
@@ -157,20 +180,38 @@ impl TermsEnumIndex {
     }
 
     /// Returns the wrapped enum for read-only queries such as
-    /// [`TermsEnum::ord`], [`TermsEnum::doc_freq`] or
-    /// [`TermsEnum::total_term_freq`].
-    pub fn terms_enum(&self) -> &dyn TermsEnum {
-        self.terms_enum.as_ref()
+    /// [`TermsEnum::ord`], or `None` when the wrapper holds none.
+    ///
+    /// Equivalent to reading the `TermsEnumIndex.termsEnum` field, which Java
+    /// leaves `null` until a `TermsEnumWithSlice` is reset.
+    pub fn terms_enum(&self) -> Option<&dyn TermsEnum> {
+        self.terms_enum.as_deref()
     }
 
     /// Returns the wrapped enum mutably, for operations that read the current
-    /// position without moving it (for example [`TermsEnum::postings`]).
+    /// position without moving it (for example [`TermsEnum::doc_freq`] or
+    /// [`TermsEnum::postings`]), or `None` when the wrapper holds none.
+    ///
+    /// Equivalent to reading the `TermsEnumIndex.termsEnum` field, as
+    /// `MultiTermsEnum` does for `docFreq`, `totalTermFreq` and `postings`.
     ///
     /// Callers must not reposition the enum through this reference: the cached
     /// term would no longer describe the enum's position. Use the positioning
     /// methods on this wrapper instead.
-    pub fn terms_enum_mut(&mut self) -> &mut dyn TermsEnum {
-        self.terms_enum.as_mut()
+    pub fn terms_enum_mut(&mut self) -> Option<&mut dyn TermsEnum> {
+        match &mut self.terms_enum {
+            Some(terms_enum) => Some(terms_enum.as_mut()),
+            None => None,
+        }
+    }
+
+    /// Returns the wrapped enum, or Java's `NullPointerException` for a `null`
+    /// one, naming the `method` about to be invoked on it.
+    fn enum_for(&mut self, method: &str) -> Result<&mut dyn TermsEnum> {
+        match &mut self.terms_enum {
+            Some(terms_enum) => Ok(terms_enum.as_mut()),
+            None => Err(null_terms_enum(method)),
+        }
     }
 
     /// Returns the current term, or `None` when the enum is exhausted or has
@@ -204,14 +245,15 @@ impl TermsEnumIndex {
     ///
     /// # Errors
     ///
-    /// Propagates any error raised by the wrapped enum.
+    /// Propagates any error raised by the wrapped enum, and reports Java's
+    /// `NullPointerException` when there is none.
     // Named after Lucene's `TermsEnumIndex.next()`, which this port keeps for
     // parity. It is not `Iterator::next`: it is fallible and it lends the term
     // out of the wrapper rather than yielding an owned item, so neither the
     // signature nor the borrow shape fits that trait.
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<&BytesRef>> {
-        let term = self.terms_enum.next()?;
+        let term = self.enum_for("next()")?.next()?;
         self.set_term(term);
         Ok(self.current_term.as_ref())
     }
@@ -223,13 +265,15 @@ impl TermsEnumIndex {
     ///
     /// # Errors
     ///
-    /// Propagates any error raised by the wrapped enum.
+    /// Propagates any error raised by the wrapped enum, and reports Java's
+    /// `NullPointerException` when there is none.
     pub fn seek_ceil(&mut self, term: &BytesRef) -> Result<SeekStatus> {
-        let status = self.terms_enum.seek_ceil(term)?;
+        let terms_enum = self.enum_for("seekCeil(org.apache.lucene.util.BytesRef)")?;
+        let status = terms_enum.seek_ceil(term)?;
         let positioned = if status == SeekStatus::END {
             None
         } else {
-            Some(self.terms_enum.term()?)
+            Some(terms_enum.term()?)
         };
         self.set_term(positioned);
         Ok(status)
@@ -242,11 +286,13 @@ impl TermsEnumIndex {
     ///
     /// # Errors
     ///
-    /// Propagates any error raised by the wrapped enum.
+    /// Propagates any error raised by the wrapped enum, and reports Java's
+    /// `NullPointerException` when there is none.
     pub fn seek_exact(&mut self, term: &BytesRef) -> Result<bool> {
-        let found = self.terms_enum.seek_exact(term)?;
+        let terms_enum = self.enum_for("seekExact(org.apache.lucene.util.BytesRef)")?;
+        let found = terms_enum.seek_exact(term)?;
         let positioned = if found {
-            Some(self.terms_enum.term()?)
+            Some(terms_enum.term()?)
         } else {
             None
         };
@@ -262,10 +308,12 @@ impl TermsEnumIndex {
     ///
     /// Propagates any error raised by the wrapped enum, including the
     /// unsupported-operation error raised by enums that do not expose
-    /// ordinals.
+    /// ordinals, and reports Java's `NullPointerException` when there is no
+    /// enum.
     pub fn seek_ord(&mut self, ord: i64) -> Result<()> {
-        self.terms_enum.seek_ord(ord)?;
-        let positioned = self.terms_enum.term()?;
+        let terms_enum = self.enum_for("seekExact(long)")?;
+        terms_enum.seek_ord(ord)?;
+        let positioned = terms_enum.term()?;
         self.set_term(Some(positioned));
         Ok(())
     }
@@ -720,7 +768,7 @@ mod tests {
         let mut tei = index_over(vec![b"aa", b"ab", b"b"], 0);
         tei.seek_ord(2).unwrap();
         assert_eq!(tei.term().unwrap().slice(), b"b");
-        assert_eq!(tei.terms_enum().ord().unwrap(), 2);
+        assert_eq!(tei.terms_enum().unwrap().ord().unwrap(), 2);
     }
 
     #[test]
@@ -898,5 +946,31 @@ mod tests {
         let rendered = format!("{tei:?}");
         assert!(rendered.contains("sub_index: 7"), "{rendered}");
         assert!(rendered.contains("TermsEnumIndex"), "{rendered}");
+    }
+
+    #[test]
+    fn a_wrapper_without_an_enum_renders_null_and_reports_javas_npe() {
+        // `MultiTermsEnum.TermsEnumWithSlice` calls `super(null, index)`.
+        let mut tei = TermsEnumIndex::with_optional_enum(None, 4);
+        assert_eq!(tei.to_string(), "null", "`Objects.toString(null)`");
+        assert!(tei.terms_enum().is_none());
+        assert!(tei.terms_enum_mut().is_none());
+        let err = tei.next().unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            LuceneError::illegal_state(
+                "Cannot invoke \"org.apache.lucene.index.TermsEnum.next()\" because \"this.termsEnum\" is null"
+                    .to_string()
+            )
+            .to_string()
+        );
+        assert!(tei.seek_ceil(&term(b"a")).is_err());
+        assert!(tei.seek_exact(&term(b"a")).is_err());
+
+        // `reset` hands it an enum, as `MultiTermsEnum.reset` does.
+        tei.reset(positioned_on(vec![b"x"], 0, b"x"));
+        assert_eq!(tei.sub_index(), 4);
+        assert_eq!(tei.term().unwrap().slice(), b"x");
+        assert_eq!(tei.to_string(), "VecTermsEnum");
     }
 }

@@ -47,9 +47,10 @@
 //!   the ones `force_merge` runs.
 //! * The merge into the HNSW scalar-quantized format starts from segments of
 //!   the flat scalar-quantized format (`SwitchingCodec`), as the Java fixture
-//!   `sq-then-hnswsq` does: a segment that format flushes cannot read its
-//!   float vectors back ("has no vector values"), so it cannot be a merge
-//!   source.
+//!   `sq-then-hnswsq` does: when these tests were written, a segment that
+//!   format flushed could not read its float vectors back ("has no vector
+//!   values"). Its flushes now write Lucene's files, as
+//!   `a_flush_writes_lucenes_vector_files_with_every_format` pins.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -60,7 +61,9 @@ use rucene::codecs::{
     Lucene104Codec, NormsFormat, PointsFormat, PostingsFormat, SegmentInfoFormat,
     StoredFieldsFormat, TermVectorsFormat,
 };
-use rucene::document::{Document, KnnByteVectorField, KnnFloatVectorField, StoredField};
+use rucene::document::{
+    Document, KnnByteVectorField, KnnFloatVectorField, NumericDocValuesField, StoredField,
+};
 use rucene::index::codec_reader::CodecReader;
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::IndexWriterConfig;
@@ -68,9 +71,13 @@ use rucene::index::merge_policy::NoMergePolicy;
 use rucene::index::merge_scheduler::SerialMergeScheduler;
 use rucene::index::segment_merger::SegmentMerger;
 use rucene::index::segment_reader::SegmentReader;
-use rucene::index::{directory_reader, DirectoryReader, FieldNumbers, SegmentInfo, SegmentInfos};
+use rucene::index::{
+    directory_reader, DirectoryReader, FieldNumbers, SegmentInfo, SegmentInfos,
+    VectorSimilarityFunction,
+};
 use rucene::search::{
-    FieldExistsQuery, IndexSearcher, KnnByteVectorQuery, KnnFloatVectorQuery, Query, NO_MORE_DOCS,
+    FieldExistsQuery, IndexSearcher, KnnByteVectorQuery, KnnFloatVectorQuery, Query, Sort,
+    SortField, SortFieldType, NO_MORE_DOCS,
 };
 use rucene::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT};
 use rucene::util::Version;
@@ -1070,8 +1077,7 @@ fn a_merged_segment_large_enough_gets_lucenes_hnsw_graph() {
 ///
 /// The sources are written with the flat scalar-quantized format, as the
 /// fixture's `sq-then-hnswsq` case does by switching formats before
-/// `forceMerge`: segments flushed by this port's HNSW scalar-quantized writer
-/// cannot have their float vectors read back (see the module documentation).
+/// `forceMerge`.
 #[test]
 fn a_merge_into_the_hnsw_quantized_format_gets_lucenes_files() {
     let merging = Arc::new(AtomicBool::new(false));
@@ -1392,5 +1398,283 @@ fn merged_vectors_without_the_deleted_documents_are_lucenes_byte_for_byte() {
                 "{name}: bytes"
             );
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Flushes of every vectors format (FlushVectorsOracle)
+// ---------------------------------------------------------------------------
+
+/// Documents per flushed segment: enough for a graph (800 is above
+/// `ln(800) * 100`).
+const FLUSH_DOCS: i32 = 800;
+
+/// `FlushVectorsOracle.doc(i)`: a Euclidean and a cosine float field, a byte
+/// field, and the `sort` doc value that reverses the documents under
+/// [`sort_reversing_the_documents`].
+fn flush_doc(i: i32) -> Document {
+    let mut doc = Document::new();
+    doc.add(Box::new(
+        StoredField::new_string("id", format!("doc-{i}")).unwrap(),
+    ));
+    doc.add(Box::new(
+        KnnFloatVectorField::with_euclidean(
+            "f",
+            &[
+                ((i * 7919) % 1009) as f32 / 7.0,
+                ((i * 104729) % 1013) as f32 / 11.0,
+            ],
+        )
+        .unwrap(),
+    ));
+    doc.add(Box::new(
+        KnnFloatVectorField::new(
+            "c",
+            &[
+                ((i * 31) % 97) as f32 + 1.0,
+                ((i * 17) % 89) as f32 / 3.0 + 0.5,
+                ((i * 13) % 83) as f32 / 7.0 + 0.25,
+            ],
+            VectorSimilarityFunction::COSINE,
+        )
+        .unwrap(),
+    ));
+    doc.add(Box::new(
+        KnnByteVectorField::with_euclidean("b", &[((i * 31) % 251) as u8, ((i * 17) % 241) as u8])
+            .unwrap(),
+    ));
+    doc.add(Box::new(NumericDocValuesField::new("sort", -i64::from(i))));
+    doc
+}
+
+/// `new Sort(new SortField("sort", SortField.Type.LONG))`: ascending on `-i`,
+/// so the flush reverses the documents and hands the vectors writers a sort
+/// map.
+fn sort_reversing_the_documents() -> Sort {
+    Sort::new_fields(vec![SortField::new(
+        Some("sort".to_string()),
+        SortFieldType::Long,
+    )
+    .unwrap()])
+    .unwrap()
+}
+
+/// Flushes [`FLUSH_DOCS`] documents of [`flush_doc`] into one segment written
+/// with the vectors format `format`, under [`sort_reversing_the_documents`]
+/// when `sorted`.
+fn flush_vectors(format: &str, sorted: bool) -> Arc<dyn Directory> {
+    ensure_codec();
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+    let mut config = IndexWriterConfig::new();
+    config
+        .set_codec(Arc::new(SwitchingCodec::new(
+            format,
+            format,
+            Arc::new(AtomicBool::new(false)),
+        )))
+        .unwrap();
+    config.set_use_compound_file(false).unwrap();
+    config
+        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .unwrap();
+    if sorted {
+        config
+            .set_index_sort(sort_reversing_the_documents())
+            .unwrap();
+    }
+    let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+    for i in 0..FLUSH_DOCS {
+        writer.add_document(&flush_doc(i)).unwrap();
+    }
+    writer.commit().unwrap();
+    writer.close().unwrap();
+    dir
+}
+
+/// `FlushVectorsOracle`: `(format, sorted, vector files)`.
+const LUCENE_FLUSHES: &[(&str, bool, &[FileSummary])] = &[
+    (
+        "Lucene99HnswVectorsFormat",
+        false,
+        &[
+            ("_0_Lucene99HnswVectorsFormat_0.vec", 17744, 3536297926),
+            ("_0_Lucene99HnswVectorsFormat_0.vem", 483, 2547855493),
+            ("_0_Lucene99HnswVectorsFormat_0.vemf", 222, 2107072135),
+            ("_0_Lucene99HnswVectorsFormat_0.vex", 26973, 1782001100),
+        ],
+    ),
+    (
+        "Lucene99HnswVectorsFormat",
+        true,
+        &[
+            ("_0_Lucene99HnswVectorsFormat_0.vec", 17744, 3377805413),
+            ("_0_Lucene99HnswVectorsFormat_0.vem", 483, 2238524042),
+            ("_0_Lucene99HnswVectorsFormat_0.vemf", 222, 2107072135),
+            ("_0_Lucene99HnswVectorsFormat_0.vex", 27428, 2601048000),
+        ],
+    ),
+    (
+        "Lucene104ScalarQuantizedVectorsFormat",
+        false,
+        &[
+            (
+                "_0_Lucene104ScalarQuantizedVectorsFormat_0.vec",
+                17744,
+                543841317,
+            ),
+            (
+                "_0_Lucene104ScalarQuantizedVectorsFormat_0.vemf",
+                234,
+                2918100865,
+            ),
+            (
+                "_0_Lucene104ScalarQuantizedVectorsFormat_0.vemq",
+                231,
+                671197806,
+            ),
+            (
+                "_0_Lucene104ScalarQuantizedVectorsFormat_0.veq",
+                29724,
+                509826771,
+            ),
+        ],
+    ),
+    (
+        "Lucene104ScalarQuantizedVectorsFormat",
+        true,
+        &[
+            (
+                "_0_Lucene104ScalarQuantizedVectorsFormat_0.vec",
+                17744,
+                1006173062,
+            ),
+            (
+                "_0_Lucene104ScalarQuantizedVectorsFormat_0.vemf",
+                234,
+                2918100865,
+            ),
+            (
+                "_0_Lucene104ScalarQuantizedVectorsFormat_0.vemq",
+                231,
+                671197806,
+            ),
+            (
+                "_0_Lucene104ScalarQuantizedVectorsFormat_0.veq",
+                29724,
+                3925899423,
+            ),
+        ],
+    ),
+    (
+        "Lucene104HnswBinaryQuantizedVectorsFormat",
+        false,
+        &[
+            (
+                "_0_Lucene104HnswBinaryQuantizedVectorsFormat_0.vec",
+                17744,
+                2169716240,
+            ),
+            (
+                "_0_Lucene104HnswBinaryQuantizedVectorsFormat_0.vem",
+                499,
+                1726906593,
+            ),
+            (
+                "_0_Lucene104HnswBinaryQuantizedVectorsFormat_0.vemf",
+                238,
+                3877738702,
+            ),
+            (
+                "_0_Lucene104HnswBinaryQuantizedVectorsFormat_0.vemq",
+                235,
+                3170717731,
+            ),
+            (
+                "_0_Lucene104HnswBinaryQuantizedVectorsFormat_0.veq",
+                29728,
+                3122531199,
+            ),
+            (
+                "_0_Lucene104HnswBinaryQuantizedVectorsFormat_0.vex",
+                26989,
+                3605353189,
+            ),
+        ],
+    ),
+    (
+        "Lucene104HnswBinaryQuantizedVectorsFormat",
+        true,
+        &[
+            (
+                "_0_Lucene104HnswBinaryQuantizedVectorsFormat_0.vec",
+                17744,
+                2596379059,
+            ),
+            (
+                "_0_Lucene104HnswBinaryQuantizedVectorsFormat_0.vem",
+                499,
+                3451580720,
+            ),
+            (
+                "_0_Lucene104HnswBinaryQuantizedVectorsFormat_0.vemf",
+                238,
+                3877738702,
+            ),
+            (
+                "_0_Lucene104HnswBinaryQuantizedVectorsFormat_0.vemq",
+                235,
+                3170717731,
+            ),
+            (
+                "_0_Lucene104HnswBinaryQuantizedVectorsFormat_0.veq",
+                29728,
+                1316824371,
+            ),
+            (
+                "_0_Lucene104HnswBinaryQuantizedVectorsFormat_0.vex",
+                27444,
+                3359917081,
+            ),
+        ],
+    ),
+];
+
+/// A flush writes Lucene's vector files with every vectors format, unsorted
+/// and under an index sort, and reads its float vectors back.
+///
+/// The HNSW and scalar-quantized writers add each field to their flat writer
+/// and keep the field writer it returns, as Java's do
+/// (`Lucene99HnswVectorsWriter.java:194-207`,
+/// `Lucene104ScalarQuantizedVectorsWriter.java:118-129`), so the flat writer
+/// writes the raw vectors at its own flush, sorted when the segment is, and
+/// the scalar-quantized writer quantizes the vectors that buffer holds,
+/// against the centroid of the running sums its field writer kept.
+#[test]
+fn a_flush_writes_lucenes_vector_files_with_every_format() {
+    for &(format, sorted, reference) in LUCENE_FLUSHES {
+        let dir = flush_vectors(format, sorted);
+        for &(name, length, crc) in reference {
+            let file = read_file(dir.as_ref(), name);
+            assert_valid_footer(name, &file);
+            assert_eq!(
+                file.len(),
+                length,
+                "{format} sorted={sorted} {name}: length"
+            );
+            assert_eq!(
+                masked_crc(&file),
+                crc,
+                "{format} sorted={sorted} {name}: bytes"
+            );
+        }
+        // `FlushVectorsOracle`: the first document of `c` and its raw vector.
+        let reader = directory_reader::open(Arc::clone(&dir)).unwrap();
+        let first = float_vectors(&reader, "c")[0].clone();
+        let expected = if sorted {
+            (0, vec![35.0, 18.833334, 1.9642857])
+        } else {
+            (0, vec![1.0, 0.5, 0.25])
+        };
+        assert_eq!(first, expected, "{format} sorted={sorted}: the raw vectors");
     }
 }

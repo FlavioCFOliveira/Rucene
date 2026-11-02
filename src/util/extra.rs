@@ -760,6 +760,28 @@ impl<T, C: PriorityQueueComparator<T>> PriorityQueue<T, C> {
     pub fn heap_array(&self) -> &[Option<T>] {
         &self.heap
     }
+
+    /// Returns the comparator, with whatever state its
+    /// [`less_than`](PriorityQueueComparator::less_than) reads.
+    ///
+    /// Java's `lessThan` is a method of the `PriorityQueue` subclass and reads
+    /// that subclass's own fields; `MultiTermsEnum.TermMergeQueue`, for one,
+    /// compares the live terms of the `TermsEnumWithSlice` objects it holds.
+    /// Here that state belongs to the comparator, and this accessor and
+    /// [`comparator_mut`](Self::comparator_mut) are how the queue's owner
+    /// reaches it, as the subclass reaches its fields.
+    pub fn comparator(&self) -> &C {
+        &self.comparator
+    }
+
+    /// Mutable counterpart of [`comparator`](Self::comparator).
+    ///
+    /// Changing what a queued element compares as breaks the heap order until
+    /// the caller restores it, exactly as mutating Java's `top()` does until
+    /// `updateTop()` is called.
+    pub fn comparator_mut(&mut self) -> &mut C {
+        &mut self.comparator
+    }
 }
 
 impl<T, C: PriorityQueueComparator<T>> IntoIterator for PriorityQueue<T, C> {

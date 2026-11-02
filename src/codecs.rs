@@ -66,10 +66,10 @@ pub use hnsw::{
 };
 pub use knn_vectors::{
     available_knn_vectors_formats, knn_vectors_for_name, BufferingKnnVectorsWriter,
-    ByteVectorValues, EmptyKnnCollector, EmptyKnnFieldVectorsWriter, EmptyKnnVectorsFormat,
-    EmptyKnnVectorsReader, EmptyKnnVectorsWriter, FloatVectorValues, KnnCollector,
-    KnnFieldVectorsWriter, KnnSearchStrategy, KnnVectorsFormat, KnnVectorsFormatRegistry,
-    KnnVectorsReader, KnnVectorsWriter, SorterDocMap, TopDocs,
+    BufferingKnnVectorsWriterImpl, ByteVectorValues, EmptyKnnCollector, EmptyKnnFieldVectorsWriter,
+    EmptyKnnVectorsFormat, EmptyKnnVectorsReader, EmptyKnnVectorsWriter, FloatVectorValues,
+    KnnCollector, KnnFieldVectorsWriter, KnnSearchStrategy, KnnVectorsFormat,
+    KnnVectorsFormatRegistry, KnnVectorsReader, KnnVectorsWriter, SorterDocMap, TopDocs,
 };
 pub use live_docs::LiveDocsFormat;
 pub use lucene103::{

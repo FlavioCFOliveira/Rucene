@@ -29,7 +29,7 @@ use crate::error::{LuceneError, Result};
 use crate::index::filter_reader::FilterFields;
 use crate::index::mapping_multi_postings_enum::MappingMultiPostingsEnum;
 use crate::index::merge::MergeState;
-use crate::index::multi_fields::{MultiFields, MultiTerms, MultiTermsEnum};
+use crate::index::multi_fields::{MultiFields, MultiPostingsEnum, MultiTerms, MultiTermsEnum};
 use crate::index::postings_enum::{ImpactsEnum, PostingsEnum};
 use crate::index::terms::{EmptyTermsEnum, Fields, SeekStatus, TermState, Terms, TermsEnum};
 use crate::util::attribute::AttributeSource;
@@ -224,16 +224,6 @@ impl MappedMultiTermsEnum {
         }
     }
 
-    /// Builds the mapped postings for the current term.
-    fn mapped_postings(&mut self, flags: i32) -> Result<Box<dyn PostingsEnum>> {
-        let merged = self.inner.multi_postings(flags)?;
-        Ok(Box::new(MappingMultiPostingsEnum::new(
-            &self.field,
-            Arc::clone(&self.merge_state),
-            merged,
-        )?))
-    }
-
     fn unsupported(&self, what: &str) -> LuceneError {
         LuceneError::UnsupportedOperation(format!(
             "{what} is not available while merging field '{}': it would ignore deleted \
@@ -294,21 +284,69 @@ impl TermsEnum for MappedMultiTermsEnum {
         Err(self.unsupported("total_term_freq"))
     }
 
+    /// Equivalent to `MappedMultiTermsEnum.postings(PostingsEnum, int)`
+    /// (`MappedMultiFields.java:116-134`).
+    ///
+    /// `reuse` is reused exactly when Java reuses it: when it is a
+    /// [`MappingMultiPostingsEnum`] ([`PostingsEnum::as_any_mut`] standing for
+    /// `instanceof`) for this very field; the box handed back is then the one
+    /// that came in. Its [`MultiPostingsEnum`] is offered to the wrapped
+    /// [`MultiTermsEnum`] as `reuse` in turn, and what comes back — cast to
+    /// `MultiPostingsEnum`, as Java casts — resets it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] — Java's `ClassCastException` —
+    /// when the wrapped enum answers anything but a `MultiPostingsEnum`, and
+    /// propagates whatever building or resetting the postings raises.
     fn postings(
         &mut self,
-        _reuse: Option<Box<dyn PostingsEnum>>,
+        reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
     ) -> Result<Box<dyn PostingsEnum>> {
-        // **Deliberate divergence**: Java reuses the previous
-        // `MappingMultiPostingsEnum` when the caller hands one back for the
-        // same field, saving an allocation per term. Rucene's `reuse` is an
-        // opaque `Box<dyn PostingsEnum>` that cannot be downcast, and
-        // `MultiTermsEnum` does not thread reuse to its own sub-enums either,
-        // so a fresh instance is built per term. Callers that want the reuse
-        // can keep a `MappingMultiPostingsEnum` themselves and call
-        // `MappingMultiPostingsEnum::reset` with
-        // `MultiTermsEnum::multi_postings`.
-        self.mapped_postings(flags)
+        let mut mapping_docs_and_positions_enum: Box<dyn PostingsEnum> = match reuse {
+            // `reuse instanceof MappingMultiPostingsEnum postings`
+            Some(mut reuse) => match reuse
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<MappingMultiPostingsEnum>())
+            {
+                Some(postings) if postings.field() == self.field => reuse,
+                _ => Box::new(MappingMultiPostingsEnum::new(
+                    &self.field,
+                    Arc::clone(&self.merge_state),
+                )?),
+            },
+            None => Box::new(MappingMultiPostingsEnum::new(
+                &self.field,
+                Arc::clone(&self.merge_state),
+            )?),
+        };
+        let mapping = mapping_docs_and_positions_enum
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<MappingMultiPostingsEnum>())
+            .ok_or_else(|| {
+                LuceneError::illegal_state(
+                    "INVARIANT: the enum was just checked or built as a MappingMultiPostingsEnum"
+                        .to_string(),
+                )
+            })?;
+
+        let mut docs_and_positions_enum = self
+            .inner
+            .postings(mapping.take_multi_docs_and_positions_enum(), flags)?;
+        // `(MultiPostingsEnum) in.postings(...)`
+        if docs_and_positions_enum
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<MultiPostingsEnum>())
+            .is_none()
+        {
+            return Err(LuceneError::illegal_state(format!(
+                "{docs_and_positions_enum} cannot be cast to class \
+                 org.apache.lucene.index.MultiPostingsEnum"
+            )));
+        }
+        mapping.reset(docs_and_positions_enum)?;
+        Ok(mapping_docs_and_positions_enum)
     }
 
     /// Inherited from `FilterTermsEnum.impacts(int)`, which delegates to the
@@ -1072,5 +1110,97 @@ mod tests {
             vec![1, 3],
             "segment 0 was dropped by the seek optimisation"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // #276: `MappedMultiTermsEnum.postings` reuses as Java does
+    // -----------------------------------------------------------------------
+
+    fn identity<T: ?Sized>(object: &T) -> *const () {
+        object as *const T as *const ()
+    }
+
+    /// The identity of the `MultiPostingsEnum` a mapped postings holds.
+    fn inner_identity(postings: &mut Box<dyn PostingsEnum>) -> *const () {
+        identity(
+            postings
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<MappingMultiPostingsEnum>())
+                .expect("MappedMultiTermsEnum hands out a MappingMultiPostingsEnum")
+                .multi_docs_and_positions_enum()
+                .expect("reset stored the MultiPostingsEnum"),
+        )
+    }
+
+    #[test]
+    fn postings_reuses_a_mapping_enum_of_the_same_field_and_its_multi_postings_enum() {
+        let (_state, fields) = scenario();
+        let terms = fields.terms("body").unwrap().unwrap();
+        let mut enumerator = terms.iterator().unwrap();
+
+        assert_eq!(enumerator.next().unwrap(), Some(term("apple")));
+        let mut postings = enumerator.postings(None, 0).unwrap();
+        let outer = identity(postings.as_ref());
+        let inner = inner_identity(&mut postings);
+        assert_eq!(drain(postings.as_mut()), vec![0, 1, 3]);
+
+        assert_eq!(enumerator.next().unwrap(), Some(term("pear")));
+        let mut postings = enumerator.postings(Some(postings), 0).unwrap();
+        assert_eq!(
+            identity(postings.as_ref()),
+            outer,
+            "`reuse instanceof MappingMultiPostingsEnum` of the same field comes back"
+        );
+        assert_eq!(
+            inner_identity(&mut postings),
+            inner,
+            "its `multiDocsAndPositionsEnum` is reused by the MultiTermsEnum that built it"
+        );
+        assert!(
+            drain(postings.as_mut()).is_empty(),
+            "pear's only doc is deleted"
+        );
+
+        assert_eq!(enumerator.next().unwrap(), Some(term("plum")));
+        let mut postings = enumerator.postings(Some(postings), 0).unwrap();
+        assert_eq!(identity(postings.as_ref()), outer);
+        assert_eq!(inner_identity(&mut postings), inner);
+        assert_eq!(drain(postings.as_mut()), vec![2]);
+    }
+
+    #[test]
+    fn postings_does_not_reuse_a_mapping_enum_of_another_field() {
+        let (_state, fields) = scenario();
+        let mut title = fields.terms("title").unwrap().unwrap().iterator().unwrap();
+        assert_eq!(title.next().unwrap(), Some(term("rust")));
+        let foreign = title.postings(None, 0).unwrap();
+        let foreign_identity = identity(foreign.as_ref());
+
+        let mut body = fields.terms("body").unwrap().unwrap().iterator().unwrap();
+        assert_eq!(body.next().unwrap(), Some(term("apple")));
+        let mut postings = body.postings(Some(foreign), 0).unwrap();
+        assert_ne!(
+            identity(postings.as_ref()),
+            foreign_identity,
+            "`postings.field.equals(this.field)` is false"
+        );
+        let mapping = postings
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<MappingMultiPostingsEnum>())
+            .unwrap();
+        assert_eq!(mapping.field(), "body");
+        assert_eq!(drain(postings.as_mut()), vec![0, 1, 3]);
+    }
+
+    #[test]
+    fn postings_does_not_reuse_an_enum_of_another_type() {
+        let (_state, fields) = scenario();
+        let mut body = fields.terms("body").unwrap().unwrap().iterator().unwrap();
+        assert_eq!(body.next().unwrap(), Some(term("apple")));
+        let other = VecPostings::boxed(&[0]);
+        let other_identity = identity(other.as_ref());
+        let mut postings = body.postings(Some(other), 0).unwrap();
+        assert_ne!(identity(postings.as_ref()), other_identity);
+        assert_eq!(drain(postings.as_mut()), vec![0, 1, 3]);
     }
 }

@@ -1826,7 +1826,16 @@ impl OrdinalMap {
 
             loop {
                 let mut top = queue.pop().unwrap();
-                let segment_ord = top.terms_enum().ord()?;
+                // Java reads `top.termsEnum.ord()`; every wrapper here was
+                // built over an enum, so the `None` arm is unreachable.
+                let segment_ord = top
+                    .terms_enum()
+                    .ok_or_else(|| {
+                        LuceneError::illegal_state(
+                            "INVARIANT: OrdinalMap wraps every segment's terms enum".to_string(),
+                        )
+                    })?
+                    .ord()?;
                 let segment_index = top.sub_index();
                 let delta = global_ord - segment_ord;
                 if segment_index < first_segment_index {

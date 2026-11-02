@@ -597,11 +597,33 @@ pub trait DocIDMergerSub {
     }
 }
 
+/// The `NullPointerException` Java's `DocIDMerger.next()` raises when it is
+/// called again after it answered `null`.
+fn exhausted_merger() -> LuceneError {
+    LuceneError::illegal_state(
+        "Cannot invoke \"org.apache.lucene.index.DocIDMerger$Sub.nextMappedDoc()\" because \"this.current\" is null"
+            .to_string(),
+    )
+}
+
 /// Produces the global doc-id order during a merge.
 ///
-/// Equivalent to `org.apache.lucene.index.DocIDMerger`.
+/// Equivalent to `org.apache.lucene.index.DocIDMerger`. Java's two private
+/// subclasses, `SequentialDocIDMerger` and `SortedDocIDMerger`, are the two
+/// shapes of its private `MergerState`; which one a merger is, is fixed when it is built
+/// ([`of`](Self::of)) and kept across [`reset`](Self::reset), as Java's object
+/// keeps its class.
+///
+/// Java's merger holds the caller's `List<T>` and reads it on every `reset()`,
+/// so a caller that reuses the merger refills that list first
+/// (`MappingMultiPostingsEnum.reset`, `MappingMultiPostingsEnum.java:65-77`).
+/// Here the merger owns the list, and lends it out through
+/// [`subs_mut`](Self::subs_mut) for that refill.
 pub struct DocIDMerger<T: DocIDMergerSub> {
     subs: Vec<T>,
+    /// `true` for Java's `SortedDocIDMerger`, `false` for its
+    /// `SequentialDocIDMerger` (`DocIDMerger.java:73-81`).
+    sorted: bool,
     state: MergerState,
 }
 
@@ -615,7 +637,6 @@ enum MergerState {
         queue: Vec<usize>,
         queue_min_doc_id: i32,
     },
-    Empty,
 }
 
 impl<T: DocIDMergerSub> DocIDMerger<T> {
@@ -635,48 +656,19 @@ impl<T: DocIDMergerSub> DocIDMerger<T> {
     /// `SortedDocIDMerger` when the index is sorted and `maxCount > 1`, and
     /// `SequentialDocIDMerger` otherwise; `max_count` is what decides, not the
     /// current length of `subs`, because a reused merger may be reset with more
-    /// subs later.
-    pub fn of(mut subs: Vec<T>, max_count: usize, index_is_sorted: bool) -> Result<Self> {
-        let state = if subs.is_empty() {
-            MergerState::Empty
-        } else if index_is_sorted && max_count > 1 {
-            let mut queue = Vec::with_capacity(subs.len() - 1);
-            let current = 0usize;
-            // The first sub is held out as `current`; initialize the rest.
-            for (i, sub) in subs.iter_mut().enumerate().skip(1) {
-                sub.set_mapped_doc_id(-1);
-                if sub.next_mapped_doc()? != NO_MORE_DOCS {
-                    queue.push(i);
-                }
-            }
-            let queue_min_doc_id = if queue.is_empty() {
-                NO_MORE_DOCS
-            } else {
-                // Find the smallest mapped doc id in the queue.
-                let mut min = NO_MORE_DOCS;
-                for &idx in &queue {
-                    let doc = subs[idx].mapped_doc_id();
-                    if doc < min {
-                        min = doc;
-                    }
-                }
-                min
-            };
-            // Simple heap ordering by mapped doc id.
-            queue.sort_by_key(|&idx| subs[idx].mapped_doc_id());
-            MergerState::Sorted {
-                current: Some(current),
-                queue,
-                queue_min_doc_id,
-            }
-        } else {
-            MergerState::Sequential {
-                current: Some(0),
-                next_index: 1,
-            }
+    /// subs later. Both constructors end with `reset()`.
+    pub fn of(subs: Vec<T>, max_count: usize, index_is_sorted: bool) -> Result<Self> {
+        let mut merger = Self {
+            subs,
+            sorted: index_is_sorted && max_count > 1,
+            // Java's fields before the constructor's `reset()` assigns them.
+            state: MergerState::Sequential {
+                current: None,
+                next_index: 0,
+            },
         };
-
-        Ok(Self { subs, state })
+        merger.reset()?;
+        Ok(merger)
     }
 
     /// Returns every sub-reader handed to this merger, in construction order.
@@ -686,6 +678,17 @@ impl<T: DocIDMergerSub> DocIDMerger<T> {
     /// merger owns the subs, so it exposes them instead.
     pub fn subs(&self) -> &[T] {
         &self.subs
+    }
+
+    /// Returns the list of sub-readers for the caller to refill before
+    /// [`reset`](Self::reset).
+    ///
+    /// Equivalent to the caller's own reference to the `List<T>` it handed to
+    /// `DocIDMerger.of`, which `MappingMultiPostingsEnum.reset` clears and
+    /// refills before calling `docIDMerger.reset()`
+    /// (`MappingMultiPostingsEnum.java:69-75`).
+    pub fn subs_mut(&mut self) -> &mut Vec<T> {
+        &mut self.subs
     }
 
     /// Returns the sub positioned by the most recent [`Self::next_sub`] call,
@@ -704,18 +707,51 @@ impl<T: DocIDMergerSub> DocIDMerger<T> {
         self.current_index().map(|idx| &mut self.subs[idx])
     }
 
-    /// Resets the merger to the beginning.
+    /// Resets the merger to the beginning of its current list of subs.
+    ///
+    /// Equivalent to `DocIDMerger.reset()`, the "reuse API, currently only
+    /// used by postings during merge" (`DocIDMerger.java:88-89`):
+    ///
+    /// * `SequentialDocIDMerger.reset()` (`DocIDMerger.java:110-119`) makes the
+    ///   first sub current and the second the next;
+    /// * `SortedDocIDMerger.reset()` (`DocIDMerger.java:166-184`) empties the
+    ///   queue, makes the first sub current with `mappedDocID = -1` — so the
+    ///   first [`next_sub`](Self::next_sub) advances it — and queues every
+    ///   other sub that still has a mapped document, after positioning it on
+    ///   that document.
+    ///
+    /// An empty list leaves `current` `null` in both kinds
+    /// (`DocIDMerger.java:115-117`, `DocIDMerger.java:169-183`), so the next
+    /// [`next_sub`](Self::next_sub) reports Java's `NullPointerException`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever positioning a sub of a sorted merger raises.
     pub fn reset(&mut self) -> Result<()> {
         self.state = if self.subs.is_empty() {
-            MergerState::Empty
-        } else if matches!(self.state, MergerState::Sorted { .. }) {
+            if self.sorted {
+                // queue.clear(); current = null; setQueueMinDocID()
+                MergerState::Sorted {
+                    current: None,
+                    queue: Vec::new(),
+                    queue_min_doc_id: NO_MORE_DOCS,
+                }
+            } else {
+                // current = null; nextIndex = 0
+                MergerState::Sequential {
+                    current: None,
+                    next_index: 0,
+                }
+            }
+        } else if self.sorted {
             let mut queue = Vec::with_capacity(self.subs.len() - 1);
-            let current = 0usize;
+            // by setting mappedDocID = -1, this entry is guaranteed to be the
+            // top of the queue so the first call to next() will advance it
+            self.subs[0].set_mapped_doc_id(-1);
             for i in 1..self.subs.len() {
-                self.subs[i].set_mapped_doc_id(-1);
                 if self.subs[i].next_mapped_doc()? != NO_MORE_DOCS {
                     queue.push(i);
-                }
+                } // else all docs in this sub were deleted; do not add it to the queue!
             }
             queue.sort_by_key(|&idx| self.subs[idx].mapped_doc_id());
             let queue_min_doc_id = queue
@@ -723,7 +759,7 @@ impl<T: DocIDMergerSub> DocIDMerger<T> {
                 .map(|&idx| self.subs[idx].mapped_doc_id())
                 .unwrap_or(NO_MORE_DOCS);
             MergerState::Sorted {
-                current: Some(current),
+                current: Some(0),
                 queue,
                 queue_min_doc_id,
             }
@@ -737,16 +773,20 @@ impl<T: DocIDMergerSub> DocIDMerger<T> {
     }
 
     /// Returns the next sub reader in merge order, or `None` when done.
+    ///
+    /// Equivalent to `DocIDMerger.next()`. Its contract forbids a call after
+    /// it has answered `null`; both of Java's mergers then dereference their
+    /// `null` `current` (`DocIDMerger.java:123`, `DocIDMerger.java:188`),
+    /// as they do on the first call over an empty list, and the
+    /// `NullPointerException` is reported here as
+    /// [`LuceneError::IllegalState`] with the JDK's message.
     pub fn next_sub(&mut self) -> Result<Option<&mut T>> {
         match &mut self.state {
-            MergerState::Empty => Ok(None),
             MergerState::Sequential {
                 current,
                 next_index,
             } => loop {
-                let idx = current.ok_or_else(|| {
-                    LuceneError::illegal_state("DocIDMerger is exhausted".to_string())
-                })?;
+                let idx = current.ok_or_else(exhausted_merger)?;
                 if self.subs[idx].next_mapped_doc()? != NO_MORE_DOCS {
                     return Ok(Some(&mut self.subs[idx]));
                 }
@@ -762,7 +802,7 @@ impl<T: DocIDMergerSub> DocIDMerger<T> {
                 queue,
                 queue_min_doc_id,
             } => {
-                let current_idx = current.expect("Sorted merger has no current sub");
+                let current_idx = current.ok_or_else(exhausted_merger)?;
                 let next_doc = self.subs[current_idx].next_mapped_doc()?;
                 if next_doc < *queue_min_doc_id {
                     return Ok(Some(&mut self.subs[current_idx]));
@@ -810,7 +850,6 @@ impl<T: DocIDMergerSub> DocIDMerger<T> {
     /// [`sub_mut`](Self::sub_mut) when it needs a value.
     pub fn current_index(&self) -> Option<usize> {
         match &self.state {
-            MergerState::Empty => None,
             MergerState::Sequential { current, .. } => *current,
             MergerState::Sorted { current, .. } => *current,
         }
@@ -869,6 +908,104 @@ mod tests {
 
         fn set_mapped_doc_id(&mut self, doc_id: i32) {
             self.mapped = doc_id;
+        }
+    }
+
+    fn drain_merger(merger: &mut DocIDMerger<VecSub>) -> Vec<i32> {
+        let mut order = Vec::new();
+        while let Some(sub) = merger.next_sub().unwrap() {
+            order.push(sub.mapped_doc_id());
+        }
+        order
+    }
+
+    /// Asserts that a step reported the `NullPointerException` both of Java's
+    /// mergers raise on their `null` `current`.
+    fn assert_npe(step: Result<Option<&mut VecSub>>) {
+        let err = match step {
+            Err(err) => err,
+            Ok(_) => panic!("a merger whose `current` is null must not step"),
+        };
+        assert_eq!(
+            err.to_string(),
+            exhausted_merger().to_string(),
+            "the JDK's message for `current.nextMappedDoc()`"
+        );
+    }
+
+    /// Java's `SequentialDocIDMerger.reset()` and `SortedDocIDMerger.reset()`
+    /// leave `current` `null` over an empty list (`DocIDMerger.java:115-117`,
+    /// `:169-183`), so the first `next()` throws `NullPointerException`
+    /// (`DocIDMerger.java:123`, `:188`); it does not answer `null`.
+    #[test]
+    fn stepping_a_merger_over_no_sub_reports_javas_npe_for_both_kinds() {
+        for (max_count, sorted) in [(0, false), (2, false), (0, true), (2, true)] {
+            let mut merger: DocIDMerger<VecSub> =
+                DocIDMerger::of(Vec::new(), max_count, sorted).unwrap();
+            assert!(merger.current_index().is_none());
+            assert_npe(merger.next_sub());
+        }
+    }
+
+    /// `MappingMultiPostingsEnum` builds its merger over an empty list with
+    /// `maxCount` = the number of segments, then refills the list and resets
+    /// it for every term: the kind `of` chose must survive, as the class of
+    /// Java's object does.
+    #[test]
+    fn a_merger_built_empty_keeps_its_sorted_kind_across_reset() {
+        let mut merger: DocIDMerger<VecSub> = DocIDMerger::of(Vec::new(), 2, true).unwrap();
+        // Stepping it while its list is empty dereferences Java's `null`
+        // `current` (`DocIDMerger.java:188`); `reset` below recovers it.
+        assert_npe(merger.next_sub());
+
+        merger
+            .subs_mut()
+            .push(VecSub::new(vec![0, 1], Arc::new(|doc: i32| doc * 2)));
+        merger
+            .subs_mut()
+            .push(VecSub::new(vec![0, 1], Arc::new(|doc: i32| doc * 2 + 1)));
+        merger.reset().unwrap();
+        assert_eq!(
+            drain_merger(&mut merger),
+            vec![0, 1, 2, 3],
+            "a SortedDocIDMerger interleaves by mapped doc id"
+        );
+    }
+
+    #[test]
+    fn a_merger_built_for_one_sub_stays_sequential_across_reset() {
+        let mut merger: DocIDMerger<VecSub> = DocIDMerger::of(Vec::new(), 1, true).unwrap();
+        merger
+            .subs_mut()
+            .push(VecSub::new(vec![0, 1], Arc::new(|doc: i32| doc * 2 + 1)));
+        merger
+            .subs_mut()
+            .push(VecSub::new(vec![0, 1], Arc::new(|doc: i32| doc * 2)));
+        merger.reset().unwrap();
+        assert_eq!(
+            drain_merger(&mut merger),
+            vec![1, 3, 0, 2],
+            "`maxCount <= 1` picks SequentialDocIDMerger, which concatenates"
+        );
+    }
+
+    #[test]
+    fn stepping_an_exhausted_merger_reports_javas_npe_for_both_kinds() {
+        for sorted in [false, true] {
+            let subs = vec![
+                VecSub::new(vec![0], identity_doc_map(1, 0)),
+                VecSub::new(vec![0], identity_doc_map(1, 1)),
+            ];
+            let mut merger = DocIDMerger::new(subs, sorted).unwrap();
+            assert_eq!(drain_merger(&mut merger), vec![0, 1]);
+            let err = match merger.next_sub() {
+                Err(err) => err,
+                Ok(_) => panic!("an exhausted merger must not be stepped again"),
+            };
+            assert!(
+                err.to_string().contains("because \"this.current\" is null"),
+                "sorted={sorted}: {err:?}"
+            );
         }
     }
 
@@ -934,13 +1071,6 @@ mod tests {
             order.push(sub.mapped_doc_id());
         }
         assert_eq!(order, vec![0, 1, 2, 3, 4, 5]);
-    }
-
-    #[test]
-    fn empty_merger_returns_none() {
-        let subs: Vec<VecSub> = vec![];
-        let mut merger = DocIDMerger::new(subs, false).unwrap();
-        assert!(merger.next_sub().unwrap().is_none());
     }
 
     #[test]
