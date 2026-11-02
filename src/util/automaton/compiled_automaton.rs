@@ -5,7 +5,8 @@ use crate::error::Result;
 use crate::index::Term;
 use crate::search::{Query, QueryVisitor};
 use crate::util::{
-    Accountable, BytesRef, BytesRefBuilder, IntsRef, RamUsageEstimator, StringHelper, UnicodeUtil,
+    Accountable, BytesRef, BytesRefBuilder, IntsRef, RamUsageEstimator, SizedObject, StringHelper,
+    UnicodeUtil,
 };
 
 use super::automata::Automata;
@@ -264,7 +265,8 @@ impl CompiledAutomaton {
 
     fn ints_ref_to_utf8_bytes_ref(ints: &IntsRef) -> Result<BytesRef> {
         let s = UnicodeUtil::new_string(&ints.ints, ints.offset, ints.length)?;
-        Ok(BytesRef::new(s.into_bytes()))
+        // `new BytesRef(UnicodeUtil.newString(...))` (`CompiledAutomaton.java:215`).
+        Ok(BytesRef::from_char_sequence(&s))
     }
 
     fn add_tail(
@@ -613,21 +615,31 @@ impl Accountable for CompiledAutomaton {
     /// constants it is built on are the JVM's — so dropping the term would
     /// answer a different question from the one Lucene answers.
     fn ram_bytes_used(&self) -> i64 {
-        let size_of_bytes_ref = |r: &Option<BytesRef>| match r {
-            Some(_) => RamUsageEstimator::UNKNOWN_DEFAULT_RAM_BYTES_USED,
-            None => 0,
+        // `BytesRef` is a class `sizeOfObject` does not know: its shallow
+        // size is an object header, the `bytes` reference and two `int`s.
+        let bytes_ref = |r: &Option<BytesRef>| {
+            r.as_ref().map(|_| SizedObject::Unknown {
+                shallow_size: RamUsageEstimator::align_object_size(
+                    RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
+                        + RamUsageEstimator::NUM_BYTES_OBJECT_REF
+                        + 8,
+                ),
+            })
         };
+        let transition = Transition::new();
         Self::BASE_RAM_BYTES
-            + size_of_bytes_ref(&self.common_suffix_ref)
-            + self
-                .run_automaton
-                .as_ref()
-                .map_or(0, ByteRunAutomaton::ram_bytes_used)
-            + self
-                .nfa_run_automaton
-                .as_ref()
-                .map_or(0, NFARunAutomaton::ram_bytes_used)
-            + size_of_bytes_ref(&self.term)
-            + Transition::BYTES_USED
+            + RamUsageEstimator::size_of_object(bytes_ref(&self.common_suffix_ref))
+            + RamUsageEstimator::size_of_object(
+                self.run_automaton
+                    .as_ref()
+                    .map(|a| SizedObject::Accountable(a as &dyn Accountable)),
+            )
+            + RamUsageEstimator::size_of_object(
+                self.nfa_run_automaton
+                    .as_ref()
+                    .map(|a| SizedObject::Accountable(a as &dyn Accountable)),
+            )
+            + RamUsageEstimator::size_of_object(bytes_ref(&self.term))
+            + RamUsageEstimator::size_of_object(Some(SizedObject::Accountable(&transition)))
     }
 }

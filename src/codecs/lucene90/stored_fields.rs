@@ -70,7 +70,7 @@ use crate::codecs::stored_fields::{
 use crate::codecs::stub::{
     FieldInfo, FieldInfos, SegmentInfo, StoredFieldVisitor, StoredFieldVisitorStatus,
 };
-use crate::error::{LuceneError, Result};
+use crate::error::{to_int_exact, LuceneError, Result};
 use crate::index::{
     segment_file_name, DocIDMerger, DocIDMergerSub, DocMap, MergeState, StoredFieldDataInput,
 };
@@ -78,11 +78,14 @@ use crate::store::{
     ByteArrayDataInput, ByteBuffersDataOutput, DataInput, DataOutput, Directory, IOContext,
     IndexInput, IndexOutput,
 };
-use crate::util::packed::{DirectMonotonicMeta, DirectMonotonicReader, DirectMonotonicWriter};
+use crate::util::packed::{
+    shared_random_access_input, DirectMonotonicMeta, DirectMonotonicReader, DirectMonotonicWriter,
+};
 use crate::util::Accountable;
 use crate::util::ArrayUtil;
 use crate::util::BitUtil;
 use crate::util::BytesRef;
+use crate::util::IOUtils;
 
 // -----------------------------------------------------------------------------
 // Format constants
@@ -450,24 +453,39 @@ pub(crate) trait FieldsIndex: Send + Sync {
 
 /// Port of `org.apache.lucene.codecs.lucene90.compressing.FieldsIndexReader`.
 ///
-/// Reader side of the block index.
+/// Reader side of the block index: the documents and start pointers of the
+/// chunks are read by two `DirectMonotonicReader`s over slices of the
+/// `.fdx`/`.tvx` file, built once in the constructor and once per clone, as
+/// Java builds them (`FieldsIndexReader.java:85-90, 106-111`); a lookup reads
+/// the monotonic blocks it needs and nothing is decoded ahead of it.
 pub(crate) struct FieldsIndexReader {
     max_doc: i32,
     block_shift: i32,
-    num_blocks: usize,
-    docs: Vec<i64>,
-    start_pointers: Vec<i64>,
+    num_chunks: i32,
+    docs_meta: DirectMonotonicMeta,
+    start_pointers_meta: DirectMonotonicMeta,
+    /// The `.fdx` file, which Java keeps open and slices.
+    index_input: Box<dyn IndexInput>,
     docs_start_pointer: i64,
+    docs_end_pointer: i64,
     start_pointers_start_pointer: i64,
     start_pointers_end_pointer: i64,
+    /// Java's `docs`.
+    docs: DirectMonotonicReader,
+    /// Java's `startPointers`.
+    start_pointers: DirectMonotonicReader,
     max_pointer: i64,
-    /// The `.fdx` file, kept open so that every use clones it rather than
-    /// re-opening the file, and so that the reader never needs to remember
-    /// which directory it came from. Lucene keeps the same handle.
-    index_input: Box<dyn IndexInput>,
 }
 
 impl FieldsIndexReader {
+    /// Equivalent to `FieldsIndexReader(Directory, String, String, String,
+    /// String, byte[], IndexInput, IOContext)` (`FieldsIndexReader.java:49-91`).
+    ///
+    /// When the index header or the footer cannot be read, the `.fdx` input is
+    /// closed before the error is returned, as Java's `finally` closes it; a
+    /// failure of that close replaces the original error, as an exception
+    /// thrown from a `finally` block does.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         directory: &dyn Directory,
         segment: &str,
@@ -480,25 +498,13 @@ impl FieldsIndexReader {
     ) -> Result<Self> {
         let max_doc = meta_in.read_int()?;
         let block_shift = meta_in.read_int()?;
-        let num_values = meta_in.read_int()?;
-        // Both come off disk. `FieldsIndexWriter.finish` writes `totalChunks + 1`
-        // here (`FieldsIndexWriter.java:120`) and `writeIndex` is called once
-        // per chunk with at least one document, so Lucene's own invariant is
-        // `numValues <= maxDoc + 1`. Checking it turns a corrupt count into an
-        // error instead of a loop that fills two vectors with billions of
-        // entries.
-        if max_doc < 0 || num_values < 0 || i64::from(num_values) > i64::from(max_doc) + 1 {
-            return Err(LuceneError::CorruptIndex(format!(
-                "the fields index of {segment}{suffix}.{extension} claims {num_values} chunk \
-                 boundaries for {max_doc} documents"
-            )));
-        }
-        let num_values = num_values as usize;
+        let num_chunks = meta_in.read_int()?;
         let docs_start_pointer = meta_in.read_long()?;
-        let docs_meta = DirectMonotonicMeta::load(meta_in, num_values as i64, block_shift)?;
-        let start_pointers_start_pointer = meta_in.read_long()?;
+        let docs_meta = DirectMonotonicMeta::load(meta_in, i64::from(num_chunks), block_shift)?;
+        let docs_end_pointer = meta_in.read_long()?;
+        let start_pointers_start_pointer = docs_end_pointer;
         let start_pointers_meta =
-            DirectMonotonicMeta::load(meta_in, num_values as i64, block_shift)?;
+            DirectMonotonicMeta::load(meta_in, i64::from(num_chunks), block_shift)?;
         let start_pointers_end_pointer = meta_in.read_long()?;
         let max_pointer = meta_in.read_long()?;
 
@@ -506,74 +512,84 @@ impl FieldsIndexReader {
         let mut index_input = directory.open_input(&index_file, io_context)?;
 
         let header_name = format!("{codec_name}Idx");
-        check_index_header(
+        let checked = check_index_header(
             index_input.as_mut(),
             &header_name,
             INDEX_VERSION_START,
             INDEX_VERSION_CURRENT,
             &id,
             suffix,
-        )?;
-        retrieve_checksum(index_input.as_mut())?;
-
-        let docs_data = Self::read_slice(
-            index_input.as_mut(),
-            docs_start_pointer,
-            start_pointers_start_pointer,
-        )?;
-        let start_pointers_data = Self::read_slice(
-            index_input.as_mut(),
-            start_pointers_start_pointer,
-            start_pointers_end_pointer,
-        )?;
-
-        let docs_reader = DirectMonotonicReader::new(docs_meta, docs_data)?;
-        let start_pointers_reader =
-            DirectMonotonicReader::new(start_pointers_meta, start_pointers_data)?;
-
-        // Nothing is reserved up front and every read is checked: `num_values`
-        // is a file value, and the two monotonic readers are built over slices
-        // whose length is a file value too, so an index they cannot serve must
-        // be an error rather than the panic `LongValues::get` would raise.
-        let mut docs = Vec::new();
-        let mut start_pointers = Vec::new();
-        for i in 0..num_values {
-            docs.push(docs_reader.get_checked(i as i64)?);
-            start_pointers.push(start_pointers_reader.get_checked(i as i64)?);
+        )
+        .and_then(|_| retrieve_checksum(index_input.as_mut()));
+        if let Err(error) = checked {
+            // `finally { if (success == false) indexInput.close(); }`
+            // (`FieldsIndexReader.java:73-83`).
+            index_input.close()?;
+            return Err(error);
         }
 
+        let (docs, start_pointers) = Self::monotonic_readers(
+            index_input.as_ref(),
+            &docs_meta,
+            &start_pointers_meta,
+            [
+                docs_start_pointer,
+                docs_end_pointer,
+                start_pointers_start_pointer,
+                start_pointers_end_pointer,
+            ],
+        )?;
         Ok(Self {
             max_doc,
             block_shift,
-            num_blocks: num_values,
-            docs,
-            start_pointers,
+            num_chunks,
+            docs_meta,
+            start_pointers_meta,
+            index_input,
             docs_start_pointer,
+            docs_end_pointer,
             start_pointers_start_pointer,
             start_pointers_end_pointer,
+            docs,
+            start_pointers,
             max_pointer,
-            index_input,
         })
     }
 
-    fn read_slice(input: &mut dyn IndexInput, start: i64, end: i64) -> Result<Vec<u8>> {
-        // The bounds come out of the `.fdm` metadata, so they are untrusted.
-        // Java reaches this through `IndexInput.slice`, which validates the
-        // range against the file length and throws `IllegalArgumentException`
-        // without allocating anything; allocating first would let a corrupt
-        // pointer pair request petabytes and abort the process on a failed
-        // allocation, which no exception can catch.
-        let length = input.length();
-        if start < 0 || end < start || end > length {
-            return Err(LuceneError::CorruptIndex(format!(
-                "slice [{start}, {end}) is outside the {length}-byte fields index"
-            )));
-        }
-        let len = (end - start) as usize;
-        let mut buf = vec![0u8; len];
-        input.seek(start)?;
-        input.read_bytes(&mut buf, 0, len)?;
-        Ok(buf)
+    /// Builds Java's `docs` and `startPointers` over their slices of
+    /// `index_input` (`FieldsIndexReader.java:84-90, 105-111`):
+    ///
+    /// ```java
+    /// docsSlice = indexInput.randomAccessSlice(docsStartPointer, docsEndPointer - docsStartPointer);
+    /// startPointersSlice = indexInput.randomAccessSlice(
+    ///     startPointersStartPointer, startPointersEndPointer - startPointersStartPointer);
+    /// docs = DirectMonotonicReader.getInstance(docsMeta, docsSlice);
+    /// startPointers = DirectMonotonicReader.getInstance(startPointersMeta, startPointersSlice);
+    /// ```
+    ///
+    /// The lengths are Java's `long` differences, which wrap; a negative one is
+    /// refused by `randomAccessSlice` with an `IllegalArgumentException`.
+    fn monotonic_readers(
+        index_input: &dyn IndexInput,
+        docs_meta: &DirectMonotonicMeta,
+        start_pointers_meta: &DirectMonotonicMeta,
+        [docs_start, docs_end, start_pointers_start, start_pointers_end]: [i64; 4],
+    ) -> Result<(DirectMonotonicReader, DirectMonotonicReader)> {
+        let docs_slice =
+            index_input.random_access_slice(docs_start, docs_end.wrapping_sub(docs_start))?;
+        let start_pointers_slice = index_input.random_access_slice(
+            start_pointers_start,
+            start_pointers_end.wrapping_sub(start_pointers_start),
+        )?;
+        let docs = DirectMonotonicReader::with_random_access(
+            docs_meta.clone(),
+            shared_random_access_input(docs_slice),
+        )?;
+        let start_pointers = DirectMonotonicReader::with_random_access(
+            start_pointers_meta.clone(),
+            shared_random_access_input(start_pointers_slice),
+        )?;
+        Ok((docs, start_pointers))
     }
 }
 
@@ -582,75 +598,42 @@ impl fmt::Debug for FieldsIndexReader {
         f.debug_struct("FieldsIndexReader")
             .field("max_doc", &self.max_doc)
             .field("block_shift", &self.block_shift)
-            .field("num_blocks", &self.num_blocks)
+            .field("num_chunks", &self.num_chunks)
             .field("max_pointer", &self.max_pointer)
             .finish_non_exhaustive()
     }
 }
 
 impl FieldsIndexReader {
+    /// Equivalent to `FieldsIndexReader.getMaxPointer()`.
     pub(crate) fn max_pointer(&self) -> i64 {
         self.max_pointer
     }
 }
 
-impl FieldsIndexReader {
-    /// Returns the value `values` holds for `block_id`, or a corrupt-index
-    /// error for a block this index does not hold.
-    ///
-    /// Java reads it through `DirectMonotonicReader.get(long)`, which throws an
-    /// unchecked `ArrayIndexOutOfBoundsException` for such a block — a hostile
-    /// `.fdm` that declares no chunks for a non-empty segment reaches it with
-    /// block `-1` — so Rust's indexing would panic where Java throws.
-    fn block_value(&self, values: &[i64], block_id: i64) -> Result<i64> {
-        usize::try_from(block_id)
-            .ok()
-            .and_then(|block| values.get(block))
-            .copied()
-            .ok_or_else(|| {
-                LuceneError::CorruptIndex(format!(
-                    "block {block_id} is outside the {} blocks of the fields index",
-                    self.num_blocks
-                ))
-            })
-    }
-}
-
 impl FieldsIndex for FieldsIndexReader {
     /// Equivalent to `FieldsIndexReader.getBlockID(int)`
-    /// (`FieldsIndexReader.java:119-127`): `docs.binarySearch(0, numChunks,
-    /// docID)`, an exact match or `-2 - (-1 - insertionPoint)`, the block
-    /// before the insertion point. An index without chunks answers `-1`, as
-    /// Java's does.
+    /// (`FieldsIndexReader.java:118-126`): `Objects.checkIndex(docID, maxDoc)`,
+    /// then `docs.binarySearch(0, numChunks, docID)`, an exact match or
+    /// `-2 - (-1 - insertionPoint)`, the block before the insertion point. An
+    /// index without chunks answers `-1`, as Java's does.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`], this crate's carrier for an
+    /// `IndexOutOfBoundsException`, with the JDK's message `Index <docID> out
+    /// of bounds for length <maxDoc>`, for a document outside the segment; and
+    /// the errors of reading the index.
     fn get_block_id(&self, doc_id: i32) -> Result<i64> {
         if doc_id < 0 || doc_id >= self.max_doc {
             return Err(LuceneError::IllegalArgument(format!(
-                "doc_id {doc_id} out of bounds [0, {})",
+                "Index {doc_id} out of bounds for length {}",
                 self.max_doc
             )));
         }
-
-        // `DirectMonotonicReader.binarySearch(long, long, long)` over the
-        // decoded values; `num_blocks` is at most `maxDoc + 1`, so neither the
-        // bounds nor their sum overflow.
-        let key = i64::from(doc_id);
-        let mut lo: i64 = 0;
-        let mut hi: i64 = self.num_blocks as i64 - 1;
-        let mut block_index: i64 = -1;
-        while lo <= hi {
-            let mid = (lo + hi) >> 1;
-            match self.docs[mid as usize].cmp(&key) {
-                std::cmp::Ordering::Less => lo = mid + 1,
-                std::cmp::Ordering::Greater => hi = mid - 1,
-                std::cmp::Ordering::Equal => {
-                    block_index = mid;
-                    break;
-                }
-            }
-        }
-        if lo > hi {
-            block_index = -1 - lo;
-        }
+        let mut block_index =
+            self.docs
+                .binary_search(0, i64::from(self.num_chunks), i64::from(doc_id))?;
         if block_index < 0 {
             block_index = -2 - block_index;
         }
@@ -658,18 +641,21 @@ impl FieldsIndex for FieldsIndexReader {
     }
 
     /// Equivalent to `FieldsIndexReader.getBlockStartPointer(long)`
-    /// (`FieldsIndexReader.java:129-132`).
+    /// (`FieldsIndexReader.java:128-131`), `startPointers.get(blockIndex)`.
+    /// Java throws an unchecked `ArrayIndexOutOfBoundsException` for a block
+    /// the index does not hold; [`DirectMonotonicReader::get_checked`] answers
+    /// it with a corrupt-index error.
     fn get_block_start_pointer(&self, block_id: i64) -> Result<i64> {
-        self.block_value(&self.start_pointers, block_id)
+        self.start_pointers.get_checked(block_id)
     }
 
     /// Equivalent to `FieldsIndexReader.getBlockLength(long)`
-    /// (`FieldsIndexReader.java:134-143`).
+    /// (`FieldsIndexReader.java:133-142`).
     fn get_block_length(&self, block_id: i64) -> Result<i64> {
-        let end_pointer = if block_id == self.num_blocks as i64 - 1 {
+        let end_pointer = if block_id == i64::from(self.num_chunks) - 1 {
             self.max_pointer
         } else {
-            self.block_value(&self.start_pointers, block_id + 1)?
+            self.start_pointers.get_checked(block_id + 1)?
         };
         Ok(end_pointer - self.get_block_start_pointer(block_id)?)
     }
@@ -681,23 +667,43 @@ impl FieldsIndex for FieldsIndexReader {
         Ok(())
     }
 
+    /// Equivalent to `FieldsIndexReader.clone()` (`FieldsIndexReader.java:145-152`),
+    /// the private copy constructor over a clone of `indexInput`, which builds
+    /// its own `docs` and `startPointers` (`FieldsIndexReader.java:93-112`).
     fn clone_index(&self) -> Result<Box<dyn FieldsIndex>> {
+        let index_input = self.index_input.clone_input()?;
+        let (docs, start_pointers) = Self::monotonic_readers(
+            index_input.as_ref(),
+            &self.docs_meta,
+            &self.start_pointers_meta,
+            [
+                self.docs_start_pointer,
+                self.docs_end_pointer,
+                self.start_pointers_start_pointer,
+                self.start_pointers_end_pointer,
+            ],
+        )?;
         Ok(Box::new(Self {
             max_doc: self.max_doc,
             block_shift: self.block_shift,
-            num_blocks: self.num_blocks,
-            docs: self.docs.clone(),
-            start_pointers: self.start_pointers.clone(),
+            num_chunks: self.num_chunks,
+            docs_meta: self.docs_meta.clone(),
+            start_pointers_meta: self.start_pointers_meta.clone(),
+            index_input,
             docs_start_pointer: self.docs_start_pointer,
+            docs_end_pointer: self.docs_end_pointer,
             start_pointers_start_pointer: self.start_pointers_start_pointer,
             start_pointers_end_pointer: self.start_pointers_end_pointer,
+            docs,
+            start_pointers,
             max_pointer: self.max_pointer,
-            index_input: self.index_input.clone_input()?,
         }))
     }
 
+    /// Equivalent to `FieldsIndexReader.close()` (`FieldsIndexReader.java:114-117`),
+    /// `indexInput.close()`.
     fn close(&mut self) -> Result<()> {
-        Ok(())
+        self.index_input.close()
     }
 }
 
@@ -924,13 +930,10 @@ impl FieldsIndexWriter {
         // IOUtils.close(docsOut, filePointersOut);`
         write_footer(Self::open_output(&mut self.docs_out)?)?;
         write_footer(Self::open_output(&mut self.file_pointers_out)?)?;
-        let closed = [
-            self.docs_out.take().map_or(Ok(()), |mut out| out.close()),
-            self.file_pointers_out
-                .take()
-                .map_or(Ok(()), |mut out| out.close()),
-        ];
-        closed.into_iter().find(Result::is_err).unwrap_or(Ok(()))?;
+        IOUtils::close(
+            [self.docs_out.take(), self.file_pointers_out.take()]
+                .map(|o| o.map(|mut o| move || o.close())),
+        )?;
 
         let data_file = segment_file_name(&self.name, &self.suffix, &self.extension);
         let mut data_out = self
@@ -1062,15 +1065,11 @@ impl FieldsIndexWriter {
     /// one step fails; as in a Java `finally`, a failure to delete replaces a
     /// failure to close.
     pub(crate) fn close(&mut self) -> Result<()> {
-        let closed = [
-            self.docs_out.take().map_or(Ok(()), |mut out| out.close()),
-            self.file_pointers_out
-                .take()
-                .map_or(Ok(()), |mut out| out.close()),
-        ]
-        .into_iter()
-        .find(Result::is_err)
-        .unwrap_or(Ok(()));
+        // `IOUtils.close(docsOut, filePointersOut)` in the `try` block.
+        let closed = IOUtils::close(
+            [self.docs_out.take(), self.file_pointers_out.take()]
+                .map(|o| o.map(|mut o| move || o.close())),
+        );
         // `IOUtils.deleteFiles(dir, fileNames)` tries every file and throws
         // the first failure.
         let deleted = [
@@ -1281,15 +1280,11 @@ impl Lucene90CompressingStoredFieldsWriter {
             Ok(())
         })();
         if let Err(error) = opened {
-            if let Some(mut out) = meta_stream {
-                let _ = out.close();
-            }
-            if let Some(mut out) = fields_stream {
-                let _ = out.close();
-            }
-            if let Some(mut writer) = index_writer {
-                let _ = writer.close();
-            }
+            IOUtils::close_while_handling_exception([
+                meta_stream.and_then(|mut out| IOUtils::closeable(move || out.close())),
+                fields_stream.and_then(|mut out| IOUtils::closeable(move || out.close())),
+                index_writer.and_then(|mut writer| IOUtils::closeable(move || writer.close())),
+            ])?;
             return Err(error);
         }
         let (Some(meta_stream), Some(fields_stream), Some(index_writer)) =
@@ -1388,7 +1383,7 @@ impl Lucene90CompressingStoredFieldsWriter {
         )?;
 
         if sliced {
-            let bytes = self.buffered_docs.to_array_copy();
+            let bytes = self.buffered_docs.to_array_copy()?;
             let capacity = bytes.len();
             let chunk_size = self.chunk_size;
             for compressed in (0..capacity).step_by(chunk_size) {
@@ -1723,7 +1718,9 @@ impl StoredFieldsWriter for Lucene90CompressingStoredFieldsWriter {
         }
         self.num_stored_fields[self.num_buffered_docs] = self.num_stored_fields_in_doc;
         self.num_stored_fields_in_doc = 0;
-        self.end_offsets[self.num_buffered_docs] = self.buffered_docs.size() as i32;
+        // `endOffsets[numBufferedDocs] = Math.toIntExact(bufferedDocs.size())`
+        // (`Lucene90CompressingStoredFieldsWriter.java:192`).
+        self.end_offsets[self.num_buffered_docs] = to_int_exact(self.buffered_docs.size() as i64)?;
         self.num_buffered_docs += 1;
         if self.trigger_flush() {
             self.flush(false)
@@ -1955,13 +1952,12 @@ impl StoredFieldsWriter for Lucene90CompressingStoredFieldsWriter {
     /// aborted flush is about to delete. Rust has no suppressed-exception
     /// chain, so the later failures are dropped rather than attached.
     fn close(&mut self) -> Result<()> {
-        let outcomes = [
-            self.meta_stream.close(),
-            self.fields_stream.close(),
-            self.index_writer.close(),
-            self.compressor.close(),
-        ];
-        outcomes.into_iter().find(Result::is_err).unwrap_or(Ok(()))
+        IOUtils::close([
+            IOUtils::closeable(|| self.meta_stream.close()),
+            IOUtils::closeable(|| self.fields_stream.close()),
+            IOUtils::closeable(|| self.index_writer.close()),
+            IOUtils::closeable(|| self.compressor.close()),
+        ])
     }
 }
 
@@ -2147,10 +2143,16 @@ impl BlockState {
         self.start_pointer = fields_stream.file_pointer();
 
         if merging {
-            let total_length = self.offsets[self.chunk_docs as usize] as usize;
+            // `Math.toIntExact(offsets[chunkDocs])`
+            // (`Lucene90CompressingStoredFieldsReader.java:511`). The total is
+            // kept as Java's `int`: a corrupt chunk can make it negative, in
+            // which case no slice is decompressed and the length check below
+            // reports it.
+            let total_length = to_int_exact(self.offsets[self.chunk_docs as usize])?;
             self.bytes.clear();
-            self.bytes.reserve(total_length);
+            self.bytes.reserve(total_length.max(0) as usize);
             if self.sliced {
+                let total_length = total_length.max(0) as usize;
                 let mut decompressed = 0;
                 while decompressed < total_length {
                     let to_decompress = cmp::min(total_length - decompressed, chunk_size);
@@ -2171,22 +2173,27 @@ impl BlockState {
                     self.bytes.extend_from_slice(spare.slice());
                     decompressed += to_decompress;
                 }
-            } else {
+            } else if let Ok(length) = usize::try_from(total_length) {
                 let mut bytes = BytesRef::default();
-                decompressor.decompress(
-                    fields_stream,
-                    total_length,
-                    0,
-                    total_length,
-                    &mut bytes,
-                )?;
+                decompressor.decompress(fields_stream, length, 0, length, &mut bytes)?;
                 self.bytes.extend_from_slice(bytes.slice());
             }
-            if self.bytes.len() != total_length {
-                return Err(LuceneError::CorruptIndex(format!(
-                    "expected chunk size = {total_length}, got {}",
-                    self.bytes.len()
-                )));
+            // **Divergence from Lucene 10.5.0.** Java hands a negative total to
+            // `decompressor.decompress(fieldsStream, totalLength, 0,
+            // totalLength, bytes)` (`Lucene90CompressingStoredFieldsReader.java:525`),
+            // whose `int` parameters accept it; what follows depends on the
+            // corrupt bytes (the LZ4 decompressor reads its header and ends
+            // with `bytes.length = length`). [`Decompressor::decompress`] takes
+            // `usize` lengths, so a negative total decompresses nothing here and
+            // the check below raises the chunk-size `CorruptIndexException`.
+            if self.bytes.len() as i64 != i64::from(total_length) {
+                return Err(LuceneError::corrupt_index(
+                    format!(
+                        "Corrupted: expected chunk size = {total_length}, got {}",
+                        self.bytes.len()
+                    ),
+                    fields_stream.resource_description(),
+                ));
             }
         }
 
@@ -2207,22 +2214,28 @@ impl BlockState {
             )));
         }
         let index = (doc_id - self.doc_base) as usize;
+        // `Lucene90CompressingStoredFieldsReader.java:544-547`, in Java's order:
+        // each `Math.toIntExact` raises `ArithmeticException("integer
+        // overflow")` for an offset or count past an `int`, and the length is
+        // an `int` subtraction.
+        let offset = to_int_exact(self.offsets[index])?;
+        let length = to_int_exact(self.offsets[index + 1])?.wrapping_sub(offset);
+        let total_length = to_int_exact(self.offsets[self.chunk_docs as usize])?;
+        let num_stored_fields = to_int_exact(self.num_stored_fields[index])?;
         // The offsets are a running sum decoded from the chunk header, so a
-        // corrupt header can make them non-monotonic or overflow an `i32`.
-        // Java's `Math.toIntExact` raises `ArithmeticException` for the latter
-        // and the negative length that the former produces trips its array
-        // bounds; both surface as an exception, so both are reported here
-        // rather than turning into a wild slice index.
-        let start = self.offsets[index];
-        let end = self.offsets[index + 1];
-        if end < start || start < 0 || end > i64::from(i32::MAX) {
+        // corrupt header can also make them go backwards. The negative length,
+        // or negative offset, that this produces trips Java's array bounds
+        // further down; both surface as an exception, so both are reported
+        // here rather than turning into a wild slice index.
+        if offset < 0 || length < 0 {
             return Err(LuceneError::CorruptIndex(format!(
-                "document {doc_id} spans [{start}, {end}) inside its chunk"
+                "document {doc_id} spans [{}, {}) inside its chunk",
+                self.offsets[index],
+                self.offsets[index + 1]
             )));
         }
-        let offset = start as usize;
-        let length = (end - start) as usize;
-        let num_stored_fields = self.num_stored_fields[index] as i32;
+        let offset = offset as usize;
+        let length = length as usize;
 
         if length == 0 {
             return Ok(SerializedDocument {
@@ -2237,7 +2250,6 @@ impl BlockState {
         } else {
             let input = fields_stream
                 .ok_or_else(|| LuceneError::illegal_state("missing fields input".to_string()))?;
-            let total_length = self.offsets[self.chunk_docs as usize] as usize;
             input.seek(self.start_pointer)?;
             // A known deviation, tracked as its own task: Java returns a lazy
             // `DataInput` that starts inflating at the document's own offset
@@ -2258,11 +2270,33 @@ impl BlockState {
             // of the document, so for a document near Lucene's documented 2 GiB
             // limit that is roughly 4 GiB against a fixed 90 KiB. The
             // difference is unbounded versus bounded, not merely "higher".
+            //
+            // **Divergence from Lucene 10.5.0.** Inflating the whole chunk also
+            // makes this path read the chunk's total length, which Java's
+            // read path only hands to the decompressor: a corrupt chunk whose
+            // total decodes negative is reported here with the chunk-size
+            // `CorruptIndexException` the merge instance raises
+            // (`Lucene90CompressingStoredFieldsReader.java:526-529`), the total
+            // kept as Java's `int`. Java passes the negative total to
+            // `decompress` (`:619`), whose outcome depends on the bytes — an
+            // `ArrayIndexOutOfBoundsException` from its `arraycopy`, or an
+            // `AssertionError` under `-ea`, on the file `LastPass.java` (case C3)
+            // builds;
+            // [`Decompressor::decompress`] takes `usize` lengths, so it cannot
+            // be handed one.
+            let resource = input.resource_description().to_string();
+            let chunk_size_error = |got: usize| {
+                LuceneError::corrupt_index(
+                    format!("Corrupted: expected chunk size = {total_length}, got {got}"),
+                    &resource,
+                )
+            };
             if self.sliced {
-                let mut full = Vec::with_capacity(total_length);
+                let expected = total_length.max(0) as usize;
+                let mut full = Vec::with_capacity(expected);
                 let mut decompressed = 0;
-                while decompressed < total_length {
-                    let to_decompress = cmp::min(total_length - decompressed, chunk_size);
+                while decompressed < expected {
+                    let to_decompress = cmp::min(expected - decompressed, chunk_size);
                     let mut spare = BytesRef::default();
                     // See the merging branch of `reset`: each slice frames its
                     // own uncompressed length.
@@ -2270,16 +2304,17 @@ impl BlockState {
                     full.extend_from_slice(spare.slice());
                     decompressed += to_decompress;
                 }
-                if full.len() != total_length {
-                    return Err(LuceneError::CorruptIndex(format!(
-                        "expected chunk size = {total_length}, got {}",
-                        full.len()
-                    )));
+                if full.len() as i64 != i64::from(total_length) {
+                    return Err(chunk_size_error(full.len()));
                 }
                 full[offset..offset + length].to_vec()
             } else {
+                // The decompressor takes `usize` lengths (see `reset`).
+                let Ok(total) = usize::try_from(total_length) else {
+                    return Err(chunk_size_error(0));
+                };
                 let mut bytes = BytesRef::default();
-                decompressor.decompress(input, total_length, offset, length, &mut bytes)?;
+                decompressor.decompress(input, total, offset, length, &mut bytes)?;
                 bytes.slice().to_vec()
             }
         };
@@ -2319,73 +2354,122 @@ impl Lucene90CompressingStoredFieldsReader {
         let id = segment_info.id();
         let num_docs = segment_info.max_doc()?;
 
-        let fields_file = segment_file_name(&segment, segment_suffix, FIELDS_EXTENSION);
-        let mut fields_stream = directory.open_input(&fields_file, io_context)?;
-        let version = check_index_header(
-            fields_stream.as_mut(),
-            format_name,
-            DATA_VERSION_START,
-            DATA_VERSION_CURRENT,
-            &id,
-            segment_suffix,
-        )?;
-        retrieve_checksum(fields_stream.as_mut())?;
+        // `fieldsStream`, the fields index and `metaIn`, held as soon as each
+        // is opened; when the `try` block fails,
+        // `IOUtils.closeWhileHandlingException(this, metaIn)` closes them
+        // (`Lucene90CompressingStoredFieldsReader.java:135-241`).
+        let mut fields_stream: Option<Box<dyn IndexInput>> = None;
+        let mut index_reader: Option<FieldsIndexReader> = None;
+        let mut meta_in: Option<Box<crate::store::BufferedChecksumIndexInput>> = None;
+        let opened = (|| -> Result<_> {
+            let fields_file = segment_file_name(&segment, segment_suffix, FIELDS_EXTENSION);
+            let fields_stream =
+                fields_stream.insert(directory.open_input(&fields_file, io_context)?);
+            let version = check_index_header(
+                fields_stream.as_mut(),
+                format_name,
+                DATA_VERSION_START,
+                DATA_VERSION_CURRENT,
+                &id,
+                segment_suffix,
+            )?;
+            retrieve_checksum(fields_stream.as_mut())?;
 
-        let meta_file = segment_file_name(&segment, segment_suffix, META_EXTENSION);
-        let mut meta_in = directory.open_checksum_input(&meta_file)?;
-        check_index_header(
-            meta_in.as_mut(),
-            &format!("{INDEX_CODEC_NAME}Meta"),
-            META_VERSION_START,
-            version,
-            &id,
-            segment_suffix,
-        )?;
+            let meta_file = segment_file_name(&segment, segment_suffix, META_EXTENSION);
+            let meta_in = meta_in.insert(directory.open_checksum_input(&meta_file)?);
+            check_index_header(
+                meta_in.as_mut(),
+                &format!("{INDEX_CODEC_NAME}Meta"),
+                META_VERSION_START,
+                version,
+                &id,
+                segment_suffix,
+            )?;
 
-        let chunk_size = meta_in.read_v_int()? as usize;
+            let chunk_size = meta_in.read_v_int()? as usize;
 
-        let index_reader = FieldsIndexReader::new(
-            directory,
-            &segment,
-            segment_suffix,
-            INDEX_EXTENSION,
-            INDEX_CODEC_NAME,
-            id,
-            meta_in.as_mut(),
-            io_context,
-        )?;
-        let max_pointer = index_reader.max_pointer;
+            let index_reader = index_reader.insert(FieldsIndexReader::new(
+                directory,
+                &segment,
+                segment_suffix,
+                INDEX_EXTENSION,
+                INDEX_CODEC_NAME,
+                id,
+                meta_in.as_mut(),
+                io_context,
+            )?);
+            let max_pointer = index_reader.max_pointer;
 
-        let num_chunks = meta_in.read_v_long()?;
-        let num_dirty_chunks = meta_in.read_v_long()?;
-        let num_dirty_docs = meta_in.read_v_long()?;
+            let num_chunks = meta_in.read_v_long()?;
+            let num_dirty_chunks = meta_in.read_v_long()?;
+            let num_dirty_docs = meta_in.read_v_long()?;
 
-        if num_chunks < num_dirty_chunks {
-            return Err(LuceneError::CorruptIndex(format!(
+            if num_chunks < num_dirty_chunks {
+                return Err(LuceneError::CorruptIndex(format!(
                 "Cannot have more dirty chunks than chunks: numChunks={num_chunks}, numDirtyChunks={num_dirty_chunks}"
             )));
-        }
-        if (num_dirty_chunks == 0) != (num_dirty_docs == 0) {
-            return Err(LuceneError::CorruptIndex(
-                "Cannot have dirty chunks without dirty docs or vice-versa".to_string(),
-            ));
-        }
-        if num_dirty_docs < num_dirty_chunks {
-            return Err(LuceneError::CorruptIndex(format!(
+            }
+            if (num_dirty_chunks == 0) != (num_dirty_docs == 0) {
+                return Err(LuceneError::CorruptIndex(
+                    "Cannot have dirty chunks without dirty docs or vice-versa".to_string(),
+                ));
+            }
+            if num_dirty_docs < num_dirty_chunks {
+                return Err(LuceneError::CorruptIndex(format!(
                 "Cannot have more dirty chunks than documents within dirty chunks: numDirtyChunks={num_dirty_chunks}, numDirtyDocs={num_dirty_docs}"
             )));
-        }
+            }
 
-        check_footer(meta_in.as_mut())?;
-        meta_in.close()?;
+            check_footer(meta_in.as_mut())?;
+            meta_in.close()?;
 
-        let cloned_field_infos =
-            FieldInfos::new(field_infos.iter().map(|fi| fi.clone()).collect())?;
+            let cloned_field_infos = FieldInfos::new(field_infos.iter().cloned().collect())?;
+            Ok((
+                version,
+                chunk_size,
+                max_pointer,
+                num_chunks,
+                num_dirty_chunks,
+                num_dirty_docs,
+                cloned_field_infos,
+            ))
+        })();
+        let (
+            version,
+            chunk_size,
+            max_pointer,
+            num_chunks,
+            num_dirty_chunks,
+            num_dirty_docs,
+            cloned_field_infos,
+        ) = match opened {
+            Ok(read) => read,
+            Err(error) => {
+                // `this.close()` is `IOUtils.close(indexReader, fieldsStream)`.
+                IOUtils::close_while_handling_exception([
+                    IOUtils::closeable(|| {
+                        IOUtils::close([
+                            index_reader
+                                .as_mut()
+                                .and_then(|r| IOUtils::closeable(move || r.close())),
+                            fields_stream
+                                .as_mut()
+                                .and_then(|i| IOUtils::closeable(move || i.close())),
+                        ])
+                    }),
+                    meta_in
+                        .as_mut()
+                        .and_then(|i| IOUtils::closeable(move || i.close())),
+                ])?;
+                return Err(error);
+            }
+        };
+        let expect = "INVARIANT: the constructor opened the fields stream and index";
 
         Ok(Self {
             version,
             field_infos: cloned_field_infos,
-            index_reader: Box::new(index_reader),
+            index_reader: Box::new(index_reader.expect(expect)),
             max_pointer,
             chunk_size,
             decompressor: Mutex::new(compression_mode.new_decompressor()),
@@ -2394,7 +2478,7 @@ impl Lucene90CompressingStoredFieldsReader {
             num_chunks,
             num_dirty_chunks,
             num_dirty_docs,
-            fields_stream,
+            fields_stream: fields_stream.expect(expect),
             merging: false,
             state: Mutex::new(BlockState::new()),
             prefetched_block_id_cache: Mutex::new([-1; PREFETCH_CACHE_SIZE]),
@@ -2523,9 +2607,10 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
         if self.closed {
             return Ok(());
         }
-        let index = self.index_reader.close();
-        let stream = self.fields_stream.close();
-        index.and(stream)?;
+        IOUtils::close([
+            IOUtils::closeable(|| self.index_reader.close()),
+            IOUtils::closeable(|| self.fields_stream.close()),
+        ])?;
         self.closed = true;
         Ok(())
     }
@@ -3129,6 +3214,79 @@ mod tests {
     use crate::util::Version;
     use std::collections::HashMap;
     use std::sync::Arc;
+
+    /// A sliced chunk whose total length decodes negative is reported, by a
+    /// merge instance, with Java's `CorruptIndexException("Corrupted: expected
+    /// chunk size = …")` (`Lucene90CompressingStoredFieldsReader.java:510-530`)
+    /// rather than a panic: no slice is decompressed, and `0 != -5`. Measured
+    /// against `lucene-core-10.5.0.jar` (`oracle/fix/StoredChunk.java`): one
+    /// document storing 200 000 `x` is a sliced single-document chunk (head
+    /// bytes `0 5 1 196 154 12` after the 54-byte header); overwriting its
+    /// length `VInt` in place with the five bytes of -5 makes
+    /// `getMergeInstance().document(0, …)` throw `Corrupted: expected chunk
+    /// size = -5, got 0 (resource=…)`.
+    #[test]
+    fn a_negative_chunk_total_is_a_corrupt_index_as_in_lucene() {
+        use crate::codecs::{register_codec, Lucene104Codec};
+        use crate::document::{Document, DocumentStoredFieldVisitor, StoredField};
+        use crate::index::index_writer::IndexWriter;
+        use crate::index::index_writer_config::IndexWriterConfig;
+        use crate::store::{Directory, READONCE_IO_CONTEXT};
+
+        let _ = register_codec("Lucene104", Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut config = IndexWriterConfig::new();
+        config.set_use_compound_file(false).unwrap();
+        let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+        let mut doc = Document::new();
+        doc.add(Box::new(
+            StoredField::new_string("f", "x".repeat(200_000)).unwrap(),
+        ));
+        writer.add_document(&doc).unwrap();
+        writer.close().unwrap();
+
+        let fdt = dir
+            .list_all()
+            .unwrap()
+            .into_iter()
+            .find(|name| name.ends_with(".fdt"))
+            .unwrap();
+        let mut bytes = {
+            let mut input = dir.open_input(&fdt, &*READONCE_IO_CONTEXT).unwrap();
+            let mut bytes = vec![0u8; input.length() as usize];
+            let length = bytes.len();
+            input.read_bytes(&mut bytes, 0, length).unwrap();
+            bytes
+        };
+        let p = crate::codecs::codec_util::index_header_length("Lucene90StoredFieldsFastData", "")
+            as usize;
+        assert_eq!(&bytes[p..p + 6], &[0, 5, 1, 196, 154, 12]);
+        bytes[p + 3..p + 8].copy_from_slice(&[0xFB, 0xFF, 0xFF, 0xFF, 0x0F]);
+        dir.delete_file(&fdt).unwrap();
+        let mut output = dir.create_output(&fdt, &*DEFAULT_IO_CONTEXT).unwrap();
+        output.write_bytes(&bytes, 0, bytes.len()).unwrap();
+        output.close().unwrap();
+
+        let reader = crate::index::directory_reader::open(Arc::clone(&dir)).unwrap();
+        let leaves = Arc::clone(&reader).leaves().unwrap();
+        let leaf = leaves[0].leaf_reader();
+        let segment = leaf.as_segment_reader().unwrap();
+        let merge = segment
+            .get_fields_reader()
+            .unwrap()
+            .unwrap()
+            .get_merge_instance();
+        let mut visitor = DocumentStoredFieldVisitor::new();
+        match merge.document(0, &mut visitor) {
+            Err(LuceneError::CorruptIndex(message)) => assert!(
+                message.starts_with("Corrupted: expected chunk size = -5, got 0 (resource="),
+                "{message}"
+            ),
+            other => panic!("expected the chunk-size CorruptIndexException, got {other:?}"),
+        }
+        drop(leaves);
+        drop(reader);
+    }
 
     #[derive(Debug, Default)]
     struct CollectingVisitor {
@@ -4209,19 +4367,48 @@ mod tests {
         };
         assert!(matches!(error, LuceneError::CorruptIndex(_)), "{error:?}");
 
-        // An offset past the range an `int` can hold is the other half of the
-        // same guard: Java's `Math.toIntExact` raises `ArithmeticException`.
-        let mut huge = BlockState::new();
-        huge.doc_base = 0;
-        huge.chunk_docs = 1;
-        huge.offsets = vec![0, i64::from(i32::MAX) + 1];
-        huge.num_stored_fields = vec![1];
-        huge.bytes = vec![0u8; 32];
-        let error = match huge.document(0, None, 1024, &mut *decompressor, true) {
-            Ok(_) => panic!("an offset past int range is corrupt"),
+        // An offset past the range an `int` can hold is Java's
+        // `Math.toIntExact(offsets[index + 1])`
+        // (`Lucene90CompressingStoredFieldsReader.java:545`) raising
+        // `ArithmeticException("integer overflow")`, and the chunk's total
+        // length, `Math.toIntExact(offsets[chunkDocs])` (`:546`), is narrowed
+        // the same way even when the document itself fits.
+        for offsets in [
+            vec![0, i64::from(i32::MAX) + 1, 5],
+            vec![0, 4, i64::from(i32::MAX) + 1],
+        ] {
+            let mut huge = BlockState::new();
+            huge.doc_base = 0;
+            huge.chunk_docs = 2;
+            huge.offsets = offsets.clone();
+            huge.num_stored_fields = vec![1, 1];
+            huge.bytes = vec![0u8; 32];
+            let error = match huge.document(0, None, 1024, &mut *decompressor, true) {
+                Ok(_) => panic!("an offset past int range is refused: {offsets:?}"),
+                Err(error) => error,
+            };
+            assert!(
+                matches!(&error, LuceneError::Arithmetic(m) if m == "integer overflow"),
+                "{offsets:?}: {error:?}"
+            );
+        }
+
+        // `Math.toIntExact(this.numStoredFields[index])` (`:547`) refuses a
+        // count past an `int` the same way, where a cast would have wrapped.
+        let mut many = BlockState::new();
+        many.doc_base = 0;
+        many.chunk_docs = 1;
+        many.offsets = vec![0, 4];
+        many.num_stored_fields = vec![i64::from(i32::MAX) + 1];
+        many.bytes = vec![0u8; 32];
+        let error = match many.document(0, None, 1024, &mut *decompressor, true) {
+            Ok(_) => panic!("a stored-field count past int range is refused"),
             Err(error) => error,
         };
-        assert!(matches!(error, LuceneError::CorruptIndex(_)), "{error:?}");
+        assert!(
+            matches!(&error, LuceneError::Arithmetic(m) if m == "integer overflow"),
+            "{error:?}"
+        );
 
         // And a well-formed block still reads.
         let mut good = BlockState::new();
@@ -5262,6 +5449,69 @@ mod tests {
         ));
     }
 
+    /// rmp #295: `FieldsIndexReader` builds its two `DirectMonotonicReader`s,
+    /// `docs` and `startPointers`, once in its constructor and once in its
+    /// copy constructor (`FieldsIndexReader.java:89-90, 110-111`), and every
+    /// lookup reads through them; `getBlockID` answers a document outside the
+    /// segment with `Objects.checkIndex(docID, maxDoc)`'s message
+    /// (`FieldsIndexReader.java:121`) and finds a chunk with
+    /// `docs.binarySearch(0, numChunks, docID)` (`:122`). Eleven documents,
+    /// four per chunk: chunks start at 0, 4 and 8.
+    #[test]
+    fn fields_index_builds_its_readers_once_and_checks_the_doc_as_java() {
+        use crate::util::packed::monotonic_reader_constructions;
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let source = write_merge_source(&dir, "_l", 0, 11);
+
+        let before_open = monotonic_reader_constructions();
+        let reader = concrete_merge_source(&dir, &source);
+        assert_eq!(
+            monotonic_reader_constructions() - before_open,
+            2,
+            "the constructor builds `docs` and `startPointers`"
+        );
+        let index = reader.index_reader();
+
+        let before = monotonic_reader_constructions();
+        let blocks: Vec<i64> = (0..11)
+            .map(|doc| index.get_block_id(doc).unwrap())
+            .collect();
+        assert_eq!(blocks, vec![0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2]);
+        assert!(
+            index.get_block_start_pointer(1).unwrap() > index.get_block_start_pointer(0).unwrap()
+        );
+        for block in 0..3 {
+            index.get_block_length(block).unwrap();
+            index.get_start_pointer(block as i32 * 4).unwrap();
+        }
+        assert_eq!(
+            monotonic_reader_constructions() - before,
+            0,
+            "no lookup builds a reader"
+        );
+
+        let before_clone = monotonic_reader_constructions();
+        let clone = index.clone_index().unwrap();
+        assert_eq!(
+            monotonic_reader_constructions() - before_clone,
+            2,
+            "the copy constructor builds its own `docs` and `startPointers`"
+        );
+        let cloned_blocks: Vec<i64> = (0..11)
+            .map(|doc| clone.get_block_id(doc).unwrap())
+            .collect();
+        assert_eq!(cloned_blocks, blocks);
+
+        for doc in [11, -1] {
+            match index.get_block_id(doc) {
+                Err(LuceneError::IllegalArgument(message)) => {
+                    assert_eq!(message, format!("Index {doc} out of bounds for length 11"));
+                }
+                other => panic!("expected Java's IndexOutOfBoundsException, got {other:?}"),
+            }
+        }
+    }
+
     /// `prefetch` asks the `.fdt` input for the whole block that holds the
     /// document — from `getBlockStartPointer` for `getBlockLength` bytes — and
     /// asks only once while that block is among the last sixteen prefetched.
@@ -5390,5 +5640,81 @@ impl fmt::Display for Lucene90CompressingStoredFieldsReader {
             self.compression_mode.to_string(),
             self.chunk_size
         )
+    }
+}
+
+/// The `IOUtils` close family at the stored-fields reader's call site (#308).
+#[cfg(test)]
+mod close_family_tests {
+    use super::Lucene90StoredFieldsFormat;
+    use crate::codecs::stored_fields::StoredFieldsFormat;
+    use crate::codecs::tests::{rewrite_file, test_segment_info, tracking_directory};
+    use crate::index::FieldInfos;
+
+    /// A constructor that fails runs `IOUtils.closeWhileHandlingException(this,
+    /// metaIn)` (`Lucene90CompressingStoredFieldsReader.java:236-241`),
+    /// closing `.fdt` and `.fdm`.
+    #[test]
+    fn a_failed_reader_constructor_closes_what_it_opened() {
+        let (dir, _tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 0);
+        let fis = FieldInfos::default();
+        let format = Lucene90StoredFieldsFormat::new();
+        let ctx = &*crate::store::DEFAULT_IO_CONTEXT;
+        let mut writer = format.fields_writer(&dir, &info, ctx).unwrap();
+        writer.finish(0).unwrap();
+        writer.close().unwrap();
+        let before = log.closed().len();
+        log.fail_open("_0.fdx");
+        format.fields_reader(&*dir, &info, &fis, ctx).unwrap_err();
+        assert_eq!(log.closed()[before..], ["_0.fdt", "_0.fdm"]);
+    }
+
+    /// rmp #295/#308: closing the reader runs `IOUtils.close(indexReader,
+    /// fieldsStream)` (`Lucene90CompressingStoredFieldsReader.java:257`), and the fields
+    /// index's `close()` is `indexInput.close()` (`FieldsIndexReader.java:114-117`).
+    /// Oracle `scratchpad/fixF/oracle/CloseOracle.java`: `[_0.fdx, _0.fdt]`.
+    #[test]
+    fn closing_the_reader_closes_the_index_then_the_data_file() {
+        let (dir, _tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 0);
+        let fis = FieldInfos::default();
+        let format = Lucene90StoredFieldsFormat::new();
+        let ctx = &*crate::store::DEFAULT_IO_CONTEXT;
+        let mut writer = format.fields_writer(&dir, &info, ctx).unwrap();
+        writer.finish(0).unwrap();
+        writer.close().unwrap();
+        let mut reader = format.fields_reader(&*dir, &info, &fis, ctx).unwrap();
+        let before = log.closed().len();
+        reader.close().unwrap();
+        assert_eq!(log.closed()[before..], ["_0.fdx", "_0.fdt"]);
+    }
+
+    /// A corrupt `.fdx` header: `FieldsIndexReader`'s own `finally` closes the
+    /// index input (`FieldsIndexReader.java:73-83`), then the reader's
+    /// constructor closes the data and metadata files
+    /// (`Lucene90CompressingStoredFieldsReader.java:236-241`). Oracle
+    /// `scratchpad/fixF/oracle/CloseOracle.java`: `CorruptIndexException`,
+    /// `[_0.fdx, _0.fdt, _0.fdm]`.
+    #[test]
+    fn a_corrupt_index_header_closes_the_index_then_what_the_reader_opened() {
+        let (dir, tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 0);
+        let fis = FieldInfos::default();
+        let format = Lucene90StoredFieldsFormat::new();
+        let ctx = &*crate::store::DEFAULT_IO_CONTEXT;
+        let mut writer = format.fields_writer(&dir, &info, ctx).unwrap();
+        writer.finish(0).unwrap();
+        writer.close().unwrap();
+        // The first byte of the codec name, after the four-byte magic and the
+        // name's length.
+        rewrite_file(&tracking, "_0.fdx", |bytes| bytes[5] ^= 1);
+        let before = log.closed().len();
+        let error = format.fields_reader(&*dir, &info, &fis, ctx).unwrap_err();
+        assert!(
+            matches!(error, crate::error::LuceneError::CorruptIndex(_)),
+            "{error:?}"
+        );
+        assert_eq!(log.closed()[before..], ["_0.fdx", "_0.fdt", "_0.fdm"]);
     }
 }

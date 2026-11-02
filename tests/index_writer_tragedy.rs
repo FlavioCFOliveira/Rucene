@@ -2669,3 +2669,416 @@ fn a_point_in_time_merge_calls_the_on_merge_complete_of_the_merge_it_wraps() {
     );
     assert_eq!(committed, "[_2(10.5.0):c2]");
 }
+
+// ---------------------------------------------------------------------------
+// The `catch` clauses around `termsHashPerField.add` (`IndexingChain.java:2001-2027`)
+// ---------------------------------------------------------------------------
+
+/// `ChainCatch.Toks`: emits `terms`, each carrying the term frequency `freq`
+/// on its `PackedTokenAttributeImpl` — where Java's
+/// `addAttribute(TermFrequencyAttribute.class)` lands under the default
+/// attribute factory once `CharTermAttribute` is added.
+#[derive(Debug)]
+struct FreqTokens {
+    source: rucene::util::AttributeSource,
+    terms: Vec<&'static str>,
+    freq: i32,
+    upto: usize,
+}
+
+impl FreqTokens {
+    fn new(freq: i32, terms: &[&'static str]) -> Self {
+        let mut source = rucene::util::AttributeSource::new_with_factory(
+            rucene::analysis::default_token_attribute_factory(),
+        );
+        source
+            .add_attribute::<rucene::analysis::tokenattributes::PackedTokenAttributeImpl>()
+            .unwrap();
+        Self {
+            source,
+            terms: terms.to_vec(),
+            freq,
+            upto: 0,
+        }
+    }
+}
+
+impl rucene::analysis::TokenStream for FreqTokens {
+    fn increment_token(&mut self) -> Result<bool> {
+        use rucene::analysis::tokenattributes::{
+            CharTermAttribute, PackedTokenAttributeImpl, TermFrequencyAttribute,
+        };
+        if self.upto == self.terms.len() {
+            return Ok(false);
+        }
+        self.source.clear_attributes();
+        let mut packed = self
+            .source
+            .get_attribute_mut::<PackedTokenAttributeImpl>()
+            .unwrap();
+        packed.append_string(self.terms[self.upto]);
+        packed.set_term_frequency(self.freq);
+        self.upto += 1;
+        Ok(true)
+    }
+    fn reset(&mut self) -> Result<()> {
+        self.upto = 0;
+        Ok(())
+    }
+    fn end(&mut self) -> Result<()> {
+        self.source.end_attributes();
+        Ok(())
+    }
+    fn attribute_source(&self) -> &rucene::util::AttributeSource {
+        &self.source
+    }
+    fn attribute_source_mut(&mut self) -> &mut rucene::util::AttributeSource {
+        &mut self.source
+    }
+}
+
+fn chain_field_type(options: IndexOptions, tokenized: bool, vector_positions: bool) -> FieldType {
+    let mut field_type = FieldType::new();
+    field_type.set_tokenized(tokenized).unwrap();
+    field_type.set_index_options(options).unwrap();
+    if vector_positions {
+        field_type.set_store_term_vectors(true).unwrap();
+        field_type.set_store_term_vector_positions(true).unwrap();
+    }
+    field_type.freeze();
+    field_type
+}
+
+fn freq_tokens_doc(freq: i32, terms: &[&'static str], field_type: FieldType) -> Document {
+    let stream: std::rc::Rc<std::cell::RefCell<dyn rucene::analysis::TokenStream>> =
+        std::rc::Rc::new(std::cell::RefCell::new(FreqTokens::new(freq, terms)));
+    let mut doc = Document::new();
+    doc.add(Box::new(
+        Field::new_with_token_stream("body", stream, field_type).unwrap(),
+    ));
+    doc
+}
+
+/// `Class: message`, the simple-name form of the line `ChainCatch` prints for
+/// a throwable.
+fn java_line(error: &LuceneError) -> String {
+    let message = match error {
+        LuceneError::IllegalArgument(message)
+        | LuceneError::IllegalArgumentWithCause { message, .. }
+        | LuceneError::IllegalState { message, .. }
+        | LuceneError::AlreadyClosed { message, .. } => message.clone(),
+        other => other.to_string(),
+    };
+    format!("{}: {message}", error.java_simple_name())
+}
+
+/// `ChainCatch.run`: one good document, then `bad`, then the writer's state
+/// and a second good document. Returns `thrown`, `cause`, `isOpen`, `tragic`
+/// and the second add's outcome (`numDocs/maxDoc` of an NRT reader, or the
+/// error), as `ChainCatch` prints them.
+fn chain_catch_case(bad: &Document) -> (String, String, bool, String, String) {
+    ensure_codec();
+    let writer = IndexWriter::new(
+        Arc::new(ByteBuffersDirectory::new()),
+        IndexWriterConfig::new(),
+    )
+    .unwrap();
+    let mut ok = Document::new();
+    ok.add(Box::new(
+        StringField::new("id", "1".to_string(), Store::NO).unwrap(),
+    ));
+    writer.add_document(&ok).unwrap();
+    let (thrown, cause) = match writer.add_document(bad) {
+        Ok(_) => ("no exception".to_string(), "null".to_string()),
+        Err(error) => {
+            // The variants keep their cause as an `Arc<LuceneError>`.
+            let cause = std::error::Error::source(&error)
+                .and_then(|cause| cause.downcast_ref::<Arc<LuceneError>>())
+                .map_or_else(|| "null".to_string(), |cause| java_line(cause));
+            (java_line(&error), cause)
+        }
+    };
+    let open = writer.is_open();
+    let tragic = writer
+        .get_tragic_exception()
+        .map_or_else(|| "null".to_string(), |error| java_line(&error));
+    let second = match writer.add_document(&ok) {
+        Ok(_) => {
+            let reader = directory_reader::open_with_writer(writer.as_ref()).unwrap();
+            let line = format!("numDocs={} maxDoc={}", reader.num_docs(), reader.max_doc());
+            drop(reader);
+            writer.close().unwrap();
+            line
+        }
+        Err(error) => java_line(&error),
+    };
+    (thrown, cause, open, tragic, second)
+}
+
+/// `catch (Throwable th) { onAbortingException(th); throw th; }`
+/// (`IndexingChain.java:2025-2027`): a failure of `termsHashPerField.add`
+/// that is neither an over-long term nor a duplicate term aborts the segment,
+/// and the writer closes with that very exception as its tragedy. Measured
+/// against `lucene-core-10.5.0.jar` (`oracle/fix/ChainCatch.java`, cases A, B
+/// and E, the same with and without `-ea`):
+/// * A — a custom frequency of 2 with positions: `IllegalStateException:
+///   field "body": cannot index positions while using custom
+///   TermFrequencyAttribute` (`FreqProxTermsWriterPerField.getTermFreq`);
+/// * B — a custom frequency of 2 on a docs-only field whose term repeats:
+///   `IllegalStateException: field "body": must index term freq while using
+///   custom TermFrequencyAttribute` (`addTerm`);
+/// * E — a custom frequency of 2 on a freqs-only field storing term-vector
+///   positions: `IllegalArgumentException: field "body": cannot index term
+///   vector positions while using custom TermFrequencyAttribute`, which the
+///   term-vectors consumer throws from inside `termsHashPerField.add`
+///   (`nextPerField.add`).
+///
+/// Each time `isOpen=false`, the tragedy is the thrown exception, and the next
+/// `addDocument` throws `AlreadyClosedException: this IndexWriter is closed`.
+#[test]
+fn a_failure_of_the_terms_hash_aborts_and_closes_the_writer_as_lucene_does() {
+    let cases = [
+        (
+            "A",
+            freq_tokens_doc(
+                2,
+                &["foo"],
+                chain_field_type(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS, true, false),
+            ),
+            "IllegalStateException: field \"body\": cannot index positions while using custom TermFrequencyAttribute",
+        ),
+        (
+            "B",
+            freq_tokens_doc(
+                2,
+                &["foo", "foo"],
+                chain_field_type(IndexOptions::DOCS, true, false),
+            ),
+            "IllegalStateException: field \"body\": must index term freq while using custom TermFrequencyAttribute",
+        ),
+        (
+            "E",
+            freq_tokens_doc(
+                2,
+                &["foo"],
+                chain_field_type(IndexOptions::DOCS_AND_FREQS, true, true),
+            ),
+            "IllegalArgumentException: field \"body\": cannot index term vector positions while using custom TermFrequencyAttribute",
+        ),
+    ];
+    for (name, doc, expected) in cases {
+        let (thrown, cause, open, tragic, second) = chain_catch_case(&doc);
+        assert_eq!(
+            (
+                thrown.as_str(),
+                cause.as_str(),
+                open,
+                tragic.as_str(),
+                second.as_str()
+            ),
+            (
+                expected,
+                "null",
+                false,
+                expected,
+                "AlreadyClosedException: this IndexWriter is closed"
+            ),
+            "case {name}"
+        );
+    }
+}
+
+/// `catch (TermsHashPerField.DuplicateTermException e) { throw new
+/// IllegalArgumentException("Document update skipped due to duplicate termdoc
+/// term", e); }` (`IndexingChain.java:2022-2024`): a term a term-doc
+/// (`DOCS_AND_CUSTOM_FREQS`) token-stream field repeats in one document is a
+/// document-level failure; the cause carries the term
+/// `TermsHashPerField.add` appends (`TermsHashPerField.java:199-204`).
+/// Measured against `lucene-core-10.5.0.jar` (`oracle/fix/ChainCatch.java`,
+/// case C): `IllegalArgumentException: Document update skipped due to
+/// duplicate termdoc term`, cause `TermsHashPerField$DuplicateTermException:
+/// field 'body' has duplicate term 'foo'` (an `IllegalStateException`),
+/// `isOpen=true`, no tragedy, and the next document indexes:
+/// `numDocs=2 maxDoc=2`.
+#[test]
+fn a_duplicate_term_doc_term_skips_only_the_document_as_lucene_does() {
+    let doc = freq_tokens_doc(
+        1,
+        &["foo", "foo"],
+        chain_field_type(IndexOptions::DOCS_AND_CUSTOM_FREQS, true, false),
+    );
+    assert_eq!(
+        chain_catch_case(&doc),
+        (
+            "IllegalArgumentException: Document update skipped due to duplicate termdoc term"
+                .to_string(),
+            "IllegalStateException: field 'body' has duplicate term 'foo'".to_string(),
+            true,
+            "null".to_string(),
+            "numDocs=2 maxDoc=2".to_string()
+        )
+    );
+}
+
+/// A field whose `invertableType()` is `BINARY`, wrapping a `Field` that holds
+/// `foo` — `ChainCatch` case D2's anonymous `Field` subclass.
+struct BinaryInvertedField(Field);
+
+impl std::fmt::Display for BinaryInvertedField {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl rucene::index::IndexableField for BinaryInvertedField {
+    fn name(&self) -> &str {
+        self.0.name()
+    }
+    fn field_type(&self) -> &dyn rucene::index::IndexableFieldType {
+        self.0.field_type()
+    }
+    fn token_stream(
+        &self,
+        analyzer: &dyn rucene::analysis::Analyzer,
+        reuse: Option<&mut dyn rucene::analysis::TokenStream>,
+    ) -> Box<dyn rucene::analysis::TokenStream> {
+        self.0.token_stream(analyzer, reuse)
+    }
+    fn binary_value(&self) -> Option<rucene::util::BytesRef> {
+        self.0.binary_value()
+    }
+    fn string_value(&self) -> Option<String> {
+        self.0.string_value()
+    }
+    fn reader_value(&mut self) -> Option<&mut dyn std::io::Read> {
+        None
+    }
+    fn numeric_value(&self) -> Option<rucene::document::NumericValue> {
+        self.0.numeric_value()
+    }
+    fn stored_value(&self) -> Result<Option<rucene::document::StoredValue>> {
+        self.0.stored_value()
+    }
+    fn invertable_type(&self) -> Option<rucene::document::InvertableType> {
+        Some(rucene::document::InvertableType::BINARY)
+    }
+}
+
+/// `invertTerm` catches only `MaxBytesLengthExceededException`
+/// (`IndexingChain.java:2077-2096`), so the same duplicate term through a
+/// `BINARY` field leaves as the `DuplicateTermException` itself and stays a
+/// document-level failure. Measured against `lucene-core-10.5.0.jar`
+/// (`oracle/fix/ChainCatch.java`, case D2): `TermsHashPerField$DuplicateTermException:
+/// field 'body' has duplicate term 'foo'`, no cause, `isOpen=true`, no
+/// tragedy, `numDocs=2 maxDoc=2`.
+#[test]
+fn a_duplicate_term_doc_term_of_a_binary_field_leaves_unwrapped_as_in_lucene() {
+    let field_type = chain_field_type(IndexOptions::DOCS_AND_CUSTOM_FREQS, false, false);
+    let mut doc = Document::new();
+    for _ in 0..2 {
+        doc.add(Box::new(BinaryInvertedField(
+            Field::new_with_bytes(
+                "body",
+                rucene::util::BytesRef::new(b"foo".to_vec()),
+                field_type.clone(),
+            )
+            .unwrap(),
+        )));
+    }
+    assert_eq!(
+        chain_catch_case(&doc),
+        (
+            "IllegalStateException: field 'body' has duplicate term 'foo'".to_string(),
+            "null".to_string(),
+            true,
+            "null".to_string(),
+            "numDocs=2 maxDoc=2".to_string()
+        )
+    );
+}
+
+/// `FieldInvertState.setAttributeSource` takes the frequency from
+/// `addAttribute(TermFrequencyAttribute.class)` (`FieldInvertState.java:107`),
+/// which under the default factory is the stream's `PackedTokenAttributeImpl`:
+/// a frequency set there is indexed. Measured against
+/// `lucene-core-10.5.0.jar` (`oracle/fix/ChainCatch.java`, case F, after the
+/// audit's `PackedFreq.java`): `tfImpl=PackedTokenAttributeImpl`, then
+/// `sumTotalTermFreq=3 freq=3 norm=3` for one token `foo` of frequency 3 on a
+/// freqs-only field — the field length, and so the norm, count the frequency.
+#[test]
+fn a_term_frequency_on_the_packed_attribute_is_indexed_as_lucene_does() {
+    ensure_codec();
+    let writer = IndexWriter::new(
+        Arc::new(ByteBuffersDirectory::new()),
+        IndexWriterConfig::new(),
+    )
+    .unwrap();
+    writer
+        .add_document(&freq_tokens_doc(
+            3,
+            &["foo"],
+            chain_field_type(IndexOptions::DOCS_AND_FREQS, true, false),
+        ))
+        .unwrap();
+    let reader = directory_reader::open_with_writer(writer.as_ref()).unwrap();
+    let leaves = Arc::clone(&reader).leaves().unwrap();
+    assert_eq!(leaves.len(), 1);
+    let leaf = leaves[0].leaf_reader();
+    let sum_total_term_freq = leaf
+        .terms("body")
+        .unwrap()
+        .unwrap()
+        .sum_total_term_freq()
+        .unwrap();
+    let mut postings = leaf
+        .postings(
+            &Term::from_text("body", "foo"),
+            rucene::index::POSTINGS_ENUM_FREQS,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(postings.next_doc().unwrap(), 0);
+    let mut norms = leaf.get_norm_values("body").unwrap().unwrap();
+    assert!(norms.advance_exact(0).unwrap());
+    assert_eq!(
+        (
+            sum_total_term_freq,
+            postings.freq().unwrap(),
+            norms.long_value().unwrap()
+        ),
+        (3, 3, 3)
+    );
+    drop(leaves);
+    drop(reader);
+    writer.close().unwrap();
+}
+
+/// `startStoredFields` hands the throwable itself to `onAbortingException`
+/// (`IndexingChain.java:563-576`), so a stored-fields file that cannot be
+/// created closes the writer with that very `IOException` as its tragedy.
+/// Measured against `lucene-core-10.5.0.jar` (`oracle/fix/StoredTragedy.java`,
+/// the same with and without `-ea`): `thrown=java.io.IOException: disk full
+/// creating _0.fdm`, `isOpen=false`, and the tragedy is the same exception.
+#[test]
+fn a_stored_fields_failure_is_the_tragedy_itself_as_in_lucene() {
+    ensure_codec();
+    let armed = Arc::new(AtomicBool::new(false));
+    let dir: Arc<dyn Directory> = Arc::new(FailingDirectory {
+        inner: Arc::new(ByteBuffersDirectory::new()),
+        armed: Arc::clone(&armed),
+    });
+    let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+    armed.store(true, Ordering::SeqCst);
+    let mut doc = Document::new();
+    doc.add(Box::new(
+        rucene::document::StoredField::new_string("f", "v".to_string()).unwrap(),
+    ));
+    let thrown = writer.add_document(&doc);
+    assert_eq!(exception(&thrown), "IOException: disk full creating _0.fdm");
+    assert!(!writer.is_open());
+    let tragic = writer.get_tragic_exception().expect("the writer is tragic");
+    assert!(
+        matches!(tragic.as_ref(), LuceneError::Io(error) if error.to_string() == "disk full creating _0.fdm"),
+        "{tragic:?}"
+    );
+}

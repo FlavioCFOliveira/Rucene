@@ -31,8 +31,12 @@ const PACKED_LONG_VALUES_BASE_RAM_BYTES_USED: i64 = 40;
 const DELTA_PACKED_LONG_VALUES_BASE_RAM_BYTES_USED: i64 = 48;
 /// The heap cost of a `MonotonicLongValues` instance itself.
 ///
-/// The [`DeltaPackedLongValues`] cost plus the `averages` reference.
-const MONOTONIC_LONG_VALUES_BASE_RAM_BYTES_USED: i64 = 56;
+/// The [`DeltaPackedLongValues`] fields plus the `averages` reference, which
+/// fits in the alignment padding of the 48 bytes: measured against
+/// `lucene-core-10.5.0.jar`,
+/// `RamUsageEstimator.shallowSizeOfInstance(MonotonicLongValues.class)` is
+/// 48, and a COMPACT monotonic `[0, 0, 1, 1]` reports 184.
+const MONOTONIC_LONG_VALUES_BASE_RAM_BYTES_USED: i64 = 48;
 /// The heap cost of a `PackedLongValues.Builder` instance itself.
 const PACKED_LONG_VALUES_BUILDER_BASE_RAM_BYTES_USED: i64 = 56;
 /// The heap cost of a `DeltaPackedLongValues.Builder` instance itself.

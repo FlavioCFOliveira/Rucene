@@ -21,6 +21,7 @@ use crate::{
         IndexOutput,
     },
     util::string_helper::{StringHelper, ID_LENGTH},
+    util::BytesRef,
     Result,
 };
 
@@ -95,9 +96,13 @@ pub fn write_index_header(
     }
     write_header(out, codec, version)?;
     out.write_bytes(id, 0, id.len())?;
-    validate_suffix(suffix)?;
-    out.write_byte(suffix.len() as u8)?;
-    out.write_bytes(suffix.as_bytes(), 0, suffix.len())?;
+    let suffix_bytes = validate_suffix(suffix)?;
+    out.write_byte(suffix_bytes.length as u8)?;
+    out.write_bytes(
+        &suffix_bytes.bytes,
+        suffix_bytes.offset,
+        suffix_bytes.length,
+    )?;
     Ok(())
 }
 
@@ -115,42 +120,32 @@ pub fn index_header_length(codec: &str, suffix: &str) -> i32 {
     header_length(codec) + ID_LENGTH as i32 + 1 + suffix.len() as i32
 }
 
+/// The codec-name check of `CodecUtil.writeHeader` (`CodecUtil.java:78-82`):
+/// `new BytesRef(codec)` must hold as many bytes as `codec` has UTF-16 code
+/// units — which only simple ASCII does — and fewer than 128.
 fn validate_codec_name(codec: &str) -> Result<()> {
-    let bytes = codec.as_bytes();
-    if bytes.len() != codec.len() || bytes.len() >= 128 {
+    let bytes = BytesRef::from_char_sequence(codec);
+    if bytes.length != codec.encode_utf16().count() || bytes.length >= 128 {
         return Err(LuceneError::IllegalArgument(format!(
             "codec must be simple ASCII, less than 128 characters in length [got {}]",
             codec
         )));
     }
-    for &b in bytes {
-        if b > 0x7f {
-            return Err(LuceneError::IllegalArgument(format!(
-                "codec must be simple ASCII, less than 128 characters in length [got {}]",
-                codec
-            )));
-        }
-    }
     Ok(())
 }
 
-fn validate_suffix(suffix: &str) -> Result<()> {
-    let bytes = suffix.as_bytes();
-    if bytes.len() != suffix.len() || bytes.len() >= 256 {
+/// The suffix check of `CodecUtil.writeIndexHeader` (`CodecUtil.java:128-132`),
+/// which returns the `new BytesRef(suffix)` it checked so that its bytes are
+/// the ones written.
+fn validate_suffix(suffix: &str) -> Result<BytesRef> {
+    let suffix_bytes = BytesRef::from_char_sequence(suffix);
+    if suffix_bytes.length != suffix.encode_utf16().count() || suffix_bytes.length >= 256 {
         return Err(LuceneError::IllegalArgument(format!(
             "suffix must be simple ASCII, less than 256 characters in length [got {}]",
             suffix
         )));
     }
-    for &b in bytes {
-        if b > 0x7f {
-            return Err(LuceneError::IllegalArgument(format!(
-                "suffix must be simple ASCII, less than 256 characters in length [got {}]",
-                suffix
-            )));
-        }
-    }
-    Ok(())
+    Ok(suffix_bytes)
 }
 
 // -----------------------------------------------------------------------------

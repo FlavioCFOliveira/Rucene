@@ -33,7 +33,7 @@ use crate::index::{FieldInfo, IndexOptions};
 use crate::index::{FreqAndNormBuffer, Impacts, ImpactsSource};
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::store::{DataInput, IndexInput};
-use crate::util::{BitUtil, FixedBitSet};
+use crate::util::{BitUtil, FixedBitSet, IOUtils};
 use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
@@ -127,13 +127,13 @@ fn next_set_bit(bits: &FixedBitSet, from_index: i32) -> Option<i32> {
         return None;
     }
     let shift = from_index & 0x3f;
-    let mut word = words[word_index] & (!0u64 << shift);
+    let mut word = words[word_index].load(std::sync::atomic::Ordering::Relaxed) & (!0u64 << shift);
     while word == 0 {
         word_index += 1;
         if word_index >= num_words {
             return None;
         }
-        word = words[word_index];
+        word = words[word_index].load(std::sync::atomic::Ordering::Relaxed);
     }
     let bit_index = word.trailing_zeros() as usize;
     let candidate = (word_index << 6) + bit_index;
@@ -223,33 +223,35 @@ impl Lucene104PostingsReader {
         let mut pos_in: Option<Box<dyn IndexInput>> = None;
         let mut pay_in: Option<Box<dyn IndexInput>> = None;
 
+        // Each input is held as soon as it is opened, as Java assigns `docIn`,
+        // `posIn` and `payIn` before checking their headers.
         let result: Result<()> = (|| {
-            let mut d = dir.open_input(&doc_name, state.context)?;
+            let d = doc_in.insert(dir.open_input(&doc_name, state.context)?);
             check_index_header(d.as_mut(), DOC_CODEC, version, version, &id, suffix)?;
             retrieve_checksum_expected_length(d.as_mut(), expected_doc_file_length)?;
-            doc_in = Some(d);
 
             if state.field_infos.has_prox() {
-                let mut p = dir.open_input(&pos_name, state.context)?;
+                let p = pos_in.insert(dir.open_input(&pos_name, state.context)?);
                 check_index_header(p.as_mut(), POS_CODEC, version, version, &id, suffix)?;
                 retrieve_checksum_expected_length(p.as_mut(), expected_pos_file_length)?;
-                pos_in = Some(p);
 
                 if state.field_infos.has_payloads() || state.field_infos.has_offsets() {
-                    let mut y = dir.open_input(&pay_name, state.context)?;
+                    let y = pay_in.insert(dir.open_input(&pay_name, state.context)?);
                     check_index_header(y.as_mut(), PAY_CODEC, version, version, &id, suffix)?;
                     retrieve_checksum_expected_length(y.as_mut(), expected_pay_file_length)?;
-                    pay_in = Some(y);
                 }
             }
             Ok(())
         })();
 
-        result.inspect_err(|_| {
-            let _ = doc_in.as_mut().map(|i| i.close());
-            let _ = pos_in.as_mut().map(|i| i.close());
-            let _ = pay_in.as_mut().map(|i| i.close());
-        })?;
+        if let Err(error) = result {
+            // `IOUtils.closeWhileHandlingException(docIn, posIn, payIn)`
+            // (`Lucene104PostingsReader.java:166-172`).
+            IOUtils::close_while_handling_exception(
+                [doc_in, pos_in, pay_in].map(|i| i.map(|mut i| move || i.close())),
+            )?;
+            return Err(error);
+        }
 
         Ok(Self {
             version,
@@ -426,17 +428,14 @@ impl PostingsReaderBase for Lucene104PostingsReader {
         Ok(())
     }
 
+    /// Equivalent to `Lucene104PostingsReader.close()`
+    /// (`Lucene104PostingsReader.java:209-212`): `IOUtils.close(docIn, posIn,
+    /// payIn)`.
     fn close(&mut self) -> Result<()> {
-        if let Some(ref mut doc_in) = self.doc_in {
-            doc_in.close()?;
-        }
-        if let Some(ref mut pos_in) = self.pos_in {
-            pos_in.close()?;
-        }
-        if let Some(ref mut pay_in) = self.pay_in {
-            pay_in.close()?;
-        }
-        Ok(())
+        IOUtils::close(
+            [&mut self.doc_in, &mut self.pos_in, &mut self.pay_in]
+                .map(|i| i.as_mut().map(|i| move || i.close())),
+        )
     }
 }
 
@@ -494,6 +493,15 @@ pub struct BlockPostingsEnum {
     payload_bytes: Vec<u8>,
     payload_byte_upto: i32,
     payload_length: i32,
+    /// Where the current payload starts in `payload_bytes`.
+    ///
+    /// Equivalent to `payload.offset` (`Lucene104PostingsReader.java:1278-1285`):
+    /// Java keeps the payload as a `BytesRef` view that
+    /// `accumulatePayloadAndOffsets` re-points at each position and nothing
+    /// else touches, so a reused enum still answers `getPayload()` with the
+    /// previous term's payload until its first position is read, although
+    /// `reset` rewinds `payloadByteUpto` to zero.
+    payload_offset: i32,
 
     last_start_offset: i32,
     start_offset: i32,
@@ -689,9 +697,14 @@ impl BlockPostingsEnum {
             payload_bytes,
             payload_byte_upto: 0,
             payload_length: 0,
+            payload_offset: 0,
             last_start_offset: 0,
-            start_offset: -1,
-            end_offset: -1,
+            // Java leaves both at the `int` default of zero when the enum
+            // reads offsets, and sets them to -1 only when it does not
+            // (`Lucene104PostingsReader.java:472-480`), where `startOffset()`
+            // and `endOffset()` answer -1 regardless.
+            start_offset: if needs_offsets { 0 } else { -1 },
+            end_offset: if needs_offsets { 0 } else { -1 },
             pos_buffer_upto: BS_I32,
             pos_in,
             pay_in,
@@ -750,30 +763,16 @@ impl BlockPostingsEnum {
             && self.needs_impacts == needs_impacts
     }
 
+    /// Equivalent to `BlockPostingsEnum.reset(IntBlockTermState, int)`
+    /// (`Lucene104PostingsReader.java:502-575`), which resets exactly the
+    /// fields below and leaves every other one — the position, offsets and
+    /// payload length of the last position read, `needsRefilling`,
+    /// `level0DocEndFP`, the serialized impacts — as the previous term left
+    /// it: a reused enum answers `startOffset()` before `nextDoc()` with the
+    /// previous term's offset (observed with the 10.5.0 oracle).
     fn reset(&mut self, term_state: &BlockTermState) -> Result<()> {
         self.doc_freq = term_state.doc_freq;
         self.singleton_doc_id = term_state.singleton_doc_id;
-        self.doc_count_left = self.doc_freq;
-        self.prev_doc_id = -1;
-        self.doc_buffer_size = BS_I32;
-        self.doc_buffer_upto = BS_I32;
-        self.pos_doc_buffer_upto = BS_I32;
-        self.pos_pending_count = 0;
-        self.payload_byte_upto = 0;
-        self.position = 0;
-        self.last_start_offset = 0;
-        self.start_offset = -1;
-        self.end_offset = -1;
-        self.payload_length = 0;
-        self.needs_refilling = false;
-        self.level0_last_doc_id = -1;
-        self.level0_doc_end_fp = 0;
-        self.level1_doc_count_upto = 0;
-        self.doc = -1;
-        self.freq_fp.set(-1);
-        self.pos_buffer_upto = BS_I32;
-        self.level0_serialized_impacts.fill(0);
-        self.level1_serialized_impacts.fill(0);
 
         self.total_term_freq = if self.index_has_freq {
             term_state.total_term_freq
@@ -807,10 +806,13 @@ impl BlockPostingsEnum {
         self.level1_pay_end_fp = pay_term_start_fp;
         self.level0_pos_end_fp = pos_term_start_fp;
         self.level0_pay_end_fp = pay_term_start_fp;
-
-        if self.total_term_freq < BS_I32 as i64 {
+        self.pos_pending_count = 0;
+        self.payload_byte_upto = 0;
+        // Java tests the term state's own `totalTermFreq` here, not the field
+        // it just derived (`Lucene104PostingsReader.java:539-545`).
+        if term_state.total_term_freq < BS_I32 as i64 {
             self.last_pos_block_fp = pos_term_start_fp;
-        } else if self.total_term_freq == BS_I32 as i64 {
+        } else if term_state.total_term_freq == BS_I32 as i64 {
             self.last_pos_block_fp = -1;
         } else {
             self.last_pos_block_fp = pos_term_start_fp + term_state.last_pos_block_offset;
@@ -820,7 +822,13 @@ impl BlockPostingsEnum {
         self.level1_block_pay_upto = 0;
         self.level0_block_pos_upto = 0;
         self.level0_block_pay_upto = 0;
+        self.pos_buffer_upto = BS_I32;
 
+        self.doc = -1;
+        self.prev_doc_id = -1;
+        self.doc_count_left = self.doc_freq;
+        self.freq_fp.set(-1);
+        self.level0_last_doc_id = -1;
         if self.doc_freq < LEVEL1_NUM_DOCS {
             self.level1_last_doc_id = NO_MORE_DOCS;
             if self.doc_freq > 1 {
@@ -832,6 +840,10 @@ impl BlockPostingsEnum {
             self.level1_last_doc_id = -1;
             self.level1_doc_end_fp = term_state.doc_start_fp;
         }
+        self.level1_doc_count_upto = 0;
+        self.doc_buffer_size = BS_I32;
+        self.doc_buffer_upto = BS_I32;
+        self.pos_doc_buffer_upto = BS_I32;
 
         Ok(())
     }
@@ -1466,6 +1478,7 @@ impl BlockPostingsEnum {
         if self.needs_payloads {
             self.payload_length =
                 self.payload_length_buffer.as_ref().unwrap()[self.pos_buffer_upto as usize];
+            self.payload_offset = self.payload_byte_upto;
             self.payload_byte_upto += self.payload_length;
         }
 
@@ -1551,7 +1564,8 @@ impl DocIdSetIterator for BlockPostingsEnum {
                 self.doc = self.doc_bit_set_base + next;
                 if self.needs_freq {
                     let word_index = next >> 6;
-                    let word = self.doc_bit_set.get_bits()[word_index as usize];
+                    let word = self.doc_bit_set.get_bits()[word_index as usize]
+                        .load(std::sync::atomic::Ordering::Relaxed);
                     let bits_on_left = (word >> (next & 0x3f)).count_ones() as i32;
                     // Take the cumulative pop count for the given word, held in
                     // `docBuffer`, and subtract the bits on the left of the
@@ -1673,8 +1687,10 @@ impl PostingsEnum for BlockPostingsEnum {
         if !self.needs_payloads || self.payload_length == 0 {
             Ok(None)
         } else {
-            let start = (self.payload_byte_upto - self.payload_length) as usize;
-            let end = self.payload_byte_upto as usize;
+            // `return payload;`, the view `accumulatePayloadAndOffsets` last
+            // set (`Lucene104PostingsReader.java:1340-1346`).
+            let start = self.payload_offset as usize;
+            let end = start + self.payload_length as usize;
             Ok(Some(&self.payload_bytes[start..end]))
         }
     }
@@ -1790,7 +1806,7 @@ mod tests {
         infos: &'a FieldInfos,
     ) -> SegmentWriteState<'a> {
         SegmentWriteState::new(
-            crate::util::default_info_stream(),
+            &crate::util::NoOutputInfoStream,
             Arc::clone(dir),
             info,
             infos,
@@ -2167,5 +2183,72 @@ impl std::fmt::Display for Lucene104PostingsReader {
             self.pos_in.is_some(),
             self.pay_in.is_some()
         )
+    }
+}
+
+/// The `IOUtils` close family at the postings reader's call sites (#308).
+#[cfg(test)]
+mod close_family_tests {
+    use super::Lucene104PostingsReader;
+    use crate::codecs::lucene104::Lucene104PostingsFormat;
+    use crate::codecs::postings::{PostingsFormat, PostingsReaderBase};
+    use crate::codecs::tests::{
+        read_state, rewrite_file, test_segment_info, tracking_directory, write_state,
+    };
+    use crate::index::{FieldInfo, FieldInfos, IndexOptions};
+
+    fn positions() -> FieldInfos {
+        FieldInfos::new(vec![FieldInfo::new("body", 0).with_postings_options(
+            IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS,
+            false,
+            true,
+        )])
+        .unwrap()
+    }
+
+    fn write_empty(
+        dir: &std::sync::Arc<dyn crate::store::Directory>,
+        info: &crate::index::SegmentInfo,
+        fis: &FieldInfos,
+    ) {
+        let mut consumer = Lucene104PostingsFormat::new()
+            .fields_consumer(&write_state(dir, info, fis))
+            .unwrap();
+        consumer
+            .write(&crate::index::terms::EmptyFields::new(), None)
+            .unwrap();
+        consumer.close().unwrap();
+    }
+
+    /// `docIn` is held before its header is checked, so a bad header closes
+    /// it: `IOUtils.closeWhileHandlingException(docIn, posIn, payIn)`
+    /// (`Lucene104PostingsReader.java:166-172`).
+    #[test]
+    fn a_bad_doc_header_closes_the_doc_input() {
+        let (dir, tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 10);
+        let fis = FieldInfos::default();
+        write_empty(&dir, &info, &fis);
+        let before = log.closed().len();
+        rewrite_file(&tracking, "_0.doc", |bytes| bytes[6] ^= 0xff);
+        Lucene104PostingsReader::new(&read_state(&*dir, &info, &fis)).unwrap_err();
+        assert_eq!(log.closed()[before..], ["_0.doc"]);
+    }
+
+    /// `close()` is `IOUtils.close(docIn, posIn, payIn)`
+    /// (`Lucene104PostingsReader.java:209-212`): a failing `.doc` does not
+    /// keep `.pos` and `.pay` open, and its failure is the one raised.
+    #[test]
+    fn close_closes_every_input_past_a_failure() {
+        let (dir, _tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 10);
+        let fis = positions();
+        write_empty(&dir, &info, &fis);
+        let mut reader = Lucene104PostingsReader::new(&read_state(&*dir, &info, &fis)).unwrap();
+        let before = log.closed().len();
+        log.fail_close("_0.doc");
+        let error = reader.close().unwrap_err();
+        assert!(format!("{error}").contains("_0.doc"), "{error}");
+        assert_eq!(log.closed()[before..], ["_0.doc", "_0.pos", "_0.pay"]);
     }
 }

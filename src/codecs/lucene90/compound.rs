@@ -5,7 +5,7 @@
 
 #![deny(unsafe_code)]
 
-use crate::util::{PriorityQueue, PriorityQueueComparator};
+use crate::util::{IOUtils, PriorityQueue, PriorityQueueComparator};
 use std::collections::HashSet;
 
 use crate::codecs::codec_util;
@@ -256,7 +256,9 @@ impl Lucene90CompoundReader {
             Ok(())
         })();
         if let Err(e) = checked {
-            let _ = handle.close();
+            // `IOUtils.closeWhileHandlingException(handle)`
+            // (`Lucene90CompoundReader.java:97-101`).
+            IOUtils::close_while_handling_exception([Some(|| handle.close())])?;
             return Err(e);
         }
 
@@ -459,7 +461,7 @@ impl Directory for Lucene90CompoundReader {
 
     /// Equivalent to `Lucene90CompoundReader.close()`: `IOUtils.close(handle)`.
     fn close(&mut self) -> Result<()> {
-        self.handle.close()
+        IOUtils::close([Some(|| self.handle.close())])
     }
 
     fn get_pending_deletions(&self) -> Result<HashSet<String>> {

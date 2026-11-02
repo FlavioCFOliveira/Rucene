@@ -56,7 +56,7 @@ use rucene::index::{FieldInfo, FieldInfos, SegmentInfo, VectorEncoding, VectorSi
 use rucene::search::{DocIdSetIterator, NO_MORE_DOCS};
 use rucene::store::{Directory, FSDirectory, DEFAULT_IO_CONTEXT};
 use rucene::util::quantization::ScalarEncoding;
-use rucene::util::{default_info_stream, Version};
+use rucene::util::Version;
 
 /// The segment name and id the Java fixture uses, so the two sides write files
 /// with the same names and the same header id.
@@ -156,7 +156,7 @@ fn write_with_rucene(
     let info = segment_info(&directory);
     let infos = field_infos(dim, similarity);
     let write_state = SegmentWriteState::new(
-        default_info_stream(),
+        &rucene::util::NoOutputInfoStream,
         Arc::clone(&directory),
         &info,
         &infos,
@@ -228,7 +228,7 @@ fn merge_with_rucene(
     )
     .expect("merged segment info");
     let write_state = SegmentWriteState::new(
-        default_info_stream(),
+        &rucene::util::NoOutputInfoStream,
         Arc::clone(&directory),
         &merged_info,
         &infos,
@@ -307,7 +307,7 @@ fn scores_with_rucene(
     )
     .expect("score segment info");
     let score_state = SegmentWriteState::new(
-        default_info_stream(),
+        &rucene::util::NoOutputInfoStream,
         Arc::clone(&directory),
         &score_info,
         &infos,

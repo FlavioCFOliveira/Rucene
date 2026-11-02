@@ -316,10 +316,8 @@ impl FeatureField {
         feature_field: &str,
         feature_name: &str,
     ) -> Result<f32> {
-        let term = Term::new(
-            feature_field,
-            BytesRef::new(feature_name.as_bytes().to_vec()),
-        );
+        // `new Term(featureField, featureName)` (`FeatureField.java`).
+        let term = Term::from_text(feature_field, feature_name);
         let states = crate::index::terms::TermStates::build(searcher, &term, true)?;
         let doc_freq = states.doc_freq()?;
         if doc_freq == 0 {
@@ -802,7 +800,8 @@ impl FeatureComparator {
     pub fn new(num_hits: usize, field: &str, feature_name: &str) -> Self {
         Self {
             field: field.to_string(),
-            feature_name: BytesRef::new(feature_name.as_bytes().to_vec()),
+            // `new BytesRef(featureName)` (`FeatureSortField.java:100`).
+            feature_name: BytesRef::from_char_sequence(feature_name),
             values: vec![0.0; num_hits],
             bottom: 0.0,
             top_value: 0.0,
@@ -1013,7 +1012,8 @@ impl DoubleValuesSource for FeatureDoubleValuesSource {
             return Ok(Box::new(EmptyDoubleValues));
         };
         let mut terms_enum = terms.iterator()?;
-        let feature = BytesRef::new(self.feature.as_bytes().to_vec());
+        // `new BytesRef(featureName)` (`FeatureDoubleValuesSource.java:49`).
+        let feature = BytesRef::from_char_sequence(&self.feature);
         if !terms_enum.seek_exact(&feature)? {
             return Ok(Box::new(EmptyDoubleValues));
         }
@@ -1106,7 +1106,8 @@ impl FeatureWeight {
             return Ok(None);
         };
         let mut terms_enum = terms.iterator()?;
-        let feature = BytesRef::new(self.query.feature.as_bytes().to_vec());
+        // `termsEnum.seekExact(new BytesRef(featureName))` (`FeatureQuery.java:124`).
+        let feature = BytesRef::from_char_sequence(&self.query.feature);
         if !terms_enum.seek_exact(&feature)? {
             return Ok(None);
         }
@@ -1133,7 +1134,8 @@ impl Weight for FeatureWeight {
             ));
         };
         let mut terms_enum = terms.iterator()?;
-        let feature = BytesRef::new(self.query.feature.as_bytes().to_vec());
+        // `termsEnum.seekExact(new BytesRef(featureName))` (`FeatureQuery.java:108`).
+        let feature = BytesRef::from_char_sequence(&self.query.feature);
         if !terms_enum.seek_exact(&feature)? {
             return Ok(Explanation::no_match(
                 format!("{desc}. Feature {} doesn't exist.", self.query.feature),
@@ -1270,10 +1272,8 @@ impl Query for FeatureQuery {
         if !score_mode.needs_scores() {
             // Scores are not needed — for faceting, say — and features are
             // stored as terms, so let TermQuery optimise this case.
-            let tq = TermQuery::new(Term::new(
-                &self.field,
-                BytesRef::new(self.feature.as_bytes().to_vec()),
-            ));
+            // `new TermQuery(new Term(fieldName, featureName))`.
+            let tq = TermQuery::new(Term::from_text(&self.field, &self.feature));
             let rewritten = searcher.rewrite(Arc::new(tq))?;
             return rewritten.create_weight(searcher, score_mode, boost);
         }

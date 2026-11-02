@@ -851,6 +851,12 @@ impl Bits for ArcBits {
     fn length(&self) -> usize {
         self.0.length()
     }
+
+    /// The handle is a Rust artefact: Java's `instanceof` sees the shared
+    /// bits themselves.
+    fn bits_as_any(&self) -> Option<&dyn std::any::Any> {
+        self.0.bits_as_any()
+    }
 }
 
 impl LeafReader for LiveDocsCodecReader {

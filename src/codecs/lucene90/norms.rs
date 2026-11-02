@@ -59,6 +59,7 @@ use crate::index::doc_values::{DocValues, DocValuesIterator, NumericDocValues};
 use crate::index::index_file_names::{segment_file_name, NORMS_EXTENSION, NORMS_META_EXTENSION};
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::store::{IndexInput, IndexOutput, RandomAccessInput};
+use crate::util::IOUtils;
 
 const DATA_CODEC: &str = "Lucene90NormsData";
 const METADATA_CODEC: &str = "Lucene90NormsMetadata";
@@ -131,41 +132,89 @@ impl fmt::Debug for Lucene90NormsConsumer {
 }
 
 impl Lucene90NormsConsumer {
+    /// Equivalent to `Lucene90NormsConsumer(SegmentWriteState, String, String,
+    /// String, String)` (`Lucene90NormsConsumer.java:38-66`): when it fails,
+    /// `IOUtils.closeWhileHandlingException(this)` runs `close()` over the
+    /// outputs created so far.
     fn new(state: &SegmentWriteState) -> Result<Self> {
-        let data_name = segment_file_name(
-            &state.segment_info.name,
-            &state.segment_suffix,
-            NORMS_EXTENSION,
-        );
-        let mut data = state.directory.create_output(&data_name, state.context)?;
-        codec_util::write_index_header(
-            data.as_mut(),
-            DATA_CODEC,
-            VERSION_CURRENT,
-            &state.segment_info.id(),
-            &state.segment_suffix,
-        )?;
+        let mut data: Option<Box<dyn IndexOutput>> = None;
+        let mut meta: Option<Box<dyn IndexOutput>> = None;
+        let opened = (|| -> Result<i32> {
+            let data_name = segment_file_name(
+                &state.segment_info.name,
+                &state.segment_suffix,
+                NORMS_EXTENSION,
+            );
+            let data = data.insert(state.directory.create_output(&data_name, state.context)?);
+            codec_util::write_index_header(
+                data.as_mut(),
+                DATA_CODEC,
+                VERSION_CURRENT,
+                &state.segment_info.id(),
+                &state.segment_suffix,
+            )?;
 
-        let meta_name = segment_file_name(
-            &state.segment_info.name,
-            &state.segment_suffix,
-            NORMS_META_EXTENSION,
-        );
-        let mut meta = state.directory.create_output(&meta_name, state.context)?;
-        codec_util::write_index_header(
-            meta.as_mut(),
-            METADATA_CODEC,
-            VERSION_CURRENT,
-            &state.segment_info.id(),
-            &state.segment_suffix,
-        )?;
-
-        let max_doc = state.segment_info.max_doc()?;
+            let meta_name = segment_file_name(
+                &state.segment_info.name,
+                &state.segment_suffix,
+                NORMS_META_EXTENSION,
+            );
+            let meta = meta.insert(state.directory.create_output(&meta_name, state.context)?);
+            codec_util::write_index_header(
+                meta.as_mut(),
+                METADATA_CODEC,
+                VERSION_CURRENT,
+                &state.segment_info.id(),
+                &state.segment_suffix,
+            )?;
+            state.segment_info.max_doc()
+        })();
+        let max_doc = match opened {
+            Ok(max_doc) => max_doc,
+            Err(error) => {
+                // `IOUtils.closeWhileHandlingException(this)`
+                // (`Lucene90NormsConsumer.java:61-65`).
+                IOUtils::close_while_handling_exception([Some(|| {
+                    Self::close_outputs(data.as_mut(), meta.as_mut())
+                })])?;
+                return Err(error);
+            }
+        };
+        let expect = "INVARIANT: the constructor created both outputs";
         Ok(Self {
-            data,
-            meta,
+            data: data.expect(expect),
+            meta: meta.expect(expect),
             max_doc,
         })
+    }
+
+    /// The body of `Lucene90NormsConsumer.close()`
+    /// (`Lucene90NormsConsumer.java:68-88`) over the outputs that are not
+    /// null: the EOF marker and the footers, then `IOUtils.close(data, meta)`,
+    /// or `IOUtils.closeWhileHandlingException(data, meta)` when writing them
+    /// failed.
+    fn close_outputs(
+        mut data: Option<&mut Box<dyn IndexOutput>>,
+        mut meta: Option<&mut Box<dyn IndexOutput>>,
+    ) -> Result<()> {
+        let written = (|| -> Result<()> {
+            if let Some(meta) = meta.as_deref_mut() {
+                meta.write_int(-1)?; // write EOF marker
+                codec_util::write_footer(meta.as_mut())?; // write checksum
+            }
+            if let Some(data) = data.as_deref_mut() {
+                codec_util::write_footer(data.as_mut())?; // write checksum
+            }
+            Ok(())
+        })();
+        let closeables = [data, meta].map(|o| o.map(|o| move || o.close()));
+        match written {
+            Ok(()) => IOUtils::close(closeables),
+            Err(error) => {
+                IOUtils::close_while_handling_exception(closeables)?;
+                Err(error)
+            }
+        }
     }
 }
 
@@ -242,13 +291,10 @@ impl NormsConsumer for Lucene90NormsConsumer {
         Ok(())
     }
 
+    /// Equivalent to `Lucene90NormsConsumer.close()`
+    /// (`Lucene90NormsConsumer.java:68-88`).
     fn close(&mut self) -> Result<()> {
-        self.meta.write_int(-1)?; // EOF marker
-        codec_util::write_footer(self.meta.as_mut())?;
-        codec_util::write_footer(self.data.as_mut())?;
-        self.meta.close()?;
-        self.data.close()?;
-        Ok(())
+        Self::close_outputs(Some(&mut self.data), Some(&mut self.meta))
     }
 }
 
@@ -416,22 +462,31 @@ impl Lucene90NormsProducer {
             NORMS_EXTENSION,
         );
         let mut data = state.directory.open_input(&data_name, state.context)?;
-        let version2 = codec_util::check_index_header(
-            data.as_mut(),
-            DATA_CODEC,
-            VERSION_START,
-            VERSION_CURRENT,
-            &state.segment_info.id(),
-            &state.segment_suffix,
-        )?;
-        if version != version2 {
-            return Err(LuceneError::CorruptIndex(format!(
-                "Format versions mismatch: meta={version}, data={version2}"
-            )));
+        let checked = (|| -> Result<()> {
+            let version2 = codec_util::check_index_header(
+                data.as_mut(),
+                DATA_CODEC,
+                VERSION_START,
+                VERSION_CURRENT,
+                &state.segment_info.id(),
+                &state.segment_suffix,
+            )?;
+            if version != version2 {
+                return Err(LuceneError::CorruptIndex(format!(
+                    "Format versions mismatch: meta={version}, data={version2}"
+                )));
+            }
+            // Cheap structural check of the data footer; the actual checksum is
+            // verified by `check_integrity` on demand.
+            codec_util::retrieve_checksum(data.as_mut())?;
+            Ok(())
+        })();
+        if let Err(error) = checked {
+            // `IOUtils.closeWhileHandlingException(this.data)`
+            // (`Lucene90NormsProducer.java:108-112`).
+            IOUtils::close_while_handling_exception([Some(|| data.close())])?;
+            return Err(error);
         }
-        // Cheap structural check of the data footer; the actual checksum is
-        // verified by `check_integrity` on demand.
-        codec_util::retrieve_checksum(data.as_mut())?;
 
         Ok(Self {
             norms,
@@ -1051,7 +1106,7 @@ mod tests {
         fis: &'a FieldInfos,
     ) -> SegmentWriteState<'a> {
         SegmentWriteState::new(
-            crate::util::default_info_stream(),
+            &crate::util::NoOutputInfoStream,
             Arc::clone(dir),
             info,
             fis,
@@ -1897,5 +1952,61 @@ impl fmt::Display for Lucene90NormsProducer {
     /// Port of `Lucene90NormsProducer.toString()`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Lucene90NormsProducer(fields={})", self.norms.len())
+    }
+}
+
+/// The `IOUtils` close family at the norms call sites (#308).
+#[cfg(test)]
+mod close_family_tests {
+    use super::{Lucene90NormsConsumer, Lucene90NormsProducer};
+    use crate::codecs::norms::NormsConsumer;
+    use crate::codecs::tests::{
+        read_state, rewrite_file, test_segment_info, tracking_directory, write_state,
+    };
+    use crate::index::FieldInfos;
+
+    /// A constructor that fails runs `IOUtils.closeWhileHandlingException(this)`
+    /// (`Lucene90NormsConsumer.java:61-65`), closing the `.nvd` it created.
+    #[test]
+    fn a_failed_consumer_constructor_closes_the_data_output() {
+        let (dir, _tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 10);
+        let fis = FieldInfos::default();
+        log.fail_open("_0.nvm");
+        Lucene90NormsConsumer::new(&write_state(&dir, &info, &fis)).unwrap_err();
+        assert_eq!(log.closed(), ["_0.nvd"]);
+    }
+
+    /// `close()` ends with `IOUtils.close(data, meta)`
+    /// (`Lucene90NormsConsumer.java:80-84`): data first, then meta, whose
+    /// failure is raised.
+    #[test]
+    fn consumer_close_closes_data_then_meta() {
+        let (dir, _tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 10);
+        let fis = FieldInfos::default();
+        let mut consumer = Lucene90NormsConsumer::new(&write_state(&dir, &info, &fis)).unwrap();
+        log.fail_close("_0.nvm");
+        let error = consumer.close().unwrap_err();
+        assert!(format!("{error}").contains("_0.nvm"), "{error}");
+        assert_eq!(log.closed(), ["_0.nvd", "_0.nvm"]);
+    }
+
+    /// A bad `.nvd` header closes the data input:
+    /// `IOUtils.closeWhileHandlingException(this.data)`
+    /// (`Lucene90NormsProducer.java:108-112`).
+    #[test]
+    fn a_bad_data_header_closes_the_data_input() {
+        let (dir, tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 10);
+        let fis = FieldInfos::default();
+        Lucene90NormsConsumer::new(&write_state(&dir, &info, &fis))
+            .unwrap()
+            .close()
+            .unwrap();
+        let before = log.closed().len();
+        rewrite_file(&tracking, "_0.nvd", |bytes| bytes[6] ^= 0xff);
+        Lucene90NormsProducer::new(&read_state(&*dir, &info, &fis)).unwrap_err();
+        assert_eq!(log.closed()[before..], ["_0.nvd"]);
     }
 }

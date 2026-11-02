@@ -432,14 +432,14 @@ fn writer_configs(m: &Measured) {
 }
 
 fn util_bit_sets(m: &Measured) {
-    let empty = SparseFixedBitSet::new(100);
+    let empty = SparseFixedBitSet::new(100).unwrap();
     assert_eq!(
         empty.to_string(),
         m.get("SparseFixedBitSet.toString/empty100"),
         "SparseFixedBitSet.toString() — note Lucene never closes the parenthesis"
     );
 
-    let mut sparse = SparseFixedBitSet::new(10_000);
+    let mut sparse = SparseFixedBitSet::new(10_000).unwrap();
     sparse.set(1);
     sparse.set(5_000);
     sparse.set(9_999);
@@ -461,7 +461,7 @@ fn util_bit_sets(m: &Measured) {
         m.get("RoaringDocIdSet.toString/empty64")
     );
 
-    let mut for_doc_id_set = SparseFixedBitSet::new(128);
+    let mut for_doc_id_set = SparseFixedBitSet::new(128).unwrap();
     for_doc_id_set.set(7);
     let set: Arc<dyn BitSet> = Arc::new(for_doc_id_set);
     assert_eq!(
@@ -508,7 +508,7 @@ fn util_bit_sets(m: &Measured) {
         m.get("DenseLiveDocs.toString/1-of-8-tie")
     );
 
-    let mut deleted = SparseFixedBitSet::new(1000);
+    let mut deleted = SparseFixedBitSet::new(1000).unwrap();
     deleted.set(4);
     deleted.set(77);
     assert_eq!(
@@ -519,7 +519,7 @@ fn util_bit_sets(m: &Measured) {
         m.get("SparseLiveDocs.toString/2-of-1000")
     );
 
-    let mut one_of_eight = SparseFixedBitSet::new(8);
+    let mut one_of_eight = SparseFixedBitSet::new(8).unwrap();
     one_of_eight.set(4);
     assert_eq!(
         SparseLiveDocs::builder(one_of_eight, 8)
@@ -1262,7 +1262,7 @@ fn readers(m: &Measured, index_dir: &std::path::Path) {
         "the segments file, the commit version and every segment reader"
     );
 
-    let leaves = Arc::clone(&reader).leaves();
+    let leaves = Arc::clone(&reader).leaves().unwrap();
     let leaf0 = leaves[0].leaf_reader();
     let leaf1 = leaves[1].leaf_reader();
 
@@ -1345,7 +1345,7 @@ fn readers(m: &Measured, index_dir: &std::path::Path) {
     // `wrapper.wrap(in.getSequentialSubReaders())` to `super`
     // (`FilterDirectoryReader.java:91-93`). Both routes to the wrapped leaf are
     // pinned here: through the reader, and straight off the `SubReaderWrapper`.
-    let exitable_leaves = Arc::clone(&exitable).leaves();
+    let exitable_leaves = Arc::clone(&exitable).leaves().unwrap();
     assert_eq!(
         exitable_leaves.len(),
         2,
@@ -1438,7 +1438,7 @@ fn enumerations(m: &Measured, index_dir: &std::path::Path) {
     let reader = open_java_index(index_dir);
     // `Arc<dyn DirectoryReader>` does not coerce to `Arc<dyn IndexReader>`, so
     // the erased view comes off the reader's own top-level context.
-    let as_index_reader: Arc<dyn IndexReader> = Arc::clone(&reader).get_context().reader();
+    let as_index_reader: Arc<dyn IndexReader> = Arc::clone(&reader).get_context().unwrap().reader();
 
     let terms = MultiTerms::get_terms(&as_index_reader, "body")
         .expect("read the merged terms")
@@ -1464,7 +1464,7 @@ fn enumerations(m: &Measured, index_dir: &std::path::Path) {
         "the class renames itself `MultiDocsAndPositionsEnum`"
     );
 
-    let leaves = Arc::clone(&reader).leaves();
+    let leaves = Arc::clone(&reader).leaves().unwrap();
     let leaf0 = leaves[0].leaf_reader();
     let leaf_terms = leaf0
         .terms("body")

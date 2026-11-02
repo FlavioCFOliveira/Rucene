@@ -269,7 +269,7 @@ fn a_sorted_merge_keeps_document_blocks_together_as_lucene_does() {
 
     let reader = directory_reader::open(Arc::clone(&dir)).unwrap();
     let mut order = Vec::new();
-    for leaf in Arc::clone(&reader).leaves() {
+    for leaf in Arc::clone(&reader).leaves().unwrap() {
         let mut blk = leaf
             .leaf_reader()
             .get_numeric_doc_values("blk")

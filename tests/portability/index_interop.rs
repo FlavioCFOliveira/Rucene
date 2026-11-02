@@ -575,7 +575,7 @@ fn query_report(path: &Path) -> String {
     let searcher = IndexSearcher::new(Arc::clone(&reader)).unwrap();
     let stored = searcher.stored_fields().unwrap();
     let stored = stored.as_ref();
-    let leaves = Arc::clone(&reader).leaves();
+    let leaves = Arc::clone(&reader).leaves().unwrap();
     let mut out = String::new();
     writeln!(
         out,

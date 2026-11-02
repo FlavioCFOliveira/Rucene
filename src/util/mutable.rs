@@ -393,21 +393,9 @@ impl MutableValue for MutableValueDouble {
 }
 
 /// Total ordering of doubles, matching `java.lang.Double.compare`: `-0.0` sorts
-/// before `0.0` and `NaN` sorts above everything.
+/// before `0.0` and every `NaN` sorts above everything, all `NaN`s equal.
 fn java_compare_f64(a: f64, b: f64) -> i32 {
-    if a < b {
-        return -1;
-    }
-    if a > b {
-        return 1;
-    }
-    let a_bits = a.to_bits() as i64;
-    let b_bits = b.to_bits() as i64;
-    match a_bits.cmp(&b_bits) {
-        Ordering::Less => -1,
-        Ordering::Equal => 0,
-        Ordering::Greater => 1,
-    }
+    crate::util::double_compare(a, b) as i32
 }
 
 /// Total ordering of floats, matching `java.lang.Float.compare`.
@@ -943,5 +931,27 @@ impl MutableValue for MutableValueStr {
         debug_assert!(self.exists || self.value.length() == 0);
         let bytes = self.value.get();
         hash_bytes(bytes.slice())
+    }
+}
+
+#[cfg(test)]
+mod double_compare_tests {
+    use super::*;
+
+    /// `MutableValueDouble.compareSameType` orders with `Double.compare`
+    /// (`MutableValueDouble.java:56-63`), which folds every `NaN` into one
+    /// value above positive infinity: `compare(-NaN,-Inf)=1` and
+    /// `compare(NaN payload, NaN)=0` on the JDK that runs the Lucene 10.5.0
+    /// oracle (`oracle/fix/MiscFix.java`, item 22).
+    #[test]
+    fn mutable_doubles_compare_as_double_compare() {
+        let value = |value: f64| MutableValueDouble {
+            value,
+            exists: true,
+        };
+        let negative_nan = value(f64::from_bits(0xfff8_0000_0000_0000));
+        let payload_nan = value(f64::from_bits(0x7ff0_0000_0000_0001));
+        assert_eq!(negative_nan.compare_same_type(&value(f64::NEG_INFINITY)), 1);
+        assert_eq!(payload_nan.compare_same_type(&value(f64::NAN)), 0);
     }
 }

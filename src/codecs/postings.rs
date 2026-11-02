@@ -569,6 +569,15 @@ pub trait PostingsWriterBase {
 /// Concrete push writers embed this struct and expose it through
 /// [`PushPostingsWriterBase::push_state`] /
 /// [`PushPostingsWriterBase::push_state_mut`].
+///
+/// Equivalent to the fields of `PushPostingsWriterBase`. The `protected` ones
+/// are public here; `postingsEnum` and `enumFlags`, `private` in Java
+/// (`PushPostingsWriterBase.java:42-43`), are private:
+///
+/// ```compile_fail,E0616
+/// let state = rucene::codecs::postings::PushPostingsWriterState::new();
+/// let _flags = state.enum_flags;
+/// ```
 #[derive(Default)]
 pub struct PushPostingsWriterState {
     /// The postings enum the last [`write_term`](PushPostingsWriterBase::write_term)
@@ -591,13 +600,59 @@ pub struct PushPostingsWriterState {
     /// Whether offsets are written for the current field.
     pub write_offsets: bool,
     /// Flags used to request the correct postings enum for the current field.
-    pub enum_flags: i32,
+    ///
+    /// Equivalent to the private `PushPostingsWriterBase.enumFlags`
+    /// (`PushPostingsWriterBase.java:43`): only
+    /// [`set_field`](Self::set_field) writes it and only
+    /// [`write_term`](PushPostingsWriterBase::write_term) reads it.
+    enum_flags: i32,
 }
 
 impl PushPostingsWriterState {
     /// Creates an empty push writer state.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Sets the current field and derives the per-field flags from it.
+    ///
+    /// Equivalent to the body of `PushPostingsWriterBase.setField(FieldInfo)`
+    /// (`PushPostingsWriterBase.java:84-112`): it stores the field, derives
+    /// `write_freqs`, `write_positions`, `write_offsets` and `write_payloads`,
+    /// and the flags `write_term` requests the postings enum with. A Rust
+    /// trait default cannot be called from the override that replaces it, so
+    /// this is the method an override calls where Java's calls
+    /// `super.setField(fieldInfo)`, as
+    /// `Lucene104PostingsWriter.setField` does (`Lucene104PostingsWriter.java:233-237`).
+    pub fn set_field(&mut self, field_info: &FieldInfo) {
+        self.field_info = Some(field_info.clone());
+        self.index_options = field_info.index_options;
+        self.write_freqs = field_info
+            .index_options
+            .subsumes(IndexOptions::DOCS_AND_FREQS);
+        self.write_positions = field_info
+            .index_options
+            .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS);
+        self.write_offsets = field_info
+            .index_options
+            .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS);
+        self.write_payloads = field_info.has_payloads();
+
+        if !self.write_freqs {
+            self.enum_flags = POSTINGS_ENUM_NONE;
+        } else if !self.write_positions {
+            self.enum_flags = POSTINGS_ENUM_FREQS;
+        } else if !self.write_offsets {
+            if self.write_payloads {
+                self.enum_flags = POSTINGS_ENUM_PAYLOADS;
+            } else {
+                self.enum_flags = POSTINGS_ENUM_POSITIONS;
+            }
+        } else if self.write_payloads {
+            self.enum_flags = POSTINGS_ENUM_PAYLOADS | POSTINGS_ENUM_OFFSETS;
+        } else {
+            self.enum_flags = POSTINGS_ENUM_OFFSETS;
+        }
     }
 }
 
@@ -687,39 +742,11 @@ pub trait PushPostingsWriterBase {
 
     /// Sets the current field and computes per-field flags.
     ///
-    /// The default implementation stores the field in [`PushPostingsWriterState`]
-    /// and derives `write_freqs`, `write_positions`, `write_payloads`,
-    /// `write_offsets` and `enum_flags`.
+    /// Equivalent to `PushPostingsWriterBase.setField(FieldInfo)`: the default
+    /// implementation is [`PushPostingsWriterState::set_field`], which an
+    /// override calls where Java's calls `super.setField`.
     fn set_field(&mut self, field_info: &FieldInfo) -> Result<()> {
-        let state = self.push_state_mut();
-        state.field_info = Some(field_info.clone());
-        state.index_options = field_info.index_options;
-        state.write_freqs = field_info
-            .index_options
-            .subsumes(IndexOptions::DOCS_AND_FREQS);
-        state.write_positions = field_info
-            .index_options
-            .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS);
-        state.write_offsets = field_info
-            .index_options
-            .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS);
-        state.write_payloads = field_info.has_payloads();
-
-        if !state.write_freqs {
-            state.enum_flags = POSTINGS_ENUM_NONE;
-        } else if !state.write_positions {
-            state.enum_flags = POSTINGS_ENUM_FREQS;
-        } else if !state.write_offsets {
-            if state.write_payloads {
-                state.enum_flags = POSTINGS_ENUM_PAYLOADS;
-            } else {
-                state.enum_flags = POSTINGS_ENUM_POSITIONS;
-            }
-        } else if state.write_payloads {
-            state.enum_flags = POSTINGS_ENUM_PAYLOADS | POSTINGS_ENUM_OFFSETS;
-        } else {
-            state.enum_flags = POSTINGS_ENUM_OFFSETS;
-        }
+        self.push_state_mut().set_field(field_info);
         Ok(())
     }
 
@@ -821,17 +848,17 @@ fn push_postings<W: PushPostingsWriterBase + ?Sized>(
             break;
         }
         doc_freq += 1;
-        if (doc_id as usize) < docs_seen.length() {
-            docs_seen.set(doc_id as usize);
-        }
+        // `docsSeen.set(docID)` (`PushPostingsWriterBase.java:136`): a
+        // document past the bit set fails, as Java's `assert index < numBits`
+        // or array bound does.
+        docs_seen.set(doc_id as usize);
         let freq = if write_freqs {
-            postings_enum.freq()?
+            let freq = postings_enum.freq()?;
+            total_term_freq += i64::from(freq);
+            freq
         } else {
             -1
         };
-        if freq >= 0 {
-            total_term_freq += freq as i64;
-        }
         writer.start_doc(doc_id, freq)?;
 
         if write_positions {
@@ -1412,7 +1439,7 @@ mod tests {
         let field_infos = crate::codecs::stub::FieldInfos::default();
         let context = &*crate::store::DEFAULT_IO_CONTEXT;
         let seg_updates = crate::codecs::stub::BufferedUpdates::default();
-        let info_stream = crate::util::default_info_stream();
+        let info_stream = &crate::util::NoOutputInfoStream;
         let write_state = SegmentWriteState::new(
             info_stream,
             Arc::clone(&dir),
@@ -1522,7 +1549,7 @@ mod tests {
         let field_infos = crate::codecs::stub::FieldInfos::default();
         let context = &*crate::store::DEFAULT_IO_CONTEXT;
         let seg_updates = crate::codecs::stub::BufferedUpdates::default();
-        let info_stream = crate::util::default_info_stream();
+        let info_stream = &crate::util::NoOutputInfoStream;
         let write_state = SegmentWriteState::new(
             info_stream,
             Arc::clone(&dir),
@@ -1590,7 +1617,7 @@ mod tests {
         let field_infos = crate::codecs::stub::FieldInfos::default();
         let context = &*crate::store::DEFAULT_IO_CONTEXT;
         let seg_updates = crate::codecs::stub::BufferedUpdates::default();
-        let info_stream = crate::util::default_info_stream();
+        let info_stream = &crate::util::NoOutputInfoStream;
         let write_state = SegmentWriteState::new(
             info_stream,
             Arc::clone(&dir),
@@ -1757,5 +1784,201 @@ mod tests {
         assert_eq!(writer.push_state().enum_flags, POSTINGS_ENUM_PAYLOADS);
         assert!(writer.push_state().write_positions);
         assert!(writer.push_state().write_payloads);
+    }
+
+    /// A postings enum over one document, `doc`, whose frequency is `freq`.
+    struct OneDocPostingsEnum {
+        doc: i32,
+        current: i32,
+        freq: i32,
+    }
+
+    impl DocIdSetIterator for OneDocPostingsEnum {
+        fn doc_id(&self) -> i32 {
+            self.current
+        }
+
+        fn next_doc(&mut self) -> Result<i32> {
+            self.current = if self.current == -1 {
+                self.doc
+            } else {
+                NO_MORE_DOCS
+            };
+            Ok(self.current)
+        }
+
+        fn advance(&mut self, _target: i32) -> Result<i32> {
+            self.next_doc()
+        }
+
+        fn cost(&self) -> i64 {
+            1
+        }
+    }
+
+    impl std::fmt::Display for OneDocPostingsEnum {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("OneDocPostingsEnum")
+        }
+    }
+
+    impl PostingsEnum for OneDocPostingsEnum {
+        fn freq(&self) -> Result<i32> {
+            Ok(self.freq)
+        }
+
+        fn next_position(&mut self) -> Result<i32> {
+            Ok(0)
+        }
+
+        fn start_offset(&self) -> i32 {
+            -1
+        }
+
+        fn end_offset(&self) -> i32 {
+            -1
+        }
+
+        fn get_payload(&self) -> Result<Option<&[u8]>> {
+            Ok(None)
+        }
+    }
+
+    /// A terms enum whose `postings` is one document, `doc`, of frequency
+    /// `freq`.
+    #[derive(Default)]
+    struct OneDocTermsEnum {
+        atts: crate::util::attribute::AttributeSource,
+        doc: i32,
+        freq: i32,
+    }
+
+    impl std::fmt::Display for OneDocTermsEnum {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("OneDocTermsEnum")
+        }
+    }
+
+    impl TermsEnum for OneDocTermsEnum {
+        fn attributes(&mut self) -> &mut crate::util::attribute::AttributeSource {
+            &mut self.atts
+        }
+
+        fn term(&self) -> Result<BytesRef> {
+            Ok(BytesRef::default())
+        }
+
+        fn postings(
+            &mut self,
+            _reuse: Option<Box<dyn PostingsEnum>>,
+            _flags: i32,
+        ) -> Result<Box<dyn PostingsEnum>> {
+            Ok(Box::new(OneDocPostingsEnum {
+                doc: self.doc,
+                current: -1,
+                freq: self.freq,
+            }))
+        }
+
+        fn seek_ceil(&mut self, _text: &BytesRef) -> Result<SeekStatus> {
+            Ok(SeekStatus::END)
+        }
+
+        fn seek_ord(&mut self, _ord: i64) -> Result<()> {
+            Ok(())
+        }
+
+        fn ord(&self) -> Result<i64> {
+            Ok(-1)
+        }
+
+        fn doc_freq(&mut self) -> Result<i32> {
+            Ok(1)
+        }
+
+        fn total_term_freq(&mut self) -> Result<i64> {
+            Ok(1)
+        }
+
+        fn impacts(&mut self, _flags: i32) -> Result<Box<dyn crate::index::ImpactsEnum>> {
+            Ok(Box::new(StubImpactsEnum))
+        }
+
+        fn next(&mut self) -> Result<Option<BytesRef>> {
+            Ok(None)
+        }
+    }
+
+    /// `writeTerm` calls `docsSeen.set(docID)` for every document
+    /// (`PushPostingsWriterBase.java:136`), with no bound check of its own: a
+    /// document past the bit set fails exactly as `docsSeen.set(docID)` does
+    /// on its own — `FixedBitSet.set`'s `assert index >= 0 && index <
+    /// numBits` (`FixedBitSet.java:298`) — rather than being skipped or
+    /// refused by `writeTerm`.
+    #[test]
+    fn write_term_hands_every_document_to_docs_seen_set() {
+        fn panic_text(payload: Box<dyn std::any::Any + Send>) -> String {
+            payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
+                .unwrap_or_default()
+        }
+        let direct = std::panic::catch_unwind(|| FixedBitSet::new(8).set(9))
+            .expect_err("FixedBitSet::set refuses a bit past its length");
+        let through_write_term = std::panic::catch_unwind(|| {
+            let mut writer = StubPushWriter::default();
+            let docs =
+                FieldInfo::new("docs", 0).with_postings_options(IndexOptions::DOCS, false, false);
+            PushPostingsWriterBase::set_field(&mut writer, &docs).unwrap();
+            let mut terms = OneDocTermsEnum {
+                doc: 9,
+                freq: 1,
+                ..OneDocTermsEnum::default()
+            };
+            let mut docs_seen = FixedBitSet::new(8);
+            PostingsWriterBase::write_term(
+                &mut writer,
+                &BytesRef::default(),
+                &mut terms,
+                &mut docs_seen,
+                None,
+            )
+            .map(|_| ())
+        })
+        .expect_err("writeTerm reaches docsSeen.set(9)");
+        assert_eq!(panic_text(through_write_term), panic_text(direct));
+    }
+
+    /// `writeTerm` adds every frequency it reads to `totalTermFreq`
+    /// (`PushPostingsWriterBase.java:139-141`) and sets the document's bit,
+    /// without filtering what the enum reports.
+    #[test]
+    fn write_term_sums_every_frequency_it_reads() {
+        let mut writer = StubPushWriter::default();
+        let freqs = FieldInfo::new("freqs", 0).with_postings_options(
+            IndexOptions::DOCS_AND_FREQS,
+            false,
+            false,
+        );
+        PushPostingsWriterBase::set_field(&mut writer, &freqs).unwrap();
+        let mut terms = OneDocTermsEnum {
+            doc: 3,
+            freq: -1,
+            ..OneDocTermsEnum::default()
+        };
+        let mut docs_seen = FixedBitSet::new(8);
+        let state = PostingsWriterBase::write_term(
+            &mut writer,
+            &BytesRef::default(),
+            &mut terms,
+            &mut docs_seen,
+            None,
+        )
+        .unwrap()
+        .expect("one document");
+        assert_eq!(state.doc_freq, 1);
+        assert_eq!(state.total_term_freq, -1);
+        assert!(docs_seen.get(3));
     }
 }

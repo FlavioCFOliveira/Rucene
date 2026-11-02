@@ -48,7 +48,25 @@ impl AbstractAnalysisFactory {
         let original_args = args.clone();
         let (lucene_match_version, explicit_version) = match args.remove(LUCENE_MATCH_VERSION_PARAM)
         {
-            Some(version) => (Version::parse_leniently(&version)?, true),
+            // `catch (ParseException pe) { throw new IllegalArgumentException(pe); }`
+            // (`AbstractAnalysisFactory.java:101-105`): the message is the
+            // `ParseException`'s `toString()`, and it is the cause.
+            // `parse_leniently` reports the `ParseException` as an
+            // `IllegalArgumentWithCause` carrying its message.
+            Some(version) => (
+                Version::parse_leniently(&version).map_err(|pe| {
+                    let message = match &pe {
+                        LuceneError::IllegalArgument(message)
+                        | LuceneError::IllegalArgumentWithCause { message, .. } => message.clone(),
+                        other => other.to_string(),
+                    };
+                    LuceneError::illegal_argument_with_cause(
+                        format!("java.text.ParseException: {message}"),
+                        std::sync::Arc::new(pe),
+                    )
+                })?,
+                true,
+            ),
             None => (Version::LATEST, false),
         };
         args.remove(CLASS_NAME);
@@ -411,21 +429,24 @@ impl AbstractAnalysisFactory {
     ///   `this.getClass().getSimpleName()`; this struct is held by the
     ///   concrete factory and cannot see its type, so the factory passes its
     ///   Java simple name in.
-    /// * **The cause is not chained.** Java attaches the
+    /// * **The cause is the regex engine's diagnostic.** Java attaches the
     ///   `PatternSyntaxException` as the cause of the
-    ///   `IllegalArgumentException`; [`LuceneError::IllegalArgument`] carries a
-    ///   message only, so the message is Java's and the parser's own
-    ///   diagnostic is dropped.
+    ///   `IllegalArgumentException` (`AbstractAnalysisFactory.java:266-276`).
+    ///   The message is Java's, and the cause is
+    ///   [`LuceneError::IllegalArgument`] — `PatternSyntaxException` extends
+    ///   `IllegalArgumentException` — carrying the `fancy_regex` parser's own
+    ///   diagnostic, which is not the text `java.util.regex` would give.
     pub fn get_pattern(
         args: &mut HashMap<String, String>,
         name: &str,
         factory_simple_name: &str,
     ) -> Result<fancy_regex::Regex> {
         let value = Self::require(args, name)?;
-        fancy_regex::Regex::new(&value).map_err(|_| {
-            LuceneError::IllegalArgument(format!(
-                "Configuration Error: '{name}' can not be parsed in {factory_simple_name}"
-            ))
+        fancy_regex::Regex::new(&value).map_err(|syntax| {
+            LuceneError::illegal_argument_with_cause(
+                format!("Configuration Error: '{name}' can not be parsed in {factory_simple_name}"),
+                std::sync::Arc::new(LuceneError::IllegalArgument(syntax.to_string())),
+            )
         })
     }
 
@@ -1224,6 +1245,35 @@ mod get_lines_tests {
             vec!["#hash".to_string(), "a".to_string(), "b".to_string()],
             "'#hash' is a Snowball word, not a comment"
         );
+    }
+}
+
+#[cfg(test)]
+mod parse_exception_tests {
+    use super::*;
+
+    /// `catch (ParseException pe) { throw new IllegalArgumentException(pe); }`
+    /// (`AbstractAnalysisFactory.java:101-105`). Measured against
+    /// `lucene-core-10.5.0.jar` (`oracle/fix/MiscFix.java`, item 16) with
+    /// `luceneMatchVersion=x.y`: `IllegalArgumentException:
+    /// java.text.ParseException: failed to parse lenient version string
+    /// "x.y": Failed to parse major version from "X" (got: X.Y)`, whose cause
+    /// is that `ParseException`.
+    #[test]
+    fn an_unparsable_match_version_wraps_the_parse_exception_as_java_does() {
+        let mut args = HashMap::from([(LUCENE_MATCH_VERSION_PARAM.to_string(), "x.y".to_string())]);
+        let expected = "failed to parse lenient version string \"x.y\": Failed to parse major \
+                        version from \"X\" (got: X.Y)";
+        match AbstractAnalysisFactory::new(&mut args) {
+            Err(LuceneError::IllegalArgumentWithCause { message, cause }) => {
+                assert_eq!(message, format!("java.text.ParseException: {expected}"));
+                assert!(matches!(
+                    cause.as_ref(),
+                    LuceneError::IllegalArgumentWithCause { message, .. } if message == expected
+                ));
+            }
+            other => panic!("expected the wrapped ParseException, got {other:?}"),
+        }
     }
 }
 

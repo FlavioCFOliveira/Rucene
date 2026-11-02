@@ -7,7 +7,65 @@ use crate::error::{LuceneError, Result};
 use crate::index::DocAndFloatFeatureBuffer;
 use crate::search::doc_id_set_iterator::DocIdSetIterator;
 use crate::search::scorable::Scorable;
-use crate::util::{Bits, MathUtil, PriorityQueue, PriorityQueueComparator};
+use crate::util::bit_sets::{DenseLiveDocs, SparseLiveDocs};
+use crate::util::{Bits, FixedBitSet, MathUtil, PriorityQueue, PriorityQueueComparator};
+use std::any::{Any, TypeId};
+use std::sync::LazyLock;
+
+/// The class of the read-only live docs a segment's pending deletes hand out.
+///
+/// Equivalent to the private `ScorerUtil.DEFAULT_ACCEPT_DOCS_CLASS`
+/// (`ScorerUtil.java:35-36`), `new FixedBitSet(1).asReadOnlyBits().getClass()`.
+/// Rust's counterpart of a `Class` compared by identity is the [`TypeId`] of
+/// the concrete type, which [`Bits::bits_as_any`] exposes.
+static DEFAULT_ACCEPT_DOCS_CLASS: LazyLock<TypeId> =
+    LazyLock::new(|| Any::type_id(&FixedBitSet::new(1).as_read_only_bits()));
+
+/// The [`Bits`] [`ScorerUtil::likely_live_docs`] returns: the accepted docs
+/// themselves, or Java's `FilterBits` wrapper around them.
+#[derive(Debug)]
+pub enum LikelyLiveDocs<'a> {
+    /// The accepted docs, returned unchanged.
+    Same(&'a dyn Bits),
+    /// The accepted docs behind a `FilterBits`.
+    Filtered(FilterBits<'a>),
+}
+
+impl<'a> LikelyLiveDocs<'a> {
+    /// The bits to hand on: Java's return value.
+    pub fn as_bits(&self) -> &dyn Bits {
+        match self {
+            Self::Same(bits) => *bits,
+            Self::Filtered(bits) => bits,
+        }
+    }
+}
+
+/// A transparent wrapper around a [`Bits`].
+///
+/// Equivalent to the private `ScorerUtil.FilterBits` (`ScorerUtil.java:108-125`),
+/// which overrides `get` and `length` only: `applyMask` takes the `Bits`
+/// default, and the wrapper is its own class to `instanceof`.
+#[derive(Debug)]
+pub struct FilterBits<'a> {
+    input: &'a dyn Bits,
+}
+
+impl Bits for FilterBits<'_> {
+    fn get(&self, index: usize) -> bool {
+        self.input.get(index)
+    }
+
+    /// Java's `get` calls `in.get(index)`, so what the wrapped bits throw
+    /// propagates through it.
+    fn try_get(&self, index: usize) -> Result<bool> {
+        self.input.try_get(index)
+    }
+
+    fn length(&self) -> usize {
+        self.input.length()
+    }
+}
 
 /// Parallel arrays storing doc IDs and their corresponding score accumulators.
 ///
@@ -163,11 +221,21 @@ impl ScorerUtil {
     /// Optimises the [`Bits`] representing the set of accepted documents for
     /// the case when they are likely the segment's live docs.
     ///
-    /// Equivalent to `ScorerUtil.likelyLiveDocs(Bits)`; see
-    /// [`likely_impacts_enum`](Self::likely_impacts_enum) for why this port
-    /// returns its argument unchanged.
-    pub fn likely_live_docs(accept_docs: Option<&dyn Bits>) -> Option<&dyn Bits> {
-        accept_docs
+    /// Equivalent to `ScorerUtil.likelyLiveDocs(Bits)` (`ScorerUtil.java:95-106`):
+    /// accepted docs of the class [`FixedBitSet::as_read_only_bits`] returns,
+    /// or a `SparseLiveDocs` or `DenseLiveDocs`, are returned unchanged; any
+    /// other bits are wrapped in a [`FilterBits`].
+    pub fn likely_live_docs(accept_docs: Option<&dyn Bits>) -> Option<LikelyLiveDocs<'_>> {
+        let accept_docs = accept_docs?;
+        let class = accept_docs.bits_as_any().map(<dyn Any>::type_id);
+        if class == Some(*DEFAULT_ACCEPT_DOCS_CLASS)
+            || class == Some(TypeId::of::<SparseLiveDocs>())
+            || class == Some(TypeId::of::<DenseLiveDocs>())
+        {
+            Some(LikelyLiveDocs::Same(accept_docs))
+        } else {
+            Some(LikelyLiveDocs::Filtered(FilterBits { input: accept_docs }))
+        }
     }
 
     /// Computes a minimum required score such that
@@ -321,5 +389,46 @@ fn float_ulp(value: f32) -> f32 {
         f32::from_bits(((exp + 127) as u32) << 23)
     } else {
         f32::from_bits(1u32 << (exp + 149))
+    }
+}
+
+#[cfg(test)]
+mod pass_e_likely_live_docs_tests {
+    use super::*;
+    use crate::util::bit_sets::SparseFixedBitSet;
+
+    /// rmp #315: `ScorerUtil.likelyLiveDocs` returns the class
+    /// `new FixedBitSet(1).asReadOnlyBits().getClass()` unchanged and wraps
+    /// any other `Bits` but the two live-docs classes in a `FilterBits`
+    /// (`ScorerUtil.java:35-36, 95-106`).
+    #[test]
+    fn likely_live_docs_keeps_the_read_only_class_and_wraps_others() {
+        assert!(ScorerUtil::likely_live_docs(None).is_none());
+
+        let mut set = FixedBitSet::new(8);
+        set.set(3);
+        let view = set.as_read_only_bits();
+        match ScorerUtil::likely_live_docs(Some(&view)).unwrap() {
+            LikelyLiveDocs::Same(bits) => {
+                assert_eq!(bits.identity(), Bits::identity(&view));
+            }
+            LikelyLiveDocs::Filtered(_) => panic!("the read-only view is the default class"),
+        }
+
+        let wrapped = ScorerUtil::likely_live_docs(Some(&set)).unwrap();
+        assert!(matches!(wrapped, LikelyLiveDocs::Filtered(_)));
+        let bits = wrapped.as_bits();
+        assert!(bits.get(3) && !bits.get(2));
+        assert_eq!(bits.length(), 8);
+        assert!(bits.bits_as_any().is_none(), "FilterBits is its own class");
+        assert_ne!(bits.identity(), Bits::identity(&set));
+
+        let mut deleted = SparseFixedBitSet::new(8).unwrap();
+        deleted.set(2);
+        let sparse = SparseLiveDocs::builder(deleted, 8).build();
+        assert!(matches!(
+            ScorerUtil::likely_live_docs(Some(&sparse)).unwrap(),
+            LikelyLiveDocs::Same(_)
+        ));
     }
 }

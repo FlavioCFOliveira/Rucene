@@ -57,13 +57,6 @@
 //!
 //! # Divergences from Java, and why
 //!
-//! * Java buffers the packed values in a `PagedBytes(12)` written through a
-//!   `DataOutput` and frozen into a `PagedBytes.Reader` at flush; this port
-//!   uses a flat `Vec<u8>`. `PagedBytes` is not ported, the buffer is never
-//!   read back through anything but a fixed-offset slice, and the RAM
-//!   accounting reports what is actually held. This is the same divergence
-//!   already declared by [`crate::index::NormValuesWriter`] and by
-//!   [`crate::index::doc_values_writer`], for the same reason.
 //! * Java's `flush` takes a `Sorter.DocMap` and, when the segment has an index
 //!   sort, wraps the mutable tree in `PointValuesWriter.MutableSortingPointValues`
 //!   (`PointValuesWriter.java:341-406`), whose only change is that `getDocID`
@@ -169,7 +162,8 @@ use crate::index::point_values::{
 };
 use crate::index::FieldInfo;
 use crate::index::BYTES_SCRATCH_SIZE;
-use crate::util::BytesRef;
+use crate::store::DataOutput;
+use crate::util::{Accountable, ArrayUtil, BytesRef, PagedBytes, PagedBytesReader};
 
 /// How many four-byte points the shared scratch buffer stages at a time.
 ///
@@ -181,12 +175,16 @@ const POINTS_BUFFER_INT_VALUES: usize = BYTES_SCRATCH_SIZE / 4;
 /// Equivalent to `PointValuesWriter.POINTS_BUFFER_LONG_VALUES`.
 const POINTS_BUFFER_LONG_VALUES: usize = BYTES_SCRATCH_SIZE / 8;
 
-/// Initial capacity of the doc-ID buffer.
+/// Initial length of the doc-ID buffer.
 ///
 /// Equivalent to `PointValuesWriter`'s `docIDs = new int[16]`
 /// (`PointValuesWriter.java:67`), whose 64 bytes Lucene charges to the shared
 /// counter in the constructor.
 const INITIAL_DOC_IDS: usize = 16;
+
+/// The page size of the value buffer, `new PagedBytes(12)`
+/// (`PointValuesWriter.java:65`).
+const BYTES_BLOCK_BITS: u32 = 12;
 
 // ---------------------------------------------------------------------------
 // The writer
@@ -198,18 +196,19 @@ const INITIAL_DOC_IDS: usize = 16;
 #[derive(Debug)]
 pub struct PointValuesWriter {
     field_info: FieldInfo,
-    /// The packed values, concatenated. Java's `PagedBytes`; see the module
-    /// documentation.
-    values: Vec<u8>,
-    /// The doc ID of each buffered value, parallel to `values`.
+    /// The packed values, concatenated: Java's `PagedBytes bytes`, written
+    /// through its `DataOutput` and frozen at flush.
+    bytes: PagedBytes,
+    /// The doc ID of each buffered value, parallel to `bytes`: Java's
+    /// `int[] docIDs`, whose length is the array's, grown by `ArrayUtil.grow`.
     doc_ids: Vec<i32>,
     num_points: i32,
     num_docs: i32,
     last_doc_id: i32,
     packed_bytes_length: usize,
     flushed: bool,
-    /// The footprint already charged to `iw_bytes_used`, so an update can
-    /// report the delta.
+    /// Everything this writer has charged to `iw_bytes_used`, so that it can
+    /// be given back (see [`Drop`]).
     bytes_used: i64,
     iw_bytes_used: Arc<AtomicI64>,
 }
@@ -233,8 +232,8 @@ impl PointValuesWriter {
             field_info.point_dimension_count as usize * field_info.point_num_bytes as usize;
         let mut writer = Self {
             field_info,
-            values: Vec::new(),
-            doc_ids: Vec::with_capacity(INITIAL_DOC_IDS),
+            bytes: PagedBytes::new(BYTES_BLOCK_BITS),
+            doc_ids: vec![0; INITIAL_DOC_IDS],
             num_points: 0,
             num_docs: 0,
             last_doc_id: -1,
@@ -243,7 +242,8 @@ impl PointValuesWriter {
             bytes_used: 0,
             iw_bytes_used,
         };
-        writer.update_bytes_used();
+        // `iwBytesUsed.addAndGet(16 * Integer.BYTES)` (`PointValuesWriter.java:68`).
+        writer.charge((INITIAL_DOC_IDS * std::mem::size_of::<i32>()) as i64);
         writer
     }
 
@@ -277,14 +277,24 @@ impl PointValuesWriter {
                 self.field_info.name, value.length, self.packed_bytes_length
             )));
         }
-        self.values.extend_from_slice(value.slice());
-        self.doc_ids.push(doc_id);
+        let num_points = self.num_points as usize;
+        if self.doc_ids.len() == num_points {
+            // `docIDs = ArrayUtil.grow(docIDs, numPoints + 1)`
+            // (`PointValuesWriter.java:88-91`).
+            self.doc_ids = ArrayUtil::grow_int(&self.doc_ids, num_points + 1);
+            self.charge(((self.doc_ids.len() - num_points) * std::mem::size_of::<i32>()) as i64);
+        }
+        let bytes_ram_bytes_used_before = self.bytes.ram_bytes_used();
+        self.bytes
+            .get_data_output()?
+            .write_bytes(value.slice(), 0, value.length)?;
+        self.charge(self.bytes.ram_bytes_used() - bytes_ram_bytes_used_before);
+        self.doc_ids[num_points] = doc_id;
         if doc_id != self.last_doc_id {
             self.num_docs += 1;
             self.last_doc_id = doc_id;
         }
         self.num_points += 1;
-        self.update_bytes_used();
         Ok(())
     }
 
@@ -311,18 +321,19 @@ impl PointValuesWriter {
         if size == 0 {
             return Ok(());
         }
-        self.reserve_dense_range(first_doc_id, size)?;
+        let ram_before = self.reserve_dense_range(first_doc_id, size)?;
         // `final byte[] buffer = sharedScratch.bytesScratch()`
         // (`PointValuesWriter.java:111, 129, 148`).
         let buffer = scratch.bytes_scratch();
         let mut remaining = size as usize;
+        let mut bytes_out = self.bytes.get_data_output()?;
         while remaining > 0 {
             let chunk = POINTS_BUFFER_INT_VALUES.min(remaining);
             cursor.fill_int_points(buffer, 0, chunk)?;
-            self.values.extend_from_slice(&buffer[..chunk * 4]);
+            bytes_out.write_bytes(buffer, 0, chunk * 4)?;
             remaining -= chunk;
         }
-        self.commit_dense_range(first_doc_id, size);
+        self.commit_dense_range(first_doc_id, size, ram_before);
         Ok(())
     }
 
@@ -348,18 +359,19 @@ impl PointValuesWriter {
         if size == 0 {
             return Ok(());
         }
-        self.reserve_dense_range(first_doc_id, size)?;
+        let ram_before = self.reserve_dense_range(first_doc_id, size)?;
         // `final byte[] buffer = sharedScratch.bytesScratch()`
         // (`PointValuesWriter.java:111, 129, 148`).
         let buffer = scratch.bytes_scratch();
         let mut remaining = size as usize;
+        let mut bytes_out = self.bytes.get_data_output()?;
         while remaining > 0 {
             let chunk = POINTS_BUFFER_LONG_VALUES.min(remaining);
             cursor.fill_long_points(buffer, 0, chunk)?;
-            self.values.extend_from_slice(&buffer[..chunk * 8]);
+            bytes_out.write_bytes(buffer, 0, chunk * 8)?;
             remaining -= chunk;
         }
-        self.commit_dense_range(first_doc_id, size);
+        self.commit_dense_range(first_doc_id, size, ram_before);
         Ok(())
     }
 
@@ -385,20 +397,21 @@ impl PointValuesWriter {
         if size == 0 {
             return Ok(());
         }
-        self.reserve_dense_range(first_doc_id, size)?;
+        let ram_before = self.reserve_dense_range(first_doc_id, size)?;
         let width = self.packed_bytes_length;
         let per_chunk = BYTES_SCRATCH_SIZE / width;
         // `final byte[] buffer = sharedScratch.bytesScratch()`
         // (`PointValuesWriter.java:111, 129, 148`).
         let buffer = scratch.bytes_scratch();
         let mut remaining = size as usize;
+        let mut bytes_out = self.bytes.get_data_output()?;
         while remaining > 0 {
             let chunk = per_chunk.min(remaining);
             cursor.fill_packed_points(buffer, 0, chunk, width)?;
-            self.values.extend_from_slice(&buffer[..chunk * width]);
+            bytes_out.write_bytes(buffer, 0, chunk * width)?;
             remaining -= chunk;
         }
-        self.commit_dense_range(first_doc_id, size);
+        self.commit_dense_range(first_doc_id, size, ram_before);
         Ok(())
     }
 
@@ -424,16 +437,17 @@ impl PointValuesWriter {
     /// Records the document id of each point a dense range is about to write.
     ///
     /// Equivalent to the private `PointValuesWriter.reserveDenseRange(int,
-    /// int)`, which returns the buffer's footprint so the caller can charge the
-    /// growth; the crate's [`update_bytes_used`](Self::update_bytes_used)
-    /// reports the whole footprint instead, so nothing needs carrying across.
+    /// int)` (`PointValuesWriter.java:175-187`): the doc-ID buffer grows by
+    /// `ArrayUtil.grow` and its growth is charged, and the value buffer's
+    /// footprint is returned so that the caller can charge what the range
+    /// adds to it.
     ///
     /// # Errors
     ///
     /// Returns [`LuceneError::IllegalState`] when the field has already been
     /// flushed, and [`LuceneError::IllegalArgument`] when the range does not
     /// start after the last document written.
-    fn reserve_dense_range(&mut self, first_doc_id: i32, size: i32) -> Result<()> {
+    fn reserve_dense_range(&mut self, first_doc_id: i32, size: i32) -> Result<i64> {
         if self.flushed {
             return Err(LuceneError::illegal_state(format!(
                 "the point values of field \"{}\" have already been flushed",
@@ -446,19 +460,28 @@ impl PointValuesWriter {
                 self.field_info.name, self.last_doc_id
             )));
         }
-        self.doc_ids.extend((0..size).map(|i| first_doc_id + i));
-        Ok(())
+        let num_points = self.num_points as usize;
+        let size = size as usize;
+        let old_length = self.doc_ids.len();
+        if old_length < num_points + size {
+            self.doc_ids = ArrayUtil::grow_int(&self.doc_ids, num_points + size);
+            self.charge(((self.doc_ids.len() - old_length) * std::mem::size_of::<i32>()) as i64);
+        }
+        for i in 0..size {
+            self.doc_ids[num_points + i] = first_doc_id + i as i32;
+        }
+        Ok(self.bytes.ram_bytes_used())
     }
 
     /// Accounts for a dense range once its points are written.
     ///
     /// Equivalent to the private `PointValuesWriter.commitDenseRange(int, int,
-    /// long)`.
-    fn commit_dense_range(&mut self, first_doc_id: i32, size: i32) {
+    /// long)` (`PointValuesWriter.java:189-194`).
+    fn commit_dense_range(&mut self, first_doc_id: i32, size: i32, ram_before: i64) {
+        self.charge(self.bytes.ram_bytes_used() - ram_before);
         self.num_docs += size;
         self.last_doc_id = first_doc_id + size - 1;
         self.num_points += size;
-        self.update_bytes_used();
     }
 
     /// Number of buffered points.
@@ -476,35 +499,30 @@ impl PointValuesWriter {
         self.num_docs
     }
 
-    /// Reports the delta between the footprint already charged and the current
-    /// one.
-    ///
-    /// Java charges the counter at each of the two growth points instead
-    /// (`PointValuesWriter.java:68`, `:90`, `:94`); reporting the whole
-    /// footprint as a delta reaches the same total and, unlike Java's, is
-    /// refunded when the writer is dropped.
-    fn update_bytes_used(&mut self) {
-        let new_bytes_used = self.ram_bytes_used();
-        self.iw_bytes_used
-            .fetch_add(new_bytes_used - self.bytes_used, Ordering::AcqRel);
-        self.bytes_used = new_bytes_used;
+    /// Adds `delta` to the shared counter, Java's `iwBytesUsed.addAndGet`,
+    /// and remembers it so that it can be given back.
+    fn charge(&mut self, delta: i64) {
+        self.iw_bytes_used.fetch_add(delta, Ordering::AcqRel);
+        self.bytes_used += delta;
     }
 
-    /// Approximate heap held by the buffers.
+    /// The bytes this writer has charged to the shared counter and not given
+    /// back.
     ///
-    /// Capacity rather than length, because that is what is actually
-    /// allocated and what Java's `docIDs.length` and `PagedBytes.ramBytesUsed`
-    /// both report.
+    /// Java charges `16 * Integer.BYTES` for the initial doc-ID array, each
+    /// `ArrayUtil.grow` of it, and what each write adds to
+    /// `PagedBytes.ramBytesUsed()` (`PointValuesWriter.java:68, 88-94, 180-193`);
+    /// this is their sum.
     pub fn ram_bytes_used(&self) -> i64 {
-        self.values.capacity() as i64
-            + (self.doc_ids.capacity() * std::mem::size_of::<i32>()) as i64
+        self.bytes_used
     }
 
-    /// Freezes `values` and `doc_ids` into the shared buffer the codec reads.
+    /// Wraps the frozen `values` and `doc_ids` into the shared buffer the
+    /// codec reads.
     ///
-    /// Equivalent to `bytes.freeze(false)` plus the fields Java's anonymous
-    /// classes capture from the enclosing writer.
-    fn freeze(&self, values: Vec<u8>, doc_ids: Vec<i32>) -> Arc<BufferedPoints> {
+    /// Equivalent to the fields Java's anonymous classes capture from the
+    /// enclosing writer, `bytes.freeze(false)` among them.
+    fn freeze(&self, values: PagedBytesReader, doc_ids: Vec<i32>) -> Arc<BufferedPoints> {
         Arc::new(BufferedPoints {
             values,
             doc_ids,
@@ -550,8 +568,11 @@ impl PointValuesWriter {
             )));
         }
         self.flushed = true;
-        let values = std::mem::take(&mut self.values);
+        // `final PagedBytes.Reader bytesReader = bytes.freeze(false)`
+        // (`PointValuesWriter.java:205`).
+        let values = self.bytes.freeze(false)?;
         let mut doc_ids = std::mem::take(&mut self.doc_ids);
+        doc_ids.truncate(self.num_points as usize);
         // `new MutableSortingPointValues(points, sortMap)`
         // (`PointValuesWriter.java:274-279`).
         if let Some(sort_map) = sort_map {
@@ -560,7 +581,9 @@ impl PointValuesWriter {
             }
         }
         let buffer = self.freeze(values, doc_ids);
-        self.update_bytes_used();
+        // The buffers now belong to the frozen reader: give their bytes back.
+        let charged = self.bytes_used;
+        self.charge(-charged);
         let reader = BufferedPointsReader {
             field_name: self.field_info.name.clone(),
             buffer,
@@ -595,7 +618,8 @@ impl Drop for PointValuesWriter {
 /// and `packedBytesLength`.
 #[derive(Debug)]
 struct BufferedPoints {
-    values: Vec<u8>,
+    /// Java's `bytesReader`, the frozen `PagedBytes`.
+    values: PagedBytesReader,
     doc_ids: Vec<i32>,
     num_points: i32,
     num_docs: i32,
@@ -612,9 +636,13 @@ struct BufferedPoints {
 
 impl BufferedPoints {
     /// Returns the packed bytes of the value stored at buffer slot `slot`.
-    fn value(&self, slot: usize) -> &[u8] {
-        let offset = slot * self.packed_bytes_length;
-        &self.values[offset..offset + self.packed_bytes_length]
+    ///
+    /// Java's `getValue`: `bytesReader.fillSlice(packedValue, (long)
+    /// packedBytesLength * ords[i], packedBytesLength)`
+    /// (`PointValuesWriter.java:246-250`).
+    fn value(&self, slot: usize) -> std::borrow::Cow<'_, [u8]> {
+        let offset = self.packed_bytes_length as i64 * slot as i64;
+        self.values.fill_slice(offset, self.packed_bytes_length)
     }
 
     /// Returns the per-index-dimension bounds over every buffered value.
@@ -848,12 +876,11 @@ impl PointTree for BufferedPointTree {
     /// Equivalent to the anonymous tree's `visitDocValues`
     /// (`PointValuesWriter.java:222-232`). Java copies each value into a
     /// reusable `byte[]` because `PagedBytes.fillSlice` hands back a `BytesRef`
-    /// with an offset; a borrowed slice of the flat buffer is the same bytes
-    /// without the copy.
+    /// with an offset; the slice it fills is the same bytes without the copy.
     fn visit_doc_values(&mut self, visitor: &mut dyn IntersectVisitor) -> Result<()> {
         for i in 0..self.buffer.num_points {
             let slot = self.slot(i);
-            visitor.visit_with_value(self.buffer.doc_ids[slot], self.buffer.value(slot))?;
+            visitor.visit_with_value(self.buffer.doc_ids[slot], &self.buffer.value(slot))?;
         }
         Ok(())
     }
@@ -868,13 +895,15 @@ impl PointTree for BufferedPointTree {
 }
 
 impl MutablePointTree for BufferedPointTree {
-    fn value(&self, i: i32) -> &[u8] {
+    fn value(&self, i: i32) -> std::borrow::Cow<'_, [u8]> {
         self.buffer.value(self.slot(i))
     }
 
+    /// Java's `getByteAt`: `bytesReader.getByte((long) packedBytesLength *
+    /// ords[i] + k)` (`PointValuesWriter.java:253-256`).
     fn byte_at(&self, i: i32, k: i32) -> u8 {
-        let offset = self.slot(i) * self.buffer.packed_bytes_length + k as usize;
-        self.buffer.values[offset]
+        let offset = self.buffer.packed_bytes_length as i64 * self.slot(i) as i64 + i64::from(k);
+        self.buffer.values.get_byte(offset)
     }
 
     fn doc_id(&self, i: i32) -> i32 {
@@ -980,9 +1009,41 @@ mod tests {
 
     /// Builds exactly the tree `flush` would hand the codec, without needing a
     /// codec and without consuming the writer's buffers.
-    fn tree_of(writer: &PointValuesWriter) -> Box<dyn PointTree> {
-        let buffer = writer.freeze(writer.values.clone(), writer.doc_ids.clone());
+    fn tree_of(writer: &mut PointValuesWriter) -> Box<dyn PointTree> {
+        let values = writer.bytes.freeze(false).unwrap();
+        let doc_ids = writer.doc_ids[..writer.num_points as usize].to_vec();
+        let buffer = writer.freeze(values, doc_ids);
         Box::new(BufferedPointTree::new(buffer))
+    }
+
+    /// `BKDWriter.writeField1Dim` sorts the buffered tree with
+    /// `MutablePointTreeReaderUtils.sort`, a `StableMSBRadixSorter` whose
+    /// fallback for short ranges is a stable `MergeSorter`
+    /// (`StableMSBRadixSorter.java:40-72`). With the doc IDs already ascending
+    /// the key is the value alone, so equal values must keep their doc order:
+    /// that order is what the 1D leaf writes.
+    #[test]
+    fn mutable_point_tree_sort_keeps_equal_values_in_doc_order() {
+        use crate::util::bkd::{BKDConfig, MutablePointTreeReaderUtils};
+        let bytes_used = counter();
+        let mut writer = writer_1d(&bytes_used);
+        let count = 60i32;
+        for doc in 0..count {
+            let value = (doc % 3) as u32;
+            writer
+                .add_packed_value(doc, &packed(&value.to_be_bytes()))
+                .unwrap();
+        }
+        let mut tree = tree_of(&mut writer);
+        let mutable = tree.as_mutable().expect("mutable");
+        let config = BKDConfig::of(1, 1, 4, 512).unwrap();
+        MutablePointTreeReaderUtils::sort(&config, count, mutable, 0, count as usize).unwrap();
+        let mut expected = Vec::new();
+        for value in 0..3 {
+            expected.extend((0..count).filter(|d| d % 3 == value));
+        }
+        let actual: Vec<i32> = (0..count).map(|i| mutable.doc_id(i)).collect();
+        assert_eq!(actual, expected);
     }
 
     // -- buffering and bookkeeping -----------------------------------------
@@ -1107,7 +1168,110 @@ mod tests {
             .expect_err("the index dimension count does not shorten a value");
     }
 
+    /// rmp #296: the values are read back through
+    /// `PagedBytes.Reader.fillSlice` and `getByte` (`PointValuesWriter.java:246-256`):
+    /// twelve-byte points do not divide the 4096-byte pages, so some values
+    /// span two of them and come back whole all the same.
+    #[test]
+    fn values_split_across_pages_read_back_whole() {
+        let bytes_used = counter();
+        let mut writer = PointValuesWriter::new(field("p", 3, 3, 4), Arc::clone(&bytes_used));
+        let value = |doc: i32| -> Vec<u8> { (0..12).map(|k| (doc * 12 + k) as u8).collect() };
+        for doc in 0..700 {
+            writer.add_packed_value(doc, &packed(&value(doc))).unwrap();
+        }
+        let mut tree = tree_of(&mut writer);
+        let mutable = tree.as_mutable().expect("mutable");
+        // Value 341 starts at byte 4092 and ends on the second page.
+        for doc in [0, 340, 341, 342, 682, 699] {
+            assert_eq!(
+                mutable.value(doc).as_ref(),
+                value(doc).as_slice(),
+                "doc {doc}"
+            );
+            for k in 0..12 {
+                assert_eq!(mutable.byte_at(doc, k), value(doc)[k as usize]);
+            }
+        }
+    }
+
     // -- RAM accounting ----------------------------------------------------
+
+    /// rmp #296: the writer charges `16 * Integer.BYTES` for its doc IDs, each
+    /// `ArrayUtil.grow` of them, and what each write adds to its
+    /// `PagedBytes(12)` (`PointValuesWriter.java:65-68, 88-94`). Measured
+    /// against `lucene-core-10.5.0.jar` (`oracle/passE/PvwOracle.java`) for
+    /// 1000 two-dimensional four-byte points, two per document: `ctor=64
+    /// n1=4176 n16=4176 n17=4192 n512=6360 n513=10472 n1000=12304`.
+    #[test]
+    fn packed_values_charge_javas_ram() {
+        let bytes_used = counter();
+        let mut writer = PointValuesWriter::new(field("p", 2, 2, 4), Arc::clone(&bytes_used));
+        let mut seen = vec![("ctor", bytes_used.load(Ordering::Acquire))];
+        for i in 1..=1000i32 {
+            let mut value = [0u8; 8];
+            value[0] = i as u8;
+            value[7] = (i >> 8) as u8;
+            writer
+                .add_packed_value((i - 1) / 2, &packed(&value))
+                .unwrap();
+            let mark = match i {
+                1 => "n1",
+                16 => "n16",
+                17 => "n17",
+                512 => "n512",
+                513 => "n513",
+                1000 => "n1000",
+                _ => continue,
+            };
+            seen.push((mark, bytes_used.load(Ordering::Acquire)));
+        }
+        assert_eq!(
+            seen,
+            vec![
+                ("ctor", 64),
+                ("n1", 4176),
+                ("n16", 4176),
+                ("n17", 4192),
+                ("n512", 6360),
+                ("n513", 10472),
+                ("n1000", 12304)
+            ]
+        );
+        assert_eq!(writer.ram_bytes_used(), 12304);
+    }
+
+    /// rmp #296: a dense range grows the doc IDs to `ArrayUtil.grow(docIDs,
+    /// numPoints + size)` and charges that growth and the `PagedBytes`
+    /// growth (`PointValuesWriter.java:175-194`). Measured against
+    /// `lucene-core-10.5.0.jar` (`oracle/passE/PvwOracle.java`): 1500 dense
+    /// four-byte points, then 10, then one packed value — `ctor=64
+    /// first=14976 second=14976 packed=14976`.
+    #[test]
+    fn dense_values_charge_javas_ram() {
+        let bytes_used = counter();
+        let mut scratch = SharedIndexingScratch::new(counter());
+        let mut writer = PointValuesWriter::new(field("p", 1, 1, 4), Arc::clone(&bytes_used));
+        assert_eq!(bytes_used.load(Ordering::Acquire), 64);
+        let mut run = |writer: &mut PointValuesWriter, first: i32, n: i64| {
+            writer
+                .add_dense_1d_int_values(
+                    first,
+                    &mut Longs {
+                        values: (0..n).collect(),
+                        upto: 0,
+                    },
+                    &mut scratch,
+                )
+                .unwrap();
+        };
+        run(&mut writer, 0, 1500);
+        assert_eq!(bytes_used.load(Ordering::Acquire), 14976);
+        run(&mut writer, 1500, 10);
+        assert_eq!(bytes_used.load(Ordering::Acquire), 14976);
+        writer.add_packed_value(1510, &packed(&[0; 4])).unwrap();
+        assert_eq!(bytes_used.load(Ordering::Acquire), 14976);
+    }
 
     #[test]
     fn the_shared_counter_tracks_and_is_refunded() {
@@ -1193,8 +1357,14 @@ mod tests {
 
     #[test]
     fn the_reader_serves_only_its_own_field() {
+        let mut bytes = PagedBytes::new(BYTES_BLOCK_BITS);
+        bytes
+            .get_data_output()
+            .unwrap()
+            .write_bytes(&[0, 0, 0, 1], 0, 4)
+            .unwrap();
         let buffer = Arc::new(BufferedPoints {
-            values: vec![0, 0, 0, 1],
+            values: bytes.freeze(false).unwrap(),
             doc_ids: vec![3],
             num_points: 1,
             num_docs: 1,
@@ -1235,7 +1405,7 @@ mod tests {
                 .add_packed_value(doc, &packed(&value.to_be_bytes()))
                 .unwrap();
         }
-        let mut tree = tree_of(&writer);
+        let mut tree = tree_of(&mut writer);
         assert_eq!(tree.size().unwrap(), 3);
         let mut visitor = CollectingPointVisitor::default();
         tree.visit_doc_values(&mut visitor).unwrap();
@@ -1259,14 +1429,14 @@ mod tests {
                 .add_packed_value(doc, &packed(&value.to_be_bytes()))
                 .unwrap();
         }
-        let mut tree = tree_of(&writer);
+        let mut tree = tree_of(&mut writer);
         {
             let mutable = tree.as_mutable().expect("a flushing tree is mutable");
             mutable.swap(0, 1);
             assert_eq!(mutable.doc_id(0), 1);
             assert_eq!(mutable.doc_id(1), 0);
-            assert_eq!(mutable.value(0), 10u32.to_be_bytes());
-            assert_eq!(mutable.value(1), 30u32.to_be_bytes());
+            assert_eq!(*mutable.value(0), 10u32.to_be_bytes());
+            assert_eq!(*mutable.value(1), 30u32.to_be_bytes());
             // `byte_at` must follow the same indirection as `value`.
             for i in 0..3i32 {
                 let value = mutable.value(i).to_vec();
@@ -1301,7 +1471,7 @@ mod tests {
                 .add_packed_value(doc, &packed(&(doc as u32).to_be_bytes()))
                 .unwrap();
         }
-        let mut tree = tree_of(&writer);
+        let mut tree = tree_of(&mut writer);
         let mutable = tree.as_mutable().expect("mutable");
 
         // Stash the live order of [1, 4) into scratch slots 1..4, reversed.
@@ -1339,7 +1509,7 @@ mod tests {
                 .add_packed_value(doc, &packed(&(doc as u32).to_be_bytes()))
                 .unwrap();
         }
-        let mut tree = tree_of(&writer);
+        let mut tree = tree_of(&mut writer);
         let mutable = tree.as_mutable().expect("mutable");
         mutable.restore(0, 4);
         assert_eq!(
@@ -1359,7 +1529,7 @@ mod tests {
                 .add_packed_value(doc, &packed(&(doc as u32).to_be_bytes()))
                 .unwrap();
         }
-        let mut tree = tree_of(&writer);
+        let mut tree = tree_of(&mut writer);
         let mutable = tree.as_mutable().expect("mutable");
         for i in 0..32 {
             mutable.save(i, 31 - i);
@@ -1380,7 +1550,7 @@ mod tests {
         let bytes_used = counter();
         let mut writer = writer_1d(&bytes_used);
         writer.add_packed_value(0, &packed(&[0, 0, 0, 1])).unwrap();
-        let mut tree = tree_of(&writer);
+        let mut tree = tree_of(&mut writer);
         assert!(!tree.move_to_child().unwrap());
         assert!(!tree.move_to_sibling().unwrap());
         assert!(!tree.move_to_parent().unwrap());
@@ -1395,7 +1565,7 @@ mod tests {
                 .add_packed_value(doc, &packed(&(doc as u32).to_be_bytes()))
                 .unwrap();
         }
-        let mut tree = tree_of(&writer);
+        let mut tree = tree_of(&mut writer);
         tree.as_mutable().expect("mutable").swap(0, 3);
         let mut copy = tree.clone_tree().unwrap();
         assert_eq!(copy.as_mutable().expect("mutable").doc_id(0), 3);
@@ -1417,7 +1587,7 @@ mod tests {
         writer.add_packed_value(0, &packed(&[5, 9, 200])).unwrap();
         writer.add_packed_value(1, &packed(&[7, 2, 1])).unwrap();
         writer.add_packed_value(2, &packed(&[3, 4, 90])).unwrap();
-        let tree = tree_of(&writer);
+        let tree = tree_of(&mut writer);
         assert_eq!(tree.min_packed_value().unwrap(), &[3, 2]);
         assert_eq!(tree.max_packed_value().unwrap(), &[7, 9]);
     }
@@ -1433,7 +1603,7 @@ mod tests {
         writer
             .add_packed_value(1, &packed(&[0x80, 0, 0, 0]))
             .unwrap();
-        let tree = tree_of(&writer);
+        let tree = tree_of(&mut writer);
         assert_eq!(tree.min_packed_value().unwrap(), &[0x7f, 0, 0, 0]);
         assert_eq!(tree.max_packed_value().unwrap(), &[0x80, 0, 0, 0]);
     }
@@ -1441,8 +1611,8 @@ mod tests {
     #[test]
     fn the_bounds_of_an_empty_buffer_are_empty() {
         let bytes_used = counter();
-        let writer = writer_1d(&bytes_used);
-        let tree = tree_of(&writer);
+        let mut writer = writer_1d(&bytes_used);
+        let tree = tree_of(&mut writer);
         assert!(tree.min_packed_value().unwrap().is_empty());
         assert!(tree.max_packed_value().unwrap().is_empty());
     }
@@ -1456,7 +1626,7 @@ mod tests {
                 .add_packed_value(doc, &packed(&(doc as u32).to_be_bytes()))
                 .unwrap();
         }
-        let mut tree = tree_of(&writer);
+        let mut tree = tree_of(&mut writer);
         tree.as_mutable().expect("mutable").swap(0, 3);
         let mut visitor = CollectingPointVisitor::default();
         tree.visit_doc_ids(&mut visitor).unwrap();

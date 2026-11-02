@@ -401,18 +401,29 @@ fn took(start: Instant) -> String {
 
 /// Returns the number of set bits in `bits`.
 ///
-/// Equivalent to `CheckIndex.bitsCardinality`. Java batches through
-/// `Bits.applyMask` into a 1024-bit `FixedBitSet`; the [`Bits`] trait in this
-/// crate exposes no `apply_mask`, so this counts bit by bit. The result is
-/// identical, only slower.
-fn bits_cardinality(bits: &dyn Bits) -> i32 {
+/// Equivalent to `CheckIndex.bitsCardinality(Bits)` (`CheckIndex.java:1312-1326`),
+/// which batches 1024 bits at a time through [`Bits::apply_mask`] into a
+/// scratch [`FixedBitSet`] and adds up its cardinality.
+///
+/// # Errors
+///
+/// Returns the error [`Bits::apply_mask`] raises.
+fn bits_cardinality(bits: &dyn Bits) -> Result<i32> {
     let mut cardinality = 0i32;
-    for i in 0..bits.length() {
-        if bits.get(i) {
-            cardinality += 1;
+    let mut copy = FixedBitSet::new(1024);
+    let mut offset = 0usize;
+    while offset < bits.length() {
+        let num_bits_to_copy = (bits.length() - offset).min(copy.length());
+        copy.set_range(0, copy.length());
+        if num_bits_to_copy < copy.length() {
+            // Clear ghost bits
+            copy.clear_range(num_bits_to_copy, copy.length());
         }
+        bits.apply_mask(&mut copy, offset)?;
+        cardinality += copy.cardinality() as i32;
+        offset += copy.length();
     }
-    cardinality
+    Ok(cardinality)
 }
 
 /// Verifies the structural integrity of an index.
@@ -1727,7 +1738,7 @@ pub fn test_live_docs(
                     "segment should have deletions, but liveDocs is null",
                 ));
             };
-            let num_live = bits_cardinality(live_docs.as_ref());
+            let num_live = bits_cardinality(live_docs.as_ref())?;
             if num_live != num_docs {
                 return Err(check_index_error(format!(
                     "liveDocs count mismatch: info={num_docs}, vs bits={num_live}"
@@ -5300,9 +5311,12 @@ pub fn test_sort(
     let mut comparators: Vec<Box<dyn crate::search::leaf_field_comparator::LeafFieldComparator>> =
         Vec::with_capacity(fields.len());
 
-    // `new LeafReaderContext(reader)`: the reader as a top-level leaf.
+    // `new LeafReaderContext(reader)`: the reader as a top-level leaf. Java
+    // builds the context itself and so does not `ensureOpen()`, which
+    // `getContext()` would.
     let reader_context = Arc::clone(reader)
         .as_index_reader()
+        .build_context(None, 0, 0, 0, 0)
         .leaves()
         .into_iter()
         .next()
@@ -5761,6 +5775,30 @@ mod tests {
     use crate::index::point_values::{
         InMemoryPointValues, IntersectVisitor, PointValues, Relation,
     };
+
+    /// `CheckIndex.bitsCardinality` counts the set bits of a `Bits`, 1024 at a
+    /// time and none past `length()` (`CheckIndex.java:1312-1326`) — for bits
+    /// that only answer `get` (the default `applyMask`) and for a
+    /// `FixedBitSet` (its own) alike. Every third of 2500 bits set: 834.
+    #[test]
+    fn bits_cardinality_counts_the_set_bits() {
+        #[derive(Debug)]
+        struct EveryThird;
+        impl Bits for EveryThird {
+            fn get(&self, index: usize) -> bool {
+                index.is_multiple_of(3)
+            }
+            fn length(&self) -> usize {
+                2500
+            }
+        }
+        let mut fixed = FixedBitSet::new(2500);
+        for index in (0..2500).step_by(3) {
+            fixed.set(index);
+        }
+        assert_eq!(bits_cardinality(&EveryThird).unwrap(), 834);
+        assert_eq!(bits_cardinality(&fixed).unwrap(), 834);
+    }
 
     /// Every "took %.3f sec" message converts the elapsed nanoseconds through
     /// `nsToSec` (`CheckIndex.java:909, 1006, 4643-4645`), so five seconds

@@ -178,6 +178,10 @@ struct SegmentReport {
     max_doc: i32,
     del_count: i32,
     use_compound_file: bool,
+    /// The keys of the `.si` diagnostics, sorted: rmp #314 checks that Rucene
+    /// records the keys `IndexWriter.setDiagnostics` records
+    /// (`IndexWriter.java:5135-5149`).
+    diagnostics: Vec<String>,
     files: Vec<String>,
 }
 
@@ -229,10 +233,11 @@ impl Report {
         out.push_str(&format!("  generation={}\n", self.generation));
         for (name, segment) in &self.segments {
             out.push_str(&format!(
-                "  segment={name} maxDoc={} delCount={} cfs={} files={}\n",
+                "  segment={name} maxDoc={} delCount={} cfs={} diag={} files={}\n",
                 segment.max_doc,
                 segment.del_count,
                 segment.use_compound_file,
+                segment.diagnostics.join(","),
                 segment.files.join(",")
             ));
         }
@@ -273,6 +278,7 @@ impl SegmentReport {
                 // The Java side also prints `id=`, which cannot match across
                 // runs and is deliberately not compared.
                 Some(("id", _)) => {}
+                Some(("diag", v)) => segment.diagnostics = split_list(v),
                 Some((other, _)) => return Err(format!("unexpected key {other:?}")),
             }
         }
@@ -389,6 +395,16 @@ fn rucene_report(out_dir: &Path) -> Report {
                 max_doc: commit_info.info.max_doc().expect("maxDoc"),
                 del_count: commit_info.get_del_count(),
                 use_compound_file: commit_info.info.get_use_compound_file(),
+                diagnostics: {
+                    let mut keys: Vec<String> = commit_info
+                        .info
+                        .get_diagnostics()
+                        .iter()
+                        .map(|(k, _)| k.clone())
+                        .collect();
+                    keys.sort();
+                    keys
+                },
                 files,
             },
         );
@@ -400,7 +416,7 @@ fn rucene_report(out_dir: &Path) -> Report {
     report.max_doc = reader.max_doc();
 
     let mut fields = BTreeSet::new();
-    for leaf in Arc::clone(&reader).leaves() {
+    for leaf in Arc::clone(&reader).leaves().unwrap() {
         for info in leaf.leaf_reader().get_field_infos().iter() {
             fields.insert(info.name.clone());
         }

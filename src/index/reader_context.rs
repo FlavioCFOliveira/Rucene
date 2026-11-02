@@ -543,7 +543,7 @@ mod tests {
     #[test]
     fn leaf_context_is_top_level_singleton() {
         let reader = leaf(5, 5);
-        let ctx = reader.get_context();
+        let ctx = reader.get_context().unwrap();
         assert!(ctx.is_top_level());
         assert!(ctx.is_leaf_context());
         let leaves = ctx.leaves();
@@ -655,7 +655,7 @@ mod tests {
             max_doc: 9,
         }) as Arc<dyn CompositeReader>;
 
-        let ctx = composite.get_context();
+        let ctx = composite.get_context().unwrap();
         assert!(ctx.is_top_level());
         assert!(!ctx.is_leaf_context());
 

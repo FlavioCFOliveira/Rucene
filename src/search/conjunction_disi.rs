@@ -18,24 +18,29 @@
 //! `matches()`. The lead/tail split, the cost-ascending approximation order, the
 //! match-cost-ascending confirmation order and the `doNext` loop are unchanged.
 //!
+//! The private `BitSetConjunctionDISI` is fused in too: the clauses whose
+//! approximation is a [`BitSetIterator`] costlier than the cheapest clause are
+//! not advanced but tested against their bit sets, and positioned with
+//! `setDocId` on a match (`ConjunctionDISI.java:113-137, 226-299`).
+//!
 //! # Divergence: no `instanceof` collapsing
 //!
 //! `ConjunctionDISI.addIterator` recognises three erased shapes with
 //! `instanceof` — a `TwoPhaseIterator` behind `TwoPhaseIterator.unwrap`, a
 //! nested `ConjunctionDISI`, and a `BitSetConjunctionDISI` — and flattens them
-//! into the parent conjunction. Rust cannot downcast a
-//! `dyn DocIdSetIterator`, so a nested conjunction stays nested. The same
-//! documents match; only the depth of the call chain differs. For the same
-//! reason the `BitSetConjunctionDISI` specialisation, which needs to recognise
-//! `BitSetIterator` instances, has no counterpart: it is a throughput
-//! optimisation over bit-set-backed clauses, not a behaviour.
+//! into the parent conjunction. This port's members are owned by the
+//! conjunction that holds them, so a nested conjunction stays nested. The same
+//! documents match; only the depth of the call chain differs.
 
 #![deny(unsafe_code)]
 
+use std::sync::Arc;
+
 use crate::error::{LuceneError, Result};
-use crate::search::doc_id_set_iterator::DocIdSetIterator;
+use crate::search::doc_id_set_iterator::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::search::scorer::Scorer;
 use crate::search::two_phase_iterator::{ScorerIterator, TwoPhaseIterator};
+use crate::util::bit_set::{BitSet, BitSetIterator};
 use crate::util::FixedBitSet;
 
 /// Message used where a two-phase view is known to be present because it was
@@ -301,6 +306,14 @@ pub struct ConjunctionDISI {
     /// Positions of the members in ascending cost order: `[0]` is Java's
     /// `lead1`, `[1]` its `lead2`, the rest its `others`.
     approx_order: Vec<usize>,
+    /// `BitSetConjunctionDISI.bitSetIterators`: the positions of the members
+    /// whose approximation is a [`BitSetIterator`] costlier than the cheapest
+    /// clause, least costly first. They are not in `approx_order`.
+    bit_set_order: Vec<usize>,
+    /// `BitSetConjunctionDISI.bitSets`, the sets of those iterators.
+    bit_sets: Vec<Arc<dyn BitSet>>,
+    /// `BitSetConjunctionDISI.minLength`, the shortest of those sets.
+    min_length: i32,
     /// Positions of the two-phase members, in ascending match-cost order.
     two_phase_order: Vec<usize>,
     match_cost: f32,
@@ -330,7 +343,7 @@ impl ConjunctionDISI {
     /// supplied, or when they are not all positioned on the same document —
     /// which is the `IllegalArgumentException` Java throws from
     /// `throwSubIteratorsNotOnSameDocument`.
-    pub fn new(members: Vec<ConjunctionMember>) -> Result<Self> {
+    pub fn new(mut members: Vec<ConjunctionMember>) -> Result<Self> {
         if members.len() < 2 {
             return Err(LuceneError::IllegalArgument(
                 "Cannot make a ConjunctionDISI of less than 2 iterators".to_string(),
@@ -345,11 +358,41 @@ impl ConjunctionDISI {
             }
         }
 
+        // `ConjunctionDISI.createConjunction` (`ConjunctionDISI.java:113-137`):
+        // every bit set iterator goes to the bit set clauses, except when it
+        // has the minimum cost, since it then has to lead the iteration.
+        let min_cost = members
+            .iter()
+            .map(ConjunctionMember::cost)
+            .min()
+            .unwrap_or(i64::MAX);
+        let mut approx_order: Vec<usize> = Vec::with_capacity(members.len());
+        let mut bit_set_order: Vec<usize> = Vec::new();
+        for (i, member) in members.iter_mut().enumerate() {
+            if member.cost() > min_cost && Self::bit_set_iterator(member).is_some() {
+                bit_set_order.push(i);
+            } else {
+                approx_order.push(i);
+            }
+        }
         // Sort the list first to allow the sparser iterator to lead the
         // matching. Java's CollectionUtil.timSort is stable, and so is
         // `sort_by`.
-        let mut approx_order: Vec<usize> = (0..members.len()).collect();
         approx_order.sort_by(|a, b| members[*a].cost().cmp(&members[*b].cost()));
+        // Put the least costly bit set iterators first so that we exit as soon
+        // as possible (`ArrayUtil.timSort`, stable).
+        bit_set_order.sort_by(|a, b| members[*a].cost().cmp(&members[*b].cost()));
+        let mut bit_sets = Vec::with_capacity(bit_set_order.len());
+        let mut min_length = i32::MAX;
+        for &i in &bit_set_order {
+            let bit_set = Arc::clone(
+                Self::bit_set_iterator(&mut members[i])
+                    .expect("INVARIANT: the member was narrowed to a BitSetIterator above")
+                    .get_bit_set(),
+            );
+            min_length = min_length.min(bit_set.length() as i32);
+            bit_sets.push(bit_set);
+        }
 
         let mut two_phase_order: Vec<usize> = (0..members.len())
             .filter(|i| members[*i].has_two_phase())
@@ -371,10 +414,72 @@ impl ConjunctionDISI {
         Ok(Self {
             members,
             approx_order,
+            bit_set_order,
+            bit_sets,
+            min_length,
             two_phase_order,
             match_cost,
             cost,
         })
+    }
+
+    /// `iterator instanceof BitSetIterator` on the member's approximation,
+    /// with the cast.
+    fn bit_set_iterator(member: &mut ConjunctionMember) -> Option<&mut BitSetIterator> {
+        member
+            .approximation()
+            .disi_as_any_mut()
+            .and_then(|any| any.downcast_mut::<BitSetIterator>())
+    }
+
+    /// Positions the conjunction of the approximations other than the bit set
+    /// clauses on its next doc.
+    ///
+    /// `lead.nextDoc()` of `BitSetConjunctionDISI`, whose lead is the
+    /// `ConjunctionDISI` of the other clauses, or the one clause when only one
+    /// is left (`ConjunctionDISI.java:126-133`).
+    fn approximation_next_doc(&mut self) -> Result<i32> {
+        let lead1 = self.approx_order[0];
+        let doc = self.members[lead1].next_doc()?;
+        self.do_next(doc)
+    }
+
+    /// `lead.advance(target)`; see [`Self::approximation_next_doc`].
+    fn approximation_advance(&mut self, target: i32) -> Result<i32> {
+        let lead1 = self.approx_order[0];
+        let doc = self.members[lead1].advance(target)?;
+        self.do_next(doc)
+    }
+
+    /// Equivalent to `BitSetConjunctionDISI.doNext(int)`
+    /// (`ConjunctionDISI.java:265-286`): skips the docs one of the bit sets
+    /// does not hold, and positions every bit set iterator on a match. With no
+    /// bit set clause there is no `BitSetConjunctionDISI`, and `doc` stands.
+    fn bit_set_do_next(&mut self, mut doc: i32) -> Result<i32> {
+        if self.bit_set_order.is_empty() {
+            return Ok(doc);
+        }
+        'advance_lead: loop {
+            if doc >= self.min_length {
+                if doc != NO_MORE_DOCS {
+                    self.approximation_advance(NO_MORE_DOCS)?;
+                }
+                return Ok(NO_MORE_DOCS);
+            }
+            for bit_set in &self.bit_sets {
+                if !bit_set.get(doc as usize) {
+                    doc = self.approximation_next_doc()?;
+                    continue 'advance_lead;
+                }
+            }
+            for k in 0..self.bit_set_order.len() {
+                let member = self.bit_set_order[k];
+                Self::bit_set_iterator(&mut self.members[member])
+                    .expect("INVARIANT: bit set members were narrowed at construction")
+                    .set_doc_id(doc);
+            }
+            return Ok(doc);
+        }
     }
 
     /// Returns the number of clauses.
@@ -407,6 +512,11 @@ impl ConjunctionDISI {
 
     /// Equivalent to the private `ConjunctionDISI.doNext(int)`.
     fn do_next(&mut self, mut doc: i32) -> Result<i32> {
+        if self.approx_order.len() == 1 {
+            // A single clause leads alone: Java uses it directly rather than
+            // building a `ConjunctionDISI` (`ConjunctionDISI.java:127-128`).
+            return Ok(doc);
+        }
         let lead1 = self.approx_order[0];
         let lead2 = self.approx_order[1];
         'advance_head: loop {
@@ -453,17 +563,15 @@ impl ConjunctionDISI {
     /// [`debug_assert!`] calls in [`next_doc`](DocIdSetIterator::next_doc) and
     /// [`advance`](DocIdSetIterator::advance) below.
     fn assert_iters_on_same_doc(&self) -> bool {
+        // `ConjunctionDISI.assertItersOnSameDoc()` over the approximations and
+        // `BitSetConjunctionDISI.assertItersOnSameDoc()` over the bit set
+        // iterators: every one is on the lead's doc.
         let lead1 = self.approx_order[0];
-        let lead2 = self.approx_order[1];
         let cur_doc = self.members[lead1].doc_id();
-        let mut iterators_on_the_same_doc = self.members[lead2].doc_id() == cur_doc;
-        let mut i = 2;
-        while i < self.approx_order.len() && iterators_on_the_same_doc {
-            iterators_on_the_same_doc =
-                iterators_on_the_same_doc && self.members[self.approx_order[i]].doc_id() == cur_doc;
-            i += 1;
-        }
-        iterators_on_the_same_doc
+        self.approx_order[1..]
+            .iter()
+            .chain(&self.bit_set_order)
+            .all(|&i| self.members[i].doc_id() == cur_doc)
     }
 }
 
@@ -477,9 +585,8 @@ impl DocIdSetIterator for ConjunctionDISI {
             self.assert_iters_on_same_doc(),
             "Sub-iterators of ConjunctionDISI are not on the same document!"
         );
-        let lead1 = self.approx_order[0];
-        let doc = self.members[lead1].next_doc()?;
-        self.do_next(doc)
+        let doc = self.approximation_next_doc()?;
+        self.bit_set_do_next(doc)
     }
 
     fn advance(&mut self, target: i32) -> Result<i32> {
@@ -487,9 +594,8 @@ impl DocIdSetIterator for ConjunctionDISI {
             self.assert_iters_on_same_doc(),
             "Sub-iterators of ConjunctionDISI are not one the same document!"
         );
-        let lead1 = self.approx_order[0];
-        let doc = self.members[lead1].advance(target)?;
-        self.do_next(doc)
+        let doc = self.approximation_advance(target)?;
+        self.bit_set_do_next(doc)
     }
 
     fn cost(&self) -> i64 {
@@ -611,4 +717,65 @@ fn throw_sub_iterators_not_on_same_document() -> LuceneError {
     LuceneError::IllegalArgument(
         "Sub-iterators of ConjunctionDISI are not on the same document!".to_string(),
     )
+}
+
+#[cfg(test)]
+mod bit_set_conjunction_tests {
+    use super::*;
+    use crate::util::FixedBitSet;
+
+    struct Docs {
+        docs: Vec<i32>,
+        i: usize,
+        doc: i32,
+    }
+
+    impl DocIdSetIterator for Docs {
+        fn doc_id(&self) -> i32 {
+            self.doc
+        }
+        fn next_doc(&mut self) -> Result<i32> {
+            self.doc = self.docs.get(self.i).copied().unwrap_or(NO_MORE_DOCS);
+            self.i += 1;
+            Ok(self.doc)
+        }
+        fn advance(&mut self, target: i32) -> Result<i32> {
+            while self.doc < target {
+                self.next_doc()?;
+            }
+            Ok(self.doc)
+        }
+        fn cost(&self) -> i64 {
+            self.docs.len() as i64
+        }
+    }
+
+    /// rmp #297: `createConjunction` moves a `BitSetIterator` costlier than
+    /// the cheapest clause into a `BitSetConjunctionDISI`, which tests its bit
+    /// set instead of advancing it and only positions it, with `setDocId`, on
+    /// a match (`ConjunctionDISI.java:113-137, 265-286`): after the lead runs
+    /// out, the bit set iterator is still on the last match.
+    #[test]
+    fn a_costlier_bit_set_iterator_is_tested_not_advanced() {
+        let mut set = FixedBitSet::new(6);
+        set.set(1);
+        set.set(3);
+        let lead = Docs {
+            docs: vec![1, 5],
+            i: 0,
+            doc: -1,
+        };
+        let bit_set_iterator = BitSetIterator::new(Arc::new(set), 10).unwrap();
+        let mut conjunction = ConjunctionDISI::new(vec![
+            ConjunctionMember::from_iterator(Box::new(lead)),
+            ConjunctionMember::from_iterator(Box::new(bit_set_iterator)),
+        ])
+        .unwrap();
+        assert_eq!(conjunction.next_doc().unwrap(), 1);
+        assert_eq!(conjunction.member(1).doc_id(), 1);
+        assert_eq!(conjunction.next_doc().unwrap(), NO_MORE_DOCS);
+        assert_eq!(conjunction.member(1).doc_id(), 1);
+        assert_eq!(conjunction.member(0).doc_id(), NO_MORE_DOCS);
+        assert_eq!(conjunction.cost(), 2);
+    }
 }

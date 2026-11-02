@@ -352,7 +352,10 @@ impl FilterDirectoryReader {
         wrapper: Arc<dyn SubReaderWrapper>,
         directory_wrapper: Arc<dyn DirectoryReaderWrapper>,
     ) -> Result<Self> {
+        // `in.getSequentialSubReaders()` does not `ensureOpen()`, which
+        // `getContext()` would, so the context is built directly.
         let leaves: Vec<Arc<dyn LeafReader>> = Arc::clone(&inner)
+            .build_context(None, 0, 0, 0, 0)
             .leaves()
             .into_iter()
             .map(|context| context.leaf_reader())

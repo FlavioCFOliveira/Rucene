@@ -398,12 +398,6 @@ impl<V> JavaHashMap<V> {
             .flat_map(|bucket| bucket.iter_mut().map(|e| (&e.key, &mut e.value)))
     }
 
-    /// Iterates the values in `HashMap.values()` order, each open to in-place
-    /// change.
-    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut V> {
-        self.iter_mut().map(|(_, v)| v)
-    }
-
     /// `HashMap.resize()`.
     ///
     /// The new capacity is the old one doubled, or the threshold when the table
@@ -688,11 +682,6 @@ impl<V> JavaIntHashMap<V> {
     /// `HashMap.isEmpty()`.
     pub fn is_empty(&self) -> bool {
         self.size == 0
-    }
-
-    /// The current table length, or 0 while the table is unallocated.
-    pub fn table_length(&self) -> usize {
-        self.table.len()
     }
 
     /// See [`JavaHashMap::is_treeified`].
@@ -1666,11 +1655,6 @@ impl<V> JavaLongHashMap<V> {
     /// Iterates the entries in `HashMap.entrySet()` order.
     pub fn iter(&self) -> impl Iterator<Item = (i64, &V)> {
         self.table.iter().flat_map(|bin| bin.entries())
-    }
-
-    /// Iterates the keys in `HashMap.keySet()` order.
-    pub fn keys(&self) -> impl Iterator<Item = i64> + '_ {
-        self.iter().map(|(k, _)| k)
     }
 
     /// Iterates the values in `HashMap.values()` order.

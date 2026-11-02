@@ -77,7 +77,9 @@ impl BaseCompositeReader {
             });
         }
 
-        let max_doc = max_doc as i32;
+        // `this.maxDoc = Math.toIntExact(maxDoc)` (`BaseCompositeReader.java:111`),
+        // which the check above leaves nothing to refuse.
+        let max_doc = crate::error::to_int_exact(max_doc)?;
         let n = sub_readers.len();
         starts[n] = max_doc;
 
@@ -181,67 +183,64 @@ impl BaseCompositeReader {
     ///
     /// Equivalent to `BaseCompositeReader.docFreq(Term)`.
     pub fn doc_freq(&self, term: &Term) -> Result<i32> {
-        let mut total = 0i32;
+        let mut total = 0i32; // sum freqs in subreaders
         for reader in &self.sub_readers {
-            total += reader.doc_freq(term)?;
+            let sub = reader.doc_freq(term)?;
+            debug_assert!(sub >= 0);
+            total = total.wrapping_add(sub);
         }
         Ok(total)
     }
 
-    /// Sums `total_term_freq` across the sub-readers, returning `-1` as soon as
-    /// one sub-reader does not track it.
-    ///
-    /// Equivalent to `BaseCompositeReader.totalTermFreq(Term)`.
+    /// Sums `total_term_freq` across the sub-readers, as
+    /// `BaseCompositeReader.totalTermFreq(Term)` does
+    /// (`BaseCompositeReader.java:209-219`): every sub-reader is added, with
+    /// Java's wrapping `long` sum.
     pub fn total_term_freq(&self, term: &Term) -> Result<i64> {
-        let mut total = 0i64;
+        let mut total = 0i64; // sum freqs in subreaders
         for reader in &self.sub_readers {
             let sub = reader.total_term_freq(term)?;
-            if sub == -1 {
-                return Ok(-1);
-            }
-            total += sub;
+            debug_assert!(sub >= 0);
+            total = total.wrapping_add(sub);
         }
         Ok(total)
     }
 
-    /// Sums `get_sum_doc_freq` across the sub-readers, returning `-1` as soon as
-    /// one sub-reader does not track it.
+    /// Sums `get_sum_doc_freq` across the sub-readers, as
+    /// `BaseCompositeReader.getSumDocFreq(String)` does
+    /// (`BaseCompositeReader.java:222-232`).
     pub fn get_sum_doc_freq(&self, field: &str) -> Result<i64> {
-        let mut total = 0i64;
+        let mut total = 0i64; // sum doc freqs in subreaders
         for reader in &self.sub_readers {
             let sub = reader.get_sum_doc_freq(field)?;
-            if sub == -1 {
-                return Ok(-1);
-            }
-            total += sub;
+            debug_assert!(sub >= 0);
+            total = total.wrapping_add(sub);
         }
         Ok(total)
     }
 
-    /// Sums `get_doc_count` across the sub-readers, returning `-1` as soon as one
-    /// sub-reader does not track it.
+    /// Sums `get_doc_count` across the sub-readers, as
+    /// `BaseCompositeReader.getDocCount(String)` does
+    /// (`BaseCompositeReader.java:235-245`).
     pub fn get_doc_count(&self, field: &str) -> Result<i32> {
-        let mut total = 0i32;
+        let mut total = 0i32; // sum doc counts in subreaders
         for reader in &self.sub_readers {
             let sub = reader.get_doc_count(field)?;
-            if sub == -1 {
-                return Ok(-1);
-            }
-            total += sub;
+            debug_assert!(sub >= 0);
+            total = total.wrapping_add(sub);
         }
         Ok(total)
     }
 
-    /// Sums `get_sum_total_term_freq` across the sub-readers, returning `-1` as
-    /// soon as one sub-reader does not track it.
+    /// Sums `get_sum_total_term_freq` across the sub-readers, as
+    /// `BaseCompositeReader.getSumTotalTermFreq(String)` does
+    /// (`BaseCompositeReader.java:248-259`).
     pub fn get_sum_total_term_freq(&self, field: &str) -> Result<i64> {
-        let mut total = 0i64;
+        let mut total = 0i64; // sum doc total term freqs in subreaders
         for reader in &self.sub_readers {
             let sub = reader.get_sum_total_term_freq(field)?;
-            if sub == -1 {
-                return Ok(-1);
-            }
-            total += sub;
+            debug_assert!(sub >= 0);
+            total = total.wrapping_add(sub);
         }
         Ok(total)
     }

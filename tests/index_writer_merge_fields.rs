@@ -525,7 +525,11 @@ fn print_comparison(case: Case, compared: &[Compared]) {
 
 fn searcher(dir: &Arc<dyn Directory>) -> (Arc<dyn DirectoryReader>, IndexSearcher) {
     let reader = directory_reader::open(Arc::clone(dir)).unwrap();
-    assert_eq!(Arc::clone(&reader).leaves().len(), 1, "one segment");
+    assert_eq!(
+        Arc::clone(&reader).leaves().unwrap().len(),
+        1,
+        "one segment"
+    );
     let searcher =
         IndexSearcher::new(Arc::clone(&reader) as Arc<dyn rucene::index::IndexReader>).unwrap();
     (reader, searcher)
@@ -577,7 +581,7 @@ fn assert_every_term_and_document(dir: &Arc<dyn Directory>, case: Case) -> Vec<i
     );
     // Frequencies and positions survive the merge: document `i` has `rep`
     // `i % 5 + 1` times, at positions 4 onwards.
-    let leaf = Arc::clone(&reader).leaves()[0].leaf_reader();
+    let leaf = Arc::clone(&reader).leaves().unwrap()[0].leaf_reader();
     let terms = leaf.terms("body").unwrap().expect("body is indexed");
     let mut terms_enum = terms.iterator().unwrap();
     assert!(terms_enum.seek_exact(&bytes("rep")).unwrap());
@@ -686,7 +690,7 @@ fn assert_every_point(dir: &Arc<dyn Directory>, case: Case) {
 fn assert_every_doc_value(dir: &Arc<dyn Directory>, case: Case) {
     let live = live_docs(case);
     let (reader, _searcher) = searcher(dir);
-    let leaf = Arc::clone(&reader).leaves()[0].leaf_reader();
+    let leaf = Arc::clone(&reader).leaves().unwrap()[0].leaf_reader();
 
     let mut ids = Vec::with_capacity(live.len());
     let mut binary = leaf.get_binary_doc_values("b").unwrap().unwrap();
@@ -938,7 +942,7 @@ fn postings_of_no(
     flags: i32,
 ) -> Box<dyn rucene::index::postings_enum::PostingsEnum> {
     let reader = directory_reader::open(Arc::clone(dir)).unwrap();
-    let leaf = Arc::clone(&reader).leaves()[0].leaf_reader();
+    let leaf = Arc::clone(&reader).leaves().unwrap()[0].leaf_reader();
     let terms = leaf.terms("del").unwrap().unwrap();
     let mut terms_enum = terms.iterator().unwrap();
     assert!(terms_enum.seek_exact(&bytes("no")).unwrap());
@@ -1017,7 +1021,7 @@ fn advance_into_a_bit_set_block_reads_each_documents_frequency() {
     writer.close().unwrap();
 
     let reader = directory_reader::open(Arc::clone(&dir)).unwrap();
-    let leaf = Arc::clone(&reader).leaves()[0].leaf_reader();
+    let leaf = Arc::clone(&reader).leaves().unwrap()[0].leaf_reader();
     let terms = leaf.terms("body").unwrap().unwrap();
     let mut terms_enum = terms.iterator().unwrap();
     assert!(terms_enum.seek_exact(&bytes("no")).unwrap());

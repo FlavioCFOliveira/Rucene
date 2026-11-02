@@ -259,7 +259,7 @@ impl LiveIndexWriterConfig {
             similarity: Arc::new(BM25Similarity::new()),
             merge_scheduler: Arc::new(ConcurrentMergeScheduler::new()),
             codec,
-            info_stream: Arc::new(crate::util::NoOutputInfoStream),
+            info_stream: crate::util::default_info_stream(),
             merge_policy: Arc::new(TieredMergePolicy::new()),
             reader_pooling: Self::DEFAULT_READER_POOLING,
             flush_policy: Arc::new(FlushByRamOrCountsPolicy::new()),
@@ -843,6 +843,27 @@ impl IndexWriterConfig {
         Ok(self)
     }
 
+    /// Sets the info stream to a [`PrintStreamInfoStream`] over `print_stream`.
+    ///
+    /// Equivalent to `IndexWriterConfig.setInfoStream(PrintStream)`
+    /// (`IndexWriterConfig.java:410-415`), "a convenience method that uses
+    /// `PrintStreamInfoStream`": `setInfoStream(new
+    /// PrintStreamInfoStream(printStream))`. The suffix stands for Java's
+    /// overload. Java refuses a `null` stream with an
+    /// `IllegalArgumentException`; a Rust stream cannot be absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns what [`set_info_stream`](Self::set_info_stream) returns.
+    pub fn set_info_stream_print_stream(
+        &mut self,
+        print_stream: Box<dyn std::io::Write + Send>,
+    ) -> Result<&mut Self> {
+        self.set_info_stream(Arc::new(crate::util::PrintStreamInfoStream::new(
+            print_stream,
+        )))
+    }
+
     /// Sets whether `IndexWriter.close()` should commit first.
     pub fn set_commit_on_close(&mut self, commit_on_close: bool) -> &mut Self {
         self.live.commit_on_close = commit_on_close;
@@ -1190,6 +1211,53 @@ impl Debug for IndexWriterConfig {
 
 // Tests
 // -----------------------------------------------------------------------------
+
+#[cfg(test)]
+mod set_info_stream_print_stream_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// A sink that keeps what is written to it.
+    #[derive(Clone, Default)]
+    struct Sink(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Sink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// rmp #310: `setInfoStream(PrintStream)` sets `new
+    /// PrintStreamInfoStream(printStream)` (`IndexWriterConfig.java:410-415`),
+    /// whose messages are `<component> <id> [<timestamp>; <thread>]:
+    /// <message>` lines on that stream.
+    #[test]
+    fn a_print_stream_becomes_a_print_stream_info_stream() {
+        // A config reads `Codec.getDefault()`, so the default codec must be
+        // registered, as the other tests of this module register it.
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let sink = Sink::default();
+        let mut config = IndexWriterConfig::default();
+        config
+            .set_info_stream_print_stream(Box::new(sink.clone()))
+            .unwrap();
+        let info_stream = config.info_stream();
+        assert_eq!(
+            info_stream.java_class_name(),
+            "org.apache.lucene.util.PrintStreamInfoStream"
+        );
+        assert!(info_stream.is_enabled("IW"));
+        info_stream.message("IW", "hello");
+        let written = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
+        assert!(written.starts_with("IW "), "{written}");
+        assert!(written.ends_with("]: hello\n"), "{written}");
+    }
+}
 
 #[cfg(test)]
 mod tests {

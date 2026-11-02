@@ -7,10 +7,9 @@
 #![allow(missing_docs)]
 
 use std::{
-    cell::{Cell, RefCell},
+    cell::Cell,
     cmp,
-    rc::Rc,
-    sync::Arc,
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
 use crate::error::{LuceneError, Result};
@@ -227,21 +226,6 @@ impl PackedInts {
             .map_err(|_| LuceneError::IllegalArgument("size is too large".to_string()))?;
         Ok(blocks)
     }
-
-    pub fn byte_count_packed(num_values: i64, bits_per_value: i32) -> Result<i64> {
-        if num_values < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
-                "numValues must be non-negative, got {num_values}"
-            )));
-        }
-        if !(1..=64).contains(&bits_per_value) {
-            return Err(LuceneError::IllegalArgument(format!(
-                "bitsPerValue must be in [1, 64], got {bits_per_value}"
-            )));
-        }
-        let bytes = ((num_values as i128) * (bits_per_value as i128) + 7) / 8;
-        Ok(bytes as i64)
-    }
 }
 
 /// The layouts a packed-integer stream can use.
@@ -397,86 +381,6 @@ pub struct FormatAndBits {
     pub format: Format,
     /// The number of bits each value occupies.
     pub bits_per_value: i32,
-}
-
-/// Write `values` using the `Format::Packed` bit-packed encoding, without a
-/// format/version header.
-///
-/// Equivalent to `PackedInts.getWriterNoHeader(out, Format.PACKED, values.len(),
-/// bits_per_value, 1).finish()`.
-pub fn write_packed_ints_no_header(
-    out: &mut dyn DataOutput,
-    values: &[i64],
-    bits_per_value: i32,
-) -> Result<()> {
-    if values.is_empty() {
-        return Ok(());
-    }
-    if !(1..=64).contains(&bits_per_value) {
-        return Err(LuceneError::IllegalArgument(format!(
-            "bitsPerValue must be in [1, 64], got {bits_per_value}"
-        )));
-    }
-
-    let encoder = BulkOperationPacked::new(bits_per_value as usize)?;
-    let values_per_block = encoder.byte_value_count();
-    let bytes_per_block = encoder.byte_block_count();
-
-    let num_values = values.len() as i64;
-    let iterations = (num_values as usize).div_ceil(values_per_block);
-    let total_values = iterations * values_per_block;
-    let total_blocks = iterations * bytes_per_block;
-
-    let mut padded = values.to_vec();
-    padded.resize(total_values, 0);
-
-    let mut blocks = vec![0u8; total_blocks];
-    encoder.encode_longs_to_byte_blocks(&padded, 0, &mut blocks, 0, iterations)?;
-
-    let byte_count = ((num_values * bits_per_value as i64 + 7) / 8) as usize;
-    out.write_bytes(&blocks, 0, byte_count)?;
-    Ok(())
-}
-
-/// Read `num_values` integers using the `Format::Packed` bit-packed encoding,
-/// without a format/version header.
-///
-/// Equivalent to `PackedInts.getReaderIteratorNoHeader(input, Format.PACKED,
-/// packed_ints_version, num_values, bits_per_value, 1)`.
-pub fn read_packed_ints_no_header(
-    input: &mut dyn DataInput,
-    num_values: i64,
-    bits_per_value: i32,
-) -> Result<Vec<i64>> {
-    if num_values < 0 {
-        return Err(LuceneError::IllegalArgument(format!(
-            "numValues must be non-negative, got {num_values}"
-        )));
-    }
-    if num_values == 0 {
-        return Ok(Vec::new());
-    }
-    if !(1..=64).contains(&bits_per_value) {
-        return Err(LuceneError::IllegalArgument(format!(
-            "bitsPerValue must be in [1, 64], got {bits_per_value}"
-        )));
-    }
-
-    let decoder = BulkOperationPacked::new(bits_per_value as usize)?;
-    let values_per_block = decoder.byte_value_count();
-    let bytes_per_block = decoder.byte_block_count();
-
-    let iterations = (num_values as usize).div_ceil(values_per_block);
-    let total_blocks = iterations * bytes_per_block;
-
-    let byte_count = ((num_values * bits_per_value as i64 + 7) / 8) as usize;
-    let mut blocks = vec![0u8; total_blocks];
-    input.read_bytes(&mut blocks, 0, byte_count)?;
-
-    let mut values = vec![0i64; iterations * values_per_block];
-    decoder.decode_byte_blocks_to_longs(&blocks, 0, &mut values, 0, iterations)?;
-    values.truncate(num_values as usize);
-    Ok(values)
 }
 
 // -----------------------------------------------------------------------------
@@ -718,8 +622,41 @@ impl<'a> DirectWriter<'a> {
     }
 }
 
+/// A [`RandomAccessInput`] shared by every reader built over one slice.
+///
+/// Java's `DirectReader` and `DirectMonotonicReader` hold the
+/// `RandomAccessInput` they are given and share it between the block readers
+/// of one monotonic reader (`DirectMonotonicReader.getInstance`). A Rust
+/// `RandomAccessInput` reads through `&mut self`, so the shared slice needs an
+/// owner that hands out exclusive access; it is a `Mutex` so that a reader
+/// built over it is `Send + Sync`, which the stored-fields `FieldsIndex` that
+/// keeps two monotonic readers for its whole life requires
+/// (`FieldsIndexReader.java:46, 88-93`). The lock is only ever held for one
+/// positional read or one buffer fill, never across a call that takes it
+/// again.
+pub type SharedRandomAccessInput = Arc<Mutex<Box<dyn RandomAccessInput>>>;
+
+/// Wraps `input` so that several readers can share it.
+///
+/// See [`SharedRandomAccessInput`].
+pub fn shared_random_access_input(input: Box<dyn RandomAccessInput>) -> SharedRandomAccessInput {
+    Arc::new(Mutex::new(input))
+}
+
+/// Locks a [`SharedRandomAccessInput`] for one positional read.
+///
+/// A panic while the input was locked leaves nothing half-done that a later
+/// read could observe — a positional read keeps no state but the input's own
+/// buffer, which every read repositions — so a poisoned lock is entered
+/// anyway rather than turned into a second panic.
+pub fn lock_random_access_input(
+    input: &SharedRandomAccessInput,
+) -> MutexGuard<'_, Box<dyn RandomAccessInput>> {
+    input.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 pub struct DirectReader {
-    input: Rc<RefCell<Box<dyn RandomAccessInput>>>,
+    input: SharedRandomAccessInput,
     bits_per_value: i32,
     offset: i64,
 }
@@ -742,9 +679,7 @@ impl DirectReader {
         DirectWriter::check_bits_per_value(bits_per_value)?;
         let data_input = ByteBuffersDataInput::new(vec![bytes])?;
         let index_input = ByteBuffersIndexInput::new(data_input, "direct-reader");
-        let input = Rc::new(RefCell::new(
-            Box::new(index_input) as Box<dyn RandomAccessInput>
-        ));
+        let input = shared_random_access_input(Box::new(index_input));
         Ok(Self {
             input,
             bits_per_value,
@@ -759,7 +694,7 @@ impl DirectReader {
     /// reader owns several block readers over the same region, exactly as
     /// `DirectMonotonicReader.getInstance` does in Java.
     pub fn with_random_access(
-        input: Rc<RefCell<Box<dyn RandomAccessInput>>>,
+        input: SharedRandomAccessInput,
         bits_per_value: i32,
         offset: i64,
     ) -> Result<Self> {
@@ -778,7 +713,7 @@ impl DirectReader {
     /// rejected when the last partial buffer falls back to a plain
     /// [`DirectReader`].
     pub fn get_merge_instance(
-        slice: Rc<RefCell<Box<dyn RandomAccessInput>>>,
+        slice: SharedRandomAccessInput,
         bits_per_value: i32,
         base_offset: i64,
         num_values: i64,
@@ -788,13 +723,15 @@ impl DirectReader {
             bits_per_value,
             base_offset,
             num_values,
-            buffer: RefCell::new(vec![0i64; Self::MERGE_BUFFER_SIZE]),
-            block_index: Cell::new(-1),
+            state: Mutex::new(MergeBuffer {
+                buffer: vec![0i64; Self::MERGE_BUFFER_SIZE],
+                block_index: -1,
+            }),
         }
     }
 
     fn with_input(
-        input: Rc<RefCell<Box<dyn RandomAccessInput>>>,
+        input: SharedRandomAccessInput,
         bits_per_value: i32,
         offset: i64,
     ) -> Result<Self> {
@@ -825,7 +762,7 @@ impl DirectReader {
     }
 
     fn get_inner(&self, index: i64) -> Result<i64> {
-        let mut input_ref = self.input.borrow_mut();
+        let mut input_ref = lock_random_access_input(&self.input);
         Self::decode(input_ref.as_mut(), self.bits_per_value, self.offset, index)
     }
 
@@ -841,24 +778,27 @@ impl DirectReader {
         offset: i64,
         index: i64,
     ) -> Result<i64> {
-        let pos = offset
-            + match bits_per_value {
-                1 => index >> 3,
-                2 => index >> 2,
-                4 => index >> 1,
-                8 => index,
-                12 => (index * 12) >> 3,
-                16 => index << 1,
-                20 => (index * 20) >> 3,
-                24 => index * 3,
-                28 => (index * 28) >> 3,
-                32 => index << 2,
-                40 => index * 5,
-                48 => index * 6,
-                56 => index * 7,
-                64 => index << 3,
-                _ => unreachable!(),
-            };
+        // Java's `long` arithmetic, which wraps, with its unsigned `>>>` where
+        // `DirectReader.java:202-457` uses one: an index decoded from a corrupt
+        // file must reach the read, and fail there, rather than abort here.
+        let unsigned_shr = |value: i64, shift: u32| ((value as u64) >> shift) as i64;
+        let pos = offset.wrapping_add(match bits_per_value {
+            1 => unsigned_shr(index, 3),
+            2 => unsigned_shr(index, 2),
+            4 => unsigned_shr(index, 1),
+            8 => index,
+            12 => unsigned_shr(index.wrapping_mul(12), 3),
+            16 => index << 1,
+            20 => unsigned_shr(index.wrapping_mul(20), 3),
+            24 => index.wrapping_mul(3),
+            28 => unsigned_shr(index.wrapping_mul(28), 3),
+            32 => index << 2,
+            40 => index.wrapping_mul(5),
+            48 => index.wrapping_mul(6),
+            56 => index.wrapping_mul(7),
+            64 => index << 3,
+            _ => unreachable!(),
+        });
 
         let value = match bits_per_value {
             1 => {
@@ -916,14 +856,21 @@ impl LongValues for DirectReader {
 /// `DirectReader.getMergeInstance(RandomAccessInput, int, long, long)`. Java
 /// can declare it inline; Rust needs a named type, so the anonymous class
 /// becomes this struct and its `buffer`/`blockIndex` fields become the interior
-/// mutability that `LongValues.get` — which takes `&self` — requires.
+/// mutability that `LongValues.get` — which takes `&self` — requires. They sit
+/// behind one `Mutex` so that a [`DirectMonotonicReader`] holding a merge
+/// instance stays `Send + Sync`.
 pub struct DirectReaderMergeInstance {
-    slice: Rc<RefCell<Box<dyn RandomAccessInput>>>,
+    slice: SharedRandomAccessInput,
     bits_per_value: i32,
     base_offset: i64,
     num_values: i64,
-    buffer: RefCell<Vec<i64>>,
-    block_index: Cell<i64>,
+    state: Mutex<MergeBuffer>,
+}
+
+/// Java's `buffer` and `blockIndex` fields of the anonymous merge instance.
+struct MergeBuffer {
+    buffer: Vec<i64>,
+    block_index: i64,
 }
 
 impl DirectReaderMergeInstance {
@@ -941,28 +888,40 @@ impl DirectReaderMergeInstance {
     pub fn get_checked(&self, index: i64) -> Result<i64> {
         debug_assert!(index < self.num_values);
         let block_index = ((index as u64) >> DirectReader::MERGE_BUFFER_SHIFT) as i64;
-        if self.block_index.get() != block_index {
-            self.fill_buffer(block_index << DirectReader::MERGE_BUFFER_SHIFT)?;
-            self.block_index.set(block_index);
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.block_index != block_index {
+            self.fill_buffer(
+                &mut state.buffer,
+                block_index << DirectReader::MERGE_BUFFER_SHIFT,
+            )?;
+            state.block_index = block_index;
         }
-        Ok(self.buffer.borrow()[(index & DirectReader::MERGE_BUFFER_MASK) as usize])
+        Ok(state.buffer[(index & DirectReader::MERGE_BUFFER_MASK) as usize])
     }
 
     /// Fills the buffer with the 128 values that start at `index`.
     ///
     /// Equivalent to the private `fillBuffer(long)` of the anonymous
     /// `LongValues` of `DirectReader.getMergeInstance`.
-    fn fill_buffer(&self, index: i64) -> Result<()> {
-        let mut buffer = self.buffer.borrow_mut();
+    fn fill_buffer(&self, buffer: &mut [i64], index: i64) -> Result<()> {
+        // Every offset below is Java's `long` arithmetic, which wraps: the
+        // index, the value count and the base offset can all come off disk.
         let bits_per_value = self.bits_per_value;
         // NOTE: we're not allowed to read more than 3 bytes past the last value
-        if index >= self.num_values - DirectReader::MERGE_BUFFER_SIZE as i64 {
+        if index
+            >= self
+                .num_values
+                .wrapping_sub(DirectReader::MERGE_BUFFER_SIZE as i64)
+        {
             // 128 values left or less
             let slow_instance =
                 DirectReader::with_input(self.slice.clone(), bits_per_value, self.base_offset)?;
-            let num_values_last_block = self.num_values - index;
+            // `Math.toIntExact(numValues - index)`; at most 128 whenever the
+            // branch is taken, or negative, which reads nothing.
+            let num_values_last_block =
+                crate::error::to_int_exact(self.num_values.wrapping_sub(index))?;
             for i in 0..num_values_last_block {
-                buffer[i as usize] = slow_instance.get_checked(index + i)?;
+                buffer[i as usize] = slow_instance.get_checked(index.wrapping_add(i64::from(i)))?;
             }
         } else if (bits_per_value & 0x07) == 0 {
             // bitsPerValue is a multiple of 8: 8, 16, 24, 32, 40, 48, 56, 64
@@ -970,10 +929,12 @@ impl DirectReaderMergeInstance {
             let mask: i64 = if bits_per_value == 64 {
                 !0
             } else {
-                (1i64 << bits_per_value) - 1
+                java_long_mask(bits_per_value)
             };
-            let mut offset = self.base_offset + (index * i64::from(bits_per_value)) / 8;
-            let mut slice = self.slice.borrow_mut();
+            let mut offset = self
+                .base_offset
+                .wrapping_add(index.wrapping_mul(i64::from(bits_per_value)) / 8);
+            let mut slice = lock_random_access_input(&self.slice);
             for slot in buffer.iter_mut().take(DirectReader::MERGE_BUFFER_SIZE) {
                 *slot = if bits_per_value > 32 {
                     slice.read_long_at(offset)? & mask
@@ -984,30 +945,37 @@ impl DirectReaderMergeInstance {
                 } else {
                     i64::from(slice.read_byte_at(offset)?)
                 };
-                offset += bytes_per_value;
+                offset = offset.wrapping_add(bytes_per_value);
             }
         } else if bits_per_value < 8 {
             // bitsPerValue is 1, 2 or 4
             let values_per_long = 64 / bits_per_value;
-            let mask: i64 = (1i64 << bits_per_value) - 1;
-            let mut offset = self.base_offset + (index * i64::from(bits_per_value)) / 8;
-            let mut slice = self.slice.borrow_mut();
+            let mask: i64 = java_long_mask(bits_per_value);
+            let mut offset = self
+                .base_offset
+                .wrapping_add(index.wrapping_mul(i64::from(bits_per_value)) / 8);
+            let mut slice = lock_random_access_input(&self.slice);
             let mut i = 0usize;
-            for _ in 0..(2 * bits_per_value) {
+            for _ in 0..2i32.wrapping_mul(bits_per_value) {
                 let bits = slice.read_long_at(offset)?;
                 for j in 0..values_per_long {
-                    buffer[i] = (((bits as u64) >> (j * bits_per_value)) as i64) & mask;
+                    // `bits >>> (j * bitsPerValue)`: Java masks the distance.
+                    buffer[i] = ((bits as u64).wrapping_shr(j.wrapping_mul(bits_per_value) as u32)
+                        as i64)
+                        & mask;
                     i += 1;
                 }
-                offset += 8;
+                offset = offset.wrapping_add(8);
             }
         } else {
             // bitsPerValue is 12, 20 or 28
             // Read values 2 by 2
-            let num_bytes_for_2_values = i64::from(bits_per_value * 2 / 8);
-            let mask: i64 = (1i64 << bits_per_value) - 1;
-            let mut offset = self.base_offset + (index * i64::from(bits_per_value)) / 8;
-            let mut slice = self.slice.borrow_mut();
+            let num_bytes_for_2_values = i64::from(bits_per_value.wrapping_mul(2) / 8);
+            let mask: i64 = java_long_mask(bits_per_value);
+            let mut offset = self
+                .base_offset
+                .wrapping_add(index.wrapping_mul(i64::from(bits_per_value)) / 8);
+            let mut slice = lock_random_access_input(&self.slice);
             let mut i = 0usize;
             while i < DirectReader::MERGE_BUFFER_SIZE {
                 let l: i64 = if num_bytes_for_2_values > 4 {
@@ -1016,13 +984,22 @@ impl DirectReaderMergeInstance {
                     i64::from(slice.read_int_at(offset)?)
                 };
                 buffer[i] = l & mask;
-                buffer[i + 1] = (((l as u64) >> bits_per_value) as i64) & mask;
-                offset += num_bytes_for_2_values;
+                // `l >>> bitsPerValue`: Java masks the distance.
+                buffer[i + 1] = ((l as u64).wrapping_shr(bits_per_value as u32) as i64) & mask;
+                offset = offset.wrapping_add(num_bytes_for_2_values);
                 i += 2;
             }
         }
         Ok(())
     }
+}
+
+/// Java's `(1L << bitsPerValue) - 1`: the shift distance is taken modulo 64
+/// and the subtraction wraps, so a width read from a corrupt file yields a mask
+/// rather than an abort. A merge instance does not validate its width
+/// (`DirectReader.getMergeInstance`), so every width reaches this.
+fn java_long_mask(bits_per_value: i32) -> i64 {
+    1i64.wrapping_shl(bits_per_value as u32).wrapping_sub(1)
 }
 
 impl LongValues for DirectReaderMergeInstance {
@@ -1397,10 +1374,12 @@ impl PositionalRead for SliceRandomAccess<'_> {
 /// off-heap vector values build it once in their constructor
 /// (`OffHeapFloatVectorValues.java:225`) and query it on every `ordToDoc`.
 ///
-/// [`DirectMonotonicReader`] reads through an `Rc<RefCell<..>>` input, so it is
-/// neither `Send` nor `Sync` and cannot live in a vector values object, which
-/// must be both. This type holds the block metadata and an `Arc<[u8]>` of the
-/// encoded blocks instead, and decodes each value with the same arithmetic.
+/// This type holds the block metadata and an `Arc<[u8]>` copy of the encoded
+/// blocks, and decodes each value with the same arithmetic. It was introduced
+/// while [`DirectMonotonicReader`] read through an `Rc<RefCell<..>>` input and
+/// was therefore neither `Send` nor `Sync`, which a vector values object must
+/// be; [`DirectMonotonicReader`] now reads through a
+/// [`SharedRandomAccessInput`] and is both, so the copy is no longer forced.
 #[derive(Debug)]
 pub struct SharedDirectMonotonicReader {
     block_shift: i32,
@@ -1504,6 +1483,10 @@ fn count_monotonic_reader_construction() {
     MONOTONIC_READER_CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
 }
 
+/// Port of `org.apache.lucene.util.packed.DirectMonotonicReader`.
+///
+/// The block readers share one [`SharedRandomAccessInput`], so a reader is
+/// `Send + Sync` and can be built once and kept, as Java keeps it.
 pub struct DirectMonotonicReader {
     block_shift: i32,
     block_mask: i64,
@@ -1517,10 +1500,7 @@ impl DirectMonotonicReader {
     pub fn new(meta: DirectMonotonicMeta, data: Vec<u8>) -> Result<Self> {
         let data_input = ByteBuffersDataInput::new(vec![data])?;
         let index_input = ByteBuffersIndexInput::new(data_input, "direct-monotonic-data");
-        let input = Rc::new(RefCell::new(
-            Box::new(index_input) as Box<dyn RandomAccessInput>
-        ));
-        Self::with_random_access(meta, input)
+        Self::with_random_access(meta, shared_random_access_input(Box::new(index_input)))
     }
 
     /// Builds a reader over a live input instead of a copy of its bytes.
@@ -1530,7 +1510,7 @@ impl DirectMonotonicReader {
     /// so nothing is copied out of the file to answer a lookup.
     pub fn with_random_access(
         meta: DirectMonotonicMeta,
-        input: Rc<RefCell<Box<dyn RandomAccessInput>>>,
+        input: SharedRandomAccessInput,
     ) -> Result<Self> {
         Self::with_random_access_merging(meta, input, false)
     }
@@ -1550,7 +1530,7 @@ impl DirectMonotonicReader {
     /// [`DirectWriter`] can produce.
     pub fn with_random_access_merging(
         meta: DirectMonotonicMeta,
-        input: Rc<RefCell<Box<dyn RandomAccessInput>>>,
+        input: SharedRandomAccessInput,
         merging: bool,
     ) -> Result<Self> {
         count_monotonic_reader_construction();
@@ -1639,17 +1619,19 @@ impl DirectMonotonicReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::CorruptIndex`] when `index` falls outside the
-    /// blocks the metadata describes. Java throws
-    /// `ArrayIndexOutOfBoundsException` there, which a caller can catch; a Rust
-    /// panic could not be.
+    /// Returns [`LuceneError::Arithmetic`] when the block number
+    /// `index >>> blockShift` does not fit an `int` — Java's
+    /// `Math.toIntExact(index >>> blockShift)` (`DirectMonotonicReader.java:144`),
+    /// which a negative `index` reaches through the unsigned shift — and
+    /// [`LuceneError::CorruptIndex`] when the block falls outside the blocks
+    /// the metadata describes. Java throws `ArrayIndexOutOfBoundsException`
+    /// there, which a caller can catch; a Rust panic could not be.
     fn get_bounds(&self, index: i64) -> Result<[i64; 2]> {
-        if index < 0 {
-            return Err(LuceneError::CorruptIndex(format!(
-                "negative index {index} into a monotonic block"
-            )));
-        }
-        let block = (index >> self.block_shift) as usize;
+        // Java's `index >>> blockShift` on a `long`, whose shift distance is
+        // masked to six bits.
+        let block = crate::error::to_int_exact(
+            (index as u64).wrapping_shr(self.block_shift as u32) as i64,
+        )? as usize;
         if block >= self.readers.len() {
             return Err(LuceneError::CorruptIndex(format!(
                 "index {index} falls in block {block} of {}",
@@ -1685,9 +1667,11 @@ impl DirectMonotonicReader {
     /// # Errors
     ///
     /// Returns [`LuceneError::IllegalArgument`] when `from_index` is negative
-    /// or greater than `to_index`, and [`LuceneError::CorruptIndex`] or the
-    /// underlying I/O error when the range addresses values the encoded blocks
-    /// do not hold.
+    /// or greater than `to_index`; [`LuceneError::Arithmetic`] when a probed
+    /// index lies in a block whose number does not fit an `int`, as Java's
+    /// `getBounds` throws `ArithmeticException("integer overflow")`; and
+    /// [`LuceneError::CorruptIndex`] or the underlying I/O error when the range
+    /// addresses values the encoded blocks do not hold.
     pub fn binary_search(&self, from_index: i64, to_index: i64, key: i64) -> Result<i64> {
         if from_index < 0 || from_index > to_index {
             return Err(LuceneError::IllegalArgument(format!(
@@ -1885,7 +1869,7 @@ fn write_block_packed_v_long(out: &mut dyn DataOutput, i: i64) -> Result<()> {
 /// full eight bits land at bit 56. An unbounded loop instead would shift past
 /// the width of the type on a corrupt stream — undefined in Java, an abort in a
 /// Rust debug build — for a stream Lucene simply stops reading.
-fn read_block_packed_v_long(input: &mut dyn DataInput) -> Result<i64> {
+fn read_block_packed_v_long<I: DataInput + ?Sized>(input: &mut I) -> Result<i64> {
     let mut l: u64 = 0;
     let mut shift: u32 = 0;
     while shift < 56 {
@@ -1899,9 +1883,30 @@ fn read_block_packed_v_long(input: &mut dyn DataInput) -> Result<i64> {
     Ok((l | (u64::from(input.read_byte()?) << 56)) as i64)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Records the calls a test asks to watch, so that it can check where a
+    /// caller resets, skips and batches (rmp #294).
+    pub(crate) static BLOCK_PACKED_TRACE: std::cell::RefCell<Option<Vec<String>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn trace_block_packed(event: impl FnOnce() -> String) {
+    BLOCK_PACKED_TRACE.with(|trace| {
+        if let Some(events) = trace.borrow_mut().as_mut() {
+            events.push(event());
+        }
+    });
+}
+
 /// Port of `org.apache.lucene.util.packed.BlockPackedReaderIterator`.
-pub struct BlockPackedReaderIterator<'a> {
-    input: &'a mut dyn DataInput,
+///
+/// `I` is the type of the stream read, so that a caller reading an
+/// [`IndexInput`](crate::store::IndexInput) between two resets keeps its
+/// position and length through [`input`](Self::input).
+pub struct BlockPackedReaderIterator<'a, I: DataInput + ?Sized = dyn DataInput> {
+    input: &'a mut I,
     packed_ints_version: i32,
     value_count: i64,
     block_size: usize,
@@ -1911,9 +1916,15 @@ pub struct BlockPackedReaderIterator<'a> {
     ord: i64,
 }
 
-impl<'a> BlockPackedReaderIterator<'a> {
+impl<'a, I: DataInput + ?Sized> BlockPackedReaderIterator<'a, I> {
+    /// Equivalent to `BlockPackedReaderIterator(DataInput, int, int, long)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] for a block size or a version
+    /// Java refuses, or a negative value count.
     pub fn new(
-        input: &'a mut dyn DataInput,
+        input: &'a mut I,
         packed_ints_version: i32,
         block_size: usize,
         value_count: i64,
@@ -1937,11 +1948,32 @@ impl<'a> BlockPackedReaderIterator<'a> {
         })
     }
 
-    pub fn reset(&mut self, input: &'a mut dyn DataInput, value_count: i64) {
-        self.input = input;
+    /// Resets the iterator to read `value_count` values from its stream.
+    ///
+    /// Equivalent to `BlockPackedReaderIterator.reset(DataInput, long)`
+    /// (`BlockPackedReaderIterator.java:84-91`).
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java hands `reset` the stream to
+    /// read next; its only caller, `Lucene90CompressingTermVectorsReader`,
+    /// always hands it the `vectorsStream` the iterator was built over, and
+    /// reads that stream itself between two resets. A Rust iterator holds the
+    /// only mutable borrow of its stream, which cannot be handed to it a second
+    /// time, so `reset` keeps the stream it holds and the caller reads it
+    /// through [`input`](Self::input).
+    pub fn reset(&mut self, value_count: i64) {
+        #[cfg(test)]
+        trace_block_packed(|| format!("reset({value_count})"));
+        // `assert valueCount >= 0`.
+        debug_assert!(value_count >= 0);
         self.value_count = value_count;
         self.off = self.block_size;
         self.ord = 0;
+    }
+
+    /// The stream this iterator reads, for the caller's own reads between two
+    /// resets; see [`reset`](Self::reset).
+    pub fn input(&mut self) -> &mut I {
+        self.input
     }
 
     #[allow(clippy::should_implement_trait)]
@@ -1961,7 +1993,19 @@ impl<'a> BlockPackedReaderIterator<'a> {
         Ok(value)
     }
 
+    /// Reads between 1 and `count` values, the rest of the current block at
+    /// most.
+    ///
+    /// Equivalent to `BlockPackedReaderIterator.next(int)`, whose `LongsRef`
+    /// becomes the returned slice.
+    ///
+    /// # Errors
+    ///
+    /// Returns Java's `EOFException` past the last value, and propagates the
+    /// errors of reading the stream.
     pub fn next_batch(&mut self, count: usize) -> Result<&[i64]> {
+        #[cfg(test)]
+        trace_block_packed(|| format!("next_batch({count})"));
         if self.ord == self.value_count {
             return Err(LuceneError::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
@@ -1981,7 +2025,17 @@ impl<'a> BlockPackedReaderIterator<'a> {
         Ok(&self.values[start..start + count])
     }
 
+    /// Skips `count` values.
+    ///
+    /// Equivalent to `BlockPackedReaderIterator.skip(long)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns Java's `EOFException` when fewer values are left, and
+    /// propagates the errors of reading the stream.
     pub fn skip(&mut self, mut count: i64) -> Result<()> {
+        #[cfg(test)]
+        trace_block_packed(|| format!("skip({count})"));
         if count < 0 {
             return Err(LuceneError::IllegalArgument(format!(
                 "count must be non-negative, got {count}"
@@ -2109,7 +2163,12 @@ impl<'a> BlockPackedReaderIterator<'a> {
         Ok(())
     }
 
+    /// The number of values read or skipped so far.
+    ///
+    /// Equivalent to `BlockPackedReaderIterator.ord()`.
     pub fn ord(&self) -> i64 {
+        #[cfg(test)]
+        trace_block_packed(|| "ord".to_string());
         self.ord
     }
 }
@@ -2262,6 +2321,114 @@ mod tests {
         let meta =
             DirectMonotonicMeta::load(&mut meta_input, values.len() as i64, block_shift).unwrap();
         (meta, data_out.to_array_copy().unwrap())
+    }
+
+    /// `binarySearch(0, Long.MAX_VALUE, 9)` over ten values written with
+    /// `blockShift = 2` probes an index whose block number,
+    /// `index >>> blockShift`, is past an `int`: `getBounds` throws
+    /// `java.lang.ArithmeticException: integer overflow` from
+    /// `Math.toIntExact` (`DirectMonotonicReader.java:144`), observed with the
+    /// 10.5.0 oracle (`PassAOracle`, section 6), which also answers `3` for
+    /// `binarySearch(0, 10, 9)`.
+    #[test]
+    fn binary_search_past_an_int_block_is_an_integer_overflow() {
+        let values: Vec<i64> = (0..10i64).map(|i| i * 3).collect();
+        let (meta, data) = write_monotonic(&values, 2);
+        let reader = DirectMonotonicReader::new(meta, data).unwrap();
+        assert_eq!(reader.binary_search(0, 10, 9).unwrap(), 3);
+        let error = reader.binary_search(0, i64::MAX, 9).unwrap_err();
+        assert!(
+            matches!(&error, LuceneError::Arithmetic(m) if m == "integer overflow"),
+            "{error:?}"
+        );
+    }
+
+    /// The merge instance takes its width, base offset and value count as
+    /// given, off disk, without validating them, as
+    /// `DirectReader.getMergeInstance` does; its buffer fill then computes
+    /// with Java's `long`/`int` arithmetic, which wraps, and Java's masked
+    /// shifts (`DirectReader.java:128-185`). Every `i8` width a block header can
+    /// carry, at extreme offsets, counts and indexes, must answer a value or an
+    /// error, never abort — the shapes `fuzz_doc_values`'s hostile-metadata
+    /// sweep reached.
+    #[test]
+    fn merge_instance_survives_every_width_offset_and_index_off_disk() {
+        let data = vec![0xA5u8; 4096];
+        let shapes: [(i64, i64); 6] = [
+            (0, 1_000),
+            (0, i64::MAX),
+            (i64::MAX, 1_000),
+            (i64::MIN, 1_000),
+            (-8, 300),
+            (0, i64::MIN + 5),
+        ];
+        let indexes = [
+            0,
+            1,
+            127,
+            128,
+            999,
+            i64::MAX - 1,
+            i64::MAX - 128,
+            i64::MIN,
+            -1,
+        ];
+        let mut answered = 0;
+        for bits_per_value in i8::MIN..=i8::MAX {
+            for (base_offset, num_values) in shapes {
+                let input = ByteBuffersIndexInput::new(
+                    ByteBuffersDataInput::new(vec![data.clone()]).unwrap(),
+                    "merge-instance",
+                );
+                let merge = DirectReader::get_merge_instance(
+                    shared_random_access_input(Box::new(input)),
+                    i32::from(bits_per_value),
+                    base_offset,
+                    num_values,
+                );
+                // Java's `assert index < numValues` is kept; respect it.
+                for index in indexes.into_iter().filter(|&index| index < num_values) {
+                    if merge.get_checked(index).is_ok() {
+                        answered += 1;
+                    }
+                }
+            }
+        }
+        assert!(answered > 0, "the valid shapes must still decode");
+    }
+
+    /// rmp #295: the direct readers can be built once and kept by a value
+    /// that must be `Send + Sync`, as the stored-fields `FieldsIndexReader`
+    /// keeps its `docs` and `startPointers` (`FieldsIndexReader.java:46`); and
+    /// a monotonic reader shared between threads answers each of them exactly
+    /// as it answers one.
+    #[test]
+    fn direct_readers_are_send_and_sync_and_answer_every_thread_alike() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<DirectReader>();
+        assert_send_sync::<DirectReaderMergeInstance>();
+        assert_send_sync::<DirectMonotonicReader>();
+
+        let values: Vec<i64> = (0..4096i64).map(|i| i * 8 + (i % 7)).collect();
+        let (meta, data) = write_monotonic(&values, 7);
+        let reader = DirectMonotonicReader::new(meta, data).unwrap();
+        std::thread::scope(|scope| {
+            for t in 0..4i64 {
+                let reader = &reader;
+                let values = &values;
+                scope.spawn(move || {
+                    for i in (t..values.len() as i64).step_by(3) {
+                        assert_eq!(reader.get_checked(i).unwrap(), values[i as usize]);
+                        assert_eq!(
+                            reader
+                                .binary_search(0, values.len() as i64, values[i as usize])
+                                .unwrap(),
+                            i
+                        );
+                    }
+                });
+            }
+        });
     }
 
     /// `SharedDirectMonotonicReader` answers every index exactly as
@@ -2570,7 +2737,7 @@ mod tests {
         ] {
             let mut out = ByteBuffersDataOutput::new();
             write_block_packed_v_long(&mut out, value).expect("write");
-            let bytes = out.to_array_copy();
+            let bytes = out.to_array_copy().unwrap();
             assert!(bytes.len() <= 9, "{value} took {} bytes", bytes.len());
             let mut input = ByteArrayDataInput::new(&bytes);
             assert_eq!(
@@ -2589,7 +2756,7 @@ mod tests {
             writer.add(value).expect("add");
         }
         writer.finish().expect("finish");
-        let reader = DirectReader::new(out.to_array_copy(), 8).expect("reader");
+        let reader = DirectReader::new(out.to_array_copy().unwrap(), 8).expect("reader");
         assert_eq!(reader.get_checked(3).expect("in range"), 3);
         assert!(
             reader.get_checked(1_000_000).is_err(),

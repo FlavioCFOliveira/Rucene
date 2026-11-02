@@ -5,7 +5,6 @@
 
 use crate::error::{LuceneError, Result};
 use crate::search::bit_set_doc_id_stream::BitSetDocIdStream;
-use crate::search::bit_set_util;
 use crate::search::bulk_scorer::BulkScorer;
 use crate::search::collection_terminated_exception::CollectionResult;
 use crate::search::collector::LeafCollector;
@@ -235,11 +234,11 @@ impl ConstantScoreBulkScorer {
                 window_matches,
                 ..
             } = self;
-            debug_assert!(bit_set_util::scan_is_empty(window_matches));
+            debug_assert!(window_matches.scan_is_empty());
             into_bit_set(scorer, two_phase, window_max, window_matches, window_base)?;
 
             if let Some(accept_docs) = accept_docs {
-                bit_set_util::apply_mask(accept_docs, window_matches, window_base);
+                accept_docs.apply_mask(window_matches, window_base as usize)?;
             }
 
             {
@@ -276,5 +275,76 @@ impl BulkScorer for ConstantScoreBulkScorer {
         }
         let two_phase = self.two_phase;
         Ok(approximation(&mut self.scorer, two_phase).doc_id())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::search::bulk_scorer::BulkScorer;
+
+    /// Collects the documents a bulk scorer hands over.
+    struct Collected(Vec<i32>);
+
+    impl LeafCollector for Collected {
+        fn set_scorer(
+            &mut self,
+            _scorer: &mut dyn crate::search::scorable::Scorable,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn collect(
+            &mut self,
+            doc: i32,
+            _scorer: &mut dyn crate::search::scorable::Scorable,
+        ) -> crate::search::collection_terminated_exception::CollectionResult<()> {
+            self.0.push(doc);
+            Ok(())
+        }
+    }
+
+    /// Live docs that keep the default `Bits.applyMask`, as the codec's live
+    /// docs do.
+    #[derive(Debug)]
+    struct NotMultiplesOfFive(usize);
+
+    impl Bits for NotMultiplesOfFive {
+        fn get(&self, index: usize) -> bool {
+            !index.is_multiple_of(5)
+        }
+        fn length(&self) -> usize {
+            self.0
+        }
+    }
+
+    /// Each window starts empty (`assert windowMatches.scanIsEmpty()`,
+    /// `ConstantScoreBulkScorer.java:134`) and is masked with
+    /// `acceptDocs.applyMask(windowMatches, windowBase)` (:142) before it is
+    /// collected.
+    #[test]
+    fn windows_are_masked_with_the_live_docs_apply_mask() {
+        let max_doc = 10_000usize;
+        let mut all = FixedBitSet::new(max_doc);
+        all.set_range(0, max_doc);
+        let iterator = crate::util::BitSetIterator::new(Arc::new(all), max_doc as i64).unwrap();
+        let mut scorer = ConstantScoreBulkScorer::from_iterator(
+            1.0,
+            ScoreMode::COMPLETE_NO_SCORES,
+            Box::new(iterator),
+        )
+        .unwrap();
+        let mut collected = Collected(Vec::new());
+        scorer
+            .score(
+                &mut collected,
+                Some(&NotMultiplesOfFive(max_doc)),
+                0,
+                crate::search::NO_MORE_DOCS,
+            )
+            .unwrap();
+        let expected: Vec<i32> = (0..max_doc as i32).filter(|d| d % 5 != 0).collect();
+        assert_eq!(collected.0, expected);
     }
 }

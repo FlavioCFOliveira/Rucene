@@ -327,7 +327,7 @@ impl Query for FieldExistsQuery {
     fn rewrite(&self, searcher: &IndexSearcher) -> Result<Option<Arc<dyn Query>>> {
         let reader = Arc::clone(searcher.get_index_reader());
         let mut all_readers_rewritable = true;
-        for context in Arc::clone(&reader).leaves() {
+        for context in Arc::clone(&reader).leaves()? {
             let leaf = context.leaf_reader();
             let field_infos = leaf.get_field_infos();
             let Some(field_info) = field_infos.field_info(&self.field) else {

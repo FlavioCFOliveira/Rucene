@@ -1159,7 +1159,7 @@ impl FieldInfos {
     /// Returns [`LuceneError::IllegalState`] when the leaves disagree about
     /// the parent field, and propagates whatever adding a field raises.
     pub fn get_merged_field_infos(reader: Arc<dyn IndexReader>) -> Result<FieldInfos> {
-        let leaves = reader.leaves();
+        let leaves = reader.leaves()?;
         if leaves.is_empty() {
             return Ok(FieldInfos::empty());
         }
@@ -1221,16 +1221,21 @@ impl FieldInfos {
     /// particular order.
     ///
     /// Equivalent to `FieldInfos.getIndexedFields(IndexReader)`.
-    pub fn get_indexed_fields(reader: Arc<dyn IndexReader>) -> HashSet<String> {
+    ///
+    /// # Errors
+    ///
+    /// [`LuceneError::AlreadyClosed`] when `reader` is closed, as Java's
+    /// `reader.leaves()` fails.
+    pub fn get_indexed_fields(reader: Arc<dyn IndexReader>) -> Result<HashSet<String>> {
         let mut fields = HashSet::new();
-        for ctx in reader.leaves() {
+        for ctx in reader.leaves()? {
             for fi in ctx.leaf_reader().get_field_infos().iter() {
                 if fi.get_index_options() != IndexOptions::NONE {
                     fields.insert(fi.name.clone());
                 }
             }
         }
-        fields
+        Ok(fields)
     }
 
     /// Returns the soft-deletes field name, if any.

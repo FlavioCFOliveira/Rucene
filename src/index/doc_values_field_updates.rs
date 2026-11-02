@@ -174,7 +174,10 @@ impl SingleValueNumericDocValuesFieldUpdates {
     fn new(max_doc: i32, value: i64) -> Self {
         Self {
             value,
-            bit_set: SparseFixedBitSet::new(max_doc.max(0) as usize),
+            bit_set: SparseFixedBitSet::new(max_doc.max(0) as usize).expect(
+                "INVARIANT: a segment receiving doc-values updates has documents; \
+                 Java's constructor throws IllegalArgumentException otherwise",
+            ),
             has_no_value: None,
             has_at_least_one_value: false,
         }
@@ -203,7 +206,10 @@ impl SingleValueNumericDocValuesFieldUpdates {
         self.bit_set.set(doc as usize);
         self.has_at_least_one_value = true;
         self.has_no_value
-            .get_or_insert_with(|| SparseFixedBitSet::new(max_doc.max(0) as usize))
+            .get_or_insert_with(|| {
+                SparseFixedBitSet::new(max_doc.max(0) as usize)
+                    .expect("INVARIANT: the segment holds `doc`, so it has documents")
+            })
             .set(doc as usize);
     }
 

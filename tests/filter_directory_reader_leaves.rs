@@ -98,7 +98,7 @@ fn exitable_directory_reader_times_out_through_its_leaves() {
 
     // The bare reader answers normally: the timeout is what must make the
     // difference, not the index.
-    let bare_leaves = Arc::clone(&reader).leaves();
+    let bare_leaves = Arc::clone(&reader).leaves().unwrap();
     assert_eq!(bare_leaves.len(), 1, "one segment was written");
     assert!(
         bare_leaves[0].leaf_reader().terms("body").is_ok(),
@@ -109,7 +109,7 @@ fn exitable_directory_reader_times_out_through_its_leaves() {
         .wrap(Arc::clone(&reader))
         .expect("wrap as an exitable reader");
 
-    let leaves = Arc::clone(&exitable).leaves();
+    let leaves = Arc::clone(&exitable).leaves().unwrap();
     assert_eq!(leaves.len(), 1, "the wrapping preserves the leaf count");
 
     let leaf = leaves[0].leaf_reader();
@@ -149,7 +149,7 @@ fn exitable_directory_reader_lets_work_through_when_the_timeout_has_not_fired() 
         .wrap(Arc::clone(&reader))
         .expect("wrap as an exitable reader");
 
-    let leaves = Arc::clone(&exitable).leaves();
+    let leaves = Arc::clone(&exitable).leaves().unwrap();
     let leaf = leaves[0].leaf_reader();
     assert!(
         leaf.terms("body")
@@ -192,7 +192,7 @@ fn soft_deletes_directory_reader_wrapper_filters_the_soft_deleted_documents() {
         "soft deletes hide documents, they do not remove them"
     );
 
-    let leaves = Arc::clone(&wrapped).leaves();
+    let leaves = Arc::clone(&wrapped).leaves().unwrap();
     assert_eq!(leaves.len(), 1, "one segment was written");
     let leaf = leaves[0].leaf_reader();
     println!("soft-deletes leaf = {leaf}");
@@ -242,7 +242,7 @@ fn filter_leaf_reader_unwrap_reaches_the_wrapped_segment_reader() {
     use rucene::index::LeafReader;
 
     let reader = build_index("rucene-269-filter-unwrap", 3, false);
-    let segment = Arc::clone(&reader).leaves()[0].leaf_reader();
+    let segment = Arc::clone(&reader).leaves().unwrap()[0].leaf_reader();
     assert!(Arc::ptr_eq(&FilterLeafReader::unwrap(&segment), &segment));
 
     let once: Arc<dyn LeafReader> = Arc::new(FilterLeafReader::new(Arc::clone(&segment)));
@@ -252,7 +252,7 @@ fn filter_leaf_reader_unwrap_reaches_the_wrapped_segment_reader() {
     let exitable = ExitableDirectoryReaderWrapper::new(Arc::new(NeverTimesOut))
         .wrap(Arc::clone(&reader))
         .expect("wrap as an exitable reader");
-    let exitable_leaf = Arc::clone(&exitable).leaves()[0].leaf_reader();
+    let exitable_leaf = Arc::clone(&exitable).leaves().unwrap()[0].leaf_reader();
     let wrapped: Arc<dyn LeafReader> = Arc::new(FilterLeafReader::new(exitable_leaf));
     assert!(Arc::ptr_eq(&FilterLeafReader::unwrap(&wrapped), &segment));
 }

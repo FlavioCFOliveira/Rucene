@@ -856,8 +856,9 @@ fn pattern_dialect_differences_are_exactly_the_declared_ones() {
     );
 }
 
-/// A pattern that does not parse is refused with Java's exact message, and
-/// the argument is consumed either way; a missing argument fails as
+/// A pattern that does not parse is refused with Java's exact message, its
+/// cause the parser's `PatternSyntaxException` — an `IllegalArgumentException`
+/// — and the argument is consumed either way; a missing argument fails as
 /// `require` does (`AbstractAnalysisFactory.java:119-125,265-277`).
 #[test]
 fn pattern_errors_carry_java_messages() {
@@ -865,8 +866,12 @@ fn pattern_errors_carry_java_messages() {
         let pattern = unhex(&r[2]);
         let mut args = HashMap::from([("pattern".to_string(), pattern.clone())]);
         match AbstractAnalysisFactory::get_pattern(&mut args, "pattern", PROBE_FACTORY) {
-            Err(rucene::error::LuceneError::IllegalArgument(message)) => {
-                assert_eq!(message, r[3], "{pattern:?}")
+            Err(rucene::error::LuceneError::IllegalArgumentWithCause { message, cause }) => {
+                assert_eq!(message, r[3], "{pattern:?}");
+                assert!(
+                    matches!(&*cause, rucene::error::LuceneError::IllegalArgument(_)),
+                    "{pattern:?}: {cause:?}"
+                );
             }
             other => panic!("{pattern:?} must be refused, got {other:?}"),
         }

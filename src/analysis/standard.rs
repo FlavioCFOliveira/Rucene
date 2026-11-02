@@ -24,6 +24,7 @@ use crate::analysis::{
 };
 use crate::error::{LuceneError, Result};
 use crate::util::attribute::{AttributeImpl, AttributeSource};
+use crate::util::IOUtils;
 
 /// Alpha/numeric token type.
 pub const ALPHANUM: usize = 0;
@@ -550,17 +551,17 @@ impl StopwordAnalyzerBase {
     ///
     /// # Errors
     ///
-    /// Returns whatever the reader returns while being read or closed. A read
-    /// failure is reported in preference to a close failure, which is the order
-    /// Java's `try`/`finally` produces.
+    /// Returns whatever the reader returns while being read or closed. A close
+    /// failure is reported in preference to a read failure: Java closes the
+    /// reader in a `finally` block, `IOUtils.close(stopwords)`
+    /// (`StopwordAnalyzerBase.java:83-89`), and an exception thrown from a
+    /// `finally` block replaces the one in flight.
     ///
     /// Equivalent to `org.apache.lucene.analysis.StopwordAnalyzerBase#loadStopwordSet(Reader)`.
     pub fn load_stopword_set(reader: &mut dyn CharReader) -> Result<CharArraySet> {
         let lines = get_buffered_reader(reader);
-        let closed = reader.close();
-        let lines = lines?;
-        closed?;
-        Ok(CharArraySet::unmodifiable_set(get_word_set(lines)))
+        IOUtils::close([Some(|| reader.close())])?;
+        Ok(CharArraySet::unmodifiable_set(get_word_set(lines?)))
     }
 
     /// Reads a stop-word set from the UTF-8 file at `stopwords`.
@@ -697,6 +698,34 @@ mod tests {
         OffsetAttribute, PositionIncrementAttribute, ReusableStringReader, TokenStream,
         TypeAttribute,
     };
+
+    /// `loadStopwordSet(Reader)` closes the reader in a `finally` block,
+    /// `IOUtils.close(stopwords)` (`StopwordAnalyzerBase.java:83-89`), whose
+    /// failure replaces the read failure — Java oracle
+    /// (`scratchpad/oracle/e2/StopwordOracle.java`): `threw close failed`.
+    #[test]
+    fn load_stopword_set_reports_the_close_failure_over_the_read_failure() {
+        #[derive(Debug)]
+        struct FailingReader {
+            closes: usize,
+        }
+        impl crate::analysis::CharReader for FailingReader {
+            fn read(&mut self, _buf: &mut [char]) -> Result<usize> {
+                Err(LuceneError::Io(std::io::Error::other("read failed")))
+            }
+            fn close(&mut self) -> Result<()> {
+                self.closes += 1;
+                Err(LuceneError::Io(std::io::Error::other("close failed")))
+            }
+        }
+        let mut reader = FailingReader { closes: 0 };
+        let error = StopwordAnalyzerBase::load_stopword_set(&mut reader).unwrap_err();
+        assert!(
+            matches!(&error, LuceneError::Io(e) if e.to_string() == "close failed"),
+            "{error:?}"
+        );
+        assert_eq!(reader.closes, 1);
+    }
 
     fn tokenize(text: &str) -> Vec<(String, i32, i32, String)> {
         let mut tokenizer = new_standard_tokenizer();

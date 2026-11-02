@@ -142,11 +142,6 @@ impl LongHeap {
         self.size
     }
 
-    /// Returns whether the heap holds no element.
-    pub fn is_empty(&self) -> bool {
-        self.size == 0
-    }
-
     /// Removes all entries.
     pub fn clear(&mut self) {
         self.size = 0;
@@ -323,11 +318,6 @@ impl TernaryLongHeap {
     /// Returns the number of elements currently stored.
     pub fn size(&self) -> usize {
         self.size
-    }
-
-    /// Returns whether the heap holds no element.
-    pub fn is_empty(&self) -> bool {
-        self.size == 0
     }
 
     /// Removes all entries.

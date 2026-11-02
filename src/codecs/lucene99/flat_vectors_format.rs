@@ -46,7 +46,7 @@ use crate::util::extra::LongValues;
 use crate::util::hnsw::scorer::BorrowedBits;
 use crate::util::hnsw::RandomVectorScorer;
 use crate::util::packed::SharedDirectMonotonicReader;
-use crate::util::Bits;
+use crate::util::{Bits, IOUtils};
 
 // -----------------------------------------------------------------------------
 // Format constants
@@ -221,24 +221,23 @@ impl Lucene99FlatVectorsWriter {
             VECTOR_DATA_EXTENSION,
         );
 
-        let meta = state
-            .directory
-            .create_output(&meta_file_name, state.context)?;
-        let vector_data = state
-            .directory
-            .create_output(&vector_data_file_name, state.context)?;
-
-        let mut meta_opt = Some(meta);
-        let mut vector_data_opt = Some(vector_data);
-        let result = (|| -> Result<Self> {
-            let meta = meta_opt.as_mut().ok_or_else(|| {
-                LuceneError::illegal_state("meta output missing during writer creation".to_string())
-            })?;
-            let vector_data = vector_data_opt.as_mut().ok_or_else(|| {
-                LuceneError::illegal_state(
-                    "vector data output missing during writer creation".to_string(),
-                )
-            })?;
+        // Both outputs are created inside the `try` block; when it fails,
+        // `IOUtils.closeWhileHandlingException(this)` closes what was created
+        // through `close()`, `IOUtils.close(meta, vectorData)`
+        // (`Lucene99FlatVectorsWriter.java:113-136, 353-356`).
+        let mut meta_opt: Option<Box<dyn IndexOutput>> = None;
+        let mut vector_data_opt: Option<Box<dyn IndexOutput>> = None;
+        let result = (|| -> Result<()> {
+            let meta = meta_opt.insert(
+                state
+                    .directory
+                    .create_output(&meta_file_name, state.context)?,
+            );
+            let vector_data = vector_data_opt.insert(
+                state
+                    .directory
+                    .create_output(&vector_data_file_name, state.context)?,
+            );
             write_index_header(
                 meta.as_mut(),
                 META_CODEC_NAME,
@@ -253,20 +252,23 @@ impl Lucene99FlatVectorsWriter {
                 &state.segment_info.id(),
                 &state.segment_suffix,
             )?;
-            Ok(Self {
-                meta: meta_opt.take(),
-                vector_data: vector_data_opt.take(),
-                vector_scorer: vectors_scorer,
-                fields: Vec::new(),
-                segment_max_doc: state.segment_info.max_doc().ok(),
-                finished: false,
-            })
+            Ok(())
         })();
 
-        if result.is_err() {
-            let _ = close_outputs(&mut meta_opt, &mut vector_data_opt);
+        if let Err(error) = result {
+            IOUtils::close_while_handling_exception([Some(|| {
+                close_outputs(&mut meta_opt, &mut vector_data_opt)
+            })])?;
+            return Err(error);
         }
-        result
+        Ok(Self {
+            meta: meta_opt,
+            vector_data: vector_data_opt,
+            vector_scorer: vectors_scorer,
+            fields: Vec::new(),
+            segment_max_doc: state.segment_info.max_doc().ok(),
+            finished: false,
+        })
     }
 
     fn write_field_float(
@@ -724,17 +726,13 @@ impl FlatVectorsWriter for Lucene99FlatVectorsWriter {
     }
 }
 
+/// `Lucene99FlatVectorsWriter.close()` (`Lucene99FlatVectorsWriter.java:353-356`):
+/// `IOUtils.close(meta, vectorData)`.
 fn close_outputs(
     meta: &mut Option<Box<dyn IndexOutput>>,
     vector_data: &mut Option<Box<dyn IndexOutput>>,
 ) -> Result<()> {
-    if let Some(mut m) = meta.take() {
-        m.close()?;
-    }
-    if let Some(mut v) = vector_data.take() {
-        v.close()?;
-    }
-    Ok(())
+    IOUtils::close([meta.take(), vector_data.take()].map(|o| o.map(|mut o| move || o.close())))
 }
 
 fn align_output(out: &mut dyn IndexOutput, encoding: VectorEncoding) -> Result<i64> {
@@ -959,21 +957,32 @@ impl Lucene99FlatVectorsReader {
             file_extension,
         );
         let mut input = state.directory.open_input(&file_name, context)?;
-        let version_vector_data = check_index_header(
-            input.as_mut(),
-            codec_name,
-            VERSION_START,
-            VERSION_CURRENT,
-            &state.segment_info.id(),
-            &state.segment_suffix,
-        )?;
-        if version_meta != version_vector_data {
-            return Err(LuceneError::CorruptIndex(format!(
-                "format versions mismatch: meta={version_meta}, {codec_name}={version_vector_data}"
-            )));
+        let checked = (|| -> Result<()> {
+            let version_vector_data = check_index_header(
+                input.as_mut(),
+                codec_name,
+                VERSION_START,
+                VERSION_CURRENT,
+                &state.segment_info.id(),
+                &state.segment_suffix,
+            )?;
+            if version_meta != version_vector_data {
+                return Err(LuceneError::CorruptIndex(format!(
+                    "format versions mismatch: meta={version_meta}, {codec_name}={version_vector_data}"
+                )));
+            }
+            retrieve_checksum(input.as_mut())?;
+            Ok(())
+        })();
+        match checked {
+            Ok(()) => Ok(input),
+            Err(error) => {
+                // `IOUtils.closeWhileHandlingException(in)`
+                // (`Lucene99FlatVectorsReader.java:169-173`).
+                IOUtils::close_while_handling_exception([Some(|| input.close())])?;
+                Err(error)
+            }
         }
-        retrieve_checksum(input.as_mut())?;
-        Ok(input)
     }
 
     /// `vectorData.updateIOContext(dataContext.withHints(DataAccessHint.SEQUENTIAL))`
@@ -1108,8 +1117,10 @@ impl KnnVectorsReader for Lucene99FlatVectorsReader {
             .update_io_context(self.data_context.as_ref())
     }
 
+    /// Equivalent to `Lucene99FlatVectorsReader.close()`
+    /// (`Lucene99FlatVectorsReader.java:307-310`): `IOUtils.close(vectorData)`.
     fn close(&mut self) -> Result<()> {
-        self.vector_data.close()
+        IOUtils::close([Some(|| self.vector_data.close())])
     }
 
     fn get_off_heap_byte_size(&self, field_info: &FieldInfo) -> HashMap<String, i64> {
@@ -2297,7 +2308,6 @@ pub(crate) mod tests {
     };
     use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
     use crate::store::{ByteBuffersDirectory, DefaultIOContext};
-    use crate::util::default_info_stream;
     use crate::util::string_helper::ID_LENGTH;
     use crate::util::Version;
     use std::collections::HashMap;
@@ -2329,7 +2339,7 @@ pub(crate) mod tests {
         seg_updates: &'a BufferedUpdates,
         io_ctx: &'a DefaultIOContext,
     ) -> (SegmentWriteState<'a>, SegmentReadState<'a>) {
-        let info_stream = default_info_stream();
+        let info_stream = &crate::util::NoOutputInfoStream;
         let write_state = SegmentWriteState::new(
             info_stream,
             Arc::clone(dir),

@@ -78,11 +78,6 @@ impl Counter {
         };
         self.count.load(ordering)
     }
-
-    /// Returns whether this counter was created for concurrent use.
-    pub fn is_thread_safe(&self) -> bool {
-        self.thread_safe
-    }
 }
 
 impl Default for Counter {

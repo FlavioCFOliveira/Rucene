@@ -1,6 +1,7 @@
 //! Port of `org.apache.lucene.util.automaton.RegExp`.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
 
@@ -472,7 +473,19 @@ impl RegExp {
                 let mut aa = automata.and_then(|m| m.get(name)).cloned();
                 if aa.is_none() {
                     if let Some(provider) = automaton_provider {
-                        aa = Some(provider.get_automaton(name)?);
+                        // `catch (IOException e) { throw new
+                        // IllegalArgumentException(e); }` (`RegExp.java:742-746`):
+                        // the message is the cause's `toString()`.
+                        aa = Some(provider.get_automaton(name).map_err(|cause| {
+                            if cause.is_io_exception() {
+                                LuceneError::illegal_argument_with_cause(
+                                    cause.to_string(),
+                                    std::sync::Arc::new(cause),
+                                )
+                            } else {
+                                cause
+                            }
+                        })?);
                     }
                 }
                 match aa {
@@ -1510,19 +1523,25 @@ impl Parser {
                             self.pos - 1
                         )));
                     }
-                    let interval_error = || {
-                        LuceneError::IllegalArgument(format!(
-                            "interval syntax error at position {}",
-                            self.pos - 1
-                        ))
+                    // `catch (NumberFormatException e) { throw new
+                    // IllegalArgumentException("interval syntax error at
+                    // position " + (pos - 1), e); }` (`RegExp.java:1512-1514`):
+                    // the `NumberFormatException` is the cause.
+                    let interval_error = |cause: LuceneError| {
+                        LuceneError::illegal_argument_with_cause(
+                            format!("interval syntax error at position {}", self.pos - 1),
+                            Arc::new(cause),
+                        )
                     };
                     if i == 0 || i == s.len() - 1 || Some(i) != s.rfind('-') {
-                        return Err(interval_error());
+                        // `throw new NumberFormatException()`, which has no
+                        // message (`getMessage()` is `null`): an empty one here.
+                        return Err(interval_error(LuceneError::IllegalArgument(String::new())));
                     }
                     let smin = &s[0..i];
                     let smax = &s[i + 1..];
-                    let mut imin = parse_int(smin).map_err(|_| interval_error())?;
-                    let mut imax = parse_int(smax).map_err(|_| interval_error())?;
+                    let mut imin = parse_int(smin).map_err(interval_error)?;
+                    let mut imax = parse_int(smax).map_err(interval_error)?;
                     let digits = if smin.len() == smax.len() {
                         smin.len() as i32
                     } else {
@@ -1550,8 +1569,78 @@ impl Parser {
 }
 
 /// Parses a decimal integer the way `Integer.parseInt` does; a `NumberFormatException`
-/// in Java is an `IllegalArgumentException`, so it maps to the same error here.
+/// in Java is an `IllegalArgumentException`, so it maps to the same error here,
+/// with the message `Integer.parseInt` gives it, `For input string: "<s>"`
+/// (observed with the 10.5.0 oracle for `x` and `99999999999`).
 fn parse_int(s: &str) -> Result<i32> {
     s.parse::<i32>()
-        .map_err(|e| LuceneError::IllegalArgument(format!("For input string: \"{}\": {}", s, e)))
+        .map_err(|_| LuceneError::IllegalArgument(format!("For input string: \"{s}\"")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `catch (IOException e) { throw new IllegalArgumentException(e); }`
+    /// (`RegExp.java:742-746`): the provider's `IOException` becomes the
+    /// cause, and its `toString()` the message. Measured against
+    /// `lucene-core-10.5.0.jar` (`oracle/fix/MiscFix.java`, item 14):
+    /// `IllegalArgumentException: java.io.IOException: boom foo`, cause
+    /// `java.io.IOException: boom foo`.
+    #[test]
+    fn a_provider_io_error_becomes_the_cause_of_an_illegal_argument() {
+        struct Failing;
+        impl AutomatonProvider for Failing {
+            fn get_automaton(&self, name: &str) -> Result<Automaton> {
+                Err(LuceneError::Io(std::io::Error::other(format!(
+                    "boom {name}"
+                ))))
+            }
+        }
+        let regexp = RegExp::with_flags("<foo>", RegExp::ALL).unwrap();
+        match regexp.to_automaton_with(None, Some(&Failing)) {
+            Err(LuceneError::IllegalArgumentWithCause { message, cause }) => {
+                assert_eq!(message, cause.to_string());
+                assert!(
+                    matches!(cause.as_ref(), LuceneError::Io(error) if error.to_string() == "boom foo")
+                );
+            }
+            other => panic!("expected an IllegalArgumentException with a cause, got {other:?}"),
+        }
+    }
+
+    /// `new RegExp(s, RegExp.INTERVAL)` over a malformed interval throws
+    /// `IllegalArgumentException("interval syntax error at position " + (pos -
+    /// 1), e)` with the `NumberFormatException` as its cause
+    /// (`RegExp.java:1512-1514`). Observed with the 10.5.0 oracle
+    /// (`PassAOracle`, section 4): `<1-x>` at position 4, cause `For input
+    /// string: "x"`; `<-1>` at position 3, cause with no message;
+    /// `<1-99999999999>` at position 14, cause `For input string:
+    /// "99999999999"`.
+    #[test]
+    fn a_malformed_interval_keeps_the_number_format_exception_as_its_cause() {
+        for (pattern, position, cause_message) in [
+            ("<1-x>", 4, "For input string: \"x\""),
+            ("<-1>", 3, ""),
+            ("<1-99999999999>", 14, "For input string: \"99999999999\""),
+        ] {
+            let error = match RegExp::with_flags(pattern, RegExp::INTERVAL) {
+                Ok(_) => panic!("{pattern} is not a valid interval"),
+                Err(error) => error,
+            };
+            match &error {
+                LuceneError::IllegalArgumentWithCause { message, cause } => {
+                    assert_eq!(
+                        message,
+                        &format!("interval syntax error at position {position}")
+                    );
+                    assert!(
+                        matches!(&**cause, LuceneError::IllegalArgument(m) if m == cause_message),
+                        "{pattern}: {cause:?}"
+                    );
+                }
+                other => panic!("{pattern}: {other:?}"),
+            }
+        }
+    }
 }

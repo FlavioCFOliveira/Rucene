@@ -89,7 +89,7 @@ fn a_positioned_term_reports_its_statistics_and_postings() {
     writer.commit().unwrap();
 
     let reader = directory_reader::open(Arc::clone(&dir)).unwrap();
-    let leaves = reader.leaves();
+    let leaves = reader.leaves().unwrap();
     println!("leaves = {}", leaves.len());
     let leaf = leaves[0].leaf_reader();
     let terms = leaf.terms("body").unwrap().expect("body terms");

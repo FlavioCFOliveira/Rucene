@@ -239,7 +239,7 @@ fn a_sorted_force_merge_interleaves_the_segments_as_lucene_does() {
 
     // The merged segment is in `rank` order.
     let reader = directory_reader::open(Arc::clone(&dir)).unwrap();
-    let leaves = Arc::clone(&reader).leaves();
+    let leaves = Arc::clone(&reader).leaves().unwrap();
     let mut ranks = leaves[0]
         .leaf_reader()
         .get_numeric_doc_values("rank")

@@ -31,12 +31,12 @@ use crate::index::IndexOptions;
 use crate::index::SegmentInfo;
 use crate::store::{
     ByteArrayDataOutput, ByteBuffersDataInput, ByteBuffersDataOutput, DataInput, DataOutput,
-    IndexOutput,
+    IndexInput, IndexOutput,
 };
 use crate::util::compress::{
     HighCompressionHashTable, LowercaseAsciiCompression, Lz4, Lz4HashTable,
 };
-use crate::util::{BytesRef, BytesRefBuilder, FixedBitSet, StringHelper};
+use crate::util::{BytesRef, BytesRefBuilder, FixedBitSet, IOUtils, StringHelper};
 
 // -----------------------------------------------------------------------------
 // Constants
@@ -572,7 +572,7 @@ impl TrieBuilder {
             // `other.min_key`, which is now this trie's last key, so they can be
             // copied over without re-encoding.
             if other.buffer.size() > 0 {
-                let bytes = other.buffer.to_array_copy();
+                let bytes = other.buffer.to_array_copy()?;
                 self.buffer.write_bytes(&bytes, 0, bytes.len())?;
             }
         }
@@ -1154,6 +1154,19 @@ impl PendingTerm {
     }
 }
 
+impl fmt::Display for PendingTerm {
+    /// Equivalent to `PendingTerm.toString()`
+    /// (`Lucene103BlockTreeTermsWriter.java:422-425`):
+    /// `"TERM: " + ToStringUtils.bytesRefToString(termBytes)`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "TERM: {}",
+            crate::util::ToStringUtils::bytes_to_string(&self.term_bytes)
+        )
+    }
+}
+
 /// A block that has been written to the terms file and is waiting to be
 /// linked into the trie index.
 ///
@@ -1168,6 +1181,27 @@ struct PendingBlock {
     floor_lead_byte: i32,
     index: Option<TrieBuilder>,
     sub_indices: Option<Vec<TrieBuilder>>,
+}
+
+impl fmt::Display for PendingBlock {
+    /// Equivalent to `PendingBlock.toString()`
+    /// (`Lucene103BlockTreeTermsWriter.java:453-456`):
+    /// `"BLOCK: prefix=" + ToStringUtils.bytesRefToString(prefix)`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "BLOCK: prefix={}",
+            crate::util::ToStringUtils::bytes_ref_to_string(Some(&self.prefix))
+        )
+    }
+}
+
+/// Renders blocks the way Java's `List.toString()` renders a
+/// `List<PendingBlock>`: `[` + each block's `toString()`, separated by `, `,
+/// + `]`, as the message of `compileIndex`'s first assertion reads it.
+fn pending_blocks_to_string(blocks: &[PendingBlock]) -> String {
+    let rendered: Vec<String> = blocks.iter().map(ToString::to_string).collect();
+    format!("[{}]", rendered.join(", "))
 }
 
 impl PendingBlock {
@@ -1189,8 +1223,13 @@ impl PendingBlock {
         blocks: &mut [PendingBlock],
         scratch_bytes: &mut ByteBuffersDataOutput,
     ) -> Result<TrieBuilder> {
+        // `assert ... : "isFloor=" + isFloor + " blocks=" + blocks`
+        // (`Lucene103BlockTreeTermsWriter.java:460-461`).
         debug_assert!(
-            (blocks[0].is_floor && blocks.len() > 1) || (!blocks[0].is_floor && blocks.len() == 1)
+            (blocks[0].is_floor && blocks.len() > 1) || (!blocks[0].is_floor && blocks.len() == 1),
+            "isFloor={} blocks={}",
+            blocks[0].is_floor,
+            pending_blocks_to_string(blocks)
         );
         debug_assert_eq!(scratch_bytes.size(), 0);
 
@@ -1212,7 +1251,7 @@ impl PendingBlock {
                 debug_assert!(sub.fp > fp);
                 scratch_bytes.write_v_long(((sub.fp - fp) << 1) | i64::from(sub.has_terms))?;
             }
-            Some(BytesRef::new(scratch_bytes.to_array_copy()))
+            Some(BytesRef::new(scratch_bytes.to_array_copy()?))
         } else {
             None
         };
@@ -1555,6 +1594,12 @@ impl<'a> TermsWriter<'a> {
         if is_leaf_block {
             for ent in entries {
                 if let PendingEntry::Term(term) = ent {
+                    // `assert StringHelper.startsWith(term.termBytes, prefix) :
+                    // term + " prefix=" + prefix` (`Lucene103BlockTreeTermsWriter.java:779`).
+                    debug_assert!(
+                        StringHelper::starts_with_bytes(&term.term_bytes, &prefix),
+                        "{term} prefix={prefix}"
+                    );
                     let suffix = term.term_bytes.len() - prefix_length as usize;
                     self.suffix_lengths_writer.write_v_int(suffix as i32)?;
                     self.suffix_writer.append_bytes(
@@ -1579,6 +1624,11 @@ impl<'a> TermsWriter<'a> {
             for ent in entries {
                 match ent {
                     PendingEntry::Term(term) => {
+                        // `Lucene103BlockTreeTermsWriter.java:813`.
+                        debug_assert!(
+                            StringHelper::starts_with_bytes(&term.term_bytes, &prefix),
+                            "{term} prefix={prefix}"
+                        );
                         let suffix = term.term_bytes.len() - prefix_length as usize;
                         self.suffix_lengths_writer
                             .write_v_int((suffix as i32) << 1)?;
@@ -1819,7 +1869,7 @@ impl<'a> TermsWriter<'a> {
             let _ = postings_writer;
             let _ = first_term;
 
-            Ok(Some(meta.to_array_copy()))
+            Ok(Some(meta.to_array_copy()?))
         } else {
             debug_assert!(
                 self.sum_total_term_freq == 0
@@ -1924,14 +1974,20 @@ impl<'a> Lucene103BlockTreeTermsWriter<'a> {
                 // `IOUtils.closeWhileHandlingException(metaOut, termsOut,
                 // indexOut)` (`Lucene103BlockTreeTermsWriter.java:338-341`),
                 // then the postings writer, which Java's caller closes when
-                // this constructor throws (`Lucene104PostingsFormat.java:419-422`).
-                // The writer has moved into this constructor here, so it is
-                // closed here.
+                // this constructor throws:
+                // `IOUtils.closeWhileHandlingException(postingsWriter)`
+                // (`Lucene104PostingsFormat.java:419-422`). The writer has
+                // moved into this constructor here, so it is closed here. The
+                // caller's `finally` runs even when the constructor's throws,
+                // and its `Error` replaces the constructor's.
                 let [terms_out, index_out, meta_out] = outputs;
-                for mut output in [meta_out, terms_out, index_out].into_iter().flatten() {
-                    let _ = output.close();
-                }
-                let _ = postings_writer.close();
+                let outputs_closed = IOUtils::close_while_handling_exception(
+                    [meta_out, terms_out, index_out].map(|o| o.map(|mut o| move || o.close())),
+                );
+                let writer_closed =
+                    IOUtils::close_while_handling_exception([Some(|| postings_writer.close())]);
+                writer_closed?;
+                outputs_closed?;
                 return Err(error);
             }
         };
@@ -2095,19 +2151,19 @@ impl<'a> FieldsConsumer for Lucene103BlockTreeTermsWriter<'a> {
         self.closed = true;
 
         let trailer = self.write_trailer();
-        let mut first_error = None;
-        for closed in [
-            self.meta_out.close(),
-            self.terms_out.close(),
-            self.index_out.close(),
-            self.postings_writer.close(),
-        ] {
-            if let Err(error) = closed {
-                first_error.get_or_insert(error);
+        let closeables = [
+            IOUtils::closeable(|| self.meta_out.close()),
+            IOUtils::closeable(|| self.terms_out.close()),
+            IOUtils::closeable(|| self.index_out.close()),
+            IOUtils::closeable(|| self.postings_writer.close()),
+        ];
+        match trailer {
+            Ok(()) => IOUtils::close(closeables),
+            Err(error) => {
+                IOUtils::close_while_handling_exception(closeables)?;
+                Err(error)
             }
         }
-        trailer?;
-        first_error.map_or(Ok(()), Err)
     }
 }
 
@@ -2144,7 +2200,8 @@ impl<'a> Lucene103BlockTreeTermsWriter<'a> {
 ///
 /// Lucene Core equivalent: `org.apache.lucene.codecs.lucene103.blocktree.Lucene103BlockTreeTermsReader`.
 pub struct Lucene103BlockTreeTermsReader {
-    postings_reader: Arc<dyn PostingsReaderBase>,
+    /// The `.tim` and `.tip` inputs and the postings reader, which Java holds
+    /// as `termsIn`, `indexIn` and `postingsReader`.
     shared: Arc<BlockTreeShared>,
     /// One reader per field that has terms, keyed by field name.
     fields: BTreeMap<String, FieldReader>,
@@ -2173,17 +2230,67 @@ impl Lucene103BlockTreeTermsReader {
     /// the `.tim` and `.tip` files, then reads the per-field entries out of the
     /// `.tmd` file, each of which names a field's statistics and its offsets
     /// into the other two.
+    ///
+    /// When it fails, it closes what it holds, as Java's
+    /// `IOUtils.closeWhileHandlingException(this)` does
+    /// (`Lucene103BlockTreeTermsReader.java:240-244`) through `close()`'s
+    /// `IOUtils.close(indexIn, termsIn, postingsReader)` (`:276-278`); then it
+    /// closes the postings reader again, as the caller does when this
+    /// constructor throws: `IOUtils.closeWhileHandlingException(postingsReader)`
+    /// (`Lucene104PostingsFormat.java:428-438`). The reader has moved into
+    /// this constructor here, so the caller's close runs here.
     pub fn new(
-        mut postings_reader: Box<dyn PostingsReaderBase>,
+        postings_reader: Box<dyn PostingsReaderBase>,
+        state: &SegmentReadState,
+    ) -> Result<Self> {
+        let mut postings_reader: Arc<dyn PostingsReaderBase> = Arc::from(postings_reader);
+        // `indexIn` and `termsIn`, once opened.
+        let mut inputs: [Option<Arc<dyn IndexInput>>; 2] = [None, None];
+        let error = match Self::open(&mut postings_reader, &mut inputs, state) {
+            Ok(reader) => return Ok(reader),
+            Err(error) => error,
+        };
+        // `open` has dropped every other holder of the inputs and the reader.
+        let [index_in, terms_in] = &mut inputs;
+        let this_closed = IOUtils::close_while_handling_exception([Some(|| {
+            IOUtils::close([
+                index_in
+                    .as_mut()
+                    .and_then(Arc::get_mut)
+                    .and_then(|i| IOUtils::closeable(move || i.close())),
+                terms_in
+                    .as_mut()
+                    .and_then(Arc::get_mut)
+                    .and_then(|i| IOUtils::closeable(move || i.close())),
+                Arc::get_mut(&mut postings_reader)
+                    .and_then(|r| IOUtils::closeable(move || r.close())),
+            ])
+        })]);
+        let caller_closed =
+            IOUtils::close_while_handling_exception([
+                Arc::get_mut(&mut postings_reader).map(|r| move || r.close())
+            ]);
+        caller_closed?;
+        this_closed?;
+        Err(error)
+    }
+
+    /// The `try` block of the constructor: opens `termsIn` and `indexIn` into
+    /// `inputs` (index, terms) and reads the metadata.
+    fn open(
+        postings_reader: &mut Arc<dyn PostingsReaderBase>,
+        inputs: &mut [Option<Arc<dyn IndexInput>>; 2],
         state: &SegmentReadState,
     ) -> Result<Self> {
         let segment = state.segment_info.name.clone();
         let segment_suffix = state.segment_suffix.clone();
 
         let terms_name = segment_file_name(&segment, &segment_suffix, TERMS_EXTENSION);
-        let mut terms_in = state.directory.open_input(&terms_name, state.context)?;
+        let terms_in = inputs[1].insert(Arc::from(
+            state.directory.open_input(&terms_name, state.context)?,
+        ));
         let version = codec_util::check_index_header(
-            terms_in.as_mut(),
+            Arc::get_mut(terms_in).expect("INVARIANT: not shared yet"),
             TERMS_CODEC_NAME,
             VERSION_START,
             VERSION_CURRENT,
@@ -2192,9 +2299,11 @@ impl Lucene103BlockTreeTermsReader {
         )?;
 
         let index_name = segment_file_name(&segment, &segment_suffix, TERMS_INDEX_EXTENSION);
-        let mut index_in = state.directory.open_input(&index_name, state.context)?;
+        let index_in = inputs[0].insert(Arc::from(
+            state.directory.open_input(&index_name, state.context)?,
+        ));
         codec_util::check_index_header(
-            index_in.as_mut(),
+            Arc::get_mut(index_in).expect("INVARIANT: not shared yet"),
             TERMS_INDEX_CODEC_NAME,
             version,
             version,
@@ -2212,18 +2321,18 @@ impl Lucene103BlockTreeTermsReader {
             &state.segment_info.id(),
             &segment_suffix,
         )?;
-        postings_reader.init(meta_in.as_mut(), state)?;
+        Arc::get_mut(postings_reader)
+            .expect("INVARIANT: not shared yet")
+            .init(meta_in.as_mut(), state)?;
         // `init` is the only method that mutates the reader, and it runs once,
         // here. From this point it is shared, as Java shares its single
         // `postingsReader` across every field's terms enum.
-        let postings_reader: Arc<dyn PostingsReaderBase> = Arc::from(postings_reader);
-
         let shared = Arc::new(BlockTreeShared {
-            terms_in: Arc::from(terms_in),
-            index_in: Arc::from(index_in),
+            terms_in: Arc::clone(inputs[1].as_ref().expect("INVARIANT: opened above")),
+            index_in: Arc::clone(inputs[0].as_ref().expect("INVARIANT: opened above")),
             segment: segment.clone(),
             version,
-            postings_reader: Arc::clone(&postings_reader),
+            postings_reader: Arc::clone(postings_reader),
         });
 
         let num_fields = meta_in.read_v_int()?;
@@ -2343,7 +2452,6 @@ impl Lucene103BlockTreeTermsReader {
         let field_list = sort_field_names(&fields, state.field_infos);
 
         Ok(Self {
-            postings_reader,
             shared,
             fields,
             field_list,
@@ -2368,7 +2476,7 @@ impl Lucene103BlockTreeTermsReader {
     /// Shared, not exclusive: Java holds one `postingsReader` and hands it to
     /// every `SegmentTermsEnum` it creates.
     pub fn postings_reader(&self) -> &Arc<dyn PostingsReaderBase> {
-        &self.postings_reader
+        &self.shared.postings_reader
     }
 }
 
@@ -2434,7 +2542,7 @@ impl Fields for Lucene103BlockTreeTermsReader {
 
 impl FieldsProducer for Lucene103BlockTreeTermsReader {
     fn check_integrity(&self) -> Result<()> {
-        self.postings_reader.check_integrity()
+        self.shared.postings_reader.check_integrity()
     }
 
     /// Returns a reader over the same terms dictionary.
@@ -2448,7 +2556,6 @@ impl FieldsProducer for Lucene103BlockTreeTermsReader {
     /// equivalent of returning the reader itself.
     fn get_merge_instance(&self) -> Result<Box<dyn FieldsProducer>> {
         Ok(Box::new(Self {
-            postings_reader: Arc::clone(&self.postings_reader),
             shared: Arc::clone(&self.shared),
             fields: self.fields.clone(),
             field_list: self.field_list.clone(),
@@ -2458,25 +2565,31 @@ impl FieldsProducer for Lucene103BlockTreeTermsReader {
         }))
     }
 
+    /// Equivalent to `Lucene103BlockTreeTermsReader.close()`
+    /// (`Lucene103BlockTreeTermsReader.java:275-284`):
+    /// `IOUtils.close(indexIn, termsIn, postingsReader)`, then `fieldMap` is
+    /// cleared.
+    ///
+    /// **Divergence from Lucene 10.5.0.** The three are shared behind `Arc`s —
+    /// the same sharing Java has, only made explicit — and `close` needs
+    /// `&mut`, which no holder of a shared reference can give. The field
+    /// readers are dropped first, which no caller can observe, and each of the
+    /// three is closed only when this reader is its last holder; otherwise it
+    /// is released by `Drop` when the last `TermsEnum` (or merge instance)
+    /// goes away. The files are closed once nothing is reading them, and
+    /// unlike Java this cannot pull a file out from under a live `TermsEnum`.
     fn close(&mut self) -> Result<()> {
-        // **Divergence from Lucene 10.5.0.** Java's `close` is
-        // `IOUtils.close(postingsReader)` (`Lucene103BlockTreeTermsReader.java`),
-        // closing the one postings reader outright. Here that reader is shared
-        // behind an `Arc` — the same sharing Java has, only made explicit — and
-        // `PostingsReaderBase::close` needs `&mut`, which no holder of a shared
-        // reference can give. Lucene's approach cannot be used unchanged, so
-        // this releases the references this object holds and closes the reader
-        // only when it is the last one; otherwise the `.doc`, `.pos` and `.pay`
-        // inputs are released by `Drop` when the last enum goes away. The
-        // observable effect — the files are closed once nothing is reading them
-        // — is the same, and unlike Java it cannot pull a file out from under a
-        // live `TermsEnum`.
         self.fields.clear();
         self.field_list.clear();
-        if let Some(reader) = Arc::get_mut(&mut self.postings_reader) {
-            reader.close()?;
-        }
-        Ok(())
+        let Some(shared) = Arc::get_mut(&mut self.shared) else {
+            return Ok(());
+        };
+        IOUtils::close([
+            Arc::get_mut(&mut shared.index_in).and_then(|i| IOUtils::closeable(move || i.close())),
+            Arc::get_mut(&mut shared.terms_in).and_then(|i| IOUtils::closeable(move || i.close())),
+            Arc::get_mut(&mut shared.postings_reader)
+                .and_then(|r| IOUtils::closeable(move || r.close())),
+        ])
     }
 }
 
@@ -2495,7 +2608,6 @@ mod tests {
     use crate::index::terms::EmptyFields;
     use crate::index::{PostingsEnum, SeekStatus, SegmentInfo, TermState};
     use crate::store::{ByteBuffersDirectory, Directory, IndexInput, IndexOutput};
-    use crate::util::default_info_stream;
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -2646,7 +2758,7 @@ mod tests {
         infos: &'a FieldInfos,
     ) -> SegmentWriteState<'a> {
         SegmentWriteState::new(
-            default_info_stream(),
+            &crate::util::NoOutputInfoStream,
             Arc::clone(dir),
             info,
             infos,
@@ -3434,7 +3546,118 @@ impl std::fmt::Display for Lucene103BlockTreeTermsReader {
             f,
             "Lucene103BlockTreeTermsReader(fields={},delegate={})",
             self.fields.len(),
-            self.postings_reader
+            self.shared.postings_reader
         )
+    }
+}
+
+#[cfg(test)]
+mod pending_entry_to_string_tests {
+    use super::*;
+
+    fn block(prefix: &[u8]) -> PendingBlock {
+        PendingBlock {
+            prefix: BytesRef::new(prefix.to_vec()),
+            fp: 0,
+            has_terms: true,
+            is_floor: false,
+            floor_lead_byte: -1,
+            index: None,
+            sub_indices: None,
+        }
+    }
+
+    /// rmp #311: `PendingTerm.toString()` and `PendingBlock.toString()`
+    /// (`Lucene103BlockTreeTermsWriter.java:422-425, 453-456`) render through
+    /// `ToStringUtils.bytesRefToString`, and `compileIndex`'s assertion renders
+    /// a `List<PendingBlock>`. Measured against `lucene-core-10.5.0.jar`
+    /// (`oracle/passD/Oracle.java`, `TSU`): `BLOCK: prefix=ab [61 62]` and
+    /// `[BLOCK: prefix=ab [61 62], BLOCK: prefix= []]`.
+    #[test]
+    fn pending_entries_render_javas_text() {
+        let term = PendingTerm::new(&BytesRef::new(b"abc".to_vec()), BlockTermState::default());
+        assert_eq!(term.to_string(), "TERM: abc [61 62 63]");
+        assert_eq!(block(b"ab").to_string(), "BLOCK: prefix=ab [61 62]");
+        assert_eq!(
+            pending_blocks_to_string(&[block(b"ab"), block(b"")]),
+            "[BLOCK: prefix=ab [61 62], BLOCK: prefix= []]"
+        );
+    }
+}
+
+/// The `IOUtils` close family at the terms dictionary's call sites (#308).
+#[cfg(test)]
+mod close_family_tests {
+    use crate::codecs::lucene104::Lucene104PostingsFormat;
+    use crate::codecs::postings::PostingsFormat;
+    use crate::codecs::tests::{
+        read_state, rewrite_file, test_segment_info, tracking_directory, write_state,
+    };
+    use crate::index::FieldInfos;
+
+    fn write_empty_terms(
+        dir: &std::sync::Arc<dyn crate::store::Directory>,
+        info: &crate::index::SegmentInfo,
+        fis: &FieldInfos,
+    ) {
+        let mut consumer = Lucene104PostingsFormat::new()
+            .fields_consumer(&write_state(dir, info, fis))
+            .unwrap();
+        consumer
+            .write(&crate::index::terms::EmptyFields::new(), None)
+            .unwrap();
+        consumer.close().unwrap();
+    }
+
+    /// `close()` is `IOUtils.close(indexIn, termsIn, postingsReader)`
+    /// (`Lucene103BlockTreeTermsReader.java:275-284`): the `.tip` and `.tim`
+    /// inputs and the postings reader, whose `.doc` input it closes, in that
+    /// order.
+    #[test]
+    fn close_closes_index_terms_and_postings_reader_in_order() {
+        let (dir, _tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 10);
+        let fis = FieldInfos::default();
+        write_empty_terms(&dir, &info, &fis);
+        let before = log.closed().len();
+        let mut producer = Lucene104PostingsFormat::new()
+            .fields_producer(&read_state(&*dir, &info, &fis))
+            .unwrap();
+        producer.close().unwrap();
+        let closed: Vec<String> = log.closed()[before..]
+            .iter()
+            .filter(|n| ["_0.tip", "_0.tim", "_0.doc"].contains(&n.as_str()))
+            .cloned()
+            .collect();
+        assert_eq!(closed, ["_0.tip", "_0.tim", "_0.doc"]);
+    }
+
+    /// A constructor that fails runs `IOUtils.closeWhileHandlingException(this)`
+    /// (`Lucene103BlockTreeTermsReader.java:240-244`), closing both inputs and
+    /// the postings reader, and the caller closes the postings reader again
+    /// (`Lucene104PostingsFormat.java:428-438`).
+    #[test]
+    fn a_failed_constructor_closes_the_inputs_and_the_postings_reader_twice() {
+        let (dir, tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 10);
+        let fis = FieldInfos::default();
+        write_empty_terms(&dir, &info, &fis);
+        let before = log.closed().len();
+        // A `.tim` one byte longer than the metadata records fails
+        // `retrieveChecksum(termsIn, termsLength)`, after everything is open.
+        rewrite_file(&tracking, "_0.tim", |bytes| bytes.push(0));
+        let Err(error) =
+            Lucene104PostingsFormat::new().fields_producer(&read_state(&*dir, &info, &fis))
+        else {
+            panic!("a .tim longer than recorded is refused");
+        };
+        assert!(
+            matches!(error, crate::error::LuceneError::CorruptIndex(_)),
+            "{error:?}"
+        );
+        let count = |name: &str| log.closed()[before..].iter().filter(|n| *n == name).count();
+        assert_eq!(count("_0.tip"), 1);
+        assert_eq!(count("_0.tim"), 1);
+        assert_eq!(count("_0.doc"), 2);
     }
 }

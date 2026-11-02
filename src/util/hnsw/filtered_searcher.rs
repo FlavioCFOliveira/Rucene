@@ -118,7 +118,10 @@ impl FilteredHnswGraphSearcher {
 
     fn bit_set(expected_bits: i32, total_bits: i32) -> Box<dyn BitSet> {
         if expected_bits < (total_bits >> 7) {
-            Box::new(SparseFixedBitSet::new(total_bits.max(1) as usize))
+            Box::new(
+                SparseFixedBitSet::new(total_bits.max(1) as usize)
+                    .expect("INVARIANT: total_bits.max(1) is at least one bit"),
+            )
         } else {
             Box::new(FixedBitSet::new(total_bits.max(0) as usize))
         }

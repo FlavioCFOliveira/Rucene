@@ -45,7 +45,7 @@ use crate::index::{
 use crate::search::knn::KnnCollector;
 use crate::search::AcceptDocs;
 use crate::store::{Directory, IOContext, READONCE_IO_CONTEXT};
-use crate::util::Bits;
+use crate::util::{Bits, RefCount, RefCountRelease};
 
 // -----------------------------------------------------------------------------
 // SegmentCoreReaders
@@ -396,25 +396,56 @@ impl CacheHelper for SegmentCoreReaders {
 // SegmentDocValues
 // -----------------------------------------------------------------------------
 
+/// The reference-counted producers of a [`SegmentDocValues`], by generation.
+///
+/// Equivalent to `SegmentDocValues.genDVProducers`, a
+/// `LongObjectHashMap<RefCount<DocValuesProducer>>`.
+type GenProducers = HashMap<i64, Arc<RefCount<Arc<SharedDocValuesProducer>>>>;
+
 /// Manages the [`DocValuesProducer`]s held by `SegmentReader`s and keeps track
 /// of their reference counts.
 ///
 /// Equivalent to `org.apache.lucene.index.SegmentDocValues`.
-#[derive(Debug)]
+///
+/// Java's two methods are `synchronized` on the instance, and the anonymous
+/// `RefCount.release()` of each producer takes that same monitor again to
+/// drop its generation from the map (`SegmentDocValues.java:56-63`). A Rust
+/// `Mutex` is not reentrant, so the one monitor becomes two locks: `monitor`,
+/// held for the whole of [`get_doc_values_producer`](Self::get_doc_values_producer)
+/// and [`dec_ref`](Self::dec_ref), and the map's own lock, taken briefly
+/// for each read or write of the map — including the one `release()` makes
+/// while `dec_ref` holds the monitor. Every change to the map therefore still
+/// happens under the monitor, as in Java.
+#[derive(Debug, Default)]
 pub struct SegmentDocValues {
-    gen_producers: Mutex<HashMap<i64, Arc<DocValuesProducerHolder>>>,
+    monitor: Mutex<()>,
+    gen_dv_producers: Arc<Mutex<GenProducers>>,
 }
 
 impl SegmentDocValues {
     /// Creates an empty manager.
     pub fn new() -> Self {
-        Self {
-            gen_producers: Mutex::new(HashMap::new()),
-        }
+        Self::default()
+    }
+
+    /// Locks the producer map for one read or write.
+    fn producers(map: &Mutex<GenProducers>) -> std::sync::MutexGuard<'_, GenProducers> {
+        map.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Returns the doc-values producer for the given generation, creating and
     /// caching it if necessary.
+    ///
+    /// Equivalent to the `synchronized`
+    /// `SegmentDocValues.getDocValuesProducer(long, SegmentCommitInfo,
+    /// Directory, FieldInfos)` (`SegmentDocValues.java:67-79`): a cached
+    /// producer gets `incRef()`, a new one starts at a count of one, and the
+    /// caller receives `dvp.get()`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the error opening a new producer raises.
     pub fn get_doc_values_producer(
         &self,
         gen: i64,
@@ -422,23 +453,27 @@ impl SegmentDocValues {
         dir: &dyn Directory,
         infos: &FieldInfos,
     ) -> Result<Arc<dyn DocValuesProducer>> {
-        let mut map = self.gen_producers.lock().map_err(|_| {
-            LuceneError::illegal_state("segment doc-values producer map lock poisoned".to_string())
-        })?;
-
-        if let Some(holder) = map.get(&gen) {
-            holder.inc_ref()?;
-            return Ok(Arc::clone(holder) as Arc<dyn DocValuesProducer>);
-        }
-
-        let holder = Self::new_doc_values_producer(si, dir, gen, infos)?;
-        let cloned = Arc::clone(&holder) as Arc<dyn DocValuesProducer>;
-        map.insert(gen, holder);
-        Ok(cloned)
+        let _monitor = self
+            .monitor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cached = Self::producers(&self.gen_dv_producers).get(&gen).cloned();
+        let dvp = match cached {
+            Some(dvp) => {
+                dvp.inc_ref();
+                dvp
+            }
+            None => {
+                let dvp = self.new_doc_values_producer(si, dir, gen, infos)?;
+                Self::producers(&self.gen_dv_producers).insert(gen, Arc::clone(&dvp));
+                dvp
+            }
+        };
+        Ok(Arc::clone(dvp.get()) as Arc<dyn DocValuesProducer>)
     }
 
     /// Opens the doc-values producer of generation `gen`, wrapped in the
-    /// reference-counting holder this manager caches.
+    /// [`RefCount`] this manager caches.
     ///
     /// Generation `-1` is the segment's own doc values, read from `dir` with no
     /// segment suffix; any other generation was written by a doc-values update,
@@ -446,12 +481,10 @@ impl SegmentDocValues {
     /// segment's own directory under the base-36 generation suffix.
     ///
     /// Equivalent to the private
-    /// `SegmentDocValues.newDocValuesProducer(SegmentCommitInfo, Directory, long, FieldInfos)`.
-    /// Java's holder is an anonymous `RefCount<DocValuesProducer>` whose
-    /// `release()` closes the producer and drops the generation from the map;
-    /// [`DocValuesProducerHolder`] does both, driven from
-    /// [`SegmentDocValues::dec_ref`], because a Rust closure cannot reach back
-    /// into the map the caller is holding locked.
+    /// `SegmentDocValues.newDocValuesProducer(SegmentCommitInfo, Directory, long, FieldInfos)`
+    /// (`SegmentDocValues.java:35-64`), whose anonymous `RefCount` subclass
+    /// overrides `release()` to close the producer and then drop `gen` from
+    /// the map; the override is the release closure here.
     ///
     /// # Errors
     ///
@@ -459,11 +492,12 @@ impl SegmentDocValues {
     /// and propagates whatever the doc-values format raises while opening the
     /// generation's files.
     fn new_doc_values_producer(
+        &self,
         si: &SegmentCommitInfo,
         dir: &dyn Directory,
         gen: i64,
         infos: &FieldInfos,
-    ) -> Result<Arc<DocValuesProducerHolder>> {
+    ) -> Result<Arc<RefCount<Arc<SharedDocValuesProducer>>>> {
         let (dv_dir, segment_suffix): (&dyn Directory, String) = if gen == -1 {
             (dir, String::new())
         } else {
@@ -486,104 +520,110 @@ impl SegmentDocValues {
             .codec()
             .ok_or_else(|| LuceneError::illegal_state("segment has no codec".to_string()))?;
         let producer = codec.doc_values_format().fields_producer(&state)?;
-        Ok(Arc::new(DocValuesProducerHolder::new(producer)?))
+        Ok(self.ref_counted(gen, producer))
+    }
+
+    /// The anonymous `RefCount<DocValuesProducer>` subclass of
+    /// `newDocValuesProducer` (`SegmentDocValues.java:53-63`) over `producer`:
+    /// a count of one, and a `release()` that closes the producer and then,
+    /// under the monitor its caller holds, drops `gen` from the map.
+    fn ref_counted(
+        &self,
+        gen: i64,
+        producer: Box<dyn DocValuesProducer>,
+    ) -> Arc<RefCount<Arc<SharedDocValuesProducer>>> {
+        let gen_dv_producers = Arc::downgrade(&self.gen_dv_producers);
+        let release: RefCountRelease<Arc<SharedDocValuesProducer>> =
+            Box::new(move |object: &Arc<SharedDocValuesProducer>| {
+                // `object.close(); synchronized (SegmentDocValues.this) {
+                // genDVProducers.remove(gen); }`
+                object.close_shared()?;
+                if let Some(map) = gen_dv_producers.upgrade() {
+                    Self::producers(&map).remove(&gen);
+                }
+                Ok(())
+            });
+        Arc::new(RefCount::with_release(
+            Arc::new(SharedDocValuesProducer::new(producer)),
+            release,
+        ))
     }
 
     /// Decrements the reference counts for the given doc-values producer
-    /// generations. When a generation's count reaches zero, the producer is
-    /// closed and removed from the cache.
+    /// generations. When a generation's count reaches zero, its release closes
+    /// the producer and removes it from the cache.
+    ///
+    /// Equivalent to the `synchronized` `SegmentDocValues.decRef(LongArrayList)`
+    /// (`SegmentDocValues.java:82-90`), which applies `decRef()` to every
+    /// generation with `IOUtils.applyToAll`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first error a release raised, the later ones suppressed
+    /// into it, as `IOUtils.applyToAll` does; a failed release puts its
+    /// reference back, as `RefCount.decRef` does.
     pub fn dec_ref(&self, gens: &[i64]) -> Result<()> {
-        let mut map = self.gen_producers.lock().map_err(|_| {
-            LuceneError::illegal_state("segment doc-values producer map lock poisoned".to_string())
-        })?;
-
-        for gen in gens {
-            if let Some(holder) = map.get(gen) {
-                let new_count = holder.dec_ref()?;
-                if new_count == 0 {
-                    // Close the producer while we still hold the map entry, so
-                    // that teardown happens eagerly during SegmentReader::close
-                    // rather than waiting for the last Arc clone to drop.
-                    holder.close_holder();
-                    map.remove(gen);
-                }
+        let _monitor = self
+            .monitor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::util::IOUtils::apply_to_all(gens.iter().map(|gen| Some(*gen)).collect(), |gen| {
+            let dvp = Self::producers(&self.gen_dv_producers).get(&gen).cloned();
+            // `assert dvp != null : "gen=" + gen`.
+            debug_assert!(dvp.is_some(), "gen={gen}");
+            match dvp {
+                Some(dvp) => dvp.dec_ref(),
+                None => Ok(()),
             }
+        })
+    }
+}
+
+/// A doc-values producer that the readers of a segment share and that its
+/// [`RefCount`] release closes.
+///
+/// **Divergence from Lucene 10.5.0.** Java's `RefCount.release()` calls
+/// `object.close()` on the very producer every reader holds
+/// (`SegmentDocValues.java:56-58`). Rust's [`DocValuesProducer::close`] needs
+/// exclusive access, which a shared producer does not grant, so the shared
+/// producer sits in a closable slot: closing takes it out, and a reader that
+/// still calls it afterwards gets the already-closed error Java's closed
+/// inputs raise.
+#[derive(Debug)]
+struct SharedDocValuesProducer {
+    producer: RwLock<Option<Box<dyn DocValuesProducer>>>,
+}
+
+impl SharedDocValuesProducer {
+    fn new(producer: Box<dyn DocValuesProducer>) -> Self {
+        Self {
+            producer: RwLock::new(Some(producer)),
         }
+    }
+
+    /// Closes the producer, as `object.close()` does in the release.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the producer's close error; the producer then stays in its
+    /// slot, as Java's stays referenced.
+    fn close_shared(&self) -> Result<()> {
+        let mut guard = self
+            .producer
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(producer) = guard.as_mut() {
+            producer.close()?;
+        }
+        *guard = None;
         Ok(())
     }
 }
 
-impl Default for SegmentDocValues {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Holder that wraps a single doc-values producer with explicit reference
-/// counting and safe close-on-drop semantics.
-#[derive(Debug)]
-struct DocValuesProducerHolder {
-    producer: Mutex<Option<Box<dyn DocValuesProducer>>>,
-    ref_count: AtomicI32,
-}
-
-impl DocValuesProducerHolder {
-    fn new(producer: Box<dyn DocValuesProducer>) -> Result<Self> {
-        Ok(Self {
-            producer: Mutex::new(Some(producer)),
-            ref_count: AtomicI32::new(1),
-        })
-    }
-
-    fn inc_ref(&self) -> Result<()> {
-        let mut count = self.ref_count.load(Ordering::SeqCst);
-        while count > 0 {
-            match self.ref_count.compare_exchange_weak(
-                count,
-                count + 1,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            ) {
-                Ok(_) => return Ok(()),
-                Err(actual) => count = actual,
-            }
-        }
-        Err(LuceneError::already_closed(
-            "DocValuesProducer is already closed".to_string(),
-        ))
-    }
-
-    fn dec_ref(&self) -> Result<i32> {
-        let rc = self.ref_count.fetch_sub(1, Ordering::SeqCst) - 1;
-        if rc < 0 {
-            return Err(LuceneError::illegal_state(
-                "too many decRef calls on DocValuesProducer".to_string(),
-            ));
-        }
-        Ok(rc)
-    }
-
-    fn close_holder(&self) {
-        if let Ok(mut guard) = self.producer.lock() {
-            if let Some(mut producer) = guard.take() {
-                // Best-effort close; errors on teardown are swallowed because
-                // there is no caller to report them to.
-                let _ = producer.close();
-            }
-        }
-    }
-}
-
-impl Drop for DocValuesProducerHolder {
-    fn drop(&mut self) {
-        self.close_holder();
-    }
-}
-
-impl DocValuesProducer for DocValuesProducerHolder {
+impl DocValuesProducer for SharedDocValuesProducer {
     fn get_numeric(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
         {
-            let guard = self.producer.lock().map_err(|_| {
+            let guard = self.producer.read().map_err(|_| {
                 LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
             })?;
             if let Some(producer) = guard.as_ref() {
@@ -598,7 +638,7 @@ impl DocValuesProducer for DocValuesProducerHolder {
 
     fn get_binary(&self, field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
         {
-            let guard = self.producer.lock().map_err(|_| {
+            let guard = self.producer.read().map_err(|_| {
                 LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
             })?;
             if let Some(producer) = guard.as_ref() {
@@ -613,7 +653,7 @@ impl DocValuesProducer for DocValuesProducerHolder {
 
     fn get_sorted(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
         {
-            let guard = self.producer.lock().map_err(|_| {
+            let guard = self.producer.read().map_err(|_| {
                 LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
             })?;
             if let Some(producer) = guard.as_ref() {
@@ -631,7 +671,7 @@ impl DocValuesProducer for DocValuesProducerHolder {
         field: &FieldInfo,
     ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
         {
-            let guard = self.producer.lock().map_err(|_| {
+            let guard = self.producer.read().map_err(|_| {
                 LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
             })?;
             if let Some(producer) = guard.as_ref() {
@@ -646,7 +686,7 @@ impl DocValuesProducer for DocValuesProducerHolder {
 
     fn get_sorted_set(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
         {
-            let guard = self.producer.lock().map_err(|_| {
+            let guard = self.producer.read().map_err(|_| {
                 LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
             })?;
             if let Some(producer) = guard.as_ref() {
@@ -660,7 +700,7 @@ impl DocValuesProducer for DocValuesProducerHolder {
     }
 
     fn get_skipper(&self, field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
-        let guard = self.producer.lock().map_err(|_| {
+        let guard = self.producer.read().map_err(|_| {
             LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
         })?;
         if let Some(producer) = guard.as_ref() {
@@ -673,7 +713,7 @@ impl DocValuesProducer for DocValuesProducerHolder {
     }
 
     fn check_integrity(&self) -> Result<()> {
-        let guard = self.producer.lock().map_err(|_| {
+        let guard = self.producer.read().map_err(|_| {
             LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
         })?;
         if let Some(producer) = guard.as_ref() {
@@ -686,7 +726,7 @@ impl DocValuesProducer for DocValuesProducerHolder {
     }
 
     fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
-        let guard = self.producer.lock().map_err(|_| {
+        let guard = self.producer.read().map_err(|_| {
             LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
         })?;
         if let Some(producer) = guard.as_ref() {
@@ -699,7 +739,7 @@ impl DocValuesProducer for DocValuesProducerHolder {
     }
 
     fn close(&mut self) -> Result<()> {
-        let mut guard = self.producer.lock().map_err(|_| {
+        let mut guard = self.producer.write().map_err(|_| {
             LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
         })?;
         if let Some(mut producer) = guard.take() {
@@ -2054,6 +2094,13 @@ impl Bits for SharedBits {
         self.0.try_get(index)
     }
 
+    /// Forwards to the wrapped bits' `apply_mask`, so that an override — the
+    /// `FixedBitSet`'s word-wise one, with its own checks — runs exactly as it
+    /// would on the bits themselves.
+    fn apply_mask(&self, bit_set: &mut crate::util::FixedBitSet, offset: usize) -> Result<()> {
+        self.0.apply_mask(bit_set, offset)
+    }
+
     fn length(&self) -> usize {
         self.0.length()
     }
@@ -2061,6 +2108,12 @@ impl Bits for SharedBits {
     /// The identity of the shared bits, not of this handle.
     fn identity(&self) -> *const () {
         self.0.identity()
+    }
+
+    /// The handle is a Rust artefact: Java's `instanceof` sees the shared
+    /// bits themselves.
+    fn bits_as_any(&self) -> Option<&dyn std::any::Any> {
+        self.0.bits_as_any()
     }
 }
 
@@ -2231,6 +2284,31 @@ pub(crate) fn register_test_secrets() {
         ))
         .expect("INVARIANT: SegmentReader's static initializer runs once, from this file");
     });
+}
+
+#[cfg(test)]
+mod shared_bits_tests {
+    use super::*;
+    use crate::util::FixedBitSet;
+
+    /// A segment's live docs answer `applyMask` with `FixedBitSet.applyMask`,
+    /// which refuses a mask with bits past the live docs
+    /// (`FixedBitSet.java:898-908`): `Some bits are set beyond the end of live
+    /// docs`. The shared handle the reader hands out must answer the same.
+    #[test]
+    fn shared_bits_apply_the_fixed_bit_set_mask() {
+        let mut live = FixedBitSet::new(10);
+        live.set_range(0, 10);
+        let shared = SharedBits::new(Box::new(live));
+        let mut mask = FixedBitSet::new(64);
+        mask.set(3);
+        mask.set(20);
+        assert!(matches!(
+            shared.apply_mask(&mut mask, 0),
+            Err(LuceneError::IllegalArgument(ref message))
+                if message == "Some bits are set beyond the end of live docs"
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -2771,9 +2849,14 @@ mod tests {
             }))
         }
 
+        /// Records the close. The wrapped dummy producer is Java's
+        /// `EmptyDocValuesProducer`, whose `close()` throws
+        /// `UnsupportedOperationException`; `SegmentDocValues` propagates a
+        /// close error as Java's `RefCount.decRef` does, and a real producer
+        /// closes cleanly, so the dummy is not closed.
         fn close(&mut self) -> Result<()> {
             self.closed.store(true, Ordering::SeqCst);
-            self.inner.close()
+            Ok(())
         }
     }
 
@@ -3600,5 +3683,96 @@ impl std::fmt::Display for SegmentDocValuesProducer {
             "SegmentDocValuesProducer(producers={})",
             self.dv_gens.len()
         )
+    }
+}
+
+#[cfg(test)]
+mod segment_doc_values_ref_count_tests {
+    use super::*;
+    use crate::codecs::doc_values::{
+        BinaryDocValues, NumericDocValues, SortedDocValues, SortedNumericDocValues,
+        SortedSetDocValues,
+    };
+    use std::sync::atomic::AtomicUsize;
+
+    /// A producer that counts its closes and fails them while `fail` is set.
+    #[derive(Debug)]
+    struct CountingProducer {
+        closes: Arc<AtomicUsize>,
+        fail: Arc<AtomicBool>,
+    }
+
+    impl DocValuesProducer for CountingProducer {
+        fn get_numeric(&self, _: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+            Ok(None)
+        }
+        fn get_binary(&self, _: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
+            Ok(None)
+        }
+        fn get_sorted(&self, _: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
+            Ok(None)
+        }
+        fn get_sorted_numeric(
+            &self,
+            _: &FieldInfo,
+        ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+            Ok(None)
+        }
+        fn get_sorted_set(&self, _: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+            Ok(None)
+        }
+        fn get_skipper(&self, _: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
+            Ok(None)
+        }
+        fn check_integrity(&self) -> Result<()> {
+            Ok(())
+        }
+        fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
+            Err(LuceneError::illegal_state("no merge instance".to_string()))
+        }
+        fn close(&mut self) -> Result<()> {
+            self.closes.fetch_add(1, Ordering::SeqCst);
+            if self.fail.load(Ordering::SeqCst) {
+                return Err(LuceneError::illegal_state("close failed".to_string()));
+            }
+            Ok(())
+        }
+    }
+
+    /// rmp #304: `SegmentDocValues` keeps each generation in a `RefCount`
+    /// whose overridden `release()` closes the producer and drops the
+    /// generation from the map (`SegmentDocValues.java:53-63`); `decRef`
+    /// reaches it through `RefCount.decRef`, which puts the reference back when
+    /// `release()` throws (`RefCount.java:43-59`).
+    #[test]
+    fn the_last_dec_ref_releases_through_the_ref_count() {
+        let seg_doc_values = SegmentDocValues::new();
+        let closes = Arc::new(AtomicUsize::new(0));
+        let fail = Arc::new(AtomicBool::new(true));
+        let dvp = seg_doc_values.ref_counted(
+            7,
+            Box::new(CountingProducer {
+                closes: Arc::clone(&closes),
+                fail: Arc::clone(&fail),
+            }),
+        );
+        SegmentDocValues::producers(&seg_doc_values.gen_dv_producers).insert(7, Arc::clone(&dvp));
+        dvp.inc_ref();
+        seg_doc_values.dec_ref(&[7]).unwrap();
+        assert_eq!((dvp.ref_count(), closes.load(Ordering::SeqCst)), (1, 0));
+
+        // A failing release keeps the generation and puts the reference back.
+        let error = seg_doc_values.dec_ref(&[7]).unwrap_err();
+        assert!(error.to_string().contains("close failed"), "{error}");
+        assert_eq!((dvp.ref_count(), closes.load(Ordering::SeqCst)), (1, 1));
+        assert!(SegmentDocValues::producers(&seg_doc_values.gen_dv_producers).contains_key(&7));
+
+        // A successful one closes the producer and removes the generation.
+        fail.store(false, Ordering::SeqCst);
+        seg_doc_values.dec_ref(&[7]).unwrap();
+        assert_eq!((dvp.ref_count(), closes.load(Ordering::SeqCst)), (0, 2));
+        assert!(!SegmentDocValues::producers(&seg_doc_values.gen_dv_producers).contains_key(&7));
+        // Readers still holding the producer find it closed.
+        assert!(dvp.get().check_integrity().is_err());
     }
 }

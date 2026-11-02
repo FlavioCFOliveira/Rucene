@@ -168,7 +168,7 @@ fn read_fixed_bit_set(input: &mut dyn IndexInput, length: usize) -> Result<Fixed
     for slot in data.iter_mut().take(num_words) {
         *slot = input.read_long()? as u64;
     }
-    Ok(FixedBitSet::from_bits(data, length))
+    FixedBitSet::from_bits(data, length)
 }
 
 fn read_sparse_fixed_bit_set(
@@ -181,7 +181,7 @@ fn read_sparse_fixed_bit_set(
         *slot = input.read_long()? as u64;
     }
 
-    let mut sparse = SparseFixedBitSet::new(length);
+    let mut sparse = SparseFixedBitSet::new(length)?;
     for (word_index, word) in data.iter().enumerate() {
         // Disk format stores live docs (1 = live, 0 = deleted). SparseLiveDocs
         // stores deleted docs (1 = deleted), so we invert unset bits.
@@ -200,27 +200,30 @@ fn read_sparse_fixed_bit_set(
     Ok(sparse)
 }
 
+/// Equivalent to the private `Lucene90LiveDocsFormat.writeBits(IndexOutput, Bits)`
+/// (`Lucene90LiveDocsFormat.java:195-214`), which copies 1024 bits at a time
+/// through [`Bits::apply_mask`].
 fn write_bits(output: &mut dyn IndexOutput, bits: &dyn Bits) -> Result<usize> {
-    let length = bits.length();
-    let mut del_count = length;
+    let mut del_count = bits.length();
+    // Copy bits in batches of 1024 bits at once using Bits#applyMask, which is faster than checking
+    // bits one by one.
     let mut copy = FixedBitSet::new(1024);
     let mut offset = 0;
-    while offset < length {
-        copy.clear_all();
-        let num_bits = (length - offset).min(1024);
-        for i in 0..num_bits {
-            if bits.get(offset + i) {
-                copy.set(i);
-            }
+    while offset < bits.length() {
+        let num_bits_to_copy = (bits.length() - offset).min(copy.length());
+        copy.set_range(0, copy.length());
+        if num_bits_to_copy < copy.length() {
+            // Clear ghost bits
+            copy.clear_range(num_bits_to_copy, copy.length());
         }
+        bits.apply_mask(&mut copy, offset)?;
         del_count -= copy.cardinality();
-        let long_count = FixedBitSet::bits2words(num_bits);
+        let long_count = FixedBitSet::bits2words(num_bits_to_copy);
         let words = copy.get_bits();
-        for &word in words.iter().take(long_count) {
-            output.write_long(word as i64)?;
+        for word in words.iter().take(long_count) {
+            output.write_long(word.load(std::sync::atomic::Ordering::Relaxed) as i64)?;
         }
-
-        offset += 1024;
+        offset += copy.length();
     }
     Ok(del_count)
 }
@@ -260,6 +263,42 @@ mod tests {
     fn make_info(name: &str, max_doc: i32, del_count: i32, del_gen: i64) -> SegmentCommitInfo {
         let info = crate::codecs::tests::test_segment_info(name, max_doc);
         SegmentCommitInfo::new(info, del_count, 0, del_gen, -1, -1, [0u8; 16]).unwrap()
+    }
+
+    /// `writeBits` writes the live docs as `bits2words(length)` longs, one
+    /// 1024-bit window at a time, and returns `length` minus the live bits
+    /// (`Lucene90LiveDocsFormat.java:195-214`): the words are the live bits,
+    /// with nothing past `length`, and the count is the deleted documents —
+    /// for live docs that only answer `get` (the default `applyMask`) and for
+    /// a `FixedBitSet` (its own) alike. Here every third of 1500 documents is
+    /// deleted: 500 deletions, 24 words.
+    #[test]
+    fn write_bits_writes_the_live_docs_and_counts_the_deletions() {
+        #[derive(Debug)]
+        struct EveryThirdDeleted;
+        impl Bits for EveryThirdDeleted {
+            fn get(&self, index: usize) -> bool {
+                !index.is_multiple_of(3)
+            }
+            fn length(&self) -> usize {
+                1500
+            }
+        }
+        let mut expected = vec![0u64; FixedBitSet::bits2words(1500)];
+        let mut fixed = FixedBitSet::new(1500);
+        for index in (0..1500).filter(|index| index % 3 != 0) {
+            expected[index >> 6] |= 1u64 << (index & 63);
+            fixed.set(index);
+        }
+        let expected: Vec<u8> = expected
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .collect();
+        for bits in [&EveryThirdDeleted as &dyn Bits, &fixed] {
+            let mut out = crate::store::MockIndexOutput::new("liv", "_0_1.liv");
+            assert_eq!(write_bits(&mut out, bits).unwrap(), 500);
+            assert_eq!(out.into_inner(), expected);
+        }
     }
 
     fn reading_info(name: &str, max_doc: i32, del_count: i32) -> SegmentCommitInfo {

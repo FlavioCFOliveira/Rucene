@@ -145,14 +145,20 @@ pub type MergeReaderWrapper =
 /// Renumbers the documents of a merged view before they are written.
 ///
 /// Equivalent to overriding
-/// `MergePolicy.OneMerge.reorder(CodecReader, Directory, Executor)`, whose base
-/// implementation returns `null`; only a policy such as Lucene's
-/// `BPReorderingMergePolicy` installs one. A `None` result means the doc IDs
-/// are left alone.
+/// `MergePolicy.OneMerge.reorder(CodecReader, Directory, Executor)`
+/// (`MergePolicy.java:317-320`), whose base implementation returns `null`;
+/// only a policy such as Lucene's `BPReorderingMergePolicy` installs one. A
+/// `None` result means the doc IDs are left alone. The third argument is
+/// Java's `executor`, "an executor that can be used to parallelize the
+/// reordering logic", which `IndexWriter` takes from
+/// `MergeScheduler.getIntraMergeExecutor(merge)` (`IndexWriter.java:3547-3551`,
+/// `:5327-5343`); `None` stands for the `null` Java documents for a scheduler
+/// that supports no concurrency.
 pub type MergeReorderer = Arc<
     dyn Fn(
             Arc<dyn CodecReader>,
             &Arc<dyn crate::store::Directory>,
+            Option<&Arc<dyn crate::search::task_executor::Executor>>,
         ) -> Result<Option<Arc<crate::index::index_sorter::SorterDocMap>>>
         + Send
         + Sync,
@@ -643,11 +649,11 @@ impl OneMerge {
 
     /// Renumbers the documents of `reader`, or leaves them alone.
     ///
-    /// Equivalent to `OneMerge.reorder(CodecReader, Directory, Executor)`,
-    /// whose base implementation returns `null`. Java also takes an `Executor`
-    /// so the reordering can be parallelised; this port has no intra-merge
-    /// executor to hand on (see the divergence note on [`OneMerge`]), so the
-    /// hook receives only the reader and the directory.
+    /// Equivalent to `OneMerge.reorder(CodecReader, Directory, Executor)`
+    /// (`MergePolicy.java:317-320`), whose base implementation returns `null`.
+    /// `executor` is the one the writer hands on, the merge scheduler's
+    /// intra-merge executor, which the installed hook may use to parallelise
+    /// the reordering; `None` stands for Java's `null`.
     ///
     /// # Errors
     ///
@@ -656,9 +662,10 @@ impl OneMerge {
         &self,
         reader: Arc<dyn CodecReader>,
         dir: &Arc<dyn crate::store::Directory>,
+        executor: Option<&Arc<dyn crate::search::task_executor::Executor>>,
     ) -> Result<Option<Arc<crate::index::index_sorter::SorterDocMap>>> {
         match &self.reorder {
-            Some(reorder) => reorder(reader, dir),
+            Some(reorder) => reorder(reader, dir, executor),
             None => Ok(None),
         }
     }

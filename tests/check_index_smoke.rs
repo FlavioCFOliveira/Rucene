@@ -152,7 +152,7 @@ fn a_segment_whose_fields_have_a_single_term_can_be_read_back() {
     assert_eq!(reader.max_doc(), 1);
 
     // Both fields decode, and their single term is both the min and the max.
-    let leaves = Arc::clone(&reader).leaves();
+    let leaves = Arc::clone(&reader).leaves().unwrap();
     let leaf = leaves[0].leaf_reader();
     for (field, term) in [("id", "only"), ("body", "solo")] {
         let terms = rucene::index::leaf_reader::LeafReader::terms(leaf.as_ref(), field)

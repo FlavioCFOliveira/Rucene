@@ -51,7 +51,7 @@ fn doc(id: &str, price: i64) -> Document {
 /// Every `(doc, value)` of the numeric doc-values field `field`, leaf by leaf.
 fn numeric_values(reader: &Arc<dyn DirectoryReader>, field: &str) -> Vec<i64> {
     let mut out = Vec::new();
-    for leaf in Arc::clone(reader).leaves() {
+    for leaf in Arc::clone(reader).leaves().unwrap() {
         let leaf = leaf.leaf_reader();
         let Some(mut values) = leaf.get_numeric_doc_values(field).unwrap() else {
             continue;
@@ -165,7 +165,7 @@ fn a_flushed_segment_of_self_soft_deleted_documents_is_dropped() {
 
     let reader = directory_reader::open(Arc::clone(&dir)).unwrap();
     assert_eq!(
-        Arc::clone(&reader).leaves().len(),
+        Arc::clone(&reader).leaves().unwrap().len(),
         1,
         "the segment of tombstones was dropped"
     );

@@ -21,7 +21,6 @@ use crate::search::field_exists_query::FieldExistsQuery;
 use crate::search::index_searcher::IndexSearcher;
 use crate::search::match_all_docs_query::MatchAllDocsQuery;
 use crate::search::numeric_doc_values_range_query::NumericDocValuesRangeQuery;
-use crate::search::point_range_query::compare_unsigned;
 use crate::search::pruning::Pruning;
 use crate::search::query::Query;
 use crate::search::query_visitor::QueryVisitor;
@@ -31,7 +30,7 @@ use crate::search::scorer_supplier::ScorerSupplier;
 use crate::search::sort::{MissingValue, SortField, SortFieldKind, SortFieldType};
 use crate::search::two_phase_iterator::ScorerIterator;
 use crate::search::weight::Weight;
-use crate::util::NumericUtils;
+use crate::util::{ArrayUtil, ByteArrayComparator, NumericUtils};
 
 /// A range query over a numeric doc-values field that exploits the index sort
 /// when the field is the primary sort key.
@@ -164,7 +163,8 @@ struct FindNextValueVisitor<'a> {
     value: &'a [u8],
     allow_equal: bool,
     last_doc: bool,
-    bytes_per_dim: usize,
+    /// The `comparator` the anonymous visitor captures.
+    comparator: &'a ByteArrayComparator,
 }
 
 impl IntersectVisitor for FindNextValueVisitor<'_> {
@@ -177,7 +177,7 @@ impl IntersectVisitor for FindNextValueVisitor<'_> {
     fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
         match self.state.value.as_ref() {
             None => {
-                let cmp = compare_unsigned(packed_value, 0, self.value, 0, self.bytes_per_dim);
+                let cmp = self.comparator.compare(packed_value, 0, self.value, 0);
                 if cmp > 0 || (cmp == 0 && self.allow_equal) {
                     self.state.value = Some(packed_value.to_vec());
                     self.state.doc_id = doc_id;
@@ -185,7 +185,7 @@ impl IntersectVisitor for FindNextValueVisitor<'_> {
             }
             Some(current) => {
                 if self.last_doc && !self.state.done {
-                    let cmp = compare_unsigned(packed_value, 0, current, 0, self.bytes_per_dim);
+                    let cmp = self.comparator.compare(packed_value, 0, current, 0);
                     debug_assert!(cmp >= 0);
                     if cmp > 0 {
                         self.state.done = true;
@@ -210,7 +210,8 @@ impl IntersectVisitor for FindNextValueVisitor<'_> {
 struct LastDocVisitor<'a> {
     last_doc: &'a mut i32,
     value: &'a [u8],
-    bytes_per_dim: usize,
+    /// The `comparator` the anonymous visitor captures.
+    comparator: &'a ByteArrayComparator,
 }
 
 impl IntersectVisitor for LastDocVisitor<'_> {
@@ -221,7 +222,7 @@ impl IntersectVisitor for LastDocVisitor<'_> {
     }
 
     fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
-        if compare_unsigned(self.value, 0, packed_value, 0, self.bytes_per_dim) == 0 {
+        if self.comparator.compare(self.value, 0, packed_value, 0) == 0 {
             *self.last_doc = doc_id;
         }
         Ok(())
@@ -238,10 +239,10 @@ fn find_next_value(
     point_tree: &mut dyn PointTree,
     value: &[u8],
     allow_equal: bool,
-    bytes_per_dim: usize,
+    comparator: &ByteArrayComparator,
     last_doc: bool,
 ) -> Result<Option<ValueAndDoc>> {
-    let cmp = compare_unsigned(point_tree.max_packed_value()?, 0, value, 0, bytes_per_dim);
+    let cmp = comparator.compare(point_tree.max_packed_value()?, 0, value, 0);
     if cmp < 0 || (cmp == 0 && !allow_equal) {
         return Ok(None);
     }
@@ -253,7 +254,7 @@ fn find_next_value(
                 value,
                 allow_equal,
                 last_doc,
-                bytes_per_dim,
+                comparator,
             };
             point_tree.visit_doc_values(&mut visitor)?;
         }
@@ -265,8 +266,7 @@ fn find_next_value(
     }
     // Recurse.
     loop {
-        if let Some(found) =
-            find_next_value(point_tree, value, allow_equal, bytes_per_dim, last_doc)?
+        if let Some(found) = find_next_value(point_tree, value, allow_equal, comparator, last_doc)?
         {
             return Ok(Some(found));
         }
@@ -285,11 +285,10 @@ fn next_doc(
     point_tree: &mut dyn PointTree,
     value: &[u8],
     allow_equal: bool,
-    bytes_per_dim: usize,
+    comparator: &ByteArrayComparator,
     last_doc: bool,
 ) -> Result<i32> {
-    let Some(found) = find_next_value(point_tree, value, allow_equal, bytes_per_dim, last_doc)?
-    else {
+    let Some(found) = find_next_value(point_tree, value, allow_equal, comparator, last_doc)? else {
         return Ok(-1);
     };
     if !last_doc || found.done {
@@ -300,7 +299,7 @@ fn next_doc(
         .value
         .as_ref()
         .expect("INVARIANT: findNextValue only returns a state with a value");
-    let doc = last_doc_of(point_tree, found_value, bytes_per_dim)?;
+    let doc = last_doc_of(point_tree, found_value, comparator)?;
     if doc == -1 {
         // `found.doc_id` was actually the last doc ID.
         Ok(found.doc_id)
@@ -313,7 +312,11 @@ fn next_doc(
 /// `lastDoc(PointTree, byte[], ByteArrayComparator)`, which effectively runs a
 /// binary search, made verbose by the point-tree API not allowing a move back
 /// to a previous sibling.
-fn last_doc_of(point_tree: &mut dyn PointTree, value: &[u8], bytes_per_dim: usize) -> Result<i32> {
+fn last_doc_of(
+    point_tree: &mut dyn PointTree,
+    value: &[u8],
+    comparator: &ByteArrayComparator,
+) -> Result<i32> {
     // A stack of nodes that may contain the value, used to search for the last
     // leaf node holding it.
     let mut stack: Vec<Box<dyn PointTree>> = Vec::new();
@@ -325,7 +328,7 @@ fn last_doc_of(point_tree: &mut dyn PointTree, value: &[u8], bytes_per_dim: usiz
                 break 'outer;
             }
         }
-        if compare_unsigned(point_tree.min_packed_value()?, 0, value, 0, bytes_per_dim) > 0 {
+        if comparator.compare(point_tree.min_packed_value()?, 0, value, 0) > 0 {
             // This node does not hold the value, so the next nodes cannot
             // either.
             break;
@@ -339,7 +342,7 @@ fn last_doc_of(point_tree: &mut dyn PointTree, value: &[u8], bytes_per_dim: usiz
                 let mut visitor = LastDocVisitor {
                     last_doc: &mut last_doc,
                     value,
-                    bytes_per_dim,
+                    comparator,
                 };
                 next.visit_doc_values(&mut visitor)?;
             }
@@ -348,7 +351,7 @@ fn last_doc_of(point_tree: &mut dyn PointTree, value: &[u8], bytes_per_dim: usiz
             }
         } else {
             loop {
-                if compare_unsigned(next.min_packed_value()?, 0, value, 0, bytes_per_dim) > 0 {
+                if comparator.compare(next.min_packed_value()?, 0, value, 0) > 0 {
                     // This node does not hold the value, so the next nodes
                     // cannot either.
                     break;
@@ -449,15 +452,13 @@ impl IndexSortSortedNumericDocValuesRangeQuery {
         query_lower_point: &[u8],
         query_upper_point: &[u8],
     ) -> Result<bool> {
-        let bytes_per_dim = points.bytes_per_dimension()? as usize;
+        let comparator = ArrayUtil::get_unsigned_comparator(points.bytes_per_dimension()? as usize);
         let (Some(min), Some(max)) = (points.min_packed_value()?, points.max_packed_value()?)
         else {
             return Ok(true);
         };
-        Ok(
-            compare_unsigned(&min, 0, query_upper_point, 0, bytes_per_dim) > 0
-                || compare_unsigned(&max, 0, query_lower_point, 0, bytes_per_dim) < 0,
-        )
+        Ok(comparator.compare(&min, 0, query_upper_point, 0) > 0
+            || comparator.compare(&max, 0, query_lower_point, 0) < 0)
     }
 
     /// Equivalent to the private `matchAll(PointValues, byte[], byte[])`.
@@ -466,15 +467,13 @@ impl IndexSortSortedNumericDocValuesRangeQuery {
         query_lower_point: &[u8],
         query_upper_point: &[u8],
     ) -> Result<bool> {
-        let bytes_per_dim = points.bytes_per_dimension()? as usize;
+        let comparator = ArrayUtil::get_unsigned_comparator(points.bytes_per_dimension()? as usize);
         let (Some(min), Some(max)) = (points.min_packed_value()?, points.max_packed_value()?)
         else {
             return Ok(false);
         };
-        Ok(
-            compare_unsigned(&min, 0, query_lower_point, 0, bytes_per_dim) >= 0
-                && compare_unsigned(&max, 0, query_upper_point, 0, bytes_per_dim) <= 0,
-        )
+        Ok(comparator.compare(&min, 0, query_lower_point, 0) >= 0
+            && comparator.compare(&max, 0, query_upper_point, 0) <= 0)
     }
 
     /// Returns the single-valued numeric doc values of the field, when the
@@ -570,27 +569,18 @@ impl IndexSortSortedNumericDocValuesRangeQuery {
             }));
         }
 
-        let bytes_per_dim = bytes_per_dim as usize;
+        // `ArrayUtil.getUnsignedComparator(points.getBytesPerDimension())`
+        // (`IndexSortSortedNumericDocValuesRangeQuery.java:472-473`).
+        let comparator = ArrayUtil::get_unsigned_comparator(bytes_per_dim as usize);
+        let comparator = &comparator;
         let min_doc_id;
         let max_doc_id;
         if reverse {
             let mut tree = points.point_tree()?;
-            min_doc_id = next_doc(
-                tree.as_mut(),
-                &query_upper_point,
-                false,
-                bytes_per_dim,
-                true,
-            )? + 1;
+            min_doc_id = next_doc(tree.as_mut(), &query_upper_point, false, comparator, true)? + 1;
         } else {
             let mut tree = points.point_tree()?;
-            min_doc_id = next_doc(
-                tree.as_mut(),
-                &query_lower_point,
-                true,
-                bytes_per_dim,
-                false,
-            )?;
+            min_doc_id = next_doc(tree.as_mut(), &query_lower_point, true, comparator, false)?;
             if min_doc_id == -1 {
                 // No matches.
                 return Ok(Some(IteratorAndCount::empty()));
@@ -598,21 +588,14 @@ impl IndexSortSortedNumericDocValuesRangeQuery {
         }
         if reverse {
             let mut tree = points.point_tree()?;
-            max_doc_id =
-                next_doc(tree.as_mut(), &query_lower_point, true, bytes_per_dim, true)? + 1;
+            max_doc_id = next_doc(tree.as_mut(), &query_lower_point, true, comparator, true)? + 1;
             if max_doc_id == 0 {
                 // No matches.
                 return Ok(Some(IteratorAndCount::empty()));
             }
         } else {
             let mut tree = points.point_tree()?;
-            let found = next_doc(
-                tree.as_mut(),
-                &query_upper_point,
-                false,
-                bytes_per_dim,
-                false,
-            )?;
+            let found = next_doc(tree.as_mut(), &query_upper_point, false, comparator, false)?;
             max_doc_id = if found == -1 { reader.max_doc() } else { found };
         }
         if min_doc_id == max_doc_id {

@@ -6,7 +6,6 @@
 use crate::error::{LuceneError, Result};
 use crate::index::DocAndFloatFeatureBuffer;
 use crate::search::bit_set_doc_id_stream::BitSetDocIdStream;
-use crate::search::bit_set_util;
 use crate::search::bulk_scorer::BulkScorer;
 use crate::search::collection_terminated_exception::CollectionResult;
 use crate::search::collector::LeafCollector;
@@ -265,7 +264,7 @@ impl BooleanScorer {
         if !has_buckets {
             if let Some(accept_docs) = accept_docs {
                 // In this case, live docs have not been applied yet.
-                bit_set_util::apply_mask(accept_docs, &mut self.matching, base);
+                accept_docs.apply_mask(&mut self.matching, base as usize)?;
             }
             let Self {
                 matching, score, ..
@@ -286,7 +285,7 @@ impl BooleanScorer {
             let min_should_match = *min_should_match as i32;
             let bit_array = matching.get_bits();
             for (idx, word) in bit_array.iter().enumerate() {
-                let mut bits = *word;
+                let mut bits = word.load(std::sync::atomic::Ordering::Relaxed);
                 while bits != 0 {
                     let ntz = bits.trailing_zeros() as usize;
                     let index_in_window = (idx << 6) | ntz;

@@ -102,7 +102,7 @@ use rucene::index::{FieldInfo, FieldInfos, IndexOptions, NormValuesWriter, Segme
 use rucene::search::{DocIdSetIterator, NO_MORE_DOCS};
 use rucene::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT};
 use rucene::util::string_helper::StringHelper;
-use rucene::util::{default_info_stream, Version};
+use rucene::util::Version;
 
 /// The two files a norms segment is made of.
 const EXTENSIONS: [&str; 2] = ["nvd", "nvm"];
@@ -231,7 +231,7 @@ fn fixtures() -> Vec<Fixture> {
 fn write_segment(directory: &Arc<dyn Directory>, info: &SegmentInfo, fixture: &Fixture) {
     let infos = field_infos();
     let write_state = SegmentWriteState::new(
-        default_info_stream(),
+        &rucene::util::NoOutputInfoStream,
         Arc::clone(directory),
         info,
         &infos,

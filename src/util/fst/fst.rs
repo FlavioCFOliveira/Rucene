@@ -622,7 +622,7 @@ impl<O: Outputs> FSTMetadata<O> {
             // Serialize the empty-string output.
             let mut ros = ByteBuffersDataOutput::new();
             self.outputs.write_final_output(empty_output, &mut ros)?;
-            let mut empty_output_bytes = ros.to_array_copy();
+            let mut empty_output_bytes = ros.to_array_copy()?;
             let empty_len = empty_output_bytes.len();
 
             empty_output_bytes.reverse();

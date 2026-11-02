@@ -75,14 +75,6 @@ impl FrozenIntSet {
     pub fn state(&self) -> i32 {
         self.state
     }
-
-    /// Sets the determinized state this set is associated with.
-    ///
-    /// The state takes no part in equality or hashing, exactly as in Lucene, where
-    /// `IntSet.equals` only inspects the values.
-    pub fn set_state(&mut self, state: i32) {
-        self.state = state;
-    }
 }
 
 impl IntSet for FrozenIntSet {

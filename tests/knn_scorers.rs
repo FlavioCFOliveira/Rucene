@@ -379,7 +379,11 @@ fn rucene_exact() -> String {
     writer.close().unwrap();
 
     let (reader, searcher) = searcher_over(&dir);
-    assert_eq!(Arc::clone(&reader).leaves().len(), 2, "two segments");
+    assert_eq!(
+        Arc::clone(&reader).leaves().unwrap().len(),
+        2,
+        "two segments"
+    );
     let mut out = String::new();
     let s = &mut out;
     search(
@@ -451,7 +455,7 @@ fn rucene_exact() -> String {
     );
     search(s, &searcher, "b3e", byte_query("b", &[0, 1], 3, even()), 3);
     search(s, &searcher, "bd3o", byte_query("bd", &[1, 2], 3, odd()), 3);
-    for leaf in Arc::clone(&reader).leaves() {
+    for leaf in Arc::clone(&reader).leaves().unwrap() {
         let ord = leaf.ord();
         let leaf = leaf.leaf_reader();
         dump_float(s, &leaf, ord, "f", &[0.0, 1.0]);
@@ -533,7 +537,7 @@ fn a_field_with_no_vector_in_the_segment_has_no_scorer_as_in_lucene() {
     writer.close().unwrap();
 
     let (reader, searcher) = searcher_over(&dir);
-    let leaves = Arc::clone(&reader).leaves();
+    let leaves = Arc::clone(&reader).leaves().unwrap();
     let leaf = leaves[0].leaf_reader();
     let mut out = format!(
         "leaves {} maxDoc {} hasE {}\n",
@@ -648,7 +652,7 @@ fn quantized_format_searches_and_scorers_match_lucene() {
         float_query("qd", &[5.0, 1.0, 1.0], 4, rank(8, 11)),
         4,
     );
-    for leaf in Arc::clone(&reader).leaves() {
+    for leaf in Arc::clone(&reader).leaves().unwrap() {
         let ord = leaf.ord();
         let leaf = leaf.leaf_reader();
         dump_float(s, &leaf, ord, "q", &target);
@@ -705,14 +709,18 @@ fn sparse_index(
     writer.commit().unwrap();
     writer.close().unwrap();
     let reader = directory_reader::open(dir).unwrap();
-    assert_eq!(Arc::clone(&reader).leaves().len(), 1, "one segment");
+    assert_eq!(
+        Arc::clone(&reader).leaves().unwrap().len(),
+        1,
+        "one segment"
+    );
     (tmp, reader)
 }
 
 /// Runs a kNN search for `[0, 0]` over the one leaf of `reader`, honouring the
 /// live documents and, when given, the documents `filter` accepts.
 fn sparse_search(reader: &Arc<dyn DirectoryReader>, filter: Option<(i32, i32)>) -> Vec<i32> {
-    let leaf: Arc<dyn LeafReader> = Arc::clone(reader).leaves()[0].leaf_reader();
+    let leaf: Arc<dyn LeafReader> = Arc::clone(reader).leaves().unwrap()[0].leaf_reader();
     let mut accept_docs: Box<dyn AcceptDocs> = match filter {
         None => Box::new(from_live_docs(leaf.get_live_docs(), leaf.max_doc()).unwrap()),
         Some((lo, hi)) => Box::new(
@@ -885,7 +893,7 @@ fn readers_built_per_search(doc_count: i32) -> (u64, u64, usize) {
     writer.commit().unwrap();
     writer.close().unwrap();
     let reader = directory_reader::open(dir).unwrap();
-    let leaf: Arc<dyn LeafReader> = Arc::clone(&reader).leaves()[0].leaf_reader();
+    let leaf: Arc<dyn LeafReader> = Arc::clone(&reader).leaves().unwrap()[0].leaf_reader();
     let max_doc = leaf.max_doc();
     // 32 documents inside the first run that has vectors.
     let (lo, hi) = (64, 96);

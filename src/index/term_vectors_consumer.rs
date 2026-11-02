@@ -587,7 +587,11 @@ impl TermVectorsConsumerPerField {
         self.do_vectors = false;
 
         let num_postings = self.base.num_terms();
-        let term_ids = self.base.sorted_term_ids(term_pool);
+        // `termsHashPerField.sortTerms(); final int[] termIDs =
+        // getSortedTermIDs();` (`TermVectorsConsumerPerField.java:98-100`),
+        // of which the first `numPostings` are read.
+        self.base.sort_terms(term_pool);
+        let term_ids = self.base.get_sorted_term_ids()[..num_postings as usize].to_vec();
 
         writer.start_field(
             &self.field_info,

@@ -15,6 +15,9 @@ use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
 use crate::index::{DocValuesType, IndexOptions};
+use crate::internal::hppc::IntObjectHashMap;
+use crate::util::java_collections::JavaHashMap;
+use crate::util::IOUtils;
 
 use super::doc_values::{
     doc_values_for_name, DocValuesConsumer, DocValuesFormat, DocValuesProducer,
@@ -270,9 +273,9 @@ impl<'a> FieldsWriter<'a> {
             }
         }
         if outcome.is_err() {
-            for consumer in self.to_close.iter_mut() {
-                let _ = consumer.close();
-            }
+            IOUtils::close_while_handling_exception(
+                self.to_close.iter_mut().map(|c| Some(move || c.close())),
+            )?;
         }
         outcome
     }
@@ -303,10 +306,7 @@ impl<'a> FieldsConsumer for FieldsWriter<'a> {
                 .fields_producers
                 .iter()
                 .flatten()
-                .map(|producer| {
-                    let names: Vec<String> = producer.iterator().collect();
-                    Box::new(names.into_iter()) as Box<dyn Iterator<Item = String>>
-                })
+                .map(|producer| producer.iterator())
                 .collect::<Vec<_>>(),
         );
         let groups = self.build_groups(indexed_field_names)?;
@@ -322,13 +322,7 @@ impl<'a> FieldsConsumer for FieldsWriter<'a> {
     /// (`PerFieldPostingsFormat.java:264-267`): every consumer is closed, and
     /// the first error is raised once all of them have been.
     fn close(&mut self) -> Result<()> {
-        let mut first_error = None;
-        for consumer in self.to_close.iter_mut() {
-            if let Err(error) = consumer.close() {
-                first_error.get_or_insert(error);
-            }
-        }
-        first_error.map_or(Ok(()), Err)
+        IOUtils::close(self.to_close.iter_mut().map(|c| Some(move || c.close())))
     }
 }
 
@@ -398,13 +392,17 @@ impl FieldsConsumer for NoOpFieldsConsumer {
 }
 
 struct FieldsReader {
-    formats: HashMap<String, Box<dyn FieldsProducer>>,
+    /// Java's `Map<String, FieldsProducer> formats = new HashMap<>()`
+    /// (`PerFieldPostingsFormat.java:273`), keyed by segment suffix: its
+    /// iteration order is the order the producers are closed in, which decides
+    /// whose failure surfaces when several fail.
+    formats: JavaHashMap<Box<dyn FieldsProducer>>,
     fields: BTreeMap<String, String>,
 }
 
 impl FieldsReader {
     fn new(read_state: &SegmentReadState) -> Result<Self> {
-        let mut formats: HashMap<String, Box<dyn FieldsProducer>> = HashMap::new();
+        let mut formats: JavaHashMap<Box<dyn FieldsProducer>> = JavaHashMap::new();
         let mut fields: BTreeMap<String, String> = BTreeMap::new();
 
         let result = (|| -> Result<()> {
@@ -449,9 +447,11 @@ impl FieldsReader {
         })();
 
         if let Err(e) = result {
-            for producer in formats.values_mut() {
-                let _ = producer.close();
-            }
+            // `IOUtils.closeWhileHandlingException(formats.values())`
+            // (`PerFieldPostingsFormat.java:325-329`).
+            IOUtils::close_while_handling_exception(
+                formats.iter_mut().map(|(_, p)| Some(move || p.close())),
+            )?;
             return Err(e);
         }
 
@@ -512,9 +512,10 @@ impl FieldsProducer for FieldsReader {
     /// of the producer it used. Fields are keyed by segment suffix here, so
     /// keeping the field-to-suffix map is that same remapping.
     fn get_merge_instance(&self) -> Result<Box<dyn FieldsProducer>> {
-        let mut formats: HashMap<String, Box<dyn FieldsProducer>> =
-            HashMap::with_capacity(self.formats.len());
-        for (suffix, producer) in &self.formats {
+        // `formats.put(ent.getKey(), ...)` over `other.formats.entrySet()`,
+        // into a new `HashMap` (`PerFieldPostingsFormat.java:279-284`).
+        let mut formats: JavaHashMap<Box<dyn FieldsProducer>> = JavaHashMap::new();
+        for (suffix, producer) in self.formats.iter() {
             formats.insert(suffix.clone(), producer.get_merge_instance()?);
         }
         Ok(Box::new(FieldsReader {
@@ -523,11 +524,14 @@ impl FieldsProducer for FieldsReader {
         }))
     }
 
+    /// Equivalent to `PerFieldPostingsFormat.FieldsReader.close()`
+    /// (`PerFieldPostingsFormat.java:350-353`): `IOUtils.close(formats.values())`.
     fn close(&mut self) -> Result<()> {
-        for producer in self.formats.values_mut() {
-            producer.close()?;
-        }
-        Ok(())
+        IOUtils::close(
+            self.formats
+                .iter_mut()
+                .map(|(_, p)| Some(move || p.close())),
+        )
     }
 }
 
@@ -854,22 +858,29 @@ impl<'a> DocValuesConsumer for DvFieldsWriter<'a> {
         Ok(())
     }
 
+    /// Equivalent to `PerFieldDocValuesFormat.FieldsWriter.close()`
+    /// (`PerFieldDocValuesFormat.java:239-243`): `IOUtils.close(formats.values())`.
     fn close(&mut self) -> Result<()> {
-        for entry in self.formats.values_mut() {
-            entry.consumer.close()?;
-        }
-        Ok(())
+        IOUtils::close(
+            self.formats
+                .values_mut()
+                .map(|entry| Some(move || entry.consumer.close())),
+        )
     }
 }
 
 struct DvFieldsReader {
-    formats: HashMap<String, Box<dyn DocValuesProducer>>,
+    /// Java's `Map<String, DocValuesProducer> formats = new HashMap<>()`
+    /// (`PerFieldDocValuesFormat.java:261`), keyed by segment suffix: its
+    /// iteration order is the order the producers are closed in, which decides
+    /// whose failure surfaces when several fail.
+    formats: JavaHashMap<Box<dyn DocValuesProducer>>,
     fields: HashMap<i32, String>,
 }
 
 impl DvFieldsReader {
     fn new(read_state: &SegmentReadState) -> Result<Self> {
-        let mut formats: HashMap<String, Box<dyn DocValuesProducer>> = HashMap::new();
+        let mut formats: JavaHashMap<Box<dyn DocValuesProducer>> = JavaHashMap::new();
         let mut fields: HashMap<i32, String> = HashMap::new();
 
         let result = (|| -> Result<()> {
@@ -917,9 +928,11 @@ impl DvFieldsReader {
         })();
 
         if let Err(e) = result {
-            for producer in formats.values_mut() {
-                let _ = producer.close();
-            }
+            // `IOUtils.closeWhileHandlingException(formats.values())`
+            // (`PerFieldDocValuesFormat.java:311-315`).
+            IOUtils::close_while_handling_exception(
+                formats.iter_mut().map(|(_, p)| Some(move || p.close())),
+            )?;
             return Err(e);
         }
 
@@ -1037,9 +1050,10 @@ impl DocValuesProducer for DvFieldsReader {
     /// of the producer it used. Fields are keyed by segment suffix here, so
     /// keeping the field-to-suffix map is that same remapping.
     fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
-        let mut formats: HashMap<String, Box<dyn DocValuesProducer>> =
-            HashMap::with_capacity(self.formats.len());
-        for (suffix, producer) in &self.formats {
+        // `formats.put(ent.getKey(), ...)` over `other.formats.entrySet()`,
+        // into a new `HashMap` (`PerFieldDocValuesFormat.java:265-271`).
+        let mut formats: JavaHashMap<Box<dyn DocValuesProducer>> = JavaHashMap::new();
+        for (suffix, producer) in self.formats.iter() {
             formats.insert(suffix.clone(), producer.get_merge_instance()?);
         }
         Ok(Box::new(DvFieldsReader {
@@ -1048,11 +1062,14 @@ impl DocValuesProducer for DvFieldsReader {
         }))
     }
 
+    /// Equivalent to `PerFieldDocValuesFormat.FieldsReader.close()`
+    /// (`PerFieldDocValuesFormat.java:354-357`): `IOUtils.close(formats.values())`.
     fn close(&mut self) -> Result<()> {
-        for producer in self.formats.values_mut() {
-            producer.close()?;
-        }
-        Ok(())
+        IOUtils::close(
+            self.formats
+                .iter_mut()
+                .map(|(_, p)| Some(move || p.close())),
+        )
     }
 }
 
@@ -1250,11 +1267,14 @@ impl KnnVectorsWriter for KnnFieldsWriter {
             .merge_one_field(field_info, merge_state)
     }
 
+    /// Equivalent to `PerFieldKnnVectorsFormat.FieldsWriter.close()`
+    /// (`PerFieldKnnVectorsFormat.java:137-140`): `IOUtils.close(formats.values())`.
     fn close(&mut self) -> Result<()> {
-        for entry in self.formats.values_mut() {
-            entry.writer.close()?;
-        }
-        Ok(())
+        IOUtils::close(
+            self.formats
+                .values_mut()
+                .map(|entry| Some(move || entry.writer.close())),
+        )
     }
 
     /// Equivalent to `PerFieldKnnVectorsFormat.FieldsWriter.ramBytesUsed()`
@@ -1277,8 +1297,16 @@ impl KnnVectorsWriter for KnnFieldsWriter {
 /// `instanceof` (`Lucene104ScalarQuantizedVectorsWriter.java:389`), which
 /// [`KnnVectorsReader::as_any`] stands for.
 pub struct KnnFieldsReader {
-    formats: HashMap<String, Box<dyn KnnVectorsReader>>,
-    fields: HashMap<i32, String>,
+    /// The readers, one per segment suffix, as Java's constructor collects
+    /// them in a local `Map<String, KnnVectorsReader> formats = new
+    /// HashMap<>()` (`PerFieldKnnVectorsFormat.java:209`), whose iteration
+    /// order is the order a failed constructor closes them in.
+    formats: JavaHashMap<Box<dyn KnnVectorsReader>>,
+    /// Field number to the suffix of its reader: Java's
+    /// `IntObjectHashMap<KnnVectorsReader> fields`
+    /// (`PerFieldKnnVectorsFormat.java:195`), whose iteration order is the
+    /// order `close()` closes the readers in.
+    fields: IntObjectHashMap<String>,
     /// Field *name* to segment suffix, so that a field can be resolved without
     /// its `FieldInfo`. Java's `FieldsReader` keeps the whole `FieldInfos` and
     /// looks the number up through it (`PerFieldKnnVectorsFormat.java:269-274`);
@@ -1291,9 +1319,26 @@ pub struct KnnFieldsReader {
 }
 
 impl KnnFieldsReader {
-    fn new(read_state: &SegmentReadState) -> Result<Self> {
-        let mut formats: HashMap<String, Box<dyn KnnVectorsReader>> = HashMap::new();
-        let mut fields: HashMap<i32, String> = HashMap::new();
+    /// Creates a reader over a segment, opening the reader of every
+    /// KNN-vectors format its vector fields name.
+    ///
+    /// Equivalent to the public
+    /// `PerFieldKnnVectorsFormat.FieldsReader(SegmentReadState)` constructor
+    /// (`PerFieldKnnVectorsFormat.java:205-241`).
+    ///
+    /// ```
+    /// // Public, as Java's constructor is.
+    /// let _new = rucene::codecs::per_field::KnnFieldsReader::new;
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Propagates the error of a delegate reader, after closing the readers
+    /// already opened, and returns [`LuceneError::IllegalState`] when a vector
+    /// field lacks its format or suffix attribute or names an unknown format.
+    pub fn new(read_state: &SegmentReadState) -> Result<Self> {
+        let mut formats: JavaHashMap<Box<dyn KnnVectorsReader>> = JavaHashMap::new();
+        let mut fields: IntObjectHashMap<String> = IntObjectHashMap::new();
         let mut field_names: HashMap<String, String> = HashMap::new();
         let mut names: HashMap<i32, String> = HashMap::new();
 
@@ -1337,16 +1382,18 @@ impl KnnFieldsReader {
                     }
                     field_names.insert(fi.name.clone(), segment_suffix.clone());
                     names.insert(fi.number, fi.name.clone());
-                    fields.insert(fi.number, segment_suffix);
+                    fields.put(fi.number, segment_suffix);
                 }
             }
             Ok(())
         })();
 
         if let Err(e) = result {
-            for reader in formats.values_mut() {
-                let _ = reader.close();
-            }
+            // `IOUtils.closeWhileHandlingException(formats.values())`
+            // (`PerFieldKnnVectorsFormat.java:236-240`).
+            IOUtils::close_while_handling_exception(
+                formats.iter_mut().map(|(_, r)| Some(move || r.close())),
+            )?;
             return Err(e);
         }
 
@@ -1359,7 +1406,7 @@ impl KnnFieldsReader {
     }
 
     fn reader_for(&self, field: &FieldInfo) -> Result<&(dyn KnnVectorsReader + '_)> {
-        let suffix = self.fields.get(&field.number).ok_or_else(|| {
+        let suffix = self.fields.get(field.number).ok_or_else(|| {
             LuceneError::IllegalArgument(format!(
                 "field \"{}\" has no KNN-vectors reader",
                 field.name
@@ -1381,14 +1428,15 @@ impl KnnFieldsReader {
         reader: Box<dyn KnnVectorsReader>,
     ) -> Self {
         let suffix = "Test_0".to_string();
-        let mut formats = HashMap::new();
+        let mut formats = JavaHashMap::new();
         formats.insert(suffix.clone(), reader);
+        let mut numbers = IntObjectHashMap::new();
+        for &(number, _) in fields {
+            numbers.put(number, suffix.clone());
+        }
         Self {
             formats,
-            fields: fields
-                .iter()
-                .map(|&(number, _)| (number, suffix.clone()))
-                .collect(),
+            fields: numbers,
             field_names: fields
                 .iter()
                 .map(|&(_, name)| (name.to_string(), suffix.clone()))
@@ -1498,12 +1546,11 @@ impl KnnVectorsReader for KnnFieldsReader {
     /// format get two instances; each field is therefore its own entry here,
     /// keyed by the field's name.
     fn get_merge_instance(&self) -> Result<Box<dyn KnnVectorsReader>> {
-        let mut formats: HashMap<String, Box<dyn KnnVectorsReader>> =
-            HashMap::with_capacity(self.fields.len());
-        let mut fields: HashMap<i32, String> = HashMap::with_capacity(self.fields.len());
-        let mut field_names: HashMap<String, String> = HashMap::with_capacity(self.fields.len());
+        let mut formats: JavaHashMap<Box<dyn KnnVectorsReader>> = JavaHashMap::new();
+        let mut fields: IntObjectHashMap<String> = IntObjectHashMap::new();
+        let mut field_names: HashMap<String, String> = HashMap::with_capacity(self.names.len());
         for (&number, name) in &self.names {
-            let Some(suffix) = self.fields.get(&number) else {
+            let Some(suffix) = self.fields.get(number) else {
                 continue;
             };
             let reader = self.formats.get(suffix).ok_or_else(|| {
@@ -1512,7 +1559,7 @@ impl KnnVectorsReader for KnnFieldsReader {
                 ))
             })?;
             formats.insert(name.clone(), reader.get_merge_instance()?);
-            fields.insert(number, name.clone());
+            fields.put(number, name.clone());
             field_names.insert(name.clone(), name.clone());
         }
         Ok(Box::new(KnnFieldsReader {
@@ -1524,7 +1571,7 @@ impl KnnVectorsReader for KnnFieldsReader {
     }
 
     fn finish_merge(&mut self) -> Result<()> {
-        for reader in self.formats.values_mut() {
+        for (_, reader) in self.formats.iter_mut() {
             reader.finish_merge()?;
         }
         Ok(())
@@ -1536,11 +1583,27 @@ impl KnnVectorsReader for KnnFieldsReader {
             .unwrap_or_default()
     }
 
+    /// Equivalent to `PerFieldKnnVectorsFormat.FieldsReader.close()`
+    /// (`PerFieldKnnVectorsFormat.java:335-341`): `IOUtils.close(readers)`
+    /// over `fields.values()`, one reader per field, so a reader several
+    /// fields share is closed once for each of them.
     fn close(&mut self) -> Result<()> {
-        for reader in self.formats.values_mut() {
-            reader.close()?;
-        }
-        Ok(())
+        // `for (ObjectCursor<KnnVectorsReader> cursor : fields.values())
+        // readers.add(cursor.value);`, in the map's own iteration order.
+        let suffixes: Vec<&String> = self
+            .fields
+            .values()
+            .into_iter()
+            .map(|cursor| cursor.value)
+            .collect();
+        let formats = std::cell::RefCell::new(&mut self.formats);
+        IOUtils::close(suffixes.into_iter().map(|suffix| {
+            let formats = &formats;
+            Some(move || match formats.borrow_mut().get_mut(suffix) {
+                Some(reader) => reader.close(),
+                None => Ok(()),
+            })
+        }))
     }
 }
 
@@ -1681,11 +1744,10 @@ mod tests {
     fn write_state() -> SegmentWriteState<'static> {
         use crate::codecs::stub::BufferedUpdates;
         use crate::store::DEFAULT_IO_CONTEXT;
-        use crate::util::default_info_stream;
 
         let dir: Arc<dyn crate::store::Directory> =
             Arc::new(crate::store::ByteBuffersDirectory::default());
-        let info_stream: &'static dyn crate::util::InfoStream = default_info_stream();
+        let info_stream: &'static dyn crate::util::InfoStream = &crate::util::NoOutputInfoStream;
         let segment_info: &'static SegmentInfo = Box::leak(Box::new(
             crate::codecs::tests::test_segment_info("test", 10),
         ));
@@ -2121,5 +2183,513 @@ mod tests {
         let names: Vec<String> = producer.iterator().collect();
         assert_eq!(names, vec!["title".to_string()]);
         assert_eq!(producer.size(), 1);
+    }
+}
+
+/// The `IOUtils` close family at the per-field formats' call sites (#308).
+#[cfg(test)]
+mod close_family_tests {
+    use super::*;
+    use crate::codecs::postings::{Fields, Terms};
+    use std::sync::Mutex;
+
+    /// A sub-format reader or writer that records its `close()` and fails it
+    /// when asked to.
+    #[derive(Debug, Clone)]
+    struct Closing {
+        name: &'static str,
+        fail: bool,
+        log: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl Closing {
+        fn record(&self) -> Result<()> {
+            self.log.lock().unwrap().push(self.name);
+            if self.fail {
+                return Err(LuceneError::Io(std::io::Error::other(self.name)));
+            }
+            Ok(())
+        }
+    }
+
+    impl Fields for Closing {
+        fn size(&self) -> i32 {
+            0
+        }
+        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+            Ok(None)
+        }
+        fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+            Box::new(std::iter::empty())
+        }
+    }
+
+    impl FieldsProducer for Closing {
+        fn check_integrity(&self) -> Result<()> {
+            Ok(())
+        }
+        fn get_merge_instance(&self) -> Result<Box<dyn FieldsProducer>> {
+            Ok(Box::new(self.clone()))
+        }
+        fn close(&mut self) -> Result<()> {
+            self.record()
+        }
+    }
+
+    impl DocValuesProducer for Closing {
+        fn get_numeric(
+            &self,
+            _field: &FieldInfo,
+        ) -> Result<Option<Box<dyn crate::index::NumericDocValues>>> {
+            Ok(None)
+        }
+        fn get_binary(
+            &self,
+            _field: &FieldInfo,
+        ) -> Result<Option<Box<dyn crate::index::BinaryDocValues>>> {
+            Ok(None)
+        }
+        fn get_sorted(
+            &self,
+            _field: &FieldInfo,
+        ) -> Result<Option<Box<dyn crate::index::SortedDocValues>>> {
+            Ok(None)
+        }
+        fn get_sorted_set(
+            &self,
+            _field: &FieldInfo,
+        ) -> Result<Option<Box<dyn crate::index::SortedSetDocValues>>> {
+            Ok(None)
+        }
+        fn get_sorted_numeric(
+            &self,
+            _field: &FieldInfo,
+        ) -> Result<Option<Box<dyn crate::index::SortedNumericDocValues>>> {
+            Ok(None)
+        }
+        fn get_skipper(
+            &self,
+            _field: &FieldInfo,
+        ) -> Result<Option<Box<dyn crate::index::DocValuesSkipper>>> {
+            Ok(None)
+        }
+        fn check_integrity(&self) -> Result<()> {
+            Ok(())
+        }
+        fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
+            Ok(Box::new(self.clone()))
+        }
+        fn close(&mut self) -> Result<()> {
+            self.record()
+        }
+    }
+
+    impl DocValuesConsumer for Closing {
+        fn add_numeric_field(&mut self, _: &FieldInfo, _: &dyn DocValuesProducer) -> Result<()> {
+            Ok(())
+        }
+        fn add_binary_field(&mut self, _: &FieldInfo, _: &dyn DocValuesProducer) -> Result<()> {
+            Ok(())
+        }
+        fn add_sorted_field(&mut self, _: &FieldInfo, _: &dyn DocValuesProducer) -> Result<()> {
+            Ok(())
+        }
+        fn add_sorted_numeric_field(
+            &mut self,
+            _: &FieldInfo,
+            _: &dyn DocValuesProducer,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn add_sorted_set_field(&mut self, _: &FieldInfo, _: &dyn DocValuesProducer) -> Result<()> {
+            Ok(())
+        }
+        fn close(&mut self) -> Result<()> {
+            self.record()
+        }
+    }
+
+    impl KnnVectorsReader for Closing {
+        fn check_integrity(&self) -> Result<()> {
+            Ok(())
+        }
+        fn get_float_vector_values(
+            &self,
+            _field: &str,
+        ) -> Result<Option<Box<dyn crate::index::FloatVectorValues>>> {
+            Ok(None)
+        }
+        fn get_byte_vector_values(
+            &self,
+            _field: &str,
+        ) -> Result<Option<Box<dyn crate::index::ByteVectorValues>>> {
+            Ok(None)
+        }
+        fn search(
+            &self,
+            _field: &str,
+            _target: &[f32],
+            _knn_collector: &mut dyn crate::search::KnnCollector,
+            _accept_docs: &mut dyn crate::search::AcceptDocs,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn search_byte(
+            &self,
+            _field: &str,
+            _target: &[u8],
+            _knn_collector: &mut dyn crate::search::KnnCollector,
+            _accept_docs: &mut dyn crate::search::AcceptDocs,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn get_merge_instance(&self) -> Result<Box<dyn KnnVectorsReader>> {
+            Ok(Box::new(self.clone()))
+        }
+        fn close(&mut self) -> Result<()> {
+            self.record()
+        }
+    }
+
+    impl KnnVectorsWriter for Closing {
+        fn add_field(
+            &mut self,
+            _field_info: &FieldInfo,
+        ) -> Result<super::super::knn_vectors::FieldVectorWriter> {
+            Err(LuceneError::UnsupportedOperation("test".to_string()))
+        }
+        fn flush(
+            &mut self,
+            _max_doc: i32,
+            _sort_map: Option<&super::super::knn_vectors::SorterDocMap>,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn finish(&mut self) -> Result<()> {
+            Ok(())
+        }
+        fn close(&mut self) -> Result<()> {
+            self.record()
+        }
+        fn ram_bytes_used(&self) -> i64 {
+            0
+        }
+    }
+
+    fn failing_pair() -> (Closing, Closing, Arc<Mutex<Vec<&'static str>>>) {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let a = Closing {
+            name: "a",
+            fail: true,
+            log: Arc::clone(&log),
+        };
+        let b = Closing {
+            name: "b",
+            fail: true,
+            log: Arc::clone(&log),
+        };
+        (a, b, log)
+    }
+
+    /// A `JavaHashMap` holding `entries`, put in the order given.
+    fn java_map<V, const N: usize>(entries: [(&str, V); N]) -> JavaHashMap<V> {
+        let mut map = JavaHashMap::new();
+        for (key, value) in entries {
+            map.insert(key.to_string(), value);
+        }
+        map
+    }
+
+    /// An hppc `IntObjectHashMap` holding `entries`, put in the order given.
+    fn int_map<const N: usize>(entries: [(i32, &str); N]) -> IntObjectHashMap<String> {
+        let mut map = IntObjectHashMap::new();
+        for (key, value) in entries {
+            map.put(key, value.to_string());
+        }
+        map
+    }
+
+    /// The message of the `IOException` a [`Closing`] raised.
+    fn surfaced(error: LuceneError) -> String {
+        match error {
+            LuceneError::Io(e) => e.to_string(),
+            other => format!("{other:?}"),
+        }
+    }
+
+    /// Eight failing closeables named after the segment suffixes `format_0` to
+    /// `format_7`, in that order — the order Java's per-field readers put them
+    /// into their `formats` map, one per new suffix in field order.
+    fn eight_failing_suffixes(
+        names: &'static [&'static str; 8],
+    ) -> (Vec<(&'static str, Closing)>, Arc<Mutex<Vec<&'static str>>>) {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let closings = names
+            .iter()
+            .map(|&name| {
+                (
+                    name,
+                    Closing {
+                        name,
+                        fail: true,
+                        log: Arc::clone(&log),
+                    },
+                )
+            })
+            .collect();
+        (closings, log)
+    }
+
+    const POSTINGS_SUFFIXES: [&str; 8] = [
+        "Lucene104_0",
+        "Lucene104_1",
+        "Lucene104_2",
+        "Lucene104_3",
+        "Lucene104_4",
+        "Lucene104_5",
+        "Lucene104_6",
+        "Lucene104_7",
+    ];
+
+    const DOC_VALUES_SUFFIXES: [&str; 8] = [
+        "Lucene90_0",
+        "Lucene90_1",
+        "Lucene90_2",
+        "Lucene90_3",
+        "Lucene90_4",
+        "Lucene90_5",
+        "Lucene90_6",
+        "Lucene90_7",
+    ];
+
+    /// rmp #308 (audit L2): `IOUtils.close(formats.values())`
+    /// (`PerFieldPostingsFormat.java:350-353`) walks a `java.util.HashMap`
+    /// keyed by segment suffix, so the producers close in that map's order and
+    /// the first failure in it is the one that surfaces. Oracle
+    /// `scratchpad/fixF/oracle/PerFieldOrderOracle.java`: `closed
+    /// [Lucene104_3, Lucene104_2, Lucene104_1, Lucene104_0, Lucene104_7,
+    /// Lucene104_6, Lucene104_5, Lucene104_4] surfaced Lucene104_3`.
+    #[test]
+    fn postings_reader_close_order_and_first_failure_are_javas() {
+        let (closings, log) = eight_failing_suffixes(&POSTINGS_SUFFIXES);
+        let mut formats = JavaHashMap::new();
+        for (suffix, closing) in closings {
+            formats.insert(
+                suffix.to_string(),
+                Box::new(closing) as Box<dyn FieldsProducer>,
+            );
+        }
+        let mut reader = FieldsReader {
+            formats,
+            fields: BTreeMap::new(),
+        };
+        assert_eq!(surfaced(reader.close().unwrap_err()), "Lucene104_3");
+        assert_eq!(
+            *log.lock().unwrap(),
+            [
+                "Lucene104_3",
+                "Lucene104_2",
+                "Lucene104_1",
+                "Lucene104_0",
+                "Lucene104_7",
+                "Lucene104_6",
+                "Lucene104_5",
+                "Lucene104_4"
+            ]
+        );
+    }
+
+    /// rmp #308 (audit L2): `IOUtils.close(formats.values())`
+    /// (`PerFieldDocValuesFormat.java:354-357`) over the suffix-keyed
+    /// `java.util.HashMap`. Oracle
+    /// `scratchpad/fixF/oracle/PerFieldOrderOracle.java`: `closed [Lucene90_3,
+    /// Lucene90_2, Lucene90_5, Lucene90_4, Lucene90_1, Lucene90_0, Lucene90_7,
+    /// Lucene90_6] surfaced Lucene90_3`.
+    #[test]
+    fn doc_values_reader_close_order_and_first_failure_are_javas() {
+        let (closings, log) = eight_failing_suffixes(&DOC_VALUES_SUFFIXES);
+        let mut formats = JavaHashMap::new();
+        for (suffix, closing) in closings {
+            formats.insert(
+                suffix.to_string(),
+                Box::new(closing) as Box<dyn DocValuesProducer>,
+            );
+        }
+        let mut reader = DvFieldsReader {
+            formats,
+            fields: HashMap::new(),
+        };
+        assert_eq!(surfaced(reader.close().unwrap_err()), "Lucene90_3");
+        assert_eq!(
+            *log.lock().unwrap(),
+            [
+                "Lucene90_3",
+                "Lucene90_2",
+                "Lucene90_5",
+                "Lucene90_4",
+                "Lucene90_1",
+                "Lucene90_0",
+                "Lucene90_7",
+                "Lucene90_6"
+            ]
+        );
+    }
+
+    /// rmp #308 (audit L2): `PerFieldKnnVectorsFormat.FieldsReader.close()`
+    /// collects `fields.values()` of an hppc `IntObjectHashMap`
+    /// (`PerFieldKnnVectorsFormat.java:335-341`), which visits the occupied
+    /// slots from a per-map seed and the empty key `0` last; with fields `0`
+    /// and `1` that is field 1 then field 0 whatever the seed. Oracle
+    /// `scratchpad/fixF/oracle/PerFieldOrderOracle.java`, over 64 fresh maps:
+    /// `[field1, field0] surfaced field1`, the only order seen. Sixty-four
+    /// readers here too, so an order that merely happens to match once cannot
+    /// pass.
+    #[test]
+    fn knn_reader_close_order_and_first_failure_are_javas() {
+        for _ in 0..64 {
+            let log = Arc::new(Mutex::new(Vec::new()));
+            let closing = |name| Closing {
+                name,
+                fail: true,
+                log: Arc::clone(&log),
+            };
+            let mut reader = KnnFieldsReader {
+                formats: java_map([
+                    (
+                        "field0",
+                        Box::new(closing("field0")) as Box<dyn KnnVectorsReader>,
+                    ),
+                    (
+                        "field1",
+                        Box::new(closing("field1")) as Box<dyn KnnVectorsReader>,
+                    ),
+                ]),
+                fields: int_map([(0, "field0"), (1, "field1")]),
+                field_names: HashMap::new(),
+                names: HashMap::new(),
+            };
+            assert_eq!(surfaced(reader.close().unwrap_err()), "field1");
+            assert_eq!(*log.lock().unwrap(), ["field1", "field0"]);
+        }
+    }
+
+    fn sorted(log: &Arc<Mutex<Vec<&'static str>>>) -> Vec<&'static str> {
+        let mut closed = log.lock().unwrap().clone();
+        closed.sort_unstable();
+        closed
+    }
+
+    /// `PerFieldPostingsFormat.FieldsReader.close()` is
+    /// `IOUtils.close(formats.values())` (`PerFieldPostingsFormat.java:350-353`):
+    /// one failing producer does not keep the others open.
+    #[test]
+    fn postings_reader_close_closes_every_producer() {
+        let (a, b, log) = failing_pair();
+        let mut reader = FieldsReader {
+            formats: java_map([
+                ("a", Box::new(a) as Box<dyn FieldsProducer>),
+                ("b", Box::new(b) as Box<dyn FieldsProducer>),
+            ]),
+            fields: BTreeMap::new(),
+        };
+        reader.close().unwrap_err();
+        assert_eq!(sorted(&log), ["a", "b"]);
+    }
+
+    /// `PerFieldDocValuesFormat.FieldsReader.close()` is
+    /// `IOUtils.close(formats.values())` (`PerFieldDocValuesFormat.java:354-357`).
+    #[test]
+    fn doc_values_reader_close_closes_every_producer() {
+        let (a, b, log) = failing_pair();
+        let mut reader = DvFieldsReader {
+            formats: java_map([
+                ("a", Box::new(a) as Box<dyn DocValuesProducer>),
+                ("b", Box::new(b) as Box<dyn DocValuesProducer>),
+            ]),
+            fields: HashMap::new(),
+        };
+        reader.close().unwrap_err();
+        assert_eq!(sorted(&log), ["a", "b"]);
+    }
+
+    /// `PerFieldDocValuesFormat.FieldsWriter.close()` is
+    /// `IOUtils.close(formats.values())` (`PerFieldDocValuesFormat.java:239-243`).
+    #[test]
+    fn doc_values_writer_close_closes_every_consumer() {
+        let (a, b, log) = failing_pair();
+        let dir: Arc<dyn crate::store::Directory> =
+            Arc::new(crate::store::ByteBuffersDirectory::default());
+        let info = crate::codecs::tests::test_segment_info("_0", 1);
+        let fis = crate::index::FieldInfos::default();
+        let entry = |c: Closing| ConsumerAndSuffix {
+            suffix: 0,
+            consumer: Box::new(c),
+            _phantom: std::marker::PhantomData,
+        };
+        let mut writer = DvFieldsWriter {
+            segment_write_state: crate::codecs::tests::write_state(&dir, &info, &fis),
+            resolver: Arc::new(|_: &str| -> Arc<dyn DocValuesFormat> { unreachable!() }),
+            formats: HashMap::from([("a".to_string(), entry(a)), ("b".to_string(), entry(b))]),
+            suffixes: HashMap::new(),
+        };
+        writer.close().unwrap_err();
+        assert_eq!(sorted(&log), ["a", "b"]);
+    }
+
+    /// `PerFieldKnnVectorsFormat.FieldsWriter.close()` is
+    /// `IOUtils.close(formats.values())` (`PerFieldKnnVectorsFormat.java:137-140`).
+    #[test]
+    fn knn_writer_close_closes_every_writer() {
+        let (a, b, log) = failing_pair();
+        let dir: Arc<dyn crate::store::Directory> =
+            Arc::new(crate::store::ByteBuffersDirectory::default());
+        let info = crate::codecs::tests::test_segment_info("_0", 1);
+        let entry = |c: Closing| WriterAndSuffix {
+            suffix: 0,
+            writer: Box::new(c),
+        };
+        let mut writer = KnnFieldsWriter {
+            segment_write_state: crate::codecs::tests::owned_write_state(&dir, &info),
+            resolver: Arc::new(|_: &str| -> Arc<dyn KnnVectorsFormat> { unreachable!() }),
+            formats: HashMap::from([("a".to_string(), entry(a)), ("b".to_string(), entry(b))]),
+            suffixes: HashMap::new(),
+        };
+        writer.close().unwrap_err();
+        assert_eq!(sorted(&log), ["a", "b"]);
+    }
+
+    /// `PerFieldKnnVectorsFormat.FieldsReader.close()` closes
+    /// `fields.values()`, one reader per field
+    /// (`PerFieldKnnVectorsFormat.java:335-341`): a reader two fields share is
+    /// closed twice, and a failing reader does not keep the others open.
+    #[test]
+    fn knn_reader_close_closes_one_reader_per_field() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let shared = Closing {
+            name: "shared",
+            fail: false,
+            log: Arc::clone(&log),
+        };
+        let mut reader = KnnFieldsReader {
+            formats: java_map([("s", Box::new(shared) as Box<dyn KnnVectorsReader>)]),
+            fields: int_map([(0, "s"), (1, "s")]),
+            field_names: HashMap::new(),
+            names: HashMap::new(),
+        };
+        reader.close().unwrap();
+        assert_eq!(sorted(&log), ["shared", "shared"]);
+
+        let (a, b, log) = failing_pair();
+        let mut reader = KnnFieldsReader {
+            formats: java_map([
+                ("a", Box::new(a) as Box<dyn KnnVectorsReader>),
+                ("b", Box::new(b) as Box<dyn KnnVectorsReader>),
+            ]),
+            fields: int_map([(0, "a"), (1, "b")]),
+            field_names: HashMap::new(),
+            names: HashMap::new(),
+        };
+        reader.close().unwrap_err();
+        assert_eq!(sorted(&log), ["a", "b"]);
     }
 }

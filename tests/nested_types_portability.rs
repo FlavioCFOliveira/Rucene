@@ -367,7 +367,7 @@ fn rust_sorted_flush(variant: &str) -> Arc<dyn Directory> {
 /// The document each `id` term landed on, read through the postings.
 fn id_order(dir: &Arc<dyn Directory>) -> Vec<String> {
     let reader = open_reader(dir);
-    let leaves = Arc::clone(&reader).leaves();
+    let leaves = Arc::clone(&reader).leaves().unwrap();
     assert_eq!(leaves.len(), 1, "one segment");
     let leaf = leaves[0].leaf_reader();
     let terms = leaf.terms("id").unwrap().expect("id is indexed");
@@ -481,7 +481,7 @@ fn binary_index_sort_segment_private_delete_matches_lucene() {
     writer.close().unwrap();
 
     let reader = open_reader(&dir);
-    let leaves = Arc::clone(&reader).leaves();
+    let leaves = Arc::clone(&reader).leaves().unwrap();
     assert_eq!(leaves.len(), 1, "one segment");
     let leaf = leaves[0].leaf_reader();
     let live_docs = leaf.get_live_docs();
@@ -687,7 +687,7 @@ fn feature_sort_orders_and_pages_as_lucene() {
 
     let reader = open_reader(&dir);
     assert_eq!(
-        Arc::clone(&reader).leaves().len().to_string(),
+        Arc::clone(&reader).leaves().unwrap().len().to_string(),
         java.value("leaves")
     );
     let searcher = IndexSearcher::new(Arc::clone(&reader) as Arc<dyn IndexReader>).unwrap();
@@ -991,7 +991,7 @@ fn assert_dv_update(variant: &str) {
 
     // The values a reader sees.
     let reader = open_reader(&dir);
-    let leaf = Arc::clone(&reader).leaves()[0].leaf_reader();
+    let leaf = Arc::clone(&reader).leaves().unwrap()[0].leaf_reader();
     let mut values = leaf
         .get_numeric_doc_values("price")
         .unwrap()
@@ -1120,7 +1120,7 @@ fn dv_update_of_several_fields_follows_java_hash_map_order() {
             }
         }
         let reader = open_reader(&dir);
-        let leaf = Arc::clone(&reader).leaves()[0].leaf_reader();
+        let leaf = Arc::clone(&reader).leaves().unwrap()[0].leaf_reader();
         let gens: Vec<String> = leaf
             .get_field_infos()
             .iter()
@@ -1562,7 +1562,7 @@ fn assert_sorted_full_flush(variant: &str) {
     );
 
     let reader = open_reader(&dir);
-    let leaf = Arc::clone(&reader).leaves()[0].leaf_reader();
+    let leaf = Arc::clone(&reader).leaves().unwrap()[0].leaf_reader();
     let lines = document_lines(&leaf);
     assert_self_consistent(&lines);
     let expected: Vec<String> = java
@@ -1593,7 +1593,7 @@ fn assert_sorted_merge(variant: &str) {
     assert_eq!(info.info.index_sort().to_string(), java.value("indexSort"));
     assert_eq!(info.get_del_count().to_string(), java.value("delCount"));
     let reader = open_reader(&dir);
-    let leaf = Arc::clone(&reader).leaves()[0].leaf_reader();
+    let leaf = Arc::clone(&reader).leaves().unwrap()[0].leaf_reader();
     let lines = document_lines(&leaf);
     assert_self_consistent(&lines);
     let expected: Vec<String> = java
@@ -1817,8 +1817,8 @@ fn delegating_cache_helper_matches_lucene() {
             key_address(wrapped.get_reader_cache_helper().unwrap().as_ref()) == wrapped_key
         ),
     ];
-    let wrapped_leaves = Arc::clone(&wrapped).leaves();
-    let inner_leaves = Arc::clone(&inner).leaves();
+    let wrapped_leaves = Arc::clone(&wrapped).leaves().unwrap();
+    let inner_leaves = Arc::clone(&inner).leaves().unwrap();
     for (i, (w, u)) in wrapped_leaves.iter().zip(inner_leaves.iter()).enumerate() {
         let w = w.leaf_reader();
         let u = u.leaf_reader();
@@ -2005,7 +2005,7 @@ fn postings_segment() -> Arc<dyn DirectoryReader> {
 #[test]
 fn filter_fields_and_filter_postings_enum_forward_everything() {
     let reader = postings_segment();
-    let leaf = Arc::clone(&reader).leaves()[0].leaf_reader();
+    let leaf = Arc::clone(&reader).leaves().unwrap()[0].leaf_reader();
     let codec_fields = leaf_fields(&leaf);
     let unwrapped = dump_fields(&codec_fields, false);
     let filtered = FilterFields::new(Box::new(leaf_fields(&leaf)) as Box<dyn Fields>);

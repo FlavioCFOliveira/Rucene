@@ -41,6 +41,7 @@ use crate::error::{LuceneError, Result};
 use crate::index::{segment_file_name, FieldInfos};
 use crate::store::{DataInput, Directory, IndexInput, IndexOutput};
 use crate::util::bkd::{BKDConfig, BKDFinalizer, BKDReader, BKDWriter};
+use crate::util::IOUtils;
 
 // -----------------------------------------------------------------------------
 // Format constants
@@ -182,62 +183,85 @@ impl Lucene90PointsWriter {
             &state.segment_suffix,
             DATA_EXTENSION,
         );
+        // `dataOut` is created before the `try` block; when the block fails,
+        // `IOUtils.closeWhileHandlingException(this)` closes what was created
+        // through `close()`, `IOUtils.close(metaOut, indexOut, dataOut)`
+        // (`Lucene90PointsWriter.java:65-109, 315-318`).
         let mut data_out = state.directory.create_output(&data_name, state.context)?;
-        write_index_header(
-            data_out.as_mut(),
-            DATA_CODEC_NAME,
-            // Java writes `VERSION_CURRENT` whatever `version` the writer was
-            // built with (`Lucene90PointsWriter.java:72, 85, 98`); `version`
-            // only selects the BKD encoding.
-            VERSION_CURRENT,
-            &state.segment_info.id(),
-            &state.segment_suffix,
-        )?;
+        let mut meta_out: Option<Box<dyn IndexOutput>> = None;
+        let mut index_out: Option<Box<dyn IndexOutput>> = None;
+        let opened = (|| -> Result<i32> {
+            write_index_header(
+                data_out.as_mut(),
+                DATA_CODEC_NAME,
+                // Java writes `VERSION_CURRENT` whatever `version` the writer was
+                // built with (`Lucene90PointsWriter.java:72, 85, 98`); `version`
+                // only selects the BKD encoding.
+                VERSION_CURRENT,
+                &state.segment_info.id(),
+                &state.segment_suffix,
+            )?;
 
-        let meta_name = segment_file_name(
-            &state.segment_info.name,
-            &state.segment_suffix,
-            META_EXTENSION,
-        );
-        let mut meta_out = state.directory.create_output(&meta_name, state.context)?;
-        write_index_header(
-            meta_out.as_mut(),
-            META_CODEC_NAME,
-            // Java writes `VERSION_CURRENT` whatever `version` the writer was
-            // built with (`Lucene90PointsWriter.java:72, 85, 98`); `version`
-            // only selects the BKD encoding.
-            VERSION_CURRENT,
-            &state.segment_info.id(),
-            &state.segment_suffix,
-        )?;
+            let meta_name = segment_file_name(
+                &state.segment_info.name,
+                &state.segment_suffix,
+                META_EXTENSION,
+            );
+            let meta_out =
+                meta_out.insert(state.directory.create_output(&meta_name, state.context)?);
+            write_index_header(
+                meta_out.as_mut(),
+                META_CODEC_NAME,
+                // Java writes `VERSION_CURRENT` whatever `version` the writer was
+                // built with (`Lucene90PointsWriter.java:72, 85, 98`); `version`
+                // only selects the BKD encoding.
+                VERSION_CURRENT,
+                &state.segment_info.id(),
+                &state.segment_suffix,
+            )?;
 
-        let index_name = segment_file_name(
-            &state.segment_info.name,
-            &state.segment_suffix,
-            INDEX_EXTENSION,
-        );
-        let mut index_out = state.directory.create_output(&index_name, state.context)?;
-        write_index_header(
-            index_out.as_mut(),
-            INDEX_CODEC_NAME,
-            // Java writes `VERSION_CURRENT` whatever `version` the writer was
-            // built with (`Lucene90PointsWriter.java:72, 85, 98`); `version`
-            // only selects the BKD encoding.
-            VERSION_CURRENT,
-            &state.segment_info.id(),
-            &state.segment_suffix,
-        )?;
+            let index_name = segment_file_name(
+                &state.segment_info.name,
+                &state.segment_suffix,
+                INDEX_EXTENSION,
+            );
+            let index_out =
+                index_out.insert(state.directory.create_output(&index_name, state.context)?);
+            write_index_header(
+                index_out.as_mut(),
+                INDEX_CODEC_NAME,
+                // Java writes `VERSION_CURRENT` whatever `version` the writer was
+                // built with (`Lucene90PointsWriter.java:72, 85, 98`); `version`
+                // only selects the BKD encoding.
+                VERSION_CURRENT,
+                &state.segment_info.id(),
+                &state.segment_suffix,
+            )?;
+            state.segment_info.max_doc()
+        })();
+        let max_doc = match opened {
+            Ok(max_doc) => max_doc,
+            Err(error) => {
+                IOUtils::close_while_handling_exception([Some(|| {
+                    IOUtils::close(
+                        [meta_out.as_mut(), index_out.as_mut(), Some(&mut data_out)]
+                            .map(|o| o.map(|o| move || o.close())),
+                    )
+                })])?;
+                return Err(error);
+            }
+        };
 
         Ok(Self {
             directory: Arc::clone(&state.directory),
             segment_name: state.segment_info.name.clone(),
             segment_suffix: state.segment_suffix.clone(),
             version,
-            max_doc: state.segment_info.max_doc()?,
+            max_doc,
             max_points_in_leaf_node,
             max_mb_sort_in_heap,
-            meta_out: Some(meta_out),
-            index_out: Some(index_out),
+            meta_out,
+            index_out,
             data_out: Some(data_out),
             finished: false,
         })
@@ -486,17 +510,18 @@ impl PointsWriter for Lucene90PointsWriter {
         Ok(())
     }
 
+    /// Equivalent to `Lucene90PointsWriter.close()`
+    /// (`Lucene90PointsWriter.java:315-318`): `IOUtils.close(metaOut, indexOut,
+    /// dataOut)`.
     fn close(&mut self) -> Result<()> {
-        if let Some(mut out) = self.meta_out.take() {
-            out.close()?;
-        }
-        if let Some(mut out) = self.index_out.take() {
-            out.close()?;
-        }
-        if let Some(mut out) = self.data_out.take() {
-            out.close()?;
-        }
-        Ok(())
+        IOUtils::close(
+            [
+                self.meta_out.take(),
+                self.index_out.take(),
+                self.data_out.take(),
+            ]
+            .map(|o| o.map(|mut o| move || o.close())),
+        )
     }
 }
 
@@ -584,38 +609,73 @@ pub struct Lucene90PointsReader {
 
 impl Lucene90PointsReader {
     /// Creates a new reader.
+    ///
+    /// Equivalent to `Lucene90PointsReader(SegmentReadState)`
+    /// (`Lucene90PointsReader.java:46-129`): when it fails,
+    /// `IOUtils.closeWhileHandlingException(this)` closes the inputs opened so
+    /// far through `close()`, `IOUtils.close(indexIn, dataIn)`.
     pub fn new(state: &SegmentReadState) -> Result<Self> {
+        let mut index_in: Option<Box<dyn IndexInput>> = None;
+        let mut data_in: Option<Box<dyn IndexInput>> = None;
+        match Self::open(state, &mut index_in, &mut data_in) {
+            Ok(readers) => {
+                let expect = "INVARIANT: the constructor opened both inputs";
+                Ok(Self {
+                    readers,
+                    field_infos: state.field_infos.clone(),
+                    index_in: index_in.expect(expect),
+                    data_in: data_in.expect(expect),
+                })
+            }
+            Err(error) => {
+                IOUtils::close_while_handling_exception([Some(|| {
+                    IOUtils::close(
+                        [index_in.as_mut(), data_in.as_mut()].map(|i| i.map(|i| move || i.close())),
+                    )
+                })])?;
+                Err(error)
+            }
+        }
+    }
+
+    /// The `try` block of the constructor: opens `indexIn` and `dataIn` into
+    /// the two slots and reads the metadata.
+    fn open(
+        state: &SegmentReadState,
+        index_in: &mut Option<Box<dyn IndexInput>>,
+        data_in: &mut Option<Box<dyn IndexInput>>,
+    ) -> Result<HashMap<i32, BkdPointValues>> {
         let index_name = segment_file_name(
             &state.segment_info.name,
             &state.segment_suffix,
             INDEX_EXTENSION,
         );
-        let mut index_in = state.directory.open_input(&index_name, state.context)?;
+        let index_in = index_in.insert(state.directory.open_input(&index_name, state.context)?);
         check_index_header(
-            &mut *index_in,
+            &mut **index_in,
             INDEX_CODEC_NAME,
             VERSION_START,
             VERSION_CURRENT,
             &state.segment_info.id(),
             &state.segment_suffix,
         )?;
-        let _ = retrieve_checksum(&mut *index_in)?;
+        let _ = retrieve_checksum(&mut **index_in)?;
 
         let data_name = segment_file_name(
             &state.segment_info.name,
             &state.segment_suffix,
             DATA_EXTENSION,
         );
-        let mut data_in = state.directory.open_input(&data_name, state.context)?;
+        let data_in = data_in.insert(state.directory.open_input(&data_name, state.context)?);
         check_index_header(
-            &mut *data_in,
+            &mut **data_in,
             DATA_CODEC_NAME,
             VERSION_START,
             VERSION_CURRENT,
             &state.segment_info.id(),
             &state.segment_suffix,
         )?;
-        let _ = retrieve_checksum(&mut *data_in)?;
+        let _ = retrieve_checksum(&mut **data_in)?;
 
         let meta_name = segment_file_name(
             &state.segment_info.name,
@@ -650,15 +710,9 @@ impl Lucene90PointsReader {
         let data_length = meta_in.read_long()?;
         check_footer(&mut *meta_in)?;
 
-        let _ = retrieve_checksum_expected_length(&mut *index_in, index_length)?;
-        let _ = retrieve_checksum_expected_length(&mut *data_in, data_length)?;
-
-        Ok(Self {
-            readers,
-            field_infos: state.field_infos.clone(),
-            index_in,
-            data_in,
-        })
+        let _ = retrieve_checksum_expected_length(&mut **index_in, index_length)?;
+        let _ = retrieve_checksum_expected_length(&mut **data_in, data_length)?;
+        Ok(readers)
     }
 }
 
@@ -719,10 +773,13 @@ impl PointsReader for Lucene90PointsReader {
         }))
     }
 
+    /// Equivalent to `Lucene90PointsReader.close()`
+    /// (`Lucene90PointsReader.java:154-159`): `IOUtils.close(indexIn,
+    /// dataIn)`, then the readers are cleared.
     fn close(&mut self) -> Result<()> {
+        IOUtils::close([&mut self.index_in, &mut self.data_in].map(|i| Some(move || i.close())))?;
+        // Free up heap:
         self.readers.clear();
-        self.index_in.close()?;
-        self.data_in.close()?;
         Ok(())
     }
 }
@@ -835,7 +892,6 @@ mod tests {
     use crate::index::point_values::DocValuesVisitor;
     use crate::index::{FieldInfo, FieldInfos};
     use crate::store::ByteBuffersDirectory;
-    use crate::util::bkd::BKDUtil;
     use crate::util::BitUtil;
 
     /// In-memory point-values source used only for tests.
@@ -867,14 +923,24 @@ mod tests {
                 for (_, packed) in &points {
                     for dim in 0..dims as usize {
                         let off = dim * bytes_per_dim as usize;
-                        if BKDUtil::unsigned_compare(packed, off, &min, off, bytes_per_dim as usize)
-                            == std::cmp::Ordering::Less
+                        if crate::util::ArrayUtil::compare_unsigned_len(
+                            packed,
+                            off,
+                            &min,
+                            off,
+                            bytes_per_dim as usize,
+                        ) < 0
                         {
                             min[off..off + bytes_per_dim as usize]
                                 .copy_from_slice(&packed[off..off + bytes_per_dim as usize]);
                         }
-                        if BKDUtil::unsigned_compare(packed, off, &max, off, bytes_per_dim as usize)
-                            == std::cmp::Ordering::Greater
+                        if crate::util::ArrayUtil::compare_unsigned_len(
+                            packed,
+                            off,
+                            &max,
+                            off,
+                            bytes_per_dim as usize,
+                        ) > 0
                         {
                             max[off..off + bytes_per_dim as usize]
                                 .copy_from_slice(&packed[off..off + bytes_per_dim as usize]);
@@ -1187,7 +1253,7 @@ mod tests {
         let fi = point_field("p", 0, 2, 2, 4);
         let field_infos = FieldInfos::new(vec![fi.clone()]).unwrap();
         let state = SegmentWriteState::new(
-            crate::util::default_info_stream(),
+            &crate::util::NoOutputInfoStream,
             Arc::clone(&dir),
             &segment_info,
             &field_infos,
@@ -1276,7 +1342,7 @@ mod tests {
         let segment_info = test_segment_info("points_version", 10);
         let field_infos = FieldInfos::new(vec![int_point_field("p", 0, 1)]).unwrap();
         let write_state = SegmentWriteState::new(
-            crate::util::default_info_stream(),
+            &crate::util::NoOutputInfoStream,
             Arc::clone(&dir),
             &segment_info,
             &field_infos,
@@ -1317,7 +1383,7 @@ mod tests {
         let field_infos = FieldInfos::new(vec![field.clone()]).unwrap();
 
         let write_state = SegmentWriteState::new(
-            crate::util::default_info_stream(),
+            &crate::util::NoOutputInfoStream,
             Arc::clone(&dir),
             &segment_info,
             &field_infos,
@@ -1368,7 +1434,7 @@ mod tests {
         let field_infos = FieldInfos::new(vec![f1.clone(), f2.clone()]).unwrap();
 
         let write_state = SegmentWriteState::new(
-            crate::util::default_info_stream(),
+            &crate::util::NoOutputInfoStream,
             Arc::clone(&dir),
             &segment_info,
             &field_infos,
@@ -1488,7 +1554,7 @@ mod tests {
         let field_infos = FieldInfos::new(vec![field.clone()]).unwrap();
 
         let write_state = SegmentWriteState::new(
-            crate::util::default_info_stream(),
+            &crate::util::NoOutputInfoStream,
             Arc::clone(&dir),
             &segment_info,
             &field_infos,
@@ -1523,7 +1589,7 @@ mod tests {
         let field_infos = FieldInfos::new(vec![field.clone()]).unwrap();
 
         let write_state = SegmentWriteState::new(
-            crate::util::default_info_stream(),
+            &crate::util::NoOutputInfoStream,
             Arc::clone(&dir),
             &segment_info,
             &field_infos,
@@ -1568,7 +1634,7 @@ mod tests {
         let field_infos = FieldInfos::new(vec![field.clone()]).unwrap();
 
         let write_state = SegmentWriteState::new(
-            crate::util::default_info_stream(),
+            &crate::util::NoOutputInfoStream,
             Arc::clone(&dir),
             &segment_info,
             &field_infos,
@@ -1620,7 +1686,7 @@ mod tests {
 
         // Create and finish an empty points writer so the segment files exist.
         let write_state = SegmentWriteState::new(
-            crate::util::default_info_stream(),
+            &crate::util::NoOutputInfoStream,
             Arc::clone(&dir),
             &segment_info,
             &field_infos,
@@ -1664,7 +1730,7 @@ mod tests {
         let field_infos = FieldInfos::new(vec![field.clone()]).unwrap();
 
         let write_state = SegmentWriteState::new(
-            crate::util::default_info_stream(),
+            &crate::util::NoOutputInfoStream,
             Arc::clone(&dir),
             &segment_info,
             &field_infos,
@@ -1742,7 +1808,7 @@ mod tests {
         let field_infos = FieldInfos::new(vec![field.clone()]).unwrap();
 
         let write_state = SegmentWriteState::new(
-            crate::util::default_info_stream(),
+            &crate::util::NoOutputInfoStream,
             Arc::clone(&dir),
             &segment_info,
             &field_infos,
@@ -1824,5 +1890,83 @@ mod tests {
         read_values.intersect(&mut visitor).unwrap();
         visitor.found.sort();
         assert_eq!(visitor.found, vec![2, 3, 4, 5, 6, 7]);
+    }
+}
+
+/// The `IOUtils` close family at the points call sites (#308).
+#[cfg(test)]
+mod close_family_tests {
+    use super::{Lucene90PointsReader, Lucene90PointsWriter, VERSION_CURRENT};
+    use crate::codecs::points::{PointsReader, PointsWriter};
+    use crate::codecs::tests::{read_state, test_segment_info, tracking_directory, write_state};
+    use crate::index::FieldInfos;
+
+    fn write_empty(
+        dir: &std::sync::Arc<dyn crate::store::Directory>,
+        info: &crate::index::SegmentInfo,
+        fis: &FieldInfos,
+    ) {
+        let mut writer =
+            Lucene90PointsWriter::new(&write_state(dir, info, fis), VERSION_CURRENT).unwrap();
+        writer.finish().unwrap();
+        writer.close().unwrap();
+    }
+
+    /// A constructor that fails runs `IOUtils.closeWhileHandlingException(this)`
+    /// (`Lucene90PointsWriter.java:105`), closing the `.kdd` created before
+    /// the `try` block.
+    #[test]
+    fn a_failed_writer_constructor_closes_the_data_output() {
+        let (dir, _tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 10);
+        let fis = FieldInfos::default();
+        log.fail_open("_0.kdm");
+        Lucene90PointsWriter::new(&write_state(&dir, &info, &fis), VERSION_CURRENT).unwrap_err();
+        assert_eq!(log.closed(), ["_0.kdd"]);
+    }
+
+    /// `close()` is `IOUtils.close(metaOut, indexOut, dataOut)`
+    /// (`Lucene90PointsWriter.java:315-318`).
+    #[test]
+    fn writer_close_closes_every_output_past_a_failure() {
+        let (dir, _tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 10);
+        let fis = FieldInfos::default();
+        let mut writer =
+            Lucene90PointsWriter::new(&write_state(&dir, &info, &fis), VERSION_CURRENT).unwrap();
+        log.fail_close("_0.kdm");
+        let error = writer.close().unwrap_err();
+        assert!(format!("{error}").contains("_0.kdm"), "{error}");
+        assert_eq!(log.closed(), ["_0.kdm", "_0.kdi", "_0.kdd"]);
+    }
+
+    /// A constructor that fails runs `IOUtils.closeWhileHandlingException(this)`
+    /// (`Lucene90PointsReader.java:122-127`), closing `.kdi` and `.kdd`.
+    #[test]
+    fn a_failed_reader_constructor_closes_index_and_data() {
+        let (dir, _tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 10);
+        let fis = FieldInfos::default();
+        write_empty(&dir, &info, &fis);
+        let before = log.closed().len();
+        log.fail_open("_0.kdm");
+        Lucene90PointsReader::new(&read_state(&*dir, &info, &fis)).unwrap_err();
+        assert_eq!(log.closed()[before..], ["_0.kdi", "_0.kdd"]);
+    }
+
+    /// `close()` is `IOUtils.close(indexIn, dataIn)`
+    /// (`Lucene90PointsReader.java:154-159`).
+    #[test]
+    fn reader_close_closes_both_inputs_past_a_failure() {
+        let (dir, _tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 10);
+        let fis = FieldInfos::default();
+        write_empty(&dir, &info, &fis);
+        let mut reader = Lucene90PointsReader::new(&read_state(&*dir, &info, &fis)).unwrap();
+        let before = log.closed().len();
+        log.fail_close("_0.kdi");
+        let error = reader.close().unwrap_err();
+        assert!(format!("{error}").contains("_0.kdi"), "{error}");
+        assert_eq!(log.closed()[before..], ["_0.kdi", "_0.kdd"]);
     }
 }

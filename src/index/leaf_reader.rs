@@ -761,7 +761,7 @@ mod tests {
         assert_eq!(reader.num_deleted_docs(), 1);
         assert!(reader.has_deletions());
 
-        let ctx = Arc::clone(&reader).get_context();
+        let ctx = Arc::clone(&reader).get_context().unwrap();
         assert!(ctx.is_top_level());
         assert!(ctx.is_leaf_context());
         let leaves = ctx.leaves();

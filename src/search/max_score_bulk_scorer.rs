@@ -5,7 +5,6 @@
 
 use crate::error::Result;
 use crate::index::DocAndFloatFeatureBuffer;
-use crate::search::bit_set_util;
 use crate::search::bulk_scorer::BulkScorer;
 use crate::search::collection_terminated_exception::CollectionResult;
 use crate::search::collector::LeafCollector;
@@ -280,7 +279,7 @@ impl MaxScoreBulkScorer {
                 }
             }
             if let Some(accept_docs) = accept_docs {
-                bit_set_util::apply_mask(accept_docs, filter_matches, inner_window_min);
+                accept_docs.apply_mask(filter_matches, inner_window_min as usize)?;
             }
         }
 
@@ -450,21 +449,29 @@ impl MaxScoreBulkScorer {
         inner_window_size: i32,
     ) {
         self.doc_and_score_acc_buffer.size = 0;
-        let mut index = bit_set_util::next_set_bit(&self.window_matches, 0);
-        while index != NO_MORE_DOCS && index < inner_window_size {
-            let i = index as usize;
-            let size = self.doc_and_score_acc_buffer.size;
-            self.doc_and_score_acc_buffer.docs[size] = inner_window_min + index;
-            self.doc_and_score_acc_buffer.scores[size] = self.window_scores[i];
-            self.doc_and_score_acc_buffer.size += 1;
-            self.window_scores[i] = 0.0;
-            if i + 1 >= self.window_matches.length() {
-                break;
-            }
-            index = bit_set_util::next_set_bit(&self.window_matches, i + 1);
-        }
-        // Only bits below `inner_window_size` can have been set.
-        self.window_matches.clear_all();
+        let Self {
+            window_matches,
+            window_scores,
+            doc_and_score_acc_buffer,
+            ..
+        } = self;
+        window_matches
+            .for_each(
+                0,
+                inner_window_size as usize,
+                0,
+                &mut |index: i32| -> std::result::Result<(), std::convert::Infallible> {
+                    let i = index as usize;
+                    let size = doc_and_score_acc_buffer.size;
+                    doc_and_score_acc_buffer.docs[size] = inner_window_min + index;
+                    doc_and_score_acc_buffer.scores[size] = window_scores[i];
+                    doc_and_score_acc_buffer.size += 1;
+                    window_scores[i] = 0.0;
+                    Ok(())
+                },
+            )
+            .unwrap_or_else(|never| match never {});
+        window_matches.clear_range(0, inner_window_size as usize);
     }
 
     /// Equivalent to the private

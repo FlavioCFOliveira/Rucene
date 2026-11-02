@@ -7,10 +7,7 @@ use crate::error::{LuceneError, Result};
 use crate::util::byte_block_pool::ByteBlockPool;
 use crate::util::packed::PackedInts;
 
-use super::byte_block_pool_reverse_bytes_reader::{
-    pool_append, pool_append_from_pool, pool_position, pool_read_bytes,
-    ByteBlockPoolReverseBytesReader,
-};
+use super::byte_block_pool_reverse_bytes_reader::ByteBlockPoolReverseBytesReader;
 use super::fst::{
     Arc, BitTable, BytesReader, ARCS_FOR_BINARY_SEARCH, ARCS_FOR_CONTINUOUS,
     ARCS_FOR_DIRECT_ADDRESSING, FINAL_END_NODE, FST, NON_FINAL_END_NODE,
@@ -227,7 +224,7 @@ impl<O: Outputs> NodeHash<O> {
                 // and then drops suddenly at a secret threshold. Measuring
                 // "perfect" hash storage and approximating the overhead makes the
                 // behaviour strictly monotonic instead.
-                let copied_bytes = pool_position(&self.primary_table.copied_nodes);
+                let copied_bytes = self.primary_table.copied_nodes.position();
                 let ram_bytes_used = self.primary_table.count
                     * 2
                     * i64::from(PackedInts::bits_required(node_address)?)
@@ -366,23 +363,14 @@ impl PagedGrowableHash {
     /// Returns the copied bytes at the provided hash slot.
     ///
     /// Equivalent to `PagedGrowableHash.getBytes`.
-    ///
-    /// # Errors
-    ///
-    /// Propagates the errors of the underlying arena.
     #[allow(dead_code)]
-    fn bytes(&self, hash_slot: i64, length: usize) -> Result<Vec<u8>> {
+    fn bytes(&self, hash_slot: i64, length: usize) -> Vec<u8> {
         let address = self.copied_node_address[hash_slot as usize];
         debug_assert!(address - length as i64 + 1 >= 0);
         let mut buf = vec![0u8; length];
-        pool_read_bytes(
-            &self.copied_nodes,
-            address - length as i64 + 1,
-            &mut buf,
-            0,
-            length,
-        )?;
-        Ok(buf)
+        self.copied_nodes
+            .read_bytes(address - length as i64 + 1, &mut buf, 0, length);
+        buf
     }
 
     /// Returns the node address stored at the provided hash slot.
@@ -406,10 +394,10 @@ impl PagedGrowableHash {
     /// Equivalent to `PagedGrowableHash.copyNodeBytes`.
     fn copy_node_bytes(&mut self, hash_slot: i64, bytes: &[u8], length: usize) -> Result<()> {
         debug_assert_eq!(self.copied_node_address[hash_slot as usize], 0);
-        pool_append(&mut self.copied_nodes, bytes, 0, length)?;
+        self.copied_nodes.append(&bytes[..length])?;
         // Write the offset, which points to the last byte of the node just
         // copied, since the node is later read in reverse.
-        self.copied_node_address[hash_slot as usize] = pool_position(&self.copied_nodes) - 1;
+        self.copied_node_address[hash_slot as usize] = self.copied_nodes.position() - 1;
         Ok(())
     }
 
@@ -429,15 +417,14 @@ impl PagedGrowableHash {
         // to be copied from the start address.
         let fallback_start_address = fallback_address - node_length as i64 + 1;
         debug_assert!(fallback_start_address >= 0);
-        pool_append_from_pool(
-            &mut self.copied_nodes,
+        self.copied_nodes.append_pool(
             &fallback_table.copied_nodes,
             fallback_start_address,
             node_length,
         )?;
         // Write the offset, which points to the last byte of the node just
         // copied, since the node is later read in reverse.
-        self.copied_node_address[hash_slot as usize] = pool_position(&self.copied_nodes) - 1;
+        self.copied_node_address[hash_slot as usize] = self.copied_nodes.position() - 1;
         Ok(())
     }
 
@@ -592,13 +579,9 @@ impl PagedGrowableHash {
             if scratch_arc.is_last() {
                 return if arc_upto == node.num_arcs - 1 {
                     // The position is one index past the starting address, as
-                    // the node is read backwards.
-                    i32::try_from(address - input.position()).map_err(|_| {
-                        LuceneError::illegal_state(format!(
-                            "node length {} does not fit in an i32",
-                            address - input.position()
-                        ))
-                    })
+                    // the node is read backwards: `Math.toIntExact(address -
+                    // in.getPosition())` (`NodeHash.java:451`).
+                    crate::error::to_int_exact(address - input.position())
                 } else {
                     Ok(-1)
                 };

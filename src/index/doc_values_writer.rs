@@ -94,7 +94,7 @@ use crate::codecs::doc_values::{DocValuesConsumer, DocValuesProducer};
 use crate::codecs::state::SegmentWriteState;
 use crate::codecs::DocsWithFieldSet;
 use crate::document::column::{LongValuesCursor, OrdinalsCursor, OrdinalsTupleCursor};
-use crate::error::{LuceneError, Result};
+use crate::error::{to_int_exact, LuceneError, Result};
 use crate::index::doc_values::{
     BinaryDocValues, SortedDocValues, SortedNumericDocValues, SortedSetDocValues,
 };
@@ -102,7 +102,6 @@ use crate::index::doc_values::{DocValuesIterator, DocValuesSkipper, NumericDocVa
 use crate::index::documents_writer::{SharedIndexingScratch, INTS_SCRATCH_SIZE};
 use crate::index::index_sorter::SorterDocMap;
 use crate::index::{DocValuesType, FieldInfo, IndexableField};
-use crate::search::bit_set_util;
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::store::{DataInput, DataOutput};
 use crate::util::bytes_ref_array::SortableBytesRefArray;
@@ -115,7 +114,7 @@ use crate::util::packed::{
 use crate::util::paged_bytes::{PagedBytes, PagedBytesDataInput};
 use crate::util::MAX_TERM_LENGTH;
 use crate::util::{
-    Accountable, ArrayUtil, ByteBlockPool, BytesRef, BytesRefArray, BytesRefHash, Counter,
+    Accountable, ArrayUtil, BitSet, ByteBlockPool, BytesRef, BytesRefArray, BytesRefHash, Counter,
     FixedBitSet, RamUsageEstimator,
 };
 
@@ -949,7 +948,7 @@ impl NumericDVs {
     /// less than [`Self::max_doc`].
     fn advance(&self, target: i32) -> i32 {
         match &self.docs_with_field {
-            Some(docs_with_field) => bit_set_util::next_set_bit(docs_with_field, target as usize),
+            Some(docs_with_field) => BitSet::next_set_bit(docs_with_field, target),
             None => target,
         }
     }
@@ -1390,9 +1389,10 @@ impl DocIdSetIterator for BufferedBinary {
     fn next_doc(&mut self) -> Result<i32> {
         let doc_id = self.docs_with_field.next_doc()?;
         if doc_id != NO_MORE_DOCS {
-            let length = usize::try_from(self.lengths_iterator.next_value()).map_err(|_| {
-                LuceneError::illegal_state("integer overflow in a binary value length".to_string())
-            })?;
+            // `Math.toIntExact(lengthsIterator.next())`
+            // (`BinaryDocValuesWriter.java:191`); a length is what `addValue`
+            // buffered, a `BytesRef.length`, never negative.
+            let length = to_int_exact(self.lengths_iterator.next_value())? as usize;
             self.length = length;
             self.bytes_iterator.read_bytes(&mut self.value, 0, length)?;
         }
@@ -1565,18 +1565,28 @@ struct Dictionary {
 
 impl Dictionary {
     /// `sortedValues = hash.sort()` and `ordMap[sortedValues[ord]] = ord`.
-    fn build(hash: &Arc<BytesRefHash>, pool: &Arc<ByteBlockPool>) -> Self {
-        let sorted_values = hash.sort(pool);
+    ///
+    /// `BytesRefHash.sort()` is destructive, as in Java: the writer's hash is
+    /// sorted in place and only read through `get` afterwards. The first
+    /// `valueCount` slots it returns are the sorted ids Java indexes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when a producer still shares the
+    /// hash, which [`hash_mut`] refuses.
+    fn build(hash: &mut Arc<BytesRefHash>, pool: &Arc<ByteBlockPool>) -> Result<Self> {
+        let value_count = hash.size() as usize;
+        let sorted_values = hash_mut(hash)?.sort(pool)[..value_count].to_vec();
         let mut ord_map = vec![0i32; sorted_values.len()];
         for (ord, &term_id) in sorted_values.iter().enumerate() {
             ord_map[term_id as usize] = ord as i32;
         }
-        Self {
+        Ok(Self {
             hash: Arc::clone(hash),
             pool: Arc::clone(pool),
             sorted_values: Arc::new(sorted_values),
             ord_map: Arc::new(ord_map),
-        }
+        })
     }
 
     /// `valueCount`: the number of distinct values.
@@ -1584,9 +1594,12 @@ impl Dictionary {
         self.sorted_values.len()
     }
 
-    /// `hash.get(sortedValues[ord], scratch)`, refusing an out-of-range
-    /// ordinal (Java indexes the array and throws).
+    /// `hash.get(sortedValues[Math.toIntExact(ord)], scratch)`
+    /// (`SortedSetDocValuesWriter.java:411-416`): an ordinal outside the `int`
+    /// range is Java's `ArithmeticException("integer overflow")`, and an
+    /// out-of-range `int` one is refused (Java indexes the array and throws).
     fn lookup_ord(&self, ord: i64) -> Result<BytesRef> {
+        let ord = to_int_exact(ord)?;
         usize::try_from(ord)
             .ok()
             .and_then(|ord| self.sorted_values.get(ord))
@@ -1958,7 +1971,7 @@ impl SortedDocValuesWriter {
     fn finish(&mut self, pool: &Arc<ByteBlockPool>) -> Result<()> {
         if self.dictionary.is_none() {
             self.update_bytes_used();
-            let dictionary = Dictionary::build(&self.hash, pool);
+            let dictionary = Dictionary::build(&mut self.hash, pool)?;
             let pending = self.pending.take().ok_or_else(already_built)?;
             self.final_ords = Some(Arc::new(pending.build()?));
             self.dictionary = Some(dictionary);
@@ -2277,11 +2290,6 @@ impl<V: PackedLongValuesAccess> SortedDocValues for BufferedSorted<V> {
     }
 }
 
-/// `Math.toIntExact(long)`.
-fn to_int_exact(value: i64) -> Result<i32> {
-    i32::try_from(value).map_err(|_| LuceneError::illegal_state("integer overflow".to_string()))
-}
-
 /// Iterates the sorted doc values of a field after an index sort has
 /// reordered the segment.
 ///
@@ -2470,8 +2478,12 @@ impl SortedSetDocValues for SingletonSortedAsSortedSet {
         Ok(1)
     }
 
+    /// `in.lookupOrd((int) ord)` (`SingletonSortedSetDocValues.java:101-105`):
+    /// the narrowing wraps, and an ordinal outside the `int` range reaches
+    /// the single-valued lookup as whatever it wraps to, which rejects it as
+    /// Java's array access does.
     fn lookup_ord(&self, ord: i64) -> Result<BytesRef> {
-        self.inner.lookup_ord(to_int_exact(ord)?)
+        self.inner.lookup_ord(ord as i32)
     }
 
     fn get_value_count(&self) -> Result<i64> {
@@ -3471,7 +3483,7 @@ impl SortedSetDocValuesWriter {
                 Some(counts) => Some(Arc::new(counts.build()?)),
                 None => None,
             };
-            self.dictionary = Some(Dictionary::build(&self.hash, pool));
+            self.dictionary = Some(Dictionary::build(&mut self.hash, pool)?);
         }
         Ok(())
     }
@@ -3912,6 +3924,74 @@ mod tests {
 
     fn counter() -> Arc<AtomicI64> {
         Arc::new(AtomicI64::new(0))
+    }
+
+    /// A single-valued sorted iterator over the dictionary `["a", "b"]`.
+    struct TwoTerms;
+    impl DocIdSetIterator for TwoTerms {
+        fn doc_id(&self) -> i32 {
+            -1
+        }
+        fn next_doc(&mut self) -> Result<i32> {
+            Ok(crate::search::NO_MORE_DOCS)
+        }
+        fn advance(&mut self, _target: i32) -> Result<i32> {
+            Ok(crate::search::NO_MORE_DOCS)
+        }
+        fn cost(&self) -> i64 {
+            0
+        }
+    }
+    impl crate::index::doc_values::DocValuesIterator for TwoTerms {
+        fn advance_exact(&mut self, _target: i32) -> Result<bool> {
+            Ok(false)
+        }
+    }
+    impl SortedDocValues for TwoTerms {
+        fn ord_value(&self) -> Result<i32> {
+            Ok(0)
+        }
+        fn get_value_count(&self) -> Result<i32> {
+            Ok(2)
+        }
+        fn lookup_ord(&self, ord: i32) -> Result<BytesRef> {
+            match ord {
+                0 => Ok(BytesRef::new(b"a".to_vec())),
+                1 => Ok(BytesRef::new(b"b".to_vec())),
+                // Java's array access throws; any refusal stands for it.
+                _ => Err(LuceneError::IllegalArgument(format!("ord={ord}"))),
+            }
+        }
+    }
+
+    /// `SingletonSortedSetDocValues.lookupOrd` narrows with `(int) ord`
+    /// (`SingletonSortedSetDocValues.java:101-105`): `2^32 + 1` wraps to
+    /// ordinal 1, and `2^31` to `Integer.MIN_VALUE`, which the single-valued
+    /// lookup refuses as Java's array access does — neither is an
+    /// `ArithmeticException`.
+    #[test]
+    fn singleton_sorted_set_lookup_ord_wraps_the_ordinal_as_java_casts_it() {
+        let set = SingletonSortedAsSortedSet::new(Box::new(TwoTerms));
+        assert_eq!(set.lookup_ord((1i64 << 32) + 1).unwrap().slice(), b"b");
+        assert!(matches!(
+            set.lookup_ord(1i64 << 31),
+            Err(LuceneError::IllegalArgument(ref message)) if message == "ord=-2147483648"
+        ));
+    }
+
+    /// `hash.get(sortedValues[Math.toIntExact(ord)], scratch)`
+    /// (`SortedSetDocValuesWriter.java:411-416`): without assertions an
+    /// ordinal past the `int` range is Java's `ArithmeticException("integer
+    /// overflow")`.
+    #[test]
+    fn sorted_set_dictionary_lookup_ord_past_an_int_is_an_arithmetic_error() {
+        let pool = test_pool();
+        let mut hash = Arc::new(crate::util::bytes_ref_hash::BytesRefHash::new(counter()));
+        let dictionary = Dictionary::build(&mut hash, &pool).unwrap();
+        assert!(matches!(
+            dictionary.lookup_ord(i64::from(i32::MAX) + 1),
+            Err(LuceneError::Arithmetic(ref message)) if message == "integer overflow"
+        ));
     }
 
     /// The indexing chain's shared `docValuesBytePool`, standing alone.

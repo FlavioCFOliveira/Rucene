@@ -344,7 +344,7 @@ mod tests {
         assert!(second.version().unwrap() > first_version);
         assert_eq!(second.max_doc(), 50);
         // `leaves` consumes the `Arc`, so clone for the count check.
-        assert_eq!(Arc::clone(&second).leaves().len(), 2);
+        assert_eq!(Arc::clone(&second).leaves().unwrap().len(), 2);
 
         // The old reader's ref count must have dropped to the references still
         // held externally (none here) -> it is closed (refCount 0).

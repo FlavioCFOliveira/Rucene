@@ -170,11 +170,6 @@ impl IntBlockPool {
         self.buffer_upto
     }
 
-    /// Returns the number of block slots currently held.
-    pub fn num_buffers(&self) -> usize {
-        self.buffers.len()
-    }
-
     /// Returns the block at `index`.
     ///
     /// # Panics

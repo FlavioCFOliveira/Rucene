@@ -162,7 +162,7 @@ fn byte_block_pool_accounting_matches_lucene() {
              which is not what ramBytesUsed() reports"
         );
 
-        pool.reset();
+        pool.reset(false, false);
         assert_eq!(
             pool.ram_bytes_used(),
             expected["ram_reset"],

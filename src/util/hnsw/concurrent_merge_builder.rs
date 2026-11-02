@@ -109,14 +109,9 @@ impl HnswConcurrentMergeBuilder {
             initialized_nodes: initialized_nodes.map(Arc::new),
             batch_size: DEFAULT_BATCH_SIZE,
             num_worker,
-            info_stream: Arc::new(crate::util::NoOutputInfoStream),
+            info_stream: crate::util::default_info_stream(),
             frozen: false,
         })
-    }
-
-    /// Number of workers this builder drives.
-    pub fn num_worker(&self) -> i32 {
-        self.num_worker
     }
 
     /// Sets the batch size; test-only, as in Lucene.

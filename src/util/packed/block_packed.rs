@@ -114,11 +114,6 @@ impl<'a> AbstractBlockPackedWriter<'a> {
         self.ord
     }
 
-    /// The number of values in one block.
-    pub fn block_size(&self) -> usize {
-        self.values.len()
-    }
-
     /// Fails when the writer has already been finished.
     ///
     /// Equivalent to `AbstractBlockPackedWriter.checkNotFinished()`.

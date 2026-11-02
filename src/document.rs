@@ -1710,7 +1710,8 @@ impl StringField {
         } else {
             string_field_type_not_stored().clone()
         };
-        let binary_value = Some(BytesRef::new(value.as_bytes().to_vec()));
+        // `binaryValue = new BytesRef(value)` (`StringField.java:61`).
+        let binary_value = Some(BytesRef::from_char_sequence(&value));
         // `StringField(String, Store.YES)` stores a STRING value, not the UTF-8
         // bytes it indexes: Lucene's ctor keeps `fieldsData` as the String.
         let stored_value = if stored == Store::YES {
@@ -2248,7 +2249,8 @@ impl KeywordField {
         } else {
             keyword_field_type().clone()
         };
-        let binary_value = BytesRef::new(value.as_bytes().to_vec());
+        // `this.binaryValue = new BytesRef(value)` (`KeywordField.java:98`).
+        let binary_value = BytesRef::from_char_sequence(&value);
         let stored_value = if stored == Store::YES {
             Some(StoredValue::String(value.clone()))
         } else {
@@ -2274,7 +2276,7 @@ impl KeywordField {
     ///
     /// Equivalent to `KeywordField.newExactQuery(String, String)`.
     pub fn new_exact_query_string(field: &str, value: &str) -> Arc<dyn Query> {
-        Self::new_exact_query(field, &BytesRef::new(value.as_bytes().to_vec()))
+        Self::new_exact_query(field, &BytesRef::from_char_sequence(value))
     }
 
     /// Creates a query matching any of `values`.
@@ -7254,5 +7256,25 @@ impl crate::search::DimensionFormatter for BinaryPointFormatter {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+}
+
+#[cfg(test)]
+mod pass_d_char_sequence_binary_value_tests {
+    use super::*;
+
+    /// rmp #322: `StringField` and `KeywordField` keep `new BytesRef(value)` as
+    /// their binary value (`StringField.java:61`, `KeywordField.java:98`), whose
+    /// buffer holds three bytes per UTF-16 code unit. Measured against
+    /// `lucene-core-10.5.0.jar` (`oracle/passD/Oracle.java`): `abc` gives a
+    /// 9-byte buffer, `abcd` a 12-byte one.
+    #[test]
+    fn string_and_keyword_fields_size_their_binary_value_as_java() {
+        let string = StringField::new("f", "abc".to_string(), Store::NO).unwrap();
+        let bytes = string.binary_value().unwrap();
+        assert_eq!((bytes.bytes.len(), bytes.slice()), (9, &b"abc"[..]));
+        let keyword = KeywordField::new("f", "abcd".to_string(), Store::NO).unwrap();
+        let bytes = keyword.binary_value().unwrap();
+        assert_eq!((bytes.bytes.len(), bytes.slice()), (12, &b"abcd"[..]));
     }
 }

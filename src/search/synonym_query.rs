@@ -582,7 +582,8 @@ impl SynonymWeight {
         let similarity = Arc::clone(searcher.get_similarity());
         let sim_weight: Option<SharedSimScorer> = if doc_freq > 0 {
             let pseudo_stats = TermStatistics::new(
-                BytesRef::new(b"synonym pseudo-term".to_vec()),
+                // `new BytesRef("synonym pseudo-term")` (`SynonymQuery.java:228`).
+                BytesRef::from_char_sequence("synonym pseudo-term"),
                 doc_freq,
                 total_term_freq,
             )?;

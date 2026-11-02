@@ -36,7 +36,7 @@ fn reader(values: &[i64]) -> Arc<dyn LeafReader> {
     writer.commit().unwrap();
     writer.close().unwrap();
     let reader = directory_reader::open(dir).unwrap();
-    let leaves = Arc::clone(&reader).leaves();
+    let leaves = Arc::clone(&reader).leaves().unwrap();
     assert_eq!(leaves.len(), 1);
     leaves[0].leaf_reader()
 }

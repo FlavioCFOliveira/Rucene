@@ -1283,7 +1283,7 @@ struct NumericSegmentOrder {
 
 impl SegmentOrderImpl for NumericSegmentOrder {
     fn reorder(&self, reader: Arc<dyn IndexReader>) -> Result<Arc<dyn IndexReader>> {
-        let leaves = Arc::clone(&reader).leaves();
+        let leaves = Arc::clone(&reader).leaves()?;
         let mut subs: Vec<Arc<dyn IndexReader>> = Vec::with_capacity(leaves.len());
         let mut leaf_views: Vec<Arc<dyn crate::index::LeafReader>> =
             Vec::with_capacity(leaves.len());
@@ -1644,7 +1644,7 @@ mod tests {
 
     #[test]
     fn segment_write_state_new() {
-        let info_stream: &dyn crate::util::InfoStream = crate::util::default_info_stream();
+        let info_stream: &dyn crate::util::InfoStream = &crate::util::NoOutputInfoStream;
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let info = test_segment_info("_0", 10);
         let field_infos = FieldInfos::default();

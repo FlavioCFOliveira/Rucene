@@ -48,7 +48,7 @@ use crate::util::hnsw::{
 };
 use crate::util::packed::{DirectMonotonicMeta, DirectMonotonicReader, DirectMonotonicWriter};
 use crate::util::quantization::{QuantizedByteVectorValues, ScalarQuantizer};
-use crate::util::Bits;
+use crate::util::{Bits, IOUtils};
 
 // -----------------------------------------------------------------------------
 // Format constants
@@ -491,24 +491,25 @@ impl HnswWriterState {
             VECTOR_INDEX_EXTENSION,
         );
 
-        let meta = state
-            .directory
-            .create_output(&meta_file_name, state.context)?;
-        let vector_index = state
-            .directory
-            .create_output(&vector_index_file_name, state.context)?;
-
-        let mut meta_opt = Some(meta);
-        let mut vector_index_opt = Some(vector_index);
-        let result = (|| -> Result<Self> {
-            let meta = meta_opt.as_mut().ok_or_else(|| {
-                LuceneError::illegal_state("meta output missing during writer creation".to_string())
-            })?;
-            let vector_index = vector_index_opt.as_mut().ok_or_else(|| {
-                LuceneError::illegal_state(
-                    "vector index output missing during writer creation".to_string(),
-                )
-            })?;
+        // Both outputs are created inside the `try` block; when it fails,
+        // `IOUtils.closeWhileHandlingException(this)` runs `close()`, which
+        // is `IOUtils.close(meta, vectorIndex, flatVectorWriter,
+        // flatVectorsReader)` with no flat reader open yet
+        // (`Lucene99HnswVectorsWriter.java:167-190, 650-656`).
+        let mut flat_vector_writer = flat_vector_writer;
+        let mut meta_opt: Option<Box<dyn IndexOutput>> = None;
+        let mut vector_index_opt: Option<Box<dyn IndexOutput>> = None;
+        let result = (|| -> Result<()> {
+            let meta = meta_opt.insert(
+                state
+                    .directory
+                    .create_output(&meta_file_name, state.context)?,
+            );
+            let vector_index = vector_index_opt.insert(
+                state
+                    .directory
+                    .create_output(&vector_index_file_name, state.context)?,
+            );
             write_index_header(
                 meta.as_mut(),
                 META_CODEC_NAME,
@@ -523,30 +524,40 @@ impl HnswWriterState {
                 &state.segment_info.id(),
                 &state.segment_suffix,
             )?;
-            Ok(Self {
-                segment_write_state: owned_state
-                    .with_new_suffix(owned_state.segment_suffix.clone()),
-                meta: meta_opt.take(),
-                vector_index: vector_index_opt.take(),
-                flat_vector_writer,
-                flat_vectors_format,
-                flat_vectors_reader: None,
-                flat_writer_closed: false,
-                m,
-                beam_width,
-                num_merge_workers,
-                merge_exec,
-                tiny_segments_threshold,
-                version,
-                fields: Vec::new(),
-                finished: false,
-            })
+            Ok(())
         })();
 
-        if result.is_err() {
-            let _ = close_outputs(&mut meta_opt, &mut vector_index_opt);
+        if let Err(error) = result {
+            IOUtils::close_while_handling_exception([Some(|| {
+                IOUtils::close([
+                    meta_opt
+                        .take()
+                        .and_then(|mut o| IOUtils::closeable(move || o.close())),
+                    vector_index_opt
+                        .take()
+                        .and_then(|mut o| IOUtils::closeable(move || o.close())),
+                    IOUtils::closeable(|| flat_vector_writer.close()),
+                ])
+            })])?;
+            return Err(error);
         }
-        result
+        Ok(Self {
+            segment_write_state: owned_state.with_new_suffix(owned_state.segment_suffix.clone()),
+            meta: meta_opt,
+            vector_index: vector_index_opt,
+            flat_vector_writer,
+            flat_vectors_format,
+            flat_vectors_reader: None,
+            flat_writer_closed: false,
+            m,
+            beam_width,
+            num_merge_workers,
+            merge_exec,
+            tiny_segments_threshold,
+            version,
+            fields: Vec::new(),
+            finished: false,
+        })
     }
 
     /// Writes one field's metadata entry.
@@ -1254,18 +1265,27 @@ impl HnswWriterState {
                         as Arc<dyn crate::util::hnsw::RandomVectorScorerSupplier>,
                     total_vector_count,
                 );
-                // `IOUtils.close(scorerSupplier)`, also on failure, where Java
-                // closes it while suppressing its own error. The graph merger
-                // that shared it is gone by now.
-                let closed = match Arc::get_mut(&mut scorer_supplier) {
+                // The graph merger that shared the supplier is gone by now.
+                let close_supplier = || match Arc::get_mut(&mut scorer_supplier) {
                     Some(supplier) => supplier.close(),
                     None => Err(LuceneError::illegal_state(
                         "the merge's scorer supplier is still shared after the graph was built"
                             .to_string(),
                     )),
                 };
-                built?;
-                closed?;
+                match built {
+                    // `IOUtils.closeWhileSuppressingExceptions(t,
+                    // scorerSupplier)`, then `throw t`
+                    // (`Lucene99HnswVectorsWriter.java:441-447`).
+                    Err(t) => {
+                        return Err(IOUtils::close_while_suppressing_exceptions(
+                            t,
+                            [Some(close_supplier)],
+                        ))
+                    }
+                    // `IOUtils.close(scorerSupplier)` (`:448`).
+                    Ok(()) => IOUtils::close([Some(close_supplier)])?,
+                }
             } else {
                 let scorer = flat_vectors_reader.get_flat_vector_scorer(&field_info.name)?;
                 let scorer_supplier: Box<dyn crate::util::hnsw::RandomVectorScorerSupplier> =
@@ -1348,35 +1368,26 @@ impl HnswWriterState {
         total
     }
 
+    /// Equivalent to `Lucene99HnswVectorsWriter.close()`
+    /// (`Lucene99HnswVectorsWriter.java:648-656`): `IOUtils.close(meta,
+    /// vectorIndex, flatVectorWriter, flatVectorsReader)`, without the flat
+    /// writer once `ensureFlatReaderOpen` has closed it.
     fn close(&mut self) -> Result<()> {
-        let mut last_err: Option<LuceneError> = None;
-        // Java closes the flat writer only when `ensureFlatReaderOpen` has not
-        // already closed it (`Lucene99HnswVectorsWriter.java:648-654`).
-        if !self.flat_writer_closed {
-            if let Err(e) = self.flat_vector_writer.close() {
-                last_err = Some(e);
-            }
-        }
-        if let Some(reader) = self.flat_vectors_reader.as_mut() {
-            if let Err(e) = reader.close() {
-                last_err = Some(e);
-            }
-        }
-        if let Some(meta) = self.meta.as_mut() {
-            if let Err(e) = meta.close() {
-                last_err = Some(e);
-            }
-        }
-        if let Some(vector_index) = self.vector_index.as_mut() {
-            if let Err(e) = vector_index.close() {
-                last_err = Some(e);
-            }
-        }
-        if let Some(e) = last_err {
-            Err(e)
-        } else {
-            Ok(())
-        }
+        let flat_writer_closed = self.flat_writer_closed;
+        IOUtils::close([
+            self.meta
+                .as_mut()
+                .and_then(|o| IOUtils::closeable(move || o.close())),
+            self.vector_index
+                .as_mut()
+                .and_then(|o| IOUtils::closeable(move || o.close())),
+            (!flat_writer_closed)
+                .then_some(&mut self.flat_vector_writer)
+                .and_then(|w| IOUtils::closeable(move || w.close())),
+            self.flat_vectors_reader
+                .as_mut()
+                .and_then(|r| IOUtils::closeable(move || r.close())),
+        ])
     }
 }
 
@@ -1458,19 +1469,6 @@ impl crate::codecs::knn_vectors::IORunnable for HnswDeferredMerge<'_> {
             })?
             .merge_one_field_deferred(&self.field_info, self.merge_state)
     }
-}
-
-fn close_outputs(
-    meta: &mut Option<Box<dyn IndexOutput>>,
-    vector_index: &mut Option<Box<dyn IndexOutput>>,
-) -> Result<()> {
-    if let Some(mut m) = meta.take() {
-        m.close()?;
-    }
-    if let Some(mut v) = vector_index.take() {
-        v.close()?;
-    }
-    Ok(())
 }
 
 fn write_neighbors(
@@ -1920,10 +1918,46 @@ struct FieldEntry {
 
 impl Lucene99HnswVectorsReader {
     /// Creates a new reader for the given segment read state.
+    ///
+    /// Equivalent to `Lucene99HnswVectorsReader(SegmentReadState,
+    /// FlatVectorsReader)` (`Lucene99HnswVectorsReader.java:83-134`): when it
+    /// fails, `IOUtils.closeWhileHandlingException(this)` runs `close()`,
+    /// `IOUtils.close(flatVectorsReader, vectorIndex)`, whose `vectorIndex`
+    /// is assigned last and so is still null.
     pub fn new(
         state: &SegmentReadState<'_>,
         flat_vectors_reader: Box<dyn FlatVectorsReader>,
     ) -> Result<Self> {
+        let mut flat_vectors_reader = flat_vectors_reader;
+        match Self::open(state) {
+            Ok((fields, vector_index, version_meta, data_context)) => Ok(Self {
+                flat_vectors_reader,
+                field_infos: state.field_infos.clone(),
+                fields,
+                vector_index,
+                version: version_meta,
+                data_context,
+            }),
+            Err(error) => {
+                IOUtils::close_while_handling_exception([Some(|| {
+                    IOUtils::close([Some(|| flat_vectors_reader.close())])
+                })])?;
+                Err(error)
+            }
+        }
+    }
+
+    /// The `try` block of the constructor: reads the metadata and opens the
+    /// `.vex` input.
+    #[allow(clippy::type_complexity)]
+    fn open(
+        state: &SegmentReadState<'_>,
+    ) -> Result<(
+        HashMap<i32, FieldEntry>,
+        Box<dyn IndexInput>,
+        i32,
+        Box<dyn crate::store::IOContext>,
+    )> {
         let meta_file_name = segment_file_name(
             &state.segment_info.name,
             &state.segment_suffix,
@@ -1958,15 +1992,7 @@ impl Lucene99HnswVectorsReader {
             VECTOR_INDEX_CODEC_NAME,
             data_context.as_ref(),
         )?;
-
-        Ok(Self {
-            flat_vectors_reader,
-            field_infos: state.field_infos.clone(),
-            fields,
-            vector_index,
-            version: version_meta,
-            data_context,
-        })
+        Ok((fields, vector_index, version_meta, data_context))
     }
 
     /// Opens one of the format's data files, checks its header against
@@ -1987,21 +2013,32 @@ impl Lucene99HnswVectorsReader {
             file_extension,
         );
         let mut input = state.directory.open_input(&file_name, context)?;
-        let version_vector_data = check_index_header(
-            input.as_mut(),
-            codec_name,
-            VERSION_START,
-            VERSION_CURRENT,
-            &state.segment_info.id(),
-            &state.segment_suffix,
-        )?;
-        if version_meta != version_vector_data {
-            return Err(LuceneError::CorruptIndex(format!(
-                "format versions mismatch: meta={version_meta}, {codec_name}={version_vector_data}"
-            )));
+        let checked = (|| -> Result<()> {
+            let version_vector_data = check_index_header(
+                input.as_mut(),
+                codec_name,
+                VERSION_START,
+                VERSION_CURRENT,
+                &state.segment_info.id(),
+                &state.segment_suffix,
+            )?;
+            if version_meta != version_vector_data {
+                return Err(LuceneError::CorruptIndex(format!(
+                    "format versions mismatch: meta={version_meta}, {codec_name}={version_vector_data}"
+                )));
+            }
+            retrieve_checksum(input.as_mut())?;
+            Ok(())
+        })();
+        match checked {
+            Ok(()) => Ok(input),
+            Err(error) => {
+                // `IOUtils.closeWhileHandlingException(in)`
+                // (`Lucene99HnswVectorsReader.java:188-192`).
+                IOUtils::close_while_handling_exception([Some(|| input.close())])?;
+                Err(error)
+            }
         }
-        retrieve_checksum(input.as_mut())?;
-        Ok(input)
     }
 
     /// Returns the quantizer the vectors of `field` were compressed with, or
@@ -2354,9 +2391,14 @@ impl KnnVectorsReader for Lucene99HnswVectorsReader {
         self.flat_vectors_reader.finish_merge()
     }
 
+    /// Equivalent to `Lucene99HnswVectorsReader.close()`
+    /// (`Lucene99HnswVectorsReader.java:424-427`): `IOUtils.close(flatVectorsReader,
+    /// vectorIndex)`.
     fn close(&mut self) -> Result<()> {
-        self.flat_vectors_reader.close()?;
-        self.vector_index.close()
+        IOUtils::close([
+            IOUtils::closeable(|| self.flat_vectors_reader.close()),
+            IOUtils::closeable(|| self.vector_index.close()),
+        ])
     }
 
     fn get_off_heap_byte_size(&self, field_info: &FieldInfo) -> HashMap<String, i64> {
@@ -2738,7 +2780,7 @@ impl HnswGraph for OffHeapHnswGraph {
         }
         if self.arc_count > 0 {
             if self.version >= VERSION_GROUPVARINT {
-                read_group_v_ints(
+                crate::util::GroupVIntUtil::read_group_vints_input(
                     self.data_in.as_mut(),
                     &mut self.current_neighbors_buffer,
                     self.arc_count,
@@ -2818,40 +2860,6 @@ impl HnswGraph for OffHeapHnswGraph {
 
     fn neighbor_count(&self) -> i32 {
         self.arc_count as i32
-    }
-}
-
-fn read_group_v_ints(input: &mut dyn DataInput, dst: &mut [i32], limit: usize) -> Result<()> {
-    let mut i = 0;
-    while i + 4 <= limit {
-        let flag = input.read_byte()? as i32;
-        let n1 = (flag >> 6) as usize;
-        let n2 = ((flag >> 4) & 0x03) as usize;
-        let n3 = ((flag >> 2) & 0x03) as usize;
-        let n4 = (flag & 0x03) as usize;
-        dst[i] = read_int_in_group(input, n1)?;
-        dst[i + 1] = read_int_in_group(input, n2)?;
-        dst[i + 2] = read_int_in_group(input, n3)?;
-        dst[i + 3] = read_int_in_group(input, n4)?;
-        i += 4;
-    }
-    while i < limit {
-        dst[i] = input.read_v_int()?;
-        i += 1;
-    }
-    Ok(())
-}
-
-fn read_int_in_group(input: &mut dyn DataInput, num_bytes_minus_1: usize) -> Result<i32> {
-    match num_bytes_minus_1 {
-        0 => Ok(input.read_byte()? as i32 & 0xFF),
-        1 => Ok(input.read_short()? as i32 & 0xFFFF),
-        2 => {
-            let short = input.read_short()? as i32 & 0xFFFF;
-            let byte = input.read_byte()? as i32 & 0xFF;
-            Ok(short | (byte << 16))
-        }
-        _ => Ok(input.read_int()?),
     }
 }
 
@@ -3610,5 +3618,139 @@ mod graph_merger_choice_tests {
             .merge_exec
             .is_none());
         let _ = Lucene99HnswVectorsFormat::with_merge_exec(16, 100, 1, Some(executor));
+    }
+}
+
+/// The `IOUtils` close family at the HNSW and flat vectors call sites (#308).
+#[cfg(test)]
+mod close_family_tests {
+    use super::Lucene99HnswVectorsFormat;
+    use crate::codecs::knn_vectors::KnnVectorsFormat;
+    use crate::codecs::tests::{
+        owned_write_state, read_state, rewrite_file, test_segment_info, tracking_directory,
+    };
+    use crate::index::FieldInfos;
+
+    fn closed_of(log: &crate::codecs::tests::CloseLog, names: &[&str]) -> Vec<String> {
+        log.closed()
+            .into_iter()
+            .filter(|n| names.contains(&n.as_str()))
+            .collect()
+    }
+
+    fn write_empty(
+        dir: &std::sync::Arc<dyn crate::store::Directory>,
+        info: &crate::index::SegmentInfo,
+    ) {
+        let mut writer = Lucene99HnswVectorsFormat::new()
+            .fields_writer(&owned_write_state(dir, info))
+            .unwrap();
+        writer.finish().unwrap();
+        writer.close().unwrap();
+    }
+
+    const ALL: [&str; 4] = ["_0.vem", "_0.vex", "_0.vemf", "_0.vec"];
+
+    /// The flat writer's constructor closes the `.vemf` it created when the
+    /// `.vec` cannot be: `IOUtils.closeWhileHandlingException(this)`
+    /// (`Lucene99FlatVectorsWriter.java:132-136`).
+    #[test]
+    fn a_failed_flat_writer_constructor_closes_its_meta_output() {
+        let (dir, _tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 10);
+        log.fail_open("_0.vec");
+        Lucene99HnswVectorsFormat::new()
+            .fields_writer(&owned_write_state(&dir, &info))
+            .unwrap_err();
+        assert_eq!(closed_of(&log, &ALL), ["_0.vemf"]);
+    }
+
+    /// The HNSW writer's constructor runs `IOUtils.closeWhileHandlingException(this)`
+    /// (`Lucene99HnswVectorsWriter.java:187-190`): `close()` closes the `.vem`
+    /// and the flat writer it was handed, whose `.vemf` and `.vec` close.
+    #[test]
+    fn a_failed_hnsw_writer_constructor_closes_meta_and_the_flat_writer() {
+        let (dir, _tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 10);
+        log.fail_open("_0.vex");
+        Lucene99HnswVectorsFormat::new()
+            .fields_writer(&owned_write_state(&dir, &info))
+            .unwrap_err();
+        assert_eq!(closed_of(&log, &ALL), ["_0.vem", "_0.vemf", "_0.vec"]);
+    }
+
+    /// `close()` is `IOUtils.close(meta, vectorIndex, flatVectorWriter,
+    /// flatVectorsReader)` (`Lucene99HnswVectorsWriter.java:648-656`), and the
+    /// flat writer's is `IOUtils.close(meta, vectorData)`
+    /// (`Lucene99FlatVectorsWriter.java:353-356`): everything is closed in
+    /// that order and the first failure is raised.
+    #[test]
+    fn writer_close_closes_everything_in_order_and_raises_the_first_failure() {
+        let (dir, _tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 10);
+        let mut writer = Lucene99HnswVectorsFormat::new()
+            .fields_writer(&owned_write_state(&dir, &info))
+            .unwrap();
+        writer.finish().unwrap();
+        for name in ["_0.vem", "_0.vex", "_0.vemf"] {
+            log.fail_close(name);
+        }
+        let error = writer.close().unwrap_err();
+        assert!(format!("{error}").contains("_0.vem"), "{error}");
+        assert!(!format!("{error}").contains("_0.vex"), "{error}");
+        assert_eq!(closed_of(&log, &ALL), ALL);
+    }
+
+    /// A bad `.vec` header closes the `.vec` input:
+    /// `IOUtils.closeWhileHandlingException(in)`
+    /// (`Lucene99FlatVectorsReader.java:169-173`).
+    #[test]
+    fn a_bad_flat_data_header_closes_the_flat_input() {
+        let (dir, tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 10);
+        let fis = FieldInfos::default();
+        write_empty(&dir, &info);
+        let before = closed_of(&log, &ALL).len();
+        rewrite_file(&tracking, "_0.vec", |bytes| bytes[6] ^= 0xff);
+        Lucene99HnswVectorsFormat::new()
+            .fields_reader(&read_state(&*dir, &info, &fis))
+            .unwrap_err();
+        assert_eq!(closed_of(&log, &ALL)[before..], ["_0.vec"]);
+    }
+
+    /// A bad `.vex` header closes the `.vex` input
+    /// (`Lucene99HnswVectorsReader.java:188-192`), then
+    /// `IOUtils.closeWhileHandlingException(this)` closes the flat reader the
+    /// constructor was handed (`Lucene99HnswVectorsReader.java:129-133`).
+    #[test]
+    fn a_failed_hnsw_reader_constructor_closes_the_index_and_the_flat_reader() {
+        let (dir, tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 10);
+        let fis = FieldInfos::default();
+        write_empty(&dir, &info);
+        let before = closed_of(&log, &ALL).len();
+        rewrite_file(&tracking, "_0.vex", |bytes| bytes[6] ^= 0xff);
+        Lucene99HnswVectorsFormat::new()
+            .fields_reader(&read_state(&*dir, &info, &fis))
+            .unwrap_err();
+        assert_eq!(closed_of(&log, &ALL)[before..], ["_0.vex", "_0.vec"]);
+    }
+
+    /// `close()` is `IOUtils.close(flatVectorsReader, vectorIndex)`
+    /// (`Lucene99HnswVectorsReader.java:424-427`).
+    #[test]
+    fn reader_close_closes_the_index_past_a_flat_reader_failure() {
+        let (dir, _tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 10);
+        let fis = FieldInfos::default();
+        write_empty(&dir, &info);
+        let mut reader = Lucene99HnswVectorsFormat::new()
+            .fields_reader(&read_state(&*dir, &info, &fis))
+            .unwrap();
+        let before = closed_of(&log, &ALL).len();
+        log.fail_close("_0.vec");
+        let error = reader.close().unwrap_err();
+        assert!(format!("{error}").contains("_0.vec"), "{error}");
+        assert_eq!(closed_of(&log, &ALL)[before..], ["_0.vec", "_0.vex"]);
     }
 }

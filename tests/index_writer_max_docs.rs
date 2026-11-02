@@ -246,7 +246,7 @@ fn add_indexes_codec_readers_refuses_readers_over_the_limit() {
         .collect();
     let leaves = readers
         .iter()
-        .flat_map(|reader| Arc::clone(reader).leaves())
+        .flat_map(|reader| Arc::clone(reader).leaves().unwrap())
         .map(|leaf| SlowCodecReaderWrapper::wrap(leaf.leaf_reader()).unwrap())
         .collect::<Vec<_>>();
 

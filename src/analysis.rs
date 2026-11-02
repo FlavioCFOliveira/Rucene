@@ -283,12 +283,15 @@ impl AsUnwrappable<dyn TokenStream> for dyn TokenStream {
 
 /// Returns Lucene's default token attribute factory.
 ///
-/// The factory uses [`PackedTokenAttributeImpl`] as the implementation for all
-/// of the standard token attribute interfaces it supports.
+/// Equivalent to `TokenStream.DEFAULT_TOKEN_ATTRIBUTE_FACTORY`
+/// (`TokenStream.java:81-83`): `AttributeFactory.getStaticImplementation` over
+/// the default attribute factory with [`PackedTokenAttributeImpl`], so that
+/// implementation serves every token attribute interface it implements and
+/// the delegate serves the others.
 pub fn default_token_attribute_factory() -> Arc<dyn AttributeFactory> {
-    let mut factory = DefaultAttributeFactory::new();
-    factory.register_attribute_impl::<PackedTokenAttributeImpl>();
-    Arc::new(factory)
+    Arc::new(crate::util::attribute::get_static_implementation::<
+        PackedTokenAttributeImpl,
+    >(Arc::new(DefaultAttributeFactory::new())))
 }
 
 fn illegal_state_message() -> String {

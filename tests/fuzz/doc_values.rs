@@ -136,10 +136,26 @@
 //!   every structural field lives; the middle of a bitmap is pure data, and
 //!   flipping a bit there adds or removes a document and reaches no branch the
 //!   ends do not.
+//!
+//! # The one Java assertion a merge instance can trip
+//!
+//! A corrupt documents-with-field stream or value count can hand the merge
+//! instance of a numeric reader an index at or past the `numValues` it was
+//! built for. `DirectReader.getMergeInstance`'s `get(long)` asserts exactly
+//! that (`assert index < numValues`, `DirectReader.java:115`), and the port
+//! keeps the assertion at the same place (`debug_assert!(index <
+//! self.num_values)` in `DirectReaderMergeInstance::get_checked`). Lucene's own
+//! tests run with assertions enabled, so such an input is one Java refuses with
+//! an `AssertionError`, not a defect of the port. The sweeps therefore accept
+//! that one panic — matched by its message and by the file it is raised in —
+//! while they walk a merge instance, and only there; any other panic, on that
+//! path or another, still fails the test (see `visit_merge_instance`).
 
+use std::cell::Cell;
 use std::collections::HashMap;
-use std::sync::atomic::AtomicI64;
-use std::sync::Arc;
+use std::panic::{self, AssertUnwindSafe, PanicHookInfo};
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+use std::sync::{Arc, Once};
 
 use rucene::codecs::codec_util;
 use rucene::codecs::state::{SegmentReadState, SegmentWriteState};
@@ -155,7 +171,7 @@ use rucene::index::{
 use rucene::search::{DocIdSetIterator, NO_MORE_DOCS};
 use rucene::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT};
 use rucene::util::string_helper::StringHelper;
-use rucene::util::{default_info_stream, ByteBlockPool, BytesRef, Version};
+use rucene::util::{ByteBlockPool, BytesRef, Version};
 
 /// Every file the consumer produces, so a corrupted copy is a complete
 /// segment. `.dvs` is written but never read by this format's producer, so it
@@ -501,7 +517,7 @@ fn fixtures() -> Vec<Fixture> {
 fn write_segment(directory: &Arc<dyn Directory>, info: &SegmentInfo, fixture: &Fixture) {
     let infos = fixture.field_infos();
     let write_state = SegmentWriteState::new(
-        default_info_stream(),
+        &rucene::util::NoOutputInfoStream,
         Arc::clone(directory),
         info,
         &infos,
@@ -634,9 +650,97 @@ fn visit_all(directory: &Arc<dyn Directory>, info: &SegmentInfo, fixture: &Fixtu
     let mut decoded = visit_fields(producer.as_ref(), &infos, fixture);
     // The merge instance must be no more trusting than the primary one.
     if let Ok(merge) = producer.get_merge_instance() {
-        decoded += visit_fields(merge.as_ref(), &infos, fixture);
+        decoded += visit_merge_instance(merge.as_ref(), &infos, fixture);
     }
     decoded
+}
+
+/// The message of the assertion `DirectReaderMergeInstance::get_checked`
+/// keeps from `DirectReader.java:115` (`assert index < numValues`).
+const MERGE_INSTANCE_ASSERTION: &str = "assertion failed: index < self.num_values";
+
+/// The file that assertion is raised in.
+const MERGE_INSTANCE_ASSERTION_FILE: &str = "src/util/packed.rs";
+
+/// How many walks of a merge instance stopped at that assertion, across the
+/// whole binary; reported by the sweeps, never asserted on.
+static MERGE_INSTANCE_ASSERTIONS: AtomicUsize = AtomicUsize::new(0);
+
+thread_local! {
+    /// Set while this thread walks a merge instance.
+    static IN_MERGE_INSTANCE: Cell<bool> = const { Cell::new(false) };
+    /// Set by the panic hook when the panic it saw is the Java assertion,
+    /// raised in its file, while this thread walked a merge instance.
+    static MERGE_ASSERTION_SEEN: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The text a panic payload carries, when it carries one.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> Option<&str> {
+    payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+}
+
+/// Whether a panic is the Java assertion of a merge instance.
+fn is_merge_instance_assertion(info: &PanicHookInfo<'_>) -> bool {
+    panic_message(info.payload()) == Some(MERGE_INSTANCE_ASSERTION)
+        && info
+            .location()
+            .is_some_and(|location| location.file().ends_with(MERGE_INSTANCE_ASSERTION_FILE))
+}
+
+/// Installs, once per binary, a panic hook that records the Java assertion of
+/// a merge instance instead of printing it, and hands every other panic to the
+/// hook that was installed before.
+fn install_merge_assertion_hook() {
+    static INSTALL: Once = Once::new();
+    INSTALL.call_once(|| {
+        let previous = panic::take_hook();
+        panic::set_hook(Box::new(move |info| {
+            if IN_MERGE_INSTANCE.with(Cell::get) && is_merge_instance_assertion(info) {
+                MERGE_ASSERTION_SEEN.with(|seen| seen.set(true));
+                return;
+            }
+            previous(info);
+        }));
+    });
+}
+
+/// Walks a merge instance as [`visit_fields`] does, accepting exactly one
+/// panic: the Java assertion `index < numValues` of the merge instance (see the
+/// module documentation). The walk stops there, as Java's would at its
+/// `AssertionError`. Any other panic is resumed, so it fails the test.
+fn visit_merge_instance(
+    producer: &dyn DocValuesProducer,
+    infos: &FieldInfos,
+    fixture: &Fixture,
+) -> usize {
+    install_merge_assertion_hook();
+    MERGE_ASSERTION_SEEN.with(|seen| seen.set(false));
+    IN_MERGE_INSTANCE.with(|flag| flag.set(true));
+    let walked = panic::catch_unwind(AssertUnwindSafe(|| visit_fields(producer, infos, fixture)));
+    IN_MERGE_INSTANCE.with(|flag| flag.set(false));
+    match walked {
+        Ok(decoded) => decoded,
+        Err(payload) => {
+            let seen = MERGE_ASSERTION_SEEN.with(|seen| seen.replace(false));
+            if seen && panic_message(&*payload) == Some(MERGE_INSTANCE_ASSERTION) {
+                MERGE_INSTANCE_ASSERTIONS.fetch_add(1, Ordering::Relaxed);
+                0
+            } else {
+                panic::resume_unwind(payload)
+            }
+        }
+    }
+}
+
+/// Prints how many merge-instance walks stopped at the Java assertion so far.
+fn report_merge_instance_assertions(sweep: &str) {
+    println!(
+        "{sweep}: {} merge-instance walks stopped at `assert index < numValues` so far",
+        MERGE_INSTANCE_ASSERTIONS.load(Ordering::Relaxed)
+    );
 }
 
 fn visit_fields(producer: &dyn DocValuesProducer, infos: &FieldInfos, fixture: &Fixture) -> usize {
@@ -1403,6 +1507,7 @@ fn every_value_at_every_byte_of_the_data_file_is_survived() {
             fixture.name
         );
     }
+    report_merge_instance_assertions("every_value_at_every_byte_of_the_data_file_is_survived");
 }
 
 #[test]
@@ -1442,6 +1547,7 @@ fn every_value_at_every_byte_of_the_metadata_file_is_survived() {
             fixture.name
         );
     }
+    report_merge_instance_assertions("every_value_at_every_byte_of_the_metadata_file_is_survived");
 }
 
 #[test]
@@ -1461,6 +1567,7 @@ fn a_truncated_data_file_is_survived_at_every_length() {
             visit_all(&corrupt, &corrupt_info, &fixture);
         }
     }
+    report_merge_instance_assertions("a_truncated_data_file_is_survived_at_every_length");
 }
 
 #[test]
@@ -1542,6 +1649,7 @@ fn hostile_metadata_that_passes_its_checksum_is_survived() {
         "the sweep must reach the iterators rather than stop at the entry \
          validation; only {opened} of {attempts} attempts decoded anything"
     );
+    report_merge_instance_assertions("hostile_metadata_that_passes_its_checksum_is_survived");
 }
 
 // ---------------------------------------------------------------------------

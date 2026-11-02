@@ -102,7 +102,7 @@ use rucene::index::point_values_writer::PointValuesWriter;
 use rucene::index::{FieldInfo, FieldInfos, SegmentInfo};
 use rucene::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT};
 use rucene::util::string_helper::StringHelper;
-use rucene::util::{default_info_stream, BytesRef, Version};
+use rucene::util::{BytesRef, Version};
 
 /// The three files a points segment is made of.
 const EXTENSIONS: [&str; 3] = ["kdd", "kdi", "kdm"];
@@ -298,7 +298,7 @@ fn fixtures() -> Vec<Fixture> {
 fn write_segment(directory: &Arc<dyn Directory>, info: &SegmentInfo, fixture: &Fixture) {
     let infos = field_infos();
     let updates = BufferedUpdates::default();
-    let info_stream = default_info_stream();
+    let info_stream = &rucene::util::NoOutputInfoStream;
     let state = SegmentWriteState::new(
         info_stream,
         Arc::clone(directory),

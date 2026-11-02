@@ -69,15 +69,16 @@ impl LongsRef {
     ///
     /// # Panics
     ///
-    /// Panics when the resulting reference is not internally consistent, which
-    /// is Java's assertion on `isValid()`.
+    /// Panics in debug builds when the resulting reference is not internally
+    /// consistent: Java's `assert isValid()` (`LongsRef.java:58-63`), which
+    /// only runs under `-ea`.
     pub fn from_longs(longs: Vec<i64>, offset: usize, length: usize) -> Self {
         let r = Self {
             longs,
             offset,
             length,
         };
-        r.is_valid().expect("INVARIANT: LongsRef must be valid");
+        debug_assert!(r.is_valid().is_ok(), "{:?}", r.is_valid());
         r
     }
 

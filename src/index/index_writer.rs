@@ -1148,15 +1148,15 @@ impl IndexWriter {
     /// `SegmentInfos` starts with before its first commit. This port's
     /// [`SegmentInfos::new`] starts at `-1` instead (see the note on
     /// `ReaderCommit::new` in `directory_reader.rs`), so the check refuses
-    /// both values. Java's `IllegalArgumentException` for a stale reader also
-    /// carries the `IOException` that revealed it as its cause; this port's
-    /// [`LuceneError::IllegalArgument`] carries a message only.
+    /// both values.
     ///
     /// # Errors
     ///
     /// Returns [`LuceneError::IllegalArgument`] with Java's messages when the
-    /// reader is from another directory, was opened before the first commit,
-    /// or names a commit file the index no longer has.
+    /// reader is from another directory or was opened before the first commit,
+    /// and [`LuceneError::IllegalArgumentWithCause`] when it names a commit
+    /// file the index no longer has, whose cause is the failure reading that
+    /// commit, as in Java (`IndexWriter.java:1059-1064`).
     fn init_from_reader(
         reader: &StandardDirectoryReader,
         commit: &dyn IndexCommit,
@@ -1202,11 +1202,16 @@ impl IndexWriter {
         let mut last_commit =
             match SegmentInfos::read_commit(Arc::clone(directory_orig), &segments_file_name) {
                 Ok(last_commit) => last_commit,
+                // `catch (IOException ioe) { throw new IllegalArgumentException(..., ioe); }`
+                // (`IndexWriter.java:1059-1064`): the read failure is the cause.
                 Err(error) if is_java_io_exception(&error) => {
-                    return Err(LuceneError::IllegalArgument(format!(
-                        "the provided reader is stale: its prior commit file \
-                         \"{segments_file_name}\" is missing from index"
-                    )));
+                    return Err(LuceneError::illegal_argument_with_cause(
+                        format!(
+                            "the provided reader is stale: its prior commit file \
+                             \"{segments_file_name}\" is missing from index"
+                        ),
+                        Arc::new(error),
+                    ));
                 }
                 Err(error) => return Err(error),
             };
@@ -4258,7 +4263,11 @@ impl IndexWriter {
                 )?;
             // `merge.reorder(mergedView, directory, intraMergeExecutor)`
             // (`IndexWriter.java:5343`).
-            if let Some(doc_map) = merge.reorder(Arc::clone(&merged_view), &self.directory)? {
+            if let Some(doc_map) = merge.reorder(
+                Arc::clone(&merged_view),
+                &self.directory,
+                intra_merge_executor.as_ref(),
+            )? {
                 let mut maps: Vec<crate::index::merge::DocMap> =
                     Vec::with_capacity(merge_readers.len());
                 let mut doc_base = 0i32;
@@ -4333,11 +4342,9 @@ impl IndexWriter {
             .max_doc()?;
         if let Some(info) = merge.info().as_mut() {
             info.info.set_max_doc(merged_max_doc)?;
-            info.set_soft_del_count(i32::try_from(soft_delete_count).map_err(|_| {
-                LuceneError::illegal_state(format!(
-                    "soft-delete count {soft_delete_count} overflows"
-                ))
-            })?)?;
+            // `merge.info.setSoftDelCount(Math.toIntExact(softDeleteCount.get()))`
+            // (`IndexWriter.java:5375`).
+            info.set_soft_del_count(crate::error::to_int_exact(soft_delete_count)?)?;
         }
         merge.check_aborted()?;
 
@@ -4691,11 +4698,8 @@ impl IndexWriter {
         // Best-effort up-front check.
         self.test_reserve_docs(num_docs)?;
 
-        // `IndexWriter.java:3509-3511`. `Math.toIntExact` throws
-        // `ArithmeticException("integer overflow")`; the crate has no
-        // arithmetic-error variant, so the nearest one carries the message.
-        let total_max_doc = i32::try_from(num_docs)
-            .map_err(|_| LuceneError::IllegalArgument("integer overflow".to_string()))?;
+        // `Math.toIntExact(numDocs)` (`IndexWriter.java:3509-3511`).
+        let total_max_doc = crate::error::to_int_exact(num_docs)?;
         let context: Arc<dyn IOContext> = Arc::from(crate::store::merge_io_context(
             crate::store::MergeInfo::new(total_max_doc, -1, false, UNBOUNDED_MAX_MERGE_SEGMENTS),
         ));
@@ -4746,7 +4750,11 @@ impl IndexWriter {
                 )?;
             // `merge.reorder(mergedReader, directory, intraMergeExecutor)`
             // (`IndexWriter.java:3551`).
-            if let Some(doc_map) = merge.reorder(Arc::clone(&merged_reader), &self.directory)? {
+            if let Some(doc_map) = merge.reorder(
+                Arc::clone(&merged_reader),
+                &self.directory,
+                intra_merge_executor.as_ref(),
+            )? {
                 readers = vec![Arc::new(
                     crate::index::sorting_codec_reader::SortingCodecReader::wrap(
                         merged_reader,
@@ -6638,23 +6646,39 @@ impl IndexWriter {
 
     /// Records the standard diagnostics plus `details` on a segment.
     ///
-    /// Equivalent to `IndexWriter.setDiagnostics(SegmentInfo, String, Map)`.
+    /// Equivalent to the private `IndexWriter.setDiagnostics(SegmentInfo,
+    /// String, Map)` (`IndexWriter.java:5135-5149`), which records eight keys
+    /// and then `details`. Each value is the port of the Java expression that
+    /// computes it:
     ///
-    /// **Divergence from Lucene 10.5.0.** Java also records
-    /// `java.runtime.version`, `java.vendor` and `os.version`, which name the
-    /// JVM the segment was written by. Rust has no JVM, so the port records the
-    /// three keys that do have a counterpart. The map is free-form metadata that
-    /// no reader interprets, so index compatibility is unaffected.
+    /// * `source`, `lucene.version` and `timestamp` are Java's values;
+    /// * `os`, `os.arch`, `os.version` and `java.vendor` are
+    ///   `Constants.OS_NAME`, `OS_ARCH`, `OS_VERSION` and `JAVA_VENDOR`, read
+    ///   through [`Constants`](crate::util::Constants), which answers the JVM
+    ///   system properties from the process environment and the Rust runtime
+    ///   (`linux`/`x86_64` where a JVM says `Linux`/`amd64`, `Unknown` for a
+    ///   property nothing sets);
+    /// * `java.runtime.version` is `Runtime.version().toString()`,
+    ///   [`Constants::runtime_version`](crate::util::Constants::runtime_version).
+    ///
+    /// The map is free-form metadata that no reader interprets.
     pub fn set_diagnostics_with_details(
         info: &mut SegmentInfo,
         source: &str,
         details: Option<&HashMap<String, String>>,
     ) {
+        use crate::util::Constants;
         let mut diagnostics = HashMap::new();
         diagnostics.insert("source".to_string(), source.to_string());
         diagnostics.insert("lucene.version".to_string(), Version::LATEST.to_string());
-        diagnostics.insert("os".to_string(), std::env::consts::OS.to_string());
-        diagnostics.insert("os.arch".to_string(), std::env::consts::ARCH.to_string());
+        diagnostics.insert("os".to_string(), Constants::os_name().to_string());
+        diagnostics.insert("os.arch".to_string(), Constants::os_arch().to_string());
+        diagnostics.insert("os.version".to_string(), Constants::os_version());
+        diagnostics.insert(
+            "java.runtime.version".to_string(),
+            Constants::runtime_version(),
+        );
+        diagnostics.insert("java.vendor".to_string(), Constants::java_vendor());
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis())
@@ -7813,7 +7837,14 @@ impl IndexWriter {
     where
         F: FnOnce(i32, &Arc<crate::index::readers_and_updates::ReadersAndUpdates>) -> Result<()>,
     {
-        let leaves = Arc::clone(reader_in).leaves();
+        // Java reads `readerIn.leaves()`, and with it `ensureOpen()`, only for
+        // a composite reader; a leaf reader is used as it is
+        // (`IndexWriter.java:1806-1817`).
+        let top = Arc::clone(reader_in).build_context(None, 0, 0, 0, 0);
+        if !top.is_leaf_context() {
+            reader_in.ensure_open()?;
+        }
+        let leaves = top.leaves();
         if leaves.is_empty() {
             return Ok(-1);
         }
@@ -11518,11 +11549,15 @@ mod tests {
             let mut config = IndexWriterConfig::new();
             config.set_index_commit(Some(Arc::from(reader.index_commit().unwrap())));
             let error = IndexWriter::new(Arc::clone(&dir), config).unwrap_err();
+            // `new IllegalArgumentException(..., ioe)` (`IndexWriter.java:1060-1064`):
+            // the failed read of the missing commit is the cause.
             assert!(
-                matches!(&error, LuceneError::IllegalArgument(message)
-                    if message.contains("the provided reader is stale: its prior commit file")),
+                matches!(&error, LuceneError::IllegalArgumentWithCause { message, cause }
+                    if message.contains("the provided reader is stale: its prior commit file")
+                        && is_java_io_exception(cause)),
                 "{error:?}"
             );
+            assert_eq!(error.java_simple_name(), "IllegalArgumentException");
             IndexReader::close(reader.as_ref()).unwrap();
         }
     }
@@ -13553,6 +13588,7 @@ mod tests {
             let reader = IndexWriterTrait::get_reader(writer.as_ref(), true, false).unwrap();
             let fields: Vec<(String, i32)> = Arc::clone(&reader)
                 .leaves()
+                .unwrap()
                 .iter()
                 .flat_map(|leaf| {
                     leaf.leaf_reader()

@@ -163,45 +163,6 @@ impl ScalarQuantizer {
         self.bits
     }
 
-    /// Computes quantiles from a sample of vectors at the given confidence
-    /// interval.
-    ///
-    /// Equivalent to `ScalarQuantizer.fromVectors`, reduced to the quantile
-    /// computation itself, for a caller that has already gathered the sample.
-    /// [`from_vectors`](Self::from_vectors) is the full form.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalArgument`] when `confidence_interval` is
-    /// outside `[0.9, 1.0]`, and whatever [`new`](Self::new) raises.
-    pub fn from_sample(
-        sample: &[f32],
-        confidence_interval: f32,
-        bits: u8,
-        dimension: usize,
-    ) -> Result<Self> {
-        if sample.is_empty() || dimension == 0 {
-            return Self::new(0.0, 0.0, bits);
-        }
-        if !(0.9..=1.0).contains(&confidence_interval) {
-            return Err(LuceneError::IllegalArgument(format!(
-                "confidenceInterval must be in [0.9, 1.0], got {confidence_interval}"
-            )));
-        }
-        if confidence_interval == 1.0 {
-            let mut min = f32::INFINITY;
-            let mut max = f32::NEG_INFINITY;
-            for &v in sample {
-                min = min.min(v);
-                max = max.max(v);
-            }
-            return Self::new(min, max, bits);
-        }
-        let mut scratch = sample.to_vec();
-        let [lower, upper] = Self::get_upper_and_lower_quantile(&mut scratch, confidence_interval);
-        Self::new(lower, upper, bits)
-    }
-
     /// Returns the values at the `(1 - confidence_interval)/2` and
     /// `confidence_interval/2` percentiles of `arr`, which need not be sorted.
     ///
@@ -842,9 +803,4 @@ impl std::fmt::Display for ScalarQuantizer {
             self.min_quantile, self.max_quantile, self.bits
         )
     }
-}
-
-/// Returns whether `v` is a unit vector, which cosine quantization requires.
-pub fn is_unit_vector(v: &[f32]) -> bool {
-    vector_util::is_unit_vector(v)
 }

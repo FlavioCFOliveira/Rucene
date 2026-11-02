@@ -89,7 +89,7 @@ impl HnswUtil {
         vector_field: &str,
         graph_of_leaf: &dyn Fn(&LeafReaderContext, &str) -> Result<Box<dyn HnswGraph>>,
     ) -> Result<bool> {
-        for ctx in reader.leaves() {
+        for ctx in reader.leaves()? {
             let mut graph = graph_of_leaf(&ctx, vector_field)?;
             if !Self::is_rooted(graph.as_mut())? {
                 return Ok(false);

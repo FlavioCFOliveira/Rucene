@@ -22,11 +22,9 @@ use crate::codecs::postings::{PushPostingsWriterBase, PushPostingsWriterState};
 use crate::codecs::state::SegmentWriteState;
 use crate::codecs::term_state::{BlockTermState, CompetitiveImpactAccumulator, Impact};
 use crate::error::{LuceneError, Result};
-use crate::index::{
-    index_file_names::segment_file_name, FieldInfo, IndexOptions, NumericDocValues,
-};
+use crate::index::{index_file_names::segment_file_name, FieldInfo, NumericDocValues};
 use crate::store::{DataOutput, IndexOutput};
-use crate::util::{BitUtil, FixedBitSet};
+use crate::util::{BitUtil, FixedBitSet, IOUtils};
 
 /// Maximum allowed position value (mirrors `IndexWriter.MAX_POSITION`).
 const MAX_POSITION: i32 = i32::MAX - 128;
@@ -230,22 +228,23 @@ impl Lucene104PostingsWriter {
         let meta_name = segment_file_name(&segment_info.name, suffix, "psm");
         let doc_name = segment_file_name(&segment_info.name, suffix, "doc");
 
+        // `metaOut` is created before the `try` block, and every other output
+        // is held as soon as it is created
+        // (`Lucene104PostingsWriter.java:153-214`).
         let mut meta_out = dir.create_output(&meta_name, context)?;
-        write_index_header(meta_out.as_mut(), META_CODEC, version, &id, suffix)?;
-
-        let mut doc_out = dir.create_output(&doc_name, context)?;
-        write_index_header(doc_out.as_mut(), DOC_CODEC, version, &id, suffix)?;
-
+        let mut doc_out: Option<Box<dyn IndexOutput>> = None;
         let mut pos_out: Option<Box<dyn IndexOutput>> = None;
         let mut pay_out: Option<Box<dyn IndexOutput>> = None;
         let mut payload_bytes = Vec::new();
 
         let build_result: Result<()> = (|| {
+            let d = doc_out.insert(dir.create_output(&doc_name, context)?);
+            write_index_header(meta_out.as_mut(), META_CODEC, version, &id, suffix)?;
+            write_index_header(d.as_mut(), DOC_CODEC, version, &id, suffix)?;
             if state.field_infos.has_prox() {
                 let pos_name = segment_file_name(&segment_info.name, suffix, "pos");
-                let mut p = dir.create_output(&pos_name, context)?;
+                let p = pos_out.insert(dir.create_output(&pos_name, context)?);
                 write_index_header(p.as_mut(), POS_CODEC, version, &id, suffix)?;
-                pos_out = Some(p);
 
                 if state.field_infos.has_payloads() {
                     payload_bytes = Vec::with_capacity(128);
@@ -253,25 +252,23 @@ impl Lucene104PostingsWriter {
 
                 if state.field_infos.has_payloads() || state.field_infos.has_offsets() {
                     let pay_name = segment_file_name(&segment_info.name, suffix, "pay");
-                    let mut py = dir.create_output(&pay_name, context)?;
+                    let py = pay_out.insert(dir.create_output(&pay_name, context)?);
                     write_index_header(py.as_mut(), PAY_CODEC, version, &id, suffix)?;
-                    pay_out = Some(py);
                 }
             }
             Ok(())
         })();
 
-        if build_result.is_err() {
-            let _ = meta_out.close();
-            let _ = doc_out.close();
-            if let Some(ref mut p) = pos_out {
-                let _ = p.close();
-            }
-            if let Some(ref mut py) = pay_out {
-                let _ = py.close();
-            }
+        if let Err(error) = build_result {
+            // `IOUtils.closeWhileHandlingException(metaOut, docOut, posOut,
+            // payOut)` (`Lucene104PostingsWriter.java:209-213`).
+            IOUtils::close_while_handling_exception(
+                [Some(meta_out), doc_out, pos_out, pay_out]
+                    .map(|o| o.map(|mut o| move || o.close())),
+            )?;
+            return Err(error);
         }
-        build_result?;
+        let doc_out = doc_out.expect("INVARIANT: the try block created the doc output");
 
         Ok(Self {
             version,
@@ -348,40 +345,12 @@ impl PushPostingsWriterBase for Lucene104PostingsWriter {
         Ok(())
     }
 
+    /// Equivalent to `Lucene104PostingsWriter.setField(FieldInfo)`
+    /// (`Lucene104PostingsWriter.java:233-237`): `super.setField(fieldInfo)`,
+    /// then the per-field state of this writer.
     fn set_field(&mut self, field_info: &FieldInfo) -> Result<()> {
-        let state = self.push_state_mut();
-        state.field_info = Some(field_info.clone());
-        state.index_options = field_info.index_options;
-        state.write_freqs = field_info
-            .index_options
-            .subsumes(IndexOptions::DOCS_AND_FREQS);
-        state.write_positions = field_info
-            .index_options
-            .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS);
-        state.write_offsets = field_info
-            .index_options
-            .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS);
-        state.write_payloads = field_info.has_payloads();
-        // A field that stores payloads but not offsets must request PAYLOADS
-        // only. Requesting ALL (which subsumes OFFSETS) makes a conforming
-        // `Fields` implementation refuse the request, exactly as Lucene's
-        // `FreqProxFields` does with "did not index offsets".
-        state.enum_flags = if !state.write_freqs {
-            crate::codecs::postings::POSTINGS_ENUM_NONE
-        } else if !state.write_positions {
-            crate::codecs::postings::POSTINGS_ENUM_FREQS
-        } else if !state.write_offsets {
-            if state.write_payloads {
-                crate::codecs::postings::POSTINGS_ENUM_PAYLOADS
-            } else {
-                crate::codecs::postings::POSTINGS_ENUM_POSITIONS
-            }
-        } else if !state.write_payloads {
-            crate::codecs::postings::POSTINGS_ENUM_OFFSETS
-        } else {
-            crate::codecs::postings::POSTINGS_ENUM_ALL
-        };
-
+        // `super.setField(fieldInfo)`.
+        self.push_state_mut().set_field(field_info);
         self.last_state = BlockTermState::default();
         self.field_has_norms = field_info.has_norms();
         Ok(())
@@ -643,19 +612,23 @@ impl PushPostingsWriterBase for Lucene104PostingsWriter {
             Ok(())
         })();
 
-        let close_result = self.meta_out.close().and_then(|_| self.doc_out.close());
-        let close_result = if let Some(pos_out) = self.pos_out.as_mut() {
-            close_result.and_then(|_| pos_out.close())
-        } else {
-            close_result
-        };
-        let close_result = if let Some(pay_out) = self.pay_out.as_mut() {
-            close_result.and_then(|_| pay_out.close())
-        } else {
-            close_result
-        };
-
-        result.and(close_result)
+        // `IOUtils.closeWhileHandlingException(metaOut, docOut, posOut,
+        // payOut)` when the footers fail, `IOUtils.close(metaOut, docOut,
+        // posOut, payOut)` otherwise (`Lucene104PostingsWriter.java:729-735`).
+        let closeables = [
+            Some(&mut self.meta_out),
+            Some(&mut self.doc_out),
+            self.pos_out.as_mut(),
+            self.pay_out.as_mut(),
+        ]
+        .map(|o| o.map(|o| move || o.close()));
+        match result {
+            Ok(()) => IOUtils::close(closeables),
+            Err(error) => {
+                IOUtils::close_while_handling_exception(closeables)?;
+                Err(error)
+            }
+        }
     }
 }
 
@@ -825,8 +798,9 @@ impl Lucene104PostingsWriter {
                 self.level0_output
                     .write_byte((-(num_bit_set_longs as i8)) as u8)?;
                 let bits = self.spare_bit_set.get_bits();
-                for &bits in bits.iter().take(num_bit_set_longs) {
-                    self.level0_output.write_long(bits as i64)?;
+                for bits in bits.iter().take(num_bit_set_longs) {
+                    self.level0_output
+                        .write_long(bits.load(std::sync::atomic::Ordering::Relaxed) as i64)?;
                 }
             }
 
@@ -935,7 +909,9 @@ mod tests {
     };
     use crate::codecs::postings::PostingsFormat;
     use crate::codecs::state::SegmentWriteState;
-    use crate::index::{FieldInfo, FieldInfos, Fields, PostingsEnum, SeekStatus, Terms, TermsEnum};
+    use crate::index::{
+        FieldInfo, FieldInfos, Fields, IndexOptions, PostingsEnum, SeekStatus, Terms, TermsEnum,
+    };
     use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
     use crate::store::{ByteBuffersDirectory, Directory};
     use crate::util::{AttributeSource, BytesRef};
@@ -957,7 +933,7 @@ mod tests {
         infos: &'a FieldInfos,
     ) -> SegmentWriteState<'a> {
         SegmentWriteState::new(
-            crate::util::default_info_stream(),
+            &crate::util::NoOutputInfoStream,
             Arc::clone(dir),
             info,
             infos,
@@ -1685,5 +1661,45 @@ mod tests {
         // through the end-to-end write above; here we just assert no panic and
         // non-empty output.
         assert!(!out.into_inner().is_empty());
+    }
+}
+
+/// The `IOUtils` close family at the postings writer's call sites (#308).
+#[cfg(test)]
+mod close_family_tests {
+    use super::Lucene104PostingsWriter;
+    use crate::codecs::postings::PostingsWriterBase;
+    use crate::codecs::tests::{test_segment_info, tracking_directory, write_state};
+    use crate::index::FieldInfos;
+    use crate::store::Directory;
+
+    /// `metaOut` is created before the `try` block and `docOut` inside it,
+    /// before either header is written; when `docOut` cannot be created,
+    /// `IOUtils.closeWhileHandlingException(metaOut, docOut, posOut, payOut)`
+    /// closes the empty `metaOut` (`Lucene104PostingsWriter.java:153-214`).
+    #[test]
+    fn a_failed_constructor_closes_the_meta_output_it_created() {
+        let (dir, tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 10);
+        let fis = FieldInfos::default();
+        log.fail_open("_0.doc");
+        Lucene104PostingsWriter::new(&write_state(&dir, &info, &fis)).unwrap_err();
+        assert_eq!(log.close_count("_0.psm"), 1);
+        assert_eq!(tracking.inner.file_length("_0.psm").unwrap(), 0);
+    }
+
+    /// `close()` ends with `IOUtils.close(metaOut, docOut, posOut, payOut)`
+    /// (`Lucene104PostingsWriter.java:735`): a failing `metaOut` does not keep
+    /// `docOut` open, and its failure is the one raised.
+    #[test]
+    fn close_closes_every_output_past_a_failure() {
+        let (dir, _tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 10);
+        let fis = FieldInfos::default();
+        let mut writer = Lucene104PostingsWriter::new(&write_state(&dir, &info, &fis)).unwrap();
+        log.fail_close("_0.psm");
+        let error = writer.close().unwrap_err();
+        assert!(format!("{error}").contains("_0.psm"), "{error}");
+        assert_eq!(log.close_count("_0.doc"), 1);
     }
 }

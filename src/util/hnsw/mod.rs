@@ -301,6 +301,7 @@ mod tests {
     use super::searcher::HnswGraphSearcher;
     use super::util::HnswUtil;
     use super::{HnswGraph, Result};
+    use crate::error::LuceneError;
     use crate::util::hnsw::concurrent_merge_builder::HnswConcurrentMergeBuilder;
 
     /// A task executor that runs every task on the calling thread, Java's
@@ -405,6 +406,28 @@ mod tests {
         assert!(graph.entry_node().unwrap() >= 0);
         // The graph should be connected (single component on level 0).
         assert!(HnswUtil::is_rooted(&mut graph as &mut dyn HnswGraph).expect("rooted check failed"));
+    }
+
+    /// `HnswGraphSearcher.search(scorer, topK, OnHeapHnswGraph, acceptOrds,
+    /// visitedLimit)` builds `new SparseFixedBitSet(getGraphSize(graph))`
+    /// (`HnswGraphSearcher.java:181-182`), whose constructor refuses a length
+    /// below one (`SparseFixedBitSet.java:63-66`): a graph without nodes throws.
+    #[test]
+    fn search_on_heap_over_a_graph_without_nodes_throws_what_the_bit_set_throws() {
+        let vectors = test_vectors();
+        let graph = OnHeapHnswGraph::new(4, 0);
+        let supplier = TestVectorScorerSupplier::new(vectors);
+        let mut scorer = supplier.scorer().expect("scorer creation failed");
+        scorer.set_scoring_ordinal(0).unwrap();
+        let Err(err) =
+            HnswGraphSearcher::search_on_heap(scorer.as_mut(), 3, &graph, None, i64::MAX)
+        else {
+            panic!("an empty graph must be refused");
+        };
+        assert_eq!(
+            err.to_string(),
+            LuceneError::IllegalArgument("length needs to be >= 1".to_string()).to_string()
+        );
     }
 
     #[test]

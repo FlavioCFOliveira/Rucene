@@ -91,15 +91,6 @@ impl ScalarEncoding {
         }
     }
 
-    /// Returns how many bytes a packed document vector of `dimension`
-    /// components occupies.
-    ///
-    /// Rust-only convenience kept for its callers; it is
-    /// [`get_doc_packed_length`](Self::get_doc_packed_length).
-    pub fn get_doc_length(self, dimension: usize) -> usize {
-        self.get_doc_packed_length(dimension as i32).max(0) as usize
-    }
-
     /// Returns the encoding whose document width is `bits`.
     ///
     /// # Errors

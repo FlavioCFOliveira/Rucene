@@ -528,7 +528,7 @@ fn two_segments(
 /// Every `(doc, vector)` of float field `field` across the index.
 fn float_vectors(reader: &Arc<dyn DirectoryReader>, field: &str) -> Vec<(i32, Vec<f32>)> {
     let mut out = Vec::new();
-    for leaf in Arc::clone(reader).leaves() {
+    for leaf in Arc::clone(reader).leaves().unwrap() {
         let leaf_reader = leaf.leaf_reader();
         let values = leaf_reader.get_float_vector_values(field).unwrap().unwrap();
         let mut iterator = values.iterator().unwrap();
@@ -549,7 +549,7 @@ fn float_vectors(reader: &Arc<dyn DirectoryReader>, field: &str) -> Vec<(i32, Ve
 /// Every `(doc, vector)` of byte field `field` across the index.
 fn byte_vectors(reader: &Arc<dyn DirectoryReader>, field: &str) -> Vec<(i32, Vec<u8>)> {
     let mut out = Vec::new();
-    for leaf in Arc::clone(reader).leaves() {
+    for leaf in Arc::clone(reader).leaves().unwrap() {
         let leaf_reader = leaf.leaf_reader();
         let values = leaf_reader.get_byte_vector_values(field).unwrap().unwrap();
         let mut iterator = values.iterator().unwrap();
@@ -1202,7 +1202,7 @@ fn a_merged_field_no_source_holds_fails_the_merge_without_a_panic() {
 
         // Positive control: before the rewrite, segment `_0` answers `v`.
         let reader = directory_reader::open(Arc::clone(&dir)).unwrap();
-        let first = Arc::clone(&reader).leaves()[0].leaf_reader();
+        let first = Arc::clone(&reader).leaves().unwrap()[0].leaf_reader();
         assert!(first.get_float_vector_values("v").unwrap().is_some());
         drop(reader);
 
@@ -1213,7 +1213,7 @@ fn a_merged_field_no_source_holds_fails_the_merge_without_a_panic() {
             1,
         );
         let reader = directory_reader::open(Arc::clone(&dir)).unwrap();
-        let first = Arc::clone(&reader).leaves()[0].leaf_reader();
+        let first = Arc::clone(&reader).leaves().unwrap()[0].leaf_reader();
         assert!(first.get_float_vector_values("v").unwrap().is_none());
         assert!(first.get_float_vector_values("w").unwrap().is_some());
         drop(reader);
@@ -1339,7 +1339,7 @@ fn segments_that_do_not_share_their_vector_fields_merge() {
         writer.close().unwrap();
 
         let reader = directory_reader::open(Arc::clone(&dir)).unwrap();
-        assert_eq!(Arc::clone(&reader).leaves().len(), 1);
+        assert_eq!(Arc::clone(&reader).leaves().unwrap().len(), 1);
         assert_eq!(
             float_vectors(&reader, "v1"),
             vec![

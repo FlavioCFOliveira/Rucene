@@ -46,9 +46,18 @@ impl Term {
         }
     }
 
-    /// Creates a term from a field and UTF-8 text.
+    /// Creates a term from a field and text.
+    ///
+    /// Equivalent to `Term(String, String)` (`Term.java:74-76`), which is
+    /// `this(fld, new BytesRef(text))`: the text goes through
+    /// [`BytesRef::from_char_sequence`], and `Term(String, BytesRef)` keeps a
+    /// `BytesRef.deepCopyOf` of it, so the term's buffer holds exactly the
+    /// UTF-8 bytes.
     pub fn from_text(field: impl Into<String>, text: &str) -> Self {
-        Self::new(field, BytesRef::new(text.as_bytes().to_vec()))
+        Self::new(
+            field,
+            BytesRef::deep_copy_of(&BytesRef::from_char_sequence(text)),
+        )
     }
 
     /// Creates a term with the given field and empty bytes.
@@ -132,7 +141,10 @@ impl crate::util::Accountable for Term {
     /// always added.
     fn ram_bytes_used(&self) -> i64 {
         term_base_ram_bytes()
-            + RamUsageEstimator::size_of_string(&self.field)
+            // `RamUsageEstimator.sizeOfObject(field)` (`Term.java:191`).
+            + RamUsageEstimator::size_of_object(Some(crate::util::SizedObject::String(
+                &self.field,
+            )))
             + RamUsageEstimator::align_object_size(
                 // `bytes.bytes.length` in Java: the whole backing array, not
                 // just the active slice.
@@ -1918,5 +1930,39 @@ impl std::hash::Hash for PrefixCodedTerms {
         self.del_gen.hash(state);
         self.size.hash(state);
         self.content.hash(state);
+    }
+}
+
+#[cfg(test)]
+mod pass_d_term_ram_tests {
+    use super::*;
+    use crate::util::Accountable;
+
+    /// rmp #309 / #322: `Term(String, String)` builds `new BytesRef(text)` and
+    /// keeps a `deepCopyOf` of it (`Term.java:74-76, 66-70`), and
+    /// `ramBytesUsed` adds `sizeOfObject(field)` (`Term.java:189-196`).
+    /// Measured against `lucene-core-10.5.0.jar` (`oracle/passD/Oracle.java`,
+    /// `TERM`): `abc`, `héllo` and `😀x` cost 128 and `""` 120 under field
+    /// `field`, with buffers of 3, 6, 5 and 0 bytes; a three-byte `BytesRef`
+    /// term costs 128.
+    #[test]
+    fn term_ram_and_buffer_are_javas() {
+        for (text, ram, buffer) in [
+            ("abc", 128, 3),
+            ("", 120, 0),
+            ("h\u{e9}llo", 128, 6),
+            ("\u{1F600}x", 128, 5),
+        ] {
+            let term = Term::from_text("field", text);
+            assert_eq!(
+                (term.ram_bytes_used(), term.bytes().bytes.len()),
+                (ram, buffer),
+                "{text:?}"
+            );
+        }
+        assert_eq!(
+            Term::new("field", BytesRef::new(vec![1, 2, 3])).ram_bytes_used(),
+            128
+        );
     }
 }

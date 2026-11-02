@@ -1112,6 +1112,333 @@ pub(crate) mod tests {
         }
     }
 
+    /// What a [`CloseTrackingDirectory`] records, and the closes it fails.
+    ///
+    /// Lucene's tests detect an input or output a failed constructor left
+    /// open through `MockDirectoryWrapper`, which tracks every `close()`; this
+    /// records each `close()` call by file name, in order.
+    #[derive(Debug, Default)]
+    pub(crate) struct CloseLog {
+        closed: std::sync::Mutex<Vec<String>>,
+        fail_close: std::sync::Mutex<std::collections::HashSet<String>>,
+        fail_open: std::sync::Mutex<std::collections::HashSet<String>>,
+    }
+
+    impl CloseLog {
+        /// The names closed through `close()`, in order, one entry per call.
+        pub(crate) fn closed(&self) -> Vec<String> {
+            self.closed.lock().unwrap().clone()
+        }
+
+        /// How many times `name` was closed.
+        pub(crate) fn close_count(&self, name: &str) -> usize {
+            self.closed
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|n| *n == name)
+                .count()
+        }
+
+        /// Makes every later `close()` of `name` fail, after delegating it.
+        pub(crate) fn fail_close(&self, name: &str) {
+            self.fail_close.lock().unwrap().insert(name.to_string());
+        }
+
+        /// Makes every later `openInput`/`createOutput` of `name` fail.
+        pub(crate) fn fail_open(&self, name: &str) {
+            self.fail_open.lock().unwrap().insert(name.to_string());
+        }
+
+        fn record_close(&self, name: &str) -> Result<()> {
+            self.closed.lock().unwrap().push(name.to_string());
+            if self.fail_close.lock().unwrap().contains(name) {
+                return Err(crate::error::LuceneError::Io(std::io::Error::other(
+                    format!("close failed: {name}"),
+                )));
+            }
+            Ok(())
+        }
+
+        fn check_open(&self, name: &str) -> Result<()> {
+            if self.fail_open.lock().unwrap().contains(name) {
+                return Err(crate::error::LuceneError::Io(std::io::Error::other(
+                    format!("open failed: {name}"),
+                )));
+            }
+            Ok(())
+        }
+    }
+
+    /// A directory over a [`crate::store::ByteBuffersDirectory`] whose inputs
+    /// and outputs record each `close()` in a [`CloseLog`]; clones and slices
+    /// are not tracked.
+    #[derive(Debug, Default)]
+    pub(crate) struct CloseTrackingDirectory {
+        /// The directory the files live in.
+        pub(crate) inner: crate::store::ByteBuffersDirectory,
+        /// What was closed.
+        pub(crate) log: std::sync::Arc<CloseLog>,
+    }
+
+    struct TrackedInput {
+        name: String,
+        inner: Box<dyn crate::store::IndexInput>,
+        log: std::sync::Arc<CloseLog>,
+    }
+
+    impl crate::store::DataInput for TrackedInput {
+        fn to_java_string(&self) -> String {
+            self.inner.to_java_string()
+        }
+
+        fn read_byte(&mut self) -> Result<u8> {
+            self.inner.read_byte()
+        }
+
+        fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+            self.inner.read_bytes(b, offset, len)
+        }
+
+        fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
+            self.inner.skip_bytes(num_bytes)
+        }
+    }
+
+    impl crate::store::IndexInput for TrackedInput {
+        fn close(&mut self) -> Result<()> {
+            self.inner.close()?;
+            self.log.record_close(&self.name)
+        }
+
+        fn file_pointer(&self) -> i64 {
+            self.inner.file_pointer()
+        }
+
+        fn length(&self) -> i64 {
+            self.inner.length()
+        }
+
+        fn seek(&mut self, pos: i64) -> Result<()> {
+            self.inner.seek(pos)
+        }
+
+        fn slice(
+            &self,
+            slice_description: &str,
+            offset: i64,
+            length: i64,
+        ) -> Result<Box<dyn crate::store::IndexInput>> {
+            self.inner.slice(slice_description, offset, length)
+        }
+
+        fn clone_input(&self) -> Result<Box<dyn crate::store::IndexInput>> {
+            self.inner.clone_input()
+        }
+
+        fn resource_description(&self) -> &str {
+            self.inner.resource_description()
+        }
+    }
+
+    struct TrackedOutput {
+        name: String,
+        inner: Box<dyn crate::store::IndexOutput>,
+        log: std::sync::Arc<CloseLog>,
+    }
+
+    impl crate::store::DataOutput for TrackedOutput {
+        fn write_byte(&mut self, b: u8) -> Result<()> {
+            self.inner.write_byte(b)
+        }
+
+        fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()> {
+            self.inner.write_bytes(b, offset, len)
+        }
+    }
+
+    impl crate::store::IndexOutput for TrackedOutput {
+        fn close(&mut self) -> Result<()> {
+            self.inner.close()?;
+            self.log.record_close(&self.name)
+        }
+
+        fn file_pointer(&self) -> i64 {
+            self.inner.file_pointer()
+        }
+
+        fn checksum(&self) -> Result<i64> {
+            self.inner.checksum()
+        }
+
+        fn resource_description(&self) -> &str {
+            self.inner.resource_description()
+        }
+
+        fn name(&self) -> &str {
+            self.inner.name()
+        }
+    }
+
+    impl crate::store::Directory for CloseTrackingDirectory {
+        fn list_all(&self) -> Result<Vec<String>> {
+            self.inner.list_all()
+        }
+
+        fn delete_file(&self, name: &str) -> Result<()> {
+            self.inner.delete_file(name)
+        }
+
+        fn file_length(&self, name: &str) -> Result<i64> {
+            self.inner.file_length(name)
+        }
+
+        fn create_output(
+            &self,
+            name: &str,
+            context: &dyn crate::store::IOContext,
+        ) -> Result<Box<dyn crate::store::IndexOutput>> {
+            self.log.check_open(name)?;
+            Ok(Box::new(TrackedOutput {
+                name: name.to_string(),
+                inner: self.inner.create_output(name, context)?,
+                log: std::sync::Arc::clone(&self.log),
+            }))
+        }
+
+        fn create_temp_output(
+            &self,
+            prefix: &str,
+            suffix: &str,
+            context: &dyn crate::store::IOContext,
+        ) -> Result<Box<dyn crate::store::IndexOutput>> {
+            self.inner.create_temp_output(prefix, suffix, context)
+        }
+
+        fn sync(&self, names: &[String]) -> Result<()> {
+            self.inner.sync(names)
+        }
+
+        fn sync_metadata(&self) -> Result<()> {
+            self.inner.sync_metadata()
+        }
+
+        fn rename(&self, source: &str, dest: &str) -> Result<()> {
+            self.inner.rename(source, dest)
+        }
+
+        fn open_input(
+            &self,
+            name: &str,
+            context: &dyn crate::store::IOContext,
+        ) -> Result<Box<dyn crate::store::IndexInput>> {
+            self.log.check_open(name)?;
+            Ok(Box::new(TrackedInput {
+                name: name.to_string(),
+                inner: self.inner.open_input(name, context)?,
+                log: std::sync::Arc::clone(&self.log),
+            }))
+        }
+
+        fn obtain_lock(&self, name: &str) -> Result<Box<dyn crate::store::Lock>> {
+            self.inner.obtain_lock(name)
+        }
+
+        fn close(&mut self) -> Result<()> {
+            Ok(())
+        }
+
+        fn get_pending_deletions(&self) -> Result<std::collections::HashSet<String>> {
+            self.inner.get_pending_deletions()
+        }
+    }
+
+    /// A write state over `dir` for cross-module codec tests.
+    pub(crate) fn write_state<'a>(
+        dir: &'a std::sync::Arc<dyn crate::store::Directory>,
+        info: &'a SegmentInfo,
+        field_infos: &'a crate::index::FieldInfos,
+    ) -> crate::codecs::state::SegmentWriteState<'a> {
+        crate::codecs::state::SegmentWriteState::new(
+            &crate::util::NoOutputInfoStream,
+            std::sync::Arc::clone(dir),
+            info,
+            field_infos,
+            Box::leak(Box::new(crate::codecs::stub::BufferedUpdates::default())),
+            &*crate::store::DEFAULT_IO_CONTEXT,
+        )
+    }
+
+    /// A read state over `dir` for cross-module codec tests.
+    pub(crate) fn read_state<'a>(
+        dir: &'a dyn crate::store::Directory,
+        info: &'a SegmentInfo,
+        field_infos: &'a crate::index::FieldInfos,
+    ) -> crate::codecs::state::SegmentReadState<'a> {
+        crate::codecs::state::SegmentReadState::new(
+            dir,
+            info,
+            field_infos,
+            &*crate::store::DEFAULT_IO_CONTEXT,
+        )
+    }
+
+    /// An owned write state over `dir` with no fields, for cross-module codec
+    /// tests.
+    pub(crate) fn owned_write_state(
+        dir: &std::sync::Arc<dyn crate::store::Directory>,
+        info: &SegmentInfo,
+    ) -> crate::codecs::state::OwnedSegmentWriteState {
+        crate::codecs::state::OwnedSegmentWriteState::new(
+            std::sync::Arc::new(crate::util::NoOutputInfoStream),
+            std::sync::Arc::clone(dir),
+            info.clone(),
+            crate::index::FieldInfos::default(),
+            crate::codecs::stub::BufferedUpdates::default(),
+            std::sync::Arc::new(crate::store::DefaultIOContext::default()),
+        )
+    }
+
+    /// Rewrites the bytes of `name` in `dir` through `edit`.
+    pub(crate) fn rewrite_file(
+        dir: &CloseTrackingDirectory,
+        name: &str,
+        edit: impl FnOnce(&mut Vec<u8>),
+    ) {
+        use crate::store::Directory;
+        let mut input = dir
+            .inner
+            .open_input(name, &*crate::store::DEFAULT_IO_CONTEXT)
+            .unwrap();
+        let mut bytes = vec![0u8; input.length() as usize];
+        let len = bytes.len();
+        input.read_bytes(&mut bytes, 0, len).unwrap();
+        edit(&mut bytes);
+        dir.inner.delete_file(name).unwrap();
+        let mut output = dir
+            .inner
+            .create_output(name, &*crate::store::DEFAULT_IO_CONTEXT)
+            .unwrap();
+        output.write_bytes(&bytes, 0, bytes.len()).unwrap();
+        output.close().unwrap();
+    }
+
+    /// A [`CloseTrackingDirectory`], the same directory as a trait object,
+    /// and its [`CloseLog`].
+    pub(crate) fn tracking_directory() -> (
+        std::sync::Arc<dyn crate::store::Directory>,
+        std::sync::Arc<CloseTrackingDirectory>,
+        std::sync::Arc<CloseLog>,
+    ) {
+        let dir = std::sync::Arc::new(CloseTrackingDirectory::default());
+        let log = std::sync::Arc::clone(&dir.log);
+        (
+            std::sync::Arc::clone(&dir) as std::sync::Arc<dyn crate::store::Directory>,
+            dir,
+            log,
+        )
+    }
+
     /// Returns a minimal `SegmentInfo` for use in cross-module codec tests.
     pub(crate) fn test_segment_info(name: &str, max_doc: i32) -> SegmentInfo {
         SegmentInfo::new(

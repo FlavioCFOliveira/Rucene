@@ -113,7 +113,7 @@ impl MultiDocValues {
         reader: &Arc<dyn IndexReader>,
         field: &str,
     ) -> Result<Option<Box<dyn NumericDocValues>>> {
-        let leaves = Arc::clone(reader).leaves();
+        let leaves = Arc::clone(reader).leaves()?;
         match leaves.len() {
             0 => return Ok(None),
             1 => return leaves[0].leaf_reader().get_norm_values(field),
@@ -152,7 +152,7 @@ impl MultiDocValues {
         reader: &Arc<dyn IndexReader>,
         field: &str,
     ) -> Result<Option<Box<dyn NumericDocValues>>> {
-        let leaves = Arc::clone(reader).leaves();
+        let leaves = Arc::clone(reader).leaves()?;
         match leaves.len() {
             0 => return Ok(None),
             1 => return leaves[0].leaf_reader().get_numeric_doc_values(field),
@@ -183,7 +183,7 @@ impl MultiDocValues {
         reader: &Arc<dyn IndexReader>,
         field: &str,
     ) -> Result<Option<Box<dyn BinaryDocValues>>> {
-        let leaves = Arc::clone(reader).leaves();
+        let leaves = Arc::clone(reader).leaves()?;
         match leaves.len() {
             0 => return Ok(None),
             1 => return leaves[0].leaf_reader().get_binary_doc_values(field),
@@ -214,7 +214,7 @@ impl MultiDocValues {
         reader: &Arc<dyn IndexReader>,
         field: &str,
     ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
-        let leaves = Arc::clone(reader).leaves();
+        let leaves = Arc::clone(reader).leaves()?;
         let size = leaves.len();
         match size {
             0 => return Ok(None),
@@ -292,7 +292,7 @@ impl MultiDocValues {
         reader: &Arc<dyn IndexReader>,
         field: &str,
     ) -> Result<Option<WithMapping<dyn SortedDocValues>>> {
-        let leaves = Arc::clone(reader).leaves();
+        let leaves = Arc::clone(reader).leaves()?;
         let size = leaves.len();
         match size {
             0 => return Ok(None),
@@ -400,7 +400,7 @@ impl MultiDocValues {
         reader: &Arc<dyn IndexReader>,
         field: &str,
     ) -> Result<Option<WithMapping<dyn SortedSetDocValues>>> {
-        let leaves = Arc::clone(reader).leaves();
+        let leaves = Arc::clone(reader).leaves()?;
         let size = leaves.len();
         match size {
             0 => return Ok(None),

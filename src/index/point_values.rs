@@ -395,9 +395,10 @@ pub trait MutablePointTree: PointTree {
     /// Returns the packed bytes of the `i`-th value.
     ///
     /// Equivalent to `MutablePointTree.getValue(int, BytesRef)`, which fills a
-    /// `BytesRef` pointing into the buffer; returning a borrowed slice is the
-    /// same thing without the out-parameter.
-    fn value(&self, i: i32) -> &[u8];
+    /// `BytesRef` pointing into the buffer, or into a copy where the buffer
+    /// cannot hand out one contiguous range (`PagedBytes.Reader.fillSlice`);
+    /// the filled `BytesRef` becomes the returned [`Cow`](std::borrow::Cow).
+    fn value(&self, i: i32) -> std::borrow::Cow<'_, [u8]>;
 
     /// Returns the `k`-th byte of the `i`-th value.
     ///
@@ -750,7 +751,7 @@ pub trait PointValues: Send + Sync {
 /// Propagates reader errors.
 pub fn size(reader: Arc<dyn IndexReader>, field: &str) -> Result<i64> {
     let mut size = 0i64;
-    for ctx in reader.leaves() {
+    for ctx in reader.leaves()? {
         if let Some(values) = ctx.leaf_reader().get_point_values(field)? {
             size += values.size()?;
         }
@@ -767,7 +768,7 @@ pub fn size(reader: Arc<dyn IndexReader>, field: &str) -> Result<i64> {
 /// Propagates reader errors.
 pub fn doc_count(reader: Arc<dyn IndexReader>, field: &str) -> Result<i32> {
     let mut count = 0i32;
-    for ctx in reader.leaves() {
+    for ctx in reader.leaves()? {
         if let Some(values) = ctx.leaf_reader().get_point_values(field)? {
             count += values.doc_count()?;
         }
@@ -815,7 +816,7 @@ fn merge_packed_values(
     bound: PackedBound,
 ) -> Result<Option<Vec<u8>>> {
     let mut merged: Option<Vec<u8>> = None;
-    for ctx in reader.leaves() {
+    for ctx in reader.leaves()? {
         let leaf = ctx.leaf_reader();
         let Some(values) = leaf.get_point_values(field)? else {
             continue;

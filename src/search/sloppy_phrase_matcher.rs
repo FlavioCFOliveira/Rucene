@@ -19,82 +19,9 @@ use crate::search::phrase_query::PostingsAndFreq;
 use crate::search::phrase_queue::PhraseQueue;
 use crate::search::score_mode::ScoreMode;
 use crate::search::sim_scorer_source::{SharedSimScorer, SharedSimScorerRef};
-
-/// A small growable bit set over the repeating terms of a phrase.
-///
-/// **Divergence from Lucene 10.5.0.** Java uses
-/// `org.apache.lucene.util.FixedBitSet` here, for its `intersects`, `or`,
-/// `nextSetBit`, `cardinality` and `ensureCapacity` operations;
-/// [`crate::util::FixedBitSet`] does not expose the first four, and that module
-/// is not part of this batch. This local set implements exactly those
-/// operations over one boolean per bit. The sets are as large as the number of
-/// repeating terms of a phrase — a handful — so the representation costs
-/// nothing observable, and every operation has the same meaning.
-#[derive(Debug, Clone, Default)]
-struct TermBits {
-    bits: Vec<bool>,
-}
-
-impl TermBits {
-    fn new(length: usize) -> Self {
-        Self {
-            bits: vec![false; length],
-        }
-    }
-
-    fn set(&mut self, index: usize) {
-        if index >= self.bits.len() {
-            self.bits.resize(index + 1, false);
-        }
-        self.bits[index] = true;
-    }
-
-    fn get(&self, index: usize) -> bool {
-        self.bits.get(index).copied().unwrap_or(false)
-    }
-
-    fn clear(&mut self, index: usize) {
-        if index < self.bits.len() {
-            self.bits[index] = false;
-        }
-    }
-
-    fn cardinality(&self) -> usize {
-        self.bits.iter().filter(|b| **b).count()
-    }
-
-    fn length(&self) -> usize {
-        self.bits.len()
-    }
-
-    fn ensure_capacity(&mut self, index: usize) {
-        if index >= self.bits.len() {
-            self.bits.resize(index + 1, false);
-        }
-    }
-
-    fn intersects(&self, other: &TermBits) -> bool {
-        self.bits.iter().zip(&other.bits).any(|(a, b)| *a && *b)
-    }
-
-    fn or(&mut self, other: &TermBits) {
-        if other.bits.len() > self.bits.len() {
-            self.bits.resize(other.bits.len(), false);
-        }
-        for (i, b) in other.bits.iter().enumerate() {
-            if *b {
-                self.bits[i] = true;
-            }
-        }
-    }
-
-    fn set_bits(&self) -> impl Iterator<Item = usize> + '_ {
-        self.bits
-            .iter()
-            .enumerate()
-            .filter_map(|(i, b)| if *b { Some(i) } else { None })
-    }
-}
+use crate::search::NO_MORE_DOCS;
+use crate::util::bit_set::BitSet;
+use crate::util::FixedBitSet;
 
 /// Finds all slop-valid position combinations encountered while traversing the
 /// [`PhrasePositions`].
@@ -287,7 +214,7 @@ impl SloppyPhraseMatcher {
         let group = self.phrase_positions[pp].rpt_group as usize;
         let rg_len = self.rpt_groups[group].len();
         // For re-queuing after the collisions are resolved.
-        let mut bits = TermBits::new(rg_len);
+        let mut bits = FixedBitSet::new(rg_len);
         let k0 = self.phrase_positions[pp].rpt_ind;
         loop {
             let k = self.collide(pp);
@@ -303,7 +230,7 @@ impl SloppyPhraseMatcher {
             }
             if k != k0 {
                 // Careful: mark only those currently in the queue.
-                bits.ensure_capacity(k as usize);
+                bits = FixedBitSet::ensure_capacity(bits, k as usize);
                 // Mark that the other position needs to be re-queued.
                 bits.set(k as usize);
             }
@@ -700,10 +627,10 @@ impl SloppyPhraseMatcher {
     ///
     /// Equivalent to the private
     /// `SloppyPhraseMatcher.ppTermsBitSets(PhrasePositions[], HashMap<Term, Integer>)`.
-    fn pp_terms_bit_sets(&self, rpp: &[usize], tord: &RepeatingTerms) -> Vec<TermBits> {
+    fn pp_terms_bit_sets(&self, rpp: &[usize], tord: &RepeatingTerms) -> Vec<FixedBitSet> {
         let mut bb = Vec::with_capacity(rpp.len());
         for &pp in rpp {
-            let mut b = TermBits::new(tord.order.len());
+            let mut b = FixedBitSet::new(tord.order.len());
             for t in &self.phrase_positions[pp].terms {
                 if let Some(ord) = tord.get(t) {
                     b.set(ord);
@@ -749,16 +676,16 @@ impl RepeatingTerms {
 /// Equivalent to the private
 /// `SloppyPhraseMatcher.unionTermGroups(ArrayList<FixedBitSet>)`, which is
 /// `O(n^2)`.
-fn union_term_groups(bb: &mut Vec<TermBits>) {
+fn union_term_groups(bb: &mut Vec<FixedBitSet>) {
     let mut i = 0usize;
     while !bb.is_empty() && i + 1 < bb.len() {
         let mut incr = 1usize;
         let mut j = i + 1;
         while j < bb.len() {
             if bb[i].intersects(&bb[j]) {
-                let other = bb[j].clone();
-                bb[i].or(&other);
-                bb.remove(j);
+                // `bb.get(i).or(bb.get(j)); bb.remove(j);`
+                let other = bb.remove(j);
+                bb[i].or_set(&other);
                 incr = 0;
             } else {
                 j += 1;
@@ -775,14 +702,20 @@ fn union_term_groups(bb: &mut Vec<TermBits>) {
 ///
 /// Equivalent to the private
 /// `SloppyPhraseMatcher.termGroups(LinkedHashMap<Term, Integer>, ArrayList<FixedBitSet>)`.
-fn term_groups(tord: &RepeatingTerms, bb: &[TermBits]) -> BTreeMap<Term, usize> {
+fn term_groups(tord: &RepeatingTerms, bb: &[FixedBitSet]) -> BTreeMap<Term, usize> {
     let mut tg = BTreeMap::new();
     for (i, bits) in bb.iter().enumerate() {
         // `i` is the group number.
-        for ord in bits.set_bits() {
-            if let Some(term) = tord.order.get(ord) {
+        let mut ord = BitSet::next_set_bit(bits, 0);
+        while ord != NO_MORE_DOCS {
+            if let Some(term) = tord.order.get(ord as usize) {
                 tg.insert(term.clone(), i);
             }
+            ord = if ord as usize + 1 >= bits.length() {
+                NO_MORE_DOCS
+            } else {
+                BitSet::next_set_bit(bits, ord + 1)
+            };
         }
     }
     tg
@@ -941,5 +874,46 @@ impl PhraseMatcher for SloppyPhraseMatcher {
     /// returns the `impactsApproximation` field.
     fn impacts_approximation(&mut self) -> &mut PhraseImpactsDISI {
         &mut self.impacts_approximation
+    }
+}
+
+#[cfg(test)]
+mod term_group_tests {
+    use super::*;
+
+    fn bits(ords: &[usize]) -> FixedBitSet {
+        let mut b = FixedBitSet::new(4);
+        for &o in ords {
+            b.set(o);
+        }
+        b
+    }
+
+    /// rmp #303: `unionTermGroups` merges the term bit sets that
+    /// `FixedBitSet.intersects` finds overlapping, and `termGroups` walks each
+    /// merged set with `nextSetBit` (`SloppyPhraseMatcher.java:656-687`).
+    #[test]
+    fn term_groups_merge_intersecting_bit_sets() {
+        let mut tord = RepeatingTerms::default();
+        for t in ["a", "b", "c", "d"] {
+            tord.insert(Term::from_text("f", t));
+        }
+        let mut bb = vec![bits(&[0, 1]), bits(&[2]), bits(&[1, 2]), bits(&[3])];
+        union_term_groups(&mut bb);
+        assert_eq!(bb.len(), 2);
+        let tg = term_groups(&tord, &bb);
+        let groups: Vec<(String, usize)> = tg
+            .iter()
+            .map(|(t, g)| (String::from_utf8(t.bytes().slice().to_vec()).unwrap(), *g))
+            .collect();
+        assert_eq!(
+            groups,
+            vec![
+                ("a".to_string(), 0),
+                ("b".to_string(), 0),
+                ("c".to_string(), 0),
+                ("d".to_string(), 1)
+            ]
+        );
     }
 }

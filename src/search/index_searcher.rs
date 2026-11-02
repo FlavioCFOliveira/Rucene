@@ -23,7 +23,7 @@ use crate::search::query_cache::{QueryCache, QueryCachingPolicy};
 use crate::search::query_visitor::QueryVisitor;
 use crate::search::score_doc::ScoreDoc;
 use crate::search::score_mode::ScoreMode;
-use crate::search::scorer_util::ScorerUtil;
+use crate::search::scorer_util::{LikelyLiveDocs, ScorerUtil};
 use crate::search::similarities::{
     BM25Similarity, CollectionStatistics, Explanation, Similarity, TermStatistics,
 };
@@ -561,12 +561,15 @@ impl IndexSearcher {
     ///
     /// # Errors
     ///
-    /// As [`new`](Self::new).
+    /// As [`new`](Self::new), and [`LuceneError::AlreadyClosed`] when `reader`
+    /// is closed, as `reader.getContext()` fails.
     pub fn with_executor(
         reader: Arc<dyn IndexReader>,
         executor: Option<Arc<dyn Executor>>,
     ) -> Result<Self> {
-        let context = Arc::clone(&reader).get_context();
+        // `this(r.getContext(), executor)` (`IndexSearcher.java:207-209`): a
+        // closed reader fails here.
+        let context = Arc::clone(&reader).get_context()?;
         Self::from_context(context, executor)
     }
 
@@ -1348,7 +1351,12 @@ impl IndexSearcher {
             let live_docs = ctx.leaf_reader().get_live_docs();
             // Optimise for the case when live docs are stored in a bit set.
             let accept_docs = ScorerUtil::likely_live_docs(live_docs.as_deref());
-            match scorer.score(&mut *leaf_collector, accept_docs, min_doc_id, max_doc_id) {
+            match scorer.score(
+                &mut *leaf_collector,
+                accept_docs.as_ref().map(LikelyLiveDocs::as_bits),
+                min_doc_id,
+                max_doc_id,
+            ) {
                 Ok(_) => {}
                 // Collection was terminated prematurely; continue with the
                 // following leaf.

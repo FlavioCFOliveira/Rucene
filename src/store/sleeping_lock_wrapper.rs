@@ -158,17 +158,15 @@ impl Directory for SleepingLockWrapper {
     /// where only `LockObtainFailedException` is caught.
     ///
     /// A `poll_interval` of zero makes Java's `lockWaitTimeout / pollInterval`
-    /// throw `ArithmeticException` from this method; this port reports the same
-    /// failure at the same point as [`LuceneError::IllegalArgument`] rather
-    /// than panicking.
+    /// (`SleepingLockWrapper.java:81`) throw `ArithmeticException("/ by
+    /// zero")` from this method; this port returns the same failure at the
+    /// same point as [`LuceneError::Arithmetic`].
     fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
         let mut failure_reason: Option<String> = None;
         let max_sleep_count = self
             .lock_wait_timeout
             .checked_div(self.poll_interval)
-            .ok_or_else(|| {
-                LuceneError::IllegalArgument("pollInterval must not be zero: / by zero".to_string())
-            })?;
+            .ok_or_else(|| LuceneError::Arithmetic("/ by zero".to_string()))?;
         let mut sleep_count: i64 = 0;
 
         loop {
@@ -251,5 +249,27 @@ impl std::fmt::Debug for SleepingLockWrapper {
             .field("lock_wait_timeout", &self.lock_wait_timeout)
             .field("poll_interval", &self.poll_interval)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::ByteBuffersDirectory;
+
+    /// A poll interval of zero makes `lockWaitTimeout / pollInterval`
+    /// (`SleepingLockWrapper.java:81`) throw. Measured against
+    /// `lucene-core-10.5.0.jar` (`oracle/fix/MiscFix.java`, item 10):
+    /// `java.lang.ArithmeticException: / by zero`.
+    #[test]
+    fn a_zero_poll_interval_fails_obtain_lock_with_division_by_zero() {
+        let dir =
+            SleepingLockWrapper::with_poll_interval(Box::new(ByteBuffersDirectory::new()), 10, 0)
+                .unwrap();
+        match dir.obtain_lock("write.lock") {
+            Err(LuceneError::Arithmetic(message)) => assert_eq!(message, "/ by zero"),
+            Err(other) => panic!("expected ArithmeticException, got {other:?}"),
+            Ok(_) => panic!("expected ArithmeticException, got a lock"),
+        }
     }
 }

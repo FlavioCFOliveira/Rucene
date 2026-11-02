@@ -294,7 +294,7 @@ impl TopFieldCollector {
 
         let rewritten = searcher.rewrite(query)?;
         let weight = searcher.create_weight(rewritten, ScoreMode::COMPLETE, 1.0)?;
-        let contexts = Arc::clone(searcher.get_index_reader()).leaves();
+        let contexts = Arc::clone(searcher.get_index_reader()).leaves()?;
         let max_doc = searcher.get_index_reader().max_doc();
 
         let mut current_context: Option<Arc<LeafReaderContext>> = None;

@@ -511,8 +511,8 @@ impl Automaton {
     /// # Divergence from Lucene 10.5.0
     ///
     /// Lucene's `Automaton` has no `finish()`; this is a pre-existing Rucene alias
-    /// for [`Automaton::finish_state`], kept because `analysis::automaton_conversion`
-    /// calls it.
+    /// for [`Automaton::finish_state`]. No production code calls it; the
+    /// `automaton_terms_enum` tests do.
     pub fn finish(&mut self) {
         self.finish_state();
     }

@@ -474,10 +474,14 @@ pub trait DataOutput {
     }
 
     /// Writes a string as a VInt length followed by UTF-8 bytes.
+    ///
+    /// Equivalent to `DataOutput.writeString(String)` (`DataOutput.java:270-274`),
+    /// which encodes through `new BytesRef(s)` and writes its `length` bytes
+    /// from `offset`.
     fn write_string(&mut self, s: &str) -> Result<()> {
-        let bytes = s.as_bytes();
-        self.write_v_int(bytes.len() as i32)?;
-        self.write_bytes(bytes, 0, bytes.len())
+        let utf8_result = crate::util::BytesRef::from_char_sequence(s);
+        self.write_v_int(utf8_result.length as i32)?;
+        self.write_bytes(&utf8_result.bytes, utf8_result.offset, utf8_result.length)
     }
 
     /// Writes a map as a VInt size followed by key-value string pairs.
@@ -4247,7 +4251,11 @@ mod channel_lock {
     ///
     /// - `EAGAIN`, `EACCES` → `Ok(false)`, Java's `null`;
     /// - `EINTR` → `Ok(true)`, the `FileLock` Java returns;
-    /// - any other → `Err`, Java's `IOException`.
+    /// - any other → `Err`, Java's `IOException`, thrown by
+    ///   `JNU_ThrowIOExceptionWithLastError(env, "Lock failed")`, whose message
+    ///   is the system's text for `errno` alone (`strerror`): the error keeps
+    ///   that text and the errno's kind, without the ` (os error N)` suffix
+    ///   [`io::Error`] appends to an OS error.
     ///
     /// The constants are `sun.nio.ch.FileDispatcher`'s, and both `lock` and
     /// `tryLock` were read in the bytecode of OpenJDK 25.0.4.1 as well as in
@@ -4261,7 +4269,14 @@ mod channel_lock {
         } else if errno == Errno::INTR {
             Ok(true)
         } else {
-            Err(errno.into())
+            let os_error = io::Error::from(errno);
+            let code = errno.raw_os_error();
+            let text = os_error.to_string();
+            let message = text
+                .strip_suffix(&format!(" (os error {code})"))
+                .unwrap_or(&text)
+                .to_string();
+            Err(io::Error::new(os_error.kind(), message))
         }
     }
 
@@ -4287,8 +4302,19 @@ mod channel_lock {
             assert!(!try_lock_failure(Errno::AGAIN).unwrap());
             assert!(!try_lock_failure(Errno::ACCESS).unwrap());
             assert!(try_lock_failure(Errno::INTR).unwrap());
+            // The message is `strerror(EBADF)` alone, as the JDK's
+            // `JNU_ThrowIOExceptionWithLastError` builds it.
             let error = try_lock_failure(Errno::BADF).unwrap_err();
-            assert_eq!(error.raw_os_error(), Some(Errno::BADF.raw_os_error()));
+            let strerror = io::Error::from(Errno::BADF).to_string();
+            let expected = strerror
+                .strip_suffix(&format!(" (os error {})", Errno::BADF.raw_os_error()))
+                .unwrap();
+            assert_eq!(error.to_string(), expected);
+            assert_eq!(error.kind(), io::Error::from(Errno::BADF).kind());
+            assert_eq!(
+                crate::error::LuceneError::Io(error).to_string(),
+                format!("I/O error: {expected}")
+            );
         }
     }
 }
@@ -7534,14 +7560,29 @@ impl ByteBuffersDataOutput {
     }
 
     /// Returns a contiguous copy of the current content.
-    pub fn to_array_copy(&self) -> Vec<u8> {
+    ///
+    /// Equivalent to `ByteBuffersDataOutput.toArrayCopy()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::Other`] — Java's plain `RuntimeException`, for
+    /// which this port has no dedicated variant — with Java's message `Data
+    /// exceeds maximum size of a single byte array: <size>` when the content
+    /// is larger than `Integer.MAX_VALUE` bytes, the largest Java array
+    /// (`ByteBuffersDataOutput.java:288-299`).
+    pub fn to_array_copy(&self) -> Result<Vec<u8>> {
         let size = self.size();
+        if size as u64 > i32::MAX as u64 {
+            return Err(LuceneError::Other(format!(
+                "Data exceeds maximum size of a single byte array: {size}"
+            )));
+        }
         let mut result = Vec::with_capacity(size);
         for block in &self.completed {
             result.extend_from_slice(block);
         }
         result.extend_from_slice(&self.current);
-        result
+        Ok(result)
     }
 
     /// Copies the current content of this output into another [`DataOutput`].
@@ -8172,7 +8213,7 @@ pub fn output_as_many_buffers() -> OutputToInputFn {
 /// Equivalent to `ByteBuffersDirectory.OUTPUT_AS_ONE_BUFFER`.
 pub fn output_as_one_buffer() -> OutputToInputFn {
     Arc::new(|file_name: &str, output: &ByteBuffersDataOutput| {
-        let bytes = output.to_array_copy();
+        let bytes = output.to_array_copy()?;
         let data_input = ByteBuffersDataInput::new(vec![bytes])?;
         // `dataInput.toString()` (`ByteBuffersDirectory.java:70-76`), as above.
         let desc = format!(
@@ -8535,7 +8576,7 @@ impl ByteBuffersIndexOutput {
 
     /// Returns a contiguous copy of the bytes written so far.
     pub fn to_array_copy(&self) -> Result<Vec<u8>> {
-        Ok(self.delegate()?.to_array_copy())
+        self.delegate()?.to_array_copy()
     }
 }
 
@@ -9124,26 +9165,15 @@ impl FSDirectory {
         self.directory.join(name)
     }
 
+    /// Equivalent to `FSDirectory.fsync(String)` (`FSDirectory.java:300-302`).
     fn fsync_file(&self, name: &str) -> Result<()> {
-        let path = self.file_path(name);
-        let file = fs::OpenOptions::new().read(true).open(&path)?;
-        file.sync_data()?;
-        Ok(())
+        crate::util::IOUtils::fsync(&self.file_path(name), false)
     }
 
+    /// The fsync of `FSDirectory.syncMetaData()`, `IOUtils.fsync(directory,
+    /// true)` (`FSDirectory.java:275`).
     fn fsync_directory(&self) -> Result<()> {
-        match fs::OpenOptions::new().read(true).open(&self.directory) {
-            Ok(file) => {
-                file.sync_all()?;
-                Ok(())
-            }
-            Err(_) if cfg!(windows) => {
-                // Windows cannot open directories as files; fsync metadata is
-                // best-effort there.
-                Ok(())
-            }
-            Err(e) => Err(LuceneError::from(e)),
-        }
+        crate::util::IOUtils::fsync(&self.directory, true)
     }
 
     fn private_delete_file(&self, name: &str, is_pending_delete: bool) -> Result<()> {
@@ -9166,9 +9196,12 @@ impl FSDirectory {
                     Err(LuceneError::Io(e))
                 }
             }
-            Err(e) => {
+            // `catch (IOException ioe) { pendingDeletes.add(name); }`
+            // (`FSDirectory.java:358-372`): the file is retried later and the
+            // failure is not raised.
+            Err(_) => {
                 pending.insert(name.to_string());
-                Err(LuceneError::Io(e))
+                Ok(())
             }
         }
     }
@@ -9333,9 +9366,23 @@ impl Directory for FSDirectory {
         Ok(())
     }
 
+    /// Equivalent to `FSDirectory.rename(String, String)`
+    /// (`FSDirectory.java:256-269`).
     fn rename(&self, source: &str, dest: &str) -> Result<()> {
         self.check_open()?;
-        self.ensure_can_read(source)?;
+        // `throw new NoSuchFileException("file \"" + source + "\" is pending
+        // delete and cannot be moved")`.
+        if self
+            .pending_deletes
+            .lock()
+            .expect("pending deletes mutex poisoned")
+            .contains(source)
+        {
+            return Err(LuceneError::Io(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("file \"{source}\" is pending delete and cannot be moved"),
+            )));
+        }
         self.maybe_delete_pending_files()?;
         {
             let was_pending = {
@@ -10220,6 +10267,22 @@ mod tests {
     use crate::util::java_collections::JavaHashMap;
     use tempfile::TempDir;
 
+    /// `ByteBuffersDataOutput.toArrayCopy()` refuses content larger than a
+    /// Java array with `RuntimeException("Data exceeds maximum size of a
+    /// single byte array: " + size)` (`ByteBuffersDataOutput.java:288-299`).
+    /// The two zero-filled 1 GiB blocks are never touched, so the kernel maps
+    /// no memory for them.
+    #[test]
+    fn to_array_copy_refuses_content_past_a_java_array() {
+        let mut output = ByteBuffersDataOutput::new();
+        output.completed = vec![vec![0u8; 1 << 30], vec![0u8; 1 << 30]];
+        assert!(matches!(
+            output.to_array_copy(),
+            Err(LuceneError::Other(ref message))
+                if message == "Data exceeds maximum size of a single byte array: 2147483648"
+        ));
+    }
+
     /// Writes all primitive encodings to a [`VecDataOutput`] and reads
     /// them back from a [`ByteArrayDataInput`], asserting exact round-trip.
     #[test]
@@ -10962,7 +11025,7 @@ mod tests {
         out.write_long(0x1122334455667788u64 as i64).unwrap();
         out.write_string("copied").unwrap();
 
-        let bytes = out.to_array_copy();
+        let bytes = out.to_array_copy().unwrap();
         let mut input = ByteArrayDataInput::new(&bytes);
         assert_eq!(input.read_int().unwrap(), 0xAABBCCDDu32 as i32);
         assert_eq!(input.read_long().unwrap(), 0x1122334455667788u64 as i64);
@@ -10976,14 +11039,14 @@ mod tests {
         out.write_long(0x1122334455667788u64 as i64).unwrap();
         out.write_string("copied").unwrap();
 
-        let source_bytes = out.to_array_copy();
+        let source_bytes = out.to_array_copy().unwrap();
         let mut source = ByteArrayDataInput::new(&source_bytes);
         let mut destination = ByteBuffersDataOutput::new();
         destination
             .copy_bytes(&mut source, source_bytes.len() as i64)
             .unwrap();
 
-        assert_eq!(destination.to_array_copy(), source_bytes);
+        assert_eq!(destination.to_array_copy().unwrap(), source_bytes);
     }
 
     #[test]
@@ -11955,6 +12018,32 @@ mod tests {
         let lock2 = factory.obtain_lock(&dir, "test.lock").unwrap();
         lock2.ensure_valid().unwrap();
         lock2.close().unwrap();
+    }
+
+    /// `FSDirectory.rename` refuses a source that is pending delete with its
+    /// own `NoSuchFileException`, `file "<source>" is pending delete and
+    /// cannot be moved` (`FSDirectory.java:256-261`), not the one `openInput`
+    /// raises. A non-empty directory under the file's name cannot be deleted,
+    /// which leaves the name pending.
+    #[test]
+    fn rename_refuses_a_source_pending_delete_with_lucenes_message() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = NIOFSDirectory::open(tmp.path()).unwrap();
+        std::fs::create_dir(tmp.path().join("pending")).unwrap();
+        std::fs::write(tmp.path().join("pending").join("inner"), b"x").unwrap();
+        // The delete fails, which leaves the name pending without raising.
+        dir.delete_file("pending").unwrap();
+        assert!(dir.get_pending_deletions().unwrap().contains("pending"));
+        match dir.rename("pending", "moved") {
+            Err(LuceneError::Io(error)) => {
+                assert_eq!(error.kind(), io::ErrorKind::NotFound);
+                assert_eq!(
+                    error.to_string(),
+                    "file \"pending\" is pending delete and cannot be moved"
+                );
+            }
+            other => panic!("expected the pending-delete NoSuchFileException, got {other:?}"),
+        }
     }
 
     /// Verifies that [`NativeFSLockFactory`] acquires and releases native locks,

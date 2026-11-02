@@ -72,8 +72,40 @@ pub enum LuceneError {
     NotFound(String),
 
     /// An invalid argument was supplied.
+    ///
+    /// Equivalent to `java.lang.IllegalArgumentException` built without a
+    /// cause, `new IllegalArgumentException(String)`; one built with a cause
+    /// is [`LuceneError::IllegalArgumentWithCause`].
     #[error("illegal argument: {0}")]
     IllegalArgument(String),
+
+    /// An invalid argument was supplied, and the failure that revealed it is
+    /// kept as its cause.
+    ///
+    /// Equivalent to `java.lang.IllegalArgumentException` built with a cause,
+    /// `new IllegalArgumentException(String, Throwable)` — for example the
+    /// stale-reader check `IndexWriter` runs on an `IndexCommit` it is opened
+    /// from (`IndexWriter.java:1059-1064`), whose cause is the `IOException`
+    /// reading the commit raised. `cause` is that cause, which
+    /// [`std::error::Error::source`] returns as Java's `getCause()` does.
+    /// Build one with [`LuceneError::illegal_argument_with_cause`].
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java has one class, and the cause is
+    /// an optional field of it. [`LuceneError::IllegalArgument`] is a tuple
+    /// variant built at about 1250 sites, none of which passes a cause, so the
+    /// cause cannot become a field of it without rewriting every one of them;
+    /// the ported sites that pass a cause build this variant instead. Both
+    /// report [`java_simple_name`](LuceneError::java_simple_name)
+    /// `IllegalArgumentException` and display alike, and every match the port
+    /// makes on Java's class names both.
+    #[error("illegal argument: {message}")]
+    IllegalArgumentWithCause {
+        /// The message, Java's `getMessage()`.
+        message: String,
+        /// The cause, Java's `getCause()`.
+        #[source]
+        cause: Arc<LuceneError>,
+    },
 
     /// An illegal state was encountered (e.g., writing to a closed writer).
     ///
@@ -142,6 +174,16 @@ pub enum LuceneError {
     #[error("unsupported operation: {0}")]
     UnsupportedOperation(String),
 
+    /// An arithmetic result does not fit the type it is computed in.
+    ///
+    /// Equivalent to `java.lang.ArithmeticException`. Lucene raises it through
+    /// `Math.toIntExact(long)` — and `GroupVIntUtil.toInt(long)`, which throws
+    /// the same exception explicitly — with the message `integer overflow`;
+    /// build that one with [`LuceneError::integer_overflow`], or convert with
+    /// [`to_int_exact`].
+    #[error("arithmetic error: {0}")]
+    Arithmetic(String),
+
     /// A merge was aborted before it completed.
     ///
     /// Equivalent to `org.apache.lucene.index.MergePolicy.MergeAbortedException`,
@@ -192,12 +234,15 @@ impl LuceneError {
             Self::IndexFormatTooOld { .. } => "IndexFormatTooOldException",
             Self::IndexFormatTooNew { .. } => "IndexFormatTooNewException",
             Self::IndexNotFound(_) => "IndexNotFoundException",
-            Self::IllegalArgument(_) => "IllegalArgumentException",
+            Self::IllegalArgument(_) | Self::IllegalArgumentWithCause { .. } => {
+                "IllegalArgumentException"
+            }
             Self::IllegalState { .. } => "IllegalStateException",
             Self::LockObtainFailed { .. } => "LockObtainFailedException",
             Self::LockReleaseFailed { .. } => "LockReleaseFailedException",
             Self::AlreadyClosed { .. } => "AlreadyClosedException",
             Self::UnsupportedOperation(_) => "UnsupportedOperationException",
+            Self::Arithmetic(_) => "ArithmeticException",
             Self::MergeAborted(_) => "MergeAbortedException",
             Self::Merge(_) => "MergeException",
             Self::AssertionError(_) => "AssertionError",
@@ -207,6 +252,29 @@ impl LuceneError {
             Self::Cancelled => "Cancelled",
             Self::Other(_) => "Other",
         }
+    }
+
+    /// Whether the Java class this error stands for is a `java.io.IOException`
+    /// — what a `catch (IOException e)` clause catches.
+    ///
+    /// True for [`LuceneError::Io`] and for the variants whose Java classes
+    /// extend `IOException`: `CorruptIndexException` and its
+    /// `IndexFormatTooOldException` and `IndexFormatTooNewException`,
+    /// `IndexNotFoundException` (a `FileNotFoundException`),
+    /// `LockObtainFailedException`, `LockReleaseFailedException` and
+    /// `MergePolicy.MergeAbortedException`.
+    pub(crate) fn is_io_exception(&self) -> bool {
+        matches!(
+            self,
+            Self::Io(_)
+                | Self::CorruptIndex(_)
+                | Self::IndexFormatTooOld { .. }
+                | Self::IndexFormatTooNew { .. }
+                | Self::IndexNotFound(_)
+                | Self::LockObtainFailed { .. }
+                | Self::LockReleaseFailed { .. }
+                | Self::MergeAborted(_)
+        )
     }
 
     /// `new IllegalStateException(String)`.
@@ -223,6 +291,23 @@ impl LuceneError {
             message: message.into(),
             cause: Some(cause),
         }
+    }
+
+    /// `new IllegalArgumentException(String, Throwable)`.
+    pub fn illegal_argument_with_cause(
+        message: impl Into<String>,
+        cause: Arc<LuceneError>,
+    ) -> Self {
+        Self::IllegalArgumentWithCause {
+            message: message.into(),
+            cause,
+        }
+    }
+
+    /// `new ArithmeticException("integer overflow")`, what `Math.toIntExact`
+    /// throws for a `long` outside the `int` range.
+    pub fn integer_overflow() -> Self {
+        Self::Arithmetic("integer overflow".to_string())
     }
 
     /// `new AlreadyClosedException(String)`.
@@ -285,6 +370,10 @@ impl LuceneError {
             Self::IndexNotFound(m) => Self::IndexNotFound(m.clone()),
             Self::NotFound(m) => Self::NotFound(m.clone()),
             Self::IllegalArgument(m) => Self::IllegalArgument(m.clone()),
+            Self::IllegalArgumentWithCause { message, cause } => Self::IllegalArgumentWithCause {
+                message: message.clone(),
+                cause: Arc::clone(cause),
+            },
             Self::IllegalState { message, cause } => Self::IllegalState {
                 message: message.clone(),
                 cause: cause.clone(),
@@ -304,6 +393,7 @@ impl LuceneError {
                 cause: cause.clone(),
             },
             Self::UnsupportedOperation(m) => Self::UnsupportedOperation(m.clone()),
+            Self::Arithmetic(m) => Self::Arithmetic(m.clone()),
             Self::MergeAborted(m) => Self::MergeAborted(m.clone()),
             Self::Merge(m) => Self::Merge(m.clone()),
             Self::AssertionError(m) => Self::AssertionError(m.clone()),
@@ -537,6 +627,20 @@ impl LuceneError {
 /// Convenience alias for `Result<T, LuceneError>`.
 pub type Result<T> = std::result::Result<T, LuceneError>;
 
+/// Narrows a `long` to an `int`, failing when it does not fit.
+///
+/// Equivalent to `java.lang.Math.toIntExact(long)`, which Lucene calls to
+/// narrow its `long` arithmetic back to an `int`.
+///
+/// # Errors
+///
+/// [`LuceneError::Arithmetic`] with the message `integer overflow`, built by
+/// [`LuceneError::integer_overflow`], when `value` is outside the `i32` range:
+/// Java's `ArithmeticException("integer overflow")`.
+pub fn to_int_exact(value: i64) -> Result<i32> {
+    i32::try_from(value).map_err(|_| LuceneError::integer_overflow())
+}
+
 #[cfg(test)]
 mod tests {
     use super::LuceneError;
@@ -591,5 +695,60 @@ mod tests {
         assert!(
             matches!(closed.duplicate(), LuceneError::AlreadyClosed { cause: Some(c), .. } if Arc::ptr_eq(&c, &tragedy))
         );
+    }
+
+    /// `Math.toIntExact(1L << 40)` throws
+    /// `java.lang.ArithmeticException: integer overflow` (observed with the
+    /// 10.5.0 oracle); an in-range value converts unchanged, at both ends of
+    /// the `int` range.
+    #[test]
+    fn to_int_exact_is_javas_arithmetic_exception() {
+        use super::to_int_exact;
+
+        let error = to_int_exact(1i64 << 40).unwrap_err();
+        assert!(
+            matches!(&error, LuceneError::Arithmetic(m) if m == "integer overflow"),
+            "{error:?}"
+        );
+        assert_eq!(error.java_simple_name(), "ArithmeticException");
+        assert!(matches!(
+            to_int_exact(i64::from(i32::MIN) - 1),
+            Err(LuceneError::Arithmetic(_))
+        ));
+        assert_eq!(to_int_exact(i64::from(i32::MAX)).unwrap(), i32::MAX);
+        assert_eq!(to_int_exact(i64::from(i32::MIN)).unwrap(), i32::MIN);
+        assert!(matches!(
+            LuceneError::integer_overflow().duplicate(),
+            LuceneError::Arithmetic(m) if m == "integer overflow"
+        ));
+    }
+
+    /// `new IllegalArgumentException(String, Throwable)` keeps the cause apart
+    /// from the message and `getCause()` returns it; it is the same Java class
+    /// as the cause-less form.
+    #[test]
+    fn illegal_argument_with_cause_keeps_its_cause_as_its_source() {
+        use std::error::Error;
+        use std::sync::Arc;
+
+        let cause = Arc::new(LuceneError::integer_overflow());
+        let error = LuceneError::illegal_argument_with_cause(
+            "too many tokens for field \"f\"",
+            Arc::clone(&cause),
+        );
+        assert_eq!(error.java_simple_name(), "IllegalArgumentException");
+        assert_eq!(
+            error.to_string(),
+            LuceneError::IllegalArgument("too many tokens for field \"f\"".to_string()).to_string()
+        );
+        let source = error
+            .source()
+            .and_then(|source| source.downcast_ref::<Arc<LuceneError>>())
+            .expect("the cause is the source");
+        assert!(Arc::ptr_eq(source, &cause));
+        assert!(matches!(
+            error.duplicate(),
+            LuceneError::IllegalArgumentWithCause { cause: c, .. } if Arc::ptr_eq(&c, &cause)
+        ));
     }
 }

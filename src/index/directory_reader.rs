@@ -751,34 +751,84 @@ impl IndexReader for StandardDirectoryReader {
         Some(Box::new(Arc::clone(&self.cache_helper)))
     }
 
-    fn doc_freq(&self, _term: &Term) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
-            "DirectoryReader does not support docFreq".to_string(),
-        ))
+    /// Equivalent to `BaseCompositeReader.docFreq(Term)`
+    /// (`BaseCompositeReader.java:196-206`): the sum over the segments, after
+    /// `ensureOpen()`. Java's `int` sum wraps.
+    fn doc_freq(&self, term: &Term) -> Result<i32> {
+        self.ensure_open()?;
+        let mut total = 0i32; // sum freqs in subreaders
+        for reader in &self.segment_readers {
+            let sub = reader.doc_freq(term)?;
+            debug_assert!(sub >= 0);
+            debug_assert!(reader
+                .get_doc_count(term.field())
+                .map_or(true, |count| sub <= count));
+            total = total.wrapping_add(sub);
+        }
+        Ok(total)
     }
 
-    fn total_term_freq(&self, _term: &Term) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(
-            "DirectoryReader does not support totalTermFreq".to_string(),
-        ))
+    /// Equivalent to `BaseCompositeReader.totalTermFreq(Term)`
+    /// (`BaseCompositeReader.java:209-219`).
+    fn total_term_freq(&self, term: &Term) -> Result<i64> {
+        self.ensure_open()?;
+        let mut total = 0i64; // sum freqs in subreaders
+        for reader in &self.segment_readers {
+            let sub = reader.total_term_freq(term)?;
+            debug_assert!(sub >= 0);
+            debug_assert!(reader
+                .get_sum_total_term_freq(term.field())
+                .map_or(true, |sum| sub <= sum));
+            total = total.wrapping_add(sub);
+        }
+        Ok(total)
     }
 
-    fn get_sum_doc_freq(&self, _field: &str) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(
-            "DirectoryReader does not support getSumDocFreq".to_string(),
-        ))
+    /// Equivalent to `BaseCompositeReader.getSumDocFreq(String)`
+    /// (`BaseCompositeReader.java:222-232`).
+    fn get_sum_doc_freq(&self, field: &str) -> Result<i64> {
+        self.ensure_open()?;
+        let mut total = 0i64; // sum doc freqs in subreaders
+        for reader in &self.segment_readers {
+            let sub = reader.get_sum_doc_freq(field)?;
+            debug_assert!(sub >= 0);
+            debug_assert!(reader
+                .get_sum_total_term_freq(field)
+                .map_or(true, |sum| sub <= sum));
+            total = total.wrapping_add(sub);
+        }
+        Ok(total)
     }
 
-    fn get_doc_count(&self, _field: &str) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
-            "DirectoryReader does not support getDocCount".to_string(),
-        ))
+    /// Equivalent to `BaseCompositeReader.getDocCount(String)`
+    /// (`BaseCompositeReader.java:235-245`).
+    fn get_doc_count(&self, field: &str) -> Result<i32> {
+        self.ensure_open()?;
+        let mut total = 0i32; // sum doc counts in subreaders
+        for reader in &self.segment_readers {
+            let sub = reader.get_doc_count(field)?;
+            debug_assert!(sub >= 0);
+            debug_assert!(sub <= crate::index::leaf_reader::LeafReader::max_doc(reader.as_ref()));
+            total = total.wrapping_add(sub);
+        }
+        Ok(total)
     }
 
-    fn get_sum_total_term_freq(&self, _field: &str) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(
-            "DirectoryReader does not support getSumTotalTermFreq".to_string(),
-        ))
+    /// Equivalent to `BaseCompositeReader.getSumTotalTermFreq(String)`
+    /// (`BaseCompositeReader.java:248-259`): the sum over the segments, after
+    /// `ensureOpen()`. Java's `long` sum wraps.
+    fn get_sum_total_term_freq(&self, field: &str) -> Result<i64> {
+        self.ensure_open()?;
+        let mut total = 0i64; // sum doc total term freqs in subreaders
+        for reader in &self.segment_readers {
+            let sub = reader.get_sum_total_term_freq(field)?;
+            debug_assert!(sub >= 0);
+            debug_assert!(reader
+                .get_sum_doc_freq(field)
+                .map_or(true, |sum| sub >= sum));
+            total = total.wrapping_add(sub);
+        }
+        Ok(total)
     }
 
     fn notify_reader_closed_listeners(&self) -> Result<()> {
@@ -1541,6 +1591,93 @@ pub fn index_exists(directory: &dyn Directory) -> Result<bool> {
 mod tests {
     use super::*;
     use crate::codecs::segment_info::SegmentInfoFormat;
+
+    /// `BaseCompositeReader.docFreq`, `totalTermFreq`, `getSumDocFreq` and
+    /// `getDocCount` sum the segments' values after `ensureOpen()`
+    /// (`BaseCompositeReader.java:196-245`).
+    #[test]
+    fn term_statistics_sum_the_segments_as_lucene_does() {
+        use crate::document::{Document, Store, TextField};
+        use crate::index::index_writer::IndexWriter as RealIndexWriter;
+        use crate::index::index_writer_config::IndexWriterConfig;
+
+        // Measured against `lucene-core-10.5.0.jar` (`oracle/fix/LastPass.java`, case C8) over
+        // the segments "a b c", "a a" and "b": `leaves=3 docFreq=2
+        // totalTermFreq=3 sumDocFreq=5 docCount=3 missing=0`, then
+        // `AlreadyClosedException: this IndexReader is closed`.
+        let _ = register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut config = IndexWriterConfig::new();
+        config
+            .set_merge_policy(Arc::new(crate::index::merge_policy::NoMergePolicy::new()))
+            .unwrap();
+        let writer = RealIndexWriter::new(Arc::clone(&dir), config).unwrap();
+        for text in ["a b c", "a a", "b"] {
+            let mut doc = Document::new();
+            doc.add(Box::new(
+                TextField::new("body", text.to_string(), Store::NO).unwrap(),
+            ));
+            writer.add_document(&doc).unwrap();
+            writer.commit().unwrap();
+        }
+        writer.close().unwrap();
+        let reader = open(Arc::clone(&dir)).unwrap();
+        let a = Term::from_text("body", "a");
+        assert_eq!(Arc::clone(&reader).leaves().unwrap().len(), 3);
+        assert_eq!(
+            (
+                reader.doc_freq(&a).unwrap(),
+                reader.total_term_freq(&a).unwrap(),
+                reader.get_sum_doc_freq("body").unwrap(),
+                reader.get_doc_count("body").unwrap(),
+                reader.doc_freq(&Term::from_text("nope", "a")).unwrap(),
+            ),
+            (2, 3, 5, 3, 0)
+        );
+        reader.close().unwrap();
+        assert!(matches!(
+            reader.doc_freq(&a),
+            Err(LuceneError::AlreadyClosed { ref message, .. }) if message == "this IndexReader is closed"
+        ));
+    }
+
+    /// `BaseCompositeReader.getSumTotalTermFreq` sums the segments' values
+    /// after `ensureOpen()` (`BaseCompositeReader.java:248-259`). Measured
+    /// against `lucene-core-10.5.0.jar` (`oracle/fix/MiscFix.java`, item 18):
+    /// `leaves=2 sumTotalTermFreq=5 missing=0`, and after `close()`
+    /// `AlreadyClosedException: this IndexReader is closed`.
+    #[test]
+    fn sum_total_term_freq_sums_the_segments_as_lucene_does() {
+        use crate::document::{Document, Store, TextField};
+        use crate::index::index_writer::IndexWriter as RealIndexWriter;
+        use crate::index::index_writer_config::IndexWriterConfig;
+
+        let _ = register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut config = IndexWriterConfig::new();
+        config
+            .set_merge_policy(Arc::new(crate::index::merge_policy::NoMergePolicy::new()))
+            .unwrap();
+        let writer = RealIndexWriter::new(Arc::clone(&dir), config).unwrap();
+        for text in ["a b c", "a a"] {
+            let mut doc = Document::new();
+            doc.add(Box::new(
+                TextField::new("body", text.to_string(), Store::NO).unwrap(),
+            ));
+            writer.add_document(&doc).unwrap();
+            writer.commit().unwrap();
+        }
+        writer.close().unwrap();
+        let reader = open(Arc::clone(&dir)).unwrap();
+        assert_eq!(Arc::clone(&reader).leaves().unwrap().len(), 2);
+        assert_eq!(reader.get_sum_total_term_freq("body").unwrap(), 5);
+        assert_eq!(reader.get_sum_total_term_freq("nope").unwrap(), 0);
+        reader.close().unwrap();
+        assert!(matches!(
+            reader.get_sum_total_term_freq("body"),
+            Err(LuceneError::AlreadyClosed { ref message, .. }) if message == "this IndexReader is closed"
+        ));
+    }
     use crate::codecs::tests::{test_segment_info, DummyCodec};
     use crate::codecs::{register_codec, FilterCodec, Lucene99SegmentInfoFormat};
     use crate::index::index_file_names::SEGMENTS;
@@ -1636,8 +1773,41 @@ mod tests {
         assert_eq!(reader.max_doc(), 0);
         assert_eq!(reader.num_docs(), 0);
         assert!(!reader.has_deletions());
-        let leaves = reader.leaves();
+        let leaves = reader.leaves().unwrap();
         assert_eq!(leaves.len(), 0);
+    }
+
+    /// `getContext()` calls `ensureOpen()` first, in `CompositeReader`
+    /// (`CompositeReader.java:93-94`) and in `LeafReader` (`LeafReader.java:59-60`),
+    /// and `leaves()` is `getContext().leaves()`: on a closed reader each
+    /// throws `AlreadyClosedException("this IndexReader is closed")`, and so
+    /// does `new IndexSearcher(reader)`, which reads `r.getContext()`
+    /// (`IndexSearcher.java:207-209`). Observed with the 10.5.0 oracle
+    /// (`PassAOracle`, section 2) for the composite's `getContext()` and
+    /// `leaves()` and for a leaf's `getContext()` once its directory reader is
+    /// closed.
+    #[test]
+    fn a_closed_reader_refuses_its_context_and_leaves() {
+        let closed = |error: LuceneError| {
+            assert!(
+                matches!(&error, LuceneError::AlreadyClosed { message, .. }
+                    if message == "this IndexReader is closed"),
+                "{error:?}"
+            );
+        };
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
+        let reader = commit_single_segment(Arc::clone(&dir));
+        let leaf = Arc::clone(&reader).leaves().unwrap()[0].leaf_reader();
+        assert!(Arc::clone(&leaf).as_index_reader().get_context().is_ok());
+        reader.close().unwrap();
+
+        closed(Arc::clone(&reader).get_context().unwrap_err());
+        closed(Arc::clone(&reader).leaves().unwrap_err());
+        closed(leaf.as_index_reader().get_context().unwrap_err());
+        match crate::search::IndexSearcher::new(Arc::clone(&reader) as Arc<dyn IndexReader>) {
+            Ok(_) => panic!("a closed reader has no context to search"),
+            Err(error) => closed(error),
+        }
     }
 
     #[test]
@@ -1646,7 +1816,7 @@ mod tests {
         let reader = commit_single_segment(Arc::clone(&dir));
         assert_eq!(reader.max_doc(), 42);
         assert_eq!(reader.num_docs(), 42);
-        let leaves = reader.leaves();
+        let leaves = reader.leaves().unwrap();
         assert_eq!(leaves.len(), 1);
         assert_eq!(leaves[0].doc_base(), 0);
     }
@@ -1676,7 +1846,7 @@ mod tests {
         let new_reader = new_reader.unwrap();
         assert!(new_reader.version().unwrap() > first_version);
         assert_eq!(new_reader.max_doc(), 50);
-        assert_eq!(Arc::clone(&new_reader).leaves().len(), 2);
+        assert_eq!(Arc::clone(&new_reader).leaves().unwrap().len(), 2);
         assert!(new_reader.is_current().unwrap());
     }
 
@@ -1985,6 +2155,7 @@ mod tests {
         let leaf_max_docs = |reader: &Arc<dyn DirectoryReader>| -> Vec<i32> {
             Arc::clone(reader)
                 .leaves()
+                .unwrap()
                 .iter()
                 .map(|leaf| leaf.leaf_reader().max_doc())
                 .collect()
@@ -2041,7 +2212,7 @@ mod tests {
             .unwrap()
             .expect("a new commit");
         let core_of = |reader: &Arc<dyn DirectoryReader>, i: usize| {
-            let leaf = Arc::clone(reader).leaves()[i].leaf_reader();
+            let leaf = Arc::clone(reader).leaves().unwrap()[i].leaf_reader();
             Arc::clone(leaf.as_segment_reader().unwrap().core_readers())
         };
         assert!(

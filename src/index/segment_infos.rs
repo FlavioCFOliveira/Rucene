@@ -499,12 +499,9 @@ impl SegmentInfos {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] with the message
-    /// `integer overflow` when the sum does not fit in an `i32`, where Java's
-    /// `Math.toIntExact(count)` throws `ArithmeticException("integer
-    /// overflow")`. The crate has no arithmetic-error variant; this is the one
-    /// the writer's other `Math.toIntExact` (`IndexWriter.java:3509-3511`,
-    /// in `add_indexes_reader_merge`) and `GroupVIntUtil` use.
+    /// Returns [`LuceneError::Arithmetic`] with the message `integer overflow`
+    /// when the sum does not fit in an `i32`: Java's `Math.toIntExact(count)`
+    /// throwing `ArithmeticException("integer overflow")`.
     ///
     /// # Panics
     ///
@@ -522,8 +519,7 @@ impl SegmentInfos {
         // We should never hit this, checks should happen elsewhere.
         debug_assert!(count <= i64::from(crate::index::index_writer::get_actual_max_docs()));
         // `Math.toIntExact(count)` (`SegmentInfos.java:1061`).
-        i32::try_from(count)
-            .map_err(|_| LuceneError::IllegalArgument("integer overflow".to_string()))
+        crate::error::to_int_exact(count)
     }
 
     /// Returns all file names referenced by this commit.
@@ -1666,8 +1662,8 @@ mod tests {
     /// (`SegmentInfos.java:1054-1062`), which throws
     /// `ArithmeticException("integer overflow")` for a sum past an `int`;
     /// under `-ea` its `assert count <= IndexWriter.getActualMaxDocs()` fires
-    /// first. This port raises `IllegalArgument("integer overflow")` in a
-    /// release build and panics on the `debug_assert!` in a debug build.
+    /// first. This port raises `Arithmetic("integer overflow")` in a release
+    /// build and panics on the `debug_assert!` in a debug build.
     #[test]
     fn total_max_doc_past_an_int_is_lucenes_integer_overflow() {
         let mut sis = SegmentInfos::new(10).unwrap();
@@ -1679,9 +1675,10 @@ mod tests {
         if cfg!(debug_assertions) {
             assert!(total.is_err(), "Java's assertion fires first: {total:?}");
         } else {
-            assert_eq!(
-                total.unwrap().unwrap_err().to_string(),
-                LuceneError::IllegalArgument("integer overflow".to_string()).to_string()
+            let error = total.unwrap().unwrap_err();
+            assert!(
+                matches!(&error, LuceneError::Arithmetic(m) if m == "integer overflow"),
+                "{error:?}"
             );
         }
     }

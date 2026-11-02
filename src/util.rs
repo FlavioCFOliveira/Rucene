@@ -65,7 +65,7 @@ pub mod hnsw;
 /// Vector arithmetic primitives ported from `org.apache.lucene.util.VectorUtil`.
 pub mod vector_util;
 
-pub use accountables::{AccountableTree, Accountables, NamedAccountable};
+pub use accountables::{Accountables, NamedAccountable};
 pub use annotations::{IgnoreRandomChains, SuppressForbidden};
 pub use bit_set::{
     bit_set_of, check_unpositioned, BitSet, BitSetIterator, DocBaseBitSetIterator, FixedBits,
@@ -152,14 +152,12 @@ pub use byte_block_pool::{
 pub use bytes_ref_hash::BytesRefHash;
 pub use chars_ref::{CharsRef, EMPTY_CHARS};
 pub use extra::{
-    IdentityLongValues, IntoIter as PriorityQueueIntoIter, LongBitSet, LongValues, MergedIterator,
-    PriorityQueue, PriorityQueueComparator, Version, ZeroesLongValues,
+    IdentityLongValues, IntoIter as PriorityQueueIntoIter, JavaComparable, LongBitSet, LongValues,
+    MergedIterator, PriorityQueue, PriorityQueueComparator, Version, ZeroesLongValues,
 };
 pub use query_builder::{QueryBuilder, QueryBuilderOps, TermAndBoost as QueryBuilderTermAndBoost};
 pub use small_float::SmallFloat;
-pub use string_helper::{
-    compare_utf16, read_string, write_string, IntsRef, StringHelper, ID_LENGTH,
-};
+pub use string_helper::{compare_utf16, IntsRef, StringHelper, ID_LENGTH};
 pub use vector_util::{
     add, check_finite, cosine_bytes, cosine_f32, dot_product_bytes, dot_product_f32,
     dot_product_score, is_unit_vector, is_zero_vector_bytes, is_zero_vector_f32, l2normalize,
@@ -175,7 +173,8 @@ use std::{
     hash::{Hash, Hasher},
     io,
     path::{Path, PathBuf},
-    sync::LazyLock,
+    sync::atomic::{AtomicU64, Ordering as AtomicOrdering},
+    sync::{Arc, LazyLock},
 };
 
 use crate::error::LuceneError;
@@ -218,6 +217,39 @@ impl BytesRef {
             bytes: Vec::with_capacity(capacity),
             offset: 0,
             length: 0,
+        }
+    }
+
+    /// Initializes the buffer from the UTF-8 bytes of `text`.
+    ///
+    /// Equivalent to `BytesRef(CharSequence)` (`BytesRef.java:79-82`), which
+    /// first allocates `UnicodeUtil.maxUTF8Length(text.length())` bytes —
+    /// three per UTF-16 code unit, through `BytesRef(int)`, so an empty text
+    /// gets an empty array — and then sets `length` to the number of UTF-8
+    /// bytes `UnicodeUtil.UTF16toUTF8` wrote. The buffer is therefore longer
+    /// than the value for any text that is not empty, and that length is
+    /// visible through [`bytes`](Self::bytes), as `bytes.length` is in Java.
+    ///
+    /// # Panics
+    ///
+    /// When three bytes per UTF-16 code unit overflow an `int`, which is the
+    /// `ArithmeticException` (`integer overflow`) of Java's
+    /// `Math.multiplyExact` in `UnicodeUtil.maxUTF8Length`.
+    pub fn from_char_sequence(text: &str) -> Self {
+        let utf16_length = text.encode_utf16().count();
+        let capacity = i32::try_from(utf16_length)
+            .ok()
+            .and_then(|length| {
+                length.checked_mul(crate::util::unicode_util::MAX_UTF8_BYTES_PER_CHAR as i32)
+            })
+            .expect("integer overflow");
+        let mut bytes = vec![0u8; capacity as usize];
+        let utf8 = text.as_bytes();
+        bytes[..utf8.len()].copy_from_slice(utf8);
+        Self {
+            bytes,
+            offset: 0,
+            length: utf8.len(),
         }
     }
 
@@ -476,7 +508,13 @@ impl BytesRefBuilder {
     }
 
     /// Copies UTF-8 bytes representing the provided text into the buffer.
+    ///
+    /// Equivalent to `BytesRefBuilder.copyChars(CharSequence, int, int)`
+    /// (`BytesRefBuilder.java:137-140`), which first runs
+    /// `growNoCopy(UnicodeUtil.maxUTF8Length(len))` for the text's UTF-16
+    /// length, so the buffer reaches the same capacity as Java's.
     pub fn copy_chars(&mut self, text: &str) {
+        self.grow_no_copy(UnicodeUtil::max_utf8_length(text.encode_utf16().count()));
         let encoded = text.as_bytes();
         self.copy_bytes(encoded, 0, encoded.len());
     }
@@ -582,10 +620,17 @@ impl NumericUtils {
     /// the tail that is not a multiple of four is borrowed byte by byte, then
     /// the aligned head four bytes at a time.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics when `a < b`, standing in for Java's `IllegalArgumentException`.
-    pub fn subtract(bytes_per_dim: usize, dim: usize, a: &[u8], b: &[u8], result: &mut [u8]) {
+    /// Returns [`LuceneError::IllegalArgument`] `"a < b"` when `a < b`, the
+    /// `IllegalArgumentException` Java throws (`NumericUtils.java:124-126`).
+    pub fn subtract(
+        bytes_per_dim: usize,
+        dim: usize,
+        a: &[u8],
+        b: &[u8],
+        result: &mut [u8],
+    ) -> Result<(), LuceneError> {
         let start = dim * bytes_per_dim;
         let end = start + bytes_per_dim;
 
@@ -612,7 +657,10 @@ impl NumericUtils {
             result[j - start..j - start + 4].copy_from_slice(&(diff as u32).to_be_bytes());
         }
 
-        assert!(borrow == 0, "a < b");
+        if borrow != 0 {
+            return Err(LuceneError::IllegalArgument("a < b".to_string()));
+        }
+        Ok(())
     }
 
     /// Writes `result = a + b` for the `dim`-th dimension, treating both as
@@ -620,10 +668,17 @@ impl NumericUtils {
     ///
     /// Equivalent to `NumericUtils.add(int, int, byte[], byte[], byte[])`.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics on overflow, standing in for Java's `IllegalArgumentException`.
-    pub fn add(bytes_per_dim: usize, dim: usize, a: &[u8], b: &[u8], result: &mut [u8]) {
+    /// Returns [`LuceneError::IllegalArgument`] on overflow, the
+    /// `IllegalArgumentException` Java throws (`NumericUtils.java:165-167`).
+    pub fn add(
+        bytes_per_dim: usize,
+        dim: usize,
+        a: &[u8],
+        b: &[u8],
+        result: &mut [u8],
+    ) -> Result<(), LuceneError> {
         let start = dim * bytes_per_dim;
         let end = start + bytes_per_dim;
 
@@ -648,7 +703,12 @@ impl NumericUtils {
             result[j - start..j - start + 4].copy_from_slice(&(digit_sum as u32).to_be_bytes());
         }
 
-        assert!(carry == 0, "a + b overflows bytesPerDim={bytes_per_dim}");
+        if carry != 0 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "a + b overflows bytesPerDim={bytes_per_dim}"
+            )));
+        }
+        Ok(())
     }
 
     /// Encodes an arbitrary-precision integer so that unsigned byte order
@@ -820,6 +880,9 @@ impl BitUtil {
     }
 
     /// Reads a big-endian `i64` from `src` at `offset`.
+    ///
+    /// Stands in for `BitUtil.VH_BE_LONG.get(byte[], int)` (`BitUtil.java:174`);
+    /// Rust has no `VarHandle`.
     pub fn read_be_long(src: &[u8], offset: usize) -> i64 {
         let mut bytes = [0u8; 8];
         bytes.copy_from_slice(&src[offset..offset + 8]);
@@ -827,6 +890,9 @@ impl BitUtil {
     }
 
     /// Writes a big-endian `i64` to `dst` at `offset`.
+    ///
+    /// Stands in for `BitUtil.VH_BE_LONG.set(byte[], int, long)`
+    /// (`BitUtil.java:174`); Rust has no `VarHandle`.
     pub fn write_be_long(dst: &mut [u8], offset: usize, value: i64) {
         dst[offset..offset + 8].copy_from_slice(&value.to_be_bytes());
     }
@@ -949,148 +1015,53 @@ pub const MAX_LENGTH_PER_GROUP: usize = 1 + 4 * 4;
 pub struct GroupVIntUtil;
 
 impl GroupVIntUtil {
-    /// Reads group varints from `src` into `dst[0..limit]`, advancing `pos`.
-    ///
-    /// # Errors
-    ///
-    /// Returns `LuceneError::Io` if the input is truncated or otherwise invalid.
-    pub fn read_group_vints(
-        src: &[u8],
-        pos: &mut usize,
-        dst: &mut [i32],
-        limit: usize,
-    ) -> Result<(), LuceneError> {
-        let limit = limit.min(dst.len());
-        let mut i = 0;
-        while i + 4 <= limit {
-            Self::read_group_vint(src, pos, dst, i)?;
-            i += 4;
-        }
-        while i < limit {
-            dst[i] = Self::read_vint(src, pos)?;
-            i += 1;
-        }
-        Ok(())
-    }
-
-    /// Reads group varints from `src` into `dst[0..limit]` through the scalar
-    /// path, bypassing any specialised decoder.
+    /// Reads the group varints of `dst[0..limit]`, including the tail vints,
+    /// from a [`DataInput`] through the scalar path.
     ///
     /// Equivalent to `GroupVIntUtil.readGroupVInts$Baseline(DataInput, int[],
-    /// int)`, which exists so a benchmark can measure the generic decoder
-    /// against a specialised one. This port has only the generic decoder, so
-    /// the baseline is the same code, kept under Lucene's name so the
-    /// comparison it exists for stays expressible.
+    /// int)` (`GroupVIntUtil.java:100-109`), which exists so a benchmark can
+    /// measure [`read_group_vints_input`](Self::read_group_vints_input) against
+    /// it ("DO not use! Only visible for benchmarking purposes!").
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::Io` if the input is truncated or otherwise invalid.
-    ///
-    /// Equivalent to `org.apache.lucene.util.GroupVIntUtil#readGroupVInts$Baseline`.
-    pub fn read_group_vints_baseline(
-        src: &[u8],
-        pos: &mut usize,
+    /// Returns any error raised by the underlying input.
+    pub fn read_group_vints_baseline<I: DataInput + ?Sized>(
+        input: &mut I,
         dst: &mut [i32],
         limit: usize,
     ) -> Result<(), LuceneError> {
-        let limit = limit.min(dst.len());
         let mut i = 0;
         while i + 4 <= limit {
-            Self::read_group_vint_baseline(src, pos, dst, i)?;
+            Self::read_group_vint_baseline(input, dst, i)?;
             i += 4;
         }
         while i < limit {
-            dst[i] = Self::read_vint(src, pos)?;
+            dst[i] = input.read_v_int()?;
             i += 1;
         }
         Ok(())
     }
 
     /// Equivalent to the private `GroupVIntUtil.readGroupVInt$Baseline(DataInput,
-    /// int[], int)`.
-    ///
-    /// Equivalent to `org.apache.lucene.util.GroupVIntUtil#readGroupVInt$Baseline`.
-    fn read_group_vint_baseline(
-        src: &[u8],
-        pos: &mut usize,
+    /// int[], int)` (`GroupVIntUtil.java:111-124`).
+    fn read_group_vint_baseline<I: DataInput + ?Sized>(
+        input: &mut I,
         dst: &mut [i32],
         offset: usize,
     ) -> Result<(), LuceneError> {
-        Self::read_group_vint(src, pos, dst, offset)
-    }
+        let flag = input.read_byte()? as usize;
 
-    /// Reads a single group of four varints.
-    fn read_group_vint(
-        src: &[u8],
-        pos: &mut usize,
-        dst: &mut [i32],
-        offset: usize,
-    ) -> Result<(), LuceneError> {
-        let flag = Self::read_byte(src, pos)? as usize;
-        let n1 = flag >> 6;
-        let n2 = (flag >> 4) & 0x03;
-        let n3 = (flag >> 2) & 0x03;
-        let n4 = flag & 0x03;
-        dst[offset] = Self::read_int_in_group(src, pos, n1)?;
-        dst[offset + 1] = Self::read_int_in_group(src, pos, n2)?;
-        dst[offset + 2] = Self::read_int_in_group(src, pos, n3)?;
-        dst[offset + 3] = Self::read_int_in_group(src, pos, n4)?;
+        let n1_minus1 = flag >> 6;
+        let n2_minus1 = (flag >> 4) & 0x03;
+        let n3_minus1 = (flag >> 2) & 0x03;
+        let n4_minus1 = flag & 0x03;
+
+        dst[offset] = Self::read_int_in_group_input(input, n1_minus1)?;
+        dst[offset + 1] = Self::read_int_in_group_input(input, n2_minus1)?;
+        dst[offset + 2] = Self::read_int_in_group_input(input, n3_minus1)?;
+        dst[offset + 3] = Self::read_int_in_group_input(input, n4_minus1)?;
         Ok(())
-    }
-
-    fn read_int_in_group(
-        src: &[u8],
-        pos: &mut usize,
-        num_bytes_minus_one: usize,
-    ) -> Result<i32, LuceneError> {
-        match num_bytes_minus_one {
-            0 => Ok(Self::read_byte(src, pos)? as i32),
-            1 => Ok(Self::read_le_short(src, pos)? as i32 & 0xFFFF),
-            2 => {
-                let low = Self::read_le_short(src, pos)? as i32 & 0xFFFF;
-                let high = (Self::read_byte(src, pos)? as i32) << 16;
-                Ok(low | high)
-            }
-            3 => Self::read_le_int(src, pos),
-            _ => Err(LuceneError::Io(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid group varint byte count",
-            ))),
-        }
-    }
-
-    /// Writes group varints from `values[0..limit]` into `dst`, advancing `pos`.
-    pub fn write_group_vints(values: &[i32], limit: usize, dst: &mut Vec<u8>) {
-        let limit = limit.min(values.len());
-        let mut read_pos = 0;
-        let mut scratch = [0u8; MAX_LENGTH_PER_GROUP];
-        while limit - read_pos >= 4 {
-            let n1 = Self::num_bytes(values[read_pos]) - 1;
-            let n2 = Self::num_bytes(values[read_pos + 1]) - 1;
-            let n3 = Self::num_bytes(values[read_pos + 2]) - 1;
-            let n4 = Self::num_bytes(values[read_pos + 3]) - 1;
-            let flag = (n1 << 6) | (n2 << 4) | (n3 << 2) | n4;
-            let mut write_pos = 0;
-            scratch[write_pos] = flag as u8;
-            write_pos += 1;
-            BitUtil::write_le_int(&mut scratch, write_pos, values[read_pos]);
-            read_pos += 1;
-            write_pos += n1 + 1;
-            BitUtil::write_le_int(&mut scratch, write_pos, values[read_pos]);
-            read_pos += 1;
-            write_pos += n2 + 1;
-            BitUtil::write_le_int(&mut scratch, write_pos, values[read_pos]);
-            read_pos += 1;
-            write_pos += n3 + 1;
-            BitUtil::write_le_int(&mut scratch, write_pos, values[read_pos]);
-            read_pos += 1;
-            write_pos += n4 + 1;
-            dst.extend_from_slice(&scratch[..write_pos]);
-        }
-        while read_pos < limit {
-            Self::write_vint(values[read_pos], dst);
-            read_pos += 1;
-        }
     }
 
     /// Reads all the group varints of `dst[0..limit]`, including the tail
@@ -1284,10 +1255,9 @@ impl GroupVIntUtil {
     /// # Errors
     ///
     /// Returns any error raised by the underlying output, and
-    /// `LuceneError::IllegalArgument("integer overflow")` when a value does not
-    /// fit in an unsigned 32-bit integer. Lucene throws `ArithmeticException`
-    /// with that message; this port has no arithmetic-error variant, so the
-    /// nearest one carries it.
+    /// [`LuceneError::Arithmetic`] with the message `integer overflow` when a
+    /// value does not fit in an unsigned 32-bit integer: the
+    /// `ArithmeticException("integer overflow")` Lucene throws.
     pub fn write_group_vints_output_long<O: DataOutput + ?Sized>(
         out: &mut O,
         scratch: &mut [u8],
@@ -1330,11 +1300,12 @@ impl GroupVIntUtil {
         Ok(())
     }
 
-    /// Equivalent to the private `GroupVIntUtil.toInt(long)`: narrows a `long`
-    /// that is required to hold an unsigned 32-bit value.
+    /// Equivalent to the private `GroupVIntUtil.toInt(long)`
+    /// (`GroupVIntUtil.java:174-179`): narrows a `long` that is required to
+    /// hold an unsigned 32-bit value.
     fn to_int(value: i64) -> Result<i32, LuceneError> {
         if (value & 0xFFFF_FFFF_0000_0000u64 as i64) != 0 {
-            return Err(LuceneError::IllegalArgument("integer overflow".to_string()));
+            return Err(LuceneError::integer_overflow());
         }
         Ok(value as i32)
     }
@@ -1342,63 +1313,6 @@ impl GroupVIntUtil {
     fn num_bytes(v: i32) -> usize {
         let uv = (v as u32) | 1;
         4 - (uv.leading_zeros() >> 3) as usize
-    }
-
-    fn read_byte(src: &[u8], pos: &mut usize) -> Result<u8, LuceneError> {
-        if *pos >= src.len() {
-            return Err(LuceneError::Io(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "unexpected EOF reading byte",
-            )));
-        }
-        let b = src[*pos];
-        *pos += 1;
-        Ok(b)
-    }
-
-    fn read_le_short(src: &[u8], pos: &mut usize) -> Result<i16, LuceneError> {
-        if *pos + 2 > src.len() {
-            return Err(LuceneError::Io(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "unexpected EOF reading short",
-            )));
-        }
-        let v = BitUtil::read_le_short(src, *pos);
-        *pos += 2;
-        Ok(v)
-    }
-
-    fn read_le_int(src: &[u8], pos: &mut usize) -> Result<i32, LuceneError> {
-        if *pos + 4 > src.len() {
-            return Err(LuceneError::Io(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "unexpected EOF reading int",
-            )));
-        }
-        let v = BitUtil::read_le_int(src, *pos);
-        *pos += 4;
-        Ok(v)
-    }
-
-    fn read_vint(src: &[u8], pos: &mut usize) -> Result<i32, LuceneError> {
-        let mut b = Self::read_byte(src, pos)? as i32;
-        let mut i = b & 0x7F;
-        let mut shift = 7;
-        while (b & 0x80) != 0 {
-            b = Self::read_byte(src, pos)? as i32;
-            i |= (b & 0x7F) << shift;
-            shift += 7;
-        }
-        Ok(i)
-    }
-
-    fn write_vint(value: i32, dst: &mut Vec<u8>) {
-        let mut value = value;
-        while (value & !0x7F) != 0 {
-            dst.push((0x80 | (value & 0x7F)) as u8);
-            value = ((value as u32) >> 7) as i32;
-        }
-        dst.push(value as u8);
     }
 }
 
@@ -1409,8 +1323,99 @@ impl GroupVIntUtil {
 /// A comparator over two byte slices at given offsets, returning a negative,
 /// zero or positive `i32` as Java's comparators do.
 ///
-/// Equivalent to the functional interface `ArrayUtil.ByteArrayComparator`.
-pub type ByteArrayComparator = fn(&[u8], usize, &[u8], usize) -> i32;
+/// The zero digit of every run of Unicode decimal digits (general category
+/// `Nd`) in the Basic Multilingual Plane outside ASCII, each run holding the
+/// digits zero to nine in order: the 360 characters for which the JDK 25 that
+/// runs the Lucene 10.5.0 oracle answers `Character.digit(char, 10) >= 0`
+/// beyond `'0'..='9'` (`oracle/fix/DigitTable.java`).
+const UNICODE_DECIMAL_ZEROS: [u32; 36] = [
+    0x0660, 0x06F0, 0x07C0, 0x0966, 0x09E6, 0x0A66, 0x0AE6, 0x0B66, 0x0BE6, 0x0C66, 0x0CE6, 0x0D66,
+    0x0DE6, 0x0E50, 0x0ED0, 0x0F20, 0x1040, 0x1090, 0x17E0, 0x1810, 0x1946, 0x19D0, 0x1A80, 0x1A90,
+    0x1B50, 0x1BB0, 0x1C40, 0x1C50, 0xA620, 0xA8D0, 0xA900, 0xA9D0, 0xA9F0, 0xAA50, 0xABF0, 0xFF10,
+];
+
+/// `java.lang.Character.digit(char, int)` for a `radix` in `2..=36`: the value
+/// of a decimal digit of any script, or of a Latin letter `A`–`Z` in either
+/// case, ASCII or fullwidth (`U+FF21`–`U+FF3A`, `U+FF41`–`U+FF5A`), counting
+/// from ten; `None` — Java's -1 — when the character is neither or its value
+/// is not below `radix`. A character outside the Basic Multilingual Plane is
+/// not a digit, as Java's `char` cannot hold one.
+pub(crate) fn java_character_digit(c: char, radix: u32) -> Option<u32> {
+    let code = c as u32;
+    let value = match code {
+        0x30..=0x39 => code - 0x30,
+        0x41..=0x5A => code - 0x41 + 10,
+        0x61..=0x7A => code - 0x61 + 10,
+        0xFF21..=0xFF3A => code - 0xFF21 + 10,
+        0xFF41..=0xFF5A => code - 0xFF41 + 10,
+        _ => UNICODE_DECIMAL_ZEROS
+            .iter()
+            .find(|&&zero| (zero..zero + 10).contains(&code))
+            .map(|&zero| code - zero)?,
+    };
+    (value < radix).then_some(value)
+}
+
+/// `java.lang.Double.compare(double, double)`: the numeric order, then the
+/// order of `Double.doubleToLongBits`, which folds every `NaN` into one value
+/// above positive infinity and puts `-0.0` before `0.0`. Unlike
+/// [`f64::total_cmp`], it does not order `NaN`s by sign and payload.
+pub(crate) fn double_compare(a: f64, b: f64) -> Ordering {
+    if a < b {
+        return Ordering::Less;
+    }
+    if a > b {
+        return Ordering::Greater;
+    }
+    // `Double.doubleToLongBits`: every `NaN` is the canonical quiet `NaN`.
+    let bits = |value: f64| {
+        if value.is_nan() {
+            0x7ff8_0000_0000_0000_u64 as i64
+        } else {
+            value.to_bits() as i64
+        }
+    };
+    bits(a).cmp(&bits(b))
+}
+
+/// Equivalent to the functional interface `ArrayUtil.ByteArrayComparator`,
+/// whose one method is `int compare(byte[] a, int aI, byte[] b, int bI)`.
+///
+/// Java implements it with lambdas, one of which captures the key width
+/// (`ArrayUtil.java:804-816`), and the classes that use one keep it in a
+/// `final` field (`PointRangeQuery.comparator`, `BKDWriter.comparator`,
+/// `HeapPointWriter.dimComparator`). This handle is the shared closure: cloning
+/// it shares the same comparator, as copying a Java reference does, so the
+/// structs that hold one keep their `Clone`. It renders as `ByteArrayComparator`
+/// in `Debug`; a lambda has no state worth showing.
+#[derive(Clone)]
+pub struct ByteArrayComparator(std::sync::Arc<ByteArrayCompareFn>);
+
+/// The signature of [`ByteArrayComparator::compare`].
+type ByteArrayCompareFn = dyn Fn(&[u8], usize, &[u8], usize) -> i32 + Send + Sync;
+
+impl ByteArrayComparator {
+    /// Wraps `compare` as a comparator.
+    pub fn new(
+        compare: impl Fn(&[u8], usize, &[u8], usize) -> i32 + Send + Sync + 'static,
+    ) -> Self {
+        Self(std::sync::Arc::new(compare))
+    }
+
+    /// Compares the key of `a` at `a_offset` with the key of `b` at `b_offset`,
+    /// returning a negative number, zero or a positive number.
+    ///
+    /// Equivalent to `ByteArrayComparator.compare(byte[], int, byte[], int)`.
+    pub fn compare(&self, a: &[u8], a_offset: usize, b: &[u8], b_offset: usize) -> i32 {
+        (self.0)(a, a_offset, b, b_offset)
+    }
+}
+
+impl std::fmt::Debug for ByteArrayComparator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ByteArrayComparator")
+    }
+}
 
 /// Methods for manipulating arrays, matching Lucene's `ArrayUtil`.
 pub struct ArrayUtil;
@@ -1637,11 +1642,10 @@ impl ArrayUtil {
         mut len: usize,
         radix: u32,
     ) -> Result<i32, LuceneError> {
-        // Character.MIN_RADIX / Character.MAX_RADIX.
+        // Character.MIN_RADIX / Character.MAX_RADIX: `throw new
+        // NumberFormatException()`, whose message is `null`.
         if !(2..=36).contains(&radix) {
-            return Err(LuceneError::IllegalArgument(format!(
-                "radix {radix} out of range"
-            )));
+            return Err(LuceneError::IllegalArgument(String::new()));
         }
         if len == 0 {
             return Err(LuceneError::IllegalArgument(
@@ -1663,15 +1667,17 @@ impl ArrayUtil {
         Self::parse(chars, offset, len, radix, negative)
     }
 
-    /// Parses every code unit of `chars` as a signed decimal integer.
+    /// Parses the code units of `chars[offset..offset + len]` as a signed
+    /// decimal integer.
     ///
-    /// Equivalent to `ArrayUtil.parseInt(char[])`.
+    /// Equivalent to `ArrayUtil.parseInt(char[], int, int)`
+    /// (`ArrayUtil.java:52-54`), which delegates with radix 10.
     ///
     /// # Errors
     ///
     /// As [`parse_int_radix`](Self::parse_int_radix).
-    pub fn parse_int(chars: &[char]) -> Result<i32, LuceneError> {
-        Self::parse_int_radix(chars, 0, chars.len(), 10)
+    pub fn parse_int(chars: &[char], offset: usize, len: usize) -> Result<i32, LuceneError> {
+        Self::parse_int_radix(chars, offset, len, 10)
     }
 
     /// Equivalent to the private `ArrayUtil.parse(char[], int, int, int, boolean)`.
@@ -1690,7 +1696,7 @@ impl ArrayUtil {
         let max = i32::MIN / radix as i32;
         let mut result: i32 = 0;
         for i in 0..len {
-            let digit = match chars[i + offset].to_digit(radix) {
+            let digit = match java_character_digit(chars[i + offset], radix) {
                 Some(d) => d as i32,
                 None => return Err(unparsable()),
             };
@@ -1767,33 +1773,19 @@ impl ArrayUtil {
     /// Returns the comparator for keys of `num_bytes` bytes.
     ///
     /// Equivalent to `ArrayUtil.getUnsignedComparator(int)`, which specialises on
-    /// the two widths that dominate — 8 and 4 — and otherwise falls back to a
-    /// plain unsigned byte-wise comparison.
+    /// the two widths that dominate — 8 and 4 — and otherwise returns a lambda
+    /// that compares exactly `num_bytes` unsigned bytes
+    /// (`Arrays.compareUnsigned(a, aOffset, aOffset + numBytes, b, bOffset,
+    /// bOffset + numBytes)`, `ArrayUtil.java:804-816`).
     pub fn get_unsigned_comparator(num_bytes: usize) -> ByteArrayComparator {
         match num_bytes {
-            8 => Self::compare_unsigned8,
-            4 => Self::compare_unsigned4,
-            _ => {
-                // A closure would capture num_bytes, which a plain fn pointer
-                // cannot carry; the generic width is served by the boxed form.
-                Self::compare_unsigned_generic
-            }
-        }
-    }
-
-    /// Compares two byte slices from the given offsets to their ends, treating
-    /// each byte as unsigned.
-    ///
-    /// This is the fallback branch of
-    /// [`get_unsigned_comparator`](Self::get_unsigned_comparator). Java closes
-    /// over `numBytes`; a `fn` pointer cannot, so the caller slices the arrays to
-    /// the width it wants before calling. [`compare_unsigned_len`](Self::compare_unsigned_len)
-    /// is the form that takes the width explicitly.
-    pub fn compare_unsigned_generic(a: &[u8], a_offset: usize, b: &[u8], b_offset: usize) -> i32 {
-        match a[a_offset..].cmp(&b[b_offset..]) {
-            Ordering::Less => -1,
-            Ordering::Equal => 0,
-            Ordering::Greater => 1,
+            8 => ByteArrayComparator::new(Self::compare_unsigned8),
+            4 => ByteArrayComparator::new(Self::compare_unsigned4),
+            _ => ByteArrayComparator::new(
+                move |a: &[u8], a_offset: usize, b: &[u8], b_offset: usize| {
+                    Self::compare_unsigned_len(a, a_offset, b, b_offset, num_bytes)
+                },
+            ),
         }
     }
 
@@ -1926,7 +1918,55 @@ impl ArrayUtil {
 // IOUtils
 // ---------------------------------------------------------------------------
 
+/// A deferred `close()`: what the [`IOUtils`] close family takes for each
+/// `java.io.Closeable`.
+///
+/// Java passes the close family `Closeable` objects, or lambdas — `Closeable`
+/// is a functional interface (`IndexWriter.java:2652-2669`,
+/// `NRTCachingDirectory.java:214-224`). The port passes closures that perform
+/// the `close()`. The family is generic over the closure, so a call closing
+/// resources of one type needs no box; this boxed form lets one call mix
+/// resources of different types, as Java's varargs do. Build one with
+/// [`IOUtils::closeable`].
+pub type Closer<'a> = Box<dyn FnOnce() -> Result<(), LuceneError> + 'a>;
+
+/// What a `catch (Throwable t)` around one `close()` catches: the error the
+/// closeable returned, or the panic it raised.
+enum Thrown {
+    /// A returned [`LuceneError`].
+    Error(LuceneError),
+    /// A panic payload, Rust's form of the unchecked throwables the port does
+    /// not model as a [`LuceneError`].
+    Panic(Box<dyn std::any::Any + Send>),
+}
+
+impl Thrown {
+    /// Whether Java would see a `java.lang.Error`: an `AssertionError`, the
+    /// only `Error` the port models as a [`LuceneError`], or a panic.
+    ///
+    /// **Divergence from Lucene 10.5.0.** A panic is the port's form of both
+    /// Java's unchecked exceptions (`IndexOutOfBoundsException`, ...) and its
+    /// `Error`s (a failed `assert`), which cannot be told apart; it is treated
+    /// as an `Error`, so it is rethrown and never swallowed.
+    fn is_java_error(&self) -> bool {
+        match self {
+            Self::Error(e) => matches!(e, LuceneError::AssertionError(_)),
+            Self::Panic(_) => true,
+        }
+    }
+
+    /// Java's `throw`: returns the error, or resumes the panic.
+    fn rethrow(self) -> LuceneError {
+        match self {
+            Self::Error(e) => e,
+            Self::Panic(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+}
+
 /// Utilities for dealing with closeable resources and file-system operations.
+///
+/// Port of `org.apache.lucene.util.IOUtils`.
 pub struct IOUtils;
 
 impl IOUtils {
@@ -1935,33 +1975,99 @@ impl IOUtils {
     /// Equivalent to `IOUtils.UTF_8`.
     pub const UTF_8: &'static str = "UTF-8";
 
-    /// Closes all given closeables, collecting the first exception and
-    /// suppressing subsequent ones into it.
-    pub fn close<I, F>(objects: I) -> Result<(), LuceneError>
+    /// Boxes `close` as a non-null closeable, so one call of the close family
+    /// can mix resources of different types.
+    ///
+    /// The Java close family takes `Closeable...`; see [`Closer`].
+    pub fn closeable<'a>(
+        close: impl FnOnce() -> Result<(), LuceneError> + 'a,
+    ) -> Option<Closer<'a>> {
+        Some(Box::new(close))
+    }
+
+    /// Runs one `close()` as the family's `try { object.close(); } catch
+    /// (Throwable t)` does: a returned error and a panic are both caught.
+    fn close_one<C>(object: C) -> Option<Thrown>
     where
-        I: IntoIterator<Item = Option<F>>,
-        F: FnOnce() -> io::Result<()>,
+        C: FnOnce() -> Result<(), LuceneError>,
     {
-        let mut err: Option<io::Error> = None;
-        for obj in objects.into_iter().flatten() {
-            if let Err(e) = obj() {
-                err = Some(Self::use_or_suppress(err, e));
+        // The closeable is not touched again whatever it left behind, and the
+        // panic is resumed or dropped as Java rethrows or suppresses it.
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(object)) {
+            Ok(Ok(())) => None,
+            Ok(Err(e)) => Some(Thrown::Error(e)),
+            Err(payload) => Some(Thrown::Panic(payload)),
+        }
+    }
+
+    /// Closes all given closeables; `None` entries are ignored. After
+    /// everything is closed, returns the first error hit while closing, or
+    /// `Ok` when there was none.
+    ///
+    /// Equivalent to `IOUtils.close(Closeable...)` and `IOUtils.close(Iterable)`
+    /// (`IOUtils.java:69-93`): every closeable is closed even after one fails,
+    /// and the first throwable is rethrown, the later ones suppressed into it
+    /// ([`use_or_suppress`](Self::use_or_suppress)). A closeable that panics is
+    /// caught like any `Throwable`; the panic is resumed once every closeable
+    /// is closed when it was the first failure, and dropped, as Java
+    /// suppresses it, when it was not.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first error a closeable returned, unchanged.
+    pub fn close<I, C>(objects: I) -> Result<(), LuceneError>
+    where
+        I: IntoIterator<Item = Option<C>>,
+        C: FnOnce() -> Result<(), LuceneError>,
+    {
+        let mut th: Option<Thrown> = None;
+        for object in objects.into_iter().flatten() {
+            if let Some(t) = Self::close_one(object) {
+                th = Some(Self::use_or_suppress(th, t));
             }
         }
-        match err {
-            Some(e) => Err(LuceneError::Io(e)),
+        match th {
+            Some(th) => Err(th.rethrow()),
             None => Ok(()),
         }
     }
 
-    /// Closes all given closeables while suppressing non-fatal exceptions.
-    pub fn close_while_handling_exception<I, F>(objects: I)
+    /// Closes all given closeables, swallowing every failure but a Java
+    /// `Error`; `None` entries are ignored. Even when an `Error` is hit, every
+    /// closeable is closed.
+    ///
+    /// Equivalent to `IOUtils.closeWhileHandlingException(Closeable...)` and
+    /// `IOUtils.closeWhileHandlingException(Iterable)` (`IOUtils.java:103-136`).
+    /// Java's method returns nothing and throws only the first `Error`, which
+    /// is unchecked; the port models Java's `AssertionError` as
+    /// [`LuceneError::AssertionError`], so that one comes back as `Err`, and a
+    /// panic is resumed (see [`Thrown::is_java_error`]). A caller propagates
+    /// the `Err` with `?`, as the `Error` propagates out of the Java caller —
+    /// out of a `finally` block too, where it replaces the exception in
+    /// flight.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`LuceneError::AssertionError`] a closeable returned.
+    pub fn close_while_handling_exception<I, C>(objects: I) -> Result<(), LuceneError>
     where
-        I: IntoIterator<Item = Option<F>>,
-        F: FnOnce() -> io::Result<()>,
+        I: IntoIterator<Item = Option<C>>,
+        C: FnOnce() -> Result<(), LuceneError>,
     {
-        for obj in objects.into_iter().flatten() {
-            let _ = obj();
+        let mut first_error: Option<Thrown> = None;
+        for object in objects.into_iter().flatten() {
+            match Self::close_one(object) {
+                Some(t) if t.is_java_error() => {
+                    first_error = Some(Self::use_or_suppress(first_error, t));
+                }
+                // Java keeps the first non-Error throwable only to add it to
+                // the Error's suppressed list.
+                _ => {}
+            }
+        }
+        match first_error {
+            Some(first_error) => Err(first_error.rethrow()),
+            None => Ok(()),
         }
     }
 
@@ -2004,53 +2110,108 @@ impl IOUtils {
 
     /// Forces all writes for the given file to durable storage.
     ///
-    /// If `is_dir` is true, the directory is opened read-only and any error is
-    /// ignored (not all platforms allow fsync on directories).
+    /// Equivalent to `IOUtils.fsync(Path, boolean)` (`IOUtils.java:452-484`):
+    /// a regular file is opened for writing, which the fsync needs to have an
+    /// effect; a directory is opened for reading, and a failure of its fsync is
+    /// ignored because not every file system allows it. On Windows a directory
+    /// cannot be opened at all, so only its existence is checked.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error opening the file raises (`NotFound` for a missing
+    /// file, Java's `NoSuchFileException`), or the error the fsync of a regular
+    /// file raises.
     pub fn fsync(file_to_sync: &Path, is_dir: bool) -> Result<(), LuceneError> {
-        if is_dir {
-            // On Windows, directories cannot be fsynced; on Unix, attempt but
-            // tolerate errors.
-            let _ = File::open(file_to_sync);
+        if is_dir && Constants::windows() {
+            // opening a directory on Windows fails, directories can not be fsynced there
+            if !file_to_sync.exists() {
+                // yet do not suppress trying to fsync directories that do not exist
+                return Err(LuceneError::Io(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    file_to_sync.display().to_string(),
+                )));
+            }
             return Ok(());
         }
-        let file = OpenOptions::new().write(true).open(file_to_sync)?;
-        file.sync_all()?;
+        let file = if is_dir {
+            File::open(file_to_sync)?
+        } else {
+            OpenOptions::new().write(true).open(file_to_sync)?
+        };
+        if let Err(e) = file.sync_all() {
+            if is_dir {
+                debug_assert!(
+                    !(Constants::linux() || Constants::mac_os_x()),
+                    "On Linux and MacOSX fsyncing a directory should not throw IOException, \
+                     we just don't want to rely on that in production (undocumented). Got: {e}"
+                );
+                // Ignore exception if it is a directory
+                return Ok(());
+            }
+            // Throw original exception
+            return Err(LuceneError::Io(e));
+        }
         Ok(())
     }
 
-    fn use_or_suppress(first: Option<io::Error>, second: io::Error) -> io::Error {
+    /// Returns `second` when there is no `first`, and `first` otherwise.
+    ///
+    /// Equivalent to `IOUtils.useOrSuppress(T, T)` (`IOUtils.java:490-497`),
+    /// which keeps the first throwable and adds the second to its suppressed
+    /// list.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Neither [`LuceneError`] nor
+    /// [`io::Error`] has a suppressed list, so `second` is dropped; `first` is
+    /// returned unchanged, so the error the caller sees — its class and
+    /// message, Java's `getMessage()` — is the one Java reports.
+    fn use_or_suppress<T>(first: Option<T>, second: T) -> T {
         match first {
             None => second,
-            Some(_first) => {
-                // io::Error doesn't support add_suppressed; chain via source.
-                io::Error::new(second.kind(), second.to_string())
+            Some(first) => {
+                drop(second);
+                first
             }
         }
     }
 
-    /// Closes all given closeables, folding every failure into `ex`.
+    /// Closes all given closeables while the failure `ex` is in flight, and
+    /// returns the failure the caller must propagate; `None` entries are
+    /// ignored. Even when a Java `Error` is hit, every closeable is closed.
     ///
     /// Equivalent to `IOUtils.closeWhileSuppressingExceptions(Throwable,
-    /// Iterable)`. Java suppresses each new throwable into the one already in
-    /// flight and rethrows any `Error` in preference to it; Rust has neither
-    /// suppressed-exception lists nor a separate `Error` hierarchy, so the
-    /// failures are appended to the message of `ex`, which is the same
-    /// information in the one place the language offers for it.
-    pub fn close_while_suppressing_exceptions<I, F>(ex: LuceneError, objects: I) -> LuceneError
+    /// Closeable...)` and `IOUtils.closeWhileSuppressingExceptions(Throwable,
+    /// Iterable)` (`IOUtils.java:145-177`), whose caller rethrows `ex` once it
+    /// returns (`StandardDirectoryReader.java:103-105`): the return value is
+    /// that `ex`, unchanged, or — when `ex` is not a Java `Error` and a
+    /// closeable hits one — that first `Error`, which Java throws with `ex`
+    /// suppressed into it. Java's `Error` is [`LuceneError::AssertionError`],
+    /// or a panic, which is resumed once every closeable is closed (see
+    /// [`Thrown::is_java_error`]).
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java adds every other failure to the
+    /// suppressed list of the throwable it rethrows; [`LuceneError`] has no
+    /// such list, so they are dropped, as in
+    /// [`use_or_suppress`](Self::use_or_suppress).
+    pub fn close_while_suppressing_exceptions<I, C>(ex: LuceneError, objects: I) -> LuceneError
     where
-        I: IntoIterator<Item = Option<F>>,
-        F: FnOnce() -> io::Result<()>,
+        I: IntoIterator<Item = Option<C>>,
+        C: FnOnce() -> Result<(), LuceneError>,
     {
-        let mut suppressed: Vec<String> = Vec::new();
+        let ex_is_error = matches!(ex, LuceneError::AssertionError(_));
+        let mut first_error: Option<Thrown> = None;
         for object in objects.into_iter().flatten() {
-            if let Err(e) = object() {
-                suppressed.push(e.to_string());
+            if let Some(e) = Self::close_one(object) {
+                if !ex_is_error && first_error.is_none() && e.is_java_error() {
+                    // don't try and suppress it - this Error should be the thing that is thrown
+                    first_error = Some(e);
+                }
+                // Otherwise Java's `ex.addSuppressed(e)`.
             }
         }
-        if suppressed.is_empty() {
-            return ex;
+        match first_error {
+            Some(first_error) => first_error.rethrow(),
+            None => ex,
         }
-        LuceneError::Other(format!("{ex} (suppressed: {})", suppressed.join("; ")))
     }
 
     /// Wraps `stream` in a reader that reports, rather than replaces, malformed
@@ -2190,34 +2351,28 @@ impl IOUtils {
     }
 
     /// Applies `consumer` to every element of `collection`, even after one of
-    /// them fails.
+    /// them fails; `None` elements are skipped.
     ///
-    /// Equivalent to `IOUtils.applyToAll(Collection, IOConsumer)`: the first
-    /// error is returned and the later ones are suppressed into it, exactly as
-    /// [`close`](Self::close) does for the closeables it is built on.
+    /// Equivalent to `IOUtils.applyToAll(Collection, IOConsumer)`
+    /// (`IOUtils.java:505-511`), which hands [`close`](Self::close) one
+    /// closeable per non-null element: the first error is returned and the
+    /// later ones are suppressed into it.
     ///
     /// # Errors
     ///
     /// Returns the first error the consumer raised.
-    pub fn apply_to_all<T, C>(
-        collection: Vec<Option<T>>,
-        mut consumer: C,
-    ) -> Result<(), LuceneError>
+    pub fn apply_to_all<T, C>(collection: Vec<Option<T>>, consumer: C) -> Result<(), LuceneError>
     where
         C: FnMut(T) -> Result<(), LuceneError>,
     {
-        let mut err: Option<LuceneError> = None;
-        for t in collection.into_iter().flatten() {
-            if let Err(e) = consumer(t) {
-                if err.is_none() {
-                    err = Some(e);
-                }
-            }
-        }
-        match err {
-            Some(e) => Err(e),
-            None => Ok(()),
-        }
+        let consumer = std::cell::RefCell::new(consumer);
+        let consumer = &consumer;
+        Self::close(
+            collection
+                .into_iter()
+                .flatten()
+                .map(|t| Some(move || (consumer.borrow_mut())(t))),
+        )
     }
 }
 
@@ -2226,13 +2381,55 @@ impl IOUtils {
 // ---------------------------------------------------------------------------
 
 /// Trait for objects whose heap memory usage can be estimated.
+///
+/// Equivalent to `org.apache.lucene.util.Accountable`.
 pub trait Accountable {
     /// Returns an estimate of the heap memory used by this object in bytes.
     fn ram_bytes_used(&self) -> i64;
 
-    /// Returns nested accountable resources.
-    fn child_resources(&self) -> Vec<&dyn Accountable> {
+    /// Returns nested accountable resources, or an empty list.
+    ///
+    /// Equivalent to `Accountable.getChildResources()` (`Accountable.java:41-50`),
+    /// whose default is an empty list. A child may be a resource this object
+    /// holds — boxed as a reference, through the `&T` implementation below — or
+    /// a described view built with [`Accountables`].
+    fn child_resources(&self) -> Vec<Box<dyn Accountable + '_>> {
         Vec::new()
+    }
+
+    /// Returns the text [`Accountables`] labels this resource with.
+    ///
+    /// Equivalent to the `toString()` that `Accountables.toString` and
+    /// `Accountables.namedAccountable` read off every `Accountable`
+    /// (`Accountables.java:51, 75`).
+    ///
+    /// **Divergence from Lucene 10.5.0.** A Java class that does not override
+    /// `toString()` answers `getClass().getName() + "@" +
+    /// Integer.toHexString(hashCode())`; the default here renders the Rust
+    /// type name and the object's address in that `name@hex` shape, as
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// does. A type whose Java class is named in such a description overrides
+    /// it with that class's binary name; one whose Java class overrides
+    /// `toString()` overrides it with that text.
+    fn accountable_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string(std::any::type_name::<Self>(), self)
+    }
+}
+
+/// A borrowed resource is the resource, so that
+/// [`child_resources`](Accountable::child_resources) can hand out references
+/// to what an object holds, as Java hands out the objects themselves.
+impl<T: Accountable + ?Sized> Accountable for &T {
+    fn ram_bytes_used(&self) -> i64 {
+        (**self).ram_bytes_used()
+    }
+
+    fn child_resources(&self) -> Vec<Box<dyn Accountable + '_>> {
+        (**self).child_resources()
+    }
+
+    fn accountable_to_string(&self) -> String {
+        (**self).accountable_to_string()
     }
 }
 
@@ -2249,6 +2446,43 @@ impl Accountable for NullAccountable {
 // ---------------------------------------------------------------------------
 // RamUsageEstimator
 // ---------------------------------------------------------------------------
+
+/// An object as `RamUsageEstimator.sizeOfObject` dispatches on it: the
+/// runtime class that its chain of `instanceof` tests recognises
+/// (`RamUsageEstimator.java:396-432`).
+///
+/// Holds the classes the crate's ported callers of `sizeOfObject` pass; a
+/// `null` argument is `None` at the call.
+#[derive(Clone, Copy)]
+pub enum SizedObject<'a> {
+    /// An `Accountable`, sized by its own `ramBytesUsed()`.
+    Accountable(&'a dyn Accountable),
+    /// A `String`, sized by `RamUsageEstimator.sizeOf(String)`.
+    String(&'a str),
+    /// An `int[]`, sized by `RamUsageEstimator.sizeOf(int[])`.
+    IntArray(&'a [i32]),
+    /// An instance of a class the `instanceof` chain does not know, such as
+    /// `BytesRef`, with the shallow size `RamUsageEstimator.shallowSizeOf`
+    /// would measure for it.
+    Unknown {
+        /// The instance's shallow size.
+        shallow_size: i64,
+    },
+}
+
+impl Debug for SizedObject<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Accountable(_) => f.write_str("Accountable"),
+            Self::String(s) => f.debug_tuple("String").field(s).finish(),
+            Self::IntArray(arr) => f.debug_tuple("IntArray").field(&arr.len()).finish(),
+            Self::Unknown { shallow_size } => f
+                .debug_struct("Unknown")
+                .field("shallow_size", shallow_size)
+                .finish(),
+        }
+    }
+}
 
 /// Estimates memory usage of JVM-like objects.
 ///
@@ -2500,32 +2734,41 @@ impl RamUsageEstimator {
 
     /// Best-effort estimate of the memory an object of undetermined type costs.
     ///
-    /// Equivalent to `RamUsageEstimator.sizeOfObject(Object, long)`: an
-    /// [`Accountable`] reports its own size, and anything else falls back to
-    /// `def_size` when that is positive, or to
-    /// [`UNKNOWN_DEFAULT_RAM_BYTES_USED`](Self::UNKNOWN_DEFAULT_RAM_BYTES_USED).
+    /// Equivalent to `RamUsageEstimator.sizeOfObject(Object)`
+    /// (`RamUsageEstimator.java:382-384`), which is
+    /// `sizeOfObject(o, 0, UNKNOWN_DEFAULT_RAM_BYTES_USED)`: see
+    /// [`size_of_object_with_def_size`](Self::size_of_object_with_def_size).
+    pub fn size_of_object(o: Option<SizedObject<'_>>) -> i64 {
+        Self::size_of_object_with_def_size(o, Self::UNKNOWN_DEFAULT_RAM_BYTES_USED)
+    }
+
+    /// Best-effort estimate of the memory an object of undetermined type
+    /// costs, charging `def_size` for a class the estimate does not know.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java dispatches on the runtime class
-    /// through a chain of `instanceof` tests covering `String`, the boxed
-    /// primitives and every primitive array, and recurses into maps, collections
-    /// and object arrays up to [`MAX_DEPTH`](Self::MAX_DEPTH). Rust has no
-    /// runtime type information to dispatch on, so the one case the crate can
-    /// recognise — an `Accountable` — is recognised, and every other type is
-    /// charged the default, exactly as Java charges it for a class it does not
-    /// know. The typed cases are reachable directly through
-    /// [`size_of_string`](Self::size_of_string) and the `size_of_*` family,
-    /// which is how the crate's callers, which know their types, reach them.
-    pub fn size_of_object(o: Option<&dyn Accountable>, def_size: i64) -> i64 {
+    /// Equivalent to `RamUsageEstimator.sizeOfObject(Object, long)`
+    /// (`RamUsageEstimator.java:392-394`) and the private
+    /// `sizeOfObject(Object, int, long)` it calls (`:396-432`): `null` costs
+    /// nothing; an `Accountable` reports its own `ramBytesUsed()`, whatever it
+    /// is; a `String` and an `int[]` are sized by their formulas; any other
+    /// class costs `defSize` when that is positive, and its shallow size
+    /// otherwise.
+    ///
+    /// Java dispatches on the runtime class with a chain of `instanceof`
+    /// tests. Rust has no runtime class to test, so the caller names it with
+    /// a [`SizedObject`] variant, which holds the cases of that chain the
+    /// crate's callers pass (`Term.java:191`, `BytesRefHash.java:508`,
+    /// `CompiledAutomaton.java:540`); the branch taken for each is Java's.
+    pub fn size_of_object_with_def_size(o: Option<SizedObject<'_>>, def_size: i64) -> i64 {
         Self::do_privileged(|| match o {
             None => 0,
-            Some(accountable) => {
-                let size = accountable.ram_bytes_used();
-                if size > 0 {
-                    size
-                } else if def_size > 0 {
+            Some(SizedObject::Accountable(accountable)) => accountable.ram_bytes_used(),
+            Some(SizedObject::String(s)) => Self::size_of_string(s),
+            Some(SizedObject::IntArray(arr)) => Self::size_of_int(arr),
+            Some(SizedObject::Unknown { shallow_size }) => {
+                if def_size > 0 {
                     def_size
                 } else {
-                    Self::UNKNOWN_DEFAULT_RAM_BYTES_USED
+                    shallow_size
                 }
             }
         })
@@ -2533,27 +2776,29 @@ impl RamUsageEstimator {
 
     /// Renders `bytes` in human-readable units — GB, MB, KB, or bytes.
     ///
-    /// Equivalent to `RamUsageEstimator.humanReadableUnits(long)`, which formats
-    /// with the pattern `0.#` under `Locale.ROOT`: at most one fractional digit,
-    /// and none when it would be zero.
+    /// Equivalent to `RamUsageEstimator.humanReadableUnits(long)`
+    /// (`RamUsageEstimator.java:600-617`), which divides as a `float` and
+    /// formats with `new DecimalFormat("0.#")` under `Locale.ROOT`: at most one
+    /// fractional digit, none when it is zero, and `DecimalFormat`'s default
+    /// `RoundingMode.HALF_EVEN` on the exact value (1280 bytes, exactly 1.25 KB,
+    /// renders `1.2 KB`).
     pub fn human_readable_units(bytes: i64) -> String {
-        fn format_one_dp(value: f32) -> String {
-            // DecimalFormat("0.#") keeps at most one fractional digit and drops
-            // it when it rounds to zero.
-            let rounded = (value * 10.0).round() / 10.0;
-            if (rounded.fract()).abs() < f32::EPSILON {
-                format!("{}", rounded as i64)
-            } else {
-                format!("{rounded:.1}")
+        /// `DecimalFormat("0.#").format((double) value)`. Rust's fixed-precision
+        /// float formatting rounds the exact binary value half to even, as
+        /// `DecimalFormat` does since JDK 8.
+        fn format_0_hash(value: f32) -> String {
+            let formatted = format!("{:.1}", f64::from(value));
+            match formatted.strip_suffix(".0") {
+                Some(integral) => integral.to_string(),
+                None => formatted,
             }
         }
-
         if bytes / Self::ONE_GB > 0 {
-            format!("{} GB", format_one_dp(bytes as f32 / Self::ONE_GB as f32))
+            format!("{} GB", format_0_hash(bytes as f32 / Self::ONE_GB as f32))
         } else if bytes / Self::ONE_MB > 0 {
-            format!("{} MB", format_one_dp(bytes as f32 / Self::ONE_MB as f32))
+            format!("{} MB", format_0_hash(bytes as f32 / Self::ONE_MB as f32))
         } else if bytes / Self::ONE_KB > 0 {
-            format!("{} KB", format_one_dp(bytes as f32 / Self::ONE_KB as f32))
+            format!("{} KB", format_0_hash(bytes as f32 / Self::ONE_KB as f32))
         } else {
             format!("{bytes} bytes")
         }
@@ -2660,11 +2905,6 @@ impl Constants {
         Self::get_sys_prop_or("java.vm.name", Self::UNKNOWN)
     }
 
-    /// Rust compiler version string.
-    pub fn jvm_version() -> String {
-        env!("CARGO_PKG_RUST_VERSION").to_string()
-    }
-
     /// Operating-system name.
     ///
     /// Equivalent to `Constants.OS_NAME`.
@@ -2728,6 +2968,17 @@ impl Constants {
     /// Equivalent to `Constants.JAVA_VENDOR`.
     pub fn java_vendor() -> String {
         Self::get_sys_prop_or("java.vendor", Self::UNKNOWN)
+    }
+
+    /// Runtime version, as `IndexWriter` records it in a segment's
+    /// diagnostics.
+    ///
+    /// Equivalent to `Runtime.version().toString()`, which the JVM also
+    /// publishes as the `java.runtime.version` system property; it is read
+    /// from that property, as every other runtime constant here is, and is
+    /// [`UNKNOWN`](Self::UNKNOWN) when it is not set.
+    pub fn runtime_version() -> String {
+        Self::get_sys_prop_or("java.runtime.version", Self::UNKNOWN)
     }
 
     /// True if the runtime is a client runtime with the optimising compiler
@@ -2957,20 +3208,34 @@ impl InfoStream for NoOutputInfoStream {
     }
 }
 
-static DEFAULT_INFO_STREAM: LazyLock<Box<dyn InfoStream>> =
-    LazyLock::new(|| Box::new(NoOutputInfoStream));
+/// The default info stream, `InfoStream.defaultInfoStream` (`InfoStream.java:57`).
+static DEFAULT_INFO_STREAM: LazyLock<std::sync::RwLock<std::sync::Arc<dyn InfoStream>>> =
+    LazyLock::new(|| std::sync::RwLock::new(std::sync::Arc::new(NoOutputInfoStream)));
 
-/// Returns the default info stream.
-pub fn default_info_stream() -> &'static dyn InfoStream {
-    DEFAULT_INFO_STREAM.as_ref()
+/// Returns the info stream that newly created classes use by default.
+///
+/// Equivalent to `InfoStream.getDefault()` (`InfoStream.java:64-66`), whose
+/// `synchronized` read is the read lock here. Lucene reads it in
+/// `LiveIndexWriterConfig` (`LiveIndexWriterConfig.java:135`),
+/// `HnswGraphBuilder` (`HnswGraphBuilder.java:85`) and
+/// `HnswConcurrentMergeBuilder` (`HnswConcurrentMergeBuilder.java:48`).
+pub fn default_info_stream() -> std::sync::Arc<dyn InfoStream> {
+    std::sync::Arc::clone(
+        &DEFAULT_INFO_STREAM
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    )
 }
 
-/// Sets the default info stream.
-pub fn set_default_info_stream(stream: Box<dyn InfoStream>) {
-    // This replaces the global default. The LazyLock only initializes once;
-    // subsequent calls would need interior mutability for a true mutable default.
-    // For this foundational port, the no-op default is sufficient.
-    let _ = stream;
+/// Sets the info stream that newly created classes use by default.
+///
+/// Equivalent to `InfoStream.setDefault(InfoStream)` (`InfoStream.java:74-81`).
+/// Java rejects `null` with an `IllegalArgumentException`; an
+/// `std::sync::Arc<dyn InfoStream>` cannot be null, so that check has no counterpart.
+pub fn set_default_info_stream(info_stream: std::sync::Arc<dyn InfoStream>) {
+    *DEFAULT_INFO_STREAM
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = info_stream;
 }
 
 // ---------------------------------------------------------------------------
@@ -3008,6 +3273,42 @@ pub trait Bits: Send + Sync + Debug {
     /// Returns the number of bits in this set.
     fn length(&self) -> usize;
 
+    /// Clears the bits of `bit_set` whose bit, shifted by `offset`, is clear in
+    /// these bits: bit `i` of `bit_set` stands for bit `offset + i` here.
+    ///
+    /// Equivalent to the default `Bits.applyMask(FixedBitSet, int)`
+    /// (`Bits.java:55-63`), which walks the set bits of `bit_set` and clears
+    /// those whose bit is clear. [`FixedBitSet`] and
+    /// [`FixedBits`](crate::util::bit_set::FixedBits) override it with a
+    /// word-at-a-time intersection, as in Java (`FixedBitSet.java:897-909`,
+    /// `FixedBits.java:33-36`).
+    ///
+    /// The default reads through [`try_get`](Self::try_get), so an
+    /// implementation whose `get` raises an error — Java's unchecked exception
+    /// from a `get` such as `ExitableDirectoryReader`'s — fails the call as
+    /// Java's default does.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error [`try_get`](Self::try_get) raises, or, for the
+    /// [`FixedBitSet`] override, the `IllegalArgumentException` Java throws
+    /// when `bit_set` has bits set beyond the end of these bits.
+    fn apply_mask(&self, bit_set: &mut FixedBitSet, offset: usize) -> Result<(), LuceneError> {
+        let mut i = BitSet::next_set_bit(bit_set, 0);
+        while i != crate::search::NO_MORE_DOCS {
+            let index = i as usize;
+            if !self.try_get(offset + index)? {
+                bit_set.clear(index);
+            }
+            i = if index + 1 >= bit_set.length() {
+                crate::search::NO_MORE_DOCS
+            } else {
+                BitSet::next_set_bit(bit_set, (index + 1) as i32)
+            };
+        }
+        Ok(())
+    }
+
     /// Consumes these bits and returns them as
     /// [`LiveDocs`](crate::util::bit_set::LiveDocs) when they are one, or
     /// `None` when they are not.
@@ -3032,6 +3333,22 @@ pub trait Bits: Send + Sync + Debug {
     /// identity.
     fn identity(&self) -> *const () {
         self as *const Self as *const ()
+    }
+
+    /// Returns these bits as [`std::any::Any`], so that a caller can test
+    /// them for a concrete type.
+    ///
+    /// This hook stands for Java's `instanceof` on a `Bits`:
+    /// `FixedBitSet.copyOf(Bits)` restores the `FixedBitSet` behind a
+    /// `FixedBits` and clones a `FixedBitSet` (`FixedBitSet.java:866-873`).
+    /// Rust cannot narrow a `dyn Bits`, so the question is asked of the bits
+    /// themselves, in the shape of
+    /// [`PostingsEnum::as_any_mut`](crate::index::PostingsEnum::as_any_mut).
+    /// The default answers `None`, the `false` branch of the `instanceof`;
+    /// the types it tests for override it, and a sharing handle Java does not
+    /// have forwards it to the bits it shares.
+    fn bits_as_any(&self) -> Option<&dyn std::any::Any> {
+        None
     }
 }
 
@@ -3093,13 +3410,89 @@ impl Bits for MatchNoBits {
     }
 }
 
-/// A fixed-size bit set backed by a `Vec<u64>`, equivalent to Lucene's
-/// `FixedBitSet`.
-#[derive(Clone, Debug)]
+/// The words of a [`FixedBitSet`]: Java's `long[] bits`, shared by reference.
+///
+/// Java's `FixedBitSet.asReadOnlyBits()` (`FixedBitSet.java:893-895`) wraps
+/// the very `long[]` the set writes, so a later write to the set shows through
+/// the view (`PendingDeletes.java:78` relies on it). Rust can only share
+/// mutable words behind interior mutability, so the words are atomics behind
+/// an `Arc`. Every access is a `Relaxed` load or store: a `FixedBitSet` has one
+/// writer, the holder of `&mut`, and Java's plain `long[]` accesses carry no
+/// ordering either — a view handed to another thread is published by whatever
+/// hands it over.
+///
+/// A single `Relaxed` load or store of an `AtomicU64` compiles to the plain
+/// load or store a `long[]` access does, but a *loop* of them does not compile
+/// as a loop over a `long[]`: the compiler neither vectorises nor merges atomic
+/// accesses, so bulk loops over the words cost more than the same loops over a
+/// `Vec<u64>`. `cardinality`, `intersection_count` and the word-aligned `or`
+/// therefore load [`WORD_CHUNK`] words into a local array before computing on
+/// them, which lets the computation vectorise. Measured on an AMD Ryzen 9
+/// 5900HX (release profile, 2^16 to 2^24 bits, median of nine): against the
+/// plain loops, `cardinality` went from 2.6–2.7× to 1.1×, `intersectionCount`
+/// from 2.6–2.7× to 1.4× and `or` from 1.9–2.8× to 1.6–1.9×. `clear_all` is a
+/// run of stores, which nothing merges; it keeps its plain loop and costs
+/// 1.6–2.0×.
+type Words = Arc<[AtomicU64]>;
+
+/// Allocates `len` zeroed words, Java's `new long[len]`.
+fn new_words(len: usize) -> Words {
+    (0..len).map(|_| AtomicU64::new(0)).collect()
+}
+
+/// How many words the bulk loops of [`FixedBitSet`] load before they compute on
+/// them; see [`Words`].
+const WORD_CHUNK: usize = 8;
+
+/// Loads one chunk of [`WORD_CHUNK`] words, each with a `Relaxed` load.
+#[inline]
+fn load_word_chunk(words: &[AtomicU64; WORD_CHUNK]) -> [u64; WORD_CHUNK] {
+    let mut chunk = [0u64; WORD_CHUNK];
+    for (value, word) in chunk.iter_mut().zip(words) {
+        *value = word.load(AtomicOrdering::Relaxed);
+    }
+    chunk
+}
+
+/// A fixed-size bit set, equivalent to Lucene's `FixedBitSet`.
+///
+/// The words are shared, as Java's `long[]` is, with the
+/// [`FixedBits`](crate::util::bit_set::FixedBits) views
+/// [`as_read_only_bits`](Self::as_read_only_bits) returns: they are atomics
+/// behind an `Arc`, each read and written with a `Relaxed` load or store.
+/// [`Clone`] copies them, as `FixedBitSet.clone()` does
+/// (`FixedBitSet.java:829-834`).
 pub struct FixedBitSet {
-    bits: Vec<u64>,
+    bits: Words,
     num_bits: usize,
     num_words: usize,
+}
+
+impl Debug for FixedBitSet {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let words: Vec<u64> = (0..self.bits.len()).map(|i| self.word(i)).collect();
+        f.debug_struct("FixedBitSet")
+            .field("bits", &words)
+            .field("num_bits", &self.num_bits)
+            .field("num_words", &self.num_words)
+            .finish()
+    }
+}
+
+impl Clone for FixedBitSet {
+    /// Equivalent to `FixedBitSet.clone()` (`FixedBitSet.java:829-834`): a new
+    /// array of the same length holding a copy of the first `numWords` words.
+    fn clone(&self) -> Self {
+        let bits = new_words(self.bits.len());
+        for i in 0..self.num_words {
+            bits[i].store(self.word(i), AtomicOrdering::Relaxed);
+        }
+        Self {
+            bits,
+            num_bits: self.num_bits,
+            num_words: self.num_words,
+        }
+    }
 }
 
 impl FixedBitSet {
@@ -3116,30 +3509,91 @@ impl FixedBitSet {
     pub fn new(num_bits: usize) -> Self {
         let num_words = Self::bits2words(num_bits);
         Self {
-            bits: vec![0u64; num_words],
+            bits: new_words(num_words),
             num_bits,
             num_words,
         }
     }
 
     /// Creates a `FixedBitSet` from an existing `u64` buffer.
-    pub fn from_bits(stored_bits: Vec<u64>, num_bits: usize) -> Self {
+    ///
+    /// Equivalent to `FixedBitSet(long[], int)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] with Java's message — `The
+    /// given long array is too small  to hold <numBits> bits`, two spaces
+    /// included (`FixedBitSet.java:162-167`) — when `stored_bits` holds fewer
+    /// than `bits2words(num_bits)` words.
+    pub fn from_bits(stored_bits: Vec<u64>, num_bits: usize) -> Result<Self, LuceneError> {
+        Self::from_words(
+            stored_bits.into_iter().map(AtomicU64::new).collect(),
+            num_bits,
+        )
+    }
+
+    /// `FixedBitSet(long[], int)` over words that are already shared.
+    fn from_words(stored_bits: Words, num_bits: usize) -> Result<Self, LuceneError> {
         let num_words = Self::bits2words(num_bits);
-        assert!(
-            num_words <= stored_bits.len(),
-            "given buffer is too small to hold {} bits",
-            num_bits
-        );
-        Self {
+        if num_words > stored_bits.len() {
+            return Err(LuceneError::IllegalArgument(format!(
+                "The given long array is too small  to hold {num_bits} bits"
+            )));
+        }
+        let bit_set = Self {
             bits: stored_bits,
             num_bits,
             num_words,
+        };
+        // `assert verifyGhostBitsClear();` (`FixedBitSet.java:171`).
+        debug_assert!(bit_set.verify_ghost_bits_clear());
+        Ok(bit_set)
+    }
+
+    /// Reads word `i`, Java's `bits[i]`.
+    #[inline]
+    fn word(&self, i: usize) -> u64 {
+        self.bits[i].load(AtomicOrdering::Relaxed)
+    }
+
+    /// Writes word `i`, Java's `bits[i] = value`.
+    #[inline]
+    fn set_word(&mut self, i: usize, value: u64) {
+        self.bits[i].store(value, AtomicOrdering::Relaxed);
+    }
+
+    /// Java's `bits[i] |= mask`: a plain read-modify-write, as in Java.
+    #[inline]
+    fn or_word(&mut self, i: usize, mask: u64) {
+        let value = self.word(i) | mask;
+        self.set_word(i, value);
+    }
+
+    /// Java's `bits[i] &= mask`.
+    #[inline]
+    fn and_word(&mut self, i: usize, mask: u64) {
+        let value = self.word(i) & mask;
+        self.set_word(i, value);
+    }
+
+    /// Java's `bits[i] ^= mask`.
+    #[inline]
+    fn xor_word(&mut self, i: usize, mask: u64) {
+        let value = self.word(i) ^ mask;
+        self.set_word(i, value);
+    }
+
+    /// Java's `Arrays.fill(bits, from, to, value)`.
+    fn fill_words(&mut self, from: usize, to: usize, value: u64) {
+        for i in from..to {
+            self.set_word(i, value);
         }
     }
 
     /// Clears all bits.
     pub fn clear_all(&mut self) {
-        self.bits.fill(0);
+        let len = self.bits.len();
+        self.fill_words(0, len, 0);
     }
 
     /// Sets the bit at `index`.
@@ -3151,7 +3605,7 @@ impl FixedBitSet {
         assert!(index < self.num_bits, "index {} out of bounds", index);
         let word = index >> 6;
         let mask = 1u64 << (index & 0x3f);
-        self.bits[word] |= mask;
+        self.or_word(word, mask);
     }
 
     /// Clears the bit at `index`.
@@ -3163,7 +3617,7 @@ impl FixedBitSet {
         assert!(index < self.num_bits, "index {} out of bounds", index);
         let word = index >> 6;
         let mask = 1u64 << (index & 0x3f);
-        self.bits[word] &= !mask;
+        self.and_word(word, !mask);
     }
 
     /// Returns the value of the bit at `index`.
@@ -3175,7 +3629,7 @@ impl FixedBitSet {
         assert!(index < self.num_bits, "index {} out of bounds", index);
         let word = index >> 6;
         let mask = 1u64 << (index & 0x3f);
-        (self.bits[word] & mask) != 0
+        (self.word(word) & mask) != 0
     }
 
     /// Returns the previous value of the bit at `index` and sets it to true.
@@ -3187,8 +3641,8 @@ impl FixedBitSet {
         assert!(index < self.num_bits, "index {} out of bounds", index);
         let word = index >> 6;
         let mask = 1u64 << (index & 0x3f);
-        let previous = (self.bits[word] & mask) != 0;
-        self.bits[word] |= mask;
+        let previous = (self.word(word) & mask) != 0;
+        self.or_word(word, mask);
         previous
     }
 
@@ -3203,8 +3657,8 @@ impl FixedBitSet {
         assert!(index < self.num_bits, "index {} out of bounds", index);
         let word = index >> 6;
         let mask = 1u64 << (index & 0x3f);
-        let previous = (self.bits[word] & mask) != 0;
-        self.bits[word] &= !mask;
+        let previous = (self.word(word) & mask) != 0;
+        self.and_word(word, !mask);
         previous
     }
 
@@ -3231,35 +3685,62 @@ impl FixedBitSet {
         let endmask = u64::MAX >> (to.wrapping_neg() & 63);
 
         if start_word == end_word {
-            self.bits[start_word] |= startmask & endmask;
+            self.or_word(start_word, startmask & endmask);
             return;
         }
 
-        self.bits[start_word] |= startmask;
-        self.bits[(start_word + 1)..end_word].fill(u64::MAX);
-        self.bits[end_word] |= endmask;
+        self.or_word(start_word, startmask);
+        self.fill_words(start_word + 1, end_word, u64::MAX);
+        self.or_word(end_word, endmask);
     }
 
     /// Creates a `FixedBitSet` that is a copy of the given `Bits`.
     ///
-    /// Equivalent to `FixedBitSet.copyOf(Bits)`.
+    /// Equivalent to `FixedBitSet.copyOf(Bits)` (`FixedBitSet.java:865-883`):
+    /// a `FixedBits` gives back the `FixedBitSet` it wraps, a `FixedBitSet` is
+    /// cloned, and any other `Bits` is copied by setting every bit and
+    /// clearing the ones it does not hold.
     pub fn copy_of(bits: &dyn Bits) -> Self {
+        let any = bits.bits_as_any();
+        // Restore the original FixedBitSet.
+        let fixed = any
+            .and_then(|any| any.downcast_ref::<crate::util::bit_set::FixedBits>())
+            .map(crate::util::bit_set::FixedBits::bit_set)
+            .or_else(|| any.and_then(|any| any.downcast_ref::<FixedBitSet>()));
+        if let Some(fixed) = fixed {
+            return fixed.clone();
+        }
         let length = bits.length();
-        let mut copy = Self::new(length);
+        let mut bit_set = Self::new(length);
+        bit_set.set_range(0, length);
         for i in 0..length {
-            if bits.get(i) {
-                copy.set(i);
+            if !bits.get(i) {
+                bit_set.clear(i);
             }
         }
-        copy
+        bit_set
     }
 
     /// Returns the number of set bits.
+    ///
+    /// Equivalent to `FixedBitSet.cardinality()` (`FixedBitSet.java:217-224`),
+    /// `Long.bitCount` summed over the words, which are loaded a chunk at a time
+    /// (see [`Words`]).
     pub fn cardinality(&self) -> usize {
-        self.bits[..self.num_words]
-            .iter()
-            .map(|w| w.count_ones() as usize)
-            .sum()
+        // Depends on the ghost bits being clear!
+        let (chunks, rest) = self.bits[..self.num_words].as_chunks::<WORD_CHUNK>();
+        let mut total = 0usize;
+        for chunk in chunks {
+            total += load_word_chunk(chunk)
+                .iter()
+                .map(|word| word.count_ones() as usize)
+                .sum::<usize>();
+        }
+        total
+            + rest
+                .iter()
+                .map(|word| word.load(AtomicOrdering::Relaxed).count_ones() as usize)
+                .sum::<usize>()
     }
 
     /// Returns the number of bits in the set.
@@ -3267,8 +3748,13 @@ impl FixedBitSet {
         self.num_bits
     }
 
-    /// Returns a reference to the backing `u64` buffer.
-    pub fn get_bits(&self) -> &[u64] {
+    /// Returns the backing words.
+    ///
+    /// Equivalent to `FixedBitSet.getBits()` (`FixedBitSet.java:207-210`),
+    /// "Expert": the array itself, shared with this set and its read-only
+    /// views, not a copy. Each word is read with a `Relaxed` load, Java's plain
+    /// `bits[i]`.
+    pub fn get_bits(&self) -> &[AtomicU64] {
         &self.bits
     }
 
@@ -3300,31 +3786,53 @@ impl FixedBitSet {
             // Depends on the ghost bits being clear! Otherwise they would become
             // visible in the new instance.
             let num_words = Self::bits2words(desired_bit);
-            let mut arr = bits.bits;
-            if num_words >= arr.len() {
-                let target = ArrayUtil::oversize(num_words + 1, 8);
+            if num_words >= bits.bits.len() {
+                let target = ArrayUtil::oversize(num_words + 1, 8).max(num_words + 1);
+                let arr = new_words(target);
                 if preserve_data {
-                    arr.resize(target.max(num_words + 1), 0);
-                } else {
-                    arr = vec![0u64; target.max(num_words + 1)];
+                    for i in 0..bits.bits.len() {
+                        arr[i].store(bits.word(i), AtomicOrdering::Relaxed);
+                    }
                 }
-            } else if !preserve_data {
-                arr.fill(0);
+                bits.bits = arr;
             }
-            let num_bits = arr.len() << 6;
-            Self::from_bits(arr, num_bits)
+            // Java keeps an array that is already long enough as it is, set
+            // bits included, whether or not `preserveData` is set
+            // (`FixedBitSet.java:74-83`).
+            let num_bits = bits.bits.len() << 6;
+            Self::from_words(bits.bits, num_bits)
+                .expect("INVARIANT: arr.len() << 6 bits need exactly arr.len() words")
         }
     }
 
     /// Returns the cardinality of the intersection of two sets, modifying neither.
     ///
     /// Equivalent to `FixedBitSet.intersectionCount(FixedBitSet, FixedBitSet)`.
+    ///
+    /// The words are loaded a chunk at a time (see [`Words`]).
     pub fn intersection_count(a: &FixedBitSet, b: &FixedBitSet) -> u64 {
         // Depends on the ghost bits being clear!
         let common = a.num_words.min(b.num_words);
-        (0..common)
-            .map(|i| (a.bits[i] & b.bits[i]).count_ones() as u64)
-            .sum()
+        let (a_chunks, a_rest) = a.bits[..common].as_chunks::<WORD_CHUNK>();
+        let (b_chunks, b_rest) = b.bits[..common].as_chunks::<WORD_CHUNK>();
+        let mut total = 0u64;
+        for (a_chunk, b_chunk) in a_chunks.iter().zip(b_chunks) {
+            let (a_words, b_words) = (load_word_chunk(a_chunk), load_word_chunk(b_chunk));
+            total += a_words
+                .iter()
+                .zip(&b_words)
+                .map(|(a_word, b_word)| (a_word & b_word).count_ones() as u64)
+                .sum::<u64>();
+        }
+        total
+            + a_rest
+                .iter()
+                .zip(b_rest)
+                .map(|(a_word, b_word)| {
+                    (a_word.load(AtomicOrdering::Relaxed) & b_word.load(AtomicOrdering::Relaxed))
+                        .count_ones() as u64
+                })
+                .sum::<u64>()
     }
 
     /// Returns the cardinality of the union of two sets, modifying neither.
@@ -3334,13 +3842,13 @@ impl FixedBitSet {
         // Depends on the ghost bits being clear!
         let common = a.num_words.min(b.num_words);
         let mut tot: u64 = (0..common)
-            .map(|i| (a.bits[i] | b.bits[i]).count_ones() as u64)
+            .map(|i| (a.word(i) | b.word(i)).count_ones() as u64)
             .sum();
         tot += (common..a.num_words)
-            .map(|i| a.bits[i].count_ones() as u64)
+            .map(|i| a.word(i).count_ones() as u64)
             .sum::<u64>();
         tot += (common..b.num_words)
-            .map(|i| b.bits[i].count_ones() as u64)
+            .map(|i| b.word(i).count_ones() as u64)
             .sum::<u64>();
         tot
     }
@@ -3352,10 +3860,10 @@ impl FixedBitSet {
         // Depends on the ghost bits being clear!
         let common = a.num_words.min(b.num_words);
         let mut tot: u64 = (0..common)
-            .map(|i| (a.bits[i] & !b.bits[i]).count_ones() as u64)
+            .map(|i| (a.word(i) & !b.word(i)).count_ones() as u64)
             .sum();
         tot += (common..a.num_words)
-            .map(|i| a.bits[i].count_ones() as u64)
+            .map(|i| a.word(i).count_ones() as u64)
             .sum::<u64>();
         tot
     }
@@ -3367,7 +3875,7 @@ impl FixedBitSet {
     /// being clear!".
     pub fn verify_ghost_bits_clear(&self) -> bool {
         for i in self.num_words..self.bits.len() {
-            if self.bits[i] != 0 {
+            if self.word(i) != 0 {
                 return false;
             }
         }
@@ -3375,7 +3883,7 @@ impl FixedBitSet {
             return true;
         }
         let mask = u64::MAX << (self.num_bits & 63);
-        (self.bits[self.num_words - 1] & mask) == 0
+        (self.word(self.num_words - 1) & mask) == 0
     }
 
     /// Returns the number of set bits between `from` inclusive and `to` exclusive.
@@ -3390,7 +3898,7 @@ impl FixedBitSet {
 
         // First, align `from` with a word start, i.e. a multiple of 64.
         if (from & 0x3f) != 0 {
-            let mut bits = self.bits[from >> 6] >> (from & 63);
+            let mut bits = self.word(from >> 6) >> (from & 63);
             let num_bits_til_next_word = from.wrapping_neg() & 0x3f;
             if to - from < num_bits_til_next_word {
                 bits &= (1u64 << ((to - from) & 63)) - 1;
@@ -3402,12 +3910,12 @@ impl FixedBitSet {
         }
 
         for i in (from >> 6)..(to >> 6) {
-            cardinality += self.bits[i].count_ones() as usize;
+            cardinality += self.word(i).count_ones() as usize;
         }
 
         // Now handle the bits between the last complete word and `to`.
         if (to & 0x3f) != 0 {
-            let bits = self.bits[to >> 6] << (to.wrapping_neg() & 63);
+            let bits = self.word(to >> 6) << (to.wrapping_neg() & 63);
             cardinality += bits.count_ones() as usize;
         }
 
@@ -3430,7 +3938,7 @@ impl FixedBitSet {
         let mut max_word = 0usize;
         while max_word + INTERVAL < self.num_words {
             for i in 0..RANGE_LENGTH {
-                pop_count += self.bits[max_word + i].count_ones() as u64;
+                pop_count += self.word(max_word + i).count_ones() as u64;
             }
             max_word += INTERVAL;
         }
@@ -3453,22 +3961,22 @@ impl FixedBitSet {
         let word_index = start_bit >> 6;
         let bit_offset = start_bit & 63;
         if bit_offset + mask_len <= 64 {
-            self.bits[word_index] |= mask << bit_offset;
+            self.or_word(word_index, mask << bit_offset);
         } else {
-            self.bits[word_index] |= mask << bit_offset;
-            self.bits[word_index + 1] |= mask >> ((64 - bit_offset) & 63);
+            self.or_word(word_index, mask << bit_offset);
+            self.or_word(word_index + 1, mask >> ((64 - bit_offset) & 63));
         }
     }
 
     /// Reads `num_bits` (between 1 and 63) bits from `bit_set` at `from`.
     ///
     /// Equivalent to the private `FixedBitSet.readNBits(long[], int, int)`.
-    fn read_n_bits(bit_set: &[u64], from: usize, num_bits: usize) -> u64 {
+    fn read_n_bits(bit_set: &FixedBitSet, from: usize, num_bits: usize) -> u64 {
         debug_assert!(num_bits > 0 && num_bits < 64);
-        let mut bits = bit_set[from >> 6] >> (from & 63);
+        let mut bits = bit_set.word(from >> 6) >> (from & 63);
         let num_bits_so_far = 64 - (from & 0x3f);
         if num_bits_so_far < num_bits {
-            bits |= bit_set[(from >> 6) + 1] << (from.wrapping_neg() & 63);
+            bits |= bit_set.word((from >> 6) + 1) << (from.wrapping_neg() & 63);
         }
         bits & ((1u64 << (num_bits & 63)) - 1)
     }
@@ -3500,9 +4008,8 @@ impl FixedBitSet {
         // First, align `dest_from` with a word start, i.e. a multiple of 64.
         if (dest_from & 0x3f) != 0 {
             let num_bits_needed = (dest_from.wrapping_neg() & 0x3f).min(length);
-            let bits =
-                Self::read_n_bits(&source.bits, source_from, num_bits_needed) << (dest_from & 63);
-            dest.bits[dest_from >> 6] |= bits;
+            let bits = Self::read_n_bits(source, source_from, num_bits_needed) << (dest_from & 63);
+            dest.or_word(dest_from >> 6, bits);
 
             source_from += num_bits_needed;
             dest_from += num_bits_needed;
@@ -3522,15 +4029,28 @@ impl FixedBitSet {
 
         if (source_from & 0x3f) == 0 {
             // source_from and dest_from are both word-aligned.
-            for i in 0..num_full_words {
-                dest.bits[dest_word_from + i] |= source.bits[source_word_from + i];
+            if Arc::ptr_eq(&source.bits, &dest.bits) && source_word_from != dest_word_from {
+                // The two ranges are one array (a set and a view of it) at
+                // different offsets: a word written may be one read later, so
+                // the words are ORed one by one, in Java's order.
+                for i in 0..num_full_words {
+                    dest.or_word(dest_word_from + i, source.word(source_word_from + i));
+                }
+            } else {
+                Self::or_disjoint_words(
+                    &source.bits[source_word_from..source_word_from + num_full_words],
+                    &dest.bits[dest_word_from..dest_word_from + num_full_words],
+                );
             }
         } else {
             let shift = source_from & 63;
             let back = source_from.wrapping_neg() & 63;
             for i in 0..num_full_words {
-                dest.bits[dest_word_from + i] |= (source.bits[source_word_from + i] >> shift)
-                    | (source.bits[source_word_from + i + 1] << back);
+                dest.or_word(
+                    dest_word_from + i,
+                    (source.word(source_word_from + i) >> shift)
+                        | (source.word(source_word_from + i + 1) << back),
+                );
             }
         }
 
@@ -3540,8 +4060,8 @@ impl FixedBitSet {
 
         // Finally handle the tail bits.
         if length > 0 {
-            let bits = Self::read_n_bits(&source.bits, source_from, length);
-            dest.bits[dest_from >> 6] |= bits;
+            let bits = Self::read_n_bits(source, source_from, length);
+            dest.or_word(dest_from >> 6, bits);
         }
     }
 
@@ -3573,9 +4093,9 @@ impl FixedBitSet {
         if (dest_from & 0x3f) != 0 {
             let num_bits_needed = (dest_from.wrapping_neg() & 0x3f).min(length);
             let mut bits =
-                Self::read_n_bits(&source.bits, source_from, num_bits_needed) << (dest_from & 63);
+                Self::read_n_bits(source, source_from, num_bits_needed) << (dest_from & 63);
             bits |= !(((1u64 << (num_bits_needed & 63)) - 1) << (dest_from & 63));
-            dest.bits[dest_from >> 6] &= bits;
+            dest.and_word(dest_from >> 6, bits);
 
             source_from += num_bits_needed;
             dest_from += num_bits_needed;
@@ -3595,14 +4115,17 @@ impl FixedBitSet {
 
         if (source_from & 0x3f) == 0 {
             for i in 0..num_full_words {
-                dest.bits[dest_word_from + i] &= source.bits[source_word_from + i];
+                dest.and_word(dest_word_from + i, source.word(source_word_from + i));
             }
         } else {
             let shift = source_from & 63;
             let back = source_from.wrapping_neg() & 63;
             for i in 0..num_full_words {
-                dest.bits[dest_word_from + i] &= (source.bits[source_word_from + i] >> shift)
-                    | (source.bits[source_word_from + i + 1] << back);
+                dest.and_word(
+                    dest_word_from + i,
+                    (source.word(source_word_from + i) >> shift)
+                        | (source.word(source_word_from + i + 1) << back),
+                );
             }
         }
 
@@ -3612,9 +4135,9 @@ impl FixedBitSet {
 
         // Finally handle the tail bits.
         if length > 0 {
-            let mut bits = Self::read_n_bits(&source.bits, source_from, length);
+            let mut bits = Self::read_n_bits(source, source_from, length);
             bits |= u64::MAX << (length & 63);
-            dest.bits[dest_from >> 6] &= bits;
+            dest.and_word(dest_from >> 6, bits);
         }
     }
 
@@ -3633,6 +4156,32 @@ impl FixedBitSet {
         Self::or_range(other, 0, self, 0, length);
     }
 
+    /// `dest[i] |= source[i]` for every word, loading a chunk of each at a time
+    /// (see [`Words`]); `source` and `dest` are the same words or do not
+    /// overlap, so no word written is read afterwards.
+    ///
+    /// The word-aligned loop of `FixedBitSet.orRange`
+    /// (`FixedBitSet.java:515-519`).
+    fn or_disjoint_words(source: &[AtomicU64], dest: &[AtomicU64]) {
+        debug_assert_eq!(source.len(), dest.len());
+        let (source_chunks, source_rest) = source.as_chunks::<WORD_CHUNK>();
+        let (dest_chunks, dest_rest) = dest.as_chunks::<WORD_CHUNK>();
+        for (source_chunk, dest_chunk) in source_chunks.iter().zip(dest_chunks) {
+            let mut words = load_word_chunk(dest_chunk);
+            for (word, source_word) in words.iter_mut().zip(load_word_chunk(source_chunk)) {
+                *word |= source_word;
+            }
+            for (dest_word, word) in dest_chunk.iter().zip(words) {
+                dest_word.store(word, AtomicOrdering::Relaxed);
+            }
+        }
+        for (source_word, dest_word) in source_rest.iter().zip(dest_rest) {
+            let word =
+                dest_word.load(AtomicOrdering::Relaxed) | source_word.load(AtomicOrdering::Relaxed);
+            dest_word.store(word, AtomicOrdering::Relaxed);
+        }
+    }
+
     /// `self = self XOR other`.
     ///
     /// Equivalent to `FixedBitSet.xor(FixedBitSet)`.
@@ -3641,12 +4190,12 @@ impl FixedBitSet {
     }
 
     /// Equivalent to the private `FixedBitSet.xor(long[], int)`.
-    fn xor_bits(&mut self, other_bits: &[u64], other_num_words: usize) {
+    fn xor_bits(&mut self, other_bits: &[AtomicU64], other_num_words: usize) {
         debug_assert!(other_num_words <= self.num_words);
         let mut pos = self.num_words.min(other_num_words);
         while pos > 0 {
             pos -= 1;
-            self.bits[pos] ^= other_bits[pos];
+            self.xor_word(pos, other_bits[pos].load(AtomicOrdering::Relaxed));
         }
     }
 
@@ -3658,7 +4207,7 @@ impl FixedBitSet {
         let mut pos = self.num_words.min(other.num_words);
         while pos > 0 {
             pos -= 1;
-            if (self.bits[pos] & other.bits[pos]) != 0 {
+            if (self.word(pos) & other.word(pos)) != 0 {
                 return true;
             }
         }
@@ -3673,14 +4222,15 @@ impl FixedBitSet {
     }
 
     /// Equivalent to the private `FixedBitSet.and(long[], int)`.
-    fn and_bits(&mut self, other_arr: &[u64], other_num_words: usize) {
+    fn and_bits(&mut self, other_arr: &[AtomicU64], other_num_words: usize) {
         let mut pos = self.num_words.min(other_num_words);
         while pos > 0 {
             pos -= 1;
-            self.bits[pos] &= other_arr[pos];
+            self.and_word(pos, other_arr[pos].load(AtomicOrdering::Relaxed));
         }
         if self.num_words > other_num_words {
-            self.bits[other_num_words..self.num_words].fill(0);
+            let num_words = self.num_words;
+            self.fill_words(other_num_words, num_words, 0);
         }
     }
 
@@ -3696,7 +4246,7 @@ impl FixedBitSet {
     pub fn and_not_offset(
         &mut self,
         other_offset_words: usize,
-        other_arr: &[u64],
+        other_arr: &[AtomicU64],
         other_num_words: usize,
     ) {
         let mut pos = self
@@ -3705,8 +4255,81 @@ impl FixedBitSet {
             .min(other_num_words);
         while pos > 0 {
             pos -= 1;
-            self.bits[pos + other_offset_words] &= !other_arr[pos];
+            self.and_word(
+                pos + other_offset_words,
+                !other_arr[pos].load(AtomicOrdering::Relaxed),
+            );
         }
+    }
+
+    /// Does an in-place XOR of the bits `iter` provides.
+    ///
+    /// Equivalent to `FixedBitSet.xor(DocIdSetIterator)` (`FixedBitSet.java:616-627`):
+    /// an iterator over a `FixedBitSet` is XORed word by word, any other one
+    /// flips each doc it returns below `length()`. The suffix stands for
+    /// Java's overload, as in [`or_set`](Self::or_set).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when the iterator is already
+    /// positioned, and propagates iteration errors.
+    pub fn xor_iterator(
+        &mut self,
+        iter: &mut dyn crate::search::DocIdSetIterator,
+    ) -> crate::error::Result<()> {
+        crate::util::bit_set::check_unpositioned(iter)?;
+        if let Some(bits) = crate::util::bit_set::BitSetIterator::get_fixed_bit_set_or_null(iter) {
+            self.xor(bits);
+        } else {
+            loop {
+                let doc = iter.next_doc()?;
+                if doc >= self.num_bits as i32 {
+                    break;
+                }
+                self.flip(doc as usize);
+            }
+        }
+        Ok(())
+    }
+
+    /// `self = self AND NOT` the docs `iter` provides.
+    ///
+    /// Equivalent to `FixedBitSet.andNot(DocIdSetIterator)` (`FixedBitSet.java:664-679`):
+    /// an iterator over a `FixedBitSet` is masked out word by word, a
+    /// `DocBaseBitSetIterator` word by word from its doc base, and any other
+    /// iterator clears each doc it returns.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when the iterator is already
+    /// positioned, and propagates iteration errors.
+    pub fn and_not_iterator(
+        &mut self,
+        iter: &mut dyn crate::search::DocIdSetIterator,
+    ) -> crate::error::Result<()> {
+        if let Some(bits) = crate::util::bit_set::BitSetIterator::get_fixed_bit_set_or_null(iter) {
+            crate::util::bit_set::check_unpositioned(iter)?;
+            self.and_not(bits);
+        } else if let Some(base_iter) = iter
+            .disi_as_any()
+            .and_then(|any| any.downcast_ref::<crate::util::bit_set::DocBaseBitSetIterator>())
+        {
+            crate::util::bit_set::check_unpositioned(iter)?;
+            let other = base_iter.get_bit_set();
+            self.and_not_offset(
+                (base_iter.get_doc_base() >> 6) as usize,
+                other.get_bits(),
+                other.num_words,
+            );
+        } else {
+            crate::util::bit_set::check_unpositioned(iter)?;
+            let mut doc = iter.next_doc()?;
+            while doc != crate::search::NO_MORE_DOCS {
+                self.clear(doc as usize);
+                doc = iter.next_doc()?;
+            }
+        }
+        Ok(())
     }
 
     /// Scans the backing store to check whether every bit is clear.
@@ -3715,7 +4338,7 @@ impl FixedBitSet {
     /// `is_empty`, as Lucene notes, to emphasise that it is not low cost.
     pub fn scan_is_empty(&self) -> bool {
         // Depends on the ghost bits being clear!
-        self.bits[..self.num_words].iter().all(|&w| w == 0)
+        (0..self.num_words).all(|i| self.word(i) == 0)
     }
 
     /// Flips the bits in the range `[start_index, end_index)`.
@@ -3737,15 +4360,15 @@ impl FixedBitSet {
         let endmask = u64::MAX >> (end_index.wrapping_neg() & 63);
 
         if start_word == end_word {
-            self.bits[start_word] ^= startmask & endmask;
+            self.xor_word(start_word, startmask & endmask);
             return;
         }
 
-        self.bits[start_word] ^= startmask;
+        self.xor_word(start_word, startmask);
         for i in (start_word + 1)..end_word {
-            self.bits[i] = !self.bits[i];
+            self.set_word(i, !self.word(i));
         }
-        self.bits[end_word] ^= endmask;
+        self.xor_word(end_word, endmask);
     }
 
     /// Flips the bit at `index`.
@@ -3755,7 +4378,7 @@ impl FixedBitSet {
         debug_assert!(index < self.num_bits);
         let word_num = index >> 6;
         let bitmask = 1u64 << (index & 63);
-        self.bits[word_num] ^= bitmask;
+        self.xor_word(word_num, bitmask);
     }
 
     /// Clears the bits in the range `[start_index, end_index)`.
@@ -3776,29 +4399,26 @@ impl FixedBitSet {
         let endmask = !(u64::MAX >> (end_index.wrapping_neg() & 63));
 
         if start_word == end_word {
-            self.bits[start_word] &= startmask | endmask;
+            self.and_word(start_word, startmask | endmask);
             return;
         }
 
-        self.bits[start_word] &= startmask;
-        self.bits[(start_word + 1)..end_word].fill(0);
-        self.bits[end_word] &= endmask;
+        self.and_word(start_word, startmask);
+        self.fill_words(start_word + 1, end_word, 0);
+        self.and_word(end_word, endmask);
     }
 
     /// Returns this set as read-only [`Bits`].
     ///
-    /// Equivalent to `FixedBitSet.asReadOnlyBits()`, which exists so that a
-    /// consumer handed a `Bits` cannot cast its way back to write access.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java's `FixedBits` wraps the same
-    /// `long[]`, so later changes to this set show through the view. The crate's
-    /// [`FixedBits`](crate::util::bit_set::FixedBits) owns its set, so this
-    /// copies the words and the view is a snapshot. Sharing the words instead
-    /// would need interior mutability that Java gets for free from an unguarded
-    /// array reference, and the read-only guarantee — the point of the method —
-    /// is preserved either way.
+    /// Equivalent to `FixedBitSet.asReadOnlyBits()` (`FixedBitSet.java:893-895`),
+    /// `new FixedBits(bits, numBits)`: the view wraps this set's own words, so a
+    /// later write to the set shows through it, and a consumer handed the view
+    /// cannot cast its way back to write access.
     pub fn as_read_only_bits(&self) -> crate::util::bit_set::FixedBits {
-        crate::util::bit_set::FixedBits::new(self.bits.clone(), self.num_bits)
+        crate::util::bit_set::FixedBits::from_bit_set(
+            Self::from_words(Arc::clone(&self.bits), self.num_bits)
+                .expect("INVARIANT: a FixedBitSet's words always hold its num_bits"),
+        )
     }
 
     /// Restricts `bit_set` to the bits this set holds from `offset` on.
@@ -3829,19 +4449,27 @@ impl FixedBitSet {
     /// Calls `consumer` with `base` added to the index of every set bit in
     /// `[from, to)`.
     ///
-    /// Equivalent to `FixedBitSet.forEach(int, int, int, CheckedIntConsumer)`,
-    /// which queries use when a bit set is an intermediate representation of
-    /// their matches. Java's checked consumer becomes a closure returning
-    /// [`Result`].
-    pub fn for_each<F>(
+    /// Equivalent to `FixedBitSet.forEach(int, int, int,
+    /// CheckedIntConsumer<IOException>)` (`FixedBitSet.java:910-916`), which
+    /// queries use when a bit set is an intermediate representation of their
+    /// matches. The consumer becomes a closure returning `Result<(), E>`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java fixes the consumer's checked
+    /// exception to `IOException`; unchecked ones, such as the
+    /// `CollectionTerminatedException` a collector throws to stop early, pass
+    /// through it untyped. Rust has no unchecked exceptions, so the error type
+    /// is generic: a caller's closure returns the error it can raise — a
+    /// collection outcome, or none at all — and this method hands it back
+    /// unchanged. Which bits are visited, and in which order, is Java's.
+    pub fn for_each<E, F>(
         &self,
         mut from: usize,
         to: usize,
         base: i32,
         consumer: &mut F,
-    ) -> crate::error::Result<()>
+    ) -> std::result::Result<(), E>
     where
-        F: FnMut(i32) -> crate::error::Result<()>,
+        F: FnMut(i32) -> std::result::Result<(), E>,
     {
         assert!(
             from <= to && to <= self.length(),
@@ -3850,7 +4478,7 @@ impl FixedBitSet {
 
         // First, align `from` with a word start, i.e. a multiple of 64.
         if (from & 0x3f) != 0 {
-            let mut bits = self.bits[from >> 6] >> (from & 63);
+            let mut bits = self.word(from >> 6) >> (from & 63);
             let num_bits_til_next_word = from.wrapping_neg() & 0x3f;
             if to - from < num_bits_til_next_word {
                 // All the bits are in a single word.
@@ -3863,12 +4491,12 @@ impl FixedBitSet {
         }
 
         for i in (from >> 6)..(to >> 6) {
-            Self::for_each_word(self.bits[i], base.wrapping_add((i << 6) as i32), consumer)?;
+            Self::for_each_word(self.word(i), base.wrapping_add((i << 6) as i32), consumer)?;
         }
 
         // Now handle the remaining bits in the last partial word.
         if (to & 0x3f) != 0 {
-            let bits = self.bits[to >> 6] & ((1u64 << (to & 63)) - 1);
+            let bits = self.word(to >> 6) & ((1u64 << (to & 63)) - 1);
             Self::for_each_word(bits, base.wrapping_add((to & !0x3f) as i32), consumer)?;
         }
 
@@ -3876,9 +4504,9 @@ impl FixedBitSet {
     }
 
     /// Equivalent to the private `FixedBitSet.forEach(long, int, CheckedIntConsumer)`.
-    fn for_each_word<F>(mut bits: u64, base: i32, consumer: &mut F) -> crate::error::Result<()>
+    fn for_each_word<E, F>(mut bits: u64, base: i32, consumer: &mut F) -> std::result::Result<(), E>
     where
-        F: FnMut(i32) -> crate::error::Result<()>,
+        F: FnMut(i32) -> std::result::Result<(), E>,
     {
         while bits != 0 {
             let ntz = bits.trailing_zeros();
@@ -3902,7 +4530,7 @@ impl FixedBitSet {
         let mut offset = 0usize;
         // First, align `from` with a word start, i.e. a multiple of 64.
         if (from & 0x3f) != 0 {
-            let mut word = self.bits[from >> 6] >> (from & 63);
+            let mut word = self.word(from >> 6) >> (from & 63);
             let num_bits_til_next_word = from.wrapping_neg() & 0x3f;
             if to - from < num_bits_til_next_word {
                 // All the bits are in a single word.
@@ -3915,13 +4543,13 @@ impl FixedBitSet {
         }
 
         for i in (from >> 6)..(to >> 6) {
-            let word = self.bits[i];
+            let word = self.word(i);
             offset = Self::word_to_array(word, base.wrapping_add((i << 6) as i32), array, offset);
         }
 
         // Now handle the remaining bits in the last partial word.
         if (to & 0x3f) != 0 {
-            let word = self.bits[to >> 6] & ((1u64 << (to & 63)) - 1);
+            let word = self.word(to >> 6) & ((1u64 << (to & 63)) - 1);
             offset =
                 Self::word_to_array(word, base.wrapping_add((to & !0x3f) as i32), array, offset);
         }
@@ -3987,7 +4615,7 @@ impl FixedBitSet {
         let mut i = self.num_words;
         while i > 0 {
             i -= 1;
-            h ^= self.bits[i];
+            h ^= self.word(i);
             h = (h << 1) | (h >> 63); // rotate left
         }
         // Fold the leftmost bits into the right and add a constant, so that an
@@ -4005,6 +4633,17 @@ impl Bits for FixedBitSet {
 
     fn length(&self) -> usize {
         self.length()
+    }
+
+    /// Equivalent to the `FixedBitSet.applyMask(FixedBitSet, int)` override
+    /// (`FixedBitSet.java:897-909`).
+    fn apply_mask(&self, bit_set: &mut FixedBitSet, offset: usize) -> Result<(), LuceneError> {
+        FixedBitSet::apply_mask(self, bit_set, offset)
+    }
+
+    /// A `FixedBitSet` is one of the classes `FixedBitSet.copyOf` tests for.
+    fn bits_as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 }
 
@@ -4032,7 +4671,10 @@ impl Accountable for FixedBitSet {
     /// (`FixedBitSet.java:203-205`), which is
     /// `BASE_RAM_BYTES_USED + RamUsageEstimator.sizeOf(bits)`.
     fn ram_bytes_used(&self) -> i64 {
-        Self::BASE_RAM_BYTES_USED + RamUsageEstimator::size_of_u64(&self.bits)
+        Self::BASE_RAM_BYTES_USED
+            + RamUsageEstimator::align_object_size(
+                RamUsageEstimator::NUM_BYTES_ARRAY_HEADER + 8 * self.bits.len() as i64,
+            )
     }
 }
 
@@ -4044,7 +4686,8 @@ impl PartialEq for FixedBitSet {
             return false;
         }
         // Depends on the ghost bits being clear!
-        self.bits == other.bits
+        self.bits.len() == other.bits.len()
+            && (0..self.bits.len()).all(|i| self.word(i) == other.word(i))
     }
 }
 
@@ -4229,6 +4872,83 @@ impl std::error::Error for ThreadInterruptedException {
 
 #[cfg(test)]
 mod tests {
+    /// `new FixedBitSet(new long[1], 65)` throws Java's
+    /// `IllegalArgumentException` (`FixedBitSet.java:162-167`). Measured
+    /// against `lucene-core-10.5.0.jar` (`oracle/fix/MiscFix.java`, item 20):
+    /// `The given long array is too small  to hold 65 bits`, two spaces.
+    #[test]
+    fn fixed_bit_set_from_too_few_words_is_lucenes_illegal_argument() {
+        assert!(matches!(
+            super::FixedBitSet::from_bits(vec![0u64], 65),
+            Err(super::LuceneError::IllegalArgument(ref message))
+                if message == "The given long array is too small  to hold 65 bits"
+        ));
+    }
+
+    /// `ArrayUtil.parseInt` reads digits with `Character.digit`, and refuses
+    /// a radix outside `2..=36` with a message-less `NumberFormatException`.
+    /// Measured against `lucene-core-10.5.0.jar` (`oracle/fix/MiscFix.java`,
+    /// item 23): Arabic-Indic `١٢` is 12, fullwidth `７ｆ` in radix 16 is 127,
+    /// and radix 1 throws `NumberFormatException: null`.
+    #[test]
+    fn array_util_parse_int_reads_digits_as_character_digit_does() {
+        let arabic: Vec<char> = "\u{0661}\u{0662}".chars().collect();
+        let fullwidth: Vec<char> = "\u{FF17}\u{FF46}".chars().collect();
+        assert_eq!(super::ArrayUtil::parse_int(&arabic, 0, 2).unwrap(), 12);
+        assert_eq!(
+            super::ArrayUtil::parse_int_radix(&fullwidth, 0, 2, 16).unwrap(),
+            127
+        );
+        assert!(matches!(
+            super::ArrayUtil::parse_int_radix(&['1'], 0, 1, 1),
+            Err(super::LuceneError::IllegalArgument(ref message)) if message.is_empty()
+        ));
+    }
+
+    /// `UnicodeUtil.newString` refuses a code point past `0x10FFFF` with a
+    /// message-less `IllegalArgumentException` (`UnicodeUtil.java:571-575`).
+    /// Measured against `lucene-core-10.5.0.jar` (`oracle/fix/MiscFix.java`,
+    /// item 25): `IllegalArgumentException: null`.
+    #[test]
+    fn unicode_util_new_string_refuses_an_invalid_code_point_without_a_message() {
+        assert!(matches!(
+            super::unicode_util::UnicodeUtil::new_string(&[0x11_0000], 0, 1),
+            Err(super::LuceneError::IllegalArgument(ref message)) if message.is_empty()
+        ));
+    }
+
+    /// `new LongsRef(long[], int, int)` only asserts `isValid()`
+    /// (`LongsRef.java:54-59`): a release build — Java without `-ea` — builds
+    /// an inconsistent reference instead of failing.
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn longs_ref_from_longs_only_asserts_validity() {
+        let longs = super::refs::LongsRef::from_longs(vec![1, 2], 1, 5);
+        assert_eq!(longs.length, 5);
+    }
+
+    /// The same, in a debug build — Java under `-ea` — where the assertion
+    /// fires.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic]
+    fn longs_ref_from_longs_asserts_validity_in_debug_builds() {
+        let _ = super::refs::LongsRef::from_longs(vec![1, 2], 1, 5);
+    }
+
+    /// `BytesRefBuilder.copyChars("abc")` grows to
+    /// `oversize(maxUTF8Length(3) = 9, 1) = 16` bytes (`BytesRefBuilder.java:138`),
+    /// not to the three bytes the UTF-8 text needs.
+    #[test]
+    fn bytes_ref_builder_copy_chars_grows_to_the_max_utf8_length() {
+        let mut builder = BytesRefBuilder::new();
+        builder.copy_chars("abc");
+        assert_eq!(builder.length(), 3);
+        assert_eq!(&builder.bytes()[..3], b"abc");
+        assert_eq!(builder.bytes().len(), ArrayUtil::oversize(9, 1));
+        assert_eq!(builder.bytes().len(), 16);
+    }
+
     use super::*;
 
     #[test]
@@ -4355,27 +5075,64 @@ mod tests {
             65536,
             i32::MAX,
         ];
-        let mut encoded = Vec::new();
-        GroupVIntUtil::write_group_vints(&values, values.len(), &mut encoded);
+        let mut out = crate::store::ByteBuffersDataOutput::new();
+        let mut scratch = [0u8; MAX_LENGTH_PER_GROUP];
+        GroupVIntUtil::write_group_vints_output(&mut out, &mut scratch, &values, values.len())
+            .unwrap();
+        let encoded = out.to_array_copy().unwrap();
+
+        // The fast path and the benchmark baseline decode the same bytes alike.
+        let mut decoded = vec![0i32; values.len()];
+        let mut input = crate::store::ByteArrayDataInput::new(&encoded);
+        GroupVIntUtil::read_group_vints_input(&mut input, &mut decoded, values.len()).unwrap();
+        assert_eq!(input.position(), encoded.len());
+        assert_eq!(decoded, values);
 
         let mut decoded = vec![0i32; values.len()];
-        let mut pos = 0;
-        GroupVIntUtil::read_group_vints(&encoded, &mut pos, &mut decoded, values.len()).unwrap();
-        assert_eq!(pos, encoded.len());
+        let mut input = crate::store::ByteArrayDataInput::new(&encoded);
+        GroupVIntUtil::read_group_vints_baseline(&mut input, &mut decoded, values.len()).unwrap();
+        assert_eq!(input.position(), encoded.len());
         assert_eq!(decoded, values);
+    }
+
+    /// `GroupVIntUtil.toInt(long)` (`GroupVIntUtil.java:174-179`) throws
+    /// `ArithmeticException("integer overflow")` for a value past an unsigned
+    /// 32-bit integer, in a full group and in the trailing vInts alike.
+    #[test]
+    fn group_vints_from_longs_refuse_a_value_past_32_bits() {
+        let mut out = crate::store::ByteBuffersDataOutput::new();
+        let mut scratch = [0u8; MAX_LENGTH_PER_GROUP];
+        for values in [[1i64, 2, 3, 1 << 32], [1 << 32, 0, 0, 0]] {
+            for limit in [4, 1] {
+                if limit == 1 && values[0] != 1 << 32 {
+                    continue;
+                }
+                let error = GroupVIntUtil::write_group_vints_output_long(
+                    &mut out,
+                    &mut scratch,
+                    &values,
+                    limit,
+                )
+                .unwrap_err();
+                assert!(
+                    matches!(&error, LuceneError::Arithmetic(m) if m == "integer overflow"),
+                    "{error:?}"
+                );
+            }
+        }
     }
 
     #[test]
     fn ioutils_close_helpers() {
-        fn failing_close() -> io::Result<()> {
-            Err(io::Error::other("close failed"))
+        fn failing_close() -> Result<(), LuceneError> {
+            Err(LuceneError::Io(io::Error::other("close failed")))
         }
 
         let result = IOUtils::close([Some(failing_close), None]);
         assert!(result.is_err());
 
-        // close_while_handling_exception should suppress errors without panicking.
-        IOUtils::close_while_handling_exception([Some(failing_close), None]);
+        // close_while_handling_exception swallows a non-Error failure.
+        IOUtils::close_while_handling_exception([Some(failing_close), None]).unwrap();
     }
 
     #[test]
@@ -4389,6 +5146,87 @@ mod tests {
         IOUtils::fsync(&tmp, false).unwrap();
         IOUtils::delete_files_ignoring_exceptions([Some(&tmp)]);
         assert!(!tmp.exists());
+    }
+
+    /// rmp #315 (M3): the bulk loops that load a chunk of words at a time
+    /// answer exactly as word-by-word loops over a `long[]` do, at every
+    /// remainder length; and an `or_range` from a set into itself one word
+    /// further on (through a read-only view, which shares the words as Java's
+    /// `asReadOnlyBits` shares the `long[]`) sees the words it has just
+    /// written, as Java's in-order loop does (`FixedBitSet.java:515-519`).
+    #[test]
+    fn fixed_bit_set_chunked_bulk_loops_match_word_by_word_loops() {
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for words in 0..=33usize {
+            let a_words: Vec<u64> = (0..words).map(|_| next()).collect();
+            let b_words: Vec<u64> = (0..words).map(|_| next()).collect();
+            let a = FixedBitSet::from_bits(a_words.clone(), words * 64).unwrap();
+            let b = FixedBitSet::from_bits(b_words.clone(), words * 64).unwrap();
+            let expected: usize = a_words.iter().map(|w| w.count_ones() as usize).sum();
+            assert_eq!(a.cardinality(), expected, "words={words}");
+            let expected: u64 = a_words
+                .iter()
+                .zip(&b_words)
+                .map(|(x, y)| (x & y).count_ones() as u64)
+                .sum();
+            assert_eq!(
+                FixedBitSet::intersection_count(&a, &b),
+                expected,
+                "words={words}"
+            );
+            let mut union = a.clone();
+            union.or_set(&b);
+            let got: Vec<u64> = union
+                .get_bits()
+                .iter()
+                .map(|w| w.load(AtomicOrdering::Relaxed))
+                .collect();
+            let want: Vec<u64> = a_words.iter().zip(&b_words).map(|(x, y)| x | y).collect();
+            assert_eq!(got, want, "words={words}");
+
+            if words >= 2 {
+                let mut dest = FixedBitSet::from_bits(a_words.clone(), words * 64).unwrap();
+                let view = dest.as_read_only_bits();
+                let length = (words - 1) * 64;
+                FixedBitSet::or_range(view.bit_set(), 0, &mut dest, 64, length);
+                let mut want = a_words.clone();
+                for i in 1..words {
+                    want[i] |= want[i - 1];
+                }
+                let got: Vec<u64> = dest
+                    .get_bits()
+                    .iter()
+                    .map(|w| w.load(AtomicOrdering::Relaxed))
+                    .collect();
+                assert_eq!(got, want, "aliased or_range, words={words}");
+            }
+        }
+    }
+
+    /// rmp #297: `ensureCapacityAndClear` keeps an array that is already long
+    /// enough, set bits included, exactly as `ensureCapacity` does
+    /// (`FixedBitSet.java:64-83`): only a grown array starts empty. Oracle
+    /// `scratchpad/auditDE/oracle/AuditOracle.java` over `new FixedBitSet(new
+    /// long[] {1, 0, 0, 0}, 10)` and bit 70: `ecac len=256 bit0=true`, `ec
+    /// len=256 bit0=true`.
+    #[test]
+    fn ensure_capacity_and_clear_keeps_a_long_enough_array_as_java() {
+        for preserve in [false, true] {
+            let bits = FixedBitSet::from_bits(vec![1, 0, 0, 0], 10).unwrap();
+            let grown = if preserve {
+                FixedBitSet::ensure_capacity(bits, 70)
+            } else {
+                FixedBitSet::ensure_capacity_and_clear(bits, 70)
+            };
+            assert_eq!(grown.length(), 256, "preserve={preserve}");
+            assert!(grown.get(0), "preserve={preserve}");
+        }
     }
 
     #[test]
@@ -4458,6 +5296,421 @@ mod tests {
         BitUtil::write_le_long(&mut buf, 0, 0x123456789ABCDEF0i64);
         assert_eq!(BitUtil::read_le_long(&buf, 0), 0x123456789ABCDEF0i64);
     }
+
+    /// `ArrayUtil.getUnsignedComparator(3)` compares exactly three bytes
+    /// (`ArrayUtil.java:804-816`); the Java oracle prints `cmp3=0` for these
+    /// arrays, which differ only in the fourth byte.
+    #[test]
+    fn unsigned_comparator_of_other_widths_compares_num_bytes_only() {
+        let x = [1u8, 2, 3, 9];
+        let y = [1u8, 2, 3, 0];
+        assert_eq!(
+            ArrayUtil::get_unsigned_comparator(3).compare(&x, 0, &y, 0),
+            0
+        );
+        assert!(ArrayUtil::get_unsigned_comparator(4).compare(&x, 0, &y, 0) > 0);
+        assert!(ArrayUtil::get_unsigned_comparator(2).compare(&[1u8, 3], 0, &[1u8, 2], 0) > 0);
+    }
+
+    /// `ArrayUtil.parseInt(char[], int offset, int len)` parses only the range;
+    /// the Java oracle prints `12` for `parseInt({'x','1','2'}, 1, 2)`.
+    #[test]
+    fn parse_int_reads_the_given_range() {
+        assert_eq!(ArrayUtil::parse_int(&['x', '1', '2'], 1, 2).unwrap(), 12);
+        assert_eq!(ArrayUtil::parse_int(&['-', '7', 'z'], 0, 2).unwrap(), -7);
+    }
+
+    /// `NumericUtils.subtract`/`add` throw `IllegalArgumentException` with
+    /// these messages (Java oracle: `java.lang.IllegalArgumentException: a < b`,
+    /// `... a + b overflows bytesPerDim=2`).
+    #[test]
+    fn numeric_utils_subtract_and_add_report_javas_illegal_argument() {
+        let mut result = [0u8; 2];
+        let error = NumericUtils::subtract(2, 0, &[0, 1], &[0, 2], &mut result).unwrap_err();
+        assert!(
+            matches!(&error, LuceneError::IllegalArgument(m) if m == "a < b"),
+            "{error:?}"
+        );
+        let error = NumericUtils::add(2, 0, &[0xff, 0xff], &[0, 1], &mut result).unwrap_err();
+        assert!(
+            matches!(&error, LuceneError::IllegalArgument(m) if m == "a + b overflows bytesPerDim=2"),
+            "{error:?}"
+        );
+        NumericUtils::subtract(2, 0, &[0x12, 0x05], &[0x10, 0x00], &mut result).unwrap();
+        assert_eq!(result, [0x02, 0x05]);
+    }
+
+    /// `RamUsageEstimator.humanReadableUnits(long)` rounds half to even, as
+    /// `DecimalFormat("0.#")` does; every expected string is the Java
+    /// oracle's output for the same input.
+    #[test]
+    fn human_readable_units_rounds_half_to_even_as_decimal_format() {
+        for (bytes, expected) in [
+            (1280, "1.2 KB"),
+            (1331, "1.3 KB"),
+            (1177, "1.1 KB"),
+            (3584, "3.5 KB"),
+            (1075, "1 KB"),
+            (1024, "1 KB"),
+            (2_621_440, "2.5 MB"),
+            (1_610_612_736, "1.5 GB"),
+            (999, "999 bytes"),
+        ] {
+            assert_eq!(
+                RamUsageEstimator::human_readable_units(bytes),
+                expected,
+                "{bytes}"
+            );
+        }
+    }
+
+    /// `IOUtils.useOrSuppress` keeps the first throwable (`IOUtils.java:490-497`),
+    /// so `IOUtils.close` reports the first close failure.
+    #[test]
+    fn ioutils_close_reports_the_first_failure() {
+        let first = || Err(LuceneError::Io(io::Error::other("first close failed")));
+        let second = || {
+            Err(LuceneError::Io(io::Error::new(
+                io::ErrorKind::NotFound,
+                "second close failed",
+            )))
+        };
+        let error =
+            IOUtils::close([IOUtils::closeable(first), IOUtils::closeable(second)]).unwrap_err();
+        match error {
+            LuceneError::Io(e) => {
+                assert_eq!(e.to_string(), "first close failed");
+                assert_eq!(e.kind(), io::ErrorKind::Other);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// One closeable of the `IOUtils` oracle (`scratchpad/oracle/e2/Oracle.java`):
+    /// records its name, then succeeds, returns `error`, or panics.
+    fn oracle_closeable<'a>(
+        log: &'a std::cell::RefCell<Vec<String>>,
+        name: &'a str,
+        outcome: &'a str,
+    ) -> Option<Closer<'a>> {
+        IOUtils::closeable(move || {
+            log.borrow_mut().push(name.to_string());
+            match outcome {
+                "ok" => Ok(()),
+                "io" => Err(LuceneError::Io(io::Error::other(name.to_string()))),
+                "rte" => Err(LuceneError::illegal_state(name)),
+                "err" => Err(LuceneError::AssertionError(name.to_string())),
+                "panic" => panic!("{name}"),
+                other => unreachable!("{other}"),
+            }
+        })
+    }
+
+    fn java_class_and_message(error: &LuceneError) -> String {
+        let message = match error {
+            LuceneError::Io(e) => e.to_string(),
+            LuceneError::IllegalState { message, .. } => message.clone(),
+            LuceneError::AssertionError(m) => m.clone(),
+            other => panic!("{other:?}"),
+        };
+        format!("{}({message})", error.java_simple_name())
+    }
+
+    /// `IOUtils.close` closes every closeable, skips null, and throws the
+    /// first throwable — Java oracle: `close/io,null,io,ok: closed=[a, b, c]
+    /// -> threw IOException(a)`, `close/rte,io: closed=[a, b] -> threw
+    /// IllegalStateException(a)`, `close/ok,err,io: closed=[a, b, c] -> threw
+    /// AssertionError(b)`, `close/all-ok: closed=[a, b] -> normal`.
+    #[test]
+    fn ioutils_close_matches_the_java_oracle() {
+        let log = std::cell::RefCell::new(Vec::new());
+        let run = |closeables: Vec<Option<Closer<'_>>>| {
+            log.borrow_mut().clear();
+            let outcome = IOUtils::close(closeables);
+            (
+                log.borrow().join(","),
+                outcome.err().map(|e| java_class_and_message(&e)),
+            )
+        };
+        assert_eq!(
+            run(vec![
+                oracle_closeable(&log, "a", "io"),
+                None,
+                oracle_closeable(&log, "b", "io"),
+                oracle_closeable(&log, "c", "ok"),
+            ]),
+            ("a,b,c".to_string(), Some("IOException(a)".to_string()))
+        );
+        assert_eq!(
+            run(vec![
+                oracle_closeable(&log, "a", "rte"),
+                oracle_closeable(&log, "b", "io"),
+            ]),
+            (
+                "a,b".to_string(),
+                Some("IllegalStateException(a)".to_string())
+            )
+        );
+        assert_eq!(
+            run(vec![
+                oracle_closeable(&log, "a", "ok"),
+                oracle_closeable(&log, "b", "err"),
+                oracle_closeable(&log, "c", "io"),
+            ]),
+            ("a,b,c".to_string(), Some("AssertionError(b)".to_string()))
+        );
+        assert_eq!(
+            run(vec![
+                oracle_closeable(&log, "a", "ok"),
+                None,
+                oracle_closeable(&log, "b", "ok"),
+            ]),
+            ("a,b".to_string(), None)
+        );
+    }
+
+    /// `IOUtils.closeWhileHandlingException` swallows every non-`Error`
+    /// failure and rethrows the first `Error` once every closeable is closed —
+    /// Java oracle: `cwhe/io,null,rte,ok: closed=[a, b, c] -> normal`,
+    /// `cwhe/io,err,err,ok: closed=[a, b, c, d] -> threw AssertionError(b)`.
+    #[test]
+    fn ioutils_close_while_handling_exception_matches_the_java_oracle() {
+        let log = std::cell::RefCell::new(Vec::new());
+        let outcome = IOUtils::close_while_handling_exception(vec![
+            oracle_closeable(&log, "a", "io"),
+            None,
+            oracle_closeable(&log, "b", "rte"),
+            oracle_closeable(&log, "c", "ok"),
+        ]);
+        assert!(outcome.is_ok());
+        assert_eq!(log.borrow().join(","), "a,b,c");
+
+        log.borrow_mut().clear();
+        let error = IOUtils::close_while_handling_exception(vec![
+            oracle_closeable(&log, "a", "io"),
+            oracle_closeable(&log, "b", "err"),
+            oracle_closeable(&log, "c", "err"),
+            oracle_closeable(&log, "d", "ok"),
+        ])
+        .unwrap_err();
+        assert_eq!(java_class_and_message(&error), "AssertionError(b)");
+        assert_eq!(log.borrow().join(","), "a,b,c,d");
+    }
+
+    /// `IOUtils.closeWhileSuppressingExceptions(ex, ...)` leaves `ex` the
+    /// throwable to rethrow unless a closeable hits an `Error` while `ex` is
+    /// not one — Java oracle: `cwse/ex=io; io,null,ok: closed=[a, b] -> threw
+    /// IOException(ex)`, `cwse/ex=io; err,io: closed=[a, b] -> threw
+    /// AssertionError(a)`, `cwse/ex=err; err,io: closed=[a, b] -> threw
+    /// AssertionError(ex)`. `ex` keeps its class and message.
+    #[test]
+    fn ioutils_close_while_suppressing_exceptions_matches_the_java_oracle() {
+        let log = std::cell::RefCell::new(Vec::new());
+        let ex = LuceneError::Io(io::Error::other("ex"));
+        let thrown = IOUtils::close_while_suppressing_exceptions(
+            ex,
+            vec![
+                oracle_closeable(&log, "a", "io"),
+                None,
+                oracle_closeable(&log, "b", "ok"),
+            ],
+        );
+        assert_eq!(java_class_and_message(&thrown), "IOException(ex)");
+        assert_eq!(log.borrow().join(","), "a,b");
+
+        log.borrow_mut().clear();
+        let ex = LuceneError::Io(io::Error::other("ex"));
+        let thrown = IOUtils::close_while_suppressing_exceptions(
+            ex,
+            vec![
+                oracle_closeable(&log, "a", "err"),
+                oracle_closeable(&log, "b", "io"),
+            ],
+        );
+        assert_eq!(java_class_and_message(&thrown), "AssertionError(a)");
+        assert_eq!(log.borrow().join(","), "a,b");
+
+        log.borrow_mut().clear();
+        let ex = LuceneError::AssertionError("ex".to_string());
+        let thrown = IOUtils::close_while_suppressing_exceptions(
+            ex,
+            vec![
+                oracle_closeable(&log, "a", "err"),
+                oracle_closeable(&log, "b", "io"),
+            ],
+        );
+        assert_eq!(java_class_and_message(&thrown), "AssertionError(ex)");
+        assert_eq!(log.borrow().join(","), "a,b");
+    }
+
+    /// `IOUtils.applyToAll` visits every non-null element and throws the
+    /// first failure — Java oracle: `applyToAll/1,null,2,3 fail 1,2:
+    /// closed=[v1, v2, v3] -> threw IOException(fail1)`.
+    #[test]
+    fn ioutils_apply_to_all_matches_the_java_oracle() {
+        let mut visited = Vec::new();
+        let error = IOUtils::apply_to_all(vec![Some(1), None, Some(2), Some(3)], |i| {
+            visited.push(format!("v{i}"));
+            if i != 3 {
+                return Err(LuceneError::Io(io::Error::other(format!("fail{i}"))));
+            }
+            Ok(())
+        })
+        .unwrap_err();
+        assert_eq!(visited.join(","), "v1,v2,v3");
+        assert_eq!(java_class_and_message(&error), "IOException(fail1)");
+    }
+
+    /// A closeable that panics is caught like any `Throwable`: the rest are
+    /// still closed, and the panic is resumed when it was the first failure
+    /// (`close`, `closeWhileHandlingException`) and dropped, as Java
+    /// suppresses it, when an error came first.
+    #[test]
+    fn ioutils_close_family_closes_past_a_panic() {
+        let log = std::cell::RefCell::new(Vec::new());
+        let resumed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            IOUtils::close(vec![
+                oracle_closeable(&log, "a", "panic"),
+                oracle_closeable(&log, "b", "io"),
+            ])
+        }))
+        .unwrap_err();
+        assert_eq!(
+            resumed.downcast_ref::<String>().map(String::as_str),
+            Some("a")
+        );
+        assert_eq!(log.borrow().join(","), "a,b");
+
+        log.borrow_mut().clear();
+        let error = IOUtils::close(vec![
+            oracle_closeable(&log, "a", "io"),
+            oracle_closeable(&log, "b", "panic"),
+        ])
+        .unwrap_err();
+        assert_eq!(java_class_and_message(&error), "IOException(a)");
+        assert_eq!(log.borrow().join(","), "a,b");
+
+        log.borrow_mut().clear();
+        let resumed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            IOUtils::close_while_handling_exception(vec![
+                oracle_closeable(&log, "a", "panic"),
+                oracle_closeable(&log, "b", "ok"),
+            ])
+        }))
+        .unwrap_err();
+        assert_eq!(
+            resumed.downcast_ref::<String>().map(String::as_str),
+            Some("a")
+        );
+        assert_eq!(log.borrow().join(","), "a,b");
+    }
+
+    /// `IOUtils.fsync(path, false)` opens the file for writing, so a read-only
+    /// file fails (Java oracle: `java.nio.file.AccessDeniedException`), and a
+    /// missing one fails with `NoSuchFileException`.
+    #[test]
+    fn ioutils_fsync_opens_a_regular_file_for_writing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("ro");
+        fs::write(&file, [1u8]).unwrap();
+        let mut permissions = fs::metadata(&file).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&file, permissions).unwrap();
+        let error = IOUtils::fsync(&file, false).unwrap_err();
+        assert!(
+            matches!(&error, LuceneError::Io(e) if e.kind() == io::ErrorKind::PermissionDenied),
+            "{error:?}"
+        );
+        let error = IOUtils::fsync(&tmp.path().join("missing"), false).unwrap_err();
+        assert!(
+            matches!(&error, LuceneError::Io(e) if e.kind() == io::ErrorKind::NotFound),
+            "{error:?}"
+        );
+        IOUtils::fsync(tmp.path(), true).unwrap();
+    }
+
+    /// `FSDirectory.sync` fsyncs each file through `IOUtils.fsync(path, false)`
+    /// (`FSDirectory.java:300-302`), which opens it for writing: syncing a
+    /// read-only file fails (Java oracle: `java.nio.file.AccessDeniedException`).
+    #[test]
+    fn fs_directory_sync_opens_each_file_for_writing() {
+        use crate::store::Directory;
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("ro");
+        fs::write(&file, [1u8]).unwrap();
+        let mut permissions = fs::metadata(&file).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&file, permissions).unwrap();
+        let dir = crate::store::FSDirectory::open(tmp.path()).unwrap();
+        let error = dir.sync(&["ro".to_string()]).unwrap_err();
+        assert!(
+            matches!(&error, LuceneError::Io(e) if e.kind() == io::ErrorKind::PermissionDenied),
+            "{error:?}"
+        );
+        dir.sync_metadata().unwrap();
+    }
+
+    /// `InfoStream.setDefault` changes what newly created classes read through
+    /// `InfoStream.getDefault()`, `LiveIndexWriterConfig` included
+    /// (`LiveIndexWriterConfig.java:135`).
+    #[test]
+    fn a_new_writer_config_reads_the_default_info_stream() {
+        let previous = default_info_stream();
+        // A no-output stream, so tests running concurrently are unaffected.
+        let custom: std::sync::Arc<dyn InfoStream> = std::sync::Arc::new(NoOutputInfoStream);
+        set_default_info_stream(std::sync::Arc::clone(&custom));
+        let picked = crate::index::IndexWriterConfig::new().info_stream();
+        let defaulted = default_info_stream();
+        set_default_info_stream(previous);
+        assert!(std::sync::Arc::ptr_eq(&defaulted, &custom));
+        assert!(std::sync::Arc::ptr_eq(&picked, &custom));
+    }
+
+    /// `new FixedBitSet(long[], int)` asserts `verifyGhostBitsClear()`
+    /// (`FixedBitSet.java:171`).
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "verify_ghost_bits_clear")]
+    fn fixed_bit_set_from_bits_asserts_the_ghost_bits_are_clear() {
+        let _ = FixedBitSet::from_bits(vec![1u64 << 10], 5).unwrap();
+    }
+
+    /// The default `Bits.applyMask` reads through `get`, so the error a `get`
+    /// raises fails the call (`Bits.java:55-63`), and bits it clears are those
+    /// whose shifted bit is clear.
+    #[test]
+    fn bits_apply_mask_default_clears_and_propagates_get_errors() {
+        #[derive(Debug)]
+        struct EvenBits(bool);
+        impl Bits for EvenBits {
+            fn get(&self, index: usize) -> bool {
+                index.is_multiple_of(2)
+            }
+            fn try_get(&self, index: usize) -> Result<bool, LuceneError> {
+                if self.0 {
+                    Err(LuceneError::Other("exiting".to_string()))
+                } else {
+                    Ok(self.get(index))
+                }
+            }
+            fn length(&self) -> usize {
+                100
+            }
+        }
+        let mut set = FixedBitSet::new(8);
+        set.set_range(0, 8);
+        EvenBits(false).apply_mask(&mut set, 1).unwrap();
+        // bit i survives when offset + i = 1 + i is even.
+        assert_eq!(
+            (0..8).filter(|&i| set.get(i)).collect::<Vec<_>>(),
+            vec![1, 3, 5, 7]
+        );
+        let error = EvenBits(true).apply_mask(&mut set, 0).unwrap_err();
+        assert!(
+            matches!(&error, LuceneError::Other(m) if m == "exiting"),
+            "{error:?}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4482,5 +5735,107 @@ impl Display for FixedBitSet {
             "FixedBitSet@{}",
             crate::util::java_fmt::to_hex_string(self as *const Self as usize as i32)
         )
+    }
+}
+
+#[cfg(test)]
+mod pass_d_bytes_ref_and_size_of_object_tests {
+    use super::*;
+
+    /// rmp #322: `BytesRef(CharSequence)` allocates
+    /// `UnicodeUtil.maxUTF8Length(text.length())` bytes — three per UTF-16 code
+    /// unit — and sets `length` to the UTF-8 bytes written (`BytesRef.java:79-82`).
+    #[test]
+    fn from_char_sequence_sizes_its_buffer_as_java() {
+        let sized = |text: &str| {
+            let b = BytesRef::from_char_sequence(text);
+            (b.bytes.len(), b.length, b.slice().to_vec())
+        };
+        assert_eq!(sized("abc"), (9, 3, b"abc".to_vec()));
+        assert_eq!(sized(""), (0, 0, Vec::new()));
+        assert_eq!(
+            sized("h\u{e9}llo"),
+            (15, 6, "h\u{e9}llo".as_bytes().to_vec())
+        );
+        // A supplementary character is two UTF-16 code units.
+        assert_eq!(
+            sized("\u{1F600}x"),
+            (9, 5, "\u{1F600}x".as_bytes().to_vec())
+        );
+    }
+
+    /// rmp #309: `sizeOfObject` returns an `Accountable`'s own
+    /// `ramBytesUsed()`, zero included (`RamUsageEstimator.java:400-401`); only
+    /// a class it does not know falls back to `defSize`, or to its shallow size
+    /// when `defSize` is not positive; `null` costs nothing.
+    #[test]
+    fn size_of_object_dispatches_on_the_class_as_java() {
+        let zero = NullAccountable;
+        assert_eq!(
+            RamUsageEstimator::size_of_object(Some(SizedObject::Accountable(&zero))),
+            0
+        );
+        assert_eq!(RamUsageEstimator::size_of_object(None), 0);
+        assert_eq!(
+            RamUsageEstimator::size_of_object(Some(SizedObject::String("field"))),
+            RamUsageEstimator::size_of_string("field")
+        );
+        assert_eq!(
+            RamUsageEstimator::size_of_object(Some(SizedObject::IntArray(&[1, 2, 3]))),
+            RamUsageEstimator::size_of_int(&[1, 2, 3])
+        );
+        let unknown = SizedObject::Unknown { shallow_size: 24 };
+        assert_eq!(RamUsageEstimator::size_of_object(Some(unknown)), 256);
+        assert_eq!(
+            RamUsageEstimator::size_of_object_with_def_size(Some(unknown), 0),
+            24
+        );
+        assert_eq!(
+            RamUsageEstimator::size_of_object_with_def_size(Some(unknown), 40),
+            40
+        );
+    }
+}
+
+#[cfg(test)]
+mod pass_e_fixed_bit_set_sharing_tests {
+    use super::*;
+
+    /// rmp #315: `FixedBitSet.asReadOnlyBits()` wraps the set's own `long[]`
+    /// (`FixedBitSet.java:893-895`), so a write after the call shows through
+    /// the view. Measured against `lucene-core-10.5.0.jar`
+    /// (`oracle/passE/PassEOracle.java`, `fbs`): `view5=true view70=true
+    /// view6=false cleared5=false copy7=false view7=true
+    /// class=org.apache.lucene.util.FixedBits`.
+    #[test]
+    fn as_read_only_bits_shares_the_words() {
+        let mut set = FixedBitSet::new(100);
+        let view = set.as_read_only_bits();
+        set.set(5);
+        set.set(70);
+        assert_eq!(
+            (view.get(5), view.get(70), view.get(6)),
+            (true, true, false)
+        );
+        set.clear(5);
+        assert!(!view.get(5), "a clear shows through too");
+        // `copyOf(view)` clones the set behind it (`FixedBitSet.java:866-870`):
+        // a deep copy, which later writes do not reach.
+        let copy = FixedBitSet::copy_of(&view);
+        set.set(7);
+        assert!(!copy.get(7));
+        assert!(view.get(7));
+    }
+
+    /// `FixedBitSet.clone()` copies the words (`FixedBitSet.java:829-834`): the
+    /// clone and the original never share.
+    #[test]
+    fn clone_copies_the_words() {
+        let mut set = FixedBitSet::new(10);
+        set.set(1);
+        let clone = set.clone();
+        set.set(2);
+        assert!(clone.get(1) && !clone.get(2));
+        assert_eq!(clone.get_bits().len(), set.get_bits().len());
     }
 }

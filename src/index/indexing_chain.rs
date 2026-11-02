@@ -91,7 +91,7 @@ use crate::index::documents_writer::{
     IndexingChain, SharedIndexingScratch, MAX_STORED_STRING_LENGTH,
 };
 use crate::index::field_infos::FieldInfosBuilder;
-use crate::index::freq_prox_terms_writer::{FreqProxTermsWriter, InvertedToken};
+use crate::index::freq_prox_terms_writer::{FreqProxTermsWriter, InvertedToken, TermsHashAddError};
 use crate::index::index_sorter::{DocComparator, Sorter, SorterDocMap};
 use crate::index::index_writer_config::LiveIndexWriterConfig;
 use crate::index::norms_writer::NormValuesWriter;
@@ -944,6 +944,15 @@ struct TokenAttributeLayout {
     position_increment: bool,
     offset: bool,
     payload: bool,
+    /// The stream carries a [`TermFrequencyAttributeImpl`] of its own.
+    ///
+    /// Without one the frequency is read from the [`PackedTokenAttributeImpl`]:
+    /// `FieldInvertState.setAttributeSource` calls
+    /// `addAttribute(TermFrequencyAttribute.class)`
+    /// (`FieldInvertState.java:95-111`), which under the default
+    /// `PackedTokenAttributeImpl` factory resolves to the very instance that
+    /// holds the term, and otherwise adds a fresh `TermFrequencyAttributeImpl`
+    /// whose frequency stays at its default of one.
     term_freq: bool,
 }
 
@@ -976,9 +985,11 @@ struct RawToken {
 /// Reads the current token off `source`.
 ///
 /// Lucene reaches for `TermToBytesRefAttribute`, `PositionIncrementAttribute`,
-/// `OffsetAttribute`, `PayloadAttribute` and `TermFrequencyAttribute`; the two
-/// former are added to the stream if missing, which is why the defaults here
-/// (increment one, offsets zero, frequency one) match the attribute defaults.
+/// `OffsetAttribute`, `PayloadAttribute` and `TermFrequencyAttribute`; the
+/// position-increment, offset and term-frequency attributes are added to the
+/// stream if missing (`FieldInvertState.java:107-109`), which is why the
+/// defaults here (increment one, offsets zero, frequency one) match the
+/// attribute defaults.
 fn read_token(source: &AttributeSource, layout: &TokenAttributeLayout) -> Result<RawToken> {
     let term = if layout.packed {
         source
@@ -1044,6 +1055,11 @@ fn read_token(source: &AttributeSource, layout: &TokenAttributeLayout) -> Result
             .get_attribute::<TermFrequencyAttributeImpl>()
             .expect("INVARIANT: presence checked above")
             .get_term_frequency()
+    } else if layout.packed {
+        source
+            .get_attribute::<PackedTokenAttributeImpl>()
+            .expect("INVARIANT: presence checked above")
+            .get_term_frequency()
     } else {
         1
     };
@@ -1055,7 +1071,10 @@ fn read_token(source: &AttributeSource, layout: &TokenAttributeLayout) -> Result
         end_offset,
         payload,
         term_freq,
-        has_term_freq_attribute: layout.term_freq,
+        // `addAttribute` never returns `null`, so a token stream always has a
+        // `TermFrequencyAttribute` (`FieldInvertState.java:107`); only
+        // `invertTerm`, which passes no attribute source, leaves it `null`.
+        has_term_freq_attribute: true,
     })
 }
 
@@ -1088,6 +1107,20 @@ fn read_stream_end(source: &AttributeSource, layout: &TokenAttributeLayout) -> (
         0
     };
     (position_increment, end_offset)
+}
+
+/// Keeps `error` as the chain's aborting exception unless one is already
+/// recorded.
+///
+/// The body of `IndexingChain.onAbortingException(Throwable)`
+/// (`IndexingChain.java:173-177`), shared by the methods that take `&mut self`
+/// and by the associated inversion functions, which only borrow the slot. The
+/// first failure is kept because the consumer `DocumentsWriterPerThread`
+/// installs asserts it is called once (`DocumentsWriterPerThread.java:56-60`).
+fn record_aborting_error(slot: &mut Option<LuceneError>, error: LuceneError) {
+    if slot.is_none() {
+        *slot = Some(error);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1212,9 +1245,8 @@ impl DefaultIndexingChain {
             return Ok(());
         };
         consumer.start_document(doc_id).inspect_err(|error| {
-            self.on_aborting_exception(LuceneError::CorruptIndex(format!(
-                "the stored fields of segment may be corrupt after doc {doc_id}: {error}"
-            )));
+            // Java hands the throwable itself to `onAbortingException`.
+            self.on_aborting_exception(error.duplicate());
         })
     }
 
@@ -1226,9 +1258,8 @@ impl DefaultIndexingChain {
             return Ok(());
         };
         consumer.finish_document().inspect_err(|error| {
-            self.on_aborting_exception(LuceneError::CorruptIndex(format!(
-                "the stored fields of segment may be corrupt: {error}"
-            )));
+            // Java hands the throwable itself to `onAbortingException`.
+            self.on_aborting_exception(error.duplicate());
         })
     }
 
@@ -1251,10 +1282,8 @@ impl DefaultIndexingChain {
         // read failure surfaces one call earlier and must be routed to the same
         // place: a half-read stored value leaves the segment untrustworthy.
         let value = field.stored_value().inspect_err(|error| {
-            self.on_aborting_exception(LuceneError::CorruptIndex(format!(
-                "the stored value of field \"{}\" could not be read: {error}",
-                field.name()
-            )));
+            // Java hands the throwable itself to `onAbortingException`.
+            self.on_aborting_exception(error.duplicate());
         })?;
         let Some(value) = value else {
             // Lucene reaches this when `Field.storedValue()` returns null.
@@ -1289,10 +1318,8 @@ impl DefaultIndexingChain {
             )));
         };
         consumer.write_field(&info, value).inspect_err(|error| {
-            self.on_aborting_exception(LuceneError::CorruptIndex(format!(
-                "the stored fields of segment may be corrupt after field \"{}\": {error}",
-                field.name()
-            )));
+            // Java hands the throwable itself to `onAbortingException`.
+            self.on_aborting_exception(error.duplicate());
         })
     }
 
@@ -1342,9 +1369,7 @@ impl DefaultIndexingChain {
     /// failure and reports it at the end of the document, which is where the
     /// caller can act on it.
     fn on_aborting_exception(&mut self, error: LuceneError) {
-        if self.aborting_error.is_none() {
-            self.aborting_error = Some(error);
-        }
+        record_aborting_error(&mut self.aborting_error, error);
     }
 
     /// Fails when a field the index sort names is indexed with the wrong
@@ -1409,7 +1434,7 @@ impl DefaultIndexingChain {
     /// new pool, and the old blocks are freed with the last producer.
     fn reset_doc_values_byte_pool(&mut self) {
         match Arc::get_mut(&mut self.doc_values_byte_pool) {
-            Some(pool) => pool.reset(),
+            Some(pool) => pool.reset(false, false),
             None => {
                 self.bytes_used.fetch_sub(
                     self.doc_values_byte_pool.charged_block_bytes(),
@@ -1822,10 +1847,8 @@ impl DefaultIndexingChain {
             match consumer.add_field(field_info) {
                 Ok(writer) => self.per_fields[pf].knn_field_vectors_writer = Some(writer),
                 Err(error) => {
-                    self.on_aborting_exception(LuceneError::CorruptIndex(format!(
-                        "the vectors of segment may be corrupt after field \"{}\": {error}",
-                        field_info.name
-                    )));
+                    // Java hands the throwable itself to `onAbortingException`.
+                    self.on_aborting_exception(error.duplicate());
                     return Err(error);
                 }
             }
@@ -2142,6 +2165,7 @@ impl DefaultIndexingChain {
         doc_id: i32,
         field: &dyn IndexableField,
         first: bool,
+        aborting_error: &mut Option<LuceneError>,
     ) -> Result<()> {
         debug_assert!(field
             .field_type()
@@ -2169,6 +2193,7 @@ impl DefaultIndexingChain {
                 doc_id,
                 field,
                 first,
+                aborting_error,
             ),
             None => Err(LuceneError::IllegalArgument(format!(
                 "field \"{}\" is not indexed but reached the inverter",
@@ -2233,7 +2258,11 @@ impl DefaultIndexingChain {
         })?;
         Self::start_vectors(term_vectors.as_deref_mut(), per_field, field, first)?;
         let (pool, int_pool, writer) = terms_writer.pool_and_field(writer_index);
-        let text_start = writer
+        // `invertTerm` catches only `MaxBytesLengthExceededException`
+        // (`IndexingChain.java:2077-2096`): a duplicate term or any other
+        // failure of `termsHashPerField.add` leaves with its own class, and is
+        // a document-level failure, not an aborting one.
+        writer
             .add(
                 pool,
                 int_pool,
@@ -2242,6 +2271,9 @@ impl DefaultIndexingChain {
                 doc_id,
                 &token,
             )
+            .and_then(|text_start| {
+                Self::add_to_vectors(term_vectors, per_field, text_start, &token)
+            })
             .map_err(|error| {
                 Self::map_add_error(
                     info_stream,
@@ -2250,8 +2282,7 @@ impl DefaultIndexingChain {
                     false,
                     error,
                 )
-            })?;
-        Self::add_to_vectors(term_vectors, per_field, text_start, &token)
+            })
     }
 
     /// Wraps the error an over-long term raises with the field name and a
@@ -2271,14 +2302,15 @@ impl DefaultIndexingChain {
         field_name: &str,
         term: &[u8],
         analyzed: bool,
-        original: &LuceneError,
+        original: LuceneError,
     ) -> LuceneError {
         // Java appends `e.getMessage()`, the bare text, not the exception's
         // `toString()`. Rucene's `Display` prefixes every variant with its kind,
         // so the carried string is used directly to keep the two messages
         // identical.
-        let original = match original {
-            LuceneError::IllegalArgument(message) => message.clone(),
+        let original_message = match &original {
+            LuceneError::IllegalArgument(message)
+            | LuceneError::IllegalArgumentWithCause { message, .. } => message.clone(),
             other => other.to_string(),
         };
         let prefix: Vec<String> = term
@@ -2292,7 +2324,7 @@ impl DefaultIndexingChain {
                 "Document contains at least one immense term in field=\"{field_name}\" (whose \
                  UTF8 encoding is longer than the max length {MAX_TERM_LENGTH}), all of which \
                  were skipped.  Please correct the analyzer to not produce such terms.  The \
-                 prefix of the first immense term is: '{prefix}...', original message: {original}"
+                 prefix of the first immense term is: '{prefix}...', original message: {original_message}"
             )
         } else {
             format!(
@@ -2304,7 +2336,10 @@ impl DefaultIndexingChain {
         if info_stream.is_enabled("IW") {
             info_stream.message("IW", &format!("ERROR: {message}"));
         }
-        LuceneError::IllegalArgument(message)
+        // `throw new IllegalArgumentException(msg, e)`
+        // (`IndexingChain.java:2021, 2095`): the `MaxBytesLengthExceededException`
+        // is the cause.
+        LuceneError::illegal_argument_with_cause(message, Arc::new(original))
     }
 
     /// Rejects a term above [`MAX_TERM_LENGTH`] with Lucene's message.
@@ -2321,9 +2356,47 @@ impl DefaultIndexingChain {
         error: LuceneError,
     ) -> LuceneError {
         if term.len() > MAX_TERM_LENGTH {
-            return Self::immense_term_error(info_stream, field_name, term, analyzed, &error);
+            return Self::immense_term_error(info_stream, field_name, term, analyzed, error);
         }
         error
+    }
+
+    /// Routes a failure of `termsHashPerField.add` in a token-stream field the
+    /// way the `catch` clauses of `invertTokenStream` do
+    /// (`IndexingChain.java:2001-2027`), and returns the error to throw.
+    ///
+    /// * `MaxBytesLengthExceededException` — an over-long term — is rethrown as
+    ///   the document-level [`Self::immense_term_error`].
+    /// * `TermsHashPerField.DuplicateTermException` is rethrown as
+    ///   `new IllegalArgumentException("Document update skipped due to
+    ///   duplicate termdoc term", e)`, also document-level.
+    /// * Any other failure may have left the terms hash corrupt: it is handed to
+    ///   `onAbortingException(th)` and rethrown unchanged (`catch (Throwable th)
+    ///   { onAbortingException(th); throw th; }`), so the segment is aborted
+    ///   and the writer closes on it as its tragedy.
+    fn catch_terms_hash_add_error(
+        info_stream: &dyn InfoStream,
+        aborting_error: &mut Option<LuceneError>,
+        field_name: &str,
+        term: &[u8],
+        error: TermsHashAddError,
+    ) -> LuceneError {
+        match error {
+            // `BytesRefHash.add` throws it before touching any state, for a
+            // term longer than `BYTE_BLOCK_SIZE - 2`, which is
+            // `MAX_TERM_LENGTH`.
+            TermsHashAddError::Other(error) if term.len() > MAX_TERM_LENGTH => {
+                Self::immense_term_error(info_stream, field_name, term, true, error)
+            }
+            TermsHashAddError::DuplicateTerm(error) => LuceneError::illegal_argument_with_cause(
+                "Document update skipped due to duplicate termdoc term",
+                Arc::new(error),
+            ),
+            TermsHashAddError::Other(error) => {
+                record_aborting_error(aborting_error, error.duplicate());
+                error
+            }
+        }
     }
 
     /// Opens one field instance on the term-vectors consumer and records
@@ -2399,6 +2472,7 @@ impl DefaultIndexingChain {
         doc_id: i32,
         field: &dyn IndexableField,
         first: bool,
+        aborting_error: &mut Option<LuceneError>,
     ) -> Result<()> {
         let analyzed = field.field_type().tokenized();
         let is_term_doc = per_field.field_info().is_term_doc_field();
@@ -2463,11 +2537,14 @@ impl DefaultIndexingChain {
                 state.last_start_offset = start_offset;
 
                 let counted = if is_term_doc { 1 } else { token.term_freq };
+                // `Math.addExact` throws `ArithmeticException("integer
+                // overflow")`, rethrown with that cause
+                // (`IndexingChain.java:1980-1991`).
                 state.length = state.length.checked_add(counted).ok_or_else(|| {
-                    LuceneError::IllegalArgument(format!(
-                        "too many tokens for field \"{}\"",
-                        field.name()
-                    ))
+                    LuceneError::illegal_argument_with_cause(
+                        format!("too many tokens for field \"{}\"", field.name()),
+                        Arc::new(LuceneError::integer_overflow()),
+                    )
                 })?;
 
                 let inverted = InvertedToken {
@@ -2484,8 +2561,11 @@ impl DefaultIndexingChain {
                     ))
                 })?;
                 let (pool, int_pool, writer) = terms_writer.pool_and_field(writer_index);
-                let text_start = writer
-                    .add(
+                // `termsHashPerField.add(...)` — the postings and, through
+                // `nextPerField.add`, the term vectors — inside one `try`
+                // (`IndexingChain.java:2001-2027`).
+                let added = writer
+                    .add_classified(
                         pool,
                         int_pool,
                         &mut per_field.invert_state,
@@ -2493,21 +2573,24 @@ impl DefaultIndexingChain {
                         doc_id,
                         &inverted,
                     )
-                    .map_err(|error| {
-                        Self::map_add_error(
-                            info_stream,
-                            field.name(),
-                            token.term.slice(),
-                            true,
-                            error,
+                    .and_then(|text_start| {
+                        Self::add_to_vectors(
+                            term_vectors.as_deref_mut(),
+                            per_field,
+                            text_start,
+                            &inverted,
                         )
-                    })?;
-                Self::add_to_vectors(
-                    term_vectors.as_deref_mut(),
-                    per_field,
-                    text_start,
-                    &inverted,
-                )?;
+                        .map_err(TermsHashAddError::Other)
+                    });
+                if let Err(error) = added {
+                    return Err(Self::catch_terms_hash_add_error(
+                        info_stream,
+                        aborting_error,
+                        field.name(),
+                        token.term.slice(),
+                        error,
+                    ));
+                }
             }
 
             stream.end()?;
@@ -3011,10 +3094,8 @@ impl DefaultIndexingChain {
                         if let Err(e) =
                             consumer.finish_document(seg_doc_id, self.terms_writer.pool())
                         {
-                            self.on_aborting_exception(LuceneError::CorruptIndex(format!(
-                                "the term vectors of segment may be corrupt after doc \
-                                 {seg_doc_id}: {e}"
-                            )));
+                            // Java hands the throwable itself to `onAbortingException`.
+                            self.on_aborting_exception(e.duplicate());
                             return Err(e);
                         }
                         for per_field in &self.per_fields {
@@ -3081,6 +3162,7 @@ impl DefaultIndexingChain {
                 doc_id,
                 field,
                 first,
+                &mut self.aborting_error,
             )?;
             if first {
                 self.per_fields[pf].first = false;
@@ -3780,16 +3862,16 @@ impl Accountable for DefaultIndexingChain {
     /// segment, so before that this returns fewer entries. Every entry reports
     /// the same bytes Java's counterpart would, and a consumer without a writer
     /// reports zero either way.
-    fn child_resources(&self) -> Vec<&dyn Accountable> {
-        let mut resources: Vec<&dyn Accountable> = Vec::with_capacity(3);
+    fn child_resources(&self) -> Vec<Box<dyn Accountable + '_>> {
+        let mut resources: Vec<Box<dyn Accountable + '_>> = Vec::with_capacity(3);
         if let Some(consumer) = self.stored_fields_consumer.as_deref() {
-            resources.push(consumer);
+            resources.push(Box::new(consumer));
         }
         if let Some(consumer) = self.term_vectors_consumer.as_deref() {
-            resources.push(consumer);
+            resources.push(Box::new(consumer));
         }
         if let Some(consumer) = self.vector_values_consumer.as_ref() {
-            resources.push(consumer);
+            resources.push(Box::new(consumer));
         }
         resources
     }
@@ -4179,6 +4261,7 @@ impl IndexingChain for DefaultIndexingChain {
                     doc_id,
                     field.as_ref(),
                     first,
+                    &mut self.aborting_error,
                 );
                 // `pf.first = false` and `indexedField = true` run *after*
                 // `pf.invert(...)` returns normally
@@ -4194,18 +4277,11 @@ impl IndexingChain for DefaultIndexingChain {
                 if let Err(error) = result {
                     // Lucene distinguishes a document-level problem (the
                     // document is dropped, indexing continues) from a corrupt
-                    // terms hash (the whole DWPT must be aborted). Only the
-                    // validation errors raised above and by the per-field
-                    // writer are recoverable.
-                    if !matches!(
-                        error,
-                        LuceneError::IllegalArgument(_) | LuceneError::IllegalState { .. }
-                    ) {
-                        self.on_aborting_exception(LuceneError::CorruptIndex(format!(
-                            "indexing chain buffers may be corrupt after field \"{}\": {error}",
-                            field.name()
-                        )));
-                    }
+                    // terms hash (the whole DWPT must be aborted). The only
+                    // aborting failures of `invert` are the ones the `catch
+                    // (Throwable th)` around `termsHashPerField.add` hands to
+                    // `onAbortingException` (`IndexingChain.java:2025-2027`),
+                    // which `invert` has already recorded.
                     outcome = Err(error);
                     break;
                 }
@@ -4226,16 +4302,10 @@ impl IndexingChain for DefaultIndexingChain {
                 let result = self.per_fields[index].doc_values.as_mut().expect(
                     "INVARIANT: every field with a doc-values type gets a writer in get_or_add_per_field",
                 ).add_value(doc_id, field.as_ref(), &mut self.doc_values_byte_pool);
+                // `indexDocValue` runs outside any `catch`
+                // (`IndexingChain.java:1386-1391, 1660-1693`): whatever it
+                // throws is a document-level failure, never an aborting one.
                 if let Err(error) = result {
-                    if !matches!(
-                        error,
-                        LuceneError::IllegalArgument(_) | LuceneError::IllegalState { .. }
-                    ) {
-                        self.on_aborting_exception(LuceneError::CorruptIndex(format!(
-                            "indexing chain buffers may be corrupt after field \"{}\": {error}",
-                            field.name()
-                        )));
-                    }
                     outcome = Err(error);
                     break;
                 }
@@ -4261,16 +4331,10 @@ impl IndexingChain for DefaultIndexingChain {
                         field.name()
                     ))),
                 };
+                // `pf.pointValuesWriter.addPackedValue(...)` runs outside any
+                // `catch` (`IndexingChain.java:1393-1395`): a failure is a
+                // document-level one, never an aborting one.
                 if let Err(error) = result {
-                    if !matches!(
-                        error,
-                        LuceneError::IllegalArgument(_) | LuceneError::IllegalState { .. }
-                    ) {
-                        self.on_aborting_exception(LuceneError::CorruptIndex(format!(
-                            "indexing chain buffers may be corrupt after field \"{}\": {error}",
-                            field.name()
-                        )));
-                    }
                     outcome = Err(error);
                     break;
                 }
@@ -4288,16 +4352,10 @@ impl IndexingChain for DefaultIndexingChain {
             if field.field_type().vector_dimension() != 0 {
                 let result =
                     Self::index_vector_value(doc_id, &mut self.per_fields[index], field.as_ref());
+                // `indexVectorValue` runs outside any `catch`
+                // (`IndexingChain.java:1396-1398, 1695-1707`): a failure is a
+                // document-level one, never an aborting one.
                 if let Err(error) = result {
-                    if !matches!(
-                        error,
-                        LuceneError::IllegalArgument(_) | LuceneError::IllegalState { .. }
-                    ) {
-                        self.on_aborting_exception(LuceneError::CorruptIndex(format!(
-                            "the vectors of segment may be corrupt after field \"{}\": {error}",
-                            field.name()
-                        )));
-                    }
                     outcome = Err(error);
                     break;
                 }
@@ -4356,9 +4414,8 @@ impl IndexingChain for DefaultIndexingChain {
             // the aborting-exception consumer.
             if let Some(consumer) = self.term_vectors_consumer.as_mut() {
                 if let Err(error) = consumer.finish_document(doc_id, self.terms_writer.pool()) {
-                    self.on_aborting_exception(LuceneError::CorruptIndex(format!(
-                        "the term vectors of segment may be corrupt after doc {doc_id}: {error}"
-                    )));
+                    // Java hands the throwable itself to `onAbortingException`.
+                    self.on_aborting_exception(error.duplicate());
                     return Err(error);
                 }
                 // `TermVectorsConsumerPerField.finishDocument` ends with
@@ -4625,6 +4682,7 @@ mod tests {
         start_offset: i32,
         end_offset: i32,
         payload: Option<Vec<u8>>,
+        term_freq: Option<i32>,
     }
 
     impl Tok {
@@ -4635,11 +4693,18 @@ mod tests {
                 start_offset: start,
                 end_offset: end,
                 payload: None,
+                term_freq: None,
             }
         }
 
         fn with_payload(mut self, payload: &[u8]) -> Self {
             self.payload = Some(payload.to_vec());
+            self
+        }
+
+        /// The token carries a `TermFrequencyAttribute` of `term_freq`.
+        fn with_term_freq(mut self, term_freq: i32) -> Self {
+            self.term_freq = Some(term_freq);
             self
         }
     }
@@ -4652,11 +4717,13 @@ mod tests {
         upto: usize,
         final_offset: i32,
         with_payload_attribute: bool,
+        with_term_freq_attribute: bool,
     }
 
     impl ScriptedTokenStream {
         fn new(tokens: Vec<Tok>) -> Self {
             let with_payload_attribute = tokens.iter().any(|token| token.payload.is_some());
+            let with_term_freq_attribute = tokens.iter().any(|token| token.term_freq.is_some());
             let mut source = AttributeSource::new_with_factory(default_token_attribute_factory());
             source
                 .add_attribute::<PackedTokenAttributeImpl>()
@@ -4664,12 +4731,17 @@ mod tests {
             if with_payload_attribute {
                 source.add_attribute_impl_instance(Box::new(PayloadImpl::new()));
             }
+            // A `TermFrequencyAttribute` is served by the packed attribute,
+            // as `addAttribute(TermFrequencyAttribute.class)` is under the
+            // default factory; a separate implementation added after it would
+            // not be registered (`AttributeSource.java:188-202`).
             Self {
                 source,
                 tokens,
                 upto: 0,
                 final_offset: 0,
                 with_payload_attribute,
+                with_term_freq_attribute,
             }
         }
     }
@@ -4697,6 +4769,12 @@ mod tests {
                     .get_attribute_mut::<PayloadImpl>()
                     .expect("payload attribute");
                 payload.set_payload(token.payload.clone().map(BytesRef::new));
+            }
+            if self.with_term_freq_attribute {
+                self.source
+                    .get_attribute_mut::<PackedTokenAttributeImpl>()
+                    .expect("packed token attribute")
+                    .set_term_frequency(token.term_freq.unwrap_or(1));
             }
             self.final_offset = token.end_offset;
             Ok(true)
@@ -5001,6 +5079,85 @@ mod tests {
         assert!(
             format!("{error}").contains("offsets must not go backwards"),
             "{error}"
+        );
+    }
+
+    /// A field length past an `int`: `Math.addExact` throws
+    /// `ArithmeticException("integer overflow")`, which `invertTokenStream`
+    /// rethrows as `IllegalArgumentException("too many tokens for field \"" +
+    /// field.name() + "\"", ae)` (`IndexingChain.java:1980-1991`) — a
+    /// document-level failure, which aborts nothing.
+    #[test]
+    fn a_field_length_past_an_int_keeps_the_overflow_as_its_cause() {
+        let mut chain = DefaultIndexingChain::new(config());
+        let mut field_infos = builder();
+        let mut document = Document::new();
+        document.add(scripted_field(
+            "body",
+            IndexOptions::DOCS_AND_FREQS,
+            vec![
+                Tok::new("alpha", 1, 0, 5).with_term_freq(i32::MAX),
+                Tok::new("beta", 1, 6, 10).with_term_freq(i32::MAX),
+            ],
+        ));
+        let error = chain
+            .process_document(0, &document, true, &mut field_infos)
+            .expect_err("must be rejected");
+        match &error {
+            LuceneError::IllegalArgumentWithCause { message, cause } => {
+                assert_eq!(message, "too many tokens for field \"body\"");
+                assert!(
+                    matches!(&**cause, LuceneError::Arithmetic(m) if m == "integer overflow"),
+                    "{cause:?}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(
+            chain.take_aborting_error().is_none(),
+            "a bad document must not poison the whole DWPT"
+        );
+    }
+
+    /// An immense term: `invertTokenStream` catches the
+    /// `MaxBytesLengthExceededException` and rethrows it as the cause of
+    /// `IllegalArgumentException(msg, e)` (`IndexingChain.java:2003-2021`) — a
+    /// document-level failure, which aborts nothing.
+    #[test]
+    fn an_immense_term_keeps_the_length_failure_as_its_cause() {
+        let mut chain = DefaultIndexingChain::new(config());
+        let mut field_infos = builder();
+        let mut document = Document::new();
+        let immense = "x".repeat(40_000);
+        document.add(scripted_field(
+            "body",
+            IndexOptions::DOCS,
+            vec![Tok::new(&immense, 1, 0, 40_000)],
+        ));
+        let error = chain
+            .process_document(0, &document, true, &mut field_infos)
+            .expect_err("must be rejected");
+        match &error {
+            LuceneError::IllegalArgumentWithCause { message, cause } => {
+                assert!(
+                    message.starts_with(
+                        "Document contains at least one immense term in field=\"body\""
+                    ) && message.ends_with(
+                        "original message: bytes can be at most 32766 in length; got 40000"
+                    ),
+                    "{message}"
+                );
+                assert!(
+                    matches!(&**cause, LuceneError::IllegalArgument(m)
+                        if m == "bytes can be at most 32766 in length; got 40000"),
+                    "{cause:?}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(
+            chain.take_aborting_error().is_none(),
+            "a bad document must not poison the whole DWPT"
         );
     }
 

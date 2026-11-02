@@ -145,6 +145,15 @@ impl SortFieldType {
     }
 
     /// Parses a Java enum name into a [`SortFieldType`].
+    ///
+    /// # Errors
+    ///
+    /// For a name that is not a constant, the error `SortField.readType`
+    /// throws (`SortField.java:258-264`):
+    /// [`LuceneError::IllegalArgumentWithCause`],
+    /// `Can't deserialize SortField - unknown type <name>`, whose cause is
+    /// `Type.valueOf`'s
+    /// `No enum constant org.apache.lucene.search.SortField.Type.<name>`.
     pub fn parse(name: &str) -> Result<Self> {
         match name {
             "SCORE" => Ok(SortFieldType::Score),
@@ -157,9 +166,16 @@ impl SortFieldType {
             "CUSTOM" => Ok(SortFieldType::Custom),
             "STRING_VAL" => Ok(SortFieldType::StringVal),
             "REWRITEABLE" => Ok(SortFieldType::Rewriteable),
-            _ => Err(LuceneError::IllegalArgument(format!(
-                "Can't deserialize SortField - unknown type {name}"
-            ))),
+            // `SortField.readType` catches the `IllegalArgumentException` of
+            // `Type.valueOf(type)` and rethrows it as the cause
+            // (`SortField.java:258-264`); `valueOf`'s message names the enum
+            // (observed with the 10.5.0 oracle).
+            _ => Err(LuceneError::illegal_argument_with_cause(
+                format!("Can't deserialize SortField - unknown type {name}"),
+                std::sync::Arc::new(LuceneError::IllegalArgument(format!(
+                    "No enum constant org.apache.lucene.search.SortField.Type.{name}"
+                ))),
+            )),
         }
     }
 
@@ -1060,9 +1076,9 @@ impl SortField {
     /// # Errors
     ///
     /// Propagates read errors, and returns
-    /// [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// [`LuceneError::IllegalArgumentWithCause`]
     /// when the name is not a known type — the `IllegalArgumentException` Java
-    /// throws.
+    /// throws, whose cause is the one `Type.valueOf` threw.
     pub fn read_type(input: &mut dyn DataInput) -> Result<SortFieldType> {
         SortFieldType::parse(&input.read_string()?)
     }
@@ -1451,6 +1467,32 @@ impl crate::index::index_sorter::SortFieldProvider for Provider {
 mod tests {
     use super::*;
     use crate::store::{ByteArrayDataInput, VecDataOutput};
+
+    /// `SortField.readType` over an unknown name throws
+    /// `IllegalArgumentException("Can't deserialize SortField - unknown type " + type, e)`,
+    /// whose cause `e` is `Type.valueOf`'s
+    /// `IllegalArgumentException("No enum constant
+    /// org.apache.lucene.search.SortField.Type.FOO")` (`SortField.java:258-264`;
+    /// the cause's message observed with the 10.5.0 oracle, `PassAOracle`,
+    /// section 3).
+    #[test]
+    fn read_type_keeps_value_of_failure_as_its_cause() {
+        let mut out = VecDataOutput::new();
+        out.write_string("FOO").unwrap();
+        let bytes = out.into_inner();
+        let error = SortField::read_type(&mut ByteArrayDataInput::new(&bytes)).unwrap_err();
+        match &error {
+            LuceneError::IllegalArgumentWithCause { message, cause } => {
+                assert_eq!(message, "Can't deserialize SortField - unknown type FOO");
+                assert!(
+                    matches!(&**cause, LuceneError::IllegalArgument(m)
+                        if m == "No enum constant org.apache.lucene.search.SortField.Type.FOO"),
+                    "{cause:?}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+    }
 
     /// Helper to serialize a single `SortField` to bytes, including the
     /// "SortField" provider name used by `Lucene99SegmentInfoFormat`.

@@ -323,7 +323,7 @@ impl Lz4FastCompressor {
 impl Compressor for Lz4FastCompressor {
     fn compress(&mut self, input: &ByteBuffersDataOutput, out: &mut dyn DataOutput) -> Result<()> {
         let len = input.size();
-        let bytes = input.to_array_copy();
+        let bytes = input.to_array_copy()?;
         Lz4::compress(&bytes, 0, len, out, &mut self.ht)
     }
 }
@@ -348,7 +348,7 @@ impl Lz4HighCompressor {
 impl Compressor for Lz4HighCompressor {
     fn compress(&mut self, input: &ByteBuffersDataOutput, out: &mut dyn DataOutput) -> Result<()> {
         let len = input.size();
-        let bytes = input.to_array_copy();
+        let bytes = input.to_array_copy()?;
         Lz4::compress(&bytes, 0, len, out, &mut self.ht)
     }
 }
@@ -494,19 +494,16 @@ impl Lz4WithPresetDictCompressor {
             &mut self.compressed,
             &mut self.hash_table,
         )?;
-        let written = self.compressed.size() - before;
-        let written = i32::try_from(written).map_err(|_| {
-            LuceneError::illegal_state(format!(
-                "compressed block does not fit in an int: {written}"
-            ))
-        })?;
+        // `out.writeVInt(Math.toIntExact(compressed.size() - prevCompressedSize))`
+        // (`LZ4WithPresetDictCompressionMode.java:169`).
+        let written = crate::error::to_int_exact((self.compressed.size() - before) as i64)?;
         out.write_v_int(written)
     }
 }
 
 impl Compressor for Lz4WithPresetDictCompressor {
     fn compress(&mut self, input: &ByteBuffersDataOutput, out: &mut dyn DataOutput) -> Result<()> {
-        let bytes = input.to_array_copy();
+        let bytes = input.to_array_copy()?;
         let len = bytes.len();
         let dict_length =
             std::cmp::min(LZ4_MAX_DISTANCE, len / (NUM_SUB_BLOCKS * DICT_SIZE_FACTOR));
@@ -851,7 +848,7 @@ impl DeflateCompressor {
 
 impl Compressor for DeflateCompressor {
     fn compress(&mut self, input: &ByteBuffersDataOutput, out: &mut dyn DataOutput) -> Result<()> {
-        let bytes = input.to_array_copy();
+        let bytes = input.to_array_copy()?;
         self.compressor.reset();
         write_deflate_block(&mut self.compressor, &bytes, &mut self.scratch, out)
     }
@@ -955,7 +952,7 @@ impl DeflateWithPresetDictCompressor {
 
 impl Compressor for DeflateWithPresetDictCompressor {
     fn compress(&mut self, input: &ByteBuffersDataOutput, out: &mut dyn DataOutput) -> Result<()> {
-        let bytes = input.to_array_copy();
+        let bytes = input.to_array_copy()?;
         let len = bytes.len();
         let dict_length = len / (NUM_SUB_BLOCKS * DEFLATE_DICT_SIZE_FACTOR);
         let block_length = (len - dict_length).div_ceil(NUM_SUB_BLOCKS);
@@ -1395,7 +1392,7 @@ mod tests {
                 input: &ByteBuffersDataOutput,
                 out: &mut dyn DataOutput,
             ) -> Result<()> {
-                let bytes: Vec<u8> = input.to_array_copy().iter().map(|b| !b).collect();
+                let bytes: Vec<u8> = input.to_array_copy()?.iter().map(|b| !b).collect();
                 out.write_bytes(&bytes, 0, bytes.len())
             }
         }

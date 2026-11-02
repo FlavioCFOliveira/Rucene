@@ -683,7 +683,7 @@ mod tests {
         let field_infos = FieldInfos::default();
         let segment_info = crate::codecs::tests::test_segment_info("test", 10);
         let state = SegmentWriteState::new(
-            crate::util::default_info_stream(),
+            &crate::util::NoOutputInfoStream,
             Arc::clone(&dir),
             &segment_info,
             &field_infos,

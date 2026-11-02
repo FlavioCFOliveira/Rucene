@@ -7,14 +7,13 @@
 //! | [`PagedBytesDataInput`] | `PagedBytes.PagedBytesDataInput` |
 //! | [`PagedBytesDataOutput`] | `PagedBytes.PagedBytesDataOutput` |
 //!
-//! **Divergence from Lucene 10.5.0.** Java's blocks are `byte[]` references
-//! shared between the writer and every `Reader`; `Reader` copies only the array
-//! of references. This port holds the blocks as `Arc<Vec<u8>>`, which shares
-//! them the same way, so freezing stays O(number of blocks). The one place the
-//! sharing is not observable is [`PagedBytesReader::fill_slice`]: Java returns a
-//! `BytesRef` pointing straight into a block when the slice does not span two
-//! of them, whereas Rucene's [`BytesRef`] owns its buffer (see
-//! [`crate::util::BytesRef`]) and must copy. The bytes returned are identical.
+//! Java's blocks are `byte[]` references shared between the writer and every
+//! `Reader`; `Reader` copies only the array of references. This port holds the
+//! blocks as `Arc<Vec<u8>>`, which shares them the same way, so freezing stays
+//! O(number of blocks). [`PagedBytesReader::fill_slice`] returns a
+//! [`Cow`](std::borrow::Cow): a view into a block, or a copy when the slice
+//! spans two of them, as Java's `fillSlice` points its `BytesRef` into the
+//! block or into a new array.
 
 #![deny(unsafe_code)]
 
@@ -393,29 +392,32 @@ pub struct PagedBytesReader {
 impl PagedBytesReader {
     /// Returns the `length` bytes stored at `start`.
     ///
-    /// Equivalent to `PagedBytes.Reader.fillSlice(BytesRef, long, int)`.
+    /// Equivalent to `PagedBytes.Reader.fillSlice(BytesRef, long, int)`
+    /// (`PagedBytes.java:83-99`): a slice within one block is a view into it,
+    /// and a slice split across two blocks is copied into a new array. The
+    /// filled `BytesRef` becomes the returned [`Cow`](std::borrow::Cow).
     ///
     /// # Panics
     ///
     /// Panics when `length` exceeds `block_size + 1`, which is Java's
     /// assertion.
-    pub fn fill_slice(&self, start: i64, length: usize) -> BytesRef {
+    pub fn fill_slice(&self, start: i64, length: usize) -> std::borrow::Cow<'_, [u8]> {
         debug_assert!(length <= self.block_size + 1, "length={length}");
         if length == 0 {
-            return BytesRef::new(Vec::new());
+            return std::borrow::Cow::Borrowed(&[]);
         }
         let index = (start >> self.block_bits) as usize;
         let offset = (start as usize) & self.block_mask;
         if self.block_size - offset >= length {
             // Within one block.
-            BytesRef::new(self.blocks[index][offset..offset + length].to_vec())
+            std::borrow::Cow::Borrowed(&self.blocks[index][offset..offset + length])
         } else {
             // Split across two blocks.
             let first = self.block_size - offset;
             let mut bytes = Vec::with_capacity(length);
             bytes.extend_from_slice(&self.blocks[index][offset..offset + first]);
             bytes.extend_from_slice(&self.blocks[index + 1][..length - first]);
-            BytesRef::new(bytes)
+            std::borrow::Cow::Owned(bytes)
         }
     }
 

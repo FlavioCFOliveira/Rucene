@@ -38,7 +38,7 @@
 #![deny(unsafe_code)]
 
 use std::cmp::Ordering;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, RwLock};
 
@@ -53,7 +53,7 @@ use crate::search::DocIdSetIterator;
 use crate::util::attribute::AttributeSource;
 use crate::util::automaton::CompiledAutomaton;
 use crate::util::BytesRef;
-use crate::util::{PriorityQueue, PriorityQueueComparator};
+use crate::util::{MergedIterator, PriorityQueue, PriorityQueueComparator};
 
 // ---------------------------------------------------------------------------
 // LeafFields — adapter exposing a LeafReader as a Fields instance.
@@ -97,15 +97,21 @@ impl LeafFields {
     /// Names of the leaf's fields that have a terms dictionary.
     fn indexed_field_names(&self) -> Vec<String> {
         // FieldInfos is returned by value; collect the names into an owned Vec
-        // so the returned iterator does not borrow from a local. The order
-        // follows FieldInfos' iteration order; MultiFields re-sorts the merged
-        // stream, so order here is not contractual.
-        self.reader
+        // so the returned iterator does not borrow from a local. A
+        // `FieldsProducer` lists its fields in sorted order — the block tree's
+        // `TreeMap` keys (`Lucene103BlockTreeTermsReader.java:178, 289-291`) —
+        // and `MultiFields` merges the sorted lists with a `MergedIterator`,
+        // so the names are sorted here too, in the `TreeMap`'s order:
+        // `String.compareTo`, UTF-16 code units.
+        let mut names: Vec<String> = self
+            .reader
             .get_field_infos()
             .iter()
             .filter(|fi| fi.index_options != crate::index::IndexOptions::NONE)
             .map(|fi| fi.get_name().to_string())
-            .collect()
+            .collect();
+        names.sort_by(|left, right| crate::util::compare_utf16(left, right));
+        names
     }
 }
 
@@ -194,7 +200,7 @@ impl MultiFields {
     /// [`ReaderSlice`] whose `start` is the leaf's `docBase`, `length` is its
     /// `maxDoc`, and `reader_index` is its leaf ordinal.
     pub fn get_fields(reader: &Arc<dyn IndexReader>) -> Result<Self> {
-        let leaves: Vec<Arc<LeafReaderContext>> = Arc::clone(reader).leaves();
+        let leaves: Vec<Arc<LeafReaderContext>> = Arc::clone(reader).leaves()?;
         let mut subs: Vec<Box<dyn Fields>> = Vec::with_capacity(leaves.len());
         let mut sub_slices: Vec<ReaderSlice> = Vec::with_capacity(leaves.len());
         for ctx in &leaves {
@@ -274,18 +280,16 @@ impl MultiFields {
 }
 
 impl Fields for MultiFields {
+    /// Equivalent to `MultiFields.iterator()` (`MultiFields.java:51-58`): the
+    /// sub-iterators merged by a `MergedIterator`, which removes the
+    /// duplicates across them and pulls each one only as far as it is read.
     fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
-        // Merge sorted-dedup view of all sub field-name iterators. Field-name
-        // counts are small, so collecting into a BTreeSet gives the exact
-        // semantics of Lucene's MergedIterator (sorted union with dedup) without
-        // a streaming k-way merge.
-        let mut names: BTreeSet<String> = BTreeSet::new();
-        for sub in &self.subs {
-            for name in sub.iterator() {
-                names.insert(name);
-            }
-        }
-        Box::new(names.into_iter())
+        Box::new(MergedIterator::new(
+            self.subs
+                .iter()
+                .map(|sub| sub.iterator())
+                .collect::<Vec<_>>(),
+        ))
     }
 
     fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
@@ -376,7 +380,7 @@ impl MultiTerms {
     /// `length` to the leaf's own `max_doc()`. See the note on
     /// [`ReaderSlice`] for why both are correct.
     pub fn get_terms(reader: &Arc<dyn IndexReader>, field: &str) -> Result<Option<Box<dyn Terms>>> {
-        let leaves = Arc::clone(reader).leaves();
+        let leaves = Arc::clone(reader).leaves()?;
         if leaves.len() == 1 {
             return leaves[0].leaf_reader().terms(field);
         }
@@ -3205,6 +3209,135 @@ mod tests {
         let fields = LeafFields::new(leaf_reader);
         assert_eq!(fields.size(), 1);
         assert_eq!(fields.iterator().count(), 1);
+    }
+
+    /// rmp #306: a leaf lists its indexed fields in the block tree's `TreeMap`
+    /// order, and `MultiFields` merges the leaves' lists with a
+    /// `MergedIterator<String>`: both order by `String.compareTo`, UTF-16 code
+    /// units. Oracle `scratchpad/fixF/oracle/Utf16Oracle.java`: `TreeMap keys
+    /// [a, b😀, b\u{E001}, \u{10000}, \u{E000}, \u{FF21}, \u{FFFD}]`, and
+    /// "across the boundary" `[a, \u{10000}, \u{E000}, \u{FFFD}]` for the merge.
+    #[test]
+    fn field_names_are_ordered_as_java_string_compare_to() {
+        use crate::index::field_infos::FieldInfo;
+        use crate::index::IndexOptions;
+        let names = [
+            "a",
+            "\u{E000}",
+            "\u{FFFD}",
+            "\u{10000}",
+            "\u{FF21}",
+            "b\u{1F600}",
+            "b\u{E001}",
+        ];
+        let infos = |names: &[&str]| {
+            FieldInfos::new(
+                names
+                    .iter()
+                    .enumerate()
+                    .map(|(number, name)| {
+                        let mut info = FieldInfo::default();
+                        info.name = name.to_string();
+                        info.number = number as i32;
+                        info.index_options = IndexOptions::DOCS;
+                        info
+                    })
+                    .collect(),
+            )
+            .unwrap()
+        };
+        let java_order = vec![
+            "a",
+            "b\u{1F600}",
+            "b\u{E001}",
+            "\u{10000}",
+            "\u{E000}",
+            "\u{FF21}",
+            "\u{FFFD}",
+        ];
+
+        let leaf: Arc<dyn LeafReader> =
+            Arc::new(StubLeaf::with_fields(1, 1, infos(&names), Vec::new()));
+        let listed: Vec<String> = LeafFields::new(leaf).iterator().collect();
+        assert_eq!(listed, java_order);
+
+        // Each leaf lists its names in UTF-16 order, and the merge compares the
+        // leaves' heads across the boundary: Utf16Oracle's "across the
+        // boundary" `[a, \u{10000}, \u{E000}, \u{FFFD}]`.
+        let first: Arc<dyn IndexReader> = Arc::new(StubLeaf::with_fields(
+            1,
+            1,
+            infos(&["\u{10000}", "a"]),
+            Vec::new(),
+        ));
+        let second: Arc<dyn IndexReader> = Arc::new(StubLeaf::with_fields(
+            1,
+            1,
+            infos(&["\u{FFFD}", "\u{E000}"]),
+            Vec::new(),
+        ));
+        let multi: Arc<dyn IndexReader> =
+            Arc::new(MultiReader::new(vec![first, second], true).unwrap());
+        let merged: Vec<String> = MultiFields::get_fields(&multi)
+            .unwrap()
+            .iterator()
+            .collect();
+        assert_eq!(merged, vec!["a", "\u{10000}", "\u{E000}", "\u{FFFD}"]);
+    }
+
+    // ----- MultiFields.iterator() is a MergedIterator (MultiFields.java:51-58) -----
+
+    /// `Fields` whose iterator counts the names it hands out.
+    struct PullCountingFields {
+        names: Vec<String>,
+        pulled: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Fields for PullCountingFields {
+        fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+            let pulled = Arc::clone(&self.pulled);
+            Box::new(self.names.iter().cloned().inspect(move |_| {
+                pulled.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }))
+        }
+
+        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+            Ok(None)
+        }
+
+        fn size(&self) -> i32 {
+            self.names.len() as i32
+        }
+    }
+
+    /// rmp #306: `MultiFields.iterator()` merges the sorted sub-iterators with
+    /// a `MergedIterator`, which takes the first name of each sub up front
+    /// and advances a sub only once its current name has been handed out
+    /// (`MergedIterator.java:66-82, 110-138`); equal names across subs come out
+    /// once.
+    #[test]
+    fn iterator_merges_the_subs_lazily_with_a_merged_iterator() {
+        let pulled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sub = |names: &[&str]| -> Box<dyn Fields> {
+            Box::new(PullCountingFields {
+                names: names.iter().map(|name| name.to_string()).collect(),
+                pulled: Arc::clone(&pulled),
+            })
+        };
+        let mf = MultiFields::new(
+            vec![sub(&["a", "c", "e"]), sub(&["b", "c", "f"])],
+            vec![ReaderSlice::new(0, 5, 0), ReaderSlice::new(5, 5, 1)],
+        );
+        let mut it = mf.iterator();
+        assert_eq!(it.next().as_deref(), Some("a"));
+        assert_eq!(
+            pulled.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "one name from each sub to prime the merge, none more"
+        );
+        let rest: Vec<String> = it.collect();
+        assert_eq!(rest, vec!["b", "c", "e", "f"]);
+        assert_eq!(pulled.load(std::sync::atomic::Ordering::SeqCst), 6);
     }
 
     // ----- per-field MultiTerms memo (MultiFields.java:28, :44-46) -----

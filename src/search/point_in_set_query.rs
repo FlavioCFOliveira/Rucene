@@ -17,14 +17,15 @@ use crate::search::constant_score_scorer::ConstantScoreScorer;
 use crate::search::constant_score_weight::{ConstantScoreWeight, ConstantScoreWeightImpl};
 use crate::search::doc_id_set_iterator::DocIdSetIterator;
 use crate::search::index_searcher::IndexSearcher;
-use crate::search::point_range_query::compare_unsigned;
 use crate::search::query::Query;
 use crate::search::query_visitor::QueryVisitor;
 use crate::search::score_mode::ScoreMode;
 use crate::search::scorer::Scorer;
 use crate::search::scorer_supplier::ScorerSupplier;
 use crate::search::weight::Weight;
-use crate::util::{Accountable, BytesRef, BytesRefIterator, DocIdSetBuilder};
+use crate::util::{
+    Accountable, ArrayUtil, ByteArrayComparator, BytesRef, BytesRefIterator, DocIdSetBuilder,
+};
 
 /// Renders a packed point value.
 ///
@@ -250,7 +251,9 @@ struct MergePointVisitor<'a> {
     /// Rust expression of the same mutation. Nothing re-enters the visitor, so
     /// the borrow is never contended.
     cursor: RefCell<MergeCursor>,
-    bytes_per_dim: usize,
+    /// `ArrayUtil.getUnsignedComparator(bytesPerDim)`
+    /// (`PointInSetQuery.java:292, 300`).
+    comparator: ByteArrayComparator,
 }
 
 /// The query-point cursor a [`MergePointVisitor`] walks.
@@ -275,7 +278,7 @@ impl<'a> MergePointVisitor<'a> {
                 iterator,
                 next_query_point,
             }),
-            bytes_per_dim,
+            comparator: ArrayUtil::get_unsigned_comparator(bytes_per_dim),
         })
     }
 
@@ -286,13 +289,9 @@ impl<'a> MergePointVisitor<'a> {
             let Some(next) = cursor.next_query_point.as_ref() else {
                 break;
             };
-            let cmp = compare_unsigned(
-                &next.bytes,
-                next.offset,
-                packed_value,
-                0,
-                self.bytes_per_dim,
-            );
+            let cmp = self
+                .comparator
+                .compare(&next.bytes, next.offset, packed_value, 0);
             if cmp == 0 {
                 return Ok(true);
             } else if cmp < 0 {
@@ -355,13 +354,9 @@ impl IntersectVisitor for MergePointVisitor<'_> {
             let Some(next) = cursor.next_query_point.as_ref() else {
                 break;
             };
-            let cmp_min = compare_unsigned(
-                &next.bytes,
-                next.offset,
-                min_packed_value,
-                0,
-                self.bytes_per_dim,
-            );
+            let cmp_min = self
+                .comparator
+                .compare(&next.bytes, next.offset, min_packed_value, 0);
             if cmp_min < 0 {
                 // The query point is before the start of this cell.
                 cursor.next_query_point = match cursor.iterator.next() {
@@ -370,13 +365,9 @@ impl IntersectVisitor for MergePointVisitor<'_> {
                 };
                 continue;
             }
-            let cmp_max = compare_unsigned(
-                &next.bytes,
-                next.offset,
-                max_packed_value,
-                0,
-                self.bytes_per_dim,
-            );
+            let cmp_max = self
+                .comparator
+                .compare(&next.bytes, next.offset, max_packed_value, 0);
             if cmp_max > 0 {
                 // The query point is after the end of this cell.
                 return Ok(Relation::CellOutsideQuery);
@@ -403,6 +394,9 @@ struct SinglePointVisitor<'a> {
     point_bytes: Vec<u8>,
     num_dims: i32,
     bytes_per_dim: usize,
+    /// `ArrayUtil.getUnsignedComparator(bytesPerDim)`
+    /// (`PointInSetQuery.java:388, 394`).
+    comparator: ByteArrayComparator,
 }
 
 impl<'a> SinglePointVisitor<'a> {
@@ -413,6 +407,7 @@ impl<'a> SinglePointVisitor<'a> {
             point_bytes: vec![0; (num_dims as usize) * bytes_per_dim],
             num_dims,
             bytes_per_dim,
+            comparator: ArrayUtil::get_unsigned_comparator(bytes_per_dim),
         }
     }
 
@@ -465,23 +460,15 @@ impl IntersectVisitor for SinglePointVisitor<'_> {
         let mut crosses = false;
         for dim in 0..self.num_dims as usize {
             let offset = dim * self.bytes_per_dim;
-            let cmp_min = compare_unsigned(
-                min_packed_value,
-                offset,
-                &self.point_bytes,
-                offset,
-                self.bytes_per_dim,
-            );
+            let cmp_min =
+                self.comparator
+                    .compare(min_packed_value, offset, &self.point_bytes, offset);
             if cmp_min > 0 {
                 return Ok(Relation::CellOutsideQuery);
             }
-            let cmp_max = compare_unsigned(
-                max_packed_value,
-                offset,
-                &self.point_bytes,
-                offset,
-                self.bytes_per_dim,
-            );
+            let cmp_max =
+                self.comparator
+                    .compare(max_packed_value, offset, &self.point_bytes, offset);
             if cmp_max < 0 {
                 return Ok(Relation::CellOutsideQuery);
             }
@@ -657,22 +644,11 @@ impl ConstantScoreWeightImpl for PointInSetWeight {
             else {
                 return Ok(None);
             };
+            let comparator = ArrayUtil::get_unsigned_comparator(self.query.bytes_per_dim);
             for i in 0..self.query.num_dims as usize {
                 let offset = i * self.query.bytes_per_dim;
-                if compare_unsigned(
-                    lower_point,
-                    offset,
-                    &field_packed_upper,
-                    offset,
-                    self.query.bytes_per_dim,
-                ) > 0
-                    || compare_unsigned(
-                        upper_point,
-                        offset,
-                        &field_packed_lower,
-                        offset,
-                        self.query.bytes_per_dim,
-                    ) < 0
+                if comparator.compare(lower_point, offset, &field_packed_upper, offset) > 0
+                    || comparator.compare(upper_point, offset, &field_packed_lower, offset) < 0
                 {
                     return Ok(None);
                 }

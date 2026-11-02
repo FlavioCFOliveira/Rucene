@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use crate::document::shape_field::{DecodedTriangle, QueryRelation, TriangleType};
 use crate::document::FieldType;
-use crate::error::{LuceneError, Result};
+use crate::error::{to_int_exact, LuceneError, Result};
 use crate::geo::encoding::{GeoEncodingUtils, XYEncodingUtils};
 use crate::geo::geometry::{Point, Rectangle, XYPoint, XYRectangle};
 use crate::geo::{Component2D, Geometry};
@@ -167,11 +167,19 @@ impl<'a> SliceDataInput<'a> {
         self.pos
     }
 
+    /// What reading the byte at `pos` past the end raises: Java's reader is a
+    /// `ByteArrayDataInput`, whose `readByte()` is `bytes[pos++]`
+    /// (`ByteArrayDataInput.java:134-137`), so the JVM's
+    /// `ArrayIndexOutOfBoundsException` — `Index <pos> out of bounds for
+    /// length <length>` — carried, like every `IndexOutOfBoundsException` of
+    /// this crate, by [`LuceneError::IllegalArgument`]. It is not an
+    /// `IOException`, so no `catch (IOException e)` wraps it.
     fn eof(&self) -> LuceneError {
-        LuceneError::corrupt_index(
-            "read past the end of the shape doc value".to_string(),
-            "shape doc values",
-        )
+        LuceneError::IllegalArgument(format!(
+            "Index {} out of bounds for length {}",
+            self.pos,
+            self.bytes.len()
+        ))
     }
 
     /// Reads the four variable longs of a bounding box, translating each back
@@ -224,7 +232,13 @@ impl DataInput for SliceDataInput<'_> {
 
     fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
         if self.pos + len > self.bytes.len() {
-            return Err(self.eof());
+            // `System.arraycopy(bytes, pos, b, offset, len)`
+            // (`ByteArrayDataInput.java:140-144`).
+            return Err(LuceneError::IllegalArgument(format!(
+                "arraycopy: last source index {} out of bounds for byte[{}]",
+                self.pos + len,
+                self.bytes.len()
+            )));
         }
         b[offset..offset + len].copy_from_slice(&self.bytes[self.pos..self.pos + len]);
         self.pos += len;
@@ -244,17 +258,6 @@ impl DataInput for SliceDataInput<'_> {
         self.pos += num_bytes;
         Ok(())
     }
-}
-
-/// Equivalent to `Math.toIntExact(long)`, which throws `ArithmeticException`
-/// when the value does not fit.
-fn to_int_exact(value: i64) -> Result<i32> {
-    i32::try_from(value).map_err(|_| {
-        LuceneError::corrupt_index(
-            format!("shape doc value holds {value}, which is not an int"),
-            "shape doc values",
-        )
-    })
 }
 
 /// The four header bits a serialised node carries.
@@ -739,7 +742,7 @@ fn write_tree(
         write_node(&mut output, nodes, index)?;
     }
 
-    Ok(BytesRef::new(output.to_array_copy()))
+    Ok(BytesRef::new(output.to_array_copy()?))
 }
 
 /// Equivalent to `Writer.writeNode(TreeNode)`.
@@ -886,10 +889,10 @@ impl ShapeDocValues {
     /// # Errors
     ///
     /// Returns [`LuceneError::IllegalArgument`] for an empty tessellation or a
-    /// centroid that falls outside the coordinate system, and
-    /// [`LuceneError::CorruptIndex`] when the bytes just written cannot be read
-    /// back — which Java reports as
-    /// `"unable to read binary shape doc value field"`.
+    /// centroid that falls outside the coordinate system, and the errors of
+    /// [`Self::from_binary_value`] when the bytes just written cannot be read
+    /// back — the same `ShapeComparator` construction and `catch`
+    /// (`ShapeDocValues.java:72-81`).
     pub fn from_tessellation(
         tessellation: &[DecodedTriangle],
         encoder: ShapeCoordinateSystem,
@@ -904,25 +907,44 @@ impl ShapeDocValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::CorruptIndex`] when the bytes are not a shape doc
-    /// value, which Java reports as
-    /// `"unable to read binary shape doc value field"`.
+    /// The constructor's reads sit in Java's `try { ... } catch (IOException e)
+    /// { throw new IllegalArgumentException("unable to read binary shape doc
+    /// value field. ", e); }` (`ShapeDocValues.java:83-92`), and any
+    /// `IOException` they raise would be wrapped so, with it as the cause; but
+    /// none of the failures they can raise is one, and each escapes unwrapped:
+    /// [`LuceneError::IllegalArgument`] — the JVM's
+    /// `ArrayIndexOutOfBoundsException` — when the value ends before its
+    /// header does, [`LuceneError::Arithmetic`] when a coordinate read back
+    /// does not fit an `int`: Java's `Math.toIntExact(data.readVLong() +
+    /// Integer.MIN_VALUE)` (`ShapeDocValues.java:601-605, 692-693`) throwing
+    /// `ArithmeticException("integer overflow")`, and
+    /// [`LuceneError::CorruptIndex`] for a dimension ordinal past the triangle
+    /// types, where Java's `TYPE.values()[...]` throws
+    /// `ArrayIndexOutOfBoundsException`.
     pub fn from_binary_value(data: BytesRef, encoder: ShapeCoordinateSystem) -> Result<Self> {
         // Equivalent to the `ShapeComparator(BytesRef)` constructor, which
-        // reads the fixed header and then rewinds.
+        // reads the fixed header and then rewinds; the constructor catches
+        // the `IOException` its reads throw.
+        let wrap = |error: LuceneError| {
+            if error.is_io_exception() {
+                LuceneError::illegal_argument_with_cause(
+                    "unable to read binary shape doc value field. ",
+                    Arc::new(error),
+                )
+            } else {
+                error
+            }
+        };
         let mut reader = SliceDataInput::new(data.slice());
-        let version = reader.read_byte()?;
-        if version != VERSION {
-            return Err(LuceneError::corrupt_index(
-                format!("unexpected shape doc value version {version}, expected {VERSION}"),
-                "shape doc values",
-            ));
-        }
-        let number_of_terms = reader.read_v_int()?;
-        let bounding_box = reader.read_bbox()?;
-        let centroid_x = reader.read_translated()?;
-        let centroid_y = reader.read_translated()?;
-        let highest_dimension = TriangleType::from_ordinal(reader.read_v_int()?)?;
+        let version = reader.read_byte().map_err(wrap)?;
+        // `assert this.version == VERSION` (`ShapeDocValues.java:689`): without
+        // `-ea` Java reads on.
+        debug_assert_eq!(version, VERSION);
+        let number_of_terms = reader.read_v_int().map_err(wrap)?;
+        let bounding_box = reader.read_bbox().map_err(wrap)?;
+        let centroid_x = reader.read_translated().map_err(wrap)?;
+        let centroid_y = reader.read_translated().map_err(wrap)?;
+        let highest_dimension = TriangleType::from_ordinal(reader.read_v_int().map_err(wrap)?)?;
         Ok(Self {
             data,
             encoder,
@@ -1937,6 +1959,38 @@ shape_doc_values_field_delegates!(
 mod tests {
     use super::*;
 
+    /// A value that ends inside its header fails as `ByteArrayDataInput`'s
+    /// `bytes[pos++]` does, with an `ArrayIndexOutOfBoundsException` that
+    /// escapes the constructor's `catch (IOException e)` unwrapped
+    /// (`ShapeDocValues.java:83-92, 686-689`). Measured against
+    /// `lucene-core-10.5.0.jar` (`oracle/fix/LastPass.java`, case B, the same
+    /// with and without `-ea`): `LatLonShape.createLatLonShapeDocValues(new
+    /// BytesRef(new byte[] {0, 1}))` throws
+    /// `java.lang.ArrayIndexOutOfBoundsException: Index 2 out of bounds for
+    /// length 2`, with no cause.
+    #[test]
+    fn a_truncated_shape_doc_value_escapes_unwrapped_as_in_lucene() {
+        let data = BytesRef::new(vec![VERSION, 1]);
+        match ShapeDocValues::from_binary_value(data, ShapeCoordinateSystem::Geographic) {
+            Err(LuceneError::IllegalArgument(message)) => {
+                assert_eq!(message, "Index 2 out of bounds for length 2");
+            }
+            other => panic!("expected the unwrapped index failure, got {other:?}"),
+        }
+    }
+
+    /// `assert this.version == VERSION` (`ShapeDocValues.java:689`): a debug
+    /// build — Java under `-ea` — stops on another version byte.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "assertion `left == right` failed")]
+    fn another_version_byte_trips_lucenes_assertion_in_debug_builds() {
+        let _ = ShapeDocValues::from_binary_value(
+            BytesRef::new(vec![VERSION + 1, 0]),
+            ShapeCoordinateSystem::Geographic,
+        );
+    }
+
     /// Lucene 10.5.0's `ShapeDocValues.newGeometryQuery` is `return null;`
     /// for every field and relation (`ShapeDocValues.java:156-161`).
     #[test]
@@ -1949,5 +2003,28 @@ mod tests {
         ] {
             assert!(ShapeDocValues::new_geometry_query("shape", relation).is_none());
         }
+    }
+
+    /// A bounding-box coordinate past the `int` range: `readBBox` narrows
+    /// `data.readVLong() + Integer.MIN_VALUE` with `Math.toIntExact`
+    /// (`ShapeDocValues.java:601-605`), which throws
+    /// `ArithmeticException("integer overflow")`.
+    #[test]
+    fn a_coordinate_past_an_int_is_an_integer_overflow() {
+        let mut output = crate::store::ByteBuffersDataOutput::new();
+        output.write_byte(VERSION).unwrap();
+        output.write_v_int(1).unwrap();
+        // `minX`: 2^33 + Integer.MIN_VALUE is past Integer.MAX_VALUE.
+        output.write_v_long(1i64 << 33).unwrap();
+        let data = BytesRef::new(output.to_array_copy().unwrap());
+        let error = match ShapeDocValues::from_binary_value(data, ShapeCoordinateSystem::Cartesian)
+        {
+            Ok(_) => panic!("the coordinate does not fit an int"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(&error, LuceneError::Arithmetic(m) if m == "integer overflow"),
+            "{error:?}"
+        );
     }
 }

@@ -14,7 +14,6 @@ use crate::index::merge_scheduler::now_ns;
 use crate::internal::hppc::IntHashSet;
 use crate::search::knn::KnnCollector;
 use crate::search::NO_MORE_DOCS;
-use crate::util::bit_set::FixedBits;
 use crate::util::hnsw::on_heap::{OnHeapGraphReader, OnHeapHnswGraph};
 use crate::util::hnsw::scorer::{RandomVectorScorerSupplier, UpdateableRandomVectorScorer};
 use crate::util::hnsw::searcher::HnswGraphSearcher;
@@ -210,7 +209,7 @@ impl HnswGraphBuilder {
             hnsw,
             node_buffer: Vec::new(),
             frozen: false,
-            info_stream: Arc::new(crate::util::NoOutputInfoStream),
+            info_stream: crate::util::default_info_stream(),
             merge_start_time_ns: -1,
             cumulative_work_time_ns: None,
         })
@@ -398,10 +397,7 @@ impl HnswGraphBuilder {
                     level,
                     &eps,
                     &mut OnHeapGraphReader::new(&self.hnsw, &mut self.node_buffer),
-                    Some(&FixedBits::new(
-                        not_fully_connected.get_bits().to_vec(),
-                        not_fully_connected.length(),
-                    )),
+                    Some(&not_fully_connected),
                 )?;
                 let mut linked = false;
                 while beam.size() > 0 {

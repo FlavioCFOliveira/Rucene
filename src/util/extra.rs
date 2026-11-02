@@ -15,7 +15,7 @@ use std::{
 
 use crate::{
     error::LuceneError,
-    util::{Accountable, ArrayUtil},
+    util::{Accountable, ArrayUtil, StrictStringTokenizer},
 };
 
 // ---------------------------------------------------------------------------
@@ -825,49 +825,90 @@ impl<T> Iterator for IntoIter<T> {
 // MergedIterator
 // ---------------------------------------------------------------------------
 
+/// Java's natural ordering, `Comparable.compareTo`, of the elements a
+/// [`MergedIterator`] merges: Java's `MergedIterator<T extends Comparable<T>>`
+/// orders its queue with `a.current.compareTo(b.current)`
+/// (`MergedIterator.java:148-156`).
+///
+/// For the integer types Rust's `Ord` is Java's `compareTo`. For `String` it is
+/// not: `String.compareTo` compares UTF-16 code units, while `str::cmp`
+/// compares UTF-8 bytes, and the two disagree once a character at `U+E000` or
+/// above meets a supplementary one; `String` therefore compares with
+/// [`compare_utf16`](crate::util::compare_utf16).
+pub trait JavaComparable: Eq {
+    /// Equivalent to `Comparable.compareTo(T)`.
+    fn compare_to(&self, other: &Self) -> Ordering;
+}
+
+impl JavaComparable for String {
+    /// Equivalent to `String.compareTo(String)`.
+    fn compare_to(&self, other: &Self) -> Ordering {
+        crate::util::compare_utf16(self, other)
+    }
+}
+
+macro_rules! java_comparable_by_ord {
+    ($($t:ty),*) => {
+        $(
+            impl JavaComparable for $t {
+                fn compare_to(&self, other: &Self) -> Ordering {
+                    self.cmp(other)
+                }
+            }
+        )*
+    };
+}
+
+java_comparable_by_ord!(i8, i16, i32, i64);
+
 /// Port of `org.apache.lucene.util.MergedIterator`.
 ///
-/// Provides a merged sorted view from several sorted iterators.
+/// Provides a merged sorted view from several sorted iterators, ordered by
+/// [`JavaComparable`], Java's `compareTo`.
 ///
 /// With `remove_duplicates` enabled, equal elements from different iterators
 /// are deduplicated; with it disabled, all elements are returned. The input
 /// iterators must be sorted and must not yield `None` as a "real" element.
-pub struct MergedIterator<T: Ord> {
+///
+/// `'a` is the lifetime of the sub-iterators, which Java's merge holds by
+/// reference: they may borrow what they iterate, as `MultiFields.iterator()`'s
+/// `subs[i].iterator()` do.
+pub struct MergedIterator<'a, T: JavaComparable> {
     current: Option<T>,
-    queue: BinaryHeap<SubIterator<T>>,
-    top: Vec<TopState<T>>,
+    queue: BinaryHeap<SubIterator<'a, T>>,
+    top: Vec<TopState<'a, T>>,
     remove_duplicates: bool,
 }
 
-struct SubIterator<T: Ord> {
+struct SubIterator<'a, T: JavaComparable> {
     current: T,
-    source: Box<dyn Iterator<Item = T>>,
+    source: Box<dyn Iterator<Item = T> + 'a>,
     index: usize,
 }
 
-struct TopState<T> {
-    source: Box<dyn Iterator<Item = T>>,
+struct TopState<'a, T> {
+    source: Box<dyn Iterator<Item = T> + 'a>,
     index: usize,
 }
 
-impl<T: Ord> PartialEq for SubIterator<T> {
+impl<T: JavaComparable> PartialEq for SubIterator<'_, T> {
     fn eq(&self, other: &Self) -> bool {
         self.current == other.current && self.index == other.index
     }
 }
 
-impl<T: Ord> Eq for SubIterator<T> {}
+impl<T: JavaComparable> Eq for SubIterator<'_, T> {}
 
-impl<T: Ord> PartialOrd for SubIterator<T> {
+impl<T: JavaComparable> PartialOrd for SubIterator<'_, T> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<T: Ord> Ord for SubIterator<T> {
+impl<T: JavaComparable> Ord for SubIterator<'_, T> {
     fn cmp(&self, other: &Self) -> Ordering {
         // BinaryHeap is a max-heap, so we reverse comparisons to get a min-heap.
-        let cmp = self.current.cmp(&other.current);
+        let cmp = self.current.compare_to(&other.current);
         if cmp != Ordering::Equal {
             return cmp.reverse();
         }
@@ -875,19 +916,24 @@ impl<T: Ord> Ord for SubIterator<T> {
     }
 }
 
-impl<T: Ord> MergedIterator<T> {
+impl<'a, T: JavaComparable> MergedIterator<'a, T> {
     /// Creates a merged iterator with duplicate removal enabled.
+    ///
+    /// Equivalent to `MergedIterator(Iterator<T>...)`.
     pub fn new<I>(iterators: I) -> Self
     where
-        I: IntoIterator<Item = Box<dyn Iterator<Item = T>>>,
+        I: IntoIterator<Item = Box<dyn Iterator<Item = T> + 'a>>,
     {
         Self::with_remove_duplicates(true, iterators)
     }
 
     /// Creates a merged iterator, optionally removing duplicates.
+    ///
+    /// Equivalent to `MergedIterator(boolean, Iterator<T>...)`, which takes
+    /// the first element of each sub-iterator up front.
     pub fn with_remove_duplicates<I>(remove_duplicates: bool, iterators: I) -> Self
     where
-        I: IntoIterator<Item = Box<dyn Iterator<Item = T>>>,
+        I: IntoIterator<Item = Box<dyn Iterator<Item = T> + 'a>>,
     {
         let mut queue = BinaryHeap::new();
         for (index, mut source) in iterators.into_iter().enumerate() {
@@ -947,7 +993,7 @@ impl<T: Ord> MergedIterator<T> {
     }
 }
 
-impl<T: Ord> Iterator for MergedIterator<T> {
+impl<T: JavaComparable> Iterator for MergedIterator<'_, T> {
     type Item = T;
 
     fn next(&mut self) -> Option<T> {
@@ -1067,11 +1113,47 @@ impl Version {
     }
 
     fn new(major: u8, minor: u8, bugfix: u8, prerelease: u8) -> Result<Self, LuceneError> {
-        // major/minor/bugfix are u8, so the Java >255 check is enforced by the type system.
-        if prerelease > 2 {
+        Self::from_ints(
+            i32::from(major),
+            i32::from(minor),
+            i32::from(bugfix),
+            i32::from(prerelease),
+        )
+    }
+
+    /// Equivalent to the private constructor `Version(int, int, int, int)`
+    /// (`Version.java:451-484`), with its range checks in Java's order.
+    ///
+    /// # Errors
+    ///
+    /// Returns Java's `IllegalArgumentException` messages for a component
+    /// that does not fit its bits, and for a prerelease on a non-major release.
+    fn from_ints(
+        major: i32,
+        minor: i32,
+        bugfix: i32,
+        prerelease: i32,
+    ) -> Result<Self, LuceneError> {
+        // NOTE: do not enforce major version so we remain future proof, except to
+        // make sure it fits in the 8 bits we encode it into:
+        if !(0..=255).contains(&major) {
             return Err(LuceneError::IllegalArgument(format!(
-                "Illegal prerelease version: {}",
-                prerelease
+                "Illegal major version: {major}"
+            )));
+        }
+        if !(0..=255).contains(&minor) {
+            return Err(LuceneError::IllegalArgument(format!(
+                "Illegal minor version: {minor}"
+            )));
+        }
+        if !(0..=255).contains(&bugfix) {
+            return Err(LuceneError::IllegalArgument(format!(
+                "Illegal bugfix version: {bugfix}"
+            )));
+        }
+        if !(0..=2).contains(&prerelease) {
+            return Err(LuceneError::IllegalArgument(format!(
+                "Illegal prerelease version: {prerelease}"
             )));
         }
         if prerelease != 0 && (minor != 0 || bugfix != 0) {
@@ -1080,7 +1162,7 @@ impl Version {
                 prerelease, minor, bugfix
             )));
         }
-        let version = Self::new_const(major, minor, bugfix, prerelease);
+        let version = Self::new_const(major as u8, minor as u8, bugfix as u8, prerelease as u8);
         debug_assert!(version.encoded_is_valid());
         Ok(version)
     }
@@ -1111,71 +1193,118 @@ impl Version {
 
     /// Parses a dot-separated version of the form `major.minor.bugfix.prerelease`.
     ///
-    /// The bugfix and prerelease components are optional. The parsed version does
-    /// not need to exist as a predefined constant.
+    /// Equivalent to `Version.parse(String)` (`Version.java:288-384`): the
+    /// parts are split with a [`StrictStringTokenizer`] on `'.'` and read as
+    /// `int`s, then the constructor checks their ranges. The bugfix and
+    /// prerelease components are optional, and the parsed version does not need
+    /// to exist as a predefined constant.
+    ///
+    /// # Errors
+    ///
+    /// Java throws `java.text.ParseException`, which has no counterpart in
+    /// [`LuceneError`]; this port reports [`LuceneError::IllegalArgument`] with
+    /// Java's messages, and keeps the `NumberFormatException` or
+    /// `IllegalArgumentException` Java attaches with `initCause` as the
+    /// [`source`](std::error::Error::source).
     pub fn parse(version: &str) -> Result<Self, LuceneError> {
-        let mut tokens = version.split('.');
-        let major = parse_version_component(tokens.next(), "major", version)?;
-        let minor = parse_version_component(tokens.next(), "minor", version)?;
-        let mut bugfix = 0u8;
-        let mut prerelease = 0u8;
-        if let Some(token) = tokens.next() {
-            bugfix = parse_version_component(Some(token), "bugfix", version)?;
-            if let Some(token) = tokens.next() {
-                prerelease = parse_version_component(Some(token), "prerelease", version)?;
+        let not_in_form = || {
+            LuceneError::IllegalArgument(format!(
+                "Version is not in form major.minor.bugfix(.prerelease) (got: {version})"
+            ))
+        };
+        let mut tokens = StrictStringTokenizer::new(version, '.');
+        if !tokens.has_more_tokens() {
+            return Err(not_in_form());
+        }
+        let major = parse_version_component(&tokens.next_token()?, "major", version)?;
+        if !tokens.has_more_tokens() {
+            return Err(not_in_form());
+        }
+        let minor = parse_version_component(&tokens.next_token()?, "minor", version)?;
+        let mut bugfix = 0;
+        let mut prerelease = 0;
+        if tokens.has_more_tokens() {
+            bugfix = parse_version_component(&tokens.next_token()?, "bugfix", version)?;
+            if tokens.has_more_tokens() {
+                prerelease = parse_version_component(&tokens.next_token()?, "prerelease", version)?;
                 if prerelease == 0 {
                     return Err(LuceneError::IllegalArgument(format!(
-                        "Invalid value {} for prerelease; should be 1 or 2 (got: {})",
-                        prerelease, version
+                        "Invalid value {prerelease} for prerelease; should be 1 or 2 (got: {version})"
                     )));
                 }
-                if tokens.next().is_some() {
-                    return Err(LuceneError::IllegalArgument(format!(
-                        "Version is not in form major.minor.bugfix(.prerelease) (got: {})",
-                        version
-                    )));
+                if tokens.has_more_tokens() {
+                    // Too many tokens!
+                    return Err(not_in_form());
                 }
             }
         }
-        Self::new(major, minor, bugfix, prerelease)
+        Self::from_ints(major, minor, bugfix, prerelease).map_err(|iae| {
+            LuceneError::illegal_argument_with_cause(
+                format!(
+                    "failed to parse version string \"{version}\": {}",
+                    java_message(&iae)
+                ),
+                std::sync::Arc::new(iae),
+            )
+        })
     }
 
     /// Parses a version number leniently, accepting constant names such as
     /// `LATEST`, `LUCENE_CURRENT`, `LUCENE_X_Y`, `LUCENE_X_Y_Z`, or `LUCENE_XY`.
+    ///
+    /// Equivalent to `Version.parseLeniently(String)` (`Version.java:393-420`):
+    /// the input is upper-cased, the three `LUCENE_` spellings are rewritten to
+    /// `major.minor.bugfix` in Java's order, and whatever results — a plain
+    /// `8.11.0` included — goes to [`parse`](Self::parse).
+    ///
+    /// # Errors
+    ///
+    /// When [`parse`](Self::parse) fails, Java throws a new `ParseException`
+    /// `failed to parse lenient version string "<input>": <reason>` whose cause
+    /// is the first; this port reports it as [`LuceneError::IllegalArgument`]
+    /// with that message and the first error as its source (see
+    /// [`parse`](Self::parse) for the exception mapping).
     pub fn parse_leniently(version: &str) -> Result<Self, LuceneError> {
-        let original = version;
-        let version = version.to_ascii_uppercase();
+        let version_orig = version;
+        let version = version.to_uppercase();
         match version.as_str() {
             "LATEST" | "LUCENE_CURRENT" => Ok(Self::LATEST),
             _ => {
-                let numeric = Self::normalize_lenient_version(&version);
-                match numeric {
-                    Some(n) => Self::parse(&n),
-                    None => Err(LuceneError::IllegalArgument(format!(
-                        "failed to parse lenient version string \"{}\"",
-                        original
-                    ))),
-                }
+                let version = Self::lenient_rewrite(&version);
+                Self::parse(&version).map_err(|pe| {
+                    LuceneError::illegal_argument_with_cause(
+                        format!(
+                            "failed to parse lenient version string \"{version_orig}\": {}",
+                            java_message(&pe)
+                        ),
+                        std::sync::Arc::new(pe),
+                    )
+                })
             }
         }
     }
 
-    fn normalize_lenient_version(version: &str) -> Option<String> {
+    /// The three `replaceFirst` calls of `parseLeniently` (`Version.java:401-405`):
+    /// `^LUCENE_(\d+)_(\d+)_(\d+)$` to `$1.$2.$3`, then `^LUCENE_(\d+)_(\d+)$`
+    /// to `$1.$2.0`, then `^LUCENE_(\d)(\d)$` to `$1.$2.0`. A later pattern
+    /// can only match an input the earlier ones left alone, so the first match
+    /// decides; `\d` is an ASCII digit, as in Java's default regex syntax.
+    fn lenient_rewrite(version: &str) -> String {
+        let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
         if let Some(rest) = version.strip_prefix("LUCENE_") {
             let parts: Vec<&str> = rest.split('_').collect();
-            match parts.len() {
-                3 => Some(parts[0].to_string() + "." + parts[1] + "." + parts[2]),
-                2 => {
-                    let a = parts[0];
-                    let b = parts[1];
-                    // LUCENE_X_Y or LUCENE_XX_YY both map to X.Y.0.
-                    Some(a.to_string() + "." + b + ".0")
+            match parts.as_slice() {
+                [a, b, c] if digits(a) && digits(b) && digits(c) => {
+                    return format!("{a}.{b}.{c}");
                 }
-                _ => None,
+                [a, b] if digits(a) && digits(b) => return format!("{a}.{b}.0"),
+                [ab] if ab.len() == 2 && digits(ab) => {
+                    return format!("{}.{}.0", &ab[..1], &ab[1..]);
+                }
+                _ => {}
             }
-        } else {
-            None
         }
+        version.to_string()
     }
 
     /// Creates a version from raw numeric components.
@@ -1215,29 +1344,75 @@ impl Ord for Version {
     }
 }
 
-fn parse_version_component(
-    token: Option<&str>,
-    name: &str,
-    version: &str,
-) -> Result<u8, LuceneError> {
-    let token = token.ok_or_else(|| {
-        LuceneError::IllegalArgument(format!(
-            "Version is not in form major.minor.bugfix(.prerelease) (got: {})",
-            version
-        ))
-    })?;
-    if token.is_empty() {
-        return Err(LuceneError::IllegalArgument(format!(
-            "Version is not in form major.minor.bugfix(.prerelease) (got: {})",
-            version
-        )));
+/// The `getMessage()` of the `IllegalArgumentException`s and `ParseException`s
+/// `Version.parse` chains, which [`Display`] would prefix with the variant.
+fn java_message(error: &LuceneError) -> String {
+    match error {
+        LuceneError::IllegalArgument(message) => message.clone(),
+        LuceneError::IllegalArgumentWithCause { message, .. } => message.clone(),
+        other => other.to_string(),
     }
-    token.parse::<u8>().map_err(|e| {
-        LuceneError::IllegalArgument(format!(
-            "Failed to parse {} version from \"{}\" (got: {}): {}",
-            name, token, version, e
-        ))
+}
+
+/// Reads one component with `Integer.parseInt`, wrapping its failure as
+/// `Version.parse` does: `Failed to parse <name> version from "<token>" (got:
+/// <version>)`, with the `NumberFormatException` (`For input string:
+/// "<token>"`) as its cause.
+fn parse_version_component(token: &str, name: &str, version: &str) -> Result<i32, LuceneError> {
+    java_parse_int(token).ok_or_else(|| {
+        LuceneError::illegal_argument_with_cause(
+            format!("Failed to parse {name} version from \"{token}\" (got: {version})"),
+            std::sync::Arc::new(LuceneError::IllegalArgument(format!(
+                "For input string: \"{token}\""
+            ))),
+        )
     })
+}
+
+/// `Integer.parseInt(String)`, or `None` where it throws
+/// `NumberFormatException`: an optional leading `-` or `+`, then at least one
+/// digit, each UTF-16 code unit read with `Character.digit(char, 10)` — so the
+/// decimal digits of every script count — and a result that fits an `int`.
+fn java_parse_int(s: &str) -> Option<i32> {
+    const RADIX: i32 = 10;
+    let units: Vec<u16> = s.encode_utf16().collect();
+    let digit = |unit: u16| {
+        char::from_u32(u32::from(unit))
+            .and_then(|c| crate::util::java_character_digit(c, RADIX as u32))
+            .map(|d| d as i32)
+    };
+    let first = *units.first()?;
+    let mut i = 0;
+    let mut negative = false;
+    let mut limit = -i32::MAX;
+    if first < u16::from(b'0') {
+        // Possible leading "+" or "-".
+        if first == u16::from(b'-') {
+            negative = true;
+            limit = i32::MIN;
+        } else if first != u16::from(b'+') {
+            return None;
+        }
+        if units.len() == 1 {
+            return None;
+        }
+        i += 1;
+    }
+    let multmin = limit / RADIX;
+    let mut result = 0i32;
+    while i < units.len() {
+        let d = digit(units[i])?;
+        i += 1;
+        if result < multmin {
+            return None;
+        }
+        result *= RADIX;
+        if result < limit + d {
+            return None;
+        }
+        result -= d;
+    }
+    Some(if negative { result } else { -result })
 }
 
 // ---------------------------------------------------------------------------
@@ -1247,6 +1422,35 @@ fn parse_version_component(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Version.parse` reads each component with `Integer.parseInt`, whose
+    /// `Character.digit` accepts the decimal digits of every script, and a
+    /// lone sign is not a number. Measured against `lucene-core-10.5.0.jar`
+    /// (`oracle/fix/MiscFix.java`, item 23): Devanagari `९.१.०` parses as
+    /// `9.1.0`, and `+.1.0` fails with `Failed to parse major version from
+    /// "+" (got: +.1.0)`, cause `For input string: "+"`.
+    #[test]
+    fn version_components_parse_with_java_integer_rules() {
+        assert_eq!(
+            Version::parse("\u{096F}.\u{0967}.\u{0966}")
+                .unwrap()
+                .to_string(),
+            "9.1.0"
+        );
+        match Version::parse("+.1.0") {
+            Err(LuceneError::IllegalArgumentWithCause { message, cause }) => {
+                assert_eq!(
+                    message,
+                    "Failed to parse major version from \"+\" (got: +.1.0)"
+                );
+                assert!(matches!(
+                    cause.as_ref(),
+                    LuceneError::IllegalArgument(m) if m == "For input string: \"+\""
+                ));
+            }
+            other => panic!("expected the major-version failure, got {other:?}"),
+        }
+    }
 
     #[test]
     fn long_values_identity_and_zeroes() {
@@ -1406,6 +1610,33 @@ mod tests {
         assert_eq!(merged.collect::<Vec<_>>(), vec![1, 2, 2, 3, 3, 4]);
     }
 
+    /// rmp #306: a `MergedIterator<String>` orders by Java's
+    /// `String.compareTo`, UTF-16 code units, where Rust's UTF-8 order puts a
+    /// supplementary character after `U+E000`–`U+FFFF`. The two subs' heads
+    /// meet across that boundary, so the merge itself decides the order.
+    /// Oracle `scratchpad/fixF/oracle/Utf16Oracle.java`, "across the
+    /// boundary": `[a, \u{10000}, \u{E000}, \u{FFFD}]`.
+    #[test]
+    fn merged_iterator_orders_strings_as_java_string_compare_to() {
+        let strings = |names: &[&str]| -> Box<dyn Iterator<Item = String>> {
+            Box::new(
+                names
+                    .iter()
+                    .map(|name| name.to_string())
+                    .collect::<Vec<_>>()
+                    .into_iter(),
+            )
+        };
+        let merged = MergedIterator::new([
+            strings(&["a", "\u{10000}"]),
+            strings(&["\u{E000}", "\u{FFFD}"]),
+        ]);
+        assert_eq!(
+            merged.collect::<Vec<_>>(),
+            vec!["a", "\u{10000}", "\u{E000}", "\u{FFFD}"]
+        );
+    }
+
     #[test]
     fn version_constants_and_parse() {
         assert_eq!(Version::LATEST, Version::LUCENE_10_5_0);
@@ -1421,11 +1652,106 @@ mod tests {
         assert_eq!(v3, Version::LATEST);
     }
 
+    /// `Version.parseLeniently` accepts the `LUCENE_` spellings and a plain
+    /// version, and wraps a failure of `parse` with its own message and cause;
+    /// every expectation is the Java oracle's (`Lenient.java`).
+    #[test]
+    fn parse_leniently_rewrites_and_wraps_as_lucene_does() {
+        for (input, expected) in [
+            ("8.11.0", "8.11.0"),
+            ("LUCENE_8_11", "8.11.0"),
+            ("lucene_9_5_1", "9.5.1"),
+            ("LUCENE_99", "9.9.0"),
+            ("LUCENE_CURRENT", "10.5.0"),
+            ("latest", "10.5.0"),
+        ] {
+            assert_eq!(
+                Version::parse_leniently(input).unwrap().to_string(),
+                expected,
+                "{input}"
+            );
+        }
+        for (input, cause) in [
+            (
+                "foo",
+                "Failed to parse major version from \"FOO\" (got: FOO)",
+            ),
+            (
+                "LUCENE_9",
+                "Failed to parse major version from \"LUCENE_9\" (got: LUCENE_9)",
+            ),
+            ("9.x", "Failed to parse minor version from \"X\" (got: 9.X)"),
+            (
+                "LUCENE_1_2_3_4",
+                "Failed to parse major version from \"LUCENE_1_2_3_4\" (got: LUCENE_1_2_3_4)",
+            ),
+        ] {
+            let error = Version::parse_leniently(input).unwrap_err();
+            let LuceneError::IllegalArgumentWithCause {
+                message,
+                cause: source,
+            } = &error
+            else {
+                panic!("{error:?}");
+            };
+            assert_eq!(
+                message,
+                &format!("failed to parse lenient version string \"{input}\": {cause}")
+            );
+            assert_eq!(java_message(source), cause);
+        }
+    }
+
+    /// `Version.parse` splits with `StrictStringTokenizer`, reads `int`s and
+    /// lets the constructor check their ranges; every expectation is the Java
+    /// oracle's (`ParseV.java`).
+    #[test]
+    fn parse_reads_ints_and_checks_ranges_as_lucene_does() {
+        assert_eq!(Version::parse("10.0.0.1").unwrap().to_string(), "10.0.0.1");
+        assert_eq!(Version::parse("+9.1").unwrap().to_string(), "9.1.0");
+        for (input, message, cause) in [
+            (
+                "256.0.0",
+                "failed to parse version string \"256.0.0\": Illegal major version: 256",
+                Some("Illegal major version: 256"),
+            ),
+            (
+                "-1.0.0",
+                "failed to parse version string \"-1.0.0\": Illegal major version: -1",
+                Some("Illegal major version: -1"),
+            ),
+            (
+                "10",
+                "Version is not in form major.minor.bugfix(.prerelease) (got: 10)",
+                None,
+            ),
+            (
+                "10.5.0.0",
+                "Invalid value 0 for prerelease; should be 1 or 2 (got: 10.5.0.0)",
+                None,
+            ),
+            (
+                "",
+                "Failed to parse major version from \"\" (got: )",
+                Some("For input string: \"\""),
+            ),
+        ] {
+            let error = Version::parse(input).unwrap_err();
+            assert_eq!(java_message(&error), message, "{input}");
+            let source = std::error::Error::source(&error).map(|e| e.to_string());
+            assert_eq!(
+                source,
+                cause.map(|c| format!("illegal argument: {c}")),
+                "{input}"
+            );
+        }
+    }
+
     #[test]
     fn version_rejects_invalid() {
         assert!(Version::parse("10").is_err());
         assert!(Version::parse("10.5.0.0").is_err());
-        // Components are u8, so 256 is rejected by the parser.
+        // 256 does not fit the 8 bits the constructor encodes a major into.
         assert!(Version::parse("256.0.0").is_err());
         assert!(Version::parse_leniently("LUCENE_BAD").is_err());
     }

@@ -1248,7 +1248,7 @@ impl SlowCompositeCodecReaderWrapper {
             true,
         )?);
         let field_infos = FieldInfos::get_merged_field_infos(Arc::clone(&multi_reader))?;
-        let live_docs = MultiBits::get_live_docs(&multi_reader).map(Arc::<dyn Bits>::from);
+        let live_docs = MultiBits::get_live_docs(&multi_reader)?.map(Arc::<dyn Bits>::from);
 
         Ok(Self {
             core: IndexReaderCore::new(),

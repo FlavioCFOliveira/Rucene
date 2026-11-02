@@ -17,7 +17,6 @@ pub mod bayesian_score_estimator;
 pub mod bayesian_score_query;
 pub mod binary_sort_field;
 pub mod bit_set_doc_id_stream;
-pub mod bit_set_util;
 pub mod blended_term_query;
 pub mod block_max_conjunction_bulk_scorer;
 pub mod block_max_conjunction_scorer;
@@ -472,7 +471,7 @@ pub use scorer::{
     into_scorer_iterator, FilterScorer, Scorer, ScorerAsIterator, ScorerAsTwoPhaseIterator,
 };
 pub use scorer_supplier::ScorerSupplier;
-pub use scorer_util::{DocAndScoreAccBuffer, ScorerUtil};
+pub use scorer_util::{DocAndScoreAccBuffer, FilterBits, LikelyLiveDocs, ScorerUtil};
 pub use scoring_rewrite::{
     scoring_rewrite, ConstantScoreBooleanRewrite, ScoringBooleanQueryBuilder,
     ScoringBooleanRewrite, ScoringRewrite,

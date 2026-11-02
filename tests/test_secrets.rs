@@ -79,7 +79,7 @@ fn every_getter_returns_the_accessor_its_owner_registers() {
         TestSecrets::get_segment_reader_access().expect("SegmentReader registers its accessor");
     writer.close().unwrap();
     let reader = directory_reader::open(Arc::clone(&dir)).unwrap();
-    let leaves = Arc::clone(&reader).leaves();
+    let leaves = Arc::clone(&reader).leaves().unwrap();
     let leaf = leaves[0].leaf_reader();
     let segment_reader = leaf
         .as_segment_reader()

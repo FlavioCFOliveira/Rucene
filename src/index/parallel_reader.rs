@@ -1159,7 +1159,7 @@ fn prepare_leaf_readers(
         return Ok(Vec::new());
     }
 
-    let first_leaves: Vec<Arc<LeafReaderContext>> = readers[0].clone().leaves();
+    let first_leaves: Vec<Arc<LeafReaderContext>> = readers[0].clone().leaves()?;
     let max_doc = readers[0].max_doc();
     let no_leaves = first_leaves.len();
     let mut leaf_max_doc = Vec::with_capacity(no_leaves);
@@ -1175,25 +1175,25 @@ fn prepare_leaf_readers(
         let subs: Vec<Arc<dyn LeafReader>> = readers
             .iter()
             .map(|r| {
-                r.clone()
-                    .leaves()
+                Ok(r.clone()
+                    .leaves()?
                     .into_iter()
                     .nth(i)
                     .map(|ctx| ctx.leaf_reader())
-                    .expect("leaf count validated above")
+                    .expect("leaf count validated above"))
             })
-            .collect();
+            .collect::<Result<_>>()?;
         let stored_subs: Vec<Arc<dyn LeafReader>> = stored_fields_readers
             .iter()
             .map(|r| {
-                r.clone()
-                    .leaves()
+                Ok(r.clone()
+                    .leaves()?
                     .into_iter()
                     .nth(i)
                     .map(|ctx| ctx.leaf_reader())
-                    .expect("leaf count validated above")
+                    .expect("leaf count validated above"))
             })
-            .collect();
+            .collect::<Result<_>>()?;
         // The synthetic reader is invisible to ref-counting: it neither incRefs
         // nor closes its sub-leaves. `new_synthetic` sets close_sub_readers=true
         // (so the constructor's incRef branch is skipped) and suppress_close=true
@@ -1217,7 +1217,7 @@ fn validate(
                 reader.max_doc()
             )));
         }
-        let subs = reader.clone().leaves();
+        let subs = reader.clone().leaves()?;
         if subs.len() != leaf_max_doc.len() {
             return Err(LuceneError::IllegalArgument(
                 "All readers must have same number of leaf readers".to_string(),
@@ -1755,7 +1755,7 @@ mod tests {
         // The merged FieldInfos at each ordinal is the union.
         let plr0 = subs[0].clone();
         // Downcast isn't trivial; assert via the leaf view through context.
-        let leaves = Arc::new(pcr).leaves();
+        let leaves = Arc::new(pcr).leaves().unwrap();
         assert_eq!(leaves.len(), 2);
         assert_eq!(leaves[0].doc_base(), 0);
         assert_eq!(leaves[1].doc_base(), 2);
@@ -1795,7 +1795,7 @@ mod tests {
         let subs = pcr.get_sequential_sub_readers();
         assert_eq!(subs.len(), 1);
         // No error: first-wins inside the synthetic ParallelLeafReader.
-        let leaves = Arc::new(pcr).leaves();
+        let leaves = Arc::new(pcr).leaves().unwrap();
         assert_eq!(leaves.len(), 1);
     }
 

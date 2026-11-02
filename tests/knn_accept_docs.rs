@@ -137,7 +137,7 @@ fn search(leaf: &Arc<dyn LeafReader>, k: i32) -> Vec<i32> {
 #[test]
 fn a_deleted_document_is_not_returned_by_a_knn_search() {
     let reader = build_index("rucene-205-deletes", Some((0, 1)));
-    let leaves = Arc::clone(&reader).leaves();
+    let leaves = Arc::clone(&reader).leaves().unwrap();
     assert_eq!(
         leaves.len(),
         1,
@@ -165,7 +165,7 @@ fn a_deleted_document_is_not_returned_by_a_knn_search() {
 #[test]
 fn a_knn_search_over_a_live_index_still_returns_the_nearest_document() {
     let reader = build_index("rucene-205-no-deletes", None);
-    let leaves = Arc::clone(&reader).leaves();
+    let leaves = Arc::clone(&reader).leaves().unwrap();
     let leaf = leaves[0].leaf_reader();
     assert_eq!(leaf.max_doc(), leaf.num_docs());
 
@@ -180,7 +180,7 @@ fn a_knn_search_over_a_live_index_still_returns_the_nearest_document() {
 #[test]
 fn a_caller_filter_is_honoured_by_a_knn_search() {
     let reader = build_index("rucene-205-filter", None);
-    let leaves = Arc::clone(&reader).leaves();
+    let leaves = Arc::clone(&reader).leaves().unwrap();
     let leaf = leaves[0].leaf_reader();
 
     // Half the index passes, which keeps the filtered count well above the
@@ -221,7 +221,7 @@ fn an_exitable_reader_interrupts_a_knn_search_through_the_accept_docs() {
         ExitableDirectoryReaderWrapper::new(Arc::clone(&timeout) as Arc<dyn QueryTimeout>)
             .wrap(Arc::clone(&reader))
             .expect("wrap as an exitable reader");
-    let leaves = Arc::clone(&exitable).leaves();
+    let leaves = Arc::clone(&exitable).leaves().unwrap();
     let leaf = leaves[0].leaf_reader();
 
     let mut collector = TopKnnCollector::new(3, i64::MAX);
@@ -249,7 +249,7 @@ fn an_exitable_reader_hides_nothing_when_the_timeout_never_fires() {
     let exitable = ExitableDirectoryReaderWrapper::new(Arc::new(NeverTimesOut))
         .wrap(Arc::clone(&reader))
         .expect("wrap as an exitable reader");
-    let leaves = Arc::clone(&exitable).leaves();
+    let leaves = Arc::clone(&exitable).leaves().unwrap();
     let leaf = leaves[0].leaf_reader();
 
     let docs = search(&leaf, 3);
@@ -275,7 +275,7 @@ fn an_exitable_reader_aborts_a_knn_search_at_the_first_sampled_check() {
         ExitableDirectoryReaderWrapper::new(Arc::clone(&timeout) as Arc<dyn QueryTimeout>)
             .wrap(Arc::clone(&reader))
             .expect("wrap as an exitable reader");
-    let leaves = Arc::clone(&exitable).leaves();
+    let leaves = Arc::clone(&exitable).leaves().unwrap();
     let leaf = leaves[0].leaf_reader();
 
     let mut collector = TopKnnCollector::new(3, i64::MAX);
@@ -315,7 +315,7 @@ fn an_exitable_reader_aborts_a_knn_search_over_a_leaf_with_deletions() {
         ExitableDirectoryReaderWrapper::new(Arc::clone(&timeout) as Arc<dyn QueryTimeout>)
             .wrap(Arc::clone(&reader))
             .expect("wrap as an exitable reader");
-    let leaves = Arc::clone(&exitable).leaves();
+    let leaves = Arc::clone(&exitable).leaves().unwrap();
     assert_eq!(leaves.len(), 1, "one segment");
     let leaf = leaves[0].leaf_reader();
     let live_docs = leaf.get_live_docs();

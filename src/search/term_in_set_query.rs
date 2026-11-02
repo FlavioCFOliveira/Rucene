@@ -273,7 +273,7 @@ impl Accountable for TermInSetQuery {
         BASE_RAM_BYTES_USED + self.term_data_bytes
     }
 
-    fn child_resources(&self) -> Vec<&dyn Accountable> {
+    fn child_resources(&self) -> Vec<Box<dyn Accountable + '_>> {
         Vec::new()
     }
 }

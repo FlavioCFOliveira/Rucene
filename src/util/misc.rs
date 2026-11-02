@@ -226,13 +226,18 @@ impl SentinelIntSet {
             tsize <<= 1;
             rehash_count = tsize - (tsize >> 2);
         }
-        let keys = vec![if empty_val != 0 { empty_val } else { 0 }; tsize];
-        Self {
-            keys,
+        // `keys = new int[tsize]; if (emptyVal != 0) clear();`
+        // (`SentinelIntSet.java:64-65`).
+        let mut set = Self {
+            keys: vec![0; tsize],
             count: 0,
             empty_val,
             rehash_count,
+        };
+        if empty_val != 0 {
+            set.clear();
         }
+        set
     }
 
     /// Empties the set.
@@ -255,11 +260,6 @@ impl SentinelIntSet {
     /// The number of integers in this set.
     pub fn size(&self) -> usize {
         self.count
-    }
-
-    /// Returns whether the set holds no value.
-    pub fn is_empty(&self) -> bool {
-        self.count == 0
     }
 
     /// Returns the slot for `key`, whether or not it is present.
@@ -436,5 +436,23 @@ impl Display for TermAndVector {
             write!(f, "{:.3}]", self.vector[self.vector.len() - 1])?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `new SentinelIntSet(size, emptyVal)` allocates `new int[tsize]` and runs
+    /// `clear()` when `emptyVal != 0` (`SentinelIntSet.java:64-65`), so every
+    /// slot holds `emptyVal` and the key `0` is absent until put.
+    #[test]
+    fn a_non_zero_empty_value_is_cleared_into_every_slot() {
+        let mut set = SentinelIntSet::new(10, -1);
+        assert!(!set.exists(0), "0 is not a member of a fresh set");
+        assert_eq!(set.size(), 0);
+        set.put(0);
+        assert!(set.exists(0));
+        assert_eq!(set.size(), 1);
     }
 }

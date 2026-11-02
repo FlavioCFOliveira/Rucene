@@ -334,7 +334,8 @@ impl DeletedTerms {
     ///
     /// Equivalent to `DeletedTerms.clear()`.
     pub fn clear(&mut self) {
-        self.pool.reset();
+        // `pool.reset(false, false)`.
+        self.pool.reset(false, false);
         self.delete_terms.clear();
         self.bytes_used.store(0, Ordering::Release);
         self.terms_size = 0;
@@ -357,17 +358,21 @@ impl DeletedTerms {
     /// Visits every term with its `docIDUpto`, fields by name and terms by
     /// their bytes.
     ///
-    /// Equivalent to `DeletedTerms.forEachOrdered`. Java's
-    /// `BytesRefHash.sort()` is destructive; this port's is not, which changes
-    /// nothing a caller can observe because Java never reads the map again
-    /// before clearing it.
+    /// Equivalent to `DeletedTerms.forEachOrdered`. Like Java's, it sorts each
+    /// field's `BytesRefHash` in place with the destructive
+    /// `BytesRefHash.sort()`, and reads the first `size()` sorted ids, so the
+    /// per-field maps are consumed: Java never probes them again before
+    /// clearing them.
     pub fn for_each_ordered(&self, mut consumer: impl FnMut(Term, i32)) {
         let mut fields: Vec<&String> = self.delete_terms.keys().collect();
         fields.sort();
         for field in fields {
             let terms = &self.delete_terms[field];
-            for index in terms.bytes_ref_hash.sort(&self.pool) {
-                let bytes = terms.bytes_ref_hash.get(&self.pool, index);
+            let mut hash = terms.lock_hash();
+            let size = hash.size() as usize;
+            let indices = hash.sort(&self.pool)[..size].to_vec();
+            for index in indices {
+                let bytes = hash.get(&self.pool, index);
                 consumer(
                     Term::new(field.clone(), crate::util::BytesRef::new(bytes.to_vec())),
                     terms.values[index as usize],
@@ -393,7 +398,17 @@ impl Accountable for DeletedTerms {
 #[derive(Debug)]
 struct BytesRefIntMap {
     counter: Arc<AtomicI64>,
-    bytes_ref_hash: BytesRefHash,
+    /// Equivalent to `BytesRefIntMap.bytesRefHash`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** `DeletedTerms.forEachOrdered`
+    /// sorts this hash with the destructive `BytesRefHash.sort()`, and Java
+    /// reaches it through references that do not grant exclusive access —
+    /// `FreqProxTermsWriter.applyDeletes` through `SegmentWriteState.segUpdates`
+    /// (`FreqProxTermsWriter.java:43-46`). The port's state holds a shared
+    /// `&BufferedUpdates`, so the hash sits behind a `Mutex` that lets the
+    /// sort mutate it there; every other access goes through `get_mut` or a
+    /// brief lock.
+    bytes_ref_hash: std::sync::Mutex<BytesRefHash>,
     values: Vec<i32>,
 }
 
@@ -419,16 +434,30 @@ impl BytesRefIntMap {
         counter.fetch_add(Self::INIT_RAM_BYTES, Ordering::AcqRel);
         Self {
             counter,
-            bytes_ref_hash,
+            bytes_ref_hash: std::sync::Mutex::new(bytes_ref_hash),
             values: vec![0; crate::util::bytes_ref_hash::DEFAULT_CAPACITY],
         }
+    }
+
+    /// The hash, locked; see [`Self::bytes_ref_hash`] for why it is locked.
+    fn lock_hash(&self) -> std::sync::MutexGuard<'_, BytesRefHash> {
+        self.bytes_ref_hash
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The hash, through exclusive access.
+    fn hash_mut(&mut self) -> &mut BytesRefHash {
+        self.bytes_ref_hash
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Equivalent to `BytesRefIntMap.put(BytesRef, int)`: `true` when `key`
     /// is new.
     fn put(&mut self, pool: &mut ByteBlockPool, key: &[u8], value: i32) -> Result<bool> {
         debug_assert!(value >= 0);
-        let e = self.bytes_ref_hash.add(pool, key)?;
+        let e = self.hash_mut().add(pool, key)?;
         if e < 0 {
             self.values[(-e - 1) as usize] = value;
             return Ok(false);
@@ -450,7 +479,7 @@ impl BytesRefIntMap {
 
     /// Equivalent to `BytesRefIntMap.get(BytesRef)`.
     fn get(&self, pool: &ByteBlockPool, key: &[u8]) -> i32 {
-        match self.bytes_ref_hash.find(pool, key) {
+        match self.lock_hash().find(pool, key) {
             -1 => -1,
             e => self.values[e as usize],
         }
@@ -658,6 +687,9 @@ impl BufferedUpdates {
     /// and terms by their bytes.
     ///
     /// Equivalent to collecting `BufferedUpdates.deleteTerms.forEachOrdered`.
+    ///
+    /// The delete terms are sorted in place, as Java's `forEachOrdered`
+    /// sorts them, so the term map cannot be probed afterwards.
     pub fn delete_terms(&self) -> Vec<TermDelete> {
         let mut out = Vec::with_capacity(self.delete_terms.size());
         self.delete_terms
@@ -4638,47 +4670,11 @@ impl DwptGuard {
 
 /// Records the standard flush diagnostics on a freshly flushed segment.
 ///
-/// Equivalent to `IndexWriter.setDiagnostics(SegmentInfo, IndexWriter.SOURCE_FLUSH)`,
-/// which delegates to the private three-argument form
-/// (`IndexWriter.java:5132-5150`).
-///
-/// **Divergence from Lucene 10.5.0.** Java records eight entries — `source`,
-/// `lucene.version`, `os`, `os.arch`, `os.version`, `java.runtime.version`,
-/// `java.vendor` and `timestamp`. This port records five, and two of those hold
-/// different text:
-///
-/// * `java.runtime.version` and `java.vendor` name the Java runtime that wrote
-///   the segment. There is no Java runtime here, and writing a value anyway
-///   would put a false statement in the index.
-/// * `os.version` comes from the JVM's `os.version` system property, which the
-///   Rust standard library has no equivalent of; reaching outside it for a
-///   field nothing reads is not worth a platform dependency.
-/// * `os` and `os.arch` come from [`std::env::consts::OS`] and
-///   [`std::env::consts::ARCH`], so they read `linux`/`x86_64` where a JVM
-///   writes `Linux`/`amd64`. They name the same machine in this port's own
-///   vocabulary.
-///
-/// The divergence is confined to values nothing acts on. Within Lucene 10.5.0
-/// the diagnostics map is only copied (`IndexWriter.java:3642`), printed by
-/// `CheckIndex` (`CheckIndex.java:985`) and serialised into the `.si`
-/// (`Lucene99SegmentInfoFormat.java:212`); no reader, merge policy or codec
-/// branches on any of these keys, and `tests/portability/flush_files.rs` shows
-/// Lucene 10.5.0 opening the segments this port writes.
-///
-/// A byte-identical diagnostics map is unreachable in any case: `timestamp` is
-/// the wall clock at flush, so two runs of Lucene itself already differ.
+/// Equivalent to `IndexWriter.setDiagnostics(SegmentInfo, IndexWriter.SOURCE_FLUSH)`
+/// (`DocumentsWriterPerThread.java:637`), which delegates to the private
+/// three-argument form (`IndexWriter.java:5131-5149`), as this does.
 fn set_flush_diagnostics(info: &mut SegmentInfo) {
-    let mut diagnostics = HashMap::new();
-    diagnostics.insert("source".to_string(), SOURCE_FLUSH.to_string());
-    diagnostics.insert("lucene.version".to_string(), Version::LATEST.to_string());
-    diagnostics.insert("os".to_string(), std::env::consts::OS.to_string());
-    diagnostics.insert("os.arch".to_string(), std::env::consts::ARCH.to_string());
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    diagnostics.insert("timestamp".to_string(), timestamp.to_string());
-    info.set_diagnostics(diagnostics);
+    crate::index::index_writer::IndexWriter::set_diagnostics(info, SOURCE_FLUSH);
 }
 
 // ---------------------------------------------------------------------------

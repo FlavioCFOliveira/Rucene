@@ -141,8 +141,19 @@ impl HnswGraphSearcher {
         graph_searcher.search(knn_collector, scorer, graph, accept_ords)
     }
 
-    /// Convenience search over an on-heap graph, returning a collector with
-    /// the top `top_k` results.
+    /// Searches an on-heap graph, returning a collector with the top `top_k`
+    /// results.
+    ///
+    /// Equivalent to the static `HnswGraphSearcher.search(RandomVectorScorer,
+    /// int, OnHeapHnswGraph, Bits, int)` (`HnswGraphSearcher.java:177-186`),
+    /// which tracks the visited nodes in a `SparseFixedBitSet` of
+    /// `getGraphSize(graph)` bits.
+    ///
+    /// # Errors
+    ///
+    /// Returns Java's `IllegalArgumentException("length needs to be >= 1")`
+    /// for a graph without nodes, which the `SparseFixedBitSet` constructor
+    /// throws (`SparseFixedBitSet.java:63-66`), and whatever the search raises.
     pub fn search_on_heap(
         scorer: &mut dyn RandomVectorScorer,
         top_k: i32,
@@ -151,27 +162,13 @@ impl HnswGraphSearcher {
         visited_limit: i64,
     ) -> Result<TopKnnCollector> {
         let mut collector = TopKnnCollector::new(top_k, visited_limit);
+        let graph_size = get_graph_size(graph);
         let mut searcher = OnHeapSearcher::new(
             NeighborQueue::new(top_k, true)?,
-            create_bit_set(top_k, get_graph_size(graph)),
+            Box::new(SparseFixedBitSet::new(graph_size.max(0) as usize)?),
         );
         searcher.search(&mut collector, scorer, graph, accept_ords)?;
         Ok(collector)
-    }
-
-    /// Searches a generic `HnswGraph`.
-    pub fn search_graph(
-        &mut self,
-        results: &mut dyn KnnCollector,
-        scorer: &mut dyn RandomVectorScorer,
-        graph: &mut dyn HnswGraph,
-        accept_ords: Option<&dyn Bits>,
-    ) -> Result<()> {
-        let eps = self.find_best_entry_point(scorer, graph, results)?;
-        if eps.is_empty() || eps[0] == UNK_EP {
-            return Ok(());
-        }
-        self.search_level(results, scorer, 0, &eps, graph, accept_ords)
     }
 
     /// Finds the best entry points from which to search the zeroth graph layer.
@@ -333,10 +330,20 @@ impl HnswGraphSearcher {
         self.candidates.clear();
         let cap = capacity.max(0) as usize;
         if self.visited.length() < cap {
-            // Java casts `visited` to a FixedBitSet here and calls
-            // `FixedBitSet.ensureCapacityAndClear`, so the grown set is always
-            // a dense one whatever `createBitSet` chose at construction.
-            self.visited = Box::new(FixedBitSet::new(cap));
+            // `visited = FixedBitSet.ensureCapacityAndClear((FixedBitSet)
+            // visited, capacity)` (`HnswGraphSearcher.java:372`). Java's cast
+            // throws `ClassCastException` when `visited` is not a
+            // `FixedBitSet`; so does this, as a panic.
+            let fixed = self
+                .visited
+                .bit_set_as_any_mut()
+                .and_then(|any| any.downcast_mut::<FixedBitSet>())
+                .expect(
+                    "ClassCastException: HnswGraphSearcher.visited cannot be cast to \
+                     org.apache.lucene.util.FixedBitSet",
+                );
+            let taken = std::mem::replace(fixed, FixedBitSet::new(0));
+            *fixed = FixedBitSet::ensure_capacity_and_clear(taken, cap);
         } else {
             self.visited.clear_all();
         }
@@ -410,10 +417,20 @@ impl OnHeapSearcher {
         self.candidates.clear();
         let cap = capacity.max(0) as usize;
         if self.visited.length() < cap {
-            // Java casts `visited` to a FixedBitSet here and calls
-            // `FixedBitSet.ensureCapacityAndClear`, so the grown set is always
-            // a dense one whatever `createBitSet` chose at construction.
-            self.visited = Box::new(FixedBitSet::new(cap));
+            // `visited = FixedBitSet.ensureCapacityAndClear((FixedBitSet)
+            // visited, capacity)` (`HnswGraphSearcher.java:372`). Java's cast
+            // throws `ClassCastException` when `visited` is not a
+            // `FixedBitSet`; so does this, as a panic.
+            let fixed = self
+                .visited
+                .bit_set_as_any_mut()
+                .and_then(|any| any.downcast_mut::<FixedBitSet>())
+                .expect(
+                    "ClassCastException: HnswGraphSearcher.visited cannot be cast to \
+                     org.apache.lucene.util.FixedBitSet",
+                );
+            let taken = std::mem::replace(fixed, FixedBitSet::new(0));
+            *fixed = FixedBitSet::ensure_capacity_and_clear(taken, cap);
         } else {
             self.visited.clear_all();
         }
@@ -622,8 +639,42 @@ pub fn expected_visited_nodes(k: i32, graph_size: i32) -> i32 {
 pub fn create_bit_set(k: i32, graph_size: i32) -> Box<dyn BitSet> {
     let size = graph_size.max(1) as usize;
     if expected_visited_nodes(k, graph_size) < (graph_size >> 7) {
-        Box::new(SparseFixedBitSet::new(size))
+        Box::new(SparseFixedBitSet::new(size).expect("INVARIANT: size is graph_size.max(1)"))
     } else {
         Box::new(FixedBitSet::new(size))
+    }
+}
+
+#[cfg(test)]
+mod prepare_scratch_state_tests {
+    use super::*;
+    use crate::util::ArrayUtil;
+
+    /// rmp #297: `prepareScratchState` grows `visited` with
+    /// `FixedBitSet.ensureCapacityAndClear((FixedBitSet) visited, capacity)`
+    /// (`HnswGraphSearcher.java:369-375`), whose new set spans
+    /// `oversize(bits2words(capacity) + 1, 8)` words, not `capacity` bits.
+    #[test]
+    fn visited_grows_through_ensure_capacity_and_clear() {
+        let mut visited = FixedBitSet::new(10);
+        visited.set(3);
+        let mut searcher =
+            HnswGraphSearcher::new(NeighborQueue::new(4, true).unwrap(), Box::new(visited));
+        searcher.prepare_scratch_state(100, 0);
+        let words = ArrayUtil::oversize(FixedBitSet::bits2words(100) + 1, 8);
+        assert_eq!(searcher.visited.length(), words << 6);
+        assert_eq!(searcher.visited.cardinality(), 0);
+    }
+
+    /// Java's cast throws `ClassCastException` when `visited` is a
+    /// `SparseFixedBitSet` that has to grow.
+    #[test]
+    #[should_panic(expected = "ClassCastException")]
+    fn a_sparse_visited_set_cannot_grow() {
+        let mut searcher = HnswGraphSearcher::new(
+            NeighborQueue::new(4, true).unwrap(),
+            Box::new(SparseFixedBitSet::new(10).unwrap()),
+        );
+        searcher.prepare_scratch_state(100, 0);
     }
 }

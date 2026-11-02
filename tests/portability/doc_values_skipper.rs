@@ -196,7 +196,7 @@ fn read_with_rucene(dir: &Path) -> Vec<String> {
     let _ = register_codec("Lucene104", Lucene104Codec::new());
     let directory: Arc<dyn Directory> = Arc::new(FSDirectory::open(dir).expect("open"));
     let reader = directory_reader::open(directory).expect("open the reader");
-    let leaves = reader.leaves();
+    let leaves = reader.leaves().unwrap();
     assert_eq!(leaves.len(), 1, "the fixture force-merges to one segment");
     let leaf = leaves[0].leaf_reader();
     let mut out = vec![format!("max_doc={}", leaf.max_doc())];

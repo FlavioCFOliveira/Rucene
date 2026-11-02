@@ -108,15 +108,6 @@ impl InitializedHnswGraphBuilder {
         builder.inner.into_graph()
     }
 
-    /// Consumes the builder and returns the graph it holds.
-    ///
-    /// # Errors
-    ///
-    /// As [`HnswGraphBuilder::into_graph`].
-    pub fn into_graph(self) -> Result<OnHeapHnswGraph> {
-        self.inner.into_graph()
-    }
-
     fn initialize_from_graph(
         &mut self,
         initializer_graph: &mut dyn HnswGraph,

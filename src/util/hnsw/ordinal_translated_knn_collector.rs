@@ -28,11 +28,6 @@ impl OrdinalTranslatedKnnCollector {
             vector_ordinal_to_doc_id,
         }
     }
-
-    /// Returns the wrapped collector.
-    pub fn inner(&self) -> &dyn KnnCollector {
-        self.collector.as_ref()
-    }
 }
 
 impl KnnCollector for OrdinalTranslatedKnnCollector {

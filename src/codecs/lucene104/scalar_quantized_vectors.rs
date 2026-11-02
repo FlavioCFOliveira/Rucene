@@ -43,7 +43,7 @@ use crate::util::quantization::{
     QuantizedVectorsReader, ScalarEncoding, ScalarQuantizer,
 };
 use crate::util::vector_util;
-use crate::util::Bits;
+use crate::util::{Bits, IOUtils};
 
 /// Info-stream component name this format reports under.
 pub const QUANTIZED_VECTOR_COMPONENT: &str = "QVEC";
@@ -1757,6 +1757,37 @@ impl Lucene104ScalarQuantizedVectorsReader {
         scorer: Arc<Lucene104ScalarQuantizedVectorScorer>,
         access_hint: Option<crate::store::DataAccessHint>,
     ) -> Result<Self> {
+        let mut raw_vectors_reader = raw_vectors_reader;
+        match Self::open(state, access_hint) {
+            Ok((fields, vector_data)) => Ok(Self {
+                fields,
+                vector_data: Arc::from(vector_data),
+                raw_vectors_reader,
+                scorer,
+            }),
+            Err(t) => {
+                // `IOUtils.closeWhileHandlingException(this)`
+                // (`Lucene104ScalarQuantizedVectorsReader.java:133-136`), whose
+                // `close()` is `IOUtils.close(quantizedVectorData,
+                // rawVectorsReader)`; `quantizedVectorData` is assigned last,
+                // so it is still null here.
+                IOUtils::close_while_handling_exception([Some(|| {
+                    IOUtils::close([Some(|| raw_vectors_reader.close())])
+                })])?;
+                Err(t)
+            }
+        }
+    }
+
+    /// The `try` block of the constructor: reads the metadata and opens the
+    /// `.veq` input.
+    fn open(
+        state: &SegmentReadState<'_>,
+        access_hint: Option<crate::store::DataAccessHint>,
+    ) -> Result<(
+        std::collections::BTreeMap<String, FieldEntry>,
+        Box<dyn IndexInput>,
+    )> {
         let meta_file_name = segment_file_name(
             &state.segment_info.name,
             &state.segment_suffix,
@@ -1808,13 +1839,7 @@ impl Lucene104ScalarQuantizedVectorsReader {
             VECTOR_DATA_CODEC_NAME,
             state.context.with_hints(&hints).as_ref(),
         )?;
-
-        Ok(Self {
-            fields,
-            vector_data: Arc::from(vector_data),
-            raw_vectors_reader,
-            scorer,
-        })
+        Ok((fields, vector_data))
     }
 
     /// Returns the centroid the vectors of `field` were quantized against.
@@ -2059,24 +2084,35 @@ impl Lucene104ScalarQuantizedVectorsReader {
             file_extension,
         );
         let mut input = state.directory.open_input(&file_name, context)?;
-        let version_vector_data = check_index_header(
-            input.as_mut(),
-            codec_name,
-            VERSION_START,
-            VERSION_CURRENT,
-            &state.segment_info.id(),
-            &state.segment_suffix,
-        )?;
-        if version_meta != version_vector_data {
-            return Err(LuceneError::corrupt_index(
-                format!(
-                    "Format versions mismatch: meta={version_meta}, {codec_name}={version_vector_data}"
-                ),
-                &file_name,
-            ));
+        let checked = (|| -> Result<()> {
+            let version_vector_data = check_index_header(
+                input.as_mut(),
+                codec_name,
+                VERSION_START,
+                VERSION_CURRENT,
+                &state.segment_info.id(),
+                &state.segment_suffix,
+            )?;
+            if version_meta != version_vector_data {
+                return Err(LuceneError::corrupt_index(
+                    format!(
+                        "Format versions mismatch: meta={version_meta}, {codec_name}={version_vector_data}"
+                    ),
+                    &file_name,
+                ));
+            }
+            retrieve_checksum(input.as_mut())?;
+            Ok(())
+        })();
+        match checked {
+            Ok(()) => Ok(input),
+            Err(t) => {
+                // `IOUtils.closeWhileHandlingException(in)`
+                // (`Lucene104ScalarQuantizedVectorsReader.java:397-400`).
+                IOUtils::close_while_handling_exception([Some(|| input.close())])?;
+                Err(t)
+            }
         }
-        retrieve_checksum(input.as_mut())?;
-        Ok(input)
     }
 
     /// Returns the quantized vectors of `field`.
@@ -2183,21 +2219,38 @@ impl Lucene104ScalarQuantizedVectorsReader {
         // it from the supplier's close action. The values here own their
         // input, so they read through a clone and the close action keeps the
         // original to close (`Lucene104ScalarQuantizedVectorsReader.java:
-        // 490-521`). A failure on the way drops — closes — the input without
-        // masking the error, as Java's `closeWhileSuppressingExceptions`.
-        let values_input = quantized_score_data_input.clone_input()?;
-        let score_vector_values = OffHeapScalarQuantizedVectorValues::load_query_side(
-            fi,
-            docs_with_field.cardinality(),
-            values_input,
-        );
-        let total_vector_count = vector_values.size();
+        // 490-521`).
         let mut quantized_score_data_input = Some(quantized_score_data_input);
-        let scorer_supplier = AsymmetricQuantizedRandomVectorScorerSupplier::new(
-            score_vector_values,
-            vector_values,
-            field_info.vector_similarity_function,
-        )?;
+        let built = (|| -> Result<_> {
+            let values_input = quantized_score_data_input
+                .as_ref()
+                .expect("INVARIANT: opened above")
+                .clone_input()?;
+            let score_vector_values = OffHeapScalarQuantizedVectorValues::load_query_side(
+                fi,
+                docs_with_field.cardinality(),
+                values_input,
+            );
+            let total_vector_count = vector_values.size();
+            let scorer_supplier = AsymmetricQuantizedRandomVectorScorerSupplier::new(
+                score_vector_values,
+                vector_values,
+                field_info.vector_similarity_function,
+            )?;
+            Ok((scorer_supplier, total_vector_count))
+        })();
+        let (scorer_supplier, total_vector_count) = match built {
+            Ok(built) => built,
+            Err(t) => {
+                // `IOUtils.closeWhileSuppressingExceptions(t,
+                // quantizedScoreDataInput)`, then `throw t`
+                // (`Lucene104ScalarQuantizedVectorsReader.java:519-522`).
+                return Err(IOUtils::close_while_suppressing_exceptions(
+                    t,
+                    [quantized_score_data_input.map(|mut i| move || i.close())],
+                ));
+            }
+        };
         Ok(Some(Box::new(crate::util::hnsw::scorer::create(
             Box::new(scorer_supplier),
             total_vector_count,
@@ -2206,9 +2259,9 @@ impl Lucene104ScalarQuantizedVectorsReader {
                 // `IOUtils.close(quantizedScoreDataInput)` first, whose
                 // exception propagates and skips the deletion; then
                 // `IOUtils.deleteFilesIgnoringExceptions` on the temp file.
-                if let Some(mut input) = quantized_score_data_input.take() {
-                    input.close()?;
-                }
+                IOUtils::close([quantized_score_data_input
+                    .take()
+                    .map(|mut i| move || i.close())])?;
                 let _ = directory.delete_file(&temp_name);
                 Ok(())
             }),
@@ -2421,15 +2474,14 @@ impl KnnVectorsReader for Lucene104ScalarQuantizedVectorsReader {
     ///
     /// Equivalent to `IOUtils.close(quantizedVectorData, rawVectorsReader)`.
     fn close(&mut self) -> Result<()> {
-        let data = match Arc::get_mut(&mut self.vector_data) {
-            Some(input) => input.close(),
-            // Another view of the same file is still alive, exactly as when
-            // Java's `IndexInput` has been cloned; Lucene closes the original
-            // and lets the clones fall away.
-            None => Ok(()),
-        };
-        let delegate = self.raw_vectors_reader.close();
-        data.and(delegate)
+        IOUtils::close([
+            // When another view of the same file is still alive, exactly as
+            // when Java's `IndexInput` has been cloned, Lucene closes the
+            // original and lets the clones fall away.
+            Arc::get_mut(&mut self.vector_data)
+                .and_then(|input| IOUtils::closeable(move || input.close())),
+            IOUtils::closeable(|| self.raw_vectors_reader.close()),
+        ])
     }
 
     /// Adds this format's `.veq` bytes to what the delegate reports.
@@ -3117,19 +3169,20 @@ impl Lucene104ScalarQuantizedVectorsWriter {
             &state.segment_suffix,
             VECTOR_DATA_EXTENSION,
         );
-        let mut meta_opt = Some(
-            state
-                .directory
-                .create_output(&meta_file_name, state.context)?,
-        );
-        let mut vector_data_opt = Some(
-            state
-                .directory
-                .create_output(&vector_data_file_name, state.context)?,
-        );
-        let result = (|| -> Result<Self> {
-            let meta = meta_opt.as_mut().expect("INVARIANT: just created");
-            let vector_data = vector_data_opt.as_mut().expect("INVARIANT: just created");
+        let mut raw_vector_delegate = raw_vector_delegate;
+        let mut meta_opt: Option<Box<dyn IndexOutput>> = None;
+        let mut vector_data_opt: Option<Box<dyn IndexOutput>> = None;
+        let result = (|| -> Result<()> {
+            let meta = meta_opt.insert(
+                state
+                    .directory
+                    .create_output(&meta_file_name, state.context)?,
+            );
+            let vector_data = vector_data_opt.insert(
+                state
+                    .directory
+                    .create_output(&vector_data_file_name, state.context)?,
+            );
             crate::codecs::codec_util::write_index_header(
                 meta.as_mut(),
                 META_CODEC_NAME,
@@ -3144,25 +3197,34 @@ impl Lucene104ScalarQuantizedVectorsWriter {
                 &state.segment_info.id(),
                 &state.segment_suffix,
             )?;
-            Ok(Self {
-                encoding,
-                meta: meta_opt.take(),
-                vector_data: vector_data_opt.take(),
-                raw_vector_delegate: Some(raw_vector_delegate),
-                fields: Vec::new(),
-                segment_max_doc: state.segment_info.max_doc().ok(),
-                finished: false,
-            })
+            Ok(())
         })();
-        if result.is_err() {
-            if let Some(mut meta) = meta_opt.take() {
-                let _ = meta.close();
-            }
-            if let Some(mut data) = vector_data_opt.take() {
-                let _ = data.close();
-            }
+        if let Err(t) = result {
+            // `IOUtils.closeWhileHandlingException(this)`
+            // (`Lucene104ScalarQuantizedVectorsWriter.java:112-115`), whose
+            // `close()` is `IOUtils.close(meta, vectorData, rawVectorDelegate)`.
+            IOUtils::close_while_handling_exception([Some(|| {
+                IOUtils::close([
+                    meta_opt
+                        .take()
+                        .and_then(|mut o| IOUtils::closeable(move || o.close())),
+                    vector_data_opt
+                        .take()
+                        .and_then(|mut o| IOUtils::closeable(move || o.close())),
+                    IOUtils::closeable(|| raw_vector_delegate.close()),
+                ])
+            })])?;
+            return Err(t);
         }
-        result
+        Ok(Self {
+            encoding,
+            meta: meta_opt,
+            vector_data: vector_data_opt,
+            raw_vector_delegate: Some(raw_vector_delegate),
+            fields: Vec::new(),
+            segment_max_doc: state.segment_info.max_doc().ok(),
+            finished: false,
+        })
     }
 
     /// Returns the encoding this writer quantizes with.
@@ -3813,19 +3875,17 @@ impl KnnVectorsWriter for Lucene104ScalarQuantizedVectorsWriter {
     /// everything is closed even when one of them fails, and the first failure
     /// is the one reported.
     fn close(&mut self) -> Result<()> {
-        let meta = match self.meta.take() {
-            Some(mut out) => out.close(),
-            None => Ok(()),
-        };
-        let data = match self.vector_data.take() {
-            Some(mut out) => out.close(),
-            None => Ok(()),
-        };
-        let delegate = match self.raw_vector_delegate.as_mut() {
-            Some(writer) => writer.close(),
-            None => Ok(()),
-        };
-        meta.and(data).and(delegate)
+        IOUtils::close([
+            self.meta
+                .take()
+                .and_then(|mut out| IOUtils::closeable(move || out.close())),
+            self.vector_data
+                .take()
+                .and_then(|mut out| IOUtils::closeable(move || out.close())),
+            self.raw_vector_delegate
+                .as_mut()
+                .and_then(|writer| IOUtils::closeable(move || writer.close())),
+        ])
     }
 
     /// Accounts for the delegate and this writer's quantization overhead.
@@ -4341,7 +4401,7 @@ mod tests {
         use crate::codecs::stub::BufferedUpdates;
         use crate::index::{FieldInfos, SegmentInfo};
         use crate::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT};
-        use crate::util::{default_info_stream, Version};
+        use crate::util::Version;
 
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
         let similarity = VectorSimilarityFunction::EUCLIDEAN;
@@ -4367,7 +4427,7 @@ mod tests {
         field_info.vector_similarity_function = similarity;
         let infos = FieldInfos::new(vec![field_info.clone()]).unwrap();
         let write_state = SegmentWriteState::new(
-            default_info_stream(),
+            &crate::util::NoOutputInfoStream,
             Arc::clone(&directory),
             &info,
             &infos,
@@ -4422,7 +4482,7 @@ mod tests {
         use crate::codecs::stub::BufferedUpdates;
         use crate::index::{FieldInfos, SegmentInfo};
         use crate::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT};
-        use crate::util::{default_info_stream, Version};
+        use crate::util::Version;
 
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
         let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
@@ -4447,7 +4507,7 @@ mod tests {
         field_info.vector_similarity_function = VectorSimilarityFunction::EUCLIDEAN;
         let infos = FieldInfos::new(vec![field_info.clone()]).unwrap();
         let write_state = SegmentWriteState::new(
-            default_info_stream(),
+            &crate::util::NoOutputInfoStream,
             Arc::clone(&directory),
             &info,
             &infos,
@@ -4501,7 +4561,7 @@ mod tests {
         use crate::codecs::stub::BufferedUpdates;
         use crate::index::{FieldInfos, SegmentInfo};
         use crate::store::{Directory, DEFAULT_IO_CONTEXT};
-        use crate::util::{default_info_stream, Version};
+        use crate::util::Version;
 
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
         let recording = Arc::new(RecordingDirectory::default());
@@ -4527,7 +4587,7 @@ mod tests {
         field_info.vector_similarity_function = VectorSimilarityFunction::EUCLIDEAN;
         let infos = FieldInfos::new(vec![field_info.clone()]).unwrap();
         let write_state = SegmentWriteState::new(
-            default_info_stream(),
+            &crate::util::NoOutputInfoStream,
             Arc::clone(&directory),
             &info,
             &infos,
@@ -4796,7 +4856,7 @@ mod tests {
         use crate::codecs::stub::BufferedUpdates;
         use crate::index::{FieldInfos, SegmentInfo};
         use crate::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT};
-        use crate::util::{default_info_stream, Version};
+        use crate::util::Version;
 
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
         let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
@@ -4821,7 +4881,7 @@ mod tests {
         field_info.vector_similarity_function = VectorSimilarityFunction::EUCLIDEAN;
         let infos = FieldInfos::new(vec![field_info.clone()]).unwrap();
         let write_state = SegmentWriteState::new(
-            default_info_stream(),
+            &crate::util::NoOutputInfoStream,
             Arc::clone(&directory),
             &info,
             &infos,
@@ -4916,5 +4976,64 @@ mod tests {
     fn get_centroid_is_none_for_a_reader_of_another_format() {
         let reader = crate::codecs::knn_vectors::EmptyKnnVectorsReader;
         assert!(Lucene104ScalarQuantizedVectorsWriter::get_centroid(&reader, "v").is_none());
+    }
+}
+
+/// The `IOUtils` close family at the scalar-quantized vectors call sites (#308).
+#[cfg(test)]
+mod close_family_tests {
+    use super::Lucene104ScalarQuantizedVectorsFormat;
+    use crate::codecs::knn_vectors::KnnVectorsFormat;
+    use crate::codecs::tests::{
+        owned_write_state, read_state, rewrite_file, test_segment_info, tracking_directory,
+    };
+    use crate::index::FieldInfos;
+
+    const ALL: [&str; 4] = ["_0.vemq", "_0.veq", "_0.vemf", "_0.vec"];
+
+    fn closed_of(log: &crate::codecs::tests::CloseLog) -> Vec<String> {
+        log.closed()
+            .into_iter()
+            .filter(|n| ALL.contains(&n.as_str()))
+            .collect()
+    }
+
+    /// The writer's constructor runs `IOUtils.closeWhileHandlingException(this)`
+    /// (`Lucene104ScalarQuantizedVectorsWriter.java:112-115`): `close()` is
+    /// `IOUtils.close(meta, vectorData, rawVectorDelegate)`, so the `.vemq`
+    /// and the raw writer it was handed close.
+    #[test]
+    fn a_failed_writer_constructor_closes_meta_and_the_raw_writer() {
+        let (dir, _tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 10);
+        log.fail_open("_0.veq");
+        Lucene104ScalarQuantizedVectorsFormat::new()
+            .fields_writer(&owned_write_state(&dir, &info))
+            .unwrap_err();
+        assert_eq!(closed_of(&log), ["_0.vemq", "_0.vemf", "_0.vec"]);
+    }
+
+    /// A bad `.veq` header closes the `.veq` input
+    /// (`Lucene104ScalarQuantizedVectorsReader.java:397-400`), then
+    /// `IOUtils.closeWhileHandlingException(this)` closes the raw reader the
+    /// constructor was handed (`Lucene104ScalarQuantizedVectorsReader.java:133-136`).
+    #[test]
+    fn a_failed_reader_constructor_closes_the_data_and_the_raw_reader() {
+        let (dir, tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 10);
+        let fis = FieldInfos::default();
+        let mut writer = Lucene104ScalarQuantizedVectorsFormat::new()
+            .fields_writer(&owned_write_state(&dir, &info))
+            .unwrap();
+        writer.finish().unwrap();
+        writer.close().unwrap();
+        let before = closed_of(&log).len();
+        rewrite_file(&tracking, "_0.veq", |bytes| bytes[6] ^= 0xff);
+        Lucene104ScalarQuantizedVectorsFormat::new()
+            .fields_reader(&read_state(&*dir, &info, &fis))
+            .unwrap_err();
+        // `meta` closes as its `try`-with-resources ends, before the `.veq`
+        // is opened.
+        assert_eq!(closed_of(&log)[before..], ["_0.vemq", "_0.veq", "_0.vec"]);
     }
 }

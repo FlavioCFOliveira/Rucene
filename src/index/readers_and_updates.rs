@@ -144,36 +144,17 @@ impl PendingDeletes {
     /// Returns the mutable bit set, creating it from the read-only live docs
     /// if necessary (copy-on-write).
     ///
-    /// In Java, `liveDocs` is set to `writeableLiveDocs.asReadOnlyBits()`,
-    /// which is a **view** of the same underlying `FixedBitSet`.  In Rust,
-    /// `FixedBitSet::clone()` produces an independent deep copy, so we
-    /// invalidate the stale `live_docs` snapshot instead — `writeable_live_docs`
-    /// becomes the sole source of truth while it exists.
-    ///
-    /// Equivalent to `PendingDeletes.getMutableBits()`.
+    /// Equivalent to `PendingDeletes.getMutableBits()`
+    /// (`PendingDeletes.java:63-81`): the live docs become
+    /// `writeableLiveDocs.asReadOnlyBits()`, a view of the very words the
+    /// returned set writes, so every delete shows through them.
     pub fn get_mutable_bits(&mut self, info: &SegmentCommitInfo) -> &mut FixedBitSet {
         // `assert liveDocsInitialized : ...` (`PendingDeletes.java:66`).
         debug_assert!(
             self.live_docs_initialized,
             "can't delete if liveDocs are not initialized"
         );
-        if self.writeable_live_docs.is_none() {
-            let max_doc = info.info.max_doc().expect("INVARIANT: max_doc valid") as usize;
-            if let Some(ref live_docs) = self.live_docs {
-                self.writeable_live_docs = Some(FixedBitSet::copy_of(live_docs));
-            } else {
-                let mut bits = FixedBitSet::new(max_doc);
-                bits.set_range(0, max_doc);
-                self.writeable_live_docs = Some(bits);
-            }
-            // The read-only snapshot is now stale; writeable_live_docs is the
-            // sole source of truth.  In Java this is handled by asReadOnlyBits()
-            // returning a view, but in Rust a clone would diverge.
-            self.live_docs = None;
-        }
-        self.writeable_live_docs
-            .as_mut()
-            .expect("initialized above")
+        mutable_bits(&mut self.live_docs, &mut self.writeable_live_docs, info)
     }
 
     /// Marks a document as deleted.  Returns `true` if the document was
@@ -212,16 +193,14 @@ impl PendingDeletes {
     /// modifications to the returned bits.
     ///
     /// Equivalent to `PendingDeletes.getLiveDocs()` (`PendingDeletes.java:108-112`):
-    /// Java drops its writeable bit set (`writeableLiveDocs = null`) and
-    /// returns `liveDocs`, the read-only view of that set, which stays this
-    /// tracker's live docs. Nothing writes the set again — the next delete
-    /// copies it — so every caller, before and after, holds the same frozen
-    /// bits. Here the writeable set, when there is one, is frozen into
-    /// `live_docs` and every call hands out a handle on those same bits;
-    /// `live_docs` is never given away.
+    /// the writeable bit set is dropped (`writeableLiveDocs = null`) and
+    /// `liveDocs`, its read-only view, is returned and stays this tracker's
+    /// live docs. Nothing writes those words again — the next delete copies
+    /// them — so every caller, before and after, holds the same frozen bits;
+    /// each receives a handle on them.
     pub fn get_live_docs(&mut self) -> Option<Box<dyn Bits>> {
         // Prevent modifications to the returned live docs.
-        freeze_live_docs(&mut self.live_docs, &mut self.writeable_live_docs);
+        self.writeable_live_docs = None;
         self.live_docs
             .clone()
             .map(|bits| Box::new(bits) as Box<dyn Bits>)
@@ -322,16 +301,13 @@ impl PendingDeletes {
         if self.pending_delete_count == 0 {
             return Ok(false);
         }
-        // Prefer the writeable copy (most up-to-date state); fall back to the
-        // read-only snapshot.  In Java, liveDocs is a view of writeableLiveDocs,
-        // so this distinction is unnecessary — but in Rust they are independent.
-        let live_docs: &dyn Bits = if let Some(ref wd) = self.writeable_live_docs {
-            wd
-        } else {
-            self.live_docs
-                .as_ref()
-                .expect("live_docs must exist when pending_delete_count > 0")
-        };
+        // `Bits liveDocs = this.liveDocs; assert liveDocs != null;`
+        // (`PendingDeletes.java:177-178`): the read-only view of the writeable
+        // set, which shows every pending delete.
+        let live_docs: &dyn Bits = self
+            .live_docs
+            .as_ref()
+            .expect("live_docs must exist when pending_delete_count > 0");
         // We have new deletes: `assert liveDocs.length() == info.info.maxDoc()`
         // (`PendingDeletes.java:179`).
         debug_assert_eq!(
@@ -517,17 +493,34 @@ pub type PendingDeletesReaderSupplier<'a, P> =
     dyn FnMut(&mut P, &SegmentCommitInfo) -> Result<Arc<SegmentReader>> + 'a;
 
 /// Freezes the writeable live docs, when there are any, into the read-only
-/// `live_docs` every caller of `getLiveDocs()` shares.
+/// The body of `PendingDeletes.getMutableBits()` (`PendingDeletes.java:67-80`),
+/// shared by [`PendingDeletes`] and [`PendingSoftDeletes`], which inherits it.
 ///
-/// Java's `liveDocs` is already the read-only view of `writeableLiveDocs`
-/// (`PendingDeletes.java:78`), so `getLiveDocs()` only has to drop the
-/// writeable reference (`:110`). This port keeps the writeable set as the one
-/// source of truth while it exists and has no view of it, so dropping the
-/// writeable set means moving it behind the shared handle.
-fn freeze_live_docs(live_docs: &mut Option<SharedBits>, writeable: &mut Option<FixedBitSet>) {
-    if let Some(bits) = writeable.take() {
-        *live_docs = Some(SharedBits::new(Box::new(bits)));
+/// On the first call after the live docs were handed out, the writeable set is
+/// a copy of them (or every document alive), and the live docs become its
+/// read-only view, [`FixedBitSet::as_read_only_bits`], which shares its words.
+fn mutable_bits<'a>(
+    live_docs: &mut Option<SharedBits>,
+    writeable: &'a mut Option<FixedBitSet>,
+    info: &SegmentCommitInfo,
+) -> &'a mut FixedBitSet {
+    if writeable.is_none() {
+        // Copy on write: this means we've cloned a SegmentReader sharing the
+        // current liveDocs instance; must now make a private clone so we can
+        // change it.
+        let bits = match live_docs {
+            Some(live_docs) => FixedBitSet::copy_of(live_docs),
+            None => {
+                let max_doc = info.info.max_doc().expect("INVARIANT: max_doc valid") as usize;
+                let mut bits = FixedBitSet::new(max_doc);
+                bits.set_range(0, max_doc);
+                bits
+            }
+        };
+        *live_docs = Some(SharedBits::new(Box::new(bits.as_read_only_bits())));
+        *writeable = Some(bits);
     }
+    writeable.as_mut().expect("initialized above")
 }
 
 // ---------------------------------------------------------------------------
@@ -618,27 +611,15 @@ impl PendingSoftDeletes {
         }
     }
 
+    /// `PendingDeletes.getMutableBits()`, which `PendingSoftDeletes` inherits;
+    /// see [`PendingDeletes::get_mutable_bits`].
     fn get_mutable_bits(&mut self, info: &SegmentCommitInfo) -> &mut FixedBitSet {
         // `assert liveDocsInitialized : ...` (`PendingDeletes.java:66`).
         debug_assert!(
             self.live_docs_initialized,
             "can't delete if liveDocs are not initialized"
         );
-        if self.writeable_live_docs.is_none() {
-            let max_doc = info.info.max_doc().expect("INVARIANT: max_doc valid") as usize;
-            if let Some(ref live_docs) = self.live_docs {
-                self.writeable_live_docs = Some(FixedBitSet::copy_of(live_docs));
-            } else {
-                let mut bits = FixedBitSet::new(max_doc);
-                bits.set_range(0, max_doc);
-                self.writeable_live_docs = Some(bits);
-            }
-            // Invalidate the stale snapshot — writeable_live_docs is the source of truth.
-            self.live_docs = None;
-        }
-        self.writeable_live_docs
-            .as_mut()
-            .expect("initialized above")
+        mutable_bits(&mut self.live_docs, &mut self.writeable_live_docs, info)
     }
 
     /// Marks a document as deleted.
@@ -679,7 +660,7 @@ impl PendingSoftDeletes {
     /// for how this port shares the frozen bits instead of handing them away.
     pub fn get_live_docs(&mut self) -> Option<Box<dyn Bits>> {
         // Prevent modifications to the returned live docs.
-        freeze_live_docs(&mut self.live_docs, &mut self.writeable_live_docs);
+        self.writeable_live_docs = None;
         self.live_docs
             .clone()
             .map(|bits| Box::new(bits) as Box<dyn Bits>)
@@ -4174,6 +4155,32 @@ mod tests {
             vec![true, false, true, true, false, true]
         );
         assert_eq!(pd.num_pending_deletes(), 2);
+    }
+
+    /// rmp #315: `getMutableBits()` makes the live docs
+    /// `writeableLiveDocs.asReadOnlyBits()` (`PendingDeletes.java:78`), a view
+    /// of the words every later delete writes: the live docs a tracker hands
+    /// out are of the read-only view's class, which `ScorerUtil.likelyLiveDocs`
+    /// passes through unchanged, and they show each delete made before
+    /// `getLiveDocs()` froze them.
+    #[test]
+    fn mutable_bits_share_their_words_with_the_live_docs() {
+        let info = make_sci("_0", 6);
+        let mut pd = PendingDeletes::new(&info);
+        assert!(pd.delete(1, &info).unwrap());
+        assert!(pd.delete(3, &info).unwrap());
+        let live_docs = pd.get_live_docs().expect("live docs after a delete");
+        assert!(live_docs
+            .bits_as_any()
+            .is_some_and(|any| any.is::<crate::util::bit_set::FixedBits>()));
+        assert!(matches!(
+            crate::search::ScorerUtil::likely_live_docs(Some(live_docs.as_ref())),
+            Some(crate::search::LikelyLiveDocs::Same(_))
+        ));
+        assert_eq!(
+            (0..6).map(|doc| live_docs.get(doc)).collect::<Vec<_>>(),
+            vec![true, false, true, false, true, true]
+        );
     }
 
     /// Verifies `is_fully_deleted` when every document is deleted.

@@ -1283,7 +1283,7 @@ fn a_directory_reader_reads_the_term_vectors_of_every_segment() {
         rucene::index::directory_reader::open(Arc::clone(&dir)).expect("open directory reader");
     assert_eq!(reader.max_doc(), 3);
     assert!(
-        Arc::clone(&reader).leaves().len() >= 2,
+        Arc::clone(&reader).leaves().unwrap().len() >= 2,
         "the fix has to be exercised across a segment boundary"
     );
 

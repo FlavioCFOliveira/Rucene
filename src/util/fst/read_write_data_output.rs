@@ -67,11 +67,6 @@ impl ReadWriteDataOutput {
         self.frozen = true;
     }
 
-    /// Returns whether [`ReadWriteDataOutput::freeze`] has been called.
-    pub fn is_frozen(&self) -> bool {
-        self.frozen
-    }
-
     /// Returns the number of bytes written.
     pub fn size(&self) -> i64 {
         match self.blocks.last() {

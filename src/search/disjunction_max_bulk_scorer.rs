@@ -4,14 +4,13 @@
 #![deny(unsafe_code)]
 
 use crate::error::{LuceneError, Result};
-use crate::search::bit_set_util;
 use crate::search::bulk_scorer::BulkScorer;
 use crate::search::collection_terminated_exception::CollectionResult;
 use crate::search::collector::LeafCollector;
 use crate::search::doc_id_set_iterator::NO_MORE_DOCS;
 use crate::search::index_priority_queue::{IndexOrder, IndexPriorityQueue};
 use crate::search::scorable::{Scorable, SimpleScorable};
-use crate::util::{Bits, FixedBitSet, MathUtil};
+use crate::util::{BitSet, Bits, FixedBitSet, MathUtil};
 
 /// The window this scorer computes matches over; the same size
 /// [`BooleanScorer`](crate::search::BooleanScorer) uses.
@@ -213,14 +212,13 @@ impl BulkScorer for DisjunctionMaxBulkScorer {
             // Then replay, resetting window_scores entries inline to avoid a
             // full fill.
             collector.set_scorer(&mut self.top_level_scorable)?;
-            let mut window_doc = bit_set_util::next_set_bit(&self.window_matches, 0);
+            let mut window_doc = BitSet::next_set_bit(&self.window_matches, 0);
             while window_doc != NO_MORE_DOCS {
                 self.top_level_scorable
                     .set_score(self.window_scores[window_doc as usize]);
                 self.window_scores[window_doc as usize] = 0.0;
                 collector.collect(window_min + window_doc, &mut self.top_level_scorable)?;
-                window_doc =
-                    bit_set_util::next_set_bit(&self.window_matches, window_doc as usize + 1);
+                window_doc = BitSet::next_set_bit(&self.window_matches, window_doc + 1);
             }
 
             // Only the bit set needs clearing; window_scores entries were reset

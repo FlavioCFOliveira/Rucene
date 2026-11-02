@@ -180,16 +180,6 @@ impl IntArrayDocIdSet {
             length,
         })
     }
-
-    /// Returns the number of documents in this set.
-    pub fn len(&self) -> usize {
-        self.length
-    }
-
-    /// Returns whether this set is empty.
-    pub fn is_empty(&self) -> bool {
-        self.length == 0
-    }
 }
 
 impl Accountable for IntArrayDocIdSet {
@@ -311,12 +301,15 @@ impl DocIdSetIterator for IntArrayDocIdSetIterator {
 /// random access when the wrapped set does.
 pub struct NotDocIdSet {
     max_doc: i32,
-    inner: Arc<dyn DocIdSet>,
+    inner: Arc<dyn DocIdSet + Send + Sync>,
 }
 
 impl NotDocIdSet {
     /// Negates `inner` over `[0, max_doc)`.
-    pub fn new(max_doc: i32, inner: Arc<dyn DocIdSet>) -> Self {
+    ///
+    /// Equivalent to `NotDocIdSet(int, DocIdSet)`. The wrapped set is shared
+    /// across threads, as a `RoaringDocIdSet` block that holds it is.
+    pub fn new(max_doc: i32, inner: Arc<dyn DocIdSet + Send + Sync>) -> Self {
         Self { max_doc, inner }
     }
 }

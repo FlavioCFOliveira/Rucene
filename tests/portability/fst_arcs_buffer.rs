@@ -338,8 +338,8 @@ fn assert_fst_matches(m: &Measured, name: &str, terms: Vec<(Vec<u8>, i64)>) {
     let mut meta = ByteBuffersDataOutput::new();
     let mut data = ByteBuffersDataOutput::new();
     fst.save(&mut meta, &mut data).expect("save");
-    let meta_bytes = meta.to_array_copy();
-    let data_bytes = data.to_array_copy();
+    let meta_bytes = meta.to_array_copy().unwrap();
+    let data_bytes = data.to_array_copy().unwrap();
     assert_eq!(
         hex(&meta_bytes, meta_bytes.len()),
         m.one(&format!("fst.{name}.meta")),

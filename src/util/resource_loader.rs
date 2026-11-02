@@ -197,11 +197,6 @@ impl ClasspathResourceLoader {
             resources,
         }
     }
-
-    /// Adds one resource.
-    pub fn add_resource(&mut self, name: impl Into<String>, bytes: Vec<u8>) {
-        self.resources.insert(name.into(), Arc::new(bytes));
-    }
 }
 
 impl ResourceLoader for ClasspathResourceLoader {
@@ -240,11 +235,6 @@ impl ModuleResourceLoader {
         Self {
             root: root.as_ref().to_path_buf(),
         }
-    }
-
-    /// Returns the root this loader reads below.
-    pub fn root(&self) -> &Path {
-        &self.root
     }
 }
 

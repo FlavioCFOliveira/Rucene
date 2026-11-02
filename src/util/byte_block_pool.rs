@@ -26,13 +26,12 @@
 //!   while the pool itself stays usable, so this port addresses blocks by index
 //!   ([`ByteBlockPool::buffer`], [`ByteBlockPool::buffer_mut`]). The generated
 //!   code is equivalent: one bounds-checked index instead of a field load.
-//! * Lucene's `Allocator` hierarchy exists to recycle `byte[]` blocks across
-//!   `DocumentsWriterPerThread` instances and to charge them to a `Counter`.
-//!   Only `DirectTrackingAllocator` is used by the indexing chain, so this port
-//!   folds it into the pool: allocation is charged to the shared
-//!   `AtomicI64` that already accounts indexing RAM, and released blocks are
-//!   dropped rather than recycled, which in Rust costs one `free` instead of
-//!   keeping a global block cache alive.
+//! * Lucene's `Allocator` hierarchy hands out and takes back the pool's
+//!   blocks. The pool holds one [`Allocator`]; [`DirectTrackingAllocator`] is
+//!   the one Lucene's users install, charging every block to a counter and
+//!   dropping the blocks it takes back. The indexing chain charges the shared
+//!   `AtomicI64` that already accounts its RAM, where Java charges a
+//!   `Counter`; [`DirectTrackingAllocator::from_atomic`] is that counter.
 //! * Lucene's `buffers` is a `byte[][]` whose slots are `null` until a block is
 //!   allocated into them, and which is grown — never shrunk — by
 //!   `ArrayUtil.oversize`. A `Vec<Vec<u8>>` has no empty slots, so the length of
@@ -45,7 +44,111 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
+use crate::util::concurrent::Counter;
 use crate::util::{Accountable, ArrayUtil, BytesRefBuilder, RamUsageEstimator, StringHelper};
+
+/// Hands out and takes back the byte blocks of a [`ByteBlockPool`].
+///
+/// Equivalent to the abstract class `ByteBlockPool.Allocator`
+/// (`ByteBlockPool.java:57-71`). Java keeps `blockSize` as a protected field;
+/// [`block_size`](Self::block_size) reads it here.
+pub trait Allocator: std::fmt::Debug + Send + Sync {
+    /// The size of the blocks this allocator hands out.
+    ///
+    /// Equivalent to the field `Allocator.blockSize`.
+    fn block_size(&self) -> usize;
+
+    /// Takes back the blocks in `blocks[start..end]`.
+    ///
+    /// Equivalent to `Allocator.recycleByteBlocks(byte[][], int, int)`. The
+    /// pool drops the slots afterwards, as Java nulls them.
+    fn recycle_byte_blocks(&self, blocks: &mut [Vec<u8>], start: usize, end: usize);
+
+    /// Returns a new, zero-filled block.
+    ///
+    /// Equivalent to `Allocator.getByteBlock()`, `new byte[blockSize]`.
+    fn get_byte_block(&self) -> Vec<u8> {
+        vec![0u8; self.block_size()]
+    }
+}
+
+/// The counter a [`DirectTrackingAllocator`] charges.
+#[derive(Debug)]
+enum TrackingCounter {
+    /// Java's `Counter`.
+    Counter(Arc<Counter>),
+    /// The `AtomicI64` the port's indexing chain accounts its RAM with, in
+    /// place of Java's `Counter`.
+    Atomic(Arc<AtomicI64>),
+}
+
+impl TrackingCounter {
+    fn add_and_get(&self, delta: i64) -> i64 {
+        match self {
+            Self::Counter(counter) => counter.add_and_get(delta),
+            Self::Atomic(atomic) => atomic.fetch_add(delta, Ordering::AcqRel) + delta,
+        }
+    }
+}
+
+/// An [`Allocator`] that never recycles, but tracks how much RAM is in use.
+///
+/// Equivalent to `ByteBlockPool.DirectTrackingAllocator`
+/// (`ByteBlockPool.java:84-104`): it charges every block it hands out to its
+/// counter and gives back the bytes of every block it takes back.
+#[derive(Debug)]
+pub struct DirectTrackingAllocator {
+    block_size: usize,
+    bytes_used: TrackingCounter,
+}
+
+impl DirectTrackingAllocator {
+    /// Creates an allocator of [`BYTE_BLOCK_SIZE`] blocks charging
+    /// `bytes_used`.
+    ///
+    /// Equivalent to `new DirectTrackingAllocator(Counter)`.
+    pub fn new(bytes_used: Arc<Counter>) -> Self {
+        Self {
+            block_size: BYTE_BLOCK_SIZE,
+            bytes_used: TrackingCounter::Counter(bytes_used),
+        }
+    }
+
+    /// Creates an allocator of [`BYTE_BLOCK_SIZE`] blocks charging the
+    /// `AtomicI64` the indexing chain accounts its RAM with.
+    ///
+    /// Equivalent to `new DirectTrackingAllocator(Counter)` over the chain's
+    /// `bytesUsed` counter, which this port keeps as an `AtomicI64`.
+    pub fn from_atomic(bytes_used: Arc<AtomicI64>) -> Self {
+        Self {
+            block_size: BYTE_BLOCK_SIZE,
+            bytes_used: TrackingCounter::Atomic(bytes_used),
+        }
+    }
+}
+
+impl Allocator for DirectTrackingAllocator {
+    fn block_size(&self) -> usize {
+        self.block_size
+    }
+
+    /// Equivalent to `DirectTrackingAllocator.recycleByteBlocks`: gives back
+    /// `(end - start) * blockSize` bytes and drops the blocks.
+    fn recycle_byte_blocks(&self, blocks: &mut [Vec<u8>], start: usize, end: usize) {
+        self.bytes_used
+            .add_and_get(-(((end - start) * self.block_size) as i64));
+        for block in &mut blocks[start..end] {
+            *block = Vec::new();
+        }
+    }
+
+    /// Equivalent to `DirectTrackingAllocator.getByteBlock()`: charges the
+    /// block, then allocates it.
+    fn get_byte_block(&self) -> Vec<u8> {
+        self.bytes_used.add_and_get(self.block_size as i64);
+        vec![0u8; self.block_size]
+    }
+}
 
 /// Number of bits used to address a byte inside one block.
 ///
@@ -104,22 +207,32 @@ pub struct ByteBlockPool {
     byte_upto: usize,
     /// Global offset of the first byte of the head block.
     byte_offset: i32,
-    bytes_used: Arc<AtomicI64>,
+    /// Equivalent to `ByteBlockPool.allocator`.
+    allocator: Box<dyn Allocator>,
 }
 
 impl ByteBlockPool {
     /// Creates an empty pool that charges every allocated block to `bytes_used`.
     ///
     /// The pool starts with no block; the first write triggers
-    /// [`Self::next_buffer`].
+    /// [`Self::next_buffer`]. Equivalent to
+    /// `new ByteBlockPool(new DirectTrackingAllocator(bytesUsed))` over the
+    /// indexing chain's counter; see [`DirectTrackingAllocator::from_atomic`].
     pub fn new(bytes_used: Arc<AtomicI64>) -> Self {
+        Self::with_allocator(Box::new(DirectTrackingAllocator::from_atomic(bytes_used)))
+    }
+
+    /// Creates an empty pool over `allocator`.
+    ///
+    /// Equivalent to `ByteBlockPool(Allocator)` (`ByteBlockPool.java:124-126`).
+    pub fn with_allocator(allocator: Box<dyn Allocator>) -> Self {
         Self {
             buffers: Vec::new(),
             buffers_length: INITIAL_BUFFERS_LENGTH,
             buffer_upto: -1,
             byte_upto: BYTE_BLOCK_SIZE,
             byte_offset: -(BYTE_BLOCK_SIZE as i32),
-            bytes_used,
+            allocator,
         }
     }
 
@@ -174,19 +287,19 @@ impl ByteBlockPool {
     /// Returns the byte at the given global offset.
     ///
     /// Equivalent to `org.apache.lucene.util.ByteBlockPool#readByte(long)`
-    /// (`ByteBlockPool.java:335-339`).
-    ///
-    /// Java's parameter is a `long`; this port takes an `i32` because its
-    /// global offsets are bounded by `i32`
-    /// ([`next_buffer`](Self::next_buffer) refuses to grow past that), so a
-    /// wider parameter could only carry an offset the pool cannot hold.
+    /// (`ByteBlockPool.java:335-339`), which `ByteBlockPoolReverseBytesReader`
+    /// calls ([`ByteBlockPoolReverseBytesReader`](crate::util::fst::ByteBlockPoolReverseBytesReader)
+    /// does). Java casts `offset >> BYTE_BLOCK_SHIFT` to an `int` unchecked;
+    /// so does this.
     ///
     /// # Panics
     ///
-    /// Panics if the offset addresses a block that was never allocated.
-    pub fn read_byte(&self, offset: i32) -> u8 {
-        let offset = offset as usize;
-        self.buffers[offset >> BYTE_BLOCK_SHIFT][offset & BYTE_BLOCK_MASK]
+    /// Panics if the offset addresses a block that was never allocated, where
+    /// Java throws `ArrayIndexOutOfBoundsException`.
+    pub fn read_byte(&self, offset: i64) -> u8 {
+        let buffer_index = (offset >> BYTE_BLOCK_SHIFT) as i32;
+        let pos = (offset & BYTE_BLOCK_MASK as i64) as usize;
+        self.buffers[buffer_index as usize][pos]
     }
 
     /// Allocates a fresh zero-filled block and makes it the head block.
@@ -195,17 +308,13 @@ impl ByteBlockPool {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::ResourceLimit`] when the pool would exceed the
-    /// `i32` global-offset space, which is Lucene's `Math.addExact` overflow.
+    /// Returns [`LuceneError::Arithmetic`] (`integer overflow`) when the pool
+    /// would exceed the `i32` global-offset space: Java's
+    /// `byteOffset = Math.addExact(byteOffset, BYTE_BLOCK_SIZE)`
+    /// (`ByteBlockPool.java:187-200`) throws `ArithmeticException`. As there,
+    /// the block is allocated and charged and the pool advanced to it before
+    /// the offset overflows, so only `byteOffset` keeps its old value.
     pub fn next_buffer(&mut self) -> Result<()> {
-        let next_offset = self
-            .byte_offset
-            .checked_add(BYTE_BLOCK_SIZE as i32)
-            .ok_or_else(|| {
-                LuceneError::ResourceLimit(
-                    "ByteBlockPool exceeded the addressable 2 GB of buffered postings".to_string(),
-                )
-            })?;
         if 1 + self.buffer_upto == self.buffers_length as i32 {
             // The reference array is full - expand it, as `nextBuffer` does.
             self.buffers_length = ArrayUtil::oversize(
@@ -213,12 +322,16 @@ impl ByteBlockPool {
                 RamUsageEstimator::NUM_BYTES_OBJECT_REF as usize,
             );
         }
-        self.buffers.push(vec![0u8; BYTE_BLOCK_SIZE]);
+        // `allocator.getByteBlock()`: the tracking allocator charges the block
+        // as it hands it out.
+        let block = self.allocator.get_byte_block();
+        self.buffers.push(block);
         self.buffer_upto += 1;
         self.byte_upto = 0;
-        self.byte_offset = next_offset;
-        self.bytes_used
-            .fetch_add(BYTE_BLOCK_SIZE as i64, Ordering::AcqRel);
+        self.byte_offset = self
+            .byte_offset
+            .checked_add(BYTE_BLOCK_SIZE as i32)
+            .ok_or_else(LuceneError::integer_overflow)?;
         Ok(())
     }
 
@@ -242,23 +355,52 @@ impl ByteBlockPool {
         (self.buffer_upto as i64 + 1) * BYTE_BLOCK_SIZE as i64
     }
 
-    /// Drops every block and returns the pool to its initial state.
+    /// Resets the pool to its initial state, optionally reusing the first
+    /// block.
     ///
-    /// Equivalent to `ByteBlockPool.reset(false, false)`. Blocks are always
-    /// freed rather than recycled; see the module-level adaptation notes.
-    pub fn reset(&mut self) {
+    /// Equivalent to `ByteBlockPool.reset(boolean, boolean)`
+    /// (`ByteBlockPool.java:147-185`). When `zero_fill_buffers` is set, the
+    /// blocks that were used are zero-filled first — the head block only up
+    /// to `byte_upto`. Every block that is not reused is handed back to the
+    /// allocator with `recycleByteBlocks` and its slot dropped; with
+    /// `reuse_first` the first block stays as the head, at offset 0, so no
+    /// [`next_buffer`](Self::next_buffer) is needed before the next write.
+    /// A pool that never allocated a block is left alone.
+    pub fn reset(&mut self, zero_fill_buffers: bool, reuse_first: bool) {
         if self.buffer_upto == -1 {
             return;
         }
-        self.bytes_used
-            .fetch_sub(self.charged_block_bytes(), Ordering::AcqRel);
-        // `buffers_length` is deliberately left alone: Java nulls the slots and
-        // recycles the blocks but never shrinks the reference array, so a reset
-        // pool still reports the larger shallow size it grew to.
-        self.buffers.clear();
-        self.buffer_upto = -1;
-        self.byte_upto = BYTE_BLOCK_SIZE;
-        self.byte_offset = -(BYTE_BLOCK_SIZE as i32);
+        // We allocated at least one buffer.
+        let buffer_upto = self.buffer_upto as usize;
+        if zero_fill_buffers {
+            // Fully zero-fill the buffers that were fully used.
+            for buffer in &mut self.buffers[..buffer_upto] {
+                buffer.fill(0);
+            }
+            // Partially zero-fill the final buffer.
+            self.buffers[buffer_upto][..self.byte_upto].fill(0);
+        }
+        if buffer_upto > 0 || !reuse_first {
+            let offset = usize::from(reuse_first);
+            // Recycle all but the first buffer.
+            self.allocator
+                .recycle_byte_blocks(&mut self.buffers, offset, 1 + buffer_upto);
+            // `Arrays.fill(buffers, offset, 1 + bufferUpto, null)`.
+            // `buffers_length` is left alone: Java nulls the slots but never
+            // shrinks the reference array, so a reset pool still reports the
+            // shallow size it grew to.
+            self.buffers.truncate(offset);
+        }
+        if reuse_first {
+            // Re-use the first buffer.
+            self.buffer_upto = 0;
+            self.byte_upto = 0;
+            self.byte_offset = 0;
+        } else {
+            self.buffer_upto = -1;
+            self.byte_upto = BYTE_BLOCK_SIZE;
+            self.byte_offset = -(BYTE_BLOCK_SIZE as i32);
+        }
     }
 
     /// Appends `bytes` prefixed by its length and returns the global offset of
@@ -576,6 +718,41 @@ pub fn hash_bytes(bytes: &[u8]) -> i32 {
 }
 
 #[cfg(test)]
+mod next_buffer_overflow_tests {
+    use super::*;
+
+    /// `nextBuffer` allocates and charges the block and advances `bufferUpto`
+    /// and `byteUpto` before `byteOffset = Math.addExact(byteOffset,
+    /// BYTE_BLOCK_SIZE)` overflows (`ByteBlockPool.java:187-200`). Measured
+    /// against `lucene-core-10.5.0.jar` (`oracle/fix/MiscFix.java`, item 9):
+    /// `ArithmeticException: integer overflow`, then `byteOffset=2147450880
+    /// byteUpto=0 charged=32768`.
+    #[test]
+    fn an_overflowing_next_buffer_is_an_arithmetic_error_after_the_allocation() {
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        pool.next_buffer().unwrap();
+        pool.byte_upto = 7;
+        pool.byte_offset = i32::MAX - BYTE_BLOCK_SIZE as i32 + 1;
+        let charged_before = bytes_used.load(Ordering::Acquire);
+        let error = pool.next_buffer().unwrap_err();
+        assert!(
+            matches!(&error, LuceneError::Arithmetic(message) if message == "integer overflow"),
+            "{error:?}"
+        );
+        assert_eq!(
+            (
+                pool.byte_offset,
+                pool.byte_upto,
+                pool.buffer_upto,
+                bytes_used.load(Ordering::Acquire) - charged_before
+            ),
+            (2_147_450_880, 0, 1, BYTE_BLOCK_SIZE as i64)
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -617,11 +794,11 @@ mod tests {
         let mut pool = ByteBlockPool::new(Arc::clone(&bytes_used));
         pool.next_buffer().expect("block");
         pool.next_buffer().expect("block");
-        pool.reset();
+        pool.reset(false, false);
         assert_eq!(pool.buffer_upto(), -1);
         assert_eq!(bytes_used.load(Ordering::Acquire), 0);
         // Resetting an untouched pool is a no-op.
-        pool.reset();
+        pool.reset(false, false);
         assert_eq!(bytes_used.load(Ordering::Acquire), 0);
     }
 
@@ -689,8 +866,8 @@ mod tests {
         pool.buffer_mut(0)[BYTE_BLOCK_SIZE - 1] = 42;
         pool.next_buffer().expect("block");
         pool.buffer_mut(1)[0] = 43;
-        assert_eq!(pool.read_byte(BYTE_BLOCK_SIZE as i32 - 1), 42);
-        assert_eq!(pool.read_byte(BYTE_BLOCK_SIZE as i32), 43);
+        assert_eq!(pool.read_byte(BYTE_BLOCK_SIZE as i64 - 1), 42);
+        assert_eq!(pool.read_byte(BYTE_BLOCK_SIZE as i64), 43);
     }
 
     /// `readByte(long)` reads one byte at a global offset, across block
@@ -708,7 +885,7 @@ mod tests {
 
         for offset in 0..total {
             assert_eq!(
-                pool.read_byte(offset as i32),
+                pool.read_byte(offset as i64),
                 payload[offset],
                 "offset={offset}"
             );
@@ -721,12 +898,50 @@ mod tests {
 
         // The block boundaries specifically.
         assert_eq!(
-            pool.read_byte(BYTE_BLOCK_SIZE as i32 - 1),
+            pool.read_byte(BYTE_BLOCK_SIZE as i64 - 1),
             payload[BYTE_BLOCK_SIZE - 1]
         );
         assert_eq!(
-            pool.read_byte(BYTE_BLOCK_SIZE as i32),
+            pool.read_byte(BYTE_BLOCK_SIZE as i64),
             payload[BYTE_BLOCK_SIZE]
         );
+    }
+}
+
+#[cfg(test)]
+mod reset_tests {
+    use super::*;
+
+    /// rmp #299: `reset(zeroFillBuffers, reuseFirst)` (`ByteBlockPool.java:147-185`)
+    /// keeps the first block as the head at offset 0 when `reuseFirst`, hands
+    /// every other block back to the allocator — which gives back their bytes —
+    /// and zero-fills the used part of the blocks when asked to.
+    #[test]
+    fn reset_reuses_the_first_block_and_recycles_the_rest() {
+        let counter = Arc::new(Counter::new_counter());
+        let mut pool = ByteBlockPool::with_allocator(Box::new(DirectTrackingAllocator::new(
+            Arc::clone(&counter),
+        )));
+        pool.next_buffer().unwrap();
+        pool.append(&vec![9u8; BYTE_BLOCK_SIZE + 10]).unwrap();
+        assert_eq!(counter.get(), 2 * BYTE_BLOCK_SIZE as i64);
+        pool.reset(true, true);
+        assert_eq!(
+            (pool.buffer_upto(), pool.byte_upto(), pool.byte_offset()),
+            (0, 0, 0)
+        );
+        assert_eq!(counter.get(), BYTE_BLOCK_SIZE as i64);
+        assert!(pool.buffer(0).iter().all(|&b| b == 0));
+        // Without zero-filling, the reused block keeps what it held.
+        pool.append(&[5, 6, 7]).unwrap();
+        pool.reset(false, true);
+        assert_eq!(&pool.buffer(0)[..3], &[5, 6, 7]);
+        // Without reuse, every block goes back.
+        pool.reset(false, false);
+        assert_eq!(
+            (pool.buffer_upto(), pool.byte_upto(), pool.byte_offset()),
+            (-1, BYTE_BLOCK_SIZE, -(BYTE_BLOCK_SIZE as i32))
+        );
+        assert_eq!(counter.get(), 0);
     }
 }

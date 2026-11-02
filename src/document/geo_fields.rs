@@ -508,7 +508,7 @@ impl LatLonPoint {
         let mut doc_bases: Vec<i32> = Vec::new();
         let mut live_docs: Vec<Option<Box<dyn Bits>>> = Vec::new();
         let mut total_hits: i32 = 0;
-        for leaf in Arc::clone(searcher.get_index_reader()).leaves() {
+        for leaf in Arc::clone(searcher.get_index_reader()).leaves()? {
             let reader = leaf.leaf_reader();
             if let Some(points) = reader.get_point_values(field)? {
                 total_hits += points.doc_count()?;

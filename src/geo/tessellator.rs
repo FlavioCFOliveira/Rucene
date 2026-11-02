@@ -22,6 +22,7 @@
 use crate::error::{LuceneError, Result};
 use crate::geo::encoding::{GeoEncodingUtils, GeoUtils, WindingOrder, XYEncodingUtils};
 use crate::geo::geometry::{Point, Polygon, XYPolygon};
+use crate::util::BitUtil;
 use std::fmt;
 
 /// This is a dumb heuristic to control whether we cut over to sorted morton
@@ -49,35 +50,6 @@ impl State {
             State::Split => "SPLIT",
         }
     }
-}
-
-/// Interleaves the bits of two 32-bit values into one 64-bit Morton code.
-///
-/// Equivalent to `org.apache.lucene.util.BitUtil.interleave(int, int)`. It is
-/// reproduced here rather than called because `org.apache.lucene.util.BitUtil`
-/// is ported in a module this file must not modify and does not yet expose the
-/// function; it belongs in `util::BitUtil` once that module gains it.
-fn interleave(even: u32, odd: u32) -> u64 {
-    const MAGIC0: u64 = 0x5555_5555_5555_5555;
-    const MAGIC1: u64 = 0x3333_3333_3333_3333;
-    const MAGIC2: u64 = 0x0F0F_0F0F_0F0F_0F0F;
-    const MAGIC3: u64 = 0x00FF_00FF_00FF_00FF;
-    const MAGIC4: u64 = 0x0000_FFFF_0000_FFFF;
-
-    let mut v1 = u64::from(even);
-    let mut v2 = u64::from(odd);
-    v1 = (v1 | (v1 << 16)) & MAGIC4;
-    v1 = (v1 | (v1 << 8)) & MAGIC3;
-    v1 = (v1 | (v1 << 4)) & MAGIC2;
-    v1 = (v1 | (v1 << 2)) & MAGIC1;
-    v1 = (v1 | (v1 << 1)) & MAGIC0;
-    v2 = (v2 | (v2 << 16)) & MAGIC4;
-    v2 = (v2 | (v2 << 8)) & MAGIC3;
-    v2 = (v2 | (v2 << 4)) & MAGIC2;
-    v2 = (v2 | (v2 << 2)) & MAGIC1;
-    v2 = (v2 | (v2 << 1)) & MAGIC0;
-
-    (v2 << 1) | v1
 }
 
 /// Flips the sign bit so that negative encoded values sort below positive ones.
@@ -321,7 +293,7 @@ impl Tessellation {
         } else {
             XYEncodingUtils::encode(x_val as f32)?
         };
-        let morton = interleave(flip_sign(enc_x), flip_sign(enc_y));
+        let morton = BitUtil::interleave(flip_sign(enc_x) as i32, flip_sign(enc_y) as i32) as u64;
         let node_pos = self.nodes.len();
         self.nodes.push(Node {
             idx: index,
@@ -940,8 +912,8 @@ impl Tessellation {
         let max_ty = flip_sign(self.nodes[a].y.max(self.nodes[b].y));
 
         // z-order range for the current edge
-        let min_z = interleave(min_tx, min_ty);
-        let max_z = interleave(max_tx, max_ty);
+        let min_z = BitUtil::interleave(min_tx as i32, min_ty as i32) as u64;
+        let max_z = BitUtil::interleave(max_tx as i32, max_ty as i32) as u64;
 
         // look for points inside the edge in both directions
         let mut p = self.nodes[a].previous_z;
@@ -1088,8 +1060,8 @@ impl Tessellation {
         );
 
         // z-order range for the current triangle bbox
-        let min_z = interleave(min_tx, min_ty);
-        let max_z = interleave(max_tx, max_ty);
+        let min_z = BitUtil::interleave(min_tx as i32, min_ty as i32) as u64;
+        let max_z = BitUtil::interleave(max_tx as i32, max_ty as i32) as u64;
 
         // now make sure we don't have other points inside the potential ear;
         // look for points inside the triangle in both directions
@@ -1307,8 +1279,8 @@ impl Tessellation {
         let max_ty = flip_sign(self.nodes[a].y.max(self.nodes[a_next].y));
 
         // z-order range for the current edge
-        let min_z = interleave(min_tx, min_ty);
-        let max_z = interleave(max_tx, max_ty);
+        let min_z = BitUtil::interleave(min_tx as i32, min_ty as i32) as u64;
+        let max_z = BitUtil::interleave(max_tx as i32, max_ty as i32) as u64;
 
         // look for points inside the edge in both directions
         let mut p = self.nodes[b].previous_z;
@@ -2389,5 +2361,85 @@ impl Tessellator {
             .ok_or_else(|| {
                 LuceneError::IllegalArgument("Malformed shape detected in Tessellator!".to_string())
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A node's z-order code is `BitUtil.interleave` of its sign-flipped
+    /// encoded longitude and latitude (`Tessellator.java` `Node` constructor);
+    /// the expected codes are Lucene 10.5.0's (oracle `Morton.java`), read as
+    /// the unsigned value Java compares with `Long.compareUnsigned`.
+    #[test]
+    fn a_node_carries_lucenes_morton_code() {
+        let mut t = Tessellation::new();
+        let x = [20.0, -120.25, 0.0, 179.9];
+        let y = [10.0, -45.5, 0.0, 89.9];
+        let mut last = None;
+        for i in 0..4 {
+            last = Some(t.insert_node(&x, &y, i, i, last, true).unwrap());
+        }
+        let mortons: Vec<i64> = t.nodes.iter().map(|n| n.morton as i64).collect();
+        assert_eq!(
+            mortons,
+            [
+                -4540737002759274244,
+                1075856544265261998,
+                -4611686018427387904,
+                -10050987923893
+            ]
+        );
+    }
+
+    /// A 100-vertex polygon takes the Morton-ordered path (more than
+    /// `VERTEX_THRESHOLD` points, `Tessellator.java:121-130`), whose z-order
+    /// codes are `BitUtil.interleave` of the flipped encoded coordinates. The
+    /// triangle count, the fold of every encoded vertex and the first and last
+    /// triangles are those `Tessellator.tessellate` returns in Lucene 10.5.0 for
+    /// the same polygon (oracle `TessMorton.java`).
+    #[test]
+    fn a_large_polygon_tessellates_through_morton_codes_as_lucene_does() {
+        let n = 100usize;
+        let mut lats = vec![0.0f64; n + 1];
+        let mut lons = vec![0.0f64; n + 1];
+        // A comb: a straight bottom edge and a zigzag top edge, counter-clockwise.
+        lons[1] = 10.0;
+        for i in 0..n - 2 {
+            lats[i + 2] = if i % 2 == 0 {
+                5.0 + (i % 5) as f64 * 0.25
+            } else {
+                4.0
+            };
+            lons[i + 2] = 10.0 - i as f64 * 10.0 / (n - 3) as f64;
+        }
+        lats[n] = lats[0];
+        lons[n] = lons[0];
+        let polygon = Polygon::new(lats, lons, Vec::new()).unwrap();
+        let triangles = Tessellator::tessellate(&polygon, true).unwrap();
+        let mut h: i64 = 17;
+        for t in &triangles {
+            for v in 0..3 {
+                h = h
+                    .wrapping_mul(31)
+                    .wrapping_add(i64::from(t.get_encoded_x(v)));
+                h = h
+                    .wrapping_mul(31)
+                    .wrapping_add(i64::from(t.get_encoded_y(v)));
+            }
+        }
+        let vertices = |t: &Triangle| {
+            (0..3)
+                .flat_map(|v| [t.get_encoded_x(v), t.get_encoded_y(v)])
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(triangles.len(), 98);
+        assert_eq!(vertices(&triangles[0]), [0, 95443717, 0, 0, 119304647, 0]);
+        assert_eq!(
+            vertices(&triangles[97]),
+            [59037351, 95443717, 56577461, 95443717, 119304647, 0]
+        );
+        assert_eq!(h, 1559882305004840519);
     }
 }

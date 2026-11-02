@@ -282,9 +282,10 @@ pub trait AbstractKnnVectorQueryImpl: Query {
 /// # Errors
 ///
 /// Propagates any I/O error raised while scoring, and
-/// [`LuceneError::IllegalArgument`] when the accept iterator's cost does not
-/// fit in an `i32`, which is Java's `Math.toIntExact` throwing
-/// `ArithmeticException`.
+/// [`LuceneError::Arithmetic`] when the accept iterator's cost does not fit in
+/// an `i32`: Java's `Math.toIntExact(acceptIterator.cost())`
+/// (`AbstractKnnVectorQuery.java:313`) throwing
+/// `ArithmeticException("integer overflow")`.
 pub fn default_exact_search(
     base: &AbstractKnnVectorQuery,
     vector_scorer: Option<Box<dyn VectorScorer>>,
@@ -296,11 +297,7 @@ pub fn default_exact_search(
     };
 
     let cost = accept_iterator.cost();
-    let cost_as_int = i32::try_from(cost).map_err(|_| {
-        LuceneError::IllegalArgument(format!(
-            "integer overflow on the accepted doc count: {cost}"
-        ))
-    })?;
+    let cost_as_int = crate::error::to_int_exact(cost)?;
     let queue_size = base.get_k().min(cost_as_int) as usize;
     let mut queue = HitQueue::new(queue_size, true)?;
     let mut relation = TotalHitsRelation::EQUAL_TO;
@@ -831,5 +828,70 @@ pub fn knn_vector_query_visit(
 ) {
     if visitor.accept_field(base.get_field()) {
         visitor.visit_leaf(query);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An iterator over no document whose cost is past an `int`.
+    struct CostlyIterator;
+
+    impl DocIdSetIterator for CostlyIterator {
+        fn doc_id(&self) -> i32 {
+            -1
+        }
+
+        fn next_doc(&mut self) -> Result<i32> {
+            Ok(NO_MORE_DOCS)
+        }
+
+        fn advance(&mut self, _target: i32) -> Result<i32> {
+            Ok(NO_MORE_DOCS)
+        }
+
+        fn cost(&self) -> i64 {
+            i64::from(i32::MAX) + 1
+        }
+    }
+
+    /// A scorer the search never reaches: the cost check comes first.
+    struct UnusedScorer;
+
+    impl VectorScorer for UnusedScorer {
+        fn score(&mut self) -> Result<f32> {
+            unreachable!("the cost check fails first")
+        }
+
+        fn iterator(&mut self) -> &mut dyn DocIdSetIterator {
+            unreachable!("the cost check fails first")
+        }
+
+        fn bulk(
+            self: Box<Self>,
+            _matching_docs: Option<Box<dyn DocIdSetIterator>>,
+        ) -> Result<Box<dyn crate::search::VectorScorerBulk>> {
+            unreachable!("the cost check fails first")
+        }
+    }
+
+    /// `Math.min(k, Math.toIntExact(acceptIterator.cost()))`
+    /// (`AbstractKnnVectorQuery.java:313`) throws
+    /// `ArithmeticException("integer overflow")` for a cost past an `int`.
+    #[test]
+    fn exact_search_with_a_cost_past_an_int_is_an_integer_overflow() {
+        let base = AbstractKnnVectorQuery::new("f", 3, None, None).unwrap();
+        let error = default_exact_search(
+            &base,
+            Some(Box::new(UnusedScorer)),
+            Box::new(CostlyIterator),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&error, LuceneError::Arithmetic(m) if m == "integer overflow"),
+            "{error:?}"
+        );
     }
 }

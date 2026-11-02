@@ -92,7 +92,8 @@ impl Builder {
     ///
     /// Equivalent to `Builder(String)`.
     pub fn new(term: &str) -> Self {
-        Self::from_bytes(&BytesRef::new(term.as_bytes().to_vec()))
+        // `this.term = new BytesRef(term)` (`CombinedFieldQuery.java:90`).
+        Self::from_bytes(&BytesRef::from_char_sequence(term))
     }
 
     /// Creates a builder for the given term bytes.
@@ -611,7 +612,8 @@ impl CombinedFieldWeight {
         let sim_weight: Option<SharedSimScorer> = if doc_freq > 0 {
             let pseudo_collection_stats = merge_collection_statistics(&query, searcher)?;
             let pseudo_term_statistics = TermStatistics::new(
-                BytesRef::new(b"pseudo_term".to_vec()),
+                // `new BytesRef("pseudo_term")` (`CombinedFieldQuery.java:291`).
+                BytesRef::from_char_sequence("pseudo_term"),
                 doc_freq,
                 total_term_freq.max(1),
             )?;

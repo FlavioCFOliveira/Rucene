@@ -270,6 +270,40 @@ impl LeafCache {
     }
 }
 
+impl Accountable for LeafCache {
+    /// Equivalent to `LeafCache.ramBytesUsed()`.
+    fn ram_bytes_used(&self) -> i64 {
+        self.ram_bytes_used
+    }
+
+    /// `LRUQueryCache.LeafCache` does not override `toString()`, so Java
+    /// renders it as `Object.toString()` does, with the binary class name.
+    fn accountable_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.search.LRUQueryCache$LeafCache",
+            self,
+        )
+    }
+}
+
+/// A key of the per-leaf caches as `Accountables.namedAccountables` renders
+/// it: Java's key is the `IndexReader.CacheKey`, which does not override
+/// `toString()`; this port's key is that key's address (see
+/// [`cache_key_identity`]), which is what
+/// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+/// would render for it.
+struct CacheKeyName(usize);
+
+impl std::fmt::Display for CacheKeyName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "org.apache.lucene.index.IndexReader$CacheKey@{:x}",
+            self.0
+        )
+    }
+}
+
 /// Whether a leaf is worth caching on.
 ///
 /// Equivalent to the `Predicate<LeafReaderContext> leavesToCache` field.
@@ -896,6 +930,34 @@ impl Accountable for LRUQueryCache {
     fn ram_bytes_used(&self) -> i64 {
         self.state.ram_bytes_used.load(Ordering::Acquire)
     }
+
+    /// Equivalent to `LRUQueryCache.getChildResources()`
+    /// (`LRUQueryCache.java:512-520`):
+    /// `Accountables.namedAccountables("segment", cache)` under the write lock,
+    /// one `segment '<key>' [<leaf cache>]` entry per leaf, sorted by that
+    /// description.
+    ///
+    /// Java releases the lock and returns views that still reference the leaf
+    /// caches; the leaf caches live behind the lock here, so each view is
+    /// [detached](crate::util::NamedAccountable::detach) before the lock is
+    /// released. A leaf cache reports no children, so the views are the ones
+    /// Java returns.
+    fn child_resources(&self) -> Vec<Box<dyn Accountable + '_>> {
+        let cache = self
+            .state
+            .cache
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        crate::util::Accountables::named_accountables(
+            "segment",
+            cache
+                .iter()
+                .map(|(key, leaf)| (CacheKeyName(*key), leaf as &dyn Accountable)),
+        )
+        .into_iter()
+        .map(|named| Box::new(named.detach()) as Box<dyn Accountable>)
+        .collect()
+    }
 }
 
 impl QueryCache for LRUQueryCache {
@@ -1405,5 +1467,55 @@ impl LeafCollector for RoaringCollector {
             self.record(Err(error));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod child_resources_tests {
+    use super::*;
+
+    /// rmp #307: `LRUQueryCache.getChildResources()` is
+    /// `Accountables.namedAccountables("segment", cache)`
+    /// (`LRUQueryCache.java:512-520`): one `segment '<CacheKey>' [<LeafCache>]`
+    /// entry per leaf, with the leaf's bytes and no children, sorted by
+    /// description. Measured against `lucene-core-10.5.0.jar`
+    /// (`oracle/passD/Oracle.java`, `LRU child`): `segment
+    /// 'org.apache.lucene.index.IndexReader$CacheKey@6bff19ff'
+    /// [org.apache.lucene.search.LRUQueryCache$LeafCache@48bfb884]`.
+    #[test]
+    fn child_resources_are_javas_named_leaf_caches() {
+        let cache = LRUQueryCache::new(10, 1 << 20).unwrap();
+        {
+            let mut leaves = cache.state.cache.write().unwrap();
+            for (key, ram) in [(0xbeef_usize, 152), (0xabc_usize, 40)] {
+                let mut leaf = LeafCache::new();
+                leaf.ram_bytes_used = ram;
+                leaves.insert(key, leaf);
+            }
+        }
+        let children = cache.child_resources();
+        let described: Vec<(String, i64, usize)> = children
+            .iter()
+            .map(|c| {
+                (
+                    c.accountable_to_string(),
+                    c.ram_bytes_used(),
+                    c.child_resources().len(),
+                )
+            })
+            .collect();
+        assert_eq!(described.len(), 2);
+        for ((description, _, kids), key) in described.iter().zip(["abc", "beef"]) {
+            let rest = description
+                .strip_prefix(&format!(
+                    "segment 'org.apache.lucene.index.IndexReader$CacheKey@{key}' \
+                     [org.apache.lucene.search.LRUQueryCache$LeafCache@"
+                ))
+                .and_then(|rest| rest.strip_suffix(']'))
+                .unwrap_or_else(|| panic!("unexpected description {description:?}"));
+            assert!(rest.chars().all(|c| c.is_ascii_hexdigit()));
+            assert_eq!(*kids, 0);
+        }
+        assert_eq!((described[0].1, described[1].1), (40, 152));
     }
 }

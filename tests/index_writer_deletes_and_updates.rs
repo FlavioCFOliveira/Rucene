@@ -63,7 +63,7 @@ fn no_merges() -> IndexWriterConfig {
 
 fn prices(reader: &Arc<dyn DirectoryReader>) -> Vec<i64> {
     let mut out = Vec::new();
-    for leaf in Arc::clone(reader).leaves() {
+    for leaf in Arc::clone(reader).leaves().unwrap() {
         let leaf = leaf.leaf_reader();
         let live = leaf.get_live_docs();
         let Some(mut values) = leaf.get_numeric_doc_values("price").unwrap() else {

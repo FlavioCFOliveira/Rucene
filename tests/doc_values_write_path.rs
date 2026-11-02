@@ -62,7 +62,7 @@ fn numeric_doc_values_written_by_the_index_writer_are_read_back() {
     let reader = directory_reader::open(Arc::clone(&dir)).expect("reopen the index");
     assert_eq!(IndexReader::num_docs(reader.as_ref()), 4);
 
-    let leaves = Arc::clone(&reader).leaves();
+    let leaves = Arc::clone(&reader).leaves().unwrap();
     let leaf = leaves[0].leaf_reader();
     let mut values = leaf
         .get_numeric_doc_values("num")
@@ -173,7 +173,7 @@ fn search_reads_doc_values_through_doc_values_get_numeric_and_get_sorted() {
     writer.close().expect("close");
 
     let reader = directory_reader::open(Arc::clone(&dir)).expect("open");
-    let leaves = Arc::clone(&reader).leaves();
+    let leaves = Arc::clone(&reader).leaves().unwrap();
 
     let source = rucene::search::long_values_source::from_long_field("sorted");
     let error = match source.get_values(&leaves[0], None) {

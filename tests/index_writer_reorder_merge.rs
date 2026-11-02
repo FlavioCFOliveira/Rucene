@@ -17,10 +17,10 @@
 //! segment id is replaced by Rucene's; the footer's checksum is checked on its
 //! own.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use rucene::codecs::Lucene104Codec;
 use rucene::document::{
@@ -28,12 +28,17 @@ use rucene::document::{
     SortedDocValuesField, SortedNumericDocValuesField, SortedSetDocValuesField, Store, StoredField,
     StringField, TextField,
 };
+use rucene::error::Result;
+use rucene::index::codec_reader::CodecReader;
+use rucene::index::filter_directory_reader::SlowCodecReaderWrapper;
 use rucene::index::index_sorter::{DocComparator, Sorter};
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::IndexWriterConfig;
 use rucene::index::merge_policy::{
-    MergePolicy, NoMergePolicy, OneMerge, OneMergeWrappingMergePolicy, TieredMergePolicy,
+    MergeContext, MergePolicy, MergeReorderer, MergeSpecification, MergeTrigger, NoMergePolicy,
+    OneMerge, OneMergeWrappingMergePolicy, TieredMergePolicy,
 };
+use rucene::index::merge_scheduler::{MergeScheduler, SerialMergeScheduler};
 use rucene::index::{directory_reader, SegmentInfos};
 use rucene::search::NO_MORE_DOCS;
 use rucene::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT};
@@ -102,7 +107,7 @@ fn reversing_policy() -> Arc<dyn MergePolicy> {
     Arc::new(OneMergeWrappingMergePolicy::new(
         Arc::new(TieredMergePolicy::new()),
         Arc::new(|mut merge: OneMerge| {
-            merge.set_reorder(Arc::new(|reader, _dir| {
+            merge.set_reorder(Arc::new(|reader, _dir, _executor| {
                 let reverse: DocComparator = Box::new(|a, b| b.cmp(&a));
                 Ok(Sorter::sort(reader.max_doc(), &reverse).map(Arc::new))
             }));
@@ -300,7 +305,7 @@ fn a_reordering_merge_writes_the_segment_lucene_writes() {
     // lists the larger segment first, so the view is documents 40..100 then
     // 0..40, and the merged segment holds that sequence backwards.
     let reader = directory_reader::open(Arc::clone(&dir)).unwrap();
-    let leaves = Arc::clone(&reader).leaves();
+    let leaves = Arc::clone(&reader).leaves().unwrap();
     let mut values = leaves[0]
         .leaf_reader()
         .get_numeric_doc_values("ndv")
@@ -319,4 +324,147 @@ fn a_reordering_merge_writes_the_segment_lucene_writes() {
             "merged document {doc}"
         );
     }
+}
+
+/// The address of the executor a reorderer was handed, `None` for Java's
+/// `null`.
+fn executor_address(
+    executor: Option<&Arc<dyn rucene::search::task_executor::Executor>>,
+) -> Option<usize> {
+    executor.map(|executor| Arc::as_ptr(executor) as *const () as usize)
+}
+
+/// A reorderer that records the executor it is handed and leaves the
+/// documents alone.
+fn recording_reorderer(seen: &Arc<Mutex<Vec<Option<usize>>>>) -> MergeReorderer {
+    let seen = Arc::clone(seen);
+    Arc::new(move |_reader, _dir, executor| {
+        seen.lock().unwrap().push(executor_address(executor));
+        Ok(None)
+    })
+}
+
+/// A policy that merges nothing on its own and installs `reorderer` on the
+/// merge `addIndexes(CodecReader...)` asks it for, as an override of
+/// `MergePolicy.findMerges(CodecReader...)` would.
+struct ReorderingReadersPolicy {
+    reorderer: MergeReorderer,
+}
+
+impl std::fmt::Display for ReorderingReadersPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ReorderingReadersPolicy")
+    }
+}
+
+impl MergePolicy for ReorderingReadersPolicy {
+    fn find_merges(
+        &self,
+        _merge_trigger: MergeTrigger,
+        _segment_infos: &SegmentInfos,
+        _merge_context: &dyn MergeContext,
+    ) -> Result<Option<MergeSpecification>> {
+        Ok(None)
+    }
+
+    fn find_merges_for_readers(
+        &self,
+        readers: &[Arc<dyn CodecReader>],
+    ) -> Result<Option<MergeSpecification>> {
+        let mut merge = OneMerge::from_codec_readers(readers.to_vec());
+        merge.set_reorder(Arc::clone(&self.reorderer));
+        let mut spec = MergeSpecification::new();
+        spec.add(merge);
+        Ok(Some(spec))
+    }
+
+    fn find_forced_merges(
+        &self,
+        _segment_infos: &SegmentInfos,
+        _max_num_segments: i32,
+        _segments_to_merge: &HashMap<String, bool>,
+        _merge_context: &dyn MergeContext,
+    ) -> Result<Option<MergeSpecification>> {
+        Ok(None)
+    }
+
+    fn find_forced_deletes_merges(
+        &self,
+        _segment_infos: &SegmentInfos,
+        _merge_context: &dyn MergeContext,
+    ) -> Result<Option<MergeSpecification>> {
+        Ok(None)
+    }
+}
+
+/// `OneMerge.reorder(CodecReader, Directory, Executor)` receives the executor
+/// `MergeScheduler.getIntraMergeExecutor(merge)` returns, on both of the
+/// writer's merge paths: `mergeMiddle` (`IndexWriter.java:5327-5343`) and
+/// `addIndexesReaderMerge` (`IndexWriter.java:3547-3551`). A
+/// `SerialMergeScheduler` answers with its own `SameThreadExecutorService`
+/// (`MergeScheduler.java:60-67`), so the reorderer is handed exactly that
+/// object, twice.
+#[test]
+fn the_reorderer_receives_the_schedulers_intra_merge_executor() {
+    let _ = rucene::codecs::register_codec("Lucene104", Lucene104Codec::new());
+    let scheduler = Arc::new(SerialMergeScheduler::new());
+    let expected = Arc::as_ptr(scheduler.same_thread_executor()) as *const () as usize;
+    let seen: Arc<Mutex<Vec<Option<usize>>>> = Arc::new(Mutex::new(Vec::new()));
+
+    // Two committed segments, then a forced merge: `mergeMiddle`.
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+    let mut initial = IndexWriterConfig::new();
+    initial
+        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .unwrap();
+    let writer = IndexWriter::new(Arc::clone(&dir), initial).unwrap();
+    for i in 0..4 {
+        writer.add_document(&doc(i)).unwrap();
+        if i % 2 == 1 {
+            writer.commit().unwrap();
+        }
+    }
+    writer.close().unwrap();
+
+    let reorderer = recording_reorderer(&seen);
+    let mut config = IndexWriterConfig::new();
+    config
+        .set_merge_policy(Arc::new(OneMergeWrappingMergePolicy::new(
+            Arc::new(TieredMergePolicy::new()),
+            Arc::new(move |mut merge: OneMerge| {
+                merge.set_reorder(Arc::clone(&reorderer));
+                merge
+            }),
+        )))
+        .unwrap();
+    config
+        .set_merge_scheduler(Arc::clone(&scheduler) as Arc<dyn MergeScheduler>)
+        .unwrap();
+    let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+    writer.force_merge(1).unwrap();
+    writer.close().unwrap();
+    assert_eq!(*seen.lock().unwrap(), vec![Some(expected)]);
+
+    // `addIndexes(CodecReader...)`: `addIndexesReaderMerge`.
+    let reader = directory_reader::open(Arc::clone(&dir)).unwrap();
+    let leaves: Vec<Arc<dyn CodecReader>> = Arc::clone(&reader)
+        .leaves()
+        .unwrap()
+        .iter()
+        .map(|leaf| SlowCodecReaderWrapper::wrap(leaf.leaf_reader()).unwrap())
+        .collect();
+    let dest: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+    let mut config = IndexWriterConfig::new();
+    config
+        .set_merge_policy(Arc::new(ReorderingReadersPolicy {
+            reorderer: recording_reorderer(&seen),
+        }))
+        .unwrap();
+    config
+        .set_merge_scheduler(Arc::clone(&scheduler) as Arc<dyn MergeScheduler>)
+        .unwrap();
+    let writer = IndexWriter::new(Arc::clone(&dest), config).unwrap();
+    writer.add_indexes_codec_readers(&leaves).unwrap();
+    writer.close().unwrap();
+    assert_eq!(*seen.lock().unwrap(), vec![Some(expected), Some(expected)]);
 }

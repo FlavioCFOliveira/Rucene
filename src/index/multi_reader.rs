@@ -496,9 +496,9 @@ impl MultiReader {
                  but readers have total maxDoc={max_doc}"
             )));
         }
-        let max_doc = i32::try_from(max_doc).map_err(|_| {
-            LuceneError::IllegalArgument(format!("Composite reader maxDoc {max_doc} overflows i32"))
-        })?;
+        // `this.maxDoc = Math.toIntExact(maxDoc)` (`BaseCompositeReader.java:111`),
+        // which the check above leaves nothing to refuse.
+        let max_doc = crate::error::to_int_exact(max_doc)?;
 
         // When the sub-readers must outlive this MultiReader, take an extra
         // reference on each, matching Java's `subReaders[i].incRef()` in the
@@ -1166,7 +1166,7 @@ mod tests {
         let empty = leaf(0, 0);
         let c = leaf(3, 3);
         let mr: Arc<dyn IndexReader> = Arc::new(MultiReader::new(vec![a, empty, c], true).unwrap());
-        let leaves = mr.leaves();
+        let leaves = mr.leaves().unwrap();
         assert_eq!(leaves.len(), 3);
         assert_eq!(leaves[1].doc_base(), 2);
         assert_eq!(leaves[2].doc_base(), 2);
@@ -1208,7 +1208,7 @@ mod tests {
         let b = leaf(3, 3);
         let c = leaf(4, 4);
         let mr: Arc<dyn IndexReader> = Arc::new(MultiReader::new(vec![a, b, c], true).unwrap());
-        let leaves = mr.leaves();
+        let leaves = mr.leaves().unwrap();
         assert_eq!(leaves.len(), 3);
         assert_eq!(leaves[0].doc_base(), 0);
         assert_eq!(leaves[1].doc_base(), 2);
@@ -1226,7 +1226,7 @@ mod tests {
         let a = leaf(2, 2);
         let b = leaf(3, 3);
         let mr: Arc<dyn IndexReader> = Arc::new(MultiReader::new(vec![a, b], true).unwrap());
-        let ctx = mr.get_context();
+        let ctx = mr.get_context().unwrap();
         // `leaves()` takes the `Arc` by value; clone it so `ctx` (the strong
         // reference keeping the composite alive) is not moved.
         let leaves = ctx.clone().leaves();
@@ -1281,7 +1281,7 @@ mod tests {
         let b = leaf(5, 5);
         let c = leaf(5, 5);
         let mr: Arc<dyn IndexReader> = Arc::new(MultiReader::new(vec![a, b, c], true).unwrap());
-        let leaves = mr.leaves();
+        let leaves = mr.leaves().unwrap();
         assert_eq!(leaves.len(), 3);
         assert_eq!(leaves[0].doc_base(), 0);
         assert_eq!(leaves[1].doc_base(), 5);
@@ -1460,7 +1460,7 @@ mod tests {
         assert_eq!(mr.max_doc(), 0);
         assert_eq!(mr.num_docs(), 0);
         assert_eq!(mr.get_sequential_sub_readers().len(), 0);
-        let leaves = Arc::new(mr).leaves();
+        let leaves = Arc::new(mr).leaves().unwrap();
         assert_eq!(leaves.len(), 0);
     }
 

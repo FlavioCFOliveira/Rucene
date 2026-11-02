@@ -713,7 +713,8 @@ impl TermsHash {
     /// hand every block back to the allocators.
     pub fn reset(&mut self) {
         self.int_pool.reset(false, false);
-        self.pool.reset();
+        // `bytePool.reset(false, false)`.
+        self.pool.reset(false, false);
     }
 
     /// Discards every buffered byte after an indexing failure.
@@ -921,7 +922,10 @@ impl TermsHashPerField {
     /// [`reinit_hash`](Self::reinit_hash) in between.
     pub fn sort_terms(&mut self, term_pool: &ByteBlockPool) {
         debug_assert!(self.sorted_term_ids.is_none());
-        self.sorted_term_ids = Some(self.bytes_hash.sort(term_pool));
+        // `sortedTermIDs = bytesHash.sort()`: Java keeps the hash's own slot
+        // array, sorted in place; this port keeps a copy of it, which leaves
+        // the hash just as consumed.
+        self.sorted_term_ids = Some(self.bytes_hash.sort(term_pool).to_vec());
     }
 
     /// Returns the sorted term ids.
@@ -996,17 +1000,6 @@ impl TermsHashPerField {
     /// [`Self::intern_by_text_start`].
     pub fn text_start(&self, term_id: i32) -> i32 {
         self.bytes_hash.byte_start(term_id)
-    }
-
-    /// Returns every buffered term id ordered by its term bytes, which live in
-    /// `term_pool`.
-    ///
-    /// Equivalent to `TermsHashPerField.sortTerms()` followed by
-    /// `getSortedTermIDs()`. Lucene splits the two because its `BytesRefHash`
-    /// sort is destructive; this one is not, so a single call does both and may
-    /// be repeated.
-    pub fn sorted_term_ids(&self, term_pool: &ByteBlockPool) -> Vec<i32> {
-        self.bytes_hash.sort(term_pool)
     }
 
     /// Positions `reader` over `stream` of `term_id`.
@@ -1486,10 +1479,13 @@ impl FreqProxTermsWriterPerField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for an over-long term or a
-    /// duplicate term in a term-doc field, and [`LuceneError::IllegalState`]
-    /// when a custom term frequency is combined with positions or with a field
-    /// that does not index frequencies.
+    /// Returns [`LuceneError::IllegalArgument`] for an over-long term,
+    /// [`LuceneError::IllegalState`] for a duplicate term in a term-doc field
+    /// and when a custom term frequency is combined with positions or with a
+    /// field that does not index frequencies, and
+    /// [`LuceneError::Arithmetic`] when a term's frequency overflows an `int`.
+    /// [`Self::add_classified`] reports the same failures with the duplicate
+    /// term told apart.
     pub fn add(
         &mut self,
         pool: &mut ByteBlockPool,
@@ -1499,11 +1495,67 @@ impl FreqProxTermsWriterPerField {
         doc_id: i32,
         token: &InvertedToken<'_>,
     ) -> Result<i32> {
+        self.add_classified(pool, int_pool, field_state, term_bytes, doc_id, token)
+            .map_err(TermsHashAddError::into_error)
+    }
+
+    /// [`Self::add`], reporting a duplicate term apart from every other
+    /// failure.
+    ///
+    /// Java tells the two apart by class: `addTerm` throws
+    /// `TermsHashPerField.DuplicateTermException`, an `IllegalStateException`,
+    /// for a term a term-doc field repeats in one document
+    /// (`FreqProxTermsWriterPerField.java:193-194`), and
+    /// `TermsHashPerField.add` rethrows it with the term appended — `e.getMessage()
+    /// + " '" + termBytes.utf8ToString() + "'"` (`TermsHashPerField.java:199-204`).
+    /// `IndexingChain.invertTokenStream` turns exactly that class into a
+    /// document-level failure and treats every other one as aborting
+    /// (`IndexingChain.java:2022-2027`). Rust has no exception subclasses, so
+    /// the class is the [`TermsHashAddError`] variant.
+    ///
+    /// # Errors
+    ///
+    /// The failures of [`Self::add`], the duplicate term as
+    /// [`TermsHashAddError::DuplicateTerm`].
+    pub(crate) fn add_classified(
+        &mut self,
+        pool: &mut ByteBlockPool,
+        int_pool: &mut IntBlockPool,
+        field_state: &mut FieldInvertState,
+        term_bytes: &[u8],
+        doc_id: i32,
+        token: &InvertedToken<'_>,
+    ) -> std::result::Result<i32, TermsHashAddError> {
         let slot = self.base.intern(pool, int_pool, term_bytes, doc_id)?;
         if slot.is_new {
             self.new_term(pool, int_pool, field_state, slot.term_id, doc_id, token)?;
         } else {
-            self.add_term(pool, int_pool, field_state, slot.term_id, doc_id, token)?;
+            match self.add_term(pool, int_pool, field_state, slot.term_id, doc_id, token) {
+                Err(TermsHashAddError::DuplicateTerm(LuceneError::IllegalState {
+                    message,
+                    cause,
+                })) => {
+                    // `BytesRef.utf8ToString()` decodes with
+                    // `UnicodeUtil.UTF8toUTF16`, which never rejects a byte.
+                    let mut utf16 = vec![0u16; term_bytes.len()];
+                    let length = crate::util::unicode_util::UnicodeUtil::utf8_to_utf16(
+                        term_bytes,
+                        0,
+                        term_bytes.len(),
+                        &mut utf16,
+                    );
+                    return Err(TermsHashAddError::DuplicateTerm(
+                        LuceneError::IllegalState {
+                            message: format!(
+                                "{message} '{}'",
+                                String::from_utf16_lossy(&utf16[..length])
+                            ),
+                            cause,
+                        },
+                    ));
+                }
+                other => other?,
+            }
         }
         Ok(self.base.text_start(slot.term_id))
     }
@@ -1624,14 +1676,15 @@ impl FreqProxTermsWriterPerField {
         term_id: i32,
         doc_id: i32,
         token: &InvertedToken<'_>,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), TermsHashAddError> {
         let index = term_id as usize;
         if !self.has_freq {
             if token.has_term_freq_attribute && token.term_freq != 1 {
                 return Err(LuceneError::illegal_state(format!(
                     "field \"{}\": must index term freq while using custom TermFrequencyAttribute",
                     self.field_name()
-                )));
+                ))
+                .into());
             }
             if doc_id != self.base.postings[index].last_doc_id {
                 debug_assert!(doc_id > self.base.postings[index].last_doc_id);
@@ -1681,21 +1734,24 @@ impl FreqProxTermsWriterPerField {
             field_state.increment_unique_term_count();
         } else {
             if self.is_term_doc {
-                return Err(LuceneError::IllegalArgument(format!(
-                    "field '{}' has duplicate term",
-                    self.field_name()
-                )));
+                // `throw new DuplicateTermException("field '" + getFieldName()
+                // + "' has duplicate term")`
+                // (`FreqProxTermsWriterPerField.java:193-194`).
+                return Err(TermsHashAddError::DuplicateTerm(
+                    LuceneError::illegal_state(format!(
+                        "field '{}' has duplicate term",
+                        self.field_name()
+                    )),
+                ));
             }
             let freq = self.term_freq(token)?;
+            // `Math.addExact(postings.termFreqs[termID], getTermFreq())`
+            // (`FreqProxTermsWriterPerField.java:196`) throws
+            // `ArithmeticException("integer overflow")`.
             self.base.postings[index].term_freq = self.base.postings[index]
                 .term_freq
                 .checked_add(freq)
-                .ok_or_else(|| {
-                    LuceneError::IllegalArgument(format!(
-                        "too many tokens for field \"{}\"",
-                        self.field_name()
-                    ))
-                })?;
+                .ok_or_else(LuceneError::integer_overflow)?;
             field_state.set_max_term_frequency(std::cmp::max(
                 field_state.max_term_frequency(),
                 self.base.postings[index].term_freq,
@@ -1709,6 +1765,39 @@ impl FreqProxTermsWriterPerField {
             }
         }
         Ok(())
+    }
+}
+
+/// Why [`FreqProxTermsWriterPerField::add_classified`] failed.
+///
+/// Equivalent to the class of the exception `TermsHashPerField.add(BytesRef,
+/// int)` throws, which is all `IndexingChain` looks at: a
+/// `TermsHashPerField.DuplicateTermException` is a document-level failure of
+/// a token-stream field, everything else aborts the segment
+/// (`IndexingChain.java:2001-2027`).
+#[derive(Debug)]
+pub(crate) enum TermsHashAddError {
+    /// `TermsHashPerField.DuplicateTermException`
+    /// (`TermsHashPerField.java:366-370`), an `IllegalStateException` whose
+    /// message names the field and the repeated term.
+    DuplicateTerm(LuceneError),
+    /// Any other failure, with its own class.
+    Other(LuceneError),
+}
+
+impl TermsHashAddError {
+    /// The failure itself, whatever its class: what the `throw` hands a caller
+    /// that catches neither class apart.
+    pub(crate) fn into_error(self) -> LuceneError {
+        match self {
+            Self::DuplicateTerm(error) | Self::Other(error) => error,
+        }
+    }
+}
+
+impl From<LuceneError> for TermsHashAddError {
+    fn from(error: LuceneError) -> Self {
+        Self::Other(error)
     }
 }
 
@@ -1987,6 +2076,13 @@ impl TermsEnum for FreqProxTermsEnum {
     /// `:262-269`). The postings array is the field's frozen buffers, shared
     /// through one [`Arc`] by every enum of the field, so the reference
     /// comparison is [`Arc::ptr_eq`].
+    ///
+    /// # Errors
+    ///
+    /// [`LuceneError::IllegalArgument`] when `flags` ask for what the field did
+    /// not index, as Java refuses to lie (`FreqProxFields.java:229-239,
+    /// 256-260`): `did not index positions`, `did not index offsets`, or — for
+    /// a docs-only field asked for frequencies — `did not index freq`.
     fn postings(
         &mut self,
         mut reuse: Option<Box<dyn PostingsEnum>>,
@@ -2035,6 +2131,14 @@ impl TermsEnum for FreqProxTermsEnum {
                 })?
                 .reset(term_id);
             return Ok(pos_enum);
+        }
+
+        // Caller wants freqs but we didn't index them; don't lie
+        // (`FreqProxFields.java:256-260`).
+        if !self.field.has_freq && crate::index::feature_requested(flags, POSTINGS_ENUM_FREQS) {
+            return Err(LuceneError::IllegalArgument(
+                "did not index freq".to_string(),
+            ));
         }
 
         // `reuse instanceof FreqProxDocsEnum`, and
@@ -2522,7 +2626,11 @@ impl FreqProxTermsWriter {
                 field.base.release_accounting();
                 continue;
             }
-            let sorted_term_ids = field.base.bytes_hash.sort(&pool);
+            // `perField.sortTerms()` (`FreqProxTermsWriter.java:96`): the
+            // destructive `BytesRefHash.sort()`, of which the first
+            // `numTerms` slots are the sorted ids.
+            let num_terms = field.base.bytes_hash.size() as usize;
+            let sorted_term_ids = field.base.bytes_hash.sort(&pool)[..num_terms].to_vec();
             let bytes_start: Vec<i32> = (0..field.base.bytes_hash.size())
                 .map(|term_id| field.base.bytes_hash.byte_start(term_id))
                 .collect();
@@ -4173,6 +4281,34 @@ mod tests {
         assert_eq!(read[0].1[0].freq, 7);
     }
 
+    /// `postings.termFreqs[termID] = Math.addExact(postings.termFreqs[termID],
+    /// getTermFreq())` (`FreqProxTermsWriterPerField.java:196`): a term whose
+    /// custom frequencies overflow an `int` within one document is Java's
+    /// `ArithmeticException("integer overflow")`.
+    #[test]
+    fn a_term_frequency_past_an_int_is_an_arithmetic_error() {
+        let info = field_info("body", IndexOptions::DOCS_AND_FREQS, false);
+        let mut harness = Harness::with_field(info);
+        let error = harness
+            .add_doc(
+                0,
+                &[
+                    Token::new("alpha", 1).with_term_freq(i32::MAX),
+                    Token::new("alpha", 1).with_term_freq(1),
+                ],
+            )
+            .expect_err("the frequency overflows");
+        assert!(
+            matches!(&error, LuceneError::Arithmetic(message) if message == "integer overflow"),
+            "{error:?}"
+        );
+    }
+
+    /// `addTerm` throws `DuplicateTermException`, an `IllegalStateException`
+    /// (`FreqProxTermsWriterPerField.java:193-194`), and `TermsHashPerField.add`
+    /// rethrows it with the term appended (`TermsHashPerField.java:199-204`):
+    /// `field 'body' has duplicate term 'foo'` in `oracle/fix/ChainCatch.java`
+    /// (cases C and D2) against `lucene-core-10.5.0.jar`.
     #[test]
     fn a_duplicate_term_is_rejected_in_a_term_doc_field() {
         // `FieldInfo.isTermDocField()` is exactly `DOCS_AND_CUSTOM_FREQS`.
@@ -4183,7 +4319,11 @@ mod tests {
             .add_doc(0, &[Token::new("alpha", 1), Token::new("alpha", 1)])
             .expect_err("must be rejected");
         assert!(
-            matches!(error, LuceneError::IllegalArgument(_)),
+            matches!(
+                error,
+                LuceneError::IllegalState { ref message, cause: None }
+                    if message == "field 'body' has duplicate term 'alpha'"
+            ),
             "{error:?}"
         );
     }
@@ -4441,6 +4581,32 @@ mod tests {
         ));
     }
 
+    /// `FreqProxTermsEnum.postings` refuses `FREQS` on a field that did not
+    /// index them, `throw new IllegalArgumentException("did not index freq")`
+    /// (`FreqProxFields.java:256-260`), and still serves `NONE`.
+    #[test]
+    fn requesting_freqs_from_a_docs_only_field_is_refused() {
+        let mut harness = Harness::new(IndexOptions::DOCS);
+        harness
+            .add_doc(0, &[Token::new("alpha", 1)])
+            .expect("doc 0");
+        let fields = harness.freeze();
+        let terms = fields.terms("body").expect("terms").expect("present");
+        let mut enumerator = terms.iterator().expect("iterator");
+        enumerator.next().expect("first term");
+        let error = match enumerator.postings(None, POSTINGS_ENUM_FREQS) {
+            Ok(_) => panic!("a docs-only field did not index freqs"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(&error, LuceneError::IllegalArgument(m) if m == "did not index freq"),
+            "{error:?}"
+        );
+        assert!(enumerator
+            .postings(None, crate::index::POSTINGS_ENUM_NONE)
+            .is_ok());
+    }
+
     // -- applyDeletes ------------------------------------------------------
 
     #[test]
@@ -4565,10 +4731,11 @@ mod tests {
         );
         assert_eq!(chained.num_terms(), 3);
 
-        let sorted: Vec<&[u8]> = chained
-            .sorted_term_ids(&term_pool)
-            .into_iter()
-            .map(|id| term_pool.term_bytes(chained.text_start(id)))
+        chained.sort_terms(&term_pool);
+        let num_terms = chained.num_terms() as usize;
+        let sorted: Vec<&[u8]> = chained.get_sorted_term_ids()[..num_terms]
+            .iter()
+            .map(|&id| term_pool.term_bytes(chained.text_start(id)))
             .collect();
         assert_eq!(sorted, vec![&b"alpha"[..], &b"beta"[..], &b"gamma"[..]]);
     }

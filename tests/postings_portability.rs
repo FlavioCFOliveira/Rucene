@@ -36,13 +36,15 @@ use rucene::codecs::{
     Lucene104PostingsWriter, NormsFormat, NormsProducer, PerFieldPostingsFormat, PointsFormat,
     PostingsFormat, PostingsWriterBase, SegmentInfoFormat, StoredFieldsFormat, TermVectorsFormat,
 };
-use rucene::document::{Document, NumericDocValuesField, Store, StringField, TextField};
+use rucene::document::{
+    Document, Field, FieldType, NumericDocValuesField, Store, StringField, TextField,
+};
 use rucene::index::freq_prox_terms_writer::{SortingDocsEnum, SortingPostingsEnum};
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::IndexWriterConfig;
 use rucene::index::merge_policy::NoMergePolicy;
 use rucene::index::{
-    directory_reader, DirectoryReader, FieldInfo, ImpactsEnum, IndexReader,
+    directory_reader, DirectoryReader, FieldInfo, ImpactsEnum, IndexOptions, IndexReader,
     MappingMultiPostingsEnum, PostingsEnum, SeekStatus, Term, TermState, TermsEnum,
     POSTINGS_ENUM_ALL, POSTINGS_ENUM_FREQS, POSTINGS_ENUM_NONE, POSTINGS_ENUM_OFFSETS,
     POSTINGS_ENUM_PAYLOADS, POSTINGS_ENUM_POSITIONS,
@@ -340,7 +342,7 @@ fn two_reuse_segments() -> Arc<dyn DirectoryReader> {
 #[test]
 fn the_block_postings_enum_is_reused_exactly_when_lucene_reuses_it() {
     let reader = two_reuse_segments();
-    let leaves = Arc::clone(&reader).leaves();
+    let leaves = Arc::clone(&reader).leaves().unwrap();
     assert_eq!(leaves.len(), 2);
     let leaf0 = leaves[0].leaf_reader();
     let leaf1 = leaves[1].leaf_reader();
@@ -385,6 +387,221 @@ fn the_block_postings_enum_is_reused_exactly_when_lucene_reuses_it() {
         impacts_identity,
         "an enum built for impacts"
     );
+}
+
+/// `BlockPostingsEnum.reset` resets only the fields
+/// `Lucene104PostingsReader.java:502-575` lists: the offsets of the last
+/// position read are not among them, so an enum reused for the next term
+/// answers `startOffset()` and `endOffset()`, before `nextDoc()`, with the
+/// previous term's. `LeafReuseOracle`-style probe against
+/// `lucene-core-10.5.0.jar` (`PassAOracle`, section 7): `aaa` reads offsets
+/// `0..3`, the enum is reused for `bbb`, and before `nextDoc()` it still
+/// answers `start=0 end=3`.
+#[test]
+fn a_reused_block_postings_enum_keeps_the_last_offsets_until_next_doc() {
+    let _ = register_codec("Lucene104", Lucene104Codec::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+    let mut field_type = FieldType::new();
+    field_type.set_tokenized(true).unwrap();
+    field_type
+        .set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)
+        .unwrap();
+    field_type.freeze();
+    let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+    for text in ["aaa bbb", "bbb"] {
+        let mut doc = Document::new();
+        doc.add(Box::new(
+            Field::new("f", text.to_string(), field_type.clone()).unwrap(),
+        ));
+        writer.add_document(&doc).unwrap();
+    }
+    writer.close().unwrap();
+
+    let reader = directory_reader::open(dir).unwrap();
+    let leaves = Arc::clone(&reader).leaves().unwrap();
+    let mut terms = leaves[0]
+        .leaf_reader()
+        .terms("f")
+        .unwrap()
+        .unwrap()
+        .iterator()
+        .unwrap();
+    assert_eq!(terms.next().unwrap(), Some(BytesRef::new(b"aaa".to_vec())));
+    let mut postings = terms.postings(None, POSTINGS_ENUM_OFFSETS).unwrap();
+    assert_eq!(postings.next_doc().unwrap(), 0);
+    assert_eq!(postings.freq().unwrap(), 1);
+    postings.next_position().unwrap();
+    assert_eq!((postings.start_offset(), postings.end_offset()), (0, 3));
+    let first = identity(postings.as_ref());
+
+    assert_eq!(terms.next().unwrap(), Some(BytesRef::new(b"bbb".to_vec())));
+    let reused = terms
+        .postings(Some(postings), POSTINGS_ENUM_OFFSETS)
+        .unwrap();
+    assert_eq!(identity(reused.as_ref()), first, "the enum is reused");
+    assert_eq!((reused.start_offset(), reused.end_offset()), (0, 3));
+}
+
+/// `ReusePayload.Toks`: emits `(term, payload)` pairs through a
+/// `PackedTokenAttributeImpl` and a `PayloadAttributeImpl`.
+#[derive(Debug)]
+struct PayloadTokens {
+    source: AttributeSource,
+    tokens: Vec<(&'static str, Vec<u8>)>,
+    upto: usize,
+}
+
+impl PayloadTokens {
+    fn new(tokens: Vec<(&'static str, Vec<u8>)>) -> Self {
+        let mut source =
+            AttributeSource::new_with_factory(rucene::analysis::default_token_attribute_factory());
+        source
+            .add_attribute::<rucene::analysis::tokenattributes::PackedTokenAttributeImpl>()
+            .unwrap();
+        source.add_attribute_impl_instance(Box::new(
+            rucene::analysis::tokenattributes::PayloadAttributeImpl::new(),
+        ));
+        Self {
+            source,
+            tokens,
+            upto: 0,
+        }
+    }
+}
+
+impl rucene::analysis::TokenStream for PayloadTokens {
+    fn increment_token(&mut self) -> rucene::error::Result<bool> {
+        use rucene::analysis::tokenattributes::{
+            CharTermAttribute, PackedTokenAttributeImpl, PayloadAttribute, PayloadAttributeImpl,
+        };
+        if self.upto == self.tokens.len() {
+            return Ok(false);
+        }
+        self.source.clear_attributes();
+        let (term, payload) = self.tokens[self.upto].clone();
+        self.upto += 1;
+        self.source
+            .get_attribute_mut::<PackedTokenAttributeImpl>()
+            .unwrap()
+            .append_string(term);
+        self.source
+            .get_attribute_mut::<PayloadAttributeImpl>()
+            .unwrap()
+            .set_payload(Some(BytesRef::new(payload)));
+        Ok(true)
+    }
+    fn reset(&mut self) -> rucene::error::Result<()> {
+        self.upto = 0;
+        Ok(())
+    }
+    fn end(&mut self) -> rucene::error::Result<()> {
+        self.source.end_attributes();
+        Ok(())
+    }
+    fn attribute_source(&self) -> &AttributeSource {
+        &self.source
+    }
+    fn attribute_source_mut(&mut self) -> &mut AttributeSource {
+        &mut self.source
+    }
+}
+
+/// `BlockPostingsEnum` keeps its payload as a `BytesRef` view that only
+/// `accumulatePayloadAndOffsets` re-points (`Lucene104PostingsReader.java:1278-1285`)
+/// and `getPayload()` returns (`:1340-1346`); `reset` rewinds
+/// `payloadByteUpto` to zero but leaves the view, so an enum reused for the
+/// next term answers `getPayload()`, before `nextDoc()`, with the previous
+/// term's payload. Measured against `lucene-core-10.5.0.jar` (the audit's
+/// `ReusePayload.java`): `aaa payload=[1 2]`, then `reused=true payload
+/// before nextDoc=[1 2]`.
+#[test]
+fn a_reused_block_postings_enum_keeps_the_last_payload_until_next_doc() {
+    let _ = register_codec("Lucene104", Lucene104Codec::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+    let mut field_type = FieldType::new();
+    field_type.set_tokenized(true).unwrap();
+    field_type
+        .set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
+        .unwrap();
+    field_type.freeze();
+    let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+    for tokens in [
+        vec![("aaa", vec![1u8, 2]), ("bbb", vec![3u8])],
+        vec![("bbb", vec![4u8])],
+    ] {
+        let stream: std::rc::Rc<std::cell::RefCell<dyn rucene::analysis::TokenStream>> =
+            std::rc::Rc::new(std::cell::RefCell::new(PayloadTokens::new(tokens)));
+        let mut doc = Document::new();
+        doc.add(Box::new(
+            Field::new_with_token_stream("f", stream, field_type.clone()).unwrap(),
+        ));
+        writer.add_document(&doc).unwrap();
+    }
+    writer.close().unwrap();
+
+    let reader = directory_reader::open(dir).unwrap();
+    let leaves = Arc::clone(&reader).leaves().unwrap();
+    let mut terms = leaves[0]
+        .leaf_reader()
+        .terms("f")
+        .unwrap()
+        .unwrap()
+        .iterator()
+        .unwrap();
+    assert_eq!(terms.next().unwrap(), Some(BytesRef::new(b"aaa".to_vec())));
+    let mut postings = terms.postings(None, POSTINGS_ENUM_PAYLOADS).unwrap();
+    assert_eq!(postings.next_doc().unwrap(), 0);
+    postings.next_position().unwrap();
+    assert_eq!(postings.get_payload().unwrap(), Some(&[1u8, 2][..]));
+    let first = identity(postings.as_ref());
+
+    assert_eq!(terms.next().unwrap(), Some(BytesRef::new(b"bbb".to_vec())));
+    let reused = terms
+        .postings(Some(postings), POSTINGS_ENUM_PAYLOADS)
+        .unwrap();
+    assert_eq!(identity(reused.as_ref()), first, "the enum is reused");
+    assert_eq!(reused.get_payload().unwrap(), Some(&[1u8, 2][..]));
+}
+
+/// A fresh `BlockPostingsEnum` that reads offsets leaves `startOffset` and
+/// `endOffset` at Java's `int` default of zero; only an enum that does not
+/// read them sets -1 (`Lucene104PostingsReader.java:472-480`). Measured
+/// against `lucene-core-10.5.0.jar` (the audit's `FreshOffsets.java`):
+/// `fresh: start=0 end=0`, and `after nextDoc: start=0 end=0`.
+#[test]
+fn a_fresh_block_postings_enum_answers_offsets_of_zero_as_lucene_does() {
+    let _ = register_codec("Lucene104", Lucene104Codec::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+    let mut field_type = FieldType::new();
+    field_type.set_tokenized(true).unwrap();
+    field_type
+        .set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)
+        .unwrap();
+    field_type.freeze();
+    let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+    for text in ["aaa bbb", "bbb"] {
+        let mut doc = Document::new();
+        doc.add(Box::new(
+            Field::new("f", text.to_string(), field_type.clone()).unwrap(),
+        ));
+        writer.add_document(&doc).unwrap();
+    }
+    writer.close().unwrap();
+
+    let reader = directory_reader::open(dir).unwrap();
+    let leaves = Arc::clone(&reader).leaves().unwrap();
+    let mut terms = leaves[0]
+        .leaf_reader()
+        .terms("f")
+        .unwrap()
+        .unwrap()
+        .iterator()
+        .unwrap();
+    terms.next().unwrap();
+    let mut postings = terms.postings(None, POSTINGS_ENUM_OFFSETS).unwrap();
+    assert_eq!((postings.start_offset(), postings.end_offset()), (0, 0));
+    postings.next_doc().unwrap();
+    assert_eq!((postings.start_offset(), postings.end_offset()), (0, 0));
 }
 
 /// One `postings` call a postings writer made: the field, the enum it offered

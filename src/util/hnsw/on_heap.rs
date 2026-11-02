@@ -274,34 +274,6 @@ impl OnHeapHnswGraph {
             .map_err(|_| poisoned(level, node))
     }
 
-    /// Replaces the neighbor array for `node` at `level`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalArgument`] when the node is out of range
-    /// or has no level `level`.
-    pub fn set_neighbors(&mut self, level: i32, node: i32, neighbors: NeighborArray) -> Result<()> {
-        let node_usize = node as usize;
-        if node < 0 || node_usize >= self.graph.len() {
-            return Err(LuceneError::IllegalArgument(format!(
-                "node {} out of bounds",
-                node
-            )));
-        }
-        let levels = self.graph[node_usize]
-            .get_mut()
-            .ok_or_else(|| LuceneError::IllegalArgument(format!("node {} has no levels", node)))?;
-        let level_usize = level as usize;
-        if level < 0 || level_usize >= levels.len() {
-            return Err(LuceneError::IllegalArgument(format!(
-                "level {} out of bounds for node {}",
-                level, node
-            )));
-        }
-        levels[level_usize] = OnceLock::from(RwLock::new(neighbors));
-        Ok(())
-    }
-
     /// Creates the empty neighbour array `addNode` installs at `level`,
     /// charging its memory to the graph.
     fn new_neighbor_array(&self, level: i32) -> NeighborArray {
