@@ -1081,12 +1081,14 @@ impl TermVectorsConsumer {
     /// closes the writer with `IOUtils.closeWhileHandlingException` and resets
     /// again. Calling this without a writer is a no-op.
     ///
-    /// Java's `abort()` returns nothing and lets the `Error` that
-    /// `closeWhileHandlingException` rethrows propagate unchecked; this one
-    /// returns nothing either, so that [`LuceneError::AssertionError`](crate::error::LuceneError::AssertionError) is
-    /// raised as the panic that stands for a Java `Error`
-    /// ([`IOUtils::rethrow_always`](crate::util::IOUtils::rethrow_always)).
-    pub fn abort(&mut self) {
+    /// # Errors
+    ///
+    /// Returns the [`LuceneError::AssertionError`](crate::error::LuceneError::AssertionError)
+    /// closing the writer raised: the `Error` Java's
+    /// `closeWhileHandlingException` rethrows, unchecked, through the callers'
+    /// `finally` blocks up to `DocumentsWriterPerThread.abort()`, which
+    /// declares `throws IOException`.
+    pub fn abort(&mut self) -> Result<()> {
         self.aborted = true;
         for field in &mut self.fields {
             field.release_accounting();
@@ -1096,11 +1098,9 @@ impl TermVectorsConsumer {
         self.pending_fields.clear();
         self.terms_hash.reset();
         let writer = self.writer.take();
-        if let Err(error) = crate::util::IOUtils::close_while_handling_exception([
+        crate::util::IOUtils::close_while_handling_exception([
             writer.map(|mut writer| move || writer.close())
-        ]) {
-            crate::util::IOUtils::rethrow_always(error);
-        }
+        ])
     }
 }
 
@@ -1335,7 +1335,7 @@ mod tests {
         consumer.finish_document(0, &term_pool).expect("finish");
         assert!(consumer.has_writer());
 
-        consumer.abort();
+        consumer.abort().unwrap();
         assert!(consumer.is_aborted());
         assert!(!consumer.has_writer());
 
@@ -1431,7 +1431,7 @@ mod tests {
             "indexing 64 terms must have charged the per-field tables"
         );
 
-        consumer.abort();
+        consumer.abort().unwrap();
         assert_eq!(
             bytes_used.load(Ordering::Acquire),
             term_pool_charge,

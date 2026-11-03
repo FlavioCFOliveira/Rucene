@@ -393,22 +393,21 @@ impl StoredFieldsConsumer {
     ///
     /// Equivalent to `StoredFieldsConsumer.abort()`, which uses
     /// `IOUtils.closeWhileHandlingException`: the writer is released, any error
-    /// raised while closing it is swallowed, and calling this without a writer
-    /// is a no-op.
+    /// raised while closing it is swallowed but a Java `Error`, and calling
+    /// this without a writer is a no-op.
     ///
-    /// Java's `abort()` returns nothing and lets the `Error` that
-    /// `closeWhileHandlingException` rethrows propagate unchecked; this one
-    /// returns nothing either, so that [`LuceneError::AssertionError`](crate::error::LuceneError::AssertionError) is
-    /// raised as the panic that stands for a Java `Error`
-    /// ([`IOUtils::rethrow_always`](crate::util::IOUtils::rethrow_always)).
-    pub fn abort(&mut self) {
+    /// # Errors
+    ///
+    /// Returns the [`LuceneError::AssertionError`] closing the writer raised:
+    /// the `Error` Java's `closeWhileHandlingException` rethrows, unchecked,
+    /// through the callers' `finally` blocks up to
+    /// `DocumentsWriterPerThread.abort()`, which declares `throws IOException`.
+    pub fn abort(&mut self) -> Result<()> {
         self.aborted = true;
         let writer = self.writer.take();
-        if let Err(error) = crate::util::IOUtils::close_while_handling_exception([
+        crate::util::IOUtils::close_while_handling_exception([
             writer.map(|mut writer| move || writer.close())
-        ]) {
-            crate::util::IOUtils::rethrow_always(error);
-        }
+        ])
     }
 
     /// Returns `true` once [`Self::abort`] has run.
@@ -994,10 +993,10 @@ mod tests {
     fn abort_closes_the_writer_and_is_idempotent() {
         let (mut consumer, log, _dir) = logging_consumer(false);
         consumer.start_document(0).expect("start");
-        consumer.abort();
+        consumer.abort().unwrap();
         assert_eq!(log.closes(), 1);
         assert!(!consumer.has_writer());
-        consumer.abort();
+        consumer.abort().unwrap();
         assert_eq!(log.closes(), 1, "aborting twice must not close twice");
     }
 
@@ -1009,7 +1008,7 @@ mod tests {
         // a second set of stored-fields files for a discarded segment.
         let (mut consumer, log, directory) = logging_consumer(false);
         consumer.start_document(0).expect("start");
-        consumer.abort();
+        consumer.abort().unwrap();
         assert!(consumer.is_aborted());
 
         let error = consumer
@@ -1066,7 +1065,7 @@ mod tests {
     #[test]
     fn abort_without_a_writer_is_a_no_op() {
         let (mut consumer, log, _dir) = logging_consumer(false);
-        consumer.abort();
+        consumer.abort().unwrap();
         assert_eq!(log.closes(), 0);
     }
 

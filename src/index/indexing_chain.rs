@@ -3786,7 +3786,7 @@ impl ChainStoredFields {
     }
 
     /// `StoredFieldsConsumer.abort()`.
-    fn abort(&mut self) {
+    fn abort(&mut self) -> Result<()> {
         match self {
             Self::Plain(consumer) => consumer.abort(),
             Self::Sorting(consumer) => consumer.abort(),
@@ -3841,7 +3841,7 @@ impl ChainTermVectors {
     }
 
     /// `TermVectorsConsumer.abort()`.
-    fn abort(&mut self) {
+    fn abort(&mut self) -> Result<()> {
         match self {
             Self::Plain(consumer) => consumer.abort(),
             Self::Sorting(consumer) => consumer.abort(),
@@ -4515,29 +4515,39 @@ impl IndexingChain for DefaultIndexingChain {
         Ok(())
     }
 
-    fn abort(&mut self) {
-        // Lucene runs `storedFieldsConsumer.abort()` inside a try-with-resources
-        // whose finalizer aborts the terms hash, so both release their files
-        // even when one of them throws.
-        if let Some(consumer) = self.stored_fields_consumer.as_mut() {
-            consumer.abort();
-        }
-        // `TermsHash.abort()` resets the postings buffers and then aborts the
-        // next hash of the chain, which closes the term-vectors writer.
+    /// Equivalent to `IndexingChain.abort()` (`IndexingChain.java:536-544`):
+    /// `try (Closeable finalizer = termsHash::abort) {
+    /// storedFieldsConsumer.abort(); vectorValuesConsumer.abort(); } finally {
+    /// Arrays.fill(fieldHash, null); }`. The stored fields abort first and
+    /// the vectors after, unless the first fails; the finalizer then aborts
+    /// the terms hash — the postings buffers, then the next hash of the
+    /// chain, which closes the term-vectors writer — however the body ended;
+    /// the per-field state is dropped last. The body's error wins, the
+    /// finalizer's then being suppressed.
+    fn abort(&mut self) -> Result<()> {
+        let body = (|| -> Result<()> {
+            if let Some(consumer) = self.stored_fields_consumer.as_mut() {
+                consumer.abort()?;
+            }
+            if let Some(consumer) = self.vector_values_consumer.as_mut() {
+                consumer.abort()?;
+            }
+            Ok(())
+        })();
+        // The finalizer, `TermsHash.abort()`: `try { reset(); } finally {
+        // nextTermsHash.abort(); }`.
         self.terms_writer.abort();
-        if let Some(consumer) = self.term_vectors_consumer.as_mut() {
-            consumer.abort();
-        }
-        // `IndexingChain.abort` closes the vectors writer inside the same
-        // finalizer chain (`IndexingChain.java:537-541`), swallowing whatever
-        // the close raises: the segment is going away either way.
-        if let Some(consumer) = self.vector_values_consumer.as_mut() {
-            consumer.abort();
-        }
+        let finalized = match self.term_vectors_consumer.as_mut() {
+            Some(consumer) => consumer.abort(),
+            None => Ok(()),
+        };
+        // The `finally`, `Arrays.fill(fieldHash, null)`.
         self.per_fields.clear();
         self.per_field_index.clear();
         self.reset_doc_values_byte_pool();
         self.bytes_used.store(0, Ordering::Release);
+        body?;
+        finalized
     }
 
     /// Equivalent to `IndexingChain.flush(SegmentWriteState)`
@@ -6584,7 +6594,7 @@ mod tests {
             chain.stored_fields_consumer().expect("bound").has_writer(),
             "indexing a document opens the stored-fields writer"
         );
-        chain.abort();
+        chain.abort().unwrap();
         assert!(
             !chain.stored_fields_consumer().expect("bound").has_writer(),
             "abort must release the stored-fields writer"
@@ -6633,7 +6643,7 @@ mod tests {
                 .expect("process document");
         }
         assert!(chain.ram_bytes_used() > 0);
-        chain.abort();
+        chain.abort().unwrap();
         assert_eq!(chain.ram_bytes_used(), 0);
         assert!(chain.field_invert_state("body").is_none());
     }
@@ -7391,7 +7401,7 @@ mod tests {
             .term_vectors_consumer()
             .expect("bound chain")
             .has_writer());
-        chain.abort();
+        chain.abort().unwrap();
         let consumer = chain.term_vectors_consumer().expect("bound chain");
         assert!(!consumer.has_writer());
         assert!(consumer.is_aborted());

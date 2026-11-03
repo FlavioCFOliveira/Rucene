@@ -407,7 +407,7 @@ impl OnHeapSearcher {
         let cur = self.cur_neighbors.as_ref().expect("graph_seek not called");
         self.cur_upto += 1;
         if self.cur_upto < cur.size() {
-            cur.nodes()[self.cur_upto as usize]
+            cur.node(self.cur_upto)
         } else {
             NO_MORE_DOCS
         }

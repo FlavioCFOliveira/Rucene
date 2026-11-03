@@ -160,7 +160,7 @@ impl InitializedHnswGraphBuilder {
                 self.inner.scorer.set_scoring_ordinal(new_ord)?;
 
                 // Copy neighbours.
-                let mut new_neighbors = self.inner.hnsw.write_neighbors(level, new_ord)?;
+                let new_neighbors = self.inner.hnsw.get_neighbors(level, new_ord)?;
                 initializer_graph.seek(level, old_ord)?;
                 let mut old_neighbour_count = 0i32;
                 loop {
@@ -180,7 +180,6 @@ impl InitializedHnswGraphBuilder {
                 // Mark as disconnected if the node lost more than the acceptable
                 // threshold of neighbours.
                 let kept = new_neighbors.size();
-                drop(new_neighbors);
                 if f64::from(kept) < f64::from(old_neighbour_count) * DISCONNECTED_NODE_FACTOR {
                     disconnected_nodes.push(new_ord);
                 }
@@ -210,13 +209,12 @@ impl InitializedHnswGraphBuilder {
 
         let beam_width = self.inner.beam_candidates.k();
         let mut candidates = GraphBuilderKnnCollector::new(beam_width)?;
-        let mut scratch_array = NeighborArray::new(beam_width, false);
+        let scratch_array = NeighborArray::new(beam_width, false);
         let mut node_buffer = Vec::new();
 
         for &node in disconnected_nodes {
             self.inner.scorer.set_scoring_ordinal(node)?;
-            let entry_points: Vec<i32> =
-                self.inner.hnsw.get_neighbors(level, node)?.nodes().to_vec();
+            let entry_points: Vec<i32> = self.inner.hnsw.get_neighbors(level, node)?.nodes();
 
             // Only repair if the node has at least one neighbour to enter from.
             if !entry_points.is_empty() {
@@ -226,14 +224,18 @@ impl InitializedHnswGraphBuilder {
                     self.inner.scorer.as_mut(),
                     level,
                     &entry_points,
-                    &mut OnHeapGraphReader::new(&self.inner.hnsw, &mut node_buffer),
+                    &mut OnHeapGraphReader::new(
+                        &self.inner.hnsw,
+                        self.inner.hnsw_lock.as_deref(),
+                        &mut node_buffer,
+                    ),
                     None,
                 )?;
-                pop_to_scratch(&mut candidates, &mut scratch_array);
+                pop_to_scratch(&mut candidates, &scratch_array);
 
                 // Add diverse neighbours using the HNSW heuristic.
                 self.inner
-                    .add_diverse_neighbors(level, node, &mut scratch_array, true)?;
+                    .add_diverse_neighbors(level, node, &scratch_array, true)?;
             } else {
                 // The node has no neighbours; add connections from scratch.
                 self.add_connections(node, level)?;
@@ -318,7 +320,11 @@ impl InitializedHnswGraphBuilder {
                 self.inner.scorer.as_mut(),
                 level,
                 &eps,
-                &mut OnHeapGraphReader::new(&self.inner.hnsw, &mut node_buffer),
+                &mut OnHeapGraphReader::new(
+                    &self.inner.hnsw,
+                    self.inner.hnsw_lock.as_deref(),
+                    &mut node_buffer,
+                ),
                 None,
             )?;
             eps[0] = candidates.pop_node();
@@ -332,16 +338,20 @@ impl InitializedHnswGraphBuilder {
             self.inner.scorer.as_mut(),
             target_level,
             &eps,
-            &mut OnHeapGraphReader::new(&self.inner.hnsw, &mut node_buffer),
+            &mut OnHeapGraphReader::new(
+                &self.inner.hnsw,
+                self.inner.hnsw_lock.as_deref(),
+                &mut node_buffer,
+            ),
             None,
         )?;
 
-        let mut scratch_array = NeighborArray::new(beam_width, false);
-        pop_to_scratch(&mut candidates, &mut scratch_array);
+        let scratch_array = NeighborArray::new(beam_width, false);
+        pop_to_scratch(&mut candidates, &scratch_array);
 
         // Add diverse neighbours and establish bidirectional connections.
         self.inner
-            .add_diverse_neighbors(target_level, node, &mut scratch_array, true)
+            .add_diverse_neighbors(target_level, node, &scratch_array, true)
     }
 }
 

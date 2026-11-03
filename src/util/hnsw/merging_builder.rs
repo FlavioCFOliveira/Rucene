@@ -117,9 +117,8 @@ impl MergingHnswGraphBuilder {
                     let newv = self.ord_maps[index][v as usize];
                     eps.add(newv);
 
-                    // Java's `hnsw.seek(0, newv)` and `nextNeighbor()` loop,
-                    // read under the array's lock.
-                    for &friend_ord in self.inner.hnsw.get_neighbors(0, newv)?.nodes() {
+                    // Java's `hnsw.seek(0, newv)` and `nextNeighbor()` loop.
+                    for friend_ord in self.inner.hnsw.get_neighbors(0, newv)?.nodes() {
                         eps.add(friend_ord);
                     }
                 }

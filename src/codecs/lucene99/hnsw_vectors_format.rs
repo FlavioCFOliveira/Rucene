@@ -761,7 +761,7 @@ impl HnswWriterState {
             level0_nodes.push(node);
             let neighbors = graph.get_neighbors(0, new_to_old_map[node as usize])?;
             let written = self.reconstruct_and_write_neighbours(
-                &neighbors,
+                neighbors,
                 old_to_new_map,
                 scratch_capacity,
                 max_ord,
@@ -782,7 +782,7 @@ impl HnswWriterState {
             for &node in &new_nodes {
                 let neighbors = graph.get_neighbors(level, new_to_old_map[node as usize])?;
                 offsets.push(self.reconstruct_and_write_neighbours(
-                    &neighbors,
+                    neighbors,
                     old_to_new_map,
                     scratch_capacity,
                     max_ord,
@@ -809,9 +809,8 @@ impl HnswWriterState {
         max_ord: i32,
     ) -> Result<i32> {
         let size = neighbors.size() as usize;
-        let mut nnodes: Vec<i32> = neighbors.nodes()[..size]
-            .iter()
-            .map(|&node| old_to_new_map[node as usize])
+        let mut nnodes: Vec<i32> = (0..size)
+            .map(|i| old_to_new_map[neighbors.node(i as i32) as usize])
             .collect();
         nnodes.sort_unstable();
 
@@ -1034,7 +1033,7 @@ impl HnswWriterState {
                 let offset_start = vector_index.file_pointer();
                 write_neighbors(
                     vector_index.as_mut(),
-                    &neighbors,
+                    neighbors,
                     scratch_capacity,
                     self.version,
                 )?;
@@ -1478,8 +1477,9 @@ fn write_neighbors(
     version: i32,
 ) -> Result<()> {
     let size = neighbors.size() as usize;
-    let mut scratch = Vec::with_capacity(scratch_capacity.max(size));
-    scratch.extend_from_slice(&neighbors.nodes()[..size]);
+    let mut scratch = vec![0; scratch_capacity.max(size)];
+    neighbors.copy_nodes(0, &mut scratch[..size]);
+    scratch.truncate(size);
     scratch[..size].sort_unstable();
     let mut actual = Vec::with_capacity(size);
     for i in 0..size {
@@ -2179,7 +2179,10 @@ impl Lucene99HnswVectorsReader {
     /// through an `OrdinalTranslatedKnnCollector` wrapping the caller's
     /// collector, which translates each ordinal to its document as it is
     /// collected; the exhaustive scan collects into the caller's collector
-    /// directly, translating with `scorer.ordToDoc`.
+    /// directly, translating with `scorer.ordToDoc`. As Java's
+    /// `scorerSupplier.get()`, `scorer_supplier` builds the scorer only once
+    /// an empty field or a `k` of zero has returned
+    /// (`Lucene99HnswVectorsReader.java:337-341`).
     ///
     /// # Divergence from Lucene 10.5.0
     ///
@@ -2188,23 +2191,27 @@ impl Lucene99HnswVectorsReader {
     /// while the graph search scores through it, so the collector cannot call
     /// the scorer; it translates through `ordToDoc` of the field's vector
     /// values instead (`field_values`), the mapping every scorer of the flat
-    /// formats delegates its own `ordToDoc` to.
+    /// formats delegates its own `ordToDoc` to. The supplier builds both,
+    /// the scorer first.
     ///
     /// # Errors
     ///
-    /// Returns whatever reading the graph, the vectors or the accept docs
-    /// raises.
+    /// Returns whatever building the scorer, or reading the graph, the vectors
+    /// or the accept docs raises.
     fn search_with_scorer(
         &self,
         entry: &FieldEntry,
-        mut scorer: Box<dyn RandomVectorScorer>,
-        field_values: Box<dyn crate::index::vector_values::KnnVectorValues>,
+        scorer_supplier: impl FnOnce() -> Result<(
+            Box<dyn RandomVectorScorer>,
+            Box<dyn crate::index::vector_values::KnnVectorValues>,
+        )>,
         knn_collector: &mut dyn KnnCollector,
         accept_docs: &mut dyn AcceptDocs,
     ) -> Result<()> {
         if entry.size == 0 || knn_collector.k() == 0 {
             return Ok(());
         }
+        let (mut scorer, field_values) = scorer_supplier()?;
         let k = knn_collector.k();
         // Use the approximate cardinality, as this is good enough, but ensure
         // it does not exceed the graph size, as that is illogical.
@@ -2380,11 +2387,15 @@ impl KnnVectorsReader for Lucene99HnswVectorsReader {
         let entry = self
             .get_field_entry(field, VectorEncoding::FLOAT32)?
             .clone();
-        let scorer = self
-            .flat_vectors_reader
-            .get_random_vector_scorer_float(field, target)?;
-        let values = self.field_values(field, VectorEncoding::FLOAT32)?;
-        self.search_with_scorer(&entry, scorer, values, knn_collector, accept_docs)
+        // `() -> flatVectorsReader.getRandomVectorScorer(field, target)`.
+        let scorer_supplier = || {
+            let scorer = self
+                .flat_vectors_reader
+                .get_random_vector_scorer_float(field, target)?;
+            let values = self.field_values(field, VectorEncoding::FLOAT32)?;
+            Ok((scorer, values))
+        };
+        self.search_with_scorer(&entry, scorer_supplier, knn_collector, accept_docs)
     }
 
     fn search_byte(
@@ -2395,11 +2406,15 @@ impl KnnVectorsReader for Lucene99HnswVectorsReader {
         accept_docs: &mut dyn AcceptDocs,
     ) -> Result<()> {
         let entry = self.get_field_entry(field, VectorEncoding::BYTE)?.clone();
-        let scorer = self
-            .flat_vectors_reader
-            .get_random_vector_scorer_byte(field, target)?;
-        let values = self.field_values(field, VectorEncoding::BYTE)?;
-        self.search_with_scorer(&entry, scorer, values, knn_collector, accept_docs)
+        // `() -> flatVectorsReader.getRandomVectorScorer(field, target)`.
+        let scorer_supplier = || {
+            let scorer = self
+                .flat_vectors_reader
+                .get_random_vector_scorer_byte(field, target)?;
+            let values = self.field_values(field, VectorEncoding::BYTE)?;
+            Ok((scorer, values))
+        };
+        self.search_with_scorer(&entry, scorer_supplier, knn_collector, accept_docs)
     }
 
     fn get_merge_instance(&self) -> Result<Box<dyn KnnVectorsReader>> {
@@ -3523,6 +3538,92 @@ mod tests {
             .map(|(doc, _)| doc)
             .collect();
         assert_eq!(docs, vec![0, 1, 2]);
+        Ok(())
+    }
+
+    /// A collector over a [`TopKnnCollector`] that reports the `k` it is given.
+    struct KCollector {
+        inner: TopKnnCollector,
+        k: i32,
+    }
+
+    impl KnnCollector for KCollector {
+        fn early_terminated(&self) -> bool {
+            self.inner.early_terminated()
+        }
+
+        fn inc_visited_count(&mut self, count: i32) {
+            self.inner.inc_visited_count(count);
+        }
+
+        fn visited_count(&self) -> i64 {
+            self.inner.visited_count()
+        }
+
+        fn visit_limit(&self) -> i64 {
+            self.inner.visit_limit()
+        }
+
+        fn k(&self) -> i32 {
+            self.k
+        }
+
+        fn collect(&mut self, doc_id: i32, similarity: f32) -> bool {
+            self.inner.collect(doc_id, similarity)
+        }
+
+        fn min_competitive_similarity(&self) -> f32 {
+            self.inner.min_competitive_similarity()
+        }
+
+        fn top_docs(&mut self) -> crate::search::knn::TopDocs {
+            self.inner.top_docs()
+        }
+
+        fn get_search_strategy(&self) -> Option<&crate::search::knn::KnnSearchStrategy> {
+            self.inner.get_search_strategy()
+        }
+    }
+
+    /// `Lucene99HnswVectorsReader.search` returns on `knnCollector.k() == 0`
+    /// before `scorerSupplier.get()` builds the scorer
+    /// (`Lucene99HnswVectorsReader.java:337-341`), so a target of the wrong
+    /// dimension is never checked. Java oracle
+    /// (`oracle/passG2/LazyScorerOracle.java`): "k=0 returned visited=0",
+    /// "k=1 threw java.lang.IllegalArgumentException: vector query dimension:
+    /// 3 differs from field dimension: 2".
+    #[test]
+    fn a_k_of_zero_returns_before_the_scorer_is_built() -> Result<()> {
+        let dir = Arc::new(ByteBuffersDirectory::new()) as Arc<dyn crate::store::Directory>;
+        let seg_info = make_segment_info(&dir, ACCEPT_DOCS_SIZE)?;
+        let field_info = float_field_info("float_field", 0, 2)?;
+        let field_infos = FieldInfos::new(vec![field_info.clone()])?;
+        write_accept_docs_segment(&dir, &seg_info, &field_info, &field_infos, ACCEPT_DOCS_SIZE)?;
+        let io_ctx = DefaultIOContext::default();
+        let read_state = SegmentReadState::new(dir.as_ref(), &seg_info, &field_infos, &io_ctx);
+        let reader = Lucene99HnswVectorsFormat::new().fields_reader(&read_state)?;
+
+        let mut zero = KCollector {
+            inner: TopKnnCollector::new(1, i64::MAX),
+            k: 0,
+        };
+        let mut all = from_live_docs(None, ACCEPT_DOCS_SIZE)?;
+        reader.search("float_field", &[0.0, 0.0, 0.0], &mut zero, &mut all)?;
+        assert_eq!(zero.visited_count(), 0);
+
+        let mut one = KCollector {
+            inner: TopKnnCollector::new(1, i64::MAX),
+            k: 1,
+        };
+        let mut all = from_live_docs(None, ACCEPT_DOCS_SIZE)?;
+        let error = reader
+            .search("float_field", &[0.0, 0.0, 0.0], &mut one, &mut all)
+            .expect_err("the scorer rejects the target");
+        assert!(
+            matches!(&error, LuceneError::IllegalArgument(message)
+                if message == "vector query dimension: 3 differs from field dimension: 2"),
+            "{error:?}"
+        );
         Ok(())
     }
 

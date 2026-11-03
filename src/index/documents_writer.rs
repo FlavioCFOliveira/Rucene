@@ -1845,7 +1845,15 @@ pub trait IndexingChain: Accountable + Send + Debug {
     }
 
     /// Discards every buffered document.
-    fn abort(&mut self);
+    ///
+    /// Equivalent to `IndexingChain.abort()` (`IndexingChain.java:536-544`),
+    /// which declares `throws IOException`.
+    ///
+    /// # Errors
+    ///
+    /// Returns what discarding the buffered documents raised; the chain still
+    /// releases everything it can, as Java's `finally` blocks do.
+    fn abort(&mut self) -> Result<()>;
 
     /// Writes the buffered documents into the segment described by `state`,
     /// and returns the permutation an index sort applied to the segment, or
@@ -3979,7 +3987,8 @@ impl DwptGuard {
         F: Fn(),
     {
         let outcome = self.update_documents_inner(docs, del_node, on_new_doc_on_ram);
-        self.maybe_abort("updateDocuments", notifications);
+        // The `finally`: a failure to abort replaces the outcome.
+        self.maybe_abort("updateDocuments", notifications)?;
         outcome
     }
 
@@ -4003,7 +4012,8 @@ impl DwptGuard {
         F: Fn(i32),
     {
         let outcome = self.update_batch_inner(column_batch, del_node, on_new_docs_on_ram);
-        self.maybe_abort("updateBatch", notifications);
+        // The `finally`: a failure to abort replaces the outcome.
+        self.maybe_abort("updateBatch", notifications)?;
         outcome
     }
 
@@ -4198,14 +4208,21 @@ impl DwptGuard {
     /// was recorded, and returns the error this DWPT itself recorded.
     ///
     /// Equivalent to `DocumentsWriterPerThread.maybeAbort(String,
-    /// DocumentsWriter.FlushNotifications)`. The error is returned so that
-    /// [`flush`](Self::flush) can still propagate the very error it caught:
-    /// [`LuceneError`] is not `Clone`, so it cannot be both stored and returned.
+    /// DocumentsWriter.FlushNotifications)`: `try { abort(); } finally {
+    /// flushNotifications.onTragicEvent(...); }`. The error this DWPT recorded
+    /// is returned so that [`flush`](Self::flush) can still propagate the very
+    /// error it caught: [`LuceneError`] is not `Clone`, so it cannot be both
+    /// stored and returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns what [`abort`](Self::abort) raised, after the tragic event was
+    /// fired.
     fn maybe_abort(
         &mut self,
         location: &str,
         notifications: &dyn FlushNotifications,
-    ) -> Option<LuceneError> {
+    ) -> Result<Option<LuceneError>> {
         let (chain_error, own_error) = {
             let state = self
                 .state
@@ -4217,7 +4234,7 @@ impl DwptGuard {
             )
         };
         if (chain_error.is_some() || own_error.is_some()) && !self.dwpt.is_aborted() {
-            self.abort();
+            let aborted = self.abort();
             // whatever we do here we have to fire this tragic event up. The
             // chain's error wins when both are present: it is the first one
             // recorded, and the one Java would have kept.
@@ -4226,8 +4243,9 @@ impl DwptGuard {
                 .or(own_error.as_ref())
                 .expect("INVARIANT: presence checked above");
             notifications.on_tragic_event(error, location);
+            aborted?;
         }
-        own_error
+        Ok(own_error)
     }
 
     /// Freezes the global deletes visible to this segment and applies its own
@@ -4276,9 +4294,11 @@ impl DwptGuard {
             "all deletes must be applied in prepareFlush"
         );
 
+        // A failure to abort in the `finally` replaces the outcome and skips
+        // `hasFlushed.set(true)`, as an exception thrown there does.
         let outcome = match self.flush_inner(notifications) {
             Ok(value) => {
-                self.maybe_abort("flush", notifications);
+                self.maybe_abort("flush", notifications)?;
                 Ok(value)
             }
             Err(error) => {
@@ -4287,7 +4307,7 @@ impl DwptGuard {
                 // indexing chain itself declared corrupt. The error is handed back
                 // by `maybe_abort` so that it can still be propagated unchanged.
                 self.on_aborting_exception(error);
-                let recorded = self.maybe_abort("flush", notifications);
+                let recorded = self.maybe_abort("flush", notifications)?;
                 Err(recorded.expect("INVARIANT: on_aborting_exception recorded it just above"))
             }
         };
@@ -4643,10 +4663,17 @@ impl DwptGuard {
 
     /// Discards every buffered document and delete.
     ///
-    /// Equivalent to `DocumentsWriterPerThread.abort()`.
-    pub fn abort(&mut self) {
+    /// Equivalent to `DocumentsWriterPerThread.abort()`
+    /// (`DocumentsWriterPerThread.java:98-115`): the pending updates are
+    /// cleared and `"done abort"` reported in its `finally` blocks, however
+    /// the indexing chain's abort ends.
+    ///
+    /// # Errors
+    ///
+    /// Returns what the indexing chain's abort raised.
+    pub fn abort(&mut self) -> Result<()> {
         if self.dwpt.aborted.swap(true, Ordering::AcqRel) {
-            return;
+            return Ok(());
         }
         let num_docs = i64::from(self.dwpt.num_docs_in_ram());
         self.dwpt
@@ -4659,12 +4686,13 @@ impl DwptGuard {
             .state
             .as_mut()
             .expect("INVARIANT: state is only taken in Drop");
-        state.indexing_chain.abort();
+        let aborted = state.indexing_chain.abort();
         state.pending_updates.clear();
         state.delete_doc_ids.clear();
         if self.dwpt.info_stream.is_enabled("DWPT") {
             self.dwpt.info_stream.message("DWPT", "done abort");
         }
+        aborted
     }
 }
 
@@ -5595,20 +5623,34 @@ impl DocumentsWriterFlushControl {
 
     /// Ends a failed full flush, aborting every DWPT it had selected.
     ///
-    /// Equivalent to `abortFullFlushes()`.
-    pub fn abort_full_flushes(&self) {
-        self.abort_pending_flushes();
+    /// Equivalent to `abortFullFlushes()` (`DocumentsWriterFlushControl.java:671-678`),
+    /// whose `finally` ends the full flush however the abort ends.
+    ///
+    /// # Errors
+    ///
+    /// As [`abort_pending_flushes`](Self::abort_pending_flushes).
+    pub fn abort_full_flushes(&self) -> Result<()> {
+        let aborted = self.abort_pending_flushes();
         let mut inner = self.lock();
         inner.full_flush = false;
         inner.full_flush_mark_done = false;
+        aborted
     }
 
     /// Aborts every queued and blocked flush.
     ///
-    /// Equivalent to `abortPendingFlushes()`. The DWPT locks are taken with the
-    /// flush-control monitor released, which is the only difference from Java,
-    /// where `abort()` needs no DWPT lock at all.
-    pub fn abort_pending_flushes(&self) {
+    /// Equivalent to `abortPendingFlushes()` (`DocumentsWriterFlushControl.java:679-712`).
+    /// The DWPT locks are taken with the flush-control monitor released, which
+    /// is the only difference from Java, where `abort()` needs no DWPT lock at
+    /// all. As Java's `catch (Exception ex)`, a DWPT's failure to abort is
+    /// ignored — best effort — unless it is a Java `Error`
+    /// ([`LuceneError::AssertionError`]), which ends the walk once that DWPT is
+    /// accounted for and propagates after the stall state is updated.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`LuceneError::AssertionError`] a DWPT's abort raised.
+    pub fn abort_pending_flushes(&self) -> Result<()> {
         let to_abort: Vec<Arc<DocumentsWriterPerThread>> = {
             let mut inner = self.lock();
             let mut to_abort: Vec<Arc<DocumentsWriterPerThread>> =
@@ -5624,15 +5666,22 @@ impl DocumentsWriterFlushControl {
             to_abort
         };
 
+        let mut outcome = Ok(());
         for dwpt in to_abort {
             self.shared
                 .subtract_flushed_num_docs(dwpt.num_docs_in_ram());
-            DocumentsWriterPerThread::lock(&dwpt).abort();
+            let aborted = DocumentsWriterPerThread::lock(&dwpt).abort();
+            // The `finally`, `doAfterFlush(dwpt)`.
             self.do_after_flush(&dwpt);
+            if let Err(error @ LuceneError::AssertionError(_)) = aborted {
+                outcome = Err(error);
+                break;
+            }
         }
 
         let mut inner = self.lock();
         self.update_stall_state_locked(&mut inner);
+        outcome
     }
 
     /// Returns `guard` to the pool, or merely unlocks it when the DWPT must
@@ -6434,7 +6483,7 @@ impl DocumentsWriter {
                 // Release the flush lock.
                 self.flush_control.finish_full_flush();
             } else {
-                self.flush_control.abort_full_flushes();
+                self.flush_control.abort_full_flushes()?;
             }
             Ok(())
         })();
@@ -6465,9 +6514,9 @@ impl DocumentsWriter {
                 self.info_stream.message("DW", "abort");
             }
             for guard in self.per_thread_pool.filter_and_lock(|_| true) {
-                self.abort_documents_writer_per_thread(guard);
+                self.abort_documents_writer_per_thread(guard)?;
             }
-            self.flush_control.abort_pending_flushes();
+            self.flush_control.abort_pending_flushes()?;
             self.flush_control.wait_for_flush()?;
             debug_assert_eq!(
                 self.per_thread_pool.size(),
@@ -6483,11 +6532,19 @@ impl DocumentsWriter {
         outcome
     }
 
-    fn abort_documents_writer_per_thread(&self, mut guard: DwptGuard) {
+    /// Equivalent to `DocumentsWriter.abortDocumentsWriterPerThread`
+    /// (`DocumentsWriter.java:325-334`), whose `finally` hands the DWPT to
+    /// `flushControl.doOnAbort` however its abort ends.
+    ///
+    /// # Errors
+    ///
+    /// Returns what the DWPT's abort raised.
+    fn abort_documents_writer_per_thread(&self, mut guard: DwptGuard) -> Result<()> {
         self.shared
             .subtract_flushed_num_docs(guard.num_docs_in_ram());
-        guard.abort();
+        let aborted = guard.abort();
         self.flush_control.do_on_abort(&guard);
+        aborted
     }
 
     /// Locks every DWPT and aborts it, keeping the pool locked until the
@@ -6527,15 +6584,19 @@ impl DocumentsWriter {
             writers: Vec::new(),
         };
         for mut writer in writers {
+            // `abortDocumentsWriterPerThread(perThread)`; on failure the
+            // returned guard is dropped, which unlocks every writer, as
+            // Java's `catch` closes `release`.
             self.shared
                 .subtract_flushed_num_docs(writer.num_docs_in_ram());
-            writer.abort();
+            let aborted = writer.abort();
             self.flush_control.do_on_abort(&writer);
             guard.writers.push(writer);
+            aborted?;
         }
         delete_queue.clear();
         delete_queue.skip_sequence_numbers(self.per_thread_pool.size() as i64 + 1);
-        self.flush_control.abort_pending_flushes();
+        self.flush_control.abort_pending_flushes()?;
         self.flush_control.wait_for_flush()?;
         Ok(guard)
     }
@@ -6837,8 +6898,9 @@ mod tests {
             Ok(())
         }
 
-        fn abort(&mut self) {
+        fn abort(&mut self) -> Result<()> {
             self.num_docs = 0;
+            Ok(())
         }
 
         fn flush(
@@ -7670,10 +7732,10 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(fixture.pending_num_docs.load(Ordering::Acquire), 3);
-        guard.abort();
+        guard.abort().unwrap();
         assert!(guard.is_aborted());
         assert_eq!(fixture.pending_num_docs.load(Ordering::Acquire), 0);
-        guard.abort();
+        guard.abort().unwrap();
         assert_eq!(
             fixture.pending_num_docs.load(Ordering::Acquire),
             0,
@@ -8079,7 +8141,7 @@ mod tests {
         );
         assert_eq!(chain.scratch().bytes_scratch().len(), BYTES_SCRATCH_SIZE);
 
-        chain.abort();
+        chain.abort().unwrap();
         assert_eq!(chain.field_term_count("body"), 0);
     }
 

@@ -14,6 +14,7 @@ use super::builder::{
 };
 use super::on_heap::OnHeapHnswGraph;
 use super::scorer::RandomVectorScorerSupplier;
+use super::HnswLock;
 
 /// Number of vectors a worker handles sequentially in one batch.
 ///
@@ -28,26 +29,22 @@ const DEFAULT_BATCH_SIZE: i32 = 2048;
 /// [`TaskExecutor`], exactly as Java's `taskExecutor.invokeAll(futures)` does;
 /// each worker reserves batches of `batch_size` ordinals by atomically
 /// advancing a shared counter and inserts them into the one shared graph, so
-/// the workers finish at about the same time. As in Lucene, the graph a
-/// concurrent merge produces depends on how the threads interleave.
+/// the workers finish at about the same time. As in Lucene, the workers share
+/// the graph through one [`HnswLock`], created with the builder, and the
+/// graph a concurrent merge produces depends on how the threads interleave.
 ///
-/// # Divergences from Lucene 10.5.0
+/// # Divergence from Lucene 10.5.0
 ///
-/// * The workers share the graph through the locks of [`OnHeapHnswGraph`] —
-///   one per neighbour array, the inserted node's own array included — rather
-///   than through the 512 striped [`HnswLock`](super::HnswLock)s Java's
-///   workers take only for a neighbour's array; that type's documentation
-///   gives the reason (Java's unlocked writes are data races in Rust).
-/// * Java builds the `ConcurrentMergeWorker`s in the constructor, each from its
-///   own `scorerSupplier.copy()`, and runs them later. A worker's scorer is not
-///   required to be [`Send`], so a worker cannot be moved onto a pool thread;
-///   the constructor takes the supplier copies, as Java does, and each task
-///   builds its worker from its own copy on the thread that runs it. A worker is
-///   used by exactly one `build`, so its state — a fresh level generator seeded
-///   with `randSeed`, a fresh searcher, the info stream and the batch size this
-///   builder holds — is the state Java's worker has when its `run` starts. A
-///   scorer the supplier cannot create is reported by `build` rather than by the
-///   constructor.
+/// Java builds the `ConcurrentMergeWorker`s in the constructor, each from its
+/// own `scorerSupplier.copy()`, and runs them later. A worker's scorer is not
+/// required to be [`Send`], so a worker cannot be moved onto a pool thread;
+/// the constructor takes the supplier copies, as Java does, and each task
+/// builds its worker from its own copy on the thread that runs it. A worker is
+/// used by exactly one `build`, so its state — a fresh level generator seeded
+/// with `randSeed`, a fresh searcher, the shared graph and lock, the info
+/// stream and the batch size this builder holds — is the state Java's worker
+/// has when its `run` starts. A scorer the supplier cannot create is reported
+/// by `build` rather than by the constructor.
 pub struct HnswConcurrentMergeBuilder {
     /// Runs the workers.
     ///
@@ -60,6 +57,10 @@ pub struct HnswConcurrentMergeBuilder {
     beam_width: i32,
     /// The graph every worker inserts into.
     hnsw: Arc<OnHeapHnswGraph>,
+    /// The striped locks every worker shares the graph through.
+    ///
+    /// Equivalent to `HnswConcurrentMergeBuilder.hnswLock`.
+    hnsw_lock: Arc<HnswLock>,
     /// A common counter shared among all workers, tracking the next vector to add.
     work_progress: Arc<AtomicI32>,
     initialized_nodes: Option<Arc<FixedBitSet>>,
@@ -105,6 +106,8 @@ impl HnswConcurrentMergeBuilder {
             m,
             beam_width,
             hnsw: Arc::new(hnsw),
+            // `hnswLock = new HnswLock()` (`HnswConcurrentMergeBuilder.java:63`).
+            hnsw_lock: Arc::new(HnswLock::new()),
             work_progress: Arc::new(AtomicI32::new(0)),
             initialized_nodes: initialized_nodes.map(Arc::new),
             batch_size: DEFAULT_BATCH_SIZE,
@@ -117,6 +120,12 @@ impl HnswConcurrentMergeBuilder {
     /// Sets the batch size; test-only, as in Lucene.
     pub fn set_batch_size(&mut self, new_size: i32) {
         self.batch_size = new_size;
+    }
+
+    /// The striped locks the workers share the graph through.
+    #[cfg(test)]
+    pub(crate) fn hnsw_lock(&self) -> &Arc<HnswLock> {
+        &self.hnsw_lock
     }
 
     /// Freezes the workers' builders.
@@ -203,6 +212,7 @@ impl HnswBuilder for HnswConcurrentMergeBuilder {
             .into_iter()
             .map(|scorer_supplier| {
                 let hnsw = Arc::clone(&self.hnsw);
+                let hnsw_lock = Arc::clone(&self.hnsw_lock);
                 let work_progress = Arc::clone(&self.work_progress);
                 let initialized_nodes = self.initialized_nodes.clone();
                 let info_stream = Arc::clone(&self.info_stream);
@@ -215,6 +225,7 @@ impl HnswBuilder for HnswConcurrentMergeBuilder {
                         beam_width,
                         DEFAULT_RAND_SEED,
                         hnsw,
+                        Some(hnsw_lock),
                     )?;
                     builder.set_info_stream(info_stream);
                     builder.set_merge_start_time_ns(merge_start_time_ns);

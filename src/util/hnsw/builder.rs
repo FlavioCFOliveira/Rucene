@@ -18,7 +18,7 @@ use crate::util::hnsw::on_heap::{OnHeapGraphReader, OnHeapHnswGraph};
 use crate::util::hnsw::scorer::{RandomVectorScorerSupplier, UpdateableRandomVectorScorer};
 use crate::util::hnsw::searcher::HnswGraphSearcher;
 use crate::util::hnsw::util::HnswUtil;
-use crate::util::hnsw::{HnswGraph, NeighborArray, NeighborQueue};
+use crate::util::hnsw::{HnswGraph, HnswLock, NeighborArray, NeighborQueue};
 use crate::util::{FixedBitSet, InfoStream};
 
 /// Default number of maximum connections per node on upper levels.
@@ -94,11 +94,15 @@ pub struct HnswGraphBuilder {
     /// The graph being built, shared with the other workers of a concurrent
     /// merge and owned alone otherwise.
     ///
-    /// Equivalent to `HnswGraphBuilder.hnsw`. Java's builder also keeps the
-    /// `hnswLock` its workers lock the graph with; this port's graph locks
-    /// each neighbour array itself (see [`OnHeapHnswGraph`]), so the builder
-    /// holds no lock of its own.
+    /// Equivalent to `HnswGraphBuilder.hnsw`.
     pub(crate) hnsw: Arc<OnHeapHnswGraph>,
+    /// The striped locks the workers of a concurrent merge share the graph
+    /// through, or `None` for a builder that owns its graph alone.
+    ///
+    /// Equivalent to `HnswGraphBuilder.hnswLock`, `null` but for a
+    /// `HnswConcurrentMergeBuilder.ConcurrentMergeWorker`, whose searcher —
+    /// Java's `MergeSearcher` — locks with it too.
+    pub(crate) hnsw_lock: Option<Arc<HnswLock>>,
     /// The buffer the graph searches copy each neighbour list into.
     ///
     /// Equivalent to `HnswConcurrentMergeBuilder.MergeSearcher.nodeBuffer`;
@@ -170,20 +174,24 @@ impl HnswGraphBuilder {
         seed: u64,
         hnsw: OnHeapHnswGraph,
     ) -> Result<Self> {
-        Self::with_shared_graph(scorer, m, beam_width, seed, Arc::new(hnsw))
+        Self::with_shared_graph(scorer, m, beam_width, seed, Arc::new(hnsw), None)
     }
 
-    /// Creates a builder over a graph other builders may share.
+    /// Creates a builder over a graph other builders may share, locking it
+    /// through `hnsw_lock`.
     ///
     /// Equivalent to the `HnswGraphBuilder` constructor that
     /// `HnswConcurrentMergeBuilder.ConcurrentMergeWorker` calls with the
-    /// shared `hnsw` (`HnswGraphBuilder.java:176-197`).
+    /// shared `hnsw` and `hnswLock` (`HnswGraphBuilder.java:176-216`); the
+    /// worker's `MergeSearcher` is this builder's searcher reading through
+    /// [`OnHeapGraphReader`] with the same lock.
     pub(crate) fn with_shared_graph(
         scorer: Box<dyn UpdateableRandomVectorScorer>,
         m: i32,
         beam_width: i32,
         seed: u64,
         hnsw: Arc<OnHeapHnswGraph>,
+        hnsw_lock: Option<Arc<HnswLock>>,
     ) -> Result<Self> {
         check_params(m, beam_width)?;
         let ml = if m == 1 { 1.0 } else { 1.0 / (m as f64).ln() };
@@ -207,6 +215,7 @@ impl HnswGraphBuilder {
             // constructor rejects too (`HnswGraphBuilder.java:211-213`).
             beam_candidates0: GraphBuilderKnnCollector::new((beam_width / 2).min(m * 3))?,
             hnsw,
+            hnsw_lock,
             node_buffer: Vec::new(),
             frozen: false,
             info_stream: crate::util::default_info_stream(),
@@ -343,8 +352,10 @@ impl HnswGraphBuilder {
         if level == 0 {
             max_conn *= 2;
         }
+        // `HnswUtil.components(hnsw, ...)` walks the graph itself, without the
+        // searcher's lock.
         let components = HnswUtil::components(
-            &mut OnHeapGraphReader::new(&self.hnsw, &mut self.node_buffer),
+            &mut OnHeapGraphReader::new(&self.hnsw, None, &mut self.node_buffer),
             level,
             Some(&mut not_fully_connected),
             max_conn,
@@ -396,7 +407,11 @@ impl HnswGraphBuilder {
                     self.scorer.as_mut(),
                     level,
                     &eps,
-                    &mut OnHeapGraphReader::new(&self.hnsw, &mut self.node_buffer),
+                    &mut OnHeapGraphReader::new(
+                        &self.hnsw,
+                        self.hnsw_lock.as_deref(),
+                        &mut self.node_buffer,
+                    ),
                     Some(&not_fully_connected),
                 )?;
                 let mut linked = false;
@@ -452,7 +467,7 @@ impl HnswGraphBuilder {
         not_fully_connected: &mut FixedBitSet,
     ) -> Result<()> {
         {
-            let mut nbr0 = hnsw.write_neighbors(level, n0)?;
+            let nbr0 = hnsw.get_neighbors(level, n0)?;
             // One must be subtracted here because the nodes array is one larger
             // than the configured maximum number of neighbours (M or 2M). The
             // fullness check itself was done by searching for not-full nodes.
@@ -466,7 +481,7 @@ impl HnswGraphBuilder {
         }
         // Java reads `maxConn` off `n0`'s array; both arrays live on one
         // level, so their capacities are equal.
-        let mut nbr1 = hnsw.write_neighbors(level, n1)?;
+        let nbr1 = hnsw.get_neighbors(level, n1)?;
         let max_conn = nbr1.max_size() - 1;
         if nbr1.size() < max_conn {
             nbr1.add_out_of_order(n0, score)?;
@@ -640,7 +655,11 @@ impl HnswGraphBuilder {
                     self.scorer.as_mut(),
                     level,
                     &eps_local,
-                    &mut OnHeapGraphReader::new(&self.hnsw, &mut self.node_buffer),
+                    &mut OnHeapGraphReader::new(
+                        &self.hnsw,
+                        self.hnsw_lock.as_deref(),
+                        &mut self.node_buffer,
+                    ),
                     None,
                 )?;
                 eps_local = vec![candidates.pop_node()];
@@ -674,21 +693,26 @@ impl HnswGraphBuilder {
                     self.scorer.as_mut(),
                     level,
                     &best_eps,
-                    &mut OnHeapGraphReader::new(&self.hnsw, &mut self.node_buffer),
+                    &mut OnHeapGraphReader::new(
+                        &self.hnsw,
+                        self.hnsw_lock.as_deref(),
+                        &mut self.node_buffer,
+                    ),
                     None,
                 )?;
                 best_eps = candidates_ref.pop_until_nearest_k_nodes();
-                let mut scratch = NeighborArray::new(candidates_ref.k().max(self.m + 1), false);
-                pop_to_scratch(candidates_ref, &mut scratch);
+                let scratch = NeighborArray::new(candidates_ref.k().max(self.m + 1), false);
+                pop_to_scratch(candidates_ref, &scratch);
                 scratch_per_level.push(scratch);
             }
             scratch_per_level.reverse();
 
             // Connect from bottom to top.
-            for (i, scratch) in scratch_per_level.iter_mut().enumerate() {
+            for (i, scratch) in scratch_per_level.iter().enumerate() {
                 let level = i as i32 + lowest_unset_level;
                 Self::add_diverse_neighbors_inner(
                     &self.hnsw,
+                    self.hnsw_lock.as_deref(),
                     self.scorer.as_mut(),
                     &mut self.bulk_score_nodes,
                     &mut self.bulk_scores,
@@ -731,11 +755,12 @@ impl HnswGraphBuilder {
         &mut self,
         level: i32,
         node: i32,
-        candidates: &mut NeighborArray,
+        candidates: &NeighborArray,
         is_link_repair: bool,
     ) -> Result<()> {
         Self::add_diverse_neighbors_inner(
             &self.hnsw,
+            self.hnsw_lock.as_deref(),
             self.scorer.as_mut(),
             &mut self.bulk_score_nodes,
             &mut self.bulk_scores,
@@ -751,20 +776,21 @@ impl HnswGraphBuilder {
     /// needs, so that callers can lend the scorer and the scratch buffers
     /// alongside a shared borrow of the graph.
     ///
-    /// Java links each selected neighbour back under
-    /// `hnswLock.write(level, nbr)` when the builder belongs to a concurrent
-    /// merge, and without a lock otherwise; here the neighbour's own array
-    /// lock is taken in both cases (see [`OnHeapHnswGraph`]).
+    /// As Java does (`HnswGraphBuilder.java:432-453`), each selected
+    /// neighbour is linked back under `hnswLock.write(level, nbr)` when the
+    /// builder has a lock — it belongs to a concurrent merge — and without a
+    /// lock otherwise.
     #[allow(clippy::too_many_arguments)]
     fn add_diverse_neighbors_inner(
         hnsw: &OnHeapHnswGraph,
+        hnsw_lock: Option<&HnswLock>,
         scorer: &mut dyn UpdateableRandomVectorScorer,
         bulk_score_nodes: &mut [i32; MAX_BULK_SCORE_NODES],
         bulk_scores: &mut [f32; MAX_BULK_SCORE_NODES],
         m: i32,
         level: i32,
         node: i32,
-        candidates: &mut NeighborArray,
+        candidates: &NeighborArray,
         is_link_repair: bool,
     ) -> Result<()> {
         // For each of the beamWidth nearest candidates (going from best to worst),
@@ -791,17 +817,38 @@ impl HnswGraphBuilder {
             if !keep {
                 continue;
             }
-            let nbr = candidates.nodes()[i];
+            let nbr = candidates.node(i as i32);
             let score = candidates.score(i as i32);
-            let mut nbrs_of_nbr = hnsw.write_neighbors(level, nbr)?;
-            Self::update_neighbor(&mut nbrs_of_nbr, scorer, node, score, nbr, is_link_repair)?;
+            match hnsw_lock {
+                Some(hnsw_lock) => {
+                    // `Lock lock = hnswLock.write(level, nbr); try { ... }
+                    // finally { lock.unlock(); }`.
+                    let _lock = hnsw_lock.write(level, nbr);
+                    Self::update_neighbor(
+                        hnsw.get_neighbors(level, nbr)?,
+                        scorer,
+                        node,
+                        score,
+                        nbr,
+                        is_link_repair,
+                    )?;
+                }
+                None => Self::update_neighbor(
+                    hnsw.get_neighbors(level, nbr)?,
+                    scorer,
+                    node,
+                    score,
+                    nbr,
+                    is_link_repair,
+                )?,
+            }
         }
         Ok(())
     }
 
     /// Equivalent to `HnswGraphBuilder.updateNeighbor`.
     fn update_neighbor(
-        nbrs_of_nbr: &mut NeighborArray,
+        nbrs_of_nbr: &NeighborArray,
         scorer: &mut dyn UpdateableRandomVectorScorer,
         node: i32,
         score: f32,
@@ -810,7 +857,7 @@ impl HnswGraphBuilder {
     ) -> Result<()> {
         // Only check for duplicates during link repair, to avoid the performance
         // overhead during normal construction.
-        if is_link_repair && nbrs_of_nbr.nodes().contains(&node) {
+        if is_link_repair && (0..nbrs_of_nbr.size()).any(|j| nbrs_of_nbr.node(j) == node) {
             return Ok(());
         }
         nbrs_of_nbr.add_and_ensure_diversity(node, score, nbr, scorer)
@@ -819,14 +866,10 @@ impl HnswGraphBuilder {
     /// Selects the neighbours to link and returns a mask telling the caller
     /// which candidates were selected.
     ///
-    /// Equivalent to the private `HnswGraphBuilder.selectAndLinkDiverse`.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java fills the new node's own array
-    /// without a lock, reasoning that no other worker can reach a node that
-    /// has no incoming link yet. A concurrent unlocked write is still a data
-    /// race in Rust whatever the reachability argument, so the array's write
-    /// lock is held for the selection; it is uncontended for exactly the
-    /// reason Java gives.
+    /// Equivalent to the private `HnswGraphBuilder.selectAndLinkDiverse`,
+    /// which fills the new node's own array without a lock: no other worker
+    /// can reach a node that has no incoming link yet, so none modifies its
+    /// array.
     #[allow(clippy::too_many_arguments)]
     fn select_and_link_diverse(
         hnsw: &OnHeapHnswGraph,
@@ -835,24 +878,24 @@ impl HnswGraphBuilder {
         bulk_scores: &mut [f32; MAX_BULK_SCORE_NODES],
         level: i32,
         node: i32,
-        candidates: &mut NeighborArray,
+        candidates: &NeighborArray,
         max_conn_on_level: i32,
         is_link_repair: bool,
     ) -> Result<Vec<bool>> {
-        let mut neighbors = hnsw.write_neighbors(level, node)?;
+        let neighbors = hnsw.get_neighbors(level, node)?;
         let mut mask = vec![false; candidates.size() as usize];
         // Candidates are sorted ascending (worst to best), so iterate backward.
         for i in (0..candidates.size() as usize).rev() {
             if neighbors.size() >= max_conn_on_level {
                 break;
             }
-            let c_node = candidates.nodes()[i];
+            let c_node = candidates.node(i as i32);
             if node == c_node {
                 continue;
             }
             let c_score = candidates.score(i as i32);
             scorer.set_scoring_ordinal(c_node)?;
-            if Self::diversity_check(scorer, bulk_score_nodes, bulk_scores, c_score, &neighbors)? {
+            if Self::diversity_check(scorer, bulk_score_nodes, bulk_scores, c_score, neighbors)? {
                 mask[i] = true;
                 if is_link_repair {
                     neighbors.add_out_of_order(c_node, c_score)?;
@@ -875,8 +918,7 @@ impl HnswGraphBuilder {
         let mut scored = 0usize;
         while scored < neighbors.size() as usize {
             let chunk_size = bulk_chunk.min(neighbors.size() as usize - scored);
-            bulk_score_nodes[..chunk_size]
-                .copy_from_slice(&neighbors.nodes()[scored..scored + chunk_size]);
+            neighbors.copy_nodes(scored, &mut bulk_score_nodes[..chunk_size]);
             let max_score = scorer.bulk_score(bulk_score_nodes, bulk_scores, chunk_size as i32)?;
             if max_score >= score {
                 return Ok(false);
@@ -901,10 +943,7 @@ impl HnswGraphBuilder {
 /// Drains `candidates` into `scratch`, worst score first.
 ///
 /// Equivalent to `HnswGraphBuilder.popToScratch`.
-pub(crate) fn pop_to_scratch(
-    candidates: &mut GraphBuilderKnnCollector,
-    scratch: &mut NeighborArray,
-) {
+pub(crate) fn pop_to_scratch(candidates: &mut GraphBuilderKnnCollector, scratch: &NeighborArray) {
     scratch.clear();
     let candidate_count = candidates.size();
     for _ in 0..candidate_count {

@@ -410,10 +410,17 @@ impl SortingStoredFieldsConsumer {
     ///
     /// Equivalent to `SortingStoredFieldsConsumer.abort()`
     /// (`SortingStoredFieldsConsumer.java:142-151`): the plain consumer
-    /// aborts, then the temporary files are deleted, ignoring failures.
-    pub fn abort(&mut self) {
-        self.inner.abort();
+    /// aborts, then — in the `finally` — the temporary files are deleted,
+    /// ignoring failures.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error the plain consumer's abort raised, after the
+    /// temporary files are deleted.
+    pub fn abort(&mut self) -> Result<()> {
+        let aborted = self.inner.abort();
         self.tmp_directory.delete_temporary_files_ignoring_errors();
+        aborted
     }
 }
 
@@ -569,10 +576,17 @@ impl SortingTermVectorsConsumer {
     ///
     /// Equivalent to `SortingTermVectorsConsumer.abort()`
     /// (`SortingTermVectorsConsumer.java:97-106`): the plain consumer aborts,
-    /// then the temporary files are deleted, ignoring failures.
-    pub fn abort(&mut self) {
-        self.inner.abort();
+    /// then — in the `finally` — the temporary files are deleted, ignoring
+    /// failures.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error the plain consumer's abort raised, after the
+    /// temporary files are deleted.
+    pub fn abort(&mut self) -> Result<()> {
+        let aborted = self.inner.abort();
         self.tmp_directory.delete_temporary_files_ignoring_errors();
+        aborted
     }
 
     /// Copies every vector field of one document from `vectors` into `writer`.

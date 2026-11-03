@@ -622,17 +622,26 @@ impl BufferingInfoStream {
         }
     }
 
-    /// Replays everything buffered so far to `info_stream`, in order, and
-    /// empties the buffer.
+    /// Replays everything buffered so far to `info_stream`, in order, keeping
+    /// the buffer.
     ///
-    /// Equivalent to Java's `msg(infoStream, output)`, which prints the whole
-    /// byte buffer of one segment in one go.
-    fn drain_to(&self, info_stream: Option<&dyn InfoStream>) {
-        let buffered =
-            std::mem::take(&mut *self.messages.lock().unwrap_or_else(PoisonError::into_inner));
+    /// Equivalent to Java's `msg(infoStream, output)`
+    /// (`CheckIndex.java:514-518`), `out.println(output.toString(UTF_8))`:
+    /// the whole byte buffer of one segment, whose every line ends with its
+    /// own newline, and then the newline of `println`, which is the blank line
+    /// after each replay. The buffer is a `ByteArrayOutputStream` that is
+    /// never reset, so a second replay prints it all again, as the
+    /// interrupted branch of `checkIndex(List, ExecutorService)` does.
+    fn print_to(&self, info_stream: Option<&dyn InfoStream>) {
+        let buffered = self
+            .messages
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
         for line in buffered {
             msg(info_stream, &line);
         }
+        msg(info_stream, "");
     }
 }
 
@@ -878,6 +887,74 @@ impl<'scope, 'env> SegmentCheckPool<'scope, 'env> {
 /// result, or the panic it raised.
 type SegmentCheckOutcome = std::thread::Result<Result<SegmentInfoStatus>>;
 
+/// The future one segment check completes.
+///
+/// Equivalent to the `CompletableFuture<Status.SegmentInfoStatus>` that
+/// `CheckIndex.runAsyncSegmentCheck` returns, as far as `checkIndex(List,
+/// ExecutorService)` uses it: the task completes it once, and `get()` waits
+/// for it interruptibly.
+struct SegmentCheckFuture {
+    outcome: Mutex<Option<SegmentCheckOutcome>>,
+    /// Signalled when the outcome is set; shared so that
+    /// [`wait_interruptibly`](crate::util::wait_interruptibly) can wait on it.
+    completed: Arc<Condvar>,
+}
+
+impl SegmentCheckFuture {
+    fn new() -> Self {
+        Self {
+            outcome: Mutex::new(None),
+            completed: Arc::new(Condvar::new()),
+        }
+    }
+
+    /// Sets the outcome and wakes the thread waiting for it.
+    ///
+    /// Equivalent to the completion `CompletableFuture.supplyAsync`'s task
+    /// performs.
+    fn complete(&self, outcome: SegmentCheckOutcome) {
+        *self.outcome.lock().unwrap_or_else(PoisonError::into_inner) = Some(outcome);
+        self.completed.notify_all();
+    }
+
+    /// Waits for the outcome and takes it.
+    ///
+    /// Equivalent to `CompletableFuture.get()`, whose behaviour on an
+    /// interrupt the JDK 25 oracle (`oracle/passG2/FutureGetOracle.java`)
+    /// pins: a completed future returns its outcome and leaves the interrupt
+    /// status set; a pending one throws `InterruptedException` at once when
+    /// the status is set on entry, or as soon as the thread is interrupted
+    /// while it waits, clearing the status — unless the outcome arrived
+    /// meanwhile, which `waitingGet` then returns, interrupting the thread
+    /// again.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InterruptedException`](crate::util::InterruptedException)
+    /// when the thread is interrupted before the outcome is available.
+    fn get(&self) -> std::result::Result<SegmentCheckOutcome, crate::util::InterruptedException> {
+        let mut outcome = self.outcome.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            if let Some(outcome) = outcome.take() {
+                return Ok(outcome);
+            }
+            let (reacquired, waited) =
+                crate::util::wait_interruptibly(&self.completed, outcome, None)
+                    .unwrap_or_else(PoisonError::into_inner);
+            outcome = reacquired;
+            if let Err(interrupted) = waited {
+                return match outcome.take() {
+                    Some(outcome) => {
+                        crate::util::InterruptHandle::current().interrupt();
+                        Ok(outcome)
+                    }
+                    None => Err(interrupted),
+                };
+            }
+        }
+    }
+}
+
 /// Submits one segment check to `pool` and hands back the future that yields
 /// its outcome.
 ///
@@ -893,18 +970,18 @@ type SegmentCheckOutcome = std::thread::Result<Result<SegmentInfoStatus>>;
 fn run_async_segment_check<'scope, F>(
     async_callable: F,
     pool: &SegmentCheckPool<'scope, '_>,
-) -> Result<mpsc::Receiver<SegmentCheckOutcome>>
+) -> Result<Arc<SegmentCheckFuture>>
 where
     F: FnOnce() -> Result<SegmentInfoStatus> + Send + 'scope,
 {
     let supplier = callable_to_supplier(async_callable);
-    let (future, completion) = mpsc::sync_channel(1);
+    let future = Arc::new(SegmentCheckFuture::new());
+    let completion = Arc::clone(&future);
     pool.execute(Box::new(move || {
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(supplier));
-        // The receiver is gone only once the check gave up waiting for it.
-        let _ = future.send(outcome);
+        completion.complete(outcome);
     }))?;
-    Ok(completion)
+    Ok(future)
 }
 
 /// Adapts a fallible segment check into the form the thread that runs it
@@ -958,34 +1035,78 @@ impl CheckIndex {
     /// Equivalent to `CheckIndex.checkIndex(List)` (`CheckIndex.java:545-573`),
     /// which, when the thread count is greater than one, creates the fixed
     /// thread pool of `NamedThreadFactory("async-check-index")` threads that
-    /// checks the segments concurrently, and shuts it down afterwards. The
-    /// pool's threads are scoped to the concurrent check
-    /// ([`SegmentCheckPool`]), so the pool is built, used and shut down there,
-    /// over the thread factory created here.
+    /// checks the segments concurrently, and shuts it down in its `finally`:
+    /// `shutdown()`, `awaitTermination(5, SECONDS)` — reporting an
+    /// `InterruptedException` — and `shutdownNow()`, once the check, "Took …
+    /// total." included, is over, however it ended. The pool's threads are
+    /// scoped ([`SegmentCheckPool`]), so the scope spans that `try`.
     ///
     /// # Errors
     ///
     /// As [`CheckIndex::check_index`].
+    ///
+    /// # Panics
+    ///
+    /// Panics with Java's `NullPointerException` message, `Cannot read field
+    /// "error" because "segmentInfoStatus" is null`, when the thread is
+    /// interrupted while it waits for a concurrent segment check, as Lucene
+    /// 10.5.0 throws that exception there (`CheckIndex.java:855-875`); a panic
+    /// is the port's form of an unchecked exception. The pool is shut down
+    /// first.
     pub fn check_index_segments(&self, only_segments: Option<&[String]>) -> Result<Status> {
         // If threadCount == 1, then no executor is created and use the main
         // thread to do index checking sequentially.
-        let thread_factory =
-            (self.thread_count > 1).then(|| NamedThreadFactory::new("async-check-index"));
-        msg(
-            self.info(),
-            &format!("Checking index with threadCount: {}", self.thread_count),
-        );
-        self.check_index_impl(only_segments, thread_factory)
+        if self.thread_count <= 1 {
+            msg(
+                self.info(),
+                &format!("Checking index with threadCount: {}", self.thread_count),
+            );
+            return self.check_index_impl(only_segments, None);
+        }
+        std::thread::scope(|scope| {
+            let pool = SegmentCheckPool::new(
+                scope,
+                NamedThreadFactory::new("async-check-index"),
+                self.thread_count,
+            );
+            msg(
+                self.info(),
+                &format!("Checking index with threadCount: {}", self.thread_count),
+            );
+            // `try { return checkIndex(onlySegments, executorService); }`: the
+            // `finally` below runs whatever the check raised, a panic included.
+            let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.check_index_impl(only_segments, Some(&pool))
+            }));
+            // `finally { executorService.shutdown(); try {
+            // executorService.awaitTermination(5, TimeUnit.SECONDS); } catch
+            // (InterruptedException e) { ... } finally {
+            // executorService.shutdownNow(); } }`.
+            pool.shutdown();
+            if let Err(e) = pool.await_termination(Duration::from_secs(5)) {
+                msg(
+                    self.info(),
+                    "ERROR: Interrupted exception occurred when shutting down executor service",
+                );
+                // `e.printStackTrace(infoStream)`, without the JVM's frames.
+                msg(self.info(), &format!("{e}"));
+            }
+            pool.shutdown_now();
+            match checked {
+                Ok(checked) => checked,
+                Err(payload) => std::panic::resume_unwind(payload),
+            }
+        })
     }
 
     /// Walks the commit points and checks the segments of the last one.
     ///
-    /// Equivalent to `CheckIndex.checkIndex(List, ExecutorService)`;
-    /// `thread_factory` is present when Java's executor is.
-    fn check_index_impl(
-        &self,
+    /// Equivalent to `CheckIndex.checkIndex(List, ExecutorService)`; `pool`
+    /// is Java's executor, `None` where Java's is `null`.
+    fn check_index_impl<'scope>(
+        &'scope self,
         only_segments: Option<&[String]>,
-        thread_factory: Option<NamedThreadFactory>,
+        pool: Option<&SegmentCheckPool<'scope, '_>>,
     ) -> Result<Status> {
         self.ensure_open()?;
         let start = Instant::now();
@@ -1159,12 +1280,15 @@ impl CheckIndex {
         result.new_segments = Some(new_segments);
         result.max_segment_name = -1;
 
-        if let Some(thread_factory) = thread_factory {
+        // Shared with the pool's tasks, which Java's lambdas capture as
+        // `finalSis`.
+        let last_commit = Arc::new(last_commit);
+        if let Some(pool) = pool {
             self.check_segments_concurrently(
                 &last_commit,
                 num_segments,
                 only_segments,
-                thread_factory,
+                pool,
                 &mut result,
             )?;
         } else {
@@ -1231,28 +1355,41 @@ impl CheckIndex {
     /// first, and records their results in segment order.
     ///
     /// Equivalent to the concurrent branch of `CheckIndex.checkIndex(List,
-    /// ExecutorService)` (`CheckIndex.java:789-858`), with the executor's
-    /// lifetime of `checkIndex(List)` (`CheckIndex.java:550-572`): the pool is
-    /// shut down whatever the check did, given five seconds to terminate, and
-    /// then shut down now.
+    /// ExecutorService)` (`CheckIndex.java:791-876`). The pool belongs to the
+    /// caller, which shuts it down, as Java's executor belongs to
+    /// `checkIndex(List)`.
+    ///
+    /// Waiting for a segment's result is `futures[i].get()`, which an
+    /// interrupt ends ([`SegmentCheckFuture::get`]). Java then reports the
+    /// segment's buffered output, an `ERROR` line and the exception, falls
+    /// through to report the output a second time, and hands the `null`
+    /// result to `processSegmentInfoStatusResult`, whose
+    /// `segmentInfoStatus.error` throws `NullPointerException`; this port
+    /// reports the same and panics with that exception's message, a panic
+    /// being the port's form of an unchecked exception.
     ///
     /// # Errors
     ///
     /// Returns a `CheckIndexException` naming the segment whose check failed —
     /// which happens only with [`set_fail_fast`](CheckIndex::set_fail_fast) —
     /// or panicked.
-    fn check_segments_concurrently(
-        &self,
-        last_commit: &SegmentInfos,
+    ///
+    /// # Panics
+    ///
+    /// Panics as described above when the thread is interrupted while it
+    /// waits for a segment's result.
+    fn check_segments_concurrently<'scope>(
+        &'scope self,
+        last_commit: &Arc<SegmentInfos>,
         num_segments: usize,
         only_segments: Option<&[String]>,
-        thread_factory: NamedThreadFactory,
+        pool: &SegmentCheckPool<'scope, '_>,
         result: &mut Status,
     ) -> Result<()> {
         // Sort the segments by size, as a smaller segment tends to finish
         // faster and hence its output can be printed out faster.
-        let mut sized: Vec<(i64, &SegmentCommitInfo)> = Vec::with_capacity(num_segments);
-        for info in last_commit.iter() {
+        let mut sized: Vec<(i64, usize)> = Vec::with_capacity(num_segments);
+        for (index, info) in last_commit.iter().enumerate() {
             let size = match info.size_in_bytes_uncached() {
                 Ok(size) => size,
                 Err(error) => {
@@ -1265,123 +1402,118 @@ impl CheckIndex {
                     0
                 }
             };
-            sized.push((size, info));
+            sized.push((size, index));
         }
         sized.sort_by_key(|(size, _)| *size);
-        let segment_commit_infos: Vec<&SegmentCommitInfo> =
-            sized.into_iter().map(|(_, info)| info).collect();
+        let segment_commit_infos: Vec<usize> = sized.into_iter().map(|(_, index)| index).collect();
 
-        std::thread::scope(|scope| -> Result<()> {
-            let pool = SegmentCheckPool::new(scope, thread_factory, self.thread_count);
-            let checked = (|| -> Result<()> {
-                let mut buffers: Vec<Option<Arc<BufferingInfoStream>>> =
-                    (0..num_segments).map(|_| None).collect();
-                let mut futures: Vec<Option<mpsc::Receiver<SegmentCheckOutcome>>> =
-                    (0..num_segments).map(|_| None).collect();
+        let mut buffers: Vec<Option<Arc<BufferingInfoStream>>> =
+            (0..num_segments).map(|_| None).collect();
+        let mut futures: Vec<Option<Arc<SegmentCheckFuture>>> =
+            (0..num_segments).map(|_| None).collect();
 
-                // Start larger segments earlier.
-                for i in (0..num_segments).rev() {
-                    let info = segment_commit_infos[i];
-                    self.update_max_segment_name(result, info)?;
-                    if is_skipped_segment(only_segments, &info.info.name) {
-                        continue;
-                    }
+        // Start larger segments earlier.
+        for i in (0..num_segments).rev() {
+            let info = last_commit.info(segment_commit_infos[i]);
+            self.update_max_segment_name(result, info)?;
+            if is_skipped_segment(only_segments, &info.info.name) {
+                continue;
+            }
 
-                    let buffer = Arc::new(BufferingInfoStream::new());
+            let buffer = Arc::new(BufferingInfoStream::new());
+            msg(
+                Some(buffer.as_ref() as &dyn InfoStream),
+                &format!(
+                    "{} of {num_segments}: name={} maxDoc={}",
+                    1 + i,
+                    info.info.name,
+                    info.info.max_doc()?
+                ),
+            );
+
+            let task_buffer = Arc::clone(&buffer);
+            // Java's lambda captures `finalSis` and `info`.
+            let final_sis = Arc::clone(last_commit);
+            let index = segment_commit_infos[i];
+            buffers[i] = Some(buffer);
+            futures[i] = Some(run_async_segment_check(
+                move || {
+                    #[cfg(test)]
+                    self.segment_check_threads
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push(std::thread::current().name().map(str::to_string));
+                    self.test_segment(
+                        &final_sis,
+                        final_sis.info(index),
+                        Some(task_buffer.as_ref() as &dyn InfoStream),
+                    )
+                },
+                pool,
+            )?);
+        }
+
+        for i in 0..num_segments {
+            let info = last_commit.info(segment_commit_infos[i]);
+            // A segment left out of the check has neither a buffer nor a
+            // future, which is what makes this the same skip as above.
+            let (Some(buffer), Some(future)) = (buffers[i].take(), futures[i].take()) else {
+                continue;
+            };
+
+            // Print the segment results in order.
+            let segment_info_status = match future.get() {
+                Ok(Ok(Ok(segment_info_status))) => Some(segment_info_status),
+                Ok(Ok(Err(error))) => {
+                    // The check only fails instead of recording the failure
+                    // when `fail_fast` is set, which is Java's `assert
+                    // failFast` on this path.
+                    buffer.print_to(self.info());
+                    return Err(check_index_error_with_cause(
+                        &format!("Segment {} check failed.", info.info.name),
+                        &error,
+                    ));
+                }
+                Ok(Err(_)) => {
+                    // Java has no counterpart: a `CompletableFuture` reports a
+                    // `RuntimeException` as an `ExecutionException` like any
+                    // other failure, while a Rust panic is caught as a payload.
+                    buffer.print_to(self.info());
+                    return Err(check_index_error(format!(
+                        "Segment {} check panicked.",
+                        info.info.name
+                    )));
+                }
+                Err(interrupted) => {
+                    // The segment test output should come before the
+                    // interrupted exception message that follows, hence it is
+                    // not emitted from a `finally` clause.
+                    buffer.print_to(self.info());
                     msg(
-                        Some(buffer.as_ref() as &dyn InfoStream),
+                        self.info(),
                         &format!(
-                            "{} of {num_segments}: name={} maxDoc={}",
-                            1 + i,
-                            info.info.name,
-                            info.info.max_doc()?
+                            "ERROR: Interrupted exception occurred when getting segment check \
+                             result for segment {}",
+                            info.info.name
                         ),
                     );
-
-                    let task_buffer = Arc::clone(&buffer);
-                    buffers[i] = Some(buffer);
-                    futures[i] = Some(run_async_segment_check(
-                        move || {
-                            #[cfg(test)]
-                            self.segment_check_threads
-                                .lock()
-                                .unwrap_or_else(PoisonError::into_inner)
-                                .push(std::thread::current().name().map(str::to_string));
-                            self.test_segment(
-                                last_commit,
-                                info,
-                                Some(task_buffer.as_ref() as &dyn InfoStream),
-                            )
-                        },
-                        &pool,
-                    )?);
+                    // `e.printStackTrace(infoStream)`, without the JVM's frames.
+                    msg(self.info(), &format!("{interrupted}"));
+                    None
                 }
+            };
 
-                for i in 0..num_segments {
-                    let info = segment_commit_infos[i];
-                    // A segment left out of the check has neither a buffer nor
-                    // a future, which is what makes this the same skip as above.
-                    let (Some(buffer), Some(future)) = (buffers[i].take(), futures[i].take())
-                    else {
-                        continue;
-                    };
+            buffer.print_to(self.info());
 
-                    // `futures[i].get()`.
-                    let outcome = future.recv().unwrap_or_else(|_| {
-                        Err(Box::new("the segment check was dropped before it ran")
-                            as Box<dyn std::any::Any + Send>)
-                    });
-                    match outcome {
-                        Ok(Ok(segment_info_status)) => {
-                            // Print the segment results in order.
-                            buffer.drain_to(self.info());
-                            self.process_segment_info_status_result(
-                                result,
-                                info,
-                                segment_info_status,
-                            )?;
-                        }
-                        Ok(Err(error)) => {
-                            // The check only fails instead of recording the
-                            // failure when `fail_fast` is set, which is Java's
-                            // `assert failFast` on this path.
-                            buffer.drain_to(self.info());
-                            return Err(check_index_error_with_cause(
-                                &format!("Segment {} check failed.", info.info.name),
-                                &error,
-                            ));
-                        }
-                        Err(_) => {
-                            // Java has no counterpart: a `CompletableFuture`
-                            // reports a `RuntimeException` as an
-                            // `ExecutionException` like any other failure,
-                            // while a Rust panic is caught as a payload.
-                            buffer.drain_to(self.info());
-                            return Err(check_index_error(format!(
-                                "Segment {} check panicked.",
-                                info.info.name
-                            )));
-                        }
-                    }
-                }
-                Ok(())
-            })();
-            // `finally { executorService.shutdown(); try {
-            // executorService.awaitTermination(5, TimeUnit.SECONDS); } catch
-            // (InterruptedException e) { ... } finally {
-            // executorService.shutdownNow(); } }`.
-            pool.shutdown();
-            if let Err(e) = pool.await_termination(Duration::from_secs(5)) {
-                msg(
-                    self.info(),
-                    "ERROR: Interrupted exception occurred when shutting down executor service",
-                );
-                // `e.printStackTrace(infoStream)`, without the JVM's frames.
-                msg(self.info(), &format!("{e}"));
-            }
-            pool.shutdown_now();
-            checked
-        })
+            // `processSegmentInfoStatusResult(result, info, segmentInfoStatus)`
+            // reads `segmentInfoStatus.error` (`CheckIndex.java:924`), which a
+            // `null` status turns into `NullPointerException`.
+            let Some(segment_info_status) = segment_info_status else {
+                panic!("Cannot read field \"error\" because \"segmentInfoStatus\" is null");
+            };
+            self.process_segment_info_status_result(result, info, segment_info_status)?;
+        }
+        Ok(())
     }
 
     /// Raises `result.max_segment_name` to `info`'s segment name when that name
@@ -6254,5 +6386,163 @@ mod segment_check_pool_tests {
                 "{thread_count} threads over {segments} segments"
             );
         }
+    }
+
+    /// Records every line a check reports, and interrupts the reporting
+    /// thread when it reports a line starting with `interrupt_on`.
+    struct InterruptingLines {
+        lines: Mutex<Vec<String>>,
+        interrupt_on: Option<&'static str>,
+    }
+
+    impl InfoStream for InterruptingLines {
+        fn java_class_name(&self) -> &'static str {
+            "java.io.PrintStream"
+        }
+
+        fn message(&self, _component: &str, message: &str) {
+            self.lines
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(message.to_string());
+            if self
+                .interrupt_on
+                .is_some_and(|prefix| message.starts_with(prefix))
+            {
+                crate::util::InterruptHandle::current().interrupt();
+            }
+        }
+
+        fn is_enabled(&self, _component: &str) -> bool {
+            true
+        }
+
+        fn close(&self) {}
+    }
+
+    /// Runs `check_index()` with two threads over three one-document
+    /// segments on a thread of its own, interrupted on entry when
+    /// `interrupt_first`; returns the outcome — the status's `clean`, or the
+    /// panic's message — the reported lines, and whether the thread was still
+    /// interrupted afterwards. Bounded, so a hang fails the test.
+    fn check_on_a_thread(
+        interrupt_first: bool,
+        interrupt_on: Option<&'static str>,
+    ) -> (std::result::Result<bool, String>, Vec<String>, bool) {
+        let dir = index_with_segments(3);
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let stream = Arc::new(InterruptingLines {
+                lines: Mutex::new(Vec::new()),
+                interrupt_on,
+            });
+            let mut checker = CheckIndex::new(dir).unwrap();
+            checker.set_info_stream(Arc::clone(&stream) as Arc<dyn InfoStream>);
+            checker.set_thread_count(2).unwrap();
+            if interrupt_first {
+                crate::util::InterruptHandle::current().interrupt();
+            }
+            let outcome =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| checker.check_index()))
+                    .map(|status| status.unwrap().clean)
+                    .map_err(|payload| {
+                        payload
+                            .downcast_ref::<String>()
+                            .cloned()
+                            .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+                            .unwrap_or_default()
+                    });
+            let still_interrupted = crate::util::InterruptHandle::interrupted();
+            let lines = stream
+                .lines
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone();
+            let _ = tx.send((outcome, lines, still_interrupted));
+        });
+        rx.recv_timeout(Duration::from_secs(60))
+            .expect("the check did not return")
+    }
+
+    /// `CheckIndex.checkIndex(List)` shuts the pool down in its `finally`
+    /// (`CheckIndex.java:557-571`), after `checkIndex(List, ExecutorService)`
+    /// has reported "Took … total.". A thread interrupted once every result
+    /// is in — on "No problems were detected" — reports the interrupted
+    /// `awaitTermination` after "Took", and leaves with its status cleared.
+    /// Java oracle (`oracle/passG2/CheckShutdownInterruptOracle.java`,
+    /// `check_shutdown_java.txt`): "clean=true interruptedAfter=false", the
+    /// lines ending "Took 0.070 sec total.", "ERROR: Interrupted exception
+    /// occurred when shutting down executor service",
+    /// "java.lang.InterruptedException".
+    ///
+    /// `awaitTermination` returns without looking at the interrupt status when
+    /// the idle workers have already exited, in Java as here; the workers
+    /// need the pool's lock the shutting-down thread has just released, so
+    /// that thread almost always gets there first. The check is repeated a
+    /// few times so that losing that race cannot fail the test, while a pool
+    /// shut down before "Took" never reports the interrupt at all.
+    #[test]
+    fn the_pool_is_shut_down_after_took_total_is_reported() {
+        let mut attempts = Vec::new();
+        for _ in 0..5 {
+            let (outcome, lines, still_interrupted) = check_on_a_thread(false, Some("No problems"));
+            assert_eq!(outcome, Ok(true));
+            let tail = lines[lines.len() - 3..].to_vec();
+            if tail[1..]
+                == [
+                    "ERROR: Interrupted exception occurred when shutting down executor service",
+                    "java.lang.InterruptedException",
+                ]
+            {
+                assert!(
+                    tail[0].starts_with("Took ") && tail[0].ends_with(" total."),
+                    "{lines:?}"
+                );
+                assert!(!still_interrupted);
+                return;
+            }
+            attempts.push(lines);
+        }
+        panic!("the interrupted shutdown was never reported after Took: {attempts:?}");
+    }
+
+    /// A thread interrupted while it waits for a segment's result
+    /// (`futures[i].get()`, `CheckIndex.java:855-875`) reports the segment's
+    /// buffered output, the `ERROR` line and the exception, the output a
+    /// second time, and then throws Java's `NullPointerException` out of
+    /// `processSegmentInfoStatusResult`, its interrupt status cleared. Java
+    /// oracle (`oracle/passG2/CheckInterruptAllOracle.java`,
+    /// `check_all_java.txt`): "interrupt=true threw
+    /// java.lang.NullPointerException: Cannot read field "error" because
+    /// "segmentInfoStatus" is null interruptedAfter=false", lines 4–7 "1 of
+    /// 3: name=_0 maxDoc=1", "", "ERROR: Interrupted exception occurred when
+    /// getting segment check result for segment _0",
+    /// "java.lang.InterruptedException", and, after the stack trace, "1 of 3:
+    /// name=_0 maxDoc=1" again.
+    #[test]
+    fn interrupting_the_wait_for_a_segment_result_throws_as_lucene_does() {
+        let (outcome, lines, still_interrupted) = check_on_a_thread(true, None);
+        assert_eq!(
+            outcome,
+            Err("Cannot read field \"error\" because \"segmentInfoStatus\" is null".to_string())
+        );
+        assert!(!still_interrupted);
+        assert_eq!(lines[3], "1 of 3: name=_0 maxDoc=1", "{lines:?}");
+        let error = lines
+            .iter()
+            .position(|line| {
+                line == "ERROR: Interrupted exception occurred when getting segment check result \
+                         for segment _0"
+            })
+            .unwrap_or_else(|| panic!("no interrupted line: {lines:?}"));
+        // The buffered output, ending with `println`'s blank line, comes
+        // before the ERROR line and again, as far as the check has since
+        // written it, after the exception.
+        let first = &lines[3..error];
+        assert_eq!(first.last().map(String::as_str), Some(""), "{lines:?}");
+        assert_eq!(lines[error + 1], "java.lang.InterruptedException");
+        let second = &lines[error + 2..];
+        assert!(second.starts_with(&first[..first.len() - 1]), "{lines:?}");
+        assert_eq!(second.last().map(String::as_str), Some(""), "{lines:?}");
     }
 }

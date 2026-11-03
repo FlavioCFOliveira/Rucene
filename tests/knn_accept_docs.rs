@@ -345,3 +345,129 @@ fn an_exitable_reader_aborts_a_knn_search_over_a_leaf_with_deletions() {
         "nothing may be collected once the first accept-docs check has thrown"
     );
 }
+
+/// The vector of document `i` in `KnnSparseOracle.java`: `{(float) Math.sin(i),
+/// (float) Math.cos(i), (i % 7) / 7f, 1f}`. The 900 vectors the test indexes
+/// were checked bit for bit against the JVM's (`oracle/passG2/VecBits.java`).
+fn sparse_vector(i: i32) -> [f32; 4] {
+    let x = f64::from(i);
+    [x.sin() as f32, x.cos() as f32, (i % 7) as f32 / 7.0, 1.0]
+}
+
+/// A sparse field: only every third document holds a vector, so vector
+/// ordinal `o` belongs to document `3o + 1` and a search that returned
+/// ordinals would return the wrong documents.
+///
+/// Regression guard for rmp task #317. `Lucene99HnswVectorsReader.search`
+/// collects through `new OrdinalTranslatedKnnCollector(knnCollector,
+/// scorer::ordToDoc)` (`Lucene99HnswVectorsReader.java:342-343`). The corpus
+/// and the expected results are Lucene 10.5.0's (`KnnSparseOracle.java`,
+/// pass G audit): 2700 documents in one segment, `i % 3 == 1` holding a
+/// EUCLIDEAN vector, searched for `{0.3, 0.9, 0.5, 1}` with
+/// `LeafReader.searchNearestVectors(field, target, k, acceptDocs,
+/// visitedLimit)`:
+///
+/// ```text
+/// k=5 limit=2147483647 total=36 EQUAL_TO docs=1879:0.9922921 2545:0.9921938 1081:0.99150485 2677:0.99073267 1747:0.9902417
+/// k=10 limit=2147483647 total=59 EQUAL_TO docs=1879:0.9922921 2545:0.9921938 1081:0.99150485 2677:0.99073267 1747:0.9902417 214:0.98999923 283:0.98838335 949:0.9859744 1012:0.985559 346:0.982509
+/// k=5 limit=12 total=17 GREATER_THAN_OR_EQUAL_TO docs=
+/// k=3 limit=1 total=1 GREATER_THAN_OR_EQUAL_TO docs=
+/// ```
+#[test]
+fn a_sparse_field_returns_the_lucene_documents_not_the_ordinals() {
+    use rucene::search::{TotalHitsRelation, TotalHitsRelation::*};
+    use rucene::store::ByteBuffersDirectory;
+
+    let _ = register_codec("Lucene104", Lucene104Codec::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+    let mut config = IndexWriterConfig::new();
+    config.set_ram_buffer_size_mb(64.0).expect("RAM buffer");
+    config
+        .set_max_buffered_docs(100_000)
+        .expect("max buffered docs");
+    let writer = IndexWriter::new(Arc::clone(&dir), config).expect("index writer");
+    for i in 0..2700 {
+        let mut document = Document::new();
+        document.add(Box::new(
+            StringField::new("id", i.to_string(), Store::YES).expect("id"),
+        ));
+        if i % 3 == 1 {
+            document.add(Box::new(
+                KnnFloatVectorField::with_euclidean("v", &sparse_vector(i)).expect("vector"),
+            ));
+        }
+        writer.add_document(&document).expect("add document");
+    }
+    writer.commit().expect("commit");
+    writer.close().expect("close");
+
+    let reader = directory_reader::open(dir).expect("open a directory reader");
+    let leaves = Arc::clone(&reader).leaves().unwrap();
+    assert_eq!(leaves.len(), 1, "leaves=1");
+    let leaf = leaves[0].leaf_reader();
+    let target = [0.3f32, 0.9, 0.5, 1.0];
+    // `(k, visitedLimit, totalHits.value, totalHits.relation, docs)`.
+    type Row = (
+        i32,
+        i32,
+        i64,
+        TotalHitsRelation,
+        &'static [(i32, &'static str)],
+    );
+    let expected: [Row; 4] = [
+        (
+            5,
+            i32::MAX,
+            36,
+            EQUAL_TO,
+            &[
+                (1879, "0.9922921"),
+                (2545, "0.9921938"),
+                (1081, "0.99150485"),
+                (2677, "0.99073267"),
+                (1747, "0.9902417"),
+            ],
+        ),
+        (
+            10,
+            i32::MAX,
+            59,
+            EQUAL_TO,
+            &[
+                (1879, "0.9922921"),
+                (2545, "0.9921938"),
+                (1081, "0.99150485"),
+                (2677, "0.99073267"),
+                (1747, "0.9902417"),
+                (214, "0.98999923"),
+                (283, "0.98838335"),
+                (949, "0.9859744"),
+                (1012, "0.985559"),
+                (346, "0.982509"),
+            ],
+        ),
+        (5, 12, 17, GREATER_THAN_OR_EQUAL_TO, &[]),
+        (3, 1, 1, GREATER_THAN_OR_EQUAL_TO, &[]),
+    ];
+    for (k, limit, total, relation, docs) in expected {
+        let mut accept = from_live_docs(None, leaf.max_doc()).expect("accept docs");
+        let top = leaf
+            .search_nearest_vectors_default("v", &target, k, &mut accept, limit)
+            .expect("the search must succeed");
+        assert_eq!(
+            (top.total_hits.value(), top.total_hits.relation()),
+            (total, relation),
+            "total hits of k={k} limit={limit}"
+        );
+        let found: Vec<(i32, f32)> = top
+            .score_docs
+            .iter()
+            .map(|score_doc| (score_doc.doc, score_doc.score))
+            .collect();
+        let wanted: Vec<(i32, f32)> = docs
+            .iter()
+            .map(|(doc, score)| (*doc, score.parse::<f32>().expect("Java float")))
+            .collect();
+        assert_eq!(found, wanted, "documents of k={k} limit={limit}");
+    }
+}

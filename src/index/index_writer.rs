@@ -3114,10 +3114,16 @@ impl IndexWriter {
     /// (`IndexWriter.java:2552-2685`). When any step fails, the writer is
     /// still closed: the merge scheduler, a pending commit, the reader pool,
     /// the deleter and the write lock are released while the failure is
-    /// handled, and the first error is returned, as Java's `catch` block does.
+    /// handled, and the original error is returned, as Java's `catch` block
+    /// rethrows `throwable`.
     ///
-    /// Java's `catch` block also records an `Error` as a tragic event
-    /// (`IndexWriter.java:2675-2683`), suppressing whatever that raises; this
+    /// Java's `catch` block runs the closing inside `try { ... } catch
+    /// (Throwable t) { throwable.addSuppressed(t); }` (`IndexWriter.java:2648-2676`),
+    /// so whatever the closing raises — an `Error` included — is suppressed
+    /// into the original error; this port drops the closing's error and
+    /// catches its panic, the port's form of an unchecked throwable. The
+    /// `finally` then records an `Error` as a tragic event
+    /// (`IndexWriter.java:2677-2683`), suppressing whatever that raises; this
     /// port does so for [`LuceneError::AssertionError`], its only counterpart
     /// of `Error`.
     fn rollback_internal_no_commit(&self) -> Result<()> {
@@ -3127,15 +3133,19 @@ impl IndexWriter {
         match self.rollback_internal_no_commit_steps() {
             Ok(()) => Ok(()),
             Err(error) => {
-                let closed = self.close_after_failed_rollback();
-                // The `finally` (`IndexWriter.java:2675-2683`).
+                // `catch (Throwable t) { throwable.addSuppressed(t); }`
+                // (`IndexWriter.java:2675-2676`): the closing's error, or its
+                // panic, never replaces the original error.
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    self.close_after_failed_rollback()
+                }));
+                // The `finally` (`IndexWriter.java:2677-2683`).
                 if matches!(error, LuceneError::AssertionError(_)) {
-                    // `throwable.addSuppressed(t1)`: the original error wins.
-                    let _ = self.tragic_event(&error, "rollbackInternal");
+                    // `catch (Throwable t1) { throwable.addSuppressed(t1); }`.
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        self.tragic_event(&error, "rollbackInternal")
+                    }));
                 }
-                // A Java `Error` the closing rethrew leaves the `try` of the
-                // `catch` block in place of `throwable`.
-                closed?;
                 Err(error)
             }
         }
@@ -3242,12 +3252,14 @@ impl IndexWriter {
     /// The `try` of the `catch` block of `IndexWriter.rollbackInternalNoCommit()`
     /// (`IndexWriter.java:2648-2674`): we tried to be nice about it; do the
     /// minimum. `IOUtils.closeWhileHandlingException(mergeScheduler, ...)`
-    /// swallows every failure but a Java `Error`, so the original error is the
-    /// one reported unless closing hit an `Error`.
+    /// swallows every failure but a Java `Error`, which it rethrows; the
+    /// caller suppresses that one too (`IndexWriter.java:2675-2676`), so the
+    /// original error is always the one reported.
     ///
     /// # Errors
     ///
-    /// Returns the [`LuceneError::AssertionError`] the closing rethrew.
+    /// Returns the [`LuceneError::AssertionError`] the closing rethrew, and
+    /// resumes a panic a closeable raised, as Java rethrows an `Error`.
     fn close_after_failed_rollback(&self) -> Result<()> {
         use crate::util::IOUtils;
         // Must not hold the writer's lock while closing the merge scheduler:
@@ -8939,10 +8951,14 @@ impl IndexWriter {
         })();
         if let Err(error) = outcome {
             // `try { IOUtils.close(segStates); } catch (Throwable t1) {
-            // t.addSuppressed(t1); } throw t;` (`IndexWriter.java:6591-6598`).
+            // t.addSuppressed(t1); } throw t;` (`IndexWriter.java:6591-6598`):
+            // whatever the closing raises — its error, or the panic that is
+            // the port's form of an unchecked throwable — is suppressed.
             let state = std::cell::RefCell::new(state);
-            let _ = crate::util::IOUtils::close(seg_states.iter().map(|seg_state| {
-                Some(|| self.close_segment_state(&mut state.borrow_mut(), seg_state))
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                crate::util::IOUtils::close(seg_states.iter().map(|seg_state| {
+                    Some(|| self.close_segment_state(&mut state.borrow_mut(), seg_state))
+                }))
             }));
             return Err(error);
         }
@@ -10544,15 +10560,25 @@ mod tests {
         let waiting = Arc::clone(&writer);
         std::thread::spawn(move || {
             handle_tx.send(InterruptHandle::current()).unwrap();
-            let state = waiting.state().unwrap();
-            let outcome = waiting.do_wait(state).map(drop).map_err(|error| {
-                (
-                    error.java_simple_name(),
-                    error.to_string(),
-                    InterruptHandle::current().is_interrupted(),
-                )
-            });
-            let _ = outcome_tx.send(outcome);
+            let mut state = waiting.state().unwrap();
+            // `doWait()` gives up after a second and its callers wait again,
+            // as `shouldClose` loops; so does this thread, until the interrupt
+            // arrives however late a loaded machine delivers it — bounded, so
+            // the test cannot hang.
+            for _ in 0..20 {
+                match waiting.do_wait(state) {
+                    Ok(next_state) => state = next_state,
+                    Err(error) => {
+                        let _ = outcome_tx.send(Some((
+                            error.java_simple_name(),
+                            error.to_string(),
+                            InterruptHandle::current().is_interrupted(),
+                        )));
+                        return;
+                    }
+                }
+            }
+            let _ = outcome_tx.send(None);
         });
         let handle = handle_rx.recv().unwrap();
         let deadline = Instant::now() + std::time::Duration::from_secs(10);
@@ -10562,11 +10588,11 @@ mod tests {
         }
         handle.interrupt();
         let outcome = outcome_rx
-            .recv_timeout(std::time::Duration::from_secs(10))
+            .recv_timeout(std::time::Duration::from_secs(25))
             .expect("the interrupted wait did not return");
         assert_eq!(
             outcome,
-            Err((
+            Some((
                 "ThreadInterruptedException",
                 "java.lang.InterruptedException".to_string(),
                 false
@@ -14178,5 +14204,273 @@ mod tests {
                  exist in live infos",
             ]
         );
+    }
+
+    /// A merge scheduler whose every `close()` fails: the first with an
+    /// `IOException` when `first_is_io`, else — and always the second — with
+    /// an `AssertionError`, or the second with a panic when `panic_second`.
+    ///
+    /// The `FailingScheduler` of the pass G audit's
+    /// `oracle/RollbackCloseOracle.java`.
+    struct FailingCloseScheduler {
+        closes: std::sync::atomic::AtomicUsize,
+        first_is_io: bool,
+        panic_second: bool,
+        serial: crate::index::merge_scheduler::SerialMergeScheduler,
+    }
+
+    impl std::fmt::Display for FailingCloseScheduler {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("FailingCloseScheduler")
+        }
+    }
+
+    impl crate::index::merge_scheduler::MergeScheduler for FailingCloseScheduler {
+        fn merge(&self, _merge_source: Arc<dyn MergeSource>, _trigger: MergeTrigger) -> Result<()> {
+            Ok(())
+        }
+
+        fn same_thread_executor(&self) -> &Arc<crate::util::SameThreadExecutorService> {
+            crate::index::merge_scheduler::MergeScheduler::same_thread_executor(&self.serial)
+        }
+
+        fn close(&self) -> Result<()> {
+            let n = self.closes.fetch_add(1, Ordering::SeqCst) + 1;
+            if n == 1 && self.first_is_io {
+                return Err(LuceneError::Io(std::io::Error::other(format!("close {n}"))));
+            }
+            if n == 2 && self.panic_second {
+                panic!("close {n} panicked");
+            }
+            Err(LuceneError::AssertionError(format!("close {n}")))
+        }
+    }
+
+    /// `IndexWriter.rollbackInternalNoCommit()` closes after a failed rollback
+    /// inside `try { ... } catch (Throwable t) { throwable.addSuppressed(t); }`
+    /// (`IndexWriter.java:2648-2676`), so the original error is rethrown
+    /// whatever the closing raises, and an `Error` is the tragic exception.
+    /// Java oracle (`oracle/passG2/RollbackCloseOracle.java`, pinned in
+    /// `rollback_java.txt`): "firstIsIo=false thrown=java.lang.AssertionError:
+    /// close 1 suppressed=[java.lang.AssertionError: close 2;] closes=2
+    /// isOpen=false tragic=java.lang.AssertionError: close 1 / write lock
+    /// released"; "firstIsIo=true thrown=java.io.IOException: close 1
+    /// suppressed=[java.lang.AssertionError: close 2;] closes=2 isOpen=false
+    /// tragic=null / write lock released". The third row is the second's
+    /// with a panic, the port's form of an unchecked throwable, which Java's
+    /// `catch (Throwable t)` suppresses alike.
+    #[test]
+    fn a_failure_closing_after_a_failed_rollback_never_replaces_the_original_error() {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let rows: [(bool, bool, &str, &str, Option<&str>); 3] = [
+            (
+                false,
+                false,
+                "AssertionError",
+                "assertion failed: close 1",
+                Some("assertion failed: close 1"),
+            ),
+            (true, false, "IOException", "I/O error: close 1", None),
+            (true, true, "IOException", "I/O error: close 1", None),
+        ];
+        for (first_is_io, panic_second, class, message, tragic) in rows {
+            let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+            let scheduler = Arc::new(FailingCloseScheduler {
+                closes: std::sync::atomic::AtomicUsize::new(0),
+                first_is_io,
+                panic_second,
+                serial: Default::default(),
+            });
+            let mut config = IndexWriterConfig::new();
+            config.set_merge_scheduler(scheduler.clone()).unwrap();
+            let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+            let outcome =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| writer.rollback()));
+            let row = format!("first_is_io={first_is_io} panic_second={panic_second}");
+            let error = match outcome {
+                Ok(Err(error)) => error,
+                Ok(Ok(())) => panic!("{row}: the rollback succeeded"),
+                Err(_) => panic!("{row}: a panic escaped the rollback"),
+            };
+            assert_eq!(
+                (error.java_simple_name(), error.to_string()),
+                (class, message.to_string()),
+                "{row}"
+            );
+            assert_eq!(scheduler.closes.load(Ordering::SeqCst), 2, "{row}");
+            assert!(!writer.is_open(), "{row}");
+            assert_eq!(
+                writer
+                    .get_tragic_exception()
+                    .map(|t| t.to_string())
+                    .as_deref(),
+                tragic,
+                "{row}"
+            );
+            dir.obtain_lock(WRITE_LOCK_NAME)
+                .unwrap_or_else(|e| panic!("{row}: the write lock is still held: {e}"))
+                .close()
+                .unwrap();
+        }
+    }
+
+    /// `IndexWriter.openSegmentStates` (`IndexWriter.java:6576-6600`) closes
+    /// the states it opened when opening the next one fails, inside `try {
+    /// IOUtils.close(segStates); } catch (Throwable t1) { t.addSuppressed(t1);
+    /// }`: a panic while closing — here closing `_0.cfs`, as the unpooled
+    /// reader the state pinned is dropped — is suppressed, and the failure to
+    /// open `_1.cfs` is the one reported. Java oracle
+    /// (`oracle/passG2/SegStatesCloseOracle.java`, `seg_states_close_java.txt`,
+    /// an `IllegalStateException` from the close, through `commit()`):
+    /// "thrown=java.io.IOException: open failed: _1.cfs
+    /// suppressed=[java.lang.IllegalStateException: close panicked: _0.cfs;]",
+    /// "closes of _0.cfs=[_0.cfs]". The method is called directly: the panic
+    /// leaves the reader pool's lock poisoned, which a `synchronized` pool
+    /// knows nothing of, so the commit's tragic rollback cannot run as Java's.
+    #[test]
+    fn a_panic_closing_the_opened_segment_states_is_suppressed() {
+        use crate::codecs::tests::CloseTrackingDirectory;
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let tracking = Arc::new(CloseTrackingDirectory::default());
+        let log = Arc::clone(&tracking.log);
+        let dir: Arc<dyn Directory> = tracking;
+        let mut config = IndexWriterConfig::new();
+        config
+            .set_merge_policy(Arc::new(crate::index::merge_policy::NoMergePolicy::new()))
+            .unwrap();
+        config.set_reader_pooling(false);
+        let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+        for id in ["a", "b"] {
+            writer.add_document(&id_body_doc(id)).unwrap();
+            writer.commit().unwrap();
+        }
+        log.fail_open("_1.cfs");
+        log.panic_close("_0.cfs");
+        let closes_before = log.close_count("_0.cfs");
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut state = writer.state().unwrap();
+            let infos: Vec<SegmentCommitInfo> = state.segment_infos.as_slice().to_vec();
+            assert_eq!(infos.len(), 2);
+            writer
+                .open_segment_states(&mut state, &infos, &mut HashSet::new(), i64::MAX)
+                .map(|states| states.len())
+        }));
+        let error = match outcome {
+            Ok(Err(error)) => error,
+            Ok(Ok(opened)) => panic!("{opened} segment states opened"),
+            Err(_) => panic!("a panic closing the segment states escaped"),
+        };
+        assert_eq!(
+            (error.java_simple_name(), error.to_string()),
+            ("IOException", "I/O error: open failed: _1.cfs".to_string())
+        );
+        assert_eq!(log.close_count("_0.cfs") - closes_before, 1);
+        // The poisoned pool makes the rollback panic; only the writer's
+        // resources are at stake here.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| writer.rollback()));
+    }
+
+    /// `StoredFieldsConsumer.abort()` lets the `Error` its
+    /// `closeWhileHandlingException` rethrows propagate through the `finally`
+    /// blocks of `IndexingChain.abort`, `DocumentsWriterPerThread.abort`
+    /// (`"done abort"`), `DocumentsWriter.abortDocumentsWriterPerThread` and
+    /// `DocumentsWriter.abort` (`"done abort success=false"`) to `rollback`,
+    /// which closes the writer, records the tragedy and rethrows it. Java
+    /// oracle (`oracle/passG2/AbortChainOracle.java`, `abort_chain_java.txt`).
+    #[test]
+    fn an_error_aborting_the_stored_fields_runs_the_finally_blocks_as_lucene_does() {
+        use crate::codecs::tests::CloseTrackingDirectory;
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let tracking = Arc::new(CloseTrackingDirectory::default());
+        let log = Arc::clone(&tracking.log);
+        let dir: Arc<dyn Directory> = tracking;
+        let stream = Arc::new(RecordingInfoStream::default());
+        let mut config = IndexWriterConfig::new();
+        config
+            .set_info_stream(Arc::clone(&stream) as Arc<dyn InfoStream>)
+            .unwrap();
+        let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+        let mut doc = Document::new();
+        doc.add(Box::new(
+            StringField::new("id", "a".to_string(), Store::YES).unwrap(),
+        ));
+        writer.add_document(&doc).unwrap();
+        log.assertion_close("_0.fdt");
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| writer.rollback()));
+        let error = match outcome {
+            Ok(Err(error)) => error,
+            Ok(Ok(())) => panic!("the rollback succeeded"),
+            Err(_) => panic!("a panic escaped the rollback"),
+        };
+        assert_eq!(
+            (error.java_simple_name(), error.to_string()),
+            (
+                "AssertionError",
+                "assertion failed: close failed: _0.fdt".to_string()
+            )
+        );
+        assert!(stream.of("DWPT").contains(&"done abort".to_string()));
+        assert!(stream
+            .of("DW")
+            .contains(&"done abort success=false".to_string()));
+        assert!(!writer.is_open());
+        assert_eq!(
+            writer
+                .get_tragic_exception()
+                .map(|t| t.to_string())
+                .as_deref(),
+            Some("assertion failed: close failed: _0.fdt")
+        );
+        dir.obtain_lock(WRITE_LOCK_NAME)
+            .expect("the write lock is released")
+            .close()
+            .unwrap();
+    }
+
+    /// `IndexingChain.abort()` is `try (Closeable finalizer = termsHash::abort)
+    /// { storedFieldsConsumer.abort(); vectorValuesConsumer.abort(); }`
+    /// (`IndexingChain.java:536-544`): when the stored fields fail to abort,
+    /// the vectors are never aborted, while the finalizer still aborts the
+    /// terms hash, closing the term-vectors writer. Java oracle
+    /// (`oracle/passG2/AbortChainClosesOracle.java`,
+    /// `abort_chain_closes_java.txt`): "closed=[_0.fdm, _0.fdt, _0.tvm,
+    /// _0.tvd]", "never closed=[_0_Lucene99HnswVectorsFormat_0.vemf,
+    /// _0_Lucene99HnswVectorsFormat_0.vec, _0_Lucene99HnswVectorsFormat_0.vem,
+    /// _0_Lucene99HnswVectorsFormat_0.vex]".
+    #[test]
+    fn a_failed_stored_fields_abort_skips_the_vectors_and_still_aborts_the_terms_hash() {
+        use crate::codecs::tests::CloseTrackingDirectory;
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let tracking = Arc::new(CloseTrackingDirectory::default());
+        let log = Arc::clone(&tracking.log);
+        let dir: Arc<dyn Directory> = tracking;
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        let mut doc = Document::new();
+        doc.add(Box::new(
+            StringField::new("id", "a".to_string(), Store::YES).unwrap(),
+        ));
+        // `TextField.TYPE_NOT_STORED` with term vectors.
+        let mut term_vectors = crate::document::FieldType::new();
+        term_vectors.set_tokenized(true).unwrap();
+        term_vectors
+            .set_index_options(crate::index::IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
+            .unwrap();
+        term_vectors.set_store_term_vectors(true).unwrap();
+        term_vectors.freeze();
+        doc.add(Box::new(
+            crate::document::Field::new("body", "some words".to_string(), term_vectors).unwrap(),
+        ));
+        doc.add(Box::new(
+            crate::document::KnnFloatVectorField::with_euclidean("v", &[1.0, 2.0]).unwrap(),
+        ));
+        writer.add_document(&doc).unwrap();
+        log.assertion_close("_0.fdt");
+        assert!(writer.rollback().is_err());
+        let closed: Vec<String> = log
+            .closed()
+            .into_iter()
+            .filter(|name| !name.ends_with(".tmp"))
+            .collect();
+        assert_eq!(closed, ["_0.fdm", "_0.fdt", "_0.tvm", "_0.tvd"]);
     }
 }

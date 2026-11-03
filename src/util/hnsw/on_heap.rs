@@ -5,19 +5,19 @@
 #![deny(unsafe_code)]
 
 use std::sync::atomic::{AtomicI32, AtomicI64, Ordering};
-use std::sync::{Arc, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, OnceLock};
 
 use crate::error::LuceneError;
 use crate::util::{Accountable, RamUsageEstimator};
 
 use super::neighbor::{NeighborArray, OnHeapMemoryUsageListener};
-use super::{ArrayNodesIterator, DenseNodesIterator, HnswGraph, NodesIterator, Result};
+use super::{ArrayNodesIterator, DenseNodesIterator, HnswGraph, HnswLock, NodesIterator, Result};
 
 const INIT_SIZE: usize = 128;
 
 /// One `(level, node)` slot: Java's `graph[node][level]`, a `NeighborArray`
 /// reference that starts `null` and is assigned by `addNode`.
-type LevelSlot = OnceLock<RwLock<NeighborArray>>;
+type LevelSlot = OnceLock<NeighborArray>;
 
 /// One node's levels: Java's `graph[node]`, `null` until the node is added.
 type NodeSlot = OnceLock<Box<[LevelSlot]>>;
@@ -27,29 +27,25 @@ type NodeSlot = OnceLock<Box<[LevelSlot]>>;
 ///
 /// Equivalent to `org.apache.lucene.util.hnsw.OnHeapHnswGraph`.
 ///
-/// # Divergence from Lucene 10.5.0: one lock per neighbour array
-///
 /// Lucene lets the workers of `HnswConcurrentMergeBuilder` share one graph:
 /// a worker writes the arrays of the node it inserts and publishes the node's
 /// slot without any lock, locks a neighbour's array through the 512 striped
-/// `HnswLock`s while it adds the back-link, and copies a neighbour list under
+/// [`HnswLock`]s while it adds the back-link, and copies a neighbour list under
 /// `HnswLock.read` while it searches (`HnswGraphBuilder.java:417-442`,
 /// `OnHeapHnswGraph.java:150-157`, `HnswConcurrentMergeBuilder.java:249-263`).
-/// The unlocked writes are a data race in Rust, so this port makes the graph
-/// itself thread-safe instead:
+/// The builders of this port take the same locks at the same points, and the
+/// graph hands out its arrays as Java's does; a [`NeighborArray`] keeps its
+/// storage in atomics, so a write Java makes without a lock is not a data race
+/// (see that type).
 ///
-/// * every `NeighborArray` sits behind its own [`RwLock`], so the readers and
-///   writers of one `(level, node)` exclude each other, the new node's own
-///   array included, where Lucene takes no lock for it;
-/// * a node's slot, and each of its level slots, is a [`OnceLock`] set once,
-///   so publishing a node to the other workers is a release store that their
-///   acquire loads observe; Java's `graph[node] = ...` is a plain store;
-/// * `size` and `maxNodeId` are atomics, as in Lucene, and the entry node is
-///   one packed atomic word, Lucene's `AtomicReference<EntryNode>`.
+/// # Divergence from Lucene 10.5.0: set-once slots
 ///
-/// The striped [`HnswLock`](super::HnswLock) therefore guards nothing in this
-/// port's build. Only locking differs: the same arrays are read and written in
-/// the same order, so a single-threaded build produces the same graph.
+/// A node's slot, and each of its level slots, is a [`OnceLock`] set once, so
+/// publishing a node to the other workers is a release store that their
+/// acquire loads observe; Java's `graph[node] = ...` is a plain store, which
+/// Rust cannot make through a shared graph. `size` and `maxNodeId` are
+/// atomics, as in Lucene, and the entry node is one packed atomic word,
+/// Lucene's `AtomicReference<EntryNode>`.
 ///
 /// Growing the outer array, or a node's level array, needs exclusive access
 /// ([`add_node`](Self::add_node)); Lucene's concurrent merge never grows
@@ -124,16 +120,6 @@ impl AtomicEntryNode {
     }
 }
 
-/// The error a poisoned neighbour-array lock turns into.
-///
-/// A lock is poisoned only when a thread panicked while it held the write
-/// guard, which may have left the array half updated; Java has no such state.
-fn poisoned(level: i32, node: i32) -> LuceneError {
-    LuceneError::illegal_state(format!(
-        "the neighbour array of node {node} at level {level} was poisoned by a panicking writer"
-    ))
-}
-
 impl OnHeapHnswGraph {
     /// Creates an empty graph with the given `M`. `num_nodes` of `-1` means
     /// unbounded growth; a non-negative value fixes the eventual size.
@@ -167,7 +153,7 @@ impl OnHeapHnswGraph {
 
     /// Returns the slot of `node` at `level`, or the error Java's assertions
     /// in `getNeighbors` stand for.
-    fn level_slot(&self, level: i32, node: i32) -> Result<&RwLock<NeighborArray>> {
+    fn level_slot(&self, level: i32, node: i32) -> Result<&NeighborArray> {
         let node_usize = node as usize;
         if node < 0 || node_usize >= self.graph.len() {
             return Err(LuceneError::IllegalArgument(format!(
@@ -196,82 +182,20 @@ impl OnHeapHnswGraph {
         })
     }
 
-    /// Returns the `NeighborArray` for `node` at `level`, read-locked.
+    /// Returns the `NeighborArray` for `node` at `level`.
     ///
-    /// Equivalent to `OnHeapHnswGraph#getNeighbors` read through
-    /// `HnswLock.read(level, node)`, which is how Lucene's concurrent merge
-    /// reads a neighbour list another worker may be writing; see the type
-    /// docs for why every read takes the array's own lock here. Hold the
-    /// guard briefly: a writer of the same array waits for it.
+    /// Equivalent to `org.apache.lucene.util.hnsw.OnHeapHnswGraph#getNeighbors`,
+    /// which takes no lock: a caller that shares the graph with other workers
+    /// holds `HnswLock.read` or `HnswLock.write` for `(level, node)` around
+    /// its use of the array, as Lucene's builders do; the array is written
+    /// through `&self` (see [`NeighborArray`]).
     ///
     /// # Errors
     ///
     /// Returns [`LuceneError::IllegalArgument`] when the node or the level is
-    /// out of range or not yet added, and [`LuceneError::IllegalState`] when a
-    /// panicking writer poisoned the array's lock.
-    pub fn get_neighbors(
-        &self,
-        level: i32,
-        node: i32,
-    ) -> Result<RwLockReadGuard<'_, NeighborArray>> {
-        self.level_slot(level, node)?
-            .read()
-            .map_err(|_| poisoned(level, node))
-    }
-
-    /// Returns the `NeighborArray` for `node` at `level`, write-locked for
-    /// modification.
-    ///
-    /// Java hands out the array itself from `getNeighbors` and its writers
-    /// mutate it in place, under `HnswLock.write(level, node)` when another
-    /// worker may read it; this is that pairing, through the array's own lock.
-    ///
-    /// # Errors
-    ///
-    /// As [`get_neighbors`](Self::get_neighbors).
-    pub fn write_neighbors(
-        &self,
-        level: i32,
-        node: i32,
-    ) -> Result<RwLockWriteGuard<'_, NeighborArray>> {
-        self.level_slot(level, node)?
-            .write()
-            .map_err(|_| poisoned(level, node))
-    }
-
-    /// Returns the `NeighborArray` for `node` at `level`, for modification
-    /// through exclusive access, without locking.
-    ///
-    /// # Errors
-    ///
-    /// As [`get_neighbors`](Self::get_neighbors).
-    pub fn get_neighbors_mut(&mut self, level: i32, node: i32) -> Result<&mut NeighborArray> {
-        let node_usize = node as usize;
-        let graph_len = self.graph.len();
-        if node < 0 || node_usize >= graph_len {
-            return Err(LuceneError::IllegalArgument(format!(
-                "node {node} out of bounds (graph length {graph_len})"
-            )));
-        }
-        let levels = self.graph[node_usize]
-            .get_mut()
-            .ok_or_else(|| LuceneError::IllegalArgument(format!("node {node} has no levels")))?;
-        let level_usize = level as usize;
-        let num_levels = levels.len();
-        if level < 0 || level_usize >= num_levels {
-            return Err(LuceneError::IllegalArgument(format!(
-                "level {level} out of bounds for node {node} (has {num_levels} levels)"
-            )));
-        }
-        levels[level_usize]
-            .get_mut()
-            .ok_or_else(|| {
-                LuceneError::IllegalArgument(format!(
-                    "node {node} has no neighbor array at level {level}"
-                ))
-            })?
-            .get_mut()
-            .map_err(|_| poisoned(level, node))
+    /// out of range or not yet added, where Java's assertions fail.
+    pub fn get_neighbors(&self, level: i32, node: i32) -> Result<&NeighborArray> {
+        self.level_slot(level, node)
     }
 
     /// Creates the empty neighbour array `addNode` installs at `level`,
@@ -330,7 +254,7 @@ impl OnHeapHnswGraph {
             grown.resize_with(target_len, OnceLock::new);
             *levels = grown.into_boxed_slice();
         }
-        levels[level as usize] = OnceLock::from(RwLock::new(array));
+        levels[level as usize] = OnceLock::from(array);
         self.max_node_id.fetch_max(node, Ordering::Relaxed);
     }
 
@@ -373,7 +297,7 @@ impl OnHeapHnswGraph {
         let mut installed = false;
         levels[level as usize].get_or_init(|| {
             installed = true;
-            RwLock::new(self.new_neighbor_array(level))
+            self.new_neighbor_array(level)
         });
         if !installed {
             return Err(LuceneError::illegal_state(format!(
@@ -495,7 +419,7 @@ impl Accountable for OnHeapHnswGraph {
 
 impl HnswGraph for OnHeapHnswGraph {
     fn seek(&mut self, level: i32, target: i32) -> Result<()> {
-        let neighbors = self.get_neighbors_mut(level, target)?.clone();
+        let neighbors = self.get_neighbors(level, target)?.clone();
         self.cur = Some(neighbors);
         self.upto = -1;
         Ok(())
@@ -520,7 +444,7 @@ impl HnswGraph for OnHeapHnswGraph {
             .ok_or_else(|| LuceneError::illegal_state("seek not called".to_string()))?;
         self.upto += 1;
         if self.upto < cur.size() {
-            Ok(cur.nodes()[self.upto as usize])
+            Ok(cur.node(self.upto))
         } else {
             Ok(super::NO_MORE_DOCS)
         }
@@ -570,7 +494,7 @@ impl HnswGraph for OnHeapHnswGraph {
 }
 
 /// A cursor over a shared [`OnHeapHnswGraph`] that copies each neighbour
-/// list out under its read lock.
+/// list out, under its stripe of the [`HnswLock`] when it has one.
 ///
 /// Equivalent to the private
 /// `org.apache.lucene.util.hnsw.HnswConcurrentMergeBuilder.MergeSearcher`,
@@ -584,11 +508,14 @@ impl HnswGraph for OnHeapHnswGraph {
 ///
 /// Every builder in this port reads its graph through this view, because the
 /// graph is shared behind an [`Arc`] and its own cursor needs `&mut`. A
-/// single-threaded build reads Java's `OnHeapHnswGraph.seek` reference
-/// instead of a copy; both yield the same neighbours in the same order, since
-/// nothing writes the graph while that build searches it.
+/// builder with no lock — Java's `hnswLock == null`, whose searcher seeks
+/// with `OnHeapHnswGraph.seek` — reads the array without one; Java walks the
+/// array itself rather than a copy, and both yield the same neighbours in the
+/// same order, since nothing writes the graph while that build searches it.
 pub(crate) struct OnHeapGraphReader<'a> {
     graph: &'a OnHeapHnswGraph,
+    /// `MergeSearcher.hnswLock`, `None` for a builder without one.
+    hnsw_lock: Option<&'a HnswLock>,
     /// Java's `nodeBuffer`, owned by the caller so that it is reused across
     /// searches as Java reuses the searcher's.
     node_buffer: &'a mut Vec<i32>,
@@ -597,10 +524,16 @@ pub(crate) struct OnHeapGraphReader<'a> {
 }
 
 impl<'a> OnHeapGraphReader<'a> {
-    /// Creates a cursor over `graph` that copies into `node_buffer`.
-    pub(crate) fn new(graph: &'a OnHeapHnswGraph, node_buffer: &'a mut Vec<i32>) -> Self {
+    /// Creates a cursor over `graph` that copies into `node_buffer`, under
+    /// `hnsw_lock`'s read stripes when it is given.
+    pub(crate) fn new(
+        graph: &'a OnHeapHnswGraph,
+        hnsw_lock: Option<&'a HnswLock>,
+        node_buffer: &'a mut Vec<i32>,
+    ) -> Self {
         Self {
             graph,
+            hnsw_lock,
             node_buffer,
             upto: -1,
             size: 0,
@@ -609,13 +542,18 @@ impl<'a> OnHeapGraphReader<'a> {
 }
 
 impl HnswGraph for OnHeapGraphReader<'_> {
-    /// Equivalent to `MergeSearcher.graphSeek`.
+    /// Equivalent to `MergeSearcher.graphSeek`: `Lock lock =
+    /// hnswLock.read(level, targetNode); try { ... size =
+    /// neighborArray.size(); System.arraycopy(neighborArray.nodes(), 0,
+    /// nodeBuffer, 0, size); } finally { lock.unlock(); }`.
     fn seek(&mut self, level: i32, target: i32) -> Result<()> {
         {
+            let _lock = self.hnsw_lock.map(|lock| lock.read(level, target));
             let neighbors = self.graph.get_neighbors(level, target)?;
-            self.node_buffer.clear();
-            self.node_buffer.extend_from_slice(neighbors.nodes());
-            self.size = neighbors.size();
+            let size = neighbors.size();
+            self.node_buffer.resize(size as usize, 0);
+            neighbors.copy_nodes(0, &mut self.node_buffer[..]);
+            self.size = size;
         }
         self.upto = -1;
         Ok(())

@@ -6,12 +6,11 @@
 #![deny(unsafe_code)]
 
 use std::fmt::{self, Debug, Formatter};
+use std::sync::atomic::{AtomicI32, AtomicU32, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use crate::error::LuceneError;
-use crate::internal::hppc::max_sized_float_array_list::MaxSizedFloatArrayList;
-use crate::internal::hppc::max_sized_int_array_list::MaxSizedIntArrayList;
-use crate::util::{Accountable, NumericUtils, TernaryLongHeap};
+use crate::util::{NumericUtils, RamUsageEstimator, TernaryLongHeap};
 
 use super::scorer::{RandomVectorScorer, UpdateableRandomVectorScorer};
 use super::Result;
@@ -28,6 +27,25 @@ use super::Result;
 /// figure is Java's object layout, not this struct's.
 const BASE_RAM_BYTES_USED: i64 = 48;
 
+/// Shallow size of a `MaxSizedIntArrayList` or a `MaxSizedFloatArrayList`
+/// instance, the two lists Java's `NeighborArray` keeps its buffers in
+/// (`base_ram_bytes_used` of both hppc lists of this crate).
+const MAX_SIZED_LIST_BASE_RAM_BYTES_USED: i64 = 24;
+
+/// Bytes per element of either buffer, Java's `Integer.BYTES` and
+/// `Float.BYTES`, which `ArrayUtil.growInRange` grows by.
+const BYTES_PER_ELEMENT: usize = 4;
+
+/// `MaxSizedIntArrayList.ramBytesUsed()`, and `MaxSizedFloatArrayList`'s, for
+/// a buffer of `length` elements: the list's shallow size plus
+/// `RamUsageEstimator.sizeOf` of its array.
+fn max_sized_list_ram_bytes_used(length: usize) -> i64 {
+    MAX_SIZED_LIST_BASE_RAM_BYTES_USED
+        + RamUsageEstimator::align_object_size(
+            RamUsageEstimator::NUM_BYTES_ARRAY_HEADER + (BYTES_PER_ELEMENT as i64) * length as i64,
+        )
+}
+
 /// Growable array of neighbor node ids and their scores.
 ///
 /// Nodes are maintained in score order: descending when `scores_desc_order`
@@ -35,18 +53,66 @@ const BASE_RAM_BYTES_USED: i64 = 48;
 /// insertions; unsorted nodes are sorted lazily on demand.
 ///
 /// Equivalent to `org.apache.lucene.util.hnsw.NeighborArray`.
-#[derive(Clone, Debug)]
+///
+/// # Divergence from Lucene 10.5.0: atomic storage
+///
+/// Lucene's `HnswConcurrentMergeBuilder` workers share the arrays of one
+/// `OnHeapHnswGraph`: a worker writes the array of the node it inserts
+/// without a lock, writes a neighbour's array under `HnswLock.write`, and
+/// copies an array under `HnswLock.read` (`HnswGraphBuilder.java:417-442`,
+/// `HnswConcurrentMergeBuilder.java:249-263`). Every method here therefore
+/// takes `&self`, and every field that changes is an atomic read and written
+/// with `Relaxed` ordering, the counterpart of Java's plain accesses: the
+/// [`HnswLock`](super::HnswLock) the builders take at Java's points orders
+/// them, as it does in Java, and an access Java makes without a lock is a race
+/// on a value, never undefined behaviour.
+///
+/// Java's two buffers start at `maxSize / 8` slots and are reallocated as they
+/// grow (`ArrayUtil.growInRange`). Replacing a buffer through `&self` would
+/// need a lock or `unsafe` code, so all `maxSize` slots are allocated up
+/// front instead; the length Java's buffers would have is still tracked, and
+/// it is what the memory listener is told about, so the accounting is Java's.
+#[derive(Debug)]
 pub struct NeighborArray {
     scores_desc_order: bool,
-    size: usize,
     max_size: usize,
-    /// Equivalent to `NeighborArray.nodes`, a `MaxSizedIntArrayList` that
-    /// starts at `maxSize / 8` slots and grows with `ArrayUtil.growInRange`.
-    nodes: MaxSizedIntArrayList,
-    /// Equivalent to `NeighborArray.scores`, sized as `nodes`.
-    scores: MaxSizedFloatArrayList,
-    sorted_node_size: usize,
+    /// Java's `size`.
+    size: AtomicUsize,
+    /// Java's `sortedNodeSize`.
+    sorted_node_size: AtomicUsize,
+    /// Java's `nodes.buffer.length`, which `scores.buffer.length` always
+    /// equals: the length the buffers have grown to in Java.
+    buffer_length: AtomicUsize,
+    /// Java's `nodes.buffer`, every one of its `maxSize` slots allocated.
+    nodes: Box<[AtomicI32]>,
+    /// Java's `scores.buffer`, as the bits of each `f32`, sized as `nodes`.
+    scores: Box<[AtomicU32]>,
     on_heap_memory_usage_listener: Option<OnHeapMemoryUsageListener>,
+}
+
+impl Clone for NeighborArray {
+    /// A copy of the array, its listener included, as the derived clone of a
+    /// plain struct would be.
+    fn clone(&self) -> Self {
+        Self {
+            scores_desc_order: self.scores_desc_order,
+            max_size: self.max_size,
+            size: AtomicUsize::new(self.size.load(Ordering::Relaxed)),
+            sorted_node_size: AtomicUsize::new(self.sorted_node_size.load(Ordering::Relaxed)),
+            buffer_length: AtomicUsize::new(self.buffer_length.load(Ordering::Relaxed)),
+            nodes: self
+                .nodes
+                .iter()
+                .map(|node| AtomicI32::new(node.load(Ordering::Relaxed)))
+                .collect(),
+            scores: self
+                .scores
+                .iter()
+                .map(|score| AtomicU32::new(score.load(Ordering::Relaxed)))
+                .collect(),
+            on_heap_memory_usage_listener: self.on_heap_memory_usage_listener.clone(),
+        }
+    }
 }
 
 /// The callback a [`NeighborArray`] notifies whenever its buffers grow.
@@ -96,22 +162,24 @@ impl NeighborArray {
         desc_order: bool,
         on_heap_memory_usage_listener: Option<OnHeapMemoryUsageListener>,
     ) -> Self {
-        let nodes = MaxSizedIntArrayList::with_expected_elements(max_size, max_size / 8);
-        let scores = MaxSizedFloatArrayList::with_expected_elements(max_size, max_size / 8);
-        let max_size = max_size.max(0) as usize;
+        // `new MaxSizedIntArrayList(maxSize, maxSize / 8)`, and the float list
+        // alike.
+        let buffer_length = (max_size / 8).max(0) as usize;
         // `BASE_RAM_BYTES_USED + nodes.ramBytesUsed() + scores.ramBytesUsed()`
         // (`NeighborArray.java:45,56`).
-        let ram_bytes_used = BASE_RAM_BYTES_USED + nodes.ram_bytes_used() + scores.ram_bytes_used();
+        let ram_bytes_used = BASE_RAM_BYTES_USED + 2 * max_sized_list_ram_bytes_used(buffer_length);
         if let Some(listener) = &on_heap_memory_usage_listener {
             listener.accept(ram_bytes_used);
         }
+        let max_size = max_size.max(0) as usize;
         Self {
             scores_desc_order: desc_order,
-            size: 0,
             max_size,
-            nodes,
-            scores,
-            sorted_node_size: 0,
+            size: AtomicUsize::new(0),
+            sorted_node_size: AtomicUsize::new(0),
+            buffer_length: AtomicUsize::new(buffer_length),
+            nodes: (0..max_size).map(|_| AtomicI32::new(0)).collect(),
+            scores: (0..max_size).map(|_| AtomicU32::new(0)).collect(),
             on_heap_memory_usage_listener,
         }
     }
@@ -127,7 +195,7 @@ impl NeighborArray {
     ///
     /// Equivalent to the private
     /// `org.apache.lucene.util.hnsw.NeighborArray#alertOnHeapMemoryUsageChange`.
-    fn alert_on_heap_memory_usage_change(&mut self, new_length: usize, previous_length: usize) {
+    fn alert_on_heap_memory_usage_change(&self, new_length: usize, previous_length: usize) {
         if new_length > previous_length {
             if let Some(listener) = &self.on_heap_memory_usage_listener {
                 let length_delta = (new_length - previous_length) as i64;
@@ -138,6 +206,44 @@ impl NeighborArray {
         }
     }
 
+    /// The node at index `i` of the buffer.
+    fn node_at(&self, i: usize) -> i32 {
+        self.nodes[i].load(Ordering::Relaxed)
+    }
+
+    /// The score at index `i` of the buffer.
+    fn score_at(&self, i: usize) -> f32 {
+        f32::from_bits(self.scores[i].load(Ordering::Relaxed))
+    }
+
+    /// Writes `node` and `score` at index `i` of the buffers.
+    fn set_at(&self, i: usize, node: i32, score: f32) {
+        self.nodes[i].store(node, Ordering::Relaxed);
+        self.scores[i].store(score.to_bits(), Ordering::Relaxed);
+    }
+
+    /// Appends `node` and `score` at index `size`, growing Java's buffer
+    /// length as the lists' `add` does, and reports the growth.
+    ///
+    /// Equivalent to `nodes.add(newNode); scores.add(newScore);
+    /// alertOnHeapMemoryUsageChange(nodes.buffer.length, previousLength)`:
+    /// `MaxSizedIntArrayList.ensureBufferSpace(1)` grows the buffer to
+    /// `growInRange(buffer, elementsCount + 1, maxSize)`, which is
+    /// `min(maxSize, ArrayUtil.oversize(elementsCount + 1, 4))`.
+    fn append(&self, size: usize, node: i32, score: f32) {
+        let previous_length = self.buffer_length.load(Ordering::Relaxed);
+        let mut new_length = previous_length;
+        if size + 1 > previous_length {
+            new_length = self.max_size.min(crate::util::ArrayUtil::oversize(
+                size + 1,
+                BYTES_PER_ELEMENT,
+            ));
+            self.buffer_length.store(new_length, Ordering::Relaxed);
+        }
+        self.set_at(size, node, score);
+        self.alert_on_heap_memory_usage_change(new_length, previous_length);
+    }
+
     /// Returns the configured maximum size.
     pub fn max_size(&self) -> i32 {
         self.max_size as i32
@@ -145,97 +251,132 @@ impl NeighborArray {
 
     /// Returns the current number of stored neighbors.
     pub fn size(&self) -> i32 {
-        self.size as i32
+        self.size.load(Ordering::Relaxed) as i32
     }
 
-    /// Returns a reference to the internal node buffer (only the first
-    /// `size()` entries are valid).
-    pub fn nodes(&self) -> &[i32] {
-        &self.nodes.buffer[..self.size]
+    /// Returns the node id at index `i`: Java's `nodes()[i]`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `i` is not below [`max_size`](Self::max_size), where Java
+    /// throws `ArrayIndexOutOfBoundsException` past its buffer.
+    pub fn node(&self, i: i32) -> i32 {
+        self.node_at(i as usize)
+    }
+
+    /// Returns a copy of the first `size()` node ids.
+    ///
+    /// Equivalent to `org.apache.lucene.util.hnsw.NeighborArray#nodes`, read up
+    /// to `size()`: Java hands out the buffer itself, which an atomic buffer
+    /// cannot be borrowed as, so this copies the valid part of it.
+    pub fn nodes(&self) -> Vec<i32> {
+        (0..self.size.load(Ordering::Relaxed))
+            .map(|i| self.node_at(i))
+            .collect()
+    }
+
+    /// Copies `dst.len()` node ids, starting at index `from`, into `dst`:
+    /// Java's `System.arraycopy(nodes(), from, dst, 0, dst.length)`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the range reaches past [`max_size`](Self::max_size).
+    pub fn copy_nodes(&self, from: usize, dst: &mut [i32]) {
+        for (offset, slot) in dst.iter_mut().enumerate() {
+            *slot = self.node_at(from + offset);
+        }
     }
 
     /// Returns the score at index `i`.
     ///
     /// Equivalent to `org.apache.lucene.util.hnsw.NeighborArray#getScores`.
     pub fn score(&self, i: i32) -> f32 {
-        self.scores.buffer[i as usize]
+        self.score_at(i as usize)
     }
 
     /// Adds a node that is known to be worse than all previously stored
     /// nodes. Panics (in debug) if ordering is violated; returns an error
     /// if the array is full.
-    pub fn add_in_order(&mut self, new_node: i32, new_score: f32) -> Result<()> {
+    ///
+    /// Equivalent to `org.apache.lucene.util.hnsw.NeighborArray#addInOrder`.
+    pub fn add_in_order(&self, new_node: i32, new_score: f32) -> Result<()> {
+        let size = self.size.load(Ordering::Relaxed);
+        let sorted_node_size = self.sorted_node_size.load(Ordering::Relaxed);
         debug_assert_eq!(
-            self.size, self.sorted_node_size,
+            size, sorted_node_size,
             "cannot call add_in_order after add_out_of_order"
         );
-        if self.size == self.max_size {
+        if size == self.max_size {
             return Err(LuceneError::illegal_state(
                 "No growth is allowed".to_string(),
             ));
         }
-        if self.size > 0 {
-            let previous_score = self.scores.buffer[self.size - 1];
+        if size > 0 {
+            let previous_score = self.score_at(size - 1);
             debug_assert!(
                 (self.scores_desc_order && previous_score >= new_score)
                     || (!self.scores_desc_order && previous_score <= new_score),
                 "nodes are added in incorrect order"
             );
         }
-        let previous_length = self.nodes.buffer.len();
-        self.nodes.add(new_node);
-        self.scores.add(new_score);
-        self.alert_on_heap_memory_usage_change(self.nodes.buffer.len(), previous_length);
-        self.size += 1;
-        self.sorted_node_size += 1;
+        self.append(size, new_node, new_score);
+        self.size.store(size + 1, Ordering::Relaxed);
+        self.sorted_node_size
+            .store(sorted_node_size + 1, Ordering::Relaxed);
         Ok(())
     }
 
     /// Adds a node without preserving sorted order.
-    pub fn add_out_of_order(&mut self, new_node: i32, new_score: f32) -> Result<()> {
-        if self.size == self.max_size {
+    ///
+    /// Equivalent to `org.apache.lucene.util.hnsw.NeighborArray#addOutOfOrder`.
+    pub fn add_out_of_order(&self, new_node: i32, new_score: f32) -> Result<()> {
+        let size = self.size.load(Ordering::Relaxed);
+        if size == self.max_size {
             return Err(LuceneError::illegal_state(
                 "No growth is allowed".to_string(),
             ));
         }
-        let previous_length = self.nodes.buffer.len();
-        self.nodes.add(new_node);
-        self.scores.add(new_score);
-        self.alert_on_heap_memory_usage_change(self.nodes.buffer.len(), previous_length);
-        self.size += 1;
+        self.append(size, new_node, new_score);
+        self.size.store(size + 1, Ordering::Relaxed);
         Ok(())
     }
 
     /// Adds an out-of-order node and, if the array overflows, removes the
     /// least-diverse neighbor using the provided scorer.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.util.hnsw.NeighborArray#addAndEnsureDiversity`, which
+    /// a concurrent merge calls under `HnswLock.write`.
     pub fn add_and_ensure_diversity(
-        &mut self,
+        &self,
         new_node: i32,
         new_score: f32,
         node_id: i32,
         scorer: &mut dyn UpdateableRandomVectorScorer,
     ) -> Result<()> {
         self.add_out_of_order(new_node, new_score)?;
-        if self.size < self.max_size {
+        if self.size.load(Ordering::Relaxed) < self.max_size {
             return Ok(());
         }
         scorer.set_scoring_ordinal(node_id)?;
         let worst = self.find_worst_non_diverse(scorer)?;
         self.remove_index(worst);
-        debug_assert_eq!(self.size, self.max_size - 1);
+        debug_assert_eq!(self.size.load(Ordering::Relaxed), self.max_size - 1);
         Ok(())
     }
 
     /// Sorts the array and returns the sorted indexes of the previously
     /// unsorted nodes, or `None` if already fully sorted.
-    pub fn sort(&mut self, scorer: &mut dyn RandomVectorScorer) -> Result<Option<Vec<i32>>> {
-        if self.size == self.sorted_node_size {
+    pub fn sort(&self, scorer: &mut dyn RandomVectorScorer) -> Result<Option<Vec<i32>>> {
+        let size = self.size.load(Ordering::Relaxed);
+        let sorted_node_size = self.sorted_node_size.load(Ordering::Relaxed);
+        if size == sorted_node_size {
             return Ok(None);
         }
-        debug_assert!(self.sorted_node_size < self.size);
-        let mut unchecked_indexes = Vec::with_capacity(self.size - self.sorted_node_size);
+        debug_assert!(sorted_node_size < size);
+        let mut unchecked_indexes = Vec::with_capacity(size - sorted_node_size);
         let mut count = 0usize;
-        while self.sorted_node_size != self.size {
+        while self.sorted_node_size.load(Ordering::Relaxed) != size {
             let idx = self.insert_sorted_internal(scorer)?;
             for prev in &mut unchecked_indexes[..count] {
                 if *prev >= idx {
@@ -251,45 +392,57 @@ impl NeighborArray {
 
     /// Test helper: insert a node and immediately sort it.
     #[cfg(test)]
-    pub fn insert_sorted(&mut self, new_node: i32, new_score: f32) -> Result<()> {
+    pub fn insert_sorted(&self, new_node: i32, new_score: f32) -> Result<()> {
         self.add_out_of_order(new_node, new_score)?;
         let _ = self.insert_sorted_internal(&mut DummyScorer)?;
         Ok(())
     }
 
-    fn insert_sorted_internal(&mut self, scorer: &mut dyn RandomVectorScorer) -> Result<i32> {
-        debug_assert!(self.sorted_node_size < self.size);
-        let tmp_node = self.nodes.buffer[self.sorted_node_size];
-        let mut tmp_score = self.scores.buffer[self.sorted_node_size];
+    fn insert_sorted_internal(&self, scorer: &mut dyn RandomVectorScorer) -> Result<i32> {
+        let sorted_node_size = self.sorted_node_size.load(Ordering::Relaxed);
+        debug_assert!(sorted_node_size < self.size.load(Ordering::Relaxed));
+        let tmp_node = self.node_at(sorted_node_size);
+        let mut tmp_score = self.score_at(sorted_node_size);
 
         if tmp_score.is_nan() {
             tmp_score = scorer.score(tmp_node)?;
         }
 
         let insertion_point = if self.scores_desc_order {
-            self.desc_sort_find_rightmost_insertion_point(tmp_score, self.sorted_node_size)
+            self.desc_sort_find_rightmost_insertion_point(tmp_score, sorted_node_size)
         } else {
-            self.asc_sort_find_rightmost_insertion_point(tmp_score, self.sorted_node_size)
+            self.asc_sort_find_rightmost_insertion_point(tmp_score, sorted_node_size)
         };
 
         // Shift the already-sorted elements to the right, mirroring Java's
         // `System.arraycopy`, then write the new element at the insertion point.
-        if insertion_point < self.sorted_node_size {
-            self.nodes
-                .buffer_mut()
-                .copy_within(insertion_point..self.sorted_node_size, insertion_point + 1);
-            self.scores
-                .buffer_mut()
-                .copy_within(insertion_point..self.sorted_node_size, insertion_point + 1);
+        for i in (insertion_point..sorted_node_size).rev() {
+            self.set_at(i + 1, self.node_at(i), self.score_at(i));
         }
-        self.nodes.buffer_mut()[insertion_point] = tmp_node;
-        self.scores.buffer_mut()[insertion_point] = tmp_score;
-        self.sorted_node_size += 1;
+        self.set_at(insertion_point, tmp_node, tmp_score);
+        self.sorted_node_size
+            .store(sorted_node_size + 1, Ordering::Relaxed);
         Ok(insertion_point as i32)
     }
 
+    /// The first index of `scores[..len]` whose score does not satisfy
+    /// `pred`, the scores being partitioned by it: `slice::partition_point`
+    /// over the atomic buffer.
+    fn partition_point(&self, len: usize, pred: impl Fn(f32) -> bool) -> usize {
+        let (mut low, mut high) = (0usize, len);
+        while low < high {
+            let mid = low + (high - low) / 2;
+            if pred(self.score_at(mid)) {
+                low = mid + 1;
+            } else {
+                high = mid;
+            }
+        }
+        low
+    }
+
     fn asc_sort_find_rightmost_insertion_point(&self, new_score: f32, sorted_size: usize) -> usize {
-        self.scores.buffer[..sorted_size].partition_point(|s| *s <= new_score)
+        self.partition_point(sorted_size, |s| s <= new_score)
     }
 
     fn desc_sort_find_rightmost_insertion_point(
@@ -297,55 +450,61 @@ impl NeighborArray {
         new_score: f32,
         sorted_size: usize,
     ) -> usize {
-        self.scores.buffer[..sorted_size].partition_point(|s| *s >= new_score)
+        self.partition_point(sorted_size, |s| s >= new_score)
     }
 
     /// Clears all entries.
-    pub fn clear(&mut self) {
-        self.size = 0;
-        self.sorted_node_size = 0;
-        self.nodes.clear();
-        self.scores.clear();
+    pub fn clear(&self) {
+        self.size.store(0, Ordering::Relaxed);
+        self.sorted_node_size.store(0, Ordering::Relaxed);
     }
 
     /// Removes the last entry.
-    pub fn remove_last(&mut self) {
-        if self.size > 0 {
-            self.size -= 1;
-            self.nodes.remove_last();
-            self.scores.remove_last();
-            self.sorted_node_size = self.sorted_node_size.min(self.size);
+    pub fn remove_last(&self) {
+        let size = self.size.load(Ordering::Relaxed);
+        if size > 0 {
+            let size = size - 1;
+            self.size.store(size, Ordering::Relaxed);
+            let sorted_node_size = self.sorted_node_size.load(Ordering::Relaxed);
+            self.sorted_node_size
+                .store(sorted_node_size.min(size), Ordering::Relaxed);
         }
     }
 
     /// Removes the entry at `idx`.
-    pub fn remove_index(&mut self, idx: usize) {
-        if idx == self.size - 1 {
+    pub fn remove_index(&self, idx: usize) {
+        let size = self.size.load(Ordering::Relaxed);
+        if idx == size - 1 {
             self.remove_last();
             return;
         }
-        self.nodes.remove_at(idx as i32);
-        self.scores.remove_at(idx as i32);
-        if idx < self.sorted_node_size {
-            self.sorted_node_size -= 1;
+        // `nodes.removeAt(idx); scores.removeAt(idx);`.
+        for i in idx..size - 1 {
+            self.set_at(i, self.node_at(i + 1), self.score_at(i + 1));
         }
-        self.size -= 1;
+        let sorted_node_size = self.sorted_node_size.load(Ordering::Relaxed);
+        if idx < sorted_node_size {
+            self.sorted_node_size
+                .store(sorted_node_size - 1, Ordering::Relaxed);
+        }
+        self.size.store(size - 1, Ordering::Relaxed);
     }
 
     fn find_worst_non_diverse(
-        &mut self,
+        &self,
         scorer: &mut dyn UpdateableRandomVectorScorer,
     ) -> Result<usize> {
         let unchecked_indexes = self
             .sort(scorer)?
             .expect("we will always have something unchecked");
+        let size = self.size.load(Ordering::Relaxed);
         let mut unchecked_cursor = unchecked_indexes.len().saturating_sub(1) as i32;
-        for i in (1..self.size).rev() {
+        for i in (1..size).rev() {
             if unchecked_cursor < 0 {
                 break;
             }
             let unchecked_idx = unchecked_indexes[unchecked_cursor as usize] as usize;
-            scorer.set_scoring_ordinal(self.nodes.buffer[i])?;
+            scorer.set_scoring_ordinal(self.node_at(i))?;
             if self.is_worst_non_diverse(
                 i,
                 &unchecked_indexes,
@@ -358,7 +517,7 @@ impl NeighborArray {
                 unchecked_cursor -= 1;
             }
         }
-        Ok(self.size - 1)
+        Ok(size - 1)
     }
 
     fn is_worst_non_diverse(
@@ -368,12 +527,12 @@ impl NeighborArray {
         unchecked_cursor: usize,
         scorer: &mut dyn RandomVectorScorer,
     ) -> Result<bool> {
-        let min_accepted_similarity = self.scores.buffer[candidate_index];
+        let min_accepted_similarity = self.score_at(candidate_index);
         let candidate_is_unchecked =
             candidate_index == unchecked_indexes[unchecked_cursor] as usize;
         if candidate_is_unchecked {
             for i in (0..candidate_index).rev() {
-                let neighbor_similarity = scorer.score(self.nodes.buffer[i])?;
+                let neighbor_similarity = scorer.score(self.node_at(i))?;
                 if neighbor_similarity >= min_accepted_similarity {
                     return Ok(true);
                 }
@@ -382,7 +541,7 @@ impl NeighborArray {
             debug_assert!(candidate_index > unchecked_indexes[unchecked_cursor] as usize);
             for i in (0..=unchecked_cursor).rev() {
                 let unchecked_idx = unchecked_indexes[i] as usize;
-                let neighbor_similarity = scorer.score(self.nodes.buffer[unchecked_idx])?;
+                let neighbor_similarity = scorer.score(self.node_at(unchecked_idx))?;
                 if neighbor_similarity >= min_accepted_similarity {
                     return Ok(true);
                 }
@@ -694,7 +853,7 @@ mod tests {
     fn neighbor_array_grows_and_reports_memory_as_java() {
         let reported = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = Arc::clone(&reported);
-        let mut arr = NeighborArray::with_listener(
+        let arr = NeighborArray::with_listener(
             33,
             true,
             Some(OnHeapMemoryUsageListener::new(Arc::new(move |bytes| {
@@ -721,7 +880,7 @@ mod tests {
 
     #[test]
     fn neighbor_array_in_order_insertion() {
-        let mut arr = NeighborArray::new(5, true);
+        let arr = NeighborArray::new(5, true);
         arr.add_in_order(1, 0.9).unwrap();
         arr.add_in_order(2, 0.7).unwrap();
         arr.add_in_order(3, 0.5).unwrap();
@@ -730,7 +889,7 @@ mod tests {
 
     #[test]
     fn neighbor_array_out_of_order_then_sort() {
-        let mut arr = NeighborArray::new(5, true);
+        let arr = NeighborArray::new(5, true);
         arr.add_out_of_order(3, 0.5).unwrap();
         arr.add_out_of_order(1, 0.9).unwrap();
         arr.add_out_of_order(2, 0.7).unwrap();
@@ -748,7 +907,7 @@ mod tests {
 impl std::fmt::Display for NeighborArray {
     /// Port of `NeighborArray.toString()`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "NeighborArray[{}]", self.size)
+        write!(f, "NeighborArray[{}]", self.size())
     }
 }
 

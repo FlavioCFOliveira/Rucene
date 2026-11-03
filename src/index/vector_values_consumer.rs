@@ -212,19 +212,18 @@ impl VectorValuesConsumer {
     /// so a failure to close one of its files changes nothing. Like Java's, it
     /// keeps the writer afterwards rather than clearing it.
     ///
-    /// Java's `abort()` returns nothing and lets the `Error` that
-    /// `closeWhileHandlingException` rethrows propagate unchecked; this one
-    /// returns nothing either, so that [`LuceneError::AssertionError`](crate::error::LuceneError::AssertionError) is
-    /// raised as the panic that stands for a Java `Error`
-    /// ([`IOUtils::rethrow_always`](crate::util::IOUtils::rethrow_always)).
-    pub fn abort(&mut self) {
-        if let Err(error) = crate::util::IOUtils::close_while_handling_exception([self
+    /// # Errors
+    ///
+    /// Returns the [`LuceneError::AssertionError`](crate::error::LuceneError::AssertionError)
+    /// closing the writer raised: the `Error` Java's
+    /// `closeWhileHandlingException` rethrows, unchecked, through the callers'
+    /// `finally` blocks up to `DocumentsWriterPerThread.abort()`, which
+    /// declares `throws IOException`.
+    pub fn abort(&mut self) -> Result<()> {
+        crate::util::IOUtils::close_while_handling_exception([self
             .writer
             .as_mut()
             .map(|writer| move || writer.close())])
-        {
-            crate::util::IOUtils::rethrow_always(error);
-        }
     }
 
     /// Returns the RAM the buffered vectors hold.
@@ -479,11 +478,11 @@ mod tests {
         consumer
             .add_field(&vector_field("v", 0, 3, VectorEncoding::FLOAT32))
             .expect("add field");
-        consumer.abort();
+        consumer.abort().unwrap();
         // Java keeps the writer reference after aborting, and so does this.
         assert!(consumer.has_writer());
         // A second abort must also be quiet.
-        consumer.abort();
+        consumer.abort().unwrap();
     }
 }
 

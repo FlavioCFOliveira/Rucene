@@ -653,7 +653,7 @@ fn util_hnsw(m: &Measured) {
         NeighborArray::new(10, true).to_string(),
         m.get("NeighborArray.toString/empty")
     );
-    let mut array = NeighborArray::new(10, true);
+    let array = NeighborArray::new(10, true);
     array.add_in_order(1, 0.9).expect("in order");
     array.add_in_order(2, 0.8).expect("in order");
     assert_eq!(array.to_string(), m.get("NeighborArray.toString/two"));

@@ -1121,6 +1121,8 @@ pub(crate) mod tests {
     pub(crate) struct CloseLog {
         closed: std::sync::Mutex<Vec<String>>,
         fail_close: std::sync::Mutex<std::collections::HashSet<String>>,
+        assertion_close: std::sync::Mutex<std::collections::HashSet<String>>,
+        panic_close: std::sync::Mutex<std::collections::HashSet<String>>,
         fail_open: std::sync::Mutex<std::collections::HashSet<String>>,
         fail_sync: std::sync::atomic::AtomicBool,
     }
@@ -1146,6 +1148,22 @@ pub(crate) mod tests {
             self.fail_close.lock().unwrap().insert(name.to_string());
         }
 
+        /// Makes every later `close()` of `name` fail with an
+        /// [`AssertionError`](crate::error::LuceneError::AssertionError), the
+        /// port's `java.lang.AssertionError`, after delegating it.
+        pub(crate) fn assertion_close(&self, name: &str) {
+            self.assertion_close
+                .lock()
+                .unwrap()
+                .insert(name.to_string());
+        }
+
+        /// Makes every later `close()` of `name` panic, the port's form of an
+        /// unchecked throwable, after delegating it.
+        pub(crate) fn panic_close(&self, name: &str) {
+            self.panic_close.lock().unwrap().insert(name.to_string());
+        }
+
         /// Makes every later `openInput`/`createOutput` of `name` fail.
         pub(crate) fn fail_open(&self, name: &str) {
             self.fail_open.lock().unwrap().insert(name.to_string());
@@ -1159,6 +1177,14 @@ pub(crate) mod tests {
 
         fn record_close(&self, name: &str) -> Result<()> {
             self.closed.lock().unwrap().push(name.to_string());
+            if self.panic_close.lock().unwrap().contains(name) {
+                panic!("close panicked: {name}");
+            }
+            if self.assertion_close.lock().unwrap().contains(name) {
+                return Err(crate::error::LuceneError::AssertionError(format!(
+                    "close failed: {name}"
+                )));
+            }
             if self.fail_close.lock().unwrap().contains(name) {
                 return Err(crate::error::LuceneError::Io(std::io::Error::other(
                     format!("close failed: {name}"),

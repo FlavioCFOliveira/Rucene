@@ -1112,7 +1112,7 @@ mod tests {
                 let neighbors = graph.get_neighbors(level, node).expect("neighbours");
                 assert!(neighbors.size() <= max_conn, "node {node} level {level}");
                 let mut seen = HashSet::new();
-                for &nbr in neighbors.nodes() {
+                for nbr in neighbors.nodes() {
                     assert!((0..n).contains(&nbr), "node {node} links to {nbr}");
                     assert_ne!(nbr, node, "self-link on level {level}");
                     assert!(seen.insert(nbr), "node {node} links twice to {nbr}");
@@ -1285,13 +1285,7 @@ mod tests {
                 let mut lists = Vec::new();
                 while nodes.has_next() {
                     let node = nodes.next_int();
-                    lists.push(
-                        graph
-                            .get_neighbors(level, node)
-                            .expect("nbrs")
-                            .nodes()
-                            .to_vec(),
-                    );
+                    lists.push(graph.get_neighbors(level, node).expect("nbrs").nodes());
                 }
                 lists
             })
@@ -1459,5 +1453,141 @@ mod tests {
         ));
         assert_eq!(graph.ram_bytes_used(), charged);
         assert_eq!(HnswGraph::size(&graph), 1);
+    }
+
+    /// Holds `hold` while `run` executes on another thread, and reports
+    /// whether `run` was still blocked 300 ms in, and whether it finished
+    /// once `hold` was released.
+    fn blocks_until_released<G, H, R>(hold: H, run: R) -> (bool, bool)
+    where
+        H: FnOnce() -> G,
+        R: FnOnce() + Send,
+    {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let guard = hold();
+            scope.spawn(move || {
+                run();
+                let _ = done_tx.send(());
+            });
+            let blocked = done_rx
+                .recv_timeout(std::time::Duration::from_millis(300))
+                .is_err();
+            drop(guard);
+            let finished = blocked
+                && done_rx
+                    .recv_timeout(std::time::Duration::from_secs(30))
+                    .is_ok();
+            (blocked, finished)
+        })
+    }
+
+    /// `HnswConcurrentMergeBuilder.MergeSearcher.graphSeek` copies a
+    /// neighbour list under `hnswLock.read(level, targetNode)`
+    /// (`HnswConcurrentMergeBuilder.java:250-263`): a reader with the lock
+    /// waits while another worker holds the stripe's write lock. A builder
+    /// without a lock — Java's `hnswLock == null` — reads without waiting.
+    #[test]
+    fn the_merge_searcher_copies_a_neighbour_list_under_its_read_lock() {
+        use super::on_heap::OnHeapGraphReader;
+        use super::HnswLock;
+        let graph = OnHeapHnswGraph::new(4, 2);
+        graph.add_node_shared(0, 0).unwrap();
+        graph.add_node_shared(0, 1).unwrap();
+        graph
+            .get_neighbors(0, 0)
+            .unwrap()
+            .add_in_order(1, 0.5)
+            .unwrap();
+        let lock = HnswLock::new();
+        let (blocked, finished) = blocks_until_released(
+            || lock.write(0, 0),
+            || {
+                let mut buffer = Vec::new();
+                let mut reader = OnHeapGraphReader::new(&graph, Some(&lock), &mut buffer);
+                reader.seek(0, 0).unwrap();
+                assert_eq!(reader.next_neighbor().unwrap(), 1);
+            },
+        );
+        assert!(blocked, "the seek waits for the stripe's write lock");
+        assert!(finished, "the seek completes once the stripe is released");
+
+        let _held = lock.write(0, 0);
+        let mut buffer = Vec::new();
+        let mut reader = OnHeapGraphReader::new(&graph, None, &mut buffer);
+        reader.seek(0, 0).unwrap();
+        assert_eq!(reader.next_neighbor().unwrap(), 1);
+    }
+
+    /// `HnswGraphBuilder.addDiverseNeighbors` links the new node back into a
+    /// neighbour's array under `hnswLock.write(level, nbr)` when the builder
+    /// has a lock (`HnswGraphBuilder.java:432-444`): the link waits while a
+    /// searching worker holds the stripe's read lock.
+    #[test]
+    fn a_worker_links_back_under_the_neighbours_write_lock() {
+        use super::HnswLock;
+        use super::NeighborArray;
+        use std::sync::Arc;
+        let supplier = TestVectorScorerSupplier::new(test_vectors());
+        let graph = Arc::new(OnHeapHnswGraph::new(4, 3));
+        for node in 0..3 {
+            graph.add_node_shared(0, node).unwrap();
+        }
+        let lock = Arc::new(HnswLock::new());
+        let (blocked, finished) = blocks_until_released(
+            || lock.read(0, 1),
+            || {
+                let mut builder = HnswGraphBuilder::with_shared_graph(
+                    supplier.scorer().unwrap(),
+                    4,
+                    20,
+                    42,
+                    Arc::clone(&graph),
+                    Some(Arc::clone(&lock)),
+                )
+                .unwrap();
+                let candidates = NeighborArray::new(10, false);
+                candidates.add_in_order(1, 0.5).unwrap();
+                builder
+                    .add_diverse_neighbors(0, 2, &candidates, false)
+                    .unwrap();
+            },
+        );
+        assert!(blocked, "the back-link waits for the stripe's read lock");
+        assert!(
+            finished,
+            "the back-link completes once the stripe is released"
+        );
+        assert_eq!(graph.get_neighbors(0, 2).unwrap().nodes(), vec![1]);
+        assert_eq!(graph.get_neighbors(0, 1).unwrap().nodes(), vec![2]);
+    }
+
+    /// `HnswConcurrentMergeBuilder` creates one `HnswLock` and hands it to
+    /// every worker (`HnswConcurrentMergeBuilder.java:63-75, 182-194`): with
+    /// every stripe write-locked, the workers' searches wait.
+    #[test]
+    fn the_concurrent_merge_hands_its_lock_to_the_workers() {
+        let vectors = test_vectors();
+        let supplier = TestVectorScorerSupplier::new(vectors.clone());
+        let graph = OnHeapHnswGraph::new(4, vectors.len() as i32);
+        let mut builder =
+            HnswConcurrentMergeBuilder::new(same_thread(), 1, &supplier, 4, 20, graph, None)
+                .expect("builder");
+        let lock = std::sync::Arc::clone(builder.hnsw_lock());
+        let n = vectors.len() as i32;
+        let (blocked, finished) = blocks_until_released(
+            || {
+                // Level 0 node `i` hashes to stripe `i`, so these are all 512.
+                (0..512).map(|node| lock.write(0, node)).collect::<Vec<_>>()
+            },
+            || {
+                builder.build(n).expect("build");
+            },
+        );
+        assert!(blocked, "the workers wait for the stripes");
+        assert!(
+            finished,
+            "the build completes once the stripes are released"
+        );
     }
 }

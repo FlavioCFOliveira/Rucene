@@ -248,11 +248,25 @@ impl SegmentCoreReaders {
         if rc == 0 {
             // `try (Closeable finalizer = this::notifyCoreClosedListeners) {
             // IOUtils.close(...); }` (`SegmentCoreReaders.java:170-181`): the
-            // producers close first and the listeners are notified after; a
-            // failure to close wins, the listeners' then being suppressed.
-            let closed = self.close_producers();
-            let notified = self.notify_core_closed_listeners();
-            closed?;
+            // producers close first and the listeners are notified after,
+            // however the closing ends — with an error, or with the panic
+            // that is the port's form of an unchecked throwable. A failure to
+            // close wins, the listeners' failure then being suppressed.
+            let closed =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.close_producers()));
+            let notified = if matches!(closed, Ok(Ok(()))) {
+                self.notify_core_closed_listeners()
+            } else {
+                // The finalizer's failure, error or panic, is suppressed.
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    self.notify_core_closed_listeners()
+                }))
+                .unwrap_or(Ok(()))
+            };
+            match closed {
+                Ok(closed) => closed?,
+                Err(payload) => std::panic::resume_unwind(payload),
+            }
             return notified;
         } else if rc < 0 {
             return Err(LuceneError::illegal_state(format!(
@@ -3837,6 +3851,54 @@ mod core_close_order_tests {
             *seen.lock().unwrap(),
             Some(after),
             "the listeners run once every producer is closed"
+        );
+        Ok(())
+    }
+
+    /// The finalizer of `SegmentCoreReaders.decRef()`'s try-with-resources
+    /// runs however the body ends (`SegmentCoreReaders.java:170-181`): a
+    /// panic closing a producer — the port's form of an unchecked throwable —
+    /// still notifies the core-closed listeners, and then propagates.
+    #[test]
+    fn a_panic_closing_a_producer_still_notifies_the_core_closed_listeners() -> Result<()> {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let tracking = Arc::new(CloseTrackingDirectory::default());
+        let log = Arc::clone(&tracking.log);
+        let dir: Arc<dyn Directory> = tracking;
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new())?;
+        let mut doc = Document::new();
+        doc.add(Box::new(TextField::new(
+            "body",
+            "some words".to_string(),
+            Store::YES,
+        )?));
+        writer.add_document(&doc)?;
+        writer.commit()?;
+        writer.close()?;
+
+        let infos = SegmentInfos::read_latest_commit(Arc::clone(&dir))?;
+        let reader = SegmentReader::new(
+            infos.info(0).clone(),
+            Version::LATEST.major as i32,
+            &*DEFAULT_IO_CONTEXT,
+        )?;
+        let seen = Arc::new(std::sync::Mutex::new(None));
+        CacheHelper::add_closed_listener(
+            reader.core_readers().as_ref(),
+            Box::new(CloseCountAtNotification {
+                log: Arc::clone(&log),
+                seen: Arc::clone(&seen),
+            }),
+        );
+        log.panic_close("_0.cfs");
+        let closed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::index::index_reader::IndexReader::close(&reader)
+        }));
+        assert!(closed.is_err(), "the producer's panic propagates");
+        assert!(log.closed().contains(&"_0.cfs".to_string()));
+        assert!(
+            seen.lock().unwrap().is_some(),
+            "the core-closed listeners run after the panic"
         );
         Ok(())
     }
