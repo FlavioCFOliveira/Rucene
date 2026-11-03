@@ -6,8 +6,6 @@
 
 #![deny(unsafe_code)]
 
-use crate::util::chars_ref::CharsRef;
-
 const INIT_SIZE: usize = 8;
 
 /// A hash map from character-array keys to values, equivalent to Lucene's
@@ -44,11 +42,6 @@ impl<V> CharArrayMap<V> {
             values: (0..size).map(|_| None).collect(),
             unmodifiable: false,
         }
-    }
-
-    /// Returns `true` if this map compares keys case-insensitively.
-    pub fn ignore_case(&self) -> bool {
-        self.ignore_case
     }
 
     /// Clears all entries.
@@ -130,20 +123,26 @@ impl<V> CharArrayMap<V> {
 
     /// Returns the hash Lucene computes for a key.
     ///
-    /// Equivalent to `CharArrayMap.getHashCode(char[], int, int)`: a
-    /// `31 * h + c` walk over the code points, lower-cased first when the map
-    /// ignores case.
+    /// Equivalent to `CharArrayMap.getHashCode(char[], int, int)`
+    /// (`CharArrayMap.java:266-279`), the hash [`get_slot`](Self::get_slot)
+    /// probes from: when the map ignores case, a `31 * h + c` walk over the
+    /// code points, each replaced by `Character.toLowerCase(int)`; otherwise
+    /// `CharsRef.stringHashCode`, the same walk over the UTF-16 code units, so
+    /// a supplementary character counts as its two surrogates.
     pub fn get_hash_code(&self, text: &[char]) -> i32 {
         let mut code: i32 = 0;
         if self.ignore_case {
-            for c in text {
-                for lower in c.to_lowercase() {
-                    code = code.wrapping_mul(31).wrapping_add(lower as i32);
-                }
+            for &c in text {
+                code = code.wrapping_mul(31).wrapping_add(
+                    crate::util::automaton::case_folding::to_lower_case(c as i32),
+                );
             }
         } else {
+            let mut units = [0u16; 2];
             for c in text {
-                code = code.wrapping_mul(31).wrapping_add(*c as i32);
+                for &unit in c.encode_utf16(&mut units).iter() {
+                    code = code.wrapping_mul(31).wrapping_add(i32::from(unit));
+                }
             }
         }
         code
@@ -224,6 +223,8 @@ impl<V> CharArrayMap<V> {
     }
 
     /// Returns the value associated with `key`, or `None` if absent.
+    ///
+    /// Equivalent to `CharArrayMap.get(CharSequence)`.
     pub fn get(&self, key: impl AsRef<str>) -> Option<&V> {
         let chars: Vec<char> = key.as_ref().chars().collect();
         self.get_chars(&chars, 0, chars.len())
@@ -231,27 +232,36 @@ impl<V> CharArrayMap<V> {
 
     /// Returns the value associated with the `len` characters of `text` starting
     /// at `off`, or `None` if absent.
+    ///
+    /// Equivalent to `CharArrayMap.get(char[], int, int)`.
     pub fn get_chars(&self, text: &[char], off: usize, len: usize) -> Option<&V> {
-        let normalized = self.normalize(&text[off..off + len]);
-        let slot = self.get_slot(&normalized);
+        let slot = self.get_slot(&text[off..off + len]);
         self.values[slot].as_ref()
     }
 
     /// Returns `true` if `key` is present.
+    ///
+    /// Equivalent to `CharArrayMap.containsKey(CharSequence)`.
     pub fn contains_key(&self, key: impl AsRef<str>) -> bool {
         let chars: Vec<char> = key.as_ref().chars().collect();
         self.contains_key_chars(&chars, 0, chars.len())
     }
 
     /// Returns `true` if the `len` characters of `text` starting at `off` are present.
+    ///
+    /// Equivalent to `CharArrayMap.containsKey(char[], int, int)`.
     pub fn contains_key_chars(&self, text: &[char], off: usize, len: usize) -> bool {
         self.get_chars(text, off, len).is_some()
     }
 
     /// Inserts `value` under `key`, returning the previous value if any.
+    ///
+    /// Equivalent to `CharArrayMap.put(String, V)`, `put(text.toCharArray(),
+    /// value)`: the key is lower-cased on a copy.
     pub fn put(&mut self, key: impl AsRef<str>, value: V) -> Option<V> {
-        let chars: Vec<char> = key.as_ref().chars().collect();
-        self.put_chars(&chars, 0, chars.len(), value)
+        let mut chars: Vec<char> = key.as_ref().chars().collect();
+        let len = chars.len();
+        self.put_chars(&mut chars, 0, len, value)
     }
 
     /// Inserts `value` under the `len` characters of `text` starting at `off`,
@@ -261,16 +271,26 @@ impl<V> CharArrayMap<V> {
     ///
     /// Panics when the map is unmodifiable, where Java's
     /// `UnmodifiableCharArrayMap.put(...)` throws `UnsupportedOperationException`.
-    pub fn put_chars(&mut self, text: &[char], off: usize, len: usize, value: V) -> Option<V> {
+    ///
+    /// Equivalent to `CharArrayMap.put(char[], V)` (`CharArrayMap.java:185-208`),
+    /// which lower-cases the key with `CharacterUtils.toLowerCase` first when
+    /// the map ignores case, on the caller's array: "If ignoreCase is true for
+    /// this Set, the text array will be directly modified." Java then keeps
+    /// that array as the key, and its contract forbids the caller to modify it
+    /// afterwards; this map keeps a copy of it.
+    pub fn put_chars(&mut self, text: &mut [char], off: usize, len: usize, value: V) -> Option<V> {
         self.assert_modifiable();
-        let normalized = self.normalize(&text[off..off + len]);
-        let slot = self.get_slot(&normalized);
+        if self.ignore_case {
+            crate::analysis::character_utils::to_lower_case(text, off, off + len);
+        }
+        let key = text[off..off + len].to_vec();
+        let slot = self.get_slot(&key);
         if self.keys[slot].is_some() {
             let old = self.values[slot].take();
             self.values[slot] = Some(value);
             return old;
         }
-        self.keys[slot] = Some(normalized);
+        self.keys[slot] = Some(key);
         self.values[slot] = Some(value);
         self.count += 1;
         if self.count + (self.count >> 2) > self.keys.len() {
@@ -298,26 +318,47 @@ impl<V> CharArrayMap<V> {
         );
     }
 
-    /// Normalizes a key according to the map's case policy.
-    fn normalize(&self, text: &[char]) -> Vec<char> {
-        if self.ignore_case {
-            text.iter().flat_map(|c| c.to_lowercase()).collect()
-        } else {
-            text.to_vec()
-        }
-    }
-
     /// Returns the table slot for `text`, whether occupied or not.
+    ///
+    /// Equivalent to the private `CharArrayMap.getSlot(char[], int, int)`
+    /// (`CharArrayMap.java:136-149`): probe from
+    /// [`get_hash_code`](Self::get_hash_code) of the text as given, stepping by
+    /// `((code >> 8) + code) | 1`, until an empty slot or a key
+    /// [`equals`](Self::equals) accepts.
     fn get_slot(&self, text: &[char]) -> usize {
-        let mut code = CharsRef::string_hash_code(text, 0, text.len());
+        let mut code = self.get_hash_code(text);
         let mask = self.keys.len() - 1;
         let mut pos = (code as u32 as usize) & mask;
         let inc = ((code >> 8).wrapping_add(code)) | 1;
-        while self.keys[pos].is_some() && self.keys[pos].as_deref().unwrap() != text {
+        while let Some(key) = self.keys[pos].as_deref() {
+            if self.equals(text, key) {
+                break;
+            }
             code = code.wrapping_add(inc);
             pos = (code as u32 as usize) & mask;
         }
         pos
+    }
+
+    /// Returns whether the lookup `text` matches the stored `key`.
+    ///
+    /// Equivalent to the private `CharArrayMap.equals(char[], int, int, char[])`
+    /// (`CharArrayMap.java:230-246`): the UTF-16 lengths must agree, and every
+    /// code point of `text`, lower-cased with `Character.toLowerCase(int)` when
+    /// the map ignores case, must equal the stored key's (stored keys are
+    /// already lower-cased).
+    fn equals(&self, text: &[char], key: &[char]) -> bool {
+        let utf16_len = |chars: &[char]| chars.iter().map(|c| c.len_utf16()).sum::<usize>();
+        if text.len() != key.len() || utf16_len(text) != utf16_len(key) {
+            return false;
+        }
+        if self.ignore_case {
+            text.iter().zip(key).all(|(&c, &k)| {
+                crate::util::automaton::case_folding::to_lower_case(c as i32) == k as i32
+            })
+        } else {
+            text == key
+        }
     }
 
     /// Doubles the table size and rehashes existing entries.
@@ -533,11 +574,32 @@ mod tests {
         assert_eq!(map.size(), 1);
     }
 
+    /// `CharArrayMap.put(char[], V)` lower-cases the caller's array when the
+    /// map ignores case, and leaves it alone otherwise. Java oracle
+    /// (`scratchpad/auditH/oracle/AuditHExtra.java`, `extra_out.txt`): `map
+    /// key after put=abç𐐨` for `ABÇ𐐀`, and `case-sensitive key after
+    /// put=ABC`.
+    #[test]
+    fn put_chars_lower_cases_the_callers_array_when_ignoring_case() {
+        let mut map = CharArrayMap::new(4, true);
+        let mut key: Vec<char> = "ABÇ\u{10400}".chars().collect();
+        let len = key.len();
+        assert_eq!(map.put_chars(&mut key, 0, len, "v"), None);
+        assert_eq!(key.iter().collect::<String>(), "abç\u{10428}");
+        assert_eq!(map.get("abç\u{10428}"), Some(&"v"));
+
+        let mut map = CharArrayMap::new(4, false);
+        let mut key: Vec<char> = "ABC".chars().collect();
+        assert_eq!(map.put_chars(&mut key, 0, 3, "v"), None);
+        assert_eq!(key.iter().collect::<String>(), "ABC");
+    }
+
     #[test]
     fn char_array_methods() {
         let mut map = CharArrayMap::new(4, false);
-        let key: Vec<char> = "token".chars().collect();
-        assert_eq!(map.put_chars(&key, 0, key.len(), "value"), None);
+        let mut key: Vec<char> = "token".chars().collect();
+        let len = key.len();
+        assert_eq!(map.put_chars(&mut key, 0, len, "value"), None);
         assert_eq!(map.get_chars(&key, 0, key.len()), Some(&"value"));
         assert!(map.contains_key_chars(&key, 0, key.len()));
     }

@@ -217,7 +217,7 @@ pub struct CodecRegistry {
 impl Default for CodecRegistry {
     fn default() -> Self {
         Self {
-            codecs: Arc::new(RwLock::new(NamedSPILoader::new(
+            codecs: Arc::new(RwLock::new(NamedSPILoader::empty(
                 "org.apache.lucene.codecs.Codec",
             ))),
         }
@@ -268,10 +268,8 @@ impl CodecRegistry {
     /// Registers an already-shared codec under its own name.
     ///
     /// The counterpart of [`register`](Self::register) for a codec the caller
-    /// already holds behind an `Arc`, which is what
-    /// [`reload_codecs`](crate::codecs::reload_codecs) hands over. As in
-    /// Lucene's `reload`, a name that is already taken is left alone rather
-    /// than replaced.
+    /// already holds behind an `Arc`. As in Lucene's `reload`, a name that is
+    /// already taken is left alone rather than replaced.
     ///
     /// # Errors
     ///
@@ -285,9 +283,9 @@ impl CodecRegistry {
             LuceneError::illegal_state("codec registry lock was poisoned".to_string())
         })?;
 
-        // Only new providers are added; an existing one is never replaced
-        // (`NamedSPILoader.reload`, `NamedSPILoader.java:59-79`).
-        codecs.reload([codec])?;
+        // Only new providers are added; an existing one is never replaced, as
+        // in `NamedSPILoader.reload` (`NamedSPILoader.java:65-79`).
+        codecs.register_as(&name, codec)?;
         Ok(())
     }
 
@@ -365,7 +363,30 @@ pub(crate) fn validate_service_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-static GLOBAL_REGISTRY: LazyLock<CodecRegistry> = LazyLock::new(CodecRegistry::new);
+/// `Codec.class`: the service type's binary name and the loader that defines
+/// it, `lucene-core`'s.
+fn codec_class() -> crate::util::spi::ServiceClass {
+    crate::util::spi::ServiceClass::new(
+        "org.apache.lucene.codecs.Codec",
+        Arc::clone(crate::util::spi::lucene_core_class_loader()),
+    )
+}
+
+/// The registry behind the module-level entry points.
+///
+/// Equivalent to `Codec.Holder.LOADER` (`Codec.java:44-60`),
+/// `new NamedSPILoader<>(Codec.class)`: it scans `lucene-core`'s loader
+/// ([`lucene_core_class_loader`](crate::util::spi::lucene_core_class_loader)),
+/// whose `META-INF/services/org.apache.lucene.codecs.Codec` lists
+/// `Lucene104Codec`, so `Lucene104` resolves without anyone registering it,
+/// and `Codec.Holder.defaultCodec`, `LOADER.lookup("Lucene104")`, is the
+/// fallback of [`get_default`].
+static GLOBAL_REGISTRY: LazyLock<CodecRegistry> = LazyLock::new(|| CodecRegistry {
+    codecs: Arc::new(RwLock::new(
+        NamedSPILoader::new(&codec_class(), None)
+            .expect("INVARIANT: lucene-core's codec names are legal service names"),
+    )),
+});
 
 /// Looks up a codec by name from the global registry.
 ///
@@ -445,17 +466,25 @@ pub fn get_default() -> Option<Arc<dyn Codec>> {
     default_codec()
 }
 
-/// Adds `codec` to the global registry under its own name.
+/// Reloads the global registry from `classloader`, adding the
+/// codecs it has not seen.
 ///
-/// Equivalent to `Codec.reloadCodecs(ClassLoader)`, which rescans a
-/// classloader for codecs it has not seen. Rust has no run-time service
-/// discovery, so the caller supplies the codec.
+/// Equivalent to `Codec.reloadCodecs(ClassLoader)`, which is
+/// `Holder.getLoader().reload(classloader)`: see
+/// [`NamedSPILoader::reload`](crate::util::spi::NamedSPILoader::reload). Only
+/// new names are added; an existing one is never removed or replaced.
 ///
 /// # Errors
 ///
-/// Returns whatever [`register_codec`] returns.
-pub fn reload_codecs(codec: Arc<dyn Codec>) -> Result<()> {
-    GLOBAL_REGISTRY.register_arc(codec)
+/// Returns whatever [`NamedSPILoader::reload`](crate::util::spi::NamedSPILoader::reload)
+/// returns, and [`LuceneError::IllegalState`] when the registry lock is
+/// poisoned.
+pub fn reload_codecs(classloader: &Arc<crate::util::resource_loader::ClassLoader>) -> Result<()> {
+    GLOBAL_REGISTRY
+        .codecs
+        .write()
+        .map_err(|_| LuceneError::illegal_state("codec registry lock was poisoned".to_string()))?
+        .reload(classloader)
 }
 
 /// Registers a codec in the global registry.
@@ -1124,6 +1153,7 @@ pub(crate) mod tests {
         assertion_close: std::sync::Mutex<std::collections::HashSet<String>>,
         panic_close: std::sync::Mutex<std::collections::HashSet<String>>,
         fail_open: std::sync::Mutex<std::collections::HashSet<String>>,
+        panic_open: std::sync::Mutex<std::collections::HashSet<String>>,
         fail_sync: std::sync::atomic::AtomicBool,
     }
 
@@ -1169,6 +1199,12 @@ pub(crate) mod tests {
             self.fail_open.lock().unwrap().insert(name.to_string());
         }
 
+        /// Makes every later `openInput`/`createOutput` of `name` panic, the
+        /// port's form of an unchecked throwable.
+        pub(crate) fn panic_open(&self, name: &str) {
+            self.panic_open.lock().unwrap().insert(name.to_string());
+        }
+
         /// Makes every later `sync` fail.
         pub(crate) fn fail_sync(&self) {
             self.fail_sync
@@ -1194,6 +1230,9 @@ pub(crate) mod tests {
         }
 
         fn check_open(&self, name: &str) -> Result<()> {
+            if self.panic_open.lock().unwrap().contains(name) {
+                panic!("open panicked: {name}");
+            }
             if self.fail_open.lock().unwrap().contains(name) {
                 return Err(crate::error::LuceneError::Io(std::io::Error::other(
                     format!("open failed: {name}"),

@@ -5,10 +5,10 @@
 use std::fmt::Debug;
 
 use crate::analysis::filtering_token_filter::{
-    FilteringTokenFilter, FilteringTokenFilterAdapter, FilteringTokenFilterLogic,
+    new_filtering_token_filter, FilteringTokenFilter, FilteringTokenFilterLogic,
 };
 use crate::analysis::tokenattributes::CharTermAttribute;
-use crate::analysis::{CharArraySet, PackedTokenAttributeImpl, TokenFilter, TokenStream};
+use crate::analysis::{CharArraySet, PackedTokenAttributeImpl, TokenStream};
 use crate::error::Result;
 use crate::util::attribute::AttributeSource;
 
@@ -34,20 +34,21 @@ impl FilteringTokenFilterLogic for StopFilterLogic {
     }
 }
 
-/// A [`TokenFilter`] that removes tokens contained in a stop-word set.
+/// A [`TokenFilter`](crate::analysis::TokenFilter) that removes tokens contained in a stop-word set.
 pub type StopFilter = FilteringTokenFilter<StopFilterLogic>;
 
 /// Creates a [`StopFilter`] over `input` using the supplied stop-word set.
+///
+/// Equivalent to `StopFilter(TokenStream, CharArraySet)`, whose `super(in)`
+/// is [`new_filtering_token_filter`].
 pub fn new_stop_filter(input: Box<dyn TokenStream>, stop_words: CharArraySet) -> StopFilter {
-    TokenFilter::new(
-        input,
-        FilteringTokenFilterAdapter::new(StopFilterLogic::new(stop_words)),
-    )
+    new_filtering_token_filter(input, StopFilterLogic::new(stop_words))
 }
 
 /// Builds a stop-word set from an iterable of string-like items.
 ///
-/// Equivalent to the `StopFilter.makeStopSet` overloads.
+/// Equivalent to the `StopFilter.makeStopSet` overloads, whose general form,
+/// `makeStopSet(List, boolean)`, sizes the set to the list and adds every item.
 pub fn make_stop_set<I, S>(words: I, ignore_case: bool) -> CharArraySet
 where
     I: IntoIterator<Item = S>,

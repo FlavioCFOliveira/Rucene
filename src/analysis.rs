@@ -15,6 +15,7 @@ pub mod character_utils;
 pub mod factories;
 pub mod filtering_token_filter;
 pub mod graph_token_filter;
+pub(crate) mod java_regex;
 pub mod lower_case_filter;
 pub mod reusable_string_reader;
 pub mod standard;
@@ -27,10 +28,10 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-pub use caching_token_filter::{new_caching_token_filter, CachingTokenFilter};
+pub use caching_token_filter::CachingTokenFilter;
 pub use char_array_map::CharArrayMap;
 pub use char_array_set::CharArraySet;
 pub use character_utils::{
@@ -312,7 +313,16 @@ pub trait TokenizerLogic: Debug {
     ) -> Result<bool>;
 
     /// Called at end-of-stream.
-    fn end(&mut self, _source: &mut AttributeSource) -> Result<()> {
+    ///
+    /// `input` is the tokenizer's current reader (`None` before `reset`),
+    /// handed over so that the logic can correct the final offset with
+    /// [`Tokenizer::correct_offset_of`], as a Java subclass's `end()` calls
+    /// the inherited `correctOffset`.
+    fn end(
+        &mut self,
+        _source: &mut AttributeSource,
+        _input: Option<&dyn CharReader>,
+    ) -> Result<()> {
         Ok(())
     }
 
@@ -407,11 +417,19 @@ impl<T: TokenizerLogic> Tokenizer<T> {
     /// scanner sees are positions in the *filtered* text, and a consumer such
     /// as a highlighter needs positions in the text the user supplied.
     pub fn correct_offset(&self, current_off: i32) -> i32 {
-        match self
-            .input
-            .as_ref()
-            .and_then(|reader| reader.as_char_filter())
-        {
+        Self::correct_offset_of(self.input.as_deref(), current_off)
+    }
+
+    /// [`correct_offset`](Self::correct_offset) over an explicit input.
+    ///
+    /// Java's `correctOffset` is a protected method of `Tokenizer` that reads
+    /// the `input` field, and a subclass such as `StandardTokenizer` calls it
+    /// from `incrementToken` and `end`. Here the subclass's body is a
+    /// [`TokenizerLogic`], which holds no `Tokenizer`; the tokenizer hands it
+    /// its input instead, and the logic corrects through this function, the
+    /// body of `correctOffset` itself.
+    pub fn correct_offset_of(input: Option<&dyn CharReader>, current_off: i32) -> i32 {
+        match input.and_then(|reader| reader.as_char_filter()) {
             Some(filter) => filter.correct_offset(current_off),
             None => current_off,
         }
@@ -429,7 +447,7 @@ impl<T: TokenizerLogic> TokenStream for Tokenizer<T> {
     }
 
     fn end(&mut self) -> Result<()> {
-        self.logic.end(&mut self.source)?;
+        self.logic.end(&mut self.source, self.input.as_deref())?;
         self.source.end_attributes();
         Ok(())
     }
@@ -760,6 +778,9 @@ impl TokenStreamComponents {
     }
 
     /// Creates components from a tokenizer, which serves as both source and sink.
+    ///
+    /// Equivalent to the constructor `TokenStreamComponents(Tokenizer)`,
+    /// `this(tokenizer::setReader, tokenizer)`.
     pub fn from_tokenizer<T: TokenizerLogic + 'static>(
         tokenizer: Rc<RefCell<Tokenizer<T>>>,
     ) -> Self {
@@ -774,11 +795,6 @@ impl TokenStreamComponents {
     /// Sets a new reader on the source.
     pub fn set_reader(&mut self, reader: Box<dyn CharReader>) -> Result<()> {
         (self.source)(reader)
-    }
-
-    /// Resets the sink token stream so it can be consumed.
-    pub fn reset(&self) -> Result<()> {
-        self.sink.borrow_mut().reset()
     }
 
     /// Returns a shared handle to the sink token stream.
@@ -815,7 +831,6 @@ impl Debug for TokenStreamComponents {
 /// class.
 #[derive(Debug)]
 pub struct AnalyzerState {
-    id: u64,
     reuse_strategy: Box<dyn ReuseStrategy>,
     stored_value: CloseableThreadLocal<Option<Box<dyn Any>>>,
     closed: AtomicBool,
@@ -824,18 +839,11 @@ pub struct AnalyzerState {
 impl AnalyzerState {
     /// Creates state with the given reuse strategy.
     pub fn new(reuse_strategy: Box<dyn ReuseStrategy>) -> Self {
-        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
         Self {
-            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             reuse_strategy,
             stored_value: CloseableThreadLocal::new(|| None),
             closed: AtomicBool::new(false),
         }
-    }
-
-    /// Returns the unique identifier for the owning analyzer.
-    pub fn id(&self) -> u64 {
-        self.id
     }
 
     /// Returns the reuse strategy.
@@ -984,7 +992,17 @@ pub trait Analyzer: Debug + Send + Sync {
     fn java_class_name(&self) -> &'static str;
 
     /// Creates a new [`TokenStreamComponents`] instance for `field_name`.
-    fn create_components(&self, field_name: &str) -> TokenStreamComponents;
+    ///
+    /// Equivalent to `Analyzer.createComponents(String)`. An unchecked
+    /// exception Java's implementation throws propagates out of `tokenStream`
+    /// before the components are stored for reuse; the error returned here
+    /// does the same.
+    ///
+    /// # Errors
+    ///
+    /// Returns what the implementation's construction of the components
+    /// raises.
+    fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents>;
 
     /// Wraps `input` with normalization filters.
     ///
@@ -1057,7 +1075,7 @@ pub trait Analyzer: Debug + Send + Sync {
         let components = match components {
             Some(c) => c,
             None => {
-                let c = Rc::new(RefCell::new(self.create_components(field_name)));
+                let c = Rc::new(RefCell::new(self.create_components(field_name)?));
                 self.analyzer_state()
                     .reuse_strategy()
                     .set_reusable_components(self.analyzer_state(), field_name, Rc::clone(&c));
@@ -1095,7 +1113,7 @@ pub trait Analyzer: Debug + Send + Sync {
         let components = match components {
             Some(c) => c,
             None => {
-                let c = Rc::new(RefCell::new(self.create_components(field_name)));
+                let c = Rc::new(RefCell::new(self.create_components(field_name)?));
                 self.analyzer_state()
                     .reuse_strategy()
                     .set_reusable_components(self.analyzer_state(), field_name, Rc::clone(&c));
@@ -1256,10 +1274,10 @@ impl Analyzer for AnalyzerWrapper {
         "org.apache.lucene.analysis.AnalyzerWrapper"
     }
 
-    fn create_components(&self, field_name: &str) -> TokenStreamComponents {
+    fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
         let wrapped = self.logic.get_wrapped_analyzer(field_name);
-        let components = wrapped.create_components(field_name);
-        self.logic.wrap_components(field_name, components)
+        let components = wrapped.create_components(field_name)?;
+        Ok(self.logic.wrap_components(field_name, components))
     }
 
     fn normalize_token_stream(
@@ -1352,7 +1370,7 @@ impl Analyzer for DelegatingAnalyzerWrapper {
         "org.apache.lucene.analysis.DelegatingAnalyzerWrapper"
     }
 
-    fn create_components(&self, field_name: &str) -> TokenStreamComponents {
+    fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
         self.logic
             .get_wrapped_analyzer(field_name)
             .create_components(field_name)
@@ -1904,9 +1922,9 @@ mod tests {
             "org.apache.lucene.analysis.core.WhitespaceAnalyzer"
         }
 
-        fn create_components(&self, _field_name: &str) -> TokenStreamComponents {
+        fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
             let tokenizer = Rc::new(RefCell::new(Tokenizer::new(WhitespaceTokenizer::default())));
-            TokenStreamComponents::from_tokenizer(tokenizer)
+            Ok(TokenStreamComponents::from_tokenizer(tokenizer))
         }
     }
 
@@ -1989,9 +2007,9 @@ mod tests {
             "org.apache.lucene.analysis.miscellaneous.PerFieldAnalyzerWrapper"
         }
 
-        fn create_components(&self, _field_name: &str) -> TokenStreamComponents {
+        fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
             let tokenizer = Rc::new(RefCell::new(Tokenizer::new(WhitespaceTokenizer::default())));
-            TokenStreamComponents::from_tokenizer(tokenizer)
+            Ok(TokenStreamComponents::from_tokenizer(tokenizer))
         }
     }
 

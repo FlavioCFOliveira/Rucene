@@ -8,6 +8,7 @@
 //! | [`ModuleResourceLoader`] | `ModuleResourceLoader` |
 //! | [`ClassRegistry`] | the `findClass`/`newInstance` half of `ResourceLoader` |
 //! | [`ClassLoader`] / [`ClassLoaderUtils`] | `ClassLoaderUtils` |
+//! | [`ServiceProvider`] | one line of a `META-INF/services` file |
 //!
 //! # Divergences from Lucene 10.5.0
 //!
@@ -32,9 +33,16 @@
 //!   chain. There is no such chain in Rust, so [`ClassLoader`] models it
 //!   explicitly and [`ClassLoaderUtils::is_parent_class_loader`] walks it with
 //!   Lucene's algorithm, comparing loaders by identity as Java's `==` does.
+//! * The SPI loaders (`NamedSPILoader`, `AnalysisSPILoader`) scan a class
+//!   loader with `java.util.ServiceLoader`, which reads the
+//!   `META-INF/services/<service>` files the loader and its parents expose.
+//!   A [`ClassLoader`] therefore also carries the lines of those files, as
+//!   [`ServiceProvider`]s, and [`ClassLoader::get_resources`] returns them in
+//!   the order `ClassLoader.getResources` yields the files: the parents' first.
 
 #![deny(unsafe_code)]
 
+use std::any::Any;
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
@@ -264,32 +272,153 @@ impl ResourceLoader for ModuleResourceLoader {
 // ClassLoaderUtils
 // ---------------------------------------------------------------------------
 
-/// A node in a class-loader parent chain.
+/// One line of a `META-INF/services/<service>` file: a provider class a
+/// loader declares for a service.
 ///
-/// Rust has no class loaders; this models the only structure
-/// [`ClassLoaderUtils`] inspects — the chain of parents — so that Lucene's
-/// algorithm can be reproduced. Loaders are compared by identity, matching
-/// Java's `==`.
+/// Java's `ServiceLoader` reads the provider's binary name from the file,
+/// loads the class through the scanned loader, checks that it is a subtype
+/// of the service and looks up its public no-argument constructor
+/// (`ServiceLoader.LazyClassPathLookupIterator`). Rust has no run-time class
+/// loading, so the line carries the class object itself: a value of the type
+/// the SPI loader of `service` expects
+/// ([`NamedSPIProvider`](crate::util::spi::NamedSPIProvider) for a
+/// `NamedSPILoader`, `AnalysisFactoryClass` for an `AnalysisSPILoader`),
+/// type-erased. A class object of another type is the provider Java reports
+/// as `not a subtype`; a line whose class the loader cannot find
+/// ([`not_found`](Self::not_found)) and a class without a public no-argument
+/// constructor ([`without_public_no_arg_constructor`](Self::without_public_no_arg_constructor))
+/// are the two other providers Java refuses.
+#[derive(Clone)]
+pub struct ServiceProvider {
+    /// The binary name of the service type: the file's name.
+    service: String,
+    /// The binary name of the provider class: the file's line.
+    class_name: String,
+    /// The provider's class object, `None` when the loader cannot find the
+    /// class.
+    class: Option<Arc<dyn Any + Send + Sync>>,
+    /// Whether the class has a public no-argument constructor.
+    public_no_arg_constructor: bool,
+}
+
+impl ServiceProvider {
+    /// Declares `class`, whose binary name is `class_name` and which has a
+    /// public no-argument constructor, as a provider of the service whose
+    /// binary name is `service`.
+    pub fn new<C: Any + Send + Sync>(
+        service: impl Into<String>,
+        class_name: impl Into<String>,
+        class: C,
+    ) -> Self {
+        Self {
+            service: service.into(),
+            class_name: class_name.into(),
+            class: Some(Arc::new(class)),
+            public_no_arg_constructor: true,
+        }
+    }
+
+    /// Declares `class`, whose binary name is `class_name`, as a provider of
+    /// `service` although it has no public no-argument constructor:
+    /// `ServiceLoader` refuses it with `<service>: <class> Unable to get public
+    /// no-arg constructor`.
+    pub fn without_public_no_arg_constructor<C: Any + Send + Sync>(
+        service: impl Into<String>,
+        class_name: impl Into<String>,
+        class: C,
+    ) -> Self {
+        Self {
+            public_no_arg_constructor: false,
+            ..Self::new(service, class_name, class)
+        }
+    }
+
+    /// A line naming a class `class_name` the loader cannot find:
+    /// `ServiceLoader` refuses it with `<service>: Provider <class> not found`.
+    pub fn not_found(service: impl Into<String>, class_name: impl Into<String>) -> Self {
+        Self {
+            service: service.into(),
+            class_name: class_name.into(),
+            class: None,
+            public_no_arg_constructor: false,
+        }
+    }
+
+    /// Returns the binary name of the service this line provides.
+    pub fn service(&self) -> &str {
+        &self.service
+    }
+
+    /// Returns the binary name of the provider class, Java's `Class.getName()`.
+    pub fn class_name(&self) -> &str {
+        &self.class_name
+    }
+
+    /// Returns the provider's class object as a `C`, or `None` when it is of
+    /// another type — Java's `service.isAssignableFrom(clazz)` failing — or
+    /// when the loader cannot find the class.
+    pub fn class<C: Any>(&self) -> Option<&C> {
+        self.class.as_ref()?.downcast_ref::<C>()
+    }
+
+    /// Returns whether the loader finds the class, Java's `Class.forName`
+    /// succeeding.
+    pub fn is_found(&self) -> bool {
+        self.class.is_some()
+    }
+
+    /// Returns whether the class has a public no-argument constructor, Java's
+    /// `Class.getConstructor()` succeeding.
+    pub fn has_public_no_arg_constructor(&self) -> bool {
+        self.public_no_arg_constructor
+    }
+}
+
+impl std::fmt::Debug for ServiceProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServiceProvider")
+            .field("service", &self.service)
+            .field("class_name", &self.class_name)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A node in a class-loader parent chain, with the service files it exposes.
+///
+/// Rust has no class loaders; this models the two things Lucene reads from
+/// one — the chain of parents [`ClassLoaderUtils`] inspects, and the
+/// `META-INF/services` files `java.util.ServiceLoader` scans for the SPI
+/// loaders. Loaders are compared by identity, matching Java's `==`.
 #[derive(Debug, Clone)]
 pub struct ClassLoader {
     name: String,
     parent: Option<Arc<ClassLoader>>,
+    /// The lines of this loader's own `META-INF/services` files, in order.
+    services: Vec<ServiceProvider>,
 }
 
 impl ClassLoader {
     /// Creates a root loader.
     pub fn new(name: impl Into<String>) -> Arc<Self> {
-        Arc::new(Self {
-            name: name.into(),
-            parent: None,
-        })
+        Self::with_services(name, None, Vec::new())
     }
 
     /// Creates a loader whose parent is `parent`.
     pub fn with_parent(name: impl Into<String>, parent: Arc<ClassLoader>) -> Arc<Self> {
+        Self::with_services(name, Some(parent), Vec::new())
+    }
+
+    /// Creates a loader below `parent` (a root loader when `None`) whose own
+    /// `META-INF/services` files hold `services`, in the order given.
+    pub fn with_services(
+        name: impl Into<String>,
+        parent: Option<Arc<ClassLoader>>,
+        services: Vec<ServiceProvider>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             name: name.into(),
-            parent: Some(parent),
+            parent,
+            services,
         })
     }
 
@@ -301,6 +430,30 @@ impl ClassLoader {
     /// Returns this loader's parent, if any.
     pub fn get_parent(&self) -> Option<&Arc<ClassLoader>> {
         self.parent.as_ref()
+    }
+
+    /// Returns the lines of every `META-INF/services/<service>` file this
+    /// loader can see, in the order `ServiceLoader` reads them.
+    ///
+    /// Equivalent to `ClassLoader.getResources("META-INF/services/" + service)`
+    /// followed by the parsing `ServiceLoader` applies: `getResources` asks
+    /// the parent first and appends this loader's own `findResources`, so the
+    /// root's files come first and this loader's last, each file's lines in
+    /// order. Duplicates are kept; `ServiceLoader` drops them (see
+    /// [`load_service_classes`](crate::util::spi::load_service_classes)).
+    pub fn get_resources(&self, service: &str) -> Vec<&ServiceProvider> {
+        let mut chain = vec![self];
+        let mut current = self;
+        while let Some(parent) = current.parent.as_deref() {
+            chain.push(parent);
+            current = parent;
+        }
+        chain
+            .into_iter()
+            .rev()
+            .flat_map(|loader| loader.services.iter())
+            .filter(|provider| provider.service == service)
+            .collect()
     }
 }
 

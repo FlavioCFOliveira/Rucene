@@ -116,7 +116,7 @@ pub use paged_bytes::{PagedBytes, PagedBytesDataInput, PagedBytesDataOutput, Pag
 pub use refs::{CharsRefBuilder, IntsRefBuilder, LongsRef, EMPTY_LONGS};
 pub use resource_loader::{
     ClassLoader, ClassLoaderUtils, ClassRegistry, ClasspathResourceLoader, ModuleResourceLoader,
-    ResourceLoader, ResourceLoaderAware,
+    ResourceLoader, ResourceLoaderAware, ServiceProvider,
 };
 pub use ring_buffer::{FrequencyTrackingRingBuffer, Resettable, RollingBuffer};
 pub use selector::intro_select;
@@ -128,7 +128,7 @@ pub use sorter::{
     StableStringSorter, StableStringSorterOps, StringSorter, StringSorterComparator,
     StringSorterOps, TimSorter, TimSorterState,
 };
-pub use spi::{NamedSPI, NamedSPILoader};
+pub use spi::{NamedSPI, NamedSPILoader, NamedSPIProvider, ServiceClass};
 pub use unicode_util::{UTF8CodePoint, UnicodeUtil};
 
 pub use attribute::{

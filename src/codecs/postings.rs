@@ -340,7 +340,7 @@ pub struct PostingsFormatRegistry {
 impl Default for PostingsFormatRegistry {
     fn default() -> Self {
         Self {
-            formats: Arc::new(RwLock::new(NamedSPILoader::new(
+            formats: Arc::new(RwLock::new(NamedSPILoader::empty(
                 "org.apache.lucene.codecs.PostingsFormat",
             ))),
         }
@@ -376,9 +376,9 @@ impl PostingsFormatRegistry {
         let mut formats = self.formats.write().map_err(|_| {
             LuceneError::illegal_state("postings format registry lock was poisoned".to_string())
         })?;
-        // Only new providers are added; an existing one is never replaced
-        // (`NamedSPILoader.reload`, `NamedSPILoader.java:59-79`).
-        formats.reload([format])?;
+        // Only new providers are added; an existing one is never replaced, as
+        // in `NamedSPILoader.reload` (`NamedSPILoader.java:65-79`).
+        formats.register_as(&name, format)?;
         Ok(())
     }
 
@@ -412,21 +412,32 @@ impl PostingsFormatRegistry {
     }
 }
 
-/// Adds `format` to the global registry under its own name.
+/// Reloads the global registry from `classloader`, adding the
+/// formats it has not seen.
 ///
-/// Equivalent to `PostingsFormat.reloadPostingsFormats(ClassLoader)`, which rescans a classloader
-/// for formats it has not seen. Rust has no run-time service discovery, so the
-/// caller supplies the format.
+/// Equivalent to `PostingsFormat.reloadPostingsFormats(ClassLoader)`, which is
+/// `Holder.getLoader().reload(classloader)`: see
+/// [`NamedSPILoader::reload`](crate::util::spi::NamedSPILoader::reload). Only
+/// new names are added; an existing one is never removed or replaced.
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when the format's name is not a
-/// valid service name.
-pub fn reload_postings_formats(format: Arc<dyn PostingsFormat>) -> Result<()> {
-    GLOBAL_POSTINGS_REGISTRY.register_arc(format)
+/// Returns whatever [`NamedSPILoader::reload`](crate::util::spi::NamedSPILoader::reload)
+/// returns, and [`LuceneError::IllegalState`] when the registry lock is
+/// poisoned.
+pub fn reload_postings_formats(
+    classloader: &Arc<crate::util::resource_loader::ClassLoader>,
+) -> Result<()> {
+    GLOBAL_POSTINGS_REGISTRY
+        .formats
+        .write()
+        .map_err(|_| {
+            LuceneError::illegal_state("postings format registry lock was poisoned".to_string())
+        })?
+        .reload(classloader)
 }
 
-/// The global registry, seeded with the formats this crate ships.
+/// The global registry.
 ///
 /// Lucene discovers postings formats through the Java service loader:
 /// `PostingsFormat.forName` consults a `NamedSPILoader` that reads
@@ -439,17 +450,24 @@ pub fn reload_postings_formats(format: Arc<dyn PostingsFormat>) -> Result<()> {
 /// looks up the format named by each field's
 /// `PerFieldPostingsFormat.format` attribute.
 ///
-/// Rust has no run-time service discovery, so the built-in entries of that
-/// service file are registered here instead, when the registry is first
-/// touched. [`reload_postings_formats`] remains the equivalent of
-/// `reloadPostingsFormats(ClassLoader)` for formats defined outside this crate.
-static GLOBAL_POSTINGS_REGISTRY: LazyLock<PostingsFormatRegistry> = LazyLock::new(|| {
-    let registry = PostingsFormatRegistry::new();
-    registry
-        .register_arc(Arc::new(crate::codecs::Lucene104PostingsFormat::new()))
-        .expect("built-in postings formats have valid, distinct SPI names");
-    registry
-});
+/// Equivalent to `PostingsFormat.Holder.LOADER`,
+/// `new NamedSPILoader<>(PostingsFormat.class)`: it scans `lucene-core`'s
+/// loader ([`lucene_core_class_loader`](crate::util::spi::lucene_core_class_loader)),
+/// which carries that service file. [`reload_postings_formats`] is
+/// `reloadPostingsFormats(ClassLoader)`.
+static GLOBAL_POSTINGS_REGISTRY: LazyLock<PostingsFormatRegistry> =
+    LazyLock::new(|| PostingsFormatRegistry {
+        formats: Arc::new(RwLock::new(
+            NamedSPILoader::new(
+                &crate::util::spi::ServiceClass::new(
+                    "org.apache.lucene.codecs.PostingsFormat",
+                    Arc::clone(crate::util::spi::lucene_core_class_loader()),
+                ),
+                None,
+            )
+            .expect("INVARIANT: lucene-core's postings format names are legal service names"),
+        )),
+    });
 
 /// Looks up a postings format by name from the global registry.
 ///

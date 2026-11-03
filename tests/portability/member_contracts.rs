@@ -680,22 +680,30 @@ fn hex(text: &str) -> String {
 }
 
 /// What `getPattern` makes of `pattern`, in the fixture's encoding:
-/// `OK|<code-point start>:<hex match>,…` over `sample`, or `ERR|`.
+/// `OK|<code-point start>:<hex match>,…` over `sample`, or `ERR|`. The
+/// matches are found as the fixture's `while (matcher.find())` finds them:
+/// each search resumes where the previous match ended, one character further
+/// after an empty match (`Matcher.find()`), which `find_iter` does not do.
 fn pattern_outcome(pattern: &str, sample: &str) -> String {
     let mut args = HashMap::from([("pattern".to_string(), pattern.to_string())]);
     match AbstractAnalysisFactory::get_pattern(&mut args, "pattern", PROBE_FACTORY) {
         Ok(regex) => {
-            let found: Vec<String> = regex
-                .find_iter(sample)
-                .map(|m| {
-                    let m = m.expect("match");
-                    format!(
-                        "{}:{}",
-                        sample[..m.start()].chars().count(),
-                        hex(m.as_str())
-                    )
-                })
-                .collect();
+            let mut found = Vec::new();
+            let mut from = 0;
+            while let Some(m) = regex.find_from_pos(sample, from).expect("match") {
+                found.push(format!(
+                    "{}:{}",
+                    sample[..m.start()].chars().count(),
+                    hex(m.as_str())
+                ));
+                from = m.end();
+                if m.start() == m.end() {
+                    match sample[from..].chars().next() {
+                        Some(c) => from += c.len_utf8(),
+                        None => break,
+                    }
+                }
+            }
             format!("OK|{}", found.join(","))
         }
         Err(_) => "ERR|".to_string(),
@@ -703,129 +711,27 @@ fn pattern_outcome(pattern: &str, sample: &str) -> String {
 }
 
 /// The `(pattern, sample)` rows of the fixture's corpus on which
-/// `java.util.regex` and `fancy-regex` are measured to differ — the closed
-/// list `AbstractAnalysisFactory::get_pattern` declares, in corpus order.
-const DECLARED_PATTERN_DIFFERENCES: &[(&str, &str)] = &[
-    ("\\0101", "A\u{7}"),
-    ("\\07", "\u{7}a"),
-    ("\\0377", "\u{ff}a"),
-    ("\\0400", " 0"),
-    ("\\uD83D\\uDE00", "a\u{1f600}"),
-    ("\\N{LATIN SMALL LETTER E WITH ACUTE}", "e\u{e9}"),
-    ("\\cA", "x\u{1}y"),
-    ("\\c?", "x\u{7f}y"),
-    ("[[:alpha:]]+", "ab:12"),
-    ("[a--b]", "a-b"),
-    ("[~~a]+", "~a~"),
-    ("[\\d-z]+", "1-z"),
-    (".+", "a\rb\u{85}c\u{2028}d\ne\u{2029}f"),
-    ("\\d+", "12\u{663}\u{ff14}"),
-    ("\\D+", "12\u{663}\u{ff14}a"),
-    ("\\h+", "a \t\u{a0}\u{2003}b\u{3000}c\u{200b}d"),
-    ("\\H+", "a \t\u{a0}b"),
-    ("\\s+", "a \t\u{b}\u{c}\r\u{a0}\u{2003}\u{85}b"),
-    ("\\S+", "a\u{a0}b"),
-    ("\\v+", "a\n\u{b}\u{c}\r\u{85}\u{2028}\u{2029}b"),
-    ("\\V+", "a\u{2028}b\u{b}c"),
-    ("\\w+", "caf\u{e9}_1\u{663}"),
-    ("\\W+", "caf\u{e9}_1\u{663}!"),
-    ("\\p{Lower}+", "ab\u{e9}z"),
-    ("\\p{Upper}+", "AB\u{c9}Z"),
-    ("\\p{Alpha}+", "aZ\u{e9}"),
-    ("\\p{Digit}+", "19\u{663}"),
-    ("\\p{Alnum}+", "a9\u{e9}\u{663}"),
-    ("\\p{Punct}+", "!/:@[`{~\u{ab}\u{a1}"),
-    ("\\p{Graph}+", "a!\u{e9} b"),
-    ("\\p{Print}+", "a \u{e9}"),
-    ("\\p{Blank}+", " \t\u{a0}a"),
-    ("\\p{Cntrl}+", "\u{1}\u{7f}\u{85}a"),
-    ("\\p{XDigit}+", "fF9g\u{ff10}"),
-    ("\\p{Space}+", " \t\u{b}\u{a0}a"),
-    ("\\P{Lower}+", "abC\u{e9}"),
-    ("\\p{javaLowerCase}+", "a\u{aa}\u{e9}A"),
-    ("\\p{javaUpperCase}+", "A\u{c9}a"),
-    ("\\p{javaWhitespace}+", " \u{a0}\u{2003}\u{1c}a"),
-    ("\\p{javaMirrored}+", "()<>\u{ab}a"),
-    ("\\p{InGreek}+", "\u{3b1}\u{3b2}a"),
-    ("\\P{InGreek}+", "\u{3b1}a"),
-    ("\\p{blk=Greek}+", "\u{3b1}a"),
-    ("\\p{Latin}+", "a\u{3b1}"),
-    ("\\p{Greek}+", "a\u{3b1}"),
-    ("(?m)^a", "a\nb\ra\r\na\u{85}a\u{2028}a"),
-    ("(?m)^", ""),
-    ("(?m)^", "a\n"),
-    ("a$", "a\n"),
-    ("a$", "a\r\n"),
-    ("a$", "a\r"),
-    ("a$", "a\u{85}"),
-    ("$", "a\r\n"),
-    ("(?m)a$", "a\ra\r\na\u{2028}b"),
-    ("(?m)$", "a\r\nb"),
-    ("\\b\\w+\\b", "caf\u{e9} na\u{ef}ve"),
-    ("\\b", "a\u{301}b \u{e9}"),
-    ("\\B", "ab \u{e9}"),
-    ("\\b{g}", "e\u{301}x"),
-    ("b\\Z", "ab\r\n"),
-    ("\\R\\n", "\r\n"),
-    ("\\X", "e\u{301}x"),
-    ("a{,3}", "aaaa"),
-    ("{2}", "a"),
-    ("a{", "a{"),
-    ("a{x}", "a{x}"),
-    ("(a)\\2", "aa"),
-    ("(a)\\11", "aa1"),
-    ("(?<a_b>x)", "x"),
-    ("(?<n>a)(?<n>b)", "ab"),
-    ("\\Qa.b\\E", "a.b axb"),
-    ("\\Q[\\E", "a["),
-    ("[\\Qa-c\\E]+", "a-c b"),
-    ("\\<", "a<b"),
-    ("\\>", "a>b"),
-    ("\\Q1\\E", "1"),
-    ("(?P<n>a)", "a"),
-    ("(?i)\u{e9}", "\u{c9}"),
-    ("(?i)k", "\u{212a}"),
-    ("(?i)s", "\u{17f}"),
-    ("(?i)[a-z]+", "\u{212a}Z"),
-    ("(?d).", "\r"),
-    ("(?d)a$", "a\r"),
-    ("(?x)[a b]+", "ab "),
-    ("(?U)\\w+", "caf\u{e9}"),
-    ("(?U)a+", "aaa"),
-    ("(?R)a$", "a\r\n"),
-    ("(?c)a", "a"),
-    ("(a)?(?(1)b|c)", "abc"),
-    ("a\\Kb", "ab"),
-    ("a(?#comment)b", "ab"),
-    ("\\u{e9}", "\u{e9}"),
-    ("\\U000000E9", "\u{e9}"),
-    ("x{2}{3}", "xxxxxx"),
-    ("(?=a)*b", "ab"),
-    ("a*", "baaa"),
-    ("a|", "ba"),
-    ("[a&&]", "a"),
-    ("(?i)[\u{e0}-\u{ff}]", "\u{c0}"),
-    ("\\p{Lowercase}+", "ab\u{aa}c"),
-    ("\\p{Alnum}+", "a1\u{e9}"),
-    ("(?U)\\p{Alpha}+", "a\u{e9}"),
-    ("\\p{all}+", "ab"),
-    ("(?i)\\x{212a}", "k"),
-    ("\\s*", "a b"),
-    (",?", "a,b"),
-    ("x*", "xxa"),
-    ("\\d*", "12ab3"),
-    ("(?=b)|a", "ab"),
-    ("x*", "a\u{1f600}b"),
-    ("", "\u{1f600}"),
+/// `getPattern` is measured to differ from Java's, in corpus order, each
+/// with the reason `AbstractAnalysisFactory::get_pattern` declares.
+const DECLARED_PATTERN_DIFFERENCES: &[(&str, &str, &str)] = &[
+    (
+        "x*",
+        "a\u{1f600}b",
+        "Java also matches between the UTF-16 halves of U+1F600",
+    ),
+    (
+        "",
+        "\u{1f600}",
+        "Java also matches between the UTF-16 halves of U+1F600",
+    ),
 ];
 
 /// The dialect contract of `get_pattern`, measured row by row against
 /// `java.util.regex`: every corpus row not declared above must compile and
 /// match exactly as Java does (same acceptance, same matches at the same
 /// code-point positions), and every declared row must still differ. A new
-/// difference fails the first half; a declared one that closes — a
-/// `fancy-regex` upgrade, say — fails the second, until the declaration is
-/// updated.
+/// difference fails the first half; a declared one that closes fails the
+/// second, until the declaration is updated.
 #[test]
 fn pattern_dialect_differences_are_exactly_the_declared_ones() {
     let mut rows_seen = 0;
@@ -835,11 +741,14 @@ fn pattern_dialect_differences_are_exactly_the_declared_ones() {
         let (pattern, sample) = (unhex(&r[2]), unhex(&r[3]));
         let java = format!("{}|{}", r[4], r.get(5).map_or("", String::as_str));
         let rust = pattern_outcome(&pattern, &sample);
-        if DECLARED_PATTERN_DIFFERENCES.contains(&(pattern.as_str(), sample.as_str())) {
+        if let Some((_, _, reason)) = DECLARED_PATTERN_DIFFERENCES
+            .iter()
+            .find(|(p, s, _)| (*p, *s) == (pattern.as_str(), sample.as_str()))
+        {
             declared_seen += 1;
             assert_ne!(
                 rust, java,
-                "declared difference closed: {pattern:?} over {sample:?}"
+                "declared difference closed ({reason}): {pattern:?} over {sample:?}"
             );
         } else {
             assert_eq!(

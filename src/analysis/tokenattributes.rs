@@ -875,6 +875,8 @@ impl TypeAttributeImpl {
     }
 
     /// Creates an attribute with the given type.
+    ///
+    /// Equivalent to the constructor `TypeAttributeImpl(String)`.
     pub fn with_type(type_value: String) -> Self {
         Self { type_value }
     }
@@ -1644,6 +1646,8 @@ impl PayloadAttributeImpl {
     }
 
     /// Creates an attribute with the given payload.
+    ///
+    /// Equivalent to the constructor `PayloadAttributeImpl(BytesRef)`.
     pub fn with_payload(payload: BytesRef) -> Self {
         Self {
             payload: Some(payload),

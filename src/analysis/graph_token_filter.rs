@@ -97,11 +97,6 @@ impl GraphTokenFilter {
         self.trailing_positions
     }
 
-    /// Returns the end offset the stream reported at its end.
-    pub fn get_final_offsets(&self) -> i32 {
-        self.final_offsets
-    }
-
     /// Returns how many tokens the lookahead cache has allocated since the
     /// last [`reset`](Self::reset); recycled tokens are not counted again.
     ///
@@ -317,7 +312,42 @@ impl GraphTokenFilter {
         Ok(false)
     }
 
+    /// Ends the stream.
+    ///
+    /// Equivalent to `GraphTokenFilter.end()` (`GraphTokenFilter.java:151-162`):
+    /// when the input's end has not been reached yet, the input is ended and
+    /// its final position increment and end offset are recorded; once they
+    /// are recorded, the attributes are ended and the recorded position
+    /// increment and final offset are set again.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever ending the input returns.
+    pub fn end(&mut self) -> Result<()> {
+        if self.trailing_positions == -1 {
+            self.input.end()?;
+            let source = self.input.attribute_source();
+            if let Some(att) = source.get_attribute::<PackedTokenAttributeImpl>() {
+                self.trailing_positions = att.get_position_increment();
+                self.final_offsets = att.end_offset();
+            } else {
+                self.trailing_positions = 0;
+                self.final_offsets = 0;
+            }
+        } else {
+            let source = self.input.attribute_source();
+            source.end_attributes();
+            if let Some(mut att) = source.get_attribute_mut::<PackedTokenAttributeImpl>() {
+                att.set_position_increment(self.trailing_positions);
+                att.set_offset(self.final_offsets, self.final_offsets);
+            }
+        }
+        Ok(())
+    }
+
     /// Resets the filter and its input.
+    ///
+    /// Equivalent to `GraphTokenFilter.reset()`.
     pub fn reset(&mut self) -> Result<()> {
         self.input.reset()?;
         self.tokens.clear();
@@ -587,5 +617,54 @@ mod tests {
         assert!(graph.increment_base_token().unwrap());
         assert!(graph.increment_graph_token().unwrap());
         assert_eq!(graph.cached_token_count(), 2);
+    }
+
+    /// `MiscOracle` O6b (`oracle/h2/MiscOracle.java`): `end()` after the walk
+    /// has reached the input's end ends the attributes and sets the recorded
+    /// position increment and final offset again — over a stop filter that
+    /// dropped the trailing `the`, Java printed `end(1,7,7)` both times, the
+    /// second after the attributes had been changed.
+    #[test]
+    fn end_sets_the_recorded_trailing_state_again() {
+        let mut tokenizer = crate::analysis::standard::new_standard_tokenizer();
+        tokenizer
+            .set_reader(Box::new(crate::analysis::StringCharReader::new("a b the")))
+            .unwrap();
+        let stop = crate::analysis::new_stop_filter(
+            Box::new(tokenizer),
+            crate::analysis::CharArraySet::from_iter(["the"], false),
+        );
+        let mut graph = GraphTokenFilter::new(Box::new(stop));
+        graph.reset().unwrap();
+        let mut tokens = 0;
+        while graph.increment_base_token().unwrap() {
+            tokens += 1;
+        }
+        assert_eq!(tokens, 2);
+        let state = |graph: &GraphTokenFilter| {
+            let att = graph
+                .input
+                .attribute_source()
+                .get_attribute::<PackedTokenAttributeImpl>()
+                .unwrap();
+            (
+                att.get_position_increment(),
+                att.start_offset(),
+                att.end_offset(),
+            )
+        };
+        graph.end().unwrap();
+        assert_eq!(state(&graph), (1, 7, 7));
+        {
+            let source = graph.input.attribute_source();
+            let mut att = source
+                .get_attribute_mut::<PackedTokenAttributeImpl>()
+                .unwrap();
+            att.set_position_increment(5);
+            att.set_offset(1, 2);
+        }
+        graph.end().unwrap();
+        assert_eq!(state(&graph), (1, 7, 7));
+        assert_eq!(graph.get_trailing_positions(), 1);
     }
 }

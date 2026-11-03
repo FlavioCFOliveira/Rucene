@@ -5647,37 +5647,46 @@ impl DocumentsWriterFlushControl {
     /// ([`LuceneError::AssertionError`]), which ends the walk once that DWPT is
     /// accounted for and propagates after the stall state is updated.
     ///
+    /// Java walks the two queues in two loops (`DocumentsWriterFlushControl.java:681-706`):
+    /// a queued DWPT is already in `flushingWriters`, and a blocked one is
+    /// added to it by `addFlushingDWPT` inside its own iteration, so an
+    /// `Error` that ends the walk leaves no later blocked DWPT registered. The
+    /// queues are emptied up front rather than in Java's `finally`, because the
+    /// monitor is released during the walk and no other thread may check out
+    /// a DWPT this walk aborts.
+    ///
     /// # Errors
     ///
     /// Returns the [`LuceneError::AssertionError`] a DWPT's abort raised.
     pub fn abort_pending_flushes(&self) -> Result<()> {
-        let to_abort: Vec<Arc<DocumentsWriterPerThread>> = {
+        let (flush_queue, blocked_flushes): (Vec<_>, Vec<_>) = {
             let mut inner = self.lock();
-            let mut to_abort: Vec<Arc<DocumentsWriterPerThread>> =
-                inner.flush_queue.drain(..).collect();
-            let blocked: Vec<Arc<DocumentsWriterPerThread>> =
-                inner.blocked_flushes.drain(..).collect();
-            for dwpt in &blocked {
-                // Blocked flushes were never added to `flushingWriters`; add
-                // them now so that `do_after_flush` accounts them correctly.
-                Self::add_flushing_dwpt(dwpt, &mut inner);
-            }
-            to_abort.extend(blocked);
-            to_abort
+            (
+                inner.flush_queue.drain(..).collect(),
+                inner.blocked_flushes.drain(..).collect(),
+            )
         };
 
-        let mut outcome = Ok(());
-        for dwpt in to_abort {
+        // One iteration's `try { ... } catch (Exception ex) { } finally {
+        // doAfterFlush(dwpt); }`: only an `Error` ends the walk.
+        let abort = |dwpt: &Arc<DocumentsWriterPerThread>| -> Result<()> {
             self.shared
                 .subtract_flushed_num_docs(dwpt.num_docs_in_ram());
-            let aborted = DocumentsWriterPerThread::lock(&dwpt).abort();
-            // The `finally`, `doAfterFlush(dwpt)`.
-            self.do_after_flush(&dwpt);
-            if let Err(error @ LuceneError::AssertionError(_)) = aborted {
-                outcome = Err(error);
-                break;
+            let aborted = DocumentsWriterPerThread::lock(dwpt).abort();
+            self.do_after_flush(dwpt);
+            match aborted {
+                Err(error @ LuceneError::AssertionError(_)) => Err(error),
+                _ => Ok(()),
             }
-        }
+        };
+        let outcome = flush_queue.iter().try_for_each(abort).and_then(|()| {
+            blocked_flushes.iter().try_for_each(|blocked| {
+                // `addFlushingDWPT(blockedFlush)`, for the accounting in
+                // `doAfterFlush`.
+                Self::add_flushing_dwpt(blocked, &mut self.lock());
+                abort(blocked)
+            })
+        });
 
         let mut inner = self.lock();
         self.update_stall_state_locked(&mut inner);
@@ -6859,6 +6868,8 @@ mod tests {
         fail_on_doc: Option<i32>,
         /// Document id whose indexing corrupts the chain's own buffers.
         corrupt_on_doc: Option<i32>,
+        /// What the chain's `abort` raises.
+        abort_error: Option<LuceneError>,
     }
 
     impl ScriptedChain {
@@ -6869,6 +6880,7 @@ mod tests {
                 aborting_error: None,
                 fail_on_doc: None,
                 corrupt_on_doc: None,
+                abort_error: None,
             }
         }
     }
@@ -6900,7 +6912,7 @@ mod tests {
 
         fn abort(&mut self) -> Result<()> {
             self.num_docs = 0;
-            Ok(())
+            self.abort_error.take().map_or(Ok(()), Err)
         }
 
         fn flush(
@@ -8173,6 +8185,56 @@ mod tests {
         fixture.writer.update_document(&doc("after"), None).unwrap();
         assert_eq!(fixture.writer.num_docs(), 1);
         assert_eq!(fixture.writer.per_thread_pool().size(), 1);
+    }
+
+    /// `abortPendingFlushes()` (`DocumentsWriterFlushControl.java:679-712`)
+    /// adds each blocked DWPT to `flushingWriters` inside its own iteration
+    /// (`:693-694`), and its `catch (Exception ex)` does not catch an `Error`:
+    /// an `AssertionError` aborting the first blocked DWPT runs that
+    /// iteration's `doAfterFlush` and ends the walk, so the second is never
+    /// registered and nothing is left flushing once the queues are cleared.
+    #[test]
+    fn an_error_aborting_a_blocked_flush_registers_no_later_blocked_flush() {
+        let created = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&created);
+        let fixture = new_writer_with_chain(
+            config(1_000_000, 16.0),
+            Arc::new(move |_config| {
+                let mut chain = ScriptedChain::new(10);
+                if counter.fetch_add(1, Ordering::AcqRel) == 0 {
+                    chain.abort_error = Some(LuceneError::AssertionError("scripted".to_string()));
+                }
+                Box::new(chain)
+            }),
+        );
+        let pool = fixture.writer.per_thread_pool();
+        let guards = [pool.get_and_lock().unwrap(), pool.get_and_lock().unwrap()];
+        assert_eq!(created.load(Ordering::Acquire), 2);
+        let flush_control = fixture.writer.flush_control();
+        {
+            // What `checkoutAndBlock` leaves behind for each of them.
+            let mut inner = flush_control.lock();
+            for guard in &guards {
+                assert!(pool.checkout(guard));
+                inner.blocked_flushes.push_back(Arc::clone(guard.dwpt()));
+            }
+        }
+        let dwpts: Vec<_> = guards.iter().map(|g| Arc::clone(g.dwpt())).collect();
+        drop(guards);
+        assert_eq!(flush_control.num_blocked_flushes(), 2);
+
+        match flush_control.abort_pending_flushes() {
+            Err(LuceneError::AssertionError(message)) => assert_eq!(message, "scripted"),
+            other => panic!("the AssertionError must propagate, got {other:?}"),
+        }
+        assert_eq!(flush_control.num_blocked_flushes(), 0);
+        assert_eq!(
+            flush_control.num_flushing_dwpt(),
+            0,
+            "the blocked DWPT after the failure was never registered"
+        );
+        assert!(dwpts[0].is_aborted());
+        assert!(!dwpts[1].is_aborted(), "the walk ended at the first");
     }
 
     /// `DocumentsWriterFlushControl.waitForFlush()`

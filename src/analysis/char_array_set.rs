@@ -23,11 +23,6 @@ impl CharArraySet {
         }
     }
 
-    /// Returns `true` if this set compares keys case-insensitively.
-    pub fn ignore_case(&self) -> bool {
-        self.map.ignore_case()
-    }
-
     /// Creates a set from an iterator of string-like values.
     pub fn from_iter<I, S>(items: I, ignore_case: bool) -> Self
     where
@@ -87,11 +82,16 @@ impl CharArraySet {
     }
 
     /// Returns the number of entries.
+    ///
+    /// Equivalent to `CharArraySet.size()`.
     pub fn size(&self) -> usize {
         self.map.size()
     }
 
     /// Returns `true` if the set contains no entries.
+    ///
+    /// Equivalent to `CharArraySet.isEmpty()`, inherited from
+    /// `AbstractCollection` as `size() == 0`.
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
@@ -103,27 +103,37 @@ impl CharArraySet {
     /// Panics when the set is unmodifiable, where Java's `CharArraySet.add`
     /// on an unmodifiable set throws `UnsupportedOperationException`.
     pub fn add(&mut self, key: impl AsRef<str>) -> bool {
-        let chars: Vec<char> = key.as_ref().chars().collect();
-        self.add_chars(&chars, 0, chars.len())
+        let mut chars: Vec<char> = key.as_ref().chars().collect();
+        let len = chars.len();
+        self.add_chars(&mut chars, 0, len)
     }
 
     /// Adds the `len` characters of `text` starting at `off` to the set.
+    ///
+    /// Equivalent to `CharArraySet.add(char[])`, `map.put(text, PLACEHOLDER)`:
+    /// when the set ignores case, `text` is lower-cased in place, as
+    /// [`CharArrayMap::put_chars`] documents.
     ///
     /// # Panics
     ///
     /// Panics when the set is unmodifiable, for the reason
     /// [`add`](Self::add) does.
-    pub fn add_chars(&mut self, text: &[char], off: usize, len: usize) -> bool {
+    pub fn add_chars(&mut self, text: &mut [char], off: usize, len: usize) -> bool {
         self.map.put_chars(text, off, len, ()).is_none()
     }
 
     /// Returns `true` if `key` is in the set.
+    ///
+    /// Equivalent to `CharArraySet.contains(CharSequence)`,
+    /// `map.containsKey(cs)`.
     pub fn contains(&self, key: impl AsRef<str>) -> bool {
-        let chars: Vec<char> = key.as_ref().chars().collect();
-        self.contains_chars(&chars, 0, chars.len())
+        self.map.contains_key(key)
     }
 
     /// Returns `true` if the `len` characters of `text` starting at `off` are in the set.
+    ///
+    /// Equivalent to `CharArraySet.contains(char[], int, int)`,
+    /// `map.containsKey(text, off, len)`.
     pub fn contains_chars(&self, text: &[char], off: usize, len: usize) -> bool {
         self.map.contains_key_chars(text, off, len)
     }
@@ -216,13 +226,97 @@ mod tests {
         assert_eq!(also_keys.len(), 3);
     }
 
+    /// `CharArraySet.add(char[])` lower-cases the caller's array when the set
+    /// ignores case. Java oracle (`scratchpad/auditH/oracle/AuditHExtra.java`,
+    /// `extra_out.txt`): `set word after add=hello` for `HeLLo`.
+    #[test]
+    fn add_chars_lower_cases_the_callers_array_when_ignoring_case() {
+        let mut set = CharArraySet::new(4, true);
+        let mut word: Vec<char> = "HeLLo".chars().collect();
+        assert!(set.add_chars(&mut word, 0, 5));
+        assert_eq!(word.iter().collect::<String>(), "hello");
+    }
+
     #[test]
     fn char_array_methods() {
         let mut set = CharArraySet::new(4, false);
-        let chars: Vec<char> = "token".chars().collect();
-        assert!(set.add_chars(&chars, 0, chars.len()));
-        assert!(!set.add_chars(&chars, 0, chars.len()));
+        let mut chars: Vec<char> = "token".chars().collect();
+        let len = chars.len();
+        assert!(set.add_chars(&mut chars, 0, len));
+        assert!(!set.add_chars(&mut chars, 0, len));
         assert!(set.contains_chars(&chars, 0, chars.len()));
+    }
+
+    /// `MiscOracle` O3 (`oracle/h2/MiscOracle.java`): the iteration order is
+    /// Java's slot order, which the hash decides — `CharsRef.stringHashCode`
+    /// over UTF-16 units, or `Character.toLowerCase` of each code point when
+    /// the set ignores case — and lookups lower-case each code point with
+    /// `Character.toLowerCase`.
+    #[test]
+    fn iteration_follows_javas_slot_order() {
+        let mut plain = CharArraySet::new(8, false);
+        for word in ["beta", "alpha", "gamma", "\u{1F600}x", "delta"] {
+            plain.add(word);
+        }
+        assert_eq!(plain.to_string(), "[beta, \u{1F600}x, gamma, delta, alpha]");
+
+        let mut folded = CharArraySet::new(8, true);
+        for word in [
+            "\u{130}stanbul",
+            "\u{3A3}\u{391}\u{3A3}",
+            "Stra\u{DF}e",
+            "\u{10400}B",
+            "Hello",
+        ] {
+            folded.add(word);
+        }
+        assert_eq!(
+            folded.to_string(),
+            "[istanbul, \u{3C3}\u{3B1}\u{3C3}, stra\u{DF}e, \u{10428}b, hello]"
+        );
+
+        let mut big = CharArraySet::new(2, true);
+        for i in 0..30 {
+            big.add(format!(
+                "Key{i}{}",
+                if i % 3 == 0 { "\u{10400}" } else { "" }
+            ));
+        }
+        assert_eq!(
+            big.to_string(),
+            "[key13, key14, key16, key15\u{10428}, key19, key21\u{10428}, key6\u{10428}, key17, \
+             key0\u{10428}, key18\u{10428}, key20, key22, key23, key25, key26, key28, key29, \
+             key24\u{10428}, key12\u{10428}, key9\u{10428}, key1, key2, key3\u{10428}, key4, \
+             key5, key7, key8, key27\u{10428}, key10, key11]"
+        );
+    }
+
+    /// `MiscOracle` O3: `contains(CharSequence)` lower-cases each code point
+    /// of the query with `Character.toLowerCase` when the set ignores case.
+    #[test]
+    fn lookups_lower_case_each_code_point() {
+        let mut folded = CharArraySet::new(8, true);
+        for word in [
+            "\u{130}stanbul",
+            "\u{3A3}\u{391}\u{3A3}",
+            "Stra\u{DF}e",
+            "\u{10400}B",
+            "Hello",
+        ] {
+            folded.add(word);
+        }
+        for (query, expected) in [
+            ("istanbul", true),
+            ("\u{130}STANBUL", true),
+            ("i\u{307}stanbul", false),
+            ("\u{3C3}\u{3B1}\u{3C3}", true),
+            ("\u{3C3}\u{3B1}\u{3C2}", false),
+            ("\u{10428}b", true),
+            ("STRASSE", false),
+            ("hELLO", true),
+        ] {
+            assert_eq!(folded.contains(query), expected, "{query:?}");
+        }
     }
 
     #[test]

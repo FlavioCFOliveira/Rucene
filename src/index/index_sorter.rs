@@ -1375,29 +1375,30 @@ pub trait SortFieldProvider: NamedSPI + Send + Sync {
     ) -> Result<()>;
 }
 
-/// The class name `NamedSPILoader` reports in its lookup error.
-const SORT_FIELD_PROVIDER_CLASS: &str = "org.apache.lucene.index.SortFieldProvider";
+/// `SortFieldProvider.class`: the service type's binary name and the loader
+/// that defines it, `lucene-core`'s.
+fn sort_field_provider_class() -> crate::util::spi::ServiceClass {
+    crate::util::spi::ServiceClass::new(
+        "org.apache.lucene.index.SortFieldProvider",
+        Arc::clone(crate::util::spi::lucene_core_class_loader()),
+    )
+}
 
 /// The loader behind [`SortFieldProvider`]'s static entry points.
 ///
-/// Equivalent to `SortFieldProvider.Holder.LOADER`, which Java hides in a
-/// holder class so the providers are only discovered when first needed. It is
-/// seeded with the four providers `lucene-core` lists in
-/// `META-INF/services/org.apache.lucene.index.SortFieldProvider`, in the order
-/// of that file, which is what Java's service loader registers. Rust has no
-/// run-time service discovery, so a provider defined outside the crate is added
-/// with [`reload_sort_field_providers`].
+/// Equivalent to `SortFieldProvider.Holder.LOADER`
+/// (`SortFieldProvider.java:30-42`), `new NamedSPILoader<>(SortFieldProvider.class)`,
+/// which Java hides in a holder class so the providers are only discovered when
+/// first needed. It scans `lucene-core`'s loader
+/// ([`lucene_core_class_loader`](crate::util::spi::lucene_core_class_loader)),
+/// whose `META-INF/services/org.apache.lucene.index.SortFieldProvider` lists
+/// the four providers of `SortField`, `SortedNumericSortField`,
+/// `SortedSetSortField` and `BinarySortField`, in that order.
 static SORT_FIELD_PROVIDERS: std::sync::LazyLock<
     std::sync::RwLock<NamedSPILoader<dyn SortFieldProvider>>,
 > = std::sync::LazyLock::new(|| {
-    let providers: [Arc<dyn SortFieldProvider>; 4] = [
-        Arc::new(crate::search::sort::Provider::new()),
-        Arc::new(crate::search::sorted_numeric_sort_field::Provider::new()),
-        Arc::new(crate::search::sorted_set_sort_field::Provider::new()),
-        Arc::new(crate::search::binary_sort_field::Provider::new()),
-    ];
     std::sync::RwLock::new(
-        NamedSPILoader::with_providers(SORT_FIELD_PROVIDER_CLASS, providers)
+        NamedSPILoader::new(&sort_field_provider_class(), None)
             .expect("INVARIANT: the built-in provider names are legal service names"),
     )
 });
@@ -1431,24 +1432,23 @@ pub fn available_sort_field_providers() -> Vec<String> {
         .collect()
 }
 
-/// Adds `providers` to the global loader; a name already registered keeps its
-/// first provider.
+/// Reloads the global loader from `classloader`, adding the providers it has
+/// not seen; a name already registered keeps its first provider.
 ///
-/// Equivalent to `SortFieldProvider.reloadSortFieldProviders(ClassLoader)`,
-/// which rescans a classloader for providers it has not seen. Rust has no
-/// run-time service discovery, so the caller supplies the providers.
+/// Equivalent to `SortFieldProvider.reloadSortFieldProviders(ClassLoader)`
+/// (`SortFieldProvider.java:65-67`), `Holder.getLoader().reload(classloader)`:
+/// see [`NamedSPILoader::reload`].
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when a provider's name is not a
-/// legal service name.
+/// Returns whatever [`NamedSPILoader::reload`] returns.
 pub fn reload_sort_field_providers(
-    providers: impl IntoIterator<Item = Arc<dyn SortFieldProvider>>,
+    classloader: &Arc<crate::util::resource_loader::ClassLoader>,
 ) -> Result<()> {
     SORT_FIELD_PROVIDERS
         .write()
         .expect("INVARIANT: the sort-field provider lock is never poisoned")
-        .reload(providers)
+        .reload(classloader)
 }
 
 /// Writes `sort_field` with the provider its index sorter names.

@@ -2011,7 +2011,7 @@ pub struct KnnVectorsFormatRegistry {
 impl Default for KnnVectorsFormatRegistry {
     fn default() -> Self {
         Self {
-            formats: Arc::new(RwLock::new(NamedSPILoader::new(
+            formats: Arc::new(RwLock::new(NamedSPILoader::empty(
                 "org.apache.lucene.codecs.KnnVectorsFormat",
             ))),
         }
@@ -2075,9 +2075,9 @@ impl KnnVectorsFormatRegistry {
         let mut formats = self.formats.write().map_err(|_| {
             LuceneError::illegal_state("KNN vectors format registry lock was poisoned".to_string())
         })?;
-        // Only new providers are added; an existing one is never replaced
-        // (`NamedSPILoader.reload`, `NamedSPILoader.java:59-79`).
-        formats.reload([format])?;
+        // Only new providers are added; an existing one is never replaced, as
+        // in `NamedSPILoader.reload` (`NamedSPILoader.java:65-79`).
+        formats.register_as(&name, format)?;
         Ok(())
     }
 
@@ -2113,51 +2113,56 @@ impl KnnVectorsFormatRegistry {
     }
 }
 
-/// Adds `format` to the global registry under its own name.
+/// Reloads the global registry from `classloader`, adding the
+/// formats it has not seen.
 ///
-/// Equivalent to `KnnVectorsFormat.reloadKnnVectorsFormat(ClassLoader)`, which rescans a classloader
-/// for formats it has not seen. Rust has no run-time service discovery, so the
-/// caller supplies the format.
+/// Equivalent to `KnnVectorsFormat.reloadKnnVectorsFormat(ClassLoader)`, which is
+/// `Holder.getLoader().reload(classloader)`: see
+/// [`NamedSPILoader::reload`](crate::util::spi::NamedSPILoader::reload). Only
+/// new names are added; an existing one is never removed or replaced.
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when the format's name is not a
-/// valid service name.
-pub fn reload_knn_vectors_format(format: Arc<dyn KnnVectorsFormat>) -> Result<()> {
-    GLOBAL_KNN_VECTORS_REGISTRY.register_arc(format)
+/// Returns whatever [`NamedSPILoader::reload`](crate::util::spi::NamedSPILoader::reload)
+/// returns, and [`LuceneError::IllegalState`] when the registry lock is
+/// poisoned.
+pub fn reload_knn_vectors_format(
+    classloader: &Arc<crate::util::resource_loader::ClassLoader>,
+) -> Result<()> {
+    GLOBAL_KNN_VECTORS_REGISTRY
+        .formats
+        .write()
+        .map_err(|_| {
+            LuceneError::illegal_state("KNN vectors format registry lock was poisoned".to_string())
+        })?
+        .reload(classloader)
 }
 
-/// The global registry, seeded with the formats this crate ships.
+/// The global registry.
 ///
-/// The `lucene-core` jar lists three KNN-vectors formats in
-/// `META-INF/services/org.apache.lucene.codecs.KnnVectorsFormat` —
+/// Equivalent to `KnnVectorsFormat.Holder.LOADER`,
+/// `new NamedSPILoader<>(KnnVectorsFormat.class)`: it scans `lucene-core`'s
+/// loader ([`lucene_core_class_loader`](crate::util::spi::lucene_core_class_loader)),
+/// whose `META-INF/services/org.apache.lucene.codecs.KnnVectorsFormat` lists
 /// `Lucene99HnswVectorsFormat`, `Lucene104ScalarQuantizedVectorsFormat` and
-/// `Lucene104HnswScalarQuantizedVectorsFormat` — which the Java service loader
-/// makes resolvable by name without anyone registering them. Rust has no
-/// run-time service discovery, so those entries are registered here when the
-/// registry is first touched; see the postings registry for the full reasoning.
-///
-/// All three are seeded. Note that the third registers under
+/// `Lucene104HnswScalarQuantizedVectorsFormat`, in that order, so they resolve
+/// by name without anyone registering them. Note that the third registers under
 /// `Lucene104HnswBinaryQuantizedVectorsFormat`, which is the string Lucene's
 /// `Lucene104HnswScalarQuantizedVectorsFormat.NAME` holds and therefore the one
 /// a segment written by Lucene carries — not the class name.
-static GLOBAL_KNN_VECTORS_REGISTRY: LazyLock<KnnVectorsFormatRegistry> = LazyLock::new(|| {
-    let registry = KnnVectorsFormatRegistry::new();
-    for format in [
-        Arc::new(crate::codecs::Lucene99HnswVectorsFormat::new()) as Arc<dyn KnnVectorsFormat>,
-        Arc::new(
-            crate::codecs::lucene104::scalar_quantized_vectors::Lucene104ScalarQuantizedVectorsFormat::new(),
-        ),
-        Arc::new(
-            crate::codecs::lucene104::scalar_quantized_vectors::Lucene104HnswScalarQuantizedVectorsFormat::new(),
-        ),
-    ] {
-        registry
-            .register_arc(format)
-            .expect("built-in KNN-vectors formats have valid, distinct SPI names");
-    }
-    registry
-});
+static GLOBAL_KNN_VECTORS_REGISTRY: LazyLock<KnnVectorsFormatRegistry> =
+    LazyLock::new(|| KnnVectorsFormatRegistry {
+        formats: Arc::new(RwLock::new(
+            NamedSPILoader::new(
+                &crate::util::spi::ServiceClass::new(
+                    "org.apache.lucene.codecs.KnnVectorsFormat",
+                    Arc::clone(crate::util::spi::lucene_core_class_loader()),
+                ),
+                None,
+            )
+            .expect("INVARIANT: lucene-core's KNN-vectors format names are legal service names"),
+        )),
+    });
 
 /// Looks up a KNN-vectors format by name from the global registry.
 ///

@@ -1373,7 +1373,7 @@ fn parse_version_component(token: &str, name: &str, version: &str) -> Result<i32
 /// `NumberFormatException`: an optional leading `-` or `+`, then at least one
 /// digit, each UTF-16 code unit read with `Character.digit(char, 10)` — so the
 /// decimal digits of every script count — and a result that fits an `int`.
-fn java_parse_int(s: &str) -> Option<i32> {
+pub(crate) fn java_parse_int(s: &str) -> Option<i32> {
     const RADIX: i32 = 10;
     let units: Vec<u16> = s.encode_utf16().collect();
     let digit = |unit: u16| {

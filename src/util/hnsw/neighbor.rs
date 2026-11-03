@@ -454,7 +454,18 @@ impl NeighborArray {
     }
 
     /// Clears all entries.
+    ///
+    /// Equivalent to `org.apache.lucene.util.hnsw.NeighborArray#clear`
+    /// (`NeighborArray.java:225-230`), whose `nodes.clear()` and
+    /// `scores.clear()` zero the `size` slots in use before resetting the
+    /// count, as hppc's `IntArrayList.clear` and `FloatArrayList.clear` do
+    /// with `Arrays.fill(buffer, 0, elementsCount, 0)`
+    /// (`IntArrayList.java:315-318`, `FloatArrayList.java:314-317`): a node
+    /// or score read past `size` afterwards is `0`, as in Java.
     pub fn clear(&self) {
+        for i in 0..self.size.load(Ordering::Relaxed) {
+            self.set_at(i, 0, 0.0);
+        }
         self.size.store(0, Ordering::Relaxed);
         self.sorted_node_size.store(0, Ordering::Relaxed);
     }
@@ -897,6 +908,25 @@ mod tests {
         // sort uses scores so 1(0.9), 2(0.7), 3(0.5)
         let _ = arr.sort(&mut DummyScorer).unwrap();
         assert_eq!(arr.nodes(), &[1, 2, 3]);
+    }
+
+    /// `clear()` zeroes the slots in use, as hppc's `IntArrayList.clear` and
+    /// `FloatArrayList.clear` do (`Arrays.fill(buffer, 0, elementsCount, 0)`),
+    /// so the raw buffer reads `0` past the new size. Java oracle
+    /// (`oracle/passH1/ClearOracle.java`, `clear_java.txt`): "size=0
+    /// nodes[0]=0 nodes[1]=0 score0bits=0 score1bits=0", then "after re-add:
+    /// size=1 nodes[0]=9 nodes[1]=0".
+    #[test]
+    fn neighbor_array_clear_zeroes_the_slots_in_use_as_java() {
+        let arr = NeighborArray::new(10, true);
+        arr.add_in_order(5, 0.5).unwrap();
+        arr.add_in_order(7, 0.25).unwrap();
+        arr.clear();
+        assert_eq!(arr.size(), 0);
+        assert_eq!((arr.node(0), arr.node(1)), (0, 0));
+        assert_eq!((arr.score(0).to_bits(), arr.score(1).to_bits()), (0, 0));
+        arr.add_in_order(9, 0.75).unwrap();
+        assert_eq!((arr.size(), arr.node(0), arr.node(1)), (1, 9, 0));
     }
 }
 

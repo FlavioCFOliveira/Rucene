@@ -711,10 +711,12 @@ struct PoolState<'scope> {
 /// **Divergence from Lucene 10.5.0.** Java's workers are free-standing
 /// threads, and `checkIndex(List)` returns after `awaitTermination(5,
 /// SECONDS)` and `shutdownNow()` even if a check is still running. A check
-/// borrows this `CheckIndex` and the commit's `SegmentInfos`, which Rust allows
-/// only on scoped threads, so the workers live in a [`std::thread::scope`] that
-/// waits for the check a worker is running when `shutdownNow()` returns; the
-/// queued checks are dropped and the workers interrupted, as in Java.
+/// borrows this `CheckIndex` — only `&self`: the commit's `SegmentInfos` is
+/// shared through an `Arc`, as Java's lambda captures `finalSis` — and Rust
+/// lets a thread borrow `&self` only on a scoped thread, so the workers live in
+/// a [`std::thread::scope`] that waits for the check a worker is running when
+/// `shutdownNow()` returns; the queued checks are dropped and the workers
+/// interrupted, as in Java.
 struct SegmentCheckPool<'scope, 'env> {
     scope: &'scope Scope<'scope, 'env>,
     thread_factory: NamedThreadFactory,

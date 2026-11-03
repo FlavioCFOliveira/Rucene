@@ -3126,19 +3126,30 @@ impl IndexWriter {
     /// (`IndexWriter.java:2677-2683`), suppressing whatever that raises; this
     /// port does so for [`LuceneError::AssertionError`], its only counterpart
     /// of `Error`.
+    ///
+    /// Java's `catch (Throwable throwable)` (`IndexWriter.java:2647`) catches
+    /// an unchecked exception of the `try` block too: a panic there runs the
+    /// same closing, then resumes, as Java's `throw throwable` rethrows it; a
+    /// panic is not an `Error`, so it records no tragic event.
     fn rollback_internal_no_commit(&self) -> Result<()> {
         if self.info_stream.is_enabled(IW) {
             self.info_stream.message(IW, "rollback");
         }
-        match self.rollback_internal_no_commit_steps() {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                // `catch (Throwable t) { throwable.addSuppressed(t); }`
-                // (`IndexWriter.java:2675-2676`): the closing's error, or its
-                // panic, never replaces the original error.
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    self.close_after_failed_rollback()
-                }));
+        let throwable = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.rollback_internal_no_commit_steps()
+        })) {
+            Ok(Ok(())) => return Ok(()),
+            Ok(Err(error)) => Ok(error),
+            Err(payload) => Err(payload),
+        };
+        // `catch (Throwable t) { throwable.addSuppressed(t); }`
+        // (`IndexWriter.java:2675-2676`): the closing's error, or its panic,
+        // never replaces the original throwable.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.close_after_failed_rollback()
+        }));
+        match throwable {
+            Ok(error) => {
                 // The `finally` (`IndexWriter.java:2677-2683`).
                 if matches!(error, LuceneError::AssertionError(_)) {
                     // `catch (Throwable t1) { throwable.addSuppressed(t1); }`.
@@ -3148,6 +3159,7 @@ impl IndexWriter {
                 }
                 Err(error)
             }
+            Err(payload) => std::panic::resume_unwind(payload),
         }
     }
 
@@ -8924,7 +8936,10 @@ impl IndexWriter {
     /// Equivalent to `IndexWriter.openSegmentStates(List, Set, long)`. A
     /// segment whose buffered-deletes generation is already past `del_gen` has
     /// seen the packet, and one already in `already_seen_segments` is being
-    /// handled by another pass.
+    /// handled by another pass. When opening a state fails — with an error, or
+    /// with a panic, which Java's `catch (Throwable t)` catches as an
+    /// unchecked exception (`IndexWriter.java:6591-6598`) — the states already
+    /// opened are closed and the failure is rethrown.
     fn open_segment_states(
         &self,
         state: &mut WriterState,
@@ -8933,7 +8948,9 @@ impl IndexWriter {
         del_gen: i64,
     ) -> Result<Vec<crate::index::buffered_updates_stream::SegmentState>> {
         let mut seg_states = Vec::new();
-        let outcome = (|| -> Result<()> {
+        // `catch (Throwable t)` (`IndexWriter.java:6591`): an error, or a
+        // panic, the port's form of an unchecked throwable.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
             for info in infos {
                 if info.get_buffered_deletes_gen() <= del_gen
                     && !already_seen_segments.contains(&info.info.name)
@@ -8948,21 +8965,26 @@ impl IndexWriter {
                 }
             }
             Ok(())
-        })();
-        if let Err(error) = outcome {
-            // `try { IOUtils.close(segStates); } catch (Throwable t1) {
-            // t.addSuppressed(t1); } throw t;` (`IndexWriter.java:6591-6598`):
-            // whatever the closing raises — its error, or the panic that is
-            // the port's form of an unchecked throwable — is suppressed.
-            let state = std::cell::RefCell::new(state);
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                crate::util::IOUtils::close(seg_states.iter().map(|seg_state| {
-                    Some(|| self.close_segment_state(&mut state.borrow_mut(), seg_state))
-                }))
-            }));
-            return Err(error);
+        }));
+        let throwable = match outcome {
+            Ok(Ok(())) => return Ok(seg_states),
+            Ok(Err(error)) => Ok(error),
+            Err(payload) => Err(payload),
+        };
+        // `try { IOUtils.close(segStates); } catch (Throwable t1) {
+        // t.addSuppressed(t1); } throw t;` (`IndexWriter.java:6592-6597`):
+        // whatever the closing raises — its error, or its panic — is
+        // suppressed, and the original throwable is rethrown.
+        let state = std::cell::RefCell::new(state);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::util::IOUtils::close(seg_states.iter().map(|seg_state| {
+                Some(|| self.close_segment_state(&mut state.borrow_mut(), seg_state))
+            }))
+        }));
+        match throwable {
+            Ok(error) => Err(error),
+            Err(payload) => std::panic::resume_unwind(payload),
         }
-        Ok(seg_states)
     }
 
     /// Closes one segment state: releases the reader it pinned, then hands its
@@ -14215,6 +14237,7 @@ mod tests {
     struct FailingCloseScheduler {
         closes: std::sync::atomic::AtomicUsize,
         first_is_io: bool,
+        panic_first: bool,
         panic_second: bool,
         serial: crate::index::merge_scheduler::SerialMergeScheduler,
     }
@@ -14236,6 +14259,9 @@ mod tests {
 
         fn close(&self) -> Result<()> {
             let n = self.closes.fetch_add(1, Ordering::SeqCst) + 1;
+            if n == 1 && self.panic_first {
+                panic!("close {n} panicked");
+            }
             if n == 1 && self.first_is_io {
                 return Err(LuceneError::Io(std::io::Error::other(format!("close {n}"))));
             }
@@ -14278,6 +14304,7 @@ mod tests {
             let scheduler = Arc::new(FailingCloseScheduler {
                 closes: std::sync::atomic::AtomicUsize::new(0),
                 first_is_io,
+                panic_first: false,
                 panic_second,
                 serial: Default::default(),
             });
@@ -14312,6 +14339,93 @@ mod tests {
                 .close()
                 .unwrap();
         }
+    }
+
+    /// `IndexWriter.rollbackInternalNoCommit()` catches `Throwable`
+    /// (`IndexWriter.java:2647`), so an unchecked exception of its `try`
+    /// block — here the merge scheduler's first close, the port's panic — runs
+    /// the same closing before it is rethrown, and records no tragedy, not
+    /// being an `Error`. Java oracle (`oracle/passH1/RollbackPanicOracle.java`,
+    /// `rollback_panic_java.txt`): "thrown=java.lang.IllegalStateException:
+    /// close 1 panicked suppressed=[java.lang.AssertionError: close 2;]
+    /// closes=2 isOpen=false tragic=null", "write lock released".
+    #[test]
+    fn a_panic_rolling_back_still_closes_the_writer() {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let scheduler = Arc::new(FailingCloseScheduler {
+            closes: std::sync::atomic::AtomicUsize::new(0),
+            first_is_io: false,
+            panic_first: true,
+            panic_second: false,
+            serial: Default::default(),
+        });
+        let mut config = IndexWriterConfig::new();
+        config.set_merge_scheduler(scheduler.clone()).unwrap();
+        let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| writer.rollback()));
+        let payload = match outcome {
+            Err(payload) => payload,
+            Ok(other) => panic!("the panic must be rethrown, got {other:?}"),
+        };
+        assert_eq!(
+            payload.downcast_ref::<String>().map(String::as_str),
+            Some("close 1 panicked")
+        );
+        assert_eq!(scheduler.closes.load(Ordering::SeqCst), 2);
+        assert!(!writer.is_open());
+        assert!(writer.get_tragic_exception().is_none());
+        dir.obtain_lock(WRITE_LOCK_NAME)
+            .expect("the write lock is released")
+            .close()
+            .unwrap();
+    }
+
+    /// `IndexWriter.openSegmentStates` catches `Throwable`
+    /// (`IndexWriter.java:6591`), so an unchecked exception opening a state —
+    /// here opening `_1.cfs`, the port's panic — closes the states already
+    /// opened before it is rethrown: the one over `_0` drops its unpooled
+    /// reader, closing `_0.cfs`. Java oracle
+    /// (`oracle/passH1/SegStatesPanicOracle.java`, `seg_states_panic_java.txt`,
+    /// through `commit()`): "thrown=java.lang.IllegalStateException: open
+    /// panicked: _1.cfs suppressed=[]", "closes of _0.cfs=[_0.cfs]".
+    #[test]
+    fn a_panic_opening_a_segment_state_closes_the_opened_ones() {
+        use crate::codecs::tests::CloseTrackingDirectory;
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let tracking = Arc::new(CloseTrackingDirectory::default());
+        let log = Arc::clone(&tracking.log);
+        let dir: Arc<dyn Directory> = tracking;
+        let mut config = IndexWriterConfig::new();
+        config
+            .set_merge_policy(Arc::new(crate::index::merge_policy::NoMergePolicy::new()))
+            .unwrap();
+        config.set_reader_pooling(false);
+        let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+        for id in ["a", "b"] {
+            writer.add_document(&id_body_doc(id)).unwrap();
+            writer.commit().unwrap();
+        }
+        log.panic_open("_1.cfs");
+        let closes_before = log.close_count("_0.cfs");
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut state = writer.state().unwrap();
+            let infos: Vec<SegmentCommitInfo> = state.segment_infos.as_slice().to_vec();
+            assert_eq!(infos.len(), 2);
+            writer
+                .open_segment_states(&mut state, &infos, &mut HashSet::new(), i64::MAX)
+                .map(|states| states.len())
+        }));
+        let payload = match outcome {
+            Err(payload) => payload,
+            Ok(other) => panic!("the panic must be rethrown, got {other:?}"),
+        };
+        assert_eq!(
+            payload.downcast_ref::<String>().map(String::as_str),
+            Some("open panicked: _1.cfs")
+        );
+        assert_eq!(log.close_count("_0.cfs") - closes_before, 1);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| writer.rollback()));
     }
 
     /// `IndexWriter.openSegmentStates` (`IndexWriter.java:6576-6600`) closes
