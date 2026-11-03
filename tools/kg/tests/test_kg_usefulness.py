@@ -165,3 +165,12 @@ def test_ask_no_caller_joins_verdicts_and_filters():
         ("rucene::search::A", "W-blocked"), ("rucene::search::B", None)]
     assert [r["item"] for r in ask.join_no_caller(rows, verdicts, unverified=True)] == [
         "rucene::search::B", "rucene::index::C"]
+
+
+def test_a_span_starting_past_the_text_reads_no_attributes():
+    import rust_refs_kg as rr
+    # the walk starts at the last line, a code line, so it reads nothing
+    assert rr._preceding_attributes(["#[cfg(test)]", "mod m {}"], 9) == []
+    assert rr._preceding_attributes(["fn f() {}"], 5) == []
+    # a start one past an attribute line reads it
+    assert rr._preceding_attributes(["#[cfg(test)]"], 1) == ["#[cfg(test)]"]

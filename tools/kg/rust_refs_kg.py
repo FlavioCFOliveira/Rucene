@@ -415,7 +415,7 @@ def _preceding_attributes(lines, start):
     lines of its `#[`), stopping at the first blank or code line.
     """
     out = []
-    j = start - 1
+    j = min(start, len(lines)) - 1
     while j >= 0:
         s = lines[j].strip()
         if s.startswith("#[") or s.startswith("//"):
