@@ -399,8 +399,39 @@ def _span_is_test(span, def_pos, lines, name=None):
     if name in ("tests", "test"):
         return True
     dl, dc = def_pos
-    attr = "\n".join(lines[span[0]:dl] + [lines[dl][:dc] if dl < len(lines) else ""])
+    attr = "\n".join(_preceding_attributes(lines, span[0])
+                     + lines[span[0]:dl] + [lines[dl][:dc] if dl < len(lines) else ""])
     return bool(RE_CFG_TEST.search(attr) or RE_TEST_ATTR.search(attr))
+
+
+def _preceding_attributes(lines, start):
+    """The attribute and comment lines directly above line `start`.
+
+    rust-analyzer starts a module's enclosing range at `mod`, below its
+    attributes, so a `#[cfg(test)] mod needs_refresh_tests { … }` read only
+    inside its span looked like production code and its references were counted
+    as production references. Walks up over `#[…]` and `//` lines, and over a
+    multi-line attribute whose closing `]` line is reached first (within five
+    lines of its `#[`), stopping at the first blank or code line.
+    """
+    out = []
+    j = start - 1
+    while j >= 0:
+        s = lines[j].strip()
+        if s.startswith("#[") or s.startswith("//"):
+            out.append(lines[j])
+            j -= 1
+            continue
+        if s.endswith("]"):
+            k = j - 1
+            while k >= 0 and j - k <= 5 and not lines[k].strip().startswith("#["):
+                k -= 1
+            if k >= 0 and j - k <= 5:
+                out.extend(reversed(lines[k:j + 1]))
+                j = k - 1
+                continue
+        break
+    return list(reversed(out))
 
 
 def attribute_document(doc, text, kg, def_index):

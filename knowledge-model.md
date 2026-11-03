@@ -35,9 +35,12 @@ Two rules make the graph an answer rather than an impression (`CLAUDE.md` §7, �
   the commit from a `git archive` export (the working tree may hold uncommitted
   work), runs the whole chain (*Reproducing the graph*), and ends with the audit. The
   log, `<kg-target>/kg_sync_<short>.log`, times every step.
-* **Ask the graph first.** *Answering the standing questions* holds the statements
-  for the questions the work asks: what is missing, what to do next, what a change
-  touches, which divergences an edit must respect, what remains of task #269.
+* **Ask the graph first.** `tools/kg/ask.py` runs the statements of *Answering the
+  standing questions* by name, with escaped inputs, and prints JSON lines:
+  `status` (is the graph current?), `divergences --file <path>` / `--type <fqn>`,
+  `item <name>`, `refs <qualifiedName>`, `lucene-callers <fn qualifiedName>`,
+  `no-caller [--subsystem S] [--unverified]`, `awaits`, `absent`, `tasks`, and
+  `cypher "<statement>"` for anything else.
 * **Read a property's maintainer before trusting it.** Each label below says which
   tool writes it. A label marked *curated* is written by hand when its fact arises; no
   sync step completes it, so its absence proves nothing.
@@ -60,6 +63,7 @@ A software project or library being modelled. Identity: `name` (string).
 | `version` | Version string, e.g. `"10.5.0"`. |
 | `path` | Root path, for the local project. |
 | `referenceUrl` | Authoritative source URL for an external project. |
+| `syncedCommit` / `syncedDate` | On `Rucene`: the commit of the last `sync_commit.sh` run whose audit passed, written as its last step. `tools/kg/ask.py status` compares it with `HEAD`. |
 
 ### `Module`
 A crate or Maven module: `rucene`, and every module of the Lucene 10.5.0 distribution
@@ -371,7 +375,7 @@ A test method of a `TestClass`: `public void testXxx()` or a `void` method carry
 | `OVERRIDES` | `Method` → `Method`, transitively: the source overrides or implements the target. `evidence: "bytecode"`. |
 | `REFERENCES` (crate) | Rust item or `File` → Rust item: the source's code names the target. `evidence`: `"rust-analyzer-scip"` (resolved by rust-analyzer) or `"macro-body-lexical"` (a `macro_rules!` body names it; weaker). `prodRefs` / `testRefs`: occurrences at production and test sites. Written whole by `rust_refs_kg.py`. |
 | `REFERENCES` | `Project` → `Project` / `Feature`; `Feature` → `Package`. Not a port relation. |
-| `AWAITS_CALLER` | Rust item → Lucene `Class`: a `W-blocked` #269 item, and a Java class that calls its counterpart and is not ported. Written whole by `no_caller_verdicts_kg.py` from the commit's no-caller list. |
+| `AWAITS_CALLER` | Rust item → Lucene `Class`: a `W-blocked` #269 item, and each Java class whose code calls its counterpart (the `callerClasses` of the commit's no-caller list). The class may be `ported` while the calling member is not; the item's `noCallerEvidence` names the unported caller. Written whole by `no_caller_verdicts_kg.py`. |
 | `DECLARED_IN` | `Divergence` → `File` that declares it. |
 | `CONCERNS` | `Divergence` → the Rust type or `RustFn` its doc comment documents, when the declaration resolves to exactly one node (a method of an `impl Trait for Type` block resolves to none). |
 | `DIVERGES_FROM` | `Divergence` → a Lucene `Class` whose source file the paragraph cites, when one top-level type is declared by a file of that name; `lines` holds the cited lines. The Lucene type of a divergence is also reached through `CONCERNS` → `PORTS`. |
@@ -393,8 +397,10 @@ A test method of a `TestClass`: `public void testXxx()` or a `void` method carry
 
 ### Is the graph current?
 
+The last completed sync (`ask.py status`):
+
 ```cypher
-MATCH (c:Commit) RETURN c.hash ORDER BY c.date DESC LIMIT 1
+MATCH (p:Project {name: 'Rucene'}) RETURN p.syncedCommit, p.syncedDate
 ```
 
 Compare with `git rev-parse HEAD`; if they differ, run `tools/kg/sync_commit.sh HEAD`.
@@ -656,9 +662,14 @@ RETURN x.qualifiedName AS item, '{label}' AS label, x.file AS file,
 ```
 
 By subsystem and class: replace the final `RETURN` of either query by `WITH` and append
-`WITH subsystem, class, count(*) AS items RETURN subsystem, class, items ORDER BY
-subsystem, class`. `no_caller_kg.py --phase report` runs exactly these statements and
-writes every row to `<kg-target>/no_caller/list_<commit>.jsonl`.
+
+```cypher
+WITH subsystem, class, count(*) AS items
+RETURN subsystem, class, items ORDER BY subsystem, class
+```
+
+`no_caller_kg.py --phase report` runs exactly these statements and writes every row to
+`<kg-target>/no_caller/list_<commit>.jsonl`.
 
 ### What remains of task #269
 

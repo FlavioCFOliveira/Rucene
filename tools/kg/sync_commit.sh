@@ -64,6 +64,9 @@ KG=tools/kg
   run python3 $KG/no_caller_verdicts_kg.py "$R" --commit "$FULL" --date "$DATE"
   run python3 $KG/divergences_kg.py "$R" --source-root "$S" --commit "$FULL" --date "$DATE"
   run python3 $KG/audit_kg.py "$R" --survey "$K/rucene_kg/survey.json" --lucene-root "$LUCENE" --source-root "$S" --commit "$FULL"
+  # The marker `ask.py status` reads: written only once the audit has passed, so
+  # a sync still running, or one that failed, never reads as current.
+  run rmp graph client -r "$R" --query "MATCH (p:Project {name: 'Rucene'}) SET p.syncedCommit = '$FULL', p.syncedDate = '$DATE', p.gitCommit = '$FULL', p.gitDate = '$DATE'"
   echo "SYNC_DONE $FULL"
 } 2>&1 | tee "$LOG"
 exit "${PIPESTATUS[0]}"

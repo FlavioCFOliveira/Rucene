@@ -129,3 +129,39 @@ def test_closings_keep_only_tasks_with_a_closing_commit():
              {"id": 2, "commit_close": "def"}]
     assert rc.closings(tasks) == [{"task": 2, "commit_close": "def"},
                                   {"task": 3, "commit_close": "abc"}]
+
+
+def test_a_cfg_test_module_with_a_custom_name_is_a_test_span():
+    import rust_refs_kg as rr
+    lines = ["fn prod() {}", "", "#[cfg(test)]", "mod needs_refresh_tests {",
+             "    fn segment() {}", "}"]
+    # rust-analyzer's enclosing range of the module starts at `mod` (line 3)
+    assert rr._span_is_test((3, 0, 5, 1), (3, 4), lines, "needs_refresh_tests")
+    assert not rr._span_is_test((0, 0, 0, 12), (0, 3), lines, "prod")
+
+
+def test_a_multi_line_cfg_test_attribute_above_the_span_counts():
+    import rust_refs_kg as rr
+    lines = ["#[cfg(", "    test", ")]", "mod helpers {", "}"]
+    assert rr._span_is_test((3, 0, 4, 1), (3, 4), lines, "helpers")
+
+
+def test_ask_escapes_its_inputs():
+    import ask
+    q = ask.q_divergences_in_file("src/a'b.rs")
+    assert "{path: 'src/a\\'b.rs'}" in q
+    assert "qualifiedName: 'x\\'y'" in ask.q_lucene_callers("x'y")
+
+
+def test_ask_no_caller_joins_verdicts_and_filters():
+    import ask
+    rows = [{"item": "rucene::search::A", "label": "RustFn", "subsystem": "search",
+             "class": "W?", "callerClasses": ["org.X"], "blocked": True},
+            {"item": "rucene::search::B", "label": "RustFn", "subsystem": "search", "class": "P?"},
+            {"item": "rucene::index::C", "label": "RustStruct", "subsystem": "index", "class": "D?"}]
+    verdicts = {"rucene::search::A": ("W-blocked", "block5_search.md")}
+    out = ask.join_no_caller(rows, verdicts, subsystem="search")
+    assert [(r["item"], r["verdict"]) for r in out] == [
+        ("rucene::search::A", "W-blocked"), ("rucene::search::B", None)]
+    assert [r["item"] for r in ask.join_no_caller(rows, verdicts, unverified=True)] == [
+        "rucene::search::B", "rucene::index::C"]
