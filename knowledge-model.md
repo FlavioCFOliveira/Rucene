@@ -1244,6 +1244,58 @@ grouped variant against the list, and writes every row to
 
 ---
 
+## Indexes and constraints
+
+Every index this engine can use (rmp 1.18.0) is a hash index on one node property,
+so it serves **equality lookups only**. The graph keeps one index per label on the
+label's identity property, because the sync tools (`tools/kg/*.py`) and ad hoc
+queries bind nodes by identity, in `MATCH (n:L {k: …})` and `MERGE (n:L {k: …})`.
+Without the index, a `MERGE` walks the whole label for every row of a batch.
+
+| Index | Label | Property |
+|---|---|---|
+| `idx_class_qualifiedname` | `Class` | `qualifiedName` |
+| `idx_method_qualifiedname` | `Method` | `qualifiedName` |
+| `idx_rustfn_qualifiedname` | `RustFn` | `qualifiedName` |
+| `idx_testmethod_qualifiedname` | `TestMethod` | `qualifiedName` |
+| `idx_testclass_qualifiedname` | `TestClass` | `qualifiedName` |
+| `idx_file_path` | `File` | `path` |
+| `idx_task_id` | `Task` | `id` |
+| `idx_commit_hash` | `Commit` | `hash` |
+| `idx_module_name` | `Module` | `name` |
+| `idx_package_name` | `Package` | `name` |
+| `idx_project_name` | `Project` | `name` |
+| `idx_component_name` | `Component` | `name` |
+| `idx_decision_name` | `Decision` | `name` |
+| `idx_defect_name` | `Defect` | `name` |
+| `idx_feature_name` | `Feature` | `name` |
+| `idx_ruststruct_name` | `RustStruct` | `name` |
+| `idx_rusttrait_name` | `RustTrait` | `name` |
+| `idx_rustenum_name` | `RustEnum` | `name` |
+| `idx_rustalias_name` | `RustAlias` | `name` |
+
+The identity of the four Rust type labels is `{name, file}`. The engine rejects
+composite indexes, so the index covers `name`, the selective half.
+
+Create an index with `CREATE INDEX <name> IF NOT EXISTS FOR (n:<Label>) ON
+(n.<property>)`, and list them with `SHOW INDEXES`.
+
+**Proof that an index is used** (re-run after an engine upgrade):
+`PROFILE MATCH (c:Class {qualifiedName:'org.apache.lucene.index.IndexWriter'})
+RETURN c` must plan `NodeByIndexSeek`, not `NodeByLabelScan` + `Filter`. The integer
+`Task.id` plans `NodeByIndexRangeScan`. A batched `UNWIND … MERGE (m:TestMethod
+{qualifiedName: qn})` must show a `Merge` operator with no label scan beneath it.
+
+**No index serves an unlabelled node.** `MATCH (t {name: row.name, file:
+row.file})` and `MATCH (n) WHERE id(n) = row.id` scan every node for every row.
+Bind such a node with its label instead.
+
+**Constraints:** none are declared. Before declaring `IS UNIQUE` on an identity
+property, this query must return 0 for that label and property:
+`MATCH (n:<Label>) WITH n.<property> AS v, count(*) AS c WHERE c > 1 RETURN count(v)`.
+
+---
+
 ## Query pitfalls
 
 **`NOT EXISTS { MATCH … WHERE … }` returns the wrong answer on this engine.** Asking which
