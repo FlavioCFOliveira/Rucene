@@ -1,4 +1,4 @@
-//! Port of `generators/AsciiLettersGenerator.java` (randomizedtesting 2.8.1).
+//! Port of `com.carrotsearch.randomizedtesting.generators.AsciiLettersGenerator` (randomizedtesting 2.8.1).
 
 use std::ops::Deref;
 

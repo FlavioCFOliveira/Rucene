@@ -34,6 +34,14 @@ jdk	doubles(-1)	java.lang.IllegalArgumentException	size must be non-negative
 jdk	doubles(1,1)	java.lang.IllegalArgumentException	bound must be greater than origin
 jdk	doubles(10,0,inf)	java.lang.IllegalArgumentException	bound must be greater than origin
 jdk	doubles(10,NaN,1)	java.lang.IllegalArgumentException	bound must be greater than origin
+jdk	equiDoubles(NaN,1,T,T)	java.lang.IllegalArgumentException	the boundaries must be finite and the interval must not be empty
+jdk	equiDoubles(-inf,0,T,T)	java.lang.IllegalArgumentException	the boundaries must be finite and the interval must not be empty
+jdk	equiDoubles(0,inf,T,T)	java.lang.IllegalArgumentException	the boundaries must be finite and the interval must not be empty
+jdk	equiDoubles(0,NaN,T,T)	java.lang.IllegalArgumentException	the boundaries must be finite and the interval must not be empty
+jdk	equiDoubles(1,0,T,T)	java.lang.IllegalArgumentException	the boundaries must be finite and the interval must not be empty
+jdk	equiDoubles(1,1,F,T)	java.lang.IllegalArgumentException	the boundaries must be finite and the interval must not be empty
+jdk	equiDoubles(1,1,T,F)	java.lang.IllegalArgumentException	the boundaries must be finite and the interval must not be empty
+jdk	equiDoubles(1,up1,F,F)	java.lang.IllegalArgumentException	the boundaries must be finite and the interval must not be empty
 jdk	setSeed(1)	OK	-
 jdk	setSeed(0)	OK	-
 xoro	nextInt(0)	java.lang.IllegalArgumentException	bound must be positive
@@ -71,6 +79,14 @@ xoro	doubles(-1)	java.lang.IllegalArgumentException	size must be non-negative
 xoro	doubles(1,1)	java.lang.IllegalArgumentException	bound must be greater than origin
 xoro	doubles(10,0,inf)	java.lang.IllegalArgumentException	bound must be greater than origin
 xoro	doubles(10,NaN,1)	java.lang.IllegalArgumentException	bound must be greater than origin
+xoro	equiDoubles(NaN,1,T,T)	java.lang.IllegalArgumentException	the boundaries must be finite and the interval must not be empty
+xoro	equiDoubles(-inf,0,T,T)	java.lang.IllegalArgumentException	the boundaries must be finite and the interval must not be empty
+xoro	equiDoubles(0,inf,T,T)	java.lang.IllegalArgumentException	the boundaries must be finite and the interval must not be empty
+xoro	equiDoubles(0,NaN,T,T)	java.lang.IllegalArgumentException	the boundaries must be finite and the interval must not be empty
+xoro	equiDoubles(1,0,T,T)	java.lang.IllegalArgumentException	the boundaries must be finite and the interval must not be empty
+xoro	equiDoubles(1,1,F,T)	java.lang.IllegalArgumentException	the boundaries must be finite and the interval must not be empty
+xoro	equiDoubles(1,1,T,F)	java.lang.IllegalArgumentException	the boundaries must be finite and the interval must not be empty
+xoro	equiDoubles(1,up1,F,F)	java.lang.IllegalArgumentException	the boundaries must be finite and the interval must not be empty
 xoro	setSeed(1)	java.lang.RuntimeException	RandomizedRunner prevents changing the seed of its random generators to assure repeatability of tests. If you need a mutable instance of Random, create a new (local) instance, preferably with the initial seed aquired from this Random instance.
 xoro	setSeed(0)	java.lang.RuntimeException	RandomizedRunner prevents changing the seed of its random generators to assure repeatability of tests. If you need a mutable instance of Random, create a new (local) instance, preferably with the initial seed aquired from this Random instance.
 asserting	nextInt(0)	java.lang.IllegalArgumentException	bound must be positive
@@ -108,6 +124,14 @@ asserting	doubles(-1)	java.lang.IllegalArgumentException	size must be non-negati
 asserting	doubles(1,1)	java.lang.IllegalArgumentException	bound must be greater than origin
 asserting	doubles(10,0,inf)	java.lang.IllegalArgumentException	bound must be greater than origin
 asserting	doubles(10,NaN,1)	java.lang.IllegalArgumentException	bound must be greater than origin
+asserting	equiDoubles(NaN,1,T,T)	java.lang.IllegalArgumentException	the boundaries must be finite and the interval must not be empty
+asserting	equiDoubles(-inf,0,T,T)	java.lang.IllegalArgumentException	the boundaries must be finite and the interval must not be empty
+asserting	equiDoubles(0,inf,T,T)	java.lang.IllegalArgumentException	the boundaries must be finite and the interval must not be empty
+asserting	equiDoubles(0,NaN,T,T)	java.lang.IllegalArgumentException	the boundaries must be finite and the interval must not be empty
+asserting	equiDoubles(1,0,T,T)	java.lang.IllegalArgumentException	the boundaries must be finite and the interval must not be empty
+asserting	equiDoubles(1,1,F,T)	java.lang.IllegalArgumentException	the boundaries must be finite and the interval must not be empty
+asserting	equiDoubles(1,1,T,F)	java.lang.IllegalArgumentException	the boundaries must be finite and the interval must not be empty
+asserting	equiDoubles(1,up1,F,F)	java.lang.IllegalArgumentException	the boundaries must be finite and the interval must not be empty
 asserting	setSeed(1)	java.lang.RuntimeException	RandomizedRunner prevents changing the seed of its random generators to assure repeatability of tests. If you need a mutable instance of Random, create a new (local) instance, preferably with the initial seed aquired from this Random instance.
 asserting	setSeed(0)	java.lang.RuntimeException	RandomizedRunner prevents changing the seed of its random generators to assure repeatability of tests. If you need a mutable instance of Random, create a new (local) instance, preferably with the initial seed aquired from this Random instance.
 asserting	next(32)	java.lang.RuntimeException	Shouldn't be reachable.

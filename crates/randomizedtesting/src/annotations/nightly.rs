@@ -14,4 +14,29 @@ pub const NIGHTLY: AnnotationType = AnnotationType {
         sys_property: "",
         enabled: false,
     }),
+    inherited: true,
 };
+
+static NIGHTLY_TYPE: AnnotationType = NIGHTLY;
+
+/// An `@Nightly(value)` annotation value.
+#[derive(Debug, Clone, Default)]
+pub struct Nightly {
+    /// `value()`, default empty.
+    pub value: String,
+}
+
+impl crate::jdk::reflect::JavaAnnotation for Nightly {
+    fn annotation_type(&self) -> &'static AnnotationType {
+        &NIGHTLY_TYPE
+    }
+    fn to_java_string(&self) -> String {
+        format!(
+            "@com.carrotsearch.randomizedtesting.annotations.Nightly({})",
+            crate::jdk::reflect::quote_member(&self.value)
+        )
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}

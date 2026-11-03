@@ -3,33 +3,68 @@
 //!
 //! `RandomizedContext` finds a thread's context through the thread's
 //! `ThreadGroup` and its parents, keeps per-thread state keyed by the
-//! `Thread` (weakly), and formats threads in its messages. Rust threads have
-//! no group, no Java identifier and no state, so this module gives every
-//! thread a [`Thread`] handle that carries them.
+//! `Thread` (weakly), and formats threads in its messages; the runner's
+//! thread-leak control enumerates the live threads of a group, interrupts
+//! them, joins them with a timeout, and turns their uncaught exceptions into
+//! failures. Rust threads have no group, no Java identifier, no state and no
+//! interruption, so this module gives every thread a [`Thread`] handle that
+//! carries them.
 //!
 //! **Divergences.**
 //! * A Java thread inherits its creator's group. Only a thread created with
 //!   [`Thread::new`] / [`Thread::with_group`] and started with
 //!   [`Thread::start`] does so here; any other thread (for example one from
-//!   `std::thread::spawn`) is registered on first use in the `main` group,
+//!   `std::thread::spawn`) is adopted on first use in the `main` group,
 //!   whose parent is `system`, as the JVM's main thread is.
+//! * [`ThreadGroup::enumerate`] (`ThreadGroup.enumerate(Thread[], true)`)
+//!   sees only the threads started with [`Thread::start`]: an adopted thread
+//!   is not enumerated, so threads the Rust test harness owns never count as
+//!   leaked threads.
 //! * Thread identifiers come from a process-wide counter starting at 1; they
 //!   are unique like Java's, but not the numbers a JVM would assign.
 //! * Only the states `NEW`, `RUNNABLE` and `TERMINATED` are observable: a
 //!   blocked thread still reports `RUNNABLE`.
-//! * The priority is always `NORM_PRIORITY` (5).
+//! * Interruption is cooperative, as Java's is for code that does not block:
+//!   [`Thread::interrupt`] sets the flag and wakes the blocking calls of this
+//!   module ([`Thread::sleep`], [`Thread::join_millis`],
+//!   [`Thread::park_nanos`]), which then throw (`park_nanos` only returns)
+//!   `InterruptedException`; a thread blocked anywhere else sees only the
+//!   flag.
+//! * [`Thread::get_stack_trace`] is empty: Rust cannot walk another thread's
+//!   stack.
 
 use std::fmt;
-use std::sync::atomic::{AtomicI64, AtomicU8, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, Weak};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU8, Ordering};
+use std::sync::{Arc, Condvar, LazyLock, Mutex, MutexGuard, RwLock, Weak};
+use std::time::{Duration, Instant};
 
-use super::exception;
+use super::exception::{self, Throwable};
+
+/// `Thread.UncaughtExceptionHandler`.
+pub trait UncaughtExceptionHandler: Send + Sync {
+    /// `uncaughtException(Thread t, Throwable e)`.
+    fn uncaught_exception(&self, t: &Thread, e: Throwable);
+}
+
+/// The override of `ThreadGroup.uncaughtException` a `ThreadGroup`
+/// subclass declares (`RunnerThreadGroup`): it receives the group, the
+/// thread and the throwable, and may call [`ThreadGroup::default_uncaught`].
+pub type GroupUncaughtHook = Arc<dyn Fn(&ThreadGroup, &Thread, Throwable) + Send + Sync>;
 
 /// `java.lang.ThreadGroup`: a named node of the group tree.
-#[derive(Debug)]
 pub struct ThreadGroup {
     name: String,
     parent: Option<Arc<ThreadGroup>>,
+    uncaught: Option<GroupUncaughtHook>,
+}
+
+impl fmt::Debug for ThreadGroup {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ThreadGroup")
+            .field("name", &self.name)
+            .field("parent", &self.parent.as_ref().map(|p| p.name.clone()))
+            .finish()
+    }
 }
 
 impl ThreadGroup {
@@ -38,6 +73,31 @@ impl ThreadGroup {
         Arc::new(ThreadGroup {
             name: name.into(),
             parent: Some(Arc::clone(parent)),
+            uncaught: None,
+        })
+    }
+
+    /// `new ThreadGroup(name)`: a child of the current thread's group.
+    pub fn new_in_current(name: impl Into<String>) -> Arc<ThreadGroup> {
+        let parent = Thread::current()
+            .thread_group()
+            .unwrap_or_else(|| Arc::clone(ThreadGroup::main()));
+        ThreadGroup::new(&parent, name)
+    }
+
+    /// A subclass of `ThreadGroup` (a child of the current thread's group)
+    /// that overrides `uncaughtException` with `hook`.
+    pub fn with_uncaught_hook(
+        name: impl Into<String>,
+        hook: GroupUncaughtHook,
+    ) -> Arc<ThreadGroup> {
+        let parent = Thread::current()
+            .thread_group()
+            .unwrap_or_else(|| Arc::clone(ThreadGroup::main()));
+        Arc::new(ThreadGroup {
+            name: name.into(),
+            parent: Some(parent),
+            uncaught: Some(hook),
         })
     }
 
@@ -51,6 +111,55 @@ impl ThreadGroup {
         self.parent.as_ref()
     }
 
+    /// Whether this group is `other` or one of its descendants
+    /// (`other.parentOf(this)`).
+    pub fn is_descendant_of(&self, other: &ThreadGroup) -> bool {
+        let mut g = Some(self);
+        while let Some(group) = g {
+            if std::ptr::eq(group, other) {
+                return true;
+            }
+            g = group.parent.as_deref();
+        }
+        false
+    }
+
+    /// `ThreadGroup.uncaughtException(t, e)`: the subclass override when
+    /// there is one, else [`default_uncaught`](Self::default_uncaught).
+    pub fn uncaught_exception(&self, t: &Thread, e: Throwable) {
+        match &self.uncaught {
+            Some(hook) => hook(self, t, e),
+            None => self.default_uncaught(t, e),
+        }
+    }
+
+    /// `ThreadGroup.uncaughtException` as `ThreadGroup` itself implements
+    /// it: delegate to the parent group; at the root, to the default
+    /// handler; without one, print `Exception in thread "name" ` and the
+    /// throwable to `System.err`.
+    pub fn default_uncaught(&self, t: &Thread, e: Throwable) {
+        if let Some(parent) = &self.parent {
+            parent.uncaught_exception(t, e);
+        } else if let Some(handler) = Thread::get_default_uncaught_exception_handler() {
+            handler.uncaught_exception(t, e);
+        } else if !e.is_instance("java.lang.ThreadDeath") {
+            super::system::err_print(&format!(
+                "Exception in thread \"{}\" {}\n",
+                t.name(),
+                super::system::format_stack_trace(&e)
+            ));
+        }
+    }
+
+    /// `ThreadGroup.enumerate(Thread[] list, true)`, as a set: the live
+    /// threads of this group and of its descendants, in start order.
+    pub fn enumerate(&self) -> Vec<Thread> {
+        live_threads()
+            .into_iter()
+            .filter(|t| t.thread_group().is_some_and(|g| g.is_descendant_of(self)))
+            .collect()
+    }
+
     /// The JVM's `main` group (child of `system`), the group of threads this
     /// module did not start.
     pub fn main() -> &'static Arc<ThreadGroup> {
@@ -58,6 +167,7 @@ impl ThreadGroup {
             let system = Arc::new(ThreadGroup {
                 name: "system".to_string(),
                 parent: None,
+                uncaught: None,
             });
             ThreadGroup::new(&system, "main")
         });
@@ -66,7 +176,7 @@ impl ThreadGroup {
 }
 
 /// `java.lang.Thread.State`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum State {
     /// `NEW`: created, not started.
     New,
@@ -99,13 +209,27 @@ impl fmt::Display for State {
 
 type Body = Box<dyn FnOnce() + Send>;
 
+/// The thread's blocking state: the interrupt flag, the `LockSupport`
+/// permit and termination, guarded by one mutex so that every blocking
+/// call of this module wakes on any of them.
+#[derive(Default)]
+struct Signals {
+    interrupted: bool,
+    permit: bool,
+}
+
 struct ThreadInner {
     id: i64,
     name: Mutex<String>,
     group: Mutex<Option<Arc<ThreadGroup>>>,
     state: AtomicU8,
+    priority: AtomicI32,
+    daemon: AtomicBool,
     body: Mutex<Option<Body>>,
     handle: Mutex<Option<std::thread::JoinHandle<()>>>,
+    signals: Mutex<Signals>,
+    wake: Condvar,
+    handler: Mutex<Option<Arc<dyn UncaughtExceptionHandler>>>,
 }
 
 /// A `java.lang.Thread`: a cheap, clonable handle whose equality is
@@ -119,6 +243,21 @@ pub struct WeakThread(Weak<ThreadInner>);
 
 static NEXT_ID: AtomicI64 = AtomicI64::new(1);
 static NEXT_THREAD_NUM: AtomicI64 = AtomicI64::new(0);
+
+/// The threads started with [`Thread::start`] that have not terminated, in
+/// start order.
+static LIVE: Mutex<Vec<Thread>> = Mutex::new(Vec::new());
+
+/// `Thread.defaultUncaughtExceptionHandler`.
+static DEFAULT_HANDLER: RwLock<Option<Arc<dyn UncaughtExceptionHandler>>> = RwLock::new(None);
+
+fn live() -> MutexGuard<'static, Vec<Thread>> {
+    LIVE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn live_threads() -> Vec<Thread> {
+    live().clone()
+}
 
 /// Marks the thread terminated when its thread-local slot is destroyed,
 /// which is when the OS thread exits.
@@ -135,14 +274,26 @@ thread_local! {
 }
 
 impl Thread {
+    /// `Thread.MIN_PRIORITY`.
+    pub const MIN_PRIORITY: i32 = 1;
+    /// `Thread.NORM_PRIORITY`.
+    pub const NORM_PRIORITY: i32 = 5;
+    /// `Thread.MAX_PRIORITY`.
+    pub const MAX_PRIORITY: i32 = 10;
+
     fn create(name: String, group: Arc<ThreadGroup>, state: State, body: Option<Body>) -> Thread {
         Thread(Arc::new(ThreadInner {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             name: Mutex::new(name),
             group: Mutex::new(Some(group)),
             state: AtomicU8::new(state as u8),
+            priority: AtomicI32::new(Thread::NORM_PRIORITY),
+            daemon: AtomicBool::new(false),
             body: Mutex::new(body),
             handle: Mutex::new(None),
+            signals: Mutex::new(Signals::default()),
+            wake: Condvar::new(),
+            handler: Mutex::new(None),
         }))
     }
 
@@ -175,21 +326,37 @@ impl Thread {
         Thread::with_group(&group, name, body)
     }
 
+    /// `new Thread(runnable)`: named `Thread-N`, as Java numbers unnamed
+    /// threads.
+    pub fn unnamed(body: impl FnOnce() + Send + 'static) -> Thread {
+        let name = format!("Thread-{}", NEXT_THREAD_NUM.fetch_add(1, Ordering::Relaxed));
+        Thread::new(name, body)
+    }
+
     /// `new Thread(group, runnable, name)`.
     pub fn with_group(
         group: &Arc<ThreadGroup>,
         name: impl Into<String>,
         body: impl FnOnce() + Send + 'static,
     ) -> Thread {
-        Thread::create(
+        let creator = Thread::current();
+        let t = Thread::create(
             name.into(),
             Arc::clone(group),
             State::New,
             Some(Box::new(body)),
-        )
+        );
+        // A Java thread inherits its creator's daemon status.
+        t.0.daemon.store(creator.is_daemon(), Ordering::Relaxed);
+        t
     }
 
     /// `Thread.start()`.
+    ///
+    /// The body runs inside `catch_unwind`; a throwable that escapes it goes
+    /// to [`get_uncaught_exception_handler`](Self::get_uncaught_exception_handler),
+    /// as the JVM dispatches it, and then ends the OS thread with the same
+    /// payload, so that [`join`](Self::join) still reports it.
     ///
     /// # Panics
     ///
@@ -201,19 +368,31 @@ impl Thread {
             exception::throw_without_message(exception::ILLEGAL_THREAD_STATE_EXCEPTION)
         };
         self.0.state.store(State::Runnable as u8, Ordering::Release);
+        live().push(self.clone());
         let me = self.clone();
         let handle = std::thread::Builder::new()
             .name(self.name())
             .spawn(move || {
-                CURRENT.with(|slot| *slot.borrow_mut() = Some(CurrentSlot(me)));
-                body();
+                CURRENT.with(|slot| *slot.borrow_mut() = Some(CurrentSlot(me.clone())));
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+                if let Err(payload) = result {
+                    let t = Throwable::from_panic(payload);
+                    let handler = me.get_uncaught_exception_handler();
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        handler.dispatch(&me, t.clone())
+                    }));
+                    me.terminate();
+                    std::panic::resume_unwind(Box::new(t));
+                }
+                me.terminate();
             })
             .expect("spawn thread");
         *self.0.handle.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
     }
 
-    /// `Thread.join()`: waits for the thread; `Err` carries the panic of its
-    /// body (Java reports it through the uncaught exception handler).
+    /// `Thread.join()`: waits for the thread; `Err` carries the throwable
+    /// that ended its body (Java reports it through the uncaught exception
+    /// handler only, which this thread did too).
     pub fn join(&self) -> std::thread::Result<()> {
         let handle = self
             .0
@@ -227,15 +406,55 @@ impl Thread {
                 self.terminate();
                 result
             }
-            None => Ok(()),
+            None => {
+                // Joined before (or never started): wait for termination.
+                while self.is_alive() {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// `Thread.join(millis)`: waits at most `millis` milliseconds (`0`
+    /// waits forever) for the thread to terminate.
+    ///
+    /// # Panics
+    ///
+    /// `InterruptedException` (`null` message) when the calling thread is
+    /// interrupted, which clears its flag; `IllegalArgumentException`
+    /// (`timeout value is negative`) for a negative timeout.
+    pub fn join_millis(&self, millis: i64) {
+        if millis < 0 {
+            exception::illegal_argument("timeout value is negative");
+        }
+        let me = Thread::current();
+        let deadline = (millis > 0).then(|| Instant::now() + Duration::from_millis(millis as u64));
+        while self.is_alive() {
+            let slice = match deadline {
+                None => Duration::from_millis(10),
+                Some(d) => {
+                    let now = Instant::now();
+                    if now >= d {
+                        return;
+                    }
+                    (d - now).min(Duration::from_millis(10))
+                }
+            };
+            if me.wait_on(slice) {
+                exception::throw_without_message(exception::INTERRUPTED_EXCEPTION);
+            }
         }
     }
 
     fn terminate(&self) {
-        self.0
-            .state
-            .store(State::Terminated as u8, Ordering::Release);
+        let was = self.0.state.swap(State::Terminated as u8, Ordering::AcqRel);
         *self.0.group.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        if was != State::Terminated as u8 {
+            live().retain(|t| t != self);
+        }
+        let _g = self.0.signals.lock().unwrap_or_else(|e| e.into_inner());
+        self.0.wake.notify_all();
     }
 
     /// `Thread.threadId()` / `Thread.getId()`.
@@ -257,14 +476,46 @@ impl Thread {
         *self.0.name.lock().unwrap_or_else(|e| e.into_inner()) = name.into();
     }
 
-    /// `Thread.getPriority()`: always `Thread.NORM_PRIORITY`.
+    /// `Thread.getPriority()`.
     pub fn priority(&self) -> i32 {
-        5
+        self.0.priority.load(Ordering::Relaxed)
+    }
+
+    /// `Thread.setPriority(priority)`: recorded only (the port does not
+    /// schedule by priority).
+    pub fn set_priority(&self, priority: i32) {
+        if !(Thread::MIN_PRIORITY..=Thread::MAX_PRIORITY).contains(&priority) {
+            exception::throw_without_message(exception::ILLEGAL_ARGUMENT_EXCEPTION);
+        }
+        self.0.priority.store(priority, Ordering::Relaxed);
+    }
+
+    /// `Thread.isDaemon()`.
+    pub fn is_daemon(&self) -> bool {
+        self.0.daemon.load(Ordering::Relaxed)
+    }
+
+    /// `Thread.setDaemon(on)`: recorded only (a Rust process does not wait
+    /// for its threads).
+    ///
+    /// # Panics
+    ///
+    /// `IllegalThreadStateException` once the thread is started.
+    pub fn set_daemon(&self, on: bool) {
+        if self.state() != State::New {
+            exception::throw_without_message(exception::ILLEGAL_THREAD_STATE_EXCEPTION);
+        }
+        self.0.daemon.store(on, Ordering::Relaxed);
     }
 
     /// `Thread.getState()`.
     pub fn state(&self) -> State {
         State::from_u8(self.0.state.load(Ordering::Acquire))
+    }
+
+    /// `Thread.isAlive()`: started and not terminated.
+    pub fn is_alive(&self) -> bool {
+        self.state() == State::Runnable
     }
 
     /// `Thread.getThreadGroup()`: `None` once the thread terminated.
@@ -276,9 +527,190 @@ impl Thread {
             .clone()
     }
 
+    /// `Thread.getStackTrace()`: always empty (see the module
+    /// documentation).
+    pub fn get_stack_trace(&self) -> Vec<exception::StackTraceElement> {
+        Vec::new()
+    }
+
     /// `new WeakReference<Thread>(this)`.
     pub fn downgrade(&self) -> WeakThread {
         WeakThread(Arc::downgrade(&self.0))
+    }
+
+    fn signals(&self) -> MutexGuard<'_, Signals> {
+        self.0.signals.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// `Thread.interrupt()`: sets the interrupt flag and wakes the thread
+    /// from the blocking calls of this module.
+    pub fn interrupt(&self) {
+        let mut s = self.signals();
+        s.interrupted = true;
+        self.0.wake.notify_all();
+    }
+
+    /// `Thread.isInterrupted()`.
+    pub fn is_interrupted(&self) -> bool {
+        self.signals().interrupted
+    }
+
+    /// `Thread.interrupted()`: the current thread's flag, cleared.
+    pub fn interrupted() -> bool {
+        let me = Thread::current();
+        let mut s = me.signals();
+        std::mem::replace(&mut s.interrupted, false)
+    }
+
+    /// Blocks the calling thread (which must be `self`) for at most
+    /// `timeout`, until it is interrupted or notified. Returns whether it
+    /// was interrupted, clearing the flag.
+    fn wait_on(&self, timeout: Duration) -> bool {
+        let mut s = self.signals();
+        if !s.interrupted && !timeout.is_zero() {
+            s = self
+                .0
+                .wake
+                .wait_timeout(s, timeout)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+        std::mem::replace(&mut s.interrupted, false)
+    }
+
+    /// `Thread.sleep(millis)`.
+    ///
+    /// # Panics
+    ///
+    /// `InterruptedException` (`sleep interrupted`) when the thread is (or
+    /// becomes) interrupted, which clears its flag; `IllegalArgumentException`
+    /// (`timeout value is negative`) for a negative time.
+    pub fn sleep(millis: i64) {
+        if let Err(e) = Thread::try_sleep(millis) {
+            e.throw()
+        }
+    }
+
+    /// [`sleep`](Self::sleep) that returns the `InterruptedException` instead
+    /// of throwing it.
+    pub fn try_sleep(millis: i64) -> Result<(), Throwable> {
+        if millis < 0 {
+            exception::illegal_argument("timeout value is negative");
+        }
+        let me = Thread::current();
+        let deadline = Instant::now() + Duration::from_millis(millis as u64);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if me.wait_on(remaining) {
+                return Err(Throwable::new(
+                    exception::INTERRUPTED_EXCEPTION,
+                    "sleep interrupted",
+                ));
+            }
+            if Instant::now() >= deadline {
+                return Ok(());
+            }
+        }
+    }
+
+    /// `LockSupport.parkNanos(nanos)`: blocks the current thread until
+    /// unparked, interrupted (the flag stays set) or the time elapses.
+    pub fn park_nanos(nanos: i64) {
+        if nanos <= 0 {
+            return;
+        }
+        let me = Thread::current();
+        let mut s = me.signals();
+        if s.permit {
+            s.permit = false;
+            return;
+        }
+        if s.interrupted {
+            return;
+        }
+        let (mut s, _) =
+            me.0.wake
+                .wait_timeout(s, Duration::from_nanos(nanos as u64))
+                .unwrap_or_else(|e| e.into_inner());
+        s.permit = false;
+    }
+
+    /// `LockSupport.unpark(thread)`.
+    pub fn unpark(&self) {
+        let mut s = self.signals();
+        s.permit = true;
+        self.0.wake.notify_all();
+    }
+
+    /// `Thread.setUncaughtExceptionHandler(handler)`.
+    pub fn set_uncaught_exception_handler(
+        &self,
+        handler: Option<Arc<dyn UncaughtExceptionHandler>>,
+    ) {
+        *self.0.handler.lock().unwrap_or_else(|e| e.into_inner()) = handler;
+    }
+
+    /// `Thread.getUncaughtExceptionHandler()`: the thread's own handler, or
+    /// its group (`ThreadGroup` is a handler too).
+    pub fn get_uncaught_exception_handler(&self) -> UncaughtDispatch {
+        if let Some(h) = self
+            .0
+            .handler
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+        {
+            return UncaughtDispatch::Handler(h);
+        }
+        match self.thread_group() {
+            Some(g) => UncaughtDispatch::Group(g),
+            None => UncaughtDispatch::None,
+        }
+    }
+
+    /// `Thread.setDefaultUncaughtExceptionHandler(handler)`.
+    pub fn set_default_uncaught_exception_handler(
+        handler: Option<Arc<dyn UncaughtExceptionHandler>>,
+    ) {
+        *DEFAULT_HANDLER.write().unwrap_or_else(|e| e.into_inner()) = handler;
+    }
+
+    /// `Thread.getDefaultUncaughtExceptionHandler()`.
+    pub fn get_default_uncaught_exception_handler() -> Option<Arc<dyn UncaughtExceptionHandler>> {
+        DEFAULT_HANDLER
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Whether two handler references are the same object (`==`).
+    pub fn same_handler(
+        a: &Arc<dyn UncaughtExceptionHandler>,
+        b: &Arc<dyn UncaughtExceptionHandler>,
+    ) -> bool {
+        std::ptr::eq(Arc::as_ptr(a) as *const u8, Arc::as_ptr(b) as *const u8)
+    }
+}
+
+/// What `Thread.getUncaughtExceptionHandler()` returns: the thread's own
+/// handler or its group.
+pub enum UncaughtDispatch {
+    /// A handler set with `setUncaughtExceptionHandler`.
+    Handler(Arc<dyn UncaughtExceptionHandler>),
+    /// The thread's group.
+    Group(Arc<ThreadGroup>),
+    /// A terminated thread: Java returns `null`.
+    None,
+}
+
+impl UncaughtDispatch {
+    /// `getUncaughtExceptionHandler().uncaughtException(t, e)`.
+    pub fn dispatch(&self, t: &Thread, e: Throwable) {
+        match self {
+            UncaughtDispatch::Handler(h) => h.uncaught_exception(t, e),
+            UncaughtDispatch::Group(g) => g.uncaught_exception(t, e),
+            UncaughtDispatch::None => {}
+        }
     }
 }
 
@@ -301,6 +733,13 @@ impl PartialEq for Thread {
 }
 
 impl Eq for Thread {}
+
+impl std::hash::Hash for Thread {
+    /// `Object.hashCode()`: identity.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        (Arc::as_ptr(&self.0) as usize).hash(state)
+    }
+}
 
 impl fmt::Display for Thread {
     /// `Thread.toString()` of JDK 25: `Thread[#id,name,priority,group]`,

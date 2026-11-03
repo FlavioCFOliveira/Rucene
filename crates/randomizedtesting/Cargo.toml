@@ -10,3 +10,9 @@ repository = "https://github.com/FlavioCFOliveira/Rucene"
 publish = false
 
 [dependencies]
+
+# The runner oracle: Rust suites under the ported RandomizedRunner against the
+# trace of the same Java suites under randomizedtesting 2.8.1.
+[[test]]
+name = "runner_oracle"
+harness = false

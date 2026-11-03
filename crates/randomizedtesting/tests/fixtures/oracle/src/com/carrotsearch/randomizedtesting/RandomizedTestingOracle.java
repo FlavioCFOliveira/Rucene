@@ -165,7 +165,24 @@ public class RandomizedTestingOracle {
       m.add(new Labeled("doubles(10000," + lbl + ")", (r, rec) -> r.doubles(DRAWS, p[0], p[1]).forEach(rec::d)));
       m.add(new Labeled("doubles(" + lbl + ")", (r, rec) -> r.doubles(p[0], p[1]).limit(DRAWS).forEach(rec::d)));
     }
+    for (Object[] p : equiDoublesCases()) {
+      double l = (Double) p[0], rt = (Double) p[1];
+      boolean li = (Boolean) p[2], ri = (Boolean) p[3];
+      String lbl = Long.toHexString(Double.doubleToLongBits(l)) + "," + Long.toHexString(Double.doubleToLongBits(rt)) + "," + li + "," + ri;
+      m.add(new Labeled("equiDoubles(" + lbl + ")", (r, rec) -> r.equiDoubles(l, rt, li, ri).limit(DRAWS).forEach(rec::d)));
+    }
     return m;
+  }
+
+  /** equiDoubles(left, right, isLeftIncluded, isRightIncluded) cases of the draw grid. */
+  static Object[][] equiDoublesCases() {
+    return new Object[][] {
+      {0d, 1d, true, false}, {0d, 1d, false, true}, {-1d, 1d, true, true}, {-1d, 1d, false, false},
+      {1e-300, 2e-300, true, true}, {-5d, -4.5d, false, true}, {-Double.MAX_VALUE, Double.MAX_VALUE, true, true},
+      {0d, Double.MIN_VALUE, true, true}, {3d, 3d, true, true}, {-1e-310, 1e-310, false, false},
+      {-3d, 1e-320, true, false}, {-1e-320, 7d, false, true}, {0d, 0d, true, true}, {-0d, 2d, true, true},
+      {1d, Math.nextUp(1d), true, false}, {1e15, 1e15 + 7, true, true}, {-1e18, -1e18 + 4096, true, true},
+    };
   }
 
   static Random gen(String kind, long seed) {
@@ -251,6 +268,14 @@ public class RandomizedTestingOracle {
         tryRecord(w, k + "doubles(1,1)", () -> r.doubles(1d, 1d));
         tryRecord(w, k + "doubles(10,0,inf)", () -> r.doubles(10, 0d, Double.POSITIVE_INFINITY));
         tryRecord(w, k + "doubles(10,NaN,1)", () -> r.doubles(10, Double.NaN, 1d));
+        tryRecord(w, k + "equiDoubles(NaN,1,T,T)", () -> r.equiDoubles(Double.NaN, 1d, true, true));
+        tryRecord(w, k + "equiDoubles(-inf,0,T,T)", () -> r.equiDoubles(Double.NEGATIVE_INFINITY, 0d, true, true));
+        tryRecord(w, k + "equiDoubles(0,inf,T,T)", () -> r.equiDoubles(0d, Double.POSITIVE_INFINITY, true, true));
+        tryRecord(w, k + "equiDoubles(0,NaN,T,T)", () -> r.equiDoubles(0d, Double.NaN, true, true));
+        tryRecord(w, k + "equiDoubles(1,0,T,T)", () -> r.equiDoubles(1d, 0d, true, true));
+        tryRecord(w, k + "equiDoubles(1,1,F,T)", () -> r.equiDoubles(1d, 1d, false, true));
+        tryRecord(w, k + "equiDoubles(1,1,T,F)", () -> r.equiDoubles(1d, 1d, true, false));
+        tryRecord(w, k + "equiDoubles(1,up1,F,F)", () -> r.equiDoubles(1d, Math.nextUp(1d), false, false));
         tryRecord(w, k + "setSeed(1)", () -> r.setSeed(1));
         tryRecord(w, k + "setSeed(0)", () -> r.setSeed(0));
       }

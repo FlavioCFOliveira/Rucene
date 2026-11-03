@@ -1,4 +1,4 @@
-//! Port of `generators/RandomStrings.java` (randomizedtesting 2.8.1).
+//! Port of `com.carrotsearch.randomizedtesting.generators.RandomStrings` (randomizedtesting 2.8.1).
 
 use std::sync::LazyLock;
 

@@ -1,4 +1,4 @@
-//! Port of `generators/RealisticUnicodeGenerator.java` (randomizedtesting
+//! Port of `com.carrotsearch.randomizedtesting.generators.RealisticUnicodeGenerator` (randomizedtesting
 //! 2.8.1).
 
 use super::{RandomNumbers, StringGenerator};

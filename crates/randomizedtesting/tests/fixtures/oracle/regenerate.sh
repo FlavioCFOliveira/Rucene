@@ -18,9 +18,10 @@ trap 'rm -rf "$work"' EXIT
 mapfile -t sources < <(find "$here/src" -name '*.java' | sort)
 java -m jdk.compiler/com.sun.tools.javac.Main -nowarn -cp "$cp" -d "$work/classes" "${sources[@]}"
 mkdir -p "$work/out"
-grep -v '^#' "$here/oracles.txt" | while read -r main; do
+grep -v '^#' "$here/oracles.txt" | while read -r main extra; do
   [ -n "$main" ] || continue
-  java -ea -cp "$work/classes:$cp" "$main" "$work/out" 2>/dev/null
+  # shellcheck disable=SC2086 # `extra` holds the further arguments.
+  java -ea -cp "$work/classes:$cp" "$main" "$work/out" $extra 2>/dev/null
 done
 cp "$work/out"/*.tsv "$fixtures/"
 # Data the crate itself embeds (JDK 25 lists), not test fixtures.

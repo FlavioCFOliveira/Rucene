@@ -1,4 +1,4 @@
-//! Port of `generators/RandomNumbers.java` (randomizedtesting 2.8.1).
+//! Port of `com.carrotsearch.randomizedtesting.generators.RandomNumbers` (randomizedtesting 2.8.1).
 
 use crate::jdk::exception::{self, illegal_argument, java_assert};
 use crate::jdk::random::Random;

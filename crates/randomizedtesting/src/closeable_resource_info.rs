@@ -15,7 +15,6 @@ use crate::threads::Threads;
 /// **Divergence.** Java keeps the registering thread's
 /// `StackTraceElement[]`; the port keeps a captured
 /// `std::backtrace::Backtrace` (empty unless backtrace capture is enabled).
-#[allow(dead_code)] // Package-private: RandomizedRunner (a later task) calls it.
 pub(crate) struct CloseableResourceInfo {
     resource: Arc<dyn Closeable>,
     scope: LifecycleScope,
@@ -23,7 +22,6 @@ pub(crate) struct CloseableResourceInfo {
     thread_name: String,
 }
 
-#[allow(dead_code)] // Package-private: RandomizedRunner (a later task) calls it.
 impl CloseableResourceInfo {
     /// `new CloseableResourceInfo(resource, scope, t, allocationStack)`.
     pub(crate) fn new(

@@ -1,4 +1,4 @@
-//! Port of `generators/CodepointSetGenerator.java` (randomizedtesting 2.8.1).
+//! Port of `com.carrotsearch.randomizedtesting.generators.CodepointSetGenerator` (randomizedtesting 2.8.1).
 
 use super::{array_length, string_from_code_points, RandomNumbers, StringGenerator};
 use crate::jdk::exception::illegal_argument;

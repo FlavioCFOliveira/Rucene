@@ -1,4 +1,4 @@
-//! Port of `generators/RandomBytes.java` (randomizedtesting 2.8.1).
+//! Port of `com.carrotsearch.randomizedtesting.generators.RandomBytes` (randomizedtesting 2.8.1).
 
 use super::{array_length, RandomNumbers};
 use crate::jdk::random::Random;

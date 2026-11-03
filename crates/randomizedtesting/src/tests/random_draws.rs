@@ -235,7 +235,41 @@ fn stream_methods() -> Vec<(String, Draw)> {
             Box::new(move |r, rec| (&r).doubles_range(o, b).take(DRAWS).for_each(|v| rec.d(v))),
         ));
     }
+    for (l, rt, li, ri) in equi_doubles_cases() {
+        let lbl = format!("{},{},{li},{ri}", hex_f64(l), hex_f64(rt));
+        m.push((
+            format!("equiDoubles({lbl})"),
+            Box::new(move |r, rec| {
+                (&r).equi_doubles(l, rt, li, ri)
+                    .take(DRAWS)
+                    .for_each(|v| rec.d(v))
+            }),
+        ));
+    }
     m
+}
+
+/// The oracle's `equiDoublesCases()`, case for case.
+fn equi_doubles_cases() -> Vec<(f64, f64, bool, bool)> {
+    vec![
+        (0.0, 1.0, true, false),
+        (0.0, 1.0, false, true),
+        (-1.0, 1.0, true, true),
+        (-1.0, 1.0, false, false),
+        (1e-300, 2e-300, true, true),
+        (-5.0, -4.5, false, true),
+        (-f64::MAX, f64::MAX, true, true),
+        (0.0, f64::from_bits(1), true, true),
+        (3.0, 3.0, true, true),
+        (-1e-310, 1e-310, false, false),
+        (-3.0, 1e-320, true, false),
+        (-1e-320, 7.0, false, true),
+        (0.0, 0.0, true, true),
+        (-0.0, 2.0, true, true),
+        (1.0, 1f64.next_up(), true, false),
+        (1e15, 1e15 + 7.0, true, true),
+        (-1e18, -1e18 + 4096.0, true, true),
+    ]
 }
 
 fn generator(kind: &str, seed: i64) -> Arc<dyn Random> {
@@ -532,6 +566,54 @@ fn error_calls() -> Vec<(&'static str, Call)> {
             "doubles(10,NaN,1)",
             Box::new(|r| {
                 (&r).doubles_sized_range(10, f64::NAN, 1.0);
+            }),
+        ),
+        (
+            "equiDoubles(NaN,1,T,T)",
+            Box::new(|r| {
+                (&r).equi_doubles(f64::NAN, 1.0, true, true);
+            }),
+        ),
+        (
+            "equiDoubles(-inf,0,T,T)",
+            Box::new(|r| {
+                (&r).equi_doubles(f64::NEG_INFINITY, 0.0, true, true);
+            }),
+        ),
+        (
+            "equiDoubles(0,inf,T,T)",
+            Box::new(|r| {
+                (&r).equi_doubles(0.0, f64::INFINITY, true, true);
+            }),
+        ),
+        (
+            "equiDoubles(0,NaN,T,T)",
+            Box::new(|r| {
+                (&r).equi_doubles(0.0, f64::NAN, true, true);
+            }),
+        ),
+        (
+            "equiDoubles(1,0,T,T)",
+            Box::new(|r| {
+                (&r).equi_doubles(1.0, 0.0, true, true);
+            }),
+        ),
+        (
+            "equiDoubles(1,1,F,T)",
+            Box::new(|r| {
+                (&r).equi_doubles(1.0, 1.0, false, true);
+            }),
+        ),
+        (
+            "equiDoubles(1,1,T,F)",
+            Box::new(|r| {
+                (&r).equi_doubles(1.0, 1.0, true, false);
+            }),
+        ),
+        (
+            "equiDoubles(1,up1,F,F)",
+            Box::new(|r| {
+                (&r).equi_doubles(1.0, 1f64.next_up(), false, false);
             }),
         ),
         ("setSeed(1)", Box::new(|r| r.set_seed(1))),

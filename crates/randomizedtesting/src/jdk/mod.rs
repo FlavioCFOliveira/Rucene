@@ -15,12 +15,16 @@
 //! JDK does and where the emulation differs.
 
 pub mod exception;
+pub mod format;
 pub mod io;
 pub mod lang;
 pub mod locale;
+pub mod logging;
 pub mod math;
 pub mod random;
+pub mod reflect;
 pub mod runtime;
 pub mod strict_math;
 pub mod system;
 pub mod thread;
+pub mod util;

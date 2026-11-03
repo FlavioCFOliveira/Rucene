@@ -13,9 +13,11 @@ use crate::group_evaluator::GroupEvaluator;
 use crate::jdk::exception::{self, illegal_argument, illegal_state};
 use crate::jdk::io::Closeable;
 use crate::jdk::random::Random;
+use crate::jdk::reflect::Class;
 use crate::jdk::thread::{State, Thread, ThreadGroup, WeakThread};
 use crate::lifecycle_scope::LifecycleScope;
 use crate::object_procedure::ObjectProcedure;
+use crate::randomized_runner::RandomizedRunner;
 use crate::randomness::Randomness;
 use crate::seed_utils::SeedUtils;
 use crate::threads::Threads;
@@ -91,7 +93,6 @@ fn find_context(
         .map(|(_, c)| Arc::clone(c))
 }
 
-#[allow(dead_code)] // Read by `create`, which RandomizedRunner (a later task) calls.
 static NEXT_IDENTITY: AtomicU64 = AtomicU64::new(1);
 
 /// The context of a test suite's execution (hooks and tests) under the
@@ -102,13 +103,11 @@ static NEXT_IDENTITY: AtomicU64 = AtomicU64::new(1);
 /// own stack of [`Randomness`], starting with a clone of the runner's.
 ///
 /// **Divergences.**
-/// * Java's `create(ThreadGroup, Class<?>, RandomizedRunner)` keeps the
-///   runner and reads its `runnerRandomness` and `groupEvaluator` fields;
-///   the runner is a later task, so `create` takes those two
-///   values, and `getRunner()` is not provided until the runner exists.
-/// * The suite class is its binary name (`Class.getName()`) and the target
-///   method its name (`Method.getName()`): Rust has no `Class` or `Method`
-///   objects.
+/// * The target method is its name (`Method.getName()`).
+/// * Besides Java's `create(ThreadGroup, Class<?>, RandomizedRunner)`
+///   (`create_for_runner`), the crate keeps a
+///   runner-less `create` for its own unit tests of the context; a context
+///   made that way has no runner and no suite `Class`.
 /// * Threads, groups and their weak references are the emulation of
 ///   [`crate::jdk::thread`]; the context's `toString()` identity hash is a
 ///   process-wide counter, not the JVM's identity hash.
@@ -116,13 +115,16 @@ pub struct RandomizedContext {
     identity: u64,
     /// Java's `_contextLock` and the state it guards.
     state: Mutex<ContextState>,
-    #[allow(dead_code)] // Read by `dispose`, which RandomizedRunner (a later task) calls.
     thread_group: Arc<ThreadGroup>,
     suite_class: String,
+    /// The suite `Class` (absent for a runner-less context).
+    suite_class_object: Option<Arc<Class>>,
+    /// `runner`.
+    runner: Option<RandomizedRunner>,
     /// `runner.runnerRandomness`.
     runner_randomness: Randomness,
     /// `runner.groupEvaluator`.
-    group_evaluator: GroupEvaluator,
+    group_evaluator: Arc<GroupEvaluator>,
     /// Java's `volatile boolean disposed`.
     disposed: AtomicBool,
     current_method: Mutex<Option<String>>,
@@ -141,6 +143,28 @@ impl RandomizedContext {
     pub fn get_target_class(&self) -> &str {
         self.check_disposed();
         &self.suite_class
+    }
+
+    /// `getTargetClass()` as the class object: `None` for a context made
+    /// without a runner.
+    ///
+    /// # Panics
+    ///
+    /// `IllegalStateException` once the context is disposed.
+    pub fn get_target_class_object(&self) -> Option<Arc<Class>> {
+        self.check_disposed();
+        self.suite_class_object.clone()
+    }
+
+    /// `getRunner()`: the runner of this context (`None` for a context made
+    /// without one).
+    ///
+    /// # Panics
+    ///
+    /// `IllegalStateException` once the context is disposed.
+    pub fn get_runner(&self) -> Option<RandomizedRunner> {
+        self.check_disposed();
+        self.runner.clone()
     }
 
     /// `getRunnerSeed()` (package-private): the runner's master seed.
@@ -172,7 +196,6 @@ impl RandomizedContext {
 
     /// `getRandomnesses()` (package-private): the calling thread's whole
     /// stack, the most recent (current) randomness last.
-    #[allow(dead_code)] // Package-private: RandomizedRunner (a later task) calls it.
     pub(crate) fn get_randomnesses(&self) -> Vec<Randomness> {
         self.with_per_thread(|r| r.randomnesses.iter().rev().cloned().collect())
     }
@@ -283,7 +306,6 @@ impl RandomizedContext {
     /// `closeResources(consumer, scope)` (package-private): hands every
     /// resource registered for `scope`, in registration order, to
     /// `consumer`, and forgets them.
-    #[allow(dead_code)] // Package-private: RandomizedRunner (a later task) calls it.
     pub(crate) fn close_resources(
         &self,
         mut consumer: impl ObjectProcedure<CloseableResourceInfo>,
@@ -340,15 +362,50 @@ impl RandomizedContext {
         context
     }
 
-    /// `create(ThreadGroup, Class<?>, RandomizedRunner)` (package-private):
-    /// a new context bound to `tg`, registered with an empty stack for the
-    /// calling thread, which must belong to `tg`.
-    #[allow(dead_code)] // Package-private: RandomizedRunner (a later task) calls it.
+    /// A runner-less context bound to `tg` (the crate's unit tests of the
+    /// context use it), registered with an empty stack for the calling
+    /// thread, which must belong to `tg`.
+    #[cfg(test)]
     pub(crate) fn create(
         tg: &Arc<ThreadGroup>,
         suite_class: &str,
         runner_randomness: Randomness,
         group_evaluator: GroupEvaluator,
+    ) -> Arc<RandomizedContext> {
+        RandomizedContext::register(
+            tg,
+            suite_class.to_string(),
+            None,
+            None,
+            runner_randomness,
+            Arc::new(group_evaluator),
+        )
+    }
+
+    /// `create(ThreadGroup, Class<?>, RandomizedRunner)` (package-private):
+    /// a new context bound to `tg` for the runner's suite, registered with
+    /// an empty stack for the calling thread, which must belong to `tg`.
+    pub(crate) fn create_for_runner(
+        tg: &Arc<ThreadGroup>,
+        runner: &RandomizedRunner,
+    ) -> Arc<RandomizedContext> {
+        RandomizedContext::register(
+            tg,
+            runner.suite_class().name().to_string(),
+            Some(Arc::clone(runner.suite_class())),
+            Some(runner.clone()),
+            runner.runner_randomness().clone(),
+            runner.group_evaluator(),
+        )
+    }
+
+    fn register(
+        tg: &Arc<ThreadGroup>,
+        suite_class: String,
+        suite_class_object: Option<Arc<Class>>,
+        runner: Option<RandomizedRunner>,
+        runner_randomness: Randomness,
+        group_evaluator: Arc<GroupEvaluator>,
     ) -> Arc<RandomizedContext> {
         let me = Thread::current();
         exception::java_assert_no_message(me.thread_group().is_some_and(|g| Arc::ptr_eq(&g, tg)));
@@ -357,7 +414,9 @@ impl RandomizedContext {
             identity: NEXT_IDENTITY.fetch_add(1, Ordering::Relaxed),
             state: Mutex::new(ContextState::default()),
             thread_group: Arc::clone(tg),
-            suite_class: suite_class.to_string(),
+            suite_class,
+            suite_class_object,
+            runner,
             runner_randomness,
             group_evaluator,
             disposed: AtomicBool::new(false),
@@ -375,7 +434,6 @@ impl RandomizedContext {
     /// # Panics
     ///
     /// `IllegalStateException` when already disposed.
-    #[allow(dead_code)] // Package-private: RandomizedRunner (a later task) calls it.
     pub(crate) fn dispose(&self) {
         let mut contexts = contexts();
         self.check_disposed();
@@ -443,7 +501,6 @@ impl RandomizedContext {
     /// `IllegalStateException` or `IllegalArgumentException` with Java's
     /// messages when `t` is started, has no group, is in another group, has
     /// no context, already has one, or the calling thread has none.
-    #[allow(dead_code)] // Package-private: RandomizedRunner (a later task) calls it.
     pub(crate) fn clone_for(t: &Thread) {
         if t.state() != State::New {
             illegal_state(format!(
@@ -480,7 +537,6 @@ impl RandomizedContext {
     }
 
     /// `setTargetMethod(Method)` (package-private).
-    #[allow(dead_code)] // Package-private: RandomizedRunner (a later task) calls it.
     pub(crate) fn set_target_method(&self, method: Option<&str>) {
         *self
             .current_method

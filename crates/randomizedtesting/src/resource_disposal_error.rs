@@ -11,14 +11,12 @@ use std::sync::Arc;
 /// (package-private). The runner builds it with the resource's registration
 /// stack as its stack.
 #[derive(Debug)]
-#[allow(dead_code)] // Package-private: RandomizedRunner (a later task) calls it.
 pub(crate) struct ResourceDisposalError {
     message: String,
     cause: Box<dyn Error + Send + Sync>,
     stack: Option<Arc<Backtrace>>,
 }
 
-#[allow(dead_code)] // Package-private: RandomizedRunner (a later task) calls it.
 impl ResourceDisposalError {
     /// `new ResourceDisposalError(msg, cause)`.
     pub(crate) fn new(message: String, cause: Box<dyn Error + Send + Sync>) -> Self {
@@ -34,12 +32,28 @@ impl ResourceDisposalError {
         self.stack = Some(stack);
     }
 
+    /// The error as the runner reports it: a
+    /// `com.carrotsearch.randomizedtesting.ResourceDisposalError` throwable
+    /// caused by the resource's `IOException`.
+    pub(crate) fn to_throwable(&self) -> crate::jdk::exception::Throwable {
+        crate::jdk::exception::Throwable::with_cause(
+            crate::randomized_runner::RESOURCE_DISPOSAL_ERROR,
+            Some(self.message.clone()),
+            crate::jdk::exception::Throwable::new(
+                crate::jdk::exception::IO_EXCEPTION,
+                self.cause.to_string(),
+            ),
+        )
+    }
+
     /// `getMessage()`.
+    #[allow(dead_code)] // Java declares it; the runner reports `to_throwable`.
     pub(crate) fn get_message(&self) -> &str {
         &self.message
     }
 
     /// `getStackTrace()`.
+    #[allow(dead_code)] // Java declares it; the runner reports `to_throwable`.
     pub(crate) fn get_stack_trace(&self) -> Option<&Arc<Backtrace>> {
         self.stack.as_ref()
     }

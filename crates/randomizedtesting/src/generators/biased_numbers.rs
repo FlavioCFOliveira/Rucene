@@ -1,4 +1,4 @@
-//! Port of `generators/BiasedNumbers.java` (randomizedtesting 2.8.1).
+//! Port of `com.carrotsearch.randomizedtesting.generators.BiasedNumbers` (randomizedtesting 2.8.1).
 
 use super::RandomNumbers;
 use crate::jdk::exception::{self, java_assert, java_assert_no_message};

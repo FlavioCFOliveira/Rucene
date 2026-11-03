@@ -1,4 +1,4 @@
-//! Port of `generators/StringGenerator.java` (randomizedtesting 2.8.1).
+//! Port of `com.carrotsearch.randomizedtesting.generators.StringGenerator` (randomizedtesting 2.8.1).
 
 use crate::jdk::random::Random;
 
