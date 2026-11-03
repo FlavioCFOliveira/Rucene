@@ -1,0 +1,3 @@
+# One oracle main class per line; regenerate.sh runs each with the fixture
+# directory as its only argument.
+com.carrotsearch.randomizedtesting.RandomizedTestingOracle

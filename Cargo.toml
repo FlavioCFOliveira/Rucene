@@ -10,6 +10,17 @@ repository = "https://github.com/FlavioCFOliveira/Rucene"
 keywords = ["lucene", "search", "index", "information-retrieval", "rust"]
 categories = ["database-implementations", "data-structures", "algorithms"]
 
+# The crates of the port, one per Lucene module (user decision 2026-11-03):
+# `rucene` (lucene/core, this package), `rucene-codecs` (lucene/codecs),
+# `randomizedtesting` (com.carrotsearch.randomizedtesting 2.8.1, the runner of
+# Lucene's tests) and `rucene-test-framework` (lucene/test-framework).
+[workspace]
+members = [
+    "crates/rucene-codecs",
+    "crates/randomizedtesting",
+    "crates/rucene-test-framework",
+]
+
 [features]
 default = ["std", "mmap"]
 std = []
@@ -87,6 +98,8 @@ proptest = "1"
 criterion = { version = "0.5", features = ["async_tokio"] }
 tempfile = "3"
 base64 = "0.22"
+# lucene/test-framework, which Lucene's own core tests are written against.
+rucene-test-framework = { path = "crates/rucene-test-framework" }
 
 [[test]]
 name = "delete_by_query"

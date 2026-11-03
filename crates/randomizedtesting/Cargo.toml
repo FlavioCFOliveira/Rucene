@@ -1,0 +1,12 @@
+[package]
+name = "randomizedtesting"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+authors = ["Flavio CF Oliveira"]
+license = "Apache-2.0"
+description = "Rust port of randomizedtesting 2.8.1 (com.carrotsearch.randomizedtesting), the runner of Apache Lucene's tests."
+repository = "https://github.com/FlavioCFOliveira/Rucene"
+publish = false
+
+[dependencies]

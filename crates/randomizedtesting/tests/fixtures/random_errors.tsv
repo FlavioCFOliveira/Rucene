@@ -1,0 +1,123 @@
+# gen	call	class	message
+jdk	nextInt(0)	java.lang.IllegalArgumentException	bound must be positive
+jdk	nextInt(-1)	java.lang.IllegalArgumentException	bound must be positive
+jdk	nextInt(5,5)	java.lang.IllegalArgumentException	bound must be greater than origin
+jdk	nextInt(5,4)	java.lang.IllegalArgumentException	bound must be greater than origin
+jdk	nextLong(0)	java.lang.IllegalArgumentException	bound must be positive
+jdk	nextLong(-1)	java.lang.IllegalArgumentException	bound must be positive
+jdk	nextLong(3,3)	java.lang.IllegalArgumentException	bound must be greater than origin
+jdk	nextLong(3,2)	java.lang.IllegalArgumentException	bound must be greater than origin
+jdk	nextFloat(0)	java.lang.IllegalArgumentException	bound must be finite and positive
+jdk	nextFloat(-1)	java.lang.IllegalArgumentException	bound must be finite and positive
+jdk	nextFloat(NaN)	java.lang.IllegalArgumentException	bound must be finite and positive
+jdk	nextFloat(inf)	java.lang.IllegalArgumentException	bound must be finite and positive
+jdk	nextFloat(1,1)	java.lang.IllegalArgumentException	bound must be greater than origin
+jdk	nextFloat(0,inf)	java.lang.IllegalArgumentException	bound must be greater than origin
+jdk	nextFloat(-inf,0)	java.lang.IllegalArgumentException	bound must be greater than origin
+jdk	nextFloat(NaN,1)	java.lang.IllegalArgumentException	bound must be greater than origin
+jdk	nextDouble(0)	java.lang.IllegalArgumentException	bound must be finite and positive
+jdk	nextDouble(-1)	java.lang.IllegalArgumentException	bound must be finite and positive
+jdk	nextDouble(NaN)	java.lang.IllegalArgumentException	bound must be finite and positive
+jdk	nextDouble(inf)	java.lang.IllegalArgumentException	bound must be finite and positive
+jdk	nextDouble(1,1)	java.lang.IllegalArgumentException	bound must be greater than origin
+jdk	nextDouble(0,inf)	java.lang.IllegalArgumentException	bound must be greater than origin
+jdk	nextDouble(-inf,0)	java.lang.IllegalArgumentException	bound must be greater than origin
+jdk	nextDouble(NaN,1)	java.lang.IllegalArgumentException	bound must be greater than origin
+jdk	ints(-1)	java.lang.IllegalArgumentException	size must be non-negative
+jdk	ints(5,5)	java.lang.IllegalArgumentException	bound must be greater than origin
+jdk	ints(10,5,5)	java.lang.IllegalArgumentException	bound must be greater than origin
+jdk	ints(-1,0,5)	java.lang.IllegalArgumentException	size must be non-negative
+jdk	longs(-1)	java.lang.IllegalArgumentException	size must be non-negative
+jdk	longs(5,5)	java.lang.IllegalArgumentException	bound must be greater than origin
+jdk	longs(10,5,5)	java.lang.IllegalArgumentException	bound must be greater than origin
+jdk	doubles(-1)	java.lang.IllegalArgumentException	size must be non-negative
+jdk	doubles(1,1)	java.lang.IllegalArgumentException	bound must be greater than origin
+jdk	doubles(10,0,inf)	java.lang.IllegalArgumentException	bound must be greater than origin
+jdk	doubles(10,NaN,1)	java.lang.IllegalArgumentException	bound must be greater than origin
+jdk	setSeed(1)	OK	-
+jdk	setSeed(0)	OK	-
+xoro	nextInt(0)	java.lang.IllegalArgumentException	bound must be positive
+xoro	nextInt(-1)	java.lang.IllegalArgumentException	bound must be positive
+xoro	nextInt(5,5)	java.lang.IllegalArgumentException	bound must be greater than origin
+xoro	nextInt(5,4)	java.lang.IllegalArgumentException	bound must be greater than origin
+xoro	nextLong(0)	java.lang.IllegalArgumentException	bound must be positive
+xoro	nextLong(-1)	java.lang.IllegalArgumentException	bound must be positive
+xoro	nextLong(3,3)	java.lang.IllegalArgumentException	bound must be greater than origin
+xoro	nextLong(3,2)	java.lang.IllegalArgumentException	bound must be greater than origin
+xoro	nextFloat(0)	java.lang.IllegalArgumentException	bound must be finite and positive
+xoro	nextFloat(-1)	java.lang.IllegalArgumentException	bound must be finite and positive
+xoro	nextFloat(NaN)	java.lang.IllegalArgumentException	bound must be finite and positive
+xoro	nextFloat(inf)	java.lang.IllegalArgumentException	bound must be finite and positive
+xoro	nextFloat(1,1)	java.lang.IllegalArgumentException	bound must be greater than origin
+xoro	nextFloat(0,inf)	java.lang.IllegalArgumentException	bound must be greater than origin
+xoro	nextFloat(-inf,0)	java.lang.IllegalArgumentException	bound must be greater than origin
+xoro	nextFloat(NaN,1)	java.lang.IllegalArgumentException	bound must be greater than origin
+xoro	nextDouble(0)	java.lang.IllegalArgumentException	bound must be finite and positive
+xoro	nextDouble(-1)	java.lang.IllegalArgumentException	bound must be finite and positive
+xoro	nextDouble(NaN)	java.lang.IllegalArgumentException	bound must be finite and positive
+xoro	nextDouble(inf)	java.lang.IllegalArgumentException	bound must be finite and positive
+xoro	nextDouble(1,1)	java.lang.IllegalArgumentException	bound must be greater than origin
+xoro	nextDouble(0,inf)	java.lang.IllegalArgumentException	bound must be greater than origin
+xoro	nextDouble(-inf,0)	java.lang.IllegalArgumentException	bound must be greater than origin
+xoro	nextDouble(NaN,1)	java.lang.IllegalArgumentException	bound must be greater than origin
+xoro	ints(-1)	java.lang.IllegalArgumentException	size must be non-negative
+xoro	ints(5,5)	java.lang.IllegalArgumentException	bound must be greater than origin
+xoro	ints(10,5,5)	java.lang.IllegalArgumentException	bound must be greater than origin
+xoro	ints(-1,0,5)	java.lang.IllegalArgumentException	size must be non-negative
+xoro	longs(-1)	java.lang.IllegalArgumentException	size must be non-negative
+xoro	longs(5,5)	java.lang.IllegalArgumentException	bound must be greater than origin
+xoro	longs(10,5,5)	java.lang.IllegalArgumentException	bound must be greater than origin
+xoro	doubles(-1)	java.lang.IllegalArgumentException	size must be non-negative
+xoro	doubles(1,1)	java.lang.IllegalArgumentException	bound must be greater than origin
+xoro	doubles(10,0,inf)	java.lang.IllegalArgumentException	bound must be greater than origin
+xoro	doubles(10,NaN,1)	java.lang.IllegalArgumentException	bound must be greater than origin
+xoro	setSeed(1)	java.lang.RuntimeException	RandomizedRunner prevents changing the seed of its random generators to assure repeatability of tests. If you need a mutable instance of Random, create a new (local) instance, preferably with the initial seed aquired from this Random instance.
+xoro	setSeed(0)	java.lang.RuntimeException	RandomizedRunner prevents changing the seed of its random generators to assure repeatability of tests. If you need a mutable instance of Random, create a new (local) instance, preferably with the initial seed aquired from this Random instance.
+asserting	nextInt(0)	java.lang.IllegalArgumentException	bound must be positive
+asserting	nextInt(-1)	java.lang.IllegalArgumentException	bound must be positive
+asserting	nextInt(5,5)	java.lang.IllegalArgumentException	bound must be greater than origin
+asserting	nextInt(5,4)	java.lang.IllegalArgumentException	bound must be greater than origin
+asserting	nextLong(0)	java.lang.IllegalArgumentException	bound must be positive
+asserting	nextLong(-1)	java.lang.IllegalArgumentException	bound must be positive
+asserting	nextLong(3,3)	java.lang.IllegalArgumentException	bound must be greater than origin
+asserting	nextLong(3,2)	java.lang.IllegalArgumentException	bound must be greater than origin
+asserting	nextFloat(0)	java.lang.IllegalArgumentException	bound must be finite and positive
+asserting	nextFloat(-1)	java.lang.IllegalArgumentException	bound must be finite and positive
+asserting	nextFloat(NaN)	java.lang.IllegalArgumentException	bound must be finite and positive
+asserting	nextFloat(inf)	java.lang.IllegalArgumentException	bound must be finite and positive
+asserting	nextFloat(1,1)	java.lang.IllegalArgumentException	bound must be greater than origin
+asserting	nextFloat(0,inf)	java.lang.IllegalArgumentException	bound must be greater than origin
+asserting	nextFloat(-inf,0)	java.lang.IllegalArgumentException	bound must be greater than origin
+asserting	nextFloat(NaN,1)	java.lang.IllegalArgumentException	bound must be greater than origin
+asserting	nextDouble(0)	java.lang.IllegalArgumentException	bound must be finite and positive
+asserting	nextDouble(-1)	java.lang.IllegalArgumentException	bound must be finite and positive
+asserting	nextDouble(NaN)	java.lang.IllegalArgumentException	bound must be finite and positive
+asserting	nextDouble(inf)	java.lang.IllegalArgumentException	bound must be finite and positive
+asserting	nextDouble(1,1)	java.lang.IllegalArgumentException	bound must be greater than origin
+asserting	nextDouble(0,inf)	java.lang.IllegalArgumentException	bound must be greater than origin
+asserting	nextDouble(-inf,0)	java.lang.IllegalArgumentException	bound must be greater than origin
+asserting	nextDouble(NaN,1)	java.lang.IllegalArgumentException	bound must be greater than origin
+asserting	ints(-1)	java.lang.IllegalArgumentException	size must be non-negative
+asserting	ints(5,5)	java.lang.IllegalArgumentException	bound must be greater than origin
+asserting	ints(10,5,5)	java.lang.IllegalArgumentException	bound must be greater than origin
+asserting	ints(-1,0,5)	java.lang.IllegalArgumentException	size must be non-negative
+asserting	longs(-1)	java.lang.IllegalArgumentException	size must be non-negative
+asserting	longs(5,5)	java.lang.IllegalArgumentException	bound must be greater than origin
+asserting	longs(10,5,5)	java.lang.IllegalArgumentException	bound must be greater than origin
+asserting	doubles(-1)	java.lang.IllegalArgumentException	size must be non-negative
+asserting	doubles(1,1)	java.lang.IllegalArgumentException	bound must be greater than origin
+asserting	doubles(10,0,inf)	java.lang.IllegalArgumentException	bound must be greater than origin
+asserting	doubles(10,NaN,1)	java.lang.IllegalArgumentException	bound must be greater than origin
+asserting	setSeed(1)	java.lang.RuntimeException	RandomizedRunner prevents changing the seed of its random generators to assure repeatability of tests. If you need a mutable instance of Random, create a new (local) instance, preferably with the initial seed aquired from this Random instance.
+asserting	setSeed(0)	java.lang.RuntimeException	RandomizedRunner prevents changing the seed of its random generators to assure repeatability of tests. If you need a mutable instance of Random, create a new (local) instance, preferably with the initial seed aquired from this Random instance.
+asserting	next(32)	java.lang.RuntimeException	Shouldn't be reachable.
+asserting	foreign-thread	java.lang.IllegalStateException	This Random was created for/by another thread (Thread[#3,main,5,main]). Random instances must not be shared (acquire per-thread). Current thread: Thread[#44,foreign-thread,5,main]
+asserting	foreign-thread-cause	com.carrotsearch.randomizedtesting.StackTraceHolder	Original allocation stack for this Random (allocated by Thread[#3,main,5,main])
+asserting	destroyed-nextInt	java.lang.IllegalStateException	This Random instance has been invalidated and is probably used out of its allowed context (test or suite).
+thread	Thread.toString	Thread[#3,main,5,main]
+thread	Threads.threadName	Thread[id=3, name=main, state=RUNNABLE, group=main]
+thread	isVerifying	true
+thread	Threads.threadName(new)	Thread[id=45, name=unstarted, state=NEW, group=main]
+thread	Thread.toString(new)	Thread[#45,unstarted,5,main]
+thread	Threads.threadName(terminated)	Thread[id=45, name=unstarted, state=TERMINATED, group={null group}]
+thread	Thread.toString(terminated)	Thread[#45,unstarted,5,]
