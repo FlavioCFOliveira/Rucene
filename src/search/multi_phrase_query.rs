@@ -218,13 +218,6 @@ impl MultiPhraseQuery {
         &self.positions
     }
 
-    /// Returns the field this query applies to, or `None` when it has no term.
-    ///
-    /// Equivalent to reading the `private final String field` field.
-    pub fn get_field(&self) -> Option<&str> {
-        self.field.as_deref()
-    }
-
     /// Breakout calculation of the term-arrays hash code.
     ///
     /// Equivalent to the private `MultiPhraseQuery.termArraysHashCode()`, whose
@@ -798,11 +791,6 @@ impl UnionPostingsEnum {
     /// Equivalent to reading the `int posQueueDoc` field.
     pub fn pos_queue_doc(&self) -> i32 {
         self.pos_queue_doc
-    }
-
-    /// Records the document the position state was built for.
-    pub fn set_pos_queue_doc(&mut self, doc: i32) {
-        self.pos_queue_doc = doc;
     }
 }
 

@@ -443,7 +443,6 @@ pub fn ordinal_range(min_ord: i64, max_ord: i64) -> Option<(i64, i64)> {
 #[derive(Debug)]
 struct DocValuesWeightImpl<S: DocValuesScorerSource> {
     source: S,
-    score: f32,
     score_mode: ScoreMode,
 }
 
@@ -503,6 +502,7 @@ impl<S: DocValuesScorerSource> ConstantScoreWeightImpl for DocValuesWeightImpl<S
     fn scorer_supplier(
         &self,
         context: &LeafReaderContext,
+        score: f32,
     ) -> Result<Option<Box<dyn ScorerSupplier>>> {
         let reader = context.leaf_reader();
         if reader
@@ -513,7 +513,7 @@ impl<S: DocValuesScorerSource> ConstantScoreWeightImpl for DocValuesWeightImpl<S
             return Ok(None);
         }
         self.source
-            .scorer_supplier(reader.as_ref(), self.score, self.score_mode)
+            .scorer_supplier(reader.as_ref(), score, self.score_mode)
     }
 
     fn is_cacheable(&self, ctx: &LeafReaderContext) -> bool {
@@ -883,7 +883,6 @@ impl Query for SortedNumericDocValuesRangeQuery {
             boost,
             DocValuesWeightImpl {
                 source: self.source(),
-                score: boost,
                 score_mode,
             },
         )))
@@ -1028,7 +1027,6 @@ impl Query for SortedNumericDocValuesSetQuery {
                     field: self.field.clone(),
                     numbers: self.values.clone(),
                 },
-                score: boost,
                 score_mode,
             },
         )))
@@ -1288,7 +1286,6 @@ impl Query for SortedSetDocValuesRangeQuery {
                     lower_inclusive: self.lower_inclusive,
                     upper_inclusive: self.upper_inclusive,
                 },
-                score: boost,
                 score_mode,
             },
         )))

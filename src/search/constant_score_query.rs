@@ -213,7 +213,6 @@ impl ScorerSupplier for ConstantScoreQuerySupplier {
 #[derive(Debug)]
 struct ConstantScoreQueryWeight {
     inner_weight: Arc<dyn Weight>,
-    score: f32,
     score_mode: ScoreMode,
 }
 
@@ -221,13 +220,14 @@ impl ConstantScoreWeightImpl for ConstantScoreQueryWeight {
     fn scorer_supplier(
         &self,
         context: &LeafReaderContext,
+        score: f32,
     ) -> Result<Option<Box<dyn ScorerSupplier>>> {
         let Some(inner) = self.inner_weight.scorer_supplier(context)? else {
             return Ok(None);
         };
         Ok(Some(Box::new(ConstantScoreQuerySupplier {
             inner,
-            score: self.score,
+            score: score,
             score_mode: self.score_mode,
         })))
     }
@@ -240,7 +240,12 @@ impl ConstantScoreWeightImpl for ConstantScoreQueryWeight {
         self.inner_weight.count(context)
     }
 
-    fn matches(&self, context: &LeafReaderContext, doc: i32) -> Result<Option<Arc<dyn Matches>>> {
+    fn matches(
+        &self,
+        context: &LeafReaderContext,
+        doc: i32,
+        _score: f32,
+    ) -> Result<Option<Arc<dyn Matches>>> {
         self.inner_weight.matches(context, doc)
     }
 }
@@ -323,7 +328,6 @@ impl Query for ConstantScoreQuery {
                 boost,
                 ConstantScoreQueryWeight {
                     inner_weight,
-                    score: boost,
                     score_mode,
                 },
             )))

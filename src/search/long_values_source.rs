@@ -111,10 +111,7 @@ pub fn get_sort_field_with_missing(
     let field = source.to_source_string();
     SortField::new_custom(
         Some(field),
-        Arc::new(LongValuesComparatorSource {
-            producer: source,
-            missing_value,
-        }),
+        Arc::new(LongValuesComparatorSource::new(source, missing_value)),
         reverse,
     )
 }

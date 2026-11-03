@@ -144,10 +144,9 @@ pub trait DoubleValuesSource: SegmentCacheable + Debug + Send + Sync {
         score_explanation: &Explanation,
     ) -> Result<Explanation> {
         let description = self.to_source_string();
-        let constant: Arc<dyn DoubleValuesSource> = Arc::new(ConstantValuesSource::new(
-            score_explanation.value().double_value(),
-        ));
-        let scores = constant.get_values(ctx, None)?;
+        // `DoubleValuesSource.constant(scoreExplanation.getValue().doubleValue())`
+        // (`DoubleValuesSource.java:70-74`).
+        let scores = constant(score_explanation.value().double_value()).get_values(ctx, None)?;
         let mut values = self.get_values(ctx, Some(scores))?;
         if values.advance_exact(doc_id)? {
             let value = values.double_value()?;
@@ -193,10 +192,7 @@ pub fn get_sort_field_with_missing(
     let field = source.to_source_string();
     SortField::new_custom(
         Some(field),
-        Arc::new(DoubleValuesComparatorSource {
-            producer: source,
-            missing_value,
-        }),
+        Arc::new(DoubleValuesComparatorSource::new(source, missing_value)),
         reverse,
     )
 }

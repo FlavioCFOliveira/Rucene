@@ -1092,14 +1092,22 @@ impl ConstantScoreWeightImpl for CachingWrapperWeightImpl {
         self.inner.is_cacheable(ctx)
     }
 
-    fn matches(&self, context: &LeafReaderContext, doc: i32) -> Result<Option<Arc<dyn Matches>>> {
+    fn matches(
+        &self,
+        context: &LeafReaderContext,
+        doc: i32,
+        _score: f32,
+    ) -> Result<Option<Arc<dyn Matches>>> {
         self.inner.matches(context, doc)
     }
 
     fn scorer_supplier(
         &self,
         context: &LeafReaderContext,
+        _score: f32,
     ) -> Result<Option<Box<dyn ScorerSupplier>>> {
+        // Java's `CachingWrapperWeight` scores its cached suppliers with `0f`
+        // and its uncached ones through the wrapped weight, never `score()`.
         self.mark_used();
 
         if !self.inner.is_cacheable(context) {

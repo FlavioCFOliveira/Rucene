@@ -322,6 +322,11 @@ impl HnswGraphSearcher {
                     }
                 }
             }
+            // `results.getSearchStrategy().nextVectorsBlock()`
+            // (`HnswGraphSearcher.java:363-365`).
+            if let Some(strategy) = results.get_search_strategy() {
+                strategy.next_vectors_block();
+            }
         }
         Ok(())
     }
@@ -587,6 +592,11 @@ impl OnHeapSearcher {
                         }
                     }
                 }
+            }
+            // `results.getSearchStrategy().nextVectorsBlock()`
+            // (`HnswGraphSearcher.java:363-365`).
+            if let Some(strategy) = results.get_search_strategy() {
+                strategy.next_vectors_block();
             }
         }
         Ok(())

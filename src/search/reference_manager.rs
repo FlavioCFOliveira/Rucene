@@ -353,14 +353,6 @@ impl<G: ManagedReference + ?Sized + 'static> ReferenceManager<G> {
         listeners.retain(|x| !Arc::ptr_eq(x, listener));
     }
 
-    /// Returns the refresh source supplied at construction.
-    ///
-    /// Useful for concrete managers that need to invoke the lifecycle hooks
-    /// directly.
-    pub fn source(&self) -> &Arc<dyn RefreshSource<G>> {
-        &self.source
-    }
-
     // -- internals -----------------------------------------------------------
 
     /// Throws `AlreadyClosed` if the manager is closed.

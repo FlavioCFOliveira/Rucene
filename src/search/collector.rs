@@ -353,21 +353,6 @@ impl<T: SimpleCollectorImpl> SimpleCollector<T> {
     pub fn new(inner: T) -> Self {
         Self { inner }
     }
-
-    /// Returns the wrapped behaviour.
-    pub fn inner(&self) -> &T {
-        &self.inner
-    }
-
-    /// Returns the wrapped behaviour for mutation.
-    pub fn inner_mut(&mut self) -> &mut T {
-        &mut self.inner
-    }
-
-    /// Unwraps this collector, returning the behaviour it was built from.
-    pub fn into_inner(self) -> T {
-        self.inner
-    }
 }
 
 impl<T: SimpleCollectorImpl> Collector for SimpleCollector<T> {
@@ -467,11 +452,6 @@ impl<L: LeafCollector> FilterLeafCollector<L> {
     /// Equivalent to `new FilterLeafCollector(LeafCollector)`.
     pub fn new(inner: L) -> Self {
         Self { inner }
-    }
-
-    /// Unwraps this collector.
-    pub fn into_inner(self) -> L {
-        self.inner
     }
 }
 

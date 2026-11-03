@@ -16,9 +16,8 @@ use crate::index::{
 };
 use crate::search::batch_score_bulk_scorer::BatchScoreBulkScorer;
 use crate::search::bulk_scorer::BulkScorer;
-use crate::search::constant_score_scorer::ConstantScoreScorer;
 use crate::search::constant_score_scorer_supplier::ConstantScoreScorerSupplier;
-use crate::search::doc_id_set_iterator::{self, DocIdSetIterator};
+use crate::search::doc_id_set_iterator::DocIdSetIterator;
 use crate::search::index_searcher::IndexSearcher;
 use crate::search::matches::{Matches, MatchesIterator, MatchesUtils};
 use crate::search::query::Query;
@@ -586,18 +585,4 @@ impl ScorerSupplier for TermScorerSupplier {
         self.top_level_scoring_clause = true;
         Ok(())
     }
-}
-
-/// Keeps the imports that only the empty-scorer branch of Java's supplier uses
-/// referenced; see [`TermScorerSupplier::term_scorer`].
-///
-/// Java's `get(long)` answers
-/// `new ConstantScoreScorer(0f, scoreMode, DocIdSetIterator.empty())` when the
-/// deferred term lookup finds nothing. That branch is unreachable in this port:
-/// [`TermStates`] resolves every lookup eagerly, so
-/// [`TermWeight::scorer_supplier`] has already answered `None` in that case.
-/// This function spells the branch out so that the behaviour is recorded and
-/// available should the lookup ever become lazy again.
-pub fn empty_term_scorer(score_mode: ScoreMode) -> ConstantScoreScorer {
-    ConstantScoreScorer::from_iterator(0.0, score_mode, Box::new(doc_id_set_iterator::empty()))
 }

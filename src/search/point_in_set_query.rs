@@ -601,7 +601,6 @@ impl PointInSetScorerSupplier {
 #[derive(Debug)]
 struct PointInSetWeight {
     query: Arc<PointInSetQuery>,
-    score: f32,
     score_mode: ScoreMode,
 }
 
@@ -609,6 +608,7 @@ impl ConstantScoreWeightImpl for PointInSetWeight {
     fn scorer_supplier(
         &self,
         context: &LeafReaderContext,
+        score: f32,
     ) -> Result<Option<Box<dyn ScorerSupplier>>> {
         let reader = context.leaf_reader();
         let Some(values) = reader.get_point_values(&self.query.field)? else {
@@ -659,7 +659,7 @@ impl ConstantScoreWeightImpl for PointInSetWeight {
             query: Arc::clone(&self.query),
             values,
             max_doc: reader.max_doc(),
-            score: self.score,
+            score: score,
             score_mode: self.score_mode,
             cost: None,
         };
@@ -725,7 +725,6 @@ impl Query for PointInSetQuery {
         });
         let inner = PointInSetWeight {
             query: Arc::clone(&query),
-            score: boost,
             score_mode,
         };
         Ok(Arc::new(ConstantScoreWeight::new(query, boost, inner)))

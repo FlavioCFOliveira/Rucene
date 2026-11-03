@@ -102,6 +102,9 @@ impl BinarySortField {
     }
 
     /// Returns this sort field as a [`SortField`].
+    ///
+    /// Java's `BinarySortField` *is* a `SortField` (`BinarySortField.java:42`);
+    /// this port composes one, and this borrow is the upcast.
     pub fn sort_field(&self) -> &SortField {
         &self.sort_field
     }
@@ -175,12 +178,16 @@ impl BinarySortField {
     /// [`comparator`](Self::comparator) and reading
     /// [`get_sort_key_doc_values`](Self::get_sort_key_doc_values).
     pub fn get_index_sorter(&self) -> Arc<dyn IndexSorter> {
-        binary_index_sorter(
-            self.get_field().unwrap_or(""),
-            self.sort_field.reverse(),
-            self.sort_field.missing_value(),
+        // `this::getSortKeyDocValues` (`BinarySortField.java:180-181`).
+        let this = self.clone();
+        let values_provider: BinaryDocValuesProvider =
+            Arc::new(move |reader: &dyn LeafReader| this.get_sort_key_doc_values(reader));
+        Arc::new(BinarySorter::new(
             self.provider_name(),
-        )
+            self.sort_field.reverse(),
+            self.comparator(),
+            values_provider,
+        ))
     }
 
     /// Returns the unsigned byte-order comparator that treats a missing value
@@ -252,29 +259,6 @@ fn binary_comparator(missing_value: Option<MissingValue>) -> BinaryComparator {
             }
         }
     })
-}
-
-/// Builds the index sorter of a binary sort field.
-///
-/// Shared by [`BinarySortField::get_index_sorter`] and
-/// [`SortField::get_index_sorter`], which dispatches on the subclass identity a
-/// [`SortField`] carries; see [`SortFieldKind`].
-pub(crate) fn binary_index_sorter(
-    field: &str,
-    reverse: bool,
-    missing_value: Option<MissingValue>,
-    provider_name: &str,
-) -> Arc<dyn IndexSorter> {
-    let field = field.to_string();
-    // `this::getSortKeyDocValues`, whose default is `DocValues.getBinary`.
-    let values_provider: BinaryDocValuesProvider =
-        Arc::new(move |reader: &dyn LeafReader| DocValues::get_binary(reader, &field));
-    Arc::new(BinarySorter::new(
-        provider_name,
-        reverse,
-        binary_comparator(missing_value),
-        values_provider,
-    ))
 }
 
 impl From<BinarySortField> for SortField {

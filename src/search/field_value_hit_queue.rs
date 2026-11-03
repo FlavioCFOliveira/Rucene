@@ -316,13 +316,6 @@ impl FieldValueHitQueue {
         self.size
     }
 
-    /// The number of entries the queue can hold.
-    ///
-    /// Equivalent to the inherited `PriorityQueue.maxSize()`.
-    pub fn max_size(&self) -> usize {
-        self.max_size
-    }
-
     /// Removes every entry.
     ///
     /// Equivalent to the inherited `PriorityQueue.clear()`.

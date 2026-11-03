@@ -332,11 +332,9 @@ pub use doc_id_set_bulk_iterator::DocIdSetBulkIterator;
 pub use doc_id_stream::{CheckedIntConsumer, DocIdStream, RangeDocIdStream};
 pub use doc_values_range_iterator::DocValuesRangeIterator;
 pub use doc_values_rewrite_method::{DocValuesRewriteMethod, MultiTermQueryDocValuesWrapper};
-pub use double_values::{
-    with_default, DoubleValues, EmptyDoubleValues, ScorerDoubleValues, WithDefaultDoubleValues,
-};
+pub use double_values::{with_default, DoubleValues, EmptyDoubleValues, WithDefaultDoubleValues};
 pub use double_values_source::{
-    DoubleValueDecoder, DoubleValuesComparatorSource, DoubleValuesSource,
+    DoubleValueDecoder, DoubleValuesComparatorSource, DoubleValuesSource, ScorerDoubleValues,
 };
 pub use double_values_source_rescorer::{
     DoubleValuesSourceRescorer, DoubleValuesSourceRescorerImpl,
@@ -496,7 +494,7 @@ pub use term_collecting_rewrite::{
 };
 pub use term_in_set_query::TermInSetQuery;
 pub use term_matches_iterator::TermMatchesIterator;
-pub use term_query::{empty_term_scorer, TermQuery, TermScorerSupplier, TermWeight};
+pub use term_query::{TermQuery, TermScorerSupplier, TermWeight};
 pub use term_range_query::{term_bytes_to_string, TermRangeQuery};
 pub use term_scorer::{BoxedImpactsEnum, TermScorer};
 pub use time_limiting_bulk_scorer::TimeLimitingBulkScorer;

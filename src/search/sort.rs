@@ -12,6 +12,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
+use crate::search::binary_sort_field::BinarySortField;
 use crate::search::comparators::numeric_comparator::NumericDocValuesSource;
 use crate::search::comparators::{
     DocComparator, DoubleComparator, FloatComparator, IntComparator, LongComparator,
@@ -483,17 +484,14 @@ impl SortField {
             }
             _ => {}
         }
-        let field = self.field.clone()?;
         // `BinarySortField` overrides `getIndexSorter()`
         // (`BinarySortField.java:178-182`).
-        if let SortFieldKind::Binary { provider_name } = &self.kind {
-            return Some(crate::search::binary_sort_field::binary_index_sorter(
-                &field,
-                self.reverse,
-                self.missing_value,
-                provider_name,
-            ));
+        if let SortFieldKind::Binary { .. } = &self.kind {
+            return BinarySortField::from_sort_field(self.clone())
+                .map(|field| field.get_index_sorter())
+                .ok();
         }
+        let field = self.field.clone()?;
         match self.field_type {
             SortFieldType::String => {
                 let name = field.clone();

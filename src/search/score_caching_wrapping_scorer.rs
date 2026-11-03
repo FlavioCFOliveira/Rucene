@@ -98,13 +98,6 @@ pub struct ScoreCachingWrappingLeafCollector<L: LeafCollector> {
     pub inner: L,
 }
 
-impl<L: LeafCollector> ScoreCachingWrappingLeafCollector<L> {
-    /// Unwraps this collector.
-    pub fn into_inner(self) -> L {
-        self.inner
-    }
-}
-
 impl<L: LeafCollector> LeafCollector for ScoreCachingWrappingLeafCollector<L> {
     fn set_scorer(&mut self, scorer: &mut dyn Scorable) -> Result<()> {
         let mut caching = ScoreCachingWrappingScorer::new(scorer);

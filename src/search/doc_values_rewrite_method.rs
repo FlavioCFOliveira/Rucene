@@ -132,7 +132,6 @@ impl Query for MultiTermQueryDocValuesWrapper {
             DocValuesWeightImpl {
                 query: Arc::clone(&self.query),
                 score_mode,
-                score: boost,
             },
         )))
     }
@@ -271,7 +270,6 @@ impl Terms for DocValuesTerms {
 struct DocValuesWeightImpl {
     query: Arc<dyn MultiTermQuery>,
     score_mode: ScoreMode,
-    score: f32,
 }
 
 impl DocValuesWeightImpl {
@@ -293,6 +291,7 @@ impl ConstantScoreWeightImpl for DocValuesWeightImpl {
     fn scorer_supplier(
         &self,
         context: &LeafReaderContext,
+        score: f32,
     ) -> Result<Option<Box<dyn ScorerSupplier>>> {
         let reader = context.leaf_reader();
         let values = get_sorted_set(&reader, self.query.get_field())?;
@@ -306,7 +305,7 @@ impl ConstantScoreWeightImpl for DocValuesWeightImpl {
             reader,
             field: self.query.get_field().to_string(),
             terms_enum: Some(terms_enum),
-            score: self.score,
+            score: score,
             score_mode: self.score_mode,
             cost,
         })))
@@ -316,7 +315,12 @@ impl ConstantScoreWeightImpl for DocValuesWeightImpl {
         doc_values_is_cacheable(ctx, self.query.get_field())
     }
 
-    fn matches(&self, context: &LeafReaderContext, doc: i32) -> Result<Option<Arc<dyn Matches>>> {
+    fn matches(
+        &self,
+        context: &LeafReaderContext,
+        doc: i32,
+        _score: f32,
+    ) -> Result<Option<Arc<dyn Matches>>> {
         let reader = context.leaf_reader();
         let field = self.query.get_field().to_string();
         let query = Arc::clone(&self.query);

@@ -203,13 +203,6 @@ impl DisjunctionScorer {
         self.approximation.cost()
     }
 
-    /// Returns the match cost of the two-phase view.
-    ///
-    /// Equivalent to `DisjunctionScorer.TwoPhase.matchCost()`.
-    pub fn match_cost(&self) -> f32 {
-        self.match_cost
-    }
-
     /// Scores the current document by handing the clauses that match it to
     /// the concrete scorer's formula.
     ///

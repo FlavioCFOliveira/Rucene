@@ -36,11 +36,6 @@ impl FilterMatchesIterator {
     pub fn new(inner: Box<dyn MatchesIterator>) -> Self {
         Self { inner }
     }
-
-    /// Unwraps this iterator, returning the delegate.
-    pub fn into_inner(self) -> Box<dyn MatchesIterator> {
-        self.inner
-    }
 }
 
 impl MatchesIterator for FilterMatchesIterator {

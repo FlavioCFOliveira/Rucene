@@ -221,14 +221,6 @@ impl<C: Collector> CachingCollector<C> {
         self.state.cached
     }
 
-    /// Unwraps this collector.
-    ///
-    /// Equivalent to reading `FilterCollector`'s
-    /// `protected final Collector in` field.
-    pub fn into_inner(self) -> C {
-        self.inner
-    }
-
     /// Replays the cached doc IDs, and their scores when they were cached, to
     /// the given collector.
     ///

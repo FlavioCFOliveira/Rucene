@@ -782,7 +782,6 @@ fn load_comparator(
 struct IndexSortRangeWeight {
     query: Arc<IndexSortSortedNumericDocValuesRangeQuery>,
     fallback_weight: Arc<dyn Weight>,
-    score: f32,
     score_mode: ScoreMode,
 }
 
@@ -790,11 +789,12 @@ impl ConstantScoreWeightImpl for IndexSortRangeWeight {
     fn scorer_supplier(
         &self,
         context: &LeafReaderContext,
+        score: f32,
     ) -> Result<Option<Box<dyn ScorerSupplier>>> {
         if let Some(it_and_count) = self.query.doc_id_set_iterator_or_none(context)? {
             return Ok(Some(Box::new(ConstantScoreScorerSupplier::from_iterator(
                 ScorerIterator::Simple(it_and_count.it),
-                self.score,
+                score,
                 self.score_mode,
                 context.leaf_reader().max_doc(),
             ))));
@@ -949,7 +949,6 @@ impl Query for IndexSortSortedNumericDocValuesRangeQuery {
         let inner = IndexSortRangeWeight {
             query: Arc::clone(&query),
             fallback_weight,
-            score: boost,
             score_mode,
         };
         Ok(Arc::new(ConstantScoreWeight::new(query, boost, inner)))

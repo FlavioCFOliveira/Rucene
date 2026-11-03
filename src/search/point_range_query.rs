@@ -635,7 +635,6 @@ impl PointRangeIteratorSupplier {
 #[derive(Debug)]
 struct PointRangeWeight {
     query: Arc<PointRangeQuery>,
-    score: f32,
     score_mode: ScoreMode,
 }
 
@@ -643,6 +642,7 @@ impl ConstantScoreWeightImpl for PointRangeWeight {
     fn scorer_supplier(
         &self,
         context: &LeafReaderContext,
+        score: f32,
     ) -> Result<Option<Box<dyn ScorerSupplier>>> {
         let reader = context.leaf_reader();
         let values = reader.get_point_values(self.query.get_field())?;
@@ -715,7 +715,7 @@ impl ConstantScoreWeightImpl for PointRangeWeight {
             // All docs have a value and all points are within bounds, so
             // everything matches.
             Ok(Some(Box::new(ConstantScoreScorerSupplier::match_all(
-                self.score,
+                score,
                 self.score_mode,
                 reader.max_doc(),
             )?)))
@@ -723,7 +723,7 @@ impl ConstantScoreWeightImpl for PointRangeWeight {
             let inner =
                 PointRangeIteratorSupplier::new(Arc::clone(&self.query), values, reader.max_doc())?;
             Ok(Some(Box::new(ConstantScoreScorerSupplier::new(
-                self.score,
+                score,
                 self.score_mode,
                 reader.max_doc(),
                 inner,
@@ -824,7 +824,6 @@ impl Query for PointRangeQuery {
         });
         let inner = PointRangeWeight {
             query: Arc::clone(&query),
-            score: boost,
             score_mode,
         };
         Ok(Arc::new(ConstantScoreWeight::new(query, boost, inner)))

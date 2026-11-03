@@ -56,10 +56,9 @@ impl IntComparator {
         pruning: Pruning,
     ) -> Self {
         let missing_value = missing_value.unwrap_or(0);
-        Self {
+        let mut comparator = Self {
             base: NumericComparator::new(
                 field,
-                i64::from(missing_value),
                 reverse,
                 pruning,
                 4, // `Integer.BYTES`
@@ -69,7 +68,12 @@ impl IntComparator {
             top_value: 0,
             bottom: 0,
             missing_value,
-        }
+        };
+        // `this.missingValueAsLong = missingValueAsComparableLong()`
+        // (`NumericComparator.java:68`), which Java's constructor dispatches to
+        // this class's override.
+        comparator.base.missing_value_as_long = comparator.missing_value_as_comparable_long();
+        comparator
     }
 
     /// Decodes the packed point bytes of this comparator's field into the

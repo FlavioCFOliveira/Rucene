@@ -59,13 +59,6 @@ impl NGramPhraseQuery {
     pub fn get_positions(&self) -> &[i32] {
         self.phrase_query.get_positions()
     }
-
-    /// Returns the wrapped phrase query.
-    ///
-    /// Equivalent to reading the `private final PhraseQuery phraseQuery` field.
-    pub fn get_phrase_query(&self) -> &PhraseQuery {
-        &self.phrase_query
-    }
 }
 
 impl Query for NGramPhraseQuery {

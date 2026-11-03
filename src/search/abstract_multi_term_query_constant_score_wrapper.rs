@@ -598,7 +598,7 @@ impl AbstractMultiTermQueryConstantScoreWrapper {
     /// `AbstractMultiTermQueryConstantScoreWrapper.visit(QueryVisitor)`;
     /// `wrapper` is the outer query, which Java passes as `this`.
     pub fn visit(&self, wrapper: &dyn Query, visitor: &mut dyn QueryVisitor) {
-        if visitor.accept_field(self.query.get_field()) {
+        if visitor.accept_field(self.get_field()) {
             let mut sub = visitor.get_sub_visitor(Occur::FILTER, wrapper);
             self.query.as_query().visit(&mut *sub);
         }

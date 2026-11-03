@@ -42,7 +42,9 @@ impl ConjunctionUtils {
         }
         let mut members = Vec::with_capacity(scorers.len());
         for scorer in scorers {
-            Self::add_scorer(scorer, &mut members);
+            // `ConjunctionDISI.addScorer`, statically imported
+            // (`ConjunctionUtils.java:20,41`).
+            conjunction_disi::add_scorer(scorer, &mut members);
         }
         conjunction_disi::create_conjunction(members)
     }
@@ -83,15 +85,6 @@ impl ConjunctionUtils {
         conjunction_disi::create_conjunction(members)
     }
 
-    /// Adds a scorer, splitting it into an approximation and a two-phase view
-    /// when it supports two-phase iteration.
-    ///
-    /// Equivalent to the package-private `ConjunctionDISI.addScorer(Scorer,
-    /// List<DocIdSetIterator>, List<TwoPhaseIterator>)`.
-    pub fn add_scorer(scorer: Box<dyn Scorer>, members: &mut Vec<ConjunctionMember>) {
-        members.push(ConjunctionMember::from_scorer(scorer));
-    }
-
     /// Adds an iterator.
     ///
     /// Equivalent to `ConjunctionUtils.addIterator(DocIdSetIterator,
@@ -101,7 +94,7 @@ impl ConjunctionUtils {
     /// [`conjunction_disi`](crate::search::conjunction_disi) module for why
     /// this port cannot.
     pub fn add_iterator(iterator: Box<dyn DocIdSetIterator>, members: &mut Vec<ConjunctionMember>) {
-        members.push(ConjunctionMember::from_iterator(iterator));
+        conjunction_disi::add_iterator(iterator, members);
     }
 
     /// Adds a two-phase iterator.
@@ -113,6 +106,6 @@ impl ConjunctionUtils {
         two_phase: Box<dyn TwoPhaseIterator>,
         members: &mut Vec<ConjunctionMember>,
     ) {
-        members.push(ConjunctionMember::from_two_phase(two_phase));
+        conjunction_disi::add_two_phase_iterator(two_phase, members);
     }
 }

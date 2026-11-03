@@ -8,6 +8,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 use crate::search::knn::{KnnCollector, KnnSearchStrategy, Patience, Seeded, TopDocs};
 use crate::search::total_hits::{TotalHits, TotalHitsRelation};
 
+/// The invariant `Patience::new` relies on in [`HnswQueueSaturationCollector`].
+const VALID_THRESHOLD: &str =
+    "INVARIANT: the threshold of an existing Hnsw strategy is within [0, 100]";
+
 /// The saturation counters of a
 /// [`HnswQueueSaturationCollector`], shared with the
 /// [`Patience`] strategy that steps them.
@@ -129,7 +133,9 @@ impl HnswQueueSaturationCollector {
         }
     }
 
-    /// Rewraps the delegate's strategy with patience.
+    /// Rewraps the delegate's strategy with patience. The threshold comes from
+    /// an existing [`Hnsw`](crate::search::knn::Hnsw), which `Hnsw::new`
+    /// already checked, so the check in `Patience::new` cannot fail here.
     ///
     /// Equivalent to the body of
     /// `HnswQueueSaturationCollector.getSearchStrategy()`.
@@ -139,17 +145,18 @@ impl HnswQueueSaturationCollector {
     ) -> Option<KnnSearchStrategy> {
         match delegate_strategy {
             Some(KnnSearchStrategy::Hnsw(hnsw)) => Some(KnnSearchStrategy::Patience(
-                Patience::new(Arc::clone(state), hnsw.filtered_search_threshold()),
+                Patience::new(Arc::clone(state), hnsw.filtered_search_threshold())
+                    .expect(VALID_THRESHOLD),
             )),
             Some(KnnSearchStrategy::Seeded(seeded)) => {
                 if let KnnSearchStrategy::Hnsw(hnsw) = seeded.original_strategy() {
                     // Rewrap the underlying HNSW strategy with patience: this
                     // way we still use the seeded entry points and the filter
                     // threshold, and can utilise patience thresholds.
-                    let patience = KnnSearchStrategy::Patience(Patience::new(
-                        Arc::clone(state),
-                        hnsw.filtered_search_threshold(),
-                    ));
+                    let patience = KnnSearchStrategy::Patience(
+                        Patience::new(Arc::clone(state), hnsw.filtered_search_threshold())
+                            .expect(VALID_THRESHOLD),
+                    );
                     Some(KnnSearchStrategy::Seeded(Seeded::with_original_strategy(
                         seeded, patience,
                     )))
@@ -159,11 +166,6 @@ impl HnswQueueSaturationCollector {
             }
             other => other.cloned(),
         }
-    }
-
-    /// Returns the shared saturation counters.
-    pub fn state(&self) -> &Arc<Mutex<HnswQueueSaturationState>> {
-        &self.state
     }
 
     /// Records the visit of the next HNSW node candidate.
@@ -241,5 +243,34 @@ impl KnnCollector for HnswQueueSaturationCollector {
 
     fn get_search_strategy(&self) -> Option<&KnnSearchStrategy> {
         self.search_strategy.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod patience_threshold_tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::HnswQueueSaturationState;
+    use crate::error::LuceneError;
+    use crate::search::knn::Patience;
+
+    /// `KnnSearchStrategy.Patience(collector, filteredSearchThreshold)` calls
+    /// `super(filteredSearchThreshold)`, the `Hnsw` constructor, which refuses a
+    /// threshold outside `[0, 100]` (KnnSearchStrategy.java:183, 58-66).
+    #[test]
+    fn patience_refuses_a_threshold_outside_zero_to_one_hundred() {
+        let state = || Arc::new(Mutex::new(HnswQueueSaturationState::new(0.995, 7)));
+        for threshold in [-1, 101] {
+            match Patience::new(state(), threshold) {
+                Err(LuceneError::IllegalArgument(message)) => {
+                    assert_eq!(message, "filteredSearchThreshold must be >= 0 and <= 100")
+                }
+                other => panic!("threshold {threshold}: expected the Hnsw refusal, got {other:?}"),
+            }
+        }
+        for threshold in [0, 60, 100] {
+            let patience = Patience::new(state(), threshold).expect("a valid threshold");
+            assert_eq!(patience.filtered_search_threshold(), threshold);
+        }
     }
 }

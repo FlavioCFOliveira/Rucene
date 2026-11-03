@@ -202,9 +202,4 @@ impl DisiWrapper {
             Some(view) => view.matches(),
         }
     }
-
-    /// Unwraps this wrapper, returning the scorer it was built from.
-    pub fn into_scorer(self) -> Box<dyn Scorer> {
-        self.scorer
-    }
 }

@@ -86,11 +86,6 @@ impl AllDocIdSet {
     pub fn new(max_doc: i32) -> Self {
         Self { max_doc }
     }
-
-    /// Returns the exclusive upper bound of this set.
-    pub fn max_doc(&self) -> i32 {
-        self.max_doc
-    }
 }
 
 impl Accountable for AllDocIdSet {

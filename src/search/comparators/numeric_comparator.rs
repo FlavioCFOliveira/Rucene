@@ -161,8 +161,11 @@ pub struct NumericComparator {
     /// The missing value encoded as a comparable `long`.
     ///
     /// Equivalent to the `private final long missingValueAsLong` field, which
-    /// Java fills from the abstract `missingValueAsComparableLong()`.
-    missing_value_as_long: i64,
+    /// Java's constructor fills from the abstract
+    /// `missingValueAsComparableLong()`. Each concrete comparator's constructor
+    /// stores its override's result here once the comparator exists, since
+    /// Rust cannot call the override from the shared constructor.
+    pub(super) missing_value_as_long: i64,
     /// The name of the sort field.
     ///
     /// Equivalent to the `protected final String field` field.
@@ -216,17 +219,19 @@ impl NumericComparator {
     /// `NumericComparator(String, T, boolean, Pruning, int)`, followed by the
     /// subclass's `sortableBytesToLong` override, which the concrete
     /// comparator passes here because the port cannot dispatch to it through
-    /// inheritance (see the `sortable_bytes_to_long` field).
+    /// inheritance (see the `sortable_bytes_to_long` field). The constructor's
+    /// `missingValueAsComparableLong()` call is made by the concrete
+    /// comparator's constructor, which stores the result in
+    /// `missing_value_as_long` (zero until then).
     pub fn new(
         field: impl Into<String>,
-        missing_value_as_long: i64,
         reverse: bool,
         pruning: Pruning,
         bytes_count: i32,
         sortable_bytes_to_long: fn(&[u8]) -> i64,
     ) -> Self {
         Self {
-            missing_value_as_long,
+            missing_value_as_long: 0,
             field: field.into(),
             reverse,
             bytes_count,
@@ -266,16 +271,6 @@ impl NumericComparator {
             Some(source) => source(reader, &self.field),
             None => crate::index::DocValues::get_numeric(reader, &self.field),
         }
-    }
-
-    /// Returns the missing value in the comparable long encoding.
-    ///
-    /// Equivalent to the abstract
-    /// `NumericComparator.missingValueAsComparableLong()`, which each numeric
-    /// subclass implements; this port takes the encoded value at construction,
-    /// so the shared state can answer it directly.
-    pub fn missing_value_as_comparable_long(&self) -> i64 {
-        self.missing_value_as_long
     }
 
     /// The name of the sort field.
@@ -969,5 +964,51 @@ impl IntersectVisitor for CompetitiveVisitor<'_> {
             return Ok(Relation::CellCrossesQuery);
         }
         Ok(Relation::CellInsideQuery)
+    }
+}
+
+#[cfg(test)]
+mod missing_value_tests {
+    use crate::search::comparators::{
+        DoubleComparator, FloatComparator, IntComparator, LongComparator,
+    };
+    use crate::search::pruning::Pruning;
+    use crate::util::NumericUtils;
+
+    /// `NumericComparator`'s constructor stores
+    /// `missingValueAsComparableLong()` — the concrete comparator's override —
+    /// in `missingValueAsLong` (`NumericComparator.java:68`), which the
+    /// competitive iterator compares against the bottom and top values.
+    #[test]
+    fn the_constructor_caches_the_overrides_comparable_missing_value() {
+        let double = DoubleComparator::new(1, "d", Some(-1.5), false, Pruning::NONE);
+        let float = FloatComparator::new(1, "f", Some(2.25), false, Pruning::NONE);
+        let int = IntComparator::new(1, "i", Some(-7), false, Pruning::NONE);
+        let long = LongComparator::new(1, "l", Some(i64::MAX - 3), true, Pruning::NONE);
+        // Java's `null` missing value is replaced with zero before the call.
+        let none = LongComparator::new(1, "l", None, false, Pruning::NONE);
+        let cases = [
+            (
+                "double",
+                double.base().missing_value_as_long,
+                NumericUtils::double_to_sortable_long(-1.5),
+            ),
+            (
+                "float",
+                float.base().missing_value_as_long,
+                i64::from(NumericUtils::float_to_sortable_int(2.25)),
+            ),
+            ("int", int.base().missing_value_as_long, -7),
+            ("long", long.base().missing_value_as_long, i64::MAX - 3),
+            ("long, null", none.base().missing_value_as_long, 0),
+        ];
+        let wrong: Vec<_> = cases
+            .iter()
+            .filter(|(_, cached, expected)| cached != expected)
+            .collect();
+        assert!(
+            wrong.is_empty(),
+            "(comparator, cached, expected): {wrong:?}"
+        );
     }
 }

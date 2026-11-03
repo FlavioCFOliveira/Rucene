@@ -133,8 +133,8 @@ impl<S: ?Sized> std::fmt::Debug for NamedSPIProvider<S> {
 /// class without a public no-argument constructor, `<service>: <class>
 /// Unable to get public no-arg constructor`, whose cause is the
 /// `NoSuchMethodException` `<class>.<init>()`, carried as
-/// [`LuceneError::Other`] with that message (as `lookupSPIName`'s
-/// `NoSuchFieldException` is) in [`LuceneError::IllegalArgumentWithCause`].
+/// [`LuceneError::NoSuchMethod`] with that message in
+/// [`LuceneError::IllegalArgumentWithCause`].
 /// The items are produced in order and Java's iterator is lazy, so a caller
 /// that stops at the first error sees exactly the providers Java's would.
 /// Java oracle (`scratchpad/auditH/oracle/AuditHOracle.java`):
@@ -166,7 +166,7 @@ pub fn load_service_classes<'a, C: Any>(
             if !provider.has_public_no_arg_constructor() {
                 return Err(LuceneError::illegal_argument_with_cause(
                     format!("{service}: {class_name} Unable to get public no-arg constructor"),
-                    Arc::new(LuceneError::Other(format!("{class_name}.<init>()"))),
+                    Arc::new(LuceneError::NoSuchMethod(format!("{class_name}.<init>()"))),
                 ));
             }
             Ok((class_name, class))
@@ -867,9 +867,12 @@ mod tests {
                     "org.example.Svc: org.example.NoCtor Unable to get public no-arg constructor"
                 );
                 assert!(
-                    matches!(&*cause, LuceneError::Other(m) if m == "org.example.NoCtor.<init>()"),
+                    matches!(&*cause, LuceneError::NoSuchMethod(m) if m == "org.example.NoCtor.<init>()"),
                     "{cause:?}"
                 );
+                // `NoSuchMethodException` is the cause's class (oracle
+                // AuditHOracle: `cause java.lang.NoSuchMethodException`).
+                assert_eq!(cause.java_simple_name(), "NoSuchMethodException");
             }
             other => panic!("expected the constructor error, got {other:?}"),
         }

@@ -280,6 +280,11 @@ impl AbstractHnswGraphSearcher for FilteredHnswGraphSearcher {
                 }
             }
             to_score.upto = to_score.size; // all scored
+                                           // `results.getSearchStrategy().nextVectorsBlock()`
+                                           // (`FilteredHnswGraphSearcher.java:214-216`).
+            if let Some(strategy) = results.get_search_strategy() {
+                strategy.next_vectors_block();
+            }
         }
         Ok(())
     }

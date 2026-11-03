@@ -18,6 +18,7 @@ use std::rc::Rc;
 
 use crate::error::Result;
 use crate::index::{DocAndFloatFeatureBuffer, DocIndexIterator};
+use crate::search::conjunction_disi::ConjunctionMember;
 use crate::search::conjunction_utils::ConjunctionUtils;
 use crate::search::doc_id_set_iterator::DocIdSetIterator;
 use crate::util::hnsw::RandomVectorScorer;
@@ -192,8 +193,13 @@ pub fn default_bulk(
     let mut iterator: Box<dyn DocIdSetIterator> = match matching_docs {
         None => Box::new(scorer.iterator()),
         Some(matching_docs) => {
-            ConjunctionUtils::intersect_iterators(vec![matching_docs, Box::new(scorer.iterator())])?
-                .into_doc_id_set_iterator()
+            // `ConjunctionUtils.createConjunction(List.of(matchingDocs,
+            // iterator()), List.of())` (`VectorScorer.java:65`).
+            ConjunctionUtils::create_conjunction(vec![
+                ConjunctionMember::from_iterator(matching_docs),
+                ConjunctionMember::from_iterator(Box::new(scorer.iterator())),
+            ])?
+            .into_doc_id_set_iterator()
         }
     };
     if iterator.doc_id() == -1 {
@@ -290,8 +296,12 @@ pub fn bulk_from_random_scorer_dense(
     let matches: Box<dyn DocIdSetIterator> = match matching_docs {
         None => iterator,
         Some(matching_docs) => {
-            ConjunctionUtils::intersect_iterators(vec![matching_docs, iterator])?
-                .into_doc_id_set_iterator()
+            // `VectorScorer.java:115`.
+            ConjunctionUtils::create_conjunction(vec![
+                ConjunctionMember::from_iterator(matching_docs),
+                ConjunctionMember::from_iterator(iterator),
+            ])?
+            .into_doc_id_set_iterator()
         }
     };
     Ok(Box::new(DenseRandomScorerBulk { scorer, matches }))
@@ -347,8 +357,12 @@ pub fn bulk_from_random_scorer_sparse(
     let matches: Box<dyn DocIdSetIterator> = match matching_docs {
         None => Box::new(shared.clone()),
         Some(matching_docs) => {
-            ConjunctionUtils::intersect_iterators(vec![matching_docs, Box::new(shared.clone())])?
-                .into_doc_id_set_iterator()
+            // `VectorScorer.java:143`.
+            ConjunctionUtils::create_conjunction(vec![
+                ConjunctionMember::from_iterator(matching_docs),
+                ConjunctionMember::from_iterator(Box::new(shared.clone())),
+            ])?
+            .into_doc_id_set_iterator()
         }
     };
     Ok(Box::new(SparseRandomScorerBulk {

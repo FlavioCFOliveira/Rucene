@@ -193,11 +193,6 @@ impl<I: DocIdSetIterator> IteratorWithImpacts<I> {
     pub fn iterator_ref(&self) -> &I {
         &self.iterator
     }
-
-    /// Returns the wrapped iterator for mutation.
-    pub fn iterator_mut(&mut self) -> &mut I {
-        &mut self.iterator
-    }
 }
 
 impl IteratorWithImpacts<Box<dyn DocIdSetIterator>> {

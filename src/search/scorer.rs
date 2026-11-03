@@ -177,11 +177,6 @@ impl ScorerAsIterator {
         let cost = scorer.iterator().cost();
         Self { scorer, cost }
     }
-
-    /// Unwraps this view, returning the scorer it was built from.
-    pub fn into_scorer(self) -> Box<dyn Scorer> {
-        self.scorer
-    }
 }
 
 impl DocIdSetIterator for ScorerAsIterator {
@@ -259,11 +254,6 @@ impl ScorerAsTwoPhaseIterator {
             cost,
             match_cost,
         }
-    }
-
-    /// Unwraps this view, returning the scorer it was built from.
-    pub fn into_scorer(self) -> Box<dyn Scorer> {
-        self.scorer
     }
 }
 

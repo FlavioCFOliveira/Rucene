@@ -256,7 +256,9 @@ impl LiveIndexWriterConfig {
             commit: None,
             open_mode: OpenMode::CREATE_OR_APPEND,
             created_version_major: Version::LATEST.major as i32,
-            similarity: Arc::new(BM25Similarity::new()),
+            // `similarity = IndexSearcher.getDefaultSimilarity()`
+            // (`LiveIndexWriterConfig.java:129`): the shared default instance.
+            similarity: crate::search::IndexSearcher::get_default_similarity(),
             merge_scheduler: Arc::new(ConcurrentMergeScheduler::new()),
             codec,
             info_stream: crate::util::default_info_stream(),

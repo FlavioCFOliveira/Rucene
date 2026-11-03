@@ -466,16 +466,6 @@ impl<C: SlotComparator> SharedFieldComparator<C> {
             shared: Arc::new(Mutex::new(comparator)),
         }
     }
-
-    /// Runs `f` on the outer state.
-    pub fn with<R>(&self, f: impl FnOnce(&C) -> R) -> R {
-        f(&lock_slots(&self.shared))
-    }
-
-    /// Runs `f` on the outer state for mutation.
-    pub fn with_mut<R>(&mut self, f: impl FnOnce(&mut C) -> R) -> R {
-        f(&mut lock_slots(&self.shared))
-    }
 }
 
 impl<C: SlotComparator> Debug for SharedFieldComparator<C> {

@@ -366,17 +366,21 @@ impl Patience {
     /// Creates a patience strategy over the saturation state of a collector.
     ///
     /// Equivalent to
-    /// `new KnnSearchStrategy.Patience(HnswQueueSaturationCollector, int)`.
+    /// `new KnnSearchStrategy.Patience(HnswQueueSaturationCollector, int)`,
+    /// whose `super(filteredSearchThreshold)` is [`Hnsw::new`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Hnsw::new`]: Java's message when the threshold is outside
+    /// `[0, 100]`.
     pub fn new(
         state: Arc<Mutex<HnswQueueSaturationState>>,
         filtered_search_threshold: i32,
-    ) -> Self {
-        Self {
-            hnsw: Hnsw {
-                filtered_search_threshold,
-            },
+    ) -> crate::error::Result<Self> {
+        Ok(Self {
+            hnsw: Hnsw::new(filtered_search_threshold)?,
             state,
-        }
+        })
     }
 
     /// Returns the filtered-search threshold inherited from `Hnsw`.
@@ -404,11 +408,6 @@ impl Patience {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .next_candidate();
-    }
-
-    /// Returns the shared saturation state.
-    pub fn state(&self) -> &Arc<Mutex<HnswQueueSaturationState>> {
-        &self.state
     }
 }
 

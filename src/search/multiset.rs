@@ -106,15 +106,6 @@ impl<T: Hash + Eq> Multiset<T> {
         self.map.contains_key(element)
     }
 
-    /// Returns the number of occurrences of `element`.
-    ///
-    /// Equivalent to reading the private `Map<T, Integer>` that backs the
-    /// multiset; Java has no accessor because the count is only used through
-    /// `equals`.
-    pub fn count(&self, element: &T) -> i32 {
-        self.map.get(element).copied().unwrap_or(0)
-    }
-
     /// Returns an iterator over the elements, yielding each element as many
     /// times as it occurs.
     ///
@@ -124,14 +115,6 @@ impl<T: Hash + Eq> Multiset<T> {
         self.map
             .iter()
             .flat_map(|(element, count)| std::iter::repeat_n(element, *count as usize))
-    }
-
-    /// Returns an iterator over the distinct elements and their counts.
-    ///
-    /// Equivalent to iterating the private backing map, which Java's `equals`
-    /// and `hashCode` do.
-    pub fn entries(&self) -> impl Iterator<Item = (&T, i32)> {
-        self.map.iter().map(|(element, count)| (element, *count))
     }
 }
 

@@ -56,10 +56,9 @@ impl DoubleComparator {
         pruning: Pruning,
     ) -> Self {
         let missing_value = missing_value.unwrap_or(0.0);
-        Self {
+        let mut comparator = Self {
             base: NumericComparator::new(
                 field,
-                NumericUtils::double_to_sortable_long(missing_value),
                 reverse,
                 pruning,
                 8, // `Double.BYTES`
@@ -69,7 +68,12 @@ impl DoubleComparator {
             top_value: 0.0,
             bottom: 0.0,
             missing_value,
-        }
+        };
+        // `this.missingValueAsLong = missingValueAsComparableLong()`
+        // (`NumericComparator.java:68`), which Java's constructor dispatches to
+        // this class's override.
+        comparator.base.missing_value_as_long = comparator.missing_value_as_comparable_long();
+        comparator
     }
 
     /// Decodes the packed point bytes of this comparator's field into the

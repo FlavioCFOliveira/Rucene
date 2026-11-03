@@ -168,7 +168,6 @@ impl FieldExistsQuery {
 #[derive(Debug)]
 struct FieldExistsWeight {
     field: String,
-    score: f32,
     score_mode: ScoreMode,
 }
 
@@ -176,6 +175,7 @@ impl ConstantScoreWeightImpl for FieldExistsWeight {
     fn scorer_supplier(
         &self,
         context: &LeafReaderContext,
+        score: f32,
     ) -> Result<Option<Box<dyn ScorerSupplier>>> {
         let reader = context.leaf_reader();
         let field_infos = reader.get_field_infos();
@@ -218,7 +218,7 @@ impl ConstantScoreWeightImpl for FieldExistsWeight {
         };
         Ok(Some(Box::new(ConstantScoreScorerSupplier::from_iterator(
             ScorerIterator::Simple(iterator),
-            self.score,
+            score,
             self.score_mode,
             reader.max_doc(),
         ))))
@@ -395,7 +395,6 @@ impl Query for FieldExistsQuery {
         let query: Arc<dyn Query> = Arc::new(self.clone());
         let inner = FieldExistsWeight {
             field: self.field.clone(),
-            score: boost,
             score_mode,
         };
         Ok(Arc::new(ConstantScoreWeight::new(query, boost, inner)))

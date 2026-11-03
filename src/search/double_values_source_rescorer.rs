@@ -69,11 +69,6 @@ impl<I: DoubleValuesSourceRescorerImpl> DoubleValuesSourceRescorer<I> {
     pub fn values_source(&self) -> &Arc<dyn DoubleValuesSource> {
         &self.values_source
     }
-
-    /// Returns the combination this rescorer applies.
-    pub fn combiner(&self) -> &I {
-        &self.inner
-    }
 }
 
 impl<I: DoubleValuesSourceRescorerImpl> Rescorer for DoubleValuesSourceRescorer<I> {

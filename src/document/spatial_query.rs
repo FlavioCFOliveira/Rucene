@@ -3159,16 +3159,16 @@ impl<M: SpatialMatcher> crate::search::ConstantScoreIteratorSupplier
 #[derive(Debug)]
 pub struct SpatialWeight<M: SpatialMatcher> {
     matcher: Arc<M>,
-    score: f32,
     score_mode: crate::search::ScoreMode,
 }
 
 impl<M: SpatialMatcher> SpatialWeight<M> {
-    /// Creates the weight over `matcher`.
-    pub fn new(matcher: Arc<M>, score: f32, score_mode: crate::search::ScoreMode) -> Self {
+    /// Creates the weight over `matcher`; its score is the enclosing
+    /// [`ConstantScoreWeight`](crate::search::ConstantScoreWeight)'s, as Java's
+    /// anonymous subclass reads `score()`.
+    pub fn new(matcher: Arc<M>, score_mode: crate::search::ScoreMode) -> Self {
         Self {
             matcher,
-            score,
             score_mode,
         }
     }
@@ -3178,6 +3178,7 @@ impl<M: SpatialMatcher + 'static> crate::search::ConstantScoreWeightImpl for Spa
     fn scorer_supplier(
         &self,
         context: &crate::index::LeafReaderContext,
+        score: f32,
     ) -> Result<Option<Box<dyn crate::search::ScorerSupplier>>> {
         let leaf = context.leaf_reader();
         let reader = leaf.as_ref();
@@ -3192,7 +3193,7 @@ impl<M: SpatialMatcher + 'static> crate::search::ConstantScoreWeightImpl for Spa
         };
         Ok(Some(Box::new(
             crate::search::ConstantScoreScorerSupplier::new(
-                self.score,
+                score,
                 self.score_mode,
                 reader.max_doc(),
                 inner,
@@ -3218,7 +3219,7 @@ pub fn spatial_create_weight<M>(
 where
     M: SpatialMatcher + 'static,
 {
-    let inner = SpatialWeight::new(matcher, boost, score_mode);
+    let inner = SpatialWeight::new(matcher, score_mode);
     Ok(Arc::new(crate::search::ConstantScoreWeight::new(
         query, boost, inner,
     )))
