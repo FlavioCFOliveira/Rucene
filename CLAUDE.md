@@ -242,9 +242,24 @@ Whenever performance, completeness, or correctness needs to be evaluated, always
 
 ---
 
-## 9. Regression prevention
+## 9. Tests
+
+### 9.1 Every delivery carries its tests
+
+Every delivered development comes with the tests that prove it meets its requirements: unit, integration, portability, or any other kind the case calls for.
+
+### 9.2 Regression prevention
 
 Whenever a bug is fixed, create the necessary regression tests to ensure the same bug does not recur as a result of future development. When the bug relates to functional parity or index-file compatibility with Lucene Core 10.5.0, the regression test should be a **portability test** that reproduces the divergence and locks in the correct behavior.
+
+### 9.3 Test execution — logical and efficient
+
+Run only the tests that are pertinent at that moment, and recover the time that unnecessary runs used to take.
+
+- **Close to development:** run the tests that exercise the code the change touched — the lib tests of the changed modules and the integration, portability, and fuzz targets that cover them — once, after all the code of the effort is written (see 5.3).
+- **At integration and release moments** (closing a sprint into `develop`, cutting a release): widen the run to the full suite.
+- **No changed code, no test run.** A change to documentation alone runs no tests.
+- A task's "`cargo test` passes" criterion is met by the pertinent run of the moment; the full suite at sprint close confirms it.
 
 ---
 
@@ -353,8 +368,8 @@ If the answer to any of these questions is "no" or "I don't know," the economica
 
 **Tests and validation**
 
-- Write all the code of the effort first, then run the tests covering all the changed code in one run (see 5.3); do not test small pieces one by one. Reserve the full suite for the final validation of the effort.
-- Do not run the full suite repeatedly to verify changes that only affect an isolated component.
+- Write all the code of the effort first, then run the tests covering all the changed code in one run (see 5.3); do not test small pieces one by one. Reserve the full suite for integration and release moments (see 9.3).
+- Do not run the full suite to verify changes that only affect an isolated component, and run no tests for a change to documentation alone.
 
 **Model, effort, and parallelism**
 
@@ -458,7 +473,7 @@ Portability tests are treated as first-class citizens: they must pass before a t
 2. Create or adapt the equivalent Rust module structure.
 3. Implement with unit tests; when applicable, include integration tests that verify index compatibility.
 4. Add or update **portability tests** that prove functional parity and index-file compatibility with Lucene Core 10.5.0.
-5. Run `cargo test`, `cargo fmt`, and `cargo clippy`.
+5. Run the tests that cover the changed code (see 9.3), `cargo fmt`, and `cargo clippy`.
 6. Update `README.md` and relevant documentation if there are changes to public behavior.
 
 ### 14.5 Fidelity first — minimize divergences
