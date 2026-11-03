@@ -1035,7 +1035,7 @@ log SEVERE 1 thread leaked from TEST scope at testLeak(com.carrotsearch.randomiz
 log INFO Starting to interrupt leaked threads:
 thread leaked-test interrupted
 log INFO All leaked threads terminated.
-failure testLeak(com.carrotsearch.randomizedtesting.RunnerOracle$LeakTest) | com.carrotsearch.randomizedtesting.ThreadLeakError: 1 thread leaked from TEST scope at testLeak(com.carrotsearch.randomizedtesting.RunnerOracle$LeakTest): \n   1) Thread[id=68, name=leaked-test, state=TIMED_WAITING, group=TGRP-RunnerOracle$LeakTest]\n        at java.base/java.lang.Thread.sleepNanos0(Native Method)\n        at java.base/java.lang.Thread.sleepNanos(Thread.java:509)\n        at java.base/java.lang.Thread.sleep(Thread.java:540)\n        at com.carrotsearch.randomizedtesting.RunnerOracle.lambda$sleeper$0(RunnerOracle.java:353)\n        at java.base/java.lang.Thread.run(Thread.java:1474) [seed [DEADBEEF:E909199F87606AA4]]
+failure testLeak(com.carrotsearch.randomizedtesting.RunnerOracle$LeakTest) | com.carrotsearch.randomizedtesting.ThreadLeakError: 1 thread leaked from TEST scope at testLeak(com.carrotsearch.randomizedtesting.RunnerOracle$LeakTest): \n   1) Thread[id=68, name=leaked-test, state=TIMED_WAITING, group=TGRP-RunnerOracle$LeakTest]\n        at java.base/java.lang.Thread.beforeSleep(Thread.java:473)\n        at java.base/java.lang.Thread.sleepNanos(Thread.java:504)\n        at java.base/java.lang.Thread.sleep(Thread.java:540)\n        at com.carrotsearch.randomizedtesting.RunnerOracle.lambda$sleeper$0(RunnerOracle.java:353)\n        at java.base/java.lang.Thread.run(Thread.java:1474) [seed [DEADBEEF:E909199F87606AA4]]
 reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$LeakTest -Dtests.method=testLeak -Dtests.prefix=tests -Dtests.killwait=200 -Dfile.encoding=UTF-8
 finished testLeak(com.carrotsearch.randomizedtesting.RunnerOracle$LeakTest)
 started testAfterLeak(com.carrotsearch.randomizedtesting.RunnerOracle$LeakTest)
@@ -1091,6 +1091,24 @@ started testOne(com.carrotsearch.randomizedtesting.RunnerOracle$LeakFiltered)
 testOne
 finished testOne(com.carrotsearch.randomizedtesting.RunnerOracle$LeakFiltered)
 runFinished run=1 fail=0 ignore=0 assumption=0
+=== leak-randomized-sleep
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$LeakRandomizedSleep
+desc   testLeak(com.carrotsearch.randomizedtesting.RunnerOracle$LeakRandomizedSleep)
+started testLeak(com.carrotsearch.randomizedtesting.RunnerOracle$LeakRandomizedSleep)
+log SEVERE 1 thread leaked from TEST scope at testLeak(com.carrotsearch.randomizedtesting.RunnerOracle$LeakRandomizedSleep): 
+log INFO Starting to interrupt leaked threads:
+thread leaked-randomized-sleep ended by java.lang.InterruptedException: sleep interrupted
+log INFO All leaked threads terminated.
+failure testLeak(com.carrotsearch.randomizedtesting.RunnerOracle$LeakRandomizedSleep) | com.carrotsearch.randomizedtesting.ThreadLeakError: 1 thread leaked from TEST scope at testLeak(com.carrotsearch.randomizedtesting.RunnerOracle$LeakRandomizedSleep): \n   1) Thread[id=90, name=leaked-randomized-sleep, state=TIMED_WAITING, group=TGRP-RunnerOracle$LeakRandomizedSleep]\n        at java.base/java.lang.Thread.sleepNanos0(Native Method)\n        at java.base/java.lang.Thread.sleepNanos(Thread.java:509)\n        at java.base/java.lang.Thread.sleep(Thread.java:540)\n        at com.carrotsearch.randomizedtesting.RandomizedTest.sleep(RandomizedTest.java:701)\n        at com.carrotsearch.randomizedtesting.RunnerOracle$LeakRandomizedSleep.lambda$testLeak$0(RunnerOracle.java:371)\n        at java.base/java.lang.Thread.run(Thread.java:1474) [seed [DEADBEEF:E909199F87606AA4]]
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$LeakRandomizedSleep -Dtests.method=testLeak -Dtests.prefix=tests -Dtests.killwait=200 -Dfile.encoding=UTF-8
+finished testLeak(com.carrotsearch.randomizedtesting.RunnerOracle$LeakRandomizedSleep)
+runFinished run=1 fail=1 ignore=0 assumption=0
+=== class-ignore
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$IgnoredClass
+ignored com.carrotsearch.randomizedtesting.RunnerOracle$IgnoredClass
+runFinished run=0 fail=0 ignore=1 assumption=0
 === timeout-test
 runStarted tests=3
 desc com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout
@@ -1171,9 +1189,9 @@ desc com.carrotsearch.randomizedtesting.RunnerOracle$Uncaught
 desc   testUncaught(com.carrotsearch.randomizedtesting.RunnerOracle$Uncaught)
 desc   testClean(com.carrotsearch.randomizedtesting.RunnerOracle$Uncaught)
 started testUncaught(com.carrotsearch.randomizedtesting.RunnerOracle$Uncaught)
-log WARNING Uncaught exception in thread: Thread[#100,uncaught-thread,5,TGRP-RunnerOracle$Uncaught]
+log WARNING Uncaught exception in thread: Thread[#102,uncaught-thread,5,TGRP-RunnerOracle$Uncaught]
 testUncaught joined
-failure testUncaught(com.carrotsearch.randomizedtesting.RunnerOracle$Uncaught) | com.carrotsearch.randomizedtesting.UncaughtExceptionError: Captured an uncaught exception in thread: Thread[id=100, name=uncaught-thread, state=RUNNABLE, group=TGRP-RunnerOracle$Uncaught] [seed [DEADBEEF:785C3E12F25B8820], [DEADBEEF]] <- java.lang.RuntimeException: boom in thread
+failure testUncaught(com.carrotsearch.randomizedtesting.RunnerOracle$Uncaught) | com.carrotsearch.randomizedtesting.UncaughtExceptionError: Captured an uncaught exception in thread: Thread[id=102, name=uncaught-thread, state=RUNNABLE, group=TGRP-RunnerOracle$Uncaught] [seed [DEADBEEF:785C3E12F25B8820], [DEADBEEF]] <- java.lang.RuntimeException: boom in thread
 reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$Uncaught -Dtests.method=testUncaught -Dtests.prefix=tests -Dfile.encoding=UTF-8
 finished testUncaught(com.carrotsearch.randomizedtesting.RunnerOracle$Uncaught)
 started testClean(com.carrotsearch.randomizedtesting.RunnerOracle$Uncaught)
@@ -1184,10 +1202,10 @@ runFinished run=2 fail=1 ignore=0 assumption=0
 runStarted tests=1
 desc com.carrotsearch.randomizedtesting.RunnerOracle$UncaughtSuite
 desc   testOne(com.carrotsearch.randomizedtesting.RunnerOracle$UncaughtSuite)
-log WARNING Uncaught exception in thread: Thread[#102,uncaught-suite,5,TGRP-RunnerOracle$UncaughtSuite]
+log WARNING Uncaught exception in thread: Thread[#104,uncaught-suite,5,TGRP-RunnerOracle$UncaughtSuite]
 started testOne(com.carrotsearch.randomizedtesting.RunnerOracle$UncaughtSuite)
 testOne
-failure testOne(com.carrotsearch.randomizedtesting.RunnerOracle$UncaughtSuite) | com.carrotsearch.randomizedtesting.UncaughtExceptionError: Captured an uncaught exception in thread: Thread[id=102, name=uncaught-suite, state=RUNNABLE, group=TGRP-RunnerOracle$UncaughtSuite] [seed [DEADBEEF:D40228C307D46C7F], [DEADBEEF]] <- java.lang.IllegalStateException: boom in suite thread
+failure testOne(com.carrotsearch.randomizedtesting.RunnerOracle$UncaughtSuite) | com.carrotsearch.randomizedtesting.UncaughtExceptionError: Captured an uncaught exception in thread: Thread[id=104, name=uncaught-suite, state=RUNNABLE, group=TGRP-RunnerOracle$UncaughtSuite] [seed [DEADBEEF:D40228C307D46C7F], [DEADBEEF]] <- java.lang.IllegalStateException: boom in suite thread
 reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$UncaughtSuite -Dtests.method=testOne -Dtests.prefix=tests -Dfile.encoding=UTF-8
 finished testOne(com.carrotsearch.randomizedtesting.RunnerOracle$UncaughtSuite)
 runFinished run=1 fail=1 ignore=0 assumption=0
@@ -1283,7 +1301,7 @@ desc   testOne(com.carrotsearch.randomizedtesting.RunnerOracle$StaticFields$Unme
 started testOne(com.carrotsearch.randomizedtesting.RunnerOracle$StaticFields$Unmeasurable)
 testOne
 finished testOne(com.carrotsearch.randomizedtesting.RunnerOracle$StaticFields$Unmeasurable)
-failure com.carrotsearch.randomizedtesting.RunnerOracle$StaticFields$Unmeasurable | junit.framework.AssertionFailedError: Clean up static fields (in @AfterClass?) and null them, your test still has references to classes of which the sizes cannot be measured due to security restrictions or Java 9 module encapsulation:\n  - static java.lang.String com.carrotsearch.randomizedtesting.RunnerOracle$StaticFields$Unmeasurable.text [seed [DEADBEEF]] <- java.lang.IllegalStateException: Unable to access 'private final byte[] java.lang.String.value' to estimate memory usage <- java.lang.reflect.InaccessibleObjectException: Unable to make field private final byte[] java.lang.String.value accessible: module java.base does not "opens java.lang" to unnamed module @1f17ae12
+failure com.carrotsearch.randomizedtesting.RunnerOracle$StaticFields$Unmeasurable | junit.framework.AssertionFailedError: Clean up static fields (in @AfterClass?) and null them, your test still has references to classes of which the sizes cannot be measured due to security restrictions or Java 9 module encapsulation:\n  - static java.lang.String com.carrotsearch.randomizedtesting.RunnerOracle$StaticFields$Unmeasurable.text [seed [DEADBEEF]] <- java.lang.IllegalStateException: Unable to access 'private final byte[] java.lang.String.value' to estimate memory usage <- java.lang.reflect.InaccessibleObjectException: Unable to make field private final byte[] java.lang.String.value accessible: module java.base does not "opens java.lang" to unnamed module @579bb367
 reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$StaticFields$Unmeasurable -Dtests.prefix=tests -Dfile.encoding=UTF-8
 runFinished run=1 fail=1 ignore=0 assumption=0
 === rule-adapter
@@ -1330,9 +1348,9 @@ testA
 log SEVERE 1 thread leaked from TEST scope at testA(com.carrotsearch.randomizedtesting.RunnerOracle$Zombies): 
 log INFO Starting to interrupt leaked threads:
 log SEVERE There are still zombie threads that couldn't be terminated:
-failure testA(com.carrotsearch.randomizedtesting.RunnerOracle$Zombies) | com.carrotsearch.randomizedtesting.ThreadLeakError: 1 thread leaked from TEST scope at testA(com.carrotsearch.randomizedtesting.RunnerOracle$Zombies): \n   1) Thread[id=114, name=zombie, state=TIMED_WAITING, group=TGRP-RunnerOracle$Zombies]\n        at java.base/java.lang.Thread.sleepNanos0(Native Method)\n        at java.base/java.lang.Thread.sleepNanos(Thread.java:509)\n        at java.base/java.lang.Thread.sleep(Thread.java:540)\n        at com.carrotsearch.randomizedtesting.RunnerOracle$Zombies.lambda$testA$0(RunnerOracle.java:452)\n        at java.base/java.lang.Thread.run(Thread.java:1474) [seed [DEADBEEF:3C9258CBA67AC2BB]]
+failure testA(com.carrotsearch.randomizedtesting.RunnerOracle$Zombies) | com.carrotsearch.randomizedtesting.ThreadLeakError: 1 thread leaked from TEST scope at testA(com.carrotsearch.randomizedtesting.RunnerOracle$Zombies): \n   1) Thread[id=116, name=zombie, state=TIMED_WAITING, group=TGRP-RunnerOracle$Zombies]\n        at java.base/java.lang.Thread.sleepNanos0(Native Method)\n        at java.base/java.lang.Thread.sleepNanos(Thread.java:509)\n        at java.base/java.lang.Thread.sleep(Thread.java:540)\n        at com.carrotsearch.randomizedtesting.RunnerOracle$Zombies.lambda$testA$0(RunnerOracle.java:475)\n        at java.base/java.lang.Thread.run(Thread.java:1474) [seed [DEADBEEF:3C9258CBA67AC2BB]]
 reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$Zombies -Dtests.method=testA -Dtests.prefix=tests -Dtests.killattempts=2 -Dtests.killwait=100 -Dfile.encoding=UTF-8
-failure testA(com.carrotsearch.randomizedtesting.RunnerOracle$Zombies) | com.carrotsearch.randomizedtesting.ThreadLeakError: There are still zombie threads that couldn't be terminated:\n   1) Thread[id=114, name=zombie, state=TIMED_WAITING, group=TGRP-RunnerOracle$Zombies]\n        at java.base/java.lang.Thread.sleepNanos0(Native Method)\n        at java.base/java.lang.Thread.sleepNanos(Thread.java:509)\n        at java.base/java.lang.Thread.sleep(Thread.java:540)\n        at com.carrotsearch.randomizedtesting.RunnerOracle$Zombies.lambda$testA$0(RunnerOracle.java:452)\n        at java.base/java.lang.Thread.run(Thread.java:1474) [seed [DEADBEEF:3C9258CBA67AC2BB]]
+failure testA(com.carrotsearch.randomizedtesting.RunnerOracle$Zombies) | com.carrotsearch.randomizedtesting.ThreadLeakError: There are still zombie threads that couldn't be terminated:\n   1) Thread[id=116, name=zombie, state=TIMED_WAITING, group=TGRP-RunnerOracle$Zombies]\n        at java.base/java.lang.Thread.sleepNanos0(Native Method)\n        at java.base/java.lang.Thread.sleepNanos(Thread.java:509)\n        at java.base/java.lang.Thread.sleep(Thread.java:540)\n        at com.carrotsearch.randomizedtesting.RunnerOracle$Zombies.lambda$testA$0(RunnerOracle.java:475)\n        at java.base/java.lang.Thread.run(Thread.java:1474) [seed [DEADBEEF:3C9258CBA67AC2BB]]
 reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$Zombies -Dtests.method=testA -Dtests.prefix=tests -Dtests.killattempts=2 -Dtests.killwait=100 -Dfile.encoding=UTF-8
 finished testA(com.carrotsearch.randomizedtesting.RunnerOracle$Zombies)
 started testB(com.carrotsearch.randomizedtesting.RunnerOracle$Zombies)
@@ -1341,9 +1359,9 @@ finished testB(com.carrotsearch.randomizedtesting.RunnerOracle$Zombies)
 log SEVERE 1 thread leaked from SUITE scope at com.carrotsearch.randomizedtesting.RunnerOracle$Zombies: 
 log INFO Starting to interrupt leaked threads:
 log SEVERE There are still zombie threads that couldn't be terminated:
-failure com.carrotsearch.randomizedtesting.RunnerOracle$Zombies | com.carrotsearch.randomizedtesting.ThreadLeakError: 1 thread leaked from SUITE scope at com.carrotsearch.randomizedtesting.RunnerOracle$Zombies: \n   1) Thread[id=114, name=zombie, state=TIMED_WAITING, group=TGRP-RunnerOracle$Zombies]\n        at java.base/java.lang.Thread.sleepNanos0(Native Method)\n        at java.base/java.lang.Thread.sleepNanos(Thread.java:509)\n        at java.base/java.lang.Thread.sleep(Thread.java:540)\n        at com.carrotsearch.randomizedtesting.RunnerOracle$Zombies.lambda$testA$0(RunnerOracle.java:452)\n        at java.base/java.lang.Thread.run(Thread.java:1474) [seed [DEADBEEF]]
+failure com.carrotsearch.randomizedtesting.RunnerOracle$Zombies | com.carrotsearch.randomizedtesting.ThreadLeakError: 1 thread leaked from SUITE scope at com.carrotsearch.randomizedtesting.RunnerOracle$Zombies: \n   1) Thread[id=116, name=zombie, state=TIMED_WAITING, group=TGRP-RunnerOracle$Zombies]\n        at java.base/java.lang.Thread.sleepNanos0(Native Method)\n        at java.base/java.lang.Thread.sleepNanos(Thread.java:509)\n        at java.base/java.lang.Thread.sleep(Thread.java:540)\n        at com.carrotsearch.randomizedtesting.RunnerOracle$Zombies.lambda$testA$0(RunnerOracle.java:475)\n        at java.base/java.lang.Thread.run(Thread.java:1474) [seed [DEADBEEF]]
 reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$Zombies -Dtests.prefix=tests -Dtests.killattempts=2 -Dtests.killwait=100 -Dfile.encoding=UTF-8
-failure com.carrotsearch.randomizedtesting.RunnerOracle$Zombies | com.carrotsearch.randomizedtesting.ThreadLeakError: There are still zombie threads that couldn't be terminated:\n   1) Thread[id=114, name=zombie, state=TIMED_WAITING, group=TGRP-RunnerOracle$Zombies]\n        at java.base/java.lang.Thread.sleepNanos0(Native Method)\n        at java.base/java.lang.Thread.sleepNanos(Thread.java:509)\n        at java.base/java.lang.Thread.sleep(Thread.java:540)\n        at com.carrotsearch.randomizedtesting.RunnerOracle$Zombies.lambda$testA$0(RunnerOracle.java:452)\n        at java.base/java.lang.Thread.run(Thread.java:1474) [seed [DEADBEEF]]
+failure com.carrotsearch.randomizedtesting.RunnerOracle$Zombies | com.carrotsearch.randomizedtesting.ThreadLeakError: There are still zombie threads that couldn't be terminated:\n   1) Thread[id=116, name=zombie, state=TIMED_WAITING, group=TGRP-RunnerOracle$Zombies]\n        at java.base/java.lang.Thread.sleepNanos0(Native Method)\n        at java.base/java.lang.Thread.sleepNanos(Thread.java:509)\n        at java.base/java.lang.Thread.sleep(Thread.java:540)\n        at com.carrotsearch.randomizedtesting.RunnerOracle$Zombies.lambda$testA$0(RunnerOracle.java:475)\n        at java.base/java.lang.Thread.run(Thread.java:1474) [seed [DEADBEEF]]
 reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$Zombies -Dtests.prefix=tests -Dtests.killattempts=2 -Dtests.killwait=100 -Dfile.encoding=UTF-8
 runFinished run=3 fail=4 ignore=0 assumption=1
 === after-zombies

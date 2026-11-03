@@ -12,9 +12,9 @@ resource-event	afterClass
 resource-event	saved random: java.lang.IllegalStateException	This Random instance has been invalidated and is probably used out of its allowed context (test or suite).
 resource-event	close:suite-1
 resource-event	close:suite-b
-disposed	java.lang.IllegalStateException	Context disposed: com.carrotsearch.randomizedtesting.RandomizedContext@2344fc66 for thread: Thread[#3,main,5,main]
-disposed-getRandomness	java.lang.IllegalStateException	Context disposed: com.carrotsearch.randomizedtesting.RandomizedContext@2344fc66 for thread: Thread[#3,main,5,main]
-failing-failure	com.carrotsearch.randomizedtesting.ResourceDisposalError	Resource in scope TEST failed to close. Resource was registered from thread Thread[id=66, name=TEST-RandomizedTestingOracle$FailingResourceSuite.testFailing-seed#[DEADBEEF], state=RUNNABLE, group=TGRP-RandomizedTestingOracle$FailingResourceSuite], registration stack trace below.
+disposed	java.lang.IllegalStateException	Context disposed: com.carrotsearch.randomizedtesting.RandomizedContext@1593948d for thread: Thread[#3,main,5,main]
+disposed-getRandomness	java.lang.IllegalStateException	Context disposed: com.carrotsearch.randomizedtesting.RandomizedContext@1593948d for thread: Thread[#3,main,5,main]
+failing-failure	com.carrotsearch.randomizedtesting.ResourceDisposalError	Resource in scope TEST failed to close. Resource was registered from thread Thread[id=68, name=TEST-RandomizedTestingOracle$FailingResourceSuite.testFailing-seed#[DEADBEEF], state=RUNNABLE, group=TGRP-RandomizedTestingOracle$FailingResourceSuite], registration stack trace below.
 failing-cause	java.io.IOException	boom fails
 failing-event	close:fails
 failing-event	close:after-fails

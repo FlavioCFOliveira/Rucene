@@ -1,6 +1,7 @@
 //! Port of `com.carrotsearch.randomizedtesting.rules.RamUsageEstimator`
 //! (randomizedtesting 2.8.1, `rules/RamUsageEstimator.java`), with the
-//! package-private `IdentityHashSet` and `Constants` it declares.
+//! package-private `IdentityHashSet`, `MurmurHash3` and `Constants` it
+//! declares.
 //!
 //! **Divergences.**
 //! * Java measures the JVM's layout (`sun.misc.Unsafe` for the reference
@@ -17,8 +18,8 @@
 //!   `RamUsageEstimator.java:576`). The port measures
 //!   the [`Value`]s that have a Java layout it can state: `null`, boxed
 //!   primitives, primitive arrays and `Object[]`; any other value (a
-//!   string, a list, an opaque Rust object) fails as an inaccessible JDK
-//!   object does.
+//!   string, a list, a JUnit `RuleChain`, which holds an `ArrayList`, a
+//!   path, an opaque Rust object) fails as an inaccessible JDK object does.
 
 use std::sync::Arc;
 
@@ -327,10 +328,31 @@ fn decimal_format_0_hash(v: f64) -> String {
 fn inaccessible(v: &Value) -> Throwable {
     let (field, package) = match v {
         Value::Str(_) => ("private final byte[] java.lang.String.value", "java.lang"),
+        // A `List`, or a JUnit `RuleChain`, whose rule list is an
+        // `ArrayList` (`RuleChain.rulesStartingWithInnerMost`).
         Value::List(_) => (
             "transient java.lang.Object[] java.util.ArrayList.elementData",
             "java.util",
         ),
+        Value::TestRule(r) if r.java_class() == Some("org.junit.rules.RuleChain") => (
+            "transient java.lang.Object[] java.util.ArrayList.elementData",
+            "java.util",
+        ),
+        // A `java.nio.file.Path` (`RandomizedTest.globalTempDir`): the
+        // platform's `sun.nio.fs` path, whose first reference field is `fs`.
+        Value::Object(o, _) if o.downcast_ref::<std::path::PathBuf>().is_some() => {
+            if cfg!(windows) {
+                (
+                    "private final sun.nio.fs.WindowsFileSystem sun.nio.fs.WindowsPath.fs",
+                    "sun.nio.fs",
+                )
+            } else {
+                (
+                    "private final sun.nio.fs.UnixFileSystem sun.nio.fs.UnixPath.fs",
+                    "sun.nio.fs",
+                )
+            }
+        }
         _ => ("a field of an opaque object", "java.lang"),
     };
     Throwable::with_cause(
@@ -345,11 +367,30 @@ fn inaccessible(v: &Value) -> Throwable {
     )
 }
 
-/// An identity set (`IdentityHashSet`, package-private): values are the
-/// same when they share their `Arc`.
-#[derive(Default)]
+/// Port of `com.carrotsearch.randomizedtesting.rules.IdentityHashSet`.
+///
+/// An identity hash set implemented with open addressing and linear probing
+/// (package-private `IdentityHashSet<KType>`): two values are the same when
+/// they share their `Arc`. Values without an identity of their own (`null`,
+/// boxed primitives, which the port stores by value) are never added nor
+/// contained.
+///
+/// **Divergence.** Java hashes `System.identityHashCode(o)`
+/// (`rules/RamUsageEstimator.java:787`), a JVM-assigned number. Rust has no
+/// such number; the port hashes the folded address of the shared allocation,
+/// which identifies the value for as long as the set holds it. Only the slot
+/// order (the iteration order) depends on it, and it is no more stable in
+/// Java across runs.
 pub(crate) struct IdentityHashSet {
-    items: Vec<*const ()>,
+    /// `keys`: every slot, always a power of two of them.
+    keys: Vec<Option<*const ()>>,
+    /// `assigned`: the number of occupied slots.
+    assigned: i32,
+    /// `loadFactor`.
+    #[allow(dead_code)] // Java stores it; resizing reads DEFAULT_LOAD_FACTOR.
+    load_factor: f32,
+    /// `resizeThreshold`.
+    resize_threshold: i32,
 }
 
 fn identity(v: &Value) -> Option<*const ()> {
@@ -360,31 +401,344 @@ fn identity(v: &Value) -> Option<*const ()> {
     }
 }
 
-impl IdentityHashSet {
-    /// `add(e)`.
-    pub(crate) fn add(&mut self, v: &Value) -> bool {
-        match identity(v) {
-            Some(p) if !self.items.contains(&p) => {
-                self.items.push(p);
-                true
-            }
-            _ => false,
-        }
-    }
-
-    /// `contains(e)`: values without identity (boxed primitives, `Object[]`
-    /// copies) are never contained.
-    pub(crate) fn contains(&self, v: &Value) -> bool {
-        identity(v).is_some_and(|p| self.items.contains(&p))
+impl Default for IdentityHashSet {
+    /// `new IdentityHashSet()`.
+    fn default() -> Self {
+        IdentityHashSet::new()
     }
 }
 
-/// `Constants` (package-private): facts about the platform.
+#[allow(dead_code)] // Java declares the full set API; the estimator uses add and contains.
+impl IdentityHashSet {
+    /// `DEFAULT_LOAD_FACTOR`.
+    pub(crate) const DEFAULT_LOAD_FACTOR: f32 = 0.75;
+    /// `MIN_CAPACITY`.
+    pub(crate) const MIN_CAPACITY: i32 = 4;
+
+    /// `new IdentityHashSet()`: capacity 16, the default load factor.
+    pub(crate) fn new() -> Self {
+        Self::with_capacity_and_load_factor(16, Self::DEFAULT_LOAD_FACTOR)
+    }
+
+    /// `new IdentityHashSet(initialCapacity)`.
+    pub(crate) fn with_capacity(initial_capacity: i32) -> Self {
+        Self::with_capacity_and_load_factor(initial_capacity, Self::DEFAULT_LOAD_FACTOR)
+    }
+
+    /// `new IdentityHashSet(initialCapacity, loadFactor)`.
+    ///
+    /// # Panics
+    ///
+    /// `AssertionError` (Java's `assert` under `-ea`) when `load_factor` is
+    /// outside `(0, 1)`.
+    pub(crate) fn with_capacity_and_load_factor(initial_capacity: i32, load_factor: f32) -> Self {
+        let initial_capacity = initial_capacity.max(Self::MIN_CAPACITY);
+        crate::jdk::exception::java_assert(initial_capacity > 0, || {
+            format!("Initial capacity must be between (0, {}].", i32::MAX)
+        });
+        crate::jdk::exception::java_assert(load_factor > 0.0 && load_factor < 1.0, || {
+            "Load factor must be between (0, 1).".to_string()
+        });
+        let mut set = IdentityHashSet {
+            keys: Vec::new(),
+            assigned: 0,
+            load_factor,
+            resize_threshold: 0,
+        };
+        set.allocate_buffers(Self::round_capacity(initial_capacity));
+        set
+    }
+
+    /// `add(e)`: whether `e` was absent.
+    pub(crate) fn add(&mut self, v: &Value) -> bool {
+        let Some(e) = identity(v) else {
+            return false;
+        };
+        if self.assigned >= self.resize_threshold {
+            self.expand_and_rehash();
+        }
+        let mask = self.keys.len() - 1;
+        let mut slot = Self::rehash(e) as usize & mask;
+        while let Some(existing) = self.keys[slot] {
+            if existing == e {
+                return false;
+            }
+            slot = (slot + 1) & mask;
+        }
+        self.assigned += 1;
+        self.keys[slot] = Some(e);
+        true
+    }
+
+    /// `contains(e)`.
+    pub(crate) fn contains(&self, v: &Value) -> bool {
+        let Some(e) = identity(v) else {
+            return false;
+        };
+        let mask = self.keys.len() - 1;
+        let mut slot = Self::rehash(e) as usize & mask;
+        while let Some(existing) = self.keys[slot] {
+            if existing == e {
+                return true;
+            }
+            slot = (slot + 1) & mask;
+        }
+        false
+    }
+
+    /// `rehash(o)`: `MurmurHash3.hash(System.identityHashCode(o))` (see the
+    /// divergence above).
+    fn rehash(e: *const ()) -> i32 {
+        let address = e as usize as u64;
+        MurmurHash3::hash_int((address ^ (address >> 32)) as i32)
+    }
+
+    /// `expandAndRehash()`: doubles the slots and reinserts every key.
+    fn expand_and_rehash(&mut self) {
+        let old_keys = std::mem::take(&mut self.keys);
+        crate::jdk::exception::java_assert_no_message(self.assigned >= self.resize_threshold);
+        self.allocate_buffers(Self::next_capacity(old_keys.len() as i32));
+        let mask = self.keys.len() - 1;
+        for key in old_keys.into_iter().flatten() {
+            let mut slot = Self::rehash(key) as usize & mask;
+            while self.keys[slot].is_some() {
+                slot = (slot + 1) & mask;
+            }
+            self.keys[slot] = Some(key);
+        }
+    }
+
+    /// `allocateBuffers(capacity)`.
+    fn allocate_buffers(&mut self, capacity: i32) {
+        self.keys = vec![None; capacity as usize];
+        self.resize_threshold = (capacity as f32 * Self::DEFAULT_LOAD_FACTOR) as i32;
+    }
+
+    /// `nextCapacity(current)`.
+    fn next_capacity(current: i32) -> i32 {
+        crate::jdk::exception::java_assert(current > 0 && current.count_ones() == 1, || {
+            "Capacity must be a power of two.".to_string()
+        });
+        crate::jdk::exception::java_assert(current.wrapping_shl(1) > 0, || {
+            format!("Maximum capacity exceeded ({}).", 0x8000_0000u32 >> 1)
+        });
+        let current = if current < Self::MIN_CAPACITY / 2 {
+            Self::MIN_CAPACITY / 2
+        } else {
+            current
+        };
+        current << 1
+    }
+
+    /// `roundCapacity(requestedCapacity)`.
+    fn round_capacity(requested_capacity: i32) -> i32 {
+        const MAX: i32 = (0x8000_0000u32 >> 1) as i32;
+        if requested_capacity > MAX {
+            return MAX;
+        }
+        let mut capacity = Self::MIN_CAPACITY;
+        while capacity < requested_capacity {
+            capacity <<= 1;
+        }
+        capacity
+    }
+
+    /// `clear()`.
+    pub(crate) fn clear(&mut self) {
+        self.assigned = 0;
+        self.keys.iter_mut().for_each(|k| *k = None);
+    }
+
+    /// `size()`.
+    pub(crate) fn size(&self) -> i32 {
+        self.assigned
+    }
+
+    /// `isEmpty()`.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.size() == 0
+    }
+
+    /// `iterator()`: the identities of the keys, in slot order.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = *const ()> + '_ {
+        self.keys.iter().flatten().copied()
+    }
+}
+
+/// Port of `com.carrotsearch.randomizedtesting.rules.MurmurHash3`.
+///
+/// Hash routines for primitive types, the finalization step of Austin
+/// Appleby's MurmurHash3: the package-private `MurmurHash3` of the `rules`
+/// package (`rules/RamUsageEstimator.java:914`), the same code as the root
+/// package's `MurmurHash3`, which it runs.
+pub(crate) struct MurmurHash3;
+
+impl MurmurHash3 {
+    /// `hash(int)`: hashes a 4-byte sequence.
+    pub(crate) fn hash_int(k: i32) -> i32 {
+        crate::murmur_hash3::MurmurHash3::hash_int(k)
+    }
+
+    /// `hash(long)`: hashes an 8-byte sequence.
+    #[allow(dead_code)] // Java declares it; IdentityHashSet hashes ints.
+    pub(crate) fn hash_long(k: i64) -> i64 {
+        crate::murmur_hash3::MurmurHash3::hash_long(k)
+    }
+}
+
+/// Port of `com.carrotsearch.randomizedtesting.rules.Constants`.
+///
+/// Some useful constants (package-private `Constants`): the platform's
+/// pointer width and the JVM's system properties, read once.
 #[allow(dead_code)] // Java declares them; the estimator reads only JRE_IS_64BIT.
 pub(crate) struct Constants;
 
 #[allow(dead_code)] // Java declares them; the estimator reads only JRE_IS_64BIT.
 impl Constants {
-    /// `JRE_IS_64BIT`.
+    /// `JRE_IS_64BIT`: whether references are 64-bit (Java asks
+    /// `sun.misc.Unsafe.addressSize()`; the port asks the target).
     pub(crate) const JRE_IS_64BIT: bool = cfg!(target_pointer_width = "64");
+
+    fn property(
+        cell: &'static std::sync::OnceLock<Option<String>>,
+        key: &str,
+    ) -> Option<&'static str> {
+        cell.get_or_init(|| crate::jdk::system::get_property(key))
+            .as_deref()
+    }
+
+    /// `JAVA_VERSION`: `System.getProperty("java.version")`.
+    pub(crate) fn java_version() -> Option<&'static str> {
+        static V: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+        Self::property(&V, "java.version")
+    }
+
+    /// `JAVA_VENDOR`: `System.getProperty("java.vendor")`.
+    pub(crate) fn java_vendor() -> Option<&'static str> {
+        static V: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+        Self::property(&V, "java.vendor")
+    }
+
+    /// `JVM_VENDOR`: `System.getProperty("java.vm.vendor")`.
+    pub(crate) fn jvm_vendor() -> Option<&'static str> {
+        static V: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+        Self::property(&V, "java.vm.vendor")
+    }
+
+    /// `JVM_VERSION`: `System.getProperty("java.vm.version")`.
+    pub(crate) fn jvm_version() -> Option<&'static str> {
+        static V: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+        Self::property(&V, "java.vm.version")
+    }
+
+    /// `JVM_NAME`: `System.getProperty("java.vm.name")`.
+    pub(crate) fn jvm_name() -> Option<&'static str> {
+        static V: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+        Self::property(&V, "java.vm.name")
+    }
+
+    /// `OS_ARCH`: `System.getProperty("os.arch")`.
+    pub(crate) fn os_arch() -> Option<&'static str> {
+        static V: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+        Self::property(&V, "os.arch")
+    }
+
+    /// `OS_VERSION`: `System.getProperty("os.version")`.
+    pub(crate) fn os_version() -> Option<&'static str> {
+        static V: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+        Self::property(&V, "os.version")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `IdentityHashSet`: identity membership, growth past the resize
+    /// threshold with every key rehashed, `clear`, and Java's capacity rules.
+    #[test]
+    fn identity_hash_set_open_addressing() {
+        let values: Vec<Value> = (0..100)
+            .map(|i| Value::primitive_array("byte", i))
+            .collect();
+        let mut set = IdentityHashSet::new();
+        assert_eq!(set.keys.len(), 16);
+        assert!(set.is_empty());
+        for (i, v) in values.iter().enumerate() {
+            assert!(set.add(v), "first add of {i}");
+            assert!(!set.add(v), "second add of {i}");
+            assert_eq!(set.size(), i as i32 + 1);
+        }
+        // 100 keys at load factor 0.75: 256 slots.
+        assert_eq!(set.keys.len(), 256);
+        for v in &values {
+            assert!(set.contains(v));
+            // An equal value with another identity is not contained.
+            let Value::PrimitiveArray(a) = v else {
+                unreachable!()
+            };
+            assert!(!set.contains(&Value::primitive_array(a.component, a.len)));
+        }
+        assert_eq!(set.iter().count(), 100);
+        // Values without an identity of their own.
+        assert!(!set.add(&Value::Int(1)));
+        assert!(!set.contains(&Value::Null));
+        set.clear();
+        assert!(set.is_empty());
+        assert!(values.iter().all(|v| !set.contains(v)));
+        assert_eq!(IdentityHashSet::round_capacity(0), 4);
+        assert_eq!(IdentityHashSet::round_capacity(17), 32);
+        assert_eq!(IdentityHashSet::round_capacity(i32::MAX), 1 << 30);
+        assert_eq!(IdentityHashSet::next_capacity(1), 4);
+        assert_eq!(IdentityHashSet::next_capacity(16), 32);
+        assert_eq!(IdentityHashSet::with_capacity(3).keys.len(), 4);
+    }
+
+    /// A JUnit `RuleChain` fails as on JDK 25, through its `ArrayList`: the
+    /// messages a Java run of `TestStaticFieldsInvariantRule` reports when
+    /// `Base.classRules` is the first unmeasurable field.
+    #[test]
+    fn rule_chain_is_unmeasurable_through_its_array_list() {
+        let chain = Value::TestRule(Arc::new(crate::junit::RuleChain::empty_rule_chain()));
+        let e = RamUsageEstimator::size_of(&chain).expect_err("a RuleChain is unmeasurable");
+        assert_eq!(
+            e.to_string(),
+            "java.lang.IllegalStateException: Unable to access 'transient java.lang.Object[] \
+             java.util.ArrayList.elementData' to estimate memory usage"
+        );
+        assert_eq!(
+            e.cause().map(|c| c.to_string()).unwrap_or_default(),
+            "java.lang.reflect.InaccessibleObjectException: Unable to make field transient \
+             java.lang.Object[] java.util.ArrayList.elementData accessible: module java.base does \
+             not \"opens java.util\" to unnamed module @0"
+        );
+    }
+
+    /// `rules.MurmurHash3` is the root package's code.
+    #[test]
+    fn rules_murmur_hash3_equals_root() {
+        for k in [0, 1, -1, i32::MIN, i32::MAX, 0x1234_5678] {
+            assert_eq!(
+                MurmurHash3::hash_int(k),
+                crate::murmur_hash3::MurmurHash3::hash_int(k)
+            );
+            assert_eq!(
+                MurmurHash3::hash_long(i64::from(k) << 17),
+                crate::murmur_hash3::MurmurHash3::hash_long(i64::from(k) << 17)
+            );
+        }
+        // fmix32 of 1 (Austin Appleby's MurmurHash3 finalizer).
+        assert_eq!(MurmurHash3::hash_int(1) as u32, 0x514E_28B7);
+    }
+
+    /// `Constants`: unset JVM properties read `null`, the pointer width
+    /// follows the target.
+    #[test]
+    fn constants_read_properties_once() {
+        assert_eq!(Constants::JRE_IS_64BIT, cfg!(target_pointer_width = "64"));
+        assert_eq!(
+            Constants::java_version(),
+            crate::jdk::system::get_property("java.version").as_deref()
+        );
+    }
 }

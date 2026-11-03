@@ -167,8 +167,12 @@ impl RandomizedContext {
         self.runner.clone()
     }
 
-    /// `getRunnerSeed()` (package-private): the runner's master seed.
-    pub(crate) fn get_runner_seed(&self) -> i64 {
+    /// `getRunnerSeed()`: the runner's master seed.
+    ///
+    /// Package-private in Java, where the runner's own tests reach it from the
+    /// same package; public here because those tests, ported, are an integration
+    /// test target outside the crate.
+    pub fn get_runner_seed(&self) -> i64 {
         self.runner_randomness.get_seed()
     }
 

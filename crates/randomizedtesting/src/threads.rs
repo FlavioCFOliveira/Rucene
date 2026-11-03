@@ -12,12 +12,15 @@ use crate::jdk::exception::runtime;
 use crate::jdk::thread::{Thread, ThreadGroup};
 
 /// Thread utilities: `Threads` (package-private).
-pub(crate) struct Threads;
+///
+/// Public here because the runner's own tests (`Utils`, same package in
+/// Java) reach it from the ported integration test target outside the crate.
+pub struct Threads;
 
 impl Threads {
     /// `threadName(Thread)`: `Thread[id=N, name=..., state=..., group=...]`,
     /// JVM vendor insensitive.
-    pub(crate) fn thread_name(t: &Thread) -> String {
+    pub fn thread_name(t: &Thread) -> String {
         format!(
             "Thread[id={}, name={}, state={}, group={}]",
             t.id(),
@@ -31,18 +34,18 @@ impl Threads {
     }
 
     /// `getAllThreads()`: the threads of the root group, recursively.
-    pub(crate) fn get_all_threads() -> Vec<Thread> {
+    pub fn get_all_threads() -> Vec<Thread> {
         Threads::get_threads(&Threads::get_top_thread_group())
     }
 
     /// `getThreads(ThreadGroup)`: the live threads of `tg` and its
     /// descendants.
-    pub(crate) fn get_threads(tg: &ThreadGroup) -> Vec<Thread> {
+    pub fn get_threads(tg: &ThreadGroup) -> Vec<Thread> {
         tg.enumerate()
     }
 
     /// `getTopThreadGroup()`: the root of the current thread's group tree.
-    pub(crate) fn get_top_thread_group() -> Arc<ThreadGroup> {
+    pub fn get_top_thread_group() -> Arc<ThreadGroup> {
         let Some(mut tg) = Thread::current().thread_group() else {
             runtime(format!(
                 "No root ThreadGroup for thread: {}",

@@ -297,7 +297,8 @@ fn run_config(config: &str, log: &mut Vec<(String, String)>) {
         log.push((format!("{config}\terror\t{call}"), outcome(f)));
     }
     if config == "default" {
-        let io = "java.io.IOException: io";
+        let io = crate::jdk::exception::Throwable::new(crate::jdk::exception::IO_EXCEPTION, "io");
+        let io2 = io.clone();
         let a: &dyn Display = &"a";
         let assumes: Vec<(&str, Call, &str)> = vec![
             ("assumeTrue(false)", Box::new(|| T::assume_true(false)), "-"),
@@ -334,7 +335,7 @@ fn run_config(config: &str, log: &mut Vec<(String, String)>) {
             ),
             (
                 "assumeNoException(ex)",
-                Box::new(move || T::assume_no_exception(Some(&io))),
+                Box::new(move || T::assume_no_exception(Some(&io2))),
                 "java.io.IOException\tio",
             ),
             (
@@ -350,14 +351,14 @@ fn run_config(config: &str, log: &mut Vec<(String, String)>) {
             ),
         ];
         for (call, f, cause) in assumes {
-            let got = match catch(f) {
+            let got = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
                 Ok(()) => "OK\t-".to_string(),
                 Err(p) => {
-                    let mut lines = p.lines();
-                    let head = java_error(lines.next().unwrap());
-                    let c = lines
-                        .next()
-                        .map(|l| java_error(l.trim_start_matches("Caused by: ")))
+                    let t = crate::jdk::exception::Throwable::from_panic(p);
+                    let head = java_error(&t.to_string());
+                    let c = t
+                        .cause()
+                        .map(|c| java_error(&c.to_string()))
                         .unwrap_or_else(|| "-".into());
                     assert_eq!(c, cause, "{call} cause");
                     format!("{head}\t{c}")

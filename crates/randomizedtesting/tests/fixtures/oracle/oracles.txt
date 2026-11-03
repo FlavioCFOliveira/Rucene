@@ -4,3 +4,5 @@ com.carrotsearch.randomizedtesting.RandomizedTestingOracle
 com.carrotsearch.randomizedtesting.RunnerOracle
 com.carrotsearch.randomizedtesting.RunnerOracle asserts-false
 com.carrotsearch.randomizedtesting.RunnerPartsOracle
+com.carrotsearch.randomizedtesting.ZigguratOracle
+com.carrotsearch.randomizedtesting.SelfTestsOracle @RANDOMIZEDTESTING_SRC@

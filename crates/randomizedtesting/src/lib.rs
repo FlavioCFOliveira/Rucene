@@ -54,8 +54,10 @@ mod temp_path_resource;
 mod test_method_provider;
 mod thread_filter;
 mod thread_leak_control;
+mod thread_leak_error;
 mod threads;
 mod trace_formatting;
+mod uncaught_exception_error;
 mod validation;
 mod writer_output_stream;
 mod xoroshiro128_plus_random;
@@ -88,6 +90,7 @@ pub use test_method_provider::{
     AnnotatedMethodProvider, JUnit3MethodProvider, JUnit4MethodProvider, TestMethodProvider,
 };
 pub use thread_filter::ThreadFilter;
+pub use threads::Threads;
 pub use trace_formatting::TraceFormatting;
 pub use writer_output_stream::{CharWriter, Charset, StringWriter, WriterOutputStream};
 pub use xoroshiro128_plus_random::Xoroshiro128PlusRandom;

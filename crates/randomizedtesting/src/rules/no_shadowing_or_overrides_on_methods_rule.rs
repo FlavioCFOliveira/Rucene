@@ -114,6 +114,8 @@ static AFTER_CLASS: AnnotationType = AfterClass::TYPE;
 static BEFORE: AnnotationType = Before::TYPE;
 static AFTER: AnnotationType = After::TYPE;
 
+/// Port of `com.carrotsearch.randomizedtesting.rules.NoClassHooksShadowingRule`.
+///
 /// Forbids `@BeforeClass` / `@AfterClass` shadowing
 /// (`NoClassHooksShadowingRule`).
 pub struct NoClassHooksShadowingRule;
@@ -126,6 +128,8 @@ impl NoClassHooksShadowingRule {
     }
 }
 
+/// Port of `com.carrotsearch.randomizedtesting.rules.NoInstanceHooksOverridesRule`.
+///
 /// Forbids `@Before` / `@After` overrides (`NoInstanceHooksOverridesRule`).
 pub struct NoInstanceHooksOverridesRule;
 

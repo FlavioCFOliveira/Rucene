@@ -361,6 +361,29 @@ public class RunnerOracle {
     @Test public void testAfterLeak() { log("testAfterLeak"); }
   }
 
+  // A thread leaked while it sleeps with RandomizedTest.sleep, which
+  // rethrows the InterruptedException of the leak control's interrupt.
+  @RunWith(RandomizedRunner.class)
+  public static class LeakRandomizedSleep {
+    @Test public void testLeak() {
+      new Thread(() -> {
+        try {
+          while (true) RandomizedTest.sleep(1000);
+        } catch (Throwable e) {
+          log("thread leaked-randomized-sleep ended by " + e);
+        }
+      }, "leaked-randomized-sleep").start();
+    }
+  }
+
+  // A class annotated @Ignore: JUnit's IgnoredClassRunner, not RandomizedRunner.
+  @RunWith(RandomizedRunner.class)
+  @Ignore("whole class")
+  public static class IgnoredClass {
+    @BeforeClass public static void beforeClass() { log("beforeClass"); }
+    @Test public void testOne() { log("testOne"); }
+  }
+
   @RunWith(RandomizedRunner.class)
   @ThreadLeakScope(Scope.SUITE)
   public static class LeakSuite {
@@ -645,6 +668,8 @@ public class RunnerOracle {
       scenario(dir, w, "leak-linger", LeakLinger.class, S, "DEADBEEF");
       scenario(dir, w, "leak-warn-only", LeakWarnOnly.class, S, "DEADBEEF");
       scenario(dir, w, "leak-filtered", LeakFiltered.class, S, "DEADBEEF");
+      scenario(dir, w, "leak-randomized-sleep", LeakRandomizedSleep.class, S, "DEADBEEF", "tests.killwait", "200");
+      scenario(dir, w, "class-ignore", IgnoredClass.class, S, "DEADBEEF");
       scenario(dir, w, "timeout-test", TestTimeout.class, S, "DEADBEEF", "tests.killwait", "200");
       scenario(dir, w, "timeout-test-global-first", TestTimeout.class, S, "DEADBEEF", "tests.timeout", "100!", "tests.killwait", "200");
       scenario(dir, w, "timeout-suite", SuiteTimeout.class, S, "DEADBEEF", "tests.killwait", "200");

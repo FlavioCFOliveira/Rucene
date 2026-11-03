@@ -113,9 +113,12 @@ impl Randomness {
         }
     }
 
-    /// `getSeed()` (package-private, "read-only for tests"): the starting
-    /// seed, undecorated.
-    pub(crate) fn get_seed(&self) -> i64 {
+    /// `getSeed()` ("read-only for tests"): the starting seed, undecorated.
+    ///
+    /// Package-private in Java, where the runner's own tests reach it from the
+    /// same package; public here because those tests, ported, are an integration
+    /// test target outside the crate.
+    pub fn get_seed(&self) -> i64 {
         self.seed
     }
 

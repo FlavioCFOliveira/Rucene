@@ -272,7 +272,7 @@ fn equi_doubles_cases() -> Vec<(f64, f64, bool, bool)> {
     ]
 }
 
-fn generator(kind: &str, seed: i64) -> Arc<dyn Random> {
+pub(super) fn generator(kind: &str, seed: i64) -> Arc<dyn Random> {
     match kind {
         "jdk" => Arc::new(JdkRandom::new(seed)),
         "xoro" => Arc::new(Xoroshiro128PlusRandom::new(seed)),

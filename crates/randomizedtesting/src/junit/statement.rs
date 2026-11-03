@@ -47,6 +47,12 @@ pub trait TestRule: Send + Sync {
     /// `apply(Statement base, Description description)`: the statement to
     /// run in place of `base`.
     fn apply(&self, base: Statement, description: &Arc<Description>) -> Statement;
+
+    /// `getClass().getName()` when the rule is a JUnit class whose fields the
+    /// memory estimator walks (`RuleChain`); `None` for any other rule.
+    fn java_class(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 /// The method a `MethodRule` wraps (`FrameworkMethod`).
@@ -114,6 +120,12 @@ impl TestRule for RuleChain {
             s = rule.apply(s, description);
         }
         s
+    }
+
+    /// `org.junit.rules.RuleChain`, whose `rulesStartingWithInnerMost` is a
+    /// `java.util.ArrayList`.
+    fn java_class(&self) -> Option<&'static str> {
+        Some("org.junit.rules.RuleChain")
     }
 }
 

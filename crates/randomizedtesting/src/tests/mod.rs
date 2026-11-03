@@ -19,6 +19,7 @@ mod java_lang;
 mod random_draws;
 mod runner_parts;
 mod seed_chain;
+mod ziggurat;
 
 use std::collections::BTreeMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};

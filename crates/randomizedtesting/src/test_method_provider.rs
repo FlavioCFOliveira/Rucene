@@ -21,6 +21,8 @@ pub trait TestMethodProvider: Send + Sync {
     ) -> Vec<Arc<Method>>;
 }
 
+/// Port of `com.carrotsearch.randomizedtesting.AnnotatedMethodProvider`.
+///
 /// Methods annotated with a given annotation: `AnnotatedMethodProvider`.
 #[derive(Debug, Clone, Copy)]
 pub struct AnnotatedMethodProvider {
@@ -60,6 +62,8 @@ impl TestMethodProvider for AnnotatedMethodProvider {
     }
 }
 
+/// Port of `com.carrotsearch.randomizedtesting.JUnit4MethodProvider`.
+///
 /// `@Test`-annotated methods: `JUnit4MethodProvider`, the default.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct JUnit4MethodProvider;
@@ -70,6 +74,8 @@ impl TestMethodProvider for JUnit4MethodProvider {
     }
 }
 
+/// Port of `com.carrotsearch.randomizedtesting.JUnit3MethodProvider`.
+///
 /// Methods named `test*`, the most specific override of each:
 /// `JUnit3MethodProvider`.
 #[derive(Debug, Clone, Copy, Default)]

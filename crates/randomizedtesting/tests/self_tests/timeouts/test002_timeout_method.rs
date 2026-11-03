@@ -1,0 +1,43 @@
+//! Port of `com.carrotsearch.randomizedtesting.timeouts.Test002TimeoutMethod`
+//! (randomized-runner 2.8.1 test sources, Apache-2.0).
+
+use std::sync::{Arc, LazyLock};
+
+use randomizedtesting::annotations::Timeout;
+use randomizedtesting::jdk::reflect::Class;
+use randomizedtesting::RandomizedTest;
+
+use super::common::{apply_at_place_suite, cls, place_tests, set_place};
+use crate::support::unit;
+use crate::utils::{assert_failure_with_message, assert_failures_contain_seeds};
+use crate::with_nested_test_class::{run_tests, Place, CLASS as WITH_NESTED};
+
+const O: &str = "Test002TimeoutMethod";
+
+/// `@Timeout(millis = 25) Nested extends ApplyAtPlace`.
+static NESTED: LazyLock<Arc<Class>> =
+    LazyLock::new(|| apply_at_place_suite(O, |b| b.annotate(Timeout { millis: 25 })));
+
+fn check(p: Place) {
+    set_place(p, || loop {
+        RandomizedTest::sleep(1000)
+    });
+    let r = run_tests(std::slice::from_ref(&*NESTED));
+    assert_failure_with_message(&r, "Test timeout exceeded");
+    assert_failures_contain_seeds(&r);
+}
+
+/// `Test002TimeoutMethod extends WithNestedTestClass`.
+pub fn classes() -> Vec<Arc<Class>> {
+    vec![place_tests(
+        cls(O).extends(&WITH_NESTED).constructor(unit()),
+        &[
+            ("testTestRule", Place::TestRule),
+            ("testBefore", Place::Before),
+            ("testTest", Place::Test),
+            ("testAfter", Place::After),
+        ],
+        check,
+    )
+    .build()]
+}

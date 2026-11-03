@@ -783,6 +783,40 @@ static LEAK_TEST: LazyLock<Arc<Class>> = LazyLock::new(|| {
         .build()
 });
 
+/// `LeakRandomizedSleep`: a thread leaked while it sleeps with
+/// `RandomizedTest.sleep`, which rethrows the leak control's interrupt.
+static LEAK_RANDOMIZED_SLEEP: LazyLock<Arc<Class>> = LazyLock::new(|| {
+    cls("LeakRandomizedSleep")
+        .constructor(unit())
+        .method(test("testLeak", || {
+            Thread::new("leaked-randomized-sleep", || {
+                let r = std::panic::catch_unwind(|| loop {
+                    RandomizedTest::sleep(1000)
+                });
+                if let Err(p) = r {
+                    log(format!(
+                        "thread leaked-randomized-sleep ended by {}",
+                        Throwable::from_panic(p)
+                    ));
+                }
+            })
+            .start()
+        }))
+        .build()
+});
+
+/// `@Ignore("whole class") IgnoredClass`: JUnit's `IgnoredClassRunner`.
+static IGNORED_CLASS: LazyLock<Arc<Class>> = LazyLock::new(|| {
+    cls("IgnoredClass")
+        .annotate(Ignore::because("whole class"))
+        .constructor(unit())
+        .method(static_hook("beforeClass", BeforeClass, || {
+            log("beforeClass")
+        }))
+        .method(test("testOne", || log("testOne")))
+        .build()
+});
+
 static LEAK_SUITE: LazyLock<Arc<Class>> = LazyLock::new(|| {
     cls("LeakSuite")
         .annotate(ThreadLeakScope {
@@ -1389,6 +1423,13 @@ fn run_scenarios() -> String {
     scenario(w, "leak-linger", &LEAK_LINGER, &[(s, "DEADBEEF")]);
     scenario(w, "leak-warn-only", &LEAK_WARN_ONLY, &[(s, "DEADBEEF")]);
     scenario(w, "leak-filtered", &LEAK_FILTERED, &[(s, "DEADBEEF")]);
+    scenario(
+        w,
+        "leak-randomized-sleep",
+        &LEAK_RANDOMIZED_SLEEP,
+        &[(s, "DEADBEEF"), ("tests.killwait", "200")],
+    );
+    scenario(w, "class-ignore", &IGNORED_CLASS, &[(s, "DEADBEEF")]);
     scenario(
         w,
         "timeout-test",

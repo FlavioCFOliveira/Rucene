@@ -16,3 +16,10 @@ publish = false
 [[test]]
 name = "runner_oracle"
 harness = false
+
+# randomizedtesting 2.8.1's own test suite (randomized-runner/src/test), run
+# by the ported runner and compared with the Java classes' outcomes.
+[[test]]
+name = "self_tests"
+path = "tests/self_tests/main.rs"
+harness = false

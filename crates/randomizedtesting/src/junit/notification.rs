@@ -45,9 +45,13 @@ impl Failure {
         self.exception.message()
     }
 
-    /// `getTrace()`: the exception's stack trace text.
+    /// `getTrace()`: the exception's stack trace text, as
+    /// `printStackTrace` writes it (every line, the last included, ends with
+    /// a line separator).
     pub fn trace(&self) -> String {
-        crate::jdk::system::format_stack_trace(&self.exception)
+        let mut t = crate::jdk::system::format_stack_trace(&self.exception);
+        t.push('\n');
+        t
     }
 }
 
@@ -335,7 +339,7 @@ impl RunListener for TextListener {
         crate::jdk::system::out_println(&format!("STARTED  {d}"));
     }
     fn test_failure(&self, f: &Failure) {
-        crate::jdk::system::out_println(&format!("FAILURE  {}\n{}", f.description(), f.trace()));
+        crate::jdk::system::out_print(&format!("FAILURE  {}\n{}", f.description(), f.trace()));
     }
     fn test_assumption_failure(&self, f: &Failure) {
         crate::jdk::system::out_println(&format!("ASSUMED  {} {}", f.description(), f.exception()));

@@ -135,13 +135,13 @@ asserting	equiDoubles(1,up1,F,F)	java.lang.IllegalArgumentException	the boundari
 asserting	setSeed(1)	java.lang.RuntimeException	RandomizedRunner prevents changing the seed of its random generators to assure repeatability of tests. If you need a mutable instance of Random, create a new (local) instance, preferably with the initial seed aquired from this Random instance.
 asserting	setSeed(0)	java.lang.RuntimeException	RandomizedRunner prevents changing the seed of its random generators to assure repeatability of tests. If you need a mutable instance of Random, create a new (local) instance, preferably with the initial seed aquired from this Random instance.
 asserting	next(32)	java.lang.RuntimeException	Shouldn't be reachable.
-asserting	foreign-thread	java.lang.IllegalStateException	This Random was created for/by another thread (Thread[#3,main,5,main]). Random instances must not be shared (acquire per-thread). Current thread: Thread[#44,foreign-thread,5,main]
+asserting	foreign-thread	java.lang.IllegalStateException	This Random was created for/by another thread (Thread[#3,main,5,main]). Random instances must not be shared (acquire per-thread). Current thread: Thread[#46,foreign-thread,5,main]
 asserting	foreign-thread-cause	com.carrotsearch.randomizedtesting.StackTraceHolder	Original allocation stack for this Random (allocated by Thread[#3,main,5,main])
 asserting	destroyed-nextInt	java.lang.IllegalStateException	This Random instance has been invalidated and is probably used out of its allowed context (test or suite).
 thread	Thread.toString	Thread[#3,main,5,main]
 thread	Threads.threadName	Thread[id=3, name=main, state=RUNNABLE, group=main]
 thread	isVerifying	true
-thread	Threads.threadName(new)	Thread[id=45, name=unstarted, state=NEW, group=main]
-thread	Thread.toString(new)	Thread[#45,unstarted,5,main]
-thread	Threads.threadName(terminated)	Thread[id=45, name=unstarted, state=TERMINATED, group={null group}]
-thread	Thread.toString(terminated)	Thread[#45,unstarted,5,]
+thread	Threads.threadName(new)	Thread[id=47, name=unstarted, state=NEW, group=main]
+thread	Thread.toString(new)	Thread[#47,unstarted,5,main]
+thread	Threads.threadName(terminated)	Thread[id=47, name=unstarted, state=TERMINATED, group={null group}]
+thread	Thread.toString(terminated)	Thread[#47,unstarted,5,]

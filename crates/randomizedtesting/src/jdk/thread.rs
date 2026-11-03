@@ -333,6 +333,12 @@ impl Thread {
         Thread::new(name, body)
     }
 
+    /// `new Thread(group, runnable)`: named `Thread-N`, in `group`.
+    pub fn unnamed_in(group: &Arc<ThreadGroup>, body: impl FnOnce() + Send + 'static) -> Thread {
+        let name = format!("Thread-{}", NEXT_THREAD_NUM.fetch_add(1, Ordering::Relaxed));
+        Thread::with_group(group, name, body)
+    }
+
     /// `new Thread(group, runnable, name)`.
     pub fn with_group(
         group: &Arc<ThreadGroup>,

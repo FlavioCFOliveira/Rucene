@@ -73,6 +73,23 @@ impl Runner for ErrorReportingRunner {
     }
 }
 
+/// The runner of a class annotated `@Ignore` (`IgnoredClassRunner`): its
+/// description is the class's suite description, and running it reports
+/// that description ignored.
+struct IgnoredClassRunner {
+    class: Arc<Class>,
+}
+
+impl Runner for IgnoredClassRunner {
+    fn description(&self) -> Arc<Description> {
+        Description::create_suite_description_for_class(&self.class)
+    }
+
+    fn run(&self, notifier: &Arc<RunNotifier>) {
+        notifier.fire_test_ignored(&self.description());
+    }
+}
+
 /// A filtered runner (`Request.filterWith`): `RandomizedRunner.filter`, or
 /// the "no tests remain" error runner JUnit substitutes.
 struct FilteredRequest {
@@ -95,12 +112,25 @@ pub struct Request {
 }
 
 impl Request {
-    /// `Request.aClass(clazz)`: the class under `RandomizedRunner`.
+    /// `Request.aClass(clazz)`: a class annotated `@Ignore` gets JUnit's
+    /// `IgnoredClassRunner` (its builder comes first, before `@RunWith` is
+    /// read); any other class runs under `RandomizedRunner`.
     ///
     /// **Divergence.** JUnit picks the runner from `@RunWith` (and runs a
-    /// plain class with `BlockJUnit4ClassRunner`); every class runs under
-    /// [`RandomizedRunner`] here, the only runner the port provides.
+    /// plain class with `BlockJUnit4ClassRunner`); every class that is not
+    /// ignored runs under [`RandomizedRunner`] here, the only runner the
+    /// port provides.
     pub fn a_class(class: &Arc<Class>) -> Request {
+        if class
+            .get_declared_annotation::<super::annotations::Ignore>()
+            .is_some()
+        {
+            return Request {
+                runner: Arc::new(IgnoredClassRunner {
+                    class: Arc::clone(class),
+                }),
+            };
+        }
         match RandomizedRunner::new(class) {
             Ok(r) => Request {
                 runner: Arc::new(r),
@@ -112,6 +142,11 @@ impl Request {
                 }),
             },
         }
+    }
+
+    /// `Request.runner(runner)`: a request for an already built runner.
+    pub fn of_runner(runner: Arc<dyn Runner>) -> Request {
+        Request { runner }
     }
 
     /// `Request.method(clazz, methodName)`: the class, filtered to the test
@@ -211,11 +246,21 @@ impl JUnitCore {
     /// `JUnitCore.runClasses(classes)`: each class in turn, into one
     /// result.
     pub fn run_classes(classes: &[Arc<Class>]) -> Arc<JUnitResult> {
-        let core = JUnitCore::new();
+        JUnitCore::new().run_all(classes)
+    }
+
+    /// `run(Class<?>... classes)`: one run of every class in turn (a suite
+    /// named `null` holding each class's description), reported to this
+    /// core's listeners, into one result.
+    pub fn run_all(&self, classes: &[Arc<Class>]) -> Arc<JUnitResult> {
+        let _quiet = crate::jdk::exception::QuietPanics::new();
         let result = JUnitResult::new();
         let notifier = Arc::new(RunNotifier::new());
         let listener = result.create_listener();
         notifier.add_first_listener(Arc::clone(&listener));
+        for l in &self.listeners {
+            notifier.add_listener(Arc::clone(l));
+        }
         let suite = Description::create_suite_description("null", Vec::new());
         let requests: Vec<Request> = classes.iter().map(Request::a_class).collect();
         for r in &requests {
@@ -226,7 +271,7 @@ impl JUnitCore {
             r.runner().run(&notifier);
         }
         notifier.fire_test_run_finished(&result);
-        let _ = core;
+        notifier.remove_listener(&listener);
         result
     }
 }

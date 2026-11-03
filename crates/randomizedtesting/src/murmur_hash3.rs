@@ -7,7 +7,6 @@ pub(crate) struct MurmurHash3;
 
 impl MurmurHash3 {
     /// `MurmurHash3.hash(int)`: hashes a 4-byte sequence.
-    #[allow(dead_code)] // Java's class carries it; no 2.8.1 caller is ported.
     pub(crate) fn hash_int(k: i32) -> i32 {
         let mut k = k as u32;
         k ^= k >> 16;

@@ -39,12 +39,14 @@ use crate::randomized_context::RandomizedContext;
 use crate::randomized_runner::{
     assert_empty, augment_stack_trace, try_run, RandomizedRunner, TestCandidate, UncaughtException,
     DEFAULT_KILLATTEMPTS, DEFAULT_KILLWAIT, DEFAULT_TIMEOUT, DEFAULT_TIMEOUT_SUITE,
-    MAIN_THREAD_GROUP, THREAD_LEAK_ERROR, UNCAUGHT_EXCEPTION_ERROR, ZOMBIE_MARKER,
+    MAIN_THREAD_GROUP, ZOMBIE_MARKER,
 };
 use crate::randomized_test::RandomizedTest;
 use crate::sys_globals::SysGlobals;
 use crate::thread_filter::ThreadFilter;
+use crate::thread_leak_error::ThreadLeakError;
 use crate::threads::Threads;
+use crate::uncaught_exception_error::UncaughtExceptionError;
 
 /// `DefaultAnnotationValues`: the annotations' defaults.
 static DEFAULTS: LazyLock<Vec<AnnotationRef>> = LazyLock::new(|| {
@@ -497,12 +499,11 @@ impl ThreadLeakControl {
     /// `processUncaught(errors, uncaughtList)`.
     fn process_uncaught(&self, errors: &mut Vec<Throwable>, uncaught: Vec<UncaughtException>) {
         for e in uncaught {
-            errors.push(empty_stack(Throwable::with_cause(
-                UNCAUGHT_EXCEPTION_ERROR,
-                Some(format!(
+            errors.push(empty_stack(UncaughtExceptionError::new(
+                format!(
                     "Captured an uncaught exception in thread: {}",
                     e.thread_name
-                )),
+                ),
                 e.error,
             )));
         }
@@ -565,7 +566,7 @@ impl ThreadLeakControl {
         );
         message.push_str(&format_thread_stacks(&with_traces));
         errors.push(augment_stack_trace(
-            empty_stack(Throwable::new(THREAD_LEAK_ERROR, message.clone())),
+            empty_stack(ThreadLeakError::new(message.clone())),
             &[],
         ));
         let actions: BTreeSet<Action> = first_annotated::<ThreadLeakAction>(chain)
@@ -689,7 +690,7 @@ impl ThreadLeakControl {
             );
             RandomizedRunner::logger().severe(&message);
             errors.push(augment_stack_trace(
-                empty_stack(Throwable::new(THREAD_LEAK_ERROR, message)),
+                empty_stack(ThreadLeakError::new(message)),
                 &[],
             ));
         }

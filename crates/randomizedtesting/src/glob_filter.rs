@@ -247,9 +247,20 @@ fn dangling(c: char, index: usize, regex: &str) -> Throwable {
     )
 }
 
+/// Port of `com.carrotsearch.randomizedtesting.ClassGlobFilter`.
+///
 /// Filters by the class name of a description (`ClassGlobFilter`).
 #[derive(Debug, Clone)]
 pub struct ClassGlobFilter(GlobFilter);
+
+/// `ClassGlobFilter extends GlobFilter`: the inherited members (`globMatches`).
+impl std::ops::Deref for ClassGlobFilter {
+    type Target = GlobFilter;
+
+    fn deref(&self) -> &GlobFilter {
+        &self.0
+    }
+}
 
 impl ClassGlobFilter {
     /// `new ClassGlobFilter(globPattern)`.
@@ -272,9 +283,20 @@ impl Filter for ClassGlobFilter {
     }
 }
 
+/// Port of `com.carrotsearch.randomizedtesting.MethodGlobFilter`.
+///
 /// Filters by the method name of a description (`MethodGlobFilter`).
 #[derive(Debug, Clone)]
 pub struct MethodGlobFilter(GlobFilter);
+
+/// `MethodGlobFilter extends GlobFilter`: the inherited members (`globMatches`).
+impl std::ops::Deref for MethodGlobFilter {
+    type Target = GlobFilter;
+
+    fn deref(&self) -> &GlobFilter {
+        &self.0
+    }
+}
 
 impl MethodGlobFilter {
     /// `new MethodGlobFilter(globPattern)`.

@@ -89,10 +89,10 @@ pub const DEFAULT_KILLWAIT: i32 = 500;
 pub const DEFAULT_ITERATIONS: i32 = 1;
 
 /// `ThreadLeakError`.
-pub(crate) const THREAD_LEAK_ERROR: &str = "com.carrotsearch.randomizedtesting.ThreadLeakError";
+pub(crate) const THREAD_LEAK_ERROR: &str = crate::thread_leak_error::ThreadLeakError::CLASS;
 /// `UncaughtExceptionError`.
 pub(crate) const UNCAUGHT_EXCEPTION_ERROR: &str =
-    "com.carrotsearch.randomizedtesting.UncaughtExceptionError";
+    crate::uncaught_exception_error::UncaughtExceptionError::CLASS;
 /// `ResourceDisposalError`.
 pub(crate) const RESOURCE_DISPOSAL_ERROR: &str =
     "com.carrotsearch.randomizedtesting.ResourceDisposalError";
@@ -133,6 +133,8 @@ pub(crate) static MAIN_THREAD_GROUP: LazyLock<Arc<ThreadGroup>> = LazyLock::new(
         .unwrap_or_else(|| Arc::clone(ThreadGroup::main()))
 });
 
+/// Port of `com.carrotsearch.randomizedtesting.InstanceProvider`.
+///
 /// Creates instances of the suite class (`InstanceProvider`).
 pub(crate) trait InstanceProvider: Send + Sync {
     /// `newInstance()`: throws what the constructor throws.
@@ -464,6 +466,13 @@ impl RandomizedRunner {
     /// `RandomizedRunner.logger`.
     pub fn logger() -> &'static Logger {
         &LOGGER
+    }
+
+    /// `zombieMarker.set(value)`: the marker `ThreadLeakControl` sets when a
+    /// thread could not be terminated. Package-private in Java, where the
+    /// runner's own tests (`WithNestedTestClass.after`) reset it.
+    pub fn set_zombie_marker(value: bool) {
+        ZOMBIE_MARKER.store(value, Ordering::Release);
     }
 
     /// `hasZombieThreads()`: whether a suite left zombie threads with

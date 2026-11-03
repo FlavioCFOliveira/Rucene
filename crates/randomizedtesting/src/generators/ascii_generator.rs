@@ -5,6 +5,8 @@ use std::ops::Deref;
 use super::{AsciiLettersGenerator, StringGenerator};
 use crate::jdk::random::Random;
 
+/// Port of `com.carrotsearch.randomizedtesting.generators.ASCIIGenerator`.
+///
 /// ASCII letters: `ASCIIGenerator extends AsciiLettersGenerator`
 /// (deprecated in favour of [`AsciiLettersGenerator`]).
 #[deprecated(note = "use AsciiLettersGenerator")]

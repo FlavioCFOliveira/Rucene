@@ -122,6 +122,8 @@ fn prefix(simple: &str) -> String {
     format!("@com.carrotsearch.randomizedtesting.annotations.{simple}")
 }
 
+/// Port of `com.carrotsearch.randomizedtesting.annotations.Repeat`.
+///
 /// `@Repeat(iterations, useConstantSeed)`: repeats a test method (or every
 /// test of a class) with the same or different seeds.
 #[derive(Debug, Clone, Copy)]
@@ -149,6 +151,8 @@ java_annotation!(Repeat, REPEAT, |s| format!(
     s.use_constant_seed
 ));
 
+/// Port of `com.carrotsearch.randomizedtesting.annotations.Seed`.
+///
 /// `@Seed(value)`: the seed (chain) of a suite or method; `random` for a
 /// random one.
 #[derive(Debug, Clone)]
@@ -179,6 +183,8 @@ java_annotation!(Seed, SEED, |s| format!(
     quote_member(&s.value)
 ));
 
+/// Port of `com.carrotsearch.randomizedtesting.annotations.Seeds`.
+///
 /// `@Seeds({@Seed(...), ...})`: several seeds for one method.
 #[derive(Debug, Clone, Default)]
 pub struct Seeds {
@@ -206,6 +212,8 @@ java_annotation!(Seeds, SEEDS, |s| format!(
         .join(", ")
 ));
 
+/// Port of `com.carrotsearch.randomizedtesting.annotations.Name`.
+///
 /// `@Name(value)`: the name of a constructor parameter in a parameterized
 /// test's description. On the Rust side it is the name given to
 /// [`Constructor::with_params`](crate::jdk::reflect::Constructor::with_params).
@@ -222,6 +230,8 @@ java_annotation!(Name, NAME, |s| format!(
     quote_member(&s.value)
 ));
 
+/// Port of `com.carrotsearch.randomizedtesting.annotations.ParametersFactory`.
+///
 /// `@ParametersFactory(argumentFormatting, shuffle)`: a static method
 /// returning the constructor arguments of a parameterized suite.
 #[derive(Debug, Clone)]
@@ -259,6 +269,8 @@ java_annotation!(ParametersFactory, PARAMETERS_FACTORY, |s| format!(
     s.shuffle
 ));
 
+/// Port of `com.carrotsearch.randomizedtesting.TestMethodAndParams`.
+///
 /// `TestMethodAndParams`: a test method with its instance arguments, as
 /// a [`TestCaseOrdering`] comparator sees it.
 pub trait TestMethodAndParams {
@@ -272,6 +284,8 @@ pub trait TestMethodAndParams {
 pub type TestCaseComparator =
     Arc<dyn Fn(&dyn TestMethodAndParams, &dyn TestMethodAndParams) -> Ordering + Send + Sync>;
 
+/// Port of `com.carrotsearch.randomizedtesting.annotations.TestCaseOrdering`.
+///
 /// `@TestCaseOrdering(comparatorClass)`: the order of test cases.
 #[derive(Clone)]
 pub struct TestCaseOrdering {
@@ -321,6 +335,8 @@ java_annotation!(TestCaseOrdering, TEST_CASE_ORDERING, |s| format!(
     s.value.name.replace('$', ".")
 ));
 
+/// Port of `com.carrotsearch.randomizedtesting.annotations.TestCaseInstanceProvider.Type`.
+///
 /// `TestCaseInstanceProvider.Type`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InstanceProviderType {
@@ -331,6 +347,8 @@ pub enum InstanceProviderType {
     InstancePerConstructorArgs,
 }
 
+/// Port of `com.carrotsearch.randomizedtesting.annotations.TestCaseInstanceProvider`.
+///
 /// `@TestCaseInstanceProvider(type)`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TestCaseInstanceProvider {
@@ -364,6 +382,8 @@ fn class_list<T: ?Sized>(v: &[ClassRef<T>]) -> String {
         .join(", ")
 }
 
+/// Port of `com.carrotsearch.randomizedtesting.annotations.Listeners`.
+///
 /// `@Listeners({listenerClasses})`: listeners the runner adds.
 #[derive(Debug, Clone, Default)]
 pub struct Listeners {
@@ -378,6 +398,8 @@ java_annotation!(Listeners, LISTENERS, |s| format!(
     class_list(&s.value)
 ));
 
+/// Port of `com.carrotsearch.randomizedtesting.annotations.TestMethodProviders`.
+///
 /// `@TestMethodProviders({providerClasses})`.
 #[derive(Debug, Clone, Default)]
 pub struct TestMethodProviders {
@@ -397,6 +419,8 @@ java_annotation!(TestMethodProviders, TEST_METHOD_PROVIDERS, |s| format!(
     class_list(&s.value)
 ));
 
+/// Port of `com.carrotsearch.randomizedtesting.annotations.SeedDecorators`.
+///
 /// `@SeedDecorators({decoratorClasses})`.
 #[derive(Debug, Clone, Default)]
 pub struct SeedDecorators {
@@ -466,6 +490,8 @@ java_annotation!(SeedDecorators, SEED_DECORATORS, |s| format!(
         .join(", ")
 ));
 
+/// Port of `com.carrotsearch.randomizedtesting.annotations.TestContextRandomSupplier`.
+///
 /// `@TestContextRandomSupplier(supplierClass)`.
 #[derive(Debug, Clone)]
 pub struct TestContextRandomSupplier {
@@ -489,6 +515,8 @@ java_annotation!(
     )
 );
 
+/// Port of `com.carrotsearch.randomizedtesting.annotations.ReplicateOnEachVm`.
+///
 /// `@ReplicateOnEachVm`: a marker for the external runner.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ReplicateOnEachVm;
@@ -504,6 +532,8 @@ java_annotation!(ReplicateOnEachVm, REPLICATE_ON_EACH_VM, |_s| format!(
     prefix("ReplicateOnEachVm")
 ));
 
+/// Port of `com.carrotsearch.randomizedtesting.annotations.SuppressForbidden`.
+///
 /// `@SuppressForbidden(value)`: a marker for the forbidden-APIs checker.
 ///
 /// **Divergence.** Java retains it in class files only
@@ -527,6 +557,8 @@ java_annotation!(SuppressForbidden, SUPPRESS_FORBIDDEN, |s| format!(
     quote_member(&s.value)
 ));
 
+/// Port of `com.carrotsearch.randomizedtesting.annotations.ThreadLeakAction.Action`.
+///
 /// `ThreadLeakAction.Action`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Action {
@@ -536,6 +568,8 @@ pub enum Action {
     Interrupt,
 }
 
+/// Port of `com.carrotsearch.randomizedtesting.annotations.ThreadLeakAction`.
+///
 /// `@ThreadLeakAction({actions})`.
 #[derive(Debug, Clone)]
 pub struct ThreadLeakAction {
@@ -570,6 +604,8 @@ java_annotation!(ThreadLeakAction, THREAD_LEAK_ACTION, |s| format!(
         .join(", ")
 ));
 
+/// Port of `com.carrotsearch.randomizedtesting.annotations.ThreadLeakFilters`.
+///
 /// `@ThreadLeakFilters(defaultFilters, filters)`.
 #[derive(Debug, Clone)]
 pub struct ThreadLeakFilters {
@@ -601,6 +637,8 @@ java_annotation!(ThreadLeakFilters, THREAD_LEAK_FILTERS, |s| format!(
     class_list(&s.filters)
 ));
 
+/// Port of `com.carrotsearch.randomizedtesting.annotations.ThreadLeakGroup.Group`.
+///
 /// `ThreadLeakGroup.Group`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Group {
@@ -613,6 +651,8 @@ pub enum Group {
     TestGroup,
 }
 
+/// Port of `com.carrotsearch.randomizedtesting.annotations.ThreadLeakGroup`.
+///
 /// `@ThreadLeakGroup(group)`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ThreadLeakGroup {
@@ -631,6 +671,8 @@ java_annotation!(ThreadLeakGroup, THREAD_LEAK_GROUP, |s| format!(
     }
 ));
 
+/// Port of `com.carrotsearch.randomizedtesting.annotations.ThreadLeakLingering`.
+///
 /// `@ThreadLeakLingering(linger)`: how long to wait for leaked threads.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ThreadLeakLingering {
@@ -650,6 +692,8 @@ java_annotation!(ThreadLeakLingering, THREAD_LEAK_LINGERING, |s| format!(
     s.linger
 ));
 
+/// Port of `com.carrotsearch.randomizedtesting.annotations.ThreadLeakScope.Scope`.
+///
 /// `ThreadLeakScope.Scope`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Scope {
@@ -662,6 +706,8 @@ pub enum Scope {
     None,
 }
 
+/// Port of `com.carrotsearch.randomizedtesting.annotations.ThreadLeakScope`.
+///
 /// `@ThreadLeakScope(scope)`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ThreadLeakScope {
@@ -680,6 +726,8 @@ java_annotation!(ThreadLeakScope, THREAD_LEAK_SCOPE, |s| format!(
     }
 ));
 
+/// Port of `com.carrotsearch.randomizedtesting.annotations.ThreadLeakZombies.Consequence`.
+///
 /// `ThreadLeakZombies.Consequence`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Consequence {
@@ -690,6 +738,8 @@ pub enum Consequence {
     IgnoreRemainingTests,
 }
 
+/// Port of `com.carrotsearch.randomizedtesting.annotations.ThreadLeakZombies`.
+///
 /// `@ThreadLeakZombies(consequence)`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ThreadLeakZombies {
@@ -712,6 +762,8 @@ java_annotation!(ThreadLeakZombies, THREAD_LEAK_ZOMBIES, |s| format!(
     }
 ));
 
+/// Port of `com.carrotsearch.randomizedtesting.annotations.Timeout`.
+///
 /// `@Timeout(millis)`: a test's timeout.
 #[derive(Debug, Clone, Copy)]
 pub struct Timeout {
@@ -726,6 +778,8 @@ java_annotation!(Timeout, TIMEOUT, |s| format!(
     s.millis
 ));
 
+/// Port of `com.carrotsearch.randomizedtesting.annotations.TimeoutSuite`.
+///
 /// `@TimeoutSuite(millis)`: a suite's timeout.
 #[derive(Debug, Clone, Copy)]
 pub struct TimeoutSuite {

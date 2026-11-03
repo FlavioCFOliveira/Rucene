@@ -10,14 +10,16 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::generators::{BiasedNumbers, RandomBytes, RandomNumbers, RandomPicks, RandomStrings};
-use crate::jdk::exception::{self, illegal_argument};
+use crate::jdk::exception::{self, illegal_argument, Throwable};
 use crate::jdk::io::Closeable;
 use crate::jdk::lang;
 use crate::jdk::locale::{self, Locale, TimeZone};
 use crate::jdk::math;
 use crate::jdk::random::{JdkRandom, Random};
+use crate::jdk::reflect::{modifier, Class, Constructor, Field, Value};
 use crate::jdk::runtime;
 use crate::jdk::system;
+use crate::jdk::thread::Thread;
 use crate::lifecycle_scope::LifecycleScope;
 use crate::randomized_context::RandomizedContext;
 use crate::temp_path_resource::TempPathResource;
@@ -55,6 +57,73 @@ static TEMP_SUB_FILE_NAME_COUNT: AtomicI32 = AtomicI32::new(0);
 pub struct RandomizedTest;
 
 impl RandomizedTest {
+    /// The declaration of `com.carrotsearch.randomizedtesting.RandomizedTest`
+    /// for suites that extend it (`Class::builder(..).extends(..)`): its
+    /// public constructor and its static fields, which the runner's rules
+    /// read (`StaticFieldsInvariantRule` walks superclasses). `@RunWith`
+    /// needs no declaration: every class runs under the port's
+    /// `RandomizedRunner`.
+    ///
+    /// `tempSubFileNameCount` is an `AtomicInteger`, an object with one
+    /// `int` field; its value is declared as a boxed `Integer`, the same
+    /// layout for the memory estimator.
+    pub fn class() -> Arc<Class> {
+        static CLASS: std::sync::LazyLock<Arc<Class>> = std::sync::LazyLock::new(|| {
+            let charset = |name: &str, java: &'static str| {
+                Field::new_static(name, "java.nio.charset.Charset", move || {
+                    Value::object(java, java)
+                })
+                .modifiers(modifier::PROTECTED | modifier::FINAL)
+            };
+            Class::builder("com.carrotsearch.randomizedtesting.RandomizedTest")
+                .modifiers(modifier::PUBLIC)
+                .constructor(Constructor::no_args(|| ()))
+                .field(
+                    Field::new_static("SYSPROP_MULTIPLIER", "java.lang.String", || {
+                        Value::Str(RandomizedTest::SYSPROP_MULTIPLIER.into())
+                    })
+                    .modifiers(modifier::PUBLIC | modifier::FINAL),
+                )
+                .field(charset("UTF8", "UTF-8"))
+                .field(charset("UTF16", "UTF-16"))
+                .field(charset("ISO8859_1", "ISO-8859-1"))
+                .field(charset("US_ASCII", "US-ASCII"))
+                .field(charset("UTF32", "UTF-32"))
+                .field(
+                    Field::new_static("DEFAULT_MULTIPLIER", "double", || {
+                        Value::Double(DEFAULT_MULTIPLIER)
+                    })
+                    .modifiers(modifier::PRIVATE | modifier::FINAL),
+                )
+                .field(
+                    Field::new_static("globalTempDir", "java.nio.file.Path", || {
+                        match GLOBAL_TEMP_DIR
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .clone()
+                        {
+                            Some(p) => {
+                                let shown = p.display().to_string();
+                                Value::object(p, shown)
+                            }
+                            None => Value::Null,
+                        }
+                    })
+                    .modifiers(modifier::PRIVATE),
+                )
+                .field(
+                    Field::new_static(
+                        "tempSubFileNameCount",
+                        "java.util.concurrent.atomic.AtomicInteger",
+                        || Value::Int(TEMP_SUB_FILE_NAME_COUNT.load(Ordering::Relaxed)),
+                    )
+                    .modifiers(modifier::PRIVATE),
+                )
+                .build()
+        });
+        Arc::clone(&CLASS)
+    }
+
     /// `SYSPROP_MULTIPLIER`: the global multiplier property (a double).
     pub const SYSPROP_MULTIPLIER: &'static str = "randomized.multiplier";
 
@@ -599,17 +668,18 @@ impl RandomizedTest {
         )
     }
 
-    /// `sleep(long millis)`: `Thread.sleep`.
+    /// `sleep(long millis)`: `Thread.sleep`, an `InterruptedException`
+    /// rethrown unchecked (`Rethrow.rethrow`).
     ///
     /// # Panics
     ///
     /// `IllegalArgumentException` (`timeout value is negative`) when
-    /// `millis < 0`, as `Thread.sleep` throws.
+    /// `millis < 0`, as `Thread.sleep` throws; `InterruptedException`
+    /// (`sleep interrupted`) when the thread is (or becomes) interrupted.
     pub fn sleep(millis: i64) {
-        if millis < 0 {
-            illegal_argument("timeout value is negative");
+        if let Err(e) = Thread::try_sleep(millis) {
+            e.throw()
         }
-        std::thread::sleep(Duration::from_millis(millis as u64));
     }
 
     /// `assumeTrue(boolean)`: `Assume.assumeTrue`.
@@ -678,36 +748,38 @@ impl RandomizedTest {
     }
 
     /// `assumeNoException(String msg, Throwable t)`: fails the assumption
-    /// with `msg` when `t` is present; `t` is the cause.
+    /// with `msg` when `t` is present, chaining `t` as the cause (`new
+    /// AssumptionViolatedException(msg, t)`).
     ///
     /// # Panics
     ///
-    /// `AssumptionViolatedException` (`msg`, then `Caused by: <t>`).
-    pub fn assume_no_exception_msg(msg: &str, t: Option<&dyn Display>) {
+    /// `AssumptionViolatedException` (`msg`, caused by `t`).
+    pub fn assume_no_exception_msg(msg: &str, t: Option<&Throwable>) {
         if let Some(t) = t {
-            panic!(
-                "{}\nCaused by: {t}",
-                exception::to_string(ASSUMPTION_VIOLATED_EXCEPTION, Some(&msg))
-            );
+            Throwable::with_cause(
+                ASSUMPTION_VIOLATED_EXCEPTION,
+                Some(msg.to_string()),
+                t.clone(),
+            )
+            .throw()
         }
     }
 
-    /// `assumeNoException(Throwable t)`: `Assume.assumeNoException`; `t` is
-    /// its `toString()`.
+    /// `assumeNoException(Throwable t)`: `Assume.assumeNoException`, whose
+    /// `AssumptionViolatedException(t, nullValue())` takes `t` as its cause.
     ///
     /// # Panics
     ///
-    /// `AssumptionViolatedException` (`got: <t>, expected: null`, then
-    /// `Caused by: <t>`).
-    pub fn assume_no_exception(t: Option<&dyn Display>) {
+    /// `AssumptionViolatedException` (`got: <t>, expected: null`, caused by
+    /// `t`).
+    pub fn assume_no_exception(t: Option<&Throwable>) {
         if let Some(t) = t {
-            panic!(
-                "{}\nCaused by: {t}",
-                exception::to_string(
-                    ASSUMPTION_VIOLATED_EXCEPTION,
-                    Some(&format!("got: <{t}>, expected: null"))
-                )
-            );
+            Throwable::with_cause(
+                ASSUMPTION_VIOLATED_EXCEPTION,
+                Some(format!("got: <{t}>, expected: null")),
+                t.clone(),
+            )
+            .throw()
         }
     }
 
