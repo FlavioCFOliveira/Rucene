@@ -6,8 +6,10 @@ The knowledge graph of the **Rucene** project (roadmap `rucene`, reached through
 1. the **Rucene** crate: its files, types and functions, and the references between
    them;
 2. the reference **Apache Lucene Core 10.5.0**: the 35 modules of the distribution,
-   and `lucene/core` in depth — packages, files, types, members, dependencies,
-   bytecode calls and its test surface;
+   and the **port modules** in depth — `lucene/core`, and the modules sprint 9 adds,
+   `lucene/codecs`, `lucene/test-framework` and **randomizedtesting 2.8.1**
+   (`randomized-runner`): packages, files, types, members, dependencies; for
+   `lucene/core` also bytecode calls and its test surface;
 3. **the port between them**: which Lucene type each Rust item ports and on what
    evidence, how much of each type exists, which members are absent, the declared
    divergences, the verdicts on items no production code references, and the `rmp`
@@ -39,7 +41,9 @@ Two rules make the graph an answer rather than an impression (`CLAUDE.md` §7, �
   standing questions* by name, with escaped inputs, and prints JSON lines:
   `status` (is the graph current?), `divergences --file <path>` / `--type <fqn>`,
   `item <name>`, `refs <qualifiedName>`, `lucene-callers <fn qualifiedName>`,
-  `no-caller [--subsystem S] [--unverified]`, `awaits`, `absent`, `tasks`, and
+  `no-caller [--subsystem S] [--unverified]`, `awaits`, `absent`, `tasks`,
+  `coverage [--module M] [--list]` (in-scope classes per module and status), `early
+  [--module M]` (members ported early under the cycle rule), and
   `cypher "<statement>"` for anything else.
 * **Read a property's maintainer before trusting it.** Each label below says which
   tool writes it. A label marked *curated* is written by hand when its fact arises; no
@@ -58,7 +62,7 @@ A software project or library being modelled. Identity: `name` (string).
 
 | Property | Purpose |
 |---|---|
-| `name` | `"Rucene"` or `"Apache Lucene Core 10.5.0"`. |
+| `name` | `"Rucene"`, `"Apache Lucene Core 10.5.0"` or `"randomizedtesting 2.8.1"`. |
 | `language` | Primary language: `"Rust"`, `"Java"`. |
 | `version` | Version string, e.g. `"10.5.0"`. |
 | `path` | Root path, for the local project. |
@@ -66,21 +70,27 @@ A software project or library being modelled. Identity: `name` (string).
 | `syncedCommit` / `syncedDate` | On `Rucene`: the commit of the last `sync_commit.sh` run whose audit passed, written as its last step. `tools/kg/ask.py status` compares it with `HEAD`. |
 
 ### `Module`
-A crate or Maven module: `rucene`, and every module of the Lucene 10.5.0 distribution
-that ships Java sources, so the port's denominator is explicit (`CLAUDE.md` §6.1).
-Identity: `name` (string). Written by `tools/kg/lucene_modules_kg.py`.
+A crate or Maven module: the crate `rucene` and each workspace member crate under
+`crates/` (named by its Cargo package), every module of the Lucene 10.5.0 distribution
+that ships Java sources, and randomizedtesting 2.8.1's `randomized-runner`, so the
+port's denominator is explicit (`CLAUDE.md` §6.1). Identity: `name` (string). Written
+by `tools/kg/lucene_modules_kg.py` (the Lucene inventory), `tools/kg/port_modules_kg.py`
+(the port modules, from its `PORT_MODULES`) and `load_rucene_kg.py` (the crates; a
+member crate the survey no longer has is pruned).
 
 | Property | Purpose |
 |---|---|
-| `name` | `"rucene"`, `"lucene/core"`, `"lucene/analysis/common"`, … |
-| `shortName` | The path under `lucene/`, e.g. `"core"`. |
+| `name` | `"rucene"`, `"rucene-codecs"`, `"lucene/core"`, `"lucene/analysis/common"`, `"randomizedtesting/randomized-runner"`, … |
+| `shortName` | The path under `lucene/` (`"core"`), or under the randomizedtesting repository (`"randomized-runner"`). |
 | `kind` | `"crate"`, `"maven-module"`. |
 | `path` | Root path in the source tree. |
 | `project` | The owning `Project.name`. |
-| `javaFiles` | Java source files the module declares at the surveyed tag. |
+| `javaFiles` | Java source files the module declares at the surveyed tag (its first source tree). |
 | `inScope` | `true` for a module the port covers. |
-| `scopeRule` | The rule that set `inScope`: `"lucene-core-is-the-port-target"`, `"outside-lucene-core"`. |
+| `scopeRule` | The rule that set `inScope`: `"lucene-core-is-the-port-target"`, `"sprint-9-ports-the-module"`, `"outside-the-port-modules"`. |
 | `role` | What the module is, in one line. |
+| `crate` / `cratePath` | On a port module: the Cargo package that ports it and its directory (`"."` for `rucene`). |
+| `jpmsName` | On a port module: its JPMS module name (randomizedtesting's is the automatic name of its jar, `randomizedtesting.runner`). |
 
 ### `Package`
 A Java package. Identity: `name` (string).
@@ -90,14 +100,17 @@ A Java package. Identity: `name` (string).
 | `name` | Fully qualified package name, e.g. `"org.apache.lucene.index"`. |
 | `shortName` | Last segment. |
 | `path` | Directory path. |
+| `module` | On a sprint-9 module's package: the owning `Module.name`. |
 
 ### `Class`
-A Java type of `lucene/core` — class, interface, enum, record, exception or annotation;
-`kind` tells them apart. (`Interface`, `Enum`, `Exception` and `Annotation` are reserved
-labels that no loader writes.) Identity: `qualifiedName` (string); a nested type is
-keyed `pkg.Outer$Inner`. Written by the Lucene survey (`extract_lucene_kg.py`,
-`enrich_lucene_kg.py`, `lucene_structure_kg.py`); the port properties by the port
-loaders named below.
+A Java type of a port module (`lucene/core`, `lucene/codecs`, `lucene/test-framework`,
+`randomizedtesting/randomized-runner`) — class, interface, enum, record, exception or
+annotation; `kind` tells them apart. (`Interface`, `Enum`, `Exception` and `Annotation`
+are reserved labels that no loader writes.) Identity: `qualifiedName` (string); a nested
+type is keyed `pkg.Outer$Inner`. Written by the Lucene survey (`extract_lucene_kg.py`,
+`enrich_lucene_kg.py`, `lucene_structure_kg.py`; for the sprint-9 modules the same
+extractors run by `port_modules_kg.py --phase structure`); the port properties by the
+port loaders named below.
 
 | Property | Purpose |
 |---|---|
@@ -105,17 +118,18 @@ loaders named below.
 | `qualifiedName` | Fully qualified name (identity). |
 | `kind` | `"class"`, `"interface"`, `"enum"`, `"record"`, `"exception"`, `"annotation"`. |
 | `package` | Enclosing Java package. |
-| `file` | Source file, relative to the Lucene repository root. |
+| `file` | Source file, relative to the root of its repository (Lucene's, or randomizedtesting's). |
+| `module` | The port module whose source tree declares it (`port_coverage_kg.py --phase scope`). |
 | `extendsExternal` / `implementsExternal` | External (`java.*`, `javax.*`) super-types not modelled as nodes. |
 | `portScope` | `"in"`, `"nested"`, `"out"` — see below. |
 | `portScopeRule` | The mechanical rule that assigned `portScope`. |
 | `portState` | Top-level: `"ported"`, `"candidate"`, `"unported"`. Nested: `"ported"`, `"absorbed"`, `"unported"`. See below. |
-| `portStateEvidence` | On a nested type, the basis of its `portState`: `"doc-comment"`, `"curated"`, `"not-nameable"`, `"verified-absorption"`, `"verified-absent"`. |
+| `portStateEvidence` | On a nested type, the basis of its `portState`: `"doc-comment"`, `"curated"`, `"not-nameable"`, `"verified-absorption"`, `"verified-absent"`, `"no-port-claim"`. |
 | `portStateNote` | Why a hand verification overrode the mechanical `portState`. A type carrying it is skipped by the mechanical pass, so the verification survives the next sync. |
 | `javaVisibility` | Top-level: `"public"` or `"package"`, from the class file's `ACC_PUBLIC` flag (`lucene_calls_kg.py`). Nested: the effective visibility. |
 | `javaPublished` / `javaUsedAcrossFiles` | On a nested type: whether it and every enclosing type are `public`/`protected`; whether another `lucene/core` file names it as `Outer.Inner`. |
 | `nestedHost` / `nestedHostFiles` | On a nested type: the nearest enclosing type that has a port, and the crate files that port it. |
-| `portDestination` | On an `unported` nested type: the crate file its port belongs in. |
+| `portDestination` | On an `unported` nested type: the crate file its port belongs in (for a sprint-9 module, the crate directory mirroring its package). |
 | `memberTotal` / `memberMatched` / `memberCoverage` | The depth floor: Java method names the type declares, those whose name maps to a function the port provides, and the ratio (`port_evidence_kg.py --phase depth`). |
 | `memberEvidence` | Always `"name-mapping"`: the basis of the floor. |
 | `memberAbsent` / `memberRenamed` / `memberNa` | The triage of the names the floor missed: really absent, present under another name, not applicable (`triage_load.py`). **`memberAbsent` is the number to plan from.** A measured type with nothing unmatched carries zeros, never null. |
@@ -126,8 +140,12 @@ loaders named below.
 | Value | `portScopeRule` | Meaning |
 |---|---|---|
 | `in` | `lucene-core-top-level` | A top-level type declared by a file of `lucene/core` (`src/java`, `src/java21`). The port target. |
+| `in` | `sprint-9-module-top-level` | A top-level type declared by a file of `lucene/codecs`, `lucene/test-framework` or randomizedtesting's `randomized-runner` (`src/main/java`). |
 | `nested` | `nested-in-enclosing-type` | An inner type; not an independent port unit. Each carries its own measured `portState`. |
 | `out` | `not-a-lucene-core-type` | Anything else carrying the label, such as Rucene's own Java test fixtures. |
+
+`portScopeRule` keeps its historical name for core; the declaring module is
+`Class.module`.
 
 The rule keys on the **declaring file**, not on the package name.
 
@@ -135,7 +153,7 @@ The rule keys on the **declaring file**, not on the package name.
 
 | Value | Meaning |
 |---|---|
-| `ported` | A `PORTS` edge asserts that a Rucene item is the port of this type; its `evidence` says on what basis. |
+| `ported` | A `PORTS` edge asserts that a Rucene item is the port of this type; its `evidence` says on what basis. In a sprint-9 module the edge must be a type-level claim: a claim naming only a member (`claimLevel: "member"`) is the cycle rule's early port of that member and leaves the type missing. |
 | `candidate` | No assertion, but exactly one Rucene type carries the same simple name, recorded as `PORTS_CANDIDATE`. Probable, unverified. |
 | `absorbed` | (nested only) No independent Rust item, and none is owed, on the evidence `portStateEvidence` names. |
 | `unported` | Neither. Real work; a nested one carries `portDestination`. |
@@ -146,7 +164,10 @@ line); `not-nameable` (no client can name it — not `public`/`protected` throug
 enclosing type, and no other file names it — so nothing depends on it except through
 its host; its behaviour is measured by the host's depth, not per type);
 `verified-absorption` (nameable, and the crate shows where its work went);
-`verified-absent` (read and found missing, with destination).
+`verified-absent` (read and found missing, with destination); `no-port-claim` (a
+sprint-9 module's nested type: `nested_port_kg.py` measures `lucene/core`'s alone, so
+these carry the mechanical state — `ported` with a type-level `PORTS`, else `unported`
+with the crate directory as `portDestination`).
 
 #### Depth
 
@@ -166,7 +187,7 @@ reachable surface has no absence; a member `tools/kg/port_gaps_exclusions.json` 
 `"triageClass": "na"`.
 
 ### `Method`
-A member of a `lucene/core` type: method, constructor or field. Identity:
+A member of a port module's type: method, constructor or field. Identity:
 `qualifiedName` (string, `<class>#<signature>`).
 
 | Property | Purpose |
@@ -197,7 +218,8 @@ A source, build, documentation or configuration file of either side. Identity: `
 | `kind` | `"source"`, `"test"`, `"test-fixture"`, `"build"`, `"doc"`, `"config"`, `"module-descriptor"`. A `"test-fixture"` is a Java program under `tests/fixtures/` that drives Lucene 10.5.0 to emit reference data. |
 | `language` | `"Rust"` for a crate `.rs` file; `"Java"` for a fixture; absent otherwise. |
 | `modulePath` | For a crate file, its Rust module path or test-crate name. |
-| `crate` | `"rucene"`, `"java-codec-harness"`, or the `[[test]]` crate name. |
+| `crate` | `"rucene"`, a member crate's identifier (`"rucene_codecs"`), `"java-codec-harness"`, or the `[[test]]` crate name. |
+| `module` | For a sprint-9 module's Java file: the owning `Module.name`. |
 | `loc` | Line count at the surveyed commit. |
 | `package` | For a Java file, its package. |
 | `role` / `moduleName` | For `module-info.java`, the JPMS module name. |
@@ -311,6 +333,7 @@ A divergence the code declares is a `Divergence`, not a `Decision`.
 | `name` | Short title (identity). |
 | `kind` | `"dependency"`, `"algorithm"`, `"format"`, `"adaptation"`, `"principle"`, `"gap"`. |
 | `summary` / `rationale` / `alternatives` / `evidence` | What was decided, why, what was rejected, and what settles it. |
+| `status` | `"current"` or `"superseded"`; a superseded decision is kept as history and reached by `SUPERSEDES` from the one that replaced it. |
 
 A `"gap"` decision records a part of a task's acceptance criteria that could not be
 verified end to end, and names the follow-up through `DEPENDS_ON` → `Task`.
@@ -349,6 +372,10 @@ A top-level type of a Lucene 10.5.0 test tree — `lucene/test-framework/src/jav
 | `testMethodCount` | Test methods the file declares. |
 | `ruceneCoverage` | `"covered"` (the subject is ported and its Rust file declares a `#[test]`), `"uncovered"` (ported, no test there), `"subject-unported"`, `"no-subject-resolved"` (the name follows no test-naming convention). A file-level correspondence: it never means the Lucene test's cases were ported. |
 
+A `lucene/test-framework` `TestClass` is also a `Class` of that port module: its port
+state lives on the `Class`, reached by `PORT_UNIT`. The `TestClass` is kept because the
+core test corpus reaches the framework through `EXTENDS` between `TestClass` nodes.
+
 ### `TestMethod`
 A test method of a `TestClass`: `public void testXxx()` or a `void` method carrying
 `@Test`, attributed to the first top-level type of its file. Identity: `qualifiedName`
@@ -361,14 +388,17 @@ A test method of a `TestClass`: `public void testXxx()` or a `void` method carry
 
 | Edge | Meaning |
 |---|---|
-| `CONTAINS` | `Project` → `Module`, `Module` → `Package` / `File`, `Package` → `Package` / `Class` / `File`. |
+| `CONTAINS` | `Project` → `Module`, `Module` → `Package` / `File` (a crate `Module` → its `.rs` files), `Package` → `Package` / `Class` / `File`. |
 | `DECLARES` | `File` → `Class`; `Class` → `Method`; crate `File` → `RustStruct`/`RustTrait`/`RustEnum`/`RustAlias`/`RustFn`; Rust type → `RustFn`; `TestClass` → `TestMethod`. |
 | `NESTED_IN` | Inner `Class` → its enclosing top-level `Class`. |
-| `DEPENDS_ON` | Lucene `Package` → `Package` and `Class` → `Class` (imports plus same-package references); crate `File` → `File` (`use`); curated Rust type → type (`note`); `Task` → `Task` (as `rmp` records); `Decision` → `Task` (a gap's follow-up). |
+| `DEPENDS_ON` | Lucene `Package` → `Package` and `Class` → `Class` (imports plus same-package references, within and across the port modules); port `Module` → `Module` (`evidence: "module-info"`, `declaredAt`: the descriptor whose `requires` states it); crate `File` → `File` (`use`, across the workspace crates); curated Rust type → type (`note`); `Task` → `Task` (as `rmp` records); `Decision` → `Task` (a gap's follow-up). |
 | `EXTENDS` | `Class` → `Class`; `TestClass` → `TestClass` (how a test reaches `LuceneTestCase` or a `Base…TestCase`). |
 | `IMPLEMENTS` | Lucene `Class` → interface `Class`; Rust type → `RustTrait` (`impl Trait for Type`, crate traits only); legacy `Feature` → `File`/`Class`, and the reverse in a few early edges. |
 | `PORTS` | Rucene item (`RustStruct`/`RustTrait`/`RustEnum`/`RustAlias`/`RustFn`/`Component`) → Lucene `Class`. **`evidence` is mandatory**: `"doc-comment"` (the item's doc says `Equivalent to \`org.apache.lucene.X\`` or a lead-in of that family, or the module's `\| Rucene \| Apache Lucene Core 10.5.0 \|` table names it) or `"curated"`. `declaredAt` gives `file:line`, or the file alone with `declarationSource: "macro-expansion"`. `claimLevel: "member"` and `declaredMember` mark a claim naming a member. Optional `note`: a partial port or adaptation. |
 | `PORTS_CANDIDATE` | Rust type → `Class`: exactly one Rust type has the same simple name; `evidence: "exact-name-match"`. Unverified; superseded by a `PORTS`. |
+| `PORTS_EARLY` | *Curated.* `Task` → `Method`: under sprint 9's cycle rule, the task ported this member in full before the task that owns its class. `ownerTask` (integer): that later task; `rustItem`: the Rust item's `qualifiedName`; `evidence: "cycle-rule"`. Written by `port_modules_kg.py --phase early`; no sync deletes it. |
+| `PORT_UNIT` | `TestClass` → `Class` of the same `qualifiedName`: the framework type's port-scope node (`port_modules_kg.py`). |
+| `SUPERSEDES` | `Decision` → `Decision` it replaced; `on`: the date of the replacing decision. |
 | `PORTS_MEMBER` | `RustFn` → `Method`: by name, the fn ports that member. `evidence: "name-mapping"`; `via`: `"declared"`, `"owner"`, `"inherited"`, `"free-fn"`. Written whole by `no_caller_kg.py --phase members`. |
 | `REQUIRES_PORT` | `Task` → `Class`: the task's text names the type (an unambiguous simple name of at least four characters). |
 | `CALLS` | Lucene `Method`/`Class` → `Method`, from the bytecode of `lucene-core-10.5.0.jar`. `kind`: `"invoke"`, `"field"`; `sites`; `resolution`: `"exact"`, `"synthetic"`, `"arity"`, `"name"`, `"ambiguous"`; `evidence: "bytecode"`. Written whole by `lucene_calls_kg.py`. |
@@ -418,6 +448,27 @@ What a port claim rests on, and the notes that record a partial port:
 ```cypher
 MATCH (t)-[e:PORTS]->(c:Class {qualifiedName: $type})
 RETURN labels(t)[0] AS label, t.name, t.file, e.evidence, e.declaredAt, e.note
+```
+
+### What of each port module is ported, and what is missing
+
+In-scope classes per module and status (`ask.py coverage`; `--module M --list` lists
+the classes; `missing` is every `portState` but `ported`):
+
+```cypher
+MATCH (c:Class) WHERE c.portScope = 'in' RETURN c.module AS module, CASE WHEN c.portState = 'ported' THEN 'ported' ELSE 'missing' END AS status, count(c) AS classes ORDER BY module, status
+```
+
+Members ported early under the cycle rule (`ask.py early`):
+
+```cypher
+MATCH (t:Task)-[e:PORTS_EARLY]->(m:Method)<-[:DECLARES]-(c:Class) RETURN c.module AS module, c.qualifiedName AS class, m.qualifiedName AS member, t.id AS task, e.ownerTask AS ownerTask, e.rustItem AS rustItem ORDER BY module, class, member
+```
+
+How the modules depend on one another:
+
+```cypher
+MATCH (a:Module)-[e:DEPENDS_ON]->(b:Module) RETURN a.name, b.name, e.declaredAt
 ```
 
 ### How much of each ported type exists — the member work
@@ -745,6 +796,14 @@ must plan `NodeByIndexSeek`, not `NodeByLabelScan` + `Filter`; the integer `Task
 plans `NodeByIndexRangeScan`; a batched `UNWIND … MERGE (m:TestMethod {qualifiedName:
 qn})` shows a `Merge` operator with no label scan beneath it.
 
+**An index serves a literal key and a `MERGE`, not a `MATCH` keyed by a row.**
+`UNWIND … AS row MATCH (m:Method {qualifiedName: row.qn})` plans one
+`NodeByLabelScan` of the label and a `HashJoin` per statement, whatever the batch size
+(also with `WITH row.qn AS qn`); `UNWIND … MERGE (m:Method {qualifiedName: row.qn})`
+uses the index. A batched labelled `MATCH` therefore costs one label scan per
+statement, which only a larger batch amortises; no index can remove it. Re-measure with
+`PROFILE` after an engine upgrade.
+
 **No index serves an unlabelled node.** `MATCH (t {name: row.name, file: row.file})`
 and `MATCH (n) WHERE id(n) = row.id` scan every node for every row. The sync tools
 route the Rust item pattern through `kgio.unwind_items`, which binds it with each
@@ -804,8 +863,13 @@ RETURN type(e) AS edge, count(e) AS unstamped ORDER BY unstamped DESC
 **One commit:** `tools/kg/sync_commit.sh <commit> [roadmap]`. The order is fixed by
 what each step reads:
 
-1. `extract_rucene_kg.py --expand` → `load_rucene_kg.py` — the crate survey, and the
-   prune of nodes it no longer confirms.
+0. `port_modules_kg.py --phase modules`, `--phase structure` — the port modules'
+   scope, JPMS dependencies and scope decision, and the sprint-9 modules' packages,
+   files, types and members (needs the randomizedtesting 2.8.1 clone,
+   `$RANDOMIZEDTESTING_ROOT`).
+1. `extract_rucene_kg.py --expand` → `load_rucene_kg.py` — the crate survey (the root
+   crate and every `crates/<dir>` member), and the prune of nodes it no longer
+   confirms.
 2. `port_coverage_kg.py` — `portScope`, `portState`, Lucene `DEPENDS_ON`,
    `PORTS_CANDIDATE`, the `Task` mirror and its prune, `REQUIRES_PORT`.
 3. `port_evidence_kg.py --phase extract`, `--phase load` — the declared `PORTS`;
@@ -814,6 +878,7 @@ what each step reads:
 4. `nested_port_kg.py` — the nested types' `portState` (needs step 3).
 5. `port_coverage_kg.py --phase scope`, then `--phase candidates` (separate
    invocations).
+   `port_modules_kg.py --phase coverage` prints the per-module coverage.
 6. `triage_dump.py` → `triage_repro.py` (fails unless it reproduces the graph's
    `memberMatched`) → `triage_members.py` → `triage_load.py` — the member triage.
 7. `rmp_closings.py` → `commits_kg.py --closings` — the commit history and task edges.
@@ -832,8 +897,11 @@ above; `tools/kg/README.md` gives the arguments.
 `tools/kg/audit_kg.py`, after every sync; `problems: 0` is the pass condition. Each
 check compares the graph with a source it re-derives independently:
 
-* **Lucene:** `lucene/core` Java files, top-level and nested types (a brace-depth
-  scanner written independently of the extractor), registered modules.
+* **Lucene and randomizedtesting:** per port module, Java files and top-level types;
+  over all of them, top-level and nested types (a brace-depth scanner written
+  independently of the extractor); registered modules; the in-scope modules equal
+  `PORT_MODULES`; every in-scope or nested `Class` has a `module`; every
+  `PORTS_EARLY` member belongs to a sprint-9 type.
 * **Crate:** `.rs` files, types and functions (from the compiler's own expansion), and
   no type the compiler sees that the graph lacks.
 * **Port state:** every `Class` has a `portScope`; every nested type a measured state

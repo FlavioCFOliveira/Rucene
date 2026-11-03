@@ -28,9 +28,20 @@ de indice com o Apache Lucene Core 10.5.0. Os tipos aninhados ficam marcados
 `nested`: sao portados com o tipo que os envolve, nao de forma independente, e
 por isso nao entram no denominador.
 
+Desde a decisao do utilizador de 2026-11-03 (sprint 9), a mesma regra cobre os
+modulos que `port_modules_kg.PORT_MODULES` nomeia -- `lucene/codecs`,
+`lucene/test-framework` e randomizedtesting 2.8.1 (`randomized-runner`) -- com
+`portScopeRule = 'sprint-9-module-top-level'`, e cada `Class` leva o seu
+`module`. Para esses modulos, uma reivindicacao so de membro
+(`claimLevel = 'member'`) nao torna o tipo `ported`: e a regra de ciclo do
+sprint, que porta um membro antes do tipo que o contem; os seus aninhados
+recebem um `portState` mecanico (`ported` com `PORTS`, senao `unported` com o
+destino no crate do modulo), porque `nested_port_kg.py` mede apenas os de
+`lucene/core`.
+
 Uso:
     python3 tools/kg/port_coverage_kg.py rucene \\
-        --lucene-root /tmp/lucene1050 \\
+        --lucene-root /tmp/lucene1050 --rt-root <randomizedtesting 2.8.1> \\
         --commit <sha> --date <YYYY-MM-DD>
 """
 
@@ -45,8 +56,10 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from extract_lucene_kg import clean_for_brace_count  # noqa: E402
 from load_rucene_kg import esc, read, rmp, run_unwind  # noqa: E402
+import port_modules_kg as pm  # noqa: E402
 
 CORE_PREFIX = "org.apache.lucene"
+JAVA_PREFIXES = pm.JAVA_PREFIXES
 SCOPE_RULE_IN = "lucene-core-top-level"
 SCOPE_RULE_NESTED = "nested-in-enclosing-type"
 SCOPE_RULE_OUT = "not-a-lucene-core-type"
@@ -57,7 +70,7 @@ DECL_RE = re.compile(
     r"(class|interface|enum|record|@interface)\s+([A-Za-z_$][A-Za-z0-9_$]*)",
     re.M,
 )
-PKG_RE = re.compile(r"\n\s*package\s+([a-zA-Z0-9_.]+)\s*;")
+PKG_RE = re.compile(r"(?:\A|\n)\s*package\s+([a-zA-Z0-9_.]+)\s*;")
 IMPORT_RE = re.compile(r"\n\s*import\s+(?:static\s+)?([a-zA-Z0-9_.$]+)\s*;")
 WORD_RE = re.compile(r"\b[A-Z][A-Za-z0-9_$]*\b")
 
@@ -67,27 +80,25 @@ WORD_RE = re.compile(r"\b[A-Z][A-Za-z0-9_$]*\b")
 # ---------------------------------------------------------------------------
 
 
-def scan_lucene(lucene_root: str):
+def scan_lucene(lucene_root: str, rt_root=None):
     """Devolve (top_level, deps).
 
-    top_level: qualifiedName -> ficheiro relativo
-    deps:      lista de (from, to) entre tipos de topo do `lucene/core`
+    top_level: qualifiedName -> ficheiro relativo a raiz do seu clone
+    deps:      lista de (from, to) entre tipos de topo dos modulos do porte
+               (`port_modules_kg.PORT_MODULES`), dentro e entre modulos
     """
-    roots = [
-        os.path.join(lucene_root, "lucene/core/src/java"),
-        os.path.join(lucene_root, "lucene/core/src/java21"),
-    ]
+    roots = pm.repo_roots(lucene_root, rt_root)
     files = []
-    for r in roots:
+    for _m, base, r in pm.source_dirs(roots):
         for dp, _dirs, fns in os.walk(r):
             for fn in fns:
                 if fn.endswith(".java") and fn != "module-info.java":
-                    files.append(os.path.join(dp, fn))
+                    files.append((str(base), os.path.join(dp, fn)))
     files.sort()
 
     info = {}
     pkg_types = {}
-    for f in files:
+    for base, f in files:
         txt = open(f, encoding="utf-8", errors="ignore").read()
         m = PKG_RE.search(txt)
         if not m:
@@ -100,7 +111,7 @@ def scan_lucene(lucene_root: str):
             if pre.count("{") - pre.count("}") != 0:
                 continue
             tops.append(dm.group(2))
-        rel = os.path.relpath(f, lucene_root)
+        rel = os.path.relpath(f, base)
         info[f] = (pkg, tops, txt, clean, rel)
         pkg_types.setdefault(pkg, set()).update(tops)
 
@@ -113,7 +124,7 @@ def scan_lucene(lucene_root: str):
     for f, (pkg, tops, txt, clean, _rel) in info.items():
         targets = set()
         for imp in IMPORT_RE.findall(txt):
-            if not imp.startswith(CORE_PREFIX):
+            if not imp.startswith(JAVA_PREFIXES):
                 continue
             parts = imp.split(".")
             for k in range(len(parts), 0, -1):
@@ -167,9 +178,13 @@ def phase_scope(roadmap, top_level, commit, date, batch_size):
         qn = n["qn"]
         file = n["file"] or ""
         if qn and qn in top_level:
-            rows_in.append({"qn": qn, "file": top_level[qn]})
-        elif file.startswith("lucene/core/"):
-            rows_nested.append({"qn": qn})
+            module = pm.module_of_file(top_level[qn])
+            rows_in.append({"qn": qn, "file": top_level[qn], "module": module,
+                            "rule": SCOPE_RULE_IN if module == "lucene/core"
+                            else pm.BY_NAME[module]["classRule"]})
+        elif pm.module_of_file(file):
+            rows_nested.append({"qn": qn, "module": pm.module_of_file(file),
+                                "pkg": n["pkg"] or ""})
         elif qn and file:
             # The declaring file decides, not the package name. Rucene's own
             # Java test fixtures are declared in `org.apache.lucene.rucene.codec`
@@ -179,7 +194,7 @@ def phase_scope(roadmap, top_level, commit, date, batch_size):
         elif qn and qn.startswith(CORE_PREFIX):
             # No file recorded: a stub some edge referenced by name. Keep it in
             # the nested bucket only while it is plausibly a Lucene inner type.
-            rows_nested.append({"qn": qn})
+            rows_nested.append({"qn": qn, "module": "lucene/core", "pkg": n["pkg"] or ""})
         else:
             rows_out.append({"qn": qn})
     stamp = f"c.gitCommit = {esc(commit)}, c.gitDate = {esc(date)}"
@@ -188,7 +203,7 @@ def phase_scope(roadmap, top_level, commit, date, batch_size):
         roadmap,
         rows_in,
         "MATCH (c:Class {qualifiedName:row.qn}) "
-        f"SET c.portScope = 'in', c.portScopeRule = '{SCOPE_RULE_IN}', "
+        "SET c.portScope = 'in', c.portScopeRule = row.rule, c.module = row.module, "
         f"c.file = coalesce(c.file, row.file), {stamp}",
         batch_size,
         "portScope = in",
@@ -196,10 +211,10 @@ def phase_scope(roadmap, top_level, commit, date, batch_size):
     run_unwind(
         "update",
         roadmap,
-        [r for r in rows_nested if r["qn"]],
+        [{"qn": r["qn"], "module": r["module"]} for r in rows_nested if r["qn"]],
         "MATCH (c:Class {qualifiedName:row.qn}) "
         f"SET c.portScope = 'nested', c.portScopeRule = '{SCOPE_RULE_NESTED}', "
-        f"{stamp}",
+        f"c.module = row.module, {stamp}",
         batch_size,
         "portScope = nested",
     )
@@ -231,12 +246,17 @@ def phase_scope(roadmap, top_level, commit, date, batch_size):
     # grafo voltava a mentir sobre o que esta portado.
     overridden = overridden_set(roadmap)
 
+    # The sprint's cycle rule ports a member before the type that holds it, so
+    # in a sprint-9 module a claim naming only a member is not a port of the
+    # type: the member is recorded (`PORTS_EARLY`) and the type stays missing.
     ported = read(
         roadmap,
-        "MATCH (x)-[:PORTS]->(c:Class) WHERE c.portScope = 'in' "
-        "RETURN DISTINCT c.qualifiedName AS qn",
+        "MATCH (x)-[e:PORTS]->(c:Class) WHERE c.portScope = 'in' "
+        "RETURN c.qualifiedName AS qn, c.module AS module, "
+        "collect(coalesce(e.claimLevel, 'type')) AS levels",
     )
-    ported_set = {r["qn"] for r in ported}
+    ported_set = {r["qn"] for r in ported
+                  if r["module"] == "lucene/core" or "type" in r["levels"]}
     run_unwind(
         "update",
         roadmap,
@@ -263,6 +283,40 @@ def phase_scope(roadmap, top_level, commit, date, batch_size):
             f"  portState preservado por verificacao manual: {len(overridden)}",
             file=sys.stderr,
         )
+    phase_sprint9_nested(roadmap, rows_nested, commit, date, batch_size)
+
+
+def phase_sprint9_nested(roadmap, rows_nested, commit, date, batch_size):
+    """`portState` of the nested types of the sprint-9 modules.
+
+    `nested_port_kg.py` measures `lucene/core`'s nested types only: its
+    `absorbed` grounds rest on a port of the enclosing type, and none of these
+    modules has one yet. Until it is extended, these carry the mechanical
+    state: `ported` when a type-level `PORTS` reaches them, else `unported`
+    with the crate directory their port belongs in (`portDestination`), on the
+    evidence `doc-comment` or `no-port-claim`.
+    """
+    rows = [r for r in rows_nested if r["qn"] and r["module"] in pm.SPRINT9]
+    claimed = {r["qn"] for r in read(
+        roadmap,
+        "MATCH ()-[e:PORTS]->(c:Class) WHERE c.portScope = 'nested' "
+        "AND coalesce(e.claimLevel, 'type') = 'type' RETURN DISTINCT c.qualifiedName AS qn")}
+    out = [{"qn": r["qn"],
+            "state": "ported" if r["qn"] in claimed else "unported",
+            "evidence": "doc-comment" if r["qn"] in claimed else "no-port-claim",
+            "dest": None if r["qn"] in claimed
+            else pm.crate_destination(r["module"], r["pkg"]),
+            "commit": commit, "date": date} for r in rows]
+    run_unwind(
+        "update",
+        roadmap,
+        out,
+        "MATCH (c:Class {qualifiedName:row.qn}) SET c.portState = row.state, "
+        "c.portStateEvidence = row.evidence, c.portDestination = row.dest, "
+        "c.gitCommit = row.commit, c.gitDate = row.date",
+        batch_size,
+        "sprint-9 nested portState",
+    )
 
 
 def phase_deps(roadmap, deps, commit, date, batch_size):
@@ -299,11 +353,20 @@ def phase_candidates(roadmap, survey_path, commit, date, batch_size):
         print("  --survey is required for this phase", file=sys.stderr)
         sys.exit(2)
     survey = json.load(open(survey_path, encoding="utf-8"))
+    # A candidate is looked for only in the crate that ports the type's module:
+    # a `lucene/core` type in `src/`, a sprint-9 type in its own workspace crate.
+    def crate_of(file):
+        for m in pm.PORT_MODULES:
+            if m["cratePath"] != "." and file.startswith(m["cratePath"] + "/src/"):
+                return m["name"]
+        return "lucene/core" if file.startswith("src/") else None
+
     by_name = {}
     for t in survey["types"]:
-        if t["scope"] != "crate" or not t["file"].startswith("src/"):
+        module = crate_of(t["file"])
+        if t["scope"] != "crate" or module is None:
             continue
-        by_name.setdefault(t["name"], []).append(t)
+        by_name.setdefault((module, t["name"]), []).append(t)
 
     # Recomeca do zero: um tipo que entretanto passou a ter um `PORTS` curado
     # deixa de ser candidato, e a aresta antiga tem de desaparecer com ele.
@@ -317,7 +380,7 @@ def phase_candidates(roadmap, survey_path, commit, date, batch_size):
         roadmap,
         "MATCH (c:Class) WHERE c.portScope = 'in' AND c.portState <> 'ported' "
         "AND c.portStateNote IS NULL "
-        "RETURN c.qualifiedName AS qn, c.name AS name",
+        "RETURN c.qualifiedName AS qn, c.name AS name, c.module AS module",
     )
     label_of = {
         "struct": "RustStruct",
@@ -328,7 +391,7 @@ def phase_candidates(roadmap, survey_path, commit, date, batch_size):
     }
     rows = []
     for r in unported:
-        cand = by_name.get(r["name"], [])
+        cand = by_name.get((r["module"], r["name"]), [])
         if len(cand) != 1:
             continue
         t = cand[0]
@@ -599,10 +662,14 @@ def phase_decision(roadmap, top_level, commit, date):
     print("phase: decision", file=sys.stderr)
     name = "Port scope is every top-level type of lucene/core 10.5.0"
     rmp("create", roadmap, f"MERGE (d:Decision {{name:{esc(name)}}})", "decision")
+    core = sum(1 for f in top_level.values() if pm.module_of_file(f) == "lucene/core")
     summary = (
         "Every top-level type declared by a file of the Apache Lucene Core 10.5.0 "
-        f"module lucene/core ({len(top_level)} types, src/java and src/java21) is "
-        "marked portScope='in' and forms the denominator of port coverage. Nested "
+        f"module lucene/core ({core} types, src/java and src/java21) is "
+        "marked portScope='in' and forms the denominator of port coverage, with "
+        "the modules sprint 9 adds -- see the decision 'Sprint 9 ports "
+        "lucene/test-framework, lucene/codecs and randomizedtesting 2.8.1' "
+        f"({len(top_level) - core} more types); Class.module tells them apart. Nested "
         "types are marked portScope='nested' and are excluded, because a nested "
         "type is not an independent port unit. That exclusion is measured, not "
         "assumed: tools/kg/nested_port_kg.py gives every one of the 908 a "
@@ -634,7 +701,7 @@ def phase_decision(roadmap, top_level, commit, date):
         "make coverage look complete while the port is not)."
     )
     evidence = (
-        f"tools/kg/port_coverage_kg.py scans {len(top_level)} top-level types from "
+        f"tools/kg/port_coverage_kg.py scans {core} top-level lucene/core types from "
         "/tmp/lucene1050 at tag releases/lucene/10.5.0; the same number is what the "
         "original Lucene survey recorded."
     )
@@ -653,6 +720,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("roadmap")
     ap.add_argument("--lucene-root", default="/tmp/lucene1050")
+    ap.add_argument("--rt-root", help="randomizedtesting 2.8.1 clone "
+                    "(else $RANDOMIZEDTESTING_ROOT, else /tmp/randomizedtesting281)")
     ap.add_argument("--commit", required=True)
     ap.add_argument("--date", required=True)
     ap.add_argument("--survey", help="JSON de extract_rucene_kg.py (fase candidates)")
@@ -672,7 +741,7 @@ def main():
     )
     args = ap.parse_args()
 
-    top_level, deps = scan_lucene(args.lucene_root)
+    top_level, deps = scan_lucene(args.lucene_root, args.rt_root)
     print(
         f"lucene: top-level types={len(top_level)} type-deps={len(deps)}",
         file=sys.stderr,

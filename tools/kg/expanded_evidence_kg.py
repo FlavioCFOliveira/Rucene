@@ -117,7 +117,9 @@ def literal_declarations(root: Path):
     to read, never this one's.
     """
     mod_to_file, declared = {}, set()
-    for dirpath, _dirs, names in os.walk(root / "src"):
+    members = ex.load_workspace(root)
+    for dirpath, _dirs, names in [w for base in ("src", *[f"{d}/src" for d in members])
+                                  for w in os.walk(root / base)]:
         for fn in sorted(names):
             if not fn.endswith(".rs"):
                 continue
@@ -131,11 +133,16 @@ def literal_declarations(root: Path):
     return mod_to_file, declared
 
 
-def extract(root: Path, expanded: str):
-    """Equivalence claims of the types no source line declares."""
+def extract(root: Path, expanded, crate: str = ex.CRATE):
+    """Equivalence claims of the types no source line declares.
+
+    `expanded` is one crate's dump (the root crate, `crate`), or a list of
+    `(crate ident, dump)` pairs, one per crate of the workspace."""
     mod_to_file, declared = literal_declarations(root)
     claims, seen_types = [], set()
-    for rec in ex.parse_expanded_records(expanded):
+    dumps = [(crate, expanded)] if isinstance(expanded, str) else expanded
+    records = [r for ident, text in dumps for r in ex.parse_expanded_records(text, ident)]
+    for rec in records:
         if rec["kind"] != "type":
             continue
         rel, _suffix = ex.resolve_module_file(rec["mods"], mod_to_file)
@@ -284,9 +291,13 @@ def main():
     args = ap.parse_args()
 
     root = Path(args.source_root).resolve()
-    expanded = (Path(args.expanded_file).read_text(encoding="utf-8")
-                if args.expanded_file else ex.run_macro_expansion(root))
-    claims = extract(root, expanded)
+    # The root crate (or its captured dump), then every workspace member.
+    dumps = [(ex.CRATE, Path(args.expanded_file).read_text(encoding="utf-8")
+              if args.expanded_file else ex.run_macro_expansion(root))]
+    if not args.expanded_file:
+        dumps += [(ident, ex.run_macro_expansion(root, pkg))
+                  for pkg, ident in ex.load_workspace(root).values()]
+    claims = extract(root, dumps)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(json.dumps(claims, indent=1), encoding="utf-8")
 

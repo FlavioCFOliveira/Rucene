@@ -433,6 +433,51 @@ def phase_nodes(roadmap, s: Survey, batch_size):
         "crate root edge",
     )
 
+    # The workspace member crates (`crates/<dir>`, `extract_rucene_kg.WORKSPACE`):
+    # one `Module` of kind `crate` each, named by its Cargo package, and a member
+    # the survey no longer has is pruned. An empty survey prunes nothing.
+    members = sorted({(f["package"], f["path"].split("/src/")[0].split("/tests/")[0])
+                      for f in s.files if f.get("package", "rucene") != "rucene"})
+    run_unwind(
+        "create",
+        roadmap,
+        [{"name": n} for n, _d in members],
+        "MERGE (m:Module {name:row.name})",
+        batch_size,
+        "member crate Module create",
+    )
+    run_unwind(
+        "update",
+        roadmap,
+        [{"name": n, "path": d, **stamp} for n, d in members],
+        "MATCH (m:Module {name:row.name}) SET m.kind = 'crate', m.path = row.path, "
+        "m.project = 'Rucene', m.gitCommit = row.gitCommit, m.gitDate = row.gitDate",
+        batch_size,
+        "member crate Module update",
+    )
+    run_unwind(
+        "create",
+        roadmap,
+        [{"name": n} for n, _d in members],
+        "MATCH (p:Project {name:'Rucene'}) WITH p, row MATCH (m:Module {name:row.name}) "
+        "MERGE (p)-[:CONTAINS]->(m)",
+        batch_size,
+        "Project CONTAINS member crate",
+    )
+    if s.files:
+        live = {n for n, _d in members} | {"rucene"}
+        stale = [{"name": r["name"]} for r in read(
+            roadmap, "MATCH (m:Module) WHERE m.kind = 'crate' RETURN m.name AS name")
+            if r["name"] not in live]
+        run_unwind(
+            "delete",
+            roadmap,
+            stale,
+            "MATCH (m:Module {name:row.name}) DETACH DELETE m",
+            batch_size,
+            "stale member crate Module pruned",
+        )
+
     run_unwind(
         "create",
         roadmap,
@@ -557,8 +602,8 @@ def phase_edges(roadmap, s: Survey, batch_size):
     run_unwind(
         "create",
         roadmap,
-        [{"path": f["path"]} for f in s.files],
-        "MATCH (m:Module {name:'rucene'}), (f:File {path:row.path}) "
+        [{"path": f["path"], "pkg": f.get("package", "rucene")} for f in s.files],
+        "MATCH (m:Module {name:row.pkg}), (f:File {path:row.path}) "
         "MERGE (m)-[:CONTAINS]->(f)",
         batch_size,
         "Module CONTAINS File",
@@ -672,7 +717,7 @@ def phase_stamp(roadmap, s: Survey):
     print("phase: stamp", file=sys.stderr)
     stamp = f"SET r.gitCommit = {esc(s.commit)}, r.gitDate = {esc(s.date)}"
     patterns = [
-        "MATCH (:Module {name:'rucene'})-[r:CONTAINS]->(:File)",
+        "MATCH (m:Module)-[r:CONTAINS]->(:File) WHERE m.kind = 'crate'",
         "MATCH (f:File)-[r:DECLARES]->() WHERE f.language = 'Rust'",
         "MATCH (f:File)-[r:DEPENDS_ON]->(:File) WHERE f.language = 'Rust'",
         "MATCH (f:File)-[r:TESTS]->() WHERE f.language = 'Rust'",

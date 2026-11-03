@@ -572,12 +572,16 @@ def phase_coverage(roadmap, commit, date, batch_size):
 def scan_rucene_tests(repo_root: str):
     """Levanta a infraestrutura de teste do lado do Rucene.
 
-    O Rucene **nao portou** o `lucene/test-framework`. Construiu outra coisa: um
+    Ate 2026-11-03 o Rucene **nao portou** o `lucene/test-framework`. Construiu outra coisa: um
     harness Java que conduz o Lucene 10.5.0 real e imprime os bytes e os valores
     de referencia, e testes Rust que os confrontam nos dois sentidos de leitura e
     escrita. Registar isso e o que torna a correspondencia honesta -- sem ele o
     grafo diria "0% do framework portado" e omitiria que existe uma infra
     equivalente em proposito, diferente em forma.
+
+    Desde 2026-11-03 o sprint 9 porta o `lucene/test-framework` (decisao do
+    utilizador; `port_modules_kg.py` regista-a e marca esta observacao como
+    `superseded`). O harness continua a ser levantado: existe e e usado.
     """
     fixtures = []
     fixture_root = os.path.join(repo_root, "tests/fixtures")
@@ -667,8 +671,19 @@ def phase_rucene(roadmap, repo_root, commit, date, batch_size):
 
 def phase_rucene_decision(roadmap, fixtures, commit, date):
     """Regista, como observacao auditavel, a forma que a infra de teste do
-    Rucene tomou -- e que ela nao e um porte do `lucene/test-framework`."""
+    Rucene tomou -- e que ela nao e um porte do `lucene/test-framework`.
+
+    Esta observacao foi substituida pela decisao do utilizador de 2026-11-03
+    (`port_modules_kg.DECISION`, aresta `SUPERSEDES`): o sprint 9 porta o
+    `lucene/test-framework`. O no fica como historia, e uma nova execucao nao o
+    reescreve -- reescreve-lo afirmaria de novo, como actual, o que deixou de o
+    ser."""
     print("phase: rucene-decision", file=sys.stderr)
+    name = "Rucene tests Lucene differentially instead of porting lucene/test-framework"
+    status = read(roadmap, f"MATCH (d:Decision {{name: {esc(name)}}}) RETURN d.status AS s")
+    if status and status[0]["s"] == "superseded":
+        print("  superseded (port_modules_kg.py): left as history", file=sys.stderr)
+        return
     loc = sum(f["loc"] for f in fixtures)
     summary = (
         "Rucene does not port org.apache.lucene.tests (the lucene/test-framework "

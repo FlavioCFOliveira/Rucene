@@ -6,7 +6,8 @@ requires decisions to rest on measurement. A graph that is only ever checked
 against its own loaders satisfies neither: a loader bug becomes a fact. This audit
 therefore re-derives both sides from primary sources --
 
-* the Apache Lucene 10.5.0 clone, parsed here by a brace-depth scanner written
+* the Apache Lucene 10.5.0 clone and the randomizedtesting 2.8.1 clone (every
+  module `port_modules_kg.PORT_MODULES` names), parsed here by a brace-depth scanner written
   independently of `extract_lucene_kg.py`/`enrich_lucene_kg.py`, so the two can
   disagree. Only the lexical pass is shared, `javatext.strip_java`: agreeing on
   what a comment, a string and a char literal are is not what this audit is
@@ -33,18 +34,21 @@ sys.path.insert(0, str(Path(__file__).parent))
 from kgio import read
 from javatext import strip_java
 import extract_rucene_kg as ex
+import port_modules_kg as pm
 
 JAVA_DECL = re.compile(
     r"[{}]|\b(?:class|interface|enum|record)\s+[A-Za-z_$][\w$]*"
     r"|@interface\s+[A-Za-z_$][\w$]*")
 
 
-def java_census(lucene_root: Path):
-    """Files, top-level types and nested types of `lucene/core`."""
+def java_census(lucene_root: Path, sources=("lucene/core/src/java",
+                                             "lucene/core/src/java21")):
+    """Files, top-level types and nested types of the source trees `sources`
+    (relative to `lucene_root`, the root of the clone that holds them);
+    `lucene/core` by default."""
     files, top, nested = [], [], []
-    core = lucene_root / "lucene/core"
-    for base in ("src/java", "src/java21"):
-        d = core / base
+    for base in sources:
+        d = lucene_root / base
         if not d.is_dir():
             continue
         for dirpath, _dirs, names in os.walk(d):
@@ -90,6 +94,8 @@ def main():
     ap.add_argument("roadmap")
     ap.add_argument("--survey", required=True)
     ap.add_argument("--lucene-root", default="/tmp/lucene1050")
+    ap.add_argument("--rt-root", help="randomizedtesting 2.8.1 clone "
+                    "(else $RANDOMIZEDTESTING_ROOT, else /tmp/randomizedtesting281)")
     ap.add_argument("--source-root", default=".")
     ap.add_argument("--commit", default="HEAD",
                     help="the surveyed commit; its history is the Commit census, so a "
@@ -114,12 +120,30 @@ def main():
     print("=" * 92)
     print("A. APACHE LUCENE 10.5.0")
     print("=" * 92)
-    files, top, nested = java_census(Path(args.lucene_root))
-    gf = {r[0] for r in q("MATCH (f:File) WHERE f.path STARTS WITH 'lucene/core/src/java' "
-                          "RETURN f.path")}
-    check("lucene/core java files", len(gf), len(files))
-    for p in sorted(set(files) - gf)[:5]:
-        print("   MISSING:", p)
+    # Every module the port covers (`port_modules_kg.PORT_MODULES`), each
+    # against its own clone, and each reported on its own line so a module that
+    # drifts is named.
+    roots = pm.repo_roots(args.lucene_root, args.rt_root)
+    top, nested = [], []
+    for m in pm.PORT_MODULES:
+        base = roots[m["repo"]]
+        mfiles, mtop, mnested = java_census(base, m["sources"])
+        top += mtop
+        nested += mnested
+        name = m["name"]
+        cond = " OR ".join(f"f.path STARTS WITH '{s}/'" for s in m["sources"])
+        gf = {r[0] for r in q(f"MATCH (f:File) WHERE {cond} RETURN f.path")}
+        check(f"{name} java files", len(gf), len(mfiles))
+        for p in sorted(set(mfiles) - gf)[:5]:
+            print("   MISSING:", p)
+        gmt = {r[0] for r in q("MATCH (c:Class) WHERE c.portScope='in' "
+                               f"AND c.module = '{name}' RETURN c.qualifiedName")}
+        cmt = {q_ for q_, _ in mtop}
+        check(f"{name} top-level types (in)", len(gmt), len(cmt))
+        for x in sorted(cmt - gmt)[:5]:
+            print("   MISSING:", x)
+        for x in sorted(gmt - cmt)[:5]:
+            print("   GRAPH-ONLY:", x)
 
     gt = {r[0] for r in q("MATCH (c:Class) WHERE c.portScope='in' RETURN c.qualifiedName")}
     ct = {q_ for q_, _ in top}
@@ -137,12 +161,18 @@ def main():
         print("   MISSING:", x)
     for x in sorted(gn - cn)[:5]:
         print("   GRAPH-ONLY:", x)
+    nomod = q("MATCH (c:Class) WHERE c.portScope IN ['in', 'nested'] AND "
+              "c.module IS NULL RETURN count(c)")[0][0]
+    check("in-scope or nested Class nodes without a module", nomod, 0)
 
     mods = q("MATCH (m:Module) WHERE m.project = 'Apache Lucene Core 10.5.0' "
              "RETURN count(m), sum(m.javaFiles)")
     real_mods = len(list(Path(args.lucene_root).glob("lucene/*/src/java")) +
                     list(Path(args.lucene_root).glob("lucene/*/*/src/java")))
     check("Lucene modules registered", mods[0][0], real_mods)
+    in_scope = {r[0] for r in q("MATCH (m:Module) WHERE m.inScope = true RETURN m.name")}
+    check("in-scope modules (inScope=true)", len(in_scope ^ set(pm.BY_NAME)), 0,
+          f"{sorted(in_scope ^ set(pm.BY_NAME))}" if in_scope ^ set(pm.BY_NAME) else "")
 
     print()
     print("=" * 92)
@@ -224,6 +254,13 @@ def main():
     stale_ported = nested_ported_without_ports(q, ported)
     check("nested types 'ported' without a PORTS edge", len(stale_ported), 0,
           f"{stale_ported[:3]}" if stale_ported else "")
+    # The cycle rule's record: a member ported early belongs to a sprint-9 type.
+    early_bad = q("MATCH (:Task)-[:PORTS_EARLY]->(m:Method) "
+                  "OPTIONAL MATCH (c:Class)-[:DECLARES]->(m) "
+                  "WITH m, collect(c.module) AS mods "
+                  f"WHERE NONE(x IN mods WHERE x IN {list(pm.SPRINT9)}) "
+                  "RETURN count(m)")[0][0]
+    check("PORTS_EARLY members outside a sprint-9 type", early_bad, 0)
 
     # Every PORTS edge must start at a node the survey confirms -- as a type or
     # as a function, since a free function can be the port of a Lucene class.

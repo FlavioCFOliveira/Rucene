@@ -10,6 +10,14 @@ de proveniencia (`--commit` / `--date`).
 
 O carregamento para o grafo e feito por `load_rucene_kg.py`.
 
+Workspace: alem do crate raiz (`src/`, `tests/`), levanta cada crate membro em
+`crates/<dir>/` (`src/`, `tests/`) -- os crates do sprint 9, que portam os
+modulos de `port_modules_kg.PORT_MODULES` (`crates/rucene-codecs`,
+`crates/randomizedtesting`, `crates/rucene-test-framework`). O caminho de modulo
+de um ficheiro de um membro comeca pelo identificador do seu pacote Cargo
+(`rucene_codecs::simpletext::...`), lido do seu `Cargo.toml`, e `--expand`
+expande cada membro com `-p <pacote>`. Um membro ausente nao contribui nada.
+
 Uso:
     python3 tools/kg/extract_rucene_kg.py \
         --source-root /path/to/rucene \
@@ -29,6 +37,30 @@ sys.path.insert(0, str(Path(__file__).parent))
 from kgio import kg_target  # noqa: E402
 
 CRATE = "rucene"
+# The workspace member crates under `crates/`: `{"crates/<dir>": (package,
+# ident)}`, from each member's own `Cargo.toml` (`load_workspace`). Empty until
+# loaded, so a member file resolves to no module rather than to a guessed one.
+WORKSPACE = {}
+RE_PACKAGE_NAME = re.compile(r"^\[package\][^\[]*?^\s*name\s*=\s*\"([^\"]+)\"", re.M | re.S)
+
+
+def load_workspace(root: Path):
+    """Read the member crates under `root/crates/` into `WORKSPACE`."""
+    WORKSPACE.clear()
+    for toml in sorted(Path(root).glob("crates/*/Cargo.toml")):
+        m = RE_PACKAGE_NAME.search(toml.read_text(encoding="utf-8"))
+        if m:
+            d = str(toml.parent.relative_to(root)).replace(os.sep, "/")
+            WORKSPACE[d] = (m.group(1), m.group(1).replace("-", "_"))
+    return dict(WORKSPACE)
+
+
+def member_of(rel: str):
+    """`(dir, package, ident)` of the member crate holding `rel`, or `None`."""
+    for d, (pkg, ident) in WORKSPACE.items():
+        if rel.startswith(d + "/"):
+            return d, pkg, ident
+    return None
 
 # --------------------------------------------------------------------------
 # Mascaramento: substitui comentarios, strings e chars por espacos, preservando
@@ -211,15 +243,20 @@ def base_type_name(s: str) -> str:
 
 
 def module_path_for(rel: str):
-    """Caminho de modulo do crate para um ficheiro `src/...`, ou None."""
-    if not rel.startswith("src/") or not rel.endswith(".rs"):
+    """Caminho de modulo do crate para um ficheiro `src/...` (ou
+    `crates/<membro>/src/...`), ou None."""
+    crate, prefix = CRATE, "src/"
+    mem = member_of(rel)
+    if mem:
+        crate, prefix = mem[2], mem[0] + "/src/"
+    if not rel.startswith(prefix) or not rel.endswith(".rs"):
         return None
-    parts = rel[len("src/") : -len(".rs")].split("/")
+    parts = rel[len(prefix) : -len(".rs")].split("/")
     if parts == ["lib"]:
-        return CRATE
+        return crate
     if parts[-1] == "mod":
         parts = parts[:-1]
-    return "::".join([CRATE] + parts)
+    return "::".join([crate] + parts)
 
 
 def parse_file(rel: str, text: str):
@@ -546,9 +583,12 @@ def main():
 
     root = Path(args.source_root).resolve()
     tmap = test_crate_names(root)
+    load_workspace(root)
+    for d in WORKSPACE:
+        tmap.update({f"{d}/{k}": v for k, v in test_crate_names(root / d).items()})
 
     rel_files = []
-    for base in ("src", "tests"):
+    for base in ("src", "tests", *[f"{d}/{b}" for d in WORKSPACE for b in ("src", "tests")]):
         for dirpath, _dirs, names in os.walk(root / base):
             for fn in sorted(names):
                 if fn.endswith(".rs"):
@@ -571,8 +611,9 @@ def main():
     for rel in rel_files:
         text = (root / rel).read_text(encoding="utf-8", errors="ignore")
         mp = module_path_for(rel)
-        is_test = rel.startswith("tests/")
-        crate_name = tmap.get(rel, Path(rel).stem) if is_test else CRATE
+        mem = member_of(rel)
+        is_test = rel.startswith((mem[0] + "/tests/") if mem else "tests/")
+        crate_name = tmap.get(rel, Path(rel).stem) if is_test else (mem[2] if mem else CRATE)
         base_path = mp if mp else crate_name
         ftypes, ffns, fimpls, fmods, fuses = parse_file(rel, text)
 
@@ -583,6 +624,7 @@ def main():
                 "kind": "test" if is_test else "source",
                 "modulePath": base_path,
                 "crate": crate_name,
+                "package": mem[1] if mem else CRATE,
                 "loc": text.count("\n") + 1,
                 "types": len(ftypes),
                 "fns": len(ffns),
@@ -613,23 +655,28 @@ def main():
         # dependencias derivadas dos `use`
         seen = set()
         for p in fuses:
-            target = resolve_use(p, base_path, mod_to_file, is_test)
+            target = resolve_use(p, base_path, mod_to_file, is_test,
+                                 mem[2] if mem else CRATE)
             if target and target != rel and target not in seen:
                 seen.add(target)
                 deps.append({"from": rel, "to": target})
 
     macro_types, macro_fns = [], []
     if args.expand or args.expanded_file:
-        expanded = (
-            Path(args.expanded_file).read_text(encoding="utf-8")
-            if args.expanded_file
-            else run_macro_expansion(root)
-        )
+        # The root crate, then each member: `--expanded-file` is the root's dump.
+        dumps = [(CRATE, Path(args.expanded_file).read_text(encoding="utf-8")
+                  if args.expanded_file else run_macro_expansion(root))]
+        if args.expand:
+            dumps += [(ident, run_macro_expansion(root, pkg))
+                      for pkg, ident in WORKSPACE.values()]
         known = {(t["name"], t["file"]) for t in types}
-        macro_types = macro_generated_types(root, mod_to_file, known, expanded)
-        types.extend(macro_types)
         known_fns = {(f["name"], f["file"], f.get("owner")) for f in fns}
-        macro_fns = macro_generated_fns(mod_to_file, known_fns, expanded)
+        for crate, expanded in dumps:
+            mt = macro_generated_types(root, mod_to_file, known, expanded, crate)
+            mf = macro_generated_fns(mod_to_file, known_fns, expanded, crate)
+            macro_types.extend(mt)
+            macro_fns.extend(mf)
+        types.extend(macro_types)
         fns.extend(macro_fns)
         # A file's type count must stay consistent with the types recorded.
         per_file = {}
@@ -660,14 +707,19 @@ def main():
     )
 
 
-def resolve_use(path: str, base_path: str, mod_to_file: dict, is_test: bool):
-    """Resolve um caminho `use` para o ficheiro que declara o modulo alvo."""
+def resolve_use(path: str, base_path: str, mod_to_file: dict, is_test: bool,
+                crate: str = CRATE):
+    """Resolve um caminho `use` para o ficheiro que declara o modulo alvo.
+
+    `crate` e o identificador do crate do ficheiro, para onde `crate::` aponta;
+    um caminho que comeca pelo identificador de outro crate do workspace
+    resolve nesse crate."""
     segs = path.split("::")
     if not segs:
         return None
     head = segs[0]
     if head == "crate":
-        segs = [CRATE] + segs[1:]
+        segs = [crate] + segs[1:]
     elif head == "self":
         segs = base_path.split("::") + segs[1:]
     elif head == "super":
@@ -677,7 +729,7 @@ def resolve_use(path: str, base_path: str, mod_to_file: dict, is_test: bool):
             parent = parent[:-1]
             rest = rest[1:]
         segs = parent + rest
-    elif head == CRATE:
+    elif head == CRATE or head in {i for _p, i in WORKSPACE.values()}:
         pass
     else:
         return None  # crate externo
@@ -723,8 +775,9 @@ RE_EXP_FN = re.compile(
 )
 
 
-def run_macro_expansion(root: Path) -> str:
-    """Expanded crate source, straight from the compiler.
+def run_macro_expansion(root: Path, package: str = None) -> str:
+    """Expanded crate source, straight from the compiler: the root crate, or
+    the workspace member `package` (`-p`).
 
     The nightly build goes to `kgio.kg_target()` (`RUCENE_KG_TARGET` overrides
     it), never to the system temp directory: `/tmp` is tmpfs on the development
@@ -732,7 +785,8 @@ def run_macro_expansion(root: Path) -> str:
     """
     target = kg_target()
     proc = subprocess.run(
-        ["cargo", "+nightly", "rustc", "--lib", "--", "-Zunpretty=expanded"],
+        ["cargo", "+nightly", "rustc", *(["-p", package] if package else []),
+         "--lib", "--", "-Zunpretty=expanded"],
         cwd=str(root),
         capture_output=True,
         text=True,
@@ -746,7 +800,7 @@ def run_macro_expansion(root: Path) -> str:
     return proc.stdout
 
 
-def parse_expanded_records(text: str):
+def parse_expanded_records(text: str, crate: str = CRATE):
     """Module-level items of the expanded crate, each with its raw header.
 
     Scans the masked text brace by brace and classifies each block from the
@@ -783,7 +837,7 @@ def parse_expanded_records(text: str):
     i = 0
 
     def mods():
-        return "::".join([CRATE] + [nm for k, nm in stack if k == "mod"])
+        return "::".join([crate] + [nm for k, nm in stack if k == "mod"])
 
     def opaque():
         return any(k in ("fn", "trait", "impl") for k, _ in stack)
@@ -867,7 +921,7 @@ def parse_expanded_records(text: str):
     return records
 
 
-def parse_expanded(text: str):
+def parse_expanded(text: str, crate: str = CRATE):
     """`(types, fns)` of the expanded crate, as the callers of this module read it.
 
     `types` is `(module_path, name, kind)`, `fns` is
@@ -876,7 +930,7 @@ def parse_expanded(text: str):
     does not change.
     """
     types, fns = [], []
-    for rec in parse_expanded_records(text):
+    for rec in parse_expanded_records(text, crate):
         if rec["kind"] == "type":
             types.append((rec["mods"], rec["name"], rec["decl"]))
         else:
@@ -912,14 +966,15 @@ def resolve_module_file(mod_path: str, mod_to_file: dict):
     return None, suffix
 
 
-def macro_generated_types(root: Path, mod_to_file: dict, known: set, expanded: str):
+def macro_generated_types(root: Path, mod_to_file: dict, known: set, expanded: str,
+                          crate: str = CRATE):
     """Types the compiler sees that the literal parser did not record.
 
     `known` holds the (name, file) pairs the literal survey already produced.
     `resolve_module_file` decides which file each one is attributed to.
     """
     added = []
-    types_seen, _fns = parse_expanded(expanded)
+    types_seen, _fns = parse_expanded(expanded, crate)
     for mod_path, name, kind in types_seen:
         rel, suffix = resolve_module_file(mod_path, mod_to_file)
         if rel is None or (name, rel) in known:
@@ -940,12 +995,12 @@ def macro_generated_types(root: Path, mod_to_file: dict, known: set, expanded: s
     return added
 
 
-def macro_generated_fns(mod_to_file: dict, known: set, expanded: str):
+def macro_generated_fns(mod_to_file: dict, known: set, expanded: str, crate: str = CRATE):
     """Free functions and inherent methods the compiler sees but no source line
     declares. Same rule and same `origin: "macro"` marker as the types above;
     `impl Trait for Type` bodies stay out, as everywhere else in this model."""
     added = []
-    _types, fns = parse_expanded(expanded)
+    _types, fns = parse_expanded(expanded, crate)
     for mod_path, name, owner, signature in fns:
         rel, suffix = resolve_module_file(mod_path, mod_to_file)
         if rel is None:
