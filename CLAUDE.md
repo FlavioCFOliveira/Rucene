@@ -61,8 +61,8 @@ Internal module organization should mirror the Lucene Core Java structure as clo
 
    Developing converging tasks one by one is a **defect in how the work is done**, not a style choice. Grouping is bound only by the quality bar of 5.3: it must deliver better work than task-by-task development, never worse. See section 5.3.
 7. **Focused development — shortest path first.** Every development is focused on, and objective about, the purpose of its tasks or of the user's request, in line with the rules above.
-   - Write and interpret tasks objectively and specifically, without digressions or assumptions.
-   - Before starting any development, determine the shortest path (strategy) to its objectives and requirements, taking convergences and synergies into account (rule 6); only then proceed with that strategy.
+   - **Create** and interpret tasks objectively, specifically, and concretely, without digressions or assumptions.
+   - Before starting any development, determine the shortest path (strategy) to its objectives and requirements, taking convergences and synergies into account (rule 6); only then proceed with that strategy. The shortest path never lowers the quality of the delivery.
 
 ---
 
