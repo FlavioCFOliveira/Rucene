@@ -102,24 +102,31 @@ impl fmt::Display for PatternSyntaxError {
 
 impl std::error::Error for PatternSyntaxError {}
 
-/// A translation, with what the engine must know to run it as Java does.
+/// A translation: the pattern the engine runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Translation {
     /// The `fancy-regex` pattern.
     pub(crate) pattern: String,
-    /// Whether the pattern repeats, with a count — `{n,m}` or `{n}` beyond
-    /// one iteration, `{n,}` with `n` beyond one — a body that can match the
-    /// empty string without only matching it.
-    ///
-    /// Java's loop over such a body ends at the first iteration that matches
-    /// the empty string. The backtracking VM of `fancy-regex` checks for an
-    /// empty iteration only in an unbounded repetition, and only once its
-    /// minimum is reached; otherwise it backtracks through the ways of
-    /// spreading the input over the iterations — `(?m)^(?:x|){3000}(?=b)`
-    /// over `xxxx` — and runs every iteration, holding one backtracking entry
-    /// for each — `^(?:a?){2147483647}` over `xxxx` — where Java answers at
-    /// once.
-    pub(crate) bounded_empty_loop: bool,
+}
+
+/// The description of a refused counted repetition of a body that can match
+/// the empty string (see [`empty_loop`]).
+fn empty_loop_refusal(min: u32, max: u32, greed: Greed, why: Untranslatable) -> String {
+    let count = match (min, max) {
+        (min, MAX_REPS) => format!("{{{min},}}"),
+        (min, max) if min == max => format!("{{{min}}}"),
+        (min, max) => format!("{{{min},{max}}}"),
+    };
+    let greed = match greed {
+        Greed::Greedy => "",
+        Greed::Lazy => "?",
+        Greed::Possessive => "+",
+    };
+    format!(
+        "Counted repetition {count}{greed} of a body that can match the empty string, with {}, \
+         which this port's regular expression engine cannot end at its first empty iteration",
+        why.construct()
+    )
 }
 
 /// Translates a `java.util.regex` pattern into a `fancy-regex` pattern that
@@ -140,21 +147,36 @@ pub(crate) struct Translation {
 /// appended to the body makes the repetition one the VM runs itself, with its
 /// `RepeatGr` and `RepeatNg` counters, in a program of constant size. A
 /// look-behind keeps the automaton form, as `fancy-regex` matches a
-/// look-behind of variable length only with its automaton; and so does a body
-/// that can match the empty string, which the VM would loop over without
-/// Java's check (see [`Translation::bounded_empty_loop`]).
+/// look-behind of variable length only with its automaton. A counted
+/// repetition of a body that can match the empty string is first rewritten
+/// with Java's rule for an empty iteration (see [`empty_loop`]), as
+/// repetitions over the body's consuming ways, which are then written in the
+/// same way.
 ///
 /// # Errors
 ///
 /// Returns a [`PatternSyntaxError`] where `Pattern.compile` throws
 /// `PatternSyntaxException`, and where the pattern needs a construct this
-/// translation does not reproduce (see the module documentation).
+/// translation does not reproduce (see the module documentation), among them
+/// a counted repetition of a body that can match the empty string in a shape
+/// [`empty_loop`] cannot write with Java's rule, refused with a description
+/// naming its count and the construct, at no index (`-1`).
 pub(crate) fn translate_for_engine(
     regex: &str,
     counts_in_vm: bool,
 ) -> Result<Translation, PatternSyntaxError> {
     let mut parser = Parser::new(regex);
-    let node = parser.compile()?;
+    let mut node = parser.compile()?;
+    never_matching_references(&mut node, parser.capturing_group_count - 1);
+    let mut referenced = Vec::new();
+    referenced_groups(&node, &mut referenced);
+    if let Err((min, max, greed, why)) = rewrite_empty_loops(&mut node, &mut 0, &referenced) {
+        return Err(PatternSyntaxError {
+            description: empty_loop_refusal(min, max, greed, why),
+            index: -1,
+            pattern: regex.to_string(),
+        });
+    }
     let mut emitter = Emitter {
         bits: &parser.bits,
         group_count: parser.capturing_group_count - 1,
@@ -165,7 +187,6 @@ pub(crate) fn translate_for_engine(
     emitter.node(&node);
     Ok(Translation {
         pattern: emitter.out,
-        bounded_empty_loop: has_bounded_empty_loop(&node),
     })
 }
 
@@ -1632,20 +1653,191 @@ fn min_length(node: &Node) -> u64 {
     }
 }
 
-/// Whether a counted repetition of a body that can match the empty string,
-/// without only matching it, occurs anywhere in `node`, look-arounds
-/// included (see [`Translation::bounded_empty_loop`]): every repetition but
-/// `?`, `*`, `+` and their spellings `{0,1}`, `{1}`, `{0,}` and `{1,}`.
-fn has_bounded_empty_loop(node: &Node) -> bool {
+/// Whether a repetition is a counted repetition of a body that can match the
+/// empty string without only matching it: every repetition but `?`, `*`, `+`
+/// and their spellings `{0,1}`, `{1}`, `{0,}` and `{1,}`. `?`, `{0,1}` and
+/// `{1}` try the body once, as Java does; `*`, `+`, `{0,}` and `{1,}` are
+/// left to the engine's own repetition.
+fn is_counted_empty_loop(body: &Node, min: u32, max: u32) -> bool {
+    let counted = !(max <= 1 || (max == MAX_REPS && min <= 1));
+    counted && !body.is_zero_width() && min_length(body) == 0
+}
+
+/// Why [`empty_loop`] cannot write a counted repetition of a body that can
+/// match the empty string with Java's rule for an empty iteration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Untranslatable {
+    /// The repetition could only end below its minimum through an empty way
+    /// that a condition decides: an anchor, a boundary, a look-around, or the
+    /// failure of an atomic group or a possessive repetition.
+    ConditionalEmpty,
+    /// A back reference that can match the empty string, which it does or
+    /// not by what its group captured.
+    BackReference,
+    /// A capturing group inside the body that the empty way passes through,
+    /// that the writing would repeat, that lies inside an atomic group or a
+    /// possessive repetition — or inside a body repeated possessively — or
+    /// inside a capturing group over the body.
+    CapturingGroup,
+    /// An empty way between two consuming ways of the body, in a repetition
+    /// bounded above, or below a minimum of two or more when lazy.
+    EmptyBetweenConsuming,
+    /// A loop over a body that can match the empty string, inside the body,
+    /// that the empty way passes through, or that the writing would copy
+    /// with another such loop inside it (see [`rewrite_empty_loops`]).
+    NestedEmptyLoop,
+    /// An atomic group or a possessive `?` that can match the empty string,
+    /// inside another, whose writing would copy the inner one.
+    NestedAtomic,
+    /// A capturing group over the body, repeated lazily with a positive
+    /// minimum.
+    LazyCapture,
+    /// A capturing group over the body that a back reference names, repeated
+    /// greedily or lazily.
+    ReferencedCapture,
+    /// A capturing group over a body whose empty way comes first, repeated
+    /// greedily up to a bound.
+    CaptureEmptyFirst,
+}
+
+impl Untranslatable {
+    /// The construct, as the refusal names it.
+    fn construct(self) -> &'static str {
+        match self {
+            Untranslatable::ConditionalEmpty => {
+                "an empty match that an anchor, a boundary, a look-around, an atomic group or a \
+                 possessive repetition decides"
+            }
+            Untranslatable::BackReference => "a back reference",
+            Untranslatable::CapturingGroup => "a capturing group inside it",
+            Untranslatable::EmptyBetweenConsuming => {
+                "an empty match between two of its consuming ways"
+            }
+            Untranslatable::NestedEmptyLoop => {
+                "a loop over a body that can match the empty string inside it"
+            }
+            Untranslatable::NestedAtomic => {
+                "an atomic group or a possessive repetition that can match the empty string \
+                 inside another"
+            }
+            Untranslatable::LazyCapture => "a capturing group repeated lazily",
+            Untranslatable::ReferencedCapture => "a capturing group a back reference names",
+            Untranslatable::CaptureEmptyFirst => {
+                "a capturing group that tries its empty match first"
+            }
+        }
+    }
+}
+
+/// A counted repetition [`rewrite_empty_loops`] refused: its count, its
+/// greed and why.
+type Refusal = (u32, u32, Greed, Untranslatable);
+
+/// Rewrites, outermost first and in the order of the pattern, every counted
+/// repetition of a body that can match the empty string
+/// ([`is_counted_empty_loop`]) as the nodes [`empty_loop`] writes for it,
+/// look-arounds included, then the repetitions inside what it wrote; the
+/// first it cannot write is returned. `groups` counts the capturing groups
+/// before `node`, in the order Java numbers them.
+///
+/// A counted repetition inside the body of another is written where the
+/// outer one's writing keeps it, inside a consuming way; where the empty way
+/// passes through it, the outer one is refused ([`ways`]). The outer writing
+/// may copy such an inner repetition, but not one that has another inside
+/// it: copies at each level of nesting would grow the pattern exponentially
+/// with the depth, where Java's grows with it.
+fn rewrite_empty_loops(
+    node: &mut Node,
+    groups: &mut usize,
+    referenced: &[usize],
+) -> Result<(), Refusal> {
+    match node {
+        Node::Repeat {
+            body,
+            min,
+            max,
+            greed,
+        } if is_counted_empty_loop(body, *min, *max) => {
+            let refusal = |why| (*min, *max, *greed, why);
+            // The number of a capturing group over the body, if it is one.
+            let mut rewritten =
+                empty_loop(body, *min, *max, *greed, *groups + 1, referenced).map_err(refusal)?;
+            if copies_a_nested_loop(body, &rewritten) {
+                return Err(refusal(Untranslatable::NestedEmptyLoop));
+            }
+            rewrite_empty_loops(&mut rewritten, groups, referenced)?;
+            *node = rewritten;
+            Ok(())
+        }
+        Node::Repeat { body, .. } => rewrite_empty_loops(body, groups, referenced),
+        Node::Group(kind, body) => {
+            if matches!(kind, GroupKind::Capturing | GroupKind::Named(_)) {
+                *groups += 1;
+            }
+            rewrite_empty_loops(body, groups, referenced)
+        }
+        Node::Sequence(nodes) | Node::Alternation(nodes) => {
+            for n in nodes {
+                rewrite_empty_loops(n, groups, referenced)?;
+            }
+            Ok(())
+        }
+        Node::Empty
+        | Node::Char(_)
+        | Node::BackRef { .. }
+        | Node::LineEnding
+        | Node::Grapheme
+        | Node::Assertion(_) => Ok(()),
+    }
+}
+
+/// Whether `rewritten`, the writing of a counted repetition over `body`,
+/// holds more copies than `body` of a counted repetition of a body that can
+/// match the empty string that has another inside it (see
+/// [`rewrite_empty_loops`]).
+fn copies_a_nested_loop(body: &Node, rewritten: &Node) -> bool {
+    fn nested(node: &Node, out: &mut Vec<String>) {
+        if let Node::Repeat { body, min, max, .. } = node {
+            if is_counted_empty_loop(body, *min, *max) && contains_counted_empty_loop(body) {
+                out.push(format!("{node:?}"));
+            }
+        }
+        match node {
+            Node::Group(_, body) | Node::Repeat { body, .. } => nested(body, out),
+            Node::Sequence(nodes) | Node::Alternation(nodes) => {
+                for n in nodes {
+                    nested(n, out);
+                }
+            }
+            Node::Empty
+            | Node::Char(_)
+            | Node::BackRef { .. }
+            | Node::LineEnding
+            | Node::Grapheme
+            | Node::Assertion(_) => {}
+        }
+    }
+    let mut inner = Vec::new();
+    nested(body, &mut inner);
+    if inner.is_empty() {
+        return false;
+    }
+    let (before, after) = (format!("{body:?}"), format!("{rewritten:?}"));
+    inner
+        .iter()
+        .any(|loop_| after.matches(loop_.as_str()).count() > before.matches(loop_.as_str()).count())
+}
+
+/// Whether a counted repetition of a body that can match the empty string
+/// lies inside `node`, look-arounds included.
+fn contains_counted_empty_loop(node: &Node) -> bool {
     match node {
         Node::Repeat { body, min, max, .. } => {
-            let counted = !(*max <= 1 || (*max == MAX_REPS && *min <= 1));
-            (counted && !body.is_zero_width() && min_length(body) == 0)
-                || has_bounded_empty_loop(body)
+            is_counted_empty_loop(body, *min, *max) || contains_counted_empty_loop(body)
         }
-        Node::Group(_, body) => has_bounded_empty_loop(body),
+        Node::Group(_, body) => contains_counted_empty_loop(body),
         Node::Sequence(nodes) | Node::Alternation(nodes) => {
-            nodes.iter().any(has_bounded_empty_loop)
+            nodes.iter().any(contains_counted_empty_loop)
         }
         Node::Empty
         | Node::Char(_)
@@ -1653,6 +1845,951 @@ fn has_bounded_empty_loop(node: &Node) -> bool {
         | Node::LineEnding
         | Node::Grapheme
         | Node::Assertion(_) => false,
+    }
+}
+
+/// Replaces each back reference to a group the pattern does not have with a
+/// class that matches nothing.
+///
+/// Java compiles such a reference, and it never matches: `BackRef.match`
+/// fails when the group was not allocated (`Pattern.java`, `BackRef`). It
+/// therefore never matches the empty string either, so a repetition of it is
+/// not a loop over a body that can match the empty string. The emitter writes
+/// the same class for it; the parse, which checks look-behinds as Java does,
+/// has already seen it as the reference it is.
+fn never_matching_references(node: &mut Node, group_count: usize) {
+    match node {
+        Node::BackRef { group, .. } if *group > group_count || *group == 0 => {
+            *node = Node::Char(Pred::class(r"[^\x{0}-\x{10FFFF}]"));
+        }
+        Node::Group(_, body) | Node::Repeat { body, .. } => {
+            never_matching_references(body, group_count)
+        }
+        Node::Sequence(nodes) | Node::Alternation(nodes) => {
+            for n in nodes {
+                never_matching_references(n, group_count);
+            }
+        }
+        Node::Empty
+        | Node::Char(_)
+        | Node::BackRef { .. }
+        | Node::LineEnding
+        | Node::Grapheme
+        | Node::Assertion(_) => {}
+    }
+}
+
+/// The group numbers the back references of `node` name, look-arounds
+/// included.
+fn referenced_groups(node: &Node, out: &mut Vec<usize>) {
+    match node {
+        Node::BackRef { group, .. } => out.push(*group),
+        Node::Group(_, body) | Node::Repeat { body, .. } => referenced_groups(body, out),
+        Node::Sequence(nodes) | Node::Alternation(nodes) => {
+            for n in nodes {
+                referenced_groups(n, out);
+            }
+        }
+        Node::Empty | Node::Char(_) | Node::LineEnding | Node::Grapheme | Node::Assertion(_) => {}
+    }
+}
+
+/// Whether `node` holds a capturing group, look-arounds included.
+fn contains_capture(node: &Node) -> bool {
+    match node {
+        Node::Group(GroupKind::Capturing | GroupKind::Named(_), _) => true,
+        Node::Group(_, body) | Node::Repeat { body, .. } => contains_capture(body),
+        Node::Sequence(nodes) | Node::Alternation(nodes) => nodes.iter().any(contains_capture),
+        Node::Empty
+        | Node::Char(_)
+        | Node::BackRef { .. }
+        | Node::LineEnding
+        | Node::Grapheme
+        | Node::Assertion(_) => false,
+    }
+}
+
+/// Whether `node` holds a back reference, look-arounds included.
+fn contains_back_reference(node: &Node) -> bool {
+    match node {
+        Node::BackRef { .. } => true,
+        Node::Group(_, body) | Node::Repeat { body, .. } => contains_back_reference(body),
+        Node::Sequence(nodes) | Node::Alternation(nodes) => {
+            nodes.iter().any(contains_back_reference)
+        }
+        Node::Empty | Node::Char(_) | Node::LineEnding | Node::Grapheme | Node::Assertion(_) => {
+            false
+        }
+    }
+}
+
+/// The capturing groups of `node`, in the order Java numbers them, each as
+/// the text of its subtree: a writing that keeps every group once, in its
+/// place, gives the same list.
+fn capture_fingerprint(node: &Node, out: &mut Vec<String>) {
+    match node {
+        Node::Group(GroupKind::Capturing | GroupKind::Named(_), body) => {
+            out.push(format!("{node:?}"));
+            capture_fingerprint(body, out);
+        }
+        Node::Group(_, body) | Node::Repeat { body, .. } => capture_fingerprint(body, out),
+        Node::Sequence(nodes) | Node::Alternation(nodes) => {
+            for n in nodes {
+                capture_fingerprint(n, out);
+            }
+        }
+        Node::Empty
+        | Node::Char(_)
+        | Node::BackRef { .. }
+        | Node::LineEnding
+        | Node::Grapheme
+        | Node::Assertion(_) => {}
+    }
+}
+
+/// A copy of `node` that tests what it matches without capturing: each
+/// capturing group becomes a non-capturing one, for the look-aheads the
+/// writing adds. A back reference inside the copy would then name the group
+/// of the original, so a node with both is refused.
+fn without_captures(node: &Node) -> Result<Node, Untranslatable> {
+    fn strip(node: &Node) -> Node {
+        match node {
+            Node::Group(GroupKind::Capturing | GroupKind::Named(_), body) => {
+                group(GroupKind::NonCapturing, strip(body))
+            }
+            Node::Group(kind, body) => group(kind.clone(), strip(body)),
+            Node::Repeat {
+                body,
+                min,
+                max,
+                greed,
+            } => repeat(strip(body), *min, *max, *greed),
+            Node::Sequence(nodes) => Node::Sequence(nodes.iter().map(strip).collect()),
+            Node::Alternation(nodes) => Node::Alternation(nodes.iter().map(strip).collect()),
+            other => other.clone(),
+        }
+    }
+    if contains_capture(node) && contains_back_reference(node) {
+        return Err(Untranslatable::BackReference);
+    }
+    Ok(strip(node))
+}
+
+/// Whether a node that only matches the empty string matches it wherever it
+/// is tried: no anchor, boundary or look-around decides it.
+fn is_unconditional_empty(node: &Node) -> bool {
+    match node {
+        Node::Empty => true,
+        Node::Group(GroupKind::NonCapturing | GroupKind::Atomic, body) => {
+            is_unconditional_empty(body)
+        }
+        Node::Sequence(nodes) => nodes.iter().all(is_unconditional_empty),
+        // One unconditional way suffices: every way ends where it started.
+        Node::Alternation(nodes) => nodes.iter().any(is_unconditional_empty),
+        Node::Repeat { body, min, max, .. } => {
+            *max == 0 || *min == 0 || is_unconditional_empty(body)
+        }
+        _ => false,
+    }
+}
+
+fn group(kind: GroupKind, body: Node) -> Node {
+    Node::Group(kind, Box::new(body))
+}
+
+fn repeat(body: Node, min: u32, max: u32, greed: Greed) -> Node {
+    Node::Repeat {
+        body: Box::new(body),
+        min,
+        max,
+        greed,
+    }
+}
+
+/// The alternation of `nodes`, in order; the node itself when there is one.
+fn alternation(mut nodes: Vec<Node>) -> Node {
+    if nodes.len() == 1 {
+        nodes.pop().expect("INVARIANT: one node")
+    } else {
+        Node::Alternation(nodes)
+    }
+}
+
+/// `(?!)`, which matches nothing.
+fn never() -> Node {
+    group(GroupKind::NegativeLookAhead, Node::Empty)
+}
+
+/// `count - by`, `MAX_REPS` staying unbounded.
+fn less(count: u32, by: u32) -> u32 {
+    if count == MAX_REPS {
+        MAX_REPS
+    } else {
+        count - by
+    }
+}
+
+/// One way a node can match, in the order Java tries its ways.
+#[derive(Debug, Clone)]
+enum Way {
+    /// A way that consumes at least one character.
+    Consuming(Node),
+    /// A way that matches the empty string: always (`None`), or where its
+    /// condition, a node that only matches the empty string, matches.
+    Empty(Option<Node>),
+}
+
+/// The ways `node`, which can match the empty string, matches, in Java's
+/// order of trial: a consuming way keeps the rest of a sequence as it is,
+/// and an empty way is followed by the ways of the rest. A consuming way
+/// keeps a repetition inside it as it is, for [`rewrite_empty_loops`] to
+/// write after.
+///
+/// An error names a construct whose empty way cannot be stated as a
+/// condition: a capturing group or a back reference the empty way passes
+/// through, and a loop over a body that can match the empty string, whose
+/// empty iteration ends it where Java's rule says.
+fn ways(node: &Node) -> Result<Vec<Way>, Untranslatable> {
+    if min_length(node) > 0 {
+        return Ok(vec![Way::Consuming(node.clone())]);
+    }
+    if node.is_zero_width() {
+        return if is_unconditional_empty(node) {
+            Ok(vec![Way::Empty(None)])
+        } else if contains_capture(node) {
+            Err(Untranslatable::CapturingGroup)
+        } else if contains_back_reference(node) {
+            Err(Untranslatable::BackReference)
+        } else {
+            Ok(vec![Way::Empty(Some(node.clone()))])
+        };
+    }
+    match node {
+        Node::Group(GroupKind::NonCapturing, body) => ways(body),
+        Node::Alternation(nodes) => {
+            let mut out = Vec::new();
+            for n in nodes {
+                out.extend(ways(n)?);
+            }
+            Ok(out)
+        }
+        Node::Sequence(nodes) => sequence_ways(nodes),
+        // `x?`, `x*`, `x{0,n}` over a body that consumes: Java tries the
+        // iterations first (`Ques`, `Curly.match0`, `CharPropertyGreedy`,
+        // `GroupCurly.match0`, `Loop`), or last when lazy (`match1`,
+        // `LazyLoop`); possessively it keeps the iterations it finds, and
+        // matches the empty string only where the body does not match.
+        // `x?` keeps its node, which Java repeats with `Ques`, save `\R?`,
+        // whose `\R` Java matches as one atom.
+        Node::Repeat {
+            body,
+            min: 0,
+            max,
+            greed,
+        } if min_length(body) > 0 => {
+            let more = if *max == 1 && !matches!(**body, Node::LineEnding) {
+                (**body).clone()
+            } else {
+                repeat((**body).clone(), 1, *max, *greed)
+            };
+            Ok(match greed {
+                Greed::Greedy => vec![Way::Consuming(more), Way::Empty(None)],
+                Greed::Lazy => vec![Way::Empty(None), Way::Consuming(more)],
+                Greed::Possessive => {
+                    if contains_capture(body) {
+                        return Err(Untranslatable::CapturingGroup);
+                    }
+                    let absent = group(GroupKind::NegativeLookAhead, without_captures(body)?);
+                    vec![
+                        Way::Consuming(repeat((**body).clone(), 1, *max, Greed::Possessive)),
+                        Way::Empty(Some(absent)),
+                    ]
+                }
+            })
+        }
+        // `X?` and `X{1}` over a body that can match the empty string try it
+        // once (`Ques`, a one-iteration `Loop`); a loop over it ends at an
+        // empty iteration, a way out these ways do not state.
+        Node::Repeat {
+            body,
+            min,
+            max: 1,
+            greed,
+        } => {
+            let once = ways(body)?;
+            Ok(match (min, greed) {
+                (1, _) => once,
+                (_, Greed::Greedy) => once.into_iter().chain([Way::Empty(None)]).collect(),
+                (_, Greed::Lazy) => [Way::Empty(None)].into_iter().chain(once).collect(),
+                (_, Greed::Possessive) if contains_capture(body) => {
+                    return Err(Untranslatable::CapturingGroup);
+                }
+                (_, Greed::Possessive) if contains_nullable_one_way(body) => {
+                    return Err(Untranslatable::NestedAtomic);
+                }
+                (_, Greed::Possessive) => {
+                    let (consuming, _) = first_success(&normalize(once))?;
+                    one_way(consuming)?
+                }
+            })
+        }
+        Node::Repeat { .. } => Err(Untranslatable::NestedEmptyLoop),
+        // An atomic group keeps the first way that matches.
+        Node::Group(GroupKind::Atomic, body) if contains_capture(body) => {
+            Err(Untranslatable::CapturingGroup)
+        }
+        Node::Group(GroupKind::Atomic, body) if contains_nullable_one_way(body) => {
+            Err(Untranslatable::NestedAtomic)
+        }
+        Node::Group(GroupKind::Atomic, body) => {
+            let (consuming, exit) = first_success(&normalize(ways(body)?))?;
+            let condition = match exit {
+                Exit::Always => None,
+                Exit::When(condition) => Some(condition),
+                Exit::Never => return Ok(consuming.into_iter().map(Way::Consuming).collect()),
+            };
+            Ok(match consuming {
+                Some(c) => {
+                    let absent = group(GroupKind::NegativeLookAhead, without_captures(&c)?);
+                    let empty = match condition {
+                        None => absent,
+                        Some(condition) => Node::Sequence(vec![absent, condition]),
+                    };
+                    vec![Way::Consuming(c), Way::Empty(Some(empty))]
+                }
+                None => vec![Way::Empty(condition)],
+            })
+        }
+        Node::Group(GroupKind::Capturing | GroupKind::Named(_), _) => {
+            Err(Untranslatable::CapturingGroup)
+        }
+        Node::BackRef { .. } => Err(Untranslatable::BackReference),
+        Node::Group(
+            GroupKind::LookAhead
+            | GroupKind::NegativeLookAhead
+            | GroupKind::LookBehind
+            | GroupKind::NegativeLookBehind,
+            _,
+        )
+        | Node::Empty
+        | Node::Char(_)
+        | Node::LineEnding
+        | Node::Grapheme
+        | Node::Assertion(_) => {
+            unreachable!("INVARIANT: a look-around or atom either consumes or only matches empty")
+        }
+    }
+}
+
+/// Whether `node` holds an atomic group, or a possessive `?` over a body,
+/// that can match the empty string without only matching it: [`ways`]
+/// writes each such node with a copy of its consuming way.
+fn contains_nullable_one_way(node: &Node) -> bool {
+    let nullable = |body: &Node| min_length(body) == 0 && !body.is_zero_width();
+    match node {
+        Node::Group(GroupKind::Atomic, body) if nullable(body) => true,
+        Node::Repeat {
+            body,
+            max: 1,
+            greed: Greed::Possessive,
+            ..
+        } if nullable(body) => true,
+        Node::Group(_, body) | Node::Repeat { body, .. } => contains_nullable_one_way(body),
+        Node::Sequence(nodes) | Node::Alternation(nodes) => {
+            nodes.iter().any(contains_nullable_one_way)
+        }
+        Node::Empty
+        | Node::Char(_)
+        | Node::BackRef { .. }
+        | Node::LineEnding
+        | Node::Grapheme
+        | Node::Assertion(_) => false,
+    }
+}
+
+/// The ways of a node that keeps one way at each position: `consuming`,
+/// atomic, where it matches, and the empty string where it does not (`None`:
+/// the empty string everywhere).
+fn one_way(consuming: Option<Node>) -> Result<Vec<Way>, Untranslatable> {
+    Ok(match consuming {
+        Some(c) => {
+            let absent = group(GroupKind::NegativeLookAhead, without_captures(&c)?);
+            vec![Way::Consuming(c), Way::Empty(Some(absent))]
+        }
+        None => vec![Way::Empty(None)],
+    })
+}
+
+/// [`ways`] for a sequence of nodes that can all match the empty string.
+fn sequence_ways(nodes: &[Node]) -> Result<Vec<Way>, Untranslatable> {
+    let Some((first, rest)) = nodes.split_first() else {
+        return Ok(vec![Way::Empty(None)]);
+    };
+    let head = normalize(ways(first)?);
+    if rest.is_empty() {
+        return Ok(head);
+    }
+    // Each empty way of the first node is followed by every way of the rest:
+    // two of them, apart, would double the ways at each such node of the
+    // sequence, so an empty way on each side of a consuming one is refused
+    // here, where a single one keeps the ways in proportion to the sequence.
+    if head.iter().filter(|w| matches!(w, Way::Empty(_))).count() > 1 {
+        return Err(Untranslatable::EmptyBetweenConsuming);
+    }
+    let mut tail: Option<Vec<Way>> = None;
+    let mut out = Vec::new();
+    for way in head {
+        match way {
+            Way::Consuming(c) => out.push(Way::Consuming(Node::Sequence(vec![
+                c,
+                Node::Sequence(rest.to_vec()),
+            ]))),
+            Way::Empty(condition) => {
+                if tail.is_none() {
+                    tail = Some(sequence_ways(rest)?);
+                }
+                for t in tail.iter().flatten() {
+                    out.push(match (&condition, t) {
+                        (None, t) => t.clone(),
+                        (Some(c), Way::Consuming(n)) => {
+                            Way::Consuming(Node::Sequence(vec![c.clone(), n.clone()]))
+                        }
+                        (Some(c), Way::Empty(None)) => Way::Empty(Some(c.clone())),
+                        (Some(c), Way::Empty(Some(d))) => {
+                            Way::Empty(Some(Node::Sequence(vec![c.clone(), d.clone()])))
+                        }
+                    });
+                }
+            }
+        }
+    }
+    Ok(normalize(out))
+}
+
+/// Joins adjacent consuming ways into one alternation and adjacent empty ways
+/// into one, in order, and drops every empty way after one that matches
+/// always, which ends a repetition where that one already ended it.
+fn normalize(ways: Vec<Way>) -> Vec<Way> {
+    let mut out: Vec<Way> = Vec::new();
+    let mut always = false;
+    for way in ways {
+        if always && matches!(way, Way::Empty(_)) {
+            continue;
+        }
+        let unmerged = match (out.last_mut(), way) {
+            (Some(Way::Consuming(last)), Way::Consuming(n)) => {
+                *last = match std::mem::replace(last, Node::Empty) {
+                    Node::Alternation(mut nodes) => {
+                        nodes.push(n);
+                        Node::Alternation(nodes)
+                    }
+                    previous => Node::Alternation(vec![previous, n]),
+                };
+                None
+            }
+            (Some(Way::Empty(last)), Way::Empty(condition)) => {
+                always |= condition.is_none();
+                *last = match (last.take(), condition) {
+                    (Some(a), Some(b)) => Some(alternation(vec![a, b])),
+                    _ => None,
+                };
+                None
+            }
+            (_, way) => Some(way),
+        };
+        if let Some(way) = unmerged {
+            always |= matches!(way, Way::Empty(None));
+            out.push(way);
+        }
+    }
+    out
+}
+
+/// Where the first way that matches is an empty one (see [`first_success`]).
+#[derive(Debug, Clone)]
+enum Exit {
+    /// Wherever no consuming way matches.
+    Always,
+    /// Where no consuming way matches and this condition does.
+    When(Node),
+    /// Nowhere: the node fails where no consuming way matches.
+    Never,
+}
+
+/// The first way of `ways` that matches, as Java's atomic group, possessive
+/// repetition and possessive loop iteration keep it: the consuming ways, each
+/// tried only where no empty way before it matches, as one atomic node; and
+/// where the first way that matches is empty.
+///
+/// A consuming way after an empty way that matches always is never tried;
+/// one that holds a capturing group stays, behind `(?!)`, so the groups keep
+/// their numbers.
+fn first_success(ways: &[Way]) -> Result<(Option<Node>, Exit), Untranslatable> {
+    let mut conditions: Vec<Node> = Vec::new();
+    let mut consuming = Vec::new();
+    let mut always = false;
+    for way in ways {
+        match way {
+            Way::Consuming(c) if always => {
+                if contains_capture(c) {
+                    consuming.push(Node::Sequence(vec![never(), c.clone()]));
+                }
+            }
+            Way::Consuming(c) => {
+                let mut parts: Vec<Node> = conditions
+                    .iter()
+                    .map(|d| group(GroupKind::NegativeLookAhead, d.clone()))
+                    .collect();
+                parts.push(c.clone());
+                consuming.push(Node::Sequence(parts));
+            }
+            Way::Empty(None) => always = true,
+            Way::Empty(Some(_)) if always => {}
+            Way::Empty(Some(c)) => conditions.push(c.clone()),
+        }
+    }
+    let exit = if always {
+        Exit::Always
+    } else if conditions.is_empty() {
+        Exit::Never
+    } else {
+        Exit::When(alternation(conditions))
+    };
+    let consuming =
+        (!consuming.is_empty()).then(|| group(GroupKind::Atomic, alternation(consuming)));
+    Ok((consuming, exit))
+}
+
+/// The ways of a body at one iteration of a greedy or lazy loop, split by
+/// where the loop can end: the consuming ways tried before the first empty
+/// way that matches (`before`, each behind the conditions of the empty ways
+/// before it failing), the consuming ways tried after it (`after`, each
+/// behind one of those conditions matching), every consuming way in order
+/// (`all`), and the conditions of the empty ways, or `always`.
+#[derive(Debug, Default)]
+struct Level {
+    before: Vec<Node>,
+    after: Vec<Node>,
+    all: Vec<Node>,
+    conditions: Vec<Node>,
+    always: bool,
+}
+
+fn level(ways: &[Way]) -> Level {
+    let mut l = Level::default();
+    for way in ways {
+        match way {
+            Way::Consuming(c) => {
+                l.all.push(c.clone());
+                if l.always {
+                    l.after.push(c.clone());
+                } else if l.conditions.is_empty() {
+                    l.before.push(c.clone());
+                } else {
+                    let mut guarded: Vec<Node> = l
+                        .conditions
+                        .iter()
+                        .map(|d| group(GroupKind::NegativeLookAhead, d.clone()))
+                        .collect();
+                    guarded.push(c.clone());
+                    l.before.push(Node::Sequence(guarded));
+                    l.after.push(Node::Sequence(vec![
+                        group(GroupKind::LookAhead, alternation(l.conditions.clone())),
+                        c.clone(),
+                    ]));
+                }
+            }
+            Way::Empty(None) => l.always = true,
+            Way::Empty(Some(c)) => {
+                if !l.always {
+                    l.conditions.push(c.clone());
+                }
+            }
+        }
+    }
+    l
+}
+
+/// Java's rule for an empty iteration, for a counted repetition `{min,max}`
+/// of `body`, which can match the empty string ([`is_counted_empty_loop`]):
+/// the nodes of a repetition over the body's consuming ways that `fancy-regex`
+/// runs with Java's result.
+///
+/// Java repeats such a body — a group with a choice inside — with its `Loop`
+/// node, `LazyLoop` when lazy, and with `Curly` when possessive or when the
+/// body is an atomic group. `Loop.match` and `LazyLoop.match` go on with the
+/// rest of the pattern when an iteration ended where it began
+/// (`if (i > matcher.locals[beginIndex])`), below the minimum too;
+/// `Curly.match0`, `match1` and `match2` stop at an iteration of length zero
+/// (`java.util.regex.Pattern` of JDK 25.0.4, jdk25u tag `jdk-25.0.4-ga`,
+/// lines 4522-4613 and 5037-5172). The `RepeatGr` and `RepeatNg` counters of
+/// `fancy-regex` have no such check, so the repetition is written over the
+/// body's consuming ways ([`ways`]), each of whose iterations consumes, with
+/// the empty ways as the ways out. At an iteration, the consuming ways tried
+/// before the first empty way that matches come before the way out, the
+/// others after it ([`Level`]); below the minimum the loop has no way out
+/// but an empty way, at or above it the rest of the pattern is tried after
+/// the body's ways (greedy) or before them (lazy). Hence:
+///
+/// * Greedy, every empty way after every consuming way: `(?:C){0,m}`, the
+///   minimum never binding when an empty way matches always or the minimum
+///   is zero, and `(?:C(?:C){0,m-1}|E)` for a minimum of one, `E` the
+///   conditions. Consuming ways after an empty way that matches always:
+///   `(?:A){0,m}?` when no consuming way comes before it, and, unbounded,
+///   `B*(?:AB*)*?`.
+/// * Lazy, minimum zero or an empty way that matches always first:
+///   `(?:C){0,m}?`, as every iteration tries the way out first. Every empty
+///   way after every consuming way, one matching always:
+///   `(?:C){0,n}(?:C){0,m-n}?`; leaving below the minimum and then trying an
+///   iteration of the second part retries what the first part tried with
+///   more iterations left, and finds nothing new. Minimum one:
+///   `(?:BL|E|AL)`, `L` the lazy `(?:C){0,m-1}?`.
+/// * Possessive, and greedy or lazy over an atomic group or a possessive
+///   repetition: the body keeps the first way that matches at each position
+///   ([`first_success`]), so the iterations below the minimum run while it
+///   consumes and end where it matches the empty string; see
+///   [`one_way_loop`].
+/// * A capturing group over a body without capturing groups: see
+///   [`captured_loop`].
+///
+/// Any other shape is an error naming the construct, which
+/// [`translate_for_engine`] reports as a refusal: `fancy-regex` cannot compare
+/// the position where an iteration began with the position where it ended,
+/// and leaves a counted repetition only at its count or by backtracking, so
+/// these shapes would need the count of iterations across two repetitions,
+/// or a group that is written in two places.
+fn empty_loop(
+    body: &Node,
+    min: u32,
+    max: u32,
+    greed: Greed,
+    group_number: usize,
+    referenced: &[usize],
+) -> Result<Node, Untranslatable> {
+    let mut inner = body;
+    while let Node::Group(GroupKind::NonCapturing, nested) = inner {
+        inner = nested;
+    }
+    if let Node::Group(kind @ (GroupKind::Capturing | GroupKind::Named(_)), x) = inner {
+        return captured_loop(kind, x, min, max, greed, referenced.contains(&group_number));
+    }
+    // Java keeps a group an atomic group or a possessive repetition recorded
+    // when the rest of the pattern then fails, where `fancy-regex` restores
+    // it on backtracking; a body of one way at each position with a
+    // capturing group inside is therefore not written.
+    let one_way_body = greed == Greed::Possessive
+        || matches!(inner, Node::Group(GroupKind::Atomic, _))
+        || matches!(
+            inner,
+            Node::Repeat {
+                min: 0,
+                greed: Greed::Possessive,
+                ..
+            }
+        );
+    if one_way_body && contains_capture(inner) {
+        return Err(Untranslatable::CapturingGroup);
+    }
+    let rewritten = match inner {
+        Node::Group(GroupKind::Atomic, x) => {
+            let (consuming, exit) = first_success(&normalize(ways(x)?))?;
+            one_way_loop(consuming, exit, min, max, greed)?
+        }
+        Node::Repeat {
+            body: x,
+            min: 0,
+            max: n,
+            greed: Greed::Possessive,
+        } if min_length(x) > 0 => {
+            let consuming = repeat((**x).clone(), 1, *n, Greed::Possessive);
+            one_way_loop(Some(consuming), Exit::Always, min, max, greed)?
+        }
+        _ => {
+            let ways = normalize(ways(inner)?);
+            match greed {
+                Greed::Possessive => {
+                    let (consuming, exit) = first_success(&ways)?;
+                    one_way_loop(consuming, exit, min, max, greed)?
+                }
+                Greed::Greedy => greedy_loop(&ways, min, max)?,
+                Greed::Lazy => lazy_loop(&ways, min, max)?,
+            }
+        }
+    };
+    let (mut before, mut after) = (Vec::new(), Vec::new());
+    capture_fingerprint(body, &mut before);
+    capture_fingerprint(&rewritten, &mut after);
+    if before != after {
+        return Err(Untranslatable::CapturingGroup);
+    }
+    Ok(rewritten)
+}
+
+/// A greedy loop (see [`empty_loop`]).
+fn greedy_loop(ways: &[Way], min: u32, max: u32) -> Result<Node, Untranslatable> {
+    let l = level(ways);
+    if l.after.is_empty() {
+        let c = alternation(l.all);
+        if l.always || min == 0 {
+            return Ok(repeat(c, 0, max, Greed::Greedy));
+        }
+        if min == 1 {
+            return Ok(alternation(vec![
+                Node::Sequence(vec![c.clone(), repeat(c, 0, less(max, 1), Greed::Greedy)]),
+                alternation(l.conditions),
+            ]));
+        }
+        return Err(Untranslatable::ConditionalEmpty);
+    }
+    if l.before.is_empty() {
+        // The first way matches the empty string always: every iteration
+        // tries the way out first.
+        return Ok(repeat(alternation(l.after), 0, max, Greed::Lazy));
+    }
+    if max == MAX_REPS && l.always {
+        let b = repeat(alternation(l.before), 0, MAX_REPS, Greed::Greedy);
+        let a = Node::Sequence(vec![alternation(l.after), b.clone()]);
+        return Ok(Node::Sequence(vec![b, repeat(a, 0, MAX_REPS, Greed::Lazy)]));
+    }
+    Err(if l.always {
+        Untranslatable::EmptyBetweenConsuming
+    } else {
+        Untranslatable::ConditionalEmpty
+    })
+}
+
+/// A lazy loop (see [`empty_loop`]).
+fn lazy_loop(ways: &[Way], min: u32, max: u32) -> Result<Node, Untranslatable> {
+    let l = level(ways);
+    if min == 0 || l.before.is_empty() {
+        return Ok(repeat(alternation(l.all), 0, max, Greed::Lazy));
+    }
+    if l.after.is_empty() && l.always {
+        let c = alternation(l.all);
+        let first = repeat(c.clone(), 0, min, Greed::Greedy);
+        return Ok(if max > min {
+            Node::Sequence(vec![first, repeat(c, 0, less(max, min), Greed::Lazy)])
+        } else {
+            first
+        });
+    }
+    if min == 1 {
+        let rest = repeat(alternation(l.all), 0, less(max, 1), Greed::Lazy);
+        let mut alternatives = vec![Node::Sequence(vec![alternation(l.before), rest.clone()])];
+        alternatives.push(if l.always {
+            Node::Empty
+        } else {
+            alternation(l.conditions)
+        });
+        if !l.after.is_empty() {
+            alternatives.push(Node::Sequence(vec![alternation(l.after), rest]));
+        }
+        return Ok(Node::Alternation(alternatives));
+    }
+    Err(if l.always {
+        Untranslatable::EmptyBetweenConsuming
+    } else {
+        Untranslatable::ConditionalEmpty
+    })
+}
+
+/// A loop over a body that keeps one way at each position: `consuming`,
+/// atomic, where it matches, and an empty match or a failure elsewhere as
+/// `exit` says (see [`first_success`]).
+///
+/// Java's `Curly` runs the iterations below the minimum without backtracking
+/// into them, each keeping its first way, and fails if one fails
+/// (`Curly.match`); an iteration that matches the empty string leaves every
+/// later one empty. Then `match0` iterates greedily and backs off, `match1`
+/// lazily, and `match2` possessively keeps every iteration, each stopping at
+/// a failed or empty iteration. `Loop` over such a body (`(?:a*+){n}`) gives
+/// the same result. So the iterations below the minimum are an atomic run of
+/// the consuming way, `(?>C{n})` or, where the body matches the empty string
+/// where the run stops, `(?>(?>C{0,n-1})E)`; the rest are `C{0,m-n}`, greedy
+/// or lazy. Possessively the whole is atomic, and the minimum is checked by a
+/// look-ahead before the atomic run of `C{0,m}`.
+fn one_way_loop(
+    consuming: Option<Node>,
+    exit: Exit,
+    min: u32,
+    max: u32,
+    greed: Greed,
+) -> Result<Node, Untranslatable> {
+    let Some(c) = consuming else {
+        // The body never consumes: the repetition matches the empty string
+        // where the body does, or with a minimum of zero.
+        return Ok(match exit {
+            _ if min == 0 => Node::Empty,
+            Exit::Always => Node::Empty,
+            Exit::When(condition) => condition,
+            Exit::Never => never(),
+        });
+    };
+    if greed == Greed::Possessive {
+        let run = repeat(c.clone(), 0, max, Greed::Greedy);
+        return Ok(group(
+            GroupKind::Atomic,
+            match below_minimum(&c, &exit, min, true)? {
+                Some(check) => Node::Sequence(vec![check, run]),
+                None => run,
+            },
+        ));
+    }
+    if min == 0 {
+        return Ok(repeat(c, 0, max, greed));
+    }
+    let first = below_minimum(&c, &exit, min, false)?
+        .expect("INVARIANT: a positive minimum has a first part");
+    Ok(if max > min {
+        Node::Sequence(vec![first, repeat(c, 0, less(max, min), greed)])
+    } else {
+        first
+    })
+}
+
+/// The iterations below the minimum of a loop over a body that keeps one way
+/// at each position (see [`one_way_loop`]): as a look-ahead when `check`,
+/// `None` when the minimum cannot fail; otherwise the atomic run itself.
+fn below_minimum(
+    c: &Node,
+    exit: &Exit,
+    min: u32,
+    check: bool,
+) -> Result<Option<Node>, Untranslatable> {
+    if check && (min == 0 || matches!(exit, Exit::Always)) {
+        return Ok(None);
+    }
+    let c = if check {
+        without_captures(c)?
+    } else {
+        c.clone()
+    };
+    let run = match exit {
+        Exit::Always => group(GroupKind::Atomic, repeat(c, 0, min, Greed::Greedy)),
+        Exit::When(condition) => group(
+            GroupKind::Atomic,
+            Node::Alternation(vec![
+                repeat(c.clone(), min, min, Greed::Greedy),
+                Node::Sequence(vec![
+                    group(GroupKind::Atomic, repeat(c, 0, min - 1, Greed::Greedy)),
+                    condition.clone(),
+                ]),
+            ]),
+        ),
+        Exit::Never => group(GroupKind::Atomic, repeat(c, min, min, Greed::Greedy)),
+    };
+    Ok(Some(if check {
+        group(GroupKind::LookAhead, run)
+    } else {
+        run
+    }))
+}
+
+/// A counted repetition of a capturing group, of `kind`, over `x`, a body
+/// that can match the empty string; `referenced` when a back reference names
+/// the group.
+///
+/// Java records the group at the end of every iteration (`GroupTail`), the
+/// empty one that ends the repetition included, and restores it when it backs
+/// off an iteration.
+///
+/// * Possessive: each iteration keeps the first way that matches, so the
+///   group is the `m`-th consuming iteration, or the empty match where the
+///   consuming way stops, or, where it stops without one and the minimum is
+///   reached, the last consuming iteration:
+///   `(?>CHECK(?:C{0,m-1}(C|E)|))`, `CHECK` the look-ahead of
+///   [`one_way_loop`] and the last alternative only for a minimum of zero.
+///   A back reference reads what Java recorded.
+/// * Greedy, with its consuming ways first and an empty way that matches
+///   always, no back reference to the group: the group surrounds the last
+///   iteration, after `m - 1` uncaptured ones, `(?:C){0,m-1}(C|)`. A later
+///   try of the group's consuming way retries a position the rest of the
+///   pattern has already failed at, and only a back reference to the group
+///   could tell. With the empty way first and no bound: every iteration
+///   tries it first, `(?:C)*?()`.
+/// * Lazy, minimum zero, no back reference: every iteration tries the rest
+///   of the pattern first, `(C){0,m}?`; an empty way after it only records
+///   the group differently where the rest of the pattern already failed.
+fn captured_loop(
+    kind: &GroupKind,
+    x: &Node,
+    min: u32,
+    max: u32,
+    greed: Greed,
+    referenced: bool,
+) -> Result<Node, Untranslatable> {
+    if contains_capture(x) {
+        return Err(Untranslatable::CapturingGroup);
+    }
+    let captured = |node: Node| group(kind.clone(), node);
+    let ways = normalize(ways(x)?);
+    match greed {
+        Greed::Possessive => {
+            let (consuming, exit) = first_success(&ways)?;
+            let empty = match &exit {
+                Exit::Always => Node::Empty,
+                Exit::When(condition) => condition.clone(),
+                Exit::Never => never(),
+            };
+            let optional = min == 0 && !matches!(exit, Exit::Always);
+            let Some(c) = consuming else {
+                let once = captured(empty);
+                return Ok(if optional {
+                    group(
+                        GroupKind::Atomic,
+                        Node::Alternation(vec![once, Node::Empty]),
+                    )
+                } else {
+                    once
+                });
+            };
+            let last = captured(Node::Alternation(vec![c.clone(), empty]));
+            let mut structure = Node::Sequence(vec![
+                repeat(c.clone(), 0, less(max, 1), Greed::Greedy),
+                last,
+            ]);
+            if optional {
+                structure = Node::Alternation(vec![structure, Node::Empty]);
+            }
+            Ok(group(
+                GroupKind::Atomic,
+                match below_minimum(&c, &exit, min, true)? {
+                    Some(check) => Node::Sequence(vec![check, structure]),
+                    None => structure,
+                },
+            ))
+        }
+        _ if referenced => Err(Untranslatable::ReferencedCapture),
+        Greed::Lazy if min == 0 => Ok(repeat(
+            captured(alternation(level(&ways).all)),
+            0,
+            max,
+            Greed::Lazy,
+        )),
+        Greed::Lazy => Err(Untranslatable::LazyCapture),
+        Greed::Greedy => {
+            let l = level(&ways);
+            if l.after.is_empty() && l.always {
+                let c = alternation(l.all);
+                return Ok(Node::Sequence(vec![
+                    repeat(c.clone(), 0, less(max, 1), Greed::Greedy),
+                    captured(Node::Alternation(vec![c, Node::Empty])),
+                ]));
+            }
+            if l.before.is_empty() && max == MAX_REPS {
+                return Ok(Node::Sequence(vec![
+                    repeat(alternation(l.after), 0, MAX_REPS, Greed::Lazy),
+                    captured(Node::Empty),
+                ]));
+            }
+            Err(if l.before.is_empty() {
+                Untranslatable::CaptureEmptyFirst
+            } else if l.always {
+                Untranslatable::EmptyBetweenConsuming
+            } else {
+                Untranslatable::ConditionalEmpty
+            })
+        }
     }
 }
 
@@ -2333,6 +3470,17 @@ impl Emitter<'_> {
         if counted_in_vm {
             self.out.push_str("(?=))");
         }
+        self.quantifier(min, max);
+        if greed == Greed::Lazy {
+            self.out.push('?');
+        }
+        if possessive {
+            self.out.push(')');
+        }
+    }
+
+    /// The quantifier of a repetition from `min` to `max`, greedy.
+    fn quantifier(&mut self, min: u32, max: u32) {
         let _ = match (min, max) {
             (0, 1) => write!(self.out, "?"),
             (0, MAX_REPS) => write!(self.out, "*"),
@@ -2341,12 +3489,6 @@ impl Emitter<'_> {
             (min, max) if min == max => write!(self.out, "{{{min}}}"),
             (min, max) => write!(self.out, "{{{min},{max}}}"),
         };
-        if greed == Greed::Lazy {
-            self.out.push('?');
-        }
-        if possessive {
-            self.out.push(')');
-        }
     }
 
     /// The `regex-syntax` class, brackets included, of a predicate.

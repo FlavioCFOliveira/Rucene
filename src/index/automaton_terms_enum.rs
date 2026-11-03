@@ -7,26 +7,126 @@
 use crate::error::{LuceneError, Result};
 use crate::index::terms::{AcceptStatus, FilteredTermsEnum, FilteredTermsEnumFilter, TermsEnum};
 use crate::util::automaton::{
-    Automaton, AutomatonType, ByteRunAutomaton, ByteRunnable, CompiledAutomaton, Transition,
-    TransitionAccessor,
+    AutomatonType, ByteRunnable, CompiledAutomaton, Transition, TransitionAccessor,
 };
 use crate::util::{ArrayUtil, BytesRef, BytesRefBuilder, StringHelper};
+use std::sync::Arc;
 
 /// Maximum unsigned byte value.
 const MAX_BYTE: i32 = 0xff;
 
-/// A [`FilteredTermsEnum`] that enumerates the terms accepted by a DFA.
+/// `compiled.getByteRunnable()`: the DFA's `ByteRunAutomaton`, or the
+/// `NFARunAutomaton` of an automaton compiled as an NFA.
+fn byte_runnable(compiled: &CompiledAutomaton) -> &dyn ByteRunnable {
+    compiled
+        .get_byte_runnable()
+        .expect("INVARIANT: a NORMAL compiled automaton has a byte runnable")
+}
+
+/// `compiled.getTransitionAccessor()`: the DFA's `Automaton`, or the same
+/// `NFARunAutomaton` [`byte_runnable`] returns.
+fn transition_accessor(compiled: &CompiledAutomaton) -> &dyn TransitionAccessor {
+    compiled
+        .get_transition_accessor()
+        .expect("INVARIANT: a NORMAL compiled automaton has a transition accessor")
+}
+
+/// A compiled automaton read through its byte runnable or its transition
+/// accessor, the two views `CompiledAutomaton.getByteRunnable()` and
+/// `getTransitionAccessor()` return, for an enum that takes them as two
+/// objects (`IntersectTermsEnum`).
+///
+/// Java's enums keep the two objects the getters return
+/// (`FieldReader.java:176-177`): the `ByteRunAutomaton` and the `Automaton`
+/// of a DFA, or, for an automaton compiled as an NFA, the query's one
+/// `NFARunAutomaton` twice, which determinizes states as it is stepped and
+/// numbers them for both views and for every other enum of the query. A view
+/// holds a clone of the compiled automaton, whose
+/// [`nfa_run_automaton`](CompiledAutomaton::nfa_run_automaton) is that same
+/// shared automaton, and every call goes through the getters; the two views
+/// an enum takes share that clone, as Java's two references share the
+/// query's objects.
+#[derive(Clone)]
+pub(crate) struct CompiledAutomatonView(Arc<CompiledAutomaton>);
+
+impl CompiledAutomatonView {
+    /// A view of `compiled`; `None` when it has neither a byte runnable nor a
+    /// transition accessor (an automaton that is not `NORMAL`).
+    pub(crate) fn new(compiled: CompiledAutomaton) -> Option<Self> {
+        is_runnable(&compiled).then(|| Self(Arc::new(compiled)))
+    }
+
+    fn byte_runnable(&self) -> &dyn ByteRunnable {
+        byte_runnable(&self.0)
+    }
+
+    fn transition_accessor(&self) -> &dyn TransitionAccessor {
+        transition_accessor(&self.0)
+    }
+}
+
+/// Whether `compiled` has both views, as a `NORMAL` compiled automaton has.
+fn is_runnable(compiled: &CompiledAutomaton) -> bool {
+    compiled.get_byte_runnable().is_some() && compiled.get_transition_accessor().is_some()
+}
+
+impl ByteRunnable for CompiledAutomatonView {
+    fn step(&self, state: i32, c: i32) -> i32 {
+        self.byte_runnable().step(state, c)
+    }
+
+    fn is_accept(&self, state: i32) -> bool {
+        self.byte_runnable().is_accept(state)
+    }
+
+    fn size(&self) -> i32 {
+        self.byte_runnable().size()
+    }
+
+    fn run(&self, s: &[u8]) -> bool {
+        self.byte_runnable().run(s)
+    }
+
+    fn run_range(&self, s: &[u8], offset: usize, length: usize) -> bool {
+        self.byte_runnable().run_range(s, offset, length)
+    }
+}
+
+impl TransitionAccessor for CompiledAutomatonView {
+    fn init_transition(&self, state: i32, transition: &mut Transition) -> i32 {
+        self.transition_accessor()
+            .init_transition(state, transition)
+    }
+
+    fn get_next_transition(&self, transition: &mut Transition) {
+        self.transition_accessor().get_next_transition(transition)
+    }
+
+    fn get_num_transitions(&self, state: i32) -> i32 {
+        self.transition_accessor().get_num_transitions(state)
+    }
+
+    fn get_transition(&self, state: i32, index: i32, transition: &mut Transition) {
+        self.transition_accessor()
+            .get_transition(state, index, transition)
+    }
+}
+
+/// A [`FilteredTermsEnum`] that enumerates the terms accepted by an
+/// automaton, compiled as a DFA or as an NFA.
 ///
 /// Equivalent to `org.apache.lucene.index.AutomatonTermsEnum`.
 pub struct AutomatonTermsEnum {
-    /// Byte-level matcher for the compiled automaton.
-    byte_runnable: ByteRunAutomaton,
+    /// The compiled automaton, read through [`byte_runnable`] (Java's
+    /// `byteRunnable` field, the byte-level matcher) and
+    /// [`transition_accessor`] (Java's `transitionAccessor`, the sorted
+    /// transitions of each state): for an automaton compiled as an NFA, the
+    /// query's one `NFARunAutomaton` serves both, as in Java.
+    compiled: CompiledAutomaton,
     /// Common suffix shared by all accepted strings, if known.
     common_suffix_ref: Option<BytesRef>,
     /// Whether the accepted language is finite.
     finite: bool,
-    /// Sorted transitions for each state.
-    transition_accessor: Automaton,
     /// Visited-state timestamps for infinite automata loop detection.
     visited: Vec<i16>,
     /// Generation counter for visited-state pruning.
@@ -87,30 +187,23 @@ impl AutomatonTermsEnum {
                 "AutomatonTermsEnum only supports CompiledAutomaton::Normal; use CompiledAutomaton::get_terms_enum for special cases".to_string(),
             ));
         }
-        let byte_runnable = compiled
-            .run_automaton
-            .ok_or_else(|| {
-                LuceneError::illegal_state("compiled automaton has no byte runnable".to_string())
-            })?
-            .clone();
-        let transition_accessor = compiled
-            .automaton
-            .ok_or_else(|| {
-                LuceneError::illegal_state(
-                    "compiled automaton has no transition accessor".to_string(),
-                )
-            })?
-            .clone();
+        // `compiled.getByteRunnable()` and `compiled.getTransitionAccessor()`
+        // (`AutomatonTermsEnum.java:85-86`): the DFA's two objects, or the
+        // NFA's one `NFARunAutomaton` for both.
+        if !is_runnable(&compiled) {
+            return Err(LuceneError::illegal_state(
+                "compiled automaton has no byte runnable".to_string(),
+            ));
+        }
         let visited = if compiled.finite {
             Vec::new()
         } else {
-            vec![-1i16; byte_runnable.size() as usize]
+            vec![-1i16; byte_runnable(&compiled).size() as usize]
         };
         let filter = Box::new(Self {
-            byte_runnable,
-            common_suffix_ref: compiled.common_suffix_ref,
+            common_suffix_ref: compiled.common_suffix_ref.clone(),
             finite: compiled.finite,
-            transition_accessor,
+            compiled,
             visited,
             cur_gen: 0,
             seek_bytes_ref: BytesRefBuilder::new(),
@@ -149,17 +242,14 @@ impl AutomatonTermsEnum {
         let mut state = 0i32;
         let mut max_interval = MAX_BYTE;
         for i in 0..position {
-            state = self
-                .byte_runnable
-                .step(state, self.seek_bytes_ref.byte_at(i) as i32);
+            state =
+                byte_runnable(&self.compiled).step(state, self.seek_bytes_ref.byte_at(i) as i32);
             assert!(state >= 0);
         }
-        let num_transitions = self.transition_accessor.get_num_transitions(state);
-        self.transition_accessor
-            .init_transition(state, &mut self.transition);
+        let num_transitions = transition_accessor(&self.compiled).get_num_transitions(state);
+        transition_accessor(&self.compiled).init_transition(state, &mut self.transition);
         for _ in 0..num_transitions {
-            self.transition_accessor
-                .get_next_transition(&mut self.transition);
+            transition_accessor(&self.compiled).get_next_transition(&mut self.transition);
             let current = self.seek_bytes_ref.byte_at(position) as i32;
             if self.transition.min <= current && current <= self.transition.max {
                 max_interval = self.transition.max;
@@ -203,8 +293,7 @@ impl AutomatonTermsEnum {
             let mut state = self.saved_states[pos];
             while pos < self.seek_bytes_ref.length() {
                 self.set_visited(state);
-                let next_state = self
-                    .byte_runnable
+                let next_state = byte_runnable(&self.compiled)
                     .step(state, self.seek_bytes_ref.byte_at(pos) as i32);
                 if next_state == -1 {
                     break;
@@ -224,11 +313,11 @@ impl AutomatonTermsEnum {
                 Some(p) => p,
                 None => return false,
             };
-            let new_state = self.byte_runnable.step(
+            let new_state = byte_runnable(&self.compiled).step(
                 self.saved_states[pos],
                 self.seek_bytes_ref.byte_at(pos) as i32,
             );
-            if new_state >= 0 && self.byte_runnable.is_accept(new_state) {
+            if new_state >= 0 && byte_runnable(&self.compiled).is_accept(new_state) {
                 return true;
             }
             if !self.finite {
@@ -250,22 +339,19 @@ impl AutomatonTermsEnum {
         self.seek_bytes_ref.set_length(position);
         self.set_visited(state);
 
-        let num_transitions = self.transition_accessor.get_num_transitions(state);
-        self.transition_accessor
-            .init_transition(state, &mut self.transition);
+        let num_transitions = transition_accessor(&self.compiled).get_num_transitions(state);
+        transition_accessor(&self.compiled).init_transition(state, &mut self.transition);
         for _ in 0..num_transitions {
-            self.transition_accessor
-                .get_next_transition(&mut self.transition);
+            transition_accessor(&self.compiled).get_next_transition(&mut self.transition);
             if self.transition.max >= c {
                 let next_char = std::cmp::max(c, self.transition.min);
                 self.seek_bytes_ref.append(next_char as u8);
                 let mut state = self.transition.dest;
-                while !self.is_visited(state) && !self.byte_runnable.is_accept(state) {
+                while !self.is_visited(state) && !byte_runnable(&self.compiled).is_accept(state) {
                     self.set_visited(state);
-                    self.transition_accessor
+                    transition_accessor(&self.compiled)
                         .init_transition(state, &mut self.transition);
-                    self.transition_accessor
-                        .get_next_transition(&mut self.transition);
+                    transition_accessor(&self.compiled).get_next_transition(&mut self.transition);
                     state = self.transition.dest;
                     self.seek_bytes_ref.append(self.transition.min as u8);
                     if !self.linear && self.is_visited(state) {
@@ -301,7 +387,7 @@ impl FilteredTermsEnumFilter for AutomatonTermsEnum {
             .as_ref()
             .is_none_or(|suffix| StringHelper::ends_with(term, suffix));
         if suffix_ok {
-            if self.byte_runnable.run(term.slice()) {
+            if byte_runnable(&self.compiled).run(term.slice()) {
                 if self.linear {
                     Ok(AcceptStatus::Yes)
                 } else {
@@ -332,7 +418,7 @@ impl FilteredTermsEnumFilter for AutomatonTermsEnum {
             self.seek_bytes_ref.copy_ref(term);
         } else {
             assert_eq!(self.seek_bytes_ref.length(), 0);
-            if self.byte_runnable.is_accept(0) {
+            if byte_runnable(&self.compiled).is_accept(0) {
                 return Ok(Some(self.seek_bytes_ref.get()));
             }
         }
@@ -483,5 +569,34 @@ mod tests {
         assert_eq!(it.next().unwrap().unwrap().slice(), b"ab");
         assert_eq!(it.next().unwrap().unwrap().slice(), b"abc");
         assert!(it.next().unwrap().is_none());
+    }
+
+    /// The two views `Terms::intersect` hands its enum read one compiled
+    /// automaton, as Java's `getTransitionAccessor()` and `getByteRunnable()`
+    /// return the query's own objects (`FieldReader.java:176-177`): a DFA is
+    /// not copied for each view.
+    #[test]
+    fn the_views_of_one_enum_share_the_compiled_automaton() {
+        // `a[bc]`: two terms, so a NORMAL automaton with a DFA.
+        let mut automaton = Automaton::new();
+        let (s0, s1, s2) = (
+            automaton.create_state(),
+            automaton.create_state(),
+            automaton.create_state(),
+        );
+        automaton.add_transition(s0, s1, i32::from(b'a'));
+        automaton.finish_state();
+        automaton.add_transition_range(s1, s2, i32::from(b'b'), i32::from(b'c'));
+        automaton.finish_state();
+        automaton.set_accept(s2, true);
+        automaton.finish_state();
+        let compiled = CompiledAutomaton::new(automaton, true, false, false).unwrap();
+        assert_eq!(compiled.automaton_type, AutomatonType::Normal);
+        assert!(compiled.run_automaton.is_some());
+        let view = CompiledAutomatonView::new(compiled).unwrap();
+        let other = view.clone();
+        let address =
+            |v: &CompiledAutomatonView| std::ptr::from_ref(v.byte_runnable()).cast::<u8>() as usize;
+        assert_eq!(address(&view), address(&other));
     }
 }

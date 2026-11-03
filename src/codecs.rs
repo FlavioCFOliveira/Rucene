@@ -265,30 +265,6 @@ impl CodecRegistry {
         Ok(())
     }
 
-    /// Registers an already-shared codec under its own name.
-    ///
-    /// The counterpart of [`register`](Self::register) for a codec the caller
-    /// already holds behind an `Arc`. As in Lucene's `reload`, a name that is
-    /// already taken is left alone rather than replaced.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalArgument`] when the codec's name is not a
-    /// valid service name.
-    pub fn register_arc(&self, codec: Arc<dyn Codec>) -> Result<()> {
-        let name = codec.name().to_string();
-        validate_service_name(&name)?;
-
-        let mut codecs = self.codecs.write().map_err(|_| {
-            LuceneError::illegal_state("codec registry lock was poisoned".to_string())
-        })?;
-
-        // Only new providers are added; an existing one is never replaced, as
-        // in `NamedSPILoader.reload` (`NamedSPILoader.java:65-79`).
-        codecs.register_as(&name, codec)?;
-        Ok(())
-    }
-
     /// Looks up a codec by name.
     ///
     /// Returns `None` if no codec has been registered under the given name.

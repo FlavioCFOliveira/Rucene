@@ -174,6 +174,56 @@ pub enum LuceneError {
     #[error("unsupported operation: {0}")]
     UnsupportedOperation(String),
 
+    /// An operation is not supported, with the error that made it so.
+    ///
+    /// Equivalent to `java.lang.UnsupportedOperationException` built with a
+    /// cause, `new UnsupportedOperationException(String, Throwable)` — for
+    /// example `AnalysisSPILoader.newFactoryClassInstance` for a factory
+    /// class without a `Map<String,String>` constructor
+    /// (`AnalysisSPILoader.java:206-211`), whose cause is the
+    /// `NoSuchMethodException` `getConstructor` threw. `cause` is that cause,
+    /// which [`std::error::Error::source`] returns as Java's `getCause()`
+    /// does. Build one with [`LuceneError::unsupported_operation_with_cause`].
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java has one class, and the cause is
+    /// an optional field of it; [`LuceneError::UnsupportedOperation`] is a
+    /// tuple variant built at several hundred sites, none of which passes a
+    /// cause, so the sites that pass one build this variant, as
+    /// [`LuceneError::IllegalArgumentWithCause`] does for
+    /// `IllegalArgumentException`. Both report
+    /// [`java_simple_name`](LuceneError::java_simple_name)
+    /// `UnsupportedOperationException` and display alike.
+    #[error("unsupported operation: {message}")]
+    UnsupportedOperationWithCause {
+        /// The message, Java's `getMessage()`.
+        message: String,
+        /// The cause, Java's `getCause()`.
+        #[source]
+        cause: Arc<LuceneError>,
+    },
+
+    /// An index into a string lies outside it.
+    ///
+    /// Equivalent to `java.lang.StringIndexOutOfBoundsException`, which
+    /// `String.charAt` throws — for example `AbstractAnalysisFactory.requireChar`
+    /// on an empty value (`AbstractAnalysisFactory.java:227-229`), whose
+    /// message on JDK 25.0.4 is `Index 0 out of bounds for length 0`. The
+    /// payload is the message, Java's `getMessage()`.
+    #[error("string index out of bounds: {0}")]
+    StringIndexOutOfBounds(String),
+
+    /// A class has no method or constructor of the signature looked up.
+    ///
+    /// Equivalent to `java.lang.NoSuchMethodException`, which
+    /// `Class.getConstructor` throws — for example the cause
+    /// `AnalysisSPILoader.newFactoryClassInstance` attaches for a factory
+    /// class without a `Map<String,String>` constructor
+    /// (`AnalysisSPILoader.java:206-211`), whose message on JDK 25.0.4 is
+    /// `<class>.<init>(java.util.Map)`. The payload is the message, Java's
+    /// `getMessage()`.
+    #[error("no such method: {0}")]
+    NoSuchMethod(String),
+
     /// An arithmetic result does not fit the type it is computed in.
     ///
     /// Equivalent to `java.lang.ArithmeticException`. Lucene raises it through
@@ -253,7 +303,11 @@ impl LuceneError {
             Self::LockObtainFailed { .. } => "LockObtainFailedException",
             Self::LockReleaseFailed { .. } => "LockReleaseFailedException",
             Self::AlreadyClosed { .. } => "AlreadyClosedException",
-            Self::UnsupportedOperation(_) => "UnsupportedOperationException",
+            Self::UnsupportedOperation(_) | Self::UnsupportedOperationWithCause { .. } => {
+                "UnsupportedOperationException"
+            }
+            Self::StringIndexOutOfBounds(_) => "StringIndexOutOfBoundsException",
+            Self::NoSuchMethod(_) => "NoSuchMethodException",
             Self::Arithmetic(_) => "ArithmeticException",
             Self::MergeAborted(_) => "MergeAbortedException",
             Self::Merge(_) => "MergeException",
@@ -312,6 +366,17 @@ impl LuceneError {
         cause: Arc<LuceneError>,
     ) -> Self {
         Self::IllegalArgumentWithCause {
+            message: message.into(),
+            cause,
+        }
+    }
+
+    /// `new UnsupportedOperationException(String, Throwable)`.
+    pub fn unsupported_operation_with_cause(
+        message: impl Into<String>,
+        cause: Arc<LuceneError>,
+    ) -> Self {
+        Self::UnsupportedOperationWithCause {
             message: message.into(),
             cause,
         }
@@ -412,6 +477,14 @@ impl LuceneError {
                 cause: cause.clone(),
             },
             Self::UnsupportedOperation(m) => Self::UnsupportedOperation(m.clone()),
+            Self::UnsupportedOperationWithCause { message, cause } => {
+                Self::UnsupportedOperationWithCause {
+                    message: message.clone(),
+                    cause: Arc::clone(cause),
+                }
+            }
+            Self::StringIndexOutOfBounds(m) => Self::StringIndexOutOfBounds(m.clone()),
+            Self::NoSuchMethod(m) => Self::NoSuchMethod(m.clone()),
             Self::Arithmetic(m) => Self::Arithmetic(m.clone()),
             Self::MergeAborted(m) => Self::MergeAborted(m.clone()),
             Self::Merge(m) => Self::Merge(m.clone()),

@@ -1,7 +1,7 @@
 //! Port of `org.apache.lucene.util.automaton.NFARunAutomaton`.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::internal::hppc::BitMixer;
 use crate::util::{Accountable, RamUsageEstimator};
@@ -84,8 +84,9 @@ impl DState {
     }
 }
 
-/// Mutable determinization state, kept behind a [`RefCell`] so the read-only
-/// [`ByteRunnable`] and [`TransitionAccessor`] contracts can be honoured.
+/// Mutable determinization state, kept behind a [`Mutex`] so the read-only
+/// [`ByteRunnable`] and [`TransitionAccessor`] contracts can be honoured by an
+/// automaton shared between enums.
 #[derive(Debug, Default)]
 struct Inner {
     d_state_to_ord: HashMap<(i32, Vec<i32>), i32>,
@@ -105,10 +106,16 @@ struct Inner {
 ///
 /// # Divergences from Lucene 10.5.0
 ///
-/// * Lucene states that this class is **not** thread-safe and mutates its fields
-///   from methods that are logically read-only. Rucene keeps the same single-threaded
-///   contract but holds the mutable determinization state in a [`RefCell`], because
-///   `ByteRunnable::step` and `TransitionAccessor` take `&self`.
+/// * Lucene states that this class is **not** thread-safe
+///   (`NFARunAutomaton.java:28-31`) and fills its DFA cache (`dStateToOrd`,
+///   `dStates` and the per-state transitions) from methods that are logically
+///   read-only; one instance, `CompiledAutomaton.nfaRunAutomaton`, is shared by
+///   every enum built from a query (`CompiledAutomaton.java:88,257,486-492`).
+///   Rust forbids unsynchronised mutation of shared state, so this port guards
+///   that cache — and only it — with a [`Mutex`], and
+///   [`CompiledAutomaton`](super::compiled_automaton::CompiledAutomaton) shares
+///   the automaton through an `Arc`. Every state an enum determinizes is the
+///   one the next enum finds, as in Java; the lock is the one adaptation.
 /// * `getSize()` returns the *capacity* of Lucene's backing `DState[]` array; this
 ///   port returns the number of DFA states discovered so far, which is the value that
 ///   array length stands in for.
@@ -119,19 +126,20 @@ pub struct NFARunAutomaton {
     alphabet_size: i32,
     /// Map from char number to class.
     classmap: Vec<i32>,
-    inner: RefCell<Inner>,
+    inner: Mutex<Inner>,
 }
 
 impl Clone for NFARunAutomaton {
     fn clone(&self) -> Self {
+        let inner = self.inner();
         Self {
             automaton: self.automaton.clone(),
             points: self.points.clone(),
             alphabet_size: self.alphabet_size,
             classmap: self.classmap.clone(),
-            inner: RefCell::new(Inner {
-                d_state_to_ord: self.inner.borrow().d_state_to_ord.clone(),
-                d_states: self.inner.borrow().d_states.clone(),
+            inner: Mutex::new(Inner {
+                d_state_to_ord: inner.d_state_to_ord.clone(),
+                d_states: inner.d_states.clone(),
                 transition_set: PointTransitionSet::default(),
                 states_set: StateSet::new(5),
             }),
@@ -187,18 +195,21 @@ impl NFARunAutomaton {
             points,
             alphabet_size,
             classmap,
-            inner: RefCell::new(Inner {
+            inner: Mutex::new(Inner {
                 d_state_to_ord: HashMap::new(),
                 d_states: Vec::new(),
                 transition_set: PointTransitionSet::default(),
                 states_set: StateSet::new(5),
             }),
         };
-        {
-            let mut inner = this.inner.borrow_mut();
-            inner.find_d_state(Some(vec![0]), &this.automaton);
-        }
+        this.inner().find_d_state(Some(vec![0]), &this.automaton);
         this
+    }
+
+    /// The DFA cache, locked; a panic that poisoned the lock left the cache in a
+    /// state some step completed, which the next step reads as Java would.
+    fn inner(&self) -> MutexGuard<'_, Inner> {
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Returns the source automaton this NFA runs.
@@ -237,7 +248,7 @@ impl NFARunAutomaton {
                 return false;
             }
         }
-        self.inner.borrow().d_states[p as usize].is_accept
+        self.inner().d_states[p as usize].is_accept
     }
 
     fn set_transition_accordingly(&self, t: &mut Transition, inner: &Inner) {
@@ -514,7 +525,7 @@ impl ByteRunnable for NFARunAutomaton {
     /// `-1` if the transition does not exist.
     fn step(&self, state: i32, c: i32) -> i32 {
         let char_class = self.get_char_class(c);
-        let mut inner = self.inner.borrow_mut();
+        let mut inner = self.inner();
         inner.next_state(
             state,
             char_class,
@@ -525,11 +536,11 @@ impl ByteRunnable for NFARunAutomaton {
     }
 
     fn is_accept(&self, state: i32) -> bool {
-        self.inner.borrow().d_states[state as usize].is_accept
+        self.inner().d_states[state as usize].is_accept
     }
 
     fn size(&self) -> i32 {
-        self.inner.borrow().d_states.len() as i32
+        self.inner().d_states.len() as i32
     }
 }
 
@@ -542,7 +553,7 @@ impl TransitionAccessor for NFARunAutomaton {
 
     fn get_next_transition(&self, t: &mut Transition) {
         debug_assert!(t.transition_upto < self.points.len() as i32 - 1 && t.transition_upto >= -1);
-        let inner = self.inner.borrow();
+        let inner = self.inner();
         loop {
             t.transition_upto += 1;
             let value = inner.transition_at(t.source, t.transition_upto);
@@ -556,17 +567,17 @@ impl TransitionAccessor for NFARunAutomaton {
     }
 
     fn get_num_transitions(&self, state: i32) -> i32 {
-        let mut inner = self.inner.borrow_mut();
+        let mut inner = self.inner();
         inner.determinize_state(state, &self.automaton, &self.points, self.alphabet_size);
         inner.d_states[state as usize].outgoing_transitions
     }
 
     fn get_transition(&self, state: i32, index: i32, t: &mut Transition) {
         {
-            let mut inner = self.inner.borrow_mut();
+            let mut inner = self.inner();
             inner.determinize_state(state, &self.automaton, &self.points, self.alphabet_size);
         }
-        let inner = self.inner.borrow();
+        let inner = self.inner();
         let mut outgoing_transitions = -1i32;
         t.transition_upto = -1;
         t.source = state;
@@ -624,7 +635,7 @@ impl Accountable for NFARunAutomaton {
     /// `DState` is charged once, in `d_states`. The map's own arithmetic, and
     /// every other term, is Java's.
     fn ram_bytes_used(&self) -> i64 {
-        let inner = self.inner.borrow();
+        let inner = self.inner();
 
         let mut registry =
             RamUsageEstimator::align_object_size(RamUsageEstimator::NUM_BYTES_OBJECT_HEADER);

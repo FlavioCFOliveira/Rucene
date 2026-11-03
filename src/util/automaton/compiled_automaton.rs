@@ -16,6 +16,7 @@ use super::nfa_run_automaton::NFARunAutomaton;
 use super::operations::Operations;
 use super::run_automaton::ByteRunnable;
 use super::utf32_to_utf8::UTF32ToUTF8;
+use std::sync::Arc;
 
 /// Automata are compiled into different internal forms for the most efficient
 /// execution depending upon the language they accept.
@@ -61,7 +62,13 @@ pub struct CompiledAutomaton {
     /// Matcher run directly on an NFA; it determinizes the state on demand and
     /// caches it. Note that this field and [`CompiledAutomaton::run_automaton`] are
     /// never both non-`None`.
-    pub nfa_run_automaton: Option<NFARunAutomaton>,
+    ///
+    /// Equivalent to `CompiledAutomaton.nfaRunAutomaton`
+    /// (`CompiledAutomaton.java:88`): one automaton, shared by every clone of
+    /// this compiled automaton and so by every enum built from it, as Java's
+    /// enums share the one instance (`CompiledAutomaton.java:486-492`); see
+    /// [`NFARunAutomaton`] for the lock that guards its cache.
+    pub nfa_run_automaton: Option<Arc<NFARunAutomaton>>,
 
     /// Shared common suffix accepted by the automaton. Only valid for
     /// [`AutomatonType::Normal`], and only when the automaton accepts an infinite
@@ -235,7 +242,7 @@ impl CompiledAutomaton {
                 automaton: None,
                 finite,
                 sink_state: -1,
-                nfa_run_automaton: Some(NFARunAutomaton::new(binary, 0xff)),
+                nfa_run_automaton: Some(Arc::new(NFARunAutomaton::new(binary, 0xff))),
             })
         } else {
             // We already had a DFA (or errored out); according to Mike, UTF32toUTF8
@@ -443,7 +450,7 @@ impl CompiledAutomaton {
         debug_assert!(self.nfa_run_automaton.is_none() || self.run_automaton.is_none());
         match &self.nfa_run_automaton {
             None => self.run_automaton.as_ref().map(|r| r as &dyn ByteRunnable),
-            Some(nfa) => Some(nfa as &dyn ByteRunnable),
+            Some(nfa) => Some(&**nfa as &dyn ByteRunnable),
         }
     }
 
@@ -458,7 +465,7 @@ impl CompiledAutomaton {
                 .automaton
                 .as_ref()
                 .map(|a| a as &dyn TransitionAccessor),
-            Some(nfa) => Some(nfa as &dyn TransitionAccessor),
+            Some(nfa) => Some(&**nfa as &dyn TransitionAccessor),
         }
     }
 
@@ -637,7 +644,7 @@ impl Accountable for CompiledAutomaton {
             + RamUsageEstimator::size_of_object(
                 self.nfa_run_automaton
                     .as_ref()
-                    .map(|a| SizedObject::Accountable(a as &dyn Accountable)),
+                    .map(|a| SizedObject::Accountable(&**a as &dyn Accountable)),
             )
             + RamUsageEstimator::size_of_object(bytes_ref(&self.term))
             + RamUsageEstimator::size_of_object(Some(SizedObject::Accountable(&transition)))

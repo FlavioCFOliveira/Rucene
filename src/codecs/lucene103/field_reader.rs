@@ -206,6 +206,12 @@ impl Terms for FieldReader {
         ))
     }
 
+    /// Equivalent to `FieldReader.intersect(CompiledAutomaton, BytesRef)`
+    /// (`FieldReader.java:162-178`): an [`IntersectTermsEnum`] over the
+    /// automaton's transition accessor and byte runnable, whether it was
+    /// compiled as a DFA or as an NFA.
+    ///
+    /// [`IntersectTermsEnum`]: crate::codecs::lucene103::intersect_terms_enum::IntersectTermsEnum
     fn intersect(
         &self,
         compiled: &crate::util::automaton::CompiledAutomaton,
@@ -217,17 +223,18 @@ impl Terms for FieldReader {
                 "please use CompiledAutomaton.get_terms_enum instead".to_string(),
             ));
         }
-        let automaton = compiled.automaton.clone().ok_or_else(|| {
-            LuceneError::IllegalArgument("compiled automaton has no transitions".to_string())
-        })?;
-        let run_automaton = compiled.run_automaton.clone().ok_or_else(|| {
-            LuceneError::IllegalArgument("compiled automaton has no runnable form".to_string())
-        })?;
+        // `compiled.getTransitionAccessor()` and `compiled.getByteRunnable()`
+        // (`FieldReader.java:176-177`): the DFA's two objects, or the query's
+        // one `NFARunAutomaton` for both, which the clone shares.
+        let view = crate::index::automaton_terms_enum::CompiledAutomatonView::new(compiled.clone())
+            .ok_or_else(|| {
+                LuceneError::IllegalArgument("compiled automaton has no runnable form".to_string())
+            })?;
         Ok(Box::new(
             crate::codecs::lucene103::intersect_terms_enum::IntersectTermsEnum::new(
                 self.clone(),
-                Box::new(automaton),
-                Box::new(run_automaton),
+                Box::new(view.clone()),
+                Box::new(view),
                 compiled.common_suffix_ref.clone(),
                 start_term.cloned(),
             )?,

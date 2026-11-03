@@ -997,6 +997,10 @@ impl PackedTokenAttributeImpl {
     }
 
     /// Returns the current term text as a `String`.
+    ///
+    /// Equivalent to `toString()`, which `PackedTokenAttributeImpl` inherits
+    /// from `CharTermAttributeImpl` (`CharTermAttributeImpl.java:252-254`):
+    /// the first `length()` characters of the term buffer.
     pub fn term(&self) -> String {
         self.buffer()[..self.length()].iter().collect()
     }

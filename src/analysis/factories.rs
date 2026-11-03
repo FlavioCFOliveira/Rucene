@@ -164,20 +164,14 @@ impl AbstractAnalysisFactory {
     /// # Errors
     ///
     /// Returns what [`require`](Self::require) returns for a missing
-    /// argument, and, for an empty one, [`LuceneError::Other`] with the
-    /// message of the `StringIndexOutOfBoundsException` `charAt(0)` throws,
-    /// `Index 0 out of bounds for length 0`.
-    ///
-    /// **Divergence from Lucene 10.5.0.** [`LuceneError`] has no
-    /// `StringIndexOutOfBoundsException`, so the JDK's message is carried by
-    /// [`LuceneError::Other`], as the port does for the other JDK exceptions
-    /// it has no variant for.
+    /// argument, and, for an empty one, [`LuceneError::StringIndexOutOfBounds`]
+    /// with the message of the `StringIndexOutOfBoundsException` `charAt(0)`
+    /// throws on JDK 25.0.4, `Index 0 out of bounds for length 0`.
     pub fn require_char(args: &mut HashMap<String, String>, name: &str) -> Result<u16> {
         let value = Self::require(args, name)?;
-        value
-            .encode_utf16()
-            .next()
-            .ok_or_else(|| LuceneError::Other("Index 0 out of bounds for length 0".to_string()))
+        value.encode_utf16().next().ok_or_else(|| {
+            LuceneError::StringIndexOutOfBounds("Index 0 out of bounds for length 0".to_string())
+        })
     }
 
     /// Splits `list` on `separator`, honouring a backslash escape.
@@ -354,8 +348,8 @@ impl AbstractAnalysisFactory {
     /// classes with their unions, intersections and Java's case folding,
     /// every escape, property and boundary — and compiles the equivalent
     /// `fancy-regex` 0.19 pattern, with Unicode 16.0 tables on both sides,
-    /// and with no limit on backtracking, as Java's matcher has none (save
-    /// the case the second item below names). A counted repetition the
+    /// and with no limit on backtracking, as Java's matcher has none. A
+    /// counted repetition the
     /// engine's automaton cannot hold is compiled for its backtracking VM,
     /// which repeats with a counter as Java does.
     /// The translation is measured, not assumed: the fixture
@@ -388,19 +382,62 @@ impl AbstractAnalysisFactory {
     ///   quantifier, an atomic group, `\X`, a repeated `\R` — is refused
     ///   (`fancy-regex` matches a variable-length look-behind only with its
     ///   automaton). A counted repetition (`{n}`, `{n,}`, `{n,m}` beyond one
-    ///   iteration) of a body that can match the empty string, such as
-    ///   `(?:x|){3000}` or `(?:a?){2,9}`, makes the engine keep its limit of a
-    ///   million backtracking steps per search, and a search that needs more
-    ///   fails with the engine's error: the engine checks for an empty
-    ///   iteration only in an unbounded repetition past its minimum, where
-    ///   Java's loop ends at the first empty iteration, so without the limit
-    ///   such a search could take time and memory in proportion to the count
-    ///   (`^(?:a?){2147483647}` over `xxxx`), where Java answers at once. A
-    ///   counted repetition too large for the engine's automaton, such as
-    ///   `(?<=\p{L}{1000})b` or `(?:a?){1000000}`, is refused when it lies
-    ///   in a look-behind or its body can match the empty string (elsewhere
-    ///   the VM runs it), and so is a pattern nested in 64 groups or 250
-    ///   classes, the engine's own nesting limits.
+    ///   iteration) of a body that can match the empty string is written
+    ///   with Java's rule that the repetition ends at the first iteration
+    ///   that matches the empty string (`java_regex::empty_loop`), as
+    ///   repetitions over the body's consuming ways, in these shapes:
+    ///   possessively, and over an atomic group or a lone possessive
+    ///   repetition, any arrangement of the body's ways (`(?:a?|b){2,}+`,
+    ///   `(?:x|\b){3}+`, `(?>a|\b){2,3}`, `(?:a*+){9}`); greedily, a body
+    ///   whose empty ways all come after its consuming ways, with a minimum
+    ///   of zero or one or an empty way that matches always (`(?:x|){3000}`,
+    ///   `(?:a?){2,9}`, `(?:a|\b){1,3}`), a body whose first way matches the
+    ///   empty string always (`(?:|x){5}`), and, unbounded, a body with an
+    ///   empty way that matches always (`(?:a?|b){2,}`); lazily, a minimum
+    ///   of zero or one, a first way that matches the empty string always,
+    ///   and empty ways after the consuming ways, one matching always
+    ///   (`(?:a?){2,5}?`); a capturing group over a body without groups,
+    ///   possessively (`(|x){2}+`), greedily with its consuming ways first
+    ///   and an empty way that matches always (`(\d*){2}`) or with its empty
+    ///   way first and no bound (`(|x){2,}`), and lazily with a minimum of
+    ///   zero (`(x|){0,3}?`). A counted repetition inside a consuming way of
+    ///   the body is written as well, where the outer writing keeps it. Any
+    ///   other shape, and any body with a construct the empty way cannot be
+    ///   stated around, is refused, with a description naming the count and
+    ///   the construct: an empty way between two consuming ways
+    ///   (`(?:a?|b){2,5}`), or on each side of one, in a node a sequence of
+    ///   the body goes on after (`(?:(?:\b|x|$)y?){2}+`); an empty way that a condition decides — an
+    ///   anchor, a boundary, a look-around, or the failure of an atomic group
+    ///   or a possessive repetition (`(?:x|\b){3}`, `(?:\b|a){0,3}`,
+    ///   `(?:a*+b?){3}`); a back reference that can match the empty string;
+    ///   a capturing group inside the body that its empty way passes
+    ///   through, that the writing would repeat, or inside an atomic group,
+    ///   a possessive repetition or a body repeated possessively
+    ///   (`(?:(a)|){0,3}+`); a loop over a body that can match the empty
+    ///   string, inside the body, that the empty way passes through
+    ///   (`(?:(?:a?){2}){3}`, `(?:(?:a?)*){2}`) or that the writing would copy
+    ///   with another such loop inside it; an atomic group or a possessive
+    ///   repetition that can match the empty string inside another; and a
+    ///   capturing group over the body
+    ///   that is repeated lazily (`(x|){2,3}?`), that a back reference names
+    ///   (`(a?){3}\1`), or whose empty way comes first (`(|x){3}`).
+    ///   `fancy-regex` cannot compare the position where an iteration began
+    ///   with the position where it ended, and leaves a counted repetition
+    ///   only at its count or by backtracking, so
+    ///   these shapes would need the count of iterations across two
+    ///   repetitions, or a group written in two places, or copies whose
+    ///   number grows exponentially with the depth of nesting, and Java keeps a
+    ///   group that an atomic group or a possessive repetition recorded when
+    ///   the rest of the pattern then fails, where `fancy-regex` restores it;
+    ///   the engine's own
+    ///   repetition, which checks for an empty iteration only when unbounded
+    ///   and past its minimum, would match differently — `(?:(?=b)|\w){3} `
+    ///   over `ab ab` matches nothing in Java and `ab ` in `fancy-regex` —
+    ///   or take time in proportion to the count where Java answers at once. A counted
+    ///   repetition too large for the engine's automaton, such as
+    ///   `(?<=\p{L}{1000})b`, is refused when it lies in a look-behind or is
+    ///   one of these shapes (elsewhere the VM runs it), and so is a pattern
+    ///   nested in 64 groups or 250 classes, the engine's own nesting limits.
     ///   A capturing group that only matches the empty string, repeated
     ///   greedily by `*` or `{0,n}`, never runs here, where Java runs it for
     ///   the captures made in its look-arounds and discards its own.
@@ -457,16 +494,11 @@ impl AbstractAnalysisFactory {
         let translation = crate::analysis::java_regex::translate_for_engine(&value, false)
             .map_err(|syntax| can_not_be_parsed(syntax.to_string()))?;
         // Java's matcher has no backtracking limit, and neither has the
-        // compiled pattern, save over a bounded loop of a body that can match
-        // the empty string, which the engine runs without Java's check for an
-        // empty iteration and which keeps the engine's limit (see the notes).
-        let unlimited = !translation.bounded_empty_loop;
+        // compiled pattern.
         let compile = |pattern: &str| {
-            let mut builder = fancy_regex::RegexBuilder::new(pattern);
-            if unlimited {
-                builder.backtrack_limit(usize::MAX);
-            }
-            builder.build()
+            fancy_regex::RegexBuilder::new(pattern)
+                .backtrack_limit(usize::MAX)
+                .build()
         };
         match compile(&translation.pattern) {
             Ok(regex) => Ok(regex),
@@ -996,6 +1028,11 @@ impl<T: ?Sized> AnalysisFactoryClass<T> {
     }
 
     /// Returns what reflection finds for the class's `NAME` field.
+    ///
+    /// Stands in for `Class.getField("NAME")` and the modifier, declaring
+    /// class and type checks `AnalysisSPILoader.lookupSPIName` makes on it
+    /// (`AnalysisSPILoader.java:172-185`), which
+    /// [`AnalysisSPILoader::lookup_spi_name`] reads through this accessor.
     pub fn spi_name_field(&self) -> SPINameField {
         self.spi_name
     }
@@ -1244,7 +1281,7 @@ impl<T: ?Sized + 'static> AnalysisSPILoader<T> {
     /// as for `CommandLineUtil`'s), and for a field that does not qualify
     /// [`LuceneError::IllegalState`] with `No SPI name defined.`.
     pub fn lookup_spi_name(service: &AnalysisFactoryClass<T>) -> Result<&'static str> {
-        match service.spi_name {
+        match service.spi_name_field() {
             SPINameField::Declared(name) => Ok(name),
             SPINameField::Unsuitable => Err(LuceneError::illegal_state("No SPI name defined.")),
             SPINameField::Missing => Err(LuceneError::Other("NAME".to_string())),
@@ -1261,27 +1298,33 @@ impl<T: ?Sized + 'static> AnalysisSPILoader<T> {
     /// # Errors
     ///
     /// Returns whatever the constructor returns, and, for a class without such
-    /// a constructor, [`LuceneError::UnsupportedOperation`] with Java's message
-    /// `Factory <class> cannot be instantiated. This is likely due to missing
-    /// Map<String,String> constructor.`.
+    /// a constructor, [`LuceneError::UnsupportedOperationWithCause`] with
+    /// Java's message `Factory <class> cannot be instantiated. This is likely
+    /// due to missing Map<String,String> constructor.` and, as its cause, the
+    /// [`LuceneError::NoSuchMethod`] `getConstructor(Map.class)` throws, whose
+    /// message is `<class>.<init>(java.util.Map)`.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java attaches the
-    /// `NoSuchMethodException` as the cause of the
-    /// `UnsupportedOperationException`; [`LuceneError::UnsupportedOperation`]
-    /// carries no cause. And Java wraps a checked exception the constructor
-    /// throws in a `RuntimeException`; a factory's `Map` constructor declares
-    /// none, and the port returns the constructor's error as it is.
+    /// **Divergence from Lucene 10.5.0.** Java wraps a checked exception the
+    /// constructor throws in a `RuntimeException`; a factory's `Map`
+    /// constructor declares none, and the port returns the constructor's
+    /// error as it is.
     pub fn new_factory_class_instance(
         clazz: &AnalysisFactoryClass<T>,
         args: &mut HashMap<String, String>,
     ) -> Result<Arc<T>> {
         match clazz.map_constructor {
             Some(constructor) => constructor(args),
-            None => Err(LuceneError::UnsupportedOperation(format!(
-                "Factory {} cannot be instantiated. This is likely due to missing \
-                 Map<String,String> constructor.",
-                clazz.name
-            ))),
+            None => Err(LuceneError::unsupported_operation_with_cause(
+                format!(
+                    "Factory {} cannot be instantiated. This is likely due to missing \
+                     Map<String,String> constructor.",
+                    clazz.name
+                ),
+                Arc::new(LuceneError::NoSuchMethod(format!(
+                    "{}.<init>(java.util.Map)",
+                    clazz.name
+                ))),
+            )),
         }
     }
 }
@@ -1908,12 +1951,31 @@ mod spi_tests {
             Some(&classes),
         )
         .unwrap();
+        // `AnalysisOracle` (pass I): the `UnsupportedOperationException`'s
+        // cause is `java.lang.NoSuchMethodException: <class>.<init>(java.util.Map)`.
         match loader.new_instance("NOMAP", &mut HashMap::new()) {
-            Err(LuceneError::UnsupportedOperation(message)) => assert_eq!(
-                message,
-                "Factory org.example.NoMapCtor cannot be instantiated. This is likely due to \
-                 missing Map<String,String> constructor."
-            ),
+            Err(error @ LuceneError::UnsupportedOperationWithCause { .. }) => {
+                assert_eq!(error.java_simple_name(), "UnsupportedOperationException");
+                // `getCause()`.
+                assert_eq!(
+                    std::error::Error::source(&error).map(ToString::to_string),
+                    Some("no such method: org.example.NoMapCtor.<init>(java.util.Map)".to_string())
+                );
+                let LuceneError::UnsupportedOperationWithCause { message, cause } = error else {
+                    unreachable!()
+                };
+                assert_eq!(
+                    message,
+                    "Factory org.example.NoMapCtor cannot be instantiated. This is likely due \
+                     to missing Map<String,String> constructor."
+                );
+                assert_eq!(cause.java_simple_name(), "NoSuchMethodException");
+                assert!(
+                    matches!(&*cause, LuceneError::NoSuchMethod(m)
+                        if m == "org.example.NoMapCtor.<init>(java.util.Map)"),
+                    "{cause:?}"
+                );
+            }
             other => panic!("expected the missing-constructor error, got {other:?}"),
         }
         let mut args =
@@ -2089,9 +2151,16 @@ mod accessor_tests {
     /// `requireChar`).
     #[test]
     fn require_char_of_an_empty_value_fails_as_char_at_does() {
+        // `AnalysisOracle` (pass I): `requireChar` over `""` throws
+        // `java.lang.StringIndexOutOfBoundsException: Index 0 out of bounds
+        // for length 0`.
         match AbstractAnalysisFactory::require_char(&mut one("c", ""), "c") {
-            Err(LuceneError::Other(message)) => {
-                assert_eq!(message, "Index 0 out of bounds for length 0")
+            Err(error @ LuceneError::StringIndexOutOfBounds(_)) => {
+                assert_eq!(error.java_simple_name(), "StringIndexOutOfBoundsException");
+                let LuceneError::StringIndexOutOfBounds(message) = error else {
+                    unreachable!()
+                };
+                assert_eq!(message, "Index 0 out of bounds for length 0");
             }
             other => panic!("expected the index error, got {other:?}"),
         }
@@ -2359,23 +2428,190 @@ mod get_pattern_tests {
         );
     }
 
-    /// The declared limit: a counted repetition of a body that can match the
-    /// empty string keeps the engine's backtracking limit, and one too large
-    /// for the automaton is refused — where Java (oracle
-    /// `scratchpad/auditH/regex/a_ctl.py` and `a_slow7.py` through
-    /// `RegexOracle.java`) answers `OK|9:` for `(?<!y)(?:x|){24}(?=b)` over
-    /// `xxxxxxxxcb` and `OK|0:` for `^(?:a?){2147483647}` over `xxxx`. Without
-    /// the limit, the first search finds Java's match after more than a
-    /// million backtracking steps.
+    /// Java's loop ends at the first iteration that matches the empty string
+    /// (`Pattern.Loop.match`, `LazyLoop.match`, `Curly.match2` of JDK
+    /// 25.0.4): a counted repetition of a body that can match the empty
+    /// string answers as Java at once, with no backtracking limit. Java oracle
+    /// `scratchpad/oracle/passI/regex/CaptureOracle.java` (`capture_out.txt`),
+    /// group 1 as `<start>:<text>`.
     #[test]
-    fn a_counted_loop_over_an_empty_match_keeps_the_engine_limit() {
-        let regex = compile("(?<!y)(?:x|){24}(?=b)").unwrap();
-        assert!(matches!(
-            regex.find("xxxxxxxxcb"),
-            Err(fancy_regex::Error::RuntimeError(
-                fancy_regex::RuntimeError::BacktrackLimitExceeded
-            ))
-        ));
-        assert!(compile("^(?:a?){2147483647}").is_err());
+    fn a_counted_loop_over_an_empty_match_ends_at_the_first_empty_iteration() {
+        for (pattern, text, expected) in [
+            ("^(?:a?){2147483647}", "xxxx", vec!["0:"]),
+            ("(?m)^(?:x|){3000}(?=b)", "xxxx", vec![]),
+            ("(?<!y)(?:x|){24}(?=b)", "xxxxxxxxcb", vec!["9:"]),
+            ("(?m)^(?:x|){3000}(?=b)", "xxb\nxb", vec!["0:xx", "4:x"]),
+            ("(?:a?){2,3}?b", "aab", vec!["0:aab"]),
+            ("(?:a?){2,5}+b", "aaab", vec!["0:aaab"]),
+            ("(?:|x){5}y", "xxy y", vec!["0:xxy", "4:y"]),
+            ("(?:a*b?){3}c", "aabaac", vec!["0:aabaac"]),
+            ("(?:a?){2147483647,}b", "aab", vec!["0:aab"]),
+            ("(?:a?){2,3}?", "aaa", vec!["0:aa", "2:a", "3:"]),
+            ("(?:|x){3}", "xx", vec!["0:", "1:", "2:"]),
+            ("(?:a?){0,3}+a", "aaa", vec![]),
+            ("(?:a?){2}+", "aaa", vec!["0:aa", "2:a", "3:"]),
+            ("(?:a?){2,5}+", "aaaaaaa", vec!["0:aaaaa", "5:aa", "7:"]),
+            // A body that keeps one way at each position (`Curly` over an
+            // atomic group, `Loop` over a possessive repetition).
+            ("(?m)^(?>a?){2147483647}", "aaab aab", vec!["0:aaa"]),
+            ("(?:a*+){2147483647}\\b", "xxb", vec!["0:", "3:"]),
+            ("x(?:a*+){2147483647}b", "cab xyb", vec![]),
+            ("(?>a?){2,3}a", "aaaa", vec!["0:aaaa"]),
+            ("(?>a?){1,3}?b", "aab ab b", vec!["0:aab", "4:ab", "7:b"]),
+            ("(?:a*+){2}a", "aa", vec![]),
+            ("(?:a*+){0,2}a", "aa", vec!["0:a", "1:a"]),
+            ("(?>|x){3}y", "xy y", vec!["1:y", "3:y"]),
+            ("(?:a?+){2,}+b", "aab", vec!["0:aab"]),
+            // A reference to a group the pattern does not have never matches,
+            // the empty string included (`DanglingRef.java`).
+            ("\\1{2,}", "aa", vec![]),
+            ("x\\2{0,3}", "xx", vec!["0:x", "1:x"]),
+            ("(a)\\2{2}|b", "ab", vec!["1:b"]),
+            // Audit I (`scratchpad/auditI/CapOracle.java`, `p_tests.py`): an
+            // empty way between consuming ways, unbounded (`B*(?:AB*)*?`).
+            ("(?:a?|b){2,}", "aaab", vec!["0:aaa", "3:", "4:"]),
+            (
+                "(?:a*|b){2,}",
+                "aab ba",
+                vec!["0:aa", "2:", "3:", "4:", "5:a", "6:"],
+            ),
+            ("(?>a||b){2,}", "aab", vec!["0:aa", "2:", "3:"]),
+            // Possessive: each iteration keeps its first way.
+            ("(?:a?|b){2,}+", "aaab", vec!["0:aaa", "3:", "4:"]),
+            ("(?:a|\\b){1,3}+", "a aa", vec!["0:a", "1:", "2:aa", "4:"]),
+            ("(?:x|\\b){3}+", "x x", vec!["0:x", "1:", "2:x", "3:"]),
+            (
+                "(?:x|\\b|y){2,}+",
+                "xy yx",
+                vec!["0:xy", "2:", "3:", "4:x", "5:"],
+            ),
+            ("(?:a|(?=b)){2,}+b", "aab", vec!["0:aab"]),
+            ("(?:a*+b?){3}+", "aabab", vec!["0:aabab", "5:"]),
+            // A counted loop inside a consuming way of the body, written in
+            // the outer writing, copied there when it has none inside it.
+            ("(?:x(?:a?){2}|){0,3}", "xaxaax", vec!["0:xaxaax", "6:"]),
+            (
+                "(?:b?(?:x(?:a?){2})){0,3}",
+                "bxaxab",
+                vec!["0:bxaxa", "5:", "6:"],
+            ),
+            ("(?:x(?:a?){2,3}?|){2,3}?y", "xaxaay", vec!["0:xaxaay"]),
+            // Lazy, minimum zero or one; greedy, minimum one, with an empty
+            // way a condition decides.
+            ("(?:a?|b){0,3}?", "aab", vec!["0:", "1:", "2:", "3:"]),
+            ("(?:a?|b){1,3}?b", "bab", vec!["0:b", "1:ab"]),
+            ("(?:a?(?=b)){1,3}?", "aab", vec!["1:a", "2:"]),
+            ("(?:x|){2,5}?$", "xxx", vec!["0:xxx", "3:"]),
+            ("(?:a|\\b){1,3}", "a a", vec!["0:a", "1:", "2:a", "3:"]),
+            ("(?>a|\\b){2,3}", "a a", vec!["0:a", "1:", "2:a", "3:"]),
+            ("(?:a*+){3}?b", "aab ab", vec!["0:aab", "4:ab"]),
+            ("(?:|x){3}y", "xxy y", vec!["0:xxy", "4:y"]),
+        ] {
+            let regex = compile(pattern).unwrap_or_else(|e| panic!("{pattern}: {e}"));
+            assert_eq!(find_all(&regex, text), expected, "{pattern} over {text:?}");
+        }
+        // The empty iteration that ends the loop is the one the group records.
+        for (pattern, text, expected) in [
+            ("(a?){3}", "aa", vec!["0:aa 2:", "2: 2:"]),
+            ("(a?){3}", "aaaa", vec!["0:aaa 2:a", "3:a 4:", "4: 4:"]),
+            ("(x|){3}b", "xxb", vec!["0:xxb 2:"]),
+            (
+                "(\\d*){2}x",
+                "12x 3x x",
+                vec!["0:12x 2:", "4:3x 5:", "7:x 7:"],
+            ),
+            ("(?<n>ab|a|){2,}", "abab", vec!["0:abab 4:", "4: 4:"]),
+            // Audit I (`CapOracle.java`, `p_tests.py`): possessive, the empty
+            // way first or a back reference to the group; lazy, minimum zero;
+            // greedy, the empty way first and no bound; a group inside the
+            // body, kept by the last iteration that ran it.
+            ("(|x){2}+", "xx", vec!["0: 0:", "1: 1:", "2: 2:"]),
+            (
+                "(|x|\\b){2,3}+",
+                "x x",
+                vec!["0: 0:", "1: 1:", "2: 2:", "3: 3:"],
+            ),
+            (
+                "(\\w*){0,3000}+\\1",
+                "ab ab",
+                vec!["0:ab 2:", "2: 2:", "3:ab 5:", "5: 5:"],
+            ),
+            ("(x|){0,3}?y", "xxy", vec!["0:xxy 1:x"]),
+            ("(|x){2,}", "xx", vec!["0: 0:", "1: 1:", "2: 2:"]),
+            ("(?:(a)|){3}", "aab", vec!["0:aa 1:a", "2: -", "3: -"]),
+        ] {
+            let regex = compile(pattern).unwrap_or_else(|e| panic!("{pattern}: {e}"));
+            let mut found = Vec::new();
+            let mut from = 0;
+            while let Some(caps) = regex.captures_from_pos(text, from).unwrap() {
+                let m = caps.get(0).unwrap();
+                let g = caps
+                    .get(1)
+                    .map_or("-".to_string(), |g| format!("{}:{}", g.start(), g.as_str()));
+                found.push(format!("{}:{} {g}", m.start(), m.as_str()));
+                from = if m.start() == m.end() {
+                    m.end() + 1
+                } else {
+                    m.end()
+                };
+                if from > text.len() {
+                    break;
+                }
+            }
+            assert_eq!(found, expected, "{pattern} over {text:?}");
+        }
+    }
+
+    /// The shapes Java's rule cannot be written for are refused, naming the
+    /// count and the construct, rather than run with the engine's own
+    /// repetition, which answers `ab ` for `(?:(?=b)|\w){3} ` over `ab ab`
+    /// where Java (`scratchpad/auditI/CapOracle.java`, `p_ex.py`) finds
+    /// nothing.
+    #[test]
+    fn an_empty_loop_the_translation_cannot_write_is_refused() {
+        let conditional =
+            "an empty match that an anchor, a boundary, a look-around, an atomic group \
+                           or a possessive repetition decides";
+        for (pattern, count, construct) in [
+            ("(?:a?|b){2,5}", "{2,5}", "an empty match between two of its consuming ways"),
+            ("(?:a?|b){2,5}?", "{2,5}?", "an empty match between two of its consuming ways"),
+            ("(?:(?:\\b|x|$)y?){2}+", "{2}+", "an empty match between two of its consuming ways"),
+            ("(?<!y)(?:x|(?=x)){24}(?=b)", "{24}", conditional),
+            ("(?:(?=b)|\\w){3} ", "{3}", conditional),
+            ("(?:x|\\b){3}", "{3}", conditional),
+            // Inside a consuming way of a loop the translation writes.
+            ("(?:x(?:x|\\b){3}|){0,3}", "{3}", conditional),
+            ("(?:\\b|a){0,3}", "{0,3}", conditional),
+            ("(?:a*+b?){3}", "{3}", conditional),
+            ("(a?){3}\\1", "{3}", "a capturing group a back reference names"),
+            ("(x|){2,3}?", "{2,3}?", "a capturing group repeated lazily"),
+            ("(|x){3}", "{3}", "a capturing group that tries its empty match first"),
+            ("(?:(a?)|b){3}", "{3}", "a capturing group inside it"),
+            ("(?:(a)|){0,3}+b", "{0,3}+", "a capturing group inside it"),
+            ("(?>(a)|){2}", "{2}", "a capturing group inside it"),
+            ("(?:(?:a?)*){2}", "{2}", "a loop over a body that can match the empty string inside it"),
+            ("(?:(?:a?){2}){0,3}", "{0,3}", "a loop over a body that can match the empty string inside it"),
+            ("(?:x(?:y(?:a?){2}|){2}|){2,3}?", "{2,3}?", "a loop over a body that can match the empty string inside it"),
+            ("(?>(?>(?>a?)|b?)|c?){2}", "{2}", "an atomic group or a possessive repetition that can match the empty string inside another"),
+            ("(a)(?:\\1|x){2,}", "{2,}", "a back reference"),
+        ] {
+            let construct = format!(
+                "{count} of a body that can match the empty string, with {construct}"
+            );
+            match compile(pattern) {
+                Err(LuceneError::IllegalArgumentWithCause { message, cause }) => {
+                    assert_eq!(
+                        message,
+                        "Configuration Error: 'pattern' can not be parsed in ProbeFactory"
+                    );
+                    let cause = cause.to_string();
+                    assert!(
+                        cause.contains(&format!("Counted repetition {construct}, which this port's regular expression engine cannot end at its first empty iteration")),
+                        "{pattern}: {cause}"
+                    );
+                }
+                other => panic!("{pattern}: expected the refusal, got {other:?}"),
+            }
+        }
     }
 }

@@ -343,11 +343,6 @@ impl NamedSPI for dyn DocValuesFormat {
 }
 
 impl DocValuesFormatRegistry {
-    /// Creates an empty registry.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// Registers a doc-values format under the given short name.
     ///
     /// # Errors
@@ -372,28 +367,6 @@ impl DocValuesFormatRegistry {
             )));
         }
         formats.register_as(&name, Arc::new(format))?;
-        Ok(())
-    }
-
-    /// Registers an already-shared format under its own name.
-    ///
-    /// The counterpart of [`register`](Self::register) for a format the caller
-    /// already holds behind an `Arc`. As in Lucene's `reload`, a name that is
-    /// already taken is left alone rather than replaced.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalArgument`] when the format's name is not
-    /// a valid service name.
-    pub fn register_arc(&self, format: Arc<dyn DocValuesFormat>) -> Result<()> {
-        let name = format.name().to_string();
-        crate::codecs::validate_service_name(&name)?;
-        let mut formats = self.formats.write().map_err(|_| {
-            LuceneError::illegal_state("doc-values format registry lock was poisoned".to_string())
-        })?;
-        // Only new providers are added; an existing one is never replaced, as
-        // in `NamedSPILoader.reload` (`NamedSPILoader.java:65-79`).
-        formats.register_as(&name, format)?;
         Ok(())
     }
 

@@ -356,32 +356,6 @@ impl NamedSPI for dyn PostingsFormat {
 }
 
 impl PostingsFormatRegistry {
-    /// Creates an empty registry.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Registers an already-shared format under its own name.
-    ///
-    /// As in Lucene's `reload`, a name that is already taken is left alone
-    /// rather than replaced.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalArgument`] when the format's name is not
-    /// a valid service name.
-    pub fn register_arc(&self, format: Arc<dyn PostingsFormat>) -> Result<()> {
-        let name = format.name().to_string();
-        crate::codecs::validate_service_name(&name)?;
-        let mut formats = self.formats.write().map_err(|_| {
-            LuceneError::illegal_state("postings format registry lock was poisoned".to_string())
-        })?;
-        // Only new providers are added; an existing one is never replaced, as
-        // in `NamedSPILoader.reload` (`NamedSPILoader.java:65-79`).
-        formats.register_as(&name, format)?;
-        Ok(())
-    }
-
     /// Looks up a postings format by name.
     ///
     /// Returns `None` if no format has been registered under the given name.
