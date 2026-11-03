@@ -54,7 +54,6 @@ use std::sync::{Arc, Mutex};
 
 use rucene::codecs::{register_codec, Lucene104Codec};
 use rucene::document::{Document, Store, StringField, TextField};
-use rucene::index::index_reader::StoredFields as _;
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::IndexWriterConfig;
 use rucene::index::merge_policy::NoMergePolicy;
@@ -179,6 +178,10 @@ struct SegmentReport {
     max_doc: i32,
     del_count: i32,
     use_compound_file: bool,
+    /// The keys of the `.si` diagnostics, sorted: rmp #314 checks that Rucene
+    /// records the keys `IndexWriter.setDiagnostics` records
+    /// (`IndexWriter.java:5135-5149`).
+    diagnostics: Vec<String>,
     files: Vec<String>,
 }
 
@@ -230,10 +233,11 @@ impl Report {
         out.push_str(&format!("  generation={}\n", self.generation));
         for (name, segment) in &self.segments {
             out.push_str(&format!(
-                "  segment={name} maxDoc={} delCount={} cfs={} files={}\n",
+                "  segment={name} maxDoc={} delCount={} cfs={} diag={} files={}\n",
                 segment.max_doc,
                 segment.del_count,
                 segment.use_compound_file,
+                segment.diagnostics.join(","),
                 segment.files.join(",")
             ));
         }
@@ -274,6 +278,7 @@ impl SegmentReport {
                 // The Java side also prints `id=`, which cannot match across
                 // runs and is deliberately not compared.
                 Some(("id", _)) => {}
+                Some(("diag", v)) => segment.diagnostics = split_list(v),
                 Some((other, _)) => return Err(format!("unexpected key {other:?}")),
             }
         }
@@ -390,6 +395,16 @@ fn rucene_report(out_dir: &Path) -> Report {
                 max_doc: commit_info.info.max_doc().expect("maxDoc"),
                 del_count: commit_info.get_del_count(),
                 use_compound_file: commit_info.info.get_use_compound_file(),
+                diagnostics: {
+                    let mut keys: Vec<String> = commit_info
+                        .info
+                        .get_diagnostics()
+                        .iter()
+                        .map(|(k, _)| k.clone())
+                        .collect();
+                    keys.sort();
+                    keys
+                },
                 files,
             },
         );
@@ -401,7 +416,7 @@ fn rucene_report(out_dir: &Path) -> Report {
     report.max_doc = reader.max_doc();
 
     let mut fields = BTreeSet::new();
-    for leaf in Arc::clone(&reader).leaves() {
+    for leaf in Arc::clone(&reader).leaves().unwrap() {
         for info in leaf.leaf_reader().get_field_infos().iter() {
             fields.insert(info.name.clone());
         }
@@ -576,5 +591,52 @@ fn file_listings_side_by_side() {
         println!("case={case}");
         println!("  lucene: {}", java.files.join(","));
         println!("  rucene: {}", rust_files.join(","));
+    }
+}
+
+/// A compound segment Lucene wrote is read through `Lucene90CompoundReader`,
+/// which opens the `.cfs` once and serves every sub-file as
+/// `handle.slice(name, offset, length, context)`
+/// (`Lucene90CompoundReader.java:58-101, 152-171`): through `FSDirectory.open`
+/// that handle is a memory-mapped input, so each sub-file is a mapped slice of
+/// it, not a copy; the entries' lengths are the slices' lengths, each slice
+/// carries its own valid codec footer, and `checkIntegrity` checksums the whole
+/// data file (`Lucene90CompoundReader.java:248-251`).
+#[test]
+fn a_lucene_compound_file_is_read_through_slices_of_its_handle() {
+    require_maven();
+    ensure_codec();
+    let java_dir = tempfile::tempdir().expect("java temp dir");
+    run_java_fixture(java_dir.path(), "cfs").expect("java harness");
+
+    let dir: Arc<dyn Directory> =
+        Arc::new(FSDirectory::open(java_dir.path()).expect("open directory"));
+    let infos = SegmentInfos::read_latest_commit(Arc::clone(&dir)).expect("read the commit");
+    let commit_info = infos.iter().next().expect("one segment");
+    let info = &commit_info.info;
+    assert!(
+        info.get_use_compound_file(),
+        "Lucene's default is a compound segment"
+    );
+    let codec = info.codec().expect("the segment names its codec");
+    let cfs = codec
+        .compound_format()
+        .get_compound_reader(dir.as_ref(), info)
+        .expect("open the compound file Lucene wrote");
+    cfs.check_integrity().expect("the data file checksums");
+
+    let names = cfs.list_all().expect("list the sub-files");
+    assert!(!names.is_empty());
+    for name in &names {
+        let mut input = cfs
+            .open_input(name, &*rucene::store::DEFAULT_IO_CONTEXT)
+            .expect("open a sub-file");
+        assert!(
+            input.as_memory_segment_access_input().is_some(),
+            "{name} must be a slice of the mapped .cfs handle"
+        );
+        assert_eq!(input.length(), cfs.file_length(name).expect("entry length"));
+        rucene::codecs::codec_util::checksum_entire_file(input.as_mut())
+            .unwrap_or_else(|e| panic!("{name} carries a valid footer: {e}"));
     }
 }

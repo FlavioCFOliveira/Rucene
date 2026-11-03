@@ -126,9 +126,14 @@ pub fn fill_basic_stats(
 /// Equivalent to `org.apache.lucene.search.similarities.SimilarityBase`.
 /// Implementors must provide [`Self::score`], [`Self::simple_name`] and a
 /// [`Display`](std::fmt::Display) rendering — Java declares `toString`
-/// abstract on this class (`SimilarityBase.java:153`), which the supertrait
+/// abstract on this class (`SimilarityBase.java:148`), which the supertrait
 /// bound reproduces — and must forward [`Similarity::scorer`] to
 /// [`similarity_base_scorer`].
+///
+/// The [`Display`](std::fmt::Display) supertrait is Java's abstract
+/// `toString()`: each similarity renders its own name, and
+/// [`SimilarityBase::simple_name`] is what goes into explanations. Equivalent
+/// to the abstract `SimilarityBase#toString`.
 ///
 /// Multi-word queries such as phrase queries are scored differently from
 /// Lucene's default ranking: rather than faking an IDF for the phrase as a

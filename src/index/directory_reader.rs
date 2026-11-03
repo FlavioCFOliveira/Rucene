@@ -15,7 +15,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Display, Formatter};
 use std::io;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use crate::error::{LuceneError, Result};
 use crate::index::index_commit::IndexCommit;
@@ -24,22 +24,26 @@ use crate::index::index_reader::{
     build_composite_context, CacheHelper, CacheKey, ClosedListener, CompositeReader, IndexReader,
     IndexReaderCore, StoredFields,
 };
+use crate::index::index_writer_config::LeafComparator;
 use crate::index::leaf_reader::{LeafReader, TermVectors};
 use crate::index::reader_context::IndexReaderContext;
 use crate::index::segment_infos::SegmentInfos;
 use crate::index::segment_reader::SegmentReader;
 use crate::index::Term;
 use crate::store::{Directory, DEFAULT_IO_CONTEXT};
+use crate::util::java_collections::JavaHashSet;
 
 // -----------------------------------------------------------------------------
 // IndexWriter (minimal trait for NRT signatures)
 // -----------------------------------------------------------------------------
 
-/// Minimal trait used by `DirectoryReader` for near-real-time interactions.
+/// The members of `IndexWriter` that a near-real-time `DirectoryReader` calls.
 ///
-/// This is **not** a port of `IndexWriter`; it exists only to let
-/// `StandardDirectoryReader` express the NRT API contract. The real
-/// `IndexWriter` port will implement this trait in a later task.
+/// This is **not** a port of `IndexWriter`: it names the part of
+/// `IndexWriter` that `StandardDirectoryReader` and its `ReaderCommit` reach
+/// through their `writer` field, so that this module does not depend on the
+/// writer's own module. The port of `IndexWriter`,
+/// [`crate::index::index_writer::IndexWriter`], implements it.
 pub trait IndexWriter: Send + Sync + Debug {
     /// Returns `true` if the reader opened from this writer is up to date with
     /// the provided `SegmentInfos`.
@@ -54,6 +58,19 @@ pub trait IndexWriter: Send + Sync + Debug {
 
     /// Returns `true` if the writer is closed.
     fn is_closed(&self) -> bool;
+
+    /// Returns a copy of the writer's own `SegmentInfos`.
+    ///
+    /// Equivalent to reading the package-private field
+    /// `IndexWriter.segmentInfos`, which a new writer opened from this reader's
+    /// commit reads off the reader's (closed) writer so that its generation,
+    /// version and counter stay ahead of everything that writer wrote
+    /// (`IndexWriter.java:1067-1076`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates a poisoned writer state.
+    fn segment_infos(&self) -> Result<SegmentInfos>;
 
     /// Returns the directory the writer is indexing into.
     fn get_directory(&self) -> Arc<dyn Directory>;
@@ -77,8 +94,21 @@ pub trait IndexWriter: Send + Sync + Debug {
     /// # Errors
     ///
     /// Propagates whatever asking the merge policy raises.
-    fn keep_fully_deleted_segment(&self) -> Result<bool> {
+    fn keep_fully_deleted_segment(&self, _reader: &Arc<SegmentReader>) -> Result<bool> {
         Ok(false)
+    }
+
+    /// Returns the comparator this writer's configuration sorts the leaves of
+    /// a near-real-time reader with, if any.
+    ///
+    /// Equivalent to the `writer.getConfig().getLeafSorter()` argument
+    /// `StandardDirectoryReader.open(IndexWriter, IOFunction, SegmentInfos,
+    /// boolean, boolean)` passes (`StandardDirectoryReader.java:156`). The
+    /// trait carries it for the same reason as
+    /// [`keep_fully_deleted_segment`](Self::keep_fully_deleted_segment); the
+    /// default is the configuration's own default, no sorter.
+    fn leaf_sorter(&self) -> Option<Arc<dyn LeafComparator>> {
+        None
     }
 }
 
@@ -142,9 +172,25 @@ pub struct StandardDirectoryReader {
     segment_readers: Vec<Arc<SegmentReader>>,
     segment_infos: SegmentInfos,
     writer: Option<Arc<dyn IndexWriter>>,
+    /// The comparator the segment readers were sorted with.
+    ///
+    /// Equivalent to `BaseCompositeReader.subReadersSorter`
+    /// (`BaseCompositeReader.java:52`), which a reopen hands to the new
+    /// reader (`StandardDirectoryReader.java:508-512`).
+    leaf_sorter: Option<Arc<dyn LeafComparator>>,
     apply_all_deletes: bool,
     write_all_deletes: bool,
     cache_helper: Arc<DirectoryReaderCacheHelper>,
+    /// A weak handle on this reader, recorded when it is put inside its `Arc`.
+    ///
+    /// Java's `getIndexCommit()` hands `this` to the `ReaderCommit` it builds
+    /// (`StandardDirectoryReader.java:574-577`), which is how `IndexWriter`
+    /// opens on an NRT reader's commit (`IndexCommit.getReader()`,
+    /// `IndexWriter.java:990-995`). A Rust `&self` cannot be turned into the
+    /// shared handle that needs, so the reader keeps a weak reference to
+    /// itself; it is weak because a strong one would keep the reader alive
+    /// for ever.
+    self_ref: OnceLock<Weak<StandardDirectoryReader>>,
 }
 
 impl Debug for StandardDirectoryReader {
@@ -184,23 +230,48 @@ impl Display for StandardDirectoryReader {
 
 impl StandardDirectoryReader {
     /// Package-private constructor used by the static `open` helpers.
+    ///
+    /// Equivalent to `StandardDirectoryReader(Directory, LeafReader[],
+    /// IndexWriter, SegmentInfos, Comparator<LeafReader>, boolean, boolean)`
+    /// (`StandardDirectoryReader.java:51-64`). As `super(directory, readers,
+    /// leafSorter)` does through `BaseCompositeReader`
+    /// (`BaseCompositeReader.java:75-77`), the segment readers are sorted with
+    /// `leaf_sorter`, stably as `Arrays.sort`, before anything is derived from
+    /// their order; the `SegmentInfos` keep theirs.
     fn new(
         directory: Arc<dyn Directory>,
-        segment_readers: Vec<Arc<SegmentReader>>,
+        mut segment_readers: Vec<Arc<SegmentReader>>,
         segment_infos: SegmentInfos,
         writer: Option<Arc<dyn IndexWriter>>,
+        leaf_sorter: Option<Arc<dyn LeafComparator>>,
         apply_all_deletes: bool,
         write_all_deletes: bool,
     ) -> Result<Self> {
-        let total_max_doc: i32 = segment_readers
+        if let Some(sorter) = leaf_sorter.as_ref() {
+            segment_readers.sort_by(|a, b| sorter.compare(a.as_ref(), b.as_ref()));
+        }
+        // `if (maxDoc > IndexWriter.getActualMaxDocs())`, which `super(...)`
+        // runs in `BaseCompositeReader`'s constructor (`BaseCompositeReader.java:90-109`)
+        // with `this instanceof DirectoryReader`: a single index with too many
+        // documents is corrupt, and the resource is
+        // `Arrays.toString(subReaders)`.
+        let max_doc: i64 = segment_readers
             .iter()
-            .map(|r| LeafReader::max_doc(r.as_ref()))
+            .map(|r| i64::from(LeafReader::max_doc(r.as_ref())))
             .sum();
-        let expected = segment_infos.total_max_doc();
-        if total_max_doc != expected {
-            return Err(LuceneError::CorruptIndex(format!(
-                "SegmentReaders total maxDoc {total_max_doc} does not match SegmentInfos total maxDoc {expected}"
-            )));
+        let actual_max_docs = crate::index::index_writer::get_actual_max_docs();
+        if max_doc > i64::from(actual_max_docs) {
+            let sub_readers = segment_readers
+                .iter()
+                .map(|r| r.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(LuceneError::corrupt_index(
+                format!(
+                    "Too many documents: an index cannot exceed {actual_max_docs} but readers have total maxDoc={max_doc}"
+                ),
+                format!("[{sub_readers}]"),
+            ));
         }
         Ok(Self {
             core: IndexReaderCore::new(),
@@ -208,32 +279,81 @@ impl StandardDirectoryReader {
             segment_readers,
             segment_infos,
             writer,
+            leaf_sorter,
             apply_all_deletes,
             write_all_deletes,
             cache_helper: Arc::new(DirectoryReaderCacheHelper::new()),
+            self_ref: OnceLock::new(),
         })
+    }
+
+    /// Puts a freshly built reader inside its `Arc` and records the weak
+    /// handle [`DirectoryReader::index_commit`] hands to its commit.
+    fn into_shared(self) -> Arc<Self> {
+        let reader = Arc::new(self);
+        // `OnceLock::set` fails only when the cell is already filled, which
+        // cannot happen for a reader that has just been moved into this `Arc`.
+        let _ = reader.self_ref.set(Arc::downgrade(&reader));
+        reader
     }
 
     /// Opens a reader from an already-loaded `SegmentInfos`.
     ///
-    /// `old_readers` is used for resource sharing on reopen; for the initial
-    /// `open` it is `None`. This placeholder always creates fresh
-    /// `SegmentReader`s; full reader reuse is left to task 93.
+    /// `old_readers` are reused, segment by segment, on reopen
+    /// ([`Self::create_segment_readers`]); for the initial `open` it is `None`.
+    ///
+    /// With `old_readers` and `leaf_sorter`, equivalent to the public
+    /// `StandardDirectoryReader.open(Directory, SegmentInfos, List, Comparator,
+    /// ExecutorService)` (`StandardDirectoryReader.java:177-186`), which hands
+    /// `leafSorter` to the new reader.
     fn open_from_infos(
         directory: Arc<dyn Directory>,
         infos: SegmentInfos,
         old_readers: Option<&[Arc<SegmentReader>]>,
         writer: Option<Arc<dyn IndexWriter>>,
+        leaf_sorter: Option<Arc<dyn LeafComparator>>,
     ) -> Result<Arc<dyn DirectoryReader>> {
         let segment_readers = Self::create_segment_readers(&infos, old_readers)?;
-        Ok(Arc::new(StandardDirectoryReader::new(
+        Ok(StandardDirectoryReader::new(
             directory,
             segment_readers,
             infos,
             writer,
+            leaf_sorter,
             false,
             false,
-        )?))
+        )?
+        .into_shared())
+    }
+
+    /// Opens a reader over the commit `infos` was read from.
+    ///
+    /// Equivalent to the `FindSegmentsFile.doBody` of
+    /// `StandardDirectoryReader.open(Directory, int, IndexCommit, Comparator,
+    /// ExecutorService)` (`StandardDirectoryReader.java:94-107`), with no leaf
+    /// sorter: the segment readers are created, and when building the reader
+    /// over them fails — it throws `CorruptIndexException` over too many
+    /// documents — `IOUtils.closeWhileSuppressingExceptions(t, readers)`
+    /// closes them before the failure is rethrown.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever creating the segment readers or the reader raises.
+    fn open_from_commit(
+        directory: Arc<dyn Directory>,
+        infos: SegmentInfos,
+    ) -> Result<Arc<dyn DirectoryReader>> {
+        let readers = Self::create_segment_readers(&infos, None)?;
+        let to_close = readers.clone();
+        match StandardDirectoryReader::new(directory, readers, infos, None, None, false, false) {
+            Ok(reader) => Ok(reader.into_shared()),
+            Err(t) => Err(crate::util::IOUtils::close_while_suppressing_exceptions(
+                t,
+                to_close
+                    .iter()
+                    .map(|reader| Some(|| IndexReader::close(reader.as_ref()))),
+            )),
+        }
     }
 
     /// Opens a near-real-time reader over the segments a writer has just
@@ -249,11 +369,8 @@ impl StandardDirectoryReader {
     /// `StandardDirectoryReader.open(IndexWriter, IOFunction<SegmentCommitInfo,
     /// SegmentReader>, SegmentInfos, boolean, boolean)`.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java also hands the reader the
-    /// comparator from `writer.getConfig().getLeafSorter()`
-    /// (`StandardDirectoryReader.java:155`). This port's
-    /// `StandardDirectoryReader` carries no leaf sorter at all, so there is
-    /// nothing to pass on.
+    /// As Java does, the new reader sorts its leaves with the comparator from
+    /// `writer.getConfig().getLeafSorter()` (`StandardDirectoryReader.java:156`).
     ///
     /// # Errors
     ///
@@ -266,6 +383,7 @@ impl StandardDirectoryReader {
         reader_function: &mut dyn FnMut(
             &crate::index::segment_info::SegmentCommitInfo,
         ) -> Result<Arc<SegmentReader>>,
+        inc_ref_deleter: &mut dyn FnMut(&SegmentInfos) -> Result<()>,
         infos: &SegmentInfos,
         apply_all_deletes: bool,
         write_all_deletes: bool,
@@ -290,7 +408,7 @@ impl StandardDirectoryReader {
                 let info = infos.info(i);
                 let reader = reader_function(info)?;
                 if LeafReader::num_docs(reader.as_ref()) > 0
-                    || writer.keep_fully_deleted_segment()?
+                    || writer.keep_fully_deleted_segment(&reader)?
                 {
                     // Steal the ref:
                     readers.push(reader);
@@ -306,19 +424,25 @@ impl StandardDirectoryReader {
             return Err(Self::dec_ref_while_suppressing_exception(error, &readers));
         }
 
-        if let Err(error) = writer.inc_ref_deleter(&segment_infos) {
+        // `writer.incRefDeleter(segmentInfos)`. The writer calls this method
+        // while holding its own lock, as Java does (`IndexWriter.java:593-609`),
+        // and that lock is not reentrant here, so the writer hands in the
+        // increment to run under the hold it already has.
+        if let Err(error) = inc_ref_deleter(&segment_infos) {
             return Err(Self::dec_ref_while_suppressing_exception(error, &readers));
         }
 
+        let leaf_sorter = writer.leaf_sorter();
         match StandardDirectoryReader::new(
             dir,
             readers.clone(),
             segment_infos,
             Some(writer),
+            leaf_sorter,
             apply_all_deletes,
             write_all_deletes,
         ) {
-            Ok(reader) => Ok(Arc::new(reader)),
+            Ok(reader) => Ok(reader.into_shared()),
             Err(error) => Err(Self::dec_ref_while_suppressing_exception(error, &readers)),
         }
     }
@@ -432,7 +556,7 @@ impl StandardDirectoryReader {
         };
         let old_reader = &old_readers[index];
         if commit_info.info.id() != old_reader.get_segment_info().info.id() {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "same segment {} has invalid doc count change; likely you are re-opening a reader \
                  after illegally removing index files yourself and building a new index in their \
                  place.  Use IndexWriter.deleteAll or open a new IndexWriter using OpenMode.CREATE \
@@ -509,7 +633,10 @@ impl StandardDirectoryReader {
         // docs live in memory: both must be read from disk.
         let live_docs: Option<Box<dyn crate::util::Bits>> = if commit_info.has_deletions() {
             let codec = commit_info.info.codec().ok_or_else(|| {
-                LuceneError::IllegalState(format!("segment {} has no codec", commit_info.info.name))
+                LuceneError::illegal_state(format!(
+                    "segment {} has no codec",
+                    commit_info.info.name
+                ))
             })?;
             Some(codec.live_docs_format().read_live_docs(
                 commit_info.info.directory.as_ref(),
@@ -541,6 +668,24 @@ impl StandardDirectoryReader {
     /// Equivalent to `StandardDirectoryReader.getSegmentInfos()`.
     pub fn segment_infos(&self) -> &SegmentInfos {
         &self.segment_infos
+    }
+
+    /// Returns the writer this near-real-time reader was opened from, if any.
+    ///
+    /// Equivalent to reading the package-private field
+    /// `StandardDirectoryReader.writer`, as `IndexWriter`'s constructor does
+    /// when it opens on this reader's commit (`IndexWriter.java:1067-1076`).
+    pub(crate) fn writer(&self) -> Option<&Arc<dyn IndexWriter>> {
+        self.writer.as_ref()
+    }
+
+    /// Returns the segment readers, in the order of [`leaves`](IndexReader::leaves).
+    ///
+    /// Equivalent to the `SegmentReader`s behind `reader.leaves()` that
+    /// `ReaderPool`'s constructor enrols when a writer opens on this reader's
+    /// commit (`ReaderPool.java:87-111`).
+    pub(crate) fn segment_readers(&self) -> &[Arc<SegmentReader>] {
+        &self.segment_readers
     }
 }
 
@@ -595,48 +740,125 @@ impl IndexReader for StandardDirectoryReader {
         }))
     }
 
+    /// Equivalent to `StandardDirectoryReader.doClose()`
+    /// (`StandardDirectoryReader.java:549-571`): every sub-reader is
+    /// dereferenced, even when one fails, and the first failure is raised
+    /// (`IOUtils.applyToAll`); then, as the `try`-with-resources finalizer,
+    /// the writer's deleter lets go of this reader's files. That finalizer
+    /// swallows only `AlreadyClosedException` — the writer was closed first,
+    /// and its next open deletes the files left behind — and any other
+    /// failure of it is raised when the sub-readers closed cleanly.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java attaches the later failures to
+    /// the one it raises through `Throwable.addSuppressed`; [`LuceneError`]
+    /// has no suppressed list, so they are dropped.
     fn do_close(&self) -> Result<()> {
-        if let Some(ref writer) = self.writer {
-            let _ = writer.dec_ref_deleter(&self.segment_infos);
-        }
+        // Try to close each reader, even if an exception is thrown.
+        let mut first_failure: Option<LuceneError> = None;
         for reader in &self.segment_readers {
-            let _ = reader.dec_ref();
+            if let Err(error) = reader.dec_ref() {
+                first_failure.get_or_insert(error);
+            }
         }
-        Ok(())
+        let dec_ref_deleter = match self.writer.as_ref() {
+            Some(writer) => match writer.dec_ref_deleter(&self.segment_infos) {
+                // This is OK, it just means our original writer was closed
+                // before we were, and this may leave some un-referenced files
+                // in the index, which is harmless. The next time IW is opened
+                // on the index, it will delete them.
+                Err(LuceneError::AlreadyClosed { .. }) => Ok(()),
+                other => other,
+            },
+            None => Ok(()),
+        };
+        match first_failure {
+            Some(error) => Err(error),
+            None => dec_ref_deleter,
+        }
     }
 
     fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
         Some(Box::new(Arc::clone(&self.cache_helper)))
     }
 
-    fn doc_freq(&self, _term: &Term) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
-            "DirectoryReader does not support docFreq".to_string(),
-        ))
+    /// Equivalent to `BaseCompositeReader.docFreq(Term)`
+    /// (`BaseCompositeReader.java:196-206`): the sum over the segments, after
+    /// `ensureOpen()`. Java's `int` sum wraps.
+    fn doc_freq(&self, term: &Term) -> Result<i32> {
+        self.ensure_open()?;
+        let mut total = 0i32; // sum freqs in subreaders
+        for reader in &self.segment_readers {
+            let sub = reader.doc_freq(term)?;
+            debug_assert!(sub >= 0);
+            debug_assert!(reader
+                .get_doc_count(term.field())
+                .map_or(true, |count| sub <= count));
+            total = total.wrapping_add(sub);
+        }
+        Ok(total)
     }
 
-    fn total_term_freq(&self, _term: &Term) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(
-            "DirectoryReader does not support totalTermFreq".to_string(),
-        ))
+    /// Equivalent to `BaseCompositeReader.totalTermFreq(Term)`
+    /// (`BaseCompositeReader.java:209-219`).
+    fn total_term_freq(&self, term: &Term) -> Result<i64> {
+        self.ensure_open()?;
+        let mut total = 0i64; // sum freqs in subreaders
+        for reader in &self.segment_readers {
+            let sub = reader.total_term_freq(term)?;
+            debug_assert!(sub >= 0);
+            debug_assert!(reader
+                .get_sum_total_term_freq(term.field())
+                .map_or(true, |sum| sub <= sum));
+            total = total.wrapping_add(sub);
+        }
+        Ok(total)
     }
 
-    fn get_sum_doc_freq(&self, _field: &str) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(
-            "DirectoryReader does not support getSumDocFreq".to_string(),
-        ))
+    /// Equivalent to `BaseCompositeReader.getSumDocFreq(String)`
+    /// (`BaseCompositeReader.java:222-232`).
+    fn get_sum_doc_freq(&self, field: &str) -> Result<i64> {
+        self.ensure_open()?;
+        let mut total = 0i64; // sum doc freqs in subreaders
+        for reader in &self.segment_readers {
+            let sub = reader.get_sum_doc_freq(field)?;
+            debug_assert!(sub >= 0);
+            debug_assert!(reader
+                .get_sum_total_term_freq(field)
+                .map_or(true, |sum| sub <= sum));
+            total = total.wrapping_add(sub);
+        }
+        Ok(total)
     }
 
-    fn get_doc_count(&self, _field: &str) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
-            "DirectoryReader does not support getDocCount".to_string(),
-        ))
+    /// Equivalent to `BaseCompositeReader.getDocCount(String)`
+    /// (`BaseCompositeReader.java:235-245`).
+    fn get_doc_count(&self, field: &str) -> Result<i32> {
+        self.ensure_open()?;
+        let mut total = 0i32; // sum doc counts in subreaders
+        for reader in &self.segment_readers {
+            let sub = reader.get_doc_count(field)?;
+            debug_assert!(sub >= 0);
+            debug_assert!(sub <= crate::index::leaf_reader::LeafReader::max_doc(reader.as_ref()));
+            total = total.wrapping_add(sub);
+        }
+        Ok(total)
     }
 
-    fn get_sum_total_term_freq(&self, _field: &str) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(
-            "DirectoryReader does not support getSumTotalTermFreq".to_string(),
-        ))
+    /// Equivalent to `BaseCompositeReader.getSumTotalTermFreq(String)`
+    /// (`BaseCompositeReader.java:248-259`): the sum over the segments, after
+    /// `ensureOpen()`. Java's `long` sum wraps.
+    fn get_sum_total_term_freq(&self, field: &str) -> Result<i64> {
+        self.ensure_open()?;
+        let mut total = 0i64; // sum doc total term freqs in subreaders
+        for reader in &self.segment_readers {
+            let sub = reader.get_sum_total_term_freq(field)?;
+            debug_assert!(sub >= 0);
+            debug_assert!(reader
+                .get_sum_doc_freq(field)
+                .map_or(true, |sum| sub >= sum));
+            total = total.wrapping_add(sub);
+        }
+        Ok(total)
     }
 
     fn notify_reader_closed_listeners(&self) -> Result<()> {
@@ -723,10 +945,9 @@ impl CompositeTermVectors {
         body: impl FnOnce(&mut dyn TermVectors, i32) -> Result<T>,
     ) -> Result<T> {
         let index = self.reader_index(doc_id)?;
-        let mut cache = self
-            .sub_vectors
-            .lock()
-            .map_err(|_| LuceneError::IllegalState("term vectors lock was poisoned".to_string()))?;
+        let mut cache = self.sub_vectors.lock().map_err(|_| {
+            LuceneError::illegal_state("term vectors lock was poisoned".to_string())
+        })?;
         if cache[index].is_none() {
             cache[index] = Some(LeafReader::term_vectors(self.sub_readers[index].as_ref())?);
         }
@@ -788,7 +1009,7 @@ impl CompositeStoredFields {
     ) -> Result<T> {
         let index = self.reader_index(doc_id)?;
         let mut cache = self.sub_fields.lock().map_err(|_| {
-            LuceneError::IllegalState("stored fields lock was poisoned".to_string())
+            LuceneError::illegal_state("stored fields lock was poisoned".to_string())
         })?;
         if cache[index].is_none() {
             cache[index] = Some(LeafReader::stored_fields(self.sub_readers[index].as_ref())?);
@@ -852,10 +1073,10 @@ impl DirectoryReader for StandardDirectoryReader {
 
     fn index_commit(&self) -> Result<Box<dyn IndexCommit>> {
         self.ensure_open()?;
-        // TODO: when this reader is held in an Arc, store a weak self-reference
-        // so that `IndexCommit::get_reader()` can return the producing reader.
+        // `return new ReaderCommit(this, segmentInfos, directory)`
+        // (`StandardDirectoryReader.java:574-577`).
         Ok(Box::new(ReaderCommit::new(
-            None,
+            self.self_ref.get().and_then(Weak::upgrade),
             self.segment_infos.clone(),
             Arc::clone(&self.directory),
         )?))
@@ -1006,7 +1227,18 @@ impl StandardDirectoryReader {
             )?,
             None => SegmentInfos::read_latest_commit(Arc::clone(&self.directory))?,
         };
-        Self::open_from_infos(Arc::clone(&self.directory), infos, None, None).map(Some)
+        // `doOpenIfChanged(infos, executor)`: `StandardDirectoryReader.open(directory,
+        // infos, getSequentialSubReaders(), subReadersSorter, executor)`
+        // (`StandardDirectoryReader.java:508-512`), which reuses every old
+        // segment reader whose segment is unchanged.
+        Self::open_from_infos(
+            Arc::clone(&self.directory),
+            infos,
+            Some(&self.segment_readers),
+            None,
+            self.leaf_sorter.as_ref().map(Arc::clone),
+        )
+        .map(Some)
     }
 }
 
@@ -1020,12 +1252,19 @@ impl StandardDirectoryReader {
 /// `org.apache.lucene.index.StandardDirectoryReader.ReaderCommit`.
 struct ReaderCommit {
     segments_file_name: String,
-    files: HashSet<String>,
+    /// `Collections.unmodifiableCollection(infos.files(true))`
+    /// (`StandardDirectoryReader.java:593`): the `java.util.HashSet`
+    /// `SegmentInfos.files` builds, iteration order included.
+    files: JavaHashSet,
     directory: Arc<dyn Directory>,
     generation: i64,
     user_data: HashMap<String, String>,
     segment_count: i32,
-    reader: Option<Weak<StandardDirectoryReader>>,
+    /// The reader this commit was taken from, if any.
+    ///
+    /// Equivalent to `ReaderCommit.reader` (`StandardDirectoryReader.java:586`),
+    /// a strong reference: the commit keeps its reader alive, as Java's does.
+    reader: Option<Arc<StandardDirectoryReader>>,
 }
 
 impl Debug for ReaderCommit {
@@ -1063,7 +1302,7 @@ impl ReaderCommit {
     /// default to `0` (`SegmentInfos.java:132-133`, no initialiser) where
     /// Rucene's [`SegmentInfos::new`] starts them at `-1`.
     fn new(
-        reader: Option<Weak<StandardDirectoryReader>>,
+        reader: Option<Arc<StandardDirectoryReader>>,
         infos: SegmentInfos,
         directory: Arc<dyn Directory>,
     ) -> Result<Self> {
@@ -1073,7 +1312,7 @@ impl ReaderCommit {
         let generation = infos.generation();
         let user_data = infos.user_data().clone();
         let segment_count = infos.size() as i32;
-        let files = infos.files(true)?;
+        let files = infos.files_ordered(true)?;
         Ok(Self {
             segments_file_name,
             files,
@@ -1089,17 +1328,11 @@ impl ReaderCommit {
 impl std::fmt::Display for ReaderCommit {
     /// Equivalent to `StandardDirectoryReader.ReaderCommit.toString()`
     /// (`StandardDirectoryReader.java:601-604`), which is
-    /// `"StandardDirectoryReader.ReaderCommit(" + segmentsFileName + " files=" + files + ")"`.
-    ///
-    /// **Divergence from Lucene 10.5.0.** `files` is a `Collection<String>`
-    /// there and renders in the iteration order of whichever collection
-    /// `SegmentInfos.files()` built. This port holds a `HashSet<String>`, whose
-    /// order is randomised per process, so the names are sorted before they are
-    /// printed: an unstable order would make the string unusable for the
-    /// debugging this method exists for.
+    /// `"StandardDirectoryReader.ReaderCommit(" + segmentsFileName + " files=" + files + ")"`;
+    /// the files render as `AbstractCollection.toString` does, in the
+    /// `HashSet`'s iteration order.
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let mut files: Vec<&str> = self.files.iter().map(String::as_str).collect();
-        files.sort_unstable();
+        let files: Vec<&str> = self.files.iter().map(String::as_str).collect();
         write!(
             f,
             "StandardDirectoryReader.ReaderCommit({} files=[{}])",
@@ -1115,7 +1348,7 @@ impl IndexCommit for ReaderCommit {
     }
 
     fn get_file_names(&self) -> Result<HashSet<String>> {
-        Ok(self.files.clone())
+        Ok(self.files.to_std())
     }
 
     fn get_directory(&self) -> Arc<dyn Directory> {
@@ -1145,7 +1378,7 @@ impl IndexCommit for ReaderCommit {
     }
 
     fn get_reader(&self) -> Option<Arc<StandardDirectoryReader>> {
-        self.reader.as_ref().and_then(Weak::upgrade)
+        self.reader.clone()
     }
 }
 
@@ -1181,7 +1414,7 @@ impl DirectoryReaderCacheHelper {
 
     fn notify_closed_listeners(&self) -> Result<()> {
         let guard = self.listeners.lock().map_err(|_| {
-            LuceneError::IllegalState("reader closed listeners lock poisoned".to_string())
+            LuceneError::illegal_state("reader closed listeners lock poisoned".to_string())
         })?;
         for l in guard.iter() {
             // `CacheKey` is a unit struct, so we can pass a fresh instance.
@@ -1222,7 +1455,7 @@ impl CacheHelper for Arc<DirectoryReaderCacheHelper> {
 /// Equivalent to `DirectoryReader.open(Directory)`.
 pub fn open(directory: Arc<dyn Directory>) -> Result<Arc<dyn DirectoryReader>> {
     let infos = SegmentInfos::read_latest_commit(Arc::clone(&directory))?;
-    StandardDirectoryReader::open_from_infos(directory, infos, None, None)
+    StandardDirectoryReader::open_from_commit(directory, infos)
 }
 
 /// Returns a `DirectoryReader` for the given `IndexCommit`.
@@ -1232,7 +1465,7 @@ pub fn open_with_commit(commit: &dyn IndexCommit) -> Result<Arc<dyn DirectoryRea
     let directory = commit.get_directory();
     let infos =
         SegmentInfos::read_commit(Arc::clone(&directory), &commit.get_segments_file_name())?;
-    StandardDirectoryReader::open_from_infos(directory, infos, None, None)
+    StandardDirectoryReader::open_from_commit(directory, infos)
 }
 
 /// Returns a near-real-time reader covering every change `writer` has made so
@@ -1388,16 +1621,103 @@ pub fn index_exists(directory: &dyn Directory) -> Result<bool> {
 mod tests {
     use super::*;
     use crate::codecs::segment_info::SegmentInfoFormat;
+
+    /// `BaseCompositeReader.docFreq`, `totalTermFreq`, `getSumDocFreq` and
+    /// `getDocCount` sum the segments' values after `ensureOpen()`
+    /// (`BaseCompositeReader.java:196-245`).
+    #[test]
+    fn term_statistics_sum_the_segments_as_lucene_does() {
+        use crate::document::{Document, Store, TextField};
+        use crate::index::index_writer::IndexWriter as RealIndexWriter;
+        use crate::index::index_writer_config::IndexWriterConfig;
+
+        // Measured against `lucene-core-10.5.0.jar` (`oracle/fix/LastPass.java`, case C8) over
+        // the segments "a b c", "a a" and "b": `leaves=3 docFreq=2
+        // totalTermFreq=3 sumDocFreq=5 docCount=3 missing=0`, then
+        // `AlreadyClosedException: this IndexReader is closed`.
+        let _ = register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut config = IndexWriterConfig::new();
+        config
+            .set_merge_policy(Arc::new(crate::index::merge_policy::NoMergePolicy::new()))
+            .unwrap();
+        let writer = RealIndexWriter::new(Arc::clone(&dir), config).unwrap();
+        for text in ["a b c", "a a", "b"] {
+            let mut doc = Document::new();
+            doc.add(Box::new(
+                TextField::new("body", text.to_string(), Store::NO).unwrap(),
+            ));
+            writer.add_document(&doc).unwrap();
+            writer.commit().unwrap();
+        }
+        writer.close().unwrap();
+        let reader = open(Arc::clone(&dir)).unwrap();
+        let a = Term::from_text("body", "a");
+        assert_eq!(Arc::clone(&reader).leaves().unwrap().len(), 3);
+        assert_eq!(
+            (
+                reader.doc_freq(&a).unwrap(),
+                reader.total_term_freq(&a).unwrap(),
+                reader.get_sum_doc_freq("body").unwrap(),
+                reader.get_doc_count("body").unwrap(),
+                reader.doc_freq(&Term::from_text("nope", "a")).unwrap(),
+            ),
+            (2, 3, 5, 3, 0)
+        );
+        reader.close().unwrap();
+        assert!(matches!(
+            reader.doc_freq(&a),
+            Err(LuceneError::AlreadyClosed { ref message, .. }) if message == "this IndexReader is closed"
+        ));
+    }
+
+    /// `BaseCompositeReader.getSumTotalTermFreq` sums the segments' values
+    /// after `ensureOpen()` (`BaseCompositeReader.java:248-259`). Measured
+    /// against `lucene-core-10.5.0.jar` (`oracle/fix/MiscFix.java`, item 18):
+    /// `leaves=2 sumTotalTermFreq=5 missing=0`, and after `close()`
+    /// `AlreadyClosedException: this IndexReader is closed`.
+    #[test]
+    fn sum_total_term_freq_sums_the_segments_as_lucene_does() {
+        use crate::document::{Document, Store, TextField};
+        use crate::index::index_writer::IndexWriter as RealIndexWriter;
+        use crate::index::index_writer_config::IndexWriterConfig;
+
+        let _ = register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut config = IndexWriterConfig::new();
+        config
+            .set_merge_policy(Arc::new(crate::index::merge_policy::NoMergePolicy::new()))
+            .unwrap();
+        let writer = RealIndexWriter::new(Arc::clone(&dir), config).unwrap();
+        for text in ["a b c", "a a"] {
+            let mut doc = Document::new();
+            doc.add(Box::new(
+                TextField::new("body", text.to_string(), Store::NO).unwrap(),
+            ));
+            writer.add_document(&doc).unwrap();
+            writer.commit().unwrap();
+        }
+        writer.close().unwrap();
+        let reader = open(Arc::clone(&dir)).unwrap();
+        assert_eq!(Arc::clone(&reader).leaves().unwrap().len(), 2);
+        assert_eq!(reader.get_sum_total_term_freq("body").unwrap(), 5);
+        assert_eq!(reader.get_sum_total_term_freq("nope").unwrap(), 0);
+        reader.close().unwrap();
+        assert!(matches!(
+            reader.get_sum_total_term_freq("body"),
+            Err(LuceneError::AlreadyClosed { ref message, .. }) if message == "this IndexReader is closed"
+        ));
+    }
     use crate::codecs::tests::{test_segment_info, DummyCodec};
     use crate::codecs::{register_codec, FilterCodec, Lucene99SegmentInfoFormat};
     use crate::index::index_file_names::SEGMENTS;
     use crate::index::segment_infos::OLD_SEGMENTS_GEN;
     use crate::index::{SegmentCommitInfo, SegmentInfos};
     use crate::search::{Sort, SortField, SortFieldType};
-    use crate::store::{Directory, RamDirectory};
+    use crate::store::{ByteBuffersDirectory, Directory};
     use crate::util::string_helper::StringHelper;
     use crate::util::Version;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashSet;
 
     fn test_codec() -> Arc<dyn crate::codecs::Codec> {
         static REGISTER: std::sync::Once = std::sync::Once::new();
@@ -1446,7 +1766,8 @@ mod tests {
                 "",
                 crate::index::FIELD_INFO_EXTENSION,
             ),
-        ]));
+        ]))
+        .unwrap();
         write_segment_info_file(directory, &info);
         info
     }
@@ -1475,31 +1796,64 @@ mod tests {
 
     #[test]
     fn opens_empty_directory() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let mut sis = SegmentInfos::new(Version::LATEST.major as i32).unwrap();
         sis.commit(dir.as_ref()).unwrap();
         let reader = open(Arc::clone(&dir)).unwrap();
         assert_eq!(reader.max_doc(), 0);
         assert_eq!(reader.num_docs(), 0);
         assert!(!reader.has_deletions());
-        let leaves = reader.leaves();
+        let leaves = reader.leaves().unwrap();
         assert_eq!(leaves.len(), 0);
+    }
+
+    /// `getContext()` calls `ensureOpen()` first, in `CompositeReader`
+    /// (`CompositeReader.java:93-94`) and in `LeafReader` (`LeafReader.java:59-60`),
+    /// and `leaves()` is `getContext().leaves()`: on a closed reader each
+    /// throws `AlreadyClosedException("this IndexReader is closed")`, and so
+    /// does `new IndexSearcher(reader)`, which reads `r.getContext()`
+    /// (`IndexSearcher.java:207-209`). Observed with the 10.5.0 oracle
+    /// (`PassAOracle`, section 2) for the composite's `getContext()` and
+    /// `leaves()` and for a leaf's `getContext()` once its directory reader is
+    /// closed.
+    #[test]
+    fn a_closed_reader_refuses_its_context_and_leaves() {
+        let closed = |error: LuceneError| {
+            assert!(
+                matches!(&error, LuceneError::AlreadyClosed { message, .. }
+                    if message == "this IndexReader is closed"),
+                "{error:?}"
+            );
+        };
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
+        let reader = commit_single_segment(Arc::clone(&dir));
+        let leaf = Arc::clone(&reader).leaves().unwrap()[0].leaf_reader();
+        assert!(Arc::clone(&leaf).as_index_reader().get_context().is_ok());
+        reader.close().unwrap();
+
+        closed(Arc::clone(&reader).get_context().unwrap_err());
+        closed(Arc::clone(&reader).leaves().unwrap_err());
+        closed(leaf.as_index_reader().get_context().unwrap_err());
+        match crate::search::IndexSearcher::new(Arc::clone(&reader) as Arc<dyn IndexReader>) {
+            Ok(_) => panic!("a closed reader has no context to search"),
+            Err(error) => closed(error),
+        }
     }
 
     #[test]
     fn opens_single_segment_directory() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let reader = commit_single_segment(Arc::clone(&dir));
         assert_eq!(reader.max_doc(), 42);
         assert_eq!(reader.num_docs(), 42);
-        let leaves = reader.leaves();
+        let leaves = reader.leaves().unwrap();
         assert_eq!(leaves.len(), 1);
         assert_eq!(leaves[0].doc_base(), 0);
     }
 
     #[test]
     fn open_if_changed_detects_new_commit() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let reader = commit_single_segment(Arc::clone(&dir));
         let first_version = reader.version().unwrap();
         assert!(reader.is_current().unwrap());
@@ -1522,13 +1876,13 @@ mod tests {
         let new_reader = new_reader.unwrap();
         assert!(new_reader.version().unwrap() > first_version);
         assert_eq!(new_reader.max_doc(), 50);
-        assert_eq!(Arc::clone(&new_reader).leaves().len(), 2);
+        assert_eq!(Arc::clone(&new_reader).leaves().unwrap().len(), 2);
         assert!(new_reader.is_current().unwrap());
     }
 
     #[test]
     fn open_if_changed_returns_none_when_unchanged() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let reader = commit_single_segment(Arc::clone(&dir));
         let same = open_if_changed(reader).unwrap();
         assert!(same.is_none());
@@ -1536,7 +1890,7 @@ mod tests {
 
     #[test]
     fn open_if_changed_from_commit() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let reader = commit_single_segment(Arc::clone(&dir));
 
         // Read the first commit back and reopen from it: should be a no-op.
@@ -1580,7 +1934,7 @@ mod tests {
 
     #[test]
     fn index_commit_matches_reader() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let reader = commit_single_segment(Arc::clone(&dir));
         let commit = reader.index_commit().unwrap();
         assert_eq!(commit.get_segment_count(), 1);
@@ -1599,7 +1953,7 @@ mod tests {
 
     #[test]
     fn list_commits_returns_sorted_commits() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let _reader = commit_single_segment(Arc::clone(&dir));
 
         // Write a second commit.
@@ -1622,7 +1976,7 @@ mod tests {
 
     #[test]
     fn list_commits_rejects_a_legacy_segments_gen_file() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let _reader = commit_single_segment(Arc::clone(&dir));
         assert_eq!(list_commits(Arc::clone(&dir)).unwrap().len(), 1);
 
@@ -1651,7 +2005,7 @@ mod tests {
 
     #[test]
     fn index_exists_matches_java_semantics() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         assert!(!index_exists(dir.as_ref()).unwrap());
 
         let mut sis = SegmentInfos::new(Version::LATEST.major as i32).unwrap();
@@ -1669,7 +2023,7 @@ mod tests {
 
     #[test]
     fn directory_reader_to_string_is_debuggable() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let reader = commit_single_segment(dir);
         let s = format!("{:?}", reader);
         assert!(s.contains("StandardDirectoryReader"));
@@ -1714,11 +2068,16 @@ mod tests {
                     current: Mutex::new(self.current.lock().unwrap().clone()),
                     closed: std::sync::atomic::AtomicBool::new(false),
                 })),
+                None,
             )
         }
 
         fn is_closed(&self) -> bool {
             self.closed.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn segment_infos(&self) -> Result<SegmentInfos> {
+            Ok(self.current.lock().unwrap().clone())
         }
 
         fn get_directory(&self) -> Arc<dyn Directory> {
@@ -1736,7 +2095,7 @@ mod tests {
 
     #[test]
     fn is_current_with_mock_writer() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let mut sis = SegmentInfos::new(Version::LATEST.major as i32).unwrap();
         sis.counter = 1;
         sis.changed();
@@ -1756,6 +2115,7 @@ mod tests {
             SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap(),
             None,
             Some(writer),
+            None,
         )
         .unwrap();
 
@@ -1774,5 +2134,329 @@ mod tests {
         assert!(new_reader.is_some());
         let new_reader = new_reader.unwrap();
         assert!(new_reader.is_current().unwrap());
+    }
+
+    /// Orders leaves by descending `maxDoc`.
+    #[derive(Debug)]
+    struct ByMaxDocDescending;
+
+    impl std::fmt::Display for ByMaxDocDescending {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("ByMaxDocDescending")
+        }
+    }
+
+    impl LeafComparator for ByMaxDocDescending {
+        fn compare(&self, a: &dyn LeafReader, b: &dyn LeafReader) -> std::cmp::Ordering {
+            b.max_doc().cmp(&a.max_doc())
+        }
+    }
+
+    /// A reader opened from a writer sorts its leaves with the writer's
+    /// `IndexWriterConfig.getLeafSorter()` (`StandardDirectoryReader.java:156`),
+    /// and a reopen from a commit keeps that sorter
+    /// (`StandardDirectoryReader.java:508-512`).
+    #[test]
+    fn readers_sort_their_leaves_with_the_configured_leaf_sorter() {
+        use crate::document::{Document, Store, StringField};
+        use crate::index::index_writer::IndexWriter as RealIndexWriter;
+        use crate::index::index_writer_config::IndexWriterConfig;
+
+        let _ = register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut config = IndexWriterConfig::new();
+        config
+            .set_merge_policy(Arc::new(crate::index::merge_policy::NoMergePolicy::new()))
+            .unwrap();
+        config.set_leaf_sorter(Some(Arc::new(ByMaxDocDescending)));
+        let writer = RealIndexWriter::new(Arc::clone(&dir), config).unwrap();
+        let add = |count: i32| {
+            for i in 0..count {
+                let mut doc = Document::new();
+                doc.add(Box::new(
+                    StringField::new("id", format!("{count}-{i}"), Store::NO).unwrap(),
+                ));
+                writer.add_document(&doc).unwrap();
+            }
+            writer.commit().unwrap();
+        };
+        add(1);
+        add(3);
+        let leaf_max_docs = |reader: &Arc<dyn DirectoryReader>| -> Vec<i32> {
+            Arc::clone(reader)
+                .leaves()
+                .unwrap()
+                .iter()
+                .map(|leaf| leaf.leaf_reader().max_doc())
+                .collect()
+        };
+
+        let nrt = open_with_writer(writer.as_ref()).unwrap();
+        assert_eq!(leaf_max_docs(&nrt), vec![3, 1], "segment order is [1, 3]");
+
+        add(2);
+        let commit = writer_commit(&dir);
+        let reopened = open_if_changed_with_commit(Arc::clone(&nrt), commit.as_ref())
+            .unwrap()
+            .expect("a new commit");
+        assert_eq!(leaf_max_docs(&reopened), vec![3, 2, 1]);
+
+        IndexReader::close(reopened.as_ref()).unwrap();
+        IndexReader::close(nrt.as_ref()).unwrap();
+        writer.close().unwrap();
+    }
+
+    /// The latest commit of `dir`.
+    fn writer_commit(dir: &Arc<dyn Directory>) -> Arc<dyn IndexCommit> {
+        list_commits(Arc::clone(dir)).unwrap().pop().unwrap()
+    }
+
+    /// Reopening from a commit reuses the segment reader of every unchanged
+    /// segment, as `doOpenIfChanged(SegmentInfos)` hands
+    /// `getSequentialSubReaders()` to `open` (`StandardDirectoryReader.java:508-512`).
+    #[test]
+    fn reopening_from_a_commit_reuses_unchanged_segment_readers() {
+        use crate::document::{Document, Store, StringField};
+        use crate::index::index_writer::IndexWriter as RealIndexWriter;
+        use crate::index::index_writer_config::IndexWriterConfig;
+
+        let _ = register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut config = IndexWriterConfig::new();
+        config
+            .set_merge_policy(Arc::new(crate::index::merge_policy::NoMergePolicy::new()))
+            .unwrap();
+        let writer = RealIndexWriter::new(Arc::clone(&dir), config).unwrap();
+        let add = |id: &str| {
+            let mut doc = Document::new();
+            doc.add(Box::new(
+                StringField::new("id", id.to_string(), Store::NO).unwrap(),
+            ));
+            writer.add_document(&doc).unwrap();
+            writer.commit().unwrap();
+        };
+        add("a");
+        let old = open(Arc::clone(&dir)).unwrap();
+        add("b");
+        let new = open_if_changed(Arc::clone(&old))
+            .unwrap()
+            .expect("a new commit");
+        let core_of = |reader: &Arc<dyn DirectoryReader>, i: usize| {
+            let leaf = Arc::clone(reader).leaves().unwrap()[i].leaf_reader();
+            Arc::clone(leaf.as_segment_reader().unwrap().core_readers())
+        };
+        assert!(
+            Arc::ptr_eq(&core_of(&old, 0), &core_of(&new, 0)),
+            "the unchanged segment shares its core readers"
+        );
+        IndexReader::close(new.as_ref()).unwrap();
+        IndexReader::close(old.as_ref()).unwrap();
+        writer.close().unwrap();
+    }
+
+    /// What the writer of the `doClose` tests answers to `decRefDeleter`.
+    #[derive(Debug, Clone, Copy)]
+    enum DeleterOutcome {
+        Released,
+        AlreadyClosed,
+        Failed,
+    }
+
+    /// A writer whose `decRefDeleter` answers as the test chose, and records
+    /// how many references the reader's segment reader still held when it
+    /// was called.
+    struct DeleterOutcomeWriter {
+        directory: Arc<dyn Directory>,
+        infos: SegmentInfos,
+        outcome: DeleterOutcome,
+        segment_reader: Mutex<Option<Arc<SegmentReader>>>,
+        segment_ref_count_at_release: Mutex<Option<i32>>,
+    }
+
+    impl Debug for DeleterOutcomeWriter {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("DeleterOutcomeWriter")
+                .field("outcome", &self.outcome)
+                .finish_non_exhaustive()
+        }
+    }
+
+    impl IndexWriter for DeleterOutcomeWriter {
+        fn nrt_is_current(&self, _infos: &SegmentInfos) -> bool {
+            true
+        }
+
+        fn get_reader(
+            &self,
+            _apply_all_deletes: bool,
+            _write_all_deletes: bool,
+        ) -> Result<Arc<dyn DirectoryReader>> {
+            Err(LuceneError::UnsupportedOperation(
+                "not used by these tests".to_string(),
+            ))
+        }
+
+        fn is_closed(&self) -> bool {
+            false
+        }
+
+        fn segment_infos(&self) -> Result<SegmentInfos> {
+            Ok(self.infos.clone())
+        }
+
+        fn get_directory(&self) -> Arc<dyn Directory> {
+            Arc::clone(&self.directory)
+        }
+
+        fn inc_ref_deleter(&self, _infos: &SegmentInfos) -> Result<()> {
+            Ok(())
+        }
+
+        fn dec_ref_deleter(&self, _infos: &SegmentInfos) -> Result<()> {
+            let ref_count = self
+                .segment_reader
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|reader| reader.get_ref_count());
+            *self.segment_ref_count_at_release.lock().unwrap() = ref_count;
+            match self.outcome {
+                DeleterOutcome::Released => Ok(()),
+                DeleterOutcome::AlreadyClosed => Err(LuceneError::already_closed(
+                    "this IndexWriter is closed".to_string(),
+                )),
+                DeleterOutcome::Failed => Err(LuceneError::Io(io::Error::other("decRef failed"))),
+            }
+        }
+    }
+
+    /// An NRT-style reader over a one-segment commit whose writer answers
+    /// `decRefDeleter` with `outcome`, and its segment reader.
+    fn reader_with_deleter(
+        outcome: DeleterOutcome,
+    ) -> (
+        Arc<DeleterOutcomeWriter>,
+        Arc<dyn DirectoryReader>,
+        Arc<SegmentReader>,
+    ) {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
+        let mut sis = SegmentInfos::new(Version::LATEST.major as i32).unwrap();
+        sis.counter = 1;
+        sis.changed();
+        sis.add(make_sci(dir.as_ref(), "_0", 10)).unwrap();
+        sis.commit(dir.as_ref()).unwrap();
+        let writer = Arc::new(DeleterOutcomeWriter {
+            directory: Arc::clone(&dir),
+            infos: sis,
+            outcome,
+            segment_reader: Mutex::new(None),
+            segment_ref_count_at_release: Mutex::new(None),
+        });
+        let reader = StandardDirectoryReader::open_from_infos(
+            Arc::clone(&dir),
+            SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap(),
+            None,
+            Some(Arc::clone(&writer) as Arc<dyn IndexWriter>),
+            None,
+        )
+        .unwrap();
+        let segment_reader = Arc::clone(
+            &reader
+                .as_any()
+                .downcast_ref::<StandardDirectoryReader>()
+                .unwrap()
+                .segment_readers()[0],
+        );
+        *writer.segment_reader.lock().unwrap() = Some(Arc::clone(&segment_reader));
+        (writer, reader, segment_reader)
+    }
+
+    /// `doClose` dereferences the sub-readers in its `try` body and releases
+    /// the writer's deleter in the finalizer (`StandardDirectoryReader.java:549-571`),
+    /// so the segment reader is already closed when `decRefDeleter` runs.
+    #[test]
+    fn closing_releases_the_segment_readers_before_the_writers_deleter() {
+        let (writer, reader, segment_reader) = reader_with_deleter(DeleterOutcome::Released);
+        assert_eq!(segment_reader.get_ref_count(), 1);
+        IndexReader::close(reader.as_ref()).unwrap();
+        assert_eq!(
+            *writer.segment_ref_count_at_release.lock().unwrap(),
+            Some(0)
+        );
+    }
+
+    /// The finalizer swallows `AlreadyClosedException` from `decRefDeleter` —
+    /// the writer closed first — and nothing else
+    /// (`StandardDirectoryReader.java:550-565`).
+    #[test]
+    fn closing_swallows_only_an_already_closed_deleter() {
+        let (_writer, reader, _segment_reader) = reader_with_deleter(DeleterOutcome::AlreadyClosed);
+        IndexReader::close(reader.as_ref()).unwrap();
+
+        let (_writer, reader, _segment_reader) = reader_with_deleter(DeleterOutcome::Failed);
+        let error = IndexReader::close(reader.as_ref()).unwrap_err();
+        assert!(
+            matches!(&error, LuceneError::Io(io) if io.to_string() == "decRef failed"),
+            "{error:?}"
+        );
+    }
+
+    /// A sub-reader that fails to close is reported — `IOUtils.applyToAll`
+    /// rethrows its first failure (`StandardDirectoryReader.java:569`) — and
+    /// the writer's deleter is still released by the finalizer.
+    #[test]
+    fn a_failing_segment_reader_is_reported_and_the_deleter_still_released() {
+        let (writer, reader, segment_reader) = reader_with_deleter(DeleterOutcome::Released);
+        segment_reader.dec_ref().unwrap();
+        let error = IndexReader::close(reader.as_ref()).unwrap_err();
+        assert!(
+            matches!(&error, LuceneError::AlreadyClosed { message, .. }
+                if message == "this IndexReader is closed"),
+            "{error:?}"
+        );
+        assert_eq!(
+            *writer.segment_ref_count_at_release.lock().unwrap(),
+            Some(0)
+        );
+    }
+
+    /// `StandardDirectoryReader`'s constructor checks nothing beyond what
+    /// `BaseCompositeReader`'s does (`StandardDirectoryReader.java:51-64`,
+    /// `BaseCompositeReader.java:72-112`): it does not compare the readers'
+    /// documents with the `SegmentInfos` it is handed.
+    #[test]
+    fn the_constructor_does_not_compare_the_readers_with_the_segment_infos() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
+        let reader = commit_single_segment(Arc::clone(&dir));
+        let segment_reader = Arc::clone(
+            &reader
+                .as_any()
+                .downcast_ref::<StandardDirectoryReader>()
+                .unwrap()
+                .segment_readers()[0],
+        );
+        assert_eq!(LeafReader::max_doc(segment_reader.as_ref()), 42);
+        // The new reader takes its own reference on the segment reader.
+        segment_reader.inc_ref().unwrap();
+        let built = StandardDirectoryReader::new(
+            Arc::clone(&dir),
+            vec![Arc::clone(&segment_reader)],
+            SegmentInfos::new(Version::LATEST.major as i32).unwrap(),
+            None,
+            None,
+            false,
+            false,
+        );
+        let built = match built {
+            Ok(built) => built,
+            Err(error) => {
+                segment_reader.dec_ref().unwrap();
+                IndexReader::close(reader.as_ref()).unwrap();
+                panic!("{error:?}");
+            }
+        };
+        assert_eq!(IndexReader::max_doc(&built), 42);
+        IndexReader::close(&built).unwrap();
+        IndexReader::close(reader.as_ref()).unwrap();
     }
 }

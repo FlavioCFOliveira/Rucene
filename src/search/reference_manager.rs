@@ -205,7 +205,7 @@ impl<G: ManagedReference + ?Sized + 'static> ReferenceManager<G> {
                 match guard.as_ref() {
                     Some(r) => Arc::clone(r),
                     None => {
-                        return Err(LuceneError::AlreadyClosed(
+                        return Err(LuceneError::already_closed(
                             REFERENCE_MANAGER_CLOSED_MSG.to_string(),
                         ))
                     }
@@ -223,7 +223,7 @@ impl<G: ManagedReference + ?Sized + 'static> ReferenceManager<G> {
                     guard.as_ref().is_some_and(|c| Arc::ptr_eq(c, &ref_arc))
                 };
                 if still_current {
-                    return Err(LuceneError::IllegalState(
+                    return Err(LuceneError::illegal_state(
                         "The managed reference has already closed - this is likely a bug when the reference count is modified outside of the ReferenceManager"
                             .to_string(),
                     ));
@@ -330,7 +330,7 @@ impl<G: ManagedReference + ?Sized + 'static> ReferenceManager<G> {
     pub fn close(&self) -> Result<()> {
         match self.swap_reference(None) {
             Ok(()) => self.source.after_close(),
-            Err(LuceneError::AlreadyClosed(_)) => Ok(()),
+            Err(LuceneError::AlreadyClosed { .. }) => Ok(()),
             Err(e) => Err(e),
         }
     }
@@ -353,14 +353,6 @@ impl<G: ManagedReference + ?Sized + 'static> ReferenceManager<G> {
         listeners.retain(|x| !Arc::ptr_eq(x, listener));
     }
 
-    /// Returns the refresh source supplied at construction.
-    ///
-    /// Useful for concrete managers that need to invoke the lifecycle hooks
-    /// directly.
-    pub fn source(&self) -> &Arc<dyn RefreshSource<G>> {
-        &self.source
-    }
-
     // -- internals -----------------------------------------------------------
 
     /// Throws `AlreadyClosed` if the manager is closed.
@@ -371,7 +363,7 @@ impl<G: ManagedReference + ?Sized + 'static> ReferenceManager<G> {
             .expect("current lock poisoned")
             .is_none()
         {
-            Err(LuceneError::AlreadyClosed(
+            Err(LuceneError::already_closed(
                 REFERENCE_MANAGER_CLOSED_MSG.to_string(),
             ))
         } else {
@@ -391,7 +383,7 @@ impl<G: ManagedReference + ?Sized + 'static> ReferenceManager<G> {
             let mut current = self.current.write().expect("current lock poisoned");
             if current.is_none() {
                 // `new_ref` is dropped here.
-                return Err(LuceneError::AlreadyClosed(
+                return Err(LuceneError::already_closed(
                     REFERENCE_MANAGER_CLOSED_MSG.to_string(),
                 ));
             }
@@ -416,7 +408,7 @@ impl<G: ManagedReference + ?Sized + 'static> ReferenceManager<G> {
             let new_ref = self.source.refresh_if_needed(&reference)?;
             if let Some(new_ref) = new_ref {
                 if Arc::ptr_eq(&new_ref, &reference) {
-                    return Err(LuceneError::IllegalState(
+                    return Err(LuceneError::illegal_state(
                         "refresh_if_needed should return None if refresh wasn't needed".to_string(),
                     ));
                 }

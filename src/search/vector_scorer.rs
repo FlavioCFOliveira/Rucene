@@ -18,6 +18,7 @@ use std::rc::Rc;
 
 use crate::error::Result;
 use crate::index::{DocAndFloatFeatureBuffer, DocIndexIterator};
+use crate::search::conjunction_disi::ConjunctionMember;
 use crate::search::conjunction_utils::ConjunctionUtils;
 use crate::search::doc_id_set_iterator::DocIdSetIterator;
 use crate::util::hnsw::RandomVectorScorer;
@@ -192,8 +193,13 @@ pub fn default_bulk(
     let mut iterator: Box<dyn DocIdSetIterator> = match matching_docs {
         None => Box::new(scorer.iterator()),
         Some(matching_docs) => {
-            ConjunctionUtils::intersect_iterators(vec![matching_docs, Box::new(scorer.iterator())])?
-                .into_doc_id_set_iterator()
+            // `ConjunctionUtils.createConjunction(List.of(matchingDocs,
+            // iterator()), List.of())` (`VectorScorer.java:65`).
+            ConjunctionUtils::create_conjunction(vec![
+                ConjunctionMember::from_iterator(matching_docs),
+                ConjunctionMember::from_iterator(Box::new(scorer.iterator())),
+            ])?
+            .into_doc_id_set_iterator()
         }
     };
     if iterator.doc_id() == -1 {
@@ -290,8 +296,12 @@ pub fn bulk_from_random_scorer_dense(
     let matches: Box<dyn DocIdSetIterator> = match matching_docs {
         None => iterator,
         Some(matching_docs) => {
-            ConjunctionUtils::intersect_iterators(vec![matching_docs, iterator])?
-                .into_doc_id_set_iterator()
+            // `VectorScorer.java:115`.
+            ConjunctionUtils::create_conjunction(vec![
+                ConjunctionMember::from_iterator(matching_docs),
+                ConjunctionMember::from_iterator(iterator),
+            ])?
+            .into_doc_id_set_iterator()
         }
     };
     Ok(Box::new(DenseRandomScorerBulk { scorer, matches }))
@@ -347,8 +357,12 @@ pub fn bulk_from_random_scorer_sparse(
     let matches: Box<dyn DocIdSetIterator> = match matching_docs {
         None => Box::new(shared.clone()),
         Some(matching_docs) => {
-            ConjunctionUtils::intersect_iterators(vec![matching_docs, Box::new(shared.clone())])?
-                .into_doc_id_set_iterator()
+            // `VectorScorer.java:143`.
+            ConjunctionUtils::create_conjunction(vec![
+                ConjunctionMember::from_iterator(matching_docs),
+                ConjunctionMember::from_iterator(Box::new(shared.clone())),
+            ])?
+            .into_doc_id_set_iterator()
         }
     };
     Ok(Box::new(SparseRandomScorerBulk {
@@ -401,6 +415,81 @@ impl VectorScorerBulk for SparseRandomScorerBulk {
         // Copy back the real doc IDs.
         buffer.docs[..size].copy_from_slice(&self.doc_ids[..size]);
         Ok(max_score)
+    }
+}
+
+/// The exact-search [`VectorScorer`] an off-heap vector values object returns
+/// from `scorer`: a [`RandomVectorScorer`] over a copy of the values, driven by
+/// the copy's own [`DocIndexIterator`].
+///
+/// Equivalent to the anonymous `VectorScorer` that each of
+/// `OffHeapFloatVectorValues`, `OffHeapByteVectorValues` (`lucene95`),
+/// `OffHeapScalarQuantizedVectorValues` and
+/// `OffHeapScalarQuantizedFloatVectorValues` (`lucene104`) builds in its dense
+/// and its sparse `scorer` override, e.g. `OffHeapFloatVectorValues.java:179-199`
+/// and `:277-297`. The eight bodies differ only in two places, which `dense`
+/// selects:
+///
+/// * `score()` scores the ordinal of the current document: the document id
+///   itself for a dense field and `iterator.index()` for a sparse one. (The
+///   dense `lucene104` bodies write `iterator.index()`, which the dense
+///   iterator answers with the document id, so they are the same call.)
+/// * `bulk` is `Bulk.fromRandomScorerDense` for a dense field and
+///   `Bulk.fromRandomScorerSparse` for a sparse one.
+pub(crate) struct OffHeapVectorScorer {
+    scorer: Box<dyn RandomVectorScorer>,
+    iterator: Box<dyn DocIndexIterator>,
+    dense: bool,
+}
+
+impl OffHeapVectorScorer {
+    /// Pairs `scorer` with `iterator`, both opened over the same copy of the
+    /// values; `dense` is whether every document of the field has a vector.
+    pub(crate) fn new(
+        scorer: Box<dyn RandomVectorScorer>,
+        iterator: Box<dyn DocIndexIterator>,
+        dense: bool,
+    ) -> Self {
+        Self {
+            scorer,
+            iterator,
+            dense,
+        }
+    }
+}
+
+impl VectorScorer for OffHeapVectorScorer {
+    fn score(&mut self) -> Result<f32> {
+        let ord = if self.dense {
+            self.iterator.doc_id()
+        } else {
+            self.iterator.index()
+        };
+        self.scorer.score(ord)
+    }
+
+    fn iterator(&mut self) -> &mut dyn DocIdSetIterator {
+        self.iterator.as_mut()
+    }
+
+    fn bulk(
+        self: Box<Self>,
+        matching_docs: Option<Box<dyn DocIdSetIterator>>,
+    ) -> Result<Box<dyn VectorScorerBulk>> {
+        let Self {
+            scorer,
+            iterator,
+            dense,
+        } = *self;
+        if dense {
+            bulk_from_random_scorer_dense(scorer, iterator, matching_docs)
+        } else {
+            bulk_from_random_scorer_sparse(scorer, iterator, matching_docs)
+        }
+    }
+
+    fn doc_index_iterator(&mut self) -> Option<&mut dyn DocIndexIterator> {
+        Some(self.iterator.as_mut())
     }
 }
 

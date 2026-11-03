@@ -13,9 +13,7 @@
 //! sums) are deliberately unavailable: during a merge they would have to be
 //! recomputed after deletions, and the codec that consumes this view derives
 //! them from the postings it actually writes. Lucene enforces that by throwing
-//! `UnsupportedOperationException`; see the note on the module's private
-//! `MappedMultiTerms` for how this port reports the same thing under an
-//! infallible signature.
+//! `UnsupportedOperationException`, and so does this port.
 //!
 //! # Reference
 //!
@@ -28,13 +26,13 @@
 use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
+use crate::index::filter_reader::FilterFields;
 use crate::index::mapping_multi_postings_enum::MappingMultiPostingsEnum;
 use crate::index::merge::MergeState;
-use crate::index::multi_fields::{MultiFields, MultiTerms, MultiTermsEnum, SlowImpactsEnum};
+use crate::index::multi_fields::{MultiFields, MultiPostingsEnum, MultiTerms, MultiTermsEnum};
 use crate::index::postings_enum::{ImpactsEnum, PostingsEnum};
 use crate::index::terms::{EmptyTermsEnum, Fields, SeekStatus, TermState, Terms, TermsEnum};
 use crate::util::attribute::AttributeSource;
-use crate::util::automaton::CompiledAutomaton;
 use crate::util::BytesRef;
 
 /// A [`Fields`] view that merges several segments' fields into one and maps
@@ -42,22 +40,25 @@ use crate::util::BytesRef;
 ///
 /// Equivalent to `org.apache.lucene.index.MappedMultiFields`.
 ///
-/// **Deliberate divergence**: Java derives this class from
-/// `FilterLeafReader.FilterFields`, a generic delegating base. Rucene has no
-/// `FilterLeafReader` yet, and this type only ever wraps a [`MultiFields`] —
-/// its constructor takes nothing else — so it holds one concretely and
-/// delegates the two inherited methods directly. That also removes the two
-/// downcasts (`(MultiTerms) in.terms(f)` and `(MultiTermsEnum) in.iterator()`)
-/// that the Java class needs to get back to the concrete types.
+/// Java derives this class from `FilterLeafReader.FilterFields` and inherits
+/// `iterator()` and `size()` from it; this port composes the same base, as a
+/// [`FilterFields`] over the [`MultiFields`] the constructor takes, and
+/// forwards those two methods to it.
+///
+/// **Deliberate divergence**: the base is typed over `MultiFields` — the only
+/// delegate the constructor accepts — rather than over any `Fields`, so the
+/// delegate is reached typed and the two downcasts the Java class needs to get
+/// back to the concrete types (`(MultiTerms) in.terms(f)` and
+/// `(MultiTermsEnum) in.iterator()`) disappear.
 pub struct MappedMultiFields {
     merge_state: Arc<MergeState>,
-    inner: MultiFields,
+    base: FilterFields<MultiFields>,
 }
 
 impl std::fmt::Debug for MappedMultiFields {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MappedMultiFields")
-            .field("num_subs", &self.inner.get_sub_fields().len())
+            .field("num_subs", &self.base.get_delegate().get_sub_fields().len())
             .field("merge_state", &self.merge_state)
             .finish_non_exhaustive()
     }
@@ -75,23 +76,26 @@ impl MappedMultiFields {
     pub fn new(merge_state: Arc<MergeState>, multi_fields: MultiFields) -> Self {
         Self {
             merge_state,
-            inner: multi_fields,
+            base: FilterFields::new(Box::new(multi_fields)),
         }
     }
 
     /// Returns the merged, unmapped view this instance wraps.
+    ///
+    /// Equivalent to reading the protected `FilterFields.in` field.
     pub fn inner(&self) -> &MultiFields {
-        &self.inner
+        self.base.get_delegate()
     }
 }
 
 impl Fields for MappedMultiFields {
+    /// Inherited from `FilterFields.iterator()`.
     fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
-        self.inner.iterator()
+        self.base.iterator()
     }
 
     fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
-        Ok(self.inner.multi_terms(field)?.map(|terms| {
+        Ok(self.base.get_delegate().multi_terms(field)?.map(|terms| {
             Box::new(MappedMultiTerms::new(
                 field,
                 Arc::clone(&self.merge_state),
@@ -100,8 +104,9 @@ impl Fields for MappedMultiFields {
         }))
     }
 
+    /// Inherited from `FilterFields.size()`.
     fn size(&self) -> i32 {
-        self.inner.size()
+        self.base.size()
     }
 }
 
@@ -110,14 +115,11 @@ impl Fields for MappedMultiFields {
 ///
 /// Equivalent to `MappedMultiFields.MappedMultiTerms`.
 ///
-/// **Deliberate divergence**: Java throws `UnsupportedOperationException` from
-/// [`Terms::size`], [`Terms::sum_total_term_freq`], [`Terms::sum_doc_freq`] and
-/// [`Terms::doc_count`], so that a codec accidentally consulting them during a
-/// merge fails loudly rather than writing statistics that ignore deletions.
-/// Rucene declares those four methods infallible, so they return `-1` instead —
-/// the value Lucene itself documents on [`Terms::size`] for "this measure is not
-/// available", and one every codec must already tolerate. The intent is
-/// unchanged: the numbers are not available here and must not be used.
+/// As in Java, [`Terms::size`], [`Terms::sum_total_term_freq`],
+/// [`Terms::sum_doc_freq`] and [`Terms::doc_count`] throw
+/// `UnsupportedOperationException` (`MappedMultiFields.java:74-92`), so that a
+/// codec consulting them during a merge fails loudly rather than writing
+/// statistics that ignore deletions.
 struct MappedMultiTerms {
     field: String,
     merge_state: Arc<MergeState>,
@@ -154,34 +156,28 @@ impl Terms for MappedMultiTerms {
         Ok(self.wrap(self.inner.multi_iterator()?))
     }
 
-    fn intersect(
-        &self,
-        compiled: &CompiledAutomaton,
-        start_term: Option<&BytesRef>,
-    ) -> Result<Box<dyn TermsEnum>> {
-        // **Deliberate divergence**: Java inherits `intersect` from
-        // `FilterTerms`, which delegates straight to the wrapped `MultiTerms`
-        // and therefore returns postings in the *composite* doc-ID space —
-        // unmapped, and wrong for a merge. Wrapping the filtered enum the same
-        // way `iterator()` does keeps every entry point of this type in the
-        // merged doc-ID space.
-        Ok(self.wrap(self.inner.multi_intersect(compiled, start_term)?))
+    fn size(&self) -> Result<i64> {
+        Err(LuceneError::UnsupportedOperation(
+            "MappedMultiTerms.size".to_string(),
+        ))
     }
 
-    fn size(&self) -> i64 {
-        -1
+    fn sum_total_term_freq(&self) -> Result<i64> {
+        Err(LuceneError::UnsupportedOperation(
+            "MappedMultiTerms.getSumTotalTermFreq".to_string(),
+        ))
     }
 
-    fn sum_total_term_freq(&self) -> i64 {
-        -1
+    fn sum_doc_freq(&self) -> Result<i64> {
+        Err(LuceneError::UnsupportedOperation(
+            "MappedMultiTerms.getSumDocFreq".to_string(),
+        ))
     }
 
-    fn sum_doc_freq(&self) -> i64 {
-        -1
-    }
-
-    fn doc_count(&self) -> i32 {
-        -1
+    fn doc_count(&self) -> Result<i32> {
+        Err(LuceneError::UnsupportedOperation(
+            "MappedMultiTerms.getDocCount".to_string(),
+        ))
     }
 
     fn has_freqs(&self) -> bool {
@@ -226,16 +222,6 @@ impl MappedMultiTermsEnum {
             merge_state,
             inner,
         }
-    }
-
-    /// Builds the mapped postings for the current term.
-    fn mapped_postings(&mut self, flags: i32) -> Result<Box<dyn PostingsEnum>> {
-        let merged = self.inner.multi_postings(flags)?;
-        Ok(Box::new(MappingMultiPostingsEnum::new(
-            &self.field,
-            Arc::clone(&self.merge_state),
-            merged,
-        )?))
     }
 
     fn unsupported(&self, what: &str) -> LuceneError {
@@ -298,30 +284,76 @@ impl TermsEnum for MappedMultiTermsEnum {
         Err(self.unsupported("total_term_freq"))
     }
 
+    /// Equivalent to `MappedMultiTermsEnum.postings(PostingsEnum, int)`
+    /// (`MappedMultiFields.java:116-134`).
+    ///
+    /// `reuse` is reused exactly when Java reuses it: when it is a
+    /// [`MappingMultiPostingsEnum`] ([`PostingsEnum::as_any_mut`] standing for
+    /// `instanceof`) for this very field; the box handed back is then the one
+    /// that came in. Its [`MultiPostingsEnum`] is offered to the wrapped
+    /// [`MultiTermsEnum`] as `reuse` in turn, and what comes back — cast to
+    /// `MultiPostingsEnum`, as Java casts — resets it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] — Java's `ClassCastException` —
+    /// when the wrapped enum answers anything but a `MultiPostingsEnum`, and
+    /// propagates whatever building or resetting the postings raises.
     fn postings(
         &mut self,
-        _reuse: Option<Box<dyn PostingsEnum>>,
+        reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
     ) -> Result<Box<dyn PostingsEnum>> {
-        // **Deliberate divergence**: Java reuses the previous
-        // `MappingMultiPostingsEnum` when the caller hands one back for the
-        // same field, saving an allocation per term. Rucene's `reuse` is an
-        // opaque `Box<dyn PostingsEnum>` that cannot be downcast, and
-        // `MultiTermsEnum` does not thread reuse to its own sub-enums either,
-        // so a fresh instance is built per term. Callers that want the reuse
-        // can keep a `MappingMultiPostingsEnum` themselves and call
-        // `MappingMultiPostingsEnum::reset` with
-        // `MultiTermsEnum::multi_postings`.
-        self.mapped_postings(flags)
+        let mut mapping_docs_and_positions_enum: Box<dyn PostingsEnum> = match reuse {
+            // `reuse instanceof MappingMultiPostingsEnum postings`
+            Some(mut reuse) => match reuse
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<MappingMultiPostingsEnum>())
+            {
+                Some(postings) if postings.field() == self.field => reuse,
+                _ => Box::new(MappingMultiPostingsEnum::new(
+                    &self.field,
+                    Arc::clone(&self.merge_state),
+                )?),
+            },
+            None => Box::new(MappingMultiPostingsEnum::new(
+                &self.field,
+                Arc::clone(&self.merge_state),
+            )?),
+        };
+        let mapping = mapping_docs_and_positions_enum
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<MappingMultiPostingsEnum>())
+            .ok_or_else(|| {
+                LuceneError::illegal_state(
+                    "INVARIANT: the enum was just checked or built as a MappingMultiPostingsEnum"
+                        .to_string(),
+                )
+            })?;
+
+        let mut docs_and_positions_enum = self
+            .inner
+            .postings(mapping.take_multi_docs_and_positions_enum(), flags)?;
+        // `(MultiPostingsEnum) in.postings(...)`
+        if docs_and_positions_enum
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<MultiPostingsEnum>())
+            .is_none()
+        {
+            return Err(LuceneError::illegal_state(format!(
+                "{docs_and_positions_enum} cannot be cast to class \
+                 org.apache.lucene.index.MultiPostingsEnum"
+            )));
+        }
+        mapping.reset(docs_and_positions_enum)?;
+        Ok(mapping_docs_and_positions_enum)
     }
 
+    /// Inherited from `FilterTermsEnum.impacts(int)`, which delegates to the
+    /// wrapped `MultiTermsEnum` (`FilterLeafReader.java:232-235`),
+    /// so its documents are in the composite doc-ID space, not the merged one.
     fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {
-        // **Deliberate divergence**: Java inherits `impacts` from
-        // `FilterTermsEnum`, which delegates to the wrapped `MultiTermsEnum`
-        // and so reports *unmapped* doc IDs. Wrapping the mapped postings in a
-        // `SlowImpactsEnum` — which is exactly what `MultiTermsEnum::impacts`
-        // does with its own postings — keeps the doc-ID space consistent.
-        Ok(Box::new(SlowImpactsEnum::new(self.mapped_postings(flags)?)))
+        self.inner.impacts(flags)
     }
 
     fn term_state(&mut self) -> Result<Box<dyn TermState>> {
@@ -344,14 +376,14 @@ impl TermsEnum for MappedMultiTermsEnum {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::automaton::CompiledAutomaton;
 
     use std::collections::{BTreeMap, HashMap};
 
     use crate::index::merge::{deletion_doc_map, identity_doc_map, DocMap};
     use crate::index::{FieldInfos, ReaderSlice, SegmentInfo};
     use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
-    use crate::store::{Directory, RamDirectory};
-    use crate::util::automaton::Automaton;
+    use crate::store::{ByteBuffersDirectory, Directory};
     use crate::util::{Bits, StringHelper, Version};
 
     // -----------------------------------------------------------------------
@@ -564,21 +596,23 @@ mod tests {
             self.iterator()
         }
 
-        fn size(&self) -> i64 {
-            self.entries.len() as i64
+        fn size(&self) -> Result<i64> {
+            Ok(self.entries.len() as i64)
         }
-        fn sum_total_term_freq(&self) -> i64 {
-            self.entries.iter().map(|(_, _, ttf, _)| *ttf).sum()
+        fn sum_total_term_freq(&self) -> Result<i64> {
+            Ok(self.entries.iter().map(|(_, _, ttf, _)| *ttf).sum())
         }
-        fn sum_doc_freq(&self) -> i64 {
-            self.entries.iter().map(|(_, df, _, _)| *df as i64).sum()
+        fn sum_doc_freq(&self) -> Result<i64> {
+            Ok(self.entries.iter().map(|(_, df, _, _)| *df as i64).sum())
         }
-        fn doc_count(&self) -> i32 {
-            self.entries
-                .iter()
-                .flat_map(|(_, _, _, docs)| docs.iter().copied())
-                .collect::<std::collections::BTreeSet<_>>()
-                .len() as i32
+        fn doc_count(&self) -> Result<i32> {
+            Ok({
+                self.entries
+                    .iter()
+                    .flat_map(|(_, _, _, docs)| docs.iter().copied())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len() as i32
+            })
         }
         fn has_freqs(&self) -> bool {
             self.has_freqs
@@ -658,7 +692,7 @@ mod tests {
     }
 
     fn segment_info(max_doc: i32) -> SegmentInfo {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         SegmentInfo::new_without_codec(
             dir,
             Version::LUCENE_10_5_0,
@@ -691,7 +725,9 @@ mod tests {
             (0..count).map(|_| None).collect(),
             (0..count).map(|_| None).collect(),
             max_docs,
+            None,
             false,
+            None,
         ))
     }
 
@@ -844,12 +880,14 @@ mod tests {
     fn field_level_statistics_are_unavailable_while_merging() {
         let (_state, fields) = scenario();
         let terms = fields.terms("body").unwrap().unwrap();
-        // Java throws UnsupportedOperationException from all four; Rucene's
-        // infallible signatures report the documented "unknown" sentinel.
-        assert_eq!(terms.size(), -1);
-        assert_eq!(terms.sum_total_term_freq(), -1);
-        assert_eq!(terms.sum_doc_freq(), -1);
-        assert_eq!(terms.doc_count(), -1);
+        // Java throws UnsupportedOperationException from all four
+        // (MappedMultiFields.java:74-92).
+        let unsupported =
+            |e: Option<LuceneError>| matches!(e, Some(LuceneError::UnsupportedOperation(_)));
+        assert!(unsupported(terms.size().err()));
+        assert!(unsupported(terms.sum_total_term_freq().err()));
+        assert!(unsupported(terms.sum_doc_freq().err()));
+        assert!(unsupported(terms.doc_count().err()));
     }
 
     #[test]
@@ -929,8 +967,11 @@ mod tests {
         assert!(enumerator.next().unwrap().is_none());
     }
 
+    /// `MappedMultiTermsEnum` inherits `FilterTermsEnum.impacts`, which asks the
+    /// wrapped `MultiTermsEnum` (`FilterLeafReader.java:232-235`): its
+    /// documents are in the composite doc-ID space, deletions included.
     #[test]
-    fn impacts_report_the_mapped_doc_ids() {
+    fn impacts_report_the_composite_doc_ids() {
         let (_state, fields) = scenario();
         let terms = fields.terms("body").unwrap().unwrap();
         let mut enumerator = terms.iterator().unwrap();
@@ -944,7 +985,7 @@ mod tests {
             }
             docs.push(doc);
         }
-        assert_eq!(docs, vec![0, 1, 3]);
+        assert_eq!(docs, vec![0, 2, 4]);
     }
 
     #[test]
@@ -958,20 +999,62 @@ mod tests {
         assert_eq!(impacts.num_levels(), 1);
     }
 
+    /// `MappedMultiTerms` inherits `Terms.intersect` (`Terms.java:64-96`),
+    /// which walks the type's own iterator: the postings it hands out are the
+    /// mapped ones.
     #[test]
-    fn intersect_also_returns_mapped_postings() {
+    fn intersect_walks_the_mapped_iterator() {
         let (_state, fields) = scenario();
-        let automaton = Automaton::new();
-        let compiled = CompiledAutomaton::new(automaton, true, false, true).unwrap();
+        let automaton = crate::util::automaton::Automata::make_string("apple");
+        let compiled = CompiledAutomaton::new(automaton, true, false, false).unwrap();
         let terms = fields.terms("body").unwrap().unwrap();
         let mut enumerator = terms.intersect(&compiled, None).unwrap();
-        assert!(enumerator.seek_exact(&term("apple")).unwrap());
+        assert_eq!(text_of(&enumerator.next().unwrap().unwrap()), "apple");
         let mut postings = enumerator.postings(None, 0).unwrap();
-        assert_eq!(
-            drain(postings.as_mut()),
-            vec![0, 1, 3],
-            "Java's inherited FilterTerms.intersect would leak unmapped doc IDs here"
-        );
+        assert_eq!(drain(postings.as_mut()), vec![0, 1, 3]);
+        assert!(enumerator.next().unwrap().is_none());
+    }
+
+    /// With a start term, the default `Terms.intersect` seeks past it: its
+    /// `AutomatonTermsEnum` subclass substitutes `startTerm` for the first,
+    /// `null`, seek term (`Terms.java:85-94`), so the first term is after it.
+    #[test]
+    fn intersect_starts_after_the_start_term() {
+        let (_state, fields) = scenario();
+        let compiled = || {
+            CompiledAutomaton::new(
+                crate::util::automaton::Automata::make_any_string(),
+                false,
+                false,
+                false,
+            )
+            .unwrap()
+        };
+        let terms = fields.terms("body").unwrap().unwrap();
+        let collect = |start: Option<&BytesRef>| {
+            let mut enumerator = terms.intersect(&compiled(), start).unwrap();
+            let mut seen = Vec::new();
+            while let Some(term) = enumerator.next().unwrap() {
+                seen.push(text_of(&term));
+            }
+            seen
+        };
+        assert_eq!(collect(None), vec!["apple", "pear", "plum"]);
+        assert_eq!(collect(Some(&term("pear"))), vec!["plum"]);
+    }
+
+    /// The default `Terms.intersect` rejects an automaton that is not
+    /// `NORMAL` (`Terms.java:79-81`).
+    #[test]
+    fn intersect_rejects_a_special_automaton() {
+        let (_state, fields) = scenario();
+        let automaton = crate::util::automaton::Automata::make_string("apple");
+        let compiled = CompiledAutomaton::new(automaton, true, true, false).unwrap();
+        let terms = fields.terms("body").unwrap().unwrap();
+        assert!(matches!(
+            terms.intersect(&compiled, None),
+            Err(LuceneError::IllegalArgument(_))
+        ));
     }
 
     #[test]
@@ -1027,5 +1110,97 @@ mod tests {
             vec![1, 3],
             "segment 0 was dropped by the seek optimisation"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // #276: `MappedMultiTermsEnum.postings` reuses as Java does
+    // -----------------------------------------------------------------------
+
+    fn identity<T: ?Sized>(object: &T) -> *const () {
+        object as *const T as *const ()
+    }
+
+    /// The identity of the `MultiPostingsEnum` a mapped postings holds.
+    fn inner_identity(postings: &mut Box<dyn PostingsEnum>) -> *const () {
+        identity(
+            postings
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<MappingMultiPostingsEnum>())
+                .expect("MappedMultiTermsEnum hands out a MappingMultiPostingsEnum")
+                .multi_docs_and_positions_enum()
+                .expect("reset stored the MultiPostingsEnum"),
+        )
+    }
+
+    #[test]
+    fn postings_reuses_a_mapping_enum_of_the_same_field_and_its_multi_postings_enum() {
+        let (_state, fields) = scenario();
+        let terms = fields.terms("body").unwrap().unwrap();
+        let mut enumerator = terms.iterator().unwrap();
+
+        assert_eq!(enumerator.next().unwrap(), Some(term("apple")));
+        let mut postings = enumerator.postings(None, 0).unwrap();
+        let outer = identity(postings.as_ref());
+        let inner = inner_identity(&mut postings);
+        assert_eq!(drain(postings.as_mut()), vec![0, 1, 3]);
+
+        assert_eq!(enumerator.next().unwrap(), Some(term("pear")));
+        let mut postings = enumerator.postings(Some(postings), 0).unwrap();
+        assert_eq!(
+            identity(postings.as_ref()),
+            outer,
+            "`reuse instanceof MappingMultiPostingsEnum` of the same field comes back"
+        );
+        assert_eq!(
+            inner_identity(&mut postings),
+            inner,
+            "its `multiDocsAndPositionsEnum` is reused by the MultiTermsEnum that built it"
+        );
+        assert!(
+            drain(postings.as_mut()).is_empty(),
+            "pear's only doc is deleted"
+        );
+
+        assert_eq!(enumerator.next().unwrap(), Some(term("plum")));
+        let mut postings = enumerator.postings(Some(postings), 0).unwrap();
+        assert_eq!(identity(postings.as_ref()), outer);
+        assert_eq!(inner_identity(&mut postings), inner);
+        assert_eq!(drain(postings.as_mut()), vec![2]);
+    }
+
+    #[test]
+    fn postings_does_not_reuse_a_mapping_enum_of_another_field() {
+        let (_state, fields) = scenario();
+        let mut title = fields.terms("title").unwrap().unwrap().iterator().unwrap();
+        assert_eq!(title.next().unwrap(), Some(term("rust")));
+        let foreign = title.postings(None, 0).unwrap();
+        let foreign_identity = identity(foreign.as_ref());
+
+        let mut body = fields.terms("body").unwrap().unwrap().iterator().unwrap();
+        assert_eq!(body.next().unwrap(), Some(term("apple")));
+        let mut postings = body.postings(Some(foreign), 0).unwrap();
+        assert_ne!(
+            identity(postings.as_ref()),
+            foreign_identity,
+            "`postings.field.equals(this.field)` is false"
+        );
+        let mapping = postings
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<MappingMultiPostingsEnum>())
+            .unwrap();
+        assert_eq!(mapping.field(), "body");
+        assert_eq!(drain(postings.as_mut()), vec![0, 1, 3]);
+    }
+
+    #[test]
+    fn postings_does_not_reuse_an_enum_of_another_type() {
+        let (_state, fields) = scenario();
+        let mut body = fields.terms("body").unwrap().unwrap().iterator().unwrap();
+        assert_eq!(body.next().unwrap(), Some(term("apple")));
+        let other = VecPostings::boxed(&[0]);
+        let other_identity = identity(other.as_ref());
+        let mut postings = body.postings(Some(other), 0).unwrap();
+        assert_ne!(identity(postings.as_ref()), other_identity);
+        assert_eq!(drain(postings.as_mut()), vec![0, 1, 3]);
     }
 }

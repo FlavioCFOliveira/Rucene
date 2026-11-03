@@ -79,11 +79,6 @@ impl FilterDocIdSetIterator {
     pub fn new(inner: Box<dyn DocIdSetIterator>) -> Self {
         Self { inner }
     }
-
-    /// Returns the wrapped iterator, consuming the wrapper.
-    pub fn into_inner(self) -> Box<dyn DocIdSetIterator> {
-        self.inner
-    }
 }
 
 impl std::fmt::Debug for FilterDocIdSetIterator {

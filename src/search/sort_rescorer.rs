@@ -84,7 +84,7 @@ impl SortRescorer {
             while doc_id >= end_doc {
                 reader_upto += 1;
                 let context = leaves.get(reader_upto as usize).ok_or_else(|| {
-                    LuceneError::IllegalState(format!(
+                    LuceneError::illegal_state(format!(
                         "hit docId={doc_id} is beyond the last leaf of the provided searcher"
                     ))
                 })?;
@@ -193,6 +193,6 @@ impl Rescorer for SortRescorer {
 fn collection_error_to_lucene(error: CollectionError) -> LuceneError {
     match error {
         CollectionError::Lucene(error) => error,
-        other => LuceneError::IllegalState(other.to_string()),
+        other => LuceneError::illegal_state(other.to_string()),
     }
 }

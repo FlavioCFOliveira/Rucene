@@ -17,6 +17,11 @@ use super::{BasicStats, Explanation};
 /// Equivalent to `org.apache.lucene.search.similarities.Normalization`.
 ///
 /// See [`DFRSimilarity`](super::DFRSimilarity).
+///
+/// The [`Display`](fmt::Display) supertrait is Java's abstract `toString()`
+/// (`Normalization.java:85`): each implementation renders the code of its
+/// formula, which `DFRSimilarity` and `IBSimilarity` concatenate into their
+/// own names. Equivalent to the abstract `Normalization#toString`.
 pub trait Normalization: fmt::Display + Debug + Send + Sync {
     /// Returns the name this normalization puts into its explanations.
     ///

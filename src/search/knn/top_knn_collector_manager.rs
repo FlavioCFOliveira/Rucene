@@ -28,15 +28,6 @@ impl TopKnnCollectorManager {
         Self { k }
     }
 
-    /// Creates a manager collecting `k` documents per leaf, without a searcher.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java has no such constructor, but its
-    /// only one ignores the searcher; this one exists so that callers who have
-    /// no searcher at hand do not have to invent one.
-    pub fn with_k(k: i32) -> Self {
-        Self { k }
-    }
-
     /// Returns the number of documents this manager collects.
     pub fn k(&self) -> i32 {
         self.k

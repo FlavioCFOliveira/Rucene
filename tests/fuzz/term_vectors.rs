@@ -60,7 +60,7 @@ use std::sync::Arc;
 
 use rucene::codecs::{register_codec, Codec, Lucene104Codec};
 use rucene::index::{FieldInfo, FieldInfos, IndexOptions, SegmentInfo, POSTINGS_ENUM_ALL};
-use rucene::store::{Directory, RamDirectory, DEFAULT_IO_CONTEXT};
+use rucene::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT};
 use rucene::util::string_helper::StringHelper;
 use rucene::util::{BytesRef, Version};
 
@@ -116,7 +116,7 @@ fn write_segment(directory: &Arc<dyn Directory>, info: &SegmentInfo, docs: i32) 
     let infos = field_infos();
     let mut writer = codec()
         .term_vectors_format()
-        .vectors_writer(directory.as_ref(), info, &*DEFAULT_IO_CONTEXT)
+        .vectors_writer(directory, info, &*DEFAULT_IO_CONTEXT)
         .expect("vectors writer");
     for doc in 0..docs {
         if doc % 5 == 4 {
@@ -188,7 +188,7 @@ fn write_mixed_segment(directory: &Arc<dyn Directory>, info: &SegmentInfo, docs:
     let infos = field_infos();
     let mut writer = codec()
         .term_vectors_format()
-        .vectors_writer(directory.as_ref(), info, &*DEFAULT_IO_CONTEXT)
+        .vectors_writer(directory, info, &*DEFAULT_IO_CONTEXT)
         .expect("vectors writer");
     for doc in 0..docs {
         writer.start_document(4).unwrap();
@@ -222,9 +222,8 @@ fn write_mixed_segment(directory: &Arc<dyn Directory>, info: &SegmentInfo, docs:
                 .start_field(infos.field_info(&name).unwrap(), 2, true, true, true)
                 .unwrap();
             for term in 0..2u32 {
-                let text: String = std::iter::repeat(char::from(b'a' + (field + term) as u8 % 26))
-                    .take(60)
-                    .collect();
+                let text: String =
+                    std::iter::repeat_n(char::from(b'a' + (field + term) as u8 % 26), 60).collect();
                 writer
                     .start_term(&BytesRef::new(format!("{text}{term}").into_bytes()), 2)
                     .unwrap();
@@ -267,7 +266,7 @@ fn write_wide_segment(directory: &Arc<dyn Directory>, info: &SegmentInfo, docs: 
     let infos = field_infos();
     let mut writer = codec()
         .term_vectors_format()
-        .vectors_writer(directory.as_ref(), info, &*DEFAULT_IO_CONTEXT)
+        .vectors_writer(directory, info, &*DEFAULT_IO_CONTEXT)
         .expect("vectors writer");
     writer.start_document(9).unwrap();
     for (ordinal, name) in FIELDS.iter().take(9).enumerate() {
@@ -400,7 +399,7 @@ fn corrupt_copy(
     at: usize,
     value: u8,
 ) -> Arc<dyn Directory> {
-    let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     for extension in EXTENSIONS {
         let name = format!("_0.{extension}");
         let mut bytes = read_file(original, &name);
@@ -440,7 +439,7 @@ fn documents_of(shape: &str, uniform_docs: i32) -> i32 {
 fn every_value_at_every_byte_of_the_data_file_is_survived() {
     for (shape, write) in FIXTURES {
         let docs = documents_of(shape, 12);
-        let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let id = StringHelper::random_id();
         let info = segment_info(&directory, docs, id);
         write(&directory, &info, docs);
@@ -485,7 +484,7 @@ fn every_value_at_every_byte_of_the_data_file_is_survived() {
 fn every_value_at_every_byte_of_the_index_files_is_survived() {
     for (shape, write) in FIXTURES {
         let docs = documents_of(shape, 8);
-        let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let id = StringHelper::random_id();
         let info = segment_info(&directory, docs, id);
         write(&directory, &info, docs);
@@ -524,14 +523,14 @@ fn every_value_at_every_byte_of_the_index_files_is_survived() {
 #[test]
 fn a_truncated_data_file_is_survived_at_every_length() {
     const DOCS: i32 = 8;
-    let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let id = StringHelper::random_id();
     let info = segment_info(&directory, DOCS, id);
     write_segment(&directory, &info, DOCS);
 
     let original = read_file(&directory, "_0.tvd");
     for length in (0..original.len()).step_by(3) {
-        let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         write_file(&corrupt, "_0.tvd", &original[..length]);
         for extension in ["tvx", "tvm"] {
             let name = format!("_0.{extension}");
@@ -546,7 +545,7 @@ fn a_truncated_data_file_is_survived_at_every_length() {
 #[test]
 fn a_truncated_index_file_is_survived_at_every_length() {
     const DOCS: i32 = 8;
-    let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let id = StringHelper::random_id();
     let info = segment_info(&directory, DOCS, id);
     write_segment(&directory, &info, DOCS);
@@ -555,7 +554,7 @@ fn a_truncated_index_file_is_survived_at_every_length() {
         let name = format!("_0.{extension}");
         let original = read_file(&directory, &name);
         for length in 0..original.len() {
-            let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+            let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
             write_file(&corrupt, &name, &original[..length]);
             for other in EXTENSIONS {
                 let other_name = format!("_0.{other}");
@@ -574,7 +573,7 @@ fn a_truncated_index_file_is_survived_at_every_length() {
 #[test]
 fn a_document_id_outside_the_segment_is_rejected() {
     const DOCS: i32 = 4;
-    let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let id = StringHelper::random_id();
     let info = segment_info(&directory, DOCS, id);
     write_segment(&directory, &info, DOCS);

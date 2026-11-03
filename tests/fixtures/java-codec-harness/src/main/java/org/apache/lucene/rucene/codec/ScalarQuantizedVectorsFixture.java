@@ -26,6 +26,7 @@ import org.apache.lucene.codecs.hnsw.FlatVectorsReader;
 import org.apache.lucene.codecs.hnsw.FlatVectorsWriter;
 import org.apache.lucene.codecs.lucene104.Lucene104Codec;
 import org.apache.lucene.codecs.lucene104.Lucene104ScalarQuantizedVectorsFormat;
+import org.apache.lucene.codecs.lucene104.Lucene104ScalarQuantizedVectorsReader;
 import org.apache.lucene.index.DocValuesSkipIndexType;
 import org.apache.lucene.index.MergeState;
 import org.apache.lucene.index.DocValuesType;
@@ -44,6 +45,9 @@ import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.util.InfoStream;
 import org.apache.lucene.util.Version;
+import org.apache.lucene.util.hnsw.CloseableRandomVectorScorerSupplier;
+import org.apache.lucene.util.hnsw.RandomVectorScorer;
+import org.apache.lucene.util.hnsw.UpdateableRandomVectorScorer;
 import org.apache.lucene.util.quantization.QuantizedByteVectorValues.ScalarEncoding;
 
 /**
@@ -107,6 +111,8 @@ public final class ScalarQuantizedVectorsFixture {
       case "unsignedbyte" -> ScalarEncoding.UNSIGNED_BYTE;
       case "packednibble" -> ScalarEncoding.PACKED_NIBBLE;
       case "sevenbit" -> ScalarEncoding.SEVEN_BIT;
+      case "singlebit" -> ScalarEncoding.SINGLE_BIT_QUERY_NIBBLE;
+      case "dibit" -> ScalarEncoding.DIBIT_QUERY_NIBBLE;
       default -> throw new IllegalArgumentException("unknown encoding: " + name);
     };
   }
@@ -272,6 +278,55 @@ public final class ScalarQuantizedVectorsFixture {
             sb.append(String.format(Locale.ROOT, "%08x", Float.floatToIntBits(v[i])));
           }
           System.out.println(sb);
+        }
+
+        // Score a fixed query against every stored vector, through the
+        // quantized query path (quantize, transpose for the asymmetric
+        // encodings, quantizedScore).
+        float[] query = vectorFor(MAX_DOC + 1, dim, true);
+        RandomVectorScorer queryScorer = reader.getRandomVectorScorer(FIELD, query);
+        for (int ord = 0; ord < queryScorer.maxOrd(); ord++) {
+          System.out.println(
+              String.format(
+                  Locale.ROOT, "score=%d:%08x", ord, Float.floatToIntBits(queryScorer.score(ord))));
+        }
+
+        // Score every stored vector against every other one through the
+        // merge-time supplier; for an asymmetric encoding this writes the
+        // query-width copies into a temporary file first.
+        SegmentInfo scoreInfo =
+            new SegmentInfo(
+                directory,
+                Version.LATEST,
+                Version.LATEST,
+                "_sqs",
+                MAX_DOC,
+                false,
+                false,
+                new Lucene104Codec(),
+                Collections.emptyMap(),
+                SEGMENT_ID.clone(),
+                Collections.emptyMap(),
+                null);
+        SegmentWriteState scoreState =
+            new SegmentWriteState(
+                InfoStream.NO_OUTPUT, directory, scoreInfo, fieldInfos, null, IOContext.DEFAULT);
+        try (CloseableRandomVectorScorerSupplier supplier =
+            ((Lucene104ScalarQuantizedVectorsReader) reader)
+                .getRandomVectorScorerSupplierForMerge(info, scoreState)) {
+          UpdateableRandomVectorScorer mergeScorer = supplier.scorer();
+          for (int i = 0; i < supplier.totalVectorCount(); i++) {
+            mergeScorer.setScoringOrdinal(i);
+            for (int j = 0; j < supplier.totalVectorCount(); j++) {
+              System.out.println(
+                  String.format(
+                      Locale.ROOT,
+                      "mergescore=%d:%d:%08x",
+                      i,
+                      j,
+                      Float.floatToIntBits(mergeScorer.score(j))));
+            }
+          }
         }
       }
     }

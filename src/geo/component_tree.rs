@@ -3,6 +3,7 @@
 
 use crate::geo::component2d::{Component2D, WithinRelation};
 use crate::index::point_values::Relation;
+use crate::util::ArrayUtil;
 use std::cmp::Ordering;
 use std::sync::Arc;
 
@@ -36,14 +37,16 @@ pub struct ComponentTree {
     component: Arc<dyn Component2D>,
 }
 
+use crate::util::double_compare;
+
 /// Compares two components by minimum then maximum X.
 ///
-/// Equivalent to `ComponentTree.X_COMPARATOR`. Java uses
-/// `Comparator.comparingDouble`, which orders with `Double.compare`, i.e. the
-/// IEEE 754 total order that [`f64::total_cmp`] implements.
+/// Equivalent to `ComponentTree.X_COMPARATOR`, which is
+/// `Comparator.comparingDouble(Component2D::getMinX).thenComparingDouble(Component2D::getMaxX)`
+/// and so orders with `Double.compare`.
 fn x_comparator(a: &Arc<dyn Component2D>, b: &Arc<dyn Component2D>) -> Ordering {
-    match a.get_min_x().total_cmp(&b.get_min_x()) {
-        Ordering::Equal => a.get_max_x().total_cmp(&b.get_max_x()),
+    match double_compare(a.get_min_x(), b.get_min_x()) {
+        Ordering::Equal => double_compare(a.get_max_x(), b.get_max_x()),
         other => other,
     }
 }
@@ -52,8 +55,8 @@ fn x_comparator(a: &Arc<dyn Component2D>, b: &Arc<dyn Component2D>) -> Ordering 
 ///
 /// Equivalent to `ComponentTree.Y_COMPARATOR`.
 fn y_comparator(a: &Arc<dyn Component2D>, b: &Arc<dyn Component2D>) -> Ordering {
-    match a.get_min_y().total_cmp(&b.get_min_y()) {
-        Ordering::Equal => a.get_max_y().total_cmp(&b.get_max_y()),
+    match double_compare(a.get_min_y(), b.get_min_y()) {
+        Ordering::Equal => double_compare(a.get_max_y(), b.get_max_y()),
         other => other,
     }
 }
@@ -104,12 +107,9 @@ impl ComponentTree {
     /// inclusive.
     ///
     /// Equivalent to the private
-    /// `ComponentTree.createTree(Component2D[], int, int, boolean)`. Java calls
-    /// `ArrayUtil.select`, an introselect; Rust's
-    /// [`slice::select_nth_unstable_by`] gives the same contract — the element
-    /// at `mid` is the one that would be there in sorted order, everything
-    /// before it compares less or equal and everything after greater or equal —
-    /// which is all the pruning in the query methods relies on.
+    /// `ComponentTree.createTree(Component2D[], int, int, boolean)`, which
+    /// partitions with `ArrayUtil.select` (`ComponentTree.java:382-384`), the
+    /// introselect [`ArrayUtil::select`] ports.
     fn create_tree(
         components: &mut [Arc<dyn Component2D>],
         low: isize,
@@ -123,11 +123,11 @@ impl ComponentTree {
         if low < high {
             let lo = low as usize;
             let hi = high as usize;
-            let k = (mid - low) as usize;
+            let k = mid as usize;
             if split_x {
-                components[lo..=hi].select_nth_unstable_by(k, x_comparator);
+                ArrayUtil::select(components, lo, hi + 1, k, x_comparator);
             } else {
-                components[lo..=hi].select_nth_unstable_by(k, y_comparator);
+                ArrayUtil::select(components, lo, hi + 1, k, y_comparator);
             }
         }
         let mut new_node = ComponentTree::new(Arc::clone(&components[mid as usize]));
@@ -539,5 +539,60 @@ impl Component2D for ComponentTree {
         self.component.within_triangle(
             min_x, max_x, min_y, max_y, a_x, a_y, ab, b_x, b_y, bc, c_x, c_y, ca,
         )
+    }
+}
+
+#[cfg(test)]
+mod double_compare_tests {
+    use super::*;
+
+    /// `Comparator.comparingDouble` orders with `Double.compare`, which folds
+    /// every `NaN` into one value above positive infinity. Measured against
+    /// `lucene-core-10.5.0.jar`'s JDK (`oracle/fix/MiscFix.java`, item 22):
+    /// `compare(-NaN,-Inf)=1 compare(NaN payload, NaN)=0 compare(-0.0,0.0)=-1`.
+    #[test]
+    fn components_order_with_double_compare() {
+        let negative_nan = f64::from_bits(0xfff8_0000_0000_0000);
+        let payload_nan = f64::from_bits(0x7ff0_0000_0000_0001);
+        assert_eq!(
+            [
+                double_compare(negative_nan, f64::NEG_INFINITY),
+                double_compare(payload_nan, f64::NAN),
+                double_compare(-0.0, 0.0),
+            ],
+            [Ordering::Greater, Ordering::Equal, Ordering::Less]
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geo::geometry::XYRectangle;
+    use crate::geo::rectangle2d::Rectangle2D;
+
+    /// The tree answers `contains` as the union of its components does. The
+    /// right subtree is visited only past the node's minimum on the split axis
+    /// (`ComponentTree.java:91-106`), which is sound only because
+    /// `ArrayUtil.select` partitions every level (`ComponentTree.java:382-384`).
+    #[test]
+    fn contains_agrees_with_the_union_of_the_components() {
+        let mut components: Vec<Arc<dyn Component2D>> = Vec::new();
+        // Twenty-seven small squares, created out of order on both axes.
+        for k in 0..27 {
+            let i = (k * 7) % 27;
+            let x = (i % 9) as f32 * 10.0;
+            let y = (i / 9) as f32 * 10.0;
+            let rectangle = XYRectangle::new(x, x + 4.0, y, y + 4.0).unwrap();
+            components.push(Rectangle2D::create_from_xy_rectangle(&rectangle));
+        }
+        let tree = ComponentTree::create(components.clone());
+        for xi in 0..95 {
+            for yi in 0..30 {
+                let (x, y) = (f64::from(xi), f64::from(yi));
+                let expected = components.iter().any(|c| c.contains(x, y));
+                assert_eq!(tree.contains(x, y), expected, "({x}, {y})");
+            }
+        }
     }
 }

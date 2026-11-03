@@ -59,6 +59,7 @@ use crate::index::doc_values::{DocValues, DocValuesIterator, NumericDocValues};
 use crate::index::index_file_names::{segment_file_name, NORMS_EXTENSION, NORMS_META_EXTENSION};
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::store::{IndexInput, IndexOutput, RandomAccessInput};
+use crate::util::IOUtils;
 
 const DATA_CODEC: &str = "Lucene90NormsData";
 const METADATA_CODEC: &str = "Lucene90NormsMetadata";
@@ -131,41 +132,89 @@ impl fmt::Debug for Lucene90NormsConsumer {
 }
 
 impl Lucene90NormsConsumer {
+    /// Equivalent to `Lucene90NormsConsumer(SegmentWriteState, String, String,
+    /// String, String)` (`Lucene90NormsConsumer.java:38-66`): when it fails,
+    /// `IOUtils.closeWhileHandlingException(this)` runs `close()` over the
+    /// outputs created so far.
     fn new(state: &SegmentWriteState) -> Result<Self> {
-        let data_name = segment_file_name(
-            &state.segment_info.name,
-            &state.segment_suffix,
-            NORMS_EXTENSION,
-        );
-        let mut data = state.directory.create_output(&data_name, state.context)?;
-        codec_util::write_index_header(
-            data.as_mut(),
-            DATA_CODEC,
-            VERSION_CURRENT,
-            &state.segment_info.id(),
-            &state.segment_suffix,
-        )?;
+        let mut data: Option<Box<dyn IndexOutput>> = None;
+        let mut meta: Option<Box<dyn IndexOutput>> = None;
+        let opened = (|| -> Result<i32> {
+            let data_name = segment_file_name(
+                &state.segment_info.name,
+                &state.segment_suffix,
+                NORMS_EXTENSION,
+            );
+            let data = data.insert(state.directory.create_output(&data_name, state.context)?);
+            codec_util::write_index_header(
+                data.as_mut(),
+                DATA_CODEC,
+                VERSION_CURRENT,
+                &state.segment_info.id(),
+                &state.segment_suffix,
+            )?;
 
-        let meta_name = segment_file_name(
-            &state.segment_info.name,
-            &state.segment_suffix,
-            NORMS_META_EXTENSION,
-        );
-        let mut meta = state.directory.create_output(&meta_name, state.context)?;
-        codec_util::write_index_header(
-            meta.as_mut(),
-            METADATA_CODEC,
-            VERSION_CURRENT,
-            &state.segment_info.id(),
-            &state.segment_suffix,
-        )?;
-
-        let max_doc = state.segment_info.max_doc()?;
+            let meta_name = segment_file_name(
+                &state.segment_info.name,
+                &state.segment_suffix,
+                NORMS_META_EXTENSION,
+            );
+            let meta = meta.insert(state.directory.create_output(&meta_name, state.context)?);
+            codec_util::write_index_header(
+                meta.as_mut(),
+                METADATA_CODEC,
+                VERSION_CURRENT,
+                &state.segment_info.id(),
+                &state.segment_suffix,
+            )?;
+            state.segment_info.max_doc()
+        })();
+        let max_doc = match opened {
+            Ok(max_doc) => max_doc,
+            Err(error) => {
+                // `IOUtils.closeWhileHandlingException(this)`
+                // (`Lucene90NormsConsumer.java:61-65`).
+                IOUtils::close_while_handling_exception([Some(|| {
+                    Self::close_outputs(data.as_mut(), meta.as_mut())
+                })])?;
+                return Err(error);
+            }
+        };
+        let expect = "INVARIANT: the constructor created both outputs";
         Ok(Self {
-            data,
-            meta,
+            data: data.expect(expect),
+            meta: meta.expect(expect),
             max_doc,
         })
+    }
+
+    /// The body of `Lucene90NormsConsumer.close()`
+    /// (`Lucene90NormsConsumer.java:68-88`) over the outputs that are not
+    /// null: the EOF marker and the footers, then `IOUtils.close(data, meta)`,
+    /// or `IOUtils.closeWhileHandlingException(data, meta)` when writing them
+    /// failed.
+    fn close_outputs(
+        mut data: Option<&mut Box<dyn IndexOutput>>,
+        mut meta: Option<&mut Box<dyn IndexOutput>>,
+    ) -> Result<()> {
+        let written = (|| -> Result<()> {
+            if let Some(meta) = meta.as_deref_mut() {
+                meta.write_int(-1)?; // write EOF marker
+                codec_util::write_footer(meta.as_mut())?; // write checksum
+            }
+            if let Some(data) = data.as_deref_mut() {
+                codec_util::write_footer(data.as_mut())?; // write checksum
+            }
+            Ok(())
+        })();
+        let closeables = [data, meta].map(|o| o.map(|o| move || o.close()));
+        match written {
+            Ok(()) => IOUtils::close(closeables),
+            Err(error) => {
+                IOUtils::close_while_handling_exception(closeables)?;
+                Err(error)
+            }
+        }
     }
 }
 
@@ -179,7 +228,7 @@ impl NormsConsumer for Lucene90NormsConsumer {
         let mut min = i64::MAX;
         let mut max = i64::MIN;
         {
-            let mut it = values.get_norms(field)?;
+            let mut it = crate::codecs::doc_values::non_null(values.get_norms(field)?, field)?;
             loop {
                 let doc = it.next_doc()?;
                 if doc == NO_MORE_DOCS {
@@ -212,7 +261,7 @@ impl NormsConsumer for Lucene90NormsConsumer {
         } else {
             let offset = self.data.file_pointer();
             self.meta.write_long(offset)?;
-            let mut it = values.get_norms(field)?;
+            let mut it = crate::codecs::doc_values::non_null(values.get_norms(field)?, field)?;
             let mut docs = NormsDocs::new(it.as_mut());
             let jump_table_entry_count =
                 write_bit_set(&mut docs, self.data.as_mut(), DEFAULT_DENSE_RANK_POWER)?;
@@ -235,20 +284,17 @@ impl NormsConsumer for Lucene90NormsConsumer {
         } else {
             let norms_offset = self.data.file_pointer();
             self.meta.write_long(norms_offset)?;
-            let mut it = values.get_norms(field)?;
+            let mut it = crate::codecs::doc_values::non_null(values.get_norms(field)?, field)?;
             write_norm_values(it.as_mut(), bytes_per_norm, self.data.as_mut())?;
         }
 
         Ok(())
     }
 
+    /// Equivalent to `Lucene90NormsConsumer.close()`
+    /// (`Lucene90NormsConsumer.java:68-88`).
     fn close(&mut self) -> Result<()> {
-        self.meta.write_int(-1)?; // EOF marker
-        codec_util::write_footer(self.meta.as_mut())?;
-        codec_util::write_footer(self.data.as_mut())?;
-        self.meta.close()?;
-        self.data.close()?;
-        Ok(())
+        Self::close_outputs(Some(&mut self.data), Some(&mut self.meta))
     }
 }
 
@@ -416,22 +462,31 @@ impl Lucene90NormsProducer {
             NORMS_EXTENSION,
         );
         let mut data = state.directory.open_input(&data_name, state.context)?;
-        let version2 = codec_util::check_index_header(
-            data.as_mut(),
-            DATA_CODEC,
-            VERSION_START,
-            VERSION_CURRENT,
-            &state.segment_info.id(),
-            &state.segment_suffix,
-        )?;
-        if version != version2 {
-            return Err(LuceneError::CorruptIndex(format!(
-                "Format versions mismatch: meta={version}, data={version2}"
-            )));
+        let checked = (|| -> Result<()> {
+            let version2 = codec_util::check_index_header(
+                data.as_mut(),
+                DATA_CODEC,
+                VERSION_START,
+                VERSION_CURRENT,
+                &state.segment_info.id(),
+                &state.segment_suffix,
+            )?;
+            if version != version2 {
+                return Err(LuceneError::CorruptIndex(format!(
+                    "Format versions mismatch: meta={version}, data={version2}"
+                )));
+            }
+            // Cheap structural check of the data footer; the actual checksum is
+            // verified by `check_integrity` on demand.
+            codec_util::retrieve_checksum(data.as_mut())?;
+            Ok(())
+        })();
+        if let Err(error) = checked {
+            // `IOUtils.closeWhileHandlingException(this.data)`
+            // (`Lucene90NormsProducer.java:108-112`).
+            IOUtils::close_while_handling_exception([Some(|| data.close())])?;
+            return Err(error);
         }
-        // Cheap structural check of the data footer; the actual checksum is
-        // verified by `check_integrity` on demand.
-        codec_util::retrieve_checksum(data.as_mut())?;
 
         Ok(Self {
             norms,
@@ -582,8 +637,9 @@ fn read_fields(
     Ok(())
 }
 
-impl NormsProducer for Lucene90NormsProducer {
-    fn get_norms(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
+impl Lucene90NormsProducer {
+    /// The body of `Lucene90NormsProducer.getNorms(FieldInfo)`.
+    fn norms_of(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
         let entry = self.norms.get(&field.number).ok_or_else(|| {
             LuceneError::IllegalArgument(format!("no norms for field {}", field.name))
         })?;
@@ -623,6 +679,13 @@ impl NormsProducer for Lucene90NormsProducer {
             slice,
             entry.bytes_per_norm,
         )))
+    }
+}
+
+impl NormsProducer for Lucene90NormsProducer {
+    fn get_norms(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+        // Java's body never answers `null`.
+        self.norms_of(field).map(Some)
     }
 
     fn check_integrity(&self) -> Result<()> {
@@ -724,7 +787,7 @@ impl DocValuesIterator for DenseConstantNormsIterator {
 impl NumericDocValues for DenseConstantNormsIterator {
     fn long_value(&self) -> Result<i64> {
         if self.doc < 0 || self.doc >= self.max_doc {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "long_value called with no current document".to_string(),
             ));
         }
@@ -815,7 +878,7 @@ impl DocValuesIterator for DenseNormsIterator {
 impl NumericDocValues for DenseNormsIterator {
     fn long_value(&self) -> Result<i64> {
         if self.doc < 0 || self.doc >= self.max_doc {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "long_value called with no current document".to_string(),
             ));
         }
@@ -888,7 +951,7 @@ impl NumericDocValues for SparseConstantNormsIterator {
         // on a document that has a norm has to be remembered rather than read
         // back off the iterator.
         if !self.positioned {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "long_value called with no current document".to_string(),
             ));
         }
@@ -975,7 +1038,7 @@ impl DocValuesIterator for SparseNormsIterator {
 impl NumericDocValues for SparseNormsIterator {
     fn long_value(&self) -> Result<i64> {
         if !self.positioned {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "long_value called with no current document".to_string(),
             ));
         }
@@ -995,7 +1058,7 @@ mod tests {
     use crate::error::LuceneError;
     use crate::index::{DocValuesType, FieldInfo, FieldInfos, IndexOptions};
     use crate::search::DocIdSetIterator;
-    use crate::store::{Directory, RamDirectory};
+    use crate::store::{ByteBuffersDirectory, Directory};
     use crate::util::Version;
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -1008,7 +1071,7 @@ mod tests {
     }
 
     fn test_segment_info(name: &str, max_doc: i32) -> crate::index::SegmentInfo {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         crate::index::SegmentInfo::new(
             dir,
             Version::LUCENE_10_5_0,
@@ -1038,26 +1101,26 @@ mod tests {
     }
 
     fn write_state<'a>(
-        dir: &'a dyn Directory,
+        dir: &'a Arc<dyn Directory>,
         info: &'a crate::index::SegmentInfo,
         fis: &'a FieldInfos,
     ) -> SegmentWriteState<'a> {
         SegmentWriteState::new(
-            crate::util::default_info_stream(),
-            dir,
+            &crate::util::NoOutputInfoStream,
+            Arc::clone(dir),
             info,
             fis,
-            &BufferedUpdates,
+            Box::leak(Box::new(BufferedUpdates::default())),
             &*crate::store::DEFAULT_IO_CONTEXT,
         )
     }
 
     fn read_state<'a>(
-        dir: &'a dyn Directory,
+        dir: &'a Arc<dyn Directory>,
         info: &'a crate::index::SegmentInfo,
         fis: &'a FieldInfos,
     ) -> SegmentReadState<'a> {
-        SegmentReadState::new(dir, info, fis, &*crate::store::DEFAULT_IO_CONTEXT)
+        SegmentReadState::new(&**dir, info, fis, &*crate::store::DEFAULT_IO_CONTEXT)
     }
 
     /// In-memory numeric doc-values iterator used only for tests.
@@ -1123,7 +1186,7 @@ mod tests {
     impl NumericDocValues for VecNumericDocValues {
         fn long_value(&self) -> Result<i64> {
             if self.idx < 0 || self.idx as usize >= self.docs.len() {
-                return Err(LuceneError::IllegalState(
+                return Err(LuceneError::illegal_state(
                     "long_value called with no current document".to_string(),
                 ));
             }
@@ -1144,9 +1207,12 @@ mod tests {
     }
 
     impl NormsProducer for VecNormsProducer {
-        fn get_norms(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
-            let docs = self.fields.get(&field.number).cloned().unwrap_or_default();
-            Ok(Box::new(VecNumericDocValues::new(docs)))
+        fn get_norms(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+            let values: Result<Box<dyn NumericDocValues>> = {
+                let docs = self.fields.get(&field.number).cloned().unwrap_or_default();
+                Ok(Box::new(VecNumericDocValues::new(docs)))
+            };
+            Ok(Some(values?))
         }
 
         fn check_integrity(&self) -> Result<()> {
@@ -1182,7 +1248,7 @@ mod tests {
 
     #[test]
     fn round_trip_dense_field() {
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let info = test_segment_info("_0", 5);
         let body = norm_field("body", 0);
         let fis = field_infos(vec![body.clone()]);
@@ -1203,7 +1269,7 @@ mod tests {
         let mut producer = Lucene90NormsFormat::new()
             .norms_producer(&read_state(&dir, &info, &fis))
             .unwrap();
-        let mut values = producer.get_norms(&body).unwrap();
+        let mut values = producer.get_norms(&body).unwrap().unwrap();
         let collected = collect_values(&mut *values, 5);
         assert_eq!(collected, vec![Some(1), Some(2), Some(3), Some(4), Some(5)]);
         producer.check_integrity().unwrap();
@@ -1213,7 +1279,7 @@ mod tests {
 
     #[test]
     fn round_trip_sparse_field() {
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let info = test_segment_info("_0", 10);
         let body = norm_field("body", 0);
         let fis = field_infos(vec![body.clone()]);
@@ -1232,7 +1298,7 @@ mod tests {
         let producer = Lucene90NormsFormat::new()
             .norms_producer(&read_state(&dir, &info, &fis))
             .unwrap();
-        let mut values = producer.get_norms(&body).unwrap();
+        let mut values = producer.get_norms(&body).unwrap().unwrap();
         let collected = collect_values(&mut *values, 10);
         let expected: Vec<Option<i64>> = (0..10)
             .map(|d| match d {
@@ -1247,7 +1313,7 @@ mod tests {
 
     #[test]
     fn round_trip_empty_field() {
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let info = test_segment_info("_0", 4);
         let body = norm_field("body", 0);
         let fis = field_infos(vec![body.clone()]);
@@ -1265,13 +1331,13 @@ mod tests {
         let producer = Lucene90NormsFormat::new()
             .norms_producer(&read_state(&dir, &info, &fis))
             .unwrap();
-        let mut values = producer.get_norms(&body).unwrap();
+        let mut values = producer.get_norms(&body).unwrap().unwrap();
         assert_eq!(values.next_doc().unwrap(), NO_MORE_DOCS);
     }
 
     #[test]
     fn round_trip_constant_value() {
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let info = test_segment_info("_0", 6);
         let body = norm_field("body", 0);
         let fis = field_infos(vec![body.clone()]);
@@ -1289,7 +1355,7 @@ mod tests {
         let producer = Lucene90NormsFormat::new()
             .norms_producer(&read_state(&dir, &info, &fis))
             .unwrap();
-        let mut values = producer.get_norms(&body).unwrap();
+        let mut values = producer.get_norms(&body).unwrap().unwrap();
         let collected = collect_values(&mut *values, 6);
         let expected: Vec<Option<i64>> = (0..6)
             .map(|d| if d % 2 == 0 { Some(42) } else { None })
@@ -1299,7 +1365,7 @@ mod tests {
 
     #[test]
     fn round_trip_multiple_fields() {
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let info = test_segment_info("_0", 5);
         let body = norm_field("body", 0);
         let title = norm_field("title", 1);
@@ -1323,13 +1389,13 @@ mod tests {
             .norms_producer(&read_state(&dir, &info, &fis))
             .unwrap();
 
-        let mut body_values = producer.get_norms(&body).unwrap();
+        let mut body_values = producer.get_norms(&body).unwrap().unwrap();
         assert_eq!(
             collect_values(&mut *body_values, 5),
             vec![Some(1), Some(2), Some(3), Some(4), Some(5)]
         );
 
-        let mut title_values = producer.get_norms(&title).unwrap();
+        let mut title_values = producer.get_norms(&title).unwrap().unwrap();
         let title_collected = collect_values(&mut *title_values, 5);
         let expected: Vec<Option<i64>> = (0..5)
             .map(|d| match d {
@@ -1343,7 +1409,7 @@ mod tests {
 
     #[test]
     fn round_trip_byte_widths() {
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let info = test_segment_info("_0", 4);
         let fields = vec![
             (0, "byte", vec![(0, 100), (1, -100), (2, 50), (3, -50)]),
@@ -1387,7 +1453,7 @@ mod tests {
             .unwrap();
         for (number, _, expected) in &fields {
             let field = fis.field_info_by_number(*number).unwrap();
-            let mut it = producer.get_norms(field).unwrap();
+            let mut it = producer.get_norms(field).unwrap().unwrap();
             let collected = collect_values(&mut *it, 4);
             assert_eq!(
                 collected,
@@ -1398,7 +1464,7 @@ mod tests {
 
     #[test]
     fn rejects_missing_field_number() {
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let info = test_segment_info("_0", 3);
         let body = norm_field("body", 0);
         let fis_with_body = field_infos(vec![body.clone()]);
@@ -1421,7 +1487,7 @@ mod tests {
 
     #[test]
     fn rejects_field_without_norms() {
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let info = test_segment_info("_0", 3);
         let mut body = FieldInfo::new("body", 0);
         body.index_options = IndexOptions::DOCS_AND_FREQS;
@@ -1453,7 +1519,7 @@ mod tests {
     ///
     /// The layout is the one `Lucene90NormsConsumer.addNormsField` writes:
     /// an index header, then `field_number` and seven words per field.
-    fn read_first_entry(dir: &RamDirectory, max_doc: i32) -> NormsEntry {
+    fn read_first_entry(dir: &Arc<dyn Directory>, max_doc: i32) -> NormsEntry {
         use crate::store::DataInput;
         let mut input = dir
             .open_input("_0.nvm", &*crate::store::DEFAULT_IO_CONTEXT)
@@ -1479,7 +1545,11 @@ mod tests {
         }
     }
 
-    fn write_one_field(dir: &RamDirectory, max_doc: i32, values: Vec<(i32, i64)>) -> FieldInfo {
+    fn write_one_field(
+        dir: &Arc<dyn Directory>,
+        max_doc: i32,
+        values: Vec<(i32, i64)>,
+    ) -> FieldInfo {
         let info = test_segment_info("_0", max_doc);
         let body = norm_field("body", 0);
         let fis = field_infos(vec![body.clone()]);
@@ -1500,7 +1570,7 @@ mod tests {
         // with each other, so every round-trip test passed — while the files
         // were unreadable by Lucene and Lucene's were unreadable here. The
         // metadata is asserted directly, because it is what names the encoding.
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         write_one_field(
             &dir,
             100,
@@ -1524,7 +1594,7 @@ mod tests {
 
     #[test]
     fn an_all_documents_field_writes_no_docs_with_field_stream() {
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         write_one_field(&dir, 20, (0..20).map(|d| (d, 3i64)).collect());
         let entry = read_first_entry(&dir, 20);
         assert_eq!(entry.docs_with_field_offset, -1);
@@ -1536,7 +1606,7 @@ mod tests {
 
     #[test]
     fn a_field_with_no_documents_writes_the_empty_sentinel() {
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         write_one_field(&dir, 20, Vec::new());
         let entry = read_first_entry(&dir, 20);
         assert_eq!(entry.docs_with_field_offset, -2);
@@ -1556,7 +1626,7 @@ mod tests {
         // zero — and so the wrong value — in a release one. Every document in
         // the segment is placed on such a boundary in turn.
         for boundary in [63, 64, 127, 128, 191, 255] {
-            let dir = RamDirectory::default();
+            let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
             let body = write_one_field(
                 &dir,
                 300,
@@ -1567,17 +1637,17 @@ mod tests {
             let producer = Lucene90NormsFormat::new()
                 .norms_producer(&read_state(&dir, &info, &fis))
                 .unwrap();
-            let mut values = producer.get_norms(&body).unwrap();
+            let mut values = producer.get_norms(&body).unwrap().unwrap();
             assert_eq!(
                 collect_values(&mut *values, 300)[boundary as usize - 1],
                 Some(11)
             );
-            let mut values = producer.get_norms(&body).unwrap();
+            let mut values = producer.get_norms(&body).unwrap().unwrap();
             assert_eq!(
                 collect_values(&mut *values, 300)[boundary as usize],
                 Some(22)
             );
-            let mut values = producer.get_norms(&body).unwrap();
+            let mut values = producer.get_norms(&body).unwrap().unwrap();
             assert_eq!(
                 collect_values(&mut *values, 300)[boundary as usize + 1],
                 Some(33)
@@ -1587,7 +1657,7 @@ mod tests {
 
     #[test]
     fn a_sparse_field_supports_random_access() {
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let body = write_one_field(&dir, 200, vec![(5, -7), (63, 8), (64, 9), (199, -1)]);
         let info = test_segment_info("_0", 200);
         let fis = field_infos(vec![body.clone()]);
@@ -1595,7 +1665,7 @@ mod tests {
             .norms_producer(&read_state(&dir, &info, &fis))
             .unwrap();
 
-        let mut values = producer.get_norms(&body).unwrap();
+        let mut values = producer.get_norms(&body).unwrap().unwrap();
         assert_eq!(values.advance(6).unwrap(), 63);
         assert_eq!(values.long_value().unwrap(), 8);
         assert_eq!(values.advance(199).unwrap(), 199);
@@ -1603,7 +1673,7 @@ mod tests {
         assert_eq!(values.advance(200).unwrap(), NO_MORE_DOCS);
         assert!(values.long_value().is_err());
 
-        let mut values = producer.get_norms(&body).unwrap();
+        let mut values = producer.get_norms(&body).unwrap().unwrap();
         assert!(values.advance_exact(5).unwrap());
         assert_eq!(values.long_value().unwrap(), -7);
         assert!(!values.advance_exact(6).unwrap());
@@ -1614,7 +1684,7 @@ mod tests {
 
     #[test]
     fn a_dense_field_supports_random_access() {
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let body = write_one_field(&dir, 8, (0..8).map(|d| (d, d as i64 - 4)).collect());
         let info = test_segment_info("_0", 8);
         let fis = field_infos(vec![body.clone()]);
@@ -1622,13 +1692,13 @@ mod tests {
             .norms_producer(&read_state(&dir, &info, &fis))
             .unwrap();
 
-        let mut values = producer.get_norms(&body).unwrap();
+        let mut values = producer.get_norms(&body).unwrap().unwrap();
         assert_eq!(values.advance(3).unwrap(), 3);
         assert_eq!(values.long_value().unwrap(), -1);
         assert_eq!(values.advance(8).unwrap(), NO_MORE_DOCS);
         assert!(values.long_value().is_err());
 
-        let mut values = producer.get_norms(&body).unwrap();
+        let mut values = producer.get_norms(&body).unwrap().unwrap();
         assert!(values.advance_exact(7).unwrap());
         assert_eq!(values.long_value().unwrap(), 3);
         assert!(!values.advance_exact(8).unwrap());
@@ -1645,7 +1715,7 @@ mod tests {
             .filter(|d| d % 43 != 0)
             .map(|d| (d, 1 + (d as i64 % 11)))
             .collect();
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let body = write_one_field(&dir, MAX_DOC, expected.clone());
         let entry = read_first_entry(&dir, MAX_DOC);
         assert_eq!(entry.num_docs_with_field, expected.len() as i32);
@@ -1656,7 +1726,7 @@ mod tests {
         let producer = Lucene90NormsFormat::new()
             .norms_producer(&read_state(&dir, &info, &fis))
             .unwrap();
-        let mut values = producer.get_norms(&body).unwrap();
+        let mut values = producer.get_norms(&body).unwrap().unwrap();
         let collected = collect_values(&mut *values, MAX_DOC);
         let mut want = vec![None; MAX_DOC as usize];
         for (doc, value) in &expected {
@@ -1667,7 +1737,7 @@ mod tests {
 
     #[test]
     fn the_merge_instance_reads_the_same_values() {
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let body = write_one_field(
             &dir,
             50,
@@ -1681,11 +1751,11 @@ mod tests {
         let producer = Lucene90NormsFormat::new()
             .norms_producer(&read_state(&dir, &info, &fis))
             .unwrap();
-        let mut direct = producer.get_norms(&body).unwrap();
+        let mut direct = producer.get_norms(&body).unwrap().unwrap();
         let expected = collect_values(&mut *direct, 50);
 
         let merge = producer.get_merge_instance().unwrap();
-        let mut merged = merge.get_norms(&body).unwrap();
+        let mut merged = merge.get_norms(&body).unwrap().unwrap();
         assert_eq!(collect_values(&mut *merged, 50), expected);
     }
 
@@ -1702,7 +1772,7 @@ mod tests {
             (vec![(0, 0i64), (1, 40_000)], 4),
             (vec![(0, 0i64), (1, i64::MAX)], 8),
         ] {
-            let dir = RamDirectory::default();
+            let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
             let body = write_one_field(&dir, 2, values.clone());
             let entry = read_first_entry(&dir, 2);
             assert_eq!(
@@ -1714,7 +1784,7 @@ mod tests {
             let producer = Lucene90NormsFormat::new()
                 .norms_producer(&read_state(&dir, &info, &fis))
                 .unwrap();
-            let mut read = producer.get_norms(&body).unwrap();
+            let mut read = producer.get_norms(&body).unwrap().unwrap();
             let collected = collect_values(&mut *read, 2);
             let mut want = vec![None; 2];
             for (doc, value) in &values {
@@ -1726,10 +1796,10 @@ mod tests {
     /// Rewrites `_0.nvm` with `patch` applied to its body, optionally recomputing
     /// the footer so that the file still passes its checksum.
     fn patch_metadata(
-        dir: &RamDirectory,
+        dir: &Arc<dyn Directory>,
         resign: bool,
         patch: impl FnOnce(&mut Vec<u8>),
-    ) -> RamDirectory {
+    ) -> Arc<dyn Directory> {
         let read = |name: &str| {
             let mut input = dir
                 .open_input(name, &*crate::store::DEFAULT_IO_CONTEXT)
@@ -1744,7 +1814,7 @@ mod tests {
         let mut body = meta[..meta.len() - 16].to_vec();
         patch(&mut body);
 
-        let out_dir = RamDirectory::default();
+        let out_dir = ByteBuffersDirectory::default();
         {
             let mut out = out_dir
                 .create_output("_0.nvd", &*crate::store::DEFAULT_IO_CONTEXT)
@@ -1765,7 +1835,7 @@ mod tests {
             }
             out.close().unwrap();
         }
-        out_dir
+        Arc::new(out_dir)
     }
 
     /// Byte offset of the `bytes_per_norm` of the only entry, within the body of
@@ -1781,7 +1851,7 @@ mod tests {
         // the checksum passes: the file is exactly what was written, so it is
         // the entry that is wrong, and saying "footer mismatch" would send the
         // operator looking for disk corruption that is not there.
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let body = write_one_field(&dir, 4, vec![(0, 1), (2, 2)]);
         let patched = patch_metadata(&dir, true, |body| {
             let at = bytes_per_norm_offset(body.len());
@@ -1804,7 +1874,7 @@ mod tests {
         // With the footer left alone the same patch makes the file genuinely
         // corrupt, and then the corruption is what explains it — with the entry
         // failure folded in rather than lost.
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let body = write_one_field(&dir, 4, vec![(0, 1), (2, 2)]);
         let patched = patch_metadata(&dir, false, |body| {
             let at = bytes_per_norm_offset(body.len());
@@ -1831,7 +1901,7 @@ mod tests {
         // When the entry decoder has already read past the start of the footer
         // there is nothing left to verify, which Java reports as an
         // indeterminate checksum rather than pretending either way.
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let body = write_one_field(&dir, 4, vec![(0, 1), (2, 2)]);
         // Dropping the end-of-metadata marker makes the decoder read on into
         // the footer looking for the next field number.
@@ -1855,7 +1925,7 @@ mod tests {
         // Java checks the header inside the same `try` as the entries, so a
         // file whose header does not belong to this codec is reported as such
         // rather than as a footer problem.
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let body = write_one_field(&dir, 4, vec![(0, 1), (2, 2)]);
         let patched = patch_metadata(&dir, true, |body| {
             // The codec name follows the four-byte magic and a one-byte length.
@@ -1882,5 +1952,61 @@ impl fmt::Display for Lucene90NormsProducer {
     /// Port of `Lucene90NormsProducer.toString()`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Lucene90NormsProducer(fields={})", self.norms.len())
+    }
+}
+
+/// The `IOUtils` close family at the norms call sites (#308).
+#[cfg(test)]
+mod close_family_tests {
+    use super::{Lucene90NormsConsumer, Lucene90NormsProducer};
+    use crate::codecs::norms::NormsConsumer;
+    use crate::codecs::tests::{
+        read_state, rewrite_file, test_segment_info, tracking_directory, write_state,
+    };
+    use crate::index::FieldInfos;
+
+    /// A constructor that fails runs `IOUtils.closeWhileHandlingException(this)`
+    /// (`Lucene90NormsConsumer.java:61-65`), closing the `.nvd` it created.
+    #[test]
+    fn a_failed_consumer_constructor_closes_the_data_output() {
+        let (dir, _tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 10);
+        let fis = FieldInfos::default();
+        log.fail_open("_0.nvm");
+        Lucene90NormsConsumer::new(&write_state(&dir, &info, &fis)).unwrap_err();
+        assert_eq!(log.closed(), ["_0.nvd"]);
+    }
+
+    /// `close()` ends with `IOUtils.close(data, meta)`
+    /// (`Lucene90NormsConsumer.java:80-84`): data first, then meta, whose
+    /// failure is raised.
+    #[test]
+    fn consumer_close_closes_data_then_meta() {
+        let (dir, _tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 10);
+        let fis = FieldInfos::default();
+        let mut consumer = Lucene90NormsConsumer::new(&write_state(&dir, &info, &fis)).unwrap();
+        log.fail_close("_0.nvm");
+        let error = consumer.close().unwrap_err();
+        assert!(format!("{error}").contains("_0.nvm"), "{error}");
+        assert_eq!(log.closed(), ["_0.nvd", "_0.nvm"]);
+    }
+
+    /// A bad `.nvd` header closes the data input:
+    /// `IOUtils.closeWhileHandlingException(this.data)`
+    /// (`Lucene90NormsProducer.java:108-112`).
+    #[test]
+    fn a_bad_data_header_closes_the_data_input() {
+        let (dir, tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 10);
+        let fis = FieldInfos::default();
+        Lucene90NormsConsumer::new(&write_state(&dir, &info, &fis))
+            .unwrap()
+            .close()
+            .unwrap();
+        let before = log.closed().len();
+        rewrite_file(&tracking, "_0.nvd", |bytes| bytes[6] ^= 0xff);
+        Lucene90NormsProducer::new(&read_state(&*dir, &info, &fis)).unwrap_err();
+        assert_eq!(log.closed()[before..], ["_0.nvd"]);
     }
 }

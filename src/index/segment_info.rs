@@ -17,7 +17,7 @@ use crate::index::IndexReader;
 use crate::search::sort::{MissingValue, SortFieldKind, SortFieldType};
 use crate::search::Sort;
 use crate::store::Directory;
-use crate::util::java_collections::{JavaHashSet, JavaStringMap};
+use crate::util::java_collections::{JavaHashSet, JavaIntHashMap, JavaStringMap};
 use crate::util::string_helper::{StringHelper, ID_LENGTH};
 use crate::util::NumericUtils;
 use crate::util::Version;
@@ -201,7 +201,7 @@ impl SegmentInfo {
     /// Returns `LuceneError::IllegalState` if `max_doc` has not been set.
     pub fn max_doc(&self) -> Result<i32> {
         if self.max_doc < 0 {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "maxDoc isn't set yet".to_string(),
             ));
         }
@@ -215,7 +215,7 @@ impl SegmentInfo {
     /// Returns `LuceneError::IllegalState` if `max_doc` was already set.
     pub fn set_max_doc(&mut self, max_doc: i32) -> Result<()> {
         if self.max_doc >= 0 {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "maxDoc was already set: this.maxDoc={} vs maxDoc={max_doc}",
                 self.max_doc
             )));
@@ -237,6 +237,17 @@ impl SegmentInfo {
     /// Returns the minimum version that contributed documents, if known.
     pub fn min_version(&self) -> Option<Version> {
         self.min_version
+    }
+
+    /// Records the minimum version that contributed documents to this segment.
+    ///
+    /// Java has no setter: `SegmentMerger`'s constructor assigns the
+    /// package-private field `segmentInfo.minVersion` directly
+    /// (`SegmentMerger.java:76-89`). Rust has no package visibility, so the
+    /// assignment goes through this crate-private method, which only that
+    /// constructor calls.
+    pub(crate) fn set_min_version(&mut self, min_version: Option<Version>) {
+        self.min_version = min_version;
     }
 
     /// Returns the 16-byte segment id.
@@ -370,7 +381,7 @@ impl SegmentInfo {
         let files = self.files.read().unwrap();
         match files.as_ref() {
             Some(f) => Ok(f.clone()),
-            None => Err(LuceneError::IllegalState(format!(
+            None => Err(LuceneError::illegal_state(format!(
                 "files were not computed yet; segment={} maxDoc={}",
                 self.name, self.max_doc
             ))),
@@ -379,31 +390,27 @@ impl SegmentInfo {
 
     /// Replaces the set of files referenced by this segment.
     ///
-    /// Equivalent to `SegmentInfo.setFiles(Collection<String>)`.
+    /// Equivalent to `SegmentInfo.setFiles(Collection<String>)`
+    /// (`SegmentInfo.java:309-320`): the set is replaced by a new, empty
+    /// `HashSet`, then `addFiles` validates every name with
+    /// [`check_file_names`](Self::check_file_names) and adds each one, in the
+    /// argument's iteration order, renamed with
+    /// [`named_for_this_segment`](Self::named_for_this_segment). As in Java, a
+    /// rejected name leaves the segment with the new, empty set.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java clears the set and then routes
-    /// the names through `addFiles`, so they are validated by
-    /// [`check_file_names`](Self::check_file_names) and renamed with
-    /// [`named_for_this_segment`](Self::named_for_this_segment). This port
-    /// stores the names as given and cannot report a rejection, because its
-    /// signature is infallible and the flush path in
-    /// `DocumentsWriterPerThread` calls it without a `Result` to propagate.
-    /// Callers that accept names from outside the codec should validate them
-    /// with [`check_file_names`](Self::check_file_names) first.
-    pub fn set_files<I>(&self, files: I)
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when a name is not a codec
+    /// file name or ends with `.tmp`, with Java's message.
+    pub fn set_files<I>(&self, files: I) -> Result<()>
     where
         I: IntoIterator<Item = String>,
     {
-        // `new HashSet<>()` then one `add` per name, in the argument's
-        // iteration order (`SegmentInfo.java:309-320`). The argument's order is
-        // therefore what fixes the chain order of any colliding names — in Java
-        // as much as here — so callers that care hand over an ordered
-        // collection.
-        let mut set = JavaHashSet::new();
-        for file in files {
-            set.insert(file);
-        }
-        *self.files.write().unwrap() = Some(set);
+        let files: Vec<String> = files.into_iter().collect();
+        // `setFiles = new HashSet<>()`.
+        *self.files.write().unwrap() = Some(JavaHashSet::new());
+        // `addFiles(files)`.
+        self.add_files(&files)
     }
 
     /// Rejects any file name that is not a well-formed codec file name.
@@ -603,17 +610,14 @@ impl std::hash::Hash for SegmentInfo {
 
 /// Strips the leading segment name from a file name, leaving the extension suffix.
 ///
-/// Equivalent to `org.apache.lucene.index.IndexFileNames.stripSegmentName`.
+/// Equivalent to `org.apache.lucene.index.IndexFileNames.stripSegmentName`
+/// (`IndexFileNames.java:119-143`): the boundary is the first `'_'` found
+/// from the *second* character on — so a generation or codec suffix such as
+/// `_1_Lucene90_0.dvd` is kept — or else the first `'.'`. This forwards to
+/// [`index_file_names::strip_segment_name`](crate::index::index_file_names::strip_segment_name),
+/// which reproduces it.
 fn strip_segment_name(name: &str) -> &str {
-    // Match Lucene's IndexFileNames.stripSegmentName: the boundary is the first
-    // '_' after the leading segment underscore, or the first '.' if no such '_'.
-    match name.find('_').filter(|pos| *pos > 0) {
-        Some(pos) => &name[pos..],
-        None => match name.find('.') {
-            Some(pos) => &name[pos..],
-            None => name,
-        },
-    }
+    crate::index::index_file_names::strip_segment_name(name)
 }
 
 // -----------------------------------------------------------------------------
@@ -663,7 +667,9 @@ pub struct SegmentCommitInfo {
     /// [`JavaHashMap`](crate::util::java_collections::JavaHashMap) is
     /// `String`-keyed. Closing it needs that type generalised over a key hash.
     /// It only bites on a segment carrying doc-values update files.
-    dv_updates_files: HashMap<i32, JavaHashSet>,
+    /// `Map<Integer, Set<String>> dvUpdatesFiles = new HashMap<>()`
+    /// (`SegmentCommitInfo.java:72`), in Java's iteration order.
+    dv_updates_files: JavaIntHashMap<JavaHashSet>,
 
     /// Field infos update files.
     /// A `java.util.HashSet` that is cleared and refilled rather than replaced
@@ -730,7 +736,7 @@ impl SegmentCommitInfo {
             } else {
                 doc_values_gen + 1
             },
-            dv_updates_files: HashMap::new(),
+            dv_updates_files: JavaIntHashMap::new(),
             field_infos_files: JavaHashSet::new(),
             size_in_bytes: -1,
             buffered_deletes_gen: -1,
@@ -922,8 +928,9 @@ impl SegmentCommitInfo {
         self.next_write_doc_values_gen = v;
     }
 
-    /// Returns the per-field doc values update files.
-    pub fn get_doc_values_updates_files(&self) -> &HashMap<i32, JavaHashSet> {
+    /// Returns the per-field doc values update files, in Java's
+    /// `HashMap<Integer, Set<String>>` order.
+    pub fn get_doc_values_updates_files(&self) -> &JavaIntHashMap<JavaHashSet> {
         &self.dv_updates_files
     }
 
@@ -933,6 +940,8 @@ impl SegmentCommitInfo {
         M: IntoIterator<Item = (i32, I)>,
         I: IntoIterator<Item = String>,
     {
+        // `this.dvUpdatesFiles.clear()` keeps the table it had, then one `put`
+        // per entry in the argument's order.
         self.dv_updates_files.clear();
         for (field_number, set) in files {
             // `new HashSet<>()` then one renamed `add` per file, in the
@@ -970,7 +979,7 @@ impl SegmentCommitInfo {
     /// Sets the buffered deletes generation.
     pub fn set_buffered_deletes_gen(&mut self, gen: i64) -> Result<()> {
         if self.buffered_deletes_gen != -1 {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "buffered deletes gen should only be set once".to_string(),
             ));
         }
@@ -995,29 +1004,37 @@ impl SegmentCommitInfo {
 
     /// Returns all files in use by this segment commit.
     ///
-    /// Equivalent to `SegmentCommitInfo.files()`.
+    /// Equivalent to `SegmentCommitInfo.files()`, for the callers that only
+    /// test membership; [`files_ordered`](Self::files_ordered) keeps Java's
+    /// iteration order.
     pub fn files(&self) -> Result<HashSet<String>> {
-        let mut files = self.info.files()?;
+        Ok(self.files_ordered()?.to_std())
+    }
+
+    /// Returns all files in use by this segment commit, iteration order
+    /// included.
+    ///
+    /// Equivalent to `SegmentCommitInfo.files()` (`SegmentCommitInfo.java:239-260`),
+    /// which builds a `java.util.HashSet` with `new HashSet<>(info.files())`
+    /// and then adds the live-docs files, the doc-values update files and the
+    /// field-infos files, in that order.
+    ///
+    pub fn files_ordered(&self) -> Result<JavaHashSet> {
+        let mut files = JavaHashSet::from_collection(self.info.files_ordered()?);
 
         if self.has_deletions() {
             if let Some(codec) = self.info.codec() {
                 let mut live_docs_files = Vec::new();
                 codec.live_docs_format().files(self, &mut live_docs_files)?;
-                for file in live_docs_files {
-                    files.insert(file);
-                }
+                files.extend(live_docs_files);
             }
         }
 
         for set in self.dv_updates_files.values() {
-            for file in set {
-                files.insert(file.clone());
-            }
+            files.extend(set.iter().cloned());
         }
 
-        for file in &self.field_infos_files {
-            files.insert(file.clone());
-        }
+        files.extend(self.field_infos_files.iter().cloned());
 
         Ok(files)
     }
@@ -1080,7 +1097,15 @@ impl Clone for SegmentCommitInfo {
             next_write_field_infos_gen: self.next_write_field_infos_gen,
             doc_values_gen: self.doc_values_gen,
             next_write_doc_values_gen: self.next_write_doc_values_gen,
-            dv_updates_files: self.dv_updates_files.clone(),
+            // Deep clone: a fresh map receiving `new HashSet<>(value)` per entry
+            // in `entrySet()` order (`SegmentCommitInfo.java:394-397`).
+            dv_updates_files: {
+                let mut files = JavaIntHashMap::new();
+                for (field_number, set) in self.dv_updates_files.iter() {
+                    files.insert(field_number, JavaHashSet::from_collection(set.clone()));
+                }
+                files
+            },
             field_infos_files: self.field_infos_files.clone(),
             size_in_bytes: self.size_in_bytes,
             buffered_deletes_gen: self.buffered_deletes_gen,
@@ -1258,7 +1283,7 @@ struct NumericSegmentOrder {
 
 impl SegmentOrderImpl for NumericSegmentOrder {
     fn reorder(&self, reader: Arc<dyn IndexReader>) -> Result<Arc<dyn IndexReader>> {
-        let leaves = Arc::clone(&reader).leaves();
+        let leaves = Arc::clone(&reader).leaves()?;
         let mut subs: Vec<Arc<dyn IndexReader>> = Vec::with_capacity(leaves.len());
         let mut leaf_views: Vec<Arc<dyn crate::index::LeafReader>> =
             Vec::with_capacity(leaves.len());
@@ -1383,7 +1408,7 @@ mod tests {
     use crate::codecs::tests::DummyCodec;
     use crate::codecs::FilterCodec;
     use crate::index::FieldInfos;
-    use crate::store::{DefaultIOContext, Directory, RamDirectory};
+    use crate::store::{ByteBuffersDirectory, DefaultIOContext, Directory};
     use crate::util::Version;
     use std::sync::Arc;
 
@@ -1395,7 +1420,7 @@ mod tests {
     }
 
     fn test_segment_info(name: &str, max_doc: i32) -> SegmentInfo {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         SegmentInfo::new(
             dir,
             Version::LUCENE_10_5_0,
@@ -1428,7 +1453,7 @@ mod tests {
         assert_eq!(info.max_doc().unwrap(), 7);
         assert!(info.set_max_doc(8).is_err(), "maxDoc may only be set once");
 
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let error = SegmentInfo::new(
             dir,
             Version::LUCENE_10_5_0,
@@ -1459,13 +1484,56 @@ mod tests {
         assert_eq!(info.get_diagnostics().get("source").unwrap(), "flush");
     }
 
+    /// `setFiles` replaces the set, then validates and renames every name
+    /// through `addFiles` (`SegmentInfo.java:309-345`): a foreign segment's
+    /// file is renamed for this segment, a name that is not a codec file name
+    /// or ends in `.tmp` is refused with Java's message, and a refusal leaves
+    /// the new, empty set behind.
+    #[test]
+    fn set_files_validates_and_renames_as_java() {
+        let info = test_segment_info("_0", 10);
+        info.set_files(["_7.fdt".to_string(), "_0_Lucene104_0.doc".to_string()])
+            .unwrap();
+        let files = info.files().unwrap();
+        assert!(
+            files.contains("_0.fdt"),
+            "namedForThisSegment renames `_7.fdt`"
+        );
+        assert!(files.contains("_0_Lucene104_0.doc"));
+        assert_eq!(files.len(), 2);
+
+        let error = info
+            .set_files(["_0.fnm".to_string(), "foo.bar".to_string()])
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            LuceneError::IllegalArgument(
+                "invalid codec filename 'foo.bar', must match: _[a-z0-9]+(_.*)?\\..*".to_string()
+            )
+            .to_string()
+        );
+        assert!(
+            info.files().unwrap().is_empty(),
+            "Java has already replaced the set when addFiles throws"
+        );
+
+        let error = info.set_files(["_0.TMP".to_string()]).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            LuceneError::IllegalArgument(
+                "invalid codec filename '_0.TMP', cannot end with .tmp extension".to_string()
+            )
+            .to_string()
+        );
+    }
+
     #[test]
     fn segment_info_files_round_trip() {
         let info = test_segment_info("_0", 10);
         let mut files = HashSet::new();
         files.insert("_0.fnm".to_string());
         files.insert("_0.si".to_string());
-        info.set_files(files);
+        info.set_files(files).unwrap();
         assert_eq!(info.files().unwrap().len(), 2);
 
         info.add_file("_0.doc".to_string()).unwrap();
@@ -1480,6 +1548,18 @@ mod tests {
         let info = test_segment_info("_a", 5);
         assert_eq!(info.named_for_this_segment("_0.fnm"), "_a.fnm");
         assert_eq!(info.named_for_this_segment("fnm"), "_afnm");
+        // The doc-values update files of generation 1 keep their generation and
+        // codec suffix, as `IndexFileNames.stripSegmentName` keeps everything
+        // from the second `'_'` on.
+        assert_eq!(
+            info.named_for_this_segment("_0_1_Lucene90_0.dvd"),
+            "_a_1_Lucene90_0.dvd"
+        );
+        assert_eq!(info.named_for_this_segment("_0_1.fnm"), "_a_1.fnm");
+        assert_eq!(
+            info.named_for_this_segment("_0_Lucene104_0.doc"),
+            "_a_Lucene104_0.doc"
+        );
     }
 
     #[test]
@@ -1489,7 +1569,7 @@ mod tests {
         let info = test_segment_info("_0", UNSET_MAX_DOC);
         assert!(info.max_doc().is_err());
 
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let result = SegmentInfo::new(
             dir,
             Version::LUCENE_10_5_0,
@@ -1549,7 +1629,7 @@ mod tests {
 
     #[test]
     fn segment_read_state_new() {
-        let dir: &dyn Directory = &RamDirectory::default();
+        let dir: &dyn Directory = &ByteBuffersDirectory::default();
         let info = test_segment_info("_0", 10);
         let field_infos = FieldInfos::default();
         let ctx: &dyn crate::store::IOContext = &DefaultIOContext::default();
@@ -1564,11 +1644,11 @@ mod tests {
 
     #[test]
     fn segment_write_state_new() {
-        let info_stream: &dyn crate::util::InfoStream = crate::util::default_info_stream();
-        let dir: &dyn Directory = &RamDirectory::default();
+        let info_stream: &dyn crate::util::InfoStream = &crate::util::NoOutputInfoStream;
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let info = test_segment_info("_0", 10);
         let field_infos = FieldInfos::default();
-        let seg_updates = crate::codecs::stub::BufferedUpdates;
+        let seg_updates = crate::codecs::stub::BufferedUpdates::default();
         let ctx: &dyn crate::store::IOContext = &DefaultIOContext::default();
         let mut state =
             SegmentWriteState::new(info_stream, dir, &info, &field_infos, &seg_updates, ctx);

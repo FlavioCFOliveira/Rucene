@@ -193,8 +193,7 @@ impl LockStressTest {
         let lock_factory = Self::get_new_lock_factory(lock_factory_class_name)?;
         // We test the lock factory directly, so we don't need it on the
         // directory itself (the directory is just for testing).
-        let lock_dir =
-            NIOFSDirectory::with_lock_factory(lock_dir_path, Some(Box::new(NoLockFactory)))?;
+        let lock_dir = NIOFSDirectory::with_lock_factory(lock_dir_path, Box::new(NoLockFactory))?;
 
         let addr = (verifier_host, verifier_port)
             .to_socket_addrs()?
@@ -228,7 +227,7 @@ impl LockStressTest {
 
         for i in 0..count {
             match verify_lf.obtain_lock(&lock_dir, LOCK_FILE_NAME) {
-                Ok(mut held) => {
+                Ok(held) => {
                     let outcome = Self::hold_lock(
                         &mut verify_lf,
                         &lock_dir,
@@ -284,7 +283,7 @@ impl LockStressTest {
                 );
             }
             match verify_lf.obtain_lock(lock_dir, LOCK_FILE_NAME) {
-                Ok(mut second_lock) => {
+                Ok(second_lock) => {
                     // Java: `try (Lock secondLock = …) { throw new
                     // IOException("Double obtain"); }` — the resource is closed
                     // and the exception from the body propagates.

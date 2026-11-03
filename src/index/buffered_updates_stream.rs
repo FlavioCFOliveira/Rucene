@@ -42,6 +42,24 @@ pub trait FieldTermIterator {
     fn del_gen(&self) -> i64;
 }
 
+impl FieldTermIterator for crate::index::PrefixCodedTermsIterator {
+    /// Equivalent to `PrefixCodedTerms.TermIterator.next()`.
+    fn next(&mut self) -> Result<Option<BytesRef>> {
+        crate::index::PrefixCodedTermsIterator::next(self)
+    }
+
+    /// Equivalent to `PrefixCodedTerms.TermIterator.field()`, which is `null`
+    /// once the iteration is exhausted.
+    fn field(&self) -> Option<&str> {
+        crate::index::PrefixCodedTermsIterator::field(self)
+    }
+
+    /// Equivalent to `PrefixCodedTerms.TermIterator.delGen()`.
+    fn del_gen(&self) -> i64 {
+        crate::index::PrefixCodedTermsIterator::del_gen(self)
+    }
+}
+
 /// What applying a batch of packets achieved.
 ///
 /// Equivalent to `BufferedUpdatesStream.ApplyDeletesResult`.
@@ -170,14 +188,6 @@ impl FinishedSegments {
 /// The queue of frozen delete packets waiting to reach their segments.
 ///
 /// Equivalent to `org.apache.lucene.index.BufferedUpdatesStream`.
-///
-/// **Divergence from Lucene 10.5.0.** Java's `waitApply` opens a
-/// `SegmentReader` per affected segment and resolves the deletes there, through
-/// `ReadersAndUpdates` and the writer's reader pool. Applying a packet is
-/// therefore part of the writer, not of the stream; this port keeps the stream's
-/// own responsibilities — ordering the packets by generation, tracking which
-/// generations are still running, and selecting the segments a packet reaches —
-/// and leaves resolution to the caller that owns the readers.
 pub struct BufferedUpdatesStream {
     /// The packets still waiting to be applied.
     ///
@@ -247,9 +257,9 @@ impl BufferedUpdatesStream {
     /// Appends `packet` to the stream and returns the generation it was given.
     ///
     /// Equivalent to `BufferedUpdatesStream.push`.
-    pub fn push(&self, packet: FrozenBufferedUpdates) -> Result<i64> {
+    pub fn push(&self, packet: Arc<FrozenBufferedUpdates>) -> Result<i64> {
         let mut guard = self.updates.lock().map_err(|_| {
-            LuceneError::IllegalState("buffered updates stream lock poisoned".to_string())
+            LuceneError::illegal_state("buffered updates stream lock poisoned".to_string())
         })?;
         // The insert operation must be atomic: letting threads increment the
         // generation and push afterwards risks packets landing out of order,
@@ -262,7 +272,7 @@ impl BufferedUpdatesStream {
         debug_assert!(self.check_delete_stats(&guard));
 
         let bytes = Self::packet_bytes_used(&packet);
-        guard.push(Arc::new(packet));
+        guard.push(packet);
         self.bytes_used.fetch_add(bytes, Ordering::Relaxed);
         if self.info_stream.is_enabled(BD) {
             self.info_stream.message(
@@ -316,7 +326,7 @@ impl BufferedUpdatesStream {
     /// rollback calls.
     pub fn clear(&self) -> Result<()> {
         let mut guard = self.updates.lock().map_err(|_| {
-            LuceneError::IllegalState("buffered updates stream lock poisoned".to_string())
+            LuceneError::illegal_state("buffered updates stream lock poisoned".to_string())
         })?;
         guard.clear();
         self.next_gen.store(1, Ordering::Release);
@@ -360,45 +370,6 @@ impl BufferedUpdatesStream {
         self.finished_segments.finished_segment(del_gen);
     }
 
-    /// Returns the segments a packet of generation `del_gen` applies to.
-    ///
-    /// A packet reaches every segment flushed **before** it, which is what the
-    /// per-segment `buffered_deletes_gen` records. A segment-private packet
-    /// reaches only the segment it was frozen for.
-    ///
-    /// Equivalent to the segment selection inside
-    /// `BufferedUpdatesStream.openSegmentStates`.
-    pub fn segments_for<'a>(
-        &self,
-        packet: &FrozenBufferedUpdates,
-        del_gen: i64,
-        segments: &'a [SegmentCommitInfo],
-    ) -> Vec<&'a SegmentCommitInfo> {
-        match packet.private_segment_name() {
-            Some(name) => segments
-                .iter()
-                .filter(|info| info.info.name == name)
-                .collect(),
-            None => segments
-                .iter()
-                .filter(|info| info.get_buffered_deletes_gen() < del_gen)
-                .collect(),
-        }
-    }
-
-    /// Removes and returns every buffered packet, oldest first.
-    ///
-    /// The caller resolves them against its readers and then reports each
-    /// generation through [`finished_segment`](Self::finished_segment).
-    pub fn take_packets(&self) -> Result<Vec<Arc<FrozenBufferedUpdates>>> {
-        let mut guard = self.updates.lock().map_err(|_| {
-            LuceneError::IllegalState("buffered updates stream lock poisoned".to_string())
-        })?;
-        let taken = std::mem::take(&mut *guard);
-        self.bytes_used.store(0, Ordering::Release);
-        Ok(taken)
-    }
-
     /// Records that `packet` has finished being resolved, and drops it.
     ///
     /// Equivalent to `BufferedUpdatesStream.finished(FrozenBufferedUpdates)`,
@@ -411,7 +382,7 @@ impl BufferedUpdatesStream {
     pub fn finished(&self, packet: &Arc<FrozenBufferedUpdates>) -> Result<()> {
         {
             let mut guard = self.updates.lock().map_err(|_| {
-                LuceneError::IllegalState("buffered updates stream lock poisoned".to_string())
+                LuceneError::illegal_state("buffered updates stream lock poisoned".to_string())
             })?;
             guard.retain(|held| !Arc::ptr_eq(held, packet));
             self.bytes_used
@@ -443,7 +414,7 @@ impl BufferedUpdatesStream {
     pub fn wait_apply_all(&self, writer: &IndexWriter) -> Result<()> {
         let wait_for = {
             let guard = self.updates.lock().map_err(|_| {
-                LuceneError::IllegalState("buffered updates stream lock poisoned".to_string())
+                LuceneError::illegal_state("buffered updates stream lock poisoned".to_string())
             })?;
             guard.clone()
         };
@@ -473,7 +444,7 @@ impl BufferedUpdatesStream {
 
         let wait_for: Vec<Arc<FrozenBufferedUpdates>> = {
             let guard = self.updates.lock().map_err(|_| {
-                LuceneError::IllegalState("buffered updates stream lock poisoned".to_string())
+                LuceneError::illegal_state("buffered updates stream lock poisoned".to_string())
             })?;
             guard
                 .iter()

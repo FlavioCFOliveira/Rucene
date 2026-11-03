@@ -115,10 +115,13 @@ impl SortedSetSortField {
                 Some(crate::search::MissingValue::StringLast)
             ),
             self.sort_field.reverse(),
+            // `this::getValues`: `SortedSetSelector.wrap(DocValues.getSortedSet(
+            // reader, getField()), selector)` (`SortedSetSortField.java:
+            // 199-201`). A single-valued sorted field is promoted, a field the
+            // reader knows with another type is refused, and an absent one
+            // reads as empty values (`DocValues.java:317-329`).
             std::sync::Arc::new(move |reader: &dyn crate::index::LeafReader| {
-                let Some(values) = reader.get_sorted_set_doc_values(&field)? else {
-                    return Ok(None);
-                };
+                let values = crate::index::DocValues::get_sorted_set(reader, &field)?;
                 Ok(Some(
                     crate::search::sorted_set_selector::SortedSetSelector::wrap(values, selector)?,
                 ))
@@ -126,6 +129,10 @@ impl SortedSetSortField {
         )))
     }
 
+    /// Returns the [`SortField`] this sort field extends.
+    ///
+    /// Java's `SortedSetSortField` *is* a `SortField`; this port composes one,
+    /// and this accessor exposes it.
     pub fn sort_field(&self) -> &SortField {
         &self.sort_field
     }
@@ -188,14 +195,6 @@ impl SortedSetSortField {
         Ok(())
     }
 
-    /// Reads a sort field written by [`serialize`](Self::serialize).
-    ///
-    /// Equivalent to `SortedSetSortField.Provider.readSortField(DataInput)`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalArgument`] for an unknown selector, and
-    /// propagates any I/O error.
     /// Reads the selector type of a serialised sort field.
     ///
     /// Equivalent to the private
@@ -214,6 +213,14 @@ impl SortedSetSortField {
         })
     }
 
+    /// Reads a sort field written by [`serialize`](Self::serialize).
+    ///
+    /// Equivalent to `SortedSetSortField.Provider.readSortField(DataInput)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] for an unknown selector, and
+    /// propagates any I/O error.
     pub fn read_sort_field(input: &mut dyn DataInput) -> Result<Self> {
         let field = input.read_string()?;
         let reverse = input.read_int()? == 1;
@@ -237,5 +244,46 @@ impl fmt::Display for SortedSetSortField {
     /// Equivalent to `SortedSetSortField.toString()`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.sort_field)
+    }
+}
+
+/// The `SortFieldProvider` for [`SortedSetSortField`], registered as [`SortedSetSortField::NAME`].
+///
+/// Equivalent to the nested class `SortedSetSortField.Provider` (`SortedSetSortField.java:83-127`).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Provider;
+
+impl Provider {
+    /// Creates a new provider.
+    ///
+    /// Equivalent to `new SortedSetSortField.Provider()`.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl crate::util::spi::NamedSPI for Provider {
+    fn get_name(&self) -> &str {
+        SortedSetSortField::NAME
+    }
+}
+
+impl crate::index::index_sorter::SortFieldProvider for Provider {
+    /// Equivalent to `SortedSetSortField.Provider.readSortField(DataInput)`.
+    fn read_sort_field(
+        &self,
+        input: &mut dyn crate::store::DataInput,
+    ) -> Result<crate::search::SortField> {
+        Ok(SortedSetSortField::read_sort_field(input)?.into_sort_field())
+    }
+
+    /// Equivalent to `SortedSetSortField.Provider.writeSortField(SortField, DataOutput)`:
+    /// the field must be a `SortedSetSortField` (Java asserts it and casts).
+    fn write_sort_field(
+        &self,
+        sort_field: &crate::search::SortField,
+        output: &mut dyn crate::store::DataOutput,
+    ) -> Result<()> {
+        SortedSetSortField::from_sort_field(sort_field.clone())?.serialize(output)
     }
 }

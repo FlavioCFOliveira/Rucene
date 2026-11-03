@@ -3,18 +3,16 @@
 
 #![deny(unsafe_code)]
 
-use std::any::Any;
-
 use crate::error::Result;
 use crate::index::LeafReaderContext;
 use crate::search::comparators::numeric_comparator::{
-    NumericComparator, NumericDocValuesSource, SortableBytes,
+    NumericComparator, NumericDocValuesSource, NumericLeafState,
 };
 use crate::search::doc_id_set_iterator::DocIdSetIterator;
-use crate::search::field_comparator::{java_long_compare, FieldComparator, SortValue};
-use crate::search::leaf_field_comparator::LeafFieldComparator;
+use crate::search::field_comparator::{java_long_compare, SlotComparator, SortValue};
 use crate::search::pruning::Pruning;
 use crate::search::scorable::Scorable;
+use crate::util::NumericUtils;
 
 /// Comparator based on `Long#compare` for `num_hits`.
 ///
@@ -58,19 +56,36 @@ impl LongComparator {
         pruning: Pruning,
     ) -> Self {
         let missing_value = missing_value.unwrap_or(0);
-        Self {
+        let mut comparator = Self {
             base: NumericComparator::new(
                 field,
-                missing_value,
                 reverse,
                 pruning,
-                SortableBytes::Long,
+                8, // `Long.BYTES`
+                Self::sortable_bytes_to_long,
             ),
             values: vec![0; num_hits],
             top_value: 0,
             bottom: 0,
             missing_value,
-        }
+        };
+        // `this.missingValueAsLong = missingValueAsComparableLong()`
+        // (`NumericComparator.java:68`), which Java's constructor dispatches to
+        // this class's override.
+        comparator.base.missing_value_as_long = comparator.missing_value_as_comparable_long();
+        comparator
+    }
+
+    /// Decodes the packed point bytes of this comparator's field into the
+    /// comparable `long` its competitive iterator ranges over.
+    ///
+    /// Equivalent to `LongComparator#sortableBytesToLong`
+    /// (`LongComparator.java:62-65`), which is
+    /// `NumericUtils.sortableBytesToLong(bytes, 0)`. It is an associated function
+    /// because the override reads no state; [`NumericComparator`] calls it through
+    /// the pointer [`new`](Self::new) hands over.
+    pub fn sortable_bytes_to_long(bytes: &[u8]) -> i64 {
+        NumericUtils::sortable_bytes_to_long(bytes, 0)
     }
 
     /// Returns this comparator's missing value in the comparable long
@@ -101,11 +116,9 @@ impl LongComparator {
     }
 
     /// Equivalent to the private `LongComparator.LongLeafComparator.getValueForDoc(int)`.
-    fn get_value_for_doc(&mut self, doc: i32) -> Result<i64> {
+    fn get_value_for_doc(&self, leaf: &mut NumericLeafState, doc: i32) -> Result<i64> {
         let missing_value = self.missing_value;
-        let Some(doc_values) = self.base.doc_values() else {
-            return Ok(missing_value);
-        };
+        let doc_values = leaf.doc_values();
         if doc_values.advance_exact(doc)? {
             let raw = doc_values.long_value()?;
             Ok(raw)
@@ -125,51 +138,11 @@ impl LongComparator {
     }
 }
 
-impl LeafFieldComparator for LongComparator {
-    fn set_bottom(&mut self, slot: i32) -> Result<()> {
-        self.bottom = self.values[slot as usize];
-        self.base.set_bottom(
-            self.bottom_as_comparable_long(),
-            self.top_as_comparable_long(),
-        )
-    }
+impl SlotComparator for LongComparator {
+    /// `LongComparator.LongLeafComparator` adds no field to
+    /// `NumericLeafComparator`'s.
+    type Leaf = NumericLeafState;
 
-    fn compare_bottom(&mut self, doc: i32, _scorer: &mut dyn Scorable) -> Result<i32> {
-        let value = self.get_value_for_doc(doc)?;
-        Ok(java_long_compare(self.bottom, value))
-    }
-
-    fn compare_top(&mut self, doc: i32, _scorer: &mut dyn Scorable) -> Result<i32> {
-        let value = self.get_value_for_doc(doc)?;
-        Ok(java_long_compare(self.top_value, value))
-    }
-
-    fn copy(&mut self, slot: i32, doc: i32, _scorer: &mut dyn Scorable) -> Result<()> {
-        self.values[slot as usize] = self.get_value_for_doc(doc)?;
-        self.base.copy(doc);
-        Ok(())
-    }
-
-    fn set_scorer(&mut self, _scorer: &mut dyn Scorable) -> Result<()> {
-        self.base.set_scorer(
-            self.bottom_as_comparable_long(),
-            self.top_as_comparable_long(),
-        )
-    }
-
-    fn competitive_iterator(&mut self) -> Result<Option<Box<dyn DocIdSetIterator>>> {
-        Ok(self.base.competitive_iterator())
-    }
-
-    fn set_hits_threshold_reached(&mut self) -> Result<()> {
-        self.base.set_hits_threshold_reached(
-            self.bottom_as_comparable_long(),
-            self.top_as_comparable_long(),
-        )
-    }
-}
-
-impl FieldComparator for LongComparator {
     fn compare(&self, slot1: i32, slot2: i32) -> i32 {
         java_long_compare(self.values[slot1 as usize], self.values[slot2 as usize])
     }
@@ -185,17 +158,11 @@ impl FieldComparator for LongComparator {
         SortValue::Long(self.values[slot as usize])
     }
 
-    fn get_leaf_comparator(&mut self, context: &LeafReaderContext) -> Result<()> {
+    /// Equivalent to `LongComparator.getLeafComparator(LeafReaderContext)`,
+    /// which returns `new LongLeafComparator(context)`.
+    fn new_leaf(&mut self, context: &LeafReaderContext) -> Result<NumericLeafState> {
         let top = self.top_as_comparable_long();
-        self.base.set_next_leaf(context, top)
-    }
-
-    fn as_leaf_comparator(&mut self) -> &mut dyn LeafFieldComparator {
-        self
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
+        self.base.new_leaf(context, top)
     }
 
     fn set_single_sort(&mut self) {
@@ -204,5 +171,73 @@ impl FieldComparator for LongComparator {
 
     fn disable_skipping(&mut self) {
         self.base.disable_skipping();
+    }
+
+    fn set_bottom(&mut self, leaf: &mut NumericLeafState, slot: i32) -> Result<()> {
+        self.bottom = self.values[slot as usize];
+        self.base.set_bottom(
+            leaf,
+            self.bottom_as_comparable_long(),
+            self.top_as_comparable_long(),
+        )
+    }
+
+    fn compare_bottom(
+        &mut self,
+        leaf: &mut NumericLeafState,
+        doc: i32,
+        _scorer: &mut dyn Scorable,
+    ) -> Result<i32> {
+        let value = self.get_value_for_doc(leaf, doc)?;
+        Ok(java_long_compare(self.bottom, value))
+    }
+
+    fn compare_top(
+        &mut self,
+        leaf: &mut NumericLeafState,
+        doc: i32,
+        _scorer: &mut dyn Scorable,
+    ) -> Result<i32> {
+        let value = self.get_value_for_doc(leaf, doc)?;
+        Ok(java_long_compare(self.top_value, value))
+    }
+
+    fn copy(
+        &mut self,
+        leaf: &mut NumericLeafState,
+        slot: i32,
+        doc: i32,
+        _scorer: &mut dyn Scorable,
+    ) -> Result<()> {
+        self.values[slot as usize] = self.get_value_for_doc(leaf, doc)?;
+        self.base.copy(leaf, doc);
+        Ok(())
+    }
+
+    fn set_scorer(
+        &mut self,
+        leaf: &mut NumericLeafState,
+        _scorer: &mut dyn Scorable,
+    ) -> Result<()> {
+        self.base.set_scorer(
+            leaf,
+            self.bottom_as_comparable_long(),
+            self.top_as_comparable_long(),
+        )
+    }
+
+    fn competitive_iterator(
+        &mut self,
+        leaf: &mut NumericLeafState,
+    ) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+        Ok(self.base.competitive_iterator(leaf))
+    }
+
+    fn set_hits_threshold_reached(&mut self, leaf: &mut NumericLeafState) -> Result<()> {
+        self.base.set_hits_threshold_reached(
+            leaf,
+            self.bottom_as_comparable_long(),
+            self.top_as_comparable_long(),
+        )
     }
 }

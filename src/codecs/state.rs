@@ -99,7 +99,12 @@ pub struct SegmentWriteState<'a> {
     pub info_stream: &'a dyn InfoStream,
 
     /// Directory that will receive the segment files.
-    pub directory: &'a dyn Directory,
+    ///
+    /// Owned, as Java's `SegmentWriteState.directory` reference is: a writer
+    /// may keep it beyond the call that received the state.
+    /// `Lucene90PointsWriter` hands it to every `BKDWriter` it creates, which
+    /// writes its temporary files there (`Lucene90PointsWriter.java:152, 252`).
+    pub directory: Arc<dyn Directory>,
 
     /// Metadata describing the segment.
     pub segment_info: &'a SegmentInfo,
@@ -141,7 +146,7 @@ impl<'a> SegmentWriteState<'a> {
     /// Creates a write state with an empty segment suffix.
     pub fn new(
         info_stream: &'a dyn InfoStream,
-        directory: &'a dyn Directory,
+        directory: Arc<dyn Directory>,
         segment_info: &'a SegmentInfo,
         field_infos: &'a FieldInfos,
         seg_updates: &'a BufferedUpdates,
@@ -164,7 +169,7 @@ impl<'a> SegmentWriteState<'a> {
     /// Creates a write state with the given segment suffix.
     pub fn with_suffix(
         info_stream: &'a dyn InfoStream,
-        directory: &'a dyn Directory,
+        directory: Arc<dyn Directory>,
         segment_info: &'a SegmentInfo,
         field_infos: &'a FieldInfos,
         seg_updates: &'a BufferedUpdates,
@@ -222,7 +227,7 @@ impl<'a> SegmentWriteState<'a> {
     pub fn with_new_suffix(&self, segment_suffix: String) -> SegmentWriteState<'a> {
         SegmentWriteState {
             info_stream: self.info_stream,
-            directory: self.directory,
+            directory: Arc::clone(&self.directory),
             segment_info: self.segment_info,
             field_infos: self.field_infos,
             seg_updates: self.seg_updates,
@@ -284,7 +289,10 @@ pub struct OwnedSegmentWriteState {
     pub field_infos: FieldInfos,
 
     /// Buffered deletes/updates for this segment while flushing.
-    pub seg_updates: BufferedUpdates,
+    ///
+    /// Shared, as Java's copy constructor shares the `segUpdates` reference
+    /// between a state and its suffixed copies.
+    pub seg_updates: Arc<BufferedUpdates>,
 
     /// I/O context for all writes.
     pub context: Arc<dyn IOContext>,
@@ -328,7 +336,7 @@ impl OwnedSegmentWriteState {
             directory,
             segment_info,
             field_infos,
-            seg_updates,
+            seg_updates: Arc::new(seg_updates),
             context,
             segment_suffix: String::new(),
             del_count_on_flush: 0,
@@ -341,7 +349,7 @@ impl OwnedSegmentWriteState {
     pub fn borrow(&self) -> SegmentWriteState<'_> {
         SegmentWriteState {
             info_stream: &*self.info_stream,
-            directory: &*self.directory,
+            directory: Arc::clone(&self.directory),
             segment_info: &self.segment_info,
             field_infos: &self.field_infos,
             seg_updates: &self.seg_updates,
@@ -364,7 +372,7 @@ impl OwnedSegmentWriteState {
             directory: Arc::clone(&self.directory),
             segment_info: self.segment_info.clone(),
             field_infos: self.field_infos.clone(),
-            seg_updates: self.seg_updates.clone(),
+            seg_updates: Arc::clone(&self.seg_updates),
             context: Arc::clone(&self.context),
             segment_suffix,
             del_count_on_flush: self.del_count_on_flush,

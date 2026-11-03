@@ -16,9 +16,8 @@ use crate::index::{
 };
 use crate::search::batch_score_bulk_scorer::BatchScoreBulkScorer;
 use crate::search::bulk_scorer::BulkScorer;
-use crate::search::constant_score_scorer::ConstantScoreScorer;
 use crate::search::constant_score_scorer_supplier::ConstantScoreScorerSupplier;
-use crate::search::doc_id_set_iterator::{self, DocIdSetIterator};
+use crate::search::doc_id_set_iterator::DocIdSetIterator;
 use crate::search::index_searcher::IndexSearcher;
 use crate::search::matches::{Matches, MatchesIterator, MatchesUtils};
 use crate::search::query::Query;
@@ -195,7 +194,7 @@ impl TermWeight {
         term_states: Option<Arc<TermStates>>,
     ) -> Result<Self> {
         if score_mode.needs_scores() && term_states.is_none() {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "termStates are required when scores are needed".to_string(),
             ));
         }
@@ -232,7 +231,7 @@ impl TermWeight {
             Some(term_stats) => {
                 if score_mode.needs_scores() {
                     let collection_stats = collection_stats.ok_or_else(|| {
-                        LuceneError::IllegalState(format!(
+                        LuceneError::illegal_state(format!(
                             "field {} has term statistics but no collection statistics",
                             term.field()
                         ))
@@ -270,7 +269,7 @@ impl TermWeight {
     /// term is not present in that reader.
     fn term_state(&self, context: &LeafReaderContext) -> Result<Option<Box<dyn TermState>>> {
         let states = self.term_states.as_ref().ok_or_else(|| {
-            LuceneError::IllegalState(
+            LuceneError::illegal_state(
                 "TermWeight was built without termStates and cannot produce scorers".to_string(),
             )
         })?;
@@ -411,7 +410,7 @@ impl Weight for TermWeight {
                     Vec::new(),
                 );
                 let sim_scorer = self.sim_scorer.as_ref().ok_or_else(|| {
-                    LuceneError::IllegalState(
+                    LuceneError::illegal_state(
                         "a matching document requires the term to exist, and therefore a scorer"
                             .to_string(),
                     )
@@ -514,7 +513,7 @@ impl TermScorerSupplier {
     /// `ScorerSupplier.get(long)` forbids, and propagates any I/O error.
     pub fn term_scorer(&mut self) -> Result<TermScorer> {
         let mut terms_enum = self.terms_enum.take().ok_or_else(|| {
-            LuceneError::IllegalState(
+            LuceneError::illegal_state(
                 "ScorerSupplier.get(long) must be called at most once".to_string(),
             )
         })?;
@@ -555,7 +554,7 @@ impl TermScorerSupplier {
 impl ScorerSupplier for TermScorerSupplier {
     fn get(&mut self, _lead_cost: i64) -> Result<Box<dyn Scorer>> {
         if self.terms_enum.is_none() {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "ScorerSupplier.get(long) must be called at most once".to_string(),
             ));
         }
@@ -586,18 +585,4 @@ impl ScorerSupplier for TermScorerSupplier {
         self.top_level_scoring_clause = true;
         Ok(())
     }
-}
-
-/// Keeps the imports that only the empty-scorer branch of Java's supplier uses
-/// referenced; see [`TermScorerSupplier::term_scorer`].
-///
-/// Java's `get(long)` answers
-/// `new ConstantScoreScorer(0f, scoreMode, DocIdSetIterator.empty())` when the
-/// deferred term lookup finds nothing. That branch is unreachable in this port:
-/// [`TermStates`] resolves every lookup eagerly, so
-/// [`TermWeight::scorer_supplier`] has already answered `None` in that case.
-/// This function spells the branch out so that the behaviour is recorded and
-/// available should the lookup ever become lazy again.
-pub fn empty_term_scorer(score_mode: ScoreMode) -> ConstantScoreScorer {
-    ConstantScoreScorer::from_iterator(0.0, score_mode, Box::new(doc_id_set_iterator::empty()))
 }

@@ -41,7 +41,7 @@ impl ScalarQuantizer {
     /// Fails on a non-finite quantile, as Java's `IllegalStateException` does.
     pub fn new(min_quantile: f32, max_quantile: f32, bits: u8) -> Result<Self> {
         if !min_quantile.is_finite() || !max_quantile.is_finite() {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "Scalar quantizer does not support infinite or NaN values".to_string(),
             ));
         }
@@ -68,7 +68,9 @@ impl ScalarQuantizer {
     /// Quantizes `src` into `dest`, returning the corrective offset the scorer
     /// needs, or `0` for Euclidean similarity which needs none.
     ///
-    /// Equivalent to `ScalarQuantizer.quantize`.
+    /// Equivalent to `ScalarQuantizer.quantize(float[], byte[],
+    /// VectorSimilarityFunction)` (`ScalarQuantizer.java:115-125`), which
+    /// delegates to `VectorUtil.minMaxScalarQuantize`.
     pub fn quantize(
         &self,
         src: &[f32],
@@ -82,37 +84,26 @@ impl ScalarQuantizer {
                 dest.len()
             )));
         }
-        let correction = self.min_max_scalar_quantize(src, dest);
+        let correction = vector_util::min_max_scalar_quantize(
+            src,
+            dest,
+            self.scale,
+            self.alpha,
+            self.min_quantile,
+            self.max_quantile,
+        )?;
         if similarity_function == VectorSimilarityFunction::EUCLIDEAN {
             return Ok(0.0);
         }
         Ok(correction)
     }
 
-    /// Clamps each component into the quantile range, rounds it onto the
-    /// integer grid, and accumulates the correction the dot-product scorers
-    /// apply.
-    ///
-    /// Equivalent to `VectorUtil.minMaxScalarQuantize`, which Lucene keeps in
-    /// `VectorUtil` so it can be vectorised; this port keeps it beside its only
-    /// caller until the crate has a vectorised counterpart.
-    fn min_max_scalar_quantize(&self, src: &[f32], dest: &mut [u8]) -> f32 {
-        let mut correction = 0.0f32;
-        for (i, &v) in src.iter().enumerate() {
-            let clamped = v.clamp(self.min_quantile, self.max_quantile);
-            let quantized = ((clamped - self.min_quantile) * self.scale + 0.5) as u8;
-            dest[i] = quantized;
-            // The residual is what rounding threw away; the scorer adds it back.
-            let dequantized = self.alpha * f32::from(quantized) + self.min_quantile;
-            correction += (v - dequantized) * dequantized;
-        }
-        correction
-    }
-
     /// Recomputes the corrective offset of an already quantized vector against
     /// a different quantizer.
     ///
-    /// Equivalent to `ScalarQuantizer.recalculateCorrectiveOffset`.
+    /// Equivalent to `ScalarQuantizer.recalculateCorrectiveOffset`
+    /// (`ScalarQuantizer.java:135-151`), which delegates to
+    /// `VectorUtil.recalculateOffset`.
     pub fn recalculate_corrective_offset(
         &self,
         quantized_vector: &[u8],
@@ -122,16 +113,15 @@ impl ScalarQuantizer {
         if similarity_function == VectorSimilarityFunction::EUCLIDEAN {
             return 0.0;
         }
-        let mut correction = 0.0f32;
-        for &q in quantized_vector {
-            // Undo the old quantizer, then measure what this one would lose.
-            let original = old_quantizer.alpha * f32::from(q) + old_quantizer.min_quantile;
-            let clamped = original.clamp(self.min_quantile, self.max_quantile);
-            let requantized = ((clamped - self.min_quantile) * self.scale + 0.5) as u8;
-            let dequantized = self.alpha * f32::from(requantized) + self.min_quantile;
-            correction += (original - dequantized) * dequantized;
-        }
-        correction
+        vector_util::recalculate_offset(
+            quantized_vector,
+            old_quantizer.alpha,
+            old_quantizer.min_quantile,
+            self.scale,
+            self.alpha,
+            self.min_quantile,
+            self.max_quantile,
+        )
     }
 
     /// Turns a quantized vector back into floats.
@@ -171,45 +161,6 @@ impl ScalarQuantizer {
     /// Returns how many bits each component occupies.
     pub fn get_bits(&self) -> u8 {
         self.bits
-    }
-
-    /// Computes quantiles from a sample of vectors at the given confidence
-    /// interval.
-    ///
-    /// Equivalent to `ScalarQuantizer.fromVectors`, reduced to the quantile
-    /// computation itself, for a caller that has already gathered the sample.
-    /// [`from_vectors`](Self::from_vectors) is the full form.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalArgument`] when `confidence_interval` is
-    /// outside `[0.9, 1.0]`, and whatever [`new`](Self::new) raises.
-    pub fn from_sample(
-        sample: &[f32],
-        confidence_interval: f32,
-        bits: u8,
-        dimension: usize,
-    ) -> Result<Self> {
-        if sample.is_empty() || dimension == 0 {
-            return Self::new(0.0, 0.0, bits);
-        }
-        if !(0.9..=1.0).contains(&confidence_interval) {
-            return Err(LuceneError::IllegalArgument(format!(
-                "confidenceInterval must be in [0.9, 1.0], got {confidence_interval}"
-            )));
-        }
-        if confidence_interval == 1.0 {
-            let mut min = f32::INFINITY;
-            let mut max = f32::NEG_INFINITY;
-            for &v in sample {
-                min = min.min(v);
-                max = max.max(v);
-            }
-            return Self::new(min, max, bits);
-        }
-        let mut scratch = sample.to_vec();
-        let [lower, upper] = Self::get_upper_and_lower_quantile(&mut scratch, confidence_interval);
-        Self::new(lower, upper, bits)
     }
 
     /// Returns the values at the `(1 - confidence_interval)/2` and
@@ -531,7 +482,7 @@ impl ScalarQuantizer {
         let au = lower_sum[0] as f32 / count as f32;
         let bl = upper_sum[0] as f32 / count as f32;
         if !al.is_finite() || !au.is_finite() || !bl.is_finite() || !bu.is_finite() {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "Quantile calculation resulted in NaN or infinite values".to_string(),
             ));
         }
@@ -806,9 +757,11 @@ impl<'a> ScoreErrorCorrelator<'a> {
     fn score_error_correlation(&mut self, lower_quantile: f32, upper_quantile: f32) -> Result<f64> {
         self.corr.reset();
         let quantizer = ScalarQuantizer::new(lower_quantile, upper_quantile, self.bits)?;
-        let similarity =
-            ScalarQuantizedVectorSimilarity::from_vector_similarity(self.function, self.bits);
-        let const_multiplier = quantizer.get_constant_multiplier();
+        let similarity = <dyn ScalarQuantizedVectorSimilarity>::from_vector_similarity(
+            self.function,
+            quantizer.get_constant_multiplier(),
+            quantizer.get_bits(),
+        );
         for i in 0..self.nearest_neighbors.len() {
             let query_correction =
                 quantizer.quantize(&self.vectors[i], &mut self.query, self.function)?;
@@ -828,7 +781,6 @@ impl<'a> ScoreErrorCorrelator<'a> {
                     query_correction,
                     &self.vector,
                     vector_correction,
-                    const_multiplier,
                 )?;
                 self.errors.add(f64::from(q_score - score_doc.score));
             }
@@ -851,9 +803,4 @@ impl std::fmt::Display for ScalarQuantizer {
             self.min_quantile, self.max_quantile, self.bits
         )
     }
-}
-
-/// Returns whether `v` is a unit vector, which cosine quantization requires.
-pub fn is_unit_vector(v: &[f32]) -> bool {
-    vector_util::is_unit_vector(v)
 }

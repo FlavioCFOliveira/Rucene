@@ -14,9 +14,10 @@ use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
 use crate::index::codec_reader::CodecReader;
+use crate::index::merge_policy::OneMerge;
 use crate::index::{FieldInfos, SegmentInfo};
-use crate::search::NO_MORE_DOCS;
-use crate::util::Bits;
+use crate::search::{Executor, NO_MORE_DOCS};
+use crate::util::{Bits, InfoStream, NoOutputInfoStream};
 
 /// Maps document IDs from an old segment to the merged segment.
 ///
@@ -59,17 +60,42 @@ pub fn deletion_doc_map(max_doc: i32, live_docs: Box<dyn Bits>, doc_base: i32) -
 /// Common state used during segment merging.
 ///
 /// Equivalent to `org.apache.lucene.index.MergeState`.
+///
+/// Every reader, live-docs set, doc map and the merged segment's
+/// `SegmentInfo` sit behind an [`Arc`], because Java shares them: the public
+/// `MergeState(DocMap[], SegmentInfo, FieldInfos, …)` constructor
+/// (`MergeState.java:291-326`) stores the references it is given, and
+/// `PerFieldMergeState.restrictFields` (`PerFieldMergeState.java:56-73`) builds
+/// a restricted state out of the original's own arrays. [`Clone`] is that
+/// constructor called with every one of the original's fields: a shallow copy
+/// whose readers, live docs, doc maps and `SegmentInfo` are the original's
+/// objects, never copies of them.
+///
+/// Both of Java's constructors have a counterpart: the package-private
+/// `MergeState(List<CodecReader>, SegmentInfo, InfoStream, Executor, OneMerge)`
+/// (`MergeState.java:103-177`) is [`from_readers`](Self::from_readers), and the
+/// public all-arrays `MergeState(DocMap[], SegmentInfo, FieldInfos, …)`
+/// (`MergeState.java:291-326`) is [`new`](Self::new).
+///
+/// Like Java's, the state carries the `intraMergeTaskExecutor` and the
+/// `oneMerge` it belongs to (`MergeState.java:88-89,94-100`), through which a
+/// codec can parallelise a merge and [`check_aborted`](Self::check_aborted)
+/// stops it once the writer aborts the merge.
+#[derive(Clone)]
 pub struct MergeState {
     /// Maps document IDs from each source segment to the merged segment.
     pub doc_maps: Vec<DocMap>,
     /// Segment info for the newly merged segment.
-    pub segment_info: Option<SegmentInfo>,
+    ///
+    /// Shared, as Java's `segmentInfo` reference is, with every state
+    /// `PerFieldMergeState::restrict_fields` derives from this one.
+    pub segment_info: Option<Arc<SegmentInfo>>,
     /// Field infos for the newly merged segment.
     pub merge_field_infos: FieldInfos,
     /// Stored-fields readers for each source segment.
-    pub stored_fields_readers: Vec<Option<Box<dyn StoredFieldsReader>>>,
+    pub stored_fields_readers: Vec<Option<Arc<dyn StoredFieldsReader>>>,
     /// Term-vectors readers for each source segment.
-    pub term_vectors_readers: Vec<Option<Box<dyn TermVectorsReader>>>,
+    pub term_vectors_readers: Vec<Option<Arc<dyn TermVectorsReader>>>,
     /// Norms producers for each source segment.
     pub norms_producers: Vec<Option<Arc<dyn NormsProducer>>>,
     /// Doc-values producers for each source segment.
@@ -77,7 +103,7 @@ pub struct MergeState {
     /// Field infos for each source segment.
     pub field_infos: Vec<FieldInfos>,
     /// Live docs for each source segment.
-    pub live_docs: Vec<Option<Box<dyn Bits>>>,
+    pub live_docs: Vec<Option<Arc<dyn Bits>>>,
     /// Postings producers for each source segment.
     pub fields_producers: Vec<Option<Arc<dyn FieldsProducer>>>,
     /// Points readers for each source segment.
@@ -88,10 +114,35 @@ pub struct MergeState {
     pub max_docs: Vec<i32>,
     /// Whether the merged segment needs to preserve index sort order.
     pub needs_index_sort: bool,
+    /// The info stream merge components report to.
+    ///
+    /// Equivalent to `MergeState.infoStream`, which the merging codecs consult
+    /// with `isEnabled` before every diagnostic message — for example
+    /// `MatchingReaders` and `KnnVectorsWriter.merge`.
+    pub info_stream: Arc<dyn InfoStream>,
+    /// The executor for intra-merge activity.
+    ///
+    /// Equivalent to `MergeState.intraMergeTaskExecutor`
+    /// (`MergeState.java:88-89`); `None` is Java's `null`.
+    pub intra_merge_task_executor: Option<Arc<dyn Executor>>,
+    /// The merge this state belongs to, or `None` when it is not an
+    /// `IndexWriter` merge.
+    ///
+    /// Equivalent to `MergeState.oneMerge` (`MergeState.java:94-100`). A
+    /// [`OneMerge`] clone shares its abort flag with the writer's, so an abort
+    /// the writer sets is the one [`check_aborted`](Self::check_aborted) sees.
+    pub one_merge: Option<OneMerge>,
 }
 
 impl MergeState {
     /// Creates a merge state from per-segment components.
+    ///
+    /// Equivalent to the public `MergeState(DocMap[], SegmentInfo, FieldInfos,
+    /// StoredFieldsReader[], TermVectorsReader[], NormsProducer[],
+    /// DocValuesProducer[], FieldInfos[], Bits[], FieldsProducer[],
+    /// PointsReader[], KnnVectorsReader[], int[], InfoStream, Executor,
+    /// boolean, OneMerge)` (`MergeState.java:291-326`), less the info stream,
+    /// which this constructor sets to [`NoOutputInfoStream`].
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         doc_maps: Vec<DocMap>,
@@ -107,23 +158,37 @@ impl MergeState {
         points_readers: Vec<Option<Arc<dyn PointsReader>>>,
         knn_vectors_readers: Vec<Option<Arc<dyn KnnVectorsReader>>>,
         max_docs: Vec<i32>,
+        intra_merge_task_executor: Option<Arc<dyn Executor>>,
         needs_index_sort: bool,
+        one_merge: Option<OneMerge>,
     ) -> Self {
         Self {
             doc_maps,
-            segment_info: Some(segment_info),
+            segment_info: Some(Arc::new(segment_info)),
             merge_field_infos,
-            stored_fields_readers,
-            term_vectors_readers,
+            stored_fields_readers: stored_fields_readers
+                .into_iter()
+                .map(|reader| reader.map(Arc::from))
+                .collect(),
+            term_vectors_readers: term_vectors_readers
+                .into_iter()
+                .map(|reader| reader.map(Arc::from))
+                .collect(),
             norms_producers,
             doc_values_producers,
             field_infos,
-            live_docs,
+            live_docs: live_docs
+                .into_iter()
+                .map(|bits| bits.map(Arc::from))
+                .collect(),
             fields_producers,
             points_readers,
             knn_vectors_readers,
             max_docs,
             needs_index_sort,
+            info_stream: Arc::new(NoOutputInfoStream),
+            intra_merge_task_executor,
+            one_merge,
         }
     }
 
@@ -183,19 +248,81 @@ impl MergeState {
         doc_maps
     }
 
-    /// Builds the doc maps of a merge that has no index sort.
+    /// Builds the doc maps of a merge over `readers`, and reports whether the
+    /// merged segment needs its documents reordered by the index sort.
     ///
-    /// Equivalent to `MergeState.buildDocMaps(List, Sort)` with a null sort:
-    /// the readers only need remapping around deletions. Java's sorted branch
-    /// calls `MultiSorter.sort`, which is not reachable from here — the merge
-    /// state does not hold the readers themselves — so a caller with an index
-    /// sort builds the maps and passes them to [`new`](Self::new).
-    pub fn build_doc_maps(
-        live_docs: &[Option<Box<dyn Bits>>],
-        max_docs: &[i32],
-        num_docs: &[i32],
-    ) -> Vec<DocMap> {
-        Self::build_deletion_doc_maps(live_docs, max_docs, num_docs)
+    /// Equivalent to the private `MergeState.buildDocMaps(List<CodecReader>,
+    /// Sort)` (`MergeState.java:214-241`), together with the `needsIndexSort`
+    /// flag it sets. Without an index sort the readers are only remapped around
+    /// their deletions. With one, `MultiSorter.sort` merge-sorts the incoming
+    /// leaves; when concatenating them already yields the sorted order it
+    /// answers no maps, and the deletion maps are used, with `needsIndexSort`
+    /// left `false`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when a sort field cannot sort
+    /// an index, and propagates whatever reading the sort values raises.
+    pub fn build_doc_maps_for(
+        readers: &[Arc<dyn CodecReader>],
+        index_sort: Option<&crate::search::Sort>,
+        info_stream: &dyn InfoStream,
+    ) -> Result<(Vec<DocMap>, bool)> {
+        let deletion_doc_maps = || -> Vec<DocMap> {
+            let live_docs: Vec<Option<Box<dyn Bits>>> = readers
+                .iter()
+                .map(|reader| reader.get_live_docs())
+                .collect();
+            let max_docs: Vec<i32> = readers.iter().map(|reader| reader.max_doc()).collect();
+            let num_docs: Vec<i32> = readers.iter().map(|reader| reader.num_docs()).collect();
+            Self::build_deletion_doc_maps(&live_docs, &max_docs, &num_docs)
+        };
+        // `SegmentInfo` spells the absent sort as the empty `Sort`.
+        let Some(index_sort) = index_sort.filter(|sort| !sort.fields().is_empty()) else {
+            // No index sort ... we only must map around deletions, and rebase
+            // to the merged segment's docID space.
+            return Ok((deletion_doc_maps(), false));
+        };
+        // Do a merge sort of the incoming leaves.
+        let t0 = std::time::Instant::now();
+        let mut sorters = Vec::with_capacity(index_sort.fields().len());
+        let mut reverse_muls = Vec::with_capacity(index_sort.fields().len());
+        for field in index_sort.fields() {
+            let sorter = field.get_index_sorter().ok_or_else(|| {
+                LuceneError::IllegalArgument(format!(
+                    "Cannot use sort field {field} for index sorting"
+                ))
+            })?;
+            sorters.push(sorter);
+            reverse_muls.push(if field.reverse() { -1 } else { 1 });
+        }
+        // `MultiSorter.sort` takes the codec readers themselves; the port's
+        // sorters read through `LeafReader`, which a delegating
+        // `FilterCodecReader` provides without trait upcasting.
+        let leaves: Vec<Arc<dyn crate::index::LeafReader>> = readers
+            .iter()
+            .map(|reader| {
+                Arc::new(crate::index::filter_reader::FilterCodecReader::new(
+                    Arc::clone(reader),
+                )) as Arc<dyn crate::index::LeafReader>
+            })
+            .collect();
+        let Some(doc_maps) =
+            crate::index::index_sorter::MultiSorter::sort(&sorters, &reverse_muls, &leaves)?
+        else {
+            // Already sorted so we can switch back to map around deletions.
+            return Ok((deletion_doc_maps(), false));
+        };
+        if info_stream.is_enabled("SM") {
+            info_stream.message(
+                "SM",
+                &format!(
+                    "{:.2} msec to build merge sorted DocMaps",
+                    t0.elapsed().as_secs_f64() * 1000.0
+                ),
+            );
+        }
+        Ok((doc_maps, true))
     }
 
     /// Refuses a merge whose readers do not all carry a sort congruent with
@@ -236,7 +363,6 @@ impl MergeState {
         Ok(())
     }
 
-    /// Returns the number of source segments.
     /// Creates a merge state carrying only the postings producers and document
     /// counts, for a codec that merges one kind of data.
     pub fn from_fields_producers(
@@ -259,6 +385,9 @@ impl MergeState {
             knn_vectors_readers: (0..n).map(|_| None).collect(),
             max_docs,
             needs_index_sort: false,
+            info_stream: Arc::new(NoOutputInfoStream),
+            intra_merge_task_executor: None,
+            one_merge: None,
         }
     }
 
@@ -275,10 +404,19 @@ impl MergeState {
 
     /// Called periodically by a long-running merge so it can stop early.
     ///
-    /// Equivalent to `MergeState.checkAborted()`, which raises
-    /// `MergePolicy.MergeAbortedException` once the writer has aborted the
-    /// merge. Nothing aborts a merge yet, so this always succeeds.
+    /// Equivalent to `MergeState.checkAborted()` (`MergeState.java:247-251`):
+    /// once the writer has aborted [`one_merge`](Self::one_merge), this fails
+    /// with [`LuceneError::MergeAborted`], Java's
+    /// `MergePolicy.MergeAbortedException`. It is a no-op when the state
+    /// belongs to no merge.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::MergeAborted`] once the merge was aborted.
     pub fn check_aborted(&self) -> Result<()> {
+        if let Some(one_merge) = &self.one_merge {
+            one_merge.check_aborted()?;
+        }
         Ok(())
     }
 
@@ -286,16 +424,48 @@ impl MergeState {
     ///
     /// Equivalent to Lucene 10.5.0's package-private
     /// `MergeState(List<CodecReader> readers, SegmentInfo segmentInfo, InfoStream
-    /// infoStream, Executor intraMergeTaskExecutor)`: it pulls each producer off
-    /// the reader rather than making the caller thread fourteen parallel vectors
-    /// through by hand.
+    /// infoStream, Executor intraMergeTaskExecutor, OneMerge oneMerge)`
+    /// (`MergeState.java:103-177`): it checks the readers' index sorts, keeps
+    /// the *merge instance* of each producer — the stored-fields,
+    /// term-vectors, norms, doc-values, postings, points and vectors readers
+    /// alike — exactly as `MergeState.java:134-168` replaces every non-null
+    /// reader with its `getMergeInstance()`, stamps the merged segment's
+    /// `maxDoc` as the sum of the readers' live documents
+    /// (`MergeState.java:170-173`), and builds the doc maps from the merged
+    /// segment's index sort (`MergeState.java:176, 214-241`), which also sets
+    /// [`needs_index_sort`](Self::needs_index_sort). A merge therefore reads
+    /// through instances built for one sequential pass, never through the
+    /// ones searches share. The merged field infos are left empty — Java's
+    /// `mergeFieldInfos` is `null` here — until `SegmentMerger` builds them
+    /// (`SegmentMerger.java:230-237`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when a reader's index sort is
+    /// not congruent with the merged segment's, or a sort field cannot sort an
+    /// index; [`LuceneError::IllegalState`] when `segment_info`'s `maxDoc` is
+    /// already set; and propagates whatever pulling a reader, building its
+    /// merge instance or reading the sort values raises.
     pub fn from_readers(
         readers: &[Arc<dyn CodecReader>],
-        doc_maps: Vec<DocMap>,
-        segment_info: Option<SegmentInfo>,
-        merge_field_infos: FieldInfos,
-        needs_index_sort: bool,
+        mut segment_info: SegmentInfo,
+        info_stream: Arc<dyn InfoStream>,
+        intra_merge_task_executor: Option<Arc<dyn Executor>>,
+        one_merge: Option<OneMerge>,
     ) -> Result<Self> {
+        // `SegmentInfo` spells "no index sort" — Java's `null` — as the
+        // relevance `Sort::new()` (or an empty sort), as `SegmentReader` reads
+        // it for its metadata.
+        let index_sort = Some(segment_info.index_sort())
+            .filter(|sort| !sort.fields().is_empty() && **sort != crate::search::Sort::new())
+            .cloned();
+        // `verifyIndexSort(readers, segmentInfo)`, the constructor's first
+        // statement (`MergeState.java:110`).
+        let segment_sorts: Vec<Option<crate::search::Sort>> = readers
+            .iter()
+            .map(|reader| reader.get_meta_data().sort().cloned())
+            .collect();
+        Self::verify_index_sort(index_sort.as_ref(), &segment_sorts)?;
         let n = readers.len();
         let mut stored_fields_readers = Vec::with_capacity(n);
         let mut term_vectors_readers = Vec::with_capacity(n);
@@ -308,23 +478,58 @@ impl MergeState {
         let mut knn_vectors_readers = Vec::with_capacity(n);
         let mut max_docs = Vec::with_capacity(n);
 
+        let mut num_docs = 0i32;
         for reader in readers {
-            stored_fields_readers.push(reader.get_fields_reader()?);
-            term_vectors_readers.push(reader.get_term_vectors_reader()?);
-            norms_producers.push(reader.get_norms_reader()?);
-            doc_values_producers.push(reader.get_doc_values_reader()?);
-            fields_producers.push(reader.get_postings_reader()?);
-            points_readers.push(reader.get_points_reader()?);
-            knn_vectors_readers.push(reader.get_vector_reader()?);
-            field_infos.push(reader.get_field_infos().clone());
-            live_docs.push(reader.get_live_docs());
             max_docs.push(reader.max_doc());
+            live_docs.push(reader.get_live_docs().map(Arc::from));
+            field_infos.push(reader.get_field_infos().clone());
+
+            norms_producers.push(match reader.get_norms_reader()? {
+                Some(producer) => Some(Arc::from(producer.get_merge_instance()?)),
+                None => None,
+            });
+            doc_values_producers.push(match reader.get_doc_values_reader()? {
+                Some(producer) => Some(Arc::from(producer.get_merge_instance()?)),
+                None => None,
+            });
+            stored_fields_readers.push(
+                reader
+                    .get_fields_reader()?
+                    .map(|fields_reader| Arc::from(fields_reader.get_merge_instance())),
+            );
+            term_vectors_readers.push(
+                reader
+                    .get_term_vectors_reader()?
+                    .map(|vectors_reader| Arc::from(vectors_reader.get_merge_instance())),
+            );
+            fields_producers.push(match reader.get_postings_reader()? {
+                Some(producer) => Some(Arc::from(producer.get_merge_instance()?)),
+                None => None,
+            });
+            points_readers.push(match reader.get_points_reader()? {
+                Some(points_reader) => Some(Arc::from(points_reader.get_merge_instance()?)),
+                None => None,
+            });
+            knn_vectors_readers.push(match reader.get_vector_reader()? {
+                Some(vectors_reader) => Some(Arc::from(vectors_reader.get_merge_instance()?)),
+                None => None,
+            });
+
+            num_docs += reader.num_docs();
         }
+
+        // `segmentInfo.setMaxDoc(numDocs)` (`MergeState.java:173`).
+        segment_info.set_max_doc(num_docs)?;
+        // `this.docMaps = buildDocMaps(readers, segmentInfo.getIndexSort())`
+        // (`MergeState.java:176`).
+        let (doc_maps, needs_index_sort) =
+            Self::build_doc_maps_for(readers, index_sort.as_ref(), info_stream.as_ref())?;
 
         Ok(Self {
             doc_maps,
-            segment_info,
-            merge_field_infos,
+            segment_info: Some(Arc::new(segment_info)),
+            // Java's `null` until `SegmentMerger.mergeFieldInfos()` sets it.
+            merge_field_infos: FieldInfos::default(),
             stored_fields_readers,
             term_vectors_readers,
             norms_producers,
@@ -336,9 +541,13 @@ impl MergeState {
             knn_vectors_readers,
             max_docs,
             needs_index_sort,
+            info_stream,
+            intra_merge_task_executor,
+            one_merge,
         })
     }
 
+    /// Returns the number of source segments.
     pub fn num_readers(&self) -> usize {
         self.max_docs.len()
     }
@@ -388,11 +597,33 @@ pub trait DocIDMergerSub {
     }
 }
 
+/// The `NullPointerException` Java's `DocIDMerger.next()` raises when it is
+/// called again after it answered `null`.
+fn exhausted_merger() -> LuceneError {
+    LuceneError::illegal_state(
+        "Cannot invoke \"org.apache.lucene.index.DocIDMerger$Sub.nextMappedDoc()\" because \"this.current\" is null"
+            .to_string(),
+    )
+}
+
 /// Produces the global doc-id order during a merge.
 ///
-/// Equivalent to `org.apache.lucene.index.DocIDMerger`.
+/// Equivalent to `org.apache.lucene.index.DocIDMerger`. Java's two private
+/// subclasses, `SequentialDocIDMerger` and `SortedDocIDMerger`, are the two
+/// shapes of its private `MergerState`; which one a merger is, is fixed when it is built
+/// ([`of`](Self::of)) and kept across [`reset`](Self::reset), as Java's object
+/// keeps its class.
+///
+/// Java's merger holds the caller's `List<T>` and reads it on every `reset()`,
+/// so a caller that reuses the merger refills that list first
+/// (`MappingMultiPostingsEnum.reset`, `MappingMultiPostingsEnum.java:65-77`).
+/// Here the merger owns the list, and lends it out through
+/// [`subs_mut`](Self::subs_mut) for that refill.
 pub struct DocIDMerger<T: DocIDMergerSub> {
     subs: Vec<T>,
+    /// `true` for Java's `SortedDocIDMerger`, `false` for its
+    /// `SequentialDocIDMerger` (`DocIDMerger.java:73-81`).
+    sorted: bool,
     state: MergerState,
 }
 
@@ -406,7 +637,6 @@ enum MergerState {
         queue: Vec<usize>,
         queue_min_doc_id: i32,
     },
-    Empty,
 }
 
 impl<T: DocIDMergerSub> DocIDMerger<T> {
@@ -426,48 +656,19 @@ impl<T: DocIDMergerSub> DocIDMerger<T> {
     /// `SortedDocIDMerger` when the index is sorted and `maxCount > 1`, and
     /// `SequentialDocIDMerger` otherwise; `max_count` is what decides, not the
     /// current length of `subs`, because a reused merger may be reset with more
-    /// subs later.
-    pub fn of(mut subs: Vec<T>, max_count: usize, index_is_sorted: bool) -> Result<Self> {
-        let state = if subs.is_empty() {
-            MergerState::Empty
-        } else if index_is_sorted && max_count > 1 {
-            let mut queue = Vec::with_capacity(subs.len() - 1);
-            let current = 0usize;
-            // The first sub is held out as `current`; initialize the rest.
-            for (i, sub) in subs.iter_mut().enumerate().skip(1) {
-                sub.set_mapped_doc_id(-1);
-                if sub.next_mapped_doc()? != NO_MORE_DOCS {
-                    queue.push(i);
-                }
-            }
-            let queue_min_doc_id = if queue.is_empty() {
-                NO_MORE_DOCS
-            } else {
-                // Find the smallest mapped doc id in the queue.
-                let mut min = NO_MORE_DOCS;
-                for &idx in &queue {
-                    let doc = subs[idx].mapped_doc_id();
-                    if doc < min {
-                        min = doc;
-                    }
-                }
-                min
-            };
-            // Simple heap ordering by mapped doc id.
-            queue.sort_by_key(|&idx| subs[idx].mapped_doc_id());
-            MergerState::Sorted {
-                current: Some(current),
-                queue,
-                queue_min_doc_id,
-            }
-        } else {
-            MergerState::Sequential {
-                current: Some(0),
-                next_index: 1,
-            }
+    /// subs later. Both constructors end with `reset()`.
+    pub fn of(subs: Vec<T>, max_count: usize, index_is_sorted: bool) -> Result<Self> {
+        let mut merger = Self {
+            subs,
+            sorted: index_is_sorted && max_count > 1,
+            // Java's fields before the constructor's `reset()` assigns them.
+            state: MergerState::Sequential {
+                current: None,
+                next_index: 0,
+            },
         };
-
-        Ok(Self { subs, state })
+        merger.reset()?;
+        Ok(merger)
     }
 
     /// Returns every sub-reader handed to this merger, in construction order.
@@ -477,6 +678,17 @@ impl<T: DocIDMergerSub> DocIDMerger<T> {
     /// merger owns the subs, so it exposes them instead.
     pub fn subs(&self) -> &[T] {
         &self.subs
+    }
+
+    /// Returns the list of sub-readers for the caller to refill before
+    /// [`reset`](Self::reset).
+    ///
+    /// Equivalent to the caller's own reference to the `List<T>` it handed to
+    /// `DocIDMerger.of`, which `MappingMultiPostingsEnum.reset` clears and
+    /// refills before calling `docIDMerger.reset()`
+    /// (`MappingMultiPostingsEnum.java:69-75`).
+    pub fn subs_mut(&mut self) -> &mut Vec<T> {
+        &mut self.subs
     }
 
     /// Returns the sub positioned by the most recent [`Self::next_sub`] call,
@@ -495,18 +707,51 @@ impl<T: DocIDMergerSub> DocIDMerger<T> {
         self.current_index().map(|idx| &mut self.subs[idx])
     }
 
-    /// Resets the merger to the beginning.
+    /// Resets the merger to the beginning of its current list of subs.
+    ///
+    /// Equivalent to `DocIDMerger.reset()`, the "reuse API, currently only
+    /// used by postings during merge" (`DocIDMerger.java:88-89`):
+    ///
+    /// * `SequentialDocIDMerger.reset()` (`DocIDMerger.java:110-119`) makes the
+    ///   first sub current and the second the next;
+    /// * `SortedDocIDMerger.reset()` (`DocIDMerger.java:166-184`) empties the
+    ///   queue, makes the first sub current with `mappedDocID = -1` — so the
+    ///   first [`next_sub`](Self::next_sub) advances it — and queues every
+    ///   other sub that still has a mapped document, after positioning it on
+    ///   that document.
+    ///
+    /// An empty list leaves `current` `null` in both kinds
+    /// (`DocIDMerger.java:115-117`, `DocIDMerger.java:169-183`), so the next
+    /// [`next_sub`](Self::next_sub) reports Java's `NullPointerException`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever positioning a sub of a sorted merger raises.
     pub fn reset(&mut self) -> Result<()> {
         self.state = if self.subs.is_empty() {
-            MergerState::Empty
-        } else if matches!(self.state, MergerState::Sorted { .. }) {
+            if self.sorted {
+                // queue.clear(); current = null; setQueueMinDocID()
+                MergerState::Sorted {
+                    current: None,
+                    queue: Vec::new(),
+                    queue_min_doc_id: NO_MORE_DOCS,
+                }
+            } else {
+                // current = null; nextIndex = 0
+                MergerState::Sequential {
+                    current: None,
+                    next_index: 0,
+                }
+            }
+        } else if self.sorted {
             let mut queue = Vec::with_capacity(self.subs.len() - 1);
-            let current = 0usize;
+            // by setting mappedDocID = -1, this entry is guaranteed to be the
+            // top of the queue so the first call to next() will advance it
+            self.subs[0].set_mapped_doc_id(-1);
             for i in 1..self.subs.len() {
-                self.subs[i].set_mapped_doc_id(-1);
                 if self.subs[i].next_mapped_doc()? != NO_MORE_DOCS {
                     queue.push(i);
-                }
+                } // else all docs in this sub were deleted; do not add it to the queue!
             }
             queue.sort_by_key(|&idx| self.subs[idx].mapped_doc_id());
             let queue_min_doc_id = queue
@@ -514,7 +759,7 @@ impl<T: DocIDMergerSub> DocIDMerger<T> {
                 .map(|&idx| self.subs[idx].mapped_doc_id())
                 .unwrap_or(NO_MORE_DOCS);
             MergerState::Sorted {
-                current: Some(current),
+                current: Some(0),
                 queue,
                 queue_min_doc_id,
             }
@@ -528,16 +773,20 @@ impl<T: DocIDMergerSub> DocIDMerger<T> {
     }
 
     /// Returns the next sub reader in merge order, or `None` when done.
+    ///
+    /// Equivalent to `DocIDMerger.next()`. Its contract forbids a call after
+    /// it has answered `null`; both of Java's mergers then dereference their
+    /// `null` `current` (`DocIDMerger.java:123`, `DocIDMerger.java:188`),
+    /// as they do on the first call over an empty list, and the
+    /// `NullPointerException` is reported here as
+    /// [`LuceneError::IllegalState`] with the JDK's message.
     pub fn next_sub(&mut self) -> Result<Option<&mut T>> {
         match &mut self.state {
-            MergerState::Empty => Ok(None),
             MergerState::Sequential {
                 current,
                 next_index,
             } => loop {
-                let idx = current.ok_or_else(|| {
-                    LuceneError::IllegalState("DocIDMerger is exhausted".to_string())
-                })?;
+                let idx = current.ok_or_else(exhausted_merger)?;
                 if self.subs[idx].next_mapped_doc()? != NO_MORE_DOCS {
                     return Ok(Some(&mut self.subs[idx]));
                 }
@@ -553,7 +802,7 @@ impl<T: DocIDMergerSub> DocIDMerger<T> {
                 queue,
                 queue_min_doc_id,
             } => {
-                let current_idx = current.expect("Sorted merger has no current sub");
+                let current_idx = current.ok_or_else(exhausted_merger)?;
                 let next_doc = self.subs[current_idx].next_mapped_doc()?;
                 if next_doc < *queue_min_doc_id {
                     return Ok(Some(&mut self.subs[current_idx]));
@@ -601,16 +850,9 @@ impl<T: DocIDMergerSub> DocIDMerger<T> {
     /// [`sub_mut`](Self::sub_mut) when it needs a value.
     pub fn current_index(&self) -> Option<usize> {
         match &self.state {
-            MergerState::Empty => None,
             MergerState::Sequential { current, .. } => *current,
             MergerState::Sorted { current, .. } => *current,
         }
-    }
-
-    /// Returns the sub at `index`, which a caller obtains from
-    /// [`current_index`](Self::current_index).
-    pub fn sub_mut(&mut self, index: usize) -> &mut T {
-        &mut self.subs[index]
     }
 
     /// Returns the sub at `index` for reading.
@@ -666,6 +908,104 @@ mod tests {
 
         fn set_mapped_doc_id(&mut self, doc_id: i32) {
             self.mapped = doc_id;
+        }
+    }
+
+    fn drain_merger(merger: &mut DocIDMerger<VecSub>) -> Vec<i32> {
+        let mut order = Vec::new();
+        while let Some(sub) = merger.next_sub().unwrap() {
+            order.push(sub.mapped_doc_id());
+        }
+        order
+    }
+
+    /// Asserts that a step reported the `NullPointerException` both of Java's
+    /// mergers raise on their `null` `current`.
+    fn assert_npe(step: Result<Option<&mut VecSub>>) {
+        let err = match step {
+            Err(err) => err,
+            Ok(_) => panic!("a merger whose `current` is null must not step"),
+        };
+        assert_eq!(
+            err.to_string(),
+            exhausted_merger().to_string(),
+            "the JDK's message for `current.nextMappedDoc()`"
+        );
+    }
+
+    /// Java's `SequentialDocIDMerger.reset()` and `SortedDocIDMerger.reset()`
+    /// leave `current` `null` over an empty list (`DocIDMerger.java:115-117`,
+    /// `:169-183`), so the first `next()` throws `NullPointerException`
+    /// (`DocIDMerger.java:123`, `:188`); it does not answer `null`.
+    #[test]
+    fn stepping_a_merger_over_no_sub_reports_javas_npe_for_both_kinds() {
+        for (max_count, sorted) in [(0, false), (2, false), (0, true), (2, true)] {
+            let mut merger: DocIDMerger<VecSub> =
+                DocIDMerger::of(Vec::new(), max_count, sorted).unwrap();
+            assert!(merger.current_index().is_none());
+            assert_npe(merger.next_sub());
+        }
+    }
+
+    /// `MappingMultiPostingsEnum` builds its merger over an empty list with
+    /// `maxCount` = the number of segments, then refills the list and resets
+    /// it for every term: the kind `of` chose must survive, as the class of
+    /// Java's object does.
+    #[test]
+    fn a_merger_built_empty_keeps_its_sorted_kind_across_reset() {
+        let mut merger: DocIDMerger<VecSub> = DocIDMerger::of(Vec::new(), 2, true).unwrap();
+        // Stepping it while its list is empty dereferences Java's `null`
+        // `current` (`DocIDMerger.java:188`); `reset` below recovers it.
+        assert_npe(merger.next_sub());
+
+        merger
+            .subs_mut()
+            .push(VecSub::new(vec![0, 1], Arc::new(|doc: i32| doc * 2)));
+        merger
+            .subs_mut()
+            .push(VecSub::new(vec![0, 1], Arc::new(|doc: i32| doc * 2 + 1)));
+        merger.reset().unwrap();
+        assert_eq!(
+            drain_merger(&mut merger),
+            vec![0, 1, 2, 3],
+            "a SortedDocIDMerger interleaves by mapped doc id"
+        );
+    }
+
+    #[test]
+    fn a_merger_built_for_one_sub_stays_sequential_across_reset() {
+        let mut merger: DocIDMerger<VecSub> = DocIDMerger::of(Vec::new(), 1, true).unwrap();
+        merger
+            .subs_mut()
+            .push(VecSub::new(vec![0, 1], Arc::new(|doc: i32| doc * 2 + 1)));
+        merger
+            .subs_mut()
+            .push(VecSub::new(vec![0, 1], Arc::new(|doc: i32| doc * 2)));
+        merger.reset().unwrap();
+        assert_eq!(
+            drain_merger(&mut merger),
+            vec![1, 3, 0, 2],
+            "`maxCount <= 1` picks SequentialDocIDMerger, which concatenates"
+        );
+    }
+
+    #[test]
+    fn stepping_an_exhausted_merger_reports_javas_npe_for_both_kinds() {
+        for sorted in [false, true] {
+            let subs = vec![
+                VecSub::new(vec![0], identity_doc_map(1, 0)),
+                VecSub::new(vec![0], identity_doc_map(1, 1)),
+            ];
+            let mut merger = DocIDMerger::new(subs, sorted).unwrap();
+            assert_eq!(drain_merger(&mut merger), vec![0, 1]);
+            let err = match merger.next_sub() {
+                Err(err) => err,
+                Ok(_) => panic!("an exhausted merger must not be stepped again"),
+            };
+            assert!(
+                err.to_string().contains("because \"this.current\" is null"),
+                "sorted={sorted}: {err:?}"
+            );
         }
     }
 
@@ -731,13 +1071,6 @@ mod tests {
             order.push(sub.mapped_doc_id());
         }
         assert_eq!(order, vec![0, 1, 2, 3, 4, 5]);
-    }
-
-    #[test]
-    fn empty_merger_returns_none() {
-        let subs: Vec<VecSub> = vec![];
-        let mut merger = DocIDMerger::new(subs, false).unwrap();
-        assert!(merger.next_sub().unwrap().is_none());
     }
 
     #[test]
@@ -810,5 +1143,53 @@ mod tests {
         assert_eq!(map(2), 11);
         assert_eq!(map(3), 12);
         assert_eq!(map(4), -1);
+    }
+
+    /// `MergeState.checkAborted()` (`MergeState.java:247-251`) is a no-op
+    /// without a `oneMerge`, and otherwise throws once the writer has aborted
+    /// that merge (`MergePolicy.java:406-410`), even through a clone of it.
+    #[test]
+    fn check_aborted_fails_once_the_merge_is_aborted() {
+        use crate::index::SegmentCommitInfo;
+        use crate::store::{ByteBuffersDirectory, Directory};
+        use crate::util::Version;
+
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
+        let info = SegmentInfo::new(
+            dir,
+            Version::LUCENE_10_5_0,
+            Some(Version::LUCENE_10_5_0),
+            "_0".to_string(),
+            1,
+            false,
+            false,
+            Arc::new(crate::codecs::Lucene104Codec::new()),
+            std::collections::HashMap::new(),
+            [0u8; crate::util::string_helper::ID_LENGTH],
+            std::collections::HashMap::new(),
+            crate::search::Sort::default(),
+        )
+        .unwrap();
+        let commit = SegmentCommitInfo::new(info, 0, 0, -1, -1, -1, [0u8; 16]).unwrap();
+        let merge = OneMerge::new(vec![commit]).unwrap();
+
+        let mut state = MergeState::from_fields_producers(vec![None], vec![1]);
+        state.check_aborted().unwrap();
+        state.one_merge = Some(merge.clone());
+        state.check_aborted().unwrap();
+
+        merge.set_aborted();
+        match state.check_aborted() {
+            Err(error @ LuceneError::MergeAborted(_)) => {
+                // `MergeAbortedException.getMessage()`, with nothing added.
+                let message = error.to_string();
+                assert_eq!(message, format!("merge is aborted: {}", merge.seg_string()));
+                assert!(message.ends_with(" [ABORTED]"), "{message}");
+            }
+            other => panic!("expected MergeAborted, got {other:?}"),
+        }
+
+        state.one_merge = None;
+        state.check_aborted().unwrap();
     }
 }

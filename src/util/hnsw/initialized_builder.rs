@@ -11,7 +11,7 @@ use super::builder::{
     pop_to_scratch, GraphBuilderKnnCollector, HnswBuilder, HnswGraphBuilder, SplittableRandom,
     DEFAULT_RAND_SEED,
 };
-use super::on_heap::OnHeapHnswGraph;
+use super::on_heap::{OnHeapGraphReader, OnHeapHnswGraph};
 use super::scorer::RandomVectorScorerSupplier;
 use super::{HnswGraph, NeighborArray};
 
@@ -105,12 +105,7 @@ impl InitializedHnswGraphBuilder {
             None,
             total_number_of_vectors,
         )?;
-        Ok(builder.inner.into_graph())
-    }
-
-    /// Consumes the builder and returns the graph it holds.
-    pub fn into_graph(self) -> OnHeapHnswGraph {
-        self.inner.into_graph()
+        builder.inner.into_graph()
     }
 
     fn initialize_from_graph(
@@ -159,13 +154,13 @@ impl InitializedHnswGraphBuilder {
                     continue;
                 }
 
-                self.inner.hnsw.add_node(level, new_ord);
+                self.inner.add_node_to_graph(level, new_ord)?;
                 self.level_to_nodes[level as usize].push(new_ord);
                 self.inner.hnsw.try_set_new_entry_node(new_ord, level);
                 self.inner.scorer.set_scoring_ordinal(new_ord)?;
 
                 // Copy neighbours.
-                let mut new_neighbors = self.inner.hnsw.get_neighbors(level, new_ord)?.clone();
+                let new_neighbors = self.inner.hnsw.get_neighbors(level, new_ord)?;
                 initializer_graph.seek(level, old_ord)?;
                 let mut old_neighbour_count = 0i32;
                 loop {
@@ -185,7 +180,6 @@ impl InitializedHnswGraphBuilder {
                 // Mark as disconnected if the node lost more than the acceptable
                 // threshold of neighbours.
                 let kept = new_neighbors.size();
-                let _ = self.inner.hnsw.set_neighbors(level, new_ord, new_neighbors);
                 if f64::from(kept) < f64::from(old_neighbour_count) * DISCONNECTED_NODE_FACTOR {
                     disconnected_nodes.push(new_ord);
                 }
@@ -214,32 +208,34 @@ impl InitializedHnswGraphBuilder {
         }
 
         let beam_width = self.inner.beam_candidates.k();
-        let mut candidates = GraphBuilderKnnCollector::new(beam_width);
-        let mut scratch_array = NeighborArray::new(beam_width, false);
+        let mut candidates = GraphBuilderKnnCollector::new(beam_width)?;
+        let scratch_array = NeighborArray::new(beam_width, false);
+        let mut node_buffer = Vec::new();
 
         for &node in disconnected_nodes {
             self.inner.scorer.set_scoring_ordinal(node)?;
-            let existing_neighbors = self.inner.hnsw.get_neighbors(level, node)?.clone();
+            let entry_points: Vec<i32> = self.inner.hnsw.get_neighbors(level, node)?.nodes();
 
             // Only repair if the node has at least one neighbour to enter from.
-            if existing_neighbors.size() > 0 {
-                let entry_points: Vec<i32> =
-                    existing_neighbors.nodes()[..existing_neighbors.size() as usize].to_vec();
-
+            if !entry_points.is_empty() {
                 // Search from the entry points to find candidate neighbours.
                 self.inner.graph_searcher.search_level(
                     candidates.as_collector(),
                     self.inner.scorer.as_mut(),
                     level,
                     &entry_points,
-                    &mut self.inner.hnsw,
+                    &mut OnHeapGraphReader::new(
+                        &self.inner.hnsw,
+                        self.inner.hnsw_lock.as_deref(),
+                        &mut node_buffer,
+                    ),
                     None,
                 )?;
-                pop_to_scratch(&mut candidates, &mut scratch_array);
+                pop_to_scratch(&mut candidates, &scratch_array);
 
                 // Add diverse neighbours using the HNSW heuristic.
                 self.inner
-                    .add_diverse_neighbors(level, node, &mut scratch_array, true)?;
+                    .add_diverse_neighbors(level, node, &scratch_array, true)?;
             } else {
                 // The node has no neighbours; add connections from scratch.
                 self.add_connections(node, level)?;
@@ -289,7 +285,7 @@ impl InitializedHnswGraphBuilder {
                     && !self.inner.hnsw.node_exists_at_level(level, node)
                 {
                     self.inner.scorer.set_scoring_ordinal(node)?;
-                    self.inner.hnsw.add_node(level, node);
+                    self.inner.add_node_to_graph(level, node)?;
 
                     if current_nodes_at_level == 0 {
                         let num_levels = self.inner.hnsw.num_levels()?;
@@ -311,8 +307,9 @@ impl InitializedHnswGraphBuilder {
 
     fn add_connections(&mut self, node: i32, target_level: i32) -> Result<()> {
         let beam_width = self.inner.beam_candidates.k();
-        let mut candidates = GraphBuilderKnnCollector::new(beam_width);
+        let mut candidates = GraphBuilderKnnCollector::new(beam_width)?;
         let mut eps = vec![self.inner.hnsw.entry_node()?];
+        let mut node_buffer = Vec::new();
 
         // Navigate down from the top to the target level, greedily moving toward the
         // new node.
@@ -323,7 +320,11 @@ impl InitializedHnswGraphBuilder {
                 self.inner.scorer.as_mut(),
                 level,
                 &eps,
-                &mut self.inner.hnsw,
+                &mut OnHeapGraphReader::new(
+                    &self.inner.hnsw,
+                    self.inner.hnsw_lock.as_deref(),
+                    &mut node_buffer,
+                ),
                 None,
             )?;
             eps[0] = candidates.pop_node();
@@ -337,16 +338,20 @@ impl InitializedHnswGraphBuilder {
             self.inner.scorer.as_mut(),
             target_level,
             &eps,
-            &mut self.inner.hnsw,
+            &mut OnHeapGraphReader::new(
+                &self.inner.hnsw,
+                self.inner.hnsw_lock.as_deref(),
+                &mut node_buffer,
+            ),
             None,
         )?;
 
-        let mut scratch_array = NeighborArray::new(beam_width, false);
-        pop_to_scratch(&mut candidates, &mut scratch_array);
+        let scratch_array = NeighborArray::new(beam_width, false);
+        pop_to_scratch(&mut candidates, &scratch_array);
 
         // Add diverse neighbours and establish bidirectional connections.
         self.inner
-            .add_diverse_neighbors(target_level, node, &mut scratch_array, true)
+            .add_diverse_neighbors(target_level, node, &scratch_array, true)
     }
 }
 
@@ -355,10 +360,19 @@ impl HnswBuilder for InitializedHnswGraphBuilder {
         self.inner.set_info_stream(info_stream);
     }
 
+    /// Equivalent to the inherited `HnswGraphBuilder.build(int)`, whose
+    /// `addVectors` loop calls this class's `addGraphNode(int)` override and
+    /// so skips the initialized nodes.
     fn build(&mut self, max_ord: i32) -> Result<&OnHeapHnswGraph> {
-        self.inner.build(max_ord)
+        self.inner
+            .build_skipping(max_ord, self.initialized_nodes.as_ref())
     }
 
+    /// Equivalent to `InitializedHnswGraphBuilder.addGraphNode(int)`
+    /// (`InitializedHnswGraphBuilder.java:446-452`): a node the initializer
+    /// graph already placed is not added again. Java dereferences
+    /// `initializedNodes` unconditionally; the builder `initGraph` creates has
+    /// none and never adds a node, and here an absent set skips nothing.
     fn add_graph_node(&mut self, node: i32) -> Result<()> {
         if let Some(initialized) = &self.initialized_nodes {
             if initialized.get(node as usize) {
@@ -368,12 +382,10 @@ impl HnswBuilder for InitializedHnswGraphBuilder {
         self.inner.add_graph_node(node)
     }
 
+    /// Equivalent to the inherited `HnswGraphBuilder.addGraphNode(int,
+    /// IntHashSet)`, which Java's class does not override: it adds the node
+    /// whether or not it was initialized.
     fn add_graph_node_with_eps(&mut self, node: i32, eps: &IntHashSet) -> Result<()> {
-        if let Some(initialized) = &self.initialized_nodes {
-            if initialized.get(node as usize) {
-                return Ok(());
-            }
-        }
         self.inner.add_graph_node_with_eps(node, eps)
     }
 
@@ -387,6 +399,6 @@ impl HnswBuilder for InitializedHnswGraphBuilder {
 
     fn into_completed_graph(mut self: Box<Self>) -> Result<OnHeapHnswGraph> {
         self.inner.get_completed_graph()?;
-        Ok(self.inner.into_graph())
+        self.inner.into_graph()
     }
 }

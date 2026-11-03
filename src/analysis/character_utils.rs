@@ -2,6 +2,12 @@
 //!
 //! These helpers provide case folding, code-point conversion, and reader
 //! buffering utilities used by tokenizers and token filters.
+//!
+//! Java's buffers are `char[]`, UTF-16 code units, where a supplementary
+//! character takes two slots; the port's are `char`s, Unicode scalar values,
+//! one slot each. The helpers therefore apply Java's per-code-point rules to
+//! one slot at a time, and the conversions between code points and characters
+//! are copies.
 
 #![deny(unsafe_code)]
 
@@ -52,58 +58,62 @@ impl CharacterBuffer {
 
 /// Creates a new [`CharacterBuffer`] with a freshly allocated internal buffer.
 ///
+/// Equivalent to `CharacterUtils.newCharacterBuffer(int)`.
+///
 /// # Errors
 ///
-/// Returns `LuceneError::IllegalArgument` if `buffer_size` is less than 2.
+/// Returns `LuceneError::IllegalArgument` with Lucene's message,
+/// `buffersize must be >= 2`, if `buffer_size` is less than 2.
 pub fn new_character_buffer(buffer_size: usize) -> Result<CharacterBuffer> {
     if buffer_size < 2 {
         return Err(LuceneError::IllegalArgument(
-            "buffer_size must be >= 2".to_string(),
+            "buffersize must be >= 2".to_string(),
         ));
     }
     Ok(CharacterBuffer::new(vec!['\0'; buffer_size], 0, 0))
 }
 
-/// Lowercases each code point in `buffer[offset..limit]`.
+/// Lowercases each code point in `buffer[offset..limit]`, in place.
 ///
-/// Uses Rust's [`char::to_lowercase`] simple Unicode mapping. Unlike Java's
-/// `Character.toLowerCase`, which always maps a single code point to a single
-/// code point, Rust's simple mapping can produce multiple `char`s for some
-/// input code points. A notable difference is U+0130 LATIN CAPITAL LETTER I
-/// WITH DOT ABOVE: Java `Character.toLowerCase` returns U+0069 (`i`), while
-/// Rust `char::to_lowercase` returns `i` followed by U+0307 COMBINING DOT
-/// ABOVE. This function resizes `buffer` to accommodate any expansion.
-///
-/// Returns the new length of the lowercased region.
-pub fn to_lower_case(buffer: &mut Vec<char>, offset: usize, limit: usize) -> usize {
-    assert!(offset <= limit && limit <= buffer.len());
-    let lowercased: Vec<char> = buffer[offset..limit]
-        .iter()
-        .flat_map(|c| c.to_lowercase())
-        .collect();
-    let new_len = lowercased.len();
-    buffer.splice(offset..limit, lowercased);
-    new_len
+/// Equivalent to `CharacterUtils.toLowerCase(char[], int, int)`
+/// (`CharacterUtils.java:53-61`), which replaces every code point with
+/// `Character.toLowerCase(int)` of it: Unicode's *simple* lowercase mapping,
+/// one code point for one, so U+0130 becomes `i` and U+1E9E becomes U+00DF
+/// (Rust's [`char::to_lowercase`] applies the full mapping instead, which
+/// turns U+0130 into two characters). The mapping is
+/// [`case_folding::to_lower_case`](crate::util::automaton::case_folding::to_lower_case),
+/// generated from the JDK.
+pub fn to_lower_case(buffer: &mut [char], offset: usize, limit: usize) {
+    debug_assert!(buffer.len() >= limit);
+    debug_assert!(offset <= buffer.len());
+    for c in &mut buffer[offset..limit] {
+        *c = simple_case(*c, crate::util::automaton::case_folding::to_lower_case);
+    }
 }
 
-/// Uppercases each code point in `buffer[offset..limit]`.
+/// Uppercases each code point in `buffer[offset..limit]`, in place.
 ///
-/// Uses Rust's [`char::to_uppercase`] simple Unicode mapping. As with
-/// [`to_lower_case`], this can expand the number of `char`s in the buffer and
-/// will resize `buffer` accordingly.
-pub fn to_upper_case(buffer: &mut Vec<char>, offset: usize, limit: usize) -> usize {
-    assert!(offset <= limit && limit <= buffer.len());
-    let uppercased: Vec<char> = buffer[offset..limit]
-        .iter()
-        .flat_map(|c| c.to_uppercase())
-        .collect();
-    let new_len = uppercased.len();
-    buffer.splice(offset..limit, uppercased);
-    new_len
+/// Equivalent to `CharacterUtils.toUpperCase(char[], int, int)`
+/// (`CharacterUtils.java:71-79`), with `Character.toUpperCase(int)`, the
+/// simple uppercase mapping: U+00DF stays U+00DF, where Rust's
+/// [`char::to_uppercase`] gives `SS`.
+pub fn to_upper_case(buffer: &mut [char], offset: usize, limit: usize) {
+    debug_assert!(buffer.len() >= limit);
+    debug_assert!(offset <= buffer.len());
+    for c in &mut buffer[offset..limit] {
+        *c = simple_case(*c, crate::util::automaton::case_folding::to_upper_case);
+    }
+}
+
+/// Applies a simple (one code point for one) case mapping to `c`.
+fn simple_case(c: char, map: fn(i32) -> i32) -> char {
+    char::from_u32(map(c as i32) as u32)
+        .expect("INVARIANT: a simple case mapping maps a scalar value to a scalar value")
 }
 
 /// Converts Java-style UTF-16 character data into Unicode code points.
 ///
+/// Equivalent to `CharacterUtils.toCodePoints(char[], int, int, int[], int)`.
 /// Rust `char`s are already Unicode scalar values, so this is a direct copy.
 ///
 /// # Errors
@@ -135,6 +145,7 @@ pub fn to_code_points(
 
 /// Converts Unicode code points into Java-style UTF-16 characters.
 ///
+/// Equivalent to `CharacterUtils.toChars(int[], int, int, char[], int)`.
 /// Rust `char`s already cover the full Unicode scalar range, so this is a
 /// direct copy.
 ///
@@ -170,13 +181,16 @@ pub fn to_chars(
 
 /// Fills `buffer` with up to `num_chars` characters from `reader`.
 ///
-/// In Java this method is careful not to split a surrogate pair across buffer
+/// Equivalent to `CharacterUtils.fill(CharacterBuffer, Reader, int)`. In Java
+/// this method is careful not to split a surrogate pair across buffer
 /// boundaries. Rust `char`s are complete scalar values, so no special handling
 /// is required.
 ///
 /// # Errors
 ///
-/// Returns `LuceneError::IllegalArgument` if `num_chars` is out of range.
+/// Returns `LuceneError::IllegalArgument` with Lucene's message,
+/// `numChars must be >= 2 and <= the buffer size`, if `num_chars` is out of
+/// range.
 pub fn fill(
     buffer: &mut CharacterBuffer,
     reader: &mut dyn CharReader,
@@ -184,7 +198,7 @@ pub fn fill(
 ) -> Result<bool> {
     if num_chars < 2 || num_chars > buffer.buffer.len() {
         return Err(LuceneError::IllegalArgument(
-            "num_chars must be >= 2 and <= buffer size".to_string(),
+            "numChars must be >= 2 and <= the buffer size".to_string(),
         ));
     }
     buffer.offset = 0;
@@ -194,6 +208,8 @@ pub fn fill(
 }
 
 /// Convenience equivalent of [`fill(buffer, reader, buffer.buffer.len())`](fill).
+///
+/// Equivalent to the overload `CharacterUtils.fill(CharacterBuffer, Reader)`.
 pub fn fill_buffer(buffer: &mut CharacterBuffer, reader: &mut dyn CharReader) -> Result<bool> {
     fill(buffer, reader, buffer.buffer.len())
 }
@@ -231,8 +247,7 @@ mod tests {
     fn to_lower_case_ascii() {
         let mut buf: Vec<char> = "HELLO WORLD".chars().collect();
         let len = buf.len();
-        let new_len = to_lower_case(&mut buf, 0, len);
-        assert_eq!(new_len, len);
+        to_lower_case(&mut buf, 0, len);
         assert_eq!(buf.iter().collect::<String>(), "hello world");
     }
 
@@ -240,17 +255,61 @@ mod tests {
     fn to_upper_case_ascii() {
         let mut buf: Vec<char> = "hello world".chars().collect();
         let len = buf.len();
-        let new_len = to_upper_case(&mut buf, 0, len);
-        assert_eq!(new_len, len);
+        to_upper_case(&mut buf, 0, len);
         assert_eq!(buf.iter().collect::<String>(), "HELLO WORLD");
     }
 
     #[test]
     fn to_lower_case_preserves_buffer_tail() {
         let mut buf: Vec<char> = "AbCdefG".chars().collect();
-        let new_len = to_lower_case(&mut buf, 1, 4);
-        assert_eq!(new_len, 3);
+        to_lower_case(&mut buf, 1, 4);
         assert_eq!(buf.iter().collect::<String>(), "AbcdefG");
+    }
+
+    /// `MiscOracle` O3 (`oracle/h2/MiscOracle.java`): Java's
+    /// `CharacterUtils.toLowerCase` and `toUpperCase` apply the simple
+    /// mappings, one code point for one.
+    #[test]
+    fn case_mappings_are_javas_simple_mappings() {
+        let mut lower: Vec<char> =
+            "\u{130}STANBUL \u{3A3}\u{391}\u{3A3} \u{1E9E} \u{10400} \u{1C5}"
+                .chars()
+                .collect();
+        let len = lower.len();
+        to_lower_case(&mut lower, 0, len);
+        assert_eq!(
+            lower.iter().collect::<String>(),
+            "istanbul \u{3C3}\u{3B1}\u{3C3} \u{DF} \u{10428} \u{1C6}"
+        );
+        let mut upper: Vec<char> = "stra\u{DF}e \u{1C6} \u{149} \u{10428} \u{B5} \u{131}"
+            .chars()
+            .collect();
+        let len = upper.len();
+        to_upper_case(&mut upper, 0, len);
+        assert_eq!(
+            upper.iter().collect::<String>(),
+            "STRA\u{DF}E \u{1C4} \u{149} \u{10400} \u{39C} I"
+        );
+    }
+
+    /// `MiscOracle` O3: the buffer helpers refuse a bad size with Java's
+    /// messages.
+    #[test]
+    fn buffer_errors_carry_javas_messages() {
+        match new_character_buffer(1) {
+            Err(LuceneError::IllegalArgument(message)) => {
+                assert_eq!(message, "buffersize must be >= 2")
+            }
+            other => panic!("expected the size error, got {other:?}"),
+        }
+        let mut buffer = new_character_buffer(4).unwrap();
+        let mut reader = crate::analysis::StringCharReader::new("x");
+        match fill(&mut buffer, &mut reader, 5) {
+            Err(LuceneError::IllegalArgument(message)) => {
+                assert_eq!(message, "numChars must be >= 2 and <= the buffer size")
+            }
+            other => panic!("expected the count error, got {other:?}"),
+        }
     }
 
     #[test]

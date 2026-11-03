@@ -3,25 +3,22 @@
 
 #![deny(unsafe_code)]
 
-use std::any::Any;
-
 use crate::error::Result;
 use crate::index::LeafReaderContext;
 use crate::search::comparators::updateable_doc_id_set_iterator::UpdateableDocIdSetIterator;
 use crate::search::doc_id_set_iterator::{all, empty, range, DocIdSetIterator};
-use crate::search::field_comparator::{java_int_compare, FieldComparator, SortValue};
-use crate::search::leaf_field_comparator::LeafFieldComparator;
+use crate::search::field_comparator::{java_int_compare, SlotComparator, SortValue};
 use crate::search::pruning::Pruning;
 use crate::search::scorable::Scorable;
 
 /// The per-segment state of a [`DocComparator`].
 ///
 /// Equivalent to the fields of the private inner class
-/// `DocComparator.DocLeafComparator`; see the adaptation note on
-/// [`FieldComparator`](crate::search::FieldComparator) for why it is a field
-/// rather than a separate object.
+/// `DocComparator.DocLeafComparator`, which
+/// [`SlotComparator`](crate::search::SlotComparator) pairs with the
+/// comparator's own fields.
 #[derive(Debug)]
-struct DocLeafState {
+pub struct DocLeafState {
     doc_base: i32,
     min_doc: i32,
     max_doc: i32,
@@ -49,7 +46,6 @@ pub struct DocComparator {
     top_value_set: bool,
     bottom_value_set: bool,
     hits_threshold_reached: bool,
-    leaf: Option<DocLeafState>,
 }
 
 impl DocComparator {
@@ -66,18 +62,14 @@ impl DocComparator {
             top_value_set: false,
             bottom_value_set: false,
             hits_threshold_reached: false,
-            leaf: None,
         }
     }
 
     /// Equivalent to the private `DocLeafComparator.updateIterator()`.
-    fn update_iterator(&mut self) -> Result<()> {
+    fn update_iterator(&self, leaf: &DocLeafState) -> Result<()> {
         if !self.enable_skipping || !self.hits_threshold_reached {
             return Ok(());
         }
-        let Some(leaf) = self.leaf.as_ref() else {
-            return Ok(());
-        };
         let Some(competitive_iterator) = leaf.competitive_iterator.as_ref() else {
             return Ok(());
         };
@@ -110,51 +102,9 @@ impl DocComparator {
     }
 }
 
-impl LeafFieldComparator for DocComparator {
-    fn set_bottom(&mut self, slot: i32) -> Result<()> {
-        self.bottom = self.doc_ids[slot as usize];
-        self.bottom_value_set = true;
-        self.update_iterator()
-    }
+impl SlotComparator for DocComparator {
+    type Leaf = DocLeafState;
 
-    fn compare_bottom(&mut self, doc: i32, _scorer: &mut dyn Scorable) -> Result<i32> {
-        let doc_base = self.leaf.as_ref().map_or(0, |leaf| leaf.doc_base);
-        // No overflow risk because doc IDs are non-negative.
-        Ok(self.bottom - (doc_base + doc))
-    }
-
-    fn compare_top(&mut self, doc: i32, _scorer: &mut dyn Scorable) -> Result<i32> {
-        let doc_base = self.leaf.as_ref().map_or(0, |leaf| leaf.doc_base);
-        let doc_value = doc_base + doc;
-        Ok(java_int_compare(self.top_value, doc_value))
-    }
-
-    fn copy(&mut self, slot: i32, doc: i32, _scorer: &mut dyn Scorable) -> Result<()> {
-        let doc_base = self.leaf.as_ref().map_or(0, |leaf| leaf.doc_base);
-        self.doc_ids[slot as usize] = doc_base + doc;
-        Ok(())
-    }
-
-    fn set_scorer(&mut self, _scorer: &mut dyn Scorable) -> Result<()> {
-        // Update the iterator on a new segment.
-        self.update_iterator()
-    }
-
-    fn competitive_iterator(&mut self) -> Result<Option<Box<dyn DocIdSetIterator>>> {
-        Ok(self.leaf.as_ref().and_then(|leaf| {
-            leaf.competitive_iterator
-                .as_ref()
-                .map(|it| Box::new(it.clone()) as Box<dyn DocIdSetIterator>)
-        }))
-    }
-
-    fn set_hits_threshold_reached(&mut self) -> Result<()> {
-        self.hits_threshold_reached = true;
-        self.update_iterator()
-    }
-}
-
-impl FieldComparator for DocComparator {
     fn compare(&self, slot1: i32, slot2: i32) -> i32 {
         // No overflow risk because doc IDs are non-negative.
         self.doc_ids[slot1 as usize] - self.doc_ids[slot2 as usize]
@@ -172,7 +122,9 @@ impl FieldComparator for DocComparator {
         SortValue::Int(self.doc_ids[slot as usize])
     }
 
-    fn get_leaf_comparator(&mut self, context: &LeafReaderContext) -> Result<()> {
+    /// Equivalent to `DocComparator.getLeafComparator(LeafReaderContext)`,
+    /// which returns `new DocLeafComparator(context)`.
+    fn new_leaf(&mut self, context: &LeafReaderContext) -> Result<DocLeafState> {
         let doc_base = context.doc_base();
         if self.enable_skipping {
             // Skip docs before topValue, but include docs starting with
@@ -182,28 +134,79 @@ impl FieldComparator for DocComparator {
             let max_doc = context.leaf_reader().max_doc();
             let competitive_iterator = UpdateableDocIdSetIterator::new();
             competitive_iterator.update(Box::new(all(max_doc)?));
-            self.leaf = Some(DocLeafState {
+            Ok(DocLeafState {
                 doc_base,
                 min_doc: self.top_value,
                 max_doc,
                 competitive_iterator: Some(competitive_iterator),
-            });
+            })
         } else {
-            self.leaf = Some(DocLeafState {
+            Ok(DocLeafState {
                 doc_base,
                 min_doc: -1,
                 max_doc: -1,
                 competitive_iterator: None,
-            });
+            })
         }
+    }
+
+    fn set_bottom(&mut self, leaf: &mut DocLeafState, slot: i32) -> Result<()> {
+        self.bottom = self.doc_ids[slot as usize];
+        self.bottom_value_set = true;
+        self.update_iterator(leaf)
+    }
+
+    fn compare_bottom(
+        &mut self,
+        leaf: &mut DocLeafState,
+        doc: i32,
+        _scorer: &mut dyn Scorable,
+    ) -> Result<i32> {
+        let doc_base = leaf.doc_base;
+        // No overflow risk because doc IDs are non-negative.
+        Ok(self.bottom - (doc_base + doc))
+    }
+
+    fn compare_top(
+        &mut self,
+        leaf: &mut DocLeafState,
+        doc: i32,
+        _scorer: &mut dyn Scorable,
+    ) -> Result<i32> {
+        let doc_base = leaf.doc_base;
+        let doc_value = doc_base + doc;
+        Ok(java_int_compare(self.top_value, doc_value))
+    }
+
+    fn copy(
+        &mut self,
+        leaf: &mut DocLeafState,
+        slot: i32,
+        doc: i32,
+        _scorer: &mut dyn Scorable,
+    ) -> Result<()> {
+        let doc_base = leaf.doc_base;
+        self.doc_ids[slot as usize] = doc_base + doc;
         Ok(())
     }
 
-    fn as_leaf_comparator(&mut self) -> &mut dyn LeafFieldComparator {
-        self
+    fn set_scorer(&mut self, leaf: &mut DocLeafState, _scorer: &mut dyn Scorable) -> Result<()> {
+        // Update the iterator on a new segment.
+        self.update_iterator(leaf)
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
+    fn competitive_iterator(
+        &mut self,
+        leaf: &mut DocLeafState,
+    ) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+        Ok(leaf
+            .competitive_iterator
+            .as_ref()
+            .map(|it| Box::new(it.clone()) as Box<dyn DocIdSetIterator>))
+    }
+
+    fn set_hits_threshold_reached(&mut self, leaf: &mut DocLeafState) -> Result<()> {
+        self.hits_threshold_reached = true;
+        self.update_iterator(leaf)
     }
 }

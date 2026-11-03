@@ -19,13 +19,14 @@ use crate::index::index_reader::{CacheHelper, IndexReaderCore, StoredFields};
 use crate::index::leaf_reader::{LeafMetaData, LeafReader, TermVectors};
 use crate::index::postings_enum::{ImpactsEnum, PostingsEnum};
 use crate::index::{
-    BinaryDocValues, ByteVectorValues, DocValuesSkipper, FieldInfos, FloatVectorValues,
+    BinaryDocValues, ByteVectorValues, DocValuesSkipper, FieldInfos, Fields, FloatVectorValues,
     NumericDocValues, PointValues, SeekStatus, SortedDocValues, SortedNumericDocValues,
     SortedSetDocValues, TermState, Terms, TermsEnum,
 };
 use crate::search::knn::KnnCollector;
 use crate::search::AcceptDocs;
-use crate::util::attribute::AttributeSource;
+use crate::search::DocIdSetIterator;
+use crate::util::attribute::{AttributeSource, Unwrappable};
 use crate::util::Bits;
 use crate::util::{BytesRef, IOBooleanSupplier};
 
@@ -38,10 +39,10 @@ use crate::util::{BytesRef, IOBooleanSupplier};
 /// inheritance, so the port is a concrete struct that forwards everything; a
 /// caller that wants to intercept one method wraps this type and forwards the
 /// rest to it, which is the same delegation with one more level of indirection.
-/// Java's `FilterLeafReader.FilterTerms` and `FilterTermsEnum` inner classes
-/// are ported the same way, as [`FilterTerms`] and [`FilterTermsEnum`]. The
-/// `FilterFields` and `FilterPostingsEnum` inner classes are pure delegation
-/// too and are not reproduced: nothing in the crate subclasses them.
+/// Java's four inner base classes — `FilterLeafReader.FilterFields`,
+/// `FilterTerms`, `FilterTermsEnum` and `FilterPostingsEnum` — are ported the
+/// same way, as [`FilterFields`], [`FilterTerms`], [`FilterTermsEnum`] and
+/// [`FilterPostingsEnum`].
 pub struct FilterLeafReader {
     /// The wrapped reader.
     pub(crate) inner: Arc<dyn LeafReader>,
@@ -81,15 +82,27 @@ impl FilterLeafReader {
 
     /// Unwraps nested filters and returns the innermost reader.
     ///
-    /// Equivalent to `FilterLeafReader.unwrap(LeafReader)`.
+    /// Equivalent to `FilterLeafReader.unwrap(LeafReader)`
+    /// (`FilterLeafReader.java:50-55`): while the reader is a
+    /// `FilterLeafReader`, step to its delegate.
     pub fn unwrap(reader: &Arc<dyn LeafReader>) -> Arc<dyn LeafReader> {
-        Arc::clone(reader)
+        let mut reader = Arc::clone(reader);
+        while let Some(delegate) = reader.filter_leaf_reader_delegate() {
+            let delegate = Arc::clone(delegate);
+            reader = delegate;
+        }
+        reader
     }
 }
 
 impl LeafReader for FilterLeafReader {
     fn core(&self) -> &IndexReaderCore {
         self.inner.core()
+    }
+
+    /// `this instanceof FilterLeafReader`: the delegate `getDelegate()` returns.
+    fn filter_leaf_reader_delegate(&self) -> Option<&Arc<dyn LeafReader>> {
+        Some(&self.inner)
     }
 
     fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
@@ -209,6 +222,158 @@ impl LeafReader for FilterLeafReader {
     }
 }
 
+/// A [`Fields`] that forwards every call to a wrapped instance.
+///
+/// Equivalent to `org.apache.lucene.index.FilterLeafReader.FilterFields`
+/// (`FilterLeafReader.java:57-89`): the base class every filtering `Fields`
+/// extends, whose three methods — `iterator()`, `terms(String)` and `size()` —
+/// all forward to the protected `in` field and are all overridable.
+///
+/// **Divergence from Lucene 10.5.0.** As [`FilterTerms`]: Java's abstract
+/// class becomes a concrete struct that a subclass holds and forwards to,
+/// overriding a method by implementing it itself instead of calling this
+/// type's. The struct is generic over the delegate's type, defaulting to
+/// `dyn Fields`, so that a subclass which only ever wraps one concrete type —
+/// `MappedMultiFields` wraps a `MultiFields` — reaches it typed through
+/// [`get_delegate`](Self::get_delegate), where Java needs a downcast of `in`;
+/// and so that a delegate held only for the length of a call can be wrapped
+/// as `FilterFields<dyn Fields + 'a>`. Java refuses a null delegate with a
+/// `NullPointerException`; Rust's type system refuses it at compile time.
+pub struct FilterFields<F: Fields + ?Sized = dyn Fields> {
+    inner: Box<F>,
+}
+
+impl<F: Fields + ?Sized> FilterFields<F> {
+    /// Wraps `inner`.
+    ///
+    /// Equivalent to `FilterFields(Fields)`.
+    pub fn new(inner: Box<F>) -> Self {
+        Self { inner }
+    }
+
+    /// Returns the wrapped instance.
+    ///
+    /// Equivalent to reading the protected `FilterFields.in` field.
+    pub fn get_delegate(&self) -> &F {
+        self.inner.as_ref()
+    }
+}
+
+impl<F: Fields + ?Sized> Fields for FilterFields<F> {
+    /// Equivalent to `FilterFields.iterator()`, which returns `in.iterator()`.
+    fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+        self.inner.iterator()
+    }
+
+    /// Equivalent to `FilterFields.terms(String)`, which returns
+    /// `in.terms(field)`.
+    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+        self.inner.terms(field)
+    }
+
+    /// Equivalent to `FilterFields.size()`, which returns `in.size()`.
+    fn size(&self) -> i32 {
+        self.inner.size()
+    }
+}
+
+/// A [`PostingsEnum`] that forwards every call to a wrapped instance.
+///
+/// Equivalent to `org.apache.lucene.index.FilterLeafReader.FilterPostingsEnum`
+/// (`FilterLeafReader.java:253-320`), the base class every filtering
+/// `PostingsEnum` extends. Java forwards exactly `docID()`, `freq()`,
+/// `nextDoc()`, `advance(int)`, `nextPosition()`, `startOffset()`,
+/// `endOffset()`, `getPayload()` and `cost()` to `in`, and implements
+/// `Unwrappable<PostingsEnum>` by returning `in`. Every other method keeps the
+/// inherited default — `slowAdvance`, `intoBitSet`, `docIDRunEnd` and
+/// `nextPostings` run against *this* enum's `nextDoc`/`advance`, not the
+/// delegate's specialisations — and this port forwards the same nine methods
+/// and leaves the same defaults in place.
+///
+/// **Divergence from Lucene 10.5.0.** As [`FilterTerms`]: Java's abstract
+/// class becomes a concrete struct that a subclass holds and forwards to.
+pub struct FilterPostingsEnum {
+    inner: Box<dyn PostingsEnum>,
+}
+
+impl FilterPostingsEnum {
+    /// Wraps `inner`.
+    ///
+    /// Equivalent to `FilterPostingsEnum(PostingsEnum)`. Java refuses a null
+    /// delegate with a `NullPointerException`; Rust's type system refuses it
+    /// at compile time.
+    pub fn new(inner: Box<dyn PostingsEnum>) -> Self {
+        Self { inner }
+    }
+
+    /// Returns the wrapped instance.
+    ///
+    /// Equivalent to reading the protected `FilterPostingsEnum.in` field.
+    pub fn get_delegate(&self) -> &dyn PostingsEnum {
+        self.inner.as_ref()
+    }
+}
+
+impl std::fmt::Display for FilterPostingsEnum {
+    /// `FilterLeafReader.FilterPostingsEnum` declares no `toString()`, so
+    /// `java.lang.Object`'s applies. See
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// for why only the hexadecimal suffix diverges.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.FilterLeafReader$FilterPostingsEnum",
+            self,
+        ))
+    }
+}
+
+impl DocIdSetIterator for FilterPostingsEnum {
+    fn doc_id(&self) -> i32 {
+        self.inner.doc_id()
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        self.inner.next_doc()
+    }
+
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        self.inner.advance(target)
+    }
+
+    fn cost(&self) -> i64 {
+        self.inner.cost()
+    }
+}
+
+impl PostingsEnum for FilterPostingsEnum {
+    fn freq(&self) -> Result<i32> {
+        self.inner.freq()
+    }
+
+    fn next_position(&mut self) -> Result<i32> {
+        self.inner.next_position()
+    }
+
+    fn start_offset(&self) -> i32 {
+        self.inner.start_offset()
+    }
+
+    fn end_offset(&self) -> i32 {
+        self.inner.end_offset()
+    }
+
+    fn get_payload(&self) -> Result<Option<&[u8]>> {
+        self.inner.get_payload()
+    }
+}
+
+impl Unwrappable<dyn PostingsEnum> for FilterPostingsEnum {
+    /// Equivalent to `FilterPostingsEnum.unwrap()`, which returns `in`.
+    fn unwrap(&self) -> &(dyn PostingsEnum + 'static) {
+        self.inner.as_ref()
+    }
+}
+
 /// A [`Terms`] that forwards every call to a wrapped instance.
 ///
 /// Equivalent to `org.apache.lucene.index.FilterLeafReader.FilterTerms`, whose
@@ -247,19 +412,19 @@ impl Terms for FilterTerms {
         self.inner.iterator()
     }
 
-    fn size(&self) -> i64 {
+    fn size(&self) -> Result<i64> {
         self.inner.size()
     }
 
-    fn sum_total_term_freq(&self) -> i64 {
+    fn sum_total_term_freq(&self) -> Result<i64> {
         self.inner.sum_total_term_freq()
     }
 
-    fn sum_doc_freq(&self) -> i64 {
+    fn sum_doc_freq(&self) -> Result<i64> {
         self.inner.sum_doc_freq()
     }
 
-    fn doc_count(&self) -> i32 {
+    fn doc_count(&self) -> Result<i32> {
         self.inner.doc_count()
     }
 
@@ -279,7 +444,7 @@ impl Terms for FilterTerms {
         self.inner.has_payloads()
     }
 
-    fn stats(&self) -> String {
+    fn stats(&self) -> Result<String> {
         self.inner.stats()
     }
 }
@@ -391,6 +556,18 @@ impl TermsEnum for FilterTermsEnum {
 /// A [`CodecReader`] that forwards every call to a wrapped codec reader.
 ///
 /// Equivalent to `org.apache.lucene.index.FilterCodecReader`.
+///
+/// **Divergence from Lucene 10.5.0.** Java's `FilterCodecReader` is
+/// abstract: a filter extends it and overrides the calls it changes,
+/// inheriting the forwarding of the rest. Rust has no implementation
+/// inheritance, so this is a concrete struct that forwards every call to
+/// [`inner`](Self::get_delegate) and can be used on its own as the identity
+/// filter; the filters Java writes as subclasses — the reader
+/// [`wrap_live_docs`](Self::wrap_live_docs) returns, `SortingCodecReader` —
+/// are types of their own that implement [`CodecReader`], forward the calls
+/// they do not change themselves, and report their delegate through
+/// [`CodecReader::filter_codec_reader_delegate`] so that
+/// [`unwrap`](Self::unwrap) sees through them as Java's `instanceof` does.
 pub struct FilterCodecReader {
     /// The wrapped codec reader.
     pub(crate) inner: Arc<dyn CodecReader>,
@@ -449,9 +626,16 @@ impl FilterCodecReader {
 
     /// Unwraps nested filters and returns the innermost codec reader.
     ///
-    /// Equivalent to `FilterCodecReader.unwrap(CodecReader)`.
+    /// Equivalent to `FilterCodecReader.unwrap(CodecReader)`
+    /// (`FilterCodecReader.java:44-49`): while the reader is a
+    /// `FilterCodecReader`, step to its delegate.
     pub fn unwrap(reader: &Arc<dyn CodecReader>) -> Arc<dyn CodecReader> {
-        Arc::clone(reader)
+        let mut reader = Arc::clone(reader);
+        while let Some(delegate) = reader.filter_codec_reader_delegate() {
+            let delegate = Arc::clone(delegate);
+            reader = delegate;
+        }
+        reader
     }
 }
 
@@ -582,6 +766,12 @@ impl CodecReader for FilterCodecReader {
         self.inner.get_fields_reader()
     }
 
+    /// A `FilterCodecReader` (Java: the class itself) answers its
+    /// delegate, `getDelegate()`.
+    fn filter_codec_reader_delegate(&self) -> Option<&Arc<dyn CodecReader>> {
+        Some(&self.inner)
+    }
+
     fn get_term_vectors_reader(&self) -> Result<Option<Box<dyn TermVectorsReader>>> {
         self.inner.get_term_vectors_reader()
     }
@@ -651,8 +841,21 @@ impl Bits for ArcBits {
         self.0.get(index)
     }
 
+    /// Forwards to the wrapped bits' `try_get`, so that an error they raise
+    /// (`ExitableDirectoryReader.java:359-387`, whose `get` throws through
+    /// every wrapper that delegates to it) is not swallowed here.
+    fn try_get(&self, index: usize) -> Result<bool> {
+        self.0.try_get(index)
+    }
+
     fn length(&self) -> usize {
         self.0.length()
+    }
+
+    /// The handle is a Rust artefact: Java's `instanceof` sees the shared
+    /// bits themselves.
+    fn bits_as_any(&self) -> Option<&dyn std::any::Any> {
+        self.0.bits_as_any()
     }
 }
 
@@ -784,6 +987,12 @@ impl LeafReader for LiveDocsCodecReader {
 impl CodecReader for LiveDocsCodecReader {
     fn get_fields_reader(&self) -> Result<Option<Box<dyn StoredFieldsReader>>> {
         self.inner.get_fields_reader()
+    }
+
+    /// A `FilterCodecReader` (Java: the anonymous subclass `wrapLiveDocs` returns) answers its
+    /// delegate, `getDelegate()`.
+    fn filter_codec_reader_delegate(&self) -> Option<&Arc<dyn CodecReader>> {
+        Some(&self.inner)
     }
 
     fn get_term_vectors_reader(&self) -> Result<Option<Box<dyn TermVectorsReader>>> {

@@ -57,7 +57,6 @@ impl std::fmt::Display for Mode {
 /// Lucene Core equivalent: `org.apache.lucene.codecs.lucene104.Lucene104Codec`.
 #[derive(Debug)]
 pub struct Lucene104Codec {
-    mode: Mode,
     stored_fields_format: Lucene90StoredFieldsFormat,
     default_postings_format: Arc<dyn PostingsFormat>,
     per_field_postings_format: PerFieldPostingsFormat,
@@ -83,7 +82,6 @@ impl Lucene104Codec {
         let default_knn_vectors_format: Arc<dyn KnnVectorsFormat> =
             Arc::new(Lucene99HnswVectorsFormat::new());
         Self {
-            mode,
             stored_fields_format,
             per_field_postings_format: PerFieldPostingsFormat::from_map(
                 std::collections::HashMap::new(),
@@ -101,11 +99,6 @@ impl Lucene104Codec {
             ),
             default_knn_vectors_format,
         }
-    }
-
-    /// Returns the stored-fields compression mode configured for this codec.
-    pub fn mode(&self) -> Mode {
-        self.mode
     }
 
     /// Returns the postings format used for fields that do not select a custom
@@ -223,17 +216,5 @@ mod tests {
         assert_eq!(codec.live_docs_format().name(), "Lucene90LiveDocs");
         assert_eq!(codec.compound_format().name(), "Lucene90CompoundFormat");
         assert_eq!(codec.points_format().name(), "Lucene90");
-    }
-
-    #[test]
-    fn codec_supports_both_modes() {
-        assert_eq!(
-            Lucene104Codec::with_mode(Mode::BestSpeed).mode(),
-            Mode::BestSpeed
-        );
-        assert_eq!(
-            Lucene104Codec::with_mode(Mode::BestCompression).mode(),
-            Mode::BestCompression
-        );
     }
 }

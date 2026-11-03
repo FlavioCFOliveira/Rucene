@@ -417,8 +417,11 @@ impl PhraseQuery {
     /// # Errors
     ///
     /// Propagates whatever reading the document frequency raises.
-    pub fn term_not_in_reader(reader: &dyn crate::index::IndexReader, term: &Term) -> Result<bool> {
-        Ok(reader.doc_freq(term)? == 0)
+    pub fn term_not_in_reader(
+        reader: &Arc<dyn crate::index::LeafReader>,
+        term: &Term,
+    ) -> Result<bool> {
+        Ok(Arc::clone(reader).as_index_reader().doc_freq(term)? == 0)
     }
 
     /// Creates a phrase query matching documents that contain the given terms
@@ -442,7 +445,7 @@ impl PhraseQuery {
     ///
     /// As [`new`](Self::new).
     pub fn with_slop_bytes(slop: i32, field: &str, terms: &[BytesRef]) -> Result<Self> {
-        let terms: Vec<Term> = terms.iter().map(|t| Term::new(field, t.clone())).collect();
+        let terms = Self::to_terms_from_bytes(field, terms);
         let positions = incremental_positions(terms.len());
         Self::new(slop, terms, positions)
     }
@@ -591,7 +594,7 @@ impl Query for PhraseQuery {
         boost: f32,
     ) -> Result<Arc<dyn Weight>> {
         let field = self.field.clone().ok_or_else(|| {
-            LuceneError::IllegalState(
+            LuceneError::illegal_state(
                 "PhraseWeight does not support less than 2 terms, call rewrite first".to_string(),
             )
         })?;
@@ -663,12 +666,12 @@ impl PhraseWeightImpl for PhraseQueryWeightImpl {
     fn get_stats(&self, searcher: &IndexSearcher) -> Result<Option<SharedSimScorer>> {
         let positions = self.query.get_positions();
         if positions.len() < 2 {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "PhraseWeight does not support less than 2 terms, call rewrite first".to_string(),
             ));
         }
         if positions[0] != 0 {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "PhraseWeight requires that the first position is 0, call rewrite first"
                     .to_string(),
             ));
@@ -699,7 +702,7 @@ impl PhraseWeightImpl for PhraseQueryWeightImpl {
         let collection_stats = searcher
             .collection_statistics(&self.field)?
             .ok_or_else(|| {
-                LuceneError::IllegalState(format!(
+                LuceneError::illegal_state(format!(
                     "field {} has term statistics but no collection statistics",
                     self.field
                 ))
@@ -727,7 +730,7 @@ impl PhraseWeightImpl for PhraseQueryWeightImpl {
         };
 
         if !field_terms.has_positions() {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "field \"{}\" was indexed without position data; cannot run PhraseQuery (phrase={})",
                 self.field,
                 self.query.to_query_string("")
@@ -735,7 +738,7 @@ impl PhraseWeightImpl for PhraseQueryWeightImpl {
         }
 
         let states = self.states.get().ok_or_else(|| {
-            LuceneError::IllegalState(
+            LuceneError::illegal_state(
                 "PhraseWeight.getStats must run before getPhraseMatcher".to_string(),
             )
         })?;
@@ -747,7 +750,13 @@ impl PhraseWeightImpl for PhraseQueryWeightImpl {
 
         for (i, t) in terms.iter().enumerate() {
             let Some(state) = states[i].get(context)? else {
-                // The term does not exist in this segment.
+                // The term does not exist in this segment. Java checks it with
+                // `assert termNotInReader(reader, t)` (`PhraseQuery.java:526`);
+                // Rust's debug assertions stand for `-ea`.
+                debug_assert!(
+                    PhraseQuery::term_not_in_reader(&reader, t)?,
+                    "no termstate found but term exists in reader"
+                );
                 return Ok(None);
             };
             te.seek_term_state(t.bytes(), &*state)?;

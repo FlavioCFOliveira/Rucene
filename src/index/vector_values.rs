@@ -32,6 +32,7 @@ use crate::error::{LuceneError, Result};
 use crate::index::leaf_reader::LeafReader;
 use crate::index::VectorEncoding;
 use crate::search::{DocIdSetIterator, VectorScorer, NO_MORE_DOCS};
+use crate::util::hnsw::scorer::BorrowedBits;
 use crate::util::Bits;
 
 // -----------------------------------------------------------------------------
@@ -42,7 +43,15 @@ use crate::util::Bits;
 /// associated with each doc.
 ///
 /// Equivalent to `KnnVectorValues.DocIndexIterator`.
-pub trait DocIndexIterator: DocIdSetIterator {
+///
+/// The `Send` bound has no Java counterpart, because Java has no notion of a
+/// type that may not cross threads. It is required here because Lucene keeps
+/// a values object's iterator *inside* another values object: the merged
+/// view `KnnVectorsWriter.MergedVectorValues` builds holds one iterator per
+/// segment (`KnnVectorsWriter.java:161-215`), and every [`KnnVectorValues`]
+/// is `Send + Sync`. Every iterator in this crate already owns its state, so
+/// the bound only states what was already true.
+pub trait DocIndexIterator: DocIdSetIterator + Send {
     /// Returns the value index (ordinal) corresponding to the current doc.
     fn index(&self) -> i32;
 }
@@ -126,13 +135,16 @@ impl DocIndexIterator for DenseDocIndexIterator {
 /// iterator sequentially. Only sequential access is valid; the behaviour is
 /// reproduced rather than "fixed" because functional parity is the contract.
 pub struct FromDisiDocIndexIterator {
-    docs: Box<dyn DocIdSetIterator>,
+    docs: Box<dyn DocIdSetIterator + Send>,
     ord: i32,
 }
 
 impl FromDisiDocIndexIterator {
     /// Creates an iterator from a doc-id iterator.
-    pub fn new(docs: Box<dyn DocIdSetIterator>) -> Self {
+    ///
+    /// The iterator must be `Send` because [`DocIndexIterator`] is; see the
+    /// note on that trait.
+    pub fn new(docs: Box<dyn DocIdSetIterator + Send>) -> Self {
         Self { docs, ord: -1 }
     }
 }
@@ -260,6 +272,24 @@ pub trait KnnVectorValues: Send + Sync {
     /// Returns the vector dimension.
     fn dimension(&self) -> i32;
 
+    /// Returns the vector dimension, or the error Java's `dimension()` would
+    /// throw instead.
+    ///
+    /// Equivalent to `KnnVectorValues.dimension()` where it can throw: the
+    /// merged views of `KnnVectorsWriter.MergedVectorValues` read it from their
+    /// first sub (`KnnVectorsWriter.java:440, 542`), which an empty view does
+    /// not have. [`dimension`](Self::dimension) has no error channel, so the
+    /// views that can fail override this method, and the merge paths call it
+    /// wherever Java calls `dimension()` on such a view. The default is
+    /// `Ok(self.dimension())`.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the implementation reports; the default never fails.
+    fn try_dimension(&self) -> Result<i32> {
+        Ok(self.dimension())
+    }
+
     /// Returns the number of vectors for this field.
     fn size(&self) -> i32;
 
@@ -269,6 +299,30 @@ pub trait KnnVectorValues: Send + Sync {
     /// implementations where every doc has a single value.
     fn ord_to_doc(&self, ord: i32) -> i32 {
         ord
+    }
+
+    /// Returns a [`Bits`] accepting the ordinals whose documents
+    /// `accept_docs` accepts, or `None` when `accept_docs` is `None`.
+    ///
+    /// Equivalent to `KnnVectorValues.getAcceptOrds(Bits)`
+    /// (`KnnVectorValues.java:75-91`), whose view reads
+    /// `acceptDocs.get(ordToDoc(ord))`, and to its overrides: a dense values
+    /// class answers `acceptDocs` itself and an empty one `null`
+    /// (`OffHeapFloatVectorValues.java:169, 254, 336`).
+    ///
+    /// The returned view borrows only `accept_docs`, never `self`, so that a
+    /// scorer can keep scoring through the values while the view is alive; a
+    /// sparse implementation hands the view a shared handle on its
+    /// ordinal-to-document mapping.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's default captures `this` and
+    /// so is right for any `ordToDoc`. A Rust default cannot capture `&self`
+    /// in a view that outlives the call, so the default returns `accept_docs`
+    /// unchanged, which is Java's answer whenever `ord_to_doc` is the identity
+    /// (the default); every implementation in this crate whose `ord_to_doc` is
+    /// not the identity overrides this method.
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        accept_docs.map(|bits| Box::new(BorrowedBits::new(bits)) as Box<dyn Bits + 'a>)
     }
 
     /// Hints that the vectors for the first `num_ords` entries of
@@ -426,6 +480,13 @@ impl Bits for AcceptOrds<'_> {
             .get(self.values.ord_to_doc(index as i32) as usize)
     }
 
+    /// Forwards to the accept docs' `try_get`, so that a check those bits
+    /// raise reaches the search as Java's exception does.
+    fn try_get(&self, index: usize) -> Result<bool> {
+        self.accept_docs
+            .try_get(self.values.ord_to_doc(index as i32) as usize)
+    }
+
     fn length(&self) -> usize {
         self.values.size() as usize
     }
@@ -451,6 +512,81 @@ pub fn accept_ords<'a>(
     accept_docs.map(|accept_docs| {
         Box::new(AcceptOrds {
             values,
+            accept_docs,
+        }) as Box<dyn Bits + 'a>
+    })
+}
+
+/// [`Bits`] view mapping a vector ordinal onto the acceptance of its document,
+/// through an ordinal-to-document mapping the view owns.
+///
+/// Equivalent to the anonymous `Bits` returned by
+/// `KnnVectorValues.getAcceptOrds(Bits)` (`KnnVectorValues.java:75-91`) when it
+/// is reached through `RandomVectorScorer.AbstractRandomVectorScorer` or
+/// `UpdateableRandomVectorScorer.AbstractUpdateableRandomVectorScorer`, whose
+/// `getAcceptOrds` is `values.getAcceptOrds(acceptDocs)`.
+///
+/// [`AcceptOrds`] borrows the values it maps through. A scorer cannot lend its
+/// own values that way, because the search scores through `&mut scorer` while
+/// the view is alive, so this view owns its mapping instead: in practice a
+/// shared handle on the field's ordinal-to-document reader or array, which
+/// [`KnnVectorValues::get_accept_ords`] hands it. The view stays lazy: no
+/// ordinal is mapped until it is queried, and building it costs nothing
+/// proportional to the field.
+pub struct OrdToDocAcceptOrds<'a, F> {
+    size: i32,
+    ord_to_doc: F,
+    accept_docs: &'a dyn Bits,
+}
+
+impl<F> fmt::Debug for OrdToDocAcceptOrds<'_, F> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OrdToDocAcceptOrds")
+            .field("length", &self.size)
+            .field("accept_docs", &self.accept_docs)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<F> Bits for OrdToDocAcceptOrds<'_, F>
+where
+    F: Fn(i32) -> i32 + Send + Sync,
+{
+    fn get(&self, index: usize) -> bool {
+        self.accept_docs
+            .get((self.ord_to_doc)(index as i32) as usize)
+    }
+
+    /// Forwards to the accept docs' `try_get`; see [`AcceptOrds`].
+    fn try_get(&self, index: usize) -> Result<bool> {
+        self.accept_docs
+            .try_get((self.ord_to_doc)(index as i32) as usize)
+    }
+
+    fn length(&self) -> usize {
+        self.size as usize
+    }
+}
+
+/// Returns a [`Bits`] accepting the ordinals whose documents `accept_docs`
+/// accepts, mapping each ordinal with `ord_to_doc`, or `None` when
+/// `accept_docs` is `None`.
+///
+/// Equivalent to `KnnVectorValues.getAcceptOrds(Bits)` for a values object of
+/// `size` vectors whose `ordToDoc` is `ord_to_doc`. See
+/// [`OrdToDocAcceptOrds`] for why the mapping is owned.
+pub fn accept_ords_with<'a, F>(
+    size: i32,
+    ord_to_doc: F,
+    accept_docs: Option<&'a dyn Bits>,
+) -> Option<Box<dyn Bits + 'a>>
+where
+    F: Fn(i32) -> i32 + Send + Sync + 'a,
+{
+    accept_docs.map(|accept_docs| {
+        Box::new(OrdToDocAcceptOrds {
+            size,
+            ord_to_doc,
             accept_docs,
         }) as Box<dyn Bits + 'a>
     })
@@ -587,7 +723,7 @@ fn check_field_encoding(
         if info.has_vector_values() && info.get_vector_encoding() != expected {
             // Message verbatim from Lucene, including the missing space before
             // "(expected=".
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "Unexpected vector encoding ({:?}) for field {}(expected={:?})",
                 info.get_vector_encoding(),
                 field,
@@ -801,110 +937,6 @@ fn check_ord(ord: i32, size: usize) -> Result<()> {
         )));
     }
     Ok(())
-}
-
-// -----------------------------------------------------------------------------
-// Empty implementations
-// -----------------------------------------------------------------------------
-
-/// A no-op KNN vector values instance.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct EmptyKnnVectorValues;
-
-impl KnnVectorValues for EmptyKnnVectorValues {
-    fn dimension(&self) -> i32 {
-        0
-    }
-
-    fn size(&self) -> i32 {
-        0
-    }
-
-    fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        Ok(Box::new(*self))
-    }
-
-    fn encoding(&self) -> VectorEncoding {
-        VectorEncoding::FLOAT32
-    }
-
-    fn iterator(&self) -> Result<Box<dyn DocIndexIterator>> {
-        Ok(Box::new(DenseDocIndexIterator::new(0)))
-    }
-}
-
-/// A no-op float vector values instance.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct EmptyFloatVectorValues;
-
-impl KnnVectorValues for EmptyFloatVectorValues {
-    fn dimension(&self) -> i32 {
-        0
-    }
-
-    fn size(&self) -> i32 {
-        0
-    }
-
-    fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        Ok(Box::new(*self))
-    }
-
-    fn encoding(&self) -> VectorEncoding {
-        VectorEncoding::FLOAT32
-    }
-
-    fn iterator(&self) -> Result<Box<dyn DocIndexIterator>> {
-        Ok(Box::new(DenseDocIndexIterator::new(0)))
-    }
-}
-
-impl FloatVectorValues for EmptyFloatVectorValues {
-    fn vector_value(&self, ord: i32) -> Result<Vec<f32>> {
-        check_ord(ord, 0)?;
-        unreachable!("INVARIANT: size() is 0, so every ordinal is rejected above")
-    }
-
-    fn copy_float(&self) -> Result<Box<dyn FloatVectorValues>> {
-        Ok(Box::new(*self))
-    }
-}
-
-/// A no-op byte vector values instance.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct EmptyByteVectorValues;
-
-impl KnnVectorValues for EmptyByteVectorValues {
-    fn dimension(&self) -> i32 {
-        0
-    }
-
-    fn size(&self) -> i32 {
-        0
-    }
-
-    fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        Ok(Box::new(*self))
-    }
-
-    fn encoding(&self) -> VectorEncoding {
-        VectorEncoding::BYTE
-    }
-
-    fn iterator(&self) -> Result<Box<dyn DocIndexIterator>> {
-        Ok(Box::new(DenseDocIndexIterator::new(0)))
-    }
-}
-
-impl ByteVectorValues for EmptyByteVectorValues {
-    fn vector_value(&self, ord: i32) -> Result<Vec<u8>> {
-        check_ord(ord, 0)?;
-        unreachable!("INVARIANT: size() is 0, so every ordinal is rejected above")
-    }
-
-    fn copy_byte(&self) -> Result<Box<dyn ByteVectorValues>> {
-        Ok(Box::new(*self))
-    }
 }
 
 // -----------------------------------------------------------------------------
@@ -1223,51 +1255,19 @@ mod tests {
         assert_eq!(Bare.vector_byte_length(), 16);
     }
 
-    #[test]
-    fn empty_float_vector_values_is_empty() {
-        let values = EmptyFloatVectorValues;
-        assert_eq!(values.dimension(), 0);
-        assert_eq!(values.size(), 0);
-        assert!(values.vector_value(0).is_err());
-        let mut it = values.iterator().unwrap();
-        assert_eq!(it.next_doc().unwrap(), NO_MORE_DOCS);
-        assert_eq!(values.copy_float().unwrap().size(), 0);
-    }
-
-    #[test]
-    fn empty_byte_vector_values_is_empty() {
-        let values = EmptyByteVectorValues;
-        assert_eq!(values.dimension(), 0);
-        assert_eq!(values.size(), 0);
-        assert_eq!(values.encoding(), VectorEncoding::BYTE);
-        assert!(values.vector_value(0).is_err());
-        assert_eq!(values.copy_byte().unwrap().size(), 0);
-    }
-
-    #[test]
-    fn empty_knn_vector_values_copy_is_empty() {
-        let values = EmptyKnnVectorValues;
-        let copy = values.copy().unwrap();
-        assert_eq!(copy.size(), 0);
-    }
-
     /// Java fixes `getEncoding()` on `FloatVectorValues`/`ByteVectorValues`.
     /// Rust cannot make a supertrait method final, so the invariant is pinned
     /// here for every implementation this module owns.
     #[test]
     fn typed_values_report_their_fixed_encoding() {
-        let float_values: Vec<Box<dyn FloatVectorValues>> = vec![
-            Box::new(from_floats(vec![vec![1.0]], 1)),
-            Box::new(EmptyFloatVectorValues),
-        ];
+        let float_values: Vec<Box<dyn FloatVectorValues>> =
+            vec![Box::new(from_floats(vec![vec![1.0]], 1))];
         for values in float_values {
             assert_eq!(values.encoding(), VectorEncoding::FLOAT32);
         }
 
-        let byte_values: Vec<Box<dyn ByteVectorValues>> = vec![
-            Box::new(from_bytes(vec![vec![1]], 1)),
-            Box::new(EmptyByteVectorValues),
-        ];
+        let byte_values: Vec<Box<dyn ByteVectorValues>> =
+            vec![Box::new(from_bytes(vec![vec![1]], 1))];
         for values in byte_values {
             assert_eq!(values.encoding(), VectorEncoding::BYTE);
         }

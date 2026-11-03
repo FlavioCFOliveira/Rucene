@@ -232,13 +232,6 @@ impl FuzzyQuery {
         self.transpositions
     }
 
-    /// Returns the maximum number of terms to match.
-    ///
-    /// Equivalent to reading the `private final int maxExpansions` field.
-    pub fn get_max_expansions(&self) -> i32 {
-        self.max_expansions
-    }
-
     /// Returns the compiled automaton used to match terms.
     ///
     /// Equivalent to `FuzzyQuery.getAutomata()`.
@@ -408,7 +401,7 @@ impl MultiTermQuery for FuzzyQuery {
         Ok(Box::new(FuzzyTermsEnum::with_attributes(
             Arc::clone(terms),
             atts,
-            self.term.clone(),
+            self.get_term().clone(),
             self.max_edits,
             self.prefix_length,
             self.transpositions,

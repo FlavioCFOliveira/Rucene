@@ -5,6 +5,7 @@
 
 use crate::error::Result;
 use crate::store::{DataInput, DataOutput};
+use crate::util::GroupVIntUtil;
 
 /// Reads a block of up to `num` doc ids using group-varint, optionally
 /// decoding frequencies.
@@ -18,7 +19,7 @@ pub fn read_v_int_block(
     index_has_freq: bool,
     decode_freq: bool,
 ) -> Result<()> {
-    read_group_vints(doc_in, doc_buffer, num)?;
+    GroupVIntUtil::read_group_vints_input(doc_in, doc_buffer, num)?;
     if index_has_freq && decode_freq {
         for i in 0..num {
             let mut freq = doc_buffer[i] & 0x01;
@@ -53,7 +54,7 @@ pub fn write_v_int_block(
             doc_buffer[i] = (doc_buffer[i] << 1) | low_bit;
         }
     }
-    write_group_vints(doc_out, doc_buffer, num)?;
+    doc_out.write_group_vints(doc_buffer, num)?;
     if write_freqs {
         for i in 0..num {
             let freq = freq_buffer[i];
@@ -65,110 +66,6 @@ pub fn write_v_int_block(
     Ok(())
 }
 
-/// Reads `limit` group-varint encoded values from `input` into `dst`.
-fn read_group_vints(input: &mut dyn DataInput, dst: &mut [i32], limit: usize) -> Result<()> {
-    let limit = limit.min(dst.len());
-    let mut i = 0;
-    while i + 4 <= limit {
-        let flag = input.read_byte()? as usize;
-        let n1 = flag >> 6;
-        let n2 = (flag >> 4) & 0x03;
-        let n3 = (flag >> 2) & 0x03;
-        let n4 = flag & 0x03;
-        dst[i] = read_int_in_group(input, n1)?;
-        dst[i + 1] = read_int_in_group(input, n2)?;
-        dst[i + 2] = read_int_in_group(input, n3)?;
-        dst[i + 3] = read_int_in_group(input, n4)?;
-        i += 4;
-    }
-    while i < limit {
-        dst[i] = input.read_v_int()?;
-        i += 1;
-    }
-    Ok(())
-}
-
-/// Reads a single value whose width is encoded as `num_bytes - 1`.
-fn read_int_in_group(input: &mut dyn DataInput, num_bytes_minus_one: usize) -> Result<i32> {
-    match num_bytes_minus_one {
-        0 => Ok(input.read_byte()? as i32),
-        1 => {
-            let b0 = input.read_byte()? as i32;
-            let b1 = input.read_byte()? as i32;
-            Ok(b0 | (b1 << 8))
-        }
-        2 => {
-            let b0 = input.read_byte()? as i32;
-            let b1 = input.read_byte()? as i32;
-            let b2 = input.read_byte()? as i32;
-            Ok(b0 | (b1 << 8) | (b2 << 16))
-        }
-        3 => input.read_int(),
-        _ => Err(crate::error::LuceneError::IllegalArgument(
-            "invalid group varint byte count".to_string(),
-        )),
-    }
-}
-
-/// Writes `limit` values from `src` using group-varint encoding.
-fn write_group_vints(out: &mut dyn DataOutput, src: &[i32], limit: usize) -> Result<()> {
-    let limit = limit.min(src.len());
-    let mut read_pos = 0;
-    let mut scratch = [0u8; 17];
-    while limit - read_pos >= 4 {
-        let n1 = num_bytes(src[read_pos]) - 1;
-        let n2 = num_bytes(src[read_pos + 1]) - 1;
-        let n3 = num_bytes(src[read_pos + 2]) - 1;
-        let n4 = num_bytes(src[read_pos + 3]) - 1;
-        let flag = (n1 << 6) | (n2 << 4) | (n3 << 2) | n4;
-        let mut write_pos = 0;
-        scratch[write_pos] = flag as u8;
-        write_pos += 1;
-        write_int_in_group(src[read_pos], n1, &mut scratch, &mut write_pos);
-        read_pos += 1;
-        write_int_in_group(src[read_pos], n2, &mut scratch, &mut write_pos);
-        read_pos += 1;
-        write_int_in_group(src[read_pos], n3, &mut scratch, &mut write_pos);
-        read_pos += 1;
-        write_int_in_group(src[read_pos], n4, &mut scratch, &mut write_pos);
-        read_pos += 1;
-        out.write_bytes(&scratch, 0, write_pos)?;
-    }
-    while read_pos < limit {
-        out.write_v_int(src[read_pos])?;
-        read_pos += 1;
-    }
-    Ok(())
-}
-
-fn write_int_in_group(
-    value: i32,
-    num_bytes_minus_one: usize,
-    scratch: &mut [u8; 17],
-    pos: &mut usize,
-) {
-    let n = num_bytes_minus_one + 1;
-    scratch[*pos] = value as u8;
-    *pos += 1;
-    if n >= 2 {
-        scratch[*pos] = (value >> 8) as u8;
-        *pos += 1;
-    }
-    if n >= 3 {
-        scratch[*pos] = (value >> 16) as u8;
-        *pos += 1;
-    }
-    if n == 4 {
-        scratch[*pos] = (value >> 24) as u8;
-        *pos += 1;
-    }
-}
-
-fn num_bytes(v: i32) -> usize {
-    let uv = (v as u32) | 1;
-    4 - (uv.leading_zeros() >> 3) as usize
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,12 +75,12 @@ mod tests {
     fn group_v_int_round_trip() {
         let values = [0, 1, 128, 0x1000, 0x1_0000, 0x100_0000, 0x7FFF_FFFF, 42];
         let mut out = VecDataOutput::new();
-        write_group_vints(&mut out, &values, values.len()).unwrap();
+        out.write_group_vints(&values, values.len()).unwrap();
 
         let data = out.into_inner();
         let mut input = MockIndexInput::new(data, "group-vint");
         let mut decoded = [0i32; 8];
-        read_group_vints(&mut input, &mut decoded, 8).unwrap();
+        GroupVIntUtil::read_group_vints_input(&mut input, &mut decoded, 8).unwrap();
         assert_eq!(decoded, values);
     }
 

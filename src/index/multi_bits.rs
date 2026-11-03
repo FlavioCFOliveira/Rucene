@@ -99,6 +99,22 @@ impl Bits for BitsSlice {
         self.parent.get(index + self.start)
     }
 
+    /// Forwards to the wrapped bits' `try_get`, so that an error they raise
+    /// (`ExitableDirectoryReader.java:359-387`, whose `get` throws through
+    /// every wrapper that delegates to it) is not swallowed here.
+    ///
+    /// # Panics
+    ///
+    /// As [`get`](Self::get).
+    fn try_get(&self, index: usize) -> Result<bool> {
+        assert!(
+            index < self.length,
+            "index {index} out of bounds for slice of length {}",
+            self.length
+        );
+        self.parent.try_get(index + self.start)
+    }
+
     fn length(&self) -> usize {
         self.length
     }
@@ -164,19 +180,27 @@ impl MultiBits {
     ///
     /// A reader with a single leaf yields that leaf's own live-docs instance
     /// with no wrapper, matching Lucene.
-    pub fn get_live_docs(reader: &Arc<dyn IndexReader>) -> Option<Box<dyn Bits>> {
+    ///
+    /// # Errors
+    ///
+    /// [`LuceneError::AlreadyClosed`]
+    /// when `reader` has deletions and is closed, as Java's `reader.leaves()`
+    /// fails.
+    pub fn get_live_docs(reader: &Arc<dyn IndexReader>) -> Result<Option<Box<dyn Bits>>> {
         if !reader.has_deletions() {
-            return None;
+            return Ok(None);
         }
 
-        let leaves = Arc::clone(reader).leaves();
-        match leaves.len() {
-            // Java asserts that a reader with deletions has at least one leaf,
-            // then builds a MultiBits whose every lookup would fail. Reporting
-            // "no live-docs view" is the truthful answer for a state that
-            // cannot arise: deletions imply `max_doc > num_docs`, which implies
-            // at least one leaf.
-            0 => None,
+        let leaves = Arc::clone(reader).leaves()?;
+        let size = leaves.len();
+        // `assert size > 0 : "A reader with deletions must have at least one
+        // leave"` (`MultiBits.java:56`); without `-ea` Java goes on to build a
+        // `MultiBits` over no sub-readers.
+        debug_assert!(
+            size > 0,
+            "A reader with deletions must have at least one leave"
+        );
+        Ok(match size {
             1 => leaves[0].leaf_reader().get_live_docs(),
             size => {
                 let mut subs: Vec<Option<Box<dyn Bits>>> = Vec::with_capacity(size);
@@ -190,7 +214,7 @@ impl MultiBits {
                 starts.push(reader.max_doc());
                 Some(Box::new(Self::new(subs, starts, true)))
             }
-        }
+        })
     }
 
     /// Returns the value reported for sub-readers that contributed no bitset.
@@ -255,6 +279,34 @@ impl Bits for MultiBits {
         }
     }
 
+    /// Forwards to the wrapped bits' `try_get`, so that an error they raise
+    /// (`ExitableDirectoryReader.java:359-387`, whose `get` throws through
+    /// every wrapper that delegates to it) is not swallowed here.
+    ///
+    /// # Panics
+    ///
+    /// As [`get`](Self::get).
+    fn try_get(&self, doc: usize) -> Result<bool> {
+        let length = self.length();
+        assert!(
+            doc < length,
+            "doc {doc} out of bounds for reader with maxDoc {length}"
+        );
+        let reader = reader_util::sub_index(doc as i32, &self.starts);
+        let sub = self
+            .subs
+            .get(reader)
+            .expect("INVARIANT: doc < length() keeps sub_index() inside subs");
+        match sub {
+            None => Ok(self.default_value),
+            Some(bits) => {
+                debug_assert!(self.check_length(reader, doc));
+                let start = self.starts[reader] as usize;
+                bits.try_get(doc - start)
+            }
+        }
+    }
+
     fn length(&self) -> usize {
         // The trailing sentinel holds the composite reader's maxDoc.
         self.starts
@@ -304,9 +356,9 @@ mod tests {
     use crate::index::leaf_reader::{LeafMetaData, LeafReader, TermVectors};
     use crate::index::multi_reader::MultiReader;
     use crate::index::{
-        BinaryDocValues, ByteVectorValues, DocValuesSkipper, EmptyFields, FieldInfos, Fields,
-        FloatVectorValues, NumericDocValues, PointValues, SortedDocValues, SortedNumericDocValues,
-        SortedSetDocValues, Terms,
+        BinaryDocValues, ByteVectorValues, DocValuesSkipper, FieldInfos, Fields, FloatVectorValues,
+        NumericDocValues, PointValues, SortedDocValues, SortedNumericDocValues, SortedSetDocValues,
+        Terms,
     };
     use crate::search::knn::KnnCollector;
     use crate::search::AcceptDocs;
@@ -354,7 +406,7 @@ mod tests {
     struct StubTermVectors;
     impl TermVectors for StubTermVectors {
         fn get(&self, _doc: i32) -> Result<Option<Box<dyn Fields>>> {
-            Ok(Some(Box::new(EmptyFields)))
+            Ok(Some(Box::new(crate::index::terms::EmptyFields)))
         }
     }
 
@@ -534,6 +586,86 @@ mod tests {
         fn get_meta_data(&self) -> LeafMetaData {
             LeafMetaData::new(10, None, None, false).unwrap()
         }
+    }
+
+    /// A reader that reports deletions but no leaves — a state no real reader
+    /// reaches, which only `MultiBits.getLiveDocs`'s assertion guards.
+    #[derive(Debug)]
+    struct LeaflessReaderWithDeletions {
+        core: IndexReaderCore,
+    }
+
+    impl std::fmt::Display for LeaflessReaderWithDeletions {
+        /// Test double without a Lucene counterpart; see [`StubLeaf`].
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("LeaflessReaderWithDeletions")
+        }
+    }
+
+    impl IndexReader for LeaflessReaderWithDeletions {
+        fn core(&self) -> &IndexReaderCore {
+            &self.core
+        }
+        fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
+            Ok(Box::new(StubTermVectors))
+        }
+        fn num_docs(&self) -> i32 {
+            1
+        }
+        fn max_doc(&self) -> i32 {
+            2
+        }
+        fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
+            Ok(Box::new(StubStoredFields))
+        }
+        fn do_close(&self) -> Result<()> {
+            Ok(())
+        }
+        fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
+            None
+        }
+        fn doc_freq(&self, _term: &crate::index::Term) -> Result<i32> {
+            Ok(0)
+        }
+        fn total_term_freq(&self, _term: &crate::index::Term) -> Result<i64> {
+            Ok(0)
+        }
+        fn get_sum_doc_freq(&self, _field: &str) -> Result<i64> {
+            Ok(0)
+        }
+        fn get_doc_count(&self, _field: &str) -> Result<i32> {
+            Ok(0)
+        }
+        fn get_sum_total_term_freq(&self, _field: &str) -> Result<i64> {
+            Ok(0)
+        }
+        fn build_context(
+            self: Arc<Self>,
+            _parent: Option<std::sync::Weak<dyn crate::index::IndexReaderContext>>,
+            _ord_in_parent: i32,
+            _doc_base_in_parent: i32,
+            _leaf_ord: i32,
+            _leaf_doc_base: i32,
+        ) -> Arc<dyn crate::index::IndexReaderContext> {
+            unreachable!("the test reads the leaves, which are answered directly")
+        }
+        fn leaves(self: Arc<Self>) -> Result<Vec<Arc<crate::index::LeafReaderContext>>> {
+            Ok(Vec::new())
+        }
+    }
+
+    /// `assert size > 0 : "A reader with deletions must have at least one
+    /// leave"` (`MultiBits.java:56`): a debug build — Java under `-ea` — stops
+    /// there instead of answering "no live docs".
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "A reader with deletions must have at least one leave")]
+    fn live_docs_of_a_leafless_reader_with_deletions_trip_lucenes_assertion() {
+        let reader: Arc<dyn IndexReader> = Arc::new(LeaflessReaderWithDeletions {
+            core: IndexReaderCore::new(),
+        });
+        assert!(reader.has_deletions());
+        let _ = MultiBits::get_live_docs(&reader);
     }
 
     fn composite(leaves: Vec<Arc<dyn IndexReader>>) -> Arc<dyn IndexReader> {
@@ -764,13 +896,13 @@ mod tests {
     #[test]
     fn get_live_docs_returns_none_without_deletions() {
         let reader = composite(vec![StubLeaf::arc(3, &[]), StubLeaf::arc(4, &[])]);
-        assert!(MultiBits::get_live_docs(&reader).is_none());
+        assert!(MultiBits::get_live_docs(&reader).unwrap().is_none());
     }
 
     #[test]
     fn get_live_docs_returns_none_for_an_empty_reader() {
         let reader = composite(vec![]);
-        assert!(MultiBits::get_live_docs(&reader).is_none());
+        assert!(MultiBits::get_live_docs(&reader).unwrap().is_none());
     }
 
     #[test]
@@ -778,7 +910,9 @@ mod tests {
         // One leaf: Lucene hands back that leaf's own bitset with no wrapper,
         // so its length is the leaf's maxDoc and lookups are already local.
         let leaf = StubLeaf::arc(4, &[1]);
-        let bits = MultiBits::get_live_docs(&leaf).expect("leaf has deletions");
+        let bits = MultiBits::get_live_docs(&leaf)
+            .unwrap()
+            .expect("leaf has deletions");
         assert_eq!(bits.length(), 4);
         assert!(bits.get(0));
         assert!(!bits.get(1));
@@ -796,7 +930,9 @@ mod tests {
             StubLeaf::arc(4, &[]),
             StubLeaf::arc(2, &[0]),
         ]);
-        let bits = MultiBits::get_live_docs(&reader).expect("reader has deletions");
+        let bits = MultiBits::get_live_docs(&reader)
+            .unwrap()
+            .expect("reader has deletions");
 
         assert_eq!(bits.length(), 9);
         let expected = [true, false, true, true, true, true, true, false, true];
@@ -810,7 +946,9 @@ mod tests {
         // The first leaf has no bitset; had the default been `false`, its docs
         // would read as deleted.
         let reader = composite(vec![StubLeaf::arc(2, &[]), StubLeaf::arc(2, &[0])]);
-        let bits = MultiBits::get_live_docs(&reader).expect("reader has deletions");
+        let bits = MultiBits::get_live_docs(&reader)
+            .unwrap()
+            .expect("reader has deletions");
         assert!(bits.get(0), "leaf 0 has no bitset -> live by default");
         assert!(bits.get(1));
         assert!(!bits.get(2), "global doc 2 is leaf 1's deleted doc 0");
@@ -826,7 +964,9 @@ mod tests {
             StubLeaf::arc(3, &[2]),
             StubLeaf::arc(0, &[]),
         ]);
-        let bits = MultiBits::get_live_docs(&reader).expect("reader has deletions");
+        let bits = MultiBits::get_live_docs(&reader)
+            .unwrap()
+            .expect("reader has deletions");
         assert_eq!(bits.length(), 3);
         assert!(bits.get(0));
         assert!(bits.get(1));
@@ -844,9 +984,11 @@ mod tests {
             StubLeaf::arc(0, &[]),
         ];
         let reader = composite(leaves);
-        let bits = MultiBits::get_live_docs(&reader).expect("reader has deletions");
+        let bits = MultiBits::get_live_docs(&reader)
+            .unwrap()
+            .expect("reader has deletions");
 
-        for ctx in Arc::clone(&reader).leaves() {
+        for ctx in Arc::clone(&reader).leaves().unwrap() {
             let leaf = ctx.leaf_reader();
             let leaf_bits = leaf.get_live_docs();
             let base = ctx.doc_base() as usize;

@@ -66,13 +66,7 @@ impl FilteredHnswGraphSearcher {
             ));
         }
         let visited = Self::bit_set_for(i64::from(filter_size), graph_size, k);
-        Ok(Self::new(
-            k,
-            NeighborQueue::new(k, true),
-            visited,
-            filter_size,
-            graph,
-        ))
+        Self::new(k, NeighborQueue::new(k, true)?, visited, filter_size, graph)
     }
 
     fn new(
@@ -81,7 +75,7 @@ impl FilteredHnswGraphSearcher {
         visited: Box<dyn BitSet>,
         filter_size: i32,
         graph: &dyn HnswGraph,
-    ) -> Self {
+    ) -> Result<Self> {
         debug_assert!(
             graph.max_conn() > 0,
             "graph must have known max connections"
@@ -101,17 +95,17 @@ impl FilteredHnswGraphSearcher {
             f64::from(graph.max_conn()),
         )) as i32;
         let entry_point_searcher = HnswGraphSearcher::new(
-            NeighborQueue::new(k, true),
+            NeighborQueue::new(k, true)?,
             Box::new(FixedBitSet::new(graph.max_node_id().max(0) as usize + 1)),
         );
-        Self {
+        Ok(Self {
             entry_point_searcher,
             candidates,
             visited,
             bulk_scores: Vec::new(),
             max_exploration_multiplier,
             min_to_score,
-        }
+        })
     }
 
     fn bit_set_for(filter_size: i64, graph_size: i32, topk: i32) -> Box<dyn BitSet> {
@@ -124,7 +118,10 @@ impl FilteredHnswGraphSearcher {
 
     fn bit_set(expected_bits: i32, total_bits: i32) -> Box<dyn BitSet> {
         if expected_bits < (total_bits >> 7) {
-            Box::new(SparseFixedBitSet::new(total_bits.max(1) as usize))
+            Box::new(
+                SparseFixedBitSet::new(total_bits.max(1) as usize)
+                    .expect("INVARIANT: total_bits.max(1) is at least one bit"),
+            )
         } else {
             Box::new(FixedBitSet::new(total_bits.max(0) as usize))
         }
@@ -203,7 +200,7 @@ impl AbstractHnswGraphSearcher for FilteredHnswGraphSearcher {
                 if self.visited.get_and_set(friend_ord as usize) {
                     continue;
                 }
-                if accept_ords.get(friend_ord as usize) {
+                if accept_ords.try_get(friend_ord as usize)? {
                     to_score.add(friend_ord);
                 } else {
                     to_explore.add(friend_ord);
@@ -245,7 +242,7 @@ impl AbstractHnswGraphSearcher for FilteredHnswGraphSearcher {
                             continue;
                         }
                         total_explored += 1;
-                        if accept_ords.get(friend_of_a_friend_ord as usize) {
+                        if accept_ords.try_get(friend_of_a_friend_ord as usize)? {
                             to_score.add(friend_of_a_friend_ord);
                         // If we have YET to find a minimum number of candidates, we
                         // will continue to explore until our max.
@@ -283,6 +280,11 @@ impl AbstractHnswGraphSearcher for FilteredHnswGraphSearcher {
                 }
             }
             to_score.upto = to_score.size; // all scored
+                                           // `results.getSearchStrategy().nextVectorsBlock()`
+                                           // (`FilteredHnswGraphSearcher.java:214-216`).
+            if let Some(strategy) = results.get_search_strategy() {
+                strategy.next_vectors_block();
+            }
         }
         Ok(())
     }

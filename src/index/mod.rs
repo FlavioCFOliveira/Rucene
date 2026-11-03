@@ -77,7 +77,7 @@ pub use automaton_terms_enum::AutomatonTermsEnum;
 pub use codec_reader::CodecReader;
 pub use doc_values::{
     BinaryDocValues, DocValues, DocValuesIterator, DocValuesSkipper, EmptyBinaryDocValues,
-    EmptyDocValuesProducer, EmptyDocValuesSkipper, EmptyNumericDocValues, EmptySortedDocValues,
+    EmptyDocValuesProducer, EmptyNumericDocValues, EmptySortedDocValues,
     EmptySortedNumericDocValues, EmptySortedSetDocValues, FilterBinaryDocValues,
     FilterNumericDocValues, FilterSortedDocValues, FilterSortedNumericDocValues,
     FilterSortedSetDocValues, NumericDocValues, OrdinalMap, SingletonSortedNumericDocValues,
@@ -87,9 +87,9 @@ pub use doc_values::{
 pub use field_infos::{FieldInfo, FieldInfos, FieldInfosBuilder, FieldNumbers};
 pub use index_file_names::{
     file_name_from_generation, get_extension, is_codec_file, matches_extension, parse_generation,
-    parse_segment_name, segment_file_name, standard_extensions, strip_extension,
-    strip_segment_name, COMPOUND_FILE_ENTRIES_EXTENSION, COMPOUND_FILE_EXTENSION,
-    DOC_VALUES_EXTENSION, DOC_VALUES_META_EXTENSION, FIELD_INFO_EXTENSION, KNN_VECTORS_EXTENSION,
+    parse_segment_name, segment_file_name, strip_extension, strip_segment_name,
+    COMPOUND_FILE_ENTRIES_EXTENSION, COMPOUND_FILE_EXTENSION, DOC_VALUES_EXTENSION,
+    DOC_VALUES_META_EXTENSION, FIELD_INFO_EXTENSION, KNN_VECTORS_EXTENSION,
     KNN_VECTORS_FORMAT_META_EXTENSION, KNN_VECTORS_INDEX_EXTENSION, KNN_VECTORS_META_EXTENSION,
     LIVE_DOCS_EXTENSION, NORMS_EXTENSION, NORMS_META_EXTENSION, OLD_LIVE_DOCS_EXTENSION,
     PAYLOADS_EXTENSION, PENDING_SEGMENTS, POINTS_EXTENSION, POINTS_INDEX_EXTENSION,
@@ -105,8 +105,7 @@ pub use index_reader::{
 };
 pub use index_utilities::{
     ApproximatePriorityQueue, ConcurrentApproximatePriorityQueue,
-    LockableConcurrentApproximatePriorityQueue, QueryTimeout, QueryTimeoutImpl,
-    TrackingTmpOutputDirectoryWrapper, TryLockable,
+    LockableConcurrentApproximatePriorityQueue, QueryTimeout, QueryTimeoutImpl, TryLockable,
 };
 pub use leaf_reader::{AsIndexReader, EmptyTermVectors, LeafMetaData, LeafReader, TermVectors};
 pub use merge::{
@@ -120,13 +119,13 @@ pub use term_vectors_consumer::{TermVectorsConsumer, TermVectorsConsumerPerField
 // `crate::index::point_values::`, which is the exact analogue of Java's
 // `PointValues.size(reader, field)` static call.
 pub use point_values::{
-    EmptyPointValues, InMemoryPointTree, InMemoryPointValues, IntersectVisitor, MutablePointTree,
-    PointTree, PointValues, Relation, MAX_DIMENSIONS, MAX_INDEX_DIMENSIONS, MAX_NUM_BYTES,
+    InMemoryPointTree, InMemoryPointValues, IntersectVisitor, MutablePointTree, PointTree,
+    PointValues, Relation, MAX_DIMENSIONS, MAX_INDEX_DIMENSIONS, MAX_NUM_BYTES,
 };
 pub use postings_enum::{
-    feature_requested, DocAndFloatFeatureBuffer, EmptyPostingsEnum, FreqAndNormBuffer, Impacts,
-    ImpactsEnum, ImpactsSource, PostingsEnum, POSTINGS_ENUM_ALL, POSTINGS_ENUM_FREQS,
-    POSTINGS_ENUM_NONE, POSTINGS_ENUM_OFFSETS, POSTINGS_ENUM_PAYLOADS, POSTINGS_ENUM_POSITIONS,
+    feature_requested, DocAndFloatFeatureBuffer, FreqAndNormBuffer, Impacts, ImpactsEnum,
+    ImpactsSource, PostingsEnum, POSTINGS_ENUM_ALL, POSTINGS_ENUM_FREQS, POSTINGS_ENUM_NONE,
+    POSTINGS_ENUM_OFFSETS, POSTINGS_ENUM_PAYLOADS, POSTINGS_ENUM_POSITIONS,
 };
 pub use reader_context::{CompositeReaderContext, IndexReaderContext, LeafReaderContext};
 pub use segment_info::{
@@ -140,9 +139,7 @@ pub use freq_prox_terms_writer::{
     FreqProxTermsWriterPerField, InvertedToken, TermSlot, TermsHash, TermsHashPerField,
     FIRST_LEVEL_SIZE, LEVEL_SIZE_ARRAY, NEXT_LEVEL_ARRAY,
 };
-pub use indexing_chain::{
-    DefaultIndexingChain, EmptyNormsProducer, FieldInvertState, MAX_POSITION,
-};
+pub use indexing_chain::{DefaultIndexingChain, FieldInvertState, MAX_POSITION};
 
 pub use index_writer_config::{
     BM25Similarity, ConcurrentMergeScheduler, IndexWriterConfig, IndexWriterEventListener,
@@ -166,10 +163,9 @@ pub use documents_writer::{
     DocumentsWriterFlushControl, DocumentsWriterFlushQueue, DocumentsWriterPerThread,
     DocumentsWriterPerThreadPool, DocumentsWriterShared, DocumentsWriterStallControl, DwptGuard,
     FlushByRamOrCountsPolicy, FlushControlHandle, FlushNotifications, FlushPolicy, FlushTicket,
-    FlushedSegment, FrozenBufferedUpdates, IndexingChain, IndexingChainFactory,
-    IndexingChainFlushState, LockAllGuard, NoOpFlushNotifications, SegmentNameSupplier,
-    SharedIndexingScratch, TermDelete, BYTES_PER_DEL_QUERY, BYTES_SCRATCH_SIZE, INTS_SCRATCH_SIZE,
-    MAX_DOCS, SOURCE_FLUSH,
+    FlushedSegment, FrozenBufferedUpdates, IndexingChain, IndexingChainFactory, LockAllGuard,
+    NoOpFlushNotifications, SegmentNameSupplier, SharedIndexingScratch, TermDelete,
+    BYTES_PER_DEL_QUERY, BYTES_SCRATCH_SIZE, INTS_SCRATCH_SIZE, MAX_DOCS, SOURCE_FLUSH,
 };
 
 // Directory/segment reader exports.
@@ -201,25 +197,22 @@ pub use stored_field_visitor::{StoredFieldVisitor, StoredFieldVisitorStatus};
 pub use stored_fields_consumer::StoredFieldsConsumer;
 
 pub use terms::{
-    AcceptStatus, EmptyFields, EmptyTerms, EmptyTermsEnum, Fields, FilteredTermsEnum,
-    FilteredTermsEnumFilter, OrdTermState, PrefixCodedTerms, PrefixCodedTermsBuilder,
-    PrefixCodedTermsIterator, SeekStatus, SingleTermsEnum, Term, TermState, TermStates, Terms,
-    TermsEnum,
+    AcceptStatus, EmptyTerms, EmptyTermsEnum, Fields, FilteredTermsEnum, FilteredTermsEnumFilter,
+    OrdTermState, PrefixCodedTerms, PrefixCodedTermsBuilder, PrefixCodedTermsIterator, SeekStatus,
+    SingleTermsEnum, Term, TermState, TermStates, Terms, TermsEnum,
 };
 pub use terms_enum_index::{
     prefix8_to_comparable_unsigned_long, TermsEnumIndex, TermsEnumIndexState,
 };
 pub use vector_values::{
-    accept_ords, check_byte_field, check_float_field, from_bytes, from_floats, AcceptOrds,
-    ByteVectorValues, DenseDocIndexIterator, DocIndexIterator, EmptyByteVectorValues,
-    EmptyFloatVectorValues, EmptyKnnVectorValues, FloatVectorValues, FromDisiDocIndexIterator,
-    KnnVectorValues, ListByteVectorValues, ListFloatVectorValues, SparseDocIndexIterator,
+    accept_ords, accept_ords_with, check_byte_field, check_float_field, from_bytes, from_floats,
+    AcceptOrds, ByteVectorValues, DenseDocIndexIterator, DocIndexIterator, FloatVectorValues,
+    FromDisiDocIndexIterator, KnnVectorValues, ListByteVectorValues, ListFloatVectorValues,
+    SparseDocIndexIterator,
 };
 
 pub use doc_values_field_updates::DocValuesFieldUpdates;
 pub use readers_and_updates::{PendingDeletes, PendingSoftDeletes, ReaderPool, ReadersAndUpdates};
-
-use std::collections::HashMap;
 
 use crate::{
     analysis::{Analyzer, TokenStream},
@@ -477,6 +470,21 @@ pub trait IndexableFieldType: std::fmt::Display {
 
     /// Attributes for the field type.
     fn attributes(&self) -> &crate::util::java_collections::JavaHashMap<String>;
+
+    /// The identity of this type when it is a frozen
+    /// [`FieldType`](crate::document::FieldType), or `None` for any other type.
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** `IndexingChain` skips
+    /// re-validating a field whose type is the very frozen `FieldType` it
+    /// validated last: it tests `candidateFieldType instanceof FieldType ft &&
+    /// ft.isFrozen()` and compares types by reference
+    /// (`IndexingChain.java:1803-1825`). A Rust field owns a clone of its type,
+    /// so neither the downcast nor the reference is available; two types are
+    /// the same Java object exactly when this returns the same `Some` for both.
+    /// Only `FieldType` overrides it.
+    fn frozen_field_type_identity(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// Represents a single field for indexing.

@@ -18,9 +18,7 @@ use crate::search::multi_term_query::{
 use crate::search::query::Query;
 use crate::search::query_visitor::QueryVisitor;
 use crate::util::attribute::AttributeSource;
-use crate::util::automaton::{
-    Automata, Automaton, AutomatonType, ByteRunAutomaton, CompiledAutomaton,
-};
+use crate::util::automaton::{Automaton, AutomatonType, CompiledAutomaton};
 use crate::util::{Accountable, RamUsageEstimator};
 
 /// A [`Query`] that matches terms against a finite-state machine.
@@ -295,20 +293,6 @@ pub fn automaton_query_visit(
     }
     // `CompiledAutomaton.visit` re-checks `acceptField` itself.
     inner.lock_compiled().visit(visitor, parent, &inner.field);
-}
-
-/// The run automaton that accepts nothing, used where Java cannot fail.
-///
-/// `QueryVisitor.consumeTermsMatching` takes a supplier that cannot report an
-/// error, while this port's [`ByteRunAutomaton`] constructors return a
-/// [`Result`]. The two calls that can fail here — cloning a compiled
-/// `AutomatonType::Normal` automaton, which always has a run automaton, and
-/// building the "any string" automaton, which is a constant — cannot actually
-/// fail, so an automaton accepting nothing stands in for the impossible case
-/// rather than a panic.
-fn empty_byte_run_automaton() -> ByteRunAutomaton {
-    ByteRunAutomaton::new(Automata::make_empty(), true)
-        .expect("INVARIANT: the empty automaton is deterministic and binary")
 }
 
 impl Accountable for AutomatonQuery {

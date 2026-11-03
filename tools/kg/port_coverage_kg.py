@@ -469,6 +469,29 @@ def phase_tasks(roadmap, top_level, commit, date, batch_size):
         "Task provenance (new nodes only)",
     )
 
+    # Poda (#190): um no `Task` cuja tarefa o `rmp` ja nao tem e uma tarefa
+    # inventada, que as consultas de "o que bloqueia o que" contavam como
+    # aberta. A leitura vazia nao poda nada -- uma falha do `rmp` nao e prova
+    # de que as tarefas desapareceram --, e um no que um commit diz ter fechado
+    # (`CLOSES_TASK`) fica e e reportado, porque apaga-lo perderia esse facto.
+    live_ids = {int(t["id"]) for t in tasks}
+    stale = sorted(set(known) - live_ids) if live_ids else []
+    closed_by_commit = {
+        r[0] for r in read(
+            roadmap,
+            f"MATCH (:Commit)-[:CLOSES_TASK]->(t:Task) WHERE t.id IN {stale} RETURN DISTINCT t.id")
+    } if stale else set()
+    for tid in sorted(closed_by_commit):
+        print(f"  KEPT stale Task #{tid}: a commit closes it (CLOSES_TASK)", file=sys.stderr)
+    run_unwind(
+        "delete",
+        roadmap,
+        [{"id": tid} for tid in stale if tid not in closed_by_commit],
+        "MATCH (t:Task {id:row.id}) DETACH DELETE t",
+        batch_size,
+        "stale Task nodes pruned",
+    )
+
     # nome simples -> qualifiedName, apenas quando nao e ambiguo
     by_simple = {}
     for qn in top_level:

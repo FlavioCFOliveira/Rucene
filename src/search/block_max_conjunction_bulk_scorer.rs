@@ -173,7 +173,7 @@ impl BlockMaxConjunctionBulkScorer {
         }
 
         'outer: while doc < max {
-            if accept_docs.map_or(true, |bits| bits.get(doc as usize)) {
+            if accept_docs.is_none_or(|bits| bits.get(doc as usize)) {
                 for i in 1..self.scorers.len() {
                     let iterator = self.scorers[i].iterator();
                     let mut other_doc = iterator.doc_id();

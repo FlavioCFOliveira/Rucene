@@ -115,7 +115,7 @@ impl SingleIteratorSupplier {
 impl ConstantScoreIteratorSupplier for SingleIteratorSupplier {
     fn iterator(&mut self, _lead_cost: i64) -> Result<ScorerIterator> {
         self.iterator.take().ok_or_else(|| {
-            LuceneError::IllegalState(
+            LuceneError::illegal_state(
                 "ScorerSupplier.get(long) must be called at most once".to_string(),
             )
         })

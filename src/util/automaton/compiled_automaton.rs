@@ -5,7 +5,8 @@ use crate::error::Result;
 use crate::index::Term;
 use crate::search::{Query, QueryVisitor};
 use crate::util::{
-    Accountable, BytesRef, BytesRefBuilder, IntsRef, RamUsageEstimator, StringHelper, UnicodeUtil,
+    Accountable, BytesRef, BytesRefBuilder, IntsRef, RamUsageEstimator, SizedObject, StringHelper,
+    UnicodeUtil,
 };
 
 use super::automata::Automata;
@@ -15,6 +16,7 @@ use super::nfa_run_automaton::NFARunAutomaton;
 use super::operations::Operations;
 use super::run_automaton::ByteRunnable;
 use super::utf32_to_utf8::UTF32ToUTF8;
+use std::sync::Arc;
 
 /// Automata are compiled into different internal forms for the most efficient
 /// execution depending upon the language they accept.
@@ -60,7 +62,13 @@ pub struct CompiledAutomaton {
     /// Matcher run directly on an NFA; it determinizes the state on demand and
     /// caches it. Note that this field and [`CompiledAutomaton::run_automaton`] are
     /// never both non-`None`.
-    pub nfa_run_automaton: Option<NFARunAutomaton>,
+    ///
+    /// Equivalent to `CompiledAutomaton.nfaRunAutomaton`
+    /// (`CompiledAutomaton.java:88`): one automaton, shared by every clone of
+    /// this compiled automaton and so by every enum built from it, as Java's
+    /// enums share the one instance (`CompiledAutomaton.java:486-492`); see
+    /// [`NFARunAutomaton`] for the lock that guards its cache.
+    pub nfa_run_automaton: Option<Arc<NFARunAutomaton>>,
 
     /// Shared common suffix accepted by the automaton. Only valid for
     /// [`AutomatonType::Normal`], and only when the automaton accepts an infinite
@@ -234,7 +242,7 @@ impl CompiledAutomaton {
                 automaton: None,
                 finite,
                 sink_state: -1,
-                nfa_run_automaton: Some(NFARunAutomaton::new(binary, 0xff)),
+                nfa_run_automaton: Some(Arc::new(NFARunAutomaton::new(binary, 0xff))),
             })
         } else {
             // We already had a DFA (or errored out); according to Mike, UTF32toUTF8
@@ -264,7 +272,8 @@ impl CompiledAutomaton {
 
     fn ints_ref_to_utf8_bytes_ref(ints: &IntsRef) -> Result<BytesRef> {
         let s = UnicodeUtil::new_string(&ints.ints, ints.offset, ints.length)?;
-        Ok(BytesRef::new(s.into_bytes()))
+        // `new BytesRef(UnicodeUtil.newString(...))` (`CompiledAutomaton.java:215`).
+        Ok(BytesRef::from_char_sequence(&s))
     }
 
     fn add_tail(
@@ -441,7 +450,7 @@ impl CompiledAutomaton {
         debug_assert!(self.nfa_run_automaton.is_none() || self.run_automaton.is_none());
         match &self.nfa_run_automaton {
             None => self.run_automaton.as_ref().map(|r| r as &dyn ByteRunnable),
-            Some(nfa) => Some(nfa as &dyn ByteRunnable),
+            Some(nfa) => Some(&**nfa as &dyn ByteRunnable),
         }
     }
 
@@ -456,7 +465,7 @@ impl CompiledAutomaton {
                 .automaton
                 .as_ref()
                 .map(|a| a as &dyn TransitionAccessor),
-            Some(nfa) => Some(nfa as &dyn TransitionAccessor),
+            Some(nfa) => Some(&**nfa as &dyn TransitionAccessor),
         }
     }
 
@@ -613,21 +622,31 @@ impl Accountable for CompiledAutomaton {
     /// constants it is built on are the JVM's — so dropping the term would
     /// answer a different question from the one Lucene answers.
     fn ram_bytes_used(&self) -> i64 {
-        let size_of_bytes_ref = |r: &Option<BytesRef>| match r {
-            Some(_) => RamUsageEstimator::UNKNOWN_DEFAULT_RAM_BYTES_USED,
-            None => 0,
+        // `BytesRef` is a class `sizeOfObject` does not know: its shallow
+        // size is an object header, the `bytes` reference and two `int`s.
+        let bytes_ref = |r: &Option<BytesRef>| {
+            r.as_ref().map(|_| SizedObject::Unknown {
+                shallow_size: RamUsageEstimator::align_object_size(
+                    RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
+                        + RamUsageEstimator::NUM_BYTES_OBJECT_REF
+                        + 8,
+                ),
+            })
         };
+        let transition = Transition::new();
         Self::BASE_RAM_BYTES
-            + size_of_bytes_ref(&self.common_suffix_ref)
-            + self
-                .run_automaton
-                .as_ref()
-                .map_or(0, ByteRunAutomaton::ram_bytes_used)
-            + self
-                .nfa_run_automaton
-                .as_ref()
-                .map_or(0, NFARunAutomaton::ram_bytes_used)
-            + size_of_bytes_ref(&self.term)
-            + Transition::BYTES_USED
+            + RamUsageEstimator::size_of_object(bytes_ref(&self.common_suffix_ref))
+            + RamUsageEstimator::size_of_object(
+                self.run_automaton
+                    .as_ref()
+                    .map(|a| SizedObject::Accountable(a as &dyn Accountable)),
+            )
+            + RamUsageEstimator::size_of_object(
+                self.nfa_run_automaton
+                    .as_ref()
+                    .map(|a| SizedObject::Accountable(&**a as &dyn Accountable)),
+            )
+            + RamUsageEstimator::size_of_object(bytes_ref(&self.term))
+            + RamUsageEstimator::size_of_object(Some(SizedObject::Accountable(&transition)))
     }
 }

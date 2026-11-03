@@ -131,7 +131,7 @@ pub trait Scorer: Scorable {
         let mut size = 0;
         let mut doc = self.doc_id();
         while doc < up_to && size < batch_size {
-            if live_docs.map_or(true, |bits| bits.get(doc as usize)) {
+            if live_docs.is_none_or(|bits| bits.get(doc as usize)) {
                 buffer.docs[size] = doc;
                 buffer.features[size] = self.score()?;
                 size += 1;
@@ -176,11 +176,6 @@ impl ScorerAsIterator {
     pub fn new(mut scorer: Box<dyn Scorer>) -> Self {
         let cost = scorer.iterator().cost();
         Self { scorer, cost }
-    }
-
-    /// Unwraps this view, returning the scorer it was built from.
-    pub fn into_scorer(self) -> Box<dyn Scorer> {
-        self.scorer
     }
 }
 
@@ -259,11 +254,6 @@ impl ScorerAsTwoPhaseIterator {
             cost,
             match_cost,
         }
-    }
-
-    /// Unwraps this view, returning the scorer it was built from.
-    pub fn into_scorer(self) -> Box<dyn Scorer> {
-        self.scorer
     }
 }
 

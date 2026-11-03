@@ -6,6 +6,7 @@
 use std::fmt;
 
 use crate::error::{LuceneError, Result};
+use crate::index::leaf_reader::TermVectors;
 use crate::store::{DataInput, Directory, IOContext};
 use crate::util::{Accountable, BytesRef};
 
@@ -34,9 +35,15 @@ pub trait TermVectorsFormat: Send + Sync + fmt::Debug {
     ) -> Result<Box<dyn TermVectorsReader>>;
 
     /// Returns a [`TermVectorsWriter`] to write term vectors.
+    ///
+    /// The directory is shared, not borrowed: as Java's writer keeps its
+    /// `Directory` reference, the writer may create, read back and delete
+    /// files after this call returns — the fields index streams to temporary
+    /// files it only turns into the `.fdx`/`.tvx` at `finish`
+    /// (`FieldsIndexWriter.java:83-87, 105-181`).
     fn vectors_writer(
         &self,
-        directory: &dyn Directory,
+        directory: &std::sync::Arc<dyn Directory>,
         segment_info: &SegmentInfo,
         context: &dyn IOContext,
     ) -> Result<Box<dyn TermVectorsWriter>>;
@@ -44,8 +51,11 @@ pub trait TermVectorsFormat: Send + Sync + fmt::Debug {
 
 /// Codec API for reading term vectors.
 ///
-/// Lucene Core equivalent: `org.apache.lucene.codecs.TermVectorsReader`.
-pub trait TermVectorsReader: Send + Sync + fmt::Debug {
+/// Lucene Core equivalent: `org.apache.lucene.codecs.TermVectorsReader`, which
+/// extends `TermVectors` (`TermVectorsReader.java:28`): `get` and `prefetch`
+/// are inherited from [`TermVectors`], so a codec reader is itself the
+/// `TermVectors` a `CodecReader` hands out.
+pub trait TermVectorsReader: TermVectors {
     /// Checks consistency of this reader.
     fn check_integrity(&self) -> Result<()>;
 
@@ -57,14 +67,6 @@ pub trait TermVectorsReader: Send + Sync + fmt::Debug {
     /// The default implementation returns a clone of `self`.
     fn get_merge_instance(&self) -> Box<dyn TermVectorsReader> {
         self.clone_reader()
-    }
-
-    /// Returns term vectors for this document, or `None` if none exist.
-    fn get(&self, doc: i32) -> Result<Option<Box<dyn Fields>>>;
-
-    /// Optional hint that the given document will be read in the near future.
-    fn prefetch(&self, _doc_id: i32) -> Result<()> {
-        Ok(())
     }
 
     /// Returns this reader as [`std::any::Any`], for the one caller that has to
@@ -242,7 +244,7 @@ pub trait TermVectorsWriter: Send + Sync + fmt::Debug + Accountable {
 
         for field_name in &field_names {
             let field_info = merge_field_infos.field_info(field_name).ok_or_else(|| {
-                crate::error::LuceneError::IllegalState(format!(
+                crate::error::LuceneError::illegal_state(format!(
                     "field \"{field_name}\" carries term vectors but is absent from the merged \
                      field infos"
                 ))
@@ -257,7 +259,7 @@ pub trait TermVectorsWriter: Send + Sync + fmt::Debug + Accountable {
             let has_payloads = terms.has_payloads();
             debug_assert!(!has_payloads || has_positions);
 
-            let mut num_terms = terms.size() as i32;
+            let mut num_terms = terms.size()? as i32;
             if num_terms == -1 {
                 // Count them: `Terms.size()` is not a mandatory statistic.
                 num_terms = 0;
@@ -310,6 +312,8 @@ pub trait TermVectorsWriter: Send + Sync + fmt::Debug + Accountable {
         let mut subs: Vec<TermVectorsMergeSub> = Vec::new();
         for (i, reader) in merge_state.term_vectors_readers.iter().enumerate() {
             if let Some(reader) = reader.as_ref() {
+                // `TermVectorsWriter.java:203`.
+                merge_state.check_aborted()?;
                 reader.check_integrity()?;
                 readers.push(Some(reader.clone_reader()));
             } else {
@@ -365,7 +369,7 @@ impl TermVectorsFormat for EmptyTermVectorsFormat {
 
     fn vectors_writer(
         &self,
-        _directory: &dyn Directory,
+        _directory: &std::sync::Arc<dyn Directory>,
         _segment_info: &SegmentInfo,
         _context: &dyn IOContext,
     ) -> Result<Box<dyn TermVectorsWriter>> {
@@ -385,7 +389,9 @@ impl TermVectorsReader for EmptyTermVectorsReader {
     fn clone_reader(&self) -> Box<dyn TermVectorsReader> {
         Box::new(*self)
     }
+}
 
+impl TermVectors for EmptyTermVectorsReader {
     fn get(&self, _doc: i32) -> Result<Option<Box<dyn Fields>>> {
         Ok(None)
     }

@@ -175,11 +175,6 @@ impl<T: TwoPhaseIterator + ?Sized> TwoPhaseIteratorAsDocIdSetIterator<T> {
         &mut self.two_phase
     }
 
-    /// Unwraps this view, returning the two-phase iterator it was built from.
-    pub fn into_two_phase(self) -> Box<T> {
-        self.two_phase
-    }
-
     fn do_next(&mut self, mut doc: i32) -> Result<i32> {
         loop {
             if doc == NO_MORE_DOCS {

@@ -30,7 +30,6 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use rucene::codecs::hnsw::graph_provider::HnswGraphProvider;
-use rucene::codecs::knn_vectors::KnnVectorsFormat;
 use rucene::codecs::lucene99::hnsw_vectors_format::{
     Lucene99HnswVectorsFormat, Lucene99HnswVectorsReader,
 };
@@ -40,7 +39,6 @@ use rucene::error::LuceneError;
 use rucene::index::{FieldInfo, FieldInfos, SegmentInfo, VectorEncoding, VectorSimilarityFunction};
 use rucene::search::NO_MORE_DOCS;
 use rucene::store::{Directory, FSDirectory, DEFAULT_IO_CONTEXT};
-use rucene::util::hnsw::NodesIterator;
 use rucene::util::Version;
 
 const SEGMENT: &str = "_hg";

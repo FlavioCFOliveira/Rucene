@@ -35,12 +35,13 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::sync::Mutex;
 
 use rucene::document::IntPoint;
 use rucene::index::point_values::{IntersectVisitor, Relation};
 use rucene::store::{
-    Directory, FSDirectory, RamDirectory, DEFAULT_IO_CONTEXT, READONCE_IO_CONTEXT,
+    ByteBuffersDirectory, Directory, FSDirectory, DEFAULT_IO_CONTEXT, READONCE_IO_CONTEXT,
 };
 use rucene::util::bkd::{BKDConfig, BKDReader, BKDWriter};
 
@@ -194,7 +195,7 @@ fn write_corpus(dir: &Path) {
 
         // The writer's temp directory is never touched for this corpus: 512
         // points fit in the heap budget, so the point writer stays in memory.
-        let temp_dir: Box<dyn Directory> = Box::new(RamDirectory::new());
+        let temp_dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut writer = BKDWriter::new_default(
             MAX_DOC,
             temp_dir,
@@ -212,8 +213,11 @@ fn write_corpus(dir: &Path) {
                 .expect("add point");
         }
         writer
-            .finish(&mut *meta, &mut *index, &mut *data)
-            .expect("finish");
+            .finish(&mut *data)
+            .expect("finish")
+            .expect("the tree has points")
+            .run(&mut *meta, &mut *index)
+            .expect("write index");
         writer.close().expect("close writer");
         meta.close().expect("close meta");
         index.close().expect("close index");
@@ -270,10 +274,15 @@ fn read_corpus(dir: &Path) -> Vec<Vec<i32>> {
             let mut data = directory
                 .open_input(&format!("{}.kdd", spec.name), &*READONCE_IO_CONTEXT)
                 .expect("kdd input");
-            let mut reader =
-                BKDReader::new(&mut *meta, &mut *index, &mut *data).expect("BKDReader");
+            let reader = BKDReader::new(&mut *meta, &mut *index, &mut *data).expect("BKDReader");
             let mut collector = DocIdCollector::default();
-            reader.intersect(&mut collector).expect("intersect");
+            // `PointValues.intersect(IntersectVisitor)`, which is
+            // `intersect(visitor, getPointTree())`.
+            rucene::index::point_values::intersect(
+                &mut collector,
+                reader.point_tree().expect("point tree").as_mut(),
+            )
+            .expect("intersect");
             collector.doc_ids
         })
         .collect()

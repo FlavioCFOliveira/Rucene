@@ -33,7 +33,7 @@
 use std::sync::Arc;
 
 use crate::search::similarities::{
-    BulkSimScorer, CollectionStatistics, Explanation, SimScorer, Similarity, TermStatistics,
+    CollectionStatistics, Explanation, SimScorer, Similarity, TermStatistics,
 };
 
 /// A [`SimScorer`] that owns the [`Similarity`] and statistics it is built
@@ -81,43 +81,12 @@ impl SimScorerSource {
         }
     }
 
-    /// Returns the similarity this source scores with.
-    pub fn similarity(&self) -> &Arc<dyn Similarity> {
-        &self.similarity
-    }
-
-    /// Returns the boost this source scores with.
-    pub fn boost(&self) -> f32 {
-        self.boost
-    }
-
-    /// Returns the collection statistics this source scores with.
-    pub fn collection_stats(&self) -> &CollectionStatistics {
-        &self.collection_stats
-    }
-
-    /// Returns the term statistics this source scores with.
-    pub fn term_stats(&self) -> &[TermStatistics] {
-        &self.term_stats
-    }
-
     /// Runs `f` with the [`SimScorer`] this source describes.
     ///
     /// The scorer is the one [`Similarity::scorer_owned`] produced when this
     /// source was created, so this is a plain borrow.
     pub fn with<R>(&self, f: impl FnOnce(&dyn SimScorer) -> R) -> R {
         f(&*self.scorer)
-    }
-
-    /// Runs `f` with a [`BulkSimScorer`] over the [`SimScorer`] this source
-    /// describes.
-    ///
-    /// Equivalent to `simScorer.asBulkSimScorer()` on a stored scorer.
-    pub fn with_bulk<R>(&self, f: impl FnOnce(&mut dyn BulkSimScorer) -> R) -> R {
-        self.with(|scorer| {
-            let mut bulk = scorer.as_bulk_sim_scorer();
-            f(&mut *bulk)
-        })
     }
 }
 

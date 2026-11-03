@@ -50,16 +50,6 @@ impl TermMatchesIterator {
             query,
         })
     }
-
-    /// Unwraps this iterator, returning the postings enum it was built from.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java hands the same `PostingsEnum`
-    /// instance to `TermsEnum.postings(reuse, flags)` for reuse after the
-    /// iterator is discarded, because the reference is still in scope. Rust
-    /// moves the enum into the iterator, so recovering it needs a method.
-    pub fn into_postings(self) -> Box<dyn PostingsEnum> {
-        self.pe
-    }
 }
 
 impl MatchesIterator for TermMatchesIterator {

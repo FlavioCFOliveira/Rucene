@@ -124,7 +124,7 @@ impl LongHeap {
             self.down_heap(1);
             Ok(result)
         } else {
-            Err(LuceneError::IllegalState("The heap is empty".to_string()))
+            Err(LuceneError::illegal_state("The heap is empty".to_string()))
         }
     }
 
@@ -140,11 +140,6 @@ impl LongHeap {
     /// Returns the number of elements currently stored.
     pub fn size(&self) -> usize {
         self.size
-    }
-
-    /// Returns whether the heap holds no element.
-    pub fn is_empty(&self) -> bool {
-        self.size == 0
     }
 
     /// Removes all entries.
@@ -309,7 +304,7 @@ impl TernaryLongHeap {
             Self::down_heap(&mut self.heap, 1, self.size, ARITY);
             Ok(result)
         } else {
-            Err(LuceneError::IllegalState("The heap is empty".to_string()))
+            Err(LuceneError::illegal_state("The heap is empty".to_string()))
         }
     }
 
@@ -323,11 +318,6 @@ impl TernaryLongHeap {
     /// Returns the number of elements currently stored.
     pub fn size(&self) -> usize {
         self.size
-    }
-
-    /// Returns whether the heap holds no element.
-    pub fn is_empty(&self) -> bool {
-        self.size == 0
     }
 
     /// Removes all entries.

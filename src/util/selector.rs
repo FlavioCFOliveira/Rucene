@@ -580,13 +580,81 @@ pub trait RadixSelectorOps {
     /// Selects `[from, to)` around `k` comparing from byte `d` onwards, for a
     /// range too short or too deep for radix selection to pay off.
     ///
-    /// Equivalent to `RadixSelector.getFallbackSelector(d).select(from, to, k)`.
-    /// Java builds a fresh `IntroSelector` per call and lets the caller
-    /// override which one; this port asks the caller to run it, which is the
-    /// same seam without the object.
-    ///
-    /// Equivalent to `org.apache.lucene.util.RadixSelector#getFallbackSelector`.
-    fn fallback_select(&mut self, from: usize, to: usize, k: usize, d: usize);
+    /// Equivalent to `RadixSelector.getFallbackSelector(d).select(from, to, k)`
+    /// (`RadixSelector.java:69-120,129`). Java's `getFallbackSelector` is a
+    /// protected method with a default body, an `IntroSelector` comparing
+    /// `byteAt` from byte `d` up to the selector's `maxLength`, which a subclass
+    /// overrides to supply its own; this default body is that `IntroSelector`,
+    /// and an implementation overrides the method exactly where Java overrides
+    /// `getFallbackSelector`. `max_length` is the outer selector's `maxLength`,
+    /// which Java's anonymous class reads from the enclosing instance.
+    fn fallback_select(&mut self, from: usize, to: usize, k: usize, d: usize, max_length: usize) {
+        let mut fallback = DefaultFallbackSelector {
+            ops: self,
+            d,
+            max_length,
+            pivot: Vec::new(),
+        };
+        intro_select(&mut fallback, from, to, k);
+    }
+}
+
+/// The `IntroSelector` Java's `RadixSelector.getFallbackSelector(int)` returns
+/// by default (`RadixSelector.java:69-120`): every comparison reads `byteAt`
+/// from byte `d` onwards.
+struct DefaultFallbackSelector<'a, T: RadixSelectorOps + ?Sized> {
+    ops: &'a mut T,
+    d: usize,
+    max_length: usize,
+    /// Java's `pivot`, a `BytesRefBuilder` holding bytes `d..` of the pivot.
+    pivot: Vec<u8>,
+}
+
+impl<T: RadixSelectorOps + ?Sized> PivotOps for DefaultFallbackSelector<'_, T> {
+    fn swap(&mut self, i: usize, j: usize) {
+        self.ops.swap(i, j);
+    }
+
+    /// `RadixSelector.java:76-88`.
+    fn compare(&mut self, i: usize, j: usize) -> i32 {
+        for o in self.d..self.max_length {
+            let b1 = self.ops.byte_at(i, o);
+            let b2 = self.ops.byte_at(j, o);
+            if b1 != b2 {
+                return b1 - b2;
+            } else if b1 == -1 {
+                break;
+            }
+        }
+        0
+    }
+
+    /// `RadixSelector.java:90-100`.
+    fn set_pivot(&mut self, i: usize) {
+        self.pivot.clear();
+        for o in self.d..self.max_length {
+            let b = self.ops.byte_at(i, o);
+            if b == -1 {
+                break;
+            }
+            self.pivot.push(b as u8);
+        }
+    }
+
+    /// `RadixSelector.java:102-115`.
+    fn compare_pivot(&mut self, j: usize) -> i32 {
+        for (o, &byte) in self.pivot.iter().enumerate() {
+            let b1 = i32::from(byte);
+            let b2 = self.ops.byte_at(j, self.d + o);
+            if b1 != b2 {
+                return b1 - b2;
+            }
+        }
+        if self.d + self.pivot.len() == self.max_length {
+            return 0;
+        }
+        -1 - self.ops.byte_at(j, self.d + self.pivot.len())
+    }
 }
 
 /// Selects by comparing elements byte by byte, most significant byte first.
@@ -637,7 +705,7 @@ impl RadixSelector {
         l: usize,
     ) {
         if to - from <= LENGTH_THRESHOLD || l >= LEVEL_THRESHOLD {
-            ops.fallback_select(from, to, k, d);
+            ops.fallback_select(from, to, k, d, self.max_length);
         } else {
             self.radix_select(ops, from, to, k, d, l);
         }
@@ -896,7 +964,7 @@ fn partition(
 // -----------------------------------------------------------------------------
 
 /// Selects over a slice of byte strings, comparing them lexicographically by
-/// unsigned byte and then by their position in the original slice.
+/// unsigned byte through the default [`RadixSelectorOps::fallback_select`].
 ///
 /// Exists so the algorithms above can be tested on their own rather than only
 /// through the BKD writer that consumes them.
@@ -905,8 +973,6 @@ pub struct BytesRefSelector<'a> {
     /// How many leading bytes of each value take part in the comparison. Bytes
     /// beyond it ride along untouched, the way a BKD point's doc ID does.
     key_length: usize,
-    pivot: Vec<u8>,
-    fallback_d: usize,
 }
 
 impl<'a> BytesRefSelector<'a> {
@@ -918,12 +984,7 @@ impl<'a> BytesRefSelector<'a> {
 
     /// Wraps `values`, comparing only their first `key_length` bytes.
     pub fn with_key_length(values: &'a mut [BytesRef], key_length: usize) -> Self {
-        Self {
-            values,
-            key_length,
-            pivot: Vec::new(),
-            fallback_d: 0,
-        }
+        Self { values, key_length }
     }
 
     /// The longest value, which is the `max_length` a [`RadixSelector`] over
@@ -949,35 +1010,6 @@ impl RadixSelectorOps for BytesRefSelector<'_> {
 
     fn swap(&mut self, i: usize, j: usize) {
         self.values.swap(i, j);
-    }
-
-    fn fallback_select(&mut self, from: usize, to: usize, k: usize, d: usize) {
-        self.fallback_d = d;
-        intro_select(self, from, to, k);
-    }
-}
-
-impl PivotOps for BytesRefSelector<'_> {
-    fn swap(&mut self, i: usize, j: usize) {
-        self.values.swap(i, j);
-    }
-
-    fn set_pivot(&mut self, i: usize) {
-        let key = &self.values[i].slice()[..self.key_length.min(self.values[i].slice().len())];
-        let d = self.fallback_d.min(key.len());
-        self.pivot.clear();
-        self.pivot.extend_from_slice(&key[d..]);
-    }
-
-    fn compare_pivot(&mut self, j: usize) -> i32 {
-        let key = &self.values[j].slice()[..self.key_length.min(self.values[j].slice().len())];
-        let d = self.fallback_d.min(key.len());
-        let other = &key[d..];
-        match self.pivot.as_slice().cmp(other) {
-            std::cmp::Ordering::Less => -1,
-            std::cmp::Ordering::Equal => 0,
-            std::cmp::Ordering::Greater => 1,
-        }
     }
 }
 
@@ -1179,6 +1211,34 @@ mod tests {
         }
         for value in &values[3..] {
             assert!(value.slice() > b"charlie".as_slice());
+        }
+    }
+
+    /// The default fallback (`RadixSelector.java:69-120`) orders a value that
+    /// extends the pivot after it: when the pivot ends before `maxLength`,
+    /// `comparePivot` returns `-1 - byteAt(j, d + pivot.length())`, which is
+    /// negative for a longer value and `0` only for an equal one.
+    #[test]
+    fn radix_select_fallback_orders_a_value_after_its_own_prefix() {
+        let input: [&[u8]; 9] = [
+            b"abc", b"a", b"abcd", b"", b"ab", b"abcde", b"b", b"aa", b"abcd",
+        ];
+        let mut sorted = bytes(&input);
+        sorted.sort_by(|x, y| x.slice().cmp(y.slice()));
+        for k in 0..input.len() {
+            let mut values = bytes(&input);
+            {
+                let mut ops = BytesRefSelector::new(&mut values);
+                let max_length = ops.max_length();
+                RadixSelector::new(max_length).select(&mut ops, 0, input.len(), k);
+            }
+            assert_eq!(values[k].slice(), sorted[k].slice(), "k={k}");
+            for value in &values[..k] {
+                assert!(value.slice() <= values[k].slice(), "k={k}");
+            }
+            for value in &values[k + 1..] {
+                assert!(value.slice() >= values[k].slice(), "k={k}");
+            }
         }
     }
 

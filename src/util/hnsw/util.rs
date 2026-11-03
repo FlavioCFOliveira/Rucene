@@ -89,7 +89,7 @@ impl HnswUtil {
         vector_field: &str,
         graph_of_leaf: &dyn Fn(&LeafReaderContext, &str) -> Result<Box<dyn HnswGraph>>,
     ) -> Result<bool> {
-        for ctx in reader.leaves() {
+        for ctx in reader.leaves()? {
             let mut graph = graph_of_leaf(&ctx, vector_field)?;
             if !Self::is_rooted(graph.as_mut())? {
                 return Ok(false);
@@ -249,14 +249,6 @@ impl HnswUtil {
             }
         }
         Ok(Component::new(entry_point, count))
-    }
-
-    fn next_unvisited(
-        _graph: &mut dyn HnswGraph,
-        _level: i32,
-        connected_nodes: &FixedBitSet,
-    ) -> Result<i32> {
-        Ok(connected_nodes.next_clear_bit(0) as i32)
     }
 }
 

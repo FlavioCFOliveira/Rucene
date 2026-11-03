@@ -11,7 +11,7 @@ use crate::index::merge::DocMap;
 use crate::index::vector_values::KnnVectorValues;
 use crate::index::VectorEncoding;
 use crate::search::NO_MORE_DOCS;
-use crate::util::{Bits, FixedBitSet};
+use crate::util::{Bits, FixedBitSet, InfoStream};
 
 use super::builder::{HnswBuilder, HnswGraphBuilder, DEFAULT_RAND_SEED};
 use super::merger::HnswGraphMerger;
@@ -61,8 +61,6 @@ pub struct GraphReader {
 ///   takes the provider explicitly; passing `None` is the counterpart of a reader
 ///   that is not an `HnswGraphProvider`, and the reader is then skipped exactly as
 ///   Java skips it.
-/// * `merge` takes no `InfoStream`: the port's [`HnswGraphBuilder`] has no info
-///   stream to set.
 pub struct IncrementalHnswGraphMerger {
     field_info: FieldInfo,
     scorer_supplier: Arc<dyn RandomVectorScorerSupplier>,
@@ -119,11 +117,24 @@ impl IncrementalHnswGraphMerger {
 
     /// Returns the vector values of `reader` for the merged field, following the
     /// field's encoding.
+    ///
+    /// Java dereferences the answer without a `null` check, so a reader without
+    /// vectors for the field fails here, as Java's `NullPointerException` does.
     fn vector_values(&self, reader: &dyn KnnVectorsReader) -> Result<Box<dyn KnnVectorValues>> {
-        match self.field_info.get_vector_encoding() {
-            VectorEncoding::BYTE => Ok(reader.get_byte_vector_values(&self.field_info.name)?),
-            VectorEncoding::FLOAT32 => Ok(reader.get_float_vector_values(&self.field_info.name)?),
-        }
+        let values: Option<Box<dyn KnnVectorValues>> = match self.field_info.get_vector_encoding() {
+            VectorEncoding::BYTE => reader
+                .get_byte_vector_values(&self.field_info.name)?
+                .map(|values| values as Box<dyn KnnVectorValues>),
+            VectorEncoding::FLOAT32 => reader
+                .get_float_vector_values(&self.field_info.name)?
+                .map(|values| values as Box<dyn KnnVectorValues>),
+        };
+        values.ok_or_else(|| {
+            LuceneError::illegal_state(format!(
+                "the merged reader has no vectors for field \"{}\"",
+                self.field_info.name
+            ))
+        })
     }
 
     /// Builds the graph builder that produces the merged graph.
@@ -166,7 +177,7 @@ impl IncrementalHnswGraphMerger {
                 .graph_provider
                 .get_graph(&self.field_info.name)?;
             if graph.size() == 0 {
-                return Err(LuceneError::IllegalState(
+                return Err(LuceneError::illegal_state(
                     "Graph should not be empty".to_string(),
                 ));
             }
@@ -321,9 +332,11 @@ impl HnswGraphMerger for IncrementalHnswGraphMerger {
     fn merge(
         &mut self,
         merged_vector_values: &dyn KnnVectorValues,
+        info_stream: Arc<dyn InfoStream>,
         max_ord: i32,
     ) -> Result<OnHeapHnswGraph> {
         let mut builder = self.create_builder(merged_vector_values, max_ord)?;
+        builder.set_info_stream(info_stream);
         builder.build(max_ord)?;
         builder.into_completed_graph()
     }

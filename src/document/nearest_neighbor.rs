@@ -212,7 +212,7 @@ impl IntersectVisitor for NearestVisitor<'_> {
     fn visit(&mut self, _doc_id: i32) -> Result<()> {
         // Java throws `AssertionError`: this visitor is only ever driven
         // through `visitDocValues`, which always supplies the packed value.
-        Err(crate::error::LuceneError::IllegalState(
+        Err(crate::error::LuceneError::illegal_state(
             "NearestVisitor is only driven through visit_doc_values".to_string(),
         ))
     }

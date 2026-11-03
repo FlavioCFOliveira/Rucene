@@ -52,6 +52,16 @@ impl std::fmt::Debug for BlockTreeShared {
 /// One field of the block-tree terms dictionary.
 ///
 /// Equivalent to `org.apache.lucene.codecs.lucene103.blocktree.FieldReader`.
+///
+/// **Divergence from Lucene 10.5.0.** Java's `FieldReader` keeps a reference
+/// to its parent `Lucene103BlockTreeTermsReader` (`parent`) and the `.tip`
+/// input it is handed (`indexIn`), and its terms enums reach the `.tim` input,
+/// the postings reader and the segment name through `parent`
+/// (`FieldReader.java:47-88`). The parent owns its field readers, so a back
+/// reference would be an ownership cycle in Rust; the state the field and its
+/// enums read is instead held in one [`BlockTreeShared`], which the terms
+/// reader and every field reader share through an [`Arc`]. The same inputs
+/// and the same postings reader are reached; only the path to them differs.
 #[derive(Clone)]
 pub struct FieldReader {
     shared: Arc<BlockTreeShared>,
@@ -196,6 +206,12 @@ impl Terms for FieldReader {
         ))
     }
 
+    /// Equivalent to `FieldReader.intersect(CompiledAutomaton, BytesRef)`
+    /// (`FieldReader.java:162-178`): an [`IntersectTermsEnum`] over the
+    /// automaton's transition accessor and byte runnable, whether it was
+    /// compiled as a DFA or as an NFA.
+    ///
+    /// [`IntersectTermsEnum`]: crate::codecs::lucene103::intersect_terms_enum::IntersectTermsEnum
     fn intersect(
         &self,
         compiled: &crate::util::automaton::CompiledAutomaton,
@@ -207,37 +223,38 @@ impl Terms for FieldReader {
                 "please use CompiledAutomaton.get_terms_enum instead".to_string(),
             ));
         }
-        let automaton = compiled.automaton.clone().ok_or_else(|| {
-            LuceneError::IllegalArgument("compiled automaton has no transitions".to_string())
-        })?;
-        let run_automaton = compiled.run_automaton.clone().ok_or_else(|| {
-            LuceneError::IllegalArgument("compiled automaton has no runnable form".to_string())
-        })?;
+        // `compiled.getTransitionAccessor()` and `compiled.getByteRunnable()`
+        // (`FieldReader.java:176-177`): the DFA's two objects, or the query's
+        // one `NFARunAutomaton` for both, which the clone shares.
+        let view = crate::index::automaton_terms_enum::CompiledAutomatonView::new(compiled.clone())
+            .ok_or_else(|| {
+                LuceneError::IllegalArgument("compiled automaton has no runnable form".to_string())
+            })?;
         Ok(Box::new(
             crate::codecs::lucene103::intersect_terms_enum::IntersectTermsEnum::new(
                 self.clone(),
-                Box::new(automaton),
-                Box::new(run_automaton),
+                Box::new(view.clone()),
+                Box::new(view),
                 compiled.common_suffix_ref.clone(),
                 start_term.cloned(),
             )?,
         ))
     }
 
-    fn size(&self) -> i64 {
-        self.num_terms
+    fn size(&self) -> Result<i64> {
+        Ok(self.num_terms)
     }
 
-    fn sum_total_term_freq(&self) -> i64 {
-        self.sum_total_term_freq
+    fn sum_total_term_freq(&self) -> Result<i64> {
+        Ok(self.sum_total_term_freq)
     }
 
-    fn sum_doc_freq(&self) -> i64 {
-        self.sum_doc_freq
+    fn sum_doc_freq(&self) -> Result<i64> {
+        Ok(self.sum_doc_freq)
     }
 
-    fn doc_count(&self) -> i32 {
-        self.doc_count
+    fn doc_count(&self) -> Result<i32> {
+        Ok(self.doc_count)
     }
 
     fn has_freqs(&self) -> bool {
@@ -268,6 +285,24 @@ impl Terms for FieldReader {
 
     fn max(&self) -> Result<Option<BytesRef>> {
         Ok(Some(self.max_term.clone()))
+    }
+
+    /// Walks every block of the field and reports the statistics `CheckIndex`
+    /// prints for it.
+    ///
+    /// Equivalent to `FieldReader.getStats()` (`FieldReader.java:110-114`):
+    /// `new SegmentTermsEnum(this, newReader()).computeBlockStats()`. Java
+    /// returns the `Stats` object and `CheckIndex` keeps it as an `Object`;
+    /// [`Terms::stats`] returns its `toString()`, which is what `CheckIndex`
+    /// prints.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever opening the cursor or reading a block raises.
+    fn stats(&self) -> Result<String> {
+        let mut terms_enum =
+            crate::codecs::lucene103::segment_terms_enum::SegmentTermsEnum::new(self.clone())?;
+        Ok(terms_enum.compute_block_stats()?.to_string())
     }
 }
 

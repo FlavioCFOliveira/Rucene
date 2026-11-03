@@ -13,26 +13,31 @@ use crate::analysis::tokenattributes::{
 use crate::analysis::{Analyzer, TokenStream};
 use crate::document::{FieldType, InvertableType, NumericValue, StoredValue};
 use crate::error::{LuceneError, Result};
-use crate::index::postings_enum::POSTINGS_ENUM_FREQS;
+use crate::index::postings_enum::{PostingsEnum, POSTINGS_ENUM_FREQS};
 use crate::index::reader_context::LeafReaderContext;
 use crate::index::terms::TermsEnum;
 use crate::index::Term;
 use crate::index::{IndexOptions, IndexableField, IndexableFieldType};
 use crate::search::double_values::{DoubleValues, EmptyDoubleValues};
 use crate::search::double_values_source::DoubleValuesSource;
+use crate::search::field_comparator::SlotComparator;
+use crate::search::field_comparator::{java_float_compare, FieldComparator, SortValue};
 use crate::search::index_searcher::IndexSearcher;
 use crate::search::query::Query;
 use crate::search::query_visitor::QueryVisitor;
+use crate::search::scorable::Scorable;
 use crate::search::score_mode::ScoreMode;
 use crate::search::scorer::Scorer;
 use crate::search::scorer_supplier::ScorerSupplier;
 use crate::search::segment_cacheable::SegmentCacheable;
 use crate::search::sim_scorer_source::SharedSimScorer;
 use crate::search::similarities::{Explanation, SimScorer};
+use crate::search::simple_field_comparator::{SimpleFieldComparator, SimpleFieldComparatorImpl};
 use crate::search::term_query::TermQuery;
 use crate::search::term_scorer::TermScorer;
 use crate::search::weight::Weight;
 use crate::search::DocIdSetIterator;
+use crate::search::{SortField, SortFieldKind, SortFieldType};
 use crate::util::attribute::DefaultAttributeFactory;
 use crate::util::{AttributeSource, BytesRef};
 
@@ -72,10 +77,11 @@ pub fn encode_feature_value(feature_value: f32) -> i32 {
 /// Equivalent to the `FeatureField.FeatureFunction` hierarchy.
 ///
 /// **Divergence from Lucene 10.5.0.** Java models the four functions as
-/// subclasses of an abstract `FeatureFunction`, each supplying a `SimScorer`
-/// and an `Explanation`. This port is one enum: the four differ only in their
-/// arithmetic, and neither `SimScorer` nor `Explanation` is reachable from the
-/// document module in this crate.
+/// subclasses of the package-private `abstract static class FeatureFunction`
+/// (`FeatureField.java:252-262`), each supplying a `SimScorer` and an
+/// `Explanation`. Because the class is package-private, no code outside
+/// Lucene can add a function, so the closed set is one enum here: each variant
+/// carries its parameters and [`score`](Self::score) matches on it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum FeatureFunction {
     /// `w * value` — the value used directly.
@@ -310,10 +316,8 @@ impl FeatureField {
         feature_field: &str,
         feature_name: &str,
     ) -> Result<f32> {
-        let term = Term::new(
-            feature_field,
-            BytesRef::new(feature_name.as_bytes().to_vec()),
-        );
+        // `new Term(featureField, featureName)` (`FeatureField.java`).
+        let term = Term::from_text(feature_field, feature_name);
         let states = crate::index::terms::TermStates::build(searcher, &term, true)?;
         let doc_freq = states.doc_freq()?;
         if doc_freq == 0 {
@@ -328,10 +332,11 @@ impl FeatureField {
 
     /// Returns a sort field ordering documents by descending feature value.
     ///
-    /// Equivalent to `FeatureField.newFeatureSort(String, String)`. A document
+    /// Equivalent to `FeatureField.newFeatureSort(String, String)`, which
+    /// returns the `FeatureSortField` as a plain `SortField`. A document
     /// without the field sorts as if its value were `0.0`.
-    pub fn new_feature_sort(field: &str, feature_name: &str) -> FeatureSortField {
-        FeatureSortField::new(field, feature_name)
+    pub fn new_feature_sort(field: &str, feature_name: &str) -> SortField {
+        FeatureSortField::new(field, feature_name).into_sort_field()
     }
 
     /// Returns a source that reads a feature's value as a double.
@@ -365,6 +370,50 @@ impl std::fmt::Display for FeatureField {
 }
 
 impl FeatureField {
+    /// The type every feature field without term vectors is created with.
+    ///
+    /// Equivalent to the private static `FeatureField.FIELD_TYPE`
+    /// (`FeatureField.java:108, 112-114`), which Java never freezes: a field
+    /// built on it is therefore validated by `IndexingChain` for every
+    /// document, since only a frozen type takes the validated-type shortcut
+    /// (`IndexingChain.java:1819-1825`). Each field holds a clone, which, like
+    /// Java's shared unfrozen object, has no frozen identity.
+    fn field_type_static() -> &'static FieldType {
+        static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+        TYPE.get_or_init(|| Self::new_field_type(false))
+    }
+
+    /// The type every feature field with term vectors is created with.
+    ///
+    /// Equivalent to the private static
+    /// `FeatureField.FIELD_TYPE_STORE_TERM_VECTORS` (`FeatureField.java:109,
+    /// 116-119`), never frozen either.
+    fn field_type_store_term_vectors() -> &'static FieldType {
+        static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+        TYPE.get_or_init(|| Self::new_field_type(true))
+    }
+
+    /// The body of `FeatureField`'s static initialiser for one of its two
+    /// types (`FeatureField.java:111-120`).
+    fn new_field_type(store_term_vectors: bool) -> FieldType {
+        let mut field_type = FieldType::new();
+        field_type
+            .set_tokenized(false)
+            .expect("INVARIANT: a new type is mutable");
+        field_type
+            .set_omit_norms(true)
+            .expect("INVARIANT: a new type is mutable");
+        field_type
+            .set_index_options(IndexOptions::DOCS_AND_FREQS)
+            .expect("INVARIANT: a new type is mutable");
+        if store_term_vectors {
+            field_type
+                .set_store_term_vectors(true)
+                .expect("INVARIANT: a new type is mutable");
+        }
+        field_type
+    }
+
     /// Creates the field.
     ///
     /// The value must be a positive normal float, because the encoding drops
@@ -386,14 +435,13 @@ impl FeatureField {
     ) -> Result<Self> {
         let name = field_name.into();
         let feature_name = feature_name.into();
-        let mut field_type = FieldType::new();
-        field_type.set_tokenized(false)?;
-        field_type.set_omit_norms(true)?;
-        field_type.set_index_options(IndexOptions::DOCS_AND_FREQS)?;
-        if store_term_vectors {
-            field_type.set_store_term_vectors(true)?;
-        }
-        field_type.freeze();
+        // `storeTermVectors ? FIELD_TYPE_STORE_TERM_VECTORS : FIELD_TYPE`
+        // (`FeatureField.java:147`).
+        let field_type = if store_term_vectors {
+            Self::field_type_store_term_vectors().clone()
+        } else {
+            Self::field_type_static().clone()
+        };
 
         let mut field = Self {
             name,
@@ -630,36 +678,247 @@ impl FeatureQuery {
 
 /// Sorts documents by a feature's value, largest first.
 ///
-/// Equivalent to `org.apache.lucene.document.FeatureSortField`.
-#[derive(Clone, Debug)]
+/// Equivalent to `org.apache.lucene.document.FeatureSortField`
+/// (`FeatureSortField.java:31-161`), a `SortField` subclass of type `CUSTOM`,
+/// always reversed, that carries the feature name, refuses a missing value and
+/// sorts with a [`FeatureComparator`]. The subclass identity travels with the
+/// sort field as
+/// [`SortFieldKind::Feature`](crate::search::SortFieldKind::Feature), for the
+/// reason given on [`SortFieldKind`](crate::search::SortFieldKind); this type
+/// builds and reads back the sort fields that carry it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct FeatureSortField {
-    field: String,
-    feature: String,
+    sort_field: SortField,
 }
 
 impl FeatureSortField {
-    /// Creates the sort field.
-    pub fn new(field: impl Into<String>, feature: impl Into<String>) -> Self {
-        Self {
-            field: field.into(),
-            feature: feature.into(),
-        }
+    /// Creates a sort by the value of `feature_name` in the feature field
+    /// `field`.
+    ///
+    /// Equivalent to `new FeatureSortField(String, String)`, which passes
+    /// `SortField.Type.CUSTOM` and `reverse = true` to `SortField`.
+    pub fn new(field: impl Into<String>, feature_name: impl Into<String>) -> Self {
+        let sort_field = SortField::with_kind(
+            Some(field.into()),
+            SortFieldType::Custom,
+            true,
+            None,
+            SortFieldKind::Feature {
+                feature_name: feature_name.into(),
+            },
+        )
+        .expect("INVARIANT: a CUSTOM sort on a named field always validates");
+        Self { sort_field }
     }
 
     /// Returns the field the sort reads.
     pub fn field(&self) -> &str {
-        &self.field
+        self.sort_field.field().unwrap_or("")
     }
 
     /// Returns the feature the sort orders by.
     pub fn feature(&self) -> &str {
-        &self.feature
+        match self.sort_field.kind() {
+            SortFieldKind::Feature { feature_name } => feature_name,
+            _ => "",
+        }
     }
 
     /// Returns whether the sort is descending, which a feature sort always is:
     /// a larger feature value ranks first.
     pub fn reverse(&self) -> bool {
-        true
+        self.sort_field.reverse()
+    }
+
+    /// Returns this sort field as a [`SortField`].
+    pub fn sort_field(&self) -> &SortField {
+        &self.sort_field
+    }
+
+    /// Unwraps this sort field into a plain [`SortField`], which is what
+    /// [`Sort`](crate::search::Sort) holds.
+    pub fn into_sort_field(self) -> SortField {
+        self.sort_field
+    }
+
+    /// Returns the comparator that sorts by the feature's value.
+    ///
+    /// Equivalent to `FeatureSortField.getComparator(int, Pruning)`, which
+    /// ignores the pruning mode.
+    pub fn get_comparator(&self, num_hits: usize) -> Box<dyn FieldComparator> {
+        Box::new(SimpleFieldComparator::new(FeatureComparator::new(
+            num_hits,
+            self.field(),
+            self.feature(),
+        )))
+    }
+}
+
+impl From<FeatureSortField> for SortField {
+    fn from(value: FeatureSortField) -> Self {
+        value.into_sort_field()
+    }
+}
+
+impl std::fmt::Display for FeatureSortField {
+    /// Equivalent to `FeatureSortField.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.sort_field)
+    }
+}
+
+/// Parses a feature field's values as floats and sorts by them.
+///
+/// Equivalent to `org.apache.lucene.document.FeatureSortField.FeatureComparator`
+/// (`FeatureSortField.java:87-160`), a `SimpleFieldComparator<Float>`: on each
+/// segment it seeks the feature's term and keeps its postings, whose term
+/// frequency encodes the feature value; a document the postings do not reach
+/// — or a segment without the field or the feature — has the value `0.0`.
+/// The postings only move forward, so a document behind the cursor also reads
+/// `0.0`, exactly as in Java.
+pub struct FeatureComparator {
+    field: String,
+    feature_name: BytesRef,
+    values: Vec<f32>,
+    bottom: f32,
+    top_value: f32,
+}
+
+impl std::fmt::Debug for FeatureComparator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FeatureComparator")
+            .field("field", &self.field)
+            .field("feature_name", &self.feature_name)
+            .finish_non_exhaustive()
+    }
+}
+
+impl FeatureComparator {
+    /// Creates a comparator over `num_hits` slots.
+    ///
+    /// Equivalent to `new FeatureComparator(int, String, String)`.
+    pub fn new(num_hits: usize, field: &str, feature_name: &str) -> Self {
+        Self {
+            field: field.to_string(),
+            // `new BytesRef(featureName)` (`FeatureSortField.java:100`).
+            feature_name: BytesRef::from_char_sequence(feature_name),
+            values: vec![0.0; num_hits],
+            bottom: 0.0,
+            top_value: 0.0,
+        }
+    }
+
+    /// Returns the feature value of `doc` in the current segment.
+    ///
+    /// Equivalent to the private `FeatureComparator.getValueForDoc(int)`.
+    fn get_value_for_doc(
+        current_reader_postings_values: &mut Option<Box<dyn PostingsEnum>>,
+        doc: i32,
+    ) -> Result<f32> {
+        if let Some(postings) = current_reader_postings_values.as_mut() {
+            if doc >= postings.doc_id()
+                && (postings.doc_id() == doc || postings.advance(doc)? == doc)
+            {
+                return Ok(decode_feature_value(postings.freq()? as f32));
+            }
+        }
+        Ok(0.0)
+    }
+}
+
+impl SlotComparator for FeatureComparator {
+    /// The `currentReaderPostingsValues` field `doSetNextReader` sets.
+    type Leaf = Option<Box<dyn PostingsEnum>>;
+
+    /// Equivalent to `FeatureComparator.compare(int, int)`.
+    fn compare(&self, slot1: i32, slot2: i32) -> i32 {
+        java_float_compare(self.values[slot1 as usize], self.values[slot2 as usize])
+    }
+
+    /// Equivalent to `FeatureComparator.setTopValue(Float)`.
+    fn set_top_value(&mut self, value: SortValue) {
+        self.top_value = value.as_float().unwrap_or(0.0);
+    }
+
+    /// Equivalent to `FeatureComparator.value(int)`.
+    fn value(&self, slot: i32) -> SortValue {
+        SortValue::Float(self.values[slot as usize])
+    }
+
+    /// `SimpleFieldComparator.getLeafComparator`: `doSetNextReader`.
+    fn new_leaf(&mut self, context: &LeafReaderContext) -> Result<Self::Leaf> {
+        self.do_set_next_reader(context)
+    }
+
+    /// Equivalent to `FeatureComparator.setBottom(int)`.
+    fn set_bottom(&mut self, _leaf: &mut Self::Leaf, slot: i32) -> Result<()> {
+        self.bottom = self.values[slot as usize];
+        Ok(())
+    }
+
+    /// Equivalent to `FeatureComparator.compareBottom(int)`.
+    fn compare_bottom(
+        &mut self,
+        leaf: &mut Self::Leaf,
+        doc: i32,
+        _scorer: &mut dyn Scorable,
+    ) -> Result<i32> {
+        let value = Self::get_value_for_doc(leaf, doc)?;
+        Ok(java_float_compare(self.bottom, value))
+    }
+
+    /// Equivalent to `FeatureComparator.compareTop(int)`.
+    fn compare_top(
+        &mut self,
+        leaf: &mut Self::Leaf,
+        doc: i32,
+        _scorer: &mut dyn Scorable,
+    ) -> Result<i32> {
+        let value = Self::get_value_for_doc(leaf, doc)?;
+        Ok(java_float_compare(self.top_value, value))
+    }
+
+    /// Equivalent to `FeatureComparator.copy(int, int)`.
+    fn copy(
+        &mut self,
+        leaf: &mut Self::Leaf,
+        slot: i32,
+        doc: i32,
+        _scorer: &mut dyn Scorable,
+    ) -> Result<()> {
+        self.values[slot as usize] = Self::get_value_for_doc(leaf, doc)?;
+        Ok(())
+    }
+
+    /// `FeatureComparator` inherits `SimpleFieldComparator.setScorer`, which
+    /// does nothing.
+    fn set_scorer(&mut self, _leaf: &mut Self::Leaf, _scorer: &mut dyn Scorable) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl SimpleFieldComparatorImpl for FeatureComparator {
+    /// Equivalent to `FeatureComparator.doSetNextReader(LeafReaderContext)`.
+    ///
+    /// Java reaches the terms through `Terms.getTerms`, which substitutes
+    /// `Terms.EMPTY` for a field the segment never saw; seeking the feature in
+    /// it fails, and the postings become `null`, which is what the absent
+    /// branch does here.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java offers the previous segment's
+    /// postings for reuse; here they belonged to the previous segment's leaf
+    /// comparator, which is gone, so nothing is offered. Reuse only saves an
+    /// allocation: the postings returned read the same values.
+    fn do_set_next_reader(&mut self, context: &LeafReaderContext) -> Result<Self::Leaf> {
+        let reader = context.leaf_reader();
+        let Some(terms) = reader.terms(&self.field)? else {
+            return Ok(None);
+        };
+        let mut terms_enum = terms.iterator()?;
+        if terms_enum.seek_exact(&self.feature_name)? {
+            return Ok(Some(terms_enum.postings(None, POSTINGS_ENUM_FREQS)?));
+        }
+        Ok(None)
     }
 }
 
@@ -753,7 +1012,8 @@ impl DoubleValuesSource for FeatureDoubleValuesSource {
             return Ok(Box::new(EmptyDoubleValues));
         };
         let mut terms_enum = terms.iterator()?;
-        let feature = BytesRef::new(self.feature.as_bytes().to_vec());
+        // `new BytesRef(featureName)` (`FeatureDoubleValuesSource.java:49`).
+        let feature = BytesRef::from_char_sequence(&self.feature);
         if !terms_enum.seek_exact(&feature)? {
             return Ok(Box::new(EmptyDoubleValues));
         }
@@ -846,7 +1106,8 @@ impl FeatureWeight {
             return Ok(None);
         };
         let mut terms_enum = terms.iterator()?;
-        let feature = BytesRef::new(self.query.feature.as_bytes().to_vec());
+        // `termsEnum.seekExact(new BytesRef(featureName))` (`FeatureQuery.java:124`).
+        let feature = BytesRef::from_char_sequence(&self.query.feature);
         if !terms_enum.seek_exact(&feature)? {
             return Ok(None);
         }
@@ -873,7 +1134,8 @@ impl Weight for FeatureWeight {
             ));
         };
         let mut terms_enum = terms.iterator()?;
-        let feature = BytesRef::new(self.query.feature.as_bytes().to_vec());
+        // `termsEnum.seekExact(new BytesRef(featureName))` (`FeatureQuery.java:108`).
+        let feature = BytesRef::from_char_sequence(&self.query.feature);
         if !terms_enum.seek_exact(&feature)? {
             return Ok(Explanation::no_match(
                 format!("{desc}. Feature {} doesn't exist.", self.query.feature),
@@ -1010,10 +1272,8 @@ impl Query for FeatureQuery {
         if !score_mode.needs_scores() {
             // Scores are not needed — for faceting, say — and features are
             // stored as terms, so let TermQuery optimise this case.
-            let tq = TermQuery::new(Term::new(
-                &self.field,
-                BytesRef::new(self.feature.as_bytes().to_vec()),
-            ));
+            // `new TermQuery(new Term(fieldName, featureName))`.
+            let tq = TermQuery::new(Term::from_text(&self.field, &self.feature));
             let rewritten = searcher.rewrite(Arc::new(tq))?;
             return rewritten.create_weight(searcher, score_mode, boost);
         }

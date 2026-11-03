@@ -78,14 +78,14 @@ impl IndriQuery {
         visitor.visit_leaf(query);
     }
 
-    /// Clause-list equivalence.
-    ///
-    /// Equivalent to the private `IndriQuery.equalsTo(IndriQuery)`, which
-    /// compares the clause lists.
     /// Compares two Indri queries by their clauses.
     ///
     /// Equivalent to the private `IndriQuery.equalsTo(IndriQuery)`, which
-    /// `equals` calls after `sameClassAs`.
+    /// compares the clause lists, and therefore to
+    /// `IndriQuery.equals(Object)` (`IndriQuery.java:67-69`) minus the
+    /// `sameClassAs` check, which the concrete Indri queries perform
+    /// themselves by downcasting in [`Query::query_eq`](crate::search::Query::query_eq)
+    /// before they call this.
     ///
     /// `IndriQuery` also redeclares `createWeight` as abstract, which adds
     /// nothing to the `Query.createWeight` it already inherits; the concrete

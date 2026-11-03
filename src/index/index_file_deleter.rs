@@ -37,9 +37,10 @@
 //! Java's constructor takes a non-null `IndexWriter` and uses it for exactly
 //! three things: an assertion that the caller holds the writer's monitor
 //! (`locked()`, `IndexFileDeleter.java:94-96`), one info-stream message built
-//! from `writer.segString(...)` (`IndexFileDeleter.java:561`), and
-//! `ensureOpen()`/`isClosed()`, which consult the writer's closed state and
-//! tragic exception (`IndexFileDeleter.java:382-403`).
+//! from `writer.segString(writer.toLiveInfos(segmentInfos))`
+//! (`IndexFileDeleter.java:557-561`), and `ensureOpen()`/`isClosed()`, which
+//! consult the writer's closed state and tragic exception
+//! (`IndexFileDeleter.java:382-403`).
 //!
 //! This type carries no writer field, and the three uses are answered
 //! differently:
@@ -49,17 +50,26 @@
 //!   method here takes `&mut self`.
 //! - [`IndexFileDeleter::ensure_open`] and [`IndexFileDeleter::is_closed`] take
 //!   the writer as an argument instead of reading it from a field.
+//! - [`IndexFileDeleter::new`] and [`IndexFileDeleter::checkpoint`], the two
+//!   places a checkpoint is described, take the writer's rendering of the
+//!   segments ([`WriterSegString`]) as an argument.
 //!
 //! **Divergence from Lucene 10.5.0.** Java's deleter holds a back-reference to
 //! the `IndexWriter` that constructed it. Here the writer owns its deleter *by
 //! value*, inside the state its own mutex guards, so a field pointing back at
 //! the writer would be a reference cycle; the writer is handed in per call
-//! instead. The two methods read exactly what Java reads through that field —
-//! `writer.ensureOpen(false)` and `writer.getTragicException()` — and nothing
-//! else in this module needs the writer, so the divergence is confined to their
-//! two signatures. In Lucene `ensureOpen` is reachable only through `isClosed`,
+//! instead. The calls read exactly what Java reads through that field —
+//! `writer.ensureOpen(false)`, `writer.getTragicException()` and
+//! `writer.segString(writer.toLiveInfos(segmentInfos))` — and nothing else in
+//! this module needs the writer, so the divergence is confined to those
+//! signatures. In Lucene `ensureOpen` is reachable only through `isClosed`,
 //! which only `IndexWriter.isDeleterClosed()` calls, so the caller that has to
-//! supply the argument is the one that already holds the writer.
+//! supply the argument is the one that already holds the writer. The segment
+//! rendering is a function rather than the writer itself because Java's
+//! `segString` and `toLiveInfos` are `synchronized` on the writer and run
+//! while the caller already holds that (reentrant) monitor; the writer's
+//! state mutex is not reentrant, so the caller hands in a function over the
+//! state it already holds.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -82,9 +92,19 @@ const IFD: &str = "IFD";
 
 /// The name of the write lock, which is never reference-counted.
 ///
-/// Equivalent to `IndexWriter.WRITE_LOCK_NAME`. Defined here because
-/// `IndexWriter` is not ported yet; it moves to `IndexWriter` when that lands.
+/// Equivalent to `IndexWriter.WRITE_LOCK_NAME` (`IndexWriter.java:237`). It is
+/// defined in this module, and `IndexWriter` imports it from here.
 pub const WRITE_LOCK_NAME: &str = "write.lock";
+
+/// The writer's rendering of a checkpoint's segments.
+///
+/// Equivalent to the `writer.segString(writer.toLiveInfos(segmentInfos))` that
+/// `IndexFileDeleter.checkpoint` logs (`IndexFileDeleter.java:557-561`): it is
+/// called with the `SegmentInfos` being checkpointed, and only when the `IFD`
+/// component of the info stream is enabled, as Java builds the message only
+/// then. See the module note on the `IndexWriter` seam for why it is an
+/// argument rather than a field.
+pub type WriterSegString<'a> = &'a dyn Fn(&SegmentInfos) -> Result<String>;
 
 /// Radix Lucene encodes segment names and generations in.
 ///
@@ -141,7 +161,7 @@ impl CommitPoint {
     ) -> Result<Arc<Self>> {
         let user_data = segment_infos.user_data().clone();
         let segments_file_name = segment_infos.segments_file_name().ok_or_else(|| {
-            LuceneError::IllegalState(
+            LuceneError::illegal_state(
                 "cannot build a commit point from SegmentInfos with no segments file name"
                     .to_string(),
             )
@@ -335,8 +355,11 @@ impl IndexFileDeleter {
     /// The caller must hold the index write lock: this opens `segments_N` files
     /// directly, with no retry logic.
     ///
-    /// Equivalent to the `IndexFileDeleter(...)` constructor, minus the
-    /// `IndexWriter` argument (see the module docs on the `IndexWriter` seam).
+    /// Equivalent to the `IndexFileDeleter(...)` constructor
+    /// (`IndexFileDeleter.java:105-249`). Its `IndexWriter` argument is
+    /// `writer`, the writer's rendering of the segments the two checkpoints
+    /// this constructor takes describe (`IndexFileDeleter.java:206, 241`); see
+    /// the module docs on the `IndexWriter` seam.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         files: &[String],
@@ -345,6 +368,7 @@ impl IndexFileDeleter {
         policy: Arc<dyn IndexDeletionPolicy>,
         segment_infos: &mut SegmentInfos,
         info_stream: Arc<dyn InfoStream>,
+        writer: WriterSegString<'_>,
         initial_index_exists: bool,
         is_reader_init: bool,
     ) -> Result<Self> {
@@ -411,7 +435,7 @@ impl IndexFileDeleter {
 
                     if last_segment_infos
                         .as_ref()
-                        .map_or(true, |last| sis.generation() > last.generation())
+                        .is_none_or(|last| sis.generation() > last.generation())
                     {
                         last_segment_infos = Some(sis);
                     }
@@ -465,7 +489,7 @@ impl IndexFileDeleter {
         if is_reader_init {
             // The incoming SegmentInfos may hold NRT changes that no commit
             // reflects yet, so its files need protecting too.
-            this.checkpoint(segment_infos, false)?;
+            this.checkpoint(segment_infos, false, writer)?;
         }
 
         // Keep the commit list sorted oldest to newest. Java uses
@@ -489,7 +513,7 @@ impl IndexFileDeleter {
         let to_delete = this.file_deleter.get_unrefed_files();
         for file_name in &to_delete {
             if file_name.starts_with(SEGMENTS) {
-                return Err(LuceneError::IllegalState(format!(
+                return Err(LuceneError::illegal_state(format!(
                     "file \"{file_name}\" has refCount=0, which should never happen on init"
                 )));
             }
@@ -507,7 +531,7 @@ impl IndexFileDeleter {
 
         // Always protect the incoming SegmentInfos: it is not always the most
         // recent commit.
-        this.checkpoint(segment_infos, false)?;
+        this.checkpoint(segment_infos, false, writer)?;
 
         this.starting_commit_deleted = current_commit_point
             .as_ref()
@@ -672,16 +696,29 @@ impl IndexFileDeleter {
     /// true the deletion policy is consulted and any commits it drops have their
     /// files decremented as well.
     ///
-    /// Equivalent to `IndexFileDeleter.checkpoint`.
-    pub fn checkpoint(&mut self, segment_infos: &SegmentInfos, is_commit: bool) -> Result<()> {
+    /// Equivalent to `IndexFileDeleter.checkpoint(SegmentInfos, boolean)`
+    /// (`IndexFileDeleter.java:552-599`). `writer` renders the segments for
+    /// the info-stream message, as Java's
+    /// `writer.segString(writer.toLiveInfos(segmentInfos))` does
+    /// (`IndexFileDeleter.java:557-561`); see the module docs on the
+    /// `IndexWriter` seam.
+    pub fn checkpoint(
+        &mut self,
+        segment_infos: &SegmentInfos,
+        is_commit: bool,
+        writer: WriterSegString<'_>,
+    ) -> Result<()> {
         debug_assert!(self.locked());
+        let t0 = std::time::Instant::now();
         if self.info_stream.is_enabled(IFD) {
-            // Java also logs `writer.segString(...)` here; that part needs
-            // `IndexWriter`, which is not ported yet (see the module docs).
+            // `"now checkpoint \"" + writer.segString(writer.toLiveInfos(segmentInfos))
+            // + "\" [" + segmentInfos.size() + " segments " + "; isCommit = "
+            // + isCommit + "]"` (`IndexFileDeleter.java:557-567`).
+            let segments = writer(segment_infos)?;
             self.info_stream.message(
                 IFD,
                 &format!(
-                    "now checkpoint [{} segments; isCommit = {is_commit}]",
+                    "now checkpoint \"{segments}\" [{} segments ; isCommit = {is_commit}]",
                     segment_infos.size()
                 ),
             );
@@ -703,13 +740,26 @@ impl IndexFileDeleter {
             // Decrement the files of whatever the policy dropped.
             self.delete_commits()?;
         } else {
-            // Decrement the previous checkpoint's files, then remember this
-            // checkpoint's for the next one. `last_files` is cleared even if the
-            // decrement fails, matching Java's try/finally.
+            // DecRef old files from the last checkpoint, if any: `try {
+            // decRef(lastFiles); } finally { lastFiles.clear(); }`
+            // (`IndexFileDeleter.java:584-589`). A failed decrement leaves
+            // `last_files` cleared and propagates before this checkpoint's
+            // files are saved (`IndexFileDeleter.java:591-592`).
             let previous = std::mem::take(&mut self.last_files);
-            let result = self.file_deleter.dec_ref_files(previous);
+            self.file_deleter.dec_ref_files(previous)?;
+
+            // Save files so we can decr on next checkpoint/commit.
             self.last_files.extend(segment_infos.files(false)?);
-            result?;
+        }
+
+        if self.info_stream.is_enabled(IFD) {
+            // `TimeUnit.NANOSECONDS.toMillis(t1 - t0) + " ms to checkpoint"`
+            // (`IndexFileDeleter.java:595-598`), timed from the method's
+            // start (`IndexFileDeleter.java:556`).
+            self.info_stream.message(
+                IFD,
+                &format!("{} ms to checkpoint", t0.elapsed().as_millis()),
+            );
         }
 
         Ok(())
@@ -786,16 +836,18 @@ impl IndexFileDeleter {
     ///
     /// # Errors
     ///
-    /// [`LuceneError::AlreadyClosed`] when the writer is closed, and
-    /// [`LuceneError::IllegalState`] carrying the recorded cause when it hit a
-    /// tragic error.
+    /// [`LuceneError::AlreadyClosed`] when the writer is closed, and also when
+    /// it hit a tragic error, with that error as its cause.
     pub fn ensure_open(&self, writer: &IndexWriter) -> Result<()> {
         writer.ensure_open_with(false)?;
+        // `new AlreadyClosedException("refusing to delete any files: this
+        // IndexWriter hit an unrecoverable exception",
+        // writer.getTragicException())` (`IndexFileDeleter.java:386-390`).
         match writer.get_tragic_exception() {
-            Some(tragedy) => Err(LuceneError::IllegalState(format!(
-                "refusing to delete any files: this IndexWriter hit an unrecoverable exception: \
-                 {tragedy}"
-            ))),
+            Some(tragedy) => Err(LuceneError::already_closed_with_cause(
+                "refusing to delete any files: this IndexWriter hit an unrecoverable exception",
+                tragedy,
+            )),
             None => Ok(()),
         }
     }
@@ -1063,6 +1115,160 @@ mod tests {
         Arc::new(NoOutputInfoStream)
     }
 
+    /// Stands in for the `IndexWriter` the deleter describes its checkpoints
+    /// through: the segment names, as `segString` renders segments that have
+    /// no deletions (without their version and document count).
+    fn names(sis: &SegmentInfos) -> Result<String> {
+        Ok(sis
+            .iter()
+            .map(|info| info.info.name.clone())
+            .collect::<Vec<_>>()
+            .join(" "))
+    }
+
+    /// Records every `IFD` message.
+    #[derive(Debug, Default)]
+    struct RecordingInfoStream {
+        messages: Mutex<Vec<String>>,
+    }
+
+    impl InfoStream for RecordingInfoStream {
+        fn java_class_name(&self) -> &'static str {
+            "org.apache.lucene.tests.util.RecordingInfoStream"
+        }
+
+        fn message(&self, component: &str, message: &str) {
+            if component == IFD {
+                self.messages.lock().unwrap().push(message.to_string());
+            }
+        }
+
+        fn is_enabled(&self, _component: &str) -> bool {
+            true
+        }
+
+        fn close(&self) {}
+    }
+
+    /// The checkpoint message carries the writer's rendering of the
+    /// checkpointed segments, in Java's shape: `"now checkpoint \"" +
+    /// writer.segString(writer.toLiveInfos(segmentInfos)) + "\" [" +
+    /// segmentInfos.size() + " segments " + "; isCommit = " + isCommit + "]"`
+    /// (`IndexFileDeleter.java:557-567`) — note the space before the `;`.
+    #[test]
+    fn checkpoint_message_carries_the_writers_segment_list() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut sis = commit_with(dir.as_ref(), &["_0"], 1);
+        let recording = Arc::new(RecordingInfoStream::default());
+        let files = dir.list_all().unwrap();
+        let mut d = IndexFileDeleter::new(
+            &files,
+            Arc::clone(&dir),
+            Arc::clone(&dir),
+            Arc::new(KeepOnlyLastCommitDeletionPolicy),
+            &mut sis,
+            Arc::clone(&recording) as Arc<dyn InfoStream>,
+            &|sis: &SegmentInfos| Ok(format!("<{}>", names(sis)?)),
+            true,
+            false,
+        )
+        .unwrap();
+        // The constructor's own checkpoint describes the writer's segments.
+        assert!(
+            recording
+                .messages
+                .lock()
+                .unwrap()
+                .contains(&"now checkpoint \"<_0>\" [1 segments ; isCommit = false]".to_string()),
+            "{:?}",
+            recording.messages.lock().unwrap()
+        );
+
+        let next = next_commit(dir.as_ref(), &sis, &["_1"], 2);
+        recording.messages.lock().unwrap().clear();
+        d.checkpoint(&next, true, &|sis: &SegmentInfos| {
+            Ok(format!("<{}>", names(sis)?))
+        })
+        .unwrap();
+        assert_eq!(
+            recording
+                .messages
+                .lock()
+                .unwrap()
+                .first()
+                .map(String::as_str),
+            Some("now checkpoint \"<_1>\" [1 segments ; isCommit = true]")
+        );
+    }
+
+    /// Every checkpoint ends by reporting how long it took:
+    /// `TimeUnit.NANOSECONDS.toMillis(t1 - t0) + " ms to checkpoint"`
+    /// (`IndexFileDeleter.java:595-598`), for a commit and for a plain
+    /// checkpoint alike.
+    #[test]
+    fn checkpoint_reports_how_long_it_took() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut sis = commit_with(dir.as_ref(), &["_0"], 1);
+        let recording = Arc::new(RecordingInfoStream::default());
+        let files = dir.list_all().unwrap();
+        let mut d = IndexFileDeleter::new(
+            &files,
+            Arc::clone(&dir),
+            Arc::clone(&dir),
+            Arc::new(KeepOnlyLastCommitDeletionPolicy),
+            &mut sis,
+            Arc::clone(&recording) as Arc<dyn InfoStream>,
+            &names,
+            true,
+            false,
+        )
+        .unwrap();
+        let is_duration = |message: &str| {
+            message
+                .strip_suffix(" ms to checkpoint")
+                .is_some_and(|ms| !ms.is_empty() && ms.bytes().all(|b| b.is_ascii_digit()))
+        };
+        for (is_commit, segment, counter) in [(true, "_1", 2), (false, "_2", 3)] {
+            let next = next_commit(dir.as_ref(), &sis, &[segment], counter);
+            recording.messages.lock().unwrap().clear();
+            d.checkpoint(&next, is_commit, &names).unwrap();
+            let messages = recording.messages.lock().unwrap();
+            assert!(
+                messages.last().is_some_and(|m| is_duration(m)),
+                "isCommit={is_commit}: {messages:?}"
+            );
+            sis = next;
+        }
+    }
+
+    /// A plain checkpoint whose decrement of the previous checkpoint's files
+    /// fails leaves `lastFiles` cleared and does not record its own files:
+    /// `try { decRef(lastFiles); } finally { lastFiles.clear(); }`, and the
+    /// failure propagates before `lastFiles.addAll(...)`
+    /// (`IndexFileDeleter.java:584-592`).
+    #[test]
+    fn a_failed_checkpoint_decrement_leaves_the_last_files_cleared() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut sis = commit_with(dir.as_ref(), &["_0"], 1);
+        let mut d = deleter(&dir, Arc::new(KeepOnlyLastCommitDeletionPolicy), &mut sis);
+
+        // A checkpoint over `_0` and a new `_1`, which only it references.
+        let mut with_new = sis.clone();
+        with_new.add(make_segment(dir.as_ref(), "_1")).unwrap();
+        d.checkpoint(&with_new, false, &names).unwrap();
+        assert!(d.last_files.iter().any(|f| f == "_1.fdt"));
+
+        // Back to `_0` alone: `_1`'s files drop to zero references and are
+        // deleted, and one of them is already gone.
+        dir.delete_file("_1.fdt").unwrap();
+        let error = d.checkpoint(&sis, false, &names).unwrap_err();
+        assert!(
+            matches!(&error, LuceneError::Io(io) if io.kind() == std::io::ErrorKind::NotFound),
+            "{error:?}"
+        );
+        assert!(d.last_files.is_empty(), "{:?}", d.last_files);
+    }
+
     fn touch(dir: &dyn Directory, name: &str) {
         let mut out = dir
             .create_output(name, &*crate::store::DEFAULT_IO_CONTEXT)
@@ -1089,7 +1295,7 @@ mod tests {
         let data2 = format!("{name}.fdt");
         touch(dir, &data);
         touch(dir, &data2);
-        info.set_files(HashSet::from([data, data2]));
+        info.set_files(HashSet::from([data, data2])).unwrap();
         Lucene99SegmentInfoFormat::new()
             .write(dir, &info, &*crate::store::DEFAULT_IO_CONTEXT)
             .unwrap();
@@ -1140,6 +1346,7 @@ mod tests {
             policy,
             sis,
             info_stream(),
+            &names,
             true,
             false,
         )
@@ -1263,8 +1470,8 @@ mod tests {
         // commits; only the non-commit branch releases `last_files`
         // (IndexFileDeleter.java:583-593), so both steps are needed for the
         // previous generation's files to become collectable.
-        d.checkpoint(&next, false).unwrap();
-        d.checkpoint(&next, true).unwrap();
+        d.checkpoint(&next, false, &names).unwrap();
+        d.checkpoint(&next, true, &names).unwrap();
 
         assert_eq!(d.commits().len(), 1, "policy kept only the newest commit");
         let files = listing(dir.as_ref());
@@ -1286,12 +1493,12 @@ mod tests {
         let mut nrt = sis.clone();
         nrt.add(make_segment(dir.as_ref(), "_5")).unwrap();
 
-        d.checkpoint(&nrt, false).unwrap();
+        d.checkpoint(&nrt, false, &names).unwrap();
         assert_eq!(d.get_ref_count("_5.fdt"), 1, "NRT file is protected");
         assert!(listing(dir.as_ref()).contains("_5.fdt"));
 
         // A later non-commit checkpoint that no longer names `_5` releases it.
-        d.checkpoint(&sis, false).unwrap();
+        d.checkpoint(&sis, false, &names).unwrap();
         assert_eq!(d.get_ref_count("_5.fdt"), 0);
         assert!(
             !listing(dir.as_ref()).contains("_5.fdt"),
@@ -1307,7 +1514,7 @@ mod tests {
 
         let mut nrt = sis.clone();
         nrt.add(make_segment(dir.as_ref(), "_5")).unwrap();
-        d.checkpoint(&nrt, false).unwrap();
+        d.checkpoint(&nrt, false, &names).unwrap();
         assert_eq!(d.get_ref_count("_5.fdt"), 1);
 
         d.close().unwrap();
@@ -1344,8 +1551,8 @@ mod tests {
         // commits; only the non-commit branch releases `last_files`
         // (IndexFileDeleter.java:583-593), so both steps are needed for the
         // previous generation's files to become collectable.
-        d.checkpoint(&next, false).unwrap();
-        d.checkpoint(&next, true).unwrap();
+        d.checkpoint(&next, false, &names).unwrap();
+        d.checkpoint(&next, true, &names).unwrap();
 
         let files = listing(dir.as_ref());
         assert!(
@@ -1386,8 +1593,8 @@ mod tests {
         // commits; only the non-commit branch releases `last_files`
         // (IndexFileDeleter.java:583-593), so both steps are needed for the
         // previous generation's files to become collectable.
-        d.checkpoint(&next, false).unwrap();
-        d.checkpoint(&next, true).unwrap();
+        d.checkpoint(&next, false, &names).unwrap();
+        d.checkpoint(&next, true, &names).unwrap();
 
         let files = listing(dir.as_ref());
         assert!(

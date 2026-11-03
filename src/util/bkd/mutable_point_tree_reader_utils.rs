@@ -5,7 +5,8 @@ use crate::index::point_values::MutablePointTree;
 use crate::util::packed::PackedInts;
 use crate::util::selector::{intro_select, intro_sort, PivotOps, RadixSelector, RadixSelectorOps};
 use crate::util::sorter::{
-    stable_reorder, MSBRadixSorterOps, StableMSBRadixSorter, StableMSBRadixSorterOps,
+    stable_fallback_sort, stable_reorder, MSBRadixSorterOps, StableMSBRadixSorter,
+    StableMSBRadixSorterOps,
 };
 
 use super::BKDConfig;
@@ -32,7 +33,9 @@ pub struct MutablePointTreeReaderUtils;
 impl MutablePointTreeReaderUtils {
     /// Sorts the given [`MutablePointTree`] based on its packed value, then doc ID.
     ///
-    /// Equivalent to `MutablePointTreeReaderUtils.sort`.
+    /// Equivalent to `MutablePointTreeReaderUtils.sort`
+    /// (`MutablePointTreeReaderUtils.java:41-83`); `BKDWriter.writeField1Dim`
+    /// calls it (`BKDWriter.java:613`), as [`BKDWriter`](super::BKDWriter) does.
     ///
     /// # Errors
     ///
@@ -76,9 +79,19 @@ impl MutablePointTreeReaderUtils {
         Ok(())
     }
 
-    /// Sorts points on the given dimension.
+    /// Sorts points on the given dimension, then on the non-index data
+    /// dimensions, then on doc ID.
     ///
-    /// Equivalent to `MutablePointTreeReaderUtils.sortByDim`.
+    /// Equivalent to `MutablePointTreeReaderUtils.sortByDim`
+    /// (`MutablePointTreeReaderUtils.java:88-140`); `BKDWriter.build` calls it on
+    /// every leaf (`BKDWriter.java:1709`), as [`BKDWriter`](super::BKDWriter)
+    /// does.
+    ///
+    /// The comparator skips the other index dimensions, so two points of the
+    /// same document that agree on the sorted dimension and on the data
+    /// dimensions tie while their packed values differ. Which of them the leaf
+    /// writes first is decided by the algorithm, which is why this runs Java's
+    /// unstable `IntroSorter` ([`intro_sort`]) and not any correct sort.
     #[allow(clippy::too_many_arguments)]
     pub fn sort_by_dim(
         config: &BKDConfig,
@@ -111,7 +124,15 @@ impl MutablePointTreeReaderUtils {
     ///
     /// All values on the left must be less than or equal to it and all values on the
     /// right must be greater than or equal to it. Equivalent to
-    /// `MutablePointTreeReaderUtils.partition`.
+    /// `MutablePointTreeReaderUtils.partition`
+    /// (`MutablePointTreeReaderUtils.java:146-241`); `BKDWriter.build` calls it
+    /// on every inner node (`BKDWriter.java:1802`), as
+    /// [`BKDWriter`](super::BKDWriter) does.
+    ///
+    /// The arrangement left within each side is observable: the leaf below
+    /// reads the point at offset `from` to choose its compression dimension, so
+    /// this is a port of Java's `RadixSelector` and its `IntroSelector`
+    /// fallback, not of the contract alone.
     ///
     /// # Errors
     ///
@@ -189,6 +210,14 @@ impl MSBRadixSorterOps for SortOps<'_> {
     ) {
         stable_reorder(self, from, to, start_offsets, end_offsets, k);
     }
+
+    /// `StableMSBRadixSorter.getFallbackSorter(k)`: a stable `MergeSorter`
+    /// over the remaining key bytes (`StableMSBRadixSorter.java:40-72`), not the
+    /// unstable `IntroSorter` of plain `MSBRadixSorter`. Points whose keys tie
+    /// therefore keep their buffer order, as Java's do.
+    fn fallback_sort(&mut self, from: usize, to: usize, k: usize, max_length: usize) {
+        stable_fallback_sort(self, from, to, k, max_length);
+    }
 }
 
 impl StableMSBRadixSorterOps for SortOps<'_> {
@@ -220,13 +249,13 @@ impl PivotOps for SortByDimOps<'_> {
 
     fn set_pivot(&mut self, i: usize) {
         self.pivot.clear();
-        self.pivot.extend_from_slice(self.reader.value(i as i32));
+        self.pivot.extend_from_slice(&self.reader.value(i as i32));
         self.pivot_doc = self.reader.doc_id(i as i32);
     }
 
     fn compare_pivot(&mut self, j: usize) -> i32 {
         self.scratch.clear();
-        self.scratch.extend_from_slice(self.reader.value(j as i32));
+        self.scratch.extend_from_slice(&self.reader.value(j as i32));
         let end = self.start + self.bytes_per_dim;
         let cmp = self.pivot[self.start..end].cmp(&self.scratch[self.start..end]);
         if cmp != std::cmp::Ordering::Equal {
@@ -280,7 +309,7 @@ impl RadixSelectorOps for PartitionOps<'_> {
         self.reader.swap(i as i32, j as i32);
     }
 
-    fn fallback_select(&mut self, from: usize, to: usize, k: usize, d: usize) {
+    fn fallback_select(&mut self, from: usize, to: usize, k: usize, d: usize, _max_length: usize) {
         self.fallback_d = d;
         intro_select(self, from, to, k);
     }
@@ -293,7 +322,7 @@ impl PivotOps for PartitionOps<'_> {
 
     fn set_pivot(&mut self, i: usize) {
         self.pivot.clear();
-        self.pivot.extend_from_slice(self.reader.value(i as i32));
+        self.pivot.extend_from_slice(&self.reader.value(i as i32));
         self.pivot_doc = self.reader.doc_id(i as i32);
     }
 
@@ -310,7 +339,7 @@ impl PivotOps for PartitionOps<'_> {
 
         if k < self.dim_cmp_bytes {
             self.scratch.clear();
-            self.scratch.extend_from_slice(self.reader.value(j as i32));
+            self.scratch.extend_from_slice(&self.reader.value(j as i32));
             let end = dim_start + self.bytes_per_dim;
             let cmp = self.pivot[dim_start..end].cmp(&self.scratch[dim_start..end]);
             if cmp != std::cmp::Ordering::Equal {
@@ -319,7 +348,7 @@ impl PivotOps for PartitionOps<'_> {
         }
         if k < self.data_cmp_bytes {
             self.scratch.clear();
-            self.scratch.extend_from_slice(self.reader.value(j as i32));
+            self.scratch.extend_from_slice(&self.reader.value(j as i32));
             let cmp = self.pivot[data_start..data_end].cmp(&self.scratch[data_start..data_end]);
             if cmp != std::cmp::Ordering::Equal {
                 return ordering_sign(cmp);

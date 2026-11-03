@@ -121,7 +121,7 @@ fn a_terms_enumeration_is_interrupted_mid_iteration() {
     let exitable = ExitableDirectoryReaderWrapper::new(Arc::new(TimeoutAfter::new(2)))
         .wrap(Arc::clone(&reader))
         .expect("wrap as an exitable reader");
-    let leaves = Arc::clone(&exitable).leaves();
+    let leaves = Arc::clone(&exitable).leaves().unwrap();
     let leaf = leaves[0].leaf_reader();
 
     let terms = leaf
@@ -168,7 +168,7 @@ fn a_terms_enumeration_runs_to_completion_when_the_timeout_never_fires() {
     let exitable = ExitableDirectoryReaderWrapper::new(Arc::new(NeverTimesOut))
         .wrap(Arc::clone(&reader))
         .expect("wrap as an exitable reader");
-    let leaves = Arc::clone(&exitable).leaves();
+    let leaves = Arc::clone(&exitable).leaves().unwrap();
     let terms = leaf_terms(&leaves[0].leaf_reader());
 
     let mut enumeration = terms.iterator().expect("an enumeration");
@@ -194,7 +194,7 @@ fn numeric_doc_values_are_interrupted_mid_iteration() {
     let exitable = ExitableDirectoryReaderWrapper::new(Arc::new(TimeoutAfter::new(2)))
         .wrap(Arc::clone(&reader))
         .expect("wrap as an exitable reader");
-    let leaves = Arc::clone(&exitable).leaves();
+    let leaves = Arc::clone(&exitable).leaves().unwrap();
     let leaf = leaves[0].leaf_reader();
 
     let mut values = leaf
@@ -234,7 +234,7 @@ fn the_accessors_check_no_timeout_of_their_own() {
     let exitable = ExitableDirectoryReaderWrapper::new(Arc::new(AlwaysTimesOut))
         .wrap(Arc::clone(&reader))
         .expect("wrap as an exitable reader");
-    let leaves = Arc::clone(&exitable).leaves();
+    let leaves = Arc::clone(&exitable).leaves().unwrap();
     let leaf = leaves[0].leaf_reader();
 
     // Lucene's `ExitableFilterAtomicReader` overrides none of these to check

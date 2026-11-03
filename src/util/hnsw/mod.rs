@@ -265,14 +265,26 @@ pub trait HnswGraph {
     ///
     /// For level 0 this is a dense iterator; otherwise it materializes and
     /// sorts the node list.
-    fn get_sorted_nodes_on_level(&self, level: i32) -> Result<Box<dyn NodesIterator>> {
+    ///
+    /// Equivalent to `HnswGraph#getSortedNodes` (`HnswGraph.java:148-159`).
+    ///
+    /// # Panics
+    ///
+    /// Panics when the level's iterator yields more nodes than its `size()`,
+    /// where Java's array store throws `ArrayIndexOutOfBoundsException`.
+    fn get_sorted_nodes(&self, level: i32) -> Result<Box<dyn NodesIterator>> {
         if level == 0 {
             return Ok(Box::new(DenseNodesIterator::new(self.size())));
         }
         let mut nodes_on_level = self.get_nodes_on_level(level)?;
         let mut sorted_nodes = vec![0i32; nodes_on_level.size() as usize];
-        for n in sorted_nodes.iter_mut() {
-            *n = nodes_on_level.next_int();
+        // Java fills the array while `hasNext()` holds, not `size()` times: an
+        // iterator that yields fewer nodes than it reports leaves zeros in the
+        // tail, and one that yields more overruns the array.
+        let mut n = 0;
+        while nodes_on_level.has_next() {
+            sorted_nodes[n] = nodes_on_level.next_int();
+            n += 1;
         }
         sorted_nodes.sort_unstable();
         Ok(Box::new(ArrayNodesIterator::new(sorted_nodes)))
@@ -282,7 +294,6 @@ pub trait HnswGraph {
 #[cfg(test)]
 mod tests {
     use super::builder::{HnswBuilder, HnswGraphBuilder};
-    use super::merger::{ConcurrentHnswMerger, HnswGraphMerger};
     use super::on_heap::OnHeapHnswGraph;
     use super::scorer::{
         RandomVectorScorer, RandomVectorScorerSupplier, UpdateableRandomVectorScorer,
@@ -290,7 +301,14 @@ mod tests {
     use super::searcher::HnswGraphSearcher;
     use super::util::HnswUtil;
     use super::{HnswGraph, Result};
+    use crate::error::LuceneError;
     use crate::util::hnsw::concurrent_merge_builder::HnswConcurrentMergeBuilder;
+
+    /// A task executor that runs every task on the calling thread, Java's
+    /// `new TaskExecutor(Runnable::run)`.
+    fn same_thread() -> std::sync::Arc<crate::search::TaskExecutor> {
+        std::sync::Arc::new(crate::search::TaskExecutor::same_thread())
+    }
 
     fn dot(a: &[Vec<f32>], i: usize, j: usize) -> f32 {
         a[i].iter().zip(&a[j]).map(|(x, y)| x * y).sum()
@@ -376,7 +394,7 @@ mod tests {
         let mut builder =
             HnswGraphBuilder::create(&supplier, m, beam_width, 42, vectors.len() as i32)?;
         builder.build(vectors.len() as i32)?;
-        Ok(builder.into_graph())
+        builder.into_graph()
     }
 
     #[test]
@@ -388,6 +406,28 @@ mod tests {
         assert!(graph.entry_node().unwrap() >= 0);
         // The graph should be connected (single component on level 0).
         assert!(HnswUtil::is_rooted(&mut graph as &mut dyn HnswGraph).expect("rooted check failed"));
+    }
+
+    /// `HnswGraphSearcher.search(scorer, topK, OnHeapHnswGraph, acceptOrds,
+    /// visitedLimit)` builds `new SparseFixedBitSet(getGraphSize(graph))`
+    /// (`HnswGraphSearcher.java:181-182`), whose constructor refuses a length
+    /// below one (`SparseFixedBitSet.java:63-66`): a graph without nodes throws.
+    #[test]
+    fn search_on_heap_over_a_graph_without_nodes_throws_what_the_bit_set_throws() {
+        let vectors = test_vectors();
+        let graph = OnHeapHnswGraph::new(4, 0);
+        let supplier = TestVectorScorerSupplier::new(vectors);
+        let mut scorer = supplier.scorer().expect("scorer creation failed");
+        scorer.set_scoring_ordinal(0).unwrap();
+        let Err(err) =
+            HnswGraphSearcher::search_on_heap(scorer.as_mut(), 3, &graph, None, i64::MAX)
+        else {
+            panic!("an empty graph must be refused");
+        };
+        assert_eq!(
+            err.to_string(),
+            LuceneError::IllegalArgument("length needs to be >= 1".to_string()).to_string()
+        );
     }
 
     #[test]
@@ -439,7 +479,8 @@ mod tests {
         // directly, so the test does not need a `KnnVectorsReader` to merge from.
         let graph = OnHeapHnswGraph::new(4, merged_vectors.len() as i32);
         let mut builder =
-            HnswConcurrentMergeBuilder::new(2, &supplier, 4, 20, graph, None).expect("builder");
+            HnswConcurrentMergeBuilder::new(same_thread(), 2, &supplier, 4, 20, graph, None)
+                .expect("builder");
         builder
             .build(merged_vectors.len() as i32)
             .expect("merge failed");
@@ -498,8 +539,8 @@ mod tests {
     ///
     /// Java's implementation is
     /// `this.infoStream = infoStream; for (worker : workers) worker.setInfoStream(infoStream);`
-    /// (`HnswConcurrentMergeBuilder.java:131-137`); executing on the calling
-    /// thread means there is one worker here, and it is the one that logs.
+    /// (`HnswConcurrentMergeBuilder.java:131-137`); here each worker is handed
+    /// the stream when its task builds it, and the single worker logs.
     #[test]
     fn concurrent_merge_builder_forwards_the_info_stream_to_its_worker() {
         let vectors = vec![
@@ -512,7 +553,8 @@ mod tests {
         let supplier = TestVectorScorerSupplier::new(vectors.clone());
         let graph = OnHeapHnswGraph::new(4, vectors.len() as i32);
         let mut builder =
-            HnswConcurrentMergeBuilder::new(1, &supplier, 4, 20, graph, None).expect("builder");
+            HnswConcurrentMergeBuilder::new(same_thread(), 1, &supplier, 4, 20, graph, None)
+                .expect("builder");
 
         let stream = std::sync::Arc::new(RecordingInfoStream::default());
         builder.set_info_stream(stream.clone());
@@ -529,6 +571,99 @@ mod tests {
         );
     }
 
+    /// Vector values that only report a size: the mergers under test have no
+    /// source readers, so `merge` never reads the merged vectors.
+    struct SizedValues(i32);
+
+    impl crate::index::vector_values::KnnVectorValues for SizedValues {
+        fn dimension(&self) -> i32 {
+            3
+        }
+
+        fn size(&self) -> i32 {
+            self.0
+        }
+
+        fn encoding(&self) -> crate::index::VectorEncoding {
+            crate::index::VectorEncoding::FLOAT32
+        }
+
+        fn copy(&self) -> Result<Box<dyn crate::index::vector_values::KnnVectorValues>> {
+            Ok(Box::new(SizedValues(self.0)))
+        }
+    }
+
+    fn merger_field_info() -> crate::index::field_infos::FieldInfo {
+        use crate::index::{
+            DocValuesSkipIndexType, DocValuesType, IndexOptions, VectorEncoding,
+            VectorSimilarityFunction,
+        };
+        crate::index::field_infos::FieldInfo::new_full(
+            "v",
+            0,
+            false,
+            false,
+            false,
+            IndexOptions::NONE,
+            DocValuesType::NONE,
+            DocValuesSkipIndexType::NONE,
+            -1,
+            crate::util::java_collections::JavaStringMap::default(),
+            0,
+            0,
+            0,
+            3,
+            VectorEncoding::FLOAT32,
+            VectorSimilarityFunction::DOT_PRODUCT,
+            false,
+            false,
+        )
+        .expect("field info")
+    }
+
+    /// `IncrementalHnswGraphMerger.merge(values, infoStream, maxOrd)` sets the
+    /// stream on the builder before `build` (`IncrementalHnswGraphMerger.java:214-219`),
+    /// and `ConcurrentHnswMerger` inherits that method; the stream must see the
+    /// builder's `HNSW` messages. Positive control: without `set_info_stream`
+    /// the recording stream stays empty (checked by the builder-level control
+    /// below), so a merger that dropped the stream fails these assertions.
+    #[test]
+    fn mergers_pass_the_info_stream_to_the_builder() {
+        use super::incremental_merger::IncrementalHnswGraphMerger;
+        use super::merger::{ConcurrentHnswMerger, HnswGraphMerger};
+        let vectors = vec![
+            vec![1.0f32, 0.0, 0.0],
+            vec![0.0, 1.0, 0.0],
+            vec![0.0, 0.0, 1.0],
+            vec![0.7, 0.7, 0.0],
+        ];
+        let n = vectors.len() as i32;
+        let supplier = || std::sync::Arc::new(TestVectorScorerSupplier::new(vectors.clone()));
+        let values = SizedValues(n);
+
+        let mut incremental =
+            IncrementalHnswGraphMerger::new(merger_field_info(), supplier(), 4, 20);
+        let stream = std::sync::Arc::new(RecordingInfoStream::default());
+        incremental
+            .merge(&values, stream.clone(), n)
+            .expect("merge");
+        let got = stream.messages.lock().expect("lock").clone();
+        assert!(
+            got.iter().any(|m| m.starts_with("HNSW")),
+            "incremental merger must hand the stream to its builder, got {got:?}"
+        );
+
+        let mut concurrent =
+            ConcurrentHnswMerger::new(merger_field_info(), supplier(), 4, 20, same_thread(), 1);
+        let stream = std::sync::Arc::new(RecordingInfoStream::default());
+        concurrent.merge(&values, stream.clone(), n).expect("merge");
+        let got = stream.messages.lock().expect("lock").clone();
+        assert!(
+            got.iter().any(|m| m.starts_with("HNSW")),
+            "concurrent merger must forward the stream to its builder, got {got:?}"
+        );
+    }
+
     /// `finish()` is what `getCompletedGraph()` calls to freeze the workers'
     /// builder, so the graph must be complete and the builder must refuse
     /// further work afterwards.
@@ -542,7 +677,8 @@ mod tests {
         let supplier = TestVectorScorerSupplier::new(vectors.clone());
         let graph = OnHeapHnswGraph::new(4, vectors.len() as i32);
         let mut builder =
-            HnswConcurrentMergeBuilder::new(1, &supplier, 4, 20, graph, None).expect("builder");
+            HnswConcurrentMergeBuilder::new(same_thread(), 1, &supplier, 4, 20, graph, None)
+                .expect("builder");
 
         builder.build(vectors.len() as i32).expect("build");
         // `build` ends in `getCompletedGraph()`, which calls `finish()`.
@@ -552,5 +688,906 @@ mod tests {
         );
         // A frozen builder refuses to build again, exactly as Java's does.
         assert!(builder.build(vectors.len() as i32).is_err());
+    }
+
+    /// A level iterator that reports `size` nodes but yields only `nodes`.
+    struct ShortNodesIterator {
+        nodes: Vec<i32>,
+        size: i32,
+        cur: usize,
+    }
+
+    impl super::NodesIterator for ShortNodesIterator {
+        fn size(&self) -> i32 {
+            self.size
+        }
+
+        fn next_int(&mut self) -> i32 {
+            match self.nodes.get(self.cur) {
+                Some(&node) => {
+                    self.cur += 1;
+                    node
+                }
+                None => crate::search::NO_MORE_DOCS,
+            }
+        }
+
+        fn has_next(&self) -> bool {
+            self.cur < self.nodes.len()
+        }
+
+        fn consume(&mut self, _dest: &mut [i32]) -> usize {
+            unreachable!("getSortedNodes does not consume in bulk")
+        }
+    }
+
+    /// A graph whose upper level is served by [`ShortNodesIterator`].
+    struct ShortLevelGraph;
+
+    impl HnswGraph for ShortLevelGraph {
+        fn seek(&mut self, _level: i32, _target: i32) -> Result<()> {
+            Ok(())
+        }
+
+        fn size(&self) -> i32 {
+            8
+        }
+
+        fn next_neighbor(&mut self) -> Result<i32> {
+            Ok(crate::search::NO_MORE_DOCS)
+        }
+
+        fn num_levels(&self) -> Result<i32> {
+            Ok(2)
+        }
+
+        fn max_conn(&self) -> i32 {
+            4
+        }
+
+        fn entry_node(&self) -> Result<i32> {
+            Ok(7)
+        }
+
+        fn get_nodes_on_level(&self, _level: i32) -> Result<Box<dyn super::NodesIterator>> {
+            Ok(Box::new(ShortNodesIterator {
+                nodes: vec![7, 5],
+                size: 3,
+                cur: 0,
+            }))
+        }
+
+        fn neighbor_count(&self) -> i32 {
+            0
+        }
+    }
+
+    /// `getSortedNodes` fills its array while `hasNext()` holds
+    /// (`HnswGraph.java:152-155`): an iterator reporting three nodes but
+    /// yielding two leaves a zero in the third slot, which sorts first.
+    /// Calling `nextInt()` `size()` times instead would read past the end.
+    #[test]
+    fn get_sorted_nodes_stops_when_the_level_iterator_has_no_next() {
+        let mut sorted = ShortLevelGraph.get_sorted_nodes(1).expect("sorted nodes");
+        assert_eq!(sorted.size(), 3);
+        let nodes: Vec<i32> = (0..3).map(|_| sorted.next_int()).collect();
+        assert_eq!(nodes, vec![0, 5, 7]);
+    }
+
+    /// The number a message prints right before `unit`, e.g. the `12.34` of
+    /// `"... in 12.34 ms"`.
+    fn number_before(message: &str, unit: &str) -> f64 {
+        let end = message
+            .find(unit)
+            .unwrap_or_else(|| panic!("no `{unit}` in {message:?}"));
+        let start = message[..end].trim_end().rfind(' ').map_or(0, |i| i + 1);
+        message[start..end]
+            .trim()
+            .parse()
+            .unwrap_or_else(|_| panic!("no number before `{unit}` in {message:?}"))
+    }
+
+    /// `setMergeStartTimeNs` moves the origin of the progress reports to the
+    /// start of the merge, and `setCumulativeWorkTimeNs` makes each
+    /// `addVectors` chunk add its elapsed time to the shared accumulator —
+    /// exactly the time its own `addVectors` message reports
+    /// (`HnswGraphBuilder.java:102-109,246-275`). Without either, the
+    /// progress origin is the chunk's own start and nothing is accumulated.
+    #[test]
+    fn merge_start_time_and_cumulative_work_time_reach_add_vectors() {
+        use std::sync::atomic::{AtomicI64, Ordering};
+        use std::sync::Arc;
+
+        let vectors = test_vectors();
+        let supplier = TestVectorScorerSupplier::new(vectors.clone());
+        let n = vectors.len() as i32;
+
+        let mut builder = HnswGraphBuilder::create(&supplier, 4, 20, 42, n).expect("builder");
+        let stream = Arc::new(RecordingInfoStream::default());
+        builder.set_info_stream(stream.clone());
+        builder.set_merge_start_time_ns(crate::index::merge_scheduler::now_ns() - 5_000_000_000);
+        let cumulative = Arc::new(AtomicI64::new(0));
+        builder.set_cumulative_work_time_ns(Some(Arc::clone(&cumulative)));
+        builder.add_vectors(0, n).expect("add vectors");
+
+        let messages = stream.messages.lock().expect("lock").clone();
+        let built = messages
+            .iter()
+            .find(|m| m.starts_with("HNSW: built 0 in "))
+            .unwrap_or_else(|| panic!("no progress report in {messages:?}"));
+        assert!(
+            number_before(built, " ms") >= 5000.0,
+            "progress must be measured from the merge start: {built}"
+        );
+        let added = messages
+            .iter()
+            .find(|m| m.starts_with(&format!("HNSW: addVectors [0 {n}): {n} vectors in ")))
+            .unwrap_or_else(|| panic!("no addVectors report in {messages:?}"));
+        let accumulated = cumulative.load(Ordering::Relaxed);
+        assert!(accumulated > 0, "the chunk's time must be accumulated");
+        assert_eq!(
+            format!("{:.2} ms", accumulated as f64 / 1_000_000.0),
+            added.rsplit(" in ").next().unwrap(),
+            "the accumulator holds exactly the time the chunk reports"
+        );
+
+        // The defaults: progress from the chunk's own start, no accumulator.
+        let mut plain = HnswGraphBuilder::create(&supplier, 4, 20, 42, n).expect("builder");
+        let plain_stream = Arc::new(RecordingInfoStream::default());
+        plain.set_info_stream(plain_stream.clone());
+        plain.add_vectors(0, n).expect("add vectors");
+        let plain_messages = plain_stream.messages.lock().expect("lock").clone();
+        let plain_built = plain_messages
+            .iter()
+            .find(|m| m.starts_with("HNSW: built 0 in "))
+            .expect("progress report");
+        assert!(number_before(plain_built, " ms") < 5000.0, "{plain_built}");
+    }
+
+    /// The concurrent merge sets both on its workers and reports the merge
+    /// as a whole, with the two messages of
+    /// `HnswConcurrentMergeBuilder.java:85-121`. The task executor here runs
+    /// every worker on the calling thread, one after the other, so the
+    /// cumulative worker time cannot exceed the wall clock and the effective
+    /// concurrency is at most `1x`.
+    #[test]
+    fn concurrent_merge_reports_the_merge_with_its_cumulative_worker_time() {
+        let vectors = test_vectors();
+        let n = vectors.len() as i32;
+        let supplier = TestVectorScorerSupplier::new(vectors.clone());
+        let graph = OnHeapHnswGraph::new(4, n);
+        let mut builder =
+            HnswConcurrentMergeBuilder::new(same_thread(), 2, &supplier, 4, 20, graph, None)
+                .expect("builder");
+        builder.set_batch_size(3);
+        let stream = std::sync::Arc::new(RecordingInfoStream::default());
+        builder.set_info_stream(stream.clone());
+        builder.build(n).expect("build");
+
+        let messages = stream.messages.lock().expect("lock").clone();
+        assert_eq!(
+            messages.first().map(String::as_str),
+            Some(format!("HNSW: build graph from {n} vectors, with 2 workers").as_str()),
+            "{messages:?}"
+        );
+        let completed = messages.last().expect("messages");
+        assert!(
+            completed.starts_with(&format!("HNSW: merge completed: {n} vectors, ")),
+            "{messages:?}"
+        );
+        let wall = number_before(completed, " ms wall clock");
+        let worker = number_before(completed, " ms cumulative worker time");
+        let concurrency = number_before(completed, "x effective concurrency");
+        assert!(worker > 0.0, "{completed}");
+        assert!(worker <= wall + 0.01, "{completed}");
+        assert!(concurrency <= 1.0, "{completed}");
+        // Four chunks of at most three vectors each, every one reported.
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|m| m.starts_with("HNSW: addVectors ["))
+                .count(),
+            4,
+            "{messages:?}"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // HnswConcurrentMergeBuilder on a real thread pool
+    // -------------------------------------------------------------------------
+
+    use std::collections::HashSet;
+    use std::sync::{Arc, Mutex};
+    use std::thread::ThreadId;
+
+    /// An executor that runs every command on a thread of its own, so that a
+    /// forked worker really runs off the calling thread.
+    struct ThreadPerTask;
+
+    impl crate::search::Executor for ThreadPerTask {
+        fn execute(
+            &self,
+            command: crate::search::Command,
+        ) -> std::result::Result<(), crate::search::RejectedExecutionException> {
+            std::thread::spawn(command);
+            Ok(())
+        }
+    }
+
+    fn thread_pool() -> Arc<crate::search::TaskExecutor> {
+        Arc::new(crate::search::TaskExecutor::new(Arc::new(ThreadPerTask)))
+    }
+
+    /// `n` unit vectors of dimension `dim`, from a fixed SplitMix64 stream.
+    fn random_unit_vectors(n: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
+        let mut state = seed;
+        let mut next = move || {
+            state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            z ^= z >> 31;
+            (z >> 40) as f32 / (1u64 << 24) as f32 - 0.5
+        };
+        (0..n)
+            .map(|_| {
+                let v: Vec<f32> = (0..dim).map(|_| next()).collect();
+                let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+                v.into_iter().map(|x| x / norm).collect()
+            })
+            .collect()
+    }
+
+    /// Lucene's `DOT_PRODUCT` similarity of two unit vectors, `(1 + dot) / 2`,
+    /// which keeps every score non-negative as Lucene's similarities do.
+    fn dot_product_score(a: &[f32], b: &[f32]) -> f32 {
+        (1.0 + a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>()) / 2.0
+    }
+
+    /// A dot-product scorer that records, on its first score, the thread
+    /// that uses it.
+    struct RecordingScorer {
+        vectors: Arc<Vec<Vec<f32>>>,
+        query: Vec<f32>,
+        threads: Arc<Mutex<HashSet<ThreadId>>>,
+        recorded: bool,
+        start_latch: Option<Arc<StartLatch>>,
+    }
+
+    /// A latch every worker's first score waits on until `parties` workers
+    /// have arrived, so that no worker can drain the batches before the
+    /// others have started. It gives up after a minute, so that a merge whose
+    /// workers cannot all run at once fails its assertions instead of hanging.
+    struct StartLatch {
+        parties: usize,
+        arrived: Mutex<usize>,
+        all_arrived: std::sync::Condvar,
+    }
+
+    impl StartLatch {
+        fn new(parties: usize) -> Self {
+            Self {
+                parties,
+                arrived: Mutex::new(0),
+                all_arrived: std::sync::Condvar::new(),
+            }
+        }
+
+        fn arrive_and_wait(&self) {
+            let mut arrived = self.arrived.lock().expect("latch");
+            *arrived += 1;
+            self.all_arrived.notify_all();
+            let _ = self
+                .all_arrived
+                .wait_timeout_while(arrived, std::time::Duration::from_secs(60), |n| {
+                    *n < self.parties
+                })
+                .expect("latch");
+        }
+    }
+
+    impl RandomVectorScorer for RecordingScorer {
+        fn score(&mut self, node: i32) -> Result<f32> {
+            if !self.recorded {
+                self.recorded = true;
+                self.threads
+                    .lock()
+                    .expect("the thread log is not poisoned")
+                    .insert(std::thread::current().id());
+                if let Some(latch) = &self.start_latch {
+                    latch.arrive_and_wait();
+                }
+            }
+            Ok(dot_product_score(&self.vectors[node as usize], &self.query))
+        }
+
+        fn max_ord(&self) -> i32 {
+            self.vectors.len() as i32
+        }
+    }
+
+    impl UpdateableRandomVectorScorer for RecordingScorer {
+        fn set_scoring_ordinal(&mut self, node: i32) -> Result<()> {
+            self.query.clone_from(&self.vectors[node as usize]);
+            Ok(())
+        }
+    }
+
+    /// A supplier whose scorers record the threads that score with them.
+    struct RecordingSupplier {
+        vectors: Arc<Vec<Vec<f32>>>,
+        threads: Arc<Mutex<HashSet<ThreadId>>>,
+        start_latch: Option<Arc<StartLatch>>,
+    }
+
+    impl RandomVectorScorerSupplier for RecordingSupplier {
+        fn scorer(&self) -> Result<Box<dyn UpdateableRandomVectorScorer>> {
+            Ok(Box::new(RecordingScorer {
+                vectors: Arc::clone(&self.vectors),
+                query: vec![0.0; self.vectors[0].len()],
+                threads: Arc::clone(&self.threads),
+                recorded: false,
+                start_latch: self.start_latch.clone(),
+            }))
+        }
+
+        fn copy(&self) -> Result<Box<dyn RandomVectorScorerSupplier>> {
+            Ok(Box::new(Self {
+                vectors: Arc::clone(&self.vectors),
+                threads: Arc::clone(&self.threads),
+                start_latch: self.start_latch.clone(),
+            }))
+        }
+    }
+
+    /// Merges `vectors` with `num_worker` workers on `executor` and returns
+    /// the graph together with the threads that scored.
+    fn concurrent_merge(
+        executor: Arc<crate::search::TaskExecutor>,
+        vectors: &Arc<Vec<Vec<f32>>>,
+        num_worker: i32,
+        batch_size: i32,
+    ) -> (OnHeapHnswGraph, HashSet<ThreadId>) {
+        concurrent_merge_with_latch(executor, vectors, num_worker, batch_size, None)
+    }
+
+    /// As [`concurrent_merge`], each worker's first score waiting on
+    /// `start_latch` when one is given.
+    fn concurrent_merge_with_latch(
+        executor: Arc<crate::search::TaskExecutor>,
+        vectors: &Arc<Vec<Vec<f32>>>,
+        num_worker: i32,
+        batch_size: i32,
+        start_latch: Option<Arc<StartLatch>>,
+    ) -> (OnHeapHnswGraph, HashSet<ThreadId>) {
+        let threads = Arc::new(Mutex::new(HashSet::new()));
+        let supplier = RecordingSupplier {
+            vectors: Arc::clone(vectors),
+            threads: Arc::clone(&threads),
+            start_latch,
+        };
+        let n = vectors.len() as i32;
+        let mut builder = HnswConcurrentMergeBuilder::new(
+            executor,
+            num_worker,
+            &supplier,
+            16,
+            100,
+            OnHeapHnswGraph::new(16, n),
+            None,
+        )
+        .expect("builder");
+        builder.set_batch_size(batch_size);
+        builder.build(n).expect("build");
+        let graph = Box::new(builder)
+            .into_completed_graph()
+            .expect("completed graph");
+        let threads = threads.lock().expect("thread log").clone();
+        (graph, threads)
+    }
+
+    /// Checks what every HNSW graph must satisfy: `n` nodes, each present on
+    /// level 0; every neighbour a valid, distinct node other than its owner
+    /// that exists on the same level; at most `2M` neighbours on level 0 and
+    /// `M` above; every node of an upper level present on all levels below;
+    /// and an entry node on the top level.
+    fn assert_graph_is_well_formed(graph: &OnHeapHnswGraph, n: i32, m: i32) {
+        assert_eq!(HnswGraph::size(graph), n);
+        let num_levels = graph.num_levels().expect("levels");
+        let entry = graph.entry_node().expect("entry node");
+        assert!(graph.node_exists_at_level(num_levels - 1, entry));
+        for level in 0..num_levels {
+            let max_conn = if level == 0 { 2 * m } else { m };
+            let mut nodes = graph.get_nodes_on_level(level).expect("nodes on level");
+            let mut count = 0;
+            while nodes.has_next() {
+                let node = nodes.next_int();
+                count += 1;
+                for lower in 0..level {
+                    assert!(
+                        graph.node_exists_at_level(lower, node),
+                        "node {node} is on level {level} but not on level {lower}"
+                    );
+                }
+                let neighbors = graph.get_neighbors(level, node).expect("neighbours");
+                assert!(neighbors.size() <= max_conn, "node {node} level {level}");
+                let mut seen = HashSet::new();
+                for nbr in neighbors.nodes() {
+                    assert!((0..n).contains(&nbr), "node {node} links to {nbr}");
+                    assert_ne!(nbr, node, "self-link on level {level}");
+                    assert!(seen.insert(nbr), "node {node} links twice to {nbr}");
+                    assert!(
+                        graph.node_exists_at_level(level, nbr),
+                        "node {node} links on level {level} to {nbr}, which is not there"
+                    );
+                }
+            }
+            if level == 0 {
+                assert_eq!(count, n);
+            }
+        }
+    }
+
+    /// Mean recall@10 of `graph` over `queries`, against exact search: each
+    /// query searches the graph with a beam of `fanout` and keeps its ten
+    /// best results.
+    fn recall_at_10(
+        graph: &OnHeapHnswGraph,
+        vectors: &Arc<Vec<Vec<f32>>>,
+        queries: &[Vec<f32>],
+        fanout: i32,
+    ) -> f64 {
+        let k = 10usize;
+        let mut hits = 0usize;
+        for query in queries {
+            let score = |v: &Vec<f32>| dot_product_score(v, query);
+            let mut exact: Vec<(usize, f32)> = vectors
+                .iter()
+                .enumerate()
+                .map(|(i, v)| (i, score(v)))
+                .collect();
+            exact.sort_by(|a, b| b.1.total_cmp(&a.1));
+            let truth: HashSet<i32> = exact[..k].iter().map(|(i, _)| *i as i32).collect();
+            let mut scorer = RecordingScorer {
+                vectors: Arc::clone(vectors),
+                query: query.clone(),
+                threads: Arc::new(Mutex::new(HashSet::new())),
+                recorded: false,
+                start_latch: None,
+            };
+            let mut found: Vec<(i32, f32)> =
+                HnswGraphSearcher::search_on_heap(&mut scorer, fanout, graph, None, i64::MAX)
+                    .expect("search")
+                    .nodes()
+                    .into_iter()
+                    .map(|node| (node, score(&vectors[node as usize])))
+                    .collect();
+            found.sort_by(|a, b| b.1.total_cmp(&a.1));
+            hits += found
+                .iter()
+                .take(k)
+                .filter(|(node, _)| truth.contains(node))
+                .count();
+        }
+        hits as f64 / (queries.len() * k) as f64
+    }
+
+    /// With a pooled executor and several workers, Java's
+    /// `taskExecutor.invokeAll(futures)` runs the workers on the pool
+    /// (`HnswConcurrentMergeBuilder.java:94-103`): every worker must score on
+    /// a thread of its own.
+    ///
+    /// Each worker's first score waits until all four have reached theirs.
+    /// There are far more batches than workers, so every worker holds a batch
+    /// by then, and none can drain the work before the others start. Run
+    /// sequentially on the calling thread, the first worker alone reaches the
+    /// latch, which gives up after a minute, and the test fails.
+    #[test]
+    fn concurrent_merge_runs_its_workers_on_the_executor_threads() {
+        let vectors = Arc::new(random_unit_vectors(3000, 16, 7));
+        let latch = Arc::new(StartLatch::new(4));
+        let (graph, threads) =
+            concurrent_merge_with_latch(thread_pool(), &vectors, 4, 32, Some(latch));
+        let caller = std::thread::current().id();
+        assert_eq!(
+            threads.len(),
+            4,
+            "each worker scores on its own thread: {threads:?}"
+        );
+        assert!(
+            threads.iter().any(|id| *id != caller),
+            "every worker scored on the calling thread: {threads:?}"
+        );
+        assert_graph_is_well_formed(&graph, 3000, 16);
+    }
+
+    /// On a same-thread executor with one worker, the concurrent merge
+    /// inserts every node in order with a level generator seeded with
+    /// `randSeed`, exactly as `HnswGraphBuilder.create(.., 42, n).build(n)`
+    /// does, so the two graphs are identical — whatever the batch size, and
+    /// even with four workers, since the first one then drains every batch.
+    #[test]
+    fn a_same_thread_merge_matches_the_single_threaded_build() {
+        let vectors = Arc::new(random_unit_vectors(2000, 16, 53));
+        let n = vectors.len() as i32;
+        let supplier = RecordingSupplier {
+            vectors: Arc::clone(&vectors),
+            threads: Arc::new(Mutex::new(HashSet::new())),
+            start_latch: None,
+        };
+        let mut builder = HnswGraphBuilder::create(&supplier, 16, 100, 42, n).expect("builder");
+        builder.build(n).expect("build");
+        let expected = neighbour_lists(&builder.into_graph().expect("graph"));
+        for (workers, batch) in [(1, 2048), (1, 64), (4, 64)] {
+            let (merged, _) = concurrent_merge(same_thread(), &vectors, workers, batch);
+            assert_eq!(
+                neighbour_lists(&merged),
+                expected,
+                "{workers} worker(s), batch {batch}"
+            );
+        }
+    }
+
+    /// A merge built by four workers on a pool is a well-formed graph whose
+    /// recall@10 is within 0.01 of the single-worker merge's, on a fixed
+    /// corpus and fixed queries.
+    ///
+    /// The queries search with a beam of 50. With a beam of 10 the measure is
+    /// dominated by which graph instance was drawn, not by how it was built:
+    /// on this corpus single-threaded builds seeded 42 and 1..=7 alone span
+    /// recall 0.749..=0.773, wider than the bound, while with a beam of 50
+    /// the single-worker and four-worker merges measured 0.9917 and
+    /// 0.9907..=0.9927 over six runs.
+    #[test]
+    fn concurrent_merge_on_a_pool_matches_the_single_worker_recall() {
+        let vectors = Arc::new(random_unit_vectors(4000, 32, 11));
+        let queries = random_unit_vectors(300, 32, 12);
+        let (single, _) = concurrent_merge(same_thread(), &vectors, 1, 2048);
+        let (pooled, threads) = concurrent_merge(thread_pool(), &vectors, 4, 64);
+        assert!(threads.len() >= 2, "{threads:?}");
+        assert_graph_is_well_formed(&single, 4000, 16);
+        assert_graph_is_well_formed(&pooled, 4000, 16);
+        let single_recall = recall_at_10(&single, &vectors, &queries, 50);
+        let pooled_recall = recall_at_10(&pooled, &vectors, &queries, 50);
+        assert!(
+            (single_recall - pooled_recall).abs() <= 0.01,
+            "single-worker recall {single_recall}, four-worker recall {pooled_recall}"
+        );
+    }
+
+    /// Many workers fighting over small batches, many times over, must
+    /// neither deadlock nor panic, and must always produce a well-formed
+    /// graph. Each merge runs under a watchdog, so a deadlock fails the test
+    /// instead of hanging it.
+    #[test]
+    fn concurrent_merge_with_many_workers_neither_deadlocks_nor_panics() {
+        let vectors = Arc::new(random_unit_vectors(1500, 8, 23));
+        for round in 0..20 {
+            let vectors = Arc::clone(&vectors);
+            let (sender, receiver) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let (graph, threads) = concurrent_merge(thread_pool(), &vectors, 16, 8);
+                let _ = sender.send((graph, threads));
+            });
+            let (graph, threads) = receiver
+                .recv_timeout(std::time::Duration::from_secs(120))
+                .unwrap_or_else(|e| panic!("round {round}: the merge did not finish: {e}"));
+            assert!(threads.len() >= 2, "round {round}: {threads:?}");
+            assert_graph_is_well_formed(&graph, 1500, 16);
+        }
+    }
+
+    /// Every neighbour list of `graph`, level by level, node by node.
+    fn neighbour_lists(graph: &OnHeapHnswGraph) -> Vec<Vec<Vec<i32>>> {
+        (0..graph.num_levels().expect("levels"))
+            .map(|level| {
+                let mut nodes = graph.get_nodes_on_level(level).expect("nodes");
+                let mut lists = Vec::new();
+                while nodes.has_next() {
+                    let node = nodes.next_int();
+                    lists.push(graph.get_neighbors(level, node).expect("nbrs").nodes());
+                }
+                lists
+            })
+            .collect()
+    }
+
+    /// `InitializedHnswGraphBuilder` overrides `addGraphNode(int)` to return
+    /// early for a node the initializer graph already placed, and inherits
+    /// `build`, so building over a fully initialized graph adds nothing
+    /// (`InitializedHnswGraphBuilder.java:446-452`, `HnswGraphBuilder.java:217-226`).
+    #[test]
+    fn initialized_builder_build_skips_the_initialized_nodes() {
+        let vectors = Arc::new(random_unit_vectors(200, 8, 31));
+        let n = vectors.len() as i32;
+        let supplier = RecordingSupplier {
+            vectors: Arc::clone(&vectors),
+            threads: Arc::new(Mutex::new(HashSet::new())),
+            start_latch: None,
+        };
+        let mut source = HnswGraphBuilder::create(&supplier, 16, 100, 42, n).expect("builder");
+        source.build(n).expect("build");
+        let mut source = source.into_graph().expect("graph");
+        let identity: Vec<i32> = (0..n).collect();
+        let mut initialized = crate::util::FixedBitSet::new(n as usize);
+        for node in 0..n as usize {
+            initialized.set(node);
+        }
+        let mut builder = super::InitializedHnswGraphBuilder::from_graph(
+            &supplier,
+            100,
+            42,
+            &mut source,
+            &identity,
+            Some(initialized),
+            n,
+        )
+        .expect("initialized builder");
+        let before = neighbour_lists(builder.get_graph());
+        builder.build(n).expect("build");
+        assert_eq!(
+            neighbour_lists(builder.get_graph()),
+            before,
+            "build must not re-insert a node the initializer graph placed"
+        );
+    }
+
+    /// A scorer returning the raw dot product, negative for vectors more than
+    /// a right angle apart.
+    struct RawDotScorer {
+        vectors: Arc<Vec<Vec<f32>>>,
+        query: Vec<f32>,
+    }
+
+    impl RandomVectorScorer for RawDotScorer {
+        fn score(&mut self, node: i32) -> Result<f32> {
+            Ok(self.vectors[node as usize]
+                .iter()
+                .zip(&self.query)
+                .map(|(a, b)| a * b)
+                .sum())
+        }
+
+        fn max_ord(&self) -> i32 {
+            self.vectors.len() as i32
+        }
+    }
+
+    impl UpdateableRandomVectorScorer for RawDotScorer {
+        fn set_scoring_ordinal(&mut self, node: i32) -> Result<()> {
+            self.query.clone_from(&self.vectors[node as usize]);
+            Ok(())
+        }
+    }
+
+    struct RawDotSupplier(Arc<Vec<Vec<f32>>>);
+
+    impl RandomVectorScorerSupplier for RawDotSupplier {
+        fn scorer(&self) -> Result<Box<dyn UpdateableRandomVectorScorer>> {
+            Ok(Box::new(RawDotScorer {
+                vectors: Arc::clone(&self.0),
+                query: vec![0.0; self.0[0].len()],
+            }))
+        }
+
+        fn copy(&self) -> Result<Box<dyn RandomVectorScorerSupplier>> {
+            Ok(Box::new(Self(Arc::clone(&self.0))))
+        }
+    }
+
+    /// Negative scores order as Java's signed `long` encoding orders them, so
+    /// building over a scorer that yields them keeps every candidate list in
+    /// score order: with debug assertions on, `NeighborArray::add_in_order`
+    /// panicked here while the queue compared the encoded arcs unsigned.
+    #[test]
+    fn graph_builds_over_negative_scores() {
+        let vectors = Arc::new(random_unit_vectors(500, 8, 41));
+        let n = vectors.len() as i32;
+        let supplier = RawDotSupplier(Arc::clone(&vectors));
+        let mut builder = HnswGraphBuilder::create(&supplier, 16, 100, 42, n).expect("builder");
+        builder.build(n).expect("build");
+        let graph = builder.into_graph().expect("graph");
+        assert_graph_is_well_formed(&graph, n, 16);
+    }
+
+    /// Java's `InitializedHnswGraphBuilder` overrides only `addGraphNode(int)`;
+    /// the inherited `addGraphNode(int, IntHashSet)` inserts the node even
+    /// when the initializer graph already placed it.
+    #[test]
+    fn initialized_builder_adds_an_initialized_node_given_entry_points() {
+        let vectors = Arc::new(random_unit_vectors(200, 8, 31));
+        let n = vectors.len() as i32;
+        let supplier = RecordingSupplier {
+            vectors: Arc::clone(&vectors),
+            threads: Arc::new(Mutex::new(HashSet::new())),
+            start_latch: None,
+        };
+        let mut source = HnswGraphBuilder::create(&supplier, 16, 100, 42, n).expect("builder");
+        source.build(n).expect("build");
+        let mut source = source.into_graph().expect("graph");
+        let identity: Vec<i32> = (0..n).collect();
+        let mut initialized = crate::util::FixedBitSet::new(n as usize);
+        for node in 0..n as usize {
+            initialized.set(node);
+        }
+        let mut builder = super::InitializedHnswGraphBuilder::from_graph(
+            &supplier,
+            100,
+            42,
+            &mut source,
+            &identity,
+            Some(initialized),
+            n,
+        )
+        .expect("initialized builder");
+        let before = neighbour_lists(builder.get_graph());
+        builder.add_graph_node(0).expect("add");
+        assert_eq!(
+            neighbour_lists(builder.get_graph()),
+            before,
+            "addGraphNode(int) skips"
+        );
+        let mut eps = crate::internal::hppc::IntHashSet::new();
+        eps.add(1);
+        builder
+            .add_graph_node_with_eps(0, &eps)
+            .expect("add with eps");
+        assert_ne!(
+            neighbour_lists(builder.get_graph()),
+            before,
+            "addGraphNode(int, IntHashSet) inserts the node again"
+        );
+    }
+
+    /// A worker that adds a level twice is refused, and the refused call
+    /// creates no neighbour array, so the graph's memory is not charged.
+    #[test]
+    fn add_node_shared_refuses_a_set_slot_without_charging_memory() {
+        use crate::util::Accountable;
+        let graph = OnHeapHnswGraph::new(4, 2);
+        graph.add_node_shared(0, 0).expect("first add");
+        let charged = graph.ram_bytes_used();
+        assert!(matches!(
+            graph.add_node_shared(0, 0),
+            Err(crate::error::LuceneError::IllegalState { .. })
+        ));
+        assert_eq!(graph.ram_bytes_used(), charged);
+        assert_eq!(HnswGraph::size(&graph), 1);
+    }
+
+    /// Holds `hold` while `run` executes on another thread, and reports
+    /// whether `run` was still blocked 300 ms in, and whether it finished
+    /// once `hold` was released.
+    fn blocks_until_released<G, H, R>(hold: H, run: R) -> (bool, bool)
+    where
+        H: FnOnce() -> G,
+        R: FnOnce() + Send,
+    {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let guard = hold();
+            scope.spawn(move || {
+                run();
+                let _ = done_tx.send(());
+            });
+            let blocked = done_rx
+                .recv_timeout(std::time::Duration::from_millis(300))
+                .is_err();
+            drop(guard);
+            let finished = blocked
+                && done_rx
+                    .recv_timeout(std::time::Duration::from_secs(30))
+                    .is_ok();
+            (blocked, finished)
+        })
+    }
+
+    /// `HnswConcurrentMergeBuilder.MergeSearcher.graphSeek` copies a
+    /// neighbour list under `hnswLock.read(level, targetNode)`
+    /// (`HnswConcurrentMergeBuilder.java:250-263`): a reader with the lock
+    /// waits while another worker holds the stripe's write lock. A builder
+    /// without a lock — Java's `hnswLock == null` — reads without waiting.
+    #[test]
+    fn the_merge_searcher_copies_a_neighbour_list_under_its_read_lock() {
+        use super::on_heap::OnHeapGraphReader;
+        use super::HnswLock;
+        let graph = OnHeapHnswGraph::new(4, 2);
+        graph.add_node_shared(0, 0).unwrap();
+        graph.add_node_shared(0, 1).unwrap();
+        graph
+            .get_neighbors(0, 0)
+            .unwrap()
+            .add_in_order(1, 0.5)
+            .unwrap();
+        let lock = HnswLock::new();
+        let (blocked, finished) = blocks_until_released(
+            || lock.write(0, 0),
+            || {
+                let mut buffer = Vec::new();
+                let mut reader = OnHeapGraphReader::new(&graph, Some(&lock), &mut buffer);
+                reader.seek(0, 0).unwrap();
+                assert_eq!(reader.next_neighbor().unwrap(), 1);
+            },
+        );
+        assert!(blocked, "the seek waits for the stripe's write lock");
+        assert!(finished, "the seek completes once the stripe is released");
+
+        let _held = lock.write(0, 0);
+        let mut buffer = Vec::new();
+        let mut reader = OnHeapGraphReader::new(&graph, None, &mut buffer);
+        reader.seek(0, 0).unwrap();
+        assert_eq!(reader.next_neighbor().unwrap(), 1);
+    }
+
+    /// `HnswGraphBuilder.addDiverseNeighbors` links the new node back into a
+    /// neighbour's array under `hnswLock.write(level, nbr)` when the builder
+    /// has a lock (`HnswGraphBuilder.java:432-444`): the link waits while a
+    /// searching worker holds the stripe's read lock.
+    #[test]
+    fn a_worker_links_back_under_the_neighbours_write_lock() {
+        use super::HnswLock;
+        use super::NeighborArray;
+        use std::sync::Arc;
+        let supplier = TestVectorScorerSupplier::new(test_vectors());
+        let graph = Arc::new(OnHeapHnswGraph::new(4, 3));
+        for node in 0..3 {
+            graph.add_node_shared(0, node).unwrap();
+        }
+        let lock = Arc::new(HnswLock::new());
+        let (blocked, finished) = blocks_until_released(
+            || lock.read(0, 1),
+            || {
+                let mut builder = HnswGraphBuilder::with_shared_graph(
+                    supplier.scorer().unwrap(),
+                    4,
+                    20,
+                    42,
+                    Arc::clone(&graph),
+                    Some(Arc::clone(&lock)),
+                )
+                .unwrap();
+                let candidates = NeighborArray::new(10, false);
+                candidates.add_in_order(1, 0.5).unwrap();
+                builder
+                    .add_diverse_neighbors(0, 2, &candidates, false)
+                    .unwrap();
+            },
+        );
+        assert!(blocked, "the back-link waits for the stripe's read lock");
+        assert!(
+            finished,
+            "the back-link completes once the stripe is released"
+        );
+        assert_eq!(graph.get_neighbors(0, 2).unwrap().nodes(), vec![1]);
+        assert_eq!(graph.get_neighbors(0, 1).unwrap().nodes(), vec![2]);
+    }
+
+    /// `HnswConcurrentMergeBuilder` creates one `HnswLock` and hands it to
+    /// every worker (`HnswConcurrentMergeBuilder.java:63-75, 182-194`): with
+    /// every stripe write-locked, the workers' searches wait.
+    #[test]
+    fn the_concurrent_merge_hands_its_lock_to_the_workers() {
+        let vectors = test_vectors();
+        let supplier = TestVectorScorerSupplier::new(vectors.clone());
+        let graph = OnHeapHnswGraph::new(4, vectors.len() as i32);
+        let mut builder =
+            HnswConcurrentMergeBuilder::new(same_thread(), 1, &supplier, 4, 20, graph, None)
+                .expect("builder");
+        let lock = std::sync::Arc::clone(builder.hnsw_lock());
+        let n = vectors.len() as i32;
+        let (blocked, finished) = blocks_until_released(
+            || {
+                // Level 0 node `i` hashes to stripe `i`, so these are all 512.
+                (0..512).map(|node| lock.write(0, node)).collect::<Vec<_>>()
+            },
+            || {
+                builder.build(n).expect("build");
+            },
+        );
+        assert!(blocked, "the workers wait for the stripes");
+        assert!(
+            finished,
+            "the build completes once the stripes are released"
+        );
     }
 }

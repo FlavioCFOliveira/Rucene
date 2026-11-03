@@ -29,9 +29,10 @@ use rucene::analysis::tokenattributes::{
     PayloadAttributeImpl, PositionIncrementAttribute,
 };
 use rucene::analysis::{default_token_attribute_factory, Analyzer, StandardAnalyzer, TokenStream};
+use rucene::codecs::state::SegmentWriteState;
 use rucene::codecs::{register_codec, Codec, Lucene104Codec};
 use rucene::document::{Document, Field, FieldType};
-use rucene::index::documents_writer::{IndexingChain, IndexingChainFlushState};
+use rucene::index::documents_writer::{BufferedUpdates, IndexingChain};
 use rucene::index::field_infos::{FieldInfosBuilder, FieldNumbers};
 use rucene::index::index_writer_config::LiveIndexWriterConfig;
 use rucene::index::indexing_chain::DefaultIndexingChain;
@@ -219,7 +220,7 @@ fn index_options(case: &str) -> IndexOptions {
     match case {
         "docs" => IndexOptions::DOCS,
         "freqs" => IndexOptions::DOCS_AND_FREQS,
-        "positions" | "payloads" | "manyterms" | "emptyvalue" => {
+        "positions" | "payloads" | "manyterms" | "emptyvalue" | "compressible" => {
             IndexOptions::DOCS_AND_FREQS_AND_POSITIONS
         }
         "offsets" | "multivalue" | "stats" | "statsmulti" => {
@@ -237,6 +238,7 @@ fn documents(case: &str) -> Vec<Vec<Vec<OwnedTok>>> {
         "multivalue" => multi_value_documents(),
         "manyterms" => many_terms_documents(),
         "emptyvalue" => empty_value_documents(),
+        "compressible" => compressible_documents(),
         other => panic!("unknown case: {other}"),
     }
 }
@@ -346,6 +348,42 @@ fn many_terms_documents() -> Vec<Vec<Vec<OwnedTok>>> {
         documents.push(vec![tokens]);
     }
     documents
+}
+
+/// Mirrors `IndexingChainFixture.compressibleDocuments`: two sub-blocks with
+/// long common prefixes, one whose suffixes Lucene compresses with LZ4 and one
+/// whose short lowercase suffixes it packs with `LowercaseAsciiCompression`
+/// (`Lucene103BlockTreeTermsWriter.java:885-922`).
+fn compressible_documents() -> Vec<Vec<Vec<OwnedTok>>> {
+    (0..30u8)
+        .map(|i| {
+            let lz4 = format!("lzfourgroup{i:02}abcdabcdabcdabcd");
+            let mut ascii = String::from("lowerascii");
+            ascii.push((b'a' + i / 26) as char);
+            ascii.push((b'a' + i % 26) as char);
+            for k in 2..5u32 {
+                ascii.push((b'a' + ((u32::from(i) * 7 + k * 3) % 26) as u8) as char);
+            }
+            let lz4_len = lz4.len() as i32;
+            let ascii_len = ascii.len() as i32;
+            vec![vec![
+                OwnedTok {
+                    term: lz4,
+                    pos_incr: 1,
+                    start: 0,
+                    end: lz4_len,
+                    payload: None,
+                },
+                OwnedTok {
+                    term: ascii,
+                    pos_incr: 1,
+                    start: lz4_len + 1,
+                    end: lz4_len + 1 + ascii_len,
+                    payload: None,
+                },
+            ]]
+        })
+        .collect()
 }
 
 fn empty_value_documents() -> Vec<Vec<Vec<OwnedTok>>> {
@@ -598,7 +636,7 @@ fn write_with_rucene(
 
     let finished = field_infos.finish().expect("field infos");
     let directory: Box<dyn Directory> = Box::new(FSDirectory::open(out_dir).expect("directory"));
-    let tracking = TrackingDirectoryWrapper::new(directory);
+    let tracking = Arc::new(TrackingDirectoryWrapper::new(directory));
 
     let segment_info = SegmentInfo::new(
         Arc::new(FSDirectory::open(out_dir).expect("directory")),
@@ -618,17 +656,16 @@ fn write_with_rucene(
 
     let info_stream = NoOutputInfoStream;
     let context = flush_io_context(FlushInfo::new(documents.len() as i32, 0));
-    let flush_state = IndexingChainFlushState {
-        info_stream: &info_stream,
-        directory: &tracking,
-        segment_info: &segment_info,
-        field_infos: &finished,
-        context: context.as_ref(),
-        live_docs: None,
-        del_count_on_flush: 0,
-        delete_terms: &[],
-    };
-    chain.flush(&flush_state).expect("flush");
+    let seg_updates = BufferedUpdates::default();
+    let mut flush_state = SegmentWriteState::new(
+        &info_stream,
+        Arc::clone(&tracking) as Arc<dyn Directory>,
+        &segment_info,
+        &finished,
+        &seg_updates,
+        context.as_ref(),
+    );
+    chain.flush(&mut flush_state).expect("flush");
 }
 
 /// Compares the postings files of the two directories byte for byte.
@@ -816,4 +853,13 @@ fn postings_match_lucene_for_documents_without_tokens() {
 #[test]
 fn postings_match_lucene_for_many_terms_and_documents() {
     assert_case_matches_lucene("manyterms");
+}
+
+/// The block-tree writer compresses a block's suffixes with LZ4 or
+/// `LowercaseAsciiCompression` exactly when Lucene does
+/// (`Lucene103BlockTreeTermsWriter.java:885-922`), so the terms dictionary and
+/// the term index are byte-identical for blocks Lucene compresses.
+#[test]
+fn postings_match_lucene_for_compressible_suffixes() {
+    assert_case_matches_lucene("compressible");
 }

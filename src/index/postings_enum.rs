@@ -7,7 +7,7 @@
 #![deny(unsafe_code)]
 
 use crate::error::Result;
-use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
+use crate::search::DocIdSetIterator;
 
 /// Request no optional information from a postings enum.
 ///
@@ -16,23 +16,26 @@ pub const POSTINGS_ENUM_NONE: i32 = 0x00;
 
 /// Request term frequencies.
 ///
-/// Equivalent to `PostingsEnum.FREQS`.
-pub const POSTINGS_ENUM_FREQS: i32 = 0x04;
+/// Equivalent to `PostingsEnum.FREQS`, `1 << 3` (`PostingsEnum.java:40`).
+pub const POSTINGS_ENUM_FREQS: i32 = 1 << 3;
 
 /// Request term positions.
 ///
-/// Equivalent to `PostingsEnum.POSITIONS`.
-pub const POSTINGS_ENUM_POSITIONS: i32 = POSTINGS_ENUM_FREQS | 0x08;
+/// Equivalent to `PostingsEnum.POSITIONS`, `FREQS | 1 << 4`
+/// (`PostingsEnum.java:46`).
+pub const POSTINGS_ENUM_POSITIONS: i32 = POSTINGS_ENUM_FREQS | 1 << 4;
 
 /// Request term offsets.
 ///
-/// Equivalent to `PostingsEnum.OFFSETS`.
-pub const POSTINGS_ENUM_OFFSETS: i32 = POSTINGS_ENUM_POSITIONS | 0x20;
+/// Equivalent to `PostingsEnum.OFFSETS`, `POSITIONS | 1 << 5`
+/// (`PostingsEnum.java:52`).
+pub const POSTINGS_ENUM_OFFSETS: i32 = POSTINGS_ENUM_POSITIONS | 1 << 5;
 
 /// Request term payloads.
 ///
-/// Equivalent to `PostingsEnum.PAYLOADS`.
-pub const POSTINGS_ENUM_PAYLOADS: i32 = POSTINGS_ENUM_POSITIONS | 0x40;
+/// Equivalent to `PostingsEnum.PAYLOADS`, `POSITIONS | 1 << 6`
+/// (`PostingsEnum.java:58`).
+pub const POSTINGS_ENUM_PAYLOADS: i32 = POSTINGS_ENUM_POSITIONS | 1 << 6;
 
 /// Request everything (frequencies, positions, payloads and offsets).
 ///
@@ -95,6 +98,31 @@ pub trait PostingsEnum: DocIdSetIterator + std::fmt::Display {
         }
         buffer.size = size;
         Ok(())
+    }
+
+    /// Returns this enum as [`std::any::Any`], so that a caller can test it for
+    /// a concrete type and reach that type's members.
+    ///
+    /// This hook stands for Java's `instanceof` and cast on a `PostingsEnum`.
+    /// Lucene's `postings(PostingsEnum reuse, int flags)` implementations test
+    /// `reuse instanceof X` and, when it is, cast it and reset it in place:
+    /// `FreqProxTermsWriter.SortingTermsEnum` (`FreqProxTermsWriter.java:176-222`),
+    /// `MappedMultiFields.MappedMultiTermsEnum` (`MappedMultiFields.java:116-134`),
+    /// `MultiTermsEnum` (`MultiTermsEnum.java:315-350`),
+    /// `FreqProxFields.FreqProxTermsEnum` (`FreqProxFields.java:226-272`) and
+    /// `Lucene104PostingsReader` (`Lucene104PostingsReader.java:256-264`). Rust cannot narrow
+    /// a `dyn PostingsEnum` to a concrete type, so the question is asked of the
+    /// enum itself, in the same shape as
+    /// [`StoredFieldsReader::as_any`](crate::codecs::stored_fields::StoredFieldsReader::as_any).
+    ///
+    /// The default answers `None`, which is the `false` branch of every
+    /// `instanceof`; only the types some Lucene `postings` method tests for
+    /// override it, with `Some(self)`. The reference is mutable because every
+    /// one of those callers resets the enum it narrowed, and the boxed enum it
+    /// came in keeps its allocation: the enum handed back is the very object
+    /// that was offered for reuse, exactly as in Java.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
     }
 }
 
@@ -210,34 +238,39 @@ impl FreqAndNormBuffer {
     }
 }
 
-/// An empty [`PostingsEnum`] instance.
+/// An empty [`PostingsEnum`] instance, for tests only: Lucene has no such
+/// class.
+#[cfg(test)]
 #[derive(Debug, Clone)]
-pub struct EmptyPostingsEnum;
+pub(crate) struct EmptyPostingsEnum;
 
+#[cfg(test)]
 impl Default for EmptyPostingsEnum {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(test)]
 impl EmptyPostingsEnum {
     /// Creates an empty postings enum.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self
     }
 }
 
+#[cfg(test)]
 impl DocIdSetIterator for EmptyPostingsEnum {
     fn doc_id(&self) -> i32 {
-        NO_MORE_DOCS
+        crate::search::NO_MORE_DOCS
     }
 
     fn next_doc(&mut self) -> Result<i32> {
-        Ok(NO_MORE_DOCS)
+        Ok(crate::search::NO_MORE_DOCS)
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Ok(NO_MORE_DOCS)
+        Ok(crate::search::NO_MORE_DOCS)
     }
 
     fn cost(&self) -> i64 {
@@ -245,6 +278,7 @@ impl DocIdSetIterator for EmptyPostingsEnum {
     }
 }
 
+#[cfg(test)]
 impl std::fmt::Display for EmptyPostingsEnum {
     /// Port-only: Lucene 10.5.0 has no `PostingsEnum.EMPTY` counterpart —
     /// `TermsEnum.EMPTY` exists, but its postings method throws. Rendered under
@@ -254,6 +288,7 @@ impl std::fmt::Display for EmptyPostingsEnum {
     }
 }
 
+#[cfg(test)]
 impl PostingsEnum for EmptyPostingsEnum {
     fn freq(&self) -> Result<i32> {
         Ok(0)
@@ -283,7 +318,7 @@ impl PostingsEnum for EmptyPostingsEnum {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::DocIdSetIterator;
+    use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
     use crate::util::BytesRef;
 
     /// Stub postings enum backed by a list of `(doc, freq, positions, offsets,
@@ -424,15 +459,14 @@ mod tests {
 
     #[test]
     fn postings_flags_match_java_values() {
+        // The literal values of `PostingsEnum.java:34-64`; the Java oracle
+        // comparison lives in `tests/postings_portability.rs`.
         assert_eq!(POSTINGS_ENUM_NONE, 0);
-        assert_eq!(POSTINGS_ENUM_FREQS, 0x04);
-        assert_eq!(POSTINGS_ENUM_POSITIONS, 0x04 | 0x08);
-        assert_eq!(POSTINGS_ENUM_OFFSETS, POSTINGS_ENUM_POSITIONS | 0x20);
-        assert_eq!(POSTINGS_ENUM_PAYLOADS, POSTINGS_ENUM_POSITIONS | 0x40);
-        assert_eq!(
-            POSTINGS_ENUM_ALL,
-            POSTINGS_ENUM_OFFSETS | POSTINGS_ENUM_PAYLOADS
-        );
+        assert_eq!(POSTINGS_ENUM_FREQS, 8);
+        assert_eq!(POSTINGS_ENUM_POSITIONS, 24);
+        assert_eq!(POSTINGS_ENUM_OFFSETS, 56);
+        assert_eq!(POSTINGS_ENUM_PAYLOADS, 88);
+        assert_eq!(POSTINGS_ENUM_ALL, 120);
     }
 
     #[test]

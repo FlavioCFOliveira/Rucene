@@ -31,12 +31,11 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 
-use rucene::codecs::term_vectors::TermVectorsWriter;
 use rucene::codecs::{register_codec, Codec, Lucene104Codec};
 use rucene::error::LuceneError;
 use rucene::index::SegmentInfo;
 use rucene::store::{
-    ByteBuffersDataOutput, DataOutput, Directory, RamDirectory, DEFAULT_IO_CONTEXT,
+    ByteBuffersDataOutput, ByteBuffersDirectory, DataOutput, Directory, DEFAULT_IO_CONTEXT,
 };
 use rucene::util::{Accountable, ArrayUtil, RamUsageEstimator, Version};
 
@@ -141,7 +140,7 @@ fn compressing_accounting_matches_lucene() {
     );
 
     // 2. A fresh Lucene90CompressingTermVectorsWriter.
-    let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let info = SegmentInfo::new(
         Arc::clone(&directory),
         Version::LATEST,
@@ -159,7 +158,7 @@ fn compressing_accounting_matches_lucene() {
     .expect("segment info");
     let writer = codec()
         .term_vectors_format()
-        .vectors_writer(directory.as_ref(), &info, &*DEFAULT_IO_CONTEXT)
+        .vectors_writer(&directory, &info, &*DEFAULT_IO_CONTEXT)
         .expect("term vectors writer");
     assert_eq!(
         writer.ram_bytes_used(),
@@ -184,7 +183,7 @@ fn compressing_accounting_matches_lucene() {
 /// (!closed)` guard both `close()` methods carry.
 #[test]
 fn compressing_readers_report_already_closed() {
-    let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let info = SegmentInfo::new(
         Arc::clone(&directory),
         Version::LATEST,
@@ -205,7 +204,7 @@ fn compressing_readers_report_already_closed() {
     // An empty segment is enough: the guard is on the reader's own state.
     let mut writer = codec()
         .term_vectors_format()
-        .vectors_writer(directory.as_ref(), &info, &*DEFAULT_IO_CONTEXT)
+        .vectors_writer(&directory, &info, &*DEFAULT_IO_CONTEXT)
         .expect("term vectors writer");
     writer.finish(0).expect("finish");
     writer.close().expect("close writer");
@@ -222,12 +221,12 @@ fn compressing_readers_report_already_closed() {
     // An open reader may answer nothing for a segment with no documents, but it
     // must not answer `AlreadyClosed`.
     assert!(
-        !matches!(reader.get(0), Err(LuceneError::AlreadyClosed(_))),
+        !matches!(reader.get(0), Err(LuceneError::AlreadyClosed { .. })),
         "an open reader must not report itself closed"
     );
     reader.close().expect("close");
     match reader.get(0) {
-        Err(LuceneError::AlreadyClosed(message)) => assert_eq!(
+        Err(LuceneError::AlreadyClosed { message, .. }) => assert_eq!(
             message, "this FieldsReader is closed",
             "the message is Lucene's own"
         ),

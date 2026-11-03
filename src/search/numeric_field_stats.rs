@@ -72,7 +72,7 @@ impl NumericFieldStats {
         let mut min: Option<i64> = None;
         let mut max: Option<i64> = None;
         let mut doc_count: i32 = 0;
-        for ctx in Arc::clone(&reader).leaves() {
+        for ctx in Arc::clone(&reader).leaves()? {
             let leaf_reader = ctx.leaf_reader();
             if leaf_reader.get_field_infos().field_info(field).is_none() {
                 continue;

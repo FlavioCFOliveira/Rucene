@@ -187,8 +187,10 @@ impl TermRangeQuery {
         include_upper: bool,
         rewrite_method: Arc<dyn RewriteMethod>,
     ) -> Result<Self> {
-        let lower = lower_term.map(|t| BytesRef::new(t.as_bytes().to_vec()));
-        let upper = upper_term.map(|t| BytesRef::new(t.as_bytes().to_vec()));
+        // `new BytesRef(lowerTerm)` / `new BytesRef(upperTerm)`
+        // (`TermRangeQuery.java:134-135`).
+        let lower = lower_term.map(BytesRef::from_char_sequence);
+        let upper = upper_term.map(BytesRef::from_char_sequence);
         Self::with_rewrite_method(
             field,
             lower,

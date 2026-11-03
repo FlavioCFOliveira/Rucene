@@ -89,15 +89,15 @@ fn a_positioned_term_reports_its_statistics_and_postings() {
     writer.commit().unwrap();
 
     let reader = directory_reader::open(Arc::clone(&dir)).unwrap();
-    let leaves = reader.leaves();
+    let leaves = reader.leaves().unwrap();
     println!("leaves = {}", leaves.len());
     let leaf = leaves[0].leaf_reader();
     let terms = leaf.terms("body").unwrap().expect("body terms");
     println!(
         "terms.size={} sumDocFreq={} docCount={}",
-        terms.size(),
-        terms.sum_doc_freq(),
-        terms.doc_count()
+        terms.size().unwrap(),
+        terms.sum_doc_freq().unwrap(),
+        terms.doc_count().unwrap()
     );
     let mut te = terms.iterator().unwrap();
     println!(

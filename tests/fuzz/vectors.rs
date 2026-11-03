@@ -68,7 +68,7 @@ use rucene::index::{
 };
 use rucene::search::knn::TopKnnCollector;
 use rucene::search::{from_live_docs, NO_MORE_DOCS};
-use rucene::store::{Directory, RamDirectory, DEFAULT_IO_CONTEXT};
+use rucene::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT};
 use rucene::util::{NoOutputInfoStream, StringHelper, Version};
 
 /// The four files the default codec writes for a segment that has vectors.
@@ -273,7 +273,7 @@ fn segment_info(directory: &Arc<dyn Directory>, max_doc: i32, id: [u8; 16]) -> S
 /// returns the field infos the reader needs — including the two per-field
 /// attributes the consumer's codec stamped onto them.
 fn build(fixture: &Fixture) -> (Arc<dyn Directory>, SegmentInfo, FieldInfos) {
-    let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let id = StringHelper::random_id();
     // `maxDoc` is unset while documents are indexed, as it is in a real
     // `DocumentsWriterPerThread`; the consumer builds its writer at that point.
@@ -345,7 +345,7 @@ fn corrupt_copy(
     at: usize,
     value: u8,
 ) -> Arc<dyn Directory> {
-    let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     for extension in EXTENSIONS {
         let name = file_name(extension);
         let mut bytes = read_file(original, &name);
@@ -359,7 +359,7 @@ fn corrupt_copy(
 
 /// A fresh directory holding a truncated copy of one of the segment's files.
 fn truncated_copy(original: &Arc<dyn Directory>, file: &str, length: usize) -> Arc<dyn Directory> {
-    let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     for extension in EXTENSIONS {
         let name = file_name(extension);
         let mut bytes = read_file(original, &name);
@@ -379,7 +379,7 @@ fn truncated_copy(original: &Arc<dyn Directory>, file: &str, length: usize) -> A
 /// so it still sees the garbage — but it does mean a patched value never
 /// reaches the structures built afterwards. Re-signing closes that gap.
 fn resigned_copy(original: &Arc<dyn Directory>, file: &str, body: &[u8]) -> Arc<dyn Directory> {
-    let signed: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let signed: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     {
         let mut output = signed
             .create_output("resigned", &*DEFAULT_IO_CONTEXT)
@@ -392,7 +392,7 @@ fn resigned_copy(original: &Arc<dyn Directory>, file: &str, body: &[u8]) -> Arc<
     }
     let resigned = read_file(&signed, "resigned");
 
-    let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     for extension in EXTENSIONS {
         let name = file_name(extension);
         let bytes = if name == file {
@@ -425,7 +425,7 @@ fn read_everything(
     for spec in &fixture.fields {
         match spec.encoding {
             VectorEncoding::FLOAT32 => {
-                if let Ok(values) = reader.get_float_vector_values(spec.name) {
+                if let Ok(Some(values)) = reader.get_float_vector_values(spec.name) {
                     if let Ok(mut iter) = values.iterator() {
                         while let Ok(doc) = iter.next_doc() {
                             if doc == NO_MORE_DOCS {
@@ -437,7 +437,7 @@ fn read_everything(
                 }
             }
             VectorEncoding::BYTE => {
-                if let Ok(values) = reader.get_byte_vector_values(spec.name) {
+                if let Ok(Some(values)) = reader.get_byte_vector_values(spec.name) {
                     if let Ok(mut iter) = values.iterator() {
                         while let Ok(doc) = iter.next_doc() {
                             if doc == NO_MORE_DOCS {
@@ -668,7 +668,8 @@ fn every_fixture_reads_back_exactly() {
                 VectorEncoding::FLOAT32 => {
                     let values = reader
                         .get_float_vector_values(spec.name)
-                        .expect("float values");
+                        .expect("float values")
+                        .expect("the field has vectors");
                     let mut iter = values.iterator().expect("iterator");
                     while iter.next_doc().expect("next doc") != NO_MORE_DOCS {
                         let value = values.vector_value(iter.index()).expect("value");
@@ -678,7 +679,8 @@ fn every_fixture_reads_back_exactly() {
                 VectorEncoding::BYTE => {
                     let values = reader
                         .get_byte_vector_values(spec.name)
-                        .expect("byte values");
+                        .expect("byte values")
+                        .expect("the field has vectors");
                     let mut iter = values.iterator().expect("iterator");
                     while iter.next_doc().expect("next doc") != NO_MORE_DOCS {
                         let value = values.vector_value(iter.index()).expect("value");

@@ -3,18 +3,20 @@
 
 #![deny(unsafe_code)]
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::error::{LuceneError, Result};
 use crate::index::{sub_index_from_leaves, LeafReaderContext};
 use crate::search::collection_terminated_exception::{CollectionError, CollectionResult};
 use crate::search::collector::{Collector, LeafCollector};
 use crate::search::doc_id_set_iterator::DocIdSetIterator;
-use crate::search::field_comparator::RelevanceComparator;
+use crate::search::field_comparator::is_relevance_comparator;
 use crate::search::field_doc::FieldDoc;
 use crate::search::field_value_hit_queue::{Entry, FieldValueHitQueue};
 use crate::search::index_searcher::IndexSearcher;
+use crate::search::leaf_field_comparator::LeafFieldComparator;
 use crate::search::max_score_accumulator::MaxScoreAccumulator;
+use crate::search::multi_leaf_field_comparator::MultiLeafFieldComparator;
 use crate::search::query::Query;
 use crate::search::scorable::Scorable;
 use crate::search::score_caching_wrapping_scorer::ScoreCachingWrappingScorer;
@@ -79,8 +81,43 @@ fn can_early_terminate_on_prefix(search_sort: &Sort, index_sort: Option<&Sort>) 
 /// This port carries `after` as an [`Option`] and branches on it, exactly as
 /// [`TopScoreDocCollector`](crate::search::TopScoreDocCollector) already does
 /// for the same split; the collected hits are identical.
+///
+/// **Divergence from Lucene 10.5.0.** A Java collector is an object any number
+/// of references can reach: `TopFieldCollectorManager.getCollectors()` hands
+/// back the very collectors the search is filling. Rust forbids that alias
+/// for an owned value, so this type is a handle over shared state. Each
+/// handle the manager keeps (see
+/// [`TopFieldCollectorManager::get_collectors`](crate::search::TopFieldCollectorManager::get_collectors))
+/// sees what the search did through the handle it was given; a leaf
+/// collector locks the state for the leaf it collects, exactly as long as it
+/// borrowed the collector before. Using another handle to the same collector
+/// — one from `get_collectors()` — while such a leaf collector is alive
+/// waits for the lock: on another thread until the leaf collector is
+/// dropped, and on the same thread forever, because `std::sync::Mutex` is
+/// not re-entrant. `Mutex::lock` documents that a second lock on the
+/// holding thread never returns and leaves a deadlock or a panic
+/// unspecified; measured on Linux with rustc 1.99.1, it deadlocks.
+///
+/// Lucene runs each collector of a search on its own executor task and
+/// reduces them on the calling thread (`IndexSearcher.java:764-796`); only the
+/// manager's `newCollector()` is single-threaded
+/// (`TopFieldCollectorManager.java:66-69`). The state is therefore behind a
+/// `Mutex` in an `Arc`, so that a handle is `Send` and `Sync` exactly when the
+/// state is `Send`. Today it is not: [`FieldComparator`](crate::search::FieldComparator)
+/// carries no `Send` bound, so neither does the hit queue that holds the
+/// comparators — which was already true of this type before handles existed.
 #[derive(Debug)]
 pub struct TopFieldCollector {
+    state: SharedCollectorState<TopFieldCollectorState>,
+}
+
+/// How a [`TopFieldCollector`]'s state is shared between its handles: `Send`
+/// and `Sync` whenever the state is `Send`.
+pub(crate) type SharedCollectorState<S> = Arc<Mutex<S>>;
+
+/// The state of a [`TopFieldCollector`], shared by every handle to it.
+#[derive(Debug)]
+struct TopFieldCollectorState {
     sort: Sort,
     queue: FieldValueHitQueue,
     after: Option<FieldDoc>,
@@ -134,9 +171,7 @@ impl TopFieldCollector {
     ) -> Self {
         let needs_scores = sort.needs_scores();
         let num_comparators = queue.get_comparators().len();
-        let first_is_relevance = queue.get_comparators()[0]
-            .as_any()
-            .is::<RelevanceComparator>();
+        let first_is_relevance = is_relevance_comparator(queue.get_comparators()[0].as_ref());
         let reverse_mul = queue.get_reverse_mul()[0];
 
         let (score_mode, can_set_min_score) = if first_is_relevance
@@ -176,7 +211,7 @@ impl TopFieldCollector {
         }
         debug_assert!(num_comparators >= 1);
 
-        Self {
+        let state = TopFieldCollectorState {
             sort,
             queue,
             after,
@@ -194,21 +229,41 @@ impl TopFieldCollector {
             score_mode,
             total_hits: 0,
             total_hits_relation: TotalHitsRelation::EQUAL_TO,
+        };
+        let state = Arc::new(Mutex::new(state));
+        Self { state }
+    }
+
+    /// Returns another handle to this same collector.
+    ///
+    /// What a second Java reference to the collector is: the manager keeps
+    /// one for every collector it creates, so that
+    /// [`TopFieldCollectorManager::get_collectors`](crate::search::TopFieldCollectorManager::get_collectors)
+    /// can hand back the collectors the search filled.
+    pub(crate) fn share(&self) -> Self {
+        Self {
+            state: Arc::clone(&self.state),
         }
+    }
+
+    /// Locks the shared state. A panic while it was held leaves the state as
+    /// far as that collection got, which is still a valid collector state.
+    fn lock(&self) -> MutexGuard<'_, TopFieldCollectorState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The number of hits this collector counts accurately.
     ///
     /// Equivalent to reading the package-private `totalHitsThreshold` field.
     pub fn total_hits_threshold(&self) -> i32 {
-        self.total_hits_threshold
+        self.lock().total_hits_threshold
     }
 
     /// Returns whether collection terminated early.
     ///
     /// Equivalent to `TopFieldCollector.isEarlyTerminated()`.
     pub fn is_early_terminated(&self) -> bool {
-        self.total_hits_relation == TotalHitsRelation::GREATER_THAN_OR_EQUAL_TO
+        self.lock().total_hits_relation == TotalHitsRelation::GREATER_THAN_OR_EQUAL_TO
     }
 
     /// Populates the [`scores`](crate::search::ScoreDoc::score) of the given
@@ -239,7 +294,7 @@ impl TopFieldCollector {
 
         let rewritten = searcher.rewrite(query)?;
         let weight = searcher.create_weight(rewritten, ScoreMode::COMPLETE, 1.0)?;
-        let contexts = Arc::clone(searcher.get_index_reader()).leaves();
+        let contexts = Arc::clone(searcher.get_index_reader()).leaves()?;
         let max_doc = searcher.get_index_reader().max_doc();
 
         let mut current_context: Option<Arc<LeafReaderContext>> = None;
@@ -286,7 +341,9 @@ impl TopFieldCollector {
         }
         Ok(())
     }
+}
 
+impl TopFieldCollectorState {
     /// Equivalent to `TopFieldCollector.updateGlobalMinCompetitiveScore(Scorable)`.
     fn update_global_min_competitive_score(&mut self, scorer: &mut dyn Scorable) -> Result<()> {
         let Some(acc) = self.min_score_acc.as_ref() else {
@@ -357,36 +414,61 @@ impl TopFieldCollector {
 
 impl Collector for TopFieldCollector {
     fn score_mode(&self) -> ScoreMode {
-        self.score_mode
+        self.lock().score_mode
     }
 
     fn get_leaf_collector<'a>(
         &'a mut self,
         context: &LeafReaderContext,
     ) -> CollectionResult<Box<dyn LeafCollector + 'a>> {
+        let mut parent = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let state = &mut *parent;
         // As all segments are sorted in the same way, it is enough to check
         // only the first segment for the index sort.
-        if self.search_sort_part_of_index_sort.is_none() {
+        if state.search_sort_part_of_index_sort.is_none() {
             let meta = context.leaf_reader().get_meta_data();
-            let part_of_index_sort = can_early_terminate(&self.sort, meta.sort());
-            self.search_sort_part_of_index_sort = Some(part_of_index_sort);
+            let part_of_index_sort = can_early_terminate(&state.sort, meta.sort());
+            state.search_sort_part_of_index_sort = Some(part_of_index_sort);
             if part_of_index_sort {
-                self.queue.get_comparators_mut()[0].disable_skipping();
+                state.queue.get_comparators_mut()[0].disable_skipping();
             }
         }
-        self.queue.set_next_leaf(context)?;
+        // `queue.getComparators(context)`, wrapped in a
+        // `MultiLeafFieldComparator` when there are several.
+        let mut comparators = state.queue.get_leaf_comparators(context)?;
+        let reverse_mul = state.queue.get_reverse_mul();
+        let (comparator, reverse_mul): (Box<dyn LeafFieldComparator>, i32) =
+            if comparators.len() == 1 {
+                (
+                    comparators
+                        .pop()
+                        .expect("INVARIANT: exactly one comparator was just counted"),
+                    reverse_mul[0],
+                )
+            } else {
+                (
+                    Box::new(MultiLeafFieldComparator::new(
+                        comparators,
+                        reverse_mul.to_vec(),
+                    )?),
+                    1,
+                )
+            };
 
         // Reset the minimum competitive score.
-        self.min_competitive_score = 0.0;
-        self.doc_base = context.doc_base();
-        let after_doc = self
+        state.min_competitive_score = 0.0;
+        state.doc_base = context.doc_base();
+        let doc_base = state.doc_base;
+        let after_doc = state
             .after
             .as_ref()
-            .map(|after| after.score_doc.doc - self.doc_base);
+            .map(|after| after.score_doc.doc - doc_base);
 
-        let needs_scores = self.needs_scores;
+        let needs_scores = state.needs_scores;
         let collector = TopFieldLeafCollector {
-            parent: self,
+            parent,
+            comparator,
+            reverse_mul,
             after_doc,
             collected_all_competitive_hits: false,
         };
@@ -406,22 +488,23 @@ impl TopDocsCollector for TopFieldCollector {
     type Docs = TopFieldDocs;
 
     fn total_hits(&self) -> i32 {
-        self.total_hits
+        self.lock().total_hits
     }
 
     fn total_hits_relation(&self) -> TotalHitsRelation {
-        self.total_hits_relation
+        self.lock().total_hits_relation
     }
 
     fn pq_size(&self) -> usize {
-        self.queue.size()
+        self.lock().queue.size()
     }
 
     /// Equivalent to `pq.pop()` followed by `queue.fillFields(...)`, which is
     /// what `TopFieldCollector.populateResults` does with each popped entry.
     fn pop(&mut self) -> Option<FieldDoc> {
-        let entry = self.queue.pop()?;
-        Some(self.queue.fill_fields(&entry))
+        let mut state = self.lock();
+        let entry = state.queue.pop()?;
+        Some(state.queue.fill_fields(&entry))
     }
 
     /// Equivalent to `TopFieldCollector.newTopDocs(ScoreDoc[], int)`, which
@@ -432,10 +515,11 @@ impl TopDocsCollector for TopFieldCollector {
     /// Propagates the [`TotalHits`] validation error, which cannot trigger for
     /// a non-negative hit count.
     fn new_top_docs(&self, results: Option<Vec<FieldDoc>>, _start: i32) -> Result<TopFieldDocs> {
+        let state = self.lock();
         Ok(TopFieldDocs::new(
-            TotalHits::new(i64::from(self.total_hits), self.total_hits_relation)?,
+            TotalHits::new(i64::from(state.total_hits), state.total_hits_relation)?,
             results.unwrap_or_default(),
-            self.queue.get_fields().to_vec(),
+            state.queue.get_fields().to_vec(),
         ))
     }
 }
@@ -447,7 +531,18 @@ impl TopDocsCollector for TopFieldCollector {
 /// subclasses that `SimpleFieldCollector.getLeafCollector` and
 /// `PagingFieldCollector.getLeafCollector` return.
 struct TopFieldLeafCollector<'a> {
-    parent: &'a mut TopFieldCollector,
+    /// The collector's state, locked for as long as this leaf is collected.
+    parent: MutexGuard<'a, TopFieldCollectorState>,
+    /// The leaf comparator of the sort, or the `MultiLeafFieldComparator`
+    /// over the leaf comparators of a multi-field sort.
+    ///
+    /// Equivalent to `TopFieldLeafCollector.comparator`.
+    comparator: Box<dyn LeafFieldComparator>,
+    /// `reverseMul[0]` for a single comparator, `1` for the
+    /// `MultiLeafFieldComparator`, which applies the multipliers itself.
+    ///
+    /// Equivalent to `TopFieldLeafCollector.reverseMul`.
+    reverse_mul: i32,
     /// The `after` hit rebased on the current leaf, when paging.
     ///
     /// Equivalent to `final int afterDoc = after.doc - docBase`.
@@ -484,7 +579,7 @@ impl TopFieldLeafCollector<'_> {
         {
             // The hits threshold was reached for the first time; notify the
             // comparator about it.
-            self.parent.queue.set_hits_threshold_reached()?;
+            self.comparator.set_hits_threshold_reached()?;
             self.parent.total_hits_relation = TotalHitsRelation::GREATER_THAN_OR_EQUAL_TO;
         }
         Ok(())
@@ -493,7 +588,7 @@ impl TopFieldLeafCollector<'_> {
     /// Equivalent to `TopFieldLeafCollector.thresholdCheck(int)`.
     fn threshold_check(&mut self, doc: i32, scorer: &mut dyn Scorable) -> CollectionResult<bool> {
         if self.collected_all_competitive_hits
-            || self.parent.queue.compare_bottom(doc, scorer)? <= 0
+            || self.reverse_mul * self.comparator.compare_bottom(doc, scorer)? <= 0
         {
             // Since docs are visited in doc ID order, a comparison of 0 means
             // this document is larger than anything else in the queue and
@@ -523,14 +618,14 @@ impl TopFieldLeafCollector<'_> {
             .bottom
             .expect("INVARIANT: the queue is full, so a bottom entry exists")
             .slot;
-        self.parent.queue.copy(bottom_slot, doc, scorer)?;
+        self.comparator.copy(bottom_slot, doc, scorer)?;
         self.parent.update_bottom(doc);
         let bottom_slot = self
             .parent
             .bottom
             .expect("INVARIANT: updateBottom leaves a bottom entry")
             .slot;
-        self.parent.queue.set_bottom(bottom_slot)?;
+        self.comparator.set_bottom(bottom_slot)?;
         self.parent.update_min_competitive_score(scorer)
     }
 
@@ -544,7 +639,7 @@ impl TopFieldLeafCollector<'_> {
         // Startup transient: the queue has not gathered numHits yet.
         let slot = hits_collected - 1;
         // Copy the hit into the queue.
-        self.parent.queue.copy(slot, doc, scorer)?;
+        self.comparator.copy(slot, doc, scorer)?;
         self.parent.add(slot, doc);
         if self.parent.queue_full {
             let bottom_slot = self
@@ -552,7 +647,7 @@ impl TopFieldLeafCollector<'_> {
                 .bottom
                 .expect("INVARIANT: a full queue has a bottom entry")
                 .slot;
-            self.parent.queue.set_bottom(bottom_slot)?;
+            self.comparator.set_bottom(bottom_slot)?;
             self.parent.update_min_competitive_score(scorer)?;
         }
         Ok(())
@@ -561,7 +656,7 @@ impl TopFieldLeafCollector<'_> {
 
 impl LeafCollector for TopFieldLeafCollector<'_> {
     fn set_scorer(&mut self, scorer: &mut dyn Scorable) -> Result<()> {
-        self.parent.queue.set_scorer(scorer)?;
+        self.comparator.set_scorer(scorer)?;
         if self.parent.min_score_acc.is_none() {
             self.parent.update_min_competitive_score(scorer)
         } else {
@@ -587,7 +682,7 @@ impl LeafCollector for TopFieldLeafCollector<'_> {
                 if self.parent.queue_full && self.threshold_check(doc, scorer)? {
                     return Ok(());
                 }
-                let top_cmp = self.parent.queue.compare_top(doc, scorer)?;
+                let top_cmp = self.reverse_mul * self.comparator.compare_top(doc, scorer)?;
                 if top_cmp > 0 || (top_cmp == 0 && doc <= after_doc) {
                     // Already collected on a previous page. Check whether the
                     // hits threshold is reached and the competitive score can be
@@ -611,6 +706,6 @@ impl LeafCollector for TopFieldLeafCollector<'_> {
     }
 
     fn competitive_iterator(&mut self) -> Result<Option<Box<dyn DocIdSetIterator>>> {
-        self.parent.queue.competitive_iterator()
+        self.comparator.competitive_iterator()
     }
 }

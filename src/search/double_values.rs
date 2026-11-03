@@ -4,7 +4,6 @@
 #![deny(unsafe_code)]
 
 use crate::error::{LuceneError, Result};
-use crate::search::scorable::Scorable;
 
 /// The per-document values of a [`DoubleValuesSource`](crate::search::DoubleValuesSource).
 ///
@@ -13,7 +12,7 @@ use crate::search::scorable::Scorable;
 /// **Divergence from Lucene 10.5.0.** Java declares `doubleValue()` on an
 /// immutable-looking receiver, but every non-trivial implementation reads
 /// through an iterator it owns and advances; this port therefore takes
-/// `&mut self`, exactly as [`Scorable`] already does for the same reason.
+/// `&mut self`, exactly as [`Scorable`](crate::search::Scorable) already does for the same reason.
 pub trait DoubleValues {
     /// Returns the value for the current document.
     ///
@@ -111,40 +110,5 @@ impl DoubleValues for EmptyDoubleValues {
 
     fn advance_exact(&mut self, _doc: i32) -> Result<bool> {
         Ok(false)
-    }
-}
-
-/// Values reading the score of a [`Scorable`].
-///
-/// Equivalent to the anonymous `DoubleValues` that the static
-/// `DoubleValuesSource.fromScorer(Scorable)` returns. It borrows the scorable
-/// rather than capturing it, which is what Rust requires to express the same
-/// object.
-pub struct ScorerDoubleValues<'a> {
-    scorer: &'a mut dyn Scorable,
-}
-
-impl std::fmt::Debug for ScorerDoubleValues<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("ScorerDoubleValues")
-    }
-}
-
-impl<'a> ScorerDoubleValues<'a> {
-    /// Creates values reading `scorer`'s score.
-    ///
-    /// Equivalent to `DoubleValuesSource.fromScorer(Scorable)`.
-    pub fn new(scorer: &'a mut dyn Scorable) -> Self {
-        Self { scorer }
-    }
-}
-
-impl DoubleValues for ScorerDoubleValues<'_> {
-    fn double_value(&mut self) -> Result<f64> {
-        Ok(f64::from(self.scorer.score()?))
-    }
-
-    fn advance_exact(&mut self, _doc: i32) -> Result<bool> {
-        Ok(true)
     }
 }

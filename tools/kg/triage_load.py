@@ -10,7 +10,10 @@ open instead of the complement of a heuristic.
 Two levels, because both are needed:
 
 * every `Method` the triage touched carries `portTriage`, the rule that decided
-  it and the evidence, so any single verdict can be audited;
+  it, the evidence and `portTriageUnit` (`<class>#<method name>`), so any single
+  verdict can be audited. The unit of the triage is a Java method *name*, so
+  every overload of the name carries the name's verdict; summed over distinct
+  `portTriageUnit` values the member verdicts equal the class rollup (#191);
 * every measured `Class` carries `memberAbsent` / `memberRenamed` / `memberNa`,
   so ranking the packages is a sum rather than a traversal of 8,558 members.
 
@@ -18,7 +21,7 @@ A class with no unmatched member is written as three zeros rather than left
 null: "nothing absent" and "never measured" must not look alike.
 
 Usage:
-    python3 tools/kg/triage_load.py rucene /tmp/triage/triaged.json \
+    python3 tools/kg/triage_load.py rucene <kg-target>/triage/triaged.json \
         --commit "$COMMIT" --date "$DATE"
 """
 import argparse
@@ -28,7 +31,7 @@ from collections import defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from kgio import read as kg_read, unwind
+from kgio import client, counters_of, format_counters, read as kg_read, unwind
 
 
 def main():
@@ -42,14 +45,24 @@ def main():
     rows = json.loads(Path(args.triaged).read_text(encoding="utf-8"))
     print(f"triaged pairs: {len(rows)}", file=sys.stderr)
 
+    # The triage is re-derived whole at every run, so the member verdicts are
+    # cleared first (#191): a member the port has since grown a function for
+    # must not keep the `absent` an older run gave it, and no value the rules do
+    # not produce may survive.
+    out = client(args.roadmap,
+                 "MATCH (m:Method) WHERE m.portTriage IS NOT NULL OR m.portTriageUnit IS NOT NULL "
+                 "REMOVE m.portTriage, m.portTriageRule, m.portTriageEvidence, m.portTriageUnit")
+    print(f"  previous member verdicts cleared: {format_counters(counters_of(out))}",
+          file=sys.stderr)
     members = [{"cls": r["type"], "name": r["method"], "klass": r["class"],
                 "rule": r["rule"], "evidence": r["evidence"][:240],
+                "unit": f"{r['type']}#{r['method']}",
                 "commit": args.commit, "date": args.date} for r in rows]
     unwind(args.roadmap, "update", members,
            "MATCH (c:Class {qualifiedName:row.cls})-[:DECLARES]->(m:Method) "
            "WHERE m.name = row.name AND m.kind = 'method' "
            "SET m.portTriage = row.klass, m.portTriageRule = row.rule, "
-           "m.portTriageEvidence = row.evidence, "
+           "m.portTriageEvidence = row.evidence, m.portTriageUnit = row.unit, "
            "m.gitCommit = row.commit, m.gitDate = row.date",
            "member triage", batch=150)
 

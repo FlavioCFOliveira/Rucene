@@ -476,6 +476,17 @@ impl AttributeSource {
         self.factory.as_ref()
     }
 
+    /// Equivalent to `AttributeSource.addAttributeImpl(AttributeImpl)`
+    /// (`AttributeSource.java:188-202`): the implementation takes every one of
+    /// its `Attribute` interfaces that no other implementation provides yet,
+    /// and is registered only when it takes at least one — an implementation
+    /// whose interfaces are all provided already is dropped.
+    ///
+    /// The port also lists an implementation's own type among its
+    /// [`AttributeImpl::attribute_interfaces`], so that it can be looked up by
+    /// it; that key is not an `Attribute` interface of Java's
+    /// `getAttributeInterfaces`, so it never decides whether the
+    /// implementation is registered.
     fn add_attribute_impl(&mut self, att: Box<dyn AttributeImpl>) {
         let type_id = att.impl_type_id();
         if self.attribute_impls.contains_key(&type_id) {
@@ -483,6 +494,22 @@ impl AttributeSource {
         }
 
         let interfaces = att.attribute_interfaces().to_vec();
+        let attribute_interfaces: Vec<TypeId> = interfaces
+            .iter()
+            .copied()
+            .filter(|interface_id| *interface_id != type_id)
+            .collect();
+        let deciding = if attribute_interfaces.is_empty() {
+            &interfaces
+        } else {
+            &attribute_interfaces
+        };
+        if deciding
+            .iter()
+            .all(|interface_id| self.attributes.contains_key(interface_id))
+        {
+            return;
+        }
         let rc = Rc::new(RefCell::new(att));
 
         for interface_id in interfaces {
@@ -972,6 +999,25 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread;
+
+    /// `addAttributeImpl` registers an implementation only for interfaces no
+    /// other implementation provides (`AttributeSource.java:188-202`): a
+    /// `TermFrequencyAttributeImpl` added after the packed implementation
+    /// already provides `TermFrequencyAttribute` is dropped. Measured against
+    /// `lucene-core-10.5.0.jar` (`oracle/fix/LastPass.java`, case C10):
+    /// `impls=[PackedTokenAttributeImpl] termFreq=PackedTokenAttributeImpl`.
+    #[test]
+    fn an_implementation_whose_interfaces_are_all_provided_is_not_registered() {
+        use crate::analysis::tokenattributes::{
+            PackedTokenAttributeImpl, TermFrequencyAttributeImpl,
+        };
+        let mut source =
+            AttributeSource::new_with_factory(crate::analysis::default_token_attribute_factory());
+        source.add_attribute::<PackedTokenAttributeImpl>().unwrap();
+        source.add_attribute_impl_instance(Box::new(TermFrequencyAttributeImpl::new()));
+        assert!(!source.has_attribute::<TermFrequencyAttributeImpl>());
+        assert_eq!(source.attribute_impls.len(), 1);
+    }
 
     #[derive(Clone, Debug, Default)]
     struct TestAttribute {

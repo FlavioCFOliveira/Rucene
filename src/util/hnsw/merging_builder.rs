@@ -117,12 +117,8 @@ impl MergingHnswGraphBuilder {
                     let newv = self.ord_maps[index][v as usize];
                     eps.add(newv);
 
-                    self.inner.hnsw.seek(0, newv)?;
-                    loop {
-                        let friend_ord = self.inner.hnsw.next_neighbor()?;
-                        if friend_ord == NO_MORE_DOCS {
-                            break;
-                        }
+                    // Java's `hnsw.seek(0, newv)` and `nextNeighbor()` loop.
+                    for friend_ord in self.inner.hnsw.get_neighbors(0, newv)?.nodes() {
                         eps.add(friend_ord);
                     }
                 }
@@ -141,7 +137,7 @@ impl HnswBuilder for MergingHnswGraphBuilder {
 
     fn build(&mut self, max_ord: i32) -> Result<&OnHeapHnswGraph> {
         if self.inner.frozen {
-            return Err(crate::error::LuceneError::IllegalState(
+            return Err(crate::error::LuceneError::illegal_state(
                 "This HnswGraphBuilder is frozen and cannot be updated".to_string(),
             ));
         }
@@ -185,6 +181,6 @@ impl HnswBuilder for MergingHnswGraphBuilder {
 
     fn into_completed_graph(mut self: Box<Self>) -> Result<OnHeapHnswGraph> {
         self.inner.get_completed_graph()?;
-        Ok(self.inner.into_graph())
+        self.inner.into_graph()
     }
 }

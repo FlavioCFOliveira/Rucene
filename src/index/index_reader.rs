@@ -232,7 +232,7 @@ impl IndexReaderCore {
     /// Increments the reference count, or returns an error if the reader is closed.
     pub fn inc_ref(&self) -> Result<()> {
         if !self.try_inc_ref() {
-            return Err(LuceneError::AlreadyClosed(
+            return Err(LuceneError::already_closed(
                 "this IndexReader is closed".to_string(),
             ));
         }
@@ -257,7 +257,7 @@ impl IndexReaderCore {
         F: FnOnce() -> Result<()>,
     {
         if self.ref_count.load(Ordering::SeqCst) <= 0 {
-            return Err(LuceneError::AlreadyClosed(
+            return Err(LuceneError::already_closed(
                 "this IndexReader is closed".to_string(),
             ));
         }
@@ -268,7 +268,7 @@ impl IndexReaderCore {
             self.report_close_to_parent_readers();
             close_result
         } else if rc < 0 {
-            Err(LuceneError::IllegalState(format!(
+            Err(LuceneError::illegal_state(format!(
                 "too many decRef calls: refCount is {rc} after decrement"
             )))
         } else {
@@ -279,12 +279,12 @@ impl IndexReaderCore {
     /// Throws an error if this reader or any of its child readers is closed.
     pub fn ensure_open(&self) -> Result<()> {
         if self.ref_count.load(Ordering::SeqCst) <= 0 {
-            return Err(LuceneError::AlreadyClosed(
+            return Err(LuceneError::already_closed(
                 "this IndexReader is closed".to_string(),
             ));
         }
         if self.link.closed_by_child.load(Ordering::SeqCst) {
-            return Err(LuceneError::AlreadyClosed(
+            return Err(LuceneError::already_closed(
                 "this IndexReader cannot be used anymore as one of its child readers was closed"
                     .to_string(),
             ));
@@ -439,7 +439,7 @@ pub trait IndexReader: Send + Sync + Debug + Display + 'static {
     /// succeeded, the first finalizer's exception propagates.
     fn dec_ref(&self) -> Result<()> {
         if self.core().ref_count() <= 0 {
-            return Err(LuceneError::AlreadyClosed(
+            return Err(LuceneError::already_closed(
                 "this IndexReader is closed".to_string(),
             ));
         }
@@ -451,7 +451,7 @@ pub trait IndexReader: Send + Sync + Debug + Display + 'static {
             self.core().report_close_to_parent_readers();
             close_result.and(notify_result)
         } else if rc < 0 {
-            Err(LuceneError::IllegalState(format!(
+            Err(LuceneError::illegal_state(format!(
                 "too many decRef calls: refCount is {rc} after decrement"
             )))
         } else {
@@ -512,13 +512,31 @@ pub trait IndexReader: Send + Sync + Debug + Display + 'static {
     /// answered here by [`build_context`](Self::build_context), which each
     /// reader implements — so the split is between the two `build_context`
     /// bodies rather than between two `getContext` overrides.
-    fn get_context(self: Arc<Self>) -> Arc<dyn IndexReaderContext> {
-        self.build_context(None, 0, 0, 0, 0)
+    ///
+    /// # Errors
+    ///
+    /// [`LuceneError::AlreadyClosed`] from `ensureOpen()`, which both Java
+    /// implementations call first (`CompositeReader.java:93-94`,
+    /// `LeafReader.java:59-60`): `this IndexReader is closed` when this reader
+    /// is closed, and `this IndexReader cannot be used anymore as one of its
+    /// child readers was closed` when a child reader this one was registered
+    /// with as a parent was closed (`IndexReader.java:170-182, 268-280`).
+    fn get_context(self: Arc<Self>) -> Result<Arc<dyn IndexReaderContext>> {
+        self.ensure_open()?;
+        Ok(self.build_context(None, 0, 0, 0, 0))
     }
 
     /// Convenience method returning the top-level leaves of this reader.
-    fn leaves(self: Arc<Self>) -> Vec<Arc<LeafReaderContext>> {
-        self.get_context().leaves()
+    ///
+    /// Equivalent to `IndexReader.leaves()`, which Java declares `final` and
+    /// implements as `getContext().leaves()` (`IndexReader.java:417-419`).
+    ///
+    /// # Errors
+    ///
+    /// As [`get_context`](Self::get_context): a closed reader fails with
+    /// [`LuceneError::AlreadyClosed`].
+    fn leaves(self: Arc<Self>) -> Result<Vec<Arc<LeafReaderContext>>> {
+        Ok(self.get_context()?.leaves())
     }
 }
 

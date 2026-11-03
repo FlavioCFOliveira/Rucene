@@ -18,7 +18,7 @@ therefore re-derives both sides from primary sources --
 -- and reports every divergence. `problems: 0` is the pass condition.
 
 Usage:
-    python3 tools/kg/audit_kg.py rucene --survey /tmp/rucene_kg/survey.json \
+    python3 tools/kg/audit_kg.py rucene --survey <kg-target>/rucene_kg/survey.json \
         [--lucene-root /tmp/lucene1050] [--source-root .] [--expanded-file FILE]
 """
 import argparse
@@ -71,12 +71,29 @@ def java_census(lucene_root: Path):
     return files, top, nested
 
 
+def nested_ported_without_ports(q, ported_ids):
+    """Nested types whose `portState` says `ported` while no `PORTS` edge reaches them.
+
+    `portState = 'ported'` asserts that a Rucene item is the port, and the only
+    thing that asserts it is a `PORTS` edge (`knowledge-model.md`, `portState`).
+    A nested type left `ported` after its last edge was retired is a stale
+    claim, which the per-state counts above cannot show. `ported_ids` is the set
+    of `id(c)` some `PORTS` edge reaches. Returns their qualified names, sorted.
+    """
+    return sorted(qn for cid, qn in q(
+        "MATCH (c:Class) WHERE c.portScope='nested' AND c.portState='ported' "
+        "RETURN id(c), c.qualifiedName") if cid not in ported_ids)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("roadmap")
     ap.add_argument("--survey", required=True)
     ap.add_argument("--lucene-root", default="/tmp/lucene1050")
     ap.add_argument("--source-root", default=".")
+    ap.add_argument("--commit", default="HEAD",
+                    help="the surveyed commit; its history is the Commit census, so a "
+                         "commit landing while the sync runs does not read as a gap")
     ap.add_argument("--expanded-file",
                     help="a captured `-Zunpretty=expanded` dump; without it the "
                          "compiler is run, which needs the nightly toolchain")
@@ -145,8 +162,11 @@ def main():
     for x in sorted(ct_r - gt_r)[:5]:
         print("   MISSING:", x)
 
+    # A `RustFn` node is keyed by `qualifiedName` (`load_rucene_kg.py`), so a fn
+    # declared twice under mutually exclusive `#[cfg]`s is one node; count the
+    # survey by the same key, as the type check above counts by `(name, file)`.
     gfn = q("MATCH (f:RustFn) RETURN count(f)")[0][0]
-    check("crate functions", gfn, len(survey["fns"]))
+    check("crate functions", gfn, len({f["qualifiedName"] for f in survey["fns"]}))
 
     # The compiler's own view, which is what makes the macro-generated types
     # checkable at all.
@@ -192,9 +212,18 @@ def main():
         print(f"   PORTS evidence {str(r[0]):<12} {r[1]}")
     unstated = q("MATCH ()-[e:PORTS]->(:Class) WHERE e.evidence IS NULL RETURN count(e)")[0][0]
     check("PORTS edges without evidence", unstated, 0)
-    both = q("MATCH (a)-[:PORTS]->(c:Class) WITH DISTINCT c "
-             "MATCH (b)-[:PORTS_CANDIDATE]->(c) RETURN count(DISTINCT c)")[0][0]
+    # Two flat reads intersected here, not one statement: the engine runs the
+    # second MATCH of `... WITH DISTINCT c MATCH (b)-[:PORTS_CANDIDATE]->(c)` as
+    # an all-nodes scan per ported type, which exceeds the server's 5-second
+    # statement budget (measured 2026-10-23: >5 s, against 0.03 s for the pair).
+    ported = {r[0] for r in q("MATCH ()-[:PORTS]->(c:Class) RETURN DISTINCT id(c)")}
+    candidate = {r[0] for r in q("MATCH ()-[:PORTS_CANDIDATE]->(c:Class) "
+                                 "RETURN DISTINCT id(c)")}
+    both = len(ported & candidate)
     check("types with both PORTS and PORTS_CANDIDATE", both, 0)
+    stale_ported = nested_ported_without_ports(q, ported)
+    check("nested types 'ported' without a PORTS edge", len(stale_ported), 0,
+          f"{stale_ported[:3]}" if stale_ported else "")
 
     # Every PORTS edge must start at a node the survey confirms -- as a type or
     # as a function, since a free function can be the port of a Lucene class.
@@ -211,11 +240,34 @@ def main():
     print("D. PROVENANCE")
     print("=" * 92)
     gc = q("MATCH (c:Commit) RETURN count(c)")[0][0]
-    real_commits = int(subprocess.run(["git", "rev-list", "--count", "HEAD"],
+    real_commits = int(subprocess.run(["git", "rev-list", "--count", args.commit],
                                       capture_output=True, text=True).stdout.strip())
-    check("Commit nodes", gc, real_commits)
+    # The surveyed commit's history is the floor; a commit landing while the sync
+    # runs may already be mirrored, so the graph may hold more but never fewer.
+    check("Commit nodes (at least the surveyed history)", min(gc, real_commits), real_commits)
     unstamped = q("MATCH (n) WHERE n.gitCommit IS NULL RETURN count(n)")[0][0]
     check("nodes without a provenance stamp", unstamped, 0)
+
+    print()
+    print("=" * 92)
+    print("E. MIRRORS OF THE OTHER SOURCES")
+    print("=" * 92)
+    # rmp: every task is mirrored, and nothing else (#190).
+    import port_coverage_kg as pcov
+    live = {int(t["id"]) for t in pcov.fetch_tasks(args.roadmap)}
+    graph_tasks = {r[0] for r in q("MATCH (t:Task) RETURN t.id")}
+    extra = sorted(graph_tasks - live)
+    missing = sorted(live - graph_tasks)
+    check("Task nodes rmp does not have", len(extra), 0, f"{extra[:5]}" if extra else "")
+    check("rmp tasks without a Task node", len(missing), 0, f"{missing[:5]}" if missing else "")
+    # The crate's declared divergences (CLAUDE.md 14.5): one node per paragraph.
+    import divergences_kg as dv
+    declared = {d["id"] for d in dv.scan_tree(Path(args.source_root))}
+    graph_divs = {r[0] for r in q("MATCH (d:Divergence) RETURN d.id")}
+    check("declared divergences without a Divergence node", len(declared - graph_divs), 0,
+          f"{sorted(declared - graph_divs)[:3]}" if declared - graph_divs else "")
+    check("Divergence nodes the crate no longer declares", len(graph_divs - declared), 0,
+          f"{sorted(graph_divs - declared)[:3]}" if graph_divs - declared else "")
 
     print()
     print(f"problems: {len(problems)}")

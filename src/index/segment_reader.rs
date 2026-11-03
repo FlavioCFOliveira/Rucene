@@ -45,7 +45,7 @@ use crate::index::{
 use crate::search::knn::KnnCollector;
 use crate::search::AcceptDocs;
 use crate::store::{Directory, IOContext, READONCE_IO_CONTEXT};
-use crate::util::Bits;
+use crate::util::{Bits, RefCount, RefCountRelease};
 
 // -----------------------------------------------------------------------------
 // SegmentCoreReaders
@@ -94,7 +94,7 @@ impl SegmentCoreReaders {
         let codec = si
             .info
             .codec()
-            .ok_or_else(|| LuceneError::IllegalState("segment has no codec".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_state("segment has no codec".to_string()))?;
 
         let cfs_reader: Option<Box<dyn CompoundDirectory>> = if si.info.get_use_compound_file() {
             Some(codec.compound_format().get_compound_reader(dir, &si.info)?)
@@ -119,7 +119,7 @@ impl SegmentCoreReaders {
 
         let result: Result<()> = (|| {
             let cfs_dir_guard = core.cfs_reader.read().map_err(|_| {
-                LuceneError::IllegalState("compound file reader lock poisoned".to_string())
+                LuceneError::illegal_state("compound file reader lock poisoned".to_string())
             })?;
             let cfs_dir: &dyn Directory = if let Some(cfs) = cfs_dir_guard.as_ref() {
                 cfs.as_ref()
@@ -140,7 +140,7 @@ impl SegmentCoreReaders {
 
             if core.core_field_infos.has_postings() {
                 *core.fields.write().map_err(|_| {
-                    LuceneError::IllegalState("fields producer lock poisoned".to_string())
+                    LuceneError::illegal_state("fields producer lock poisoned".to_string())
                 })? = Some(Arc::from(
                     codec
                         .postings_format()
@@ -150,14 +150,14 @@ impl SegmentCoreReaders {
 
             if core.core_field_infos.has_norms() {
                 *core.norms_producer.write().map_err(|_| {
-                    LuceneError::IllegalState("norms producer lock poisoned".to_string())
+                    LuceneError::illegal_state("norms producer lock poisoned".to_string())
                 })? = Some(Arc::from(
                     codec.norms_format().norms_producer(&segment_read_state)?,
                 ));
             }
 
             *core.fields_reader_orig.write().map_err(|_| {
-                LuceneError::IllegalState("stored fields reader lock poisoned".to_string())
+                LuceneError::illegal_state("stored fields reader lock poisoned".to_string())
             })? = Some(codec.stored_fields_format().fields_reader(
                 cfs_dir,
                 &si.info,
@@ -167,7 +167,7 @@ impl SegmentCoreReaders {
 
             if core.core_field_infos.has_term_vectors() {
                 *core.term_vectors_reader_orig.write().map_err(|_| {
-                    LuceneError::IllegalState("term vectors reader lock poisoned".to_string())
+                    LuceneError::illegal_state("term vectors reader lock poisoned".to_string())
                 })? = Some(codec.term_vectors_format().vectors_reader(
                     cfs_dir,
                     &si.info,
@@ -178,7 +178,7 @@ impl SegmentCoreReaders {
 
             if core.core_field_infos.has_point_values() {
                 *core.points_reader.write().map_err(|_| {
-                    LuceneError::IllegalState("points reader lock poisoned".to_string())
+                    LuceneError::illegal_state("points reader lock poisoned".to_string())
                 })? = Some(Arc::from(
                     codec.points_format().fields_reader(&segment_read_state)?,
                 ));
@@ -186,7 +186,7 @@ impl SegmentCoreReaders {
 
             if core.core_field_infos.has_vector_values() {
                 *core.knn_vectors_reader.write().map_err(|_| {
-                    LuceneError::IllegalState("knn vectors reader lock poisoned".to_string())
+                    LuceneError::illegal_state("knn vectors reader lock poisoned".to_string())
                 })? = Some(Arc::from(
                     codec
                         .knn_vectors_format()
@@ -236,7 +236,7 @@ impl SegmentCoreReaders {
                 Err(actual) => count = actual,
             }
         }
-        Err(LuceneError::AlreadyClosed(
+        Err(LuceneError::already_closed(
             "SegmentCoreReaders is already closed".to_string(),
         ))
     }
@@ -246,61 +246,68 @@ impl SegmentCoreReaders {
     pub fn dec_ref(&self) -> Result<()> {
         let rc = self.ref_count.fetch_sub(1, Ordering::SeqCst) - 1;
         if rc == 0 {
-            let listener_result = self.notify_core_closed_listeners();
-            let close_result = self.close_producers();
-            listener_result?;
-            return close_result;
+            // `try (Closeable finalizer = this::notifyCoreClosedListeners) {
+            // IOUtils.close(...); }` (`SegmentCoreReaders.java:170-181`): the
+            // producers close first and the listeners are notified after,
+            // however the closing ends — with an error, or with the panic
+            // that is the port's form of an unchecked throwable. A failure to
+            // close wins, the listeners' failure then being suppressed.
+            let closed =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.close_producers()));
+            let notified = if matches!(closed, Ok(Ok(()))) {
+                self.notify_core_closed_listeners()
+            } else {
+                // The finalizer's failure, error or panic, is suppressed.
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    self.notify_core_closed_listeners()
+                }))
+                .unwrap_or(Ok(()))
+            };
+            match closed {
+                Ok(closed) => closed?,
+                Err(payload) => std::panic::resume_unwind(payload),
+            }
+            return notified;
         } else if rc < 0 {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "too many decRef calls: refCount is {rc} after decrement"
             )));
         }
         Ok(())
     }
 
+    /// `IOUtils.close(fields, termVectorsReaderOrig, fieldsReaderOrig,
+    /// cfsReader, normsProducer, pointsReader, knnVectorsReader)`
+    /// (`SegmentCoreReaders.java:172-179`): every one is closed, in Java's
+    /// order, and the first failure is returned.
     fn close_producers(&self) -> Result<()> {
-        let mut first_error: Option<LuceneError> = None;
-
-        let mut record = |result: Result<()>| {
-            if let Err(err) = result {
-                if first_error.is_none() {
-                    first_error = Some(err);
-                }
-            }
-        };
-
-        record(close_lock_arc(&self.fields, |producer| producer.close()));
-        record(close_lock_arc(&self.norms_producer, |producer| {
-            producer.close()
-        }));
-        record(close_lock(&self.fields_reader_orig, |reader| {
-            reader.close()
-        }));
-        record(close_lock(&self.term_vectors_reader_orig, |reader| {
-            reader.close()
-        }));
-        record(close_lock_arc(&self.points_reader, |producer| {
-            producer.close()
-        }));
-        record(close_lock_arc(&self.knn_vectors_reader, |producer| {
-            producer.close()
-        }));
-
-        if let Ok(mut guard) = self.cfs_reader.write() {
-            if let Some(mut reader) = guard.take() {
-                record(reader.close());
-            }
-        }
-
-        match first_error {
-            Some(err) => Err(err),
-            None => Ok(()),
-        }
+        use crate::util::IOUtils;
+        IOUtils::close([
+            IOUtils::closeable(|| close_lock_arc(&self.fields, |producer| producer.close())),
+            IOUtils::closeable(|| {
+                close_lock(&self.term_vectors_reader_orig, |reader| reader.close())
+            }),
+            IOUtils::closeable(|| close_lock(&self.fields_reader_orig, |reader| reader.close())),
+            IOUtils::closeable(|| match self.cfs_reader.write() {
+                Ok(mut guard) => match guard.take() {
+                    Some(mut reader) => reader.close(),
+                    None => Ok(()),
+                },
+                Err(_) => Ok(()),
+            }),
+            IOUtils::closeable(|| {
+                close_lock_arc(&self.norms_producer, |producer| producer.close())
+            }),
+            IOUtils::closeable(|| close_lock_arc(&self.points_reader, |producer| producer.close())),
+            IOUtils::closeable(|| {
+                close_lock_arc(&self.knn_vectors_reader, |producer| producer.close())
+            }),
+        ])
     }
 
     fn notify_core_closed_listeners(&self) -> Result<()> {
         let guard = self.core_closed_listeners.lock().map_err(|_| {
-            LuceneError::IllegalState("core closed listeners lock poisoned".to_string())
+            LuceneError::illegal_state("core closed listeners lock poisoned".to_string())
         })?;
         for listener in guard.iter() {
             listener.on_close(CacheKey)?;
@@ -320,7 +327,7 @@ fn close_lock<T>(
 ) -> Result<()> {
     let mut guard = lock
         .write()
-        .map_err(|_| LuceneError::IllegalState("codec reader lock poisoned".to_string()))?;
+        .map_err(|_| LuceneError::illegal_state("codec reader lock poisoned".to_string()))?;
     if let Some(mut value) = guard.take() {
         close(&mut value)?;
     }
@@ -340,7 +347,7 @@ fn close_lock_arc<T: ?Sized>(
 ) -> Result<()> {
     let mut guard = lock
         .write()
-        .map_err(|_| LuceneError::IllegalState("codec reader lock poisoned".to_string()))?;
+        .map_err(|_| LuceneError::illegal_state("codec reader lock poisoned".to_string()))?;
     if let Some(mut value) = guard.take() {
         if let Some(inner) = Arc::get_mut(&mut value) {
             close(inner)?;
@@ -353,7 +360,7 @@ fn close_lock_arc<T: ?Sized>(
 fn check_lock<T>(lock: &RwLock<Option<T>>, mut check: impl FnMut(&T) -> Result<()>) -> Result<()> {
     let guard = lock
         .read()
-        .map_err(|_| LuceneError::IllegalState("codec reader lock poisoned".to_string()))?;
+        .map_err(|_| LuceneError::illegal_state("codec reader lock poisoned".to_string()))?;
     if let Some(ref value) = *guard {
         check(value)?;
     }
@@ -396,25 +403,56 @@ impl CacheHelper for SegmentCoreReaders {
 // SegmentDocValues
 // -----------------------------------------------------------------------------
 
+/// The reference-counted producers of a [`SegmentDocValues`], by generation.
+///
+/// Equivalent to `SegmentDocValues.genDVProducers`, a
+/// `LongObjectHashMap<RefCount<DocValuesProducer>>`.
+type GenProducers = HashMap<i64, Arc<RefCount<Arc<SharedDocValuesProducer>>>>;
+
 /// Manages the [`DocValuesProducer`]s held by `SegmentReader`s and keeps track
 /// of their reference counts.
 ///
 /// Equivalent to `org.apache.lucene.index.SegmentDocValues`.
-#[derive(Debug)]
+///
+/// Java's two methods are `synchronized` on the instance, and the anonymous
+/// `RefCount.release()` of each producer takes that same monitor again to
+/// drop its generation from the map (`SegmentDocValues.java:56-63`). A Rust
+/// `Mutex` is not reentrant, so the one monitor becomes two locks: `monitor`,
+/// held for the whole of [`get_doc_values_producer`](Self::get_doc_values_producer)
+/// and [`dec_ref`](Self::dec_ref), and the map's own lock, taken briefly
+/// for each read or write of the map — including the one `release()` makes
+/// while `dec_ref` holds the monitor. Every change to the map therefore still
+/// happens under the monitor, as in Java.
+#[derive(Debug, Default)]
 pub struct SegmentDocValues {
-    gen_producers: Mutex<HashMap<i64, Arc<DocValuesProducerHolder>>>,
+    monitor: Mutex<()>,
+    gen_dv_producers: Arc<Mutex<GenProducers>>,
 }
 
 impl SegmentDocValues {
     /// Creates an empty manager.
     pub fn new() -> Self {
-        Self {
-            gen_producers: Mutex::new(HashMap::new()),
-        }
+        Self::default()
+    }
+
+    /// Locks the producer map for one read or write.
+    fn producers(map: &Mutex<GenProducers>) -> std::sync::MutexGuard<'_, GenProducers> {
+        map.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Returns the doc-values producer for the given generation, creating and
     /// caching it if necessary.
+    ///
+    /// Equivalent to the `synchronized`
+    /// `SegmentDocValues.getDocValuesProducer(long, SegmentCommitInfo,
+    /// Directory, FieldInfos)` (`SegmentDocValues.java:67-79`): a cached
+    /// producer gets `incRef()`, a new one starts at a count of one, and the
+    /// caller receives `dvp.get()`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the error opening a new producer raises.
     pub fn get_doc_values_producer(
         &self,
         gen: i64,
@@ -422,23 +460,27 @@ impl SegmentDocValues {
         dir: &dyn Directory,
         infos: &FieldInfos,
     ) -> Result<Arc<dyn DocValuesProducer>> {
-        let mut map = self.gen_producers.lock().map_err(|_| {
-            LuceneError::IllegalState("segment doc-values producer map lock poisoned".to_string())
-        })?;
-
-        if let Some(holder) = map.get(&gen) {
-            holder.inc_ref()?;
-            return Ok(Arc::clone(holder) as Arc<dyn DocValuesProducer>);
-        }
-
-        let holder = Self::new_doc_values_producer(si, dir, gen, infos)?;
-        let cloned = Arc::clone(&holder) as Arc<dyn DocValuesProducer>;
-        map.insert(gen, holder);
-        Ok(cloned)
+        let _monitor = self
+            .monitor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cached = Self::producers(&self.gen_dv_producers).get(&gen).cloned();
+        let dvp = match cached {
+            Some(dvp) => {
+                dvp.inc_ref();
+                dvp
+            }
+            None => {
+                let dvp = self.new_doc_values_producer(si, dir, gen, infos)?;
+                Self::producers(&self.gen_dv_producers).insert(gen, Arc::clone(&dvp));
+                dvp
+            }
+        };
+        Ok(Arc::clone(dvp.get()) as Arc<dyn DocValuesProducer>)
     }
 
     /// Opens the doc-values producer of generation `gen`, wrapped in the
-    /// reference-counting holder this manager caches.
+    /// [`RefCount`] this manager caches.
     ///
     /// Generation `-1` is the segment's own doc values, read from `dir` with no
     /// segment suffix; any other generation was written by a doc-values update,
@@ -446,12 +488,10 @@ impl SegmentDocValues {
     /// segment's own directory under the base-36 generation suffix.
     ///
     /// Equivalent to the private
-    /// `SegmentDocValues.newDocValuesProducer(SegmentCommitInfo, Directory, long, FieldInfos)`.
-    /// Java's holder is an anonymous `RefCount<DocValuesProducer>` whose
-    /// `release()` closes the producer and drops the generation from the map;
-    /// [`DocValuesProducerHolder`] does both, driven from
-    /// [`SegmentDocValues::dec_ref`], because a Rust closure cannot reach back
-    /// into the map the caller is holding locked.
+    /// `SegmentDocValues.newDocValuesProducer(SegmentCommitInfo, Directory, long, FieldInfos)`
+    /// (`SegmentDocValues.java:35-64`), whose anonymous `RefCount` subclass
+    /// overrides `release()` to close the producer and then drop `gen` from
+    /// the map; the override is the release closure here.
     ///
     /// # Errors
     ///
@@ -459,11 +499,12 @@ impl SegmentDocValues {
     /// and propagates whatever the doc-values format raises while opening the
     /// generation's files.
     fn new_doc_values_producer(
+        &self,
         si: &SegmentCommitInfo,
         dir: &dyn Directory,
         gen: i64,
         infos: &FieldInfos,
-    ) -> Result<Arc<DocValuesProducerHolder>> {
+    ) -> Result<Arc<RefCount<Arc<SharedDocValuesProducer>>>> {
         let (dv_dir, segment_suffix): (&dyn Directory, String) = if gen == -1 {
             (dir, String::new())
         } else {
@@ -484,210 +525,229 @@ impl SegmentDocValues {
         let codec = si
             .info
             .codec()
-            .ok_or_else(|| LuceneError::IllegalState("segment has no codec".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_state("segment has no codec".to_string()))?;
         let producer = codec.doc_values_format().fields_producer(&state)?;
-        Ok(Arc::new(DocValuesProducerHolder::new(producer)?))
+        Ok(self.ref_counted(gen, producer))
+    }
+
+    /// The anonymous `RefCount<DocValuesProducer>` subclass of
+    /// `newDocValuesProducer` (`SegmentDocValues.java:53-63`) over `producer`:
+    /// a count of one, and a `release()` that closes the producer and then,
+    /// under the monitor its caller holds, drops `gen` from the map.
+    fn ref_counted(
+        &self,
+        gen: i64,
+        producer: Box<dyn DocValuesProducer>,
+    ) -> Arc<RefCount<Arc<SharedDocValuesProducer>>> {
+        let gen_dv_producers = Arc::downgrade(&self.gen_dv_producers);
+        let release: RefCountRelease<Arc<SharedDocValuesProducer>> =
+            Box::new(move |object: &Arc<SharedDocValuesProducer>| {
+                // `object.close(); synchronized (SegmentDocValues.this) {
+                // genDVProducers.remove(gen); }`
+                object.close_shared()?;
+                if let Some(map) = gen_dv_producers.upgrade() {
+                    Self::producers(&map).remove(&gen);
+                }
+                Ok(())
+            });
+        Arc::new(RefCount::with_release(
+            Arc::new(SharedDocValuesProducer::new(producer)),
+            release,
+        ))
     }
 
     /// Decrements the reference counts for the given doc-values producer
-    /// generations. When a generation's count reaches zero, the producer is
-    /// closed and removed from the cache.
+    /// generations. When a generation's count reaches zero, its release closes
+    /// the producer and removes it from the cache.
+    ///
+    /// Equivalent to the `synchronized` `SegmentDocValues.decRef(LongArrayList)`
+    /// (`SegmentDocValues.java:82-90`), which applies `decRef()` to every
+    /// generation with `IOUtils.applyToAll`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first error a release raised, the later ones suppressed
+    /// into it, as `IOUtils.applyToAll` does; a failed release puts its
+    /// reference back, as `RefCount.decRef` does.
     pub fn dec_ref(&self, gens: &[i64]) -> Result<()> {
-        let mut map = self.gen_producers.lock().map_err(|_| {
-            LuceneError::IllegalState("segment doc-values producer map lock poisoned".to_string())
-        })?;
-
-        for gen in gens {
-            if let Some(holder) = map.get(gen) {
-                let new_count = holder.dec_ref()?;
-                if new_count == 0 {
-                    // Close the producer while we still hold the map entry, so
-                    // that teardown happens eagerly during SegmentReader::close
-                    // rather than waiting for the last Arc clone to drop.
-                    holder.close_holder();
-                    map.remove(gen);
-                }
+        let _monitor = self
+            .monitor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::util::IOUtils::apply_to_all(gens.iter().map(|gen| Some(*gen)).collect(), |gen| {
+            let dvp = Self::producers(&self.gen_dv_producers).get(&gen).cloned();
+            // `assert dvp != null : "gen=" + gen`.
+            debug_assert!(dvp.is_some(), "gen={gen}");
+            match dvp {
+                Some(dvp) => dvp.dec_ref(),
+                None => Ok(()),
             }
+        })
+    }
+}
+
+/// A doc-values producer that the readers of a segment share and that its
+/// [`RefCount`] release closes.
+///
+/// **Divergence from Lucene 10.5.0.** Java's `RefCount.release()` calls
+/// `object.close()` on the very producer every reader holds
+/// (`SegmentDocValues.java:56-58`). Rust's [`DocValuesProducer::close`] needs
+/// exclusive access, which a shared producer does not grant, so the shared
+/// producer sits in a closable slot: closing takes it out, and a reader that
+/// still calls it afterwards gets the already-closed error Java's closed
+/// inputs raise.
+#[derive(Debug)]
+struct SharedDocValuesProducer {
+    producer: RwLock<Option<Box<dyn DocValuesProducer>>>,
+}
+
+impl SharedDocValuesProducer {
+    fn new(producer: Box<dyn DocValuesProducer>) -> Self {
+        Self {
+            producer: RwLock::new(Some(producer)),
         }
+    }
+
+    /// Closes the producer, as `object.close()` does in the release.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the producer's close error; the producer then stays in its
+    /// slot, as Java's stays referenced.
+    fn close_shared(&self) -> Result<()> {
+        let mut guard = self
+            .producer
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(producer) = guard.as_mut() {
+            producer.close()?;
+        }
+        *guard = None;
         Ok(())
     }
 }
 
-impl Default for SegmentDocValues {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Holder that wraps a single doc-values producer with explicit reference
-/// counting and safe close-on-drop semantics.
-#[derive(Debug)]
-struct DocValuesProducerHolder {
-    producer: Mutex<Option<Box<dyn DocValuesProducer>>>,
-    ref_count: AtomicI32,
-}
-
-impl DocValuesProducerHolder {
-    fn new(producer: Box<dyn DocValuesProducer>) -> Result<Self> {
-        Ok(Self {
-            producer: Mutex::new(Some(producer)),
-            ref_count: AtomicI32::new(1),
-        })
-    }
-
-    fn inc_ref(&self) -> Result<()> {
-        let mut count = self.ref_count.load(Ordering::SeqCst);
-        while count > 0 {
-            match self.ref_count.compare_exchange_weak(
-                count,
-                count + 1,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            ) {
-                Ok(_) => return Ok(()),
-                Err(actual) => count = actual,
-            }
-        }
-        Err(LuceneError::AlreadyClosed(
-            "DocValuesProducer is already closed".to_string(),
-        ))
-    }
-
-    fn dec_ref(&self) -> Result<i32> {
-        let rc = self.ref_count.fetch_sub(1, Ordering::SeqCst) - 1;
-        if rc < 0 {
-            return Err(LuceneError::IllegalState(
-                "too many decRef calls on DocValuesProducer".to_string(),
-            ));
-        }
-        Ok(rc)
-    }
-
-    fn close_holder(&self) {
-        if let Ok(mut guard) = self.producer.lock() {
-            if let Some(mut producer) = guard.take() {
-                // Best-effort close; errors on teardown are swallowed because
-                // there is no caller to report them to.
-                let _ = producer.close();
+impl DocValuesProducer for SharedDocValuesProducer {
+    fn get_numeric(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+        {
+            let guard = self.producer.read().map_err(|_| {
+                LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
+            })?;
+            if let Some(producer) = guard.as_ref() {
+                producer.get_numeric(field)
+            } else {
+                Err(LuceneError::already_closed(
+                    "doc-values producer is closed".to_string(),
+                ))
             }
         }
     }
-}
 
-impl Drop for DocValuesProducerHolder {
-    fn drop(&mut self) {
-        self.close_holder();
-    }
-}
-
-impl DocValuesProducer for DocValuesProducerHolder {
-    fn get_numeric(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
-        let guard = self.producer.lock().map_err(|_| {
-            LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
-        })?;
-        if let Some(producer) = guard.as_ref() {
-            producer.get_numeric(field)
-        } else {
-            Err(LuceneError::AlreadyClosed(
-                "doc-values producer is closed".to_string(),
-            ))
+    fn get_binary(&self, field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
+        {
+            let guard = self.producer.read().map_err(|_| {
+                LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
+            })?;
+            if let Some(producer) = guard.as_ref() {
+                producer.get_binary(field)
+            } else {
+                Err(LuceneError::already_closed(
+                    "doc-values producer is closed".to_string(),
+                ))
+            }
         }
     }
 
-    fn get_binary(&self, field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>> {
-        let guard = self.producer.lock().map_err(|_| {
-            LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
-        })?;
-        if let Some(producer) = guard.as_ref() {
-            producer.get_binary(field)
-        } else {
-            Err(LuceneError::AlreadyClosed(
-                "doc-values producer is closed".to_string(),
-            ))
+    fn get_sorted(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
+        {
+            let guard = self.producer.read().map_err(|_| {
+                LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
+            })?;
+            if let Some(producer) = guard.as_ref() {
+                producer.get_sorted(field)
+            } else {
+                Err(LuceneError::already_closed(
+                    "doc-values producer is closed".to_string(),
+                ))
+            }
         }
     }
 
-    fn get_sorted(&self, field: &FieldInfo) -> Result<Box<dyn SortedDocValues>> {
-        let guard = self.producer.lock().map_err(|_| {
-            LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
-        })?;
-        if let Some(producer) = guard.as_ref() {
-            producer.get_sorted(field)
-        } else {
-            Err(LuceneError::AlreadyClosed(
-                "doc-values producer is closed".to_string(),
-            ))
+    fn get_sorted_numeric(
+        &self,
+        field: &FieldInfo,
+    ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+        {
+            let guard = self.producer.read().map_err(|_| {
+                LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
+            })?;
+            if let Some(producer) = guard.as_ref() {
+                producer.get_sorted_numeric(field)
+            } else {
+                Err(LuceneError::already_closed(
+                    "doc-values producer is closed".to_string(),
+                ))
+            }
         }
     }
 
-    fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>> {
-        let guard = self.producer.lock().map_err(|_| {
-            LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
-        })?;
-        if let Some(producer) = guard.as_ref() {
-            producer.get_sorted_numeric(field)
-        } else {
-            Err(LuceneError::AlreadyClosed(
-                "doc-values producer is closed".to_string(),
-            ))
+    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+        {
+            let guard = self.producer.read().map_err(|_| {
+                LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
+            })?;
+            if let Some(producer) = guard.as_ref() {
+                producer.get_sorted_set(field)
+            } else {
+                Err(LuceneError::already_closed(
+                    "doc-values producer is closed".to_string(),
+                ))
+            }
         }
     }
 
-    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>> {
-        let guard = self.producer.lock().map_err(|_| {
-            LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
-        })?;
-        if let Some(producer) = guard.as_ref() {
-            producer.get_sorted_set(field)
-        } else {
-            Err(LuceneError::AlreadyClosed(
-                "doc-values producer is closed".to_string(),
-            ))
-        }
-    }
-
-    fn get_skipper(&self, field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>> {
-        let guard = self.producer.lock().map_err(|_| {
-            LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
+    fn get_skipper(&self, field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
+        let guard = self.producer.read().map_err(|_| {
+            LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
         })?;
         if let Some(producer) = guard.as_ref() {
             producer.get_skipper(field)
         } else {
-            Err(LuceneError::AlreadyClosed(
+            Err(LuceneError::already_closed(
                 "doc-values producer is closed".to_string(),
             ))
         }
     }
 
     fn check_integrity(&self) -> Result<()> {
-        let guard = self.producer.lock().map_err(|_| {
-            LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
+        let guard = self.producer.read().map_err(|_| {
+            LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
         })?;
         if let Some(producer) = guard.as_ref() {
             producer.check_integrity()
         } else {
-            Err(LuceneError::AlreadyClosed(
+            Err(LuceneError::already_closed(
                 "doc-values producer is closed".to_string(),
             ))
         }
     }
 
     fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
-        let guard = self.producer.lock().map_err(|_| {
-            LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
+        let guard = self.producer.read().map_err(|_| {
+            LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
         })?;
         if let Some(producer) = guard.as_ref() {
             producer.get_merge_instance()
         } else {
-            Err(LuceneError::AlreadyClosed(
+            Err(LuceneError::already_closed(
                 "doc-values producer is closed".to_string(),
             ))
         }
     }
 
     fn close(&mut self) -> Result<()> {
-        let mut guard = self.producer.lock().map_err(|_| {
-            LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
+        let mut guard = self.producer.write().map_err(|_| {
+            LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
         })?;
         if let Some(mut producer) = guard.take() {
             producer.close()?;
@@ -779,67 +839,83 @@ impl SegmentDocValuesProducer {
 }
 
 impl DocValuesProducer for SegmentDocValuesProducer {
-    fn get_numeric(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
-        self.dv_producers_by_field
-            .get(&field.number)
-            .ok_or_else(|| {
-                LuceneError::IllegalArgument(format!(
-                    "no doc-values producer for field {}",
-                    field.name
-                ))
-            })?
-            .get_numeric(field)
+    fn get_numeric(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+        {
+            self.dv_producers_by_field
+                .get(&field.number)
+                .ok_or_else(|| {
+                    LuceneError::IllegalArgument(format!(
+                        "no doc-values producer for field {}",
+                        field.name
+                    ))
+                })?
+                .get_numeric(field)
+        }
     }
 
-    fn get_binary(&self, field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>> {
-        self.dv_producers_by_field
-            .get(&field.number)
-            .ok_or_else(|| {
-                LuceneError::IllegalArgument(format!(
-                    "no doc-values producer for field {}",
-                    field.name
-                ))
-            })?
-            .get_binary(field)
+    fn get_binary(&self, field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
+        {
+            self.dv_producers_by_field
+                .get(&field.number)
+                .ok_or_else(|| {
+                    LuceneError::IllegalArgument(format!(
+                        "no doc-values producer for field {}",
+                        field.name
+                    ))
+                })?
+                .get_binary(field)
+        }
     }
 
-    fn get_sorted(&self, field: &FieldInfo) -> Result<Box<dyn SortedDocValues>> {
-        self.dv_producers_by_field
-            .get(&field.number)
-            .ok_or_else(|| {
-                LuceneError::IllegalArgument(format!(
-                    "no doc-values producer for field {}",
-                    field.name
-                ))
-            })?
-            .get_sorted(field)
+    fn get_sorted(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
+        {
+            self.dv_producers_by_field
+                .get(&field.number)
+                .ok_or_else(|| {
+                    LuceneError::IllegalArgument(format!(
+                        "no doc-values producer for field {}",
+                        field.name
+                    ))
+                })?
+                .get_sorted(field)
+        }
     }
 
-    fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>> {
-        self.dv_producers_by_field
-            .get(&field.number)
-            .ok_or_else(|| {
-                LuceneError::IllegalArgument(format!(
-                    "no doc-values producer for field {}",
-                    field.name
-                ))
-            })?
-            .get_sorted_numeric(field)
+    fn get_sorted_numeric(
+        &self,
+        field: &FieldInfo,
+    ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+        {
+            self.dv_producers_by_field
+                .get(&field.number)
+                .ok_or_else(|| {
+                    LuceneError::IllegalArgument(format!(
+                        "no doc-values producer for field {}",
+                        field.name
+                    ))
+                })?
+                .get_sorted_numeric(field)
+        }
     }
 
-    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>> {
-        self.dv_producers_by_field
-            .get(&field.number)
-            .ok_or_else(|| {
-                LuceneError::IllegalArgument(format!(
-                    "no doc-values producer for field {}",
-                    field.name
-                ))
-            })?
-            .get_sorted_set(field)
+    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+        {
+            self.dv_producers_by_field
+                .get(&field.number)
+                .ok_or_else(|| {
+                    LuceneError::IllegalArgument(format!(
+                        "no doc-values producer for field {}",
+                        field.name
+                    ))
+                })?
+                .get_sorted_set(field)
+        }
     }
 
-    fn get_skipper(&self, field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>> {
+    /// Equivalent to `SegmentDocValuesProducer.getSkipper(FieldInfo)`
+    /// (`index/SegmentDocValuesProducer.java:126-131`): the answer of the
+    /// producer serving the field, `None` included.
+    fn get_skipper(&self, field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
         self.dv_producers_by_field
             .get(&field.number)
             .ok_or_else(|| {
@@ -968,7 +1044,7 @@ impl LeafReader for DocValuesLeafReader {
     ) -> Result<Option<Box<dyn IndexNumericDocValues>>> {
         if let Some(fi) = self.field_infos.field_info(field) {
             if fi.doc_values_type == DocValuesType::NUMERIC {
-                return Ok(Some(self.doc_values_producer.get_numeric(fi)?));
+                return self.doc_values_producer.get_numeric(fi);
             }
         }
         Ok(None)
@@ -977,7 +1053,7 @@ impl LeafReader for DocValuesLeafReader {
     fn get_binary_doc_values(&self, field: &str) -> Result<Option<Box<dyn IndexBinaryDocValues>>> {
         if let Some(fi) = self.field_infos.field_info(field) {
             if fi.doc_values_type == DocValuesType::BINARY {
-                return Ok(Some(self.doc_values_producer.get_binary(fi)?));
+                return self.doc_values_producer.get_binary(fi);
             }
         }
         Ok(None)
@@ -986,7 +1062,7 @@ impl LeafReader for DocValuesLeafReader {
     fn get_sorted_doc_values(&self, field: &str) -> Result<Option<Box<dyn IndexSortedDocValues>>> {
         if let Some(fi) = self.field_infos.field_info(field) {
             if fi.doc_values_type == DocValuesType::SORTED {
-                return Ok(Some(self.doc_values_producer.get_sorted(fi)?));
+                return self.doc_values_producer.get_sorted(fi);
             }
         }
         Ok(None)
@@ -998,7 +1074,7 @@ impl LeafReader for DocValuesLeafReader {
     ) -> Result<Option<Box<dyn IndexSortedNumericDocValues>>> {
         if let Some(fi) = self.field_infos.field_info(field) {
             if fi.doc_values_type == DocValuesType::SORTED_NUMERIC {
-                return Ok(Some(self.doc_values_producer.get_sorted_numeric(fi)?));
+                return self.doc_values_producer.get_sorted_numeric(fi);
             }
         }
         Ok(None)
@@ -1010,7 +1086,7 @@ impl LeafReader for DocValuesLeafReader {
     ) -> Result<Option<Box<dyn IndexSortedSetDocValues>>> {
         if let Some(fi) = self.field_infos.field_info(field) {
             if fi.doc_values_type == DocValuesType::SORTED_SET {
-                return Ok(Some(self.doc_values_producer.get_sorted_set(fi)?));
+                return self.doc_values_producer.get_sorted_set(fi);
             }
         }
         Ok(None)
@@ -1026,7 +1102,7 @@ impl LeafReader for DocValuesLeafReader {
     ) -> Result<Option<Box<dyn IndexDocValuesSkipper>>> {
         if let Some(fi) = self.field_infos.field_info(field) {
             if fi.doc_values_skip_index_type != crate::index::DocValuesSkipIndexType::NONE {
-                return Ok(Some(self.doc_values_producer.get_skipper(fi)?));
+                return self.doc_values_producer.get_skipper(fi);
             }
         }
         Ok(None)
@@ -1159,10 +1235,17 @@ impl SegmentReader {
         let original_si = segment_info;
         let dir: &dyn Directory = &*original_si.info.directory;
 
+        // `si.info.getIndexSort()` is `null` for a segment without an index
+        // sort (`SegmentReader.java:85-90`); this port's `SegmentInfo` stands
+        // for that `null` with the relevance sort `Sort::new()`, which no index
+        // can be sorted by, so it maps back to `None` here. Handing it on
+        // made a relevance search look like a prefix of the index sort, and
+        // `TopFieldCollector` then terminated its leaves early.
+        let index_sort = original_si.info.index_sort();
         let meta_data = LeafMetaData::new(
             created_version_major,
             original_si.info.min_version(),
-            Some(original_si.info.index_sort().clone()),
+            (*index_sort != crate::search::Sort::new()).then(|| index_sort.clone()),
             original_si.info.get_has_blocks(),
         )?;
 
@@ -1180,7 +1263,7 @@ impl SegmentReader {
 
                 let live_docs = if original_si_for_closure.has_deletions() {
                     let codec = original_si_for_closure.info.codec().ok_or_else(|| {
-                        LuceneError::IllegalState("segment has no codec".to_string())
+                        LuceneError::illegal_state("segment has no codec".to_string())
                     })?;
                     Some(SharedBits::new(codec.live_docs_format().read_live_docs(
                         dir,
@@ -1203,7 +1286,7 @@ impl SegmentReader {
                 ));
 
                 let cfs_dir_guard = core_readers.cfs_reader.read().map_err(|_| {
-                    LuceneError::IllegalState("compound file reader lock poisoned".to_string())
+                    LuceneError::illegal_state("compound file reader lock poisoned".to_string())
                 })?;
                 let cfs_dir: &dyn Directory = if let Some(cfs) = cfs_dir_guard.as_ref() {
                     cfs.as_ref()
@@ -1313,7 +1396,7 @@ impl SegmentReader {
 
                 let dir: &dyn Directory = &*original_si_for_closure.info.directory;
                 let cfs_dir_guard = core_readers.cfs_reader.read().map_err(|_| {
-                    LuceneError::IllegalState("compound file reader lock poisoned".to_string())
+                    LuceneError::illegal_state("compound file reader lock poisoned".to_string())
                 })?;
                 let cfs_dir: &dyn Directory = if let Some(cfs) = cfs_dir_guard.as_ref() {
                     cfs.as_ref()
@@ -1374,7 +1457,7 @@ impl SegmentReader {
             let codec = si
                 .info
                 .codec()
-                .ok_or_else(|| LuceneError::IllegalState("segment has no codec".to_string()))?;
+                .ok_or_else(|| LuceneError::illegal_state("segment has no codec".to_string()))?;
             let segment_suffix = radix36(si.get_field_infos_gen());
             codec
                 .field_infos_format()
@@ -1417,11 +1500,6 @@ impl SegmentReader {
         self.core.ensure_open()
     }
 
-    /// Returns the field infos for this segment.
-    pub fn get_field_infos_ref(&self) -> &FieldInfos {
-        &self.field_infos
-    }
-
     /// Returns the name of the segment this reader is reading.
     pub fn get_segment_name(&self) -> &str {
         &self.segment_info.info.name
@@ -1447,7 +1525,6 @@ impl SegmentReader {
         &self.core_readers
     }
 
-    /// Returns the live docs that are not hard-deleted, if any.
     /// Returns whether this reader was opened over an in-memory segment that
     /// the writer may still be changing.
     ///
@@ -1458,6 +1535,7 @@ impl SegmentReader {
         self.is_nrt
     }
 
+    /// Returns the live docs that are not hard-deleted, if any.
     pub fn get_hard_live_docs(&self) -> Option<Box<dyn Bits>> {
         self.hard_live_docs
             .as_ref()
@@ -1469,7 +1547,7 @@ impl SegmentReader {
         self.ensure_open()?;
         let guard =
             self.core_readers.fields.read().map_err(|_| {
-                LuceneError::IllegalState("fields producer lock poisoned".to_string())
+                LuceneError::illegal_state("fields producer lock poisoned".to_string())
             })?;
         Ok(guard.as_ref().map(Arc::clone))
     }
@@ -1478,7 +1556,7 @@ impl SegmentReader {
     pub fn get_fields_reader(&self) -> Result<Option<Box<dyn StoredFieldsReader>>> {
         self.ensure_open()?;
         let guard = self.core_readers.fields_reader_orig.read().map_err(|_| {
-            LuceneError::IllegalState("stored fields reader lock poisoned".to_string())
+            LuceneError::illegal_state("stored fields reader lock poisoned".to_string())
         })?;
         Ok(guard.as_ref().map(|reader| reader.clone_reader()))
     }
@@ -1491,7 +1569,7 @@ impl SegmentReader {
             .term_vectors_reader_orig
             .read()
             .map_err(|_| {
-                LuceneError::IllegalState("term vectors reader lock poisoned".to_string())
+                LuceneError::illegal_state("term vectors reader lock poisoned".to_string())
             })?;
         Ok(guard.as_ref().map(|reader| reader.clone_reader()))
     }
@@ -1501,7 +1579,7 @@ impl SegmentReader {
         self.ensure_open()?;
         let guard =
             self.core_readers.norms_producer.read().map_err(|_| {
-                LuceneError::IllegalState("norms producer lock poisoned".to_string())
+                LuceneError::illegal_state("norms producer lock poisoned".to_string())
             })?;
         Ok(guard.as_ref().map(Arc::clone))
     }
@@ -1517,7 +1595,7 @@ impl SegmentReader {
         self.ensure_open()?;
         let guard =
             self.core_readers.points_reader.read().map_err(|_| {
-                LuceneError::IllegalState("points reader lock poisoned".to_string())
+                LuceneError::illegal_state("points reader lock poisoned".to_string())
             })?;
         Ok(guard.as_ref().map(Arc::clone))
     }
@@ -1526,7 +1604,7 @@ impl SegmentReader {
     pub fn get_vector_reader(&self) -> Result<Option<Arc<dyn KnnVectorsReader>>> {
         self.ensure_open()?;
         let guard = self.core_readers.knn_vectors_reader.read().map_err(|_| {
-            LuceneError::IllegalState("knn vectors reader lock poisoned".to_string())
+            LuceneError::illegal_state("knn vectors reader lock poisoned".to_string())
         })?;
         Ok(guard.as_ref().map(Arc::clone))
     }
@@ -1548,10 +1626,12 @@ impl LeafReader for SegmentReader {
             .term_vectors_reader_orig
             .read()
             .map_err(|_| {
-                LuceneError::IllegalState("term vectors reader lock poisoned".to_string())
+                LuceneError::illegal_state("term vectors reader lock poisoned".to_string())
             })?;
         if let Some(reader) = guard.as_ref() {
-            Ok(Box::new(TermVectorsReaderWrapper(reader.clone_reader())))
+            // `TermVectorsReader` extends `TermVectors`, so the codec reader
+            // itself is the caller's `TermVectors` (`CodecReader.java:107-114`).
+            Ok(reader.clone_reader())
         } else {
             Ok(Box::new(crate::index::leaf_reader::EmptyTermVectors))
         }
@@ -1568,7 +1648,7 @@ impl LeafReader for SegmentReader {
     fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
         self.ensure_open()?;
         let guard = self.core_readers.fields_reader_orig.read().map_err(|_| {
-            LuceneError::IllegalState("stored fields reader lock poisoned".to_string())
+            LuceneError::illegal_state("stored fields reader lock poisoned".to_string())
         })?;
         if let Some(_reader) = guard.as_ref() {
             Ok(Box::new(CodecStoredFields {
@@ -1576,7 +1656,7 @@ impl LeafReader for SegmentReader {
                 max_doc: self.max_doc,
             }))
         } else {
-            Err(LuceneError::AlreadyClosed(
+            Err(LuceneError::already_closed(
                 "stored fields reader is closed".to_string(),
             ))
         }
@@ -1622,7 +1702,7 @@ impl LeafReader for SegmentReader {
         }
         let guard =
             self.core_readers.fields.read().map_err(|_| {
-                LuceneError::IllegalState("fields producer lock poisoned".to_string())
+                LuceneError::illegal_state("fields producer lock poisoned".to_string())
             })?;
         if let Some(fields) = guard.as_ref() {
             fields.terms(field)
@@ -1641,7 +1721,7 @@ impl LeafReader for SegmentReader {
             return Ok(None);
         }
         if let Some(ref producer) = self.doc_values_producer {
-            Ok(Some(producer.get_numeric(fi.unwrap())?))
+            producer.get_numeric(fi.unwrap())
         } else {
             Ok(None)
         }
@@ -1654,7 +1734,7 @@ impl LeafReader for SegmentReader {
             return Ok(None);
         }
         if let Some(ref producer) = self.doc_values_producer {
-            Ok(Some(producer.get_binary(fi.unwrap())?))
+            producer.get_binary(fi.unwrap())
         } else {
             Ok(None)
         }
@@ -1667,7 +1747,7 @@ impl LeafReader for SegmentReader {
             return Ok(None);
         }
         if let Some(ref producer) = self.doc_values_producer {
-            Ok(Some(producer.get_sorted(fi.unwrap())?))
+            producer.get_sorted(fi.unwrap())
         } else {
             Ok(None)
         }
@@ -1683,7 +1763,7 @@ impl LeafReader for SegmentReader {
             return Ok(None);
         }
         if let Some(ref producer) = self.doc_values_producer {
-            Ok(Some(producer.get_sorted_numeric(fi.unwrap())?))
+            producer.get_sorted_numeric(fi.unwrap())
         } else {
             Ok(None)
         }
@@ -1699,7 +1779,7 @@ impl LeafReader for SegmentReader {
             return Ok(None);
         }
         if let Some(ref producer) = self.doc_values_producer {
-            Ok(Some(producer.get_sorted_set(fi.unwrap())?))
+            producer.get_sorted_set(fi.unwrap())
         } else {
             Ok(None)
         }
@@ -1713,10 +1793,10 @@ impl LeafReader for SegmentReader {
         }
         let guard =
             self.core_readers.norms_producer.read().map_err(|_| {
-                LuceneError::IllegalState("norms producer lock poisoned".to_string())
+                LuceneError::illegal_state("norms producer lock poisoned".to_string())
             })?;
         if let Some(producer) = guard.as_ref() {
-            Ok(Some(producer.get_norms(fi.unwrap())?))
+            producer.get_norms(fi.unwrap())
         } else {
             Ok(None)
         }
@@ -1734,7 +1814,7 @@ impl LeafReader for SegmentReader {
             return Ok(None);
         }
         if let Some(ref producer) = self.doc_values_producer {
-            Ok(Some(producer.get_skipper(fi.unwrap())?))
+            producer.get_skipper(fi.unwrap())
         } else {
             Ok(None)
         }
@@ -1750,10 +1830,10 @@ impl LeafReader for SegmentReader {
             return Ok(None);
         }
         let guard = self.core_readers.knn_vectors_reader.read().map_err(|_| {
-            LuceneError::IllegalState("knn vectors reader lock poisoned".to_string())
+            LuceneError::illegal_state("knn vectors reader lock poisoned".to_string())
         })?;
         if let Some(reader) = guard.as_ref() {
-            Ok(Some(reader.get_float_vector_values(field)?))
+            reader.get_float_vector_values(field)
         } else {
             Ok(None)
         }
@@ -1769,10 +1849,10 @@ impl LeafReader for SegmentReader {
             return Ok(None);
         }
         let guard = self.core_readers.knn_vectors_reader.read().map_err(|_| {
-            LuceneError::IllegalState("knn vectors reader lock poisoned".to_string())
+            LuceneError::illegal_state("knn vectors reader lock poisoned".to_string())
         })?;
         if let Some(reader) = guard.as_ref() {
-            Ok(Some(reader.get_byte_vector_values(field)?))
+            reader.get_byte_vector_values(field)
         } else {
             Ok(None)
         }
@@ -1794,7 +1874,7 @@ impl LeafReader for SegmentReader {
             return Ok(());
         }
         let mut guard = self.core_readers.knn_vectors_reader.write().map_err(|_| {
-            LuceneError::IllegalState("knn vectors reader lock poisoned".to_string())
+            LuceneError::illegal_state("knn vectors reader lock poisoned".to_string())
         })?;
         if let Some(reader) = guard.as_mut() {
             reader.search(field, target, collector, accept_docs)
@@ -1819,7 +1899,7 @@ impl LeafReader for SegmentReader {
             return Ok(());
         }
         let mut guard = self.core_readers.knn_vectors_reader.write().map_err(|_| {
-            LuceneError::IllegalState("knn vectors reader lock poisoned".to_string())
+            LuceneError::illegal_state("knn vectors reader lock poisoned".to_string())
         })?;
         if let Some(reader) = guard.as_mut() {
             reader.search_byte(field, target, collector, accept_docs)
@@ -1852,12 +1932,11 @@ impl LeafReader for SegmentReader {
         let Some(guard) = self.get_points_reader()? else {
             return Ok(None);
         };
-        // `PointsReader::get_values` returns `Box<dyn PointValues>`; the codec
-        // layer re-exports the index-layer `PointValues`, so this is directly
-        // `Box<dyn IndexPointValues>`. The guard is dropped here; the returned
-        // box is owned and independent of the reader's lock.
-        let values = guard.get_values(field)?;
-        Ok(Some(values))
+        // The codec layer re-exports the index-layer `PointValues`, so the
+        // reader's answer — `None` for a field with no tree in this segment,
+        // Java's `null` — is directly this method's. The returned box is owned
+        // and independent of the reader's lock.
+        guard.get_values(field)
     }
 
     fn check_integrity(&self) -> Result<()> {
@@ -1981,34 +2060,6 @@ fn radix36(gen: i64) -> String {
     s.chars().rev().collect()
 }
 
-/// Wrapper that lets a `Box<dyn TermVectorsReader>` satisfy the
-/// `TermVectors` trait.
-struct TermVectorsReaderWrapper(Box<dyn TermVectorsReader>);
-
-impl Debug for TermVectorsReaderWrapper {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TermVectorsReaderWrapper")
-            .finish_non_exhaustive()
-    }
-}
-
-impl TermVectors for TermVectorsReaderWrapper {
-    fn prefetch(&mut self, doc_id: i32) -> Result<()> {
-        // Java's `TermVectorsReader` *extends* `TermVectors`, so `CodecReader`
-        // hands the codec reader itself to the caller
-        // (`CodecReader.java:107-114`) and a `prefetch` call reaches the
-        // format's own override. This wrapper stands in for that inheritance
-        // and must forward, exactly as `StoredFieldsReaderWrapper` does;
-        // swallowing the hint would silently disable I/O parallelism for term
-        // vectors the moment a format implements it.
-        self.0.prefetch(doc_id)
-    }
-
-    fn get(&self, doc: i32) -> Result<Option<Box<dyn crate::index::Fields>>> {
-        self.0.get(doc)
-    }
-}
-
 /// `Bits` implementation that shares an underlying `Arc<dyn Bits>`.
 #[derive(Clone)]
 /// A [`Bits`] one reader can hand to several owners.
@@ -2022,6 +2073,11 @@ pub(crate) struct SharedBits(Arc<dyn Bits>);
 impl SharedBits {
     pub(crate) fn new(bits: Box<dyn Bits>) -> Self {
         Self(Arc::from(bits))
+    }
+
+    /// A handle onto bits that are already shared.
+    pub(crate) fn from_arc(bits: Arc<dyn Bits>) -> Self {
+        Self(bits)
     }
 }
 
@@ -2038,8 +2094,33 @@ impl Bits for SharedBits {
         self.0.get(index)
     }
 
+    /// Forwards to the wrapped bits' `try_get`, so that an error they raise
+    /// (`ExitableDirectoryReader.java:359-387`, whose `get` throws through
+    /// every wrapper that delegates to it) is not swallowed here.
+    fn try_get(&self, index: usize) -> Result<bool> {
+        self.0.try_get(index)
+    }
+
+    /// Forwards to the wrapped bits' `apply_mask`, so that an override — the
+    /// `FixedBitSet`'s word-wise one, with its own checks — runs exactly as it
+    /// would on the bits themselves.
+    fn apply_mask(&self, bit_set: &mut crate::util::FixedBitSet, offset: usize) -> Result<()> {
+        self.0.apply_mask(bit_set, offset)
+    }
+
     fn length(&self) -> usize {
         self.0.length()
+    }
+
+    /// The identity of the shared bits, not of this handle.
+    fn identity(&self) -> *const () {
+        self.0.identity()
+    }
+
+    /// The handle is a Rust artefact: Java's `instanceof` sees the shared
+    /// bits themselves.
+    fn bits_as_any(&self) -> Option<&dyn std::any::Any> {
+        self.0.bits_as_any()
     }
 }
 
@@ -2055,12 +2136,12 @@ impl StoredFields for CodecStoredFields {
     fn prefetch(&mut self, doc_id: i32) -> Result<()> {
         check_index(doc_id, self.max_doc)?;
         let guard = self.core.fields_reader_orig.read().map_err(|_| {
-            LuceneError::IllegalState("stored fields reader lock poisoned".to_string())
+            LuceneError::illegal_state("stored fields reader lock poisoned".to_string())
         })?;
         if let Some(reader) = guard.as_ref() {
             reader.prefetch(doc_id)
         } else {
-            Err(LuceneError::AlreadyClosed(
+            Err(LuceneError::already_closed(
                 "stored fields reader is closed".to_string(),
             ))
         }
@@ -2073,12 +2154,12 @@ impl StoredFields for CodecStoredFields {
     ) -> Result<()> {
         check_index(doc_id, self.max_doc)?;
         let guard = self.core.fields_reader_orig.read().map_err(|_| {
-            LuceneError::IllegalState("stored fields reader lock poisoned".to_string())
+            LuceneError::illegal_state("stored fields reader lock poisoned".to_string())
         })?;
         if let Some(reader) = guard.as_ref() {
             reader.document(doc_id, visitor)
         } else {
-            Err(LuceneError::AlreadyClosed(
+            Err(LuceneError::already_closed(
                 "stored fields reader is closed".to_string(),
             ))
         }
@@ -2129,7 +2210,7 @@ impl SegmentReaderCacheHelper {
             return Ok(());
         }
         let guard = self.listeners.lock().map_err(|_| {
-            LuceneError::IllegalState("reader closed listeners lock poisoned".to_string())
+            LuceneError::illegal_state("reader closed listeners lock poisoned".to_string())
         })?;
         for listener in guard.iter() {
             listener.on_close(CacheKey)?;
@@ -2175,6 +2256,67 @@ impl CacheHelper for SegmentReaderCoreCacheHelper {
 // -----------------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------------
+
+// -----------------------------------------------------------------------------
+// TestSecrets registration
+// -----------------------------------------------------------------------------
+
+/// The [`SegmentReaderAccess`](crate::internal::tests_hooks::SegmentReaderAccess)
+/// `SegmentReader` registers with
+/// [`TestSecrets`](crate::internal::tests_hooks::TestSecrets).
+///
+/// Equivalent to the anonymous `SegmentReaderAccess` of `SegmentReader`'s
+/// static initializer (`SegmentReader.java:408-414`), which returns the
+/// reader's `core`.
+#[derive(Debug)]
+struct SegmentReaderAccessImpl;
+
+impl crate::internal::tests_hooks::SegmentReaderAccess for SegmentReaderAccessImpl {
+    fn get_core(&self, segment_reader: &SegmentReader) -> Arc<dyn std::any::Any + Send + Sync> {
+        Arc::clone(segment_reader.core_readers()) as Arc<dyn std::any::Any + Send + Sync>
+    }
+}
+
+/// Registers `SegmentReader`'s accessor with
+/// [`TestSecrets`](crate::internal::tests_hooks::TestSecrets), once.
+///
+/// Equivalent to `SegmentReader`'s `static {}` block
+/// (`SegmentReader.java:407-415`), which
+/// `TestSecrets.ensureInitialized(SegmentReader.class)` triggers.
+pub(crate) fn register_test_secrets() {
+    static INITIALIZED: std::sync::Once = std::sync::Once::new();
+    INITIALIZED.call_once(|| {
+        crate::internal::tests_hooks::TestSecrets::set_segment_reader_access(Arc::new(
+            SegmentReaderAccessImpl,
+        ))
+        .expect("INVARIANT: SegmentReader's static initializer runs once, from this file");
+    });
+}
+
+#[cfg(test)]
+mod shared_bits_tests {
+    use super::*;
+    use crate::util::FixedBitSet;
+
+    /// A segment's live docs answer `applyMask` with `FixedBitSet.applyMask`,
+    /// which refuses a mask with bits past the live docs
+    /// (`FixedBitSet.java:898-908`): `Some bits are set beyond the end of live
+    /// docs`. The shared handle the reader hands out must answer the same.
+    #[test]
+    fn shared_bits_apply_the_fixed_bit_set_mask() {
+        let mut live = FixedBitSet::new(10);
+        live.set_range(0, 10);
+        let shared = SharedBits::new(Box::new(live));
+        let mut mask = FixedBitSet::new(64);
+        mask.set(3);
+        mask.set(20);
+        assert!(matches!(
+            shared.apply_mask(&mut mask, 0),
+            Err(LuceneError::IllegalArgument(ref message))
+                if message == "Some bits are set beyond the end of live docs"
+        ));
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -2323,19 +2465,26 @@ mod tests {
     struct RecordingFieldsProducer {
         inner: Box<dyn FieldsProducer>,
         closed: Arc<AtomicBool>,
+        /// Whether this wrapper came out of `get_merge_instance`.
+        merge_instance: bool,
     }
 
     impl Debug for RecordingFieldsProducer {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.debug_struct("RecordingFieldsProducer")
                 .field("closed", &self.closed.load(Ordering::SeqCst))
+                .field("merge_instance", &self.merge_instance)
                 .finish_non_exhaustive()
         }
     }
 
     impl RecordingFieldsProducer {
         fn new(inner: Box<dyn FieldsProducer>, closed: Arc<AtomicBool>) -> Self {
-            Self { inner, closed }
+            Self {
+                inner,
+                closed,
+                merge_instance: false,
+            }
         }
     }
 
@@ -2359,10 +2508,11 @@ mod tests {
         }
 
         fn get_merge_instance(&self) -> Result<Box<dyn FieldsProducer>> {
-            Ok(Box::new(RecordingFieldsProducer::new(
-                self.inner.get_merge_instance()?,
-                self.closed.clone(),
-            )))
+            Ok(Box::new(RecordingFieldsProducer {
+                inner: self.inner.get_merge_instance()?,
+                closed: self.closed.clone(),
+                merge_instance: true,
+            }))
         }
 
         fn close(&mut self) -> Result<()> {
@@ -2375,16 +2525,24 @@ mod tests {
     struct RecordingNormsProducer {
         inner: Box<dyn NormsProducer>,
         closed: Arc<AtomicBool>,
+        /// Whether this wrapper came out of `get_merge_instance`. Tests read it
+        /// through `Debug`, which dead-code analysis does not count.
+        #[allow(dead_code)]
+        merge_instance: bool,
     }
 
     impl RecordingNormsProducer {
         fn new(inner: Box<dyn NormsProducer>, closed: Arc<AtomicBool>) -> Self {
-            Self { inner, closed }
+            Self {
+                inner,
+                closed,
+                merge_instance: false,
+            }
         }
     }
 
     impl NormsProducer for RecordingNormsProducer {
-        fn get_norms(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
+        fn get_norms(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
             self.inner.get_norms(field)
         }
 
@@ -2393,10 +2551,11 @@ mod tests {
         }
 
         fn get_merge_instance(&self) -> Result<Box<dyn NormsProducer>> {
-            Ok(Box::new(RecordingNormsProducer::new(
-                self.inner.get_merge_instance()?,
-                self.closed.clone(),
-            )))
+            Ok(Box::new(RecordingNormsProducer {
+                inner: self.inner.get_merge_instance()?,
+                closed: self.closed.clone(),
+                merge_instance: true,
+            }))
         }
 
         fn close(&mut self) -> Result<()> {
@@ -2409,11 +2568,19 @@ mod tests {
     struct RecordingStoredFieldsReader {
         inner: Box<dyn StoredFieldsReader>,
         closed: Arc<AtomicBool>,
+        /// Whether this wrapper came out of `get_merge_instance`. Tests read it
+        /// through `Debug`, which dead-code analysis does not count.
+        #[allow(dead_code)]
+        merge_instance: bool,
     }
 
     impl RecordingStoredFieldsReader {
         fn new(inner: Box<dyn StoredFieldsReader>, closed: Arc<AtomicBool>) -> Self {
-            Self { inner, closed }
+            Self {
+                inner,
+                closed,
+                merge_instance: false,
+            }
         }
     }
 
@@ -2434,10 +2601,11 @@ mod tests {
         }
 
         fn get_merge_instance(&self) -> Box<dyn StoredFieldsReader> {
-            Box::new(RecordingStoredFieldsReader::new(
-                self.inner.get_merge_instance(),
-                self.closed.clone(),
-            ))
+            Box::new(RecordingStoredFieldsReader {
+                inner: self.inner.get_merge_instance(),
+                closed: self.closed.clone(),
+                merge_instance: true,
+            })
         }
 
         fn prefetch(&self, doc_id: i32) -> Result<()> {
@@ -2454,11 +2622,19 @@ mod tests {
     struct RecordingTermVectorsReader {
         inner: Box<dyn TermVectorsReader>,
         closed: Arc<AtomicBool>,
+        /// Whether this wrapper came out of `get_merge_instance`. Tests read it
+        /// through `Debug`, which dead-code analysis does not count.
+        #[allow(dead_code)]
+        merge_instance: bool,
     }
 
     impl RecordingTermVectorsReader {
         fn new(inner: Box<dyn TermVectorsReader>, closed: Arc<AtomicBool>) -> Self {
-            Self { inner, closed }
+            Self {
+                inner,
+                closed,
+                merge_instance: false,
+            }
         }
     }
 
@@ -2475,18 +2651,11 @@ mod tests {
         }
 
         fn get_merge_instance(&self) -> Box<dyn TermVectorsReader> {
-            Box::new(RecordingTermVectorsReader::new(
-                self.inner.get_merge_instance(),
-                self.closed.clone(),
-            ))
-        }
-
-        fn get(&self, doc: i32) -> Result<Option<Box<dyn Fields>>> {
-            self.inner.get(doc)
-        }
-
-        fn prefetch(&self, doc_id: i32) -> Result<()> {
-            self.inner.prefetch(doc_id)
+            Box::new(RecordingTermVectorsReader {
+                inner: self.inner.get_merge_instance(),
+                closed: self.closed.clone(),
+                merge_instance: true,
+            })
         }
 
         fn close(&mut self) -> Result<()> {
@@ -2495,15 +2664,33 @@ mod tests {
         }
     }
 
+    impl TermVectors for RecordingTermVectorsReader {
+        fn get(&self, doc: i32) -> Result<Option<Box<dyn Fields>>> {
+            self.inner.get(doc)
+        }
+
+        fn prefetch(&mut self, doc_id: i32) -> Result<()> {
+            self.inner.prefetch(doc_id)
+        }
+    }
+
     #[derive(Debug)]
     struct RecordingPointsReader {
         inner: Box<dyn PointsReader>,
         closed: Arc<AtomicBool>,
+        /// Whether this wrapper came out of `get_merge_instance`. Tests read it
+        /// through `Debug`, which dead-code analysis does not count.
+        #[allow(dead_code)]
+        merge_instance: bool,
     }
 
     impl RecordingPointsReader {
         fn new(inner: Box<dyn PointsReader>, closed: Arc<AtomicBool>) -> Self {
-            Self { inner, closed }
+            Self {
+                inner,
+                closed,
+                merge_instance: false,
+            }
         }
     }
 
@@ -2512,15 +2699,16 @@ mod tests {
             self.inner.check_integrity()
         }
 
-        fn get_values(&self, field: &str) -> Result<Box<dyn PointValues>> {
+        fn get_values(&self, field: &str) -> Result<Option<Box<dyn PointValues>>> {
             self.inner.get_values(field)
         }
 
         fn get_merge_instance(&self) -> Result<Box<dyn PointsReader>> {
-            Ok(Box::new(RecordingPointsReader::new(
-                self.inner.get_merge_instance()?,
-                self.closed.clone(),
-            )))
+            Ok(Box::new(RecordingPointsReader {
+                inner: self.inner.get_merge_instance()?,
+                closed: self.closed.clone(),
+                merge_instance: true,
+            }))
         }
 
         fn close(&mut self) -> Result<()> {
@@ -2533,11 +2721,19 @@ mod tests {
     struct RecordingKnnVectorsReader {
         inner: Box<dyn KnnVectorsReader>,
         closed: Arc<AtomicBool>,
+        /// Whether this wrapper came out of `get_merge_instance`. Tests read it
+        /// through `Debug`, which dead-code analysis does not count.
+        #[allow(dead_code)]
+        merge_instance: bool,
     }
 
     impl RecordingKnnVectorsReader {
         fn new(inner: Box<dyn KnnVectorsReader>, closed: Arc<AtomicBool>) -> Self {
-            Self { inner, closed }
+            Self {
+                inner,
+                closed,
+                merge_instance: false,
+            }
         }
     }
 
@@ -2546,11 +2742,14 @@ mod tests {
             self.inner.check_integrity()
         }
 
-        fn get_float_vector_values(&self, field: &str) -> Result<Box<dyn FloatVectorValues>> {
+        fn get_float_vector_values(
+            &self,
+            field: &str,
+        ) -> Result<Option<Box<dyn FloatVectorValues>>> {
             self.inner.get_float_vector_values(field)
         }
 
-        fn get_byte_vector_values(&self, field: &str) -> Result<Box<dyn ByteVectorValues>> {
+        fn get_byte_vector_values(&self, field: &str) -> Result<Option<Box<dyn ByteVectorValues>>> {
             self.inner.get_byte_vector_values(field)
         }
 
@@ -2576,10 +2775,11 @@ mod tests {
         }
 
         fn get_merge_instance(&self) -> Result<Box<dyn KnnVectorsReader>> {
-            Ok(Box::new(RecordingKnnVectorsReader::new(
-                self.inner.get_merge_instance()?,
-                self.closed.clone(),
-            )))
+            Ok(Box::new(RecordingKnnVectorsReader {
+                inner: self.inner.get_merge_instance()?,
+                closed: self.closed.clone(),
+                merge_instance: true,
+            }))
         }
 
         fn finish_merge(&mut self) -> Result<()> {
@@ -2600,36 +2800,47 @@ mod tests {
     struct RecordingDocValuesProducer {
         inner: Box<dyn DocValuesProducer>,
         closed: Arc<AtomicBool>,
+        /// Whether this wrapper came out of `get_merge_instance`. Tests read it
+        /// through `Debug`, which dead-code analysis does not count.
+        #[allow(dead_code)]
+        merge_instance: bool,
     }
 
     impl RecordingDocValuesProducer {
         fn new(inner: Box<dyn DocValuesProducer>, closed: Arc<AtomicBool>) -> Self {
-            Self { inner, closed }
+            Self {
+                inner,
+                closed,
+                merge_instance: false,
+            }
         }
     }
 
     impl DocValuesProducer for RecordingDocValuesProducer {
-        fn get_numeric(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
+        fn get_numeric(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
             self.inner.get_numeric(field)
         }
 
-        fn get_binary(&self, field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>> {
+        fn get_binary(&self, field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
             self.inner.get_binary(field)
         }
 
-        fn get_sorted(&self, field: &FieldInfo) -> Result<Box<dyn SortedDocValues>> {
+        fn get_sorted(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
             self.inner.get_sorted(field)
         }
 
-        fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>> {
+        fn get_sorted_numeric(
+            &self,
+            field: &FieldInfo,
+        ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
             self.inner.get_sorted_numeric(field)
         }
 
-        fn get_sorted_set(&self, field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>> {
+        fn get_sorted_set(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
             self.inner.get_sorted_set(field)
         }
 
-        fn get_skipper(&self, field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>> {
+        fn get_skipper(&self, field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
             self.inner.get_skipper(field)
         }
 
@@ -2638,15 +2849,21 @@ mod tests {
         }
 
         fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
-            Ok(Box::new(RecordingDocValuesProducer::new(
-                self.inner.get_merge_instance()?,
-                self.closed.clone(),
-            )))
+            Ok(Box::new(RecordingDocValuesProducer {
+                inner: self.inner.get_merge_instance()?,
+                closed: self.closed.clone(),
+                merge_instance: true,
+            }))
         }
 
+        /// Records the close. The wrapped dummy producer is Java's
+        /// `EmptyDocValuesProducer`, whose `close()` throws
+        /// `UnsupportedOperationException`; `SegmentDocValues` propagates a
+        /// close error as Java's `RefCount.decRef` does, and a real producer
+        /// closes cleanly, so the dummy is not closed.
         fn close(&mut self) -> Result<()> {
             self.closed.store(true, Ordering::SeqCst);
-            self.inner.close()
+            Ok(())
         }
     }
 
@@ -2862,7 +3079,7 @@ mod tests {
 
         fn fields_writer(
             &self,
-            directory: &dyn Directory,
+            directory: &std::sync::Arc<dyn Directory>,
             segment_info: &SegmentInfo,
             context: &dyn IOContext,
         ) -> Result<Box<dyn StoredFieldsWriter>> {
@@ -2916,7 +3133,7 @@ mod tests {
 
         fn vectors_writer(
             &self,
-            directory: &dyn Directory,
+            directory: &std::sync::Arc<dyn Directory>,
             segment_info: &SegmentInfo,
             context: &dyn IOContext,
         ) -> Result<Box<dyn TermVectorsWriter>> {
@@ -3227,6 +3444,106 @@ mod tests {
         );
     }
 
+    /// `MergeState` holds the merge instance of every reader it pulls off a
+    /// segment, never the instance a search shares.
+    ///
+    /// Lucene's `MergeState` constructor replaces each non-null producer with
+    /// its `getMergeInstance()` (`MergeState.java:134-168`): norms, doc values,
+    /// stored fields, term vectors, postings, points and vectors alike. Every
+    /// producer of the recording codec marks the wrapper its
+    /// `get_merge_instance` returns, so each of the seven slots must hold a
+    /// marked one while the segment reader keeps handing out unmarked ones.
+    #[test]
+    fn merge_state_holds_the_merge_instance_of_every_reader() {
+        use crate::index::codec_reader::CodecReader;
+        use crate::index::merge::MergeState;
+
+        let recorder = CloseRecorder::default();
+        let info = recording_segment_commit_info("_0", 5, &recorder);
+        let reader = Arc::new(
+            SegmentReader::new(info, Version::LATEST.major as i32, &*DEFAULT_IO_CONTEXT)
+                .expect("segment reader should open"),
+        );
+        let readers: Vec<Arc<dyn CodecReader>> = vec![reader.clone()];
+        let merge_state = MergeState::from_readers(
+            &readers,
+            test_segment_info("_1", -1),
+            Arc::new(crate::util::NoOutputInfoStream),
+            None,
+            None,
+        )
+        .expect("merge state");
+
+        let merge_instance = |debug: String| debug.contains("merge_instance: true");
+        let slots = [
+            (
+                "norms",
+                format!("{:?}", merge_state.norms_producers[0].as_ref().unwrap()),
+                format!("{:?}", reader.get_norms_reader().unwrap().unwrap()),
+            ),
+            (
+                "doc values",
+                format!(
+                    "{:?}",
+                    merge_state.doc_values_producers[0].as_ref().unwrap()
+                ),
+                format!("{:?}", reader.get_doc_values_reader().unwrap().unwrap()),
+            ),
+            (
+                "stored fields",
+                format!(
+                    "{:?}",
+                    merge_state.stored_fields_readers[0].as_ref().unwrap()
+                ),
+                format!("{:?}", reader.get_fields_reader().unwrap().unwrap()),
+            ),
+            (
+                "term vectors",
+                format!(
+                    "{:?}",
+                    merge_state.term_vectors_readers[0].as_ref().unwrap()
+                ),
+                format!("{:?}", reader.get_term_vectors_reader().unwrap().unwrap()),
+            ),
+            (
+                "points",
+                format!("{:?}", merge_state.points_readers[0].as_ref().unwrap()),
+                format!("{:?}", reader.get_points_reader().unwrap().unwrap()),
+            ),
+            (
+                "vectors",
+                format!("{:?}", merge_state.knn_vectors_readers[0].as_ref().unwrap()),
+                format!("{:?}", reader.get_vector_reader().unwrap().unwrap()),
+            ),
+        ];
+        for (kind, in_merge_state, from_reader) in slots {
+            assert!(
+                merge_instance(in_merge_state.clone()),
+                "the merge state must hold the {kind} merge instance, got {in_merge_state}"
+            );
+            assert!(
+                !merge_instance(from_reader.clone()),
+                "the segment reader must still hand out the {kind} search instance, got {from_reader}"
+            );
+        }
+
+        // `FieldsProducer` carries no `Debug`, so the postings slot is told
+        // apart by identity: the segment reader hands out one shared producer,
+        // and the merge state must not hold that one.
+        let search_postings = reader.get_postings_reader().unwrap().unwrap();
+        assert!(Arc::ptr_eq(
+            &search_postings,
+            &reader.get_postings_reader().unwrap().unwrap()
+        ));
+        assert!(
+            !Arc::ptr_eq(
+                &search_postings,
+                merge_state.fields_producers[0].as_ref().unwrap()
+            ),
+            "the merge state must hold the postings merge instance, not the search one"
+        );
+    }
+
     #[test]
     fn segment_reader_num_docs_respects_deletion_bitset() {
         let max_doc = 6;
@@ -3282,7 +3599,7 @@ mod tests {
     /// A codec reader that only counts the prefetch hints it is handed.
     #[derive(Debug, Default)]
     struct CountingPrefetchReader {
-        prefetched: std::sync::Mutex<Vec<i32>>,
+        prefetched: Arc<std::sync::Mutex<Vec<i32>>>,
     }
 
     impl TermVectorsReader for CountingPrefetchReader {
@@ -3293,50 +3610,32 @@ mod tests {
         fn clone_reader(&self) -> Box<dyn TermVectorsReader> {
             Box::new(Self::default())
         }
+    }
 
+    impl TermVectors for CountingPrefetchReader {
         fn get(&self, _doc: i32) -> Result<Option<Box<dyn crate::index::Fields>>> {
             Ok(None)
         }
 
-        fn prefetch(&self, doc_id: i32) -> Result<()> {
+        fn prefetch(&mut self, doc_id: i32) -> Result<()> {
             self.prefetched.lock().unwrap().push(doc_id);
             Ok(())
         }
     }
 
     #[test]
-    fn the_term_vectors_wrapper_forwards_the_prefetch_hint() {
+    fn the_codec_reader_is_the_term_vectors_and_receives_the_prefetch_hint() {
         // Java's `TermVectorsReader` *extends* `TermVectors`, so `CodecReader`
         // hands the codec reader itself to the caller and a prefetch reaches
-        // the format's own override. This wrapper stands in for that
-        // inheritance; swallowing the hint would silently disable I/O
-        // parallelism for term vectors.
-        let inner = Arc::new(CountingPrefetchReader::default());
-        struct Shared(Arc<CountingPrefetchReader>);
-        impl std::fmt::Debug for Shared {
-            fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-                f.debug_struct("Shared").finish()
-            }
-        }
-        impl TermVectorsReader for Shared {
-            fn check_integrity(&self) -> Result<()> {
-                self.0.check_integrity()
-            }
-            fn clone_reader(&self) -> Box<dyn TermVectorsReader> {
-                Box::new(Shared(Arc::clone(&self.0)))
-            }
-            fn get(&self, doc: i32) -> Result<Option<Box<dyn crate::index::Fields>>> {
-                self.0.get(doc)
-            }
-            fn prefetch(&self, doc_id: i32) -> Result<()> {
-                self.0.prefetch(doc_id)
-            }
-        }
-
-        let mut wrapper = TermVectorsReaderWrapper(Box::new(Shared(Arc::clone(&inner))));
-        wrapper.prefetch(3).expect("prefetch");
-        wrapper.prefetch(11).expect("prefetch");
-        assert_eq!(*inner.prefetched.lock().unwrap(), vec![3, 11]);
+        // the format's own override (`CodecReader.java:107-114`).
+        let prefetched = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let reader: Box<dyn TermVectorsReader> = Box::new(CountingPrefetchReader {
+            prefetched: Arc::clone(&prefetched),
+        });
+        let mut term_vectors: Box<dyn TermVectors> = reader;
+        term_vectors.prefetch(3).expect("prefetch");
+        term_vectors.prefetch(11).expect("prefetch");
+        assert_eq!(*prefetched.lock().unwrap(), vec![3, 11]);
     }
 }
 
@@ -3391,5 +3690,216 @@ impl std::fmt::Display for SegmentDocValuesProducer {
             "SegmentDocValuesProducer(producers={})",
             self.dv_gens.len()
         )
+    }
+}
+
+#[cfg(test)]
+mod segment_doc_values_ref_count_tests {
+    use super::*;
+    use crate::codecs::doc_values::{
+        BinaryDocValues, NumericDocValues, SortedDocValues, SortedNumericDocValues,
+        SortedSetDocValues,
+    };
+    use std::sync::atomic::AtomicUsize;
+
+    /// A producer that counts its closes and fails them while `fail` is set.
+    #[derive(Debug)]
+    struct CountingProducer {
+        closes: Arc<AtomicUsize>,
+        fail: Arc<AtomicBool>,
+    }
+
+    impl DocValuesProducer for CountingProducer {
+        fn get_numeric(&self, _: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+            Ok(None)
+        }
+        fn get_binary(&self, _: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
+            Ok(None)
+        }
+        fn get_sorted(&self, _: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
+            Ok(None)
+        }
+        fn get_sorted_numeric(
+            &self,
+            _: &FieldInfo,
+        ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+            Ok(None)
+        }
+        fn get_sorted_set(&self, _: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+            Ok(None)
+        }
+        fn get_skipper(&self, _: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
+            Ok(None)
+        }
+        fn check_integrity(&self) -> Result<()> {
+            Ok(())
+        }
+        fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
+            Err(LuceneError::illegal_state("no merge instance".to_string()))
+        }
+        fn close(&mut self) -> Result<()> {
+            self.closes.fetch_add(1, Ordering::SeqCst);
+            if self.fail.load(Ordering::SeqCst) {
+                return Err(LuceneError::illegal_state("close failed".to_string()));
+            }
+            Ok(())
+        }
+    }
+
+    /// rmp #304: `SegmentDocValues` keeps each generation in a `RefCount`
+    /// whose overridden `release()` closes the producer and drops the
+    /// generation from the map (`SegmentDocValues.java:53-63`); `decRef`
+    /// reaches it through `RefCount.decRef`, which puts the reference back when
+    /// `release()` throws (`RefCount.java:43-59`).
+    #[test]
+    fn the_last_dec_ref_releases_through_the_ref_count() {
+        let seg_doc_values = SegmentDocValues::new();
+        let closes = Arc::new(AtomicUsize::new(0));
+        let fail = Arc::new(AtomicBool::new(true));
+        let dvp = seg_doc_values.ref_counted(
+            7,
+            Box::new(CountingProducer {
+                closes: Arc::clone(&closes),
+                fail: Arc::clone(&fail),
+            }),
+        );
+        SegmentDocValues::producers(&seg_doc_values.gen_dv_producers).insert(7, Arc::clone(&dvp));
+        dvp.inc_ref();
+        seg_doc_values.dec_ref(&[7]).unwrap();
+        assert_eq!((dvp.ref_count(), closes.load(Ordering::SeqCst)), (1, 0));
+
+        // A failing release keeps the generation and puts the reference back.
+        let error = seg_doc_values.dec_ref(&[7]).unwrap_err();
+        assert!(error.to_string().contains("close failed"), "{error}");
+        assert_eq!((dvp.ref_count(), closes.load(Ordering::SeqCst)), (1, 1));
+        assert!(SegmentDocValues::producers(&seg_doc_values.gen_dv_producers).contains_key(&7));
+
+        // A successful one closes the producer and removes the generation.
+        fail.store(false, Ordering::SeqCst);
+        seg_doc_values.dec_ref(&[7]).unwrap();
+        assert_eq!((dvp.ref_count(), closes.load(Ordering::SeqCst)), (0, 2));
+        assert!(!SegmentDocValues::producers(&seg_doc_values.gen_dv_producers).contains_key(&7));
+        // Readers still holding the producer find it closed.
+        assert!(dvp.get().check_integrity().is_err());
+    }
+}
+
+#[cfg(test)]
+mod core_close_order_tests {
+    //! `SegmentCoreReaders.decRef()` (`SegmentCoreReaders.java:168-182`):
+    //! `try (Closeable finalizer = this::notifyCoreClosedListeners) {
+    //! IOUtils.close(fields, ..., knnVectorsReader); }` closes the producers
+    //! first and notifies the core-closed listeners after.
+    use super::*;
+    use crate::codecs::tests::{CloseLog, CloseTrackingDirectory};
+    use crate::document::{Document, Store, TextField};
+    use crate::index::index_reader::{CacheHelper, CacheKey, ClosedListener};
+    use crate::index::index_writer::IndexWriter;
+    use crate::index::index_writer_config::IndexWriterConfig;
+    use crate::index::segment_infos::SegmentInfos;
+    use crate::store::{Directory, DEFAULT_IO_CONTEXT};
+    use crate::util::Version;
+
+    struct CloseCountAtNotification {
+        log: Arc<CloseLog>,
+        seen: Arc<std::sync::Mutex<Option<usize>>>,
+    }
+
+    impl ClosedListener for CloseCountAtNotification {
+        fn on_close(&self, _key: CacheKey) -> Result<()> {
+            *self.seen.lock().unwrap() = Some(self.log.closed().len());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn the_producers_close_before_the_core_closed_listeners_run() -> Result<()> {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let tracking = Arc::new(CloseTrackingDirectory::default());
+        let log = Arc::clone(&tracking.log);
+        let dir: Arc<dyn Directory> = tracking;
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new())?;
+        let mut doc = Document::new();
+        doc.add(Box::new(TextField::new(
+            "body",
+            "some words".to_string(),
+            Store::YES,
+        )?));
+        writer.add_document(&doc)?;
+        writer.commit()?;
+        writer.close()?;
+
+        let infos = SegmentInfos::read_latest_commit(Arc::clone(&dir))?;
+        let reader = SegmentReader::new(
+            infos.info(0).clone(),
+            Version::LATEST.major as i32,
+            &*DEFAULT_IO_CONTEXT,
+        )?;
+        let seen = Arc::new(std::sync::Mutex::new(None));
+        CacheHelper::add_closed_listener(
+            reader.core_readers().as_ref(),
+            Box::new(CloseCountAtNotification {
+                log: Arc::clone(&log),
+                seen: Arc::clone(&seen),
+            }),
+        );
+        let before = log.closed().len();
+        crate::index::index_reader::IndexReader::close(&reader)?;
+        let after = log.closed().len();
+        assert!(after > before, "closing the core closes its inputs");
+        assert_eq!(
+            *seen.lock().unwrap(),
+            Some(after),
+            "the listeners run once every producer is closed"
+        );
+        Ok(())
+    }
+
+    /// The finalizer of `SegmentCoreReaders.decRef()`'s try-with-resources
+    /// runs however the body ends (`SegmentCoreReaders.java:170-181`): a
+    /// panic closing a producer — the port's form of an unchecked throwable —
+    /// still notifies the core-closed listeners, and then propagates.
+    #[test]
+    fn a_panic_closing_a_producer_still_notifies_the_core_closed_listeners() -> Result<()> {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let tracking = Arc::new(CloseTrackingDirectory::default());
+        let log = Arc::clone(&tracking.log);
+        let dir: Arc<dyn Directory> = tracking;
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new())?;
+        let mut doc = Document::new();
+        doc.add(Box::new(TextField::new(
+            "body",
+            "some words".to_string(),
+            Store::YES,
+        )?));
+        writer.add_document(&doc)?;
+        writer.commit()?;
+        writer.close()?;
+
+        let infos = SegmentInfos::read_latest_commit(Arc::clone(&dir))?;
+        let reader = SegmentReader::new(
+            infos.info(0).clone(),
+            Version::LATEST.major as i32,
+            &*DEFAULT_IO_CONTEXT,
+        )?;
+        let seen = Arc::new(std::sync::Mutex::new(None));
+        CacheHelper::add_closed_listener(
+            reader.core_readers().as_ref(),
+            Box::new(CloseCountAtNotification {
+                log: Arc::clone(&log),
+                seen: Arc::clone(&seen),
+            }),
+        );
+        log.panic_close("_0.cfs");
+        let closed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::index::index_reader::IndexReader::close(&reader)
+        }));
+        assert!(closed.is_err(), "the producer's panic propagates");
+        assert!(log.closed().contains(&"_0.cfs".to_string()));
+        assert!(
+            seen.lock().unwrap().is_some(),
+            "the core-closed listeners run after the panic"
+        );
+        Ok(())
     }
 }

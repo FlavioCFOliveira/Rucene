@@ -102,38 +102,57 @@ impl<W: SkipDataWriter + std::fmt::Debug> std::fmt::Debug for MultiLevelSkipList
 
 impl<W: SkipDataWriter> MultiLevelSkipListWriter<W> {
     /// Creates a writer with a separate `skip_multiplier` for higher levels.
+    ///
+    /// Equivalent to the protected
+    /// `MultiLevelSkipListWriter(int skipInterval, int skipMultiplier, int
+    /// maxSkipLevels, int df)` constructor.
+    ///
+    /// # Errors
+    ///
+    /// [`LuceneError::Arithmetic`] when `skip_interval * skip_multiplier` does
+    /// not fit an `int`: Java's `Math.toIntExact(skipInterval * (long)
+    /// skipMultiplier)` (`MultiLevelSkipListWriter.java:83`) throwing
+    /// `ArithmeticException("integer overflow")`.
     pub fn new(
         skip_data_writer: W,
         skip_interval: i32,
         skip_multiplier: i32,
         max_skip_levels: i32,
         df: i32,
-    ) -> Self {
+    ) -> Result<Self> {
         let number_of_skip_levels = if df > skip_interval {
             let levels = 1 + log(df / skip_interval, skip_multiplier);
             levels.min(max_skip_levels)
         } else {
             1
         };
-        Self {
+        Ok(Self {
             skip_interval,
             skip_multiplier,
-            window_length: skip_interval
-                .checked_mul(skip_multiplier)
-                .unwrap_or(i32::MAX),
+            window_length: crate::error::to_int_exact(
+                i64::from(skip_interval) * i64::from(skip_multiplier),
+            )?,
             number_of_skip_levels,
             skip_buffer: Vec::new(),
             skip_data_writer,
-        }
+        })
     }
 
     /// Creates a writer where the `skip_multiplier` equals the `skip_interval`.
+    ///
+    /// Equivalent to the protected
+    /// `MultiLevelSkipListWriter(int skipInterval, int maxSkipLevels, int df)`
+    /// constructor.
+    ///
+    /// # Errors
+    ///
+    /// As [`new`](Self::new).
     pub fn new_same_multiplier(
         skip_data_writer: W,
         skip_interval: i32,
         max_skip_levels: i32,
         df: i32,
-    ) -> Self {
+    ) -> Result<Self> {
         Self::new(
             skip_data_writer,
             skip_interval,
@@ -558,7 +577,7 @@ mod tests {
     #[test]
     fn writer_round_trips_simple_skip_list() {
         let codec = IntervalSkipCodec::new_same(3);
-        let mut writer = MultiLevelSkipListWriter::new_same_multiplier(codec, 3, 10, 27);
+        let mut writer = MultiLevelSkipListWriter::new_same_multiplier(codec, 3, 10, 27).unwrap();
         writer.reset_skip();
 
         // df = 27, skipInterval = 3 -> 9 entries on level 0.
@@ -589,7 +608,7 @@ mod tests {
     #[test]
     fn writer_multi_level_round_trip() {
         let codec = IntervalSkipCodec::new_same(2);
-        let mut writer = MultiLevelSkipListWriter::new_same_multiplier(codec, 2, 5, 64);
+        let mut writer = MultiLevelSkipListWriter::new_same_multiplier(codec, 2, 5, 64).unwrap();
         writer.reset_skip();
 
         // skipInterval=2, windowLength=4. Every 4 docs we write level 1.
@@ -629,7 +648,7 @@ mod tests {
     #[test]
     fn writer_rejects_non_multiple_df() {
         let codec = IntervalSkipCodec::new_same(3);
-        let mut writer = MultiLevelSkipListWriter::new_same_multiplier(codec, 3, 10, 30);
+        let mut writer = MultiLevelSkipListWriter::new_same_multiplier(codec, 3, 10, 30).unwrap();
         writer.reset_skip();
         let err = writer.buffer_skip(4).unwrap_err();
         assert!(matches!(err, LuceneError::IllegalArgument(_)));
@@ -638,7 +657,7 @@ mod tests {
     #[test]
     fn reader_skip_to_end_exhausts_list() {
         let codec = IntervalSkipCodec::new_same(3);
-        let mut writer = MultiLevelSkipListWriter::new_same_multiplier(codec, 3, 5, 12);
+        let mut writer = MultiLevelSkipListWriter::new_same_multiplier(codec, 3, 5, 12).unwrap();
         writer.reset_skip();
         for df in [3, 6, 9, 12] {
             writer.buffer_skip(df).unwrap();
@@ -663,19 +682,41 @@ mod tests {
     fn skip_levels_computation_matches_lucene() {
         // log(27/3, 3) = log(9, 3) = 2, so levels = 1 + 2 = 3.
         let codec = IntervalSkipCodec::new_same(3);
-        let writer = MultiLevelSkipListWriter::new(codec, 3, 3, 10, 27);
+        let writer = MultiLevelSkipListWriter::new(codec, 3, 3, 10, 27).unwrap();
         assert_eq!(writer.number_of_skip_levels(), 3);
 
         // df <= skipInterval -> one level.
-        let writer = MultiLevelSkipListWriter::new_same_multiplier(codec, 8, 10, 5);
+        let writer = MultiLevelSkipListWriter::new_same_multiplier(codec, 8, 10, 5).unwrap();
         assert_eq!(writer.number_of_skip_levels(), 1);
+    }
+
+    /// `windowLength = Math.toIntExact(skipInterval * (long) skipMultiplier)`
+    /// (`MultiLevelSkipListWriter.java:83`): a product past an `int` throws
+    /// `ArithmeticException("integer overflow")` from the constructor, rather
+    /// than leaving a saturated window.
+    #[test]
+    fn a_window_past_an_int_is_an_integer_overflow() {
+        let codec = IntervalSkipCodec::new_same(3);
+        let error = match MultiLevelSkipListWriter::new(codec, i32::MAX, 2, 10, 1) {
+            Ok(_) => panic!("the window length does not fit an int"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(&error, LuceneError::Arithmetic(m) if m == "integer overflow"),
+            "{error:?}"
+        );
+        let error = match MultiLevelSkipListWriter::new_same_multiplier(codec, 1 << 16, 10, 1) {
+            Ok(_) => panic!("the window length does not fit an int"),
+            Err(error) => error,
+        };
+        assert!(matches!(&error, LuceneError::Arithmetic(_)), "{error:?}");
     }
 
     #[test]
     fn clone_input_is_used_for_higher_levels() {
         // Ensure the reader clones the base stream for higher levels.
         let codec = IntervalSkipCodec::new_same(2);
-        let mut writer = MultiLevelSkipListWriter::new_same_multiplier(codec, 2, 5, 16);
+        let mut writer = MultiLevelSkipListWriter::new_same_multiplier(codec, 2, 5, 16).unwrap();
         writer.reset_skip();
         for df in (2..=16).step_by(2) {
             writer.buffer_skip(df).unwrap();

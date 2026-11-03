@@ -23,10 +23,12 @@ use std::fmt::Debug;
 ///   [`IndexInput`](crate::store::IndexInput); the convenience
 ///   [`add_test_filter_type_of`](Self::add_test_filter_type_of) states that
 ///   bound at compile time.
-/// * **No `FilterIndexInput` in this port.** Rucene has not ported
-///   `org.apache.lucene.store.FilterIndexInput` yet, so the registry has no
-///   consumer inside the crate; the interface is ported because it is part of
-///   this package, and it will bind to that type once it exists.
+/// * **The registered type answers for itself.** Java tests
+///   `TEST_FILTER_INPUTS.contains(in.getClass())`; a `dyn IndexInput` has no
+///   class to read, so
+///   [`FilterIndexInput::unwrap_only_test`](crate::store::FilterIndexInput::unwrap_only_test)
+///   asks each input for the [`TypeId`] it registers as, through
+///   [`IndexInput::as_filter_index_input`](crate::store::IndexInput::as_filter_index_input).
 /// * **`Send + Sync + Debug` bounds.** Needed because
 ///   [`TestSecrets`](super::TestSecrets) keeps the accessor in a `static`.
 pub trait FilterIndexInputAccess: Send + Sync + Debug {

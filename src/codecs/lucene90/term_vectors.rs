@@ -21,17 +21,21 @@
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::fmt;
+use std::sync::atomic::AtomicI32;
 use std::sync::{Arc, Mutex};
 
 use crate::codecs::codec_util::{
     check_footer, check_index_header, checksum_entire_file, retrieve_checksum, write_footer,
     write_index_header,
 };
-use crate::codecs::compressing::{CompressionMode, Compressor, Decompressor, MatchingReaders};
+use crate::codecs::compressing::{
+    self, CompressionMode, Compressor, Decompressor, MatchingReaders,
+};
 use crate::codecs::lucene90::stored_fields::{FieldsIndex, FieldsIndexReader, FieldsIndexWriter};
 use crate::codecs::stub::{FieldInfo, FieldInfos, SegmentInfo};
 use crate::codecs::term_vectors::{TermVectorsFormat, TermVectorsReader, TermVectorsWriter};
 use crate::error::{LuceneError, Result};
+use crate::index::leaf_reader::TermVectors;
 use crate::index::postings_enum::{Impacts, ImpactsEnum, ImpactsSource, PostingsEnum};
 use crate::index::terms::{Fields, SeekStatus, TermState, Terms, TermsEnum};
 use crate::index::{segment_file_name, DocIDMerger, DocIDMergerSub, DocMap, MergeState};
@@ -43,10 +47,11 @@ use crate::store::{
 use crate::util::attribute::AttributeSource;
 use crate::util::byte_block_pool::MAX_TERM_LENGTH;
 use crate::util::packed::{
-    read_packed_ints_no_header, write_packed_ints_no_header, BlockPackedReaderIterator,
-    BlockPackedWriter, DirectReader, DirectWriter, PackedInts,
+    BlockPackedReaderIterator, BlockPackedWriter, DirectReader, DirectWriter, Format, PackedInts,
+    PackedIntsReaderIterator, PackedIntsWriter,
 };
 use crate::util::string_helper::StringHelper;
+use crate::util::IOUtils;
 use crate::util::{Accountable, ArrayUtil, BytesRef};
 
 // -----------------------------------------------------------------------------
@@ -128,7 +133,7 @@ impl TermVectorsFormat for Lucene90TermVectorsFormat {
         Lucene90CompressingTermVectorsFormat::new(
             VECTORS_CODEC_NAME,
             "",
-            CompressionMode::FAST,
+            Arc::clone(&compressing::FAST),
             DEFAULT_CHUNK_SIZE,
             DEFAULT_MAX_DOCS_PER_CHUNK,
             DEFAULT_BLOCK_SHIFT,
@@ -138,14 +143,14 @@ impl TermVectorsFormat for Lucene90TermVectorsFormat {
 
     fn vectors_writer(
         &self,
-        directory: &dyn Directory,
+        directory: &std::sync::Arc<dyn Directory>,
         segment_info: &SegmentInfo,
         context: &dyn IOContext,
     ) -> Result<Box<dyn TermVectorsWriter>> {
         Lucene90CompressingTermVectorsFormat::new(
             VECTORS_CODEC_NAME,
             "",
-            CompressionMode::FAST,
+            Arc::clone(&compressing::FAST),
             DEFAULT_CHUNK_SIZE,
             DEFAULT_MAX_DOCS_PER_CHUNK,
             DEFAULT_BLOCK_SHIFT,
@@ -166,7 +171,7 @@ impl TermVectorsFormat for Lucene90TermVectorsFormat {
 pub struct Lucene90CompressingTermVectorsFormat {
     format_name: String,
     segment_suffix: String,
-    compression_mode: CompressionMode,
+    compression_mode: Arc<dyn CompressionMode>,
     chunk_size: i32,
     max_docs_per_chunk: i32,
     block_shift: i32,
@@ -177,7 +182,7 @@ impl Lucene90CompressingTermVectorsFormat {
     pub fn new(
         format_name: &str,
         segment_suffix: &str,
-        compression_mode: CompressionMode,
+        compression_mode: Arc<dyn CompressionMode>,
         chunk_size: i32,
         max_docs_per_chunk: i32,
         block_shift: i32,
@@ -227,7 +232,7 @@ impl TermVectorsFormat for Lucene90CompressingTermVectorsFormat {
             field_infos,
             context,
             &self.format_name,
-            self.compression_mode,
+            Arc::clone(&self.compression_mode),
             self.chunk_size,
             self.block_shift,
         )?))
@@ -235,7 +240,7 @@ impl TermVectorsFormat for Lucene90CompressingTermVectorsFormat {
 
     fn vectors_writer(
         &self,
-        directory: &dyn Directory,
+        directory: &std::sync::Arc<dyn Directory>,
         segment_info: &SegmentInfo,
         context: &dyn IOContext,
     ) -> Result<Box<dyn TermVectorsWriter>> {
@@ -245,7 +250,7 @@ impl TermVectorsFormat for Lucene90CompressingTermVectorsFormat {
             &self.segment_suffix,
             context,
             &self.format_name,
-            self.compression_mode,
+            Arc::clone(&self.compression_mode),
             self.chunk_size,
             self.max_docs_per_chunk,
             self.block_shift,
@@ -399,7 +404,7 @@ pub struct Lucene90CompressingTermVectorsWriter {
     meta_stream: Box<dyn IndexOutput>,
     vectors_stream: Box<dyn IndexOutput>,
     compressor: Box<dyn Compressor>,
-    compression_mode: CompressionMode,
+    compression_mode: Arc<dyn CompressionMode>,
     chunk_size: usize,
     max_docs_per_chunk: usize,
     num_docs: i32,
@@ -510,7 +515,7 @@ fn next_term_vectors_step(
         return Ok(None);
     }
     let sub_index = merger.current_index().ok_or_else(|| {
-        LuceneError::IllegalState("DocIDMerger returned a sub it cannot locate".to_string())
+        LuceneError::illegal_state("DocIDMerger returned a sub it cannot locate".to_string())
     })?;
     let sub = merger.sub(sub_index);
     Ok(Some(TermVectorsMergeStep {
@@ -525,12 +530,12 @@ fn next_term_vectors_step(
 impl Lucene90CompressingTermVectorsWriter {
     #[allow(clippy::too_many_arguments)]
     fn new(
-        directory: &dyn Directory,
+        directory: &Arc<dyn Directory>,
         segment_info: &SegmentInfo,
         segment_suffix: &str,
         context: &dyn IOContext,
         format_name: &str,
-        compression_mode: CompressionMode,
+        compression_mode: Arc<dyn CompressionMode>,
         chunk_size: i32,
         max_docs_per_chunk: i32,
         block_shift: i32,
@@ -538,39 +543,77 @@ impl Lucene90CompressingTermVectorsWriter {
         let segment = segment_info.name.clone();
         let id = segment_info.id();
 
-        let meta_file = segment_file_name(&segment, segment_suffix, META_EXTENSION);
-        let mut meta_stream = directory.create_output(&meta_file, context)?;
-        write_index_header(
-            meta_stream.as_mut(),
-            &format!("{INDEX_CODEC_NAME}Meta"),
-            VERSION_CURRENT,
-            &id,
-            segment_suffix,
-        )?;
+        // `boolean success = false; try { ... } finally { if (!success)
+        // IOUtils.closeWhileHandlingException(metaStream, vectorsStream,
+        // indexWriter, indexWriter); }`
+        // (`Lucene90CompressingTermVectorsWriter.java:256-304`): whatever
+        // fails, everything opened so far is closed, and the index writer's
+        // close deletes its temporary files.
+        let mut meta_stream: Option<Box<dyn IndexOutput>> = None;
+        let mut vectors_stream: Option<Box<dyn IndexOutput>> = None;
+        let mut index_writer: Option<FieldsIndexWriter> = None;
+        let opened = (|| -> Result<()> {
+            let meta_file = segment_file_name(&segment, segment_suffix, META_EXTENSION);
+            let meta = meta_stream.insert(directory.create_output(&meta_file, context)?);
+            write_index_header(
+                meta.as_mut(),
+                &format!("{INDEX_CODEC_NAME}Meta"),
+                VERSION_CURRENT,
+                &id,
+                segment_suffix,
+            )?;
 
-        let vectors_file = segment_file_name(&segment, segment_suffix, VECTORS_EXTENSION);
-        let mut vectors_stream = directory.create_output(&vectors_file, context)?;
-        write_index_header(
-            vectors_stream.as_mut(),
-            format_name,
-            VERSION_CURRENT,
-            &id,
-            segment_suffix,
-        )?;
+            let vectors_file = segment_file_name(&segment, segment_suffix, VECTORS_EXTENSION);
+            let vectors = vectors_stream.insert(directory.create_output(&vectors_file, context)?);
+            write_index_header(
+                vectors.as_mut(),
+                format_name,
+                VERSION_CURRENT,
+                &id,
+                segment_suffix,
+            )?;
 
-        let index_writer = FieldsIndexWriter::new(
-            directory,
-            &segment,
-            segment_suffix,
-            INDEX_EXTENSION,
-            INDEX_CODEC_NAME,
-            id,
-            block_shift,
-            context,
-        )?;
+            index_writer = Some(FieldsIndexWriter::new(
+                directory,
+                &segment,
+                segment_suffix,
+                INDEX_EXTENSION,
+                INDEX_CODEC_NAME,
+                id,
+                block_shift,
+                context,
+            )?);
 
-        meta_stream.write_v_int(PackedInts::VERSION_CURRENT)?;
-        meta_stream.write_v_int(chunk_size)?;
+            meta.write_v_int(PackedInts::VERSION_CURRENT)?;
+            meta.write_v_int(chunk_size)?;
+            Ok(())
+        })();
+        if let Err(error) = opened {
+            // Java passes `indexWriter` twice; its second close finds nothing
+            // left to close.
+            let has_index_writer = index_writer.is_some();
+            let index_writer = std::cell::RefCell::new(index_writer);
+            let close_index_writer = || match index_writer.borrow_mut().as_mut() {
+                Some(writer) => writer.close(),
+                None => Ok(()),
+            };
+            IOUtils::close_while_handling_exception([
+                meta_stream.and_then(|mut out| IOUtils::closeable(move || out.close())),
+                vectors_stream.and_then(|mut out| IOUtils::closeable(move || out.close())),
+                has_index_writer
+                    .then_some(())
+                    .and_then(|()| IOUtils::closeable(close_index_writer)),
+                has_index_writer
+                    .then_some(())
+                    .and_then(|()| IOUtils::closeable(close_index_writer)),
+            ])?;
+            return Err(error);
+        }
+        let (Some(meta_stream), Some(vectors_stream), Some(index_writer)) =
+            (meta_stream, vectors_stream, index_writer)
+        else {
+            unreachable!("INVARIANT: a successful open set all three resources");
+        };
 
         Ok(Self {
             segment,
@@ -692,7 +735,7 @@ impl Lucene90CompressingTermVectorsWriter {
             Some(reader) => {
                 BULK_MERGE_ENABLED
                     && matching_readers.matching_readers[reader_index]
-                    && reader.compression_mode() == self.compression_mode
+                    && compressing::same_mode(reader.compression_mode(), &self.compression_mode)
                     && reader.chunk_size() == self.chunk_size as i32
                     && reader.version() == VERSION_CURRENT
                     && reader.packed_ints_version() == PackedInts::VERSION_CURRENT
@@ -742,13 +785,16 @@ impl Lucene90CompressingTermVectorsWriter {
             .and_then(|reader| reader.as_any())
             .and_then(|any| any.downcast_ref::<Lucene90CompressingTermVectorsReader>())
             .ok_or_else(|| {
-                LuceneError::IllegalState(
+                LuceneError::illegal_state(
                     "bulk merge needs a Lucene90CompressingTermVectorsReader".to_string(),
                 )
             })?;
         debug_assert_eq!(reader.version(), VERSION_CURRENT);
         debug_assert_eq!(reader.chunk_size(), self.chunk_size as i32);
-        debug_assert_eq!(reader.compression_mode(), self.compression_mode);
+        debug_assert!(compressing::same_mode(
+            reader.compression_mode(),
+            &self.compression_mode
+        ));
         debug_assert!(!self.too_dirty(reader));
         debug_assert!(merge_state.live_docs[sub.reader_index].is_none());
 
@@ -927,11 +973,20 @@ impl Lucene90CompressingTermVectorsWriter {
                 .write_v_int((num_distinct_fields - 1 - 0x07) as i32)?;
         }
 
-        write_packed_ints_no_header(
+        // `PackedInts.getWriterNoHeader(vectorsStream, Format.PACKED,
+        // numDistinctFields, bitsRequired, 1)`, one `add` per field number,
+        // then `finish()` (`Lucene90CompressingTermVectorsWriter.java:473-479`).
+        let mut writer = PackedInts::get_writer_no_header(
             self.vectors_stream.as_mut(),
-            &field_nums.iter().map(|&v| v as i64).collect::<Vec<_>>(),
+            Format::Packed,
+            num_distinct_fields as i32,
             bits_required,
+            1,
         )?;
+        for &field_num in &field_nums {
+            writer.add(i64::from(field_num))?;
+        }
+        writer.finish()?;
 
         Ok(field_nums)
     }
@@ -948,7 +1003,7 @@ impl Lucene90CompressingTermVectorsWriter {
             }
         }
         writer.finish()?;
-        let bytes = self.scratch_buffer.to_array_copy();
+        let bytes = self.scratch_buffer.to_array_copy()?;
         self.vectors_stream.write_v_long(bytes.len() as i64)?;
         self.vectors_stream.write_bytes(&bytes, 0, bytes.len())?;
         Ok(())
@@ -981,7 +1036,7 @@ impl Lucene90CompressingTermVectorsWriter {
                 writer.add(*flags as i64)?;
             }
             writer.finish()?;
-            let bytes = self.scratch_buffer.to_array_copy();
+            let bytes = self.scratch_buffer.to_array_copy()?;
             self.vectors_stream.write_v_int(bytes.len() as i32)?;
             self.vectors_stream.write_bytes(&bytes, 0, bytes.len())?;
         } else {
@@ -995,7 +1050,7 @@ impl Lucene90CompressingTermVectorsWriter {
                 }
             }
             writer.finish()?;
-            let bytes = self.scratch_buffer.to_array_copy();
+            let bytes = self.scratch_buffer.to_array_copy()?;
             self.vectors_stream.write_v_int(bytes.len() as i32)?;
             self.vectors_stream.write_bytes(&bytes, 0, bytes.len())?;
         }
@@ -1021,7 +1076,7 @@ impl Lucene90CompressingTermVectorsWriter {
             }
         }
         writer.finish()?;
-        let bytes = self.scratch_buffer.to_array_copy();
+        let bytes = self.scratch_buffer.to_array_copy()?;
         self.vectors_stream.write_v_int(bytes.len() as i32)?;
         self.vectors_stream.write_bytes(&bytes, 0, bytes.len())?;
         Ok(())
@@ -1210,7 +1265,7 @@ impl fmt::Debug for Lucene90CompressingTermVectorsWriter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Lucene90CompressingTermVectorsWriter")
             .field("segment", &self.segment)
-            .field("compression_mode", &format!("{}", self.compression_mode))
+            .field("compression_mode", &self.compression_mode.to_string())
             .field("chunk_size", &self.chunk_size)
             .field("max_docs_per_chunk", &self.max_docs_per_chunk)
             .field("num_docs", &self.num_docs)
@@ -1241,8 +1296,8 @@ impl Accountable for Lucene90CompressingTermVectorsWriter {
             + self.scratch_buffer.ram_bytes_used()
     }
 
-    fn child_resources(&self) -> Vec<&dyn Accountable> {
-        vec![&self.term_suffixes, &self.payload_bytes]
+    fn child_resources(&self) -> Vec<Box<dyn Accountable + '_>> {
+        vec![Box::new(&self.term_suffixes), Box::new(&self.payload_bytes)]
     }
 }
 
@@ -1261,7 +1316,7 @@ impl TermVectorsWriter for Lucene90CompressingTermVectorsWriter {
         // Append payload bytes of the doc after its terms.
         let payload_len = self.payload_bytes.size();
         if payload_len > 0 {
-            let bytes = self.payload_bytes.to_array_copy();
+            let bytes = self.payload_bytes.to_array_copy()?;
             self.term_suffixes.write_bytes(&bytes, 0, payload_len)?;
         }
         self.payload_bytes.reset();
@@ -1287,7 +1342,7 @@ impl TermVectorsWriter for Lucene90CompressingTermVectorsWriter {
         payloads: bool,
     ) -> Result<()> {
         let doc = self.cur_doc.as_mut().ok_or_else(|| {
-            LuceneError::IllegalState("start_field called without active document".to_string())
+            LuceneError::illegal_state("start_field called without active document".to_string())
         })?;
         let _field = doc.add_field(field_info.number, num_terms, positions, offsets, payloads);
         self.cur_field = Some(doc.fields.len() - 1);
@@ -1307,7 +1362,7 @@ impl TermVectorsWriter for Lucene90CompressingTermVectorsWriter {
             )));
         }
         let cur_field_idx = self.cur_field.ok_or_else(|| {
-            LuceneError::IllegalState("start_term called without active field".to_string())
+            LuceneError::illegal_state("start_term called without active field".to_string())
         })?;
         let doc = self.cur_doc.as_mut().unwrap();
         let field = &mut doc.fields[cur_field_idx];
@@ -1344,14 +1399,14 @@ impl TermVectorsWriter for Lucene90CompressingTermVectorsWriter {
         payload: Option<&BytesRef>,
     ) -> Result<()> {
         let cur_field_idx = self.cur_field.ok_or_else(|| {
-            LuceneError::IllegalState("add_position called without active field".to_string())
+            LuceneError::illegal_state("add_position called without active field".to_string())
         })?;
         let doc = self.cur_doc.as_mut().unwrap();
         let field = &doc.fields[cur_field_idx];
 
         let payload_length = if let Some(p) = payload {
             if !field.has_payloads {
-                return Err(LuceneError::IllegalState(
+                return Err(LuceneError::illegal_state(
                     "payload provided but field does not store payloads".to_string(),
                 ));
             }
@@ -1398,7 +1453,7 @@ impl TermVectorsWriter for Lucene90CompressingTermVectorsWriter {
 
     fn finish(&mut self, num_docs: i32) -> Result<()> {
         if self.finished {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "Lucene90CompressingTermVectorsWriter already finished".to_string(),
             ));
         }
@@ -1410,7 +1465,7 @@ impl TermVectorsWriter for Lucene90CompressingTermVectorsWriter {
             self.flush(true)?;
         }
         if num_docs != self.num_docs {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "Wrote {} docs, finish called with numDocs={num_docs}",
                 self.num_docs
             )));
@@ -1518,10 +1573,18 @@ impl TermVectorsWriter for Lucene90CompressingTermVectorsWriter {
         Ok(doc_count)
     }
 
+    /// Equivalent to `Lucene90CompressingTermVectorsWriter.close()`
+    /// (`Lucene90CompressingTermVectorsWriter.java:307-316`), which is
+    /// `IOUtils.close(metaStream, vectorsStream, indexWriter)`: all three are
+    /// closed even when one fails, the first failure propagates, and the
+    /// index writer's close deletes its temporary files. Java does not close
+    /// the compressor here; neither does this.
     fn close(&mut self) -> Result<()> {
-        self.meta_stream.close()?;
-        self.vectors_stream.close()?;
-        self.compressor.close()
+        IOUtils::close([
+            IOUtils::closeable(|| self.meta_stream.close()),
+            IOUtils::closeable(|| self.vectors_stream.close()),
+            IOUtils::closeable(|| self.index_writer.close()),
+        ])
     }
 }
 
@@ -1614,6 +1677,16 @@ fn at(what: &str, values: &[i32], index: i32) -> Result<i32> {
 // Reader
 // -----------------------------------------------------------------------------
 
+/// Number of block ids the reader remembers having prefetched.
+///
+/// Equivalent to `Lucene90CompressingTermVectorsReader.PREFETCH_CACHE_SIZE`.
+const PREFETCH_CACHE_SIZE: usize = 1 << 4;
+
+/// Mask that turns the running prefetch counter into a cache slot.
+///
+/// Equivalent to `Lucene90CompressingTermVectorsReader.PREFETCH_CACHE_MASK`.
+const PREFETCH_CACHE_MASK: i32 = PREFETCH_CACHE_SIZE as i32 - 1;
+
 /// Reader for the compressing term-vectors format.
 ///
 /// Lucene Core equivalent:
@@ -1623,7 +1696,7 @@ pub struct Lucene90CompressingTermVectorsReader {
     index_reader: Box<dyn FieldsIndex>,
     version: i32,
     packed_ints_version: i32,
-    compression_mode: CompressionMode,
+    compression_mode: Arc<dyn CompressionMode>,
     decompressor: Mutex<Box<dyn Decompressor>>,
     chunk_size: i32,
     num_docs: i32,
@@ -1640,6 +1713,20 @@ pub struct Lucene90CompressingTermVectorsReader {
     /// read inside the same chunk skips the index lookup and a bulk merge can
     /// tell whether a document's chunk is already in flight.
     block_state: Mutex<BlockState>,
+    /// The last [`PREFETCH_CACHE_SIZE`] blocks
+    /// [`prefetch`](TermVectorsReader::prefetch) asked the `.tvd` input for,
+    /// overwritten round-robin; `-1` marks a free slot.
+    ///
+    /// Equivalent to Lucene's `long[] prefetchedBlockIDCache`
+    /// (`Lucene90CompressingTermVectorsReader.java:104`). `prefetch` takes
+    /// `&self`, so the array sits behind a lock.
+    prefetched_block_id_cache: Mutex<[i64; PREFETCH_CACHE_SIZE]>,
+    /// How many blocks have been prefetched, which picks the next slot.
+    ///
+    /// Equivalent to Lucene's `int prefetchedBlockIDCacheIndex`
+    /// (`Lucene90CompressingTermVectorsReader.java:105`); it wraps as Java's
+    /// `int` does.
+    prefetched_block_id_cache_index: AtomicI32,
     /// Whether [`close`](TermVectorsReader::close) has already run, so that a
     /// later read reports `AlreadyClosed` instead of touching a closed file.
     ///
@@ -1678,7 +1765,7 @@ impl Lucene90CompressingTermVectorsReader {
         field_infos: &FieldInfos,
         context: &dyn IOContext,
         format_name: &str,
-        compression_mode: CompressionMode,
+        compression_mode: Arc<dyn CompressionMode>,
         _chunk_size: i32,
         _block_shift: i32,
     ) -> Result<Self> {
@@ -1686,81 +1773,140 @@ impl Lucene90CompressingTermVectorsReader {
         let id = segment_info.id();
         let num_docs = segment_info.max_doc()?;
 
-        let vectors_file = segment_file_name(&segment, segment_suffix, VECTORS_EXTENSION);
-        let mut vectors_stream = directory.open_input(&vectors_file, context)?;
-        let version = check_index_header(
-            vectors_stream.as_mut(),
-            format_name,
-            VERSION_START,
-            VERSION_CURRENT,
-            &id,
-            segment_suffix,
-        )?;
-        retrieve_checksum(vectors_stream.as_mut())?;
+        // `vectorsStream`, the fields index and `metaIn`, held as soon as each
+        // is opened; when the `try` block fails,
+        // `IOUtils.closeWhileHandlingException(this, metaIn)` closes them
+        // (`Lucene90CompressingTermVectorsReader.java:134-243`).
+        let mut vectors_stream: Option<Box<dyn IndexInput>> = None;
+        let mut index_reader: Option<FieldsIndexReader> = None;
+        let mut meta_in: Option<Box<crate::store::BufferedChecksumIndexInput>> = None;
+        let opened = (|| -> Result<_> {
+            let vectors_file = segment_file_name(&segment, segment_suffix, VECTORS_EXTENSION);
+            let vectors_stream =
+                vectors_stream.insert(directory.open_input(&vectors_file, context)?);
+            let version = check_index_header(
+                vectors_stream.as_mut(),
+                format_name,
+                VERSION_START,
+                VERSION_CURRENT,
+                &id,
+                segment_suffix,
+            )?;
+            retrieve_checksum(vectors_stream.as_mut())?;
 
-        let meta_file = segment_file_name(&segment, segment_suffix, META_EXTENSION);
-        let mut meta_in = directory.open_checksum_input(&meta_file)?;
-        check_index_header(
-            meta_in.as_mut(),
-            &format!("{INDEX_CODEC_NAME}Meta"),
-            VERSION_START,
-            version,
-            &id,
-            segment_suffix,
-        )?;
-        let packed_ints_version = meta_in.read_v_int()?;
-        let chunk_size = meta_in.read_v_int()?;
+            let meta_file = segment_file_name(&segment, segment_suffix, META_EXTENSION);
+            let meta_in = meta_in.insert(directory.open_checksum_input(&meta_file)?);
+            check_index_header(
+                meta_in.as_mut(),
+                &format!("{INDEX_CODEC_NAME}Meta"),
+                VERSION_START,
+                version,
+                &id,
+                segment_suffix,
+            )?;
+            let packed_ints_version = meta_in.read_v_int()?;
+            let chunk_size = meta_in.read_v_int()?;
 
-        let index_reader = FieldsIndexReader::new(
-            directory,
-            &segment,
-            segment_suffix,
-            INDEX_EXTENSION,
-            INDEX_CODEC_NAME,
-            id,
-            meta_in.as_mut(),
-            context,
-        )?;
-        let max_pointer = index_reader.max_pointer();
+            let index_reader = index_reader.insert(FieldsIndexReader::new(
+                directory,
+                &segment,
+                segment_suffix,
+                INDEX_EXTENSION,
+                INDEX_CODEC_NAME,
+                id,
+                meta_in.as_mut(),
+                context,
+            )?);
+            let max_pointer = index_reader.max_pointer();
 
-        let num_chunks = meta_in.read_v_long()?;
-        let num_dirty_chunks = meta_in.read_v_long()?;
-        let num_dirty_docs = meta_in.read_v_long()?;
+            let num_chunks = meta_in.read_v_long()?;
+            let num_dirty_chunks = meta_in.read_v_long()?;
+            let num_dirty_docs = meta_in.read_v_long()?;
 
-        if num_chunks < num_dirty_chunks {
-            return Err(LuceneError::CorruptIndex(format!(
+            if num_chunks < num_dirty_chunks {
+                return Err(LuceneError::CorruptIndex(format!(
                 "Cannot have more dirty chunks than chunks: numChunks={num_chunks}, numDirtyChunks={num_dirty_chunks}"
             )));
-        }
-        if (num_dirty_chunks == 0) != (num_dirty_docs == 0) {
-            return Err(LuceneError::CorruptIndex(
-                "Cannot have dirty chunks without dirty docs or vice-versa".to_string(),
-            ));
-        }
-        if num_dirty_docs < num_dirty_chunks {
-            return Err(LuceneError::CorruptIndex(format!(
+            }
+            if (num_dirty_chunks == 0) != (num_dirty_docs == 0) {
+                return Err(LuceneError::CorruptIndex(
+                    "Cannot have dirty chunks without dirty docs or vice-versa".to_string(),
+                ));
+            }
+            if num_dirty_docs < num_dirty_chunks {
+                return Err(LuceneError::CorruptIndex(format!(
                 "Cannot have more dirty chunks than documents within dirty chunks: numDirtyChunks={num_dirty_chunks}, numDirtyDocs={num_dirty_docs}"
             )));
-        }
+            }
 
-        check_footer(meta_in.as_mut())?;
-        meta_in.close()?;
-
-        Ok(Self {
-            field_infos: FieldInfos::new(field_infos.iter().cloned().collect())?,
-            index_reader: index_reader.clone_index()?,
+            check_footer(meta_in.as_mut())?;
+            meta_in.close()?;
+            Ok((
+                FieldInfos::new(field_infos.iter().cloned().collect())?,
+                version,
+                packed_ints_version,
+                chunk_size,
+                num_chunks,
+                num_dirty_chunks,
+                num_dirty_docs,
+                max_pointer,
+            ))
+        })();
+        let (
+            field_infos,
             version,
             packed_ints_version,
-            compression_mode,
+            chunk_size,
+            num_chunks,
+            num_dirty_chunks,
+            num_dirty_docs,
+            max_pointer,
+        ) = match opened {
+            Ok(read) => read,
+            Err(error) => {
+                // `this.close()` is `IOUtils.close(indexReader, vectorsStream)`.
+                IOUtils::close_while_handling_exception([
+                    IOUtils::closeable(|| {
+                        IOUtils::close([
+                            index_reader
+                                .as_mut()
+                                .and_then(|r| IOUtils::closeable(move || r.close())),
+                            vectors_stream
+                                .as_mut()
+                                .and_then(|i| IOUtils::closeable(move || i.close())),
+                        ])
+                    }),
+                    meta_in
+                        .as_mut()
+                        .and_then(|i| IOUtils::closeable(move || i.close())),
+                ])?;
+                return Err(error);
+            }
+        };
+
+        Ok(Self {
+            field_infos,
+            // `this.indexReader = fieldsIndexReader`
+            // (`Lucene90CompressingTermVectorsReader.java:189`): the reader
+            // keeps the fields index it opened, whose `close()` closes `.tvx`.
+            index_reader: Box::new(
+                index_reader.expect("INVARIANT: the constructor opened the fields index"),
+            ),
+            version,
+            packed_ints_version,
             decompressor: Mutex::new(compression_mode.new_decompressor()),
+            compression_mode,
             chunk_size,
             num_docs,
             num_chunks,
             num_dirty_chunks,
             num_dirty_docs,
             max_pointer,
-            vectors_stream,
+            vectors_stream: vectors_stream
+                .expect("INVARIANT: the constructor opened the vectors stream"),
             block_state: Mutex::new(BlockState::new()),
+            prefetched_block_id_cache: Mutex::new([-1; PREFETCH_CACHE_SIZE]),
+            prefetched_block_id_cache_index: AtomicI32::new(0),
             closed: false,
         })
     }
@@ -1770,7 +1916,7 @@ impl fmt::Debug for Lucene90CompressingTermVectorsReader {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Lucene90CompressingTermVectorsReader")
             .field("version", &self.version)
-            .field("compression_mode", &format!("{}", self.compression_mode))
+            .field("compression_mode", &self.compression_mode.to_string())
             .field("chunk_size", &self.chunk_size)
             .field("num_docs", &self.num_docs)
             .field("num_chunks", &self.num_chunks)
@@ -1787,7 +1933,7 @@ impl Clone for Lucene90CompressingTermVectorsReader {
             index_reader: self.index_reader.clone_index().expect("clone index"),
             version: self.version,
             packed_ints_version: self.packed_ints_version,
-            compression_mode: self.compression_mode,
+            compression_mode: Arc::clone(&self.compression_mode),
             decompressor: Mutex::new(self.compression_mode.new_decompressor()),
             chunk_size: self.chunk_size,
             num_docs: self.num_docs,
@@ -1800,6 +1946,8 @@ impl Clone for Lucene90CompressingTermVectorsReader {
                 .clone_input()
                 .expect("INVARIANT: cloning an open IndexInput never fails"),
             block_state: Mutex::new(BlockState::new()),
+            prefetched_block_id_cache: Mutex::new([-1; PREFETCH_CACHE_SIZE]),
+            prefetched_block_id_cache_index: AtomicI32::new(0),
             closed: false,
         }
     }
@@ -1810,6 +1958,42 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
         Some(self)
     }
 
+    fn check_integrity(&self) -> Result<()> {
+        self.index_reader.check_integrity()?;
+        let mut input = self.vectors_stream.clone_input()?;
+        input.seek(0)?;
+        checksum_entire_file(input.as_mut())?;
+        Ok(())
+    }
+
+    fn clone_reader(&self) -> Box<dyn TermVectorsReader> {
+        Box::new(self.clone())
+    }
+
+    fn get_merge_instance(&self) -> Box<dyn TermVectorsReader> {
+        Box::new(self.clone())
+    }
+
+    /// Closes the fields index and the `.tvd` stream, once.
+    ///
+    /// Equivalent to `Lucene90CompressingTermVectorsReader.close()`: both are
+    /// closed even when the first fails, the first failure is the one reported,
+    /// and the reader is only marked closed when the close succeeded — so a
+    /// failed close can be retried, exactly as Java's `if (!closed)` allows.
+    fn close(&mut self) -> Result<()> {
+        if self.closed {
+            return Ok(());
+        }
+        IOUtils::close([
+            IOUtils::closeable(|| self.index_reader.close()),
+            IOUtils::closeable(|| self.vectors_stream.close()),
+        ])?;
+        self.closed = true;
+        Ok(())
+    }
+}
+
+impl TermVectors for Lucene90CompressingTermVectorsReader {
     #[allow(clippy::needless_range_loop)]
     fn get(&self, doc: i32) -> Result<Option<Box<dyn Fields>>> {
         self.ensure_open()?;
@@ -1849,20 +2033,26 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
         // Taken before the block-packed reader borrows the stream, because
         // every count it decodes is bounded by what is still left to read.
         let available = remaining(input.as_ref());
+        // Java's `reader` is one `BlockPackedReaderIterator` over
+        // `vectorsStream`, built with the reader (`:118`) and reset before
+        // each block-packed section. Each `get` here reads its own clone of the
+        // stream, so the iterator is built over that clone, once, and the
+        // stream is read through it between two resets.
+        let mut reader = BlockPackedReaderIterator::<dyn IndexInput>::new(
+            input.as_mut(),
+            self.packed_ints_version,
+            PACKED_BLOCK_SIZE,
+            0,
+        )?;
         let skip;
         let num_fields;
         let total_fields;
         if chunk_docs == 1 {
             skip = 0;
-            num_fields = input.read_v_int()?;
+            num_fields = reader.input().read_v_int()?;
             total_fields = num_fields;
         } else {
-            let mut reader = BlockPackedReaderIterator::new(
-                input.as_mut(),
-                self.packed_ints_version,
-                PACKED_BLOCK_SIZE,
-                chunk_docs as i64,
-            )?;
+            reader.reset(i64::from(chunk_docs));
             // The per-document field counts are summed in 64 bits and validated
             // once, rather than accumulated in a wrapping `int` as Java does.
             // A corrupt block can decode to any `i64` at all, so the running
@@ -1894,24 +2084,33 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
         }
 
         // Read field numbers.
-        let token = input.read_byte()? as i32;
+        let token = reader.input().read_byte()? as i32;
         let bits_per_field_num = token & 0x1F;
         let mut total_distinct_fields = i64::from(token >> 5);
         if total_distinct_fields == 0x07 {
-            total_distinct_fields += i64::from(input.read_v_int()?);
+            total_distinct_fields += i64::from(reader.input().read_v_int()?);
         }
         total_distinct_fields += 1;
         let total_distinct_fields = checked_count(
             "the distinct fields of the chunk",
             total_distinct_fields,
-            remaining(input.as_ref()),
+            remaining(reader.input()),
         )?;
-        let field_nums = read_packed_ints_no_header(
-            input.as_mut(),
-            total_distinct_fields as i64,
+        // `PackedInts.getReaderIteratorNoHeader(vectorsStream, Format.PACKED,
+        // packedIntsVersion, totalDistinctFields, bitsPerFieldNum, 1)`, read
+        // with one `next()` per field (`Lucene90CompressingTermVectorsReader.java:424-435`).
+        let mut it = PackedInts::get_reader_iterator_no_header(
+            reader.input(),
+            Format::Packed,
+            self.packed_ints_version,
+            total_distinct_fields as i32,
             bits_per_field_num,
+            1,
         )?;
-        let field_nums: Vec<i32> = field_nums.into_iter().map(|v| v as i32).collect();
+        let mut field_nums: Vec<i32> = Vec::with_capacity(total_distinct_fields);
+        for _ in 0..total_distinct_fields {
+            field_nums.push(it.next()? as i32);
+        }
         if field_nums.is_empty() {
             return Err(LuceneError::CorruptIndex(
                 "a term-vector chunk with fields must name at least one of them".to_string(),
@@ -1919,10 +2118,10 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
         }
 
         // Read field num offsets and flags.
-        let field_num_offs_len = input.read_v_long()?;
+        let field_num_offs_len = reader.input().read_v_long()?;
         let field_num_offs_bytes = read_block(
             "the field-number offsets",
-            input.as_mut(),
+            reader.input(),
             field_num_offs_len,
         )?;
         let bits_per_off = DirectWriter::bits_required((field_nums.len() - 1) as i64);
@@ -1950,12 +2149,12 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
             )?);
         }
 
-        let flags_mode = input.read_v_int()?;
+        let flags_mode = reader.input().read_v_int()?;
         let mut field_flags_values = vec![0i32; total_fields as usize];
         match flags_mode {
             0 => {
-                let flags_len = i64::from(input.read_v_int()?);
-                let flags_bytes = read_block("the per-field flags", input.as_mut(), flags_len)?;
+                let flags_len = i64::from(reader.input().read_v_int()?);
+                let flags_bytes = read_block("the per-field flags", reader.input(), flags_len)?;
                 let field_flags_reader = DirectReader::new(flags_bytes, FLAGS_BITS)?;
                 let mut distinct_flags = Vec::with_capacity(field_nums.len());
                 for idx in 0..field_nums.len() as i64 {
@@ -1967,8 +2166,8 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
                 }
             }
             1 => {
-                let flags_len = i64::from(input.read_v_int()?);
-                let flags_bytes = read_block("the per-instance flags", input.as_mut(), flags_len)?;
+                let flags_len = i64::from(reader.input().read_v_int()?);
+                let flags_bytes = read_block("the per-instance flags", reader.input(), flags_len)?;
                 let all_flags = DirectReader::new(flags_bytes, FLAGS_BITS)?;
                 for i in 0..total_fields as usize {
                     field_flags_values[i] = all_flags.get_checked(i as i64)? as i32;
@@ -1987,9 +2186,9 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
         };
 
         // Number of terms per field.
-        let num_terms_bits = input.read_v_int()?;
-        let num_terms_len = i64::from(input.read_v_int()?);
-        let num_terms_bytes = read_block("the term counts", input.as_mut(), num_terms_len)?;
+        let num_terms_bits = reader.input().read_v_int()?;
+        let num_terms_len = i64::from(reader.input().read_v_int()?);
+        let num_terms_bytes = read_block("the term counts", reader.input(), num_terms_len)?;
         let num_terms_reader = DirectReader::new(num_terms_bytes, num_terms_bits)?;
         let mut num_terms_per_field = Vec::with_capacity(total_fields as usize);
         let mut total_terms = 0i64;
@@ -2006,85 +2205,79 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
         let total_terms = checked_count(
             "the terms of the chunk",
             total_terms,
-            remaining(input.as_ref()),
+            remaining(reader.input()),
         )? as i32;
         let num_terms_at = |index: i64| -> i64 { i64::from(num_terms_per_field[index as usize]) };
 
-        // Term lengths.
-        let mut all_prefix_lengths = vec![0i32; total_terms as usize];
-        let mut all_suffix_lengths = vec![0i32; total_terms as usize];
-        {
-            let mut reader = BlockPackedReaderIterator::new(
-                input.as_mut(),
-                self.packed_ints_version,
-                PACKED_BLOCK_SIZE,
-                total_terms as i64,
-            )?;
-            for i in 0..total_terms as usize {
-                all_prefix_lengths[i] = reader.next()? as i32;
-            }
-        }
-        {
-            let mut reader = BlockPackedReaderIterator::new(
-                input.as_mut(),
-                self.packed_ints_version,
-                PACKED_BLOCK_SIZE,
-                total_terms as i64,
-            )?;
-            for i in 0..total_terms as usize {
-                all_suffix_lengths[i] = reader.next()? as i32;
-            }
-        }
-
-        let mut skip_terms = 0i32;
-        for i in 0..skip as usize {
-            skip_terms = skip_terms.wrapping_add(num_terms_at(i as i64) as i32);
-        }
-        let mut prefix_lengths = vec![Vec::new(); num_fields as usize];
-        let mut suffix_lengths = vec![Vec::new(); num_fields as usize];
-        let mut field_lengths = vec![0i32; num_fields as usize];
+        // Term lengths (`Lucene90CompressingTermVectorsReader.java:479-536`).
         let mut doc_off = 0i32;
         let mut doc_len = 0i32;
-        for i in 0..skip_terms as usize {
-            doc_off = doc_off.wrapping_add(all_suffix_lengths[i]);
+        let chunk_total_len: i32;
+        let mut field_lengths = vec![0i32; num_fields as usize];
+        let mut prefix_lengths = vec![Vec::new(); num_fields as usize];
+        let mut suffix_lengths = vec![Vec::new(); num_fields as usize];
+        {
+            reader.reset(i64::from(total_terms));
+            // skip
+            let mut to_skip = 0i32;
+            for i in 0..skip {
+                to_skip = to_skip.wrapping_add(num_terms_at(i64::from(i)) as i32);
+            }
+            reader.skip(i64::from(to_skip))?;
+            // read prefix lengths
+            for i in 0..num_fields as usize {
+                let term_count = num_terms_at((skip + i as i32) as i64) as usize;
+                prefix_lengths[i] = Self::read_batches(&mut reader, term_count)?;
+            }
+            let ord = reader.ord();
+            reader.skip(i64::from(total_terms) - ord)?;
+
+            reader.reset(i64::from(total_terms));
+            // skip
+            for i in 0..skip {
+                for _ in 0..num_terms_at(i64::from(i)) {
+                    doc_off = doc_off.wrapping_add(reader.next()? as i32);
+                }
+            }
+            for i in 0..num_fields as usize {
+                let term_count = num_terms_at((skip + i as i32) as i64) as usize;
+                suffix_lengths[i] = Self::read_batches(&mut reader, term_count)?;
+                field_lengths[i] = Self::sum(&suffix_lengths[i]);
+                doc_len = doc_len.wrapping_add(field_lengths[i]);
+            }
+            let mut total_len = doc_off.wrapping_add(doc_len);
+            for i in skip + num_fields..total_fields {
+                for _ in 0..num_terms_at(i64::from(i)) {
+                    total_len = total_len.wrapping_add(reader.next()? as i32);
+                }
+            }
+            chunk_total_len = total_len;
         }
-        let mut off = skip_terms;
-        for i in 0..num_fields as usize {
-            let term_count = num_terms_at((skip + i as i32) as i64) as usize;
-            prefix_lengths[i] =
-                all_prefix_lengths[off as usize..off as usize + term_count].to_vec();
-            suffix_lengths[i] =
-                all_suffix_lengths[off as usize..off as usize + term_count].to_vec();
-            field_lengths[i] = Self::sum(&suffix_lengths[i]);
-            doc_len = doc_len.wrapping_add(field_lengths[i]);
-            off = off.wrapping_add(term_count as i32);
-        }
-        let chunk_total_len: i32 = Self::sum(&all_suffix_lengths);
 
         // Term freqs.
         let mut term_freqs = vec![0i32; total_terms as usize];
         {
-            let mut reader = BlockPackedReaderIterator::new(
-                input.as_mut(),
-                self.packed_ints_version,
-                PACKED_BLOCK_SIZE,
-                total_terms as i64,
-            )?;
+            reader.reset(i64::from(total_terms));
             // Java stores `1 + next()` and lets a corrupt block produce a
             // frequency of zero or less, which then walks off the end of the
             // position arrays. A frequency below one cannot describe a term
             // that is in the vector at all, so it is rejected here; the total
             // is capped for the same reason every other count is.
             let mut total_freqs = 0i64;
-            for i in 0..total_terms as usize {
-                let freq = reader.next()?.saturating_add(1);
-                if freq < 1 {
-                    return Err(LuceneError::CorruptIndex(format!(
-                        "term {i} of the chunk claims a frequency of {freq}"
-                    )));
+            let mut i = 0usize;
+            while i < total_terms as usize {
+                let next = reader.next_batch(total_terms as usize - i)?;
+                for &value in next {
+                    let freq = value.saturating_add(1);
+                    if freq < 1 {
+                        return Err(LuceneError::CorruptIndex(format!(
+                            "term {i} of the chunk claims a frequency of {freq}"
+                        )));
+                    }
+                    total_freqs = total_freqs.saturating_add(freq);
+                    term_freqs[i] = checked_count("a term frequency", freq, available)? as i32;
+                    i += 1;
                 }
-                total_freqs = total_freqs.saturating_add(freq);
-                term_freqs[i] = checked_count("a term frequency", freq, available)? as i32;
             }
             checked_count("the term occurrences of the chunk", total_freqs, available)?;
         }
@@ -2120,8 +2313,7 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
 
         if total_positions > 0 {
             let raw = Self::read_positions(
-                input.as_mut(),
-                self.packed_ints_version,
+                &mut reader,
                 skip,
                 num_fields,
                 &num_terms_at,
@@ -2145,11 +2337,10 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
         if total_offsets > 0 {
             let mut chars_per_term = vec![0.0f32; field_nums.len()];
             for cpt in &mut chars_per_term {
-                *cpt = f32::from_bits(input.read_int()? as u32);
+                *cpt = f32::from_bits(reader.input().read_int()? as u32);
             }
             let raw_start = Self::read_positions(
-                input.as_mut(),
-                self.packed_ints_version,
+                &mut reader,
                 skip,
                 num_fields,
                 &num_terms_at,
@@ -2160,8 +2351,7 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
                 &position_index,
             )?;
             let raw_lengths = Self::read_positions(
-                input.as_mut(),
-                self.packed_ints_version,
+                &mut reader,
                 skip,
                 num_fields,
                 &num_terms_at,
@@ -2227,20 +2417,8 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
         let mut payload_len = 0i32;
         let mut chunk_total_payload_length = 0i32;
         if total_payloads > 0 {
-            let mut all_payload_lengths = vec![0i32; total_payloads as usize];
-            {
-                let mut reader = BlockPackedReaderIterator::new(
-                    input.as_mut(),
-                    self.packed_ints_version,
-                    PACKED_BLOCK_SIZE,
-                    total_payloads as i64,
-                )?;
-                for i in 0..total_payloads as usize {
-                    all_payload_lengths[i] = reader.next()? as i32;
-                }
-            }
-
-            let mut offset = 0usize;
+            reader.reset(i64::from(total_payloads));
+            // skip
             let mut term_idx = 0i32;
             for i in 0..skip as usize {
                 let f = flags(i as i32);
@@ -2249,13 +2427,14 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
                     for j in 0..term_count as usize {
                         let freq = term_freqs[(term_idx + j as i32) as usize];
                         for _ in 0..freq {
-                            payload_off = payload_off.wrapping_add(all_payload_lengths[offset]);
-                            offset += 1;
+                            payload_off = payload_off.wrapping_add(reader.next()? as i32);
                         }
                     }
                 }
                 term_idx = term_idx.wrapping_add(term_count);
             }
+            chunk_total_payload_length = payload_off;
+            // read doc payload lengths
             for i in 0..num_fields as usize {
                 let f = flags(skip + i as i32);
                 let term_count = num_terms_at((skip + i as i32) as i64) as i32;
@@ -2271,27 +2450,44 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
                     // later field of a document begin at the buffer's start and
                     // run far too long.
                     idx[0] = payload_len;
-                    for pos_idx in 0..total_freq as usize {
-                        let pl = all_payload_lengths[offset + pos_idx];
-                        payload_len = payload_len.wrapping_add(pl);
-                        idx[pos_idx + 1] = payload_len;
+                    let mut pos_idx = 0usize;
+                    for j in 0..term_count as usize {
+                        let freq = term_freqs[(term_idx + j as i32) as usize];
+                        for _ in 0..freq {
+                            let payload_length = reader.next()? as i32;
+                            payload_len = payload_len.wrapping_add(payload_length);
+                            idx[pos_idx + 1] = payload_len;
+                            pos_idx += 1;
+                        }
                     }
-                    offset += total_freq as usize;
+                    // `assert posIdx == totalFreq`.
+                    debug_assert_eq!(pos_idx, total_freq as usize);
                     payload_index[i] = Some(idx);
                 }
+                term_idx = term_idx.wrapping_add(term_count);
             }
+            chunk_total_payload_length = chunk_total_payload_length.wrapping_add(payload_len);
             // Java also sums the payloads of the fields that follow this
             // document inside the same chunk
             // (`Lucene90CompressingTermVectorsReader.java:688-700`); the total
             // is the decompressor's `originalLength`, which bounds the buffer
-            // and is checked against what the stream actually holds. Every
-            // remaining entry belongs to a payload-bearing field of a later
-            // document, so summing the tail of the array is that third term.
-            chunk_total_payload_length = all_payload_lengths[offset..]
-                .iter()
-                .fold(payload_off.wrapping_add(payload_len), |sum, value| {
-                    sum.wrapping_add(*value)
-                });
+            // and is checked against what the stream actually holds.
+            for i in (skip + num_fields) as usize..total_fields as usize {
+                let f = flags(i as i32);
+                let term_count = num_terms_at(i as i64) as i32;
+                if (f & PAYLOADS) != 0 {
+                    for j in 0..term_count as usize {
+                        let freq = term_freqs[(term_idx + j as i32) as usize];
+                        for _ in 0..freq {
+                            chunk_total_payload_length =
+                                chunk_total_payload_length.wrapping_add(reader.next()? as i32);
+                        }
+                    }
+                }
+                term_idx = term_idx.wrapping_add(term_count);
+            }
+            // `assert termIndex == totalTerms`.
+            debug_assert_eq!(term_idx, total_terms);
         }
 
         // Decompress term and payload bytes. Java asserts
@@ -2389,41 +2585,44 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
         })))
     }
 
-    fn check_integrity(&self) -> Result<()> {
-        self.index_reader.check_integrity()?;
-        let mut input = self.vectors_stream.clone_input()?;
-        input.seek(0)?;
-        checksum_entire_file(input.as_mut())?;
-        Ok(())
-    }
-
-    fn clone_reader(&self) -> Box<dyn TermVectorsReader> {
-        Box::new(self.clone())
-    }
-
-    fn get_merge_instance(&self) -> Box<dyn TermVectorsReader> {
-        Box::new(self.clone())
-    }
-
-    /// Closes the fields index and the `.tvd` stream, once.
+    /// Asks the `.tvd` input to load the block that holds `doc_id`, unless it
+    /// was one of the last sixteen blocks prefetched.
     ///
-    /// Equivalent to `Lucene90CompressingTermVectorsReader.close()`: both are
-    /// closed even when the first fails, the first failure is the one reported,
-    /// and the reader is only marked closed when the close succeeded — so a
-    /// failed close can be retried, exactly as Java's `if (!closed)` allows.
-    fn close(&mut self) -> Result<()> {
-        if self.closed {
-            return Ok(());
+    /// Equivalent to `Lucene90CompressingTermVectorsReader.prefetch(int)`
+    /// (`Lucene90CompressingTermVectorsReader.java:347-361`).
+    fn prefetch(&mut self, doc_id: i32) -> Result<()> {
+        let block_id = self.index_reader.get_block_id(doc_id)?;
+
+        let mut prefetched_block_id_cache = self.prefetched_block_id_cache.lock().unwrap();
+        for &prefetched_block_id in prefetched_block_id_cache.iter() {
+            if prefetched_block_id == block_id {
+                return Ok(());
+            }
         }
-        let index = self.index_reader.close();
-        let stream = self.vectors_stream.close();
-        index.and(stream)?;
-        self.closed = true;
+
+        let block_start_pointer = self.index_reader.get_block_start_pointer(block_id)?;
+        let block_length = self.index_reader.get_block_length(block_id)?;
+        self.vectors_stream
+            .prefetch(block_start_pointer, block_length)?;
+
+        let index = self
+            .prefetched_block_id_cache_index
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        prefetched_block_id_cache[(index & PREFETCH_CACHE_MASK) as usize] = block_id;
         Ok(())
     }
 }
 
 impl Lucene90CompressingTermVectorsReader {
+    /// Returns the number of documents this reader covers, which is the
+    /// segment's `maxDoc`.
+    ///
+    /// Equivalent to the package-private `Lucene90CompressingTermVectorsReader#getNumDocs`
+    /// (`Lucene90CompressingTermVectorsReader.java:301-303`).
+    pub fn get_num_docs(&self) -> i32 {
+        self.num_docs
+    }
+
     /// Adds up the entries of `arr`.
     ///
     /// Equivalent to the private
@@ -2442,7 +2641,7 @@ impl Lucene90CompressingTermVectorsReader {
     /// message.
     fn ensure_open(&self) -> Result<()> {
         if self.closed {
-            return Err(LuceneError::AlreadyClosed(
+            return Err(LuceneError::already_closed(
                 "this FieldsReader is closed".to_string(),
             ));
         }
@@ -2505,8 +2704,8 @@ impl Lucene90CompressingTermVectorsReader {
     /// Returns the compression mode the chunks were written with.
     ///
     /// Equivalent to `Lucene90CompressingTermVectorsReader.getCompressionMode`.
-    fn compression_mode(&self) -> CompressionMode {
-        self.compression_mode
+    fn compression_mode(&self) -> &Arc<dyn CompressionMode> {
+        &self.compression_mode
     }
 
     /// Returns the number of chunks in this segment.
@@ -2569,9 +2768,16 @@ impl Lucene90CompressingTermVectorsReader {
         state.doc_base <= doc_id && doc_id < state.doc_base.wrapping_add(state.chunk_docs)
     }
 
+    /// Reads the positions (or offsets, or lengths) of the document's fields
+    /// that carry `flag`, skipping those of the fields before it.
+    ///
+    /// Equivalent to the private
+    /// `Lucene90CompressingTermVectorsReader.readPositions`
+    /// (`Lucene90CompressingTermVectorsReader.java:783-829`): the shared
+    /// iterator is reset to `total_positions`, skipped past the fields before
+    /// the document, read in batches, and skipped to the end of the section.
     fn read_positions(
-        input: &mut dyn DataInput,
-        packed_ints_version: i32,
+        reader: &mut BlockPackedReaderIterator<'_, dyn IndexInput>,
         skip: i32,
         num_fields: i32,
         num_terms_at: &dyn Fn(i64) -> i64,
@@ -2581,18 +2787,10 @@ impl Lucene90CompressingTermVectorsReader {
         total_positions: i32,
         position_index: &[Vec<i32>],
     ) -> Result<Vec<Option<Vec<i32>>>> {
-        let mut reader = BlockPackedReaderIterator::new(
-            input,
-            packed_ints_version,
-            PACKED_BLOCK_SIZE,
-            total_positions as i64,
-        )?;
-        let mut all_values = vec![0i32; total_positions as usize];
-        for i in 0..total_positions as usize {
-            all_values[i] = reader.next()? as i32;
-        }
-
-        let mut offset = 0usize;
+        let mut positions = vec![None; num_fields as usize];
+        reader.reset(i64::from(total_positions));
+        // skip
+        let mut to_skip = 0i32;
         let mut term_index = 0i32;
         for i in 0..skip as usize {
             let f = flags(i as i32);
@@ -2600,23 +2798,44 @@ impl Lucene90CompressingTermVectorsReader {
             if (f & flag) != 0 {
                 for j in 0..term_count as usize {
                     let freq = term_freqs[(term_index + j as i32) as usize];
-                    offset += freq as usize;
+                    to_skip = to_skip.wrapping_add(freq);
                 }
             }
-            term_index += term_count;
+            term_index = term_index.wrapping_add(term_count);
         }
-
-        let mut result = vec![None; num_fields as usize];
+        reader.skip(i64::from(to_skip))?;
+        // read doc positions
         for i in 0..num_fields as usize {
             let f = flags(skip + i as i32);
             let term_count = num_terms_at((skip + i as i32) as i64) as i32;
             if (f & flag) != 0 {
                 let total_freq = position_index[i][term_count as usize];
-                result[i] = Some(all_values[offset..offset + total_freq as usize].to_vec());
-                offset += total_freq as usize;
+                positions[i] = Some(Self::read_batches(reader, total_freq as usize)?);
+            }
+            term_index = term_index.wrapping_add(term_count);
+        }
+        let ord = reader.ord();
+        reader.skip(i64::from(total_positions) - ord)?;
+        Ok(positions)
+    }
+
+    /// Reads `count` values with `reader.next(count - j)` until all are read,
+    /// the loop Java writes out for each per-term array
+    /// (`Lucene90CompressingTermVectorsReader.java:497-502, 518-523, 819-824`).
+    fn read_batches(
+        reader: &mut BlockPackedReaderIterator<'_, dyn IndexInput>,
+        count: usize,
+    ) -> Result<Vec<i32>> {
+        let mut values = vec![0i32; count];
+        let mut j = 0usize;
+        while j < count {
+            let next = reader.next_batch(count - j)?;
+            for &value in next {
+                values[j] = value as i32;
+                j += 1;
             }
         }
-        Ok(result)
+        Ok(values)
     }
 }
 
@@ -2745,20 +2964,20 @@ impl Terms for TVTerms {
         )?))
     }
 
-    fn size(&self) -> i64 {
-        self.num_terms as i64
+    fn size(&self) -> Result<i64> {
+        Ok(self.num_terms as i64)
     }
 
-    fn sum_total_term_freq(&self) -> i64 {
-        self.term_freqs.iter().map(|&f| f as i64).sum()
+    fn sum_total_term_freq(&self) -> Result<i64> {
+        Ok(self.term_freqs.iter().map(|&f| f as i64).sum())
     }
 
-    fn sum_doc_freq(&self) -> i64 {
-        self.num_terms as i64
+    fn sum_doc_freq(&self) -> Result<i64> {
+        Ok(self.num_terms as i64)
     }
 
-    fn doc_count(&self) -> i32 {
-        1
+    fn doc_count(&self) -> Result<i32> {
+        Ok(1)
     }
 
     fn has_freqs(&self) -> bool {
@@ -2963,7 +3182,7 @@ impl TermsEnum for TVTermsEnum {
 
     fn total_term_freq(&mut self) -> Result<i64> {
         if self.ord < 0 || self.ord >= self.num_terms {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "total_term_freq called before first term".to_string(),
             ));
         }
@@ -2977,7 +3196,7 @@ impl TermsEnum for TVTermsEnum {
     ) -> Result<Box<dyn PostingsEnum>> {
         let mut postings = TVPostingsEnum::new();
         if self.ord < 0 || self.ord >= self.num_terms {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "postings called before first term".to_string(),
             ));
         }
@@ -3161,7 +3380,7 @@ impl std::fmt::Display for TVPostingsEnum {
 impl PostingsEnum for TVPostingsEnum {
     fn freq(&self) -> Result<i32> {
         if self.doc == NO_MORE_DOCS || self.doc == -1 {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "freq called on unpositioned postings enum".to_string(),
             ));
         }
@@ -3170,12 +3389,12 @@ impl PostingsEnum for TVPostingsEnum {
 
     fn next_position(&mut self) -> Result<i32> {
         if self.doc != 0 {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "next_position called on unpositioned postings enum".to_string(),
             ));
         }
         if self.i >= self.term_freq - 1 {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "read past last position".to_string(),
             ));
         }
@@ -3363,7 +3582,7 @@ mod tests {
     use crate::index::postings_enum::{POSTINGS_ENUM_PAYLOADS, POSTINGS_ENUM_POSITIONS};
     use crate::index::{FieldInfo as RealFieldInfo, IndexOptions};
     use crate::search::Sort;
-    use crate::store::RamDirectory;
+    use crate::store::ByteBuffersDirectory;
     use crate::store::DEFAULT_IO_CONTEXT;
     use crate::util::string_helper::ID_LENGTH;
     use crate::util::Bits;
@@ -3397,8 +3616,8 @@ mod tests {
         FieldInfos::new(vec![body, title]).unwrap()
     }
 
-    fn write_read_round_trip(compression_mode: CompressionMode) {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    fn write_read_round_trip(compression_mode: Arc<dyn CompressionMode>) {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let field_infos = make_field_infos();
         let segment_info = test_segment_info(Arc::clone(&dir), "_0", 3);
 
@@ -3414,7 +3633,7 @@ mod tests {
 
         {
             let mut writer = format
-                .vectors_writer(dir.as_ref(), &segment_info, &*DEFAULT_IO_CONTEXT)
+                .vectors_writer(&dir, &segment_info, &*DEFAULT_IO_CONTEXT)
                 .unwrap();
 
             // Document 0: body with positions and offsets.
@@ -3536,19 +3755,169 @@ mod tests {
         assert!(dir.file_length("_0.tvm").unwrap() > 0);
     }
 
+    /// Writes three documents of one field each into one chunk — `doc_terms`
+    /// gives each document's `(term, freq)` pairs — and reads document 1
+    /// with the block-packed calls traced.
+    fn traced_middle_document(
+        positions: bool,
+        doc_terms: &[&[(&str, i32)]],
+    ) -> (Vec<String>, Vec<(Vec<u8>, i64)>) {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let field_infos = make_field_infos();
+        let segment_info = test_segment_info(Arc::clone(&dir), "_0", 3);
+        let format = Lucene90CompressingTermVectorsFormat::new(
+            VECTORS_CODEC_NAME,
+            "",
+            Arc::clone(&compressing::FAST),
+            1 << 12,
+            128,
+            10,
+        )
+        .unwrap();
+        let field = if positions { "body" } else { "title" };
+        {
+            let mut writer = format
+                .vectors_writer(&dir, &segment_info, &*DEFAULT_IO_CONTEXT)
+                .unwrap();
+            for terms in doc_terms {
+                writer.start_document(1).unwrap();
+                writer
+                    .start_field(
+                        field_infos.field_info(field).unwrap(),
+                        terms.len() as i32,
+                        positions,
+                        positions,
+                        positions,
+                    )
+                    .unwrap();
+                let mut position = 0;
+                for (term, freq) in terms.iter() {
+                    writer
+                        .start_term(&BytesRef::new(term.as_bytes().to_vec()), *freq)
+                        .unwrap();
+                    if positions {
+                        for _ in 0..*freq {
+                            let payload = BytesRef::new(vec![position as u8; 2]);
+                            writer
+                                .add_position(
+                                    position,
+                                    position * 2,
+                                    position * 2 + 1,
+                                    Some(&payload),
+                                )
+                                .unwrap();
+                            position += 1;
+                        }
+                    }
+                    writer.finish_term().unwrap();
+                }
+                writer.finish_field().unwrap();
+                writer.finish_document().unwrap();
+            }
+            writer.finish(3).unwrap();
+            writer.close().unwrap();
+        }
+        let reader = format
+            .vectors_reader(
+                dir.as_ref(),
+                &segment_info,
+                &field_infos,
+                &*DEFAULT_IO_CONTEXT,
+            )
+            .unwrap();
+        crate::util::packed::BLOCK_PACKED_TRACE
+            .with(|trace| *trace.borrow_mut() = Some(Vec::new()));
+        let fields = reader.get(1).unwrap().expect("document 1 has vectors");
+        let trace = crate::util::packed::BLOCK_PACKED_TRACE
+            .with(|trace| trace.borrow_mut().take().unwrap());
+        let terms = fields.terms(field).unwrap().expect("terms");
+        let mut it = terms.iterator().unwrap();
+        let mut read = Vec::new();
+        while let Some(term) = it.next().unwrap() {
+            read.push((term.slice().to_vec(), it.total_term_freq().unwrap()));
+        }
+        (trace, read)
+    }
+
+    /// rmp #294: the reader resets its one `BlockPackedReaderIterator` before
+    /// each block-packed section, skips the terms of the fields before the
+    /// document, reads the document's per-term arrays with `next(int)`, and
+    /// skips to the end of the section from `ord()`
+    /// (`Lucene90CompressingTermVectorsReader.java:394-547`). Document 1 of
+    /// three, with 2, 3 and 1 terms.
+    #[test]
+    fn get_resets_skips_and_batches_one_iterator_as_java() {
+        let (trace, read) = traced_middle_document(
+            false,
+            &[
+                &[("a", 1), ("b", 1)],
+                &[("c", 1), ("d", 2), ("e", 1)],
+                &[("f", 1)],
+            ],
+        );
+        assert_eq!(
+            trace,
+            vec![
+                "reset(3)",
+                "reset(6)",
+                "skip(2)",
+                "next_batch(3)",
+                "ord",
+                "skip(1)",
+                "reset(6)",
+                "next_batch(3)",
+                "reset(6)",
+                "next_batch(6)",
+            ]
+        );
+        assert_eq!(
+            read,
+            vec![(b"c".to_vec(), 1), (b"d".to_vec(), 2), (b"e".to_vec(), 1)]
+        );
+    }
+
+    /// rmp #294: positions, start offsets and lengths are each read by
+    /// `readPositions` — reset, skip, `next(int)`, `ord()`, skip — and the
+    /// payload lengths after one more reset
+    /// (`Lucene90CompressingTermVectorsReader.java:649, 783-829`).
+    #[test]
+    fn get_reads_positions_and_payloads_on_the_same_iterator_as_java() {
+        let (trace, read) =
+            traced_middle_document(true, &[&[("a", 1)], &[("b", 2), ("c", 1)], &[("d", 1)]]);
+        let read_positions = ["reset(5)", "skip(1)", "next_batch(3)", "ord", "skip(1)"];
+        let mut expected = vec![
+            "reset(3)",
+            "reset(4)",
+            "skip(1)",
+            "next_batch(2)",
+            "ord",
+            "skip(1)",
+            "reset(4)",
+            "next_batch(2)",
+            "reset(4)",
+            "next_batch(4)",
+        ];
+        for _ in 0..3 {
+            expected.extend(read_positions);
+        }
+        expected.push("reset(5)");
+        assert_eq!(trace, expected);
+        assert_eq!(read, vec![(b"b".to_vec(), 2), (b"c".to_vec(), 1)]);
+    }
+
     #[test]
     fn round_trip_fast() {
-        write_read_round_trip(CompressionMode::FAST);
+        write_read_round_trip(Arc::clone(&compressing::FAST));
     }
 
     #[test]
     fn round_trip_high_compression() {
-        write_read_round_trip(CompressionMode::HIGH_COMPRESSION);
+        write_read_round_trip(Arc::clone(&compressing::HIGH_COMPRESSION));
     }
 
     #[test]
     fn round_trip_payloads() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut tags = RealFieldInfo::new("tags", 0);
         tags.index_options = IndexOptions::DOCS_AND_FREQS_AND_POSITIONS;
         let field_infos = FieldInfos::new(vec![tags]).unwrap();
@@ -3557,7 +3926,7 @@ mod tests {
         let format = Lucene90CompressingTermVectorsFormat::new(
             VECTORS_CODEC_NAME,
             "",
-            CompressionMode::FAST,
+            Arc::clone(&compressing::FAST),
             1 << 12,
             128,
             10,
@@ -3566,7 +3935,7 @@ mod tests {
 
         {
             let mut writer = format
-                .vectors_writer(dir.as_ref(), &segment_info, &*DEFAULT_IO_CONTEXT)
+                .vectors_writer(&dir, &segment_info, &*DEFAULT_IO_CONTEXT)
                 .unwrap();
             writer.start_document(1).unwrap();
             writer
@@ -3652,7 +4021,7 @@ mod tests {
     /// Writes one document made of `fields`, exactly as a
     /// `TermVectorsConsumer` would.
     fn write_document(
-        directory: &dyn Directory,
+        directory: &Arc<dyn Directory>,
         segment_info: &SegmentInfo,
         field_infos: &FieldInfos,
         fields: &[ScriptedField<'_>],
@@ -3705,7 +4074,7 @@ mod tests {
         // positions only after the offsets are reconstructed. Doing it earlier
         // leaves every occurrence but the first two shifted by one
         // `charsPerTerm`.
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let field_infos = make_field_infos();
         let segment_info = test_segment_info(Arc::clone(&dir), "_0", 1);
         let occurrences: Vec<(i32, i32, i32, Option<&[u8]>)> = vec![
@@ -3715,7 +4084,7 @@ mod tests {
             (3, 15, 19, None),
         ];
         write_document(
-            dir.as_ref(),
+            &dir,
             &segment_info,
             &field_infos,
             &[("body", true, true, false, vec![("zeta", occurrences)])],
@@ -3753,7 +4122,7 @@ mod tests {
         // Every payload-bearing field of a document shares one payload buffer,
         // so a field's payload index starts where the previous field's ended.
         // Starting it at zero hands the second field the first field's bytes.
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut first = RealFieldInfo::new("aaa", 0);
         first.index_options = IndexOptions::DOCS_AND_FREQS_AND_POSITIONS;
         let mut second = RealFieldInfo::new("bbb", 1);
@@ -3762,7 +4131,7 @@ mod tests {
         let segment_info = test_segment_info(Arc::clone(&dir), "_0", 1);
 
         write_document(
-            dir.as_ref(),
+            &dir,
             &segment_info,
             &field_infos,
             &[
@@ -3816,7 +4185,7 @@ mod tests {
         // stores `PackedInts.bitsRequired(maxFieldNum)`. Rounding that up to a
         // width `DirectWriter` supports — 3 becomes 4 — still round-trips but
         // writes bytes Lucene never would.
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let infos: Vec<RealFieldInfo> = (0..6)
             .map(|number| {
                 let mut info = RealFieldInfo::new(format!("f{number}"), number);
@@ -3871,7 +4240,7 @@ mod tests {
                 vec![("t", vec![(0, 0, 0, None)])],
             ),
         ];
-        write_document(dir.as_ref(), &segment_info, &field_infos, &fields);
+        write_document(&dir, &segment_info, &field_infos, &fields);
 
         let mut input = dir
             .open_input("_0.tvd", &*DEFAULT_IO_CONTEXT)
@@ -3899,18 +4268,21 @@ mod tests {
         // (`Lucene90CompressingTermVectorsReader.java:688-700`). Leaving that
         // third term out understates the buffer the codec is allowed to
         // produce.
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut body = RealFieldInfo::new("body", 0);
         body.index_options = IndexOptions::DOCS_AND_FREQS_AND_POSITIONS;
         let field_infos = FieldInfos::new(vec![body]).unwrap();
         let segment_info = test_segment_info(Arc::clone(&dir), "_0", 2);
 
-        for mode in [CompressionMode::FAST, CompressionMode::HIGH_COMPRESSION] {
-            let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        for mode in [
+            Arc::clone(&compressing::FAST),
+            Arc::clone(&compressing::HIGH_COMPRESSION),
+        ] {
+            let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
             let format = Lucene90CompressingTermVectorsFormat::new(
                 VECTORS_CODEC_NAME,
                 "",
-                mode,
+                Arc::clone(&mode),
                 1 << 12,
                 128,
                 10,
@@ -3918,7 +4290,7 @@ mod tests {
             .unwrap();
             {
                 let mut writer = format
-                    .vectors_writer(dir.as_ref(), &segment_info, &*DEFAULT_IO_CONTEXT)
+                    .vectors_writer(&dir, &segment_info, &*DEFAULT_IO_CONTEXT)
                     .unwrap();
                 for doc in 0..2u8 {
                     writer.start_document(1).unwrap();
@@ -3955,7 +4327,7 @@ mod tests {
             for doc in 0..2u8 {
                 let fields = reader
                     .get(doc as i32)
-                    .unwrap_or_else(|error| panic!("{mode} doc {doc}: {error}"))
+                    .unwrap_or_else(|error| panic!("{} doc {doc}: {error}", mode.to_string()))
                     .expect("vectors");
                 let terms = fields.terms("body").unwrap().expect("body terms");
                 let mut iterator = terms.iterator().unwrap();
@@ -3966,7 +4338,8 @@ mod tests {
                 assert_eq!(
                     postings.get_payload().unwrap(),
                     Some(&vec![doc; 32][..]),
-                    "{mode} doc {doc}"
+                    "{} doc {doc}",
+                    mode.to_string()
                 );
             }
         }
@@ -3976,7 +4349,10 @@ mod tests {
 
     /// Writes one document's term vector into `directory` and returns the field
     /// infos the reader needs.
-    fn write_one_document(directory: &dyn Directory, segment_info: &SegmentInfo) -> FieldInfos {
+    fn write_one_document(
+        directory: &Arc<dyn Directory>,
+        segment_info: &SegmentInfo,
+    ) -> FieldInfos {
         let field_infos = make_field_infos();
         let format = Lucene90TermVectorsFormat::new();
         let mut writer = format
@@ -4028,11 +4404,11 @@ mod tests {
         // parses a `.si`, and a compound segment's files exist only inside the
         // `.cfs`. Both halves of the format must therefore go through their
         // `directory` argument.
-        let files: Arc<dyn Directory> = Arc::new(RamDirectory::new());
-        let placeholder: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let files: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let placeholder: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let segment_info = test_segment_info(Arc::clone(&placeholder), "_0", 1);
 
-        let field_infos = write_one_document(files.as_ref(), &segment_info);
+        let field_infos = write_one_document(&files, &segment_info);
         assert!(
             placeholder.list_all().expect("list").is_empty(),
             "the writer must not create files in SegmentInfo.directory"
@@ -4052,15 +4428,17 @@ mod tests {
 
     #[test]
     fn term_vectors_are_readable_from_a_compound_file_segment() {
-        let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let segment_info = test_segment_info(Arc::clone(&directory), "_0", 1);
-        let field_infos = write_one_document(directory.as_ref(), &segment_info);
+        let field_infos = write_one_document(&directory, &segment_info);
 
         let loose: Vec<String> = ["_0.tvd", "_0.tvx", "_0.tvm"]
             .iter()
             .map(|name| (*name).to_string())
             .collect();
-        segment_info.set_files(loose.iter().cloned().collect::<Vec<String>>());
+        segment_info
+            .set_files(loose.iter().cloned().collect::<Vec<String>>())
+            .unwrap();
         let compound_format = crate::codecs::lucene90::compound::Lucene90CompoundFormat;
         compound_format
             .write(directory.as_ref(), &segment_info, &*DEFAULT_IO_CONTEXT)
@@ -4104,7 +4482,7 @@ mod tests {
         Lucene90CompressingTermVectorsFormat::new(
             VECTORS_CODEC_NAME,
             "",
-            CompressionMode::FAST,
+            Arc::clone(&compressing::FAST),
             MERGE_TEST_CHUNK_SIZE,
             MERGE_TEST_DOCS_PER_CHUNK,
             10,
@@ -4117,11 +4495,11 @@ mod tests {
     fn merge_test_writer(
         dir: &Arc<dyn Directory>,
         name: &str,
-        compression_mode: CompressionMode,
+        compression_mode: Arc<dyn CompressionMode>,
         chunk_size: i32,
     ) -> Lucene90CompressingTermVectorsWriter {
         Lucene90CompressingTermVectorsWriter::new(
-            dir.as_ref(),
+            dir,
             &test_segment_info(Arc::clone(dir), name, 0),
             "",
             &*DEFAULT_IO_CONTEXT,
@@ -4230,7 +4608,7 @@ mod tests {
         let field_infos = make_field_infos();
         let segment_info = test_segment_info(Arc::clone(dir), name, count);
         let mut writer = merge_test_format()
-            .vectors_writer(dir.as_ref(), &segment_info, &*DEFAULT_IO_CONTEXT)
+            .vectors_writer(dir, &segment_info, &*DEFAULT_IO_CONTEXT)
             .unwrap();
         for n in first..first + count {
             let fields = tv_merge_doc(n).unwrap_or_default();
@@ -4345,6 +4723,26 @@ mod tests {
             .clone()
     }
 
+    /// `getNumDocs` is the segment's `maxDoc` — the constructor's
+    /// `numDocs = si.maxDoc()` — and a merge instance, which Java builds with
+    /// the copy constructor's `this.numDocs = reader.numDocs`, reports the same
+    /// (`Lucene90CompressingTermVectorsReader.java:116,143,301-303`).
+    #[test]
+    fn get_num_docs_is_the_segment_max_doc() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        for (name, count) in [("_t1", 1), ("_t3", 3), ("_t9", 9)] {
+            let source = write_tv_merge_source(&dir, name, 0, count);
+            let reader = concrete_tv_merge_source(&dir, &source);
+            assert_eq!(reader.get_num_docs(), count, "{name}");
+            let merge_box = reader.get_merge_instance();
+            let merge = merge_box
+                .as_any()
+                .and_then(|any| any.downcast_ref::<Lucene90CompressingTermVectorsReader>())
+                .expect("the merge instance is this format's reader");
+            assert_eq!(merge.get_num_docs(), count, "{name} merge instance");
+        }
+    }
+
     /// `(numChunks, numDirtyChunks, numDirtyDocs)` of a term-vectors segment,
     /// as its own reader reports them.
     fn tv_chunk_counters(dir: &Arc<dyn Directory>, segment_info: &SegmentInfo) -> (i64, i64, i64) {
@@ -4376,12 +4774,14 @@ mod tests {
             Box::new(Self(self.0.clone_reader()))
         }
 
-        fn get(&self, doc: i32) -> Result<Option<Box<dyn Fields>>> {
-            self.0.get(doc)
-        }
-
         fn close(&mut self) -> Result<()> {
             self.0.close()
+        }
+    }
+
+    impl TermVectors for OpaqueTermVectorsReader {
+        fn get(&self, doc: i32) -> Result<Option<Box<dyn Fields>>> {
+            self.0.get(doc)
         }
     }
 
@@ -4440,8 +4840,11 @@ mod tests {
     ) -> MergeState {
         let n = readers.len();
         let field_infos = make_field_infos();
-        let merged_info =
-            test_segment_info(Arc::new(RamDirectory::new()), "_m", max_docs.iter().sum());
+        let merged_info = test_segment_info(
+            Arc::new(ByteBuffersDirectory::new()),
+            "_m",
+            max_docs.iter().sum(),
+        );
         MergeState::new(
             doc_maps,
             merged_info,
@@ -4456,7 +4859,9 @@ mod tests {
             (0..n).map(|_| None).collect(),
             (0..n).map(|_| None).collect(),
             max_docs,
+            None,
             needs_index_sort,
+            None,
         )
     }
 
@@ -4502,11 +4907,11 @@ mod tests {
                 Some(live) => (0..max_doc).filter(|&doc| live.get(doc as usize)).count() as i32,
             })
             .sum();
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let info = test_segment_info(Arc::clone(&dir), "_m", total_docs);
         {
             let mut writer = merge_test_format()
-                .vectors_writer(dir.as_ref(), &info, &*DEFAULT_IO_CONTEXT)
+                .vectors_writer(&dir, &info, &*DEFAULT_IO_CONTEXT)
                 .unwrap();
             assert_eq!(
                 writer.merge(merge_state).unwrap(),
@@ -4553,10 +4958,15 @@ mod tests {
     /// `949-954`).
     #[test]
     fn the_term_vectors_bulk_merge_conditions_are_lucenes() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let source = write_tv_merge_source(&dir, "_0", 0, 10);
-        let out: Arc<dyn Directory> = Arc::new(RamDirectory::new());
-        let writer = merge_test_writer(&out, "_w0", CompressionMode::FAST, MERGE_TEST_CHUNK_SIZE);
+        let out: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = merge_test_writer(
+            &out,
+            "_w0",
+            Arc::clone(&compressing::FAST),
+            MERGE_TEST_CHUNK_SIZE,
+        );
         let bulk_for = |writer: &Lucene90CompressingTermVectorsWriter,
                         reader: Box<dyn TermVectorsReader>,
                         live_docs: Option<Box<dyn Bits>>| {
@@ -4586,7 +4996,7 @@ mod tests {
         let other_mode = merge_test_writer(
             &out,
             "_w1",
-            CompressionMode::HIGH_COMPRESSION,
+            Arc::clone(&compressing::HIGH_COMPRESSION),
             MERGE_TEST_CHUNK_SIZE,
         );
         assert!(
@@ -4596,7 +5006,7 @@ mod tests {
         let other_chunk_size = merge_test_writer(
             &out,
             "_w2",
-            CompressionMode::FAST,
+            Arc::clone(&compressing::FAST),
             MERGE_TEST_CHUNK_SIZE * 2,
         );
         assert!(
@@ -4675,7 +5085,7 @@ mod tests {
     /// exactly the same vectors.
     #[test]
     fn a_bulk_term_vectors_merge_copies_the_source_chunks_verbatim() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let first = write_tv_merge_source(&dir, "_0", 0, 10);
         let second = write_tv_merge_source(&dir, "_1", 100, 6);
         assert_eq!(
@@ -4723,7 +5133,7 @@ mod tests {
     #[test]
     fn bulk_and_reencoded_term_vectors_merges_produce_the_same_index() {
         for sources in [vec![(0i32, 10i32)], vec![(0i32, 8i32), (100i32, 8i32)]] {
-            let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+            let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
             let infos: Vec<SegmentInfo> = sources
                 .iter()
                 .enumerate()
@@ -4747,9 +5157,13 @@ mod tests {
                     .collect(),
                 max_docs.clone(),
             );
-            let out: Arc<dyn Directory> = Arc::new(RamDirectory::new());
-            let writer =
-                merge_test_writer(&out, "_w", CompressionMode::FAST, MERGE_TEST_CHUNK_SIZE);
+            let out: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+            let writer = merge_test_writer(
+                &out,
+                "_w",
+                Arc::clone(&compressing::FAST),
+                MERGE_TEST_CHUNK_SIZE,
+            );
             let matching = MatchingReaders::new(&bulk_state);
             for i in 0..infos.len() {
                 assert!(
@@ -4807,7 +5221,7 @@ mod tests {
     /// three of them dirty, holding 2 + 3 + 2 documents.
     #[test]
     fn a_term_vectors_merge_decides_the_route_per_segment() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let a = write_tv_merge_source(&dir, "_0", 0, 10);
         let b = write_tv_merge_source(&dir, "_1", 100, 6);
         let c = write_tv_merge_source(&dir, "_2", 200, 6);
@@ -4832,8 +5246,13 @@ mod tests {
             )
         };
 
-        let out: Arc<dyn Directory> = Arc::new(RamDirectory::new());
-        let writer = merge_test_writer(&out, "_w", CompressionMode::FAST, MERGE_TEST_CHUNK_SIZE);
+        let out: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = merge_test_writer(
+            &out,
+            "_w",
+            Arc::clone(&compressing::FAST),
+            MERGE_TEST_CHUNK_SIZE,
+        );
         let probe = state();
         let matching = MatchingReaders::new(&probe);
         assert_eq!(
@@ -4866,7 +5285,7 @@ mod tests {
     /// repacks the six documents as `[4][2]`.
     #[test]
     fn a_too_dirty_term_vectors_segment_is_recompressed() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let sources: Vec<SegmentInfo> = (0..3)
             .map(|i| write_tv_merge_source(&dir, &format!("_{i}"), 10 * i + 1, 2))
             .collect();
@@ -4881,8 +5300,13 @@ mod tests {
         ));
         assert_eq!(dirty.counters, (3, 3, 6), "each tiny chunk is carried over");
         assert_eq!(dirty.documents, expected);
-        let out: Arc<dyn Directory> = Arc::new(RamDirectory::new());
-        let writer = merge_test_writer(&out, "_w", CompressionMode::FAST, MERGE_TEST_CHUNK_SIZE);
+        let out: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = merge_test_writer(
+            &out,
+            "_w",
+            Arc::clone(&compressing::FAST),
+            MERGE_TEST_CHUNK_SIZE,
+        );
         assert!(writer.too_dirty(&concrete_tv_merge_source(&dirty.dir, &dirty.info)));
 
         let recompressed = run_term_vectors_merge(&term_vectors_merge_state(
@@ -4919,7 +5343,7 @@ mod tests {
     /// chunks.
     #[test]
     fn an_index_sorted_term_vectors_merge_copies_interleaved_runs() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let a = write_tv_merge_source(&dir, "_0", 1, 10);
         let b = write_tv_merge_source(&dir, "_1", 101, 10);
         let state = |wrap: fn(Box<dyn TermVectorsReader>) -> Box<dyn TermVectorsReader>| {
@@ -4957,6 +5381,153 @@ mod tests {
         assert_eq!(reencoded.documents, expected);
         assert_eq!(reencoded.counters, (5, 0, 0));
     }
+
+    /// An input that records every `prefetch` request and otherwise reads
+    /// through to the input it wraps.
+    struct PrefetchRecordingInput {
+        inner: Box<dyn IndexInput>,
+        requests: Arc<Mutex<Vec<(i64, i64)>>>,
+    }
+
+    impl fmt::Debug for PrefetchRecordingInput {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("PrefetchRecordingInput")
+                .finish_non_exhaustive()
+        }
+    }
+
+    impl DataInput for PrefetchRecordingInput {
+        /// `IndexInput.toString()` returns the resource description.
+        fn to_java_string(&self) -> String {
+            crate::store::IndexInput::resource_description(self).to_string()
+        }
+
+        fn read_byte(&mut self) -> Result<u8> {
+            self.inner.read_byte()
+        }
+
+        fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+            self.inner.read_bytes(b, offset, len)
+        }
+
+        fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
+            self.inner.skip_bytes(num_bytes)
+        }
+    }
+
+    impl IndexInput for PrefetchRecordingInput {
+        fn close(&mut self) -> Result<()> {
+            self.inner.close()
+        }
+
+        fn file_pointer(&self) -> i64 {
+            self.inner.file_pointer()
+        }
+
+        fn length(&self) -> i64 {
+            self.inner.length()
+        }
+
+        fn seek(&mut self, pos: i64) -> Result<()> {
+            self.inner.seek(pos)
+        }
+
+        fn slice(
+            &self,
+            slice_description: &str,
+            offset: i64,
+            length: i64,
+        ) -> Result<Box<dyn IndexInput>> {
+            self.inner.slice(slice_description, offset, length)
+        }
+
+        fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
+            self.inner.clone_input()
+        }
+
+        fn resource_description(&self) -> &str {
+            self.inner.resource_description()
+        }
+
+        fn prefetch(&self, offset: i64, length: i64) -> Result<()> {
+            self.requests.lock().unwrap().push((offset, length));
+            self.inner.prefetch(offset, length)
+        }
+    }
+
+    /// A `.tvm` whose fields index declares no chunks for a non-empty segment
+    /// opens, `prefetch` answers from the cache, and reading the document's
+    /// vectors is a corrupt-index error rather than a panic.
+    ///
+    /// Lucene 10.5.0 shares `FieldsIndexReader` between both formats:
+    /// `getBlockID` answers `-1` (`FieldsIndexReader.java:119-127`), the
+    /// `-1`-filled prefetch cache holds it
+    /// (`Lucene90CompressingTermVectorsReader.java:125, 347-361`), and `get(0)`
+    /// throws from `getBlockStartPointer(-1)`.
+    #[test]
+    fn a_term_vectors_index_without_chunks_is_a_corrupt_index_not_a_panic() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let source = write_tv_merge_source(&dir, "_h", 0, 3);
+        // Positive control: the intact index serves the same calls.
+        {
+            let mut reader = concrete_tv_merge_source(&dir, &source);
+            reader.prefetch(0).unwrap();
+            reader.get(0).unwrap();
+        }
+
+        crate::codecs::lucene90::stored_fields::declare_no_fields_index_chunks(
+            dir.as_ref(),
+            "_h.tvm",
+            2,
+        );
+        let mut reader = concrete_tv_merge_source(&dir, &source);
+        assert_eq!(reader.index_reader.get_block_id(0).unwrap(), -1);
+        reader.prefetch(0).unwrap();
+        assert!(matches!(reader.get(0), Err(LuceneError::CorruptIndex(_))));
+    }
+
+    /// `prefetch` asks the `.tvd` input for the whole block that holds the
+    /// document — from `getBlockStartPointer` for `getBlockLength` bytes, the
+    /// last block ending at `maxPointer` — and asks once while it is cached.
+    ///
+    /// Equivalent to `Lucene90CompressingTermVectorsReader.prefetch(int)`
+    /// (`Lucene90CompressingTermVectorsReader.java:347-361`).
+    #[test]
+    fn term_vectors_prefetch_asks_for_the_whole_block_once_while_it_is_cached() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        // Two full blocks and a last partial one.
+        let source = write_tv_merge_source(&dir, "_p", 0, 2 * MERGE_TEST_DOCS_PER_CHUNK + 1);
+        let mut reader = concrete_tv_merge_source(&dir, &source);
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let inner = reader.vectors_stream.clone_input().unwrap();
+        reader.vectors_stream = Box::new(PrefetchRecordingInput {
+            inner,
+            requests: Arc::clone(&requests),
+        });
+
+        let block = |b: i64| {
+            let start = reader.index_reader.get_block_start_pointer(b).unwrap();
+            let end = if b == 2 {
+                reader.max_pointer
+            } else {
+                reader.index_reader.get_block_start_pointer(b + 1).unwrap()
+            };
+            assert_eq!(
+                reader.index_reader.get_block_length(b).unwrap(),
+                end - start
+            );
+            (start, end - start)
+        };
+        let expected = vec![block(0), block(2), block(1)];
+
+        reader.prefetch(1).unwrap();
+        reader.prefetch(0).unwrap(); // same block: cached
+        reader.prefetch(2 * MERGE_TEST_DOCS_PER_CHUNK).unwrap(); // the last block
+        reader.prefetch(MERGE_TEST_DOCS_PER_CHUNK).unwrap();
+        reader.prefetch(2 * MERGE_TEST_DOCS_PER_CHUNK).unwrap(); // cached
+
+        assert_eq!(*requests.lock().unwrap(), expected);
+    }
 }
 
 impl fmt::Display for Lucene90CompressingTermVectorsFormat {
@@ -4968,7 +5539,7 @@ impl fmt::Display for Lucene90CompressingTermVectorsFormat {
         write!(
             f,
             "Lucene90CompressingTermVectorsFormat(compressionMode={}, chunkSize={}, maxDocsPerChunk={}, blockSize={})",
-            self.compression_mode, self.chunk_size, self.max_docs_per_chunk, self.block_shift
+            self.compression_mode.to_string(), self.chunk_size, self.max_docs_per_chunk, self.block_shift
         )
     }
 }
@@ -4979,7 +5550,84 @@ impl fmt::Display for Lucene90CompressingTermVectorsReader {
         write!(
             f,
             "Lucene90CompressingTermVectorsReader(mode={},chunksize={})",
-            self.compression_mode, self.chunk_size
+            self.compression_mode.to_string(),
+            self.chunk_size
         )
+    }
+}
+
+/// The `IOUtils` close family at the term-vectors reader's call site (#308).
+#[cfg(test)]
+mod close_family_tests {
+    use super::Lucene90TermVectorsFormat;
+    use crate::codecs::term_vectors::TermVectorsFormat;
+    use crate::codecs::tests::{rewrite_file, test_segment_info, tracking_directory};
+    use crate::index::FieldInfos;
+
+    /// A constructor that fails runs `IOUtils.closeWhileHandlingException(this,
+    /// metaIn)` (`Lucene90CompressingTermVectorsReader.java:238-243`),
+    /// closing `.tvd` and `.tvm`.
+    #[test]
+    fn a_failed_reader_constructor_closes_what_it_opened() {
+        let (dir, _tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 0);
+        let fis = FieldInfos::default();
+        let format = Lucene90TermVectorsFormat::new();
+        let ctx = &*crate::store::DEFAULT_IO_CONTEXT;
+        let mut writer = format.vectors_writer(&dir, &info, ctx).unwrap();
+        writer.finish(0).unwrap();
+        writer.close().unwrap();
+        let before = log.closed().len();
+        log.fail_open("_0.tvx");
+        format.vectors_reader(&*dir, &info, &fis, ctx).unwrap_err();
+        assert_eq!(log.closed()[before..], ["_0.tvd", "_0.tvm"]);
+    }
+
+    /// rmp #295/#308: closing the reader runs `IOUtils.close(indexReader,
+    /// vectorsStream)` (`Lucene90CompressingTermVectorsReader.java:317`), and the fields
+    /// index's `close()` is `indexInput.close()` (`FieldsIndexReader.java:114-117`).
+    /// Oracle `scratchpad/fixF/oracle/CloseOracle.java`: `[_0.tvx, _0.tvd]`.
+    #[test]
+    fn closing_the_reader_closes_the_index_then_the_data_file() {
+        let (dir, _tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 0);
+        let fis = FieldInfos::default();
+        let format = Lucene90TermVectorsFormat::new();
+        let ctx = &*crate::store::DEFAULT_IO_CONTEXT;
+        let mut writer = format.vectors_writer(&dir, &info, ctx).unwrap();
+        writer.finish(0).unwrap();
+        writer.close().unwrap();
+        let mut reader = format.vectors_reader(&*dir, &info, &fis, ctx).unwrap();
+        let before = log.closed().len();
+        reader.close().unwrap();
+        assert_eq!(log.closed()[before..], ["_0.tvx", "_0.tvd"]);
+    }
+
+    /// A corrupt `.tvx` header: `FieldsIndexReader`'s own `finally` closes the
+    /// index input (`FieldsIndexReader.java:73-83`), then the reader's
+    /// constructor closes the data and metadata files
+    /// (`Lucene90CompressingTermVectorsReader.java:238-243`). Oracle
+    /// `scratchpad/fixF/oracle/CloseOracle.java`: `CorruptIndexException`,
+    /// `[_0.tvx, _0.tvd, _0.tvm]`.
+    #[test]
+    fn a_corrupt_index_header_closes_the_index_then_what_the_reader_opened() {
+        let (dir, tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 0);
+        let fis = FieldInfos::default();
+        let format = Lucene90TermVectorsFormat::new();
+        let ctx = &*crate::store::DEFAULT_IO_CONTEXT;
+        let mut writer = format.vectors_writer(&dir, &info, ctx).unwrap();
+        writer.finish(0).unwrap();
+        writer.close().unwrap();
+        // The first byte of the codec name, after the four-byte magic and the
+        // name's length.
+        rewrite_file(&tracking, "_0.tvx", |bytes| bytes[5] ^= 1);
+        let before = log.closed().len();
+        let error = format.vectors_reader(&*dir, &info, &fis, ctx).unwrap_err();
+        assert!(
+            matches!(error, crate::error::LuceneError::CorruptIndex(_)),
+            "{error:?}"
+        );
+        assert_eq!(log.closed()[before..], ["_0.tvx", "_0.tvd", "_0.tvm"]);
     }
 }

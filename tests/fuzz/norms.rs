@@ -100,9 +100,9 @@ use rucene::codecs::stub::BufferedUpdates;
 use rucene::codecs::{register_codec, Codec, Lucene104Codec};
 use rucene::index::{FieldInfo, FieldInfos, IndexOptions, NormValuesWriter, SegmentInfo};
 use rucene::search::{DocIdSetIterator, NO_MORE_DOCS};
-use rucene::store::{Directory, RamDirectory, DEFAULT_IO_CONTEXT};
+use rucene::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT};
 use rucene::util::string_helper::StringHelper;
-use rucene::util::{default_info_stream, Version};
+use rucene::util::Version;
 
 /// The two files a norms segment is made of.
 const EXTENSIONS: [&str; 2] = ["nvd", "nvm"];
@@ -231,11 +231,11 @@ fn fixtures() -> Vec<Fixture> {
 fn write_segment(directory: &Arc<dyn Directory>, info: &SegmentInfo, fixture: &Fixture) {
     let infos = field_infos();
     let write_state = SegmentWriteState::new(
-        default_info_stream(),
-        directory.as_ref(),
+        &rucene::util::NoOutputInfoStream,
+        Arc::clone(directory),
         info,
         &infos,
-        &BufferedUpdates,
+        Box::leak(Box::new(BufferedUpdates::default())),
         &*DEFAULT_IO_CONTEXT,
     );
     let mut consumer = codec()
@@ -253,7 +253,7 @@ fn write_segment(directory: &Arc<dyn Directory>, info: &SegmentInfo, fixture: &F
             writer.add_value(*doc, *value).expect("add value");
         }
         writer.finish(fixture.max_doc);
-        writer.flush(consumer.as_mut()).expect("flush");
+        writer.flush(consumer.as_mut(), None).expect("flush");
     }
     consumer.close().expect("close");
 }
@@ -303,7 +303,7 @@ fn visit_all(directory: &Arc<dyn Directory>, info: &SegmentInfo, max_doc: i32) -
         // Every field is asked for twice: state a failed read left behind must
         // not be served to the second one.
         for pass in 0..2 {
-            let Ok(mut norms) = producer.get_norms(field) else {
+            let Ok(Some(mut norms)) = producer.get_norms(field) else {
                 continue;
             };
             // A corrupt entry can describe a run far longer than the segment,
@@ -329,8 +329,8 @@ fn visit_all(directory: &Arc<dyn Directory>, info: &SegmentInfo, max_doc: i32) -
                 // the ordinal arithmetic, including the shifts.
                 for target in [0, 1, max_doc / 2, max_doc - 1, max_doc, max_doc + 1] {
                     let mut fresh = match producer.get_norms(field) {
-                        Ok(fresh) => fresh,
-                        Err(_) => continue,
+                        Ok(Some(fresh)) => fresh,
+                        _ => continue,
                     };
                     let _ = fresh.advance(target);
                     let _ = fresh.long_value();
@@ -344,7 +344,7 @@ fn visit_all(directory: &Arc<dyn Directory>, info: &SegmentInfo, max_doc: i32) -
     // The merge instance must be no more trusting than the primary one.
     if let Ok(merge) = producer.get_merge_instance() {
         for field in infos.iter() {
-            let Ok(mut norms) = merge.get_norms(field) else {
+            let Ok(Some(mut norms)) = merge.get_norms(field) else {
                 continue;
             };
             let mut steps = 0;
@@ -371,7 +371,7 @@ fn corrupt_copy(
     at: usize,
     value: u8,
 ) -> Arc<dyn Directory> {
-    let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     for extension in EXTENSIONS {
         let name = format!("_0.{extension}");
         let mut bytes = read_file(original, &name);
@@ -385,7 +385,7 @@ fn corrupt_copy(
 
 /// Builds a valid segment for `fixture` in a fresh directory.
 fn build(fixture: &Fixture) -> (Arc<dyn Directory>, SegmentInfo, [u8; 16]) {
-    let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let id = StringHelper::random_id();
     let info = segment_info(&directory, fixture.max_doc, id);
     write_segment(&directory, &info, fixture);
@@ -493,7 +493,7 @@ fn a_truncated_data_file_is_survived_at_every_length() {
         let meta = read_file(&directory, "_0.nvm");
         let step = if original.len() > 1_024 { 7 } else { 1 };
         for length in (0..original.len()).step_by(step) {
-            let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+            let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
             write_file(&corrupt, "_0.nvd", &original[..length]);
             write_file(&corrupt, "_0.nvm", &meta);
             let corrupt_info = segment_info(&corrupt, fixture.max_doc, id);
@@ -509,7 +509,7 @@ fn a_truncated_metadata_file_is_survived_at_every_length() {
         let data = read_file(&directory, "_0.nvd");
         let original = read_file(&directory, "_0.nvm");
         for length in 0..original.len() {
-            let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+            let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
             write_file(&corrupt, "_0.nvd", &data);
             write_file(&corrupt, "_0.nvm", &original[..length]);
             let corrupt_info = segment_info(&corrupt, fixture.max_doc, id);
@@ -594,7 +594,7 @@ fn patch(bytes: &mut [u8], at: usize, width: usize, value: i64) {
 /// reached, so every offset, length, count and width in the metadata would go
 /// untested against the iterators.
 fn resign(body: &[u8]) -> Vec<u8> {
-    let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     {
         let mut output = directory
             .create_output("resigned", &*DEFAULT_IO_CONTEXT)
@@ -645,7 +645,7 @@ fn hostile_metadata_that_passes_its_checksum_is_survived() {
                     patch(&mut patched, entry_start + offset, width, value);
                     let signed = resign(&patched);
 
-                    let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+                    let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
                     write_file(&corrupt, "_0.nvd", &data);
                     write_file(&corrupt, "_0.nvm", &signed);
                     let corrupt_info = segment_info(&corrupt, fixture.max_doc, id);
@@ -685,7 +685,7 @@ fn a_metadata_entry_naming_an_unknown_field_is_refused() {
         let mut patched = body.to_vec();
         patch(&mut patched, entry_start, 4, number as i64);
         let signed = resign(&patched);
-        let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         write_file(&corrupt, "_0.nvd", &data);
         write_file(&corrupt, "_0.nvm", &signed);
         let corrupt_info = segment_info(&corrupt, fixture.max_doc, id);
@@ -740,7 +740,7 @@ fn a_document_id_outside_the_segment_is_never_answered_with_a_value() {
         for (number, _) in &fixture.fields {
             let field = infos.field_info_by_number(*number).expect("field info");
             for doc in [fixture.max_doc, fixture.max_doc + 1, i32::MAX - 1] {
-                let mut norms = producer.get_norms(field).expect("norms");
+                let mut norms = producer.get_norms(field).expect("norms").unwrap();
                 // Out of range is `NO_MORE_DOCS` or an error, never a value
                 // read from some other document's bytes.
                 if let Ok(found) = norms.advance(doc) {

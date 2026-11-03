@@ -1,16 +1,12 @@
 //! Index-level utilities ported from `org.apache.lucene.index`.
 //!
 //! Groups the small support types the indexing engine needs: the query-timeout
-//! contract, the approximate priority queues that `DocumentsWriter` uses to pick
-//! a thread state, and the directory wrapper that tracks temporary merge output.
+//! contract and the approximate priority queues that `DocumentsWriter` uses to
+//! pick a thread state.
 
-use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::Instant;
-
-use crate::error::Result;
-use crate::store::{Directory, FilterDirectory, IOContext, IndexInput, IndexOutput, Lock};
 
 // -----------------------------------------------------------------------------
 // QueryTimeout
@@ -128,8 +124,12 @@ impl<T> ApproximatePriorityQueue<T> {
     pub fn add(&mut self, entry: T, weight: i64) {
         let expected_slot = (weight as u64).leading_zeros() as usize;
         let free_slots = !self.used_slots;
-        let destination_slot =
-            expected_slot + (free_slots >> expected_slot).trailing_zeros() as usize;
+        // Java's `>>>` takes the shift count modulo 64, so a weight of zero
+        // (64 leading zeros) shifts by nothing; `wrapping_shr` does the same.
+        let destination_slot = expected_slot
+            + free_slots
+                .wrapping_shr(expected_slot as u32)
+                .trailing_zeros() as usize;
         if destination_slot < SPARSE_SLOTS {
             self.used_slots |= 1u64 << destination_slot;
             self.slots[destination_slot] = Some(entry);
@@ -350,7 +350,10 @@ impl<T: PartialEq> ConcurrentApproximatePriorityQueue<T> {
 /// **Divergence from Lucene 10.5.0.** Java bounds the queue's element type on
 /// `java.util.concurrent.locks.Lock` and calls `tryLock`/`unlock` on the entry
 /// itself. Rust's standard library has no object-safe lock trait to bound on, so
-/// the port declares the two operations it actually uses.
+/// the port declares the two operations it actually uses. The lock taken by
+/// [`try_lock_entry`](Self::try_lock_entry) is held by the entry until
+/// [`unlock_entry`](Self::unlock_entry), or until the owner takes it over, as
+/// `DocumentsWriterPerThreadPool.getAndLock` does with the DWPT it polls.
 pub trait TryLockable {
     /// Attempts to take the entry's lock without blocking.
     fn try_lock_entry(&self) -> bool;
@@ -406,13 +409,21 @@ impl<T: TryLockable> LockableConcurrentApproximatePriorityQueue<T> {
         }
     }
 
-    /// Adds `entry` and releases its lock.
+    /// Adds `entry`, then releases its lock.
     ///
-    /// Equivalent to `LockableConcurrentApproximatePriorityQueue.addAndUnlock`.
-    pub fn add_and_unlock(&self, entry: T, weight: i64) {
-        self.queue.add(entry, weight);
-        // The entry was unlocked by `add`'s move, so the counter bump is what
-        // tells a concurrent `lock_and_poll` that retrying is worthwhile.
+    /// Equivalent to `LockableConcurrentApproximatePriorityQueue.addAndUnlock`
+    /// (`LockableConcurrentApproximatePriorityQueue.java:69-73`): the entry is
+    /// queued while still locked, so a concurrent `lock_and_poll` cannot take
+    /// it before it is released, and the counter bump tells such a poller that
+    /// retrying is worthwhile. Java keeps a reference to the entry after
+    /// handing it to the queue; here the caller's handle is cloned, which is
+    /// why `T` must be `Clone` (an `Arc` in practice).
+    pub fn add_and_unlock(&self, entry: T, weight: i64)
+    where
+        T: Clone,
+    {
+        self.queue.add(entry.clone(), weight);
+        entry.unlock_entry();
         self.add_and_unlock_counter.fetch_add(1, Ordering::Release);
     }
 }
@@ -426,115 +437,6 @@ impl<T: TryLockable + PartialEq> LockableConcurrentApproximatePriorityQueue<T> {
     /// Removes `entry` from the queue.
     pub fn remove(&self, entry: &T) -> bool {
         self.queue.remove(entry)
-    }
-}
-
-// -----------------------------------------------------------------------------
-// TrackingTmpOutputDirectoryWrapper
-// -----------------------------------------------------------------------------
-
-/// A directory that redirects every `create_output` to a temporary file and
-/// remembers the mapping.
-///
-/// Equivalent to `org.apache.lucene.index.TrackingTmpOutputDirectoryWrapper`,
-/// which index sorting uses so a merge can write under the final names while the
-/// bytes land in temporary files.
-pub struct TrackingTmpOutputDirectoryWrapper {
-    inner: FilterDirectory,
-    file_names: RwLock<HashMap<String, String>>,
-}
-
-impl TrackingTmpOutputDirectoryWrapper {
-    /// Wraps `inner`.
-    pub fn new(inner: Box<dyn Directory>) -> Self {
-        Self {
-            inner: FilterDirectory::new(inner),
-            file_names: RwLock::new(HashMap::new()),
-        }
-    }
-
-    /// Returns the mapping from requested name to the temporary file that holds
-    /// its bytes.
-    ///
-    /// Equivalent to `getTemporaryFiles()`.
-    pub fn get_temporary_files(&self) -> HashMap<String, String> {
-        self.file_names
-            .read()
-            .map(|guard| guard.clone())
-            .unwrap_or_default()
-    }
-}
-
-impl std::fmt::Debug for TrackingTmpOutputDirectoryWrapper {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TrackingTmpOutputDirectoryWrapper")
-            .finish_non_exhaustive()
-    }
-}
-
-impl Directory for TrackingTmpOutputDirectoryWrapper {
-    fn list_all(&self) -> Result<Vec<String>> {
-        self.inner.list_all()
-    }
-
-    fn delete_file(&self, name: &str) -> Result<()> {
-        self.inner.delete_file(name)
-    }
-
-    fn file_length(&self, name: &str) -> Result<i64> {
-        self.inner.file_length(name)
-    }
-
-    fn create_output(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexOutput>> {
-        let output = self.inner.create_temp_output(name, "", context)?;
-        if let Ok(mut guard) = self.file_names.write() {
-            guard.insert(name.to_string(), output.name().to_string());
-        }
-        Ok(output)
-    }
-
-    fn create_temp_output(
-        &self,
-        prefix: &str,
-        suffix: &str,
-        context: &dyn IOContext,
-    ) -> Result<Box<dyn IndexOutput>> {
-        self.inner.create_temp_output(prefix, suffix, context)
-    }
-
-    fn sync(&self, names: &[String]) -> Result<()> {
-        self.inner.sync(names)
-    }
-
-    fn sync_metadata(&self) -> Result<()> {
-        self.inner.sync_metadata()
-    }
-
-    fn rename(&self, source: &str, dest: &str) -> Result<()> {
-        self.inner.rename(source, dest)
-    }
-
-    fn open_input(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
-        // Fall back to the original name: it may already be a temporary file.
-        let tmp_name = self
-            .file_names
-            .read()
-            .ok()
-            .and_then(|guard| guard.get(name).cloned())
-            .unwrap_or_else(|| name.to_string());
-        self.inner.open_input(&tmp_name, context)
-    }
-
-    fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
-        self.inner.obtain_lock(name)
-    }
-
-    fn close(&mut self) -> Result<()> {
-        self.inner.close()
-    }
-
-    fn get_pending_deletions(&self) -> Result<HashSet<String>> {
-        self.inner.get_pending_deletions()
     }
 }
 

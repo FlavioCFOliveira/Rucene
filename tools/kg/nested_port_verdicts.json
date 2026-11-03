@@ -399,41 +399,6 @@
   }
  },
  "unported": {
-  "org.apache.lucene.codecs.KnnVectorsWriter$MergedVectorValues": {
-   "destination": "src/codecs/knn_vectors.rs",
-   "javaLoc": 274,
-   "reason": "declared not ported at src/codecs/lucene104/scalar_quantized_vectors.rs:3403: each writer walks the segments itself instead of building Lucene's merged view."
-  },
-  "org.apache.lucene.codecs.KnnVectorsWriter$MergedVectorValues$MergedByteVectorValues": {
-   "destination": "src/codecs/knn_vectors.rs",
-   "javaLoc": 96,
-   "reason": "nested inside MergedVectorValues, which is not ported."
-  },
-  "org.apache.lucene.codecs.KnnVectorsWriter$MergedVectorValues$MergedFloat32VectorValues": {
-   "destination": "src/codecs/knn_vectors.rs",
-   "javaLoc": 98,
-   "reason": "nested inside MergedVectorValues, which is not ported."
-  },
-  "org.apache.lucene.codecs.hnsw.PrefetchableFlatVectorScorer$PrefetchableRandomVectorScorer": {
-   "destination": "src/codecs/hnsw/graph_provider.rs",
-   "javaLoc": 44,
-   "reason": "every `FlatVectorsScorer` method of `PrefetchableFlatVectorScorer` (src/codecs/hnsw/graph_provider.rs:52-89) forwards to `inner` unwrapped, so no scorer prefetches; the wrapper is the whole point of the class."
-  },
-  "org.apache.lucene.codecs.hnsw.PrefetchableFlatVectorScorer$PrefetchableRandomVectorScorerSupplier": {
-   "destination": "src/codecs/hnsw/graph_provider.rs",
-   "javaLoc": 40,
-   "reason": "the supplier that would hand out the missing prefetching scorers."
-  },
-  "org.apache.lucene.codecs.hnsw.PrefetchableFlatVectorScorer$PrefetchableUpdatableRandomVectorScorer": {
-   "destination": "src/codecs/hnsw/graph_provider.rs",
-   "javaLoc": 49,
-   "reason": "the updateable half of the same missing wrapper."
-  },
-  "org.apache.lucene.codecs.hnsw.ScalarQuantizedVectorScorer$ScalarQuantizedRandomVectorScorerSupplier": {
-   "destination": "src/codecs/hnsw/scalar_quantized_scorer.rs",
-   "javaLoc": 64,
-   "reason": "`ScalarQuantizedVectorScorer::get_random_vector_scorer_supplier_{float,byte}` (src/codecs/hnsw/scalar_quantized_scorer.rs:124-141) delegate to the non-quantized scorer, so no quantized supplier exists; Java returns this class."
-  },
   "org.apache.lucene.document.FeatureSortField$FeatureComparator": {
    "destination": "src/document/feature_field.rs",
    "javaLoc": 73,

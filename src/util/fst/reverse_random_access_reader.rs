@@ -39,6 +39,14 @@ impl std::fmt::Debug for ReverseRandomAccessReader {
 }
 
 impl DataInput for ReverseRandomAccessReader {
+    /// `Object.toString()` of `org.apache.lucene.util.fst.ReverseRandomAccessReader`, which declares no `toString()`.
+    fn to_java_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.util.fst.ReverseRandomAccessReader",
+            self,
+        )
+    }
+
     fn read_byte(&mut self) -> Result<u8> {
         let pos = self.pos;
         self.pos = pos - 1;

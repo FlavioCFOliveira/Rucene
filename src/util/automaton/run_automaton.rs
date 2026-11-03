@@ -256,7 +256,7 @@ impl PartialEq for RunAutomaton {
         self.alphabet_size == other.alphabet_size
             && self.size == other.size
             && self.points == other.points
-            && self.accept.get_bits() == other.accept.get_bits()
+            && self.accept == other.accept
             && self.transitions == other.transitions
     }
 }

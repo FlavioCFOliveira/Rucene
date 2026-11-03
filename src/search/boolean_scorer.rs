@@ -6,7 +6,6 @@
 use crate::error::{LuceneError, Result};
 use crate::index::DocAndFloatFeatureBuffer;
 use crate::search::bit_set_doc_id_stream::BitSetDocIdStream;
-use crate::search::bit_set_util;
 use crate::search::bulk_scorer::BulkScorer;
 use crate::search::collection_terminated_exception::CollectionResult;
 use crate::search::collector::LeafCollector;
@@ -246,7 +245,7 @@ impl BooleanScorer {
                 debug_assert!(self.min_should_match > 1);
                 let mut doc = self.wrappers[w].iterator().doc_id();
                 while doc < max {
-                    if accept_docs.map_or(true, |bits| bits.get(doc as usize)) {
+                    if accept_docs.is_none_or(|bits| bits.get(doc as usize)) {
                         let d = (doc & MASK) as usize;
                         self.matching.set(d);
                         let bucket =
@@ -265,7 +264,7 @@ impl BooleanScorer {
         if !has_buckets {
             if let Some(accept_docs) = accept_docs {
                 // In this case, live docs have not been applied yet.
-                bit_set_util::apply_mask(accept_docs, &mut self.matching, base);
+                accept_docs.apply_mask(&mut self.matching, base as usize)?;
             }
             let Self {
                 matching, score, ..
@@ -286,7 +285,7 @@ impl BooleanScorer {
             let min_should_match = *min_should_match as i32;
             let bit_array = matching.get_bits();
             for (idx, word) in bit_array.iter().enumerate() {
-                let mut bits = *word;
+                let mut bits = word.load(std::sync::atomic::Ordering::Relaxed);
                 while bits != 0 {
                     let ntz = bits.trailing_zeros() as usize;
                     let index_in_window = (idx << 6) | ntz;
@@ -420,7 +419,7 @@ impl BooleanScorer {
         }
         collector.set_scorer(self.wrappers[w].scorable())?;
         while doc < end {
-            if accept_docs.map_or(true, |bits| bits.get(doc as usize)) {
+            if accept_docs.is_none_or(|bits| bits.get(doc as usize)) {
                 collector.collect(doc, self.wrappers[w].scorable())?;
             }
             doc = self.wrappers[w].iterator().next_doc()?;

@@ -37,6 +37,14 @@ impl<'a> ForwardBytesReader<'a> {
 }
 
 impl DataInput for ForwardBytesReader<'_> {
+    /// `Object.toString()` of `org.apache.lucene.util.fst.ForwardBytesReader`, which declares no `toString()`.
+    fn to_java_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.util.fst.ForwardBytesReader",
+            self,
+        )
+    }
+
     fn read_byte(&mut self) -> Result<u8> {
         let pos = self.pos;
         if pos < 0 || pos as u64 >= self.bytes.len() as u64 {

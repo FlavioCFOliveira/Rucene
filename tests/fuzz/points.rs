@@ -100,9 +100,9 @@ use rucene::codecs::{register_codec, Codec, Lucene104Codec};
 use rucene::index::point_values::IntersectVisitor;
 use rucene::index::point_values_writer::PointValuesWriter;
 use rucene::index::{FieldInfo, FieldInfos, SegmentInfo};
-use rucene::store::{Directory, RamDirectory, DEFAULT_IO_CONTEXT};
+use rucene::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT};
 use rucene::util::string_helper::StringHelper;
-use rucene::util::{default_info_stream, BytesRef, Version};
+use rucene::util::{BytesRef, Version};
 
 /// The three files a points segment is made of.
 const EXTENSIONS: [&str; 3] = ["kdd", "kdi", "kdm"];
@@ -297,11 +297,11 @@ fn fixtures() -> Vec<Fixture> {
 
 fn write_segment(directory: &Arc<dyn Directory>, info: &SegmentInfo, fixture: &Fixture) {
     let infos = field_infos();
-    let updates = BufferedUpdates;
-    let info_stream = default_info_stream();
+    let updates = BufferedUpdates::default();
+    let info_stream = &rucene::util::NoOutputInfoStream;
     let state = SegmentWriteState::new(
         info_stream,
-        directory.as_ref(),
+        Arc::clone(directory),
         info,
         &infos,
         &updates,
@@ -326,7 +326,7 @@ fn write_segment(directory: &Arc<dyn Directory>, info: &SegmentInfo, fixture: &F
                 .add_packed_value(*doc, &BytesRef::new(value.clone()))
                 .expect("a well-formed value");
         }
-        field.flush(&mut writer).expect("flush");
+        field.flush(&mut writer, None).expect("flush");
     }
     writer.finish().expect("finish");
     writer.close().expect("close");
@@ -438,7 +438,7 @@ fn visit_all(directory: &Arc<dyn Directory>, info: &SegmentInfo, fixture: &Fixtu
             .field_info_by_number(*number)
             .expect("a known field")
             .name;
-        let Ok(values) = reader.get_values(name) else {
+        let Ok(Some(values)) = reader.get_values(name) else {
             continue;
         };
         let _ = values.size();
@@ -490,7 +490,7 @@ fn corrupt_copy(
     at: usize,
     value: u8,
 ) -> Arc<dyn Directory> {
-    let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     for extension in EXTENSIONS {
         let name = format!("_0.{extension}");
         let mut bytes = read_file(original, &name);
@@ -504,7 +504,7 @@ fn corrupt_copy(
 
 /// Builds a fresh directory holding a truncated copy of a valid segment.
 fn truncated_copy(original: &Arc<dyn Directory>, file: &str, length: usize) -> Arc<dyn Directory> {
-    let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     for extension in EXTENSIONS {
         let name = format!("_0.{extension}");
         let mut bytes = read_file(original, &name);
@@ -518,7 +518,7 @@ fn truncated_copy(original: &Arc<dyn Directory>, file: &str, length: usize) -> A
 
 /// Builds a valid segment for `fixture` in a fresh directory.
 fn build(fixture: &Fixture) -> (Arc<dyn Directory>, SegmentInfo, [u8; 16]) {
-    let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let id = StringHelper::random_id();
     let info = segment_info(&directory, fixture.max_doc, id);
     write_segment(&directory, &info, fixture);
@@ -648,7 +648,7 @@ fn a_truncated_file_is_survived_at_every_length() {
 /// afterwards, so the decoder still sees the garbage — but it does mean the
 /// patched value never reaches the tree. Re-signing closes that gap.
 fn resign(body: &[u8]) -> Vec<u8> {
-    let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     {
         let mut output = directory
             .create_output("resigned", &*DEFAULT_IO_CONTEXT)
@@ -709,7 +709,7 @@ fn hostile_metadata_that_passes_its_checksum_is_survived() {
                         patched[at..at + 8].copy_from_slice(&value.to_le_bytes());
                     }
                     let signed = resign(&patched[..body_end]);
-                    let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+                    let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
                     for extension in EXTENSIONS {
                         let file = format!("_0.{extension}");
                         if file == name {
@@ -793,8 +793,10 @@ fn intersect_field(
         .field_info_by_number(number)
         .expect("a known field")
         .name;
-    let values = reader.get_values(name)?;
-    values.intersect(visitor)
+    match reader.get_values(name)? {
+        Some(values) => values.intersect(visitor),
+        None => Ok(()),
+    }
 }
 
 /// Replaces `patch.len()` bytes of one file, in place, keeping its length.
@@ -804,7 +806,7 @@ fn patched_copy(
     at: usize,
     patch: &[u8],
 ) -> Arc<dyn Directory> {
-    let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     for extension in EXTENSIONS {
         let name = format!("_0.{extension}");
         let mut bytes = read_file(original, &name);
@@ -991,20 +993,21 @@ fn get_values_answers_exactly_as_lucene_does() {
         .expect("a valid segment opens");
     reader.check_integrity().expect("integrity");
 
-    let written = reader.get_values("one").unwrap_or_else(|error| {
-        panic!(
-            "[{}] the field the fixture wrote must be readable: {error}",
-            fixture.name
-        )
-    });
+    let written = reader
+        .get_values("one")
+        .unwrap_or_else(|error| {
+            panic!(
+                "[{}] the field the fixture wrote must be readable: {error}",
+                fixture.name
+            )
+        })
+        .expect("the field the fixture wrote has a tree");
     assert_eq!(written.size().unwrap(), i64::from(fixture.max_doc));
 
     let absent = reader
         .get_values("two")
         .expect("a field with no metadata entry is Java's null, not a throw");
-    assert_eq!(absent.size().unwrap(), 0);
-    assert_eq!(absent.doc_count().unwrap(), 0);
-    assert!(absent.min_packed_value().expect("no error").is_none());
+    assert!(absent.is_none(), "Java's `getValues` answers null");
 
     assert!(
         reader.get_values("nosuchfield").is_err(),

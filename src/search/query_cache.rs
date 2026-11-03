@@ -1,14 +1,10 @@
 //! Query caching hooks, ported from `org.apache.lucene.search.QueryCache` and
 //! `org.apache.lucene.search.QueryCachingPolicy`.
 //!
-//! **Divergence from Lucene 10.5.0.** Java installs concrete defaults —
-//! `LRUQueryCache` holding up to 1000 queries or 5% of the heap, and
-//! `UsageTrackingQueryCachingPolicy`. Neither is part of the query-execution
-//! spine and neither is ported yet, so
-//! [`IndexSearcher`](crate::search::IndexSearcher) starts with no cache and no
-//! policy, and [`IndexSearcher::create_weight`](crate::search::IndexSearcher::create_weight)
-//! simply returns the uncached weight. The hook itself is faithful: install a
-//! cache and a policy and the weight is wrapped exactly where Java wraps it.
+//! [`IndexSearcher`](crate::search::IndexSearcher) installs the defaults Java
+//! installs — an `LRUQueryCache` and a `UsageTrackingQueryCachingPolicy` — and
+//! [`IndexSearcher::create_weight`](crate::search::IndexSearcher::create_weight)
+//! wraps the weight exactly where Java wraps it.
 
 #![deny(unsafe_code)]
 

@@ -2,35 +2,30 @@
 //!
 //! This module provides [`MultiFields`] and [`MultiTerms`], the utilities that
 //! present a composite reader's multiple leaves as a single [`Fields`] /
-//! [`Terms`] view. The merge is driven by [`MultiTermsEnum`], a min-heap of
-//! per-leaf [`TermsEnum`]s that interleaves terms in sorted order, dedups
-//! identical terms across leaves, and OR-merges postings with the correct
-//! per-leaf `docBase` offset.
+//! [`Terms`] view. The merge is driven by [`MultiTermsEnum`], which merges the
+//! per-leaf [`TermsEnum`]s in sorted term order, dedups identical terms across
+//! leaves, and concatenates postings with the correct per-leaf `docBase`
+//! offset.
 //!
 //! # Merge strategy
 //!
-//! `MultiTermsEnum` mirrors Lucene's `MultiTermsEnum`:
+//! `MultiTermsEnum` is Lucene's `MultiTermsEnum`, structure included:
 //!
-//! - A min-heap (Rust's `std::collections::BinaryHeap`, reversed by term order)
-//!   keyed on each sub-enum's current term, plus a `top` set holding every sub
-//!   positioned at the current (smallest) term.
-//! - `next()` first `push_top`s each sub in `top` (calling `next()` on it and
-//!   re-pushing the survivors), then `pull_top`s the new heap minimum and
-//!   gathers all subs that share that term into `top`. Identical terms across
-//!   leaves are thus deduped and exposed once.
-//! - `doc_freq` / `total_term_freq` sum over `top` (the subs holding the
-//!   current term).
-//! - `postings` builds a [`MultiPostingsEnum`] that concatenates the per-leaf
-//!   postings (each leaf's local doc IDs offset by its slice `start`); because
-//!   the slices partition the global doc-ID space, the concatenation is a
-//!   globally sorted doc-ID stream — exactly Lucene's `MultiPostingsEnum`.
-//! - `seek_exact` / `seek_ceil` re-seed the heap from every sub, applying the
-//!   LUCENE-2130 optimisation: when the new seek term is not before the last
-//!   one, a sub whose current term is already past the seek term is not
-//!   re-seeked. The optimisation is armed only by `seek_ceil`, which leaves
-//!   every sub positioned; `seek_exact` and `next()` disarm it, because a sub
-//!   whose exact seek missed is left unpositioned and must be re-seeked from
-//!   scratch next time. See `MultiTermsEnum::reseed`.
+//! - every sub-enum is a [`TermsEnumWithSlice`] — a
+//!   [`TermsEnumIndex`] with its [`ReaderSlice`] — and the subs are merged by a
+//!   `TermMergeQueue` built on the crate's port of Lucene's `PriorityQueue`;
+//! - `next()` pushes every sub on the current term back into the queue after
+//!   advancing it (`pushTop`), then gathers every sub that shares the new
+//!   smallest term into `top` (`pullTop`, `TermMergeQueue.fillTop`). Identical
+//!   terms across leaves are thus exposed once;
+//! - `doc_freq` / `total_term_freq` sum over `top`;
+//! - `postings` builds or reuses a [`MultiPostingsEnum`] that concatenates the
+//!   per-leaf postings (each leaf's local doc IDs offset by its slice
+//!   `start`); because the slices partition the global doc-ID space, the
+//!   concatenation is a globally sorted doc-ID stream;
+//! - `seek_exact` / `seek_ceil` apply the LUCENE-2130 optimisation: when the
+//!   new seek term is not before the last `seek_ceil` term, a sub whose current
+//!   term is already past the seek term is not re-seeked.
 //!
 //! # Reference
 //!
@@ -39,15 +34,11 @@
 //! - `org.apache.lucene.index.MultiTermsEnum`
 //! - `org.apache.lucene.index.MultiPostingsEnum`
 //! - `org.apache.lucene.util.MergedIterator` (for the field-name merge)
-//!
-//! This port does **not** transcribe Lucene's `PriorityQueue`; it uses an
-//! idiomatic Rust binary heap with a reversed `Ord` wrapper to obtain min-heap
-//! semantics by term.
 
 #![deny(unsafe_code)]
 
 use std::cmp::Ordering;
-use std::collections::{BTreeSet, BinaryHeap, HashMap};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, RwLock};
 
@@ -55,12 +46,14 @@ use crate::error::{LuceneError, Result};
 use crate::index::leaf_reader::LeafReader;
 use crate::index::postings_enum::{Impacts, ImpactsEnum, ImpactsSource, PostingsEnum};
 use crate::index::reader_context::LeafReaderContext;
-use crate::index::terms::{EmptyTermsEnum, Fields, SeekStatus, TermState, Terms, TermsEnum};
+use crate::index::terms::{EmptyTermsEnum, Fields, SeekStatus, Terms, TermsEnum};
+use crate::index::terms_enum_index::TermsEnumIndex;
 use crate::index::{IndexReader, ReaderSlice};
 use crate::search::DocIdSetIterator;
 use crate::util::attribute::AttributeSource;
 use crate::util::automaton::CompiledAutomaton;
 use crate::util::BytesRef;
+use crate::util::{MergedIterator, PriorityQueue, PriorityQueueComparator};
 
 // ---------------------------------------------------------------------------
 // LeafFields — adapter exposing a LeafReader as a Fields instance.
@@ -104,15 +97,21 @@ impl LeafFields {
     /// Names of the leaf's fields that have a terms dictionary.
     fn indexed_field_names(&self) -> Vec<String> {
         // FieldInfos is returned by value; collect the names into an owned Vec
-        // so the returned iterator does not borrow from a local. The order
-        // follows FieldInfos' iteration order; MultiFields re-sorts the merged
-        // stream, so order here is not contractual.
-        self.reader
+        // so the returned iterator does not borrow from a local. A
+        // `FieldsProducer` lists its fields in sorted order — the block tree's
+        // `TreeMap` keys (`Lucene103BlockTreeTermsReader.java:178, 289-291`) —
+        // and `MultiFields` merges the sorted lists with a `MergedIterator`,
+        // so the names are sorted here too, in the `TreeMap`'s order:
+        // `String.compareTo`, UTF-16 code units.
+        let mut names: Vec<String> = self
+            .reader
             .get_field_infos()
             .iter()
             .filter(|fi| fi.index_options != crate::index::IndexOptions::NONE)
             .map(|fi| fi.get_name().to_string())
-            .collect()
+            .collect();
+        names.sort_by(|left, right| crate::util::compare_utf16(left, right));
+        names
     }
 }
 
@@ -201,7 +200,7 @@ impl MultiFields {
     /// [`ReaderSlice`] whose `start` is the leaf's `docBase`, `length` is its
     /// `maxDoc`, and `reader_index` is its leaf ordinal.
     pub fn get_fields(reader: &Arc<dyn IndexReader>) -> Result<Self> {
-        let leaves: Vec<Arc<LeafReaderContext>> = Arc::clone(reader).leaves();
+        let leaves: Vec<Arc<LeafReaderContext>> = Arc::clone(reader).leaves()?;
         let mut subs: Vec<Box<dyn Fields>> = Vec::with_capacity(leaves.len());
         let mut sub_slices: Vec<ReaderSlice> = Vec::with_capacity(leaves.len());
         for ctx in &leaves {
@@ -267,12 +266,7 @@ impl MultiFields {
             return Ok(None);
         }
 
-        // `Arc` rather than `Rc`, although `Terms` is not currently bound by
-        // `Send + Sync`: Lucene's readers are fully thread-safe, and the
-        // reference count is the one part of this memo that must not have to
-        // change when Rucene's `Terms` catches up. The atomics are the cost of
-        // not baking single-threadedness into the public signature.
-        #[allow(clippy::arc_with_non_send_sync)]
+        // `Arc`: the memo is shared across threads, as Java's `ConcurrentHashMap` is.
         let built = Arc::new(MultiTerms::new(subs2, slices2)?);
         match self.terms_cache.write() {
             // Another caller may have raced us here; keep whichever instance
@@ -286,18 +280,16 @@ impl MultiFields {
 }
 
 impl Fields for MultiFields {
+    /// Equivalent to `MultiFields.iterator()` (`MultiFields.java:51-58`): the
+    /// sub-iterators merged by a `MergedIterator`, which removes the
+    /// duplicates across them and pulls each one only as far as it is read.
     fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
-        // Merge sorted-dedup view of all sub field-name iterators. Field-name
-        // counts are small, so collecting into a BTreeSet gives the exact
-        // semantics of Lucene's MergedIterator (sorted union with dedup) without
-        // a streaming k-way merge.
-        let mut names: BTreeSet<String> = BTreeSet::new();
-        for sub in &self.subs {
-            for name in sub.iterator() {
-                names.insert(name);
-            }
-        }
-        Box::new(names.into_iter())
+        Box::new(MergedIterator::new(
+            self.subs
+                .iter()
+                .map(|sub| sub.iterator())
+                .collect::<Vec<_>>(),
+        ))
     }
 
     fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
@@ -388,7 +380,7 @@ impl MultiTerms {
     /// `length` to the leaf's own `max_doc()`. See the note on
     /// [`ReaderSlice`] for why both are correct.
     pub fn get_terms(reader: &Arc<dyn IndexReader>, field: &str) -> Result<Option<Box<dyn Terms>>> {
-        let leaves = Arc::clone(reader).leaves();
+        let leaves = Arc::clone(reader).leaves()?;
         if leaves.len() == 1 {
             return leaves[0].leaf_reader().terms(field);
         }
@@ -469,63 +461,59 @@ impl MultiTerms {
         &self.sub_slices
     }
 
-    /// Builds a merged [`MultiTermsEnum`] from the given per-sub `TermsEnum`s.
+    /// Builds a [`MultiTermsEnum`] over `sub_slices` and resets it on the given
+    /// per-sub enums, returning `None` when no sub yields a term.
     ///
-    /// Mirrors `MultiTermsEnum.reset(TermsEnumIndex[])`: each sub-enum is
-    /// advanced once (its first term seeded into the heap). `None` is returned
-    /// when no sub yields any term — the case where Lucene's `reset()` returns
-    /// `TermsEnum.EMPTY`.
+    /// The shared tail of `MultiTerms.iterator()` and `MultiTerms.intersect`
+    /// (`MultiTerms.java:138-150`, `MultiTerms.java:181-195`): each enum is
+    /// wrapped in a [`TermsEnumIndex`] tagged with its sub's position, and
+    /// `new MultiTermsEnum(subSlices).reset(...)` answers `TermsEnum.EMPTY`
+    /// when no sub yields a term — `None` here.
     fn build_enum(
         sub_slices: &[ReaderSlice],
-        entries: Vec<(Box<dyn TermsEnum>, ReaderSlice)>,
+        terms_enums: Vec<TermsEnumIndex>,
     ) -> Result<Option<MultiTermsEnum>> {
-        let mut me = MultiTermsEnum::new(sub_slices);
-        for (te, slice) in entries {
-            me.add_sub(te, slice)?;
+        if terms_enums.is_empty() {
+            return Ok(None);
         }
-        Ok(me.finish())
+        let mut multi_terms_enum = MultiTermsEnum::new(sub_slices)?;
+        let has_terms = multi_terms_enum.reset(terms_enums)?.is_some();
+        Ok(has_terms.then_some(multi_terms_enum))
     }
 
     /// Concretely typed counterpart of [`Terms::intersect`], returning `None`
     /// when no sub contributed a term.
     ///
-    /// Shares its heap-seeding step with [`Self::multi_iterator`]; the only
-    /// difference is that each sub is asked for an automaton-filtered enum.
+    /// Equivalent to `MultiTerms.intersect(CompiledAutomaton, BytesRef)`
+    /// (`MultiTerms.java:138-150`).
     pub fn multi_intersect(
         &self,
         compiled: &CompiledAutomaton,
         start_term: Option<&BytesRef>,
     ) -> Result<Option<MultiTermsEnum>> {
-        let mut entries: Vec<(Box<dyn TermsEnum>, ReaderSlice)> =
-            Vec::with_capacity(self.subs.len());
+        let mut terms_enums: Vec<TermsEnumIndex> = Vec::with_capacity(self.subs.len());
         for (i, sub) in self.subs.iter().enumerate() {
-            // Terms::intersect returns UnsupportedOperation by default; subs
-            // that do not implement it surface as an error here, matching the
-            // expectation that a real segment reader provides intersect.
-            let te = sub.intersect(compiled, start_term)?;
-            entries.push((te, self.sub_slices[i]));
+            // Java skips a `null` enum; `Terms::intersect` always answers one.
+            terms_enums.push(TermsEnumIndex::new(sub.intersect(compiled, start_term)?, i));
         }
-        Self::build_enum(&self.sub_slices, entries)
+        Self::build_enum(&self.sub_slices, terms_enums)
     }
 
     /// Concretely typed counterpart of [`Terms::iterator`].
     ///
+    /// Equivalent to `MultiTerms.iterator()` (`MultiTerms.java:181-195`).
     /// Returns `None` exactly when [`Terms::iterator`] would return an
     /// [`EmptyTermsEnum`], i.e. when no sub contributed a term. Java expresses
     /// the same distinction by comparing the returned enum against the
     /// `TermsEnum.EMPTY` singleton (LUCENE-6826) after a cast to
     /// `MultiTermsEnum`; `Option` makes it type-safe here.
     pub fn multi_iterator(&self) -> Result<Option<MultiTermsEnum>> {
-        let mut entries: Vec<(Box<dyn TermsEnum>, ReaderSlice)> =
-            Vec::with_capacity(self.subs.len());
+        let mut terms_enums: Vec<TermsEnumIndex> = Vec::with_capacity(self.subs.len());
         for (i, sub) in self.subs.iter().enumerate() {
-            // Lucene guards against null iterators; Rucene's Terms::iterator
-            // is infallible per-sub (returns Result, not Option), so we always
-            // include the sub-enum. An exhausted sub-enum simply contributes
-            // no terms to the heap.
-            entries.push((sub.iterator()?, self.sub_slices[i]));
+            // Java skips a `null` enum; `Terms::iterator` always answers one.
+            terms_enums.push(TermsEnumIndex::new(sub.iterator()?, i));
         }
-        Self::build_enum(&self.sub_slices, entries)
+        Self::build_enum(&self.sub_slices, terms_enums)
     }
 }
 
@@ -548,33 +536,41 @@ impl Terms for MultiTerms {
         })
     }
 
-    fn size(&self) -> i64 {
-        // Matches Lucene: the merged term count is not cheap to compute.
-        -1
+    fn size(&self) -> Result<i64> {
+        Ok({
+            // Matches Lucene: the merged term count is not cheap to compute.
+            -1
+        })
     }
 
-    fn sum_total_term_freq(&self) -> i64 {
-        let mut sum: i64 = 0;
-        for sub in &self.subs {
-            sum += sub.sum_total_term_freq();
-        }
-        sum
+    fn sum_total_term_freq(&self) -> Result<i64> {
+        Ok({
+            let mut sum: i64 = 0;
+            for sub in &self.subs {
+                sum += sub.sum_total_term_freq()?;
+            }
+            sum
+        })
     }
 
-    fn sum_doc_freq(&self) -> i64 {
-        let mut sum: i64 = 0;
-        for sub in &self.subs {
-            sum += sub.sum_doc_freq();
-        }
-        sum
+    fn sum_doc_freq(&self) -> Result<i64> {
+        Ok({
+            let mut sum: i64 = 0;
+            for sub in &self.subs {
+                sum += sub.sum_doc_freq()?;
+            }
+            sum
+        })
     }
 
-    fn doc_count(&self) -> i32 {
-        let mut sum: i32 = 0;
-        for sub in &self.subs {
-            sum = sum.wrapping_add(sub.doc_count());
-        }
-        sum
+    fn doc_count(&self) -> Result<i32> {
+        Ok({
+            let mut sum: i32 = 0;
+            for sub in &self.subs {
+                sum = sum.wrapping_add(sub.doc_count()?);
+            }
+            sum
+        })
     }
 
     fn has_freqs(&self) -> bool {
@@ -668,19 +664,19 @@ impl Terms for Arc<MultiTerms> {
         (**self).intersect(compiled, start_term)
     }
 
-    fn size(&self) -> i64 {
+    fn size(&self) -> Result<i64> {
         (**self).size()
     }
 
-    fn sum_total_term_freq(&self) -> i64 {
+    fn sum_total_term_freq(&self) -> Result<i64> {
         (**self).sum_total_term_freq()
     }
 
-    fn sum_doc_freq(&self) -> i64 {
+    fn sum_doc_freq(&self) -> Result<i64> {
         (**self).sum_doc_freq()
     }
 
-    fn doc_count(&self) -> i32 {
+    fn doc_count(&self) -> Result<i32> {
         (**self).doc_count()
     }
 
@@ -708,7 +704,7 @@ impl Terms for Arc<MultiTerms> {
         (**self).max()
     }
 
-    fn stats(&self) -> String {
+    fn stats(&self) -> Result<String> {
         (**self).stats()
     }
 }
@@ -727,73 +723,206 @@ impl Terms for Arc<MultiTerms> {
 /// comparison answers exactly what the reference comparison answers.
 static NEXT_MULTI_TERMS_ENUM_ID: AtomicU64 = AtomicU64::new(0);
 
-/// One sub-enum entry inside [`MultiTermsEnum`].
+/// The `NullPointerException` Java raises when a method is invoked on a
+/// sub-enum's `null` `termsEnum` field, reached through `expression`.
 ///
-/// Equivalent to `MultiTermsEnum.TermsEnumWithSlice`, the sub-enum paired with
-/// the [`ReaderSlice`] that says where its sub-reader sits in the global
-/// doc-ID space. Java declares the class package-private and hands arrays of it
-/// out through `getMatchArray()`; this port keeps the fields module-private for
-/// the same reason and exposes the type itself so
-/// [`MultiTermsEnum::get_match_array`] can name it.
-pub struct TermsEnumEntry {
-    tenum: Box<dyn TermsEnum>,
-    /// Slice identifying this sub-reader's place in the global doc-ID space.
-    slice: ReaderSlice,
-    /// The sub-enum's current term, or `None` when exhausted. Updated only
-    /// while the entry is not in the heap (after popping).
-    current: Option<BytesRef>,
+/// The JDK names the dereferenced expression: `this.top[i].termsEnum` in
+/// `docFreq` and `totalTermFreq` (`MultiTermsEnum.java:299`, `:308`), and
+/// `entry.termsEnum` in `postings` (`MultiTermsEnum.java:340-341`). Measured
+/// against `lucene-core-10.5.0.jar` by setting the field to `null` through
+/// reflection.
+fn null_sub_terms_enum(method: &str, expression: &str) -> LuceneError {
+    LuceneError::illegal_state(format!(
+        "Cannot invoke \"org.apache.lucene.index.TermsEnum.{method}\" because \"{expression}\" is null"
+    ))
 }
 
-impl std::fmt::Display for TermsEnumEntry {
-    /// Port of `MultiTermsEnum.TermsEnumWithSlice.toString()`
-    /// (`MultiTermsEnum.java:367-370`): the slice, a colon, then
-    /// `super.toString()` — which is `TermsEnumIndex`'s, i.e. the wrapped
-    /// enumeration's own rendering.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}", self.slice, self.tenum)
-    }
+/// One sub-enum of [`MultiTermsEnum`]: a [`TermsEnumIndex`] paired with the
+/// [`ReaderSlice`] that says where its sub-reader sits in the global doc-ID
+/// space.
+///
+/// Equivalent to `MultiTermsEnum.TermsEnumWithSlice`
+/// (`MultiTermsEnum.java:358-371`), which extends `TermsEnumIndex`; Rust has no
+/// implementation inheritance, so the `TermsEnumIndex` is held and reached
+/// through [`terms_enum_index`](Self::terms_enum_index). Java declares the
+/// class package-private and hands arrays of it out through `getMatchArray()`;
+/// [`MultiTermsEnum::get_match_array`] does the same here.
+pub struct TermsEnumWithSlice {
+    /// The `TermsEnumIndex` this class extends. Its enum is `None` — Java's
+    /// `super(null, index)` — until [`MultiTermsEnum::reset`] hands it one.
+    base: TermsEnumIndex,
+    /// Java's `private final ReaderSlice subSlice`.
+    sub_slice: ReaderSlice,
 }
 
-impl TermsEnumEntry {
-    fn new(tenum: Box<dyn TermsEnum>, slice: ReaderSlice) -> Self {
+impl TermsEnumWithSlice {
+    /// Equivalent to `TermsEnumWithSlice(int index, ReaderSlice subSlice)`
+    /// (`MultiTermsEnum.java:361-365`), which calls `super(null, index)`.
+    fn new(index: usize, sub_slice: ReaderSlice) -> Self {
+        debug_assert!(sub_slice.length >= 0, "length={}", sub_slice.length);
         Self {
-            tenum,
-            slice,
-            current: None,
+            base: TermsEnumIndex::with_optional_enum(None, index),
+            sub_slice,
         }
     }
+
+    /// Returns the [`TermsEnumIndex`] this sub-enum extends in Java.
+    pub fn terms_enum_index(&self) -> &TermsEnumIndex {
+        &self.base
+    }
+
+    /// Returns the slice of the sub-reader this enum belongs to.
+    ///
+    /// Equivalent to reading the `TermsEnumWithSlice.subSlice` field.
+    pub fn sub_slice(&self) -> ReaderSlice {
+        self.sub_slice
+    }
 }
 
-/// Heap element: index into `MultiTermsEnum::subs` plus a snapshot of that
-/// sub's current term. The snapshot is taken at push time and stays valid
-/// while the element sits in the heap (the entry is only mutated after
-/// popping), so the heap invariant is preserved.
+impl std::fmt::Display for TermsEnumWithSlice {
+    /// Port of `MultiTermsEnum.TermsEnumWithSlice.toString()`
+    /// (`MultiTermsEnum.java:367-370`): the slice, a colon, then
+    /// `super.toString()` — `TermsEnumIndex`'s, i.e. the wrapped enumeration's
+    /// own rendering, or `null` for a sub that was never reset.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.sub_slice, self.base)
+    }
+}
+
+/// `TermMergeQueue.lessThan`: `termsA.compareTermTo(termsB) < 0`
+/// (`MultiTermsEnum.java:382-385`), over the subs' live terms.
 ///
-/// `Ord` is reversed on `term` so that Rust's max-heap `BinaryHeap` behaves as
-/// a min-heap by unsigned byte order (the same order `BytesRef::cmp` gives).
-struct HeapEntry {
-    idx: usize,
-    term: BytesRef,
+/// Java's queue holds the `TermsEnumWithSlice` objects themselves — the same
+/// objects `MultiTermsEnum` keeps in its `subs`, `currentSubs` and `top`
+/// arrays — and `lessThan` compares their current terms as they stand at that
+/// moment. Rust cannot let the queue and the enum alias the subs, so this
+/// comparator owns `subs`, the queue holds each queued sub's position in it
+/// (which is its `subIndex`), and every comparison reads the two subs' current
+/// terms, exactly as Java's does.
+struct TermMergeLessThan {
+    /// Java's `MultiTermsEnum.subs`: every sub, one per sub-reader slice, at
+    /// its sub index.
+    subs: Vec<TermsEnumWithSlice>,
 }
 
-impl PartialEq for HeapEntry {
-    fn eq(&self, other: &Self) -> bool {
-        self.term == other.term && self.idx == other.idx
+impl PriorityQueueComparator<usize> for TermMergeLessThan {
+    fn less_than(&self, a: &usize, b: &usize) -> bool {
+        self.subs[*a].base.compare_term_to(&self.subs[*b].base) == Ordering::Less
     }
 }
 
-impl Eq for HeapEntry {}
-
-impl PartialOrd for HeapEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
+/// The priority queue [`MultiTermsEnum`] merges its subs with, ordered by
+/// current term.
+///
+/// Equivalent to `MultiTermsEnum.TermMergeQueue` (`MultiTermsEnum.java:373-418`),
+/// a `PriorityQueue<TermsEnumWithSlice>`, built here on the crate's port of
+/// that `PriorityQueue`, so that the heap — and therefore the order
+/// [`fill_top`](Self::fill_top) gathers equal terms in — is Lucene's. Its
+/// comparator owns the subs ([`TermMergeLessThan`]); the queue holds their
+/// positions, and [`subs`](Self::subs) / [`subs_mut`](Self::subs_mut) are how
+/// [`MultiTermsEnum`] reaches them.
+struct TermMergeQueue {
+    queue: PriorityQueue<usize, TermMergeLessThan>,
+    /// Java's `final int[] stack`, scratch for [`fill_top`](Self::fill_top).
+    stack: Vec<usize>,
 }
 
-impl Ord for HeapEntry {
-    fn cmp(&self, other: &Self) -> Ordering {
-        // Reverse term comparison for min-heap; idx is a stable tiebreaker.
-        other.term.cmp(&self.term).then(other.idx.cmp(&self.idx))
+impl TermMergeQueue {
+    /// Equivalent to `TermMergeQueue(int size)` with `size = subs.len()`,
+    /// taking the subs its comparator reads.
+    fn new(subs: Vec<TermsEnumWithSlice>) -> Result<Self> {
+        let size = subs.len();
+        Ok(Self {
+            queue: PriorityQueue::new(size, TermMergeLessThan { subs })?,
+            stack: vec![0; size],
+        })
+    }
+
+    /// Java's `MultiTermsEnum.subs`.
+    fn subs(&self) -> &[TermsEnumWithSlice] {
+        &self.queue.comparator().subs
+    }
+
+    /// Java's `MultiTermsEnum.subs`, for moving a sub. A queued sub moved
+    /// here is re-sifted with [`update_top`](Self::update_top), as in Java.
+    fn subs_mut(&mut self) -> &mut [TermsEnumWithSlice] {
+        &mut self.queue.comparator_mut().subs
+    }
+
+    /// Equivalent to `PriorityQueue.add(TermsEnumWithSlice)`.
+    fn add(&mut self, sub: usize) {
+        self.queue.add(sub);
+    }
+
+    /// Equivalent to `PriorityQueue.top()`.
+    fn top(&self) -> Option<usize> {
+        self.queue.top().copied()
+    }
+
+    /// Equivalent to `PriorityQueue.pop()`.
+    fn pop(&mut self) -> Option<usize> {
+        self.queue.pop()
+    }
+
+    /// Equivalent to `PriorityQueue.updateTop()`, after the top sub moved.
+    fn update_top(&mut self) {
+        self.queue.update_top();
+    }
+
+    /// Equivalent to `PriorityQueue.size()`.
+    fn size(&self) -> usize {
+        self.queue.size()
+    }
+
+    /// Equivalent to `PriorityQueue.clear()`.
+    fn clear(&mut self) {
+        self.queue.clear();
+    }
+
+    /// Adds the [`top`](Self::top) slice as well as all slices that are
+    /// positioned on the same term to `tops` and returns how many of them there
+    /// are.
+    ///
+    /// Equivalent to `TermMergeQueue.fillTop(TermsEnumWithSlice[])`
+    /// (`MultiTermsEnum.java:391-413`): a depth-first walk of the heap from its
+    /// root that only descends into children holding the top term. Java writes
+    /// the first `numTop` slots of its array; `tops` is cleared and filled with
+    /// exactly those.
+    fn fill_top(&mut self, tops: &mut Vec<usize>) -> usize {
+        tops.clear();
+        let size = self.queue.size();
+        if size == 0 {
+            return 0;
+        }
+        let subs = &self.queue.comparator().subs;
+        let heap = self.queue.heap_array();
+        let Some(top0) = heap[1] else {
+            return 0;
+        };
+        tops.push(top0);
+        let mut num_top = 1;
+        self.stack[0] = 1;
+        let mut stack_len = 1;
+
+        while stack_len != 0 {
+            stack_len -= 1;
+            let index = self.stack[stack_len];
+            let left_child = index << 1;
+            let end = size.min(left_child + 1);
+            let mut child = left_child;
+            while child <= end {
+                if let Some(te) = heap[child] {
+                    if subs[te].base.compare_term_to(&subs[tops[0]].base) == Ordering::Equal {
+                        tops.push(te);
+                        num_top += 1;
+                        self.stack[stack_len] = child;
+                        stack_len += 1;
+                    }
+                }
+                child += 1;
+            }
+        }
+        num_top
     }
 }
 
@@ -801,53 +930,90 @@ impl Ord for HeapEntry {
 /// identical terms across subs, and aggregates per-term statistics and
 /// postings across the subs positioned at the current term.
 ///
-/// Equivalent to `org.apache.lucene.index.MultiTermsEnum`.
+/// Equivalent to `org.apache.lucene.index.MultiTermsEnum`. Built with
+/// [`new`](Self::new) over the sub-readers' slices, then
+/// [`reset`](Self::reset) on the sub-enums, exactly as
+/// `new MultiTermsEnum(slices).reset(termsEnumsIndex)`.
+///
+/// Java keeps the subs in four places at once — `subs`, `currentSubs`, `top`
+/// and the merge queue — as references to the same objects. Here the merge
+/// queue's comparator owns them (`TermMergeLessThan`) and `currentSubs`,
+/// `top` and the queue hold their positions in it.
 pub struct MultiTermsEnum {
-    /// All sub-entries, persistent for the life of this enum (needed by seek).
-    subs: Vec<TermsEnumEntry>,
-    /// Min-heap of indices into `subs`, keyed by the sub's current term.
-    heap: BinaryHeap<HeapEntry>,
-    /// Indices of subs positioned at the current term.
+    /// Java's `private final TermMergeQueue queue`, whose comparator also
+    /// holds Java's `subs`.
+    queue: TermMergeQueue,
+    /// Java's `currentSubs[0..numSubs]`: the subs that had at least one term
+    /// for this field on [`reset`](Self::reset).
+    current_subs: Vec<usize>,
+    /// Java's `top[0..numTop]`: the subs positioned on the current term.
     top: Vec<usize>,
-    /// The current term, or `None` once exhausted.
-    current: Option<BytesRef>,
+    /// Java's `lastSeek`: the last `seekCeil` term, for the LUCENE-2130
+    /// seek optimisation, or `None`.
+    last_seek: Option<BytesRef>,
+    /// Java's `lastSeekExact`.
+    last_seek_exact: bool,
+    /// Java's `current`, as the sub whose term it is, or `None` for `null`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `current` is the `BytesRef`
+    /// object the supplying sub returned (`MultiTermsEnum.java:156`, `:208`,
+    /// `:249`). A codec's terms enum returns its own term buffer, so Java's
+    /// `current` keeps following that enum as it moves: after a missed
+    /// `seekExact` it shows the term the miss scanned to, after an `END`
+    /// `seekCeil` the emptied buffer (`StaleCurrentOracle` over two Lucene104
+    /// segments: `cccc` and `""`). [`TermsEnum::term`] returns an owned copy
+    /// here, so the port keeps the supplying sub and reads its enum's term
+    /// whenever `current` is read, which is Java's behaviour for every enum
+    /// that returns its own buffer. A sub enum that answers a new `BytesRef`
+    /// on each call would leave Java's `current` on the old value, where this
+    /// port reads the moved enum; and `next()` after a missed `seekExact`
+    /// re-seeks a copy of the term, where Java passes the buffer itself.
+    current: Option<usize>,
     /// Identity of this enum, so that a [`MultiPostingsEnum`] it built can be
     /// told apart from one another enum built. Stands in for the object
     /// reference Java compares in `MultiPostingsEnum.canReuse`.
     id: u64,
-    /// Last seek term, for the LUCENE-2130 seek-optimisation.
-    last_seek: Option<BytesRef>,
-    /// Set by `seek_exact` so the next `next()` re-seeds non-matching subs via
-    /// `seek_ceil(current)` before advancing, matching Lucene.
-    last_seek_exact: bool,
+    /// The attributes `BaseTermsEnum.attributes()` creates.
     atts: AttributeSource,
 }
 
 impl MultiTermsEnum {
-    /// Creates a fresh `MultiTermsEnum` sized for `sub_slices`.
+    /// Creates an enum over the sub-readers described by `slices`, holding no
+    /// sub-enum yet; [`reset`](Self::reset) supplies them.
     ///
-    /// Use [`Self::add_sub`] to seed each sub-enum, then [`Self::finish`] to
-    /// obtain the boxed enum (or an [`EmptyTermsEnum`] if no sub yields a term).
-    fn new(sub_slices: &[ReaderSlice]) -> Self {
-        let n = sub_slices.len();
-        Self {
-            subs: Vec::with_capacity(n),
-            heap: BinaryHeap::with_capacity(n),
+    /// Equivalent to `MultiTermsEnum(ReaderSlice[] slices)`
+    /// (`MultiTermsEnum.java:65-76`). Java also allocates a
+    /// `MultiPostingsEnum.EnumWithSlice[] subDocs` scratch array here, which
+    /// [`postings`](TermsEnum::postings) builds per call instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `slices` is too large for
+    /// a `PriorityQueue`, as Java's constructor throws.
+    pub fn new(slices: &[ReaderSlice]) -> Result<Self> {
+        let n = slices.len();
+        let subs = slices
+            .iter()
+            .enumerate()
+            .map(|(i, &slice)| TermsEnumWithSlice::new(i, slice))
+            .collect();
+        Ok(Self {
+            queue: TermMergeQueue::new(subs)?,
+            current_subs: Vec::with_capacity(n),
             top: Vec::with_capacity(n),
-            current: None,
-            id: NEXT_MULTI_TERMS_ENUM_ID.fetch_add(1, AtomicOrdering::Relaxed),
             last_seek: None,
             last_seek_exact: false,
+            current: None,
+            id: NEXT_MULTI_TERMS_ENUM_ID.fetch_add(1, AtomicOrdering::Relaxed),
             atts: AttributeSource::new(),
-        }
+        })
     }
 
     /// Returns how many sub-reader slices contain the current term.
     ///
     /// Equivalent to `org.apache.lucene.index.MultiTermsEnum#getMatchCount`,
     /// which returns the `numTop` counter that says how much of the `top`
-    /// array is live. This port's `top` is a right-sized `Vec`, so its length
-    /// *is* that counter.
+    /// array is live.
     ///
     /// See also [`get_match_array`](Self::get_match_array).
     pub fn get_match_count(&self) -> usize {
@@ -859,213 +1025,102 @@ impl MultiTermsEnum {
     /// Equivalent to `org.apache.lucene.index.MultiTermsEnum#getMatchArray`.
     /// Java hands back the whole `top` array, of which only the first
     /// [`get_match_count`](Self::get_match_count) entries are live; this port
-    /// returns exactly the live ones.
-    pub fn get_match_array(&self) -> Vec<&TermsEnumEntry> {
-        self.top.iter().map(|&idx| &self.subs[idx]).collect()
+    /// returns exactly the live ones, in the array's order.
+    pub fn get_match_array(&self) -> Vec<&TermsEnumWithSlice> {
+        let subs = self.queue.subs();
+        self.top.iter().map(|&sub| &subs[sub]).collect()
     }
 
-    /// Adds a sub-enum with its slice, seeding the heap with the sub's first
-    /// term (if any). Mirrors the per-sub loop in `MultiTermsEnum.reset`.
-    fn add_sub(&mut self, tenum: Box<dyn TermsEnum>, slice: ReaderSlice) -> Result<()> {
-        let idx = self.subs.len();
-        let mut entry = TermsEnumEntry::new(tenum, slice);
-        let first = entry.tenum.next()?;
-        if let Some(t) = first {
-            entry.current = Some(t.clone());
-            self.heap.push(HeapEntry { idx, term: t });
-        } else {
-            entry.current = None;
-        }
-        self.subs.push(entry);
-        Ok(())
-    }
-
-    /// Finalises construction. Returns `None` if no sub yielded a term —
-    /// matching Lucene's `reset()` returning `TermsEnum.EMPTY` when the queue
-    /// is empty.
-    fn finish(self) -> Option<Self> {
-        if self.heap.is_empty() {
-            None
-        } else {
-            Some(self)
-        }
-    }
-
-    /// Concretely typed counterpart of [`TermsEnum::postings`].
+    /// Positions this enum on the given sub-enums, which must be newly
+    /// created ([`TermsEnum::next`] not yet called), and returns `Some(self)`,
+    /// or `None` when none of them has a term.
     ///
-    /// Builds the [`MultiPostingsEnum`] over every sub currently positioned at
-    /// the enum's term. Java reaches the same object through a cast
-    /// (`(MultiPostingsEnum) in.postings(...)` in `MappedMultiFields`); callers
-    /// that need the per-sub [`ReaderSlice`]s — segment merging above all —
-    /// use this method instead.
-    pub fn multi_postings(&mut self, flags: i32) -> Result<MultiPostingsEnum> {
-        // Sort the top subs by reader_index so the MultiPostingsEnum receives
-        // slices in ascending doc-ID order (Lucene does the same via
-        // ArrayUtil.timSort on subIndex).
-        let mut top_sorted: Vec<usize> = self.top.clone();
-        top_sorted.sort_by_key(|&idx| self.subs[idx].slice.reader_index);
-
-        let mut sub_docs: Vec<EnumWithSlice> = Vec::with_capacity(top_sorted.len());
-        for &idx in &top_sorted {
-            // Sub-enum reuse across calls is not tracked here; each call asks
-            // the sub for a fresh postings enum. This matches Lucene's behaviour
-            // (which passes the previous sub-enum as reuse) when the sub
-            // implementations do not special-case reuse, and is correct.
-            let pe = self.subs[idx].tenum.postings(None, flags)?;
-            sub_docs.push(EnumWithSlice::new(pe, self.subs[idx].slice));
-        }
-        let mut postings = MultiPostingsEnum::new(sub_docs);
-        // Java passes `this` to the `MultiPostingsEnum` constructor
-        // (`MultiTermsEnum.java:324,327`); the identity stamped here is what
-        // `MultiPostingsEnum::can_reuse` later compares against.
-        postings.parent = Some(self.id);
-        Ok(postings)
-    }
-
-    /// Advances every sub in `top` and pushes the survivors back into the
-    /// heap. Mirrors `MultiTermsEnum.pushTop`.
-    fn push_top(&mut self) -> Result<()> {
-        for &idx in &self.top {
-            let next_term = self.subs[idx].tenum.next()?;
-            match next_term {
-                Some(t) => {
-                    self.subs[idx].current = Some(t.clone());
-                    self.heap.push(HeapEntry { idx, term: t });
-                }
-                None => {
-                    self.subs[idx].current = None;
-                }
+    /// Equivalent to `MultiTermsEnum.reset(TermsEnumIndex[])`
+    /// (`MultiTermsEnum.java:87-113`): each sub-enum is advanced once, and the
+    /// ones that yield a term are adopted by the sub at their
+    /// [`sub_index`](TermsEnumIndex::sub_index) and queued. Java returns
+    /// `TermsEnum.EMPTY` when the queue stays empty and `this` otherwise; `None`
+    /// stands for `EMPTY`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever advancing a sub-enum raises, and returns
+    /// [`LuceneError::IllegalArgument`] — Java's
+    /// `ArrayIndexOutOfBoundsException` — for a sub index this enum has no
+    /// slice for.
+    pub fn reset(&mut self, terms_enums_index: Vec<TermsEnumIndex>) -> Result<Option<&mut Self>> {
+        debug_assert!(terms_enums_index.len() <= self.queue.subs().len());
+        self.current_subs.clear();
+        self.top.clear();
+        self.queue.clear();
+        let num_slices = self.queue.subs().len();
+        for mut terms_enum_index in terms_enums_index {
+            let has_term = terms_enum_index.next()?.is_some();
+            if has_term {
+                let sub_index = terms_enum_index.sub_index();
+                let entry = self.queue.subs_mut().get_mut(sub_index).ok_or_else(|| {
+                    LuceneError::IllegalArgument(format!(
+                        "Index {sub_index} out of bounds for length {num_slices}"
+                    ))
+                })?;
+                entry.base.reset(terms_enum_index);
+                self.queue.add(sub_index);
+                self.current_subs.push(sub_index);
+            } else {
+                // field has no terms
             }
         }
-        self.top.clear();
-        Ok(())
+
+        if self.queue.size() == 0 {
+            Ok(None)
+        } else {
+            Ok(Some(self))
+        }
     }
 
-    /// Pops the heap minimum into `top` and gathers every sub sharing that
-    /// term. Sets `current` to the gathered term. Mirrors
-    /// `MultiTermsEnum.pullTop` / `TermMergeQueue.fillTop`.
+    /// Reads the term `current` refers to: the current term of the enum of
+    /// sub `sub`, as it stands now (see [`current`](Self#structfield.current)).
+    fn sub_term(&self, sub: usize) -> Result<BytesRef> {
+        self.queue.subs()[sub]
+            .base
+            .terms_enum()
+            .ok_or_else(|| {
+                LuceneError::illegal_state(
+                    "INVARIANT: a sub that supplied a term holds an enum".to_string(),
+                )
+            })?
+            .term()
+    }
+
+    /// Extracts every sub that sits on the top term out of the queue into
+    /// `top`. Equivalent to `MultiTermsEnum.pullTop()`
+    /// (`MultiTermsEnum.java:244-250`).
     fn pull_top(&mut self) {
-        let Some(min) = self.heap.pop() else {
-            self.current = None;
-            return;
-        };
-        let first_term = min.term.clone();
-        self.top.push(min.idx);
-        while let Some(peek) = self.heap.peek() {
-            if peek.term == first_term {
-                let e = self.heap.pop().unwrap();
-                self.top.push(e.idx);
-            } else {
-                break;
-            }
-        }
-        self.current = Some(first_term);
+        // extract all subs from the queue that have the same top term
+        debug_assert!(self.top.is_empty());
+        self.queue.fill_top(&mut self.top);
+        self.current = self.top.first().copied();
     }
 
-    /// Re-seeds the heap and top from every sub after a seek, applying the
-    /// LUCENE-2130 optimisation when `seek_opt` is set.
-    ///
-    /// Shared by `seek_exact` (`exact = true`) and `seek_ceil`
-    /// (`exact = false`). Both compute `seek_opt` from the *previous*
-    /// `last_seek` before calling; this method then records the `last_seek`
-    /// that the *next* seek will consult.
-    ///
-    /// # Why an exact seek forgets `last_seek`
-    ///
-    /// A `seek_ceil` leaves every sub positioned: on `NOT_FOUND` the sub sits
-    /// on its ceiling term, and on `END` it is exhausted for every term from
-    /// here on. Recording `last_seek` is therefore safe, and lets the next
-    /// non-decreasing seek skip subs that are already past the new term.
-    ///
-    /// A `seek_exact` does not: a sub whose `seek_exact` returned `false` is
-    /// left *unpositioned* (`TermsEnum::seek_exact` promises nothing about
-    /// where the underlying enum stopped, so `current` is cleared), and the
-    /// sub may well hold terms after the one that was sought. Keeping
-    /// `last_seek` would let the next non-decreasing seek take the
-    /// "no recorded term ⇒ nothing to find here" branch and drop that sub
-    /// permanently. Clearing it forces the next seek to re-seek every sub from
-    /// scratch. This mirrors `MultiTermsEnum.seekExact`, which assigns
-    /// `lastSeek = null` (`MultiTermsEnum.java:124`) exactly where
-    /// `seekCeil` assigns `lastSeek = term` (`MultiTermsEnum.java:177`).
-    ///
-    /// With `last_seek` cleared, the `seek_opt` branch for a sub with no
-    /// recorded term is reachable only after a `seek_ceil` that returned
-    /// `SeekStatus::END` for it — for which skipping is correct, because no
-    /// term at or after the previous seek term exists in that sub.
-    fn reseed(&mut self, term: &BytesRef, seek_opt: bool, exact: bool) -> Result<()> {
-        self.heap.clear();
-        self.top.clear();
-        self.last_seek_exact = exact;
-        self.last_seek = if exact { None } else { Some(term.clone()) };
-
-        for i in 0..self.subs.len() {
-            if seek_opt {
-                // LUCENE-2130: if this sub's current term is already past
-                // `term`, don't re-seek it. Compare against the live current.
-                if let Some(cur) = &self.subs[i].current {
-                    match term.cmp(cur) {
-                        Ordering::Equal => {
-                            // The sub already sits on the term: a hit for
-                            // seek_exact and a FOUND for seek_ceil alike.
-                            self.top.push(i);
-                            continue;
-                        }
-                        Ordering::Less => {
-                            // Sub's current term is past `term`: for seek_ceil
-                            // this is a NOT_FOUND ceiling; for seek_exact the
-                            // sub does not hold the term. In both cases leave
-                            // the sub where it is and push to the heap (its
-                            // current term is the ceiling).
-                            self.heap.push(HeapEntry {
-                                idx: i,
-                                term: cur.clone(),
-                            });
-                            continue;
-                        }
-                        Ordering::Greater => {
-                            // Sub's current term is before `term`: fall through
-                            // to the actual seek.
-                        }
-                    }
-                } else {
-                    // No recorded term. Because `last_seek` is cleared by
-                    // `seek_exact` and by `next()`, `seek_opt` can only be set
-                    // by a preceding `seek_ceil` — so the sub reached
-                    // `SeekStatus::END` there, and `term` is not before that
-                    // seek term. Nothing at or after `term` exists in this sub;
-                    // skipping it is correct. (Reaching here after a *failed*
-                    // seek_exact would instead drop a sub that may still hold
-                    // later terms: see this function's doc comment.)
-                    continue;
-                }
-            }
-
-            if exact {
-                let found = self.subs[i].tenum.seek_exact(term)?;
-                if found {
-                    self.subs[i].current = Some(term.clone());
-                    self.top.push(i);
-                } else {
-                    self.subs[i].current = None;
-                }
+    /// Advances every sub on the current term and restores the queue.
+    /// Equivalent to `MultiTermsEnum.pushTop()` (`MultiTermsEnum.java:252-263`),
+    /// which advances the queue's top `numTop` times.
+    fn push_top(&mut self) -> Result<()> {
+        // call next() on each top, and reorder queue
+        for _ in 0..self.top.len() {
+            let top = self.queue.top().ok_or_else(|| {
+                LuceneError::illegal_state(
+                    "Cannot invoke \"org.apache.lucene.index.MultiTermsEnum$TermsEnumWithSlice.next()\" because \"top\" is null"
+                        .to_string(),
+                )
+            })?;
+            if self.queue.subs_mut()[top].base.next()?.is_none() {
+                self.queue.pop();
             } else {
-                let status = self.subs[i].tenum.seek_ceil(term)?;
-                match status {
-                    SeekStatus::FOUND => {
-                        self.subs[i].current = Some(term.clone());
-                        self.top.push(i);
-                    }
-                    SeekStatus::NOT_FOUND => {
-                        let cur = self.subs[i].tenum.term()?;
-                        self.subs[i].current = Some(cur.clone());
-                        self.heap.push(HeapEntry { idx: i, term: cur });
-                    }
-                    SeekStatus::END => {
-                        self.subs[i].current = None;
-                    }
-                }
+                self.queue.update_top();
             }
         }
+        self.top.clear();
         Ok(())
     }
 }
@@ -1081,7 +1136,7 @@ impl std::fmt::Display for MultiTermsEnum {
     /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("MultiTermsEnum([")?;
-        for (i, sub) in self.subs.iter().enumerate() {
+        for (i, sub) in self.queue.subs().iter().enumerate() {
             if i != 0 {
                 f.write_str(", ")?;
             }
@@ -1096,146 +1151,331 @@ impl TermsEnum for MultiTermsEnum {
         &mut self.atts
     }
 
-    /// Positions the enum on `text` if any sub holds it.
+    /// Equivalent to `MultiTermsEnum.seekExact(BytesRef)`
+    /// (`MultiTermsEnum.java:115-164`), LUCENE-2130 optimisation included.
     ///
-    /// **Deliberate divergence from Lucene: the state after a miss.** Java
-    /// leaves `current` pointing at whatever term the enum was on before
-    /// (`MultiTermsEnum.java:154-158` only assigns `current` inside the
-    /// `status == true` branch), so a `false` return leaves a stale term
-    /// readable through `term()`. This port clears `current`, which is what
-    /// [`TermsEnum::seek_exact`]'s own contract requires: *"if this returns
-    /// false, the enum is unpositioned"*.
-    ///
-    /// One consequence is visible in [`Self::next`]: Java's `next()` after a
-    /// failed `seek_exact` re-seeks to the stale term and asserts the result is
-    /// `FOUND` — an assertion that only holds because the stale term happens to
-    /// exist. Here there is no term to re-seek to, so `next()` resumes from the
-    /// merge heap instead. Both behaviours are outside the `TermsEnum`
-    /// contract, which does not define `next()` on an unpositioned enum; this
-    /// one at least cannot read a term the caller never asked for.
+    /// As in Java, `current` is only assigned for a sub that holds the term,
+    /// so after a miss [`term`](TermsEnum::term) reads the sub that supplied
+    /// the previous term — wherever the miss moved that sub's enum.
     ///
     /// # Errors
     ///
     /// Propagates any error raised while seeking a sub-enum.
-    fn seek_exact(&mut self, text: &BytesRef) -> Result<bool> {
-        // LUCENE-2130: optimise only if the new term is not before the last
-        // seek term.
-        let seek_opt = self.last_seek.as_ref().is_some_and(|ls| ls <= text);
-        self.reseed(text, seek_opt, true)?;
-        if self.top.is_empty() {
-            self.current = None;
-            Ok(false)
-        } else {
-            self.current = Some(text.clone());
-            Ok(true)
+    fn seek_exact(&mut self, term: &BytesRef) -> Result<bool> {
+        self.queue.clear();
+        self.top.clear();
+
+        let seek_opt = self.last_seek.as_ref().is_some_and(|last| last <= term);
+
+        self.last_seek = None;
+        self.last_seek_exact = true;
+
+        for i in 0..self.current_subs.len() {
+            let sub = self.current_subs[i];
+            let entry = &mut self.queue.subs_mut()[sub].base;
+            // LUCENE-2130: if we had just seek'd already, prior to this seek,
+            // and the new seek term is after the previous one, don't try to
+            // re-seek this sub if its current term is already beyond this new
+            // seek term. Doing so is a waste because this sub will simply seek
+            // to the same spot.
+            let status = if seek_opt {
+                match entry.term().map(|cur_term| term.cmp(cur_term)) {
+                    Some(Ordering::Equal) => true,
+                    Some(Ordering::Less) => false,
+                    Some(Ordering::Greater) => entry.seek_exact(term)?,
+                    None => false,
+                }
+            } else {
+                entry.seek_exact(term)?
+            };
+
+            if status {
+                self.top.push(sub);
+                self.current = Some(sub);
+                debug_assert_eq!(Some(term), entry.term());
+            }
         }
+
+        // if at least one sub had exact match to the requested term then we
+        // found match
+        Ok(!self.top.is_empty())
     }
 
-    /// Positions the enum on `text`, or on the smallest term after it.
+    /// Equivalent to `MultiTermsEnum.seekCeil(BytesRef)`
+    /// (`MultiTermsEnum.java:166-232`), LUCENE-2130 optimisation included.
     ///
-    /// **Deliberate divergence from Lucene: the state after `END`.** Java
-    /// leaves `current` untouched when every sub reports `END`
-    /// (`MultiTermsEnum.java:229-231` returns `SeekStatus.END` without
-    /// clearing it), so `term()` keeps reporting the previous term. This port
-    /// clears `current`, matching [`TermsEnum::seek_ceil`]'s contract that
-    /// `END` means the enum is exhausted.
+    /// As in Java, [`SeekStatus::END`] leaves `current` on the sub that
+    /// supplied the previous term, so [`term`](TermsEnum::term) reads that
+    /// sub's enum wherever the seek left it.
     ///
     /// # Errors
     ///
     /// Propagates any error raised while seeking a sub-enum.
-    fn seek_ceil(&mut self, text: &BytesRef) -> Result<SeekStatus> {
-        let seek_opt = self.last_seek.as_ref().is_some_and(|ls| ls <= text);
-        self.reseed(text, seek_opt, false)?;
+    fn seek_ceil(&mut self, term: &BytesRef) -> Result<SeekStatus> {
+        self.queue.clear();
+        self.top.clear();
+        self.last_seek_exact = false;
+
+        let seek_opt = self.last_seek.as_ref().is_some_and(|last| last <= term);
+
+        self.last_seek = Some(term.clone());
+
+        for i in 0..self.current_subs.len() {
+            let sub = self.current_subs[i];
+            let status = {
+                let entry = &mut self.queue.subs_mut()[sub].base;
+                // LUCENE-2130: see seek_exact.
+                if seek_opt {
+                    match entry.term().map(|cur_term| term.cmp(cur_term)) {
+                        Some(Ordering::Equal) => SeekStatus::FOUND,
+                        Some(Ordering::Less) => SeekStatus::NOT_FOUND,
+                        Some(Ordering::Greater) => entry.seek_ceil(term)?,
+                        None => SeekStatus::END,
+                    }
+                } else {
+                    entry.seek_ceil(term)?
+                }
+            };
+
+            if status == SeekStatus::FOUND {
+                self.top.push(sub);
+                self.current = Some(sub);
+                self.queue.add(sub);
+            } else if status == SeekStatus::NOT_FOUND {
+                debug_assert!(self.queue.subs()[sub].base.term().is_some());
+                self.queue.add(sub);
+            } else {
+                debug_assert_eq!(status, SeekStatus::END);
+            }
+        }
+
         if !self.top.is_empty() {
-            // At least one sub had an exact match.
-            self.current = Some(text.clone());
+            // at least one sub had exact match to the requested term
             Ok(SeekStatus::FOUND)
-        } else if !self.heap.is_empty() {
-            // No exact match; advance to the ceiling term.
+        } else if self.queue.size() > 0 {
+            // no sub had exact match, but at least one sub found a term after
+            // the requested term -- advance to that next term:
             self.pull_top();
             Ok(SeekStatus::NOT_FOUND)
         } else {
-            self.current = None;
             Ok(SeekStatus::END)
         }
     }
 
+    /// Equivalent to `MultiTermsEnum.seekExact(long)`, which throws
+    /// `UnsupportedOperationException`.
     fn seek_ord(&mut self, _ord: i64) -> Result<()> {
         Err(LuceneError::UnsupportedOperation(
             "MultiTermsEnum does not support seekOrd".to_string(),
         ))
     }
 
+    /// Equivalent to `MultiTermsEnum.term()`, which answers the `current`
+    /// field: the current term of the sub that supplied it, read now (see
+    /// [`MultiTermsEnum`]'s `current`); its `null` is an error here.
     fn term(&self) -> Result<BytesRef> {
-        self.current.clone().ok_or_else(|| {
-            LuceneError::IllegalState(
+        match self.current {
+            Some(sub) => self.sub_term(sub),
+            None => Err(LuceneError::illegal_state(
                 "MultiTermsEnum.term() called with no current term".to_string(),
-            )
-        })
+            )),
+        }
     }
 
+    /// Equivalent to `MultiTermsEnum.ord()`, which throws
+    /// `UnsupportedOperationException`.
     fn ord(&self) -> Result<i64> {
         Err(LuceneError::UnsupportedOperation(
             "MultiTermsEnum does not support ord".to_string(),
         ))
     }
 
+    /// Equivalent to `MultiTermsEnum.docFreq()` (`MultiTermsEnum.java:295-302`):
+    /// the `int` sum over the subs on the current term.
     fn doc_freq(&mut self) -> Result<i32> {
         let mut sum: i32 = 0;
-        for &idx in &self.top {
-            sum = sum.wrapping_add(self.subs[idx].tenum.doc_freq()?);
+        for i in 0..self.top.len() {
+            let sub = self.top[i];
+            let terms_enum = self.queue.subs_mut()[sub]
+                .base
+                .terms_enum_mut()
+                .ok_or_else(|| null_sub_terms_enum("docFreq()", "this.top[i].termsEnum"))?;
+            sum = sum.wrapping_add(terms_enum.doc_freq()?);
         }
         Ok(sum)
     }
 
+    /// Equivalent to `MultiTermsEnum.totalTermFreq()`
+    /// (`MultiTermsEnum.java:304-313`): the `long` sum over the subs on the
+    /// current term.
     fn total_term_freq(&mut self) -> Result<i64> {
         let mut sum: i64 = 0;
-        for &idx in &self.top {
-            sum += self.subs[idx].tenum.total_term_freq()?;
+        for i in 0..self.top.len() {
+            let sub = self.top[i];
+            let terms_enum = self.queue.subs_mut()[sub]
+                .base
+                .terms_enum_mut()
+                .ok_or_else(|| null_sub_terms_enum("totalTermFreq()", "this.top[i].termsEnum"))?;
+            let v = terms_enum.total_term_freq()?;
+            debug_assert_ne!(v, -1);
+            sum = sum.wrapping_add(v);
         }
         Ok(sum)
     }
 
+    /// Equivalent to `MultiTermsEnum.postings(PostingsEnum, int)`
+    /// (`MultiTermsEnum.java:315-350`).
+    ///
+    /// `reuse` is reused exactly when Java reuses it: when it is a
+    /// [`MultiPostingsEnum`] ([`PostingsEnum::as_any_mut`] standing for
+    /// `instanceof`) that this very enum created
+    /// ([`MultiPostingsEnum::can_reuse`]); the box handed back is then the one
+    /// that came in. The subs on the current term are sorted by sub index —
+    /// in place, as Java's `ArrayUtil.timSort(top, 0, numTop, …)` sorts its
+    /// `top` array — and each sub-enum is asked for its postings with the
+    /// enum it returned last time for the same sub index as `reuse`
+    /// (`docsEnum.subPostingsEnums[entry.subIndex]`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error raised by a sub-enum's `postings`.
     fn postings(
         &mut self,
-        _reuse: Option<Box<dyn PostingsEnum>>,
+        reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
     ) -> Result<Box<dyn PostingsEnum>> {
-        Ok(Box::new(self.multi_postings(flags)?))
+        // Can only reuse if incoming enum is also a MultiDocsEnum ... and was
+        // previously created w/ this MultiTermsEnum:
+        let mut docs_enum: Box<dyn PostingsEnum> = match reuse {
+            // `reuse != null && reuse instanceof MultiPostingsEnum`
+            Some(mut reuse) => match reuse
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<MultiPostingsEnum>())
+            {
+                // ... and was previously created w/ this MultiTermsEnum:
+                Some(docs_enum) if docs_enum.can_reuse(self) => reuse,
+                _ => Box::new(MultiPostingsEnum::new(self, self.queue.subs().len())),
+            },
+            None => Box::new(MultiPostingsEnum::new(self, self.queue.subs().len())),
+        };
+        let multi = docs_enum
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<MultiPostingsEnum>())
+            .ok_or_else(|| {
+                LuceneError::illegal_state(
+                    "INVARIANT: the enum was just checked or built as a MultiPostingsEnum"
+                        .to_string(),
+                )
+            })?;
+        // Rust-only: the live sub-enums go back to `subPostingsEnums`, which
+        // in Java still holds them alongside the live slots.
+        multi.release_live_subs();
+
+        // `ArrayUtil.timSort(top, 0, numTop, (o1, o2) -> o1.subIndex - o2.subIndex)`
+        // is stable, as `sort_by_key` is.
+        let subs = self.queue.subs();
+        self.top.sort_by_key(|&sub| subs[sub].base.sub_index());
+
+        let num_subs = self.queue.subs().len();
+        let mut sub_docs: Vec<(EnumWithSlice, usize)> = Vec::with_capacity(self.top.len());
+        for i in 0..self.top.len() {
+            let sub = self.top[i];
+            let entry = &mut self.queue.subs_mut()[sub];
+            let sub_index = entry.base.sub_index();
+            debug_assert!(
+                sub_index < multi.sub_postings_enums.len(),
+                "{sub_index} vs {}; {num_subs}",
+                multi.sub_postings_enums.len(),
+            );
+            let reuse_sub = multi
+                .sub_postings_enums
+                .get_mut(sub_index)
+                .and_then(Option::take);
+            let sub_postings_enum = entry
+                .base
+                .terms_enum_mut()
+                .ok_or_else(|| {
+                    null_sub_terms_enum(
+                        "postings(org.apache.lucene.index.PostingsEnum, int)",
+                        "entry.termsEnum",
+                    )
+                })?
+                .postings(reuse_sub, flags)?;
+            // Java stores the enum both in `subPostingsEnums[subIndex]` and in
+            // `subDocs[upto]`; here it lives in the slot, and goes back to
+            // `subPostingsEnums` on the next reuse.
+            sub_docs.push((
+                EnumWithSlice::new(sub_postings_enum, entry.sub_slice),
+                sub_index,
+            ));
+        }
+
+        // `docsEnum.reset(subDocs, upto)`
+        let (sub_docs, sub_indices): (Vec<EnumWithSlice>, Vec<usize>) =
+            sub_docs.into_iter().unzip();
+        multi.reset(sub_docs);
+        // Rust-only: the `subPostingsEnums` slot each live enum returns to.
+        multi.live_sub_indices = sub_indices.into_iter().map(Some).collect();
+        Ok(docs_enum)
     }
 
+    /// Equivalent to `MultiTermsEnum.impacts(int)`: implemented to not fail
+    /// `CheckIndex`, but one shouldn't be using impacts on a slow reader.
     fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {
-        // Mirrors Lucene: wrap the merged postings in a SlowImpactsEnum, since
-        // impacts are not indexed across the merge.
         Ok(Box::new(SlowImpactsEnum::new(self.postings(None, flags)?)))
     }
 
-    fn term_state(&mut self) -> Result<Box<dyn TermState>> {
-        Err(LuceneError::UnsupportedOperation(
-            "MultiTermsEnum does not support term_state".to_string(),
-        ))
-    }
-
+    /// Equivalent to `MultiTermsEnum.next()` (`MultiTermsEnum.java:265-293`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error raised while moving a sub-enum. After a
+    /// [`seek_exact`](TermsEnum::seek_exact) that found nothing on an enum that
+    /// never had a term, Java re-seeks to its `null` `current` and throws
+    /// `NullPointerException`; that is reported as
+    /// [`LuceneError::IllegalState`] with the JDK's message.
     fn next(&mut self) -> Result<Option<BytesRef>> {
         if self.last_seek_exact {
-            // After a seek_exact, subs that did not hold the term are left at
-            // arbitrary positions; re-seed via seek_ceil(current) so they line
-            // up at/below the current term before we advance, exactly as in
-            // Lucene's next().
+            // Must seekCeil at this point, so those subs that didn't have the
+            // term can find the following term. NOTE: we could save some CPU
+            // by only seekCeil the subs that didn't match the last exact
+            // seek... but most impls short-circuit if you seekCeil to term they
+            // are already on.
+            let Some(current) = self.current else {
+                // `seekCeil(null)`: its first statements run, then
+                // `lastSeekScratch.copyBytes(term)` dereferences the `null`.
+                self.queue.clear();
+                self.top.clear();
+                self.last_seek_exact = false;
+                return Err(LuceneError::illegal_state(
+                    "Cannot read field \"bytes\" because \"ref\" is null".to_string(),
+                ));
+            };
+            // Java passes `current` itself; this is a copy of the same bytes.
+            let current = self.sub_term(current)?;
+            let status = self.seek_ceil(&current)?;
+            debug_assert_eq!(status, SeekStatus::FOUND);
             self.last_seek_exact = false;
-            if let Some(cur) = self.current.clone() {
-                let _ = self.seek_ceil(&cur)?;
-            }
         }
         self.last_seek = None;
 
+        // restore queue
         self.push_top()?;
-        if !self.heap.is_empty() {
+
+        // gather equal top fields
+        if self.queue.size() > 0 {
+            // TODO: we could maybe defer this somewhat costly operation until
+            // one of the APIs that needs to see the top is invoked (docFreq,
+            // postings, etc.)
             self.pull_top();
         } else {
             self.current = None;
         }
-        Ok(self.current.clone())
+
+        match self.current {
+            Some(sub) => Ok(Some(self.sub_term(sub)?)),
+            None => Ok(None),
+        }
     }
 }
 
@@ -1246,11 +1486,14 @@ impl TermsEnum for MultiTermsEnum {
 /// A [`PostingsEnum`] paired with the [`ReaderSlice`] describing how its
 /// sub-reader fits into the composite reader.
 ///
-/// Equivalent to `MultiPostingsEnum.EnumWithSlice`.
+/// Equivalent to `MultiPostingsEnum.EnumWithSlice`. Java's `postingsEnum`
+/// field may be `null`; it is `None` here while a
+/// [`MappingMultiPostingsEnum`](crate::index::MappingMultiPostingsEnum) holds
+/// the enum.
 pub struct EnumWithSlice {
     /// Postings enum for this sub-reader, in the sub-reader's local doc-ID
     /// space.
-    pub postings_enum: Box<dyn PostingsEnum>,
+    pub postings_enum: Option<Box<dyn PostingsEnum>>,
     /// Placement of this sub-reader inside the composite reader.
     pub slice: ReaderSlice,
 }
@@ -1258,9 +1501,12 @@ pub struct EnumWithSlice {
 impl std::fmt::Display for EnumWithSlice {
     /// Port of `MultiPostingsEnum.EnumWithSlice.toString()`
     /// (`MultiPostingsEnum.java:176-179`): the slice, a colon, then the
-    /// sub-enum rendered by its own `toString()`.
+    /// sub-enum rendered by its own `toString()`, or `null`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}", self.slice, self.postings_enum)
+        match &self.postings_enum {
+            Some(postings_enum) => write!(f, "{}:{}", self.slice, postings_enum),
+            None => write!(f, "{}:null", self.slice),
+        }
     }
 }
 
@@ -1268,7 +1514,7 @@ impl EnumWithSlice {
     /// Pairs `postings_enum` with `slice`.
     pub fn new(postings_enum: Box<dyn PostingsEnum>, slice: ReaderSlice) -> Self {
         Self {
-            postings_enum,
+            postings_enum: Some(postings_enum),
             slice,
         }
     }
@@ -1276,12 +1522,19 @@ impl EnumWithSlice {
 
 impl std::fmt::Debug for EnumWithSlice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Matches `EnumWithSlice.toString()`, which prints only the slice; the
-        // postings enum itself has no Debug bound in Rucene.
+        // The postings enum itself has no Debug bound in Rucene.
         f.debug_struct("EnumWithSlice")
             .field("slice", &self.slice)
             .finish_non_exhaustive()
     }
+}
+
+/// The `NullPointerException` Java raises when `MultiPostingsEnum` reaches a
+/// sub whose `postingsEnum` is `null`.
+fn null_current_postings(method: &str) -> LuceneError {
+    LuceneError::illegal_state(format!(
+        "Cannot invoke \"org.apache.lucene.index.PostingsEnum.{method}\" because \"this.current\" is null"
+    ))
 }
 
 /// A [`PostingsEnum`] that concatenates several sub-readers' postings, offset
@@ -1292,34 +1545,62 @@ impl std::fmt::Debug for EnumWithSlice {
 /// `slice.start`), so a plain concatenation yields the same globally increasing
 /// doc-ID sequence a merge would — without a per-doc comparison.
 ///
-/// **Deliberate divergence**: Java pre-allocates one `EnumWithSlice` per
-/// sub-reader and tracks how many are live in `numSubs`, so the instance can be
-/// reset onto a new term without reallocating. Rucene builds a right-sized
-/// `Vec` per term instead: [`Self::get_num_subs`] is simply its length. Reuse
-/// buys nothing here because [`MultiTermsEnum`] does not thread `reuse` through
-/// to its sub-enums either.
+/// Java keeps every sub-enum in two arrays at once: `subPostingsEnums`, by sub
+/// index, which `MultiTermsEnum.postings` offers back as `reuse`, and the live
+/// `subs[0..numSubs]`. Rust gives each enum one owner: a live enum is owned by
+/// its slot in `subs`, and returns to `sub_postings_enums` when this enum is
+/// reused or reset; `sub_postings_enums` owns the rest.
+///
+/// **Divergence from Lucene 10.5.0.** Java's `subs` is pre-allocated with one
+/// `EnumWithSlice` per sub-reader, and `getSubs()` and `toString()` expose the
+/// whole array: past `numSubs` it holds the entries of earlier terms, whose
+/// enums `subPostingsEnums` or a codec may have replaced since, and entries
+/// that were never filled, whose `null` slice makes `toString()` throw. The
+/// stale entries alias enums owned elsewhere, which Rust ownership cannot
+/// express, so [`get_subs`](Self::get_subs) and `Display` cover the live
+/// entries only — the part every Lucene caller reads, bounded by
+/// [`get_num_subs`](Self::get_num_subs).
 pub struct MultiPostingsEnum {
-    /// Identity of the [`MultiTermsEnum`] that created this instance, or `None`
-    /// when it was built outside one. Equivalent to Java's `parent` field,
-    /// which holds the creating `MultiTermsEnum` itself.
-    parent: Option<u64>,
-    /// Live sub-enums with their slices, in ascending slice order.
+    /// Identity of the [`MultiTermsEnum`] that created this instance.
+    /// Equivalent to Java's `parent` field, which holds the creating
+    /// `MultiTermsEnum` itself.
+    parent: u64,
+    /// Java's `final PostingsEnum[] subPostingsEnums`, indexed by sub index:
+    /// the enum each sub returned last, minus the live ones.
+    sub_postings_enums: Vec<Option<Box<dyn PostingsEnum>>>,
+    /// Java's `subs[0..numSubs]`, in ascending slice order.
     subs: Vec<EnumWithSlice>,
-    /// Index into `subs` of the current sub, or `-1` before the first
-    /// `next_doc`/`advance`.
+    /// The sub index each live slot's enum belongs to in
+    /// `sub_postings_enums`, or `None` for an enum [`reset`](Self::reset)
+    /// received from outside a [`MultiTermsEnum`]. Rust-only bookkeeping for
+    /// the one-owner rule above.
+    live_sub_indices: Vec<Option<usize>>,
+    /// Java's `upto`: index into `subs` of the current sub, or `-1`.
     upto: i32,
-    /// Current global doc ID (`-1` before the first positioning).
+    /// Java's `current`: the slot whose enum is current, or `None` for `null`.
+    current: Option<usize>,
+    /// Java's `currentBase`.
+    current_base: i32,
+    /// Java's `doc`: the current global doc ID (`-1` before the first
+    /// positioning).
     doc: i32,
 }
 
 impl MultiPostingsEnum {
-    /// Builds a merged postings enum over `subs`, which must be ordered by
-    /// ascending [`ReaderSlice::start`].
-    pub fn new(subs: Vec<EnumWithSlice>) -> Self {
+    /// Creates an enum for `parent` over `sub_reader_count` sub-readers.
+    ///
+    /// Equivalent to `MultiPostingsEnum(MultiTermsEnum parent, int
+    /// subReaderCount)` (`MultiPostingsEnum.java:44-51`). The enum has no live
+    /// sub until [`reset`](Self::reset).
+    pub fn new(parent: &MultiTermsEnum, sub_reader_count: usize) -> Self {
         Self {
-            parent: None,
-            subs,
+            parent: parent.id,
+            sub_postings_enums: (0..sub_reader_count).map(|_| None).collect(),
+            subs: Vec::with_capacity(sub_reader_count),
+            live_sub_indices: Vec::with_capacity(sub_reader_count),
             upto: -1,
+            current: None,
+            current_base: 0,
             doc: -1,
         }
     }
@@ -1331,25 +1612,48 @@ impl MultiPostingsEnum {
     /// the very enum that built it, because its sub-enum array is sized and
     /// indexed for that enum's sub-readers. The identity here is the number
     /// [`MultiTermsEnum`] carries in place of the object reference Java
-    /// compares; an instance built outside a [`MultiTermsEnum`] has no parent
-    /// and can therefore be reused by none.
+    /// compares.
     pub fn can_reuse(&self, parent: &MultiTermsEnum) -> bool {
-        self.parent == Some(parent.id)
+        self.parent == parent.id
     }
 
     /// Re-uses and resets this instance on `subs`, returning it positioned
     /// before the first document.
     ///
-    /// Equivalent to `org.apache.lucene.index.MultiPostingsEnum#reset`. Java
-    /// copies the incoming slices into its pre-allocated array and records how
-    /// many are live in `numSubs`; this port's `subs` is a right-sized `Vec`,
-    /// so the copy is the assignment and the count is its length. Java returns
-    /// `this`, which is `&mut Self` here.
+    /// Equivalent to `org.apache.lucene.index.MultiPostingsEnum#reset`
+    /// (`MultiPostingsEnum.java:59-69`). Java copies the incoming slices into
+    /// its pre-allocated array and records how many are live in `numSubs`;
+    /// this port's live slots are a `Vec`, so the count is its length. Java
+    /// returns `this`, which is `&mut Self` here.
+    ///
+    /// The enums the live slots held go back to `subPostingsEnums` first, where
+    /// Java's array still holds them. The new slots carry no sub index:
+    /// [`MultiTermsEnum::postings`] records the one of each enum it obtained
+    /// right after calling this.
     pub fn reset(&mut self, subs: Vec<EnumWithSlice>) -> &mut Self {
+        self.release_live_subs();
+        self.live_sub_indices = vec![None; subs.len()];
         self.subs = subs;
         self.upto = -1;
         self.doc = -1;
+        self.current = None;
         self
+    }
+
+    /// Moves every live enum back to its slot in `sub_postings_enums`, where
+    /// Java's `subPostingsEnums` still holds it. An enum with no known sub
+    /// index has no such slot: Java's array never held it.
+    fn release_live_subs(&mut self) {
+        let subs = std::mem::take(&mut self.subs);
+        let sub_indices = std::mem::take(&mut self.live_sub_indices);
+        for (sub, sub_index) in subs.into_iter().zip(sub_indices) {
+            if let (Some(postings_enum), Some(sub_index)) = (sub.postings_enum, sub_index) {
+                if let Some(slot) = self.sub_postings_enums.get_mut(sub_index) {
+                    *slot = Some(postings_enum);
+                }
+            }
+        }
+        self.current = None;
     }
 
     /// Returns how many sub-readers are being merged.
@@ -1361,29 +1665,46 @@ impl MultiPostingsEnum {
 
     /// Returns the sub-readers being merged.
     ///
-    /// Equivalent to `MultiPostingsEnum.getSubs()`.
+    /// Equivalent to `MultiPostingsEnum.getSubs()`; see the type's divergence
+    /// note for why only the live entries are returned.
     pub fn get_subs(&self) -> &[EnumWithSlice] {
         &self.subs
     }
 
-    /// Consumes this enum and returns its sub-readers, so a caller can take
-    /// ownership of the per-sub postings.
+    /// Mutable counterpart of [`get_subs`](Self::get_subs).
     ///
-    /// Java hands out the live `EnumWithSlice[]` from `getSubs()` and lets the
-    /// caller keep the references; Rust ownership makes that transfer explicit.
-    pub fn into_subs(self) -> Vec<EnumWithSlice> {
-        self.subs
+    /// Java's `getSubs()` hands out the array itself, whose `EnumWithSlice`
+    /// fields are public and assignable; `MappingMultiPostingsEnum` reads its
+    /// enums out of it.
+    pub fn get_subs_mut(&mut self) -> &mut [EnumWithSlice] {
+        &mut self.subs
     }
 
-    /// Returns the current sub's index, or an error if none is active.
-    fn current_idx(&self) -> Result<usize> {
-        if self.upto >= 0 && (self.upto as usize) < self.subs.len() {
-            Ok(self.upto as usize)
-        } else {
-            Err(LuceneError::IllegalState(
-                "MultiPostingsEnum: no current postings enum".to_string(),
-            ))
+    /// Returns the enum of the current sub, or Java's `NullPointerException`.
+    fn current_enum(&self, method: &str) -> Result<&dyn PostingsEnum> {
+        self.current
+            .and_then(|i| self.subs[i].postings_enum.as_deref())
+            .ok_or_else(|| null_current_postings(method))
+    }
+
+    /// Mutable counterpart of [`current_enum`](Self::current_enum).
+    fn current_enum_mut(&mut self, method: &str) -> Result<&mut dyn PostingsEnum> {
+        match self.current {
+            Some(i) => match &mut self.subs[i].postings_enum {
+                Some(postings_enum) => Ok(postings_enum.as_mut()),
+                None => Err(null_current_postings(method)),
+            },
+            None => Err(null_current_postings(method)),
         }
+    }
+
+    /// Moves to the next live slot: Java's `upto++; current =
+    /// subs[upto].postingsEnum; currentBase = subs[upto].slice.start();`.
+    fn step_to_next_sub(&mut self) {
+        self.upto += 1;
+        let slot = self.upto as usize;
+        self.current = self.subs[slot].postings_enum.as_ref().map(|_| slot);
+        self.current_base = self.subs[slot].slice.start;
     }
 }
 
@@ -1392,58 +1713,70 @@ impl DocIdSetIterator for MultiPostingsEnum {
         self.doc
     }
 
+    /// Equivalent to `MultiPostingsEnum.nextDoc()`
+    /// (`MultiPostingsEnum.java:123-143`).
     fn next_doc(&mut self) -> Result<i32> {
         loop {
-            let i = self.upto;
-            if i >= 0 && (i as usize) < self.subs.len() {
-                let d = self.subs[i as usize].postings_enum.next_doc()?;
-                if d == crate::search::NO_MORE_DOCS {
-                    // Exhausted current sub; advance to the next.
-                    self.upto += 1;
-                } else {
-                    self.doc = d + self.subs[i as usize].slice.start;
+            if self.current.is_none() {
+                if self.upto == self.subs.len() as i32 - 1 {
+                    self.doc = crate::search::NO_MORE_DOCS;
                     return Ok(self.doc);
                 }
-            } else if i < self.subs.len() as i32 - 1 {
-                self.upto += 1;
-            } else {
-                self.doc = crate::search::NO_MORE_DOCS;
+                self.step_to_next_sub();
+            }
+
+            // Java dereferences `current` here, `null` included.
+            let doc = self.current_enum_mut("nextDoc()")?.next_doc()?;
+            if doc != crate::search::NO_MORE_DOCS {
+                self.doc = self.current_base + doc;
                 return Ok(self.doc);
             }
+            self.current = None;
         }
     }
 
+    /// Equivalent to `MultiPostingsEnum.advance(int)`
+    /// (`MultiPostingsEnum.java:96-121`). Unlike `nextDoc`, a slot whose enum is
+    /// `null` is stepped over, as Java's loop tests `current != null` first.
     fn advance(&mut self, target: i32) -> Result<i32> {
+        debug_assert!(target > self.doc);
         loop {
-            let i = self.upto;
-            if i >= 0 && (i as usize) < self.subs.len() {
-                let base = self.subs[i as usize].slice.start;
-                // target < base: target was in a previous slice that had no
-                // matching doc after it — just next_doc the current sub.
-                let d = if target < base {
-                    self.subs[i as usize].postings_enum.next_doc()?
+            if let Some(i) = self.current {
+                let current_base = self.current_base;
+                let current = self.subs[i]
+                    .postings_enum
+                    .as_mut()
+                    .ok_or_else(|| null_current_postings("advance(int)"))?;
+                let doc = if target < current_base {
+                    // target was in the previous slice but there was no
+                    // matching doc after it
+                    current.next_doc()?
                 } else {
-                    self.subs[i as usize].postings_enum.advance(target - base)?
+                    current.advance(target - current_base)?
                 };
-                if d == crate::search::NO_MORE_DOCS {
-                    self.upto += 1;
+                if doc == crate::search::NO_MORE_DOCS {
+                    self.current = None;
                 } else {
-                    self.doc = d + base;
+                    self.doc = doc + current_base;
                     return Ok(self.doc);
                 }
-            } else if i < self.subs.len() as i32 - 1 {
-                self.upto += 1;
-            } else {
+            } else if self.upto == self.subs.len() as i32 - 1 {
                 self.doc = crate::search::NO_MORE_DOCS;
                 return Ok(self.doc);
+            } else {
+                self.step_to_next_sub();
             }
         }
     }
 
+    /// Equivalent to `MultiPostingsEnum.cost()`: the sum over the live subs.
+    /// A slot whose enum another holder has taken contributes nothing.
     fn cost(&self) -> i64 {
         let mut cost: i64 = 0;
         for sub in &self.subs {
-            cost += sub.postings_enum.cost();
+            if let Some(postings_enum) = &sub.postings_enum {
+                cost += postings_enum.cost();
+            }
         }
         cost
     }
@@ -1456,7 +1789,8 @@ impl std::fmt::Display for MultiPostingsEnum {
     /// **The class renames itself**: the string opens with
     /// `MultiDocsAndPositionsEnum`, the name this class carried before docs and
     /// positions were merged into one enumeration — not `MultiPostingsEnum`.
-    /// Measured against `lucene-core-10.5.0.jar`.
+    /// Measured against `lucene-core-10.5.0.jar`. Java renders the whole
+    /// pre-allocated array; see the type's divergence note.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("MultiDocsAndPositionsEnum([")?;
         for (i, sub) in self.subs.iter().enumerate() {
@@ -1470,33 +1804,40 @@ impl std::fmt::Display for MultiPostingsEnum {
 }
 
 impl PostingsEnum for MultiPostingsEnum {
+    /// Equivalent to `MultiPostingsEnum.freq()`, which asserts and then
+    /// dereferences `current`.
     fn freq(&self) -> Result<i32> {
-        self.current_idx()
-            .and_then(|i| self.subs[i].postings_enum.freq())
+        self.current_enum("freq()")?.freq()
     }
 
     fn next_position(&mut self) -> Result<i32> {
-        let i = self.current_idx()?;
-        self.subs[i].postings_enum.next_position()
+        self.current_enum_mut("nextPosition()")?.next_position()
     }
 
     fn start_offset(&self) -> i32 {
-        match self.current_idx() {
-            Ok(i) => self.subs[i].postings_enum.start_offset(),
+        match self.current_enum("startOffset()") {
+            Ok(current) => current.start_offset(),
             Err(_) => -1,
         }
     }
 
     fn end_offset(&self) -> i32 {
-        match self.current_idx() {
-            Ok(i) => self.subs[i].postings_enum.end_offset(),
+        match self.current_enum("endOffset()") {
+            Ok(current) => current.end_offset(),
             Err(_) => -1,
         }
     }
 
     fn get_payload(&self) -> Result<Option<&[u8]>> {
-        let i = self.current_idx()?;
-        self.subs[i].postings_enum.get_payload()
+        self.current_enum("getPayload()")?.get_payload()
+    }
+
+    /// This enum answers with itself: it is the `true` arm of Java's
+    /// `reuse instanceof MultiPostingsEnum` (`MultiTermsEnum.java:320`) and of
+    /// the cast `(MultiPostingsEnum) in.postings(...)`
+    /// (`MappedMultiFields.java:129-131`).
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 }
 
@@ -1622,8 +1963,9 @@ impl Impacts for SlowImpacts {
 mod tests {
     use super::*;
     use crate::index::postings_enum::{ImpactsEnum, PostingsEnum, POSTINGS_ENUM_FREQS};
+    use crate::index::terms::EmptyFields;
     use crate::index::terms::{EmptyTerms, Fields, SeekStatus, Terms, TermsEnum};
-    use crate::index::{EmptyFields, MultiReader, ReaderSlice};
+    use crate::index::{MultiReader, ReaderSlice};
     use crate::search::DocIdSetIterator;
     use crate::util::BytesRef;
 
@@ -1709,6 +2051,12 @@ mod tests {
         fn get_payload(&self) -> Result<Option<&[u8]>> {
             Ok(None)
         }
+
+        /// The fake reuses itself as a codec's enum does, so that the tests
+        /// can see which enum `MultiTermsEnum` offers each sub as `reuse`.
+        fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+            Some(self)
+        }
     }
 
     /// TermsEnum over a sorted list of `(term, doc_freq, total_term_freq, docs)`.
@@ -1791,18 +2139,28 @@ mod tests {
             Ok(self.entries[self.pos as usize].2)
         }
 
+        /// Resets `reuse` in place when it is a [`VecPostings`], as a codec
+        /// reuses its own enum, and builds a new one otherwise.
         fn postings(
             &mut self,
-            _reuse: Option<Box<dyn PostingsEnum>>,
+            reuse: Option<Box<dyn PostingsEnum>>,
             _flags: i32,
         ) -> Result<Box<dyn PostingsEnum>> {
-            Ok(Box::new(VecPostings::new(
-                self.entries[self.pos as usize].3.clone(),
-            )))
+            let docs = self.entries[self.pos as usize].3.clone();
+            if let Some(mut reuse) = reuse {
+                if let Some(postings) = reuse
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<VecPostings>())
+                {
+                    *postings = VecPostings::new(docs);
+                    return Ok(reuse);
+                }
+            }
+            Ok(Box::new(VecPostings::new(docs)))
         }
 
         fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
-            Err(LuceneError::IllegalState("not used".to_string()))
+            Err(LuceneError::illegal_state("not used".to_string()))
         }
 
         fn next(&mut self) -> Result<Option<BytesRef>> {
@@ -1849,26 +2207,28 @@ mod tests {
             Ok(Box::new(VecTermsEnum::new(self.entries.clone())))
         }
 
-        fn size(&self) -> i64 {
-            self.entries.len() as i64
+        fn size(&self) -> Result<i64> {
+            Ok(self.entries.len() as i64)
         }
 
-        fn sum_total_term_freq(&self) -> i64 {
-            self.entries.iter().map(|(_, _, ttf, _)| *ttf).sum()
+        fn sum_total_term_freq(&self) -> Result<i64> {
+            Ok(self.entries.iter().map(|(_, _, ttf, _)| *ttf).sum())
         }
 
-        fn sum_doc_freq(&self) -> i64 {
-            self.entries.iter().map(|(_, df, _, _)| *df as i64).sum()
+        fn sum_doc_freq(&self) -> Result<i64> {
+            Ok(self.entries.iter().map(|(_, df, _, _)| *df as i64).sum())
         }
 
-        fn doc_count(&self) -> i32 {
-            // Number of distinct docs across all terms (approximation enough
-            // for the tests; not the focus here).
-            self.entries
-                .iter()
-                .flat_map(|(_, _, _, docs)| docs.iter().copied())
-                .collect::<std::collections::BTreeSet<_>>()
-                .len() as i32
+        fn doc_count(&self) -> Result<i32> {
+            Ok({
+                // Number of distinct docs across all terms (approximation enough
+                // for the tests; not the focus here).
+                self.entries
+                    .iter()
+                    .flat_map(|(_, _, _, docs)| docs.iter().copied())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len() as i32
+            })
         }
 
         fn has_freqs(&self) -> bool {
@@ -2304,9 +2664,9 @@ mod tests {
         )
         .unwrap();
         // sumTotalTermFreq = (3+1) + (2+5) = 11
-        assert_eq!(mt.sum_total_term_freq(), 11);
+        assert_eq!(mt.sum_total_term_freq().unwrap(), 11);
         // sumDocFreq = (2+1) + (1+3) = 7
-        assert_eq!(mt.sum_doc_freq(), 7);
+        assert_eq!(mt.sum_doc_freq().unwrap(), 7);
     }
 
     #[test]
@@ -2562,7 +2922,8 @@ mod tests {
         let mut enumerator = terms.multi_iterator().unwrap().unwrap();
 
         assert_eq!(enumerator.next().unwrap(), Some(term(b"a")));
-        let postings = enumerator.multi_postings(POSTINGS_ENUM_FREQS).unwrap();
+        let mut boxed = enumerator.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let postings = as_multi(&mut boxed);
         assert_eq!(postings.get_num_subs(), 2, "both subs hold 'a'");
         let reader_indexes: Vec<i32> = postings
             .get_subs()
@@ -2574,10 +2935,11 @@ mod tests {
             vec![0, 1],
             "subs are ordered by reader index"
         );
-        assert_eq!(postings.into_subs().len(), 2);
+        assert_eq!(postings.get_subs().len(), 2);
 
         assert_eq!(enumerator.next().unwrap(), Some(term(b"b")));
-        let postings = enumerator.multi_postings(POSTINGS_ENUM_FREQS).unwrap();
+        let mut boxed = enumerator.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let postings = as_multi(&mut boxed);
         assert_eq!(postings.get_num_subs(), 1, "only the first sub holds 'b'");
         assert_eq!(postings.get_subs()[0].slice.reader_index, 0);
     }
@@ -2599,7 +2961,7 @@ mod tests {
         let terms = mf.multi_terms("body").unwrap().unwrap();
         let mut enumerator = terms.multi_iterator().unwrap().unwrap();
         assert_eq!(enumerator.next().unwrap(), Some(term(b"a")));
-        let mut postings = enumerator.multi_postings(POSTINGS_ENUM_FREQS).unwrap();
+        let mut postings = enumerator.postings(None, POSTINGS_ENUM_FREQS).unwrap();
         assert_eq!(postings.next_doc().unwrap(), 0);
         assert_eq!(postings.next_doc().unwrap(), 7);
         assert_eq!(postings.next_doc().unwrap(), crate::search::NO_MORE_DOCS);
@@ -2608,7 +2970,7 @@ mod tests {
     // ----- LUCENE-2130 seek-optimisation regression tests -----
     //
     // `MultiTermsEnum.seekExact` deliberately clears `lastSeek`
-    // (`MultiTermsEnum.java:124`), which disables the LUCENE-2130 skip on the
+    // (`MultiTermsEnum.java:125`), which disables the LUCENE-2130 skip on the
     // *next* seek. It must, because a sub whose `seekExact` failed is left
     // unpositioned: its recorded current term is dropped, so the skip logic
     // would have no term to compare against and would silently discard the
@@ -2639,6 +3001,15 @@ mod tests {
         .unwrap()
     }
 
+    /// Narrows the postings `MultiTermsEnum::postings` hands out to the
+    /// [`MultiPostingsEnum`] they are, as Java casts them.
+    fn as_multi(postings: &mut Box<dyn PostingsEnum>) -> &mut MultiPostingsEnum {
+        postings
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<MultiPostingsEnum>())
+            .expect("MultiTermsEnum hands out a MultiPostingsEnum")
+    }
+
     fn drain_docs(postings: &mut dyn PostingsEnum) -> Vec<i32> {
         let mut docs = Vec::new();
         loop {
@@ -2665,8 +3036,8 @@ mod tests {
             2,
             "leaf 0 was dropped by the seek optimisation"
         );
-        let mut postings = te.multi_postings(POSTINGS_ENUM_FREQS).unwrap();
-        assert_eq!(drain_docs(&mut postings), vec![1, 11]);
+        let mut postings = te.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        assert_eq!(drain_docs(postings.as_mut()), vec![1, 11]);
     }
 
     #[test]
@@ -2711,9 +3082,9 @@ mod tests {
         // "a" exists only in leaf 0, so leaf 1's seek_exact fails.
         assert!(te.seek_exact(&term(b"a")).unwrap());
         assert!(te.seek_exact(&term(b"c")).unwrap());
-        let mut postings = te.multi_postings(POSTINGS_ENUM_FREQS).unwrap();
+        let mut postings = te.postings(None, POSTINGS_ENUM_FREQS).unwrap();
         assert_eq!(
-            drain_docs(&mut postings),
+            drain_docs(postings.as_mut()),
             vec![1, 11],
             "leaf 1 was dropped by the seek optimisation"
         );
@@ -2752,19 +3123,16 @@ mod tests {
         let mt = two_leaves_with_a_shared_trailing_term();
         let mut te = mt.multi_iterator().unwrap().unwrap();
         assert!(te.seek_exact(&term(b"c")).unwrap());
-        let mut postings = te.multi_postings(POSTINGS_ENUM_FREQS).unwrap();
-        assert_eq!(drain_docs(&mut postings), vec![1, 11]);
+        let mut postings = te.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        assert_eq!(drain_docs(postings.as_mut()), vec![1, 11]);
         // Exhausted: every further call keeps reporting NO_MORE_DOCS and never
         // rewinds into an earlier sub.
+        // (`advance` below the current document breaks Java's `assert target
+        // > doc`, so only `nextDoc` is called again.)
         assert_eq!(postings.doc_id(), crate::search::NO_MORE_DOCS);
         assert_eq!(postings.next_doc().unwrap(), crate::search::NO_MORE_DOCS);
         assert_eq!(postings.doc_id(), crate::search::NO_MORE_DOCS);
-        assert_eq!(postings.advance(0).unwrap(), crate::search::NO_MORE_DOCS);
-        assert_eq!(postings.advance(11).unwrap(), crate::search::NO_MORE_DOCS);
-        assert_eq!(
-            postings.advance(crate::search::NO_MORE_DOCS).unwrap(),
-            crate::search::NO_MORE_DOCS
-        );
+        assert_eq!(postings.next_doc().unwrap(), crate::search::NO_MORE_DOCS);
         assert_eq!(postings.doc_id(), crate::search::NO_MORE_DOCS);
     }
 
@@ -2841,6 +3209,135 @@ mod tests {
         let fields = LeafFields::new(leaf_reader);
         assert_eq!(fields.size(), 1);
         assert_eq!(fields.iterator().count(), 1);
+    }
+
+    /// rmp #306: a leaf lists its indexed fields in the block tree's `TreeMap`
+    /// order, and `MultiFields` merges the leaves' lists with a
+    /// `MergedIterator<String>`: both order by `String.compareTo`, UTF-16 code
+    /// units. Oracle `scratchpad/fixF/oracle/Utf16Oracle.java`: `TreeMap keys
+    /// [a, b😀, b\u{E001}, \u{10000}, \u{E000}, \u{FF21}, \u{FFFD}]`, and
+    /// "across the boundary" `[a, \u{10000}, \u{E000}, \u{FFFD}]` for the merge.
+    #[test]
+    fn field_names_are_ordered_as_java_string_compare_to() {
+        use crate::index::field_infos::FieldInfo;
+        use crate::index::IndexOptions;
+        let names = [
+            "a",
+            "\u{E000}",
+            "\u{FFFD}",
+            "\u{10000}",
+            "\u{FF21}",
+            "b\u{1F600}",
+            "b\u{E001}",
+        ];
+        let infos = |names: &[&str]| {
+            FieldInfos::new(
+                names
+                    .iter()
+                    .enumerate()
+                    .map(|(number, name)| {
+                        let mut info = FieldInfo::default();
+                        info.name = name.to_string();
+                        info.number = number as i32;
+                        info.index_options = IndexOptions::DOCS;
+                        info
+                    })
+                    .collect(),
+            )
+            .unwrap()
+        };
+        let java_order = vec![
+            "a",
+            "b\u{1F600}",
+            "b\u{E001}",
+            "\u{10000}",
+            "\u{E000}",
+            "\u{FF21}",
+            "\u{FFFD}",
+        ];
+
+        let leaf: Arc<dyn LeafReader> =
+            Arc::new(StubLeaf::with_fields(1, 1, infos(&names), Vec::new()));
+        let listed: Vec<String> = LeafFields::new(leaf).iterator().collect();
+        assert_eq!(listed, java_order);
+
+        // Each leaf lists its names in UTF-16 order, and the merge compares the
+        // leaves' heads across the boundary: Utf16Oracle's "across the
+        // boundary" `[a, \u{10000}, \u{E000}, \u{FFFD}]`.
+        let first: Arc<dyn IndexReader> = Arc::new(StubLeaf::with_fields(
+            1,
+            1,
+            infos(&["\u{10000}", "a"]),
+            Vec::new(),
+        ));
+        let second: Arc<dyn IndexReader> = Arc::new(StubLeaf::with_fields(
+            1,
+            1,
+            infos(&["\u{FFFD}", "\u{E000}"]),
+            Vec::new(),
+        ));
+        let multi: Arc<dyn IndexReader> =
+            Arc::new(MultiReader::new(vec![first, second], true).unwrap());
+        let merged: Vec<String> = MultiFields::get_fields(&multi)
+            .unwrap()
+            .iterator()
+            .collect();
+        assert_eq!(merged, vec!["a", "\u{10000}", "\u{E000}", "\u{FFFD}"]);
+    }
+
+    // ----- MultiFields.iterator() is a MergedIterator (MultiFields.java:51-58) -----
+
+    /// `Fields` whose iterator counts the names it hands out.
+    struct PullCountingFields {
+        names: Vec<String>,
+        pulled: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Fields for PullCountingFields {
+        fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+            let pulled = Arc::clone(&self.pulled);
+            Box::new(self.names.iter().cloned().inspect(move |_| {
+                pulled.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }))
+        }
+
+        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+            Ok(None)
+        }
+
+        fn size(&self) -> i32 {
+            self.names.len() as i32
+        }
+    }
+
+    /// rmp #306: `MultiFields.iterator()` merges the sorted sub-iterators with
+    /// a `MergedIterator`, which takes the first name of each sub up front
+    /// and advances a sub only once its current name has been handed out
+    /// (`MergedIterator.java:66-82, 110-138`); equal names across subs come out
+    /// once.
+    #[test]
+    fn iterator_merges_the_subs_lazily_with_a_merged_iterator() {
+        let pulled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sub = |names: &[&str]| -> Box<dyn Fields> {
+            Box::new(PullCountingFields {
+                names: names.iter().map(|name| name.to_string()).collect(),
+                pulled: Arc::clone(&pulled),
+            })
+        };
+        let mf = MultiFields::new(
+            vec![sub(&["a", "c", "e"]), sub(&["b", "c", "f"])],
+            vec![ReaderSlice::new(0, 5, 0), ReaderSlice::new(5, 5, 1)],
+        );
+        let mut it = mf.iterator();
+        assert_eq!(it.next().as_deref(), Some("a"));
+        assert_eq!(
+            pulled.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "one name from each sub to prime the merge, none more"
+        );
+        let rest: Vec<String> = it.collect();
+        assert_eq!(rest, vec!["b", "c", "e", "f"]);
+        assert_eq!(pulled.load(std::sync::atomic::Ordering::SeqCst), 6);
     }
 
     // ----- per-field MultiTerms memo (MultiFields.java:28, :44-46) -----
@@ -2929,8 +3426,8 @@ mod tests {
         assert!(b.next().unwrap().is_none());
 
         // ... and the Arc handle itself satisfies `Terms`.
-        assert_eq!(Terms::doc_count(&shared), 2);
-        assert_eq!(Terms::sum_doc_freq(&shared), 2);
+        assert_eq!(Terms::doc_count(&shared).unwrap(), 2);
+        assert_eq!(Terms::sum_doc_freq(&shared).unwrap(), 2);
         assert!(Terms::has_freqs(&shared));
         assert_eq!(Terms::min(&shared).unwrap(), Some(term(b"apple")));
         assert_eq!(Terms::max(&shared).unwrap(), Some(term(b"apple")));
@@ -2986,34 +3483,140 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_seek_exact_leaves_the_enum_unpositioned() {
-        // Java leaves `current` stale here; this port honours the TermsEnum
-        // contract and reports the enum as unpositioned.
+    fn a_failed_seek_exact_reads_the_sub_that_supplied_the_previous_term() {
+        // `MultiTermsEnum.seekExact` only assigns `current` for a sub that
+        // holds the term (`MultiTermsEnum.java:154-158`), so after a miss
+        // `term()` reads the sub that supplied the previous term — here leaf
+        // 0, which this in-memory enum does not move on a miss — and no sub is
+        // on it. `MultiTermsOracle` over the same subs: `term=a docFreq=0
+        // next=b`.
         let mt = two_leaves_with_a_shared_trailing_term();
         let mut te = mt.multi_iterator().unwrap().unwrap();
         assert!(te.seek_exact(&term(b"a")).unwrap());
         assert_eq!(te.term().unwrap(), term(b"a"));
 
         assert!(!te.seek_exact(&term(b"bb")).unwrap());
-        assert!(
-            te.term().is_err(),
-            "a missed seek_exact must not leave the previous term readable"
+        assert_eq!(te.term().unwrap(), term(b"a"), "leaf 0's term");
+        assert_eq!(te.doc_freq().unwrap(), 0, "no sub holds `bb`");
+        // `next()` re-seeks to that term first (`MultiTermsEnum.java:267-276`),
+        // so iteration resumes after `a`.
+        assert_eq!(te.next().unwrap(), Some(term(b"b")));
+    }
+
+    /// Two committed Lucene104 segments holding `{aaaa, cccc}` and
+    /// `{bbbb, cccc}` in the `StringField` `f` (`StaleCurrentOracle`).
+    fn stale_current_reader() -> Arc<dyn IndexReader> {
+        use crate::document::{Document, Store, StringField};
+        use crate::index::index_writer::IndexWriter;
+        use crate::index::index_writer_config::IndexWriterConfig;
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn crate::store::Directory> =
+            Arc::new(crate::store::ByteBuffersDirectory::new());
+        let mut config = IndexWriterConfig::new();
+        config
+            .set_merge_policy(Arc::new(crate::index::merge_policy::NoMergePolicy::new()))
+            .unwrap();
+        let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+        for segment in [["aaaa", "cccc"], ["bbbb", "cccc"]] {
+            for text in segment {
+                let mut doc = Document::new();
+                doc.add(Box::new(
+                    StringField::new("f", text.to_string(), Store::NO).unwrap(),
+                ));
+                writer.add_document(&doc).unwrap();
+            }
+            writer.commit().unwrap();
+        }
+        writer.close().unwrap();
+        crate::index::directory_reader::open(dir).unwrap() as Arc<dyn IndexReader>
+    }
+
+    /// Java's `current` is the term buffer of the sub that supplied it, so
+    /// after a missed `seekExact` it shows where the miss moved that sub's
+    /// `SegmentTermsEnum`, and `next()` re-seeks to that term and steps past
+    /// it. Measured against `lucene-core-10.5.0.jar` (`StaleCurrentOracle`):
+    /// `seekExact aaaa=true term=aaaa`, `seekExact aazz=false term=cccc`,
+    /// `next=null`.
+    #[test]
+    fn a_missed_seek_exact_reads_the_term_the_miss_moved_the_sub_to() {
+        let reader = stale_current_reader();
+        let terms = MultiTerms::get_terms(&reader, "f").unwrap().unwrap();
+        let mut te = terms.iterator().unwrap();
+        assert!(te.seek_exact(&term(b"aaaa")).unwrap());
+        assert_eq!(te.term().unwrap(), term(b"aaaa"));
+        assert!(!te.seek_exact(&term(b"aazz")).unwrap());
+        assert_eq!(
+            te.term().unwrap(),
+            term(b"cccc"),
+            "leaf 0 scanned to `cccc`"
         );
-        assert_eq!(te.doc_freq().unwrap(), 0);
+        assert_eq!(te.next().unwrap(), None);
+    }
+
+    /// After a `seekCeil` that ends past the last term, Java's `current` is
+    /// the supplying sub's term buffer, which that `SegmentTermsEnum` emptied.
+    /// Measured against `lucene-core-10.5.0.jar` (`StaleCurrentOracle`):
+    /// `seekCeil aaaa=FOUND`, `seekCeil zzzz=END term=` (the empty term).
+    #[test]
+    fn a_seek_ceil_past_the_end_reads_the_term_the_sub_was_left_on() {
+        let reader = stale_current_reader();
+        let terms = MultiTerms::get_terms(&reader, "f").unwrap().unwrap();
+        let mut te = terms.iterator().unwrap();
+        assert_eq!(te.seek_ceil(&term(b"aaaa")).unwrap(), SeekStatus::FOUND);
+        assert_eq!(te.seek_ceil(&term(b"zzzz")).unwrap(), SeekStatus::END);
+        assert_eq!(te.term().unwrap(), term(b""));
+    }
+
+    /// The JDK's messages for the `NullPointerException`s of a sub with a
+    /// `null` `termsEnum` on the current term, and of `pushTop` over an empty
+    /// queue. Measured against `lucene-core-10.5.0.jar` (`NpeTextOracle`,
+    /// which nulls `top[0].termsEnum` and clears the queue by reflection).
+    #[test]
+    fn null_sub_enums_and_an_empty_queue_report_javas_npe_texts() {
+        let npe = |message: &str| LuceneError::illegal_state(message.to_string()).to_string();
+        let mt = two_leaves_with_a_shared_trailing_term();
+
+        let mut te = mt.multi_iterator().unwrap().unwrap();
+        te.next().unwrap();
+        let top = te.top[0];
+        te.queue.subs_mut()[top]
+            .base
+            .reset(TermsEnumIndex::with_optional_enum(None, top));
+        assert_eq!(
+            te.doc_freq().unwrap_err().to_string(),
+            npe("Cannot invoke \"org.apache.lucene.index.TermsEnum.docFreq()\" because \"this.top[i].termsEnum\" is null")
+        );
+        assert_eq!(
+            te.total_term_freq().unwrap_err().to_string(),
+            npe("Cannot invoke \"org.apache.lucene.index.TermsEnum.totalTermFreq()\" because \"this.top[i].termsEnum\" is null")
+        );
+        assert_eq!(
+            te.postings(None, POSTINGS_ENUM_FREQS).err().unwrap().to_string(),
+            npe("Cannot invoke \"org.apache.lucene.index.TermsEnum.postings(org.apache.lucene.index.PostingsEnum, int)\" because \"entry.termsEnum\" is null")
+        );
+
+        let mut te = mt.multi_iterator().unwrap().unwrap();
+        te.next().unwrap();
+        te.queue.clear();
+        assert_eq!(
+            te.next().unwrap_err().to_string(),
+            npe("Cannot invoke \"org.apache.lucene.index.MultiTermsEnum$TermsEnumWithSlice.next()\" because \"top\" is null")
+        );
     }
 
     #[test]
-    fn a_seek_ceil_past_the_end_leaves_the_enum_unpositioned() {
-        // Java leaves `current` stale on SeekStatus::END; this port clears it.
+    fn next_after_a_failed_seek_exact_on_a_fresh_enum_reports_javas_npe() {
+        // A fresh enum has no `current`; `next()` after a missed seekExact
+        // calls `seekCeil(null)`, whose `lastSeekScratch.copyBytes(term)`
+        // dereferences it.
         let mt = two_leaves_with_a_shared_trailing_term();
         let mut te = mt.multi_iterator().unwrap().unwrap();
-        assert_eq!(te.seek_ceil(&term(b"a")).unwrap(), SeekStatus::FOUND);
-        assert_eq!(te.term().unwrap(), term(b"a"));
-
-        assert_eq!(te.seek_ceil(&term(b"zzz")).unwrap(), SeekStatus::END);
+        assert!(!te.seek_exact(&term(b"bb")).unwrap());
+        let err = te.next().unwrap_err();
         assert!(
-            te.term().is_err(),
-            "SeekStatus::END must not leave the previous term readable"
+            err.to_string()
+                .contains("Cannot read field \"bytes\" because \"ref\" is null"),
+            "unexpected error: {err:?}"
         );
     }
 
@@ -3099,7 +3702,7 @@ mod tests {
         let terms = MultiTerms::get_terms(&mr, "body").unwrap().unwrap();
         // Not wrapped: MultiTerms reports size() == -1, the leaf's VecTerms
         // reports the real count.
-        assert_eq!(terms.size(), 1);
+        assert_eq!(terms.size().unwrap(), 1);
         assert!(MultiTerms::get_terms(&mr, "missing").unwrap().is_none());
     }
 
@@ -3137,6 +3740,173 @@ mod tests {
             MultiTerms::get_term_postings_enum_all(&mr, "body", &term(b"durian"))
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    // ----- #276 / #277: Lucene's structure, reuse and heap order -----
+
+    /// The address of the object behind a reference, for identity checks:
+    /// Java's `==` on references.
+    fn identity<T: ?Sized>(object: &T) -> *const () {
+        object as *const T as *const ()
+    }
+
+    /// The identity of the enum in live slot `slot` of a merged postings.
+    fn sub_identity(postings: &mut Box<dyn PostingsEnum>, slot: usize) -> *const () {
+        identity(
+            as_multi(postings).get_subs()[slot]
+                .postings_enum
+                .as_deref()
+                .expect("a live slot holds its enum"),
+        )
+    }
+
+    #[test]
+    fn postings_reuses_the_multi_postings_enum_it_created_and_offers_each_sub_its_own_enum() {
+        // leaf 0 = {a, c}, leaf 1 = {b, c}
+        let mt = two_leaves_with_a_shared_trailing_term();
+        let mut te = mt.multi_iterator().unwrap().unwrap();
+
+        assert_eq!(te.next().unwrap(), Some(term(b"a")));
+        let mut postings = te.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let multi = identity(postings.as_ref());
+        let leaf0 = sub_identity(&mut postings, 0);
+
+        assert_eq!(te.next().unwrap(), Some(term(b"b")));
+        let mut postings = te.postings(Some(postings), POSTINGS_ENUM_FREQS).unwrap();
+        assert_eq!(
+            identity(postings.as_ref()),
+            multi,
+            "`reuse instanceof MultiPostingsEnum && canReuse(this)`: the same object comes back"
+        );
+        let leaf1 = sub_identity(&mut postings, 0);
+        assert_ne!(leaf1, leaf0);
+
+        assert_eq!(te.next().unwrap(), Some(term(b"c")));
+        let mut postings = te.postings(Some(postings), POSTINGS_ENUM_FREQS).unwrap();
+        assert_eq!(identity(postings.as_ref()), multi);
+        assert_eq!(
+            (
+                sub_identity(&mut postings, 0),
+                sub_identity(&mut postings, 1)
+            ),
+            (leaf0, leaf1),
+            "each sub is offered `subPostingsEnums[subIndex]`, leaf 0's from two terms back"
+        );
+        assert_eq!(drain_docs(postings.as_mut()), vec![1, 11]);
+    }
+
+    #[test]
+    fn postings_does_not_reuse_a_multi_postings_enum_another_enum_created() {
+        let mt = two_leaves_with_a_shared_trailing_term();
+        let mut first = mt.multi_iterator().unwrap().unwrap();
+        let mut second = mt.multi_iterator().unwrap().unwrap();
+        assert_eq!(first.next().unwrap(), Some(term(b"a")));
+        assert_eq!(second.next().unwrap(), Some(term(b"a")));
+
+        let foreign = first.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let foreign_identity = identity(foreign.as_ref());
+        let mut postings = second.postings(Some(foreign), POSTINGS_ENUM_FREQS).unwrap();
+        assert_ne!(
+            identity(postings.as_ref()),
+            foreign_identity,
+            "`canReuse(this)` is false for another MultiTermsEnum's enum"
+        );
+        assert!(as_multi(&mut postings).can_reuse(&second));
+        assert!(!as_multi(&mut postings).can_reuse(&first));
+        assert_eq!(drain_docs(postings.as_mut()), vec![0]);
+    }
+
+    #[test]
+    fn postings_does_not_reuse_an_enum_of_another_type() {
+        let mt = two_leaves_with_a_shared_trailing_term();
+        let mut te = mt.multi_iterator().unwrap().unwrap();
+        assert_eq!(te.next().unwrap(), Some(term(b"a")));
+        let other: Box<dyn PostingsEnum> = Box::new(VecPostings::new(vec![3]));
+        let other_identity = identity(other.as_ref());
+        let mut postings = te.postings(Some(other), POSTINGS_ENUM_FREQS).unwrap();
+        assert_ne!(identity(postings.as_ref()), other_identity);
+        assert_eq!(drain_docs(postings.as_mut()), vec![0]);
+    }
+
+    /// leaf 0 = {a, c}, leaf 1 = {b, c}, leaf 2 = {a, c}.
+    fn three_leaves() -> MultiTerms {
+        let leaf = |terms: [&[u8]; 2]| {
+            Box::new(VecTerms::new(
+                vec![
+                    (term(terms[0]), 1, 1, vec![0]),
+                    (term(terms[1]), 1, 1, vec![1]),
+                ],
+                true,
+                false,
+                false,
+                false,
+            )) as Box<dyn Terms>
+        };
+        MultiTerms::new(
+            vec![leaf([b"a", b"c"]), leaf([b"b", b"c"]), leaf([b"a", b"c"])],
+            vec![
+                ReaderSlice::new(0, 10, 0),
+                ReaderSlice::new(10, 10, 1),
+                ReaderSlice::new(20, 10, 2),
+            ],
+        )
+        .unwrap()
+    }
+
+    fn match_order(te: &MultiTermsEnum) -> Vec<usize> {
+        te.get_match_array()
+            .iter()
+            .map(|sub| sub.terms_enum_index().sub_index())
+            .collect()
+    }
+
+    #[test]
+    fn the_match_array_follows_lucenes_term_merge_queue_and_postings_sorts_it() {
+        // The order `TermMergeQueue.fillTop` gathers the subs on a term in is
+        // the heap's, which `pushTop`'s `updateTop`s rearrange; the expected
+        // orders are those `lucene-core-10.5.0.jar` prints for the same three
+        // leaves.
+        let mt = three_leaves();
+        let mut te = mt.multi_iterator().unwrap().unwrap();
+        assert_eq!(te.next().unwrap(), Some(term(b"a")));
+        assert_eq!(match_order(&te), vec![0, 2]);
+        assert_eq!(te.next().unwrap(), Some(term(b"b")));
+        assert_eq!(match_order(&te), vec![1]);
+        assert_eq!(te.next().unwrap(), Some(term(b"c")));
+        assert_eq!(match_order(&te), vec![1, 2, 0]);
+        // `postings` sorts `top` in place by sub index
+        // (`ArrayUtil.timSort(top, 0, numTop, ...)`).
+        let mut postings = te.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        assert_eq!(match_order(&te), vec![0, 1, 2]);
+        assert_eq!(drain_docs(postings.as_mut()), vec![1, 11, 21]);
+        assert_eq!(te.next().unwrap(), None);
+    }
+
+    #[test]
+    fn to_string_renders_null_for_a_sub_that_never_had_a_term() {
+        // Leaf 1 has the field but no term, so `reset` never gives its
+        // `TermsEnumWithSlice` an enum: `super(null, index)` stays, and
+        // `Objects.toString(null)` is `null`.
+        let mt = MultiTerms::new(
+            vec![
+                Box::new(VecTerms::new(
+                    vec![(term(b"a"), 1, 1, vec![0])],
+                    true,
+                    false,
+                    false,
+                    false,
+                )),
+                Box::new(VecTerms::new(vec![], true, false, false, false)),
+            ],
+            vec![ReaderSlice::new(0, 5, 0), ReaderSlice::new(5, 5, 1)],
+        )
+        .unwrap();
+        let te = mt.multi_iterator().unwrap().unwrap();
+        assert_eq!(
+            te.to_string(),
+            "MultiTermsEnum([ReaderSlice[start=0, length=5, readerIndex=0]:VecTermsEnum, \
+             ReaderSlice[start=5, length=5, readerIndex=1]:null])"
         );
     }
 }

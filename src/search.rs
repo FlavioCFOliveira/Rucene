@@ -17,7 +17,6 @@ pub mod bayesian_score_estimator;
 pub mod bayesian_score_query;
 pub mod binary_sort_field;
 pub mod bit_set_doc_id_stream;
-pub mod bit_set_util;
 pub mod blended_term_query;
 pub mod block_max_conjunction_bulk_scorer;
 pub mod block_max_conjunction_scorer;
@@ -62,7 +61,6 @@ pub mod doc_id_set;
 pub mod doc_id_set_bulk_iterator;
 pub mod doc_id_set_iterator;
 pub mod doc_id_stream;
-mod doc_values_access;
 pub(crate) mod doc_values_iteration;
 pub mod doc_values_range_iterator;
 pub mod doc_values_rewrite_method;
@@ -327,24 +325,25 @@ pub use disjunction_max_scorer::DisjunctionMaxScorer;
 pub use disjunction_score_block_boundary_propagator::{
     DisjunctionScoreBlockBoundaryPropagator, SubScorers,
 };
-pub use disjunction_scorer::{ByMatchCost, DisjunctionScorer};
+pub use disjunction_scorer::{ByMatchCost, DisjunctionScorer, DisjunctionScorerImpl};
 pub use disjunction_sum_scorer::DisjunctionSumScorer;
 pub use doc_and_score_query::{find_segment_starts, DocAndScoreQuery};
 pub use doc_id_set_bulk_iterator::DocIdSetBulkIterator;
 pub use doc_id_stream::{CheckedIntConsumer, DocIdStream, RangeDocIdStream};
 pub use doc_values_range_iterator::DocValuesRangeIterator;
 pub use doc_values_rewrite_method::{DocValuesRewriteMethod, MultiTermQueryDocValuesWrapper};
-pub use double_values::{
-    with_default, DoubleValues, EmptyDoubleValues, ScorerDoubleValues, WithDefaultDoubleValues,
-};
+pub use double_values::{with_default, DoubleValues, EmptyDoubleValues, WithDefaultDoubleValues};
 pub use double_values_source::{
-    DoubleValueDecoder, DoubleValuesComparatorSource, DoubleValuesSource,
+    DoubleValueDecoder, DoubleValuesComparatorSource, DoubleValuesSource, ScorerDoubleValues,
 };
 pub use double_values_source_rescorer::{
     DoubleValuesSourceRescorer, DoubleValuesSourceRescorerImpl,
 };
 pub use exact_phrase_matcher::{merge_impacts, ExactPhraseMatcher, MergedImpactsSource};
-pub use field_comparator::{FieldComparator, RelevanceComparator, SortValue, TermValComparator};
+pub use field_comparator::{
+    is_relevance_comparator, FieldComparator, RelevanceComparator, SharedFieldComparator,
+    SharedLeafComparator, SlotComparator, SortValue, TermValComparator,
+};
 pub use field_comparator_source::FieldComparatorSource;
 pub use field_doc::FieldDoc;
 pub use field_exists_query::FieldExistsQuery;
@@ -410,9 +409,7 @@ pub use multi_collector::{MinCompetitiveScoreAwareScorable, MultiCollector, Mult
 pub use multi_collector_manager::{
     AnyCollector, ErasedCollectorManager, MultiCollectorHandle, MultiCollectorManager,
 };
-pub use multi_leaf_field_comparator::{
-    compare_bottom_weighted, compare_top_weighted, MultiLeafFieldComparator,
-};
+pub use multi_leaf_field_comparator::MultiLeafFieldComparator;
 pub use multi_norms_leaf_sim_scorer::MultiNormsLeafSimScorer;
 pub use multi_phrase_query::{
     Builder as MultiPhraseQueryBuilder, MultiPhraseQuery, UnionFullPostingsEnum, UnionPostingsEnum,
@@ -472,7 +469,7 @@ pub use scorer::{
     into_scorer_iterator, FilterScorer, Scorer, ScorerAsIterator, ScorerAsTwoPhaseIterator,
 };
 pub use scorer_supplier::ScorerSupplier;
-pub use scorer_util::{DocAndScoreAccBuffer, ScorerUtil};
+pub use scorer_util::{DocAndScoreAccBuffer, FilterBits, LikelyLiveDocs, ScorerUtil};
 pub use scoring_rewrite::{
     scoring_rewrite, ConstantScoreBooleanRewrite, ScoringBooleanQueryBuilder,
     ScoringBooleanRewrite, ScoringRewrite,
@@ -490,14 +487,14 @@ pub use synonym_query::{
     merge_impacts as merge_synonym_impacts, Builder as SynonymQueryBuilder, FreqBoostTermScorer,
     SynonymImpactsSource, SynonymQuery, SynonymWeight, TermAndBoost,
 };
-pub use task_executor::{Executor, TaskExecutor};
+pub use task_executor::{Command, Executor, RejectedExecutionException, TaskExecutor};
 pub use term_collecting_rewrite::{
     collect_terms as collect_multi_term_terms, TermCollectingRewrite, TermCollector,
     TopLevelBuilder,
 };
 pub use term_in_set_query::TermInSetQuery;
 pub use term_matches_iterator::TermMatchesIterator;
-pub use term_query::{empty_term_scorer, TermQuery, TermScorerSupplier, TermWeight};
+pub use term_query::{TermQuery, TermScorerSupplier, TermWeight};
 pub use term_range_query::{term_bytes_to_string, TermRangeQuery};
 pub use term_scorer::{BoxedImpactsEnum, TermScorer};
 pub use time_limiting_bulk_scorer::TimeLimitingBulkScorer;

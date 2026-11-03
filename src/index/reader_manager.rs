@@ -142,10 +142,10 @@ mod tests {
     use crate::index::index_file_names::FIELD_INFO_EXTENSION;
     use crate::index::{SegmentCommitInfo, SegmentInfos};
     use crate::search::reference_manager::RefreshListener;
-    use crate::store::{Directory, RamDirectory};
+    use crate::store::{ByteBuffersDirectory, Directory};
     use crate::util::string_helper::StringHelper;
     use crate::util::Version;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashSet;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex as StdMutex;
 
@@ -194,7 +194,8 @@ mod tests {
             name,
             "",
             FIELD_INFO_EXTENSION,
-        )]));
+        )]))
+        .unwrap();
         write_segment_info_file(directory, &info);
         info
     }
@@ -269,7 +270,7 @@ mod tests {
 
     #[test]
     fn open_and_acquire_from_directory() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let reader = commit_single_segment(Arc::clone(&dir));
         // Steal the reader's ref into the manager.
         let manager = ReaderManager::from_reader(reader).unwrap();
@@ -284,7 +285,7 @@ mod tests {
 
     #[test]
     fn open_from_directory_directly() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         commit_single_segment(Arc::clone(&dir));
         let manager = ReaderManager::open(dir).unwrap();
         let acquired = manager.acquire().unwrap();
@@ -297,18 +298,21 @@ mod tests {
 
     #[test]
     fn acquire_after_close_returns_already_closed() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let reader = commit_single_segment(Arc::clone(&dir));
         let manager = ReaderManager::from_reader(reader).unwrap();
         manager.close().unwrap();
         assert!(manager.is_closed());
         let err = manager.acquire().unwrap_err();
-        assert!(matches!(err, LuceneError::AlreadyClosed(_)), "got {err:?}");
+        assert!(
+            matches!(err, LuceneError::AlreadyClosed { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]
     fn close_is_idempotent() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let reader = commit_single_segment(Arc::clone(&dir));
         let manager = ReaderManager::from_reader(reader).unwrap();
         manager.close().unwrap();
@@ -319,7 +323,7 @@ mod tests {
 
     #[test]
     fn refresh_to_latest_commit_swaps_reference() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let reader = commit_single_segment(Arc::clone(&dir));
         let manager = ReaderManager::from_reader(reader).unwrap();
 
@@ -340,7 +344,7 @@ mod tests {
         assert!(second.version().unwrap() > first_version);
         assert_eq!(second.max_doc(), 50);
         // `leaves` consumes the `Arc`, so clone for the count check.
-        assert_eq!(Arc::clone(&second).leaves().len(), 2);
+        assert_eq!(Arc::clone(&second).leaves().unwrap().len(), 2);
 
         // The old reader's ref count must have dropped to the references still
         // held externally (none here) -> it is closed (refCount 0).
@@ -353,7 +357,7 @@ mod tests {
 
     #[test]
     fn refresh_is_noop_when_unchanged() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let reader = commit_single_segment(Arc::clone(&dir));
         let manager = ReaderManager::from_reader(reader).unwrap();
 
@@ -397,7 +401,7 @@ mod tests {
             }
         }
 
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let reader = commit_single_segment(Arc::clone(&dir));
         let gate = Arc::new(Barrier::new(2));
         let source = Arc::new(BlockingSource {
@@ -431,7 +435,7 @@ mod tests {
 
     #[test]
     fn listeners_notified_on_refresh() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let reader = commit_single_segment(Arc::clone(&dir));
         let manager = ReaderManager::from_reader(reader).unwrap();
         let listener = Arc::new(RecordingListener::new());
@@ -462,7 +466,7 @@ mod tests {
 
     #[test]
     fn release_drops_refcount_and_close_releases_manager_ref() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let reader = commit_single_segment(Arc::clone(&dir));
         // reader has refCount 1.
         assert_eq!(reader.get_ref_count(), 1);
@@ -485,7 +489,7 @@ mod tests {
 
     #[test]
     fn concurrent_acquire_release_and_refresh() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let reader = commit_single_segment(Arc::clone(&dir));
         let manager = Arc::new(ReaderManager::from_reader(reader).unwrap());
 

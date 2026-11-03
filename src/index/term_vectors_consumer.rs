@@ -129,22 +129,11 @@
 //!   (`TermVectorsConsumer.java:65`) and therefore leaves them out of
 //!   `IndexingChain.ramBytesUsed()`. That private counter is what sizes the
 //!   `FlushInfo` when the writer is created.
-//! * **The codec writer's own buffer is not accounted, and the gap is
-//!   unbounded.** Java keeps the writer in an `Accountable` field so that
-//!   `IndexingChain.ramBytesUsed()` adds `termVectorsWriter.accountable
-//!   .ramBytesUsed()` (`IndexingChain.java:1719-1724`), which the compressing
-//!   writer reports as `positionsBuf + startOffsetsBuf + lengthsBuf +
-//!   payloadLengthsBuf + termSuffixes + payloadBytes + lastTerm + scratchBuffer`
-//!   (`Lucene90CompressingTermVectorsWriter.java:999-1008`). Rucene's
-//!   [`TermVectorsWriter`] has
-//!   no `ram_bytes_used`, so [`TermVectorsConsumer::ram_bytes_used`] reports
-//!   zero always. The four `int[]` in that sum grow with the position count of
-//!   the largest document seen and are never shrunk, so the undercount is
-//!   **not** bounded by the chunk size: one document with a million positions
-//!   leaves 16 MB uncounted for the rest of the segment. It shifts only when a
-//!   flush is triggered, never what is written, but a segment of very large
-//!   documents can overshoot its RAM budget. Giving the trait a
-//!   `ram_bytes_used` is the fix, and is filed separately.
+//! * **The `accountable` field is the writer itself.** Java keeps the
+//!   writer in an `Accountable` field that starts as
+//!   `Accountable.NULL_ACCOUNTABLE` (`TermVectorsConsumer.java:55-57`, `:108`);
+//!   [`TermVectorsConsumer::ram_bytes_used`] asks the `Option` writer instead,
+//!   with the same answers.
 //! * **Field names are ordered with a UTF-16 comparator.** Java sorts the
 //!   pending fields with `TermsHashPerField.compareTo`, which is
 //!   `String.compareTo` — UTF-16 code-unit order. The order reaches the `.tvd`
@@ -156,22 +145,12 @@
 //! Lucene subclasses this consumer with `SortingTermVectorsConsumer`, which
 //! buffers the vectors into a temporary, uncompressed term-vectors file during
 //! indexing and, at flush time, replays every document through the real codec
-//! writer in the order a `Sorter.DocMap` gives. It overrides exactly two
-//! members: `initTermVectorsWriter()`, to redirect the writer at a
-//! `TrackingTmpOutputDirectoryWrapper`, and `flush(...)`, to do the replay. Both
-//! of its dependencies — `Sorter.DocMap` and
-//! `TrackingTmpOutputDirectoryWrapper` — belong to the index-sorting port, so
-//! this type stops where `SortingStoredFieldsConsumer` stopped, and for the same
-//! reason. The two extension points are in place and are not expected to change:
-//! writer creation is isolated in the public
-//! [`TermVectorsConsumer::init_term_vectors_writer`], which is the only place
-//! the writer is built, and [`TermVectorsConsumer::flush`] already takes the
-//! document count of the segment being flushed. Neither is an override point in
-//! the Java sense: this is a concrete struct behind no trait, so a sorting
-//! variant has to change its shape — by giving it a writer-factory field, by
-//! wrapping it, or by introducing a trait — rather than subclass it. What is
-//! promised here is only that the two seams are isolated and that no caller
-//! reaches around them.
+//! writer in the order a `Sorter.DocMap` gives. That subclass is ported as
+//! [`SortingTermVectorsConsumer`](crate::index::sorting_consumers::SortingTermVectorsConsumer),
+//! which wraps this type: Java's override of `initTermVectorsWriter`
+//! (`SortingTermVectorsConsumer.java:87-94`) becomes the format and the
+//! directory it hands this consumer, which
+//! [`TermVectorsConsumer::init_term_vectors_writer`] writes through.
 
 #![deny(unsafe_code)]
 
@@ -189,6 +168,7 @@ use crate::index::indexing_chain::FieldInvertState;
 use crate::index::{FieldInfo, IndexableField, SegmentInfo};
 use crate::store::{flush_io_context, DataInput, Directory, FlushInfo};
 use crate::util::byte_block_pool::ByteBlockPool;
+use crate::util::int_block_pool::IntBlockPool;
 use crate::util::{compare_utf16, BytesRef};
 
 /// Stream carrying the positions and payloads of a term.
@@ -273,13 +253,6 @@ impl TermVectorsConsumerPerField {
         self.base.num_terms()
     }
 
-    /// Returns `true` when the current document's tokens are being collected.
-    ///
-    /// Equivalent to reading the private `doVectors` field.
-    pub fn collects_vectors(&self) -> bool {
-        self.do_vectors
-    }
-
     /// Returns `true` when the field's vector reached the writer for the
     /// document that was just finished.
     pub fn wrote_vectors(&self) -> bool {
@@ -337,6 +310,10 @@ impl TermVectorsConsumerPerField {
                 // (`TermVectorsConsumerPerField.java:138-143`).
                 self.base.reset();
             }
+            // `reinitHash()` (`TermVectorsConsumerPerField.java:145`): the
+            // postings slots the previous document's `reset()` dropped are
+            // allocated again.
+            self.base.reinit_hash();
             self.has_payloads = false;
             self.do_vectors = field_type.store_term_vectors();
 
@@ -432,11 +409,14 @@ impl TermVectorsConsumerPerField {
     pub fn add(
         &mut self,
         streams: &mut ByteBlockPool,
+        int_pool: &mut IntBlockPool,
         field_state: &FieldInvertState,
         text_start: i32,
         token: &InvertedToken<'_>,
     ) -> Result<()> {
-        let slot = self.base.intern_by_text_start(streams, text_start)?;
+        let slot = self
+            .base
+            .intern_by_text_start(streams, int_pool, text_start)?;
         let freq = self.term_freq(token)?;
         if slot.is_new {
             let posting = self.base.posting_mut(slot.term_id);
@@ -455,7 +435,7 @@ impl TermVectorsConsumerPerField {
                 ))
             })?;
         }
-        self.write_prox(streams, field_state, slot.term_id, token)
+        self.write_prox(streams, int_pool, field_state, slot.term_id, token)
     }
 
     /// Returns the frequency to record for the current token.
@@ -491,6 +471,7 @@ impl TermVectorsConsumerPerField {
     fn write_prox(
         &mut self,
         streams: &mut ByteBlockPool,
+        int_pool: &mut IntBlockPool,
         field_state: &FieldInvertState,
         term_id: i32,
         token: &InvertedToken<'_>,
@@ -504,10 +485,20 @@ impl TermVectorsConsumerPerField {
             // (`TermVectorsConsumerPerField.java:240-242`, decoded back by
             // `TermVectorsWriter.addProx`).
             let last_offset = self.base.posting(term_id).last_offset;
-            self.base
-                .write_v_int(streams, term_id, OFFSETS_STREAM, start_offset - last_offset)?;
-            self.base
-                .write_v_int(streams, term_id, OFFSETS_STREAM, end_offset - start_offset)?;
+            self.base.write_v_int(
+                streams,
+                int_pool,
+                term_id,
+                OFFSETS_STREAM,
+                start_offset - last_offset,
+            )?;
+            self.base.write_v_int(
+                streams,
+                int_pool,
+                term_id,
+                OFFSETS_STREAM,
+                end_offset - start_offset,
+            )?;
             self.base.posting_mut(term_id).last_offset = end_offset;
         }
 
@@ -530,21 +521,32 @@ impl TermVectorsConsumerPerField {
             let code = (delta as u32) << 1;
             match payload {
                 Some(payload) if !payload.is_empty() => {
-                    self.base
-                        .write_v_int(streams, term_id, POSITIONS_STREAM, (code | 1) as i32)?;
                     self.base.write_v_int(
                         streams,
+                        int_pool,
+                        term_id,
+                        POSITIONS_STREAM,
+                        (code | 1) as i32,
+                    )?;
+                    self.base.write_v_int(
+                        streams,
+                        int_pool,
                         term_id,
                         POSITIONS_STREAM,
                         payload.len() as i32,
                     )?;
                     self.base
-                        .write_bytes(streams, term_id, POSITIONS_STREAM, payload)?;
+                        .write_bytes(streams, int_pool, term_id, POSITIONS_STREAM, payload)?;
                     self.has_payloads = true;
                 }
                 _ => {
-                    self.base
-                        .write_v_int(streams, term_id, POSITIONS_STREAM, code as i32)?;
+                    self.base.write_v_int(
+                        streams,
+                        int_pool,
+                        term_id,
+                        POSITIONS_STREAM,
+                        code as i32,
+                    )?;
                 }
             }
             self.base.posting_mut(term_id).last_position = position;
@@ -575,6 +577,7 @@ impl TermVectorsConsumerPerField {
         &mut self,
         writer: &mut dyn TermVectorsWriter,
         streams: &ByteBlockPool,
+        int_pool: &IntBlockPool,
         term_pool: &ByteBlockPool,
         scratch: &mut BytesRef,
     ) -> Result<()> {
@@ -584,7 +587,11 @@ impl TermVectorsConsumerPerField {
         self.do_vectors = false;
 
         let num_postings = self.base.num_terms();
-        let term_ids = self.base.sorted_term_ids(term_pool);
+        // `termsHashPerField.sortTerms(); final int[] termIDs =
+        // getSortedTermIDs();` (`TermVectorsConsumerPerField.java:98-100`),
+        // of which the first `numPostings` are read.
+        self.base.sort_terms(term_pool);
+        let term_ids = self.base.get_sorted_term_ids()[..num_postings as usize].to_vec();
 
         writer.start_field(
             &self.field_info,
@@ -607,12 +614,13 @@ impl TermVectorsConsumerPerField {
                 let mut positions = self.do_vector_positions.then(|| {
                     let mut reader = ByteSliceReader::new();
                     self.base
-                        .init_reader(&mut reader, term_id, POSITIONS_STREAM);
+                        .init_reader(int_pool, &mut reader, term_id, POSITIONS_STREAM);
                     PooledSliceReader::new(reader, streams)
                 });
                 let mut offsets = self.do_vector_offsets.then(|| {
                     let mut reader = ByteSliceReader::new();
-                    self.base.init_reader(&mut reader, term_id, OFFSETS_STREAM);
+                    self.base
+                        .init_reader(int_pool, &mut reader, term_id, OFFSETS_STREAM);
                     PooledSliceReader::new(reader, streams)
                 });
                 writer.add_prox(
@@ -643,6 +651,10 @@ impl TermVectorsConsumerPerField {
 /// documentation for the specification this type implements.
 pub struct TermVectorsConsumer {
     codec: Arc<dyn Codec>,
+    /// The format `init_term_vectors_writer` writes through, when it is not
+    /// the codec's: Java's `SortingTermVectorsConsumer` overrides
+    /// `initTermVectorsWriter` to use its temporary format.
+    format: Option<Arc<dyn crate::codecs::term_vectors::TermVectorsFormat>>,
     directory: Arc<dyn Directory>,
     info: SegmentInfo,
     writer: Option<Box<dyn TermVectorsWriter>>,
@@ -702,6 +714,7 @@ impl TermVectorsConsumer {
     ) -> Self {
         Self {
             codec,
+            format: None,
             directory,
             info,
             writer: None,
@@ -715,6 +728,25 @@ impl TermVectorsConsumer {
             last_doc_id: 0,
             aborted: false,
         }
+    }
+
+    /// Creates a consumer that writes through `format` rather than the codec's
+    /// term-vectors format.
+    ///
+    /// This is how [`SortingTermVectorsConsumer`](crate::index::sorting_consumers::SortingTermVectorsConsumer)
+    /// reproduces its `initTermVectorsWriter` override
+    /// (`SortingTermVectorsConsumer.java:86-94`), which opens the writer of its
+    /// temporary format instead.
+    pub fn with_format(
+        codec: Arc<dyn Codec>,
+        format: Arc<dyn crate::codecs::term_vectors::TermVectorsFormat>,
+        directory: Arc<dyn Directory>,
+        info: SegmentInfo,
+        bytes_used: Arc<AtomicI64>,
+    ) -> Self {
+        let mut consumer = Self::new(codec, directory, info, bytes_used);
+        consumer.format = Some(format);
+        consumer
     }
 
     /// Returns `true` once the codec writer has been created.
@@ -743,18 +775,15 @@ impl TermVectorsConsumer {
         self.aborted
     }
 
-    /// Returns the approximate heap usage this consumer adds on top of the
-    /// chain's RAM counter, which is zero.
+    /// Returns the heap the codec writer uses, or zero while there is none.
     ///
-    /// Equivalent to `TermVectorsConsumer.accountable.ramBytesUsed()`. The
-    /// stream pool is already charged to the chain's counter, so adding it here
-    /// would count it twice, and the per-field tables are deliberately
-    /// uncounted in Java too. What is missing is the codec writer's own buffer,
-    /// which the [`TermVectorsWriter`] trait does not expose and which grows
-    /// without bound with the largest document of the segment — see the module
-    /// documentation.
+    /// Equivalent to `TermVectorsConsumer.accountable.ramBytesUsed()`
+    /// (`TermVectorsConsumer.java:55-57`, `:108`): the writer once it exists,
+    /// `Accountable.NULL_ACCOUNTABLE` before.
     pub fn ram_bytes_used(&self) -> i64 {
-        0
+        self.writer
+            .as_ref()
+            .map_or(0, |writer| writer.ram_bytes_used())
     }
 
     /// Records that the segment has at least one field storing term vectors.
@@ -850,7 +879,8 @@ impl TermVectorsConsumer {
         let Self {
             terms_hash, fields, ..
         } = self;
-        fields[index].add(terms_hash.pool_mut(), field_state, text_start, token)
+        let (streams, int_pool) = terms_hash.pools_mut();
+        fields[index].add(streams, int_pool, field_state, text_start, token)
     }
 
     /// Closes the field at `index` for the current document, queueing its
@@ -886,7 +916,7 @@ impl TermVectorsConsumer {
             // has to release the writer in order to close it, so without this
             // guard the lazy initialisation would build a second set of
             // `.tvd`/`.tvx`/`.tvm` files for a discarded segment.
-            return Err(LuceneError::AlreadyClosed(format!(
+            return Err(LuceneError::already_closed(format!(
                 "the term vectors of segment {} were aborted",
                 self.info.name
             )));
@@ -900,11 +930,17 @@ impl TermVectorsConsumer {
                 self.field_bytes_used
                     .load(std::sync::atomic::Ordering::Acquire),
             ));
-            self.writer = Some(self.codec.term_vectors_format().vectors_writer(
-                self.directory.as_ref(),
-                &self.info,
-                context.as_ref(),
-            )?);
+            let writer = match &self.format {
+                Some(format) => {
+                    format.vectors_writer(&self.directory, &self.info, context.as_ref())
+                }
+                None => self.codec.term_vectors_format().vectors_writer(
+                    &self.directory,
+                    &self.info,
+                    context.as_ref(),
+                ),
+            }?;
+            self.writer = Some(writer);
             self.last_doc_id = 0;
         }
         Ok(())
@@ -971,22 +1007,29 @@ impl TermVectorsConsumer {
             ..
         } = self;
         let writer = writer.as_mut().ok_or_else(|| {
-            LuceneError::IllegalState(
+            LuceneError::illegal_state(
                 "the term-vectors writer was not created by initTermVectorsWriter".to_string(),
             )
         })?;
 
         Self::fill(writer.as_mut(), last_doc_id, doc_id)?;
         if *last_doc_id != doc_id {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "term vectors must be written in increasing doc order: lastDocID={last_doc_id} docID={doc_id}"
             )));
         }
 
         writer.start_document(pending_fields.len() as i32)?;
         let streams = terms_hash.pool();
+        let int_pool = terms_hash.int_pool();
         for index in pending_fields.iter() {
-            fields[*index].finish_document(writer.as_mut(), streams, term_pool, flush_term)?;
+            fields[*index].finish_document(
+                writer.as_mut(),
+                streams,
+                int_pool,
+                term_pool,
+                flush_term,
+            )?;
         }
         writer.finish_document()?;
         *last_doc_id += 1;
@@ -1013,7 +1056,10 @@ impl TermVectorsConsumer {
     /// had vectors — nothing is written and no file is created.
     ///
     /// The writer is closed even when padding or finishing it failed, mirroring
-    /// Java's `try`/`finally`; the first error wins.
+    /// Java's `try { fill(numDocs); writer.finish(numDocs); } finally {
+    /// IOUtils.close(writer); }` (`TermVectorsConsumer.java:82-88`): a failure
+    /// to close replaces the one from padding or finishing, as an exception
+    /// thrown from `finally` does.
     ///
     /// # Errors
     ///
@@ -1025,8 +1071,8 @@ impl TermVectorsConsumer {
         };
         let filled = Self::fill(writer.as_mut(), &mut self.last_doc_id, max_doc);
         let finished = filled.and_then(|()| writer.finish(max_doc));
-        let closed = writer.close();
-        finished.and(closed)
+        crate::util::IOUtils::close([Some(|| writer.close())])?;
+        finished
     }
 
     /// Discards the segment's term vectors.
@@ -1034,7 +1080,15 @@ impl TermVectorsConsumer {
     /// Equivalent to `TermVectorsConsumer.abort()`, which resets the buffers,
     /// closes the writer with `IOUtils.closeWhileHandlingException` and resets
     /// again. Calling this without a writer is a no-op.
-    pub fn abort(&mut self) {
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`LuceneError::AssertionError`](crate::error::LuceneError::AssertionError)
+    /// closing the writer raised: the `Error` Java's
+    /// `closeWhileHandlingException` rethrows, unchecked, through the callers'
+    /// `finally` blocks up to `DocumentsWriterPerThread.abort()`, which
+    /// declares `throws IOException`.
+    pub fn abort(&mut self) -> Result<()> {
         self.aborted = true;
         for field in &mut self.fields {
             field.release_accounting();
@@ -1043,9 +1097,10 @@ impl TermVectorsConsumer {
         self.field_index.clear();
         self.pending_fields.clear();
         self.terms_hash.reset();
-        if let Some(mut writer) = self.writer.take() {
-            let _ = writer.close();
-        }
+        let writer = self.writer.take();
+        crate::util::IOUtils::close_while_handling_exception([
+            writer.map(|mut writer| move || writer.close())
+        ])
     }
 }
 
@@ -1128,6 +1183,104 @@ mod tests {
         assert!(tracking.get_created_files().is_empty());
     }
 
+    /// A term-vectors writer whose `finish` and `close` both fail.
+    #[derive(Debug)]
+    struct FailingFinishAndCloseWriter;
+
+    impl Accountable for FailingFinishAndCloseWriter {
+        fn ram_bytes_used(&self) -> i64 {
+            0
+        }
+    }
+
+    impl TermVectorsWriter for FailingFinishAndCloseWriter {
+        fn start_document(&mut self, _num_vector_fields: i32) -> Result<()> {
+            Ok(())
+        }
+        fn start_field(
+            &mut self,
+            _info: &FieldInfo,
+            _num_terms: i32,
+            _positions: bool,
+            _offsets: bool,
+            _payloads: bool,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn start_term(&mut self, _term: &BytesRef, _freq: i32) -> Result<()> {
+            Ok(())
+        }
+        fn add_position(
+            &mut self,
+            _position: i32,
+            _start_offset: i32,
+            _end_offset: i32,
+            _payload: Option<&BytesRef>,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn finish(&mut self, _num_docs: i32) -> Result<()> {
+            Err(LuceneError::Other("finish blew up".to_string()))
+        }
+        fn close(&mut self) -> Result<()> {
+            Err(LuceneError::Other("close blew up".to_string()))
+        }
+    }
+
+    /// Hands out a [`FailingFinishAndCloseWriter`].
+    #[derive(Debug)]
+    struct FailingTermVectorsFormat;
+
+    impl crate::codecs::term_vectors::TermVectorsFormat for FailingTermVectorsFormat {
+        fn name(&self) -> &str {
+            "FailingTermVectors"
+        }
+
+        fn vectors_reader(
+            &self,
+            _directory: &dyn Directory,
+            _segment_info: &SegmentInfo,
+            _field_infos: &crate::index::FieldInfos,
+            _context: &dyn crate::store::IOContext,
+        ) -> Result<Box<dyn crate::codecs::term_vectors::TermVectorsReader>> {
+            Err(LuceneError::UnsupportedOperation(
+                "the failing format does not read".to_string(),
+            ))
+        }
+
+        fn vectors_writer(
+            &self,
+            _directory: &Arc<dyn Directory>,
+            _segment_info: &SegmentInfo,
+            _context: &dyn crate::store::IOContext,
+        ) -> Result<Box<dyn TermVectorsWriter>> {
+            Ok(Box::new(FailingFinishAndCloseWriter))
+        }
+    }
+
+    /// `try { fill(numDocs); writer.finish(numDocs); } finally {
+    /// IOUtils.close(writer); }` (`TermVectorsConsumer.java:82-88`): an
+    /// exception thrown from the `finally` replaces the one in flight (JLS
+    /// 14.20.2), so a failure to close wins over the failure to finish.
+    #[test]
+    fn flush_reports_the_close_failure_over_the_finish_failure() {
+        let (plain, tracking) = consumer();
+        let mut consumer = TermVectorsConsumer::with_format(
+            Arc::clone(&plain.codec),
+            Arc::new(FailingTermVectorsFormat),
+            Arc::clone(&tracking) as Arc<dyn Directory>,
+            plain.info.clone(),
+            Arc::new(AtomicI64::new(0)),
+        );
+        let term_pool = ByteBlockPool::new(Arc::new(AtomicI64::new(0)));
+        consumer.set_has_vectors();
+        consumer.start_document();
+        consumer.finish_document(0, &term_pool).expect("finish");
+        assert!(consumer.has_writer());
+        let error = consumer.flush(1).expect_err("finish and close blow up");
+        assert!(error.to_string().contains("close blew up"), "{error}");
+    }
+
     #[test]
     fn flushing_without_a_writer_is_a_no_op() {
         let (mut consumer, tracking) = consumer();
@@ -1167,7 +1320,10 @@ mod tests {
         let error = consumer
             .finish_document(2, &term_pool)
             .expect_err("doc 2 was already covered by the back-fill");
-        assert!(matches!(error, LuceneError::IllegalState(_)), "{error:?}");
+        assert!(
+            matches!(error, LuceneError::IllegalState { .. }),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -1179,14 +1335,17 @@ mod tests {
         consumer.finish_document(0, &term_pool).expect("finish");
         assert!(consumer.has_writer());
 
-        consumer.abort();
+        consumer.abort().unwrap();
         assert!(consumer.is_aborted());
         assert!(!consumer.has_writer());
 
         let error = consumer
             .init_term_vectors_writer()
             .expect_err("a discarded segment must not grow a second set of files");
-        assert!(matches!(error, LuceneError::AlreadyClosed(_)), "{error:?}");
+        assert!(
+            matches!(error, LuceneError::AlreadyClosed { .. }),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -1272,7 +1431,7 @@ mod tests {
             "indexing 64 terms must have charged the per-field tables"
         );
 
-        consumer.abort();
+        consumer.abort().unwrap();
         assert_eq!(
             bytes_used.load(Ordering::Acquire),
             term_pool_charge,
@@ -1345,17 +1504,20 @@ mod tests {
         // `TermVectorsWriter.addProx` decodes it that way. Writing the postings
         // convention here would silently shift every offset but the first.
         let (mut field, mut streams, mut term_pool, mut state) = buffered_field(false, true, false);
+        let mut ints = IntBlockPool::new();
         let text_start = term_pool.add_bytes_ref(b"alpha").expect("intern");
         field
-            .add(&mut streams, &state, text_start, &token(0, 5))
+            .add(&mut streams, &mut ints, &state, text_start, &token(0, 5))
             .expect("first occurrence");
         state.set_position(1);
         field
-            .add(&mut streams, &state, text_start, &token(20, 25))
+            .add(&mut streams, &mut ints, &state, text_start, &token(20, 25))
             .expect("second occurrence");
 
         let mut reader = ByteSliceReader::new();
-        field.base.init_reader(&mut reader, 0, OFFSETS_STREAM);
+        field
+            .base
+            .init_reader(&ints, &mut reader, 0, OFFSETS_STREAM);
         let mut input = PooledSliceReader::new(reader, &streams);
         assert_eq!(input.read_v_int().expect("start gap"), 0);
         assert_eq!(input.read_v_int().expect("length"), 5);
@@ -1371,21 +1533,24 @@ mod tests {
     #[test]
     fn positions_are_written_as_a_shifted_delta_with_a_payload_bit() {
         let (mut field, mut streams, mut term_pool, mut state) = buffered_field(true, false, true);
+        let mut ints = IntBlockPool::new();
         let text_start = term_pool.add_bytes_ref(b"alpha").expect("intern");
         let payload = InvertedToken {
             payload: Some(b"pay"),
             ..token(0, 5)
         };
         field
-            .add(&mut streams, &state, text_start, &payload)
+            .add(&mut streams, &mut ints, &state, text_start, &payload)
             .expect("first occurrence");
         state.set_position(7);
         field
-            .add(&mut streams, &state, text_start, &token(0, 5))
+            .add(&mut streams, &mut ints, &state, text_start, &token(0, 5))
             .expect("second occurrence");
 
         let mut reader = ByteSliceReader::new();
-        field.base.init_reader(&mut reader, 0, POSITIONS_STREAM);
+        field
+            .base
+            .init_reader(&ints, &mut reader, 0, POSITIONS_STREAM);
         let mut input = PooledSliceReader::new(reader, &streams);
         assert_eq!(input.read_v_int().expect("code"), 1, "(0 << 1) | 1");
         assert_eq!(input.read_v_int().expect("payload length"), 3);
@@ -1400,16 +1565,19 @@ mod tests {
     #[test]
     fn an_empty_payload_does_not_set_the_payload_bit() {
         let (mut field, mut streams, mut term_pool, state) = buffered_field(true, false, true);
+        let mut ints = IntBlockPool::new();
         let text_start = term_pool.add_bytes_ref(b"alpha").expect("intern");
         let empty = InvertedToken {
             payload: Some(b""),
             ..token(0, 5)
         };
         field
-            .add(&mut streams, &state, text_start, &empty)
+            .add(&mut streams, &mut ints, &state, text_start, &empty)
             .expect("occurrence");
         let mut reader = ByteSliceReader::new();
-        field.base.init_reader(&mut reader, 0, POSITIONS_STREAM);
+        field
+            .base
+            .init_reader(&ints, &mut reader, 0, POSITIONS_STREAM);
         let mut input = PooledSliceReader::new(reader, &streams);
         assert_eq!(input.read_v_int().expect("code"), 0);
         assert!(input.eof());
@@ -1421,18 +1589,21 @@ mod tests {
         // `IndexWriter.MAX_POSITION` allows a delta whose `delta << 1`
         // overflows an `i32`; Java wraps and recovers it with `>>>`.
         let (mut field, mut streams, mut term_pool, mut state) = buffered_field(true, false, false);
+        let mut ints = IntBlockPool::new();
         let text_start = term_pool.add_bytes_ref(b"alpha").expect("intern");
         let far = i32::MAX - 128;
         field
-            .add(&mut streams, &state, text_start, &token(0, 5))
+            .add(&mut streams, &mut ints, &state, text_start, &token(0, 5))
             .expect("first occurrence");
         state.set_position(far);
         field
-            .add(&mut streams, &state, text_start, &token(0, 5))
+            .add(&mut streams, &mut ints, &state, text_start, &token(0, 5))
             .expect("second occurrence");
 
         let mut reader = ByteSliceReader::new();
-        field.base.init_reader(&mut reader, 0, POSITIONS_STREAM);
+        field
+            .base
+            .init_reader(&ints, &mut reader, 0, POSITIONS_STREAM);
         let mut input = PooledSliceReader::new(reader, &streams);
         assert_eq!(input.read_v_int().expect("code"), 0);
         let code = input.read_v_int().expect("code");
@@ -1446,11 +1617,12 @@ mod tests {
     #[test]
     fn repeated_occurrences_accumulate_the_frequency() {
         let (mut field, mut streams, mut term_pool, mut state) = buffered_field(true, false, false);
+        let mut ints = IntBlockPool::new();
         let text_start = term_pool.add_bytes_ref(b"alpha").expect("intern");
         for position in 0..5 {
             state.set_position(position);
             field
-                .add(&mut streams, &state, text_start, &token(0, 5))
+                .add(&mut streams, &mut ints, &state, text_start, &token(0, 5))
                 .expect("occurrence");
         }
         assert_eq!(field.num_terms(), 1);
@@ -1463,6 +1635,7 @@ mod tests {
         {
             let (mut field, mut streams, mut term_pool, state) =
                 buffered_field(positions, offsets, false);
+            let mut ints = IntBlockPool::new();
             let text_start = term_pool.add_bytes_ref(b"alpha").expect("intern");
             let custom = InvertedToken {
                 term_freq: 4,
@@ -1470,7 +1643,7 @@ mod tests {
                 ..token(0, 5)
             };
             let error = field
-                .add(&mut streams, &state, text_start, &custom)
+                .add(&mut streams, &mut ints, &state, text_start, &custom)
                 .expect_err("a custom frequency has no positions to go with");
             assert!(
                 matches!(&error, LuceneError::IllegalArgument(message)
@@ -1483,6 +1656,7 @@ mod tests {
     #[test]
     fn a_custom_term_frequency_is_accepted_without_positions_and_offsets() {
         let (mut field, mut streams, mut term_pool, state) = buffered_field(false, false, false);
+        let mut ints = IntBlockPool::new();
         let text_start = term_pool.add_bytes_ref(b"alpha").expect("intern");
         let custom = InvertedToken {
             term_freq: 4,
@@ -1490,7 +1664,7 @@ mod tests {
             ..token(0, 5)
         };
         field
-            .add(&mut streams, &state, text_start, &custom)
+            .add(&mut streams, &mut ints, &state, text_start, &custom)
             .expect("a bare frequency is fine");
         assert_eq!(field.base.posting(0).term_freq, 4);
     }
@@ -1498,10 +1672,11 @@ mod tests {
     #[test]
     fn a_field_is_only_pending_when_it_has_both_vectors_and_terms() {
         let (mut field, mut streams, mut term_pool, state) = buffered_field(false, false, false);
+        let mut ints = IntBlockPool::new();
         assert!(!field.finish(), "no term was buffered yet");
         let text_start = term_pool.add_bytes_ref(b"alpha").expect("intern");
         field
-            .add(&mut streams, &state, text_start, &token(0, 5))
+            .add(&mut streams, &mut ints, &state, text_start, &token(0, 5))
             .expect("occurrence");
         assert!(field.finish());
         field.do_vectors = false;

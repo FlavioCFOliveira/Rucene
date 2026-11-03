@@ -65,7 +65,13 @@ pub fn default_bulk_get<R: PackedIntsReader + ?Sized>(
 ///
 /// Equivalent to the abstract class
 /// `org.apache.lucene.util.packed.PackedInts.Mutable`, which extends `Reader`.
-pub trait PackedIntsMutable: PackedIntsReader {
+///
+/// Every implementation is a plain in-memory array, so the trait requires
+/// `Send + Sync`: a packed page built by a
+/// [`PackedLongValuesBuilder`](super::PackedLongValuesBuilder) is read by the
+/// flush-time doc-values producers, which must be `Send + Sync`. Java objects
+/// carry no such bound; the readers here are as shareable as Java's.
+pub trait PackedIntsMutable: PackedIntsReader + Send + Sync {
     /// Returns the number of bits used to store any given value.
     ///
     /// Equivalent to `PackedInts.Mutable.getBitsPerValue()`.
@@ -112,7 +118,7 @@ pub trait PackedIntsMutable: PackedIntsReader {
     ///
     /// The counterpart of [`Self::as_packed_ints_reader`] for owned values; see
     /// its documentation for why the conversion is explicit.
-    fn into_packed_ints_reader(self: Box<Self>) -> Box<dyn PackedIntsReader>;
+    fn into_packed_ints_reader(self: Box<Self>) -> Box<dyn PackedIntsReader + Send + Sync>;
 }
 
 /// The body of `PackedInts.Mutable.set(int, long[], int, int)`.

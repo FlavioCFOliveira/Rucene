@@ -104,6 +104,8 @@ public final class JavaCollectionsFixture {
       case "map_capacity" -> order(mapCapacity(arg, keys));
       case "map_put_all" -> order(mapPutAll(arg, keys));
       case "map_remove_reinsert" -> order(mapRemoveReinsert(arg, keys));
+      case "map_compute_if_absent" -> order(mapComputeIfAbsent(keys));
+      case "map_compute_remove" -> order(mapComputeRemove(arg, keys));
       case "set_add" -> setOrder(setAdd(keys));
       case "set_copy" -> setOrder(new HashSet<>(setAdd(keys)));
       default -> throw new IllegalArgumentException("unknown shape: " + shape);
@@ -114,6 +116,29 @@ public final class JavaCollectionsFixture {
     Map<String, String> map = new HashMap<>();
     for (String key : keys) {
       map.put(key, "v");
+    }
+    return map;
+  }
+
+  /** Exactly how {@code ReadersAndUpdates.addDVUpdate} fills {@code pendingDVUpdates}. */
+  private static Map<String, String> mapComputeIfAbsent(List<String> keys) {
+    Map<String, String> map = new HashMap<>();
+    for (String key : keys) {
+      map.computeIfAbsent(key, k -> "v");
+    }
+    return map;
+  }
+
+  /**
+   * {@code pendingDVUpdates} after a write prunes the first {@code count} fields through the
+   * entry-set iterator and later updates add them back.
+   */
+  private static Map<String, String> mapComputeRemove(int count, List<String> keys) {
+    Map<String, String> map = mapComputeIfAbsent(keys);
+    Set<String> pruned = new HashSet<>(keys.subList(0, Math.min(count, keys.size())));
+    map.entrySet().removeIf(entry -> pruned.contains(entry.getKey()));
+    for (int i = 0; i < Math.min(count, keys.size()); i++) {
+      map.computeIfAbsent(keys.get(i), k -> "v");
     }
     return map;
   }

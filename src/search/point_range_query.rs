@@ -4,7 +4,6 @@
 #![deny(unsafe_code)]
 
 use std::any::Any;
-use std::cmp::Ordering;
 use std::fmt::Debug;
 use std::sync::Arc;
 
@@ -29,27 +28,9 @@ use crate::search::score_mode::ScoreMode;
 use crate::search::scorer_supplier::ScorerSupplier;
 use crate::search::two_phase_iterator::ScorerIterator;
 use crate::search::weight::Weight;
-use crate::util::{BitSet, BitSetIterator, DocIdSetBuilder, FixedBitSet, IntsRef};
-
-/// Compares the `len` bytes of `a` starting at `a_offset` with the `len` bytes
-/// of `b` starting at `b_offset`, treating each byte as unsigned.
-///
-/// Equivalent to the `ArrayUtil.ByteArrayComparator` that
-/// `ArrayUtil.getUnsignedComparator(int)` returns. Rust's `u8` ordering is
-/// already unsigned, so the slice comparison is the comparator.
-pub(crate) fn compare_unsigned(
-    a: &[u8],
-    a_offset: usize,
-    b: &[u8],
-    b_offset: usize,
-    len: usize,
-) -> i32 {
-    match a[a_offset..a_offset + len].cmp(&b[b_offset..b_offset + len]) {
-        Ordering::Less => -1,
-        Ordering::Equal => 0,
-        Ordering::Greater => 1,
-    }
-}
+use crate::util::{
+    ArrayUtil, BitSet, BitSetIterator, ByteArrayComparator, DocIdSetBuilder, FixedBitSet, IntsRef,
+};
 
 /// Renders one dimension of a packed point value.
 ///
@@ -97,6 +78,11 @@ pub struct PointRangeQuery {
     lower_point: Vec<u8>,
     upper_point: Vec<u8>,
     formatter: Arc<dyn DimensionFormatter>,
+    /// `final ByteArrayComparator comparator`, set to
+    /// `ArrayUtil.getUnsignedComparator(bytesPerDim)` by the constructor
+    /// (`PointRangeQuery.java:60, 97`). Like Java's, it takes no part in
+    /// equality.
+    comparator: ByteArrayComparator,
 }
 
 impl PointRangeQuery {
@@ -143,7 +129,7 @@ impl PointRangeQuery {
                 "lowerPoint has length of zero".to_string(),
             ));
         }
-        if lower_point.len() % (num_dims as usize) != 0 {
+        if !lower_point.len().is_multiple_of(num_dims as usize) {
             return Err(LuceneError::IllegalArgument(
                 "lowerPoint is not a fixed multiple of numDims".to_string(),
             ));
@@ -163,6 +149,7 @@ impl PointRangeQuery {
             lower_point,
             upper_point,
             formatter,
+            comparator: ArrayUtil::get_unsigned_comparator(bytes_per_dim),
         })
     }
 
@@ -207,24 +194,18 @@ impl PointRangeQuery {
     fn matches(&self, packed_value: &[u8]) -> bool {
         let mut offset = 0;
         for _ in 0..self.num_dims {
-            if compare_unsigned(
-                packed_value,
-                offset,
-                &self.lower_point,
-                offset,
-                self.bytes_per_dim,
-            ) < 0
+            if self
+                .comparator
+                .compare(packed_value, offset, &self.lower_point, offset)
+                < 0
             {
                 // The doc's value is too low in this dimension.
                 return false;
             }
-            if compare_unsigned(
-                packed_value,
-                offset,
-                &self.upper_point,
-                offset,
-                self.bytes_per_dim,
-            ) > 0
+            if self
+                .comparator
+                .compare(packed_value, offset, &self.upper_point, offset)
+                > 0
             {
                 // The doc's value is too high in this dimension.
                 return false;
@@ -241,20 +222,14 @@ impl PointRangeQuery {
         let mut crosses = false;
         let mut offset = 0;
         for _ in 0..self.num_dims {
-            if compare_unsigned(
-                min_packed_value,
-                offset,
-                &self.upper_point,
-                offset,
-                self.bytes_per_dim,
-            ) > 0
-                || compare_unsigned(
-                    max_packed_value,
-                    offset,
-                    &self.lower_point,
-                    offset,
-                    self.bytes_per_dim,
-                ) < 0
+            if self
+                .comparator
+                .compare(min_packed_value, offset, &self.upper_point, offset)
+                > 0
+                || self
+                    .comparator
+                    .compare(max_packed_value, offset, &self.lower_point, offset)
+                    < 0
             {
                 return Relation::CellOutsideQuery;
             }
@@ -262,20 +237,16 @@ impl PointRangeQuery {
             // visit every dimension to make sure none of them is completely
             // outside.
             if !crosses {
-                crosses = compare_unsigned(
-                    min_packed_value,
-                    offset,
-                    &self.lower_point,
-                    offset,
-                    self.bytes_per_dim,
-                ) < 0
-                    || compare_unsigned(
-                        max_packed_value,
-                        offset,
-                        &self.upper_point,
-                        offset,
-                        self.bytes_per_dim,
-                    ) > 0;
+                crosses =
+                    self.comparator
+                        .compare(min_packed_value, offset, &self.lower_point, offset)
+                        < 0
+                        || self.comparator.compare(
+                            max_packed_value,
+                            offset,
+                            &self.upper_point,
+                            offset,
+                        ) > 0;
             }
             offset += self.bytes_per_dim;
         }
@@ -322,7 +293,7 @@ impl PointRangeQuery {
 
     /// Equivalent to the private `canRewriteToMatchAllQuery(IndexReader)`.
     fn can_rewrite_to_match_all_query(&self, searcher: &IndexSearcher) -> Result<bool> {
-        for context in Arc::clone(searcher.get_index_reader()).leaves() {
+        for context in Arc::clone(searcher.get_index_reader()).leaves()? {
             let leaf = context.leaf_reader();
             match leaf.get_point_values(&self.field)? {
                 None => return Ok(false),
@@ -336,9 +307,10 @@ impl PointRangeQuery {
         Ok(true)
     }
 
-    /// Equivalent to the private `canRewriteToFieldExistsQuery(IndexReader)`.
-    fn can_rewrite_to_field_exists_query(&self, searcher: &IndexSearcher) -> bool {
-        for context in Arc::clone(searcher.get_index_reader()).leaves() {
+    /// Equivalent to the private `canRewriteToFieldExistsQuery(IndexReader)`,
+    /// which reads `reader.leaves()` and so fails on a closed reader.
+    fn can_rewrite_to_field_exists_query(&self, searcher: &IndexSearcher) -> Result<bool> {
+        for context in Arc::clone(searcher.get_index_reader()).leaves()? {
             let field_infos = context.leaf_reader().get_field_infos();
             if let Some(info) = field_infos.field_info(&self.field) {
                 if info.get_doc_values_type() == DocValuesType::NONE
@@ -346,11 +318,11 @@ impl PointRangeQuery {
                     && info.get_vector_dimension() == 0
                 {
                     // A FieldExistsQuery cannot be used on this segment.
-                    return false;
+                    return Ok(false);
                 }
             }
         }
-        true
+        Ok(true)
     }
 
     /// Counts the documents whose point falls in the range, walking the tree.
@@ -603,7 +575,7 @@ impl ConstantScoreIteratorSupplier for PointRangeIteratorSupplier {
                 visitor.cost
             };
             // Flip the bit set and the cost.
-            let result = flip_all(&result, self.max_doc as usize);
+            result.flip_range(0, self.max_doc as usize);
             let cost = (i64::from(self.max_doc) - cost).max(0);
             let iterator = BitSetIterator::new(Arc::new(result), cost)?;
             return Ok(ScorerIterator::Simple(Box::new(iterator)));
@@ -656,22 +628,6 @@ impl PointRangeIteratorSupplier {
     }
 }
 
-/// Returns the bit set with every bit in `[0, num_bits)` flipped.
-///
-/// Equivalent to `FixedBitSet.flip(0, maxDoc)`, which this crate's
-/// [`FixedBitSet`] does not expose; the words are complemented and the bits
-/// past `num_bits` are cleared so that the cardinality stays exact.
-fn flip_all(set: &FixedBitSet, num_bits: usize) -> FixedBitSet {
-    let mut words: Vec<u64> = set.get_bits().iter().map(|word| !word).collect();
-    let remainder = num_bits & 63;
-    if remainder != 0 {
-        if let Some(last) = words.last_mut() {
-            *last &= (1u64 << remainder) - 1;
-        }
-    }
-    FixedBitSet::from_bits(words, num_bits)
-}
-
 /// The weight of a [`PointRangeQuery`].
 ///
 /// Equivalent to the anonymous `ConstantScoreWeight` that
@@ -679,7 +635,6 @@ fn flip_all(set: &FixedBitSet, num_bits: usize) -> FixedBitSet {
 #[derive(Debug)]
 struct PointRangeWeight {
     query: Arc<PointRangeQuery>,
-    score: f32,
     score_mode: ScoreMode,
 }
 
@@ -687,6 +642,7 @@ impl ConstantScoreWeightImpl for PointRangeWeight {
     fn scorer_supplier(
         &self,
         context: &LeafReaderContext,
+        score: f32,
     ) -> Result<Option<Box<dyn ScorerSupplier>>> {
         let reader = context.leaf_reader();
         let values = reader.get_point_values(self.query.get_field())?;
@@ -708,19 +664,17 @@ impl ConstantScoreWeightImpl for PointRangeWeight {
         let bytes_per_dim = self.query.bytes_per_dim;
         for i in 0..self.query.num_dims as usize {
             let offset = i * bytes_per_dim;
-            if compare_unsigned(
+            if self.query.comparator.compare(
                 &self.query.lower_point,
                 offset,
                 &field_packed_upper,
                 offset,
-                bytes_per_dim,
             ) > 0
-                || compare_unsigned(
+                || self.query.comparator.compare(
                     &self.query.upper_point,
                     offset,
                     &field_packed_lower,
                     offset,
-                    bytes_per_dim,
                 ) < 0
             {
                 // Returning None here helps make sure that, when this query is a
@@ -735,19 +689,17 @@ impl ConstantScoreWeightImpl for PointRangeWeight {
             let mut all = true;
             for i in 0..self.query.num_dims as usize {
                 let offset = i * bytes_per_dim;
-                if compare_unsigned(
+                if self.query.comparator.compare(
                     &self.query.lower_point,
                     offset,
                     &field_packed_lower,
                     offset,
-                    bytes_per_dim,
                 ) > 0
-                    || compare_unsigned(
+                    || self.query.comparator.compare(
                         &self.query.upper_point,
                         offset,
                         &field_packed_upper,
                         offset,
-                        bytes_per_dim,
                     ) < 0
                 {
                     all = false;
@@ -763,7 +715,7 @@ impl ConstantScoreWeightImpl for PointRangeWeight {
             // All docs have a value and all points are within bounds, so
             // everything matches.
             Ok(Some(Box::new(ConstantScoreScorerSupplier::match_all(
-                self.score,
+                score,
                 self.score_mode,
                 reader.max_doc(),
             )?)))
@@ -771,7 +723,7 @@ impl ConstantScoreWeightImpl for PointRangeWeight {
             let inner =
                 PointRangeIteratorSupplier::new(Arc::clone(&self.query), values, reader.max_doc())?;
             Ok(Some(Box::new(ConstantScoreScorerSupplier::new(
-                self.score,
+                score,
                 self.score_mode,
                 reader.max_doc(),
                 inner,
@@ -868,10 +820,10 @@ impl Query for PointRangeQuery {
             lower_point: self.lower_point.clone(),
             upper_point: self.upper_point.clone(),
             formatter: Arc::clone(&self.formatter),
+            comparator: self.comparator.clone(),
         });
         let inner = PointRangeWeight {
             query: Arc::clone(&query),
-            score: boost,
             score_mode,
         };
         Ok(Arc::new(ConstantScoreWeight::new(query, boost, inner)))
@@ -879,7 +831,7 @@ impl Query for PointRangeQuery {
 
     fn rewrite(&self, searcher: &IndexSearcher) -> Result<Option<Arc<dyn Query>>> {
         let reader = Arc::clone(searcher.get_index_reader());
-        for leaf in Arc::clone(&reader).leaves() {
+        for leaf in Arc::clone(&reader).leaves()? {
             let values = leaf.leaf_reader().get_point_values(&self.field)?;
             self.check_valid_point_values(values.as_deref())?;
         }
@@ -895,7 +847,7 @@ impl Query for PointRangeQuery {
             Relation::CellInsideQuery => {
                 if self.can_rewrite_to_match_all_query(searcher)? {
                     Ok(Some(Arc::new(MatchAllDocsQuery::instance())))
-                } else if self.can_rewrite_to_field_exists_query(searcher) {
+                } else if self.can_rewrite_to_field_exists_query(searcher)? {
                     Ok(Some(Arc::new(FieldExistsQuery::new(&self.field))))
                 } else {
                     Ok(None)

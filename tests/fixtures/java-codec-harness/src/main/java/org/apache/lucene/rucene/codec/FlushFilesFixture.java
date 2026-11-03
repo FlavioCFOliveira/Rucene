@@ -160,6 +160,8 @@ public final class FlushFilesFixture {
                 + sci.info.getUseCompoundFile()
                 + " id="
                 + StringHelper.idToString(sci.info.getId())
+                + " diag="
+                + String.join(",", new java.util.TreeSet<>(sci.info.getDiagnostics().keySet()))
                 + " files="
                 + String.join(",", files));
       }

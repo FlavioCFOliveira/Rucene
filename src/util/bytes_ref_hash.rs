@@ -15,11 +15,16 @@
 //!   owning handles, so every method that touches term bytes takes the pool as
 //!   an argument. Ownership therefore lives one level up, in the structure that
 //!   owns both the pool and the per-field hashes.
-//! * **`BytesStartArray` is gone.** Lucene needs that callback so a subclass can
-//!   grow its parallel `int[]` arrays in lockstep with `bytesStart`. Term ids
-//!   are dense and monotonically increasing, so this port simply pushes onto a
-//!   `Vec`, and callers push onto their own `Vec` in the same step. No callback,
-//!   no `System.arraycopy`, no possibility of the two arrays disagreeing.
+//! * **[`BytesStartArray`] hands the array back and forth.** Java's
+//!   `BytesStartArray` keeps a reference to the `int[] bytesStart` it allocated
+//!   and the table keeps another to the same array. A Rust array has one owner,
+//!   so the table owns it and passes it to [`BytesStartArray::grow`], which
+//!   returns the grown array, as Java's `grow()` returns the array the table
+//!   then holds. The allocation sizes and the counter they charge are Java's.
+//!   `TermsHashPerField.PostingsBytesStartArray` is not ported: the postings
+//!   tables ([`BytesRefHash::for_postings`]) keep their starts in a
+//!   [`DirectBytesStartArray`] over the shared counter, which their
+//!   `TermsHashPerField` charges for the postings columns itself.
 //! * **The two hash keys are chosen at construction, not per call.** Lucene's
 //!   `BytesRefHash` exposes both `add(BytesRef)`, which hashes the *bytes*, and
 //!   `addByPoolOffset(int)`, which hashes the *pool offset* of bytes some other
@@ -30,31 +35,285 @@
 //!   picking one and never straying; this port makes the choice explicit in the
 //!   constructor ([`BytesRefHash::new`] versus
 //!   [`BytesRefHash::new_by_pool_offset`]) and asserts it on every entry point.
-//! * **[`BytesRefHash::sort`] is a comparison sort.** Lucene uses an MSB radix
-//!   sort with a comparison fallback. Both produce exactly the same order —
-//!   ascending unsigned byte-wise order — which is all the index format
-//!   depends on; the radix sort is a constant-factor optimisation that can be
-//!   revisited once term-heavy segments are benchmarked.
+//! * **[`BytesRefHash::sort`] consumes the table, as Lucene's does.** It runs
+//!   [`compact`](BytesRefHash::compact) and sorts the `ids` array in place, so
+//!   [`clear`](BytesRefHash::clear) must be called before the hash is probed
+//!   or added to again.
 
+use std::cell::Cell;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
 use crate::error::Result;
 use crate::util::byte_block_pool::{hash_bytes, ByteBlockPool};
+use crate::util::selector::{intro_sort, PivotOps};
+use crate::util::sorter::{
+    MSBRadixSorter, MSBRadixSorterOps, MSB_HISTOGRAM_SIZE, MSB_LENGTH_THRESHOLD,
+    MSB_LEVEL_THRESHOLD,
+};
 use crate::util::RamUsageEstimator;
+
+/// The anonymous `MSBStringRadixSorter` subclass of `BytesRefHash.sort()`
+/// (`BytesRefHash.java:205-252`), together with the `StringSorter` it lives in:
+/// bytes are read as `BytesRefComparator.NATURAL` reads them, and each entry's
+/// bucket is cached at `compact[tmp_offset + i]` while a level is reordered.
+///
+/// Java keeps the bucket cache in the second half of the `compact` array and
+/// writes it from `buildHistogram`; [`MSBRadixSorterOps::build_histogram`]
+/// takes `&self`, so the cache is a separate array of cells here. The values
+/// and the moments they are written and read are Java's.
+struct HashRadixOps<'a> {
+    compact: &'a mut [i32],
+    /// Equivalent to `compact[tmpOffset ..]`.
+    bucket_cache: Vec<Cell<i32>>,
+    pool: &'a ByteBlockPool,
+    bytes_start: &'a [i32],
+    /// The byte the current histogram was built for; Java asserts it matches
+    /// the one `reorder` is called with.
+    k: Cell<usize>,
+}
+
+impl HashRadixOps<'_> {
+    /// The term bytes of the entry at `i`.
+    ///
+    /// Equivalent to the overridden `StringSorter.get(BytesRefBuilder,
+    /// BytesRef, int)`: `pool.fillBytesRef(result, bytesStart[compact[i]])`.
+    fn term(&self, i: usize) -> &[u8] {
+        self.pool
+            .term_bytes(self.bytes_start[self.compact[i] as usize])
+    }
+
+    /// `swapBucketCache(int, int)`.
+    fn swap_bucket_cache(&mut self, i: usize, j: usize) {
+        self.compact.swap(i, j);
+        self.bucket_cache.swap(i, j);
+    }
+}
+
+impl MSBRadixSorterOps for HashRadixOps<'_> {
+    /// `MSBStringRadixSorter.byteAt`, over `BytesRefComparator.NATURAL.byteAt`.
+    fn byte_at(&self, i: usize, k: usize) -> i32 {
+        let term = self.term(i);
+        if term.len() <= k {
+            -1
+        } else {
+            i32::from(term[k])
+        }
+    }
+
+    /// The overridden `StringSorter.swap(int, int)`.
+    fn swap(&mut self, i: usize, j: usize) {
+        self.compact.swap(i, j);
+    }
+
+    fn build_histogram(
+        &self,
+        prefix_common_bucket: usize,
+        prefix_common_len: i32,
+        from: usize,
+        to: usize,
+        k: usize,
+        histogram: &mut [i32],
+    ) {
+        self.k.set(k);
+        histogram[prefix_common_bucket] = prefix_common_len;
+        let fill_from = from - prefix_common_len as usize;
+        for cell in &self.bucket_cache[fill_from..from] {
+            cell.set(prefix_common_bucket as i32);
+        }
+        for i in from..to {
+            let b = self.get_bucket(i, k);
+            self.bucket_cache[i].set(b as i32);
+            histogram[b] += 1;
+        }
+    }
+
+    fn should_fallback(&self, from: usize, to: usize, l: usize) -> bool {
+        // We lower the fallback threshold because the bucket cache speeds up
+        // the reorder.
+        to - from <= MSB_LENGTH_THRESHOLD / 2 || l >= MSB_LEVEL_THRESHOLD
+    }
+
+    fn reorder(
+        &mut self,
+        from: usize,
+        _to: usize,
+        start_offsets: &mut [i32],
+        end_offsets: &[i32],
+        k: usize,
+    ) {
+        debug_assert_eq!(self.k.get(), k);
+        for i in 0..MSB_HISTOGRAM_SIZE {
+            let limit = end_offsets[i];
+            loop {
+                let h1 = start_offsets[i];
+                if h1 >= limit {
+                    break;
+                }
+                let b = self.bucket_cache[from + h1 as usize].get() as usize;
+                let h2 = start_offsets[b];
+                start_offsets[b] += 1;
+                self.swap_bucket_cache(from + h1 as usize, from + h2 as usize);
+            }
+        }
+    }
+
+    /// `MSBStringRadixSorter.getFallbackSorter(k)`: the `StringSorter`
+    /// intro sort under `(o1, o2) -> NATURAL.compare(o1, o2, k)`.
+    fn fallback_sort(&mut self, from: usize, to: usize, k: usize, _max_length: usize) {
+        let mut fallback = HashFallbackSorter {
+            ops: self,
+            k,
+            pivot: Vec::new(),
+        };
+        intro_sort(&mut fallback, from, to);
+    }
+}
+
+/// The intro sort of `StringSorter.fallbackSorter(Comparator)` over the
+/// hash's entries, comparing from byte `k` on, as
+/// `BytesRefComparator.NATURAL.compare(o1, o2, k)` does.
+struct HashFallbackSorter<'a, 'b> {
+    ops: &'a mut HashRadixOps<'b>,
+    k: usize,
+    pivot: Vec<u8>,
+}
+
+impl PivotOps for HashFallbackSorter<'_, '_> {
+    fn swap(&mut self, i: usize, j: usize) {
+        self.ops.compact.swap(i, j);
+    }
+
+    fn set_pivot(&mut self, i: usize) {
+        self.pivot.clear();
+        self.pivot.extend_from_slice(self.ops.term(i));
+    }
+
+    fn compare_pivot(&mut self, j: usize) -> i32 {
+        compare_unsigned_from(&self.pivot, self.ops.term(j), self.k)
+    }
+
+    fn compare(&mut self, i: usize, j: usize) -> i32 {
+        compare_unsigned_from(self.ops.term(i), self.ops.term(j), self.k)
+    }
+}
+
+/// `Arrays.compareUnsigned` over both arrays from offset `k` to their ends,
+/// which is what `BytesRefComparator.NATURAL.compare(o1, o2, k)` computes.
+fn compare_unsigned_from(a: &[u8], b: &[u8], k: usize) -> i32 {
+    let a = a.get(k..).unwrap_or(&[]);
+    let b = b.get(k..).unwrap_or(&[]);
+    let n = a.len().min(b.len());
+    for i in 0..n {
+        if a[i] != b[i] {
+            return i32::from(a[i]) - i32::from(b[i]);
+        }
+    }
+    a.len() as i32 - b.len() as i32
+}
 
 /// Initial number of slots in the hash table.
 ///
 /// Equivalent to the `HASH_INIT_SIZE` used by `TermsHashPerField`.
 pub const HASH_INIT_SIZE: usize = 4;
 
+/// The slot count of a table built without an explicit capacity.
+///
+/// Equivalent to `BytesRefHash.DEFAULT_CAPACITY`.
+pub const DEFAULT_CAPACITY: usize = 16;
+
+/// Manages the allocation of a table's per-term addresses.
+///
+/// Equivalent to `BytesRefHash.BytesStartArray` (`BytesRefHash.java:525-556`).
+/// Java's implementation keeps a reference to the `int[]` it allocated; here
+/// the table owns the array and hands it to [`grow`](Self::grow), which returns
+/// the grown one (see the module notes).
+pub trait BytesStartArray: std::fmt::Debug + Send + Sync {
+    /// Allocates the start array.
+    ///
+    /// Equivalent to `BytesStartArray.init()`.
+    fn init(&mut self) -> Vec<i32>;
+
+    /// Grows `bytes_start`, keeping its contents, and returns the grown array.
+    ///
+    /// Equivalent to `BytesStartArray.grow()`.
+    fn grow(&mut self, bytes_start: Vec<i32>) -> Vec<i32>;
+
+    /// Clears the start array and returns what the table holds next, which
+    /// may be none.
+    ///
+    /// Equivalent to `BytesStartArray.clear()`.
+    fn clear(&mut self) -> Option<Vec<i32>>;
+
+    /// The counter the table charges its slots to, or none for a private one.
+    ///
+    /// Equivalent to `BytesStartArray.bytesUsed()`.
+    fn bytes_used(&self) -> Option<Arc<AtomicI64>>;
+}
+
+/// A [`BytesStartArray`] of plain arrays, which charges its counter nothing.
+///
+/// Equivalent to `BytesRefHash.DirectBytesStartArray`
+/// (`BytesRefHash.java:562-600`): `init` allocates
+/// `ArrayUtil.oversize(initSize, Integer.BYTES)` starts, `grow` is
+/// `ArrayUtil.grow(bytesStart, bytesStart.length + 1)`, and `clear` drops the
+/// array.
+#[derive(Debug)]
+pub struct DirectBytesStartArray {
+    /// Equivalent to `DirectBytesStartArray.initSize`.
+    init_size: usize,
+    bytes_used: Arc<AtomicI64>,
+}
+
+impl DirectBytesStartArray {
+    /// Equivalent to `DirectBytesStartArray(int, Counter)`.
+    pub fn new(init_size: usize, counter: Arc<AtomicI64>) -> Self {
+        Self {
+            init_size,
+            bytes_used: counter,
+        }
+    }
+
+    /// Equivalent to `DirectBytesStartArray(int)`, over a counter of its own
+    /// (`Counter.newCounter()`).
+    pub fn with_private_counter(init_size: usize) -> Self {
+        Self::new(init_size, Arc::new(AtomicI64::new(0)))
+    }
+}
+
+impl BytesStartArray for DirectBytesStartArray {
+    fn init(&mut self) -> Vec<i32> {
+        vec![0; crate::util::ArrayUtil::oversize(self.init_size, 4)]
+    }
+
+    fn grow(&mut self, mut bytes_start: Vec<i32>) -> Vec<i32> {
+        let min_size = bytes_start.len() + 1;
+        // `ArrayUtil.grow(int[], int)`: `growExact(array, oversize(minSize,
+        // Integer.BYTES))` when the array is shorter than `minSize`, which it
+        // always is here.
+        bytes_start.resize(crate::util::ArrayUtil::oversize(min_size, 4), 0);
+        bytes_start
+    }
+
+    fn clear(&mut self) -> Option<Vec<i32>> {
+        None
+    }
+
+    fn bytes_used(&self) -> Option<Arc<AtomicI64>> {
+        Some(Arc::clone(&self.bytes_used))
+    }
+}
+
 /// Maps byte sequences to dense term ids.
 ///
 /// Equivalent to `org.apache.lucene.util.BytesRefHash`.
 #[derive(Debug)]
 pub struct BytesRefHash {
-    /// Maps a term id to the global pool offset of its bytes.
-    bytes_start: Vec<i32>,
+    /// Maps a term id to the global pool offset of its bytes: Java's
+    /// `int[] bytesStart`, sized by the [`BytesStartArray`] that allocated it
+    /// and `None` where Java's is `null` — after a `clear` or `close`, until
+    /// [`reinit`](Self::reinit).
+    bytes_start: Option<Vec<i32>>,
     /// Open-addressed slots. `-1` marks an empty slot; otherwise the low bits
     /// hold the term id and the high bits hold part of the hash code, so a
     /// probe can reject a mismatch without touching the pool.
@@ -73,6 +332,10 @@ pub struct BytesRefHash {
     /// bytes (`BytesRefHash.addByPoolOffset`) rather than by the bytes
     /// themselves (`BytesRefHash.add`).
     keyed_by_pool_offset: bool,
+    /// Allocates, grows and clears `bytes_start`.
+    ///
+    /// Equivalent to `BytesRefHash.bytesStartArray`.
+    bytes_start_array: Box<dyn BytesStartArray>,
 }
 
 impl BytesRefHash {
@@ -102,17 +365,46 @@ impl BytesRefHash {
     /// # Panics
     ///
     /// Panics if `capacity` is zero or not a power of two.
+    ///
+    /// The term starts are kept in a [`DirectBytesStartArray`] of `capacity`
+    /// over `bytes_used`, as Java's `new BytesRefHash(pool, capacity, new
+    /// DirectBytesStartArray(capacity, bytesUsed))` keeps them.
     pub fn with_capacity(capacity: usize, bytes_used: Arc<AtomicI64>) -> Self {
+        Self::with_bytes_start_array(
+            capacity,
+            Box::new(DirectBytesStartArray::new(capacity, bytes_used)),
+        )
+    }
+
+    /// Creates an empty table with `capacity` slots, keyed by the term bytes,
+    /// whose term starts `bytes_start_array` manages.
+    ///
+    /// Equivalent to `BytesRefHash(ByteBlockPool, int, BytesStartArray)`
+    /// (`BytesRefHash.java:122-142`): the start array is initialised, the
+    /// table charges its slots to the start array's counter — a private one
+    /// when it has none — and nothing else.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `capacity` is zero or not a power of two.
+    pub fn with_bytes_start_array(
+        capacity: usize,
+        mut bytes_start_array: Box<dyn BytesStartArray>,
+    ) -> Self {
         assert!(
             capacity > 0 && capacity.is_power_of_two(),
             "capacity must be a positive power of two, got {capacity}"
         );
+        let bytes_start = Some(bytes_start_array.init());
+        let bytes_used = bytes_start_array
+            .bytes_used()
+            .unwrap_or_else(|| Arc::new(AtomicI64::new(0)));
         bytes_used.fetch_add(
             (capacity * std::mem::size_of::<i32>()) as i64,
             Ordering::AcqRel,
         );
         Self {
-            bytes_start: Vec::new(),
+            bytes_start,
             ids: vec![-1; capacity],
             hash_half_size: capacity >> 1,
             hash_mask: capacity as i32 - 1,
@@ -121,7 +413,53 @@ impl BytesRefHash {
             last_count: -1,
             bytes_used,
             keyed_by_pool_offset: false,
+            bytes_start_array,
         }
+    }
+
+    /// Creates an empty table with `capacity` slots whose term start offsets
+    /// are kept in a `DirectBytesStartArray`: only the slot array is charged to
+    /// `bytes_used`.
+    ///
+    /// Equivalent to `new BytesRefHash(pool, capacity, new
+    /// DirectBytesStartArray(capacity, bytesUsed))`, the table
+    /// `SortedDocValuesWriter` and `SortedSetDocValuesWriter` intern their
+    /// values into (`SortedDocValuesWriter.java:59-63`): the constructor
+    /// charges `capacity * Integer.BYTES` for the slots and the start array
+    /// costs the counter nothing.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `capacity` is zero or not a power of two.
+    pub fn with_direct_bytes_start(capacity: usize, bytes_used: Arc<AtomicI64>) -> Self {
+        Self::with_capacity(capacity, bytes_used)
+    }
+
+    /// Creates the term table of a `TermsHashPerField`, keyed by the term
+    /// bytes, whose term start offsets are not charged to `bytes_used`.
+    ///
+    /// Equivalent to `new BytesRefHash(termBytePool, HASH_INIT_SIZE,
+    /// PostingsBytesStartArray)` (`TermsHashPerField.java:82-83`): the
+    /// constructor charges the `HASH_INIT_SIZE` slots, and the start offsets
+    /// are the `textStarts` column of the postings array, which the
+    /// `TermsHashPerField` charges as part of `bytesPerPosting()`.
+    ///
+    /// **Divergence from Lucene 10.5.0 (pre-existing).** The unported
+    /// `PostingsBytesStartArray` hands out the postings array's `textStarts`;
+    /// this table keeps the starts in a [`DirectBytesStartArray`] over the
+    /// same counter, which, like Java's, charges the counter nothing for them
+    /// and drops them on `clear`.
+    pub fn for_postings(bytes_used: Arc<AtomicI64>) -> Self {
+        Self::with_capacity(HASH_INIT_SIZE, bytes_used)
+    }
+
+    /// [`for_postings`](Self::for_postings), keyed by the pool offset of
+    /// bytes the primary hash already interned, as
+    /// [`new_by_pool_offset`](Self::new_by_pool_offset) is.
+    pub fn for_postings_by_pool_offset(bytes_used: Arc<AtomicI64>) -> Self {
+        let mut hash = Self::for_postings(bytes_used);
+        hash.keyed_by_pool_offset = true;
+        hash
     }
 
     /// Returns `true` when this table is keyed by pool offset.
@@ -145,7 +483,39 @@ impl BytesRefHash {
     ///
     /// Panics if `term_id` was never returned by [`Self::add`].
     pub fn byte_start(&self, term_id: i32) -> i32 {
-        self.bytes_start[term_id as usize]
+        // `assert bytesID >= 0 && bytesID < count : bytesID`
+        // (`BytesRefHash.java:500`).
+        debug_assert!(term_id >= 0 && term_id < self.count, "{term_id}");
+        self.starts()[term_id as usize]
+    }
+
+    /// Java's `bytesStart`, which every reader asserts is not `null`
+    /// (`assert bytesStart != null : "bytesStart is null - not initialized"`).
+    fn starts(&self) -> &[i32] {
+        self.bytes_start
+            .as_deref()
+            .expect("bytesStart is null - not initialized")
+    }
+
+    /// Stores `text_start` as the start of the next term id, growing the start
+    /// array first when it is full (`BytesRefHash.java:339-343, 413-418`).
+    fn push_start(&mut self, text_start: i32) {
+        let count = self.count as usize;
+        let mut bytes_start = self
+            .bytes_start
+            .take()
+            .expect("Bytesstart is null - not initialized");
+        if count >= bytes_start.len() {
+            bytes_start = self.bytes_start_array.grow(bytes_start);
+            // `assert count < bytesStart.length + 1`.
+            debug_assert!(
+                count < bytes_start.len() + 1,
+                "count: {count} len: {}",
+                bytes_start.len()
+            );
+        }
+        bytes_start[count] = text_start;
+        self.bytes_start = Some(bytes_start);
     }
 
     /// Interns `bytes` and returns its term id.
@@ -175,9 +545,7 @@ impl BytesRefHash {
 
         let text_start = pool.add_bytes_ref(bytes)?;
         let term_id = self.count;
-        self.bytes_start.push(text_start);
-        self.bytes_used
-            .fetch_add(std::mem::size_of::<i32>() as i64, Ordering::AcqRel);
+        self.push_start(text_start);
         self.ids[hash_pos] = term_id | (hashcode & self.high_mask);
         self.count += 1;
         if self.count as usize == self.hash_half_size {
@@ -206,7 +574,7 @@ impl BytesRefHash {
         let mut code = text_start;
         let mut hash_pos = (code & self.hash_mask) as usize;
         let mut entry = self.ids[hash_pos];
-        while entry != -1 && self.bytes_start[entry as usize] != text_start {
+        while entry != -1 && self.starts()[entry as usize] != text_start {
             code = code.wrapping_add(1);
             hash_pos = (code & self.hash_mask) as usize;
             entry = self.ids[hash_pos];
@@ -216,9 +584,7 @@ impl BytesRefHash {
         }
 
         let term_id = self.count;
-        self.bytes_start.push(text_start);
-        self.bytes_used
-            .fetch_add(std::mem::size_of::<i32>() as i64, Ordering::AcqRel);
+        self.push_start(text_start);
         // Unlike the bytes-keyed path the slot holds the bare term id: the
         // probe compares `bytes_start[id]` with the offset, so there are no
         // high bits to shortcut it with (`BytesRefHash.java`, the `hashOnData
@@ -248,18 +614,44 @@ impl BytesRefHash {
         }
     }
 
-    /// Returns every term id ordered by the unsigned byte-wise order of its
-    /// term bytes.
+    /// Returns the slot array with its first [`size`](Self::size) entries
+    /// holding every term id, ordered by the unsigned byte-wise order of the
+    /// term bytes, and `-1` in every other slot.
     ///
-    /// Equivalent to `BytesRefHash.sort()`. Unlike Lucene's version this does
-    /// not consume the table, so it can be called again after inspection.
-    pub fn sort(&self, pool: &ByteBlockPool) -> Vec<i32> {
-        let mut sorted: Vec<i32> = (0..self.count).collect();
-        sorted.sort_unstable_by(|left, right| {
-            pool.term_bytes(self.bytes_start[*left as usize])
-                .cmp(pool.term_bytes(self.bytes_start[*right as usize]))
-        });
-        sorted
+    /// Equivalent to `BytesRefHash.sort()` (`BytesRefHash.java:179-262`):
+    /// [`compact`](Self::compact) first, then a `StringSorter` over
+    /// `BytesRefComparator.NATURAL` whose radix sorter is an
+    /// `MSBStringRadixSorter` caching each entry's bucket, and whose fallback
+    /// is the `StringSorter` intro sort, over the compacted slots. As in Java
+    /// this is destructive: the slots no longer hash anything, so
+    /// [`find`](Self::find) and [`add`](Self::add) are unusable until
+    /// [`clear`](Self::clear) is called. Sorting a sorted table again
+    /// compacts and sorts the same ids, and returns the same order.
+    pub fn sort(&mut self, pool: &ByteBlockPool) -> &[i32] {
+        self.compact();
+        let count = self.count as usize;
+        // `assert count * 2 <= compact.length : "We need load factor <= 0.5f
+        // to speed up this sort"`.
+        debug_assert!(
+            count * 2 <= self.ids.len(),
+            "We need load factor <= 0.5f to speed up this sort"
+        );
+        let mut ops = HashRadixOps {
+            compact: &mut self.ids,
+            bucket_cache: vec![Cell::new(0); count],
+            pool,
+            bytes_start: self
+                .bytes_start
+                .as_deref()
+                .expect("bytesStart is null - not initialized"),
+            k: Cell::new(0),
+        };
+        let mut radix = MSBRadixSorter::new(i32::MAX as usize);
+        radix.sort(&mut ops, 0, count);
+        // Java then refills the bucket cache it kept in `compact[tmpOffset ..]`
+        // with -1; the cache is a separate array here, so those slots already
+        // hold the -1 `compact()` wrote.
+        &self.ids
     }
 
     /// Shallow size of the Java class plus the `Counter` it shares, the fixed
@@ -294,12 +686,13 @@ impl BytesRefHash {
     /// Panics when `bytes_id` is not a term id this table handed out, which is
     /// what Java's two assertions check.
     pub fn get<'p>(&self, pool: &'p ByteBlockPool, bytes_id: i32) -> &'p [u8] {
+        let bytes_start = self.starts();
         assert!(
-            bytes_id >= 0 && (bytes_id as usize) < self.bytes_start.len(),
+            bytes_id >= 0 && (bytes_id as usize) < bytes_start.len(),
             "bytesID exceeds byteStart len: {}",
-            self.bytes_start.len()
+            bytes_start.len()
         );
-        pool.term_bytes(self.bytes_start[bytes_id as usize])
+        pool.term_bytes(bytes_start[bytes_id as usize])
     }
 
     /// Returns an estimate of the heap this table occupies, including the pool
@@ -316,12 +709,27 @@ impl BytesRefHash {
     /// parameter here too. That also means this cannot be the
     /// [`Accountable`](crate::util::Accountable) implementation, whose
     /// `ram_bytes_used` takes nothing but `&self`.
+    ///
+    /// Java's `pool` is a `BytesRefBlockPool` wrapping the `ByteBlockPool`, so
+    /// the pool term adds that wrapper's shallow size
+    /// ([`BytesRefBlockPool::BASE_RAM_BYTES`](crate::util::bytes_ref_array::BytesRefBlockPool::BASE_RAM_BYTES))
+    /// to the block pool's estimate. After [`close`](Self::close) Java's
+    /// `bytesStart` and `ids` are `null`, which `sizeOfObject` charges
+    /// nothing: this port's `bytes_start` is `None` then, and its closed table
+    /// holds an empty `ids` vector, read here as that `null`. An open table's
+    /// `bytesStart` is sized as its [`BytesStartArray`] allocated it.
     pub fn ram_bytes_used(&self, pool: &ByteBlockPool) -> i64 {
-        use crate::util::Accountable;
+        use crate::util::SizedObject;
+        let closed = self.ids.is_empty();
         Self::BASE_RAM_BYTES
-            + RamUsageEstimator::size_of_int(&self.bytes_start)
-            + RamUsageEstimator::size_of_int(&self.ids)
-            + pool.ram_bytes_used()
+            + RamUsageEstimator::size_of_object(
+                self.bytes_start.as_deref().map(SizedObject::IntArray),
+            )
+            + RamUsageEstimator::size_of_object(
+                (!closed).then_some(SizedObject::IntArray(&self.ids)),
+            )
+            + RamUsageEstimator::size_of_object(Some(SizedObject::Accountable(pool)))
+            + crate::util::bytes_ref_array::BytesRefBlockPool::BASE_RAM_BYTES
     }
 
     /// Empties the table, resets the pool and releases every byte this table
@@ -337,7 +745,8 @@ impl BytesRefHash {
     /// back; calling this twice is harmless.
     pub fn close(&mut self, pool: &mut ByteBlockPool) {
         self.clear();
-        pool.reset();
+        // `clear(true)` resets the pool with `pool.reset(false, false)`.
+        pool.reset(false, false);
         let hash_size = self.ids.len();
         self.bytes_used.fetch_sub(
             (hash_size * std::mem::size_of::<i32>()) as i64,
@@ -346,27 +755,44 @@ impl BytesRefHash {
         self.ids = Vec::new();
     }
 
+    /// The bytes this table has charged to its counter and still holds: the
+    /// slot array. Java's table charges nothing else (`BytesRefHash.java:141,
+    /// 317, 486`), and a [`DirectBytesStartArray`] charges nothing for the
+    /// starts.
+    ///
+    /// What [`release_accounting`](Self::release_accounting) gives back; an
+    /// owner that shares the table read-only gives it back with this figure
+    /// instead.
+    pub fn charged_bytes(&self) -> i64 {
+        (self.ids.len() * std::mem::size_of::<i32>()) as i64
+    }
+
     /// Drops both arrays and removes them from the shared RAM counter.
     ///
     /// This is [`close`](Self::close) without the pool: it returns the same
-    /// bytes to the shared counter that Java's `close()` does — the `ids` and
-    /// `bytesStart` arrays — but leaves the pool alone, for the callers that
+    /// bytes to the shared counter that Java's `close()` does — the `ids`
+    /// array — but leaves the pool alone, for the callers that
     /// discard a table without owning the pool it interned into. Rust frees
     /// eagerly, so the owner must hand the bytes back when it drops the table,
     /// whereas the JVM reclaims a discarded `BytesRefHash` on its own. The
     /// table is empty and unusable afterwards, and calling this twice is
     /// harmless.
+    ///
+    /// It goes through the same steps as `close()` (`BytesRefHash.java:313-318`):
+    /// `clear` records `lastCount` and shrinks the table towards it, and the
+    /// remaining slots are handed back, so a later [`reinit`](Self::reinit)
+    /// allocates the table size, and the next `clear` shrinks towards the
+    /// count, that Java's would.
     pub fn release_accounting(&mut self) {
-        let held = (self.ids.len() + self.bytes_start.len()) * std::mem::size_of::<i32>();
-        self.bytes_used.fetch_sub(held as i64, Ordering::AcqRel);
+        self.clear();
+        let hash_size = self.ids.len();
+        self.bytes_used.fetch_sub(
+            (hash_size * std::mem::size_of::<i32>()) as i64,
+            Ordering::AcqRel,
+        );
         self.ids = Vec::new();
-        self.bytes_start = Vec::new();
-        self.count = 0;
     }
 
-    /// Removes every term, keeping the table allocated for reuse.
-    ///
-    /// Equivalent to `BytesRefHash.clear(false)`.
     /// Restores the table's buffers after a [`close`](Self::clear) that
     /// released them.
     ///
@@ -379,9 +805,13 @@ impl BytesRefHash {
     /// emptiness, which is the state [`close`](Self::close) and
     /// [`release_accounting`](Self::release_accounting) leave them in. The
     /// slot count comes from `hash_mask`, which those methods do not disturb,
-    /// and is Java's `hashSize` field. Whichever way the table got here, it is
-    /// left empty, sized, and ready to intern again.
+    /// and is Java's `hashSize` field. A table whose arrays are still there is
+    /// left exactly as it is, as Java's is.
     pub fn reinit(&mut self) {
+        if self.bytes_start.is_none() {
+            self.bytes_start = Some(self.bytes_start_array.init());
+        }
+
         if self.ids.is_empty() {
             let hash_size = (self.hash_mask as usize) + 1;
             self.ids = vec![-1i32; hash_size];
@@ -389,21 +819,19 @@ impl BytesRefHash {
                 (hash_size * std::mem::size_of::<i32>()) as i64,
                 Ordering::AcqRel,
             );
-            self.count = 0;
-            self.last_count = -1;
-        } else {
-            self.clear();
         }
     }
 
+    /// Removes every term, keeping the slot array allocated for reuse.
+    ///
+    /// Equivalent to `BytesRefHash.clear(false)` (`BytesRefHash.java:295-306`):
+    /// the start array becomes what [`BytesStartArray::clear`] returns — none
+    /// for a [`DirectBytesStartArray`] — so the table is used again only after
+    /// [`reinit`](Self::reinit).
     pub fn clear(&mut self) {
-        self.bytes_used.fetch_sub(
-            (self.bytes_start.len() * std::mem::size_of::<i32>()) as i64,
-            Ordering::AcqRel,
-        );
-        self.bytes_start.clear();
         self.last_count = self.count;
         self.count = 0;
+        self.bytes_start = self.bytes_start_array.clear();
         // `shrink` clears the hash entries when it resizes; when it does not,
         // they must be cleared here.
         if self.last_count == -1 || !self.shrink(self.last_count) {
@@ -471,7 +899,7 @@ impl BytesRefHash {
         let mut entry = self.ids[hash_pos];
         while entry != -1
             && ((entry & self.high_mask) != high_bits
-                || pool.term_bytes(self.bytes_start[(entry & self.hash_mask) as usize]) != bytes)
+                || pool.term_bytes(self.starts()[(entry & self.hash_mask) as usize]) != bytes)
         {
             code = code.wrapping_add(1);
             hash_pos = (code & self.hash_mask) as usize;
@@ -500,7 +928,7 @@ impl BytesRefHash {
                 continue;
             }
             let term_id = entry & self.hash_mask;
-            let hashcode = pool.hash_at(self.bytes_start[term_id as usize]);
+            let hashcode = pool.hash_at(self.starts()[term_id as usize]);
             let mut code = hashcode;
             let mut hash_pos = (code & new_mask) as usize;
             while new_ids[hash_pos] != -1 {
@@ -529,7 +957,7 @@ impl BytesRefHash {
         let new_mask = new_size as i32 - 1;
         let mut new_ids = vec![-1i32; new_size];
         for term_id in 0..self.count {
-            let mut code = self.bytes_start[term_id as usize];
+            let mut code = self.starts()[term_id as usize];
             let mut hash_pos = (code & new_mask) as usize;
             while new_ids[hash_pos] != -1 {
                 code = code.wrapping_add(1);
@@ -620,8 +1048,9 @@ mod tests {
         for input in &inputs {
             hash.add(&mut pool, input).expect("add");
         }
-        let sorted: Vec<Vec<u8>> = hash
-            .sort(&pool)
+        let count = hash.size() as usize;
+        let ids = hash.sort(&pool)[..count].to_vec();
+        let sorted: Vec<Vec<u8>> = ids
             .into_iter()
             .map(|id| pool.term_bytes(hash.byte_start(id)).to_vec())
             .collect();
@@ -630,32 +1059,109 @@ mod tests {
         assert_eq!(sorted, expected);
     }
 
+    /// rmp #151: `sort` runs Lucene's `MSBStringRadixSorter` with the bucket
+    /// cache and the lowered fallback threshold (`BytesRefHash.java:198-262`).
+    /// Terms with long shared prefixes, empty and one-byte terms, and bytes
+    /// above 0x7F drive the radix levels, the common-prefix shortcut and the
+    /// intro-sort fallback; the order must be the unsigned byte-wise order.
     #[test]
-    fn sort_is_stable_across_repeated_calls_and_survives_growth() {
+    fn sort_uses_the_radix_sorter_and_yields_unsigned_byte_order() {
         let (mut pool, mut hash) = fixture();
-        for i in (0..1000u32).rev() {
-            hash.add(&mut pool, format!("t{i:05}").as_bytes())
-                .expect("add");
+        let mut inputs: Vec<Vec<u8>> = vec![Vec::new(), vec![0x00], vec![0xFF], vec![0x80, 0x01]];
+        for i in 0..3000u32 {
+            let mut term = b"common/prefix/".to_vec();
+            term.push(((i * 131) % 256) as u8);
+            term.extend_from_slice(format!("{}", (i * 7919) % 3001).as_bytes());
+            if i % 3 == 0 {
+                term.extend_from_slice(b"/tail");
+            }
+            inputs.push(term);
         }
-        let first = hash.sort(&pool);
-        let second = hash.sort(&pool);
-        assert_eq!(first, second);
-        let terms: Vec<Vec<u8>> = first
-            .iter()
-            .map(|id| pool.term_bytes(hash.byte_start(*id)).to_vec())
+        inputs.sort();
+        inputs.dedup();
+        // Insert in a scrambled order so the ids do not already sort.
+        let mut scrambled = inputs.clone();
+        let n = scrambled.len();
+        for i in 0..n {
+            scrambled.swap(i, (i * 104_729) % n);
+        }
+        for input in &scrambled {
+            hash.add(&mut pool, input).expect("add");
+        }
+        let count = hash.size() as usize;
+        let ids = hash.sort(&pool)[..count].to_vec();
+        let sorted: Vec<Vec<u8>> = ids
+            .into_iter()
+            .map(|id| pool.term_bytes(hash.byte_start(id)).to_vec())
             .collect();
-        assert!(terms.windows(2).all(|w| w[0] < w[1]));
+        assert_eq!(sorted, inputs);
     }
 
+    /// rmp #301: `sort()` runs `compact()` and sorts the slot array in place
+    /// (`BytesRefHash.java:179-199`), so it returns the whole slot array —
+    /// the sorted ids, then `-1` — and leaves the table consumed until
+    /// `clear()`. Measured against `lucene-core-10.5.0.jar`
+    /// (`oracle/passD/Oracle.java`, `BRH sort`): after adding `c`, `a`, `b` to
+    /// a default table, `sort()` is `[1, 2, 0, -1 x 13]`, `size()` stays 3, and
+    /// `find` answers -1 for all three terms.
     #[test]
-    fn clear_empties_the_table_but_keeps_it_usable() {
+    fn sort_compacts_and_consumes_the_table_as_lucene() {
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut hash = BytesRefHash::with_capacity(DEFAULT_CAPACITY, bytes_used);
+        for term in [b"c", b"a", b"b"] {
+            hash.add(&mut pool, term).expect("add");
+        }
+        let mut expected = vec![1, 2, 0];
+        expected.extend(std::iter::repeat_n(-1, 13));
+        assert_eq!(hash.sort(&pool), &expected[..]);
+        assert_eq!(hash.size(), 3);
+        assert_eq!(
+            (
+                hash.find(&pool, b"a"),
+                hash.find(&pool, b"b"),
+                hash.find(&pool, b"c")
+            ),
+            (-1, -1, -1)
+        );
+        // Sorting the consumed table again compacts and sorts the same ids.
+        assert_eq!(hash.sort(&pool), &expected[..]);
+        // `clear()` and `reinit()` make it usable again.
+        hash.clear();
+        hash.reinit();
+        assert_eq!(hash.add(&mut pool, b"a").expect("add"), 0);
+        assert_eq!(hash.find(&pool, b"a"), 0);
+    }
+
+    /// rmp #309: `clear()` drops the start array a `DirectBytesStartArray`
+    /// holds (`BytesRefHash.java:301, 581-583`), and `reinit()` allocates it
+    /// again (`:480-484`). Measured against `lucene-core-10.5.0.jar`
+    /// (`oracle/passE/PassEOracle.java`, `brhclear`): after `reinit()` the
+    /// term is new again, `afterReinit=0`.
+    #[test]
+    fn clear_empties_the_table_and_reinit_makes_it_usable() {
         let (mut pool, mut hash) = fixture();
         hash.add(&mut pool, b"x").expect("x");
         hash.clear();
         assert_eq!(hash.size(), 0);
         assert!(hash.is_empty());
         assert_eq!(hash.find(&pool, b"x"), -1);
+        hash.reinit();
         assert_eq!(hash.add(&mut pool, b"x").expect("x again"), 0);
+    }
+
+    /// rmp #309: adding to a cleared table before `reinit()` fails Java's
+    /// `assert bytesStart != null : "Bytesstart is null - not initialized"`
+    /// (`BytesRefHash.java:331`); measured with `-ea` against
+    /// `lucene-core-10.5.0.jar` (`brhclear`: `addAfterClear=AssertionError:
+    /// Bytesstart is null - not initialized`).
+    #[test]
+    #[should_panic(expected = "Bytesstart is null - not initialized")]
+    fn adding_to_a_cleared_table_before_reinit_fails_as_java() {
+        let (mut pool, mut hash) = fixture();
+        hash.add(&mut pool, b"x").expect("x");
+        hash.clear();
+        let _ = hash.add(&mut pool, b"x");
     }
 
     #[test]
@@ -681,8 +1187,10 @@ mod tests {
         }
         let after_adds = bytes_used.load(Ordering::Acquire);
         assert!(after_adds > after_init);
+        // `clear` charges nothing back unless it shrinks the slots
+        // (`BytesRefHash.java:295-306`): 100 terms keep all 256 of them.
         hash.clear();
-        assert!(bytes_used.load(Ordering::Acquire) < after_adds);
+        assert_eq!(bytes_used.load(Ordering::Acquire), after_adds);
         hash.release_accounting();
         assert_eq!(
             bytes_used.load(Ordering::Acquire),
@@ -735,8 +1243,9 @@ mod tests {
             let id = primary.add(&mut pool, term.as_bytes()).expect("intern");
             secondary.add_by_pool_offset(primary.byte_start(id));
         }
-        let sorted: Vec<&[u8]> = secondary
-            .sort(&pool)
+        let count = secondary.size() as usize;
+        let ids = secondary.sort(&pool)[..count].to_vec();
+        let sorted: Vec<&[u8]> = ids
             .into_iter()
             .map(|id| pool.term_bytes(secondary.byte_start(id)))
             .collect();
@@ -782,6 +1291,7 @@ mod tests {
         let start = primary.byte_start(id);
         assert_eq!(secondary.add_by_pool_offset(start), 0);
         secondary.clear();
+        secondary.reinit();
         assert_eq!(secondary.size(), 0);
         assert_eq!(
             secondary.add_by_pool_offset(start),
@@ -815,12 +1325,18 @@ mod tests {
         }
     }
 
+    /// `get` asserts the id against the length of the start array, which a
+    /// four-slot table's `DirectBytesStartArray` allocates as
+    /// `oversize(4, 4) = 8` starts: Java answers `get(7)` with the bytes at
+    /// offset 0 and fails `get(8)` (`brhclear`: `get7=alpha get8=AssertionError:
+    /// bytesID exceeds byteStart len: 8`).
     #[test]
-    #[should_panic(expected = "bytesID exceeds byteStart len")]
-    fn get_rejects_an_id_the_table_never_handed_out() {
+    #[should_panic(expected = "bytesID exceeds byteStart len: 8")]
+    fn get_rejects_an_id_past_the_start_array() {
         let (mut pool, mut hash) = fixture();
         hash.add(&mut pool, b"alpha").expect("add");
-        hash.get(&pool, 7);
+        assert_eq!(hash.get(&pool, 7), b"alpha");
+        hash.get(&pool, 8);
     }
 
     /// `ramBytesUsed` is `BASE_RAM_BYTES + sizeOfObject(bytesStart) +
@@ -844,9 +1360,12 @@ mod tests {
             let raw = 16 + 4 * n as i64;
             raw + ((8 - raw % 8) % 8)
         };
+        // Java's `pool` is a `BytesRefBlockPool`, whose own 16 bytes come on
+        // top of the block pool's.
         let expected = 64
-            + size_of_int_array(hash.bytes_start.len())
+            + size_of_int_array(hash.bytes_start.as_ref().unwrap().len())
             + size_of_int_array(hash.ids.len())
+            + 16
             + pool.ram_bytes_used();
         assert_eq!(hash.ram_bytes_used(&pool), expected);
 
@@ -892,5 +1411,104 @@ mod tests {
         hash.reinit();
         assert_eq!(hash.add(&mut pool, b"again").expect("again"), 0);
         assert_eq!(hash.get(&pool, 0), b"again");
+    }
+
+    /// Releasing a table's accounting leaves it as Java's `close()` does: the
+    /// table shrank towards the count it held and remembers that count, so a
+    /// `reinit` allocates the same slots and later clears shrink alike.
+    #[test]
+    fn releasing_accounting_leaves_the_table_as_close_does() {
+        let fill = |hash: &mut BytesRefHash, pool: &mut ByteBlockPool| {
+            for i in 0..3 {
+                hash.add(pool, format!("t{i}").as_bytes()).expect("add");
+            }
+        };
+        let (mut closed_pool, mut closed) = fixture();
+        let (mut released_pool, mut released) = fixture();
+        for _ in 0..2 {
+            for i in 0..200 {
+                closed
+                    .add(&mut closed_pool, format!("x{i}").as_bytes())
+                    .unwrap();
+                released
+                    .add(&mut released_pool, format!("x{i}").as_bytes())
+                    .unwrap();
+            }
+            closed.clear();
+            released.clear();
+            // `clear()` dropped the starts; `reinit()` allocates them again.
+            closed.reinit();
+            released.reinit();
+        }
+        fill(&mut closed, &mut closed_pool);
+        fill(&mut released, &mut released_pool);
+
+        closed.close(&mut closed_pool);
+        released.release_accounting();
+        assert_eq!(released.last_count, closed.last_count);
+        assert_eq!(released.hash_mask, closed.hash_mask);
+
+        closed.reinit();
+        released.reinit();
+        assert_eq!(released.ids.len(), closed.ids.len());
+        fill(&mut closed, &mut closed_pool);
+        fill(&mut released, &mut released_pool);
+        closed.clear();
+        released.clear();
+        assert_eq!(released.ids.len(), closed.ids.len());
+    }
+}
+
+#[cfg(test)]
+mod size_of_object_tests {
+    use super::*;
+
+    /// rmp #309: `ramBytesUsed` is `BASE_RAM_BYTES + sizeOfObject(bytesStart) +
+    /// sizeOfObject(ids) + sizeOfObject(pool)` (`BytesRefHash.java:504-512`):
+    /// after `close()` both arrays are `null`, which costs nothing, and the
+    /// pool is a `BytesRefBlockPool` (16 bytes) over the block pool. Measured
+    /// against `lucene-core-10.5.0.jar` (`oracle/passD/Probe2.java`): a default
+    /// table holding `c`, `a`, `b` reports 176 once closed.
+    #[test]
+    fn a_closed_table_reports_javas_ram() {
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut hash = BytesRefHash::with_capacity(DEFAULT_CAPACITY, bytes_used);
+        for term in [b"c", b"a", b"b"] {
+            hash.add(&mut pool, term).expect("add");
+        }
+        hash.close(&mut pool);
+        assert_eq!(hash.ram_bytes_used(&pool), 176);
+    }
+
+    /// rmp #309: an open table sizes the `bytesStart` its
+    /// `DirectBytesStartArray` allocated — `oversize(16, 4)` starts, grown by
+    /// `ArrayUtil.grow(bytesStart, length + 1)` (`BytesRefHash.java:586-594`)
+    /// — and a closed one charges nothing for it. Measured against
+    /// `lucene-core-10.5.0.jar` (`oracle/passE/PassEOracle.java`, `brh`) over
+    /// `new BytesRefHash(new ByteBlockPool(new DirectAllocator()))` holding
+    /// `term-0 .. term-<n-1>`.
+    #[test]
+    fn open_and_closed_tables_report_javas_ram() {
+        for (n, open, closed) in [
+            (0, 352, 176),
+            (3, 33_136, 176),
+            (17, 33_328, 176),
+            (18, 33_328, 176),
+            (19, 33_328, 176),
+            (100, 34_464, 176),
+            (1000, 45_264, 176),
+        ] {
+            let bytes_used = Arc::new(AtomicI64::new(0));
+            let mut pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+            let mut hash = BytesRefHash::with_capacity(DEFAULT_CAPACITY, bytes_used);
+            for i in 0..n {
+                hash.add(&mut pool, format!("term-{i}").as_bytes())
+                    .expect("add");
+            }
+            assert_eq!(hash.ram_bytes_used(&pool), open, "open, n={n}");
+            hash.close(&mut pool);
+            assert_eq!(hash.ram_bytes_used(&pool), closed, "closed, n={n}");
+        }
     }
 }

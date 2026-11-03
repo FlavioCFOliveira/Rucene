@@ -366,17 +366,21 @@ impl Patience {
     /// Creates a patience strategy over the saturation state of a collector.
     ///
     /// Equivalent to
-    /// `new KnnSearchStrategy.Patience(HnswQueueSaturationCollector, int)`.
+    /// `new KnnSearchStrategy.Patience(HnswQueueSaturationCollector, int)`,
+    /// whose `super(filteredSearchThreshold)` is [`Hnsw::new`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Hnsw::new`]: Java's message when the threshold is outside
+    /// `[0, 100]`.
     pub fn new(
         state: Arc<Mutex<HnswQueueSaturationState>>,
         filtered_search_threshold: i32,
-    ) -> Self {
-        Self {
-            hnsw: Hnsw {
-                filtered_search_threshold,
-            },
+    ) -> crate::error::Result<Self> {
+        Ok(Self {
+            hnsw: Hnsw::new(filtered_search_threshold)?,
             state,
-        }
+        })
     }
 
     /// Returns the filtered-search threshold inherited from `Hnsw`.
@@ -404,11 +408,6 @@ impl Patience {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .next_candidate();
-    }
-
-    /// Returns the shared saturation state.
-    pub fn state(&self) -> &Arc<Mutex<HnswQueueSaturationState>> {
-        &self.state
     }
 }
 
@@ -506,6 +505,10 @@ impl TopKnnCollector {
     /// Creates a collector with no search strategy.
     ///
     /// Equivalent to `new TopKnnCollector(int, int)`.
+    ///
+    /// # Panics
+    ///
+    /// As [`with_strategy`](Self::with_strategy).
     pub fn new(k: i32, visit_limit: i64) -> Self {
         Self::with_strategy(k, visit_limit, None)
     }
@@ -514,6 +517,11 @@ impl TopKnnCollector {
     ///
     /// Equivalent to
     /// `new TopKnnCollector(int, int, KnnSearchStrategy)`.
+    ///
+    /// # Panics
+    ///
+    /// Panics with Java's message when `k < 1`, where the `NeighborQueue`
+    /// constructor throws the unchecked `IllegalArgumentException`.
     pub fn with_strategy(
         k: i32,
         visit_limit: i64,
@@ -521,7 +529,7 @@ impl TopKnnCollector {
     ) -> Self {
         Self {
             base: AbstractKnnCollectorState::new(k, visit_limit, search_strategy),
-            queue: NeighborQueue::new(k, false),
+            queue: NeighborQueue::new(k, false).unwrap_or_else(|e| panic!("{e}")),
         }
     }
 

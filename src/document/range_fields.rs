@@ -213,7 +213,7 @@ macro_rules! range_field {
                     )));
                 }
                 let FieldData::Bytes(bytes) = &self.fields_data else {
-                    return Err(LuceneError::IllegalState(
+                    return Err(LuceneError::illegal_state(
                         "range field has no packed value".to_string(),
                     ));
                 };
@@ -230,7 +230,7 @@ macro_rules! range_field {
                     )));
                 }
                 let FieldData::Bytes(bytes) = &self.fields_data else {
-                    return Err(LuceneError::IllegalState(
+                    return Err(LuceneError::illegal_state(
                         "range field has no packed value".to_string(),
                     ));
                 };
@@ -955,7 +955,6 @@ impl TwoPhaseIterator for BinaryRangeTwoPhaseIterator {
 #[derive(Debug)]
 struct BinaryRangeWeight {
     query: BinaryRangeFieldRangeQuery,
-    score: f32,
     score_mode: ScoreMode,
 }
 
@@ -963,6 +962,7 @@ impl ConstantScoreWeightImpl for BinaryRangeWeight {
     fn scorer_supplier(
         &self,
         context: &LeafReaderContext,
+        score: f32,
     ) -> Result<Option<Box<dyn ScorerSupplier>>> {
         let reader = context.leaf_reader();
         let max_doc = reader.max_doc();
@@ -975,7 +975,7 @@ impl ConstantScoreWeightImpl for BinaryRangeWeight {
         }));
         Ok(Some(Box::new(ConstantScoreScorerSupplier::from_iterator(
             iterator,
-            self.score,
+            score,
             self.score_mode,
             max_doc,
         ))))
@@ -1036,7 +1036,6 @@ impl Query for BinaryRangeFieldRangeQuery {
             boost,
             BinaryRangeWeight {
                 query: self.clone(),
-                score: boost,
                 score_mode,
             },
         )))
@@ -1491,7 +1490,6 @@ impl ConstantScoreIteratorSupplier for RangeFieldIteratorSupplier {
 #[derive(Debug)]
 struct RangeFieldWeight {
     query: RangeFieldQuery,
-    score: f32,
     score_mode: ScoreMode,
 }
 
@@ -1499,6 +1497,7 @@ impl ConstantScoreWeightImpl for RangeFieldWeight {
     fn scorer_supplier(
         &self,
         context: &LeafReaderContext,
+        score: f32,
     ) -> Result<Option<Box<dyn ScorerSupplier>>> {
         let reader = context.leaf_reader();
         let Some(values) = reader.get_point_values(&self.query.field)? else {
@@ -1523,14 +1522,14 @@ impl ConstantScoreWeightImpl for RangeFieldWeight {
 
         if all_docs_match {
             Ok(Some(Box::new(ConstantScoreScorerSupplier::match_all(
-                self.score,
+                score,
                 self.score_mode,
                 max_doc,
             )?)))
         } else {
             let inner = RangeFieldIteratorSupplier::new(self.query.clone(), values, max_doc)?;
             Ok(Some(Box::new(ConstantScoreScorerSupplier::new(
-                self.score,
+                score,
                 self.score_mode,
                 max_doc,
                 inner,
@@ -1599,7 +1598,6 @@ impl Query for RangeFieldQuery {
             boost,
             RangeFieldWeight {
                 query: self.clone(),
-                score: boost,
                 score_mode,
             },
         )))
@@ -1645,7 +1643,6 @@ impl Query for RangeFieldQuery {
 mod tests {
     use super::*;
     use crate::document::IntRangeSlowRangeQuery;
-    use crate::index::IntersectVisitor as _;
     use crate::search::query_visitor::QueryVisitor;
     use crate::search::NO_MORE_DOCS;
 
@@ -1973,7 +1970,7 @@ mod tests {
                 query,
                 result: &mut result,
             };
-            visitor.grow(docs.len() as i32);
+            visitor.grow(docs.len() as i32).unwrap();
             for (doc, packed) in docs {
                 visitor.visit_with_value(*doc, packed).unwrap();
             }

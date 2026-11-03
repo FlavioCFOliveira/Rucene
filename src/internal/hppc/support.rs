@@ -230,7 +230,7 @@ pub(crate) fn group_digits(value: i64) -> String {
         out.push('-');
     }
     for (i, byte) in bytes.iter().enumerate() {
-        if i > 0 && (bytes.len() - i) % 3 == 0 {
+        if i > 0 && (bytes.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(*byte as char);

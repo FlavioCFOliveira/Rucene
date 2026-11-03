@@ -171,11 +171,6 @@ impl GraphTokenStreamFiniteStrings {
         })
     }
 
-    /// Returns the determinized token graph.
-    pub fn automaton(&self) -> &Automaton {
-        &self.det
-    }
-
     /// Returns whether the provided state is the start of multiple side paths of
     /// different length (e.g. "new york", "ny").
     pub fn has_side_path(&self, state: i32) -> bool {
@@ -307,7 +302,7 @@ impl GraphTokenStreamFiniteStrings {
             };
 
             if pos == -1 && current_incr < 1 {
-                return Err(LuceneError::IllegalState(
+                return Err(LuceneError::illegal_state(
                     "Malformed TokenStream, start token can't have increment less than 1"
                         .to_string(),
                 ));

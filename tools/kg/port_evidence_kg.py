@@ -45,7 +45,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from kgio import read as kg_read, unwind
+from kgio import item_labels, kg_target, read as kg_read, unwind, unwind_items
 
 # A Lucene type named in full, and the short Java spelling the crate uses for a
 # *nested* one. `CLAUDE.md` 14.1 asks each item to name its Lucene equivalent; it
@@ -94,9 +94,14 @@ _CI = lambda pat: "(?i:" + pat + ")"
 # Lead-ins that assert "this item is the port of that Lucene type". Ordered
 # most specific first; each is anchored at the start of the doc text.
 CLAIM_PATTERNS = [
+    # `public`/`protected` and `functional interface` are spellings the crate
+    # writes for a type claim (`Equivalent to the protected abstract class
+    # ...TieredMergePolicy.MergeScore`, `Equivalent to the functional interface
+    # ...IndexWriter.IndexReaderWarmer`); a functional interface is an interface.
     re.compile("^" + _CI(r"Equivalent to (?:the )?"
-               r"(?:abstract |final |sealed |package-private |private |static |nested |inner )*"
-               r"(?:class |interface |enum |record |annotation )?") + FQN),
+               r"(?:abstract |final |sealed |package-private |private |protected |public "
+               r"|static |nested |inner )*"
+               r"(?:class |functional interface |interface |enum |record |annotation )?") + FQN),
     re.compile("^" + _CI(r"Port of (?:the )?"
                r"(?:abstract |final |sealed |package-private |private |static |nested |inner )*"
                r"(?:class |interface |enum |record |annotation )?") + FQN),
@@ -359,6 +364,12 @@ def _item_paragraph_claims(block, item_name):
     as routinely states the subject before the assertion. Reading the paragraph
     recovers both. What keeps this from becoming a guess is the name guard: only
     an FQN whose simple name is the documented declaration's own name counts.
+
+    A paragraph that *opens* with an explicit lead-in (`CLAIM_PATTERNS`) is
+    the one-line claim wrapped after the lead-in -- "Equivalent to the
+    functional interface" / "`org.apache.lucene.index.IndexWriter.IndexReaderWarmer`"
+    -- and is read exactly as `claim_in` reads one line: the anchored lead-in is
+    the assertion, so no name guard applies, as none applies on one line.
     """
     out, para, para_line = [], [], None
     for ln, text in list(block) + [(None, "")]:
@@ -369,7 +380,11 @@ def _item_paragraph_claims(block, item_name):
                 para_line = ln
             continue
         joined = " ".join(para)
-        if joined:
+        lead = next((m.group(1) for pat in CLAIM_PATTERNS
+                     if (m := pat.match(joined))), None) if joined else None
+        if lead:
+            out.append((para_line, lead))
+        elif joined:
             for m in RE_FQN.finditer(joined):
                 fqn = m.group(1)
                 if re.split(r"[.$]", fqn)[-1] != item_name:
@@ -588,6 +603,9 @@ def load(roadmap, claims, commit, date):
     # already joined by PORTS_CANDIDATE would never gain its PORTS edge. Drop
     # the candidate edge first: a declared equivalence supersedes a name guess.
     uniq = [{k: v for k, v in r.items() if k != "component"} for r in uniq]
+    # Routes the Rust item pattern to a labelled match (`kgio.unwind_items`):
+    # read after the `Component` writes above, so a new `Component` is routed.
+    items = item_labels(roadmap)
 
     # Retire the edges whose declaration has gone. `load_rucene_kg.py --phase
     # prune` deletes the *node* the survey no longer confirms, which takes its
@@ -617,28 +635,28 @@ def load(roadmap, claims, commit, date):
         for d in dead:
             print(f"  RETIRED (no live declaration): {d['name']} @ {d['file']} "
                   f"-> {d['lucene']}", file=sys.stderr)
-        run_unwind(roadmap, "delete", dead,
-                   "MATCH (t {name:row.name, file:row.file})-[e:PORTS]->"
-                   "(c:Class {qualifiedName:row.lucene}) DELETE e",
-                   "PORTS edges retired")
+        unwind_items(roadmap, "delete", dead,
+                     "MATCH (t {name:row.name, file:row.file})-[e:PORTS]->"
+                     "(c:Class {qualifiedName:row.lucene}) DELETE e",
+                     "PORTS edges retired", items)
 
-    run_unwind(roadmap, "delete", uniq,
-               "MATCH (t {name:row.name, file:row.file})-[e:PORTS_CANDIDATE]->"
-               "(c:Class {qualifiedName:row.lucene}) DELETE e",
-               "superseded PORTS_CANDIDATE removed")
-    run_unwind(roadmap, "create", uniq,
-               "MATCH (t {name:row.name, file:row.file}) "
-               "WITH t, row MATCH (c:Class {qualifiedName:row.lucene}) "
-               "MERGE (t)-[:PORTS]->(c)",
-               "PORTS edges")
-    run_unwind(roadmap, "update", uniq,
-               "MATCH (t {name:row.name, file:row.file})-[e:PORTS]->"
-               "(c:Class {qualifiedName:row.lucene}) "
-               "SET e.evidence = coalesce(e.evidence, 'doc-comment'), "
-               "e.declaredAt = row.file + ':' + toString(row.line), "
-               "e.claimLevel = row.claimLevel, e.declaredMember = row.member, "
-               "e.gitCommit = row.commit, e.gitDate = row.date",
-               "PORTS evidence stamped")
+    unwind_items(roadmap, "delete", uniq,
+                 "MATCH (t {name:row.name, file:row.file})-[e:PORTS_CANDIDATE]->"
+                 "(c:Class {qualifiedName:row.lucene}) DELETE e",
+                 "superseded PORTS_CANDIDATE removed", items)
+    unwind_items(roadmap, "create", uniq,
+                 "MATCH (t {name:row.name, file:row.file}) "
+                 "WITH t, row MATCH (c:Class {qualifiedName:row.lucene}) "
+                 "MERGE (t)-[:PORTS]->(c)",
+                 "PORTS edges", items)
+    unwind_items(roadmap, "update", uniq,
+                 "MATCH (t {name:row.name, file:row.file})-[e:PORTS]->"
+                 "(c:Class {qualifiedName:row.lucene}) "
+                 "SET e.evidence = coalesce(e.evidence, 'doc-comment'), "
+                 "e.declaredAt = row.file + ':' + toString(row.line), "
+                 "e.claimLevel = row.claimLevel, e.declaredMember = row.member, "
+                 "e.gitCommit = row.commit, e.gitDate = row.date",
+                 "PORTS evidence stamped", items)
     return uniq
 
 
@@ -755,7 +773,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("roadmap")
     ap.add_argument("--source-root", default=".")
-    ap.add_argument("--out", default="/tmp/rucene_kg/port_evidence.json")
+    ap.add_argument("--out", default=str(kg_target() / "rucene_kg" / "port_evidence.json"))
     ap.add_argument("--commit")
     ap.add_argument("--date")
     ap.add_argument("--phase", default="extract",

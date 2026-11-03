@@ -14,7 +14,7 @@ Uso:
     python3 tools/kg/extract_rucene_kg.py \
         --source-root /path/to/rucene \
         --commit <sha> --date <YYYY-MM-DD> \
-        --output /tmp/rucene_kg/survey.json
+        --output <kg-target>/rucene_kg/survey.json
 """
 
 import argparse
@@ -23,8 +23,10 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+from kgio import kg_target  # noqa: E402
 
 CRATE = "rucene"
 
@@ -722,8 +724,13 @@ RE_EXP_FN = re.compile(
 
 
 def run_macro_expansion(root: Path) -> str:
-    """Expanded crate source, straight from the compiler."""
-    target = Path(tempfile.gettempdir()) / "rucene-kg-expand-target"
+    """Expanded crate source, straight from the compiler.
+
+    The nightly build goes to `kgio.kg_target()` (`RUCENE_KG_TARGET` overrides
+    it), never to the system temp directory: `/tmp` is tmpfs on the development
+    machine, and a crate build there has filled swap.
+    """
+    target = kg_target()
     proc = subprocess.run(
         ["cargo", "+nightly", "rustc", "--lib", "--", "-Zunpretty=expanded"],
         cwd=str(root),

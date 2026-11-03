@@ -46,6 +46,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from load_rucene_kg import esc, read, rmp, run_unwind  # noqa: E402
+from kgio import PER_ROW_SCAN_BATCH, kg_target  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Extraccao
@@ -310,9 +311,9 @@ def phase_classes(roadmap, survey, commit, date, batch_size):
         }
         for c in survey["classes"]
     ]
-    # `rmp graph create` so aceita CREATE/MERGE puros, e `graph update` so
-    # SET/REMOVE, por isso cada no entra em duas passagens: primeiro a
-    # identidade, depois as propriedades.
+    # Cada no entra em duas passagens, primeiro a identidade e depois as
+    # propriedades. A forma vem do rmp anterior ao 1.17, cujo `graph create`
+    # recusava SET; com `graph client` ja nao e obrigatoria, mas mantem-se.
     run_unwind(
         "create",
         roadmap,
@@ -352,7 +353,7 @@ def phase_methods(roadmap, survey, commit, date, batch_size):
         roadmap,
         rows,
         "MERGE (c:TestMethod {qualifiedName: row.qn})",
-        batch_size,
+        min(batch_size, PER_ROW_SCAN_BATCH),
         "TestMethod create",
     )
     run_unwind(
@@ -616,7 +617,7 @@ def phase_rucene(roadmap, repo_root, commit, date, batch_size):
         roadmap,
         rows,
         "MERGE (f:File {path: row.p})",
-        batch_size,
+        min(batch_size, PER_ROW_SCAN_BATCH),
         "fixture File create",
     )
     run_unwind(
@@ -773,7 +774,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("roadmap")
     ap.add_argument("--lucene-root", default="/tmp/lucene1050")
-    ap.add_argument("--out", default="/tmp/lucene_tests_kg/survey.json")
+    ap.add_argument("--out", default=str(kg_target() / "lucene_tests_kg" / "survey.json"))
     ap.add_argument("--repo-root", default=".")
     ap.add_argument("--commit", required=True)
     ap.add_argument("--date", required=True)

@@ -3,9 +3,14 @@
 
 #![deny(unsafe_code)]
 
+use std::cmp::Ordering;
 use std::fmt;
+use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
+use crate::index::index_sorter::{
+    BinaryComparator, BinaryDocValuesProvider, BinarySorter, IndexSorter,
+};
 use crate::index::{BinaryDocValues, DocValues, LeafReader};
 use crate::search::sort::{MissingValue, SortField, SortFieldKind, SortFieldType};
 use crate::store::{DataInput, DataOutput};
@@ -97,6 +102,9 @@ impl BinarySortField {
     }
 
     /// Returns this sort field as a [`SortField`].
+    ///
+    /// Java's `BinarySortField` *is* a `SortField` (`BinarySortField.java:42`);
+    /// this port composes one, and this borrow is the upcast.
     pub fn sort_field(&self) -> &SortField {
         &self.sort_field
     }
@@ -162,6 +170,37 @@ impl BinarySortField {
         DocValues::get_binary(reader, self.get_field().unwrap_or(""))
     }
 
+    /// Returns the [`IndexSorter`] that sorts a segment by this field.
+    ///
+    /// Equivalent to `BinarySortField.getIndexSorter()`
+    /// (`BinarySortField.java:178-182`): an `IndexSorter.BinarySorter` under
+    /// this sort field's provider name and reverse flag, comparing with
+    /// [`comparator`](Self::comparator) and reading
+    /// [`get_sort_key_doc_values`](Self::get_sort_key_doc_values).
+    pub fn get_index_sorter(&self) -> Arc<dyn IndexSorter> {
+        // `this::getSortKeyDocValues` (`BinarySortField.java:180-181`).
+        let this = self.clone();
+        let values_provider: BinaryDocValuesProvider =
+            Arc::new(move |reader: &dyn LeafReader| this.get_sort_key_doc_values(reader));
+        Arc::new(BinarySorter::new(
+            self.provider_name(),
+            self.sort_field.reverse(),
+            self.comparator(),
+            values_provider,
+        ))
+    }
+
+    /// Returns the unsigned byte-order comparator that treats a missing value
+    /// (`None`) as smaller than any value, or larger when the missing value is
+    /// [`MissingValue::StringLast`].
+    ///
+    /// Equivalent to the private `BinarySortField.comparator()`
+    /// (`BinarySortField.java:163-176`); `BytesRef.compareTo` is the unsigned
+    /// lexicographic order Rust's slice ordering gives.
+    pub fn comparator(&self) -> BinaryComparator {
+        binary_comparator(self.sort_field.missing_value())
+    }
+
     /// Writes this sort field's payload, without the provider name.
     ///
     /// Equivalent to the private `BinarySortField.serialize(DataOutput)`.
@@ -199,6 +238,29 @@ impl BinarySortField {
     }
 }
 
+/// The comparator of a binary sort whose missing value is `missing_value`.
+///
+/// Equivalent to the body of the private `BinarySortField.comparator()`.
+fn binary_comparator(missing_value: Option<MissingValue>) -> BinaryComparator {
+    let missing_last = missing_value == Some(MissingValue::StringLast);
+    Arc::new(move |a: Option<&[u8]>, b: Option<&[u8]>| match (a, b) {
+        (Some(a), Some(b)) => a.cmp(b),
+        (None, None) => Ordering::Equal,
+        (a, _) => {
+            let c = if a.is_none() {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            };
+            if missing_last {
+                c.reverse()
+            } else {
+                c
+            }
+        }
+    })
+}
+
 impl From<BinarySortField> for SortField {
     fn from(value: BinarySortField) -> Self {
         value.into_sort_field()
@@ -209,5 +271,46 @@ impl fmt::Display for BinarySortField {
     /// Equivalent to `BinarySortField.toString()`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.sort_field)
+    }
+}
+
+/// The `SortFieldProvider` for [`BinarySortField`], registered as [`BinarySortField::NAME`].
+///
+/// Equivalent to the nested class `BinarySortField.Provider` (`BinarySortField.java:105-132`).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Provider;
+
+impl Provider {
+    /// Creates a new provider.
+    ///
+    /// Equivalent to `new BinarySortField.Provider()`.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl crate::util::spi::NamedSPI for Provider {
+    fn get_name(&self) -> &str {
+        BinarySortField::NAME
+    }
+}
+
+impl crate::index::index_sorter::SortFieldProvider for Provider {
+    /// Equivalent to `BinarySortField.Provider.readSortField(DataInput)`.
+    fn read_sort_field(
+        &self,
+        input: &mut dyn crate::store::DataInput,
+    ) -> Result<crate::search::SortField> {
+        Ok(BinarySortField::read_sort_field(input)?.into_sort_field())
+    }
+
+    /// Equivalent to `BinarySortField.Provider.writeSortField(SortField, DataOutput)`:
+    /// the field must be a `BinarySortField` (Java asserts it and casts).
+    fn write_sort_field(
+        &self,
+        sort_field: &crate::search::SortField,
+        output: &mut dyn crate::store::DataOutput,
+    ) -> Result<()> {
+        BinarySortField::from_sort_field(sort_field.clone())?.serialize(output)
     }
 }

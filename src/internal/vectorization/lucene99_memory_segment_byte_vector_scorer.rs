@@ -8,8 +8,9 @@ use crate::error::{LuceneError, Result};
 use crate::index::vector_values::ByteVectorValues;
 use crate::index::VectorSimilarityFunction;
 use crate::internal::vectorization::PanamaVectorUtilSupport;
-use crate::store::{IndexInput, MemorySegment, MemorySegmentAccessInput};
+use crate::store::{FilterIndexInput, IndexInput, MemorySegment, MemorySegmentAccessInput};
 use crate::util::hnsw::RandomVectorScorer;
+use crate::util::Bits;
 
 /// Where one vector's bytes were found.
 ///
@@ -105,14 +106,6 @@ pub(crate) fn check_invariants(
 ///   [`VectorSimilarityFunction`] discriminant itself, matched inside
 ///   [`score`](RandomVectorScorer::score). The score formulas are transcribed
 ///   unchanged.
-/// * **The caller narrows the input.** Java's `create` takes an `IndexInput`,
-///   calls `FilterIndexInput.unwrapOnlyTest`, tests
-///   `instanceof MemorySegmentAccessInput` and returns `Optional.empty()` when
-///   the test fails. Rust cannot test one trait object for another trait, and
-///   `FilterIndexInput` is not ported yet, so
-///   [`create`](Self::create) takes the narrowed
-///   [`MemorySegmentAccessInput`] and returns [`Result`] rather than an
-///   optional.
 /// * **The kernels are scalar.** They go through
 ///   [`PanamaVectorUtilSupport`], whose divergence note explains why.
 pub struct Lucene99MemorySegmentByteVectorScorer {
@@ -136,11 +129,15 @@ impl std::fmt::Debug for Lucene99MemorySegmentByteVectorScorer {
 }
 
 impl Lucene99MemorySegmentByteVectorScorer {
-    /// Creates the scorer for `query`.
+    /// Creates the scorer for `query`, or returns `None` when the input is not
+    /// a memory-segment input.
     ///
     /// Equivalent to
-    /// `Lucene99MemorySegmentByteVectorScorer.create(VectorSimilarityFunction, IndexInput, KnnVectorValues, byte[])`,
-    /// minus the `instanceof` narrowing described on the type.
+    /// `Lucene99MemorySegmentByteVectorScorer.create(VectorSimilarityFunction, IndexInput, KnnVectorValues, byte[])`
+    /// (`Lucene99MemorySegmentByteVectorScorer.java:43-58`): the input is
+    /// unwrapped with [`FilterIndexInput::unwrap_only_test`], then narrowed to
+    /// a [`MemorySegmentAccessInput`], Java's `instanceof`, through
+    /// [`IndexInput::as_memory_segment_access_input`].
     ///
     /// # Errors
     ///
@@ -150,21 +147,25 @@ impl Lucene99MemorySegmentByteVectorScorer {
     /// input.
     pub fn create(
         similarity: VectorSimilarityFunction,
-        input: &dyn MemorySegmentAccessInput,
+        input: &dyn IndexInput,
         values: Arc<dyn ByteVectorValues>,
         query_vector: &[u8],
-    ) -> Result<Self> {
+    ) -> Result<Option<Self>> {
+        let input = FilterIndexInput::unwrap_only_test(input);
+        let Some(ms_input) = input.as_memory_segment_access_input() else {
+            return Ok(None);
+        };
         let vector_byte_size = values.vector_byte_length() as usize;
         check_invariants(values.size(), vector_byte_size, input)?;
-        Ok(Self {
+        Ok(Some(Self {
             similarity,
             vector_byte_size,
-            input: input.clone_access_input()?,
+            input: ms_input.clone_access_input()?,
             max_ord: values.size(),
             values,
             query: query_vector.to_vec(),
             scratch: Vec::new(),
-        })
+        }))
     }
 
     /// Reads the vector at `ord`, in place when possible.
@@ -225,5 +226,12 @@ impl RandomVectorScorer for Lucene99MemorySegmentByteVectorScorer {
 
     fn ord_to_doc(&self, ord: i32) -> i32 {
         self.values.ord_to_doc(ord)
+    }
+
+    /// Equivalent to the `getAcceptOrds` this scorer inherits from Java's
+    /// `AbstractRandomVectorScorer` / `AbstractUpdateableRandomVectorScorer`,
+    /// `values.getAcceptOrds(acceptDocs)`.
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        self.values.get_accept_ords(accept_docs)
     }
 }

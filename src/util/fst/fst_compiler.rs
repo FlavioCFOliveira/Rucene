@@ -728,7 +728,7 @@ impl<'a, O: Outputs> FSTCompiler<'a, O> {
     pub fn fst_reader(&self) -> Result<&dyn FSTReader> {
         match &self.data_output {
             FstOutputSink::OnHeap(output) => Ok(output),
-            FstOutputSink::Streaming(_) => Err(LuceneError::IllegalState(
+            FstOutputSink::Streaming(_) => Err(LuceneError::illegal_state(
                 "The DataOutput must implement FSTReader".to_string(),
             )),
         }
@@ -748,7 +748,7 @@ impl<'a, O: Outputs> FSTCompiler<'a, O> {
     pub fn into_fst_reader(self) -> Result<Box<dyn FSTReader>> {
         match self.data_output {
             FstOutputSink::OnHeap(output) => Ok(Box::new(output)),
-            FstOutputSink::Streaming(_) => Err(LuceneError::IllegalState(
+            FstOutputSink::Streaming(_) => Err(LuceneError::illegal_state(
                 "The DataOutput must implement FSTReader".to_string(),
             )),
         }
@@ -1501,7 +1501,7 @@ impl<'a, O: Outputs> FSTCompiler<'a, O> {
     fn finish(&mut self, new_start_node: i64) -> Result<()> {
         debug_assert!(new_start_node <= self.num_bytes_written);
         if self.fst.metadata.start_node != -1 {
-            return Err(LuceneError::IllegalState("already finished".to_string()));
+            return Err(LuceneError::illegal_state("already finished".to_string()));
         }
         let new_start_node =
             if new_start_node == FINAL_END_NODE && self.fst.metadata.empty_output.is_some() {
@@ -1675,6 +1675,41 @@ mod tests {
             );
         }
         assert_eq!(Util::get_bytes(&fst, &BytesRef::new(b"c".to_vec()))?, None);
+        Ok(())
+    }
+
+    /// Under a tiny suffix RAM limit `NodeHash` keeps swapping its primary
+    /// table into the fallback slot and promoting nodes found there back with
+    /// `copyFallbackNodeBytes` (`NodeHash.java:170-185, 311-323`), which
+    /// copies the node through `ByteBlockPool.append(ByteBlockPool, long, int)`.
+    /// The counts, the byte length and the CRC32 of the saved FST are those
+    /// `lucene-core-10.5.0.jar` prints for the same terms (oracle
+    /// `FstFallback.java 0.001 3000`): `nodes=13316 arcs=16314 bytes=45999
+    /// crc=1824107834`.
+    #[test]
+    fn a_tiny_suffix_ram_limit_promotes_fallback_nodes_as_lucene_does() -> Result<()> {
+        use crate::store::ByteBuffersDataOutput;
+        const SUF: [&str; 7] = ["ing", "tion", "ness", "able", "ment", "ers", "ally"];
+        let mut compiler = Builder::new(InputType::Byte1, PositiveIntOutputs::get_singleton())
+            .suffix_ram_limit_mb(0.001)?
+            .build()?;
+        let mut scratch = IntsRefBuilder::new();
+        for i in 0..3000usize {
+            let term = format!("{:05}{}{}", i * 7, SUF[(i * 3) % SUF.len()], SUF[i % 5]);
+            let input = Util::to_ints_ref(&BytesRef::new(term.into_bytes()), &mut scratch);
+            compiler.add(&input, (i % 13) as i64)?;
+        }
+        let metadata = compiler.compile()?;
+        assert_eq!(compiler.node_count(), 13316);
+        assert_eq!(compiler.arc_count(), 16314);
+        let fst = FST::from_fst_reader(metadata, compiler.into_fst_reader()?)
+            .expect("INVARIANT: terms were added");
+        let mut meta = ByteBuffersDataOutput::new();
+        let mut out = ByteBuffersDataOutput::new();
+        fst.save(&mut meta, &mut out)?;
+        let bytes = out.to_array_copy()?;
+        assert_eq!(bytes.len(), 45999);
+        assert_eq!(crc32fast::hash(&bytes), 1_824_107_834);
         Ok(())
     }
 }

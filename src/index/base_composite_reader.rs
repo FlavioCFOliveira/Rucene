@@ -10,12 +10,6 @@ use crate::index::multi_reader::{MultiStoredFields, MultiTermVectors};
 use crate::index::terms::TermsEnum;
 use crate::index::Term;
 
-/// The largest `maxDoc` a single index may hold.
-///
-/// Equivalent to the value `IndexWriter.getActualMaxDocs()` returns: Lucene caps
-/// a segment at `IndexWriter.MAX_DOCS`, which is `Integer.MAX_VALUE - 128`.
-pub const ACTUAL_MAX_DOCS: i32 = i32::MAX - 128;
-
 /// Base state shared by every composite reader: the sub-reader array, the
 /// per-sub-reader doc bases, and the lazily computed live-document count.
 ///
@@ -58,20 +52,34 @@ impl BaseCompositeReader {
             max_doc += i64::from(reader.max_doc());
         }
 
-        if max_doc > i64::from(ACTUAL_MAX_DOCS) {
+        // `if (maxDoc > IndexWriter.getActualMaxDocs())`
+        // (`BaseCompositeReader.java:90-109`): the limit is the one
+        // `IndexWriter.setMaxDocs` may have lowered, read each time.
+        let actual_max_docs = crate::index::index_writer::get_actual_max_docs();
+        if max_doc > i64::from(actual_max_docs) {
             let message = format!(
-                "Too many documents: an index cannot exceed {ACTUAL_MAX_DOCS} but readers have total maxDoc={max_doc}"
+                "Too many documents: an index cannot exceed {actual_max_docs} but readers have total maxDoc={max_doc}"
             );
             return Err(if is_directory_reader {
-                LuceneError::corrupt_index(message, format!("{} sub-readers", sub_readers.len()))
+                // The resource is `Arrays.toString(subReaders)`
+                // (`BaseCompositeReader.java:94-99`): every sub-reader's
+                // `toString()`, comma-separated inside brackets.
+                let sub_readers = sub_readers
+                    .iter()
+                    .map(|reader| reader.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                LuceneError::corrupt_index(message, format!("[{sub_readers}]"))
             } else {
                 LuceneError::IllegalArgument(format!(
-                    "Too many documents: composite IndexReaders cannot exceed {ACTUAL_MAX_DOCS} but readers have total maxDoc={max_doc}"
+                    "Too many documents: composite IndexReaders cannot exceed {actual_max_docs} but readers have total maxDoc={max_doc}"
                 ))
             });
         }
 
-        let max_doc = max_doc as i32;
+        // `this.maxDoc = Math.toIntExact(maxDoc)` (`BaseCompositeReader.java:111`),
+        // which the check above leaves nothing to refuse.
+        let max_doc = crate::error::to_int_exact(max_doc)?;
         let n = sub_readers.len();
         starts[n] = max_doc;
 
@@ -101,22 +109,21 @@ impl BaseCompositeReader {
 
     /// Returns the index of the sub-reader that owns `doc_id`.
     ///
-    /// Equivalent to `BaseCompositeReader.readerIndex(int)`, which binary-searches
-    /// the `starts` array.
+    /// Equivalent to `BaseCompositeReader.readerIndex(int)`
+    /// (`BaseCompositeReader.java:262-268`): the bounds check, then
+    /// `ReaderUtil.subIndex(docID, starts)`, which resolves a run of empty
+    /// sub-readers to the last of them. The body is the one the
+    /// [`stored_fields`](Self::stored_fields) and
+    /// [`term_vectors`](Self::term_vectors) dispatch runs for every document,
+    /// as Java's anonymous views call `readerIndex`
+    /// (`BaseCompositeReader.java:122, 131, 177, 186`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `doc_id` is outside
+    /// `0..max_doc`.
     pub fn reader_index(&self, doc_id: i32) -> Result<usize> {
-        if doc_id < 0 || doc_id >= self.max_doc {
-            return Err(LuceneError::IllegalArgument(format!(
-                "docID must be >= 0 and < maxDoc={} (got docID={doc_id})",
-                self.max_doc
-            )));
-        }
-        // `starts` is ascending with a trailing max_doc, so the owning reader is
-        // the last entry not greater than doc_id.
-        let hi = self.sub_readers.len() - 1;
-        match self.starts[..=hi].binary_search(&doc_id) {
-            Ok(index) => Ok(index),
-            Err(insertion) => Ok(insertion - 1),
-        }
+        Ok(crate::index::multi_reader::resolve_sub(doc_id, self.max_doc, &self.starts)?.0)
     }
 
     /// Returns one greater than the largest document number.
@@ -176,67 +183,64 @@ impl BaseCompositeReader {
     ///
     /// Equivalent to `BaseCompositeReader.docFreq(Term)`.
     pub fn doc_freq(&self, term: &Term) -> Result<i32> {
-        let mut total = 0i32;
+        let mut total = 0i32; // sum freqs in subreaders
         for reader in &self.sub_readers {
-            total += reader.doc_freq(term)?;
+            let sub = reader.doc_freq(term)?;
+            debug_assert!(sub >= 0);
+            total = total.wrapping_add(sub);
         }
         Ok(total)
     }
 
-    /// Sums `total_term_freq` across the sub-readers, returning `-1` as soon as
-    /// one sub-reader does not track it.
-    ///
-    /// Equivalent to `BaseCompositeReader.totalTermFreq(Term)`.
+    /// Sums `total_term_freq` across the sub-readers, as
+    /// `BaseCompositeReader.totalTermFreq(Term)` does
+    /// (`BaseCompositeReader.java:209-219`): every sub-reader is added, with
+    /// Java's wrapping `long` sum.
     pub fn total_term_freq(&self, term: &Term) -> Result<i64> {
-        let mut total = 0i64;
+        let mut total = 0i64; // sum freqs in subreaders
         for reader in &self.sub_readers {
             let sub = reader.total_term_freq(term)?;
-            if sub == -1 {
-                return Ok(-1);
-            }
-            total += sub;
+            debug_assert!(sub >= 0);
+            total = total.wrapping_add(sub);
         }
         Ok(total)
     }
 
-    /// Sums `get_sum_doc_freq` across the sub-readers, returning `-1` as soon as
-    /// one sub-reader does not track it.
+    /// Sums `get_sum_doc_freq` across the sub-readers, as
+    /// `BaseCompositeReader.getSumDocFreq(String)` does
+    /// (`BaseCompositeReader.java:222-232`).
     pub fn get_sum_doc_freq(&self, field: &str) -> Result<i64> {
-        let mut total = 0i64;
+        let mut total = 0i64; // sum doc freqs in subreaders
         for reader in &self.sub_readers {
             let sub = reader.get_sum_doc_freq(field)?;
-            if sub == -1 {
-                return Ok(-1);
-            }
-            total += sub;
+            debug_assert!(sub >= 0);
+            total = total.wrapping_add(sub);
         }
         Ok(total)
     }
 
-    /// Sums `get_doc_count` across the sub-readers, returning `-1` as soon as one
-    /// sub-reader does not track it.
+    /// Sums `get_doc_count` across the sub-readers, as
+    /// `BaseCompositeReader.getDocCount(String)` does
+    /// (`BaseCompositeReader.java:235-245`).
     pub fn get_doc_count(&self, field: &str) -> Result<i32> {
-        let mut total = 0i32;
+        let mut total = 0i32; // sum doc counts in subreaders
         for reader in &self.sub_readers {
             let sub = reader.get_doc_count(field)?;
-            if sub == -1 {
-                return Ok(-1);
-            }
-            total += sub;
+            debug_assert!(sub >= 0);
+            total = total.wrapping_add(sub);
         }
         Ok(total)
     }
 
-    /// Sums `get_sum_total_term_freq` across the sub-readers, returning `-1` as
-    /// soon as one sub-reader does not track it.
+    /// Sums `get_sum_total_term_freq` across the sub-readers, as
+    /// `BaseCompositeReader.getSumTotalTermFreq(String)` does
+    /// (`BaseCompositeReader.java:248-259`).
     pub fn get_sum_total_term_freq(&self, field: &str) -> Result<i64> {
-        let mut total = 0i64;
+        let mut total = 0i64; // sum doc total term freqs in subreaders
         for reader in &self.sub_readers {
             let sub = reader.get_sum_total_term_freq(field)?;
-            if sub == -1 {
-                return Ok(-1);
-            }
-            total += sub;
+            debug_assert!(sub >= 0);
+            total = total.wrapping_add(sub);
         }
         Ok(total)
     }
@@ -269,7 +273,8 @@ mod tests {
     use crate::codecs::stub::StoredFieldVisitor;
     use crate::index::index_reader::{CacheHelper, IndexReaderCore};
     use crate::index::reader_context::IndexReaderContext;
-    use crate::index::{EmptyFields, Fields};
+    use crate::index::terms::EmptyFields;
+    use crate::index::Fields;
     use std::sync::Weak;
 
     /// Reports the sub-reader-local document id it was handed, so the doc-base
@@ -283,7 +288,7 @@ mod tests {
             doc_id: i32,
             _visitor: &mut dyn StoredFieldVisitor,
         ) -> Result<()> {
-            Err(LuceneError::IllegalState(format!("local doc {doc_id}")))
+            Err(LuceneError::illegal_state(format!("local doc {doc_id}")))
         }
     }
 
@@ -295,7 +300,7 @@ mod tests {
             if doc == 0 {
                 Ok(Some(Box::new(EmptyFields)))
             } else {
-                Err(LuceneError::IllegalState(format!("local doc {doc}")))
+                Err(LuceneError::illegal_state(format!("local doc {doc}")))
             }
         }
     }
@@ -365,8 +370,8 @@ mod tests {
         }
     }
 
-    fn base_of(sizes: &[i32]) -> BaseCompositeReader {
-        let subs: Vec<Arc<dyn IndexReader>> = sizes
+    fn stubs(sizes: &[i32]) -> Vec<Arc<dyn IndexReader>> {
+        sizes
             .iter()
             .map(|&size| {
                 Arc::new(StubReader {
@@ -374,8 +379,60 @@ mod tests {
                     max_doc: size,
                 }) as Arc<dyn IndexReader>
             })
-            .collect();
-        BaseCompositeReader::new(subs, false).expect("composite over stub readers")
+            .collect()
+    }
+
+    fn base_of(sizes: &[i32]) -> BaseCompositeReader {
+        BaseCompositeReader::new(stubs(sizes), false).expect("composite over stub readers")
+    }
+
+    /// The document limit is `IndexWriter.getActualMaxDocs()`, read when the
+    /// reader is built (`BaseCompositeReader.java:90-109`), so a limit lowered
+    /// through `IndexWriter.setMaxDocs` applies — to `MultiReader` too, whose
+    /// Java constructor is `BaseCompositeReader`'s.
+    ///
+    /// The limit is process-wide, so it is lowered only to two billion, far
+    /// above any document count another test running at the same time reaches,
+    /// and a guard puts the previous limit back even if an assertion fails.
+    #[test]
+    fn the_document_limit_is_the_writers_actual_max_docs() {
+        use crate::index::index_writer::{get_actual_max_docs, set_max_docs};
+
+        struct RestoreMaxDocs(i32);
+        impl Drop for RestoreMaxDocs {
+            fn drop(&mut self) {
+                set_max_docs(self.0).expect("the previous limit is valid");
+            }
+        }
+        let _restore = RestoreMaxDocs(get_actual_max_docs());
+        const LIMIT: i32 = 2_000_000_000;
+        set_max_docs(LIMIT).unwrap();
+
+        let sizes = [1_000_000_000, 1_000_000_001];
+        let composite = BaseCompositeReader::new(stubs(&sizes), false).unwrap_err();
+        assert_eq!(
+            composite.to_string(),
+            LuceneError::IllegalArgument(
+                "Too many documents: composite IndexReaders cannot exceed 2000000000 but readers \
+                 have total maxDoc=2000000001"
+                    .to_string()
+            )
+            .to_string()
+        );
+        // A directory reader's failure names `Arrays.toString(subReaders)` as
+        // its resource (`BaseCompositeReader.java:94-99`).
+        let directory = BaseCompositeReader::new(stubs(&sizes), true).unwrap_err();
+        assert_eq!(
+            directory.to_string(),
+            LuceneError::corrupt_index(
+                "Too many documents: an index cannot exceed 2000000000 but readers have total \
+                 maxDoc=2000000001",
+                "[StubReader, StubReader]"
+            )
+            .to_string()
+        );
+        let multi = crate::index::multi_reader::MultiReader::new(stubs(&sizes), false).unwrap_err();
+        assert_eq!(multi.to_string(), composite.to_string());
     }
 
     /// `BaseCompositeReader.termVectors()` and `storedFields()` translate the
@@ -413,6 +470,28 @@ mod tests {
             Err(error) => assert!(error.to_string().contains("local doc 1"), "{error}"),
             Ok(()) => panic!("expected the stub to report the local id"),
         }
+    }
+
+    /// `readerIndex` is `ReaderUtil.subIndex` over `starts`, which scans a run
+    /// of equal starts to its last entry: a document right after an empty
+    /// sub-reader belongs to the sub-reader that follows it, never to the empty
+    /// one (`ReaderUtil.java:49-69`).
+    #[test]
+    fn reader_index_skips_empty_sub_readers_as_java_sub_index_does() {
+        let base = base_of(&[3, 0, 0, 2]);
+        assert_eq!(base.reader_index(0).unwrap(), 0);
+        assert_eq!(base.reader_index(2).unwrap(), 0);
+        assert_eq!(base.reader_index(3).unwrap(), 3);
+        assert_eq!(base.reader_index(4).unwrap(), 3);
+        let error = base.reader_index(5).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            LuceneError::IllegalArgument(
+                "docID must be >= 0 and < maxDoc=5 (got docID=5)".to_string()
+            )
+            .to_string()
+        );
+        assert!(base.reader_index(-1).is_err());
     }
 
     /// A visitor that is never asked for anything: the stub reports the local

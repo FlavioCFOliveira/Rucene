@@ -157,10 +157,14 @@ impl SortedNumericSortField {
             kind,
             missing,
             self.sort_field.reverse(),
+            // `this::getValue`: `SortedNumericSelector.wrap(DocValues.
+            // getSortedNumeric(reader, getField()), selector, type)`
+            // (`SortedNumericSortField.java:373-376`). A single-valued numeric
+            // field is promoted, a field the reader knows with another type is
+            // refused, and an absent one reads as empty values
+            // (`DocValues.java:293-305`).
             std::sync::Arc::new(move |reader: &dyn crate::index::LeafReader| {
-                let Some(values) = reader.get_sorted_numeric_doc_values(&field)? else {
-                    return Ok(None);
-                };
+                let values = crate::index::DocValues::get_sorted_numeric(reader, &field)?;
                 Ok(Some(
                     crate::search::sorted_numeric_selector::SortedNumericSelector::wrap(
                         values,
@@ -172,6 +176,10 @@ impl SortedNumericSortField {
         )))
     }
 
+    /// Returns the [`SortField`] this sort field extends.
+    ///
+    /// Java's `SortedNumericSortField` *is* a `SortField`; this port composes
+    /// one, and this accessor exposes it.
     pub fn sort_field(&self) -> &SortField {
         &self.sort_field
     }
@@ -265,15 +273,6 @@ impl SortedNumericSortField {
         Ok(())
     }
 
-    /// Reads a sort field written by [`serialize`](Self::serialize).
-    ///
-    /// Equivalent to `SortedNumericSortField.Provider.readSortField(DataInput)`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalArgument`] for an unknown selector or a
-    /// numeric type that cannot carry a missing value, and propagates any I/O
-    /// error.
     /// Reads the selector type of a serialised sort field.
     ///
     /// Equivalent to the private
@@ -292,6 +291,15 @@ impl SortedNumericSortField {
         })
     }
 
+    /// Reads a sort field written by [`serialize`](Self::serialize).
+    ///
+    /// Equivalent to `SortedNumericSortField.Provider.readSortField(DataInput)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] for an unknown selector or a
+    /// numeric type that cannot carry a missing value, and propagates any I/O
+    /// error.
     pub fn read_sort_field(input: &mut dyn DataInput) -> Result<Self> {
         let field = input.read_string()?;
         let numeric_type = SortFieldType::parse(&input.read_string()?)?;
@@ -330,5 +338,46 @@ impl fmt::Display for SortedNumericSortField {
     /// Equivalent to `SortedNumericSortField.toString()`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.sort_field)
+    }
+}
+
+/// The `SortFieldProvider` for [`SortedNumericSortField`], registered as [`SortedNumericSortField::NAME`].
+///
+/// Equivalent to the nested class `SortedNumericSortField.Provider` (`SortedNumericSortField.java:116-180`).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Provider;
+
+impl Provider {
+    /// Creates a new provider.
+    ///
+    /// Equivalent to `new SortedNumericSortField.Provider()`.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl crate::util::spi::NamedSPI for Provider {
+    fn get_name(&self) -> &str {
+        SortedNumericSortField::NAME
+    }
+}
+
+impl crate::index::index_sorter::SortFieldProvider for Provider {
+    /// Equivalent to `SortedNumericSortField.Provider.readSortField(DataInput)`.
+    fn read_sort_field(
+        &self,
+        input: &mut dyn crate::store::DataInput,
+    ) -> Result<crate::search::SortField> {
+        Ok(SortedNumericSortField::read_sort_field(input)?.into_sort_field())
+    }
+
+    /// Equivalent to `SortedNumericSortField.Provider.writeSortField(SortField, DataOutput)`:
+    /// the field must be a `SortedNumericSortField` (Java asserts it and casts).
+    fn write_sort_field(
+        &self,
+        sort_field: &crate::search::SortField,
+        output: &mut dyn crate::store::DataOutput,
+    ) -> Result<()> {
+        SortedNumericSortField::from_sort_field(sort_field.clone())?.serialize(output)
     }
 }

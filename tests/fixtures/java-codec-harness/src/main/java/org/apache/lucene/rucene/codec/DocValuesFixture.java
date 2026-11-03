@@ -92,7 +92,25 @@ import org.apache.lucene.util.BytesRef;
  *       the growth path, the multi-block path, and LZ4 blocks large enough to
  *       have anything to compress;
  *   <li>{@code mixed} — one document stream carrying all five types at once,
- *       with gaps in several of them.
+ *       with gaps in several of them;
+ *   <li>{@code blocks} — 34000 documents whose numeric values change range
+ *       from one 16384-value block to the next, so {@code writeValues} takes
+ *       its per-block layout ({@code doBlocks},
+ *       {@code Lucene90DocValuesConsumer.java:485-497}): a dense numeric field,
+ *       a sparse one, and a two-values-per-document sorted-numeric field, with
+ *       a constant block and a partial last block;
+ *   <li>{@code sortedoneterm} — a sorted field and a single-valued sorted-set
+ *       field whose only term is the same in every document, so every ordinal
+ *       is 0 and the ordinals' GCD stays 0
+ *       ({@code Lucene90DocValuesConsumer.java:390-401});
+ *   <li>{@code ordblocks} — sorted and sorted-set ordinals whose ranges change
+ *       from block to block, so the ordinals themselves take the per-block
+ *       layout;
+ *   <li>{@code extreme}, {@code extremeblocks} — {@code Long.MIN_VALUE} and
+ *       {@code Long.MAX_VALUE} beside small values, where the consumer's
+ *       {@code long} arithmetic wraps;
+ *   <li>{@code boundary09}, {@code boundary095} — per-block savings on either
+ *       side of the 10% threshold that decides {@code doBlocks}.
  * </ul>
  *
  * <p>Command-line usage:
@@ -109,7 +127,7 @@ public final class DocValuesFixture {
       System.err.println("Usage: DocValuesFixture <output-dir> <case>");
       System.err.println(
           "Supported cases: numeric, sparse, dense, binary, sorted, sortednumeric, "
-              + "sortedsetsingle, sortedsetmulti, sortedlongterms, mixed");
+              + "sortedsetsingle, sortedsetmulti, sortedlongterms, mixed, blocks, sortedoneterm");
       System.exit(1);
     }
 
@@ -355,6 +373,112 @@ public final class DocValuesFixture {
     return documents;
   }
 
+  /** The value of {@code vbpv} in document {@code doc}: three ranges, one per block. */
+  static long blockValue(int doc) {
+    if (doc < 16384) {
+      return doc % 2;
+    } else if (doc < 32768) {
+      return doc * 1_000_003L % 1_099_511_627_776L;
+    }
+    return 7;
+  }
+
+  /** The value of {@code svbpv} for its {@code i}-th value (document {@code 2 * i}). */
+  static long sparseBlockValue(int i) {
+    return i < 16384 ? i % 4 : i * 7919L;
+  }
+
+  private static List<Document> blocks() {
+    List<Document> documents = new ArrayList<>();
+    for (int doc = 0; doc < 34_000; doc++) {
+      Document document = new Document();
+      document.add(new NumericDocValuesField("vbpv", blockValue(doc)));
+      if (doc % 2 == 0) {
+        document.add(new NumericDocValuesField("svbpv", sparseBlockValue(doc / 2)));
+      }
+      if (doc < 8192) {
+        document.add(new SortedNumericDocValuesField("snvbpv", doc % 3));
+        document.add(new SortedNumericDocValuesField("snvbpv", 1 + doc % 3));
+      } else {
+        document.add(new SortedNumericDocValuesField("snvbpv", doc * 104_729L));
+        document.add(new SortedNumericDocValuesField("snvbpv", doc * 104_729L + 5));
+      }
+      documents.add(document);
+    }
+    return documents;
+  }
+
+  private static List<Document> sortedOneTerm() {
+    List<Document> documents = new ArrayList<>();
+    for (int doc = 0; doc < 10; doc++) {
+      Document document = new Document();
+      document.add(new SortedDocValuesField("one", new BytesRef("only")));
+      if (doc % 2 == 0) {
+        document.add(new SortedSetDocValuesField("oneset", new BytesRef("only")));
+      }
+      documents.add(document);
+    }
+    return documents;
+  }
+
+  private static List<Document> ordBlocks() {
+    List<Document> documents = new ArrayList<>();
+    for (int doc = 0; doc < 40_000; doc++) {
+      Document document = new Document();
+      String term = doc < 16384 ? (doc % 2 == 0 ? "a" : "b") : String.format("t%05d", doc);
+      document.add(new SortedDocValuesField("ob", new BytesRef(term)));
+      if (doc < 16384) {
+        document.add(new SortedSetDocValuesField("obs", new BytesRef("a")));
+      } else {
+        document.add(new SortedSetDocValuesField("obs", new BytesRef(String.format("t%05d", doc))));
+        document.add(new SortedSetDocValuesField("obs", new BytesRef(String.format("u%05d", doc))));
+      }
+      documents.add(document);
+    }
+    return documents;
+  }
+
+  static long extremeValue(int doc) {
+    if (doc < 16384) return doc % 2;
+    if (doc < 32768) return doc % 2 == 0 ? Long.MIN_VALUE : Long.MAX_VALUE;
+    return -1;
+  }
+
+  private static List<Document> extreme() {
+    List<Document> documents = new ArrayList<>();
+    for (int doc = 0; doc < 34_000; doc++) {
+      Document document = new Document();
+      document.add(new NumericDocValuesField("ex", extremeValue(doc)));
+      document.add(new SortedNumericDocValuesField("exs", Long.MIN_VALUE));
+      document.add(new SortedNumericDocValuesField("exs", Long.MAX_VALUE));
+      document.add(new NumericDocValuesField("exw", doc % 3 == 0 ? Long.MIN_VALUE : (doc % 3 == 1 ? Long.MAX_VALUE : (long) doc)));
+      documents.add(document);
+    }
+    return documents;
+  }
+
+  private static List<Document> extremeBlocks() {
+    List<Document> documents = new ArrayList<>();
+    for (int doc = 0; doc < 34_000; doc++) {
+      Document document = new Document();
+      long v = doc < 16384 ? doc % 2 : (doc < 32768 ? (doc % 3 == 0 ? Long.MIN_VALUE : (doc % 3 == 1 ? Long.MAX_VALUE : (long) doc)) : -1L);
+      document.add(new NumericDocValuesField("xb", v));
+      documents.add(document);
+    }
+    return documents;
+  }
+
+  private static List<Document> boundary(int lowBits) {
+    List<Document> documents = new ArrayList<>();
+    for (int doc = 0; doc < 32_768; doc++) {
+      Document document = new Document();
+      long v = doc < 16384 ? doc % (1 << lowBits) : (doc * 7L) % 1024;
+      document.add(new NumericDocValuesField("bd", v));
+      documents.add(document);
+    }
+    return documents;
+  }
+
   static final String[] DICTIONARY = {"zz", "apple", "mm", "bee", "kiwi"};
   static final String[] SINGLE = {"ant", "bee", "cow", "dog", "emu", "fox"};
   static final String[] SET = {"bee", "ant", "cow", "dog"};
@@ -372,6 +496,13 @@ public final class DocValuesFixture {
       case "sortedsetmulti" -> sortedSetMulti();
       case "sortedlongterms" -> sortedLongTerms();
       case "mixed" -> mixed();
+      case "blocks" -> blocks();
+      case "sortedoneterm" -> sortedOneTerm();
+      case "ordblocks" -> ordBlocks();
+      case "extreme" -> extreme();
+      case "extremeblocks" -> extremeBlocks();
+      case "boundary09" -> boundary(8);
+      case "boundary095" -> boundary(9);
       default -> throw new IllegalArgumentException("unknown case: " + caseName);
     };
   }

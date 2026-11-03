@@ -8,7 +8,7 @@
 
 #![deny(unsafe_code)]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fmt::{self, Debug, Formatter};
 use std::io;
 use std::sync::{Arc, RwLock};
@@ -18,7 +18,7 @@ use crate::error::{LuceneError, Result};
 use crate::index::index_file_names::{file_name_from_generation, PENDING_SEGMENTS, SEGMENTS};
 use crate::index::SegmentCommitInfo;
 use crate::store::{Directory, IndexOutput};
-use crate::util::java_collections::JavaStringMap;
+use crate::util::java_collections::{JavaHashSet, JavaIntHashMap, JavaStringMap};
 use crate::util::string_helper::{StringHelper, ID_LENGTH};
 use crate::util::{InfoStream, Version};
 
@@ -170,11 +170,6 @@ impl SegmentInfos {
         self.segments.len()
     }
 
-    /// Returns `true` if there are no segments.
-    pub fn is_empty(&self) -> bool {
-        self.segments.is_empty()
-    }
-
     /// Appends the provided `SegmentCommitInfo`.
     ///
     /// # Errors
@@ -207,11 +202,21 @@ impl SegmentInfos {
 
     /// Removes the provided `SegmentCommitInfo`.
     ///
+    /// Equivalent to `SegmentInfos.remove(SegmentCommitInfo)`, which finds the
+    /// segment by `List.remove(Object)`. `SegmentCommitInfo` does not override
+    /// `equals`, so Java matches the very instance the writer holds, whatever
+    /// its delete counts and generations are at the time. This port hands out
+    /// clones (the reader pool keeps its own copy of each segment), so the
+    /// instance is recognised by its segment name, which is unique within one
+    /// `SegmentInfos`. Comparing by value instead would miss a segment whose
+    /// pooled copy has a different delete count than the writer's, and leave it
+    /// in the index after its reader was dropped.
+    ///
     /// # Warning
     ///
     /// O(N) cost.
     pub fn remove(&mut self, si: &SegmentCommitInfo) -> bool {
-        if let Some(pos) = self.segments.iter().position(|s| s == si) {
+        if let Some(pos) = self.index_of(si) {
             self.segments.remove(pos);
             true
         } else {
@@ -230,20 +235,28 @@ impl SegmentInfos {
 
     /// Returns `true` if the provided `SegmentCommitInfo` is contained.
     ///
+    /// Equivalent to `SegmentInfos.contains(SegmentCommitInfo)`; the segment is
+    /// recognised by its name, as [`remove`](Self::remove) explains.
+    ///
     /// # Warning
     ///
     /// O(N) cost.
     pub fn contains(&self, si: &SegmentCommitInfo) -> bool {
-        self.segments.iter().any(|s| s == si)
+        self.index_of(si).is_some()
     }
 
     /// Returns the index of the provided `SegmentCommitInfo`, or `None`.
+    ///
+    /// Equivalent to `SegmentInfos.indexOf(SegmentCommitInfo)`; the segment is
+    /// recognised by its name, as [`remove`](Self::remove) explains.
     ///
     /// # Warning
     ///
     /// O(N) cost.
     pub fn index_of(&self, si: &SegmentCommitInfo) -> Option<usize> {
-        self.segments.iter().position(|s| s == si)
+        self.segments
+            .iter()
+            .position(|s| s.info.name == si.info.name)
     }
 
     /// Returns an iterator over the contained segments.
@@ -264,30 +277,48 @@ impl SegmentInfos {
     /// Returns a slice view of the contained segments.
     /// Reads a codec name and resolves it to the registered codec.
     ///
-    /// Equivalent to the private `SegmentInfos.readCodec(DataInput)`. A name
-    /// that starts with `Lucene` and cannot be resolved is reported as an index
-    /// written by a version whose codec is no longer on the path, which is what
-    /// Java's `IndexFormatTooOldException` says.
+    /// Equivalent to the private `SegmentInfos.readCodec(DataInput)`
+    /// (`SegmentInfos.java:524-541`). A name that starts with `Lucene` and
+    /// cannot be resolved is reported as an index written by a version whose
+    /// codec is no longer on the path: `new IndexFormatTooOldException(input,
+    /// "Could not load codec '" + name + "'. " + e.getMessage() + ". Did you
+    /// forget to add lucene-backward-codecs.jar?")`, `e` the
+    /// `IllegalArgumentException` of `Codec.forName`. As with
+    /// [`parse_segment_infos`](Self::parse_segment_infos), Java's `DataInput`
+    /// is always the commit's `ChecksumIndexInput`, whose `toString()` is the
+    /// exception's resource; this takes that input.
+    ///
+    /// **Divergence from Lucene 10.5.0.** For a name that does not start with
+    /// `Lucene`, Java rethrows `Codec.forName`'s `IllegalArgumentException`
+    /// (`SegmentInfos.java:539`); this port still reports
+    /// `IndexFormatNotSupported("Could not load codec '<name>'.")`.
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IndexFormatNotSupported`] when the codec cannot
-    /// be resolved, and propagates any I/O error.
+    /// Returns [`LuceneError::IndexFormatTooOld`] when a `Lucene` codec cannot
+    /// be resolved, [`LuceneError::IndexFormatNotSupported`] when another
+    /// codec cannot be, and propagates any I/O error.
     fn read_codec(
-        input: &mut dyn crate::store::DataInput,
+        input: &mut dyn crate::store::ChecksumIndexInput,
     ) -> Result<std::sync::Arc<dyn crate::codecs::Codec>> {
         let name = input.read_string()?;
-        crate::codecs::for_name(&name).ok_or_else(|| {
-            if name.starts_with("Lucene") {
-                // Maybe it is an old default codec that has moved.
-                LuceneError::IndexFormatNotSupported(format!(
-                    "Could not load codec '{name}'. Did you forget to add \
-                     lucene-backward-codecs.jar?"
+        match crate::codecs::lookup(&name) {
+            Ok(codec) => Ok(codec),
+            // Maybe it is an old default codec that has moved.
+            Err(LuceneError::IllegalArgument(message)) if name.starts_with("Lucene") => {
+                Err(LuceneError::index_format_too_old_reason(
+                    input.resource_description(),
+                    format!(
+                        "Could not load codec '{name}'. {message}. Did you forget to add \
+                         lucene-backward-codecs.jar?"
+                    ),
                 ))
-            } else {
-                LuceneError::IndexFormatNotSupported(format!("Could not load codec '{name}'."))
             }
-        })
+            Err(LuceneError::IllegalArgument(_)) => Err(LuceneError::IndexFormatNotSupported(
+                format!("Could not load codec '{name}'."),
+            )),
+            Err(error) => Err(error),
+        }
     }
 
     /// Returns the segments as a slice.
@@ -298,6 +329,8 @@ impl SegmentInfos {
         self.as_slice()
     }
 
+    /// Returns the segments as a slice; the same view as
+    /// [`as_list`](Self::as_list).
     pub fn as_slice(&self) -> &[SegmentCommitInfo] {
         &self.segments
     }
@@ -392,7 +425,7 @@ impl SegmentInfos {
     /// Sets the generation to be used for the next commit.
     pub fn set_next_write_generation(&mut self, generation: i64) -> Result<()> {
         if generation < self.generation {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "cannot decrease generation to {generation} from current generation {}",
                 self.generation
             )));
@@ -461,13 +494,32 @@ impl SegmentInfos {
     /// Returns the sum of all segment `max_doc` values.
     ///
     /// Deletions are not included.
-    pub fn total_max_doc(&self) -> i32 {
+    ///
+    /// Equivalent to `SegmentInfos.totalMaxDoc()` (`SegmentInfos.java:1054-1062`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::Arithmetic`] with the message `integer overflow`
+    /// when the sum does not fit in an `i32`: Java's `Math.toIntExact(count)`
+    /// throwing `ArithmeticException("integer overflow")`.
+    ///
+    /// # Panics
+    ///
+    /// In a debug build, when the sum exceeds
+    /// [`get_actual_max_docs`](crate::index::index_writer::get_actual_max_docs):
+    /// Java's `assert count <= IndexWriter.getActualMaxDocs()`
+    /// (`SegmentInfos.java:1060`), which fires before the conversion under
+    /// `-ea`.
+    pub fn total_max_doc(&self) -> Result<i32> {
         let count: i64 = self
             .segments
             .iter()
             .map(|s| s.info.max_doc().unwrap_or(0) as i64)
             .sum();
-        count.min(i32::MAX as i64) as i32
+        // We should never hit this, checks should happen elsewhere.
+        debug_assert!(count <= i64::from(crate::index::index_writer::get_actual_max_docs()));
+        // `Math.toIntExact(count)` (`SegmentInfos.java:1061`).
+        crate::error::to_int_exact(count)
     }
 
     /// Returns all file names referenced by this commit.
@@ -477,16 +529,24 @@ impl SegmentInfos {
     /// * `include_segments_file` - if `true`, the committed `segments_N` file is
     ///   included.
     pub fn files(&self, include_segments_file: bool) -> Result<HashSet<String>> {
-        let mut files = HashSet::new();
+        Ok(self.files_ordered(include_segments_file)?.to_std())
+    }
+
+    /// Returns all file names referenced by this commit, iteration order
+    /// included.
+    ///
+    /// Equivalent to `SegmentInfos.files(boolean)` (`SegmentInfos.java:932-947`):
+    /// a `java.util.HashSet` that receives the `segments_N` name first, then
+    /// every segment's [`SegmentCommitInfo::files_ordered`] in segment order.
+    pub fn files_ordered(&self, include_segments_file: bool) -> Result<JavaHashSet> {
+        let mut files = JavaHashSet::new();
         if include_segments_file {
             if let Some(segment_file_name) = self.segments_file_name() {
                 files.insert(segment_file_name);
             }
         }
         for info in &self.segments {
-            for file in info.files()? {
-                files.insert(file);
-            }
+            files.extend(info.files_ordered()?);
         }
         Ok(files)
     }
@@ -499,7 +559,13 @@ impl SegmentInfos {
         self.user_data.clone_from(&other.user_data);
     }
 
-    fn rollback_segment_infos(&mut self, infos: &[SegmentCommitInfo]) {
+    /// Replaces every segment with `infos`, leaving the generation, version,
+    /// counter and user data as they are.
+    ///
+    /// Equivalent to the package-private
+    /// `SegmentInfos.rollbackSegmentInfos(List<SegmentCommitInfo>)`
+    /// (`SegmentInfos.java:1132-1135`).
+    pub(crate) fn rollback_segment_infos(&mut self, infos: &[SegmentCommitInfo]) {
         self.clear();
         self.segments.extend_from_slice(infos);
     }
@@ -620,15 +686,21 @@ impl SegmentInfos {
         generation: i64,
         min_supported_major_version: i32,
     ) -> Result<Self> {
+        // `int format = -1`: set once `checkHeaderNoMagic` accepted the header.
+        let mut format = -1;
         let result = (|| {
             let magic = codec_util::read_be_int(input)?;
             if magic != codec_util::CODEC_MAGIC {
-                return Err(LuceneError::IndexFormatNotSupported(format!(
-                    "index format too old: magic={magic}, expected={}",
-                    codec_util::CODEC_MAGIC
-                )));
+                // `new IndexFormatTooOldException(input, magic, CODEC_MAGIC,
+                // CODEC_MAGIC)` (`SegmentInfos.java:326-329`).
+                return Err(LuceneError::index_format_too_old(
+                    input.resource_description(),
+                    magic,
+                    codec_util::CODEC_MAGIC,
+                    codec_util::CODEC_MAGIC,
+                ));
             }
-            let format =
+            format =
                 codec_util::check_header_no_magic(input, "segments", VERSION_74, VERSION_CURRENT)?;
 
             let mut id = [0u8; ID_LENGTH];
@@ -644,9 +716,13 @@ impl SegmentInfos {
             if (lucene_version.major as i32) > index_created_version {
                 // continue
             } else if (lucene_version.major as i32) < index_created_version {
-                return Err(LuceneError::CorruptIndex(format!(
-                    "Creation version [{index_created_version}.x] can't be greater than the version that wrote the segment infos: [{lucene_version}]"
-                )));
+                // `new CorruptIndexException(..., input)` (`SegmentInfos.java:338-346`).
+                return Err(LuceneError::corrupt_index(
+                    format!(
+                        "Creation version [{index_created_version}.x] can't be greater than the version that wrote the segment infos: [{lucene_version}]"
+                    ),
+                    input.resource_description(),
+                ));
             }
 
             let mut infos = Self::new(index_created_version)?;
@@ -664,11 +740,18 @@ impl SegmentInfos {
             Ok(infos)
         })();
 
-        // Java's `finally` calls `CodecUtil.checkFooter(input, priorE)`, which
-        // *rethrows* the parse failure when there is one, reporting the footer
-        // only as extra context. Validating the footer with `?` before the
-        // parse result would replace the real cause with a footer complaint,
-        // because a parse that stopped early always leaves unread bytes.
+        // Java's `finally` (`SegmentInfos.java:358-364`) checks the footer only
+        // once the header was accepted (`format >= VERSION_74`); before that,
+        // the failure is rethrown as is, so a wrong magic or an unsupported
+        // header version is reported whatever the checksum says. The check is
+        // `CodecUtil.checkFooter(input, priorE)`, which *rethrows* the parse
+        // failure when there is one, reporting the footer only as extra
+        // context. Validating the footer with `?` before the parse result
+        // would replace the real cause with a footer complaint, because a
+        // parse that stopped early always leaves unread bytes.
+        if format < VERSION_74 {
+            return result;
+        }
         match result {
             Ok(infos) => {
                 codec_util::check_footer(input)?;
@@ -678,9 +761,17 @@ impl SegmentInfos {
         }
     }
 
+    /// Reads the segments of a commit.
+    ///
+    /// Equivalent to the private `SegmentInfos.parseSegmentInfos(Directory,
+    /// DataInput, SegmentInfos, int, int)` (`SegmentInfos.java:368-522`). Java
+    /// declares a `DataInput` but is only ever handed the commit's
+    /// `ChecksumIndexInput`, whose `toString()` is the resource every
+    /// `CorruptIndexException(message, input)` it throws names; this takes that
+    /// input, so the errors name the same resource.
     fn parse_segment_infos(
         directory: Arc<dyn Directory>,
-        input: &mut dyn crate::store::DataInput,
+        input: &mut dyn crate::store::ChecksumIndexInput,
         infos: &mut SegmentInfos,
         format: i32,
         min_supported_major_version: i32,
@@ -689,9 +780,10 @@ impl SegmentInfos {
         infos.counter = input.read_v_long()?;
         let num_segments = codec_util::read_be_int(input)?;
         if num_segments < 0 {
-            return Err(LuceneError::CorruptIndex(format!(
-                "invalid segment count: {num_segments}"
-            )));
+            return Err(LuceneError::corrupt_index(
+                format!("invalid segment count: {num_segments}"),
+                input.resource_description(),
+            ));
         }
 
         if num_segments > 0 {
@@ -724,24 +816,31 @@ impl SegmentInfos {
             let del_gen = codec_util::read_be_long(input)?;
             let del_count = codec_util::read_be_int(input)?;
             if del_count < 0 || del_count > max_doc {
-                return Err(LuceneError::CorruptIndex(format!(
-                    "invalid deletion count: {del_count} vs maxDoc={max_doc}"
-                )));
+                return Err(LuceneError::corrupt_index(
+                    format!("invalid deletion count: {del_count} vs maxDoc={max_doc}"),
+                    input.resource_description(),
+                ));
             }
 
             let field_infos_gen = codec_util::read_be_long(input)?;
             let doc_values_gen = codec_util::read_be_long(input)?;
             let soft_del_count = codec_util::read_be_int(input)?;
+            // Java reports an invalid soft deletion count with the same
+            // "invalid deletion count" text (`SegmentInfos.java:410-413`).
             if soft_del_count < 0 || soft_del_count > max_doc {
-                return Err(LuceneError::CorruptIndex(format!(
-                    "invalid soft deletion count: {soft_del_count} vs maxDoc={max_doc}"
-                )));
+                return Err(LuceneError::corrupt_index(
+                    format!("invalid deletion count: {soft_del_count} vs maxDoc={max_doc}"),
+                    input.resource_description(),
+                ));
             }
             if (soft_del_count as i64 + del_count as i64) > max_doc as i64 {
-                return Err(LuceneError::CorruptIndex(format!(
-                    "invalid deletion count: {} vs maxDoc={max_doc}",
-                    soft_del_count + del_count
-                )));
+                return Err(LuceneError::corrupt_index(
+                    format!(
+                        "invalid deletion count: {} vs maxDoc={max_doc}",
+                        soft_del_count + del_count
+                    ),
+                    input.resource_description(),
+                ));
             }
 
             let sci_id: [u8; ID_LENGTH] = if format > VERSION_74 {
@@ -754,9 +853,10 @@ impl SegmentInfos {
                     }
                     0 => StringHelper::random_id(),
                     _ => {
-                        return Err(LuceneError::CorruptIndex(format!(
-                            "invalid SegmentCommitInfo ID marker: {marker}"
-                        )))
+                        return Err(LuceneError::corrupt_index(
+                            format!("invalid SegmentCommitInfo ID marker: {marker}"),
+                            input.resource_description(),
+                        ))
                     }
                 }
             } else {
@@ -777,41 +877,63 @@ impl SegmentInfos {
             si_per_commit.set_field_infos_files(field_infos_files);
 
             let num_dv_fields = codec_util::read_be_int(input)?;
-            let mut dv_updates_files: HashMap<i32, Vec<String>> = HashMap::new();
+            // `HashMap.newHashMap(numDVFields)`, iterated in its order by
+            // `setDocValuesUpdatesFiles` (`SegmentInfos.java:440-451`); an
+            // empty count is `Collections.emptyMap()`.
+            let mut dv_updates_files: JavaIntHashMap<Vec<String>> =
+                JavaIntHashMap::new_hash_map(num_dv_fields.max(0) as usize);
             for _ in 0..num_dv_fields {
                 let field_number = codec_util::read_be_int(input)?;
                 let files = input.read_set_of_strings()?;
                 dv_updates_files.insert(field_number, files.into_iter().collect());
             }
-            si_per_commit.set_doc_values_updates_files(dv_updates_files);
+            si_per_commit.set_doc_values_updates_files(
+                dv_updates_files
+                    .iter()
+                    .map(|(field_number, files)| (field_number, files.clone()))
+                    .collect::<Vec<_>>(),
+            );
 
             infos.add(si_per_commit)?;
 
             let segment_version = infos.segments.last().unwrap().info.version();
+            // Java names the segment by `info`, its `SegmentInfo.toString()`
+            // (`SegmentInfos.java:456-477`).
             if let Some(min_version) = infos.min_segment_lucene_version {
                 if !segment_version.on_or_after(&min_version) {
-                    return Err(LuceneError::CorruptIndex(format!(
-                        "segments file recorded minSegmentLuceneVersion={min_version} but segment={seg_name} has older version={segment_version}"
-                    )));
+                    return Err(LuceneError::corrupt_index(
+                        format!(
+                            "segments file recorded minSegmentLuceneVersion={min_version} but segment={} has older version={segment_version}",
+                            infos.segments.last().unwrap().info.to_string_with_del_count(0)
+                        ),
+                        input.resource_description(),
+                    ));
                 }
             }
 
             if infos.index_created_version_major >= 7
                 && (segment_version.major as i32) < infos.index_created_version_major
             {
-                return Err(LuceneError::CorruptIndex(format!(
-                    "segments file recorded indexCreatedVersionMajor={} but segment={seg_name} has older version={segment_version}",
-                    infos.index_created_version_major
-                )));
+                return Err(LuceneError::corrupt_index(
+                    format!(
+                        "segments file recorded indexCreatedVersionMajor={} but segment={} has older version={segment_version}",
+                        infos.index_created_version_major,
+                        infos.segments.last().unwrap().info.to_string_with_del_count(0)
+                    ),
+                    input.resource_description(),
+                ));
             }
 
             if infos.index_created_version_major >= 7
                 && infos.segments.last().unwrap().info.min_version().is_none()
             {
-                return Err(LuceneError::CorruptIndex(format!(
-                    "segments infos must record minVersion with indexCreatedVersionMajor={}",
-                    infos.index_created_version_major
-                )));
+                return Err(LuceneError::corrupt_index(
+                    format!(
+                        "segments infos must record minVersion with indexCreatedVersionMajor={}",
+                        infos.index_created_version_major
+                    ),
+                    input.resource_description(),
+                ));
             }
 
             let created_or_segment_min_version = infos
@@ -833,19 +955,37 @@ impl SegmentInfos {
                     .major as i32)
                     < min_supported_major_version
             {
-                return Err(LuceneError::IndexFormatNotSupported(format!(
-                    "Index has segments derived from Lucene version {created_or_segment_min_version}.x and is not supported by Lucene {}. This Lucene version only supports indexes with major version {min_supported_major_version} or later (found: {created_or_segment_min_version}, minimum supported: {min_supported_major_version}).",
-                    Version::LATEST
-                )));
+                // `new IndexFormatTooOldException(input, "Index has segments
+                // derived from ...")` (`SegmentInfos.java:492-508`).
+                return Err(LuceneError::index_format_too_old_reason(
+                    input.resource_description(),
+                    format!(
+                        "Index has segments derived from Lucene version \
+                         {created_or_segment_min_version}.x and is not supported by Lucene {}. \
+                         This Lucene version only supports indexes with major version \
+                         {min_supported_major_version} or later (found: \
+                         {created_or_segment_min_version}, minimum supported: \
+                         {min_supported_major_version}). To resolve this issue re-index your \
+                         data using Lucene {min_supported_major_version}.x or later.",
+                        Version::LATEST
+                    ),
+                ));
             }
         }
 
         infos.user_data = input.read_map_of_strings()?;
 
-        if total_docs > MAX_DOCS as i64 {
-            return Err(LuceneError::CorruptIndex(format!(
-                "Too many documents: an index cannot exceed {MAX_DOCS} but readers have total maxDoc={total_docs}"
-            )));
+        // LUCENE-6299: check we are in bounds (`SegmentInfos.java:513-520`).
+        // The limit is `IndexWriter.getActualMaxDocs()`, the one
+        // `IndexWriter.setMaxDocs` may have lowered, read each time.
+        let actual_max_docs = crate::index::index_writer::get_actual_max_docs();
+        if total_docs > i64::from(actual_max_docs) {
+            return Err(LuceneError::corrupt_index(
+                format!(
+                    "Too many documents: an index cannot exceed {actual_max_docs} but readers have total maxDoc={total_docs}"
+                ),
+                input.resource_description(),
+            ));
         }
 
         Ok(())
@@ -913,13 +1053,14 @@ impl SegmentInfos {
             }
 
             if gen == -1 {
-                return Err(LuceneError::Io(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!(
-                        "no segments* file found in {}: files: {:?}",
-                        directory.directory_type_name(),
-                        files
-                    ),
+                // `throw new IndexNotFoundException("no segments* file found in
+                // " + directory + ": files: " + Arrays.toString(files))`
+                // (`SegmentInfos.java:825-827`): the directory's `toString()`
+                // and the sorted listing as `Arrays.toString` renders it.
+                return Err(LuceneError::index_not_found(format!(
+                    "no segments* file found in {}: files: [{}]",
+                    directory.directory_to_string(),
+                    files.join(", ")
                 )));
             }
 
@@ -927,7 +1068,7 @@ impl SegmentInfos {
                 last_gen = gen;
                 let segment_file_name =
                     file_name_from_generation(SEGMENTS, "", gen).ok_or_else(|| {
-                        LuceneError::IllegalState(format!(
+                        LuceneError::illegal_state(format!(
                             "could not build segments file name for generation {gen}"
                         ))
                     })?;
@@ -980,7 +1121,7 @@ impl SegmentInfos {
     /// Equivalent to `SegmentInfos.prepareCommit(Directory)`.
     pub fn prepare_commit(&mut self, directory: &dyn Directory) -> Result<()> {
         if self.pending_commit {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "prepareCommit was already called".to_string(),
             ));
         }
@@ -992,7 +1133,7 @@ impl SegmentInfos {
         let next_generation = self.next_pending_generation();
         let segment_file_name = file_name_from_generation(PENDING_SEGMENTS, "", next_generation)
             .ok_or_else(|| {
-                LuceneError::IllegalState(format!(
+                LuceneError::illegal_state(format!(
                     "could not build pending segments file name for generation {next_generation}"
                 ))
             })?;
@@ -1000,18 +1141,34 @@ impl SegmentInfos {
         // Always advance the generation on write.
         self.generation = next_generation;
 
-        let mut output =
-            directory.create_output(&segment_file_name, &*crate::store::DEFAULT_IO_CONTEXT)?;
-        let result = self.write_to_output(output.as_mut());
-        match result {
-            Ok(_) => {
-                output.close()?;
-                directory.sync(std::slice::from_ref(&segment_file_name))?;
+        // `SegmentInfos.write(Directory)` (`SegmentInfos.java:578-603`): every
+        // step from creating the output to syncing it is inside the `try`, so
+        // any of them failing closes the output — again, if it was closed —
+        // and deletes the truncated file.
+        let mut seg_output: Option<Box<dyn IndexOutput>> = None;
+        let outcome = (|| -> Result<()> {
+            let output = seg_output.insert(
+                directory.create_output(&segment_file_name, &*crate::store::DEFAULT_IO_CONTEXT)?,
+            );
+            self.write_to_output(output.as_mut())?;
+            output.close()?;
+            directory.sync(std::slice::from_ref(&segment_file_name))?;
+            Ok(())
+        })();
+        match outcome {
+            Ok(()) => {
                 self.pending_commit = true;
                 Ok(())
             }
             Err(err) => {
-                let _ = output.close();
+                // We hit an exception above; try to close the file but
+                // suppress any exception.
+                crate::util::IOUtils::close_while_handling_exception([seg_output
+                    .as_mut()
+                    .map(|output| move || output.close())])?;
+                // Try not to leave a truncated segments_N file in the index:
+                // `IOUtils.deleteFilesIgnoringExceptions(directory,
+                // segmentFileName)`.
                 let _ = directory.delete_file(&segment_file_name);
                 Err(err)
             }
@@ -1061,7 +1218,7 @@ impl SegmentInfos {
         for si_per_commit in &self.segments {
             let si = &si_per_commit.info;
             if self.index_created_version_major >= 7 && si.min_version().is_none() {
-                return Err(LuceneError::IllegalState(format!(
+                return Err(LuceneError::illegal_state(format!(
                     "Segments must record minVersion if they have been created on or after Lucene 7: {si:?}"
                 )));
             }
@@ -1069,7 +1226,7 @@ impl SegmentInfos {
             out.write_string(&si.name)?;
             let segment_id = si.id();
             if segment_id.len() != ID_LENGTH {
-                return Err(LuceneError::IllegalState(format!(
+                return Err(LuceneError::illegal_state(format!(
                     "cannot write segment: invalid id segment={} id={:?}",
                     si.name, segment_id
                 )));
@@ -1078,7 +1235,7 @@ impl SegmentInfos {
             let codec_name = si
                 .codec()
                 .ok_or_else(|| {
-                    LuceneError::IllegalState(format!(
+                    LuceneError::illegal_state(format!(
                         "cannot write segment: codec not set for {si:?}"
                     ))
                 })?
@@ -1090,7 +1247,7 @@ impl SegmentInfos {
             let del_count = si_per_commit.get_del_count();
             let max_doc = si.max_doc()?;
             if del_count < 0 || del_count > max_doc {
-                return Err(LuceneError::IllegalState(format!(
+                return Err(LuceneError::illegal_state(format!(
                     "cannot write segment: invalid maxDoc segment={} maxDoc={max_doc} delCount={del_count}",
                     si.name
                 )));
@@ -1100,7 +1257,7 @@ impl SegmentInfos {
             codec_util::write_be_long(out, si_per_commit.get_doc_values_gen())?;
             let soft_del_count = si_per_commit.get_soft_del_count();
             if soft_del_count < 0 || soft_del_count > max_doc {
-                return Err(LuceneError::IllegalState(format!(
+                return Err(LuceneError::illegal_state(format!(
                     "cannot write segment: invalid maxDoc segment={} maxDoc={max_doc} softDelCount={soft_del_count}",
                     si.name
                 )));
@@ -1117,8 +1274,8 @@ impl SegmentInfos {
             out.write_set_of_strings(si_per_commit.get_field_infos_files())?;
             let dv_updates_files = si_per_commit.get_doc_values_updates_files();
             codec_util::write_be_int(out, dv_updates_files.len() as i32)?;
-            for (field_number, files) in dv_updates_files {
-                codec_util::write_be_int(out, *field_number)?;
+            for (field_number, files) in dv_updates_files.iter() {
+                codec_util::write_be_int(out, field_number)?;
                 out.write_set_of_strings(files)?;
             }
         }
@@ -1134,20 +1291,20 @@ impl SegmentInfos {
     /// Equivalent to `SegmentInfos.finishCommit(Directory)`.
     pub fn finish_commit(&mut self, directory: &dyn Directory) -> Result<String> {
         if !self.pending_commit {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "prepareCommit was not called".to_string(),
             ));
         }
 
         let src =
             file_name_from_generation(PENDING_SEGMENTS, "", self.generation).ok_or_else(|| {
-                LuceneError::IllegalState(format!(
+                LuceneError::illegal_state(format!(
                     "could not build pending segments file name for generation {}",
                     self.generation
                 ))
             })?;
         let dest = file_name_from_generation(SEGMENTS, "", self.generation).ok_or_else(|| {
-            LuceneError::IllegalState(format!(
+            LuceneError::illegal_state(format!(
                 "could not build segments file name for generation {}",
                 self.generation
             ))
@@ -1262,10 +1419,45 @@ mod tests {
     use crate::index::index_file_names::{file_name_from_generation, SEGMENTS};
     use crate::index::SegmentCommitInfo;
     use crate::search::{Sort, SortField, SortFieldType};
-    use crate::store::{Directory, RamDirectory};
+    use crate::store::{ByteBuffersDirectory, Directory};
     use crate::util::string_helper::StringHelper;
     use std::collections::HashSet;
     use std::sync::Arc;
+
+    /// A directory with no commit fails `readLatestCommit` with
+    /// `IndexNotFoundException("no segments* file found in " + directory +
+    /// ": files: " + Arrays.toString(files))` (`SegmentInfos.java:825-827`).
+    /// Java oracle (`fp/SisOracle.java`): "empty: IndexNotFoundException: no
+    /// segments* file found in ByteBuffersDirectory@3bd40a57
+    /// lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@a4102b8:
+    /// files: []", "files: ...: files: [a, b]".
+    #[test]
+    fn read_latest_commit_without_a_commit_raises_index_not_found() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let in_dir = "no segments* file found in ByteBuffersDirectory@{hash} \
+                      lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@{hash}";
+        let message =
+            |dir: &Arc<dyn Directory>| match SegmentInfos::read_latest_commit(Arc::clone(dir)) {
+                Err(LuceneError::IndexNotFound(message)) => message,
+                other => panic!("expected IndexNotFoundException, got {:?}", other.err()),
+            };
+        let empty = message(&dir);
+        assert!(
+            crate::store::matches_java_text(&empty, &format!("{in_dir}: files: []")),
+            "{empty}"
+        );
+        for name in ["b", "a"] {
+            dir.create_output(name, &*crate::store::DEFAULT_IO_CONTEXT)
+                .unwrap()
+                .close()
+                .unwrap();
+        }
+        let files = message(&dir);
+        assert!(
+            crate::store::matches_java_text(&files, &format!("{in_dir}: files: [a, b]")),
+            "{files}"
+        );
+    }
 
     fn test_codec() -> Arc<dyn Codec> {
         static REGISTER: std::sync::Once = std::sync::Once::new();
@@ -1294,7 +1486,7 @@ mod tests {
     fn segment_infos_basic() {
         let mut sis = SegmentInfos::new(10).unwrap();
         assert_eq!(sis.size(), 0);
-        assert_eq!(sis.total_max_doc(), 0);
+        assert_eq!(sis.total_max_doc().unwrap(), 0);
         assert_eq!(sis.index_created_version_major(), 10);
         sis.changed();
         assert_eq!(sis.version(), 1);
@@ -1391,7 +1583,7 @@ mod tests {
 
     #[test]
     fn round_trip_empty_segments_file() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let mut sis = SegmentInfos::new(10).unwrap();
         sis.user_data = [("foo".to_string(), "bar".to_string())]
             .into_iter()
@@ -1410,7 +1602,7 @@ mod tests {
 
     #[test]
     fn round_trip_single_segment() {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let mut info = test_segment_info("_0", 42);
         info.set_codec(test_codec());
         info.set_index_sort(
@@ -1421,8 +1613,12 @@ mod tests {
             .unwrap()])
             .unwrap(),
         );
-        info.set_diagnostics(HashMap::from([("source".to_string(), "test".to_string())]));
-        info.set_files(HashSet::from(["_0.fnm".to_string(), "_0.fdt".to_string()]));
+        info.set_diagnostics(std::collections::HashMap::from([(
+            "source".to_string(),
+            "test".to_string(),
+        )]));
+        info.set_files(HashSet::from(["_0.fnm".to_string(), "_0.fdt".to_string()]))
+            .unwrap();
 
         write_segment_info_file(dir.as_ref(), &info).unwrap();
 
@@ -1442,7 +1638,7 @@ mod tests {
         assert_eq!(read.size(), 1);
         assert_eq!(read.counter, 1);
         assert_eq!(read.version(), sis.version());
-        assert_eq!(read.total_max_doc(), 42);
+        assert_eq!(read.total_max_doc().unwrap(), 42);
         assert_eq!(read.user_data().get("user"), Some(&"data".to_string()));
 
         let read_sci = read.info(0);
@@ -1456,7 +1652,7 @@ mod tests {
 
     #[test]
     fn pending_commit_rollback_cleans_up() {
-        let dir = RamDirectory::default();
+        let dir = ByteBuffersDirectory::default();
         let mut sis = SegmentInfos::new(10).unwrap();
         sis.prepare_commit(&dir).unwrap();
         assert!(dir.file_length("pending_segments_1").is_ok());
@@ -1476,6 +1672,297 @@ mod tests {
         cloned.remove(&sci);
         assert_eq!(cloned.size(), 0);
         assert_eq!(sis.size(), 1);
+    }
+
+    /// `totalMaxDoc()` sums in a `long` and returns `Math.toIntExact(count)`
+    /// (`SegmentInfos.java:1054-1062`), which throws
+    /// `ArithmeticException("integer overflow")` for a sum past an `int`;
+    /// under `-ea` its `assert count <= IndexWriter.getActualMaxDocs()` fires
+    /// first. This port raises `Arithmetic("integer overflow")` in a release
+    /// build and panics on the `debug_assert!` in a debug build.
+    #[test]
+    fn total_max_doc_past_an_int_is_lucenes_integer_overflow() {
+        let mut sis = SegmentInfos::new(10).unwrap();
+        for name in ["_0", "_1", "_2"] {
+            sis.add(test_segment_commit_info(name, 1_000_000_000))
+                .unwrap();
+        }
+        let total = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sis.total_max_doc()));
+        if cfg!(debug_assertions) {
+            assert!(total.is_err(), "Java's assertion fires first: {total:?}");
+        } else {
+            let error = total.unwrap().unwrap_err();
+            assert!(
+                matches!(&error, LuceneError::Arithmetic(m) if m == "integer overflow"),
+                "{error:?}"
+            );
+        }
+    }
+
+    /// Commits `_0`, a segment of 42 documents, and returns the directory and
+    /// the bytes of its `segments_1`.
+    fn committed_single_segment() -> (Arc<dyn Directory>, Vec<u8>) {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
+        let mut info = test_segment_info("_0", 42);
+        info.set_codec(test_codec());
+        info.set_files(HashSet::from(["_0.fnm".to_string()]))
+            .unwrap();
+        write_segment_info_file(dir.as_ref(), &info).unwrap();
+        let sci =
+            SegmentCommitInfo::new(info, 0, 0, -1, -1, -1, StringHelper::random_id()).unwrap();
+        let mut sis = SegmentInfos::new(10).unwrap();
+        sis.counter = 1;
+        sis.changed();
+        sis.add(sci).unwrap();
+        assert_eq!(sis.commit(dir.as_ref()).unwrap(), "segments_1");
+        let mut input = dir
+            .open_input("segments_1", &*crate::store::DEFAULT_IO_CONTEXT)
+            .unwrap();
+        let mut bytes = vec![0u8; input.length() as usize];
+        let length = bytes.len();
+        input.read_bytes(&mut bytes, 0, length).unwrap();
+        input.close().unwrap();
+        (dir, bytes)
+    }
+
+    /// Replaces `segments_1` with `bytes`, its footer checksum recomputed so
+    /// that only the patched field is wrong, and returns the error reading it
+    /// raises together with the resource description of its checksum input.
+    fn read_patched(dir: &Arc<dyn Directory>, mut bytes: Vec<u8>) -> (LuceneError, String) {
+        let length = bytes.len();
+        let checksum = u64::from(crc32fast::hash(&bytes[..length - 8]));
+        bytes[length - 8..].copy_from_slice(&checksum.to_be_bytes());
+        read_as_written(dir, bytes)
+    }
+
+    /// Replaces `segments_1` with `bytes`, footer as given, and returns the
+    /// error reading it raises together with the resource description of its
+    /// checksum input.
+    fn read_as_written(dir: &Arc<dyn Directory>, bytes: Vec<u8>) -> (LuceneError, String) {
+        use crate::store::IndexInput;
+        let length = bytes.len();
+        dir.delete_file("segments_1").unwrap();
+        let mut output = dir
+            .create_output("segments_1", &*crate::store::DEFAULT_IO_CONTEXT)
+            .unwrap();
+        output.write_bytes(&bytes, 0, length).unwrap();
+        output.close().unwrap();
+        let mut input = dir.open_checksum_input("segments_1").unwrap();
+        let resource = input.resource_description().to_string();
+        input.close().unwrap();
+        let error = SegmentInfos::read_commit(Arc::clone(dir), "segments_1").unwrap_err();
+        (error, resource)
+    }
+
+    /// Every `CorruptIndexException(message, input)` that `readCommit` and
+    /// `parseSegmentInfos` throw names the commit's input as its resource
+    /// (`SegmentInfos.java:338-346, 368-522`), with Java's text: an invalid
+    /// soft deletion count is reported as an "invalid deletion count"
+    /// (`SegmentInfos.java:410-413`), and an old segment is named by its
+    /// `SegmentInfo.toString()` (`SegmentInfos.java:456-477`).
+    #[test]
+    fn a_corrupt_commit_names_its_input_as_lucene_does() {
+        let (dir, original) = committed_single_segment();
+        let header = crate::codecs::codec_util::index_header_length("segments", "1") as usize;
+        // The segment's name, after the segment count and the three VInts of
+        // the minimum segment version 10.5.0.
+        let name_at = original
+            .windows(3)
+            .position(|window| window == [2, b'_', b'0'])
+            .unwrap();
+        assert_eq!(&original[name_at - 7..name_at], &[0, 0, 0, 1, 10, 5, 0]);
+        // The soft deletion count follows the codec name, the deletion
+        // generation, the deletion count and the two field generations.
+        let codec_at = original
+            .windows(10)
+            .position(|window| window == b"\x09TestCodec")
+            .unwrap();
+        let soft_del_count_at = codec_at + 10 + 8 + 4 + 8 + 8;
+
+        /// Patches one field of the commit's bytes.
+        type Patch = Box<dyn Fn(&mut Vec<u8>)>;
+        let cases: [(&str, Patch); 4] = [
+            (
+                "Creation version [10.x] can't be greater than the version that wrote the \
+                 segment infos: [9.5.0]",
+                Box::new(move |bytes| bytes[header] = 9),
+            ),
+            (
+                "invalid segment count: -1",
+                Box::new(move |bytes| bytes[name_at - 7..name_at - 3].copy_from_slice(&[0xff; 4])),
+            ),
+            (
+                "invalid deletion count: 43 vs maxDoc=42",
+                Box::new(move |bytes| {
+                    bytes[soft_del_count_at..soft_del_count_at + 4]
+                        .copy_from_slice(&43i32.to_be_bytes())
+                }),
+            ),
+            (
+                "segments file recorded minSegmentLuceneVersion=10.5.1 but segment=_0(10.5.0):C42 \
+                 has older version=10.5.0",
+                Box::new(move |bytes| bytes[name_at - 1] = 1),
+            ),
+        ];
+        let mut mismatches = Vec::new();
+        for (message, patch) in cases {
+            let mut bytes = original.clone();
+            patch(&mut bytes);
+            let (error, resource) = read_patched(&dir, bytes);
+            let expected = LuceneError::corrupt_index(message, &resource).to_string();
+            if error.to_string() != expected {
+                mismatches.push(format!("got {error}, expected {expected}"));
+            }
+        }
+        assert!(mismatches.is_empty(), "{mismatches:#?}");
+    }
+
+    /// `readCommit`'s two `IndexFormatTooOldException`s carry the text that
+    /// exception's constructors build around the commit's input
+    /// (`IndexFormatTooOldException.java:40-48, 63-65, 76-89, 106-108`): a
+    /// wrong magic is reported with the version triple
+    /// (`SegmentInfos.java:326-329`), a segment older than the minimum
+    /// supported major version with its reason (`SegmentInfos.java:492-508`).
+    /// Measured against
+    /// `lucene-core-10.5.0.jar` (`oracle6/Probe13.java`, cases A1 and A2),
+    /// where only the resource differs.
+    #[test]
+    fn a_too_old_commit_is_reported_as_lucene_reports_it() {
+        use crate::store::IndexInput;
+        let (dir, original) = committed_single_segment();
+        let resource = {
+            let mut input = dir.open_checksum_input("segments_1").unwrap();
+            let resource = input.resource_description().to_string();
+            input.close().unwrap();
+            resource
+        };
+        let error = SegmentInfos::read_commit_with_min_version(Arc::clone(&dir), "segments_1", 11)
+            .unwrap_err();
+        assert!(
+            matches!(error, LuceneError::IndexFormatTooOld { .. }),
+            "{error:?}"
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "Format version is not supported (resource {resource}): Index has segments \
+                 derived from Lucene version 10.x and is not supported by Lucene 10.5.0. This \
+                 Lucene version only supports indexes with major version 11 or later (found: \
+                 10, minimum supported: 11). To resolve this issue re-index your data using \
+                 Lucene 11.x or later.. This version of Lucene only supports indexes created \
+                 with release 9.0 and later by default."
+            )
+        );
+
+        let mut bytes = original;
+        bytes[3] ^= 1;
+        let (error, resource) = read_patched(&dir, bytes);
+        assert!(
+            matches!(error, LuceneError::IndexFormatTooOld { .. }),
+            "{error:?}"
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "Format version is not supported (resource {resource}): 1071082518 (needs to \
+                 be between 1071082519 and 1071082519). This version of Lucene only supports \
+                 indexes created with release 9.0 and later."
+            )
+        );
+    }
+
+    /// `readCommit` checks the footer only once `checkHeaderNoMagic` accepted
+    /// the header (`format >= VERSION_74`, `SegmentInfos.java:358-364`): a
+    /// wrong magic or a header version below `VERSION_74` is reported as such
+    /// even when the checksum is wrong as well. Measured against
+    /// `lucene-core-10.5.0.jar` (`oracle7/Probe16.java`, cases C1 and C2, the
+    /// checksum left stale): `IndexFormatTooOldException` with `1071082518
+    /// (needs to be between 1071082519 and 1071082519)` and with `8 (needs to
+    /// be between 9 and 10)`, both naming the checksum input as the resource.
+    /// The second is raised by `codec_util::check_header_no_magic`
+    /// (`CodecUtil.java:209-212`).
+    #[test]
+    fn a_header_refused_before_its_format_is_known_skips_the_footer_check() {
+        let (dir, original) = committed_single_segment();
+
+        let mut bytes = original.clone();
+        bytes[3] ^= 1;
+        let (error, resource) = read_as_written(&dir, bytes);
+        assert!(
+            matches!(error, LuceneError::IndexFormatTooOld { .. }),
+            "{error:?}"
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "Format version is not supported (resource {resource}): 1071082518 (needs to be \
+                 between 1071082519 and 1071082519). This version of Lucene only supports \
+                 indexes created with release 9.0 and later."
+            )
+        );
+
+        // The header's version follows the magic and the codec name
+        // `segments`, a length byte and eight bytes.
+        let mut bytes = original;
+        assert_eq!(bytes[13..17], [0, 0, 0, 10]);
+        bytes[16] = 8;
+        let (error, resource) = read_as_written(&dir, bytes);
+        assert!(
+            matches!(error, LuceneError::IndexFormatTooOld { .. }),
+            "the header's refusal, not the footer's checksum failure: {error:?}"
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "Format version is not supported (resource {resource}): 8 (needs to be between 9 \
+                 and 10). This version of Lucene only supports indexes created with release 9.0 \
+                 and later."
+            )
+        );
+    }
+
+    /// `readCodec` reports a `Lucene` codec it cannot load as
+    /// `IndexFormatTooOldException(input, "Could not load codec '" + name +
+    /// "'. " + e.getMessage() + ". Did you forget to add
+    /// lucene-backward-codecs.jar?")`, `e` the `IllegalArgumentException` of
+    /// `Codec.forName` (`SegmentInfos.java:524-541`,
+    /// `NamedSPILoader.java:102-114`). Measured against
+    /// `lucene-core-10.5.0.jar` (`oracle7/Probe16.java`, case D1, the
+    /// checksum recomputed), resource aside; Java lists `[Lucene104]`, this
+    /// registry the codecs the crate's tests register, so only the list's
+    /// form and one name are asserted.
+    #[test]
+    fn an_unknown_lucene_codec_is_reported_as_lucene_reports_it() {
+        let (dir, mut bytes) = committed_single_segment();
+        let at: Vec<usize> = bytes
+            .windows(9)
+            .enumerate()
+            .filter(|(_, window)| window == b"TestCodec")
+            .map(|(at, _)| at)
+            .collect();
+        assert_eq!(at.len(), 1, "the segment's codec name is written once");
+        bytes[at[0]..at[0] + 9].copy_from_slice(b"Lucene000");
+        let (error, resource) = read_patched(&dir, bytes);
+        assert!(
+            matches!(error, LuceneError::IndexFormatTooOld { .. }),
+            "{error:?}"
+        );
+        let message = error.to_string();
+        let prefix = format!(
+            "Format version is not supported (resource {resource}): Could not load codec \
+             'Lucene000'. An SPI class of type org.apache.lucene.codecs.Codec with name \
+             'Lucene000' does not exist.  You need to add the corresponding JAR file supporting \
+             this SPI to your classpath.  The current classpath supports the following names: ["
+        );
+        let suffix = "]. Did you forget to add lucene-backward-codecs.jar?. This version of \
+                      Lucene only supports indexes created with release 9.0 and later by \
+                      default.";
+        assert!(
+            message.starts_with(&prefix) && message.ends_with(suffix),
+            "{message}"
+        );
+        let names = &message[prefix.len()..message.len() - suffix.len()];
+        assert!(names.split(", ").any(|name| name == "TestCodec"), "{names}");
     }
 }
 
@@ -1548,5 +2035,36 @@ impl SegmentInfos {
     /// cannot be built.
     pub fn create_backup_segment_infos(&self) -> Vec<SegmentCommitInfo> {
         self.segments.to_vec()
+    }
+}
+
+#[cfg(test)]
+mod write_failure_tests {
+    //! `SegmentInfos.write(Directory)` (`SegmentInfos.java:578-603`): every
+    //! step from `createOutput` to `sync` is inside the `try`, so a failure of
+    //! any of them closes the output with
+    //! `IOUtils.closeWhileHandlingException(segnOutput)` and deletes the
+    //! truncated `pending_segments_N`.
+    use super::*;
+    use crate::codecs::tests::CloseTrackingDirectory;
+
+    #[test]
+    fn a_failed_sync_deletes_the_pending_segments_file() {
+        let dir = CloseTrackingDirectory::default();
+        dir.log.fail_sync();
+        let mut infos = SegmentInfos::new(crate::util::Version::LATEST.major as i32).unwrap();
+        let error = infos.prepare_commit(&dir).unwrap_err();
+        assert!(error.to_string().contains("sync failed"), "{error}");
+        let files = dir.list_all().unwrap();
+        assert!(
+            files
+                .iter()
+                .all(|name| !name.starts_with("pending_segments")),
+            "the truncated file is deleted: {files:?}"
+        );
+        assert!(
+            dir.log.close_count("pending_segments_1") >= 1,
+            "the output was closed"
+        );
     }
 }

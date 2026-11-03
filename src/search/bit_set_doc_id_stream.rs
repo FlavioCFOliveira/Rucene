@@ -4,7 +4,6 @@
 #![deny(unsafe_code)]
 
 use crate::error::Result;
-use crate::search::bit_set_util;
 use crate::search::collection_terminated_exception::{CollectionError, CollectionResult};
 use crate::search::doc_id_stream::{CheckedIntConsumer, DocIdStream};
 use crate::util::{FixedBitSet, MathUtil};
@@ -62,8 +61,7 @@ impl DocIdStream for BitSetDocIdStream<'_> {
     ) -> CollectionResult<()> {
         if up_to > self.up_to {
             let up_to = up_to.min(self.max);
-            bit_set_util::for_each(
-                self.bit_set,
+            self.bit_set.for_each(
                 (self.up_to - self.offset) as usize,
                 (up_to - self.offset) as usize,
                 self.offset,
@@ -77,11 +75,10 @@ impl DocIdStream for BitSetDocIdStream<'_> {
     fn count_up_to(&mut self, up_to: i32) -> Result<i32> {
         if up_to > self.up_to {
             let up_to = up_to.min(self.max);
-            let count = bit_set_util::cardinality_range(
-                self.bit_set,
+            let count = self.bit_set.cardinality_range(
                 (self.up_to - self.offset) as usize,
                 (up_to - self.offset) as usize,
-            );
+            ) as i32;
             self.up_to = up_to;
             Ok(count)
         } else {
@@ -92,8 +89,7 @@ impl DocIdStream for BitSetDocIdStream<'_> {
     fn into_array_up_to(&mut self, up_to: i32, array: &mut [i32]) -> usize {
         if up_to > self.up_to {
             let mut up_to = up_to.min(self.max);
-            let count = bit_set_util::into_array(
-                self.bit_set,
+            let count = self.bit_set.into_array(
                 (self.up_to - self.offset) as usize,
                 (up_to - self.offset) as usize,
                 self.offset,
@@ -108,5 +104,60 @@ impl DocIdStream for BitSetDocIdStream<'_> {
         } else {
             0
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bits() -> FixedBitSet {
+        let mut bits = FixedBitSet::new(200);
+        for i in [3usize, 64, 65, 130, 199] {
+            bits.set(i);
+        }
+        bits
+    }
+
+    /// `forEach(upTo)` walks the set bits through `FixedBitSet.forEach`
+    /// (`BitSetDocIdStream.java:45`), re-based by the offset.
+    #[test]
+    fn for_each_up_to_visits_the_set_bits_rebased() {
+        let bits = bits();
+        let mut stream = BitSetDocIdStream::new(&bits, 1000);
+        let mut seen = Vec::new();
+        stream
+            .for_each_up_to(1131, &mut |doc: i32| -> CollectionResult<()> {
+                seen.push(doc);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(seen, [1003, 1064, 1065, 1130]);
+        assert!(stream.may_have_remaining());
+    }
+
+    /// `count(upTo)` is `FixedBitSet.cardinality(from, to)`
+    /// (`BitSetDocIdStream.java:54`).
+    #[test]
+    fn count_up_to_counts_the_set_bits_in_range() {
+        let bits = bits();
+        let mut stream = BitSetDocIdStream::new(&bits, 1000);
+        assert_eq!(stream.count_up_to(1066).unwrap(), 3);
+        assert_eq!(stream.count_up_to(2000).unwrap(), 2);
+        assert!(!stream.may_have_remaining());
+    }
+
+    /// `intoArray(upTo, array)` is `FixedBitSet.intoArray`
+    /// (`BitSetDocIdStream.java:66`) and stops when the array is full.
+    #[test]
+    fn into_array_up_to_copies_until_the_array_is_full() {
+        let bits = bits();
+        let mut stream = BitSetDocIdStream::new(&bits, 1000);
+        let mut array = [0i32; 2];
+        assert_eq!(stream.into_array_up_to(2000, &mut array), 2);
+        assert_eq!(array, [1003, 1064]);
+        let mut array = [0i32; 8];
+        assert_eq!(stream.into_array_up_to(2000, &mut array), 3);
+        assert_eq!(&array[..3], &[1065, 1130, 1199]);
     }
 }

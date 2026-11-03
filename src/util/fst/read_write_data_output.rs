@@ -67,11 +67,6 @@ impl ReadWriteDataOutput {
         self.frozen = true;
     }
 
-    /// Returns whether [`ReadWriteDataOutput::freeze`] has been called.
-    pub fn is_frozen(&self) -> bool {
-        self.frozen
-    }
-
     /// Returns the number of bytes written.
     pub fn size(&self) -> i64 {
         match self.blocks.last() {
@@ -111,7 +106,7 @@ impl ReadWriteDataOutput {
         if self
             .blocks
             .last()
-            .map_or(true, |block| block.len() == self.block_size)
+            .is_none_or(|block| block.len() == self.block_size)
         {
             self.blocks.push(Vec::with_capacity(self.block_size));
         }
@@ -238,6 +233,15 @@ impl<'a> BlockReverseBytesReader<'a> {
 }
 
 impl DataInput for BlockReverseBytesReader<'_> {
+    /// `Object.toString()` of `org.apache.lucene.util.fst.ReadWriteDataOutput$1`, the anonymous `FST.BytesReader` of `getReverseBytesReader`, which declares no
+    /// `toString()`.
+    fn to_java_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.util.fst.ReadWriteDataOutput$1",
+            self,
+        )
+    }
+
     fn read_byte(&mut self) -> Result<u8> {
         self.next()
     }

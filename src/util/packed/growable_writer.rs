@@ -174,7 +174,7 @@ impl PackedIntsMutable for GrowableWriter {
         self
     }
 
-    fn into_packed_ints_reader(self: Box<Self>) -> Box<dyn PackedIntsReader> {
+    fn into_packed_ints_reader(self: Box<Self>) -> Box<dyn PackedIntsReader + Send + Sync> {
         self
     }
 }

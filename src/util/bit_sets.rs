@@ -19,8 +19,11 @@
 use std::fmt;
 use std::sync::Arc;
 
+use crate::error::{LuceneError, Result};
+use crate::search::doc_id_set::DocIdSet;
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::util::bit_set::{BitSet, BitSetIterator, LiveDocs};
+use crate::util::doc_id_set::NotDocIdSet;
 use crate::util::java_fmt;
 use crate::util::{Accountable, FixedBitSet, RamUsageEstimator};
 
@@ -56,7 +59,9 @@ pub struct SparseFixedBitSet {
 const SPARSE_BLOCK_BITS: usize = 1 << 12; // 4096
 const SPARSE_LONGS_PER_BLOCK: usize = SPARSE_BLOCK_BITS / 64; // 64
 
-fn sparse_block_count(length: usize) -> usize {
+/// Equivalent to the private `SparseFixedBitSet.blockCount(int)`
+/// (`SparseFixedBitSet.java:44-51`): the length of `indices`.
+pub(crate) fn sparse_block_count(length: usize) -> usize {
     length.div_ceil(SPARSE_BLOCK_BITS)
 }
 
@@ -73,18 +78,25 @@ fn oversize(s: usize) -> usize {
 impl SparseFixedBitSet {
     /// Creates a sparse bit set that can hold bits in `[0, length)`.
     ///
-    /// # Panics
+    /// Equivalent to `SparseFixedBitSet(int)`.
     ///
-    /// Panics if `length` is zero.
-    pub fn new(length: usize) -> Self {
-        assert!(length >= 1, "length needs to be >= 1");
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] with Java's message, `length
+    /// needs to be >= 1`, when `length` is zero (`SparseFixedBitSet.java:63-66`).
+    pub fn new(length: usize) -> Result<Self> {
+        if length < 1 {
+            return Err(LuceneError::IllegalArgument(
+                "length needs to be >= 1".to_string(),
+            ));
+        }
         let block_count = sparse_block_count(length);
-        Self {
+        Ok(Self {
             indices: vec![0u64; block_count],
             bits: vec![None; block_count],
             length,
             non_zero_long_count: 0,
-        }
+        })
     }
 
     /// Clears every bit in the set.
@@ -96,7 +108,6 @@ impl SparseFixedBitSet {
         self.non_zero_long_count = 0;
     }
 
-    /// Returns the number of bits the set can hold.
     /// Returns whether `index` is inside this set's range.
     ///
     /// Equivalent to the private `SparseFixedBitSet.consistent(int)`, which
@@ -106,6 +117,7 @@ impl SparseFixedBitSet {
         true
     }
 
+    /// Returns the number of bits the set can hold.
     pub fn length(&self) -> usize {
         self.length
     }
@@ -296,11 +308,17 @@ impl SparseFixedBitSet {
     /// Returns the mask of the bits in `[from, to]`, both inclusive, within a
     /// 64-bit word.
     ///
-    /// Equivalent to `SparseFixedBitSet.mask(int, int)`. The double shift is
-    /// deliberate: `1 << 64` is undefined, so the mask for a full word is built
-    /// as two shifts of 63 and 1.
+    /// Equivalent to `SparseFixedBitSet.mask(int, int)` (`SparseFixedBitSet.java:353-355`),
+    /// `((1L << (to - from) << 1) - 1) << from`. The double shift is deliberate:
+    /// `1 << 64` is undefined, so the mask for a full word is built as two
+    /// shifts of 63 and 1. Java takes every `long` shift distance modulo 64,
+    /// which the block-relative callers rely on: `mask(0, to)` and
+    /// `mask(from, 63)` receive offsets past the first word
+    /// (`clearWithinBlock`, `setWithinBlock`), so `to - from` can exceed 63 or
+    /// be negative. The distances are reduced the same way here.
     fn mask(from: usize, to: usize) -> u64 {
-        ((1u64 << (to - from) << 1).wrapping_sub(1)) << (from & 0x3f)
+        let distance = (to.wrapping_sub(from) & 0x3f) as u32;
+        ((1u64 << distance << 1).wrapping_sub(1)) << (from & 0x3f)
     }
 
     /// Clears the bits in `[from, to]` of block `i4096`, both offsets relative
@@ -642,6 +660,22 @@ impl SparseFixedBitSet {
             non_zero_long_count - (current_index & index_word).count_ones() as usize;
     }
 
+    /// Ors every bit of `other` into this set, block by block.
+    ///
+    /// Equivalent to the private `SparseFixedBitSet.or(SparseFixedBitSet)`
+    /// (`SparseFixedBitSet.java:632-639`), which `or(DocIdSetIterator)` uses
+    /// when the iterator wraps another sparse set.
+    pub(crate) fn or_sparse(&mut self, other: &SparseFixedBitSet) {
+        for (i, &index) in other.indices.iter().enumerate() {
+            if index != 0 {
+                let words = other.bits[i]
+                    .as_ref()
+                    .expect("INVARIANT: index word non-zero implies block");
+                self.or_block(i, index, words, index.count_ones() as usize);
+            }
+        }
+    }
+
     /// Ors every document of `it` into this set, taking advantage of the fact
     /// that they arrive in order.
     ///
@@ -880,80 +914,206 @@ pub struct RoaringDocIdSet {
     cardinality: usize,
 }
 
-#[derive(Clone, Debug)]
+/// The `DocIdSet` Java keeps for one block of a `RoaringDocIdSet`
+/// (`RoaringDocIdSet.java:68-107`).
+#[derive(Clone)]
 enum RoaringBlock {
-    /// Every doc in the block is present.
-    All { block_len: usize },
-    /// Docs in `[min, max]` (inclusive, relative to block base) are present.
+    /// `AllDocIdSet.INSTANCE`: every doc of a full block is present.
+    All,
+    /// `RangeDocIdSet`: docs in `[min, max]` (inclusive, relative to the block
+    /// base) are present.
     Range { min: u16, max: u16 },
-    /// Sorted list of present doc offsets.
-    Array(Vec<u16>),
-    /// Dense representation as a bit set.
+    /// `ShortArrayDocIdSet`: the sorted present doc offsets.
+    Array(Arc<ShortArrayDocIdSet>),
+    /// `BitDocIdSet` over the dense buffer.
     BitSet(FixedBitSet),
-    /// Nearly-full block: stores the *excluded* doc offsets.
-    Not(Vec<u16>),
+    /// `NotDocIdSet(BLOCK_SIZE, new ShortArrayDocIdSet(excludedDocs))`: a
+    /// nearly-full block, as the negation of its excluded doc offsets, which
+    /// Java reads off the flipped dense buffer. The excluded set is kept
+    /// beside the negation it is wrapped in, for [`Bits`] lookups.
+    Not {
+        set: Arc<NotDocIdSet>,
+        excluded: Arc<ShortArrayDocIdSet>,
+    },
 }
+
+impl fmt::Debug for RoaringBlock {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RoaringBlock::All => f.write_str("All"),
+            RoaringBlock::Range { min, max } => f
+                .debug_struct("Range")
+                .field("min", min)
+                .field("max", max)
+                .finish(),
+            RoaringBlock::Array(docs) => f.debug_tuple("Array").field(&docs.doc_ids.len()).finish(),
+            RoaringBlock::BitSet(bits) => f.debug_tuple("BitSet").field(&bits.length()).finish(),
+            RoaringBlock::Not { excluded, .. } => {
+                f.debug_tuple("Not").field(&excluded.doc_ids.len()).finish()
+            }
+        }
+    }
+}
+
+/// Shallow size of `RoaringDocIdSet.RangeDocIdSet`: an object header and two
+/// `short`s.
+const RANGE_DOC_ID_SET_BASE_RAM_BYTES_USED: i64 =
+    RamUsageEstimator::align_object_size(RamUsageEstimator::NUM_BYTES_OBJECT_HEADER + 2 * 2);
+
+/// Shallow size of `BitDocIdSet`: an object header, the `set` reference and
+/// the `long` cost.
+const BIT_DOC_ID_SET_BASE_RAM_BYTES_USED: i64 = RamUsageEstimator::align_object_size(
+    RamUsageEstimator::NUM_BYTES_OBJECT_HEADER + RamUsageEstimator::NUM_BYTES_OBJECT_REF + 8,
+);
 
 impl RoaringBlock {
     fn contains(&self, offset: u16) -> bool {
         match self {
-            RoaringBlock::All { .. } => true,
+            RoaringBlock::All => true,
             RoaringBlock::Range { min, max } => offset >= *min && offset <= *max,
-            RoaringBlock::Array(docs) => docs.binary_search(&offset).is_ok(),
+            RoaringBlock::Array(docs) => docs.doc_ids.binary_search(&offset).is_ok(),
             RoaringBlock::BitSet(bits) => {
                 let idx = offset as usize;
                 idx < bits.length() && bits.get(idx)
             }
-            RoaringBlock::Not(excluded) => excluded.binary_search(&offset).is_err(),
+            RoaringBlock::Not { excluded, .. } => excluded.doc_ids.binary_search(&offset).is_err(),
         }
     }
 
-    fn iterator(&self, _block_base: usize) -> Box<dyn DocIdSetIterator> {
+    /// The `ramBytesUsed()` of the block's `DocIdSet`.
+    fn ram_bytes_used(&self) -> i64 {
         match self {
-            RoaringBlock::All { block_len } => Box::new(RoaringBlockIter::Range {
+            // "we use a static instance"
+            RoaringBlock::All => 0,
+            RoaringBlock::Range { .. } => RANGE_DOC_ID_SET_BASE_RAM_BYTES_USED,
+            RoaringBlock::Array(docs) => docs.ram_bytes_used(),
+            RoaringBlock::BitSet(bits) => {
+                BIT_DOC_ID_SET_BASE_RAM_BYTES_USED + bits.ram_bytes_used()
+            }
+            RoaringBlock::Not { set, .. } => set.ram_bytes_used(),
+        }
+    }
+
+    fn iterator(&self, _block_base: usize) -> Result<Box<dyn DocIdSetIterator>> {
+        Ok(match self {
+            RoaringBlock::All => Box::new(RoaringBlockIter::Range {
                 doc: -1,
                 min: 0,
-                max: (*block_len - 1) as u16,
+                max: (ROARING_BLOCK_SIZE - 1) as u16,
             }),
             RoaringBlock::Range { min, max } => Box::new(RoaringBlockIter::Range {
                 doc: -1,
                 min: *min,
                 max: *max,
             }),
-            RoaringBlock::Array(docs) => Box::new(RoaringBlockIter::Array {
-                docs: docs.clone(),
-                idx: -1,
-                doc: -1,
-            }),
+            RoaringBlock::Array(docs) => docs.iterator()?,
             RoaringBlock::BitSet(bits) => Box::new(RoaringBitSetIter::new(bits.clone())),
-            RoaringBlock::Not(excluded) => Box::new(RoaringBlockIter::Not {
-                excluded: excluded.clone(),
-                doc: -1,
-                block_len: ROARING_BLOCK_SIZE,
-                next_excluded_idx: 0,
-            }),
+            RoaringBlock::Not { set, .. } => set.iterator()?,
+        })
+    }
+}
+
+/// A `DocIdSet` of documents up to 2^16 - 1, stored as `short`s.
+///
+/// Port of the private `RoaringDocIdSet.ShortArrayDocIdSet`
+/// (`RoaringDocIdSet.java:282-375`); Java's `short` values are read with
+/// `& 0xFFFF`, which a `u16` is.
+#[derive(Debug)]
+struct ShortArrayDocIdSet {
+    doc_ids: Vec<u16>,
+}
+
+impl ShortArrayDocIdSet {
+    /// Shallow size of the class: an object header and the array reference.
+    const BASE_RAM_BYTES_USED: i64 = RamUsageEstimator::align_object_size(
+        RamUsageEstimator::NUM_BYTES_OBJECT_HEADER + RamUsageEstimator::NUM_BYTES_OBJECT_REF,
+    );
+}
+
+impl Accountable for ShortArrayDocIdSet {
+    /// `BASE_RAM_BYTES_USED + RamUsageEstimator.sizeOf(docIDs)`.
+    fn ram_bytes_used(&self) -> i64 {
+        Self::BASE_RAM_BYTES_USED
+            + RamUsageEstimator::align_object_size(
+                RamUsageEstimator::NUM_BYTES_ARRAY_HEADER + 2 * self.doc_ids.len() as i64,
+            )
+    }
+}
+
+impl DocIdSet for ShortArrayDocIdSet {
+    fn iterator(&self) -> Result<Box<dyn DocIdSetIterator>> {
+        Ok(Box::new(ShortArrayDocIdSetIterator {
+            doc_ids: self.doc_ids.clone(),
+            i: -1,
+            doc: -1,
+        }))
+    }
+}
+
+/// The anonymous iterator of `ShortArrayDocIdSet.iterator()`.
+struct ShortArrayDocIdSetIterator {
+    doc_ids: Vec<u16>,
+    /// The index of the current document in the array.
+    i: i32,
+    doc: i32,
+}
+
+impl DocIdSetIterator for ShortArrayDocIdSetIterator {
+    fn doc_id(&self) -> i32 {
+        self.doc
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        self.i += 1;
+        if self.i as usize >= self.doc_ids.len() {
+            self.doc = NO_MORE_DOCS;
+        } else {
+            self.doc = i32::from(self.doc_ids[self.i as usize]);
         }
+        Ok(self.doc)
+    }
+
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        // Binary search.
+        let mut lo = self.i + 1;
+        let mut hi = self.doc_ids.len() as i32 - 1;
+        while lo <= hi {
+            let mid = ((lo + hi) as u32 >> 1) as i32;
+            let mid_doc = i32::from(self.doc_ids[mid as usize]);
+            if mid_doc < target {
+                lo = mid + 1;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        if lo as usize == self.doc_ids.len() {
+            self.i = self.doc_ids.len() as i32;
+            self.doc = NO_MORE_DOCS;
+        } else {
+            self.i = lo;
+            self.doc = i32::from(self.doc_ids[self.i as usize]);
+        }
+        Ok(self.doc)
+    }
+
+    fn cost(&self) -> i64 {
+        self.doc_ids.len() as i64
+    }
+
+    fn doc_id_run_end(&self) -> Result<i32> {
+        let mut run_end = self.doc + 1;
+        let mut j = (self.i + 1) as usize;
+        while j < self.doc_ids.len() && i32::from(self.doc_ids[j]) == run_end {
+            run_end += 1;
+            j += 1;
+        }
+        Ok(run_end)
     }
 }
 
 #[derive(Clone, Debug)]
 enum RoaringBlockIter {
-    Range {
-        doc: i32,
-        min: u16,
-        max: u16,
-    },
-    Array {
-        docs: Vec<u16>,
-        idx: i32,
-        doc: i32,
-    },
-    Not {
-        excluded: Vec<u16>,
-        doc: i32,
-        block_len: usize,
-        next_excluded_idx: usize,
-    },
+    Range { doc: i32, min: u16, max: u16 },
 }
 
 impl DocIdSetIterator for RoaringBlockIter {
@@ -973,39 +1133,6 @@ impl DocIdSetIterator for RoaringBlockIter {
                 }
                 Ok(*doc)
             }
-            RoaringBlockIter::Array { docs, idx, doc } => {
-                *idx += 1;
-                if (*idx as usize) < docs.len() {
-                    *doc = docs[*idx as usize] as i32;
-                } else {
-                    *doc = NO_MORE_DOCS;
-                }
-                Ok(*doc)
-            }
-            RoaringBlockIter::Not {
-                excluded,
-                doc,
-                block_len,
-                next_excluded_idx,
-            } => {
-                let mut next = if *doc == -1 { 0 } else { (*doc as usize) + 1 };
-                while next < *block_len {
-                    if *next_excluded_idx < excluded.len()
-                        && excluded[*next_excluded_idx] == next as u16
-                    {
-                        *next_excluded_idx += 1;
-                        next += 1;
-                        continue;
-                    }
-                    break;
-                }
-                *doc = if next < *block_len {
-                    next as i32
-                } else {
-                    NO_MORE_DOCS
-                };
-                Ok(*doc)
-            }
         }
     }
 
@@ -1021,59 +1148,12 @@ impl DocIdSetIterator for RoaringBlockIter {
                 }
                 Ok(*doc)
             }
-            RoaringBlockIter::Array { docs, idx, doc } => {
-                let start = (*idx + 1).max(0) as usize;
-                let pos = docs[start..].binary_search(&(target as u16));
-                *idx = (start + pos.unwrap_or_else(|e| e)) as i32;
-                if (*idx as usize) < docs.len() {
-                    *doc = docs[*idx as usize] as i32;
-                } else {
-                    *doc = NO_MORE_DOCS;
-                }
-                Ok(*doc)
-            }
-            RoaringBlockIter::Not {
-                excluded,
-                doc,
-                block_len,
-                next_excluded_idx,
-            } => {
-                let mut next = target.max(0) as usize;
-                while next < *block_len {
-                    if *next_excluded_idx < excluded.len()
-                        && excluded[*next_excluded_idx] < next as u16
-                    {
-                        *next_excluded_idx += 1;
-                        continue;
-                    }
-                    if *next_excluded_idx < excluded.len()
-                        && excluded[*next_excluded_idx] == next as u16
-                    {
-                        *next_excluded_idx += 1;
-                        next += 1;
-                        continue;
-                    }
-                    break;
-                }
-                *doc = if next < *block_len {
-                    next as i32
-                } else {
-                    NO_MORE_DOCS
-                };
-                Ok(*doc)
-            }
         }
     }
 
     fn cost(&self) -> i64 {
         match self {
             RoaringBlockIter::Range { min, max, .. } => (*max as i64 - *min as i64) + 1,
-            RoaringBlockIter::Array { docs, .. } => docs.len() as i64,
-            RoaringBlockIter::Not {
-                block_len,
-                excluded,
-                ..
-            } => (*block_len - excluded.len()) as i64,
         }
     }
 }
@@ -1082,8 +1162,6 @@ impl RoaringBlockIter {
     fn doc(&self) -> i32 {
         match self {
             RoaringBlockIter::Range { doc, .. } => *doc,
-            RoaringBlockIter::Array { doc, .. } => *doc,
-            RoaringBlockIter::Not { doc, .. } => *doc,
         }
     }
 }
@@ -1120,14 +1198,14 @@ impl DocIdSetIterator for RoaringBitSetIter {
         let words = self.bits.get_bits();
         let mut word_idx = start >> 6;
         let mut shift = start & 0x3f;
-        let mut word = words[word_idx] >> shift;
+        let mut word = words[word_idx].load(std::sync::atomic::Ordering::Relaxed) >> shift;
         while word == 0 {
             word_idx += 1;
             if word_idx >= words.len() {
                 self.doc = NO_MORE_DOCS;
                 return Ok(NO_MORE_DOCS);
             }
-            word = words[word_idx];
+            word = words[word_idx].load(std::sync::atomic::Ordering::Relaxed);
             shift = 0;
         }
         let candidate = (word_idx << 6) + shift + word.trailing_zeros() as usize;
@@ -1156,12 +1234,7 @@ impl RoaringDocIdSet {
         self.cardinality
     }
 
-    /// Returns the exclusive upper bound of doc ids.
-    pub fn max_doc(&self) -> usize {
-        self.max_doc
-    }
-
-    /// Returns the length of the bit space, equal to `max_doc()`.
+    /// Returns the length of the bit space, the `maxDoc` the set was built for.
     pub fn length(&self) -> usize {
         self.max_doc
     }
@@ -1196,21 +1269,24 @@ impl Bits for RoaringDocIdSet {
     }
 }
 
+/// Shallow size of `RoaringDocIdSet`: an object header, the `docIdSets`
+/// reference, the `int` cardinality and the `long` RAM figure.
+const ROARING_DOC_ID_SET_BASE_RAM_BYTES_USED: i64 = RamUsageEstimator::align_object_size(
+    RamUsageEstimator::NUM_BYTES_OBJECT_HEADER + RamUsageEstimator::NUM_BYTES_OBJECT_REF + 4 + 8,
+);
+
 impl Accountable for RoaringDocIdSet {
+    /// Equivalent to `RoaringDocIdSet.ramBytesUsed()`, which the constructor
+    /// computes as `BASE_RAM_BYTES_USED + RamUsageEstimator.shallowSizeOf(docIdSets)`
+    /// plus every non-null block's `ramBytesUsed()` (`RoaringDocIdSet.java:383-392`).
     fn ram_bytes_used(&self) -> i64 {
-        let mut bytes = RamUsageEstimator::shallow_size_of(&self.blocks);
+        let mut bytes = ROARING_DOC_ID_SET_BASE_RAM_BYTES_USED
+            + RamUsageEstimator::align_object_size(
+                RamUsageEstimator::NUM_BYTES_ARRAY_HEADER
+                    + RamUsageEstimator::NUM_BYTES_OBJECT_REF * self.blocks.len() as i64,
+            );
         for b in self.blocks.iter().flatten() {
-            bytes += match b {
-                RoaringBlock::All { .. } => 0,
-                RoaringBlock::Range { .. } => 0,
-                RoaringBlock::Array(arr) => {
-                    RamUsageEstimator::size_of_u64(&vec![0u64; arr.len().div_ceil(4)])
-                }
-                RoaringBlock::BitSet(bits) => bits.ram_bytes_used(),
-                RoaringBlock::Not(arr) => {
-                    RamUsageEstimator::size_of_u64(&vec![0u64; arr.len().div_ceil(4)])
-                }
-            };
+            bytes += b.ram_bytes_used();
         }
         bytes
     }
@@ -1331,9 +1407,10 @@ impl RoaringDocIdSetBuilder {
             return;
         }
         let block = self.current_block as usize;
-        let block_len = self.block_len(block);
-        let block_data = if self.current_block_cardinality == block_len {
-            Some(RoaringBlock::All { block_len })
+        // `currentBlockCardinality == BLOCK_SIZE`: all docs in the block. A
+        // last block shorter than `BLOCK_SIZE` is never one, even when full.
+        let block_data = if self.current_block_cardinality == ROARING_BLOCK_SIZE {
+            Some(RoaringBlock::All)
         } else if self.current_block_cardinality
             == ((self.last_doc_id - self.first_doc_id) as usize) + 1
         {
@@ -1343,27 +1420,47 @@ impl RoaringDocIdSetBuilder {
             })
         } else if self.current_block_cardinality <= ROARING_MAX_ARRAY_LENGTH {
             assert!(self.dense_buffer.is_none());
-            let mut docs = Vec::with_capacity(self.current_block_cardinality);
-            docs.extend_from_slice(&self.buffer[..self.current_block_cardinality]);
-            docs.sort_unstable();
-            Some(RoaringBlock::Array(docs))
+            // `new ShortArrayDocIdSet(ArrayUtil.copyOfSubArray(buffer, 0,
+            // currentBlockCardinality))`: docs were added in order.
+            let doc_ids = self.buffer[..self.current_block_cardinality].to_vec();
+            Some(RoaringBlock::Array(Arc::new(ShortArrayDocIdSet {
+                doc_ids,
+            })))
         } else {
-            let dense = self
+            let mut dense = self
                 .dense_buffer
                 .take()
                 .expect("INVARIANT: dense buffer exists");
-            assert_eq!(dense.cardinality(), self.current_block_cardinality);
+            debug_assert_eq!(dense.cardinality(), self.current_block_cardinality);
             if dense.length() == ROARING_BLOCK_SIZE
                 && ROARING_BLOCK_SIZE - self.current_block_cardinality < ROARING_MAX_ARRAY_LENGTH
             {
-                let mut excluded =
-                    Vec::with_capacity(ROARING_BLOCK_SIZE - self.current_block_cardinality);
-                for offset in 0..ROARING_BLOCK_SIZE {
-                    if !dense.get(offset) {
-                        excluded.push(offset as u16);
-                    }
+                // Doc ids are very dense: invert the encoding
+                // (`RoaringDocIdSet.java:88-101`).
+                let mut excluded_docs =
+                    vec![0u16; ROARING_BLOCK_SIZE - self.current_block_cardinality];
+                let length = dense.length();
+                dense.flip_range(0, length);
+                let mut excluded_doc = -1i32;
+                for slot in excluded_docs.iter_mut() {
+                    excluded_doc = BitSet::next_set_bit(&dense, excluded_doc + 1);
+                    debug_assert_ne!(excluded_doc, NO_MORE_DOCS);
+                    *slot = excluded_doc as u16;
                 }
-                Some(RoaringBlock::Not(excluded))
+                debug_assert!(
+                    excluded_doc + 1 == length as i32
+                        || BitSet::next_set_bit(&dense, excluded_doc + 1) == NO_MORE_DOCS
+                );
+                let excluded = Arc::new(ShortArrayDocIdSet {
+                    doc_ids: excluded_docs,
+                });
+                Some(RoaringBlock::Not {
+                    set: Arc::new(NotDocIdSet::new(
+                        ROARING_BLOCK_SIZE as i32,
+                        Arc::clone(&excluded) as Arc<dyn DocIdSet + Send + Sync>,
+                    )),
+                    excluded,
+                })
             } else {
                 Some(RoaringBlock::BitSet(dense))
             }
@@ -1429,11 +1526,6 @@ impl RoaringDocIdSetBuilder {
         self.last_doc_id = (to_doc_exclusive - 1) as i32;
         self.current_block_cardinality += span;
     }
-
-    fn block_len(&self, block: usize) -> usize {
-        let end = ((block + 1) * ROARING_BLOCK_SIZE).min(self.max_doc);
-        end - (block * ROARING_BLOCK_SIZE)
-    }
 }
 
 /// Iterator over the doc ids of a [`RoaringDocIdSet`].
@@ -1474,7 +1566,7 @@ impl RoaringDocIdSetIterator {
             }
             if let Some(b) = &self.set.blocks[self.block as usize] {
                 let block_base = (self.block as usize) << 16;
-                let mut sub = b.iterator(block_base);
+                let mut sub = b.iterator(block_base)?;
                 let first = sub.next_doc()?;
                 assert_ne!(first, NO_MORE_DOCS);
                 self.sub = Some(sub);
@@ -1518,7 +1610,7 @@ impl DocIdSetIterator for RoaringDocIdSetIterator {
                 self.set.blocks[self.block as usize]
                     .as_ref()
                     .unwrap()
-                    .iterator(block_base),
+                    .iterator(block_base)?,
             );
         }
         if let Some(sub) = self.sub.as_mut() {
@@ -1689,6 +1781,12 @@ impl Bits for DenseLiveDocs {
     fn into_live_docs(self: Box<Self>) -> Option<Box<dyn LiveDocs>> {
         Some(self)
     }
+
+    /// `ScorerUtil.likelyLiveDocs` tests `acceptDocs instanceof DenseLiveDocs`
+    /// (`ScorerUtil.java:100`).
+    fn bits_as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
 }
 
 impl LiveDocs for DenseLiveDocs {
@@ -1830,6 +1928,12 @@ impl Bits for SparseLiveDocs {
     fn into_live_docs(self: Box<Self>) -> Option<Box<dyn LiveDocs>> {
         Some(self)
     }
+
+    /// `ScorerUtil.likelyLiveDocs` tests `acceptDocs instanceof SparseLiveDocs`
+    /// (`ScorerUtil.java:99`).
+    fn bits_as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
 }
 
 impl LiveDocs for SparseLiveDocs {
@@ -1925,6 +2029,17 @@ mod tests {
     use super::*;
     use crate::search::NO_MORE_DOCS;
 
+    /// `new SparseFixedBitSet(0)` throws (`SparseFixedBitSet.java:63-66`).
+    /// Measured against `lucene-core-10.5.0.jar` (`oracle/fix/MiscFix.java`,
+    /// item 30): `IllegalArgumentException: length needs to be >= 1`.
+    #[test]
+    fn an_empty_sparse_fixed_bit_set_is_lucenes_illegal_argument() {
+        assert!(matches!(
+            SparseFixedBitSet::new(0),
+            Err(LuceneError::IllegalArgument(ref message)) if message == "length needs to be >= 1"
+        ));
+    }
+
     /// A tiny deterministic LCG for reproducible pseudo-random tests without a
     /// dependency on an external random crate.
     struct TestRng {
@@ -1960,7 +2075,7 @@ mod tests {
 
     #[test]
     fn sparse_fixed_bit_set_basic() {
-        let mut s = SparseFixedBitSet::new(10_000);
+        let mut s = SparseFixedBitSet::new(10_000).unwrap();
         assert_eq!(s.length(), 10_000);
         assert_eq!(s.cardinality(), 0);
 
@@ -1993,7 +2108,7 @@ mod tests {
 
     #[test]
     fn sparse_fixed_bit_set_next_set_bit() {
-        let mut s = SparseFixedBitSet::new(200);
+        let mut s = SparseFixedBitSet::new(200).unwrap();
         s.set(5);
         s.set(67);
         s.set(128);
@@ -2009,7 +2124,7 @@ mod tests {
 
     #[test]
     fn sparse_fixed_bit_set_iterator() {
-        let mut s = SparseFixedBitSet::new(100);
+        let mut s = SparseFixedBitSet::new(100).unwrap();
         s.set(3);
         s.set(5);
         s.set(64);
@@ -2026,7 +2141,7 @@ mod tests {
         let num_docs = 5_000;
 
         let mut reference = FixedBitSet::new(max_doc);
-        let mut sparse = SparseFixedBitSet::new(max_doc);
+        let mut sparse = SparseFixedBitSet::new(max_doc).unwrap();
 
         let mut docs = Vec::with_capacity(num_docs);
         for _ in 0..num_docs {
@@ -2180,7 +2295,7 @@ mod tests {
 
     #[test]
     fn sparse_live_docs_basic() {
-        let mut deleted = SparseFixedBitSet::new(10);
+        let mut deleted = SparseFixedBitSet::new(10).unwrap();
         deleted.set(1);
         deleted.set(3);
         deleted.set(5);
@@ -2205,7 +2320,7 @@ mod tests {
         let mut reference_live = FixedBitSet::new(max_doc);
         let mut deleted_count = 0;
         for d in 0..max_doc {
-            if rng.next() % 5 == 0 {
+            if rng.next().is_multiple_of(5) {
                 deleted_count += 1;
             } else {
                 reference_live.set(d);
@@ -2218,7 +2333,7 @@ mod tests {
             .build();
 
         // SparseLiveDocs stores deleted docs.
-        let mut sparse_deleted = SparseFixedBitSet::new(max_doc);
+        let mut sparse_deleted = SparseFixedBitSet::new(max_doc).unwrap();
         for d in 0..max_doc {
             if !reference_live.get(d) {
                 sparse_deleted.set(d);
@@ -2382,7 +2497,7 @@ mod tests {
 
         // Sparse side: the bit set stores DELETED docs, so the scan yields the
         // live ones.
-        let mut deleted_bits = SparseFixedBitSet::new(max_doc);
+        let mut deleted_bits = SparseFixedBitSet::new(max_doc).unwrap();
         for &d in deleted.iter() {
             deleted_bits.set(d);
         }
@@ -2433,7 +2548,7 @@ mod tests {
 
         let mut live_bits = FixedBitSet::new(max_doc);
         live_bits.set_range(0, max_doc);
-        let mut deleted_bits = SparseFixedBitSet::new(max_doc);
+        let mut deleted_bits = SparseFixedBitSet::new(max_doc).unwrap();
         for &d in &deleted {
             live_bits.clear(d);
             deleted_bits.set(d);
@@ -2510,7 +2625,7 @@ mod tests {
             vec![3]
         );
 
-        let mut deleted_bits = SparseFixedBitSet::new(max_doc);
+        let mut deleted_bits = SparseFixedBitSet::new(max_doc).unwrap();
         deleted_bits.set(3);
         let sparse: Box<dyn Bits> = Box::new(
             SparseLiveDocs::builder(deleted_bits, max_doc)
@@ -2531,7 +2646,7 @@ mod tests {
     /// it.
     #[test]
     fn first_doc_finds_the_next_non_empty_block() {
-        let mut set = SparseFixedBitSet::new(20_000);
+        let mut set = SparseFixedBitSet::new(20_000).unwrap();
         set.set(5);
         set.set(4096 * 3 + 77);
 
@@ -2551,7 +2666,7 @@ mod tests {
     #[test]
     fn next_set_bit_matches_a_linear_scan_across_blocks() {
         let length = 30_000usize;
-        let mut set = SparseFixedBitSet::new(length);
+        let mut set = SparseFixedBitSet::new(length).unwrap();
         let mut rng = TestRng::new(0x51ED_2701);
         let mut expected = Vec::new();
         for _ in 0..400 {
@@ -2609,7 +2724,7 @@ mod tests {
         // shallowSizeOfInstance(SparseFixedBitSet.class) == 40, and
         // new SparseFixedBitSet(10000).ramBytesUsed() == 112 while empty.
         assert_eq!(SparseFixedBitSet::BASE_RAM_BYTES_USED, 40);
-        let mut set = SparseFixedBitSet::new(10_000);
+        let mut set = SparseFixedBitSet::new(10_000).unwrap();
         // 3 blocks: indices is a long[3] (40 bytes) and bits an Object[3]
         // (32 bytes).
         assert_eq!(set.ram_bytes_used(), 40 + 40 + 32);
@@ -2678,5 +2793,62 @@ impl fmt::Display for SparseLiveDocs {
             self.deleted_count,
             java_fmt::format_fixed(100.0 * self.deleted_count as f64 / self.max_doc as f64, 2)
         )
+    }
+}
+
+#[cfg(test)]
+mod roaring_java_blocks_tests {
+    use super::*;
+
+    fn build(max_doc: usize, docs: impl IntoIterator<Item = usize>) -> RoaringDocIdSet {
+        let mut builder = RoaringDocIdSet::builder(max_doc);
+        for doc in docs {
+            builder.add(doc).unwrap();
+        }
+        builder.build()
+    }
+
+    /// rmp #302: a very dense block is `new NotDocIdSet(BLOCK_SIZE, new
+    /// ShortArrayDocIdSet(excludedDocs))` over the flipped dense buffer
+    /// (`RoaringDocIdSet.java:88-101`), and every block reports its Java
+    /// `DocIdSet`'s `ramBytesUsed()`. Measured against `lucene-core-10.5.0.jar`
+    /// (`oracle/passD/Oracle.java`, `ROARING`).
+    #[test]
+    fn blocks_are_javas_doc_id_sets_and_report_javas_ram() {
+        let not = build(65536, (0..65536).filter(|d| d % 1000 != 0));
+        assert_eq!((not.ram_bytes_used(), not.cardinality()), (248, 65470));
+        let mut it = not.iter();
+        assert_eq!((it.next_doc().unwrap(), it.next_doc().unwrap()), (1, 2));
+        assert_eq!(it.advance(1000).unwrap(), 1001);
+        assert!(matches!(
+            &not.blocks[0],
+            Some(RoaringBlock::Not { excluded, .. }) if excluded.doc_ids.len() == 66
+        ));
+        // The block iterator is the `NotDocIdSet`'s, whose cost is its maxDoc.
+        let block = not.blocks[0].as_ref().unwrap().iterator(0).unwrap();
+        assert_eq!(block.cost(), 65536);
+
+        assert_eq!(build(65536, (0..65536).step_by(3)).ram_bytes_used(), 8312);
+        assert_eq!(build(65536, (0..65536).step_by(100)).ram_bytes_used(), 1400);
+        assert_eq!(build(65536, 5..10).ram_bytes_used(), 72);
+        assert_eq!(build(65536, 0..65536).ram_bytes_used(), 56);
+        assert_eq!(build(65536, std::iter::empty()).ram_bytes_used(), 56);
+
+        // One set of each kind; the last, partial block is full yet a range,
+        // since only a block of BLOCK_SIZE documents is `AllDocIdSet`.
+        let max_doc = 6 * 65536 + 100;
+        let mixed = build(
+            max_doc,
+            (0..65536)
+                .chain(70000..70100)
+                .chain((2 * 65536..3 * 65536).step_by(100))
+                .chain((3 * 65536..4 * 65536).step_by(3))
+                .chain((4 * 65536..5 * 65536).filter(|d| (d - 4 * 65536) % 1000 != 0))
+                .chain(6 * 65536..max_doc),
+        );
+        assert_eq!(
+            (mixed.ram_bytes_used(), mixed.cardinality()),
+            (9904, 153708)
+        );
     }
 }

@@ -25,7 +25,7 @@ use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::IndexWriterConfig;
 use rucene::index::merge_policy::OneMerge;
 use rucene::index::SegmentInfos;
-use rucene::store::{Directory, RamDirectory};
+use rucene::store::{ByteBuffersDirectory, Directory};
 
 /// The integration crate does not share the library's test-time codec registry,
 /// so every entry point registers the default codec before writing an index.
@@ -41,9 +41,9 @@ fn add_doc(writer: &IndexWriter, id: &str) {
     writer.add_document(&doc).unwrap();
 }
 
-fn writer_on_ram() -> (Arc<dyn Directory>, IndexWriter) {
+fn writer_on_ram() -> (Arc<dyn Directory>, Arc<IndexWriter>) {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
     (dir, writer)
 }
@@ -273,7 +273,7 @@ fn a_segment_of_this_directory_validates_before_it_is_committed() {
     assert_eq!(writer.num_deleted_docs(&mine).unwrap(), 0);
 
     // A segment of a different directory is not.
-    let other: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let other: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let foreign = uncommitted(&other);
     assert!(
         writer.num_deletes_to_merge_for(&foreign).is_err(),

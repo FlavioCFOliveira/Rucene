@@ -40,7 +40,7 @@ use crate::index::point_values::Relation;
 use crate::index::{LeafReader, PointValues};
 use crate::search::{DocIdSetIterator, Query, QueryVisitor, NO_MORE_DOCS};
 use crate::util::doc_id_set::DocIdSetBuilder;
-use crate::util::{BitSet, BitSetIterator, FixedBitSet, IntsRef, NumericUtils};
+use crate::util::{ArrayUtil, BitSet, BitSetIterator, FixedBitSet, IntsRef, NumericUtils};
 
 // -----------------------------------------------------------------------------
 // Geometry unions
@@ -1103,7 +1103,7 @@ impl SpatialQuery {
                     self.get_dense_visitor(visitor, &mut result, &mut excluded, &mut cost);
                 values.intersect(&mut dense)?;
             }
-            and_not(&mut result, &excluded);
+            result.and_not(&excluded);
             // Remove the false positives. Only the inner nodes matter, because
             // the intersecting leaf nodes have already been taken into account;
             // this still reads the leaf nodes, unfortunately.
@@ -1133,7 +1133,7 @@ impl SpatialQuery {
                 self.get_contains_dense_visitor(visitor, &mut result, &mut excluded, &mut cost);
             values.intersect(&mut contains)?;
         }
-        and_not(&mut result, &excluded);
+        result.and_not(&excluded);
         debug_assert!(cost > 0 || result.cardinality() == 0);
         if cost == 0 {
             return Ok(Some(Box::new(crate::search::empty())));
@@ -1168,30 +1168,11 @@ fn bit_set_iterator(result: FixedBitSet, cost: i64) -> Result<Box<dyn DocIdSetIt
     Ok(Box::new(BitSetIterator::new(Arc::new(result), cost)?))
 }
 
-/// Clears in `result` every bit set in `excluded`.
-///
-/// Equivalent to `FixedBitSet.andNot(FixedBitSet)`, which this port's
-/// `FixedBitSet` does not expose; walking the set bits of `excluded` gives the
-/// same result.
-fn and_not(result: &mut FixedBitSet, excluded: &FixedBitSet) {
-    let length = excluded.length() as i32;
-    let mut doc = if length == 0 {
-        -1
-    } else {
-        excluded.next_set_bit(0)
-    };
-    while doc >= 0 && doc < length {
-        result.clear(doc as usize);
-        if doc + 1 >= length {
-            break;
-        }
-        doc = excluded.next_set_bit(doc + 1);
-    }
-}
-
 /// Clears in `result` every document `iterator` produces.
 ///
-/// Equivalent to `FixedBitSet.andNot(DocIdSetIterator)`.
+/// Stands in for `FixedBitSet.andNot(DocIdSetIterator)` (`FixedBitSet.java:664-679`),
+/// which this port's [`FixedBitSet`] does not have; this is that method's
+/// generic branch, whose result its two bit-set fast paths reproduce.
 fn and_not_iterator(result: &mut FixedBitSet, iterator: &mut dyn DocIdSetIterator) -> Result<()> {
     loop {
         let doc = iterator.next_doc()?;
@@ -2155,14 +2136,6 @@ impl XYShapeQuery {
 // LatLonShapeBoundingBoxQuery
 // -----------------------------------------------------------------------------
 
-/// Compares four unsigned bytes of `a` at `a_offset` with four of `b` at
-/// `b_offset`.
-///
-/// Equivalent to `org.apache.lucene.util.ArrayUtil.compareUnsigned4`.
-fn compare_unsigned4(a: &[u8], a_offset: usize, b: &[u8], b_offset: usize) -> std::cmp::Ordering {
-    a[a_offset..a_offset + 4].cmp(&b[b_offset..b_offset + 4])
-}
-
 /// The encoded bounding box a [`LatLonShapeBoundingBoxQuery`] compares against,
 /// which also keeps the packed form the BKD comparison needs.
 ///
@@ -2340,7 +2313,6 @@ fn compare_bbox_to_range_bbox(
     max_y_offset: usize,
     max_triangle: &[u8],
 ) -> Relation {
-    use std::cmp::Ordering::{Greater, Less};
     if bbox_disjoint(
         bbox,
         min_x_offset,
@@ -2352,10 +2324,10 @@ fn compare_bbox_to_range_bbox(
     ) {
         return Relation::CellOutsideQuery;
     }
-    if compare_unsigned4(min_triangle, min_x_offset, bbox, BYTES) != Less
-        && compare_unsigned4(max_triangle, max_x_offset, bbox, 3 * BYTES) != Greater
-        && compare_unsigned4(min_triangle, min_y_offset, bbox, 0) != Less
-        && compare_unsigned4(max_triangle, max_y_offset, bbox, 2 * BYTES) != Greater
+    if ArrayUtil::compare_unsigned4(min_triangle, min_x_offset, bbox, BYTES) >= 0
+        && ArrayUtil::compare_unsigned4(max_triangle, max_x_offset, bbox, 3 * BYTES) <= 0
+        && ArrayUtil::compare_unsigned4(min_triangle, min_y_offset, bbox, 0) >= 0
+        && ArrayUtil::compare_unsigned4(max_triangle, max_y_offset, bbox, 2 * BYTES) <= 0
     {
         return Relation::CellInsideQuery;
     }
@@ -2374,7 +2346,6 @@ fn intersect_bbox_with_range_bbox(
     max_y_offset: usize,
     max_triangle: &[u8],
 ) -> Relation {
-    use std::cmp::Ordering::{Greater, Less};
     if bbox_disjoint(
         bbox,
         min_x_offset,
@@ -2386,31 +2357,31 @@ fn intersect_bbox_with_range_bbox(
     ) {
         return Relation::CellOutsideQuery;
     }
-    if compare_unsigned4(min_triangle, min_x_offset, bbox, BYTES) != Less
-        && compare_unsigned4(min_triangle, min_y_offset, bbox, 0) != Less
+    if ArrayUtil::compare_unsigned4(min_triangle, min_x_offset, bbox, BYTES) >= 0
+        && ArrayUtil::compare_unsigned4(min_triangle, min_y_offset, bbox, 0) >= 0
     {
-        if compare_unsigned4(max_triangle, min_x_offset, bbox, 3 * BYTES) != Greater
-            && compare_unsigned4(max_triangle, max_y_offset, bbox, 2 * BYTES) != Greater
+        if ArrayUtil::compare_unsigned4(max_triangle, min_x_offset, bbox, 3 * BYTES) <= 0
+            && ArrayUtil::compare_unsigned4(max_triangle, max_y_offset, bbox, 2 * BYTES) <= 0
         {
             return Relation::CellInsideQuery;
         }
-        if compare_unsigned4(max_triangle, max_x_offset, bbox, 3 * BYTES) != Greater
-            && compare_unsigned4(max_triangle, min_y_offset, bbox, 2 * BYTES) != Greater
+        if ArrayUtil::compare_unsigned4(max_triangle, max_x_offset, bbox, 3 * BYTES) <= 0
+            && ArrayUtil::compare_unsigned4(max_triangle, min_y_offset, bbox, 2 * BYTES) <= 0
         {
             return Relation::CellInsideQuery;
         }
     }
 
-    if compare_unsigned4(max_triangle, max_x_offset, bbox, 3 * BYTES) != Greater
-        && compare_unsigned4(max_triangle, max_y_offset, bbox, 2 * BYTES) != Greater
+    if ArrayUtil::compare_unsigned4(max_triangle, max_x_offset, bbox, 3 * BYTES) <= 0
+        && ArrayUtil::compare_unsigned4(max_triangle, max_y_offset, bbox, 2 * BYTES) <= 0
     {
-        if compare_unsigned4(min_triangle, min_x_offset, bbox, BYTES) != Less
-            && compare_unsigned4(min_triangle, max_y_offset, bbox, 0) != Less
+        if ArrayUtil::compare_unsigned4(min_triangle, min_x_offset, bbox, BYTES) >= 0
+            && ArrayUtil::compare_unsigned4(min_triangle, max_y_offset, bbox, 0) >= 0
         {
             return Relation::CellInsideQuery;
         }
-        if compare_unsigned4(min_triangle, max_x_offset, bbox, BYTES) != Less
-            && compare_unsigned4(min_triangle, min_y_offset, bbox, 0) != Less
+        if ArrayUtil::compare_unsigned4(min_triangle, max_x_offset, bbox, BYTES) >= 0
+            && ArrayUtil::compare_unsigned4(min_triangle, min_y_offset, bbox, 0) >= 0
         {
             return Relation::CellInsideQuery;
         }
@@ -2430,11 +2401,10 @@ fn bbox_disjoint(
     max_y_offset: usize,
     max_triangle: &[u8],
 ) -> bool {
-    use std::cmp::Ordering::{Greater, Less};
-    compare_unsigned4(min_triangle, min_x_offset, bbox, 3 * BYTES) == Greater
-        || compare_unsigned4(max_triangle, max_x_offset, bbox, BYTES) == Less
-        || compare_unsigned4(min_triangle, min_y_offset, bbox, 2 * BYTES) == Greater
-        || compare_unsigned4(max_triangle, max_y_offset, bbox, 0) == Less
+    ArrayUtil::compare_unsigned4(min_triangle, min_x_offset, bbox, 3 * BYTES) > 0
+        || ArrayUtil::compare_unsigned4(max_triangle, max_x_offset, bbox, BYTES) < 0
+        || ArrayUtil::compare_unsigned4(min_triangle, min_y_offset, bbox, 2 * BYTES) > 0
+        || ArrayUtil::compare_unsigned4(max_triangle, max_y_offset, bbox, 0) < 0
 }
 
 /// The [`SpatialVisitor`] of a geographic bounding-box shape query, which works
@@ -3169,7 +3139,7 @@ impl<M: SpatialMatcher> crate::search::ConstantScoreIteratorSupplier
         // Java's supplier may be asked for its scorer only once; the iterator
         // is taken here for the same reason.
         let iterator = self.iterator.take().ok_or_else(|| {
-            LuceneError::IllegalState(
+            LuceneError::illegal_state(
                 "a spatial scorer supplier may be asked for its scorer only once".to_string(),
             )
         })?;
@@ -3189,16 +3159,16 @@ impl<M: SpatialMatcher> crate::search::ConstantScoreIteratorSupplier
 #[derive(Debug)]
 pub struct SpatialWeight<M: SpatialMatcher> {
     matcher: Arc<M>,
-    score: f32,
     score_mode: crate::search::ScoreMode,
 }
 
 impl<M: SpatialMatcher> SpatialWeight<M> {
-    /// Creates the weight over `matcher`.
-    pub fn new(matcher: Arc<M>, score: f32, score_mode: crate::search::ScoreMode) -> Self {
+    /// Creates the weight over `matcher`; its score is the enclosing
+    /// [`ConstantScoreWeight`](crate::search::ConstantScoreWeight)'s, as Java's
+    /// anonymous subclass reads `score()`.
+    pub fn new(matcher: Arc<M>, score_mode: crate::search::ScoreMode) -> Self {
         Self {
             matcher,
-            score,
             score_mode,
         }
     }
@@ -3208,6 +3178,7 @@ impl<M: SpatialMatcher + 'static> crate::search::ConstantScoreWeightImpl for Spa
     fn scorer_supplier(
         &self,
         context: &crate::index::LeafReaderContext,
+        score: f32,
     ) -> Result<Option<Box<dyn crate::search::ScorerSupplier>>> {
         let leaf = context.leaf_reader();
         let reader = leaf.as_ref();
@@ -3222,7 +3193,7 @@ impl<M: SpatialMatcher + 'static> crate::search::ConstantScoreWeightImpl for Spa
         };
         Ok(Some(Box::new(
             crate::search::ConstantScoreScorerSupplier::new(
-                self.score,
+                score,
                 self.score_mode,
                 reader.max_doc(),
                 inner,
@@ -3248,7 +3219,7 @@ pub fn spatial_create_weight<M>(
 where
     M: SpatialMatcher + 'static,
 {
-    let inner = SpatialWeight::new(matcher, boost, score_mode);
+    let inner = SpatialWeight::new(matcher, score_mode);
     Ok(Arc::new(crate::search::ConstantScoreWeight::new(
         query, boost, inner,
     )))
@@ -3282,6 +3253,84 @@ mod visit_tests {
             LatLonGeometryValue::Rectangle(Rectangle::new(-1.0, 1.0, -1.0, 1.0).unwrap());
         let component = SpatialQuery::create_component_2d(&[geometry]).unwrap();
         SpatialQuery::new(field, QueryRelation::Intersects, component)
+    }
+
+    /// `CONTAINS`, and `WITHIN`/`DISJOINT` over multi-triangle documents, run
+    /// the dense scorers, which drop the documents of the `excluded` set with
+    /// `FixedBitSet.andNot` (`SpatialQuery.java:356, 376`). The expected doc ids
+    /// are Lucene 10.5.0's for the same index and box (oracle
+    /// `ShapeContains.java`: `CONTAINS:[0, 4]`, `WITHIN:[5]`, `DISJOINT:[7]`).
+    #[test]
+    fn the_dense_relations_drop_the_excluded_documents_as_lucene_does() {
+        use crate::document::{Document, LatLonShape};
+        use crate::geo::geometry::Polygon;
+        use crate::index::index_writer::IndexWriter;
+        use crate::index::index_writer_config::IndexWriterConfig;
+        use crate::index::IndexReader;
+
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        fn square(lat0: f64, lat1: f64, lon0: f64, lon1: f64) -> Polygon {
+            Polygon::new(
+                vec![lat0, lat0, lat1, lat1, lat0],
+                vec![lon0, lon1, lon1, lon0, lon0],
+                Vec::new(),
+            )
+            .unwrap()
+        }
+        let docs: Vec<Vec<Polygon>> = vec![
+            vec![square(-10.0, 10.0, -10.0, 10.0)],
+            vec![square(-10.0, 10.0, -10.0, 10.0), square(0.5, 3.0, 0.5, 3.0)],
+            vec![square(0.0, 10.0, 0.0, 10.0)],
+            vec![],
+            vec![square(-20.0, 20.0, -20.0, 20.0)],
+            vec![square(-0.5, 0.5, -0.5, 0.5)],
+            vec![square(-0.5, 0.5, -0.5, 0.5), square(5.0, 6.0, 5.0, 6.0)],
+            vec![square(30.0, 31.0, 30.0, 31.0)],
+            vec![square(30.0, 31.0, 30.0, 31.0), square(0.5, 3.0, 0.5, 3.0)],
+        ];
+        let dir: Arc<dyn crate::store::Directory> =
+            Arc::new(crate::store::ByteBuffersDirectory::default());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        for polygons in &docs {
+            let mut document = Document::new();
+            for polygon in polygons {
+                for triangle in LatLonShape::create_indexable_fields_polygon("s", polygon).unwrap()
+                {
+                    document.add(Box::new(triangle));
+                }
+            }
+            document.add(Box::new(
+                crate::document::StoredField::new_string("id", "x".to_string()).unwrap(),
+            ));
+            writer.add_document(&document).unwrap();
+        }
+        writer.force_merge(1).unwrap();
+        writer.close().unwrap();
+        let reader = crate::index::directory_reader::open(Arc::clone(&dir)).unwrap();
+        let leaves = (reader.clone() as Arc<dyn IndexReader>).leaves().unwrap();
+        assert_eq!(leaves.len(), 1);
+        let leaf = leaves[0].leaf_reader();
+        let matches = |relation: QueryRelation| -> Vec<i32> {
+            let query =
+                match LatLonShape::new_box_query("s", relation, -1.0, 1.0, -1.0, 1.0).unwrap() {
+                    crate::document::LatLonShapeQueryPlan::BoundingBox(query) => query,
+                    other => panic!("{other:?}"),
+                };
+            let mut docs = Vec::new();
+            if let Some(mut iterator) = query.matching_docs(leaf.as_ref()).unwrap() {
+                loop {
+                    let doc = iterator.next_doc().unwrap();
+                    if doc == crate::search::NO_MORE_DOCS {
+                        break;
+                    }
+                    docs.push(doc);
+                }
+            }
+            docs
+        };
+        assert_eq!(matches(QueryRelation::Contains), [0, 4]);
+        assert_eq!(matches(QueryRelation::Within), [5]);
+        assert_eq!(matches(QueryRelation::Disjoint), [7]);
     }
 
     #[test]

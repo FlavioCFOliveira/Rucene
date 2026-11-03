@@ -49,7 +49,6 @@ impl MatchAllDocsQuery {
 /// the score is the same value the surrounding [`ConstantScoreWeight`] holds.
 #[derive(Debug)]
 struct MatchAllDocsWeight {
-    score: f32,
     score_mode: ScoreMode,
 }
 
@@ -57,10 +56,11 @@ impl ConstantScoreWeightImpl for MatchAllDocsWeight {
     fn scorer_supplier(
         &self,
         context: &LeafReaderContext,
+        score: f32,
     ) -> Result<Option<Box<dyn ScorerSupplier>>> {
         let max_doc = context.leaf_reader().max_doc();
         Ok(Some(Box::new(ConstantScoreScorerSupplier::match_all(
-            self.score,
+            score,
             self.score_mode,
             max_doc,
         )?)))
@@ -97,10 +97,7 @@ impl Query for MatchAllDocsQuery {
         Ok(Arc::new(ConstantScoreWeight::new(
             Arc::new(*self),
             boost,
-            MatchAllDocsWeight {
-                score: boost,
-                score_mode,
-            },
+            MatchAllDocsWeight { score_mode },
         )))
     }
 

@@ -53,7 +53,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from javatext import strip_java
-from kgio import read as kg_read, unwind, rmp, esc
+from kgio import PER_ROW_SCAN_BATCH, read as kg_read, unwind, rmp, esc
 
 VERDICTS = Path(__file__).parent / "nested_port_verdicts.json"
 
@@ -355,13 +355,13 @@ def main():
     unwind(args.roadmap, "create", edges,
            "MATCH (t {name:row.name, file:row.file}) "
            "WITH t, row MATCH (c:Class {qualifiedName:row.lucene}) "
-           "MERGE (t)-[:PORTS]->(c)", "curated PORTS edges", batch=50)
+           "MERGE (t)-[:PORTS]->(c)", "curated PORTS edges", batch=PER_ROW_SCAN_BATCH)
     unwind(args.roadmap, "update", edges,
            "MATCH (t {name:row.name, file:row.file})-[e:PORTS]->"
            "(c:Class {qualifiedName:row.lucene}) "
            "SET e.evidence = 'curated', e.claimLevel = 'type', "
            "e.gitCommit = row.commit, e.gitDate = row.date",
-           "curated PORTS evidence", batch=50)
+           "curated PORTS evidence", batch=PER_ROW_SCAN_BATCH)
 
     unwind(args.roadmap, "update", rows,
            "MATCH (c:Class {qualifiedName:row.qn}) "

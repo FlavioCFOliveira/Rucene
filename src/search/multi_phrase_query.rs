@@ -218,13 +218,6 @@ impl MultiPhraseQuery {
         &self.positions
     }
 
-    /// Returns the field this query applies to, or `None` when it has no term.
-    ///
-    /// Equivalent to reading the `private final String field` field.
-    pub fn get_field(&self) -> Option<&str> {
-        self.field.as_deref()
-    }
-
     /// Breakout calculation of the term-arrays hash code.
     ///
     /// Equivalent to the private `MultiPhraseQuery.termArraysHashCode()`, whose
@@ -354,7 +347,7 @@ impl Query for MultiPhraseQuery {
         boost: f32,
     ) -> Result<Arc<dyn Weight>> {
         let field = self.field.clone().ok_or_else(|| {
-            LuceneError::IllegalState(
+            LuceneError::illegal_state(
                 "MultiPhraseQuery has no term; call rewrite first".to_string(),
             )
         })?;
@@ -453,7 +446,7 @@ impl PhraseWeightImpl for MultiPhraseWeightImpl {
         let collection_stats = searcher
             .collection_statistics(&self.field)?
             .ok_or_else(|| {
-                LuceneError::IllegalState(format!(
+                LuceneError::illegal_state(format!(
                     "field {} has term statistics but no collection statistics",
                     self.field
                 ))
@@ -481,7 +474,7 @@ impl PhraseWeightImpl for MultiPhraseWeightImpl {
         };
 
         if !field_terms.has_positions() {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "field \"{}\" was indexed without position data; cannot run MultiPhraseQuery (phrase={})",
                 self.field,
                 self.query.to_query_string("")
@@ -489,7 +482,7 @@ impl PhraseWeightImpl for MultiPhraseWeightImpl {
         }
 
         let term_states = self.term_states.get().ok_or_else(|| {
-            LuceneError::IllegalState(
+            LuceneError::illegal_state(
                 "PhraseWeight.getStats must run before getPhraseMatcher".to_string(),
             )
         })?;
@@ -504,7 +497,7 @@ impl PhraseWeightImpl for MultiPhraseWeightImpl {
 
             for term in terms {
                 let states = term_states.get(term).ok_or_else(|| {
-                    LuceneError::IllegalState(format!("no TermStates were built for {term}"))
+                    LuceneError::illegal_state(format!("no TermStates were built for {term}"))
                 })?;
                 if let Some(term_state) = states.get(context)? {
                     terms_enum.seek_term_state(term.bytes(), &*term_state)?;
@@ -798,11 +791,6 @@ impl UnionPostingsEnum {
     /// Equivalent to reading the `int posQueueDoc` field.
     pub fn pos_queue_doc(&self) -> i32 {
         self.pos_queue_doc
-    }
-
-    /// Records the document the position state was built for.
-    pub fn set_pos_queue_doc(&mut self, doc: i32) {
-        self.pos_queue_doc = doc;
     }
 }
 

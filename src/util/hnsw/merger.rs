@@ -8,13 +8,13 @@ use std::sync::Arc;
 
 use crate::codecs::hnsw::graph_provider::HnswGraphProvider;
 use crate::codecs::knn_vectors::KnnVectorsReader;
-use crate::error::Result;
+use crate::error::{LuceneError, Result};
 use crate::index::field_infos::FieldInfo;
 use crate::index::merge::DocMap;
 use crate::index::vector_values::KnnVectorValues;
 use crate::index::VectorEncoding;
-use crate::search::NO_MORE_DOCS;
-use crate::util::{Bits, FixedBitSet};
+use crate::search::{TaskExecutor, NO_MORE_DOCS};
+use crate::util::{Bits, FixedBitSet, InfoStream};
 
 use super::builder::{HnswBuilder, DEFAULT_RAND_SEED};
 use super::concurrent_merge_builder::HnswConcurrentMergeBuilder;
@@ -32,7 +32,6 @@ use super::scorer::RandomVectorScorerSupplier;
 /// * `add_reader` takes the [`HnswGraphProvider`] explicitly, because Rust cannot
 ///   cast a `dyn KnnVectorsReader` to a `dyn HnswGraphProvider` the way Java's
 ///   `instanceof` does. `None` stands for a reader that is not a graph provider.
-/// * `merge` takes no `InfoStream`: the port's builders have none.
 pub trait HnswGraphMerger {
     /// Adds a reader to the graph merger, recording its state.
     ///
@@ -49,8 +48,10 @@ pub trait HnswGraphMerger {
 
     /// Merges the added readers and produces the on-heap graph.
     ///
-    /// `merged_vector_values` is the view of the vectors in the merged segment and
-    /// `max_ord` the number of vectors that will be added to the graph.
+    /// `merged_vector_values` is the view of the vectors in the merged segment,
+    /// `info_stream` receives the builder's progress messages (Java's
+    /// `HnswBuilder.setInfoStream`) and `max_ord` is the number of vectors that
+    /// will be added to the graph.
     ///
     /// # Errors
     ///
@@ -58,6 +59,7 @@ pub trait HnswGraphMerger {
     fn merge(
         &mut self,
         merged_vector_values: &dyn KnnVectorValues,
+        info_stream: Arc<dyn InfoStream>,
         max_ord: i32,
     ) -> Result<OnHeapHnswGraph>;
 }
@@ -66,24 +68,31 @@ pub trait HnswGraphMerger {
 ///
 /// Equivalent to `org.apache.lucene.util.hnsw.ConcurrentHnswMerger`, which extends
 /// `IncrementalHnswGraphMerger`; this port holds one instead, because Rust has no
-/// implementation inheritance. See [`HnswConcurrentMergeBuilder`] for how the
-/// workers are executed.
+/// implementation inheritance. The builder runs its workers on the merger's
+/// [`TaskExecutor`].
 pub struct ConcurrentHnswMerger {
     inner: IncrementalHnswGraphMerger,
+    /// Equivalent to `ConcurrentHnswMerger.taskExecutor`.
+    task_executor: Arc<TaskExecutor>,
     num_worker: i32,
 }
 
 impl ConcurrentHnswMerger {
-    /// Creates a merger driving `num_worker` merge workers.
+    /// Creates a merger driving `num_worker` merge workers on `task_executor`.
+    ///
+    /// Equivalent to `ConcurrentHnswMerger(FieldInfo, RandomVectorScorerSupplier,
+    /// int, int, TaskExecutor, int)`.
     pub fn new(
         field_info: FieldInfo,
         scorer_supplier: Arc<dyn RandomVectorScorerSupplier>,
         m: i32,
         beam_width: i32,
+        task_executor: Arc<TaskExecutor>,
         num_worker: i32,
     ) -> Self {
         Self {
             inner: IncrementalHnswGraphMerger::new(field_info, scorer_supplier, m, beam_width),
+            task_executor,
             num_worker,
         }
     }
@@ -134,6 +143,7 @@ impl ConcurrentHnswMerger {
             }
         };
         Ok(Box::new(HnswConcurrentMergeBuilder::new(
+            Arc::clone(&self.task_executor),
             self.num_worker,
             self.inner.scorer_supplier().as_ref(),
             m,
@@ -154,10 +164,21 @@ impl ConcurrentHnswMerger {
         merged_vector_values: &dyn KnnVectorValues,
         initialized_nodes: &mut FixedBitSet,
     ) -> Result<Vec<i32>> {
+        // Java dereferences the answer without a `null` check.
         let values: Box<dyn KnnVectorValues> = match field_info.get_vector_encoding() {
-            VectorEncoding::BYTE => init_reader.get_byte_vector_values(&field_info.name)?,
-            VectorEncoding::FLOAT32 => init_reader.get_float_vector_values(&field_info.name)?,
-        };
+            VectorEncoding::BYTE => init_reader
+                .get_byte_vector_values(&field_info.name)?
+                .map(|values| values as Box<dyn KnnVectorValues>),
+            VectorEncoding::FLOAT32 => init_reader
+                .get_float_vector_values(&field_info.name)?
+                .map(|values| values as Box<dyn KnnVectorValues>),
+        }
+        .ok_or_else(|| {
+            LuceneError::illegal_state(format!(
+                "the initializing reader has no vectors for field \"{}\"",
+                field_info.name
+            ))
+        })?;
         let mut initializer_iterator = values.iterator()?;
 
         let mut new_id_to_old_ordinal: HashMap<i32, i32> =
@@ -216,9 +237,11 @@ impl HnswGraphMerger for ConcurrentHnswMerger {
     fn merge(
         &mut self,
         merged_vector_values: &dyn KnnVectorValues,
+        info_stream: Arc<dyn InfoStream>,
         max_ord: i32,
     ) -> Result<OnHeapHnswGraph> {
         let mut builder = self.create_builder(merged_vector_values, max_ord)?;
+        builder.set_info_stream(info_stream);
         builder.build(max_ord)?;
         builder.into_completed_graph()
     }

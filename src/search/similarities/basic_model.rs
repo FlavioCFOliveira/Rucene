@@ -15,6 +15,11 @@ use super::{BasicStats, Explanation};
 /// models compute the informative content *Inf₁ = -log₂Prob₁*.
 ///
 /// See [`DFRSimilarity`](super::DFRSimilarity).
+///
+/// The [`Display`](fmt::Display) supertrait is Java's abstract `toString()`
+/// (`BasicModel.java:49`): each implementation renders the code of its
+/// formula, which `DFRSimilarity` concatenates into its own name. Equivalent
+/// to the abstract `BasicModel#toString`.
 pub trait BasicModel: fmt::Display + Debug + Send + Sync {
     /// Returns the name this model puts into its explanations.
     ///

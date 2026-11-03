@@ -7,14 +7,13 @@
 //! | [`PagedBytesDataInput`] | `PagedBytes.PagedBytesDataInput` |
 //! | [`PagedBytesDataOutput`] | `PagedBytes.PagedBytesDataOutput` |
 //!
-//! **Divergence from Lucene 10.5.0.** Java's blocks are `byte[]` references
-//! shared between the writer and every `Reader`; `Reader` copies only the array
-//! of references. This port holds the blocks as `Arc<Vec<u8>>`, which shares
-//! them the same way, so freezing stays O(number of blocks). The one place the
-//! sharing is not observable is [`PagedBytesReader::fill_slice`]: Java returns a
-//! `BytesRef` pointing straight into a block when the slice does not span two
-//! of them, whereas Rucene's [`BytesRef`] owns its buffer (see
-//! [`crate::util::BytesRef`]) and must copy. The bytes returned are identical.
+//! Java's blocks are `byte[]` references shared between the writer and every
+//! `Reader`; `Reader` copies only the array of references. This port holds the
+//! blocks as `Arc<Vec<u8>>`, which shares them the same way, so freezing stays
+//! O(number of blocks). [`PagedBytesReader::fill_slice`] returns a
+//! [`Cow`](std::borrow::Cow): a view into a block, or a copy when the slice
+//! spans two of them, as Java's `fillSlice` points its `BytesRef` into the
+//! block or into a new array.
 
 #![deny(unsafe_code)]
 
@@ -22,7 +21,10 @@ use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
 use crate::store::{DataInput, DataOutput, IndexInput};
-use crate::util::{Accountable, BytesRef, RamUsageEstimator};
+use crate::util::{Accountable, ArrayUtil, BytesRef, RamUsageEstimator};
+
+/// Initial length of Java's `byte[][] blocks` (`new byte[16][]`).
+const INITIAL_BLOCKS_LENGTH: usize = 16;
 
 /// An empty block, used when nothing was ever written.
 /// `PagedBytes.EMPTY_BYTES`.
@@ -34,6 +36,11 @@ const EMPTY_BYTES: &[u8] = &[];
 #[derive(Debug)]
 pub struct PagedBytes {
     blocks: Vec<Arc<Vec<u8>>>,
+    /// Length of the `byte[][] blocks` array Java would be holding: it starts
+    /// at 16 and grows through `ArrayUtil.grow` (`PagedBytes.java:35,165-168`).
+    /// Only [`ram_bytes_used`](Accountable::ram_bytes_used) reads it, because
+    /// Java charges the whole reference array, empty slots included.
+    blocks_length: usize,
     block_size: usize,
     block_bits: u32,
     block_mask: usize,
@@ -55,6 +62,7 @@ impl PagedBytes {
         let block_size = 1usize << block_bits;
         Self {
             blocks: Vec::new(),
+            blocks_length: INITIAL_BLOCKS_LENGTH,
             block_size,
             block_bits,
             block_mask: block_size - 1,
@@ -73,8 +81,14 @@ impl PagedBytes {
         self.block_size
     }
 
-    /// Equivalent to the private `PagedBytes.addBlock`.
+    /// Equivalent to the private `PagedBytes.addBlock`: `blocks =
+    /// ArrayUtil.grow(blocks, numBlocks + 1)`, then the block is appended.
     fn add_block(&mut self, block: Vec<u8>) {
+        let min_size = self.blocks.len() + 1;
+        if self.blocks_length < min_size {
+            self.blocks_length =
+                ArrayUtil::oversize(min_size, RamUsageEstimator::NUM_BYTES_OBJECT_REF as usize);
+        }
         self.blocks.push(Arc::new(block));
     }
 
@@ -158,10 +172,10 @@ impl PagedBytes {
     /// `IllegalStateException`s.
     pub fn freeze(&mut self, trim: bool) -> Result<PagedBytesReader> {
         if self.frozen {
-            return Err(LuceneError::IllegalState("already frozen".to_string()));
+            return Err(LuceneError::illegal_state("already frozen".to_string()));
         }
         if self.did_skip_bytes {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "cannot freeze when copy(BytesRef, BytesRef) was used".to_string(),
             ));
         }
@@ -265,12 +279,42 @@ impl PagedBytes {
     /// reproducing Lucene's "must call freeze() before getDataInput".
     pub fn get_data_input(&self) -> Result<PagedBytesDataInput<'_>> {
         if !self.frozen {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "must call freeze() before getDataInput".to_string(),
             ));
         }
         Ok(PagedBytesDataInput {
-            blocks: &self.blocks,
+            blocks: std::borrow::Cow::Borrowed(&self.blocks),
+            block_size: self.block_size,
+            block_bits: self.block_bits,
+            block_mask: self.block_mask,
+            current_block_index: 0,
+            current_block_upto: 0,
+        })
+    }
+
+    /// Returns a reader over the frozen content that holds its own references
+    /// to the blocks, so it can outlive the borrow of this arena.
+    ///
+    /// Equivalent to `PagedBytes.getDataInput()` as
+    /// `BinaryDocValuesWriter.BufferedBinaryDocValues` keeps it: Java's input
+    /// references the blocks through the garbage collector, while
+    /// [`get_data_input`](Self::get_data_input) borrows them, which an iterator
+    /// handed out as an owned `Box<dyn ...>` cannot do. The blocks are shared,
+    /// not copied: only their `Arc`s are cloned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when the arena is not frozen,
+    /// reproducing Lucene's "must call freeze() before getDataInput".
+    pub fn get_shared_data_input(&self) -> Result<PagedBytesDataInput<'static>> {
+        if !self.frozen {
+            return Err(LuceneError::illegal_state(
+                "must call freeze() before getDataInput".to_string(),
+            ));
+        }
+        Ok(PagedBytesDataInput {
+            blocks: std::borrow::Cow::Owned(self.blocks.clone()),
             block_size: self.block_size,
             block_bits: self.block_bits,
             block_mask: self.block_mask,
@@ -287,7 +331,7 @@ impl PagedBytes {
     /// reproducing Lucene's "cannot get DataOutput after freeze()".
     pub fn get_data_output(&mut self) -> Result<PagedBytesDataOutput<'_>> {
         if self.frozen {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "cannot get DataOutput after freeze()".to_string(),
             ));
         }
@@ -295,13 +339,33 @@ impl PagedBytes {
     }
 }
 
+impl PagedBytes {
+    /// `RamUsageEstimator.shallowSizeOfInstance(PagedBytes.class)`: an object
+    /// header, the references `blocks` and `currentBlock`, the five `int`s
+    /// `numBlocks`, `blockSize`, `blockBits`, `blockMask` and `upto`, the two
+    /// `boolean`s `didSkipBytes` and `frozen`, and the `long`
+    /// `bytesUsedPerBlock`, aligned — 56 bytes with compressed references.
+    ///
+    /// Equivalent to the private `PagedBytes.BASE_RAM_BYTES_USED`
+    /// (`PagedBytes.java:33-34`).
+    pub const BASE_RAM_BYTES_USED: i64 = RamUsageEstimator::align_object_size(
+        RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
+            + 2 * RamUsageEstimator::NUM_BYTES_OBJECT_REF
+            + 5 * 4
+            + 2
+            + 8,
+    );
+}
+
 impl Accountable for PagedBytes {
+    /// Equivalent to `PagedBytes.ramBytesUsed()` (`PagedBytes.java:248-259`).
     fn ram_bytes_used(&self) -> i64 {
-        let base = RamUsageEstimator::align_object_size(
-            RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
-                + 4 * RamUsageEstimator::NUM_BYTES_OBJECT_REF,
-        );
-        let mut size = base + RamUsageEstimator::shallow_size_of(&self.blocks);
+        // `RamUsageEstimator.shallowSizeOf(byte[][])` over the whole array.
+        let mut size = Self::BASE_RAM_BYTES_USED
+            + RamUsageEstimator::align_object_size(
+                RamUsageEstimator::NUM_BYTES_ARRAY_HEADER
+                    + RamUsageEstimator::NUM_BYTES_OBJECT_REF * self.blocks_length as i64,
+            );
         if !self.blocks.is_empty() {
             size += (self.blocks.len() as i64 - 1) * self.bytes_used_per_block;
             size += RamUsageEstimator::size_of(self.blocks[self.blocks.len() - 1].as_slice());
@@ -328,29 +392,32 @@ pub struct PagedBytesReader {
 impl PagedBytesReader {
     /// Returns the `length` bytes stored at `start`.
     ///
-    /// Equivalent to `PagedBytes.Reader.fillSlice(BytesRef, long, int)`.
+    /// Equivalent to `PagedBytes.Reader.fillSlice(BytesRef, long, int)`
+    /// (`PagedBytes.java:83-99`): a slice within one block is a view into it,
+    /// and a slice split across two blocks is copied into a new array. The
+    /// filled `BytesRef` becomes the returned [`Cow`](std::borrow::Cow).
     ///
     /// # Panics
     ///
     /// Panics when `length` exceeds `block_size + 1`, which is Java's
     /// assertion.
-    pub fn fill_slice(&self, start: i64, length: usize) -> BytesRef {
+    pub fn fill_slice(&self, start: i64, length: usize) -> std::borrow::Cow<'_, [u8]> {
         debug_assert!(length <= self.block_size + 1, "length={length}");
         if length == 0 {
-            return BytesRef::new(Vec::new());
+            return std::borrow::Cow::Borrowed(&[]);
         }
         let index = (start >> self.block_bits) as usize;
         let offset = (start as usize) & self.block_mask;
         if self.block_size - offset >= length {
             // Within one block.
-            BytesRef::new(self.blocks[index][offset..offset + length].to_vec())
+            std::borrow::Cow::Borrowed(&self.blocks[index][offset..offset + length])
         } else {
             // Split across two blocks.
             let first = self.block_size - offset;
             let mut bytes = Vec::with_capacity(length);
             bytes.extend_from_slice(&self.blocks[index][offset..offset + first]);
             bytes.extend_from_slice(&self.blocks[index + 1][..length - first]);
-            BytesRef::new(bytes)
+            std::borrow::Cow::Owned(bytes)
         }
     }
 
@@ -389,13 +456,28 @@ impl PagedBytesReader {
     }
 }
 
+impl PagedBytesReader {
+    /// `RamUsageEstimator.shallowSizeOfInstance(PagedBytes.Reader.class)`: an
+    /// object header, the `blocks` reference, the three `int`s `blockBits`,
+    /// `blockMask` and `blockSize`, and the `long` `bytesUsedPerBlock`,
+    /// aligned — 40 bytes with compressed references.
+    ///
+    /// Equivalent to the private `PagedBytes.Reader.BASE_RAM_BYTES_USED`
+    /// (`PagedBytes.java:55-56`).
+    pub const BASE_RAM_BYTES_USED: i64 = RamUsageEstimator::align_object_size(
+        RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
+            + RamUsageEstimator::NUM_BYTES_OBJECT_REF
+            + 3 * 4
+            + 8,
+    );
+}
+
 impl Accountable for PagedBytesReader {
+    /// Equivalent to `PagedBytes.Reader.ramBytesUsed()` (`PagedBytes.java:138-145`);
+    /// the reader's array is `copyOfSubArray(blocks, 0, numBlocks)`, exactly as
+    /// long as the blocks it holds.
     fn ram_bytes_used(&self) -> i64 {
-        let base = RamUsageEstimator::align_object_size(
-            RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
-                + 4 * RamUsageEstimator::NUM_BYTES_OBJECT_REF,
-        );
-        let mut size = base + RamUsageEstimator::shallow_size_of(&self.blocks);
+        let mut size = Self::BASE_RAM_BYTES_USED + RamUsageEstimator::shallow_size_of(&self.blocks);
         if !self.blocks.is_empty() {
             size += (self.blocks.len() as i64 - 1) * self.bytes_used_per_block;
             size += RamUsageEstimator::size_of(self.blocks[self.blocks.len() - 1].as_slice());
@@ -415,7 +497,11 @@ impl std::fmt::Display for PagedBytesReader {
 /// Port of the nested class `PagedBytes.PagedBytesDataInput`.
 #[derive(Debug, Clone)]
 pub struct PagedBytesDataInput<'a> {
-    blocks: &'a [Arc<Vec<u8>>],
+    /// The frozen blocks: borrowed from the arena by
+    /// [`PagedBytes::get_data_input`], or holding their own references
+    /// (cloned `Arc`s, never the bytes) when built by
+    /// [`PagedBytes::get_shared_data_input`].
+    blocks: std::borrow::Cow<'a, [Arc<Vec<u8>>]>,
     block_size: usize,
     block_bits: u32,
     block_mask: usize,
@@ -443,6 +529,14 @@ impl PagedBytesDataInput<'_> {
 }
 
 impl DataInput for PagedBytesDataInput<'_> {
+    /// `Object.toString()` of `org.apache.lucene.util.PagedBytes$PagedBytesDataInput`, which declares no `toString()`.
+    fn to_java_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.util.PagedBytes$PagedBytesDataInput",
+            self,
+        )
+    }
+
     fn read_byte(&mut self) -> Result<u8> {
         if self.current_block_upto == self.block_size {
             self.next_block();

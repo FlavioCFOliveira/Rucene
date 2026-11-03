@@ -54,9 +54,10 @@ use std::sync::{Arc, Mutex};
 use rucene::analysis::{Analyzer, StandardAnalyzer};
 use rucene::codecs::knn_vectors::KnnVectorsReader;
 use rucene::codecs::state::SegmentReadState;
+use rucene::codecs::state::SegmentWriteState;
 use rucene::codecs::{register_codec, Codec, Lucene104Codec};
 use rucene::document::{Document, KnnByteVectorField, KnnFloatVectorField};
-use rucene::index::documents_writer::{IndexingChain, IndexingChainFlushState};
+use rucene::index::documents_writer::{BufferedUpdates, IndexingChain};
 use rucene::index::field_infos::{FieldInfosBuilder, FieldNumbers};
 use rucene::index::index_writer_config::LiveIndexWriterConfig;
 use rucene::index::indexing_chain::DefaultIndexingChain;
@@ -570,17 +571,16 @@ fn write_with_rucene(
     let segment_info = make_info(documents.len() as i32);
     let info_stream = NoOutputInfoStream;
     let context = flush_io_context(FlushInfo::new(documents.len() as i32, 0));
-    let state = IndexingChainFlushState {
-        info_stream: &info_stream,
-        directory: &tracking,
-        segment_info: &segment_info,
-        field_infos: &finished,
-        context: context.as_ref(),
-        live_docs: None,
-        del_count_on_flush: 0,
-        delete_terms: &[],
-    };
-    chain.flush(&state).expect("flush");
+    let seg_updates = BufferedUpdates::default();
+    let mut state = SegmentWriteState::new(
+        &info_stream,
+        Arc::clone(&tracking) as Arc<dyn Directory>,
+        &segment_info,
+        &finished,
+        &seg_updates,
+        context.as_ref(),
+    );
+    chain.flush(&mut state).expect("flush");
     finished
 }
 
@@ -613,7 +613,8 @@ fn read_with_rucene(
             VectorEncoding::FLOAT32 => {
                 let values = reader
                     .get_float_vector_values(&info.name)
-                    .expect("float vector values");
+                    .expect("float vector values")
+                    .expect("the field has vectors");
                 let mut iter = values.iterator().expect("iterator");
                 while iter.next_doc().expect("next doc") != rucene::search::NO_MORE_DOCS {
                     let ord = iter.index();
@@ -635,7 +636,8 @@ fn read_with_rucene(
             VectorEncoding::BYTE => {
                 let values = reader
                     .get_byte_vector_values(&info.name)
-                    .expect("byte vector values");
+                    .expect("byte vector values")
+                    .expect("the field has vectors");
                 let mut iter = values.iterator().expect("iterator");
                 while iter.next_doc().expect("next doc") != rucene::search::NO_MORE_DOCS {
                     let ord = iter.index();

@@ -23,6 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import extract_lucene_kg as e
 from javatext import strip_java
+from kgio import kg_target, read as kg_read
 
 # The reference clone and the provenance stamp are settable from the command
 # line (see `main`). The defaults are the path `CLAUDE.md` 16.1 names and the
@@ -273,12 +274,8 @@ def generate_missing_edges_cypher(data):
 
     # Current KG edges
     def kg_edges(rel):
-        res = subprocess.run(
-            ['rmp', 'graph', 'query', '-r', 'rucene',
-             '--query', f'MATCH (a)-[r:{rel}]->(b) RETURN a.name, b.name'],
-            capture_output=True, text=True, check=True,
-        )
-        return {(a, b) for a, b in json.loads(res.stdout)['rows']}
+        rows = kg_read('rucene', f'MATCH (a)-[r:{rel}]->(b) RETURN a.name, b.name')
+        return {(a, b) for a, b in rows}
 
     kg_depends = kg_edges('DEPENDS_ON')
     for pkg, deps in data['pkg_deps'].items():
@@ -1131,7 +1128,7 @@ def run_rmp(mode, filepath):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--output-dir', default='/tmp/lucene_kg_enrich')
+    parser.add_argument('--output-dir', default=str(kg_target() / 'lucene_kg_enrich'))
     parser.add_argument('--run', action='store_true', help='Execute Cypher against rmp')
     parser.add_argument('--lucene-root', default=str(BASE_ROOT),
                         help='Apache Lucene 10.5.0 clone (default: %(default)s)')
@@ -1145,7 +1142,7 @@ def main():
         raise SystemExit(f'no Lucene core sources under {CORE_ROOT_JAVA}')
 
     out_dir = Path(args.output_dir)
-    out_dir.mkdir(exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     print('Discovering structure from src/java and src/java21...', file=sys.stderr)
     data = discover_both_roots()

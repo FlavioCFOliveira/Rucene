@@ -105,6 +105,12 @@ impl Default for AxiomaticParams {
 /// [`SimilarityBase::explain_details`] to [`axiomatic_explain_details`], and
 /// [`SimilarityBase::explain`] to [`axiomatic_explain`]; those three are what
 /// Java inherits from the abstract class.
+///
+/// Java re-declares `toString()` abstract here (`Axiomatic.java:172`), on top
+/// of the abstract declaration it inherits from `SimilarityBase`; the
+/// [`Display`](fmt::Display) bound this trait inherits through
+/// [`SimilarityBase`] is that declaration. Equivalent to the abstract
+/// `Axiomatic#toString`.
 pub trait Axiomatic: SimilarityBase<Stats = BasicStats> {
     /// Returns the hyper-parameter of the growth function.
     ///
@@ -503,6 +509,15 @@ macro_rules! axiomatic_boilerplate {
         impl fmt::Display for $ty {
             /// Renders the name of the axiomatic method, as the Java
             /// `toString()` override does.
+            ///
+            /// One expansion per variant, each the port of that variant's
+            /// override, which returns the literal this macro is given:
+            /// `AxiomaticF1EXP#toString` (`AxiomaticF1EXP.java:53`),
+            /// `AxiomaticF1LOG#toString` (`AxiomaticF1LOG.java:44`),
+            /// `AxiomaticF2EXP#toString` (`AxiomaticF2EXP.java:53`),
+            /// `AxiomaticF2LOG#toString` (`AxiomaticF2LOG.java:43`),
+            /// `AxiomaticF3EXP#toString` (`AxiomaticF3EXP.java:53`) and
+            /// `AxiomaticF3LOG#toString` (`AxiomaticF3LOG.java:42`).
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.write_str($name)
             }

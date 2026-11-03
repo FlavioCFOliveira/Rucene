@@ -189,7 +189,7 @@ impl BulkScorer for ConjunctionBulkScorer {
         // case separately here.
         if self.doc_id(lead1) == self.doc_id(lead2) {
             let doc = self.doc_id(lead1);
-            if accept_docs.map_or(true, |bits| bits.get(doc as usize)) {
+            if accept_docs.is_none_or(|bits| bits.get(doc as usize)) {
                 let next = {
                     let Self { scorers, order, .. } = &mut *self;
                     align_others(scorers, &order[2..], &mut competitive_iterator, doc)?

@@ -11,9 +11,10 @@ use crate::internal::vectorization::lucene99_memory_segment_byte_vector_scorer::
     check_invariants, check_ordinal,
 };
 use crate::internal::vectorization::MemorySegmentBulkVectorOps;
-use crate::store::{IndexInput, MemorySegment, MemorySegmentAccessInput};
+use crate::store::{FilterIndexInput, IndexInput, MemorySegment};
 use crate::util::hnsw::RandomVectorScorer;
 use crate::util::vector_util;
+use crate::util::Bits;
 
 /// `Math.max(float, float)` as specified by the JLS.
 ///
@@ -57,11 +58,14 @@ pub(crate) fn normalize_raw_score(similarity: VectorSimilarityFunction, raw_scor
 /// Fills `scores[0..4]` with the raw similarities of four document vectors
 /// against an on-heap query.
 ///
-/// Equivalent to the `vectorOp(MemorySegment, float[], long, long, long, long, int)`
-/// method each subclass overrides, which picks the matching
-/// [`MemorySegmentBulkVectorOps`] instance.
+/// Equivalent to the abstract
+/// `Lucene99MemorySegmentFloatVectorScorer.vectorOp(MemorySegment, float[], long, long, long, long, int)`
+/// (`Lucene99MemorySegmentFloatVectorScorer.java:124-131`) together with the
+/// override each of its four subclasses declares, which picks the matching
+/// [`MemorySegmentBulkVectorOps`] instance; `similarity` selects the
+/// subclass (see the type's divergences).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn bulk_vector_op(
+pub(crate) fn vector_op(
     similarity: VectorSimilarityFunction,
     seg: &MemorySegment,
     scores: &mut [f32],
@@ -124,13 +128,8 @@ pub(crate) fn bulk_vector_op(
 /// * **One type instead of a sealed hierarchy.** Java's four subclasses differ
 ///   only in which bulk operation and which score normalisation they use, so
 ///   the port matches on [`VectorSimilarityFunction`] instead, in the
-///   crate-private `bulk_vector_op` and `normalize_raw_score` helpers of this
+///   crate-private `vector_op` and `normalize_raw_score` helpers of this
 ///   module.
-/// * **The caller narrows the input.** Java's `create` takes an `IndexInput`,
-///   unwraps test filters and tests `instanceof MemorySegmentAccessInput`. Rust
-///   cannot test a trait object for another trait, so [`create`](Self::create)
-///   takes the narrowed [`MemorySegmentAccessInput`]. It still returns `None`
-///   for the other reason Lucene does: the file does not fit in one segment.
 /// * **The kernels are scalar**, as explained on
 ///   [`MemorySegmentBulkVectorOps`].
 pub struct Lucene99MemorySegmentFloatVectorScorer {
@@ -154,12 +153,17 @@ impl std::fmt::Debug for Lucene99MemorySegmentFloatVectorScorer {
 }
 
 impl Lucene99MemorySegmentFloatVectorScorer {
-    /// Creates the scorer, or returns `None` when the vector data does not fit
-    /// in a single mapped segment.
+    /// Creates the scorer, or returns `None` when the input is not a
+    /// memory-segment input or its vector data does not fit in a single
+    /// mapped segment.
     ///
     /// Equivalent to
-    /// `Lucene99MemorySegmentFloatVectorScorer.create(VectorSimilarityFunction, IndexInput, FloatVectorValues, float[])`,
-    /// minus the `instanceof` narrowing described on the type.
+    /// `Lucene99MemorySegmentFloatVectorScorer.create(VectorSimilarityFunction, IndexInput, FloatVectorValues, float[])`
+    /// (`Lucene99MemorySegmentFloatVectorScorer.java:44-60`): the input is
+    /// unwrapped with [`FilterIndexInput::unwrap_only_test`], then narrowed to
+    /// a [`MemorySegmentAccessInput`](crate::store::MemorySegmentAccessInput),
+    /// Java's `instanceof`, through
+    /// [`IndexInput::as_memory_segment_access_input`].
     ///
     /// # Errors
     ///
@@ -168,11 +172,15 @@ impl Lucene99MemorySegmentFloatVectorScorer {
     /// error raised while slicing the input.
     pub fn create(
         similarity: VectorSimilarityFunction,
-        input: &dyn MemorySegmentAccessInput,
+        input: &dyn IndexInput,
         values: Arc<dyn FloatVectorValues>,
         query: &[f32],
     ) -> Result<Option<Self>> {
-        let Some(seg) = input.segment_slice_or_null(0, input.length())? else {
+        let input = FilterIndexInput::unwrap_only_test(input);
+        let Some(ms_input) = input.as_memory_segment_access_input() else {
+            return Ok(None);
+        };
+        let Some(seg) = ms_input.segment_slice_or_null(0, ms_input.length())? else {
             return Ok(None);
         };
         Self::check_invariants(values.size(), values.vector_byte_length() as usize, input)?;
@@ -247,7 +255,7 @@ impl RandomVectorScorer for Lucene99MemorySegmentFloatVectorScorer {
             let offset2 = i64::from(nodes[i + 1]) * self.vector_byte_size;
             let offset3 = i64::from(nodes[i + 2]) * self.vector_byte_size;
             let offset4 = i64::from(nodes[i + 3]) * self.vector_byte_size;
-            bulk_vector_op(
+            vector_op(
                 self.similarity,
                 &self.seg,
                 &mut self.scratch_scores,
@@ -278,7 +286,7 @@ impl RandomVectorScorer for Lucene99MemorySegmentFloatVectorScorer {
             } else {
                 addr1
             };
-            bulk_vector_op(
+            vector_op(
                 self.similarity,
                 &self.seg,
                 &mut self.scratch_scores,
@@ -303,5 +311,12 @@ impl RandomVectorScorer for Lucene99MemorySegmentFloatVectorScorer {
 
     fn ord_to_doc(&self, ord: i32) -> i32 {
         self.values.ord_to_doc(ord)
+    }
+
+    /// Equivalent to the `getAcceptOrds` this scorer inherits from Java's
+    /// `AbstractRandomVectorScorer` / `AbstractUpdateableRandomVectorScorer`,
+    /// `values.getAcceptOrds(acceptDocs)`.
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        self.values.get_accept_ords(accept_docs)
     }
 }

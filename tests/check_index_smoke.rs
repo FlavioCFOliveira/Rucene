@@ -4,7 +4,7 @@ use rucene::document::{Document, Store, StringField, TextField};
 use rucene::index::check_index::{CheckIndex, Level};
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::IndexWriterConfig;
-use rucene::store::{Directory, RamDirectory};
+use rucene::store::{ByteBuffersDirectory, Directory};
 
 /// The integration crate does not share the library's test-time codec registry,
 /// so every entry point registers the default codec before writing an index.
@@ -49,7 +49,7 @@ fn build(dir: Arc<dyn Directory>, segments: usize) {
 #[test]
 fn sequential_and_concurrent_checks_agree() {
     for threads in [1i32, 4] {
-        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         build(Arc::clone(&dir), 3);
 
         let mut checker = CheckIndex::with_write_lock(Arc::clone(&dir), None);
@@ -73,7 +73,7 @@ fn sequential_and_concurrent_checks_agree() {
 
 #[test]
 fn only_segments_marks_the_status_partial() {
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     build(Arc::clone(&dir), 2);
 
     let mut checker = CheckIndex::with_write_lock(Arc::clone(&dir), None);
@@ -134,7 +134,7 @@ fn upgrader_parse_args_rejects_a_missing_directory() {
 #[test]
 fn a_segment_whose_fields_have_a_single_term_can_be_read_back() {
     ensure_codec();
-    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
     let mut doc = Document::new();
     doc.add(Box::new(
@@ -152,13 +152,13 @@ fn a_segment_whose_fields_have_a_single_term_can_be_read_back() {
     assert_eq!(reader.max_doc(), 1);
 
     // Both fields decode, and their single term is both the min and the max.
-    let leaves = Arc::clone(&reader).leaves();
+    let leaves = Arc::clone(&reader).leaves().unwrap();
     let leaf = leaves[0].leaf_reader();
     for (field, term) in [("id", "only"), ("body", "solo")] {
         let terms = rucene::index::leaf_reader::LeafReader::terms(leaf.as_ref(), field)
             .expect("terms")
             .unwrap_or_else(|| panic!("field {field} must have a terms dictionary"));
-        assert_eq!(terms.size(), 1);
+        assert_eq!(terms.size().unwrap(), 1);
         assert_eq!(terms.min().unwrap().unwrap().slice(), term.as_bytes());
         assert_eq!(terms.max().unwrap().unwrap().slice(), term.as_bytes());
     }
@@ -204,4 +204,40 @@ fn upgrader_do_main_parses_then_upgrades() {
     assert_eq!(reader.max_doc(), 5);
     drop(dir);
     let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// `IndexUpgrader.upgrade()` forces its final commit with
+/// `w.setLiveCommitData(w.getLiveCommitData())` and asserts
+/// `w.hasUncommittedChanges()` (`IndexUpgrader.java:201-203`): the writer's
+/// own live commit data — the user data of the commit it opened — is written
+/// again, so the upgraded commit keeps it.
+#[test]
+fn the_upgrader_rewrites_the_writers_live_commit_data() {
+    ensure_codec();
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+    let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+    let mut doc = Document::new();
+    doc.add(Box::new(
+        StringField::new("id", "a".to_string(), Store::YES).unwrap(),
+    ));
+    writer.add_document(&doc).unwrap();
+    writer
+        .set_live_commit_data([("origin".to_string(), "test".to_string())])
+        .unwrap();
+    writer.commit().unwrap();
+    writer.close().unwrap();
+    let before = rucene::index::SegmentInfos::read_latest_commit(Arc::clone(&dir))
+        .unwrap()
+        .generation();
+
+    rucene::index::check_index::IndexUpgrader::new(Arc::clone(&dir))
+        .upgrade()
+        .unwrap();
+
+    let after = rucene::index::SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
+    assert!(after.generation() > before, "the upgrade committed");
+    assert_eq!(
+        after.user_data().get("origin").map(String::as_str),
+        Some("test")
+    );
 }

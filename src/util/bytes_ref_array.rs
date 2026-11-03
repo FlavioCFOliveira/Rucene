@@ -15,13 +15,13 @@ use std::sync::atomic::AtomicI64;
 use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
-use crate::util::byte_block_pool::{ByteBlockPool, BYTE_BLOCK_MASK, BYTE_BLOCK_SHIFT};
+use crate::util::byte_block_pool::{ByteBlockPool, DirectTrackingAllocator};
 use crate::util::concurrent::Counter;
 use crate::util::sorter::{
     StableStringSorter, StableStringSorterOps, StringSorter, StringSorterComparator,
     StringSorterOps,
 };
-use crate::util::{Accountable, ArrayUtil, BytesRef, RamUsageEstimator, BYTE_BLOCK_SIZE};
+use crate::util::{Accountable, ArrayUtil, BytesRef, BytesRefBuilder, RamUsageEstimator};
 
 // ---------------------------------------------------------------------------
 // BytesRefIterator
@@ -103,113 +103,6 @@ pub trait SortableBytesRefArray {
 }
 
 // ---------------------------------------------------------------------------
-// The byte arena behind BytesRefArray
-// ---------------------------------------------------------------------------
-
-/// The raw append/read half of Lucene's `ByteBlockPool`, as
-/// [`BytesRefArray`] uses it.
-///
-/// **Divergence from Lucene 10.5.0.** [`crate::util::byte_block_pool`] ports
-/// `ByteBlockPool` around the term-hash use case: it exposes
-/// `add_bytes_ref`/`term_bytes`, which write and read a length-prefixed term
-/// inside a single block, but not the raw `append(BytesRef)` /
-/// `readBytes(long, byte[], int, int)` pair that spans block boundaries and
-/// that `BytesRefArray` needs. Widening that module is outside this port's
-/// remit, so the arena is reproduced here with the same block size, the same
-/// boundary handling and the same RAM accounting; the bytes stored and the
-/// ordinals returned are identical.
-#[derive(Debug)]
-struct ByteArena {
-    buffers: Vec<Vec<u8>>,
-    /// Index of the head block, or `-1` before the first allocation.
-    buffer_upto: i32,
-    /// Next free position inside the head block.
-    byte_upto: usize,
-    bytes_used: Arc<Counter>,
-}
-
-impl ByteArena {
-    fn new(bytes_used: Arc<Counter>) -> Self {
-        Self {
-            buffers: Vec::new(),
-            buffer_upto: -1,
-            byte_upto: BYTE_BLOCK_SIZE,
-            bytes_used,
-        }
-    }
-
-    /// `ByteBlockPool.nextBuffer()`.
-    fn next_buffer(&mut self) {
-        let index = (self.buffer_upto + 1) as usize;
-        if index == self.buffers.len() {
-            self.buffers.push(vec![0u8; BYTE_BLOCK_SIZE]);
-            self.bytes_used.add_and_get(BYTE_BLOCK_SIZE as i64);
-        }
-        self.buffer_upto += 1;
-        self.byte_upto = 0;
-    }
-
-    /// `ByteBlockPool.reset(false, true)`: keep the first block, drop the rest.
-    fn reset_reuse_first(&mut self) {
-        if self.buffer_upto == -1 {
-            return;
-        }
-        if self.buffers.len() > 1 {
-            let dropped = self.buffers.len() - 1;
-            self.buffers.truncate(1);
-            self.bytes_used
-                .add_and_get(-((dropped * BYTE_BLOCK_SIZE) as i64));
-        }
-        self.buffer_upto = 0;
-        self.byte_upto = 0;
-    }
-
-    /// `ByteBlockPool.append(BytesRef)`.
-    fn append(&mut self, bytes: &[u8]) {
-        let mut bytes_left = bytes.len();
-        let mut offset = 0usize;
-        while bytes_left > 0 {
-            let buffer_left = BYTE_BLOCK_SIZE - self.byte_upto;
-            if bytes_left < buffer_left {
-                let upto = self.byte_upto;
-                let head = self.buffer_upto as usize;
-                self.buffers[head][upto..upto + bytes_left]
-                    .copy_from_slice(&bytes[offset..offset + bytes_left]);
-                self.byte_upto += bytes_left;
-                break;
-            }
-            if buffer_left > 0 {
-                let upto = self.byte_upto;
-                let head = self.buffer_upto as usize;
-                self.buffers[head][upto..upto + buffer_left]
-                    .copy_from_slice(&bytes[offset..offset + buffer_left]);
-            }
-            self.next_buffer();
-            bytes_left -= buffer_left;
-            offset += buffer_left;
-        }
-    }
-
-    /// `ByteBlockPool.readBytes(long, byte[], int, int)`.
-    fn read_bytes(&self, offset: usize, out: &mut [u8]) {
-        if out.is_empty() {
-            return;
-        }
-        let mut buffer_index = offset >> BYTE_BLOCK_SHIFT;
-        let mut pos = offset & BYTE_BLOCK_MASK;
-        let mut written = 0usize;
-        while written < out.len() {
-            let chunk = (BYTE_BLOCK_SIZE - pos).min(out.len() - written);
-            out[written..written + chunk]
-                .copy_from_slice(&self.buffers[buffer_index][pos..pos + chunk]);
-            written += chunk;
-            buffer_index += 1;
-            pos = 0;
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // BytesRefArray
 // ---------------------------------------------------------------------------
 
@@ -219,7 +112,9 @@ impl ByteArena {
 /// Port of `org.apache.lucene.util.BytesRefArray`.
 #[derive(Debug)]
 pub struct BytesRefArray {
-    pool: ByteArena,
+    /// Equivalent to `BytesRefArray.pool`, a `ByteBlockPool` over a
+    /// `DirectTrackingAllocator` charging `bytes_used`.
+    pool: ByteBlockPool,
     offsets: Vec<i32>,
     last_element: usize,
     current_offset: usize,
@@ -228,9 +123,17 @@ pub struct BytesRefArray {
 
 impl BytesRefArray {
     /// Creates an array charging its allocations to `bytes_used`.
+    ///
+    /// Equivalent to `BytesRefArray(Counter)` (`BytesRefArray.java:40-45`):
+    /// a `ByteBlockPool` over a `DirectTrackingAllocator(bytesUsed)`, advanced
+    /// to its first block, plus `NUM_BYTES_ARRAY_HEADER * Integer.BYTES`
+    /// charged for the offsets.
     pub fn new(bytes_used: Arc<Counter>) -> Self {
-        let mut pool = ByteArena::new(Arc::clone(&bytes_used));
-        pool.next_buffer();
+        let mut pool = ByteBlockPool::with_allocator(Box::new(DirectTrackingAllocator::new(
+            Arc::clone(&bytes_used),
+        )));
+        pool.next_buffer()
+            .expect("INVARIANT: the first block of an empty pool starts at offset 0");
         bytes_used.add_and_get(RamUsageEstimator::NUM_BYTES_ARRAY_HEADER * 4);
         Self {
             pool,
@@ -243,8 +146,10 @@ impl BytesRefArray {
 
     /// Returns the value at `index`.
     ///
-    /// Equivalent to `BytesRefArray.get(BytesRefBuilder, int)`; Rucene's owning
-    /// [`BytesRef`] makes the scratch builder unnecessary.
+    /// Equivalent to `BytesRefArray.get(BytesRefBuilder, int)`
+    /// (`BytesRefArray.java:87-95`), which copies the value out of the pool
+    /// with `readBytes`; Rucene's owning [`BytesRef`] makes the scratch builder
+    /// unnecessary.
     ///
     /// # Errors
     ///
@@ -257,23 +162,38 @@ impl BytesRefArray {
                 self.last_element
             )));
         }
-        Ok(self.value_at(index))
+        let (offset, length) = self.offset_and_length(index);
+        let mut bytes = vec![0u8; length];
+        self.pool.read_bytes(offset as i64, &mut bytes, 0, length);
+        Ok(BytesRef::new(bytes))
     }
 
-    /// The body of Java's private `setBytesRef`, with the bounds check already
-    /// performed by the caller.
-    ///
-    /// Equivalent to `org.apache.lucene.util.BytesRefArray#setBytesRef`.
-    fn value_at(&self, index: usize) -> BytesRef {
+    /// The offset and length of the value at `index`.
+    fn offset_and_length(&self, index: usize) -> (usize, usize) {
         let offset = self.offsets[index] as usize;
         let length = if index == self.last_element - 1 {
             self.current_offset - offset
         } else {
             self.offsets[index + 1] as usize - offset
         };
-        let mut bytes = vec![0u8; length];
-        self.pool.read_bytes(offset, &mut bytes);
-        BytesRef::new(bytes)
+        (offset, length)
+    }
+
+    /// Returns the value at `index`, which the caller has bounds-checked.
+    ///
+    /// Equivalent to the private `BytesRefArray.setBytesRef(BytesRefBuilder,
+    /// BytesRef, int)` (`BytesRefArray.java:101-111`), which the sort and the
+    /// iterator use: `pool.setBytesRef` references the block directly when the
+    /// value lies in one block, and copies it through the builder otherwise.
+    /// The owning [`BytesRef`] then takes a copy of the slice it returns.
+    fn set_bytes_ref(&self, index: usize) -> BytesRef {
+        let (offset, length) = self.offset_and_length(index);
+        let mut builder = BytesRefBuilder::new();
+        BytesRef::new(
+            self.pool
+                .set_bytes_ref(&mut builder, offset as i64, length)
+                .to_vec(),
+        )
     }
 
     /// Sorts the values and returns the resulting order.
@@ -321,7 +241,7 @@ impl BytesRefArray {
     ) -> BytesRefArrayIterator<'_> {
         let size = self.size();
         let indices = sort_state.map(|s| s.indices);
-        debug_assert!(indices.as_ref().map_or(true, |i| i.len() == size));
+        debug_assert!(indices.as_ref().is_none_or(|i| i.len() == size));
         BytesRefArrayIterator {
             array: self,
             indices,
@@ -341,7 +261,7 @@ impl SortableBytesRefArray for BytesRefArray {
             self.bytes_used
                 .add_and_get((self.offsets.len() - old_len) as i64 * 4);
         }
-        self.pool.append(bytes.slice());
+        self.pool.append(bytes.slice())?;
         self.offsets[self.last_element] = self.current_offset as i32;
         self.last_element += 1;
         self.current_offset += bytes.length;
@@ -352,8 +272,9 @@ impl SortableBytesRefArray for BytesRefArray {
         self.last_element = 0;
         self.current_offset = 0;
         self.offsets.iter_mut().for_each(|o| *o = 0);
-        // No need to zero-fill the buffers: the allocator is ours.
-        self.pool.reset_reuse_first();
+        // `pool.reset(false, true)`: no need to zero-fill the buffers, the
+        // allocator is ours.
+        self.pool.reset(false, true);
     }
 
     fn size(&self) -> usize {
@@ -407,7 +328,7 @@ impl BytesRefIterator for BytesRefArrayIterator<'_> {
                 Some(indices) => indices[self.pos],
             };
             self.pos += 1;
-            Ok(Some(self.array.value_at(self.ord)))
+            Ok(Some(self.array.set_bytes_ref(self.ord)))
         } else {
             Ok(None)
         }
@@ -428,7 +349,7 @@ struct SortAdapter<'a> {
 
 impl StringSorterOps for SortAdapter<'_> {
     fn get(&self, i: usize) -> BytesRef {
-        self.array.value_at(self.ordered_entries[i])
+        self.array.set_bytes_ref(self.ordered_entries[i])
     }
 
     fn swap(&mut self, i: usize, j: usize) {
@@ -445,7 +366,7 @@ struct StableSortAdapter<'a> {
 
 impl StringSorterOps for StableSortAdapter<'_> {
     fn get(&self, i: usize) -> BytesRef {
-        self.array.value_at(self.ordered_entries[i])
+        self.array.set_bytes_ref(self.ordered_entries[i])
     }
 
     fn swap(&mut self, i: usize, j: usize) {
@@ -687,7 +608,7 @@ impl BytesRefBlockPool {
     ///
     /// Equivalent to the package-private `BytesRefBlockPool.reset()`.
     pub fn reset(&mut self) {
-        self.byte_block_pool.reset();
+        self.byte_block_pool.reset(false, false);
     }
 
     /// Returns the value written at `start`.
@@ -723,10 +644,61 @@ impl BytesRefBlockPool {
     }
 }
 
+impl BytesRefBlockPool {
+    /// Shallow size of the Java class: an object header and the
+    /// `byteBlockPool` reference.
+    ///
+    /// Equivalent to the private `BytesRefBlockPool.BASE_RAM_BYTES`,
+    /// `RamUsageEstimator.shallowSizeOfInstance(BytesRefBlockPool.class)`,
+    /// which is 16 on a JVM with compressed references.
+    pub const BASE_RAM_BYTES: i64 = RamUsageEstimator::align_object_size(
+        RamUsageEstimator::NUM_BYTES_OBJECT_HEADER + RamUsageEstimator::NUM_BYTES_OBJECT_REF,
+    );
+}
+
 impl Accountable for BytesRefBlockPool {
     fn ram_bytes_used(&self) -> i64 {
-        RamUsageEstimator::align_object_size(
-            RamUsageEstimator::NUM_BYTES_OBJECT_HEADER + RamUsageEstimator::NUM_BYTES_OBJECT_REF,
-        ) + self.byte_block_pool.ram_bytes_used()
+        Self::BASE_RAM_BYTES + self.byte_block_pool.ram_bytes_used()
+    }
+}
+
+#[cfg(test)]
+mod byte_block_pool_tests {
+    use super::*;
+
+    /// rmp #299: `BytesRefArray` stores into a `ByteBlockPool` over a
+    /// `DirectTrackingAllocator(bytesUsed)` and clears it with
+    /// `pool.reset(false, true)` (`BytesRefArray.java:40-56`). Measured against
+    /// `lucene-core-10.5.0.jar` (`oracle/passD/Oracle.java`, `BRA`): the
+    /// counter reads 32832 new and after one short value, 65620 after a 40000
+    /// byte value, 65684 after 22 values, 32916 once cleared, and 98452 after
+    /// two 40000-byte values, the second of which reads back whole.
+    #[test]
+    fn the_counter_follows_javas_pool_and_allocator() {
+        let counter = Arc::new(Counter::new_counter());
+        let mut array = BytesRefArray::new(Arc::clone(&counter));
+        assert_eq!(counter.get(), 32832);
+        array.append(&BytesRef::new(b"a".to_vec())).unwrap();
+        assert_eq!(counter.get(), 32832);
+        let big = BytesRef::new(vec![7u8; 40000]);
+        array.append(&big).unwrap();
+        assert_eq!(counter.get(), 65620);
+        for i in 0..20 {
+            array
+                .append(&BytesRef::new(format!("x{i}").into_bytes()))
+                .unwrap();
+        }
+        assert_eq!((counter.get(), array.size()), (65684, 22));
+        array.clear();
+        assert_eq!(counter.get(), 32916);
+        array.append(&big).unwrap();
+        array.append(&big).unwrap();
+        assert_eq!(counter.get(), 98452);
+        assert_eq!(array.get(1).unwrap(), big);
+        // The sort reads values through `setBytesRef`, across block boundaries.
+        let compare = |a: &BytesRef, b: &BytesRef| a.cmp(b) as i32;
+        let state = array.sort(StringSorterComparator::Generic(&compare), false);
+        let mut it = array.iterator_with_sort_state(Some(state));
+        assert_eq!(it.next().unwrap().unwrap(), big);
     }
 }

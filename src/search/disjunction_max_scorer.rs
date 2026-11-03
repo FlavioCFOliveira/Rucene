@@ -5,7 +5,7 @@
 
 use crate::error::{LuceneError, Result};
 use crate::search::disjunction_score_block_boundary_propagator::DisjunctionScoreBlockBoundaryPropagator;
-use crate::search::disjunction_scorer::DisjunctionScorer;
+use crate::search::disjunction_scorer::{DisjunctionScorer, DisjunctionScorerImpl};
 use crate::search::doc_id_set_iterator::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::search::scorable::{ChildScorable, Scorable};
 use crate::search::score_mode::ScoreMode;
@@ -91,16 +91,20 @@ impl DocIdSetIterator for DisjunctionMaxScorer {
     }
 }
 
-impl Scorable for DisjunctionMaxScorer {
-    /// Equivalent to `DisjunctionScorer.score()`, which is
-    /// `score(getSubMatches())`, fused with the `score(DisiWrapper)` override.
+impl DisjunctionScorerImpl for DisjunctionMaxScorer {
+    fn disjunction_scorer(&mut self) -> &mut DisjunctionScorer {
+        &mut self.base
+    }
+
+    /// Takes the maximum sub-score plus the tie-breaker share of the others.
     ///
-    /// The accumulator is a `double` and the whole expression is narrowed once,
-    /// as Java writes it: narrowing per addition would give a different score.
-    fn score(&mut self) -> Result<f32> {
+    /// Equivalent to `DisjunctionMaxScorer.score(DisiWrapper)`. The
+    /// accumulator is a `double` and the whole expression is narrowed once, as
+    /// Java writes it: narrowing per addition would give a different score.
+    fn score_top_list(&mut self, top_list: &[usize]) -> Result<f32> {
         let mut score_max = 0.0f32;
         let mut other_score_sum = 0.0f64;
-        for position in self.base.sub_matches()? {
+        for &position in top_list {
             let sub_score = self.base.wrapper(position).scorable().score()?;
             if sub_score >= score_max {
                 other_score_sum += f64::from(score_max);
@@ -113,6 +117,14 @@ impl Scorable for DisjunctionMaxScorer {
             (f64::from(score_max) + other_score_sum * f64::from(self.tie_breaker_multiplier))
                 as f32,
         )
+    }
+}
+
+impl Scorable for DisjunctionMaxScorer {
+    /// Equivalent to the inherited `DisjunctionScorer.score()`, which is
+    /// `score(getSubMatches())`.
+    fn score(&mut self) -> Result<f32> {
+        DisjunctionScorer::score(self)
     }
 
     fn set_min_competitive_score(&mut self, min_score: f32) -> Result<()> {

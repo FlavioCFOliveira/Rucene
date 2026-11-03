@@ -236,6 +236,30 @@ fn rucene_order(case: &Case) -> (Vec<String>, bool) {
             }
             (keys_of(&map), map.is_treeified())
         }
+        "map_compute_if_absent" => {
+            // `ReadersAndUpdates.addDVUpdate`: `computeIfAbsent` per field.
+            let mut map: JavaHashMap<String> = JavaHashMap::new();
+            for key in &case.keys {
+                map.compute_if_absent(key, || "v".to_string());
+            }
+            (keys_of(&map), map.is_treeified())
+        }
+        "map_compute_remove" => {
+            // The prune of `ReadersAndUpdates.writeFieldUpdates`, then new
+            // updates for the pruned fields.
+            let mut map: JavaHashMap<String> = JavaHashMap::new();
+            for key in &case.keys {
+                map.compute_if_absent(key, || "v".to_string());
+            }
+            let count = (case.arg.max(0) as usize).min(case.keys.len());
+            for key in &case.keys[..count] {
+                map.remove(key);
+            }
+            for key in &case.keys[..count] {
+                map.compute_if_absent(key, || "v".to_string());
+            }
+            (keys_of(&map), map.is_treeified())
+        }
         "set_add" => {
             let set: JavaHashSet = case.keys.iter().cloned().collect();
             (set.iter().cloned().collect(), set.is_treeified())
@@ -352,13 +376,15 @@ fn random_key(rng: &mut Xorshift) -> String {
 /// length is the modulus the bucket index is taken against and is therefore
 /// what the order turns on.
 fn build_cases(seed: u64, per_shape: usize) -> Vec<Case> {
-    const SHAPES: [&str; 8] = [
+    const SHAPES: [&str; 10] = [
         "map_put",
         "map_copy",
         "map_copy_put",
         "map_capacity",
         "map_put_all",
         "map_remove_reinsert",
+        "map_compute_if_absent",
+        "map_compute_remove",
         "set_add",
         "set_copy",
     ];
@@ -372,7 +398,9 @@ fn build_cases(seed: u64, per_shape: usize) -> Vec<Case> {
                 let keys: Vec<String> = (0..size).map(|_| random_key(&mut rng)).collect();
                 let arg = match shape {
                     "map_capacity" => [0, 1, 2, 3, 7, 16, 17, 64][rng.below(8)],
-                    "map_put_all" | "map_remove_reinsert" => rng.below(size + 1) as i32,
+                    "map_put_all" | "map_remove_reinsert" | "map_compute_remove" => {
+                        rng.below(size + 1) as i32
+                    }
                     _ => 0,
                 };
                 cases.push(Case { shape, arg, keys });

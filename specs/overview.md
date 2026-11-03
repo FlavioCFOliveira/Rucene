@@ -24,7 +24,7 @@ The project pursues two dimensions of parity, whenever technically feasible:
 
 | Topic | Decision |
 |-------|----------|
-| Rust edition / MSRV | 2021 / 1.80+ |
+| Rust edition / MSRV | 2021 / 1.89+ |
 | Crate structure | Single crate with Cargo features per module |
 | API style | Mirror Java Lucene class/method names and organization as closely as idiomatic Rust permits |
 | Async model | Public API is fully async with `tokio`; backpressure and cancellation required from the start |
@@ -32,11 +32,11 @@ The project pursues two dimensions of parity, whenever technically feasible:
 | Core abstractions | Generic traits with associated types where possible; `dyn` trait objects only where runtime polymorphism is required |
 | Error handling | `Result`-based `LuceneError` hierarchy; selective mapping of important Java exceptions |
 | `unsafe` | Prohibited by default; only allowed with explicit justification and review |
-| Dependencies | Minimal; prefer `std` + hand-picked essential crates (`tokio`, `log`, `thiserror`, optional `memmap2`) |
+| Dependencies | Minimal; prefer `std` + hand-picked essential crates: `tokio`, `log`, `thiserror`, `crc32fast`, `flate2` (`zlib-rs` backend; C zlib with feature `zlib-c`), `unicode-segmentation`, `chrono`, `fancy-regex`, optional `memmap2` (feature `mmap`), and `rustix` on the Unix targets that have `fcntl` record locks |
 | Compatibility | Read and write full index trees byte-compatible with Lucene 10.5.0; compare complete directory trees |
 | Codecs | Default Lucene 10.5.0 codec (`Lucene104`) only; no legacy codec support in the initial phase |
 | Similarity / scoring | `BM25Similarity` and `ClassicSimilarity` |
-| Directory implementations | All standard ones: `RAMDirectory`, `MMapDirectory`, `FSDirectory`, `NIOFSDirectory`, `SimpleFSDirectory` |
+| Directory implementations | The Lucene 10.5.0 ones: `FSDirectory` (with `MMapDirectory` and `NIOFSDirectory`), `ByteBuffersDirectory`, and the wrappers `FilterDirectory`, `NRTCachingDirectory`, `FileSwitchDirectory`, `TrackingDirectoryWrapper`, `LockValidatingDirectoryWrapper`, `SleepingLockWrapper` (`RAMDirectory` and `SimpleFSDirectory` were removed in Lucene 9) |
 | Merge policies | All standard policies (`TieredMergePolicy`, `LogByteSizeMergePolicy`, `LogDocMergePolicy`) |
 | Query parser | Classic `QueryParser` only |
 | NRT search | Supported from the start (`IndexWriter.getReader()`) |

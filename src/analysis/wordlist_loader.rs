@@ -82,6 +82,9 @@ pub fn get_word_set_with_comment(
 
 /// Reads every non-blank, non-comment line from `lines` into a new
 /// [`CharArraySet`].
+///
+/// Equivalent to the overload `WordlistLoader.getWordSet(Reader, String)`,
+/// which returns the set unmodifiable.
 pub fn get_word_set_ignoring_comments(
     lines: impl IntoIterator<Item = impl AsRef<str>>,
     comment: &str,

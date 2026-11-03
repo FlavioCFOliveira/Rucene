@@ -87,25 +87,24 @@
 //!   [`StoredFieldsConsumer::init_stored_fields_writer`] reports
 //!   [`LuceneError::AlreadyClosed`]. The `DocumentsWriterPerThread` contract
 //!   never reaches this state, so no behaviour Lucene relies on changes.
-//! * **`Accountable` is not ported.** Lucene wraps the writer in an
-//!   `Accountable` so that a null writer reports zero bytes;
-//!   [`StoredFieldsConsumer::ram_bytes_used`] returns zero for the same reason,
-//!   without the wrapper.
+//! * **The `accountable` field is the writer itself.** Lucene keeps the
+//!   writer in an `Accountable` field that starts as
+//!   `Accountable.NULL_ACCOUNTABLE` (`StoredFieldsConsumer.java:34-36`, `:51`)
+//!   so that a consumer without a writer reports zero bytes;
+//!   [`StoredFieldsConsumer::ram_bytes_used`] asks the `Option` writer instead,
+//!   with the same answers.
 //!
 //! # Index sorting
 //!
 //! Lucene subclasses this consumer with `SortingStoredFieldsConsumer`, which
 //! writes to a temporary, uncompressed stored-fields file during indexing and,
 //! at flush time, replays the documents through the real codec writer in the
-//! order given by a `Sorter.DocMap`. That subclass depends on index-sorting
-//! infrastructure (`Sorter.DocMap`, `IndexSorter`,
-//! `TrackingTmpOutputDirectoryWrapper`) which is not part of this port yet, so
-//! it belongs to the index-sorting task. The extension points it needs are in
-//! place and are not expected to change: writer creation is isolated in
-//! [`StoredFieldsConsumer::init_stored_fields_writer`], and
-//! [`StoredFieldsConsumer::flush`] already takes the segment being flushed, so
-//! a sorting variant adds the temporary directory and the doc map without
-//! altering this type's contract.
+//! order given by a `Sorter.DocMap`. That subclass is ported as
+//! [`SortingStoredFieldsConsumer`](crate::index::sorting_consumers::SortingStoredFieldsConsumer),
+//! which wraps this type: Java's override of `initStoredFieldsWriter`
+//! (`SortingStoredFieldsConsumer.java:95-100`) becomes the format and the
+//! directory it hands this consumer, which
+//! [`StoredFieldsConsumer::init_stored_fields_writer`] writes through.
 
 #![deny(unsafe_code)]
 
@@ -124,6 +123,10 @@ use crate::store::{ByteArrayDataInput, Directory, DEFAULT_IO_CONTEXT};
 /// documentation for the specification this type implements.
 pub struct StoredFieldsConsumer {
     codec: Arc<dyn Codec>,
+    /// The format `init_stored_fields_writer` writes through, when it is not
+    /// the codec's: Java's `SortingStoredFieldsConsumer` overrides
+    /// `initStoredFieldsWriter` to use its temporary format.
+    format: Option<Arc<dyn crate::codecs::stored_fields::StoredFieldsFormat>>,
     directory: Arc<dyn Directory>,
     info: SegmentInfo,
     writer: Option<Box<dyn StoredFieldsWriter>>,
@@ -153,12 +156,31 @@ impl StoredFieldsConsumer {
     pub fn new(codec: Arc<dyn Codec>, directory: Arc<dyn Directory>, info: SegmentInfo) -> Self {
         Self {
             codec,
+            format: None,
             directory,
             info,
             writer: None,
             last_doc: -1,
             aborted: false,
         }
+    }
+
+    /// Creates a consumer that writes through `format` rather than the codec's
+    /// stored-fields format.
+    ///
+    /// This is how [`SortingStoredFieldsConsumer`](crate::index::sorting_consumers::SortingStoredFieldsConsumer)
+    /// reproduces its `initStoredFieldsWriter` override
+    /// (`SortingStoredFieldsConsumer.java:95-100`), which opens the writer of
+    /// its temporary format instead.
+    pub fn with_format(
+        codec: Arc<dyn Codec>,
+        format: Arc<dyn crate::codecs::stored_fields::StoredFieldsFormat>,
+        directory: Arc<dyn Directory>,
+        info: SegmentInfo,
+    ) -> Self {
+        let mut consumer = Self::new(codec, directory, info);
+        consumer.format = Some(format);
+        consumer
     }
 
     /// Returns `true` once the codec writer has been created.
@@ -210,17 +232,23 @@ impl StoredFieldsConsumer {
             // `.fdt`/`.fdx`/`.fdm` files for a segment that was already
             // discarded. Recording the abort and refusing immediately is the
             // only one of the three that is neither silent nor destructive.
-            return Err(LuceneError::AlreadyClosed(format!(
+            return Err(LuceneError::already_closed(format!(
                 "the stored fields of segment {} were aborted",
                 self.info.name
             )));
         }
         if self.writer.is_none() {
-            self.writer = Some(self.codec.stored_fields_format().fields_writer(
-                self.directory.as_ref(),
-                &self.info,
-                &*DEFAULT_IO_CONTEXT,
-            )?);
+            let writer = match &self.format {
+                Some(format) => {
+                    format.fields_writer(&self.directory, &self.info, &*DEFAULT_IO_CONTEXT)
+                }
+                None => self.codec.stored_fields_format().fields_writer(
+                    &self.directory,
+                    &self.info,
+                    &*DEFAULT_IO_CONTEXT,
+                ),
+            }?;
+            self.writer = Some(writer);
         }
         Ok(())
     }
@@ -238,7 +266,7 @@ impl StoredFieldsConsumer {
     /// Lucene asserts `lastDoc < docID` — and propagates any I/O error.
     pub fn start_document(&mut self, doc_id: i32) -> Result<()> {
         if self.last_doc >= doc_id {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "stored fields must be written in increasing doc order: lastDoc={} docID={doc_id}",
                 self.last_doc
             )));
@@ -252,7 +280,7 @@ impl StoredFieldsConsumer {
             writer, last_doc, ..
         } = self;
         let writer = writer.as_mut().ok_or_else(|| {
-            LuceneError::IllegalState(
+            LuceneError::illegal_state(
                 "the stored-fields writer was not created by initStoredFieldsWriter".to_string(),
             )
         })?;
@@ -336,7 +364,9 @@ impl StoredFieldsConsumer {
     /// stored-fields format recorded (see the module documentation).
     ///
     /// The writer is closed even when finishing it failed, mirroring Java's
-    /// `try`/`finally`; the error from `finish` wins over the one from `close`.
+    /// `try { writer.finish(...); } finally { IOUtils.close(writer); }`
+    /// (`StoredFieldsConsumer.java:104-110`): a failure to close replaces the
+    /// one from `finish`, as an exception thrown from `finally` does.
     ///
     /// # Errors
     ///
@@ -347,31 +377,37 @@ impl StoredFieldsConsumer {
     pub fn flush(&mut self, segment_info: &SegmentInfo) -> Result<()> {
         let max_doc = segment_info.max_doc()?;
         let Some(mut writer) = self.writer.take() else {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "no stored-fields writer was created for segment {}: \
                  finish(maxDoc) must run before flush",
                 self.info.name
             )));
         };
         let finished = writer.finish(max_doc);
-        let closed = writer.close();
-        let copied = self.copy_attributes_to(segment_info);
-        // Java propagates the exception from `finish` unconditionally, so no
-        // later step may mask it: `and` keeps the first error of the three.
-        finished.and(closed).and(copied)
+        crate::util::IOUtils::close([Some(|| writer.close())])?;
+        finished?;
+        self.copy_attributes_to(segment_info)
     }
 
     /// Discards the segment's stored fields.
     ///
     /// Equivalent to `StoredFieldsConsumer.abort()`, which uses
     /// `IOUtils.closeWhileHandlingException`: the writer is released, any error
-    /// raised while closing it is swallowed, and calling this without a writer
-    /// is a no-op.
-    pub fn abort(&mut self) {
+    /// raised while closing it is swallowed but a Java `Error`, and calling
+    /// this without a writer is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`LuceneError::AssertionError`] closing the writer raised:
+    /// the `Error` Java's `closeWhileHandlingException` rethrows, unchecked,
+    /// through the callers' `finally` blocks up to
+    /// `DocumentsWriterPerThread.abort()`, which declares `throws IOException`.
+    pub fn abort(&mut self) -> Result<()> {
         self.aborted = true;
-        if let Some(mut writer) = self.writer.take() {
-            let _ = writer.close();
-        }
+        let writer = self.writer.take();
+        crate::util::IOUtils::close_while_handling_exception([
+            writer.map(|mut writer| move || writer.close())
+        ])
     }
 
     /// Returns `true` once [`Self::abort`] has run.
@@ -389,7 +425,7 @@ impl StoredFieldsConsumer {
                 }
                 Some(existing) if existing == value => {}
                 Some(existing) => {
-                    return Err(LuceneError::IllegalState(format!(
+                    return Err(LuceneError::illegal_state(format!(
                         "found existing value for {key} for segment: {} old={existing}, new={value}",
                         segment_info.name
                     )));
@@ -401,7 +437,7 @@ impl StoredFieldsConsumer {
 
     fn writer_mut(&mut self) -> Result<&mut Box<dyn StoredFieldsWriter>> {
         self.writer.as_mut().ok_or_else(|| {
-            LuceneError::IllegalState(format!(
+            LuceneError::illegal_state(format!(
                 "no stored-fields document is open for segment {}",
                 self.info.name
             ))
@@ -542,10 +578,12 @@ mod tests {
         }
     }
 
-    /// A writer whose `finish` always fails, to prove `flush` still closes it.
+    /// A writer whose `finish` always fails, to prove `flush` still closes it;
+    /// with `fail_close`, its `close` fails too.
     #[derive(Debug)]
     struct FailingFinishWriter {
         log: Log,
+        fail_close: bool,
     }
 
     impl crate::util::Accountable for FailingFinishWriter {
@@ -581,6 +619,9 @@ mod tests {
         }
         fn close(&mut self) -> Result<()> {
             *self.log.closes.lock().expect("log mutex") += 1;
+            if self.fail_close {
+                return Err(LuceneError::Other("close blew up".to_string()));
+            }
             Ok(())
         }
     }
@@ -590,6 +631,7 @@ mod tests {
     struct LoggingStoredFieldsFormat {
         log: Log,
         fail_finish: bool,
+        fail_close: bool,
     }
 
     impl StoredFieldsFormat for LoggingStoredFieldsFormat {
@@ -611,7 +653,7 @@ mod tests {
 
         fn fields_writer(
             &self,
-            _directory: &dyn Directory,
+            _directory: &std::sync::Arc<dyn Directory>,
             _segment_info: &SegmentInfo,
             _context: &dyn IOContext,
         ) -> Result<Box<dyn StoredFieldsWriter>> {
@@ -619,6 +661,7 @@ mod tests {
             if self.fail_finish {
                 Ok(Box::new(FailingFinishWriter {
                     log: self.log.clone(),
+                    fail_close: self.fail_close,
                 }))
             } else {
                 Ok(Box::new(RecordingWriter {
@@ -629,12 +672,20 @@ mod tests {
     }
 
     fn logging_consumer(fail_finish: bool) -> (StoredFieldsConsumer, Log, Arc<dyn Directory>) {
+        logging_consumer_with(fail_finish, false)
+    }
+
+    fn logging_consumer_with(
+        fail_finish: bool,
+        fail_close: bool,
+    ) -> (StoredFieldsConsumer, Log, Arc<dyn Directory>) {
         let log = Log::default();
         let codec: Arc<dyn Codec> = Arc::new(
             FilterCodec::new("LoggingCodec", lucene_codec()).with_stored_fields_format(
                 LoggingStoredFieldsFormat {
                     log: log.clone(),
                     fail_finish,
+                    fail_close,
                 },
             ),
         );
@@ -868,11 +919,17 @@ mod tests {
         let error = consumer
             .start_document(2)
             .expect_err("a document may not be revisited");
-        assert!(matches!(error, LuceneError::IllegalState(_)), "{error:?}");
+        assert!(
+            matches!(error, LuceneError::IllegalState { .. }),
+            "{error:?}"
+        );
         let error = consumer
             .start_document(1)
             .expect_err("doc ids may not go backwards");
-        assert!(matches!(error, LuceneError::IllegalState(_)), "{error:?}");
+        assert!(
+            matches!(error, LuceneError::IllegalState { .. }),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -897,9 +954,26 @@ mod tests {
         let error = consumer.flush(&flushed).expect_err("finish blows up");
         assert!(
             error.to_string().contains("finish blew up"),
-            "the error from finish must win over the one from close: {error}"
+            "with a clean close, the error from finish is the one raised: {error}"
         );
         assert_eq!(log.closes(), 1, "Java closes the writer in a finally block");
+    }
+
+    /// `try { writer.finish(...); } finally { IOUtils.close(writer); }`
+    /// (`StoredFieldsConsumer.java:104-110`): an exception thrown from the
+    /// `finally` replaces the one in flight (JLS 14.20.2), so a failure to
+    /// close wins over the failure to finish.
+    #[test]
+    fn flush_reports_the_close_failure_over_the_finish_failure() {
+        let (mut consumer, log, directory) = logging_consumer_with(true, true);
+        consumer.start_document(0).expect("start");
+        consumer.finish_document().expect("finish");
+        let flushed = make_segment_info(&directory, 1);
+        let error = consumer
+            .flush(&flushed)
+            .expect_err("finish and close blow up");
+        assert!(error.to_string().contains("close blew up"), "{error}");
+        assert_eq!(log.closes(), 1);
     }
 
     #[test]
@@ -909,17 +983,20 @@ mod tests {
         let error = consumer
             .flush(&flushed)
             .expect_err("Java would raise a NullPointerException here");
-        assert!(matches!(error, LuceneError::IllegalState(_)), "{error:?}");
+        assert!(
+            matches!(error, LuceneError::IllegalState { .. }),
+            "{error:?}"
+        );
     }
 
     #[test]
     fn abort_closes_the_writer_and_is_idempotent() {
         let (mut consumer, log, _dir) = logging_consumer(false);
         consumer.start_document(0).expect("start");
-        consumer.abort();
+        consumer.abort().unwrap();
         assert_eq!(log.closes(), 1);
         assert!(!consumer.has_writer());
-        consumer.abort();
+        consumer.abort().unwrap();
         assert_eq!(log.closes(), 1, "aborting twice must not close twice");
     }
 
@@ -931,13 +1008,16 @@ mod tests {
         // a second set of stored-fields files for a discarded segment.
         let (mut consumer, log, directory) = logging_consumer(false);
         consumer.start_document(0).expect("start");
-        consumer.abort();
+        consumer.abort().unwrap();
         assert!(consumer.is_aborted());
 
         let error = consumer
             .start_document(1)
             .expect_err("an aborted consumer must not write again");
-        assert!(matches!(error, LuceneError::AlreadyClosed(_)), "{error:?}");
+        assert!(
+            matches!(error, LuceneError::AlreadyClosed { .. }),
+            "{error:?}"
+        );
         assert_eq!(
             log.calls().iter().filter(|c| *c == "open_writer").count(),
             1,
@@ -948,7 +1028,10 @@ mod tests {
         let error = consumer
             .flush(&flushed)
             .expect_err("an aborted segment has nothing to flush");
-        assert!(matches!(error, LuceneError::IllegalState(_)), "{error:?}");
+        assert!(
+            matches!(error, LuceneError::IllegalState { .. }),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -982,7 +1065,7 @@ mod tests {
     #[test]
     fn abort_without_a_writer_is_a_no_op() {
         let (mut consumer, log, _dir) = logging_consumer(false);
-        consumer.abort();
+        consumer.abort().unwrap();
         assert_eq!(log.closes(), 0);
     }
 
@@ -992,7 +1075,10 @@ mod tests {
         let error = consumer
             .write_field(&field("f", 0), StoredValue::Integer(1))
             .expect_err("no document frame is open");
-        assert!(matches!(error, LuceneError::IllegalState(_)), "{error:?}");
+        assert!(
+            matches!(error, LuceneError::IllegalState { .. }),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -1222,7 +1308,10 @@ mod tests {
             "BEST_COMPRESSION".to_string(),
         );
         let error = consumer.flush(&flushed).expect_err("conflicting attribute");
-        assert!(matches!(error, LuceneError::IllegalState(_)), "{error:?}");
+        assert!(
+            matches!(error, LuceneError::IllegalState { .. }),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -1246,9 +1335,18 @@ mod tests {
             .filter_map(|name| name.rsplit_once('.').map(|(_, ext)| ext.to_string()))
             .collect();
         extensions.sort();
+        // The index is streamed to two temporary outputs until the segment is
+        // finished (`FieldsIndexWriter.java:83-87`); the tracking wrapper
+        // records them, as Java's `TrackingDirectoryWrapper.createTempOutput`
+        // does.
         assert_eq!(
             extensions,
-            vec!["fdm".to_string(), "fdt".to_string(), "fdx".to_string()],
+            vec![
+                "fdm".to_string(),
+                "fdt".to_string(),
+                "tmp".to_string(),
+                "tmp".to_string()
+            ],
             "the consumer must write through the tracking wrapper so the segment lists its files"
         );
     }

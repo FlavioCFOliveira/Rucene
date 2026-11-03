@@ -12,9 +12,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from kgio import read as kg_read
+from kgio import kg_target, read as kg_read
 
-OUT = Path(sys.argv[2] if len(sys.argv) > 2 else "/tmp/triage")
+OUT = Path(sys.argv[2]) if len(sys.argv) > 2 else kg_target() / "triage"
 ROADMAP = sys.argv[1] if len(sys.argv) > 1 else "rucene"
 OUT.mkdir(parents=True, exist_ok=True)
 

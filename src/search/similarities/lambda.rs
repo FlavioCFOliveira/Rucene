@@ -13,6 +13,11 @@ use super::{BasicStats, Explanation};
 /// Equivalent to `org.apache.lucene.search.similarities.Lambda`.
 ///
 /// See [`IBSimilarity`](super::IBSimilarity).
+///
+/// The [`Display`](fmt::Display) supertrait is Java's abstract `toString()`
+/// (`Lambda.java:44`): each implementation renders the code of its formula,
+/// which `IBSimilarity` concatenates into its own name. Equivalent to the
+/// abstract `Lambda#toString`.
 pub trait Lambda: fmt::Display + Debug + Send + Sync {
     /// Returns the name this parameter puts into its explanation.
     ///

@@ -156,9 +156,6 @@ impl FileDeleter {
         }
     }
 
-    /// Increments the reference count of `file_name`.
-    ///
-    /// Equivalent to `FileDeleter.incRef(String)`.
     /// Returns the reference count of `file_name`, creating it at zero when the
     /// file is not tracked yet.
     ///
@@ -174,6 +171,9 @@ impl FileDeleter {
             .or_insert_with(|| RefCount::new(file_name))
     }
 
+    /// Increments the reference count of `file_name`.
+    ///
+    /// Equivalent to `FileDeleter.incRef(String)`.
     pub fn inc_ref(&mut self, file_name: &str) {
         let rc = Self::get_ref_count_internal(&mut self.ref_counts, file_name);
         let pre = rc.count;

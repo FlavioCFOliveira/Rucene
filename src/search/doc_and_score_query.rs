@@ -175,7 +175,7 @@ impl Query for DocAndScoreQuery {
         boost: f32,
     ) -> Result<Arc<dyn Weight>> {
         if searcher.get_top_reader_context().id() != self.context_identity {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "This DocAndScore query was created by a different reader".to_string(),
             ));
         }

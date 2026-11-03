@@ -94,6 +94,10 @@ impl<T: FilteringTokenFilterLogic> TokenFilterLogic for FilteringTokenFilterAdap
 pub type FilteringTokenFilter<T> = TokenFilter<FilteringTokenFilterAdapter<T>>;
 
 /// Creates a [`FilteringTokenFilter`] over `input` using `logic`.
+///
+/// Equivalent to the constructor `FilteringTokenFilter(TokenStream)`, which a
+/// subclass such as `StopFilter` calls as `super(in)`; `logic` is the
+/// subclass's `accept`.
 pub fn new_filtering_token_filter<T: FilteringTokenFilterLogic>(
     input: Box<dyn TokenStream>,
     logic: T,

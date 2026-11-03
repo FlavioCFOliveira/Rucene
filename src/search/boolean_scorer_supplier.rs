@@ -65,18 +65,6 @@ impl std::fmt::Debug for ClauseSuppliers {
 }
 
 impl ClauseSuppliers {
-    /// Returns the suppliers of the clauses that occur the given way.
-    ///
-    /// Equivalent to `subs.get(Occur)`.
-    pub fn get(&self, occur: Occur) -> &Vec<Box<dyn ScorerSupplier>> {
-        match occur {
-            Occur::SHOULD => &self.should,
-            Occur::MUST => &self.must,
-            Occur::FILTER => &self.filter,
-            Occur::MUST_NOT => &self.must_not,
-        }
-    }
-
     /// Returns the suppliers of the clauses that occur the given way, for
     /// mutation.
     pub fn get_mut(&mut self, occur: Occur) -> &mut Vec<Box<dyn ScorerSupplier>> {

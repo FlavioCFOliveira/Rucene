@@ -46,14 +46,6 @@ const HALF_MASK: u32 = 0x3FF;
 const SURROGATE_OFFSET: i32 =
     0x1_0000 - ((UNI_SUR_HIGH_START as i32) << HALF_SHIFT) - UNI_SUR_LOW_START as i32;
 
-const LEAD_SURROGATE_SHIFT: u32 = 10;
-const TRAIL_SURROGATE_MASK: u32 = 0x3FF;
-const TRAIL_SURROGATE_MIN_VALUE: u32 = 0xDC00;
-const LEAD_SURROGATE_MIN_VALUE: u32 = 0xD800;
-const SUPPLEMENTARY_MIN_VALUE: u32 = 0x10000;
-const LEAD_SURROGATE_OFFSET: u32 =
-    LEAD_SURROGATE_MIN_VALUE - (SUPPLEMENTARY_MIN_VALUE >> LEAD_SURROGATE_SHIFT);
-
 /// A term that sorts after every legal UTF-8 term.
 ///
 /// Port of `UnicodeUtil.BIG_TERM`. Lucene's own comment notes this constant is
@@ -366,14 +358,16 @@ impl UnicodeUtil {
     /// Returns [`LuceneError::IllegalArgument`] when a value is negative, above
     /// `0x10FFFF`, or is an unpaired surrogate — the last of which Java accepts
     /// because a Java `String` may hold lone surrogates and a Rust `String` may
-    /// not. That is the only behavioural difference.
+    /// not. That is the only behavioural difference. Java's `new
+    /// IllegalArgumentException()` for an invalid code point
+    /// (`UnicodeUtil.java:571-575`) carries no message, and neither does the
+    /// error here; Java's other one, for a negative `count`, cannot arise from
+    /// a `usize`.
     pub fn new_string(code_points: &[i32], offset: usize, count: usize) -> Result<String> {
         let mut out = String::with_capacity(count);
         for &cp in &code_points[offset..offset + count] {
             if !(0..=0x10FFFF).contains(&cp) {
-                return Err(LuceneError::IllegalArgument(format!(
-                    "invalid code point: {cp}"
-                )));
+                return Err(LuceneError::IllegalArgument(String::new()));
             }
             match char::from_u32(cp as u32) {
                 Some(c) => out.push(c),
@@ -483,20 +477,5 @@ impl UnicodeUtil {
         utf16_length
             .checked_mul(MAX_UTF8_BYTES_PER_CHAR)
             .expect("INVARIANT: maxUTF8Length overflows, as Math.multiplyExact would")
-    }
-
-    /// Encodes a single code point as a UTF-16 code unit pair, appending to
-    /// `out`. Used by [`Self::new_string`]-style conversions.
-    ///
-    /// Not a Lucene method; it exposes the surrogate arithmetic that
-    /// `UnicodeUtil.newString` performs inline so callers working in UTF-16 can
-    /// reuse it.
-    pub fn append_code_point_utf16(cp: u32, out: &mut Vec<u16>) {
-        if cp < SUPPLEMENTARY_MIN_VALUE {
-            out.push(cp as u16);
-        } else {
-            out.push((LEAD_SURROGATE_OFFSET + (cp >> LEAD_SURROGATE_SHIFT)) as u16);
-            out.push((TRAIL_SURROGATE_MIN_VALUE + (cp & TRAIL_SURROGATE_MASK)) as u16);
-        }
     }
 }

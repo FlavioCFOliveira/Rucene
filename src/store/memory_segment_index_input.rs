@@ -217,11 +217,21 @@ impl MemorySegmentIndexInput {
 
     /// Returns the error Java's `alreadyClosed` produces.
     fn already_closed(&self) -> LuceneError {
-        LuceneError::AlreadyClosed(format!("Already closed: {self}"))
+        LuceneError::already_closed(format!("Already closed: {self}"))
     }
 
     /// Returns the error Java's `handlePositionalIOOBE` produces, for a
     /// position already expressed in this input's own coordinates.
+    ///
+    /// Equivalent to `MemorySegmentIndexInput#handlePositionalIOOBE`
+    /// (`MemorySegmentIndexInput.java:136-143`): `IllegalArgumentException`
+    /// for a negative position, `EOFException` otherwise. Renamed because
+    /// there is no `IndexOutOfBoundsException` to handle here — the port checks
+    /// bounds before it reads, where Java catches the exception the segment
+    /// access throws — and Java's `unused` parameter is dropped. The
+    /// multi-segment override, which subtracts the slice offset first
+    /// (`MemorySegmentIndexInput.java:880-883`), is the callers passing the
+    /// already-adjusted position.
     fn positional_error(&self, action: &str, pos: i64) -> LuceneError {
         if pos < 0 {
             LuceneError::IllegalArgument(format!("{action} negative position (pos={pos}): {self}"))
@@ -258,7 +268,7 @@ impl MemorySegmentIndexInput {
     /// Equivalent to `MemorySegmentIndexInput.ensureAccessible()`.
     fn ensure_accessible(&self) -> Result<()> {
         if self.confined && !self.scope.is_accessible_by(std::thread::current().id()) {
-            return Err(LuceneError::IllegalState("confined".to_string()));
+            return Err(LuceneError::illegal_state("confined".to_string()));
         }
         Ok(())
     }
@@ -658,6 +668,11 @@ fn check_dst(offset: usize, length: usize, len: usize) -> Result<()> {
 }
 
 impl DataInput for MemorySegmentIndexInput {
+    /// `IndexInput.toString()` returns the resource description.
+    fn to_java_string(&self) -> String {
+        crate::store::IndexInput::resource_description(self).to_string()
+    }
+
     fn read_byte(&mut self) -> Result<u8> {
         self.ensure_open()?;
         let pos = self.cur_position;
@@ -810,6 +825,40 @@ impl DataInput for MemorySegmentIndexInput {
 }
 
 impl IndexInput for MemorySegmentIndexInput {
+    /// A memory-mapped input is a `MemorySegmentAccessInput`.
+    fn as_memory_segment_access_input(&self) -> Option<&dyn MemorySegmentAccessInput> {
+        Some(self)
+    }
+
+    /// Re-advises the kernel for the access pattern `context` describes.
+    ///
+    /// Equivalent to `MemorySegmentIndexInput.updateIOContext(IOContext)`,
+    /// which overrides `IndexInput.updateIOContext`, so that a caller holding
+    /// a plain `IndexInput` — `Lucene99FlatVectorsReader.getMergeInstance` and
+    /// `finishMerge` — reaches it.
+    fn update_io_context(&self, context: &dyn IOContext) -> Result<()> {
+        MemorySegmentIndexInput::update_io_context(self, context)
+    }
+
+    /// Equivalent to `MemorySegmentIndexInput.slice(String, long, long,
+    /// IOContext)`, which overrides the `IndexInput` overload so that
+    /// `Lucene90CompoundReader.openInput` reaches it.
+    fn slice_with_context(
+        &self,
+        slice_description: &str,
+        offset: i64,
+        length: i64,
+        context: &dyn IOContext,
+    ) -> Result<Box<dyn IndexInput>> {
+        Ok(Box::new(MemorySegmentIndexInput::slice_with_context(
+            self,
+            slice_description,
+            offset,
+            length,
+            context,
+        )?))
+    }
+
     fn close(&mut self) -> Result<()> {
         if self.cur_segment.is_none() {
             return Ok(());

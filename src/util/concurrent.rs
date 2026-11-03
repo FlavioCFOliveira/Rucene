@@ -7,13 +7,21 @@
 //! | [`SameThreadExecutorService`] | `SameThreadExecutorService` |
 //! | [`NamedThreadFactory`] | `NamedThreadFactory` |
 //! | [`WeakIdentityMap`] | `WeakIdentityMap<K, V>` |
+//!
+//! It also models the part of `java.lang.Thread` that Lucene's waits observe:
+//! [`InterruptHandle`] is a thread's interrupt status (`Thread.interrupt`,
+//! `Thread.isInterrupted`, `Thread.interrupted`), [`wait_interruptibly`] is
+//! `Object.wait` on a monitor, and [`InterruptedException`] is the exception
+//! that wait throws.
 
 #![deny(unsafe_code)]
 
 use std::collections::HashMap;
+use std::fmt::{self, Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock, Weak};
+use std::sync::{Arc, Condvar, LockResult, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
+use std::time::{Duration, Instant};
 
 use crate::error::{LuceneError, Result};
 
@@ -78,11 +86,6 @@ impl Counter {
         };
         self.count.load(ordering)
     }
-
-    /// Returns whether this counter was created for concurrent use.
-    pub fn is_thread_safe(&self) -> bool {
-        self.thread_safe
-    }
 }
 
 impl Default for Counter {
@@ -134,7 +137,7 @@ impl<T> SetOnce<T> {
     /// which is Java's `AlreadySetException`.
     pub fn set(&self, obj: T) -> Result<()> {
         if !self.try_set(obj) {
-            return Err(LuceneError::IllegalState(ALREADY_SET_MESSAGE.to_string()));
+            return Err(LuceneError::illegal_state(ALREADY_SET_MESSAGE.to_string()));
         }
         Ok(())
     }
@@ -240,7 +243,7 @@ impl SameThreadExecutorService {
 
     fn check_shutdown(&self) -> Result<()> {
         if self.shutdown.load(Ordering::SeqCst) {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "Executor is shut down.".to_string(),
             ));
         }
@@ -331,6 +334,226 @@ impl NamedThreadFactory {
             .name(name)
             .spawn(r)
             .map_err(LuceneError::Io)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Thread interruption
+// ---------------------------------------------------------------------------
+
+/// The exception a wait throws when its thread is interrupted.
+///
+/// Equivalent to `java.lang.InterruptedException` as `Object.wait` throws it:
+/// built without a message, so its `toString()` — what
+/// [`ThreadInterruptedException`](crate::util::ThreadInterruptedException)
+/// reports as its message — is the class name alone.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct InterruptedException;
+
+impl Display for InterruptedException {
+    /// Java's `Throwable.toString()` of an exception without a message.
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str("java.lang.InterruptedException")
+    }
+}
+
+impl std::error::Error for InterruptedException {}
+
+/// One thread's interrupt status, and the monitor it is waiting in.
+#[derive(Debug, Default)]
+struct InterruptState {
+    /// Java's interrupt status of the thread.
+    interrupted: AtomicBool,
+    /// The condition variable of the monitor the thread waits in, while it
+    /// waits in [`wait_interruptibly`].
+    blocker: Mutex<Option<Arc<Condvar>>>,
+}
+
+impl InterruptState {
+    /// Tests and clears the interrupt status, as Java's wait does when it
+    /// throws `InterruptedException` and as `Thread.interrupted()` does.
+    fn take_interrupt(&self) -> bool {
+        // SeqCst orders this load after the publication of the blocker, so an
+        // interrupter that missed the blocker set the status before it.
+        self.interrupted.swap(false, Ordering::SeqCst)
+    }
+
+    fn set_blocker(&self, blocker: Option<Arc<Condvar>>) {
+        *self.blocker.lock().unwrap_or_else(PoisonError::into_inner) = blocker;
+    }
+}
+
+thread_local! {
+    /// `Thread.currentThread()`'s interrupt state.
+    static CURRENT_THREAD: Arc<InterruptState> = Arc::new(InterruptState::default());
+}
+
+/// A handle to one thread's interrupt status: the part of `java.lang.Thread`
+/// that Lucene's interruptible waits observe.
+///
+/// Equivalent to `Thread.interrupt()`, `Thread.isInterrupted()` and
+/// `Thread.interrupted()`. A thread obtains its own handle with
+/// [`current`](Self::current) and hands it to the threads that may interrupt
+/// it. Interrupting sets the status; a thread waiting in
+/// [`wait_interruptibly`] is woken and its wait returns
+/// [`InterruptedException`] with the status cleared, and a wait entered with
+/// the status set returns it at once, as `Object.wait` does
+/// (JLS 17.2.1, `Object.wait` Javadoc). Rust threads have no interruption of
+/// their own, so only the waits built on [`wait_interruptibly`] observe it.
+#[derive(Debug, Clone)]
+pub struct InterruptHandle {
+    state: Arc<InterruptState>,
+}
+
+impl InterruptHandle {
+    /// Returns the handle of the calling thread.
+    ///
+    /// Equivalent to `Thread.currentThread()`, as far as interruption goes.
+    pub fn current() -> Self {
+        Self {
+            state: CURRENT_THREAD.with(Arc::clone),
+        }
+    }
+
+    /// Interrupts the thread: sets its interrupt status and wakes it out of
+    /// the wait it is blocked in, if any.
+    ///
+    /// Equivalent to `Thread.interrupt()`. The interrupter does not take the
+    /// monitor the thread waits in, as Java's does not; see
+    /// [`wait_interruptibly`] for how a wake-up that races the thread's entry
+    /// into the wait is still delivered.
+    pub fn interrupt(&self) {
+        self.state.interrupted.store(true, Ordering::SeqCst);
+        let blocker = self
+            .state
+            .blocker
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some(blocker) = blocker {
+            blocker.notify_all();
+        }
+    }
+
+    /// Returns whether the thread's interrupt status is set, leaving it
+    /// unchanged.
+    ///
+    /// Equivalent to `Thread.isInterrupted()`.
+    pub fn is_interrupted(&self) -> bool {
+        self.state.interrupted.load(Ordering::SeqCst)
+    }
+
+    /// Tests whether the calling thread has been interrupted, and clears its
+    /// interrupt status.
+    ///
+    /// Equivalent to the static `Thread.interrupted()`.
+    pub fn interrupted() -> bool {
+        CURRENT_THREAD.with(|state| state.take_interrupt())
+    }
+
+    /// Returns whether the thread is waiting in [`wait_interruptibly`].
+    #[cfg(test)]
+    pub(crate) fn is_waiting(&self) -> bool {
+        self.state
+            .blocker
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some()
+    }
+}
+
+/// The longest stretch a waiting thread goes without checking its interrupt
+/// status; see [`wait_interruptibly`].
+const INTERRUPT_CHECK_INTERVAL: Duration = Duration::from_millis(10);
+
+/// Clears the blocker a waiting thread published, however the wait ends.
+struct BlockerRegistration<'a> {
+    state: &'a InterruptState,
+}
+
+impl Drop for BlockerRegistration<'_> {
+    fn drop(&mut self) {
+        self.state.set_blocker(None);
+    }
+}
+
+/// Waits on `condvar`, releasing the monitor `guard` holds, until the thread is
+/// notified, `timeout` elapses (`None` waits without a bound) or the thread is
+/// interrupted; returns the monitor re-acquired, with
+/// `Err(`[`InterruptedException`]`)` when the thread was interrupted.
+///
+/// Equivalent to `Object.wait(long)` and `Object.wait()` on the monitor that
+/// `guard`'s mutex and `condvar` together stand for. As in Java, a thread whose
+/// interrupt status is set when it enters, or that is interrupted while it
+/// waits, gets the exception and has its status cleared; a normal return may
+/// be a notification, the timeout or a spurious wake-up, so the caller
+/// re-checks its condition, as every Java caller of `wait` does.
+///
+/// **Divergence from Lucene 10.5.0 (the JDK).** Java's `Thread.interrupt()`
+/// wakes the waiting thread atomically with its entry into the wait. An
+/// interrupter here notifies `condvar` without holding the monitor — as Java's
+/// does not hold it, and must not, since it may itself be holding the monitor
+/// — so a notification sent between the thread's last check of its status and
+/// its entry into the wait would be lost. The thread therefore waits in
+/// stretches of at most 10 ms and checks its status after each; the stretches
+/// are not returned to the caller, so the wait ends only as Java's does, and an
+/// interrupt is delivered at most 10 ms late in that race.
+///
+/// # Errors
+///
+/// Returns `Err(`[`PoisonError`]`)`, carrying the guard and the wait's outcome,
+/// when another thread panicked while holding the monitor.
+pub fn wait_interruptibly<'a, T>(
+    condvar: &Arc<Condvar>,
+    guard: MutexGuard<'a, T>,
+    timeout: Option<Duration>,
+) -> LockResult<(
+    MutexGuard<'a, T>,
+    std::result::Result<(), InterruptedException>,
+)> {
+    let state = CURRENT_THREAD.with(Arc::clone);
+    // Publish the monitor before checking the status: an interrupter sets the
+    // status before it reads the blocker, so it either finds the blocker and
+    // notifies, or set the status before this check sees it.
+    state.set_blocker(Some(Arc::clone(condvar)));
+    let _registration = BlockerRegistration { state: &state };
+    if state.take_interrupt() {
+        return Ok((guard, Err(InterruptedException)));
+    }
+    let deadline = timeout.map(|timeout| Instant::now() + timeout);
+    let mut guard = guard;
+    let mut poisoned = false;
+    let outcome = loop {
+        let stretch = match deadline {
+            None => INTERRUPT_CHECK_INTERVAL,
+            Some(deadline) => {
+                let now = Instant::now();
+                if now >= deadline {
+                    break Ok(());
+                }
+                (deadline - now).min(INTERRUPT_CHECK_INTERVAL)
+            }
+        };
+        let (reacquired, result) = match condvar.wait_timeout(guard, stretch) {
+            Ok(woken) => woken,
+            Err(error) => {
+                poisoned = true;
+                error.into_inner()
+            }
+        };
+        guard = reacquired;
+        if state.take_interrupt() {
+            break Err(InterruptedException);
+        }
+        if !result.timed_out() {
+            // Notified, or woken spuriously: Java returns either way.
+            break Ok(());
+        }
+    };
+    if poisoned {
+        Err(PoisonError::new((guard, outcome)))
+    } else {
+        Ok((guard, outcome))
     }
 }
 
@@ -516,5 +739,134 @@ impl<K, V> WeakIdentityMap<K, V> {
 impl<K, V> Default for WeakIdentityMap<K, V> {
     fn default() -> Self {
         Self::new_hash_map()
+    }
+}
+
+#[cfg(test)]
+mod interrupt_tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    /// A monitor: Java's object with its intrinsic lock and wait set.
+    struct Monitor {
+        lock: Mutex<()>,
+        condvar: Arc<Condvar>,
+    }
+
+    fn monitor() -> Arc<Monitor> {
+        Arc::new(Monitor {
+            lock: Mutex::new(()),
+            condvar: Arc::new(Condvar::new()),
+        })
+    }
+
+    /// A wait's outcome and the thread's interrupt status after it.
+    type WaitOutcome = (std::result::Result<(), InterruptedException>, bool);
+
+    /// Starts a thread that waits on `monitor` once, without a timeout, and
+    /// reports its handle and then the wait's outcome and its interrupt
+    /// status afterwards.
+    fn start_waiter(monitor: &Arc<Monitor>) -> (InterruptHandle, mpsc::Receiver<WaitOutcome>) {
+        let (handle_tx, handle_rx) = mpsc::channel();
+        let (outcome_tx, outcome_rx) = mpsc::channel();
+        let monitor = Arc::clone(monitor);
+        std::thread::spawn(move || {
+            handle_tx.send(InterruptHandle::current()).unwrap();
+            let guard = monitor.lock.lock().unwrap();
+            let (_guard, outcome) = wait_interruptibly(&monitor.condvar, guard, None).unwrap();
+            let _ = outcome_tx.send((outcome, InterruptHandle::current().is_interrupted()));
+        });
+        (handle_rx.recv().unwrap(), outcome_rx)
+    }
+
+    fn wait_until_waiting(handle: &InterruptHandle) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !handle.is_waiting() {
+            assert!(
+                Instant::now() < deadline,
+                "the thread never started waiting"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn interrupting_a_waiting_thread_ends_its_wait_with_the_status_cleared() {
+        let monitor = monitor();
+        let (handle, outcome) = start_waiter(&monitor);
+        wait_until_waiting(&handle);
+        handle.interrupt();
+        let (outcome, interrupted_after) = outcome
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the interrupted wait did not return");
+        assert_eq!(outcome, Err(InterruptedException));
+        assert!(!interrupted_after);
+    }
+
+    #[test]
+    fn a_wait_entered_with_the_status_set_fails_at_once_and_clears_it() {
+        let monitor = monitor();
+        InterruptHandle::current().interrupt();
+        assert!(InterruptHandle::current().is_interrupted());
+        let guard = monitor.lock.lock().unwrap();
+        let started = Instant::now();
+        let (_guard, outcome) =
+            wait_interruptibly(&monitor.condvar, guard, Some(Duration::from_secs(5))).unwrap();
+        assert_eq!(outcome, Err(InterruptedException));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(!InterruptHandle::current().is_interrupted());
+    }
+
+    #[test]
+    fn a_notification_ends_the_wait_normally() {
+        let monitor = monitor();
+        let (handle, outcome) = start_waiter(&monitor);
+        wait_until_waiting(&handle);
+        {
+            let _guard = monitor.lock.lock().unwrap();
+            monitor.condvar.notify_all();
+        }
+        let (outcome, interrupted_after) = outcome
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the notified wait did not return");
+        assert_eq!(outcome, Ok(()));
+        assert!(!interrupted_after);
+    }
+
+    #[test]
+    fn a_timed_wait_returns_normally_after_its_timeout() {
+        let monitor = monitor();
+        let guard = monitor.lock.lock().unwrap();
+        let started = Instant::now();
+        let (_guard, outcome) =
+            wait_interruptibly(&monitor.condvar, guard, Some(Duration::from_millis(50))).unwrap();
+        assert_eq!(outcome, Ok(()));
+        assert!(started.elapsed() >= Duration::from_millis(50));
+    }
+
+    #[test]
+    fn interrupted_tests_and_clears_the_status() {
+        assert!(!InterruptHandle::interrupted());
+        InterruptHandle::current().interrupt();
+        assert!(InterruptHandle::interrupted());
+        assert!(!InterruptHandle::interrupted());
+        assert!(!InterruptHandle::current().is_interrupted());
+    }
+
+    #[test]
+    fn interrupting_a_thread_that_holds_the_monitor_does_not_block() {
+        // Java's `Thread.interrupt()` does not take the waiter's monitor, so
+        // the interrupter may hold it.
+        let monitor = monitor();
+        let (handle, outcome) = start_waiter(&monitor);
+        wait_until_waiting(&handle);
+        {
+            let _guard = monitor.lock.lock().unwrap();
+            handle.interrupt();
+        }
+        let (outcome, _) = outcome
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the interrupted wait did not return");
+        assert_eq!(outcome, Err(InterruptedException));
     }
 }

@@ -22,11 +22,6 @@ pub struct CachingTokenFilter {
     final_state: Option<CapturedState>,
 }
 
-/// Creates a [`CachingTokenFilter`] around `input`.
-pub fn new_caching_token_filter(input: Box<dyn TokenStream>) -> CachingTokenFilter {
-    CachingTokenFilter::new(input)
-}
-
 impl CachingTokenFilter {
     /// Creates a caching filter around `input`.
     pub fn new(input: Box<dyn TokenStream>) -> Self {
@@ -42,6 +37,8 @@ impl CachingTokenFilter {
 
     /// Returns `true` once the underlying token stream has been consumed and
     /// cached.
+    ///
+    /// Equivalent to `CachingTokenFilter.isCached()`.
     pub fn is_cached(&self) -> bool {
         self.cache.is_some()
     }

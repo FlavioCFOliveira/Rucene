@@ -59,7 +59,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import extract_rucene_kg as ex
 import port_evidence_kg as pe
-from kgio import read as kg_read, unwind
+from kgio import item_labels, kg_target, read as kg_read, unwind, unwind_items
 
 # `#[doc = "…"]`, as the pretty-printer prints it: it wraps after the `=`, so
 # the string routinely starts on the next line, and `concat!` has already been
@@ -202,11 +202,14 @@ def load(roadmap, claims, commit, date):
                f"(t:{label} {{name:row.name, file:row.file}}) "
                "MERGE (f)-[:DECLARES]->(t)",
                f"File DECLARES {label}")
-    unwind(roadmap, "update", rows,
-           "MATCH (t {name:row.name, file:row.file}) "
-           "SET t.origin = 'macro', t.scope = coalesce(t.scope, 'crate'), "
-           "t.gitCommit = row.commit, t.gitDate = row.date",
-           "node provenance")
+    # Routes the Rust item pattern to a labelled match (`kgio.unwind_items`),
+    # read after the node writes above so every node just merged is routed.
+    items = item_labels(roadmap)
+    unwind_items(roadmap, "update", rows,
+                 "MATCH (t {name:row.name, file:row.file}) "
+                 "SET t.origin = 'macro', t.scope = coalesce(t.scope, 'crate'), "
+                 "t.gitCommit = row.commit, t.gitDate = row.date",
+                 "node provenance", items)
     after = len(kg_read(roadmap, "MATCH (t) WHERE t.origin = 'macro' RETURN t.name"))
     print(f"  macro-origin nodes: {before} -> {after}", file=sys.stderr)
 
@@ -232,37 +235,37 @@ def load(roadmap, claims, commit, date):
         for d in dead:
             print(f"  RETIRED (no live expansion claim): {d['name']} @ "
                   f"{d['file']} -> {d['lucene']}", file=sys.stderr)
-        unwind(roadmap, "delete", dead,
-               "MATCH (t {name:row.name, file:row.file})-[e:PORTS]->"
-               "(c:Class {qualifiedName:row.lucene}) DELETE e",
-               "PORTS edges retired")
+        unwind_items(roadmap, "delete", dead,
+                     "MATCH (t {name:row.name, file:row.file})-[e:PORTS]->"
+                     "(c:Class {qualifiedName:row.lucene}) DELETE e",
+                     "PORTS edges retired", items)
 
     # `MERGE (a)-[:PORTS]->(b)` silently matches a relationship of a *different*
     # type between the same ordered pair (see `knowledge-model.md`), so a pair
     # already joined by `PORTS_CANDIDATE` would never gain its `PORTS` edge.
     # Drop the candidate first: a declared equivalence supersedes a name guess.
-    unwind(roadmap, "delete", rows,
-           "MATCH (t {name:row.name, file:row.file})-[e:PORTS_CANDIDATE]->"
-           "(c:Class {qualifiedName:row.lucene}) DELETE e",
-           "superseded PORTS_CANDIDATE removed")
-    unwind(roadmap, "create", rows,
-           "MATCH (t {name:row.name, file:row.file}) "
-           "WITH t, row MATCH (c:Class {qualifiedName:row.lucene}) "
-           "MERGE (t)-[:PORTS]->(c)",
-           "PORTS edges")
+    unwind_items(roadmap, "delete", rows,
+                 "MATCH (t {name:row.name, file:row.file})-[e:PORTS_CANDIDATE]->"
+                 "(c:Class {qualifiedName:row.lucene}) DELETE e",
+                 "superseded PORTS_CANDIDATE removed", items)
+    unwind_items(roadmap, "create", rows,
+                 "MATCH (t {name:row.name, file:row.file}) "
+                 "WITH t, row MATCH (c:Class {qualifiedName:row.lucene}) "
+                 "MERGE (t)-[:PORTS]->(c)",
+                 "PORTS edges", items)
     # `declaredAt` names the file the compiler places the generated item in --
     # the macro's invocation site, not the file that declares the `macro_rules!`
     # (see `resolve_module_file`). There is no line to quote: the declaration
     # this claim documents exists only after expansion, which is exactly what
     # `declarationSource` records.
-    unwind(roadmap, "update", rows,
-           "MATCH (t {name:row.name, file:row.file})-[e:PORTS]->"
-           "(c:Class {qualifiedName:row.lucene}) "
-           "SET e.evidence = coalesce(e.evidence, 'doc-comment'), "
-           "e.declarationSource = 'macro-expansion', "
-           "e.declaredAt = row.file, e.note = coalesce(row.note, e.note), "
-           "e.gitCommit = row.commit, e.gitDate = row.date",
-           "PORTS evidence stamped")
+    unwind_items(roadmap, "update", rows,
+                 "MATCH (t {name:row.name, file:row.file})-[e:PORTS]->"
+                 "(c:Class {qualifiedName:row.lucene}) "
+                 "SET e.evidence = coalesce(e.evidence, 'doc-comment'), "
+                 "e.declarationSource = 'macro-expansion', "
+                 "e.declaredAt = row.file, e.note = coalesce(row.note, e.note), "
+                 "e.gitCommit = row.commit, e.gitDate = row.date",
+                 "PORTS evidence stamped", items)
     return rows
 
 
@@ -273,7 +276,7 @@ def main():
     ap.add_argument("--expanded-file",
                     help="a captured `-Zunpretty=expanded` dump; without it the "
                          "compiler is run, which needs the nightly toolchain")
-    ap.add_argument("--out", default="/tmp/rucene_kg/expanded_evidence.json")
+    ap.add_argument("--out", default=str(kg_target() / "rucene_kg" / "expanded_evidence.json"))
     ap.add_argument("--commit")
     ap.add_argument("--date")
     ap.add_argument("--dry-run", action="store_true",

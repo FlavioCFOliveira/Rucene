@@ -5,7 +5,7 @@
 //! of sub-`IndexReader`s, together with the doc-ID mapping helpers shared by
 //! all composite readers.
 //!
-//! # Decision on `BaseCompositeReader`
+//! # `MultiReader` and `BaseCompositeReader`
 //!
 //! Lucene models the shared behaviour of every array-backed composite reader
 //! in an abstract `BaseCompositeReader<R extends IndexReader>` base class: it
@@ -15,19 +15,14 @@
 //! `getSumDocFreq`, `getDocCount`, and `getSumTotalTermFreq` that dispatch to
 //! (or aggregate across) the sub-readers.
 //!
-//! This port does **not** introduce a separate `BaseCompositeReader` type.
-//! Rust expresses the same sharing through the [`CompositeReader`] trait +
-//! the [`build_composite_context`] helper (already used by
-//! [`StandardDirectoryReader`](crate::index::StandardDirectoryReader)), plus
-//! the [`reader_util`] free functions for doc-ID mapping. Each concrete
-//! composite reader in this crate is thin enough that the small amount of
-//! duplicated aggregation arithmetic is preferable to an extra abstract layer
-//! that would fight the trait-based design (there is no `R extends IndexReader`
-//! generic parameter to carry in Rust, and `numDocs`/`maxDoc` are already
-//! trait methods). The `starts[]` table and the dispatch/aggregation logic that
-//! would live in `BaseCompositeReader` instead live here, in
-//! [`MultiReader`] and in [`reader_util`]; a future `ParallelLeafReader`/
-//! `ParallelCompositeReader` port will reuse [`reader_util`] directly.
+//! That base class is ported as the
+//! [`BaseCompositeReader`](crate::index::base_composite_reader::BaseCompositeReader)
+//! struct, which a concrete reader holds and delegates to
+//! (`FilterDirectoryReader` does). [`MultiReader`] does not hold one: it keeps
+//! its own `starts[]` table, `maxDoc` and lazily computed `numDocs`, and
+//! dispatches through the [`reader_util`] free functions and the
+//! [`CompositeReader`] trait with the [`build_composite_context`] helper, as
+//! [`StandardDirectoryReader`](crate::index::StandardDirectoryReader) does.
 
 #![deny(unsafe_code)]
 
@@ -272,7 +267,7 @@ pub mod reader_util {
     /// when there is none. Rust's own `slice::binary_search` may pick a
     /// different member of a run of equal elements, which would move a
     /// duplicated doc ID from one leaf to the next.
-    fn binary_search_range(
+    pub(crate) fn binary_search_range(
         a: &[i32],
         from_index: usize,
         to_index: usize,
@@ -490,19 +485,20 @@ impl MultiReader {
             r.core().register_parent_core(&core);
         }
 
-        // Guard against overflow / the IndexWriter.MAX_DOCS ceiling, matching
+        // Guard against the `IndexWriter.getActualMaxDocs()` ceiling, matching
         // BaseCompositeReader, which throws IllegalArgumentException for
-        // non-DirectoryReader composites that exceed the limit.
-        let actual_max_docs = i64::from(crate::index::documents_writer::MAX_DOCS);
+        // non-DirectoryReader composites that exceed the limit
+        // (`BaseCompositeReader.java:90-109`).
+        let actual_max_docs = i64::from(crate::index::index_writer::get_actual_max_docs());
         if max_doc > actual_max_docs {
             return Err(LuceneError::IllegalArgument(format!(
                 "Too many documents: composite IndexReaders cannot exceed {actual_max_docs} \
                  but readers have total maxDoc={max_doc}"
             )));
         }
-        let max_doc = i32::try_from(max_doc).map_err(|_| {
-            LuceneError::IllegalArgument(format!("Composite reader maxDoc {max_doc} overflows i32"))
-        })?;
+        // `this.maxDoc = Math.toIntExact(maxDoc)` (`BaseCompositeReader.java:111`),
+        // which the check above leaves nothing to refuse.
+        let max_doc = crate::error::to_int_exact(max_doc)?;
 
         // When the sub-readers must outlive this MultiReader, take an extra
         // reference on each, matching Java's `subReaders[i].incRef()` in the
@@ -705,10 +701,15 @@ impl CompositeReader for MultiReader {
 // ---------------------------------------------------------------------------
 
 /// Resolves a global `doc_id` to `(sub-reader index, local doc_id)`, validating
-/// that `doc_id` is within `0..max_doc`. Mirrors the bounds check in
-/// `BaseCompositeReader.readerIndex(int)` and the per-doc dispatch in its
-/// anonymous `TermVectors` / `StoredFields`.
-fn resolve_sub(doc_id: i32, max_doc: i32, starts: &[i32]) -> Result<(usize, i32)> {
+/// that `doc_id` is within `0..max_doc`.
+///
+/// The index half is `BaseCompositeReader.readerIndex(int)`
+/// (`BaseCompositeReader.java:262-268`): the bounds check, then
+/// `ReaderUtil.subIndex(docID, starts)`. The local id is the `docID -
+/// starts[i]` of the per-document dispatch in its anonymous `TermVectors` /
+/// `StoredFields`. [`BaseCompositeReader::reader_index`](crate::index::base_composite_reader::BaseCompositeReader::reader_index)
+/// and [`MultiReader::reader_index`] answer through this function too.
+pub(crate) fn resolve_sub(doc_id: i32, max_doc: i32, starts: &[i32]) -> Result<(usize, i32)> {
     if doc_id < 0 || doc_id >= max_doc {
         return Err(LuceneError::IllegalArgument(format!(
             "docID must be >= 0 and < maxDoc={max_doc} (got docID={doc_id})"
@@ -848,9 +849,9 @@ mod tests {
     use crate::index::index_reader::IndexReader;
     use crate::index::leaf_reader::{LeafMetaData, LeafReader};
     use crate::index::{
-        BinaryDocValues, ByteVectorValues, DocValuesSkipper, EmptyFields, FieldInfos,
-        FloatVectorValues, NumericDocValues, PointValues, SortedDocValues, SortedNumericDocValues,
-        SortedSetDocValues, Term, Terms,
+        BinaryDocValues, ByteVectorValues, DocValuesSkipper, FieldInfos, FloatVectorValues,
+        NumericDocValues, PointValues, SortedDocValues, SortedNumericDocValues, SortedSetDocValues,
+        Term, Terms,
     };
     use crate::search::knn::KnnCollector;
     use crate::search::AcceptDocs;
@@ -862,7 +863,7 @@ mod tests {
     struct StubTermVectors;
     impl TermVectors for StubTermVectors {
         fn get(&self, _doc: i32) -> Result<Option<Box<dyn Fields>>> {
-            Ok(Some(Box::new(EmptyFields)))
+            Ok(Some(Box::new(crate::index::terms::EmptyFields)))
         }
     }
 
@@ -1165,7 +1166,7 @@ mod tests {
         let empty = leaf(0, 0);
         let c = leaf(3, 3);
         let mr: Arc<dyn IndexReader> = Arc::new(MultiReader::new(vec![a, empty, c], true).unwrap());
-        let leaves = mr.leaves();
+        let leaves = mr.leaves().unwrap();
         assert_eq!(leaves.len(), 3);
         assert_eq!(leaves[1].doc_base(), 2);
         assert_eq!(leaves[2].doc_base(), 2);
@@ -1207,7 +1208,7 @@ mod tests {
         let b = leaf(3, 3);
         let c = leaf(4, 4);
         let mr: Arc<dyn IndexReader> = Arc::new(MultiReader::new(vec![a, b, c], true).unwrap());
-        let leaves = mr.leaves();
+        let leaves = mr.leaves().unwrap();
         assert_eq!(leaves.len(), 3);
         assert_eq!(leaves[0].doc_base(), 0);
         assert_eq!(leaves[1].doc_base(), 2);
@@ -1225,7 +1226,7 @@ mod tests {
         let a = leaf(2, 2);
         let b = leaf(3, 3);
         let mr: Arc<dyn IndexReader> = Arc::new(MultiReader::new(vec![a, b], true).unwrap());
-        let ctx = mr.get_context();
+        let ctx = mr.get_context().unwrap();
         // `leaves()` takes the `Arc` by value; clone it so `ctx` (the strong
         // reference keeping the composite alive) is not moved.
         let leaves = ctx.clone().leaves();
@@ -1280,7 +1281,7 @@ mod tests {
         let b = leaf(5, 5);
         let c = leaf(5, 5);
         let mr: Arc<dyn IndexReader> = Arc::new(MultiReader::new(vec![a, b, c], true).unwrap());
-        let leaves = mr.leaves();
+        let leaves = mr.leaves().unwrap();
         assert_eq!(leaves.len(), 3);
         assert_eq!(leaves[0].doc_base(), 0);
         assert_eq!(leaves[1].doc_base(), 5);
@@ -1459,7 +1460,7 @@ mod tests {
         assert_eq!(mr.max_doc(), 0);
         assert_eq!(mr.num_docs(), 0);
         assert_eq!(mr.get_sequential_sub_readers().len(), 0);
-        let leaves = Arc::new(mr).leaves();
+        let leaves = Arc::new(mr).leaves().unwrap();
         assert_eq!(leaves.len(), 0);
     }
 
@@ -1480,7 +1481,7 @@ mod tests {
         assert!(mr.core().is_closed_by_child());
         let err = mr.ensure_open().unwrap_err();
         assert!(
-            matches!(err, LuceneError::AlreadyClosed(_)),
+            matches!(err, LuceneError::AlreadyClosed { .. }),
             "expected AlreadyClosed, got {err:?}"
         );
         // The poisoning reaches the public API, not just ensure_open().

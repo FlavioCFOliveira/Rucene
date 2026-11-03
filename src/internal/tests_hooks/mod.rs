@@ -32,11 +32,11 @@
 //! restriction, which needs a stack walker Rust does not have. Each item states
 //! its own divergences; see [`TestSecrets`] for the registry-level ones.
 //!
-//! No implementation of these traits is registered yet: in Lucene each one is
-//! installed by the static initializer of `IndexWriter`, `SegmentReader`,
-//! `ConcurrentMergeScheduler` and `FilterIndexInput`, which have no equivalent
-//! initialization point in this port, so registration will be added with the
-//! test framework itself.
+//! As in Lucene, each accessor is implemented and registered by the type whose
+//! internals it exposes — `IndexWriter` (which also registers
+//! [`IndexPackageAccess`]), `SegmentReader`, `ConcurrentMergeScheduler` and
+//! `FilterIndexInput` — from the port of that type's `static {}` block, which
+//! [`TestSecrets`] runs the first time a getter needs it.
 
 #![deny(unsafe_code)]
 

@@ -253,9 +253,10 @@ pub fn get_searcher(
     reader: Arc<dyn DirectoryReader>,
     previous_reader: Option<Arc<dyn DirectoryReader>>,
 ) -> Result<ManagedSearcher> {
-    let index_reader: Arc<dyn IndexReader> = Arc::clone(&reader).get_context().reader();
-    let previous_index_reader =
-        previous_reader.map(|previous| Arc::clone(&previous).get_context().reader());
+    // Java hands the readers on as they are; it reads no context, so a closed
+    // reader reaches the factory (`SearcherManager.java:248-270`).
+    let index_reader: Arc<dyn IndexReader> = Arc::clone(&reader) as Arc<dyn IndexReader>;
+    let previous_index_reader = previous_reader.map(|previous| previous as Arc<dyn IndexReader>);
     let outcome = searcher_factory.new_searcher(Arc::clone(&index_reader), previous_index_reader);
     let searcher = match outcome {
         Err(error) => {
@@ -266,7 +267,7 @@ pub fn get_searcher(
     };
     if !Arc::ptr_eq(searcher.get_index_reader(), &index_reader) {
         reader.dec_ref()?;
-        return Err(LuceneError::IllegalState(format!(
+        return Err(LuceneError::illegal_state(format!(
             "SearcherFactory must wrap exactly the provided reader (got {:?} but expected {:?})",
             searcher.get_index_reader(),
             index_reader

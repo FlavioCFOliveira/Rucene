@@ -10,7 +10,7 @@
 
 use std::{
     cmp::Ordering,
-    fmt, io,
+    fmt,
     sync::{Mutex, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -26,7 +26,7 @@ use super::BytesRef;
 /// Port of `org.apache.lucene.util.IntsRef`.
 ///
 /// A reference to a slice of `i32` values, equivalent to Lucene's `IntsRef`.
-#[derive(Clone, Default, Debug)]
+#[derive(Default, Debug)]
 pub struct IntsRef {
     /// The underlying integer buffer.
     pub ints: Vec<i32>,
@@ -47,6 +47,38 @@ impl IntsRef {
         }
     }
 
+    /// References `ints` directly, without copying it, with the given offset
+    /// and length.
+    ///
+    /// Equivalent to `IntsRef(int[], int, int)` (`IntsRef.java:54-59`), which
+    /// ends with `assert isValid()`. Java's `isValid()` throws an
+    /// `IllegalStateException` describing the broken invariant, and the `assert`
+    /// only runs it under `-ea`; this port checks it with `debug_assert!`, so
+    /// the check exists in debug builds only, and panics with that message.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, when `offset` or `offset + length` falls outside
+    /// `ints`, with the message of the `IllegalStateException` from
+    /// [`is_valid`](Self::is_valid).
+    pub fn with_offset_length(ints: Vec<i32>, offset: usize, length: usize) -> Self {
+        let ints_ref = Self {
+            ints,
+            offset,
+            length,
+        };
+        debug_assert!(
+            ints_ref.is_valid().is_ok(),
+            "{}",
+            ints_ref
+                .is_valid()
+                .err()
+                .map(|e| e.to_string())
+                .unwrap_or_default()
+        );
+        ints_ref
+    }
+
     /// Returns the active slice.
     pub fn slice(&self) -> &[i32] {
         &self.ints[self.offset..self.offset + self.length]
@@ -64,11 +96,7 @@ impl IntsRef {
     ///
     /// Equivalent to `org.apache.lucene.util.IntsRef#deepCopyOf`.
     pub fn deep_copy_of(other: &IntsRef) -> Self {
-        Self {
-            ints: other.slice().to_vec(),
-            offset: 0,
-            length: other.length,
-        }
+        Self::with_offset_length(other.slice().to_vec(), 0, other.length)
     }
 
     /// Java's `hashCode()`, reproduced exactly so that values hash the same way
@@ -98,21 +126,21 @@ impl IntsRef {
     /// Equivalent to `org.apache.lucene.util.IntsRef#isValid`.
     pub fn is_valid(&self) -> Result<(), LuceneError> {
         if self.length > self.ints.len() {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "length is out of bounds: {},ints.length={}",
                 self.length,
                 self.ints.len()
             )));
         }
         if self.offset > self.ints.len() {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "offset out of bounds: {},ints.length={}",
                 self.offset,
                 self.ints.len()
             )));
         }
         if self.offset + self.length > self.ints.len() {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "offset+length out of bounds: offset={},length={},ints.length={}",
                 self.offset,
                 self.length,
@@ -136,6 +164,16 @@ impl fmt::Display for IntsRef {
             f.write_str(&crate::util::java_fmt::to_hex_string(*value))?;
         }
         f.write_str("]")
+    }
+}
+
+impl Clone for IntsRef {
+    /// Equivalent to `IntsRef.clone()` (`IntsRef.java:68-70`), which returns
+    /// `new IntsRef(ints, offset, length)` and so runs that constructor's
+    /// `assert isValid()`. Java's clone shares `ints`; this owning port copies
+    /// them, keeping the same offset and length.
+    fn clone(&self) -> Self {
+        Self::with_offset_length(self.ints.clone(), self.offset, self.length)
     }
 }
 
@@ -200,7 +238,7 @@ impl StringHelper {
         }
         mismatch
             .try_into()
-            .map_err(|_| LuceneError::IllegalState("mismatch index overflow".to_string()))
+            .map_err(|_| LuceneError::illegal_state("mismatch index overflow".to_string()))
     }
 
     /// Returns the length of `current_term` needed as a sort key so that byte
@@ -755,69 +793,6 @@ fn is_utf16_order_safe(text: &str) -> bool {
     !text.as_bytes().iter().any(|byte| *byte >= 0xEE)
 }
 
-/// Encodes a string as a VInt length followed by UTF-8 bytes.
-///
-/// This matches the byte output of `DataOutput.writeString` in Lucene.
-pub fn write_string(s: &str) -> Vec<u8> {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len() + 5);
-    write_v_int(bytes.len() as i32, &mut out);
-    out.extend_from_slice(bytes);
-    out
-}
-
-/// Decodes a string previously encoded with [`write_string`].
-///
-/// # Errors
-///
-/// Returns `LuceneError::Io` if the VInt is truncated and
-/// `LuceneError::IllegalArgument` if the UTF-8 bytes are invalid.
-pub fn read_string(bytes: &[u8], pos: &mut usize) -> Result<String, LuceneError> {
-    let length = read_v_int(bytes, pos)? as usize;
-    if *pos + length > bytes.len() {
-        return Err(LuceneError::Io(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "truncated string bytes",
-        )));
-    }
-    let s = String::from_utf8(bytes[*pos..*pos + length].to_vec())
-        .map_err(|e| LuceneError::IllegalArgument(format!("invalid UTF-8 reading string: {e}")))?;
-    *pos += length;
-    Ok(s)
-}
-
-fn read_byte(src: &[u8], pos: &mut usize) -> Result<u8, LuceneError> {
-    if *pos >= src.len() {
-        return Err(LuceneError::Io(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "unexpected EOF reading byte",
-        )));
-    }
-    let b = src[*pos];
-    *pos += 1;
-    Ok(b)
-}
-
-fn read_v_int(src: &[u8], pos: &mut usize) -> Result<i32, LuceneError> {
-    let mut b = read_byte(src, pos)? as i32;
-    let mut i = b & 0x7F;
-    let mut shift = 7;
-    while (b & 0x80) != 0 {
-        b = read_byte(src, pos)? as i32;
-        i |= (b & 0x7F) << shift;
-        shift += 7;
-    }
-    Ok(i)
-}
-
-fn write_v_int(mut value: i32, dst: &mut Vec<u8>) {
-    while (value & !0x7F) != 0 {
-        dst.push((0x80 | (value & 0x7F)) as u8);
-        value = ((value as u32) >> 7) as i32;
-    }
-    dst.push(value as u8);
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -909,34 +884,6 @@ mod tests {
 
         let bad = IntsRef::new(vec![256]);
         assert!(StringHelper::ints_ref_to_bytes_ref(&bad).is_err());
-    }
-
-    #[test]
-    fn write_and_read_string_matches_java_format() {
-        let cases = [
-            ("", vec![0x00]),
-            ("hello", vec![0x05, b'h', b'e', b'l', b'l', b'o']),
-            ("héllo", vec![0x06, b'h', 0xc3, 0xa9, b'l', b'l', b'o']),
-            (
-                "日本語",
-                vec![0x09, 0xe6, 0x97, 0xa5, 0xe6, 0x9c, 0xac, 0xe8, 0xaa, 0x9e],
-            ),
-        ];
-        for (s, expected) in cases {
-            let encoded = write_string(s);
-            assert_eq!(encoded, expected, "Java byte mismatch for {:?}", s);
-            let mut pos = 0;
-            let decoded = read_string(&encoded, &mut pos).unwrap();
-            assert_eq!(decoded, s);
-            assert_eq!(pos, encoded.len());
-        }
-    }
-
-    #[test]
-    fn read_string_detects_invalid_utf8() {
-        let encoded = vec![0x02, 0xc3, 0x28]; // invalid UTF-8
-        let mut pos = 0;
-        assert!(read_string(&encoded, &mut pos).is_err());
     }
 
     // -- compare_utf16 -------------------------------------------------------
@@ -1051,4 +998,26 @@ fn java_string_hash_code(s: &str) -> i32 {
         h = h.wrapping_mul(31).wrapping_add(i32::from(c));
     }
     h
+}
+
+#[cfg(test)]
+mod ints_ref_constructor_tests {
+    use super::*;
+
+    /// rmp #312: `IntsRef(int[], int, int)` ends with `assert isValid()`
+    /// (`IntsRef.java:54-59`), whose `IllegalStateException` names the broken
+    /// invariant; the port checks it under `debug_assert!`.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "offset+length out of bounds: offset=1,length=2,ints.length=2")]
+    fn the_constructor_asserts_is_valid_in_debug_builds() {
+        let _ = IntsRef::with_offset_length(vec![1, 2], 1, 2);
+    }
+
+    /// A valid reference keeps the given offset and length.
+    #[test]
+    fn the_constructor_keeps_a_valid_offset_and_length() {
+        let r = IntsRef::with_offset_length(vec![1, 2, 3], 1, 2);
+        assert_eq!((r.offset, r.length, r.slice()), (1, 2, &[2, 3][..]));
+    }
 }

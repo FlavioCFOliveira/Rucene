@@ -143,15 +143,6 @@ pub struct IntArrayDocIdSet {
 }
 
 impl IntArrayDocIdSet {
-    /// Wraps the first `length` entries of `docs`.
-    ///
-    /// `docs[length]` must be [`NO_MORE_DOCS`], as Lucene requires, and
-    /// `docs[..length]` must be sorted.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalArgument`] when the sentinel is missing,
-    /// which is Java's bare `IllegalArgumentException`.
     /// Returns whether the first `length` entries of `docs` are non-decreasing.
     ///
     /// Equivalent to the private `IntArrayDocIdSet.assertArraySorted(int[],
@@ -165,6 +156,15 @@ impl IntArrayDocIdSet {
         true
     }
 
+    /// Wraps the first `length` entries of `docs`.
+    ///
+    /// `docs[length]` must be [`NO_MORE_DOCS`], as Lucene requires, and
+    /// `docs[..length]` must be sorted.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the sentinel is missing,
+    /// which is Java's bare `IllegalArgumentException`.
     pub fn new(docs: Vec<i32>, length: usize) -> Result<Self> {
         if docs[length] != NO_MORE_DOCS {
             return Err(LuceneError::IllegalArgument(
@@ -179,16 +179,6 @@ impl IntArrayDocIdSet {
             docs: Arc::new(docs),
             length,
         })
-    }
-
-    /// Returns the number of documents in this set.
-    pub fn len(&self) -> usize {
-        self.length
-    }
-
-    /// Returns whether this set is empty.
-    pub fn is_empty(&self) -> bool {
-        self.length == 0
     }
 }
 
@@ -311,12 +301,15 @@ impl DocIdSetIterator for IntArrayDocIdSetIterator {
 /// random access when the wrapped set does.
 pub struct NotDocIdSet {
     max_doc: i32,
-    inner: Arc<dyn DocIdSet>,
+    inner: Arc<dyn DocIdSet + Send + Sync>,
 }
 
 impl NotDocIdSet {
     /// Negates `inner` over `[0, max_doc)`.
-    pub fn new(max_doc: i32, inner: Arc<dyn DocIdSet>) -> Self {
+    ///
+    /// Equivalent to `NotDocIdSet(int, DocIdSet)`. The wrapped set is shared
+    /// across threads, as a `RoaringDocIdSet` block that holds it is.
+    pub fn new(max_doc: i32, inner: Arc<dyn DocIdSet + Send + Sync>) -> Self {
         Self { max_doc, inner }
     }
 }
@@ -336,6 +329,13 @@ struct NotBits {
 impl Bits for NotBits {
     fn get(&self, index: usize) -> bool {
         !self.inner.get(index)
+    }
+
+    /// Forwards to the wrapped bits' `try_get`, so that an error they raise
+    /// (`ExitableDirectoryReader.java:359-387`, whose `get` throws through
+    /// every wrapper that delegates to it) is not swallowed here.
+    fn try_get(&self, index: usize) -> Result<bool> {
+        self.inner.try_get(index).map(|bit| !bit)
     }
 
     fn length(&self) -> usize {
@@ -473,9 +473,18 @@ impl DocIdSetBuilder {
 
     /// Creates a builder optimised for accumulating docs matching `terms`.
     ///
-    /// Equivalent to `new DocIdSetBuilder(int, Terms)`.
-    pub fn from_terms(max_doc: i32, terms: &dyn Terms) -> Self {
-        Self::with_stats(max_doc, terms.doc_count(), terms.sum_doc_freq())
+    /// Equivalent to `new DocIdSetBuilder(int, Terms)`, which throws
+    /// `IOException` (`DocIdSetBuilder.java:157`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading the terms statistics raises.
+    pub fn from_terms(max_doc: i32, terms: &dyn Terms) -> crate::error::Result<Self> {
+        Ok(Self::with_stats(
+            max_doc,
+            terms.doc_count()?,
+            terms.sum_doc_freq()?,
+        ))
     }
 
     /// Creates a builder optimised for accumulating docs matching `values`.

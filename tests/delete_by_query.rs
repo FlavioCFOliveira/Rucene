@@ -196,7 +196,7 @@ fn report(dir: &Arc<dyn Directory>) -> Outcome {
     let stored = reader.stored_fields().expect("stored fields");
     let mut live = Vec::new();
     let mut deleted = Vec::new();
-    for leaf in Arc::clone(&reader).leaves() {
+    for leaf in Arc::clone(&reader).leaves().unwrap() {
         let live_docs = leaf.leaf_reader().get_live_docs();
         for i in 0..leaf.leaf_reader().max_doc() {
             let id = stored

@@ -332,6 +332,7 @@ fn deleter_construction_over_a_hostile_directory_does_not_abort() {
         Arc::new(KeepOnlyLastCommitDeletionPolicy),
         &mut infos,
         Arc::new(NoOutputInfoStream),
+        &|_| Ok(String::new()),
         false,
         false,
     );
@@ -401,6 +402,7 @@ fn a_corrupt_older_commit_is_an_error_not_an_abort() {
             Arc::new(KeepOnlyLastCommitDeletionPolicy),
             &mut latest,
             Arc::new(NoOutputInfoStream),
+            &|_| Ok(String::new()),
             true,
             false,
         );
@@ -447,6 +449,7 @@ fn a_segment_infos_naming_no_commit_file_is_a_clean_no_op() {
         Arc::new(KeepOnlyLastCommitDeletionPolicy),
         &mut infos,
         Arc::new(NoOutputInfoStream),
+        &|_| Ok(String::new()),
         false,
         false,
     )

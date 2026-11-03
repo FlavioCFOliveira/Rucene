@@ -11,10 +11,11 @@
 //! file format.
 
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
-use std::thread::{Scope, ScopedJoinHandle};
+use std::sync::{mpsc, Arc, Condvar, Mutex, PoisonError};
+use std::thread::Scope;
 use std::time::{Duration, Instant};
 
 use crate::codecs::doc_values::DocValuesProducer;
@@ -51,8 +52,8 @@ use crate::util::automaton::ByteRunnable;
 use crate::util::bit_set::BitSet;
 use crate::util::{
     Automata, Automaton, Bits, ByteRunAutomaton, BytesRef, CommandLineUtil, CompiledAutomaton,
-    FixedBitSet, InfoStream, LongBitSet, Operations, PrintStreamInfoStream, StringHelper, Version,
-    DEFAULT_DETERMINIZE_WORK_LIMIT,
+    FixedBitSet, InfoStream, InterruptHandle, LongBitSet, NamedThreadFactory, Operations,
+    PrintStreamInfoStream, StringHelper, Version, DEFAULT_DETERMINIZE_WORK_LIMIT,
 };
 
 // ---------------------------------------------------------------------------
@@ -391,25 +392,39 @@ fn msg(info_stream: Option<&dyn InfoStream>, text: &str) {
     }
 }
 
-/// Formats an elapsed duration the way Java's `nsToSec` plus `%.3f` does.
+/// Formats an elapsed duration the way Java's `nsToSec` plus `%.3f` does:
+/// every "took %.3f sec" message converts `System.nanoTime() - startNS`
+/// through `nsToSec` (`CheckIndex.java:909, 1006, 1016, 1230, ...`).
 fn took(start: Instant) -> String {
-    format!("{:.3} sec", start.elapsed().as_secs_f64())
+    let elapsed_ns = i64::try_from(start.elapsed().as_nanos()).unwrap_or(i64::MAX);
+    format!("{:.3} sec", ns_to_sec(elapsed_ns))
 }
 
 /// Returns the number of set bits in `bits`.
 ///
-/// Equivalent to `CheckIndex.bitsCardinality`. Java batches through
-/// `Bits.applyMask` into a 1024-bit `FixedBitSet`; the [`Bits`] trait in this
-/// crate exposes no `apply_mask`, so this counts bit by bit. The result is
-/// identical, only slower.
-fn bits_cardinality(bits: &dyn Bits) -> i32 {
+/// Equivalent to `CheckIndex.bitsCardinality(Bits)` (`CheckIndex.java:1312-1326`),
+/// which batches 1024 bits at a time through [`Bits::apply_mask`] into a
+/// scratch [`FixedBitSet`] and adds up its cardinality.
+///
+/// # Errors
+///
+/// Returns the error [`Bits::apply_mask`] raises.
+fn bits_cardinality(bits: &dyn Bits) -> Result<i32> {
     let mut cardinality = 0i32;
-    for i in 0..bits.length() {
-        if bits.get(i) {
-            cardinality += 1;
+    let mut copy = FixedBitSet::new(1024);
+    let mut offset = 0usize;
+    while offset < bits.length() {
+        let num_bits_to_copy = (bits.length() - offset).min(copy.length());
+        copy.set_range(0, copy.length());
+        if num_bits_to_copy < copy.length() {
+            // Clear ghost bits
+            copy.clear_range(num_bits_to_copy, copy.length());
         }
+        bits.apply_mask(&mut copy, offset)?;
+        cardinality += copy.cardinality() as i32;
+        offset += copy.length();
     }
-    cardinality
+    Ok(cardinality)
 }
 
 /// Verifies the structural integrity of an index.
@@ -429,6 +444,10 @@ pub struct CheckIndex {
     fail_fast: bool,
     thread_count: usize,
     closed: bool,
+    /// The name of the thread each segment check ran on, in the order the
+    /// checks started; for the tests of the pool.
+    #[cfg(test)]
+    segment_check_threads: Mutex<Vec<Option<String>>>,
 }
 
 impl CheckIndex {
@@ -462,6 +481,8 @@ impl CheckIndex {
                 .map(|n| n.get())
                 .unwrap_or(1),
             closed: false,
+            #[cfg(test)]
+            segment_check_threads: Mutex::new(Vec::new()),
         }
     }
 
@@ -470,7 +491,7 @@ impl CheckIndex {
     /// Equivalent to `CheckIndex.ensureOpen`.
     fn ensure_open(&self) -> Result<()> {
         if self.closed {
-            return Err(LuceneError::AlreadyClosed(
+            return Err(LuceneError::already_closed(
                 "this instance is closed".to_string(),
             ));
         }
@@ -479,17 +500,15 @@ impl CheckIndex {
 
     /// Releases the write lock.
     ///
-    /// Equivalent to `CheckIndex.close()`.
+    /// Equivalent to `CheckIndex.close()` (`CheckIndex.java:450-454`),
+    /// `closed = true; IOUtils.close(writeLock)`.
     ///
     /// # Errors
     ///
     /// Propagates the failure of releasing the lock.
     pub fn close(&mut self) -> Result<()> {
         self.closed = true;
-        match self.write_lock.take() {
-            Some(mut lock) => lock.close(),
-            None => Ok(()),
-        }
+        crate::util::IOUtils::close([self.write_lock.take().map(|lock| move || lock.close())])
     }
 
     /// Sets the detail level; the higher the value, the more checks are run.
@@ -603,17 +622,26 @@ impl BufferingInfoStream {
         }
     }
 
-    /// Replays everything buffered so far to `info_stream`, in order, and
-    /// empties the buffer.
+    /// Replays everything buffered so far to `info_stream`, in order, keeping
+    /// the buffer.
     ///
-    /// Equivalent to Java's `msg(infoStream, output)`, which prints the whole
-    /// byte buffer of one segment in one go.
-    fn drain_to(&self, info_stream: Option<&dyn InfoStream>) {
-        let buffered =
-            std::mem::take(&mut *self.messages.lock().unwrap_or_else(PoisonError::into_inner));
+    /// Equivalent to Java's `msg(infoStream, output)`
+    /// (`CheckIndex.java:514-518`), `out.println(output.toString(UTF_8))`:
+    /// the whole byte buffer of one segment, whose every line ends with its
+    /// own newline, and then the newline of `println`, which is the blank line
+    /// after each replay. The buffer is a `ByteArrayOutputStream` that is
+    /// never reset, so a second replay prints it all again, as the
+    /// interrupted branch of `checkIndex(List, ExecutorService)` does.
+    fn print_to(&self, info_stream: Option<&dyn InfoStream>) {
+        let buffered = self
+            .messages
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
         for line in buffered {
             msg(info_stream, &line);
         }
+        msg(info_stream, "");
     }
 }
 
@@ -642,85 +670,320 @@ impl InfoStream for BufferingInfoStream {
     }
 }
 
-/// Caps how many segment checks may run at the same time.
-///
-/// Equivalent to the bound that the fixed-size `ExecutorService` created by
-/// `CheckIndex.checkIndex(List)` puts on concurrency.
-struct SegmentCheckPermits {
-    available: Mutex<usize>,
-    released: Condvar,
+/// A task the segment-check pool runs.
+type PoolTask<'scope> = Box<dyn FnOnce() + Send + 'scope>;
+
+/// What the threads of a [`SegmentCheckPool`] share.
+struct PoolShared<'scope> {
+    state: Mutex<PoolState<'scope>>,
+    /// Signalled when a task is queued or the pool shuts down.
+    work_available: Condvar,
+    /// Signalled when a worker exits; shared so that
+    /// [`wait_interruptibly`](crate::util::wait_interruptibly) can wait on it.
+    terminated: Arc<Condvar>,
 }
 
-impl SegmentCheckPermits {
-    /// Creates a set of `permits` permits.
-    fn new(permits: usize) -> Self {
+/// The state of a [`SegmentCheckPool`], guarded by its lock.
+struct PoolState<'scope> {
+    /// `ThreadPoolExecutor.workQueue`, an unbounded `LinkedBlockingQueue`.
+    queue: VecDeque<PoolTask<'scope>>,
+    /// Set by `shutdown()`.
+    shutdown: bool,
+    /// The workers that have not exited yet.
+    live_workers: usize,
+    /// The interrupt handle of every worker started, which `shutdownNow()`
+    /// interrupts.
+    workers: Vec<InterruptHandle>,
+}
+
+/// The fixed thread pool that checks segments concurrently.
+///
+/// Equivalent to the `ExecutorService` `CheckIndex.checkIndex(List)` creates
+/// with `Executors.newFixedThreadPool(threadCount, new
+/// NamedThreadFactory("async-check-index"))` (`CheckIndex.java:550-553`): a
+/// `ThreadPoolExecutor` whose core and maximum size are `threadCount`, over an
+/// unbounded queue. As `ThreadPoolExecutor.execute` does, a submitted task
+/// starts a new worker — named by the factory, `async-check-index-N-thread-M` —
+/// while fewer than `threadCount` workers exist, and waits in the queue
+/// otherwise; a worker takes queued tasks until the pool is shut down and the
+/// queue is empty.
+///
+/// **Divergence from Lucene 10.5.0.** Java's workers are free-standing
+/// threads, and `checkIndex(List)` returns after `awaitTermination(5,
+/// SECONDS)` and `shutdownNow()` even if a check is still running. A check
+/// borrows this `CheckIndex` — only `&self`: the commit's `SegmentInfos` is
+/// shared through an `Arc`, as Java's lambda captures `finalSis` — and Rust
+/// lets a thread borrow `&self` only on a scoped thread, so the workers live in
+/// a [`std::thread::scope`] that waits for the check a worker is running when
+/// `shutdownNow()` returns; the queued checks are dropped and the workers
+/// interrupted, as in Java.
+struct SegmentCheckPool<'scope, 'env> {
+    scope: &'scope Scope<'scope, 'env>,
+    thread_factory: NamedThreadFactory,
+    /// `corePoolSize`, `threadCount`.
+    core_pool_size: usize,
+    shared: Arc<PoolShared<'scope>>,
+}
+
+impl<'scope, 'env> SegmentCheckPool<'scope, 'env> {
+    fn new(
+        scope: &'scope Scope<'scope, 'env>,
+        thread_factory: NamedThreadFactory,
+        core_pool_size: usize,
+    ) -> Self {
         Self {
-            available: Mutex::new(permits.max(1)),
-            released: Condvar::new(),
+            scope,
+            thread_factory,
+            core_pool_size: core_pool_size.max(1),
+            shared: Arc::new(PoolShared {
+                state: Mutex::new(PoolState {
+                    queue: VecDeque::new(),
+                    shutdown: false,
+                    live_workers: 0,
+                    workers: Vec::new(),
+                }),
+                work_available: Condvar::new(),
+                terminated: Arc::new(Condvar::new()),
+            }),
         }
     }
 
-    /// Takes one permit, blocking until one is free.
-    fn acquire(&self) -> SegmentCheckPermit<'_> {
-        let mut available = self
-            .available
+    /// Runs `task` on a worker of the pool.
+    ///
+    /// Equivalent to `ThreadPoolExecutor.execute(Runnable)`: while fewer than
+    /// `corePoolSize` workers exist, a new worker starts with `task` as its
+    /// first task; otherwise `task` is queued.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::Io`] when the worker thread cannot be spawned.
+    fn execute(&self, task: PoolTask<'scope>) -> Result<()> {
+        let mut state = self
+            .shared
+            .state
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        while *available == 0 {
-            available = self
-                .released
-                .wait(available)
-                .unwrap_or_else(PoisonError::into_inner);
+        if state.workers.len() < self.core_pool_size {
+            let shared = Arc::clone(&self.shared);
+            let (started_tx, started_rx) = mpsc::channel();
+            std::thread::Builder::new()
+                .name(self.thread_factory.next_thread_name())
+                .spawn_scoped(self.scope, move || {
+                    let _ = started_tx.send(InterruptHandle::current());
+                    Self::run_worker(&shared, task);
+                })
+                .map_err(LuceneError::Io)?;
+            let handle = started_rx.recv().map_err(|_| {
+                LuceneError::illegal_state("a segment check worker exited before it started")
+            })?;
+            state.workers.push(handle);
+            state.live_workers += 1;
+        } else {
+            state.queue.push_back(task);
+            self.shared.work_available.notify_one();
         }
-        *available -= 1;
-        SegmentCheckPermit { permits: self }
+        Ok(())
     }
-}
 
-/// One permit held by a running segment check, returned when it is dropped.
-struct SegmentCheckPermit<'a> {
-    permits: &'a SegmentCheckPermits,
-}
+    /// The loop of one worker: its first task, then every task it takes from
+    /// the queue, until the pool is shut down and the queue is empty.
+    ///
+    /// Equivalent to `ThreadPoolExecutor.runWorker` with `getTask`.
+    fn run_worker(shared: &PoolShared<'scope>, first_task: PoolTask<'scope>) {
+        let mut task = Some(first_task);
+        loop {
+            if let Some(task) = task.take() {
+                task();
+            }
+            let mut state = shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+            loop {
+                if let Some(next) = state.queue.pop_front() {
+                    task = Some(next);
+                    break;
+                }
+                if state.shutdown {
+                    state.live_workers -= 1;
+                    shared.terminated.notify_all();
+                    return;
+                }
+                state = shared
+                    .work_available
+                    .wait(state)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
+        }
+    }
 
-impl Drop for SegmentCheckPermit<'_> {
-    fn drop(&mut self) {
-        *self
-            .permits
-            .available
+    /// Accepts no new task; the queued ones still run.
+    ///
+    /// Equivalent to `ExecutorService.shutdown()`.
+    fn shutdown(&self) {
+        let mut state = self
+            .shared
+            .state
             .lock()
-            .unwrap_or_else(PoisonError::into_inner) += 1;
-        self.permits.released.notify_one();
+            .unwrap_or_else(PoisonError::into_inner);
+        state.shutdown = true;
+        self.shared.work_available.notify_all();
+    }
+
+    /// Waits until every worker has exited, or `timeout` has elapsed; returns
+    /// whether the workers exited.
+    ///
+    /// Equivalent to `ExecutorService.awaitTermination(long, TimeUnit)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InterruptedException`](crate::util::InterruptedException)
+    /// when the calling thread is interrupted while it waits.
+    fn await_termination(
+        &self,
+        timeout: Duration,
+    ) -> std::result::Result<bool, crate::util::InterruptedException> {
+        let deadline = Instant::now() + timeout;
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        while state.live_workers > 0 {
+            let now = Instant::now();
+            if now >= deadline {
+                return Ok(false);
+            }
+            let (reacquired, waited) = crate::util::wait_interruptibly(
+                &self.shared.terminated,
+                state,
+                Some(deadline - now),
+            )
+            .unwrap_or_else(PoisonError::into_inner);
+            state = reacquired;
+            waited?;
+        }
+        Ok(true)
+    }
+
+    /// Drops the queued tasks and interrupts the workers.
+    ///
+    /// Equivalent to `ExecutorService.shutdownNow()`, whose list of the tasks
+    /// that never ran `checkIndex(List)` ignores.
+    fn shutdown_now(&self) {
+        let workers = {
+            let mut state = self
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            state.shutdown = true;
+            state.queue.clear();
+            self.shared.work_available.notify_all();
+            state.workers.clone()
+        };
+        for worker in workers {
+            worker.interrupt();
+        }
     }
 }
 
-/// Starts one segment check on another thread and hands back the handle that
-/// yields its result.
+/// The outcome of one segment check, as its future yields it: the check's
+/// result, or the panic it raised.
+type SegmentCheckOutcome = std::thread::Result<Result<SegmentInfoStatus>>;
+
+/// The future one segment check completes.
+///
+/// Equivalent to the `CompletableFuture<Status.SegmentInfoStatus>` that
+/// `CheckIndex.runAsyncSegmentCheck` returns, as far as `checkIndex(List,
+/// ExecutorService)` uses it: the task completes it once, and `get()` waits
+/// for it interruptibly.
+struct SegmentCheckFuture {
+    outcome: Mutex<Option<SegmentCheckOutcome>>,
+    /// Signalled when the outcome is set; shared so that
+    /// [`wait_interruptibly`](crate::util::wait_interruptibly) can wait on it.
+    completed: Arc<Condvar>,
+}
+
+impl SegmentCheckFuture {
+    fn new() -> Self {
+        Self {
+            outcome: Mutex::new(None),
+            completed: Arc::new(Condvar::new()),
+        }
+    }
+
+    /// Sets the outcome and wakes the thread waiting for it.
+    ///
+    /// Equivalent to the completion `CompletableFuture.supplyAsync`'s task
+    /// performs.
+    fn complete(&self, outcome: SegmentCheckOutcome) {
+        *self.outcome.lock().unwrap_or_else(PoisonError::into_inner) = Some(outcome);
+        self.completed.notify_all();
+    }
+
+    /// Waits for the outcome and takes it.
+    ///
+    /// Equivalent to `CompletableFuture.get()`, whose behaviour on an
+    /// interrupt the JDK 25 oracle (`oracle/passG2/FutureGetOracle.java`)
+    /// pins: a completed future returns its outcome and leaves the interrupt
+    /// status set; a pending one throws `InterruptedException` at once when
+    /// the status is set on entry, or as soon as the thread is interrupted
+    /// while it waits, clearing the status — unless the outcome arrived
+    /// meanwhile, which `waitingGet` then returns, interrupting the thread
+    /// again.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InterruptedException`](crate::util::InterruptedException)
+    /// when the thread is interrupted before the outcome is available.
+    fn get(&self) -> std::result::Result<SegmentCheckOutcome, crate::util::InterruptedException> {
+        let mut outcome = self.outcome.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            if let Some(outcome) = outcome.take() {
+                return Ok(outcome);
+            }
+            let (reacquired, waited) =
+                crate::util::wait_interruptibly(&self.completed, outcome, None)
+                    .unwrap_or_else(PoisonError::into_inner);
+            outcome = reacquired;
+            if let Err(interrupted) = waited {
+                return match outcome.take() {
+                    Some(outcome) => {
+                        crate::util::InterruptHandle::current().interrupt();
+                        Ok(outcome)
+                    }
+                    None => Err(interrupted),
+                };
+            }
+        }
+    }
+}
+
+/// Submits one segment check to `pool` and hands back the future that yields
+/// its outcome.
 ///
 /// Equivalent to `CheckIndex.runAsyncSegmentCheck(Callable, ExecutorService)`,
-/// which submits the callable to the executor as a `CompletableFuture`.
+/// `CompletableFuture.supplyAsync(callableToSupplier(asyncCallable),
+/// executorService)`. As `supplyAsync`'s task does, the task catches what the
+/// check throws — here a panic — so that the worker survives it and the
+/// future carries it.
 ///
-/// **Divergence from Lucene 10.5.0.** Java submits to a fixed-size
-/// `ExecutorService`, whose pool size bounds both the number of threads and the
-/// number of checks running at once. The Rust standard library ships no thread
-/// pool, and the crate's [`Executor`](crate::search::Executor) seam only accepts
-/// `'static` tasks, which a check borrowing this `CheckIndex` and the commit's
-/// `SegmentInfos` cannot be. This port therefore spawns one scoped thread per
-/// segment and gates the check itself on `permits`, so that `thread_count` still
-/// caps how many segments are checked concurrently, exactly as the pool size
-/// does in Java.
-fn run_async_segment_check<'scope, 'env, F>(
+/// # Errors
+///
+/// Returns [`LuceneError::Io`] when the pool cannot spawn a worker.
+fn run_async_segment_check<'scope, F>(
     async_callable: F,
-    permits: &'env SegmentCheckPermits,
-    scope: &'scope Scope<'scope, 'env>,
-) -> ScopedJoinHandle<'scope, Result<SegmentInfoStatus>>
+    pool: &SegmentCheckPool<'scope, '_>,
+) -> Result<Arc<SegmentCheckFuture>>
 where
     F: FnOnce() -> Result<SegmentInfoStatus> + Send + 'scope,
 {
     let supplier = callable_to_supplier(async_callable);
-    scope.spawn(move || {
-        let _permit = permits.acquire();
-        supplier()
-    })
+    let future = Arc::new(SegmentCheckFuture::new());
+    let completion = Arc::clone(&future);
+    pool.execute(Box::new(move || {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(supplier));
+        completion.complete(outcome);
+    }))?;
+    Ok(future)
 }
 
 /// Adapts a fallible segment check into the form the thread that runs it
@@ -734,11 +997,11 @@ where
 /// `CompletionException`, so the future can carry it to whoever joins.
 ///
 /// **Divergence from Lucene 10.5.0.** Rust draws no checked/unchecked line: a
-/// failure is a [`Result`] on the ordinary return path, and the handle
+/// failure is a [`Result`] on the ordinary return path, and the future
 /// [`run_async_segment_check`] returns already carries it, so there is nothing
 /// to convert and the task is passed through as it is. The one failure that
-/// does not travel as a value — a panic — surfaces at
-/// [`ScopedJoinHandle::join`] as `Err`, which the caller turns into a
+/// does not travel as a value — a panic — is caught by the pool's task and
+/// surfaces from the future as `Err`, which the caller turns into a
 /// `CheckIndexException` just as Java's future surfaces a
 /// `CompletionException`.
 fn callable_to_supplier<T, F>(callable: F) -> impl FnOnce() -> Result<T>
@@ -771,28 +1034,82 @@ impl CheckIndex {
     /// Returns a [`Status`] describing the state of the named segments, or of
     /// every segment when `only_segments` is `None`.
     ///
-    /// Equivalent to `CheckIndex.checkIndex(List)`, which creates the executor
-    /// that checks the segments concurrently when the thread count is greater
-    /// than one, and shuts it down afterwards. In this port the threads live in
-    /// a `std::thread::scope` inside the check, so there is nothing to shut
-    /// down; the divergence is recorded on the private
-    /// `run_async_segment_check`, which spawns them.
+    /// Equivalent to `CheckIndex.checkIndex(List)` (`CheckIndex.java:545-573`),
+    /// which, when the thread count is greater than one, creates the fixed
+    /// thread pool of `NamedThreadFactory("async-check-index")` threads that
+    /// checks the segments concurrently, and shuts it down in its `finally`:
+    /// `shutdown()`, `awaitTermination(5, SECONDS)` — reporting an
+    /// `InterruptedException` — and `shutdownNow()`, once the check, "Took …
+    /// total." included, is over, however it ended. The pool's threads are
+    /// scoped ([`SegmentCheckPool`]), so the scope spans that `try`.
     ///
     /// # Errors
     ///
     /// As [`CheckIndex::check_index`].
+    ///
+    /// # Panics
+    ///
+    /// Panics with Java's `NullPointerException` message, `Cannot read field
+    /// "error" because "segmentInfoStatus" is null`, when the thread is
+    /// interrupted while it waits for a concurrent segment check, as Lucene
+    /// 10.5.0 throws that exception there (`CheckIndex.java:855-875`); a panic
+    /// is the port's form of an unchecked exception. The pool is shut down
+    /// first.
     pub fn check_index_segments(&self, only_segments: Option<&[String]>) -> Result<Status> {
-        msg(
-            self.info(),
-            &format!("Checking index with threadCount: {}", self.thread_count),
-        );
-        self.check_index_impl(only_segments)
+        // If threadCount == 1, then no executor is created and use the main
+        // thread to do index checking sequentially.
+        if self.thread_count <= 1 {
+            msg(
+                self.info(),
+                &format!("Checking index with threadCount: {}", self.thread_count),
+            );
+            return self.check_index_impl(only_segments, None);
+        }
+        std::thread::scope(|scope| {
+            let pool = SegmentCheckPool::new(
+                scope,
+                NamedThreadFactory::new("async-check-index"),
+                self.thread_count,
+            );
+            msg(
+                self.info(),
+                &format!("Checking index with threadCount: {}", self.thread_count),
+            );
+            // `try { return checkIndex(onlySegments, executorService); }`: the
+            // `finally` below runs whatever the check raised, a panic included.
+            let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.check_index_impl(only_segments, Some(&pool))
+            }));
+            // `finally { executorService.shutdown(); try {
+            // executorService.awaitTermination(5, TimeUnit.SECONDS); } catch
+            // (InterruptedException e) { ... } finally {
+            // executorService.shutdownNow(); } }`.
+            pool.shutdown();
+            if let Err(e) = pool.await_termination(Duration::from_secs(5)) {
+                msg(
+                    self.info(),
+                    "ERROR: Interrupted exception occurred when shutting down executor service",
+                );
+                // `e.printStackTrace(infoStream)`, without the JVM's frames.
+                msg(self.info(), &format!("{e}"));
+            }
+            pool.shutdown_now();
+            match checked {
+                Ok(checked) => checked,
+                Err(payload) => std::panic::resume_unwind(payload),
+            }
+        })
     }
 
     /// Walks the commit points and checks the segments of the last one.
     ///
-    /// Equivalent to `CheckIndex.checkIndex(List, ExecutorService)`.
-    fn check_index_impl(&self, only_segments: Option<&[String]>) -> Result<Status> {
+    /// Equivalent to `CheckIndex.checkIndex(List, ExecutorService)`; `pool`
+    /// is Java's executor, `None` where Java's is `null`.
+    fn check_index_impl<'scope>(
+        &'scope self,
+        only_segments: Option<&[String]>,
+        pool: Option<&SegmentCheckPool<'scope, '_>>,
+    ) -> Result<Status> {
         self.ensure_open()?;
         let start = Instant::now();
 
@@ -911,10 +1228,10 @@ impl CheckIndex {
         let mut newest: Option<Version> = None;
         for si in last_commit.iter() {
             let version = si.info.version();
-            if oldest.map_or(true, |oldest| !version.on_or_after(&oldest)) {
+            if oldest.is_none_or(|oldest| !version.on_or_after(&oldest)) {
                 oldest = Some(version);
             }
-            if newest.map_or(true, |newest| version.on_or_after(&newest)) {
+            if newest.is_none_or(|newest| version.on_or_after(&newest)) {
                 newest = Some(version);
             }
         }
@@ -965,7 +1282,18 @@ impl CheckIndex {
         result.new_segments = Some(new_segments);
         result.max_segment_name = -1;
 
-        if self.thread_count <= 1 {
+        // Shared with the pool's tasks, which Java's lambdas capture as
+        // `finalSis`.
+        let last_commit = Arc::new(last_commit);
+        if let Some(pool) = pool {
+            self.check_segments_concurrently(
+                &last_commit,
+                num_segments,
+                only_segments,
+                pool,
+                &mut result,
+            )?;
+        } else {
             // Checks segments sequentially.
             for i in 0..num_segments {
                 let info = last_commit.info(i);
@@ -987,119 +1315,6 @@ impl CheckIndex {
 
                 self.process_segment_info_status_result(&mut result, info, segment_info_status)?;
             }
-        } else {
-            // Sort the segments by size, as a smaller segment tends to finish
-            // faster and hence its output can be printed out faster.
-            let mut sized: Vec<(i64, &SegmentCommitInfo)> = Vec::with_capacity(num_segments);
-            for info in last_commit.iter() {
-                let size = match info.size_in_bytes_uncached() {
-                    Ok(size) => size,
-                    Err(error) => {
-                        msg(
-                            self.info(),
-                            "ERROR: IOException occurred when comparing SegmentCommitInfo file \
-                             sizes",
-                        );
-                        msg(self.info(), &format!("{error}"));
-                        0
-                    }
-                };
-                sized.push((size, info));
-            }
-            sized.sort_by_key(|(size, _)| *size);
-            let segment_commit_infos: Vec<&SegmentCommitInfo> =
-                sized.into_iter().map(|(_, info)| info).collect();
-
-            let permits = SegmentCheckPermits::new(self.thread_count);
-            let last_commit_ref = &last_commit;
-            let result_ref = &mut result;
-
-            // Checks segments concurrently.
-            std::thread::scope(|scope| -> Result<()> {
-                let mut buffers: Vec<Option<Arc<BufferingInfoStream>>> =
-                    (0..num_segments).map(|_| None).collect();
-                let mut handles: Vec<Option<ScopedJoinHandle<'_, Result<SegmentInfoStatus>>>> =
-                    (0..num_segments).map(|_| None).collect();
-
-                // Start larger segments earlier.
-                for i in (0..num_segments).rev() {
-                    let info = segment_commit_infos[i];
-                    self.update_max_segment_name(result_ref, info)?;
-                    if is_skipped_segment(only_segments, &info.info.name) {
-                        continue;
-                    }
-
-                    let buffer = Arc::new(BufferingInfoStream::new());
-                    msg(
-                        Some(buffer.as_ref() as &dyn InfoStream),
-                        &format!(
-                            "{} of {num_segments}: name={} maxDoc={}",
-                            1 + i,
-                            info.info.name,
-                            info.info.max_doc()?
-                        ),
-                    );
-
-                    let task_buffer = Arc::clone(&buffer);
-                    buffers[i] = Some(buffer);
-                    handles[i] = Some(run_async_segment_check(
-                        move || {
-                            self.test_segment(
-                                last_commit_ref,
-                                info,
-                                Some(task_buffer.as_ref() as &dyn InfoStream),
-                            )
-                        },
-                        &permits,
-                        scope,
-                    ));
-                }
-
-                for i in 0..num_segments {
-                    let info = segment_commit_infos[i];
-                    // A segment left out of the check has neither a buffer nor a
-                    // handle, which is what makes this the same skip as above.
-                    let (Some(buffer), Some(handle)) = (buffers[i].take(), handles[i].take())
-                    else {
-                        continue;
-                    };
-
-                    match handle.join() {
-                        Ok(Ok(segment_info_status)) => {
-                            // Print the segment results in order.
-                            buffer.drain_to(self.info());
-                            self.process_segment_info_status_result(
-                                result_ref,
-                                info,
-                                segment_info_status,
-                            )?;
-                        }
-                        Ok(Err(error)) => {
-                            // The check only fails instead of recording the
-                            // failure when `fail_fast` is set, which is Java's
-                            // `assert failFast` on this path.
-                            buffer.drain_to(self.info());
-                            return Err(check_index_error_with_cause(
-                                &format!("Segment {} check failed.", info.info.name),
-                                &error,
-                            ));
-                        }
-                        Err(_) => {
-                            // Java has no counterpart: a `CompletableFuture`
-                            // reports a `RuntimeException` as an
-                            // `ExecutionException` like any other failure, while
-                            // a Rust panic unwinds into the join handle instead.
-                            buffer.drain_to(self.info());
-                            return Err(check_index_error(format!(
-                                "Segment {} check panicked.",
-                                info.info.name
-                            )));
-                        }
-                    }
-                }
-
-                Ok(())
-            })?;
         }
 
         if result.num_bad_segments == 0 {
@@ -1136,6 +1351,171 @@ impl CheckIndex {
         msg(self.info(), &format!("Took {} total.", took(start)));
 
         Ok(result)
+    }
+
+    /// Checks the segments of `last_commit` on the pool, larger segments
+    /// first, and records their results in segment order.
+    ///
+    /// Equivalent to the concurrent branch of `CheckIndex.checkIndex(List,
+    /// ExecutorService)` (`CheckIndex.java:791-876`). The pool belongs to the
+    /// caller, which shuts it down, as Java's executor belongs to
+    /// `checkIndex(List)`.
+    ///
+    /// Waiting for a segment's result is `futures[i].get()`, which an
+    /// interrupt ends ([`SegmentCheckFuture::get`]). Java then reports the
+    /// segment's buffered output, an `ERROR` line and the exception, falls
+    /// through to report the output a second time, and hands the `null`
+    /// result to `processSegmentInfoStatusResult`, whose
+    /// `segmentInfoStatus.error` throws `NullPointerException`; this port
+    /// reports the same and panics with that exception's message, a panic
+    /// being the port's form of an unchecked exception.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `CheckIndexException` naming the segment whose check failed —
+    /// which happens only with [`set_fail_fast`](CheckIndex::set_fail_fast) —
+    /// or panicked.
+    ///
+    /// # Panics
+    ///
+    /// Panics as described above when the thread is interrupted while it
+    /// waits for a segment's result.
+    fn check_segments_concurrently<'scope>(
+        &'scope self,
+        last_commit: &Arc<SegmentInfos>,
+        num_segments: usize,
+        only_segments: Option<&[String]>,
+        pool: &SegmentCheckPool<'scope, '_>,
+        result: &mut Status,
+    ) -> Result<()> {
+        // Sort the segments by size, as a smaller segment tends to finish
+        // faster and hence its output can be printed out faster.
+        let mut sized: Vec<(i64, usize)> = Vec::with_capacity(num_segments);
+        for (index, info) in last_commit.iter().enumerate() {
+            let size = match info.size_in_bytes_uncached() {
+                Ok(size) => size,
+                Err(error) => {
+                    msg(
+                        self.info(),
+                        "ERROR: IOException occurred when comparing SegmentCommitInfo file \
+                         sizes",
+                    );
+                    msg(self.info(), &format!("{error}"));
+                    0
+                }
+            };
+            sized.push((size, index));
+        }
+        sized.sort_by_key(|(size, _)| *size);
+        let segment_commit_infos: Vec<usize> = sized.into_iter().map(|(_, index)| index).collect();
+
+        let mut buffers: Vec<Option<Arc<BufferingInfoStream>>> =
+            (0..num_segments).map(|_| None).collect();
+        let mut futures: Vec<Option<Arc<SegmentCheckFuture>>> =
+            (0..num_segments).map(|_| None).collect();
+
+        // Start larger segments earlier.
+        for i in (0..num_segments).rev() {
+            let info = last_commit.info(segment_commit_infos[i]);
+            self.update_max_segment_name(result, info)?;
+            if is_skipped_segment(only_segments, &info.info.name) {
+                continue;
+            }
+
+            let buffer = Arc::new(BufferingInfoStream::new());
+            msg(
+                Some(buffer.as_ref() as &dyn InfoStream),
+                &format!(
+                    "{} of {num_segments}: name={} maxDoc={}",
+                    1 + i,
+                    info.info.name,
+                    info.info.max_doc()?
+                ),
+            );
+
+            let task_buffer = Arc::clone(&buffer);
+            // Java's lambda captures `finalSis` and `info`.
+            let final_sis = Arc::clone(last_commit);
+            let index = segment_commit_infos[i];
+            buffers[i] = Some(buffer);
+            futures[i] = Some(run_async_segment_check(
+                move || {
+                    #[cfg(test)]
+                    self.segment_check_threads
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push(std::thread::current().name().map(str::to_string));
+                    self.test_segment(
+                        &final_sis,
+                        final_sis.info(index),
+                        Some(task_buffer.as_ref() as &dyn InfoStream),
+                    )
+                },
+                pool,
+            )?);
+        }
+
+        for i in 0..num_segments {
+            let info = last_commit.info(segment_commit_infos[i]);
+            // A segment left out of the check has neither a buffer nor a
+            // future, which is what makes this the same skip as above.
+            let (Some(buffer), Some(future)) = (buffers[i].take(), futures[i].take()) else {
+                continue;
+            };
+
+            // Print the segment results in order.
+            let segment_info_status = match future.get() {
+                Ok(Ok(Ok(segment_info_status))) => Some(segment_info_status),
+                Ok(Ok(Err(error))) => {
+                    // The check only fails instead of recording the failure
+                    // when `fail_fast` is set, which is Java's `assert
+                    // failFast` on this path.
+                    buffer.print_to(self.info());
+                    return Err(check_index_error_with_cause(
+                        &format!("Segment {} check failed.", info.info.name),
+                        &error,
+                    ));
+                }
+                Ok(Err(_)) => {
+                    // Java has no counterpart: a `CompletableFuture` reports a
+                    // `RuntimeException` as an `ExecutionException` like any
+                    // other failure, while a Rust panic is caught as a payload.
+                    buffer.print_to(self.info());
+                    return Err(check_index_error(format!(
+                        "Segment {} check panicked.",
+                        info.info.name
+                    )));
+                }
+                Err(interrupted) => {
+                    // The segment test output should come before the
+                    // interrupted exception message that follows, hence it is
+                    // not emitted from a `finally` clause.
+                    buffer.print_to(self.info());
+                    msg(
+                        self.info(),
+                        &format!(
+                            "ERROR: Interrupted exception occurred when getting segment check \
+                             result for segment {}",
+                            info.info.name
+                        ),
+                    );
+                    // `e.printStackTrace(infoStream)`, without the JVM's frames.
+                    msg(self.info(), &format!("{interrupted}"));
+                    None
+                }
+            };
+
+            buffer.print_to(self.info());
+
+            // `processSegmentInfoStatusResult(result, info, segmentInfoStatus)`
+            // reads `segmentInfoStatus.error` (`CheckIndex.java:924`), which a
+            // `null` status turns into `NullPointerException`.
+            let Some(segment_info_status) = segment_info_status else {
+                panic!("Cannot read field \"error\" because \"segmentInfoStatus\" is null");
+            };
+            self.process_segment_info_status_result(result, info, segment_info_status)?;
+        }
+        Ok(())
     }
 
     /// Raises `result.max_segment_name` to `info`'s segment name when that name
@@ -1250,9 +1630,13 @@ impl CheckIndex {
             seg_info_stat.compound = info.info.get_use_compound_file();
             let num_files = info.files()?.len();
             msg(info_stream, &format!("    numFiles={num_files}"));
-            // An empty `Sort` is how this crate spells Java's null index sort.
+            // `Sort::new()` (relevance) is how this crate spells Java's null
+            // index sort: the segment-info reader stores it for a sort of no
+            // fields, and the writer writes it back as one
+            // (`lucene99/segment_info_format.rs`, `write_segment_sort`). Java
+            // runs `testSort` only for a non-null sort (`CheckIndex.java:974-977`, `:1089-1092`).
             let index_sort = info.info.index_sort();
-            let index_sort = if index_sort.fields().is_empty() {
+            let index_sort = if index_sort.fields().is_empty() || *index_sort == Sort::new() {
                 None
             } else {
                 Some(index_sort)
@@ -1289,11 +1673,11 @@ impl CheckIndex {
             }
 
             let start_open_reader = Instant::now();
-            let reader = SegmentReader::new(
+            let reader = Arc::new(SegmentReader::new(
                 info.clone(),
                 sis.index_created_version_major(),
                 &*DEFAULT_IO_CONTEXT,
-            )?;
+            )?);
             msg(
                 info_stream,
                 &format!(
@@ -1326,7 +1710,7 @@ impl CheckIndex {
 
             // `has_deletions` lives on `IndexReader`, whose `max_doc` and
             // `num_docs` would shadow `LeafReader`'s if the trait were imported.
-            if crate::index::index_reader::IndexReader::has_deletions(&reader) {
+            if crate::index::index_reader::IndexReader::has_deletions(&*reader) {
                 if num_docs != max_doc - info.get_del_count() {
                     return Err(check_index_error(format!(
                         "delete count mismatch: info={} vs reader={num_docs}",
@@ -1356,7 +1740,7 @@ impl CheckIndex {
             }
 
             if self.level >= Level::MIN_LEVEL_FOR_INTEGRITY_CHECKS {
-                let codec_reader: &dyn CodecReader = &reader;
+                let codec_reader: &dyn CodecReader = &*reader;
 
                 // Test live docs.
                 seg_info_stat.live_doc_status =
@@ -1410,7 +1794,7 @@ impl CheckIndex {
                 // Test the index sort.
                 if index_sort.is_some() {
                     seg_info_stat.index_sort_status = Some(test_sort(
-                        codec_reader,
+                        &(Arc::clone(&reader) as Arc<dyn CodecReader>),
                         index_sort,
                         info_stream,
                         self.fail_fast,
@@ -1423,7 +1807,7 @@ impl CheckIndex {
                     seg_info_stat.soft_deletes_status = Some(check_soft_deletes(
                         soft_deletes_field,
                         info.get_soft_del_count(),
-                        &reader as &dyn LeafReader,
+                        &*reader as &dyn LeafReader,
                         info_stream,
                         self.fail_fast,
                     )?);
@@ -1720,7 +2104,7 @@ pub fn test_live_docs(
                     "segment should have deletions, but liveDocs is null",
                 ));
             };
-            let num_live = bits_cardinality(live_docs.as_ref());
+            let num_live = bits_cardinality(live_docs.as_ref())?;
             if num_live != num_docs {
                 return Err(check_index_error(format!(
                     "liveDocs count mismatch: info={num_docs}, vs bits={num_live}"
@@ -2581,50 +2965,67 @@ fn check_doc_values(
 ) -> Result<()> {
     if fi.doc_values_skip_index_type() != DocValuesSkipIndexType::NONE {
         status.total_skipping_index += 1;
-        let mut skipper = dv_reader.get_skipper(fi)?;
+        // Java dereferences the result unchecked (`CheckIndex.java:3910-3912`,
+        // `:3397-3400`), so a missing skipper is Java's `NullPointerException`.
+        let mut skipper = dv_reader.get_skipper(fi)?.ok_or_else(|| {
+            LuceneError::illegal_state(format!(
+                "field \"{}\" declares a skip index but its producer returned none",
+                fi.name
+            ))
+        })?;
         check_doc_value_skipper(fi, skipper.as_mut())?;
     }
     match fi.get_doc_values_type() {
         DocValuesType::SORTED => {
             status.total_sorted_fields += 1;
-            check_dv_iterator(fi, || dv_reader.get_sorted(fi))?;
-            let mut a = dv_reader.get_sorted(fi)?;
-            let mut b = dv_reader.get_sorted(fi)?;
+            check_dv_iterator(fi, || {
+                crate::codecs::doc_values::non_null(dv_reader.get_sorted(fi)?, fi)
+            })?;
+            let mut a = crate::codecs::doc_values::non_null(dv_reader.get_sorted(fi)?, fi)?;
+            let mut b = crate::codecs::doc_values::non_null(dv_reader.get_sorted(fi)?, fi)?;
             check_sorted_doc_values(fi.get_name(), a.as_mut(), b.as_mut())?;
         }
         DocValuesType::SORTED_NUMERIC => {
             status.total_sorted_numeric_fields += 1;
-            check_dv_iterator(fi, || dv_reader.get_sorted_numeric(fi))?;
-            let mut a = dv_reader.get_sorted_numeric(fi)?;
-            let mut b = dv_reader.get_sorted_numeric(fi)?;
+            check_dv_iterator(fi, || {
+                crate::codecs::doc_values::non_null(dv_reader.get_sorted_numeric(fi)?, fi)
+            })?;
+            let mut a = crate::codecs::doc_values::non_null(dv_reader.get_sorted_numeric(fi)?, fi)?;
+            let mut b = crate::codecs::doc_values::non_null(dv_reader.get_sorted_numeric(fi)?, fi)?;
             check_sorted_numeric_doc_values(fi.get_name(), a.as_mut(), b.as_mut())?;
         }
         DocValuesType::SORTED_SET => {
             status.total_sorted_set_fields += 1;
-            check_dv_iterator(fi, || dv_reader.get_sorted_set(fi))?;
-            let mut a = dv_reader.get_sorted_set(fi)?;
-            let mut b = dv_reader.get_sorted_set(fi)?;
+            check_dv_iterator(fi, || {
+                crate::codecs::doc_values::non_null(dv_reader.get_sorted_set(fi)?, fi)
+            })?;
+            let mut a = crate::codecs::doc_values::non_null(dv_reader.get_sorted_set(fi)?, fi)?;
+            let mut b = crate::codecs::doc_values::non_null(dv_reader.get_sorted_set(fi)?, fi)?;
             check_sorted_set_doc_values(fi.get_name(), a.as_mut(), b.as_mut())?;
         }
         DocValuesType::BINARY => {
             status.total_binary_fields += 1;
-            check_dv_iterator(fi, || dv_reader.get_binary(fi))?;
-            let mut a = dv_reader.get_binary(fi)?;
-            let mut b = dv_reader.get_binary(fi)?;
+            check_dv_iterator(fi, || {
+                crate::codecs::doc_values::non_null(dv_reader.get_binary(fi)?, fi)
+            })?;
+            let mut a = crate::codecs::doc_values::non_null(dv_reader.get_binary(fi)?, fi)?;
+            let mut b = crate::codecs::doc_values::non_null(dv_reader.get_binary(fi)?, fi)?;
             check_binary_doc_values(fi.get_name(), a.as_mut(), b.as_mut())?;
         }
         DocValuesType::NUMERIC => {
             status.total_numeric_fields += 1;
-            check_dv_iterator(fi, || dv_reader.get_numeric(fi))?;
-            let mut a = dv_reader.get_numeric(fi)?;
-            let mut b = dv_reader.get_numeric(fi)?;
+            check_dv_iterator(fi, || {
+                crate::codecs::doc_values::non_null(dv_reader.get_numeric(fi)?, fi)
+            })?;
+            let mut a = crate::codecs::doc_values::non_null(dv_reader.get_numeric(fi)?, fi)?;
+            let mut b = crate::codecs::doc_values::non_null(dv_reader.get_numeric(fi)?, fi)?;
             check_numeric_doc_values(fi.get_name(), a.as_mut(), b.as_mut())?;
-            let mut a = dv_reader.get_numeric(fi)?;
-            let mut b = dv_reader.get_numeric(fi)?;
+            let mut a = crate::codecs::doc_values::non_null(dv_reader.get_numeric(fi)?, fi)?;
+            let mut b = crate::codecs::doc_values::non_null(dv_reader.get_numeric(fi)?, fi)?;
             check_bulk_fetch_numeric_doc_values(a.as_mut(), b.as_mut(), max_doc)?;
         }
         DocValuesType::NONE => {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "checkDocValues called on field {} which has no doc values",
                 fi.get_name()
             )));
@@ -2731,11 +3132,15 @@ pub fn test_field_norms(
                         info.get_name()
                     )));
                 };
-                let mut a = norms_reader.get_norms(info)?;
-                let mut b = norms_reader.get_norms(info)?;
+                let mut a =
+                    crate::codecs::doc_values::non_null(norms_reader.get_norms(info)?, info)?;
+                let mut b =
+                    crate::codecs::doc_values::non_null(norms_reader.get_norms(info)?, info)?;
                 check_numeric_doc_values(info.get_name(), a.as_mut(), b.as_mut())?;
-                let mut a = norms_reader.get_norms(info)?;
-                let mut b = norms_reader.get_norms(info)?;
+                let mut a =
+                    crate::codecs::doc_values::non_null(norms_reader.get_norms(info)?, info)?;
+                let mut b =
+                    crate::codecs::doc_values::non_null(norms_reader.get_norms(info)?, info)?;
                 check_bulk_fetch_numeric_doc_values(a.as_mut(), b.as_mut(), reader.max_doc())?;
                 status.tot_fields += 1;
             }
@@ -2786,7 +3191,7 @@ fn check_terms_intersect(
     let automaton = match Operations::determinize(automaton, DEFAULT_DETERMINIZE_WORK_LIMIT) {
         Ok(a) => a,
         Err(e) => {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "could not determinize the CheckIndex probe automaton: {e:?}"
             )))
         }
@@ -2906,10 +3311,10 @@ fn check_fields(
             continue;
         };
 
-        if terms.doc_count() > max_doc {
+        if terms.doc_count()? > max_doc {
             return Err(check_index_error(format!(
                 "docCount > maxDoc for field: {field}, docCount={}, maxDoc={max_doc}",
-                terms.doc_count()
+                terms.doc_count()?
             )));
         }
 
@@ -3245,11 +3650,11 @@ fn check_fields(
                     term.to_hex_string()
                 )));
             }
-            if doc_freq > terms.doc_count() {
+            if doc_freq > terms.doc_count()? {
                 return Err(check_index_error(format!(
                     "term {} docFreq={doc_freq} > docCount={}",
                     term.to_hex_string(),
-                    terms.doc_count()
+                    terms.doc_count()?
                 )));
             }
             if total_term_freq2 <= 0 {
@@ -3466,20 +3871,25 @@ fn check_fields(
                     let mut doc = impacts_enum.doc_id();
                     let advance;
                     let target;
+                    // Java's `int` arithmetic wraps here (`CheckIndex.java:2094-2115`):
+                    // before the first document `doc` is -1, so
+                    // `NO_MORE_DOCS - doc` overflows to `Integer.MIN_VALUE` and the
+                    // target wraps round to `NO_MORE_DOCS`. The same wrapping is
+                    // reproduced rather than letting a debug build abort.
                     if ((field_hash.wrapping_add(doc)) & 1) == 1 {
                         advance = false;
-                        target = doc + 1;
+                        target = doc.wrapping_add(1);
                     } else {
                         advance = true;
                         let delta = (1 + ((field_hash.wrapping_mul(31).wrapping_add(doc)) & 0x1ff))
-                            .min(NO_MORE_DOCS - doc);
-                        target = impacts_enum.doc_id() + delta;
+                            .min(NO_MORE_DOCS.wrapping_sub(doc));
+                        target = impacts_enum.doc_id().wrapping_add(delta);
                     }
 
                     if target > max && target % 2 == 1 {
                         let delta = ((field_hash.wrapping_mul(31).wrapping_add(target)) & 0x1ff)
-                            .min(NO_MORE_DOCS - target);
-                        max = target + delta;
+                            .min(NO_MORE_DOCS.wrapping_sub(target));
+                        max = target.wrapping_add(delta);
                         impacts_enum.advance_shallow(target)?;
                         let impacts = impacts_enum.get_impacts()?;
                         check_impacts(impacts.as_ref(), doc)?;
@@ -3564,20 +3974,20 @@ fn check_fields(
         if let Some(field_terms) = fields.terms(&field)? {
             let field_term_count = (status.del_term_count + status.term_count) - term_count_start;
 
-            let stats = field_terms.stats();
+            let stats = field_terms.stats()?;
             status
                 .block_tree_stats
                 .get_or_insert_with(HashMap::new)
                 .insert(field.clone(), stats);
 
-            let actual_sum_doc_freq = field_terms.sum_doc_freq();
+            let actual_sum_doc_freq = field_terms.sum_doc_freq()?;
             if sum_doc_freq != actual_sum_doc_freq {
                 return Err(check_index_error(format!(
                     "sumDocFreq for field {field}={actual_sum_doc_freq} != recomputed sumDocFreq={sum_doc_freq}"
                 )));
             }
 
-            let actual_sum_total_term_freq = field_terms.sum_total_term_freq();
+            let actual_sum_total_term_freq = field_terms.sum_total_term_freq()?;
             if sum_total_term_freq != actual_sum_total_term_freq {
                 return Err(check_index_error(format!(
                     "sumTotalTermFreq for field {field}={actual_sum_total_term_freq} != recomputed sumTotalTermFreq={sum_total_term_freq}"
@@ -3590,7 +4000,7 @@ fn check_fields(
                 )));
             }
 
-            let v = field_terms.doc_count();
+            let v = field_terms.doc_count()?;
             if visited_docs.cardinality() as i32 != v {
                 return Err(check_index_error(format!(
                     "docCount for field {field}={v} != recomputed docCount={}",
@@ -3604,7 +4014,10 @@ fn check_fields(
                         "field \"{field}\" has norms, but no norms producer was supplied"
                     )));
                 };
-                let mut norms = norms_producer.get_norms(field_info)?;
+                let mut norms = crate::codecs::doc_values::non_null(
+                    norms_producer.get_norms(field_info)?,
+                    field_info,
+                )?;
                 // Count of valid norm values found for the field.
                 let mut actual_count = 0i32;
                 // Cross-check terms with norms.
@@ -3684,7 +4097,7 @@ fn check_fields(
             let mut term_count = -1i64;
 
             if field_term_count > 0 {
-                term_count = field_terms.size();
+                term_count = field_terms.size()?;
 
                 if term_count != -1 && term_count != field_term_count {
                     return Err(check_index_error(format!(
@@ -4378,23 +4791,6 @@ impl IndexUpgrader {
             }
         }
 
-        // Java reads the writer's live commit data back and writes it out again
-        // to force a commit even when nothing else changed. This port cannot do
-        // that literally, because `IndexWriter` here exposes no
-        // `get_live_commit_data`; it reads the same value from the commit the
-        // writer is about to open on, which is exactly what Java's writer
-        // initialises its `commitUserData` from (`IndexWriter.java:1122`).
-        let commit_user_data: Vec<(String, String)> =
-            SegmentInfos::read_latest_commit(Arc::clone(&self.dir))
-                .map(|infos| {
-                    infos
-                        .user_data()
-                        .iter()
-                        .map(|(key, value)| (key.clone(), value.clone()))
-                        .collect()
-                })
-                .unwrap_or_default();
-
         let inner_policy = self.iwc.merge_policy();
         self.iwc
             .set_merge_policy(Arc::new(UpgradeIndexMergePolicy::new(inner_policy)))?;
@@ -4429,9 +4825,11 @@ impl IndexUpgrader {
                     "Enforcing commit to rewrite all index metadata...",
                 );
             }
-            // Fake change, so that a commit happens even when the index has no
-            // segments at all.
-            writer.set_live_commit_data(commit_user_data)?;
+            // `w.setLiveCommitData(w.getLiveCommitData())`: fake change to
+            // enforce a commit (e.g. if index has no segments), then
+            // `assert w.hasUncommittedChanges()` (`IndexUpgrader.java:201-203`).
+            writer.set_live_commit_data(writer.get_live_commit_data()?)?;
+            debug_assert!(writer.has_uncommitted_changes()?);
             writer.commit()?;
             if info_stream.is_enabled(UPGRADER_LOG_PREFIX) {
                 info_stream.message(UPGRADER_LOG_PREFIX, "Committed upgraded metadata to index.");
@@ -4536,7 +4934,7 @@ pub fn test_stored_fields(
         msg(
             info_stream,
             &format!(
-                "OK [{} total field count; avg {:.1} fields per doc] [took {}]",
+                "    test: stored fields.......OK [{} total field count; avg {:.1} fields per doc] [took {}]",
                 status.tot_fields,
                 avg,
                 took(start)
@@ -4549,7 +4947,10 @@ pub fn test_stored_fields(
         if fail_fast {
             return Err(error);
         }
-        msg(info_stream, &format!("ERROR [{error}]"));
+        msg(
+            info_stream,
+            &format!("    test: stored fields.......ERROR [{error}]"),
+        );
         status.error = Some(error);
     }
     Ok(status)
@@ -4597,8 +4998,13 @@ pub struct VerifyPointsVisitor {
     point_count_seen: i64,
     last_doc_id: i32,
     docs_seen: crate::util::FixedBitSet,
-    last_min_packed_value: Vec<u8>,
-    last_max_packed_value: Vec<u8>,
+    /// The bounds of the last cell `compare` was asked about.
+    ///
+    /// Java's `compare` copies them into plain arrays;
+    /// [`IntersectVisitor::compare`](crate::index::point_values::IntersectVisitor::compare)
+    /// takes `&self`, so the copies sit in cells.
+    last_min_packed_value: std::cell::RefCell<Vec<u8>>,
+    last_max_packed_value: std::cell::RefCell<Vec<u8>>,
     last_packed_value: Vec<u8>,
     global_min_packed_value: Option<Vec<u8>>,
     global_max_packed_value: Option<Vec<u8>>,
@@ -4607,13 +5013,6 @@ pub struct VerifyPointsVisitor {
     num_data_dims: usize,
     num_index_dims: usize,
     bytes_per_dim: usize,
-    /// The failure the visitor hit, if any.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java's visitor throws
-    /// `CheckIndexException` from `visit` and `compare`. `compare` returns a
-    /// `Relation` here and cannot fail, so the failure is recorded and reported
-    /// by [`take_error`](Self::take_error) once the traversal is done.
-    error: Option<LuceneError>,
 }
 
 impl VerifyPointsVisitor {
@@ -4691,8 +5090,8 @@ impl VerifyPointsVisitor {
             point_count_seen: 0,
             last_doc_id: -1,
             docs_seen: crate::util::FixedBitSet::new(max_doc.max(0) as usize),
-            last_min_packed_value: vec![0u8; packed_index_bytes_count],
-            last_max_packed_value: vec![0u8; packed_index_bytes_count],
+            last_min_packed_value: std::cell::RefCell::new(vec![0u8; packed_index_bytes_count]),
+            last_max_packed_value: std::cell::RefCell::new(vec![0u8; packed_index_bytes_count]),
             last_packed_value: vec![0u8; packed_bytes_count],
             global_min_packed_value,
             global_max_packed_value,
@@ -4701,7 +5100,6 @@ impl VerifyPointsVisitor {
             num_data_dims,
             num_index_dims,
             bytes_per_dim,
-            error: None,
         })
     }
 
@@ -4717,11 +5115,6 @@ impl VerifyPointsVisitor {
     /// Equivalent to `VerifyPointsVisitor.getDocCountSeen()`.
     pub fn get_doc_count_seen(&self) -> i64 {
         self.docs_seen.cardinality() as i64
-    }
-
-    /// Returns the failure the traversal hit, if any.
-    pub fn take_error(&mut self) -> Option<LuceneError> {
-        self.error.take()
     }
 
     /// Checks that a packed value is present and of the right width.
@@ -4745,6 +5138,13 @@ impl VerifyPointsVisitor {
     }
 }
 
+/// Renders bytes as Java's `Arrays.toString(byte[])` does: signed, comma and
+/// space separated, in brackets.
+fn java_byte_array_to_string(bytes: &[u8]) -> String {
+    let rendered: Vec<String> = bytes.iter().map(|&b| (b as i8).to_string()).collect();
+    format!("[{}]", rendered.join(", "))
+}
+
 impl crate::index::point_values::IntersectVisitor for VerifyPointsVisitor {
     fn visit(&mut self, doc_id: i32) -> Result<()> {
         Err(check_index_error(format!(
@@ -4757,17 +5157,24 @@ impl crate::index::point_values::IntersectVisitor for VerifyPointsVisitor {
         self.point_count_seen += 1;
         self.docs_seen.set(doc_id as usize);
 
-        for dim in 0..self.num_index_dims {
-            let offset = self.bytes_per_dim * dim;
-            let value = &packed_value[offset..offset + self.bytes_per_dim];
-            let cell_min = &self.last_min_packed_value[offset..offset + self.bytes_per_dim];
-            let cell_max = &self.last_max_packed_value[offset..offset + self.bytes_per_dim];
-            if value < cell_min || value > cell_max {
-                return Err(check_index_error(format!(
-                    "packed points value {packed_value:?} for field=\"{}\", docID={doc_id} is \
-                     out-of-bounds of the last cell min={:?} max={:?} dim={dim}",
-                    self.field_name, self.last_min_packed_value, self.last_max_packed_value
-                )));
+        {
+            let last_min_packed_value = self.last_min_packed_value.borrow();
+            let last_max_packed_value = self.last_max_packed_value.borrow();
+            for dim in 0..self.num_index_dims {
+                let offset = self.bytes_per_dim * dim;
+                let value = &packed_value[offset..offset + self.bytes_per_dim];
+                let cell_min = &last_min_packed_value[offset..offset + self.bytes_per_dim];
+                let cell_max = &last_max_packed_value[offset..offset + self.bytes_per_dim];
+                if value < cell_min || value > cell_max {
+                    return Err(check_index_error(format!(
+                        "packed points value {} for field=\"{}\", docID={doc_id} \
+                         is out-of-bounds of the last cell min={} max={} dim={dim}",
+                        java_byte_array_to_string(packed_value),
+                        self.field_name,
+                        java_byte_array_to_string(&last_min_packed_value),
+                        java_byte_array_to_string(&last_max_packed_value)
+                    )));
+                }
             }
         }
 
@@ -4781,9 +5188,11 @@ impl crate::index::point_values::IntersectVisitor for VerifyPointsVisitor {
             match previous.cmp(value) {
                 std::cmp::Ordering::Greater => {
                     return Err(check_index_error(format!(
-                        "packed points value {packed_value:?} for field=\"{}\", for docID={doc_id} \
-                         is out-of-order vs the previous document's value {:?}",
-                        self.field_name, self.last_packed_value
+                        "packed points value {} for field=\"{}\", for docID={doc_id} \
+                         is out-of-order vs the previous document's value {}",
+                        java_byte_array_to_string(packed_value),
+                        self.field_name,
+                        java_byte_array_to_string(&self.last_packed_value)
                     )));
                 }
                 std::cmp::Ordering::Equal => {
@@ -4804,20 +5213,83 @@ impl crate::index::point_values::IntersectVisitor for VerifyPointsVisitor {
         Ok(())
     }
 
+    /// Equivalent to `VerifyPointsVisitor.compare(byte[], byte[])`
+    /// (`CheckIndex.java:3167-3246`): records the cell's bounds for `visit`,
+    /// checks that the cell is well formed and inside the global bounds, and
+    /// claims the query crosses every cell, so that the codec hands every
+    /// point to [`visit_with_value`](Self::visit_with_value).
     fn compare(
         &self,
-        _min_packed_value: &[u8],
-        _max_packed_value: &[u8],
+        min_packed_value: &[u8],
+        max_packed_value: &[u8],
     ) -> Result<crate::index::point_values::Relation> {
-        // The query shape is always claimed to be complex enough to cross every
-        // cell, so the codec passes each packed value through `visit_with_value`.
-        //
-        // **Divergence from Lucene 10.5.0.** Java also records the cell bounds
-        // here and checks them against the global minimum and maximum. This
-        // signature takes `&self`, so it cannot do either; `visit_with_value`
-        // performs the per-point bound check, and the cell-versus-global check
-        // is done up front in [`VerifyPointsVisitor::new`] from the same
-        // statistics.
+        self.check_packed_value("min packed value", min_packed_value, -1)?;
+        self.last_min_packed_value.borrow_mut()[..self.packed_index_bytes_count]
+            .copy_from_slice(&min_packed_value[..self.packed_index_bytes_count]);
+        self.check_packed_value("max packed value", max_packed_value, -1)?;
+        self.last_max_packed_value.borrow_mut()[..self.packed_index_bytes_count]
+            .copy_from_slice(&max_packed_value[..self.packed_index_bytes_count]);
+
+        let field_name = &self.field_name;
+        for dim in 0..self.num_index_dims {
+            let range = self.bytes_per_dim * dim..self.bytes_per_dim * (dim + 1);
+            let min = &min_packed_value[range.clone()];
+            let max = &max_packed_value[range.clone()];
+
+            if min > max {
+                return Err(check_index_error(format!(
+                    "packed points cell minPackedValue {} is out-of-bounds of the cell's \
+                     maxPackedValue {} dim={dim} field=\"{field_name}\"",
+                    java_byte_array_to_string(min_packed_value),
+                    java_byte_array_to_string(max_packed_value)
+                )));
+            }
+
+            // Make sure this cell is not outside the global min/max. Java
+            // dereferences both unconditionally: they are only absent for a
+            // field of size 0, whose tree has no cell to compare.
+            if let Some(global_min) = self.global_min_packed_value.as_deref() {
+                let global = &global_min[range.clone()];
+                if min < global {
+                    return Err(check_index_error(format!(
+                        "packed points cell minPackedValue {} is out-of-bounds of the global \
+                         minimum {} dim={dim} field=\"{field_name}\"",
+                        java_byte_array_to_string(min_packed_value),
+                        java_byte_array_to_string(global_min)
+                    )));
+                }
+                if max < global {
+                    return Err(check_index_error(format!(
+                        "packed points cell maxPackedValue {} is out-of-bounds of the global \
+                         minimum {} dim={dim} field=\"{field_name}\"",
+                        java_byte_array_to_string(max_packed_value),
+                        java_byte_array_to_string(global_min)
+                    )));
+                }
+            }
+            if let Some(global_max) = self.global_max_packed_value.as_deref() {
+                let global = &global_max[range];
+                if min > global {
+                    return Err(check_index_error(format!(
+                        "packed points cell minPackedValue {} is out-of-bounds of the global \
+                         maximum {} dim={dim} field=\"{field_name}\"",
+                        java_byte_array_to_string(min_packed_value),
+                        java_byte_array_to_string(global_max)
+                    )));
+                }
+                if max > global {
+                    return Err(check_index_error(format!(
+                        "packed points cell maxPackedValue {} is out-of-bounds of the global \
+                         maximum {} dim={dim} field=\"{field_name}\"",
+                        java_byte_array_to_string(max_packed_value),
+                        java_byte_array_to_string(global_max)
+                    )));
+                }
+            }
+        }
+
+        // We always pretend the query shape is so complex that it crosses every
+        // cell, so that packedValue is passed for every document.
         Ok(crate::index::point_values::Relation::CellCrossesQuery)
     }
 }
@@ -4850,7 +5322,9 @@ pub fn test_points(
             if field_info.point_dimension_count <= 0 {
                 continue;
             }
-            let values = points_reader.get_values(&field_info.name)?;
+            let Some(values) = points_reader.get_values(&field_info.name)? else {
+                continue;
+            };
             status.total_value_fields += 1;
 
             let size = values.size()?;
@@ -4884,9 +5358,6 @@ pub fn test_points(
             let mut visitor =
                 VerifyPointsVisitor::new(&field_info.name, reader.max_doc(), values.as_ref())?;
             values.intersect(&mut visitor)?;
-            if let Some(error) = visitor.take_error() {
-                return Err(error);
-            }
 
             if visitor.get_point_count_seen() != size {
                 return Err(check_index_error(format!(
@@ -4910,7 +5381,7 @@ pub fn test_points(
         msg(
             info_stream,
             &format!(
-                "OK [{} fields, {} points] [took {}]",
+                "    test: points..............OK [{} fields, {} points] [took {}]",
                 status.total_value_fields,
                 status.total_value_points,
                 took(start)
@@ -4923,7 +5394,10 @@ pub fn test_points(
         if fail_fast {
             return Err(error);
         }
-        msg(info_stream, &format!("ERROR: {error}"));
+        msg(
+            info_stream,
+            &format!("    test: points..............ERROR: {error}"),
+        );
         status.error = Some(error);
     }
     Ok(status)
@@ -4970,7 +5444,7 @@ pub fn test_vectors(
                             field_info.name
                         ))
                     })?;
-                    check_byte_vector_values(values.as_ref(), field_info, &mut status)?;
+                    check_byte_vector_values(values.as_ref(), field_info, &mut status, reader)?;
                 }
                 crate::index::VectorEncoding::FLOAT32 => {
                     let values = float_values.ok_or_else(|| {
@@ -4979,14 +5453,14 @@ pub fn test_vectors(
                             field_info.name
                         ))
                     })?;
-                    check_float_vector_values(values.as_ref(), field_info, &mut status)?;
+                    check_float_vector_values(values.as_ref(), field_info, &mut status, reader)?;
                 }
             }
         }
         msg(
             info_stream,
             &format!(
-                "OK [{} fields, {} vectors] [took {}]",
+                "    test: vectors.............OK [{} fields, {} vectors] [took {}]",
                 status.total_knn_vector_fields,
                 status.total_vector_values,
                 took(start)
@@ -4999,7 +5473,10 @@ pub fn test_vectors(
         if fail_fast {
             return Err(error);
         }
-        msg(info_stream, &format!("ERROR: {error}"));
+        msg(
+            info_stream,
+            &format!("    test: vectors.............ERROR: {error}"),
+        );
         status.error = Some(error);
     }
     Ok(status)
@@ -5041,22 +5518,46 @@ fn vectors_reader_supports_search(
     Ok(reader.as_flat_vectors_reader().is_none())
 }
 
-/// Checks every float vector of one field.
+/// Checks every float vector of one field and, from every 64th document,
+/// searches the field's graph for nearest neighbours.
 ///
-/// Equivalent to `CheckIndex.checkFloatVectorValues(FloatVectorValues, FieldInfo, Status.VectorValuesStatus, CodecReader)`.
-///
-/// **Divergence from Lucene 10.5.0.** Java also runs a kNN search from every
-/// 64th vector, to exercise the graph. That needs the reader's vector search
-/// path, which this check does not take, so only the values themselves are
-/// verified here: that each has the field's declared dimension, and that the
-/// iteration returns exactly as many as the field claims.
+/// Equivalent to `CheckIndex.checkFloatVectorValues(FloatVectorValues,
+/// FieldInfo, Status.VectorValuesStatus, CodecReader)` (`CheckIndex.java:2871-2921`).
 fn check_float_vector_values(
     values: &dyn crate::index::vector_values::FloatVectorValues,
     field_info: &FieldInfo,
     status: &mut VectorValuesStatus,
+    codec_reader: &dyn CodecReader,
 ) -> Result<()> {
     let mut count = 0i32;
+    let every_ndoc = (values.size() / 64).max(1);
     while count < values.size() {
+        // search the first maxNumSearches vectors to exercise the graph
+        if values.ord_to_doc(count) % every_ndoc == 0 {
+            let mut collector = crate::search::knn::TopKnnCollector::new(10, i64::from(i32::MAX));
+            if vectors_reader_supports_search(codec_reader, &field_info.name)? {
+                let vectors_reader = codec_reader.get_vector_reader()?.ok_or_else(|| {
+                    check_index_error(format!(
+                        "Field \"{}\" has vectors but the reader has no vectors reader",
+                        field_info.name
+                    ))
+                })?;
+                let mut accept_docs = crate::search::from_live_docs(None, codec_reader.max_doc())?;
+                vectors_reader.search(
+                    &field_info.name,
+                    &values.vector_value(count)?,
+                    &mut collector,
+                    &mut accept_docs,
+                )?;
+                let docs = crate::search::knn::KnnCollector::top_docs(&mut collector);
+                if docs.score_docs.is_empty() {
+                    return Err(check_index_error(format!(
+                        "Field \"{}\" failed to search k nearest neighbors",
+                        field_info.name
+                    )));
+                }
+            }
+        }
         let value_length = values.vector_value(count)?.len() as i32;
         if value_length != field_info.vector_dimension {
             return Err(check_index_error(format!(
@@ -5078,17 +5579,45 @@ fn check_float_vector_values(
     Ok(())
 }
 
-/// Checks every byte vector of one field.
+/// Checks every byte vector of one field and, from every 64th document,
+/// searches the field's graph for nearest neighbours.
 ///
-/// Equivalent to `CheckIndex.checkByteVectorValues(ByteVectorValues, FieldInfo, Status.VectorValuesStatus, CodecReader)`.
-/// The same divergence as [`check_float_vector_values`] applies.
+/// Equivalent to `CheckIndex.checkByteVectorValues(ByteVectorValues, FieldInfo,
+/// Status.VectorValuesStatus, CodecReader)` (`CheckIndex.java:2923-2972`).
 fn check_byte_vector_values(
     values: &dyn crate::index::vector_values::ByteVectorValues,
     field_info: &FieldInfo,
     status: &mut VectorValuesStatus,
+    codec_reader: &dyn CodecReader,
 ) -> Result<()> {
     let mut count = 0i32;
+    let every_ndoc = (values.size() / 64).max(1);
+    let supports_search = vectors_reader_supports_search(codec_reader, &field_info.name)?;
     while count < values.size() {
+        // search the first maxNumSearches vectors to exercise the graph
+        if supports_search && values.ord_to_doc(count) % every_ndoc == 0 {
+            let mut collector = crate::search::knn::TopKnnCollector::new(10, i64::from(i32::MAX));
+            let vectors_reader = codec_reader.get_vector_reader()?.ok_or_else(|| {
+                check_index_error(format!(
+                    "Field \"{}\" has vectors but the reader has no vectors reader",
+                    field_info.name
+                ))
+            })?;
+            let mut accept_docs = crate::search::from_live_docs(None, codec_reader.max_doc())?;
+            vectors_reader.search_byte(
+                &field_info.name,
+                &values.vector_value(count)?,
+                &mut collector,
+                &mut accept_docs,
+            )?;
+            let docs = crate::search::knn::KnnCollector::top_docs(&mut collector);
+            if docs.score_docs.is_empty() {
+                return Err(check_index_error(format!(
+                    "Field \"{}\" failed to search k nearest neighbors",
+                    field_info.name
+                )));
+            }
+        }
         let value_length = values.vector_value(count)?.len() as i32;
         if value_length != field_info.vector_dimension {
             return Err(check_index_error(format!(
@@ -5113,27 +5642,60 @@ fn check_byte_vector_values(
 /// Checks that the segment's documents really are in the order its index sort
 /// claims.
 ///
-/// Equivalent to `CheckIndex.testSort(CodecReader, Sort, PrintStream, boolean)`.
+/// Equivalent to `CheckIndex.testSort(CodecReader, Sort, PrintStream, boolean)`
+/// (`CheckIndex.java:1162-1244`): every pair of consecutive documents — of
+/// consecutive parent documents in an index with blocks — is compared through
+/// one `LeafFieldComparator` per sort field, bound to the reader as a
+/// top-level leaf.
 ///
-/// **Divergence from Lucene 10.5.0.** Java compares consecutive documents
-/// through a `LeafFieldComparator` per sort field, which needs the whole
-/// comparator stack bound to this leaf. This port checks the invariant the
-/// comparators are there to enforce, using the sort fields' own doc values:
-/// the parent-field consistency required for an index with document blocks, and
-/// that the sort is declared on fields the segment actually carries. What it
-/// does not yet do is the pairwise value comparison; the check therefore
-/// reports a sort as OK that Java might reject, never the reverse.
+/// The comparators are asked without a scorer: Java's `copy(int, int)` and
+/// `compareBottom(int)` take none, and an index sort cannot be on the score.
+/// The port's comparators take one, so they are handed a scorable that reports
+/// a score request as an error, where Java's would dereference `null`.
+///
+/// # Errors
+///
+/// With `fail_fast`, returns the first failure; otherwise records it in the
+/// status. Building the comparators fails outside that handling, as Java's
+/// does.
 pub fn test_sort(
-    reader: &dyn CodecReader,
+    reader: &Arc<dyn CodecReader>,
     sort: Option<&Sort>,
     info_stream: Option<&dyn InfoStream>,
     fail_fast: bool,
 ) -> Result<IndexSortStatus> {
+    // This segment claims its documents are sorted according to the incoming
+    // sort ... let's make sure:
     let start = Instant::now();
     let mut status = IndexSortStatus::default();
     let Some(sort) = sort else {
         return Ok(status);
     };
+
+    let fields = sort.fields();
+    let mut reverse_mul: Vec<i32> = Vec::with_capacity(fields.len());
+    let mut comparators: Vec<Box<dyn crate::search::leaf_field_comparator::LeafFieldComparator>> =
+        Vec::with_capacity(fields.len());
+
+    // `new LeafReaderContext(reader)`: the reader as a top-level leaf. Java
+    // builds the context itself and so does not `ensureOpen()`, which
+    // `getContext()` would.
+    let reader_context = Arc::clone(reader)
+        .as_index_reader()
+        .build_context(None, 0, 0, 0, 0)
+        .leaves()
+        .into_iter()
+        .next()
+        .ok_or_else(|| LuceneError::illegal_state("a leaf reader has one leaf".to_string()))?;
+    // The field comparators outlive the leaf comparators they hand out only
+    // through the state they share, so they are kept for the whole check.
+    let mut field_comparators = Vec::with_capacity(fields.len());
+    for field in fields {
+        reverse_mul.push(if field.reverse() { -1 } else { 1 });
+        let mut comparator = field.get_comparator(1, crate::search::Pruning::NONE)?;
+        comparators.push(comparator.get_leaf_comparator(&reader_context)?);
+        field_comparators.push(comparator);
+    }
 
     let outcome = (|| -> Result<()> {
         let meta_data = reader.get_meta_data();
@@ -5142,22 +5704,56 @@ pub fn test_sort(
             && field_infos.get_parent_field().is_none()
             && meta_data.created_version_major() >= 10
         {
-            return Err(LuceneError::IllegalState(format!(
+            return Err(LuceneError::illegal_state(format!(
                 "parent field is not set but the index has document blocks and was created with \
                  version: {}",
                 meta_data.created_version_major()
             )));
         }
-        for field in sort.fields() {
-            if let Some(name) = field.field() {
-                if field_infos.field_info(name).is_none() {
-                    return Err(check_index_error(format!(
-                        "segment has indexSort on field \"{name}\" which the segment does not carry"
-                    )));
+        let mut iter: Box<dyn DocIdSetIterator> = match field_infos.get_parent_field() {
+            Some(parent_field) if meta_data.has_blocks() => {
+                match reader.get_numeric_doc_values(parent_field)? {
+                    Some(parents) => parents,
+                    // Java hands `iter` the null this returns, and the first
+                    // `nextDoc()` dereferences it.
+                    None => {
+                        return Err(LuceneError::illegal_state(format!(
+                            "the parent field \"{parent_field}\" has no numeric doc values"
+                        )))
+                    }
                 }
             }
+            _ => Box::new(crate::search::doc_id_set_iterator::all(reader.max_doc())?),
+        };
+        let mut scorer = NoScorer;
+        let mut prev_doc = iter.next_doc()?;
+        loop {
+            let next_doc = iter.next_doc()?;
+            if next_doc == NO_MORE_DOCS {
+                break;
+            }
+            let mut cmp = 0;
+            for (i, comparator) in comparators.iter_mut().enumerate() {
+                // TODO: would be better if copy() didn't cause a term lookup in
+                // TermOrdVal & co, the segments are always the same here...
+                comparator.copy(0, prev_doc, &mut scorer)?;
+                comparator.set_bottom(0)?;
+                cmp = reverse_mul[i] * comparator.compare_bottom(next_doc, &mut scorer)?;
+                if cmp != 0 {
+                    break;
+                }
+            }
+            if cmp > 0 {
+                return Err(check_index_error(format!(
+                    "segment has indexSort={sort} but docID={prev_doc} sorts after docID={next_doc}"
+                )));
+            }
+            prev_doc = next_doc;
         }
-        msg(info_stream, &format!("OK [took {}]", took(start)));
+        msg(
+            info_stream,
+            &format!("    test: index sort..........OK [took {}]", took(start)),
+        );
         Ok(())
     })();
 
@@ -5165,10 +5761,25 @@ pub fn test_sort(
         if fail_fast {
             return Err(error);
         }
-        msg(info_stream, &format!("ERROR [{error}]"));
+        msg(
+            info_stream,
+            &format!("    test: index sort..........ERROR [{error}]"),
+        );
         status.error = Some(error);
     }
     Ok(status)
+}
+
+/// The scorer [`test_sort`] hands its comparators, which Java leaves unset.
+#[derive(Debug)]
+struct NoScorer;
+
+impl crate::search::Scorable for NoScorer {
+    fn score(&mut self) -> Result<f32> {
+        Err(LuceneError::illegal_state(
+            "CheckIndex.testSort compares documents without a scorer".to_string(),
+        ))
+    }
 }
 
 /// Checks that the segment's recorded soft-delete count matches the documents
@@ -5214,11 +5825,19 @@ pub fn check_soft_deletes(
         Ok(())
     })();
 
+    // Java prints the header and nothing after it on success
+    // (`CheckIndex.java:4619`).
+    if outcome.is_ok() {
+        msg(info_stream, "    test: check soft deletes.....");
+    }
     if let Err(error) = outcome {
         if fail_fast {
             return Err(error);
         }
-        msg(info_stream, &format!("ERROR [{error}]"));
+        msg(
+            info_stream,
+            &format!("    test: check soft deletes.....ERROR [{error}]"),
+        );
         status.error = Some(error);
     }
     Ok(status)
@@ -5257,7 +5876,7 @@ pub fn test_term_vectors(
             msg(
                 info_stream,
                 &format!(
-                    "OK [{} total term vector count; avg 0.0 term/freq vector fields per doc] \
+                    "    test: term vectors........OK [{} total term vector count; avg 0.0 term/freq vector fields per doc] \
                      [took {}]",
                     status.tot_vectors,
                     took(start)
@@ -5265,7 +5884,7 @@ pub fn test_term_vectors(
             );
             return Ok(());
         };
-        let vectors_reader = vectors_reader.get_merge_instance();
+        let mut vectors_reader = vectors_reader.get_merge_instance();
 
         for j in 0..reader.max_doc() {
             if (j & 0x03) == 0 {
@@ -5338,7 +5957,7 @@ pub fn test_term_vectors(
         msg(
             info_stream,
             &format!(
-                "OK [{} total term vector count; avg {:.1} term/freq vector fields per doc] \
+                "    test: term vectors........OK [{} total term vector count; avg {:.1} term/freq vector fields per doc] \
                  [took {}]",
                 status.tot_vectors,
                 avg,
@@ -5352,7 +5971,10 @@ pub fn test_term_vectors(
         if fail_fast {
             return Err(error);
         }
-        msg(info_stream, &format!("ERROR: {error}"));
+        msg(
+            info_stream,
+            &format!("    test: term vectors........ERROR: {error}"),
+        );
         status.error = Some(error);
     }
     Ok(status)
@@ -5511,4 +6133,418 @@ fn cross_check_vector_field_against_postings(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::index::point_values::{
+        InMemoryPointValues, IntersectVisitor, PointValues, Relation,
+    };
+
+    /// `CheckIndex.bitsCardinality` counts the set bits of a `Bits`, 1024 at a
+    /// time and none past `length()` (`CheckIndex.java:1312-1326`) — for bits
+    /// that only answer `get` (the default `applyMask`) and for a
+    /// `FixedBitSet` (its own) alike. Every third of 2500 bits set: 834.
+    #[test]
+    fn bits_cardinality_counts_the_set_bits() {
+        #[derive(Debug)]
+        struct EveryThird;
+        impl Bits for EveryThird {
+            fn get(&self, index: usize) -> bool {
+                index.is_multiple_of(3)
+            }
+            fn length(&self) -> usize {
+                2500
+            }
+        }
+        let mut fixed = FixedBitSet::new(2500);
+        for index in (0..2500).step_by(3) {
+            fixed.set(index);
+        }
+        assert_eq!(bits_cardinality(&EveryThird).unwrap(), 834);
+        assert_eq!(bits_cardinality(&fixed).unwrap(), 834);
+    }
+
+    /// Every "took %.3f sec" message converts the elapsed nanoseconds through
+    /// `nsToSec` (`CheckIndex.java:909, 1006, 4643-4645`), so five seconds
+    /// render as `5.000 sec`.
+    #[test]
+    fn elapsed_time_is_converted_through_ns_to_sec() {
+        let start = Instant::now()
+            .checked_sub(std::time::Duration::from_secs(5))
+            .expect("the clock reaches five seconds back");
+        let text = took(start);
+        assert!(text.starts_with("5.00") && text.ends_with(" sec"), "{text}");
+        assert_eq!(ns_to_sec(1_500_000_000), 1.5);
+    }
+
+    /// One-byte points 10, 20 and 30, on documents 0 to 2.
+    fn points() -> InMemoryPointValues {
+        InMemoryPointValues::new(
+            1,
+            1,
+            1,
+            vec![vec![(0, vec![10]), (1, vec![20]), (2, vec![30])]],
+        )
+        .unwrap()
+    }
+
+    /// `VerifyPointsVisitor.compare` checks a cell against the field's global
+    /// bounds and its own order (`CheckIndex.java:3167-3246`), and records it
+    /// for the points that follow.
+    #[test]
+    fn verify_points_visitor_checks_each_cell() {
+        let values = points();
+        let visitor = VerifyPointsVisitor::new("p", 3, &values).unwrap();
+        assert_eq!(
+            visitor.compare(&[10], &[30]).unwrap(),
+            Relation::CellCrossesQuery
+        );
+        for (min, max, expected) in [
+            (5u8, 30u8, "is out-of-bounds of the global minimum"),
+            (10, 35, "is out-of-bounds of the global maximum"),
+            (20, 10, "is out-of-bounds of the cell's maxPackedValue"),
+            // `maxPackedValue` below the global minimum (`CheckIndex.java:3204-3215`)
+            // cannot fire on its own: a cell that passes the `min > max` check
+            // and has its maximum below the global minimum has its minimum below
+            // it too, which the check before it reports.
+            // `minPackedValue` above the global maximum (`CheckIndex.java:3217-3228`)
+            (
+                32,
+                35,
+                "cell minPackedValue [32] is out-of-bounds of the global maximum",
+            ),
+        ] {
+            let error = visitor.compare(&[min], &[max]).unwrap_err().to_string();
+            assert!(error.contains(expected), "{min}..{max}: {error}");
+        }
+    }
+
+    /// `visit` reports the bytes as Java's `Arrays.toString(byte[])` does:
+    /// signed (`CheckIndex.java:3096-3130`).
+    #[test]
+    fn verify_points_visitor_reports_signed_bytes() {
+        let values =
+            InMemoryPointValues::new(1, 1, 1, vec![vec![(0, vec![200]), (1, vec![250])]]).unwrap();
+        let mut visitor = VerifyPointsVisitor::new("p", 2, &values).unwrap();
+        visitor.compare(&[200], &[210]).unwrap();
+        let error = visitor.visit_with_value(1, &[250]).unwrap_err().to_string();
+        assert!(
+            error.contains("packed points value [-6]") && error.contains("min=[-56] max=[-46]"),
+            "{error}"
+        );
+    }
+
+    /// A whole traversal passes: every point lies in the cell `compare`
+    /// recorded before it.
+    #[test]
+    fn verify_points_visitor_accepts_a_well_formed_tree() {
+        let values = points();
+        let mut visitor = VerifyPointsVisitor::new("p", 3, &values).unwrap();
+        values.intersect(&mut visitor).unwrap();
+        assert_eq!(visitor.get_point_count_seen(), 3);
+        assert_eq!(visitor.get_doc_count_seen(), 3);
+    }
+
+    /// `testSort` compares consecutive documents through the sort's leaf
+    /// comparators (`CheckIndex.java:1162-1244`): a segment out of the
+    /// declared order is reported, one in order is not.
+    #[test]
+    fn test_sort_compares_consecutive_documents() {
+        use crate::document::{Document, NumericDocValuesField};
+        use crate::index::index_writer_config::IndexWriterConfig;
+        use crate::search::{SortField, SortFieldType};
+        use crate::store::{ByteBuffersDirectory, Directory};
+
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        for value in [30, 20, 10] {
+            let mut doc = Document::new();
+            doc.add(Box::new(NumericDocValuesField::new("n", value)));
+            writer.add_document(&doc).unwrap();
+        }
+        writer.commit().unwrap();
+        writer.close().unwrap();
+        let infos = SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
+        let reader: Arc<dyn CodecReader> = Arc::new(
+            SegmentReader::new(
+                infos.info(0).clone(),
+                infos.index_created_version_major(),
+                &*DEFAULT_IO_CONTEXT,
+            )
+            .unwrap(),
+        );
+
+        let ascending = Sort::new_fields(vec![SortField::new(
+            Some("n".to_string()),
+            SortFieldType::Long,
+        )
+        .unwrap()])
+        .unwrap();
+        let status = test_sort(&reader, Some(&ascending), None, false).unwrap();
+        let error = status
+            .error
+            .expect("30, 20, 10 is not ascending")
+            .to_string();
+        assert!(error.contains("but docID=0 sorts after docID=1"), "{error}");
+
+        let descending = Sort::new_fields(vec![SortField::new_reverse(
+            Some("n".to_string()),
+            SortFieldType::Long,
+            true,
+        )
+        .unwrap()])
+        .unwrap();
+        let stream = BufferingInfoStream::new();
+        let status = test_sort(&reader, Some(&descending), Some(&stream), false).unwrap();
+        assert!(status.error.is_none(), "{:?}", status.error);
+        // `infoStream.print("    test: index sort..........")`, then the result on
+        // the same line (`CheckIndex.java:1172-1174`).
+        let messages = stream.messages.lock().unwrap().clone();
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert!(
+            messages[0].starts_with("    test: index sort..........OK [took "),
+            "{messages:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod segment_check_pool_tests {
+    //! `CheckIndex.checkIndex(List)` (`CheckIndex.java:545-573`) checks the
+    //! segments on `Executors.newFixedThreadPool(threadCount, new
+    //! NamedThreadFactory("async-check-index"))` when the thread count is
+    //! greater than one.
+    use super::*;
+    use crate::document::{Document, Store, TextField};
+    use crate::index::merge_policy::NoMergePolicy;
+    use std::collections::{BTreeSet, HashSet};
+
+    /// An index of `segments` one-document segments.
+    fn index_with_segments(segments: usize) -> Arc<dyn Directory> {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(crate::store::ByteBuffersDirectory::new());
+        let mut config = IndexWriterConfig::new();
+        config
+            .set_merge_policy(Arc::new(NoMergePolicy::new()))
+            .unwrap();
+        let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+        for i in 0..segments {
+            let mut doc = Document::new();
+            doc.add(Box::new(
+                TextField::new("body", format!("document {i}"), Store::YES).unwrap(),
+            ));
+            writer.add_document(&doc).unwrap();
+            writer.commit().unwrap();
+        }
+        writer.close().unwrap();
+        dir
+    }
+
+    /// The thread every segment check ran on, checking `segments` segments
+    /// with `thread_count` threads.
+    fn segment_check_threads(segments: usize, thread_count: i32) -> Vec<Option<String>> {
+        let mut checker = CheckIndex::new(index_with_segments(segments)).unwrap();
+        checker.set_thread_count(thread_count).unwrap();
+        let status = checker.check_index().unwrap();
+        assert!(status.clean);
+        assert_eq!(status.segment_infos.len(), segments);
+        let threads = checker
+            .segment_check_threads
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        checker.close().unwrap();
+        threads
+    }
+
+    /// Java oracle (`oracle/passG/PoolNamesOracle.java`, three tasks submitted
+    /// with `CompletableFuture.supplyAsync` to the fixed pool of
+    /// `NamedThreadFactory("async-check-index")`): two threads run on
+    /// `async-check-index-1-thread-1` and `-thread-2`; four threads start a
+    /// worker per task, `async-check-index-2-thread-1` to `-thread-3`.
+    #[test]
+    fn concurrent_checks_run_on_named_thread_factory_pool_threads() {
+        for (segments, thread_count, workers) in [(3usize, 2i32, 2usize), (3, 4, 3)] {
+            let threads = segment_check_threads(segments, thread_count);
+            assert_eq!(threads.len(), segments);
+            let mut pools = HashSet::new();
+            let mut numbers = BTreeSet::new();
+            for name in threads {
+                let name = name.expect("a pool thread is named");
+                let (pool, number) = name
+                    .strip_prefix("async-check-index-")
+                    .and_then(|rest| rest.split_once("-thread-"))
+                    .unwrap_or_else(|| panic!("not a NamedThreadFactory name: {name}"));
+                pools.insert(pool.parse::<usize>().unwrap());
+                numbers.insert(number.parse::<usize>().unwrap());
+            }
+            assert_eq!(pools.len(), 1, "one pool per check");
+            assert_eq!(
+                numbers.into_iter().collect::<Vec<_>>(),
+                (1..=workers).collect::<Vec<_>>(),
+                "{thread_count} threads over {segments} segments"
+            );
+        }
+    }
+
+    /// Records every line a check reports, and interrupts the reporting
+    /// thread when it reports a line starting with `interrupt_on`.
+    struct InterruptingLines {
+        lines: Mutex<Vec<String>>,
+        interrupt_on: Option<&'static str>,
+    }
+
+    impl InfoStream for InterruptingLines {
+        fn java_class_name(&self) -> &'static str {
+            "java.io.PrintStream"
+        }
+
+        fn message(&self, _component: &str, message: &str) {
+            self.lines
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(message.to_string());
+            if self
+                .interrupt_on
+                .is_some_and(|prefix| message.starts_with(prefix))
+            {
+                crate::util::InterruptHandle::current().interrupt();
+            }
+        }
+
+        fn is_enabled(&self, _component: &str) -> bool {
+            true
+        }
+
+        fn close(&self) {}
+    }
+
+    /// Runs `check_index()` with two threads over three one-document
+    /// segments on a thread of its own, interrupted on entry when
+    /// `interrupt_first`; returns the outcome — the status's `clean`, or the
+    /// panic's message — the reported lines, and whether the thread was still
+    /// interrupted afterwards. Bounded, so a hang fails the test.
+    fn check_on_a_thread(
+        interrupt_first: bool,
+        interrupt_on: Option<&'static str>,
+    ) -> (std::result::Result<bool, String>, Vec<String>, bool) {
+        let dir = index_with_segments(3);
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let stream = Arc::new(InterruptingLines {
+                lines: Mutex::new(Vec::new()),
+                interrupt_on,
+            });
+            let mut checker = CheckIndex::new(dir).unwrap();
+            checker.set_info_stream(Arc::clone(&stream) as Arc<dyn InfoStream>);
+            checker.set_thread_count(2).unwrap();
+            if interrupt_first {
+                crate::util::InterruptHandle::current().interrupt();
+            }
+            let outcome =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| checker.check_index()))
+                    .map(|status| status.unwrap().clean)
+                    .map_err(|payload| {
+                        payload
+                            .downcast_ref::<String>()
+                            .cloned()
+                            .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+                            .unwrap_or_default()
+                    });
+            let still_interrupted = crate::util::InterruptHandle::interrupted();
+            let lines = stream
+                .lines
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone();
+            let _ = tx.send((outcome, lines, still_interrupted));
+        });
+        rx.recv_timeout(Duration::from_secs(60))
+            .expect("the check did not return")
+    }
+
+    /// `CheckIndex.checkIndex(List)` shuts the pool down in its `finally`
+    /// (`CheckIndex.java:557-571`), after `checkIndex(List, ExecutorService)`
+    /// has reported "Took … total.". A thread interrupted once every result
+    /// is in — on "No problems were detected" — reports the interrupted
+    /// `awaitTermination` after "Took", and leaves with its status cleared.
+    /// Java oracle (`oracle/passG2/CheckShutdownInterruptOracle.java`,
+    /// `check_shutdown_java.txt`): "clean=true interruptedAfter=false", the
+    /// lines ending "Took 0.070 sec total.", "ERROR: Interrupted exception
+    /// occurred when shutting down executor service",
+    /// "java.lang.InterruptedException".
+    ///
+    /// `awaitTermination` returns without looking at the interrupt status when
+    /// the idle workers have already exited, in Java as here; the workers
+    /// need the pool's lock the shutting-down thread has just released, so
+    /// that thread almost always gets there first. The check is repeated a
+    /// few times so that losing that race cannot fail the test, while a pool
+    /// shut down before "Took" never reports the interrupt at all.
+    #[test]
+    fn the_pool_is_shut_down_after_took_total_is_reported() {
+        let mut attempts = Vec::new();
+        for _ in 0..5 {
+            let (outcome, lines, still_interrupted) = check_on_a_thread(false, Some("No problems"));
+            assert_eq!(outcome, Ok(true));
+            let tail = lines[lines.len() - 3..].to_vec();
+            if tail[1..]
+                == [
+                    "ERROR: Interrupted exception occurred when shutting down executor service",
+                    "java.lang.InterruptedException",
+                ]
+            {
+                assert!(
+                    tail[0].starts_with("Took ") && tail[0].ends_with(" total."),
+                    "{lines:?}"
+                );
+                assert!(!still_interrupted);
+                return;
+            }
+            attempts.push(lines);
+        }
+        panic!("the interrupted shutdown was never reported after Took: {attempts:?}");
+    }
+
+    /// A thread interrupted while it waits for a segment's result
+    /// (`futures[i].get()`, `CheckIndex.java:855-875`) reports the segment's
+    /// buffered output, the `ERROR` line and the exception, the output a
+    /// second time, and then throws Java's `NullPointerException` out of
+    /// `processSegmentInfoStatusResult`, its interrupt status cleared. Java
+    /// oracle (`oracle/passG2/CheckInterruptAllOracle.java`,
+    /// `check_all_java.txt`): "interrupt=true threw
+    /// java.lang.NullPointerException: Cannot read field "error" because
+    /// "segmentInfoStatus" is null interruptedAfter=false", lines 4–7 "1 of
+    /// 3: name=_0 maxDoc=1", "", "ERROR: Interrupted exception occurred when
+    /// getting segment check result for segment _0",
+    /// "java.lang.InterruptedException", and, after the stack trace, "1 of 3:
+    /// name=_0 maxDoc=1" again.
+    #[test]
+    fn interrupting_the_wait_for_a_segment_result_throws_as_lucene_does() {
+        let (outcome, lines, still_interrupted) = check_on_a_thread(true, None);
+        assert_eq!(
+            outcome,
+            Err("Cannot read field \"error\" because \"segmentInfoStatus\" is null".to_string())
+        );
+        assert!(!still_interrupted);
+        assert_eq!(lines[3], "1 of 3: name=_0 maxDoc=1", "{lines:?}");
+        let error = lines
+            .iter()
+            .position(|line| {
+                line == "ERROR: Interrupted exception occurred when getting segment check result \
+                         for segment _0"
+            })
+            .unwrap_or_else(|| panic!("no interrupted line: {lines:?}"));
+        // The buffered output, ending with `println`'s blank line, comes
+        // before the ERROR line and again, as far as the check has since
+        // written it, after the exception.
+        let first = &lines[3..error];
+        assert_eq!(first.last().map(String::as_str), Some(""), "{lines:?}");
+        assert_eq!(lines[error + 1], "java.lang.InterruptedException");
+        let second = &lines[error + 2..];
+        assert!(second.starts_with(&first[..first.len() - 1]), "{lines:?}");
+        assert_eq!(second.last().map(String::as_str), Some(""), "{lines:?}");
+    }
 }

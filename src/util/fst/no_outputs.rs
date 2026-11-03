@@ -26,11 +26,6 @@ impl NoOutputs {
     pub fn get_singleton() -> Self {
         Self
     }
-
-    /// Returns the singleton "no output" value.
-    ///
-    /// Equivalent to `NoOutputs.getNoOutput`.
-    pub fn no_output_value() {}
 }
 
 impl fmt::Display for NoOutputs {

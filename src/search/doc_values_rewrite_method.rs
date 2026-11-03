@@ -18,9 +18,7 @@ use crate::search::constant_score_weight::{ConstantScoreWeight, ConstantScoreWei
 use crate::search::doc_values_range_iterator::DocValuesRangeIterator;
 use crate::search::index_searcher::IndexSearcher;
 use crate::search::matches::{owned_leaf_context, Matches, MatchesUtils};
-use crate::search::multi_term_query::{
-    get_terms_enum, rewrite_method_type_hash, MultiTermQuery, RewriteMethod,
-};
+use crate::search::multi_term_query::{get_terms_enum, MultiTermQuery, RewriteMethod};
 use crate::search::query::Query;
 use crate::search::query_visitor::QueryVisitor;
 use crate::search::score_mode::ScoreMode;
@@ -53,11 +51,25 @@ impl RewriteMethod for DocValuesRewriteMethod {
         self
     }
 
+    /// Two doc-values rewrite methods are always equal.
+    ///
+    /// Equivalent to `DocValuesRewriteMethod#equals`
+    /// (`DocValuesRewriteMethod.java:195-197`), which is
+    /// `other != null && getClass() == other.getClass()`. Unlike the
+    /// singletons of [`MultiTermQuery`], this class is instantiated freely, so
+    /// Java overrides `equals` to compare the class rather than the identity;
+    /// comparing the concrete type is the same test, and a `&dyn` reference
+    /// cannot be `null`.
+    fn method_eq(&self, other: &dyn RewriteMethod) -> bool {
+        other.as_any().is::<DocValuesRewriteMethod>()
+    }
+
+    /// Returns `641`, the constant every instance hashes to.
+    ///
+    /// Equivalent to `DocValuesRewriteMethod#hashCode`
+    /// (`DocValuesRewriteMethod.java:200-202`).
     fn method_hash(&self) -> u64 {
-        // Java answers the constant 641; the type hash keeps the value
-        // consistent with the rest of this port's rewrite methods, and the two
-        // are equally arbitrary.
-        rewrite_method_type_hash(self).wrapping_add(641)
+        641
     }
 }
 
@@ -120,7 +132,6 @@ impl Query for MultiTermQueryDocValuesWrapper {
             DocValuesWeightImpl {
                 query: Arc::clone(&self.query),
                 score_mode,
-                score: boost,
             },
         )))
     }
@@ -207,23 +218,31 @@ impl Terms for DocValuesTerms {
         )?))
     }
 
-    fn size(&self) -> i64 {
-        -1
+    /// Equivalent to the anonymous `Terms.size()` (`DocValuesRewriteMethod.java:122-125`).
+    fn size(&self) -> Result<i64> {
+        Ok(-1)
     }
 
-    fn sum_total_term_freq(&self) -> i64 {
-        // Java throws `UnsupportedOperationException`; the trait cannot report
-        // an error from these accessors, and nothing in this rewrite reads
-        // them, so the "unknown" sentinel stands in.
-        -1
+    /// Throws `UnsupportedOperationException`, as Java's does
+    /// (`DocValuesRewriteMethod.java:107-110`).
+    fn sum_total_term_freq(&self) -> Result<i64> {
+        Err(LuceneError::UnsupportedOperation(
+            "getSumTotalTermFreq".to_string(),
+        ))
     }
 
-    fn sum_doc_freq(&self) -> i64 {
-        -1
+    /// Throws `UnsupportedOperationException`, as Java's does
+    /// (`DocValuesRewriteMethod.java:112-115`).
+    fn sum_doc_freq(&self) -> Result<i64> {
+        Err(LuceneError::UnsupportedOperation(
+            "getSumDocFreq".to_string(),
+        ))
     }
 
-    fn doc_count(&self) -> i32 {
-        -1
+    /// Throws `UnsupportedOperationException`, as Java's does
+    /// (`DocValuesRewriteMethod.java:117-120`).
+    fn doc_count(&self) -> Result<i32> {
+        Err(LuceneError::UnsupportedOperation("getDocCount".to_string()))
     }
 
     fn has_freqs(&self) -> bool {
@@ -251,7 +270,6 @@ impl Terms for DocValuesTerms {
 struct DocValuesWeightImpl {
     query: Arc<dyn MultiTermQuery>,
     score_mode: ScoreMode,
-    score: f32,
 }
 
 impl DocValuesWeightImpl {
@@ -273,6 +291,7 @@ impl ConstantScoreWeightImpl for DocValuesWeightImpl {
     fn scorer_supplier(
         &self,
         context: &LeafReaderContext,
+        score: f32,
     ) -> Result<Option<Box<dyn ScorerSupplier>>> {
         let reader = context.leaf_reader();
         let values = get_sorted_set(&reader, self.query.get_field())?;
@@ -286,7 +305,7 @@ impl ConstantScoreWeightImpl for DocValuesWeightImpl {
             reader,
             field: self.query.get_field().to_string(),
             terms_enum: Some(terms_enum),
-            score: self.score,
+            score: score,
             score_mode: self.score_mode,
             cost,
         })))
@@ -296,7 +315,12 @@ impl ConstantScoreWeightImpl for DocValuesWeightImpl {
         doc_values_is_cacheable(ctx, self.query.get_field())
     }
 
-    fn matches(&self, context: &LeafReaderContext, doc: i32) -> Result<Option<Arc<dyn Matches>>> {
+    fn matches(
+        &self,
+        context: &LeafReaderContext,
+        doc: i32,
+        _score: f32,
+    ) -> Result<Option<Arc<dyn Matches>>> {
         let reader = context.leaf_reader();
         let field = self.query.get_field().to_string();
         let query = Arc::clone(&self.query);
@@ -356,7 +380,7 @@ impl ScorerSupplier for DocValuesScorerSupplier {
         // Create a terms enum that provides the intersection of the terms the
         // query specifies with the values present in the doc values.
         let mut terms_enum = self.terms_enum.take().ok_or_else(|| {
-            LuceneError::IllegalState(
+            LuceneError::illegal_state(
                 "ScorerSupplier.get(long) must be called at most once".to_string(),
             )
         })?;

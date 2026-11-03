@@ -19,19 +19,16 @@
 
 #![deny(unsafe_code)]
 
-use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, LazyLock, RwLock};
 
-use crate::codecs::doc_values::DocValuesProducer;
-use crate::codecs::knn_vectors::KnnVectorsReader;
-use crate::codecs::points::PointsReader;
+use crate::util::spi::{NamedSPI, NamedSPILoader};
+
+use crate::codecs::norms::NormsProducer;
 use crate::codecs::state::{SegmentReadState, SegmentWriteState};
-use crate::codecs::stored_fields::StoredFieldsReader;
 use crate::codecs::stub::FieldInfo;
-use crate::codecs::term_vectors::TermVectorsReader;
 use crate::error::{LuceneError, Result};
-use crate::index::IndexOptions;
+use crate::index::{IndexOptions, NumericDocValues};
 use crate::search::NO_MORE_DOCS;
 use crate::store::{DataInput, DataOutput, IndexInput, IndexOutput};
 use crate::util::{BytesRef, FixedBitSet};
@@ -58,59 +55,13 @@ pub use crate::codecs::term_state::{
 pub use crate::index::merge::MergeState;
 
 // -----------------------------------------------------------------------------
-// Doc-values / norms abstractions used by postings
-// -----------------------------------------------------------------------------
-
-/// Random-access view of one numeric doc-values field, used by the postings
-/// path to read norms.
-///
-/// **This is not a port of a Lucene type, and no Lucene type carries this
-/// name.** Java passes `org.apache.lucene.index.NumericDocValues` — a
-/// forward-only iterator, ported as [`crate::index::NumericDocValues`] — down
-/// the postings path, obtaining a fresh one from the `NormsProducer` for every
-/// term so that the iterator contract holds. This port instead grew a
-/// random-access shape for that same job, so the two cannot be the same trait.
-/// The name says so, rather than claiming a Lucene type this does not
-/// implement.
-///
-/// The divergence is described in full at
-/// `crate::index::segment_merger::PostingsNormsAdapter`, which bridges the two;
-/// unifying them is the faithful fix and is tracked separately.
-pub trait PostingsNumericDocValues {
-    /// Returns the value for the given document.
-    fn get(&self, doc_id: i32) -> Result<i64>;
-}
-
-/// Source of normalization values for the postings path.
-///
-/// **This is not a port of a Lucene type, and no Lucene type carries this
-/// name.** Java has a single `org.apache.lucene.codecs.NormsProducer`, ported
-/// as [`crate::codecs::norms::NormsProducer`], which the norms format and the
-/// postings path share. This port grew a second, narrower trait for the
-/// postings path, whose `get_norms` hands back the random-access
-/// [`PostingsNumericDocValues`] instead of the iterator Java returns, and which
-/// carries none of `check_integrity`, `get_merge_instance` or `close`. The name
-/// says so, rather than claiming a Lucene type this does not implement.
-///
-/// The divergence is described in full at
-/// `crate::index::segment_merger::PostingsNormsAdapter`, which bridges the two;
-/// unifying them is the faithful fix and is tracked separately.
-pub trait PostingsNormsProducer: Send + Sync {
-    /// Returns the numeric doc-values for the requested field.
-    fn get_norms(&self, field_info: &FieldInfo) -> Result<Box<dyn PostingsNumericDocValues>>;
-}
-
-// -----------------------------------------------------------------------------
 // Field / term / postings iteration (re-exported from the index module)
 // -----------------------------------------------------------------------------
 
 pub use crate::index::{
-    EmptyFields, EmptyTerms, EmptyTermsEnum, Fields, ImpactsEnum, PostingsEnum, SeekStatus,
-    TermState, Terms, TermsEnum,
+    EmptyTerms, EmptyTermsEnum, Fields, ImpactsEnum, PostingsEnum, SeekStatus, TermState, Terms,
+    TermsEnum,
 };
-
-/// Empty postings iterator.
-pub use crate::index::EmptyPostingsEnum;
 
 /// Returns an empty terms iterator.
 pub fn empty_terms_enum() -> Box<dyn TermsEnum> {
@@ -235,15 +186,90 @@ impl TermsEnum for SingleTermsEnum {
 /// Writes all fields, terms and postings for a segment.
 ///
 /// Equivalent to `org.apache.lucene.codecs.FieldsConsumer`.
-pub trait FieldsConsumer: Send + Sync {
+///
+/// `norms` is the segment's [`NormsProducer`], or `None` — Java's `null` — when
+/// no field has norms; the postings writer reads a field's norms from it,
+/// term by term, to compute the impacts it writes with its skip data.
+pub trait FieldsConsumer {
     /// Writes every field/term/posting in `fields`.
-    fn write(&mut self, fields: &dyn Fields, norms: &dyn PostingsNormsProducer) -> Result<()>;
+    ///
+    /// Equivalent to `FieldsConsumer.write(Fields, NormsProducer)`.
+    fn write(&mut self, fields: &dyn Fields, norms: Option<&dyn NormsProducer>) -> Result<()>;
 
-    /// Merges the source segments described by `merge_state`.
-    fn merge(&mut self, merge_state: &MergeState, norms: &dyn PostingsNormsProducer) -> Result<()>;
+    /// Merges in the fields from the readers in `merge_state`.
+    ///
+    /// Equivalent to `FieldsConsumer.merge(MergeState, NormsProducer)`
+    /// (`FieldsConsumer.java:72-96`): every non-null postings producer is
+    /// integrity-checked and given a slice of the composite doc-ID space —
+    /// starting at the sum of the `maxDoc`s before it, null producers
+    /// included — and the merged view of all of them, mapped around deleted
+    /// documents ([`MappedMultiFields`](crate::index::mapped_multi_fields::MappedMultiFields)
+    /// over [`MultiFields`](crate::index::multi_fields::MultiFields)), is
+    /// handed to [`write`](Self::write). A format that can do better — bulk-
+    /// copying bytes, say — overrides this.
+    ///
+    /// `MappedMultiFields` shares the merge state with every terms and
+    /// postings enum it hands out, as Java's reference does; it receives a
+    /// [`Clone`] of `merge_state`, which is that same state: every doc map,
+    /// reader and live-docs set in it is the original's own object.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the integrity checks, the merged view or
+    /// [`write`](Self::write) raise.
+    fn merge(&mut self, merge_state: &MergeState, norms: Option<&dyn NormsProducer>) -> Result<()> {
+        let mut fields: Vec<Box<dyn Fields>> = Vec::new();
+        let mut slices: Vec<crate::index::multi_reader::ReaderSlice> = Vec::new();
+
+        let mut doc_base = 0i32;
+
+        for (reader_index, producer) in merge_state.fields_producers.iter().enumerate() {
+            let max_doc = merge_state.max_docs[reader_index];
+            if let Some(producer) = producer {
+                merge_state.check_aborted()?;
+                producer.check_integrity()?;
+                slices.push(crate::index::multi_reader::ReaderSlice::new(
+                    doc_base,
+                    max_doc,
+                    reader_index as i32,
+                ));
+                fields.push(Box::new(SharedFieldsProducer(Arc::clone(producer))));
+            }
+            doc_base += max_doc;
+        }
+
+        let merged_fields = crate::index::mapped_multi_fields::MappedMultiFields::new(
+            Arc::new(merge_state.clone()),
+            crate::index::multi_fields::MultiFields::new(fields, slices),
+        );
+        self.write(&merged_fields, norms)
+    }
 
     /// Closes this consumer, releasing all resources.
     fn close(&mut self) -> Result<()>;
+}
+
+/// A postings producer of a merge state, seen as the [`Fields`] it is.
+///
+/// Java's `FieldsConsumer.merge` adds each `FieldsProducer` itself to the list
+/// it hands `MultiFields` (`FieldsConsumer.java:86`). `MultiFields` here owns
+/// boxed subs while the merge state shares its producers behind an [`Arc`], so
+/// this adapter forwards to the shared producer and is otherwise that same
+/// object.
+struct SharedFieldsProducer(Arc<dyn FieldsProducer>);
+
+impl Fields for SharedFieldsProducer {
+    fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+        self.0.iterator()
+    }
+
+    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+        self.0.terms(field)
+    }
+
+    fn size(&self) -> i32 {
+        self.0.size()
+    }
 }
 
 /// Reads all fields, terms and postings for a segment.
@@ -299,110 +325,93 @@ impl fmt::Display for dyn PostingsFormat + '_ {
 /// A registry mapping postings-format short names to [`PostingsFormat`]
 /// implementations.
 ///
-/// The registry intentionally does not use reflection or SPI loading. Formats
+/// Rust has no run-time service discovery, so formats
 /// are registered explicitly with [`PostingsFormatRegistry::register`] and
 /// looked up by name with [`PostingsFormatRegistry::for_name`].
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct PostingsFormatRegistry {
-    formats: Arc<RwLock<HashMap<String, Arc<dyn PostingsFormat>>>>,
+    /// The providers, kept by a [`NamedSPILoader`] exactly as Java's
+    /// `PostingsFormat.Holder.LOADER` keeps them: first registration for a
+    /// name wins, lookups fail with the loader's message, and iteration is in
+    /// insertion order.
+    formats: Arc<RwLock<NamedSPILoader<dyn PostingsFormat>>>,
+}
+
+impl Default for PostingsFormatRegistry {
+    fn default() -> Self {
+        Self {
+            formats: Arc::new(RwLock::new(NamedSPILoader::empty(
+                "org.apache.lucene.codecs.PostingsFormat",
+            ))),
+        }
+    }
+}
+
+impl NamedSPI for dyn PostingsFormat {
+    /// Equivalent to `NamedSPILoader.NamedSPI.getName()`, which every
+    /// `PostingsFormat` implements by returning the name it was constructed with.
+    fn get_name(&self) -> &str {
+        self.name()
+    }
 }
 
 impl PostingsFormatRegistry {
-    /// Creates an empty registry.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Registers a postings format under the given short name.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalArgument`] if `name` is empty, contains
-    /// characters other than ASCII alphanumerics, or is longer than 127 bytes.
-    /// Returns [`LuceneError::IllegalState`] if the name is already registered.
-    pub fn register<F>(&self, name: impl Into<String>, format: F) -> Result<()>
-    where
-        F: PostingsFormat + 'static,
-    {
-        let name = name.into();
-        super::validate_service_name(&name)?;
-
-        let mut formats = self.formats.write().map_err(|_| {
-            LuceneError::IllegalState("postings format registry lock was poisoned".to_string())
-        })?;
-
-        if formats.contains_key(&name) {
-            return Err(LuceneError::IllegalState(format!(
-                "postings format already registered: {name}"
-            )));
-        }
-
-        formats.insert(name, Arc::new(format));
-        Ok(())
-    }
-
     /// Looks up a postings format by name.
     ///
     /// Returns `None` if no format has been registered under the given name.
-    /// Registers an already-shared format under its own name.
-    ///
-    /// The counterpart of [`register`](Self::register) for a format the caller
-    /// already holds behind an `Arc`. As in Lucene's `reload`, a name that is
-    /// already taken is left alone rather than replaced.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalArgument`] when the format's name is not
-    /// a valid service name.
-    pub fn register_arc(&self, format: Arc<dyn PostingsFormat>) -> Result<()> {
-        let name = format.name().to_string();
-        crate::codecs::validate_service_name(&name)?;
-        let mut formats = self.formats.write().map_err(|_| {
-            LuceneError::IllegalState("postings format registry lock was poisoned".to_string())
-        })?;
-        // Only new formats are added; an existing one is never replaced.
-        formats.entry(name).or_insert(format);
-        Ok(())
-    }
-
     pub fn for_name(&self, name: &str) -> Option<Arc<dyn PostingsFormat>> {
         self.formats
             .read()
             .map_err(|_| {
-                LuceneError::IllegalState("postings format registry lock was poisoned".to_string())
+                LuceneError::illegal_state("postings format registry lock was poisoned".to_string())
             })
             .ok()?
-            .get(name)
-            .cloned()
+            .lookup(name)
+            .ok()
     }
 
-    /// Returns the names of all registered postings formats, sorted
-    /// alphabetically.
+    /// Returns the names of all registered postings formats, in registration order.
+    ///
+    /// Equivalent to `NamedSPILoader.availableServices()`, the key set of
+    /// Java's insertion-ordered `LinkedHashMap`.
     pub fn available_postings_formats(&self) -> Vec<String> {
         let Ok(formats) = self.formats.read() else {
             return Vec::new();
         };
-        let mut names: Vec<String> = formats.keys().cloned().collect();
-        names.sort();
-        names
+        formats
+            .available_services()
+            .into_iter()
+            .map(str::to_string)
+            .collect()
     }
 }
 
-/// Adds `format` to the global registry under its own name.
+/// Reloads the global registry from `classloader`, adding the
+/// formats it has not seen.
 ///
-/// Equivalent to `PostingsFormat.reloadPostingsFormats(ClassLoader)`, which rescans a classloader
-/// for formats it has not seen. Rust has no run-time service discovery, so the
-/// caller supplies the format.
+/// Equivalent to `PostingsFormat.reloadPostingsFormats(ClassLoader)`, which is
+/// `Holder.getLoader().reload(classloader)`: see
+/// [`NamedSPILoader::reload`](crate::util::spi::NamedSPILoader::reload). Only
+/// new names are added; an existing one is never removed or replaced.
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when the format's name is not a
-/// valid service name.
-pub fn reload_postings_formats(format: Arc<dyn PostingsFormat>) -> Result<()> {
-    GLOBAL_POSTINGS_REGISTRY.register_arc(format)
+/// Returns whatever [`NamedSPILoader::reload`](crate::util::spi::NamedSPILoader::reload)
+/// returns, and [`LuceneError::IllegalState`] when the registry lock is
+/// poisoned.
+pub fn reload_postings_formats(
+    classloader: &Arc<crate::util::resource_loader::ClassLoader>,
+) -> Result<()> {
+    GLOBAL_POSTINGS_REGISTRY
+        .formats
+        .write()
+        .map_err(|_| {
+            LuceneError::illegal_state("postings format registry lock was poisoned".to_string())
+        })?
+        .reload(classloader)
 }
 
-/// The global registry, seeded with the formats this crate ships.
+/// The global registry.
 ///
 /// Lucene discovers postings formats through the Java service loader:
 /// `PostingsFormat.forName` consults a `NamedSPILoader` that reads
@@ -415,17 +424,24 @@ pub fn reload_postings_formats(format: Arc<dyn PostingsFormat>) -> Result<()> {
 /// looks up the format named by each field's
 /// `PerFieldPostingsFormat.format` attribute.
 ///
-/// Rust has no run-time service discovery, so the built-in entries of that
-/// service file are registered here instead, when the registry is first
-/// touched. [`reload_postings_formats`] remains the equivalent of
-/// `reloadPostingsFormats(ClassLoader)` for formats defined outside this crate.
-static GLOBAL_POSTINGS_REGISTRY: LazyLock<PostingsFormatRegistry> = LazyLock::new(|| {
-    let registry = PostingsFormatRegistry::new();
-    registry
-        .register_arc(Arc::new(crate::codecs::Lucene104PostingsFormat::new()))
-        .expect("built-in postings formats have valid, distinct SPI names");
-    registry
-});
+/// Equivalent to `PostingsFormat.Holder.LOADER`,
+/// `new NamedSPILoader<>(PostingsFormat.class)`: it scans `lucene-core`'s
+/// loader ([`lucene_core_class_loader`](crate::util::spi::lucene_core_class_loader)),
+/// which carries that service file. [`reload_postings_formats`] is
+/// `reloadPostingsFormats(ClassLoader)`.
+static GLOBAL_POSTINGS_REGISTRY: LazyLock<PostingsFormatRegistry> =
+    LazyLock::new(|| PostingsFormatRegistry {
+        formats: Arc::new(RwLock::new(
+            NamedSPILoader::new(
+                &crate::util::spi::ServiceClass::new(
+                    "org.apache.lucene.codecs.PostingsFormat",
+                    Arc::clone(crate::util::spi::lucene_core_class_loader()),
+                ),
+                None,
+            )
+            .expect("INVARIANT: lucene-core's postings format names are legal service names"),
+        )),
+    });
 
 /// Looks up a postings format by name from the global registry.
 ///
@@ -502,7 +518,7 @@ pub trait PostingsReaderBase: Send + Sync + fmt::Display {
 /// Low-level postings writer used by term dictionaries.
 ///
 /// Equivalent to `org.apache.lucene.codecs.PostingsWriterBase`.
-pub trait PostingsWriterBase: Send + Sync {
+pub trait PostingsWriterBase {
     /// Performs one-time initialization, typically writing a header.
     fn init(&mut self, terms_out: &mut dyn IndexOutput, state: &SegmentWriteState) -> Result<()>;
 
@@ -517,7 +533,7 @@ pub trait PostingsWriterBase: Send + Sync {
         term: &BytesRef,
         terms_enum: &mut dyn TermsEnum,
         docs_seen: &mut FixedBitSet,
-        norms: &dyn PostingsNormsProducer,
+        norms: Option<&dyn NormsProducer>,
     ) -> Result<Option<BlockTermState>>;
 
     /// Encodes term metadata to the provided output.
@@ -545,8 +561,24 @@ pub trait PostingsWriterBase: Send + Sync {
 /// Concrete push writers embed this struct and expose it through
 /// [`PushPostingsWriterBase::push_state`] /
 /// [`PushPostingsWriterBase::push_state_mut`].
-#[derive(Debug, Default, Clone)]
+///
+/// Equivalent to the fields of `PushPostingsWriterBase`. The `protected` ones
+/// are public here; `postingsEnum` and `enumFlags`, `private` in Java
+/// (`PushPostingsWriterBase.java:42-43`), are private:
+///
+/// ```compile_fail,E0616
+/// let state = rucene::codecs::postings::PushPostingsWriterState::new();
+/// let _flags = state.enum_flags;
+/// ```
+#[derive(Default)]
 pub struct PushPostingsWriterState {
+    /// The postings enum the last [`write_term`](PushPostingsWriterBase::write_term)
+    /// pulled the postings from, offered to the next one as `reuse`.
+    ///
+    /// Equivalent to `PushPostingsWriterBase.postingsEnum` ("Reused in
+    /// writeTerm", `PushPostingsWriterBase.java:41-42`), which no method ever
+    /// resets: it is kept across terms and fields alike.
+    postings_enum: Option<Box<dyn PostingsEnum>>,
     /// The field currently being written.
     pub field_info: Option<FieldInfo>,
     /// Index options of the current field.
@@ -560,13 +592,80 @@ pub struct PushPostingsWriterState {
     /// Whether offsets are written for the current field.
     pub write_offsets: bool,
     /// Flags used to request the correct postings enum for the current field.
-    pub enum_flags: i32,
+    ///
+    /// Equivalent to the private `PushPostingsWriterBase.enumFlags`
+    /// (`PushPostingsWriterBase.java:43`): only
+    /// [`set_field`](Self::set_field) writes it and only
+    /// [`write_term`](PushPostingsWriterBase::write_term) reads it.
+    enum_flags: i32,
 }
 
 impl PushPostingsWriterState {
     /// Creates an empty push writer state.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Sets the current field and derives the per-field flags from it.
+    ///
+    /// Equivalent to the body of `PushPostingsWriterBase.setField(FieldInfo)`
+    /// (`PushPostingsWriterBase.java:84-112`): it stores the field, derives
+    /// `write_freqs`, `write_positions`, `write_offsets` and `write_payloads`,
+    /// and the flags `write_term` requests the postings enum with. A Rust
+    /// trait default cannot be called from the override that replaces it, so
+    /// this is the method an override calls where Java's calls
+    /// `super.setField(fieldInfo)`, as
+    /// `Lucene104PostingsWriter.setField` does (`Lucene104PostingsWriter.java:233-237`).
+    pub fn set_field(&mut self, field_info: &FieldInfo) {
+        self.field_info = Some(field_info.clone());
+        self.index_options = field_info.index_options;
+        self.write_freqs = field_info
+            .index_options
+            .subsumes(IndexOptions::DOCS_AND_FREQS);
+        self.write_positions = field_info
+            .index_options
+            .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS);
+        self.write_offsets = field_info
+            .index_options
+            .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS);
+        self.write_payloads = field_info.has_payloads();
+
+        if !self.write_freqs {
+            self.enum_flags = POSTINGS_ENUM_NONE;
+        } else if !self.write_positions {
+            self.enum_flags = POSTINGS_ENUM_FREQS;
+        } else if !self.write_offsets {
+            if self.write_payloads {
+                self.enum_flags = POSTINGS_ENUM_PAYLOADS;
+            } else {
+                self.enum_flags = POSTINGS_ENUM_POSITIONS;
+            }
+        } else if self.write_payloads {
+            self.enum_flags = POSTINGS_ENUM_PAYLOADS | POSTINGS_ENUM_OFFSETS;
+        } else {
+            self.enum_flags = POSTINGS_ENUM_OFFSETS;
+        }
+    }
+}
+
+impl fmt::Debug for PushPostingsWriterState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PushPostingsWriterState")
+            .field(
+                "postings_enum",
+                &self
+                    .postings_enum
+                    .as_ref()
+                    .map(|postings_enum| postings_enum.to_string()),
+            )
+            .field("field_info", &self.field_info)
+            .field("index_options", &self.index_options)
+            .field("write_freqs", &self.write_freqs)
+            .field("write_positions", &self.write_positions)
+            .field("write_payloads", &self.write_payloads)
+            .field("write_offsets", &self.write_offsets)
+            .field("enum_flags", &self.enum_flags)
+            .finish()
     }
 }
 
@@ -576,7 +675,12 @@ impl PushPostingsWriterState {
 /// implement this trait automatically implement [`PostingsWriterBase`] via the
 /// blanket implementation below; they only need to supply the lifecycle,
 /// metadata encoding and push callbacks.
-pub trait PushPostingsWriterBase: Send + Sync {
+///
+/// Like Java's, a writer keeps the norms iterator of the term it is writing
+/// (`startTerm(NumericDocValues)`); that iterator is not thread-safe, so this
+/// trait, [`PostingsWriterBase`] and [`FieldsConsumer`] are not `Send` or
+/// `Sync`. A postings writer lives on the thread that flushes or merges.
+pub trait PushPostingsWriterBase {
     /// Returns the shared mutable state.
     fn push_state(&self) -> &PushPostingsWriterState;
 
@@ -601,8 +705,14 @@ pub trait PushPostingsWriterBase: Send + Sync {
     /// Returns a newly created empty term state.
     fn new_term_state(&self) -> Result<BlockTermState>;
 
-    /// Starts a new term.
-    fn start_term(&mut self, norms: Option<&dyn PostingsNumericDocValues>) -> Result<()>;
+    /// Starts a new term; `norms` are the field's norms, or `None` when the
+    /// field has none.
+    ///
+    /// Equivalent to `PushPostingsWriterBase.startTerm(NumericDocValues)`,
+    /// whose implementations keep the reference for the term's documents
+    /// (`Lucene104PostingsWriter.java:240-257`); the writer receives them
+    /// here to keep until the next term.
+    fn start_term(&mut self, norms: Option<Box<dyn NumericDocValues>>) -> Result<()>;
 
     /// Finishes the current term.
     fn finish_term(&mut self, state: &mut BlockTermState) -> Result<()>;
@@ -624,39 +734,11 @@ pub trait PushPostingsWriterBase: Send + Sync {
 
     /// Sets the current field and computes per-field flags.
     ///
-    /// The default implementation stores the field in [`PushPostingsWriterState`]
-    /// and derives `write_freqs`, `write_positions`, `write_payloads`,
-    /// `write_offsets` and `enum_flags`.
+    /// Equivalent to `PushPostingsWriterBase.setField(FieldInfo)`: the default
+    /// implementation is [`PushPostingsWriterState::set_field`], which an
+    /// override calls where Java's calls `super.setField`.
     fn set_field(&mut self, field_info: &FieldInfo) -> Result<()> {
-        let state = self.push_state_mut();
-        state.field_info = Some(field_info.clone());
-        state.index_options = field_info.index_options;
-        state.write_freqs = field_info
-            .index_options
-            .subsumes(IndexOptions::DOCS_AND_FREQS);
-        state.write_positions = field_info
-            .index_options
-            .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS);
-        state.write_offsets = field_info
-            .index_options
-            .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS);
-        state.write_payloads = field_info.has_payloads();
-
-        if !state.write_freqs {
-            state.enum_flags = POSTINGS_ENUM_NONE;
-        } else if !state.write_positions {
-            state.enum_flags = POSTINGS_ENUM_FREQS;
-        } else if !state.write_offsets {
-            if state.write_payloads {
-                state.enum_flags = POSTINGS_ENUM_PAYLOADS;
-            } else {
-                state.enum_flags = POSTINGS_ENUM_POSITIONS;
-            }
-        } else if state.write_payloads {
-            state.enum_flags = POSTINGS_ENUM_PAYLOADS | POSTINGS_ENUM_OFFSETS;
-        } else {
-            state.enum_flags = POSTINGS_ENUM_OFFSETS;
-        }
+        self.push_state_mut().set_field(field_info);
         Ok(())
     }
 
@@ -665,26 +747,42 @@ pub trait PushPostingsWriterBase: Send + Sync {
     /// The default implementation mirrors `PushPostingsWriterBase.writeTerm` in
     /// Java: it calls `start_term`, iterates over the postings, calls
     /// `start_doc` / `add_position` / `finish_doc`, and finally `finish_term`.
+    ///
+    /// The postings enum is Java's: `postingsEnum = termsEnum.postings(postingsEnum,
+    /// enumFlags)` (`PushPostingsWriterBase.java:125`) offers the enum of the
+    /// previous term, whatever its field, and keeps the one returned for the
+    /// next term — also when walking it fails, as Java's field keeps it.
+    /// Rust moves the offered enum into `postings`, so an error raised by
+    /// `postings` itself drops it, where Java's field would still hold it.
     fn write_term(
         &mut self,
         _term: &BytesRef,
         terms_enum: &mut dyn TermsEnum,
         docs_seen: &mut FixedBitSet,
-        norms: &dyn PostingsNormsProducer,
+        norms: Option<&dyn NormsProducer>,
     ) -> Result<Option<BlockTermState>> {
         let field_info = self
             .push_state()
             .field_info
             .as_ref()
-            .ok_or_else(|| LuceneError::IllegalState("set_field not called".to_string()))?
+            .ok_or_else(|| LuceneError::illegal_state("set_field not called".to_string()))?
             .clone();
 
-        let mut norms_values: Option<Box<dyn PostingsNumericDocValues>> = None;
-        if field_info.has_norms() {
-            norms_values = Some(norms.get_norms(&field_info)?);
-        }
-        let norms_ref = norms_values.as_deref();
-        self.start_term(norms_ref)?;
+        // A fresh, forward-only iterator over the field's norms for every term
+        // (`PushPostingsWriterBase.java:118-124`): the writer reads only this
+        // term's documents from it, with `advanceExact`.
+        let norm_values = if !field_info.has_norms() {
+            None
+        } else {
+            let norms = norms.ok_or_else(|| {
+                LuceneError::illegal_state(format!(
+                    "field \"{}\" has norms, but no norms producer was given",
+                    field_info.name
+                ))
+            })?;
+            norms.get_norms(&field_info)?
+        };
+        self.start_term(norm_values)?;
 
         let enum_flags = self.push_state().enum_flags;
         let write_freqs = self.push_state().write_freqs;
@@ -692,46 +790,19 @@ pub trait PushPostingsWriterBase: Send + Sync {
         let write_payloads = self.push_state().write_payloads;
         let write_offsets = self.push_state().write_offsets;
 
-        let mut postings_enum = terms_enum.postings(None, enum_flags)?;
-        let mut doc_freq = 0i32;
-        let mut total_term_freq = 0i64;
-        loop {
-            let doc_id = postings_enum.next_doc()?;
-            if doc_id == NO_MORE_DOCS {
-                break;
-            }
-            doc_freq += 1;
-            if (doc_id as usize) < docs_seen.length() {
-                docs_seen.set(doc_id as usize);
-            }
-            let freq = if write_freqs {
-                postings_enum.freq()?
-            } else {
-                -1
-            };
-            if freq >= 0 {
-                total_term_freq += freq as i64;
-            }
-            self.start_doc(doc_id, freq)?;
-
-            if write_positions {
-                for _ in 0..freq {
-                    let position = postings_enum.next_position()?;
-                    let payload = if write_payloads {
-                        postings_enum.get_payload()?
-                    } else {
-                        None
-                    };
-                    let (start_offset, end_offset) = if write_offsets {
-                        (postings_enum.start_offset(), postings_enum.end_offset())
-                    } else {
-                        (-1, -1)
-                    };
-                    self.add_position(position, payload, start_offset, end_offset)?;
-                }
-            }
-            self.finish_doc()?;
-        }
+        let reuse = self.push_state_mut().postings_enum.take();
+        let mut postings_enum = terms_enum.postings(reuse, enum_flags)?;
+        let walked = push_postings(
+            self,
+            postings_enum.as_mut(),
+            docs_seen,
+            write_freqs,
+            write_positions,
+            write_payloads,
+            write_offsets,
+        );
+        self.push_state_mut().postings_enum = Some(postings_enum);
+        let (doc_freq, total_term_freq) = walked?;
 
         if doc_freq == 0 {
             Ok(None)
@@ -743,6 +814,64 @@ pub trait PushPostingsWriterBase: Send + Sync {
             Ok(Some(state))
         }
     }
+}
+
+/// Pushes every document, frequency and position of `postings_enum` and
+/// returns the term's `docFreq` and `totalTermFreq`.
+///
+/// The `while (true)` loop of `PushPostingsWriterBase.writeTerm`
+/// (`PushPostingsWriterBase.java:130-164`), split out so that
+/// [`write_term`](PushPostingsWriterBase::write_term) keeps the enum whether or not the
+/// loop fails.
+fn push_postings<W: PushPostingsWriterBase + ?Sized>(
+    writer: &mut W,
+    postings_enum: &mut dyn PostingsEnum,
+    docs_seen: &mut FixedBitSet,
+    write_freqs: bool,
+    write_positions: bool,
+    write_payloads: bool,
+    write_offsets: bool,
+) -> Result<(i32, i64)> {
+    let mut doc_freq = 0i32;
+    let mut total_term_freq = 0i64;
+    loop {
+        let doc_id = postings_enum.next_doc()?;
+        if doc_id == NO_MORE_DOCS {
+            break;
+        }
+        doc_freq += 1;
+        // `docsSeen.set(docID)` (`PushPostingsWriterBase.java:136`): a
+        // document past the bit set fails, as Java's `assert index < numBits`
+        // or array bound does.
+        docs_seen.set(doc_id as usize);
+        let freq = if write_freqs {
+            let freq = postings_enum.freq()?;
+            total_term_freq += i64::from(freq);
+            freq
+        } else {
+            -1
+        };
+        writer.start_doc(doc_id, freq)?;
+
+        if write_positions {
+            for _ in 0..freq {
+                let position = postings_enum.next_position()?;
+                let payload = if write_payloads {
+                    postings_enum.get_payload()?
+                } else {
+                    None
+                };
+                let (start_offset, end_offset) = if write_offsets {
+                    (postings_enum.start_offset(), postings_enum.end_offset())
+                } else {
+                    (-1, -1)
+                };
+                writer.add_position(position, payload, start_offset, end_offset)?;
+            }
+        }
+        writer.finish_doc()?;
+    }
+    Ok((doc_freq, total_term_freq))
 }
 
 impl<T: PushPostingsWriterBase + ?Sized> PostingsWriterBase for T {
@@ -769,7 +898,7 @@ impl<T: PushPostingsWriterBase + ?Sized> PostingsWriterBase for T {
         term: &BytesRef,
         terms_enum: &mut dyn TermsEnum,
         docs_seen: &mut FixedBitSet,
-        norms: &dyn PostingsNormsProducer,
+        norms: Option<&dyn NormsProducer>,
     ) -> Result<Option<BlockTermState>> {
         PushPostingsWriterBase::write_term(self, term, terms_enum, docs_seen, norms)
     }
@@ -787,6 +916,7 @@ impl<T: PushPostingsWriterBase + ?Sized> PostingsWriterBase for T {
 mod tests {
     use super::*;
     use crate::search::DocIdSetIterator;
+    use std::sync::Arc;
 
     // Stub Fields -----------------------------------------------------------
     #[derive(Debug, Default, Clone)]
@@ -1022,25 +1152,6 @@ mod tests {
         }
     }
 
-    // Stub norms -----------------------------------------------------------
-    #[derive(Debug, Default, Clone)]
-    struct StubNumericDocValues;
-
-    impl PostingsNumericDocValues for StubNumericDocValues {
-        fn get(&self, _doc_id: i32) -> Result<i64> {
-            Ok(0)
-        }
-    }
-
-    #[derive(Debug, Default, Clone)]
-    struct StubNormsProducer;
-
-    impl PostingsNormsProducer for StubNormsProducer {
-        fn get_norms(&self, _field_info: &FieldInfo) -> Result<Box<dyn PostingsNumericDocValues>> {
-            Ok(Box::new(StubNumericDocValues))
-        }
-    }
-
     // Stub FieldsConsumer ---------------------------------------------------
     #[derive(Debug, Default, Clone)]
     struct StubFieldsConsumer;
@@ -1049,7 +1160,7 @@ mod tests {
         fn write(
             &mut self,
             _fields: &dyn Fields,
-            _norms: &dyn PostingsNormsProducer,
+            _norms: Option<&dyn NormsProducer>,
         ) -> Result<()> {
             Ok(())
         }
@@ -1057,7 +1168,7 @@ mod tests {
         fn merge(
             &mut self,
             _merge_state: &MergeState,
-            _norms: &dyn PostingsNormsProducer,
+            _norms: Option<&dyn NormsProducer>,
         ) -> Result<()> {
             Ok(())
         }
@@ -1185,7 +1296,7 @@ mod tests {
     }
 
     // Stub PushPostingsWriterBase -------------------------------------------
-    #[derive(Debug, Default, Clone)]
+    #[derive(Debug, Default)]
     struct StubPushWriter {
         state: PushPostingsWriterState,
     }
@@ -1225,7 +1336,7 @@ mod tests {
             Ok(BlockTermState::default())
         }
 
-        fn start_term(&mut self, _norms: Option<&dyn PostingsNumericDocValues>) -> Result<()> {
+        fn start_term(&mut self, _norms: Option<Box<dyn NumericDocValues>>) -> Result<()> {
             Ok(())
         }
 
@@ -1270,7 +1381,7 @@ mod tests {
             _term: &BytesRef,
             _terms_enum: &mut dyn TermsEnum,
             _docs_seen: &mut FixedBitSet,
-            _norms: &dyn PostingsNormsProducer,
+            _norms: Option<&dyn NormsProducer>,
         ) -> Result<Option<BlockTermState>> {
             Ok(None)
         }
@@ -1299,10 +1410,11 @@ mod tests {
         let format = StubPostingsFormat;
         assert_eq!(format.name(), "StubPostingsFormat");
 
-        let dir = crate::store::RamDirectory::default();
-        let dir_ref: &dyn crate::store::Directory = &dir;
+        let dir: Arc<dyn crate::store::Directory> =
+            Arc::new(crate::store::ByteBuffersDirectory::default());
+        let dir_ref: &dyn crate::store::Directory = &*dir;
         let segment_info = crate::index::SegmentInfo::new(
-            std::sync::Arc::new(crate::store::RamDirectory::default()),
+            std::sync::Arc::new(crate::store::ByteBuffersDirectory::default()),
             crate::util::Version::LUCENE_10_5_0,
             Some(crate::util::Version::LUCENE_10_5_0),
             "_0".to_string(),
@@ -1318,11 +1430,11 @@ mod tests {
         .unwrap();
         let field_infos = crate::codecs::stub::FieldInfos::default();
         let context = &*crate::store::DEFAULT_IO_CONTEXT;
-        let seg_updates = crate::codecs::stub::BufferedUpdates;
-        let info_stream = crate::util::default_info_stream();
+        let seg_updates = crate::codecs::stub::BufferedUpdates::default();
+        let info_stream = &crate::util::NoOutputInfoStream;
         let write_state = SegmentWriteState::new(
             info_stream,
-            dir_ref,
+            Arc::clone(&dir),
             &segment_info,
             &field_infos,
             &seg_updates,
@@ -1331,11 +1443,11 @@ mod tests {
         let read_state = SegmentReadState::new(dir_ref, &segment_info, &field_infos, context);
 
         let mut consumer = format.fields_consumer(&write_state).unwrap();
-        consumer.write(&StubFields, &StubNormsProducer).unwrap();
+        consumer.write(&StubFields, None).unwrap();
         consumer
             .merge(
                 &MergeState::from_fields_producers(Vec::new(), Vec::new()),
-                &StubNormsProducer,
+                None,
             )
             .unwrap();
         consumer.close().unwrap();
@@ -1349,10 +1461,11 @@ mod tests {
 
     #[test]
     fn stub_postings_reader_base_compiles_and_runs() {
-        let dir = crate::store::RamDirectory::default();
-        let dir_ref: &dyn crate::store::Directory = &dir;
+        let dir: Arc<dyn crate::store::Directory> =
+            Arc::new(crate::store::ByteBuffersDirectory::default());
+        let dir_ref: &dyn crate::store::Directory = &*dir;
         let segment_info = crate::index::SegmentInfo::new(
-            std::sync::Arc::new(crate::store::RamDirectory::default()),
+            std::sync::Arc::new(crate::store::ByteBuffersDirectory::default()),
             crate::util::Version::LUCENE_10_5_0,
             Some(crate::util::Version::LUCENE_10_5_0),
             "_0".to_string(),
@@ -1408,10 +1521,10 @@ mod tests {
 
     #[test]
     fn stub_push_postings_writer_blanket_impl_runs() {
-        let dir = crate::store::RamDirectory::default();
-        let dir_ref: &dyn crate::store::Directory = &dir;
+        let dir: Arc<dyn crate::store::Directory> =
+            Arc::new(crate::store::ByteBuffersDirectory::default());
         let segment_info = crate::index::SegmentInfo::new(
-            std::sync::Arc::new(crate::store::RamDirectory::default()),
+            std::sync::Arc::new(crate::store::ByteBuffersDirectory::default()),
             crate::util::Version::LUCENE_10_5_0,
             Some(crate::util::Version::LUCENE_10_5_0),
             "_0".to_string(),
@@ -1427,11 +1540,11 @@ mod tests {
         .unwrap();
         let field_infos = crate::codecs::stub::FieldInfos::default();
         let context = &*crate::store::DEFAULT_IO_CONTEXT;
-        let seg_updates = crate::codecs::stub::BufferedUpdates;
-        let info_stream = crate::util::default_info_stream();
+        let seg_updates = crate::codecs::stub::BufferedUpdates::default();
+        let info_stream = &crate::util::NoOutputInfoStream;
         let write_state = SegmentWriteState::new(
             info_stream,
-            dir_ref,
+            Arc::clone(&dir),
             &segment_info,
             &field_infos,
             &seg_updates,
@@ -1458,7 +1571,7 @@ mod tests {
             &BytesRef::default(),
             &mut StubTermsEnum::default(),
             &mut docs_seen,
-            &StubNormsProducer,
+            None,
         )
         .unwrap();
         assert!(result.is_none());
@@ -1476,10 +1589,10 @@ mod tests {
 
     #[test]
     fn stub_postings_writer_base_compiles_and_runs() {
-        let dir = crate::store::RamDirectory::default();
-        let dir_ref: &dyn crate::store::Directory = &dir;
+        let dir: Arc<dyn crate::store::Directory> =
+            Arc::new(crate::store::ByteBuffersDirectory::default());
         let segment_info = crate::index::SegmentInfo::new(
-            std::sync::Arc::new(crate::store::RamDirectory::default()),
+            std::sync::Arc::new(crate::store::ByteBuffersDirectory::default()),
             crate::util::Version::LUCENE_10_5_0,
             Some(crate::util::Version::LUCENE_10_5_0),
             "_0".to_string(),
@@ -1495,11 +1608,11 @@ mod tests {
         .unwrap();
         let field_infos = crate::codecs::stub::FieldInfos::default();
         let context = &*crate::store::DEFAULT_IO_CONTEXT;
-        let seg_updates = crate::codecs::stub::BufferedUpdates;
-        let info_stream = crate::util::default_info_stream();
+        let seg_updates = crate::codecs::stub::BufferedUpdates::default();
+        let info_stream = &crate::util::NoOutputInfoStream;
         let write_state = SegmentWriteState::new(
             info_stream,
-            dir_ref,
+            Arc::clone(&dir),
             &segment_info,
             &field_infos,
             &seg_updates,
@@ -1522,7 +1635,7 @@ mod tests {
                 &BytesRef::default(),
                 &mut StubTermsEnum::default(),
                 &mut docs_seen,
-                &StubNormsProducer,
+                None,
             )
             .unwrap();
         assert!(result.is_none());
@@ -1537,36 +1650,117 @@ mod tests {
         writer.close().unwrap();
     }
 
-    #[test]
-    fn postings_format_registry_registers_and_looks_up() {
-        let registry = PostingsFormatRegistry::new();
-        registry.register("Stub", StubPostingsFormat).unwrap();
-        let looked_up = registry.for_name("Stub").expect("format should be present");
-        assert_eq!(looked_up.name(), "StubPostingsFormat");
-        assert_eq!(
-            registry.available_postings_formats(),
-            vec!["Stub".to_string()]
-        );
+    /// A terms enum whose `postings` records the enum it is offered and
+    /// answers a new one, keeping every offered enum alive so that no address
+    /// is handed out twice.
+    #[derive(Default)]
+    struct OfferRecordingTermsEnum {
+        atts: crate::util::attribute::AttributeSource,
+        offered: Vec<Option<usize>>,
+        returned: Vec<usize>,
+        kept: Vec<Box<dyn PostingsEnum>>,
     }
 
+    fn identity(postings: &dyn PostingsEnum) -> usize {
+        postings as *const dyn PostingsEnum as *const () as usize
+    }
+
+    impl std::fmt::Display for OfferRecordingTermsEnum {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("OfferRecordingTermsEnum")
+        }
+    }
+
+    impl TermsEnum for OfferRecordingTermsEnum {
+        fn attributes(&mut self) -> &mut crate::util::attribute::AttributeSource {
+            &mut self.atts
+        }
+
+        fn term(&self) -> Result<BytesRef> {
+            Ok(BytesRef::default())
+        }
+
+        fn postings(
+            &mut self,
+            reuse: Option<Box<dyn PostingsEnum>>,
+            _flags: i32,
+        ) -> Result<Box<dyn PostingsEnum>> {
+            self.offered.push(reuse.as_deref().map(identity));
+            self.kept.extend(reuse);
+            let postings: Box<dyn PostingsEnum> = Box::new(StubPostingsEnum::default());
+            self.returned.push(identity(postings.as_ref()));
+            Ok(postings)
+        }
+
+        fn seek_ceil(&mut self, _text: &BytesRef) -> Result<SeekStatus> {
+            Ok(SeekStatus::END)
+        }
+
+        fn seek_ord(&mut self, _ord: i64) -> Result<()> {
+            Ok(())
+        }
+
+        fn ord(&self) -> Result<i64> {
+            Ok(-1)
+        }
+
+        fn doc_freq(&mut self) -> Result<i32> {
+            Ok(0)
+        }
+
+        fn total_term_freq(&mut self) -> Result<i64> {
+            Ok(0)
+        }
+
+        fn impacts(&mut self, _flags: i32) -> Result<Box<dyn crate::index::ImpactsEnum>> {
+            Ok(Box::new(StubImpactsEnum))
+        }
+
+        fn next(&mut self) -> Result<Option<BytesRef>> {
+            Ok(None)
+        }
+    }
+
+    /// `PushPostingsWriterBase.writeTerm` offers each term the enum the
+    /// previous term got — `postingsEnum = termsEnum.postings(postingsEnum,
+    /// enumFlags)` (`PushPostingsWriterBase.java:125`) — across fields too:
+    /// nothing ever resets the field.
     #[test]
-    fn postings_format_registry_rejects_duplicates_and_invalid_names() {
-        let registry = PostingsFormatRegistry::new();
-        registry.register("Stub", StubPostingsFormat).unwrap();
-        let err = registry
-            .register("Stub", StubPostingsFormat)
-            .expect_err("duplicate should fail");
-        assert!(matches!(err, LuceneError::IllegalState(_)));
-
-        let err = registry
-            .register("", StubPostingsFormat)
-            .expect_err("empty name should fail");
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
-
-        let err = registry
-            .register("Bad Name", StubPostingsFormat)
-            .expect_err("space should fail");
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+    fn write_term_offers_each_term_the_enum_the_previous_term_got() {
+        let mut writer = StubPushWriter::default();
+        let mut terms = OfferRecordingTermsEnum::default();
+        let mut docs_seen = FixedBitSet::new(8);
+        let docs =
+            FieldInfo::new("docs", 0).with_postings_options(IndexOptions::DOCS, false, false);
+        let freqs = FieldInfo::new("freqs", 1).with_postings_options(
+            IndexOptions::DOCS_AND_FREQS,
+            false,
+            false,
+        );
+        PushPostingsWriterBase::set_field(&mut writer, &docs).unwrap();
+        for _ in 0..2 {
+            PostingsWriterBase::write_term(
+                &mut writer,
+                &BytesRef::default(),
+                &mut terms,
+                &mut docs_seen,
+                None,
+            )
+            .unwrap();
+        }
+        PushPostingsWriterBase::set_field(&mut writer, &freqs).unwrap();
+        PostingsWriterBase::write_term(
+            &mut writer,
+            &BytesRef::default(),
+            &mut terms,
+            &mut docs_seen,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            terms.offered,
+            vec![None, Some(terms.returned[0]), Some(terms.returned[1])]
+        );
     }
 
     #[test]
@@ -1582,5 +1776,201 @@ mod tests {
         assert_eq!(writer.push_state().enum_flags, POSTINGS_ENUM_PAYLOADS);
         assert!(writer.push_state().write_positions);
         assert!(writer.push_state().write_payloads);
+    }
+
+    /// A postings enum over one document, `doc`, whose frequency is `freq`.
+    struct OneDocPostingsEnum {
+        doc: i32,
+        current: i32,
+        freq: i32,
+    }
+
+    impl DocIdSetIterator for OneDocPostingsEnum {
+        fn doc_id(&self) -> i32 {
+            self.current
+        }
+
+        fn next_doc(&mut self) -> Result<i32> {
+            self.current = if self.current == -1 {
+                self.doc
+            } else {
+                NO_MORE_DOCS
+            };
+            Ok(self.current)
+        }
+
+        fn advance(&mut self, _target: i32) -> Result<i32> {
+            self.next_doc()
+        }
+
+        fn cost(&self) -> i64 {
+            1
+        }
+    }
+
+    impl std::fmt::Display for OneDocPostingsEnum {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("OneDocPostingsEnum")
+        }
+    }
+
+    impl PostingsEnum for OneDocPostingsEnum {
+        fn freq(&self) -> Result<i32> {
+            Ok(self.freq)
+        }
+
+        fn next_position(&mut self) -> Result<i32> {
+            Ok(0)
+        }
+
+        fn start_offset(&self) -> i32 {
+            -1
+        }
+
+        fn end_offset(&self) -> i32 {
+            -1
+        }
+
+        fn get_payload(&self) -> Result<Option<&[u8]>> {
+            Ok(None)
+        }
+    }
+
+    /// A terms enum whose `postings` is one document, `doc`, of frequency
+    /// `freq`.
+    #[derive(Default)]
+    struct OneDocTermsEnum {
+        atts: crate::util::attribute::AttributeSource,
+        doc: i32,
+        freq: i32,
+    }
+
+    impl std::fmt::Display for OneDocTermsEnum {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("OneDocTermsEnum")
+        }
+    }
+
+    impl TermsEnum for OneDocTermsEnum {
+        fn attributes(&mut self) -> &mut crate::util::attribute::AttributeSource {
+            &mut self.atts
+        }
+
+        fn term(&self) -> Result<BytesRef> {
+            Ok(BytesRef::default())
+        }
+
+        fn postings(
+            &mut self,
+            _reuse: Option<Box<dyn PostingsEnum>>,
+            _flags: i32,
+        ) -> Result<Box<dyn PostingsEnum>> {
+            Ok(Box::new(OneDocPostingsEnum {
+                doc: self.doc,
+                current: -1,
+                freq: self.freq,
+            }))
+        }
+
+        fn seek_ceil(&mut self, _text: &BytesRef) -> Result<SeekStatus> {
+            Ok(SeekStatus::END)
+        }
+
+        fn seek_ord(&mut self, _ord: i64) -> Result<()> {
+            Ok(())
+        }
+
+        fn ord(&self) -> Result<i64> {
+            Ok(-1)
+        }
+
+        fn doc_freq(&mut self) -> Result<i32> {
+            Ok(1)
+        }
+
+        fn total_term_freq(&mut self) -> Result<i64> {
+            Ok(1)
+        }
+
+        fn impacts(&mut self, _flags: i32) -> Result<Box<dyn crate::index::ImpactsEnum>> {
+            Ok(Box::new(StubImpactsEnum))
+        }
+
+        fn next(&mut self) -> Result<Option<BytesRef>> {
+            Ok(None)
+        }
+    }
+
+    /// `writeTerm` calls `docsSeen.set(docID)` for every document
+    /// (`PushPostingsWriterBase.java:136`), with no bound check of its own: a
+    /// document past the bit set fails exactly as `docsSeen.set(docID)` does
+    /// on its own — `FixedBitSet.set`'s `assert index >= 0 && index <
+    /// numBits` (`FixedBitSet.java:298`) — rather than being skipped or
+    /// refused by `writeTerm`.
+    #[test]
+    fn write_term_hands_every_document_to_docs_seen_set() {
+        fn panic_text(payload: Box<dyn std::any::Any + Send>) -> String {
+            payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
+                .unwrap_or_default()
+        }
+        let direct = std::panic::catch_unwind(|| FixedBitSet::new(8).set(9))
+            .expect_err("FixedBitSet::set refuses a bit past its length");
+        let through_write_term = std::panic::catch_unwind(|| {
+            let mut writer = StubPushWriter::default();
+            let docs =
+                FieldInfo::new("docs", 0).with_postings_options(IndexOptions::DOCS, false, false);
+            PushPostingsWriterBase::set_field(&mut writer, &docs).unwrap();
+            let mut terms = OneDocTermsEnum {
+                doc: 9,
+                freq: 1,
+                ..OneDocTermsEnum::default()
+            };
+            let mut docs_seen = FixedBitSet::new(8);
+            PostingsWriterBase::write_term(
+                &mut writer,
+                &BytesRef::default(),
+                &mut terms,
+                &mut docs_seen,
+                None,
+            )
+            .map(|_| ())
+        })
+        .expect_err("writeTerm reaches docsSeen.set(9)");
+        assert_eq!(panic_text(through_write_term), panic_text(direct));
+    }
+
+    /// `writeTerm` adds every frequency it reads to `totalTermFreq`
+    /// (`PushPostingsWriterBase.java:139-141`) and sets the document's bit,
+    /// without filtering what the enum reports.
+    #[test]
+    fn write_term_sums_every_frequency_it_reads() {
+        let mut writer = StubPushWriter::default();
+        let freqs = FieldInfo::new("freqs", 0).with_postings_options(
+            IndexOptions::DOCS_AND_FREQS,
+            false,
+            false,
+        );
+        PushPostingsWriterBase::set_field(&mut writer, &freqs).unwrap();
+        let mut terms = OneDocTermsEnum {
+            doc: 3,
+            freq: -1,
+            ..OneDocTermsEnum::default()
+        };
+        let mut docs_seen = FixedBitSet::new(8);
+        let state = PostingsWriterBase::write_term(
+            &mut writer,
+            &BytesRef::default(),
+            &mut terms,
+            &mut docs_seen,
+            None,
+        )
+        .unwrap()
+        .expect("one document");
+        assert_eq!(state.doc_freq, 1);
+        assert_eq!(state.total_term_freq, -1);
+        assert!(docs_seen.get(3));
     }
 }

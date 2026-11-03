@@ -49,20 +49,62 @@ fn point_token_stream(packed_value: Option<&[u8]>) -> Box<dyn TokenStream> {
 /// How many bytes one encoded coordinate occupies.
 pub const COORDINATE_BYTES: usize = 4;
 
-/// Builds the field type a two-dimensional point field uses.
-fn point_field_type() -> Result<FieldType> {
+/// Builds and freezes the type of a two-dimensional point of
+/// [`COORDINATE_BYTES`] bytes per dimension.
+fn new_point_field_type() -> FieldType {
     let mut ft = FieldType::new();
-    ft.set_dimensions(2, COORDINATE_BYTES as i32)?;
+    ft.set_dimensions(2, COORDINATE_BYTES as i32)
+        .expect("INVARIANT: two dimensions of four bytes fit a new, mutable type");
     ft.freeze();
-    Ok(ft)
+    ft
 }
 
-/// Builds the field type a location doc-values field uses.
-fn doc_values_field_type() -> Result<FieldType> {
+/// Builds and freezes the type of a location doc-values field: sorted-numeric
+/// doc values.
+fn new_doc_values_field_type() -> FieldType {
     let mut ft = FieldType::new();
-    ft.set_doc_values_type(DocValuesType::SORTED_NUMERIC)?;
+    ft.set_doc_values_type(DocValuesType::SORTED_NUMERIC)
+        .expect("INVARIANT: a new type is mutable");
     ft.freeze();
-    Ok(ft)
+    ft
+}
+
+/// The one frozen type every [`LatLonPoint`] shares.
+///
+/// Equivalent to the static `LatLonPoint.TYPE` (`LatLonPoint.java:101-106`).
+/// Each field holds a clone, which keeps the frozen identity, so the fields
+/// share one type as Java's share one object (see [`FieldType`]'s
+/// `frozen_identity`). It is a static of its own: `XYPointField.TYPE` is
+/// another object, equal by value.
+fn lat_lon_point_type() -> &'static FieldType {
+    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    TYPE.get_or_init(new_point_field_type)
+}
+
+/// The one frozen type every [`XYPointField`] shares.
+///
+/// Equivalent to the static `XYPointField.TYPE` (`XYPointField.java:64-69`).
+fn xy_point_field_type() -> &'static FieldType {
+    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    TYPE.get_or_init(new_point_field_type)
+}
+
+/// The one frozen type every [`LatLonDocValuesField`] shares.
+///
+/// Equivalent to the static `LatLonDocValuesField.TYPE`
+/// (`LatLonDocValuesField.java:70-75`).
+fn lat_lon_doc_values_field_type() -> &'static FieldType {
+    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    TYPE.get_or_init(new_doc_values_field_type)
+}
+
+/// The one frozen type every [`XYDocValuesField`] shares.
+///
+/// Equivalent to the static `XYDocValuesField.TYPE`
+/// (`XYDocValuesField.java:66-71`).
+fn xy_doc_values_field_type() -> &'static FieldType {
+    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    TYPE.get_or_init(new_doc_values_field_type)
 }
 
 /// A latitude/longitude pair indexed as a point.
@@ -83,7 +125,7 @@ impl LatLonPoint {
     pub fn new(name: impl Into<String>, latitude: f64, longitude: f64) -> Result<Self> {
         let mut field = Self {
             name: name.into(),
-            field_type: point_field_type()?,
+            field_type: lat_lon_point_type().clone(),
             fields_data: FieldData::Bytes(BytesRef::new(vec![0u8; 2 * COORDINATE_BYTES])),
         };
         field.set_location_value(latitude, longitude)?;
@@ -343,6 +385,16 @@ impl LatLonPoint {
         Ok(Arc::new(ConstantScoreQuery::new(Arc::new(builder.build()))))
     }
 
+    /// Encodes a bounding box into the lower and upper packed points a box
+    /// query compares against.
+    ///
+    /// Equivalent to the `encodeCeil(minLatitude, minLongitude)` and
+    /// `encode(maxLatitude, maxLongitude)` calls of
+    /// `LatLonPoint.newBoxQuery(String, double, double, double, double)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever encoding a coordinate raises.
     pub fn encode_box(rectangle: &Rectangle) -> Result<(Vec<u8>, Vec<u8>)> {
         let mut lower = vec![0u8; 2 * COORDINATE_BYTES];
         let mut upper = vec![0u8; 2 * COORDINATE_BYTES];
@@ -456,7 +508,7 @@ impl LatLonPoint {
         let mut doc_bases: Vec<i32> = Vec::new();
         let mut live_docs: Vec<Option<Box<dyn Bits>>> = Vec::new();
         let mut total_hits: i32 = 0;
-        for leaf in Arc::clone(searcher.get_index_reader()).leaves() {
+        for leaf in Arc::clone(searcher.get_index_reader()).leaves()? {
             let reader = leaf.leaf_reader();
             if let Some(points) = reader.get_point_values(field)? {
                 total_hits += points.doc_count()?;
@@ -548,7 +600,7 @@ impl LatLonDocValuesField {
     pub fn new(name: impl Into<String>, latitude: f64, longitude: f64) -> Result<Self> {
         let mut field = Self {
             name: name.into(),
-            field_type: doc_values_field_type()?,
+            field_type: lat_lon_doc_values_field_type().clone(),
             value: 0,
         };
         field.set_location_value(latitude, longitude)?;
@@ -810,7 +862,7 @@ impl XYPointField {
     pub fn new(name: impl Into<String>, x: f32, y: f32) -> Result<Self> {
         let mut field = Self {
             name: name.into(),
-            field_type: point_field_type()?,
+            field_type: xy_point_field_type().clone(),
             fields_data: FieldData::Bytes(BytesRef::new(vec![0u8; 2 * COORDINATE_BYTES])),
         };
         field.set_location_value(x, y)?;
@@ -950,7 +1002,7 @@ impl XYDocValuesField {
     pub fn new(name: impl Into<String>, x: f32, y: f32) -> Result<Self> {
         let mut field = Self {
             name: name.into(),
-            field_type: doc_values_field_type()?,
+            field_type: xy_doc_values_field_type().clone(),
             value: 0,
         };
         field.set_location_value(x, y)?;
@@ -1150,14 +1202,28 @@ impl InetAddressPoint {
     /// Equivalent to `InetAddressPoint.IPV4_PREFIX`.
     pub const IPV4_PREFIX: [u8; 12] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF];
 
+    /// The one frozen type every `InetAddressPoint` shares: one dimension of
+    /// [`BYTES`](Self::BYTES) bytes.
+    ///
+    /// Equivalent to the private static `InetAddressPoint.TYPE`
+    /// (`InetAddressPoint.java:62-68`); each field holds a clone, which keeps
+    /// the frozen identity (see [`FieldType`]).
+    fn field_type_static() -> &'static FieldType {
+        static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+        TYPE.get_or_init(|| {
+            let mut ft = FieldType::new();
+            ft.set_dimensions(1, Self::BYTES as i32)
+                .expect("INVARIANT: one dimension of sixteen bytes fits a new, mutable type");
+            ft.freeze();
+            ft
+        })
+    }
+
     /// Creates the field from an address already in its 4- or 16-byte form.
     pub fn new(name: impl Into<String>, address: &[u8]) -> Result<Self> {
-        let mut ft = FieldType::new();
-        ft.set_dimensions(1, Self::BYTES as i32)?;
-        ft.freeze();
         Ok(Self {
             name: name.into(),
-            field_type: ft,
+            field_type: Self::field_type_static().clone(),
             fields_data: FieldData::Bytes(BytesRef::new(Self::encode(address)?)),
         })
     }
@@ -1502,14 +1568,28 @@ impl InetAddressRange {
     /// How many bytes one address occupies.
     pub const BYTES: usize = InetAddressPoint::BYTES;
 
+    /// The one frozen type every `InetAddressRange` shares: two dimensions of
+    /// [`BYTES`](Self::BYTES) bytes.
+    ///
+    /// Equivalent to the private static `InetAddressRange.TYPE`
+    /// (`InetAddressRange.java:52-58`); each field holds a clone, which keeps
+    /// the frozen identity (see [`FieldType`]).
+    fn field_type_static() -> &'static FieldType {
+        static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+        TYPE.get_or_init(|| {
+            let mut ft = FieldType::new();
+            ft.set_dimensions(2, Self::BYTES as i32)
+                .expect("INVARIANT: two dimensions of sixteen bytes fit a new, mutable type");
+            ft.freeze();
+            ft
+        })
+    }
+
     /// Creates the field from a minimum and a maximum address.
     pub fn new(name: impl Into<String>, min: &[u8], max: &[u8]) -> Result<Self> {
-        let mut ft = FieldType::new();
-        ft.set_dimensions(2, Self::BYTES as i32)?;
-        ft.freeze();
         let mut field = Self {
             name: name.into(),
-            field_type: ft,
+            field_type: Self::field_type_static().clone(),
             fields_data: FieldData::Bytes(BytesRef::new(vec![0u8; 2 * Self::BYTES])),
         };
         field.set_range_values(min, max)?;

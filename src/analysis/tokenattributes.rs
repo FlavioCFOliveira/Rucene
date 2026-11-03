@@ -233,19 +233,25 @@ impl CharTermAttribute for CharTermAttributeImpl {
         self.term_length
     }
 
+    /// `Objects.checkIndex(index, termLength)` (`CharTermAttributeImpl.java:104-107`):
+    /// an index past the term panics with the JDK's `IndexOutOfBoundsException`
+    /// message.
     fn char_at(&self, index: usize) -> char {
         assert!(
             index < self.term_length,
-            "index {index} out of bounds (length {})",
+            "Index {index} out of bounds for length {}",
             self.term_length
         );
         self.term_buffer[index]
     }
 
+    /// `Objects.checkFromToIndex(start, end, termLength)`
+    /// (`CharTermAttributeImpl.java:110-113`): a range outside the term panics
+    /// with the JDK's `IndexOutOfBoundsException` message.
     fn sub_sequence(&self, start: usize, end: usize) -> String {
         assert!(
             start <= end && end <= self.term_length,
-            "invalid sub-sequence: start={start}, end={end}, length={}",
+            "Range [{start}, {end}) out of bounds for length {}",
             self.term_length
         );
         self.term_buffer[start..end].iter().collect()
@@ -869,6 +875,8 @@ impl TypeAttributeImpl {
     }
 
     /// Creates an attribute with the given type.
+    ///
+    /// Equivalent to the constructor `TypeAttributeImpl(String)`.
     pub fn with_type(type_value: String) -> Self {
         Self { type_value }
     }
@@ -989,6 +997,10 @@ impl PackedTokenAttributeImpl {
     }
 
     /// Returns the current term text as a `String`.
+    ///
+    /// Equivalent to `toString()`, which `PackedTokenAttributeImpl` inherits
+    /// from `CharTermAttributeImpl` (`CharTermAttributeImpl.java:252-254`):
+    /// the first `length()` characters of the term buffer.
     pub fn term(&self) -> String {
         self.buffer()[..self.length()].iter().collect()
     }
@@ -1638,6 +1650,8 @@ impl PayloadAttributeImpl {
     }
 
     /// Creates an attribute with the given payload.
+    ///
+    /// Equivalent to the constructor `PayloadAttributeImpl(BytesRef)`.
     pub fn with_payload(payload: BytesRef) -> Self {
         Self {
             payload: Some(payload),
@@ -1986,6 +2000,28 @@ impl AttributeImpl for SentenceAttributeImpl {
 mod tests {
     use super::*;
     use crate::util::attribute::{AttributeSource, DefaultAttributeFactory};
+
+    /// `CharTermAttributeImpl.charAt` checks with `Objects.checkIndex`
+    /// (`CharTermAttributeImpl.java:104-107`). Measured against
+    /// `lucene-core-10.5.0.jar` (`oracle/fix/LastPass.java`, case C7):
+    /// `Index 5 out of bounds for length 3`.
+    #[test]
+    #[should_panic(expected = "Index 5 out of bounds for length 3")]
+    fn char_term_char_at_has_the_jdk_message() {
+        let mut term = CharTermAttributeImpl::new();
+        term.append_string("abc");
+        let _ = term.char_at(5);
+    }
+
+    /// As above, `subSequence` with `Objects.checkFromToIndex`
+    /// (`:110-113`): `Range [2, 5) out of bounds for length 3`.
+    #[test]
+    #[should_panic(expected = "Range [2, 5) out of bounds for length 3")]
+    fn char_term_sub_sequence_has_the_jdk_message() {
+        let mut term = CharTermAttributeImpl::new();
+        term.append_string("abc");
+        let _ = term.sub_sequence(2, 5);
+    }
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     use std::sync::Arc;

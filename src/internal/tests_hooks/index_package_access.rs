@@ -14,9 +14,9 @@ use crate::index::{CacheKey, FieldInfo, FieldInfos, Impacts};
 /// # Divergences from Lucene 10.5.0
 ///
 /// * **`Result` instead of unchecked exceptions.** Java's
-///   `setIndexWriterMaxDocs` throws `IllegalArgumentException` and
-///   `checkImpacts` throws `AssertionError`; both surface as
-///   [`crate::LuceneError`] here.
+///   `setIndexWriterMaxDocs` and `newFieldInfosBuilder` throw
+///   `IllegalArgumentException` and `checkImpacts` throws `AssertionError`;
+///   all surface as [`crate::LuceneError`] here.
 /// * **`Option<&str>` for nullable names.** Java passes `null` for an absent
 ///   soft-deletes or parent field.
 /// * **`Send + Sync + Debug` bounds.** Needed because
@@ -40,11 +40,16 @@ pub trait IndexPackageAccess: Send + Sync + Debug {
     /// Creates a builder for the field infos of one segment.
     ///
     /// Equivalent to `IndexPackageAccess.newFieldInfosBuilder(String, String)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::LuceneError::IllegalArgument`] when the two names are
+    /// the same field, which `FieldInfos.FieldNumbers` refuses.
     fn new_field_infos_builder(
         &self,
         soft_deletes_field_name: Option<&str>,
         parent_field_name: Option<&str>,
-    ) -> Box<dyn FieldInfosBuilder>;
+    ) -> Result<Box<dyn FieldInfosBuilder>>;
 
     /// Verifies that `impacts` is well formed up to doc ID `max`.
     ///

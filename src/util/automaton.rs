@@ -110,7 +110,8 @@ pub use utf32_to_utf8::UTF32ToUTF8;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codecs::postings::{EmptyPostingsEnum, PostingsEnum, Terms, TermsEnum};
+    use crate::codecs::postings::{PostingsEnum, Terms, TermsEnum};
+    use crate::index::postings_enum::EmptyPostingsEnum;
     use crate::util::BytesRef;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -410,20 +411,20 @@ mod tests {
             Ok(Box::new(ListTermsEnum::new(self.terms.clone())))
         }
 
-        fn size(&self) -> i64 {
-            self.terms.len() as i64
+        fn size(&self) -> crate::error::Result<i64> {
+            Ok(self.terms.len() as i64)
         }
 
-        fn doc_count(&self) -> i32 {
-            -1
+        fn doc_count(&self) -> crate::error::Result<i32> {
+            Ok(-1)
         }
 
-        fn sum_total_term_freq(&self) -> i64 {
-            -1
+        fn sum_total_term_freq(&self) -> crate::error::Result<i64> {
+            Ok(-1)
         }
 
-        fn sum_doc_freq(&self) -> i64 {
-            -1
+        fn sum_doc_freq(&self) -> crate::error::Result<i64> {
+            Ok(-1)
         }
 
         fn has_freqs(&self) -> bool {

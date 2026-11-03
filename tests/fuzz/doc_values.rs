@@ -136,10 +136,26 @@
 //!   every structural field lives; the middle of a bitmap is pure data, and
 //!   flipping a bit there adds or removes a document and reaches no branch the
 //!   ends do not.
+//!
+//! # The one Java assertion a merge instance can trip
+//!
+//! A corrupt documents-with-field stream or value count can hand the merge
+//! instance of a numeric reader an index at or past the `numValues` it was
+//! built for. `DirectReader.getMergeInstance`'s `get(long)` asserts exactly
+//! that (`assert index < numValues`, `DirectReader.java:115`), and the port
+//! keeps the assertion at the same place (`debug_assert!(index <
+//! self.num_values)` in `DirectReaderMergeInstance::get_checked`). Lucene's own
+//! tests run with assertions enabled, so such an input is one Java refuses with
+//! an `AssertionError`, not a defect of the port. The sweeps therefore accept
+//! that one panic — matched by its message and by the file it is raised in —
+//! while they walk a merge instance, and only there; any other panic, on that
+//! path or another, still fails the test (see `visit_merge_instance`).
 
+use std::cell::Cell;
 use std::collections::HashMap;
-use std::sync::atomic::AtomicI64;
-use std::sync::Arc;
+use std::panic::{self, AssertUnwindSafe, PanicHookInfo};
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+use std::sync::{Arc, Once};
 
 use rucene::codecs::codec_util;
 use rucene::codecs::state::{SegmentReadState, SegmentWriteState};
@@ -153,9 +169,9 @@ use rucene::index::{
     SegmentInfo, SortedDocValuesWriter, SortedNumericDocValuesWriter, SortedSetDocValuesWriter,
 };
 use rucene::search::{DocIdSetIterator, NO_MORE_DOCS};
-use rucene::store::{Directory, RamDirectory, DEFAULT_IO_CONTEXT};
+use rucene::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT};
 use rucene::util::string_helper::StringHelper;
-use rucene::util::{default_info_stream, BytesRef, Version};
+use rucene::util::{ByteBlockPool, BytesRef, Version};
 
 /// Every file the consumer produces, so a corrupted copy is a complete
 /// segment. `.dvs` is written but never read by this format's producer, so it
@@ -501,11 +517,11 @@ fn fixtures() -> Vec<Fixture> {
 fn write_segment(directory: &Arc<dyn Directory>, info: &SegmentInfo, fixture: &Fixture) {
     let infos = fixture.field_infos();
     let write_state = SegmentWriteState::new(
-        default_info_stream(),
-        directory.as_ref(),
+        &rucene::util::NoOutputInfoStream,
+        Arc::clone(directory),
         info,
         &infos,
-        &BufferedUpdates,
+        Box::leak(Box::new(BufferedUpdates::default())),
         &*DEFAULT_IO_CONTEXT,
     );
     let mut consumer = Lucene90DocValuesFormat::new()
@@ -517,38 +533,51 @@ fn write_segment(directory: &Arc<dyn Directory>, info: &SegmentInfo, fixture: &F
             .field_info_by_number(number as i32)
             .expect("field info")
             .clone();
-        write_field(consumer.as_mut(), info, values, Arc::clone(&bytes_used));
+        write_field(
+            &write_state,
+            consumer.as_mut(),
+            info,
+            values,
+            Arc::clone(&bytes_used),
+        );
     }
     consumer.close().expect("close");
 }
 
 fn write_field(
+    state: &SegmentWriteState<'_>,
     consumer: &mut dyn DocValuesConsumer,
     info: FieldInfo,
     values: &Values,
     bytes_used: Arc<AtomicI64>,
 ) {
+    // The indexing chain's shared `docValuesBytePool`.
+    let mut pool = Arc::new(ByteBlockPool::new(Arc::clone(&bytes_used)));
     match values {
         Values::Numeric(pairs) => {
             let mut writer = NumericDocValuesWriter::new(info, bytes_used);
             for (doc, value) in pairs {
                 writer.add_value(*doc, *value).expect("add numeric");
             }
-            writer.flush(consumer).expect("flush numeric");
+            writer.flush(state, None, consumer).expect("flush numeric");
         }
         Values::Binary(pairs) => {
             let mut writer = BinaryDocValuesWriter::new(info, bytes_used);
             for (doc, value) in pairs {
                 writer.add_value(*doc, value).expect("add binary");
             }
-            writer.flush(consumer).expect("flush binary");
+            writer.flush(state, None, consumer).expect("flush binary");
         }
         Values::Sorted(pairs) => {
             let mut writer = SortedDocValuesWriter::new(info, bytes_used);
             for (doc, value) in pairs {
-                writer.add_value(*doc, value).expect("add sorted");
+                writer
+                    .add_value(*doc, value, &mut pool)
+                    .expect("add sorted");
             }
-            writer.flush(consumer).expect("flush sorted");
+            writer
+                .flush(state, None, consumer, &pool)
+                .expect("flush sorted");
         }
         Values::SortedNumeric(pairs) => {
             let mut writer = SortedNumericDocValuesWriter::new(info, bytes_used);
@@ -557,16 +586,22 @@ fn write_field(
                     writer.add_value(*doc, *value).expect("add sorted numeric");
                 }
             }
-            writer.flush(consumer).expect("flush sorted numeric");
+            writer
+                .flush(state, None, consumer)
+                .expect("flush sorted numeric");
         }
         Values::SortedSet(pairs) => {
             let mut writer = SortedSetDocValuesWriter::new(info, bytes_used);
             for (doc, values) in pairs {
                 for value in values {
-                    writer.add_value(*doc, value).expect("add sorted set");
+                    writer
+                        .add_value(*doc, value, &mut pool)
+                        .expect("add sorted set");
                 }
             }
-            writer.flush(consumer).expect("flush sorted set");
+            writer
+                .flush(state, None, consumer, &pool)
+                .expect("flush sorted set");
         }
     }
 }
@@ -615,9 +650,97 @@ fn visit_all(directory: &Arc<dyn Directory>, info: &SegmentInfo, fixture: &Fixtu
     let mut decoded = visit_fields(producer.as_ref(), &infos, fixture);
     // The merge instance must be no more trusting than the primary one.
     if let Ok(merge) = producer.get_merge_instance() {
-        decoded += visit_fields(merge.as_ref(), &infos, fixture);
+        decoded += visit_merge_instance(merge.as_ref(), &infos, fixture);
     }
     decoded
+}
+
+/// The message of the assertion `DirectReaderMergeInstance::get_checked`
+/// keeps from `DirectReader.java:115` (`assert index < numValues`).
+const MERGE_INSTANCE_ASSERTION: &str = "assertion failed: index < self.num_values";
+
+/// The file that assertion is raised in.
+const MERGE_INSTANCE_ASSERTION_FILE: &str = "src/util/packed.rs";
+
+/// How many walks of a merge instance stopped at that assertion, across the
+/// whole binary; reported by the sweeps, never asserted on.
+static MERGE_INSTANCE_ASSERTIONS: AtomicUsize = AtomicUsize::new(0);
+
+thread_local! {
+    /// Set while this thread walks a merge instance.
+    static IN_MERGE_INSTANCE: Cell<bool> = const { Cell::new(false) };
+    /// Set by the panic hook when the panic it saw is the Java assertion,
+    /// raised in its file, while this thread walked a merge instance.
+    static MERGE_ASSERTION_SEEN: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The text a panic payload carries, when it carries one.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> Option<&str> {
+    payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+}
+
+/// Whether a panic is the Java assertion of a merge instance.
+fn is_merge_instance_assertion(info: &PanicHookInfo<'_>) -> bool {
+    panic_message(info.payload()) == Some(MERGE_INSTANCE_ASSERTION)
+        && info
+            .location()
+            .is_some_and(|location| location.file().ends_with(MERGE_INSTANCE_ASSERTION_FILE))
+}
+
+/// Installs, once per binary, a panic hook that records the Java assertion of
+/// a merge instance instead of printing it, and hands every other panic to the
+/// hook that was installed before.
+fn install_merge_assertion_hook() {
+    static INSTALL: Once = Once::new();
+    INSTALL.call_once(|| {
+        let previous = panic::take_hook();
+        panic::set_hook(Box::new(move |info| {
+            if IN_MERGE_INSTANCE.with(Cell::get) && is_merge_instance_assertion(info) {
+                MERGE_ASSERTION_SEEN.with(|seen| seen.set(true));
+                return;
+            }
+            previous(info);
+        }));
+    });
+}
+
+/// Walks a merge instance as [`visit_fields`] does, accepting exactly one
+/// panic: the Java assertion `index < numValues` of the merge instance (see the
+/// module documentation). The walk stops there, as Java's would at its
+/// `AssertionError`. Any other panic is resumed, so it fails the test.
+fn visit_merge_instance(
+    producer: &dyn DocValuesProducer,
+    infos: &FieldInfos,
+    fixture: &Fixture,
+) -> usize {
+    install_merge_assertion_hook();
+    MERGE_ASSERTION_SEEN.with(|seen| seen.set(false));
+    IN_MERGE_INSTANCE.with(|flag| flag.set(true));
+    let walked = panic::catch_unwind(AssertUnwindSafe(|| visit_fields(producer, infos, fixture)));
+    IN_MERGE_INSTANCE.with(|flag| flag.set(false));
+    match walked {
+        Ok(decoded) => decoded,
+        Err(payload) => {
+            let seen = MERGE_ASSERTION_SEEN.with(|seen| seen.replace(false));
+            if seen && panic_message(&*payload) == Some(MERGE_INSTANCE_ASSERTION) {
+                MERGE_INSTANCE_ASSERTIONS.fetch_add(1, Ordering::Relaxed);
+                0
+            } else {
+                panic::resume_unwind(payload)
+            }
+        }
+    }
+}
+
+/// Prints how many merge-instance walks stopped at the Java assertion so far.
+fn report_merge_instance_assertions(sweep: &str) {
+    println!(
+        "{sweep}: {} merge-instance walks stopped at `assert index < numValues` so far",
+        MERGE_INSTANCE_ASSERTIONS.load(Ordering::Relaxed)
+    );
 }
 
 fn visit_fields(producer: &dyn DocValuesProducer, infos: &FieldInfos, fixture: &Fixture) -> usize {
@@ -659,7 +782,7 @@ fn step_budget(fixture: &Fixture) -> usize {
 }
 
 fn visit_numeric(producer: &dyn DocValuesProducer, field: &FieldInfo, fixture: &Fixture) -> usize {
-    let Ok(mut values) = producer.get_numeric(field) else {
+    let Ok(Some(mut values)) = producer.get_numeric(field) else {
         return 0;
     };
     let mut decoded = 0;
@@ -677,7 +800,7 @@ fn visit_numeric(producer: &dyn DocValuesProducer, field: &FieldInfo, fixture: &
 }
 
 fn visit_binary(producer: &dyn DocValuesProducer, field: &FieldInfo, fixture: &Fixture) -> usize {
-    let Ok(mut values) = producer.get_binary(field) else {
+    let Ok(Some(mut values)) = producer.get_binary(field) else {
         return 0;
     };
     let mut decoded = 0;
@@ -697,7 +820,7 @@ fn visit_binary(producer: &dyn DocValuesProducer, field: &FieldInfo, fixture: &F
 }
 
 fn visit_sorted(producer: &dyn DocValuesProducer, field: &FieldInfo, fixture: &Fixture) -> usize {
-    let Ok(mut values) = producer.get_sorted(field) else {
+    let Ok(Some(mut values)) = producer.get_sorted(field) else {
         return 0;
     };
     let count = values.get_value_count().unwrap_or(0);
@@ -726,7 +849,7 @@ fn visit_sorted_numeric(
     field: &FieldInfo,
     fixture: &Fixture,
 ) -> usize {
-    let Ok(mut values) = producer.get_sorted_numeric(field) else {
+    let Ok(Some(mut values)) = producer.get_sorted_numeric(field) else {
         return 0;
     };
     let mut decoded = 0;
@@ -752,7 +875,7 @@ fn visit_sorted_set(
     field: &FieldInfo,
     fixture: &Fixture,
 ) -> usize {
-    let Ok(mut values) = producer.get_sorted_set(field) else {
+    let Ok(Some(mut values)) = producer.get_sorted_set(field) else {
         return 0;
     };
     let count = values.get_value_count().unwrap_or(0);
@@ -785,7 +908,7 @@ fn visit_random_access(producer: &dyn DocValuesProducer, field: &FieldInfo, fixt
     for target in targets {
         match field.doc_values_type {
             DocValuesType::NUMERIC => {
-                if let Ok(mut values) = producer.get_numeric(field) {
+                if let Ok(Some(mut values)) = producer.get_numeric(field) {
                     let _ = values.advance(target);
                     let _ = values.long_value();
                     let _ = values.advance_exact(target);
@@ -794,7 +917,7 @@ fn visit_random_access(producer: &dyn DocValuesProducer, field: &FieldInfo, fixt
                 }
             }
             DocValuesType::BINARY => {
-                if let Ok(mut values) = producer.get_binary(field) {
+                if let Ok(Some(mut values)) = producer.get_binary(field) {
                     let _ = values.advance(target);
                     let _ = values.binary_value();
                     let _ = values.advance_exact(target);
@@ -803,7 +926,7 @@ fn visit_random_access(producer: &dyn DocValuesProducer, field: &FieldInfo, fixt
                 }
             }
             DocValuesType::SORTED => {
-                if let Ok(mut values) = producer.get_sorted(field) {
+                if let Ok(Some(mut values)) = producer.get_sorted(field) {
                     let _ = values.advance(target);
                     let _ = values.ord_value();
                     let _ = values.advance_exact(target);
@@ -812,7 +935,7 @@ fn visit_random_access(producer: &dyn DocValuesProducer, field: &FieldInfo, fixt
                 }
             }
             DocValuesType::SORTED_NUMERIC => {
-                if let Ok(mut values) = producer.get_sorted_numeric(field) {
+                if let Ok(Some(mut values)) = producer.get_sorted_numeric(field) {
                     let _ = values.advance(target);
                     let _ = values.next_value();
                     let _ = values.advance_exact(target);
@@ -821,7 +944,7 @@ fn visit_random_access(producer: &dyn DocValuesProducer, field: &FieldInfo, fixt
                 }
             }
             DocValuesType::SORTED_SET => {
-                if let Ok(mut values) = producer.get_sorted_set(field) {
+                if let Ok(Some(mut values)) = producer.get_sorted_set(field) {
                     let _ = values.advance(target);
                     let _ = values.next_ord();
                     let _ = values.advance_exact(target);
@@ -1215,7 +1338,7 @@ fn corrupt_copy(
     at: usize,
     value: u8,
 ) -> Arc<dyn Directory> {
-    let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     for extension in ALL_EXTENSIONS {
         let name = format!("_0.{extension}");
         let mut bytes = read_file(original, &name);
@@ -1229,7 +1352,7 @@ fn corrupt_copy(
 
 /// Builds a valid segment for `fixture` in a fresh directory.
 fn build(fixture: &Fixture) -> (Arc<dyn Directory>, SegmentInfo, [u8; 16]) {
-    let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let id = StringHelper::random_id();
     let info = segment_info(&directory, fixture.max_doc, id);
     write_segment(&directory, &info, fixture);
@@ -1315,7 +1438,7 @@ fn hostile_values(width: usize) -> Vec<i64> {
 /// reached, so every offset, length, count and width in the metadata would go
 /// untested against them.
 fn resign(body: &[u8]) -> Vec<u8> {
-    let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     {
         let mut output = directory
             .create_output("resigned", &*DEFAULT_IO_CONTEXT)
@@ -1384,6 +1507,7 @@ fn every_value_at_every_byte_of_the_data_file_is_survived() {
             fixture.name
         );
     }
+    report_merge_instance_assertions("every_value_at_every_byte_of_the_data_file_is_survived");
 }
 
 #[test]
@@ -1423,6 +1547,7 @@ fn every_value_at_every_byte_of_the_metadata_file_is_survived() {
             fixture.name
         );
     }
+    report_merge_instance_assertions("every_value_at_every_byte_of_the_metadata_file_is_survived");
 }
 
 #[test]
@@ -1434,7 +1559,7 @@ fn a_truncated_data_file_is_survived_at_every_length() {
         let skip = read_file(&directory, "_0.dvs");
         let step = if original.len() > 1_024 { 17 } else { 1 };
         for length in (0..original.len()).step_by(step) {
-            let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+            let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
             write_file(&corrupt, "_0.dvd", &original[..length]);
             write_file(&corrupt, "_0.dvm", &meta);
             write_file(&corrupt, "_0.dvs", &skip);
@@ -1442,6 +1567,7 @@ fn a_truncated_data_file_is_survived_at_every_length() {
             visit_all(&corrupt, &corrupt_info, &fixture);
         }
     }
+    report_merge_instance_assertions("a_truncated_data_file_is_survived_at_every_length");
 }
 
 #[test]
@@ -1453,7 +1579,7 @@ fn a_truncated_metadata_file_is_survived_at_every_length() {
         let skip = read_file(&directory, "_0.dvs");
         let step = if original.len() > 1_024 { 17 } else { 1 };
         for length in (0..original.len()).step_by(step) {
-            let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+            let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
             write_file(&corrupt, "_0.dvd", &data);
             write_file(&corrupt, "_0.dvm", &original[..length]);
             write_file(&corrupt, "_0.dvs", &skip);
@@ -1501,7 +1627,7 @@ fn hostile_metadata_that_passes_its_checksum_is_survived() {
                     patch(&mut patched, at, width, value);
                     let signed = resign(&patched);
 
-                    let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+                    let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
                     write_file(&corrupt, "_0.dvd", &data);
                     write_file(&corrupt, "_0.dvm", &signed);
                     write_file(&corrupt, "_0.dvs", &skip);
@@ -1523,6 +1649,7 @@ fn hostile_metadata_that_passes_its_checksum_is_survived() {
         "the sweep must reach the iterators rather than stop at the entry \
          validation; only {opened} of {attempts} attempts decoded anything"
     );
+    report_merge_instance_assertions("hostile_metadata_that_passes_its_checksum_is_survived");
 }
 
 // ---------------------------------------------------------------------------
@@ -1562,7 +1689,7 @@ fn a_metadata_entry_naming_an_unknown_field_is_refused() {
         let mut patched = body.to_vec();
         patch(&mut patched, entry_start, 4, i64::from(number));
         let signed = resign(&patched);
-        let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         write_file(&corrupt, "_0.dvd", &data);
         write_file(&corrupt, "_0.dvm", &signed);
         write_file(&corrupt, "_0.dvs", &skip);
@@ -1614,7 +1741,7 @@ fn a_field_the_metadata_never_mentions_is_never_answered_with_another_fields_val
         .fields_producer(&read_state)
         .expect("doc values producer");
     let field = infos.field_info_by_number(orphan).expect("field info");
-    let mut values = producer.get_numeric(field).expect("numeric");
+    let mut values = producer.get_numeric(field).expect("numeric").unwrap();
     assert_eq!(
         values.next_doc().expect("next doc"),
         NO_MORE_DOCS,
@@ -1641,7 +1768,7 @@ fn advancing_past_the_segment_exhausts_the_iterator() {
                 continue;
             }
             for doc in [fixture.max_doc, fixture.max_doc + 1, i32::MAX - 1] {
-                let mut values = producer.get_numeric(field).expect("numeric");
+                let mut values = producer.get_numeric(field).expect("numeric").unwrap();
                 if let Ok(found) = values.advance(doc) {
                     assert_eq!(
                         found, NO_MORE_DOCS,
@@ -1678,7 +1805,7 @@ fn an_ordinal_outside_the_dictionary_is_refused() {
         for field in infos.iter() {
             match field.doc_values_type {
                 DocValuesType::SORTED => {
-                    let values = producer.get_sorted(field).expect("sorted");
+                    let values = producer.get_sorted(field).expect("sorted").unwrap();
                     let count = values.get_value_count().expect("value count");
                     assert!(count > 0, "[{}] the fixture writes terms", fixture.name);
                     assert!(values.lookup_ord(count).is_err());
@@ -1687,7 +1814,7 @@ fn an_ordinal_outside_the_dictionary_is_refused() {
                     assert!(values.lookup_ord(count - 1).is_ok());
                 }
                 DocValuesType::SORTED_SET => {
-                    let values = producer.get_sorted_set(field).expect("sorted set");
+                    let values = producer.get_sorted_set(field).expect("sorted set").unwrap();
                     let count = values.get_value_count().expect("value count");
                     assert!(count > 0, "[{}] the fixture writes terms", fixture.name);
                     assert!(values.lookup_ord(count).is_err());
@@ -1722,7 +1849,7 @@ fn every_fixture_round_trips_before_it_is_corrupted() {
                 .expect("field info");
             match expected {
                 Values::Numeric(pairs) => {
-                    let mut values = producer.get_numeric(field).expect("numeric");
+                    let mut values = producer.get_numeric(field).expect("numeric").unwrap();
                     for (doc, value) in pairs {
                         assert_eq!(values.next_doc().expect("next doc"), *doc);
                         assert_eq!(values.long_value().expect("value"), *value);
@@ -1730,7 +1857,7 @@ fn every_fixture_round_trips_before_it_is_corrupted() {
                     assert_eq!(values.next_doc().expect("next doc"), NO_MORE_DOCS);
                 }
                 Values::Binary(pairs) => {
-                    let mut values = producer.get_binary(field).expect("binary");
+                    let mut values = producer.get_binary(field).expect("binary").unwrap();
                     for (doc, value) in pairs {
                         assert_eq!(values.next_doc().expect("next doc"), *doc);
                         assert_eq!(values.binary_value().expect("value").slice(), &value[..]);
@@ -1738,7 +1865,7 @@ fn every_fixture_round_trips_before_it_is_corrupted() {
                     assert_eq!(values.next_doc().expect("next doc"), NO_MORE_DOCS);
                 }
                 Values::Sorted(pairs) => {
-                    let mut values = producer.get_sorted(field).expect("sorted");
+                    let mut values = producer.get_sorted(field).expect("sorted").unwrap();
                     for (doc, value) in pairs {
                         assert_eq!(values.next_doc().expect("next doc"), *doc);
                         let ord = values.ord_value().expect("ord");
@@ -1747,7 +1874,10 @@ fn every_fixture_round_trips_before_it_is_corrupted() {
                     assert_eq!(values.next_doc().expect("next doc"), NO_MORE_DOCS);
                 }
                 Values::SortedNumeric(pairs) => {
-                    let mut values = producer.get_sorted_numeric(field).expect("sorted numeric");
+                    let mut values = producer
+                        .get_sorted_numeric(field)
+                        .expect("sorted numeric")
+                        .unwrap();
                     for (doc, expected) in pairs {
                         assert_eq!(values.next_doc().expect("next doc"), *doc);
                         let count = values.doc_value_count().expect("count");
@@ -1763,7 +1893,7 @@ fn every_fixture_round_trips_before_it_is_corrupted() {
                     assert_eq!(values.next_doc().expect("next doc"), NO_MORE_DOCS);
                 }
                 Values::SortedSet(pairs) => {
-                    let mut values = producer.get_sorted_set(field).expect("sorted set");
+                    let mut values = producer.get_sorted_set(field).expect("sorted set").unwrap();
                     for (doc, expected) in pairs {
                         assert_eq!(values.next_doc().expect("next doc"), *doc);
                         let count = values.doc_value_count().expect("count");
@@ -1817,7 +1947,7 @@ fn a_value_count_off_disk_sizes_nothing() {
             let mut patched = body.to_vec();
             patch(&mut patched, entry.at + NUM_VALUES_OFFSET, 8, count);
             let signed = resign(&patched);
-            let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+            let corrupt: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
             write_file(&corrupt, "_0.dvd", &data);
             write_file(&corrupt, "_0.dvm", &signed);
             write_file(&corrupt, "_0.dvs", &skip);
@@ -1840,7 +1970,7 @@ fn a_value_count_off_disk_sizes_nothing() {
             // reader that had reserved anything from `numValues` could not get
             // this far, and one that iterated it would not stop.
             for field in infos.iter() {
-                let Ok(mut values) = producer.get_numeric(field) else {
+                let Ok(Some(mut values)) = producer.get_numeric(field) else {
                     continue;
                 };
                 let mut seen = 0;

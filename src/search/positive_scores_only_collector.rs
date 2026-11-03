@@ -34,14 +34,6 @@ impl<C: Collector> PositiveScoresOnlyCollector<C> {
             inner: FilterCollector::new(inner),
         }
     }
-
-    /// Unwraps this collector.
-    ///
-    /// Equivalent to reading `FilterCollector`'s `protected final Collector in`
-    /// field.
-    pub fn into_inner(self) -> C {
-        self.inner.into_inner()
-    }
 }
 
 impl<C: Collector> Collector for PositiveScoresOnlyCollector<C> {

@@ -244,33 +244,16 @@ impl PostingsFormat for Lucene104PostingsFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codecs::postings::{PostingsNormsProducer, PostingsNumericDocValues};
-    use crate::codecs::stub::{FieldInfo, FieldInfos};
+    use crate::codecs::stub::FieldInfos;
     use crate::index::SegmentInfo;
-    use crate::store::{Directory, RamDirectory};
+    use crate::store::ByteBuffersDirectory;
     use crate::util::{StringHelper, Version};
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    /// No-op norms producer for testing.
-    #[derive(Debug, Default, Clone)]
-    struct TestNormsProducer;
-
-    impl PostingsNumericDocValues for TestNormsProducer {
-        fn get(&self, _doc_id: i32) -> Result<i64> {
-            Ok(0)
-        }
-    }
-
-    impl PostingsNormsProducer for TestNormsProducer {
-        fn get_norms(&self, _field_info: &FieldInfo) -> Result<Box<dyn PostingsNumericDocValues>> {
-            Ok(Box::new(TestNormsProducer))
-        }
-    }
-
     fn test_segment_info(name: &str, max_doc: i32) -> SegmentInfo {
         SegmentInfo::new(
-            Arc::new(RamDirectory::default()),
+            Arc::new(ByteBuffersDirectory::default()),
             Version::LUCENE_10_5_0,
             Some(Version::LUCENE_10_5_0),
             name.to_string(),
@@ -287,16 +270,16 @@ mod tests {
     }
 
     fn test_write_state<'a>(
-        dir: &'a dyn crate::store::Directory,
+        dir: &'a Arc<dyn crate::store::Directory>,
         info: &'a SegmentInfo,
         infos: &'a FieldInfos,
     ) -> SegmentWriteState<'a> {
         SegmentWriteState::new(
-            crate::util::default_info_stream(),
-            dir,
+            &crate::util::NoOutputInfoStream,
+            Arc::clone(dir),
             info,
             infos,
-            &crate::codecs::stub::BufferedUpdates,
+            Box::leak(Box::new(crate::codecs::stub::BufferedUpdates::default())),
             &*crate::store::DEFAULT_IO_CONTEXT,
         )
     }
@@ -372,11 +355,10 @@ mod tests {
 
     #[test]
     fn fields_consumer_returns_writer() {
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn crate::store::Directory = &dir;
+        let dir: Arc<dyn crate::store::Directory> = Arc::new(ByteBuffersDirectory::default());
         let segment_info = test_segment_info("_0", 10);
         let field_infos = FieldInfos::default();
-        let write_state = test_write_state(dir_ref, &segment_info, &field_infos);
+        let write_state = test_write_state(&dir, &segment_info, &field_infos);
 
         let format = Lucene104PostingsFormat::new();
         let mut consumer = format
@@ -384,7 +366,7 @@ mod tests {
             .expect("consumer should build");
 
         consumer
-            .write(&crate::index::EmptyFields::new(), &TestNormsProducer)
+            .write(&crate::index::terms::EmptyFields::new(), None)
             .expect("write should succeed on skeleton");
         consumer.close().expect("close should succeed");
 
@@ -397,18 +379,18 @@ mod tests {
 
     #[test]
     fn fields_producer_returns_reader_after_writing_empty_fields() {
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn crate::store::Directory = &dir;
+        let dir: Arc<dyn crate::store::Directory> = Arc::new(ByteBuffersDirectory::default());
+        let dir_ref: &dyn crate::store::Directory = &*dir;
         let segment_info = test_segment_info("_0", 10);
         let field_infos = FieldInfos::default();
-        let write_state = test_write_state(dir_ref, &segment_info, &field_infos);
+        let write_state = test_write_state(&dir, &segment_info, &field_infos);
 
         let format = Lucene104PostingsFormat::new();
         let mut consumer = format
             .fields_consumer(&write_state)
             .expect("consumer should build");
         consumer
-            .write(&crate::index::EmptyFields::new(), &TestNormsProducer)
+            .write(&crate::index::terms::EmptyFields::new(), None)
             .expect("write should succeed on empty fields");
         consumer.close().expect("close should succeed");
 

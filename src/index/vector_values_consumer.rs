@@ -150,7 +150,7 @@ impl VectorValuesConsumer {
             Arc::clone(&self.directory),
             self.segment_info.clone(),
             FieldInfos::default(),
-            BufferedUpdates,
+            BufferedUpdates::default(),
             // `IOContext.DEFAULT`, as Java passes.
             Arc::new(DefaultIOContext::default()),
         );
@@ -199,8 +199,8 @@ impl VectorValuesConsumer {
         let outcome = writer
             .flush(max_doc, sort_map)
             .and_then(|()| writer.finish());
-        let close_outcome = writer.close();
-        close_outcome?;
+        // `finally { IOUtils.close(writer); }` (`VectorValuesConsumer.java:74-80`).
+        crate::util::IOUtils::close([Some(|| writer.close())])?;
         outcome
     }
 
@@ -211,10 +211,19 @@ impl VectorValuesConsumer {
     /// `IOUtils.closeWhileHandlingException`: the segment is being thrown away,
     /// so a failure to close one of its files changes nothing. Like Java's, it
     /// keeps the writer afterwards rather than clearing it.
-    pub fn abort(&mut self) {
-        if let Some(writer) = self.writer.as_mut() {
-            let _ = writer.close();
-        }
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`LuceneError::AssertionError`](crate::error::LuceneError::AssertionError)
+    /// closing the writer raised: the `Error` Java's
+    /// `closeWhileHandlingException` rethrows, unchecked, through the callers'
+    /// `finally` blocks up to `DocumentsWriterPerThread.abort()`, which
+    /// declares `throws IOException`.
+    pub fn abort(&mut self) -> Result<()> {
+        crate::util::IOUtils::close_while_handling_exception([self
+            .writer
+            .as_mut()
+            .map(|writer| move || writer.close())])
     }
 
     /// Returns the RAM the buffered vectors hold.
@@ -284,7 +293,7 @@ mod tests {
         DocValuesSkipIndexType, DocValuesType, IndexOptions, VectorEncoding,
         VectorSimilarityFunction,
     };
-    use crate::store::{Directory, RamDirectory, TrackingDirectoryWrapper};
+    use crate::store::{ByteBuffersDirectory, Directory, TrackingDirectoryWrapper};
     use crate::util::{NoOutputInfoStream, Version};
 
     fn vector_field(name: &str, number: i32, dim: i32, encoding: VectorEncoding) -> FieldInfo {
@@ -315,12 +324,13 @@ mod tests {
     /// around it so a test can see which files it created.
     ///
     /// The wrapper, not the directory's own listing, is what answers "which
-    /// files does this segment own": `RamDirectory` publishes a file only once
-    /// its output is closed, and the whole point of these tests is that the
-    /// consumer opens its files while documents are still being indexed.
+    /// files does this segment own": `ByteBuffersDirectory` publishes a file's
+    /// content only once its output is closed, and the whole point of these
+    /// tests is that the consumer opens its files while documents are still
+    /// being indexed.
     fn consumer() -> (VectorValuesConsumer, Arc<TrackingDirectoryWrapper>) {
         let directory = Arc::new(TrackingDirectoryWrapper::new(Box::new(
-            RamDirectory::default(),
+            ByteBuffersDirectory::default(),
         )));
         let codec: Arc<dyn crate::codecs::Codec> = Arc::new(Lucene104Codec::new());
         // `maxDoc` is deliberately unset, exactly as it is while a
@@ -468,11 +478,11 @@ mod tests {
         consumer
             .add_field(&vector_field("v", 0, 3, VectorEncoding::FLOAT32))
             .expect("add field");
-        consumer.abort();
+        consumer.abort().unwrap();
         // Java keeps the writer reference after aborting, and so does this.
         assert!(consumer.has_writer());
         // A second abort must also be quiet.
-        consumer.abort();
+        consumer.abort().unwrap();
     }
 }
 

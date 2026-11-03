@@ -168,7 +168,6 @@ impl FieldExistsQuery {
 #[derive(Debug)]
 struct FieldExistsWeight {
     field: String,
-    score: f32,
     score_mode: ScoreMode,
 }
 
@@ -176,6 +175,7 @@ impl ConstantScoreWeightImpl for FieldExistsWeight {
     fn scorer_supplier(
         &self,
         context: &LeafReaderContext,
+        score: f32,
     ) -> Result<Option<Box<dyn ScorerSupplier>>> {
         let reader = context.leaf_reader();
         let field_infos = reader.get_field_infos();
@@ -208,7 +208,7 @@ impl ConstantScoreWeightImpl for FieldExistsWeight {
             // The field indexes doc values.
             FieldExistsQuery::get_doc_values_doc_id_set_iterator(&self.field, reader.as_ref())?
         } else {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 FieldExistsQuery::build_error_msg(&field_info.name),
             ));
         };
@@ -218,7 +218,7 @@ impl ConstantScoreWeightImpl for FieldExistsWeight {
         };
         Ok(Some(Box::new(ConstantScoreScorerSupplier::from_iterator(
             ScorerIterator::Simple(iterator),
-            self.score,
+            score,
             self.score_mode,
             reader.max_doc(),
         ))))
@@ -262,13 +262,14 @@ impl ConstantScoreWeightImpl for FieldExistsWeight {
                         None => 0,
                     };
                 } else if field_info.get_index_options() != IndexOptions::NONE {
-                    count = reader
-                        .terms(&self.field)?
-                        .map_or(0, |terms| terms.doc_count());
+                    count = match reader.terms(&self.field)? {
+                        Some(terms) => terms.doc_count()?,
+                        None => 0,
+                    };
                 }
             }
         } else {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 FieldExistsQuery::build_error_msg(&field_info.name),
             ));
         }
@@ -326,7 +327,7 @@ impl Query for FieldExistsQuery {
     fn rewrite(&self, searcher: &IndexSearcher) -> Result<Option<Arc<dyn Query>>> {
         let reader = Arc::clone(searcher.get_index_reader());
         let mut all_readers_rewritable = true;
-        for context in Arc::clone(&reader).leaves() {
+        for context in Arc::clone(&reader).leaves()? {
             let leaf = context.leaf_reader();
             let field_infos = leaf.get_field_infos();
             let Some(field_info) = field_infos.field_info(&self.field) else {
@@ -354,7 +355,10 @@ impl Query for FieldExistsQuery {
                 // The field indexes doc values or points. This optimization is
                 // possible because a field always uses the same data structures
                 // in every document — all or nothing.
-                let terms_doc_count = leaf.terms(&self.field)?.map(|terms| terms.doc_count());
+                let terms_doc_count = match leaf.terms(&self.field)? {
+                    Some(terms) => Some(terms.doc_count()?),
+                    None => None,
+                };
                 let points_doc_count = match leaf.get_point_values(&self.field)? {
                     Some(values) => Some(values.doc_count()?),
                     None => None,
@@ -371,7 +375,7 @@ impl Query for FieldExistsQuery {
                     break;
                 }
             } else {
-                return Err(LuceneError::IllegalState(
+                return Err(LuceneError::illegal_state(
                     FieldExistsQuery::build_error_msg(&field_info.name),
                 ));
             }
@@ -391,7 +395,6 @@ impl Query for FieldExistsQuery {
         let query: Arc<dyn Query> = Arc::new(self.clone());
         let inner = FieldExistsWeight {
             field: self.field.clone(),
-            score: boost,
             score_mode,
         };
         Ok(Arc::new(ConstantScoreWeight::new(query, boost, inner)))

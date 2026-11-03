@@ -39,7 +39,10 @@ pub const INT_BLOCK_MASK: usize = INT_BLOCK_SIZE - 1;
 /// Allocates and frees `i32` blocks.
 ///
 /// Port of the abstract class `IntBlockPool.Allocator`.
-pub trait IntBlockAllocator {
+///
+/// `Send + Sync`, so that a pool can live in the per-thread writer that a
+/// flush hands to another thread, as Java's pools do.
+pub trait IntBlockAllocator: Send + Sync {
     /// The size in `i32`s of every block this allocator hands out.
     ///
     /// Equivalent to the protected field `blockSize`.
@@ -165,11 +168,6 @@ impl IntBlockPool {
     /// Returns the index of the head block, or `-1` if no block was allocated.
     pub fn buffer_upto(&self) -> i32 {
         self.buffer_upto
-    }
-
-    /// Returns the number of block slots currently held.
-    pub fn num_buffers(&self) -> usize {
-        self.buffers.len()
     }
 
     /// Returns the block at `index`.

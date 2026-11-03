@@ -5,7 +5,6 @@
 
 use crate::error::{LuceneError, Result};
 use crate::search::bit_set_doc_id_stream::BitSetDocIdStream;
-use crate::search::bit_set_util;
 use crate::search::bulk_scorer::BulkScorer;
 use crate::search::collection_terminated_exception::CollectionResult;
 use crate::search::collector::LeafCollector;
@@ -13,7 +12,7 @@ use crate::search::conjunction_disi::ConjunctionMember;
 use crate::search::doc_id_set_iterator::NO_MORE_DOCS;
 use crate::search::scorable::{Scorable, SimpleScorable};
 use crate::search::scorer::Scorer;
-use crate::util::{Bits, FixedBitSet, MathUtil};
+use crate::util::{BitSet, Bits, FixedBitSet, MathUtil};
 
 /// The size of the windows this scorer intersects clauses over.
 ///
@@ -138,7 +137,7 @@ impl DenseConjunctionBulkScorer {
         if i >= WINDOW_SIZE {
             NO_MORE_DOCS
         } else {
-            bit_set_util::next_set_bit(set, i as usize)
+            BitSet::next_set_bit(set, i)
         }
     }
 
@@ -294,8 +293,8 @@ fn score_window_using_bit_set(
     window_max: i32,
 ) -> CollectionResult<()> {
     debug_assert!(window_max > window_base);
-    debug_assert!(bit_set_util::scan_is_empty(window_matches));
-    debug_assert!(bit_set_util::scan_is_empty(clause_window_matches));
+    debug_assert!(window_matches.scan_is_empty());
+    debug_assert!(clause_window_matches.scan_is_empty());
 
     if clauses.is_empty() {
         // This happens if all clauses fully matched the window and there are
@@ -311,7 +310,7 @@ fn score_window_using_bit_set(
 
     if let Some(accept_docs) = accept_docs {
         // Apply live docs.
-        bit_set_util::apply_mask(accept_docs, window_matches, window_base);
+        accept_docs.apply_mask(window_matches, window_base as usize)?;
     }
 
     let window_size = window_max - window_base;
@@ -332,7 +331,7 @@ fn score_window_using_bit_set(
             // Sparse survivors + per-doc confirmation: confirm only the docs
             // that survived the cheaper clauses (the bit set gates matches()),
             // never decoding a doc another clause excluded.
-            let mut window_match = bit_set_util::next_set_bit(window_matches, 0);
+            let mut window_match = BitSet::next_set_bit(&*window_matches, 0);
             while window_match != NO_MORE_DOCS {
                 let doc = window_base + window_match;
                 let mut other_doc = members[other].doc_id();
@@ -350,7 +349,7 @@ fn score_window_using_bit_set(
             // in bulk and intersect. For a two-phase clause this still confirms
             // matches() via its (possibly vectorized) intoBitSet.
             members[other].into_bit_set(window_max, clause_window_matches, window_base)?;
-            bit_set_util::and_in_place(window_matches, clause_window_matches);
+            window_matches.and(clause_window_matches);
             clause_window_matches.clear_all();
         }
         up_to += 1;
@@ -366,7 +365,7 @@ fn score_window_using_bit_set(
         // "secretary" and "state". As the leap-frog only visits surviving docs,
         // two-phase clauses confirm matches() here only on docs that no cheaper
         // clause already excluded.
-        let mut window_match = bit_set_util::next_set_bit(window_matches, 0);
+        let mut window_match = BitSet::next_set_bit(&*window_matches, 0);
         'advance_head: while window_match != NO_MORE_DOCS {
             let doc = window_base + window_match;
             // First confirm every remaining approximation is on doc...
@@ -437,9 +436,7 @@ fn score_window_using_leap_frog(
         }
         let mut doc = members[clause].doc_id();
         while doc < max {
-            if accept_docs.map_or(true, |bits| bits.get(doc as usize))
-                && members[clause].matches()?
-            {
+            if accept_docs.is_none_or(|bits| bits.get(doc as usize)) && members[clause].matches()? {
                 collector.collect(doc, scorable)?;
             }
             doc = members[clause].next_doc()?;
@@ -560,5 +557,163 @@ impl DenseConjunctionBulkScorer {
         } else {
             Ok(max)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use crate::document::{Document, IntPoint, Store, StringField};
+    use crate::index::index_writer::IndexWriter;
+    use crate::index::index_writer_config::IndexWriterConfig;
+    use crate::index::{IndexReader, Term};
+    use crate::search::{ConstantScoreQuery, IndexSearcher, Occur, Query, TermQuery};
+    use crate::util::BytesRef;
+
+    /// Counts the documents a bulk scorer collects.
+    struct Count(Vec<i32>);
+
+    impl crate::search::collector::LeafCollector for Count {
+        fn set_scorer(
+            &mut self,
+            _scorer: &mut dyn crate::search::scorable::Scorable,
+        ) -> crate::error::Result<()> {
+            Ok(())
+        }
+        fn collect(
+            &mut self,
+            doc: i32,
+            _scorer: &mut dyn crate::search::scorable::Scorable,
+        ) -> crate::search::collection_terminated_exception::CollectionResult<()> {
+            self.0.push(doc);
+            Ok(())
+        }
+    }
+
+    fn clause(max_doc: usize, step: usize) -> crate::search::conjunction_disi::ConjunctionMember {
+        let mut bits = crate::util::FixedBitSet::new(max_doc);
+        for d in (0..max_doc).step_by(step) {
+            bits.set(d);
+        }
+        let cost = bits.cardinality() as i64;
+        crate::search::conjunction_disi::ConjunctionMember::from_iterator(Box::new(
+            crate::util::BitSetIterator::new(Arc::new(bits), cost).unwrap(),
+        ))
+    }
+
+    /// Two dense clauses over 8192 documents, with every multiple of 5
+    /// deleted: each window starts empty (`assert windowMatches.scanIsEmpty()`,
+    /// `DenseConjunctionBulkScorer.java:261-262`), applies the live docs with
+    /// `acceptDocs.applyMask` (:277) and intersects the second clause with
+    /// `windowMatches.and(clauseWindowMatches)` (:315). The matches are the
+    /// multiples of 6 that are not multiples of 5.
+    #[test]
+    fn dense_windows_mask_live_docs_and_intersect_clauses() {
+        let max_doc = 8192usize;
+        let mut live = crate::util::FixedBitSet::new(max_doc);
+        for d in 0..max_doc {
+            if d % 5 != 0 {
+                live.set(d);
+            }
+        }
+        let mut scorer = super::DenseConjunctionBulkScorer::new(
+            vec![clause(max_doc, 2), clause(max_doc, 3)],
+            max_doc as i32,
+            1.0,
+        )
+        .unwrap();
+        let mut count = Count(Vec::new());
+        use crate::search::bulk_scorer::BulkScorer;
+        scorer
+            .score(&mut count, Some(&live), 0, crate::search::NO_MORE_DOCS)
+            .unwrap();
+        let expected: Vec<i32> = (0..max_doc as i32)
+            .filter(|d| d % 6 == 0 && d % 5 != 0)
+            .collect();
+        assert_eq!(count.0, expected);
+    }
+
+    fn term(field: &str) -> Arc<dyn Query> {
+        Arc::new(TermQuery::new(Term::new(
+            field,
+            BytesRef::new(b"x".to_vec()),
+        )))
+    }
+
+    fn boolean(clauses: &[(&str, Occur)]) -> Arc<dyn Query> {
+        let mut builder = crate::search::boolean_query::Builder::new();
+        for (field, occur) in clauses {
+            builder.add(term(field), *occur).unwrap();
+        }
+        Arc::new(builder.build())
+    }
+
+    /// 4096 documents (`a` on even ids, `b` on multiples of 3, the point `rank`
+    /// = id on every one), with every multiple of 5 deleted. The bulk scorers
+    /// apply the live docs with `Bits.applyMask`, collect windows through
+    /// `FixedBitSet.forEach`/`intoArray`/`cardinality(from, to)`, intersect
+    /// with `FixedBitSet.and` and clear with `FixedBitSet.clear(from, to)`;
+    /// `PointRangeQuery` takes its inverse branch (every document holds one
+    /// value and the range matches most of them) and flips with
+    /// `FixedBitSet.flip(0, maxDoc)`. Every count is the arithmetic one, and
+    /// Lucene 10.5.0's for the same index (oracle `Scorers.java`).
+    #[test]
+    fn bulk_scorers_over_deleted_documents_count_as_lucene_does() {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn crate::store::Directory> =
+            Arc::new(crate::store::ByteBuffersDirectory::default());
+        let mut config = IndexWriterConfig::new();
+        // Keep the deletions in the segment instead of merging them away.
+        config
+            .set_merge_policy(Arc::new(crate::index::merge_policy::NoMergePolicy::new()))
+            .unwrap();
+        let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+        for d in 0..4096i32 {
+            let mut doc = Document::new();
+            if d % 2 == 0 {
+                doc.add(Box::new(
+                    StringField::new("a", "x".to_string(), Store::NO).unwrap(),
+                ));
+            }
+            if d % 3 == 0 {
+                doc.add(Box::new(
+                    StringField::new("b", "x".to_string(), Store::NO).unwrap(),
+                ));
+            }
+            if d % 5 == 0 {
+                doc.add(Box::new(
+                    StringField::new("del", "x".to_string(), Store::NO).unwrap(),
+                ));
+            }
+            doc.add(Box::new(IntPoint::new("rank", &[d]).unwrap()));
+            writer.add_document(&doc).unwrap();
+        }
+        writer.commit().unwrap();
+        writer
+            .delete_documents_by_terms(vec![Term::new("del", BytesRef::new(b"x".to_vec()))])
+            .unwrap();
+        writer.commit().unwrap();
+        writer.close().unwrap();
+        let reader = crate::index::directory_reader::open(Arc::clone(&dir)).unwrap();
+        assert_eq!((reader.max_doc(), reader.num_docs()), (4096, 3276));
+        let searcher = IndexSearcher::new(reader as Arc<dyn IndexReader>).unwrap();
+
+        let both = boolean(&[("a", Occur::FILTER), ("b", Occur::FILTER)]);
+        assert_eq!(searcher.count(both).unwrap(), 546);
+        let constant: Arc<dyn Query> = Arc::new(ConstantScoreQuery::new(term("a")));
+        assert_eq!(searcher.count(constant).unwrap(), 1638);
+        let either = boolean(&[("a", Occur::SHOULD), ("b", Occur::SHOULD)]);
+        assert_eq!(searcher.count(Arc::clone(&either)).unwrap(), 2184);
+        // The top hits and their score are Lucene 10.5.0's for the same index
+        // (oracle `Scorers.java`: `top 2184+ hits: 6=2.7721934E-4 12=2.7721934E-4 ...`).
+        let top = searcher.search(either, 10).unwrap();
+        let docs: Vec<i32> = top.score_docs.iter().map(|hit| hit.doc).collect();
+        assert_eq!(docs, [6, 12, 18, 24, 36, 42, 48, 54, 66, 72]);
+        for hit in &top.score_docs {
+            assert_eq!(hit.score, 2.7721934e-4_f32, "{hit:?}");
+        }
+        let range = IntPoint::new_range_query("rank", &[100], &[4095]).unwrap();
+        assert_eq!(searcher.count(range).unwrap(), 3196);
     }
 }

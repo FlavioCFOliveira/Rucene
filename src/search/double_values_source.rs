@@ -11,12 +11,12 @@ use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
 use crate::index::LeafReaderContext;
-use crate::search::doc_values_access::get_numeric;
 use crate::search::double_values::{DoubleValues, EmptyDoubleValues};
-use crate::search::field_comparator::{java_double_compare, FieldComparator, SortValue};
+use crate::search::field_comparator::{
+    java_double_compare, FieldComparator, SharedFieldComparator, SlotComparator, SortValue,
+};
 use crate::search::field_comparator_source::FieldComparatorSource;
 use crate::search::index_searcher::IndexSearcher;
-use crate::search::leaf_field_comparator::LeafFieldComparator;
 use crate::search::long_values_source::LongValuesSource;
 use crate::search::pruning::Pruning;
 use crate::search::query::Query;
@@ -144,10 +144,9 @@ pub trait DoubleValuesSource: SegmentCacheable + Debug + Send + Sync {
         score_explanation: &Explanation,
     ) -> Result<Explanation> {
         let description = self.to_source_string();
-        let constant: Arc<dyn DoubleValuesSource> = Arc::new(ConstantValuesSource::new(
-            score_explanation.value().double_value(),
-        ));
-        let scores = constant.get_values(ctx, None)?;
+        // `DoubleValuesSource.constant(scoreExplanation.getValue().doubleValue())`
+        // (`DoubleValuesSource.java:70-74`).
+        let scores = constant(score_explanation.value().double_value()).get_values(ctx, None)?;
         let mut values = self.get_values(ctx, Some(scores))?;
         if values.advance_exact(doc_id)? {
             let value = values.double_value()?;
@@ -193,10 +192,7 @@ pub fn get_sort_field_with_missing(
     let field = source.to_source_string();
     SortField::new_custom(
         Some(field),
-        Arc::new(DoubleValuesComparatorSource {
-            producer: source,
-            missing_value,
-        }),
+        Arc::new(DoubleValuesComparatorSource::new(source, missing_value)),
         reverse,
     )
 }
@@ -298,7 +294,7 @@ impl DoubleValuesSource for ScoresValuesSource {
         scores: Option<Box<dyn DoubleValues + 'a>>,
     ) -> Result<Box<dyn DoubleValues + 'a>> {
         scores.ok_or_else(|| {
-            LuceneError::IllegalState("DoubleValuesSource.SCORES requires scores".to_string())
+            LuceneError::illegal_state("DoubleValuesSource.SCORES requires scores".to_string())
         })
     }
 
@@ -465,7 +461,7 @@ impl DoubleValuesSource for FieldValuesSource {
         _scores: Option<Box<dyn DoubleValues + 'a>>,
     ) -> Result<Box<dyn DoubleValues + 'a>> {
         let reader = ctx.leaf_reader();
-        let values = get_numeric(reader.as_ref(), &self.field)?;
+        let values = crate::index::DocValues::get_numeric(reader.as_ref(), &self.field)?;
         Ok(Box::new(FieldDoubleValues {
             values,
             decoder: self.decoder,
@@ -878,15 +874,15 @@ impl FieldComparatorSource for DoubleValuesComparatorSource {
         _pruning: Pruning,
         _reversed: bool,
     ) -> Result<Box<dyn FieldComparator>> {
-        Ok(Box::new(DoubleValuesComparator {
-            producer: Arc::clone(&self.producer),
-            missing_value: self.missing_value,
-            values: vec![0.0; num_hits],
-            bottom: 0.0,
-            top_value: 0.0,
-            score: Rc::new(Cell::new(0.0)),
-            leaf: None,
-        }))
+        Ok(Box::new(SharedFieldComparator::new(
+            DoubleValuesComparator {
+                producer: Arc::clone(&self.producer),
+                missing_value: self.missing_value,
+                values: vec![0.0; num_hits],
+                bottom: 0.0,
+                top_value: 0.0,
+            },
+        )))
     }
 }
 
@@ -927,8 +923,13 @@ struct DoubleValuesComparator {
     values: Vec<f64>,
     bottom: f64,
     top_value: f64,
+}
+
+/// The per-segment state of a [`DoubleValuesComparator`]: the producer's values
+/// for the segment, and the cell through which they read the current score.
+struct DoubleValuesLeaf {
     score: Rc<Cell<f64>>,
-    leaf: Option<Box<dyn DoubleValues>>,
+    values: Box<dyn DoubleValues>,
 }
 
 impl Debug for DoubleValuesComparator {
@@ -943,14 +944,17 @@ impl Debug for DoubleValuesComparator {
 impl DoubleValuesComparator {
     /// Equivalent to `DoubleLeafComparator.getValueForDoc(int)` over the
     /// producer's values.
-    fn get_value_for_doc(&mut self, doc: i32, scorer: &mut dyn Scorable) -> Result<f64> {
+    fn get_value_for_doc(
+        &self,
+        leaf: &mut DoubleValuesLeaf,
+        doc: i32,
+        scorer: &mut dyn Scorable,
+    ) -> Result<f64> {
         if self.producer.needs_scores() {
-            self.score.set(f64::from(scorer.score()?));
+            leaf.score.set(f64::from(scorer.score()?));
         }
         let missing_value = self.missing_value;
-        let Some(values) = self.leaf.as_mut() else {
-            return Ok(missing_value);
-        };
+        let values = &mut leaf.values;
         if values.advance_exact(doc)? {
             values.double_value()
         } else {
@@ -959,33 +963,9 @@ impl DoubleValuesComparator {
     }
 }
 
-impl LeafFieldComparator for DoubleValuesComparator {
-    fn set_bottom(&mut self, slot: i32) -> Result<()> {
-        self.bottom = self.values[slot as usize];
-        Ok(())
-    }
+impl SlotComparator for DoubleValuesComparator {
+    type Leaf = DoubleValuesLeaf;
 
-    fn compare_bottom(&mut self, doc: i32, scorer: &mut dyn Scorable) -> Result<i32> {
-        let value = self.get_value_for_doc(doc, scorer)?;
-        Ok(java_double_compare(self.bottom, value))
-    }
-
-    fn compare_top(&mut self, doc: i32, scorer: &mut dyn Scorable) -> Result<i32> {
-        let value = self.get_value_for_doc(doc, scorer)?;
-        Ok(java_double_compare(self.top_value, value))
-    }
-
-    fn copy(&mut self, slot: i32, doc: i32, scorer: &mut dyn Scorable) -> Result<()> {
-        self.values[slot as usize] = self.get_value_for_doc(doc, scorer)?;
-        Ok(())
-    }
-
-    fn set_scorer(&mut self, _scorer: &mut dyn Scorable) -> Result<()> {
-        Ok(())
-    }
-}
-
-impl FieldComparator for DoubleValuesComparator {
     fn compare(&self, slot1: i32, slot2: i32) -> i32 {
         java_double_compare(self.values[slot1 as usize], self.values[slot2 as usize])
     }
@@ -1000,20 +980,57 @@ impl FieldComparator for DoubleValuesComparator {
         SortValue::Double(self.values[slot as usize])
     }
 
-    fn get_leaf_comparator(&mut self, context: &LeafReaderContext) -> Result<()> {
+    fn new_leaf(&mut self, context: &LeafReaderContext) -> Result<DoubleValuesLeaf> {
+        let score = Rc::new(Cell::new(0.0));
         let scores: Box<dyn DoubleValues> = Box::new(ScoreCellDoubleValues {
-            score: Rc::clone(&self.score),
+            score: Rc::clone(&score),
         });
-        self.leaf = Some(Arc::clone(&self.producer).get_values(context, Some(scores))?);
+        let values = Arc::clone(&self.producer).get_values(context, Some(scores))?;
+        Ok(DoubleValuesLeaf { score, values })
+    }
+
+    fn set_bottom(&mut self, _leaf: &mut DoubleValuesLeaf, slot: i32) -> Result<()> {
+        self.bottom = self.values[slot as usize];
         Ok(())
     }
 
-    fn as_leaf_comparator(&mut self) -> &mut dyn LeafFieldComparator {
-        self
+    fn compare_bottom(
+        &mut self,
+        leaf: &mut DoubleValuesLeaf,
+        doc: i32,
+        scorer: &mut dyn Scorable,
+    ) -> Result<i32> {
+        let value = self.get_value_for_doc(leaf, doc, scorer)?;
+        Ok(java_double_compare(self.bottom, value))
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
+    fn compare_top(
+        &mut self,
+        leaf: &mut DoubleValuesLeaf,
+        doc: i32,
+        scorer: &mut dyn Scorable,
+    ) -> Result<i32> {
+        let value = self.get_value_for_doc(leaf, doc, scorer)?;
+        Ok(java_double_compare(self.top_value, value))
+    }
+
+    fn copy(
+        &mut self,
+        leaf: &mut DoubleValuesLeaf,
+        slot: i32,
+        doc: i32,
+        scorer: &mut dyn Scorable,
+    ) -> Result<()> {
+        self.values[slot as usize] = self.get_value_for_doc(leaf, doc, scorer)?;
+        Ok(())
+    }
+
+    fn set_scorer(
+        &mut self,
+        _leaf: &mut DoubleValuesLeaf,
+        _scorer: &mut dyn Scorable,
+    ) -> Result<()> {
+        Ok(())
     }
 }
 

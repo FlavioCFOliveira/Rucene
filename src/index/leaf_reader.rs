@@ -206,6 +206,20 @@ pub trait LeafReader: AsIndexReader + Send + Sync + Debug + Display + 'static {
         None
     }
 
+    /// Returns the reader this one wraps when it is a `FilterLeafReader`, and
+    /// `None` otherwise.
+    ///
+    /// Equivalent to `reader instanceof FilterLeafReader` followed by
+    /// `getDelegate()`, which is how `FilterLeafReader.unwrap` walks a chain of
+    /// filters (`FilterLeafReader.java:50-55`). Rust cannot test a
+    /// `dyn LeafReader` for a type, so each port of `FilterLeafReader` or of
+    /// one of its subclasses answers for itself, as
+    /// [`CodecReader::filter_codec_reader_delegate`](crate::index::codec_reader::CodecReader::filter_codec_reader_delegate)
+    /// does for `FilterCodecReader`; every other reader keeps this default.
+    fn filter_leaf_reader_delegate(&self) -> Option<&Arc<dyn LeafReader>> {
+        None
+    }
+
     /// Returns a [`TermVectors`] reader for this leaf.
     fn term_vectors(&self) -> Result<Box<dyn TermVectors>>;
 
@@ -462,7 +476,7 @@ impl<T: LeafReader> IndexReader for T {
 
     fn get_sum_doc_freq(&self, field: &str) -> Result<i64> {
         if let Some(terms) = self.terms(field)? {
-            Ok(terms.sum_doc_freq())
+            terms.sum_doc_freq()
         } else {
             Ok(0)
         }
@@ -470,7 +484,7 @@ impl<T: LeafReader> IndexReader for T {
 
     fn get_doc_count(&self, field: &str) -> Result<i32> {
         if let Some(terms) = self.terms(field)? {
-            Ok(terms.doc_count())
+            terms.doc_count()
         } else {
             Ok(0)
         }
@@ -478,7 +492,7 @@ impl<T: LeafReader> IndexReader for T {
 
     fn get_sum_total_term_freq(&self, field: &str) -> Result<i64> {
         if let Some(terms) = self.terms(field)? {
-            Ok(terms.sum_total_term_freq())
+            terms.sum_total_term_freq()
         } else {
             Ok(0)
         }
@@ -511,7 +525,7 @@ mod tests {
     use super::*;
     use crate::index::index_reader::IndexReader;
     use crate::index::postings_enum::POSTINGS_ENUM_FREQS;
-    use crate::index::EmptyFields;
+    use crate::index::terms::EmptyFields;
     use crate::search::AcceptDocs;
     use crate::util::extra::Version;
 
@@ -747,7 +761,7 @@ mod tests {
         assert_eq!(reader.num_deleted_docs(), 1);
         assert!(reader.has_deletions());
 
-        let ctx = Arc::clone(&reader).get_context();
+        let ctx = Arc::clone(&reader).get_context().unwrap();
         assert!(ctx.is_top_level());
         assert!(ctx.is_leaf_context());
         let leaves = ctx.leaves();

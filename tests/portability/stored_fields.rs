@@ -29,12 +29,13 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 use rucene::codecs::lucene104::codec::Mode as CodecMode;
+use rucene::codecs::state::SegmentWriteState;
 use rucene::codecs::{register_codec, Codec, Lucene104Codec};
 use rucene::document::{
     Document, DoubleField, Field, FieldType, FloatField, IntField, KeywordField, LongField,
     NumericValue, Store, StoredField, StringField, TextField,
 };
-use rucene::index::documents_writer::{IndexingChain, IndexingChainFlushState};
+use rucene::index::documents_writer::{BufferedUpdates, IndexingChain};
 use rucene::index::field_infos::{FieldInfosBuilder, FieldNumbers};
 use rucene::index::index_writer_config::LiveIndexWriterConfig;
 use rucene::index::indexing_chain::DefaultIndexingChain;
@@ -790,17 +791,16 @@ fn write_with_rucene(
     let segment_info = make_info(max_doc);
     let info_stream = NoOutputInfoStream;
     let context = flush_io_context(FlushInfo::new(max_doc, 0));
-    let state = IndexingChainFlushState {
-        info_stream: &info_stream,
-        directory: &tracking,
-        segment_info: &segment_info,
-        field_infos: &finished,
-        context: context.as_ref(),
-        live_docs: None,
-        del_count_on_flush: 0,
-        delete_terms: &[],
-    };
-    chain.flush(&state).expect("flush");
+    let seg_updates = BufferedUpdates::default();
+    let mut state = SegmentWriteState::new(
+        &info_stream,
+        Arc::clone(&tracking) as Arc<dyn Directory>,
+        &segment_info,
+        &finished,
+        &seg_updates,
+        context.as_ref(),
+    );
+    chain.flush(&mut state).expect("flush");
     (segment_info, finished)
 }
 

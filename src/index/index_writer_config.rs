@@ -16,10 +16,10 @@
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::fmt::{self, Debug, Formatter};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, OnceLock, Weak};
 
 use crate::analysis::{Analyzer, StandardAnalyzer};
-use crate::codecs::{default_codec, Codec};
+use crate::codecs::{get_default, Codec};
 use crate::error::{LuceneError, Result};
 use crate::index::directory_reader::IndexWriter as IndexWriterTrait;
 use crate::index::documents_writer::{FlushByRamOrCountsPolicy, FlushPolicy};
@@ -37,16 +37,37 @@ use crate::util::InfoStream;
 // Placeholder traits for subsystems that have not been ported yet.
 // -----------------------------------------------------------------------------
 
-/// Placeholder for `org.apache.lucene.index.IndexWriter.IndexReaderWarmer`.
+/// Warms a newly merged segment before it becomes visible to near-real-time
+/// readers, so the first search on it does not pay for the cold read.
 ///
-/// Only the minimal trait bounds needed by `IndexWriterConfig` are enforced;
-/// warmer logic will be added in a later task.
-pub trait MergedSegmentWarmer: Send + Sync + Debug + fmt::Display {}
+/// Equivalent to the functional interface
+/// `org.apache.lucene.index.IndexWriter.IndexReaderWarmer`, which
+/// `IndexWriter.mergeMiddle` calls once per merged segment, with a pooled
+/// reader over it, when reader pooling is enabled (`IndexWriter.java:5562-5574`).
+pub trait MergedSegmentWarmer: Send + Sync + Debug + fmt::Display {
+    /// Warms `reader`, a reader over the newly merged segment.
+    ///
+    /// Equivalent to `IndexReaderWarmer.warm(LeafReader)`.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the warmer raises fails the merge, as Java's `IOException`
+    /// does.
+    fn warm(&self, reader: &dyn LeafReader) -> crate::error::Result<()>;
+}
 
-/// Placeholder for `java.util.Comparator<LeafReader>` used to sort leaf
-/// readers when a `DirectoryReader` is opened from an `IndexWriter`.
+/// The `java.util.Comparator<LeafReader>` that sorts the leaves of a
+/// `DirectoryReader` opened from an `IndexWriter`.
+///
+/// Equivalent to the comparator `IndexWriterConfig.setLeafSorter` takes
+/// (`IndexWriterConfig.java:488-497`; `LiveIndexWriterConfig.java:96`,
+/// `:412-414`), which `StandardDirectoryReader` hands to its
+/// `BaseCompositeReader` constructor to sort the segment readers
+/// (`StandardDirectoryReader.java:51-64`, `:156`, `:184`).
 pub trait LeafComparator: Send + Sync + Debug + fmt::Display {
     /// Compares two leaf readers.
+    ///
+    /// Equivalent to `Comparator.compare(LeafReader, LeafReader)`.
     fn compare(&self, a: &dyn LeafReader, b: &dyn LeafReader) -> Ordering;
 }
 
@@ -158,6 +179,24 @@ pub struct LiveIndexWriterConfig {
     max_full_flush_merge_wait_millis: i64,
     event_listener: Arc<dyn IndexWriterEventListener>,
     parent_field: Option<String>,
+    /// The writer this configuration is attached to.
+    ///
+    /// Equivalent to `IndexWriterConfig.writer`, a `SetOnce<IndexWriter>`
+    /// (`IndexWriterConfig.java:110-112`) that `IndexWriter`'s constructor
+    /// sets through `setIndexWriter` (`IndexWriter.java:951`) and
+    /// `IndexWriterConfig.toString()` prints (`IndexWriterConfig.java:499-504`).
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java keeps the field on
+    /// `IndexWriterConfig`, and `IndexWriter` keeps that `IndexWriterConfig`
+    /// object itself in its `LiveIndexWriterConfig config` field, so
+    /// `writer.getConfig().toString()` and `messageState` dispatch to
+    /// `IndexWriterConfig.toString()` and print the `writer=` line. This
+    /// port's `IndexWriter` keeps the `LiveIndexWriterConfig`
+    /// [`IndexWriterConfig::into_live`] unwraps, so the field travels with it:
+    /// `None` for a configuration built as a plain `LiveIndexWriterConfig`
+    /// (whose Java `toString()` has no `writer=` line), `Some` for one built
+    /// by an [`IndexWriterConfig`], whose `toString()` it reproduces.
+    index_writer: Option<OnceLock<Weak<dyn IndexWriterTrait>>>,
 }
 
 impl LiveIndexWriterConfig {
@@ -200,7 +239,8 @@ impl LiveIndexWriterConfig {
     }
 
     fn with_defaults(analyzer: Arc<dyn Analyzer>) -> Self {
-        let codec = default_codec().unwrap_or_else(|| {
+        // `codec = Codec.getDefault()` (`LiveIndexWriterConfig.java:131`).
+        let codec = get_default().unwrap_or_else(|| {
             panic!(
                 "default codec '{}' is not registered in the global codec registry",
                 crate::codecs::DEFAULT_CODEC_NAME
@@ -216,10 +256,12 @@ impl LiveIndexWriterConfig {
             commit: None,
             open_mode: OpenMode::CREATE_OR_APPEND,
             created_version_major: Version::LATEST.major as i32,
-            similarity: Arc::new(BM25Similarity::new()),
+            // `similarity = IndexSearcher.getDefaultSimilarity()`
+            // (`LiveIndexWriterConfig.java:129`): the shared default instance.
+            similarity: crate::search::IndexSearcher::get_default_similarity(),
             merge_scheduler: Arc::new(ConcurrentMergeScheduler::new()),
             codec,
-            info_stream: Arc::new(crate::util::NoOutputInfoStream),
+            info_stream: crate::util::default_info_stream(),
             merge_policy: Arc::new(TieredMergePolicy::new()),
             reader_pooling: Self::DEFAULT_READER_POOLING,
             flush_policy: Arc::new(FlushByRamOrCountsPolicy::new()),
@@ -234,6 +276,31 @@ impl LiveIndexWriterConfig {
             max_full_flush_merge_wait_millis: Self::DEFAULT_MAX_FULL_FLUSH_MERGE_WAIT_MILLIS,
             event_listener: Arc::new(NoOpIndexWriterEventListener),
             parent_field: None,
+            index_writer: None,
+        }
+    }
+
+    /// Records the writer this configuration is attached to.
+    ///
+    /// Equivalent to the package-private `IndexWriterConfig.setIndexWriter`
+    /// (`IndexWriterConfig.java:119-125`), which `IndexWriter`'s constructor
+    /// calls (`IndexWriter.java:951`) and which refuses a configuration that is
+    /// already attached, so one configuration cannot serve two writers. A
+    /// configuration built as a plain `LiveIndexWriterConfig` has no such field
+    /// in Java and records nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] if the configuration is already
+    /// attached to a writer.
+    pub(crate) fn attach_writer(&self, writer: Weak<dyn IndexWriterTrait>) -> Result<()> {
+        match &self.index_writer {
+            Some(slot) => slot.set(writer).map_err(|_| {
+                LuceneError::illegal_state(
+                    "do not share IndexWriterConfig instances across IndexWriters".to_string(),
+                )
+            }),
+            None => Ok(()),
         }
     }
 
@@ -445,6 +512,9 @@ impl LiveIndexWriterConfig {
     }
 
     /// Returns the leaf comparator, if one was configured.
+    ///
+    /// Equivalent to `LiveIndexWriterConfig.getLeafSorter()`
+    /// (`LiveIndexWriterConfig.java:412-414`).
     pub fn leaf_sorter(&self) -> Option<Arc<dyn LeafComparator>> {
         self.leaf_sorter.as_ref().map(Arc::clone)
     }
@@ -564,7 +634,25 @@ impl fmt::Display for LiveIndexWriterConfig {
             f,
             "parentField={}",
             self.parent_field.as_deref().unwrap_or("null")
-        )
+        )?;
+        // `IndexWriterConfig.toString()` appends one `writer=` line carrying
+        // `writer.get()` (`IndexWriterConfig.java:499-504`); see the note on
+        // `index_writer`. `IndexWriter` declares no `toString()`, so an
+        // attached writer renders as `Object.toString()` does.
+        if let Some(slot) = &self.index_writer {
+            match slot.get().and_then(Weak::upgrade) {
+                Some(writer) => writeln!(
+                    f,
+                    "writer={}",
+                    crate::index::index_reader::java_object_to_string(
+                        "org.apache.lucene.index.IndexWriter",
+                        writer.as_ref(),
+                    )
+                )?,
+                None => writeln!(f, "writer=null")?,
+            }
+        }
+        Ok(())
     }
 }
 
@@ -580,8 +668,9 @@ impl fmt::Display for LiveIndexWriterConfig {
 ///
 /// Equivalent to `org.apache.lucene.index.IndexWriterConfig`.
 pub struct IndexWriterConfig {
+    /// The live settings, and the `writer` field Java keeps on this class
+    /// (see the note on that field of [`LiveIndexWriterConfig`]).
     live: LiveIndexWriterConfig,
-    writer: Option<Weak<dyn IndexWriterTrait>>,
 }
 
 impl IndexWriterConfig {
@@ -593,50 +682,19 @@ impl IndexWriterConfig {
 
     /// Creates a new config using the provided analyzer and the default codec.
     pub fn with_analyzer(analyzer: Arc<dyn Analyzer>) -> Self {
-        Self {
-            live: LiveIndexWriterConfig::new(analyzer),
-            writer: None,
-        }
-    }
-
-    /// Records that this config is attached to a writer.
-    ///
-    /// This is the Rust equivalent of the package-private Java
-    /// `IndexWriterConfig.setIndexWriter`.  It prevents a single config from
-    /// being shared across writers.
-    ///
-    /// # Errors
-    ///
-    /// Returns `LuceneError::IllegalState` if the config is already attached.
-    #[allow(dead_code)]
-    pub(crate) fn attach_writer(
-        &mut self,
-        writer: Weak<dyn IndexWriterTrait>,
-    ) -> Result<&mut Self> {
-        if self.writer.is_some() {
-            return Err(LuceneError::IllegalState(
-                "do not share IndexWriterConfig instances across IndexWriters".to_string(),
-            ));
-        }
-        self.writer = Some(writer);
-        Ok(self)
-    }
-
-    /// Returns the live config wrapped by this configuration.
-    pub fn live(&self) -> &LiveIndexWriterConfig {
-        &self.live
-    }
-
-    /// Returns a mutable reference to the live config.
-    pub fn live_mut(&mut self) -> &mut LiveIndexWriterConfig {
-        &mut self.live
+        let mut live = LiveIndexWriterConfig::new(analyzer);
+        // `private SetOnce<IndexWriter> writer = new SetOnce<>()`
+        // (`IndexWriterConfig.java:112`).
+        live.index_writer = Some(OnceLock::new());
+        Self { live }
     }
 
     /// Consumes this config and returns the live config it wraps.
     ///
-    /// `IndexWriter` takes ownership of the live config at construction, which
-    /// is what makes a config unusable with a second writer, as Java enforces
-    /// through its `writer` field.
+    /// `IndexWriter` takes ownership of the live config at construction and
+    /// attaches itself to it
+    /// (`LiveIndexWriterConfig::attach_writer`, Java's `setIndexWriter`), so
+    /// the `writer=` line of `toString()` follows the configuration.
     pub fn into_live(self) -> LiveIndexWriterConfig {
         self.live
     }
@@ -787,6 +845,27 @@ impl IndexWriterConfig {
         Ok(self)
     }
 
+    /// Sets the info stream to a [`PrintStreamInfoStream`] over `print_stream`.
+    ///
+    /// Equivalent to `IndexWriterConfig.setInfoStream(PrintStream)`
+    /// (`IndexWriterConfig.java:410-415`), "a convenience method that uses
+    /// `PrintStreamInfoStream`": `setInfoStream(new
+    /// PrintStreamInfoStream(printStream))`. The suffix stands for Java's
+    /// overload. Java refuses a `null` stream with an
+    /// `IllegalArgumentException`; a Rust stream cannot be absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns what [`set_info_stream`](Self::set_info_stream) returns.
+    pub fn set_info_stream_print_stream(
+        &mut self,
+        print_stream: Box<dyn std::io::Write + Send>,
+    ) -> Result<&mut Self> {
+        self.set_info_stream(Arc::new(crate::util::PrintStreamInfoStream::new(
+            print_stream,
+        )))
+    }
+
     /// Sets whether `IndexWriter.close()` should commit first.
     pub fn set_commit_on_close(&mut self, commit_on_close: bool) -> &mut Self {
         self.live.commit_on_close = commit_on_close;
@@ -800,8 +879,12 @@ impl IndexWriterConfig {
     /// Returns `LuceneError::IllegalArgument` if any sort field does not
     /// support index sorting.
     pub fn set_index_sort(&mut self, sort: Sort) -> Result<&mut Self> {
+        // `IndexWriterConfig.setIndexSort` (`IndexWriterConfig.java:475-485`)
+        // accepts exactly the sort fields that hand out an `IndexSorter`, which
+        // is what lets a `BinarySortField` — a `CUSTOM` sort with a sorter of
+        // its own — sort an index.
         for field in sort.fields() {
-            if !field.field_type().is_serializable() {
+            if field.get_index_sorter().is_none() {
                 return Err(LuceneError::IllegalArgument(format!(
                     "Cannot sort index with sort field {field}"
                 )));
@@ -818,7 +901,11 @@ impl IndexWriterConfig {
         Ok(self)
     }
 
-    /// Sets a comparator used to sort leaf readers on NRT reopen.
+    /// Sets the comparator that sorts the leaf readers of a `DirectoryReader`
+    /// opened from an `IndexWriter` with this configuration.
+    ///
+    /// Equivalent to `IndexWriterConfig.setLeafSorter(Comparator<LeafReader>)`
+    /// (`IndexWriterConfig.java:488-497`).
     pub fn set_leaf_sorter(&mut self, leaf_sorter: Option<Arc<dyn LeafComparator>>) -> &mut Self {
         self.live.leaf_sorter = leaf_sorter;
         self
@@ -1049,25 +1136,13 @@ impl fmt::Display for IndexWriterConfig {
     /// Equivalent to `IndexWriterConfig.toString()`
     /// (`IndexWriterConfig.java:499-504`): everything
     /// [`LiveIndexWriterConfig`]'s own `toString()` writes, then one
-    /// `writer=` line carrying `writer.get()`.
+    /// `writer=` line carrying `writer.get()`, which the live configuration
+    /// this one wraps renders (see the note on its `index_writer` field).
     ///
     /// Java's `writer` is a `SetOnce<IndexWriter>` whose `get()` is `null`
-    /// until [`attach_writer`](Self::attach_writer) is called, and `IndexWriter`
-    /// declares no `toString()`, so an attached writer renders as
-    /// `Object.toString()` does.
+    /// until an `IndexWriter` attaches itself.
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.live, f)?;
-        match self.writer.as_ref().and_then(std::sync::Weak::upgrade) {
-            Some(writer) => writeln!(
-                f,
-                "writer={}",
-                crate::index::index_reader::java_object_to_string(
-                    "org.apache.lucene.index.IndexWriter",
-                    writer.as_ref(),
-                )
-            ),
-            None => writeln!(f, "writer=null"),
-        }
+        fmt::Display::fmt(&self.live, f)
     }
 }
 
@@ -1128,7 +1203,6 @@ impl Debug for IndexWriterConfig {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IndexWriterConfig")
             .field("live", &self.live)
-            .field("writer", &self.writer.as_ref().map(|_| "<weak>"))
             .finish()
     }
 }
@@ -1139,6 +1213,53 @@ impl Debug for IndexWriterConfig {
 
 // Tests
 // -----------------------------------------------------------------------------
+
+#[cfg(test)]
+mod set_info_stream_print_stream_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// A sink that keeps what is written to it.
+    #[derive(Clone, Default)]
+    struct Sink(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Sink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// rmp #310: `setInfoStream(PrintStream)` sets `new
+    /// PrintStreamInfoStream(printStream)` (`IndexWriterConfig.java:410-415`),
+    /// whose messages are `<component> <id> [<timestamp>; <thread>]:
+    /// <message>` lines on that stream.
+    #[test]
+    fn a_print_stream_becomes_a_print_stream_info_stream() {
+        // A config reads `Codec.getDefault()`, so the default codec must be
+        // registered, as the other tests of this module register it.
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let sink = Sink::default();
+        let mut config = IndexWriterConfig::default();
+        config
+            .set_info_stream_print_stream(Box::new(sink.clone()))
+            .unwrap();
+        let info_stream = config.info_stream();
+        assert_eq!(
+            info_stream.java_class_name(),
+            "org.apache.lucene.util.PrintStreamInfoStream"
+        );
+        assert!(info_stream.is_enabled("IW"));
+        info_stream.message("IW", "hello");
+        let written = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
+        assert!(written.starts_with("IW "), "{written}");
+        assert!(written.ends_with("]: hello\n"), "{written}");
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -1162,14 +1283,55 @@ mod tests {
         IndexWriterConfig::new()
     }
 
+    /// A new config takes the codec `Codec.setDefault` installed, because
+    /// `LiveIndexWriterConfig(Analyzer)` reads `Codec.getDefault()`
+    /// (`LiveIndexWriterConfig.java:131`) rather than looking the default name
+    /// up in the registry.
+    ///
+    /// The installed codec delegates everything to the registered `Lucene104`
+    /// under the same name, so a config another test creates meanwhile writes
+    /// exactly what it would have written. The tests that install a default
+    /// are serialised, and the exact prior state — unset included — is
+    /// restored even when an assertion fails.
+    #[test]
+    fn a_new_config_takes_the_codec_set_as_the_default() {
+        /// Puts the prior default back when dropped, panicking or not.
+        struct Restore(Option<Option<Arc<dyn Codec>>>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                if let Some(prior) = self.0.take() {
+                    crate::codecs::swap_default(prior);
+                }
+            }
+        }
+
+        ensure_default_codec();
+        let _serial = crate::codecs::DEFAULT_CODEC_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let registered = crate::codecs::for_name("Lucene104").expect("Lucene104 is registered");
+        let installed: Arc<dyn Codec> = Arc::new(crate::codecs::FilterCodec::new(
+            "Lucene104",
+            Arc::clone(&registered),
+        ));
+        let _restore = Restore(Some(crate::codecs::swap_default(Some(Arc::clone(
+            &installed,
+        )))));
+        let picked = IndexWriterConfig::new().codec();
+        assert!(
+            std::ptr::addr_eq(Arc::as_ptr(&picked), Arc::as_ptr(&installed)),
+            "the config must take the codec set as the default"
+        );
+    }
+
     #[test]
     fn default_deletion_policy_keeps_only_the_last_commit() {
         use crate::index::index_commit::test_support::TestCommit;
         use crate::index::IndexCommit;
-        use crate::store::{Directory, RamDirectory};
+        use crate::store::{ByteBuffersDirectory, Directory};
 
         let config = new_config();
-        let directory: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let commits: Vec<Arc<dyn IndexCommit>> = (1..=3)
             .map(|generation| TestCommit::at_generation(Arc::clone(&directory), generation))
             .collect();
@@ -1189,14 +1351,14 @@ mod tests {
         use crate::index::index_commit::test_support::TestCommit;
         use crate::index::index_deletion_policy::KeepLastNCommitsDeletionPolicy;
         use crate::index::IndexCommit;
-        use crate::store::{Directory, RamDirectory};
+        use crate::store::{ByteBuffersDirectory, Directory};
 
         let mut config = new_config();
         config
             .set_index_deletion_policy(Arc::new(KeepLastNCommitsDeletionPolicy::new(2).unwrap()))
             .unwrap();
 
-        let directory: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let commits: Vec<Arc<dyn IndexCommit>> = (1..=3)
             .map(|generation| TestCommit::at_generation(Arc::clone(&directory), generation))
             .collect();
@@ -1392,10 +1554,15 @@ mod tests {
 
     #[test]
     fn attach_writer_prevents_reuse() {
-        let mut config = new_config();
+        let live = new_config().into_live();
         let writer: Arc<dyn IndexWriterTrait> = Arc::new(DummyIndexWriter);
-        assert!(config.attach_writer(Arc::downgrade(&writer)).is_ok());
-        assert!(config.attach_writer(Arc::downgrade(&writer)).is_err());
+        assert!(live.attach_writer(Arc::downgrade(&writer)).is_ok());
+        let error = live.attach_writer(Arc::downgrade(&writer)).unwrap_err();
+        assert!(
+            matches!(&error, LuceneError::IllegalState { message, .. }
+                if message == "do not share IndexWriterConfig instances across IndexWriters"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -1432,15 +1599,19 @@ mod tests {
             _apply_all_deletes: bool,
             _write_all_deletes: bool,
         ) -> Result<Arc<dyn crate::index::DirectoryReader>> {
-            Err(LuceneError::IllegalState("dummy".to_string()))
+            Err(LuceneError::illegal_state("dummy".to_string()))
         }
 
         fn is_closed(&self) -> bool {
             false
         }
 
+        fn segment_infos(&self) -> Result<crate::index::SegmentInfos> {
+            Err(LuceneError::illegal_state("dummy".to_string()))
+        }
+
         fn get_directory(&self) -> Arc<dyn crate::store::Directory> {
-            Arc::new(crate::store::RamDirectory::default())
+            Arc::new(crate::store::ByteBuffersDirectory::default())
         }
     }
 }

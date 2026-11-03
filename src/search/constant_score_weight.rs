@@ -70,7 +70,10 @@ pub(crate) fn java_float_to_string(value: f32) -> String {
 pub trait ConstantScoreWeightImpl: Send + Sync + Debug {
     /// Returns the scorer supplier for the given leaf.
     ///
-    /// Equivalent to `Weight.scorerSupplier(LeafReaderContext)`.
+    /// Equivalent to `Weight.scorerSupplier(LeafReaderContext)`. `score` is the
+    /// weight's [`ConstantScoreWeight::score`], which Java's subclasses read
+    /// through the inherited `score()` (`ConstantScoreWeight.java:39-41`); the
+    /// weight passes it because this part is a separate object.
     ///
     /// # Errors
     ///
@@ -78,6 +81,7 @@ pub trait ConstantScoreWeightImpl: Send + Sync + Debug {
     fn scorer_supplier(
         &self,
         context: &LeafReaderContext,
+        score: f32,
     ) -> Result<Option<Box<dyn ScorerSupplier>>>;
 
     /// Returns whether this weight can be cached against the given leaf.
@@ -103,13 +107,19 @@ pub trait ConstantScoreWeightImpl: Send + Sync + Debug {
     /// Equivalent to `Weight.matches(LeafReaderContext, int)`, which
     /// `ConstantScoreWeight` does not override but some of its subclasses do —
     /// `ConstantScoreQuery`'s weight delegates it to the wrapped weight. The
-    /// default reproduces `Weight`'s own.
+    /// default reproduces `Weight`'s own; `score` is the weight's, as for
+    /// [`scorer_supplier`](Self::scorer_supplier).
     ///
     /// # Errors
     ///
     /// Propagates any I/O error raised while positioning the scorer.
-    fn matches(&self, context: &LeafReaderContext, doc: i32) -> Result<Option<Arc<dyn Matches>>> {
-        let scorer_supplier = self.scorer_supplier(context)?;
+    fn matches(
+        &self,
+        context: &LeafReaderContext,
+        doc: i32,
+        score: f32,
+    ) -> Result<Option<Arc<dyn Matches>>> {
+        let scorer_supplier = self.scorer_supplier(context, score)?;
         let Some(mut scorer_supplier) = scorer_supplier else {
             return Ok(None);
         };
@@ -167,11 +177,6 @@ impl<I: ConstantScoreWeightImpl> ConstantScoreWeight<I> {
     pub fn score(&self) -> f32 {
         self.score
     }
-
-    /// Returns the wrapped leaf-level behaviour.
-    pub fn inner(&self) -> &I {
-        &self.inner
-    }
 }
 
 impl<I: ConstantScoreWeightImpl> SegmentCacheable for ConstantScoreWeight<I> {
@@ -189,7 +194,7 @@ impl<I: ConstantScoreWeightImpl> Weight for ConstantScoreWeight<I> {
         &self,
         context: &LeafReaderContext,
     ) -> Result<Option<Box<dyn ScorerSupplier>>> {
-        self.inner.scorer_supplier(context)
+        self.inner.scorer_supplier(context, self.score())
     }
 
     fn count(&self, context: &LeafReaderContext) -> Result<i32> {
@@ -197,7 +202,7 @@ impl<I: ConstantScoreWeightImpl> Weight for ConstantScoreWeight<I> {
     }
 
     fn matches(&self, context: &LeafReaderContext, doc: i32) -> Result<Option<Arc<dyn Matches>>> {
-        self.inner.matches(context, doc)
+        self.inner.matches(context, doc, self.score())
     }
 
     fn explain(&self, context: &LeafReaderContext, doc: i32) -> Result<Explanation> {

@@ -42,12 +42,15 @@ use std::sync::Arc;
 
 use rucene::analysis::char_array_set::CharArraySet;
 use rucene::analysis::tokenattributes::{CharTermAttribute, CharTermAttributeImpl};
-use rucene::codecs::compressing::CompressionMode;
+use rucene::codecs::compressing::{self, CompressionMode as _};
 use rucene::codecs::hnsw::flat_vectors::DefaultFlatVectorScorer;
 use rucene::codecs::hnsw::scalar_quantized_scorer::ScalarQuantizedVectorScorer;
 use rucene::codecs::lucene104::scalar_quantized_vectors::Lucene104HnswScalarQuantizedVectorsFormat;
 use rucene::codecs::lucene90::stored_fields::Lucene90CompressingStoredFieldsFormat;
 use rucene::codecs::lucene90::term_vectors::Lucene90CompressingTermVectorsFormat;
+use rucene::codecs::lucene90::{
+    DeflateWithPresetDictCompressionMode, LZ4WithPresetDictCompressionMode,
+};
 use rucene::codecs::lucene99::flat_vectors_format::Lucene99FlatVectorsFormat;
 use rucene::codecs::lucene99::hnsw_vectors_format::Lucene99HnswVectorsFormat;
 use rucene::codecs::term_state::{BlockTermState, CompetitiveImpactAccumulator, Impact};
@@ -242,7 +245,7 @@ fn field_updates_buffer(m: &Measured) {
         3,
     )
     .expect("a buffer of resets");
-    none.add_reset("price", &term("b"), 5).expect("second");
+    none.add_no_value(&term("b"), 5).expect("second");
 
     for (name, buffer, count) in [
         ("same", &same, 3usize),
@@ -404,7 +407,7 @@ fn writer_configs(m: &Measured) {
     tuned
         .set_max_buffered_docs(1000)
         .expect("a valid doc count");
-    tuned.set_use_compound_file(false);
+    tuned.set_use_compound_file(false).unwrap();
     tuned.set_commit_on_close(false);
     tuned.set_soft_deletes_field(Some("__soft_deletes".to_string()));
     tuned
@@ -429,14 +432,14 @@ fn writer_configs(m: &Measured) {
 }
 
 fn util_bit_sets(m: &Measured) {
-    let empty = SparseFixedBitSet::new(100);
+    let empty = SparseFixedBitSet::new(100).unwrap();
     assert_eq!(
         empty.to_string(),
         m.get("SparseFixedBitSet.toString/empty100"),
         "SparseFixedBitSet.toString() — note Lucene never closes the parenthesis"
     );
 
-    let mut sparse = SparseFixedBitSet::new(10_000);
+    let mut sparse = SparseFixedBitSet::new(10_000).unwrap();
     sparse.set(1);
     sparse.set(5_000);
     sparse.set(9_999);
@@ -458,7 +461,7 @@ fn util_bit_sets(m: &Measured) {
         m.get("RoaringDocIdSet.toString/empty64")
     );
 
-    let mut for_doc_id_set = SparseFixedBitSet::new(128);
+    let mut for_doc_id_set = SparseFixedBitSet::new(128).unwrap();
     for_doc_id_set.set(7);
     let set: Arc<dyn BitSet> = Arc::new(for_doc_id_set);
     assert_eq!(
@@ -505,7 +508,7 @@ fn util_bit_sets(m: &Measured) {
         m.get("DenseLiveDocs.toString/1-of-8-tie")
     );
 
-    let mut deleted = SparseFixedBitSet::new(1000);
+    let mut deleted = SparseFixedBitSet::new(1000).unwrap();
     deleted.set(4);
     deleted.set(77);
     assert_eq!(
@@ -516,7 +519,7 @@ fn util_bit_sets(m: &Measured) {
         m.get("SparseLiveDocs.toString/2-of-1000")
     );
 
-    let mut one_of_eight = SparseFixedBitSet::new(8);
+    let mut one_of_eight = SparseFixedBitSet::new(8).unwrap();
     one_of_eight.set(4);
     assert_eq!(
         SparseLiveDocs::builder(one_of_eight, 8)
@@ -650,17 +653,17 @@ fn util_hnsw(m: &Measured) {
         NeighborArray::new(10, true).to_string(),
         m.get("NeighborArray.toString/empty")
     );
-    let mut array = NeighborArray::new(10, true);
+    let array = NeighborArray::new(10, true);
     array.add_in_order(1, 0.9).expect("in order");
     array.add_in_order(2, 0.8).expect("in order");
     assert_eq!(array.to_string(), m.get("NeighborArray.toString/two"));
 
     assert_eq!(
-        NeighborQueue::new(4, true).to_string(),
+        NeighborQueue::new(4, true).unwrap().to_string(),
         m.get("NeighborQueue.toString/empty"),
         "NeighborQueue names itself Neighbors, not after its own class"
     );
-    let mut queue = NeighborQueue::new(4, true);
+    let mut queue = NeighborQueue::new(4, true).unwrap();
     queue.add(1, 0.5);
     queue.add(2, 0.6);
     queue.add(3, 0.7);
@@ -876,7 +879,7 @@ fn codecs(m: &Measured) {
     assert_eq!(
         Lucene90CompressingStoredFieldsFormat::new(
             "Lucene90StoredFieldsFastData",
-            CompressionMode::FAST,
+            Arc::clone(&compressing::FAST),
             1 << 14,
             128,
             10,
@@ -889,7 +892,7 @@ fn codecs(m: &Measured) {
         Lucene90CompressingTermVectorsFormat::new(
             "Lucene90TermVectorsData",
             "",
-            CompressionMode::FAST,
+            Arc::clone(&compressing::FAST),
             1 << 12,
             128,
             10,
@@ -901,12 +904,12 @@ fn codecs(m: &Measured) {
     );
 
     assert_eq!(
-        CompressionMode::DEFLATE_WITH_PRESET_DICT.to_string(),
+        DeflateWithPresetDictCompressionMode::new().to_string(),
         m.get("DeflateWithPresetDictCompressionMode.toString"),
         "Lucene's DeflateWithPresetDictCompressionMode calls itself BEST_COMPRESSION"
     );
     assert_eq!(
-        CompressionMode::LZ4_WITH_PRESET_DICT.to_string(),
+        LZ4WithPresetDictCompressionMode::new().to_string(),
         m.get("LZ4WithPresetDictCompressionMode.toString")
     );
 
@@ -1007,12 +1010,19 @@ fn index(m: &Measured) {
     );
     assert_ne!(hash_of(&first), hash_of(&other_gen));
 
-    // Sorter.toString() is getID() verbatim; this port takes the id directly.
-    let java_id = m.get("Sorter.getID/price-long");
-    assert_eq!(
-        rucene::index::index_sorter::Sorter::new(java_id).to_string(),
-        m.get("Sorter.toString/price-long")
-    );
+    // `new Sorter(new Sort(new SortField("price", LONG)))`: `getID()` is the
+    // sort's `toString()`, and `toString()` is `getID()` verbatim.
+    let sorter = rucene::index::index_sorter::Sorter::new(
+        rucene::search::Sort::new_fields(vec![rucene::search::SortField::new(
+            Some("price".to_string()),
+            rucene::search::SortFieldType::Long,
+        )
+        .unwrap()])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(sorter.get_id(), m.get("Sorter.getID/price-long"));
+    assert_eq!(sorter.to_string(), m.get("Sorter.toString/price-long"));
 }
 
 fn analysis(m: &Measured) {
@@ -1252,7 +1262,7 @@ fn readers(m: &Measured, index_dir: &std::path::Path) {
         "the segments file, the commit version and every segment reader"
     );
 
-    let leaves = Arc::clone(&reader).leaves();
+    let leaves = Arc::clone(&reader).leaves().unwrap();
     let leaf0 = leaves[0].leaf_reader();
     let leaf1 = leaves[1].leaf_reader();
 
@@ -1335,7 +1345,7 @@ fn readers(m: &Measured, index_dir: &std::path::Path) {
     // `wrapper.wrap(in.getSequentialSubReaders())` to `super`
     // (`FilterDirectoryReader.java:91-93`). Both routes to the wrapped leaf are
     // pinned here: through the reader, and straight off the `SubReaderWrapper`.
-    let exitable_leaves = Arc::clone(&exitable).leaves();
+    let exitable_leaves = Arc::clone(&exitable).leaves().unwrap();
     assert_eq!(
         exitable_leaves.len(),
         2,
@@ -1428,7 +1438,7 @@ fn enumerations(m: &Measured, index_dir: &std::path::Path) {
     let reader = open_java_index(index_dir);
     // `Arc<dyn DirectoryReader>` does not coerce to `Arc<dyn IndexReader>`, so
     // the erased view comes off the reader's own top-level context.
-    let as_index_reader: Arc<dyn IndexReader> = Arc::clone(&reader).get_context().reader();
+    let as_index_reader: Arc<dyn IndexReader> = Arc::clone(&reader).get_context().unwrap().reader();
 
     let terms = MultiTerms::get_terms(&as_index_reader, "body")
         .expect("read the merged terms")
@@ -1454,7 +1464,7 @@ fn enumerations(m: &Measured, index_dir: &std::path::Path) {
         "the class renames itself `MultiDocsAndPositionsEnum`"
     );
 
-    let leaves = Arc::clone(&reader).leaves();
+    let leaves = Arc::clone(&reader).leaves().unwrap();
     let leaf0 = leaves[0].leaf_reader();
     let leaf_terms = leaf0
         .terms("body")
@@ -1559,8 +1569,12 @@ fn buffered_updates(m: &Measured, index_dir: &std::path::Path) {
     );
 
     let mut terms = BufferedUpdates::new("_0");
-    terms.add_term(Term::new("id", BytesRef::new(b"0-0".to_vec())), 5);
-    terms.add_term(Term::new("id", BytesRef::new(b"0-1".to_vec())), 7);
+    terms
+        .add_term(Term::new("id", BytesRef::new(b"0-0".to_vec())), 5)
+        .unwrap();
+    terms
+        .add_term(Term::new("id", BytesRef::new(b"0-1".to_vec())), 7)
+        .unwrap();
     assert_eq!(
         terms.to_string(),
         m.get("BufferedUpdates.toString/two-terms"),
@@ -1605,7 +1619,6 @@ fn buffered_updates(m: &Measured, index_dir: &std::path::Path) {
         Arc::clone(&queue),
         rucene::index::field_infos::FieldInfosBuilder::new(field_numbers),
         Arc::new(std::sync::atomic::AtomicI64::new(0)),
-        Arc::new(std::sync::atomic::AtomicI32::new(rucene::index::MAX_DOCS)),
         false,
         Box::new(rucene::index::indexing_chain::DefaultIndexingChain::new(
             Arc::clone(&config),
@@ -1618,7 +1631,9 @@ fn buffered_updates(m: &Measured, index_dir: &std::path::Path) {
     );
 
     let mut everything = BufferedUpdates::new("_0");
-    everything.add_term(Term::new("id", BytesRef::new(b"0-0".to_vec())), 5);
+    everything
+        .add_term(Term::new("id", BytesRef::new(b"0-0".to_vec())), 5)
+        .unwrap();
     everything.add_query(
         Arc::new(rucene::search::TermQuery::new(Term::new(
             "id",
@@ -1645,24 +1660,25 @@ fn buffered_updates(m: &Measured, index_dir: &std::path::Path) {
         "the trailing space of the terms clause leaves two spaces before the query clause"
     );
 
-    // `FrozenBufferedUpdates` is where this port's freezing model shows: Java
-    // packs the terms into `PrefixCodedTerms` and the queries into an array and
-    // reports *their* RAM, while this port keeps the source `BufferedUpdates`
-    // and reports its own. The `bytesUsed=` clause therefore cannot agree — an
-    // empty Java packet already reports `bytesUsed=16` for an empty
-    // `PrefixCodedTerms` — so what is compared is every other clause, in Java's
-    // order and wording. See the divergence recorded on `Display for
-    // FrozenBufferedUpdates`.
-    let frozen_empty = FrozenBufferedUpdates::new(BufferedUpdates::new("_0"), None, 0);
+    // `FrozenBufferedUpdates` freezes its delete terms into `PrefixCodedTerms`
+    // and reports their RAM, the queries' fixed charge and the finished field
+    // updates as `bytesUsed=` (`FrozenBufferedUpdates.java:87-111`), so the
+    // whole rendering is compared — an empty packet already reports
+    // `bytesUsed=16` for its empty `PrefixCodedTerms`.
+    let frozen_empty = FrozenBufferedUpdates::new(BufferedUpdates::new("_0"), None);
     assert_eq!(
         frozen_empty.to_string(),
-        without_bytes_used(m.get("FrozenBufferedUpdates.toString/empty")),
+        m.get("FrozenBufferedUpdates.toString/empty"),
         "an unpushed packet renders `delGen=-1`: Java reads the field, not the asserting accessor"
     );
 
     let mut source = BufferedUpdates::new("_0");
-    source.add_term(Term::new("id", BytesRef::new(b"0-0".to_vec())), 5);
-    source.add_term(Term::new("id", BytesRef::new(b"0-1".to_vec())), 7);
+    source
+        .add_term(Term::new("id", BytesRef::new(b"0-0".to_vec())), 5)
+        .unwrap();
+    source
+        .add_term(Term::new("id", BytesRef::new(b"0-1".to_vec())), 7)
+        .unwrap();
     source
         .add_numeric_update(
             &DocValuesUpdate::new(
@@ -1675,46 +1691,38 @@ fn buffered_updates(m: &Measured, index_dir: &std::path::Path) {
             4,
         )
         .expect("buffer a numeric update");
-    let frozen = FrozenBufferedUpdates::new(source, None, 0);
+    let frozen = FrozenBufferedUpdates::new(source, None);
     frozen.set_del_gen(7);
     assert_eq!(
-        without_bytes_used(&frozen.to_string()),
-        without_bytes_used(m.get("FrozenBufferedUpdates.toString/terms-and-updates")),
+        frozen.to_string(),
+        m.get("FrozenBufferedUpdates.toString/terms-and-updates"),
         "`unique deleteTerms=` then `fieldUpdates=`, guarded on the field count but printing \
          the update count"
     );
 
     let mut private_source = BufferedUpdates::new("_0");
     private_source.add_query(Arc::new(MatchAllDocsQuery::instance()), 3);
-    let private_frozen = FrozenBufferedUpdates::new(private_source, Some("_0".to_string()), 0);
-    let rendered = without_bytes_used(&private_frozen.to_string());
-    let expected = without_bytes_used(m.get("FrozenBufferedUpdates.toString/private-segment"));
+    let private_frozen = FrozenBufferedUpdates::new(private_source, Some("_0".to_string()));
+    let rendered = private_frozen.to_string();
+    let expected = m
+        .get("FrozenBufferedUpdates.toString/private-segment")
+        .to_string();
+    // Java renders the private segment as a `SegmentCommitInfo`, this port as
+    // its name (see `Display for FrozenBufferedUpdates`): everything before it,
+    // `bytesUsed=` included, must agree.
+    let java_head = &expected[..expected.find(" privateSegment=").expect("Java shape")];
+    assert_eq!(
+        &rendered[..rendered.find(" privateSegment=").expect("Rucene shape")],
+        java_head,
+        "every clause before the private segment"
+    );
     assert!(
-        expected.starts_with("delGen=-1 numDeleteQueries=1 privateSegment="),
+        expected.starts_with(&format!("{java_head} privateSegment=_0(")),
         "the Java shape this comparison relies on: {expected}"
     );
-    assert!(
-        rendered.starts_with("delGen=-1 numDeleteQueries=1 privateSegment=_0"),
-        "the query clause and the private-segment clause, in Java's order: {rendered}"
+    assert_eq!(
+        rendered,
+        format!("{java_head} privateSegment=_0"),
+        "the private segment rendered by name, last, in Java's order"
     );
-}
-
-/// Strips the `bytesUsed=<n>` clause from a `FrozenBufferedUpdates` rendering.
-///
-/// Java's figure is the RAM of the frozen `PrefixCodedTerms` and `Query[]`;
-/// this port freezes by keeping the source `BufferedUpdates`, so the two count
-/// different objects. Everything else in the string is comparable.
-fn without_bytes_used(rendered: &str) -> String {
-    let mut out = Vec::new();
-    let mut rest = rendered;
-    while let Some(at) = rest.find(" bytesUsed=") {
-        out.push(&rest[..at]);
-        rest = &rest[at + " bytesUsed=".len()..];
-        let end = rest
-            .find(|c: char| !c.is_ascii_digit() && c != '-')
-            .unwrap_or(rest.len());
-        rest = &rest[end..];
-    }
-    out.push(rest);
-    out.concat()
 }

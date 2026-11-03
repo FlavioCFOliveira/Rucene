@@ -160,7 +160,7 @@ impl SearcherLifetimeManager {
     /// Equivalent to `SearcherLifetimeManager.ensureOpen()`.
     fn ensure_open(&self) -> Result<()> {
         if self.closed.load(Ordering::Acquire) {
-            return Err(LuceneError::AlreadyClosed(
+            return Err(LuceneError::already_closed(
                 "this SearcherLifetimeManager instance is closed".to_string(),
             ));
         }
@@ -330,15 +330,8 @@ impl SearcherLifetimeManager {
             trackers
         };
 
-        let mut first_error = None;
-        for tracker in to_close {
-            if let Err(error) = tracker.close() {
-                first_error.get_or_insert(error);
-            }
-        }
-        if let Some(error) = first_error {
-            return Err(error);
-        }
+        // `IOUtils.close(toClose)` (`SearcherLifetimeManager.java:285`).
+        crate::util::IOUtils::close(to_close.iter().map(|tracker| Some(|| tracker.close())))?;
 
         // Make some effort to catch misuse.
         if !self
@@ -347,7 +340,7 @@ impl SearcherLifetimeManager {
             .unwrap_or_else(PoisonError::into_inner)
             .is_empty()
         {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "another thread called record while this SearcherLifetimeManager instance was \
                  being closed; not all searchers were closed"
                     .to_string(),

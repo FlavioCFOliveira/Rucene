@@ -622,12 +622,12 @@ impl<O: Outputs> FSTMetadata<O> {
             // Serialize the empty-string output.
             let mut ros = ByteBuffersDataOutput::new();
             self.outputs.write_final_output(empty_output, &mut ros)?;
-            let mut empty_output_bytes = ros.to_array_copy();
+            let mut empty_output_bytes = ros.to_array_copy()?;
             let empty_len = empty_output_bytes.len();
 
             empty_output_bytes.reverse();
             meta_out.write_v_int(i32::try_from(empty_len).map_err(|_| {
-                LuceneError::IllegalState(format!("empty output too long: {empty_len}"))
+                LuceneError::illegal_state(format!("empty output too long: {empty_len}"))
             })?)?;
             meta_out.write_bytes(&empty_output_bytes, 0, empty_len)?;
         } else {

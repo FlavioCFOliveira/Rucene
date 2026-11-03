@@ -15,6 +15,8 @@ use unicode_segmentation::UnicodeSegmentation;
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::Arc;
 
 use crate::analysis::{
     get_buffered_reader, get_word_set, new_lower_case_filter, new_stop_filter, Analyzer,
@@ -24,6 +26,7 @@ use crate::analysis::{
 };
 use crate::error::{LuceneError, Result};
 use crate::util::attribute::{AttributeImpl, AttributeSource};
+use crate::util::IOUtils;
 
 /// Alpha/numeric token type.
 pub const ALPHANUM: usize = 0;
@@ -94,8 +97,6 @@ pub struct StandardTokenizerImpl {
     word_bounds: Vec<usize>,
     current_word: usize,
     max_token_length: usize,
-    /// Number of positions skipped because of over-long tokens.
-    skipped_positions: i32,
 }
 
 impl StandardTokenizerImpl {
@@ -106,7 +107,6 @@ impl StandardTokenizerImpl {
             word_bounds: Vec::new(),
             current_word: 0,
             max_token_length: DEFAULT_MAX_TOKEN_LENGTH,
-            skipped_positions: 0,
         }
     }
 
@@ -141,7 +141,6 @@ impl StandardTokenizerImpl {
         self.text.clear();
         self.word_bounds.clear();
         self.current_word = 0;
-        self.skipped_positions = 0;
 
         let mut buf = vec!['\0'; 1024];
         loop {
@@ -222,16 +221,6 @@ impl StandardTokenizerImpl {
         let start = self.word_bounds[self.current_word - 2];
         let end = self.word_bounds[self.current_word - 1];
         term_att.copy_buffer(&self.text, start, end - start);
-    }
-
-    /// Returns the current skipped-position count.
-    pub fn skipped_positions(&self) -> i32 {
-        self.skipped_positions
-    }
-
-    /// Resets the skipped-position counter.
-    pub fn clear_skipped_positions(&mut self) {
-        self.skipped_positions = 0;
     }
 }
 
@@ -380,7 +369,11 @@ fn is_emoji_start(c: char) -> bool {
 /// length. `(token_start, token_end, token_type, next_piece_start)`.
 type LongTokenState = (usize, usize, usize, usize);
 
-/// User-supplied logic for [`StandardTokenizer`].
+/// The body of [`StandardTokenizer`]: what Lucene's `StandardTokenizer` adds to
+/// `Tokenizer`.
+///
+/// Equivalent to the members of `org.apache.lucene.analysis.standard.StandardTokenizer`;
+/// the `Tokenizer` half is [`Tokenizer`](crate::analysis::Tokenizer).
 #[derive(Debug)]
 pub struct StandardTokenizerLogic {
     scanner: StandardTokenizerImpl,
@@ -399,11 +392,33 @@ impl StandardTokenizerLogic {
     }
 
     /// Sets the maximum token length.
-    pub fn set_max_token_length(&mut self, length: usize) -> Result<()> {
-        self.scanner.set_max_token_length(length)
+    ///
+    /// Equivalent to `StandardTokenizer.setMaxTokenLength(int)`
+    /// (`StandardTokenizer.java:95-105`), which refuses a length below 1 or
+    /// above [`MAX_TOKEN_LENGTH_LIMIT`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] with Lucene's messages,
+    /// `maxTokenLength must be greater than zero` and
+    /// `maxTokenLength may not exceed 1048576`.
+    pub fn set_max_token_length(&mut self, length: i32) -> Result<()> {
+        if length < 1 {
+            return Err(LuceneError::IllegalArgument(
+                "maxTokenLength must be greater than zero".to_string(),
+            ));
+        }
+        if length as usize > MAX_TOKEN_LENGTH_LIMIT {
+            return Err(LuceneError::IllegalArgument(format!(
+                "maxTokenLength may not exceed {MAX_TOKEN_LENGTH_LIMIT}"
+            )));
+        }
+        self.scanner.set_max_token_length(length as usize)
     }
 
     /// Returns the current maximum token length.
+    ///
+    /// Equivalent to `StandardTokenizer.getMaxTokenLength()`.
     pub fn max_token_length(&self) -> usize {
         self.scanner.max_token_length()
     }
@@ -419,11 +434,18 @@ impl TokenizerLogic for StandardTokenizerLogic {
     fn increment_token(
         &mut self,
         source: &mut AttributeSource,
-        _reader: &mut dyn CharReader,
+        reader: &mut dyn CharReader,
     ) -> Result<bool> {
+        // `offsetAtt.setOffset(correctOffset(start), correctOffset(start +
+        // termAtt.length()))` (`StandardTokenizer.incrementToken`): offsets
+        // are mapped back through the input's char filters.
+        let input: &dyn CharReader = reader;
+        let correct = |offset: i32| Tokenizer::<Self>::correct_offset_of(Some(input), offset);
         let mut att = source
             .get_attribute_mut::<crate::analysis::PackedTokenAttributeImpl>()
-            .ok_or_else(|| LuceneError::IllegalState("missing PackedTokenAttribute".to_string()))?;
+            .ok_or_else(|| {
+                LuceneError::illegal_state("missing PackedTokenAttribute".to_string())
+            })?;
 
         att.clear();
 
@@ -434,7 +456,10 @@ impl TokenizerLogic for StandardTokenizerLogic {
             let length = (piece_end - next_start) as i32;
             att.copy_buffer(&self.scanner.text, next_start, piece_end - next_start);
             att.set_position_increment(1);
-            att.set_offset(next_start as i32, next_start as i32 + length);
+            att.set_offset(
+                correct(next_start as i32),
+                correct(next_start as i32 + length),
+            );
             att.set_type(TOKEN_TYPES[token_type].to_string());
             next_start = piece_end;
             if next_start >= token_end {
@@ -458,7 +483,7 @@ impl TokenizerLogic for StandardTokenizerLogic {
             att.set_position_increment(self.skipped_positions + 1);
             self.scanner.get_text(&mut *att);
             let length = att.length() as i32;
-            att.set_offset(start as i32, start as i32 + length);
+            att.set_offset(correct(start as i32), correct(start as i32 + length));
             att.set_type(TOKEN_TYPES[token_type].to_string());
             self.skipped_positions = 0;
             return Ok(true);
@@ -469,19 +494,26 @@ impl TokenizerLogic for StandardTokenizerLogic {
         let piece_end = start + max_len;
         att.copy_buffer(&self.scanner.text, start, max_len);
         att.set_position_increment(self.skipped_positions + 1);
-        att.set_offset(start as i32, piece_end as i32);
+        att.set_offset(correct(start as i32), correct(piece_end as i32));
         att.set_type(TOKEN_TYPES[token_type].to_string());
         self.long_token = Some((start, end, token_type, piece_end));
         self.skipped_positions = 0;
         Ok(true)
     }
 
-    fn end(&mut self, source: &mut AttributeSource) -> Result<()> {
+    fn end(&mut self, source: &mut AttributeSource, input: Option<&dyn CharReader>) -> Result<()> {
         let mut att = source
             .get_attribute_mut::<crate::analysis::PackedTokenAttributeImpl>()
-            .ok_or_else(|| LuceneError::IllegalState("missing PackedTokenAttribute".to_string()))?;
+            .ok_or_else(|| {
+                LuceneError::illegal_state("missing PackedTokenAttribute".to_string())
+            })?;
 
-        let final_offset = self.scanner.yychar() + self.scanner.yylength() as i32;
+        // `int finalOffset = correctOffset(scanner.yychar() +
+        // scanner.yylength())` (`StandardTokenizer.end`).
+        let final_offset = Tokenizer::<Self>::correct_offset_of(
+            input,
+            self.scanner.yychar() + self.scanner.yylength() as i32,
+        );
         att.set_offset(final_offset, final_offset);
         let current = att.get_position_increment();
         att.set_position_increment(current + self.skipped_positions);
@@ -546,20 +578,22 @@ impl StopwordAnalyzerBase {
     ///
     /// # Errors
     ///
-    /// Returns whatever the reader returns while being read or closed. A read
-    /// failure is reported in preference to a close failure, which is the order
-    /// Java's `try`/`finally` produces.
+    /// Returns whatever the reader returns while being read or closed. A close
+    /// failure is reported in preference to a read failure: Java closes the
+    /// reader in a `finally` block, `IOUtils.close(stopwords)`
+    /// (`StopwordAnalyzerBase.java:83-89`), and an exception thrown from a
+    /// `finally` block replaces the one in flight.
     ///
     /// Equivalent to `org.apache.lucene.analysis.StopwordAnalyzerBase#loadStopwordSet(Reader)`.
     pub fn load_stopword_set(reader: &mut dyn CharReader) -> Result<CharArraySet> {
         let lines = get_buffered_reader(reader);
-        let closed = reader.close();
-        let lines = lines?;
-        closed?;
-        Ok(CharArraySet::unmodifiable_set(get_word_set(lines)))
+        IOUtils::close([Some(|| reader.close())])?;
+        Ok(CharArraySet::unmodifiable_set(get_word_set(lines?)))
     }
 
     /// Reads a stop-word set from the UTF-8 file at `stopwords`.
+    ///
+    /// Equivalent to the overload `StopwordAnalyzerBase.loadStopwordSet(Path)`.
     ///
     /// Divergence: Java streams the file through
     /// `Files.newBufferedReader(path, StandardCharsets.UTF_8)`
@@ -589,58 +623,66 @@ impl StopwordAnalyzerBase {
 /// Analyzer that tokenizes with the standard tokenizer, lowercases, and removes
 /// stop words.
 ///
-/// Equivalent to `org.apache.lucene.analysis.standard.StandardAnalyzer`.
+/// Equivalent to `org.apache.lucene.analysis.standard.StandardAnalyzer`, which
+/// extends `StopwordAnalyzerBase`: the stop words live in the
+/// [`StopwordAnalyzerBase`] this analyzer holds, as Java's live in the
+/// inherited field.
 #[derive(Debug)]
 pub struct StandardAnalyzer {
     state: AnalyzerState,
-    stopwords: CharArraySet,
-    max_token_length: usize,
+    base: StopwordAnalyzerBase,
+    /// Java's `maxTokenLength` field. The components' source reads it again on
+    /// every reader, as Java's lambda reads `StandardAnalyzer.this.maxTokenLength`,
+    /// so it is shared with them.
+    max_token_length: Arc<AtomicI32>,
 }
 
 impl StandardAnalyzer {
     /// Creates a `StandardAnalyzer` with the default, empty stop-word set.
+    ///
+    /// Equivalent to `StandardAnalyzer()`, `this(CharArraySet.EMPTY_SET)`.
     pub fn new() -> Self {
         Self::with_stopwords(CharArraySet::new(0, false))
     }
 
     /// Creates a `StandardAnalyzer` with the supplied stop-word set.
+    ///
+    /// Equivalent to `StandardAnalyzer(CharArraySet)`, `super(stopWords)`:
+    /// [`StopwordAnalyzerBase::new`] keeps an unmodifiable copy of the set.
     pub fn with_stopwords(stopwords: CharArraySet) -> Self {
         Self {
             state: AnalyzerState::new(Box::new(GlobalReuseStrategy)),
-            stopwords,
-            max_token_length: DEFAULT_MAX_TOKEN_LENGTH,
+            base: StopwordAnalyzerBase::new(stopwords),
+            max_token_length: Arc::new(AtomicI32::new(DEFAULT_MAX_TOKEN_LENGTH as i32)),
         }
     }
 
     /// Sets the maximum token length.
     ///
-    /// # Errors
-    ///
-    /// Returns `LuceneError::IllegalArgument` if `length` is outside
-    /// `[1, MAX_TOKEN_LENGTH_LIMIT]`.
-    pub fn set_max_token_length(&mut self, length: usize) -> Result<()> {
-        if length < 1 {
-            return Err(LuceneError::IllegalArgument(
-                "maxTokenLength must be greater than zero".to_string(),
-            ));
-        }
-        if length > MAX_TOKEN_LENGTH_LIMIT {
-            return Err(LuceneError::IllegalArgument(format!(
-                "maxTokenLength may not exceed {MAX_TOKEN_LENGTH_LIMIT}"
-            )));
-        }
-        self.max_token_length = length;
-        Ok(())
+    /// Equivalent to `StandardAnalyzer.setMaxTokenLength(int)`, which only
+    /// stores the value: it is checked when the tokenizer receives it, so an
+    /// out-of-range length surfaces as the error of the next
+    /// [`token_stream`](Analyzer::token_stream) — from `create_components`
+    /// when no components exist yet, from their source otherwise — and
+    /// components created earlier pick the new length up on their next
+    /// reader.
+    pub fn set_max_token_length(&mut self, length: i32) {
+        self.max_token_length.store(length, Ordering::Relaxed);
     }
 
     /// Returns the current maximum token length.
-    pub fn max_token_length(&self) -> usize {
-        self.max_token_length
+    ///
+    /// Equivalent to `StandardAnalyzer.getMaxTokenLength()`.
+    pub fn max_token_length(&self) -> i32 {
+        self.max_token_length.load(Ordering::Relaxed)
     }
 
     /// Returns the stop-word set used by this analyzer.
+    ///
+    /// Equivalent to `StopwordAnalyzerBase.getStopwordSet()`, which returns
+    /// the inherited `stopwords` field.
     pub fn stopwords(&self) -> &CharArraySet {
-        &self.stopwords
+        self.base.stopwords()
     }
 }
 
@@ -659,22 +701,33 @@ impl Analyzer for StandardAnalyzer {
         "org.apache.lucene.analysis.standard.StandardAnalyzer"
     }
 
-    fn create_components(&self, _field_name: &str) -> TokenStreamComponents {
+    /// Equivalent to `StandardAnalyzer.createComponents(String)`
+    /// (`StandardAnalyzer.java:84-96`): the tokenizer receives the analyzer's
+    /// maximum token length, which fails for an out-of-range length before
+    /// the components exist, and the source applies the analyzer's current
+    /// length again before every reader, as Java's
+    /// `src.setMaxTokenLength(StandardAnalyzer.this.maxTokenLength)` lambda
+    /// does.
+    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
         let tokenizer = Rc::new(RefCell::new(new_standard_tokenizer()));
+        let max_token_length = Arc::clone(&self.max_token_length);
         tokenizer
             .borrow_mut()
             .logic_mut()
-            .set_max_token_length(self.max_token_length)
-            .unwrap();
+            .set_max_token_length(max_token_length.load(Ordering::Relaxed))?;
         let tokenizer_for_source = Rc::clone(&tokenizer);
         let source = Box::new(move |reader: Box<dyn CharReader>| {
-            tokenizer_for_source.borrow_mut().set_reader(reader)
+            let mut tokenizer = tokenizer_for_source.borrow_mut();
+            tokenizer
+                .logic_mut()
+                .set_max_token_length(max_token_length.load(Ordering::Relaxed))?;
+            tokenizer.set_reader(reader)
         });
         let shared = SharedTokenStream::new(tokenizer);
         let lower = new_lower_case_filter(Box::new(shared));
-        let stop = new_stop_filter(Box::new(lower), self.stopwords.clone());
+        let stop = new_stop_filter(Box::new(lower), self.base.stopwords().clone());
         let sink: Rc<RefCell<dyn TokenStream>> = Rc::new(RefCell::new(stop));
-        TokenStreamComponents::new(source, sink)
+        Ok(TokenStreamComponents::new(source, sink))
     }
 
     fn normalize_token_stream(
@@ -693,6 +746,34 @@ mod tests {
         OffsetAttribute, PositionIncrementAttribute, ReusableStringReader, TokenStream,
         TypeAttribute,
     };
+
+    /// `loadStopwordSet(Reader)` closes the reader in a `finally` block,
+    /// `IOUtils.close(stopwords)` (`StopwordAnalyzerBase.java:83-89`), whose
+    /// failure replaces the read failure — Java oracle
+    /// (`scratchpad/oracle/e2/StopwordOracle.java`): `threw close failed`.
+    #[test]
+    fn load_stopword_set_reports_the_close_failure_over_the_read_failure() {
+        #[derive(Debug)]
+        struct FailingReader {
+            closes: usize,
+        }
+        impl crate::analysis::CharReader for FailingReader {
+            fn read(&mut self, _buf: &mut [char]) -> Result<usize> {
+                Err(LuceneError::Io(std::io::Error::other("read failed")))
+            }
+            fn close(&mut self) -> Result<()> {
+                self.closes += 1;
+                Err(LuceneError::Io(std::io::Error::other("close failed")))
+            }
+        }
+        let mut reader = FailingReader { closes: 0 };
+        let error = StopwordAnalyzerBase::load_stopword_set(&mut reader).unwrap_err();
+        assert!(
+            matches!(&error, LuceneError::Io(e) if e.to_string() == "close failed"),
+            "{error:?}"
+        );
+        assert_eq!(reader.closes, 1);
+    }
 
     fn tokenize(text: &str) -> Vec<(String, i32, i32, String)> {
         let mut tokenizer = new_standard_tokenizer();
@@ -885,12 +966,167 @@ mod tests {
     #[test]
     fn standard_analyzer_respects_max_token_length() {
         let mut analyzer = StandardAnalyzer::new();
-        analyzer.set_max_token_length(3).unwrap();
+        analyzer.set_max_token_length(3);
         let terms = analyze(&analyzer, "abcdefg");
         assert_eq!(
             terms,
             vec!["abc".to_string(), "def".to_string(), "g".to_string()]
         );
+    }
+
+    /// Consumes one token stream of `analyzer` over `text` to the end and
+    /// closes it, as Java's try-with-resources does, rendering each token as
+    /// `term(start,end)` and the end state as `end(start,end)`.
+    fn tokens(analyzer: &dyn Analyzer, text: &str) -> Result<Vec<String>> {
+        let stream = analyzer.token_stream_from_str("f", text)?;
+        let mut stream = stream.borrow_mut();
+        let render = |stream: &dyn TokenStream, term: Option<String>| {
+            let att = stream
+                .attribute_source()
+                .get_attribute::<crate::analysis::PackedTokenAttributeImpl>()
+                .unwrap();
+            format!(
+                "{}({},{})",
+                term.unwrap_or_else(|| att.term()),
+                att.start_offset(),
+                att.end_offset()
+            )
+        };
+        stream.reset()?;
+        let mut out = Vec::new();
+        while stream.increment_token()? {
+            out.push(render(&*stream, None));
+        }
+        stream.end()?;
+        out.push(render(&*stream, Some("end".to_string())));
+        stream.close()?;
+        Ok(out)
+    }
+
+    /// `MiscOracle` O4 (`oracle/h2/MiscOracle.java`): `setMaxTokenLength`
+    /// only stores the length; the reused components apply it on their next
+    /// reader, and an out-of-range length fails the next `tokenStream` with
+    /// the tokenizer's message, until a valid one is set again.
+    #[test]
+    fn the_analyzer_applies_its_max_token_length_on_every_reader() {
+        let mut analyzer = StandardAnalyzer::new();
+        assert_eq!(
+            tokens(&analyzer, "abcdefgh ij").unwrap(),
+            ["abcdefgh(0,8)", "ij(9,11)", "end(11,11)"]
+        );
+        analyzer.set_max_token_length(3);
+        assert_eq!(
+            tokens(&analyzer, "abcdefgh ij").unwrap(),
+            ["abc(0,3)", "def(3,6)", "gh(6,8)", "ij(9,11)", "end(11,11)"]
+        );
+        analyzer.set_max_token_length(0);
+        assert_eq!(analyzer.max_token_length(), 0);
+        match tokens(&analyzer, "abcdefgh ij") {
+            Err(LuceneError::IllegalArgument(message)) => {
+                assert_eq!(message, "maxTokenLength must be greater than zero")
+            }
+            other => panic!("expected the tokenizer's refusal, got {other:?}"),
+        }
+        analyzer.set_max_token_length(4);
+        assert_eq!(
+            tokens(&analyzer, "abcdefgh ij").unwrap(),
+            ["abcd(0,4)", "efgh(4,8)", "ij(9,11)", "end(11,11)"]
+        );
+    }
+
+    /// `StandardAnalyzer.createComponents` gives the tokenizer the analyzer's
+    /// length before the components exist, so an out-of-range length fails
+    /// `tokenStream` with no components stored for reuse. Java oracle
+    /// (`scratchpad/auditH/oracle/AuditHExtra.java`, `extra_out.txt`):
+    /// `tokenStream java.lang.IllegalArgumentException: maxTokenLength must be
+    /// greater than zero`, `components after failure=null`, then `after fix
+    /// tokens=[ab, cd, e] components=true`.
+    #[test]
+    fn an_out_of_range_length_fails_before_the_components_are_stored() {
+        let mut analyzer = StandardAnalyzer::new();
+        analyzer.set_max_token_length(0);
+        match tokens(&analyzer, "abc") {
+            Err(LuceneError::IllegalArgument(message)) => {
+                assert_eq!(message, "maxTokenLength must be greater than zero")
+            }
+            other => panic!("expected the tokenizer's refusal, got {other:?}"),
+        }
+        let state = analyzer.analyzer_state();
+        assert!(state
+            .reuse_strategy()
+            .get_reusable_components(state, "f")
+            .is_none());
+        analyzer.set_max_token_length(2);
+        assert_eq!(
+            tokens(&analyzer, "abcde").unwrap(),
+            ["ab(0,2)", "cd(2,4)", "e(4,5)", "end(5,5)"]
+        );
+        let state = analyzer.analyzer_state();
+        assert!(state
+            .reuse_strategy()
+            .get_reusable_components(state, "f")
+            .is_some());
+    }
+
+    /// `MiscOracle` O4: the analyzer's stop words are the
+    /// `StopwordAnalyzerBase`'s unmodifiable copy — Java's
+    /// `getStopwordSet().add("x")` threw `UnsupportedOperationException` —
+    /// and they remove their words from the stream.
+    #[test]
+    fn the_analyzer_keeps_an_unmodifiable_copy_of_its_stop_words() {
+        let mut stop = CharArraySet::new(4, false);
+        stop.add("the");
+        let analyzer = StandardAnalyzer::with_stopwords(stop);
+        assert_eq!(analyzer.stopwords().to_string(), "[the]");
+        assert_eq!(
+            tokens(&analyzer, "the quick fox").unwrap(),
+            ["quick(4,9)", "fox(10,13)", "end(13,13)"]
+        );
+        let mut stopwords = analyzer.stopwords().clone();
+        let added = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            stopwords.add("x");
+        }));
+        assert!(added.is_err(), "the stop-word set refuses writes");
+        assert_eq!(StandardAnalyzer::new().stopwords().to_string(), "[]");
+    }
+
+    /// `MiscOracle` O5: the tokenizer reports offsets in the text the user
+    /// supplied, corrected through every char filter below it
+    /// (`correctOffset` in `incrementToken` and `end`); two doubling filters
+    /// gave `[hello(0,20), world(24,44), end(44,44)]`.
+    #[test]
+    fn offsets_are_corrected_through_the_char_filters() {
+        let doubling = |inner: Box<dyn CharReader>| -> Box<dyn CharReader> {
+            Box::new(crate::analysis::CharFilterFn::new(inner, |off: i32| {
+                off * 2
+            }))
+        };
+        let mut tokenizer = new_standard_tokenizer();
+        tokenizer
+            .set_reader(doubling(doubling(Box::new(StringCharReader::new(
+                "hello world",
+            )))))
+            .unwrap();
+        tokenizer.reset().unwrap();
+        let render = |tokenizer: &StandardTokenizer, term: Option<&str>| {
+            let att = tokenizer
+                .attribute_source()
+                .get_attribute::<crate::analysis::PackedTokenAttributeImpl>()
+                .unwrap();
+            format!(
+                "{}({},{})",
+                term.map_or_else(|| att.term(), str::to_string),
+                att.start_offset(),
+                att.end_offset()
+            )
+        };
+        let mut out = Vec::new();
+        while tokenizer.increment_token().unwrap() {
+            out.push(render(&tokenizer, None));
+        }
+        tokenizer.end().unwrap();
+        out.push(render(&tokenizer, Some("end")));
+        assert_eq!(out, ["hello(0,20)", "world(24,44)", "end(44,44)"]);
     }
 }
 
@@ -904,7 +1140,8 @@ mod tests {
 /// `org.apache.lucene.analysis.standard.StandardTokenizerFactory`.
 #[derive(Clone, Debug)]
 pub struct StandardTokenizerFactory {
-    max_token_length: usize,
+    /// Java's private `maxTokenLength`, read by [`create`](crate::analysis::factories::TokenizerFactory::create).
+    max_token_length: i32,
 }
 
 /// SPI name this factory is registered under.
@@ -916,7 +1153,23 @@ impl StandardTokenizerFactory {
     /// Builds the factory from `args`, consuming every argument it recognises.
     ///
     /// Equivalent to `StandardTokenizerFactory(Map<String, String>)`, including
-    /// its refusal of any argument left over.
+    /// its refusal of any argument left over, `Unknown parameters: ` followed
+    /// by the map's `toString()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns what [`AbstractAnalysisFactory::new`] and
+    /// [`AbstractAnalysisFactory::get_int`] return, and
+    /// [`LuceneError::IllegalArgument`] for a leftover argument.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java prints the caller's `HashMap`,
+    /// in that map's iteration order. The leftovers are rendered here in the
+    /// order of a `java.util.HashMap` holding them alone, filled in key order:
+    /// the same order whenever the caller's map had the default capacity and
+    /// no two leftover keys share a bucket.
+    ///
+    /// [`AbstractAnalysisFactory::new`]: crate::analysis::factories::AbstractAnalysisFactory::new
+    /// [`AbstractAnalysisFactory::get_int`]: crate::analysis::factories::AbstractAnalysisFactory::get_int
     pub fn new(args: &mut std::collections::HashMap<String, String>) -> crate::error::Result<Self> {
         use crate::analysis::factories::AbstractAnalysisFactory;
         AbstractAnalysisFactory::new(args)?;
@@ -924,26 +1177,65 @@ impl StandardTokenizerFactory {
             args,
             "maxTokenLength",
             DEFAULT_MAX_TOKEN_LENGTH as i32,
-        )?
-        .max(0) as usize;
+        )?;
         if !args.is_empty() {
+            let mut leftovers: Vec<(&String, &String)> = args.iter().collect();
+            leftovers.sort();
+            let mut map = crate::util::java_collections::JavaHashMap::new();
+            for (key, value) in leftovers {
+                map.insert(key.clone(), value.clone());
+            }
+            let rendered = map
+                .iter()
+                .map(|(key, value)| format!("{key}={value}"))
+                .collect::<Vec<_>>()
+                .join(", ");
             return Err(crate::error::LuceneError::IllegalArgument(format!(
-                "Unknown parameters: {:?}",
-                args.keys().collect::<Vec<_>>()
+                "Unknown parameters: {{{rendered}}}"
             )));
         }
         Ok(Self { max_token_length })
     }
 
-    /// Returns the configured maximum token length.
-    pub fn max_token_length(&self) -> usize {
-        self.max_token_length
+    /// Refuses to build the factory without arguments.
+    ///
+    /// Equivalent to the public no-argument `StandardTokenizerFactory()`
+    /// constructor, which exists for `ServiceLoader` and throws
+    /// `defaultCtorException()`.
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`AbstractAnalysisFactory::default_ctor_exception`](crate::analysis::factories::AbstractAnalysisFactory::default_ctor_exception).
+    pub fn new_without_args() -> crate::error::Result<Self> {
+        Err(crate::analysis::factories::AbstractAnalysisFactory::default_ctor_exception())
+    }
+
+    /// The factory's class, as `lucene-core`'s
+    /// `META-INF/services/org.apache.lucene.analysis.TokenizerFactory` names
+    /// it: `StandardTokenizerFactory.class`, with its `NAME` field and its
+    /// `Map<String, String>` constructor.
+    pub const fn class() -> crate::analysis::factories::AnalysisFactoryClass<
+        dyn crate::analysis::factories::TokenizerFactory,
+    > {
+        crate::analysis::factories::AnalysisFactoryClass::new(
+            "org.apache.lucene.analysis.standard.StandardTokenizerFactory",
+            crate::analysis::factories::SPINameField::Declared(STANDARD_TOKENIZER_FACTORY_NAME),
+            Some(Self::new_from_map),
+        )
+    }
+
+    /// The `Map<String, String>` constructor, as [`class`](Self::class)
+    /// exposes it.
+    fn new_from_map(
+        args: &mut std::collections::HashMap<String, String>,
+    ) -> crate::error::Result<Arc<dyn crate::analysis::factories::TokenizerFactory>> {
+        Ok(Arc::new(Self::new(args)?))
     }
 }
 
 impl crate::analysis::factories::TokenizerFactory for StandardTokenizerFactory {
-    fn name(&self) -> &str {
-        STANDARD_TOKENIZER_FACTORY_NAME
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.analysis.standard.StandardTokenizerFactory"
     }
 
     fn create(&self) -> crate::error::Result<Box<dyn crate::analysis::TokenizerLogic>> {

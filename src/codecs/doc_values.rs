@@ -14,15 +14,16 @@
 
 #![deny(unsafe_code)]
 
-use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, LazyLock, RwLock};
+
+use crate::util::spi::{NamedSPI, NamedSPILoader};
 
 use crate::error::{LuceneError, Result};
 
 pub use crate::index::doc_values::{
     BinaryDocValues, DocValues, DocValuesIterator, DocValuesSkipper, EmptyBinaryDocValues,
-    EmptyDocValuesProducer, EmptyDocValuesSkipper, EmptyNumericDocValues, EmptySortedDocValues,
+    EmptyDocValuesProducer, EmptyNumericDocValues, EmptySortedDocValues,
     EmptySortedNumericDocValues, EmptySortedSetDocValues, NumericDocValues,
     SingletonSortedNumericDocValues, SingletonSortedSetDocValues, SortedDocValues,
     SortedNumericDocValues, SortedSetDocValues,
@@ -48,22 +49,72 @@ use super::stub::FieldInfo;
 /// data file instead of a copy of its contents.
 pub trait DocValuesProducer: Send + Sync + fmt::Debug {
     /// Returns the numeric values for the given field.
-    fn get_numeric(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>>;
+    ///
+    /// Java's return value is nullable: a producer with no values of this
+    /// kind for the field answers `null` — `PerFieldDocValuesFormat` for a
+    /// field it has no producer for (`codecs/perfield/PerFieldDocValuesFormat.java:313-347`),
+    /// `SlowCompositeCodecReaderWrapper` when no wrapped reader has the field
+    /// (`MultiDocValues.java`). `None` is that `null`.
+    fn get_numeric(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>>;
 
     /// Returns the binary values for the given field.
-    fn get_binary(&self, field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>>;
+    ///
+    /// Java's return value is nullable: a producer with no values of this
+    /// kind for the field answers `null` — `PerFieldDocValuesFormat` for a
+    /// field it has no producer for (`codecs/perfield/PerFieldDocValuesFormat.java:313-347`),
+    /// `SlowCompositeCodecReaderWrapper` when no wrapped reader has the field
+    /// (`MultiDocValues.java`). `None` is that `null`.
+    fn get_binary(&self, field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>>;
 
     /// Returns the sorted values for the given field.
-    fn get_sorted(&self, field: &FieldInfo) -> Result<Box<dyn SortedDocValues>>;
+    ///
+    /// Java's return value is nullable: a producer with no values of this
+    /// kind for the field answers `null` — `PerFieldDocValuesFormat` for a
+    /// field it has no producer for (`codecs/perfield/PerFieldDocValuesFormat.java:313-347`),
+    /// `SlowCompositeCodecReaderWrapper` when no wrapped reader has the field
+    /// (`MultiDocValues.java`). `None` is that `null`.
+    fn get_sorted(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>>;
 
     /// Returns the sorted-numeric values for the given field.
-    fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>>;
+    ///
+    /// Java's return value is nullable: a producer with no values of this
+    /// kind for the field answers `null` — `PerFieldDocValuesFormat` for a
+    /// field it has no producer for (`codecs/perfield/PerFieldDocValuesFormat.java:313-347`),
+    /// `SlowCompositeCodecReaderWrapper` when no wrapped reader has the field
+    /// (`MultiDocValues.java`). `None` is that `null`.
+    fn get_sorted_numeric(
+        &self,
+        field: &FieldInfo,
+    ) -> Result<Option<Box<dyn SortedNumericDocValues>>>;
 
     /// Returns the sorted-set values for the given field.
-    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>>;
+    ///
+    /// Java's return value is nullable: a producer with no values of this
+    /// kind for the field answers `null` — `PerFieldDocValuesFormat` for a
+    /// field it has no producer for (`codecs/perfield/PerFieldDocValuesFormat.java:313-347`),
+    /// `SlowCompositeCodecReaderWrapper` when no wrapped reader has the field
+    /// (`MultiDocValues.java`). `None` is that `null`.
+    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>>;
 
-    /// Returns the skip index for the given field.
-    fn get_skipper(&self, field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>>;
+    /// Returns the skip index for the given field, or `None` when this
+    /// producer has none to offer.
+    ///
+    /// Equivalent to `DocValuesProducer.getSkipper(FieldInfo)`
+    /// (`codecs/DocValuesProducer.java:78-83`), whose return value is nullable:
+    /// `PerFieldDocValuesFormat` answers `null` for a field with no producer
+    /// (`codecs/perfield/PerFieldDocValuesFormat.java:348-351`) and
+    /// `SortingCodecReader` always does (`index/SortingCodecReader.java:713-716`).
+    /// As in Java, the result is undefined when the field's
+    /// `doc_values_skip_index_type` is `NONE`; readers check that first
+    /// (`index/CodecReader.java:198-206`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::UnsupportedOperation`] from producers that
+    /// mirror Java's `EmptyDocValuesProducer`, whose `getSkipper` throws
+    /// `UnsupportedOperationException` (`index/EmptyDocValuesProducer.java:54-57`),
+    /// and any I/O error from opening the skip index.
+    fn get_skipper(&self, field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>>;
 
     /// Checks consistency of this producer.
     fn check_integrity(&self) -> Result<()>;
@@ -78,6 +129,22 @@ pub trait DocValuesProducer: Send + Sync + fmt::Debug {
 // -----------------------------------------------------------------------------
 // Consumer
 // -----------------------------------------------------------------------------
+
+/// Dereferences the values a producer returned, as Java's callers dereference
+/// them without a check: a `null` there raises `NullPointerException`, which
+/// is reported as [`LuceneError::IllegalState`].
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalState`] when `values` is `None`.
+pub(crate) fn non_null<T>(values: Option<T>, field: &FieldInfo) -> Result<T> {
+    values.ok_or_else(|| {
+        LuceneError::illegal_state(format!(
+            "the producer has no values for field \"{}\"",
+            field.name
+        ))
+    })
+}
 
 /// Writes doc-values fields for a segment.
 ///
@@ -121,6 +188,8 @@ pub trait DocValuesConsumer: Send + Sync + fmt::Debug {
     /// siblings.
     fn merge(&mut self, merge_state: &MergeState) -> Result<()> {
         for producer in merge_state.doc_values_producers.iter().flatten() {
+            // `DocValuesConsumer.java:135`.
+            merge_state.check_aborted()?;
             producer.check_integrity()?;
         }
         for merge_field_info in merge_state.merge_field_infos.iter() {
@@ -243,20 +312,37 @@ impl fmt::Display for dyn DocValuesFormat + '_ {
 /// A registry mapping doc-values-format short names to [`DocValuesFormat`]
 /// implementations.
 ///
-/// The registry intentionally does not use reflection or SPI loading. Formats
+/// Rust has no run-time service discovery, so formats
 /// are registered explicitly with [`DocValuesFormatRegistry::register`] and
 /// looked up by name with [`DocValuesFormatRegistry::for_name`].
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct DocValuesFormatRegistry {
-    formats: Arc<RwLock<HashMap<String, Arc<dyn DocValuesFormat>>>>,
+    /// The providers, kept by a [`NamedSPILoader`] exactly as Java's
+    /// `DocValuesFormat.Holder.LOADER` keeps them: first registration for a
+    /// name wins, lookups fail with the loader's message, and iteration is in
+    /// insertion order.
+    formats: Arc<RwLock<NamedSPILoader<dyn DocValuesFormat>>>,
+}
+
+impl Default for DocValuesFormatRegistry {
+    fn default() -> Self {
+        Self {
+            formats: Arc::new(RwLock::new(NamedSPILoader::empty(
+                "org.apache.lucene.codecs.DocValuesFormat",
+            ))),
+        }
+    }
+}
+
+impl NamedSPI for dyn DocValuesFormat {
+    /// Equivalent to `NamedSPILoader.NamedSPI.getName()`, which every
+    /// `DocValuesFormat` implements by returning the name it was constructed with.
+    fn get_name(&self) -> &str {
+        self.name()
+    }
 }
 
 impl DocValuesFormatRegistry {
-    /// Creates an empty registry.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// Registers a doc-values format under the given short name.
     ///
     /// # Errors
@@ -272,100 +358,96 @@ impl DocValuesFormatRegistry {
         super::validate_service_name(&name)?;
 
         let mut formats = self.formats.write().map_err(|_| {
-            LuceneError::IllegalState("doc-values format registry lock was poisoned".to_string())
+            LuceneError::illegal_state("doc-values format registry lock was poisoned".to_string())
         })?;
 
-        if formats.contains_key(&name) {
-            return Err(LuceneError::IllegalState(format!(
+        if formats.lookup(&name).is_ok() {
+            return Err(LuceneError::illegal_state(format!(
                 "doc-values format already registered: {name}"
             )));
         }
-
-        formats.insert(name, Arc::new(format));
+        formats.register_as(&name, Arc::new(format))?;
         Ok(())
     }
 
     /// Looks up a doc-values format by name.
     ///
     /// Returns `None` if no format has been registered under the given name.
-    /// Registers an already-shared format under its own name.
-    ///
-    /// The counterpart of [`register`](Self::register) for a format the caller
-    /// already holds behind an `Arc`. As in Lucene's `reload`, a name that is
-    /// already taken is left alone rather than replaced.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalArgument`] when the format's name is not
-    /// a valid service name.
-    pub fn register_arc(&self, format: Arc<dyn DocValuesFormat>) -> Result<()> {
-        let name = format.name().to_string();
-        crate::codecs::validate_service_name(&name)?;
-        let mut formats = self.formats.write().map_err(|_| {
-            LuceneError::IllegalState("doc-values format registry lock was poisoned".to_string())
-        })?;
-        // Only new formats are added; an existing one is never replaced.
-        formats.entry(name).or_insert(format);
-        Ok(())
-    }
-
     pub fn for_name(&self, name: &str) -> Option<Arc<dyn DocValuesFormat>> {
         self.formats
             .read()
             .map_err(|_| {
-                LuceneError::IllegalState(
+                LuceneError::illegal_state(
                     "doc-values format registry lock was poisoned".to_string(),
                 )
             })
             .ok()?
-            .get(name)
-            .cloned()
+            .lookup(name)
+            .ok()
     }
 
-    /// Returns the names of all registered doc-values formats, sorted
-    /// alphabetically.
+    /// Returns the names of all registered doc-values formats, in registration order.
+    ///
+    /// Equivalent to `NamedSPILoader.availableServices()`, the key set of
+    /// Java's insertion-ordered `LinkedHashMap`.
     pub fn available_doc_values_formats(&self) -> Vec<String> {
         let Ok(formats) = self.formats.read() else {
             return Vec::new();
         };
-        let mut names: Vec<String> = formats.keys().cloned().collect();
-        names.sort();
-        names
+        formats
+            .available_services()
+            .into_iter()
+            .map(str::to_string)
+            .collect()
     }
 }
 
-/// Adds `format` to the global registry under its own name.
+/// Reloads the global registry from `classloader`, adding the
+/// formats it has not seen.
 ///
-/// Equivalent to `DocValuesFormat.reloadDocValuesFormats(ClassLoader)`, which rescans a classloader
-/// for formats it has not seen. Rust has no run-time service discovery, so the
-/// caller supplies the format.
+/// Equivalent to `DocValuesFormat.reloadDocValuesFormats(ClassLoader)`, which is
+/// `Holder.getLoader().reload(classloader)`: see
+/// [`NamedSPILoader::reload`](crate::util::spi::NamedSPILoader::reload). Only
+/// new names are added; an existing one is never removed or replaced.
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when the format's name is not a
-/// valid service name.
-pub fn reload_doc_values_formats(format: Arc<dyn DocValuesFormat>) -> Result<()> {
-    GLOBAL_DOC_VALUES_REGISTRY.register_arc(format)
+/// Returns whatever [`NamedSPILoader::reload`](crate::util::spi::NamedSPILoader::reload)
+/// returns, and [`LuceneError::IllegalState`] when the registry lock is
+/// poisoned.
+pub fn reload_doc_values_formats(
+    classloader: &Arc<crate::util::resource_loader::ClassLoader>,
+) -> Result<()> {
+    GLOBAL_DOC_VALUES_REGISTRY
+        .formats
+        .write()
+        .map_err(|_| {
+            LuceneError::illegal_state("doc-values format registry lock was poisoned".to_string())
+        })?
+        .reload(classloader)
 }
 
-/// The global registry, seeded with the formats this crate ships.
+/// The global registry.
 ///
-/// The `lucene-core` jar lists a single doc-values format in
-/// `META-INF/services/org.apache.lucene.codecs.DocValuesFormat`,
-/// `org.apache.lucene.codecs.lucene90.Lucene90DocValuesFormat`, which the Java
-/// service loader makes resolvable by name without anyone registering it. Rust
-/// has no run-time service discovery, so that entry is registered here when the
-/// registry is first touched; see [`GLOBAL_POSTINGS_REGISTRY`] for the full
-/// reasoning.
-///
-/// [`GLOBAL_POSTINGS_REGISTRY`]: crate::codecs::postings_for_name
-static GLOBAL_DOC_VALUES_REGISTRY: LazyLock<DocValuesFormatRegistry> = LazyLock::new(|| {
-    let registry = DocValuesFormatRegistry::new();
-    registry
-        .register_arc(Arc::new(crate::codecs::Lucene90DocValuesFormat::new()))
-        .expect("built-in doc-values formats have valid, distinct SPI names");
-    registry
-});
+/// Equivalent to `DocValuesFormat.Holder.LOADER`,
+/// `new NamedSPILoader<>(DocValuesFormat.class)`: it scans `lucene-core`'s
+/// loader ([`lucene_core_class_loader`](crate::util::spi::lucene_core_class_loader)),
+/// whose `META-INF/services/org.apache.lucene.codecs.DocValuesFormat` lists
+/// `Lucene90DocValuesFormat`, so `Lucene90` resolves by name without anyone
+/// registering it.
+static GLOBAL_DOC_VALUES_REGISTRY: LazyLock<DocValuesFormatRegistry> =
+    LazyLock::new(|| DocValuesFormatRegistry {
+        formats: Arc::new(RwLock::new(
+            NamedSPILoader::new(
+                &crate::util::spi::ServiceClass::new(
+                    "org.apache.lucene.codecs.DocValuesFormat",
+                    Arc::clone(crate::util::spi::lucene_core_class_loader()),
+                ),
+                None,
+            )
+            .expect("INVARIANT: lucene-core's doc-values format names are legal service names"),
+        )),
+    });
 
 /// Looks up a doc-values format by name from the global registry.
 ///
@@ -404,9 +486,13 @@ pub fn register_doc_values_format(
 // -----------------------------------------------------------------------------
 
 /// A no-op doc-values consumer.
+///
+/// Test-only: Lucene has no such class.
+#[cfg(test)]
 #[derive(Debug, Default, Clone)]
-pub struct EmptyDocValuesConsumer;
+pub(crate) struct EmptyDocValuesConsumer;
 
+#[cfg(test)]
 impl DocValuesConsumer for EmptyDocValuesConsumer {
     fn add_numeric_field(
         &mut self,
@@ -454,18 +540,23 @@ impl DocValuesConsumer for EmptyDocValuesConsumer {
 }
 
 /// A no-op doc-values format.
+///
+/// Test-only: Lucene has no such class.
+#[cfg(test)]
 #[derive(Debug, Default, Clone)]
-pub struct EmptyDocValuesFormat {
+pub(crate) struct EmptyDocValuesFormat {
     name: String,
 }
 
+#[cfg(test)]
 impl EmptyDocValuesFormat {
     /// Creates a new no-op doc-values format with the given SPI name.
-    pub fn new(name: impl Into<String>) -> Self {
+    pub(crate) fn new(name: impl Into<String>) -> Self {
         Self { name: name.into() }
     }
 }
 
+#[cfg(test)]
 impl DocValuesFormat for EmptyDocValuesFormat {
     fn name(&self) -> &str {
         &self.name
@@ -494,6 +585,7 @@ impl DocValuesFormat for EmptyDocValuesFormat {
 mod tests {
     use super::*;
     use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
+    use std::sync::Arc;
 
     #[test]
     fn empty_numeric_doc_values_returns_no_docs() {
@@ -534,33 +626,18 @@ mod tests {
         assert_eq!(values.lookup_ord(0).unwrap().length, 0);
     }
 
+    /// `EmptyDocValuesProducer.getSkipper` throws
+    /// `UnsupportedOperationException` (`index/EmptyDocValuesProducer.java:54-57`);
+    /// it never hands out a skipper whose `advance` cannot reach `NO_MORE_DOCS`.
     #[test]
-    fn empty_doc_values_skipper_reports_no_interval() {
-        let mut skipper = EmptyDocValuesSkipper;
-        skipper.advance(42).unwrap();
-        assert_eq!(skipper.num_levels(), 1);
-        assert_eq!(skipper.min_doc_id(0), -1);
-        assert_eq!(skipper.max_doc_id(0), -1);
-        assert_eq!(skipper.global_doc_count(), 0);
-    }
-
-    #[test]
-    fn empty_doc_values_producer_returns_empty_iterators() {
+    fn empty_doc_values_producer_get_skipper_is_unsupported() {
         let producer = EmptyDocValuesProducer;
         let field = FieldInfo::default();
-        let mut numeric = producer.get_numeric(&field).unwrap();
-        assert_eq!(numeric.next_doc().unwrap(), NO_MORE_DOCS);
-        let mut binary = producer.get_binary(&field).unwrap();
-        assert_eq!(binary.next_doc().unwrap(), NO_MORE_DOCS);
-        let mut sorted = producer.get_sorted(&field).unwrap();
-        assert_eq!(sorted.next_doc().unwrap(), NO_MORE_DOCS);
-        let mut sorted_numeric = producer.get_sorted_numeric(&field).unwrap();
-        assert_eq!(sorted_numeric.next_doc().unwrap(), NO_MORE_DOCS);
-        let mut sorted_set = producer.get_sorted_set(&field).unwrap();
-        assert_eq!(sorted_set.next_doc().unwrap(), NO_MORE_DOCS);
-        let skipper = producer.get_skipper(&field).unwrap();
-        assert_eq!(skipper.num_levels(), 1);
-        producer.check_integrity().unwrap();
+        match producer.get_skipper(&field) {
+            Err(LuceneError::UnsupportedOperation(_)) => {}
+            Err(other) => panic!("expected UnsupportedOperation, got {other:?}"),
+            Ok(_) => panic!("expected UnsupportedOperation, got a skipper"),
+        }
     }
 
     #[test]
@@ -586,17 +663,18 @@ mod tests {
         let format = EmptyDocValuesFormat::new("EmptyDV");
         assert_eq!(format.name(), "EmptyDV");
 
-        let dir = crate::store::RamDirectory::default();
-        let dir_ref: &dyn crate::store::Directory = &dir;
+        let dir: Arc<dyn crate::store::Directory> =
+            Arc::new(crate::store::ByteBuffersDirectory::default());
+        let dir_ref: &dyn crate::store::Directory = &*dir;
         let context = &*crate::store::DEFAULT_IO_CONTEXT;
         let field_infos = FieldInfos::default();
         let segment_info = crate::codecs::tests::test_segment_info("test", 10);
         let state = SegmentWriteState::new(
-            crate::util::default_info_stream(),
-            dir_ref,
+            &crate::util::NoOutputInfoStream,
+            Arc::clone(&dir),
             &segment_info,
             &field_infos,
-            &BufferedUpdates,
+            Box::leak(Box::new(BufferedUpdates::default())),
             context,
         );
         let _consumer = format.fields_consumer(&state).unwrap();
@@ -852,7 +930,7 @@ impl NumericDocValues for MergedNumericDocValues {
     fn long_value(&self) -> Result<i64> {
         match self.merger.current_sub() {
             Some(sub) if !self.exhausted => sub.values.long_value(),
-            _ => Err(LuceneError::IllegalState(
+            _ => Err(LuceneError::illegal_state(
                 "no current document in the merged numeric doc values".to_string(),
             )),
         }
@@ -895,9 +973,13 @@ pub fn get_merged_numeric_doc_values(
         else {
             continue;
         };
+        // `if (values != null) subs.add(...)` (`DocValuesConsumer.java:217-219`).
+        let Some(values) = producer.get_numeric(reader_field_info)? else {
+            continue;
+        };
         subs.push(NumericDocValuesSub {
             doc_map: Arc::clone(&merge_state.doc_maps[i]),
-            values: producer.get_numeric(reader_field_info)?,
+            values,
             mapped_doc_id: -1,
         });
     }
@@ -937,7 +1019,7 @@ impl BinaryDocValues for MergedBinaryDocValues {
     fn binary_value(&self) -> Result<BytesRef> {
         match self.merger.current_sub() {
             Some(sub) if !self.exhausted => sub.values.binary_value(),
-            _ => Err(LuceneError::IllegalState(
+            _ => Err(LuceneError::illegal_state(
                 "no current document in the merged binary doc values".to_string(),
             )),
         }
@@ -961,7 +1043,10 @@ pub fn get_merged_binary_doc_values(
         else {
             continue;
         };
-        let values = producer.get_binary(reader_field_info)?;
+        // `if (values != null)` (`DocValuesConsumer.java:336-339`).
+        let Some(values) = producer.get_binary(reader_field_info)? else {
+            continue;
+        };
         cost += values.cost();
         subs.push(BinaryDocValuesSub {
             doc_map: Arc::clone(&merge_state.doc_maps[i]),
@@ -1009,13 +1094,13 @@ impl DocValuesIterator for MergedSortedNumericDocValues {
 impl SortedNumericDocValues for MergedSortedNumericDocValues {
     fn next_value(&mut self) -> Result<i64> {
         if self.exhausted {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "no current document in the merged sorted numeric doc values".to_string(),
             ));
         }
         match self.merger.current_sub_mut() {
             Some(sub) => sub.values.next_value(),
-            None => Err(LuceneError::IllegalState(
+            None => Err(LuceneError::illegal_state(
                 "no current document in the merged sorted numeric doc values".to_string(),
             )),
         }
@@ -1024,7 +1109,7 @@ impl SortedNumericDocValues for MergedSortedNumericDocValues {
     fn doc_value_count(&self) -> Result<i32> {
         match self.merger.current_sub() {
             Some(sub) if !self.exhausted => sub.values.doc_value_count(),
-            _ => Err(LuceneError::IllegalState(
+            _ => Err(LuceneError::illegal_state(
                 "no current document in the merged sorted numeric doc values".to_string(),
             )),
         }
@@ -1054,9 +1139,9 @@ pub fn get_merged_sorted_numeric_doc_values(
                 field,
                 DocValuesType::SORTED_NUMERIC,
             )) {
-            Some((producer, reader_field_info)) => {
-                producer.get_sorted_numeric(reader_field_info)?
-            }
+            Some((producer, reader_field_info)) => producer
+                .get_sorted_numeric(reader_field_info)?
+                .unwrap_or_else(|| Box::new(DocValues::empty_sorted_numeric())),
             None => Box::new(DocValues::empty_sorted_numeric()),
         };
         cost += values.cost();
@@ -1076,7 +1161,7 @@ pub fn get_merged_sorted_numeric_doc_values(
         let mut single_valued_subs = Vec::with_capacity(subs.len());
         for sub in subs {
             let single = sub.values.into_singleton().ok_or_else(|| {
-                LuceneError::IllegalState(
+                LuceneError::illegal_state(
                     "sorted numeric doc values reported singleton but did not unwrap".to_string(),
                 )
             })?;
@@ -1136,7 +1221,7 @@ impl SortedDocValues for MergedSortedDocValues {
                 debug_assert_ne!(sub_ord, -1);
                 Ok(sub.map.get_global_ords(sub.segment).get(i64::from(sub_ord)) as i32)
             }
-            _ => Err(LuceneError::IllegalState(
+            _ => Err(LuceneError::illegal_state(
                 "no current document in the merged sorted doc values".to_string(),
             )),
         }
@@ -1211,9 +1296,11 @@ fn select_sorted_leaves_to_merge(
             .as_ref()
             .zip(sub_field_info(merge_state, i, field, DocValuesType::SORTED))
         {
-            Some((producer, reader_field_info)) => {
-                to_merge.push(producer.get_sorted(reader_field_info)?)
-            }
+            Some((producer, reader_field_info)) => to_merge.push(
+                producer
+                    .get_sorted(reader_field_info)?
+                    .unwrap_or_else(|| Box::new(DocValues::empty_sorted())),
+            ),
             None => to_merge.push(Box::new(DocValues::empty_sorted())),
         }
     }
@@ -1297,12 +1384,12 @@ impl DocValuesIterator for MergedSortedSetDocValues {
 impl SortedSetDocValues for MergedSortedSetDocValues {
     fn next_ord(&mut self) -> Result<i64> {
         if self.exhausted {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "no current document in the merged sorted set doc values".to_string(),
             ));
         }
         let Some(sub) = self.merger.current_sub_mut() else {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "no current document in the merged sorted set doc values".to_string(),
             ));
         };
@@ -1314,7 +1401,7 @@ impl SortedSetDocValues for MergedSortedSetDocValues {
     fn doc_value_count(&self) -> Result<i32> {
         match self.merger.current_sub() {
             Some(sub) if !self.exhausted => sub.values.doc_value_count(),
-            _ => Err(LuceneError::IllegalState(
+            _ => Err(LuceneError::illegal_state(
                 "no current document in the merged sorted set doc values".to_string(),
             )),
         }
@@ -1352,9 +1439,11 @@ pub fn select_leaves_to_merge(
                 field,
                 DocValuesType::SORTED_SET,
             )) {
-            Some((producer, reader_field_info)) => {
-                to_merge.push(producer.get_sorted_set(reader_field_info)?)
-            }
+            Some((producer, reader_field_info)) => to_merge.push(
+                producer
+                    .get_sorted_set(reader_field_info)?
+                    .unwrap_or_else(|| Box::new(DocValues::empty_sorted_set())),
+            ),
             None => to_merge.push(Box::new(DocValues::empty_sorted_set())),
         }
     }
@@ -1437,7 +1526,7 @@ pub fn get_merged_sorted_set_doc_values(
         let mut single_valued_subs = Vec::with_capacity(subs.len());
         for sub in subs {
             let single = sub.values.into_singleton().ok_or_else(|| {
-                LuceneError::IllegalState(
+                LuceneError::illegal_state(
                     "sorted set doc values reported singleton but did not unwrap".to_string(),
                 )
             })?;
@@ -1626,7 +1715,7 @@ impl<'a> MergedDocValuesProducer<'a> {
     /// Returns the ordinal map, which the two dictionary kinds always carry.
     fn map(&self) -> Result<Arc<OrdinalMap>> {
         self.map.clone().ok_or_else(|| {
-            LuceneError::IllegalState(
+            LuceneError::illegal_state(
                 "a sorted or sorted-set merge needs an ordinal map".to_string(),
             )
         })
@@ -1641,32 +1730,53 @@ impl<'a> MergedDocValuesProducer<'a> {
 }
 
 impl DocValuesProducer for MergedDocValuesProducer<'_> {
-    fn get_numeric(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
-        self.check_field(field)?;
-        get_merged_numeric_doc_values(self.merge_state, self.field)
+    fn get_numeric(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+        let values: Result<Box<dyn NumericDocValues>> = {
+            self.check_field(field)?;
+            get_merged_numeric_doc_values(self.merge_state, self.field)
+        };
+        Ok(Some(values?))
     }
 
-    fn get_binary(&self, field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>> {
-        self.check_field(field)?;
-        get_merged_binary_doc_values(self.field, self.merge_state)
+    fn get_binary(&self, field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
+        let values: Result<Box<dyn BinaryDocValues>> = {
+            self.check_field(field)?;
+            get_merged_binary_doc_values(self.field, self.merge_state)
+        };
+        Ok(Some(values?))
     }
 
-    fn get_sorted(&self, field: &FieldInfo) -> Result<Box<dyn SortedDocValues>> {
-        self.check_field(field)?;
-        get_merged_sorted_doc_values(self.field, self.merge_state, self.map()?)
+    fn get_sorted(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
+        let values: Result<Box<dyn SortedDocValues>> = {
+            self.check_field(field)?;
+            get_merged_sorted_doc_values(self.field, self.merge_state, self.map()?)
+        };
+        Ok(Some(values?))
     }
 
-    fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>> {
-        self.check_field(field)?;
-        get_merged_sorted_numeric_doc_values(self.field, self.merge_state)
+    fn get_sorted_numeric(
+        &self,
+        field: &FieldInfo,
+    ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+        let values: Result<Box<dyn SortedNumericDocValues>> = {
+            self.check_field(field)?;
+            get_merged_sorted_numeric_doc_values(self.field, self.merge_state)
+        };
+        Ok(Some(values?))
     }
 
-    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>> {
-        self.check_field(field)?;
-        get_merged_sorted_set_doc_values(self.field, self.merge_state, self.map()?)
+    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+        let values: Result<Box<dyn SortedSetDocValues>> = {
+            self.check_field(field)?;
+            get_merged_sorted_set_doc_values(self.field, self.merge_state, self.map()?)
+        };
+        Ok(Some(values?))
     }
 
-    fn get_skipper(&self, _field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>> {
+    /// Equivalent to the `getSkipper` the anonymous merge producers of
+    /// `DocValuesConsumer` inherit from `EmptyDocValuesProducer`
+    /// (`index/EmptyDocValuesProducer.java:54-57`): unsupported.
+    fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
         Err(self.unsupported("skip-index"))
     }
 

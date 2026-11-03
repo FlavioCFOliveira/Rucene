@@ -1173,7 +1173,7 @@ impl Operations {
         let mut bytes = Vec::with_capacity(prefix.len());
         for ch in prefix {
             if ch > 255 {
-                return Err(LuceneError::IllegalState(
+                return Err(LuceneError::illegal_state(
                     "automaton is not binary".to_string(),
                 ));
             }

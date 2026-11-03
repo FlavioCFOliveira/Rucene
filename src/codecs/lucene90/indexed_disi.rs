@@ -42,14 +42,14 @@ fn flush(
                 let rank = create_rank(buffer, dense_rank_power);
                 out.write_bytes(&rank, 0, rank.len())?;
             }
-            for &word in buffer.get_bits() {
-                out.write_long(word as i64)?;
+            for word in buffer.get_bits() {
+                out.write_long(word.load(std::sync::atomic::Ordering::Relaxed) as i64)?;
             }
         }
     } else {
         let bits = buffer.get_bits();
         for word_idx in 0..DENSE_BLOCK_LONGS {
-            let word = bits[word_idx];
+            let word = bits[word_idx].load(std::sync::atomic::Ordering::Relaxed);
             if word == 0 {
                 continue;
             }
@@ -77,7 +77,9 @@ fn create_rank(buffer: &FixedBitSet, dense_rank_power: i8) -> Vec<u8> {
             rank[word >> rank_index_shift] = (bit_count >> 8) as u8;
             rank[(word >> rank_index_shift) + 1] = (bit_count & 0xFF) as u8;
         }
-        bit_count += (bits[word] as u64).count_ones() as usize;
+        bit_count += bits[word]
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .count_ones() as usize;
     }
     rank
 }

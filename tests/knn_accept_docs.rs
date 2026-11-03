@@ -12,7 +12,7 @@
 //!
 //! Because the reader now reads the accept docs, `ExitableDirectoryReader`'s
 //! `ExitableAcceptDocs` is reachable from inside the crate for the first time,
-//! and the last two tests cover it end to end.
+//! and the exitable tests below cover it end to end.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -137,7 +137,7 @@ fn search(leaf: &Arc<dyn LeafReader>, k: i32) -> Vec<i32> {
 #[test]
 fn a_deleted_document_is_not_returned_by_a_knn_search() {
     let reader = build_index("rucene-205-deletes", Some((0, 1)));
-    let leaves = Arc::clone(&reader).leaves();
+    let leaves = Arc::clone(&reader).leaves().unwrap();
     assert_eq!(
         leaves.len(),
         1,
@@ -165,7 +165,7 @@ fn a_deleted_document_is_not_returned_by_a_knn_search() {
 #[test]
 fn a_knn_search_over_a_live_index_still_returns_the_nearest_document() {
     let reader = build_index("rucene-205-no-deletes", None);
-    let leaves = Arc::clone(&reader).leaves();
+    let leaves = Arc::clone(&reader).leaves().unwrap();
     let leaf = leaves[0].leaf_reader();
     assert_eq!(leaf.max_doc(), leaf.num_docs());
 
@@ -180,7 +180,7 @@ fn a_knn_search_over_a_live_index_still_returns_the_nearest_document() {
 #[test]
 fn a_caller_filter_is_honoured_by_a_knn_search() {
     let reader = build_index("rucene-205-filter", None);
-    let leaves = Arc::clone(&reader).leaves();
+    let leaves = Arc::clone(&reader).leaves().unwrap();
     let leaf = leaves[0].leaf_reader();
 
     // Half the index passes, which keeps the filtered count well above the
@@ -221,7 +221,7 @@ fn an_exitable_reader_interrupts_a_knn_search_through_the_accept_docs() {
         ExitableDirectoryReaderWrapper::new(Arc::clone(&timeout) as Arc<dyn QueryTimeout>)
             .wrap(Arc::clone(&reader))
             .expect("wrap as an exitable reader");
-    let leaves = Arc::clone(&exitable).leaves();
+    let leaves = Arc::clone(&exitable).leaves().unwrap();
     let leaf = leaves[0].leaf_reader();
 
     let mut collector = TopKnnCollector::new(3, i64::MAX);
@@ -249,7 +249,7 @@ fn an_exitable_reader_hides_nothing_when_the_timeout_never_fires() {
     let exitable = ExitableDirectoryReaderWrapper::new(Arc::new(NeverTimesOut))
         .wrap(Arc::clone(&reader))
         .expect("wrap as an exitable reader");
-    let leaves = Arc::clone(&exitable).leaves();
+    let leaves = Arc::clone(&exitable).leaves().unwrap();
     let leaf = leaves[0].leaf_reader();
 
     let docs = search(&leaf, 3);
@@ -258,4 +258,216 @@ fn an_exitable_reader_hides_nothing_when_the_timeout_never_fires() {
         Some(0),
         "wrapping must not change what the search finds, got {docs:?}"
     );
+}
+
+/// rmp #206: the timeout is raised from the accept-docs check itself, at the
+/// first sampled `Bits.get` of the search, as Java's `ExitingReaderException`
+/// leaves `ExitableAcceptDocs.bits().get(int)`
+/// (`ExitableDirectoryReader.java:371-375, 439-445`), not after the search has
+/// run to completion. With a timeout that has always fired, Java's first call
+/// samples (`calls++ % 16 == 0`), checks once and throws: exactly one timeout
+/// check is made and nothing is collected.
+#[test]
+fn an_exitable_reader_aborts_a_knn_search_at_the_first_sampled_check() {
+    let reader = build_index("rucene-206-exitable-first-check", None);
+    let timeout = Arc::new(AlwaysTimesOut::new());
+    let exitable =
+        ExitableDirectoryReaderWrapper::new(Arc::clone(&timeout) as Arc<dyn QueryTimeout>)
+            .wrap(Arc::clone(&reader))
+            .expect("wrap as an exitable reader");
+    let leaves = Arc::clone(&exitable).leaves().unwrap();
+    let leaf = leaves[0].leaf_reader();
+
+    let mut collector = TopKnnCollector::new(3, i64::MAX);
+    let mut accept_docs =
+        from_live_docs(leaf.get_live_docs(), leaf.max_doc()).expect("accept docs");
+    let error = leaf
+        .search_nearest_vectors(VECTOR_FIELD, &[0.0, 0.0], &mut collector, &mut accept_docs)
+        .expect_err("the timeout has fired, so the search must be interrupted");
+    assert!(
+        error
+            .to_string()
+            .contains("The request took too long to search nearest vectors"),
+        "got: {error}"
+    );
+    assert_eq!(
+        timeout.calls(),
+        1,
+        "the search must stop at the first sampled check, as Java's exception does"
+    );
+    assert!(
+        collector.top_docs().score_docs.is_empty(),
+        "nothing may be collected once the first accept-docs check has thrown"
+    );
+}
+
+/// `ExitableAcceptDocs.bits()` wraps whatever bits the delegate answers, not
+/// only the `MatchAllBits` it substitutes for `null`
+/// (`ExitableDirectoryReader.java:359-387`). Over a leaf with deletions the
+/// delegate answers the live docs, and the wrapper around them still checks
+/// the timeout on the first sampled `get`: exactly one check is made, the
+/// search is interrupted, and nothing is collected.
+#[test]
+fn an_exitable_reader_aborts_a_knn_search_over_a_leaf_with_deletions() {
+    let reader = build_index("rucene-exitable-deletions-first-check", Some((0, 1)));
+    let timeout = Arc::new(AlwaysTimesOut::new());
+    let exitable =
+        ExitableDirectoryReaderWrapper::new(Arc::clone(&timeout) as Arc<dyn QueryTimeout>)
+            .wrap(Arc::clone(&reader))
+            .expect("wrap as an exitable reader");
+    let leaves = Arc::clone(&exitable).leaves().unwrap();
+    assert_eq!(leaves.len(), 1, "one segment");
+    let leaf = leaves[0].leaf_reader();
+    let live_docs = leaf.get_live_docs();
+    assert!(
+        live_docs.is_some(),
+        "the leaf must have deletions, so the delegate answers bits of its own"
+    );
+
+    let mut collector = TopKnnCollector::new(3, i64::MAX);
+    let mut accept_docs = from_live_docs(live_docs, leaf.max_doc()).expect("accept docs");
+    let error = leaf
+        .search_nearest_vectors(VECTOR_FIELD, &[0.0, 0.0], &mut collector, &mut accept_docs)
+        .expect_err("the timeout has fired, so the search must be interrupted");
+    assert!(
+        error
+            .to_string()
+            .contains("The request took too long to search nearest vectors"),
+        "got: {error}"
+    );
+    assert_eq!(
+        timeout.calls(),
+        1,
+        "the search must stop at the first sampled check, as Java's exception does"
+    );
+    assert!(
+        collector.top_docs().score_docs.is_empty(),
+        "nothing may be collected once the first accept-docs check has thrown"
+    );
+}
+
+/// The vector of document `i` in `KnnSparseOracle.java`: `{(float) Math.sin(i),
+/// (float) Math.cos(i), (i % 7) / 7f, 1f}`. The 900 vectors the test indexes
+/// were checked bit for bit against the JVM's (`oracle/passG2/VecBits.java`).
+fn sparse_vector(i: i32) -> [f32; 4] {
+    let x = f64::from(i);
+    [x.sin() as f32, x.cos() as f32, (i % 7) as f32 / 7.0, 1.0]
+}
+
+/// A sparse field: only every third document holds a vector, so vector
+/// ordinal `o` belongs to document `3o + 1` and a search that returned
+/// ordinals would return the wrong documents.
+///
+/// Regression guard for rmp task #317. `Lucene99HnswVectorsReader.search`
+/// collects through `new OrdinalTranslatedKnnCollector(knnCollector,
+/// scorer::ordToDoc)` (`Lucene99HnswVectorsReader.java:342-343`). The corpus
+/// and the expected results are Lucene 10.5.0's (`KnnSparseOracle.java`,
+/// pass G audit): 2700 documents in one segment, `i % 3 == 1` holding a
+/// EUCLIDEAN vector, searched for `{0.3, 0.9, 0.5, 1}` with
+/// `LeafReader.searchNearestVectors(field, target, k, acceptDocs,
+/// visitedLimit)`:
+///
+/// ```text
+/// k=5 limit=2147483647 total=36 EQUAL_TO docs=1879:0.9922921 2545:0.9921938 1081:0.99150485 2677:0.99073267 1747:0.9902417
+/// k=10 limit=2147483647 total=59 EQUAL_TO docs=1879:0.9922921 2545:0.9921938 1081:0.99150485 2677:0.99073267 1747:0.9902417 214:0.98999923 283:0.98838335 949:0.9859744 1012:0.985559 346:0.982509
+/// k=5 limit=12 total=17 GREATER_THAN_OR_EQUAL_TO docs=
+/// k=3 limit=1 total=1 GREATER_THAN_OR_EQUAL_TO docs=
+/// ```
+#[test]
+fn a_sparse_field_returns_the_lucene_documents_not_the_ordinals() {
+    use rucene::search::{TotalHitsRelation, TotalHitsRelation::*};
+    use rucene::store::ByteBuffersDirectory;
+
+    let _ = register_codec("Lucene104", Lucene104Codec::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+    let mut config = IndexWriterConfig::new();
+    config.set_ram_buffer_size_mb(64.0).expect("RAM buffer");
+    config
+        .set_max_buffered_docs(100_000)
+        .expect("max buffered docs");
+    let writer = IndexWriter::new(Arc::clone(&dir), config).expect("index writer");
+    for i in 0..2700 {
+        let mut document = Document::new();
+        document.add(Box::new(
+            StringField::new("id", i.to_string(), Store::YES).expect("id"),
+        ));
+        if i % 3 == 1 {
+            document.add(Box::new(
+                KnnFloatVectorField::with_euclidean("v", &sparse_vector(i)).expect("vector"),
+            ));
+        }
+        writer.add_document(&document).expect("add document");
+    }
+    writer.commit().expect("commit");
+    writer.close().expect("close");
+
+    let reader = directory_reader::open(dir).expect("open a directory reader");
+    let leaves = Arc::clone(&reader).leaves().unwrap();
+    assert_eq!(leaves.len(), 1, "leaves=1");
+    let leaf = leaves[0].leaf_reader();
+    let target = [0.3f32, 0.9, 0.5, 1.0];
+    // `(k, visitedLimit, totalHits.value, totalHits.relation, docs)`.
+    type Row = (
+        i32,
+        i32,
+        i64,
+        TotalHitsRelation,
+        &'static [(i32, &'static str)],
+    );
+    let expected: [Row; 4] = [
+        (
+            5,
+            i32::MAX,
+            36,
+            EQUAL_TO,
+            &[
+                (1879, "0.9922921"),
+                (2545, "0.9921938"),
+                (1081, "0.99150485"),
+                (2677, "0.99073267"),
+                (1747, "0.9902417"),
+            ],
+        ),
+        (
+            10,
+            i32::MAX,
+            59,
+            EQUAL_TO,
+            &[
+                (1879, "0.9922921"),
+                (2545, "0.9921938"),
+                (1081, "0.99150485"),
+                (2677, "0.99073267"),
+                (1747, "0.9902417"),
+                (214, "0.98999923"),
+                (283, "0.98838335"),
+                (949, "0.9859744"),
+                (1012, "0.985559"),
+                (346, "0.982509"),
+            ],
+        ),
+        (5, 12, 17, GREATER_THAN_OR_EQUAL_TO, &[]),
+        (3, 1, 1, GREATER_THAN_OR_EQUAL_TO, &[]),
+    ];
+    for (k, limit, total, relation, docs) in expected {
+        let mut accept = from_live_docs(None, leaf.max_doc()).expect("accept docs");
+        let top = leaf
+            .search_nearest_vectors_default("v", &target, k, &mut accept, limit)
+            .expect("the search must succeed");
+        assert_eq!(
+            (top.total_hits.value(), top.total_hits.relation()),
+            (total, relation),
+            "total hits of k={k} limit={limit}"
+        );
+        let found: Vec<(i32, f32)> = top
+            .score_docs
+            .iter()
+            .map(|score_doc| (score_doc.doc, score_doc.score))
+            .collect();
+        let wanted: Vec<(i32, f32)> = docs
+            .iter()
+            .map(|(doc, score)| (*doc, score.parse::<f32>().expect("Java float")))
+            .collect();
+        assert_eq!(found, wanted, "documents of k={k} limit={limit}");
+    }
 }

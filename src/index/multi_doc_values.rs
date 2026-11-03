@@ -96,6 +96,16 @@ impl MultiDocValues {
     /// This is a slow way to read norms; prefer
     /// [`LeafReader::get_norm_values`] per leaf.
     ///
+    /// **Divergence from Lucene 10.5.0.** The `advance` of Java's merged view
+    /// opens the leaf holding the target and, when that leaf has no norms,
+    /// falls back to `nextDoc()` *before* setting `nextLeaf = readerIndex + 1`
+    /// (`MultiDocValues.java:117-128`). `nextDoc()` then resumes from the stale
+    /// `nextLeaf`, an earlier leaf, and can return a document before the
+    /// target, which breaks the `DocIdSetIterator.advance` contract. The
+    /// sibling `getNumericValues` sets `nextLeaf` first; this port shares one
+    /// cursor between the two and does the bookkeeping in that order for both,
+    /// so `advance` past a leaf without norms lands at or after the target.
+    ///
     /// # Errors
     ///
     /// Propagates any error raised while reading a leaf's norms.
@@ -103,7 +113,7 @@ impl MultiDocValues {
         reader: &Arc<dyn IndexReader>,
         field: &str,
     ) -> Result<Option<Box<dyn NumericDocValues>>> {
-        let leaves = Arc::clone(reader).leaves();
+        let leaves = Arc::clone(reader).leaves()?;
         match leaves.len() {
             0 => return Ok(None),
             1 => return leaves[0].leaf_reader().get_norm_values(field),
@@ -142,7 +152,7 @@ impl MultiDocValues {
         reader: &Arc<dyn IndexReader>,
         field: &str,
     ) -> Result<Option<Box<dyn NumericDocValues>>> {
-        let leaves = Arc::clone(reader).leaves();
+        let leaves = Arc::clone(reader).leaves()?;
         match leaves.len() {
             0 => return Ok(None),
             1 => return leaves[0].leaf_reader().get_numeric_doc_values(field),
@@ -173,7 +183,7 @@ impl MultiDocValues {
         reader: &Arc<dyn IndexReader>,
         field: &str,
     ) -> Result<Option<Box<dyn BinaryDocValues>>> {
-        let leaves = Arc::clone(reader).leaves();
+        let leaves = Arc::clone(reader).leaves()?;
         match leaves.len() {
             0 => return Ok(None),
             1 => return leaves[0].leaf_reader().get_binary_doc_values(field),
@@ -204,7 +214,7 @@ impl MultiDocValues {
         reader: &Arc<dyn IndexReader>,
         field: &str,
     ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
-        let leaves = Arc::clone(reader).leaves();
+        let leaves = Arc::clone(reader).leaves()?;
         let size = leaves.len();
         match size {
             0 => return Ok(None),
@@ -262,11 +272,36 @@ impl MultiDocValues {
         reader: &Arc<dyn IndexReader>,
         field: &str,
     ) -> Result<Option<Box<dyn SortedDocValues>>> {
-        let leaves = Arc::clone(reader).leaves();
+        Ok(Self::get_sorted_values_and_mapping(reader, field)?.map(|(values, _)| values))
+    }
+
+    /// [`Self::get_sorted_values`], also handing back the [`OrdinalMap`] of the merged
+    /// view when one was built: `None` for a reader with a single leaf, whose
+    /// own values are returned.
+    ///
+    /// Java's `SlowCompositeCodecReaderWrapper` reaches the same map by testing
+    /// the returned instance with `instanceof MultiSortedDocValues` and reading its
+    /// `mapping` field (`SlowCompositeCodecReaderWrapper.java:421-446`); a Rust
+    /// trait object cannot be narrowed that way, so the map comes back beside
+    /// the values.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::get_sorted_values`].
+    pub(crate) fn get_sorted_values_and_mapping(
+        reader: &Arc<dyn IndexReader>,
+        field: &str,
+    ) -> Result<Option<WithMapping<dyn SortedDocValues>>> {
+        let leaves = Arc::clone(reader).leaves()?;
         let size = leaves.len();
         match size {
             0 => return Ok(None),
-            1 => return leaves[0].leaf_reader().get_sorted_doc_values(field),
+            1 => {
+                return Ok(leaves[0]
+                    .leaf_reader()
+                    .get_sorted_doc_values(field)?
+                    .map(|values| (values, None)))
+            }
             _ => {}
         }
 
@@ -304,10 +339,17 @@ impl MultiDocValues {
             return Ok(None);
         }
 
-        let mapping = OrdinalMap::build_sorted(map_inputs, DEFAULT_ACCEPTABLE_OVERHEAD_RATIO)?;
-        Ok(Some(Box::new(MultiSortedDocValues::new(
-            values, doc_starts, mapping, total_cost,
-        )?)))
+        let mapping = Arc::new(OrdinalMap::build_sorted(
+            map_inputs,
+            DEFAULT_ACCEPTABLE_OVERHEAD_RATIO,
+        )?);
+        let view: Box<dyn SortedDocValues> = Box::new(MultiSortedDocValues::new(
+            values,
+            doc_starts,
+            Arc::clone(&mapping),
+            total_cost,
+        )?);
+        Ok(Some((view, Some(mapping))))
     }
 
     /// Returns a [`SortedSetDocValues`] over `reader`'s sorted-set doc values
@@ -338,11 +380,36 @@ impl MultiDocValues {
         reader: &Arc<dyn IndexReader>,
         field: &str,
     ) -> Result<Option<Box<dyn SortedSetDocValues>>> {
-        let leaves = Arc::clone(reader).leaves();
+        Ok(Self::get_sorted_set_values_and_mapping(reader, field)?.map(|(values, _)| values))
+    }
+
+    /// [`Self::get_sorted_set_values`], also handing back the [`OrdinalMap`] of the merged
+    /// view when one was built: `None` for a reader with a single leaf, whose
+    /// own values are returned.
+    ///
+    /// Java's `SlowCompositeCodecReaderWrapper` reaches the same map by testing
+    /// the returned instance with `instanceof MultiSortedSetDocValues` and reading its
+    /// `mapping` field (`SlowCompositeCodecReaderWrapper.java:421-446`); a Rust
+    /// trait object cannot be narrowed that way, so the map comes back beside
+    /// the values.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::get_sorted_set_values`].
+    pub(crate) fn get_sorted_set_values_and_mapping(
+        reader: &Arc<dyn IndexReader>,
+        field: &str,
+    ) -> Result<Option<WithMapping<dyn SortedSetDocValues>>> {
+        let leaves = Arc::clone(reader).leaves()?;
         let size = leaves.len();
         match size {
             0 => return Ok(None),
-            1 => return leaves[0].leaf_reader().get_sorted_set_doc_values(field),
+            1 => {
+                return Ok(leaves[0]
+                    .leaf_reader()
+                    .get_sorted_set_doc_values(field)?
+                    .map(|values| (values, None)))
+            }
             _ => {}
         }
 
@@ -378,12 +445,23 @@ impl MultiDocValues {
             return Ok(None);
         }
 
-        let mapping = OrdinalMap::build_sorted_set(map_inputs, DEFAULT_ACCEPTABLE_OVERHEAD_RATIO)?;
-        Ok(Some(Box::new(MultiSortedSetDocValues::new(
-            values, doc_starts, mapping, total_cost,
-        )?)))
+        let mapping = Arc::new(OrdinalMap::build_sorted_set(
+            map_inputs,
+            DEFAULT_ACCEPTABLE_OVERHEAD_RATIO,
+        )?);
+        let view: Box<dyn SortedSetDocValues> = Box::new(MultiSortedSetDocValues::new(
+            values,
+            doc_starts,
+            Arc::clone(&mapping),
+            total_cost,
+        )?);
+        Ok(Some((view, Some(mapping))))
     }
 }
+
+/// A merged view, and the [`OrdinalMap`] it was built with when there was one
+/// to build.
+pub(crate) type WithMapping<T> = (Box<T>, Option<Arc<OrdinalMap>>);
 
 /// Returns `true` if any leaf declares `field` with the given doc-values type.
 fn any_leaf_has(leaves: &[Arc<LeafReaderContext>], field: &str, wanted: DocValuesType) -> bool {
@@ -400,7 +478,7 @@ fn any_leaf_has(leaves: &[Arc<LeafReaderContext>], field: &str, wanted: DocValue
 /// ordinal-space corruption.
 fn second_instance<T: ?Sized>(values: Option<Box<T>>, field: &str, kind: &str) -> Result<Box<T>> {
     values.ok_or_else(|| {
-        LuceneError::IllegalState(format!(
+        LuceneError::illegal_state(format!(
             "leaf reader returned {kind} doc values for field '{field}' on the first call \
              but not on the second"
         ))
@@ -460,7 +538,7 @@ impl MultiNumericDocValues {
     fn values_mut(&mut self) -> Result<&mut Box<dyn NumericDocValues>> {
         self.current_values
             .as_mut()
-            .ok_or_else(|| LuceneError::IllegalState(no_current("numeric")))
+            .ok_or_else(|| LuceneError::illegal_state(no_current("numeric")))
     }
 }
 
@@ -556,7 +634,7 @@ impl NumericDocValues for MultiNumericDocValues {
     fn long_value(&self) -> Result<i64> {
         self.current_values
             .as_ref()
-            .ok_or_else(|| LuceneError::IllegalState(no_current("numeric")))?
+            .ok_or_else(|| LuceneError::illegal_state(no_current("numeric")))?
             .long_value()
     }
 }
@@ -602,7 +680,7 @@ impl MultiBinaryDocValues {
     fn values_mut(&mut self) -> Result<&mut Box<dyn BinaryDocValues>> {
         self.current_values
             .as_mut()
-            .ok_or_else(|| LuceneError::IllegalState(no_current("binary")))
+            .ok_or_else(|| LuceneError::illegal_state(no_current("binary")))
     }
 }
 
@@ -694,7 +772,7 @@ impl BinaryDocValues for MultiBinaryDocValues {
     fn binary_value(&self) -> Result<BytesRef> {
         self.current_values
             .as_ref()
-            .ok_or_else(|| LuceneError::IllegalState(no_current("binary")))?
+            .ok_or_else(|| LuceneError::illegal_state(no_current("binary")))?
             .binary_value()
     }
 }
@@ -742,7 +820,7 @@ impl MultiSortedNumericDocValues {
 
     fn current_index(&self) -> Result<usize> {
         self.current
-            .ok_or_else(|| LuceneError::IllegalState(no_current("sorted-numeric")))
+            .ok_or_else(|| LuceneError::illegal_state(no_current("sorted-numeric")))
     }
 }
 
@@ -856,7 +934,7 @@ impl SortedNumericDocValues for MultiSortedNumericDocValues {
 pub struct MultiSortedDocValues {
     values: Vec<Box<dyn SortedDocValues>>,
     doc_starts: Vec<i32>,
-    mapping: OrdinalMap,
+    mapping: Arc<OrdinalMap>,
     total_cost: i64,
     next_leaf: usize,
     current: Option<usize>,
@@ -890,7 +968,7 @@ impl MultiSortedDocValues {
     pub fn new(
         values: Vec<Box<dyn SortedDocValues>>,
         doc_starts: Vec<i32>,
-        mapping: OrdinalMap,
+        mapping: Arc<OrdinalMap>,
         total_cost: i64,
     ) -> Result<Self> {
         check_doc_starts(doc_starts.len(), values.len())?;
@@ -921,20 +999,18 @@ impl MultiSortedDocValues {
 
     /// Returns the ordinal map translating per-leaf ordinals to global ones.
     ///
-    /// Equivalent to reading the public `mapping` field in Java.
-    ///
-    /// **Deliberate divergence**: Java shares one `OrdinalMap` object between
-    /// several views by reference, and caches it on the reader. Rucene's
-    /// [`OrdinalMap`] is built on `Box<dyn LongValues>` and is therefore
-    /// neither `Send` nor `Sync`, so nothing is gained by wrapping it in a
-    /// shared pointer; this view owns its map outright.
-    pub fn mapping(&self) -> &OrdinalMap {
+    /// Equivalent to reading the public `mapping` field in Java. The map is
+    /// shared by [`Arc`] as Java shares it by reference: a reader that caches
+    /// it — `SlowCompositeCodecReaderWrapper`'s doc-values producer
+    /// (`SlowCompositeCodecReaderWrapper.java:353-354`, `:421-446`) — hands the
+    /// same map to every view it builds.
+    pub fn mapping(&self) -> &Arc<OrdinalMap> {
         &self.mapping
     }
 
     fn current_index(&self) -> Result<usize> {
         self.current
-            .ok_or_else(|| LuceneError::IllegalState(no_current("sorted")))
+            .ok_or_else(|| LuceneError::illegal_state(no_current("sorted")))
     }
 }
 
@@ -1050,7 +1126,7 @@ impl SortedDocValues for MultiSortedDocValues {
 pub struct MultiSortedSetDocValues {
     values: Vec<Box<dyn SortedSetDocValues>>,
     doc_starts: Vec<i32>,
-    mapping: OrdinalMap,
+    mapping: Arc<OrdinalMap>,
     total_cost: i64,
     next_leaf: usize,
     current: Option<usize>,
@@ -1080,7 +1156,7 @@ impl MultiSortedSetDocValues {
     pub fn new(
         values: Vec<Box<dyn SortedSetDocValues>>,
         doc_starts: Vec<i32>,
-        mapping: OrdinalMap,
+        mapping: Arc<OrdinalMap>,
         total_cost: i64,
     ) -> Result<Self> {
         check_doc_starts(doc_starts.len(), values.len())?;
@@ -1107,15 +1183,15 @@ impl MultiSortedSetDocValues {
 
     /// Returns the ordinal map translating per-leaf ordinals to global ones.
     ///
-    /// See [`MultiSortedDocValues::mapping`] for why the map is owned rather
-    /// than shared.
-    pub fn mapping(&self) -> &OrdinalMap {
+    /// Equivalent to reading the public `mapping` field in Java; see
+    /// [`MultiSortedDocValues::mapping`].
+    pub fn mapping(&self) -> &Arc<OrdinalMap> {
         &self.mapping
     }
 
     fn current_index(&self) -> Result<usize> {
         self.current
-            .ok_or_else(|| LuceneError::IllegalState(no_current("sorted-set")))
+            .ok_or_else(|| LuceneError::illegal_state(no_current("sorted-set")))
     }
 }
 
@@ -1283,8 +1359,8 @@ mod tests {
     use crate::index::leaf_reader::{LeafMetaData, TermVectors};
     use crate::index::multi_reader::MultiReader;
     use crate::index::{
-        ByteVectorValues, DocValuesSkipIndexType, DocValuesSkipper, EmptyFields, FieldInfo,
-        FieldInfos, Fields, FloatVectorValues, IndexOptions, PointValues, Terms, VectorEncoding,
+        ByteVectorValues, DocValuesSkipIndexType, DocValuesSkipper, FieldInfo, FieldInfos, Fields,
+        FloatVectorValues, IndexOptions, PointValues, Terms, VectorEncoding,
         VectorSimilarityFunction,
     };
     use crate::search::knn::KnnCollector;
@@ -1356,7 +1432,7 @@ mod tests {
 
         fn index(&self) -> Result<usize> {
             self.current
-                .ok_or_else(|| LuceneError::IllegalState("no value at current doc".to_string()))
+                .ok_or_else(|| LuceneError::illegal_state("no value at current doc".to_string()))
         }
     }
 
@@ -1628,7 +1704,7 @@ mod tests {
     struct StubTermVectors;
     impl TermVectors for StubTermVectors {
         fn get(&self, _doc: i32) -> Result<Option<Box<dyn Fields>>> {
-            Ok(Some(Box::new(EmptyFields)))
+            Ok(Some(Box::new(crate::index::terms::EmptyFields)))
         }
     }
 
@@ -2330,7 +2406,7 @@ mod tests {
         assert_eq!(values.doc_id(), -1);
         assert!(matches!(
             values.long_value(),
-            Err(LuceneError::IllegalState(_))
+            Err(LuceneError::IllegalState { .. })
         ));
     }
 
@@ -2374,15 +2450,9 @@ mod tests {
             .is_none());
     }
 
-    /// Regression test for a deliberate divergence from Lucene 10.5.0.
-    ///
-    /// `MultiDocValues.getNormValues(...).advance(target)` updates `nextLeaf`
-    /// *after* checking whether the target leaf has norms, so a leaf without
-    /// norms leaves `nextLeaf` pointing at an already-consumed leaf and the
-    /// fallback `nextDoc()` restarts from there — returning a document *before*
-    /// `target` and breaking the `DocIdSetIterator` contract. The sibling
-    /// `getNumericValues` does the bookkeeping in the other order and is
-    /// correct; this port follows the correct order in both.
+    /// Regression test for the divergence declared on
+    /// [`MultiDocValues::get_norm_values`]: `advance` over a leaf without norms
+    /// never moves backwards.
     #[test]
     fn norm_values_advance_over_a_leaf_without_norms_never_moves_backwards() {
         let reader = composite(vec![
@@ -2802,7 +2872,7 @@ mod tests {
             ListSorted::boxed(&["b"], &[(0, 0)]),
             ListSorted::boxed(&["a"], &[(0, 0)]),
         ];
-        let mapping = OrdinalMap::build_sorted(map_inputs, 0.25).unwrap();
+        let mapping = Arc::new(OrdinalMap::build_sorted(map_inputs, 0.25).unwrap());
         let values = MultiSortedDocValues::new(leaf_values, vec![0, 1, 2], mapping, 2).unwrap();
         assert_eq!(values.doc_starts(), &[0, 1, 2]);
         assert_eq!(values.values().len(), 2);
@@ -2814,7 +2884,7 @@ mod tests {
     fn multi_sorted_doc_values_reject_a_doc_start_table_of_the_wrong_length() {
         let leaf_values: Vec<Box<dyn SortedDocValues>> = vec![ListSorted::boxed(&["b"], &[(0, 0)])];
         let map_inputs: Vec<Box<dyn SortedDocValues>> = vec![ListSorted::boxed(&["b"], &[(0, 0)])];
-        let mapping = OrdinalMap::build_sorted(map_inputs, 0.25).unwrap();
+        let mapping = Arc::new(OrdinalMap::build_sorted(map_inputs, 0.25).unwrap());
         // One leaf needs two doc starts (its docBase plus the maxDoc sentinel).
         let err = MultiSortedDocValues::new(leaf_values, vec![0], mapping, 1).unwrap_err();
         assert!(matches!(err, LuceneError::IllegalArgument(_)));
@@ -2967,7 +3037,7 @@ mod tests {
             vec![ListSortedSet::boxed(&["b"], &[(0, &[0])])];
         let map_inputs: Vec<Box<dyn SortedSetDocValues>> =
             vec![ListSortedSet::boxed(&["b"], &[(0, &[0])])];
-        let mapping = OrdinalMap::build_sorted_set(map_inputs, 0.25).unwrap();
+        let mapping = Arc::new(OrdinalMap::build_sorted_set(map_inputs, 0.25).unwrap());
         let err = MultiSortedSetDocValues::new(leaf_values, vec![0, 1, 2], mapping, 1).unwrap_err();
         assert!(matches!(err, LuceneError::IllegalArgument(_)));
     }
@@ -2982,7 +3052,7 @@ mod tests {
             ListSortedSet::boxed(&["b"], &[(0, &[0])]),
             ListSortedSet::boxed(&["a"], &[(0, &[0])]),
         ];
-        let mapping = OrdinalMap::build_sorted_set(map_inputs, 0.25).unwrap();
+        let mapping = Arc::new(OrdinalMap::build_sorted_set(map_inputs, 0.25).unwrap());
         let values = MultiSortedSetDocValues::new(leaf_values, vec![0, 1, 2], mapping, 2).unwrap();
         assert_eq!(values.doc_starts(), &[0, 1, 2]);
         assert_eq!(values.values().len(), 2);

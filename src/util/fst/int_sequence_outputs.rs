@@ -52,7 +52,9 @@ impl Outputs for IntSequenceOutputs {
         } else if mismatch_pos as usize == output2.length {
             output2.clone()
         } else {
-            IntsRef::new(output1.slice()[..mismatch_pos as usize].to_vec())
+            // `new IntsRef(output1.ints, output1.offset, mismatchPos)`
+            // (`IntSequenceOutputs.java:69`).
+            IntsRef::with_offset_length(output1.ints.clone(), output1.offset, mismatch_pos as usize)
         }
     }
 
@@ -63,7 +65,13 @@ impl Outputs for IntSequenceOutputs {
             self.no_output()
         } else {
             debug_assert!(inc.length < output.length);
-            IntsRef::new(output.slice()[inc.length..].to_vec())
+            // `new IntsRef(output.ints, output.offset + inc.length,
+            // output.length - inc.length)` (`IntSequenceOutputs.java:87`).
+            IntsRef::with_offset_length(
+                output.ints.clone(),
+                output.offset + inc.length,
+                output.length - inc.length,
+            )
         }
     }
 
@@ -137,5 +145,33 @@ impl Outputs for IntSequenceOutputs {
             result = result.wrapping_mul(31).wrapping_add(*value);
         }
         i64::from(result)
+    }
+}
+
+#[cfg(test)]
+mod shared_buffer_tests {
+    use super::*;
+
+    /// rmp #312: `IntSequenceOutputs.common` and `subtract` return
+    /// `new IntsRef(output.ints, offset, length)` over the operand's own array
+    /// (`IntSequenceOutputs.java:69, 87`), so `ramBytesUsed(output)` — which
+    /// sizes `output.ints` — charges the whole array, not the result's length.
+    #[test]
+    fn common_and_subtract_keep_the_operands_array() {
+        let outputs = IntSequenceOutputs;
+        let a = IntsRef::new(vec![1, 2, 3, 9]);
+        let b = IntsRef::new(vec![1, 2, 4]);
+        let common = outputs.common(&a, &b);
+        assert_eq!((common.offset, common.length, common.ints.len()), (0, 2, 4));
+        assert_eq!(
+            outputs.ram_bytes_used(&common),
+            BASE_NUM_BYTES + RamUsageEstimator::size_of_int(&[0; 4])
+        );
+        let rest = outputs.subtract(&a, &IntsRef::new(vec![1]));
+        assert_eq!(
+            (rest.offset, rest.length, rest.slice()),
+            (1, 3, &[2, 3, 9][..])
+        );
+        assert_eq!(rest.ints.len(), 4);
     }
 }

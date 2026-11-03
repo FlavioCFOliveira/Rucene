@@ -30,12 +30,12 @@ intercepted and answered from the in-memory model below.
 """
 import json
 import sys
-import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import load_rucene_kg as lo
 import port_evidence_kg as pe
+from kgio import kg_target
 
 FAILURES = []
 
@@ -114,8 +114,9 @@ def fake_read_dicts(_roadmap, query):
                 if ev == "curated" or ds == "macro-expansion"]
     if "e.evidence = 'curated'" in query and "RETURN f.qualifiedName AS qn" in query:
         return []
-    if "MATCH (t)-[:PORTS]->(:Class) RETURN t.name AS name" in query:
-        return [{"name": n, "file": f} for n, f, _l, _e, _d in PORTS]
+    if "MATCH (t)-[e:PORTS]->(c:Class)" in query and "properties(e) AS props" in query:
+        return [{"name": n, "file": f, "labels": ["RustStruct"], "lucene": l,
+                 "props": {"evidence": ev}} for n, f, l, ev, _d in PORTS]
     if "MATCH (f:File)" in query:
         return [{"path": p} for p in
                 ("src/live.rs", "src/tool.rs", "src/hits.rs", "src/gone.rs",
@@ -182,9 +183,10 @@ survey = {
             for n, f in RUST_FNS],
     "impls": [], "mods": [], "deps": [],
 }
-with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
-    json.dump(survey, fh)
-    path = fh.name
+scratch = kg_target() / "retirement_check"
+scratch.mkdir(parents=True, exist_ok=True)
+path = scratch / "survey.json"
+path.write_text(json.dumps(survey), encoding="utf-8")
 writes.clear()
 lo.phase_prune("rucene", lo.Survey(path), 200)
 Path(path).unlink()

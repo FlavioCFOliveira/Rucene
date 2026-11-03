@@ -375,7 +375,7 @@ impl SegmentTermsEnumFrame {
             next_floor_label,
             ..
         } = self;
-        let mut new_fp = *fp_orig;
+        let mut new_fp;
         let mut reader = ByteArrayDataInput::new(floor_data);
         reader.set_position(*floor_data_pos);
         loop {
@@ -829,12 +829,19 @@ enum PrepareSeek {
 ///
 /// **Divergence from Lucene 10.5.0.** Java's cursor keeps its own `IndexInput`
 /// over the `.tim` file and its frames read through a back-reference to it. This
-/// port clones the input into the cursor and passes it to each frame, which is
-/// the same single reader with the ownership made explicit. `seek_ord` is
-/// unsupported here as it is in Java, and `intersect` lives in its own cursor.
+/// port holds that input in the cursor and passes it to each frame, which is
+/// the same single reader with the ownership made explicit. As in Java, the
+/// input is cloned lazily, by [`init_index_input`](Self::init_index_input), the
+/// first time a block is loaded or prefetched. `seek_ord` is unsupported here
+/// as it is in Java, and `intersect` lives in its own cursor.
 pub struct SegmentTermsEnum {
     field: FieldReader,
-    terms_in: Box<dyn IndexInput>,
+    /// This cursor's clone of the `.tim` input, or `None` until a block is
+    /// first loaded or prefetched.
+    ///
+    /// Equivalent to `SegmentTermsEnum.in`, which is `null` until
+    /// `initIndexInput()` runs.
+    terms_in: Option<Box<dyn IndexInput>>,
     trie: TrieReader,
     /// The frame stack. Frame `n` holds a block whose prefix is `n` bytes deep.
     stack: Vec<SegmentTermsEnumFrame>,
@@ -873,12 +880,11 @@ impl std::fmt::Debug for SegmentTermsEnum {
 impl SegmentTermsEnum {
     /// Opens a cursor over `field`.
     pub fn new(field: FieldReader) -> Result<Self> {
-        let terms_in = field.shared().terms_in.clone_input()?;
         let trie = field.new_reader()?;
 
         Ok(Self {
             field,
-            terms_in,
+            terms_in: None,
             trie,
             stack: Vec::new(),
             current: 0,
@@ -891,6 +897,43 @@ impl SegmentTermsEnum {
             target_before_current_length: -1,
             attributes: AttributeSource::new(),
         })
+    }
+
+    /// Clones the terms dictionary input the first time this cursor needs it,
+    /// so that a consumer that only seeks by `TermState` never pays for the
+    /// clone.
+    ///
+    /// Equivalent to `SegmentTermsEnum#initIndexInput`
+    /// (`SegmentTermsEnum.java:81-85`), which clones `fr.parent.termsIn` when
+    /// `in` is still `null`. Java's frames call it from `loadBlock` and
+    /// `prefetchBlock`; here the cursor calls it before handing the input to
+    /// a frame, at the same two points.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the error cloning the input raises.
+    fn init_index_input(&mut self) -> Result<()> {
+        if self.terms_in.is_none() {
+            self.terms_in = Some(self.field.shared().terms_in.clone_input()?);
+        }
+        Ok(())
+    }
+
+    /// Whether [`init_index_input`](Self::init_index_input) has cloned the
+    /// terms input yet; a test probe for Java's `in != null`.
+    #[cfg(test)]
+    pub(crate) fn index_input_initialized(&self) -> bool {
+        self.terms_in.is_some()
+    }
+
+    /// The input [`init_index_input`](Self::init_index_input) cloned.
+    ///
+    /// Takes the field rather than `self` so that a frame of the stack can be
+    /// borrowed beside it.
+    fn index_input(terms_in: &mut Option<Box<dyn IndexInput>>) -> &mut dyn IndexInput {
+        terms_in
+            .as_deref_mut()
+            .expect("INVARIANT: init_index_input runs before the terms input is read")
     }
 
     /// Returns the frame at stack position `ord`, creating it when needed.
@@ -967,7 +1010,8 @@ impl SegmentTermsEnum {
 
     /// Loads the current frame's block.
     fn load_current_block(&mut self) -> Result<()> {
-        let terms_in = &mut *self.terms_in;
+        self.init_index_input()?;
+        let terms_in = Self::index_input(&mut self.terms_in);
         self.stack[self.current].load_block(terms_in)
     }
 
@@ -1018,12 +1062,15 @@ impl SegmentTermsEnum {
     /// Equivalent to
     /// `org.apache.lucene.codecs.lucene103.blocktree.SegmentTermsEnumFrame#prefetchBlock`.
     fn prefetch_block(&mut self) -> Result<()> {
-        let frame = &self.stack[self.current];
-        if frame.next_ent != -1 {
+        if self.stack[self.current].next_ent != -1 {
             // Already loaded.
             return Ok(());
         }
-        self.terms_in.prefetch(frame.fp, 1)
+        // Clone the input lazily, so that consumers that only seek by
+        // `TermState` do not pay for it.
+        self.init_index_input()?;
+        let fp = self.stack[self.current].fp;
+        Self::index_input(&mut self.terms_in).prefetch(fp, 1)
     }
 
     /// Reads the next entry of the current frame, moving on to the next floor
@@ -1043,7 +1090,8 @@ impl SegmentTermsEnum {
                 return Ok(false);
             }
             if self.stack[self.current].next_ent == self.stack[self.current].ent_count {
-                let terms_in = &mut *self.terms_in;
+                self.init_index_input()?;
+                let terms_in = Self::index_input(&mut self.terms_in);
                 self.stack[self.current].load_next_floor_block(terms_in)?;
                 continue;
             }
@@ -1112,7 +1160,7 @@ impl SegmentTermsEnum {
     /// walk reports. The index walk and the state it leaves behind are
     /// unchanged.
     fn prepare_seek_exact_state(&mut self, target: &[u8]) -> Result<PrepareSeek> {
-        if self.field.size() > 0
+        if self.field.size()? > 0
             && (target < self.field.get_min().slice() || target > self.field.get_max().slice())
         {
             return Ok(PrepareSeek::NoMatch);
@@ -1333,7 +1381,8 @@ impl SegmentTermsEnum {
                 stats.end_block(&self.stack[self.current]);
                 if !self.stack[self.current].is_last_in_floor {
                     // Advance to the next floor block.
-                    let terms_in = &mut *self.terms_in;
+                    self.init_index_input()?;
+                    let terms_in = Self::index_input(&mut self.terms_in);
                     self.stack[self.current].load_next_floor_block(terms_in)?;
                     stats.start_block(&self.stack[self.current], true);
                     break;
@@ -1463,7 +1512,7 @@ impl SegmentTermsEnum {
 
             if frame_prefix_length > 0 && is_seek_frame {
                 let node = frame_node.ok_or_else(|| {
-                    LuceneError::IllegalState(format!(
+                    LuceneError::illegal_state(format!(
                         "seek state is broken: seek frame {ord} has no index node"
                     ))
                 })?;
@@ -1474,7 +1523,7 @@ impl SegmentTermsEnum {
                         node.label,
                         self.term[frame_prefix_length - 1]
                     )?;
-                    return Err(LuceneError::IllegalState(
+                    return Err(LuceneError::illegal_state(
                         "seek state is broken".to_string(),
                     ));
                 }
@@ -1485,7 +1534,7 @@ impl SegmentTermsEnum {
                 match self.trie.lookup_child(i32::from(label), &node)? {
                     Some(child) => node = child,
                     None => {
-                        return Err(LuceneError::IllegalState(
+                        return Err(LuceneError::illegal_state(
                             "seek state is broken, prefix not exist in index".to_string(),
                         ))
                     }
@@ -1493,7 +1542,7 @@ impl SegmentTermsEnum {
             }
             if !node.has_output() {
                 writeln!(out, "      broken seek state: prefix is not final in index")?;
-                return Err(LuceneError::IllegalState(
+                return Err(LuceneError::illegal_state(
                     "seek state is broken".to_string(),
                 ));
             } else if is_seek_frame
@@ -1512,7 +1561,7 @@ impl SegmentTermsEnum {
                     frame_has_terms,
                     frame_is_floor
                 )?;
-                return Err(LuceneError::IllegalState(
+                return Err(LuceneError::illegal_state(
                     "seek state is broken".to_string(),
                 ));
             }
@@ -1550,20 +1599,6 @@ impl SegmentTermsEnum {
     /// Returns the field this cursor walks.
     pub fn field_reader(&self) -> &FieldReader {
         &self.field
-    }
-
-    /// Returns the term state of the current term, decoding its metadata first.
-    ///
-    /// Equivalent to `SegmentTermsEnum.decodeMetaData` followed by reading the
-    /// frame's state.
-    pub fn block_term_state(
-        &mut self,
-        postings_reader: &dyn crate::codecs::postings::PostingsReaderBase,
-    ) -> Result<BlockTermState> {
-        let field_info = self.field.field_info().clone();
-        let frame = &mut self.stack[self.current];
-        frame.decode_meta_data(&field_info, postings_reader)?;
-        Ok(frame.state.clone())
     }
 
     /// Catches the current frame up on the metadata decode it defers.
@@ -1612,7 +1647,8 @@ impl TermsEnum for SegmentTermsEnum {
             // or pop back to the parent.
             while self.stack[self.current].next_ent == self.stack[self.current].ent_count {
                 if !self.stack[self.current].is_last_in_floor {
-                    let terms_in = &mut *self.terms_in;
+                    self.init_index_input()?;
+                    let terms_in = Self::index_input(&mut self.terms_in);
                     self.stack[self.current].load_next_floor_block(terms_in)?;
                     break;
                 }
@@ -1631,7 +1667,8 @@ impl TermsEnum for SegmentTermsEnum {
                 {
                     let target = self.term.clone();
                     self.stack[self.current].scan_to_floor_frame(&target)?;
-                    let terms_in = &mut *self.terms_in;
+                    self.init_index_input()?;
+                    let terms_in = Self::index_input(&mut self.terms_in);
                     self.stack[self.current].load_block(terms_in)?;
                     let mut term = std::mem::take(&mut self.term);
                     let result = self.stack[self.current].scan_to_sub_block(last_fp, &mut term);
@@ -1669,6 +1706,19 @@ impl TermsEnum for SegmentTermsEnum {
                 return Ok(Some(BytesRef::new(self.term.clone())));
             }
         }
+    }
+
+    /// Two-phase [`TermsEnum::seek_exact`] that walks the term index first.
+    ///
+    /// Equivalent to `SegmentTermsEnum.prepareSeekExact(BytesRef)`, which
+    /// overrides `TermsEnum.prepareSeekExact`, so that `TermStates` and the
+    /// other callers that hold a plain `TermsEnum` reach the block-tree walk
+    /// and its prefetch instead of the default supplier.
+    fn prepare_seek_exact<'a>(
+        &'a mut self,
+        text: &BytesRef,
+    ) -> Result<Option<Box<dyn IOBooleanSupplier + 'a>>> {
+        SegmentTermsEnum::prepare_seek_exact(self, text)
     }
 
     fn seek_exact(&mut self, text: &BytesRef) -> Result<bool> {

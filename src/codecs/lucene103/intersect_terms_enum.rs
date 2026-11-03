@@ -356,11 +356,6 @@ impl IntersectTermsEnumFrame {
         }
     }
 
-    /// Returns the bytes of the current entry's suffix.
-    pub fn suffix_slice(&self) -> &[u8] {
-        &self.suffix_bytes[self.start_byte_pos..self.start_byte_pos + self.suffix]
-    }
-
     /// Returns the byte at `index` of the suffix buffer.
     pub fn suffix_byte(&self, index: usize) -> u8 {
         self.suffix_bytes[index]
@@ -618,7 +613,7 @@ impl IntersectTermsEnum {
             }
         }
 
-        Err(LuceneError::IllegalState(
+        Err(LuceneError::illegal_state(
             "seek_to_start_term ran past the target term".to_string(),
         ))
     }
@@ -672,7 +667,7 @@ impl IntersectTermsEnum {
 
         // Walk the trie down the bytes this sub-block added to the prefix.
         let mut node = parent_node.ok_or_else(|| {
-            LuceneError::IllegalState("parent frame has no trie node".to_string())
+            LuceneError::illegal_state("parent frame has no trie node".to_string())
         })?;
         let mut idx = parent_prefix;
         while idx < prefix {
@@ -998,7 +993,7 @@ impl TermsEnum for IntersectTermsEnum {
         self.decode_current_meta_data()?;
         let cur = self
             .current
-            .ok_or_else(|| LuceneError::IllegalState("no current term".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_state("no current term".to_string()))?;
         Ok(self.stack[cur].state_data.doc_freq)
     }
 
@@ -1006,7 +1001,7 @@ impl TermsEnum for IntersectTermsEnum {
         self.decode_current_meta_data()?;
         let cur = self
             .current
-            .ok_or_else(|| LuceneError::IllegalState("no current term".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_state("no current term".to_string()))?;
         Ok(self.stack[cur].state_data.total_term_freq)
     }
 
@@ -1014,7 +1009,7 @@ impl TermsEnum for IntersectTermsEnum {
         self.decode_current_meta_data()?;
         let cur = self
             .current
-            .ok_or_else(|| LuceneError::IllegalState("no current term".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_state("no current term".to_string()))?;
         let field_info = self.field.field_info().clone();
         let state = self.stack[cur].state_data;
         let reader = std::sync::Arc::clone(&self.field.shared().postings_reader);
@@ -1029,7 +1024,7 @@ impl TermsEnum for IntersectTermsEnum {
         self.decode_current_meta_data()?;
         let cur = self
             .current
-            .ok_or_else(|| LuceneError::IllegalState("no current term".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_state("no current term".to_string()))?;
         let field_info = self.field.field_info().clone();
         let state = self.stack[cur].state_data;
         let reader = std::sync::Arc::clone(&self.field.shared().postings_reader);
@@ -1039,7 +1034,7 @@ impl TermsEnum for IntersectTermsEnum {
     fn term_state(&mut self) -> Result<Box<dyn TermState>> {
         let cur = self
             .current
-            .ok_or_else(|| LuceneError::IllegalState("no current term".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_state("no current term".to_string()))?;
         Ok(Box::new(self.stack[cur].state_data.clone()))
     }
 }

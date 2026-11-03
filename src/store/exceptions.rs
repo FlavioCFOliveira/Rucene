@@ -31,13 +31,12 @@
 //! exception hierarchy onto a single enum; adding real Rust error types for
 //! these three would have created two ways to express the same failure.
 //!
-//! [`AlreadyClosedException::with_cause`] additionally folds the cause into the
-//! message, because [`LuceneError::AlreadyClosed`] carries only a `String`,
-//! whereas Java keeps the cause in a separate `Throwable` field. The two
-//! lock exceptions do have a `source` field, so their causes are preserved.
+//! Every one of the three keeps its cause apart from its message, as Java's
+//! `Throwable.getCause()` does, and returns it from
+//! [`std::error::Error::source`].
 
-use std::fmt::Display;
 use std::io;
+use std::sync::Arc;
 
 use crate::error::LuceneError;
 
@@ -58,20 +57,16 @@ impl AlreadyClosedException {
     // `new` names the Java constructor and necessarily yields a `LuceneError`.
     #[allow(clippy::new_ret_no_self)]
     pub fn new(message: impl Into<String>) -> LuceneError {
-        LuceneError::AlreadyClosed(message.into())
+        LuceneError::already_closed(message)
     }
 
-    /// Builds the error for `message`, recording `cause` in the message.
+    /// Builds the error for `message` with `cause`.
     ///
-    /// Equivalent to `new AlreadyClosedException(String, Throwable)`.
-    ///
-    /// # Divergence from Lucene 10.5.0
-    ///
-    /// Java keeps the cause in `Throwable.getCause()`, separate from the
-    /// message. [`LuceneError::AlreadyClosed`] holds only a message, so the
-    /// cause is appended as ` (caused by: …)`.
-    pub fn with_cause(message: impl Display, cause: impl Display) -> LuceneError {
-        LuceneError::AlreadyClosed(format!("{message} (caused by: {cause})"))
+    /// Equivalent to `new AlreadyClosedException(String, Throwable)`: the
+    /// cause is kept apart from the message and returned by
+    /// [`std::error::Error::source`].
+    pub fn with_cause(message: impl Into<String>, cause: LuceneError) -> LuceneError {
+        LuceneError::already_closed_with_cause(message, Arc::new(cause))
     }
 
     /// Returns `true` if `error` is the equivalent of an
@@ -79,7 +74,7 @@ impl AlreadyClosedException {
     ///
     /// This is the Rust counterpart of `catch (AlreadyClosedException e)`.
     pub fn is(error: &LuceneError) -> bool {
-        matches!(error, LuceneError::AlreadyClosed(_))
+        matches!(error, LuceneError::AlreadyClosed { .. })
     }
 }
 

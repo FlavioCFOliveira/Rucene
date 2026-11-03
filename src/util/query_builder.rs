@@ -452,7 +452,7 @@ pub trait QueryBuilderOps {
     ) -> Result<Option<Arc<dyn Query>>> {
         stream.reset()?;
         if !stream.increment_token()? {
-            return Err(LuceneError::IllegalState(
+            return Err(LuceneError::illegal_state(
                 "the cached token stream produced no token where one was counted".to_string(),
             ));
         }
@@ -491,13 +491,15 @@ pub trait QueryBuilderOps {
     /// Adds the terms collected at one position to the boolean query being
     /// built.
     ///
-    /// Equivalent to `add(String, BooleanQuery.Builder, List, Occur)`.
+    /// Equivalent to the `protected`
+    /// `QueryBuilder.add(String, BooleanQuery.Builder, List, Occur)`
+    /// (`QueryBuilder.java:398-411`).
     ///
     /// # Errors
     ///
     /// Propagates the errors of the query factories and of
     /// [`BooleanQuery`]'s clause limit.
-    fn add_position(
+    fn add(
         &self,
         field: &str,
         q: &mut boolean_query::Builder,
@@ -538,7 +540,7 @@ pub trait QueryBuilderOps {
         while stream.increment_token()? {
             let atts = stream.attribute_source();
             if position_increment_of(atts) != 0 {
-                self.add_position(field, &mut q, &current_query, operator)?;
+                self.add(field, &mut q, &current_query, operator)?;
                 current_query.clear();
             }
             let atts = stream.attribute_source();
@@ -547,7 +549,7 @@ pub trait QueryBuilderOps {
                 boost_of(atts),
             ));
         }
-        self.add_position(field, &mut q, &current_query, operator)?;
+        self.add(field, &mut q, &current_query, operator)?;
 
         Ok(Some(Arc::new(q.build())))
     }

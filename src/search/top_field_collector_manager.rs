@@ -3,7 +3,7 @@
 
 #![deny(unsafe_code)]
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::error::{LuceneError, Result};
 use crate::search::collector::CollectorManager;
@@ -16,6 +16,10 @@ use crate::search::top_docs_collector::TopDocsCollector;
 use crate::search::top_field_collector::TopFieldCollector;
 use crate::search::top_field_docs::TopFieldDocs;
 
+/// How the manager holds its collectors: `Send` and `Sync` whenever the
+/// collector is `Send`.
+pub(crate) type CollectorHandles<C> = Mutex<Vec<C>>;
+
 /// Creates [`TopFieldCollector`]s that share a [`MaxScoreAccumulator`], so that
 /// the minimum competitive score found by one slice prunes the others.
 ///
@@ -24,20 +28,23 @@ use crate::search::top_field_docs::TopFieldDocs;
 ///
 /// Java also keeps a deprecated five-argument constructor whose
 /// `supportsConcurrency` flag it ignores — it simply delegates to the
-/// four-argument one — and a deprecated `getCollectors()` accessor over the
-/// collectors it has handed out. Neither is ported.
+/// four-argument one — which is not ported: it carries no behaviour at all.
+/// The deprecated `getCollectors()` is
+/// [`get_collectors`](Self::get_collectors).
 ///
-/// The constructor carries no behaviour at all. `getCollectors()` is marked for
-/// removal in Lucene 11, its javadoc directing callers to the `TopFieldDocs`
-/// that reduction returns, and nothing in the Lucene 10.5.0 tree calls it.
-/// Porting it would mean the manager retaining every collector it has already
-/// given away, which in Java costs nothing because both sides hold the same
-/// object, but in Rust would force
-/// [`CollectorManager::Collector`](crate::search::CollectorManager) to become a
-/// shared, interior-mutable handle for this manager alone — changing the
-/// ownership contract of the whole collection path for an accessor that is
-/// scheduled to disappear. The absence is confined to this one method: every
-/// value it would expose is reachable through the reduced `TopFieldDocs`.
+/// **Divergence from Lucene 10.5.0, and from this port at `6cb74bf`.** At
+/// `6cb74bf` this manager was `Send` and `Sync`. Keeping a handle to every
+/// collector it creates — which `getCollectors()` needs — makes it `Send` and
+/// `Sync` only when [`TopFieldCollector`] is, and today that collector is
+/// neither, because [`FieldComparator`](crate::search::FieldComparator)
+/// carries no `Send` bound. In Lucene the manager stays on the calling
+/// thread: `IndexSearcher` creates every collector and reduces them there,
+/// and each executor task captures only its own collector
+/// (`IndexSearcher.java:764-796`). The collectors cross threads while the
+/// manager keeps a handle to each, so the handles and their list are
+/// `Arc<Mutex<..>>` and `Mutex<..>`, and the manager regains both traits
+/// automatically once the comparators are `Send`; the unit test
+/// `manager_is_send_and_sync_but_for_its_collectors` pins every other part.
 #[derive(Debug)]
 pub struct TopFieldCollectorManager {
     sort: Sort,
@@ -45,6 +52,12 @@ pub struct TopFieldCollectorManager {
     after: Option<FieldDoc>,
     total_hits_threshold: i32,
     min_score_acc: Option<Arc<MaxScoreAccumulator>>,
+    /// A handle to every collector [`new_collector`](CollectorManager::new_collector)
+    /// created, in creation order.
+    ///
+    /// Equivalent to the `private final List<TopFieldCollector> collectors`
+    /// field.
+    collectors: CollectorHandles<TopFieldCollector>,
 }
 
 impl TopFieldCollectorManager {
@@ -102,7 +115,31 @@ impl TopFieldCollectorManager {
             num_hits,
             after,
             total_hits_threshold,
+            collectors: Mutex::new(Vec::new()),
         })
+    }
+
+    /// Returns the collectors created by this manager, in creation order.
+    ///
+    /// Equivalent to `TopFieldCollectorManager#getCollectors`
+    /// (`TopFieldCollectorManager.java:189-198`), deprecated in Lucene 10.5.0
+    /// for removal in Lucene 11: the reduced [`TopFieldDocs`] carries what it
+    /// exposes. Each element is a handle to the collector a search was given,
+    /// so it shows what that search collected — including that
+    /// [`reduce`](CollectorManager::reduce) has drained its queue, as Java's
+    /// does.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java returns its live list; this
+    /// returns the handles held when it is called, so a collector created
+    /// afterwards is not in a list obtained before.
+    #[deprecated(note = "Lucene 10.5.0 deprecates getCollectors() for removal in Lucene 11")]
+    pub fn get_collectors(&self) -> Vec<TopFieldCollector> {
+        self.collectors
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .map(TopFieldCollector::share)
+            .collect()
     }
 
     /// Creates a manager collecting `num_hits` results from the first page.
@@ -155,14 +192,19 @@ impl CollectorManager for TopFieldCollectorManager {
         } else if let Some(after) = self.after.as_ref() {
             Self::check_after(after, &self.sort)?;
         }
-        Ok(TopFieldCollector::new(
+        let collector = TopFieldCollector::new(
             self.sort.clone(),
             queue,
             self.after.clone(),
             self.num_hits,
             self.total_hits_threshold,
             self.min_score_acc.clone(),
-        ))
+        );
+        self.collectors
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(collector.share());
+        Ok(collector)
     }
 
     fn reduce(&self, collectors: Vec<TopFieldCollector>) -> Result<TopFieldDocs> {
@@ -171,5 +213,26 @@ impl CollectorManager for TopFieldCollectorManager {
             top_docs.push(collector.top_docs()?);
         }
         TopDocs::merge_sorted_from(&self.sort, 0, self.num_hits as usize, &top_docs)
+    }
+}
+
+#[cfg(test)]
+mod send_sync_tests {
+    use super::*;
+    use crate::search::FieldValueHitQueue;
+
+    fn assert_send_sync<T: Send + Sync>() {}
+    fn assert_send<T: Send>() {}
+
+    /// The manager, its collectors and their hit queue are `Send` — the
+    /// comparators the queue holds included — so a collector can be handed to
+    /// an executor's worker, as Lucene's `IndexSearcher.search(Query,
+    /// CollectorManager)` does with every slice.
+    #[test]
+    fn manager_collectors_and_queue_are_send() {
+        assert_send_sync::<TopFieldCollectorManager>();
+        assert_send_sync::<TopFieldCollector>();
+        assert_send::<FieldValueHitQueue>();
+        assert_send::<Box<dyn crate::search::FieldComparator>>();
     }
 }

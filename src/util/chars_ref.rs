@@ -35,10 +35,14 @@ impl CharsRef {
         Self::default()
     }
 
-    /// Creates a `CharsRef` whose buffer has the requested capacity and zero length.
+    /// Creates a `CharsRef` over a zero-filled buffer of `capacity` characters,
+    /// with zero length.
+    ///
+    /// Equivalent to `new CharsRef(int capacity)` (`CharsRef.java:47-49`),
+    /// whose `chars = new char[capacity]` holds `capacity` NUL characters.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            chars: Vec::with_capacity(capacity),
+            chars: vec!['\0'; capacity],
             offset: 0,
             length: 0,
         }
@@ -56,20 +60,23 @@ impl CharsRef {
 
     /// Creates a `CharsRef` referencing `length` characters of `chars` starting at `offset`.
     ///
+    /// Equivalent to `new CharsRef(char[], int, int)` (`CharsRef.java:52-57`),
+    /// which ends with `assert isValid()`.
+    ///
     /// # Panics
     ///
-    /// Panics if `offset + length > chars.len()`.
+    /// Panics in builds with debug assertions when [`is_valid`](Self::is_valid)
+    /// fails, as Java's assertion does under `-ea`.
     pub fn from_chars_offset(chars: Vec<char>, offset: usize, length: usize) -> Self {
-        assert!(
-            offset + length <= chars.len(),
-            "offset + length out of bounds: offset={offset}, length={length}, chars.len()={}",
-            chars.len()
-        );
-        Self {
+        let r = Self {
             chars,
             offset,
             length,
+        };
+        if let Err(e) = r.is_valid() {
+            debug_assert!(false, "{e}");
         }
+        r
     }
 
     /// Creates a `CharsRef` from the characters of `string`.
@@ -100,13 +107,17 @@ impl CharsRef {
 
     /// Returns the character at `index` within the active slice.
     ///
+    /// Equivalent to `CharsRef.charAt(int)` (`CharsRef.java:139-144`).
+    ///
     /// # Panics
     ///
-    /// Panics if `index >= self.length()`.
+    /// Panics if `index >= self.length()`, with the message of the
+    /// `IndexOutOfBoundsException` Java's `Objects.checkIndex(index, length)`
+    /// throws: `Index <index> out of bounds for length <length>`.
     pub fn char_at(&self, index: usize) -> char {
         assert!(
             index < self.length,
-            "index {index} out of bounds (length {})",
+            "Index {index} out of bounds for length {}",
             self.length
         );
         self.chars[self.offset + index]
@@ -115,13 +126,23 @@ impl CharsRef {
     /// Returns a new `CharsRef` containing a copy of the active characters
     /// between `start` and `end` (relative to the active slice), with offset zero.
     ///
+    /// Equivalent to `CharsRef.subSequence(int, int)` (`CharsRef.java:146-150`).
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java returns
+    /// `new CharsRef(chars, offset + start, end - start)`, sharing this array;
+    /// a `Vec<char>` has one owner, so the characters are copied and the
+    /// result's offset is zero. The characters it denotes are the same.
+    ///
     /// # Panics
     ///
-    /// Panics if `start > end` or `end > self.length()`.
+    /// Panics if `start > end` or `end > self.length()`, with the message of
+    /// the `IndexOutOfBoundsException` Java's `Objects.checkFromToIndex(start,
+    /// end, length)` throws: `Range [<start>, <end>) out of bounds for length
+    /// <length>`.
     pub fn sub_sequence(&self, start: usize, end: usize) -> Self {
         assert!(
             start <= end && end <= self.length,
-            "invalid sub-sequence: start={start}, end={end}, length={}",
+            "Range [{start}, {end}) out of bounds for length {}",
             self.length
         );
         let slice = &self.chars[self.offset + start..self.offset + end];
@@ -220,24 +241,34 @@ impl CharsRef {
         a.length.cmp(&b.length)
     }
 
+    /// Performs internal consistency checks.
+    ///
+    /// Equivalent to `CharsRef.isValid()`, which always returns `true` or throws
+    /// `IllegalStateException`; this returns `Ok(())` or the matching error.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when a check fails.
     pub fn is_valid(&self) -> Result<(), LuceneError> {
+        // `chars` cannot be null, and the `usize` fields cannot be negative, so
+        // Java's four checks for those have no Rust counterpart.
         if self.length > self.chars.len() {
-            return Err(LuceneError::IllegalState(format!(
-                "length {} out of bounds (chars.len() = {})",
+            return Err(LuceneError::illegal_state(format!(
+                "length is out of bounds: {},chars.length={}",
                 self.length,
                 self.chars.len()
             )));
         }
         if self.offset > self.chars.len() {
-            return Err(LuceneError::IllegalState(format!(
-                "offset {} out of bounds (chars.len() = {})",
+            return Err(LuceneError::illegal_state(format!(
+                "offset out of bounds: {},chars.length={}",
                 self.offset,
                 self.chars.len()
             )));
         }
         if self.offset + self.length > self.chars.len() {
-            return Err(LuceneError::IllegalState(format!(
-                "offset + length out of bounds: offset={}, length={}, chars.len()={}",
+            return Err(LuceneError::illegal_state(format!(
+                "offset+length out of bounds: offset={},length={},chars.length={}",
                 self.offset,
                 self.length,
                 self.chars.len()
@@ -312,6 +343,22 @@ impl Hash for CharsRef {
 
 #[cfg(test)]
 mod tests {
+    /// `Objects.checkIndex` and `Objects.checkFromToIndex` messages. Measured
+    /// against `lucene-core-10.5.0.jar`'s JDK (`oracle/fix/MiscFix.java`,
+    /// item 27): `Index 5 out of bounds for length 3`.
+    #[test]
+    #[should_panic(expected = "Index 5 out of bounds for length 3")]
+    fn char_at_out_of_bounds_has_the_jdk_message() {
+        super::CharsRef::from_string("abc").char_at(5);
+    }
+
+    /// As above: `Range [2, 5) out of bounds for length 3`.
+    #[test]
+    #[should_panic(expected = "Range [2, 5) out of bounds for length 3")]
+    fn sub_sequence_out_of_bounds_has_the_jdk_message() {
+        let _ = super::CharsRef::from_string("abc").sub_sequence(2, 5);
+    }
+
     use super::*;
 
     #[test]
@@ -322,9 +369,38 @@ mod tests {
         assert!(empty.chars().is_empty());
         assert!(empty.is_valid().is_ok());
 
+        // `new CharsRef(10)`: `chars = new char[10]`, ten NULs, length 0.
         let with_cap = CharsRef::with_capacity(10);
         assert_eq!(with_cap.length(), 0);
-        assert!(with_cap.chars.capacity() >= 10);
+        assert_eq!(with_cap.chars, vec!['\0'; 10]);
+    }
+
+    /// `new CharsRef(char[], int, int)` ends with `assert isValid()`
+    /// (`CharsRef.java:56`), whose message for a range past the end is
+    /// `offset+length out of bounds: offset=…,length=…,chars.length=…`.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "offset+length out of bounds: offset=2,length=2,chars.length=3")]
+    fn from_chars_offset_asserts_is_valid() {
+        let _ = CharsRef::from_chars_offset(vec!['a', 'b', 'c'], 2, 2);
+    }
+
+    #[test]
+    fn is_valid_reports_lucenes_messages() {
+        let mut r = CharsRef::from_string("abc");
+        r.length = 4;
+        assert_eq!(
+            r.is_valid().unwrap_err().to_string(),
+            LuceneError::illegal_state("length is out of bounds: 4,chars.length=3".to_string())
+                .to_string()
+        );
+        r.length = 0;
+        r.offset = 4;
+        assert_eq!(
+            r.is_valid().unwrap_err().to_string(),
+            LuceneError::illegal_state("offset out of bounds: 4,chars.length=3".to_string())
+                .to_string()
+        );
     }
 
     #[test]

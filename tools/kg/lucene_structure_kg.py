@@ -17,28 +17,17 @@ Usage:
 """
 import argparse
 import json
-import subprocess
 import sys
-import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import enrich_lucene_kg as en
+from kgio import PER_ROW_SCAN_BATCH, client
 
 
 def rmp(mode, roadmap, query, attempts=6):
-    delay = 1.0
-    for attempt in range(1, attempts + 1):
-        r = subprocess.run(["rmp", "graph", mode, "-r", roadmap],
-                           input=query, text=True, capture_output=True)
-        if r.returncode == 0 or "store is busy" not in r.stderr:
-            break
-        if attempt < attempts:
-            time.sleep(delay)
-            delay = min(delay * 2, 20)
-    if r.returncode != 0:
-        raise SystemExit(f"{mode} failed: {r.stderr[:400]}\n{query[:300]}")
-    return r.stdout
+    """One statement through the graph server; `mode` only labels a failure."""
+    return client(roadmap, query, label=mode, attempts=attempts)
 
 
 def esc(v):
@@ -137,7 +126,8 @@ def load_members(roadmap, commit, date):
             })
     print(f"members in the reference tree: {len(all_rows)}", file=sys.stderr)
     unwind(roadmap, "create", all_rows,
-           "MERGE (m:Method {qualifiedName: row.qn})", "Method nodes")
+           "MERGE (m:Method {qualifiedName: row.qn})", "Method nodes",
+           batch=PER_ROW_SCAN_BATCH)
     unwind(roadmap, "update", all_rows,
            "MATCH (m:Method {qualifiedName: row.qn}) SET m.name = row.name, "
            "m.signature = row.signature, m.kind = row.kind, "

@@ -394,8 +394,7 @@ impl Automaton {
         // below is total on the triple, so an unstable sort yields the same result.
         {
             let block = &mut self.transitions[offset..offset + 3 * num_transitions];
-            let mut triples: Vec<[i32; 3]> =
-                block.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
+            let mut triples: Vec<[i32; 3]> = block.as_chunks::<3>().0.to_vec();
             triples.sort_unstable_by(|a, b| {
                 a[0].cmp(&b[0])
                     .then_with(|| a[1].cmp(&b[1]))
@@ -463,8 +462,7 @@ impl Automaton {
         // Sort transitions by min/max/dest:
         {
             let block = &mut self.transitions[offset..offset + 3 * upto];
-            let mut triples: Vec<[i32; 3]> =
-                block.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
+            let mut triples: Vec<[i32; 3]> = block.as_chunks::<3>().0.to_vec();
             triples.sort_unstable_by(|a, b| {
                 a[1].cmp(&b[1])
                     .then_with(|| a[2].cmp(&b[2]))
@@ -513,8 +511,8 @@ impl Automaton {
     /// # Divergence from Lucene 10.5.0
     ///
     /// Lucene's `Automaton` has no `finish()`; this is a pre-existing Rucene alias
-    /// for [`Automaton::finish_state`], kept because `analysis::automaton_conversion`
-    /// calls it.
+    /// for [`Automaton::finish_state`]. No production code calls it; the
+    /// `automaton_terms_enum` tests do.
     pub fn finish(&mut self) {
         self.finish_state();
     }
@@ -924,11 +922,7 @@ impl AutomatonBuilder {
 
         // Sort transitions by source, then min label ascending, then max label
         // ascending, then dest ascending.
-        let mut quads: Vec<[i32; 4]> = self
-            .transitions
-            .chunks_exact(4)
-            .map(|c| [c[0], c[1], c[2], c[3]])
-            .collect();
+        let mut quads: Vec<[i32; 4]> = self.transitions.as_chunks::<4>().0.to_vec();
         quads.sort_unstable_by(|a, b| {
             a[0].cmp(&b[0])
                 .then_with(|| a[2].cmp(&b[2]))
