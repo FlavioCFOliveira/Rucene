@@ -199,8 +199,8 @@ impl VectorValuesConsumer {
         let outcome = writer
             .flush(max_doc, sort_map)
             .and_then(|()| writer.finish());
-        let close_outcome = writer.close();
-        close_outcome?;
+        // `finally { IOUtils.close(writer); }` (`VectorValuesConsumer.java:74-80`).
+        crate::util::IOUtils::close([Some(|| writer.close())])?;
         outcome
     }
 
@@ -211,9 +211,19 @@ impl VectorValuesConsumer {
     /// `IOUtils.closeWhileHandlingException`: the segment is being thrown away,
     /// so a failure to close one of its files changes nothing. Like Java's, it
     /// keeps the writer afterwards rather than clearing it.
+    ///
+    /// Java's `abort()` returns nothing and lets the `Error` that
+    /// `closeWhileHandlingException` rethrows propagate unchecked; this one
+    /// returns nothing either, so that [`LuceneError::AssertionError`](crate::error::LuceneError::AssertionError) is
+    /// raised as the panic that stands for a Java `Error`
+    /// ([`IOUtils::rethrow_always`](crate::util::IOUtils::rethrow_always)).
     pub fn abort(&mut self) {
-        if let Some(writer) = self.writer.as_mut() {
-            let _ = writer.close();
+        if let Err(error) = crate::util::IOUtils::close_while_handling_exception([self
+            .writer
+            .as_mut()
+            .map(|writer| move || writer.close())])
+        {
+            crate::util::IOUtils::rethrow_always(error);
         }
     }
 

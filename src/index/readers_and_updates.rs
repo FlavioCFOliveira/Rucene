@@ -1109,17 +1109,16 @@ impl PendingSoftDeletes {
                 context,
             )
         } else if seg_info.get_use_compound_file() {
-            // `try (Directory cfs = codec.compoundFormat().getCompoundReader(...))`
-            // (`IndexWriter.java:1262-1264`): closed whatever the read did; a
-            // failure to close is reported only when the read succeeded.
+            // `try { return ...read(dir, ...); } finally { IOUtils.close(toClose); }`
+            // (`PendingSoftDeletes.java:234-238`): closed whatever the read
+            // did, and a failure to close replaces the read's, as an exception
+            // thrown from `finally` does.
             let mut cfs = codec
                 .compound_format()
                 .get_compound_reader(seg_info.directory.as_ref(), seg_info)?;
             let read = fis_format.read(&*cfs, seg_info, "", context);
-            let closed = cfs.close();
-            let field_infos = read?;
-            closed?;
-            Ok(field_infos)
+            crate::util::IOUtils::close([Some(|| cfs.close())])?;
+            read
         } else {
             fis_format.read(seg_info.directory.as_ref(), seg_info, "", context)
         }

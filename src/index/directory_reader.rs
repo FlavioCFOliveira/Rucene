@@ -326,6 +326,36 @@ impl StandardDirectoryReader {
         .into_shared())
     }
 
+    /// Opens a reader over the commit `infos` was read from.
+    ///
+    /// Equivalent to the `FindSegmentsFile.doBody` of
+    /// `StandardDirectoryReader.open(Directory, int, IndexCommit, Comparator,
+    /// ExecutorService)` (`StandardDirectoryReader.java:94-107`), with no leaf
+    /// sorter: the segment readers are created, and when building the reader
+    /// over them fails — it throws `CorruptIndexException` over too many
+    /// documents — `IOUtils.closeWhileSuppressingExceptions(t, readers)`
+    /// closes them before the failure is rethrown.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever creating the segment readers or the reader raises.
+    fn open_from_commit(
+        directory: Arc<dyn Directory>,
+        infos: SegmentInfos,
+    ) -> Result<Arc<dyn DirectoryReader>> {
+        let readers = Self::create_segment_readers(&infos, None)?;
+        let to_close = readers.clone();
+        match StandardDirectoryReader::new(directory, readers, infos, None, None, false, false) {
+            Ok(reader) => Ok(reader.into_shared()),
+            Err(t) => Err(crate::util::IOUtils::close_while_suppressing_exceptions(
+                t,
+                to_close
+                    .iter()
+                    .map(|reader| Some(|| IndexReader::close(reader.as_ref()))),
+            )),
+        }
+    }
+
     /// Opens a near-real-time reader over the segments a writer has just
     /// flushed.
     ///
@@ -1425,7 +1455,7 @@ impl CacheHelper for Arc<DirectoryReaderCacheHelper> {
 /// Equivalent to `DirectoryReader.open(Directory)`.
 pub fn open(directory: Arc<dyn Directory>) -> Result<Arc<dyn DirectoryReader>> {
     let infos = SegmentInfos::read_latest_commit(Arc::clone(&directory))?;
-    StandardDirectoryReader::open_from_infos(directory, infos, None, None, None)
+    StandardDirectoryReader::open_from_commit(directory, infos)
 }
 
 /// Returns a `DirectoryReader` for the given `IndexCommit`.
@@ -1435,7 +1465,7 @@ pub fn open_with_commit(commit: &dyn IndexCommit) -> Result<Arc<dyn DirectoryRea
     let directory = commit.get_directory();
     let infos =
         SegmentInfos::read_commit(Arc::clone(&directory), &commit.get_segments_file_name())?;
-    StandardDirectoryReader::open_from_infos(directory, infos, None, None, None)
+    StandardDirectoryReader::open_from_commit(directory, infos)
 }
 
 /// Returns a near-real-time reader covering every change `writer` has made so

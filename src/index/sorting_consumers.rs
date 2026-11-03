@@ -367,7 +367,7 @@ impl SortingStoredFieldsConsumer {
             )?;
             Ok((reader, sort_writer))
         })();
-        let (reader, mut sort_writer) = match opened {
+        let (mut reader, mut sort_writer) = match opened {
             Ok(opened) => opened,
             Err(error) => {
                 let _ = self.tmp_directory.delete_temporary_files();
@@ -393,12 +393,17 @@ impl SortingStoredFieldsConsumer {
             }
             sort_writer.finish(max_doc)
         })();
-        // `IOUtils.close(reader, sortWriter)`, then
-        // `IOUtils.deleteFiles(tmpDirectory, ...)`.
-        drop(reader);
-        let closed = sort_writer.close();
-        let deleted = self.tmp_directory.delete_temporary_files();
-        copied.and(closed).and(deleted)
+        // `finally { IOUtils.close(reader, sortWriter);
+        // IOUtils.deleteFiles(tmpDirectory, ...); }`
+        // (`SortingStoredFieldsConsumer.java:135-138`): a failure of either
+        // replaces the copy's, as an exception thrown from `finally` does, and
+        // a failure to close skips the deletion.
+        crate::util::IOUtils::close([
+            crate::util::IOUtils::closeable(|| reader.close()),
+            crate::util::IOUtils::closeable(|| sort_writer.close()),
+        ])?;
+        self.tmp_directory.delete_temporary_files()?;
+        copied
     }
 
     /// Discards everything buffered.
@@ -531,7 +536,7 @@ impl SortingTermVectorsConsumer {
             )?;
             Ok((reader, writer))
         })();
-        let (reader, mut writer) = match opened {
+        let (mut reader, mut writer) = match opened {
             Ok(opened) => opened,
             Err(error) => {
                 let _ = self.tmp_directory.delete_temporary_files();
@@ -547,12 +552,17 @@ impl SortingTermVectorsConsumer {
             }
             writer.finish(max_doc)
         })();
-        // `IOUtils.close(reader, writer)`, then
-        // `IOUtils.deleteFiles(tmpDirectory, ...)`.
-        drop(reader);
-        let closed = writer.close();
-        let deleted = self.tmp_directory.delete_temporary_files();
-        copied.and(closed).and(deleted)
+        // `finally { IOUtils.close(reader, writer);
+        // IOUtils.deleteFiles(tmpDirectory, ...); }`
+        // (`SortingTermVectorsConsumer.java:79-82`): a failure of either
+        // replaces the copy's, as an exception thrown from `finally` does, and
+        // a failure to close skips the deletion.
+        crate::util::IOUtils::close([
+            crate::util::IOUtils::closeable(|| reader.close()),
+            crate::util::IOUtils::closeable(|| writer.close()),
+        ])?;
+        self.tmp_directory.delete_temporary_files()?;
+        copied
     }
 
     /// Discards everything buffered.
@@ -696,5 +706,72 @@ impl SortingTermVectorsConsumer {
         }
         debug_assert_eq!(field_count, num_fields);
         writer.finish_document()
+    }
+}
+
+#[cfg(test)]
+mod sorted_flush_close_tests {
+    //! `SortingStoredFieldsConsumer.flush` and `SortingTermVectorsConsumer.flush`
+    //! close the reader over the temporary files in their `finally`:
+    //! `IOUtils.close(reader, sortWriter)` (`SortingStoredFieldsConsumer.java:135-138`)
+    //! and `IOUtils.close(reader, writer)` (`SortingTermVectorsConsumer.java:79-82`).
+    use std::sync::Arc;
+
+    use crate::codecs::tests::CloseTrackingDirectory;
+    use crate::document::{Document, Field, FieldType, NumericDocValuesField, StoredField};
+    use crate::index::index_writer::IndexWriter;
+    use crate::index::index_writer_config::IndexWriterConfig;
+    use crate::index::IndexOptions;
+    use crate::search::{Sort, SortField, SortFieldType};
+    use crate::store::Directory;
+
+    #[test]
+    fn a_sorted_flush_closes_the_readers_over_its_temporary_files() {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let tracking = Arc::new(CloseTrackingDirectory::default());
+        let log = Arc::clone(&tracking.log);
+        let dir: Arc<dyn Directory> = tracking;
+        let mut config = IndexWriterConfig::new();
+        config
+            .set_index_sort(
+                Sort::new_fields(vec![SortField::new(
+                    Some("sort".to_string()),
+                    SortFieldType::Long,
+                )
+                .unwrap()])
+                .unwrap(),
+            )
+            .unwrap();
+        let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+        let mut vectors = FieldType::new();
+        vectors
+            .set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
+            .unwrap();
+        vectors.set_tokenized(true).unwrap();
+        vectors.set_store_term_vectors(true).unwrap();
+        vectors.freeze();
+        for i in 0..3i64 {
+            let mut doc = Document::new();
+            doc.add(Box::new(NumericDocValuesField::new("sort", 3 - i)));
+            doc.add(Box::new(
+                StoredField::new_string("stored", format!("value {i}")).unwrap(),
+            ));
+            doc.add(Box::new(
+                Field::new("body", format!("words {i}"), vectors.clone()).unwrap(),
+            ));
+            writer.add_document(&doc).unwrap();
+        }
+        writer.commit().unwrap();
+        writer.close().unwrap();
+        let closed = log.closed();
+        for extension in ["fdt", "tvd"] {
+            assert!(
+                closed
+                    .iter()
+                    .any(|name| name.starts_with(&format!("_0.{extension}"))
+                        && name.ends_with(".tmp")),
+                "the temporary .{extension} input is closed: {closed:?}"
+            );
+        }
     }
 }

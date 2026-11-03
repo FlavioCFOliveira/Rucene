@@ -228,12 +228,33 @@ impl LockVerifyServer {
 
     /// Serves one client for its whole lifetime: reads its id, waits for the
     /// starting gun, and then validates every lock command it sends.
+    ///
+    /// Equivalent to the body of the client thread Java starts
+    /// (`LockVerifyServer.java:81-131`), whose `finally` is
+    /// `IOUtils.closeWhileHandlingException(cs)`: the socket is closed however
+    /// the client ends.
     fn serve_client(
         client: TcpStream,
         locked_id: &LockedId,
         starting_gun: &StartingGun,
     ) -> Result<()> {
-        let mut input = client.try_clone()?;
+        let served = Self::serve_client_streams(&client, locked_id, starting_gun);
+        // Closing a socket is dropping its `TcpStream`, which cannot fail.
+        crate::util::IOUtils::close_while_handling_exception([Some(move || {
+            drop(client);
+            Ok(())
+        })])?;
+        served
+    }
+
+    /// The `try (InputStream in = cs.getInputStream(); OutputStream os =
+    /// cs.getOutputStream())` block of the client thread.
+    fn serve_client_streams(
+        client: &TcpStream,
+        locked_id: &LockedId,
+        starting_gun: &StartingGun,
+    ) -> Result<()> {
+        let mut input = client;
         let mut output = client;
 
         let mut byte = [0u8; 1];

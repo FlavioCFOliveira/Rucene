@@ -37,14 +37,14 @@ use crate::index::vector_values::{
 use crate::index::{
     accept_ords_with, segment_file_name, FieldInfos, VectorEncoding, VectorSimilarityFunction,
 };
-use crate::search::knn::{KnnCollector, TopKnnCollector};
+use crate::search::knn::KnnCollector;
 use crate::search::{AcceptDocs, DocIdSetIterator, TaskExecutor, NO_MORE_DOCS};
 use crate::store::{DataInput, IndexInput, IndexOutput};
 use crate::util::hnsw::{
     ArrayNodesIterator, CloseableRandomVectorScorerSupplier, ConcurrentHnswMerger,
     DenseNodesIterator, EmptyHnswGraph, HnswBuilder, HnswGraph, HnswGraphBuilder, HnswGraphMerger,
     HnswGraphSearcher, IncrementalHnswGraphMerger, NeighborArray, NodesIterator, OnHeapHnswGraph,
-    RandomVectorScorer,
+    OrdinalTranslatedKnnCollector, RandomVectorScorer,
 };
 use crate::util::packed::{DirectMonotonicMeta, DirectMonotonicReader, DirectMonotonicWriter};
 use crate::util::quantization::{QuantizedByteVectorValues, ScalarQuantizer};
@@ -2174,21 +2174,21 @@ impl Lucene99HnswVectorsReader {
     /// between the graph and the exhaustive scan.
     ///
     /// Equivalent to the private `Lucene99HnswVectorsReader.search(FieldEntry,
-    /// KnnCollector, AcceptDocs, IOSupplier<RandomVectorScorer>)`.
+    /// KnnCollector, AcceptDocs, IOSupplier<RandomVectorScorer>)`
+    /// (`Lucene99HnswVectorsReader.java:331-384`): the graph search collects
+    /// through an `OrdinalTranslatedKnnCollector` wrapping the caller's
+    /// collector, which translates each ordinal to its document as it is
+    /// collected; the exhaustive scan collects into the caller's collector
+    /// directly, translating with `scorer.ordToDoc`.
     ///
     /// # Divergence from Lucene 10.5.0
     ///
-    /// Java hands the graph search an `OrdinalTranslatedKnnCollector` that
-    /// wraps the caller's collector and translates each ordinal as it is
-    /// collected, and hands the exhaustive scan the caller's collector
-    /// directly. This port collects ordinals into a [`TopKnnCollector`] of its
-    /// own and translates them once the search is over, because
-    /// `OrdinalTranslatedKnnCollector` owns the collector it wraps and the
-    /// caller's arrives as a borrow. The collector is built with the caller's
-    /// `k`, visit limit and search strategy, so it terminates early, reports
-    /// the same minimum competitive similarity and selects the same searcher as
-    /// the collector Java passes; only the visited count reaches the caller in
-    /// one increment at the end rather than as the search goes.
+    /// Java's translation function is `scorer::ordToDoc`. A [`KnnCollector`]
+    /// is `Send`, and a [`RandomVectorScorer`] is neither `Send` nor shareable
+    /// while the graph search scores through it, so the collector cannot call
+    /// the scorer; it translates through `ordToDoc` of the field's vector
+    /// values instead (`field_values`), the mapping every scorer of the flat
+    /// formats delegates its own `ordToDoc` to.
     ///
     /// # Errors
     ///
@@ -2198,6 +2198,7 @@ impl Lucene99HnswVectorsReader {
         &self,
         entry: &FieldEntry,
         mut scorer: Box<dyn RandomVectorScorer>,
+        field_values: Box<dyn crate::index::vector_values::KnnVectorValues>,
         knn_collector: &mut dyn KnnCollector,
         accept_docs: &mut dyn AcceptDocs,
     ) -> Result<()> {
@@ -2205,11 +2206,6 @@ impl Lucene99HnswVectorsReader {
             return Ok(());
         }
         let k = knn_collector.k();
-        let mut internal = TopKnnCollector::with_strategy(
-            k,
-            knn_collector.visit_limit(),
-            knn_collector.get_search_strategy().cloned(),
-        );
         // Use the approximate cardinality, as this is good enough, but ensure
         // it does not exceed the graph size, as that is illogical.
         let graph_size = if entry.vector_index_length == 0 {
@@ -2229,10 +2225,14 @@ impl Lucene99HnswVectorsReader {
             do_hnsw = false;
         }
         if do_hnsw {
+            let mut collector = OrdinalTranslatedKnnCollector::new(
+                knn_collector,
+                Box::new(move |ord: i32| field_values.ord_to_doc(ord)),
+            );
             let mut graph = self.get_graph_for_entry(entry)?;
             HnswGraphSearcher::search(
                 scorer.as_mut(),
-                &mut internal,
+                &mut collector,
                 graph.as_mut(),
                 accepted_ords.as_deref(),
                 filtered_doc_count,
@@ -2249,7 +2249,7 @@ impl Lucene99HnswVectorsReader {
                     .as_deref()
                     .map_or(Ok(true), |accepted| accepted.try_get(i as usize))?
                 {
-                    if internal.early_terminated() {
+                    if knn_collector.early_terminated() {
                         break;
                     }
                     ords[num_ords] = i;
@@ -2259,7 +2259,7 @@ impl Lucene99HnswVectorsReader {
                             &ords,
                             &mut scores,
                             num_ords,
-                            &mut internal,
+                            knn_collector,
                             scorer.as_mut(),
                         )?;
                         num_ords = 0;
@@ -2271,16 +2271,35 @@ impl Lucene99HnswVectorsReader {
                     &ords,
                     &mut scores,
                     num_ords,
-                    &mut internal,
+                    knn_collector,
                     scorer.as_mut(),
                 )?;
             }
         }
-        knn_collector.inc_visited_count(internal.visited_count() as i32);
-        for (ord, score) in internal.top_docs_with_scores() {
-            knn_collector.collect(scorer.ord_to_doc(ord), score);
-        }
         Ok(())
+    }
+
+    /// The vector values of `field`, whose `ordToDoc` the graph search's
+    /// `OrdinalTranslatedKnnCollector` translates through; see
+    /// [`search_with_scorer`](Self::search_with_scorer).
+    fn field_values(
+        &self,
+        field: &str,
+        encoding: VectorEncoding,
+    ) -> Result<Box<dyn crate::index::vector_values::KnnVectorValues>> {
+        let values: Option<Box<dyn crate::index::vector_values::KnnVectorValues>> = match encoding {
+            VectorEncoding::FLOAT32 => self
+                .flat_vectors_reader
+                .get_float_vector_values(field)?
+                .map(|values| values as Box<dyn crate::index::vector_values::KnnVectorValues>),
+            _ => self
+                .flat_vectors_reader
+                .get_byte_vector_values(field)?
+                .map(|values| values as Box<dyn crate::index::vector_values::KnnVectorValues>),
+        };
+        values.ok_or_else(|| {
+            LuceneError::illegal_state(format!("field=\"{field}\" has no vector values"))
+        })
     }
 }
 
@@ -2364,7 +2383,8 @@ impl KnnVectorsReader for Lucene99HnswVectorsReader {
         let scorer = self
             .flat_vectors_reader
             .get_random_vector_scorer_float(field, target)?;
-        self.search_with_scorer(&entry, scorer, knn_collector, accept_docs)
+        let values = self.field_values(field, VectorEncoding::FLOAT32)?;
+        self.search_with_scorer(&entry, scorer, values, knn_collector, accept_docs)
     }
 
     fn search_byte(
@@ -2378,7 +2398,8 @@ impl KnnVectorsReader for Lucene99HnswVectorsReader {
         let scorer = self
             .flat_vectors_reader
             .get_random_vector_scorer_byte(field, target)?;
-        self.search_with_scorer(&entry, scorer, knn_collector, accept_docs)
+        let values = self.field_values(field, VectorEncoding::BYTE)?;
+        self.search_with_scorer(&entry, scorer, values, knn_collector, accept_docs)
     }
 
     fn get_merge_instance(&self) -> Result<Box<dyn KnnVectorsReader>> {
@@ -2433,17 +2454,17 @@ fn score_batch_exhaustive(
     ords: &[i32],
     scores: &mut [f32],
     num_ords: usize,
-    collector: &mut TopKnnCollector,
+    knn_collector: &mut dyn KnnCollector,
     scorer: &mut dyn RandomVectorScorer,
 ) -> Result<()> {
     if num_ords == 0 {
         return Ok(());
     }
-    collector.inc_visited_count(num_ords as i32);
+    knn_collector.inc_visited_count(num_ords as i32);
     let best = scorer.bulk_score(ords, &mut scores[..num_ords], num_ords as i32)?;
-    if best > collector.min_competitive_similarity() {
+    if best > knn_collector.min_competitive_similarity() {
         for i in 0..num_ords {
-            collector.collect(ords[i], scores[i]);
+            knn_collector.collect(scorer.ord_to_doc(ords[i]), scores[i]);
         }
     }
     Ok(())
@@ -2905,6 +2926,7 @@ mod tests {
         VectorEncoding, VectorSimilarityFunction,
     };
     use crate::search::from_live_docs;
+    use crate::search::knn::TopKnnCollector;
     use crate::store::{ByteBuffersDirectory, DefaultIOContext};
     use crate::util::string_helper::ID_LENGTH;
     use crate::util::Version;
@@ -3405,6 +3427,103 @@ mod tests {
             live[*doc as usize] = false;
         }
         Box::new(VecBits(live))
+    }
+
+    /// A collector that records what the reader hands it, over a
+    /// [`TopKnnCollector`] that keeps the results.
+    struct RecordingKnnCollector {
+        inner: TopKnnCollector,
+        collected: Vec<(i32, f32)>,
+        visited_increments: Vec<i32>,
+    }
+
+    impl KnnCollector for RecordingKnnCollector {
+        fn early_terminated(&self) -> bool {
+            self.inner.early_terminated()
+        }
+
+        fn inc_visited_count(&mut self, count: i32) {
+            self.visited_increments.push(count);
+            self.inner.inc_visited_count(count);
+        }
+
+        fn visited_count(&self) -> i64 {
+            self.inner.visited_count()
+        }
+
+        fn visit_limit(&self) -> i64 {
+            self.inner.visit_limit()
+        }
+
+        fn k(&self) -> i32 {
+            self.inner.k()
+        }
+
+        fn collect(&mut self, doc_id: i32, similarity: f32) -> bool {
+            self.collected.push((doc_id, similarity));
+            self.inner.collect(doc_id, similarity)
+        }
+
+        fn min_competitive_similarity(&self) -> f32 {
+            self.inner.min_competitive_similarity()
+        }
+
+        fn top_docs(&mut self) -> crate::search::knn::TopDocs {
+            self.inner.top_docs()
+        }
+
+        fn get_search_strategy(&self) -> Option<&crate::search::knn::KnnSearchStrategy> {
+            self.inner.get_search_strategy()
+        }
+    }
+
+    /// `Lucene99HnswVectorsReader.search` (`Lucene99HnswVectorsReader.java:340-363`)
+    /// hands the graph search `new OrdinalTranslatedKnnCollector(knnCollector,
+    /// scorer::ordToDoc)`: the caller's collector sees every visit and every
+    /// collected document, translated, as the search makes them, not one
+    /// visit increment and its top `k` once it is over.
+    #[test]
+    fn the_graph_search_collects_through_the_callers_collector() -> Result<()> {
+        let dir = Arc::new(ByteBuffersDirectory::new()) as Arc<dyn crate::store::Directory>;
+        let seg_info = make_segment_info(&dir, ACCEPT_DOCS_SIZE)?;
+        let field_info = float_field_info("float_field", 0, 2)?;
+        let field_infos = FieldInfos::new(vec![field_info.clone()])?;
+        write_accept_docs_segment(&dir, &seg_info, &field_info, &field_infos, ACCEPT_DOCS_SIZE)?;
+        let io_ctx = DefaultIOContext::default();
+        let read_state = SegmentReadState::new(dir.as_ref(), &seg_info, &field_infos, &io_ctx);
+        let reader = Lucene99HnswVectorsFormat::new().fields_reader(&read_state)?;
+
+        let mut collector = RecordingKnnCollector {
+            inner: TopKnnCollector::new(3, i64::MAX),
+            collected: Vec::new(),
+            visited_increments: Vec::new(),
+        };
+        let mut all = from_live_docs(None, ACCEPT_DOCS_SIZE)?;
+        reader.search("float_field", &[0.0, 0.0], &mut collector, &mut all)?;
+        assert!(
+            collector.visited_increments.len() > 1,
+            "every visit reaches the caller's collector: {:?}",
+            collector.visited_increments
+        );
+        assert!(
+            collector.collected.len() > 3,
+            "every competitive document reaches the caller's collector: {:?}",
+            collector.collected
+        );
+        // Document `i` holds `[i, 0]` and its ordinal is `i`, so a translated
+        // document is a valid document of the segment.
+        assert!(collector
+            .collected
+            .iter()
+            .all(|(doc, _)| (0..ACCEPT_DOCS_SIZE).contains(doc)));
+        let docs: Vec<i32> = collector
+            .inner
+            .top_docs_with_scores()
+            .into_iter()
+            .map(|(doc, _)| doc)
+            .collect();
+        assert_eq!(docs, vec![0, 1, 2]);
+        Ok(())
     }
 
     #[test]

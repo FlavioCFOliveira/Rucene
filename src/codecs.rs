@@ -1122,6 +1122,7 @@ pub(crate) mod tests {
         closed: std::sync::Mutex<Vec<String>>,
         fail_close: std::sync::Mutex<std::collections::HashSet<String>>,
         fail_open: std::sync::Mutex<std::collections::HashSet<String>>,
+        fail_sync: std::sync::atomic::AtomicBool,
     }
 
     impl CloseLog {
@@ -1148,6 +1149,12 @@ pub(crate) mod tests {
         /// Makes every later `openInput`/`createOutput` of `name` fail.
         pub(crate) fn fail_open(&self, name: &str) {
             self.fail_open.lock().unwrap().insert(name.to_string());
+        }
+
+        /// Makes every later `sync` fail.
+        pub(crate) fn fail_sync(&self) {
+            self.fail_sync
+                .store(true, std::sync::atomic::Ordering::SeqCst);
         }
 
         fn record_close(&self, name: &str) -> Result<()> {
@@ -1316,6 +1323,11 @@ pub(crate) mod tests {
         }
 
         fn sync(&self, names: &[String]) -> Result<()> {
+            if self.log.fail_sync.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(crate::error::LuceneError::Io(std::io::Error::other(
+                    format!("sync failed: {names:?}"),
+                )));
+            }
             self.inner.sync(names)
         }
 

@@ -1123,10 +1123,12 @@ impl crate::index::index_writer_config::MergedSegmentWarmer for SimpleMergedSegm
 /// **Divergence from Lucene 10.5.0.** Java's producers `close()` the producers
 /// of the wrapped readers they hold (`IOUtils.close(producers)`). The norms,
 /// doc-values, postings, points and vectors producers of a wrapped reader are
-/// [`Arc`]s it shares with every other holder and closes itself, so the
-/// producers built here release nothing on `close`; the stored-fields and
-/// term-vectors readers, which each wrapped reader hands out as a fresh
-/// instance, are closed as in Java.
+/// [`Arc`]s it shares with every other holder and closes itself, and a close
+/// needs exclusive access, so the producers built here close through
+/// `IOUtils.close` only the producers they are the last holder of — none,
+/// while the wrapped reader is open; the stored-fields and term-vectors
+/// readers, which each wrapped reader hands out as a fresh instance, are
+/// closed as in Java.
 pub struct SlowCompositeCodecReaderWrapper {
     /// This reader's own reference count and identity: Java's wrapper is an
     /// `IndexReader` of its own, distinct from every wrapped reader.
@@ -1640,33 +1642,34 @@ impl StoredFieldsReader for SlowCompositeStoredFieldsReader {
         reader.prefetch(local_doc)
     }
 
-    /// Equivalent to `IOUtils.close(readers)`: every reader is closed, and the
-    /// first failure is reported.
+    /// Equivalent to `IOUtils.close(readers)`
+    /// (`SlowCompositeCodecReaderWrapper.java:135-138`): every reader is
+    /// closed, and the first failure is reported.
     fn close(&mut self) -> Result<()> {
-        close_all(
+        crate::util::IOUtils::close(
             self.readers
                 .iter_mut()
-                .flatten()
-                .map(|reader| reader.close()),
+                .map(|reader| reader.as_mut().map(|reader| move || reader.close())),
         )
     }
 }
 
-/// Runs every close in `closes`, returning the first failure.
-///
-/// Equivalent to `IOUtils.close(Closeable...)`, which closes everything before
-/// rethrowing the first exception.
-fn close_all(closes: impl Iterator<Item = Result<()>>) -> Result<()> {
-    let mut first_error = None;
-    for result in closes {
-        if let Err(error) = result {
-            first_error.get_or_insert(error);
-        }
-    }
-    match first_error {
-        Some(error) => Err(error),
-        None => Ok(()),
-    }
+/// `IOUtils.close(producers)` over producers the wrapped readers share with
+/// this one: every producer this one holds last is closed, in order, and the
+/// first failure is returned once all ran; a producer another holder still
+/// shares is left to it (the close divergence of
+/// [`SlowCompositeCodecReaderWrapper`]).
+fn close_shared<T: ?Sized>(
+    producers: &mut [Option<Arc<T>>],
+    close: impl Fn(&mut T) -> Result<()>,
+) -> Result<()> {
+    let close = &close;
+    crate::util::IOUtils::close(producers.iter_mut().map(|producer| {
+        producer
+            .as_mut()
+            .and_then(Arc::get_mut)
+            .map(|producer| move || close(producer))
+    }))
 }
 
 /// Hands every field a wrapped reader visits to `visitor` under the
@@ -1777,13 +1780,13 @@ impl TermVectorsReader for SlowCompositeTermVectorsReader {
         })
     }
 
-    /// Equivalent to `IOUtils.close(readers)`.
+    /// Equivalent to `IOUtils.close(readers)`
+    /// (`SlowCompositeCodecReaderWrapper.java:226-229`).
     fn close(&mut self) -> Result<()> {
-        close_all(
+        crate::util::IOUtils::close(
             self.readers
                 .iter_mut()
-                .flatten()
-                .map(|reader| reader.close()),
+                .map(|reader| reader.as_mut().map(|reader| move || reader.close())),
         )
     }
 }
@@ -1824,8 +1827,11 @@ impl NormsProducer for SlowCompositeNormsProducer {
         Ok(Box::new(self.clone()))
     }
 
+    /// Java `IOUtils.close(producers)` (`SlowCompositeCodecReaderWrapper.java:285-288`), each producer closed only
+    /// when this one is its last holder: see the close divergence of
+    /// [`SlowCompositeCodecReaderWrapper`].
     fn close(&mut self) -> Result<()> {
-        Ok(())
+        close_shared(&mut self.producers, |producer| producer.close())
     }
 }
 
@@ -1990,8 +1996,11 @@ impl DocValuesProducer for SlowCompositeDocValuesProducer {
         Ok(Box::new(self.clone()))
     }
 
+    /// Java `IOUtils.close(producers)` (`SlowCompositeCodecReaderWrapper.java:397-400`), each producer closed only
+    /// when this one is its last holder: see the close divergence of
+    /// [`SlowCompositeCodecReaderWrapper`].
     fn close(&mut self) -> Result<()> {
-        Ok(())
+        close_shared(&mut self.producers, |producer| producer.close())
     }
 }
 
@@ -2078,8 +2087,11 @@ impl FieldsProducer for SlowCompositeFieldsProducer {
         }))
     }
 
+    /// Java `IOUtils.close(producers)` (`SlowCompositeCodecReaderWrapper.java:525-528`), each producer closed only
+    /// when this one is its last holder: see the close divergence of
+    /// [`SlowCompositeCodecReaderWrapper`].
     fn close(&mut self) -> Result<()> {
-        Ok(())
+        close_shared(&mut self.producers, |producer| producer.close())
     }
 }
 
@@ -2150,8 +2162,11 @@ impl PointsReader for SlowCompositePointsReader {
         Ok(Box::new(self.clone()))
     }
 
+    /// Java `IOUtils.close(readers)` (`SlowCompositeCodecReaderWrapper.java:582-585`), each producer closed only
+    /// when this one is its last holder: see the close divergence of
+    /// [`SlowCompositeCodecReaderWrapper`].
     fn close(&mut self) -> Result<()> {
-        Ok(())
+        close_shared(&mut self.points_readers, |producer| producer.close())
     }
 }
 
@@ -2522,8 +2537,11 @@ impl KnnVectorsReader for SlowCompositeKnnVectorsReader {
         map
     }
 
+    /// Java `IOUtils.close(readers)` (`SlowCompositeCodecReaderWrapper.java:822-825`), each producer closed only
+    /// when this one is its last holder: see the close divergence of
+    /// [`SlowCompositeCodecReaderWrapper`].
     fn close(&mut self) -> Result<()> {
-        Ok(())
+        close_shared(&mut self.vectors_readers, |producer| producer.close())
     }
 }
 

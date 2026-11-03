@@ -246,10 +246,14 @@ impl SegmentCoreReaders {
     pub fn dec_ref(&self) -> Result<()> {
         let rc = self.ref_count.fetch_sub(1, Ordering::SeqCst) - 1;
         if rc == 0 {
-            let listener_result = self.notify_core_closed_listeners();
-            let close_result = self.close_producers();
-            listener_result?;
-            return close_result;
+            // `try (Closeable finalizer = this::notifyCoreClosedListeners) {
+            // IOUtils.close(...); }` (`SegmentCoreReaders.java:170-181`): the
+            // producers close first and the listeners are notified after; a
+            // failure to close wins, the listeners' then being suppressed.
+            let closed = self.close_producers();
+            let notified = self.notify_core_closed_listeners();
+            closed?;
+            return notified;
         } else if rc < 0 {
             return Err(LuceneError::illegal_state(format!(
                 "too many decRef calls: refCount is {rc} after decrement"
@@ -258,44 +262,33 @@ impl SegmentCoreReaders {
         Ok(())
     }
 
+    /// `IOUtils.close(fields, termVectorsReaderOrig, fieldsReaderOrig,
+    /// cfsReader, normsProducer, pointsReader, knnVectorsReader)`
+    /// (`SegmentCoreReaders.java:172-179`): every one is closed, in Java's
+    /// order, and the first failure is returned.
     fn close_producers(&self) -> Result<()> {
-        let mut first_error: Option<LuceneError> = None;
-
-        let mut record = |result: Result<()>| {
-            if let Err(err) = result {
-                if first_error.is_none() {
-                    first_error = Some(err);
-                }
-            }
-        };
-
-        record(close_lock_arc(&self.fields, |producer| producer.close()));
-        record(close_lock_arc(&self.norms_producer, |producer| {
-            producer.close()
-        }));
-        record(close_lock(&self.fields_reader_orig, |reader| {
-            reader.close()
-        }));
-        record(close_lock(&self.term_vectors_reader_orig, |reader| {
-            reader.close()
-        }));
-        record(close_lock_arc(&self.points_reader, |producer| {
-            producer.close()
-        }));
-        record(close_lock_arc(&self.knn_vectors_reader, |producer| {
-            producer.close()
-        }));
-
-        if let Ok(mut guard) = self.cfs_reader.write() {
-            if let Some(mut reader) = guard.take() {
-                record(reader.close());
-            }
-        }
-
-        match first_error {
-            Some(err) => Err(err),
-            None => Ok(()),
-        }
+        use crate::util::IOUtils;
+        IOUtils::close([
+            IOUtils::closeable(|| close_lock_arc(&self.fields, |producer| producer.close())),
+            IOUtils::closeable(|| {
+                close_lock(&self.term_vectors_reader_orig, |reader| reader.close())
+            }),
+            IOUtils::closeable(|| close_lock(&self.fields_reader_orig, |reader| reader.close())),
+            IOUtils::closeable(|| match self.cfs_reader.write() {
+                Ok(mut guard) => match guard.take() {
+                    Some(mut reader) => reader.close(),
+                    None => Ok(()),
+                },
+                Err(_) => Ok(()),
+            }),
+            IOUtils::closeable(|| {
+                close_lock_arc(&self.norms_producer, |producer| producer.close())
+            }),
+            IOUtils::closeable(|| close_lock_arc(&self.points_reader, |producer| producer.close())),
+            IOUtils::closeable(|| {
+                close_lock_arc(&self.knn_vectors_reader, |producer| producer.close())
+            }),
+        ])
     }
 
     fn notify_core_closed_listeners(&self) -> Result<()> {
@@ -3774,5 +3767,77 @@ mod segment_doc_values_ref_count_tests {
         assert!(!SegmentDocValues::producers(&seg_doc_values.gen_dv_producers).contains_key(&7));
         // Readers still holding the producer find it closed.
         assert!(dvp.get().check_integrity().is_err());
+    }
+}
+
+#[cfg(test)]
+mod core_close_order_tests {
+    //! `SegmentCoreReaders.decRef()` (`SegmentCoreReaders.java:168-182`):
+    //! `try (Closeable finalizer = this::notifyCoreClosedListeners) {
+    //! IOUtils.close(fields, ..., knnVectorsReader); }` closes the producers
+    //! first and notifies the core-closed listeners after.
+    use super::*;
+    use crate::codecs::tests::{CloseLog, CloseTrackingDirectory};
+    use crate::document::{Document, Store, TextField};
+    use crate::index::index_reader::{CacheHelper, CacheKey, ClosedListener};
+    use crate::index::index_writer::IndexWriter;
+    use crate::index::index_writer_config::IndexWriterConfig;
+    use crate::index::segment_infos::SegmentInfos;
+    use crate::store::{Directory, DEFAULT_IO_CONTEXT};
+    use crate::util::Version;
+
+    struct CloseCountAtNotification {
+        log: Arc<CloseLog>,
+        seen: Arc<std::sync::Mutex<Option<usize>>>,
+    }
+
+    impl ClosedListener for CloseCountAtNotification {
+        fn on_close(&self, _key: CacheKey) -> Result<()> {
+            *self.seen.lock().unwrap() = Some(self.log.closed().len());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn the_producers_close_before_the_core_closed_listeners_run() -> Result<()> {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let tracking = Arc::new(CloseTrackingDirectory::default());
+        let log = Arc::clone(&tracking.log);
+        let dir: Arc<dyn Directory> = tracking;
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new())?;
+        let mut doc = Document::new();
+        doc.add(Box::new(TextField::new(
+            "body",
+            "some words".to_string(),
+            Store::YES,
+        )?));
+        writer.add_document(&doc)?;
+        writer.commit()?;
+        writer.close()?;
+
+        let infos = SegmentInfos::read_latest_commit(Arc::clone(&dir))?;
+        let reader = SegmentReader::new(
+            infos.info(0).clone(),
+            Version::LATEST.major as i32,
+            &*DEFAULT_IO_CONTEXT,
+        )?;
+        let seen = Arc::new(std::sync::Mutex::new(None));
+        CacheHelper::add_closed_listener(
+            reader.core_readers().as_ref(),
+            Box::new(CloseCountAtNotification {
+                log: Arc::clone(&log),
+                seen: Arc::clone(&seen),
+            }),
+        );
+        let before = log.closed().len();
+        crate::index::index_reader::IndexReader::close(&reader)?;
+        let after = log.closed().len();
+        assert!(after > before, "closing the core closes its inputs");
+        assert_eq!(
+            *seen.lock().unwrap(),
+            Some(after),
+            "the listeners run once every producer is closed"
+        );
+        Ok(())
     }
 }

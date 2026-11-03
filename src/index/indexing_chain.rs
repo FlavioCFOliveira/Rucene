@@ -114,7 +114,9 @@ use crate::store::TrackingDirectoryWrapper;
 use crate::util::byte_block_pool::MAX_TERM_LENGTH;
 use crate::util::java_collections::JavaStringMap;
 use crate::util::NumericUtils;
-use crate::util::{Accountable, AttributeSource, ByteBlockPool, BytesRef, InfoStream, Version};
+use crate::util::{
+    Accountable, AttributeSource, ByteBlockPool, BytesRef, IOUtils, InfoStream, Version,
+};
 
 /// Highest position a token may occupy.
 ///
@@ -2674,9 +2676,17 @@ impl DefaultIndexingChain {
             }
             Ok(())
         })();
-        let close_outcome = consumer.close();
-        outcome?;
-        close_outcome
+        // `finally { if (success) IOUtils.close(normsConsumer); else
+        // IOUtils.closeWhileHandlingException(normsConsumer); }`
+        // (`IndexingChain.java:526-532`).
+        let closeable = [Some(|| consumer.close())];
+        match outcome {
+            Ok(()) => IOUtils::close(closeable),
+            Err(error) => {
+                IOUtils::close_while_handling_exception(closeable)?;
+                Err(error)
+            }
+        }
     }
 
     /// Writes the buffered doc values of the segment through the codec's
@@ -2759,10 +2769,18 @@ impl DefaultIndexingChain {
             }
             Ok(())
         })();
-        let close_outcome = match consumer.as_mut() {
-            Some(consumer) => consumer.close(),
-            None => Ok(()),
-        };
+        // `finally { if (success) IOUtils.close(dvConsumer); else
+        // IOUtils.closeWhileHandlingException(dvConsumer); }`
+        // (`IndexingChain.java:482-488`): a failure leaves before the checks
+        // below.
+        let closeable = [consumer.as_mut().map(|consumer| move || consumer.close())];
+        match outcome {
+            Ok(()) => IOUtils::close(closeable)?,
+            Err(error) => {
+                IOUtils::close_while_handling_exception(closeable)?;
+                return Err(error);
+            }
+        }
         // Lucene re-checks the field infos after the `finally` that closes the
         // consumer: writing doc values without the segment declaring them, or
         // declaring them without writing, is a bug in the chain.
@@ -2780,8 +2798,7 @@ impl DefaultIndexingChain {
                 state.segment_info.name
             )));
         }
-        outcome?;
-        close_outcome
+        Ok(())
     }
 
     /// Writes the buffered point values of the segment through the codec's
@@ -2851,12 +2868,17 @@ impl DefaultIndexingChain {
             }
             Ok(())
         })();
-        let close_outcome = match writer.as_mut() {
-            Some(writer) => writer.close(),
-            None => Ok(()),
-        };
-        outcome?;
-        close_outcome
+        // `finally { if (success) IOUtils.close(pointsWriter); else
+        // IOUtils.closeWhileHandlingException(pointsWriter); }`
+        // (`IndexingChain.java:429-435`).
+        let closeable = [writer.as_mut().map(|writer| move || writer.close())];
+        match outcome {
+            Ok(()) => IOUtils::close(closeable),
+            Err(error) => {
+                IOUtils::close_while_handling_exception(closeable)?;
+                Err(error)
+            }
+        }
     }
 
     /// Hands one field instance's vector to the codec's per-field writer.
@@ -5719,6 +5741,93 @@ mod tests {
         (0..count)
             .map(|i| Tok::new(&format!("t{i}"), 1, i * 4, i * 4 + 2))
             .collect()
+    }
+
+    /// A doc-values format whose consumer cannot be created.
+    #[derive(Debug)]
+    struct RefusingDocValuesFormat;
+
+    impl crate::codecs::DocValuesFormat for RefusingDocValuesFormat {
+        fn name(&self) -> &str {
+            "RefusingDocValues"
+        }
+
+        fn fields_consumer<'a>(
+            &self,
+            _state: &SegmentWriteState<'a>,
+        ) -> Result<Box<dyn crate::codecs::doc_values::DocValuesConsumer + 'a>> {
+            Err(LuceneError::Other("consumer refused".to_string()))
+        }
+
+        fn fields_producer<'a>(
+            &self,
+            _state: &crate::codecs::state::SegmentReadState<'a>,
+        ) -> Result<Box<dyn crate::codecs::doc_values::DocValuesProducer>> {
+            Err(LuceneError::Other("producer refused".to_string()))
+        }
+    }
+
+    /// `IndexingChain.writeDocValues` (`IndexingChain.java:439-497`): a
+    /// failure inside the `try` leaves through the `finally`, which only
+    /// closes the consumer, so the field-infos checks after it are never
+    /// reached and the original failure is the one raised.
+    #[test]
+    fn a_failed_doc_values_consumer_is_reported_over_the_field_infos_check() {
+        let codec = ensure_codec();
+        let mut live = LiveIndexWriterConfig::new(Arc::new(StandardAnalyzer::new()));
+        live.set_codec(Arc::new(
+            crate::codecs::FilterCodec::new("RefusingCodec", Arc::clone(&codec))
+                .with_doc_values_format(RefusingDocValuesFormat),
+        ));
+        let config = Arc::new(live);
+        let tracking = Arc::new(TrackingDirectoryWrapper::new(Box::new(
+            ByteBuffersDirectory::new(),
+        )));
+        let directory: Arc<dyn Directory> = Arc::clone(&tracking) as Arc<dyn Directory>;
+        let make_info = |max_doc| {
+            SegmentInfo::new(
+                Arc::clone(&directory),
+                Version::LATEST,
+                Some(Version::LATEST),
+                "_0".to_string(),
+                max_doc,
+                false,
+                false,
+                Arc::clone(&codec),
+                HashMap::new(),
+                [7u8; 16],
+                HashMap::new(),
+                Default::default(),
+            )
+            .expect("segment info")
+        };
+        let indexing_info = make_info(-1);
+        let mut chain =
+            DefaultIndexingChain::new_for_segment(config, Arc::clone(&tracking), &indexing_info)
+                .expect("bind segment");
+        let mut field_infos = builder();
+        let mut document = Document::new();
+        document.add(Box::new(NumericDocValuesField::new("dv", 7)));
+        chain
+            .process_document(0, &document, true, &mut field_infos)
+            .expect("process document");
+        let finished = field_infos.finish().expect("field infos");
+        let segment_info = make_info(1);
+        let info_stream = NoOutputInfoStream;
+        let context = flush_io_context(FlushInfo::new(1, 0));
+        let seg_updates = segment_updates(&[]);
+        let mut state = SegmentWriteState::new(
+            &info_stream,
+            Arc::clone(&tracking) as Arc<dyn Directory>,
+            &segment_info,
+            &finished,
+            &seg_updates,
+            context.as_ref(),
+        );
+        let error = chain
+            .flush(&mut state)
+            .expect_err("the consumer is refused");
+        assert_eq!(error.to_string(), "consumer refused");
     }
 
     /// Flushes `documents` with `config` and reads every norm back out of the

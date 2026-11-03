@@ -4178,14 +4178,22 @@ impl FSLockFactory for NativeFSLockFactory {
                 closed: AtomicBool::new(false),
             })),
             Ok(false) => {
-                drop(channel);
+                // `IOUtils.closeWhileHandlingException(channel)`: closing a
+                // `File` is dropping it, which cannot fail.
+                crate::util::IOUtils::close_while_handling_exception([Some(move || {
+                    drop(channel);
+                    Ok(())
+                })])?;
                 Self::clear_lock_held(&real_path_str)?;
                 Err(LuceneError::lock_obtain_failed(format!(
                     "Lock held by another program: {real_path_str}"
                 )))
             }
             Err(error) => {
-                drop(channel);
+                crate::util::IOUtils::close_while_handling_exception([Some(move || {
+                    drop(channel);
+                    Ok(())
+                })])?;
                 Self::clear_lock_held(&real_path_str)?;
                 Err(error.into())
             }
@@ -6178,10 +6186,15 @@ impl Directory for FileSwitchDirectory {
         self.get_directory(name).obtain_lock(name)
     }
 
+    /// Equivalent to `FileSwitchDirectory.close()` (`FileSwitchDirectory.java:82-88`):
+    /// `IOUtils.close(primaryDir, secondaryDir)` closes both, even when the
+    /// first fails, and rethrows the first failure, which leaves `doClose` set.
     fn close(&mut self) -> Result<()> {
         if self.do_close {
-            self.primary_dir.close()?;
-            self.secondary_dir.close()?;
+            crate::util::IOUtils::close([
+                crate::util::IOUtils::closeable(|| self.primary_dir.close()),
+                crate::util::IOUtils::closeable(|| self.secondary_dir.close()),
+            ])?;
             self.do_close = false;
         }
         Ok(())
@@ -6386,24 +6399,36 @@ impl NRTCachingDirectory {
     /// monitor: "other sync methods have if (cache.fileNameExists(name)) {
     /// ... } else { ... }".
     fn un_cache(&self, file_name: &str) -> Result<()> {
-        let _monitor = self.shared.enter();
-        if !self.cache.file_exists(file_name)? {
+        Self::un_cache_with(
+            &self.shared,
+            &self.cache,
+            self.inner.get_delegate(),
+            file_name,
+        )
+    }
+
+    /// [`un_cache`](Self::un_cache) over the parts of the directory it
+    /// touches, so that [`close`](Directory::close) can run it while another
+    /// of its closeables holds the delegate.
+    fn un_cache_with(
+        shared: &NrtCacheShared,
+        cache: &ByteBuffersDirectory,
+        delegate: &dyn Directory,
+        file_name: &str,
+    ) -> Result<()> {
+        let _monitor = shared.enter();
+        if !cache.file_exists(file_name)? {
             // Another thread beat us...
             return Ok(());
         }
         debug_assert!(
-            !Self::slow_file_exists(self.inner.get_delegate(), file_name)?,
+            !Self::slow_file_exists(delegate, file_name)?,
             "fileName={file_name} exists both in cache and in delegate"
         );
-        self.inner.get_delegate().copy_from(
-            &*self.cache,
-            file_name,
-            file_name,
-            &*DEFAULT_IO_CONTEXT,
-        )?;
-        let length = self.cache.file_length(file_name)?;
-        self.shared.cache_size.fetch_sub(length, Ordering::SeqCst);
-        self.cache.delete_file(file_name)?;
+        delegate.copy_from(cache, file_name, file_name, &*DEFAULT_IO_CONTEXT)?;
+        let length = cache.file_length(file_name)?;
+        shared.cache_size.fetch_sub(length, Ordering::SeqCst);
+        cache.delete_file(file_name)?;
         Ok(())
     }
 
@@ -6545,9 +6570,9 @@ impl Directory for NRTCachingDirectory {
             Err(error) => {
                 // `IOUtils.closeWhileHandlingException(out);
                 // IOUtils.deleteFilesIgnoringExceptions(first, toDelete);`
-                if let Some(mut out) = out {
-                    let _ = out.close();
-                }
+                crate::util::IOUtils::close_while_handling_exception([
+                    out.map(|mut out| move || out.close())
+                ])?;
                 for name in to_delete.iter() {
                     let _ = first.delete_file(name);
                 }
@@ -6600,17 +6625,27 @@ impl Directory for NRTCachingDirectory {
     /// first failure is rethrown. Closing again is therefore allowed: it
     /// closes the two directories again.
     fn close(&mut self) -> Result<()> {
-        let un_cached = if self.closed.swap(true, Ordering::SeqCst) {
-            Ok(())
-        } else {
-            self.cache
-                .list_all()
-                .and_then(|cached| cached.iter().try_for_each(|name| self.un_cache(name)))
-        };
-        // `ByteBuffersDirectory.close()` raises nothing.
-        self.cache.close_shared();
-        let closed = self.inner.close();
-        un_cached.and(closed)
+        let closed = &self.closed;
+        let cache = &self.cache;
+        let shared = &self.shared;
+        let inner = std::cell::RefCell::new(&mut self.inner);
+        crate::util::IOUtils::close([
+            crate::util::IOUtils::closeable(|| {
+                if !closed.swap(true, Ordering::SeqCst) {
+                    let inner = inner.borrow();
+                    for file_name in cache.list_all()? {
+                        Self::un_cache_with(shared, cache, inner.get_delegate(), &file_name)?;
+                    }
+                }
+                Ok(())
+            }),
+            crate::util::IOUtils::closeable(|| {
+                // `ByteBuffersDirectory.close()` raises nothing.
+                cache.close_shared();
+                Ok(())
+            }),
+            crate::util::IOUtils::closeable(|| inner.borrow_mut().close()),
+        ])
     }
 
     /// The `FilterDirectory.getPendingDeletions()` it inherits
@@ -9690,13 +9725,30 @@ impl Directory for NIOFSDirectory {
         self.inner.ensure_open()?;
         self.inner.ensure_can_read(name)?;
         let path = self.inner.directory_path().join(name);
-        // `new NIOFSIndexInput("NIOFSIndexInput(path=\"" + path + "\")", fc, context)`
-        // (`NIOFSDirectory.java:79-89`).
-        Ok(Box::new(NIOFSIndexInput::new(
+        // `FileChannel fc = FileChannel.open(path, StandardOpenOption.READ)`.
+        let fc: NioChannel = Arc::new(std::sync::RwLock::new(Some(
+            fs::OpenOptions::new().read(true).open(&path)?,
+        )));
+        // `try { new NIOFSIndexInput("NIOFSIndexInput(path=\"" + path + "\")",
+        // fc, context) } finally { if (success == false)
+        // IOUtils.closeWhileHandlingException(fc); }` (`NIOFSDirectory.java:79-89`).
+        match NIOFSIndexInput::with_file_channel(
             format!("NIOFSIndexInput(path=\"{}\")", path.display()),
-            path,
+            Arc::clone(&fc),
             context,
-        )?))
+        ) {
+            Ok(input) => Ok(Box::new(input)),
+            Err(error) => {
+                crate::util::IOUtils::close_while_handling_exception([Some(|| {
+                    // Closing the channel is dropping its `File`.
+                    fc.write()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .take();
+                    Ok(())
+                })])?;
+                Err(error)
+            }
+        }
     }
 
     /// The final `BaseDirectory.obtainLock(String)` it inherits
@@ -10005,10 +10057,31 @@ impl NIOFSIndexInput {
     /// Propagates any I/O error opening the file.
     pub fn new(resource_desc: String, path: PathBuf, context: &dyn IOContext) -> Result<Self> {
         let file = fs::OpenOptions::new().read(true).open(&path)?;
-        let len = file.metadata()?.len() as i64;
-        Self::with_channel(
+        Self::with_file_channel(
             resource_desc,
             Arc::new(std::sync::RwLock::new(Some(file))),
+            context,
+        )
+    }
+
+    /// Equivalent to `NIOFSIndexInput(String, FileChannel, IOContext)`
+    /// (`NIOFSDirectory.java:109-114`): the whole file the open channel
+    /// reads, `end = fc.size()`.
+    fn with_file_channel(
+        resource_desc: String,
+        fc: NioChannel,
+        context: &dyn IOContext,
+    ) -> Result<Self> {
+        let len = {
+            let file = fc.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+            match file.as_ref() {
+                Some(file) => file.metadata()?.len() as i64,
+                None => return Err(LuceneError::already_closed("channel is closed")),
+            }
+        };
+        Self::with_channel(
+            resource_desc,
+            fc,
             false,
             0,
             len,
@@ -12887,6 +12960,9 @@ mod tests {
         }
 
         fn close(&mut self) -> Result<()> {
+            if self.fault == "close" {
+                return Err(LuceneError::Io(io::Error::other("close refused")));
+            }
             self.inner.close()
         }
 
@@ -14685,6 +14761,30 @@ mod tests {
         input.set_position(99);
         assert_eq!(input.position(), 99);
         assert!(input.read_byte().is_err());
+    }
+
+    /// `FileSwitchDirectory.close()` (`FileSwitchDirectory.java:82-88`) is
+    /// `IOUtils.close(primaryDir, secondaryDir)`: the secondary directory is
+    /// closed even when closing the primary fails, the first failure is
+    /// rethrown, and `doClose` stays set.
+    #[test]
+    fn file_switch_close_closes_the_secondary_past_a_primary_failure() {
+        let mut fsd = FileSwitchDirectory::new(
+            HashSet::from(["fdt".to_string()]),
+            Box::new(FaultyDirectory::new("close")),
+            Box::new(ByteBuffersDirectory::new()),
+            true,
+        )
+        .unwrap();
+        let error = fsd.close().unwrap_err();
+        assert_eq!(error.to_string(), "I/O error: close refused");
+        assert!(
+            matches!(
+                fsd.secondary_dir().ensure_open(),
+                Err(LuceneError::AlreadyClosed { .. })
+            ),
+            "the secondary directory is closed"
+        );
     }
 }
 

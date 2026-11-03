@@ -1056,7 +1056,10 @@ impl TermVectorsConsumer {
     /// had vectors — nothing is written and no file is created.
     ///
     /// The writer is closed even when padding or finishing it failed, mirroring
-    /// Java's `try`/`finally`; the first error wins.
+    /// Java's `try { fill(numDocs); writer.finish(numDocs); } finally {
+    /// IOUtils.close(writer); }` (`TermVectorsConsumer.java:82-88`): a failure
+    /// to close replaces the one from padding or finishing, as an exception
+    /// thrown from `finally` does.
     ///
     /// # Errors
     ///
@@ -1068,8 +1071,8 @@ impl TermVectorsConsumer {
         };
         let filled = Self::fill(writer.as_mut(), &mut self.last_doc_id, max_doc);
         let finished = filled.and_then(|()| writer.finish(max_doc));
-        let closed = writer.close();
-        finished.and(closed)
+        crate::util::IOUtils::close([Some(|| writer.close())])?;
+        finished
     }
 
     /// Discards the segment's term vectors.
@@ -1077,6 +1080,12 @@ impl TermVectorsConsumer {
     /// Equivalent to `TermVectorsConsumer.abort()`, which resets the buffers,
     /// closes the writer with `IOUtils.closeWhileHandlingException` and resets
     /// again. Calling this without a writer is a no-op.
+    ///
+    /// Java's `abort()` returns nothing and lets the `Error` that
+    /// `closeWhileHandlingException` rethrows propagate unchecked; this one
+    /// returns nothing either, so that [`LuceneError::AssertionError`](crate::error::LuceneError::AssertionError) is
+    /// raised as the panic that stands for a Java `Error`
+    /// ([`IOUtils::rethrow_always`](crate::util::IOUtils::rethrow_always)).
     pub fn abort(&mut self) {
         self.aborted = true;
         for field in &mut self.fields {
@@ -1086,8 +1095,11 @@ impl TermVectorsConsumer {
         self.field_index.clear();
         self.pending_fields.clear();
         self.terms_hash.reset();
-        if let Some(mut writer) = self.writer.take() {
-            let _ = writer.close();
+        let writer = self.writer.take();
+        if let Err(error) = crate::util::IOUtils::close_while_handling_exception([
+            writer.map(|mut writer| move || writer.close())
+        ]) {
+            crate::util::IOUtils::rethrow_always(error);
         }
     }
 }
@@ -1169,6 +1181,104 @@ mod tests {
         assert!(!consumer.has_writer());
         consumer.flush(1).expect("flush");
         assert!(tracking.get_created_files().is_empty());
+    }
+
+    /// A term-vectors writer whose `finish` and `close` both fail.
+    #[derive(Debug)]
+    struct FailingFinishAndCloseWriter;
+
+    impl Accountable for FailingFinishAndCloseWriter {
+        fn ram_bytes_used(&self) -> i64 {
+            0
+        }
+    }
+
+    impl TermVectorsWriter for FailingFinishAndCloseWriter {
+        fn start_document(&mut self, _num_vector_fields: i32) -> Result<()> {
+            Ok(())
+        }
+        fn start_field(
+            &mut self,
+            _info: &FieldInfo,
+            _num_terms: i32,
+            _positions: bool,
+            _offsets: bool,
+            _payloads: bool,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn start_term(&mut self, _term: &BytesRef, _freq: i32) -> Result<()> {
+            Ok(())
+        }
+        fn add_position(
+            &mut self,
+            _position: i32,
+            _start_offset: i32,
+            _end_offset: i32,
+            _payload: Option<&BytesRef>,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn finish(&mut self, _num_docs: i32) -> Result<()> {
+            Err(LuceneError::Other("finish blew up".to_string()))
+        }
+        fn close(&mut self) -> Result<()> {
+            Err(LuceneError::Other("close blew up".to_string()))
+        }
+    }
+
+    /// Hands out a [`FailingFinishAndCloseWriter`].
+    #[derive(Debug)]
+    struct FailingTermVectorsFormat;
+
+    impl crate::codecs::term_vectors::TermVectorsFormat for FailingTermVectorsFormat {
+        fn name(&self) -> &str {
+            "FailingTermVectors"
+        }
+
+        fn vectors_reader(
+            &self,
+            _directory: &dyn Directory,
+            _segment_info: &SegmentInfo,
+            _field_infos: &crate::index::FieldInfos,
+            _context: &dyn crate::store::IOContext,
+        ) -> Result<Box<dyn crate::codecs::term_vectors::TermVectorsReader>> {
+            Err(LuceneError::UnsupportedOperation(
+                "the failing format does not read".to_string(),
+            ))
+        }
+
+        fn vectors_writer(
+            &self,
+            _directory: &Arc<dyn Directory>,
+            _segment_info: &SegmentInfo,
+            _context: &dyn crate::store::IOContext,
+        ) -> Result<Box<dyn TermVectorsWriter>> {
+            Ok(Box::new(FailingFinishAndCloseWriter))
+        }
+    }
+
+    /// `try { fill(numDocs); writer.finish(numDocs); } finally {
+    /// IOUtils.close(writer); }` (`TermVectorsConsumer.java:82-88`): an
+    /// exception thrown from the `finally` replaces the one in flight (JLS
+    /// 14.20.2), so a failure to close wins over the failure to finish.
+    #[test]
+    fn flush_reports_the_close_failure_over_the_finish_failure() {
+        let (plain, tracking) = consumer();
+        let mut consumer = TermVectorsConsumer::with_format(
+            Arc::clone(&plain.codec),
+            Arc::new(FailingTermVectorsFormat),
+            Arc::clone(&tracking) as Arc<dyn Directory>,
+            plain.info.clone(),
+            Arc::new(AtomicI64::new(0)),
+        );
+        let term_pool = ByteBlockPool::new(Arc::new(AtomicI64::new(0)));
+        consumer.set_has_vectors();
+        consumer.start_document();
+        consumer.finish_document(0, &term_pool).expect("finish");
+        assert!(consumer.has_writer());
+        let error = consumer.flush(1).expect_err("finish and close blow up");
+        assert!(error.to_string().contains("close blew up"), "{error}");
     }
 
     #[test]

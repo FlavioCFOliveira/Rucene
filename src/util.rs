@@ -81,7 +81,8 @@ pub use collection_util::{
 };
 pub use command_line_util::{CommandLineUtil, FSDirectoryKind};
 pub use concurrent::{
-    Counter, NamedThreadFactory, SameThreadExecutorService, SetOnce, WeakIdentityMap,
+    wait_interruptibly, Counter, InterruptHandle, InterruptedException, NamedThreadFactory,
+    SameThreadExecutorService, SetOnce, WeakIdentityMap,
 };
 pub use doc_id_set::{
     BitDocIdSet, BulkAdder, DocIdSetBuilder, IntArrayDocIdSet, IntArrayDocIdSetIterator,
@@ -4838,31 +4839,40 @@ impl<T> RefCount<T> {
 // ThreadInterruptedException
 // ---------------------------------------------------------------------------
 
-/// Runtime error thrown when thread interruption is detected, equivalent to
-/// Lucene's `ThreadInterruptedException`.
-#[derive(Debug, Clone)]
+/// Thrown by Lucene on detecting that `Thread.interrupt()` had been called.
+/// Unlike [`InterruptedException`], it is unchecked: Lucene's waits catch the
+/// former and throw this, which travels as
+/// [`LuceneError::ThreadInterrupted`].
+///
+/// Equivalent to `org.apache.lucene.util.ThreadInterruptedException`, a
+/// `RuntimeException` built over its cause; its message, Java's
+/// `getMessage()`, is the cause's `toString()`, `java.lang.InterruptedException`.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThreadInterruptedException {
-    source: String,
+    cause: InterruptedException,
 }
 
 impl ThreadInterruptedException {
-    /// Creates a new exception wrapping the source interruption description.
-    pub fn new(source: impl Display) -> Self {
-        Self {
-            source: source.to_string(),
-        }
+    /// Wraps the interruption a wait raised.
+    ///
+    /// Equivalent to `ThreadInterruptedException(InterruptedException)`.
+    pub fn new(ie: InterruptedException) -> Self {
+        Self { cause: ie }
     }
 }
 
 impl Display for ThreadInterruptedException {
+    /// Java's `getMessage()`: `RuntimeException(Throwable)` takes the
+    /// cause's `toString()` as its message.
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "thread was interrupted: {}", self.source)
+        write!(f, "{}", self.cause)
     }
 }
 
 impl std::error::Error for ThreadInterruptedException {
+    /// Java's `getCause()`.
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        None
+        Some(&self.cause)
     }
 }
 
@@ -5270,9 +5280,12 @@ mod tests {
 
     #[test]
     fn thread_interrupted_exception_display() {
-        let e = ThreadInterruptedException::new("channel recv");
-        assert!(e.to_string().contains("thread was interrupted"));
+        // Oracle `InterruptOracle.java`: `getMessage()` is
+        // `java.lang.InterruptedException`, the cause's `toString()`.
+        let e = ThreadInterruptedException::new(InterruptedException);
+        assert_eq!(e.to_string(), "java.lang.InterruptedException");
         assert!(format!("{:?}", e).contains("ThreadInterruptedException"));
+        assert!(std::error::Error::source(&e).is_some());
     }
 
     #[test]

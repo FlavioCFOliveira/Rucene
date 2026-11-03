@@ -364,7 +364,9 @@ impl StoredFieldsConsumer {
     /// stored-fields format recorded (see the module documentation).
     ///
     /// The writer is closed even when finishing it failed, mirroring Java's
-    /// `try`/`finally`; the error from `finish` wins over the one from `close`.
+    /// `try { writer.finish(...); } finally { IOUtils.close(writer); }`
+    /// (`StoredFieldsConsumer.java:104-110`): a failure to close replaces the
+    /// one from `finish`, as an exception thrown from `finally` does.
     ///
     /// # Errors
     ///
@@ -382,11 +384,9 @@ impl StoredFieldsConsumer {
             )));
         };
         let finished = writer.finish(max_doc);
-        let closed = writer.close();
-        let copied = self.copy_attributes_to(segment_info);
-        // Java propagates the exception from `finish` unconditionally, so no
-        // later step may mask it: `and` keeps the first error of the three.
-        finished.and(closed).and(copied)
+        crate::util::IOUtils::close([Some(|| writer.close())])?;
+        finished?;
+        self.copy_attributes_to(segment_info)
     }
 
     /// Discards the segment's stored fields.
@@ -395,10 +395,19 @@ impl StoredFieldsConsumer {
     /// `IOUtils.closeWhileHandlingException`: the writer is released, any error
     /// raised while closing it is swallowed, and calling this without a writer
     /// is a no-op.
+    ///
+    /// Java's `abort()` returns nothing and lets the `Error` that
+    /// `closeWhileHandlingException` rethrows propagate unchecked; this one
+    /// returns nothing either, so that [`LuceneError::AssertionError`](crate::error::LuceneError::AssertionError) is
+    /// raised as the panic that stands for a Java `Error`
+    /// ([`IOUtils::rethrow_always`](crate::util::IOUtils::rethrow_always)).
     pub fn abort(&mut self) {
         self.aborted = true;
-        if let Some(mut writer) = self.writer.take() {
-            let _ = writer.close();
+        let writer = self.writer.take();
+        if let Err(error) = crate::util::IOUtils::close_while_handling_exception([
+            writer.map(|mut writer| move || writer.close())
+        ]) {
+            crate::util::IOUtils::rethrow_always(error);
         }
     }
 
@@ -570,10 +579,12 @@ mod tests {
         }
     }
 
-    /// A writer whose `finish` always fails, to prove `flush` still closes it.
+    /// A writer whose `finish` always fails, to prove `flush` still closes it;
+    /// with `fail_close`, its `close` fails too.
     #[derive(Debug)]
     struct FailingFinishWriter {
         log: Log,
+        fail_close: bool,
     }
 
     impl crate::util::Accountable for FailingFinishWriter {
@@ -609,6 +620,9 @@ mod tests {
         }
         fn close(&mut self) -> Result<()> {
             *self.log.closes.lock().expect("log mutex") += 1;
+            if self.fail_close {
+                return Err(LuceneError::Other("close blew up".to_string()));
+            }
             Ok(())
         }
     }
@@ -618,6 +632,7 @@ mod tests {
     struct LoggingStoredFieldsFormat {
         log: Log,
         fail_finish: bool,
+        fail_close: bool,
     }
 
     impl StoredFieldsFormat for LoggingStoredFieldsFormat {
@@ -647,6 +662,7 @@ mod tests {
             if self.fail_finish {
                 Ok(Box::new(FailingFinishWriter {
                     log: self.log.clone(),
+                    fail_close: self.fail_close,
                 }))
             } else {
                 Ok(Box::new(RecordingWriter {
@@ -657,12 +673,20 @@ mod tests {
     }
 
     fn logging_consumer(fail_finish: bool) -> (StoredFieldsConsumer, Log, Arc<dyn Directory>) {
+        logging_consumer_with(fail_finish, false)
+    }
+
+    fn logging_consumer_with(
+        fail_finish: bool,
+        fail_close: bool,
+    ) -> (StoredFieldsConsumer, Log, Arc<dyn Directory>) {
         let log = Log::default();
         let codec: Arc<dyn Codec> = Arc::new(
             FilterCodec::new("LoggingCodec", lucene_codec()).with_stored_fields_format(
                 LoggingStoredFieldsFormat {
                     log: log.clone(),
                     fail_finish,
+                    fail_close,
                 },
             ),
         );
@@ -931,9 +955,26 @@ mod tests {
         let error = consumer.flush(&flushed).expect_err("finish blows up");
         assert!(
             error.to_string().contains("finish blew up"),
-            "the error from finish must win over the one from close: {error}"
+            "with a clean close, the error from finish is the one raised: {error}"
         );
         assert_eq!(log.closes(), 1, "Java closes the writer in a finally block");
+    }
+
+    /// `try { writer.finish(...); } finally { IOUtils.close(writer); }`
+    /// (`StoredFieldsConsumer.java:104-110`): an exception thrown from the
+    /// `finally` replaces the one in flight (JLS 14.20.2), so a failure to
+    /// close wins over the failure to finish.
+    #[test]
+    fn flush_reports_the_close_failure_over_the_finish_failure() {
+        let (mut consumer, log, directory) = logging_consumer_with(true, true);
+        consumer.start_document(0).expect("start");
+        consumer.finish_document().expect("finish");
+        let flushed = make_segment_info(&directory, 1);
+        let error = consumer
+            .flush(&flushed)
+            .expect_err("finish and close blow up");
+        assert!(error.to_string().contains("close blew up"), "{error}");
+        assert_eq!(log.closes(), 1);
     }
 
     #[test]

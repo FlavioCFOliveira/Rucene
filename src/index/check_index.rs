@@ -11,10 +11,11 @@
 //! file format.
 
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
-use std::thread::{Scope, ScopedJoinHandle};
+use std::sync::{mpsc, Arc, Condvar, Mutex, PoisonError};
+use std::thread::Scope;
 use std::time::{Duration, Instant};
 
 use crate::codecs::doc_values::DocValuesProducer;
@@ -51,8 +52,8 @@ use crate::util::automaton::ByteRunnable;
 use crate::util::bit_set::BitSet;
 use crate::util::{
     Automata, Automaton, Bits, ByteRunAutomaton, BytesRef, CommandLineUtil, CompiledAutomaton,
-    FixedBitSet, InfoStream, LongBitSet, Operations, PrintStreamInfoStream, StringHelper, Version,
-    DEFAULT_DETERMINIZE_WORK_LIMIT,
+    FixedBitSet, InfoStream, InterruptHandle, LongBitSet, NamedThreadFactory, Operations,
+    PrintStreamInfoStream, StringHelper, Version, DEFAULT_DETERMINIZE_WORK_LIMIT,
 };
 
 // ---------------------------------------------------------------------------
@@ -443,6 +444,10 @@ pub struct CheckIndex {
     fail_fast: bool,
     thread_count: usize,
     closed: bool,
+    /// The name of the thread each segment check ran on, in the order the
+    /// checks started; for the tests of the pool.
+    #[cfg(test)]
+    segment_check_threads: Mutex<Vec<Option<String>>>,
 }
 
 impl CheckIndex {
@@ -476,6 +481,8 @@ impl CheckIndex {
                 .map(|n| n.get())
                 .unwrap_or(1),
             closed: false,
+            #[cfg(test)]
+            segment_check_threads: Mutex::new(Vec::new()),
         }
     }
 
@@ -493,17 +500,15 @@ impl CheckIndex {
 
     /// Releases the write lock.
     ///
-    /// Equivalent to `CheckIndex.close()`.
+    /// Equivalent to `CheckIndex.close()` (`CheckIndex.java:450-454`),
+    /// `closed = true; IOUtils.close(writeLock)`.
     ///
     /// # Errors
     ///
     /// Propagates the failure of releasing the lock.
     pub fn close(&mut self) -> Result<()> {
         self.closed = true;
-        match self.write_lock.take() {
-            Some(lock) => lock.close(),
-            None => Ok(()),
-        }
+        crate::util::IOUtils::close([self.write_lock.take().map(|lock| move || lock.close())])
     }
 
     /// Sets the detail level; the higher the value, the more checks are run.
@@ -656,85 +661,250 @@ impl InfoStream for BufferingInfoStream {
     }
 }
 
-/// Caps how many segment checks may run at the same time.
-///
-/// Equivalent to the bound that the fixed-size `ExecutorService` created by
-/// `CheckIndex.checkIndex(List)` puts on concurrency.
-struct SegmentCheckPermits {
-    available: Mutex<usize>,
-    released: Condvar,
+/// A task the segment-check pool runs.
+type PoolTask<'scope> = Box<dyn FnOnce() + Send + 'scope>;
+
+/// What the threads of a [`SegmentCheckPool`] share.
+struct PoolShared<'scope> {
+    state: Mutex<PoolState<'scope>>,
+    /// Signalled when a task is queued or the pool shuts down.
+    work_available: Condvar,
+    /// Signalled when a worker exits; shared so that
+    /// [`wait_interruptibly`](crate::util::wait_interruptibly) can wait on it.
+    terminated: Arc<Condvar>,
 }
 
-impl SegmentCheckPermits {
-    /// Creates a set of `permits` permits.
-    fn new(permits: usize) -> Self {
+/// The state of a [`SegmentCheckPool`], guarded by its lock.
+struct PoolState<'scope> {
+    /// `ThreadPoolExecutor.workQueue`, an unbounded `LinkedBlockingQueue`.
+    queue: VecDeque<PoolTask<'scope>>,
+    /// Set by `shutdown()`.
+    shutdown: bool,
+    /// The workers that have not exited yet.
+    live_workers: usize,
+    /// The interrupt handle of every worker started, which `shutdownNow()`
+    /// interrupts.
+    workers: Vec<InterruptHandle>,
+}
+
+/// The fixed thread pool that checks segments concurrently.
+///
+/// Equivalent to the `ExecutorService` `CheckIndex.checkIndex(List)` creates
+/// with `Executors.newFixedThreadPool(threadCount, new
+/// NamedThreadFactory("async-check-index"))` (`CheckIndex.java:550-553`): a
+/// `ThreadPoolExecutor` whose core and maximum size are `threadCount`, over an
+/// unbounded queue. As `ThreadPoolExecutor.execute` does, a submitted task
+/// starts a new worker — named by the factory, `async-check-index-N-thread-M` —
+/// while fewer than `threadCount` workers exist, and waits in the queue
+/// otherwise; a worker takes queued tasks until the pool is shut down and the
+/// queue is empty.
+///
+/// **Divergence from Lucene 10.5.0.** Java's workers are free-standing
+/// threads, and `checkIndex(List)` returns after `awaitTermination(5,
+/// SECONDS)` and `shutdownNow()` even if a check is still running. A check
+/// borrows this `CheckIndex` and the commit's `SegmentInfos`, which Rust allows
+/// only on scoped threads, so the workers live in a [`std::thread::scope`] that
+/// waits for the check a worker is running when `shutdownNow()` returns; the
+/// queued checks are dropped and the workers interrupted, as in Java.
+struct SegmentCheckPool<'scope, 'env> {
+    scope: &'scope Scope<'scope, 'env>,
+    thread_factory: NamedThreadFactory,
+    /// `corePoolSize`, `threadCount`.
+    core_pool_size: usize,
+    shared: Arc<PoolShared<'scope>>,
+}
+
+impl<'scope, 'env> SegmentCheckPool<'scope, 'env> {
+    fn new(
+        scope: &'scope Scope<'scope, 'env>,
+        thread_factory: NamedThreadFactory,
+        core_pool_size: usize,
+    ) -> Self {
         Self {
-            available: Mutex::new(permits.max(1)),
-            released: Condvar::new(),
+            scope,
+            thread_factory,
+            core_pool_size: core_pool_size.max(1),
+            shared: Arc::new(PoolShared {
+                state: Mutex::new(PoolState {
+                    queue: VecDeque::new(),
+                    shutdown: false,
+                    live_workers: 0,
+                    workers: Vec::new(),
+                }),
+                work_available: Condvar::new(),
+                terminated: Arc::new(Condvar::new()),
+            }),
         }
     }
 
-    /// Takes one permit, blocking until one is free.
-    fn acquire(&self) -> SegmentCheckPermit<'_> {
-        let mut available = self
-            .available
+    /// Runs `task` on a worker of the pool.
+    ///
+    /// Equivalent to `ThreadPoolExecutor.execute(Runnable)`: while fewer than
+    /// `corePoolSize` workers exist, a new worker starts with `task` as its
+    /// first task; otherwise `task` is queued.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::Io`] when the worker thread cannot be spawned.
+    fn execute(&self, task: PoolTask<'scope>) -> Result<()> {
+        let mut state = self
+            .shared
+            .state
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        while *available == 0 {
-            available = self
-                .released
-                .wait(available)
-                .unwrap_or_else(PoisonError::into_inner);
+        if state.workers.len() < self.core_pool_size {
+            let shared = Arc::clone(&self.shared);
+            let (started_tx, started_rx) = mpsc::channel();
+            std::thread::Builder::new()
+                .name(self.thread_factory.next_thread_name())
+                .spawn_scoped(self.scope, move || {
+                    let _ = started_tx.send(InterruptHandle::current());
+                    Self::run_worker(&shared, task);
+                })
+                .map_err(LuceneError::Io)?;
+            let handle = started_rx.recv().map_err(|_| {
+                LuceneError::illegal_state("a segment check worker exited before it started")
+            })?;
+            state.workers.push(handle);
+            state.live_workers += 1;
+        } else {
+            state.queue.push_back(task);
+            self.shared.work_available.notify_one();
         }
-        *available -= 1;
-        SegmentCheckPermit { permits: self }
+        Ok(())
     }
-}
 
-/// One permit held by a running segment check, returned when it is dropped.
-struct SegmentCheckPermit<'a> {
-    permits: &'a SegmentCheckPermits,
-}
+    /// The loop of one worker: its first task, then every task it takes from
+    /// the queue, until the pool is shut down and the queue is empty.
+    ///
+    /// Equivalent to `ThreadPoolExecutor.runWorker` with `getTask`.
+    fn run_worker(shared: &PoolShared<'scope>, first_task: PoolTask<'scope>) {
+        let mut task = Some(first_task);
+        loop {
+            if let Some(task) = task.take() {
+                task();
+            }
+            let mut state = shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+            loop {
+                if let Some(next) = state.queue.pop_front() {
+                    task = Some(next);
+                    break;
+                }
+                if state.shutdown {
+                    state.live_workers -= 1;
+                    shared.terminated.notify_all();
+                    return;
+                }
+                state = shared
+                    .work_available
+                    .wait(state)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
+        }
+    }
 
-impl Drop for SegmentCheckPermit<'_> {
-    fn drop(&mut self) {
-        *self
-            .permits
-            .available
+    /// Accepts no new task; the queued ones still run.
+    ///
+    /// Equivalent to `ExecutorService.shutdown()`.
+    fn shutdown(&self) {
+        let mut state = self
+            .shared
+            .state
             .lock()
-            .unwrap_or_else(PoisonError::into_inner) += 1;
-        self.permits.released.notify_one();
+            .unwrap_or_else(PoisonError::into_inner);
+        state.shutdown = true;
+        self.shared.work_available.notify_all();
+    }
+
+    /// Waits until every worker has exited, or `timeout` has elapsed; returns
+    /// whether the workers exited.
+    ///
+    /// Equivalent to `ExecutorService.awaitTermination(long, TimeUnit)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InterruptedException`](crate::util::InterruptedException)
+    /// when the calling thread is interrupted while it waits.
+    fn await_termination(
+        &self,
+        timeout: Duration,
+    ) -> std::result::Result<bool, crate::util::InterruptedException> {
+        let deadline = Instant::now() + timeout;
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        while state.live_workers > 0 {
+            let now = Instant::now();
+            if now >= deadline {
+                return Ok(false);
+            }
+            let (reacquired, waited) = crate::util::wait_interruptibly(
+                &self.shared.terminated,
+                state,
+                Some(deadline - now),
+            )
+            .unwrap_or_else(PoisonError::into_inner);
+            state = reacquired;
+            waited?;
+        }
+        Ok(true)
+    }
+
+    /// Drops the queued tasks and interrupts the workers.
+    ///
+    /// Equivalent to `ExecutorService.shutdownNow()`, whose list of the tasks
+    /// that never ran `checkIndex(List)` ignores.
+    fn shutdown_now(&self) {
+        let workers = {
+            let mut state = self
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            state.shutdown = true;
+            state.queue.clear();
+            self.shared.work_available.notify_all();
+            state.workers.clone()
+        };
+        for worker in workers {
+            worker.interrupt();
+        }
     }
 }
 
-/// Starts one segment check on another thread and hands back the handle that
-/// yields its result.
+/// The outcome of one segment check, as its future yields it: the check's
+/// result, or the panic it raised.
+type SegmentCheckOutcome = std::thread::Result<Result<SegmentInfoStatus>>;
+
+/// Submits one segment check to `pool` and hands back the future that yields
+/// its outcome.
 ///
 /// Equivalent to `CheckIndex.runAsyncSegmentCheck(Callable, ExecutorService)`,
-/// which submits the callable to the executor as a `CompletableFuture`.
+/// `CompletableFuture.supplyAsync(callableToSupplier(asyncCallable),
+/// executorService)`. As `supplyAsync`'s task does, the task catches what the
+/// check throws — here a panic — so that the worker survives it and the
+/// future carries it.
 ///
-/// **Divergence from Lucene 10.5.0.** Java submits to a fixed-size
-/// `ExecutorService`, whose pool size bounds both the number of threads and the
-/// number of checks running at once. The Rust standard library ships no thread
-/// pool, and the crate's [`Executor`](crate::search::Executor) seam only accepts
-/// `'static` tasks, which a check borrowing this `CheckIndex` and the commit's
-/// `SegmentInfos` cannot be. This port therefore spawns one scoped thread per
-/// segment and gates the check itself on `permits`, so that `thread_count` still
-/// caps how many segments are checked concurrently, exactly as the pool size
-/// does in Java.
-fn run_async_segment_check<'scope, 'env, F>(
+/// # Errors
+///
+/// Returns [`LuceneError::Io`] when the pool cannot spawn a worker.
+fn run_async_segment_check<'scope, F>(
     async_callable: F,
-    permits: &'env SegmentCheckPermits,
-    scope: &'scope Scope<'scope, 'env>,
-) -> ScopedJoinHandle<'scope, Result<SegmentInfoStatus>>
+    pool: &SegmentCheckPool<'scope, '_>,
+) -> Result<mpsc::Receiver<SegmentCheckOutcome>>
 where
     F: FnOnce() -> Result<SegmentInfoStatus> + Send + 'scope,
 {
     let supplier = callable_to_supplier(async_callable);
-    scope.spawn(move || {
-        let _permit = permits.acquire();
-        supplier()
-    })
+    let (future, completion) = mpsc::sync_channel(1);
+    pool.execute(Box::new(move || {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(supplier));
+        // The receiver is gone only once the check gave up waiting for it.
+        let _ = future.send(outcome);
+    }))?;
+    Ok(completion)
 }
 
 /// Adapts a fallible segment check into the form the thread that runs it
@@ -748,11 +918,11 @@ where
 /// `CompletionException`, so the future can carry it to whoever joins.
 ///
 /// **Divergence from Lucene 10.5.0.** Rust draws no checked/unchecked line: a
-/// failure is a [`Result`] on the ordinary return path, and the handle
+/// failure is a [`Result`] on the ordinary return path, and the future
 /// [`run_async_segment_check`] returns already carries it, so there is nothing
 /// to convert and the task is passed through as it is. The one failure that
-/// does not travel as a value — a panic — surfaces at
-/// [`ScopedJoinHandle::join`] as `Err`, which the caller turns into a
+/// does not travel as a value — a panic — is caught by the pool's task and
+/// surfaces from the future as `Err`, which the caller turns into a
 /// `CheckIndexException` just as Java's future surfaces a
 /// `CompletionException`.
 fn callable_to_supplier<T, F>(callable: F) -> impl FnOnce() -> Result<T>
@@ -785,28 +955,38 @@ impl CheckIndex {
     /// Returns a [`Status`] describing the state of the named segments, or of
     /// every segment when `only_segments` is `None`.
     ///
-    /// Equivalent to `CheckIndex.checkIndex(List)`, which creates the executor
-    /// that checks the segments concurrently when the thread count is greater
-    /// than one, and shuts it down afterwards. In this port the threads live in
-    /// a `std::thread::scope` inside the check, so there is nothing to shut
-    /// down; the divergence is recorded on the private
-    /// `run_async_segment_check`, which spawns them.
+    /// Equivalent to `CheckIndex.checkIndex(List)` (`CheckIndex.java:545-573`),
+    /// which, when the thread count is greater than one, creates the fixed
+    /// thread pool of `NamedThreadFactory("async-check-index")` threads that
+    /// checks the segments concurrently, and shuts it down afterwards. The
+    /// pool's threads are scoped to the concurrent check
+    /// ([`SegmentCheckPool`]), so the pool is built, used and shut down there,
+    /// over the thread factory created here.
     ///
     /// # Errors
     ///
     /// As [`CheckIndex::check_index`].
     pub fn check_index_segments(&self, only_segments: Option<&[String]>) -> Result<Status> {
+        // If threadCount == 1, then no executor is created and use the main
+        // thread to do index checking sequentially.
+        let thread_factory =
+            (self.thread_count > 1).then(|| NamedThreadFactory::new("async-check-index"));
         msg(
             self.info(),
             &format!("Checking index with threadCount: {}", self.thread_count),
         );
-        self.check_index_impl(only_segments)
+        self.check_index_impl(only_segments, thread_factory)
     }
 
     /// Walks the commit points and checks the segments of the last one.
     ///
-    /// Equivalent to `CheckIndex.checkIndex(List, ExecutorService)`.
-    fn check_index_impl(&self, only_segments: Option<&[String]>) -> Result<Status> {
+    /// Equivalent to `CheckIndex.checkIndex(List, ExecutorService)`;
+    /// `thread_factory` is present when Java's executor is.
+    fn check_index_impl(
+        &self,
+        only_segments: Option<&[String]>,
+        thread_factory: Option<NamedThreadFactory>,
+    ) -> Result<Status> {
         self.ensure_open()?;
         let start = Instant::now();
 
@@ -979,7 +1159,15 @@ impl CheckIndex {
         result.new_segments = Some(new_segments);
         result.max_segment_name = -1;
 
-        if self.thread_count <= 1 {
+        if let Some(thread_factory) = thread_factory {
+            self.check_segments_concurrently(
+                &last_commit,
+                num_segments,
+                only_segments,
+                thread_factory,
+                &mut result,
+            )?;
+        } else {
             // Checks segments sequentially.
             for i in 0..num_segments {
                 let info = last_commit.info(i);
@@ -1001,119 +1189,6 @@ impl CheckIndex {
 
                 self.process_segment_info_status_result(&mut result, info, segment_info_status)?;
             }
-        } else {
-            // Sort the segments by size, as a smaller segment tends to finish
-            // faster and hence its output can be printed out faster.
-            let mut sized: Vec<(i64, &SegmentCommitInfo)> = Vec::with_capacity(num_segments);
-            for info in last_commit.iter() {
-                let size = match info.size_in_bytes_uncached() {
-                    Ok(size) => size,
-                    Err(error) => {
-                        msg(
-                            self.info(),
-                            "ERROR: IOException occurred when comparing SegmentCommitInfo file \
-                             sizes",
-                        );
-                        msg(self.info(), &format!("{error}"));
-                        0
-                    }
-                };
-                sized.push((size, info));
-            }
-            sized.sort_by_key(|(size, _)| *size);
-            let segment_commit_infos: Vec<&SegmentCommitInfo> =
-                sized.into_iter().map(|(_, info)| info).collect();
-
-            let permits = SegmentCheckPermits::new(self.thread_count);
-            let last_commit_ref = &last_commit;
-            let result_ref = &mut result;
-
-            // Checks segments concurrently.
-            std::thread::scope(|scope| -> Result<()> {
-                let mut buffers: Vec<Option<Arc<BufferingInfoStream>>> =
-                    (0..num_segments).map(|_| None).collect();
-                let mut handles: Vec<Option<ScopedJoinHandle<'_, Result<SegmentInfoStatus>>>> =
-                    (0..num_segments).map(|_| None).collect();
-
-                // Start larger segments earlier.
-                for i in (0..num_segments).rev() {
-                    let info = segment_commit_infos[i];
-                    self.update_max_segment_name(result_ref, info)?;
-                    if is_skipped_segment(only_segments, &info.info.name) {
-                        continue;
-                    }
-
-                    let buffer = Arc::new(BufferingInfoStream::new());
-                    msg(
-                        Some(buffer.as_ref() as &dyn InfoStream),
-                        &format!(
-                            "{} of {num_segments}: name={} maxDoc={}",
-                            1 + i,
-                            info.info.name,
-                            info.info.max_doc()?
-                        ),
-                    );
-
-                    let task_buffer = Arc::clone(&buffer);
-                    buffers[i] = Some(buffer);
-                    handles[i] = Some(run_async_segment_check(
-                        move || {
-                            self.test_segment(
-                                last_commit_ref,
-                                info,
-                                Some(task_buffer.as_ref() as &dyn InfoStream),
-                            )
-                        },
-                        &permits,
-                        scope,
-                    ));
-                }
-
-                for i in 0..num_segments {
-                    let info = segment_commit_infos[i];
-                    // A segment left out of the check has neither a buffer nor a
-                    // handle, which is what makes this the same skip as above.
-                    let (Some(buffer), Some(handle)) = (buffers[i].take(), handles[i].take())
-                    else {
-                        continue;
-                    };
-
-                    match handle.join() {
-                        Ok(Ok(segment_info_status)) => {
-                            // Print the segment results in order.
-                            buffer.drain_to(self.info());
-                            self.process_segment_info_status_result(
-                                result_ref,
-                                info,
-                                segment_info_status,
-                            )?;
-                        }
-                        Ok(Err(error)) => {
-                            // The check only fails instead of recording the
-                            // failure when `fail_fast` is set, which is Java's
-                            // `assert failFast` on this path.
-                            buffer.drain_to(self.info());
-                            return Err(check_index_error_with_cause(
-                                &format!("Segment {} check failed.", info.info.name),
-                                &error,
-                            ));
-                        }
-                        Err(_) => {
-                            // Java has no counterpart: a `CompletableFuture`
-                            // reports a `RuntimeException` as an
-                            // `ExecutionException` like any other failure, while
-                            // a Rust panic unwinds into the join handle instead.
-                            buffer.drain_to(self.info());
-                            return Err(check_index_error(format!(
-                                "Segment {} check panicked.",
-                                info.info.name
-                            )));
-                        }
-                    }
-                }
-
-                Ok(())
-            })?;
         }
 
         if result.num_bad_segments == 0 {
@@ -1150,6 +1225,163 @@ impl CheckIndex {
         msg(self.info(), &format!("Took {} total.", took(start)));
 
         Ok(result)
+    }
+
+    /// Checks the segments of `last_commit` on the pool, larger segments
+    /// first, and records their results in segment order.
+    ///
+    /// Equivalent to the concurrent branch of `CheckIndex.checkIndex(List,
+    /// ExecutorService)` (`CheckIndex.java:789-858`), with the executor's
+    /// lifetime of `checkIndex(List)` (`CheckIndex.java:550-572`): the pool is
+    /// shut down whatever the check did, given five seconds to terminate, and
+    /// then shut down now.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `CheckIndexException` naming the segment whose check failed —
+    /// which happens only with [`set_fail_fast`](CheckIndex::set_fail_fast) —
+    /// or panicked.
+    fn check_segments_concurrently(
+        &self,
+        last_commit: &SegmentInfos,
+        num_segments: usize,
+        only_segments: Option<&[String]>,
+        thread_factory: NamedThreadFactory,
+        result: &mut Status,
+    ) -> Result<()> {
+        // Sort the segments by size, as a smaller segment tends to finish
+        // faster and hence its output can be printed out faster.
+        let mut sized: Vec<(i64, &SegmentCommitInfo)> = Vec::with_capacity(num_segments);
+        for info in last_commit.iter() {
+            let size = match info.size_in_bytes_uncached() {
+                Ok(size) => size,
+                Err(error) => {
+                    msg(
+                        self.info(),
+                        "ERROR: IOException occurred when comparing SegmentCommitInfo file \
+                         sizes",
+                    );
+                    msg(self.info(), &format!("{error}"));
+                    0
+                }
+            };
+            sized.push((size, info));
+        }
+        sized.sort_by_key(|(size, _)| *size);
+        let segment_commit_infos: Vec<&SegmentCommitInfo> =
+            sized.into_iter().map(|(_, info)| info).collect();
+
+        std::thread::scope(|scope| -> Result<()> {
+            let pool = SegmentCheckPool::new(scope, thread_factory, self.thread_count);
+            let checked = (|| -> Result<()> {
+                let mut buffers: Vec<Option<Arc<BufferingInfoStream>>> =
+                    (0..num_segments).map(|_| None).collect();
+                let mut futures: Vec<Option<mpsc::Receiver<SegmentCheckOutcome>>> =
+                    (0..num_segments).map(|_| None).collect();
+
+                // Start larger segments earlier.
+                for i in (0..num_segments).rev() {
+                    let info = segment_commit_infos[i];
+                    self.update_max_segment_name(result, info)?;
+                    if is_skipped_segment(only_segments, &info.info.name) {
+                        continue;
+                    }
+
+                    let buffer = Arc::new(BufferingInfoStream::new());
+                    msg(
+                        Some(buffer.as_ref() as &dyn InfoStream),
+                        &format!(
+                            "{} of {num_segments}: name={} maxDoc={}",
+                            1 + i,
+                            info.info.name,
+                            info.info.max_doc()?
+                        ),
+                    );
+
+                    let task_buffer = Arc::clone(&buffer);
+                    buffers[i] = Some(buffer);
+                    futures[i] = Some(run_async_segment_check(
+                        move || {
+                            #[cfg(test)]
+                            self.segment_check_threads
+                                .lock()
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .push(std::thread::current().name().map(str::to_string));
+                            self.test_segment(
+                                last_commit,
+                                info,
+                                Some(task_buffer.as_ref() as &dyn InfoStream),
+                            )
+                        },
+                        &pool,
+                    )?);
+                }
+
+                for i in 0..num_segments {
+                    let info = segment_commit_infos[i];
+                    // A segment left out of the check has neither a buffer nor
+                    // a future, which is what makes this the same skip as above.
+                    let (Some(buffer), Some(future)) = (buffers[i].take(), futures[i].take())
+                    else {
+                        continue;
+                    };
+
+                    // `futures[i].get()`.
+                    let outcome = future.recv().unwrap_or_else(|_| {
+                        Err(Box::new("the segment check was dropped before it ran")
+                            as Box<dyn std::any::Any + Send>)
+                    });
+                    match outcome {
+                        Ok(Ok(segment_info_status)) => {
+                            // Print the segment results in order.
+                            buffer.drain_to(self.info());
+                            self.process_segment_info_status_result(
+                                result,
+                                info,
+                                segment_info_status,
+                            )?;
+                        }
+                        Ok(Err(error)) => {
+                            // The check only fails instead of recording the
+                            // failure when `fail_fast` is set, which is Java's
+                            // `assert failFast` on this path.
+                            buffer.drain_to(self.info());
+                            return Err(check_index_error_with_cause(
+                                &format!("Segment {} check failed.", info.info.name),
+                                &error,
+                            ));
+                        }
+                        Err(_) => {
+                            // Java has no counterpart: a `CompletableFuture`
+                            // reports a `RuntimeException` as an
+                            // `ExecutionException` like any other failure,
+                            // while a Rust panic is caught as a payload.
+                            buffer.drain_to(self.info());
+                            return Err(check_index_error(format!(
+                                "Segment {} check panicked.",
+                                info.info.name
+                            )));
+                        }
+                    }
+                }
+                Ok(())
+            })();
+            // `finally { executorService.shutdown(); try {
+            // executorService.awaitTermination(5, TimeUnit.SECONDS); } catch
+            // (InterruptedException e) { ... } finally {
+            // executorService.shutdownNow(); } }`.
+            pool.shutdown();
+            if let Err(e) = pool.await_termination(Duration::from_secs(5)) {
+                msg(
+                    self.info(),
+                    "ERROR: Interrupted exception occurred when shutting down executor service",
+                );
+                // `e.printStackTrace(infoStream)`, without the JVM's frames.
+                msg(self.info(), &format!("{e}"));
+            }
+            pool.shutdown_now();
+            checked
+        })
     }
 
     /// Raises `result.max_segment_name` to `info`'s segment name when that name
@@ -5942,5 +6174,85 @@ mod tests {
             messages[0].starts_with("    test: index sort..........OK [took "),
             "{messages:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod segment_check_pool_tests {
+    //! `CheckIndex.checkIndex(List)` (`CheckIndex.java:545-573`) checks the
+    //! segments on `Executors.newFixedThreadPool(threadCount, new
+    //! NamedThreadFactory("async-check-index"))` when the thread count is
+    //! greater than one.
+    use super::*;
+    use crate::document::{Document, Store, TextField};
+    use crate::index::merge_policy::NoMergePolicy;
+    use std::collections::{BTreeSet, HashSet};
+
+    /// An index of `segments` one-document segments.
+    fn index_with_segments(segments: usize) -> Arc<dyn Directory> {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(crate::store::ByteBuffersDirectory::new());
+        let mut config = IndexWriterConfig::new();
+        config
+            .set_merge_policy(Arc::new(NoMergePolicy::new()))
+            .unwrap();
+        let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+        for i in 0..segments {
+            let mut doc = Document::new();
+            doc.add(Box::new(
+                TextField::new("body", format!("document {i}"), Store::YES).unwrap(),
+            ));
+            writer.add_document(&doc).unwrap();
+            writer.commit().unwrap();
+        }
+        writer.close().unwrap();
+        dir
+    }
+
+    /// The thread every segment check ran on, checking `segments` segments
+    /// with `thread_count` threads.
+    fn segment_check_threads(segments: usize, thread_count: i32) -> Vec<Option<String>> {
+        let mut checker = CheckIndex::new(index_with_segments(segments)).unwrap();
+        checker.set_thread_count(thread_count).unwrap();
+        let status = checker.check_index().unwrap();
+        assert!(status.clean);
+        assert_eq!(status.segment_infos.len(), segments);
+        let threads = checker
+            .segment_check_threads
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        checker.close().unwrap();
+        threads
+    }
+
+    /// Java oracle (`oracle/passG/PoolNamesOracle.java`, three tasks submitted
+    /// with `CompletableFuture.supplyAsync` to the fixed pool of
+    /// `NamedThreadFactory("async-check-index")`): two threads run on
+    /// `async-check-index-1-thread-1` and `-thread-2`; four threads start a
+    /// worker per task, `async-check-index-2-thread-1` to `-thread-3`.
+    #[test]
+    fn concurrent_checks_run_on_named_thread_factory_pool_threads() {
+        for (segments, thread_count, workers) in [(3usize, 2i32, 2usize), (3, 4, 3)] {
+            let threads = segment_check_threads(segments, thread_count);
+            assert_eq!(threads.len(), segments);
+            let mut pools = HashSet::new();
+            let mut numbers = BTreeSet::new();
+            for name in threads {
+                let name = name.expect("a pool thread is named");
+                let (pool, number) = name
+                    .strip_prefix("async-check-index-")
+                    .and_then(|rest| rest.split_once("-thread-"))
+                    .unwrap_or_else(|| panic!("not a NamedThreadFactory name: {name}"));
+                pools.insert(pool.parse::<usize>().unwrap());
+                numbers.insert(number.parse::<usize>().unwrap());
+            }
+            assert_eq!(pools.len(), 1, "one pool per check");
+            assert_eq!(
+                numbers.into_iter().collect::<Vec<_>>(),
+                (1..=workers).collect::<Vec<_>>(),
+                "{thread_count} threads over {segments} segments"
+            );
+        }
     }
 }

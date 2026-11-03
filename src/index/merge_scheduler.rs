@@ -19,7 +19,7 @@ use crate::store::{
     BufferedChecksumIndexInput, Directory, IOContext, IndexInput, IndexOutput, Lock,
     RateLimitedIndexOutput,
 };
-use crate::util::{InfoStream, SameThreadExecutorService};
+use crate::util::{wait_interruptibly, InfoStream, SameThreadExecutorService};
 
 /// Where a scheduler gets its merges and how it runs them.
 ///
@@ -389,8 +389,9 @@ pub struct ConcurrentMergeScheduler {
 struct CmsShared {
     /// The fields Java guards with the scheduler's monitor.
     monitor: Mutex<CmsState>,
-    /// The monitor's `wait`/`notifyAll`.
-    monitor_cond: Condvar,
+    /// The monitor's `wait`/`notifyAll`, shared so that an interrupter can
+    /// wake a thread stalled on it ([`wait_interruptibly`]).
+    monitor_cond: Arc<Condvar>,
     /// The sink `verbose()`/`message()` report to.
     ///
     /// Equivalent to the protected `MergeScheduler.infoStream` field, which
@@ -644,7 +645,7 @@ impl ConcurrentMergeScheduler {
                     do_auto_io_throttle: false,
                     force_merge_mb_per_sec: f64::INFINITY,
                 }),
-                monitor_cond: Condvar::new(),
+                monitor_cond: Arc::new(Condvar::new()),
                 info_stream: Mutex::new(None),
                 suppress_exceptions: AtomicBool::new(false),
                 do_merge_override: Mutex::new(None),
@@ -1130,7 +1131,9 @@ impl ConcurrentMergeScheduler {
     /// # Errors
     ///
     /// Propagates what `merge_source.has_pending_merges()` raises — Java's
-    /// `IllegalStateException` once the writer hit a tragedy.
+    /// `IllegalStateException` once the writer hit a tragedy — and returns
+    /// [`LuceneError::ThreadInterrupted`] when the thread is interrupted while
+    /// it stalls, as `doStall()` throws `ThreadInterruptedException`.
     pub fn maybe_stall(&self, merge_source: &Arc<dyn MergeSource>) -> Result<bool> {
         let state = self.lock();
         self.maybe_stall_locked(state, merge_source).1
@@ -1172,7 +1175,11 @@ impl ConcurrentMergeScheduler {
                     self.message("    too many merges; stalling...");
                 }
             }
-            state = self.do_stall_locked(state);
+            let (next_state, stalled) = self.do_stall_locked(state);
+            state = next_state;
+            if let Err(error) = stalled {
+                return (state, Err(error));
+            }
         }
         if self.verbose() && start_stall_time != 0 {
             self.message(&format!(
@@ -1185,14 +1192,30 @@ impl ConcurrentMergeScheduler {
 
     /// Pauses the calling thread for a bit, releasing the monitor.
     ///
-    /// Equivalent to `ConcurrentMergeScheduler.doStall()`, which waits at most
-    /// 250 ms defensively, in case a notification is missed.
-    fn do_stall_locked<'a>(&'a self, state: MutexGuard<'a, CmsState>) -> MutexGuard<'a, CmsState> {
-        self.shared
-            .monitor_cond
-            .wait_timeout(state, Duration::from_millis(250))
-            .unwrap_or_else(PoisonError::into_inner)
-            .0
+    /// Equivalent to `ConcurrentMergeScheduler.doStall()`
+    /// (`ConcurrentMergeScheduler.java:653-660`), which waits at most 250 ms
+    /// defensively, in case a notification is missed, and turns the
+    /// `InterruptedException` of an interrupted wait into a
+    /// `ThreadInterruptedException`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::ThreadInterrupted`] when the thread is
+    /// interrupted ([`InterruptHandle::interrupt`](crate::util::InterruptHandle::interrupt))
+    /// before or while it waits.
+    fn do_stall_locked<'a>(
+        &'a self,
+        state: MutexGuard<'a, CmsState>,
+    ) -> (MutexGuard<'a, CmsState>, Result<()>) {
+        // Defensively wait for only .25 seconds in case we are missing a
+        // .notify/All somewhere.
+        let (state, waited) = wait_interruptibly(
+            &self.shared.monitor_cond,
+            state,
+            Some(Duration::from_millis(250)),
+        )
+        .unwrap_or_else(PoisonError::into_inner);
+        (state, waited.map_err(LuceneError::thread_interrupted))
     }
 
     /// Runs one merge.
@@ -3592,5 +3615,65 @@ mod intra_merge_executor_tests {
         ) -> std::result::Result<(), crate::search::RejectedExecutionException> {
             self.0.execute(command)
         }
+    }
+}
+
+#[cfg(test)]
+mod do_stall_interrupt_tests {
+    //! `ConcurrentMergeScheduler.doStall()` (`ConcurrentMergeScheduler.java:653-660`)
+    //! catches the `InterruptedException` of its `wait(250)` and throws
+    //! `ThreadInterruptedException`.
+    use super::*;
+    use crate::util::InterruptHandle;
+    use std::sync::mpsc;
+    use std::time::Instant;
+
+    /// Java oracle (`oracle/passG/InterruptOracle.java`, a subclass calling
+    /// `doStall()` in a loop, interrupted after 300 ms): "waiting:
+    /// class=ThreadInterruptedException message=java.lang.InterruptedException
+    /// ... interruptedAfter=false".
+    #[test]
+    fn interrupting_a_stalled_thread_raises_thread_interrupted_exception() {
+        let cms = Arc::new(ConcurrentMergeScheduler::new());
+        let (handle_tx, handle_rx) = mpsc::channel();
+        let (outcome_tx, outcome_rx) = mpsc::channel();
+        let stalling = Arc::clone(&cms);
+        std::thread::spawn(move || {
+            handle_tx.send(InterruptHandle::current()).unwrap();
+            let mut state = stalling.lock();
+            // A stalled producer stalls again after each 250 ms wait, as
+            // `maybeStall` loops; bounded so the test cannot hang.
+            for _ in 0..40 {
+                let (next_state, stalled) = stalling.do_stall_locked(state);
+                state = next_state;
+                if let Err(error) = stalled {
+                    let _ = outcome_tx.send(Some((
+                        error.java_simple_name(),
+                        error.to_string(),
+                        InterruptHandle::current().is_interrupted(),
+                    )));
+                    return;
+                }
+            }
+            let _ = outcome_tx.send(None);
+        });
+        let handle = handle_rx.recv().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !handle.is_waiting() {
+            assert!(Instant::now() < deadline, "the thread never stalled");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        handle.interrupt();
+        let outcome = outcome_rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("the stalled thread did not return");
+        assert_eq!(
+            outcome,
+            Some((
+                "ThreadInterruptedException",
+                "java.lang.InterruptedException".to_string(),
+                false
+            ))
+        );
     }
 }

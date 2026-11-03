@@ -213,6 +213,18 @@ pub enum LuceneError {
     #[error("assertion failed: {0}")]
     AssertionError(String),
 
+    /// A wait was interrupted by `Thread.interrupt()`.
+    ///
+    /// Equivalent to `org.apache.lucene.util.ThreadInterruptedException`, the
+    /// `RuntimeException` Lucene's waits throw when the `Object.wait` they
+    /// block in throws `InterruptedException` (for example
+    /// `IndexWriter.doWait()`, `IndexWriter.java:5647-5651`). It displays
+    /// exactly its message, Java's `getMessage()`; see
+    /// [`InterruptHandle`](crate::util::InterruptHandle) for how a thread is
+    /// interrupted.
+    #[error("{0}")]
+    ThreadInterrupted(crate::util::ThreadInterruptedException),
+
     /// A generic wrapper for errors that do not yet have a dedicated variant.
     #[error("{0}")]
     Other(String),
@@ -246,6 +258,7 @@ impl LuceneError {
             Self::MergeAborted(_) => "MergeAbortedException",
             Self::Merge(_) => "MergeException",
             Self::AssertionError(_) => "AssertionError",
+            Self::ThreadInterrupted(_) => "ThreadInterruptedException",
             Self::IndexFormatNotSupported(_) => "IndexFormatNotSupported",
             Self::NotFound(_) => "NotFound",
             Self::ResourceLimit(_) => "ResourceLimit",
@@ -308,6 +321,12 @@ impl LuceneError {
     /// throws for a `long` outside the `int` range.
     pub fn integer_overflow() -> Self {
         Self::Arithmetic("integer overflow".to_string())
+    }
+
+    /// `new ThreadInterruptedException(ie)`, what Lucene's waits throw when
+    /// `Object.wait` throws `InterruptedException`.
+    pub fn thread_interrupted(ie: crate::util::InterruptedException) -> Self {
+        Self::ThreadInterrupted(crate::util::ThreadInterruptedException::new(ie))
     }
 
     /// `new AlreadyClosedException(String)`.
@@ -397,6 +416,7 @@ impl LuceneError {
             Self::MergeAborted(m) => Self::MergeAborted(m.clone()),
             Self::Merge(m) => Self::Merge(m.clone()),
             Self::AssertionError(m) => Self::AssertionError(m.clone()),
+            Self::ThreadInterrupted(e) => Self::ThreadInterrupted(e.clone()),
             Self::Other(m) => Self::Other(m.clone()),
         }
     }

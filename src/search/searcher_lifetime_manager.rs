@@ -330,15 +330,8 @@ impl SearcherLifetimeManager {
             trackers
         };
 
-        let mut first_error = None;
-        for tracker in to_close {
-            if let Err(error) = tracker.close() {
-                first_error.get_or_insert(error);
-            }
-        }
-        if let Some(error) = first_error {
-            return Err(error);
-        }
+        // `IOUtils.close(toClose)` (`SearcherLifetimeManager.java:285`).
+        crate::util::IOUtils::close(to_close.iter().map(|tracker| Some(|| tracker.close())))?;
 
         // Make some effort to catch misuse.
         if !self

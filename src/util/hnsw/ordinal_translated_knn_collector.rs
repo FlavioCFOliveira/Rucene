@@ -10,18 +10,23 @@ use super::int_to_int_function::IntToIntFunction;
 ///
 /// Equivalent to `org.apache.lucene.util.hnsw.OrdinalTranslatedKnnCollector`, which
 /// extends `KnnCollector.Decorator`; Rust has no implementation inheritance, so the
-/// decorator's delegation is written out.
-pub struct OrdinalTranslatedKnnCollector {
-    collector: Box<dyn KnnCollector>,
-    vector_ordinal_to_doc_id: Box<dyn IntToIntFunction + Send>,
+/// decorator's delegation is written out. Java's decorator holds the collector it
+/// wraps; this one borrows it for the search it serves, which is the only use
+/// Lucene makes of it (`Lucene99HnswVectorsReader.java:340-342`).
+pub struct OrdinalTranslatedKnnCollector<'a> {
+    collector: &'a mut dyn KnnCollector,
+    vector_ordinal_to_doc_id: Box<dyn IntToIntFunction + Send + 'a>,
 }
 
-impl OrdinalTranslatedKnnCollector {
+impl<'a> OrdinalTranslatedKnnCollector<'a> {
     /// Wraps `collector`, mapping every collected ordinal through
     /// `vector_ordinal_to_doc_id`.
+    ///
+    /// Equivalent to `OrdinalTranslatedKnnCollector(KnnCollector,
+    /// IntToIntFunction)`.
     pub fn new(
-        collector: Box<dyn KnnCollector>,
-        vector_ordinal_to_doc_id: Box<dyn IntToIntFunction + Send>,
+        collector: &'a mut dyn KnnCollector,
+        vector_ordinal_to_doc_id: Box<dyn IntToIntFunction + Send + 'a>,
     ) -> Self {
         Self {
             collector,
@@ -30,7 +35,7 @@ impl OrdinalTranslatedKnnCollector {
     }
 }
 
-impl KnnCollector for OrdinalTranslatedKnnCollector {
+impl KnnCollector for OrdinalTranslatedKnnCollector<'_> {
     fn early_terminated(&self) -> bool {
         self.collector.early_terminated()
     }

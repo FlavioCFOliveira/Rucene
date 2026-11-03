@@ -1141,18 +1141,34 @@ impl SegmentInfos {
         // Always advance the generation on write.
         self.generation = next_generation;
 
-        let mut output =
-            directory.create_output(&segment_file_name, &*crate::store::DEFAULT_IO_CONTEXT)?;
-        let result = self.write_to_output(output.as_mut());
-        match result {
-            Ok(_) => {
-                output.close()?;
-                directory.sync(std::slice::from_ref(&segment_file_name))?;
+        // `SegmentInfos.write(Directory)` (`SegmentInfos.java:578-603`): every
+        // step from creating the output to syncing it is inside the `try`, so
+        // any of them failing closes the output — again, if it was closed —
+        // and deletes the truncated file.
+        let mut seg_output: Option<Box<dyn IndexOutput>> = None;
+        let outcome = (|| -> Result<()> {
+            let output = seg_output.insert(
+                directory.create_output(&segment_file_name, &*crate::store::DEFAULT_IO_CONTEXT)?,
+            );
+            self.write_to_output(output.as_mut())?;
+            output.close()?;
+            directory.sync(std::slice::from_ref(&segment_file_name))?;
+            Ok(())
+        })();
+        match outcome {
+            Ok(()) => {
                 self.pending_commit = true;
                 Ok(())
             }
             Err(err) => {
-                let _ = output.close();
+                // We hit an exception above; try to close the file but
+                // suppress any exception.
+                crate::util::IOUtils::close_while_handling_exception([seg_output
+                    .as_mut()
+                    .map(|output| move || output.close())])?;
+                // Try not to leave a truncated segments_N file in the index:
+                // `IOUtils.deleteFilesIgnoringExceptions(directory,
+                // segmentFileName)`.
                 let _ = directory.delete_file(&segment_file_name);
                 Err(err)
             }
@@ -2019,5 +2035,36 @@ impl SegmentInfos {
     /// cannot be built.
     pub fn create_backup_segment_infos(&self) -> Vec<SegmentCommitInfo> {
         self.segments.to_vec()
+    }
+}
+
+#[cfg(test)]
+mod write_failure_tests {
+    //! `SegmentInfos.write(Directory)` (`SegmentInfos.java:578-603`): every
+    //! step from `createOutput` to `sync` is inside the `try`, so a failure of
+    //! any of them closes the output with
+    //! `IOUtils.closeWhileHandlingException(segnOutput)` and deletes the
+    //! truncated `pending_segments_N`.
+    use super::*;
+    use crate::codecs::tests::CloseTrackingDirectory;
+
+    #[test]
+    fn a_failed_sync_deletes_the_pending_segments_file() {
+        let dir = CloseTrackingDirectory::default();
+        dir.log.fail_sync();
+        let mut infos = SegmentInfos::new(crate::util::Version::LATEST.major as i32).unwrap();
+        let error = infos.prepare_commit(&dir).unwrap_err();
+        assert!(error.to_string().contains("sync failed"), "{error}");
+        let files = dir.list_all().unwrap();
+        assert!(
+            files
+                .iter()
+                .all(|name| !name.starts_with("pending_segments")),
+            "the truncated file is deleted: {files:?}"
+        );
+        assert!(
+            dir.log.close_count("pending_segments_1") >= 1,
+            "the output was closed"
+        );
     }
 }

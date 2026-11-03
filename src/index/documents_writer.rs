@@ -5044,7 +5044,7 @@ impl FlushControlInner {
 /// Equivalent to `org.apache.lucene.index.DocumentsWriterFlushControl`.
 pub struct DocumentsWriterFlushControl {
     inner: Mutex<FlushControlInner>,
-    flush_done: Condvar,
+    flush_done: Arc<Condvar>,
     hard_max_bytes_per_dwpt: i64,
     per_thread_pool: Arc<DocumentsWriterPerThreadPool>,
     flush_policy: Arc<dyn FlushPolicy>,
@@ -5080,7 +5080,7 @@ impl DocumentsWriterFlushControl {
         flush_policy.init(Arc::clone(&config));
         Self {
             inner: Mutex::new(FlushControlInner::default()),
-            flush_done: Condvar::new(),
+            flush_done: Arc::new(Condvar::new()),
             hard_max_bytes_per_dwpt: i64::from(config.ram_per_thread_hard_limit_mb()) * 1024 * 1024,
             per_thread_pool,
             flush_policy,
@@ -5280,15 +5280,26 @@ impl DocumentsWriterFlushControl {
 
     /// Blocks until every running flush has finished.
     ///
-    /// Equivalent to `waitForFlush()`.
-    pub fn wait_for_flush(&self) {
+    /// Equivalent to `DocumentsWriterFlushControl.waitForFlush()`
+    /// (`DocumentsWriterFlushControl.java:349-357`), which turns the
+    /// `InterruptedException` of an interrupted `wait()` into a
+    /// `ThreadInterruptedException`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::ThreadInterrupted`] when the thread is
+    /// interrupted ([`InterruptHandle::interrupt`](crate::util::InterruptHandle::interrupt))
+    /// before or while it waits.
+    pub fn wait_for_flush(&self) -> Result<()> {
         let mut inner = self.lock();
         while !inner.flushing_writers.is_empty() {
-            inner = self
-                .flush_done
-                .wait(inner)
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let (reacquired, waited) =
+                crate::util::wait_interruptibly(&self.flush_done, inner, None)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+            inner = reacquired;
+            waited.map_err(LuceneError::thread_interrupted)?;
         }
+        Ok(())
     }
 
     /// Marks `per_thread` as pending flush.
@@ -6370,7 +6381,7 @@ impl DocumentsWriter {
 
         let outcome = (|| -> Result<bool> {
             let anything_flushed = self.maybe_flush()?;
-            self.flush_control.wait_for_flush();
+            self.flush_control.wait_for_flush()?;
             if !anything_flushed && flushing_delete_queue.any_changes() {
                 if self.info_stream.is_enabled("DW") {
                     self.info_stream
@@ -6438,31 +6449,38 @@ impl DocumentsWriter {
 
     /// Aborts every buffered document.
     ///
-    /// Equivalent to `DocumentsWriter.abort()`.
+    /// Equivalent to `DocumentsWriter.abort()` (`DocumentsWriter.java:212-242`),
+    /// whose `finally` reports `"done abort success=" + success`.
     ///
     /// # Errors
     ///
-    /// Never fails today; the signature matches Lucene's `IOException`.
+    /// Returns [`LuceneError::ThreadInterrupted`] when the thread is
+    /// interrupted while it waits for the running flushes
+    /// ([`DocumentsWriterFlushControl::wait_for_flush`]).
     pub fn abort(&self) -> Result<()> {
         let _monitor = self.lock_monitor();
-        self.shared.delete_queue().clear();
+        let outcome = (|| -> Result<()> {
+            self.shared.delete_queue().clear();
+            if self.info_stream.is_enabled("DW") {
+                self.info_stream.message("DW", "abort");
+            }
+            for guard in self.per_thread_pool.filter_and_lock(|_| true) {
+                self.abort_documents_writer_per_thread(guard);
+            }
+            self.flush_control.abort_pending_flushes();
+            self.flush_control.wait_for_flush()?;
+            debug_assert_eq!(
+                self.per_thread_pool.size(),
+                0,
+                "there are still active DWPTs in the pool"
+            );
+            Ok(())
+        })();
         if self.info_stream.is_enabled("DW") {
-            self.info_stream.message("DW", "abort");
+            self.info_stream
+                .message("DW", &format!("done abort success={}", outcome.is_ok()));
         }
-        for guard in self.per_thread_pool.filter_and_lock(|_| true) {
-            self.abort_documents_writer_per_thread(guard);
-        }
-        self.flush_control.abort_pending_flushes();
-        self.flush_control.wait_for_flush();
-        debug_assert_eq!(
-            self.per_thread_pool.size(),
-            0,
-            "there are still active DWPTs in the pool"
-        );
-        if self.info_stream.is_enabled("DW") {
-            self.info_stream.message("DW", "done abort");
-        }
-        Ok(())
+        outcome
     }
 
     fn abort_documents_writer_per_thread(&self, mut guard: DwptGuard) {
@@ -6480,7 +6498,10 @@ impl DocumentsWriter {
     ///
     /// # Errors
     ///
-    /// Propagates errors from purging the ticket queue.
+    /// Propagates errors from purging the ticket queue, and returns
+    /// [`LuceneError::ThreadInterrupted`] when the thread is interrupted while
+    /// it waits for the running flushes
+    /// ([`DocumentsWriterFlushControl::wait_for_flush`]).
     pub fn lock_and_abort_all(&self) -> Result<LockAllGuard<'_>> {
         let _monitor = self.lock_monitor();
         if self.info_stream.is_enabled("DW") {
@@ -6515,7 +6536,7 @@ impl DocumentsWriter {
         delete_queue.clear();
         delete_queue.skip_sequence_numbers(self.per_thread_pool.size() as i64 + 1);
         self.flush_control.abort_pending_flushes();
-        self.flush_control.wait_for_flush();
+        self.flush_control.wait_for_flush()?;
         Ok(guard)
     }
 
@@ -6570,10 +6591,24 @@ impl DocumentsWriter {
     }
 
     /// Closes the writer; no further document may be added.
+    ///
+    /// Equivalent to `DocumentsWriter.close()` (`DocumentsWriter.java:379-382`),
+    /// `closed = true; IOUtils.close(flushControl, perThreadPool)`. Neither
+    /// close can fail, so only a panic, which `IOUtils.close` resumes once both
+    /// ran, leaves this method early.
     pub fn close(&self) {
         self.closed.store(true, Ordering::Release);
-        self.flush_control.close();
-        self.per_thread_pool.close();
+        let closed = crate::util::IOUtils::close([
+            crate::util::IOUtils::closeable(|| {
+                self.flush_control.close();
+                Ok(())
+            }),
+            crate::util::IOUtils::closeable(|| {
+                self.per_thread_pool.close();
+                Ok(())
+            }),
+        ]);
+        debug_assert!(closed.is_ok(), "neither close returns an error");
     }
 
     fn ensure_open(&self) -> Result<()> {
@@ -8076,6 +8111,72 @@ mod tests {
         fixture.writer.update_document(&doc("after"), None).unwrap();
         assert_eq!(fixture.writer.num_docs(), 1);
         assert_eq!(fixture.writer.per_thread_pool().size(), 1);
+    }
+
+    /// `DocumentsWriterFlushControl.waitForFlush()`
+    /// (`DocumentsWriterFlushControl.java:349-357`) catches the
+    /// `InterruptedException` of its `wait()` and throws
+    /// `ThreadInterruptedException`; the oracle (`oracle/passG/InterruptOracle.java`)
+    /// pins the class, the message `java.lang.InterruptedException` and the
+    /// cleared interrupt status.
+    #[test]
+    fn interrupting_a_thread_waiting_for_flush_raises_thread_interrupted_exception() {
+        use crate::util::InterruptHandle;
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        let fixture = new_writer(config(1_000_000, 16.0));
+        fixture
+            .writer
+            .update_document(&doc("flushing"), None)
+            .unwrap();
+        let flush_control = fixture.writer.flush_control();
+        let dwpt = flush_control
+            .all_active_writers()
+            .into_iter()
+            .next()
+            .expect("one active writer");
+        flush_control.set_flush_pending(&dwpt);
+        let flushing = flush_control
+            .next_pending_flush()
+            .expect("the pending writer is checked out for flushing");
+        assert_eq!(flush_control.num_flushing_dwpt(), 1);
+
+        let (handle_tx, handle_rx) = mpsc::channel();
+        let (outcome_tx, outcome_rx) = mpsc::channel();
+        let writer = Arc::clone(&fixture.writer);
+        thread::spawn(move || {
+            handle_tx.send(InterruptHandle::current()).unwrap();
+            let outcome = writer.flush_control().wait_for_flush();
+            let _ = outcome_tx.send(outcome.map_err(|error| {
+                (
+                    error.java_simple_name(),
+                    error.to_string(),
+                    InterruptHandle::current().is_interrupted(),
+                )
+            }));
+        });
+        let handle = handle_rx.recv().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !handle.is_waiting() {
+            assert!(
+                Instant::now() < deadline,
+                "the thread never waited for the flush"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        handle.interrupt();
+        let outcome = outcome_rx.recv_timeout(Duration::from_secs(10));
+        // Release the waiter, whatever happened, so the thread ends.
+        flush_control.do_after_flush(&flushing);
+        assert_eq!(
+            outcome.expect("the interrupted wait did not return"),
+            Err((
+                "ThreadInterruptedException",
+                "java.lang.InterruptedException".to_string(),
+                false
+            ))
+        );
     }
 
     // -- Concurrency --------------------------------------------------------

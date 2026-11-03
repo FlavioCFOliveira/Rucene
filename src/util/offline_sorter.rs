@@ -254,6 +254,17 @@ impl ByteSequencesReader {
     pub fn input(&mut self) -> &mut dyn ChecksumIndexInput {
         self.input.as_mut()
     }
+
+    /// Closes the underlying input.
+    ///
+    /// Equivalent to `ByteSequencesReader.close()`, `in.close()`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the failure of closing the input.
+    pub fn close(&mut self) -> Result<()> {
+        self.input.close()
+    }
 }
 
 impl BytesRefIterator for ByteSequencesReader {
@@ -757,56 +768,72 @@ impl OfflineSorter {
         self.created_files.insert(new_segment_name.clone());
         let mut writer = self.get_writer(out, total_count);
 
-        // Open every stream and read its first value.
+        // `try (ByteSequencesWriter writer = ...) { ... } finally {
+        // IOUtils.close(streams); }` (`OfflineSorter.java:701-752`).
         let mut streams: Vec<ByteSequencesReader> = Vec::with_capacity(segments_to_merge.len());
-        for segment in &segments_to_merge {
-            let file_name = segment
-                .file_name
-                .as_deref()
-                .expect("INVARIANT: a merged partition always has a file");
-            let mut stream = self.get_reader(file_name)?;
-            let item = match stream.next() {
-                Ok(item) => item,
-                Err(e) => {
-                    let name = stream.name().to_string();
-                    return Err(self.verify_checksum(e, &name));
-                }
-            };
-            let item = item.expect("INVARIANT: a sorted partition is never empty");
-            let fd = streams.len();
-            queue.insert_with_overflow(FileAndTop { fd, current: item });
-            streams.push(stream);
-        }
+        let body = (|| -> Result<()> {
+            // Open every stream and read its first value.
+            for segment in &segments_to_merge {
+                let file_name = segment
+                    .file_name
+                    .as_deref()
+                    .expect("INVARIANT: a merged partition always has a file");
+                streams.push(self.get_reader(file_name)?);
+                let fd = streams.len() - 1;
+                let item = match streams[fd].next() {
+                    Ok(item) => item,
+                    Err(e) => {
+                        let name = streams[fd].name().to_string();
+                        return Err(self.verify_checksum(e, &name));
+                    }
+                };
+                let item = item.expect("INVARIANT: a sorted partition is never empty");
+                queue.insert_with_overflow(FileAndTop { fd, current: item });
+            }
 
-        // A priority queue keeps the merge O(n log k); the process is I/O bound
-        // anyway, as Lucene notes.
-        while let Some((fd, current)) = queue.top().map(|top| (top.fd, top.current.clone())) {
-            writer.write(current.slice())?;
-            let next = match streams[fd].next() {
-                Ok(next) => next,
-                Err(e) => {
-                    let name = streams[fd].name().to_string();
-                    return Err(self.verify_checksum(e, &name));
-                }
-            };
-            match next {
-                Some(item) => {
-                    queue.update_top_with(FileAndTop { fd, current: item });
-                }
-                None => {
-                    queue.pop();
+            // A priority queue keeps the merge O(n log k); the process is I/O
+            // bound anyway, as Lucene notes.
+            while let Some((fd, current)) = queue.top().map(|top| (top.fd, top.current.clone())) {
+                writer.write(current.slice())?;
+                let next = match streams[fd].next() {
+                    Ok(next) => next,
+                    Err(e) => {
+                        let name = streams[fd].name().to_string();
+                        return Err(self.verify_checksum(e, &name));
+                    }
+                };
+                match next {
+                    Some(item) => {
+                        queue.update_top_with(FileAndTop { fd, current: item });
+                    }
+                    None => {
+                        queue.pop();
+                    }
                 }
             }
-        }
 
-        codec_util::write_footer(writer.out())?;
+            codec_util::write_footer(writer.out())?;
 
-        for stream in streams.iter_mut() {
-            codec_util::check_footer(stream.input())?;
-        }
+            for stream in streams.iter_mut() {
+                codec_util::check_footer(stream.input())?;
+            }
 
-        self.sort_info.merge_time_ms += start.elapsed().as_millis() as i64;
-        writer.close()?;
+            self.sort_info.merge_time_ms += start.elapsed().as_millis() as i64;
+            Ok(())
+        })();
+        // The try-with-resources closes the writer after the body; a failure
+        // to close is suppressed when the body failed.
+        let body = match body {
+            Ok(()) => writer.close(),
+            Err(error) => {
+                let _ = writer.close();
+                Err(error)
+            }
+        };
+        // `finally { IOUtils.close(streams); }`: a failure to close a stream
+        // replaces the one in flight.
+        crate::util::IOUtils::close(streams.iter_mut().map(|stream| Some(|| stream.close())))?;
+        body?;
 
         for segment in &segments_to_merge {
             if let Some(name) = segment.file_name.as_deref() {
@@ -816,5 +843,62 @@ impl OfflineSorter {
         }
 
         Ok(Partition::on_disk(new_segment_name, total_count))
+    }
+}
+
+#[cfg(test)]
+mod merge_close_tests {
+    //! `MergePartitionsTask.call()` (`OfflineSorter.java:701-752`): `finally {
+    //! IOUtils.close(streams); }` closes every partition the merge read.
+    use super::*;
+    use crate::codecs::tests::CloseTrackingDirectory;
+
+    #[test]
+    fn a_merge_closes_every_partition_it_read() -> Result<()> {
+        let tracking = Arc::new(CloseTrackingDirectory::default());
+        let log = Arc::clone(&tracking.log);
+        let dir: Arc<dyn Directory> = tracking;
+        // Enough values for several partitions of the smallest buffer, and
+        // two temporary files at most, so that partitions are merged.
+        {
+            let out = dir.create_output("unsorted", &*crate::store::DEFAULT_IO_CONTEXT)?;
+            let mut writer = ByteSequencesWriter::new(out);
+            for i in 0..40_000u32 {
+                let value = format!(
+                    "{:08}-{}",
+                    i.wrapping_mul(2_654_435_761) % 1_000_003,
+                    "x".repeat(40)
+                );
+                writer.write(value.as_bytes())?;
+            }
+            codec_util::write_footer(writer.out())?;
+            writer.close()?;
+        }
+        let mut sorter = OfflineSorter::with_options(
+            Arc::clone(&dir),
+            "merge_close",
+            OfflineSorterComparator::Natural,
+            BufferSize {
+                bytes: ABSOLUTE_MIN_SORT_BUFFER_SIZE as usize,
+            },
+            2,
+            -1,
+        )?;
+        sorter.sort("unsorted")?;
+        assert!(
+            sorter.sort_info().merge_rounds > 0,
+            "the sort merged partitions"
+        );
+        let partition_closes: Vec<String> = log
+            .closed()
+            .into_iter()
+            .filter(|name| name.starts_with("merge_close"))
+            .collect();
+        assert!(
+            !partition_closes.is_empty(),
+            "the merged partitions are closed: {:?}",
+            log.closed()
+        );
+        Ok(())
     }
 }

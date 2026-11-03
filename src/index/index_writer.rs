@@ -57,11 +57,13 @@ const IW: &str = "IW";
 /// Equivalent to the `finally` of the `IndexWriter` constructor
 /// (`IndexWriter.java:1209-1216`): unless `success` was reached it writes
 /// `"init: hit exception on init; releasing write lock"` and calls
-/// `IOUtils.closeWhileHandlingException(writeLock)`. Java's `finally` also
-/// runs when an `Error` escapes, such as an `AssertionError` under `-ea`; a
-/// Rust `match` on the result would miss the panic that stands for it, so the
-/// release is this guard's `Drop`, which runs on an error return and on
-/// unwinding alike. [`disarm`](Self::disarm) is `success = true`.
+/// `IOUtils.closeWhileHandlingException(writeLock)`. On an error return the
+/// constructor calls [`release`](Self::release), whose Java `Error` replaces
+/// the failure in flight, as one thrown from `finally` does. Java's `finally`
+/// also runs when an `Error` escapes, such as an `AssertionError` under `-ea`;
+/// a Rust `match` on the result would miss the panic that stands for it, so
+/// the guard's `Drop` releases the lock while unwinding, where nothing can
+/// replace the panic in flight. [`disarm`](Self::disarm) is `success = true`.
 struct InitWriteLockRelease<'a> {
     write_lock: Option<Arc<dyn Lock>>,
     info_stream: &'a Arc<dyn InfoStream>,
@@ -72,18 +74,29 @@ impl InitWriteLockRelease<'_> {
     fn disarm(&mut self) {
         self.write_lock = None;
     }
+
+    /// Releases the lock, once.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`LuceneError::AssertionError`] closing the lock raised,
+    /// what `IOUtils.closeWhileHandlingException` rethrows.
+    fn release(&mut self) -> Result<()> {
+        let Some(write_lock) = self.write_lock.take() else {
+            return Ok(());
+        };
+        if self.info_stream.is_enabled(IW) {
+            self.info_stream
+                .message(IW, "init: hit exception on init; releasing write lock");
+        }
+        crate::util::IOUtils::close_while_handling_exception([Some(|| write_lock.close())])
+    }
 }
 
 impl Drop for InitWriteLockRelease<'_> {
     fn drop(&mut self) {
-        if let Some(write_lock) = self.write_lock.take() {
-            if self.info_stream.is_enabled(IW) {
-                self.info_stream
-                    .message(IW, "init: hit exception on init; releasing write lock");
-            }
-            // `IOUtils.closeWhileHandlingException(writeLock)`.
-            let _ = write_lock.close();
-        }
+        // Only reached with the lock still held while unwinding.
+        let _ = self.release();
     }
 }
 
@@ -228,7 +241,7 @@ pub struct IndexWriter {
     ///
     /// Equivalent to the `Object.wait(1000)` in `IndexWriter.doWait()` and the
     /// `notifyAll()` calls that wake it (`mergeFinish`, `abortMerges`, …).
-    state_changed: std::sync::Condvar,
+    state_changed: Arc<std::sync::Condvar>,
     /// Held from construction until the writer closes, so only one writer
     /// opens a directory at a time.
     ///
@@ -762,9 +775,16 @@ impl IndexWriter {
             write_lock: Some(Arc::clone(&write_lock)),
             info_stream: &info_stream,
         };
-        let writer = Self::init(d, config, write_lock, &info_stream)?;
-        release_on_failure.disarm();
-        Ok(writer)
+        match Self::init(d, config, write_lock, &info_stream) {
+            Ok(writer) => {
+                release_on_failure.disarm();
+                Ok(writer)
+            }
+            Err(error) => {
+                release_on_failure.release()?;
+                Err(error)
+            }
+        }
     }
 
     /// The `try` block of the constructor (`IndexWriter.java:960-1207`),
@@ -1057,7 +1077,7 @@ impl IndexWriter {
             documents_writer,
             reader_pool,
             global_field_numbers,
-            state_changed: std::sync::Condvar::new(),
+            state_changed: Arc::new(std::sync::Condvar::new()),
             state: Mutex::new(WriterState {
                 segment_infos,
                 rollback_segments,
@@ -3107,11 +3127,15 @@ impl IndexWriter {
         match self.rollback_internal_no_commit_steps() {
             Ok(()) => Ok(()),
             Err(error) => {
-                self.close_after_failed_rollback();
+                let closed = self.close_after_failed_rollback();
+                // The `finally` (`IndexWriter.java:2675-2683`).
                 if matches!(error, LuceneError::AssertionError(_)) {
                     // `throwable.addSuppressed(t1)`: the original error wins.
                     let _ = self.tragic_event(&error, "rollbackInternal");
                 }
+                // A Java `Error` the closing rethrew leaves the `try` of the
+                // `catch` block in place of `throwable`.
+                closed?;
                 Err(error)
             }
         }
@@ -3145,7 +3169,7 @@ impl IndexWriter {
         self.documents_writer.close();
         self.documents_writer.abort()?;
         // Wait for all concurrently running flushes.
-        self.documents_writer.flush_control().wait_for_flush();
+        self.documents_writer.flush_control().wait_for_flush()?;
         // Empty the flush ticket queue, otherwise we might not have cleaned up
         // all resources.
         self.publish_flushed_segments(true)?;
@@ -3206,37 +3230,57 @@ impl IndexWriter {
         // `IOUtils.close`, which runs the second even when the first fails
         // (`IndexWriter.java:2645`).
         self.closed.store(true, Ordering::Release);
-        let released = self.release_write_lock();
-        self.cleanup_and_notify(&mut state);
-        released
+        crate::util::IOUtils::close([
+            crate::util::IOUtils::closeable(|| self.release_write_lock()),
+            crate::util::IOUtils::closeable(|| {
+                self.cleanup_and_notify(&mut state);
+                Ok(())
+            }),
+        ])
     }
 
-    /// The `catch` block of `IndexWriter.rollbackInternalNoCommit()`
-    /// (`IndexWriter.java:2648-2683`): we tried to be nice about it; do the
-    /// minimum. Every failure here is swallowed, as
-    /// `IOUtils.closeWhileHandlingException` does, so the original error is
-    /// the one reported.
-    fn close_after_failed_rollback(&self) {
+    /// The `try` of the `catch` block of `IndexWriter.rollbackInternalNoCommit()`
+    /// (`IndexWriter.java:2648-2674`): we tried to be nice about it; do the
+    /// minimum. `IOUtils.closeWhileHandlingException(mergeScheduler, ...)`
+    /// swallows every failure but a Java `Error`, so the original error is the
+    /// one reported unless closing hit an `Error`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`LuceneError::AssertionError`] the closing rethrew.
+    fn close_after_failed_rollback(&self) -> Result<()> {
+        use crate::util::IOUtils;
         // Must not hold the writer's lock while closing the merge scheduler:
         // this can lead to deadlock.
-        let _ = self.config.merge_scheduler().close();
-        let mut state = match self.state.lock() {
-            Ok(state) => state,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        // Don't leak a segments_N file if there is a pending commit:
-        // `pendingCommit.rollbackCommit(directory)` (`IndexWriter.java:2660`).
-        if let Some(mut pending) = state.pending_commit.take() {
-            pending.rollback_commit(self.directory.as_ref());
-            state.files_to_commit = None;
-            let _ = state.deleter.dec_ref_segment_infos(&pending);
-        }
-        // Close all the closeables we can (but important is the reader pool
-        // and the write lock, to prevent leaks).
-        let _ = self.reader_pool.close();
-        let _ = state.deleter.close();
-        let _ = self.release_write_lock();
-        self.cleanup_and_notify(&mut state);
+        IOUtils::close_while_handling_exception([
+            IOUtils::closeable(|| self.config.merge_scheduler().close()),
+            IOUtils::closeable(|| {
+                let mut state = match self.state.lock() {
+                    Ok(state) => state,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                // Don't leak a segments_N file if there is a pending commit:
+                // `pendingCommit.rollbackCommit(directory)`
+                // (`IndexWriter.java:2660`).
+                if let Some(mut pending) = state.pending_commit.take() {
+                    pending.rollback_commit(self.directory.as_ref());
+                    state.files_to_commit = None;
+                    let _ = state.deleter.dec_ref_segment_infos(&pending);
+                }
+                // Close all the closeables we can (but important is the reader
+                // pool and the write lock, to prevent leaks).
+                let state = std::cell::RefCell::new(&mut *state);
+                IOUtils::close_while_handling_exception([
+                    IOUtils::closeable(|| self.reader_pool.close()),
+                    IOUtils::closeable(|| state.borrow_mut().deleter.close()),
+                    IOUtils::closeable(|| self.release_write_lock()),
+                    IOUtils::closeable(|| {
+                        self.cleanup_and_notify(&mut state.borrow_mut());
+                        Ok(())
+                    }),
+                ])
+            }),
+        ])
     }
 
     /// Releases the directory's write lock, so another writer may open it.
@@ -7699,9 +7743,10 @@ impl IndexWriter {
                 Ok(lock) => locks.push(lock),
                 Err(error) => {
                     // Release all previously acquired locks.
-                    for lock in &locks {
-                        let _ = lock.close();
-                    }
+                    // TODO: addSuppressed? it could be many...
+                    crate::util::IOUtils::close_while_handling_exception(
+                        locks.iter().map(|lock| Some(|| lock.close())),
+                    )?;
                     return Err(error);
                 }
             }
@@ -7938,17 +7983,18 @@ impl IndexWriter {
         // The `finally` (`IndexWriter.java:3204-3211`): on success
         // `IOUtils.close(locks)` closes every lock and then throws the first
         // failure; otherwise `IOUtils.closeWhileHandlingException(locks)`
-        // ignores them, so the original error wins.
-        let mut release_failure: Option<LuceneError> = None;
-        for lock in locks {
-            if let Err(error) = lock.close() {
-                release_failure.get_or_insert(error);
+        // ignores them but a Java `Error`, so the original error wins.
+        let closeables = locks.iter().map(|lock| Some(|| lock.close()));
+        let seq_no = match outcome {
+            Ok(seq_no) => {
+                crate::util::IOUtils::close(closeables)?;
+                seq_no
             }
-        }
-        let seq_no = outcome?;
-        if let Some(error) = release_failure {
-            return Err(error);
-        }
+            Err(error) => {
+                crate::util::IOUtils::close_while_handling_exception(closeables)?;
+                return Err(error);
+            }
+        };
         self.maybe_merge()?;
         Ok(seq_no)
     }
@@ -8430,19 +8476,27 @@ impl IndexWriter {
     /// Equivalent to `IndexWriter.doWait()` (`IndexWriter.java:5640-5652`):
     /// the callers could in theory simply wait, but as a defence against a
     /// missed `notifyAll()` the wait lasts at most one second, after which the
-    /// caller re-checks its condition.
+    /// caller re-checks its condition; the `InterruptedException` of an
+    /// interrupted wait becomes a `ThreadInterruptedException`.
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the monitor is poisoned.
+    /// Returns [`LuceneError::ThreadInterrupted`] when the thread is
+    /// interrupted ([`InterruptHandle::interrupt`](crate::util::InterruptHandle::interrupt))
+    /// before or while it waits, and [`LuceneError::IllegalState`] when the
+    /// monitor is poisoned.
     fn do_wait<'a>(
         &'a self,
         state: MutexGuard<'a, WriterState>,
     ) -> Result<MutexGuard<'a, WriterState>> {
-        self.state_changed
-            .wait_timeout(state, std::time::Duration::from_secs(1))
-            .map(|(state, _)| state)
-            .map_err(|_| LuceneError::illegal_state("IndexWriter state lock poisoned".to_string()))
+        let (state, waited) = crate::util::wait_interruptibly(
+            &self.state_changed,
+            state,
+            Some(std::time::Duration::from_secs(1)),
+        )
+        .map_err(|_| LuceneError::illegal_state("IndexWriter state lock poisoned".to_string()))?;
+        waited.map_err(LuceneError::thread_interrupted)?;
+        Ok(state)
     }
 
     /// Counts the soft and hard deletions a reader carries.
@@ -8861,7 +8915,7 @@ impl IndexWriter {
     /// handled by another pass.
     fn open_segment_states(
         &self,
-        state: &WriterState,
+        state: &mut WriterState,
         infos: &[SegmentCommitInfo],
         already_seen_segments: &mut HashSet<String>,
         del_gen: i64,
@@ -8884,12 +8938,39 @@ impl IndexWriter {
             Ok(())
         })();
         if let Err(error) = outcome {
-            for state in &seg_states {
-                let _ = state.close();
-            }
+            // `try { IOUtils.close(segStates); } catch (Throwable t1) {
+            // t.addSuppressed(t1); } throw t;` (`IndexWriter.java:6591-6598`).
+            let state = std::cell::RefCell::new(state);
+            let _ = crate::util::IOUtils::close(seg_states.iter().map(|seg_state| {
+                Some(|| self.close_segment_state(&mut state.borrow_mut(), seg_state))
+            }));
             return Err(error);
         }
         Ok(seg_states)
+    }
+
+    /// Closes one segment state: releases the reader it pinned, then hands its
+    /// `ReadersAndUpdates` back to the writer's pool.
+    ///
+    /// Equivalent to `BufferedUpdatesStream.SegmentState.close()`
+    /// (`BufferedUpdatesStream.java:289-292`), `IOUtils.close(() ->
+    /// rld.release(reader), () -> onClose.accept(rld))`, whose `onClose` is
+    /// `IndexWriter::release`, `release(rld, true)`
+    /// (`IndexWriter.java:6263-6265`, `:6599`). The pool is the writer's, so
+    /// the writer runs the second half with the lock it holds.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first failure of the two, after both ran.
+    fn close_segment_state(
+        &self,
+        state: &mut WriterState,
+        seg_state: &crate::index::buffered_updates_stream::SegmentState,
+    ) -> Result<()> {
+        crate::util::IOUtils::close([
+            crate::util::IOUtils::closeable(|| seg_state.close()),
+            crate::util::IOUtils::closeable(|| self.release_with(state, &seg_state.rld, true)),
+        ])
     }
 
     /// Closes the segment states a packet was resolved against, and reports
@@ -8905,40 +8986,46 @@ impl IndexWriter {
     ) -> Result<crate::index::buffered_updates_stream::ApplyDeletesResult> {
         let mut all_deleted: Vec<SegmentCommitInfo> = Vec::new();
         let mut tot_del_count = 0i64;
-        for seg_state in seg_states {
-            if success {
-                tot_del_count +=
-                    i64::from(seg_state.rld.get_del_count() - seg_state.start_del_count);
-                debug_assert!(
-                    seg_state.rld.get_del_count() <= seg_state.rld.info().info.max_doc()?
-                );
-                // `segState.rld.isFullyDeleted() && getConfig().getMergePolicy()
-                // .keepFullyDeletedSegment(() -> segState.reader) == false`
-                // (`IndexWriter.java:6550-6552`).
-                if seg_state.rld.is_fully_deleted()? {
-                    let reader = Arc::clone(&seg_state.reader);
-                    let keep =
-                        self.config
-                            .merge_policy()
-                            .keep_fully_deleted_segment(&mut || {
-                                Ok(Arc::clone(&reader)
-                                    as Arc<dyn crate::index::codec_reader::CodecReader>)
-                            })?;
-                    if !keep {
-                        all_deleted.push(seg_state.reader.get_original_segment_info().clone());
+        let outcome = (|| -> Result<()> {
+            for seg_state in seg_states {
+                if success {
+                    tot_del_count +=
+                        i64::from(seg_state.rld.get_del_count() - seg_state.start_del_count);
+                    debug_assert!(
+                        seg_state.rld.get_del_count() <= seg_state.rld.info().info.max_doc()?
+                    );
+                    // `segState.rld.isFullyDeleted() && getConfig().getMergePolicy()
+                    // .keepFullyDeletedSegment(() -> segState.reader) == false`
+                    // (`IndexWriter.java:6550-6552`).
+                    if seg_state.rld.is_fully_deleted()? {
+                        let reader = Arc::clone(&seg_state.reader);
+                        let keep =
+                            self.config
+                                .merge_policy()
+                                .keep_fully_deleted_segment(&mut || {
+                                    Ok(Arc::clone(&reader)
+                                        as Arc<dyn crate::index::codec_reader::CodecReader>)
+                                })?;
+                        if !keep {
+                            all_deleted.push(seg_state.reader.get_original_segment_info().clone());
+                        }
                     }
                 }
             }
-        }
-        // The readers must be released whatever happened, and the pooled
-        // instances returned to the writer's pool, which only the writer owns.
-        // `closeSegmentStates` is `synchronized`, and `release` asserts the lock.
-        let mut state = self.state()?;
-        for seg_state in seg_states {
-            let _ = seg_state.close();
-            let _ = self.release_with(&mut state, &seg_state.rld, false);
-        }
-        drop(state);
+            Ok(())
+        })();
+        // `finally { IOUtils.close(segStates); }` (`IndexWriter.java:6560-6562`):
+        // every state is closed whatever happened, and a failure to close one
+        // replaces the failure in flight. `closeSegmentStates` is
+        // `synchronized`, and `release` asserts the lock.
+        let closed = {
+            let state = std::cell::RefCell::new(self.state()?);
+            crate::util::IOUtils::close(seg_states.iter().map(|seg_state| {
+                Some(|| self.close_segment_state(&mut state.borrow_mut(), seg_state))
+            }))
+        };
+        closed?;
+        outcome?;
         if self.info_stream.is_enabled("BD") {
             self.info_stream.message(
                 "BD",
@@ -9107,7 +9194,7 @@ impl IndexWriter {
                     del_files.extend(info.files()?);
                 }
                 let seg_states =
-                    self.open_segment_states(&state, &infos, &mut seen_segments, del_gen)?;
+                    self.open_segment_states(&mut state, &infos, &mut seen_segments, del_gen)?;
                 if seg_states.is_empty() {
                     if self.info_stream.is_enabled("BD") {
                         self.info_stream.message("BD", "packet matches no segments");
@@ -9527,22 +9614,18 @@ impl IndexWriter {
             apply_all_deletes,
             write_all_deletes,
         )?;
-        // Java closes the readers still in the map and then clears it; draining
-        // does both at once and cannot close the same reader twice.
+        // `IOUtils.close(mergedReaders.values()); mergedReaders.clear();`:
+        // draining does both at once and cannot close the same reader twice.
         let leftover: Vec<Arc<SegmentReader>> = lock_reader_map(merged_readers, "mergedReaders")?
             .drain()
             .map(|(_, reader)| reader)
             .collect();
-        let mut first_error: Option<LuceneError> = None;
-        for merged in leftover {
-            if let Err(error) = IndexReader::close(merged.as_ref()) {
-                first_error.get_or_insert(error);
-            }
-        }
-        match first_error {
-            Some(error) => Err(error),
-            None => Ok(reader),
-        }
+        crate::util::IOUtils::close(
+            leftover
+                .iter()
+                .map(|merged| Some(|| IndexReader::close(merged.as_ref()))),
+        )?;
+        Ok(reader)
     }
 
     /// Reopens the near-real-time reader over the segments the point-in-time
@@ -9652,26 +9735,21 @@ impl IndexWriter {
             .drain()
             .map(|(_, reader)| reader)
             .collect();
-        let mut first_error: Option<LuceneError> = None;
-        for reader in readers {
-            let released = (|| -> Result<()> {
-                let mut state = self.state()?;
-                state
-                    .deleter
-                    .dec_ref_files(reader.get_segment_info().files()?.iter())
-            })();
-            let closed = IndexReader::close(reader.as_ref());
-            if let Err(error) = released {
-                first_error.get_or_insert(error);
-            }
-            if let Err(error) = closed {
-                first_error.get_or_insert(error);
-            }
-        }
-        match first_error {
-            Some(error) => Err(error),
-            None => Ok(()),
-        }
+        // `IOUtils.close(mergedReaders.values().stream().map(sr -> () -> { try
+        // { deleter.decRef(sr.getSegmentInfo().files()); } finally {
+        // sr.close(); } }))` (`IndexWriter.java:653-668`).
+        crate::util::IOUtils::close(readers.iter().map(|reader| {
+            Some(|| {
+                let released = (|| -> Result<()> {
+                    let mut state = self.state()?;
+                    state
+                        .deleter
+                        .dec_ref_files(reader.get_segment_info().files()?.iter())
+                })();
+                // `finally`: a failure to close replaces the one from decRef.
+                IndexReader::close(reader.as_ref()).and(released)
+            })
+        }))
     }
 
     /// The part of the point-in-time merge's `mergeFinished` that applies a
@@ -10145,33 +10223,39 @@ impl IndexWriterTrait for IndexWriter {
         // `finally` releases the reader.
         let outcome = self.catch_error_as_tragedy(outcome, "getReader");
 
+        // `onGetReaderMergeResources`, a `Closeable` that is `null` unless the
+        // merges on getReader were prepared.
+        let on_get_reader_merge_resources = nrt.on_get_reader_merge_resources.then_some(|| {
+            self.close_get_reader_merge_resources(
+                &nrt.stop_collecting_merged_readers,
+                &nrt.merged_readers,
+            )
+        });
         match outcome {
             Ok(()) => {
-                if nrt.on_get_reader_merge_resources {
-                    self.close_get_reader_merge_resources(
-                        &nrt.stop_collecting_merged_readers,
-                        &nrt.merged_readers,
-                    )?;
-                }
+                // `IOUtils.close(onGetReaderMergeResources)`.
+                crate::util::IOUtils::close([on_get_reader_merge_resources])?;
                 let reader = nrt.reader.take().ok_or_else(|| {
                     LuceneError::illegal_state("getReader produced no reader".to_string())
                 })?;
                 Ok(reader as Arc<dyn DirectoryReader>)
             }
             Err(error) => {
-                // Java's `IOUtils.closeWhileHandlingException(r,
-                // onGetReaderMergeResources)`: release both, keep the original
-                // failure.
-                if let Some(reader) = nrt.reader.take() {
-                    let _ = IndexReader::close(reader.as_ref());
-                }
-                if nrt.on_get_reader_merge_resources {
-                    let _ = self.close_get_reader_merge_resources(
-                        &nrt.stop_collecting_merged_readers,
-                        &nrt.merged_readers,
-                    );
-                }
+                // `try { IOUtils.closeWhileHandlingException(r,
+                // onGetReaderMergeResources); } finally {
+                // maybeCloseOnTragicEvent(); }`: both are released and the
+                // original failure kept, unless closing hit a Java `Error`.
+                let reader = nrt.reader.take();
+                let closed = crate::util::IOUtils::close_while_handling_exception([
+                    reader.map(|reader| {
+                        Box::new(move || IndexReader::close(reader.as_ref()))
+                            as crate::util::Closer<'_>
+                    }),
+                    on_get_reader_merge_resources
+                        .map(|close| Box::new(close) as crate::util::Closer<'_>),
+                ]);
                 self.maybe_close_on_tragic_event()?;
+                closed?;
                 Err(error)
             }
         }
@@ -10442,6 +10526,73 @@ mod tests {
             crate::document::TextField::new("body", "some words".to_string(), Store::NO).unwrap(),
         ));
         doc
+    }
+
+    /// `IndexWriter.doWait()` (`IndexWriter.java:5640-5652`) catches the
+    /// `InterruptedException` of its `wait(1000)` and throws
+    /// `ThreadInterruptedException`; the oracle (`oracle/passG/InterruptOracle.java`)
+    /// pins the class, the message `java.lang.InterruptedException` and the
+    /// cleared interrupt status.
+    #[test]
+    fn interrupting_a_thread_in_do_wait_raises_thread_interrupted_exception() {
+        use crate::util::InterruptHandle;
+        use std::sync::mpsc;
+
+        let (_stream, writer) = recording_writer();
+        let (handle_tx, handle_rx) = mpsc::channel();
+        let (outcome_tx, outcome_rx) = mpsc::channel();
+        let waiting = Arc::clone(&writer);
+        std::thread::spawn(move || {
+            handle_tx.send(InterruptHandle::current()).unwrap();
+            let state = waiting.state().unwrap();
+            let outcome = waiting.do_wait(state).map(drop).map_err(|error| {
+                (
+                    error.java_simple_name(),
+                    error.to_string(),
+                    InterruptHandle::current().is_interrupted(),
+                )
+            });
+            let _ = outcome_tx.send(outcome);
+        });
+        let handle = handle_rx.recv().unwrap();
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        while !handle.is_waiting() {
+            assert!(Instant::now() < deadline, "the thread never waited");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        handle.interrupt();
+        let outcome = outcome_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the interrupted wait did not return");
+        assert_eq!(
+            outcome,
+            Err((
+                "ThreadInterruptedException",
+                "java.lang.InterruptedException".to_string(),
+                false
+            ))
+        );
+        writer.rollback().unwrap();
+    }
+
+    /// `DocumentsWriter.abort()` reports `"done abort success=" + success` from
+    /// its `finally` (`DocumentsWriter.java:238-240`). Java oracle
+    /// (`oracle/passG/AbortMsgOracle.java`, one document, then `rollback()`):
+    /// "DW: abort", "DW: done abort success=true".
+    #[test]
+    fn rollback_reports_the_abort_outcome_as_java_does() {
+        let (stream, writer) = recording_writer();
+        writer.add_document(&id_body_doc("1")).unwrap();
+        writer.rollback().unwrap();
+        let dw: Vec<String> = stream
+            .of("DW")
+            .into_iter()
+            .filter(|m| m.starts_with("abort") || m.starts_with("done abort"))
+            .collect();
+        assert_eq!(
+            dw,
+            vec!["abort".to_string(), "done abort success=true".to_string()]
+        );
     }
 
     /// A writer starts from the user data of the commit it opened
