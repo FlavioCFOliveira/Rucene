@@ -91,6 +91,9 @@ def main():
     ap.add_argument("--survey", required=True)
     ap.add_argument("--lucene-root", default="/tmp/lucene1050")
     ap.add_argument("--source-root", default=".")
+    ap.add_argument("--commit", default="HEAD",
+                    help="the surveyed commit; its history is the Commit census, so a "
+                         "commit landing while the sync runs does not read as a gap")
     ap.add_argument("--expanded-file",
                     help="a captured `-Zunpretty=expanded` dump; without it the "
                          "compiler is run, which needs the nightly toolchain")
@@ -237,11 +240,34 @@ def main():
     print("D. PROVENANCE")
     print("=" * 92)
     gc = q("MATCH (c:Commit) RETURN count(c)")[0][0]
-    real_commits = int(subprocess.run(["git", "rev-list", "--count", "HEAD"],
+    real_commits = int(subprocess.run(["git", "rev-list", "--count", args.commit],
                                       capture_output=True, text=True).stdout.strip())
-    check("Commit nodes", gc, real_commits)
+    # The surveyed commit's history is the floor; a commit landing while the sync
+    # runs may already be mirrored, so the graph may hold more but never fewer.
+    check("Commit nodes (at least the surveyed history)", min(gc, real_commits), real_commits)
     unstamped = q("MATCH (n) WHERE n.gitCommit IS NULL RETURN count(n)")[0][0]
     check("nodes without a provenance stamp", unstamped, 0)
+
+    print()
+    print("=" * 92)
+    print("E. MIRRORS OF THE OTHER SOURCES")
+    print("=" * 92)
+    # rmp: every task is mirrored, and nothing else (#190).
+    import port_coverage_kg as pcov
+    live = {int(t["id"]) for t in pcov.fetch_tasks(args.roadmap)}
+    graph_tasks = {r[0] for r in q("MATCH (t:Task) RETURN t.id")}
+    extra = sorted(graph_tasks - live)
+    missing = sorted(live - graph_tasks)
+    check("Task nodes rmp does not have", len(extra), 0, f"{extra[:5]}" if extra else "")
+    check("rmp tasks without a Task node", len(missing), 0, f"{missing[:5]}" if missing else "")
+    # The crate's declared divergences (CLAUDE.md 14.5): one node per paragraph.
+    import divergences_kg as dv
+    declared = {d["id"] for d in dv.scan_tree(Path(args.source_root))}
+    graph_divs = {r[0] for r in q("MATCH (d:Divergence) RETURN d.id")}
+    check("declared divergences without a Divergence node", len(declared - graph_divs), 0,
+          f"{sorted(declared - graph_divs)[:3]}" if declared - graph_divs else "")
+    check("Divergence nodes the crate no longer declares", len(graph_divs - declared), 0,
+          f"{sorted(graph_divs - declared)[:3]}" if graph_divs - declared else "")
 
     print()
     print(f"problems: {len(problems)}")

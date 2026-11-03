@@ -73,7 +73,22 @@ def kg_target() -> Path:
 # label at 2.2 ms per row on `TestMethod` (5,746 nodes). A labelled
 # `MATCH (n:L {k: row.k})` is hash-joined -- one label scan per statement, at
 # most 0.04 s on the write path at 200 rows -- and needs no cap.
+#
+# Since 2026-11-03 every label carries a hash index on its identity property
+# (`knowledge-model.md`, *Indexes and constraints*). A node `MERGE` on an
+# indexed property is then an index seek -- measured on `TestMethod`: a 20-row
+# batch in 0.12 ms in all, against 2.2 ms per row before -- and needs no cap
+# either. The cap still governs the unlabelled match and the `id(n)` match,
+# which no index can serve; the Rust item pattern `(t {name:row.name,
+# file:row.file})` is routed through `unwind_items` instead, which binds it
+# with its label.
 PER_ROW_SCAN_BATCH = 20
+
+# The labels whose nodes a Rust item pattern `(t {name:row.name, file:row.file})`
+# can bind: the four type labels, `RustFn` and `Component` are the only ones that
+# carry both `name` and a crate `file`.
+RUST_ITEM_LABELS = ("RustStruct", "RustTrait", "RustEnum", "RustAlias", "RustFn", "Component")
+ITEM_PATTERN = "(t {name:row.name, file:row.file})"
 
 _ERROR_LINE = re.compile(r"^Error:.*$", re.MULTILINE)
 
@@ -213,4 +228,53 @@ def unwind(roadmap, mode, rows, body, label, batch=300):
         for k, v in counters_of(out).items():
             total[k] = total.get(k, 0) + v
     print(f"  {label}: {len(rows)} rows sent; {format_counters(total)}", file=sys.stderr)
+    return total
+
+
+def item_labels(roadmap, labels=RUST_ITEM_LABELS):
+    """`{(name, file): {label, ...}}` over every node of `labels`.
+
+    The routing table of `unwind_items`: one read per label, instead of a scan of
+    the whole graph for every row a batch sends.
+    """
+    out = {}
+    for label in labels:
+        for name, file in read(roadmap, f"MATCH (n:{label}) RETURN n.name, n.file"):
+            out.setdefault((name, file), set()).add(label)
+    return out
+
+
+def route_items(rows, index):
+    """`{label: [row, ...]}`: each row under every label its `(name, file)` carries.
+
+    A row whose `(name, file)` names no node of the index's labels is dropped:
+    the unlabelled pattern matched nothing for it either.
+    """
+    out = {}
+    for r in rows:
+        for label in sorted(index.get((r["name"], r["file"]), ())):
+            out.setdefault(label, []).append(r)
+    return out
+
+
+def unwind_items(roadmap, mode, rows, body, label, index, batch=300):
+    """`unwind` for a body that binds the Rust item as `ITEM_PATTERN`.
+
+    Each row is sent once per label its `(name, file)` carries in `index`
+    (`item_labels`), with the pattern rewritten to `(t:<Label> {...})`. That binds
+    exactly the nodes the unlabelled pattern bound among the index's labels, and
+    a labelled match is hash-joined or index-served instead of scanning every
+    node of the graph for every row. Returns the summed write counters.
+    """
+    if ITEM_PATTERN not in body:
+        raise ValueError(f"unwind_items: body does not bind {ITEM_PATTERN}")
+    total = {}
+    routed = route_items(rows, index)
+    if not routed:
+        print(f"  {label}: 0 rows routed ({len(rows)} given)", file=sys.stderr)
+        return total
+    for lab, sel in sorted(routed.items()):
+        typed = body.replace(ITEM_PATTERN, f"(t:{lab} {{name:row.name, file:row.file}})")
+        for k, v in unwind(roadmap, mode, sel, typed, f"{label} [{lab}]", batch).items():
+            total[k] = total.get(k, 0) + v
     return total

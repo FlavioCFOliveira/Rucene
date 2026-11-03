@@ -45,7 +45,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from kgio import PER_ROW_SCAN_BATCH, kg_target, read as kg_read, unwind
+from kgio import item_labels, kg_target, read as kg_read, unwind, unwind_items
 
 # A Lucene type named in full, and the short Java spelling the crate uses for a
 # *nested* one. `CLAUDE.md` 14.1 asks each item to name its Lucene equivalent; it
@@ -603,6 +603,9 @@ def load(roadmap, claims, commit, date):
     # already joined by PORTS_CANDIDATE would never gain its PORTS edge. Drop
     # the candidate edge first: a declared equivalence supersedes a name guess.
     uniq = [{k: v for k, v in r.items() if k != "component"} for r in uniq]
+    # Routes the Rust item pattern to a labelled match (`kgio.unwind_items`):
+    # read after the `Component` writes above, so a new `Component` is routed.
+    items = item_labels(roadmap)
 
     # Retire the edges whose declaration has gone. `load_rucene_kg.py --phase
     # prune` deletes the *node* the survey no longer confirms, which takes its
@@ -632,28 +635,28 @@ def load(roadmap, claims, commit, date):
         for d in dead:
             print(f"  RETIRED (no live declaration): {d['name']} @ {d['file']} "
                   f"-> {d['lucene']}", file=sys.stderr)
-        run_unwind(roadmap, "delete", dead,
-                   "MATCH (t {name:row.name, file:row.file})-[e:PORTS]->"
-                   "(c:Class {qualifiedName:row.lucene}) DELETE e",
-                   "PORTS edges retired", batch=PER_ROW_SCAN_BATCH)
+        unwind_items(roadmap, "delete", dead,
+                     "MATCH (t {name:row.name, file:row.file})-[e:PORTS]->"
+                     "(c:Class {qualifiedName:row.lucene}) DELETE e",
+                     "PORTS edges retired", items)
 
-    run_unwind(roadmap, "delete", uniq,
-               "MATCH (t {name:row.name, file:row.file})-[e:PORTS_CANDIDATE]->"
-               "(c:Class {qualifiedName:row.lucene}) DELETE e",
-               "superseded PORTS_CANDIDATE removed", batch=PER_ROW_SCAN_BATCH)
-    run_unwind(roadmap, "create", uniq,
-               "MATCH (t {name:row.name, file:row.file}) "
-               "WITH t, row MATCH (c:Class {qualifiedName:row.lucene}) "
-               "MERGE (t)-[:PORTS]->(c)",
-               "PORTS edges", batch=PER_ROW_SCAN_BATCH)
-    run_unwind(roadmap, "update", uniq,
-               "MATCH (t {name:row.name, file:row.file})-[e:PORTS]->"
-               "(c:Class {qualifiedName:row.lucene}) "
-               "SET e.evidence = coalesce(e.evidence, 'doc-comment'), "
-               "e.declaredAt = row.file + ':' + toString(row.line), "
-               "e.claimLevel = row.claimLevel, e.declaredMember = row.member, "
-               "e.gitCommit = row.commit, e.gitDate = row.date",
-               "PORTS evidence stamped", batch=PER_ROW_SCAN_BATCH)
+    unwind_items(roadmap, "delete", uniq,
+                 "MATCH (t {name:row.name, file:row.file})-[e:PORTS_CANDIDATE]->"
+                 "(c:Class {qualifiedName:row.lucene}) DELETE e",
+                 "superseded PORTS_CANDIDATE removed", items)
+    unwind_items(roadmap, "create", uniq,
+                 "MATCH (t {name:row.name, file:row.file}) "
+                 "WITH t, row MATCH (c:Class {qualifiedName:row.lucene}) "
+                 "MERGE (t)-[:PORTS]->(c)",
+                 "PORTS edges", items)
+    unwind_items(roadmap, "update", uniq,
+                 "MATCH (t {name:row.name, file:row.file})-[e:PORTS]->"
+                 "(c:Class {qualifiedName:row.lucene}) "
+                 "SET e.evidence = coalesce(e.evidence, 'doc-comment'), "
+                 "e.declaredAt = row.file + ':' + toString(row.line), "
+                 "e.claimLevel = row.claimLevel, e.declaredMember = row.member, "
+                 "e.gitCommit = row.commit, e.gitDate = row.date",
+                 "PORTS evidence stamped", items)
     return uniq
 
 

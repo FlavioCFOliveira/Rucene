@@ -513,7 +513,9 @@ def phase_nodes(roadmap, s: Survey, batch_size):
         roadmap,
         [{"qualifiedName": f["qualifiedName"]} for f in s.fns],
         "MERGE (f:RustFn {qualifiedName:row.qualifiedName})",
-        min(batch_size, PER_ROW_SCAN_BATCH),
+        # An index seek since `idx_rustfn_qualifiedname` (knowledge-model.md),
+        # so the per-row-scan cap no longer applies.
+        batch_size,
         "RustFn create",
     )
     run_unwind(
