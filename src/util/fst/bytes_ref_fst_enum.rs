@@ -70,6 +70,9 @@ impl FSTEnumTarget for BytesRefEnumState {
 pub struct BytesRefFSTEnum<'a, O: Outputs> {
     inner: FSTEnum<'a, O>,
     state: BytesRefEnumState,
+    /// `result.output`: the output of the last term a step positioned on,
+    /// `None` (Java's `null`) before the first.
+    result_output: Option<O::Output>,
 }
 
 impl<'a, O: Outputs> BytesRefFSTEnum<'a, O> {
@@ -93,6 +96,7 @@ impl<'a, O: Outputs> BytesRefFSTEnum<'a, O> {
                 },
                 target: BytesRef::default(),
             },
+            result_output: None,
         })
     }
 
@@ -118,22 +122,21 @@ impl<'a, O: Outputs> BytesRefFSTEnum<'a, O> {
                 },
                 target: BytesRef::default(),
             },
+            result_output: None,
         })
     }
 
-    /// Returns the current input and output pair, or `None` before the first
-    /// term and after the last one.
+    /// Returns the current input and output pair.
     ///
-    /// Equivalent to `BytesRefFSTEnum.current`.
-    pub fn current(&self) -> Option<InputOutput<'_, O::Output>> {
-        let upto = self.inner.upto();
-        if upto == 0 {
-            None
-        } else {
-            Some(InputOutput {
-                input: &self.state.current,
-                output: self.inner.output_at(upto),
-            })
+    /// Equivalent to `BytesRefFSTEnum.current`, which returns the one
+    /// `result` every step reuses: its input is the enum's current term
+    /// (empty before the first term, the last term once the enumeration is
+    /// exhausted) and its output the output of the last term a step
+    /// positioned on, `None` (Java's `null`) before the first.
+    pub fn current(&self) -> InputOutput<'_, Option<O::Output>> {
+        InputOutput {
+            input: &self.state.current,
+            output: &self.result_output,
         }
     }
 
@@ -208,9 +211,14 @@ impl<'a, O: Outputs> BytesRefFSTEnum<'a, O> {
             return None;
         }
         self.state.current.length = upto - 1;
+        // `result.output = output[upto]`: Java keeps the reference, which no
+        // later step changes, so the port keeps the value.
+        let output = self
+            .result_output
+            .insert(self.inner.output_at(upto).clone());
         Some(InputOutput {
             input: &self.state.current,
-            output: self.inner.output_at(upto),
+            output,
         })
     }
 }
@@ -285,6 +293,24 @@ mod tests {
             out.push(format!("{target:?} {ceil:?} {floor:?} {exact:?} {next:?}"));
         }
         out
+    }
+
+    /// As Java's constructor (`FSTEnum.java:45-50`), both constructors open
+    /// the reader every operation reads through, so a store that cannot be
+    /// read fails the construction itself, not the first operation.
+    #[test]
+    fn constructors_open_the_reader() {
+        use crate::util::fst::NullFSTReader;
+        let mut compiler = Builder::new(InputType::Byte1, PositiveIntOutputs::get_singleton())
+            .build()
+            .unwrap();
+        let mut scratch = IntsRefBuilder::new();
+        let input = Util::to_ints_ref(&BytesRef::new(b"a".to_vec()), &mut scratch);
+        compiler.add(&input, 1).unwrap();
+        let metadata = compiler.compile().unwrap().unwrap();
+        let fst = FST::from_reader(metadata, Box::new(NullFSTReader));
+        assert!(BytesRefFSTEnum::new(&fst).is_err());
+        assert!(BytesRefFSTEnum::new_shared(Arc::new(fst)).is_err());
     }
 
     /// An enumeration that keeps its FST alive itself (the one a terms

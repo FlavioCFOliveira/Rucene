@@ -104,6 +104,22 @@ impl FSTReader for OnHeapFSTStore {
         }
     }
 
+    fn get_owned_reverse_bytes_reader(self: std::sync::Arc<Self>) -> Result<Box<dyn BytesReader>> {
+        if self.bytes_array.is_some() {
+            Ok(Box::new(ReverseBytesReader::new(OwnedBytesArray(self))))
+        } else {
+            Ok(super::read_write_data_output::owned_reverse_bytes_reader(
+                self,
+                |store| {
+                    store
+                        .data_output
+                        .as_ref()
+                        .expect("INVARIANT: the constructor sets exactly one of the two backings")
+                },
+            ))
+        }
+    }
+
     fn write_to(&self, out: &mut dyn DataOutput) -> Result<()> {
         if let Some(data_output) = &self.data_output {
             data_output.write_to(out)
@@ -114,5 +130,14 @@ impl FSTReader for OnHeapFSTStore {
                 .expect("INVARIANT: the constructor sets exactly one of the two backings");
             out.write_bytes(bytes, 0, bytes.len())
         }
+    }
+}
+
+/// A share of an [`OnHeapFSTStore`] projected onto its single array.
+struct OwnedBytesArray(std::sync::Arc<OnHeapFSTStore>);
+
+impl AsRef<[u8]> for OwnedBytesArray {
+    fn as_ref(&self) -> &[u8] {
+        self.0.bytes_array.as_deref().unwrap_or(&[])
     }
 }

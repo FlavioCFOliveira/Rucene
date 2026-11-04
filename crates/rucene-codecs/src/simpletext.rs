@@ -55,18 +55,19 @@
 
 //! # Exceptions
 //!
-//! **Divergence.** The Java readers throw some unchecked exceptions the port's
-//! `LuceneError` has no variant for: `IndexOutOfBoundsException` (a doc id or
-//! ord out of range, `SimpleTextDocValuesReader.java:263-266`),
-//! `ArrayIndexOutOfBoundsException` (more `doc` lines than `maxDoc`,
-//! `SimpleTextStoredFieldsReader.java:92-96`) and `NullPointerException` (a
-//! field number the field infos do not hold). They are reported as
-//! [`LuceneError::IllegalState`](rucene::error::LuceneError::IllegalState)
-//! with Java's message where it has one. `NumberFormatException` is reported
-//! as its superclass `IllegalArgumentException`, with its message, and a plain
-//! `RuntimeException` as [`LuceneError::Other`](rucene::error::LuceneError::Other).
-//! Only malformed files reach these paths; the oracle's corruption cases are
-//! the `CorruptIndexException`s, whose class and message match.
+//! The unchecked exceptions the Java readers throw that `LuceneError` has no
+//! dedicated variant for — `IndexOutOfBoundsException`,
+//! `ArrayIndexOutOfBoundsException`, `NullPointerException`,
+//! `NegativeArraySizeException` and a plain `RuntimeException`, including the
+//! `new RuntimeException(ioe)` of the doc-values value functions — are
+//! [`LuceneError::Unchecked`](rucene::error::LuceneError::Unchecked), with
+//! Java's class, message and cause; `crates/rucene-codecs/tests/simpletext_oracle.rs`
+//! compares them with what Lucene 10.5.0 throws. Where a Java `assert` decides
+//! the outcome, debug builds behave as a JVM with `-ea` and release builds as
+//! one without.
+//!
+//! **Divergence.** `NumberFormatException` is reported as its superclass
+//! `IllegalArgumentException`, with its message, as everywhere in the port.
 
 pub mod bkd_reader;
 pub mod bkd_writer;

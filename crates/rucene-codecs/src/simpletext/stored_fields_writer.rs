@@ -166,11 +166,14 @@ impl StoredFieldsWriter for SimpleTextStoredFieldsWriter {
                 || "null".to_string(),
                 |o| o.resource_description().to_string(),
             );
-            return Err(LuceneError::Other(format!(
+            return Err(LuceneError::unchecked(
+                "java.lang.RuntimeException",
+                format!(
                 "mergeFields produced an invalid result: docCount is {num_docs} but only saw {} \
                  file={description}; now aborting this merge to prevent index corruption",
                 self.num_docs_written
-            )));
+            ),
+            ));
         }
         self.write_bytes(END)?;
         self.new_line()?;

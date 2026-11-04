@@ -528,6 +528,29 @@ public final class SimpleTextReadOracle {
           }
         }
         out.add(im.toString());
+        // The Impacts getImpacts() returns is a view of the enum: one taken before the first
+        // advanceShallow reports the state each later one leaves.
+        ImpactsEnum held = te.impacts(PostingsEnum.FREQS);
+        Impacts view = held.getImpacts();
+        StringBuilder lv = new StringBuilder("   live");
+        for (int target : ADVANCE_TARGETS) {
+          held.advanceShallow(target);
+          lv.append(" @").append(target).append(" levels=").append(view.numLevels());
+          for (int level = 0; level < view.numLevels(); level++) {
+            lv.append(" L").append(level).append(" upTo=").append(view.getDocIdUpTo(level));
+            var buf = view.getImpacts(level);
+            for (int i = 0; i < buf.size; i++) {
+              lv.append(' ').append(buf.freqs[i]).append('/').append(buf.norms[i]);
+            }
+          }
+          if (held.docID() < target) {
+            held.advance(target);
+          }
+          if (held.docID() == DocIdSetIterator.NO_MORE_DOCS) {
+            break;
+          }
+        }
+        out.add(lv.toString());
       }
     }
     // seekCeil and seekExact probes: every term, a term past each term, and the empty term.

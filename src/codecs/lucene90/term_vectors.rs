@@ -1966,12 +1966,12 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
         Ok(())
     }
 
-    fn clone_reader(&self) -> Box<dyn TermVectorsReader> {
-        Box::new(self.clone())
+    fn clone_reader(&self) -> Result<Box<dyn TermVectorsReader>> {
+        Ok(Box::new(self.clone()))
     }
 
-    fn get_merge_instance(&self) -> Box<dyn TermVectorsReader> {
-        Box::new(self.clone())
+    fn get_merge_instance(&self) -> Result<Box<dyn TermVectorsReader>> {
+        Ok(Box::new(self.clone()))
     }
 
     /// Closes the fields index and the `.tvd` stream, once.
@@ -4463,8 +4463,8 @@ mod tests {
         assert_reads_hello(reader.as_ref());
 
         // A clone must keep reading from the same compound stream.
-        assert_reads_hello(reader.clone_reader().as_ref());
-        assert_reads_hello(reader.get_merge_instance().as_ref());
+        assert_reads_hello(reader.clone_reader().unwrap().as_ref());
+        assert_reads_hello(reader.get_merge_instance().unwrap().as_ref());
     }
 
     // -----------------------------------------------------------------------
@@ -4734,7 +4734,7 @@ mod tests {
             let source = write_tv_merge_source(&dir, name, 0, count);
             let reader = concrete_tv_merge_source(&dir, &source);
             assert_eq!(reader.get_num_docs(), count, "{name}");
-            let merge_box = reader.get_merge_instance();
+            let merge_box = reader.get_merge_instance().unwrap();
             let merge = merge_box
                 .as_any()
                 .and_then(|any| any.downcast_ref::<Lucene90CompressingTermVectorsReader>())
@@ -4770,8 +4770,8 @@ mod tests {
             self.0.check_integrity()
         }
 
-        fn clone_reader(&self) -> Box<dyn TermVectorsReader> {
-            Box::new(Self(self.0.clone_reader()))
+        fn clone_reader(&self) -> Result<Box<dyn TermVectorsReader>> {
+            Ok(Box::new(Self(self.0.clone_reader()?)))
         }
 
         fn close(&mut self) -> Result<()> {

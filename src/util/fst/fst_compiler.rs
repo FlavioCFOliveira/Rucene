@@ -164,6 +164,12 @@ impl FSTReader for NullFSTReader {
         ))
     }
 
+    fn get_owned_reverse_bytes_reader(self: std::sync::Arc<Self>) -> Result<Box<dyn BytesReader>> {
+        Err(LuceneError::UnsupportedOperation(
+            "FST was not constructed with get_on_heap_reader_writer()".to_string(),
+        ))
+    }
+
     fn write_to(&self, _out: &mut dyn DataOutput) -> Result<()> {
         Err(LuceneError::UnsupportedOperation(
             "FST was not constructed with get_on_heap_reader_writer()".to_string(),

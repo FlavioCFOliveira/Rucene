@@ -60,12 +60,24 @@ pub trait StoredFieldsReader: Send + Sync + fmt::Debug {
     fn check_integrity(&self) -> Result<()>;
 
     /// Creates a clone that one caller at a time may use to read stored fields.
-    fn clone_reader(&self) -> Box<dyn StoredFieldsReader>;
+    ///
+    /// Equivalent to `StoredFieldsReader.clone()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the unchecked exception Java's `clone()` throws, such as the
+    /// `AlreadyClosedException` of a closed reader, and the error of cloning
+    /// its inputs.
+    fn clone_reader(&self) -> Result<Box<dyn StoredFieldsReader>>;
 
     /// Returns an instance optimized for merging.
     ///
     /// The default implementation returns a clone of `self`.
-    fn get_merge_instance(&self) -> Box<dyn StoredFieldsReader> {
+    ///
+    /// # Errors
+    ///
+    /// As [`clone_reader`](Self::clone_reader).
+    fn get_merge_instance(&self) -> Result<Box<dyn StoredFieldsReader>> {
         self.clone_reader()
     }
 
@@ -252,8 +264,8 @@ impl StoredFieldsReader for EmptyStoredFieldsReader {
         Ok(())
     }
 
-    fn clone_reader(&self) -> Box<dyn StoredFieldsReader> {
-        Box::new(*self)
+    fn clone_reader(&self) -> Result<Box<dyn StoredFieldsReader>> {
+        Ok(Box::new(*self))
     }
 }
 
@@ -315,7 +327,7 @@ mod tests {
         reader.check_integrity().unwrap();
         let mut visitor = NullStoredFieldVisitor;
         reader.document(0, &mut visitor).unwrap();
-        let _clone = reader.clone_reader();
+        let _clone = reader.clone_reader().unwrap();
     }
 
     #[test]
@@ -374,11 +386,11 @@ mod tests {
 
         /// A clone counts its reads apart, so a merge that read through a
         /// clone instead of the merge state's own reader is visible.
-        fn clone_reader(&self) -> Box<dyn StoredFieldsReader> {
-            Box::new(Self {
+        fn clone_reader(&self) -> Result<Box<dyn StoredFieldsReader>> {
+            Ok(Box::new(Self {
                 field: self.field.clone(),
                 reads: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            })
+            }))
         }
     }
 

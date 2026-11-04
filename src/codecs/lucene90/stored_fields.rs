@@ -2542,18 +2542,15 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
         Ok(())
     }
 
-    fn clone_reader(&self) -> Box<dyn StoredFieldsReader> {
-        // Java guards this with `ensureOpen()`, which throws the *unchecked*
-        // `AlreadyClosedException`. The trait's return type cannot carry an
-        // error, and the `clone_input` below already panics once the stream is
-        // closed, so the same condition is reported here with Java's message
-        // instead of as an opaque clone failure.
-        self.ensure_open().expect("this FieldsReader is closed");
-        Box::new(Self {
+    /// Java guards this with `ensureOpen()`, which throws the unchecked
+    /// `AlreadyClosedException` (`Lucene90CompressingStoredFieldsReader.java`,
+    /// `clone()`).
+    fn clone_reader(&self) -> Result<Box<dyn StoredFieldsReader>> {
+        self.ensure_open()?;
+        Ok(Box::new(Self {
             version: self.version,
-            field_infos: FieldInfos::new(self.field_infos.iter().map(|fi| fi.clone()).collect())
-                .expect("clone field infos"),
-            index_reader: self.index_reader.clone_index().expect("clone failed"),
+            field_infos: FieldInfos::new(self.field_infos.iter().cloned().collect())?,
+            index_reader: self.index_reader.clone_index()?,
             max_pointer: self.max_pointer,
             chunk_size: self.chunk_size,
             compression_mode: Arc::clone(&self.compression_mode),
@@ -2562,24 +2559,23 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
             num_chunks: self.num_chunks,
             num_dirty_chunks: self.num_dirty_chunks,
             num_dirty_docs: self.num_dirty_docs,
-            fields_stream: self.fields_stream.clone_input().expect("clone failed"),
+            fields_stream: self.fields_stream.clone_input()?,
             merging: false,
             state: Mutex::new(BlockState::new()),
             prefetched_block_id_cache: Mutex::new([-1; PREFETCH_CACHE_SIZE]),
             prefetched_block_id_cache_index: AtomicI32::new(0),
             closed: false,
-        })
+        }))
     }
 
-    fn get_merge_instance(&self) -> Box<dyn StoredFieldsReader> {
-        // See the note on `clone_reader`: Java guards this with the same
-        // unchecked `ensureOpen()`.
-        self.ensure_open().expect("this FieldsReader is closed");
-        Box::new(Self {
+    /// Java guards this with the same unchecked `ensureOpen()` as
+    /// [`clone_reader`](StoredFieldsReader::clone_reader).
+    fn get_merge_instance(&self) -> Result<Box<dyn StoredFieldsReader>> {
+        self.ensure_open()?;
+        Ok(Box::new(Self {
             version: self.version,
-            field_infos: FieldInfos::new(self.field_infos.iter().map(|fi| fi.clone()).collect())
-                .expect("clone field infos"),
-            index_reader: self.index_reader.clone_index().expect("clone failed"),
+            field_infos: FieldInfos::new(self.field_infos.iter().cloned().collect())?,
+            index_reader: self.index_reader.clone_index()?,
             max_pointer: self.max_pointer,
             chunk_size: self.chunk_size,
             compression_mode: Arc::clone(&self.compression_mode),
@@ -2588,13 +2584,13 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
             num_chunks: self.num_chunks,
             num_dirty_chunks: self.num_dirty_chunks,
             num_dirty_docs: self.num_dirty_docs,
-            fields_stream: self.fields_stream.clone_input().expect("clone failed"),
+            fields_stream: self.fields_stream.clone_input()?,
             merging: true,
             state: Mutex::new(BlockState::new()),
             prefetched_block_id_cache: Mutex::new([-1; PREFETCH_CACHE_SIZE]),
             prefetched_block_id_cache_index: AtomicI32::new(0),
             closed: false,
-        })
+        }))
     }
 
     /// Closes the fields index and the `.fdt` stream, once.
@@ -3275,7 +3271,8 @@ mod tests {
             .get_fields_reader()
             .unwrap()
             .unwrap()
-            .get_merge_instance();
+            .get_merge_instance()
+            .unwrap();
         let mut visitor = DocumentStoredFieldVisitor::new();
         match merge.document(0, &mut visitor) {
             Err(LuceneError::CorruptIndex(message)) => assert!(
@@ -4259,7 +4256,7 @@ mod tests {
                     )
                     .unwrap();
                 let reader = if merging {
-                    base.get_merge_instance()
+                    base.get_merge_instance().unwrap()
                 } else {
                     base
                 };
@@ -4582,6 +4579,7 @@ mod tests {
             )
             .unwrap()
             .get_merge_instance()
+            .unwrap()
     }
 
     /// Opens one source segment as this format's concrete reader, whose
@@ -4636,8 +4634,8 @@ mod tests {
             self.0.check_integrity()
         }
 
-        fn clone_reader(&self) -> Box<dyn StoredFieldsReader> {
-            Box::new(Self(self.0.clone_reader()))
+        fn clone_reader(&self) -> Result<Box<dyn StoredFieldsReader>> {
+            Ok(Box::new(Self(self.0.clone_reader()?)))
         }
 
         fn close(&mut self) -> Result<()> {
@@ -5276,7 +5274,7 @@ mod tests {
             let source = write_merge_source(&dir, name, 0, count);
             let search = concrete_merge_source(&dir, &source);
             assert_eq!(search.get_num_docs(), count, "{name}");
-            let merge_box = search.get_merge_instance();
+            let merge_box = search.get_merge_instance().unwrap();
             let merge = merge_box
                 .as_any()
                 .and_then(|any| any.downcast_ref::<Lucene90CompressingStoredFieldsReader>())
@@ -5297,7 +5295,7 @@ mod tests {
         let source = write_merge_source(&dir, "_a", 0, 10);
 
         let search = concrete_merge_source(&dir, &source);
-        let merge_box = search.get_merge_instance();
+        let merge_box = search.get_merge_instance().unwrap();
         let merge = merge_box
             .as_any()
             .and_then(|any| any.downcast_ref::<Lucene90CompressingStoredFieldsReader>())

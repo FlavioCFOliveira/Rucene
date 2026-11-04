@@ -759,6 +759,279 @@ public final class SimpleTextOracle {
     }
   }
 
+  /** {@code replaceLast} for the first occurrence. */
+  static byte[] replaceFirst(byte[] bytes, String from, String to) {
+    String s = new String(bytes, StandardCharsets.ISO_8859_1);
+    int at = s.indexOf(from);
+    if (at < 0) {
+      throw new IllegalStateException("no " + from);
+    }
+    return (s.substring(0, at) + to + s.substring(at + from.length()))
+        .getBytes(StandardCharsets.ISO_8859_1);
+  }
+
+  /**
+   * Rewrites the last {@code checksum} line as {@code SimpleTextUtil.writeChecksum} would for the
+   * edited bytes before it: the CRC-32 of everything before the line, {@code %020d}.
+   */
+  static byte[] fixChecksum(byte[] bytes) {
+    String s = new String(bytes, StandardCharsets.ISO_8859_1);
+    int at = s.lastIndexOf("checksum ");
+    java.util.zip.CRC32 crc = new java.util.zip.CRC32();
+    crc.update(bytes, 0, at);
+    return (s.substring(0, at)
+            + "checksum "
+            + String.format(java.util.Locale.ROOT, "%020d", crc.getValue())
+            + "\n")
+        .getBytes(StandardCharsets.ISO_8859_1);
+  }
+
+  /** An operation on the first leaf of an index, returning what it read. */
+  interface LeafOp {
+    String run(Path dir, org.apache.lucene.index.LeafReader leaf) throws Exception;
+  }
+
+  /** The {@code SegmentReadState} of {@code leaf}, for the format readers it opens directly. */
+  static org.apache.lucene.index.SegmentReadState readState(
+      Directory d, org.apache.lucene.index.LeafReader leaf) {
+    var sr = (org.apache.lucene.index.SegmentReader) leaf;
+    return new org.apache.lucene.index.SegmentReadState(
+        d, sr.getSegmentInfo().info, sr.getFieldInfos(), IOContext.DEFAULT);
+  }
+
+  static String masked(Throwable t, String real, String id) {
+    return t.getClass().getName()
+        + "\t"
+        + String.valueOf(t.getMessage()).replace(real, "$D").replace(id, "$ID").replace('\n', ' ');
+  }
+
+  /**
+   * Edits {@code file} of a copy of {@code source} ({@code ext} of the first segment, or a literal
+   * file name starting with {@code _}; {@code null} for none), opens it, runs {@code op} on the
+   * first leaf and records {@code case, class, message, cause class, cause message} of the
+   * exception, or {@code case, none, result}.
+   */
+  static void unchecked(
+      String name, Path source, Path work, String file,
+      java.util.function.UnaryOperator<byte[]> edit, LeafOp op, PrintWriter w)
+      throws IOException {
+    Path dir = work.resolve("unchecked-" + name);
+    copy(source, dir);
+    String id;
+    try (Directory d = new NIOFSDirectory(dir)) {
+      id = org.apache.lucene.util.StringHelper.idToString(
+          SegmentInfos.readLatestCommit(d).info(0).info.getId());
+    }
+    if (file != null) {
+      Path f = file.startsWith("_") ? dir.resolve(file) : firstSegmentFile(dir, file);
+      Files.write(f, edit.apply(Files.readAllBytes(f)));
+    }
+    String real = dir.toRealPath().toString();
+    try (Directory d = new NIOFSDirectory(dir);
+        DirectoryReader r = DirectoryReader.open(d)) {
+      w.println(name + "\tnone\t" + op.run(dir, r.leaves().get(0).reader()));
+    } catch (Throwable t) {
+      Throwable c = t.getCause();
+      w.println(name + "\t" + masked(t, real, id) + "\t" + (c == null ? "-\t-" : masked(c, real, id)));
+    }
+  }
+
+  /** The visitor of the direct stored-fields reads: it reads every field and keeps nothing. */
+  static final class AllFields extends org.apache.lucene.index.StoredFieldVisitor {
+    @Override
+    public Status needsField(FieldInfo fieldInfo) {
+      return Status.YES;
+    }
+  }
+
+  /** The unchecked exceptions of the SimpleText readers, on copies of {@code nocfs}. */
+  static void uncheckedCases(Path nocfs, Path work, PrintWriter w) throws IOException {
+    unchecked("dv-num-exhausted", nocfs, work, null, null, (p, leaf) -> {
+      var v = leaf.getNumericDocValues("dv_num");
+      while (v.nextDoc() != org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS) {}
+      return String.valueOf(v.longValue());
+    }, w);
+    unchecked("dv-bin-exhausted", nocfs, work, null, null, (p, leaf) -> {
+      var v = leaf.getBinaryDocValues("dv_bin");
+      while (v.nextDoc() != org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS) {}
+      return String.valueOf(v.binaryValue());
+    }, w);
+    unchecked("dv-sorted-ord-neg", nocfs, work, null, null,
+        (p, leaf) -> String.valueOf(leaf.getSortedDocValues("dv_sorted").lookupOrd(-1)), w);
+    unchecked("dv-sorted-ord-count", nocfs, work, null, null, (p, leaf) -> {
+      var v = leaf.getSortedDocValues("dv_sorted");
+      return String.valueOf(v.lookupOrd(v.getValueCount()));
+    }, w);
+    unchecked("dv-sset-ord-neg", nocfs, work, null, null,
+        (p, leaf) -> String.valueOf(leaf.getSortedSetDocValues("dv_sset").lookupOrd(-1)), w);
+    unchecked("dv-sset-ord-count", nocfs, work, null, null, (p, leaf) -> {
+      var v = leaf.getSortedSetDocValues("dv_sset");
+      return String.valueOf(v.lookupOrd(v.getValueCount()));
+    }, w);
+    unchecked("dv-snum-past", nocfs, work, null, null, (p, leaf) -> {
+      var v = leaf.getSortedNumericDocValues("dv_snum");
+      v.nextDoc();
+      for (int i = 0; i < v.docValueCount(); i++) {
+        v.nextValue();
+      }
+      return String.valueOf(v.nextValue());
+    }, w);
+    unchecked("dv-sset-past", nocfs, work, null, null, (p, leaf) -> {
+      var v = leaf.getSortedSetDocValues("dv_sset");
+      v.nextDoc();
+      for (int i = 0; i < v.docValueCount(); i++) {
+        v.nextOrd();
+      }
+      return String.valueOf(v.nextOrd());
+    }, w);
+    unchecked("dv-num-corrupt", nocfs, work, "dat",
+        b -> replaceFirst(b, "  pattern 0000\n1042\n", "  pattern 0000\nx042\n"), (p, leaf) -> {
+          var v = leaf.getNumericDocValues("dv_num");
+          v.nextDoc();
+          return String.valueOf(v.longValue());
+        }, w);
+    unchecked("dv-bin-corrupt", nocfs, work, "dat",
+        b -> replaceFirst(b, "length 19\n", "length x9\n"), (p, leaf) -> {
+          var v = leaf.getBinaryDocValues("dv_bin");
+          v.nextDoc();
+          return String.valueOf(v.binaryValue());
+        }, w);
+    unchecked("fld-doc-past", nocfs, work, null, null, (p, leaf) -> {
+      ((org.apache.lucene.index.CodecReader) leaf).getFieldsReader()
+          .document(leaf.maxDoc(), new AllFields());
+      return "read";
+    }, w);
+    unchecked("fld-doc-neg", nocfs, work, null, null, (p, leaf) -> {
+      ((org.apache.lucene.index.CodecReader) leaf).getFieldsReader().document(-1, new AllFields());
+      return "read";
+    }, w);
+    unchecked("fld-extra-doc", nocfs, work, "fld", b -> replaceFirst(b, "doc 0\n", "doc 0\ndoc 0\n"),
+        (p, leaf) -> "opened", w);
+    unchecked("fld-unknown-type", nocfs, work, "fld",
+        b -> fixChecksum(replaceFirst(b, "    type string\n", "    type strinx\n")), (p, leaf) -> {
+          ((org.apache.lucene.index.CodecReader) leaf).getFieldsReader().document(0, new AllFields());
+          return "read";
+        }, w);
+    unchecked("fld-unknown-field", nocfs, work, "fld",
+        b -> fixChecksum(replaceFirst(b, "  field 0\n", "  field 99\n")),
+        (p, leaf) -> String.valueOf(leaf.storedFields().document(0)), w);
+    unchecked("tvc-doc-past", nocfs, work, null, null, (p, leaf) -> String.valueOf(
+        ((org.apache.lucene.index.CodecReader) leaf).getTermVectorsReader().get(leaf.maxDoc())), w);
+    unchecked("tvc-extra-doc", nocfs, work, "tvc", b -> replaceFirst(b, "doc 0\n", "doc 0\ndoc 0\n"),
+        (p, leaf) -> "opened", w);
+    unchecked("tvc-term-unpositioned", nocfs, work, null, null, (p, leaf) -> String.valueOf(
+        ((org.apache.lucene.index.CodecReader) leaf).getTermVectorsReader().get(0).terms("tv")
+            .iterator().term()), w);
+    unchecked("tvc-ttf-unpositioned", nocfs, work, null, null, (p, leaf) -> String.valueOf(
+        ((org.apache.lucene.index.CodecReader) leaf).getTermVectorsReader().get(0).terms("tv")
+            .iterator().totalTermFreq()), w);
+    unchecked("pst-term-unpositioned", nocfs, work, null, null,
+        (p, leaf) -> String.valueOf(leaf.terms("body").iterator().term()), w);
+    unchecked("pst-term-exhausted", nocfs, work, null, null, (p, leaf) -> {
+      var te = leaf.terms("body").iterator();
+      while (te.next() != null) {}
+      return String.valueOf(te.term());
+    }, w);
+    unchecked("pst-doc-out", nocfs, work, "pst",
+        b -> fixChecksum(replaceFirst(b, "    doc 3\n", "    doc 99999\n")),
+        (p, leaf) -> String.valueOf(leaf.terms("body").getDocCount()), w);
+    unchecked("pst-doc-neg", nocfs, work, "pst",
+        b -> fixChecksum(replaceFirst(b, "    doc 3\n", "    doc -1\n")),
+        (p, leaf) -> String.valueOf(leaf.terms("body").getDocCount()), w);
+    unchecked("pst-doc-ghost", nocfs, work, "pst",
+        b -> fixChecksum(replaceFirst(b, "    doc 3\n", "    doc 191\n")),
+        (p, leaf) -> String.valueOf(leaf.terms("body").getDocCount()), w);
+    unchecked("pst-field-unknown", nocfs, work, "pst",
+        b -> fixChecksum(replaceFirst(b, "field tv\n", "field tx\n")), (p, leaf) -> {
+          try (Directory d = new NIOFSDirectory(p);
+              var fields = new SimpleTextFieldsReader(readState(d, leaf))) {
+            return String.valueOf(fields.terms("tx"));
+          }
+        }, w);
+    unchecked("pst-field-unknown-iterator", nocfs, work, "pst",
+        b -> fixChecksum(replaceFirst(b, "field tv\n", "field tx\n")), (p, leaf) -> {
+          try (Directory d = new NIOFSDirectory(p);
+              var fields = new SimpleTextFieldsReader(readState(d, leaf))) {
+            return String.valueOf(fields.terms("tx").iterator());
+          }
+        }, w);
+    unchecked("pst-field-unknown-has-freqs", nocfs, work, "pst",
+        b -> fixChecksum(replaceFirst(b, "field tv\n", "field tx\n")), (p, leaf) -> {
+          try (Directory d = new NIOFSDirectory(p);
+              var fields = new SimpleTextFieldsReader(readState(d, leaf))) {
+            return String.valueOf(fields.terms("tx").hasFreqs());
+          }
+        }, w);
+    unchecked("pst-field-unknown-has-offsets", nocfs, work, "pst",
+        b -> fixChecksum(replaceFirst(b, "field tv\n", "field tx\n")), (p, leaf) -> {
+          try (Directory d = new NIOFSDirectory(p);
+              var fields = new SimpleTextFieldsReader(readState(d, leaf))) {
+            return String.valueOf(fields.terms("tx").hasOffsets());
+          }
+        }, w);
+    unchecked("pst-field-unknown-has-positions", nocfs, work, "pst",
+        b -> fixChecksum(replaceFirst(b, "field tv\n", "field tx\n")), (p, leaf) -> {
+          try (Directory d = new NIOFSDirectory(p);
+              var fields = new SimpleTextFieldsReader(readState(d, leaf))) {
+            return String.valueOf(fields.terms("tx").hasPositions());
+          }
+        }, w);
+    unchecked("pst-field-unknown-has-payloads", nocfs, work, "pst",
+        b -> fixChecksum(replaceFirst(b, "field tv\n", "field tx\n")), (p, leaf) -> {
+          try (Directory d = new NIOFSDirectory(p);
+              var fields = new SimpleTextFieldsReader(readState(d, leaf))) {
+            return String.valueOf(fields.terms("tx").hasPayloads());
+          }
+        }, w);
+    unchecked("gri-field-unknown", nocfs, work, "gri",
+        b -> fixChecksum(replaceFirst(b, "field-name vb\n", "field-name vz\n")),
+        (p, leaf) -> "opened", w);
+    unchecked("vec-short-line", nocfs, work, "vec",
+        b -> replaceFirst(b, "[20, -30, 0, -20]\n", "[\n"), (p, leaf) -> {
+          var v = leaf.getByteVectorValues("vb");
+          return Arrays.toString(v.vectorValue(0));
+        }, w);
+    unchecked("knn-search-unknown", nocfs, work, null, null, (p, leaf) -> {
+      try (Directory d = new NIOFSDirectory(p);
+          var vectors = new SimpleTextKnnVectorsReader(readState(d, leaf))) {
+        vectors.search("nope", new float[] {1, 2, 3, 4},
+            new org.apache.lucene.search.TopKnnCollector(3, Integer.MAX_VALUE),
+            org.apache.lucene.search.AcceptDocs.fromLiveDocs(null, leaf.maxDoc()));
+        return "searched";
+      }
+    }, w);
+    unchecked("knn-search-bytes-unknown", nocfs, work, null, null, (p, leaf) -> {
+      try (Directory d = new NIOFSDirectory(p);
+          var vectors = new SimpleTextKnnVectorsReader(readState(d, leaf))) {
+        vectors.search("nope", new byte[] {1, 2, 3, 4},
+            new org.apache.lucene.search.TopKnnCollector(3, Integer.MAX_VALUE),
+            org.apache.lucene.search.AcceptDocs.fromLiveDocs(null, leaf.maxDoc()));
+        return "searched";
+      }
+    }, w);
+    unchecked("liv-negative", nocfs, work, "_1_1.liv",
+        b -> replaceFirst(b, "  doc 0\n", "  doc -1\n"), (p, leaf) -> "opened", w);
+    unchecked("fld-clone-closed", nocfs, work, null, null, (p, leaf) -> {
+      try (Directory d = new NIOFSDirectory(p)) {
+        var state = readState(d, leaf);
+        var reader = new SimpleTextStoredFieldsReader(d, state.segmentInfo, state.fieldInfos,
+            IOContext.DEFAULT);
+        reader.close();
+        reader.clone();
+        return "cloned";
+      }
+    }, w);
+    unchecked("tvc-clone-closed", nocfs, work, null, null, (p, leaf) -> {
+      try (Directory d = new NIOFSDirectory(p)) {
+        var reader = new SimpleTextTermVectorsReader(d, readState(d, leaf).segmentInfo,
+            IOContext.DEFAULT);
+        reader.close();
+        reader.clone();
+        return "cloned";
+      }
+    }, w);
+  }
+
   static String lastDigitBumped(byte[] bytes) {
     String s = new String(bytes, StandardCharsets.ISO_8859_1);
     int at = s.length() - 2; // the last digit, before the final newline
@@ -816,6 +1089,12 @@ public final class SimpleTextOracle {
       corrupt("si-version", nocfs, work, "si", b -> replaceLast(b, "    version 1", "    version x"), w);
       corrupt("dat-checksum", nocfs, work, "dat",
           b -> lastDigitBumped(b).getBytes(StandardCharsets.ISO_8859_1), w);
+    }
+    try (PrintWriter w = new PrintWriter(new File(out, "simpletext_unchecked.tsv"), "UTF-8")) {
+      w.println(
+          "# case\tclass\tmessage\tcause class\tcause message ($D = the index directory),"
+              + " or case\tnone\tresult");
+      uncheckedCases(nocfs, work, w);
     }
     try (PrintWriter w = new PrintWriter(new File(out, "simpletext_spi.tsv"), "UTF-8")) {
       w.println("# lookup\tresult");

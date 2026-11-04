@@ -492,16 +492,14 @@ impl MergeState {
                 Some(producer) => Some(Arc::from(producer.get_merge_instance()?)),
                 None => None,
             });
-            stored_fields_readers.push(
-                reader
-                    .get_fields_reader()?
-                    .map(|fields_reader| Arc::from(fields_reader.get_merge_instance())),
-            );
-            term_vectors_readers.push(
-                reader
-                    .get_term_vectors_reader()?
-                    .map(|vectors_reader| Arc::from(vectors_reader.get_merge_instance())),
-            );
+            stored_fields_readers.push(match reader.get_fields_reader()? {
+                Some(fields_reader) => Some(Arc::from(fields_reader.get_merge_instance()?)),
+                None => None,
+            });
+            term_vectors_readers.push(match reader.get_term_vectors_reader()? {
+                Some(vectors_reader) => Some(Arc::from(vectors_reader.get_merge_instance()?)),
+                None => None,
+            });
             fields_producers.push(match reader.get_postings_reader()? {
                 Some(producer) => Some(Arc::from(producer.get_merge_instance()?)),
                 None => None,

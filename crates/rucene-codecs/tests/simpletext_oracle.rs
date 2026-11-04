@@ -1549,6 +1549,30 @@ fn dump_terms(leaf: &dyn LeafReader, fi: &FieldInfo, out: &mut Vec<String>) {
                 }
             }
             out.push(im);
+            // The `Impacts` `get_impacts` returns is a view of the enum: one
+            // taken before the first `advance_shallow` reports the state each
+            // later one leaves.
+            let mut held = te.impacts(POSTINGS_ENUM_FREQS).unwrap();
+            let view = held.get_impacts().unwrap();
+            let mut lv = "   live".to_string();
+            for target in ADVANCE_TARGETS {
+                held.advance_shallow(target).unwrap();
+                lv.push_str(&format!(" @{target} levels={}", view.num_levels()));
+                for level in 0..view.num_levels() {
+                    lv.push_str(&format!(" L{level} upTo={}", view.doc_id_up_to(level)));
+                    let buf = view.get_impacts(level);
+                    for i in 0..buf.size {
+                        lv.push_str(&format!(" {}/{}", buf.freqs[i], buf.norms[i]));
+                    }
+                }
+                if held.doc_id() < target {
+                    held.advance(target).unwrap();
+                }
+                if held.doc_id() == NO_MORE_DOCS {
+                    break;
+                }
+            }
+            out.push(lv);
         }
     }
     let mut targets: Vec<Vec<u8>> = vec![Vec::new()];
@@ -2264,5 +2288,524 @@ fn rucene_reads_lucenes_segment_and_field_infos() {
             "{}",
             r.name
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The unchecked exceptions of the readers: SimpleTextOracle.uncheckedCases
+// ---------------------------------------------------------------------------
+
+/// `SimpleTextOracle.replaceFirst`.
+fn replace_first(bytes: &[u8], from: &str, to: &str) -> Vec<u8> {
+    let at = bytes
+        .windows(from.len())
+        .position(|w| w == from.as_bytes())
+        .unwrap_or_else(|| panic!("no {from}"));
+    let mut out = bytes[..at].to_vec();
+    out.extend_from_slice(to.as_bytes());
+    out.extend_from_slice(&bytes[at + from.len()..]);
+    out
+}
+
+/// `SimpleTextOracle.fixChecksum`: the last `checksum` line rewritten as
+/// `SimpleTextUtil.writeChecksum` writes it for the bytes before it.
+fn fix_checksum(bytes: &[u8]) -> Vec<u8> {
+    let from = b"checksum ";
+    let at = bytes
+        .windows(from.len())
+        .rposition(|w| w == from)
+        .expect("a checksum line");
+    let mut crc = rucene::store::BufferedChecksum::new();
+    crc.update_bytes(bytes, 0, at).unwrap();
+    let mut out = bytes[..at].to_vec();
+    out.extend_from_slice(format!("checksum {:020}\n", crc.get_value()).as_bytes());
+    out
+}
+
+/// `SimpleTextOracle.readState` over `dir`.
+fn with_read_state<T>(
+    dir: &dyn rucene::store::Directory,
+    leaf: &dyn LeafReader,
+    f: impl FnOnce(&rucene::codecs::SegmentReadState<'_>) -> rucene::error::Result<T>,
+) -> rucene::error::Result<T> {
+    let segment = leaf.as_segment_reader().expect("a segment reader");
+    let field_infos = leaf.get_field_infos();
+    let state = rucene::codecs::SegmentReadState {
+        directory: dir,
+        segment_info: &segment.get_segment_info().info,
+        field_infos: &field_infos,
+        context: &*rucene::store::DEFAULT_IO_CONTEXT,
+        segment_suffix: String::new(),
+    };
+    f(&state)
+}
+
+/// Java's `getClass().getName()` and `getMessage()` of `e`.
+fn java_class_and_message(e: &rucene::error::LuceneError) -> (String, String) {
+    use rucene::error::LuceneError;
+    match e {
+        LuceneError::Unchecked { class, message, .. } => (
+            class.to_string(),
+            message.clone().unwrap_or_else(|| "null".to_string()),
+        ),
+        LuceneError::CorruptIndex(m) => (
+            "org.apache.lucene.index.CorruptIndexException".to_string(),
+            m.clone(),
+        ),
+        LuceneError::AlreadyClosed { message, .. } => (
+            "org.apache.lucene.store.AlreadyClosedException".to_string(),
+            message.clone(),
+        ),
+        LuceneError::IllegalState { message, .. } => (
+            "java.lang.IllegalStateException".to_string(),
+            message.clone(),
+        ),
+        other => (
+            format!("rucene::{}", other.java_simple_name()),
+            other.to_string(),
+        ),
+    }
+}
+
+/// The class and message a panic stands for: the `class: message` of a Java
+/// exception the port panics with, or the `AssertionError` of a debug
+/// assertion.
+fn java_class_and_message_of_panic(payload: &(dyn std::any::Any + Send)) -> (String, String) {
+    let text = payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+        .unwrap_or_default();
+    match text.split_once(": ") {
+        Some((class, message)) if class.starts_with("java.") => {
+            (class.to_string(), message.to_string())
+        }
+        _ => ("java.lang.AssertionError".to_string(), text),
+    }
+}
+
+/// An edit of one file's bytes.
+type Edit = fn(&[u8]) -> Vec<u8>;
+
+/// An operation on the first leaf of an index, returning what it read.
+type LeafOp = fn(&Path, &dyn LeafReader) -> rucene::error::Result<String>;
+
+/// `SimpleTextOracle.unchecked`: the row of one case, `class, message,
+/// cause class, cause message` or `none, result`.
+fn unchecked_case(name: &str, file: Option<(&str, Edit)>, op: LeafOp) -> Vec<String> {
+    let tmp = TempDir::new(&format!("simpletext-unchecked-{name}"));
+    write_files(&tmp.0, &java_files("nocfs"));
+    let infos = rucene::index::SegmentInfos::read_latest_commit(open_dir(&tmp.0)).unwrap();
+    let segment = infos.info(0).info.name.clone();
+    let id =
+        rucene::util::string_helper::StringHelper::id_to_string(Some(&infos.info(0).info.id()));
+    if let Some((file, edit)) = file {
+        let path = if file.starts_with('_') {
+            tmp.0.join(file)
+        } else {
+            tmp.0.join(format!("{segment}.{file}"))
+        };
+        std::fs::write(&path, edit(&std::fs::read(&path).unwrap())).unwrap();
+    }
+    let real = tmp.0.to_string_lossy().into_owned();
+    let mask = |s: String| {
+        s.replace(&real, "$D")
+            .replace(&id, "$ID")
+            .replace('\n', " ")
+    };
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let reader = directory_reader::open(open_dir(&tmp.0))?;
+        let leaves = Arc::clone(&reader).leaves()?;
+        let leaf = leaves[0].leaf_reader();
+        op(&tmp.0, leaf.as_ref())
+    }));
+    let mut row = vec![name.to_string()];
+    match outcome {
+        Ok(Ok(result)) => row.extend(["none".to_string(), result]),
+        Ok(Err(e)) => {
+            let (class, message) = java_class_and_message(&e);
+            row.extend([class, mask(message)]);
+            // `#[source]` hands out the `Arc` the cause is kept in.
+            let cause = std::error::Error::source(&e).and_then(|c| {
+                c.downcast_ref::<Arc<rucene::error::LuceneError>>()
+                    .map(|c| c.as_ref())
+                    .or_else(|| c.downcast_ref::<rucene::error::LuceneError>())
+            });
+            match cause {
+                Some(cause) => {
+                    let (class, message) = java_class_and_message(cause);
+                    row.extend([class, mask(message)]);
+                }
+                None => row.extend(["-".to_string(), "-".to_string()]),
+            }
+        }
+        Err(payload) => {
+            let (class, message) = java_class_and_message_of_panic(payload.as_ref());
+            row.extend([class, mask(message), "-".to_string(), "-".to_string()]);
+        }
+    }
+    row
+}
+
+/// The visitor of the direct stored-fields reads: every field, nothing kept.
+struct AllFields;
+
+impl StoredFieldVisitor for AllFields {
+    fn needs_field(
+        &mut self,
+        _field_info: &FieldInfo,
+    ) -> rucene::error::Result<StoredFieldVisitorStatus> {
+        Ok(StoredFieldVisitorStatus::Yes)
+    }
+}
+
+fn segment(leaf: &dyn LeafReader) -> &rucene::index::segment_reader::SegmentReader {
+    leaf.as_segment_reader().expect("a segment reader")
+}
+
+/// `String.valueOf(SimpleTextTerms)`.
+fn terms_to_string(terms: &dyn rucene::index::Terms) -> rucene::error::Result<String> {
+    Ok(format!(
+        "SimpleTextTerms(terms={},postings={},positions={},docs={})",
+        terms.size()?,
+        terms.sum_doc_freq()?,
+        terms.sum_total_term_freq()?,
+        terms.doc_count()?
+    ))
+}
+
+/// The `.pst` whose field `tv` is renamed `tx`, which the field infos do not
+/// know, read through `SimpleTextFieldsReader` itself.
+fn unknown_field_terms(
+    p: &Path,
+    leaf: &dyn LeafReader,
+    f: fn(&dyn rucene::index::Terms) -> rucene::error::Result<String>,
+) -> rucene::error::Result<String> {
+    use rucene::index::Fields;
+    let dir = open_dir(p);
+    with_read_state(dir.as_ref(), leaf, |state| {
+        let fields = rucene_codecs::simpletext::fields_reader::SimpleTextFieldsReader::new(state)?;
+        let terms = fields.terms("tx")?.expect("the renamed field");
+        f(terms.as_ref())
+    })
+}
+
+fn pst_rename(b: &[u8]) -> Vec<u8> {
+    fix_checksum(&replace_first(b, "field tv\n", "field tx\n"))
+}
+
+/// The rows `java -da` writes where a Java `assert` decides the outcome
+/// (the fixture is written with `-ea`), for release builds. Measured with
+/// `java -da -cp <oracle classes>:<lucene jars>
+/// org.apache.lucene.codecs.simpletext.SimpleTextOracle <out>`.
+const DISABLED_ASSERTIONS_ROWS: [&str; 4] = [
+    "pst-doc-out\tjava.lang.ArrayIndexOutOfBoundsException\tIndex 1562 out of bounds for length 3\t-\t-",
+    "pst-doc-neg\tjava.lang.ArrayIndexOutOfBoundsException\tIndex -1 out of bounds for length 3\t-\t-",
+    "pst-doc-ghost\tnone\t151",
+    "vec-short-line\tjava.lang.NegativeArraySizeException\t-1\t-\t-",
+];
+
+/// Every unchecked exception the SimpleText readers throw on a copy of the
+/// `nocfs` index, edited or misused, is the one Lucene throws: class,
+/// message, and cause.
+#[test]
+fn unchecked_exceptions_are_lucenes() {
+    install_codecs();
+    let mut expected: BTreeMap<String, Vec<String>> = rows("simpletext_unchecked.tsv")
+        .into_iter()
+        .map(|r| (r[0].clone(), r))
+        .collect();
+    if !cfg!(debug_assertions) {
+        for row in DISABLED_ASSERTIONS_ROWS {
+            let row: Vec<String> = row.split('\t').map(str::to_string).collect();
+            expected.insert(row[0].clone(), row);
+        }
+    }
+    type Case = (&'static str, Option<(&'static str, Edit)>, LeafOp);
+    let cases: Vec<Case> = vec![
+        ("dv-num-exhausted", None, |_, leaf| {
+            let mut v = leaf.get_numeric_doc_values("dv_num")?.unwrap();
+            while v.next_doc()? != NO_MORE_DOCS {}
+            Ok(v.long_value()?.to_string())
+        }),
+        ("dv-bin-exhausted", None, |_, leaf| {
+            let mut v = leaf.get_binary_doc_values("dv_bin")?.unwrap();
+            while v.next_doc()? != NO_MORE_DOCS {}
+            Ok(v.binary_value()?.to_string())
+        }),
+        ("dv-sorted-ord-neg", None, |_, leaf| {
+            Ok(leaf
+                .get_sorted_doc_values("dv_sorted")?
+                .unwrap()
+                .lookup_ord(-1)?
+                .to_string())
+        }),
+        ("dv-sorted-ord-count", None, |_, leaf| {
+            let v = leaf.get_sorted_doc_values("dv_sorted")?.unwrap();
+            Ok(v.lookup_ord(v.get_value_count()?)?.to_string())
+        }),
+        ("dv-sset-ord-neg", None, |_, leaf| {
+            Ok(leaf
+                .get_sorted_set_doc_values("dv_sset")?
+                .unwrap()
+                .lookup_ord(-1)?
+                .to_string())
+        }),
+        ("dv-sset-ord-count", None, |_, leaf| {
+            let v = leaf.get_sorted_set_doc_values("dv_sset")?.unwrap();
+            Ok(v.lookup_ord(v.get_value_count()?)?.to_string())
+        }),
+        ("dv-snum-past", None, |_, leaf| {
+            let mut v = leaf.get_sorted_numeric_doc_values("dv_snum")?.unwrap();
+            v.next_doc()?;
+            for _ in 0..v.doc_value_count()? {
+                v.next_value()?;
+            }
+            Ok(v.next_value()?.to_string())
+        }),
+        ("dv-sset-past", None, |_, leaf| {
+            let mut v = leaf.get_sorted_set_doc_values("dv_sset")?.unwrap();
+            v.next_doc()?;
+            for _ in 0..v.doc_value_count()? {
+                v.next_ord()?;
+            }
+            Ok(v.next_ord()?.to_string())
+        }),
+        (
+            "dv-num-corrupt",
+            Some(("dat", |b| {
+                replace_first(b, "  pattern 0000\n1042\n", "  pattern 0000\nx042\n")
+            })),
+            |_, leaf| {
+                let mut v = leaf.get_numeric_doc_values("dv_num")?.unwrap();
+                v.next_doc()?;
+                Ok(v.long_value()?.to_string())
+            },
+        ),
+        (
+            "dv-bin-corrupt",
+            Some(("dat", |b| replace_first(b, "length 19\n", "length x9\n"))),
+            |_, leaf| {
+                let mut v = leaf.get_binary_doc_values("dv_bin")?.unwrap();
+                v.next_doc()?;
+                Ok(v.binary_value()?.to_string())
+            },
+        ),
+        ("fld-doc-past", None, |_, leaf| {
+            let reader = segment(leaf).get_fields_reader()?.unwrap();
+            reader.document(leaf.max_doc(), &mut AllFields)?;
+            Ok("read".to_string())
+        }),
+        ("fld-doc-neg", None, |_, leaf| {
+            let reader = segment(leaf).get_fields_reader()?.unwrap();
+            reader.document(-1, &mut AllFields)?;
+            Ok("read".to_string())
+        }),
+        (
+            "fld-extra-doc",
+            Some(("fld", |b| replace_first(b, "doc 0\n", "doc 0\ndoc 0\n"))),
+            |_, _| Ok("opened".to_string()),
+        ),
+        (
+            "fld-unknown-type",
+            Some(("fld", |b| {
+                fix_checksum(&replace_first(b, "    type string\n", "    type strinx\n"))
+            })),
+            |_, leaf| {
+                let reader = segment(leaf).get_fields_reader()?.unwrap();
+                reader.document(0, &mut AllFields)?;
+                Ok("read".to_string())
+            },
+        ),
+        (
+            "fld-unknown-field",
+            Some(("fld", |b| {
+                fix_checksum(&replace_first(b, "  field 0\n", "  field 99\n"))
+            })),
+            |_, leaf| {
+                leaf.stored_fields()?.document(0)?;
+                Ok("read".to_string())
+            },
+        ),
+        ("tvc-doc-past", None, |_, leaf| {
+            let reader = segment(leaf).get_term_vectors_reader()?.unwrap();
+            Ok(reader
+                .get(leaf.max_doc())?
+                .map_or("null", |_| "fields")
+                .to_string())
+        }),
+        (
+            "tvc-extra-doc",
+            Some(("tvc", |b| replace_first(b, "doc 0\n", "doc 0\ndoc 0\n"))),
+            |_, _| Ok("opened".to_string()),
+        ),
+        ("tvc-term-unpositioned", None, |_, leaf| {
+            let reader = segment(leaf).get_term_vectors_reader()?.unwrap();
+            let fields = reader.get(0)?.unwrap();
+            Ok(fields.terms("tv")?.unwrap().iterator()?.term()?.to_string())
+        }),
+        ("tvc-ttf-unpositioned", None, |_, leaf| {
+            let reader = segment(leaf).get_term_vectors_reader()?.unwrap();
+            let fields = reader.get(0)?.unwrap();
+            let mut te = fields.terms("tv")?.unwrap().iterator()?;
+            Ok(te.total_term_freq()?.to_string())
+        }),
+        ("pst-term-unpositioned", None, |_, leaf| {
+            Ok(leaf.terms("body")?.unwrap().iterator()?.term()?.to_string())
+        }),
+        ("pst-term-exhausted", None, |_, leaf| {
+            let mut te = leaf.terms("body")?.unwrap().iterator()?;
+            while te.next()?.is_some() {}
+            Ok(te.term()?.to_string())
+        }),
+        (
+            "pst-doc-out",
+            Some(("pst", |b| {
+                fix_checksum(&replace_first(b, "    doc 3\n", "    doc 99999\n"))
+            })),
+            |_, leaf| Ok(leaf.terms("body")?.unwrap().doc_count()?.to_string()),
+        ),
+        (
+            "pst-doc-neg",
+            Some(("pst", |b| {
+                fix_checksum(&replace_first(b, "    doc 3\n", "    doc -1\n"))
+            })),
+            |_, leaf| Ok(leaf.terms("body")?.unwrap().doc_count()?.to_string()),
+        ),
+        (
+            "pst-doc-ghost",
+            Some(("pst", |b| {
+                fix_checksum(&replace_first(b, "    doc 3\n", "    doc 191\n"))
+            })),
+            |_, leaf| Ok(leaf.terms("body")?.unwrap().doc_count()?.to_string()),
+        ),
+        ("pst-field-unknown", Some(("pst", pst_rename)), |p, leaf| {
+            unknown_field_terms(p, leaf, terms_to_string)
+        }),
+        (
+            "pst-field-unknown-iterator",
+            Some(("pst", pst_rename)),
+            |p, leaf| {
+                unknown_field_terms(p, leaf, |t| {
+                    t.iterator()?;
+                    Ok("iterated".to_string())
+                })
+            },
+        ),
+        (
+            "pst-field-unknown-has-freqs",
+            Some(("pst", pst_rename)),
+            |p, leaf| unknown_field_terms(p, leaf, |t| Ok(t.has_freqs().to_string())),
+        ),
+        (
+            "pst-field-unknown-has-offsets",
+            Some(("pst", pst_rename)),
+            |p, leaf| unknown_field_terms(p, leaf, |t| Ok(t.has_offsets().to_string())),
+        ),
+        (
+            "pst-field-unknown-has-positions",
+            Some(("pst", pst_rename)),
+            |p, leaf| unknown_field_terms(p, leaf, |t| Ok(t.has_positions().to_string())),
+        ),
+        (
+            "pst-field-unknown-has-payloads",
+            Some(("pst", pst_rename)),
+            |p, leaf| unknown_field_terms(p, leaf, |t| Ok(t.has_payloads().to_string())),
+        ),
+        (
+            "gri-field-unknown",
+            Some(("gri", |b| {
+                fix_checksum(&replace_first(b, "field-name vb\n", "field-name vz\n"))
+            })),
+            |_, _| Ok("opened".to_string()),
+        ),
+        (
+            "vec-short-line",
+            Some(("vec", |b| replace_first(b, "[20, -30, 0, -20]\n", "[\n"))),
+            |_, leaf| {
+                let v = leaf.get_byte_vector_values("vb")?.unwrap();
+                Ok(format!("{:?}", v.vector_value(0)?))
+            },
+        ),
+        ("knn-search-unknown", None, |p, leaf| {
+            use rucene::codecs::KnnVectorsReader;
+            let dir = open_dir(p);
+            with_read_state(dir.as_ref(), leaf, |state| {
+                let vectors =
+                    rucene_codecs::simpletext::knn_vectors_reader::SimpleTextKnnVectorsReader::new(
+                        state,
+                    )?;
+                let mut collector = TopKnnCollector::new(3, i64::from(i32::MAX));
+                let mut accept = BitsAcceptDocs::from_live_docs(None, leaf.max_doc())?;
+                vectors.search("nope", &[1.0, 2.0, 3.0, 4.0], &mut collector, &mut accept)?;
+                Ok("searched".to_string())
+            })
+        }),
+        ("knn-search-bytes-unknown", None, |p, leaf| {
+            use rucene::codecs::KnnVectorsReader;
+            let dir = open_dir(p);
+            with_read_state(dir.as_ref(), leaf, |state| {
+                let vectors =
+                    rucene_codecs::simpletext::knn_vectors_reader::SimpleTextKnnVectorsReader::new(
+                        state,
+                    )?;
+                let mut collector = TopKnnCollector::new(3, i64::from(i32::MAX));
+                let mut accept = BitsAcceptDocs::from_live_docs(None, leaf.max_doc())?;
+                vectors.search_byte("nope", &[1, 2, 3, 4], &mut collector, &mut accept)?;
+                Ok("searched".to_string())
+            })
+        }),
+        (
+            "liv-negative",
+            Some(("_1_1.liv", |b| replace_first(b, "  doc 0\n", "  doc -1\n"))),
+            |_, _| Ok("opened".to_string()),
+        ),
+        ("fld-clone-closed", None, |p, leaf| {
+            use rucene::codecs::StoredFieldsReader;
+            let dir = open_dir(p);
+            with_read_state(dir.as_ref(), leaf, |state| {
+                let mut reader =
+                    rucene_codecs::simpletext::stored_fields_reader::SimpleTextStoredFieldsReader::new(
+                        state.directory,
+                        state.segment_info,
+                        state.field_infos,
+                        state.context,
+                    )?;
+                reader.close()?;
+                reader.clone_reader()?;
+                Ok("cloned".to_string())
+            })
+        }),
+        ("tvc-clone-closed", None, |p, leaf| {
+            use rucene::codecs::TermVectorsReader;
+            let dir = open_dir(p);
+            with_read_state(dir.as_ref(), leaf, |state| {
+                let mut reader =
+                    rucene_codecs::simpletext::term_vectors_reader::SimpleTextTermVectorsReader::new(
+                        state.directory,
+                        state.segment_info,
+                        state.context,
+                    )?;
+                reader.close()?;
+                reader.clone_reader()?;
+                Ok("cloned".to_string())
+            })
+        }),
+    ];
+    assert_eq!(
+        cases.iter().map(|c| c.0).collect::<BTreeSet<_>>(),
+        expected.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+        "the cases are the oracle's"
+    );
+    for (name, file, op) in cases {
+        let mut actual = unchecked_case(name, file, op);
+        let mut want = expected[name].clone();
+        // `CorruptIndexException` keeps no cause in the port, so the
+        // `ParseException` Java chains under it is not compared.
+        if name == "dv-bin-corrupt" {
+            actual.truncate(3);
+            want.truncate(3);
+        }
+        assert_eq!(actual, want, "{name}");
     }
 }

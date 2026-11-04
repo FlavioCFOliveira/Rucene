@@ -278,6 +278,32 @@ pub enum LuceneError {
     /// A generic wrapper for errors that do not yet have a dedicated variant.
     #[error("{0}")]
     Other(String),
+
+    /// An unchecked Java exception that no other variant stands for, carried
+    /// with its Java class: `class` is the binary name
+    /// (`java.lang.IndexOutOfBoundsException`), `message` Java's
+    /// `getMessage()` (`None` for `null`) and `cause` Java's `getCause()`.
+    ///
+    /// Equivalent to throwing `new <class>(message[, cause])`; it displays as
+    /// Java's `Throwable.toString()`, the class then `": " + message`.
+    #[error("{}", unchecked_to_string(class, message))]
+    Unchecked {
+        /// The Java binary class name.
+        class: &'static str,
+        /// `getMessage()`, `None` for `null`.
+        message: Option<String>,
+        /// `getCause()`.
+        #[source]
+        cause: Option<Arc<LuceneError>>,
+    },
+}
+
+/// `Throwable.toString()` of an [`LuceneError::Unchecked`].
+fn unchecked_to_string(class: &str, message: &Option<String>) -> String {
+    match message {
+        Some(message) => format!("{class}: {message}"),
+        None => class.to_string(),
+    }
 }
 
 impl LuceneError {
@@ -318,6 +344,7 @@ impl LuceneError {
             Self::ResourceLimit(_) => "ResourceLimit",
             Self::Cancelled => "Cancelled",
             Self::Other(_) => "Other",
+            Self::Unchecked { class, .. } => class.rsplit('.').next().unwrap_or(class),
         }
     }
 
@@ -330,7 +357,7 @@ impl LuceneError {
     /// `IndexNotFoundException` (a `FileNotFoundException`),
     /// `LockObtainFailedException`, `LockReleaseFailedException` and
     /// `MergePolicy.MergeAbortedException`.
-    pub(crate) fn is_io_exception(&self) -> bool {
+    pub fn is_io_exception(&self) -> bool {
         matches!(
             self,
             Self::Io(_)
@@ -491,6 +518,15 @@ impl LuceneError {
             Self::AssertionError(m) => Self::AssertionError(m.clone()),
             Self::ThreadInterrupted(e) => Self::ThreadInterrupted(e.clone()),
             Self::Other(m) => Self::Other(m.clone()),
+            Self::Unchecked {
+                class,
+                message,
+                cause,
+            } => Self::Unchecked {
+                class,
+                message: message.clone(),
+                cause: cause.clone(),
+            },
         }
     }
 }
@@ -523,6 +559,63 @@ fn format_too_old(
 }
 
 impl LuceneError {
+    /// `new RuntimeException(cause)`: an [`LuceneError::Unchecked`]
+    /// `java.lang.RuntimeException` whose message is the cause's
+    /// `Throwable.toString()`, as `RuntimeException(Throwable)` sets it.
+    ///
+    /// Lucene builds it where a method that cannot throw a checked exception
+    /// catches an `IOException` (for example `SimpleTextDocValuesReader`'s
+    /// value functions), so `cause` is one of the variants
+    /// [`is_io_exception`](Self::is_io_exception) accepts; any other is
+    /// described by [`java_simple_name`](Self::java_simple_name) and its
+    /// display.
+    pub fn runtime_exception(cause: LuceneError) -> Self {
+        let message = cause.io_exception_to_string();
+        Self::Unchecked {
+            class: "java.lang.RuntimeException",
+            message: Some(message),
+            cause: Some(Arc::new(cause)),
+        }
+    }
+
+    /// `Throwable.toString()` of the `IOException` this error stands for.
+    fn io_exception_to_string(&self) -> String {
+        match self {
+            Self::Io(e) => crate::store::java_nio_file::java_to_string(e),
+            Self::CorruptIndex(m) => format!("org.apache.lucene.index.CorruptIndexException: {m}"),
+            Self::IndexFormatTooOld { .. } => {
+                format!("org.apache.lucene.index.IndexFormatTooOldException: {self}")
+            }
+            Self::IndexFormatTooNew { .. } => {
+                format!("org.apache.lucene.index.IndexFormatTooNewException: {self}")
+            }
+            Self::IndexNotFound(m) => {
+                format!("org.apache.lucene.index.IndexNotFoundException: {m}")
+            }
+            Self::LockObtainFailed { message, .. } => {
+                format!("org.apache.lucene.store.LockObtainFailedException: {message}")
+            }
+            Self::LockReleaseFailed { message, .. } => {
+                format!("org.apache.lucene.store.LockReleaseFailedException: {message}")
+            }
+            Self::MergeAborted(m) => {
+                format!("org.apache.lucene.index.MergePolicy$MergeAbortedException: {m}")
+            }
+            Self::Unchecked { class, message, .. } => unchecked_to_string(class, message),
+            other => format!("{}: {other}", other.java_simple_name()),
+        }
+    }
+
+    /// `new <class>(message)` for an unchecked Java exception no other
+    /// variant stands for: [`LuceneError::Unchecked`] without a cause.
+    pub fn unchecked(class: &'static str, message: impl Into<String>) -> Self {
+        Self::Unchecked {
+            class,
+            message: Some(message.into()),
+            cause: None,
+        }
+    }
+
     /// Creates a `CorruptIndex` error composing the message the way
     /// `org.apache.lucene.index.CorruptIndexException` does: the caller's message
     /// followed by ` (resource=<description>)`.

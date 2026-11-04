@@ -1,0 +1,38 @@
+# case	class	message	cause class	cause message ($D = the index directory), or case	none	result
+dv-num-exhausted	java.lang.IndexOutOfBoundsException	docID must be 0 .. 149; got 2147483647	-	-
+dv-bin-exhausted	java.lang.IndexOutOfBoundsException	docID must be 0 .. 149; got 2147483647	-	-
+dv-sorted-ord-neg	java.lang.IndexOutOfBoundsException	ord must be 0 .. 28; got -1	-	-
+dv-sorted-ord-count	java.lang.IndexOutOfBoundsException	ord must be 0 .. 28; got 29	-	-
+dv-sset-ord-neg	java.lang.IndexOutOfBoundsException	ord must be 0 .. 7; got -1	-	-
+dv-sset-ord-count	java.lang.IndexOutOfBoundsException	ord must be 0 .. 7; got 8	-	-
+dv-snum-past	java.lang.ArrayIndexOutOfBoundsException	Index 2 out of bounds for length 2	-	-
+dv-sset-past	java.lang.ArrayIndexOutOfBoundsException	Index 2 out of bounds for length 2	-	-
+dv-num-corrupt	java.lang.RuntimeException	org.apache.lucene.index.CorruptIndexException: failed to parse BigDecimal value (resource=NIOFSIndexInput(path="$D/_5.dat"))	org.apache.lucene.index.CorruptIndexException	failed to parse BigDecimal value (resource=NIOFSIndexInput(path="$D/_5.dat"))
+dv-bin-corrupt	org.apache.lucene.index.CorruptIndexException	failed to parse int length (resource=NIOFSIndexInput(path="$D/_5.dat"))	java.text.ParseException	Unparseable number: "x9"
+fld-doc-past	java.lang.ArrayIndexOutOfBoundsException	Index 150 out of bounds for length 150	-	-
+fld-doc-neg	java.lang.ArrayIndexOutOfBoundsException	Index -1 out of bounds for length 150	-	-
+fld-extra-doc	java.lang.ArrayIndexOutOfBoundsException	Index 150 out of bounds for length 150	-	-
+fld-unknown-type	java.lang.RuntimeException	unknown field type	-	-
+fld-unknown-field	java.lang.NullPointerException	Cannot invoke "org.apache.lucene.index.FieldInfo.hasTermVectors()" because "fieldInfo" is null	-	-
+tvc-doc-past	java.lang.ArrayIndexOutOfBoundsException	Index 150 out of bounds for length 150	-	-
+tvc-extra-doc	java.lang.ArrayIndexOutOfBoundsException	Index 150 out of bounds for length 150	-	-
+tvc-term-unpositioned	java.lang.NullPointerException	Cannot invoke "java.util.Map$Entry.getKey()" because "this.current" is null	-	-
+tvc-ttf-unpositioned	java.lang.NullPointerException	Cannot invoke "java.util.Map$Entry.getValue()" because "this.current" is null	-	-
+pst-term-unpositioned	none	[]
+pst-term-exhausted	none	[77 39]
+pst-doc-out	java.lang.AssertionError	index=99999, numBits=150	-	-
+pst-doc-neg	java.lang.AssertionError	index=-1, numBits=150	-	-
+pst-doc-ghost	java.lang.AssertionError	index=191, numBits=150	-	-
+pst-field-unknown	none	SimpleTextTerms(terms=9,postings=342,positions=381,docs=150)
+pst-field-unknown-iterator	java.lang.NullPointerException	Cannot invoke "org.apache.lucene.index.FieldInfo.getIndexOptions()" because "this.fieldInfo" is null	-	-
+pst-field-unknown-has-freqs	java.lang.NullPointerException	Cannot invoke "org.apache.lucene.index.FieldInfo.getIndexOptions()" because "this.fieldInfo" is null	-	-
+pst-field-unknown-has-offsets	java.lang.NullPointerException	Cannot invoke "org.apache.lucene.index.FieldInfo.getIndexOptions()" because "this.fieldInfo" is null	-	-
+pst-field-unknown-has-positions	java.lang.NullPointerException	Cannot invoke "org.apache.lucene.index.FieldInfo.getIndexOptions()" because "this.fieldInfo" is null	-	-
+pst-field-unknown-has-payloads	java.lang.NullPointerException	Cannot invoke "org.apache.lucene.index.FieldInfo.hasPayloads()" because "this.fieldInfo" is null	-	-
+gri-field-unknown	java.lang.NullPointerException	Cannot invoke "org.apache.lucene.index.FieldInfo.getVectorSimilarityFunction()" because the return value of "org.apache.lucene.index.FieldInfos.fieldInfo(String)" is null	-	-
+vec-short-line	java.lang.IllegalStateException	length is negative: -1	-	-
+knn-search-unknown	java.lang.NullPointerException	Cannot invoke "org.apache.lucene.index.FloatVectorValues.dimension()" because "values" is null	-	-
+knn-search-bytes-unknown	java.lang.NullPointerException	Cannot invoke "org.apache.lucene.index.ByteVectorValues.dimension()" because "values" is null	-	-
+liv-negative	java.lang.IndexOutOfBoundsException	bitIndex < 0: -1	-	-
+fld-clone-closed	org.apache.lucene.store.AlreadyClosedException	this FieldsReader is closed	-	-
+tvc-clone-closed	org.apache.lucene.store.AlreadyClosedException	this TermVectorsReader is closed	-	-

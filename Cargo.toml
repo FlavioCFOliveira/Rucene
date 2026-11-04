@@ -257,6 +257,10 @@ name = "portability_fst_arcs_buffer"
 path = "tests/portability/fst_arcs_buffer.rs"
 
 [[test]]
+name = "portability_fst_enum_reader"
+path = "tests/portability/fst_enum_reader.rs"
+
+[[test]]
 name = "portability_byte_block_pool_accounting"
 path = "tests/portability/byte_block_pool_accounting.rs"
 

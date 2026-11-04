@@ -4902,7 +4902,7 @@ pub fn test_stored_fields(
         let Some(stored_fields) = reader.get_fields_reader()? else {
             return Ok(());
         };
-        let stored_fields = stored_fields.get_merge_instance();
+        let stored_fields = stored_fields.get_merge_instance()?;
         for j in 0..reader.max_doc() {
             // Deleted documents are pulled deliberately, to be sure they too
             // are not corrupt.
@@ -5884,7 +5884,7 @@ pub fn test_term_vectors(
             );
             return Ok(());
         };
-        let mut vectors_reader = vectors_reader.get_merge_instance();
+        let mut vectors_reader = vectors_reader.get_merge_instance()?;
 
         for j in 0..reader.max_doc() {
             if (j & 0x03) == 0 {

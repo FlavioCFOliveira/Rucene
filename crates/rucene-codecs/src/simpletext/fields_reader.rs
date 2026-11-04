@@ -39,7 +39,7 @@ use rucene::util::{BytesRef, FixedBitSet, IntsRefBuilder};
 
 use super::fields_writer::{DOC, END, END_OFFSET, FIELD, FREQ, PAYLOAD, POS, START_OFFSET, TERM};
 use super::postings_format::get_postings_file_name;
-use super::skip_reader::SimpleTextSkipReader;
+use super::skip_reader::SharedSkipReader;
 use super::skip_writer::{BLOCK_SIZE, SKIP_LIST};
 use super::util::{self, parse_int_at, read_line};
 
@@ -362,17 +362,12 @@ impl TermsEnum for SimpleTextTermsEnum {
         }
     }
 
+    /// `fstEnum.current().input`: empty before the first term, the last term
+    /// once the enumeration is exhausted.
     fn term(&self) -> Result<BytesRef> {
-        self.fst_enum
-            .current()
-            .map(|current| BytesRef::new(current.input.slice().to_vec()))
-            .ok_or_else(|| {
-                LuceneError::illegal_state(
-                    "Cannot read field \"input\" because the return value of \
-                     \"org.apache.lucene.util.fst.BytesRefFSTEnum.current()\" is null"
-                        .to_string(),
-                )
-            })
+        Ok(BytesRef::new(
+            self.fst_enum.current().input.slice().to_vec(),
+        ))
     }
 
     fn ord(&self) -> Result<i64> {
@@ -453,7 +448,7 @@ struct SimpleTextDocsEnum {
     cost: i32,
 
     // for skip list data
-    skip_reader: SimpleTextSkipReader,
+    skip_reader: SharedSkipReader,
     next_skip_doc: i32,
     seek_to: i64,
 }
@@ -461,7 +456,7 @@ struct SimpleTextDocsEnum {
 impl SimpleTextDocsEnum {
     fn new(in_start: Arc<SharedInput>) -> Result<Self> {
         let input = in_start.clone_input()?;
-        let skip_reader = SimpleTextSkipReader::new(in_start.clone_input()?);
+        let skip_reader = SharedSkipReader::new(in_start.clone_input()?);
         Ok(Self {
             in_start,
             input,
@@ -651,7 +646,7 @@ struct SimpleTextPostingsEnum {
     cost: i32,
 
     // for skip list data
-    skip_reader: SimpleTextSkipReader,
+    skip_reader: SharedSkipReader,
     next_skip_doc: i32,
     seek_to: i64,
 }
@@ -659,7 +654,7 @@ struct SimpleTextPostingsEnum {
 impl SimpleTextPostingsEnum {
     fn new(in_start: Arc<SharedInput>) -> Result<Self> {
         let input = in_start.clone_input()?;
-        let skip_reader = SimpleTextSkipReader::new(in_start.clone_input()?);
+        let skip_reader = SharedSkipReader::new(in_start.clone_input()?);
         Ok(Self {
             in_start,
             input,
@@ -886,7 +881,10 @@ struct SimpleTextTerms {
 }
 
 struct TermsInner {
-    field_info: FieldInfo,
+    /// `fieldInfos.fieldInfo(field)`: `None` (Java's `null`) for a field the
+    /// segment's field infos do not know, which Java only dereferences in
+    /// `iterator` and the `has*` methods.
+    field_info: Option<FieldInfo>,
     sum_total_term_freq: i64,
     sum_doc_freq: i64,
     doc_count: i32,
@@ -903,9 +901,7 @@ impl SimpleTextTerms {
         field_infos: &FieldInfos,
         input: Arc<SharedInput>,
     ) -> Result<Self> {
-        let field_info = field_infos.field_info(field).cloned().ok_or_else(|| {
-            LuceneError::illegal_state(format!("no field info for field {field}"))
-        })?;
+        let field_info = field_infos.field_info(field).cloned();
         let inner = Self::load_terms(field_info, terms_start, max_doc, input)?;
         Ok(Self {
             inner: Arc::new(inner),
@@ -914,7 +910,7 @@ impl SimpleTextTerms {
 
     /// Port of the private `SimpleTextTerms.loadTerms`.
     fn load_terms(
-        field_info: FieldInfo,
+        field_info: Option<FieldInfo>,
         terms_start: i64,
         max_doc: i32,
         shared: Arc<SharedInput>,
@@ -931,7 +927,7 @@ impl SimpleTextTerms {
         let mut doc_freq = 0i32;
         let mut total_term_freq = 0i64;
         let mut skip_pointer = 0i64;
-        let mut visited_docs = FixedBitSet::new(max_doc.max(0) as usize);
+        let visited_docs = FixedBitSet::new(max_doc.max(0) as usize);
         let mut scratch_ints_ref = IntsRefBuilder::new();
         let mut scratch = Vec::new();
         let mut sum_total_term_freq = 0i64;
@@ -959,12 +955,7 @@ impl SimpleTextTerms {
                 sum_doc_freq += 1;
                 total_term_freq += 1;
                 let doc_id = parse_int_at(&scratch, DOC.len())?;
-                if doc_id < 0 || doc_id as usize >= visited_docs.length() {
-                    return Err(LuceneError::illegal_state(format!(
-                        "Index {doc_id} out of bounds for length {max_doc}"
-                    )));
-                }
-                visited_docs.set(doc_id as usize);
+                set_visited(&visited_docs, doc_id)?;
             } else if scratch.starts_with(FREQ) {
                 total_term_freq += i64::from(parse_int_at(&scratch, FREQ.len())? - 1);
             } else if scratch.starts_with(SKIP_LIST) {
@@ -1007,6 +998,62 @@ impl SimpleTextTerms {
     }
 }
 
+/// `visitedDocs.set(docID)`, `FixedBitSet.set` as Java runs it
+/// (`FixedBitSet.java:297-302`): its `assert` is a debug assertion, and
+/// without it `bits[index >> 6] |= 1L << index` sets a bit past `numBits` in
+/// the last word, which `cardinality()` counts, and throws
+/// `ArrayIndexOutOfBoundsException` for a word outside the array. The port's
+/// [`FixedBitSet::set`] panics on any index past `numBits` instead, so the
+/// word is set here.
+fn set_visited(visited_docs: &FixedBitSet, doc_id: i32) -> Result<()> {
+    debug_assert!(
+        doc_id >= 0 && (doc_id as usize) < visited_docs.length(),
+        "index={doc_id}, numBits={}",
+        visited_docs.length()
+    );
+    let words = visited_docs.get_bits();
+    let word_num = doc_id >> 6;
+    let word = usize::try_from(word_num)
+        .ok()
+        .and_then(|w| words.get(w))
+        .ok_or_else(|| {
+            LuceneError::unchecked(
+                "java.lang.ArrayIndexOutOfBoundsException",
+                format!("Index {word_num} out of bounds for length {}", words.len()),
+            )
+        })?;
+    // `1L << index` shifts by `index & 63`.
+    word.fetch_or(1u64 << (doc_id & 63), std::sync::atomic::Ordering::Relaxed);
+    Ok(())
+}
+
+/// The `NullPointerException` of `fieldInfo.<method>` on a field the field
+/// infos do not know.
+fn field_info_is_null(method: &str) -> String {
+    format!(
+        "Cannot invoke \"org.apache.lucene.index.FieldInfo.{method}\" because \"this.fieldInfo\" is null"
+    )
+}
+
+impl TermsInner {
+    /// `fieldInfo`, for the `has*` methods, whose `boolean` result cannot
+    /// carry the `NullPointerException` Java throws for an unknown field.
+    ///
+    /// # Panics
+    ///
+    /// Panics with that exception's message when the field infos do not know
+    /// the field.
+    fn field_info_or_panic(&self, method: &str) -> &FieldInfo {
+        match &self.field_info {
+            Some(field_info) => field_info,
+            None => panic!(
+                "java.lang.NullPointerException: {}",
+                field_info_is_null(method)
+            ),
+        }
+    }
+}
+
 impl fmt::Display for SimpleTextTerms {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -1024,7 +1071,17 @@ impl Terms for SimpleTextTerms {
     fn iterator(&self) -> Result<Box<dyn TermsEnum>> {
         match &self.inner.fst {
             Some(fst) => Ok(Box::new(SimpleTextTermsEnum {
-                index_options: self.inner.field_info.get_index_options(),
+                index_options: self
+                    .inner
+                    .field_info
+                    .as_ref()
+                    .ok_or_else(|| {
+                        LuceneError::unchecked(
+                            "java.lang.NullPointerException",
+                            field_info_is_null("getIndexOptions()"),
+                        )
+                    })?
+                    .get_index_options(),
                 meta: TermMeta::default(),
                 fst_enum: BytesRefFSTEnum::new_shared(Arc::clone(fst))?,
                 input: Arc::clone(&self.inner.input),
@@ -1050,28 +1107,43 @@ impl Terms for SimpleTextTerms {
         Ok(self.inner.doc_count)
     }
 
+    /// # Panics
+    ///
+    /// As Java's `NullPointerException`, when the field infos do not know the
+    /// field.
     fn has_freqs(&self) -> bool {
         self.inner
-            .field_info
+            .field_info_or_panic("getIndexOptions()")
             .get_index_options()
             .subsumes(IndexOptions::DOCS_AND_FREQS)
     }
 
+    /// # Panics
+    ///
+    /// As [`has_freqs`](Self::has_freqs).
     fn has_offsets(&self) -> bool {
         self.inner
-            .field_info
+            .field_info_or_panic("getIndexOptions()")
             .get_index_options()
             .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)
     }
 
+    /// # Panics
+    ///
+    /// As [`has_freqs`](Self::has_freqs).
     fn has_positions(&self) -> bool {
         self.inner
-            .field_info
+            .field_info_or_panic("getIndexOptions()")
             .get_index_options()
             .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
     }
 
+    /// # Panics
+    ///
+    /// As [`has_freqs`](Self::has_freqs).
     fn has_payloads(&self) -> bool {
-        self.inner.field_info.has_payloads()
+        self.inner
+            .field_info_or_panic("hasPayloads()")
+            .has_payloads()
     }
 }

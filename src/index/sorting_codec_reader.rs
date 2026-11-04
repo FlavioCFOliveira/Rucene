@@ -1625,16 +1625,21 @@ impl StoredFieldsReader for SlowCompositeStoredFieldsReader {
         Ok(())
     }
 
-    fn clone_reader(&self) -> Box<dyn StoredFieldsReader> {
-        Box::new(SlowCompositeStoredFieldsReader {
+    fn clone_reader(&self) -> Result<Box<dyn StoredFieldsReader>> {
+        Ok(Box::new(SlowCompositeStoredFieldsReader {
             readers: self
                 .readers
                 .iter()
-                .map(|reader| reader.as_ref().map(|reader| reader.clone_reader()))
-                .collect(),
+                .map(|reader| {
+                    reader
+                        .as_ref()
+                        .map(|reader| reader.clone_reader())
+                        .transpose()
+                })
+                .collect::<Result<_>>()?,
             doc_starts: Arc::clone(&self.doc_starts),
             field_infos: self.field_infos.clone(),
-        })
+        }))
     }
 
     fn prefetch(&self, doc_id: i32) -> Result<()> {
@@ -1769,15 +1774,20 @@ impl TermVectorsReader for SlowCompositeTermVectorsReader {
         Ok(())
     }
 
-    fn clone_reader(&self) -> Box<dyn TermVectorsReader> {
-        Box::new(SlowCompositeTermVectorsReader {
+    fn clone_reader(&self) -> Result<Box<dyn TermVectorsReader>> {
+        Ok(Box::new(SlowCompositeTermVectorsReader {
             readers: self
                 .readers
                 .iter()
-                .map(|reader| reader.as_ref().map(|reader| reader.clone_reader()))
-                .collect(),
+                .map(|reader| {
+                    reader
+                        .as_ref()
+                        .map(|reader| reader.clone_reader())
+                        .transpose()
+                })
+                .collect::<Result<_>>()?,
             doc_starts: Arc::clone(&self.doc_starts),
-        })
+        }))
     }
 
     /// Equivalent to `IOUtils.close(readers)`
@@ -3549,11 +3559,11 @@ impl StoredFieldsReader for SortingStoredFieldsReader {
         self.delegate.check_integrity()
     }
 
-    fn clone_reader(&self) -> Box<dyn StoredFieldsReader> {
-        Box::new(SortingStoredFieldsReader {
-            delegate: self.delegate.clone_reader(),
+    fn clone_reader(&self) -> Result<Box<dyn StoredFieldsReader>> {
+        Ok(Box::new(SortingStoredFieldsReader {
+            delegate: self.delegate.clone_reader()?,
             doc_map: Arc::clone(&self.doc_map),
-        })
+        }))
     }
 
     fn prefetch(&self, doc_id: i32) -> Result<()> {
@@ -3589,11 +3599,11 @@ impl TermVectorsReader for SortingTermVectorsReader {
         self.delegate.check_integrity()
     }
 
-    fn clone_reader(&self) -> Box<dyn TermVectorsReader> {
-        Box::new(SortingTermVectorsReader {
-            delegate: self.delegate.clone_reader(),
+    fn clone_reader(&self) -> Result<Box<dyn TermVectorsReader>> {
+        Ok(Box::new(SortingTermVectorsReader {
+            delegate: self.delegate.clone_reader()?,
             doc_map: Arc::clone(&self.doc_map),
-        })
+        }))
     }
 
     /// Equivalent to the anonymous reader's `close()`, which closes the
@@ -4783,8 +4793,8 @@ mod tests {
             Ok(())
         }
 
-        fn clone_reader(&self) -> Box<dyn StoredFieldsReader> {
-            Box::new(ClosingStoredFields(Arc::clone(&self.0)))
+        fn clone_reader(&self) -> Result<Box<dyn StoredFieldsReader>> {
+            Ok(Box::new(ClosingStoredFields(Arc::clone(&self.0))))
         }
 
         fn close(&mut self) -> Result<()> {

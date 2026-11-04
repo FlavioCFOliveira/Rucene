@@ -419,11 +419,12 @@ impl SimpleTextPointTree {
         for i in 0..count as usize {
             read_line(self.input.as_mut(), &mut scratch)?;
             let doc = parse_int_prefix(&scratch, BLOCK_DOC_ID)?;
+            let length = self.scratch_doc_ids.len();
             *self.scratch_doc_ids.get_mut(i).ok_or_else(|| {
-                LuceneError::illegal_state(format!(
-                    "Index {i} out of bounds for length {}",
-                    self.reader.config.max_points_in_leaf_node
-                ))
+                LuceneError::unchecked(
+                    "java.lang.ArrayIndexOutOfBoundsException",
+                    format!("Index {i} out of bounds for length {length}"),
+                )
             })? = doc;
         }
         Ok(count.max(0) as usize)

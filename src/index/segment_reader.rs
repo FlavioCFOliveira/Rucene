@@ -1558,7 +1558,10 @@ impl SegmentReader {
         let guard = self.core_readers.fields_reader_orig.read().map_err(|_| {
             LuceneError::illegal_state("stored fields reader lock poisoned".to_string())
         })?;
-        Ok(guard.as_ref().map(|reader| reader.clone_reader()))
+        guard
+            .as_ref()
+            .map(|reader| reader.clone_reader())
+            .transpose()
     }
 
     /// Returns the underlying term-vectors reader.
@@ -1571,7 +1574,10 @@ impl SegmentReader {
             .map_err(|_| {
                 LuceneError::illegal_state("term vectors reader lock poisoned".to_string())
             })?;
-        Ok(guard.as_ref().map(|reader| reader.clone_reader()))
+        guard
+            .as_ref()
+            .map(|reader| reader.clone_reader())
+            .transpose()
     }
 
     /// Returns the underlying norms producer.
@@ -1631,7 +1637,7 @@ impl LeafReader for SegmentReader {
         if let Some(reader) = guard.as_ref() {
             // `TermVectorsReader` extends `TermVectors`, so the codec reader
             // itself is the caller's `TermVectors` (`CodecReader.java:107-114`).
-            Ok(reader.clone_reader())
+            Ok(reader.clone_reader()?)
         } else {
             Ok(Box::new(crate::index::leaf_reader::EmptyTermVectors))
         }
@@ -2593,19 +2599,19 @@ mod tests {
             self.inner.check_integrity()
         }
 
-        fn clone_reader(&self) -> Box<dyn StoredFieldsReader> {
-            Box::new(RecordingStoredFieldsReader::new(
-                self.inner.clone_reader(),
+        fn clone_reader(&self) -> Result<Box<dyn StoredFieldsReader>> {
+            Ok(Box::new(RecordingStoredFieldsReader::new(
+                self.inner.clone_reader()?,
                 self.closed.clone(),
-            ))
+            )))
         }
 
-        fn get_merge_instance(&self) -> Box<dyn StoredFieldsReader> {
-            Box::new(RecordingStoredFieldsReader {
-                inner: self.inner.get_merge_instance(),
+        fn get_merge_instance(&self) -> Result<Box<dyn StoredFieldsReader>> {
+            Ok(Box::new(RecordingStoredFieldsReader {
+                inner: self.inner.get_merge_instance()?,
                 closed: self.closed.clone(),
                 merge_instance: true,
-            })
+            }))
         }
 
         fn prefetch(&self, doc_id: i32) -> Result<()> {
@@ -2643,19 +2649,19 @@ mod tests {
             self.inner.check_integrity()
         }
 
-        fn clone_reader(&self) -> Box<dyn TermVectorsReader> {
-            Box::new(RecordingTermVectorsReader::new(
-                self.inner.clone_reader(),
+        fn clone_reader(&self) -> Result<Box<dyn TermVectorsReader>> {
+            Ok(Box::new(RecordingTermVectorsReader::new(
+                self.inner.clone_reader()?,
                 self.closed.clone(),
-            ))
+            )))
         }
 
-        fn get_merge_instance(&self) -> Box<dyn TermVectorsReader> {
-            Box::new(RecordingTermVectorsReader {
-                inner: self.inner.get_merge_instance(),
+        fn get_merge_instance(&self) -> Result<Box<dyn TermVectorsReader>> {
+            Ok(Box::new(RecordingTermVectorsReader {
+                inner: self.inner.get_merge_instance()?,
                 closed: self.closed.clone(),
                 merge_instance: true,
-            })
+            }))
         }
 
         fn close(&mut self) -> Result<()> {
@@ -3607,8 +3613,8 @@ mod tests {
             Ok(())
         }
 
-        fn clone_reader(&self) -> Box<dyn TermVectorsReader> {
-            Box::new(Self::default())
+        fn clone_reader(&self) -> Result<Box<dyn TermVectorsReader>> {
+            Ok(Box::new(Self::default()))
         }
     }
 

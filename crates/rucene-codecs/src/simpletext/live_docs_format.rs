@@ -158,9 +158,10 @@ impl JavaBitSet {
     /// negative index.
     fn set(&mut self, index: i32) -> Result<()> {
         if index < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
-                "bitIndex < 0: {index}"
-            )));
+            return Err(LuceneError::unchecked(
+                "java.lang.IndexOutOfBoundsException",
+                format!("bitIndex < 0: {index}"),
+            ));
         }
         let word = index as usize / 64;
         if word >= self.words.len() {

@@ -151,11 +151,11 @@ impl SimpleTextKnnVectorsReader {
                 .field_info(&field_name)
                 .map(FieldInfo::get_vector_similarity_function)
                 .ok_or_else(|| {
-                    LuceneError::illegal_state(format!(
+                    null_pointer(
                         "Cannot invoke \"org.apache.lucene.index.FieldInfo.getVectorSimilarityFunction()\" \
                          because the return value of \"org.apache.lucene.index.FieldInfos.fieldInfo(String)\" \
-                         is null (field={field_name})"
-                    ))
+                         is null",
+                    )
                 })?;
             field_entries.insert(
                 field_number,
@@ -234,11 +234,26 @@ impl SimpleTextKnnVectorsReader {
     }
 }
 
+/// `new NullPointerException(message)`, as the JVM throws it.
+fn null_pointer(message: &str) -> LuceneError {
+    LuceneError::unchecked("java.lang.NullPointerException", message)
+}
+
 /// The `NullPointerException` Java's `search` throws when the field has no
-/// vectors (`values` is `null`).
-fn null_values() -> LuceneError {
-    LuceneError::illegal_state(
-        "Cannot invoke \"dimension()\" because \"values\" is null".to_string(),
+/// vectors (`values` is `null`); `class` is the type of `values`.
+fn null_values(class: &str) -> LuceneError {
+    null_pointer(&format!(
+        "Cannot invoke \"org.apache.lucene.index.{class}.dimension()\" because \"values\" is null"
+    ))
+}
+
+/// The `NullPointerException` of `info.getVectorSimilarityFunction()` in
+/// `search`; `getFloatVectorValues` and `getByteVectorValues` return `null`
+/// for a field the field infos do not know, so `search` never reaches it.
+fn null_info() -> LuceneError {
+    null_pointer(
+        "Cannot invoke \"org.apache.lucene.index.FieldInfo.getVectorSimilarityFunction()\" \
+         because \"info\" is null",
     )
 }
 
@@ -304,7 +319,9 @@ impl KnnVectorsReader for SimpleTextKnnVectorsReader {
         knn_collector: &mut dyn KnnCollector,
         accept_docs: &mut dyn AcceptDocs,
     ) -> Result<()> {
-        let values = self.float_values(field)?.ok_or_else(null_values)?;
+        let values = self
+            .float_values(field)?
+            .ok_or_else(|| null_values("FloatVectorValues"))?;
         if target.len() as i32 != values.dimension() {
             return Err(LuceneError::IllegalArgument(format!(
                 "vector query dimension: {} differs from field dimension: {}",
@@ -316,7 +333,7 @@ impl KnnVectorsReader for SimpleTextKnnVectorsReader {
             .field_infos
             .field_info(field)
             .map(FieldInfo::get_vector_similarity_function)
-            .ok_or_else(null_values)?;
+            .ok_or_else(null_info)?;
         for ord in 0..values.size() {
             let doc = values.ord_to_doc(ord);
             if let Some(bits) = accept_docs.bits()? {
@@ -345,7 +362,9 @@ impl KnnVectorsReader for SimpleTextKnnVectorsReader {
         knn_collector: &mut dyn KnnCollector,
         accept_docs: &mut dyn AcceptDocs,
     ) -> Result<()> {
-        let values = self.byte_values(field)?.ok_or_else(null_values)?;
+        let values = self
+            .byte_values(field)?
+            .ok_or_else(|| null_values("ByteVectorValues"))?;
         if target.len() as i32 != values.dimension() {
             return Err(LuceneError::IllegalArgument(format!(
                 "vector query dimension: {} differs from field dimension: {}",
@@ -357,7 +376,7 @@ impl KnnVectorsReader for SimpleTextKnnVectorsReader {
             .field_infos
             .field_info(field)
             .map(FieldInfo::get_vector_similarity_function)
-            .ok_or_else(null_values)?;
+            .ok_or_else(null_info)?;
 
         for ord in 0..values.size() {
             let doc = values.ord_to_doc(ord);
@@ -402,15 +421,20 @@ impl KnnVectorsReader for SimpleTextKnnVectorsReader {
 /// "]", split on ",", `Float.parseFloat` each part.
 fn read_vector_parts(input: &mut dyn IndexInput, scratch: &mut Vec<u8>) -> Result<Vec<f32>> {
     read_line(input, scratch)?;
-    let inner = if scratch.len() >= 2 {
-        &scratch[1..scratch.len() - 1]
-    } else {
-        return Err(LuceneError::illegal_state(format!(
-            "Range [1, {}) out of bounds for length {}",
-            scratch.len() as i64 - 1,
-            scratch.len()
-        )));
-    };
+    // `new BytesRef(scratch.bytes(), 1, scratch.length() - 2).utf8ToString()`.
+    let length = scratch.len() as i64 - 2;
+    if length < 0 {
+        // `assert isValid()` in the `BytesRef` constructor, which throws
+        // the `IllegalStateException` itself (`BytesRef.java:54-58`,
+        // `:184-189`); without assertions `utf8ToString` allocates
+        // `new char[length]` (`:137-138`).
+        return Err(if cfg!(debug_assertions) {
+            LuceneError::illegal_state(format!("length is negative: {length}"))
+        } else {
+            LuceneError::unchecked("java.lang.NegativeArraySizeException", length.to_string())
+        });
+    }
+    let inner = &scratch[1..scratch.len() - 1];
     let s = java_utf8_to_string(inner);
     java_split(&s, ',').into_iter().map(parse_float).collect()
 }

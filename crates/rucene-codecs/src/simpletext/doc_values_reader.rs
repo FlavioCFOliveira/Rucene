@@ -369,16 +369,44 @@ fn read_skip_data(data: &mut dyn IndexInput, scratch: &mut Vec<u8>) -> Result<Ve
 
 /// The `IndexOutOfBoundsException` the value functions throw.
 fn doc_id_out_of_bounds(max_doc: i32, doc_id: i32) -> LuceneError {
-    LuceneError::illegal_state(format!("docID must be 0 .. {}; got {doc_id}", max_doc - 1))
+    LuceneError::unchecked(
+        INDEX_OUT_OF_BOUNDS,
+        format!("docID must be 0 .. {}; got {doc_id}", max_doc - 1),
+    )
+}
+
+/// The `IndexOutOfBoundsException` `lookupOrd` throws.
+fn ord_out_of_bounds(num_values: i64, ord: i64) -> LuceneError {
+    LuceneError::unchecked(
+        INDEX_OUT_OF_BOUNDS,
+        format!("ord must be 0 .. {}; got {ord}", num_values - 1),
+    )
+}
+
+/// The `ArrayIndexOutOfBoundsException` of `values[index++]` past the end of
+/// a document's values.
+fn array_index_out_of_bounds(index: usize, length: usize) -> LuceneError {
+    LuceneError::unchecked(
+        ARRAY_INDEX_OUT_OF_BOUNDS,
+        format!("Index {index} out of bounds for length {length}"),
+    )
+}
+
+const INDEX_OUT_OF_BOUNDS: &str = "java.lang.IndexOutOfBoundsException";
+const ARRAY_INDEX_OUT_OF_BOUNDS: &str = "java.lang.ArrayIndexOutOfBoundsException";
+
+/// The `catch (IOException ioe) { throw new RuntimeException(ioe); }` around
+/// the body of the value functions: `IntFunction.apply` cannot throw a
+/// checked exception (`SimpleTextDocValuesReader.java:310-314`, `:420-423`).
+fn wrap_io_exception(error: LuceneError) -> LuceneError {
+    if error.is_io_exception() {
+        LuceneError::runtime_exception(error)
+    } else {
+        error
+    }
 }
 
 /// The `IntFunction<Long>` of `getNumericNonIterator`.
-///
-/// **Divergence.** Java's `IntFunction.apply` cannot throw a checked
-/// exception, so it wraps an `IOException` in a `RuntimeException`
-/// (`SimpleTextDocValuesReader.java:272-274`, and the same in `getBinary`'s);
-/// the port's `long_value` and `binary_value` return a `Result`, so the
-/// `IOException` reaches the caller unwrapped.
 struct NumericValues {
     input: RefCell<Box<dyn IndexInput>>,
     field: OneField,
@@ -390,6 +418,11 @@ impl NumericValues {
         if doc_id < 0 || doc_id >= self.max_doc {
             return Err(doc_id_out_of_bounds(self.max_doc, doc_id));
         }
+        self.read(doc_id).map_err(wrap_io_exception)
+    }
+
+    /// The part of `apply` inside its `try`, after the bounds check.
+    fn read(&self, doc_id: i32) -> Result<i64> {
         let mut input = self.input.borrow_mut();
         let mut scratch = Vec::new();
         input.seek(
@@ -421,6 +454,11 @@ impl BinaryValues {
         if doc_id < 0 || doc_id >= self.max_doc {
             return Err(doc_id_out_of_bounds(self.max_doc, doc_id));
         }
+        self.read(doc_id).map_err(wrap_io_exception)
+    }
+
+    /// The part of `apply` inside its `try`, after the bounds check.
+    fn read(&self, doc_id: i32) -> Result<BytesRef> {
         let mut input = self.input.borrow_mut();
         let mut scratch = Vec::new();
         input.seek(
@@ -660,10 +698,7 @@ impl SortedDocValues for TextSortedDocValues {
 
     fn lookup_ord(&self, ord: i32) -> Result<BytesRef> {
         if ord < 0 || i64::from(ord) >= self.field.num_values {
-            return Err(LuceneError::illegal_state(format!(
-                "ord must be 0 .. {}; got {ord}",
-                self.field.num_values - 1
-            )));
+            return Err(ord_out_of_bounds(self.field.num_values, i64::from(ord)));
         }
         let mut input = self.input.borrow_mut();
         input.seek(self.field.data_start_file_pointer + i64::from(ord) * self.value_stride())?;
@@ -743,15 +778,13 @@ impl DocValuesIterator for TextSortedNumericDocValues {
 
 impl SortedNumericDocValues for TextSortedNumericDocValues {
     fn next_value(&mut self) -> Result<i64> {
-        let value = *self.values.get(self.index).ok_or_else(|| {
-            LuceneError::illegal_state(format!(
-                "Index {} out of bounds for length {}",
-                self.index,
-                self.values.len()
-            ))
-        })?;
+        // `values[index++]`: the increment happens before the access.
+        let index = self.index;
         self.index += 1;
-        Ok(value)
+        self.values
+            .get(index)
+            .copied()
+            .ok_or_else(|| array_index_out_of_bounds(index, self.values.len()))
     }
 
     fn doc_value_count(&self) -> Result<i32> {
@@ -839,16 +872,15 @@ impl DocValuesIterator for TextSortedSetDocValues {
 
 impl SortedSetDocValues for TextSortedSetDocValues {
     fn next_ord(&mut self) -> Result<i64> {
-        let ord = self.current_ords.get(self.current_index).ok_or_else(|| {
-            LuceneError::illegal_state(format!(
-                "Index {} out of bounds for length {}",
-                self.current_index,
-                self.current_ords.len()
-            ))
-        })?;
-        let value = parse_long(ord)?;
+        // `Long.parseLong(currentOrds[currentIndex++])`: the increment
+        // happens before the access and the parse.
+        let index = self.current_index;
         self.current_index += 1;
-        Ok(value)
+        let ord = self
+            .current_ords
+            .get(index)
+            .ok_or_else(|| array_index_out_of_bounds(index, self.current_ords.len()))?;
+        parse_long(ord)
     }
 
     fn doc_value_count(&self) -> Result<i32> {
@@ -857,10 +889,7 @@ impl SortedSetDocValues for TextSortedSetDocValues {
 
     fn lookup_ord(&self, ord: i64) -> Result<BytesRef> {
         if ord < 0 || ord >= self.field.num_values {
-            return Err(LuceneError::illegal_state(format!(
-                "ord must be 0 .. {}; got {ord}",
-                self.field.num_values - 1
-            )));
+            return Err(ord_out_of_bounds(self.field.num_values, ord));
         }
         let mut input = self.input.borrow_mut();
         input.seek(self.field.data_start_file_pointer + ord * self.value_stride())?;

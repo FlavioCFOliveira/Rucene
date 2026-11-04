@@ -17,6 +17,8 @@
 
 //! Port of `org.apache.lucene.codecs.simpletext.SimpleTextSkipReader`.
 
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
 use rucene::codecs::{MultiLevelSkipListReader, SkipDataReader};
 use rucene::error::Result;
 use rucene::index::{FreqAndNormBuffer, Impacts};
@@ -120,29 +122,6 @@ impl SimpleTextSkipReader {
         self.has_skip_list = false;
     }
 
-    /// Port of `SimpleTextSkipReader.getImpacts`.
-    ///
-    /// **Divergence.** Java returns the one anonymous `Impacts` the
-    /// constructor built, which reads the skip reader's `numLevels`,
-    /// `skipDoc` and `perLevelImpacts` on every call
-    /// (`SimpleTextSkipReader.java:53-71`), so a caller that keeps it across an
-    /// `advanceShallow` sees the new state. The port's
-    /// `ImpactsSource::get_impacts` returns an owned `Box<dyn Impacts>`, which
-    /// cannot borrow the enum that keeps advancing; this is a copy of that
-    /// state taken when the caller asks for it. Every caller reads the impacts
-    /// right after `advanceShallow`, before advancing again, where the two
-    /// agree (the oracle's `imp` lines compare them at every target).
-    pub(crate) fn get_impacts(&self) -> SimpleTextImpacts {
-        let num_levels = self.num_levels;
-        SimpleTextImpacts {
-            num_levels,
-            doc_id_up_to: (0..num_levels.max(0))
-                .map(|level| self.inner.skip_doc(level))
-                .collect(),
-            per_level_impacts: self.inner.skip_data_reader().per_level_impacts.clone(),
-        }
-    }
-
     /// Port of `SimpleTextSkipReader.getNextSkipDocFP`.
     pub(crate) fn get_next_skip_doc_fp(&self) -> i64 {
         self.inner.skip_data_reader().next_skip_doc_fp
@@ -163,27 +142,78 @@ impl SimpleTextSkipReader {
     }
 }
 
-/// The anonymous `Impacts` of `SimpleTextSkipReader`, at the moment
-/// [`SimpleTextSkipReader::get_impacts`] was called.
-#[derive(Debug, Clone)]
+/// A [`SimpleTextSkipReader`] shared by the enum that advances it and the
+/// [`SimpleTextImpacts`] views of it the enum hands out.
+///
+/// Java's `getImpacts` returns the one anonymous `Impacts` the constructor
+/// built, which reads the skip reader's `numLevels`, `skipDoc` and
+/// `perLevelImpacts` on every call (`SimpleTextSkipReader.java:69-85`), so a
+/// view kept across `advanceShallow` reports the state each later call leaves.
+/// In Rust the view and the enum share the reader through this handle.
+#[derive(Clone)]
+pub(crate) struct SharedSkipReader(Arc<Mutex<SimpleTextSkipReader>>);
+
+impl SharedSkipReader {
+    /// Port of `SimpleTextSkipReader(IndexInput)`.
+    pub(crate) fn new(skip_stream: Box<dyn IndexInput>) -> Self {
+        Self(Arc::new(Mutex::new(SimpleTextSkipReader::new(skip_stream))))
+    }
+
+    /// The reader. A panic of an earlier holder leaves the state Java would
+    /// see after the same exception, so a poisoned lock is entered anyway.
+    fn lock(&self) -> MutexGuard<'_, SimpleTextSkipReader> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Port of `SimpleTextSkipReader.skipTo`.
+    pub(crate) fn skip_to(&self, target: i32) -> Result<i32> {
+        self.lock().skip_to(target)
+    }
+
+    /// Port of `SimpleTextSkipReader.reset`.
+    pub(crate) fn reset(&self, skip_pointer: i64, doc_freq: i32) -> Result<()> {
+        self.lock().reset(skip_pointer, doc_freq)
+    }
+
+    /// Port of `SimpleTextSkipReader.getImpacts`: a view of this reader.
+    pub(crate) fn get_impacts(&self) -> SimpleTextImpacts {
+        SimpleTextImpacts {
+            reader: self.clone(),
+        }
+    }
+
+    /// Port of `SimpleTextSkipReader.getNextSkipDocFP`.
+    pub(crate) fn get_next_skip_doc_fp(&self) -> i64 {
+        self.lock().get_next_skip_doc_fp()
+    }
+
+    /// Port of `SimpleTextSkipReader.getNextSkipDoc`.
+    pub(crate) fn get_next_skip_doc(&self) -> i32 {
+        self.lock().get_next_skip_doc()
+    }
+}
+
+/// The anonymous `Impacts` of `SimpleTextSkipReader`: every call reads the
+/// reader's current state.
 pub(crate) struct SimpleTextImpacts {
-    num_levels: i32,
-    doc_id_up_to: Vec<i32>,
-    per_level_impacts: Vec<FreqAndNormBuffer>,
+    reader: SharedSkipReader,
 }
 
 impl Impacts for SimpleTextImpacts {
     fn num_levels(&self) -> i32 {
-        self.num_levels
+        self.reader.lock().num_levels
     }
 
     fn doc_id_up_to(&self, level: i32) -> i32 {
-        self.doc_id_up_to[level as usize]
+        self.reader.lock().inner.skip_doc(level)
     }
 
+    /// Java returns the reader's `FreqAndNormBuffer` itself; the port's
+    /// `Impacts::get_impacts` returns an owned buffer, a copy of it.
     fn get_impacts(&self, level: i32) -> FreqAndNormBuffer {
-        debug_assert!(level < self.num_levels);
-        self.per_level_impacts[level as usize].clone()
+        let reader = self.reader.lock();
+        debug_assert!(level < reader.num_levels);
+        reader.inner.skip_data_reader().per_level_impacts[level as usize].clone()
     }
 }
 

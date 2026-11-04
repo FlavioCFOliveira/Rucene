@@ -60,12 +60,24 @@ pub trait TermVectorsReader: TermVectors {
     fn check_integrity(&self) -> Result<()>;
 
     /// Creates a clone that one caller at a time may use to read term vectors.
-    fn clone_reader(&self) -> Box<dyn TermVectorsReader>;
+    ///
+    /// Equivalent to `TermVectorsReader.clone()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the unchecked exception Java's `clone()` throws, such as the
+    /// `AlreadyClosedException` of a closed reader, and the error of cloning
+    /// its inputs.
+    fn clone_reader(&self) -> Result<Box<dyn TermVectorsReader>>;
 
     /// Returns an instance optimized for merging.
     ///
     /// The default implementation returns a clone of `self`.
-    fn get_merge_instance(&self) -> Box<dyn TermVectorsReader> {
+    ///
+    /// # Errors
+    ///
+    /// As [`clone_reader`](Self::clone_reader).
+    fn get_merge_instance(&self) -> Result<Box<dyn TermVectorsReader>> {
         self.clone_reader()
     }
 
@@ -315,7 +327,7 @@ pub trait TermVectorsWriter: Send + Sync + fmt::Debug + Accountable {
                 // `TermVectorsWriter.java:203`.
                 merge_state.check_aborted()?;
                 reader.check_integrity()?;
-                readers.push(Some(reader.clone_reader()));
+                readers.push(Some(reader.clone_reader()?));
             } else {
                 readers.push(None);
             }
@@ -386,8 +398,8 @@ impl TermVectorsReader for EmptyTermVectorsReader {
         Ok(())
     }
 
-    fn clone_reader(&self) -> Box<dyn TermVectorsReader> {
-        Box::new(*self)
+    fn clone_reader(&self) -> Result<Box<dyn TermVectorsReader>> {
+        Ok(Box::new(*self))
     }
 }
 
@@ -650,7 +662,7 @@ mod tests {
         let reader = EmptyTermVectorsReader;
         reader.check_integrity().unwrap();
         assert!(reader.get(0).unwrap().is_none());
-        let _clone = reader.clone_reader();
+        let _clone = reader.clone_reader().unwrap();
     }
 
     #[test]

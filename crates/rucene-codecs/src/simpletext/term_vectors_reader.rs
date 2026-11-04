@@ -75,6 +75,23 @@ fn closed() -> LuceneError {
     LuceneError::already_closed("this TermVectorsReader is closed")
 }
 
+/// Java's `ArrayIndexOutOfBoundsException` on `offsets[index]`.
+fn array_index_out_of_bounds(index: i64, length: usize) -> LuceneError {
+    LuceneError::unchecked(
+        "java.lang.ArrayIndexOutOfBoundsException",
+        format!("Index {index} out of bounds for length {length}"),
+    )
+}
+
+/// The `NullPointerException` of `current.<method>` on an enum that is not
+/// positioned on a term (`this.current` is `null`).
+fn current_is_null(method: &str) -> LuceneError {
+    LuceneError::unchecked(
+        "java.lang.NullPointerException",
+        format!("Cannot invoke \"java.util.Map$Entry.{method}\" because \"this.current\" is null"),
+    )
+}
+
 impl SimpleTextTermVectorsReader {
     /// Opens `si`'s `.tvc` file and reads its index.
     ///
@@ -115,9 +132,7 @@ impl SimpleTextTermVectorsReader {
             read_line(&mut input, scratch)?;
             if scratch.starts_with(DOC) {
                 *offsets.get_mut(upto).ok_or_else(|| {
-                    LuceneError::illegal_state(format!(
-                        "Index {upto} out of bounds for length {max_doc}"
-                    ))
+                    array_index_out_of_bounds(upto as i64, max_doc.max(0) as usize)
                 })? = input.file_pointer();
                 upto += 1;
             }
@@ -141,12 +156,7 @@ impl TermVectors for SimpleTextTermVectorsReader {
         let offsets = self.offsets.as_ref().ok_or_else(closed)?;
         let offset = *offsets
             .get(usize::try_from(doc).unwrap_or(usize::MAX))
-            .ok_or_else(|| {
-                LuceneError::illegal_state(format!(
-                    "Index {doc} out of bounds for length {}",
-                    offsets.len()
-                ))
-            })?;
+            .ok_or_else(|| array_index_out_of_bounds(i64::from(doc), offsets.len()))?;
         let mut guard = self.state.lock().map_err(poisoned)?;
         let state = guard.as_mut().ok_or_else(closed)?;
         let input = state.input.as_mut();
@@ -291,30 +301,20 @@ impl TermVectorsReader for SimpleTextTermVectorsReader {
         Ok(())
     }
 
-    /// Port of `SimpleTextTermVectorsReader.clone`.
-    ///
-    /// **Divergence.** Java's `clone()` throws `AlreadyClosedException("this
-    /// TermVectorsReader is closed")` on a closed reader
-    /// (`SimpleTextTermVectorsReader.java:204-209`); the port's
-    /// `clone_reader` cannot fail, so the clone of a closed reader is itself
-    /// closed and reports that exception, with the same message, on its first
-    /// use.
-    fn clone_reader(&self) -> Box<dyn TermVectorsReader> {
-        let guard = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let state = guard.as_ref().map(|state| ReaderState {
-            input: state
-                .input
-                .clone_input()
-                .expect("INVARIANT: cloning an open IndexInput does not fail"),
+    /// Port of `SimpleTextTermVectorsReader.clone`: a closed reader throws
+    /// `AlreadyClosedException("this TermVectorsReader is closed")`
+    /// (`SimpleTextTermVectorsReader.java:212-218`).
+    fn clone_reader(&self) -> Result<Box<dyn TermVectorsReader>> {
+        let guard = self.state.lock().map_err(poisoned)?;
+        let state = guard.as_ref().ok_or_else(closed)?;
+        let state = ReaderState {
+            input: state.input.clone_input()?,
             scratch: Vec::new(),
-        });
-        Box::new(Self {
+        };
+        Ok(Box::new(Self {
             offsets: self.offsets.clone(),
-            state: Mutex::new(state),
-        })
+            state: Mutex::new(Some(state)),
+        }))
     }
 
     fn close(&mut self) -> Result<()> {
@@ -434,10 +434,13 @@ impl SimpleTVTermsEnum {
         }
     }
 
-    fn current(&self) -> Result<&(BytesRef, SimpleTVPostings)> {
+    /// `current`, the entry the enum is positioned on; `method` names the
+    /// `Map.Entry` accessor the caller dereferences it with, for the
+    /// `NullPointerException` an unpositioned enum throws.
+    fn current(&self, method: &str) -> Result<&(BytesRef, SimpleTVPostings)> {
         self.current
             .map(|i| &self.terms[i])
-            .ok_or_else(|| LuceneError::illegal_state("current is null".to_string()))
+            .ok_or_else(|| current_is_null(method))
     }
 }
 
@@ -484,7 +487,7 @@ impl TermsEnum for SimpleTVTermsEnum {
     }
 
     fn term(&self) -> Result<BytesRef> {
-        Ok(self.current()?.0.clone())
+        Ok(self.current("getKey()")?.0.clone())
     }
 
     fn ord(&self) -> Result<i64> {
@@ -496,7 +499,7 @@ impl TermsEnum for SimpleTVTermsEnum {
     }
 
     fn total_term_freq(&mut self) -> Result<i64> {
-        Ok(i64::from(self.current()?.1.freq))
+        Ok(i64::from(self.current("getValue()")?.1.freq))
     }
 
     fn postings(
@@ -505,7 +508,7 @@ impl TermsEnum for SimpleTVTermsEnum {
         flags: i32,
     ) -> Result<Box<dyn PostingsEnum>> {
         if feature_requested(flags, POSTINGS_ENUM_POSITIONS) {
-            let postings = &self.current()?.1;
+            let postings = &self.current("getValue()")?.1;
             if postings.positions.is_some() || postings.start_offsets.is_some() {
                 // TODO: reuse
                 let mut e = SimpleTVPostingsEnum::default();
@@ -524,7 +527,7 @@ impl TermsEnum for SimpleTVTermsEnum {
         e.reset(if !feature_requested(flags, POSTINGS_ENUM_FREQS) {
             1
         } else {
-            self.current()?.1.freq
+            self.current("getValue()")?.1.freq
         });
         Ok(Box::new(e))
     }
@@ -667,11 +670,18 @@ impl DocIdSetIterator for SimpleTVPostingsEnum {
 
 impl PostingsEnum for SimpleTVPostingsEnum {
     fn freq(&self) -> Result<i32> {
-        match (&self.positions, &self.start_offsets) {
-            (Some(positions), _) => Ok(positions.len() as i32),
-            (None, Some(start_offsets)) => Ok(start_offsets.len() as i32),
-            (None, None) => Err(LuceneError::illegal_state(
-                "positions and startOffsets are both null".to_string(),
+        if let Some(positions) = &self.positions {
+            return Ok(positions.len() as i32);
+        }
+        // `assert startOffsets != null; return startOffsets.length;`
+        // (`SimpleTextTermVectorsReader.java:503-504`); `postings` never builds
+        // this enum with both arrays `null`.
+        debug_assert!(self.start_offsets.is_some());
+        match &self.start_offsets {
+            Some(start_offsets) => Ok(start_offsets.len() as i32),
+            None => Err(LuceneError::unchecked(
+                "java.lang.NullPointerException",
+                "Cannot read the array length because \"this.startOffsets\" is null",
             )),
         }
     }

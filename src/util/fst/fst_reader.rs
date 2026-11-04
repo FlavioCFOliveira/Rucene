@@ -32,6 +32,20 @@ pub trait FSTReader: Accountable + Send + Sync {
     /// Propagates any error raised while opening the underlying storage.
     fn get_reverse_bytes_reader(&self) -> Result<Box<dyn BytesReader + '_>>;
 
+    /// Returns the reverse [`BytesReader`] for this FST, owning a share of
+    /// the store instead of borrowing it.
+    ///
+    /// Equivalent to `FSTReader.getReverseBytesReader` for a caller that
+    /// keeps the reader as long as the store itself: Java's reader holds a
+    /// reference to the store's arrays, which in Rust is a share of the
+    /// `Arc` the store lives in. It reads the same bytes as
+    /// [`get_reverse_bytes_reader`](Self::get_reverse_bytes_reader).
+    ///
+    /// # Errors
+    ///
+    /// As [`get_reverse_bytes_reader`](Self::get_reverse_bytes_reader).
+    fn get_owned_reverse_bytes_reader(self: std::sync::Arc<Self>) -> Result<Box<dyn BytesReader>>;
+
     /// Writes this FST to another [`DataOutput`].
     ///
     /// Equivalent to `FSTReader.writeTo`.

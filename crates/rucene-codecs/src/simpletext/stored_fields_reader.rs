@@ -116,7 +116,8 @@ impl SimpleTextStoredFieldsReader {
             if scratch.starts_with(DOC) {
                 *offsets
                     .get_mut(upto)
-                    .ok_or_else(|| array_index_out_of_bounds(upto, size))? = input.file_pointer();
+                    .ok_or_else(|| array_index_out_of_bounds(upto as i64, offsets_len(size)))? =
+                    input.file_pointer();
                 upto += 1;
             }
         }
@@ -172,9 +173,17 @@ fn closed() -> LuceneError {
     LuceneError::already_closed("this FieldsReader is closed")
 }
 
-/// Java's `ArrayIndexOutOfBoundsException` on `offsets[upto]`.
-fn array_index_out_of_bounds(index: usize, length: i32) -> LuceneError {
-    LuceneError::illegal_state(format!("Index {index} out of bounds for length {length}"))
+/// The length of `new long[size]`.
+fn offsets_len(size: i32) -> usize {
+    size.max(0) as usize
+}
+
+/// Java's `ArrayIndexOutOfBoundsException` on `offsets[index]`.
+fn array_index_out_of_bounds(index: i64, length: usize) -> LuceneError {
+    LuceneError::unchecked(
+        "java.lang.ArrayIndexOutOfBoundsException",
+        format!("Index {index} out of bounds for length {length}"),
+    )
 }
 
 impl StoredFieldsReader for SimpleTextStoredFieldsReader {
@@ -183,7 +192,7 @@ impl StoredFieldsReader for SimpleTextStoredFieldsReader {
         let offsets = self.offsets.as_ref().ok_or_else(closed)?;
         let offset = *offsets
             .get(usize::try_from(n).unwrap_or(usize::MAX))
-            .ok_or_else(|| array_index_out_of_bounds(n as usize, offsets.len() as i32))?;
+            .ok_or_else(|| array_index_out_of_bounds(i64::from(n), offsets.len()))?;
         let mut guard = self.state.lock().map_err(poisoned)?;
         let state = guard.as_mut().ok_or_else(closed)?;
         state.input.seek(offset)?;
@@ -194,11 +203,25 @@ impl StoredFieldsReader for SimpleTextStoredFieldsReader {
                 break;
             }
             let field_number = parse_int_at(&state.scratch, FIELD.len())?;
-            let field_info = self.field_infos.field_info_by_number(field_number).ok_or_else(|| {
-                LuceneError::illegal_state(format!(
-                    "Cannot invoke \"org.apache.lucene.index.FieldInfo\" for field number {field_number}"
-                ))
-            })?;
+            // **Divergence.** Java passes the `null` `fieldInfos.fieldInfo(n)`
+            // returns for a field number the segment does not know on to the
+            // visitor, whose first use of it throws the
+            // `NullPointerException`; a Rust visitor takes a `&FieldInfo`,
+            // which cannot be null, so the port throws it here. Java's message
+            // depends on the visitor; this is the one the visitor of
+            // `StoredFields.document(int)` raises for a string field
+            // (`DocumentStoredFieldVisitor.stringField`,
+            // `DocumentStoredFieldVisitor.java:66-68`).
+            let field_info = self
+                .field_infos
+                .field_info_by_number(field_number)
+                .ok_or_else(|| {
+                    LuceneError::unchecked(
+                        "java.lang.NullPointerException",
+                        "Cannot invoke \"org.apache.lucene.index.FieldInfo.hasTermVectors()\" \
+                         because \"fieldInfo\" is null",
+                    )
+                })?;
             read_line(state.input.as_mut(), &mut state.scratch)?;
             debug_assert!(state.scratch.starts_with(NAME));
             read_line(state.input.as_mut(), &mut state.scratch)?;
@@ -217,7 +240,10 @@ impl StoredFieldsReader for SimpleTextStoredFieldsReader {
             } else if equals_at(TYPE_DOUBLE, &state.scratch, TYPE.len()) {
                 StoredType::Double
             } else {
-                return Err(LuceneError::Other("unknown field type".to_string()));
+                return Err(LuceneError::unchecked(
+                    "java.lang.RuntimeException",
+                    "unknown field type",
+                ));
             };
 
             match visitor.needs_field(field_info)? {
@@ -238,31 +264,21 @@ impl StoredFieldsReader for SimpleTextStoredFieldsReader {
         Ok(())
     }
 
-    /// Port of `SimpleTextStoredFieldsReader.clone`.
-    ///
-    /// **Divergence.** Java's `clone()` throws `AlreadyClosedException("this
-    /// FieldsReader is closed")` on a closed reader
-    /// (`SimpleTextStoredFieldsReader.java:192-197`); the port's
-    /// `clone_reader` cannot fail, so the clone of a closed reader is itself
-    /// closed and reports that exception, with the same message, on its first
-    /// use.
-    fn clone_reader(&self) -> Box<dyn StoredFieldsReader> {
-        let guard = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let state = guard.as_ref().map(|state| ReaderState {
-            input: state
-                .input
-                .clone_input()
-                .expect("INVARIANT: cloning an open IndexInput does not fail"),
+    /// Port of `SimpleTextStoredFieldsReader.clone`: a closed reader throws
+    /// `AlreadyClosedException("this FieldsReader is closed")`
+    /// (`SimpleTextStoredFieldsReader.java:192-197`).
+    fn clone_reader(&self) -> Result<Box<dyn StoredFieldsReader>> {
+        let guard = self.state.lock().map_err(poisoned)?;
+        let state = guard.as_ref().ok_or_else(closed)?;
+        let state = ReaderState {
+            input: state.input.clone_input()?,
             scratch: Vec::new(),
-        });
-        Box::new(Self {
+        };
+        Ok(Box::new(Self {
             offsets: self.offsets.clone(),
-            state: Mutex::new(state),
+            state: Mutex::new(Some(state)),
             field_infos: self.field_infos.clone(),
-        })
+        }))
     }
 
     fn close(&mut self) -> Result<()> {

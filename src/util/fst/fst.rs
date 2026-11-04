@@ -662,7 +662,7 @@ impl<O: Outputs> FSTMetadata<O> {
 ///   cannot borrow one value both shared and mutably.
 pub struct FST<O: Outputs> {
     pub(crate) metadata: FSTMetadata<O>,
-    fst_reader: Box<dyn FSTReader>,
+    fst_reader: std::sync::Arc<dyn FSTReader>,
 }
 
 impl<O: Outputs> FST<O> {
@@ -686,7 +686,7 @@ impl<O: Outputs> FST<O> {
     pub fn from_reader(metadata: FSTMetadata<O>, fst_reader: Box<dyn FSTReader>) -> Self {
         Self {
             metadata,
-            fst_reader,
+            fst_reader: std::sync::Arc::from(fst_reader),
         }
     }
 
@@ -866,6 +866,21 @@ impl<O: Outputs> FST<O> {
     /// wraps the same failure in an unchecked `RuntimeException`.
     pub fn get_bytes_reader(&self) -> Result<Box<dyn BytesReader + '_>> {
         self.fst_reader.get_reverse_bytes_reader()
+    }
+
+    /// Returns a reader of this FST's bytes that keeps a share of the store
+    /// rather than borrowing the FST.
+    ///
+    /// Equivalent to `FST.getBytesReader` for a caller that keeps the reader
+    /// while it holds the FST through an `Arc` (an [`FSTEnum`](super::FSTEnum)
+    /// created by [`FSTEnum::new_shared`](super::FSTEnum::new_shared)); see
+    /// [`FSTReader::get_owned_reverse_bytes_reader`].
+    ///
+    /// # Errors
+    ///
+    /// As [`get_bytes_reader`](Self::get_bytes_reader).
+    pub fn get_owned_bytes_reader(&self) -> Result<Box<dyn BytesReader>> {
+        std::sync::Arc::clone(&self.fst_reader).get_owned_reverse_bytes_reader()
     }
 
     /// Reads the presence bits of a direct-addressing node.

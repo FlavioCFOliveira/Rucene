@@ -3039,10 +3039,10 @@ impl StoredFieldsReader for SlowStoredFieldsReader {
         Ok(())
     }
 
-    fn clone_reader(&self) -> Box<dyn StoredFieldsReader> {
-        Box::new(Self {
+    fn clone_reader(&self) -> Result<Box<dyn StoredFieldsReader>> {
+        Ok(Box::new(Self {
             reader: Arc::clone(&self.reader),
-        })
+        }))
     }
 
     fn prefetch(&self, doc_id: i32) -> Result<()> {
@@ -3069,10 +3069,10 @@ impl TermVectorsReader for SlowTermVectorsReader {
         Ok(())
     }
 
-    fn clone_reader(&self) -> Box<dyn TermVectorsReader> {
-        Box::new(Self {
+    fn clone_reader(&self) -> Result<Box<dyn TermVectorsReader>> {
+        Ok(Box::new(Self {
             reader: Arc::clone(&self.reader),
-        })
+        }))
     }
 
     fn close(&mut self) -> Result<()> {

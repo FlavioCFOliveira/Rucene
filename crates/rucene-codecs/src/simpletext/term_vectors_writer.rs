@@ -230,12 +230,15 @@ impl TermVectorsWriter for SimpleTextTermVectorsWriter {
                 || "null".to_string(),
                 |o| o.resource_description().to_string(),
             );
-            return Err(LuceneError::Other(format!(
-                "mergeVectors produced an invalid result: mergedDocs is {num_docs} but vec \
+            return Err(LuceneError::unchecked(
+                "java.lang.RuntimeException",
+                format!(
+                    "mergeVectors produced an invalid result: mergedDocs is {num_docs} but vec \
                  numDocs is {} file={description}; now aborting this merge to prevent index \
                  corruption",
-                self.num_docs_written
-            )));
+                    self.num_docs_written
+                ),
+            ));
         }
         self.write_bytes(END)?;
         self.new_line()?;
