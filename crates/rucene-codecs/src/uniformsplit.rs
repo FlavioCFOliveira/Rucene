@@ -92,7 +92,7 @@ pub use term_bytes::TermBytes;
 pub use uniform_split_postings_format::UniformSplitPostingsFormat;
 pub use uniform_split_terms::UniformSplitTerms;
 pub use uniform_split_terms_reader::UniformSplitTermsReader;
-pub use uniform_split_terms_writer::UniformSplitTermsWriter;
+pub use uniform_split_terms_writer::{TermsWriterOverrides, UniformSplitTermsWriter};
 
 use rucene::error::LuceneError;
 use rucene::store::DataOutput;

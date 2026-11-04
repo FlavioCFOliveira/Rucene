@@ -46,8 +46,20 @@ use rucene::util::{AttributeSource, BytesRef};
 // Fixtures
 // ---------------------------------------------------------------------------
 
+/// The fixture `name` of the crate that includes this module, or, when it has
+/// none of that name, `rucene-codecs`' (the formats `lucene-test-framework`
+/// ports from `lucene-codecs`' oracles, such as the blockterms assemblies,
+/// read the fixtures `PostingsFormatOracle` wrote for `rucene-codecs`).
 pub fn fixture(name: &str) -> String {
-    let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
+    let own = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
+    let path = if Path::new(&own).exists() {
+        own
+    } else {
+        format!(
+            "{}/../rucene-codecs/tests/fixtures/{name}",
+            env!("CARGO_MANIFEST_DIR")
+        )
+    };
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"))
 }
 
@@ -433,6 +445,136 @@ pub fn write_corpus(path: &Path, compound: bool, codec: Arc<dyn Codec>) {
     ])
     .unwrap();
     w.force_merge_deletes().unwrap();
+    w.commit().unwrap();
+    w.close().unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// Bloom filter files (`.blm`)
+// ---------------------------------------------------------------------------
+
+/// A `.blm` file cut into its header and delegate name, its filters
+/// (`FieldNumber, FuzzySet`, each with its field number) and its footer.
+pub struct Blm {
+    pub head: Vec<u8>,
+    pub filters: Vec<(i32, Vec<u8>)>,
+    pub footer: Vec<u8>,
+}
+
+pub fn parse_blm(bytes: &[u8]) -> Blm {
+    let header_end = id_offset(bytes) + 16;
+    let header_end = header_end + 1 + bytes[header_end] as usize;
+    let mut input = rucene::store::ByteArrayDataInput::new(&bytes[header_end..]);
+    rucene::store::DataInput::read_string(&mut input).unwrap();
+    let num = rucene::store::DataInput::read_int(&mut input).unwrap();
+    let head = bytes[..header_end + input.position()].to_vec();
+    let mut filters = Vec::new();
+    for _ in 0..num {
+        let start = header_end + input.position();
+        let field = rucene::store::DataInput::read_int(&mut input).unwrap();
+        rucene_codecs::bloom::FuzzySet::deserialize(&mut input).unwrap();
+        filters.push((field, bytes[start..header_end + input.position()].to_vec()));
+    }
+    let end = header_end + input.position();
+    assert_eq!(bytes.len() - end, 16, "the footer follows the filters");
+    Blm {
+        head,
+        filters,
+        footer: bytes[end..].to_vec(),
+    }
+}
+
+/// Lucene's `.blm` with its filters in the order of Rucene's: Lucene writes
+/// them in `HashMap<FieldInfo, FuzzySet>` order, which follows identity
+/// hash codes (the `nocfs` and `cfs` fixtures hold segment `_5`'s three
+/// filters in two orders). Every filter of one side must be byte for byte a
+/// filter of the other; the footer's CRC-32 is recomputed.
+pub fn blm_in_rucenes_order(name: &str, java: Vec<u8>, rust: &[u8]) -> Vec<u8> {
+    if !name.ends_with(".blm") {
+        return java;
+    }
+    let java_blm = parse_blm(&java);
+    let rust_blm = parse_blm(rust);
+    let mut reordered = java_blm.head.clone();
+    assert_eq!(
+        java_blm.filters.len(),
+        rust_blm.filters.len(),
+        "{name}: filter count"
+    );
+    for (field, _) in &rust_blm.filters {
+        let (_, filter) = java_blm
+            .filters
+            .iter()
+            .find(|(f, _)| f == field)
+            .unwrap_or_else(|| panic!("{name}: Lucene wrote no filter for field {field}"));
+        reordered.extend_from_slice(filter);
+    }
+    reordered.extend_from_slice(&java_blm.footer);
+    with_fixed_footer(reordered)
+}
+
+// ---------------------------------------------------------------------------
+// The `shared` case: terms in several fields (`PostingsFormatOracle.writeShared`)
+// ---------------------------------------------------------------------------
+
+/// `PostingsFormatOracle.sharedType(IndexOptions)`.
+pub fn shared_type(options: IndexOptions) -> FieldType {
+    field_type(|t| {
+        t.set_tokenized(false).unwrap();
+        t.set_omit_norms(true).unwrap();
+        t.set_index_options(options).unwrap();
+    })
+}
+
+/// `PostingsFormatOracle.writeShared(Directory, Codec)`.
+pub fn write_shared(path: &Path, codec: Arc<dyn Codec>) {
+    let mut config = new_config(codec);
+    let policy = TieredMergePolicy::new();
+    policy.set_no_cfs_ratio(0.0).unwrap();
+    config.set_merge_policy(Arc::new(policy)).unwrap();
+    config.set_use_compound_file(false).unwrap();
+    let docs = shared_type(IndexOptions::DOCS);
+    let freqs = shared_type(IndexOptions::DOCS_AND_FREQS);
+    let positions = shared_type(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS);
+    let offsets = shared_type(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS);
+    let w = IndexWriter::new(open_dir(path), config).unwrap();
+    for batch in 0..3 {
+        for i in batch * 100..batch * 100 + 100 {
+            let mut d = Document::new();
+            d.add(Box::new(
+                StringField::new("s_id", format!("{i:04}"), Store::NO).unwrap(),
+            ));
+            d.add(Box::new(
+                Field::new("sa", format!("t{}", i % 37), docs.clone()).unwrap(),
+            ));
+            d.add(Box::new(
+                Field::new("sb", format!("t{}", i % 23), positions.clone()).unwrap(),
+            ));
+            d.add(Box::new(
+                Field::new("sc", format!("t{}", i % 11), offsets.clone()).unwrap(),
+            ));
+            d.add(Box::new(
+                Field::new("sc", format!("u{}", i % 53), offsets.clone()).unwrap(),
+            ));
+            d.add(Box::new(
+                Field::new("sd", format!("t{}", i % 37), freqs.clone()).unwrap(),
+            ));
+            if i % 3 == 0 {
+                d.add(Box::new(
+                    Field::new("se", format!("t{}", i % 7), docs.clone()).unwrap(),
+                ));
+            }
+            w.add_document(&d).unwrap();
+        }
+        w.commit().unwrap();
+        if batch == 1 {
+            for i in (0..200).step_by(9) {
+                w.delete_documents_by_terms(vec![term("s_id", &format!("{i:04}"))])
+                    .unwrap();
+            }
+        }
+    }
+    w.force_merge(1).unwrap();
     w.commit().unwrap();
     w.close().unwrap();
 }
@@ -1875,16 +2017,19 @@ pub fn enum_trace_with(path: &Path, known_panic: Option<&str>, panics: &mut usiz
                 sb.push_str(&first?.to_string());
                 for ord in [0, size / 3, size / 2, size - 1] {
                     te.seek_ord(ord)?;
-                    sb.push_str(&format!(
-                        " {ord}={}/{}/{}",
-                        hex(te.term()?.slice()),
-                        te.doc_freq()?,
-                        te.total_term_freq()?
-                    ));
+                    // Appended piece by piece, as Java's `StringBuilder`
+                    // chain leaves what precedes a call that throws.
+                    sb.push_str(&format!(" {ord}="));
+                    sb.push_str(&hex(te.term()?.slice()));
+                    sb.push('/');
+                    sb.push_str(&te.doc_freq()?.to_string());
+                    sb.push('/');
+                    sb.push_str(&te.total_term_freq()?.to_string());
                     let next = te.next()?;
                     sb.push_str(&format!(" next={}", hex_or_null(next.as_ref())));
                     if next.is_some() {
-                        sb.push_str(&format!("@{}", te.ord()?));
+                        sb.push('@');
+                        sb.push_str(&te.ord()?.to_string());
                     }
                 }
                 Ok(())
@@ -1909,25 +2054,26 @@ pub fn enum_trace_with(path: &Path, known_panic: Option<&str>, panics: &mut usiz
             let mut sb = "  state".to_string();
             let mut fresh = terms.iterator().unwrap();
             for k in (0..kept.len()).rev() {
-                let step = (|| -> Result<String> {
+                // Appended piece by piece, as Java's `StringBuilder` chain
+                // leaves what precedes a call that throws.
+                let step = (|sb: &mut String| -> Result<()> {
                     fresh.seek_term_state(&kept[k], states[k].as_ref())?;
-                    let mut s = format!(
-                        " {}/{}/{}/{}",
-                        hex(fresh.term()?.slice()),
-                        fresh.doc_freq()?,
-                        fresh.total_term_freq()?,
-                        first_doc(fresh.as_mut())?
-                    );
+                    sb.push(' ');
+                    sb.push_str(&hex(fresh.term()?.slice()));
+                    sb.push('/');
+                    sb.push_str(&fresh.doc_freq()?.to_string());
+                    sb.push('/');
+                    sb.push_str(&fresh.total_term_freq()?.to_string());
+                    sb.push('/');
+                    sb.push_str(&first_doc(fresh.as_mut())?.to_string());
+                    sb.push_str(" next=");
                     let next = fresh.next()?;
-                    s.push_str(&format!(" next={}", hex_or_null(next.as_ref())));
-                    Ok(s)
-                })();
-                match step {
-                    Ok(s) => sb.push_str(&s),
-                    Err(e) => {
-                        sb.push(' ');
-                        sb.push_str(&error_name(&e));
-                    }
+                    sb.push_str(&hex_or_null(next.as_ref()));
+                    Ok(())
+                })(&mut sb);
+                if let Err(e) = step {
+                    sb.push(' ');
+                    sb.push_str(&error_name(&e));
                 }
             }
             out.push(sb);
@@ -1953,13 +2099,17 @@ pub fn enum_trace_with(path: &Path, known_panic: Option<&str>, panics: &mut usiz
                     let mut list = || -> Result<()> {
                         let mut ie = terms.intersect(&compiled, start)?;
                         while let Some(t) = ie.next()? {
-                            listed_terms.push_str(&format!(
-                                " {}/{}/{}/{}",
-                                hex(t.slice()),
-                                ie.doc_freq()?,
-                                ie.total_term_freq()?,
-                                first_doc(ie.as_mut())?
-                            ));
+                            // Appended piece by piece, as Java's
+                            // `StringBuilder` chain leaves what precedes a
+                            // call that throws.
+                            listed_terms.push(' ');
+                            listed_terms.push_str(&hex(t.slice()));
+                            listed_terms.push('/');
+                            listed_terms.push_str(&ie.doc_freq()?.to_string());
+                            listed_terms.push('/');
+                            listed_terms.push_str(&ie.total_term_freq()?.to_string());
+                            listed_terms.push('/');
+                            listed_terms.push_str(&first_doc(ie.as_mut())?.to_string());
                         }
                         Ok(())
                     };

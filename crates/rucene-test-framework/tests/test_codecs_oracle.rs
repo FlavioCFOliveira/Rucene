@@ -1,6 +1,7 @@
 //! Oracle parity of the test codecs of `org.apache.lucene.tests.codecs`
 //! (rmp #340: `asserting`, `cheapbastard`, `compressing`, `vector`; rmp #341:
-//! `cranky`) against Apache Lucene 10.5.0.
+//! `cranky`, `blockterms`, `bloom`, `mockrandom`, `ramonly`, `uniformsplit` and
+//! the service files) against Apache Lucene 10.5.0.
 //!
 //! The Java oracle (`org.apache.lucene.tests.codecs.TestCodecsOracle`, in the
 //! workspace harness `crates/randomizedtesting/tests/fixtures/oracle/`)
@@ -21,6 +22,13 @@
 //! * `testcodecs_cranky_seeds.tsv`: per seed 1..=40, the draw at which a
 //!   `CrankyCodec` over `new Random(seed)` first fails while writing the
 //!   corpus, and the root cause's class and message.
+//! * rmp #341: `tc_<format>_{files,reads,enum,errors,spi}.tsv` (the generic
+//!   `PostingsFormatOracle` fixtures, through `FormatOracle`) for
+//!   `TestBloomFilteredLucenePostings`, the two Rot13 `UniformSplit` formats
+//!   and `MockRandomPostingsFormat` over seeds 1 to 3, and `rucene-codecs`'
+//!   fixtures for the blockterms formats; `testcodecs_ramonly_*.tsv` for
+//!   `RAMOnlyPostingsFormat`; `testcodecs_rot13_flags.tsv`; and
+//!   `testcodecs_spi.tsv`, the entries of the crate's service files.
 
 #[path = "../../rucene-codecs/tests/oracle/mod.rs"]
 mod oracle;
@@ -28,13 +36,13 @@ mod oracle;
 use std::collections::BTreeMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
-use std::sync::{Arc, LazyLock, Mutex, Once};
+use std::sync::{Arc, Mutex, Once};
 
 use oracle::*;
 use randomizedtesting::jdk::exception::{panic_message, QuietPanics};
 use randomizedtesting::jdk::random::{JdkRandom, Random, RandomFields};
 use rucene::codecs::lucene104::Lucene104Codec;
-use rucene::codecs::{Codec, DocValuesFormat, KnnVectorsFormat, PostingsFormat};
+use rucene::codecs::Codec;
 use rucene::document::IntPoint;
 use rucene::error::{LuceneError, Result};
 use rucene::index::index_writer::IndexWriter;
@@ -43,14 +51,11 @@ use rucene::index::{
     LeafReader, SegmentInfo, POSTINGS_ENUM_ALL, POSTINGS_ENUM_FREQS, POSTINGS_ENUM_NONE,
     POSTINGS_ENUM_OFFSETS, POSTINGS_ENUM_POSITIONS,
 };
-use rucene::search::NO_MORE_DOCS;
+use rucene::search::{Sort, SortField, SortFieldType, NO_MORE_DOCS};
 use rucene::store::java_nio_file::{java_class_of, java_message_of};
 use rucene::store::{Directory, IOContext};
-use rucene::util::resource_loader::{ClassLoader, ServiceProvider};
-use rucene::util::spi::NamedSPIProvider;
-use rucene_test_framework::codecs::asserting::{
-    AssertingCodec, AssertingDocValuesFormat, AssertingKnnVectorsFormat, AssertingPostingsFormat,
-};
+use rucene::util::resource_loader::ClassLoader;
+use rucene_test_framework::codecs::asserting::AssertingCodec;
 use rucene_test_framework::codecs::cheapbastard::CheapBastardCodec;
 use rucene_test_framework::codecs::compressing::dummy::DummyCompressingCodec;
 use rucene_test_framework::codecs::compressing::{
@@ -60,86 +65,12 @@ use rucene_test_framework::codecs::compressing::{
 use rucene_test_framework::codecs::cranky::CrankyCodec;
 use rucene_test_framework::codecs::vector::ConfigurableMCodec;
 
-/// The "class path" of the tests: `lucene-codecs` and the asserting
-/// providers Lucene's test-framework jar lists in its service files (the
-/// crate's own service files are task #341's), so that the indexes written
-/// with `AssertingCodec` can be read back by name.
+/// The "class path" of the tests: `lucene-codecs` and the crate's own
+/// service files (`rucene_test_framework::class_loader()`), so that the
+/// indexes written with the test codecs and formats can be read back by
+/// name.
 fn test_class_loader() -> &'static Arc<ClassLoader> {
-    static LOADER: LazyLock<Arc<ClassLoader>> = LazyLock::new(|| {
-        ClassLoader::with_services(
-            "rucene-test-framework-tests",
-            Some(Arc::clone(rucene_codecs::class_loader())),
-            vec![
-                ServiceProvider::new(
-                    "org.apache.lucene.codecs.Codec",
-                    "org.apache.lucene.tests.codecs.asserting.AssertingCodec",
-                    NamedSPIProvider::new(|| Arc::new(AssertingCodec::new()) as Arc<dyn Codec>),
-                ),
-                ServiceProvider::new(
-                    "org.apache.lucene.codecs.Codec",
-                    "org.apache.lucene.tests.codecs.cheapbastard.CheapBastardCodec",
-                    NamedSPIProvider::new(|| codec("CheapBastard")),
-                ),
-                ServiceProvider::new(
-                    "org.apache.lucene.codecs.Codec",
-                    "org.apache.lucene.tests.codecs.compressing.DeflateWithPresetCompressingCodec",
-                    NamedSPIProvider::new(|| codec("DeflateWithPresetCompressing")),
-                ),
-                ServiceProvider::new(
-                    "org.apache.lucene.codecs.Codec",
-                    "org.apache.lucene.tests.codecs.compressing.FastCompressingCodec",
-                    NamedSPIProvider::new(|| codec("FastCompressing")),
-                ),
-                ServiceProvider::new(
-                    "org.apache.lucene.codecs.Codec",
-                    "org.apache.lucene.tests.codecs.compressing.FastDecompressionCompressingCodec",
-                    NamedSPIProvider::new(|| codec("FastDecompressionCompressing")),
-                ),
-                ServiceProvider::new(
-                    "org.apache.lucene.codecs.Codec",
-                    "org.apache.lucene.tests.codecs.compressing.HighCompressionCompressingCodec",
-                    NamedSPIProvider::new(|| codec("HighCompressionCompressing")),
-                ),
-                ServiceProvider::new(
-                    "org.apache.lucene.codecs.Codec",
-                    "org.apache.lucene.tests.codecs.compressing.LZ4WithPresetCompressingCodec",
-                    NamedSPIProvider::new(|| codec("LZ4WithPresetCompressing")),
-                ),
-                ServiceProvider::new(
-                    "org.apache.lucene.codecs.Codec",
-                    "org.apache.lucene.tests.codecs.compressing.dummy.DummyCompressingCodec",
-                    NamedSPIProvider::new(|| codec("DummyCompressing")),
-                ),
-                ServiceProvider::new(
-                    "org.apache.lucene.codecs.Codec",
-                    "org.apache.lucene.tests.codecs.vector.ConfigurableMCodec",
-                    NamedSPIProvider::new(|| codec("ConfigurableM")),
-                ),
-                ServiceProvider::new(
-                    "org.apache.lucene.codecs.DocValuesFormat",
-                    "org.apache.lucene.tests.codecs.asserting.AssertingDocValuesFormat",
-                    NamedSPIProvider::new(|| {
-                        Arc::new(AssertingDocValuesFormat::new()) as Arc<dyn DocValuesFormat>
-                    }),
-                ),
-                ServiceProvider::new(
-                    "org.apache.lucene.codecs.KnnVectorsFormat",
-                    "org.apache.lucene.tests.codecs.asserting.AssertingKnnVectorsFormat",
-                    NamedSPIProvider::new(|| {
-                        Arc::new(AssertingKnnVectorsFormat::new()) as Arc<dyn KnnVectorsFormat>
-                    }),
-                ),
-                ServiceProvider::new(
-                    "org.apache.lucene.codecs.PostingsFormat",
-                    "org.apache.lucene.tests.codecs.asserting.AssertingPostingsFormat",
-                    NamedSPIProvider::new(|| {
-                        Arc::new(AssertingPostingsFormat::new()) as Arc<dyn PostingsFormat>
-                    }),
-                ),
-            ],
-        )
-    });
-    &LOADER
+    rucene_test_framework::class_loader()
 }
 
 const PREFIX: &str = "testcodecs";
@@ -1071,4 +1002,867 @@ fn asserting_live_docs_format_hands_out_live_docs() {
         Ok(())
     });
     assert_eq!(vec![class, message], expected[1..].to_vec());
+}
+
+// ---------------------------------------------------------------------------
+// rmp #341: the postings formats of `blockterms`, `bloom`, `mockrandom`,
+// `ramonly` and `uniformsplit`, and the crate's service files
+// ---------------------------------------------------------------------------
+
+use rucene_test_framework::codecs::blockterms::{
+    LuceneFixedGap, LuceneVarGapDocFreqInterval, LuceneVarGapFixedInterval,
+};
+use rucene_test_framework::codecs::bloom::TestBloomFilteredLucenePostings;
+use rucene_test_framework::codecs::mockrandom::MockRandomPostingsFormat;
+use rucene_test_framework::codecs::ramonly::RAMOnlyPostingsFormat;
+use rucene_test_framework::codecs::uniformsplit::sharedterms::STUniformSplitRot13PostingsFormat;
+use rucene_test_framework::codecs::uniformsplit::uniform_split_rot13_postings_format as rot13;
+use rucene_test_framework::codecs::uniformsplit::UniformSplitRot13PostingsFormat;
+
+fn fixed_gap_codec() -> Arc<dyn Codec> {
+    per_field_postings_codec(Arc::new(LuceneFixedGap::new()))
+}
+fn var_gap_fixed_codec() -> Arc<dyn Codec> {
+    per_field_postings_codec(Arc::new(LuceneVarGapFixedInterval::new()))
+}
+fn var_gap_doc_freq_codec() -> Arc<dyn Codec> {
+    per_field_postings_codec(Arc::new(LuceneVarGapDocFreqInterval::new()))
+}
+fn test_bloom_codec() -> Arc<dyn Codec> {
+    per_field_postings_codec(Arc::new(TestBloomFilteredLucenePostings::new()))
+}
+fn rot13_codec() -> Arc<dyn Codec> {
+    per_field_postings_codec(Arc::new(UniformSplitRot13PostingsFormat::new()))
+}
+fn st_rot13_codec() -> Arc<dyn Codec> {
+    per_field_postings_codec(Arc::new(STUniformSplitRot13PostingsFormat::new()))
+}
+/// `new MockRandomPostingsFormat(new Random(SEED))`, a new one per corpus, as
+/// `TestCodecsOracle` makes it.
+fn mock_random_codec<const SEED: i64>() -> Arc<dyn Codec> {
+    per_field_postings_codec(Arc::new(MockRandomPostingsFormat::with_random(
+        &JdkRandom::new(SEED),
+    )))
+}
+
+/// `TEST_FRAMEWORK_JARS` and Hamcrest 2.2, which `LuceneTestCase` needs:
+/// `MockRandomPostingsFormat` reads `LuceneTestCase.VERBOSE`.
+const TEST_FRAMEWORK_RUNTIME_JARS: &[&str] = &[
+    "org/apache/lucene/lucene-test-framework/10.5.0/lucene-test-framework-10.5.0.jar",
+    "com/carrotsearch/randomizedtesting/randomizedtesting-runner/2.8.1/randomizedtesting-runner-2.8.1.jar",
+    "junit/junit/4.13.1/junit-4.13.1.jar",
+    "org/hamcrest/hamcrest/2.2/hamcrest-2.2.jar",
+];
+
+const fn postings_oracle(
+    prefix: &'static str,
+    format_name: &'static str,
+    extensions: &'static [&'static str],
+    codec: fn() -> Arc<dyn Codec>,
+) -> FormatOracle {
+    FormatOracle {
+        prefix,
+        format_name,
+        extensions,
+        codec,
+        extra_jars: TEST_FRAMEWORK_RUNTIME_JARS,
+        // Every format keeps its postings in `Lucene104PostingsWriter`'s files.
+        live_impacts_differ: true,
+    }
+}
+
+/// The formats and their oracles: `TestCodecsOracle`'s `tc_*` fixtures, and
+/// `lucene-codecs`' fixtures of the blockterms assemblies (written by
+/// `PostingsFormatOracle` with these classes, found by name).
+const POSTINGS_ORACLES: [FormatOracle; 9] = [
+    postings_oracle(
+        "fixedgap",
+        "LuceneFixedGap",
+        &["tib", "tii"],
+        fixed_gap_codec,
+    ),
+    postings_oracle(
+        "vargap_fixed",
+        "LuceneVarGapFixedInterval",
+        &["tib", "tiv", "tmv"],
+        var_gap_fixed_codec,
+    ),
+    postings_oracle(
+        "vargap_docfreq",
+        "LuceneVarGapDocFreqInterval",
+        &["tib", "tiv", "tmv"],
+        var_gap_doc_freq_codec,
+    ),
+    postings_oracle(
+        "tc_bloom",
+        "TestBloomFilteredLucenePostings",
+        &["blm"],
+        test_bloom_codec,
+    ),
+    postings_oracle(
+        "tc_rot13",
+        "UniformSplitRot13",
+        &["ustb", "ustd"],
+        rot13_codec,
+    ),
+    postings_oracle(
+        "tc_strot13",
+        "STUniformSplitRot13",
+        &["stustb", "stustd"],
+        st_rot13_codec,
+    ),
+    postings_oracle(
+        "tc_mockrandom_s1",
+        "MockRandom",
+        &["sd"],
+        mock_random_codec::<1>,
+    ),
+    postings_oracle(
+        "tc_mockrandom_s2",
+        "MockRandom",
+        &["sd"],
+        mock_random_codec::<2>,
+    ),
+    postings_oracle(
+        "tc_mockrandom_s3",
+        "MockRandom",
+        &["sd"],
+        mock_random_codec::<3>,
+    ),
+];
+
+/// The two Rot13 formats, which also write the `shared` case.
+const ROT13_ORACLES: [usize; 2] = [4, 5];
+
+/// Every format writes Lucene's bytes for the `nocfs`, `cfs` and `edge`
+/// corpus: for `MockRandom` the seed file and the files of every terms
+/// dictionary its seeds pick; for the Rot13 formats the encoded blocks,
+/// fields metadata and dictionary.
+#[test]
+fn postings_formats_write_lucenes_bytes() {
+    register_codecs();
+    for oracle in &POSTINGS_ORACLES {
+        // Lucene writes a `.blm`'s filters in `HashMap<FieldInfo, ?>` order
+        // (identity hash codes); Rucene in field order (`rucene-codecs`'
+        // declared divergence): the filters are compared in Rucene's order.
+        let compared = oracle.assert_writes_lucenes_bytes_with(blm_in_rucenes_order);
+        assert!(compared > 0, "{}: {compared} files compared", oracle.prefix);
+    }
+}
+
+/// `MockRandom`'s seeds pick every terms dictionary Lucene's do: the format
+/// files of the three seeds hold each branch's extensions.
+#[test]
+fn mock_random_seeds_pick_every_terms_dictionary() {
+    let mut extensions = std::collections::BTreeSet::new();
+    for oracle in &POSTINGS_ORACLES[6..] {
+        for case in ["nocfs", "cfs", "edge"] {
+            for name in java_files(oracle.prefix, case).keys() {
+                if name.contains("_MockRandom_") {
+                    extensions.insert(name.rsplit('.').next().unwrap().to_string());
+                }
+            }
+        }
+    }
+    // FSTTermsWriter (tfp), Lucene103BlockTreeTermsWriter (tim/tip/tmd),
+    // BlockTermsWriter with a fixed-gap (tii) and a variable-gap (tiv/tmv)
+    // index (tib), OrdsBlockTreeTermsWriter (tio/tipo), and the seed (sd).
+    for ext in [
+        "sd", "tfp", "tim", "tip", "tmd", "tib", "tii", "tiv", "tmv", "tio", "tipo",
+    ] {
+        assert!(extensions.contains(ext), "{ext} in {extensions:?}");
+    }
+}
+
+#[test]
+fn postings_formats_read_what_lucene_reads() {
+    register_codecs();
+    for oracle in &POSTINGS_ORACLES {
+        oracle.assert_reads_what_lucene_reads();
+    }
+}
+
+/// `actual` is `expected` but for `  state` lines (the term-state replay of
+/// `PostingsFormatOracle.enumTrace`), which may differ; returns how many do.
+fn assert_same_lines_but_state(what: &str, actual: &[String], expected: &[String]) -> usize {
+    assert_eq!(actual.len(), expected.len(), "{what}: line count");
+    let mut differ = 0;
+    for (i, (a, e)) in actual.iter().zip(expected).enumerate() {
+        if a != e {
+            assert!(
+                a.starts_with("  state") && e.starts_with("  state"),
+                "{what}: line {i} differs\n  left: {a}\n right: {e}"
+            );
+            eprintln!("{what}: line {i} (state) differs\n  left: {a}\n right: {e}");
+            differ += 1;
+        }
+    }
+    differ
+}
+
+/// Core defect 5 of `rucene-codecs`' bloom oracle, outside this crate: the
+/// intersection of `Lucene103`'s terms dictionary (the bloom format's
+/// delegate, and the `MockRandom` segments whose seed picks the block tree)
+/// checks Java's `assert state != -1` with `debug_assert!`, a panic where
+/// Lucene under `-ea` throws the `AssertionError` its trace lists. The trace
+/// lists the panic as that error, and requires it on both sides.
+const LUCENE103_INTERSECT_PANIC: &str = "assertion failed: state != -1";
+
+#[test]
+fn postings_formats_enum_trace_matches_lucenes() {
+    register_codecs();
+    // Per side (Lucene's files, Rucene's), the core panics met.
+    let mut panics = [0usize; 2];
+    let mut state_next_differs = 0;
+    for oracle in &POSTINGS_ORACLES {
+        for case in ["nocfs", "cfs", "edge"] {
+            let expected: Vec<String> = rows(&format!("{}_enum.tsv", oracle.prefix))
+                .into_iter()
+                .filter(|r| r[0] == case)
+                .map(|r| r[1].clone())
+                .collect();
+            let java_dir = TempDir::new(&format!("{}-enum-java-{case}", oracle.prefix));
+            write_files(&java_dir.0, &java_files(oracle.prefix, case));
+            let rust_dir = TempDir::new(&format!("{}-enum-rust-{case}", oracle.prefix));
+            oracle.write_case(case, &rust_dir.0);
+            for (i, (side, dir)) in [("Lucene's", &java_dir.0), ("Rucene's", &rust_dir.0)]
+                .into_iter()
+                .enumerate()
+            {
+                let known = cfg!(debug_assertions).then_some(LUCENE103_INTERSECT_PANIC);
+                let trace = enum_trace_with(dir, known, &mut panics[i]);
+                let what = format!("{}: {case}: enum trace of {side} files", oracle.prefix);
+                if oracle.prefix.starts_with("tc_mockrandom") {
+                    state_next_differs += assert_same_lines_but_state(&what, &trace, &expected);
+                } else {
+                    assert_same_lines(&what, &trace, &expected);
+                }
+            }
+        }
+    }
+    assert!(
+        state_next_differs > 0,
+        "no `state` line differs: the core is fixed, remove the exclusion"
+    );
+    if cfg!(debug_assertions) {
+        assert!(
+            panics.iter().all(|&p| p > 0),
+            "no `{LUCENE103_INTERSECT_PANIC}` panic on one side ({panics:?}): the core is \
+             fixed, remove the exclusion"
+        );
+    }
+}
+
+#[test]
+fn lucene_reads_what_postings_formats_write() {
+    register_codecs();
+    for oracle in &POSTINGS_ORACLES {
+        oracle.assert_lucene_reads_what_rucene_writes();
+    }
+}
+
+#[test]
+fn postings_formats_corrupted_files_raise_lucenes_errors() {
+    register_codecs();
+    let stripped: Vec<(&str, Vec<String>)> = POSTINGS_ORACLES
+        .iter()
+        .map(|o| (o.prefix, o.assert_corrupted_files_raise_lucenes_errors()))
+        .filter(|(_, s)| !s.is_empty())
+        .collect();
+    // The variable-gap readers check `.tmv`'s footer with the prior error of
+    // its corrupted header: core defect 2 of `oracle::PRIOR_ERROR_SUFFIX`,
+    // as in `rucene-codecs`' blockterms oracle.
+    assert_eq!(
+        stripped,
+        [
+            ("vargap_fixed", vec!["tmv-id".to_string()]),
+            ("vargap_docfreq", vec!["tmv-id".to_string()])
+        ]
+    );
+}
+
+/// The `shared` case of the Rot13 formats (terms in several fields, every
+/// index option, a merge).
+#[test]
+fn rot13_shared_case_matches_lucene() {
+    register_codecs();
+    for i in ROT13_ORACLES {
+        let f = &POSTINGS_ORACLES[i];
+        let write = |path: &Path| write_shared(path, (f.codec)());
+        assert!(
+            f.assert_case_writes_lucenes_bytes("shared", write, |_, java, _| java) > 0,
+            "{}",
+            f.prefix
+        );
+        f.assert_case_reads_what_lucene_reads("shared", write);
+        f.assert_case_enum_trace_matches("shared", write);
+        f.assert_case_lucene_reads_what_rucene_writes("shared", write);
+    }
+}
+
+/// Each format resolves by its name and prints Lucene's `toString()`.
+#[test]
+fn postings_formats_resolve_by_name() {
+    register_codecs();
+    let concrete: [(&str, String); 7] = [
+        ("fixedgap", LuceneFixedGap::new().to_string()),
+        ("vargap_fixed", LuceneVarGapFixedInterval::new().to_string()),
+        (
+            "vargap_docfreq",
+            LuceneVarGapDocFreqInterval::new().to_string(),
+        ),
+        (
+            "tc_bloom",
+            TestBloomFilteredLucenePostings::new().to_string(),
+        ),
+        (
+            "tc_rot13",
+            UniformSplitRot13PostingsFormat::new().to_string(),
+        ),
+        (
+            "tc_strot13",
+            STUniformSplitRot13PostingsFormat::new().to_string(),
+        ),
+        (
+            "tc_mockrandom_s1",
+            MockRandomPostingsFormat::new().to_string(),
+        ),
+    ];
+    for (prefix, to_string) in concrete {
+        let oracle = POSTINGS_ORACLES
+            .iter()
+            .find(|o| o.prefix == prefix)
+            .unwrap();
+        let spi = oracle.spi();
+        let found = rucene::codecs::postings_for_name(&spi["getName"])
+            .unwrap_or_else(|| panic!("{} resolves", spi["getName"]));
+        assert_eq!(found.name(), spi["getName"], "{prefix}");
+        assert_eq!(to_string, spi["toString"], "{prefix}");
+        assert_eq!(to_string, spi["forName.toString"], "{prefix}");
+    }
+}
+
+/// Every entry of `lucene-test-framework`'s four service files is a provider
+/// of the crate's class loader, in Lucene's order, and its name resolves to a
+/// provider of the same name (and, for codecs, Lucene's `toString()`).
+#[test]
+fn test_framework_services_resolve() {
+    register_codecs();
+    let rows = rows("testcodecs_spi.tsv");
+    assert_eq!(rows.len(), 20);
+    let loader = rucene_test_framework::class_loader();
+    let services = [
+        "Codec",
+        "DocValuesFormat",
+        "KnnVectorsFormat",
+        "PostingsFormat",
+    ];
+    let mut own: Vec<(String, String)> = Vec::new();
+    for service in services {
+        let name = format!("org.apache.lucene.codecs.{service}");
+        let all = loader.get_resources(&name);
+        let parent = rucene_codecs::class_loader().get_resources(&name).len();
+        for p in &all[parent..] {
+            own.push((service.to_string(), p.class_name().to_string()));
+        }
+    }
+    let java: Vec<(String, String)> = rows.iter().map(|r| (r[0].clone(), r[1].clone())).collect();
+    assert_eq!(own, java);
+    for r in &rows {
+        let (service, name, to_string) = (&r[0], &r[2], &r[3]);
+        let found = match service.as_str() {
+            "Codec" => {
+                let c = rucene::codecs::for_name(name).expect("codec resolves");
+                assert_eq!(&c.to_string(), to_string);
+                c.name().to_string()
+            }
+            "DocValuesFormat" => rucene::codecs::doc_values::doc_values_for_name(name)
+                .expect("doc values format resolves")
+                .name()
+                .to_string(),
+            "KnnVectorsFormat" => rucene::codecs::knn_vectors::knn_vectors_for_name(name)
+                .expect("knn format resolves")
+                .name()
+                .to_string(),
+            _ => rucene::codecs::postings_for_name(name)
+                .expect("postings format resolves")
+                .name()
+                .to_string(),
+        };
+        assert_eq!(&found, name, "{}", r[1]);
+    }
+}
+
+/// Serializes the tests that read or reset the Rot13 formats' static flags.
+static ROT13_FLAGS: Mutex<()> = Mutex::new(());
+
+/// The Rot13 formats' encoding flags after writing the `nocfs` corpus and
+/// after opening it are Lucene's (`testcodecs_rot13_flags.tsv`): the
+/// overridden `writeDictionary` and `writeEncodedFieldsMetadata` record the
+/// block, fields-metadata and dictionary encodings in Lucene's order.
+#[test]
+fn rot13_encoding_flags_are_lucenes() {
+    register_codecs();
+    let _serial = ROT13_FLAGS.lock().unwrap_or_else(|e| e.into_inner());
+    use std::sync::atomic::Ordering::SeqCst;
+    let flags = || {
+        format!(
+            "{}\t{}\t{}\t{}\t{}",
+            rot13::ENCODER_CALLED.load(SeqCst),
+            rot13::BLOCKS_ENCODED.load(SeqCst),
+            rot13::FIELDS_METADATA_ENCODED.load(SeqCst),
+            rot13::DICTIONARY_ENCODED.load(SeqCst),
+            rot13::DECODER_CALLED.load(SeqCst)
+        )
+    };
+    let mut lines = Vec::new();
+    for name in ["UniformSplitRot13", "STUniformSplitRot13"] {
+        UniformSplitRot13PostingsFormat::reset_encoding_flags();
+        let tmp = TempDir::new(&format!("rot13-flags-{name}"));
+        let format = rucene::codecs::postings_for_name(name).unwrap();
+        write_corpus(&tmp.0, false, per_field_postings_codec(format));
+        lines.push(format!("{name}\twrite\t{}", flags()));
+        let reader = rucene::index::directory_reader::open(open_dir(&tmp.0)).unwrap();
+        lines.push(format!("{name}\tread\t{}", flags()));
+        drop(reader);
+    }
+    let java: Vec<String> = rows("testcodecs_rot13_flags.tsv")
+        .iter()
+        .map(|r| r.join("\t"))
+        .collect();
+    assert_eq!(lines, java);
+}
+
+/// `Rot13CypherTestUtil`: encode then decode is the identity, `decode`
+/// skips the 7-byte offset, and the encoder and decoder it hands out do the
+/// same; a negative decoded length fails as Java's `new byte[-1]` does.
+#[test]
+fn rot13_cypher_round_trips() {
+    use rucene::store::{ByteArrayDataInput, DataInput};
+    use rucene_test_framework::codecs::uniformsplit::Rot13CypherTestUtil;
+    let plain: Vec<u8> = (0..=255u8).collect();
+    let encoded = Rot13CypherTestUtil::encode(&mut ByteArrayDataInput::new(&plain), 256).unwrap();
+    assert_eq!(encoded.len(), 263);
+    assert_eq!(&encoded[..7], &[0; 7]);
+    assert_eq!(encoded[7], 13);
+    assert_eq!(encoded[7 + 250], 250u8.wrapping_add(13));
+    let decoded = Rot13CypherTestUtil::decode(&mut ByteArrayDataInput::new(&encoded), 263).unwrap();
+    assert_eq!(decoded, plain);
+    let mut input = ByteArrayDataInput::new(&encoded);
+    let e = Rot13CypherTestUtil::decode(&mut input, 6).unwrap_err();
+    assert_eq!(
+        java_error_of(&e),
+        (
+            "java.lang.NegativeArraySizeException".to_string(),
+            "-1".to_string()
+        )
+    );
+    let bytes = Rot13CypherTestUtil::get_block_encoder()
+        .encode(&mut ByteArrayDataInput::new(&plain), 256)
+        .unwrap();
+    assert_eq!(bytes.size(), 263);
+    let round = Rot13CypherTestUtil::get_block_decoder()
+        .decode(&mut ByteArrayDataInput::new(&encoded), 263)
+        .unwrap();
+    assert_eq!(round.slice(), &plain[..]);
+    let _ = input.read_byte();
+}
+
+/// The read-time `MockRandomPostingsFormat()` refuses to write, as Java's
+/// throwing random does on its first draw.
+#[test]
+fn mock_random_read_time_format_refuses_to_write() {
+    register_codecs();
+    let tmp = TempDir::new("mockrandom-read-time");
+    let codec = per_field_postings_codec(Arc::new(MockRandomPostingsFormat::new()));
+    let e = try_write_corpus(&tmp.0, codec).unwrap_err();
+    assert_eq!(
+        root_cause(&e),
+        (
+            "java.lang.IllegalStateException".to_string(),
+            "Please use MockRandomPostingsFormat(Random)".to_string()
+        )
+    );
+}
+
+// -- RAMOnly ----------------------------------------------------------------
+
+/// [`root_cause`], with the Java class and message of the errors
+/// `java_error_of` does not name: `UnsupportedOperationException` and
+/// `AssertionError` (`null` for an `assert` without a message).
+fn java_root_cause(e: &LuceneError) -> (String, String) {
+    let mut deepest = e;
+    let mut current: &(dyn std::error::Error + 'static) = e;
+    while let Some(next) = current.source() {
+        if let Some(l) = next.downcast_ref::<LuceneError>() {
+            deepest = l;
+        }
+        current = next;
+    }
+    match deepest {
+        LuceneError::UnsupportedOperation(m) => (
+            "java.lang.UnsupportedOperationException".to_string(),
+            m.clone(),
+        ),
+        LuceneError::AssertionError(m) => (
+            "java.lang.AssertionError".to_string(),
+            if m.is_empty() {
+                "null".to_string()
+            } else {
+                m.clone()
+            },
+        ),
+        _ => root_cause(e),
+    }
+}
+
+/// `TestCodecsOracle.writeRamOnly(Directory, Codec, boolean, boolean)`.
+fn write_ram_only(path: &Path, codec: Arc<dyn Codec>, freqs: bool, merge: bool) -> Result<()> {
+    use rucene::document::{Document, Field, Store, StringField};
+    let mut config = new_config(codec);
+    let policy = TieredMergePolicy::new();
+    policy.set_no_cfs_ratio(0.0)?;
+    config.set_merge_policy(Arc::new(policy))?;
+    config.set_use_compound_file(false)?;
+    let freqs_type = shared_type(rucene::index::IndexOptions::DOCS_AND_FREQS);
+    let positions = shared_type(rucene::index::IndexOptions::DOCS_AND_FREQS_AND_POSITIONS);
+    let words = ["a", "b\u{e9}", "\u{1d400}x", "\u{e000}y", "z", "\u{1f600}"];
+    let w = IndexWriter::new(open_dir(path), config)?;
+    let result = (|| -> Result<()> {
+        for batch in 0..2 {
+            for i in batch * 60..batch * 60 + 60 {
+                let mut d = Document::new();
+                d.add(Box::new(StringField::new(
+                    "e_id",
+                    format!("{i:04}"),
+                    Store::NO,
+                )?));
+                if freqs {
+                    d.add(Box::new(Field::new(
+                        "rf",
+                        words[i % 6].to_string(),
+                        freqs_type.clone(),
+                    )?));
+                }
+                let rq = |w: &str| format!("{w}{}", i % 13);
+                let rp = |w: &str| format!("{w}{}", i % 17);
+                d.add(Box::new(Field::new(
+                    "rq",
+                    rq(words[i % 6]),
+                    positions.clone(),
+                )?));
+                d.add(Box::new(Field::new(
+                    "rq",
+                    rq(words[(i / 2) % 6]),
+                    positions.clone(),
+                )?));
+                d.add(Box::new(Field::new(
+                    "rp",
+                    rp(words[i % 5]),
+                    positions.clone(),
+                )?));
+                d.add(Box::new(Field::new(
+                    "rp",
+                    rp(words[i % 3]),
+                    positions.clone(),
+                )?));
+                w.add_document(&d)?;
+            }
+            w.commit()?;
+            if batch == 0 {
+                for i in (0..60).step_by(7) {
+                    w.delete_documents_by_terms(vec![term("e_id", &format!("{i:04}"))])?;
+                }
+            }
+        }
+        if merge {
+            w.force_merge(1)?;
+            w.commit()?;
+        }
+        Ok(())
+    })();
+    let closed = w.close();
+    result.and(closed)
+}
+
+/// `TestCodecsOracle.probe`: the value, `null`, `x<hex>` for a term, or `!`
+/// and the simple name of the Java exception (a returned error or a panic
+/// with a Java throwable).
+fn probe<T: std::fmt::Display>(f: impl FnOnce() -> Result<T>) -> String {
+    let result = {
+        let _quiet = QuietPanics::new();
+        catch_unwind(AssertUnwindSafe(f))
+    };
+    match result {
+        Ok(Ok(v)) => v.to_string(),
+        Ok(Err(e)) => format!("!{}", e.java_simple_name()),
+        Err(payload) => {
+            let text = panic_message(&*payload);
+            let class = text.split(':').next().unwrap_or(&text);
+            format!("!{}", class.rsplit('.').next().unwrap_or(class))
+        }
+    }
+}
+
+/// A term as `TestCodecsOracle.probe` prints it.
+struct X(Option<rucene::util::BytesRef>);
+
+impl std::fmt::Display for X {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.0 {
+            Some(b) => write!(f, "x{}", hex(b.slice())),
+            None => f.write_str("null"),
+        }
+    }
+}
+
+/// A `SeekStatus` as Java prints it.
+fn status(s: rucene::index::SeekStatus) -> String {
+    format!("{s:?}")
+}
+
+/// `TestCodecsOracle.ramOnlyTrace(Path)`.
+fn ram_only_trace(path: &Path) -> Vec<String> {
+    use rucene::index::{IndexReader, POSTINGS_ENUM_ALL};
+    use rucene::util::BytesRef;
+    let reader: Arc<dyn IndexReader> =
+        rucene::index::directory_reader::open(open_dir(path)).unwrap();
+    let mut out = Vec::new();
+    for ctx in Arc::clone(&reader).leaves().unwrap() {
+        let leaf = ctx.leaf_reader();
+        out.push(format!("leaf {} maxDoc={}", ctx.ord(), leaf.max_doc()));
+        let fis: Vec<rucene::index::FieldInfo> = leaf.get_field_infos().iter().cloned().collect();
+        for fi in &fis {
+            if fi.name == "e_id" {
+                continue;
+            }
+            let Some(terms) = leaf.terms(&fi.name).unwrap() else {
+                continue;
+            };
+            out.push(format!(
+                " field {} size={} sttf={} sdf={} dc={} {}/{}/{}/{}",
+                fi.name,
+                terms.size().unwrap(),
+                terms.sum_total_term_freq().unwrap(),
+                terms.sum_doc_freq().unwrap(),
+                terms.doc_count().unwrap(),
+                terms.has_freqs(),
+                terms.has_positions(),
+                terms.has_offsets(),
+                terms.has_payloads()
+            ));
+            let mut all: Vec<BytesRef> = Vec::new();
+            let mut te = terms.iterator().unwrap();
+            while let Some(t) = te.next().unwrap() {
+                all.push(t.clone());
+                out.push(format!(
+                    "  t {} df={} ttf={}",
+                    hex(t.slice()),
+                    te.doc_freq().unwrap(),
+                    te.total_term_freq().unwrap()
+                ));
+                let mut pe = te.postings(None, POSTINGS_ENUM_ALL).unwrap();
+                loop {
+                    let d = pe.next_doc().unwrap();
+                    if d == NO_MORE_DOCS {
+                        break;
+                    }
+                    let freq = pe.freq().unwrap();
+                    let mut sb = format!("   d={d} f={freq} cost={}", pe.cost());
+                    for _ in 0..freq {
+                        let pos = pe.next_position().unwrap();
+                        sb.push_str(&format!(
+                            " {pos}/{}/{}/",
+                            pe.start_offset(),
+                            pe.end_offset()
+                        ));
+                        let payload = pe.get_payload().unwrap().map(|p| BytesRef::new(p.to_vec()));
+                        sb.push_str(&X(payload).to_string());
+                    }
+                    out.push(sb);
+                }
+                out.push(format!("   end docID={}", probe(|| Ok(pe.doc_id()))));
+            }
+            let mut targets = vec![BytesRef::new(Vec::new())];
+            for t in &all {
+                targets.push(t.clone());
+                let mut past = t.slice().to_vec();
+                past.push(0);
+                targets.push(BytesRef::new(past));
+            }
+            targets.push(BytesRef::new(vec![0xff, 0xff]));
+            let mut seek = terms.iterator().unwrap();
+            let mut sb = "  seek".to_string();
+            for target in &targets {
+                sb.push_str(&format!(
+                    " {}:{}",
+                    hex(target.slice()),
+                    probe(|| seek.seek_ceil(target).map(status))
+                ));
+                sb.push_str(&format!(":{}", probe(|| seek.term().map(|t| X(Some(t))))));
+                sb.push_str(&format!(":{}", probe(|| seek.doc_freq())));
+                sb.push_str(&format!(":{}", probe(|| seek.total_term_freq())));
+                sb.push_str(&format!(
+                    ":{}",
+                    probe(|| seek.postings(None, POSTINGS_ENUM_NONE)?.next_doc())
+                ));
+                sb.push_str(&format!(":{}", probe(|| seek.next().map(X))));
+            }
+            out.push(sb);
+            let mut exact = terms.iterator().unwrap();
+            let mut sb = "  exact".to_string();
+            for target in &targets {
+                sb.push_str(&format!(
+                    " {}:{}",
+                    hex(target.slice()),
+                    probe(|| exact.seek_exact(target))
+                ));
+            }
+            out.push(sb);
+            let mut fresh = terms.iterator().unwrap();
+            let term = probe(|| fresh.term().map(|t| X(Some(t))));
+            let ord = probe(|| fresh.ord());
+            let seek_ord = probe(|| fresh.seek_ord(0).map(|()| "null"));
+            out.push(format!("  fresh term={term} ord={ord} seekOrd={seek_ord}"));
+        }
+    }
+    out
+}
+
+/// The `RAMDocsEnum@<hash>` identity in a message, which differs per run.
+fn mask_identity(message: &str) -> String {
+    let mut out = String::new();
+    let mut rest = message;
+    while let Some(at) = rest.find("RAMDocsEnum@") {
+        let end = at + "RAMDocsEnum@".len();
+        out.push_str(&rest[..end]);
+        out.push_str("HASH");
+        rest = rest[end..].trim_start_matches(|c: char| c.is_ascii_hexdigit());
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `RAMOnlyPostingsFormat` against `testcodecs_ramonly_*.tsv`, in Lucene's
+/// order (the format found by name numbers its slots from 0, so this one test
+/// owns it in this process):
+///
+/// * the `ramonly` index, written and read with the format found by name:
+///   every file is Lucene's (the `.id` slot files included), and what Rucene
+///   reads (`ramOnlyTrace`, the enum trace) is what Lucene reads in its JVM;
+/// * a new instance fails on each corpus where Lucene's does, with Lucene's
+///   root cause: offsets refused, a `DOCS` field's `new int[-1]`, the
+///   `finishDoc` assertion of a field with freqs and no positions, and the
+///   merge of positions stored as `-1`;
+/// * `advance` on a fresh enum throws `docID()`'s `NullPointerException`.
+#[test]
+fn ram_only_matches_lucene() {
+    register_codecs();
+    let tmp = TempDir::new("ramonly");
+    let ram_only = rucene::codecs::postings_for_name("RAMOnly").expect("RAMOnly resolves");
+    write_ram_only(&tmp.0, per_field_postings_codec(ram_only), false, false).unwrap();
+    let java = java_files("testcodecs_ramonly", "ramonly");
+    let compared = assert_same_files("ramonly", &java, &read_dir(&tmp.0), |_| false);
+    assert!(compared > 0);
+    let java_reads: Vec<String> = rows("testcodecs_ramonly_reads.tsv")
+        .into_iter()
+        .map(|r| r[1..].join("\t"))
+        .collect();
+    assert_same_lines("ramonly reads", &ram_only_trace(&tmp.0), &java_reads);
+    let java_enum: Vec<String> = rows("testcodecs_ramonly_enum.tsv")
+        .into_iter()
+        .map(|r| r[1..].join("\t"))
+        .collect();
+    assert_same_lines("ramonly enum", &enum_trace(&tmp.0), &java_enum);
+
+    let mut corpus = Vec::new();
+    for case in ["nocfs", "cfs", "edge", "freqs", "merge"] {
+        let dir = TempDir::new(&format!("ramonly-{case}"));
+        let codec = per_field_postings_codec(Arc::new(RAMOnlyPostingsFormat::new()));
+        let result = {
+            let _quiet = QuietPanics::new();
+            catch_unwind(AssertUnwindSafe(|| match case {
+                "nocfs" => try_write_corpus(&dir.0, codec),
+                "cfs" => {
+                    // The corpus fails at its first flush: its first batch.
+                    let config = new_config(codec);
+                    let w = IndexWriter::new(open_dir(&dir.0), config)?;
+                    let added =
+                        (0..BATCHES[0].1).try_for_each(|i| w.add_document(&doc(i)).map(drop));
+                    let committed = added.and_then(|()| w.commit());
+                    let closed = w.close();
+                    committed.and(closed)
+                }
+                "edge" => {
+                    // As `writeEdge`, which fails at its first flush.
+                    let mut config = new_config(codec);
+                    config.set_use_compound_file(false)?;
+                    config.set_soft_deletes_field(Some("e_soft".to_string()));
+                    config.set_index_sort(Sort::new_fields(vec![SortField::new(
+                        Some("e_sortkey".to_string()),
+                        SortFieldType::Long,
+                    )?])?)?;
+                    let w = IndexWriter::new(open_dir(&dir.0), config)?;
+                    let added =
+                        (0..EDGE_DOCS).try_for_each(|i| w.add_document(&edge_doc(i)).map(drop));
+                    let committed = added
+                        .and_then(|()| w.delete_documents_by_terms(vec![term("e_id", "e9")]))
+                        .and_then(|_| w.commit());
+                    let closed = w.close();
+                    committed.and(closed)
+                }
+                _ => write_ram_only(&dir.0, codec, case == "freqs", case == "merge"),
+            }))
+        };
+        let (class, message) = match result {
+            Ok(Ok(())) => ("none".to_string(), "-".to_string()),
+            Ok(Err(e)) => java_root_cause(&e),
+            Err(payload) => ("panic".to_string(), panic_message(&*payload)),
+        };
+        corpus.push(format!("{case}\t{class}\t{}", mask_identity(&message)));
+    }
+    let reader = rucene::index::directory_reader::open(open_dir(&tmp.0)).unwrap();
+    let (class, message) = outcome(|| {
+        let leaves = Arc::clone(&reader).leaves()?;
+        let terms = leaves[0].leaf_reader().terms("rp")?.expect("rp has terms");
+        let mut te = terms.iterator()?;
+        te.next()?;
+        te.postings(None, POSTINGS_ENUM_FREQS)?.advance(1)?;
+        Ok(())
+    });
+    corpus.push(format!("advance\t{class}\t{message}"));
+    let java: Vec<String> = rows("testcodecs_ramonly_corpus.tsv")
+        .iter()
+        .map(|r| mask_identity(&r.join("\t")))
+        .collect();
+    assert_eq!(corpus, java);
+}
+
+/// An instance that did not write the segment holds no slot for its id: its
+/// producer is Java's `null` (no terms; `checkIntegrity` and
+/// `getMergeInstance` throw `PerFieldPostingsFormat`'s
+/// `NullPointerException`s).
+#[test]
+fn ram_only_other_instance_reads_no_postings() {
+    use rucene::codecs::{PostingsFormat, SegmentReadState};
+    let writer = Arc::new(RAMOnlyPostingsFormat::new());
+    let tmp = TempDir::new("ramonly-other");
+    write_ram_only(&tmp.0, per_field_postings_codec(writer), false, false).unwrap();
+    let dir = open_dir(&tmp.0);
+    let infos = rucene::index::SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
+    let si = infos.info(0).info.clone();
+    let field_infos = rucene::index::FieldInfos::default();
+    let context = &*rucene::store::DEFAULT_IO_CONTEXT;
+    // The per-field suffix of the format's first (only) instance.
+    let state =
+        SegmentReadState::with_suffix(&*dir, &si, &field_infos, context, "RAMOnly_0".to_string());
+    let producer = RAMOnlyPostingsFormat::new()
+        .fields_producer(&state)
+        .unwrap();
+    assert!(producer.terms("rp").unwrap().is_none());
+    assert_eq!(
+        java_error_of(&producer.check_integrity().unwrap_err()).0,
+        "java.lang.NullPointerException"
+    );
+    assert!(producer.get_merge_instance().is_err());
 }

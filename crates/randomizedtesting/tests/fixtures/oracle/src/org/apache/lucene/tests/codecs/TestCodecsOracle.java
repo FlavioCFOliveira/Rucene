@@ -6,6 +6,7 @@ import java.io.PrintWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import org.apache.lucene.util.BytesRef;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -15,7 +16,25 @@ import org.apache.lucene.codecs.Codec;
 import org.apache.lucene.codecs.StoredFieldsWriter;
 import org.apache.lucene.codecs.TermVectorsWriter;
 import org.apache.lucene.codecs.lucene104.Lucene104Codec;
+import org.apache.lucene.codecs.DocValuesFormat;
+import org.apache.lucene.codecs.KnnVectorsFormat;
+import org.apache.lucene.codecs.PostingsFormat;
+import org.apache.lucene.codecs.simpletext.PostingsFormatOracle;
 import org.apache.lucene.codecs.simpletext.SimpleTextOracle;
+import org.apache.lucene.analysis.standard.StandardAnalyzer;
+import org.apache.lucene.document.Document;
+import org.apache.lucene.document.Field;
+import org.apache.lucene.document.FieldType;
+import org.apache.lucene.document.StringField;
+import org.apache.lucene.index.IndexOptions;
+import org.apache.lucene.index.IndexWriter;
+import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.index.SerialMergeScheduler;
+import org.apache.lucene.index.Term;
+import org.apache.lucene.index.TieredMergePolicy;
+import org.apache.lucene.tests.codecs.mockrandom.MockRandomPostingsFormat;
+import org.apache.lucene.tests.codecs.ramonly.RAMOnlyPostingsFormat;
+import org.apache.lucene.tests.codecs.uniformsplit.UniformSplitRot13PostingsFormat;
 import org.apache.lucene.index.BinaryDocValues;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.LeafReader;
@@ -62,6 +81,23 @@ import org.apache.lucene.util.Version;
  *   <li>{@code testcodecs_cranky_seeds.tsv}: per seed, the {@code nocfs} corpus written with a
  *       {@link CrankyCodec} over {@code new Random(seed)}: the draws made up to the first failure
  *       and the root cause it raised (class, message).
+ *   <li>The postings formats of the {@code bloom}, {@code uniformsplit} and {@code mockrandom}
+ *       packages (rmp #341), through {@link PostingsFormatOracle#run}: {@code tc_bloom_*} ({@code
+ *       TestBloomFilteredLucenePostings}), {@code tc_rot13_*} ({@code UniformSplitRot13}), {@code
+ *       tc_strot13_*} ({@code STUniformSplitRot13}) and {@code tc_mockrandom_s<seed>_*} ({@code new
+ *       MockRandomPostingsFormat(new Random(seed))}, a new one per corpus, seeds 1 to 3). The
+ *       {@code blockterms} formats are {@code lucene-codecs}' fixtures {@code fixedgap_*}, {@code
+ *       vargap_fixed_*} and {@code vargap_docfreq_*}, written with the same classes.
+ *   <li>{@code testcodecs_ramonly_*.tsv}: {@code RAMOnlyPostingsFormat}: {@code _corpus.tsv}, the
+ *       root cause of writing each corpus with a new instance; {@code _files.tsv}, {@code
+ *       _reads.tsv} and {@code _enum.tsv}, the {@code ramonly} index of {@link #writeRamOnly},
+ *       written and read in this JVM with the instance found by name.
+ *   <li>{@code testcodecs_rot13_flags.tsv}: the encoding flags of {@code
+ *       UniformSplitRot13PostingsFormat} after each Rot13 format writes the {@code nocfs} corpus,
+ *       and after it is opened.
+ *   <li>{@code testcodecs_spi.tsv}: every entry of the four {@code META-INF/services} files of
+ *       {@code lucene-test-framework}: the provider's name, {@code toString()}, and the class
+ *       {@code forName(name)} returns.
  * </ul>
  */
 public final class TestCodecsOracle {
@@ -513,10 +549,357 @@ public final class TestCodecsOracle {
     return t;
   }
 
+  /** The entries of {@code lucene-test-framework}'s {@code META-INF/services} files. */
+  static final String[][] SERVICES = {
+    {"Codec", "org.apache.lucene.tests.codecs.asserting.AssertingCodec"},
+    {"Codec", "org.apache.lucene.tests.codecs.cheapbastard.CheapBastardCodec"},
+    {"Codec", "org.apache.lucene.tests.codecs.compressing.DeflateWithPresetCompressingCodec"},
+    {"Codec", "org.apache.lucene.tests.codecs.compressing.FastCompressingCodec"},
+    {"Codec", "org.apache.lucene.tests.codecs.compressing.FastDecompressionCompressingCodec"},
+    {"Codec", "org.apache.lucene.tests.codecs.compressing.HighCompressionCompressingCodec"},
+    {"Codec", "org.apache.lucene.tests.codecs.compressing.LZ4WithPresetCompressingCodec"},
+    {"Codec", "org.apache.lucene.tests.codecs.compressing.dummy.DummyCompressingCodec"},
+    {"Codec", "org.apache.lucene.tests.codecs.vector.ConfigurableMCodec"},
+    {"DocValuesFormat", "org.apache.lucene.tests.codecs.asserting.AssertingDocValuesFormat"},
+    {"KnnVectorsFormat", "org.apache.lucene.tests.codecs.asserting.AssertingKnnVectorsFormat"},
+    {"PostingsFormat", "org.apache.lucene.tests.codecs.mockrandom.MockRandomPostingsFormat"},
+    {"PostingsFormat", "org.apache.lucene.tests.codecs.ramonly.RAMOnlyPostingsFormat"},
+    {"PostingsFormat", "org.apache.lucene.tests.codecs.blockterms.LuceneFixedGap"},
+    {"PostingsFormat", "org.apache.lucene.tests.codecs.blockterms.LuceneVarGapFixedInterval"},
+    {"PostingsFormat", "org.apache.lucene.tests.codecs.blockterms.LuceneVarGapDocFreqInterval"},
+    {"PostingsFormat", "org.apache.lucene.tests.codecs.bloom.TestBloomFilteredLucenePostings"},
+    {"PostingsFormat", "org.apache.lucene.tests.codecs.asserting.AssertingPostingsFormat"},
+    {"PostingsFormat", "org.apache.lucene.tests.codecs.uniformsplit.UniformSplitRot13PostingsFormat"},
+    {
+      "PostingsFormat",
+      "org.apache.lucene.tests.codecs.uniformsplit.sharedterms.STUniformSplitRot13PostingsFormat"
+    },
+  };
+
+  /** {@code service<TAB>class<TAB>getName<TAB>toString<TAB>forName(getName).getClass}. */
+  static void spi(PrintWriter w) throws Exception {
+    for (String[] e : SERVICES) {
+      Object o = Class.forName(e[1]).getDeclaredConstructor().newInstance();
+      String name;
+      Object found;
+      switch (e[0]) {
+        case "Codec" -> {
+          name = ((Codec) o).getName();
+          found = Codec.forName(name);
+        }
+        case "DocValuesFormat" -> {
+          name = ((DocValuesFormat) o).getName();
+          found = DocValuesFormat.forName(name);
+        }
+        case "KnnVectorsFormat" -> {
+          name = ((KnnVectorsFormat) o).getName();
+          found = KnnVectorsFormat.forName(name);
+        }
+        default -> {
+          name = ((PostingsFormat) o).getName();
+          found = PostingsFormat.forName(name);
+        }
+      }
+      w.println(
+          e[0] + "\t" + e[1] + "\t" + name + "\t" + o + "\t" + found.getClass().getName());
+    }
+  }
+
+  /**
+   * The {@code ramonly} index: two single-token fields with positions ({@code rp}, {@code rq}),
+   * the only postings option {@code RAMOnlyPostingsFormat} writes under {@code -ea} (a field
+   * without positions fails its {@code finishDoc} assertion, one with offsets is refused), over
+   * terms whose Java order differs from their UTF-8 order (each in at most 8 documents: {@code
+   * RAMDocsEnum.advance} on a fresh enum throws, see {@code _corpus.tsv}'s {@code advance}), in
+   * two committed batches with
+   * deletions (by {@code e_id}, which keeps the default format). With {@code freqs} the documents
+   * also hold {@code rf}, a field with freqs and no positions; with {@code merge} the index is
+   * then merged with {@code forceMerge(1)}, which fails: the flush stores the positions of {@code
+   * rp} and {@code rq} as {@code -1} (it asks for no positions, {@code enumFlags = 0}, when the
+   * field has no payloads), which the merge refuses.
+   */
+  static void writeRamOnly(Directory dir, Codec codec, boolean freqs, boolean merge)
+      throws IOException {
+    IndexWriterConfig config = new IndexWriterConfig(new StandardAnalyzer());
+    config.setCodec(codec);
+    config.setOpenMode(IndexWriterConfig.OpenMode.CREATE);
+    config.setMergeScheduler(new SerialMergeScheduler());
+    TieredMergePolicy policy = new TieredMergePolicy();
+    policy.setNoCFSRatio(0.0);
+    config.setMergePolicy(policy);
+    config.setUseCompoundFile(false);
+    FieldType freqsType = PostingsFormatOracle.sharedType(IndexOptions.DOCS_AND_FREQS);
+    FieldType positions = PostingsFormatOracle.sharedType(IndexOptions.DOCS_AND_FREQS_AND_POSITIONS);
+    String[] words = {"a", "b\u00e9", "\ud835\udc00x", "\ue000y", "z", "\ud83d\ude00"};
+    try (IndexWriter w = new IndexWriter(dir, config)) {
+      for (int batch = 0; batch < 2; batch++) {
+        for (int i = batch * 60; i < batch * 60 + 60; i++) {
+          Document d = new Document();
+          d.add(
+              new StringField(
+                  "e_id", String.format(java.util.Locale.ROOT, "%04d", i), Field.Store.NO));
+          if (freqs) {
+            d.add(new Field("rf", words[i % 6], freqsType));
+          }
+          d.add(new Field("rq", words[i % 6] + (i % 13), positions));
+          d.add(new Field("rq", words[(i / 2) % 6] + (i % 13), positions));
+          d.add(new Field("rp", words[i % 5] + (i % 17), positions));
+          d.add(new Field("rp", words[i % 3] + (i % 17), positions));
+          w.addDocument(d);
+        }
+        w.commit();
+        if (batch == 0) {
+          for (int i = 0; i < 60; i += 7) {
+            w.deleteDocuments(new Term("e_id", String.format(java.util.Locale.ROOT, "%04d", i)));
+          }
+        }
+      }
+      if (merge) {
+        w.forceMerge(1);
+        w.commit();
+      }
+    }
+  }
+
+  interface Probe {
+    Object get() throws Exception;
+  }
+
+  /** The probe's value, {@code null} as {@code null}, a {@code BytesRef} in hex, or {@code !} and the simple name of what it throws. */
+  static String probe(Probe p) {
+    try {
+      Object o = p.get();
+      if (o instanceof BytesRef b) {
+        return "x" + hex(b);
+      }
+      return String.valueOf(o);
+    } catch (Throwable t) {
+      return "!" + t.getClass().getSimpleName();
+    }
+  }
+
+  static String hex(BytesRef b) {
+    StringBuilder sb = new StringBuilder();
+    for (int i = 0; i < b.length; i++) {
+      sb.append(String.format("%02x", b.bytes[b.offset + i] & 0xff));
+    }
+    return sb.toString();
+  }
+
+  /**
+   * What Lucene reads from the {@code ramonly} index: per leaf and field of {@code
+   * RAMOnlyPostingsFormat} (every field but {@code e_id}), its statistics, every term (by {@code
+   * next()}) with its stats and postings ({@code PostingsEnum.ALL}: doc, freq, positions,
+   * payloads), and {@code seekCeil} probes of one enum (the empty term, each term, each term
+   * followed by a 0 byte, {@code ffff}): status, {@code term()}, {@code docFreq()} and {@code
+   * next()}; then {@code seekExact} of the same targets on a fresh enum. The generic dump does not
+   * apply: {@code RAMTermsEnum.docFreq()} throws after a {@code NOT_FOUND} seek.
+   */
+  static List<String> ramOnlyTrace(Path path) throws IOException {
+    List<String> out = new ArrayList<>();
+    try (Directory dir = new NIOFSDirectory(path);
+        DirectoryReader reader = DirectoryReader.open(dir)) {
+      for (LeafReaderContext ctx : reader.leaves()) {
+        out.add("leaf " + ctx.ord + " maxDoc=" + ctx.reader().maxDoc());
+        for (org.apache.lucene.index.FieldInfo fi : ctx.reader().getFieldInfos()) {
+          Terms terms = ctx.reader().terms(fi.name);
+          if (terms == null || fi.name.equals("e_id")) {
+            continue;
+          }
+          out.add(
+              " field " + fi.name + " size=" + terms.size() + " sttf="
+                  + terms.getSumTotalTermFreq() + " sdf=" + terms.getSumDocFreq() + " dc="
+                  + terms.getDocCount() + " " + terms.hasFreqs() + "/" + terms.hasPositions()
+                  + "/" + terms.hasOffsets() + "/" + terms.hasPayloads());
+          List<BytesRef> all = new ArrayList<>();
+          TermsEnum te = terms.iterator();
+          for (BytesRef t = te.next(); t != null; t = te.next()) {
+            all.add(BytesRef.deepCopyOf(t));
+            out.add("  t " + hex(t) + " df=" + te.docFreq() + " ttf=" + te.totalTermFreq());
+            PostingsEnum pe = te.postings(null, PostingsEnum.ALL);
+            for (int d = pe.nextDoc(); d != DocIdSetIterator.NO_MORE_DOCS; d = pe.nextDoc()) {
+              StringBuilder sb = new StringBuilder("   d=" + d + " f=" + pe.freq() + " cost=" + pe.cost());
+              for (int i = 0; i < pe.freq(); i++) {
+                sb.append(' ').append(pe.nextPosition()).append('/').append(pe.startOffset());
+                sb.append('/').append(pe.endOffset()).append('/');
+                sb.append(probe(pe::getPayload));
+              }
+              out.add(sb.toString());
+            }
+            out.add("   end docID=" + probe(pe::docID));
+          }
+          List<BytesRef> targets = new ArrayList<>();
+          targets.add(new BytesRef(""));
+          for (BytesRef t : all) {
+            targets.add(t);
+            BytesRef past = new BytesRef(new byte[t.length + 1]);
+            System.arraycopy(t.bytes, t.offset, past.bytes, 0, t.length);
+            targets.add(past);
+          }
+          targets.add(new BytesRef(new byte[] {(byte) 0xff, (byte) 0xff}));
+          TermsEnum seek = terms.iterator();
+          StringBuilder sb = new StringBuilder("  seek");
+          for (BytesRef target : targets) {
+            sb.append(' ').append(hex(target)).append(':').append(probe(() -> seek.seekCeil(target)));
+            sb.append(':').append(probe(seek::term)).append(':').append(probe(seek::docFreq));
+            sb.append(':').append(probe(seek::totalTermFreq));
+            sb.append(':').append(probe(() -> seek.postings(null, PostingsEnum.NONE).nextDoc()));
+            sb.append(':').append(probe(seek::next));
+          }
+          out.add(sb.toString());
+          TermsEnum exact = terms.iterator();
+          sb = new StringBuilder("  exact");
+          for (BytesRef target : targets) {
+            sb.append(' ').append(hex(target)).append(':').append(probe(() -> exact.seekExact(target)));
+          }
+          out.add(sb.toString());
+          TermsEnum fresh = terms.iterator();
+          out.add(
+              "  fresh term=" + probe(fresh::term) + " ord=" + probe(fresh::ord) + " seekOrd="
+                  + probe(() -> { fresh.seekExact(0L); return null; }));
+        }
+      }
+    }
+    return out;
+  }
+
+  static String flags() {
+    return UniformSplitRot13PostingsFormat.encoderCalled
+        + "\t"
+        + UniformSplitRot13PostingsFormat.blocksEncoded
+        + "\t"
+        + UniformSplitRot13PostingsFormat.fieldsMetadataEncoded
+        + "\t"
+        + UniformSplitRot13PostingsFormat.dictionaryEncoded
+        + "\t"
+        + UniformSplitRot13PostingsFormat.decoderCalled;
+  }
+
+  /** {@code Lucene104Codec} with every field but {@code e_id} on {@code pf}. */
+  static Codec perFieldCodec(PostingsFormat pf) {
+    return new Lucene104Codec() {
+      @Override
+      public PostingsFormat getPostingsFormatForField(String field) {
+        return field.equals("e_id") ? super.getPostingsFormatForField(field) : pf;
+      }
+    };
+  }
+
+  /** The postings formats of rmp #341 and the service files. */
+  static void postingsFormats(File out, Path work) throws Exception {
+    // First: the RAMOnly instance found by name numbers its slots from 0 in this JVM.
+    Path ramonly = work.resolve("ramonly");
+    Files.createDirectories(ramonly);
+    try (Directory d = new NIOFSDirectory(ramonly)) {
+      writeRamOnly(d, perFieldCodec(PostingsFormat.forName("RAMOnly")), false, false);
+    }
+    try (PrintWriter w = new PrintWriter(new File(out, "testcodecs_ramonly_files.tsv"), "UTF-8")) {
+      w.println("# case\tfile\tlength\tfnv1a64\tcontent (\\xHH, \\\\)");
+      SimpleTextOracle.files("ramonly", ramonly, w);
+    }
+    try (PrintWriter w = new PrintWriter(new File(out, "testcodecs_ramonly_reads.tsv"), "UTF-8")) {
+      w.println("# case\tline of TestCodecsOracle.ramOnlyTrace");
+      for (String line : ramOnlyTrace(ramonly)) {
+        w.println("ramonly\t" + line);
+      }
+    }
+    try (PrintWriter w = new PrintWriter(new File(out, "testcodecs_ramonly_enum.tsv"), "UTF-8")) {
+      w.println("# case\tline of PostingsFormatOracle.enumTrace");
+      for (String line : PostingsFormatOracle.enumTrace(ramonly)) {
+        w.println("ramonly\t" + line);
+      }
+    }
+    try (PrintWriter w =
+        new PrintWriter(new File(out, "testcodecs_ramonly_corpus.tsv"), "UTF-8")) {
+      w.println("# case\tclass\tmessage (root cause of writing the corpus with a new RAMOnly)");
+      for (String c : new String[] {"nocfs", "cfs", "edge", "freqs", "merge"}) {
+        Path p = work.resolve("ramonly-" + c);
+        Files.createDirectories(p);
+        Codec codec = perFieldCodec(new RAMOnlyPostingsFormat());
+        try (Directory d = new NIOFSDirectory(p)) {
+          if (c.equals("edge")) {
+            SimpleTextOracle.writeEdge(d, codec);
+          } else if (c.equals("freqs") || c.equals("merge")) {
+            writeRamOnly(d, codec, c.equals("freqs"), c.equals("merge"));
+          } else {
+            SimpleTextOracle.writeCorpus(d, c.equals("cfs"), codec);
+          }
+          w.println(c + "\tnone\t-");
+        } catch (Throwable t) {
+          w.println(c + "\t" + err(rootCause(t)));
+        }
+      }
+      // advance on a fresh enum: DocIdSetIterator.slowAdvance asserts docID() < target.
+      try (Directory d = new NIOFSDirectory(ramonly);
+          DirectoryReader r = DirectoryReader.open(d)) {
+        TermsEnum te = r.leaves().get(0).reader().terms("rp").iterator();
+        te.next();
+        te.postings(null, PostingsEnum.FREQS).advance(1);
+        w.println("advance\tnone\t-");
+      } catch (Throwable t) {
+        w.println("advance\t" + err(rootCause(t)));
+      }
+    }
+    PostingsFormatOracle.run(
+        out,
+        "tc_bloom",
+        "postings",
+        "TestBloomFilteredLucenePostings",
+        () -> PostingsFormat.forName("TestBloomFilteredLucenePostings"),
+        List.of("blm"));
+    PostingsFormatOracle.run(
+        out,
+        "tc_rot13",
+        "postings",
+        "UniformSplitRot13",
+        () -> PostingsFormat.forName("UniformSplitRot13"),
+        List.of("ustb", "ustd"));
+    PostingsFormatOracle.run(
+        out,
+        "tc_strot13",
+        "postings",
+        "STUniformSplitRot13",
+        () -> PostingsFormat.forName("STUniformSplitRot13"),
+        List.of("stustb", "stustd"));
+    for (long seed = 1; seed <= 3; seed++) {
+      long s = seed;
+      PostingsFormatOracle.run(
+          out,
+          "tc_mockrandom_s" + seed,
+          "postings",
+          "MockRandom",
+          () -> new MockRandomPostingsFormat(new Random(s)),
+          List.of("sd"));
+    }
+    try (PrintWriter w = new PrintWriter(new File(out, "testcodecs_rot13_flags.tsv"), "UTF-8")) {
+      w.println(
+          "# format\tstep\tencoderCalled\tblocksEncoded\tfieldsMetadataEncoded"
+              + "\tdictionaryEncoded\tdecoderCalled");
+      for (String name : new String[] {"UniformSplitRot13", "STUniformSplitRot13"}) {
+        UniformSplitRot13PostingsFormat.resetEncodingFlags();
+        Path p = work.resolve("flags-" + name);
+        Files.createDirectories(p);
+        try (Directory d = new NIOFSDirectory(p)) {
+          SimpleTextOracle.writeCorpus(d, false, perFieldCodec(PostingsFormat.forName(name)));
+        }
+        w.println(name + "\twrite\t" + flags());
+        try (Directory d = new NIOFSDirectory(p);
+            DirectoryReader r = DirectoryReader.open(d)) {
+          w.println(name + "\tread\t" + flags());
+        }
+      }
+    }
+    try (PrintWriter w = new PrintWriter(new File(out, "testcodecs_spi.tsv"), "UTF-8")) {
+      w.println("# service\tclass\tgetName\ttoString\tforName(getName).getClass");
+      spi(w);
+    }
+  }
+
   public static void main(String[] args) throws Exception {
     File out = new File(args[0], "rucene-test-framework");
     out.mkdirs();
     Path work = Files.createTempDirectory("testcodecs-oracle");
+    postingsFormats(out, work);
     try (PrintWriter w = new PrintWriter(new File(out, "testcodecs_files.tsv"), "UTF-8")) {
       w.println("# case (codec/case)\tfile\tlength\tfnv1a64\tcontent (\\xHH, \\\\)");
       for (String label : CODECS) {

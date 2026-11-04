@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use oracle::*;
 use rucene::codecs::{Codec, Lucene104PostingsFormat};
-use rucene::store::{ByteArrayDataInput, DataInput};
+use rucene::store::ByteArrayDataInput;
 use rucene::util::resource_loader::ClassLoader;
 use rucene_codecs::bloom::{BloomFilteringPostingsFormat, FuzzySet};
 
@@ -45,66 +45,6 @@ const BLOOM: FormatOracle = FormatOracle {
     extra_jars: &[],
     live_impacts_differ: true,
 };
-
-/// A `.blm` file cut into its header and delegate name, its filters
-/// (`FieldNumber, FuzzySet`, each with its field number) and its footer.
-struct Blm {
-    head: Vec<u8>,
-    filters: Vec<(i32, Vec<u8>)>,
-    footer: Vec<u8>,
-}
-
-fn parse_blm(bytes: &[u8]) -> Blm {
-    let header_end = id_offset(bytes) + 16;
-    let header_end = header_end + 1 + bytes[header_end] as usize;
-    let mut input = ByteArrayDataInput::new(&bytes[header_end..]);
-    input.read_string().unwrap();
-    let num = input.read_int().unwrap();
-    let head = bytes[..header_end + input.position()].to_vec();
-    let mut filters = Vec::new();
-    for _ in 0..num {
-        let start = header_end + input.position();
-        let field = input.read_int().unwrap();
-        FuzzySet::deserialize(&mut input).unwrap();
-        filters.push((field, bytes[start..header_end + input.position()].to_vec()));
-    }
-    let end = header_end + input.position();
-    assert_eq!(bytes.len() - end, 16, "the footer follows the filters");
-    Blm {
-        head,
-        filters,
-        footer: bytes[end..].to_vec(),
-    }
-}
-
-/// Lucene's `.blm` with its filters in the order of Rucene's: Lucene writes
-/// them in `HashMap<FieldInfo, FuzzySet>` order, which follows identity
-/// hash codes (the `nocfs` and `cfs` fixtures hold segment `_5`'s three
-/// filters in two orders). Every filter of one side must be byte for byte a
-/// filter of the other; the footer's CRC-32 is recomputed.
-fn blm_in_rucenes_order(name: &str, java: Vec<u8>, rust: &[u8]) -> Vec<u8> {
-    if !name.ends_with(".blm") {
-        return java;
-    }
-    let java_blm = parse_blm(&java);
-    let rust_blm = parse_blm(rust);
-    let mut reordered = java_blm.head.clone();
-    assert_eq!(
-        java_blm.filters.len(),
-        rust_blm.filters.len(),
-        "{name}: filter count"
-    );
-    for (field, _) in &rust_blm.filters {
-        let (_, filter) = java_blm
-            .filters
-            .iter()
-            .find(|(f, _)| f == field)
-            .unwrap_or_else(|| panic!("{name}: Lucene wrote no filter for field {field}"));
-        reordered.extend_from_slice(filter);
-    }
-    reordered.extend_from_slice(&java_blm.footer);
-    with_fixed_footer(reordered)
-}
 
 #[test]
 fn bloom_writes_lucenes_bytes() {

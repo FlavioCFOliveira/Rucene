@@ -137,6 +137,18 @@ impl STUniformSplitTermsWriter {
         })
     }
 
+    /// The writer with its protected methods overridden by `overrides` (a
+    /// Java subclass's overrides, see
+    /// [`TermsWriterOverrides`](crate::uniformsplit::uniform_split_terms_writer::TermsWriterOverrides)).
+    #[must_use]
+    pub fn with_overrides(
+        mut self,
+        overrides: Arc<dyn crate::uniformsplit::uniform_split_terms_writer::TermsWriterOverrides>,
+    ) -> Self {
+        self.base = self.base.with_overrides(overrides);
+        self
+    }
+
     /// Writes the new segment with the provided terms writer, which can be
     /// either a single segment writer, or a multiple segment merging writer.
     ///
@@ -180,6 +192,7 @@ impl STUniformSplitTermsWriter {
             field_metadata_writer: postings.field_metadata_writer,
             block_output,
             dictionary_output: postings.dictionary_output,
+            overrides: postings.overrides,
         };
         let fields_number = write_field_metadata_list(&mut parts, &field_metadata_list)?;
         write_dictionary(&mut parts, fields_number, &mut dictionary_builder)

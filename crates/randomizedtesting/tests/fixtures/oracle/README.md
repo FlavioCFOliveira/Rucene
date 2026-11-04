@@ -64,6 +64,23 @@ write the fixtures (`../*.tsv`) the crate's parity tests (`src/tests/`) read.
   and cranky methods of every draw a `CrankyCodec` makes while writing the
   corpus (`_cranky_draws.tsv`), the first failure per seed (`_cranky_seeds.tsv`)
   and `CompressingCodec`'s random factories per seed
-  (`_compressing_random.tsv`). The Rust side is
+  (`_compressing_random.tsv`). It also runs `PostingsFormatOracle.run` (the
+  body of `PostingsFormatOracle.main`, with the crate directory and a supplier
+  of the format, called once per corpus) for the postings formats of rmp #341
+  into `rucene-test-framework/`: `tc_bloom_*` (`TestBloomFilteredLucenePostings`),
+  `tc_rot13_*` and `tc_strot13_*` (the two Rot13 `UniformSplit` formats, with
+  their `shared` case) and `tc_mockrandom_s{1,2,3}_*` (`new
+  MockRandomPostingsFormat(new Random(seed))`, a new one per corpus); the
+  blockterms formats reuse `rucene-codecs`' `fixedgap_*`, `vargap_fixed_*` and
+  `vargap_docfreq_*`. `RAMOnlyPostingsFormat` cannot write the corpus (offsets,
+  `DOCS` fields): `testcodecs_ramonly_corpus.tsv` records each root cause,
+  and `_files.tsv`, `_reads.tsv` (`TestCodecsOracle.ramOnlyTrace`) and
+  `_enum.tsv` the `ramonly` index of `writeRamOnly`, written and read in the
+  oracle's JVM with the instance found by name. `testcodecs_rot13_flags.tsv`
+  holds the Rot13 encoding flags, `testcodecs_spi.tsv` the 20 entries of the
+  crate's service files. The Rust side is
   `crates/rucene-test-framework/tests/test_codecs_oracle.rs`, which includes
-  the corpus helpers of `crates/rucene-codecs/tests/oracle/mod.rs`.
+  the corpus helpers of `crates/rucene-codecs/tests/oracle/mod.rs`; its
+  `fixture()` reads a crate's own fixture, or `rucene-codecs`' when the crate
+  has none of that name. To refresh only these fixtures, run
+  `TestCodecsOracle` alone (as `regenerate.sh` does) and copy the new files.

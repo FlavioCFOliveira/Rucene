@@ -59,3 +59,7 @@ pub mod mockfile;
 pub mod search;
 pub mod store;
 pub mod util;
+
+mod spi;
+
+pub use spi::class_loader;

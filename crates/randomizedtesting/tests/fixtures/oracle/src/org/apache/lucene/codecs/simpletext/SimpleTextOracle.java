@@ -440,12 +440,12 @@ public final class SimpleTextOracle {
   }
 
   /** The edge operations; {@code simpletext_oracle.rs::write_edge} performs the same. */
-  static void writeEdge(Directory dir) throws IOException {
+  public static void writeEdge(Directory dir) throws IOException {
     writeEdge(dir, new SimpleTextCodec());
   }
 
   /** {@link #writeEdge(Directory)} with {@code codec} ({@link PostingsFormatOracle}). */
-  static void writeEdge(Directory dir, Codec codec) throws IOException {
+  public static void writeEdge(Directory dir, Codec codec) throws IOException {
     IndexWriterConfig config = new IndexWriterConfig(new StandardAnalyzer());
     config.setCodec(codec);
     config.setOpenMode(IndexWriterConfig.OpenMode.CREATE);
@@ -707,7 +707,7 @@ public final class SimpleTextOracle {
     }
   }
 
-  static void reads(String name, Path path, PrintWriter w) throws IOException {
+  public static void reads(String name, Path path, PrintWriter w) throws IOException {
     for (String line : SimpleTextReadOracle.dump(path)) {
       w.println(name + "\t" + escape(line.getBytes(StandardCharsets.UTF_8)));
     }

@@ -225,72 +225,10 @@ fn formats_resolve_by_name() {
 
 use std::path::Path;
 
-use rucene::document::{Document, Field, FieldType, Store, StringField};
+use rucene::document::{Document, Field};
 use rucene::index::index_writer::IndexWriter;
-use rucene::index::merge_policy::{MergePolicy, TieredMergePolicy};
+
 use rucene::index::IndexOptions;
-
-/// `PostingsFormatOracle.sharedType(IndexOptions)`.
-fn shared_type(options: IndexOptions) -> FieldType {
-    field_type(|t| {
-        t.set_tokenized(false).unwrap();
-        t.set_omit_norms(true).unwrap();
-        t.set_index_options(options).unwrap();
-    })
-}
-
-/// `PostingsFormatOracle.writeShared(Directory, Codec)`.
-fn write_shared(path: &Path, codec: Arc<dyn Codec>) {
-    let mut config = new_config(codec);
-    let policy = TieredMergePolicy::new();
-    policy.set_no_cfs_ratio(0.0).unwrap();
-    config.set_merge_policy(Arc::new(policy)).unwrap();
-    config.set_use_compound_file(false).unwrap();
-    let docs = shared_type(IndexOptions::DOCS);
-    let freqs = shared_type(IndexOptions::DOCS_AND_FREQS);
-    let positions = shared_type(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS);
-    let offsets = shared_type(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS);
-    let w = IndexWriter::new(open_dir(path), config).unwrap();
-    for batch in 0..3 {
-        for i in batch * 100..batch * 100 + 100 {
-            let mut d = Document::new();
-            d.add(Box::new(
-                StringField::new("s_id", format!("{i:04}"), Store::NO).unwrap(),
-            ));
-            d.add(Box::new(
-                Field::new("sa", format!("t{}", i % 37), docs.clone()).unwrap(),
-            ));
-            d.add(Box::new(
-                Field::new("sb", format!("t{}", i % 23), positions.clone()).unwrap(),
-            ));
-            d.add(Box::new(
-                Field::new("sc", format!("t{}", i % 11), offsets.clone()).unwrap(),
-            ));
-            d.add(Box::new(
-                Field::new("sc", format!("u{}", i % 53), offsets.clone()).unwrap(),
-            ));
-            d.add(Box::new(
-                Field::new("sd", format!("t{}", i % 37), freqs.clone()).unwrap(),
-            ));
-            if i % 3 == 0 {
-                d.add(Box::new(
-                    Field::new("se", format!("t{}", i % 7), docs.clone()).unwrap(),
-                ));
-            }
-            w.add_document(&d).unwrap();
-        }
-        w.commit().unwrap();
-        if batch == 1 {
-            for i in (0..200).step_by(9) {
-                w.delete_documents_by_terms(vec![term("s_id", &format!("{i:04}"))])
-                    .unwrap();
-            }
-        }
-    }
-    w.force_merge(1).unwrap();
-    w.commit().unwrap();
-    w.close().unwrap();
-}
 
 /// The `shared` case of every format: Rucene writes Lucene's bytes (the
 /// shared-terms format's multi-field lines and its merge of them included),

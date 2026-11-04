@@ -151,9 +151,55 @@ pub struct UniformSplitTermsWriter {
     pub(crate) field_metadata_writer: field_metadata::Serializer,
     pub(crate) block_output: Option<Box<dyn IndexOutput>>,
     pub(crate) dictionary_output: Option<Box<dyn IndexOutput>>,
+
+    pub(crate) overrides: Option<Arc<dyn TermsWriterOverrides>>,
+}
+
+/// The protected methods of [`UniformSplitTermsWriter`] (and of
+/// `STUniformSplitTermsWriter`) that a Java subclass overrides around a call
+/// to `super`, as `lucene-test-framework`'s `UniformSplitRot13PostingsFormat`
+/// and `STUniformSplitRot13PostingsFormat` do (their anonymous subclasses
+/// record which parts of the segment went through the block encoder).
+///
+/// Each method receives `super_`, the base implementation; the default runs
+/// it and nothing else, which is the writer without a subclass.
+///
+/// **Divergence (declared).** Java overrides the methods in an anonymous
+/// subclass of the writer; Rust has no subclassing, so the writer holds the
+/// overrides as an optional object ([`UniformSplitTermsWriter::with_overrides`])
+/// and dispatches the two methods through it. The bytes written and the
+/// order of the calls are Java's.
+pub trait TermsWriterOverrides: Send + Sync {
+    /// `protected void writeDictionary(IndexDictionary.Builder)`
+    /// (`UniformSplitTermsWriter.java:369-371`).
+    ///
+    /// # Errors
+    ///
+    /// The errors of `super_` and of the override.
+    fn write_dictionary(&self, super_: &mut dyn FnMut() -> Result<()>) -> Result<()> {
+        super_()
+    }
+
+    /// `protected void writeEncodedFieldsMetadata(ByteBuffersDataOutput)`
+    /// (`UniformSplitTermsWriter.java:303-311`).
+    ///
+    /// # Errors
+    ///
+    /// The errors of `super_` and of the override.
+    fn write_encoded_fields_metadata(&self, super_: &mut dyn FnMut() -> Result<()>) -> Result<()> {
+        super_()
+    }
 }
 
 impl UniformSplitTermsWriter {
+    /// The writer with its protected methods overridden by `overrides` (a
+    /// Java subclass's overrides, see [`TermsWriterOverrides`]).
+    #[must_use]
+    pub fn with_overrides(mut self, overrides: Arc<dyn TermsWriterOverrides>) -> Self {
+        self.overrides = Some(overrides);
+        self
+    }
+
     /// Port of `UniformSplitTermsWriter(PostingsWriterBase,
     /// SegmentWriteState, BlockEncoder)`.
     ///
@@ -285,6 +331,7 @@ impl UniformSplitTermsWriter {
                 field_metadata_writer: field_metadata::Serializer::INSTANCE,
                 block_output,
                 dictionary_output,
+                overrides: None,
             }),
             Err(e) => {
                 IOUtils::close_while_handling_exception([
@@ -320,6 +367,7 @@ impl UniformSplitTermsWriter {
             field_metadata_writer: self.field_metadata_writer,
             block_output: block_output.as_mut(),
             dictionary_output: dictionary_output.as_mut(),
+            overrides: self.overrides.as_deref(),
         })
     }
 }
@@ -335,6 +383,7 @@ pub(crate) struct WriterParts<'w> {
     pub(crate) field_metadata_writer: field_metadata::Serializer,
     pub(crate) block_output: &'w mut dyn IndexOutput,
     pub(crate) dictionary_output: &'w mut dyn IndexOutput,
+    pub(crate) overrides: Option<&'w dyn TermsWriterOverrides>,
 }
 
 /// Validates the constructor settings.
@@ -405,8 +454,23 @@ impl WriterParts<'_> {
         fields_output.copy_to(self.block_output)
     }
 
-    /// Port of `UniformSplitTermsWriter.writeEncodedFieldsMetadata(ByteBuffersDataOutput)`.
+    /// Port of `UniformSplitTermsWriter.writeEncodedFieldsMetadata(ByteBuffersDataOutput)`,
+    /// dispatched through the writer's [`TermsWriterOverrides`].
     pub(crate) fn write_encoded_fields_metadata(
+        &mut self,
+        fields_output: &ByteBuffersDataOutput,
+    ) -> Result<()> {
+        match self.overrides {
+            Some(overrides) => overrides.write_encoded_fields_metadata(&mut || {
+                self.base_write_encoded_fields_metadata(fields_output)
+            }),
+            None => self.base_write_encoded_fields_metadata(fields_output),
+        }
+    }
+
+    /// The base `writeEncodedFieldsMetadata(ByteBuffersDataOutput)`, an
+    /// override's `super`.
+    fn base_write_encoded_fields_metadata(
         &mut self,
         fields_output: &ByteBuffersDataOutput,
     ) -> Result<()> {
@@ -426,11 +490,15 @@ impl WriterParts<'_> {
 
     /// Writes the dictionary index (FST) to disk.
     ///
-    /// Port of `UniformSplitTermsWriter.writeDictionary(IndexDictionary.Builder)`.
+    /// Port of `UniformSplitTermsWriter.writeDictionary(IndexDictionary.Builder)`,
+    /// dispatched through the writer's [`TermsWriterOverrides`].
     pub(crate) fn write_dictionary(&mut self, dictionary_builder: &mut dyn Builder) -> Result<()> {
-        dictionary_builder
-            .build()?
-            .write(self.dictionary_output, self.block_encoder)
+        write_dictionary(
+            self.overrides,
+            &mut *self.dictionary_output,
+            self.block_encoder,
+            dictionary_builder,
+        )
     }
 
     /// Port of `UniformSplitTermsWriter.writeFieldTerms(BlockWriter,
@@ -484,9 +552,12 @@ impl WriterParts<'_> {
             postings
                 .field_metadata_writer
                 .write(fields_output, &field_metadata)?;
-            dictionary_builder
-                .build()?
-                .write(postings.dictionary_output, postings.block_encoder)?;
+            write_dictionary(
+                postings.overrides,
+                &mut *postings.dictionary_output,
+                postings.block_encoder,
+                &mut dictionary_builder,
+            )?;
             return Ok(1);
         }
         Ok(0)
@@ -501,6 +572,27 @@ pub(crate) struct PostingParts<'w> {
     pub(crate) block_encoder: Option<&'w dyn BlockEncoder>,
     pub(crate) field_metadata_writer: field_metadata::Serializer,
     pub(crate) dictionary_output: &'w mut dyn IndexOutput,
+    pub(crate) overrides: Option<&'w dyn TermsWriterOverrides>,
+}
+
+/// `writeDictionary(IndexDictionary.Builder)` (`UniformSplitTermsWriter.java:369-371`):
+/// `dictionaryBuilder.build().write(dictionaryOutput, blockEncoder)`, through
+/// `overrides` when the writer has them.
+fn write_dictionary(
+    overrides: Option<&dyn TermsWriterOverrides>,
+    dictionary_output: &mut dyn IndexOutput,
+    block_encoder: Option<&dyn BlockEncoder>,
+    dictionary_builder: &mut dyn Builder,
+) -> Result<()> {
+    let mut base = || {
+        dictionary_builder
+            .build()?
+            .write(&mut *dictionary_output, block_encoder)
+    };
+    match overrides {
+        Some(overrides) => overrides.write_dictionary(&mut base),
+        None => base(),
+    }
 }
 
 impl PostingParts<'_> {
@@ -547,6 +639,7 @@ impl<'w> WriterParts<'w> {
                 block_encoder: self.block_encoder,
                 field_metadata_writer: self.field_metadata_writer,
                 dictionary_output: self.dictionary_output,
+                overrides: self.overrides,
             },
             self.field_infos,
         )
@@ -603,6 +696,7 @@ impl FieldsConsumer for UniformSplitTermsWriter {
             field_metadata_writer: postings.field_metadata_writer,
             block_output,
             dictionary_output: postings.dictionary_output,
+            overrides: postings.overrides,
         };
         parts.write_fields_metadata(fields_number, &fields_output)?;
         write_footer(parts.dictionary_output)

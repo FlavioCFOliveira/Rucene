@@ -19,10 +19,18 @@
 //! randomize over.
 //!
 //! * [`asserting`]: acts like the default codec but with additional asserts.
+//! * [`blockterms`]: postings formats over `lucene-codecs`' block terms
+//!   dictionary and its terms indexes.
+//! * [`bloom`]: a Bloom-filtered postings format with tiny filters.
 //! * [`cheapbastard`]: the default codec with a low-memory postings format.
 //! * [`compressing`]: the default codec with configurable compressing stored
 //!   fields and term vectors.
 //! * [`cranky`]: wraps a codec and throws random `IOException`s.
+//! * [`mockrandom`]: a postings format that picks its terms dictionary at
+//!   random, per segment.
+//! * [`ramonly`]: a postings format that keeps the postings in RAM.
+//! * [`uniformsplit`]: the `UniformSplit` postings formats with ROT13 block
+//!   encoding.
 //! * [`vector`]: the default codec with a configurable HNSW `M`.
 //!
 //! The `asserting` and `cranky` families share one skeleton: a
@@ -35,9 +43,14 @@
 //! every time.
 
 pub mod asserting;
+pub mod blockterms;
+pub mod bloom;
 pub mod cheapbastard;
 pub mod compressing;
 pub mod cranky;
+pub mod mockrandom;
+pub mod ramonly;
+pub mod uniformsplit;
 pub mod vector;
 
 use std::fmt;

@@ -24,6 +24,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
+import java.util.function.Supplier;
 import java.util.stream.Stream;
 import org.apache.lucene.codecs.Codec;
 import org.apache.lucene.codecs.KnnVectorsFormat;
@@ -114,8 +115,13 @@ public final class PostingsFormatOracle {
   }
 
   static Codec codec(String kind, String format) {
+    return codec(kind, format, () -> postingsFormat(format));
+  }
+
+  /** As {@link #codec(String, String)}, the postings format made by {@code formats}. */
+  static Codec codec(String kind, String format, Supplier<PostingsFormat> formats) {
     if (kind.equals("postings")) {
-      PostingsFormat pf = postingsFormat(format);
+      PostingsFormat pf = formats.get();
       return new Lucene104Codec() {
         @Override
         public PostingsFormat getPostingsFormatForField(String field) {
@@ -135,7 +141,7 @@ public final class PostingsFormatOracle {
   }
 
   /** A single-token field type with the given index options and no norms. */
-  static FieldType sharedType(IndexOptions options) {
+  public static FieldType sharedType(IndexOptions options) {
     FieldType t = new FieldType();
     t.setTokenized(false);
     t.setOmitNorms(true);
@@ -286,7 +292,7 @@ public final class PostingsFormatOracle {
    * intersect} with each of {@link #REGEXPS} ({@code new CompiledAutomaton(new
    * RegExp(r).toAutomaton(), false, false)}), from the start and from the field's second term.
    */
-  static List<String> enumTrace(Path path) throws IOException {
+  public static List<String> enumTrace(Path path) throws IOException {
     List<String> out = new java.util.ArrayList<>();
     try (Directory dir = new NIOFSDirectory(path);
         DirectoryReader reader = DirectoryReader.open(dir)) {
@@ -371,36 +377,54 @@ public final class PostingsFormatOracle {
   }
 
   public static void main(String[] args) throws Exception {
-    File out = new File(args[0], "rucene-codecs");
-    out.mkdirs();
-    String prefix = args[1];
-    String kind = args[2];
     String format = args[3];
-    List<String> extensions = Arrays.asList(args).subList(4, args.length);
-    Codec codec = codec(kind, format);
+    run(
+        new File(args[0], "rucene-codecs"),
+        args[1],
+        args[2],
+        format,
+        () -> postingsFormat(format),
+        Arrays.asList(args).subList(4, args.length));
+  }
+
+  /**
+   * The body of {@link #main}: the fixtures of {@code format} written into {@code out} (a crate's
+   * directory of the output), with the postings format {@code formats} makes; {@code formats} is
+   * called once per corpus written (a format with state of its own, such as {@code
+   * MockRandomPostingsFormat}, starts afresh for each) and once for the service lookups.
+   */
+  public static void run(
+      File out,
+      String prefix,
+      String kind,
+      String format,
+      Supplier<PostingsFormat> formats,
+      List<String> extensions)
+      throws Exception {
+    out.mkdirs();
     String formatName =
         kind.equals("postings")
-            ? postingsFormat(format).getName()
+            ? formats.get().getName()
             : KnnVectorsFormat.forName(format).getName();
     Path work = Files.createTempDirectory(prefix + "-oracle");
     Path nocfs = work.resolve("nocfs");
     Path cfs = work.resolve("cfs");
     Path edge = work.resolve("edge");
     try (Directory d = new NIOFSDirectory(nocfs)) {
-      SimpleTextOracle.writeCorpus(d, false, codec);
+      SimpleTextOracle.writeCorpus(d, false, codec(kind, format, formats));
     }
     try (Directory d = new NIOFSDirectory(cfs)) {
-      SimpleTextOracle.writeCorpus(d, true, codec);
+      SimpleTextOracle.writeCorpus(d, true, codec(kind, format, formats));
     }
     try (Directory d = new NIOFSDirectory(edge)) {
-      SimpleTextOracle.writeEdge(d, codec);
+      SimpleTextOracle.writeEdge(d, codec(kind, format, formats));
     }
     // The UniformSplit formats also write the `shared` case (terms in several fields).
     boolean shared = formatName.contains("UniformSplit");
     Path sharedDir = work.resolve("shared");
     if (shared) {
       try (Directory d = new NIOFSDirectory(sharedDir)) {
-        writeShared(d, codec);
+        writeShared(d, codec(kind, format, formats));
       }
     }
     try (PrintWriter w = new PrintWriter(new File(out, prefix + "_files.tsv"), "UTF-8")) {
@@ -447,7 +471,7 @@ public final class PostingsFormatOracle {
     try (PrintWriter w = new PrintWriter(new File(out, prefix + "_spi.tsv"), "UTF-8")) {
       w.println("# lookup\tresult");
       if (kind.equals("postings")) {
-        PostingsFormat pf = postingsFormat(format);
+        PostingsFormat pf = formats.get();
         w.println("getName\t" + pf.getName());
         w.println("toString\t" + pf);
         try {
