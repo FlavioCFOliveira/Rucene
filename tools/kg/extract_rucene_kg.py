@@ -562,6 +562,30 @@ def test_crate_names(root: Path):
     return mapping
 
 
+def test_file_path(rel: str, mem, tmap) -> str:
+    """Base path of a file under a `tests/` directory.
+
+    A test target keeps its crate name: a `[[test]]` entry of `Cargo.toml`
+    (`tmap`), else Cargo's auto-discovered `tests/<name>.rs` or
+    `tests/<name>/main.rs`. Any other file is a module a target includes
+    (`mod oracle;`), shared by every target that includes it; it is named by
+    its location, `<crate>::tests::<dir>[::<stem>]`, so that two support
+    modules of the same file name (`tests/a/mod.rs`, `tests/b/mod.rs`, in one
+    crate or two) never share a `qualifiedName`.
+    """
+    if rel in tmap:
+        return tmap[rel]
+    prefix = (mem[0] + "/tests/") if mem else "tests/"
+    parts = rel[len(prefix) : -len(".rs")].split("/")
+    if len(parts) == 1:
+        return parts[0]
+    if len(parts) == 2 and parts[1] == "main":
+        return parts[0]
+    if parts[-1] == "mod":
+        parts = parts[:-1]
+    return "::".join([mem[2] if mem else CRATE, "tests"] + parts)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--source-root", default=".")
@@ -613,7 +637,7 @@ def main():
         mp = module_path_for(rel)
         mem = member_of(rel)
         is_test = rel.startswith((mem[0] + "/tests/") if mem else "tests/")
-        crate_name = tmap.get(rel, Path(rel).stem) if is_test else (mem[2] if mem else CRATE)
+        crate_name = test_file_path(rel, mem, tmap) if is_test else (mem[2] if mem else CRATE)
         base_path = mp if mp else crate_name
         ftypes, ffns, fimpls, fmods, fuses = parse_file(rel, text)
 

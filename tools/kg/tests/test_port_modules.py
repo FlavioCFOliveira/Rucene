@@ -346,3 +346,29 @@ def test_divergences_are_scanned_in_the_member_crates(tmp_path):
 def test_ask_lists_one_module_with_its_status():
     q = ask.q_coverage_list("lucene/codecs")
     assert "c.module = 'lucene/codecs'" in q and "ELSE 'missing'" in q
+
+
+def test_test_support_modules_are_named_by_location(monkeypatch):
+    """Two `tests/<dir>/mod.rs` support modules never share a base path.
+
+    Regression: both were named `mod`, so `TempDir` of
+    `crates/rucene-codecs/tests/oracle/mod.rs` and of
+    `crates/rucene-test-framework/tests/oracle_support/mod.rs` shared the
+    `qualifiedName` `mod::TempDir` and the audit counted one type missing.
+    """
+    monkeypatch.setattr(ex, "WORKSPACE", {
+        "crates/rucene-codecs": ("rucene-codecs", "rucene_codecs"),
+        "crates/rucene-test-framework": ("rucene-test-framework", "rucene_test_framework"),
+    })
+    codecs = ex.member_of("crates/rucene-codecs/tests/oracle/mod.rs")
+    tf = ex.member_of("crates/rucene-test-framework/tests/oracle_support/mod.rs")
+    a = ex.test_file_path("crates/rucene-codecs/tests/oracle/mod.rs", codecs, {})
+    b = ex.test_file_path("crates/rucene-test-framework/tests/oracle_support/mod.rs", tf, {})
+    assert a == "rucene_codecs::tests::oracle"
+    assert b == "rucene_test_framework::tests::oracle_support"
+    # test targets keep the crate name Cargo gives them
+    assert ex.test_file_path("crates/rucene-codecs/tests/memory_oracle.rs", codecs, {}) == "memory_oracle"
+    assert ex.test_file_path("tests/self/main.rs", None, {}) == "self"
+    assert ex.test_file_path("tests/portability/codecs.rs", None,
+                             {"tests/portability/codecs.rs": "portability_codecs"}) == "portability_codecs"
+    assert ex.test_file_path("tests/common/util.rs", None, {}) == f"{ex.CRATE}::tests::common::util"
