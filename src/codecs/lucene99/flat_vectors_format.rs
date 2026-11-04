@@ -83,14 +83,30 @@ fn ensure_registered() {
 /// Lucene 9.9 flat vector format.
 ///
 /// Equivalent to `org.apache.lucene.codecs.lucene99.Lucene99FlatVectorsFormat`.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Lucene99FlatVectorsFormat {
-    vectors_scorer: DefaultFlatVectorScorer,
+    vectors_scorer: Arc<dyn FlatVectorsScorer>,
+}
+
+impl Default for Lucene99FlatVectorsFormat {
+    fn default() -> Self {
+        Self::new(DefaultFlatVectorScorer::INSTANCE)
+    }
 }
 
 impl Lucene99FlatVectorsFormat {
-    /// Creates a new format instance using the default flat-vector scorer.
-    pub const fn new(vectors_scorer: DefaultFlatVectorScorer) -> Self {
+    /// Creates a new format instance whose writers and readers score with
+    /// `vectors_scorer`.
+    ///
+    /// Equivalent to `Lucene99FlatVectorsFormat(FlatVectorsScorer)`
+    /// (`Lucene99FlatVectorsFormat.java:89-92`): any scorer, the default one
+    /// or another, such as `lucene-codecs`' `FlatBitVectorsScorer`.
+    pub fn new(vectors_scorer: impl FlatVectorsScorer + 'static) -> Self {
+        Self::with_shared_scorer(Arc::new(vectors_scorer))
+    }
+
+    /// [`new`](Self::new) over a scorer the caller already shares.
+    pub fn with_shared_scorer(vectors_scorer: Arc<dyn FlatVectorsScorer>) -> Self {
         Self { vectors_scorer }
     }
 
@@ -99,12 +115,12 @@ impl Lucene99FlatVectorsFormat {
         state: &SegmentWriteState<'a>,
     ) -> Result<Lucene99FlatVectorsWriter> {
         ensure_registered();
-        Lucene99FlatVectorsWriter::new(state, self.vectors_scorer)
+        Lucene99FlatVectorsWriter::new(state, Arc::clone(&self.vectors_scorer))
     }
 
     fn create_reader<'a>(&self, state: &SegmentReadState<'a>) -> Result<Lucene99FlatVectorsReader> {
         ensure_registered();
-        Lucene99FlatVectorsReader::new(state, self.vectors_scorer)
+        Lucene99FlatVectorsReader::new(state, Arc::clone(&self.vectors_scorer))
     }
 }
 
@@ -152,7 +168,7 @@ impl FlatVectorsFormat for Lucene99FlatVectorsFormat {
 pub struct Lucene99FlatVectorsWriter {
     meta: Option<Box<dyn IndexOutput>>,
     vector_data: Option<Box<dyn IndexOutput>>,
-    vector_scorer: DefaultFlatVectorScorer,
+    vector_scorer: Arc<dyn FlatVectorsScorer>,
     fields: Vec<FieldWriterEntry>,
     /// `maxDoc` of the segment being written, or `None` when it was not set
     /// yet at the moment this writer was created.
@@ -208,7 +224,7 @@ impl Lucene99FlatVectorsWriter {
     /// Creates a new writer for the given segment write state.
     pub fn new(
         state: &SegmentWriteState<'_>,
-        vectors_scorer: DefaultFlatVectorScorer,
+        vectors_scorer: Arc<dyn FlatVectorsScorer>,
     ) -> Result<Self> {
         let meta_file_name = segment_file_name(
             &state.segment_info.name,
@@ -672,7 +688,7 @@ impl FlatVectorsWriter for Lucene99FlatVectorsWriter {
     }
 
     fn get_flat_vector_scorer(&self) -> &dyn FlatVectorsScorer {
-        &self.vector_scorer
+        &*self.vector_scorer
     }
 
     /// Writes one field's merged vectors straight into the new segment: the
@@ -826,7 +842,7 @@ fn read_vector_similarity(ordinal: i32) -> Result<VectorSimilarityFunction> {
 /// Equivalent to `org.apache.lucene.codecs.lucene99.Lucene99FlatVectorsReader`.
 pub struct Lucene99FlatVectorsReader {
     fields: HashMap<i32, FieldEntry>,
-    vector_scorer: DefaultFlatVectorScorer,
+    vector_scorer: Arc<dyn FlatVectorsScorer>,
     vector_data: Box<dyn IndexInput>,
     field_infos: FieldInfos,
     data_context: Box<dyn crate::store::IOContext>,
@@ -862,7 +878,7 @@ impl Lucene99FlatVectorsReader {
     /// passes `DataAccessHint.RANDOM`.
     pub fn new(
         state: &SegmentReadState<'_>,
-        vectors_scorer: DefaultFlatVectorScorer,
+        vectors_scorer: Arc<dyn FlatVectorsScorer>,
     ) -> Result<Self> {
         Self::with_access_hint(state, vectors_scorer, Some(DataAccessHint::Random))
     }
@@ -879,7 +895,7 @@ impl Lucene99FlatVectorsReader {
     /// Returns whatever reading the metadata or opening the data file raises.
     pub fn with_access_hint(
         state: &SegmentReadState<'_>,
-        vectors_scorer: DefaultFlatVectorScorer,
+        vectors_scorer: Arc<dyn FlatVectorsScorer>,
         access_hint: Option<DataAccessHint>,
     ) -> Result<Self> {
         let (version_meta, fields) = Self::read_metadata(state)?;
@@ -996,7 +1012,7 @@ impl Lucene99FlatVectorsReader {
     fn clone_reader(&self) -> Result<Self> {
         Ok(Self {
             fields: self.fields.clone(),
-            vector_scorer: self.vector_scorer,
+            vector_scorer: Arc::clone(&self.vector_scorer),
             vector_data: self.vector_data.clone_input()?,
             field_infos: self.field_infos.clone(),
             data_context: self.data_context.with_hints(self.data_context.hints()),
@@ -1040,7 +1056,7 @@ impl KnnVectorsReader for Lucene99FlatVectorsReader {
         let entry = self.get_field_entry(field, VectorEncoding::FLOAT32)?;
         OffHeapFloatVectorValues::load(
             entry.similarity_function,
-            Arc::new(self.vector_scorer),
+            Arc::clone(&self.vector_scorer),
             &entry.ord_to_doc,
             entry.dimension,
             entry.vector_data_offset,
@@ -1054,7 +1070,7 @@ impl KnnVectorsReader for Lucene99FlatVectorsReader {
         let entry = self.get_field_entry(field, VectorEncoding::BYTE)?;
         OffHeapByteVectorValues::load(
             entry.similarity_function,
-            Arc::new(self.vector_scorer),
+            Arc::clone(&self.vector_scorer),
             &entry.ord_to_doc,
             entry.dimension,
             entry.vector_data_offset,
@@ -1176,7 +1192,7 @@ impl crate::util::Accountable for Lucene99FlatVectorsReader {
 
 impl FlatVectorsReader for Lucene99FlatVectorsReader {
     fn get_flat_vector_scorer(&self, _field: &str) -> Result<Box<dyn FlatVectorsScorer>> {
-        Ok(Box::new(self.vector_scorer))
+        Ok(Box::new(Arc::clone(&self.vector_scorer)))
     }
 
     fn get_random_vector_scorer_float(
@@ -1187,7 +1203,7 @@ impl FlatVectorsReader for Lucene99FlatVectorsReader {
         let entry = self.get_field_entry(field, VectorEncoding::FLOAT32)?;
         let values = OffHeapFloatVectorValues::load(
             entry.similarity_function,
-            Arc::new(self.vector_scorer),
+            Arc::clone(&self.vector_scorer),
             &entry.ord_to_doc,
             entry.dimension,
             entry.vector_data_offset,
@@ -1206,7 +1222,7 @@ impl FlatVectorsReader for Lucene99FlatVectorsReader {
         let entry = self.get_field_entry(field, VectorEncoding::BYTE)?;
         let values = OffHeapByteVectorValues::load(
             entry.similarity_function,
-            Arc::new(self.vector_scorer),
+            Arc::clone(&self.vector_scorer),
             &entry.ord_to_doc,
             entry.dimension,
             entry.vector_data_offset,

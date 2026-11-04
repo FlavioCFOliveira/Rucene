@@ -16,11 +16,13 @@
 
 use std::sync::{Arc, LazyLock};
 
-use rucene::codecs::{Codec, PostingsFormat};
+use rucene::codecs::{Codec, KnnVectorsFormat, PostingsFormat};
 use rucene::util::resource_loader::{ClassLoader, ServiceProvider};
 use rucene::util::spi::{lucene_core_class_loader, NamedSPIProvider};
 
-use crate::memory::FSTPostingsFormat;
+use crate::bitvectors::HnswBitVectorsFormat;
+use crate::bloom::BloomFilteringPostingsFormat;
+use crate::memory::{DirectPostingsFormat, FSTPostingsFormat};
 use crate::simpletext::SimpleTextCodec;
 
 /// The class loader that sees `lucene-codecs`' `META-INF/services` files, a
@@ -32,18 +34,17 @@ use crate::simpletext::SimpleTextCodec;
 /// | service | providers |
 /// | --- | --- |
 /// | `org.apache.lucene.codecs.Codec` | `SimpleTextCodec` |
-/// | `org.apache.lucene.codecs.PostingsFormat` | `FSTPostingsFormat` |
+/// | `org.apache.lucene.codecs.KnnVectorsFormat` | `HnswBitVectorsFormat` |
+/// | `org.apache.lucene.codecs.PostingsFormat` | `BloomFilteringPostingsFormat`, `DirectPostingsFormat`, `FSTPostingsFormat` |
 ///
-/// **Divergence.** `lucene-codecs` 10.5.0 also lists `HnswBitVectorsFormat`
-/// under `org.apache.lucene.codecs.KnnVectorsFormat`, and
-/// `BlockTreeOrdsPostingsFormat`, `BloomFilteringPostingsFormat`,
-/// `DirectPostingsFormat`, `UniformSplitPostingsFormat` and
+/// **Divergence.** `lucene-codecs` 10.5.0 also lists
+/// `BlockTreeOrdsPostingsFormat`, `UniformSplitPostingsFormat` and
 /// `STUniformSplitPostingsFormat` under `org.apache.lucene.codecs.PostingsFormat`
 /// (`lucene/codecs/src/resources/META-INF/services/`). Those classes are not
 /// ported yet, and a service line whose class cannot be loaded makes every
 /// scan of the service fail (`ServiceConfigurationError: Provider ... not
 /// found`), so their lines are left out until the tasks that port the
-/// classes add them.
+/// classes add them; the lines present keep the file's order.
 pub fn class_loader() -> &'static Arc<ClassLoader> {
     static LOADER: LazyLock<Arc<ClassLoader>> = LazyLock::new(|| {
         ClassLoader::with_services(
@@ -54,6 +55,28 @@ pub fn class_loader() -> &'static Arc<ClassLoader> {
                     "org.apache.lucene.codecs.Codec",
                     "org.apache.lucene.codecs.simpletext.SimpleTextCodec",
                     NamedSPIProvider::new(|| Arc::new(SimpleTextCodec::new()) as Arc<dyn Codec>),
+                ),
+                ServiceProvider::new(
+                    "org.apache.lucene.codecs.KnnVectorsFormat",
+                    "org.apache.lucene.codecs.bitvectors.HnswBitVectorsFormat",
+                    NamedSPIProvider::new(|| {
+                        Arc::new(HnswBitVectorsFormat::new()) as Arc<dyn KnnVectorsFormat>
+                    }),
+                ),
+                ServiceProvider::new(
+                    "org.apache.lucene.codecs.PostingsFormat",
+                    "org.apache.lucene.codecs.bloom.BloomFilteringPostingsFormat",
+                    NamedSPIProvider::new(|| {
+                        Arc::new(BloomFilteringPostingsFormat::for_reading())
+                            as Arc<dyn PostingsFormat>
+                    }),
+                ),
+                ServiceProvider::new(
+                    "org.apache.lucene.codecs.PostingsFormat",
+                    "org.apache.lucene.codecs.memory.DirectPostingsFormat",
+                    NamedSPIProvider::new(|| {
+                        Arc::new(DirectPostingsFormat::new()) as Arc<dyn PostingsFormat>
+                    }),
                 ),
                 ServiceProvider::new(
                     "org.apache.lucene.codecs.PostingsFormat",

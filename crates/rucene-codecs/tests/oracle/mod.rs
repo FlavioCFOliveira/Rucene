@@ -1840,6 +1840,14 @@ fn first_doc(te: &mut dyn rucene::index::TermsEnum) -> rucene::error::Result<i32
 
 /// `PostingsFormatOracle.enumTrace`, line for line.
 pub fn enum_trace(path: &Path) -> Vec<String> {
+    enum_trace_with(path, None, &mut 0)
+}
+
+/// [`enum_trace`], with an intersection that panics with `known_panic` (a
+/// core `debug_assert!` that Java runs as an `assert`, raising
+/// `AssertionError` under `-ea`) listed as Java lists that error,
+/// `!AssertionError`; `panics` counts them.
+pub fn enum_trace_with(path: &Path, known_panic: Option<&str>, panics: &mut usize) -> Vec<String> {
     use rucene::error::Result;
     install_codecs();
     let reader: Arc<dyn IndexReader> = directory_reader::open(open_dir(path)).unwrap();
@@ -1941,10 +1949,11 @@ pub fn enum_trace(path: &Path) -> Vec<String> {
                 .unwrap();
                 for start in [None, second.as_ref()] {
                     let mut sb = format!("  intersect {r} from={}", hex_or_null(start));
-                    let listed = (|| -> Result<()> {
+                    let mut listed_terms = String::new();
+                    let mut list = || -> Result<()> {
                         let mut ie = terms.intersect(&compiled, start)?;
                         while let Some(t) = ie.next()? {
-                            sb.push_str(&format!(
+                            listed_terms.push_str(&format!(
                                 " {}/{}/{}/{}",
                                 hex(t.slice()),
                                 ie.doc_freq()?,
@@ -1953,7 +1962,28 @@ pub fn enum_trace(path: &Path) -> Vec<String> {
                             ));
                         }
                         Ok(())
-                    })();
+                    };
+                    let listed = match known_panic {
+                        None => list(),
+                        Some(known) => {
+                            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(list)) {
+                                Ok(listed) => listed,
+                                Err(payload) => {
+                                    let message = payload
+                                        .downcast_ref::<&str>()
+                                        .map(|m| m.to_string())
+                                        .or_else(|| payload.downcast_ref::<String>().cloned())
+                                        .unwrap_or_default();
+                                    if !message.contains(known) {
+                                        std::panic::resume_unwind(payload);
+                                    }
+                                    *panics += 1;
+                                    Err(rucene::error::LuceneError::AssertionError(message))
+                                }
+                            }
+                        }
+                    };
+                    sb.push_str(&listed_terms);
                     if let Err(e) = listed {
                         sb.push(' ');
                         sb.push_str(&error_name(&e));
@@ -2024,6 +2054,18 @@ impl FormatOracle {
     /// file of the format under test byte for byte, once Lucene's segment id
     /// is replaced by Rucene's; returns the number of format files compared.
     pub fn assert_writes_lucenes_bytes(&self) -> usize {
+        self.assert_writes_lucenes_bytes_with(|_, java, _| java)
+    }
+
+    /// [`assert_writes_lucenes_bytes`](Self::assert_writes_lucenes_bytes)
+    /// with Lucene's bytes of each format file passed through `normalize(name,
+    /// java_with_rust_id, rust)` before the comparison, for a file whose
+    /// bytes Lucene does not determine (an order that follows identity hash
+    /// codes).
+    pub fn assert_writes_lucenes_bytes_with(
+        &self,
+        normalize: impl Fn(&str, Vec<u8>, &[u8]) -> Vec<u8>,
+    ) -> usize {
         let mut compared = 0;
         for case in ["nocfs", "cfs", "edge"] {
             let tmp = TempDir::new(&format!("{}-write-{case}", self.prefix));
@@ -2047,7 +2089,11 @@ impl FormatOracle {
             );
             for (name, java_bytes) in &java_files {
                 let rust_bytes = &rust_files[name];
-                let expected = java_bytes_with_rust_id(java_bytes, rust_bytes);
+                let expected = normalize(
+                    name,
+                    java_bytes_with_rust_id(java_bytes, rust_bytes),
+                    rust_bytes,
+                );
                 assert!(
                     *rust_bytes == expected,
                     "{}: {case}: {name} differs from Lucene's at byte {} (lengths {} and {})",
@@ -2118,6 +2164,43 @@ impl FormatOracle {
         }
     }
 
+    /// [`assert_enum_trace_matches`](Self::assert_enum_trace_matches) for a
+    /// format whose intersections run a core enum that panics with
+    /// `known_panic` where Java raises `AssertionError` (see
+    /// [`enum_trace_with`]); the panic must still happen on both sides'
+    /// files, so the exclusion fails once the core is fixed.
+    pub fn assert_enum_trace_matches_but_core_panic(&self, known_panic: &str) {
+        let mut panics = [0usize; 2];
+        for case in ["nocfs", "cfs", "edge"] {
+            let expected: Vec<String> = rows(&format!("{}_enum.tsv", self.prefix))
+                .into_iter()
+                .filter(|r| r[0] == case)
+                .map(|r| r[1].clone())
+                .collect();
+            let java_dir = TempDir::new(&format!("{}-enum-java-{case}", self.prefix));
+            write_files(&java_dir.0, &java_files(self.prefix, case));
+            let rust_dir = TempDir::new(&format!("{}-enum-rust-{case}", self.prefix));
+            self.write_case(case, &rust_dir.0);
+            for (i, (side, dir)) in [("Lucene's", &java_dir.0), ("Rucene's", &rust_dir.0)]
+                .into_iter()
+                .enumerate()
+            {
+                let trace = enum_trace_with(dir, Some(known_panic), &mut panics[i]);
+                assert_same_lines(
+                    &format!("{}: {case}: enum trace of {side} files", self.prefix),
+                    &trace,
+                    &expected,
+                );
+            }
+        }
+        assert!(
+            panics.iter().all(|&p| p > 0),
+            "{}: no `{known_panic}` panic on one side ({panics:?}): the core is fixed, remove \
+             the exclusion",
+            self.prefix
+        );
+    }
+
     /// Lucene reads the files Rucene writes and sees what it sees in its own
     /// (`java -cp <jars> SimpleTextReadOracle.java <dir>`).
     pub fn assert_lucene_reads_what_rucene_writes(&self) {
@@ -2167,6 +2250,18 @@ impl FormatOracle {
     /// returns the labels of the cases whose message carried core defect 2
     /// (see [`PRIOR_ERROR_SUFFIX`]), stripped before the comparison.
     pub fn assert_corrupted_files_raise_lucenes_errors(&self) -> Vec<String> {
+        self.assert_corrupted_files_raise_lucenes_errors_but(&[])
+    }
+
+    /// [`assert_corrupted_files_raise_lucenes_errors`](Self::assert_corrupted_files_raise_lucenes_errors)
+    /// for every case but the `known` ones, `(label, class, message)`: a
+    /// core defect outside the format makes Rucene raise that error instead
+    /// of Lucene's, and the comparison requires it to still differ from
+    /// Lucene's, so the exclusion fails once the core is fixed.
+    pub fn assert_corrupted_files_raise_lucenes_errors_but(
+        &self,
+        known: &[(&str, &str, &str)],
+    ) -> Vec<String> {
         let mut stripped = Vec::new();
         install_codecs();
         let expected: BTreeMap<String, (String, String)> =
@@ -2233,7 +2328,22 @@ impl FormatOracle {
                         (class, message)
                     }
                 };
-                assert_eq!(&actual, &expected[&label], "{}: {label}", self.prefix);
+                match known.iter().find(|(l, _, _)| *l == label) {
+                    Some((_, class, message)) => {
+                        assert_eq!(
+                            (actual.0.as_str(), actual.1.as_str()),
+                            (*class, *message),
+                            "{}: {label}: the known core defect changed",
+                            self.prefix
+                        );
+                        assert_ne!(
+                            &actual, &expected[&label],
+                            "{}: {label}: the core defect is fixed, remove the exclusion",
+                            self.prefix
+                        );
+                    }
+                    None => assert_eq!(&actual, &expected[&label], "{}: {label}", self.prefix),
+                }
                 cases += 1;
             }
         }

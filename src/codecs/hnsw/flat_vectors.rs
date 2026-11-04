@@ -766,6 +766,67 @@ pub trait FlatVectorsScorer: Send + Sync + fmt::Debug + fmt::Display {
     }
 }
 
+/// A shared scorer is the scorer it shares: Java passes one
+/// `FlatVectorsScorer` reference to the format, its writers and its readers
+/// (`Lucene99FlatVectorsFormat.java:86-102`).
+impl<T: FlatVectorsScorer + ?Sized> FlatVectorsScorer for Arc<T> {
+    fn get_random_vector_scorer_supplier_float(
+        &self,
+        similarity_function: VectorSimilarityFunction,
+        vector_values: Box<dyn FloatVectorValues>,
+    ) -> Result<Box<dyn RandomVectorScorerSupplier>> {
+        (**self).get_random_vector_scorer_supplier_float(similarity_function, vector_values)
+    }
+
+    fn get_random_vector_scorer_supplier_byte(
+        &self,
+        similarity_function: VectorSimilarityFunction,
+        vector_values: Box<dyn ByteVectorValues>,
+    ) -> Result<Box<dyn RandomVectorScorerSupplier>> {
+        (**self).get_random_vector_scorer_supplier_byte(similarity_function, vector_values)
+    }
+
+    fn get_random_vector_scorer_float(
+        &self,
+        similarity_function: VectorSimilarityFunction,
+        vector_values: Box<dyn FloatVectorValues>,
+        target: &[f32],
+    ) -> Result<Box<dyn RandomVectorScorer>> {
+        (**self).get_random_vector_scorer_float(similarity_function, vector_values, target)
+    }
+
+    fn get_random_vector_scorer_byte(
+        &self,
+        similarity_function: VectorSimilarityFunction,
+        vector_values: Box<dyn ByteVectorValues>,
+        target: &[u8],
+    ) -> Result<Box<dyn RandomVectorScorer>> {
+        (**self).get_random_vector_scorer_byte(similarity_function, vector_values, target)
+    }
+
+    fn get_random_vector_scorer_supplier_legacy_quantized(
+        &self,
+        similarity_function: VectorSimilarityFunction,
+        vector_values: Box<dyn LegacyQuantizedByteVectorValues>,
+    ) -> Result<Box<dyn RandomVectorScorerSupplier>> {
+        (**self)
+            .get_random_vector_scorer_supplier_legacy_quantized(similarity_function, vector_values)
+    }
+
+    fn get_random_vector_scorer_legacy_quantized(
+        &self,
+        similarity_function: VectorSimilarityFunction,
+        vector_values: Box<dyn LegacyQuantizedByteVectorValues>,
+        target: &[f32],
+    ) -> Result<Box<dyn RandomVectorScorer>> {
+        (**self).get_random_vector_scorer_legacy_quantized(
+            similarity_function,
+            vector_values,
+            target,
+        )
+    }
+}
+
 /// Checks that a query vector and a field's vectors have the same dimension.
 ///
 /// # Errors

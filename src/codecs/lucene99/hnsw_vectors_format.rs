@@ -59,16 +59,39 @@ const META_CODEC_NAME: &str = "Lucene99HnswVectorsFormatMeta";
 const VECTOR_INDEX_CODEC_NAME: &str = "Lucene99HnswVectorsFormatIndex";
 const META_EXTENSION: &str = "vem";
 const VECTOR_INDEX_EXTENSION: &str = "vex";
-const VERSION_START: i32 = 0;
-const VERSION_GROUPVARINT: i32 = 1;
-pub(crate) const VERSION_CURRENT: i32 = VERSION_GROUPVARINT;
+/// The first version of the format: `Lucene99HnswVectorsFormat.VERSION_START`.
+pub const VERSION_START: i32 = 0;
+/// The version that writes neighbours with group-varint:
+/// `Lucene99HnswVectorsFormat.VERSION_GROUPVARINT`.
+pub const VERSION_GROUPVARINT: i32 = 1;
+/// The version written: `Lucene99HnswVectorsFormat.VERSION_CURRENT`.
+pub const VERSION_CURRENT: i32 = VERSION_GROUPVARINT;
 
-const MAXIMUM_MAX_CONN: i32 = 512;
-const MAXIMUM_BEAM_WIDTH: i32 = 3200;
-const DEFAULT_MAX_CONN: i32 = crate::util::hnsw::DEFAULT_M;
-const DEFAULT_BEAM_WIDTH: i32 = crate::util::hnsw::DEFAULT_BEAM_WIDTH;
-pub(crate) const DEFAULT_NUM_MERGE_WORKER: i32 = 1;
-pub(crate) const HNSW_GRAPH_THRESHOLD: i32 = 100;
+/// A maximum configurable maximum max conn.
+///
+/// NOTE: We eagerly populate `float[MAX_CONN*2]` and `int[MAX_CONN*2]`, so
+/// exceptionally large numbers here will use an inordinate amount of heap.
+/// `Lucene99HnswVectorsFormat.MAXIMUM_MAX_CONN`.
+pub const MAXIMUM_MAX_CONN: i32 = 512;
+/// The maximum size of the queue to maintain while searching during graph
+/// construction. This maximum value preserves the ratio of the
+/// `DEFAULT_BEAM_WIDTH`/`DEFAULT_MAX_CONN` (i.e. `6.25 * 16 = 3200`).
+/// `Lucene99HnswVectorsFormat.MAXIMUM_BEAM_WIDTH`.
+pub const MAXIMUM_BEAM_WIDTH: i32 = 3200;
+/// Default number of maximum connections per node:
+/// `Lucene99HnswVectorsFormat.DEFAULT_MAX_CONN`.
+pub const DEFAULT_MAX_CONN: i32 = crate::util::hnsw::DEFAULT_M;
+/// Default number of the size of the queue maintained while searching
+/// during a graph construction: `Lucene99HnswVectorsFormat.DEFAULT_BEAM_WIDTH`.
+pub const DEFAULT_BEAM_WIDTH: i32 = crate::util::hnsw::DEFAULT_BEAM_WIDTH;
+/// Default to use single-thread merge:
+/// `Lucene99HnswVectorsFormat.DEFAULT_NUM_MERGE_WORKER`.
+pub const DEFAULT_NUM_MERGE_WORKER: i32 = 1;
+/// Minimum estimated search effort (in terms of expected visited nodes)
+/// required before building an HNSW graph for a segment; below it, graph
+/// construction is skipped for that segment. Default: `100`.
+/// `Lucene99HnswVectorsFormat.HNSW_GRAPH_THRESHOLD`.
+pub const HNSW_GRAPH_THRESHOLD: i32 = 100;
 const DIRECT_MONOTONIC_BLOCK_SHIFT: i32 = 16;
 const EXHAUSTIVE_BULK_SCORE_ORDS: usize = 64;
 
@@ -1091,6 +1114,7 @@ impl HnswWriterState {
                 FieldWriterEntry::Float(writer, info) => {
                     let values = BufferedFloatVectorValues::new(info.vector_dimension, writer)?;
                     let graph = build_hnsw_graph_float(
+                        self.flat_vector_writer.get_flat_vector_scorer(),
                         &values,
                         info.vector_similarity_function,
                         self.m,
@@ -1102,6 +1126,7 @@ impl HnswWriterState {
                 FieldWriterEntry::Byte(writer, info) => {
                     let values = BufferedByteVectorValues::new(info.vector_dimension, writer)?;
                     let graph = build_hnsw_graph_byte(
+                        self.flat_vector_writer.get_flat_vector_scorer(),
                         &values,
                         info.vector_similarity_function,
                         self.m,
@@ -1532,7 +1557,12 @@ fn write_int_le_bytes(out: &mut dyn IndexOutput, v: i32, n: usize) -> Result<()>
     out.write_bytes(&bytes, 0, n)
 }
 
+/// Builds a flushed field's graph, scoring with the flat writer's scorer:
+/// Java's `FieldWriter.create` takes the scorer supplier from
+/// `flatVectorWriter.getFlatVectorScorer()` (`Lucene99HnswVectorsWriter.java:196-199, 738-747`),
+/// which for `lucene-codecs`' `HnswBitVectorsFormat` is `FlatBitVectorsScorer`.
 fn build_hnsw_graph_float(
+    scorer: &dyn FlatVectorsScorer,
     values: &BufferedFloatVectorValues,
     similarity: VectorSimilarityFunction,
     m: i32,
@@ -1541,8 +1571,8 @@ fn build_hnsw_graph_float(
 ) -> Result<Option<OnHeapHnswGraph>> {
     let count = values.size();
     if count > 0 && should_create_graph(tiny_segments_threshold, count) {
-        let supplier = DefaultFlatVectorScorer::INSTANCE
-            .get_random_vector_scorer_supplier_float(similarity, Box::new(values.clone()))?;
+        let supplier =
+            scorer.get_random_vector_scorer_supplier_float(similarity, Box::new(values.clone()))?;
         let mut builder = HnswGraphBuilder::create(&*supplier, m, beam_width, 42, count)?;
         builder.build(count)?;
         Ok(Some(builder.into_graph()?))
@@ -1551,7 +1581,9 @@ fn build_hnsw_graph_float(
     }
 }
 
+/// [`build_hnsw_graph_float`] for byte vectors.
 fn build_hnsw_graph_byte(
+    scorer: &dyn FlatVectorsScorer,
     values: &BufferedByteVectorValues,
     similarity: VectorSimilarityFunction,
     m: i32,
@@ -1560,8 +1592,8 @@ fn build_hnsw_graph_byte(
 ) -> Result<Option<OnHeapHnswGraph>> {
     let count = values.size();
     if count > 0 && should_create_graph(tiny_segments_threshold, count) {
-        let supplier = DefaultFlatVectorScorer::INSTANCE
-            .get_random_vector_scorer_supplier_byte(similarity, Box::new(values.clone()))?;
+        let supplier =
+            scorer.get_random_vector_scorer_supplier_byte(similarity, Box::new(values.clone()))?;
         let mut builder = HnswGraphBuilder::create(&*supplier, m, beam_width, 42, count)?;
         builder.build(count)?;
         Ok(Some(builder.into_graph()?))

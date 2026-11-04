@@ -20,16 +20,19 @@
 //!
 //! | Rucene | Apache Lucene 10.5.0 |
 //! | --- | --- |
+//! | [`DirectPostingsFormat`] | `DirectPostingsFormat` |
 //! | [`FSTPostingsFormat`] | `FSTPostingsFormat` |
 //! | [`FSTTermsReader`] | `FSTTermsReader` |
 //! | [`FSTTermsWriter`] | `FSTTermsWriter` |
 //! | [`FSTTermOutputs`], [`TermData`] | `FSTTermOutputs`, `FSTTermOutputs.TermData` |
 
+pub mod direct_postings_format;
 pub mod fst_postings_format;
 pub mod fst_term_outputs;
 pub mod fst_terms_reader;
 pub mod fst_terms_writer;
 
+pub use direct_postings_format::DirectPostingsFormat;
 pub use fst_postings_format::FSTPostingsFormat;
 pub use fst_term_outputs::{FSTTermOutputs, TermData};
 pub use fst_terms_reader::FSTTermsReader;
