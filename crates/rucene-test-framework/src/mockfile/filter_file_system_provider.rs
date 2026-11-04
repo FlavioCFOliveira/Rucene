@@ -176,7 +176,7 @@ pub fn install<T: FilterFileSystemProvider + 'static>(
         .set_file_system(Arc::new(FilterFileSystem::new(parent, delegate_instance)));
 }
 
-/// `FilterFileSystemProvider`: a provider that contains another provider,
+/// Port of `org.apache.lucene.tests.mockfile.FilterFileSystemProvider`: a provider that contains another provider,
 /// which it uses as its basic source of data, possibly transforming the data
 /// along the way or providing additional functionality.
 ///
