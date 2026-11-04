@@ -388,13 +388,14 @@ pub struct MemorySegment {
 impl MemorySegment {
     /// Maps `len` bytes of `file` starting at `file_offset` into `scope`.
     ///
-    /// Equivalent to `FileChannel.map(MapMode.READ_ONLY, offset, size, arena)`.
+    /// Equivalent to `FileChannel.map(MapMode.READ_ONLY, offset, size, arena)`, on
+    /// the channel the provider opened.
     ///
     /// # Errors
     ///
     /// Returns [`LuceneError::Io`] if the mapping cannot be created.
     pub fn map(
-        file: &std::fs::File,
+        channel: &dyn super::java_nio_file::FileChannel,
         file_offset: u64,
         len: usize,
         scope: Arc<Scope>,
@@ -402,7 +403,7 @@ impl MemorySegment {
         if len == 0 {
             return Ok(Self::empty(scope));
         }
-        let mapping = super::mmap::map_read_only(file, file_offset, len)?;
+        let mapping = channel.map_read_only(file_offset as i64, len as i64)?;
         Ok(Self {
             mapping: Some(Arc::new(mapping)),
             offset: 0,

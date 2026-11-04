@@ -21,7 +21,6 @@
 
 use std::fs;
 use std::io;
-use std::path::Path;
 use std::sync::{Arc, LazyLock};
 
 use memmap2::Mmap;
@@ -127,7 +126,7 @@ impl MMapDirectory {
     /// chunk size.
     ///
     /// Equivalent to `MMapDirectory(Path)` in Lucene 10.5.0.
-    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+    pub fn open(path: impl crate::store::java_nio_file::IntoNioPath) -> Result<Self> {
         // `this(path, FSLockFactory.getDefault())`
         Self::with_lock_factory(path, Box::new(NativeFSLockFactory))
     }
@@ -141,7 +140,7 @@ impl MMapDirectory {
     ///
     /// As [`with_options`](Self::with_options).
     pub fn with_lock_factory(
-        path: impl AsRef<Path>,
+        path: impl crate::store::java_nio_file::IntoNioPath,
         lock_factory: Box<dyn LockFactory>,
     ) -> Result<Self> {
         Self::with_options(path, lock_factory, *DEFAULT_MAX_CHUNK_SIZE)
@@ -160,7 +159,7 @@ impl MMapDirectory {
     /// beyond a Java `long`, and propagates any I/O error creating or
     /// canonicalizing the directory.
     pub fn with_options(
-        path: impl AsRef<Path>,
+        path: impl crate::store::java_nio_file::IntoNioPath,
         lock_factory: Box<dyn LockFactory>,
         max_chunk_size: usize,
     ) -> Result<Self> {
@@ -196,7 +195,7 @@ impl MMapDirectory {
     /// # Errors
     ///
     /// Returns [`LuceneError::AlreadyClosed`] once the directory is closed.
-    pub fn get_directory(&self) -> Result<&Path> {
+    pub fn get_directory(&self) -> Result<&crate::store::java_nio_file::Path> {
         self.inner.get_directory()
     }
 
@@ -411,7 +410,7 @@ impl Directory for MMapDirectory {
     fn open_input(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
         self.inner.ensure_open()?;
         self.inner.ensure_can_read(name)?;
-        let path = self.inner.directory_path().join(name);
+        let path = self.inner.get_directory()?.resolve_str(name);
         let read_advice = Arc::clone(&self.read_advice);
         let file_name = name.to_string();
         // `c -> readAdvice.apply(name, c).orElse(Constants.DEFAULT_READADVICE)`

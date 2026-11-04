@@ -170,13 +170,13 @@ use std::{
     cmp::Ordering,
     env,
     fmt::{self, Debug, Display, Formatter},
-    fs::{self, File, OpenOptions},
     hash::{Hash, Hasher},
     io,
-    path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering as AtomicOrdering},
     sync::{Arc, LazyLock},
 };
+
+use crate::store::java_nio_file as nio;
 
 use crate::error::LuceneError;
 use crate::store::{DataInput, DataOutput};
@@ -2072,26 +2072,44 @@ impl IOUtils {
         }
     }
 
-    /// Deletes the given files, suppressing all exceptions.
+    /// Deletes all given files, suppressing all thrown exceptions; `None`
+    /// entries are ignored.
+    ///
+    /// Equivalent to `IOUtils.deleteFilesIgnoringExceptions(Collection)`
+    /// (`IOUtils.java:278-290`): `Files.delete` through each path's provider.
     pub fn delete_files_ignoring_exceptions<I, P>(files: I)
     where
         I: IntoIterator<Item = Option<P>>,
-        P: AsRef<Path>,
+        P: nio::IntoNioPath,
     {
         for path in files.into_iter().flatten() {
-            let _ = fs::remove_file(path.as_ref());
+            let path = path.into_nio_path();
+            // `catch (Throwable ignored)`: an unchecked exception is ignored
+            // too.
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = nio::Files::delete(&path);
+            }));
         }
     }
 
-    /// Deletes the given files if they exist, propagating the first exception.
+    /// Deletes all given paths if they exist; `None` entries are ignored.
+    /// After everything is deleted, the first exception hit is returned.
+    ///
+    /// Equivalent to `IOUtils.deleteFilesIfExist(Collection)`
+    /// (`IOUtils.java:310-325`): `Files.deleteIfExists` through each path's
+    /// provider.
+    ///
+    /// # Errors
+    ///
+    /// The first failure; the later ones are suppressed.
     pub fn delete_files_if_exist<I, P>(files: I) -> Result<(), LuceneError>
     where
         I: IntoIterator<Item = Option<P>>,
-        P: AsRef<Path>,
+        P: nio::IntoNioPath,
     {
         let mut err: Option<io::Error> = None;
         for path in files.into_iter().flatten() {
-            if let Err(e) = Self::delete_if_exists(path.as_ref()) {
+            if let Err(e) = nio::Files::delete_if_exists(&path.into_nio_path()) {
                 err = Some(Self::use_or_suppress(err, e));
             }
         }
@@ -2101,57 +2119,61 @@ impl IOUtils {
         }
     }
 
-    fn delete_if_exists(path: &Path) -> io::Result<()> {
-        match fs::remove_file(path) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e),
-        }
-    }
-
     /// Forces all writes for the given file to durable storage.
     ///
     /// Equivalent to `IOUtils.fsync(Path, boolean)` (`IOUtils.java:452-484`):
-    /// a regular file is opened for writing, which the fsync needs to have an
-    /// effect; a directory is opened for reading, and a failure of its fsync is
-    /// ignored because not every file system allows it. On Windows a directory
-    /// cannot be opened at all, so only its existence is checked.
+    /// `FileChannel.open(fileToSync, isDir ? READ : WRITE)` through the path's
+    /// provider — a regular file is opened for writing, which the fsync needs
+    /// to have an effect; a directory for reading — then `force(true)`, whose
+    /// failure is ignored for a directory because not every file system
+    /// allows it. On Windows a directory cannot be opened at all, so only its
+    /// existence is checked.
     ///
     /// # Errors
     ///
-    /// Returns the error opening the file raises (`NotFound` for a missing
-    /// file, Java's `NoSuchFileException`), or the error the fsync of a regular
-    /// file raises.
-    pub fn fsync(file_to_sync: &Path, is_dir: bool) -> Result<(), LuceneError> {
+    /// Returns the error opening the file raises (`NoSuchFileException` for a
+    /// missing file), or the error the fsync of a regular file raises.
+    pub fn fsync(file_to_sync: impl nio::IntoNioPath, is_dir: bool) -> Result<(), LuceneError> {
+        let file_to_sync = file_to_sync.into_nio_path();
         if is_dir && Constants::windows() {
             // opening a directory on Windows fails, directories can not be fsynced there
-            if !file_to_sync.exists() {
+            if !nio::Files::exists(&file_to_sync, &[]) {
                 // yet do not suppress trying to fsync directories that do not exist
-                return Err(LuceneError::Io(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    file_to_sync.display().to_string(),
+                return Err(LuceneError::Io(nio::no_such_file_exception(
+                    file_to_sync.to_string(),
                 )));
             }
             return Ok(());
         }
-        let file = if is_dir {
-            File::open(file_to_sync)?
+        let mode = if is_dir {
+            nio::OpenOption::Read
         } else {
-            OpenOptions::new().write(true).open(file_to_sync)?
+            nio::OpenOption::Write
         };
-        if let Err(e) = file.sync_all() {
-            if is_dir {
-                debug_assert!(
-                    !(Constants::linux() || Constants::mac_os_x()),
-                    "On Linux and MacOSX fsyncing a directory should not throw IOException, \
-                     we just don't want to rely on that in production (undocumented). Got: {e}"
-                );
-                // Ignore exception if it is a directory
-                return Ok(());
+        let file = <dyn nio::FileChannel>::open(&file_to_sync, &[mode])?;
+        // `try (final FileChannel file = ...)`: closed whatever `force`
+        // does; a failure to close is suppressed by the failure of `force`.
+        let forced = file.force(true);
+        let result = match forced {
+            Err(e) => {
+                if is_dir {
+                    debug_assert!(
+                        !(Constants::linux() || Constants::mac_os_x()),
+                        "On Linux and MacOSX fsyncing a directory should not throw IOException, \
+                         we just don't want to rely on that in production (undocumented). Got: {e}"
+                    );
+                    // Ignore exception if it is a directory
+                    Ok(())
+                } else {
+                    // Throw original exception
+                    Err(LuceneError::Io(e))
+                }
             }
-            // Throw original exception
-            return Err(LuceneError::Io(e));
-        }
+            Ok(()) => Ok(()),
+        };
+        let closed = file.close();
+        result?;
+        closed?;
         Ok(())
     }
 
@@ -2265,9 +2287,11 @@ impl IOUtils {
     /// Deletes one or more files or directories, and everything underneath
     /// them.
     ///
-    /// Equivalent to `IOUtils.rm(Path...)`: every location is attempted, the
-    /// ones that could not be removed are collected in the order they were
-    /// attempted, and a single error naming all of them is raised at the end.
+    /// Equivalent to `IOUtils.rm(Path...)` (`IOUtils.java:333-348`): every
+    /// location is attempted, the ones that could not be removed are collected
+    /// in the order they were attempted, and a single `IOException` naming all
+    /// of them — each with its absolute path and `Throwable.toString()` of its
+    /// failure — is raised at the end.
     ///
     /// # Errors
     ///
@@ -2275,9 +2299,9 @@ impl IOUtils {
     pub fn rm<I, P>(locations: I) -> Result<(), LuceneError>
     where
         I: IntoIterator<Item = P>,
-        P: AsRef<Path>,
+        P: nio::IntoNioPath,
     {
-        let mut unremoved: Vec<(PathBuf, io::Error)> = Vec::new();
+        let mut unremoved: Vec<(nio::Path, io::Error)> = Vec::new();
         Self::rm_into(&mut unremoved, locations);
         if unremoved.is_empty() {
             return Ok(());
@@ -2285,55 +2309,84 @@ impl IOUtils {
         let mut b =
             String::from("Could not remove the following files (in the order of attempts):\n");
         for (path, cause) in &unremoved {
-            let absolute = path.canonicalize().unwrap_or_else(|_| path.clone());
-            b.push_str(&format!("   {}: {cause}\n", absolute.display()));
+            b.push_str(&format!(
+                "   {}: {}\n",
+                path.to_absolute_path(),
+                nio::java_to_string(cause)
+            ));
         }
-        Err(LuceneError::Io(io::Error::other(b)))
+        Err(LuceneError::Io(nio::io_exception(b)))
     }
 
-    /// Equivalent to the private `IOUtils.rm(LinkedHashMap, Path...)`: walks
-    /// each location depth-first, deleting files before the directory that
-    /// holds them, and records — rather than propagates — every failure.
-    fn rm_into<I, P>(unremoved: &mut Vec<(PathBuf, io::Error)>, locations: I)
+    /// Equivalent to the private `IOUtils.rm(LinkedHashMap, Path...)`
+    /// (`IOUtils.java:350-404`): `Files.walkFileTree` over each existing
+    /// location, deleting files before the directory that holds them, and
+    /// recording — rather than propagating — every failure. A path already
+    /// recorded keeps its first position and takes the later failure, as
+    /// `LinkedHashMap.put` does.
+    fn rm_into<I, P>(unremoved: &mut Vec<(nio::Path, io::Error)>, locations: I)
     where
         I: IntoIterator<Item = P>,
-        P: AsRef<Path>,
+        P: nio::IntoNioPath,
     {
-        for location in locations {
-            let location = location.as_ref();
-            // TODO: remove this leniency!
-            if !location.exists() {
-                continue;
-            }
-            Self::rm_walk(unremoved, location);
-        }
-    }
+        struct Visitor<'a>(&'a mut Vec<(nio::Path, io::Error)>);
 
-    /// The file-tree visitor Java hands to `Files.walkFileTree`: post-order, so
-    /// a directory is removed only once its entries have been.
-    fn rm_walk(unremoved: &mut Vec<(PathBuf, io::Error)>, path: &Path) {
-        let is_dir = path.symlink_metadata().map(|m| m.is_dir()).unwrap_or(false);
-        if is_dir {
-            match fs::read_dir(path) {
-                Ok(entries) => {
-                    for entry in entries {
-                        match entry {
-                            Ok(entry) => Self::rm_walk(unremoved, &entry.path()),
-                            Err(e) => unremoved.push((path.to_path_buf(), e)),
-                        }
-                    }
-                }
-                Err(e) => {
-                    // visitFileFailed: the directory could not be opened.
-                    unremoved.push((path.to_path_buf(), e));
-                    return;
+        impl Visitor<'_> {
+            fn put(&mut self, path: &nio::Path, error: io::Error) {
+                match self.0.iter_mut().find(|(p, _)| p == path) {
+                    Some(entry) => entry.1 = error,
+                    None => self.0.push((path.clone(), error)),
                 }
             }
-            if let Err(e) = fs::remove_dir(path) {
-                unremoved.push((path.to_path_buf(), e));
+        }
+
+        impl nio::FileVisitor for Visitor<'_> {
+            fn pre_visit_directory(
+                &mut self,
+                _dir: &nio::Path,
+                _attrs: &nio::BasicFileAttributes,
+            ) -> io::Result<nio::FileVisitResult> {
+                Ok(nio::FileVisitResult::Continue)
             }
-        } else if let Err(e) = fs::remove_file(path) {
-            unremoved.push((path.to_path_buf(), e));
+
+            fn post_visit_directory(
+                &mut self,
+                dir: &nio::Path,
+                _impossible: Option<io::Error>,
+            ) -> io::Result<nio::FileVisitResult> {
+                if let Err(e) = nio::Files::delete(dir) {
+                    self.put(dir, e);
+                }
+                Ok(nio::FileVisitResult::Continue)
+            }
+
+            fn visit_file(
+                &mut self,
+                file: &nio::Path,
+                _attrs: &nio::BasicFileAttributes,
+            ) -> io::Result<nio::FileVisitResult> {
+                if let Err(e) = nio::Files::delete(file) {
+                    self.put(file, e);
+                }
+                Ok(nio::FileVisitResult::Continue)
+            }
+
+            fn visit_file_failed(
+                &mut self,
+                file: &nio::Path,
+                exc: io::Error,
+            ) -> io::Result<nio::FileVisitResult> {
+                self.put(file, exc);
+                Ok(nio::FileVisitResult::Continue)
+            }
+        }
+
+        for location in locations {
+            let location = location.into_nio_path();
+            // TODO: remove this leniency!
+            if nio::Files::exists(&location, &[]) {
+                let _ = nio::Files::walk_file_tree(&location, &mut Visitor(unremoved));
+            }
         }
     }
 
@@ -4882,6 +4935,7 @@ impl std::error::Error for ThreadInterruptedException {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     /// `new FixedBitSet(new long[1], 65)` throws Java's
     /// `IllegalArgumentException` (`FixedBitSet.java:162-167`). Measured
     /// against `lucene-core-10.5.0.jar` (`oracle/fix/MiscFix.java`, item 20):
@@ -5634,7 +5688,7 @@ mod tests {
             matches!(&error, LuceneError::Io(e) if e.kind() == io::ErrorKind::PermissionDenied),
             "{error:?}"
         );
-        let error = IOUtils::fsync(&tmp.path().join("missing"), false).unwrap_err();
+        let error = IOUtils::fsync(tmp.path().join("missing"), false).unwrap_err();
         assert!(
             matches!(&error, LuceneError::Io(e) if e.kind() == io::ErrorKind::NotFound),
             "{error:?}"

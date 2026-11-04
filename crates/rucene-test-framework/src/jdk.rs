@@ -1,0 +1,34 @@
+//! The JDK behaviour `lucene/test-framework` calls that the `randomizedtesting`
+//! emulation layer (`randomizedtesting::jdk`) does not cover.
+//!
+//! **Divergence.** These modules are emulations, not ports of a Lucene file:
+//! the JDK is GPL with the Classpath Exception, so each one reproduces, from
+//! the JDK's specification, the part of JDK 25 the framework calls, verified
+//! against a JDK 25 oracle (`tests/fixtures/`). Each states at its point what
+//! the JDK does and where the emulation differs.
+
+pub mod locale;
+pub mod stack_walker;
+
+/// `Runtime.version().feature()` of the JDK this port reproduces: 25.
+///
+/// **Divergence.** Java asks the running JVM; this port reproduces Lucene
+/// 10.5.0 on JDK 25, whose behaviour every JDK emulation here follows.
+pub const RUNTIME_VERSION_FEATURE: i32 = 25;
+
+/// `TimeZone.getAvailableIDs()` of JDK 25, in the JDK's order (which is not
+/// sorted), from `data/available_time_zone_ids.txt`, written by the oracle.
+///
+/// Measured on OpenJDK 25: the region IDs come in a fixed order, but the 28
+/// legacy three-letter IDs (`ACT` … `VST`) come in an order that changes
+/// between JVM runs; `LuceneTestCase.randomTimeZone` removes exactly those on
+/// JDK 25, so the order it draws from is stable.
+pub fn time_zone_available_ids() -> &'static [&'static str] {
+    static IDS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
+        include_str!("jdk/data/available_time_zone_ids.txt")
+            .lines()
+            .filter(|l| !l.is_empty())
+            .collect()
+    });
+    &IDS
+}

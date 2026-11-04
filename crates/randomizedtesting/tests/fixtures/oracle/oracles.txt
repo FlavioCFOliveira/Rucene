@@ -6,3 +6,6 @@ com.carrotsearch.randomizedtesting.RunnerOracle asserts-false
 com.carrotsearch.randomizedtesting.RunnerPartsOracle
 com.carrotsearch.randomizedtesting.ZigguratOracle
 com.carrotsearch.randomizedtesting.SelfTestsOracle @RANDOMIZEDTESTING_SRC@
+org.apache.lucene.tests.mockfile.NioOracle
+org.apache.lucene.tests.mockfile.MockfileOracle
+org.apache.lucene.tests.util.LuceneTestCaseOracle

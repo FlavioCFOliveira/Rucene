@@ -21,3 +21,10 @@ write the fixtures (`../*.tsv`) the crate's parity tests (`src/tests/`) read.
   (`Rec`, `units`, `err`, `seeds`, `tryRecord`), write its own `*.tsv` names
   into the directory it receives, list it in `oracles.txt`, and add the Rust
   test module that reads the new files.
+* **Lucene oracles:** the classes under `src/org/apache/lucene/` drive
+  Lucene 10.5.0 (`lucene-core`, `lucene-codecs`, `lucene-test-framework`, on
+  Hamcrest 2.2) for the other crates of the workspace. Each writes its files
+  into `<out>/<crate>/`; `regenerate.sh` copies the `*.tsv` files to
+  `crates/<crate>/tests/fixtures/` and the JDK data lists to
+  `crates/<crate>/src/jdk/data/`. Their temporary directories are masked as
+  `$D` and identity hash codes as `@HASH`.

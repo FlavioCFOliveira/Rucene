@@ -7,6 +7,7 @@
 #![deny(unsafe_code)]
 
 pub mod exceptions;
+pub mod java_nio_file;
 pub mod lock_stress_test;
 pub mod lock_validating_directory_wrapper;
 pub mod lock_verify_server;
@@ -46,9 +47,7 @@ pub use verifying_lock_factory::VerifyingLockFactory;
 
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
-    fs,
-    io::{self, Read, Seek, SeekFrom, Write},
-    path::{Path, PathBuf},
+    io::{self, Read, Write},
     sync::{
         atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
         Arc, Mutex,
@@ -58,6 +57,8 @@ use std::{
 
 use crc32fast;
 
+use self::java_nio_file as nio;
+use self::java_nio_file::file_time_to_string;
 use crate::{
     error::{LuceneError, Result},
     util::java_collections::{
@@ -4115,34 +4116,33 @@ impl NativeFSLockFactory {
 
 impl FSLockFactory for NativeFSLockFactory {
     /// Equivalent to `NativeFSLockFactory.obtainFSLock(FSDirectory, String)`
-    /// (`NativeFSLockFactory.java:73-128`).
+    /// (`NativeFSLockFactory.java:73-128`); every file operation goes through
+    /// the provider of the directory's path.
     fn obtain_fs_lock(&self, dir: &dyn Directory, lock_name: &str) -> Result<Box<dyn Lock>> {
         let lock_dir = fs_directory_of::<Self>(dir)?.get_directory()?;
 
         // Ensure that lockDir exists and is a directory.
-        std::fs::create_dir_all(lock_dir)?;
-        let lock_file = lock_dir.join(lock_name);
+        // note: this will fail if lockDir is a symlink
+        nio::Files::create_directories(lock_dir)?;
+        let lock_file = lock_dir.resolve_str(lock_name);
 
         // `Files.createFile(lockFile)`: "we must create the file to have a
         // truly canonical path. if it's already created, we don't care. if it
         // cant be created, it will fail below." Java keeps the failure only to
         // attach it, suppressed, to a failing `toRealPath`. An existing file is
-        // not opened (`O_CREAT | O_EXCL`), so no descriptor of a file this
-        // process may hold locked is opened and closed here.
-        let _ = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&lock_file);
+        // not opened (`CREATE_NEW`), so no descriptor of a file this process
+        // may hold locked is opened and closed here.
+        let _ = nio::Files::create_file(&lock_file);
 
         // Fails if the lock file does not exist.
-        let real_path = lock_file.canonicalize()?;
+        let real_path = lock_file.to_real_path(&[])?;
 
         // Used as a best-effort check, to see if the underlying file has
         // changed: read before the path is marked held
         // (`NativeFSLockFactory.java:104-106`).
-        let creation_time = file_creation_time(&std::fs::metadata(&real_path)?)?;
+        let creation_time = nio::Files::read_attributes(&real_path, &[])?.creation_time;
 
-        let real_path_str = real_path.to_string_lossy().to_string();
+        let real_path_str = real_path.to_string();
         let added = NATIVE_HELD_LOCKS
             .lock()
             .expect("native held locks mutex poisoned")
@@ -4157,43 +4157,41 @@ impl FSLockFactory for NativeFSLockFactory {
         // channel.tryLock();`. When no lock results, the `finally` closes the
         // channel and clears the held path last; an exception it raises
         // replaces the one in flight, as a Java `finally` does.
-        let channel = match std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(false)
-            .open(&real_path)
-        {
+        let channel = match <dyn nio::FileChannel>::open(
+            &real_path,
+            &[nio::OpenOption::Create, nio::OpenOption::Write],
+        ) {
             Ok(channel) => channel,
             Err(error) => {
                 Self::clear_lock_held(&real_path_str)?;
                 return Err(error.into());
             }
         };
-        match try_lock_channel(&channel) {
-            Ok(true) => Ok(Box::new(NativeFSLock {
+        let close_channel = |channel: &Arc<dyn nio::FileChannel>| {
+            // `IOUtils.closeWhileHandlingException(channel)`.
+            crate::util::IOUtils::close_while_handling_exception([Some(|| {
+                let _ = channel.close();
+                Ok(())
+            })])
+        };
+        match channel.try_lock_whole() {
+            Ok(Some(lock)) => Ok(Box::new(NativeFSLock {
+                lock,
                 channel: Mutex::new(Some(channel)),
                 path: real_path,
                 path_str: real_path_str,
                 creation_time,
                 closed: AtomicBool::new(false),
             })),
-            Ok(false) => {
-                // `IOUtils.closeWhileHandlingException(channel)`: closing a
-                // `File` is dropping it, which cannot fail.
-                crate::util::IOUtils::close_while_handling_exception([Some(move || {
-                    drop(channel);
-                    Ok(())
-                })])?;
+            Ok(None) => {
+                close_channel(&channel)?;
                 Self::clear_lock_held(&real_path_str)?;
                 Err(LuceneError::lock_obtain_failed(format!(
                     "Lock held by another program: {real_path_str}"
                 )))
             }
             Err(error) => {
-                crate::util::IOUtils::close_while_handling_exception([Some(move || {
-                    drop(channel);
-                    Ok(())
-                })])?;
+                close_channel(&channel)?;
                 Self::clear_lock_held(&real_path_str)?;
                 Err(error.into())
             }
@@ -4238,7 +4236,7 @@ mod channel_lock {
     /// [`NonBlockingLockExclusive`](FlockOperation::NonBlockingLockExclusive)
     /// issues that same `F_SETLK`. A failure is answered by
     /// [`try_lock_failure`].
-    pub(super) fn try_lock_channel(channel: &std::fs::File) -> io::Result<bool> {
+    pub(crate) fn try_lock_channel(channel: &std::fs::File) -> io::Result<bool> {
         match rustix::fs::fcntl_lock(channel, FlockOperation::NonBlockingLockExclusive) {
             Ok(()) => Ok(true),
             Err(errno) => try_lock_failure(errno),
@@ -4291,8 +4289,22 @@ mod channel_lock {
     /// `FileLock.release()`, which `NativeFSLock.close()` runs before it
     /// closes the channel: the JDK's `UnixFileDispatcherImpl.release0`,
     /// `fcntl(fd, F_SETLK, {F_UNLCK, SEEK_SET, 0, 0})`.
-    pub(super) fn release_channel_lock(channel: &std::fs::File) -> io::Result<()> {
+    pub(crate) fn release_channel_lock(channel: &std::fs::File) -> io::Result<()> {
         rustix::fs::fcntl_lock(channel, FlockOperation::NonBlockingUnlock).map_err(io::Error::from)
+    }
+
+    /// `channel.lock()`: `fcntl(fd, F_SETLKW, {F_WRLCK, SEEK_SET, 0, 0})`,
+    /// waiting for the whole-file exclusive lock (`UnixFileDispatcherImpl.lock0`
+    /// with `blocking`); an `EINTR` is retried, as `FileChannelImpl.lock`
+    /// retries an interrupted `lock0` while the channel is open.
+    pub(crate) fn lock_channel(channel: &std::fs::File) -> io::Result<()> {
+        loop {
+            match rustix::fs::fcntl_lock(channel, FlockOperation::LockExclusive) {
+                Ok(()) => return Ok(()),
+                Err(errno) if errno == Errno::INTR => continue,
+                Err(errno) => return Err(io::Error::from(errno)),
+            }
+        }
     }
 
     #[cfg(test)]
@@ -4357,7 +4369,7 @@ mod channel_lock {
     use std::io;
 
     /// `channel.tryLock()`; see the module.
-    pub(super) fn try_lock_channel(channel: &std::fs::File) -> io::Result<bool> {
+    pub(crate) fn try_lock_channel(channel: &std::fs::File) -> io::Result<bool> {
         match channel.try_lock() {
             Ok(()) => Ok(true),
             Err(std::fs::TryLockError::WouldBlock) => Ok(false),
@@ -4366,12 +4378,17 @@ mod channel_lock {
     }
 
     /// `FileLock.release()`; see the module.
-    pub(super) fn release_channel_lock(channel: &std::fs::File) -> io::Result<()> {
+    pub(crate) fn release_channel_lock(channel: &std::fs::File) -> io::Result<()> {
         channel.unlock()
+    }
+
+    /// `channel.lock()`; see the module.
+    pub(crate) fn lock_channel(channel: &std::fs::File) -> io::Result<()> {
+        channel.lock()
     }
 }
 
-use channel_lock::{release_channel_lock, try_lock_channel};
+pub(crate) use channel_lock::{lock_channel, release_channel_lock, try_lock_channel};
 
 /// Returns a file's `BasicFileAttributes.creationTime()`, as the two
 /// filesystem lock factories read it to detect a lock file replaced behind
@@ -4387,6 +4404,7 @@ use channel_lock::{release_channel_lock, try_lock_channel};
 ///
 /// Propagates the error of [`std::fs::Metadata::modified`] when the platform
 /// reports neither time.
+#[cfg(test)]
 fn file_creation_time(metadata: &std::fs::Metadata) -> io::Result<SystemTime> {
     metadata.created().or_else(|_| metadata.modified())
 }
@@ -4403,160 +4421,62 @@ static NATIVE_HELD_LOCKS: std::sync::LazyLock<Mutex<HashSet<String>>> =
 ///
 /// Equivalent to the private `NativeFSLock` inner class of
 /// `org.apache.lucene.store.NativeFSLockFactory`.
-#[derive(Debug)]
 struct NativeFSLock {
-    /// The open handle on the lock file, which holds the lock; `None` once
-    /// [`close`](Lock::close) has released the lock and closed the handle.
-    ///
-    /// Equivalent to `NativeFSLock.channel` together with `NativeFSLock.lock`
-    /// (`NativeFSLockFactory.java:141-142`): Java's `FileLock` is taken on that
-    /// same channel by `channel.tryLock()`, and is valid until it is released
-    /// or the channel is closed, so `lock.isValid()` is the handle still being
-    /// held. `ensureValid` reads the file size through it, `channel.size()`
-    /// (`NativeFSLockFactory.java:169`), which still answers after the path was
-    /// deleted. The mutex also serves as the monitor of Java's `synchronized
-    /// close()`.
-    channel: Mutex<Option<std::fs::File>>,
-    path: PathBuf,
+    /// `NativeFSLock.lock`, the `FileLock` `channel.tryLock()` returned.
+    lock: Box<dyn nio::FileLock>,
+    /// `NativeFSLock.channel`, the channel the lock is held on; `None` once
+    /// [`close`](Lock::close) has closed it. The mutex also serves as the
+    /// monitor of Java's `synchronized close()`.
+    channel: Mutex<Option<Arc<dyn nio::FileChannel>>>,
+    path: nio::Path,
     path_str: String,
     creation_time: SystemTime,
     closed: AtomicBool,
 }
 
+impl std::fmt::Debug for NativeFSLock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeFSLock")
+            .field("path", &self.path)
+            .field("closed", &self.closed)
+            .finish()
+    }
+}
+
 impl std::fmt::Display for NativeFSLock {
     /// Equivalent to `NativeFSLock.toString()` (`NativeFSLockFactory.java:201-204`):
     /// `"NativeFSLock(path=" + path + ",impl=" + lock + ",creationTime=" +
-    /// creationTime + ")"`.
-    ///
-    /// `lock` is the `java.nio.channels.FileLock` that `channel.tryLock()`
-    /// returns, whose `toString()` is its class name, `[position:size`, the
-    /// mode and whether it is still valid, `]`. `tryLock()` locks the whole
-    /// file — position `0`, size `Long.MAX_VALUE`, exclusive — and the lock is
-    /// valid until `close()` releases it; on the JDK the class is
-    /// `sun.nio.ch.FileLockImpl`. Measured against `lucene-core-10.5.0.jar`
-    /// on OpenJDK 25: `impl=sun.nio.ch.FileLockImpl[0:9223372036854775807
-    /// exclusive valid]`, and `invalid` once the lock is closed. The record
-    /// lock this port holds has no such string, so Java's is rendered from
-    /// the same facts. `creationTime` is a `FileTime`, rendered as
-    /// [`file_time_to_string`] does.
+    /// creationTime + ")"`, the lock rendered by `FileLock.toString()` and the
+    /// creation time by `FileTime.toString()`. Measured against
+    /// `lucene-core-10.5.0.jar` on OpenJDK 25:
+    /// `impl=sun.nio.ch.FileLockImpl[0:9223372036854775807 exclusive valid]`,
+    /// and `invalid` once the lock is closed.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let validity = if self.closed.load(Ordering::SeqCst) {
-            "invalid"
-        } else {
-            "valid"
-        };
         write!(
             f,
-            "NativeFSLock(path={},impl=sun.nio.ch.FileLockImpl[0:{} exclusive {validity}],creationTime={})",
-            self.path.display(),
-            i64::MAX,
+            "NativeFSLock(path={},impl={},creationTime={})",
+            self.path,
+            self.lock.lock_to_string(),
             file_time_to_string(self.creation_time)
         )
     }
 }
 
-/// Renders a point in time as `java.nio.file.attribute.FileTime.toString()`
-/// does.
-///
-/// The ISO-8601 form in UTC, `yyyy-MM-ddTHH:mm:ss[.fraction]Z`: the year has
-/// at least four digits, a year before 1 is written as Java writes it — the
-/// proleptic year minus one, signed, so year 0 is `-0001` — and the fraction
-/// is the nanoseconds with their trailing zeros removed, omitted when they are
-/// zero. The calendar fields come from the same split into 10 000-year cycles
-/// `FileTime.toString()` performs before handing a value to
-/// `LocalDateTime.ofEpochSecond`, so every value renders as on the JDK.
-/// Measured against OpenJDK 25: `1970-01-01T00:00:00Z`,
-/// `1970-01-01T00:00:01.12Z`, `-0002-12-31T23:59:59Z` for one second before
-/// year 0, and `10000-01-01T00:00:00.000000005Z`.
-fn file_time_to_string(time: SystemTime) -> String {
-    use chrono::{Datelike, Timelike};
-
-    /// `FileTime.SECONDS_PER_10000_YEARS`.
-    const SECONDS_PER_10000_YEARS: i64 = 146_097 * 25 * 86_400;
-    /// `FileTime.SECONDS_0000_TO_1970`.
-    const SECONDS_0000_TO_1970: i64 = ((146_097 * 5) - (30 * 365 + 7)) * 86_400;
-
-    // `toInstant().getEpochSecond()` and `getNano()`: the seconds are floored,
-    // and the nanoseconds are never negative.
-    let (secs, nanos) = match time.duration_since(SystemTime::UNIX_EPOCH) {
-        Ok(after) => (after.as_secs() as i64, after.subsec_nanos()),
-        Err(before) => {
-            let before = before.duration();
-            let secs = -(before.as_secs() as i64);
-            match before.subsec_nanos() {
-                0 => (secs, 0),
-                nanos => (secs - 1, 1_000_000_000 - nanos),
-            }
-        }
-    };
-    let (hi, lo) = if secs >= -SECONDS_0000_TO_1970 {
-        // Current era.
-        let zero_secs = secs - SECONDS_PER_10000_YEARS + SECONDS_0000_TO_1970;
-        (
-            zero_secs.div_euclid(SECONDS_PER_10000_YEARS) + 1,
-            zero_secs.rem_euclid(SECONDS_PER_10000_YEARS),
-        )
-    } else {
-        // Before the current era.
-        let zero_secs = secs + SECONDS_0000_TO_1970;
-        (
-            zero_secs / SECONDS_PER_10000_YEARS,
-            zero_secs % SECONDS_PER_10000_YEARS,
-        )
-    };
-    let ldt = chrono::DateTime::from_timestamp(lo - SECONDS_0000_TO_1970, nanos)
-        .expect("INVARIANT: a second within one 10 000-year cycle of year 0 is representable")
-        .naive_utc();
-    let mut year = i64::from(ldt.year()) + hi * 10_000;
-    if year <= 0 {
-        year -= 1;
-    }
-    let mut out = String::with_capacity(32);
-    if year < 0 {
-        out.push('-');
-    }
-    let year = year.unsigned_abs();
-    if year < 10_000 {
-        out.push_str(&format!("{year:04}"));
-    } else {
-        out.push_str(&year.to_string());
-    }
-    out.push_str(&format!(
-        "-{:02}-{:02}T{:02}:{:02}:{:02}",
-        ldt.month(),
-        ldt.day(),
-        ldt.hour(),
-        ldt.minute(),
-        ldt.second()
-    ));
-    if nanos != 0 {
-        let fraction = format!("{nanos:09}");
-        out.push('.');
-        out.push_str(fraction.trim_end_matches('0'));
-    }
-    out.push('Z');
-    out
-}
-
 impl Lock for NativeFSLock {
     /// Equivalent to `NativeFSLock.close()` (`NativeFSLockFactory.java:185-199`):
-    /// release the lock, then close the channel, and — in a `finally` — mark
-    /// the lock closed and clear the held path last, whose failure replaces
-    /// any failure to release. "we don't validate, as unlike
+    /// `try (FileChannel channel = this.channel; FileLock lock = this.lock) {}`
+    /// releases the lock, then closes the channel, and — in a `finally` —
+    /// marks the lock closed and clears the held path last, whose failure
+    /// replaces any failure to release. "we don't validate, as unlike
     /// SimpleFSLockFactory, we can't break others locks".
     fn close(&self) -> Result<()> {
         let mut channel = self.channel.lock().expect("native lock mutex poisoned");
         if self.closed.load(Ordering::SeqCst) {
             return Ok(());
         }
-        // `try (FileChannel channel = this.channel; FileLock lock = this.lock)
-        // {}`: the lock is released first, then the channel is closed.
-        let released = match channel.take() {
-            Some(file) => {
-                let released = release_channel_lock(&file);
-                drop(file);
-                released
-            }
+        let released = self.lock.close();
+        let closed = match channel.take() {
+            Some(channel) => channel.close(),
             None => Ok(()),
         };
         self.closed.store(true, Ordering::SeqCst);
@@ -4564,6 +4484,7 @@ impl Lock for NativeFSLock {
         drop(channel);
         cleared?;
         released?;
+        closed?;
         Ok(())
     }
 
@@ -4588,21 +4509,22 @@ impl Lock for NativeFSLock {
         }
         drop(held);
 
-        // Check our lock wasn't invalidated, then try to validate the
-        // underlying file descriptor: `channel.size()` throws if something is
-        // wrong. Both go through the one handle the lock is held on.
-        let channel = self.channel.lock().expect("native lock mutex poisoned");
-        let size = match channel.as_ref() {
-            Some(file) => file.metadata().map(|metadata| metadata.len() as i64),
-            None => {
-                drop(channel);
-                return Err(LuceneError::already_closed(format!(
-                    "FileLock invalidated by an external force: {self}"
-                )));
+        // Check our lock wasn't invalidated.
+        if !self.lock.is_valid() {
+            return Err(LuceneError::already_closed(format!(
+                "FileLock invalidated by an external force: {self}"
+            )));
+        }
+
+        // Try to validate the underlying file descriptor: `channel.size()`
+        // throws if something is wrong.
+        let size = {
+            let channel = self.channel.lock().expect("native lock mutex poisoned");
+            match channel.as_ref() {
+                Some(channel) => channel.size(),
+                None => Err(nio::closed_channel_exception()),
             }
-        };
-        drop(channel);
-        let size = size?;
+        }?;
         if size != 0 {
             return Err(LuceneError::already_closed(format!(
                 "Unexpected lock file size: {size}, (lock={self})"
@@ -4613,19 +4535,8 @@ impl Lock for NativeFSLock {
         // the same creation time as when we obtained the lock: Java reads it
         // through the path, `Files.readAttributes(path,
         // BasicFileAttributes.class)` (`NativeFSLockFactory.java:174-177`), so
-        // that a lock file deleted or replaced behind our back is detected;
-        // its `NoSuchFileException` carries the path as its message.
-        let metadata = match std::fs::metadata(&self.path) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Err(LuceneError::Io(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    self.path.display().to_string(),
-                )));
-            }
-            Err(error) => return Err(error.into()),
-        };
-        let ctime = file_creation_time(&metadata)?;
+        // that a lock file deleted or replaced behind our back is detected.
+        let ctime = nio::Files::read_attributes(&self.path, &[])?.creation_time;
         if ctime != self.creation_time {
             // `"... at " + ctime + ...` renders the `FileTime`
             // (`NativeFSLockFactory.java:178-181`).
@@ -4661,26 +4572,29 @@ impl FSLockFactory for SimpleFSLockFactory {
     fn obtain_fs_lock(&self, dir: &dyn Directory, lock_name: &str) -> Result<Box<dyn Lock>> {
         let lock_dir = fs_directory_of::<Self>(dir)?.get_directory()?;
 
-        std::fs::create_dir_all(lock_dir)?;
-        let lock_file = lock_dir.join(lock_name);
+        // Ensure that lockDir exists and is a directory.
+        // note: this will fail if lockDir is a symlink
+        nio::Files::create_directories(lock_dir)?;
+        let lock_file = lock_dir.resolve_str(lock_name);
 
-        match std::fs::File::create_new(&lock_file) {
-            Ok(_) => {}
-            Err(e)
-                if e.kind() == std::io::ErrorKind::AlreadyExists
-                    || e.kind() == std::io::ErrorKind::PermissionDenied =>
+        // create the file: this will fail if it already exists
+        if let Err(e) = nio::Files::create_file(&lock_file) {
+            let class = nio::java_class_of(&e);
+            if class == nio::FILE_ALREADY_EXISTS_EXCEPTION || class == nio::ACCESS_DENIED_EXCEPTION
             {
+                // convert optional specific exception to our optional
+                // specific exception
                 return Err(LuceneError::lock_obtain_failed_with_source(
-                    format!("Lock held elsewhere: {}", lock_file.display()),
+                    format!("Lock held elsewhere: {lock_file}"),
                     e,
                 ));
             }
-            Err(e) => return Err(LuceneError::from(e)),
+            return Err(LuceneError::from(e));
         }
 
         // Used as a best-effort check, to see if the underlying file has
         // changed.
-        let creation_time = file_creation_time(&std::fs::metadata(&lock_file)?)?;
+        let creation_time = nio::Files::read_attributes(&lock_file, &[])?.creation_time;
 
         Ok(Box::new(SimpleFSLock {
             path: lock_file,
@@ -4697,7 +4611,7 @@ impl FSLockFactory for SimpleFSLockFactory {
 /// `org.apache.lucene.store.SimpleFSLockFactory`.
 #[derive(Debug)]
 struct SimpleFSLock {
-    path: PathBuf,
+    path: nio::Path,
     creation_time: SystemTime,
     closed: AtomicBool,
     /// The monitor of Java's `synchronized close()`.
@@ -4712,7 +4626,7 @@ impl std::fmt::Display for SimpleFSLock {
         write!(
             f,
             "SimpleFSLock(path={},creationTime={})",
-            self.path.display(),
+            self.path,
             file_time_to_string(self.creation_time)
         )
     }
@@ -4743,7 +4657,7 @@ impl Lock for SimpleFSLock {
             // We did a best effort check, now try to remove the file. If
             // something goes wrong, we need to make it clear to the user that
             // the directory may still remain locked.
-            Ok(()) => std::fs::remove_file(&self.path).map_err(|e| {
+            Ok(()) => nio::Files::delete(&self.path).map_err(|e| {
                 LuceneError::lock_release_failed_with_source(
                     "Unable to remove lock file. Manual intervention is recommended",
                     e,
@@ -4765,7 +4679,7 @@ impl Lock for SimpleFSLock {
         // Try to validate the backing file name, that it still exists, and has
         // the same creation time as when we obtained the lock. If it differs,
         // someone deleted our lock file (and we are ineffective).
-        let ctime = file_creation_time(&std::fs::metadata(&self.path)?)?;
+        let ctime = nio::Files::read_attributes(&self.path, &[])?.creation_time;
         if ctime != self.creation_time {
             // `"... at " + ctime + ...`: the `FileTime`'s `toString()`
             // (`SimpleFSLockFactory.java:102-106`).
@@ -8947,10 +8861,12 @@ impl<W: Write + Send + Sync> std::fmt::Debug for OutputStreamIndexOutput<W> {
 
 /// File-based [`IndexOutput`] used by [`FSDirectory`].
 ///
-/// Equivalent to the private `FSIndexOutput` inner class of
-/// `org.apache.lucene.store.FSDirectory`. Writes are broken into 8192-byte
-/// chunks, buffered, and checksummed.
-pub struct FSIndexOutput(OutputStreamIndexOutput<ChunkedOutput<fs::File>>);
+/// Equivalent to the `FSIndexOutput` inner class of
+/// `org.apache.lucene.store.FSDirectory` (`FSDirectory.java:404-427`): an
+/// `OutputStreamIndexOutput` over `Files.newOutputStream(path, options)` —
+/// the provider of the directory's path opens the stream — whose writes are
+/// broken into 8192-byte chunks, buffered, and checksummed.
+pub struct FSIndexOutput(OutputStreamIndexOutput<ChunkedOutput<nio::OutputStreamWriter>>);
 
 impl FSIndexOutput {
     /// Maximum chunk size for file writes.
@@ -8958,19 +8874,35 @@ impl FSIndexOutput {
     /// Equivalent to `org.apache.lucene.store.FSIndexOutput.CHUNK_SIZE`.
     pub const CHUNK_SIZE: usize = FS_INDEX_OUTPUT_CHUNK_SIZE;
 
-    /// Creates a new output for `name` inside `directory`.
+    /// Creates a new output for `name` inside `directory`, opened with
+    /// `WRITE` and `CREATE_NEW`.
     ///
-    /// The file is opened with `WRITE | CREATE_NEW` semantics; if the file
-    /// already exists, this returns an I/O error.
-    pub fn new(name: impl Into<String>, directory: &Path) -> Result<Self> {
+    /// Equivalent to `FSIndexOutput(String name)` (`FSDirectory.java:407-409`).
+    ///
+    /// # Errors
+    ///
+    /// `FileAlreadyExistsException` when the file exists, and the other
+    /// failures of the provider.
+    pub fn new(name: impl Into<String>, directory: &nio::Path) -> Result<Self> {
+        Self::with_options(
+            name,
+            directory,
+            &[nio::OpenOption::Write, nio::OpenOption::CreateNew],
+        )
+    }
+
+    /// Equivalent to `FSIndexOutput(String name, OpenOption... options)`
+    /// (`FSDirectory.java:411-426`).
+    fn with_options(
+        name: impl Into<String>,
+        directory: &nio::Path,
+        options: &[nio::OpenOption],
+    ) -> Result<Self> {
         let name = name.into();
-        let path = directory.join(&name);
-        let file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)?;
-        let resource_description = format!("FSIndexOutput(path=\"{}\")", path.display());
-        let chunked = ChunkedOutput::new(file, Self::CHUNK_SIZE);
+        let resource_description =
+            format!("FSIndexOutput(path=\"{}\")", directory.resolve_str(&name));
+        let stream = nio::Files::new_output_stream(&directory.resolve_str(&name), options)?;
+        let chunked = ChunkedOutput::new(nio::OutputStreamWriter(stream), Self::CHUNK_SIZE);
         Ok(Self(OutputStreamIndexOutput::new(
             resource_description,
             name,
@@ -9003,8 +8935,15 @@ impl DataOutput for FSIndexOutput {
 }
 
 impl IndexOutput for FSIndexOutput {
+    /// `OutputStreamIndexOutput.close()`: `try (OutputStream o = os) { if
+    /// (!flushedOnClose) { flushedOnClose = true; o.flush(); } }` — the stream
+    /// is flushed once and closed on every call, and a failure to close is
+    /// suppressed by a failure to flush.
     fn close(&mut self) -> Result<()> {
-        self.0.close()
+        let flushed = self.0.close();
+        let closed = self.0.out.get_mut().inner.0.close();
+        flushed?;
+        closed.map_err(LuceneError::from)
     }
 
     fn file_pointer(&self) -> i64 {
@@ -9047,7 +8986,10 @@ impl IndexOutput for FSIndexOutput {
 pub struct FSDirectory {
     /// The `BaseDirectory` state this class extends.
     base: BaseDirectory,
-    directory: PathBuf,
+    /// `FSDirectory.directory`: the real path of the directory, a path of the
+    /// filesystem the directory was opened on, through whose provider every
+    /// file operation goes.
+    directory: nio::Path,
     pending_deletes: Mutex<HashSet<String>>,
     ops_since_last_delete: AtomicU64,
     next_temp_file_counter: AtomicU64,
@@ -9086,12 +9028,14 @@ impl FSDirectory {
     /// implementation for the platform, with the default lock factory.
     ///
     /// Equivalent to `FSDirectory.open(Path)` (`FSDirectory.java:151-153`);
-    /// see [`FSDirectoryImpl`] for the selection.
+    /// see [`FSDirectoryImpl`] for the selection. `path` is a
+    /// [`nio::Path`], whose filesystem the directory works on, or a
+    /// standard-library path, a path of the default filesystem.
     ///
     /// # Errors
     ///
     /// Propagates any I/O error creating or canonicalizing the directory.
-    pub fn open(path: impl AsRef<Path>) -> Result<FSDirectoryImpl> {
+    pub fn open(path: impl nio::IntoNioPath) -> Result<FSDirectoryImpl> {
         // `open(path, FSLockFactory.getDefault())`
         Self::open_with_lock_factory(path, Box::new(NativeFSLockFactory))
     }
@@ -9105,7 +9049,7 @@ impl FSDirectory {
     ///
     /// Propagates any I/O error creating or canonicalizing the directory.
     pub fn open_with_lock_factory(
-        path: impl AsRef<Path>,
+        path: impl nio::IntoNioPath,
         lock_factory: Box<dyn LockFactory>,
     ) -> Result<FSDirectoryImpl> {
         FSDirectoryImpl::with_lock_factory(path, lock_factory)
@@ -9115,21 +9059,25 @@ impl FSDirectory {
     ///
     /// Equivalent to the protected `FSDirectory(Path, LockFactory)`
     /// constructor that `MMapDirectory` and `NIOFSDirectory` call
-    /// (`FSDirectory.java:119-127`), which starts with `super(lockFactory)`.
+    /// (`FSDirectory.java:119-127`), which starts with `super(lockFactory)`:
+    /// "If only read access is permitted, createDirectories fails even if the
+    /// directory already exists", so it is created only when
+    /// `Files.isDirectory` is false; the directory is `path.toRealPath()`.
     ///
     /// # Errors
     ///
     /// Propagates any I/O error creating or canonicalizing the directory.
     pub fn with_lock_factory(
-        path: impl AsRef<Path>,
+        path: impl nio::IntoNioPath,
         lock_factory: Box<dyn LockFactory>,
     ) -> Result<Self> {
         let base = BaseDirectory::new(lock_factory);
-        let path = path.as_ref();
-        if !path.is_dir() {
-            fs::create_dir_all(path)?;
+        let path = path.into_nio_path();
+        if !nio::Files::is_directory(&path, &[]) {
+            // create directory, if it doesn't exist
+            nio::Files::create_directories(&path)?;
         }
-        let directory = path.canonicalize()?;
+        let directory = path.to_real_path(&[])?;
         Ok(Self {
             base,
             directory,
@@ -9139,16 +9087,66 @@ impl FSDirectory {
         })
     }
 
+    /// Lists all files (including subdirectories) in the directory, sorted.
+    ///
+    /// Equivalent to the static `FSDirectory.listAll(Path)`
+    /// (`FSDirectory.java:165-167`).
+    ///
+    /// # Errors
+    ///
+    /// The failures of the provider.
+    pub fn list_all_in(dir: &nio::Path) -> Result<Vec<String>> {
+        Self::list_all_skipping(dir, None)
+    }
+
+    /// Equivalent to the private `FSDirectory.listAll(Path, Set<String>)`
+    /// (`FSDirectory.java:169-189`): the names of the entries of
+    /// `Files.newDirectoryStream(dir)` not in `skip_names`, sorted "so we don't
+    /// let filesystem specifics leak out of this abstraction".
+    fn list_all_skipping(
+        dir: &nio::Path,
+        skip_names: Option<&HashSet<String>>,
+    ) -> Result<Vec<String>> {
+        let mut entries = Vec::new();
+        let mut stream = nio::Files::new_directory_stream(dir)?;
+        let mut failure: Option<io::Error> = None;
+        for path in stream.iterator() {
+            match path {
+                Ok(path) => {
+                    let name = path
+                        .get_file_name()
+                        .map(|name| name.to_string())
+                        .unwrap_or_default();
+                    if skip_names.is_none_or(|skip| !skip.contains(&name)) {
+                        entries.push(name);
+                    }
+                }
+                Err(error) => {
+                    failure = Some(error);
+                    break;
+                }
+            }
+        }
+        let closed = stream.close();
+        if let Some(error) = failure {
+            return Err(error.into());
+        }
+        closed?;
+        // `Arrays.sort(String[])`: UTF-16 order.
+        entries.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
+        Ok(entries)
+    }
+
     /// Returns the underlying filesystem directory.
     ///
     /// Equivalent to `FSDirectory.getDirectory()` (`FSDirectory.java:288-291`):
-    /// `ensureOpen()`, then the canonical path the constructor resolved.
+    /// `ensureOpen()`, then the real path the constructor resolved.
     ///
     /// # Errors
     ///
     /// Returns [`LuceneError::AlreadyClosed`] "this Directory is closed" once
     /// the directory is closed.
-    pub fn get_directory(&self) -> Result<&Path> {
+    pub fn get_directory(&self) -> Result<&nio::Path> {
         self.base.ensure_open()?;
         Ok(&self.directory)
     }
@@ -9156,7 +9154,7 @@ impl FSDirectory {
     /// The protected `directory` field (`FSDirectory.java:92`), which the
     /// subclasses and this class read without `ensureOpen`. The public reader
     /// is [`get_directory`](Self::get_directory).
-    pub(crate) fn directory_path(&self) -> &Path {
+    pub(crate) fn directory_path(&self) -> &nio::Path {
         &self.directory
     }
 
@@ -9173,7 +9171,7 @@ impl FSDirectory {
         format!(
             "{}@{} lockFactory={}",
             java_simple_name(dir.directory_type_name()),
-            self.directory.display(),
+            self.directory,
             self.base.lock_factory().lock_factory_to_string()
         )
     }
@@ -9182,27 +9180,38 @@ impl FSDirectory {
         self.base.ensure_open()
     }
 
-    fn ensure_can_read(&self, name: &str) -> Result<()> {
-        let pending = self
-            .pending_deletes
+    fn is_pending(&self, name: &str) -> bool {
+        self.pending_deletes
             .lock()
-            .expect("pending deletes mutex poisoned");
-        if pending.contains(name) {
-            return Err(LuceneError::Io(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("file \"{name}\" is pending delete and cannot be opened for read"),
-            )));
+            .expect("pending deletes mutex poisoned")
+            .contains(name)
+    }
+
+    fn remove_pending(&self, name: &str) -> bool {
+        self.pending_deletes
+            .lock()
+            .expect("pending deletes mutex poisoned")
+            .remove(name)
+    }
+
+    /// Equivalent to `FSDirectory.ensureCanRead(String)` (`FSDirectory.java:229-234`).
+    fn ensure_can_read(&self, name: &str) -> Result<()> {
+        if self.is_pending(name) {
+            return Err(LuceneError::Io(nio::no_such_file_exception(format!(
+                "file \"{name}\" is pending delete and cannot be opened for read"
+            ))));
         }
         Ok(())
     }
 
-    fn file_path(&self, name: &str) -> PathBuf {
-        self.directory.join(name)
+    /// `directory.resolve(name)`.
+    fn file_path(&self, name: &str) -> nio::Path {
+        self.directory.resolve_str(name)
     }
 
     /// Equivalent to `FSDirectory.fsync(String)` (`FSDirectory.java:300-302`).
     fn fsync_file(&self, name: &str) -> Result<()> {
-        crate::util::IOUtils::fsync(&self.file_path(name), false)
+        crate::util::IOUtils::fsync(self.file_path(name), false)
     }
 
     /// The fsync of `FSDirectory.syncMetaData()`, `IOUtils.fsync(directory,
@@ -9211,21 +9220,24 @@ impl FSDirectory {
         crate::util::IOUtils::fsync(&self.directory, true)
     }
 
+    /// Equivalent to `FSDirectory.privateDeleteFile(String, boolean)`
+    /// (`FSDirectory.java:349-373`).
     fn private_delete_file(&self, name: &str, is_pending_delete: bool) -> Result<()> {
         let path = self.file_path(name);
-        let mut pending = self
-            .pending_deletes
-            .lock()
-            .expect("pending deletes mutex poisoned");
-        match fs::remove_file(&path) {
+        match nio::Files::delete(&path) {
             Ok(()) => {
-                pending.remove(name);
+                self.remove_pending(name);
                 Ok(())
             }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                pending.remove(name);
-                if is_pending_delete && cfg!(windows) {
-                    // Windows-specific leniency copied from Lucene 10.5.0.
+            // `catch (NoSuchFileException | FileNotFoundException e)`.
+            Err(e)
+                if nio::java_class_of(&e) == nio::NO_SUCH_FILE_EXCEPTION
+                    || e.kind() == io::ErrorKind::NotFound =>
+            {
+                // We were asked to delete a non-existent file:
+                self.remove_pending(name);
+                if is_pending_delete && crate::util::Constants::windows() {
+                    // LUCENE-6684: we suppress this check for Windows.
                     Ok(())
                 } else {
                     Err(LuceneError::Io(e))
@@ -9235,12 +9247,16 @@ impl FSDirectory {
             // (`FSDirectory.java:358-372`): the file is retried later and the
             // failure is not raised.
             Err(_) => {
-                pending.insert(name.to_string());
+                self.pending_deletes
+                    .lock()
+                    .expect("pending deletes mutex poisoned")
+                    .insert(name.to_string());
                 Ok(())
             }
         }
     }
 
+    /// Equivalent to `FSDirectory.deletePendingFiles()` (`FSDirectory.java:314-325`).
     fn delete_pending_files(&self) -> Result<()> {
         let pending = {
             let pending = self
@@ -9252,12 +9268,15 @@ impl FSDirectory {
             }
             pending.clone()
         };
+        // Clone the set since we mutate it in privateDeleteFile:
         for name in pending {
             self.private_delete_file(&name, true)?;
         }
         Ok(())
     }
 
+    /// Equivalent to `FSDirectory.maybeDeletePendingFiles()`
+    /// (`FSDirectory.java:327-338`).
     fn maybe_delete_pending_files(&self) -> Result<()> {
         let should_delete = {
             let pending = self
@@ -9285,76 +9304,60 @@ impl FSDirectory {
 }
 
 impl Directory for FSDirectory {
+    /// Equivalent to `FSDirectory.listAll()` (`FSDirectory.java:191-195`):
+    /// the entries of the directory but those pending delete.
     fn list_all(&self) -> Result<Vec<String>> {
         self.check_open()?;
-        self.maybe_delete_pending_files()?;
         let pending = self
             .pending_deletes
             .lock()
-            .expect("pending deletes mutex poisoned");
-        let mut entries = Vec::new();
-        for entry in fs::read_dir(&self.directory)? {
-            let entry = entry?;
-            let name = entry.file_name().to_string_lossy().to_string();
-            if !pending.contains(&name) {
-                entries.push(name);
-            }
-        }
-        drop(pending);
-        entries.sort();
-        Ok(entries)
+            .expect("pending deletes mutex poisoned")
+            .clone();
+        Self::list_all_skipping(&self.directory, Some(&pending))
     }
 
+    /// Equivalent to `FSDirectory.deleteFile(String)` (`FSDirectory.java:304-311`).
     fn delete_file(&self, name: &str) -> Result<()> {
         self.check_open()?;
-        {
-            let pending = self
-                .pending_deletes
-                .lock()
-                .expect("pending deletes mutex poisoned");
-            if pending.contains(name) {
-                return Err(LuceneError::Io(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!("file \"{name}\" is already pending delete"),
-                )));
-            }
+        if self.is_pending(name) {
+            return Err(LuceneError::Io(nio::no_such_file_exception(format!(
+                "file \"{name}\" is already pending delete"
+            ))));
         }
         self.private_delete_file(name, false)?;
         self.maybe_delete_pending_files()?;
         Ok(())
     }
 
+    /// Equivalent to `FSDirectory.fileLength(String)` (`FSDirectory.java:197-204`):
+    /// `Files.size(directory.resolve(name))`.
     fn file_length(&self, name: &str) -> Result<i64> {
         self.check_open()?;
-        self.ensure_can_read(name)?;
-        let metadata = fs::metadata(self.file_path(name))?;
-        Ok(metadata.len() as i64)
+        if self.is_pending(name) {
+            return Err(LuceneError::Io(nio::no_such_file_exception(format!(
+                "file \"{name}\" is pending delete"
+            ))));
+        }
+        Ok(nio::Files::size(&self.file_path(name))?)
     }
 
+    /// Equivalent to `FSDirectory.createOutput(String, IOContext)`
+    /// (`FSDirectory.java:206-216`).
     fn create_output(&self, name: &str, _context: &dyn IOContext) -> Result<Box<dyn IndexOutput>> {
         self.check_open()?;
         self.maybe_delete_pending_files()?;
-        {
-            let was_pending = {
-                let mut pending = self
-                    .pending_deletes
-                    .lock()
-                    .expect("pending deletes mutex poisoned");
-                pending.remove(name)
-            };
-            if was_pending {
-                // Best-effort: try to delete again before re-creating.
-                let _ = self.private_delete_file(name, true);
-                let mut pending = self
-                    .pending_deletes
-                    .lock()
-                    .expect("pending deletes mutex poisoned");
-                pending.remove(name);
-            }
+        // If this file was pending delete, we are now bringing it back to life:
+        if self.remove_pending(name) {
+            // try again to delete it - this is the best effort
+            self.private_delete_file(name, true)?;
+            // watch out - if the delete fails it put
+            self.remove_pending(name);
         }
         Ok(Box::new(FSIndexOutput::new(name, &self.directory)?))
     }
 
+    /// Equivalent to `FSDirectory.createTempOutput(String, String, IOContext)`
+    /// (`FSDirectory.java:218-236`).
     fn create_temp_output(
         &self,
         prefix: &str,
@@ -9366,18 +9369,20 @@ impl Directory for FSDirectory {
         loop {
             let counter = self.next_temp_file_counter.fetch_add(1, Ordering::Relaxed);
             let name = Self::get_temp_file_name(prefix, suffix, counter);
-            let pending = self
-                .pending_deletes
-                .lock()
-                .expect("pending deletes mutex poisoned");
-            if pending.contains(&name) {
+            if self.is_pending(&name) {
                 continue;
             }
-            drop(pending);
-            match FSIndexOutput::new(&name, &self.directory) {
+            match FSIndexOutput::with_options(
+                &name,
+                &self.directory,
+                &[nio::OpenOption::Write, nio::OpenOption::CreateNew],
+            ) {
                 Ok(out) => return Ok(Box::new(out)),
-                Err(LuceneError::Io(e)) if e.kind() == io::ErrorKind::AlreadyExists => {
-                    // Retry with next counter.
+                // Retry with next incremented name
+                Err(LuceneError::Io(e))
+                    if nio::java_class_of(&e) == nio::FILE_ALREADY_EXISTS_EXCEPTION
+                        || e.kind() == io::ErrorKind::AlreadyExists =>
+                {
                     continue;
                 }
                 Err(e) => return Err(e),
@@ -9385,6 +9390,7 @@ impl Directory for FSDirectory {
         }
     }
 
+    /// Equivalent to `FSDirectory.sync(Collection)` (`FSDirectory.java:238-246`).
     fn sync(&self, names: &[String]) -> Result<()> {
         self.check_open()?;
         for name in names {
@@ -9394,6 +9400,7 @@ impl Directory for FSDirectory {
         Ok(())
     }
 
+    /// Equivalent to `FSDirectory.syncMetaData()` (`FSDirectory.java:271-277`).
     fn sync_metadata(&self) -> Result<()> {
         self.check_open()?;
         self.fsync_directory()?;
@@ -9402,41 +9409,26 @@ impl Directory for FSDirectory {
     }
 
     /// Equivalent to `FSDirectory.rename(String, String)`
-    /// (`FSDirectory.java:256-269`).
+    /// (`FSDirectory.java:256-269`): `Files.move(source, dest, ATOMIC_MOVE)`.
     fn rename(&self, source: &str, dest: &str) -> Result<()> {
         self.check_open()?;
-        // `throw new NoSuchFileException("file \"" + source + "\" is pending
-        // delete and cannot be moved")`.
-        if self
-            .pending_deletes
-            .lock()
-            .expect("pending deletes mutex poisoned")
-            .contains(source)
-        {
-            return Err(LuceneError::Io(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("file \"{source}\" is pending delete and cannot be moved"),
-            )));
+        if self.is_pending(source) {
+            return Err(LuceneError::Io(nio::no_such_file_exception(format!(
+                "file \"{source}\" is pending delete and cannot be moved"
+            ))));
         }
         self.maybe_delete_pending_files()?;
-        {
-            let was_pending = {
-                let mut pending = self
-                    .pending_deletes
-                    .lock()
-                    .expect("pending deletes mutex poisoned");
-                pending.remove(dest)
-            };
-            if was_pending {
-                let _ = self.private_delete_file(dest, true);
-                let mut pending = self
-                    .pending_deletes
-                    .lock()
-                    .expect("pending deletes mutex poisoned");
-                pending.remove(dest);
-            }
+        if self.remove_pending(dest) {
+            // try again to delete it - this is the best effort
+            self.private_delete_file(dest, true)?;
+            // watch out if the delete fails, it's back in here
+            self.remove_pending(dest);
         }
-        fs::rename(self.file_path(source), self.file_path(dest))?;
+        nio::Files::r#move(
+            &self.file_path(source),
+            &self.file_path(dest),
+            &[nio::CopyOption::AtomicMove],
+        )?;
         Ok(())
     }
 
@@ -9444,10 +9436,15 @@ impl Directory for FSDirectory {
         self.check_open()?;
         self.ensure_can_read(name)?;
         let path = self.file_path(name);
-        let file = fs::OpenOptions::new().read(true).open(&path)?;
-        let metadata = file.metadata()?;
-        let len = metadata.len() as i64;
-        let input = FileIndexInput::new(file, path, len)?;
+        let channel = <dyn nio::FileChannel>::open(&path, &[nio::OpenOption::Read])?;
+        let len = match channel.size() {
+            Ok(len) => len,
+            Err(error) => {
+                let _ = channel.close();
+                return Err(error.into());
+            }
+        };
+        let input = FileIndexInput::new(channel, path, len)?;
         Ok(Box::new(BufferedIndexInput::with_default_size(Box::new(
             input,
         ))?))
@@ -9460,12 +9457,14 @@ impl Directory for FSDirectory {
         self.base.obtain_lock(self, name)
     }
 
+    /// Equivalent to `FSDirectory.close()` (`FSDirectory.java:279-283`).
     fn close(&mut self) -> Result<()> {
         self.base.set_open(false);
         self.delete_pending_files()?;
         Ok(())
     }
 
+    /// Equivalent to `FSDirectory.getPendingDeletions()` (`FSDirectory.java:429-437`).
     fn get_pending_deletions(&self) -> Result<HashSet<String>> {
         self.check_open()?;
         self.delete_pending_files()?;
@@ -9506,25 +9505,44 @@ impl std::fmt::Display for FSDirectory {
 /// File-based [`IndexInput`] used by [`FSDirectory`]'s own `open_input`.
 ///
 /// No Java counterpart: Java's abstract `FSDirectory` opens no inputs (see the
-/// divergence on [`FSDirectory`]). A clone reopens the file by path.
+/// divergence on [`FSDirectory`]). It reads the channel the provider opened at
+/// its own position; a clone reopens the file by path.
 struct FileIndexInput {
-    file: fs::File,
-    path: PathBuf,
+    channel: Arc<dyn nio::FileChannel>,
+    path: nio::Path,
     pos: u64,
     len: i64,
     resource_description: String,
 }
 
 impl FileIndexInput {
-    fn new(file: fs::File, path: PathBuf, len: i64) -> Result<Self> {
-        let resource_description = format!("FileIndexInput(path=\"{}\")", path.display());
+    fn new(channel: Arc<dyn nio::FileChannel>, path: nio::Path, len: i64) -> Result<Self> {
+        let resource_description = format!("FileIndexInput(path=\"{path}\")");
         Ok(Self {
-            file,
+            channel,
             path,
             pos: 0,
             len,
             resource_description,
         })
+    }
+
+    fn read_fully(&mut self, buf: &mut [u8]) -> Result<()> {
+        let mut done = 0usize;
+        while done < buf.len() {
+            let n = self
+                .channel
+                .read_at(&mut buf[done..], self.pos as i64 + done as i64)?;
+            if n < 0 {
+                return Err(LuceneError::Io(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "failed to fill whole buffer",
+                )));
+            }
+            done += n as usize;
+        }
+        self.pos += buf.len() as u64;
+        Ok(())
     }
 }
 
@@ -9536,8 +9554,7 @@ impl DataInput for FileIndexInput {
 
     fn read_byte(&mut self) -> Result<u8> {
         let mut buf = [0u8; 1];
-        self.file.read_exact(&mut buf).map_err(LuceneError::from)?;
-        self.pos += 1;
+        self.read_fully(&mut buf)?;
         Ok(buf[0])
     }
 
@@ -9551,11 +9568,7 @@ impl DataInput for FileIndexInput {
                 b.len()
             )));
         }
-        self.file
-            .read_exact(&mut b[offset..end])
-            .map_err(LuceneError::from)?;
-        self.pos += len as u64;
-        Ok(())
+        self.read_fully(&mut b[offset..end])
     }
 
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
@@ -9571,7 +9584,6 @@ impl DataInput for FileIndexInput {
                 "skip past EOF",
             )));
         }
-        self.file.seek(SeekFrom::Start(target as u64))?;
         self.pos = target as u64;
         Ok(())
     }
@@ -9579,6 +9591,7 @@ impl DataInput for FileIndexInput {
 
 impl IndexInput for FileIndexInput {
     fn close(&mut self) -> Result<()> {
+        self.channel.close()?;
         Ok(())
     }
 
@@ -9602,7 +9615,6 @@ impl IndexInput for FileIndexInput {
                 "seek past EOF",
             )));
         }
-        self.file.seek(SeekFrom::Start(pos as u64))?;
         self.pos = pos as u64;
         Ok(())
     }
@@ -9628,8 +9640,8 @@ impl IndexInput for FileIndexInput {
     }
 
     fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
-        let file = fs::OpenOptions::new().read(true).open(&self.path)?;
-        let mut clone = FileIndexInput::new(file, self.path.clone(), self.len)?;
+        let channel = <dyn nio::FileChannel>::open(&self.path, &[nio::OpenOption::Read])?;
+        let mut clone = FileIndexInput::new(channel, self.path.clone(), self.len)?;
         clone.seek(self.pos as i64)?;
         Ok(Box::new(clone))
     }
@@ -9652,7 +9664,7 @@ impl NIOFSDirectory {
     /// Opens a new `NIOFSDirectory` at `path` using the default lock factory.
     ///
     /// Equivalent to `NIOFSDirectory(Path)` in Lucene 10.5.0.
-    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+    pub fn open(path: impl nio::IntoNioPath) -> Result<Self> {
         // `this(path, FSLockFactory.getDefault())`
         Self::with_lock_factory(path, Box::new(NativeFSLockFactory))
     }
@@ -9665,7 +9677,7 @@ impl NIOFSDirectory {
     ///
     /// Propagates any I/O error creating or canonicalizing the directory.
     pub fn with_lock_factory(
-        path: impl AsRef<Path>,
+        path: impl nio::IntoNioPath,
         lock_factory: Box<dyn LockFactory>,
     ) -> Result<Self> {
         let inner = FSDirectory::with_lock_factory(path, lock_factory)?;
@@ -9678,7 +9690,7 @@ impl NIOFSDirectory {
     /// # Errors
     ///
     /// Returns [`LuceneError::AlreadyClosed`] once the directory is closed.
-    pub fn get_directory(&self) -> Result<&Path> {
+    pub fn get_directory(&self) -> Result<&nio::Path> {
         self.inner.get_directory()
     }
 }
@@ -9721,29 +9733,26 @@ impl Directory for NIOFSDirectory {
         self.inner.rename(source, dest)
     }
 
+    /// Equivalent to `NIOFSDirectory.openInput(String, IOContext)`
+    /// (`NIOFSDirectory.java:73-89`).
     fn open_input(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
         self.inner.ensure_open()?;
         self.inner.ensure_can_read(name)?;
-        let path = self.inner.directory_path().join(name);
+        let path = self.inner.get_directory()?.resolve_str(name);
         // `FileChannel fc = FileChannel.open(path, StandardOpenOption.READ)`.
-        let fc: NioChannel = Arc::new(std::sync::RwLock::new(Some(
-            fs::OpenOptions::new().read(true).open(&path)?,
-        )));
+        let fc: NioChannel = <dyn nio::FileChannel>::open(&path, &[nio::OpenOption::Read])?;
         // `try { new NIOFSIndexInput("NIOFSIndexInput(path=\"" + path + "\")",
         // fc, context) } finally { if (success == false)
         // IOUtils.closeWhileHandlingException(fc); }` (`NIOFSDirectory.java:79-89`).
         match NIOFSIndexInput::with_file_channel(
-            format!("NIOFSIndexInput(path=\"{}\")", path.display()),
+            format!("NIOFSIndexInput(path=\"{path}\")"),
             Arc::clone(&fc),
             context,
         ) {
             Ok(input) => Ok(Box::new(input)),
             Err(error) => {
                 crate::util::IOUtils::close_while_handling_exception([Some(|| {
-                    // Closing the channel is dropping its `File`.
-                    fc.write()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .take();
+                    let _ = fc.close();
                     Ok(())
                 })])?;
                 Err(error)
@@ -9806,38 +9815,41 @@ impl std::fmt::Debug for NIOFSDirectory {
 /// Equivalent to the `FileChannel` that `NIOFSIndexInput` shares with every
 /// clone and slice (`NIOFSDirectory.java:95-123`): reads are positional, so
 /// the inputs never disturb each other, and closing the input that opened the
-/// file closes it for all of them. `None` once closed.
-type NioChannel = Arc<std::sync::RwLock<Option<fs::File>>>;
+/// file closes it for all of them.
+type NioChannel = Arc<dyn nio::FileChannel>;
 
-/// Reads `buf.len()` bytes of `file` at `position`, without moving any file
+/// `NIOFSIndexInput.CHUNK_SIZE`: "The maximum chunk size for reads of 16384
+/// bytes" (`NIOFSDirectory.java:93-94`).
+const NIOFS_CHUNK_SIZE: usize = 16384;
+
+/// Reads `buf.len()` bytes of `channel` at `position`, without moving any
 /// position.
 ///
 /// Equivalent to the `channel.read(ByteBuffer, long)` loop of
-/// `NIOFSIndexInput.readInternal` (`NIOFSDirectory.java:182-210`).
-fn read_channel_at(file: &fs::File, buf: &mut [u8], position: u64) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        std::os::unix::fs::FileExt::read_exact_at(file, buf, position)
-    }
-    #[cfg(windows)]
-    {
-        let mut done = 0usize;
-        while done < buf.len() {
-            let read = std::os::windows::fs::FileExt::seek_read(
-                file,
-                &mut buf[done..],
-                position + done as u64,
-            )?;
-            if read == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "failed to fill whole buffer",
-                ));
-            }
-            done += read;
+/// `NIOFSIndexInput.readInternal` (`NIOFSDirectory.java:182-210`): at most
+/// [`NIOFS_CHUNK_SIZE`] bytes per read, and an [`io::ErrorKind::UnexpectedEof`]
+/// error when the channel reports the end of the file.
+fn read_channel_at(
+    channel: &dyn nio::FileChannel,
+    buf: &mut [u8],
+    position: u64,
+) -> io::Result<()> {
+    let mut done = 0usize;
+    while done < buf.len() {
+        let to_read = (buf.len() - done).min(NIOFS_CHUNK_SIZE);
+        let i = channel.read_at(
+            &mut buf[done..done + to_read],
+            (position + done as u64) as i64,
+        )?;
+        if i < 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "failed to fill whole buffer",
+            ));
         }
-        Ok(())
+        done += i as usize;
     }
+    Ok(())
 }
 
 /// Raw unbuffered file input used by [`NIOFSDirectory`]: the
@@ -9885,18 +9897,13 @@ impl RawNioFsIndexInput {
                 format!("read past EOF: {}", self.resource_description),
             )));
         }
-        let guard = self
-            .channel
-            .read()
-            .map_err(|_| LuceneError::illegal_state("NIOFS channel lock poisoned".to_string()))?;
-        let Some(file) = guard.as_ref() else {
-            return Err(LuceneError::already_closed(format!(
-                "Already closed: {}",
-                self.resource_description
-            )));
-        };
-        read_channel_at(file, buf, self.off + self.pos).map_err(|e| {
-            if e.kind() == io::ErrorKind::UnexpectedEof {
+        read_channel_at(&*self.channel, buf, self.off + self.pos).map_err(|e| {
+            if nio::java_class_of(&e) == nio::CLOSED_CHANNEL_EXCEPTION {
+                LuceneError::already_closed(format!(
+                    "Already closed: {}",
+                    self.resource_description
+                ))
+            } else if e.kind() == io::ErrorKind::UnexpectedEof {
                 LuceneError::Io(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
                     format!("read past EOF: {}", self.resource_description),
@@ -9960,9 +9967,7 @@ impl IndexInput for RawNioFsIndexInput {
     /// Equivalent to `NIOFSIndexInput.close()`: `if (!isClone) channel.close()`.
     fn close(&mut self) -> Result<()> {
         if !self.is_clone {
-            if let Ok(mut file) = self.channel.write() {
-                file.take();
-            }
+            self.channel.close()?;
         }
         Ok(())
     }
@@ -10055,13 +10060,14 @@ impl NIOFSIndexInput {
     /// # Errors
     ///
     /// Propagates any I/O error opening the file.
-    pub fn new(resource_desc: String, path: PathBuf, context: &dyn IOContext) -> Result<Self> {
-        let file = fs::OpenOptions::new().read(true).open(&path)?;
-        Self::with_file_channel(
-            resource_desc,
-            Arc::new(std::sync::RwLock::new(Some(file))),
-            context,
-        )
+    pub fn new(
+        resource_desc: String,
+        path: impl nio::IntoNioPath,
+        context: &dyn IOContext,
+    ) -> Result<Self> {
+        let path = path.into_nio_path();
+        let fc = <dyn nio::FileChannel>::open(&path, &[nio::OpenOption::Read])?;
+        Self::with_file_channel(resource_desc, fc, context)
     }
 
     /// Equivalent to `NIOFSIndexInput(String, FileChannel, IOContext)`
@@ -10072,13 +10078,7 @@ impl NIOFSIndexInput {
         fc: NioChannel,
         context: &dyn IOContext,
     ) -> Result<Self> {
-        let len = {
-            let file = fc.read().unwrap_or_else(std::sync::PoisonError::into_inner);
-            match file.as_ref() {
-                Some(file) => file.metadata()?.len() as i64,
-                None => return Err(LuceneError::already_closed("channel is closed")),
-            }
-        };
+        let len = fc.size()?;
         Self::with_channel(
             resource_desc,
             fc,
@@ -10338,6 +10338,8 @@ pub(crate) fn matches_java_text(actual: &str, pattern: &str) -> bool {
 mod tests {
     use super::*;
     use crate::util::java_collections::JavaHashMap;
+    use std::fs;
+    use std::path::Path;
     use tempfile::TempDir;
 
     /// `ByteBuffersDataOutput.toArrayCopy()` refuses content larger than a
@@ -11903,7 +11905,7 @@ mod tests {
                         "lock instance already obtained: (dir=NIOFSDirectory@{} \
                          lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@{{hash}}, \
                          lockName=x)",
-                        dir.get_directory().unwrap().display()
+                        dir.get_directory().unwrap()
                     )
                 ),
                 "{message}"
@@ -11933,7 +11935,7 @@ mod tests {
         let nio = NIOFSDirectory::open(tmp.path().join("nio")).unwrap();
         let nio_text = format!(
             "NIOFSDirectory@{} lockFactory=org.apache.lucene.store.NativeFSLockFactory@{{hash}}",
-            nio.get_directory().unwrap().display()
+            nio.get_directory().unwrap()
         );
         assert!(
             matches_java_text(&nio.directory_to_string(), &nio_text),
@@ -11950,7 +11952,7 @@ mod tests {
             &simple.directory_to_string(),
             &format!(
                 "NIOFSDirectory@{} lockFactory=org.apache.lucene.store.SimpleFSLockFactory@{{hash}}",
-                simple.get_directory().unwrap().display()
+                simple.get_directory().unwrap()
             )
         ));
         let fs =
@@ -11960,7 +11962,7 @@ mod tests {
             &fs.directory_to_string(),
             &format!(
                 "FSDirectory@{} lockFactory=org.apache.lucene.store.NativeFSLockFactory@{{hash}}",
-                fs.get_directory().unwrap().display()
+                fs.get_directory().unwrap()
             )
         ));
 
@@ -12296,7 +12298,11 @@ mod tests {
         let lock = SimpleFSLockFactory::instance()
             .obtain_lock(&dir, "write.lock")
             .unwrap();
-        let path = dir.get_directory().unwrap().join("write.lock");
+        let path = dir
+            .get_directory()
+            .unwrap()
+            .as_std_path()
+            .join("write.lock");
         let created = |path: &std::path::Path| {
             std::fs::metadata(path)
                 .unwrap()
@@ -12391,14 +12397,14 @@ mod tests {
             file_time_to_string(file_creation_time(&std::fs::metadata(path).unwrap()).unwrap())
         };
 
-        let a_path = dir.get_directory().unwrap().join("a.lock");
+        let a_path = dir.get_directory().unwrap().as_std_path().join("a.lock");
         let a = dir.obtain_lock("a.lock").unwrap();
         let a_created = creation_time(&a_path);
         a.close().unwrap();
         a.close().expect("a second close is a no-op");
         released(a.as_ref(), &a_path, &a_created);
 
-        let b_path = dir.get_directory().unwrap().join("b.lock");
+        let b_path = dir.get_directory().unwrap().as_std_path().join("b.lock");
         let b = dir.obtain_lock("b.lock").unwrap();
         let b_created = creation_time(&b_path);
         std::fs::remove_file(&b_path).unwrap();
@@ -12505,7 +12511,7 @@ mod tests {
         }
         let tmp = tempfile::tempdir().unwrap();
         let dir = NIOFSDirectory::open(tmp.path().join("native")).unwrap();
-        let a_path = dir.get_directory().unwrap().join("a.lock");
+        let a_path = dir.get_directory().unwrap().as_std_path().join("a.lock");
         let test_name = concat!(module_path!(), "::native_fs_lock_excludes_another_process")
             .split_once("::")
             .expect("INVARIANT: module_path! starts with the crate name")
@@ -12513,7 +12519,10 @@ mod tests {
         let child = || -> Vec<String> {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([test_name, "--exact", "--nocapture", "--test-threads=1"])
-                .env(NATIVE_LOCK_CHILD_DIR, dir.get_directory().unwrap())
+                .env(
+                    NATIVE_LOCK_CHILD_DIR,
+                    dir.get_directory().unwrap().as_std_path(),
+                )
                 .output()
                 .unwrap();
             assert!(output.status.success(), "{output:?}");
@@ -12566,7 +12575,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = NIOFSDirectory::open(tmp.path().join("native")).unwrap();
         let a = dir.obtain_lock("a.lock").unwrap();
-        let a_path = dir.get_directory().unwrap().join("a.lock");
+        let a_path = dir.get_directory().unwrap().as_std_path().join("a.lock");
         match dir.obtain_lock("a.lock") {
             Err(LuceneError::LockObtainFailed { message, .. }) => assert_eq!(
                 message,
@@ -12582,7 +12591,7 @@ mod tests {
             .unwrap();
 
         let b = dir.obtain_lock("b.lock").unwrap();
-        let b_path = dir.get_directory().unwrap().join("b.lock");
+        let b_path = dir.get_directory().unwrap().as_std_path().join("b.lock");
         std::fs::remove_file(&b_path).unwrap();
         match b.ensure_valid() {
             Err(LuceneError::Io(error)) => {
@@ -12600,7 +12609,7 @@ mod tests {
         // A lock file replaced by a non-empty one: the handle still sees the
         // empty file the lock was taken on, the path sees the new file.
         let c = dir.obtain_lock("c.lock").unwrap();
-        let c_path = dir.get_directory().unwrap().join("c.lock");
+        let c_path = dir.get_directory().unwrap().as_std_path().join("c.lock");
         let created = |path: &Path| file_creation_time(&std::fs::metadata(path).unwrap()).unwrap();
         let original = created(&c_path);
         let mut ctime = original;
@@ -12713,7 +12722,7 @@ mod tests {
     #[test]
     fn get_directory_refuses_a_closed_directory() {
         let tmp = tempfile::tempdir().unwrap();
-        let closed = |result: Result<&Path>| match result {
+        let closed = |result: Result<&nio::Path>| match result {
             Err(LuceneError::AlreadyClosed { message, .. }) => {
                 assert_eq!(message, "this Directory is closed")
             }
@@ -12722,19 +12731,19 @@ mod tests {
         let canonical = tmp.path().canonicalize().unwrap();
 
         let mut fs = FSDirectory::with_lock_factory(tmp.path(), Box::new(NoLockFactory)).unwrap();
-        assert_eq!(fs.get_directory().unwrap(), canonical);
+        assert_eq!(fs.get_directory().unwrap().as_std_path(), canonical);
         fs.close().unwrap();
         closed(fs.get_directory());
 
         let mut nio = NIOFSDirectory::open(tmp.path()).unwrap();
-        assert_eq!(nio.get_directory().unwrap(), canonical);
+        assert_eq!(nio.get_directory().unwrap().as_std_path(), canonical);
         nio.close().unwrap();
         closed(nio.get_directory());
 
         #[cfg(feature = "mmap")]
         {
             let mut mmap = mmap::MMapDirectory::open(tmp.path()).unwrap();
-            assert_eq!(mmap.get_directory().unwrap(), canonical);
+            assert_eq!(mmap.get_directory().unwrap().as_std_path(), canonical);
             mmap.close().unwrap();
             closed(mmap.get_directory());
         }
@@ -13431,7 +13440,10 @@ mod tests {
         let path = temp.path().join("index");
         let dir = FSDirectory::open(&path).unwrap();
         assert!(path.is_dir());
-        assert_eq!(dir.get_directory().unwrap(), path.canonicalize().unwrap());
+        assert_eq!(
+            dir.get_directory().unwrap().as_std_path(),
+            path.canonicalize().unwrap()
+        );
     }
 
     /// Writing through `create_output` and reading back with `open_input` round-trips
@@ -13711,7 +13723,7 @@ mod tests {
             }
             out.close().unwrap();
         }
-        let path = dir.get_directory().unwrap().join("data.bin");
+        let path = dir.get_directory().unwrap().as_std_path().join("data.bin");
         let merge = merge_io_context(MergeInfo::new(100, 1024, false, 1));
         let input = NIOFSIndexInput::new(
             format!("NIOFSIndexInput(path=\"{}\")", path.display()),

@@ -1264,7 +1264,7 @@ fn the_memory_segment_quantized_path_reads_the_mapped_nodes() {
                 std::fs::write(tmp.path().join(&name), node_bytes(&values, packed)).unwrap();
                 let input = provider
                     .open_input(
-                        &tmp.path().join(&name),
+                        tmp.path().join(&name),
                         30,
                         &*DEFAULT_IO_CONTEXT,
                         Arc::new(|_: &dyn IOContext| ReadAdvice::Normal),
