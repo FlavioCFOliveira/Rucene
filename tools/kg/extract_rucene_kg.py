@@ -663,6 +663,8 @@ def main():
 
     macro_types, macro_fns = [], []
     if args.expand or args.expanded_file:
+        if args.expand:
+            clean_workspace_members(root)
         # The root crate, then each member: `--expanded-file` is the root's dump.
         dumps = [(CRATE, Path(args.expanded_file).read_text(encoding="utf-8")
                   if args.expanded_file else run_macro_expansion(root))]
@@ -773,6 +775,32 @@ RE_EXP_FN = re.compile(
     r"^\s*(?:pub(?:\([^)]*\))?\s+)?"
     r"(?:const\s+|async\s+|unsafe\s+|extern\s+\"[^\"]*\"\s+)*fn\s"
 )
+
+
+def clean_workspace_members(root: Path) -> None:
+    """Drop the KG target's artifacts of every workspace member of `root`.
+
+    Each sync expands a fresh `git archive` snapshot (`rucene-survey-<hash>`),
+    but all snapshots share `kg_target()`. Cargo's fingerprint for a path
+    package lists the source files of the snapshot that built it; those files
+    still exist unchanged, so without this step a member's rlib built from an
+    older snapshot is reused, and a later member expanded against it fails to
+    resolve items the commit added (observed on 2026-11-04: 541 errors in
+    `rucene-test-framework` at `f1e8838`). Third-party artifacts stay cached.
+    """
+    packages = [CRATE] + [pkg for pkg, _ident in WORKSPACE.values()]
+    cmd = ["cargo", "+nightly", "clean"]
+    for pkg in packages:
+        cmd += ["-p", pkg]
+    proc = subprocess.run(
+        cmd,
+        cwd=str(root),
+        capture_output=True,
+        text=True,
+        env=dict(os.environ, CARGO_TARGET_DIR=str(kg_target())),
+    )
+    if proc.returncode != 0:
+        raise SystemExit("cleaning workspace members failed:\n" + proc.stderr[-2000:])
 
 
 def run_macro_expansion(root: Path, package: str = None) -> str:

@@ -138,3 +138,39 @@ def test_expand_builds_in_kg_target(monkeypatch, target):
 def test_pytest_basetemp_is_not_tmp(tmp_path):
     assert not str(tmp_path).startswith("/tmp/")
     assert not str(tmp_path).startswith(os.path.realpath("/tmp") + "/")
+
+
+def test_expand_cleans_every_workspace_member_first(monkeypatch, target):
+    """Stale-snapshot defect: member artifacts of an older snapshot must not be
+    reused, so `cargo clean -p` covers the root package and every member, in
+    the KG target."""
+    import extract_rucene_kg as m
+    calls = []
+
+    class Done:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(cmd, cwd, capture_output, text, env):
+        calls.append((cmd, env["CARGO_TARGET_DIR"]))
+        return Done()
+
+    monkeypatch.setattr(m.subprocess, "run", fake_run)
+    monkeypatch.setattr(m, "WORKSPACE", {
+        "randomizedtesting": ("randomizedtesting", "randomizedtesting"),
+        "rucene-codecs": ("rucene-codecs", "rucene_codecs"),
+    })
+    m.clean_workspace_members(Path("."))
+    (cmd, tdir), = calls
+    assert cmd[:3] == ["cargo", "+nightly", "clean"]
+    pkgs = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-p"]
+    assert pkgs == ["rucene", "randomizedtesting", "rucene-codecs"]
+    assert Path(tdir) == target
+
+
+def test_expand_runs_clean_before_expansion():
+    """The clean step is issued in `main` before the first expansion."""
+    import extract_rucene_kg as m
+    src = Path(m.__file__).read_text(encoding="utf-8")
+    assert src.index("clean_workspace_members(root)") < src.index("run_macro_expansion(root))]")
