@@ -4467,7 +4467,7 @@ impl IndexWriter {
                     IW,
                     &Self::merge_finished_message(
                         merge,
-                        codec.name(),
+                        &codec.to_java_string(),
                         merged_max_doc,
                         &merged_fields,
                     )?,

@@ -334,9 +334,9 @@ impl fmt::Display for dyn PostingsFormat + '_ {
     /// Port of the concrete `PostingsFormat.toString()`, which every
     /// implementation inherits: `"PostingsFormat(name=" + name + ")"`.
     ///
-    /// It hangs off the trait object for the same reason `Codec`'s does: Rust
-    /// cannot give [`fmt::Display`] a default body, but Java's method is
-    /// concrete on the abstract class.
+    /// It hangs off the trait object because Rust cannot give
+    /// [`fmt::Display`] a default body, but Java's method is concrete on the
+    /// abstract class.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "PostingsFormat(name={})", self.name())
     }

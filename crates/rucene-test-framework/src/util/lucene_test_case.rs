@@ -148,6 +148,41 @@ impl JavaAnnotation for SuppressFileSystems {
     }
 }
 
+/// `@SuppressAssertingFormats` (`LuceneTestCase.SuppressAssertingFormats`,
+/// `@Inherited`): suppresses specific asserting formats of the
+/// `AssertingCodec` while keeping the other asserting formats active. Ported
+/// under the cycle rule: `AssertingCodec`'s constructor reads it.
+pub static SUPPRESS_ASSERTING_FORMATS: AnnotationType = AnnotationType::plain(
+    "org.apache.lucene.tests.util.LuceneTestCase$SuppressAssertingFormats",
+    "SuppressAssertingFormats",
+    true,
+);
+
+/// An `@SuppressAssertingFormats(value)` annotation value.
+#[derive(Debug, Clone, Default)]
+pub struct SuppressAssertingFormats {
+    /// `value()`.
+    pub value: Vec<crate::codecs::asserting::Format>,
+}
+
+impl JavaAnnotation for SuppressAssertingFormats {
+    fn annotation_type(&self) -> &'static AnnotationType {
+        &SUPPRESS_ASSERTING_FORMATS
+    }
+    /// JDK 25's `Annotation.toString()`, enum constants by name: checked
+    /// against `java` on `@SuppressAssertingFormats({STORED_FIELDS, NORMS})`.
+    fn to_java_string(&self) -> String {
+        let items: Vec<String> = self.value.iter().map(|v| v.to_string()).collect();
+        format!(
+            "@org.apache.lucene.tests.util.LuceneTestCase.SuppressAssertingFormats({{{}}})",
+            items.join(", ")
+        )
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 /// `@SuppressFsync` (`LuceneTestCase.SuppressFsync`, `@Inherited`): never
 /// omit actual fsync calls. Ported under the cycle rule.
 pub static SUPPRESS_FSYNC: AnnotationType = AnnotationType::plain(

@@ -181,11 +181,24 @@ pub trait Codec: Send + Sync + fmt::Debug {
 
     /// Returns the KNN-vectors format used by this codec.
     fn knn_vectors_format(&self) -> &dyn KnnVectorsFormat;
+
+    /// Returns the text of Java's `toString()` for this codec.
+    ///
+    /// Port of `Codec.toString()` (`Codec.java:157-161`), which returns the
+    /// name and which subclasses may override (in Lucene 10.5.0 only the test
+    /// framework's `AssertingCodec`, `CrankyCodec` and `CompressingCodec` do).
+    /// Rust has no `toString()` on a trait object, so the trait carries it,
+    /// with Java's body as its default.
+    fn to_java_string(&self) -> String {
+        self.name().to_string()
+    }
 }
 
 impl fmt::Display for dyn Codec + '_ {
+    /// `Codec.toString()`: the text of [`Codec::to_java_string`], so a codec
+    /// that overrides it prints as its Java class does.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.name())
+        f.write_str(&self.to_java_string())
     }
 }
 

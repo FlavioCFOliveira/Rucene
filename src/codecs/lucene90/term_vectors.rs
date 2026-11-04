@@ -192,14 +192,11 @@ impl Lucene90CompressingTermVectorsFormat {
                 "chunkSize must be >= 1".to_string(),
             ));
         }
-        if max_docs_per_chunk < 1 {
-            return Err(LuceneError::IllegalArgument(
-                "maxDocsPerChunk must be >= 1".to_string(),
-            ));
-        }
+        // Java checks no lower bound on `maxDocsPerChunk`
+        // (`Lucene90CompressingTermVectorsFormat.java:81-89`).
         if block_shift < 1 {
             return Err(LuceneError::IllegalArgument(
-                "blockShift must be >= 1".to_string(),
+                "blockSize must be >= 1".to_string(),
             ));
         }
         Ok(Self {

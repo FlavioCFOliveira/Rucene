@@ -242,7 +242,7 @@ public final class SimpleTextOracle {
   }
 
   /** {@link #writeCorpus(Directory, boolean)} with {@code codec} ({@link PostingsFormatOracle}). */
-  static void writeCorpus(Directory dir, boolean compound, Codec codec) throws IOException {
+  public static void writeCorpus(Directory dir, boolean compound, Codec codec) throws IOException {
     IndexWriterConfig config = new IndexWriterConfig(new StandardAnalyzer());
     config.setCodec(codec);
     config.setOpenMode(IndexWriterConfig.OpenMode.CREATE);
@@ -690,7 +690,7 @@ public final class SimpleTextOracle {
     return sb.toString();
   }
 
-  static void files(String name, Path path, PrintWriter w) throws IOException {
+  public static void files(String name, Path path, PrintWriter w) throws IOException {
     List<Path> files;
     try (Stream<Path> s = Files.list(path)) {
       files = s.sorted().toList();

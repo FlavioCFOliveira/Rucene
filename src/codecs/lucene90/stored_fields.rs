@@ -2944,6 +2944,7 @@ impl Lucene90CompressingStoredFieldsReader {
 #[derive(Debug, Clone)]
 pub struct Lucene90CompressingStoredFieldsFormat {
     format_name: &'static str,
+    segment_suffix: String,
     compression_mode: Arc<dyn CompressionMode>,
     chunk_size: usize,
     max_docs_per_chunk: usize,
@@ -2951,9 +2952,43 @@ pub struct Lucene90CompressingStoredFieldsFormat {
 }
 
 impl Lucene90CompressingStoredFieldsFormat {
-    /// Creates a new format instance.
+    /// `new Lucene90CompressingStoredFieldsFormat(formatName, compressionMode,
+    /// chunkSize, maxDocsPerChunk, blockShift)`: the format with an empty
+    /// segment suffix.
+    ///
+    /// # Errors
+    ///
+    /// As [`with_segment_suffix`](Self::with_segment_suffix).
     pub fn new(
         format_name: &'static str,
+        compression_mode: Arc<dyn CompressionMode>,
+        chunk_size: usize,
+        max_docs_per_chunk: usize,
+        block_shift: i32,
+    ) -> Result<Self> {
+        Self::with_segment_suffix(
+            format_name,
+            "",
+            compression_mode,
+            chunk_size,
+            max_docs_per_chunk,
+            block_shift,
+        )
+    }
+
+    /// `new Lucene90CompressingStoredFieldsFormat(formatName, segmentSuffix,
+    /// compressionMode, chunkSize, maxDocsPerChunk, blockShift)`
+    /// (`Lucene90CompressingStoredFieldsFormat.java:99-128`).
+    ///
+    /// # Errors
+    ///
+    /// `IllegalArgumentException` when `chunk_size` or `max_docs_per_chunk`
+    /// is below 1, or `block_shift` outside
+    /// `[DirectMonotonicWriter.MIN_BLOCK_SHIFT, MAX_BLOCK_SHIFT]`, with
+    /// Java's messages.
+    pub fn with_segment_suffix(
+        format_name: &'static str,
+        segment_suffix: &str,
         compression_mode: Arc<dyn CompressionMode>,
         chunk_size: usize,
         max_docs_per_chunk: usize,
@@ -2973,13 +3008,14 @@ impl Lucene90CompressingStoredFieldsFormat {
             .contains(&block_shift)
         {
             return Err(LuceneError::IllegalArgument(format!(
-                "blockShift must be in [{}, {}], got {block_shift}",
+                "blockSize must be in {}-{}, got {block_shift}",
                 DirectMonotonicWriter::MIN_BLOCK_SHIFT,
                 DirectMonotonicWriter::MAX_BLOCK_SHIFT
             )));
         }
         Ok(Self {
             format_name,
+            segment_suffix: segment_suffix.to_string(),
             compression_mode,
             chunk_size,
             max_docs_per_chunk,
@@ -3003,7 +3039,7 @@ impl StoredFieldsFormat for Lucene90CompressingStoredFieldsFormat {
         Ok(Box::new(Lucene90CompressingStoredFieldsReader::new(
             directory,
             segment_info,
-            "",
+            &self.segment_suffix,
             field_infos,
             context,
             self.format_name,
@@ -3020,7 +3056,7 @@ impl StoredFieldsFormat for Lucene90CompressingStoredFieldsFormat {
         Ok(Box::new(Lucene90CompressingStoredFieldsWriter::new(
             directory,
             segment_info,
-            "",
+            &self.segment_suffix,
             context,
             self.format_name,
             Arc::clone(&self.compression_mode),
@@ -3115,6 +3151,7 @@ impl Lucene90StoredFieldsFormat {
         match mode {
             Mode::BestSpeed => Lucene90CompressingStoredFieldsFormat {
                 format_name: "Lucene90StoredFieldsFastData",
+                segment_suffix: String::new(),
                 // `Lucene90StoredFieldsFormat.BEST_SPEED_MODE` is
                 // `LZ4WithPresetDictCompressionMode`, not plain LZ4: the chunk
                 // is split into ten sub blocks sharing one dictionary.
@@ -3125,6 +3162,7 @@ impl Lucene90StoredFieldsFormat {
             },
             Mode::BestCompression => Lucene90CompressingStoredFieldsFormat {
                 format_name: "Lucene90StoredFieldsHighData",
+                segment_suffix: String::new(),
                 // `Lucene90StoredFieldsFormat.BEST_COMPRESSION_MODE` is
                 // `DeflateWithPresetDictCompressionMode`, not plain deflate.
                 compression_mode: Arc::clone(&BEST_COMPRESSION_MODE),

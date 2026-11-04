@@ -16,17 +16,75 @@
  */
 
 //! The members of `org.apache.lucene.tests.util.TestUtil` that
-//! `LuceneTestCase`'s static API calls, ported in full under the sprint's
+//! `LuceneTestCase`'s static API and the test codecs
+//! (`org.apache.lucene.tests.codecs`) call, ported in full under the sprint's
 //! cycle rule; task #342 ports the rest of the class.
+
+use std::sync::Arc;
 
 use randomizedtesting::generators::RandomNumbers;
 use randomizedtesting::jdk::random::Random;
+use rucene::codecs::lucene99::hnsw_vectors_format::{
+    DEFAULT_BEAM_WIDTH, DEFAULT_MAX_CONN, DEFAULT_NUM_MERGE_WORKER,
+};
+use rucene::codecs::{
+    Codec, DocValuesFormat, KnnVectorsFormat, Lucene104Codec, Lucene104PostingsFormat,
+    Lucene90DocValuesFormat, Lucene99HnswVectorsFormat, PostingsFormat,
+};
 
 /// Port of `org.apache.lucene.tests.util.TestUtil` (the members
 /// `LuceneTestCase` calls).
 pub struct TestUtil;
 
 impl TestUtil {
+    /// `getDefaultCodec()`: the actual default codec (e.g.
+    /// `LuceneMNCodec`) for this version of Lucene, `new Lucene104Codec()`.
+    pub fn get_default_codec() -> Arc<dyn Codec> {
+        Arc::new(Lucene104Codec::new())
+    }
+
+    /// `getDefaultPostingsFormat()`: the actual default postings format
+    /// (e.g. `LuceneMNPostingsFormat`), `new Lucene104PostingsFormat()`.
+    pub fn get_default_postings_format() -> Arc<dyn PostingsFormat> {
+        Arc::new(Lucene104PostingsFormat::new())
+    }
+
+    /// `getDefaultPostingsFormat(minItemsPerBlock, maxItemsPerBlock)`:
+    /// `new Lucene104PostingsFormat(minItemsPerBlock, maxItemsPerBlock)`.
+    ///
+    /// # Panics
+    ///
+    /// `IllegalArgumentException` for block sizes the block-tree writer
+    /// refuses, as Java's constructor throws.
+    pub fn get_default_postings_format_with(
+        min_items_per_block: i32,
+        max_items_per_block: i32,
+    ) -> Arc<dyn PostingsFormat> {
+        Arc::new(Lucene104PostingsFormat::with_block_sizes(
+            min_items_per_block,
+            max_items_per_block,
+        ))
+    }
+
+    /// `getDefaultDocValuesFormat()`: the actual default doc-values format,
+    /// `new Lucene90DocValuesFormat()`.
+    pub fn get_default_doc_values_format() -> Arc<dyn DocValuesFormat> {
+        Arc::new(Lucene90DocValuesFormat::new())
+    }
+
+    /// `getDefaultKnnVectorsFormat()`: `new
+    /// Lucene99HnswVectorsFormat(DEFAULT_MAX_CONN, DEFAULT_BEAM_WIDTH, 0)`,
+    /// whose `tinySegmentsThreshold` of 0 builds a graph for every segment.
+    pub fn get_default_knn_vectors_format() -> Arc<dyn KnnVectorsFormat> {
+        Arc::new(Lucene99HnswVectorsFormat::with_merge_exec_and_threshold(
+            DEFAULT_MAX_CONN,
+            DEFAULT_BEAM_WIDTH,
+            DEFAULT_NUM_MERGE_WORKER,
+            None,
+            0,
+        ))
+    }
+
     /// `nextInt(r, start, end)`: a number in `[start, end]`,
     /// `RandomNumbers.randomIntBetween(r, start, end)`.
     ///

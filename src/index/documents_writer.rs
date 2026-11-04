@@ -4524,8 +4524,11 @@ impl DwptGuard {
                 "DWPT",
                 &format!("flushedFiles=[{}]", flushed_files.join(", ")),
             );
-            // `"flushed codec=" + codec`: `Codec.toString()` is its name.
-            info_stream.message("DWPT", &format!("flushed codec={}", self.dwpt.codec.name()));
+            // `"flushed codec=" + codec`: `Codec.toString()`.
+            info_stream.message(
+                "DWPT",
+                &format!("flushed codec={}", self.dwpt.codec.to_java_string()),
+            );
         }
 
         // `packableSortMap != null ? packableSortMap.pack() : null`: use a

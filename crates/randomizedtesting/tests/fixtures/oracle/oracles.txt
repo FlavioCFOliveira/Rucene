@@ -12,6 +12,8 @@ org.apache.lucene.tests.util.LuceneTestCaseOracle
 com.carrotsearch.randomizedtesting.ToStringOracle
 org.apache.lucene.tests.util.TempFilesOracle
 org.apache.lucene.codecs.simpletext.SimpleTextOracle
+# The test codecs of org.apache.lucene.tests.codecs (asserting, cheapbastard, compressing, cranky, vector)
+org.apache.lucene.tests.codecs.TestCodecsOracle
 # The other lucene/codecs formats: PostingsFormatOracle <prefix> <kind> <format> <extensions>
 org.apache.lucene.codecs.simpletext.PostingsFormatOracle fst50 postings FST50 tfp
 org.apache.lucene.codecs.simpletext.PostingsFormatOracle fixedgap postings LuceneFixedGap tib tii

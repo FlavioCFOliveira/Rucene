@@ -55,3 +55,15 @@ write the fixtures (`../*.tsv`) the crate's parity tests (`src/tests/`) read.
   test file per format family; its `java -cp` run of `SimpleTextReadOracle.java`
   adds `lucene-test-framework` (with randomizedtesting and JUnit) for the
   blockterms assemblies, which only that jar registers.
+* **The test codecs:** `org.apache.lucene.tests.codecs.TestCodecsOracle`
+  writes `crates/rucene-test-framework/tests/fixtures/testcodecs_*.tsv`: the
+  `nocfs` and `cfs` corpus of `SimpleTextOracle.writeCorpus` (public for it)
+  written with each codec of `lucene-test-framework`'s `asserting`,
+  `cheapbastard`, `compressing` and `vector` packages (`_files.tsv`), the
+  error of each misuse of an `Asserting` object (`_misuse.tsv`), the bounds
+  and cranky methods of every draw a `CrankyCodec` makes while writing the
+  corpus (`_cranky_draws.tsv`), the first failure per seed (`_cranky_seeds.tsv`)
+  and `CompressingCodec`'s random factories per seed
+  (`_compressing_random.tsv`). The Rust side is
+  `crates/rucene-test-framework/tests/test_codecs_oracle.rs`, which includes
+  the corpus helpers of `crates/rucene-codecs/tests/oracle/mod.rs`.

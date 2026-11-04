@@ -1,0 +1,35 @@
+# misuse	class	message (null for none)
+te.docFreq unpositioned	java.lang.AssertionError	docFreq() called on unpositioned TermsEnum
+te.term unpositioned	java.lang.AssertionError	term() called on unpositioned TermsEnum
+te.ord unpositioned	java.lang.AssertionError	ord() called on unpositioned TermsEnum
+te.postings unpositioned	java.lang.AssertionError	docs(...) called on unpositioned TermsEnum
+te.totalTermFreq unpositioned	java.lang.AssertionError	totalTermFreq() called on unpositioned TermsEnum
+te.next after end	java.lang.AssertionError	next() called on unpositioned TermsEnum
+te.impacts without freqs	java.lang.AssertionError	Freqs should be requested on impacts
+pe.freq before nextDoc	java.lang.AssertionError	freq() called before nextDoc()/advance()
+pe.advance backwards	java.lang.AssertionError	target must be > docID(), got 3 <= 3
+pe.nextDoc after end	java.lang.AssertionError	nextDoc() called after NO_MORE_DOCS
+pe.advance after end	java.lang.AssertionError	advance() called after NO_MORE_DOCS
+pe.nextPosition beyond freq	java.lang.AssertionError	nextPosition() called more than freq() times!
+pe.nextPosition before nextDoc	java.lang.AssertionError	nextPosition() called before nextDoc()/advance()
+pe.getPayload before nextPosition	java.lang.AssertionError	getPayload() called before nextPosition()!
+pe.startOffset before nextPosition	java.lang.AssertionError	startOffset() called before nextPosition()!
+pe.freq after end	java.lang.AssertionError	freq() called after NO_MORE_DOCS
+pe.freq after reuse	java.lang.AssertionError	freq() called before nextDoc()/advance()
+terms consumed in another thread	java.lang.AssertionError	Terms are only supposed to be consumed in the thread in which they have been acquired.
+dv.numeric longValue unpositioned	java.lang.AssertionError	null
+dv.numeric advance backwards	java.lang.AssertionError	null
+dv.numeric advanceExact beyond maxDoc	java.lang.AssertionError	null
+dv.binary binaryValue unpositioned	java.lang.AssertionError	null
+dv.sorted lookupOrd out of range	java.lang.AssertionError	null
+dv.sorted ordValue unpositioned	java.lang.AssertionError	null
+dv.sortedset nextOrd unpositioned	java.lang.AssertionError	null
+dv.sortednumeric nextValue unpositioned	java.lang.AssertionError	null
+livedocs get beyond length	java.lang.AssertionError	index=120 vs in.length()=120
+livedocs as LiveDocs get beyond length	java.lang.AssertionError	index=120 vs in.length()=120
+sfw.finishDocument before startDocument	java.lang.AssertionError	null
+sfw.startDocument twice	java.lang.AssertionError	null
+sfw.finish with a wrong count	java.lang.AssertionError	null
+tvw.finishDocument before startDocument	java.lang.AssertionError	null
+tvw.finishDocument with fields left	java.lang.AssertionError	null
+tvw.finish with a wrong count	java.lang.AssertionError	null

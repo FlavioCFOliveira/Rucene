@@ -1619,7 +1619,9 @@ impl CheckIndex {
                 info_stream,
                 &format!(
                     "    codec={}",
-                    codec.as_ref().map_or("null", |codec| codec.name())
+                    codec
+                        .as_ref()
+                        .map_or_else(|| "null".to_string(), |codec| codec.to_java_string())
                 ),
             );
             seg_info_stat.codec = codec;
