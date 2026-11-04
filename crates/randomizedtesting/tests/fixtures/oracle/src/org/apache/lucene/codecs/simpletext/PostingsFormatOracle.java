@@ -74,7 +74,8 @@ import org.apache.lucene.util.automaton.RegExp;
  * BloomFilter(Lucene104)} for {@code new BloomFilteringPostingsFormat(new
  * Lucene104PostingsFormat())}. The blockterms assemblies are {@code lucene-test-framework}'s
  * {@code LuceneFixedGap}, {@code LuceneVarGapFixedInterval} and {@code
- * LuceneVarGapDocFreqInterval}, found by their SPI names.
+ * LuceneVarGapDocFreqInterval}, found by their SPI names; {@code BlockTreeOrds}, whose terms enum
+ * supports {@code ord()} and {@code seekExact(long)}, is found by its SPI name too.
  */
 public final class PostingsFormatOracle {
 

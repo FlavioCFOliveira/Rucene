@@ -19,4 +19,5 @@ org.apache.lucene.codecs.simpletext.PostingsFormatOracle vargap_fixed postings L
 org.apache.lucene.codecs.simpletext.PostingsFormatOracle vargap_docfreq postings LuceneVarGapDocFreqInterval tib tiv tmv
 org.apache.lucene.codecs.simpletext.PostingsFormatOracle direct postings Direct tmd tim
 org.apache.lucene.codecs.simpletext.PostingsFormatOracle bloom postings BloomFilter(Lucene104) blm
+org.apache.lucene.codecs.simpletext.PostingsFormatOracle blocktreeords postings BlockTreeOrds tio tipo
 org.apache.lucene.codecs.simpletext.PostingsFormatOracle bitvectors knn HnswBitVectorsFormat vem vex vemf vec

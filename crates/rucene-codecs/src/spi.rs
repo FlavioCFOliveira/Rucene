@@ -21,6 +21,7 @@ use rucene::util::resource_loader::{ClassLoader, ServiceProvider};
 use rucene::util::spi::{lucene_core_class_loader, NamedSPIProvider};
 
 use crate::bitvectors::HnswBitVectorsFormat;
+use crate::blocktreeords::BlockTreeOrdsPostingsFormat;
 use crate::bloom::BloomFilteringPostingsFormat;
 use crate::memory::{DirectPostingsFormat, FSTPostingsFormat};
 use crate::simpletext::SimpleTextCodec;
@@ -35,11 +36,11 @@ use crate::simpletext::SimpleTextCodec;
 /// | --- | --- |
 /// | `org.apache.lucene.codecs.Codec` | `SimpleTextCodec` |
 /// | `org.apache.lucene.codecs.KnnVectorsFormat` | `HnswBitVectorsFormat` |
-/// | `org.apache.lucene.codecs.PostingsFormat` | `BloomFilteringPostingsFormat`, `DirectPostingsFormat`, `FSTPostingsFormat` |
+/// | `org.apache.lucene.codecs.PostingsFormat` | `BlockTreeOrdsPostingsFormat`, `BloomFilteringPostingsFormat`, `DirectPostingsFormat`, `FSTPostingsFormat` |
 ///
 /// **Divergence.** `lucene-codecs` 10.5.0 also lists
-/// `BlockTreeOrdsPostingsFormat`, `UniformSplitPostingsFormat` and
-/// `STUniformSplitPostingsFormat` under `org.apache.lucene.codecs.PostingsFormat`
+/// `UniformSplitPostingsFormat` and `STUniformSplitPostingsFormat` under
+/// `org.apache.lucene.codecs.PostingsFormat`
 /// (`lucene/codecs/src/resources/META-INF/services/`). Those classes are not
 /// ported yet, and a service line whose class cannot be loaded makes every
 /// scan of the service fail (`ServiceConfigurationError: Provider ... not
@@ -61,6 +62,13 @@ pub fn class_loader() -> &'static Arc<ClassLoader> {
                     "org.apache.lucene.codecs.bitvectors.HnswBitVectorsFormat",
                     NamedSPIProvider::new(|| {
                         Arc::new(HnswBitVectorsFormat::new()) as Arc<dyn KnnVectorsFormat>
+                    }),
+                ),
+                ServiceProvider::new(
+                    "org.apache.lucene.codecs.PostingsFormat",
+                    "org.apache.lucene.codecs.blocktreeords.BlockTreeOrdsPostingsFormat",
+                    NamedSPIProvider::new(|| {
+                        Arc::new(BlockTreeOrdsPostingsFormat::new()) as Arc<dyn PostingsFormat>
                     }),
                 ),
                 ServiceProvider::new(
