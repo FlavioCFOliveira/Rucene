@@ -31,6 +31,19 @@ import org.apache.lucene.codecs.PostingsFormat;
 import org.apache.lucene.codecs.bloom.BloomFilteringPostingsFormat;
 import org.apache.lucene.codecs.lucene104.Lucene104Codec;
 import org.apache.lucene.codecs.lucene104.Lucene104PostingsFormat;
+import org.apache.lucene.codecs.uniformsplit.UniformSplitPostingsFormat;
+import org.apache.lucene.codecs.uniformsplit.sharedterms.STUniformSplitPostingsFormat;
+import org.apache.lucene.analysis.standard.StandardAnalyzer;
+import org.apache.lucene.document.Document;
+import org.apache.lucene.document.Field;
+import org.apache.lucene.document.FieldType;
+import org.apache.lucene.document.StringField;
+import org.apache.lucene.index.IndexOptions;
+import org.apache.lucene.index.IndexWriter;
+import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.index.SerialMergeScheduler;
+import org.apache.lucene.index.Term;
+import org.apache.lucene.index.TieredMergePolicy;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.LeafReaderContext;
@@ -72,7 +85,9 @@ import org.apache.lucene.util.automaton.RegExp;
  * postings} (every field but {@code e_id} uses the format) or {@code knn} (the byte-vector fields
  * {@code vb} and {@code e_vb_*} use it); {@code format} is an SPI name, or {@code
  * BloomFilter(Lucene104)} for {@code new BloomFilteringPostingsFormat(new
- * Lucene104PostingsFormat())}. The blockterms assemblies are {@code lucene-test-framework}'s
+ * Lucene104PostingsFormat())}, or {@code UniformSplit(t,d,h)} / {@code SharedTermsUniformSplit(t,d,h)}
+ * for {@code new UniformSplitPostingsFormat(t, d, null, null, h)} / {@code new
+ * STUniformSplitPostingsFormat(t, d, null, null, h)}. The blockterms assemblies are {@code lucene-test-framework}'s
  * {@code LuceneFixedGap}, {@code LuceneVarGapFixedInterval} and {@code
  * LuceneVarGapDocFreqInterval}, found by their SPI names; {@code BlockTreeOrds}, whose terms enum
  * supports {@code ord()} and {@code seekExact(long)}, is found by its SPI name too.
@@ -84,6 +99,16 @@ public final class PostingsFormatOracle {
   static PostingsFormat postingsFormat(String format) {
     if (format.equals("BloomFilter(Lucene104)")) {
       return new BloomFilteringPostingsFormat(new Lucene104PostingsFormat());
+    }
+    if (format.endsWith(")")
+        && (format.startsWith("UniformSplit(") || format.startsWith("SharedTermsUniformSplit("))) {
+      String[] a = format.substring(format.indexOf('(') + 1, format.length() - 1).split(",");
+      int target = Integer.parseInt(a[0]);
+      int delta = Integer.parseInt(a[1]);
+      boolean onHeap = Boolean.parseBoolean(a[2]);
+      return format.startsWith("UniformSplit(")
+          ? new UniformSplitPostingsFormat(target, delta, null, null, onHeap)
+          : new STUniformSplitPostingsFormat(target, delta, null, null, onHeap);
     }
     return PostingsFormat.forName(format);
   }
@@ -107,6 +132,61 @@ public final class PostingsFormatOracle {
             : super.getKnnVectorsFormatForField(field);
       }
     };
+  }
+
+  /** A single-token field type with the given index options and no norms. */
+  static FieldType sharedType(IndexOptions options) {
+    FieldType t = new FieldType();
+    t.setTokenized(false);
+    t.setOmitNorms(true);
+    t.setIndexOptions(options);
+    t.freeze();
+    return t;
+  }
+
+  /**
+   * The {@code shared} case of the {@code UniformSplit} formats: terms that occur in several fields
+   * (the shared-terms format's multi-field block lines), over fields of every postings index
+   * option, written in three committed batches with deletions, then {@code forceMerge(1)}.
+   */
+  static void writeShared(Directory dir, Codec codec) throws IOException {
+    IndexWriterConfig config = new IndexWriterConfig(new StandardAnalyzer());
+    config.setCodec(codec);
+    config.setOpenMode(IndexWriterConfig.OpenMode.CREATE);
+    config.setMergeScheduler(new SerialMergeScheduler());
+    TieredMergePolicy policy = new TieredMergePolicy();
+    policy.setNoCFSRatio(0.0);
+    config.setMergePolicy(policy);
+    config.setUseCompoundFile(false);
+    FieldType docs = sharedType(IndexOptions.DOCS);
+    FieldType freqs = sharedType(IndexOptions.DOCS_AND_FREQS);
+    FieldType positions = sharedType(IndexOptions.DOCS_AND_FREQS_AND_POSITIONS);
+    FieldType offsets = sharedType(IndexOptions.DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS);
+    try (IndexWriter w = new IndexWriter(dir, config)) {
+      for (int batch = 0; batch < 3; batch++) {
+        for (int i = batch * 100; i < batch * 100 + 100; i++) {
+          Document d = new Document();
+          d.add(new StringField("s_id", String.format(java.util.Locale.ROOT, "%04d", i), Field.Store.NO));
+          d.add(new Field("sa", "t" + (i % 37), docs));
+          d.add(new Field("sb", "t" + (i % 23), positions));
+          d.add(new Field("sc", "t" + (i % 11), offsets));
+          d.add(new Field("sc", "u" + (i % 53), offsets));
+          d.add(new Field("sd", "t" + (i % 37), freqs));
+          if (i % 3 == 0) {
+            d.add(new Field("se", "t" + (i % 7), docs));
+          }
+          w.addDocument(d);
+        }
+        w.commit();
+        if (batch == 1) {
+          for (int i = 0; i < 200; i += 9) {
+            w.deleteDocuments(new Term("s_id", String.format(java.util.Locale.ROOT, "%04d", i)));
+          }
+        }
+      }
+      w.forceMerge(1);
+      w.commit();
+    }
   }
 
   /** The file of the first segment of {@code dir} with the format's name and {@code ext}. */
@@ -315,22 +395,39 @@ public final class PostingsFormatOracle {
     try (Directory d = new NIOFSDirectory(edge)) {
       SimpleTextOracle.writeEdge(d, codec);
     }
+    // The UniformSplit formats also write the `shared` case (terms in several fields).
+    boolean shared = formatName.contains("UniformSplit");
+    Path sharedDir = work.resolve("shared");
+    if (shared) {
+      try (Directory d = new NIOFSDirectory(sharedDir)) {
+        writeShared(d, codec);
+      }
+    }
     try (PrintWriter w = new PrintWriter(new File(out, prefix + "_files.tsv"), "UTF-8")) {
       w.println("# case\tfile\tlength\tfnv1a64\tcontent (\\xHH, \\\\)");
       SimpleTextOracle.files("nocfs", nocfs, w);
       SimpleTextOracle.files("cfs", cfs, w);
       SimpleTextOracle.files("edge", edge, w);
+      if (shared) {
+        SimpleTextOracle.files("shared", sharedDir, w);
+      }
     }
     try (PrintWriter w = new PrintWriter(new File(out, prefix + "_reads.tsv"), "UTF-8")) {
       w.println("# case\tline of SimpleTextReadOracle.dump (\\xHH, \\\\)");
       SimpleTextOracle.reads("nocfs", nocfs, w);
       SimpleTextOracle.reads("cfs", cfs, w);
       SimpleTextOracle.reads("edge", edge, w);
+      if (shared) {
+        SimpleTextOracle.reads("shared", sharedDir, w);
+      }
     }
     if (kind.equals("postings")) {
       try (PrintWriter w = new PrintWriter(new File(out, prefix + "_enum.tsv"), "UTF-8")) {
         w.println("# case\tline of PostingsFormatOracle.enumTrace");
-        for (String c : new String[] {"nocfs", "cfs", "edge"}) {
+        for (String c :
+            shared
+                ? new String[] {"nocfs", "cfs", "edge", "shared"}
+                : new String[] {"nocfs", "cfs", "edge"}) {
           for (String line : enumTrace(work.resolve(c))) {
             w.println(c + "\t" + line);
           }

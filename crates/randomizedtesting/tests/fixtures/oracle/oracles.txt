@@ -21,3 +21,8 @@ org.apache.lucene.codecs.simpletext.PostingsFormatOracle direct postings Direct 
 org.apache.lucene.codecs.simpletext.PostingsFormatOracle bloom postings BloomFilter(Lucene104) blm
 org.apache.lucene.codecs.simpletext.PostingsFormatOracle blocktreeords postings BlockTreeOrds tio tipo
 org.apache.lucene.codecs.simpletext.PostingsFormatOracle bitvectors knn HnswBitVectorsFormat vem vex vemf vec
+org.apache.lucene.codecs.simpletext.PostingsFormatOracle uniformsplit postings UniformSplit ustb ustd
+org.apache.lucene.codecs.simpletext.PostingsFormatOracle uniformsplit_heap postings UniformSplit(32,3,true) ustb ustd
+org.apache.lucene.codecs.simpletext.PostingsFormatOracle uniformsplit_small postings UniformSplit(8,2,false) ustb ustd
+org.apache.lucene.codecs.simpletext.PostingsFormatOracle stuniformsplit postings SharedTermsUniformSplit stustb stustd
+org.apache.lucene.codecs.simpletext.PostingsFormatOracle stuniformsplit_small postings SharedTermsUniformSplit(8,2,true) stustb stustd

@@ -40,12 +40,17 @@ write the fixtures (`../*.tsv`) the crate's parity tests (`src/tests/`) read.
   `org.apache.lucene.codecs.simpletext.PostingsFormatOracle <prefix> <kind>
   <format> <extension>...` (one line per format in `oracles.txt`) writes the
   corpus of `SimpleTextOracle` (`nocfs`, `cfs`, `edge`) with `Lucene104Codec`
-  routing every field but `e_id` (`kind` `postings`, `format` an SPI name or
-  `BloomFilter(Lucene104)`) or the byte-vector fields (`kind` `knn`) to the
-  format, and records `crates/rucene-codecs/tests/fixtures/<prefix>_files.tsv`,
+  routing every field but `e_id` (`kind` `postings`, `format` an SPI name,
+  `BloomFilter(Lucene104)`, or `UniformSplit(t,d,h)` /
+  `SharedTermsUniformSplit(t,d,h)` for the formats built with those block
+  settings and `dictionaryOnHeap`) or the byte-vector fields (`kind` `knn`)
+  to the format, and records `crates/rucene-codecs/tests/fixtures/<prefix>_files.tsv`,
   `_reads.tsv` (`SimpleTextReadOracle.dump`), `_enum.tsv` (ords, term states
   and intersections; `postings` only), `_errors.tsv` (three corruptions of each
-  given extension) and `_spi.tsv`. The Rust side is
+  given extension) and `_spi.tsv`. The `UniformSplit` formats also write a
+  `shared` case (`writeShared`: terms that occur in several fields, every
+  postings index option, three batches with deletions, `forceMerge(1)`) into
+  `_files.tsv`, `_reads.tsv` and `_enum.tsv`. The Rust side is
   `crates/rucene-codecs/tests/oracle/mod.rs` (`FormatOracle`), shared by one
   test file per format family; its `java -cp` run of `SimpleTextReadOracle.java`
   adds `lucene-test-framework` (with randomizedtesting and JUnit) for the

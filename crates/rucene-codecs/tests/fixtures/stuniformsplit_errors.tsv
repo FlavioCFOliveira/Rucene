@@ -1,0 +1,7 @@
+# case (extension-corruption)	class	message ($D = the index directory, $ID = the segment id, $BADID = the flipped id)
+stustb-truncate	org.apache.lucene.index.CorruptIndexException	codec footer mismatch (file truncated?): actual footer=12593299 vs expected footer=-1071082520 (resource=NIOFSIndexInput(path="$D/_5_SharedTermsUniformSplit_0.stustb"))
+stustb-id	org.apache.lucene.index.CorruptIndexException	file mismatch, expected id=$ID, got=$BADID (resource=NIOFSIndexInput(path="$D/_5_SharedTermsUniformSplit_0.stustb"))
+stustb-checksum	none	-
+stustd-truncate	org.apache.lucene.index.CorruptIndexException	codec footer mismatch (file truncated?): actual footer=297805971 vs expected footer=-1071082520 (resource=BufferedChecksumIndexInput(NIOFSIndexInput(path="$D/_5_SharedTermsUniformSplit_0.stustd")))
+stustd-id	org.apache.lucene.index.CorruptIndexException	file mismatch, expected id=$ID, got=$BADID (resource=NIOFSIndexInput(path="$D/_5_SharedTermsUniformSplit_0.stustd"))
+stustd-checksum	org.apache.lucene.index.CorruptIndexException	checksum failed (hardware problem?) : expected=$CRC actual=$CRC (resource=BufferedChecksumIndexInput(NIOFSIndexInput(path="$D/_5_SharedTermsUniformSplit_0.stustd")))

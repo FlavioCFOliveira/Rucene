@@ -12,6 +12,7 @@
 //! | [`bloom`] | `org.apache.lucene.codecs.bloom` |
 //! | [`memory`] | `org.apache.lucene.codecs.memory` |
 //! | [`simpletext`] | `org.apache.lucene.codecs.simpletext` |
+//! | [`uniformsplit`] | `org.apache.lucene.codecs.uniformsplit` |
 //! | [`class_loader`] | `lucene-codecs`' `META-INF/services` |
 
 pub mod bitvectors;
@@ -20,6 +21,7 @@ pub mod blocktreeords;
 pub mod bloom;
 pub mod memory;
 pub mod simpletext;
+pub mod uniformsplit;
 
 mod spi;
 

@@ -25,6 +25,8 @@ use crate::blocktreeords::BlockTreeOrdsPostingsFormat;
 use crate::bloom::BloomFilteringPostingsFormat;
 use crate::memory::{DirectPostingsFormat, FSTPostingsFormat};
 use crate::simpletext::SimpleTextCodec;
+use crate::uniformsplit::sharedterms::STUniformSplitPostingsFormat;
+use crate::uniformsplit::UniformSplitPostingsFormat;
 
 /// The class loader that sees `lucene-codecs`' `META-INF/services` files, a
 /// child of `lucene-core`'s
@@ -36,16 +38,10 @@ use crate::simpletext::SimpleTextCodec;
 /// | --- | --- |
 /// | `org.apache.lucene.codecs.Codec` | `SimpleTextCodec` |
 /// | `org.apache.lucene.codecs.KnnVectorsFormat` | `HnswBitVectorsFormat` |
-/// | `org.apache.lucene.codecs.PostingsFormat` | `BlockTreeOrdsPostingsFormat`, `BloomFilteringPostingsFormat`, `DirectPostingsFormat`, `FSTPostingsFormat` |
+/// | `org.apache.lucene.codecs.PostingsFormat` | `BlockTreeOrdsPostingsFormat`, `BloomFilteringPostingsFormat`, `DirectPostingsFormat`, `FSTPostingsFormat`, `UniformSplitPostingsFormat`, `STUniformSplitPostingsFormat` |
 ///
-/// **Divergence.** `lucene-codecs` 10.5.0 also lists
-/// `UniformSplitPostingsFormat` and `STUniformSplitPostingsFormat` under
-/// `org.apache.lucene.codecs.PostingsFormat`
-/// (`lucene/codecs/src/resources/META-INF/services/`). Those classes are not
-/// ported yet, and a service line whose class cannot be loaded makes every
-/// scan of the service fail (`ServiceConfigurationError: Provider ... not
-/// found`), so their lines are left out until the tasks that port the
-/// classes add them; the lines present keep the file's order.
+/// Every line of the three service files of
+/// `lucene/codecs/src/resources/META-INF/services/`, in their order.
 pub fn class_loader() -> &'static Arc<ClassLoader> {
     static LOADER: LazyLock<Arc<ClassLoader>> = LazyLock::new(|| {
         ClassLoader::with_services(
@@ -91,6 +87,20 @@ pub fn class_loader() -> &'static Arc<ClassLoader> {
                     "org.apache.lucene.codecs.memory.FSTPostingsFormat",
                     NamedSPIProvider::new(|| {
                         Arc::new(FSTPostingsFormat::new()) as Arc<dyn PostingsFormat>
+                    }),
+                ),
+                ServiceProvider::new(
+                    "org.apache.lucene.codecs.PostingsFormat",
+                    "org.apache.lucene.codecs.uniformsplit.UniformSplitPostingsFormat",
+                    NamedSPIProvider::new(|| {
+                        Arc::new(UniformSplitPostingsFormat::new()) as Arc<dyn PostingsFormat>
+                    }),
+                ),
+                ServiceProvider::new(
+                    "org.apache.lucene.codecs.PostingsFormat",
+                    "org.apache.lucene.codecs.uniformsplit.sharedterms.STUniformSplitPostingsFormat",
+                    NamedSPIProvider::new(|| {
+                        Arc::new(STUniformSplitPostingsFormat::new()) as Arc<dyn PostingsFormat>
                     }),
                 ),
             ],

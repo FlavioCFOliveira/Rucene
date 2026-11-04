@@ -747,6 +747,18 @@ pub trait Terms: Send + Sync {
             self.sum_doc_freq()?
         ))
     }
+
+    /// This terms instance as [`Any`], for the `instanceof` tests Java code
+    /// makes on a `Terms` (`STUniformSplitTermsWriter.merge` falls back to the
+    /// default merge unless `terms instanceof STUniformSplitTerms`).
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** Java tests the run-time
+    /// class of any object; a Rust trait object exposes its concrete type only
+    /// through [`Any`], which an implementation opts into by returning
+    /// `Some(self)`. The default, `None`, answers `false` to every such test.
+    fn as_any(&self) -> Option<&dyn Any> {
+        None
+    }
 }
 
 /// The body of the default `Terms.intersect(CompiledAutomaton, BytesRef)`

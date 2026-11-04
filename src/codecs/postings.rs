@@ -218,35 +218,55 @@ pub trait FieldsConsumer {
     /// Propagates whatever the integrity checks, the merged view or
     /// [`write`](Self::write) raise.
     fn merge(&mut self, merge_state: &MergeState, norms: Option<&dyn NormsProducer>) -> Result<()> {
-        let mut fields: Vec<Box<dyn Fields>> = Vec::new();
-        let mut slices: Vec<crate::index::multi_reader::ReaderSlice> = Vec::new();
-
-        let mut doc_base = 0i32;
-
-        for (reader_index, producer) in merge_state.fields_producers.iter().enumerate() {
-            let max_doc = merge_state.max_docs[reader_index];
-            if let Some(producer) = producer {
-                merge_state.check_aborted()?;
-                producer.check_integrity()?;
-                slices.push(crate::index::multi_reader::ReaderSlice::new(
-                    doc_base,
-                    max_doc,
-                    reader_index as i32,
-                ));
-                fields.push(Box::new(SharedFieldsProducer(Arc::clone(producer))));
-            }
-            doc_base += max_doc;
-        }
-
-        let merged_fields = crate::index::mapped_multi_fields::MappedMultiFields::new(
-            Arc::new(merge_state.clone()),
-            crate::index::multi_fields::MultiFields::new(fields, slices),
-        );
-        self.write(&merged_fields, norms)
+        default_merge(self, merge_state, norms)
     }
 
     /// Closes this consumer, releasing all resources.
     fn close(&mut self) -> Result<()>;
+}
+
+/// The body of the default `FieldsConsumer.merge(MergeState, NormsProducer)`
+/// (`FieldsConsumer.java:72-96`), which [`FieldsConsumer::merge`] runs.
+///
+/// A consumer that overrides `merge` and falls back to the default, as
+/// `STUniformSplitTermsWriter.merge` does with `super.merge(mergeState,
+/// normsProducer)`, calls this: Rust cannot call a trait's default body from
+/// an implementation that overrides it.
+///
+/// # Errors
+///
+/// Propagates whatever the integrity checks, the merged view or
+/// [`FieldsConsumer::write`] raise.
+pub fn default_merge<C: FieldsConsumer + ?Sized>(
+    consumer: &mut C,
+    merge_state: &MergeState,
+    norms: Option<&dyn NormsProducer>,
+) -> Result<()> {
+    let mut fields: Vec<Box<dyn Fields>> = Vec::new();
+    let mut slices: Vec<crate::index::multi_reader::ReaderSlice> = Vec::new();
+
+    let mut doc_base = 0i32;
+
+    for (reader_index, producer) in merge_state.fields_producers.iter().enumerate() {
+        let max_doc = merge_state.max_docs[reader_index];
+        if let Some(producer) = producer {
+            merge_state.check_aborted()?;
+            producer.check_integrity()?;
+            slices.push(crate::index::multi_reader::ReaderSlice::new(
+                doc_base,
+                max_doc,
+                reader_index as i32,
+            ));
+            fields.push(Box::new(SharedFieldsProducer(Arc::clone(producer))));
+        }
+        doc_base += max_doc;
+    }
+
+    let merged_fields = crate::index::mapped_multi_fields::MappedMultiFields::new(
+        Arc::new(merge_state.clone()),
+        crate::index::multi_fields::MultiFields::new(fields, slices),
+    );
+    consumer.write(&merged_fields, norms)
 }
 
 /// A postings producer of a merge state, seen as the [`Fields`] it is.

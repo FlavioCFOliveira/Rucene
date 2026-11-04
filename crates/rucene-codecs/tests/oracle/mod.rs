@@ -2068,68 +2068,97 @@ impl FormatOracle {
     ) -> usize {
         let mut compared = 0;
         for case in ["nocfs", "cfs", "edge"] {
-            let tmp = TempDir::new(&format!("{}-write-{case}", self.prefix));
-            self.write_case(case, &tmp.0);
-            let rust = read_dir(&tmp.0);
-            let java = java_files(self.prefix, case);
-            let rust_names: Vec<&String> = rust.keys().collect();
-            let java_names: Vec<&String> = java.keys().collect();
-            assert_eq!(
-                rust_names, java_names,
-                "{}: {case}: file listing",
-                self.prefix
+            compared += self.assert_case_writes_lucenes_bytes(
+                case,
+                |path: &Path| self.write_case(case, path),
+                &normalize,
             );
-            let rust_files = self.format_files(&rust);
-            let java_files = self.format_files(&java);
-            assert_eq!(
-                rust_files.keys().collect::<Vec<_>>(),
-                java_files.keys().collect::<Vec<_>>(),
-                "{}: {case}: format files",
-                self.prefix
-            );
-            for (name, java_bytes) in &java_files {
-                let rust_bytes = &rust_files[name];
-                let expected = normalize(
-                    name,
-                    java_bytes_with_rust_id(java_bytes, rust_bytes),
-                    rust_bytes,
-                );
-                assert!(
-                    *rust_bytes == expected,
-                    "{}: {case}: {name} differs from Lucene's at byte {} (lengths {} and {})",
-                    self.prefix,
-                    first_difference(rust_bytes, &expected),
-                    rust_bytes.len(),
-                    expected.len()
-                );
-                compared += 1;
-            }
         }
         assert!(compared > 0, "{}: no format file compared", self.prefix);
+        compared
+    }
+
+    /// One case of
+    /// [`assert_writes_lucenes_bytes_with`](Self::assert_writes_lucenes_bytes_with):
+    /// `write` writes the case's index with Rucene into the directory it is
+    /// given; returns the number of format files compared.
+    pub fn assert_case_writes_lucenes_bytes(
+        &self,
+        case: &str,
+        write: impl Fn(&Path),
+        normalize: impl Fn(&str, Vec<u8>, &[u8]) -> Vec<u8>,
+    ) -> usize {
+        let mut compared = 0;
+        let tmp = TempDir::new(&format!("{}-write-{case}", self.prefix));
+        write(&tmp.0);
+        let rust = read_dir(&tmp.0);
+        let java = java_files(self.prefix, case);
+        let rust_names: Vec<&String> = rust.keys().collect();
+        let java_names: Vec<&String> = java.keys().collect();
+        assert_eq!(
+            rust_names, java_names,
+            "{}: {case}: file listing",
+            self.prefix
+        );
+        let rust_files = self.format_files(&rust);
+        let java_files = self.format_files(&java);
+        assert_eq!(
+            rust_files.keys().collect::<Vec<_>>(),
+            java_files.keys().collect::<Vec<_>>(),
+            "{}: {case}: format files",
+            self.prefix
+        );
+        for (name, java_bytes) in &java_files {
+            let rust_bytes = &rust_files[name];
+            let expected = normalize(
+                name,
+                java_bytes_with_rust_id(java_bytes, rust_bytes),
+                rust_bytes,
+            );
+            assert!(
+                *rust_bytes == expected,
+                "{}: {case}: {name} differs from Lucene's at byte {} (lengths {} and {})",
+                self.prefix,
+                first_difference(rust_bytes, &expected),
+                rust_bytes.len(),
+                expected.len()
+            );
+            compared += 1;
+        }
         compared
     }
 
     /// Rucene reads Lucene's files and its own and sees what Lucene sees.
     pub fn assert_reads_what_lucene_reads(&self) {
         for case in ["nocfs", "cfs", "edge"] {
-            let expected = java_reads(self.prefix, case);
-            let java_dir = TempDir::new(&format!("{}-java-{case}", self.prefix));
-            write_files(&java_dir.0, &java_files(self.prefix, case));
-            assert_same_lines_but_live(
-                &format!("{}: {case}: Lucene's files", self.prefix),
-                &dump(&java_dir.0),
-                &expected,
-                self.live_impacts_differ,
-            );
-            let rust_dir = TempDir::new(&format!("{}-rust-{case}", self.prefix));
-            self.write_case(case, &rust_dir.0);
-            assert_same_lines_but_live(
-                &format!("{}: {case}: Rucene's files", self.prefix),
-                &dump(&rust_dir.0),
-                &expected,
-                self.live_impacts_differ,
-            );
+            self.assert_case_reads_what_lucene_reads(case, |path: &Path| {
+                self.write_case(case, path)
+            });
         }
+    }
+
+    /// One case of
+    /// [`assert_reads_what_lucene_reads`](Self::assert_reads_what_lucene_reads),
+    /// whose Rucene index `write` writes.
+    pub fn assert_case_reads_what_lucene_reads(&self, case: &str, write: impl Fn(&Path)) {
+        let expected = java_reads(self.prefix, case);
+        assert!(!expected.is_empty(), "{}: {case}: no reads", self.prefix);
+        let java_dir = TempDir::new(&format!("{}-java-{case}", self.prefix));
+        write_files(&java_dir.0, &java_files(self.prefix, case));
+        assert_same_lines_but_live(
+            &format!("{}: {case}: Lucene's files", self.prefix),
+            &dump(&java_dir.0),
+            &expected,
+            self.live_impacts_differ,
+        );
+        let rust_dir = TempDir::new(&format!("{}-rust-{case}", self.prefix));
+        write(&rust_dir.0);
+        assert_same_lines_but_live(
+            &format!("{}: {case}: Rucene's files", self.prefix),
+            &dump(&rust_dir.0),
+            &expected,
+            self.live_impacts_differ,
+        );
     }
 
     /// The terms-enum calls the dump does not make
@@ -2137,31 +2166,38 @@ impl FormatOracle {
     /// Rucene's what Lucene saw on its own.
     pub fn assert_enum_trace_matches(&self) {
         for case in ["nocfs", "cfs", "edge"] {
-            let expected: Vec<String> = rows(&format!("{}_enum.tsv", self.prefix))
-                .into_iter()
-                .filter(|r| r[0] == case)
-                .map(|r| r[1].clone())
-                .collect();
-            assert!(
-                !expected.is_empty(),
-                "{}: {case}: no enum trace",
-                self.prefix
-            );
-            let java_dir = TempDir::new(&format!("{}-enum-java-{case}", self.prefix));
-            write_files(&java_dir.0, &java_files(self.prefix, case));
-            assert_same_lines(
-                &format!("{}: {case}: enum trace of Lucene's files", self.prefix),
-                &enum_trace(&java_dir.0),
-                &expected,
-            );
-            let rust_dir = TempDir::new(&format!("{}-enum-rust-{case}", self.prefix));
-            self.write_case(case, &rust_dir.0);
-            assert_same_lines(
-                &format!("{}: {case}: enum trace of Rucene's files", self.prefix),
-                &enum_trace(&rust_dir.0),
-                &expected,
-            );
+            self.assert_case_enum_trace_matches(case, |path: &Path| self.write_case(case, path));
         }
+    }
+
+    /// One case of
+    /// [`assert_enum_trace_matches`](Self::assert_enum_trace_matches), whose
+    /// Rucene index `write` writes.
+    pub fn assert_case_enum_trace_matches(&self, case: &str, write: impl Fn(&Path)) {
+        let expected: Vec<String> = rows(&format!("{}_enum.tsv", self.prefix))
+            .into_iter()
+            .filter(|r| r[0] == case)
+            .map(|r| r[1].clone())
+            .collect();
+        assert!(
+            !expected.is_empty(),
+            "{}: {case}: no enum trace",
+            self.prefix
+        );
+        let java_dir = TempDir::new(&format!("{}-enum-java-{case}", self.prefix));
+        write_files(&java_dir.0, &java_files(self.prefix, case));
+        assert_same_lines(
+            &format!("{}: {case}: enum trace of Lucene's files", self.prefix),
+            &enum_trace(&java_dir.0),
+            &expected,
+        );
+        let rust_dir = TempDir::new(&format!("{}-enum-rust-{case}", self.prefix));
+        write(&rust_dir.0);
+        assert_same_lines(
+            &format!("{}: {case}: enum trace of Rucene's files", self.prefix),
+            &enum_trace(&rust_dir.0),
+            &expected,
+        );
     }
 
     /// [`assert_enum_trace_matches`](Self::assert_enum_trace_matches) for a
@@ -2204,6 +2240,17 @@ impl FormatOracle {
     /// Lucene reads the files Rucene writes and sees what it sees in its own
     /// (`java -cp <jars> SimpleTextReadOracle.java <dir>`).
     pub fn assert_lucene_reads_what_rucene_writes(&self) {
+        for case in ["nocfs", "cfs", "edge"] {
+            self.assert_case_lucene_reads_what_rucene_writes(case, |path: &Path| {
+                self.write_case(case, path)
+            });
+        }
+    }
+
+    /// One case of
+    /// [`assert_lucene_reads_what_rucene_writes`](Self::assert_lucene_reads_what_rucene_writes),
+    /// whose Rucene index `write` writes.
+    pub fn assert_case_lucene_reads_what_rucene_writes(&self, case: &str, write: impl Fn(&Path)) {
         let source = Path::new(env!("CARGO_MANIFEST_DIR")).join(
             "../randomizedtesting/tests/fixtures/oracle/src/org/apache/lucene/codecs/simpletext/\
              SimpleTextReadOracle.java",
@@ -2215,34 +2262,32 @@ impl FormatOracle {
             .map(|j| j.display().to_string())
             .collect::<Vec<_>>()
             .join(":");
-        for case in ["nocfs", "cfs", "edge"] {
-            let rust_dir = TempDir::new(&format!("{}-forjava-{case}", self.prefix));
-            self.write_case(case, &rust_dir.0);
-            let output = std::process::Command::new("java")
-                .arg("-ea")
-                .arg("-cp")
-                .arg(&classpath)
-                .arg(&source)
-                .arg(&rust_dir.0)
-                .output()
-                .expect("a JDK is required to run the Lucene oracle");
-            assert!(
-                output.status.success(),
-                "{}: SimpleTextReadOracle failed on Rucene's {case} index:\n{}",
-                self.prefix,
-                String::from_utf8_lossy(&output.stderr)
-            );
-            let lines: Vec<String> = String::from_utf8(output.stdout)
-                .unwrap()
-                .lines()
-                .map(str::to_string)
-                .collect();
-            assert_same_lines(
-                &format!("{}: {case}: Lucene on Rucene's files", self.prefix),
-                &lines,
-                &java_reads(self.prefix, case),
-            );
-        }
+        let rust_dir = TempDir::new(&format!("{}-forjava-{case}", self.prefix));
+        write(&rust_dir.0);
+        let output = std::process::Command::new("java")
+            .arg("-ea")
+            .arg("-cp")
+            .arg(&classpath)
+            .arg(&source)
+            .arg(&rust_dir.0)
+            .output()
+            .expect("a JDK is required to run the Lucene oracle");
+        assert!(
+            output.status.success(),
+            "{}: SimpleTextReadOracle failed on Rucene's {case} index:\n{}",
+            self.prefix,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let lines: Vec<String> = String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect();
+        assert_same_lines(
+            &format!("{}: {case}: Lucene on Rucene's files", self.prefix),
+            &lines,
+            &java_reads(self.prefix, case),
+        );
     }
 
     /// The corruptions of `PostingsFormatOracle.corrupt` of Lucene's `nocfs`
