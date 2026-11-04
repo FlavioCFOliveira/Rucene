@@ -28,3 +28,11 @@ write the fixtures (`../*.tsv`) the crate's parity tests (`src/tests/`) read.
   `crates/<crate>/tests/fixtures/` and the JDK data lists to
   `crates/<crate>/src/jdk/data/`. Their temporary directories are masked as
   `$D` and identity hash codes as `@HASH`.
+* **`SimpleText` oracles:** `org.apache.lucene.codecs.simpletext.SimpleTextOracle`
+  writes `crates/rucene-codecs/tests/fixtures/simpletext_*.tsv` (every file of
+  the indexes it writes with `SimpleTextCodec`, what Lucene reads back, the
+  errors of corrupted copies, the service lookups). Its reader,
+  `SimpleTextReadOracle.java`, depends only on `lucene-core` and
+  `lucene-codecs`: `crates/rucene-codecs/tests/simpletext_oracle.rs` also
+  launches it as a single source file (`java -cp <jars>
+  SimpleTextReadOracle.java <dir>`) on the indexes Rucene writes.

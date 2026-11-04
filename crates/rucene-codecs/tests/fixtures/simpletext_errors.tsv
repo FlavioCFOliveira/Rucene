@@ -1,0 +1,7 @@
+# case	class	message ($D = the index directory)
+pst-checksum	org.apache.lucene.index.CorruptIndexException	SimpleText checksum failure: 00000000000080662864 != 00000000000080662863 (resource=BufferedChecksumIndexInput(NIOFSIndexInput(path="$D/_5.pst")))
+fld-trailing	org.apache.lucene.index.CorruptIndexException	Unexpected stuff at the end of file, please be careful with your text editor! (resource=BufferedChecksumIndexInput(NIOFSIndexInput(path="$D/_5.fld")))
+inf-word	org.apache.lucene.index.CorruptIndexException	SimpleText failure: expected checksum line but got chksum   00000000000652352172 (resource=BufferedChecksumIndexInput(NIOFSIndexInput(path="$D/_5.inf")))
+si-id	org.apache.lucene.index.CorruptIndexException	file mismatch, expected: $ID, got: 00$ID (INVALID FORMAT) (resource=BufferedChecksumIndexInput(NIOFSIndexInput(path="$D/_5.si")))
+si-version	org.apache.lucene.index.CorruptIndexException	unable to parse version string: Failed to parse major version from "x0" (got: x0.5.0) (resource=BufferedChecksumIndexInput(NIOFSIndexInput(path="$D/_5.si")))
+dat-checksum	none	-

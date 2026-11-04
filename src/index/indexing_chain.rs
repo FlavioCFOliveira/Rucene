@@ -4184,18 +4184,44 @@ impl IndexingChain for DefaultIndexingChain {
             }
         }
 
+        // `termsHash.startDocument()` and `startStoredFields(docID)` run before
+        // the `try` block that holds both passes (`IndexingChain.java:604-605`):
+        // the stored-fields writer of a segment is created by its first
+        // document before any field of that document initializes its own
+        // writer, which fixes the order in which a segment's files are created
+        // and so the iteration order of the file set its `.si` records. For the
+        // term-vectors half it only drops whatever the previous document left
+        // pending.
+        if let Some(consumer) = self.term_vectors_consumer.as_mut() {
+            consumer.start_document();
+        }
+
+        // Lucene opens a stored-fields frame for every document, before any
+        // field is processed, and closes it in a `finally` block: a document
+        // that stores nothing still occupies its own frame, so the stream stays
+        // aligned with the doc ids.
+        self.start_stored_fields(doc_id)?;
+
+        let mut indexed: Vec<usize> = Vec::new();
+        let mut outcome: Result<()> = Ok(());
+
         // Two passes, as in Lucene: every instance of a multi-valued field must
         // be inverted together, because the analyzer may reuse one TokenStream
         // across fields.
         //
         // 1st pass over doc fields – verify that doc schema matches the index
         // schema; build schema for each unique doc field
-        // (`IndexingChain.java:617-644`).
+        // (`IndexingChain.java:617-644`). It runs inside Java's `try`, so a
+        // failure is recorded as the outcome and the `finally` tail below
+        // still closes the stored-fields frame.
         let mut doc_fields: Vec<usize> = Vec::with_capacity(doc.get_fields().len());
-        for field in doc.get_fields() {
+        'first_pass: for field in doc.get_fields() {
             let field_name = field.name();
             let field_type = field.field_type();
-            self.reject_reserved_parent_field(field_name)?;
+            if let Err(error) = self.reject_reserved_parent_field(field_name) {
+                outcome = Err(error);
+                break 'first_pass;
+            }
             let pf = self.get_or_add_per_field(field_name);
             let per_field = &mut self.per_fields[pf];
             if per_field.field_gen != field_gen {
@@ -4214,35 +4240,28 @@ impl IndexingChain for DefaultIndexingChain {
             }
             doc_fields.push(pf);
             if per_field.validated_frozen_field_type.is_none() {
-                Self::update_doc_field_schema(field_name, &mut per_field.schema, field_type)?;
+                if let Err(error) =
+                    Self::update_doc_field_schema(field_name, &mut per_field.schema, field_type)
+                {
+                    outcome = Err(error);
+                    break 'first_pass;
+                }
             }
         }
 
-        if !fields_need_init_or_validate.is_empty() {
-            self.init_and_validate_fields(&fields_need_init_or_validate, field_infos)?;
+        if outcome.is_ok() && !fields_need_init_or_validate.is_empty() {
+            if let Err(error) =
+                self.init_and_validate_fields(&fields_need_init_or_validate, field_infos)
+            {
+                outcome = Err(error);
+            }
         }
-
-        // `termsHash.startDocument()` runs before the stored-fields frame is
-        // opened (`IndexingChain.java:604-605`); for the term-vectors half it
-        // only drops whatever the previous document left pending.
-        if let Some(consumer) = self.term_vectors_consumer.as_mut() {
-            consumer.start_document();
-        }
-
-        // Lucene opens a stored-fields frame for every document, before any
-        // field is processed, and closes it in a `finally` block: a document
-        // that stores nothing still occupies its own frame, so the stream stays
-        // aligned with the doc ids.
-        self.start_stored_fields(doc_id)?;
-
-        let mut indexed: Vec<usize> = Vec::new();
-        let mut outcome: Result<()> = Ok(());
 
         // 2nd pass — index the parent field first (`IndexingChain.java:650-657`).
         // `parent_field` is currently a `NumericDocValuesField`, so
         // `process_field` always returns `false` here, but the result is checked
         // defensively in case the parent field's representation changes.
-        if let Some(parent_pf) = parent_pf {
+        if let Some(parent_pf) = parent_pf.filter(|_| outcome.is_ok()) {
             let parent_field = self
                 .parent_field
                 .take()

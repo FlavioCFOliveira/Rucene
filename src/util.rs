@@ -31,7 +31,7 @@ pub mod info_stream;
 pub mod int_block_pool;
 pub mod io_function;
 pub mod java_collections;
-pub(crate) mod java_fmt;
+pub mod java_fmt;
 pub mod jvm;
 pub mod long_heap;
 pub mod math_util;
@@ -1341,7 +1341,7 @@ const UNICODE_DECIMAL_ZEROS: [u32; 36] = [
 /// from ten; `None` — Java's -1 — when the character is neither or its value
 /// is not below `radix`. A character outside the Basic Multilingual Plane is
 /// not a digit, as Java's `char` cannot hold one.
-pub(crate) fn java_character_digit(c: char, radix: u32) -> Option<u32> {
+pub fn java_character_digit(c: char, radix: u32) -> Option<u32> {
     let code = c as u32;
     let value = match code {
         0x30..=0x39 => code - 0x30,

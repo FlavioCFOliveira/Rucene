@@ -10,3 +10,4 @@ repository = "https://github.com/FlavioCFOliveira/Rucene"
 publish = false
 
 [dependencies]
+rucene = { path = "../.." }

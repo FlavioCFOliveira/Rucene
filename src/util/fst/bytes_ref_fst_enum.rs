@@ -96,6 +96,31 @@ impl<'a, O: Outputs> BytesRefFSTEnum<'a, O> {
         })
     }
 
+    /// Creates an enumeration over `fst` that keeps it alive itself.
+    ///
+    /// Equivalent to `BytesRefFSTEnum(FST)` for a caller that cannot lend the
+    /// FST for the enumeration's lifetime, such as a terms enumeration that
+    /// outlives the call that built it; see [`FSTEnum::new_shared`].
+    ///
+    /// # Errors
+    ///
+    /// Never fails; the signature matches [`new`](Self::new).
+    pub fn new_shared(fst: std::sync::Arc<FST<O>>) -> Result<BytesRefFSTEnum<'static, O>> {
+        Ok(BytesRefFSTEnum {
+            inner: FSTEnum::new_shared(fst)?,
+            state: BytesRefEnumState {
+                // The current term is written from index 1 onwards, so its
+                // offset is fixed at 1, exactly as in Lucene.
+                current: BytesRef {
+                    bytes: vec![0u8; 10],
+                    offset: 1,
+                    length: 0,
+                },
+                target: BytesRef::default(),
+            },
+        })
+    }
+
     /// Returns the current input and output pair, or `None` before the first
     /// term and after the last one.
     ///
@@ -187,5 +212,93 @@ impl<'a, O: Outputs> BytesRefFSTEnum<'a, O> {
             input: &self.state.current,
             output: self.inner.output_at(upto),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::util::fst::{Builder, InputType, PositiveIntOutputs, Util};
+    use crate::util::IntsRefBuilder;
+
+    const TERMS: [&[u8]; 9] = [
+        b"",
+        b"a",
+        b"ab",
+        b"abc",
+        b"abd",
+        b"b",
+        b"ba",
+        b"z\xff",
+        b"\xff\xff",
+    ];
+
+    fn fst() -> FST<PositiveIntOutputs> {
+        let mut compiler = Builder::new(InputType::Byte1, PositiveIntOutputs::get_singleton())
+            .build()
+            .unwrap();
+        let mut scratch = IntsRefBuilder::new();
+        for (i, term) in TERMS.iter().enumerate() {
+            let input = Util::to_ints_ref(&BytesRef::new(term.to_vec()), &mut scratch);
+            compiler.add(&input, i as i64 * 3).unwrap();
+        }
+        let metadata = compiler.compile().unwrap();
+        FST::from_fst_reader(metadata, compiler.into_fst_reader().unwrap()).unwrap()
+    }
+
+    fn walk<O: Outputs>(e: &mut BytesRefFSTEnum<'_, O>) -> Vec<String>
+    where
+        O::Output: std::fmt::Debug,
+    {
+        let mut out = Vec::new();
+        while let Some(io) = e.next().unwrap() {
+            out.push(format!("{:?}={:?}", io.input.slice(), io.output));
+        }
+        for target in [
+            &b""[..],
+            b"aa",
+            b"abc",
+            b"abz",
+            b"c",
+            b"\xff",
+            b"\xff\xff\xff",
+        ] {
+            let t = BytesRef::new(target.to_vec());
+            let ceil = e
+                .seek_ceil(&t)
+                .unwrap()
+                .map(|io| format!("{:?}={:?}", io.input.slice(), io.output));
+            let floor = e
+                .seek_floor(&t)
+                .unwrap()
+                .map(|io| format!("{:?}={:?}", io.input.slice(), io.output));
+            let exact = e
+                .seek_exact(&t)
+                .unwrap()
+                .map(|io| format!("{:?}={:?}", io.input.slice(), io.output));
+            let next = e
+                .next()
+                .unwrap()
+                .map(|io| format!("{:?}={:?}", io.input.slice(), io.output));
+            out.push(format!("{target:?} {ceil:?} {floor:?} {exact:?} {next:?}"));
+        }
+        out
+    }
+
+    /// An enumeration that keeps its FST alive itself (the one a terms
+    /// enumeration needs) walks, seeks and outputs exactly as one that borrows
+    /// it.
+    #[test]
+    fn shared_enum_matches_borrowed_enum() {
+        let fst = fst();
+        let borrowed = walk(&mut BytesRefFSTEnum::new(&fst).unwrap());
+        let shared = walk(&mut BytesRefFSTEnum::new_shared(Arc::new(fst)).unwrap());
+        assert_eq!(borrowed.len(), TERMS.len() + 7);
+        assert_eq!(shared, borrowed);
+        // The terms come out in order with their outputs.
+        assert_eq!(borrowed[0], "[]=0");
+        assert_eq!(borrowed[8], "[255, 255]=24");
     }
 }

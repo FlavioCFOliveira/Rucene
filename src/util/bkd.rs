@@ -877,6 +877,13 @@ impl OfflinePointWriter {
         })
     }
 
+    /// Returns the name of the temporary file, Java's package-private field
+    /// `OfflinePointWriter.name`, which `BKDWriter` and its fork
+    /// `SimpleTextBKDWriter` read to delete or verify the file.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
     fn ensure_open(&self) -> Result<()> {
         if self.closed {
             return Err(LuceneError::illegal_state(

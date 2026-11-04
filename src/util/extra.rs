@@ -1373,7 +1373,7 @@ fn parse_version_component(token: &str, name: &str, version: &str) -> Result<i32
 /// `NumberFormatException`: an optional leading `-` or `+`, then at least one
 /// digit, each UTF-16 code unit read with `Character.digit(char, 10)` — so the
 /// decimal digits of every script count — and a result that fits an `int`.
-pub(crate) fn java_parse_int(s: &str) -> Option<i32> {
+pub fn java_parse_int(s: &str) -> Option<i32> {
     const RADIX: i32 = 10;
     let units: Vec<u16> = s.encode_utf16().collect();
     let digit = |unit: u16| {
@@ -1415,6 +1415,51 @@ pub(crate) fn java_parse_int(s: &str) -> Option<i32> {
     Some(if negative { result } else { -result })
 }
 
+/// `Long.parseLong(String)`, or `None` where it throws
+/// `NumberFormatException`: the same grammar as [`java_parse_int`], with a
+/// result that fits a `long`.
+pub fn java_parse_long(s: &str) -> Option<i64> {
+    const RADIX: i64 = 10;
+    let units: Vec<u16> = s.encode_utf16().collect();
+    let digit = |unit: u16| {
+        char::from_u32(u32::from(unit))
+            .and_then(|c| crate::util::java_character_digit(c, RADIX as u32))
+            .map(i64::from)
+    };
+    let first = *units.first()?;
+    let mut i = 0;
+    let mut negative = false;
+    let mut limit = -i64::MAX;
+    if first < u16::from(b'0') {
+        // Possible leading "+" or "-".
+        if first == u16::from(b'-') {
+            negative = true;
+            limit = i64::MIN;
+        } else if first != u16::from(b'+') {
+            return None;
+        }
+        if units.len() == 1 {
+            return None;
+        }
+        i += 1;
+    }
+    let multmin = limit / RADIX;
+    let mut result = 0i64;
+    while i < units.len() {
+        let d = digit(units[i])?;
+        i += 1;
+        if result < multmin {
+            return None;
+        }
+        result *= RADIX;
+        if result < limit + d {
+            return None;
+        }
+        result -= d;
+    }
+    Some(if negative { result } else { -result })
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1422,6 +1467,19 @@ pub(crate) fn java_parse_int(s: &str) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// JDK 25 `Long.parseLong`: an optional sign, the full `long` range, and
+    /// `NumberFormatException` one past it.
+    #[test]
+    fn java_parse_long_matches_jdk_25() {
+        assert_eq!(java_parse_long("+42"), Some(42));
+        assert_eq!(java_parse_long("-9223372036854775808"), Some(i64::MIN));
+        assert_eq!(java_parse_long("9223372036854775807"), Some(i64::MAX));
+        assert_eq!(java_parse_long("9223372036854775808"), None);
+        assert_eq!(java_parse_long("-"), None);
+        assert_eq!(java_parse_long(""), None);
+        assert_eq!(java_parse_long("1 "), None);
+    }
 
     /// `Version.parse` reads each component with `Integer.parseInt`, whose
     /// `Character.digit` accepts the decimal digits of every script, and a

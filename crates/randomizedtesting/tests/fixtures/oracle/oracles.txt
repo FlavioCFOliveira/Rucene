@@ -11,3 +11,4 @@ org.apache.lucene.tests.mockfile.MockfileOracle
 org.apache.lucene.tests.util.LuceneTestCaseOracle
 com.carrotsearch.randomizedtesting.ToStringOracle
 org.apache.lucene.tests.util.TempFilesOracle
+org.apache.lucene.codecs.simpletext.SimpleTextOracle

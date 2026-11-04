@@ -143,8 +143,9 @@ pub const SOURCE_FLUSH: &str = "flush";
 /// delegates everything else.
 ///
 /// `BKDWriter` uses it for the same reason: it wraps the directory it is given
-/// in a [`TrackingDirectoryWrapper`] (`BKDWriter.java:173`).
-pub(crate) struct SharedDirectory(pub(crate) Arc<dyn Directory>);
+/// in a [`TrackingDirectoryWrapper`] (`BKDWriter.java:173`), and so does
+/// `lucene/codecs`' `SimpleTextBKDWriter`, which forks it.
+pub struct SharedDirectory(pub Arc<dyn Directory>);
 
 impl Directory for SharedDirectory {
     fn list_all(&self) -> Result<Vec<String>> {

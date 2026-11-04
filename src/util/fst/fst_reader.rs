@@ -18,7 +18,11 @@ use super::fst::BytesReader;
 ///   `RuntimeException`; this port reports the failure instead of panicking.
 /// * The returned reader borrows the store, which is what Lucene's readers do
 ///   implicitly by holding a reference to the store's arrays.
-pub trait FSTReader: Accountable {
+/// * The store is `Send + Sync`, as every Lucene store may be: an FST is
+///   immutable once built and is read from many threads (for example by the
+///   terms dictionary of `SimpleTextFieldsReader`, whose `Terms` must be
+///   shareable).
+pub trait FSTReader: Accountable + Send + Sync {
     /// Returns the reverse [`BytesReader`] for this FST.
     ///
     /// Equivalent to `FSTReader.getReverseBytesReader`.

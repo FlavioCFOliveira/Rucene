@@ -33,44 +33,209 @@
 
 /// Renders an `f64` the way `java.lang.Double.toString(double)` does.
 ///
-/// Java uses the shortest decimal that round-trips — which is also what Rust's
-/// `Display` produces — but always keeps at least one fraction digit, and
-/// switches to "computerized scientific notation" when the magnitude leaves
-/// `[10^-3, 10^7)`.
-pub(crate) fn double_to_string(value: f64) -> String {
-    if value.is_nan() {
+/// JDK 19 and later (Raffaello Giulietti's algorithm, the `Double.toString`
+/// javadoc) render the shortest decimal that rounds to the value, with at
+/// least two significant digits, the one closest to the value and, of two
+/// equally close, the one with the even significand; it switches to
+/// "computerized scientific notation" when the magnitude leaves
+/// `[10^-3, 10^7)`. Rust's shortest form breaks the tie upwards and has no
+/// two-digit minimum, so [`giulietti_decimal`] corrects it: `Double.MIN_VALUE`
+/// renders `4.9E-324` (Rust's shortest form is `5e-324`) and
+/// `9.4832877835713125E12`, a halfway value, `9.483287783571312E12`.
+///
+/// The algorithm is the one of the workspace crate `randomizedtesting`
+/// (`src/jdk/lang.rs`), pinned against JDK 25 by its oracle grid.
+pub fn double_to_string(d: f64) -> String {
+    if d.is_nan() {
         return "NaN".to_string();
     }
-    if value.is_infinite() {
-        return if value > 0.0 { "Infinity" } else { "-Infinity" }.to_string();
+    if d.is_infinite() {
+        return if d > 0.0 { "Infinity" } else { "-Infinity" }.to_string();
     }
-    let magnitude = value.abs();
-    if magnitude != 0.0 && !(1e-3..1e7).contains(&magnitude) {
-        return with_fraction_digit(&format!("{value:E}"));
+    if d == 0.0 {
+        return if d.is_sign_negative() { "-0.0" } else { "0.0" }.to_string();
     }
-    with_fraction_digit(&format!("{value}"))
+    let a = d.abs();
+    let decimal = giulietti_decimal(
+        format!("{a:e}"),
+        format!("{a:.1e}"),
+        // A double's exact decimal expansion has at most 767 significant
+        // digits, so 800 fraction digits render it exactly.
+        |digits| format!("{a:.*e}", digits.min(800)),
+        |s| s.parse::<f64>().is_ok_and(|v| v.to_bits() == a.to_bits()),
+    );
+    java_float_format(&decimal, d < 0.0)
 }
 
-/// Adds the fraction digit Java always prints and Rust omits: `800` becomes
-/// `800.0`, and the mantissa of `1E-10` becomes `1.0E-10`.
-fn with_fraction_digit(rendered: &str) -> String {
-    match rendered.find('E') {
-        Some(exponent) => {
-            let (mantissa, exponent) = rendered.split_at(exponent);
-            if mantissa.contains('.') {
-                rendered.to_string()
-            } else {
-                format!("{mantissa}.0{exponent}")
-            }
+/// Renders an `f32` the way `java.lang.Float.toString(float)` does.
+///
+/// The rules of [`double_to_string`], applied to the decimals that round to
+/// the value as a `float`: `Float.MIN_VALUE` renders `1.4E-45` and
+/// `390.015625f`, a halfway value, `390.01562`.
+pub fn float_to_string(f: f32) -> String {
+    if f.is_nan() {
+        return "NaN".to_string();
+    }
+    if f.is_infinite() {
+        return if f > 0.0 { "Infinity" } else { "-Infinity" }.to_string();
+    }
+    if f == 0.0 {
+        return if f.is_sign_negative() { "-0.0" } else { "0.0" }.to_string();
+    }
+    let a = f.abs();
+    let decimal = giulietti_decimal(
+        format!("{a:e}"),
+        format!("{a:.1e}"),
+        // A float's exact decimal expansion has at most 112 significant digits.
+        |digits| format!("{a:.*e}", digits.min(150)),
+        |s| s.parse::<f32>().is_ok_and(|v| v.to_bits() == a.to_bits()),
+    );
+    java_float_format(&decimal, f < 0.0)
+}
+
+/// The decimal `Double.toString` / `Float.toString` render for the positive
+/// finite value whose shortest round-trip form (`{:e}`) is `shortest` and
+/// whose form rounded to two significant digits (`{:.1e}`) is `two`.
+///
+/// JDK 19 and later (the `Double.toString(double)` javadoc, the algorithm of
+/// Raffaello Giulietti) take the set R of decimals that round to the value,
+/// and the minimal length p over R: when p >= 2 the result is the decimal of
+/// length p in R closest to the value, which is the shortest form; when p is
+/// 1, the result is the decimal of length 1 or 2 in R closest to the value,
+/// which is the value rounded to two significant digits (that decimal is
+/// closer than the one-digit one, so it is in R too). Before, this
+/// emulation always took the shortest form and padded `d` to `d.0`, so
+/// `Double.MIN_VALUE` (shortest `5e-324`) rendered `5.0E-324` where JDK 25
+/// renders `4.9E-324`, and `Float.MIN_VALUE` `1.0E-45` for `1.4E-45`.
+///
+/// Among the decimals of length p, JDK 25 takes the one closest to the value
+/// and, of two equally close, the one with the even significand. Rust's
+/// shortest form breaks that tie upwards: when the value lies exactly halfway
+/// between two p-digit decimals (its exact expansion, `exact(n)` with `n`
+/// fraction digits, continues
+/// after the p-th digit with `5` and zeros only), the neighbour with the even
+/// last digit is taken if it rounds to the value too (`round_trips`). Measured on JDK 25:
+/// `Float.toString(2234752.25f)` is `2234752.2`, where the shortest form is
+/// `2234752.3`.
+fn giulietti_decimal(
+    shortest: String,
+    two: String,
+    exact: impl Fn(usize) -> String,
+    round_trips: impl Fn(&str) -> bool,
+) -> String {
+    let split = |sci: &str| -> (String, i32) {
+        let (m, e) = sci.split_once('e').expect("scientific notation");
+        (
+            m.chars().filter(char::is_ascii_digit).collect(),
+            e.parse().expect("exponent"),
+        )
+    };
+    let (digits, exp) = split(&shortest);
+    if digits.len() == 1 {
+        return two;
+    }
+    // The exact value's digits at the same exponent: a halfway point is
+    // `digits - 1` followed by `5000…`.
+    let p = digits.len();
+    let halfway = |sci: &str| -> Option<String> {
+        let (exact_digits, exact_exp) = split(sci);
+        let tail = &exact_digits[p..];
+        (exact_exp == exp && tail.starts_with('5') && tail[1..].bytes().all(|b| b == b'0'))
+            .then_some(exact_digits)
+    };
+    // A cheap rendering with 20 more digits rules out almost every value; a
+    // possible halfway point is confirmed on the exact expansion.
+    if halfway(&exact(p + 20)).is_none() {
+        return shortest;
+    }
+    let Some(exact_digits) = halfway(&exact(usize::MAX)) else {
+        return shortest;
+    };
+    // The two neighbours: `exact_digits[..p]` and the next p-digit decimal.
+    let lower = exact_digits[..p].to_string();
+    let mut upper = lower.clone().into_bytes();
+    let mut i = p;
+    loop {
+        if i == 0 {
+            // `99…9` + 1 has more digits: not a neighbour of length p.
+            return shortest;
         }
-        None => {
-            if rendered.contains('.') {
-                rendered.to_string()
-            } else {
-                format!("{rendered}.0")
-            }
+        i -= 1;
+        if upper[i] == b'9' {
+            upper[i] = b'0';
+        } else {
+            upper[i] += 1;
+            break;
         }
     }
+    let upper = String::from_utf8(upper).expect("ASCII digits");
+    let even = if (lower.as_bytes()[p - 1] - b'0').is_multiple_of(2) {
+        lower
+    } else {
+        upper
+    };
+    if even == digits {
+        return shortest;
+    }
+    let candidate = format!("{}.{}e{exp}", &even[..1], &even[1..]);
+    if round_trips(&candidate) {
+        candidate
+    } else {
+        shortest
+    }
+}
+
+/// Formats decimal digits as `Double.toString` / `Float.toString` do:
+/// plain notation with at least one fraction digit for magnitudes in
+/// `[10^-3, 10^7)`, otherwise `d.dddE[-]n`.
+fn java_float_format(sci: &str, negative: bool) -> String {
+    // `sci` is the decimal of `giulietti_decimal`, `d[.ddd]e[-]n`.
+    let (mantissa, exp) = sci.split_once('e').expect("scientific notation");
+    let exp: i32 = exp.parse().expect("exponent");
+    let digits: String = mantissa.chars().filter(|c| *c != '.').collect();
+    // `{:.1e}` keeps a second digit that may be a zero; the significand
+    // carries no trailing zero (`d.0` is rendered by the branches below).
+    let digits = match digits.trim_end_matches('0') {
+        "" => "0".to_string(),
+        trimmed => trimmed.to_string(),
+    };
+    let mut out = String::new();
+    if negative {
+        out.push('-');
+    }
+    if (-3..7).contains(&exp) {
+        if exp < 0 {
+            out.push_str("0.");
+            for _ in 0..(-exp - 1) {
+                out.push('0');
+            }
+            out.push_str(&digits);
+        } else {
+            let int_len = (exp + 1) as usize;
+            if digits.len() <= int_len {
+                out.push_str(&digits);
+                for _ in digits.len()..int_len {
+                    out.push('0');
+                }
+                out.push_str(".0");
+            } else {
+                out.push_str(&digits[..int_len]);
+                out.push('.');
+                out.push_str(&digits[int_len..]);
+            }
+        }
+    } else {
+        out.push_str(&digits[..1]);
+        out.push('.');
+        if digits.len() > 1 {
+            out.push_str(&digits[1..]);
+        } else {
+            out.push('0');
+        }
+        out.push('E');
+        out.push_str(&exp.to_string());
+    }
+    out
 }
 
 /// Renders `value` the way `String.format(Locale.ROOT, "%.<digits>f", value)`
@@ -183,7 +348,7 @@ pub(crate) fn to_hex_string(value: i32) -> String {
 /// and by [`DataInput::read_string`](crate::store::DataInput::read_string), whose
 /// Java counterparts both build the string with that constructor
 /// (`CodecUtil.java:383`, `DataInput.java:234`).
-pub(crate) fn java_utf8_to_string(bytes: &[u8]) -> String {
+pub fn java_utf8_to_string(bytes: &[u8]) -> String {
     const REPL: u16 = 0xFFFD;
     fn is_not_continuation(b: u8) -> bool {
         b & 0xC0 != 0x80
@@ -312,6 +477,272 @@ pub(crate) fn java_utf8_to_string(bytes: &[u8]) -> String {
     String::from_utf16_lossy(&out)
 }
 
+// ---------------------------------------------------------------------------
+// Double.parseDouble / Float.parseFloat
+// ---------------------------------------------------------------------------
+//
+// Copied from the workspace crate `randomizedtesting` (`src/jdk/lang.rs`),
+// whose parsers are pinned against JDK 25 by its oracle grid
+// (`tests/fixtures/java_lang.tsv`). `lucene/codecs`' `SimpleText` formats read
+// back what `Float.toString` and `Double.toString` wrote with these two JDK
+// parsers (`SimpleTextStoredFieldsReader`, `SimpleTextKnnVectorsReader`).
+
+/// The binary format a floating-point string is rounded to.
+#[derive(Clone, Copy)]
+struct BinaryFormat {
+    /// Explicit significand bits (52 or 23).
+    mant_bits: u32,
+    /// Exponent bias (1023 or 127).
+    bias: i64,
+}
+
+const F64_FORMAT: BinaryFormat = BinaryFormat {
+    mant_bits: 52,
+    bias: 1023,
+};
+const F32_FORMAT: BinaryFormat = BinaryFormat {
+    mant_bits: 23,
+    bias: 127,
+};
+
+/// Rounds `m * 2^e` (plus a nonzero remainder below `m`'s last bit when
+/// `sticky`) to the nearest value of `format`, ties to even, and returns its
+/// unsigned bit pattern (`+inf` on overflow).
+fn round_binary(m: u64, e: i64, sticky: bool, format: BinaryFormat) -> u64 {
+    if m == 0 {
+        return 0;
+    }
+    let mb = i64::from(format.mant_bits);
+    let emin = 1 - format.bias;
+    let emax = format.bias;
+    let inf_bits = ((2 * format.bias + 1) as u64) << format.mant_bits;
+    let n = 64 - i64::from(m.leading_zeros());
+    let top = e + n - 1;
+    if top > emax + 1 {
+        return inf_bits;
+    }
+    // The weight of the last bit kept.
+    let unit = top.max(emin) - mb;
+    let shift = unit - e;
+    let q: u64 = if shift <= 0 {
+        // Exact: fewer significant bits than the format keeps.
+        m << (-shift)
+    } else if shift > 64 {
+        // The value is below half the smallest subnormal: it rounds to zero.
+        0
+    } else {
+        let shift = shift as u32;
+        let wide = u128::from(m);
+        let kept = (wide >> shift) as u64;
+        let rem = wide & ((1u128 << shift) - 1);
+        let half = 1u128 << (shift - 1);
+        let round_up = rem > half || (rem == half && (sticky || kept & 1 == 1));
+        kept + u64::from(round_up)
+    };
+    let base = ((top.max(emin) + format.bias - 1) as u64) << format.mant_bits;
+    let bits = base + q;
+    if bits >= inf_bits {
+        inf_bits
+    } else {
+        bits
+    }
+}
+
+/// Parses the hexadecimal significand and binary exponent of a Java hex
+/// floating-point literal (after the sign and `0x`), rounding to `format`.
+/// `None` when the text does not match
+/// `(HexDigits\.?|HexDigits?\.HexDigits)[pP][+-]?Digits[fFdD]?`.
+fn parse_hex(body: &[u8], format: BinaryFormat) -> Option<u64> {
+    let mut i = 0;
+    let mut m: u64 = 0;
+    let mut e: i64 = 0;
+    let mut sticky = false;
+    let mut digits = 0;
+    let accumulate = |d: u64, fraction: bool, m: &mut u64, e: &mut i64, sticky: &mut bool| {
+        if *m >> 60 == 0 {
+            *m = (*m << 4) | d;
+            if fraction {
+                *e -= 4;
+            }
+        } else {
+            if d != 0 {
+                *sticky = true;
+            }
+            if !fraction {
+                *e += 4;
+            }
+        }
+    };
+    while i < body.len() && body[i].is_ascii_hexdigit() {
+        let d = u64::from((body[i] as char).to_digit(16)?);
+        accumulate(d, false, &mut m, &mut e, &mut sticky);
+        i += 1;
+        digits += 1;
+    }
+    if i < body.len() && body[i] == b'.' {
+        i += 1;
+        while i < body.len() && body[i].is_ascii_hexdigit() {
+            let d = u64::from((body[i] as char).to_digit(16)?);
+            accumulate(d, true, &mut m, &mut e, &mut sticky);
+            i += 1;
+            digits += 1;
+        }
+    }
+    if digits == 0 {
+        return None;
+    }
+    if i >= body.len() || (body[i] != b'p' && body[i] != b'P') {
+        return None;
+    }
+    i += 1;
+    let mut exp_negative = false;
+    if i < body.len() && (body[i] == b'+' || body[i] == b'-') {
+        exp_negative = body[i] == b'-';
+        i += 1;
+    }
+    let exp_start = i;
+    let mut exp: i64 = 0;
+    while i < body.len() && body[i].is_ascii_digit() {
+        // Saturate: any exponent this large over- or underflows.
+        exp = (exp * 10 + i64::from(body[i] - b'0')).min(1 << 40);
+        i += 1;
+    }
+    if i == exp_start {
+        return None;
+    }
+    if i < body.len() && matches!(body[i], b'f' | b'F' | b'd' | b'D') {
+        i += 1;
+    }
+    if i != body.len() {
+        return None;
+    }
+    let exp = if exp_negative { -exp } else { exp };
+    Some(round_binary(m, e + exp, sticky, format))
+}
+
+/// Whether `body` (after the sign) is a Java decimal floating-point literal:
+/// `Digits.Digits?Exponent?|.Digits Exponent?|Digits Exponent?`, where
+/// `Exponent` is `[eE][+-]?Digits`. Returns the length without a trailing
+/// `[fFdD]` suffix.
+fn decimal_literal_len(body: &[u8]) -> Option<usize> {
+    let mut i = 0;
+    let mut digits = 0;
+    while i < body.len() && body[i].is_ascii_digit() {
+        i += 1;
+        digits += 1;
+    }
+    if i < body.len() && body[i] == b'.' {
+        i += 1;
+        while i < body.len() && body[i].is_ascii_digit() {
+            i += 1;
+            digits += 1;
+        }
+    }
+    if digits == 0 {
+        return None;
+    }
+    if i < body.len() && (body[i] == b'e' || body[i] == b'E') {
+        i += 1;
+        if i < body.len() && (body[i] == b'+' || body[i] == b'-') {
+            i += 1;
+        }
+        let start = i;
+        while i < body.len() && body[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == start {
+            return None;
+        }
+    }
+    let len = i;
+    if i < body.len() && matches!(body[i], b'f' | b'F' | b'd' | b'D') {
+        i += 1;
+    }
+    (i == body.len()).then_some(len)
+}
+
+/// What a Java floating-point string denotes, before rounding.
+enum JavaFloat<'a> {
+    NaN,
+    Infinity(bool),
+    /// A decimal literal (sign, then the literal without its suffix).
+    Decimal(bool, &'a str),
+    /// A hexadecimal literal (sign, then the text after `0x`).
+    Hex(bool, &'a [u8]),
+}
+
+/// `FloatingDecimal.readJavaFormatString`'s grammar: `String.trim()`, an
+/// optional sign, then `NaN`, `Infinity`, a hexadecimal literal or a decimal
+/// literal with an optional `[fFdD]` suffix.
+fn classify(s: &str) -> Option<JavaFloat<'_>> {
+    let s = s.trim_matches(|c: char| c <= '\u{20}');
+    let bytes = s.as_bytes();
+    if bytes.is_empty() || !s.is_ascii() {
+        return None;
+    }
+    let (negative, rest) = match bytes[0] {
+        b'-' => (true, &s[1..]),
+        b'+' => (false, &s[1..]),
+        _ => (false, s),
+    };
+    if rest == "NaN" {
+        return Some(JavaFloat::NaN);
+    }
+    if rest == "Infinity" {
+        return Some(JavaFloat::Infinity(negative));
+    }
+    let rb = rest.as_bytes();
+    if rb.len() >= 2 && rb[0] == b'0' && (rb[1] == b'x' || rb[1] == b'X') {
+        return Some(JavaFloat::Hex(negative, &rb[2..]));
+    }
+    let len = decimal_literal_len(rb)?;
+    Some(JavaFloat::Decimal(negative, &rest[..len]))
+}
+
+/// `Double.parseDouble(s)`; `None` where Java throws
+/// `NumberFormatException`.
+pub fn parse_double(s: &str) -> Option<f64> {
+    match classify(s)? {
+        JavaFloat::NaN => Some(f64::NAN),
+        JavaFloat::Infinity(neg) => Some(if neg {
+            f64::NEG_INFINITY
+        } else {
+            f64::INFINITY
+        }),
+        JavaFloat::Decimal(neg, lit) => {
+            // The literal matches Java's grammar, which `f64::from_str`
+            // accepts and rounds correctly, as Java does.
+            let v: f64 = lit.parse().ok()?;
+            Some(if neg { -v } else { v })
+        }
+        JavaFloat::Hex(neg, body) => {
+            let v = f64::from_bits(parse_hex(body, F64_FORMAT)?);
+            Some(if neg { -v } else { v })
+        }
+    }
+}
+
+/// `Float.parseFloat(s)`; `None` where Java throws `NumberFormatException`.
+/// The string is rounded to `float` directly, not through `double`.
+pub fn parse_float(s: &str) -> Option<f32> {
+    match classify(s)? {
+        JavaFloat::NaN => Some(f32::NAN),
+        JavaFloat::Infinity(neg) => Some(if neg {
+            f32::NEG_INFINITY
+        } else {
+            f32::INFINITY
+        }),
+        JavaFloat::Decimal(neg, lit) => {
+            let v: f32 = lit.parse().ok()?;
+            Some(if neg { -v } else { v })
+        }
+        JavaFloat::Hex(neg, body) => {
+            let v = f32::from_bits(parse_hex(body, F32_FORMAT)? as u32);
+            Some(if neg { -v } else { v })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,6 +758,42 @@ mod tests {
         assert_eq!(double_to_string(0.001), "0.001");
         assert_eq!(double_to_string(f64::NAN), "NaN");
         assert_eq!(double_to_string(f64::INFINITY), "Infinity");
+    }
+
+    /// JDK 25 (`java P.java`, the values printed by `Float.toString` and
+    /// `Double.toString`): the two-digit minimum of the smallest subnormals
+    /// and the even neighbour of a halfway value, where Rust's shortest form
+    /// prints `1e-45`, `5e-324`, `390.01563`, `2234752.3` and
+    /// `9.483287783571313e12`.
+    #[test]
+    fn float_and_double_to_string_match_jdk_25() {
+        assert_eq!(float_to_string(f32::from_bits(1)), "1.4E-45");
+        assert_eq!(float_to_string(f32::from_bits(0x43c3_0200)), "390.01562");
+        assert_eq!(float_to_string(f32::from_bits(0x4a08_6601)), "2234752.2");
+        assert_eq!(float_to_string(-0.0), "-0.0");
+        assert_eq!(float_to_string(1.0E-30), "1.0E-30");
+        assert_eq!(float_to_string(9.999999E-4), "9.999999E-4");
+        assert_eq!(double_to_string(f64::from_bits(1)), "4.9E-324");
+        assert_eq!(
+            double_to_string(f64::from_bits(0x42a1_3fff_ffd1_26a0)),
+            "9.483287783571312E12"
+        );
+        assert_eq!(double_to_string(1e23), "1.0E23");
+        assert_eq!(double_to_string(9.99999999999E-4), "9.99999999999E-4");
+    }
+
+    /// JDK 25 `Float.parseFloat` and `Double.parseDouble`: surrounding
+    /// characters up to U+0020 are trimmed, a `[fFdD]` suffix and hexadecimal
+    /// literals are accepted, an underflow is zero.
+    #[test]
+    fn parse_float_and_double_match_jdk_25() {
+        assert_eq!(parse_float(" 1.5f "), Some(1.5));
+        assert_eq!(parse_float("0x1.8p1"), Some(3.0));
+        assert_eq!(parse_double("-Infinity"), Some(f64::NEG_INFINITY));
+        assert_eq!(parse_double("1e-400"), Some(0.0));
+        assert_eq!(parse_double("NaN").map(f64::is_nan), Some(true));
+        assert_eq!(parse_double("1.0.0"), None);
+        assert_eq!(parse_float(""), None);
     }
 
     #[test]
