@@ -12,3 +12,11 @@ org.apache.lucene.tests.util.LuceneTestCaseOracle
 com.carrotsearch.randomizedtesting.ToStringOracle
 org.apache.lucene.tests.util.TempFilesOracle
 org.apache.lucene.codecs.simpletext.SimpleTextOracle
+# The other lucene/codecs formats: PostingsFormatOracle <prefix> <kind> <format> <extensions>
+org.apache.lucene.codecs.simpletext.PostingsFormatOracle fst50 postings FST50 tfp
+org.apache.lucene.codecs.simpletext.PostingsFormatOracle fixedgap postings LuceneFixedGap tib tii
+org.apache.lucene.codecs.simpletext.PostingsFormatOracle vargap_fixed postings LuceneVarGapFixedInterval tib tiv tmv
+org.apache.lucene.codecs.simpletext.PostingsFormatOracle vargap_docfreq postings LuceneVarGapDocFreqInterval tib tiv tmv
+org.apache.lucene.codecs.simpletext.PostingsFormatOracle direct postings Direct tmd tim
+org.apache.lucene.codecs.simpletext.PostingsFormatOracle bloom postings BloomFilter(Lucene104) blm
+org.apache.lucene.codecs.simpletext.PostingsFormatOracle bitvectors knn HnswBitVectorsFormat vem vex vemf vec

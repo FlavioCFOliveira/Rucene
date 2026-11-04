@@ -16,10 +16,11 @@
 
 use std::sync::{Arc, LazyLock};
 
-use rucene::codecs::Codec;
+use rucene::codecs::{Codec, PostingsFormat};
 use rucene::util::resource_loader::{ClassLoader, ServiceProvider};
 use rucene::util::spi::{lucene_core_class_loader, NamedSPIProvider};
 
+use crate::memory::FSTPostingsFormat;
 use crate::simpletext::SimpleTextCodec;
 
 /// The class loader that sees `lucene-codecs`' `META-INF/services` files, a
@@ -31,29 +32,37 @@ use crate::simpletext::SimpleTextCodec;
 /// | service | providers |
 /// | --- | --- |
 /// | `org.apache.lucene.codecs.Codec` | `SimpleTextCodec` |
+/// | `org.apache.lucene.codecs.PostingsFormat` | `FSTPostingsFormat` |
 ///
-/// **Divergence.** `lucene-codecs` 10.5.0 also lists
-/// `HnswBitVectorsFormat` under `org.apache.lucene.codecs.KnnVectorsFormat`
-/// and five postings formats (`BlockTreeOrdsPostingsFormat`,
-/// `BloomFilteringPostingsFormat`, `DirectPostingsFormat`,
-/// `FSTPostingsFormat`, `UniformSplitPostingsFormat`,
-/// `STUniformSplitPostingsFormat`) under
-/// `org.apache.lucene.codecs.PostingsFormat`
+/// **Divergence.** `lucene-codecs` 10.5.0 also lists `HnswBitVectorsFormat`
+/// under `org.apache.lucene.codecs.KnnVectorsFormat`, and
+/// `BlockTreeOrdsPostingsFormat`, `BloomFilteringPostingsFormat`,
+/// `DirectPostingsFormat`, `UniformSplitPostingsFormat` and
+/// `STUniformSplitPostingsFormat` under `org.apache.lucene.codecs.PostingsFormat`
 /// (`lucene/codecs/src/resources/META-INF/services/`). Those classes are not
 /// ported yet, and a service line whose class cannot be loaded makes every
 /// scan of the service fail (`ServiceConfigurationError: Provider ... not
-/// found`), so the two files are left out until the tasks that port the
+/// found`), so their lines are left out until the tasks that port the
 /// classes add them.
 pub fn class_loader() -> &'static Arc<ClassLoader> {
     static LOADER: LazyLock<Arc<ClassLoader>> = LazyLock::new(|| {
         ClassLoader::with_services(
             "lucene-codecs",
             Some(Arc::clone(lucene_core_class_loader())),
-            vec![ServiceProvider::new(
-                "org.apache.lucene.codecs.Codec",
-                "org.apache.lucene.codecs.simpletext.SimpleTextCodec",
-                NamedSPIProvider::new(|| Arc::new(SimpleTextCodec::new()) as Arc<dyn Codec>),
-            )],
+            vec![
+                ServiceProvider::new(
+                    "org.apache.lucene.codecs.Codec",
+                    "org.apache.lucene.codecs.simpletext.SimpleTextCodec",
+                    NamedSPIProvider::new(|| Arc::new(SimpleTextCodec::new()) as Arc<dyn Codec>),
+                ),
+                ServiceProvider::new(
+                    "org.apache.lucene.codecs.PostingsFormat",
+                    "org.apache.lucene.codecs.memory.FSTPostingsFormat",
+                    NamedSPIProvider::new(|| {
+                        Arc::new(FSTPostingsFormat::new()) as Arc<dyn PostingsFormat>
+                    }),
+                ),
+            ],
         )
     });
     &LOADER

@@ -6,9 +6,13 @@
 //!
 //! | Rucene | Apache Lucene 10.5.0 |
 //! | --- | --- |
+//! | [`blockterms`] | `org.apache.lucene.codecs.blockterms` |
+//! | [`memory`] | `org.apache.lucene.codecs.memory` |
 //! | [`simpletext`] | `org.apache.lucene.codecs.simpletext` |
 //! | [`class_loader`] | `lucene-codecs`' `META-INF/services` |
 
+pub mod blockterms;
+pub mod memory;
 pub mod simpletext;
 
 mod spi;

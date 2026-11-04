@@ -238,8 +238,13 @@ public final class SimpleTextOracle {
 
   /** The corpus operations; {@code simpletext_oracle.rs::write_corpus} performs the same. */
   static void writeCorpus(Directory dir, boolean compound) throws IOException {
+    writeCorpus(dir, compound, new SimpleTextCodec());
+  }
+
+  /** {@link #writeCorpus(Directory, boolean)} with {@code codec} ({@link PostingsFormatOracle}). */
+  static void writeCorpus(Directory dir, boolean compound, Codec codec) throws IOException {
     IndexWriterConfig config = new IndexWriterConfig(new StandardAnalyzer());
-    config.setCodec(new SimpleTextCodec());
+    config.setCodec(codec);
     config.setOpenMode(IndexWriterConfig.OpenMode.CREATE);
     config.setMergeScheduler(new SerialMergeScheduler());
     if (!compound) {
@@ -436,8 +441,13 @@ public final class SimpleTextOracle {
 
   /** The edge operations; {@code simpletext_oracle.rs::write_edge} performs the same. */
   static void writeEdge(Directory dir) throws IOException {
+    writeEdge(dir, new SimpleTextCodec());
+  }
+
+  /** {@link #writeEdge(Directory)} with {@code codec} ({@link PostingsFormatOracle}). */
+  static void writeEdge(Directory dir, Codec codec) throws IOException {
     IndexWriterConfig config = new IndexWriterConfig(new StandardAnalyzer());
-    config.setCodec(new SimpleTextCodec());
+    config.setCodec(codec);
     config.setOpenMode(IndexWriterConfig.OpenMode.CREATE);
     config.setMergeScheduler(new SerialMergeScheduler());
     config.setUseCompoundFile(false);
