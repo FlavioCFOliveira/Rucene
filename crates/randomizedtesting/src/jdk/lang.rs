@@ -349,14 +349,112 @@ pub fn parse_float(s: &str) -> Option<f32> {
     }
 }
 
-/// Formats shortest decimal digits as `Double.toString` / `Float.toString`
-/// do: plain notation with at least one fraction digit for magnitudes in
+/// The decimal `Double.toString` / `Float.toString` render for the positive
+/// finite value whose shortest round-trip form (`{:e}`) is `shortest` and
+/// whose form rounded to two significant digits (`{:.1e}`) is `two`.
+///
+/// JDK 19 and later (the `Double.toString(double)` javadoc, the algorithm of
+/// Raffaello Giulietti) take the set R of decimals that round to the value,
+/// and the minimal length p over R: when p >= 2 the result is the decimal of
+/// length p in R closest to the value, which is the shortest form; when p is
+/// 1, the result is the decimal of length 1 or 2 in R closest to the value,
+/// which is the value rounded to two significant digits (that decimal is
+/// closer than the one-digit one, so it is in R too). Before, this
+/// emulation always took the shortest form and padded `d` to `d.0`, so
+/// `Double.MIN_VALUE` (shortest `5e-324`) rendered `5.0E-324` where JDK 25
+/// renders `4.9E-324`, and `Float.MIN_VALUE` `1.0E-45` for `1.4E-45`.
+///
+/// Among the decimals of length p, JDK 25 takes the one closest to the value
+/// and, of two equally close, the one with the even significand. Rust's
+/// shortest form breaks that tie upwards: when the value lies exactly halfway
+/// between two p-digit decimals (its exact expansion, `exact(n)` with `n`
+/// fraction digits, continues
+/// after the p-th digit with `5` and zeros only), the neighbour with the even
+/// last digit is taken if it rounds to the value too (`round_trips`). Measured on JDK 25:
+/// `Float.toString(2234752.25f)` is `2234752.2`, where the shortest form is
+/// `2234752.3`.
+fn giulietti_decimal(
+    shortest: String,
+    two: String,
+    exact: impl Fn(usize) -> String,
+    round_trips: impl Fn(&str) -> bool,
+) -> String {
+    let split = |sci: &str| -> (String, i32) {
+        let (m, e) = sci.split_once('e').expect("scientific notation");
+        (
+            m.chars().filter(char::is_ascii_digit).collect(),
+            e.parse().expect("exponent"),
+        )
+    };
+    let (digits, exp) = split(&shortest);
+    if digits.len() == 1 {
+        return two;
+    }
+    // The exact value's digits at the same exponent: a halfway point is
+    // `digits - 1` followed by `5000…`.
+    let p = digits.len();
+    let halfway = |sci: &str| -> Option<String> {
+        let (exact_digits, exact_exp) = split(sci);
+        let tail = &exact_digits[p..];
+        (exact_exp == exp && tail.starts_with('5') && tail[1..].bytes().all(|b| b == b'0'))
+            .then_some(exact_digits)
+    };
+    // A cheap rendering with 20 more digits rules out almost every value; a
+    // possible halfway point is confirmed on the exact expansion.
+    if halfway(&exact(p + 20)).is_none() {
+        return shortest;
+    }
+    let Some(exact_digits) = halfway(&exact(usize::MAX)) else {
+        return shortest;
+    };
+    // The two neighbours: `exact_digits[..p]` and the next p-digit decimal.
+    let lower = exact_digits[..p].to_string();
+    let mut upper = lower.clone().into_bytes();
+    let mut i = p;
+    loop {
+        if i == 0 {
+            // `99…9` + 1 has more digits: not a neighbour of length p.
+            return shortest;
+        }
+        i -= 1;
+        if upper[i] == b'9' {
+            upper[i] = b'0';
+        } else {
+            upper[i] += 1;
+            break;
+        }
+    }
+    let upper = String::from_utf8(upper).expect("ASCII digits");
+    let even = if (lower.as_bytes()[p - 1] - b'0').is_multiple_of(2) {
+        lower
+    } else {
+        upper
+    };
+    if even == digits {
+        return shortest;
+    }
+    let candidate = format!("{}.{}e{exp}", &even[..1], &even[1..]);
+    if round_trips(&candidate) {
+        candidate
+    } else {
+        shortest
+    }
+}
+
+/// Formats decimal digits as `Double.toString` / `Float.toString` do:
+/// plain notation with at least one fraction digit for magnitudes in
 /// `[10^-3, 10^7)`, otherwise `d.dddE[-]n`.
 fn java_float_format(sci: &str, negative: bool) -> String {
-    // `sci` is Rust's shortest round-trip form, `d[.ddd]e[-]n`.
+    // `sci` is the decimal of `giulietti_decimal`, `d[.ddd]e[-]n`.
     let (mantissa, exp) = sci.split_once('e').expect("scientific notation");
     let exp: i32 = exp.parse().expect("exponent");
     let digits: String = mantissa.chars().filter(|c| *c != '.').collect();
+    // `{:.1e}` keeps a second digit that may be a zero; the significand
+    // carries no trailing zero (`d.0` is rendered by the branches below).
+    let digits = match digits.trim_end_matches('0') {
+        "" => "0".to_string(),
+        trimmed => trimmed.to_string(),
+    };
     let mut out = String::new();
     if negative {
         out.push('-');
@@ -407,7 +505,16 @@ pub fn double_to_string(d: f64) -> String {
     if d == 0.0 {
         return if d.is_sign_negative() { "-0.0" } else { "0.0" }.to_string();
     }
-    java_float_format(&format!("{:e}", d.abs()), d < 0.0)
+    let a = d.abs();
+    let decimal = giulietti_decimal(
+        format!("{a:e}"),
+        format!("{a:.1e}"),
+        // A double's exact decimal expansion has at most 767 significant
+        // digits, so 800 fraction digits render it exactly.
+        |digits| format!("{a:.*e}", digits.min(800)),
+        |s| s.parse::<f64>().is_ok_and(|v| v.to_bits() == a.to_bits()),
+    );
+    java_float_format(&decimal, d < 0.0)
 }
 
 /// `Float.toString(f)`.
@@ -421,7 +528,15 @@ pub fn float_to_string(f: f32) -> String {
     if f == 0.0 {
         return if f.is_sign_negative() { "-0.0" } else { "0.0" }.to_string();
     }
-    java_float_format(&format!("{:e}", f.abs()), f < 0.0)
+    let a = f.abs();
+    let decimal = giulietti_decimal(
+        format!("{a:e}"),
+        format!("{a:.1e}"),
+        // A float's exact decimal expansion has at most 112 significant digits.
+        |digits| format!("{a:.*e}", digits.min(150)),
+        |s| s.parse::<f32>().is_ok_and(|v| v.to_bits() == a.to_bits()),
+    );
+    java_float_format(&decimal, f < 0.0)
 }
 
 /// `Integer.toHexString(i)`: lower-case hex of the unsigned value.

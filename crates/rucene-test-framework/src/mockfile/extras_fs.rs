@@ -62,6 +62,16 @@ impl ExtrasFS {
         this
     }
 
+    /// The package-private field `active`.
+    pub fn active(&self) -> bool {
+        self.active
+    }
+
+    /// The package-private field `createDirectory`.
+    pub fn create_directory(&self) -> bool {
+        self.create_directory
+    }
+
     /// `isExtra(fileName)`: whether `file_name` is one of the extra files this
     /// class adds.
     pub fn is_extra(file_name: &str) -> bool {

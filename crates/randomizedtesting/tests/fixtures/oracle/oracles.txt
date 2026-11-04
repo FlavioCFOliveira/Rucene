@@ -9,3 +9,5 @@ com.carrotsearch.randomizedtesting.SelfTestsOracle @RANDOMIZEDTESTING_SRC@
 org.apache.lucene.tests.mockfile.NioOracle
 org.apache.lucene.tests.mockfile.MockfileOracle
 org.apache.lucene.tests.util.LuceneTestCaseOracle
+com.carrotsearch.randomizedtesting.ToStringOracle
+org.apache.lucene.tests.util.TempFilesOracle

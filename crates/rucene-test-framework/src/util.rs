@@ -18,9 +18,14 @@
 //! Port of `org.apache.lucene.tests.util`.
 
 pub mod lucene_test_case;
+pub mod test_rule_mark_failure;
+pub mod test_rule_setup_and_restore_class_env;
 pub mod test_rule_store_class_name;
+pub mod test_rule_temporary_files_cleanup;
 pub mod test_util;
 
 pub use lucene_test_case::LuceneTestCase;
+pub use test_rule_mark_failure::TestRuleMarkFailure;
 pub use test_rule_store_class_name::TestRuleStoreClassName;
+pub use test_rule_temporary_files_cleanup::TestRuleTemporaryFilesCleanup;
 pub use test_util::TestUtil;

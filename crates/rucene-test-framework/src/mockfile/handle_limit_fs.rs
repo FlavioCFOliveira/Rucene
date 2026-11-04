@@ -39,6 +39,29 @@ impl MaxOpenHandles {
     pub const MAX_OPEN_FILES: i32 = 2048;
 }
 
+/// The annotation type `HandleLimitFS.MaxOpenHandles` (`@Inherited`).
+pub static MAX_OPEN_HANDLES: randomizedtesting::annotations::AnnotationType =
+    randomizedtesting::annotations::AnnotationType::plain(
+        "org.apache.lucene.tests.mockfile.HandleLimitFS$MaxOpenHandles",
+        "MaxOpenHandles",
+        true,
+    );
+
+impl randomizedtesting::jdk::reflect::JavaAnnotation for MaxOpenHandles {
+    fn annotation_type(&self) -> &'static randomizedtesting::annotations::AnnotationType {
+        &MAX_OPEN_HANDLES
+    }
+    fn to_java_string(&self) -> String {
+        format!(
+            "@org.apache.lucene.tests.mockfile.HandleLimitFS.MaxOpenHandles(limit={})",
+            self.limit
+        )
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 /// Port of `org.apache.lucene.tests.mockfile.HandleLimitFS`: a filesystem
 /// that throws an exception if the file handles in use exceed a specified
 /// limit.
@@ -63,6 +86,11 @@ impl HandleLimitFS {
         install(&this, delegate);
         install_tracking(&this);
         this
+    }
+
+    /// The package-private field `limit`.
+    pub fn limit(&self) -> i32 {
+        self.limit
     }
 
     /// `count`, the handles the filesystem believes open.

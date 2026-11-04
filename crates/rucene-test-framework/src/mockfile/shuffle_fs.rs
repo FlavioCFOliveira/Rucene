@@ -49,6 +49,11 @@ impl ShuffleFS {
         install(&this, delegate);
         this
     }
+
+    /// The package-private field `seed`.
+    pub fn seed(&self) -> i64 {
+        self.seed
+    }
 }
 
 /// The anonymous `DirectoryStream` `ShuffleFS` returns: the shuffled listing,

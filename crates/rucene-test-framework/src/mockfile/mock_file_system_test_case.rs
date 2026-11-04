@@ -29,26 +29,22 @@ use crate::util::lucene_test_case::LuceneTestCase;
 /// Port of `org.apache.lucene.tests.mockfile.MockFileSystemTestCase`: the base
 /// class for testing mock filesystems. This tests things that really need to
 /// work: `Path` `equals()`/`hashCode()`, directory listing glob and
-/// filtering, URI conversion, etc. (`@SuppressFileSystems("*")`: the random
-/// filesystems are suppressed and the tests are done explicitly.)
-///
-/// **Divergence.** Java's test methods start from `createTempDir()`, which
-/// `LuceneTestCase`'s `TestRuleTemporaryFilesCleanup` serves (task #348);
-/// until that rule is ported, an implementation supplies the directory
-/// through [`create_temp_dir`](Self::create_temp_dir).
+/// filtering, URI conversion, etc. Java's class is
+/// `@SuppressFileSystems("*")` ("we suppress random filesystems and do tests
+/// explicitly"): a suite running these tests carries
+/// [`SuppressFileSystems`](crate::util::lucene_test_case::SuppressFileSystems)
+/// with `*` and `LuceneTestCase`'s temporary-files rule, whose
+/// `createTempDir()` each test starts from.
 pub trait MockFileSystemTestCase {
     /// `wrap(path)`: wraps `path` with custom behavior.
     fn wrap(&self, path: &Path) -> Path;
-
-    /// `createTempDir()`: a new, empty temporary directory.
-    fn create_temp_dir(&self) -> Path;
 
     /// `testHashCodeEquals()`: `Path.hashCode`/`equals` are sane
     /// (`@SuppressWarnings("SelfAssertion")`). Java's `assertFalse(f1.equals(null))`
     /// has no counterpart: a Rust path is never null.
     #[allow(clippy::eq_op)]
     fn test_hash_code_equals(&self) {
-        let dir = self.wrap(&self.create_temp_dir());
+        let dir = self.wrap(&LuceneTestCase::create_temp_dir());
 
         let f1 = dir.resolve_str("file1");
         let f1_again = dir.resolve_str("file1");
@@ -78,7 +74,7 @@ pub trait MockFileSystemTestCase {
 
     /// `implTestURI(fileName)`.
     fn impl_test_uri(&self, file_name: &str) {
-        let dir = self.wrap(&self.create_temp_dir());
+        let dir = self.wrap(&LuceneTestCase::create_temp_dir());
 
         let f1 = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             dir.resolve_str(file_name)
@@ -106,7 +102,7 @@ pub trait MockFileSystemTestCase {
     /// `testDirectoryStreamFiltered()`: `newDirectoryStream` with a filter
     /// works correctly.
     fn test_directory_stream_filtered(&self) {
-        let dir = self.wrap(&self.create_temp_dir());
+        let dir = self.wrap(&LuceneTestCase::create_temp_dir());
 
         let mut file =
             Files::new_output_stream(&dir.resolve_str("file1"), &[]).unwrap_or_else(rethrow);
@@ -134,7 +130,7 @@ pub trait MockFileSystemTestCase {
     /// `testDirectoryStreamGlobFiltered()`: `newDirectoryStream` with globbing
     /// works correctly.
     fn test_directory_stream_glob_filtered(&self) {
-        let dir = self.wrap(&self.create_temp_dir());
+        let dir = self.wrap(&LuceneTestCase::create_temp_dir());
 
         let mut file =
             Files::new_output_stream(&dir.resolve_str("foo"), &[]).unwrap_or_else(rethrow);

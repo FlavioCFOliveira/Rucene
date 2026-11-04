@@ -461,27 +461,8 @@ fn statics_match_lucene() {
         Ltc::get_test_class().name().to_string()
     });
 
-    // `randomizedtesting::jdk::lang::{float,double}_to_string` render
-    // `Float.MIN_VALUE` and `Double.MIN_VALUE` as `1.0E-45` and `5.0E-324`
-    // where JDK 25 renders `1.4E-45` and `4.9E-324`: a defect of that crate's
-    // JDK emulation, outside this task. The rows naming those two values are
-    // compared with that rendering substituted, and the substitution is
-    // counted, so that any other difference still fails.
-    let mut expected: BTreeMap<String, String> = labelled("ltc_statics.tsv");
-    let mut substituted = 0;
-    for (label, line) in expected.iter_mut() {
-        if label.starts_with("assertFloatUlpEquals") || label.starts_with("assertDoubleUlpEquals") {
-            let fixed = line
-                .replace("1.4E-45", "1.0E-45")
-                .replace("4.9E-324", "5.0E-324");
-            if fixed != *line {
-                substituted += 1;
-                *line = fixed;
-            }
-        }
-    }
+    let expected: BTreeMap<String, String> = labelled("ltc_statics.tsv");
     assert_same("statics", &expected, r);
-    assert_eq!(substituted, 216, "rows rendering a MIN_VALUE subnormal");
 }
 
 #[test]

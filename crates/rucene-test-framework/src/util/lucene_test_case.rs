@@ -36,19 +36,21 @@ use randomizedtesting::jdk::exception::{
 use randomizedtesting::jdk::lang::{double_to_string, float_to_string};
 use randomizedtesting::jdk::locale::available_locales_sorted;
 use randomizedtesting::jdk::random::Random;
-use randomizedtesting::jdk::reflect::Class;
+use randomizedtesting::jdk::reflect::{quote_member, Class, JavaAnnotation};
 use randomizedtesting::jdk::system;
 use randomizedtesting::junit::Assert;
 use randomizedtesting::{RandomizedContext, RandomizedTest};
 use rucene::search::{Query, QueryCachingPolicy};
-use rucene::store::java_nio_file::{Files, IntoNioPath};
+use rucene::store::java_nio_file::{Files, IntoNioPath, Path};
 use rucene::util::BytesRef;
 
 use crate::hamcrest::{Matcher, MatcherAssert};
 use crate::jdk::locale::Locale;
 use crate::jdk::{time_zone_available_ids, RUNTIME_VERSION_FEATURE};
 use crate::store::Throttling;
+use crate::util::test_rule_mark_failure::TestRuleMarkFailure;
 use crate::util::test_rule_store_class_name::TestRuleStoreClassName;
+use crate::util::test_rule_temporary_files_cleanup::TestRuleTemporaryFilesCleanup;
 use crate::util::test_util::TestUtil;
 
 /// `junit.framework.AssertionFailedError`, which `expectThrows` throws.
@@ -113,6 +115,99 @@ pub const AWAITS_FIX: AnnotationType = AnnotationType {
     }),
     inherited: true,
 };
+
+/// `@SuppressFileSystems` (`LuceneTestCase.SuppressFileSystems`, `@Inherited`):
+/// the mock filesystems a suite does not want, by simple name, or `*` for all.
+/// Ported under the cycle rule: `TestRuleTemporaryFilesCleanup` reads it.
+pub static SUPPRESS_FILE_SYSTEMS: AnnotationType = AnnotationType::plain(
+    "org.apache.lucene.tests.util.LuceneTestCase$SuppressFileSystems",
+    "SuppressFileSystems",
+    true,
+);
+
+/// An `@SuppressFileSystems(value)` annotation value.
+#[derive(Debug, Clone, Default)]
+pub struct SuppressFileSystems {
+    /// `value()`.
+    pub value: Vec<String>,
+}
+
+impl JavaAnnotation for SuppressFileSystems {
+    fn annotation_type(&self) -> &'static AnnotationType {
+        &SUPPRESS_FILE_SYSTEMS
+    }
+    fn to_java_string(&self) -> String {
+        let items: Vec<String> = self.value.iter().map(|v| quote_member(v)).collect();
+        format!(
+            "@org.apache.lucene.tests.util.LuceneTestCase.SuppressFileSystems({{{}}})",
+            items.join(", ")
+        )
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// `@SuppressFsync` (`LuceneTestCase.SuppressFsync`, `@Inherited`): never
+/// omit actual fsync calls. Ported under the cycle rule.
+pub static SUPPRESS_FSYNC: AnnotationType = AnnotationType::plain(
+    "org.apache.lucene.tests.util.LuceneTestCase$SuppressFsync",
+    "SuppressFsync",
+    true,
+);
+
+/// `@SuppressTempFileChecks` (`LuceneTestCase.SuppressTempFileChecks`,
+/// `@Inherited`): leftover temporary files only warn. Ported under the cycle
+/// rule.
+pub static SUPPRESS_TEMP_FILE_CHECKS: AnnotationType = AnnotationType::plain(
+    "org.apache.lucene.tests.util.LuceneTestCase$SuppressTempFileChecks",
+    "SuppressTempFileChecks",
+    true,
+);
+
+/// An `@SuppressTempFileChecks(bugUrl)` annotation value.
+#[derive(Debug, Clone)]
+pub struct SuppressTempFileChecks {
+    /// `bugUrl()`, `"None"` by default.
+    pub bug_url: String,
+}
+
+impl Default for SuppressTempFileChecks {
+    fn default() -> Self {
+        SuppressTempFileChecks {
+            bug_url: "None".to_string(),
+        }
+    }
+}
+
+impl JavaAnnotation for SuppressTempFileChecks {
+    fn annotation_type(&self) -> &'static AnnotationType {
+        &SUPPRESS_TEMP_FILE_CHECKS
+    }
+    fn to_java_string(&self) -> String {
+        format!(
+            "@org.apache.lucene.tests.util.LuceneTestCase.SuppressTempFileChecks(bugUrl={})",
+            quote_member(&self.bug_url)
+        )
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// `suiteFailureMarker`: the suite's failure marker, in `LuceneTestCase`'s
+/// class rules (task #348).
+pub static SUITE_FAILURE_MARKER: LazyLock<Arc<TestRuleMarkFailure>> =
+    LazyLock::new(|| Arc::new(TestRuleMarkFailure::new(Vec::new())));
+
+/// `tempFilesCleanupRule`: the rule `createTempDir` and `createTempFile`
+/// delegate to, in `LuceneTestCase`'s class rules (task #348).
+pub static TEMP_FILES_CLEANUP_RULE: LazyLock<Arc<TestRuleTemporaryFilesCleanup>> =
+    LazyLock::new(|| {
+        Arc::new(TestRuleTemporaryFilesCleanup::new(Arc::clone(
+            &SUITE_FAILURE_MARKER,
+        )))
+    });
 
 fn test_group_enabled(annotation: &AnnotationType) -> bool {
     annotation
@@ -958,6 +1053,45 @@ impl LuceneTestCase {
             return Self::new_bytes_ref_slice(&it.bytes, it.offset, it.length);
         }
         it
+    }
+
+    /// `createTempDir()`: `createTempDir("tempDir")`.
+    ///
+    /// # Panics
+    ///
+    /// As [`create_temp_dir_prefix`](Self::create_temp_dir_prefix).
+    pub fn create_temp_dir() -> Path {
+        Self::create_temp_dir_prefix("tempDir")
+    }
+
+    /// `createTempDir(prefix)`: a new temporary directory under the suite's
+    /// temporary folder, removed after the suite (unless `LEAVE_TEMPORARY`),
+    /// `tempFilesCleanupRule.createTempDir(prefix)`.
+    ///
+    /// # Panics
+    ///
+    /// When the rule is not running, as in Java.
+    pub fn create_temp_dir_prefix(prefix: &str) -> Path {
+        TEMP_FILES_CLEANUP_RULE.create_temp_dir(prefix)
+    }
+
+    /// `createTempFile(prefix, suffix)`:
+    /// `tempFilesCleanupRule.createTempFile(prefix, suffix)`.
+    ///
+    /// # Errors
+    ///
+    /// As `TestRuleTemporaryFilesCleanup.createTempFile`.
+    pub fn create_temp_file_with(prefix: &str, suffix: &str) -> io::Result<Path> {
+        TEMP_FILES_CLEANUP_RULE.create_temp_file(prefix, suffix)
+    }
+
+    /// `createTempFile()`: `createTempFile("tempFile", ".tmp")`.
+    ///
+    /// # Errors
+    ///
+    /// As [`create_temp_file_with`](Self::create_temp_file_with).
+    pub fn create_temp_file() -> io::Result<Path> {
+        Self::create_temp_file_with("tempFile", ".tmp")
     }
 
     /// `getJvmForkArguments()`: the arguments to fork a JVM with the same
