@@ -1298,91 +1298,6 @@ const U16: [&str; 13] = [
     CORPUS[8],
 ];
 
-/// The `u16` rows where Rucene's `StandardTokenizer` still differs from
-/// Lucene's, by causes outside the UTF-16 accounting these rows pin, all in
-/// the scanner's declared divergence (a UAX #29 segmentation plus a token-type
-/// heuristic instead of the JFlex automaton of `StandardTokenizerImpl`):
-///
-/// * A: emoji sequences (ZWJ sequences, modifiers, regional-indicator pairs
-///   cut by the buffer) are split or kept where the JFlex grammar does not;
-/// * B: a token mixing digits and a supplementary letter is typed `<NUM>`
-///   (the heuristic tests ASCII letters only) where Lucene says
-///   `<ALPHANUM>`;
-/// * C: the scanner reads its whole input at `reset`, so a `MockCharFilter`
-///   has recorded every offset correction before the first token, while the
-///   JFlex buffer of 1 or 2 `char`s has read only up to the token, and
-///   Lucene corrects the offset with the corrections recorded so far.
-///
-/// The test requires each of them to still differ, so the list shrinks with
-/// the scanner.
-const U16_STANDARD_DIVERGENT: &[&str] = &[
-    // A
-    "sa.c6.m255",
-    "sa.c6.m3",
-    "sa.c7.m255",
-    "sa.c7.m3",
-    "sa.c8.m3",
-    "std.c6.r0.m2",
-    "std.c6.r0.m255",
-    "std.c6.r0.m5",
-    "std.c6.r1.m2",
-    "std.c6.r1.m255",
-    "std.c6.r1.m5",
-    "std.c6.r2.m2",
-    "std.c6.r2.m255",
-    "std.c6.r2.m5",
-    "std.c6.r3.m2",
-    "std.c6.r3.m255",
-    "std.c6.r3.m5",
-    "std.c7.r0.m2",
-    "std.c7.r0.m255",
-    "std.c7.r0.m5",
-    "std.c7.r1.m2",
-    "std.c7.r1.m255",
-    "std.c7.r1.m5",
-    "std.c7.r2.m2",
-    "std.c7.r2.m255",
-    "std.c7.r2.m5",
-    "std.c7.r3.m2",
-    "std.c7.r3.m255",
-    "std.c7.r3.m5",
-    "std.c8.r0.m2",
-    "std.c8.r1.m2",
-    "std.c8.r2.m2",
-    "std.c8.r3.m2",
-    // B
-    "sa.c9.m255",
-    "std.c9.r0.m255",
-    "std.c9.r0.m5",
-    "std.c9.r1.m255",
-    "std.c9.r2.m255",
-    "std.c9.r3.m255",
-    "std.c9.r3.m5",
-    // C
-    "std.c0.r1.m1",
-    "std.c1.r2.m1",
-    "std.c4.r2.m1",
-    "std.c9.r1.m1",
-    "std.c9.r1.m2",
-    "std.c9.r2.m1",
-    "std.c9.r2.m2",
-    "std.c10.r1.m1",
-    "std.c10.r1.m2",
-    "std.c10.r2.m1",
-    "std.c10.r3.m1",
-    "std.c11.r1.m1",
-    "std.c11.r1.m2",
-    "std.c11.r2.m1",
-    "std.c11.r2.m2",
-    "std.c11.r3.m1",
-    "std.c11.r3.m2",
-    "std.c12.r1.m1",
-    "std.c12.r1.m2",
-    "std.c12.r2.m1",
-    "std.c12.r3.m1",
-    "std.c12.r3.m2",
-];
-
 /// The reader of `u16` case `r`: plain, or behind a `MockCharFilter` of
 /// remainder 0, 2, 7.
 fn u16_reader(r: usize, text: &str) -> Box<dyn rucene::analysis::CharReader> {
@@ -1678,6 +1593,153 @@ fn factories() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// stdtok
+// ---------------------------------------------------------------------------
+
+/// `AnalysisMocksOracle.STD`: the inputs of Lucene's `TestStandardAnalyzer`
+/// plus odd regional indicators and supplementary digits (generated from the
+/// Java source).
+fn std_inputs() -> Vec<String> {
+    vec![
+        "\u{E01}\u{E32}\u{E23}\u{E17}\u{E35}\u{E48}\u{E44}\u{E14}\u{E49}\u{E15}\u{E49}\u{E2D}\u{E07}\u{E41}\u{E2A}\u{E14}\u{E07}\u{E27}\u{E48}\u{E32}\u{E07}\u{E32}\u{E19}\u{E14}\u{E35}. \u{E41}\u{E25}\u{E49}\u{E27}\u{E40}\u{E18}\u{E2D}\u{E08}\u{E30}\u{E44}\u{E1B}\u{E44}\u{E2B}\u{E19}? \u{E51}\u{E52}\u{E53}\u{E54}".to_string(),
+        "\u{EAA}\u{EB2}\u{E97}\u{EB2}\u{EA5}\u{EB0}\u{E99}\u{EB0}\u{EA5}\u{EB1}\u{E94} \u{E9B}\u{EB0}\u{E8A}\u{EB2}\u{E97}\u{EB4}\u{E9B}\u{EB0}\u{EC4}\u{E95} \u{E9B}\u{EB0}\u{E8A}\u{EB2}\u{E8A}\u{EBB}\u{E99}\u{EA5}\u{EB2}\u{EA7}".to_string(),
+        "\u{C548}\u{B155}\u{D558}\u{C138}\u{C694} \u{D55C}\u{AE00}\u{C785}\u{B2C8}\u{B2E4} \u{D6C8}\u{BBFC}\u{C815}\u{C74C}".to_string(),
+        "\u{4EEE}\u{540D}\u{9063}\u{3044} \u{30AB}\u{30BF}\u{30AB}\u{30CA}".to_string(),
+        "\u{3056} \u{30B6} \u{58F9}\u{3099} \u{C544}\u{3099}".to_string(),
+        "21.35 R2D2 C3PO 216.239.63.104 David has 5000 bones".to_string(),
+        "A:B A::B 1.2 A.B 1..2 A..B 1,2 1,,2 A.:B 1,.2 A:B_A::B 1.2_1..2 C_A.:B 3_1.,2".to_string(),
+        "\u{1F4A9} \u{1F4A9}\u{1F4A9} poo\u{1F4A9}poo \u{1F4A9}\u{4E2D}\u{570B}\u{1F4A9}".to_string(),
+        "\u{1F469}\u{200D}\u{2764}\u{FE0F}\u{200D}\u{1F469} \u{1F468}\u{1F3FC}\u{200D}\u{2695}\u{FE0F}".to_string(),
+        "\u{1F1FA}\u{1F1F8}\u{1F1FA}\u{1F1F8}\u{1F1FA} x\u{1F1FA}\u{1F1F8}y".to_string(),
+        "#\u{FE0F}\u{20E3} 3\u{FE0F}\u{20E3} #\u{FE0E} 3\u{FE0E} \u{2B55}\u{FE0E} \u{2B55}\u{FE0E}\u{200D}\u{2B55}\u{FE0E}".to_string(),
+        "\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}".to_string(),
+        "\u{1D7CE}\u{1D7CF} 12\u{1D7D0} \u{104A0}\u{104A1}.5 \u{661}\u{662}\u{663} x\u{104A2}".to_string(),
+        format!("x {} {}b", "b".repeat(255), "b".repeat(255)),
+    ]
+}
+
+/// `TestStandardAnalyzer`'s `SpoonFeedMaxCharsReaderWrapper`: at most
+/// `max_chars` characters per read.
+#[derive(Debug)]
+struct SpoonFeed {
+    input: Box<dyn rucene::analysis::CharReader>,
+    max_chars: usize,
+}
+
+impl rucene::analysis::CharReader for SpoonFeed {
+    fn read(&mut self, buf: &mut [char]) -> Result<usize> {
+        let n = self.max_chars.min(buf.len());
+        self.input.read(&mut buf[..n])
+    }
+
+    fn close(&mut self) -> Result<()> {
+        self.input.close()
+    }
+}
+
+/// The reader of `stdtok` case `r`: plain, `MockCharFilter` 0/2/7,
+/// spoon-feed 1/2/9.
+fn std_reader(r: usize, text: &str) -> Box<dyn rucene::analysis::CharReader> {
+    match r {
+        0 => reader(text),
+        1..=3 => Box::new(MockCharFilter::new(reader(text), [0, 0, 2, 7][r]).unwrap()),
+        _ => Box::new(SpoonFeed {
+            input: reader(text),
+            max_chars: [1, 2, 9][r - 4],
+        }),
+    }
+}
+
+/// `dumpResizing`: consumes the stream, calling `setMaxTokenLength(max)`
+/// after token `after`.
+fn dump_resizing(st: &mut rucene::analysis::StandardTokenizer, after: i32, max: i32) -> String {
+    let mut sb = String::new();
+    let result = catch_unwind(AssertUnwindSafe(|| -> Result<()> {
+        st.reset()?;
+        let mut n = 0;
+        while st.increment_token()? {
+            sb.push_str(&tok(st.attribute_source()));
+            sb.push(' ');
+            n += 1;
+            if n == after {
+                st.logic_mut().set_max_token_length(max)?;
+            }
+        }
+        st.end()?;
+        sb.push_str("end:");
+        sb.push_str(&tok(st.attribute_source()));
+        st.close()
+    }));
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            sb.push('!');
+            sb.push_str(&err(&e));
+        }
+        Err(payload) => {
+            sb.push('!');
+            sb.push_str(&panic_err(payload));
+        }
+    }
+    sb
+}
+
+fn standard_tokenizer() {
+    let inputs = std_inputs();
+    for (c, text) in inputs.iter().enumerate() {
+        for r in 0..7 {
+            for m in [1, 2, 3, 255] {
+                row(
+                    "stdtok",
+                    0,
+                    &format!("c{c}.r{r}.m{m}"),
+                    ctx(seeds()[0], || {
+                        let mut st = new_standard_tokenizer();
+                        st.logic_mut().set_max_token_length(m).unwrap();
+                        st.set_reader(std_reader(r, text)).unwrap();
+                        dump(&mut st)
+                    }),
+                );
+            }
+        }
+        // setBufferSize between two streams of one tokenizer
+        for (a, b) in [(255, 2), (2, 255), (1, 3), (3, 1), (2, 2)] {
+            row(
+                "stdtok",
+                0,
+                &format!("c{c}.reuse{a}-{b}"),
+                ctx(seeds()[0], || {
+                    let mut st = new_standard_tokenizer();
+                    st.logic_mut().set_max_token_length(a).unwrap();
+                    st.set_reader(std_reader(2, text)).unwrap();
+                    let first = dump(&mut st);
+                    st.logic_mut().set_max_token_length(b).unwrap();
+                    st.set_reader(std_reader(2, text)).unwrap();
+                    format!("{first}\t{}", dump(&mut st))
+                }),
+            );
+        }
+        // setBufferSize in the middle of a stream, after the first and the
+        // second token
+        for after in 1..=2 {
+            for (a, b) in [(3, 255), (255, 3), (2, 1), (1, 2), (255, 1)] {
+                row(
+                    "stdtok",
+                    0,
+                    &format!("c{c}.mid{after}.{a}-{b}"),
+                    ctx(seeds()[0], || {
+                        let mut st = new_standard_tokenizer();
+                        st.logic_mut().set_max_token_length(a).unwrap();
+                        st.set_reader(std_reader(0, text)).unwrap();
+                        dump_resizing(&mut st, after, b)
+                    }),
+                );
+            }
+        }
+    }
+}
+
 fn scenarios() {
     tokenizers();
     lengths();
@@ -1690,6 +1752,7 @@ fn scenarios() {
     core();
     utf16();
     factories();
+    standard_tokenizer();
 }
 
 #[test]
@@ -1730,16 +1793,6 @@ fn analysis_mocks_match_lucene() {
     for line in ROWS.lock().unwrap().iter() {
         let r: Vec<String> = line.split('\t').map(str::to_string).collect();
         actual.insert(key(&r), r[3..].join("\t"));
-    }
-    for &step in U16_STANDARD_DIVERGENT {
-        let k = format!("u16\t0\t{step}");
-        let (Some(e), Some(a)) = (expected.remove(&k), actual.remove(&k)) else {
-            panic!("missing row {k}");
-        };
-        assert_ne!(
-            e, a,
-            "{k} now matches Lucene: remove it from U16_STANDARD_DIVERGENT"
-        );
     }
     assert_same("analysis mocks", &expected, &actual);
 }

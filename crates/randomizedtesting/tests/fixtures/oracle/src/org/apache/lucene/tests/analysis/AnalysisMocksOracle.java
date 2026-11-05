@@ -1037,6 +1037,156 @@ public final class AnalysisMocksOracle {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // stdtok: StandardTokenizer (StandardTokenizerImpl, the JFlex scanner) over the inputs of Lucene's
+  // TestStandardAnalyzer (testThai, testLao, testKoreanSA, testJapanese, testCombiningMarks,
+  // testNumericSA, testTextWithNumbersSA, testMid, testEmoji*, testEmojiVariationSequence,
+  // testEmojiTagSequence, testEmojiTokenization, testMaxTokenLengthDefault) plus odd regional
+  // indicators and supplementary digits; per maxTokenLength (1, 2, 3, 255) and reader (plain,
+  // MockCharFilter 0/2/7, a spoon-feed reader of 1/2/9 chars per read), then setMaxTokenLength
+  // between two streams of one tokenizer and in the middle of a stream (setBufferSize)
+  // ---------------------------------------------------------------------------
+
+  public static final String[] STD = {
+    "\u0E01\u0E32\u0E23\u0E17\u0E35\u0E48\u0E44\u0E14\u0E49\u0E15\u0E49\u0E2D\u0E07\u0E41\u0E2A"
+        + "\u0E14\u0E07\u0E27\u0E48\u0E32\u0E07\u0E32\u0E19\u0E14\u0E35. \u0E41\u0E25\u0E49\u0E27"
+        + "\u0E40\u0E18\u0E2D\u0E08\u0E30\u0E44\u0E1B\u0E44\u0E2B\u0E19? \u0E51\u0E52\u0E53\u0E54",
+    "\u0EAA\u0EB2\u0E97\u0EB2\u0EA5\u0EB0\u0E99\u0EB0\u0EA5\u0EB1\u0E94 \u0E9B\u0EB0\u0E8A\u0EB2"
+        + "\u0E97\u0EB4\u0E9B\u0EB0\u0EC4\u0E95 \u0E9B\u0EB0\u0E8A\u0EB2\u0E8A\u0EBB\u0E99\u0EA5\u0EB2\u0EA7",
+    "\uC548\uB155\uD558\uC138\uC694 \uD55C\uAE00\uC785\uB2C8\uB2E4 \uD6C8\uBBFC\uC815\uC74C",
+    "\u4EEE\u540D\u9063\u3044 \u30AB\u30BF\u30AB\u30CA",
+    "\u3056 \u30B6 \u58F9\u3099 \uC544\u3099",
+    "21.35 R2D2 C3PO 216.239.63.104 David has 5000 bones",
+    "A:B A::B 1.2 A.B 1..2 A..B 1,2 1,,2 A.:B 1,.2 A:B_A::B 1.2_1..2 C_A.:B 3_1.,2",
+    "\uD83D\uDCA9 \uD83D\uDCA9\uD83D\uDCA9 poo\uD83D\uDCA9poo \uD83D\uDCA9\u4E2D\u570B\uD83D\uDCA9",
+    "\uD83D\uDC69\u200D\u2764\uFE0F\u200D\uD83D\uDC69 \uD83D\uDC68\uD83C\uDFFC\u200D\u2695\uFE0F",
+    "\uD83C\uDDFA\uD83C\uDDF8\uD83C\uDDFA\uD83C\uDDF8\uD83C\uDDFA x\uD83C\uDDFA\uD83C\uDDF8y",
+    "#\uFE0F\u20E3 3\uFE0F\u20E3 #\uFE0E 3\uFE0E \u2B55\uFE0E \u2B55\uFE0E\u200D\u2B55\uFE0E",
+    "\uD83C\uDFF4\uDB40\uDC67\uDB40\uDC62\uDB40\uDC65\uDB40\uDC6E\uDB40\uDC67\uDB40\uDC7F",
+    "\uD835\uDFCE\uD835\uDFCF 12\uD835\uDFD0 \uD801\uDCA0\uD801\uDCA1.5 \u0661\u0662\u0663 x\uD801\uDCA2",
+    "x " + "b".repeat(StandardAnalyzer.DEFAULT_MAX_TOKEN_LENGTH) + " "
+        + "b".repeat(StandardAnalyzer.DEFAULT_MAX_TOKEN_LENGTH) + "b",
+  };
+
+  /** TestStandardAnalyzer's SpoonFeedMaxCharsReaderWrapper. */
+  static final class SpoonFeed extends Reader {
+    private final Reader in;
+    private final int maxChars;
+
+    SpoonFeed(int maxChars, Reader in) {
+      this.in = in;
+      this.maxChars = maxChars;
+    }
+
+    @Override
+    public void close() throws IOException {
+      in.close();
+    }
+
+    @Override
+    public int read(char[] cbuf, int off, int len) throws IOException {
+      return in.read(cbuf, off, Math.min(maxChars, len));
+    }
+  }
+
+  /** The reader of stdtok case {@code r}: plain, MockCharFilter 0/2/7, spoon-feed 1/2/9. */
+  static Reader stdReader(int r, String text) {
+    Reader in = new StringReader(text);
+    switch (r) {
+      case 0:
+        return in;
+      case 1:
+      case 2:
+      case 3:
+        return new MockCharFilter(in, new int[] {0, 0, 2, 7}[r]);
+      default:
+        return new SpoonFeed(new int[] {1, 2, 9}[r - 4], in);
+    }
+  }
+
+  /** Consumes the stream, calling setMaxTokenLength(max) after token {@code after}. */
+  static String dumpResizing(StandardTokenizer st, int after, int max) {
+    StringBuilder sb = new StringBuilder();
+    try {
+      st.reset();
+      int n = 0;
+      while (st.incrementToken()) {
+        sb.append(tok(st)).append(' ');
+        if (++n == after) {
+          st.setMaxTokenLength(max);
+        }
+      }
+      st.end();
+      sb.append("end:").append(tok(st));
+      st.close();
+    } catch (Throwable t) {
+      sb.append('!').append(err(t));
+    }
+    return sb.toString();
+  }
+
+  static void standardTokenizer() throws Exception {
+    int[] maxes = {1, 2, 3, StandardAnalyzer.DEFAULT_MAX_TOKEN_LENGTH};
+    for (int c = 0; c < STD.length; c++) {
+      for (int r = 0; r < 7; r++) {
+        for (int m : maxes) {
+          final int fc = c, fr = r, fm = m;
+          row(
+              "stdtok",
+              0,
+              "c" + c + ".r" + r + ".m" + m,
+              ctx(
+                  SEEDS[0],
+                  () -> {
+                    StandardTokenizer st = new StandardTokenizer();
+                    st.setMaxTokenLength(fm);
+                    st.setReader(stdReader(fr, STD[fc]));
+                    return dump(st);
+                  }));
+        }
+      }
+      // setBufferSize between two streams of one tokenizer
+      int[][] pairs = {{255, 2}, {2, 255}, {1, 3}, {3, 1}, {2, 2}};
+      for (int[] p : pairs) {
+        final int fc = c;
+        row(
+            "stdtok",
+            0,
+            "c" + c + ".reuse" + p[0] + "-" + p[1],
+            ctx(
+                SEEDS[0],
+                () -> {
+                  StandardTokenizer st = new StandardTokenizer();
+                  st.setMaxTokenLength(p[0]);
+                  st.setReader(stdReader(2, STD[fc]));
+                  String first = dump(st);
+                  st.setMaxTokenLength(p[1]);
+                  st.setReader(stdReader(2, STD[fc]));
+                  return first + "\t" + dump(st);
+                }));
+      }
+      // setBufferSize in the middle of a stream, after the first and the second token
+      int[][] mid = {{3, 255}, {255, 3}, {2, 1}, {1, 2}, {255, 1}};
+      for (int after = 1; after <= 2; after++) {
+        for (int[] p : mid) {
+          final int fc = c, fa = after;
+          row(
+              "stdtok",
+              0,
+              "c" + c + ".mid" + after + "." + p[0] + "-" + p[1],
+              ctx(
+                  SEEDS[0],
+                  () -> {
+                    StandardTokenizer st = new StandardTokenizer();
+                    st.setMaxTokenLength(p[0]);
+                    st.setReader(stdReader(0, STD[fc]));
+                    return dumpResizing(st, fa, p[1]);
+                  }));
+        }
+      }
+    }
+  }
+
   public static void scenarios() throws Exception {
     tokenizers();
     lengths();
@@ -1049,6 +1199,7 @@ public final class AnalysisMocksOracle {
     core();
     utf16();
     factories();
+    standardTokenizer();
   }
 
   public static void main(String[] args) throws Exception {

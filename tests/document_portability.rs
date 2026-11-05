@@ -37,7 +37,9 @@ fn standard_analyzer_tokens_match_java() {
         tokens.push(term);
     }
     stream.end().unwrap();
-    assert_eq!(tokens, vec!["hello", "world", "123", "45"]);
+    // Lucene 10.5.0 keeps `123.45` whole (UAX #29 WB11/WB12):
+    // `hello|world|123.45|`.
+    assert_eq!(tokens, vec!["hello", "world", "123.45"]);
 }
 
 #[test]

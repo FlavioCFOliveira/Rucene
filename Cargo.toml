@@ -66,8 +66,6 @@ crc32fast = "1.4"
 # `BEST_COMPRESSION` cannot be byte-compatible with Lucene 10.5.0.
 # `default-features = false` keeps `miniz_oxide` out of the dependency tree.
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
-# Unicode word segmentation (UAX #29) for the standard tokenizer.
-unicode-segmentation = "1.12"
 # Date/time handling for DateTools, matching Java's GregorianCalendar in GMT.
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 # Regular expressions for `AbstractAnalysisFactory.getPattern`, which compiles a

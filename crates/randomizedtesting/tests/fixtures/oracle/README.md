@@ -251,8 +251,15 @@ write the fixtures (`../*.tsv`) the crate's parity tests (`src/tests/`) read.
   filters (`LowerCaseFilter`, `StopFilter`, `MockSynonymFilter` over them,
   `CachingTokenFilter` replayed, a `GraphTokenFilter` walk) and `QueryBuilder`
   over a `StandardTokenizer` built with each of the three factories
-  `newAttributeFactory` picks. The Rust side is
-  `crates/rucene-test-framework/tests/analysis_mocks_oracle.rs`, which replays
-  every scenario through the port's runner and compares the rows; the `u16`
-  rows where the port's `StandardTokenizer` still differs, by causes its
-  documentation declares, are listed there and required to differ.
+  `newAttributeFactory` picks; `stdtok`, `StandardTokenizer` (the JFlex
+  `StandardTokenizerImpl`) over the inputs of Lucene's `TestStandardAnalyzer`
+  (Thai, Lao, Hangul, Japanese, combining marks, numerics, `testMid`, emoji,
+  ZWJ, flag, keycap and tag sequences, the default maximum token length) plus
+  odd regional indicators and supplementary digits, per maximum token length
+  (1, 2, 3, 255) and reader (plain, `MockCharFilter` 0/2/7, the spoon-feed
+  reader of `TestStandardAnalyzer` at 1, 2 and 9 chars per read), then
+  `setMaxTokenLength` between two streams of one tokenizer and in the middle
+  of a stream (`setBufferSize`, whose shrinking fails as Java's does). The
+  Rust side is `crates/rucene-test-framework/tests/analysis_mocks_oracle.rs`,
+  which replays every scenario through the port's runner and compares the
+  rows.

@@ -57,6 +57,7 @@ pub mod mock_tokenizer;
 pub mod mock_utf16_term_attribute_impl;
 pub mod mock_variable_length_payload_filter;
 pub mod simple_payload_filter;
+pub mod standard;
 pub mod token;
 pub mod token_stream_to_dot;
 pub mod validating_token_filter;
