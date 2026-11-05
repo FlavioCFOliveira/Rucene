@@ -173,10 +173,6 @@ impl Scorable for PhraseScorer {
 }
 
 impl Scorer for PhraseScorer {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
-    }
-
     fn doc_id(&self) -> i32 {
         self.matcher.approximation_ref().doc_id()
     }

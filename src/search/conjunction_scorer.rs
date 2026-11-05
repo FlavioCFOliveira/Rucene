@@ -148,17 +148,13 @@ impl Scorable for ConjunctionScorer {
             let scorer = member
                 .scorer()
                 .expect("INVARIANT: every clause of a ConjunctionScorer wraps a Scorer");
-            children.push(ChildScorable::new(scorer.as_scorable(), "MUST"));
+            children.push(ChildScorable::new(scorer, "MUST"));
         }
         Ok(children)
     }
 }
 
 impl Scorer for ConjunctionScorer {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
-    }
-
     fn doc_id(&self) -> i32 {
         DocIdSetIterator::doc_id(self)
     }

@@ -26,8 +26,7 @@
 //!   caches): a collector of a `CollectorManager` must own its state here.
 //! * `ExplanationAssertingSearcher` is a wrapper around an [`IndexSearcher`]
 //!   whose inherent `search*` methods check the explanations first, instead
-//!   of a subclass; the core searcher has no `search(Query, int, Sort)`, so
-//!   that override is not ported.
+//!   of a subclass.
 //! * `verifyExplanation` lower-cases the description with Rust's Unicode
 //!   lower-casing, which is `toLowerCase(Locale.ROOT)` except for the
 //!   characters whose Java mapping depends on context beyond final sigma.
@@ -44,8 +43,8 @@ use rucene::index::{IndexReader, LeafReaderContext};
 use rucene::search::similarities::Explanation;
 use rucene::search::{
     query_to_string, CollectionResult, Collector, CollectorManager, IndexSearcher, LeafCollector,
-    Matches, Query, Scorable, ScoreDoc, ScoreMode, Scorer, TopDocs, TopScoreDocCollectorManager,
-    Weight, NO_MORE_DOCS,
+    Matches, Query, Scorable, ScoreDoc, ScoreMode, Scorer, Sort, TopDocs, TopFieldDocs,
+    TopScoreDocCollectorManager, Weight, NO_MORE_DOCS,
 };
 use rucene::util::java_fmt::parse_float;
 
@@ -656,7 +655,7 @@ impl CheckHits {
         let w2 = searcher.create_weight(query, ScoreMode::TOP_SCORES, 1.0)?;
 
         // Check boundaries and max scores when iterating all matches
-        for ctx in searcher.get_leaf_contexts().to_vec() {
+        for ctx in Arc::clone(searcher.get_index_reader()).leaves()? {
             let Some((mut s1, mut s2)) = Self::max_scores_scorers(&w1, &w2, &ctx)? else {
                 continue;
             };
@@ -710,7 +709,7 @@ impl CheckHits {
         }
 
         // Now check advancing
-        for ctx in searcher.get_leaf_contexts().to_vec() {
+        for ctx in Arc::clone(searcher.get_index_reader()).leaves()? {
             let Some((mut s1, mut s2)) = Self::max_scores_scorers(&w1, &w2, &ctx)? else {
                 continue;
             };
@@ -925,7 +924,7 @@ impl CollectorManager for ExplanationAsserterManager {
 /// match whenever it executes a search.
 ///
 /// Equivalent to `CheckHits.ExplanationAssertingSearcher` (see the module
-/// divergences: a wrapper, without `search(Query, int, Sort)`).
+/// divergences: a wrapper).
 #[derive(Debug, Clone)]
 pub struct ExplanationAssertingSearcher {
     searcher: IndexSearcher,
@@ -972,6 +971,21 @@ impl ExplanationAssertingSearcher {
                 deep: false,
             },
         )
+    }
+
+    /// `search(query, n, sort)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the searcher's errors.
+    pub fn search_with_sort(
+        &self,
+        query: Arc<dyn Query>,
+        n: i32,
+        sort: &Sort,
+    ) -> Result<TopFieldDocs> {
+        self.check_explanations(&query)?;
+        self.searcher.super_search_with_sort(query, n, sort)
     }
 
     /// `search(query, collector)`.

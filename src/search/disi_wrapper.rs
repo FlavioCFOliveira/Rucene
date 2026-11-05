@@ -133,7 +133,7 @@ impl DisiWrapper {
     /// Equivalent to reading the `public final Scorable scorable` field, which
     /// Java initialises with `ScorerUtil.likelyTermScorer(scorer)`.
     pub fn scorable(&mut self) -> &mut dyn Scorable {
-        ScorerUtil::likely_term_scorer(self.scorer.as_scorable())
+        ScorerUtil::likely_term_scorer(&mut *self.scorer)
     }
 
     /// Returns the iterator over matching documents.

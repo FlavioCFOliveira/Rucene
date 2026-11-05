@@ -314,10 +314,6 @@ impl Scorable for ConstantScoreScorer {
 }
 
 impl Scorer for ConstantScoreScorer {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
-    }
-
     fn doc_id(&self) -> i32 {
         match &self.iteration {
             Iteration::Plain(disi) => disi.doc_id(),

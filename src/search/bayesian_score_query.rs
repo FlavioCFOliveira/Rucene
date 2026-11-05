@@ -406,10 +406,6 @@ impl Scorable for BayesianScoreScorer {
 }
 
 impl Scorer for BayesianScoreScorer {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
-    }
-
     fn doc_id(&self) -> i32 {
         self.inner.inner().doc_id()
     }

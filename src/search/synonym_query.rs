@@ -869,10 +869,6 @@ impl Scorable for SynonymScorer {
 }
 
 impl Scorer for SynonymScorer {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
-    }
-
     fn doc_id(&self) -> i32 {
         DocIdSetIterator::doc_id(self)
     }
@@ -977,10 +973,6 @@ impl Scorable for FreqBoostTermScorer {
 }
 
 impl Scorer for FreqBoostTermScorer {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
-    }
-
     fn doc_id(&self) -> i32 {
         Scorer::doc_id(&self.inner)
     }

@@ -107,10 +107,6 @@ impl Scorable for ZeroScoreScorer {
 }
 
 impl Scorer for ZeroScoreScorer {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
-    }
-
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }

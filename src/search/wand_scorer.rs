@@ -903,10 +903,6 @@ impl Scorable for WANDScorer {
 }
 
 impl Scorer for WANDScorer {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
-    }
-
     fn doc_id(&self) -> i32 {
         self.core.doc
     }

@@ -84,6 +84,10 @@ fn class_and_message(e: &LuceneError) -> (String, String) {
         LuceneError::AssertionError(message) => {
             ("java.lang.AssertionError".to_string(), or_null(message))
         }
+        LuceneError::IllegalArgument(message) => (
+            "java.lang.IllegalArgumentException".to_string(),
+            or_null(message),
+        ),
         other => (
             format!("rucene::{}", other.java_simple_name()),
             other.to_string(),
@@ -849,8 +853,13 @@ fn similarities() {
 mod searcher_checks {
     use super::*;
     use rucene::index::DirectoryReader;
-    use rucene::search::{DocIdStream, ScoreDoc, ScorerAsScorable};
-    use rucene_test_framework::search::{CheckHits, QueryUtils};
+    use rucene::index::FieldInvertState;
+    use rucene::search::similarities::{CollectionStatistics, SimScorer, TermStatistics};
+    use rucene::search::{
+        DocIdStream, FieldDoc, ScoreDoc, ScorerAsScorable, Sort, SortField, SortFieldType,
+        SortValue, TopFieldDocs,
+    };
+    use rucene_test_framework::search::{CheckHits, ExplanationAssertingSearcher, QueryUtils};
     use rucene_test_framework::util::lucene_test_case::{
         Concurrency, TestReader, MAYBE_CACHE_POLICY,
     };
@@ -928,6 +937,7 @@ mod searcher_checks {
         query_utils_checks(&reader);
         check_hits(&reader);
         scorer_branch(&reader);
+        sorted_search(&reader);
         reader.close().unwrap();
         LuceneTestCase::set_class_env_similarity(None);
         IndexSearcher::set_default_query_cache(default_cache);
@@ -1522,6 +1532,192 @@ mod searcher_checks {
             Ok(sb)
         });
         rec(C, "scorer_branch", "next", next);
+    }
+
+    /// `SearcherChecksOracle.fieldDocs`: `totalHits` then each hit's
+    /// `FieldDoc.toString()`.
+    fn field_docs(td: &TopFieldDocs) -> String {
+        let mut sb = td.total_hits.to_string();
+        for fd in &td.score_docs {
+            sb.push_str(&format!(" | {fd}"));
+        }
+        sb
+    }
+
+    fn field(name: &str, field_type: SortFieldType, reverse: bool) -> SortField {
+        SortField::new_reverse(Some(name.to_string()), field_type, reverse).unwrap()
+    }
+
+    /// `SearcherChecksOracle.sortedSearch`: `search(Query, int, Sort)` through
+    /// `ExplanationAssertingSearcher`, `search(Query, int, Sort, true)` and
+    /// `searchAfter(ScoreDoc, Query, int, Sort[, boolean])`.
+    fn sorted_search(reader: &Arc<dyn IndexReader>) {
+        let es = ExplanationAssertingSearcher::new(Arc::clone(reader)).unwrap();
+        let plain = IndexSearcher::new(Arc::clone(reader)).unwrap();
+        let sorts: Vec<(&str, Sort)> = vec![
+            (
+                "num",
+                Sort::new_fields(vec![field("dv_num", SortFieldType::Long, false)]).unwrap(),
+            ),
+            (
+                "num_rev",
+                Sort::new_fields(vec![field("dv_num", SortFieldType::Long, true)]).unwrap(),
+            ),
+            (
+                "sorted",
+                Sort::new_fields(vec![field("dv_sorted", SortFieldType::String, false)]).unwrap(),
+            ),
+            (
+                "score_num",
+                Sort::new_fields(vec![
+                    SortField::FIELD_SCORE.clone(),
+                    field("dv_num", SortFieldType::Long, false),
+                ])
+                .unwrap(),
+            ),
+            (
+                "doc",
+                Sort::new_fields(vec![SortField::FIELD_DOC.clone()]).unwrap(),
+            ),
+        ];
+        let queries: Vec<(&str, Arc<dyn Query>)> = vec![
+            ("term", term("w7")),
+            ("should", should_w1_w2()),
+            ("all", Arc::new(MatchAllDocsQuery)),
+            ("constant", Arc::new(ConstantScoreQuery::new(term("w7")))),
+            ("exists", Arc::new(FieldExistsQuery::new("dv_num"))),
+        ];
+        let last = |td: &TopFieldDocs| td.score_docs.last().cloned();
+        for (sn, sort) in &sorts {
+            for (qn, q) in &queries {
+                let step = format!("{sn}/{qn}");
+                rec(C, "sorted_search", &format!("explanation/{step}"), || {
+                    Ok(field_docs(&es.search_with_sort(Arc::clone(q), 5, sort)?))
+                });
+                rec(C, "sorted_search", &format!("scores/{step}"), || {
+                    Ok(field_docs(&plain.search_with_sort_and_scores(
+                        Arc::clone(q),
+                        5,
+                        sort,
+                        true,
+                    )?))
+                });
+                rec(C, "sorted_search", &format!("after/{step}"), || {
+                    let first = plain.search_with_sort(Arc::clone(q), 3, sort)?;
+                    Ok(field_docs(&plain.search_after_with_sort(
+                        last(&first),
+                        Arc::clone(q),
+                        3,
+                        sort,
+                    )?))
+                });
+                rec(C, "sorted_search", &format!("after_scores/{step}"), || {
+                    let first = plain.search_with_sort(Arc::clone(q), 2, sort)?;
+                    Ok(field_docs(&plain.search_after_with_sort_and_scores(
+                        last(&first),
+                        Arc::clone(q),
+                        4,
+                        sort,
+                        true,
+                    )?))
+                });
+            }
+        }
+        let num = &sorts[0].1;
+        rec(C, "sorted_search", "after_out_of_range", || {
+            let after = FieldDoc::with_fields(reader.max_doc(), 0.0, vec![SortValue::Long(0)]);
+            Ok(field_docs(&plain.search_after_with_sort(
+                Some(after),
+                term("w7"),
+                3,
+                num,
+            )?))
+        });
+        rec(C, "sorted_search", "after_wrong_fields", || {
+            let after = FieldDoc::with_fields(0, 0.0, vec![SortValue::Long(0), SortValue::Long(1)]);
+            Ok(field_docs(&plain.search_after_with_sort(
+                Some(after),
+                term("w7"),
+                3,
+                num,
+            )?))
+        });
+        rec(C, "sorted_search", "zero_hits", || {
+            Ok(field_docs(&plain.search_with_sort(term("w7"), 0, num)?))
+        });
+        rec(C, "sorted_search", "explanation_zero_hits", || {
+            Ok(field_docs(&es.search_with_sort(term("w7"), 0, num)?))
+        });
+        // A similarity whose explanations add 1 to the score: the explanation
+        // check of `ExplanationAssertingSearcher.search(Query, int, Sort)`
+        // fails, the plain search does not.
+        let mut lying_es = ExplanationAssertingSearcher::new(Arc::clone(reader)).unwrap();
+        lying_es
+            .searcher_mut()
+            .set_similarity(Arc::new(LyingSimilarity::default()));
+        let mut lying_plain = IndexSearcher::new(Arc::clone(reader)).unwrap();
+        lying_plain.set_similarity(Arc::new(LyingSimilarity::default()));
+        rec(C, "sorted_search", "explanation_lie", || {
+            Ok(field_docs(&lying_es.search_with_sort(
+                term("w7"),
+                3,
+                num,
+            )?))
+        });
+        rec(C, "sorted_search", "plain_lie", || {
+            Ok(field_docs(&lying_plain.search_with_sort(
+                term("w7"),
+                3,
+                num,
+            )?))
+        });
+        rec(C, "sorted_search", "next", next);
+    }
+
+    /// `SearcherChecksOracle.LyingSimilarity`: BM25, except that every
+    /// explanation is one more than the score.
+    #[derive(Debug, Default)]
+    struct LyingSimilarity {
+        r#in: BM25Similarity,
+    }
+
+    struct LyingSimScorer<'a> {
+        scorer: Box<dyn SimScorer + 'a>,
+    }
+
+    impl SimScorer for LyingSimScorer<'_> {
+        fn score(&self, freq: f32, norm: i64) -> f32 {
+            self.scorer.score(freq, norm)
+        }
+
+        fn explain(&self, freq: &Explanation, norm: i64) -> Explanation {
+            Explanation::matched(
+                self.scorer.score(freq.value().float_value(), norm) + 1.0,
+                "lie",
+                Vec::new(),
+            )
+        }
+    }
+
+    impl Similarity for LyingSimilarity {
+        fn java_class_name(&self) -> &'static str {
+            "org.apache.lucene.tests.search.SearcherChecksOracle$LyingSimilarity"
+        }
+
+        fn compute_norm(&self, state: &FieldInvertState) -> Result<i64> {
+            self.r#in.compute_norm(state)
+        }
+
+        fn scorer<'a>(
+            &'a self,
+            boost: f32,
+            collection_stats: &CollectionStatistics,
+            term_stats: &[TermStatistics],
+        ) -> Box<dyn SimScorer + 'a> {
+            Box::new(LyingSimScorer {
+                scorer: self.r#in.scorer(boost, collection_stats, term_stats),
+            })
+        }
     }
 }
 

@@ -738,10 +738,6 @@ impl Scorable for VectorSimilarityScorer {
 }
 
 impl Scorer for VectorSimilarityScorer {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
-    }
-
     fn doc_id(&self) -> i32 {
         self.iterator.doc_id()
     }

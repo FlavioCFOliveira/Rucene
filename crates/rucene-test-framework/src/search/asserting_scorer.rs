@@ -160,10 +160,6 @@ impl Scorer for BorrowedScorer<'_> {
         self.inner.as_indri_scorer()
     }
 
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
-    }
-
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -491,7 +487,7 @@ impl Scorable for AssertingScorer<'_> {
         // ToParentBlockJoinCollector) that need to walk the scorer tree will
         // miss/skip the Scorer we wrap.
         Ok(vec![ChildScorable::new(
-            self.core_mut().inner.as_scorable(),
+            &mut *self.core_mut().inner,
             "SHOULD",
         )])
     }
@@ -508,10 +504,6 @@ impl Scorable for AssertingScorer<'_> {
 }
 
 impl Scorer for AssertingScorer<'_> {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
-    }
-
     fn doc_id(&self) -> i32 {
         self.core().inner.doc_id()
     }

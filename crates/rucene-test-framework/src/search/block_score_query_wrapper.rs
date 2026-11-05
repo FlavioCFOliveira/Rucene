@@ -211,10 +211,6 @@ impl Scorable for BlockScorer {
 }
 
 impl Scorer for BlockScorer {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
-    }
-
     fn doc_id(&self) -> i32 {
         self.docs[self.i]
     }

@@ -318,17 +318,13 @@ impl Scorable for ReqExclScorer {
 
     fn children(&mut self) -> Result<Vec<ChildScorable<'_>>> {
         Ok(vec![ChildScorable::new(
-            self.inner.req_scorer.as_scorable(),
+            &mut *self.inner.req_scorer,
             "MUST",
         )])
     }
 }
 
 impl Scorer for ReqExclScorer {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
-    }
-
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }

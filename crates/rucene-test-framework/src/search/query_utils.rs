@@ -585,9 +585,7 @@ impl QueryUtils {
     ) -> Result<()> {
         let query = searcher.rewrite(Arc::clone(query))?;
         let weight = searcher.create_weight(query, ScoreMode::COMPLETE, 1.0)?;
-        // `searcher.getIndexReader().leaves()`: the searcher's own leaf contexts, which are the
-        // reader's (cached) context leaves in Java.
-        for context in searcher.get_leaf_contexts().to_vec() {
+        for context in Arc::clone(searcher.get_index_reader()).leaves()? {
             let scorer: Option<Box<dyn Scorer>> = match weight.scorer_supplier(&context)? {
                 None => None,
                 // For IndexOrDocValuesQuey, the bulk scorer will use the indexed structure query
@@ -651,7 +649,7 @@ impl QueryUtils {
     pub fn check_count(query: &Arc<dyn Query>, searcher: &IndexSearcher) -> Result<()> {
         let query = searcher.rewrite(Arc::clone(query))?;
         let weight = searcher.create_weight(query, ScoreMode::COMPLETE_NO_SCORES, 1.0)?;
-        for context in searcher.get_leaf_contexts().to_vec() {
+        for context in Arc::clone(searcher.get_index_reader()).leaves()? {
             let Some(mut scorer) = weight.bulk_scorer(&context)? else {
                 continue;
             };

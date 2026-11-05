@@ -11,7 +11,7 @@ use std::{
     fmt::{Debug, Display, Formatter},
     sync::{
         atomic::{AtomicBool, AtomicI32, Ordering},
-        Arc, Mutex, Weak,
+        Arc, Mutex, PoisonError, Weak,
     },
 };
 
@@ -203,6 +203,13 @@ impl ReaderLink {
 pub struct IndexReaderCore {
     closed: AtomicBool,
     link: Arc<ReaderLink>,
+    /// The top-level context [`IndexReader::get_context`] answers.
+    ///
+    /// Equivalent to the `readerContext` field of `LeafReader`
+    /// (`LeafReader.java:51`) and of `CompositeReader`
+    /// (`CompositeReader.java:49`), held weakly: see
+    /// [`IndexReader::get_context`] for why.
+    reader_context: Mutex<Option<Weak<dyn IndexReaderContext>>>,
 }
 
 /// A handle on a reader's open state that `ensureOpen()` can be called
@@ -251,6 +258,14 @@ fn throw_if_closed(result: Result<()>) {
     }
 }
 
+/// Whether `context` was built for the reader at `reader`.
+///
+/// A reader whose [`IndexReader::core`] is another reader's core would
+/// otherwise be answered that reader's context.
+fn context_reader_is(context: &Arc<dyn IndexReaderContext>, reader: *const ()) -> bool {
+    std::ptr::eq(Arc::as_ptr(&context.reader()).cast::<()>(), reader)
+}
+
 impl Default for IndexReaderCore {
     fn default() -> Self {
         Self::new()
@@ -272,7 +287,42 @@ impl IndexReaderCore {
         Self {
             closed: AtomicBool::new(false),
             link: Arc::new(ReaderLink::new()),
+            reader_context: Mutex::new(None),
         }
+    }
+
+    /// The cached top-level context of the reader at `reader`, if it is still
+    /// alive and was built for that reader.
+    fn cached_reader_context(&self, reader: *const ()) -> Option<Arc<dyn IndexReaderContext>> {
+        self.reader_context
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .filter(|context| context_reader_is(context, reader))
+    }
+
+    /// Caches `context`, the top-level context just built for the reader at
+    /// `reader`, unless another thread cached a live one for that reader
+    /// first; returns the cached context.
+    fn cache_reader_context(
+        &self,
+        reader: *const (),
+        context: Arc<dyn IndexReaderContext>,
+    ) -> Arc<dyn IndexReaderContext> {
+        let mut cached = self
+            .reader_context
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(existing) = cached
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .filter(|existing| context_reader_is(existing, reader))
+        {
+            return existing;
+        }
+        *cached = Some(Arc::downgrade(&context));
+        context
     }
 
     /// Returns the current reference count.
@@ -612,7 +662,23 @@ pub trait IndexReader: Send + Sync + Debug + Display + 'static {
     /// `CompositeReaderContext` over the sub-readers and caches it. Both are
     /// answered here by [`build_context`](Self::build_context), which each
     /// reader implements — so the split is between the two `build_context`
-    /// bodies rather than between two `getContext` overrides.
+    /// bodies rather than between two `getContext` overrides. The context is
+    /// built once and answered again on every later call, as both Java
+    /// implementations do (`LeafReader.java:51, 59-62`,
+    /// `CompositeReader.java:49, 93-102`): `reader.leaves()` hands out the
+    /// leaf contexts an [`IndexSearcher`](crate::search::IndexSearcher) over
+    /// the same reader holds.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's reader holds its context
+    /// strongly, and the context holds the reader: a cycle Java's garbage
+    /// collector reclaims. Reference counting cannot, so the reader caches its
+    /// context weakly ([`IndexReaderCore`]'s `reader_context`). While anything
+    /// holds the top-level context — a searcher, a caller — every call answers
+    /// that same context, as in Java; once nothing does, the next call builds a
+    /// new one, with a new [`IndexReaderContext::id`]. Holding a leaf context
+    /// alone does not keep the top-level one alive, because a leaf refers to
+    /// its parent weakly. Caching strongly instead would leak every reader
+    /// whose context was ever asked for.
     ///
     /// # Errors
     ///
@@ -624,7 +690,12 @@ pub trait IndexReader: Send + Sync + Debug + Display + 'static {
     /// with as a parent was closed (`IndexReader.java:170-182, 268-280`).
     fn get_context(self: Arc<Self>) -> Result<Arc<dyn IndexReaderContext>> {
         self.ensure_open()?;
-        Ok(self.build_context(None, 0, 0, 0, 0))
+        let reader = Arc::as_ptr(&self).cast::<()>();
+        if let Some(context) = self.core().cached_reader_context(reader) {
+            return Ok(context);
+        }
+        let context = Arc::clone(&self).build_context(None, 0, 0, 0, 0);
+        Ok(self.core().cache_reader_context(reader, context))
     }
 
     /// Convenience method returning the top-level leaves of this reader.

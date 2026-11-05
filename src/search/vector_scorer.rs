@@ -80,8 +80,8 @@ pub trait VectorScorer {
     /// `AbstractKnnVectorQuery.ReentrantKnnCollectorManager` — write
     /// `scorer.iterator() instanceof KnnVectorValues.DocIndexIterator`. Rust
     /// cannot downcast a `dyn DocIdSetIterator`, so the test is declared as a
-    /// method, the same way [`Scorer::as_scorable`](crate::search::Scorer::as_scorable)
-    /// declares an upcast Java gets for free. The default answers `None`, which
+    /// method, the same way [`Scorable::as_scorer`](crate::search::Scorable::as_scorer)
+    /// declares Java's `instanceof Scorer`. The default answers `None`, which
     /// is the `false` branch of Java's `instanceof`.
     fn doc_index_iterator(&mut self) -> Option<&mut dyn DocIndexIterator> {
         None

@@ -214,13 +214,10 @@ impl SlotComparator for LongComparator {
         Ok(())
     }
 
-    fn set_scorer(
-        &mut self,
-        leaf: &mut NumericLeafState,
-        _scorer: &mut dyn Scorable,
-    ) -> Result<()> {
+    fn set_scorer(&mut self, leaf: &mut NumericLeafState, scorer: &mut dyn Scorable) -> Result<()> {
         self.base.set_scorer(
             leaf,
+            scorer,
             self.bottom_as_comparable_long(),
             self.top_as_comparable_long(),
         )

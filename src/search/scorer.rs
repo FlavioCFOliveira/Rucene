@@ -31,15 +31,6 @@ pub trait Scorer: Scorable {
         None
     }
 
-    /// Returns this scorer viewed as a [`Scorable`].
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java gets this for free, because
-    /// `Scorer extends Scorable`. Rust before 1.86 cannot coerce a
-    /// `&mut dyn Scorer` into a `&mut dyn Scorable`, and this crate's minimum
-    /// supported Rust version is 1.80, so the upcast is spelled out as a
-    /// method. Every implementation writes `self`.
-    fn as_scorable(&mut self) -> &mut dyn Scorable;
-
     /// Returns the doc ID that is currently being scored.
     ///
     /// Equivalent to `Scorer.docID()`.
@@ -148,8 +139,9 @@ pub trait Scorer: Scorable {
 ///
 /// **Divergence from Lucene 10.5.0.** Java hands the `Scorer` itself to
 /// `LeafCollector.setScorer`/`collect`, and a collector may test it with
-/// `instanceof Scorer`. [`Scorer::as_scorable`] returns the scorer as a plain
-/// `dyn Scorable`, whose [`Scorable::as_scorer`] is `None`, so the bulk scorers
+/// `instanceof Scorer`. Upcasting a `&mut dyn Scorer` to a `&mut dyn Scorable`
+/// keeps the concrete scorer's own [`Scorable::as_scorer`], which is `None`
+/// unless that scorer overrides it, so the bulk scorers
 /// that pass a `Scorer` to a collector (`DefaultBulkScorer`,
 /// `ConstantScoreBulkScorer`, `BooleanScorer`'s single-clause window) pass this
 /// view instead. Every other call is forwarded unchanged.
@@ -479,10 +471,6 @@ impl Scorable for FilterScorer {
 }
 
 impl Scorer for FilterScorer {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
-    }
-
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }

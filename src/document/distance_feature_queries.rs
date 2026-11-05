@@ -615,10 +615,6 @@ impl Scorable for LongDistanceScorer {
 }
 
 impl Scorer for LongDistanceScorer {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
-    }
-
     fn doc_id(&self) -> i32 {
         self.iter.doc
     }
@@ -1046,10 +1042,6 @@ impl Scorable for LatLonPointDistanceScorer {
 }
 
 impl Scorer for LatLonPointDistanceScorer {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
-    }
-
     fn doc_id(&self) -> i32 {
         self.iter.doc
     }

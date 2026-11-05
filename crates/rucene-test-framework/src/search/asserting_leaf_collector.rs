@@ -301,10 +301,6 @@ impl Scorable for BatchCheckingScorer<'_> {
 }
 
 impl Scorer for BatchCheckingScorer<'_> {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
-    }
-
     /// `FilterScorer.docID()`.
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()

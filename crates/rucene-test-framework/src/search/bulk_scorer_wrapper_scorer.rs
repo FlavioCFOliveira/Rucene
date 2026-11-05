@@ -108,10 +108,6 @@ impl Scorable for BulkScorerWrapperScorer {
 }
 
 impl Scorer for BulkScorerWrapperScorer {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
-    }
-
     fn doc_id(&self) -> i32 {
         self.doc
     }

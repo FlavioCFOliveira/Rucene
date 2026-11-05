@@ -124,10 +124,6 @@ impl<I: IndriDisjunctionScoring> Scorable for IndriDisjunctionScorer<I> {
 }
 
 impl<I: IndriDisjunctionScoring> Scorer for IndriDisjunctionScorer<I> {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
-    }
-
     fn as_indri_scorer(&mut self) -> Option<&mut dyn IndriScorer> {
         Some(self)
     }

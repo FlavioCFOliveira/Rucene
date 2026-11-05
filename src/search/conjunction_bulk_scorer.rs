@@ -149,7 +149,7 @@ impl Scorable for ConjunctionBulkScorer {
     fn children(&mut self) -> Result<Vec<ChildScorable<'_>>> {
         let mut children = Vec::with_capacity(self.scorers.len());
         for scorer in &mut self.scorers {
-            children.push(ChildScorable::new(scorer.as_scorable(), "MUST"));
+            children.push(ChildScorable::new(&mut **scorer, "MUST"));
         }
         Ok(children)
     }

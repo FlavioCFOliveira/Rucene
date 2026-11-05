@@ -454,17 +454,13 @@ impl Scorable for ReqOptSumScorer {
 
     fn children(&mut self) -> Result<Vec<ChildScorable<'_>>> {
         Ok(vec![
-            ChildScorable::new(self.core.req_scorer.as_scorable(), "MUST"),
-            ChildScorable::new(self.core.opt_scorer.as_scorable(), "SHOULD"),
+            ChildScorable::new(&mut *self.core.req_scorer, "MUST"),
+            ChildScorable::new(&mut *self.core.opt_scorer, "SHOULD"),
         ])
     }
 }
 
 impl Scorer for ReqOptSumScorer {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
-    }
-
     fn doc_id(&self) -> i32 {
         self.core.req_scorer.doc_id()
     }

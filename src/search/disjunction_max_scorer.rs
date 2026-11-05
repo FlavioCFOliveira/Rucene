@@ -151,10 +151,6 @@ impl Scorable for DisjunctionMaxScorer {
 }
 
 impl Scorer for DisjunctionMaxScorer {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
-    }
-
     fn doc_id(&self) -> i32 {
         self.base.doc_id()
     }

@@ -201,7 +201,13 @@ write the fixtures (`../*.tsv`) the crate's parity tests (`src/tests/`) read.
   tolerances); and the `Scorer` branch of `AssertingLeafCollector` (a `Scorer`
   reaching a collector, a score read during a batch, the `AssertingScorer`
   state carried across calls, an `AssertingScorer` passed through unchanged,
-  nested collectors); each group ends with the context's next draw. The Rust
+  nested collectors); and sorted searches (`sorted_search`: per sort and query,
+  `search(Query, int, Sort)` through `CheckHits.ExplanationAssertingSearcher`,
+  `search(Query, int, Sort, true)`, `searchAfter(ScoreDoc, Query, int, Sort)`
+  and its scoring overload, each hit as `FieldDoc.toString()`; their argument
+  errors; and a similarity whose explanations exceed the score, which fails
+  only the explanation-checking searcher); each group ends with the context's
+  next draw. The Rust
   side is `crates/rucene-test-framework/tests/search_wrappers_oracle.rs`,
   which replays every scenario (the suite through the port's runner) and
   compares the rows.

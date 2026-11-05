@@ -20,6 +20,8 @@ import org.apache.lucene.search.BooleanClause.Occur;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.DocIdStream;
 import org.apache.lucene.search.Explanation;
+import org.apache.lucene.search.FieldDoc;
+import org.apache.lucene.search.FieldExistsQuery;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.LeafCollector;
 import org.apache.lucene.search.Query;
@@ -28,9 +30,16 @@ import org.apache.lucene.search.Scorable;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.search.Scorer;
+import org.apache.lucene.search.Sort;
+import org.apache.lucene.search.SortField;
 import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.search.TopFieldDocs;
 import org.apache.lucene.search.Weight;
 import org.apache.lucene.search.similarities.BM25Similarity;
+import org.apache.lucene.search.similarities.Similarity;
+import org.apache.lucene.index.FieldInvertState;
+import org.apache.lucene.search.CollectionStatistics;
+import org.apache.lucene.search.TermStatistics;
 import org.apache.lucene.tests.util.LuceneTestCase;
 
 /**
@@ -109,6 +118,7 @@ final class SearcherChecksOracle {
       queryUtilsChecks(reader);
       checkHits(reader);
       scorerBranch(reader);
+      sortedSearch(reader);
     } finally {
       IndexSearcher.setDefaultQueryCache(defaultCache);
       executorField.set(null, executor);
@@ -500,5 +510,104 @@ final class SearcherChecksOracle {
       return sb;
     });
     rec(C, "scorer_branch", "next", SearcherChecksOracle::next);
+  }
+
+  /** {@code totalHits} then each hit's {@code FieldDoc.toString()}. */
+  static String fieldDocs(TopDocs td) {
+    StringBuilder sb = new StringBuilder().append(td.totalHits);
+    for (ScoreDoc sd : td.scoreDocs) {
+      sb.append(" | ").append(sd);
+    }
+    return sb.toString();
+  }
+
+  /**
+   * {@code IndexSearcher.search(Query, int, Sort)} through {@code
+   * CheckHits.ExplanationAssertingSearcher}, {@code search(Query, int, Sort, true)} and {@code
+   * searchAfter(ScoreDoc, Query, int, Sort)} (rmp #345, block 3 round 2).
+   */
+  static void sortedSearch(DirectoryReader reader) throws Exception {
+    CheckHits.ExplanationAssertingSearcher es = new CheckHits.ExplanationAssertingSearcher(reader);
+    IndexSearcher plain = new IndexSearcher(reader);
+    Object[][] sorts = {
+      {"num", new Sort(new SortField("dv_num", SortField.Type.LONG))},
+      {"num_rev", new Sort(new SortField("dv_num", SortField.Type.LONG, true))},
+      {"sorted", new Sort(new SortField("dv_sorted", SortField.Type.STRING))},
+      {"score_num", new Sort(SortField.FIELD_SCORE, new SortField("dv_num", SortField.Type.LONG))},
+      {"doc", new Sort(SortField.FIELD_DOC)},
+    };
+    Object[][] queries = {
+      {"term", term("w7")},
+      {"should", bool(term("w1"), Occur.SHOULD, term("w2"), Occur.SHOULD)},
+      {"all", new org.apache.lucene.search.MatchAllDocsQuery()},
+      {"constant", new org.apache.lucene.search.ConstantScoreQuery(term("w7"))},
+      {"exists", new FieldExistsQuery("dv_num")},
+    };
+    for (Object[] ns : sorts) {
+      String sn = (String) ns[0];
+      Sort sort = (Sort) ns[1];
+      for (Object[] nq : queries) {
+        String qn = (String) nq[0];
+        Query q = (Query) nq[1];
+        String step = sn + "/" + qn;
+        rec(C, "sorted_search", "explanation/" + step, () -> fieldDocs(es.search(q, 5, sort)));
+        rec(C, "sorted_search", "scores/" + step, () -> fieldDocs(plain.search(q, 5, sort, true)));
+        rec(C, "sorted_search", "after/" + step, () -> {
+          TopFieldDocs first = plain.search(q, 3, sort);
+          ScoreDoc after =
+              first.scoreDocs.length == 0 ? null : first.scoreDocs[first.scoreDocs.length - 1];
+          return fieldDocs(plain.searchAfter(after, q, 3, sort));
+        });
+        rec(C, "sorted_search", "after_scores/" + step, () -> {
+          TopFieldDocs first = plain.search(q, 2, sort);
+          ScoreDoc after =
+              first.scoreDocs.length == 0 ? null : first.scoreDocs[first.scoreDocs.length - 1];
+          return fieldDocs(plain.searchAfter(after, q, 4, sort, true));
+        });
+      }
+    }
+    Sort num = (Sort) sorts[0][1];
+    rec(C, "sorted_search", "after_out_of_range", () ->
+        fieldDocs(plain.searchAfter(new FieldDoc(reader.maxDoc(), 0f, new Object[] {0L}), term("w7"), 3, num)));
+    rec(C, "sorted_search", "after_wrong_fields", () ->
+        fieldDocs(plain.searchAfter(new FieldDoc(0, 0f, new Object[] {0L, 1L}), term("w7"), 3, num)));
+    rec(C, "sorted_search", "zero_hits", () -> fieldDocs(plain.search(term("w7"), 0, num)));
+    rec(C, "sorted_search", "explanation_zero_hits", () -> fieldDocs(es.search(term("w7"), 0, num)));
+    // A similarity whose explanations add 1 to the score: the explanation check of
+    // ExplanationAssertingSearcher.search(Query, int, Sort) fails, the plain search does not.
+    CheckHits.ExplanationAssertingSearcher lyingEs = new CheckHits.ExplanationAssertingSearcher(reader);
+    lyingEs.setSimilarity(new LyingSimilarity());
+    IndexSearcher lyingPlain = new IndexSearcher(reader);
+    lyingPlain.setSimilarity(new LyingSimilarity());
+    rec(C, "sorted_search", "explanation_lie", () -> fieldDocs(lyingEs.search(term("w7"), 3, num)));
+    rec(C, "sorted_search", "plain_lie", () -> fieldDocs(lyingPlain.search(term("w7"), 3, num)));
+    rec(C, "sorted_search", "next", SearcherChecksOracle::next);
+  }
+
+  /** BM25, except that every explanation is one more than the score. */
+  static final class LyingSimilarity extends Similarity {
+    private final Similarity in = new BM25Similarity();
+
+    @Override
+    public long computeNorm(FieldInvertState state) {
+      return in.computeNorm(state);
+    }
+
+    @Override
+    public SimScorer scorer(
+        float boost, CollectionStatistics collectionStats, TermStatistics... termStats) {
+      SimScorer scorer = in.scorer(boost, collectionStats, termStats);
+      return new SimScorer() {
+        @Override
+        public float score(float freq, long norm) {
+          return scorer.score(freq, norm);
+        }
+
+        @Override
+        public Explanation explain(Explanation freq, long norm) {
+          return Explanation.match(scorer.score(freq.getValue().floatValue(), norm) + 1f, "lie");
+        }
+      };
+    }
   }
 }
