@@ -30,6 +30,7 @@ use crate::codecs::term_vectors::TermVectorsReader;
 use crate::codecs::DocValuesSkipper;
 use crate::error::{LuceneError, Result};
 use crate::index::codec_reader::CodecReader;
+use crate::index::filter_directory_reader::SharedCacheKey;
 use crate::index::index_reader::{
     java_object_to_string, CacheHelper, CacheKey, ClosedListener, IndexReaderCore, StoredFields,
 };
@@ -45,7 +46,8 @@ use crate::index::{
 use crate::search::knn::KnnCollector;
 use crate::search::AcceptDocs;
 use crate::store::{Directory, IOContext, READONCE_IO_CONTEXT};
-use crate::util::{Bits, RefCount, RefCountRelease};
+use crate::util::bit_set::LiveDocs;
+use crate::util::{Bits, DenseLiveDocs, RefCount, RefCountRelease, SparseLiveDocs};
 
 // -----------------------------------------------------------------------------
 // SegmentCoreReaders
@@ -2137,6 +2139,94 @@ impl Bits for SharedBits {
     fn bits_as_any(&self) -> Option<&dyn std::any::Any> {
         self.0.bits_as_any()
     }
+
+    /// Java's `liveDocs instanceof LiveDocs` sees the shared bits themselves:
+    /// the `SparseLiveDocs` or `DenseLiveDocs` `Lucene90LiveDocsFormat`
+    /// reads (`Lucene90LiveDocsFormat.java:108-128`) are [`LiveDocs`], so the
+    /// handle answers as a [`SharedLiveDocs`] over them.
+    fn into_live_docs(self: Box<Self>) -> Option<Box<dyn LiveDocs>> {
+        SharedLiveDocs::live_docs_of(self.0.as_ref())?;
+        Some(Box::new(SharedLiveDocs(self.0)))
+    }
+}
+
+/// A [`SharedBits`] handle whose shared bits are [`LiveDocs`] (the
+/// `SparseLiveDocs` or `DenseLiveDocs` of a segment), answering as them.
+///
+/// Rust cannot narrow the shared `Arc<dyn Bits>` to a `dyn LiveDocs`, so each
+/// call reaches the concrete live docs through [`Bits::bits_as_any`].
+struct SharedLiveDocs(Arc<dyn Bits>);
+
+impl SharedLiveDocs {
+    /// The live docs `bits` are, when they are one of the two `LiveDocs`
+    /// implementations.
+    fn live_docs_of(bits: &dyn Bits) -> Option<&dyn LiveDocs> {
+        let any = bits.bits_as_any()?;
+        if let Some(sparse) = any.downcast_ref::<SparseLiveDocs>() {
+            return Some(sparse);
+        }
+        any.downcast_ref::<DenseLiveDocs>()
+            .map(|dense| dense as &dyn LiveDocs)
+    }
+
+    /// The shared live docs; [`SharedBits::into_live_docs`] builds this
+    /// handle only over bits [`live_docs_of`](Self::live_docs_of) accepts.
+    fn live_docs(&self) -> &dyn LiveDocs {
+        Self::live_docs_of(self.0.as_ref())
+            .expect("a SharedLiveDocs is only built over SparseLiveDocs or DenseLiveDocs")
+    }
+}
+
+impl Debug for SharedLiveDocs {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SharedLiveDocs")
+            .field("length", &self.0.length())
+            .finish()
+    }
+}
+
+impl Bits for SharedLiveDocs {
+    fn get(&self, index: usize) -> bool {
+        self.0.get(index)
+    }
+
+    fn try_get(&self, index: usize) -> Result<bool> {
+        self.0.try_get(index)
+    }
+
+    fn apply_mask(&self, bit_set: &mut crate::util::FixedBitSet, offset: usize) -> Result<()> {
+        self.0.apply_mask(bit_set, offset)
+    }
+
+    fn length(&self) -> usize {
+        self.0.length()
+    }
+
+    fn into_live_docs(self: Box<Self>) -> Option<Box<dyn LiveDocs>> {
+        Some(self)
+    }
+
+    fn identity(&self) -> *const () {
+        self.0.identity()
+    }
+
+    fn bits_as_any(&self) -> Option<&dyn std::any::Any> {
+        self.0.bits_as_any()
+    }
+}
+
+impl LiveDocs for SharedLiveDocs {
+    fn live_docs_iterator(&self) -> Result<Box<dyn crate::search::DocIdSetIterator>> {
+        self.live_docs().live_docs_iterator()
+    }
+
+    fn deleted_docs_iterator(&self) -> Result<Box<dyn crate::search::DocIdSetIterator>> {
+        self.live_docs().deleted_docs_iterator()
+    }
+
+    fn deleted_count(&self) -> i32 {
+        self.live_docs().deleted_count()
+    }
 }
 
 /// `StoredFields` implementation used by `SegmentReader` that performs
@@ -2196,9 +2286,17 @@ fn check_index(doc_id: i32, max_doc: i32) -> Result<()> {
 // -----------------------------------------------------------------------------
 
 /// Reader-level cache helper for `SegmentReader`.
+///
+/// Java keeps one anonymous `CacheHelper` per reader, with one `cacheKey`
+/// object (`SegmentReader.java:330-349`), so every `getReaderCacheHelper()`
+/// answers the same key. [`SegmentReader::get_reader_cache_helper`] hands out
+/// clones of this helper, so the key sits behind a [`SharedCacheKey`]: every
+/// clone answers the one key, whose address (this port's key identity) is
+/// stable. A key held by value would be a new zero-sized value in each clone,
+/// at the clone's own address.
 #[derive(Clone)]
 struct SegmentReaderCacheHelper {
-    key: CacheKey,
+    key: SharedCacheKey,
     listeners: Arc<Mutex<Vec<Box<dyn ClosedListener>>>>,
     closed: Arc<AtomicBool>,
 }
@@ -2214,7 +2312,7 @@ impl Debug for SegmentReaderCacheHelper {
 impl SegmentReaderCacheHelper {
     fn new() -> Self {
         Self {
-            key: CacheKey,
+            key: SharedCacheKey::new(),
             listeners: Arc::new(Mutex::new(Vec::new())),
             closed: Arc::new(AtomicBool::new(false)),
         }
@@ -2236,7 +2334,7 @@ impl SegmentReaderCacheHelper {
 
 impl CacheHelper for SegmentReaderCacheHelper {
     fn get_key(&self) -> &CacheKey {
-        &self.key
+        self.key.key()
     }
 
     fn add_closed_listener(&self, listener: Box<dyn ClosedListener>) {

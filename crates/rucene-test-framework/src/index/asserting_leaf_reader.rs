@@ -15,16 +15,16 @@
  * limitations under the License.
  */
 
-//! The inner classes of `org.apache.lucene.tests.index.AssertingLeafReader`
-//! that the asserting codecs (`org.apache.lucene.tests.codecs.asserting`)
-//! wrap their readers' values in, ported in full under the sprint's cycle
-//! rule: [`AssertingFields`], [`AssertingTerms`], `AssertingTermsEnum`,
-//! [`AssertingPostingsEnum`], [`AssertingImpactsEnum`], `AssertingImpacts`,
-//! the five doc-values wrappers, [`AssertingDocValuesSkipper`],
-//! [`AssertingPointValues`], `AssertingPointTree` and
-//! `AssertingIntersectVisitor`. Task #344 ports the reader itself
-//! (`AssertingLeafReader extends FilterLeafReader`) and its stored-fields and
-//! term-vectors wrappers.
+//! Port of `org.apache.lucene.tests.index.AssertingLeafReader`: the reader
+//! itself ([`AssertingLeafReader`], `extends FilterLeafReader`), its
+//! [`AssertingStoredFields`], [`AssertingTermVectors`], [`AssertingBits`] and
+//! `AssertingLiveDocs` (rmp #344), and the inner classes the asserting codecs
+//! (`org.apache.lucene.tests.codecs.asserting`) wrap their readers' values in,
+//! ported earlier under the sprint's cycle rule: [`AssertingFields`],
+//! [`AssertingTerms`], `AssertingTermsEnum`, [`AssertingPostingsEnum`],
+//! [`AssertingImpactsEnum`], `AssertingImpacts`, the five doc-values
+//! wrappers, [`AssertingDocValuesSkipper`], [`AssertingPointValues`],
+//! `AssertingPointTree` and `AssertingIntersectVisitor`.
 //!
 //! Every Java `assert` is a `java_assert!` (an
 //! `Err(AssertionError)`) where the Rust signature returns a `Result`, and a
@@ -1622,9 +1622,22 @@ impl AssertingSortedSetDocValues {
                 "a singleton sorted-set doc values gave up no single-valued view".to_string(),
             ));
         }
+        Ok(Box::new(AssertingSortedSetDocValues::new(r#in, max_doc)?))
+    }
+
+    /// The private `AssertingSortedSetDocValues(in, maxDoc)` constructor,
+    /// which wraps `in` as is (a singleton too): [`create`](Self::create)
+    /// calls it for a multi-valued `in`, and `AssertingLeafReader` for every
+    /// `in` (`AssertingLeafReader.java:1796-1808`).
+    ///
+    /// # Errors
+    ///
+    /// What `in.getValueCount()` raises, and the `AssertionError` of
+    /// `assert valueCount >= 0`.
+    pub(crate) fn new(r#in: Box<dyn SortedSetDocValues>, max_doc: i32) -> Result<Self> {
         let value_count = r#in.get_value_count()?;
         java_assert!(value_count >= 0);
-        Ok(Box::new(AssertingSortedSetDocValues {
+        Ok(AssertingSortedSetDocValues {
             creation_thread: Thread::current(),
             r#in,
             max_doc,
@@ -1632,7 +1645,7 @@ impl AssertingSortedSetDocValues {
             last_doc_id: -1,
             ords_retrieved: 0,
             exists: false,
-        }))
+        })
     }
 }
 
@@ -2168,5 +2181,581 @@ impl IntersectVisitor for AssertingIntersectVisitor<'_> {
         let result = self.r#in.compare(min_packed_value, max_packed_value)?;
         self.last_compare_result.set(Some(result));
         Ok(result)
+    }
+}
+
+// =============================================================================
+// AssertingLeafReader
+// =============================================================================
+
+use rucene::index::index_reader::{CacheHelper, CacheKey, ClosedListener, StoredFields};
+use rucene::index::leaf_reader::TermVectors;
+use rucene::index::{
+    DocValuesSkipIndexType, DocValuesType, FieldInfo, LeafReader, StoredFieldVisitor,
+};
+use rucene::search::knn::KnnCollector;
+use rucene::search::AcceptDocs;
+use rucene::util::bit_set::LiveDocs;
+use rucene::util::Bits;
+
+use crate::search::asserting_accept_docs::AssertingAcceptDocs;
+
+/// Port of `org.apache.lucene.tests.index.AssertingLeafReader`: a
+/// `FilterLeafReader` that applies additional checks for tests. It checks the
+/// basic sanity of the wrapped reader when built, wraps every terms,
+/// doc-values, points, stored-fields, term-vectors and live-docs view it hands
+/// out in the asserting wrapper of this module, checks that a doc-values
+/// view exists exactly when the field infos say it does, and wraps the
+/// `AcceptDocs` of a vector search in an [`AssertingAcceptDocs`]. It does not
+/// change the behaviour of the reader: it only validates the API.
+///
+/// **Divergence (closed-listener key check).** Java's constructor registers on
+/// the wrapped reader's core and reader cache helpers a listener that asserts
+/// it is called with the helper's own key (`expectedKey == cacheKey`, an
+/// identity test; `AssertingLeafReader.java:88-112`). This port's
+/// [`ClosedListener::on_close`] receives the [`CacheKey`] by value, a unit
+/// value without identity (the declared divergence of
+/// `rucene::index::filter_directory_reader::DelegatingCacheHelper`), so the
+/// identity cannot be tested: the listeners are registered, as in Java, and
+/// check nothing.
+pub struct AssertingLeafReader {
+    core: rucene::index::index_reader::IndexReaderCore,
+    r#in: Arc<dyn LeafReader>,
+}
+
+/// The listener `AssertingLeafReader`'s constructor registers on the wrapped
+/// reader's cache helpers; see the divergence on [`AssertingLeafReader`].
+struct KeyCheckListener;
+
+impl ClosedListener for KeyCheckListener {
+    fn on_close(&self, _cache_key: CacheKey) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl AssertingLeafReader {
+    /// `new AssertingLeafReader(in)`: checks the basic sanity of `in` (Java's
+    /// four `assert`s) and registers the closed listeners on its cache
+    /// helpers.
+    ///
+    /// # Errors
+    ///
+    /// The `AssertionError` (no message) of a failed sanity `assert`.
+    pub fn new(r#in: Arc<dyn LeafReader>) -> Result<Self> {
+        let reader = Arc::clone(&r#in).as_index_reader();
+        // check some basic reader sanity
+        java_assert!(reader.max_doc() >= 0);
+        java_assert!(reader.num_docs() <= reader.max_doc());
+        java_assert!(reader.num_deleted_docs() + reader.num_docs() == reader.max_doc());
+        java_assert!(
+            !reader.has_deletions()
+                || reader.num_deleted_docs() > 0 && reader.num_docs() < reader.max_doc()
+        );
+        if let Some(core_cache_helper) = r#in.get_core_cache_helper() {
+            core_cache_helper.add_closed_listener(Box::new(KeyCheckListener));
+        }
+        if let Some(reader_cache_helper) = r#in.get_reader_cache_helper() {
+            reader_cache_helper.add_closed_listener(Box::new(KeyCheckListener));
+        }
+        Ok(AssertingLeafReader {
+            core: crate::index::filter_leaf_core(&r#in),
+            r#in,
+        })
+    }
+
+    /// `getDelegate()`: the wrapped reader.
+    pub fn get_delegate(&self) -> &Arc<dyn LeafReader> {
+        &self.r#in
+    }
+
+    /// `getFieldInfos().fieldInfo(field)`.
+    fn field_info(&self, field: &str) -> Option<FieldInfo> {
+        self.get_field_infos().field_info(field).cloned()
+    }
+}
+
+impl fmt::Debug for AssertingLeafReader {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AssertingLeafReader")
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Display for AssertingLeafReader {
+    /// `AssertingLeafReader` does not override `toString()`: the inherited
+    /// `FilterLeafReader.toString()` renders `FilterLeafReader(<in>)`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "FilterLeafReader({})", self.r#in)
+    }
+}
+
+impl LeafReader for AssertingLeafReader {
+    forward_leaf_reader!(filter r#in;
+        core,
+        filter_leaf_reader_delegate,
+        num_docs,
+        max_doc,
+        do_close,
+        get_float_vector_values,
+        get_byte_vector_values,
+        get_field_infos,
+        check_integrity,
+        get_meta_data,
+    );
+
+    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+        self.core.ensure_open()?;
+        Ok(self
+            .r#in
+            .terms(field)?
+            .map(|terms| Box::new(AssertingTerms::new(terms)) as Box<dyn Terms>))
+    }
+
+    fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
+        self.core.ensure_open()?;
+        Ok(Box::new(AssertingTermVectors::new(
+            self.r#in.term_vectors()?,
+        )))
+    }
+
+    fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
+        self.core.ensure_open()?;
+        Ok(Box::new(AssertingStoredFields::new(
+            self.r#in.stored_fields()?,
+        )))
+    }
+
+    fn get_numeric_doc_values(&self, field: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
+        self.core.ensure_open()?;
+        let dv = self.r#in.get_numeric_doc_values(field)?;
+        let fi = self.field_info(field);
+        match dv {
+            Some(dv) => {
+                java_assert!(fi.is_some());
+                java_assert!(fi.as_ref().unwrap().get_doc_values_type() == DocValuesType::NUMERIC);
+                Ok(Some(Box::new(AssertingNumericDocValues::new(
+                    dv,
+                    self.max_doc(),
+                )?)))
+            }
+            None => {
+                java_assert!(fi
+                    .as_ref()
+                    .is_none_or(|fi| fi.get_doc_values_type() != DocValuesType::NUMERIC));
+                Ok(None)
+            }
+        }
+    }
+
+    fn get_binary_doc_values(&self, field: &str) -> Result<Option<Box<dyn BinaryDocValues>>> {
+        self.core.ensure_open()?;
+        let dv = self.r#in.get_binary_doc_values(field)?;
+        let fi = self.field_info(field);
+        match dv {
+            Some(dv) => {
+                java_assert!(fi.is_some());
+                java_assert!(fi.as_ref().unwrap().get_doc_values_type() == DocValuesType::BINARY);
+                Ok(Some(Box::new(AssertingBinaryDocValues::new(
+                    dv,
+                    self.max_doc(),
+                )?)))
+            }
+            None => {
+                java_assert!(fi
+                    .as_ref()
+                    .is_none_or(|fi| fi.get_doc_values_type() != DocValuesType::BINARY));
+                Ok(None)
+            }
+        }
+    }
+
+    fn get_sorted_doc_values(&self, field: &str) -> Result<Option<Box<dyn SortedDocValues>>> {
+        self.core.ensure_open()?;
+        let dv = self.r#in.get_sorted_doc_values(field)?;
+        let fi = self.field_info(field);
+        match dv {
+            Some(dv) => {
+                java_assert!(fi.is_some());
+                java_assert!(fi.as_ref().unwrap().get_doc_values_type() == DocValuesType::SORTED);
+                Ok(Some(Box::new(AssertingSortedDocValues::new(
+                    dv,
+                    self.max_doc(),
+                )?)))
+            }
+            None => {
+                java_assert!(fi
+                    .as_ref()
+                    .is_none_or(|fi| fi.get_doc_values_type() != DocValuesType::SORTED));
+                Ok(None)
+            }
+        }
+    }
+
+    fn get_sorted_numeric_doc_values(
+        &self,
+        field: &str,
+    ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+        let fi = self.field_info(field);
+        self.core.ensure_open()?;
+        let dv = self.r#in.get_sorted_numeric_doc_values(field)?;
+        match dv {
+            Some(dv) => {
+                java_assert!(fi.is_some());
+                java_assert!(
+                    fi.as_ref().unwrap().get_doc_values_type() == DocValuesType::SORTED_NUMERIC
+                );
+                Ok(Some(AssertingSortedNumericDocValues::create(
+                    dv,
+                    self.max_doc(),
+                )?))
+            }
+            None => {
+                java_assert!(fi
+                    .as_ref()
+                    .is_none_or(|fi| fi.get_doc_values_type() != DocValuesType::SORTED_NUMERIC));
+                Ok(None)
+            }
+        }
+    }
+
+    /// Java wraps with the private constructor, not `create`
+    /// (`AssertingLeafReader.java:1796-1808`): a singleton is wrapped as is.
+    fn get_sorted_set_doc_values(
+        &self,
+        field: &str,
+    ) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+        self.core.ensure_open()?;
+        let dv = self.r#in.get_sorted_set_doc_values(field)?;
+        let fi = self.field_info(field);
+        match dv {
+            Some(dv) => {
+                java_assert!(fi.is_some());
+                java_assert!(
+                    fi.as_ref().unwrap().get_doc_values_type() == DocValuesType::SORTED_SET
+                );
+                Ok(Some(Box::new(AssertingSortedSetDocValues::new(
+                    dv,
+                    self.max_doc(),
+                )?)))
+            }
+            None => {
+                java_assert!(fi
+                    .as_ref()
+                    .is_none_or(|fi| fi.get_doc_values_type() != DocValuesType::SORTED_SET));
+                Ok(None)
+            }
+        }
+    }
+
+    /// Java's `assert fi.docValuesSkipIndexType() != NONE` dereferences `fi`
+    /// without a null check: under `-ea`, a skipper for a field the infos do
+    /// not know throws the `NullPointerException`.
+    fn get_doc_values_skipper(&self, field: &str) -> Result<Option<Box<dyn DocValuesSkipper>>> {
+        self.core.ensure_open()?;
+        let skipper = self.r#in.get_doc_values_skipper(field)?;
+        let fi = self.field_info(field);
+        match skipper {
+            Some(skipper) => {
+                if cfg!(debug_assertions) {
+                    let Some(fi) = fi.as_ref() else {
+                        return Err(npe());
+                    };
+                    java_assert!(fi.doc_values_skip_index_type() != DocValuesSkipIndexType::NONE);
+                }
+                Ok(Some(Box::new(AssertingDocValuesSkipper::new(skipper)?)))
+            }
+            None => {
+                java_assert!(fi.as_ref().is_none_or(
+                    |fi| fi.doc_values_skip_index_type() == DocValuesSkipIndexType::NONE
+                ));
+                Ok(None)
+            }
+        }
+    }
+
+    fn get_norm_values(&self, field: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
+        self.core.ensure_open()?;
+        let dv = self.r#in.get_norm_values(field)?;
+        let fi = self.field_info(field);
+        match dv {
+            Some(dv) => {
+                java_assert!(fi.is_some());
+                java_assert!(fi.as_ref().unwrap().has_norms());
+                Ok(Some(Box::new(AssertingNumericDocValues::new(
+                    dv,
+                    self.max_doc(),
+                )?)))
+            }
+            None => {
+                java_assert!(fi.as_ref().is_none_or(|fi| !fi.has_norms()));
+                Ok(None)
+            }
+        }
+    }
+
+    fn get_point_values(&self, field: &str) -> Result<Option<Box<dyn PointValues>>> {
+        match self.r#in.get_point_values(field)? {
+            None => Ok(None),
+            Some(values) => Ok(Some(Box::new(AssertingPointValues::new(
+                values,
+                self.max_doc(),
+            )?))),
+        }
+    }
+
+    /// `liveDocs instanceof LiveDocs` is asked of the wrapped reader's bits
+    /// with [`Bits::into_live_docs`], which consumes them; when they are not a
+    /// [`LiveDocs`], the plain bits are asked for again (a getter without side
+    /// effects) and wrapped in an [`AssertingBits`].
+    fn get_live_docs(&self) -> Option<Box<dyn Bits>> {
+        crate::index::ensure_open_unchecked(&self.core);
+        match self.r#in.get_live_docs() {
+            Some(live_docs) => {
+                java_assert_unchecked!(self.max_doc() as usize == live_docs.length());
+                match live_docs.into_live_docs() {
+                    Some(live_docs) => Some(Box::new(AssertingLiveDocs::new(live_docs))),
+                    None => self
+                        .r#in
+                        .get_live_docs()
+                        .map(|bits| Box::new(AssertingBits::new(bits)) as Box<dyn Bits>),
+                }
+            }
+            None => {
+                java_assert_unchecked!(self.max_doc() == self.num_docs());
+                java_assert_unchecked!(!Arc::clone(&self.r#in).as_index_reader().has_deletions());
+                None
+            }
+        }
+    }
+
+    fn search_nearest_vectors(
+        &self,
+        field: &str,
+        target: &[f32],
+        collector: &mut dyn KnnCollector,
+        accept_docs: &mut dyn AcceptDocs,
+    ) -> Result<()> {
+        let mut accept_docs = AssertingAcceptDocs::wrap(accept_docs);
+        self.r#in
+            .search_nearest_vectors(field, target, collector, &mut accept_docs)
+    }
+
+    fn search_nearest_vectors_byte(
+        &self,
+        field: &str,
+        target: &[u8],
+        collector: &mut dyn KnnCollector,
+        accept_docs: &mut dyn AcceptDocs,
+    ) -> Result<()> {
+        let mut accept_docs = AssertingAcceptDocs::wrap(accept_docs);
+        self.r#in
+            .search_nearest_vectors_byte(field, target, collector, &mut accept_docs)
+    }
+
+    // we don't change behavior of the reader: just validate the API.
+
+    fn get_core_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
+        self.r#in.get_core_cache_helper()
+    }
+
+    fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
+        self.r#in.get_reader_cache_helper()
+    }
+}
+
+// =============================================================================
+// AssertingStoredFields
+// =============================================================================
+
+/// Port of `AssertingLeafReader.AssertingStoredFields`: wraps a
+/// [`StoredFields`] but with additional asserts (the consuming thread).
+pub struct AssertingStoredFields {
+    r#in: Box<dyn StoredFields>,
+    creation_thread: Thread,
+}
+
+impl AssertingStoredFields {
+    /// `new AssertingStoredFields(in)`.
+    pub fn new(r#in: Box<dyn StoredFields>) -> Self {
+        AssertingStoredFields {
+            r#in,
+            creation_thread: Thread::current(),
+        }
+    }
+}
+
+impl fmt::Debug for AssertingStoredFields {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AssertingStoredFields")
+            .field("in", &self.r#in)
+            .finish_non_exhaustive()
+    }
+}
+
+impl StoredFields for AssertingStoredFields {
+    fn prefetch(&mut self, doc_id: i32) -> Result<()> {
+        assert_thread("StoredFields", &self.creation_thread)?;
+        self.r#in.prefetch(doc_id)
+    }
+
+    fn document_with_visitor(
+        &self,
+        doc_id: i32,
+        visitor: &mut dyn StoredFieldVisitor,
+    ) -> Result<()> {
+        assert_thread("StoredFields", &self.creation_thread)?;
+        self.r#in.document_with_visitor(doc_id, visitor)
+    }
+}
+
+// =============================================================================
+// AssertingTermVectors
+// =============================================================================
+
+/// Port of `AssertingLeafReader.AssertingTermVectors`: wraps a
+/// [`TermVectors`] but with additional asserts (the consuming thread), and
+/// wraps the [`Fields`] it returns in an [`AssertingFields`].
+pub struct AssertingTermVectors {
+    r#in: Box<dyn TermVectors>,
+    creation_thread: Thread,
+}
+
+impl AssertingTermVectors {
+    /// `new AssertingTermVectors(in)`.
+    pub fn new(r#in: Box<dyn TermVectors>) -> Self {
+        AssertingTermVectors {
+            r#in,
+            creation_thread: Thread::current(),
+        }
+    }
+}
+
+impl fmt::Debug for AssertingTermVectors {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AssertingTermVectors")
+            .field("in", &self.r#in)
+            .finish_non_exhaustive()
+    }
+}
+
+impl TermVectors for AssertingTermVectors {
+    fn prefetch(&mut self, doc_id: i32) -> Result<()> {
+        assert_thread("TermVectors", &self.creation_thread)?;
+        self.r#in.prefetch(doc_id)
+    }
+
+    fn get(&self, doc: i32) -> Result<Option<Box<dyn Fields>>> {
+        assert_thread("TermVectors", &self.creation_thread)?;
+        Ok(self
+            .r#in
+            .get(doc)?
+            .map(|fields| Box::new(AssertingFields::new(fields)) as Box<dyn Fields>))
+    }
+}
+
+// =============================================================================
+// AssertingBits / AssertingLiveDocs
+// =============================================================================
+
+/// Port of `AssertingLeafReader.AssertingBits`: wraps a [`Bits`] but with
+/// additional asserts (the consuming thread, and an index in range).
+pub struct AssertingBits {
+    creation_thread: Thread,
+    r#in: Box<dyn Bits>,
+}
+
+impl AssertingBits {
+    /// `new AssertingBits(in)`.
+    pub fn new(r#in: Box<dyn Bits>) -> Self {
+        AssertingBits {
+            creation_thread: Thread::current(),
+            r#in,
+        }
+    }
+}
+
+impl fmt::Debug for AssertingBits {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AssertingBits")
+            .field("in", &self.r#in)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Bits for AssertingBits {
+    /// Java's `assert index >= 0 && index < length()`: an `index` is never
+    /// negative in this port's `usize` signature.
+    fn get(&self, index: usize) -> bool {
+        assert_thread_unchecked("Bits", &self.creation_thread);
+        java_assert_unchecked!(index < self.length());
+        self.r#in.get(index)
+    }
+
+    fn length(&self) -> usize {
+        assert_thread_unchecked("Bits", &self.creation_thread);
+        self.r#in.length()
+    }
+}
+
+/// Port of `AssertingLeafReader.AssertingLiveDocs` (`extends AssertingBits
+/// implements LiveDocs`): the [`AssertingBits`] of a [`LiveDocs`], which also
+/// checks the deleted count.
+struct AssertingLiveDocs {
+    creation_thread: Thread,
+    live_docs: Box<dyn LiveDocs>,
+}
+
+impl AssertingLiveDocs {
+    fn new(live_docs: Box<dyn LiveDocs>) -> Self {
+        AssertingLiveDocs {
+            creation_thread: Thread::current(),
+            live_docs,
+        }
+    }
+}
+
+impl fmt::Debug for AssertingLiveDocs {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AssertingLiveDocs")
+            .field("in", &self.live_docs)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Bits for AssertingLiveDocs {
+    /// `AssertingBits.get(index)`.
+    fn get(&self, index: usize) -> bool {
+        assert_thread_unchecked("Bits", &self.creation_thread);
+        java_assert_unchecked!(index < self.length());
+        self.live_docs.get(index)
+    }
+
+    /// `AssertingBits.length()`.
+    fn length(&self) -> usize {
+        assert_thread_unchecked("Bits", &self.creation_thread);
+        self.live_docs.length()
+    }
+
+    /// This object is a `LiveDocs`: Java's `instanceof LiveDocs` on it is
+    /// `true`.
+    fn into_live_docs(self: Box<Self>) -> Option<Box<dyn LiveDocs>> {
+        Some(self)
+    }
+}
+
+impl LiveDocs for AssertingLiveDocs {
+    fn deleted_count(&self) -> i32 {
+        let count = self.live_docs.deleted_count();
+        java_assert_unchecked!(count >= 0);
+        java_assert_unchecked!(count as usize <= self.length());
+        count
+    }
+
+    fn live_docs_iterator(&self) -> Result<Box<dyn DocIdSetIterator>> {
+        self.live_docs.live_docs_iterator()
+    }
+
+    fn deleted_docs_iterator(&self) -> Result<Box<dyn DocIdSetIterator>> {
+        self.live_docs.deleted_docs_iterator()
     }
 }

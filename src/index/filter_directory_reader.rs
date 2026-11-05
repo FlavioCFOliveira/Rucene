@@ -206,7 +206,8 @@ struct SharedCacheKeyCell {
 }
 
 impl SharedCacheKey {
-    fn new() -> Self {
+    /// A new key, distinct from every other live key.
+    pub(crate) fn new() -> Self {
         Self(Arc::new(SharedCacheKeyCell {
             key: CacheKey,
             _non_empty: 0,

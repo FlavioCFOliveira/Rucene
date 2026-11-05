@@ -1041,7 +1041,7 @@ pub fn dump(path: &Path) -> Vec<String> {
     )];
     for ctx in Arc::clone(&reader).leaves().unwrap() {
         let leaf = ctx.leaf_reader();
-        dump_leaf(ctx.ord(), leaf.as_ref(), &mut out);
+        dump_leaf(ctx.ord(), leaf.as_ref(), &mut out).unwrap();
     }
     let searcher = rucene::search::IndexSearcher::new(Arc::clone(&reader)).unwrap();
     let merged = rucene::index::FieldInfos::get_merged_field_infos(Arc::clone(&reader)).unwrap();
@@ -1059,21 +1059,36 @@ pub fn dump(path: &Path) -> Vec<String> {
     out
 }
 
-pub fn positions(pe: &mut dyn PostingsEnum, sb: &mut String) {
-    let freq = pe.freq().unwrap();
+/// The `NullPointerException` Java throws where the dump dereferences a
+/// `null` the Rust signature returns as `None`.
+pub fn null_value() -> rucene::error::LuceneError {
+    rucene::error::LuceneError::Unchecked {
+        class: "java.lang.NullPointerException",
+        message: None,
+        cause: None,
+    }
+}
+
+pub fn positions(pe: &mut dyn PostingsEnum, sb: &mut String) -> rucene::error::Result<()> {
+    let freq = pe.freq()?;
     sb.push_str(&format!("f={freq}"));
     for _ in 0..freq {
-        let pos = pe.next_position().unwrap();
+        let pos = pe.next_position()?;
         sb.push_str(&format!(
             " [{pos},{},{},{}]",
             pe.start_offset(),
             pe.end_offset(),
-            opt_hex(pe.get_payload().unwrap())
+            opt_hex(pe.get_payload()?)
         ));
     }
+    Ok(())
 }
 
-pub fn dump_leaf(ord: i32, leaf: &dyn LeafReader, out: &mut Vec<String>) {
+pub fn dump_leaf(
+    ord: i32,
+    leaf: &dyn LeafReader,
+    out: &mut Vec<String>,
+) -> rucene::error::Result<()> {
     let codec = leaf
         .as_segment_reader()
         .and_then(|s| s.get_segment_info().info.codec())
@@ -1120,143 +1135,144 @@ pub fn dump_leaf(ord: i32, leaf: &dyn LeafReader, out: &mut Vec<String>) {
     }
     for fi in &fis {
         if fi.get_index_options() != IndexOptions::NONE {
-            dump_terms(leaf, fi, out);
+            dump_terms(leaf, fi, out)?;
         }
     }
     for fi in &fis {
         if fi.has_norms() {
             let mut sb = format!(" norms {}", fi.name);
-            match leaf.get_norm_values(&fi.name).unwrap() {
+            match leaf.get_norm_values(&fi.name)? {
                 None => sb.push_str(" null"),
                 Some(mut norms) => {
-                    let mut d = norms.next_doc().unwrap();
+                    let mut d = norms.next_doc()?;
                     while d != NO_MORE_DOCS {
-                        sb.push_str(&format!(" {d}={}", norms.long_value().unwrap()));
-                        d = norms.next_doc().unwrap();
+                        sb.push_str(&format!(" {d}={}", norms.long_value()?));
+                        d = norms.next_doc()?;
                     }
                 }
             }
             out.push(sb);
         }
     }
-    let stored = leaf.stored_fields().unwrap();
+    let stored = leaf.stored_fields()?;
     for doc in 0..leaf.max_doc() {
         let mut visitor = DumpVisitor {
             sb: format!(" stored doc={doc}"),
         };
-        stored.document_with_visitor(doc, &mut visitor).unwrap();
+        stored.document_with_visitor(doc, &mut visitor)?;
         out.push(visitor.sb);
     }
-    let tvs = leaf.term_vectors().unwrap();
+    let tvs = leaf.term_vectors()?;
     for doc in 0..leaf.max_doc() {
-        if let Some(fields) = tvs.get(doc).unwrap() {
+        if let Some(fields) = tvs.get(doc)? {
             out.push(format!(" tv doc={doc} size={}", fields.size()));
             let names: Vec<String> = fields.iterator().collect();
             for field in names {
-                let terms = fields.terms(&field).unwrap().unwrap();
+                let terms = fields.terms(&field)?.ok_or_else(null_value)?;
                 out.push(format!(
                     "  tvf {field} size={} sumTTF={} sumDF={} docCount={} pos={} off={} pay={}",
-                    terms.size().unwrap(),
-                    terms.sum_total_term_freq().unwrap(),
-                    terms.sum_doc_freq().unwrap(),
-                    terms.doc_count().unwrap(),
+                    terms.size()?,
+                    terms.sum_total_term_freq()?,
+                    terms.sum_doc_freq()?,
+                    terms.doc_count()?,
                     terms.has_positions(),
                     terms.has_offsets(),
                     terms.has_payloads()
                 ));
-                let mut te = terms.iterator().unwrap();
-                while let Some(t) = te.next().unwrap() {
-                    let mut sb = format!(
-                        "   t {} ttf={} ",
-                        hex(t.slice()),
-                        te.total_term_freq().unwrap()
-                    );
-                    let mut pe = te.postings(None, POSTINGS_ENUM_ALL).unwrap();
-                    pe.next_doc().unwrap();
-                    positions(pe.as_mut(), &mut sb);
+                let mut te = terms.iterator()?;
+                while let Some(t) = te.next()? {
+                    let mut sb = format!("   t {} ttf={} ", hex(t.slice()), te.total_term_freq()?);
+                    let mut pe = te.postings(None, POSTINGS_ENUM_ALL)?;
+                    pe.next_doc()?;
+                    positions(pe.as_mut(), &mut sb)?;
                     out.push(sb);
                 }
             }
         }
     }
     for fi in &fis {
-        dump_doc_values(leaf, fi, out);
+        dump_doc_values(leaf, fi, out)?;
     }
     for fi in &fis {
         if fi.get_point_dimension_count() > 0 {
-            dump_points(leaf, fi, out);
+            dump_points(leaf, fi, out)?;
         }
     }
     for fi in &fis {
         if fi.get_vector_dimension() > 0 {
-            dump_vectors(leaf, fi, out);
+            dump_vectors(leaf, fi, out)?;
         }
     }
+    Ok(())
 }
 
-pub fn dump_terms(leaf: &dyn LeafReader, fi: &FieldInfo, out: &mut Vec<String>) {
-    let Some(terms) = leaf.terms(&fi.name).unwrap() else {
+pub fn dump_terms(
+    leaf: &dyn LeafReader,
+    fi: &FieldInfo,
+    out: &mut Vec<String>,
+) -> rucene::error::Result<()> {
+    let Some(terms) = leaf.terms(&fi.name)? else {
         out.push(format!(" terms {} null", fi.name));
-        return;
+        return Ok(());
     };
     out.push(format!(
         " terms {} size={} sumTTF={} sumDF={} docCount={} freqs={} pos={} off={} pay={}",
         fi.name,
-        terms.size().unwrap(),
-        terms.sum_total_term_freq().unwrap(),
-        terms.sum_doc_freq().unwrap(),
-        terms.doc_count().unwrap(),
+        terms.size()?,
+        terms.sum_total_term_freq()?,
+        terms.sum_doc_freq()?,
+        terms.doc_count()?,
         terms.has_freqs(),
         terms.has_positions(),
         terms.has_offsets(),
         terms.has_payloads()
     ));
-    let mut te = terms.iterator().unwrap();
+    let mut te = terms.iterator()?;
     let mut all = Vec::new();
-    while let Some(t) = te.next().unwrap() {
+    while let Some(t) = te.next()? {
         all.push(t.slice().to_vec());
         out.push(format!(
             "  t {} df={} ttf={}",
             hex(t.slice()),
-            te.doc_freq().unwrap(),
-            te.total_term_freq().unwrap()
+            te.doc_freq()?,
+            te.total_term_freq()?
         ));
-        let mut pe = te.postings(None, POSTINGS_ENUM_ALL).unwrap();
-        let mut d = pe.next_doc().unwrap();
+        let mut pe = te.postings(None, POSTINGS_ENUM_ALL)?;
+        let mut d = pe.next_doc()?;
         while d != NO_MORE_DOCS {
             let mut sb = format!("   d={d} ");
-            positions(pe.as_mut(), &mut sb);
+            positions(pe.as_mut(), &mut sb)?;
             out.push(sb);
-            d = pe.next_doc().unwrap();
+            d = pe.next_doc()?;
         }
-        let mut docs = te.postings(None, POSTINGS_ENUM_NONE).unwrap();
+        let mut docs = te.postings(None, POSTINGS_ENUM_NONE)?;
         let mut sb = "   docs".to_string();
-        let mut d = docs.next_doc().unwrap();
+        let mut d = docs.next_doc()?;
         while d != NO_MORE_DOCS {
-            sb.push_str(&format!(" {d}:{}", docs.freq().unwrap()));
-            d = docs.next_doc().unwrap();
+            sb.push_str(&format!(" {d}:{}", docs.freq()?));
+            d = docs.next_doc()?;
         }
         out.push(sb);
-        if te.doc_freq().unwrap() > 8 {
-            let mut adv = te.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        if te.doc_freq()? > 8 {
+            let mut adv = te.postings(None, POSTINGS_ENUM_FREQS)?;
             let mut a = "   adv".to_string();
             let mut doc = -1;
             for target in ADVANCE_TARGETS {
                 if target > doc {
-                    doc = adv.advance(target).unwrap();
+                    doc = adv.advance(target)?;
                     a.push_str(&format!(" {target}->{doc}"));
                     if doc == NO_MORE_DOCS {
                         break;
                     }
-                    a.push_str(&format!(":{}", adv.freq().unwrap()));
+                    a.push_str(&format!(":{}", adv.freq()?));
                 }
             }
             out.push(a);
-            let mut ie = te.impacts(POSTINGS_ENUM_FREQS).unwrap();
+            let mut ie = te.impacts(POSTINGS_ENUM_FREQS)?;
             let mut im = "   imp".to_string();
             for target in ADVANCE_TARGETS {
-                ie.advance_shallow(target).unwrap();
-                let impacts = ie.get_impacts().unwrap();
+                ie.advance_shallow(target)?;
+                let impacts = ie.get_impacts()?;
                 im.push_str(&format!(" @{target} levels={}", impacts.num_levels()));
                 for level in 0..impacts.num_levels() {
                     im.push_str(&format!(" L{level} upTo={}", impacts.doc_id_up_to(level)));
@@ -1266,7 +1282,7 @@ pub fn dump_terms(leaf: &dyn LeafReader, fi: &FieldInfo, out: &mut Vec<String>) 
                     }
                 }
                 if ie.doc_id() < target {
-                    ie.advance(target).unwrap();
+                    ie.advance(target)?;
                 }
                 if ie.doc_id() == NO_MORE_DOCS {
                     break;
@@ -1276,11 +1292,11 @@ pub fn dump_terms(leaf: &dyn LeafReader, fi: &FieldInfo, out: &mut Vec<String>) 
             // The `Impacts` `get_impacts` returns is a view of the enum: one
             // taken before the first `advance_shallow` reports the state each
             // later one leaves.
-            let mut held = te.impacts(POSTINGS_ENUM_FREQS).unwrap();
-            let view = held.get_impacts().unwrap();
+            let mut held = te.impacts(POSTINGS_ENUM_FREQS)?;
+            let view = held.get_impacts()?;
             let mut lv = "   live".to_string();
             for target in ADVANCE_TARGETS {
-                held.advance_shallow(target).unwrap();
+                held.advance_shallow(target)?;
                 lv.push_str(&format!(" @{target} levels={}", view.num_levels()));
                 for level in 0..view.num_levels() {
                     lv.push_str(&format!(" L{level} upTo={}", view.doc_id_up_to(level)));
@@ -1290,7 +1306,7 @@ pub fn dump_terms(leaf: &dyn LeafReader, fi: &FieldInfo, out: &mut Vec<String>) 
                     }
                 }
                 if held.doc_id() < target {
-                    held.advance(target).unwrap();
+                    held.advance(target)?;
                 }
                 if held.doc_id() == NO_MORE_DOCS {
                     break;
@@ -1307,30 +1323,31 @@ pub fn dump_terms(leaf: &dyn LeafReader, fi: &FieldInfo, out: &mut Vec<String>) 
         targets.push(past);
     }
     targets.push(vec![0xff, 0xff]);
-    let mut probe = terms.iterator().unwrap();
+    let mut probe = terms.iterator()?;
     let mut sb = "  seek".to_string();
     for target in &targets {
-        let status = probe.seek_ceil(&BytesRef::new(target.clone())).unwrap();
+        let status = probe.seek_ceil(&BytesRef::new(target.clone()))?;
         sb.push_str(&format!(" {}:{}", hex(target), enum_name(status)));
         if status != SeekStatus::END {
             sb.push_str(&format!(
                 ":{}:{}",
-                hex(probe.term().unwrap().slice()),
-                probe.doc_freq().unwrap()
+                hex(probe.term()?.slice()),
+                probe.doc_freq()?
             ));
         }
     }
     out.push(sb);
-    let mut exact = terms.iterator().unwrap();
+    let mut exact = terms.iterator()?;
     let mut ex = "  exact".to_string();
     for target in &targets {
-        let found = exact.seek_exact(&BytesRef::new(target.clone())).unwrap();
+        let found = exact.seek_exact(&BytesRef::new(target.clone()))?;
         ex.push_str(&format!(" {found}"));
         if found {
-            ex.push_str(&format!(":{}", exact.total_term_freq().unwrap()));
+            ex.push_str(&format!(":{}", exact.total_term_freq()?));
         }
     }
     out.push(ex);
+    Ok(())
 }
 
 pub struct DumpVisitor {
@@ -1380,89 +1397,91 @@ impl StoredFieldVisitor for DumpVisitor {
     }
 }
 
-pub fn dump_doc_values(leaf: &dyn LeafReader, fi: &FieldInfo, out: &mut Vec<String>) {
+pub fn dump_doc_values(
+    leaf: &dyn LeafReader,
+    fi: &FieldInfo,
+    out: &mut Vec<String>,
+) -> rucene::error::Result<()> {
     let name = &fi.name;
     match fi.get_doc_values_type() {
         DocValuesType::NONE => {}
         DocValuesType::NUMERIC => {
-            let mut v = leaf.get_numeric_doc_values(name).unwrap().unwrap();
+            let mut v = leaf.get_numeric_doc_values(name)?.ok_or_else(null_value)?;
             let mut sb = format!(" dv {name}");
-            let mut d = v.next_doc().unwrap();
+            let mut d = v.next_doc()?;
             while d != NO_MORE_DOCS {
-                sb.push_str(&format!(" {d}={}", v.long_value().unwrap()));
-                d = v.next_doc().unwrap();
+                sb.push_str(&format!(" {d}={}", v.long_value()?));
+                d = v.next_doc()?;
             }
             out.push(sb);
         }
         DocValuesType::BINARY => {
-            let mut v = leaf.get_binary_doc_values(name).unwrap().unwrap();
+            let mut v = leaf.get_binary_doc_values(name)?.ok_or_else(null_value)?;
             let mut sb = format!(" dv {name}");
-            let mut d = v.next_doc().unwrap();
+            let mut d = v.next_doc()?;
             while d != NO_MORE_DOCS {
-                sb.push_str(&format!(" {d}={}", hex(v.binary_value().unwrap().slice())));
-                d = v.next_doc().unwrap();
+                sb.push_str(&format!(" {d}={}", hex(v.binary_value()?.slice())));
+                d = v.next_doc()?;
             }
             out.push(sb);
         }
         DocValuesType::SORTED => {
-            let mut v = leaf.get_sorted_doc_values(name).unwrap().unwrap();
-            let count = v.get_value_count().unwrap();
+            let mut v = leaf.get_sorted_doc_values(name)?.ok_or_else(null_value)?;
+            let count = v.get_value_count()?;
             let mut sb = format!(" dv {name} count={count}");
             for ord in 0..count {
-                sb.push_str(&format!(
-                    " o{ord}={}",
-                    hex(v.lookup_ord(ord).unwrap().slice())
-                ));
+                sb.push_str(&format!(" o{ord}={}", hex(v.lookup_ord(ord)?.slice())));
             }
-            let mut d = v.next_doc().unwrap();
+            let mut d = v.next_doc()?;
             while d != NO_MORE_DOCS {
-                sb.push_str(&format!(" {d}={}", v.ord_value().unwrap()));
-                d = v.next_doc().unwrap();
+                sb.push_str(&format!(" {d}={}", v.ord_value()?));
+                d = v.next_doc()?;
             }
             out.push(sb);
         }
         DocValuesType::SORTED_NUMERIC => {
-            let mut v = leaf.get_sorted_numeric_doc_values(name).unwrap().unwrap();
+            let mut v = leaf
+                .get_sorted_numeric_doc_values(name)?
+                .ok_or_else(null_value)?;
             let mut sb = format!(" dv {name}");
-            let mut d = v.next_doc().unwrap();
+            let mut d = v.next_doc()?;
             while d != NO_MORE_DOCS {
                 sb.push_str(&format!(" {d}="));
-                for i in 0..v.doc_value_count().unwrap() {
+                for i in 0..v.doc_value_count()? {
                     if i > 0 {
                         sb.push(',');
                     }
-                    sb.push_str(&v.next_value().unwrap().to_string());
+                    sb.push_str(&v.next_value()?.to_string());
                 }
-                d = v.next_doc().unwrap();
+                d = v.next_doc()?;
             }
             out.push(sb);
         }
         DocValuesType::SORTED_SET => {
-            let mut v = leaf.get_sorted_set_doc_values(name).unwrap().unwrap();
-            let count = v.get_value_count().unwrap();
+            let mut v = leaf
+                .get_sorted_set_doc_values(name)?
+                .ok_or_else(null_value)?;
+            let count = v.get_value_count()?;
             let mut sb = format!(" dv {name} count={count}");
             for ord in 0..count {
-                sb.push_str(&format!(
-                    " o{ord}={}",
-                    hex(v.lookup_ord(ord).unwrap().slice())
-                ));
+                sb.push_str(&format!(" o{ord}={}", hex(v.lookup_ord(ord)?.slice())));
             }
-            let mut d = v.next_doc().unwrap();
+            let mut d = v.next_doc()?;
             while d != NO_MORE_DOCS {
                 sb.push_str(&format!(" {d}="));
-                for i in 0..v.doc_value_count().unwrap() {
+                for i in 0..v.doc_value_count()? {
                     if i > 0 {
                         sb.push(',');
                     }
-                    sb.push_str(&v.next_ord().unwrap().to_string());
+                    sb.push_str(&v.next_ord()?.to_string());
                 }
-                d = v.next_doc().unwrap();
+                d = v.next_doc()?;
             }
             out.push(sb);
         }
     }
     if fi.doc_values_skip_index_type() != DocValuesSkipIndexType::NONE {
-        let mut s = leaf.get_doc_values_skipper(name).unwrap().unwrap();
+        let mut s = leaf.get_doc_values_skipper(name)?.ok_or_else(null_value)?;
         let mut sb = format!(
             " skip {name} min={} max={} docCount={} maxValueCount={} levels={}",
             s.global_min_value(),
@@ -1473,7 +1492,7 @@ pub fn dump_doc_values(leaf: &dyn LeafReader, fi: &FieldInfo, out: &mut Vec<Stri
         );
         let mut target = 0;
         loop {
-            s.advance(target).unwrap();
+            s.advance(target)?;
             sb.push_str(&format!(
                 " [{},{},{},{},{}]",
                 s.min_doc_id(0),
@@ -1489,6 +1508,7 @@ pub fn dump_doc_values(leaf: &dyn LeafReader, fi: &FieldInfo, out: &mut Vec<Stri
         }
         out.push(sb);
     }
+    Ok(())
 }
 
 pub struct ValuesVisitor<'a> {
@@ -1530,114 +1550,114 @@ impl rucene::index::IntersectVisitor for IdsVisitor<'_> {
     }
 }
 
-pub fn dump_points(leaf: &dyn LeafReader, fi: &FieldInfo, out: &mut Vec<String>) {
-    let Some(pv) = leaf.get_point_values(&fi.name).unwrap() else {
+pub fn dump_points(
+    leaf: &dyn LeafReader,
+    fi: &FieldInfo,
+    out: &mut Vec<String>,
+) -> rucene::error::Result<()> {
+    let Some(pv) = leaf.get_point_values(&fi.name)? else {
         out.push(format!(" points {} null", fi.name));
-        return;
+        return Ok(());
     };
     out.push(format!(
         " points {} size={} docCount={} dims={},{},{} min={} max={} treeSize={}",
         fi.name,
-        pv.size().unwrap(),
-        pv.doc_count().unwrap(),
-        pv.num_dimensions().unwrap(),
-        pv.num_index_dimensions().unwrap(),
-        pv.bytes_per_dimension().unwrap(),
-        hex(&pv.min_packed_value().unwrap().unwrap()),
-        hex(&pv.max_packed_value().unwrap().unwrap()),
-        pv.point_tree().unwrap().size().unwrap()
+        pv.size()?,
+        pv.doc_count()?,
+        pv.num_dimensions()?,
+        pv.num_index_dimensions()?,
+        pv.bytes_per_dimension()?,
+        hex(&pv.min_packed_value()?.ok_or_else(null_value)?),
+        hex(&pv.max_packed_value()?.ok_or_else(null_value)?),
+        pv.point_tree()?.size()?
     ));
     let mut sb = "  pv".to_string();
-    pv.point_tree()
-        .unwrap()
-        .visit_doc_values(&mut ValuesVisitor { sb: &mut sb })
-        .unwrap();
+    pv.point_tree()?
+        .visit_doc_values(&mut ValuesVisitor { sb: &mut sb })?;
     out.push(sb);
     let mut ids = "  pids".to_string();
-    pv.point_tree()
-        .unwrap()
-        .visit_doc_ids(&mut IdsVisitor { sb: &mut ids })
-        .unwrap();
+    pv.point_tree()?
+        .visit_doc_ids(&mut IdsVisitor { sb: &mut ids })?;
     out.push(ids);
     let mut tree = "  tree".to_string();
-    let mut root = pv.point_tree().unwrap();
-    walk(root.as_mut(), &mut tree);
+    let mut root = pv.point_tree()?;
+    walk(root.as_mut(), &mut tree)?;
     out.push(tree);
-    out.push(format!(
-        "  clone size={}",
-        root.clone_tree().unwrap().size().unwrap()
-    ));
+    out.push(format!("  clone size={}", root.clone_tree()?.size()?));
+    Ok(())
 }
 
 /// `SimpleTextReadOracle.walk`: each node's bounds and size, then its
 /// children, in pre-order.
-pub fn walk(t: &mut dyn rucene::index::PointTree, sb: &mut String) {
+pub fn walk(t: &mut dyn rucene::index::PointTree, sb: &mut String) -> rucene::error::Result<()> {
     sb.push_str(&format!(
         " [{},{},{}",
-        hex(t.min_packed_value().unwrap()),
-        hex(t.max_packed_value().unwrap()),
-        t.size().unwrap()
+        hex(t.min_packed_value()?),
+        hex(t.max_packed_value()?),
+        t.size()?
     ));
-    if t.move_to_child().unwrap() {
+    if t.move_to_child()? {
         loop {
-            walk(t, sb);
-            if !t.move_to_sibling().unwrap() {
+            walk(t, sb)?;
+            if !t.move_to_sibling()? {
                 break;
             }
         }
-        t.move_to_parent().unwrap();
+        t.move_to_parent()?;
     }
     sb.push(']');
+    Ok(())
 }
 
-pub fn dump_vectors(leaf: &dyn LeafReader, fi: &FieldInfo, out: &mut Vec<String>) {
+pub fn dump_vectors(
+    leaf: &dyn LeafReader,
+    fi: &FieldInfo,
+    out: &mut Vec<String>,
+) -> rucene::error::Result<()> {
     let dim = fi.get_vector_dimension();
     let mut collector = TopKnnCollector::new(3, i64::from(i32::MAX));
-    let mut accept_docs =
-        BitsAcceptDocs::from_live_docs(leaf.get_live_docs(), leaf.max_doc()).unwrap();
+    let mut accept_docs = BitsAcceptDocs::from_live_docs(leaf.get_live_docs(), leaf.max_doc())?;
     let mut sb = format!(" vec {}", fi.name);
     if fi.get_vector_encoding() == VectorEncoding::FLOAT32 {
-        let Some(values) = leaf.get_float_vector_values(&fi.name).unwrap() else {
+        let Some(values) = leaf.get_float_vector_values(&fi.name)? else {
             out.push(format!(" vec {} null", fi.name));
-            return;
+            return Ok(());
         };
         sb.push_str(&format!(
             " size={} dim={}",
             values.size(),
             values.dimension()
         ));
-        let mut it = values.iterator().unwrap();
-        let mut d = it.next_doc().unwrap();
+        let mut it = values.iterator()?;
+        let mut d = it.next_doc()?;
         while d != NO_MORE_DOCS {
             sb.push_str(&format!(" {d}:"));
-            let v = values.vector_value(it.index()).unwrap();
+            let v = values.vector_value(it.index())?;
             let parts: Vec<String> = v.iter().map(|x| fbits(*x)).collect();
             sb.push_str(&parts.join(","));
-            d = it.next_doc().unwrap();
+            d = it.next_doc()?;
         }
         let target: Vec<f32> = (0..dim).map(|i| (i + 1) as f32 / 4.0).collect();
-        leaf.search_nearest_vectors(&fi.name, &target, &mut collector, &mut accept_docs)
-            .unwrap();
+        leaf.search_nearest_vectors(&fi.name, &target, &mut collector, &mut accept_docs)?;
     } else {
-        let Some(values) = leaf.get_byte_vector_values(&fi.name).unwrap() else {
+        let Some(values) = leaf.get_byte_vector_values(&fi.name)? else {
             out.push(format!(" vec {} null", fi.name));
-            return;
+            return Ok(());
         };
         sb.push_str(&format!(
             " size={} dim={}",
             values.size(),
             values.dimension()
         ));
-        let mut it = values.iterator().unwrap();
-        let mut d = it.next_doc().unwrap();
+        let mut it = values.iterator()?;
+        let mut d = it.next_doc()?;
         while d != NO_MORE_DOCS {
-            let v = values.vector_value(it.index()).unwrap();
+            let v = values.vector_value(it.index())?;
             sb.push_str(&format!(" {d}:{}", hex(&v)));
-            d = it.next_doc().unwrap();
+            d = it.next_doc()?;
         }
         let target: Vec<u8> = (0..dim).map(|i| (i * 3 - 2) as i8 as u8).collect();
-        leaf.search_nearest_vectors_byte(&fi.name, &target, &mut collector, &mut accept_docs)
-            .unwrap();
+        leaf.search_nearest_vectors_byte(&fi.name, &target, &mut collector, &mut accept_docs)?;
     }
     out.push(sb);
     let visited = collector.visited_count();
@@ -1647,6 +1667,7 @@ pub fn dump_vectors(leaf: &dyn LeafReader, fi: &FieldInfo, out: &mut Vec<String>
         knn.push_str(&format!(" {}:{}", sd.doc, fbits(sd.score)));
     }
     out.push(knn);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

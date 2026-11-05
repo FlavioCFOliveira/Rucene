@@ -11,8 +11,10 @@
 //! codecs of [`codecs`] (`asserting`, `cheapbastard`, `compressing`,
 //! `cranky`, `vector`), the helpers of [`util`] (`TestUtil`, `LineFileDocs`,
 //! `automaton::AutomatonTestUtil`, `fst::FSTTester`, `CloseableDirectory`,
-//! ...), and the members of other classes they call. The rest of the module
-//! is ported by later tasks.
+//! ...), the index readers and reader wrappers of [`index`] (`AssertingLeafReader`,
+//! `AssertingDirectoryReader`, `FieldFilterLeafReader`, the `Mismatched*` and
+//! `Merging*` wrappers, `PerThreadPKLookup`, ...), and the members of other
+//! classes they call. The rest of the module is ported by later tasks.
 
 /// Java's `assert condition [: message];` under `-ea` in a method that
 /// returns [`rucene::error::Result`]: a failed assertion returns

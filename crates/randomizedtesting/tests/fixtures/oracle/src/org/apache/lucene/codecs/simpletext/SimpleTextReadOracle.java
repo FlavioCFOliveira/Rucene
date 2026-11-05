@@ -123,11 +123,19 @@ public final class SimpleTextReadOracle {
   }
 
   static void dumpLeaf(LeafReaderContext ctx, List<String> out) throws IOException {
-    LeafReader leaf = ctx.reader();
-    String codec = ((SegmentReader) leaf).getSegmentInfo().info.getCodec().getName();
+    dumpLeaf(ctx.ord, ctx.reader(), out);
+  }
+
+  /**
+   * The dump of one leaf; a leaf that is not a {@code SegmentReader} (a wrapper, {@code
+   * IndexWrappersOracle}) prints {@code codec=null}.
+   */
+  public static void dumpLeaf(int leafOrd, LeafReader leaf, List<String> out) throws IOException {
+    String codec =
+        leaf instanceof SegmentReader sr ? sr.getSegmentInfo().info.getCodec().getName() : "null";
     out.add(
         "leaf ord="
-            + ctx.ord
+            + leafOrd
             + " maxDoc="
             + leaf.maxDoc()
             + " numDocs="

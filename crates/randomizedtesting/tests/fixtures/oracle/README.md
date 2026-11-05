@@ -127,3 +127,33 @@ write the fixtures (`../*.tsv`) the crate's parity tests (`src/tests/`) read.
   replays every scenario and compares the rows. The segment ids of
   the index and the corpus are random, so the three files change together on
   every run and must be copied together.
+* **The index readers and wrappers of `org.apache.lucene.tests.index` (rmp #344):**
+  `org.apache.lucene.tests.index.IndexWrappersOracle` (listed after
+  `MockDirectoryWrapperOracle`, whose `mdw_corpus.tsv` it reads from the
+  output directory; to run it alone, copy the committed
+  `crates/rucene-test-framework/tests/fixtures/mdw_corpus.tsv` there first)
+  writes `crates/rucene-test-framework/tests/fixtures/iw_wrappers.tsv`: per
+  corpus case (`nocfs`, `cfs`), scenario and step, `ok<TAB>value` or
+  `err<TAB>class<TAB>message` (identity hashes masked as `@HASH`, thread ids
+  as `#N`). Per leaf of each wrapper (`AssertingDirectoryReader`,
+  `AllDeletedFilterReader`, `FieldFilterLeafReader` with and without negation,
+  `MismatchedDirectoryReader`/`MismatchedLeafReader`/`MismatchedCodecReader`
+  for three seeds, `MergingDirectoryReaderWrapper`, `MergingCodecReader`,
+  `MergeReaderWrapper`): `toString()`, document counts, live docs (and whether
+  they are a `LiveDocs`), which accessors answer for a fixed set of fields, the
+  cache-helper identity relations, the field numbers the stored fields report,
+  and the digest (`OracleSupport.Rec`'s line digest and the line count) of
+  `SimpleTextReadOracle.dumpLeaf` (public, with a `codec=null` line for a leaf
+  that is not a `SegmentReader`) through the wrapper, its `   live` impact lines
+  digested apart, with the dump's `leaf`/`live`/`fi` lines in full. It also
+  records `MismatchedLeafReader.shuffleInfos` for every seed of the grid and the
+  `nextLong()` each `Mismatched*` wrapper leaves; `PerThreadPKLookup` lookups,
+  `reopen` and two segments holding the same ids (`pkdup`);
+  `OwnCacheKeyMultiReader`'s key and listeners; the class each directory
+  wrapper's reopen returns; each wrapper's life cycle (the wrapped reader
+  closed, the wrapper closed); the misuse of the asserting views; and
+  `PointsStackTracker` fed by the `compare` calls of an intersection over an
+  index of 5000 points (`points`). The Rust side is
+  `crates/rucene-test-framework/tests/index_wrappers_oracle.rs`, which replays
+  every scenario and compares the rows, except those its `DECLARED` list names
+  with their reason; `IW_DUMP_DIR=<dir>` makes it write each dump in full.
