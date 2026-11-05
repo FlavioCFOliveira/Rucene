@@ -178,7 +178,7 @@ fn commits(case: &str, config: IndexWriterConfig, count: i32) -> String {
 /// `WriterMergeTriggersFixture`'s `commit-merge` configuration.
 fn commit_merge_config(max_full_flush_merge_wait_millis: Option<i64>) -> IndexWriterConfig {
     let mut config = IndexWriterConfig::new();
-    let mut policy = LogMergePolicy::by_doc_count();
+    let policy = LogMergePolicy::by_doc_count();
     policy.set_merge_factor(2).unwrap();
     config.set_merge_policy(Arc::new(policy)).unwrap();
     config
@@ -309,7 +309,7 @@ fn a_forced_merge_cascades_under_the_concurrent_scheduler_as_lucene_does() {
     std::thread::spawn(move || {
         ensure_codec();
         let mut config = IndexWriterConfig::new();
-        let mut policy = LogMergePolicy::by_doc_count();
+        let policy = LogMergePolicy::by_doc_count();
         policy.set_merge_factor(2).unwrap();
         config.set_merge_policy(Arc::new(policy)).unwrap();
         let _ = tx.send(forced_merge_cascade(config));
@@ -471,7 +471,7 @@ fn segments_flushed_by_add_document_are_published_and_merged_as_lucene_does() {
 /// `WriterMergeTriggersFixture.logMerge`: segments of `sizes` documents written
 /// without merging, then one `maybeMerge` with a `LogDocMergePolicy`.
 fn log_merge(case: &str, merge_factor: i32, sizes: &[i32]) -> String {
-    let mut policy = LogMergePolicy::by_doc_count();
+    let policy = LogMergePolicy::by_doc_count();
     policy.set_merge_factor(merge_factor).unwrap();
     log_merge_with(case, policy, sizes)
 }

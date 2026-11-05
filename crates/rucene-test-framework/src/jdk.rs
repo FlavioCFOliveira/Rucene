@@ -7,6 +7,7 @@
 //! against a JDK 25 oracle (`tests/fixtures/`). Each states at its point what
 //! the JDK does and where the emulation differs.
 
+pub mod executor_service;
 pub mod gzip;
 pub mod locale;
 pub mod stack_walker;

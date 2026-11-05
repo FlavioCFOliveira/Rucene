@@ -1,6 +1,8 @@
-//! The part of Hamcrest 2.2 (`org.hamcrest`) `LuceneTestCase.assertThat`
-//! uses: [`Matcher`], [`Description`], `MatcherAssert.assertThat` and the core
-//! `equalTo` and `is` matchers.
+//! The part of Hamcrest 2.2 (`org.hamcrest`) `LuceneTestCase.assertThat` and
+//! `TestUtil.assertConsistent` use: [`Matcher`], [`Description`],
+//! `MatcherAssert.assertThat`, the core `equalTo`, `is`, `not` and
+//! `instanceOf` matchers, `OrderingComparison`'s `lessThanOrEqualTo` and
+//! `greaterThanOrEqualTo`, and `IsArrayWithSize.arrayWithSize`.
 //!
 //! **Divergence.** Hamcrest is a third-party Java library (BSD-3-Clause); the
 //! port adds no dependency, so this module reproduces the behaviour the test
@@ -199,6 +201,191 @@ impl<T: ?Sized, M: Matcher<T>> Matcher<T> for Is<M> {
 
     fn describe_mismatch(&self, item: &T, description: &mut Description) {
         self.matcher.describe_mismatch(item, description);
+    }
+}
+
+/// `org.hamcrest.core.IsNot`: `not(matcher)`, the logical negation of
+/// another matcher.
+pub struct IsNot<M> {
+    matcher: M,
+}
+
+/// `CoreMatchers.not(matcher)`.
+pub fn not<M>(matcher: M) -> IsNot<M> {
+    IsNot { matcher }
+}
+
+impl<T: HamcrestValue, M: Matcher<T>> Matcher<T> for IsNot<M> {
+    fn matches(&self, item: &T) -> bool {
+        !self.matcher.matches(item)
+    }
+
+    /// `"not "` and the negated matcher's description.
+    fn describe_to(&self, description: &mut Description) {
+        description.append_text("not ");
+        self.matcher.describe_to(description);
+    }
+
+    /// `BaseMatcher.describeMismatch`: `was ` and the value (`IsNot` does not
+    /// override it).
+    fn describe_mismatch(&self, item: &T, description: &mut Description) {
+        description.append_text("was ").append_value(item);
+    }
+}
+
+/// What `IsInstanceOf` asks of a value: its run-time class, as
+/// `getClass().getName()` reports it, and whether it is an instance of a
+/// class (`Class.isInstance`), which a Rust value answers for itself.
+pub trait JavaObject: HamcrestValue {
+    /// `getClass().getName()`.
+    fn java_class_name(&self) -> String;
+
+    /// `Class.forName(class_name).isInstance(this)`: `true` for the value's
+    /// own class and each of its superclasses and interfaces.
+    fn is_instance_of(&self, class_name: &str) -> bool;
+}
+
+/// `org.hamcrest.core.IsInstanceOf`: `instanceOf(type)`.
+pub struct IsInstanceOf {
+    expected_class: String,
+}
+
+/// `CoreMatchers.instanceOf(type)`, with the class given by its name
+/// (`Class.getName()`).
+pub fn instance_of(class_name: &str) -> IsInstanceOf {
+    IsInstanceOf {
+        expected_class: class_name.to_string(),
+    }
+}
+
+impl<T: JavaObject> Matcher<T> for IsInstanceOf {
+    fn matches(&self, item: &T) -> bool {
+        item.is_instance_of(&self.expected_class)
+    }
+
+    /// `"an instance of "` and the class name.
+    fn describe_to(&self, description: &mut Description) {
+        description
+            .append_text("an instance of ")
+            .append_text(&self.expected_class);
+    }
+
+    /// The value, `" is a "` and its class name (`IsInstanceOf.matches(Object,
+    /// Description)`; a `null` item, `"null"`, has no Rust counterpart).
+    fn describe_mismatch(&self, item: &T, description: &mut Description) {
+        description
+            .append_value(item)
+            .append_text(&format!(" is a {}", item.java_class_name()));
+    }
+}
+
+/// `org.hamcrest.number.OrderingComparison`: compares a value with an
+/// expected one, matching when `actual.compareTo(expected)` has a sign in
+/// `[min_compare, max_compare]`.
+pub struct OrderingComparison<T> {
+    expected: T,
+    min_compare: i32,
+    max_compare: i32,
+}
+
+/// `OrderingComparison.lessThanOrEqualTo(value)`.
+pub fn less_than_or_equal_to<T>(value: T) -> OrderingComparison<T> {
+    OrderingComparison {
+        expected: value,
+        min_compare: -1,
+        max_compare: 0,
+    }
+}
+
+/// `OrderingComparison.greaterThanOrEqualTo(value)`.
+pub fn greater_than_or_equal_to<T>(value: T) -> OrderingComparison<T> {
+    OrderingComparison {
+        expected: value,
+        min_compare: 0,
+        max_compare: 1,
+    }
+}
+
+/// `OrderingComparison.asText(comparison)`.
+fn comparison_text(comparison: i32) -> &'static str {
+    match comparison {
+        c if c < 0 => "less than",
+        0 => "equal to",
+        _ => "greater than",
+    }
+}
+
+impl<T: PartialOrd + HamcrestValue + Send + Sync> OrderingComparison<T> {
+    /// `signum(actual.compareTo(expected))`.
+    fn compare(&self, actual: &T) -> i32 {
+        match actual.partial_cmp(&self.expected) {
+            Some(std::cmp::Ordering::Less) => -1,
+            Some(std::cmp::Ordering::Equal) | None => 0,
+            Some(std::cmp::Ordering::Greater) => 1,
+        }
+    }
+}
+
+impl<T: PartialOrd + HamcrestValue + Send + Sync> Matcher<T> for OrderingComparison<T> {
+    fn matches(&self, item: &T) -> bool {
+        let c = self.compare(item);
+        self.min_compare <= c && c <= self.max_compare
+    }
+
+    /// `"a value "`, the comparison (`"equal to or "` between the two words
+    /// when the range covers 0 and one side) and the expected value.
+    fn describe_to(&self, description: &mut Description) {
+        description
+            .append_text("a value ")
+            .append_text(comparison_text(self.min_compare));
+        if self.min_compare != self.max_compare {
+            description
+                .append_text(" or ")
+                .append_text(comparison_text(self.max_compare));
+        }
+        description.append_text(" ").append_value(&self.expected);
+    }
+
+    /// The value, `" was "`, the comparison and the expected value.
+    fn describe_mismatch(&self, item: &T, description: &mut Description) {
+        description
+            .append_value(item)
+            .append_text(" was ")
+            .append_text(comparison_text(self.compare(item)))
+            .append_text(" ")
+            .append_value(&self.expected);
+    }
+}
+
+/// `org.hamcrest.collection.IsArrayWithSize`: `arrayWithSize(size)`, the
+/// `FeatureMatcher` of the array's length with `equalTo(size)`.
+pub struct IsArrayWithSize {
+    size: IsEqual<i32>,
+}
+
+/// `IsArrayWithSize.arrayWithSize(size)`.
+pub fn array_with_size(size: i32) -> IsArrayWithSize {
+    IsArrayWithSize {
+        size: equal_to(size),
+    }
+}
+
+impl<E> Matcher<[E]> for IsArrayWithSize {
+    fn matches(&self, item: &[E]) -> bool {
+        self.size.matches(&(item.len() as i32))
+    }
+
+    /// `"an array with size "` and the size matcher's description.
+    fn describe_to(&self, description: &mut Description) {
+        description.append_text("an array with size ");
+        self.size.describe_to(description);
+    }
+
+    /// `FeatureMatcher`: `"array size "` and the size matcher's mismatch.
+    fn describe_mismatch(&self, item: &[E], description: &mut Description) {
+        description.append_text("array size ");
+        self.size
+            .describe_mismatch(&(item.len() as i32), description);
     }
 }
 

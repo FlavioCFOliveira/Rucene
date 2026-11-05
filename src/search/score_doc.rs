@@ -64,10 +64,13 @@ impl fmt::Display for ScoreDoc {
     /// Renders the hit exactly as `ScoreDoc.toString()`, a convenience for
     /// debugging.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // `"score=" + score` is `Float.toString`, not Rust's shortest form.
         write!(
             f,
             "doc={} score={} shardIndex={}",
-            self.doc, self.score, self.shard_index
+            self.doc,
+            crate::util::java_fmt::float_to_string(self.score),
+            self.shard_index
         )
     }
 }

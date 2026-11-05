@@ -117,7 +117,7 @@ fn id_doc(id: i32) -> Document {
 }
 
 fn log_doc_policy(merge_factor: i32) -> Arc<LogMergePolicy> {
-    let mut policy = LogMergePolicy::by_doc_count();
+    let policy = LogMergePolicy::by_doc_count();
     policy.set_merge_factor(merge_factor).unwrap();
     Arc::new(policy)
 }
@@ -328,7 +328,7 @@ fn max_merge_count_stalls_the_producer() {
                 .set_merge_scheduler(Arc::clone(&cms) as Arc<dyn MergeScheduler>)
                 .unwrap();
             config.set_max_buffered_docs(2).unwrap();
-            let mut tmp = TieredMergePolicy::new();
+            let tmp = TieredMergePolicy::new();
             tmp.set_max_merge_at_once(2).unwrap();
             tmp.set_segments_per_tier(2.0).unwrap();
             config.set_merge_policy(Arc::new(tmp)).unwrap();

@@ -26,28 +26,57 @@
 //! pairs), so the port returns a Rust [`String`] holding the same code points,
 //! and counts every length the way Java does, in UTF-16 code units.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use randomizedtesting::generators::{RandomNumbers, RandomPicks};
+use randomizedtesting::jdk::exception::Throwable;
+use randomizedtesting::jdk::lang::double_to_string;
 use randomizedtesting::jdk::random::Random;
+use randomizedtesting::junit::Assert;
 use randomizedtesting::RandomizedTest;
 use rucene::analysis::factories::AbstractAnalysisFactory;
+use rucene::codecs::per_field::{PerFieldDocValuesFormat, PerFieldPostingsFormat};
+use rucene::document::{
+    BinaryDocValuesField, BinaryPoint, Document, Field, FieldType, IntField, KeywordField,
+    NumericDocValuesField, NumericValue, SortedDocValuesField, Store,
+};
 use rucene::error::{LuceneError, Result};
-use rucene::index::check_index::{CheckIndex, Level, Status};
+use rucene::index::check_index::{self, CheckIndex, Level, Status};
+use rucene::index::directory_reader::DirectoryReader;
+use rucene::index::filter_directory_reader::SlowCodecReaderWrapper;
 use rucene::index::index_file_names;
+use rucene::index::index_writer::IndexWriter;
+use rucene::index::merge_policy::{LogMergePolicy, TieredMergePolicy};
+use rucene::index::merge_scheduler::{ConcurrentMergeScheduler, MergeScheduler};
+use rucene::index::{CodecReader, DocValuesType, IndexableField, LeafReader};
 use rucene::index::{
     IndexReader, MultiTerms, PostingsEnum, TermsEnum, POSTINGS_ENUM_ALL, POSTINGS_ENUM_FREQS,
     POSTINGS_ENUM_OFFSETS, POSTINGS_ENUM_PAYLOADS, POSTINGS_ENUM_POSITIONS,
 };
+use rucene::search::{
+    FieldDoc, ScoreDoc, SortValue, TopDocs, TopFieldDocs, TotalHits, TotalHitsRelation,
+};
+use rucene::store::java_nio_file::{FileSystem, FileSystemProvider, Path};
+use rucene::store::FilterDirectory;
 use rucene::store::{
     ByteBuffersDirectory, Directory, LockFactory, NoLockFactory, DEFAULT_IO_CONTEXT,
 };
+use rucene::util::attribute::AttributeImpl;
 use rucene::util::automaton::case_folding;
+use rucene::util::java_collections::JavaHashMap;
 use rucene::util::BytesRef;
 use rucene_codecs::blocktreeords::BlockTreeOrdsPostingsFormat;
 
 use crate::codecs::asserting::AssertingCodec;
 use crate::codecs::blockterms::LuceneFixedGap;
+use crate::hamcrest::{
+    array_with_size, equal_to, greater_than_or_equal_to, instance_of, less_than_or_equal_to, not,
+    HamcrestValue, JavaObject, MatcherAssert,
+};
+use crate::jdk::executor_service::ExecutorService;
+use crate::mockfile::{FilterFileSystem, VirusCheckingFS, WindowsFS};
 use rucene::codecs::lucene99::hnsw_vectors_format::{
     DEFAULT_BEAM_WIDTH, DEFAULT_MAX_CONN, DEFAULT_NUM_MERGE_WORKER,
 };
@@ -1211,6 +1240,917 @@ impl TestUtil {
             pos = next;
         }
         Ok(())
+    }
+
+    /// `syncConcurrentMerges(writer)`: `syncConcurrentMerges` of the
+    /// writer's live merge scheduler.
+    pub fn sync_concurrent_merges_of_writer(writer: &IndexWriter) {
+        Self::sync_concurrent_merges(&*writer.get_config().merge_scheduler());
+    }
+
+    /// `syncConcurrentMerges(ms)`: waits for the running merges of `ms` when
+    /// it is a `ConcurrentMergeScheduler` (`ConcurrentMergeScheduler.sync()`).
+    pub fn sync_concurrent_merges(ms: &dyn MergeScheduler) {
+        if let Some(cms) = ms
+            .as_any()
+            .and_then(|any| any.downcast_ref::<ConcurrentMergeScheduler>())
+        {
+            cms.sync();
+        }
+    }
+
+    /// `checkReader(reader)`: [`check_leaf_reader`](Self::check_leaf_reader)
+    /// at `MIN_LEVEL_FOR_SLOW_CHECKS` on every leaf of `reader`.
+    ///
+    /// # Errors
+    ///
+    /// As [`check_leaf_reader`](Self::check_leaf_reader).
+    pub fn check_reader(reader: &Arc<dyn IndexReader>) -> Result<()> {
+        for context in Arc::clone(reader).leaves()? {
+            Self::check_leaf_reader(context.leaf_reader(), Level::MIN_LEVEL_FOR_SLOW_CHECKS)?;
+        }
+        Ok(())
+    }
+
+    /// `checkReader(reader, level)`: runs `CheckIndex`'s tests (live docs,
+    /// field infos, norms, postings, stored fields, term vectors, doc values,
+    /// points) with `failFast` on the reader — itself when it is a
+    /// `CodecReader` (after `checkIntegrity()`), else
+    /// `SlowCodecReaderWrapper.wrap(reader)` — then checks the reader API
+    /// (`checkReaderSanity`) and that `getFieldInfos()` returns the same
+    /// instance twice.
+    ///
+    /// **Divergence.** [`LeafReader::get_field_infos`] returns an owned
+    /// snapshot, so Java's identity check `reader.getFieldInfos() !=
+    /// reader.getFieldInfos()` compares what identifies the instance's
+    /// content: the two snapshots must hold the same `FieldInfo` objects
+    /// (pointer-equal), which a reader that rebuilds its field infos per
+    /// call does not. Its message names the reader by its `toString()`
+    /// where Java prints `getClass()`, which a trait object cannot name.
+    ///
+    /// # Errors
+    ///
+    /// The first error a `CheckIndex` test raises (`failFast`); a
+    /// `RuntimeException` when the reader API returns values a field does
+    /// not have, or different field infos.
+    pub fn check_leaf_reader(reader: Arc<dyn LeafReader>, level: i32) -> Result<()> {
+        let buffer = Arc::new(Mutex::new(Vec::with_capacity(1024)));
+        let info_stream = PrintStreamLines(Arc::clone(&buffer));
+
+        let codec_reader: Arc<dyn CodecReader> = match Arc::clone(&reader).as_codec_reader() {
+            Some(codec_reader) => {
+                reader.check_integrity()?;
+                codec_reader
+            }
+            None => SlowCodecReaderWrapper::wrap(Arc::clone(&reader))?,
+        };
+        let cr = &*codec_reader;
+        let stream = Some(&info_stream as &dyn rucene::util::InfoStream);
+        check_index::test_live_docs(cr, stream, true)?;
+        check_index::test_field_infos(cr, stream, true)?;
+        check_index::test_field_norms(cr, stream, true)?;
+        check_index::test_postings(cr, stream, false, level, true)?;
+        check_index::test_stored_fields(cr, stream, true)?;
+        check_index::test_term_vectors(cr, stream, false, level, true)?;
+        check_index::test_doc_values(cr, stream, true)?;
+        check_index::test_points(cr, stream, true)?;
+
+        // some checks really against the reader API
+        Self::check_reader_sanity(&*reader)?;
+
+        if *crate::util::lucene_test_case::INFOSTREAM {
+            let text = buffer.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            println!("{}", String::from_utf8_lossy(&text));
+        }
+
+        // FieldInfos should be cached at the reader and always return the same instance
+        let first = reader.get_field_infos();
+        let second = reader.get_field_infos();
+        let same = first.len() == second.len()
+            && first
+                .iter()
+                .zip(second.iter())
+                .all(|(a, b)| std::ptr::eq(a, b));
+        if !same {
+            return Err(runtime_exception(format!(
+                "getFieldInfos() returned different instances for class: {}",
+                reader_class_name(&*reader)
+            )));
+        }
+        Ok(())
+    }
+
+    /// `checkReaderSanity(reader)`: the reader returns no norms for a field
+    /// that omits them, no doc values for a field without them, and only the
+    /// doc values of the field's type.
+    fn check_reader_sanity(reader: &dyn LeafReader) -> Result<()> {
+        for info in reader.get_field_infos().iter() {
+            let name = info.name.as_str();
+            // reader shouldn't return normValues if the field does not have them
+            if !info.has_norms() && reader.get_norm_values(name)?.is_some() {
+                return Err(runtime_exception(format!(
+                    "field: {name} should omit norms but has them!"
+                )));
+            }
+
+            // reader shouldn't return docValues if the field does not have them
+            // reader shouldn't return multiple docvalues types for the same field.
+            let binary = || -> Result<bool> { Ok(reader.get_binary_doc_values(name)?.is_some()) };
+            let numeric = || -> Result<bool> { Ok(reader.get_numeric_doc_values(name)?.is_some()) };
+            let sorted = || -> Result<bool> { Ok(reader.get_sorted_doc_values(name)?.is_some()) };
+            let sorted_set =
+                || -> Result<bool> { Ok(reader.get_sorted_set_doc_values(name)?.is_some()) };
+            let sorted_numeric =
+                || -> Result<bool> { Ok(reader.get_sorted_numeric_doc_values(name)?.is_some()) };
+            // Java evaluates each `||` chain left to right and stops at the
+            // first non-null accessor; so does each chain here.
+            let multiple = match info.get_doc_values_type() {
+                DocValuesType::NONE => {
+                    if binary()? || numeric()? || sorted()? || sorted_set()? {
+                        return Err(runtime_exception(format!(
+                            "field: {name} has docvalues but should omit them!"
+                        )));
+                    }
+                    false
+                }
+                DocValuesType::SORTED => {
+                    binary()? || numeric()? || sorted_numeric()? || sorted_set()?
+                }
+                DocValuesType::SORTED_NUMERIC => {
+                    binary()? || numeric()? || sorted_set()? || sorted()?
+                }
+                DocValuesType::SORTED_SET => {
+                    binary()? || numeric()? || sorted_numeric()? || sorted()?
+                }
+                DocValuesType::BINARY => {
+                    numeric()? || sorted()? || sorted_numeric()? || sorted_set()?
+                }
+                DocValuesType::NUMERIC => {
+                    binary()? || sorted()? || sorted_numeric()? || sorted_set()?
+                }
+            };
+            if multiple {
+                return Err(runtime_exception(format!(
+                    "{name} returns multiple docvalues types!"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// `getPostingsFormat(field)`: [`get_postings_format_of`] the default
+    /// codec (`Codec.getDefault()`).
+    ///
+    /// # Panics
+    ///
+    /// When no default codec is registered, where Java's `Codec.getDefault()`
+    /// fails.
+    ///
+    /// [`get_postings_format_of`]: Self::get_postings_format_of
+    pub fn get_postings_format(field: &str) -> String {
+        Self::get_postings_format_of(&*default_codec(), field)
+    }
+
+    /// `getPostingsFormat(codec, field)`: the name of the postings format
+    /// `codec` writes `field` with — its `PerFieldPostingsFormat`'s
+    /// `getPostingsFormatForField(field)` when it has one, else its postings
+    /// format.
+    pub fn get_postings_format_of(codec: &dyn Codec, field: &str) -> String {
+        let p = codec.postings_format();
+        match p
+            .as_any()
+            .and_then(|any| any.downcast_ref::<PerFieldPostingsFormat>())
+        {
+            Some(per_field) => per_field
+                .get_postings_format_for_field(field)
+                .name()
+                .to_string(),
+            None => p.name().to_string(),
+        }
+    }
+
+    /// `getDocValuesFormat(field)`: [`get_doc_values_format_of`] the default
+    /// codec (`Codec.getDefault()`).
+    ///
+    /// # Panics
+    ///
+    /// When no default codec is registered, where Java's `Codec.getDefault()`
+    /// fails.
+    ///
+    /// [`get_doc_values_format_of`]: Self::get_doc_values_format_of
+    pub fn get_doc_values_format(field: &str) -> String {
+        Self::get_doc_values_format_of(&*default_codec(), field)
+    }
+
+    /// `getDocValuesFormat(codec, field)`: the name of the doc-values format
+    /// `codec` writes `field` with — its `PerFieldDocValuesFormat`'s
+    /// `getDocValuesFormatForField(field)` when it has one, else its
+    /// doc-values format.
+    pub fn get_doc_values_format_of(codec: &dyn Codec, field: &str) -> String {
+        let f = codec.doc_values_format();
+        match f
+            .as_any()
+            .and_then(|any| any.downcast_ref::<PerFieldDocValuesFormat>())
+        {
+            Some(per_field) => per_field
+                .get_doc_values_format_for_field(field)
+                .name()
+                .to_string(),
+            None => f.name().to_string(),
+        }
+    }
+
+    /// `fieldSupportsHugeBinaryDocValues(field)`: `false` for the
+    /// `Lucene40` and `Lucene42` doc-values formats of the default codec.
+    ///
+    /// # Panics
+    ///
+    /// As [`get_doc_values_format`](Self::get_doc_values_format).
+    // TODO: remove this, push this test to Lucene40/Lucene42 codec tests
+    pub fn field_supports_huge_binary_doc_values(field: &str) -> bool {
+        let dv_format = Self::get_doc_values_format(field);
+        !(dv_format == "Lucene40" || dv_format == "Lucene42")
+    }
+
+    /// `addIndexesSlowly(writer, readers...)`: adds every leaf of `readers`
+    /// to `writer` as a `SlowCodecReaderWrapper` (`addIndexes(CodecReader...)`).
+    ///
+    /// # Errors
+    ///
+    /// The errors of wrapping the leaves and of `addIndexes`.
+    pub fn add_indexes_slowly(
+        writer: &IndexWriter,
+        readers: &[Arc<dyn DirectoryReader>],
+    ) -> Result<()> {
+        let mut leaves: Vec<Arc<dyn CodecReader>> = Vec::new();
+        for reader in readers {
+            for context in Arc::clone(reader).leaves()? {
+                leaves.push(SlowCodecReaderWrapper::wrap(context.leaf_reader())?);
+            }
+        }
+        writer.add_indexes_codec_readers(&leaves)?;
+        Ok(())
+    }
+
+    /// `reduceOpenFiles(w)`: configures the writer's live merge policy and
+    /// scheduler to keep the number of open files lowish — `noCFSRatio` 1.0,
+    /// a merge factor (`LogMergePolicy`) or `maxMergeAtOnce` and
+    /// `segmentsPerTier` (`TieredMergePolicy`) of at most 5, and 3 merges on
+    /// 2 threads for a `ConcurrentMergeScheduler`.
+    ///
+    /// # Errors
+    ///
+    /// The error of a setter: none for Lucene's policies; core's
+    /// `MergePolicy::set_no_cfs_ratio` default (a policy without
+    /// compound-file settings) fails with `UnsupportedOperation`.
+    pub fn reduce_open_files(w: &IndexWriter) -> Result<()> {
+        // keep number of open files lowish
+        let mp = w.get_config().merge_policy();
+        mp.set_no_cfs_ratio(1.0)?;
+        if let Some(any) = mp.as_any() {
+            if let Some(lmp) = any.downcast_ref::<LogMergePolicy>() {
+                lmp.set_merge_factor(5.min(lmp.get_merge_factor()))?;
+            } else if let Some(tmp) = any.downcast_ref::<TieredMergePolicy>() {
+                tmp.set_max_merge_at_once(5.min(tmp.get_max_merge_at_once()))?;
+                tmp.set_segments_per_tier(5.0f64.min(tmp.get_segments_per_tier()))?;
+            }
+        }
+        let ms = w.get_config().merge_scheduler();
+        if let Some(cms) = ms
+            .as_any()
+            .and_then(|any| any.downcast_ref::<ConcurrentMergeScheduler>())
+        {
+            // wtf... shouldn't it be even lower since it's 1 by default?!?!
+            cms.set_max_merges_and_threads(3, 2)?;
+        }
+        Ok(())
+    }
+
+    /// `assertAttributeReflection(att, reflectedValues)`: `att.reflectWith`
+    /// reports exactly `reflected_values`, keyed `"AttributeClass#key"`.
+    ///
+    /// **Divergence.** Core's
+    /// [`AttributeReflector`](rucene::util::attribute::AttributeReflector) reports a source-level
+    /// type name and a `Debug` value where Java reports the attribute
+    /// interface's `Class` and an `Object`; the map compared here is keyed by
+    /// that name, `#` and the key, with each value's `Debug` rendering, and
+    /// is printed in `java.util.HashMap`'s order.
+    ///
+    /// # Panics
+    ///
+    /// `AssertionError` (`Reflection does not produce same map expected:<…>
+    /// but was:<…>`).
+    pub fn assert_attribute_reflection(
+        att: &dyn AttributeImpl,
+        reflected_values: &HashMap<String, String>,
+    ) {
+        let mut map: HashMap<String, String> = HashMap::new();
+        let mut order: Vec<String> = Vec::new();
+        att.reflect_with(&mut |_att_type: std::any::TypeId,
+                               att_class: &'static str,
+                               key: &str,
+                               value: &dyn std::fmt::Debug| {
+            let k = format!("{att_class}#{key}");
+            if map.insert(k.clone(), format!("{value:?}")).is_none() {
+                order.push(k);
+            }
+        });
+        if &map != reflected_values {
+            let render = |m: &HashMap<String, String>, keys: &mut dyn Iterator<Item = String>| {
+                let mut java = JavaHashMap::new();
+                for k in keys {
+                    let v = m[&k].clone();
+                    java.insert(k, v);
+                }
+                let entries: Vec<String> = java.iter().map(|(k, v)| format!("{k}={v}")).collect();
+                format!("{{{}}}", entries.join(", "))
+            };
+            let mut expected_keys: Vec<String> = reflected_values.keys().cloned().collect();
+            expected_keys.sort();
+            Assert::assert_equals_msg(
+                Some("Reflection does not produce same map"),
+                render(reflected_values, &mut expected_keys.into_iter()),
+                render(&map, &mut order.into_iter()),
+            );
+        }
+    }
+
+    /// `assertConsistent(expected, actual)`: the two results have the same
+    /// top hits (docs, scores, sort values) and consistent hit counts.
+    ///
+    /// Java's `TopDocs` holds `ScoreDoc`s or `FieldDoc`s; the port's
+    /// [`TopDocs`] holds `ScoreDoc`s and [`TopFieldDocs`] `FieldDoc`s, so
+    /// either is a [`TopDocsView`].
+    ///
+    /// # Panics
+    ///
+    /// The `AssertionError` (or JUnit's `ArrayComparisonFailure`) of the
+    /// first inconsistency, with Java's message.
+    pub fn assert_consistent<'a, 'b>(
+        expected: impl Into<TopDocsView<'a>>,
+        actual: impl Into<TopDocsView<'b>>,
+    ) {
+        let expected: TopDocsView<'_> = expected.into();
+        let actual: TopDocsView<'_> = actual.into();
+        let (expected_hits, actual_hits) = (expected.total_hits(), actual.total_hits());
+        Assert::assert_equals_msg(
+            Some("wrong total hits"),
+            expected_hits.value() == 0,
+            actual_hits.value() == 0,
+        );
+        if expected_hits.relation() == TotalHitsRelation::EQUAL_TO {
+            if actual_hits.relation() == TotalHitsRelation::EQUAL_TO {
+                MatcherAssert::assert_that_reason(
+                    "wrong total hits",
+                    &actual_hits.value(),
+                    &equal_to(expected_hits.value()),
+                );
+            } else {
+                MatcherAssert::assert_that_reason(
+                    "wrong total hits",
+                    &actual_hits.value(),
+                    &less_than_or_equal_to(expected_hits.value()),
+                );
+            }
+        } else if actual_hits.relation() == TotalHitsRelation::EQUAL_TO {
+            MatcherAssert::assert_that_reason(
+                "wrong total hits",
+                &actual_hits.value(),
+                &greater_than_or_equal_to(expected_hits.value()),
+            );
+        }
+        let expected_docs = expected.score_docs();
+        let actual_docs = actual.score_docs();
+        MatcherAssert::assert_that_reason(
+            "wrong hit count",
+            &actual_docs[..],
+            &array_with_size(expected_docs.len() as i32),
+        );
+        for (expected_sd, actual_sd) in expected_docs.iter().zip(actual_docs.iter()) {
+            MatcherAssert::assert_that_reason(
+                "wrong hit docID",
+                &actual_sd.score_doc().doc,
+                &equal_to(expected_sd.score_doc().doc),
+            );
+            assert_double_equals(
+                "wrong hit score",
+                f64::from(expected_sd.score_doc().score),
+                f64::from(actual_sd.score_doc().score),
+                0.0,
+            );
+            if let Hit::Field(expected_fd) = expected_sd {
+                MatcherAssert::assert_that(actual_sd, &instance_of(FIELD_DOC_CLASS));
+                let Hit::Field(actual_fd) = actual_sd else {
+                    unreachable!("INVARIANT: instanceOf(FieldDoc) passed");
+                };
+                assert_array_equals(
+                    "wrong sort field values",
+                    expected_fd.fields.as_deref(),
+                    actual_fd.fields.as_deref(),
+                );
+            } else {
+                MatcherAssert::assert_that(actual_sd, &not(instance_of(FIELD_DOC_CLASS)));
+            }
+        }
+    }
+
+    /// `cloneDocument(doc1)`: a document of new fields with the names, values
+    /// and types of `doc1`'s: a `KeywordField` or `IntField` as one, a
+    /// numeric, binary or sorted doc-values field as one, a point field as a
+    /// `BinaryPoint` of its packed bytes and type, any other field as a
+    /// `Field` of its string value and type. "this is likely buggy, and
+    /// cannot clone fields with tokenStreamValues, etc. Use at your own
+    /// risk!!"
+    ///
+    /// **Divergence.** Java first casts each field to `Field`, a
+    /// `ClassCastException` for an `IndexableField` that is not one; the port
+    /// reads every value through [`IndexableField`], whose implementations
+    /// are the ports of `Field`'s subclasses.
+    ///
+    /// # Errors
+    ///
+    /// `IllegalStateException` (`unknown Type: …`) for a field whose doc
+    /// values are sorted-set or sorted-numeric (and is not a `KeywordField`
+    /// or `IntField`); `IllegalArgumentException` (`value must not be null`,
+    /// `bytes must not be null`) for a field without the string or binary
+    /// value its clone takes, `NullPointerException` without the number or
+    /// packed bytes; the errors of the field constructors.
+    pub fn clone_document(doc1: &Document) -> Result<Document> {
+        let mut doc2 = Document::new();
+        for f in doc1.get_fields() {
+            let f: &dyn IndexableField = f.as_ref();
+            let field_type = f.field_type();
+            let dv_type = field_type.doc_values_type();
+            let dim_count = field_type.point_dimension_count();
+            let stored = |f: &dyn IndexableField| {
+                if f.field_type().stored() {
+                    Store::YES
+                } else {
+                    Store::NO
+                }
+            };
+            let any = f.as_any();
+            let field2: Box<dyn IndexableField> = if any.is_some_and(|a| a.is::<KeywordField>()) {
+                // `new KeywordField(name, (String) null, store)` fails in
+                // `Field(String, CharSequence, IndexableFieldType)`.
+                let value = f.string_value().ok_or_else(value_must_not_be_null)?;
+                Box::new(KeywordField::new(f.name(), value, stored(f))?)
+            } else if any.is_some_and(|a| a.is::<IntField>()) {
+                let value = number_int_value(f.numeric_value().ok_or_else(null_pointer)?);
+                Box::new(IntField::new(f.name(), value, stored(f)))
+            } else if dv_type != DocValuesType::NONE {
+                match dv_type {
+                    DocValuesType::NUMERIC => {
+                        let value = number_long_value(f.numeric_value().ok_or_else(null_pointer)?);
+                        Box::new(NumericDocValuesField::new(f.name(), value))
+                    }
+                    // `Field(String, BytesRef, IndexableFieldType)` refuses a
+                    // null value.
+                    DocValuesType::BINARY => Box::new(BinaryDocValuesField::new(
+                        f.name(),
+                        f.binary_value().ok_or_else(bytes_must_not_be_null)?,
+                    )),
+                    DocValuesType::SORTED => Box::new(SortedDocValuesField::new(
+                        f.name(),
+                        f.binary_value().ok_or_else(bytes_must_not_be_null)?,
+                    )),
+                    other => {
+                        return Err(LuceneError::illegal_state(format!(
+                            "unknown Type: {other:?}"
+                        )))
+                    }
+                }
+            } else if dim_count != 0 {
+                let br = f.binary_value().ok_or_else(null_pointer)?;
+                let bytes = BytesRef::new(br.bytes[br.offset..br.offset + br.length].to_vec());
+                Box::new(BinaryPoint::new_with_packed(
+                    f.name(),
+                    bytes,
+                    FieldType::new_from(field_type),
+                )?)
+            } else {
+                let value = f.string_value().ok_or_else(value_must_not_be_null)?;
+                Box::new(Field::new(
+                    f.name(),
+                    value,
+                    FieldType::new_from(field_type),
+                )?)
+            };
+            doc2.add(field2);
+        }
+
+        Ok(doc2)
+    }
+
+    /// `shutdownExecutorService(ex)`: shuts `ex` down and waits up to one
+    /// second for it; an interruption is reported on the standard error
+    /// stream.
+    pub fn shutdown_executor_service(ex: Option<&dyn ExecutorService>) {
+        if let Some(ex) = ex {
+            ex.shutdown();
+            if let Err(e) = ex.await_termination(Duration::from_secs(1)) {
+                // Just report it on the syserr.
+                eprintln!("Could not properly close executor service.");
+                eprintln!("{e}");
+            }
+        }
+    }
+
+    /// `hasWindowsFS(dir)`: whether the filesystem of the `FSDirectory` under
+    /// `dir`'s `FilterDirectory` wrappers is (or wraps) a `WindowsFS`.
+    ///
+    /// # Errors
+    ///
+    /// `AlreadyClosedException` for a closed `FSDirectory`
+    /// (`FSDirectory.getDirectory()`).
+    pub fn has_windows_fs(dir: &dyn Directory) -> Result<bool> {
+        let dir = FilterDirectory::unwrap(dir);
+        match dir.as_fs_directory() {
+            Some(fs_dir) => Ok(Self::has_windows_fs_path(fs_dir.get_directory()?)),
+            None => Ok(false),
+        }
+    }
+
+    /// `hasWindowsFS(path)`: whether `path`'s filesystem is (or wraps) a
+    /// `WindowsFS`.
+    pub fn has_windows_fs_path(path: &Path) -> bool {
+        find_provider::<WindowsFS>(path.get_file_system()).is_some()
+    }
+
+    /// `hasVirusChecker(dir)`: whether the filesystem of the `FSDirectory`
+    /// under `dir`'s `FilterDirectory` wrappers is (or wraps) a
+    /// `VirusCheckingFS`.
+    ///
+    /// # Errors
+    ///
+    /// `AlreadyClosedException` for a closed `FSDirectory`.
+    pub fn has_virus_checker(dir: &dyn Directory) -> Result<bool> {
+        let dir = FilterDirectory::unwrap(dir);
+        match dir.as_fs_directory() {
+            Some(fs_dir) => Ok(Self::has_virus_checker_path(fs_dir.get_directory()?)),
+            None => Ok(false),
+        }
+    }
+
+    /// `hasVirusChecker(path)`: whether `path`'s filesystem is (or wraps) a
+    /// `VirusCheckingFS`.
+    pub fn has_virus_checker_path(path: &Path) -> bool {
+        find_provider::<VirusCheckingFS>(path.get_file_system()).is_some()
+    }
+
+    /// `disableVirusChecker(in)`: disables the `VirusCheckingFS` under the
+    /// `FSDirectory` of `in`; whether it was in use and enabled.
+    ///
+    /// # Errors
+    ///
+    /// `AlreadyClosedException` for a closed `FSDirectory`.
+    pub fn disable_virus_checker(r#in: &dyn Directory) -> Result<bool> {
+        let dir = FilterDirectory::unwrap(r#in);
+        if let Some(fs_dir) = dir.as_fs_directory() {
+            if let Some(vfs) =
+                find_provider::<VirusCheckingFS>(fs_dir.get_directory()?.get_file_system())
+            {
+                let vfs = vfs
+                    .as_any()
+                    .downcast_ref::<VirusCheckingFS>()
+                    .expect("INVARIANT: find_provider matched a VirusCheckingFS");
+                let is_enabled = vfs.is_enabled();
+                vfs.disable();
+                return Ok(is_enabled);
+            }
+        }
+        Ok(false)
+    }
+
+    /// `enableVirusChecker(in)`: enables the `VirusCheckingFS` under the
+    /// `FSDirectory` of `in`, if any.
+    ///
+    /// # Errors
+    ///
+    /// `AlreadyClosedException` for a closed `FSDirectory`.
+    pub fn enable_virus_checker(r#in: &dyn Directory) -> Result<()> {
+        let dir = FilterDirectory::unwrap(r#in);
+        if let Some(fs_dir) = dir.as_fs_directory() {
+            if let Some(vfs) =
+                find_provider::<VirusCheckingFS>(fs_dir.get_directory()?.get_file_system())
+            {
+                vfs.as_any()
+                    .downcast_ref::<VirusCheckingFS>()
+                    .expect("INVARIANT: find_provider matched a VirusCheckingFS")
+                    .enable();
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A `java.lang.RuntimeException` with `message`.
+fn runtime_exception(message: String) -> LuceneError {
+    LuceneError::Unchecked {
+        class: "java.lang.RuntimeException",
+        message: Some(message),
+        cause: None,
+    }
+}
+
+/// The `NullPointerException` Java raises dereferencing a `null` value.
+fn null_pointer() -> LuceneError {
+    LuceneError::Unchecked {
+        class: "java.lang.NullPointerException",
+        message: None,
+        cause: None,
+    }
+}
+
+/// `Field(String, CharSequence, IndexableFieldType)`'s refusal of a `null`
+/// value.
+fn value_must_not_be_null() -> LuceneError {
+    LuceneError::IllegalArgument("value must not be null".to_string())
+}
+
+/// `Field(String, BytesRef, IndexableFieldType)`'s refusal of a `null` value.
+fn bytes_must_not_be_null() -> LuceneError {
+    LuceneError::IllegalArgument("bytes must not be null".to_string())
+}
+
+/// `Number.intValue()`: the Java narrowing conversion of the number to an
+/// `int` (`(int)` of a `long` keeps the low 32 bits; of a `float` or `double`
+/// it rounds toward zero, saturates, and maps NaN to 0, as Rust's `as` does).
+fn number_int_value(n: NumericValue) -> i32 {
+    match n {
+        NumericValue::Int(v) => v,
+        NumericValue::Long(v) => v as i32,
+        NumericValue::Float(v) => v as i32,
+        NumericValue::Double(v) => v as i32,
+    }
+}
+
+/// `Number.longValue()`: the Java conversion of the number to a `long`.
+fn number_long_value(n: NumericValue) -> i64 {
+    match n {
+        NumericValue::Int(v) => i64::from(v),
+        NumericValue::Long(v) => v,
+        NumericValue::Float(v) => v as i64,
+        NumericValue::Double(v) => v as i64,
+    }
+}
+
+/// `Codec.getDefault()`.
+fn default_codec() -> Arc<dyn Codec> {
+    rucene::codecs::get_default().unwrap_or_else(|| {
+        panic!(
+            "default codec '{}' is not registered in the global codec registry",
+            rucene::codecs::DEFAULT_CODEC_NAME
+        )
+    })
+}
+
+/// What stands for `reader.getClass()` in a message: the reader's
+/// `toString()`, since a Rust trait object cannot name its concrete type.
+fn reader_class_name(reader: &dyn LeafReader) -> String {
+    reader.to_string()
+}
+
+/// The provider of the first `FilterFileSystem` in the chain from `fs` whose
+/// provider is a `T` (`while (fs instanceof FilterFileSystem ffs) { if
+/// (ffs.provider() instanceof T) ...; fs = ffs.getDelegate(); }`).
+fn find_provider<T: 'static>(fs: &Arc<dyn FileSystem>) -> Option<Arc<dyn FileSystemProvider>> {
+    let mut fs = Arc::clone(fs);
+    loop {
+        let delegate = {
+            let ffs = fs.as_any().downcast_ref::<FilterFileSystem>()?;
+            let provider = ffs.provider();
+            if provider.as_any().is::<T>() {
+                return Some(provider);
+            }
+            Arc::clone(ffs.get_delegate())
+        };
+        fs = delegate;
+    }
+}
+
+/// The class name `assertConsistent`'s `instanceOf` matchers name.
+const FIELD_DOC_CLASS: &str = "org.apache.lucene.search.FieldDoc";
+
+/// The class name of a `ScoreDoc` that is not a `FieldDoc`.
+const SCORE_DOC_CLASS: &str = "org.apache.lucene.search.ScoreDoc";
+
+/// The results [`TestUtil::assert_consistent`] compares: Java's `TopDocs`,
+/// whose hits are `ScoreDoc`s ([`TopDocs`]) or `FieldDoc`s
+/// ([`TopFieldDocs`]).
+#[derive(Debug, Clone, Copy)]
+pub enum TopDocsView<'a> {
+    /// A `TopDocs` of `ScoreDoc`s.
+    Scores(&'a TopDocs),
+    /// A `TopFieldDocs`, whose hits are `FieldDoc`s.
+    Fields(&'a TopFieldDocs),
+}
+
+impl<'a> From<&'a TopDocs> for TopDocsView<'a> {
+    fn from(top_docs: &'a TopDocs) -> Self {
+        TopDocsView::Scores(top_docs)
+    }
+}
+
+impl<'a> From<&'a TopFieldDocs> for TopDocsView<'a> {
+    fn from(top_docs: &'a TopFieldDocs) -> Self {
+        TopDocsView::Fields(top_docs)
+    }
+}
+
+impl<'a> TopDocsView<'a> {
+    /// `totalHits`.
+    fn total_hits(&self) -> TotalHits {
+        match self {
+            TopDocsView::Scores(t) => t.total_hits,
+            TopDocsView::Fields(t) => t.total_hits,
+        }
+    }
+
+    /// `scoreDocs`.
+    fn score_docs(&self) -> Vec<Hit<'a>> {
+        match self {
+            TopDocsView::Scores(t) => t.score_docs.iter().map(Hit::Score).collect(),
+            TopDocsView::Fields(t) => t.score_docs.iter().map(Hit::Field).collect(),
+        }
+    }
+}
+
+/// One hit of a [`TopDocsView`]: a `ScoreDoc` or a `FieldDoc`.
+#[derive(Debug, Clone, Copy)]
+enum Hit<'a> {
+    Score(&'a ScoreDoc),
+    Field(&'a FieldDoc),
+}
+
+impl Hit<'_> {
+    /// The `ScoreDoc` part of the hit.
+    fn score_doc(&self) -> &ScoreDoc {
+        match self {
+            Hit::Score(sd) => sd,
+            Hit::Field(fd) => &fd.score_doc,
+        }
+    }
+}
+
+impl HamcrestValue for Hit<'_> {
+    /// `<toString()>`.
+    fn describe_value(&self) -> String {
+        match self {
+            Hit::Score(sd) => format!("<{sd}>"),
+            Hit::Field(fd) => format!("<{fd}>"),
+        }
+    }
+}
+
+impl JavaObject for Hit<'_> {
+    fn java_class_name(&self) -> String {
+        match self {
+            Hit::Score(_) => SCORE_DOC_CLASS.to_string(),
+            Hit::Field(_) => FIELD_DOC_CLASS.to_string(),
+        }
+    }
+
+    /// A `FieldDoc` is a `ScoreDoc`.
+    fn is_instance_of(&self, class_name: &str) -> bool {
+        match self {
+            Hit::Score(_) => class_name == SCORE_DOC_CLASS,
+            Hit::Field(_) => class_name == FIELD_DOC_CLASS || class_name == SCORE_DOC_CLASS,
+        }
+    }
+}
+
+/// JUnit's `Assert.assertEquals(String message, double expected, double
+/// actual, double delta)`: equal when `Double.compare` is 0 or the difference
+/// is within `delta`, else `failNotEquals` with the boxed `Double`s.
+fn assert_double_equals(message: &str, expected: f64, actual: f64, delta: f64) {
+    // `Double.compare(expected, actual) == 0`: the same bits, or two NaNs.
+    let same = expected.to_bits() == actual.to_bits() || (expected.is_nan() && actual.is_nan());
+    if same || (expected - actual).abs() <= delta {
+        return;
+    }
+    fail_not_equals(
+        message,
+        &double_to_string(expected),
+        "java.lang.Double",
+        &double_to_string(actual),
+        "java.lang.Double",
+    );
+}
+
+/// JUnit's `Assert.failNotEquals(message, expected, actual)`: `message `,
+/// then `expected:<x> but was:<y>`, or, when the two render alike, each with
+/// its class (`expected: java.lang.Long<5> but was: java.lang.Integer<5>`).
+fn fail_not_equals(
+    message: &str,
+    expected: &str,
+    expected_class: &str,
+    actual: &str,
+    actual_class: &str,
+) -> ! {
+    Assert::fail(&format!(
+        "{}{}",
+        if message.is_empty() {
+            String::new()
+        } else {
+            format!("{message} ")
+        },
+        not_equals_message(expected, expected_class, actual, actual_class)
+    ))
+}
+
+/// The part of JUnit's `Assert.format` after the message.
+fn not_equals_message(
+    expected: &str,
+    expected_class: &str,
+    actual: &str,
+    actual_class: &str,
+) -> String {
+    if expected == actual {
+        format!("expected: {expected_class}<{expected}> but was: {actual_class}<{actual}>")
+    } else {
+        format!("expected:<{expected}> but was:<{actual}>")
+    }
+}
+
+/// The class of a sort value, as `getClass().getName()` names the object
+/// Java holds (`null` for `null`).
+fn sort_value_class(value: &SortValue) -> &'static str {
+    match value {
+        SortValue::Null => "null",
+        SortValue::Int(_) => "java.lang.Integer",
+        SortValue::Long(_) => "java.lang.Long",
+        SortValue::Float(_) => "java.lang.Float",
+        SortValue::Double(_) => "java.lang.Double",
+        SortValue::Bytes(_) => "org.apache.lucene.util.BytesRef",
+    }
+}
+
+/// JUnit 4.13.1's `Assert.assertArrayEquals(String message, Object[]
+/// expecteds, Object[] actuals)` over sort values (`ComparisonCriteria
+/// .arrayEquals` with `ExactComparisonCriteria`): `expected array was null`
+/// or `actual array was null` (an `AssertionError`), else an
+/// `ArrayComparisonFailure` naming the first differing index (a missing
+/// element is `end of array`), after `array lengths differed, …` when the
+/// lengths differ.
+fn assert_array_equals(
+    message: &str,
+    expecteds: Option<&[SortValue]>,
+    actuals: Option<&[SortValue]>,
+) {
+    if expecteds == actuals {
+        return;
+    }
+    let mut header = format!("{message}: ");
+    let Some(expecteds) = expecteds else {
+        Assert::fail(&format!("{header}expected array was null"))
+    };
+    let Some(actuals) = actuals else {
+        Assert::fail(&format!("{header}actual array was null"))
+    };
+    if actuals.len() != expecteds.len() {
+        header.push_str(&format!(
+            "array lengths differed, expected.length={} actual.length={}",
+            expecteds.len(),
+            actuals.len()
+        ));
+    }
+    // `ArrayComparisonFailure.getMessage()`: the header, then `"; "` unless
+    // the header is empty or ends with a space, the index, `"; "` and the
+    // cause's message (`Assert.assertEquals(Object, Object)` of the two
+    // elements, `end of array` past the end of the shorter one).
+    let fail_at = |index: usize, expected: Option<&SortValue>, actual: Option<&SortValue>| -> ! {
+        let render =
+            |v: Option<&SortValue>| v.map_or("end of array".to_string(), |v| v.to_string());
+        let cause = not_equals_message(
+            &render(expected),
+            expected.map_or("org.junit.internal.ComparisonCriteria$1", sort_value_class),
+            &render(actual),
+            actual.map_or("org.junit.internal.ComparisonCriteria$1", sort_value_class),
+        );
+        let separator = if header.is_empty() || header.ends_with(' ') {
+            ""
+        } else {
+            "; "
+        };
+        Throwable::new(
+            "org.junit.internal.ArrayComparisonFailure",
+            format!("{header}{separator}arrays first differed at element [{index}]; {cause}"),
+        )
+        .throw()
+    };
+    let prefix_length = actuals.len().min(expecteds.len());
+    for i in 0..prefix_length {
+        if expecteds[i] != actuals[i] {
+            fail_at(i, Some(&expecteds[i]), Some(&actuals[i]));
+        }
+    }
+    if actuals.len() != expecteds.len() {
+        fail_at(
+            prefix_length,
+            expecteds.get(prefix_length),
+            actuals.get(prefix_length),
+        );
     }
 }
 

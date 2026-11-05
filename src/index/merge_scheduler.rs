@@ -208,6 +208,19 @@ pub trait MergeScheduler: Send + Sync + fmt::Display {
             stream.message(MS, message);
         }
     }
+
+    /// This scheduler as [`Any`](std::any::Any), for the `instanceof` tests
+    /// Java code makes on a `MergeScheduler` (`TestUtil.syncConcurrentMerges`
+    /// and `TestUtil.reduceOpenFiles` narrow to `ConcurrentMergeScheduler`,
+    /// `TestUtil.java:309-311`, `:1467-1470`).
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** Java tests the run-time
+    /// class of any object; a Rust trait object exposes its concrete type only
+    /// through `Any`, which an implementation opts into by returning
+    /// `Some(self)`. The default, `None`, answers `false` to every such test.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
 }
 
 /// The body of `MergeScheduler.close()` (`MergeScheduler.java:71-73`): shuts
@@ -1764,6 +1777,12 @@ impl fmt::Debug for ConcurrentMergeScheduler {
 }
 
 impl MergeScheduler for ConcurrentMergeScheduler {
+    /// This scheduler answers with itself: Java's `instanceof
+    /// ConcurrentMergeScheduler` on it is `true`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     /// Equivalent to `ConcurrentMergeScheduler.merge(MergeSource, MergeTrigger)`
     /// (`ConcurrentMergeScheduler.java:541-603`): starts one merge thread per
     /// pending merge, stalling the caller while too many are running, and

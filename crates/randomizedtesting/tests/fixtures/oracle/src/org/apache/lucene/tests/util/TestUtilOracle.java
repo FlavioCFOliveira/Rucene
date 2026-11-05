@@ -18,6 +18,42 @@ import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.IntsRef;
 import org.apache.lucene.util.automaton.Automaton;
 import org.apache.lucene.util.automaton.Operations;
+import org.apache.lucene.codecs.Codec;
+import org.apache.lucene.codecs.lucene104.Lucene104Codec;
+import org.apache.lucene.codecs.lucene90.Lucene90DocValuesFormat;
+import org.apache.lucene.codecs.simpletext.SimpleTextCodec;
+import org.apache.lucene.document.BinaryDocValuesField;
+import org.apache.lucene.document.BinaryPoint;
+import org.apache.lucene.document.Field;
+import org.apache.lucene.document.IntField;
+import org.apache.lucene.document.IntPoint;
+import org.apache.lucene.document.KeywordField;
+import org.apache.lucene.document.LongField;
+import org.apache.lucene.document.NumericDocValuesField;
+import org.apache.lucene.document.SortedDocValuesField;
+import org.apache.lucene.document.SortedSetDocValuesField;
+import org.apache.lucene.document.StoredField;
+import org.apache.lucene.document.StringField;
+import org.apache.lucene.document.TextField;
+import org.apache.lucene.index.ConcurrentMergeScheduler;
+import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.FilterMergePolicy;
+import org.apache.lucene.index.IndexWriter;
+import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.index.LogByteSizeMergePolicy;
+import org.apache.lucene.index.LogDocMergePolicy;
+import org.apache.lucene.index.LogMergePolicy;
+import org.apache.lucene.index.MergePolicy;
+import org.apache.lucene.index.MergeScheduler;
+import org.apache.lucene.index.SerialMergeScheduler;
+import org.apache.lucene.index.TieredMergePolicy;
+import org.apache.lucene.search.FieldDoc;
+import org.apache.lucene.search.ScoreDoc;
+import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.search.TotalHits;
+import org.apache.lucene.tests.codecs.asserting.AssertingCodec;
+import org.apache.lucene.tests.codecs.blockterms.LuceneFixedGap;
+import org.apache.lucene.tests.codecs.cheapbastard.CheapBastardCodec;
 
 /**
  * The oracle of the {@code org.apache.lucene.tests.util} helpers of rmp #342, for {@code
@@ -65,6 +101,18 @@ import org.apache.lucene.util.automaton.Operations;
  *       the tester random's next {@code nextLong()}.
  *   <li>{@code testutil_compare.tsv}: {@code STRING_CODEPOINT_COMPARATOR}, {@code
  *       bytesRefToString}, {@code floatUlpEquals} and {@code doubleUlpEquals} on fixed inputs.
+ *   <li>{@code testutil_members.tsv}: {@code reduceOpenFiles} (then {@code
+ *       syncConcurrentMerges}) on a live writer per merge policy and scheduler (the policy's
+ *       {@code noCFSRatio} and factors, the scheduler's merge and thread counts after); {@code
+ *       getPostingsFormat}, {@code getDocValuesFormat} per codec and field, their one-argument
+ *       forms and {@code fieldSupportsHugeBinaryDocValues}; {@code cloneDocument} (the {@code
+ *       toString()} of every field of the clone, or the error per single-field document); {@code
+ *       addIndexesSlowly} (segments and documents after); {@code assertConsistent} per case
+ *       ({@code ok} or the error).
+ *   <li>{@code testutil_ramusage.tsv}: {@code RamUsageTester.ramUsed} and {@code humanSizeOf} of
+ *       primitive arrays, strings, {@code BytesRef}s, reference arrays (shared and {@code null}
+ *       elements), nested arrays, an {@code ArrayList} and a {@code HashMap} of strings, and
+ *       {@code ramUsed} with an {@code Accumulator} that does not follow array elements.
  * </ul>
  */
 public final class TestUtilOracle {
@@ -523,6 +571,285 @@ public final class TestUtilOracle {
     }
   }
 
+
+  static String err(Throwable t) {
+    return OracleSupport.err(t);
+  }
+
+  static String describe(MergePolicy mp) {
+    String d = "noCFSRatio=" + mp.getNoCFSRatio();
+    if (mp instanceof LogMergePolicy lmp) {
+      d += " mergeFactor=" + lmp.getMergeFactor();
+    } else if (mp instanceof TieredMergePolicy tmp) {
+      d += " maxMergeAtOnce=" + tmp.getMaxMergeAtOnce() + " segmentsPerTier=" + tmp.getSegmentsPerTier();
+    } else if (mp instanceof FilterMergePolicy fmp) {
+      d += " delegate(" + describe(fmp.unwrap()) + ")";
+    }
+    return d;
+  }
+
+  static String describe(MergeScheduler ms) {
+    if (ms instanceof ConcurrentMergeScheduler cms) {
+      return "maxMergeCount=" + cms.getMaxMergeCount() + " maxThreadCount=" + cms.getMaxThreadCount();
+    }
+    return ms.getClass().getSimpleName();
+  }
+
+  static ScoreDoc sd(int doc, float score) {
+    return new ScoreDoc(doc, score);
+  }
+
+  static FieldDoc fd(int doc, float score, Object... fields) {
+    return new FieldDoc(doc, score, fields);
+  }
+
+  static TopDocs td(long hits, boolean equal, ScoreDoc... docs) {
+    return new TopDocs(
+        new TotalHits(
+            hits, equal ? TotalHits.Relation.EQUAL_TO : TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO),
+        docs);
+  }
+
+  static void consistent(PrintWriter w, String label, TopDocs expected, TopDocs actual) {
+    String result;
+    try {
+      TestUtil.assertConsistent(expected, actual);
+      result = "ok";
+    } catch (Throwable t) {
+      result = err(t);
+    }
+    w.println("assertConsistent\t" + label + "\t" + result);
+  }
+
+  static void members(PrintWriter w) throws Exception {
+    w.println("# method\tcase\tresult (value, or class<TAB>message)");
+    // reduceOpenFiles and syncConcurrentMerges on a live writer.
+    String[] policyNames = {
+      "tiered", "tiered(3,4.0)", "tiered(20,30.0)", "logdoc", "logbytes(3)", "filter(tiered)"
+    };
+    String[] schedulerNames = {"cms", "cms(6,4)", "serial"};
+    for (int p = 0; p < policyNames.length; p++) {
+      for (int m = 0; m < schedulerNames.length; m++) {
+        MergePolicy mp;
+        switch (p) {
+          case 0 -> mp = new TieredMergePolicy();
+          case 1 -> {
+            TieredMergePolicy t = new TieredMergePolicy();
+            t.setMaxMergeAtOnce(3);
+            t.setSegmentsPerTier(4.0);
+            mp = t;
+          }
+          case 2 -> {
+            TieredMergePolicy t = new TieredMergePolicy();
+            t.setMaxMergeAtOnce(20);
+            t.setSegmentsPerTier(30.0);
+            mp = t;
+          }
+          case 3 -> mp = new LogDocMergePolicy();
+          case 4 -> {
+            LogByteSizeMergePolicy l = new LogByteSizeMergePolicy();
+            l.setMergeFactor(3);
+            mp = l;
+          }
+          default -> mp = new FilterMergePolicy(new TieredMergePolicy());
+        }
+        MergeScheduler ms;
+        switch (m) {
+          case 0 -> ms = new ConcurrentMergeScheduler();
+          case 1 -> {
+            ConcurrentMergeScheduler c = new ConcurrentMergeScheduler();
+            c.setMaxMergesAndThreads(6, 4);
+            ms = c;
+          }
+          default -> ms = new SerialMergeScheduler();
+        }
+        IndexWriterConfig c = new IndexWriterConfig();
+        c.setMergePolicy(mp);
+        c.setMergeScheduler(ms);
+        try (ByteBuffersDirectory d = new ByteBuffersDirectory();
+            IndexWriter iw = new IndexWriter(d, c)) {
+          String before = describe(iw.getConfig().getMergePolicy()) + " " + describe(iw.getConfig().getMergeScheduler());
+          TestUtil.reduceOpenFiles(iw);
+          TestUtil.syncConcurrentMerges(iw);
+          w.println(
+              "reduceOpenFiles\t" + policyNames[p] + " " + schedulerNames[m] + "\t" + before + " -> "
+                  + describe(iw.getConfig().getMergePolicy()) + " "
+                  + describe(iw.getConfig().getMergeScheduler()));
+        }
+      }
+    }
+    // getPostingsFormat / getDocValuesFormat.
+    Codec[] codecs = {
+      new Lucene104Codec(),
+      new AssertingCodec(),
+      TestUtil.alwaysPostingsFormat(new LuceneFixedGap()),
+      TestUtil.alwaysDocValuesFormat(new Lucene90DocValuesFormat()),
+      new SimpleTextCodec(),
+      new CheapBastardCodec()
+    };
+    String[] codecNames = {"lucene104", "asserting", "alwaysFixedGap", "alwaysLucene90", "simpletext", "cheapbastard"};
+    for (int i = 0; i < codecs.length; i++) {
+      for (String field : new String[] {"f", "id"}) {
+        w.println("getPostingsFormat\t" + codecNames[i] + " " + field + "\t" + TestUtil.getPostingsFormat(codecs[i], field));
+        w.println("getDocValuesFormat\t" + codecNames[i] + " " + field + "\t" + TestUtil.getDocValuesFormat(codecs[i], field));
+      }
+    }
+    w.println("getPostingsFormat\tdefault f\t" + TestUtil.getPostingsFormat("f"));
+    w.println("getDocValuesFormat\tdefault f\t" + TestUtil.getDocValuesFormat("f"));
+    w.println("fieldSupportsHugeBinaryDocValues\tf\t" + TestUtil.fieldSupportsHugeBinaryDocValues("f"));
+    // cloneDocument.
+    Document doc = new Document();
+    doc.add(new KeywordField("kw", "v1", Field.Store.YES));
+    doc.add(new KeywordField("kw2", "v2", Field.Store.NO));
+    doc.add(new IntField("int", 7, Field.Store.YES));
+    doc.add(new IntField("int2", -3, Field.Store.NO));
+    doc.add(new NumericDocValuesField("ndv", 42L));
+    doc.add(new BinaryDocValuesField("bdv", new BytesRef("bin")));
+    doc.add(new SortedDocValuesField("sdv", new BytesRef("sorted")));
+    doc.add(new BinaryPoint("bp", new byte[] {1, 2}, new byte[] {3, 4}));
+    doc.add(new IntPoint("ip", 5, 6));
+    doc.add(new StringField("s", "str", Field.Store.YES));
+    doc.add(new TextField("t", "some text", Field.Store.NO));
+    doc.add(new StoredField("st", "stored"));
+    Document clone = TestUtil.cloneDocument(doc);
+    for (IndexableField f : clone.getFields()) {
+      w.println("cloneDocument\t" + f.name() + "\t" + f);
+    }
+    IndexableField[] bad = {
+      new LongField("lf", 5L, Field.Store.NO),
+      new SortedSetDocValuesField("ssdv", new BytesRef("x")),
+      new StoredField("sti", 5)
+    };
+    for (IndexableField f : bad) {
+      Document one = new Document();
+      one.add(f);
+      String result;
+      try {
+        result = TestUtil.cloneDocument(one).getFields().get(0).toString();
+      } catch (Throwable t) {
+        result = err(t);
+      }
+      w.println("cloneDocument\t" + f.name() + "\t" + result);
+    }
+    // addIndexesSlowly: two source indexes of 3 and 2 documents (one deleted).
+    try (ByteBuffersDirectory a = new ByteBuffersDirectory();
+        ByteBuffersDirectory b = new ByteBuffersDirectory();
+        ByteBuffersDirectory target = new ByteBuffersDirectory()) {
+      for (ByteBuffersDirectory src : new ByteBuffersDirectory[] {a, b}) {
+        try (IndexWriter iw = new IndexWriter(src, new IndexWriterConfig())) {
+          int n = src == a ? 3 : 2;
+          for (int i = 0; i < n; i++) {
+            Document d = new Document();
+            d.add(new StringField("id", "" + i, Field.Store.YES));
+            iw.addDocument(d);
+          }
+          if (src == b) {
+            iw.deleteDocuments(new org.apache.lucene.index.Term("id", "0"));
+          }
+        }
+      }
+      try (DirectoryReader ra = DirectoryReader.open(a);
+          DirectoryReader rb = DirectoryReader.open(b);
+          IndexWriter iw =
+              new IndexWriter(target, new IndexWriterConfig().setMergeScheduler(new SerialMergeScheduler()))) {
+        TestUtil.addIndexesSlowly(iw, ra, rb);
+        iw.commit();
+        try (DirectoryReader r = DirectoryReader.open(target)) {
+          w.println(
+              "addIndexesSlowly\ta(3)+b(2,-1)\tsegments=" + r.leaves().size() + " maxDoc=" + r.maxDoc()
+                  + " numDocs=" + r.numDocs());
+        }
+      }
+    }
+    // assertConsistent.
+    ScoreDoc[] three = {sd(1, 2f), sd(2, 1f), sd(3, 0.5f)};
+    consistent(w, "same", td(3, true, three), td(3, true, sd(1, 2f), sd(2, 1f), sd(3, 0.5f)));
+    consistent(w, "zero-vs-two", td(0, true), td(2, true, sd(1, 1f), sd(2, 1f)));
+    consistent(w, "two-vs-zero", td(2, false, sd(1, 1f), sd(2, 1f)), td(0, true));
+    consistent(w, "eq5-vs-eq4", td(5, true, sd(1, 1f)), td(4, true, sd(1, 1f)));
+    consistent(w, "eq5-vs-gte6", td(5, true, sd(1, 1f)), td(6, false, sd(1, 1f)));
+    consistent(w, "eq5-vs-gte3", td(5, true, sd(1, 1f)), td(3, false, sd(1, 1f)));
+    consistent(w, "gte5-vs-eq4", td(5, false, sd(1, 1f)), td(4, true, sd(1, 1f)));
+    consistent(w, "gte5-vs-eq7", td(5, false, sd(1, 1f)), td(7, true, sd(1, 1f)));
+    consistent(w, "gte5-vs-gte1", td(5, false, sd(1, 1f)), td(1, false, sd(1, 1f)));
+    consistent(w, "size", td(3, true, three), td(3, true, sd(1, 2f), sd(2, 1f)));
+    consistent(w, "doc", td(3, true, three), td(3, true, sd(1, 2f), sd(4, 1f), sd(3, 0.5f)));
+    consistent(w, "score", td(1, true, sd(1, 1.5f)), td(1, true, sd(1, 0.1f)));
+    consistent(w, "score-nan", td(1, true, sd(1, Float.NaN)), td(1, true, sd(1, Float.NaN)));
+    consistent(w, "score-zero", td(1, true, sd(1, 0f)), td(1, true, sd(1, -0f)));
+    consistent(w, "fields-same", td(1, true, fd(1, 1f, 3, new BytesRef("ab"))), td(1, true, fd(1, 1f, 3, new BytesRef("ab"))));
+    consistent(w, "fields-int", td(1, true, fd(1, 1f, 3)), td(1, true, fd(1, 1f, 4)));
+    consistent(w, "fields-bytes", td(1, true, fd(1, 1f, 1, new BytesRef("ab"))), td(1, true, fd(1, 1f, 1, new BytesRef("ac"))));
+    consistent(w, "fields-float", td(1, true, fd(1, 1f, 1f)), td(1, true, fd(1, 1f, 2f)));
+    consistent(w, "fields-long-int", td(1, true, fd(1, 1f, 5L)), td(1, true, fd(1, 1f, 5)));
+    consistent(w, "fields-null-value", td(1, true, fd(1, 1f, (Object) null)), td(1, true, fd(1, 1f, 5)));
+    consistent(w, "fields-longer", td(1, true, fd(1, 1f, 3)), td(1, true, fd(1, 1f, 3, 1f)));
+    consistent(w, "fields-shorter", td(1, true, fd(1, 1f, 3, 1f)), td(1, true, fd(1, 1f, 3)));
+    consistent(w, "fields-null", td(1, true, new FieldDoc(1, 1f)), td(1, true, fd(1, 1f, 3)));
+    consistent(w, "fields-null-actual", td(1, true, fd(1, 1f, 3)), td(1, true, new FieldDoc(1, 1f)));
+    consistent(w, "fields-both-null", td(1, true, new FieldDoc(1, 1f)), td(1, true, new FieldDoc(1, 1f)));
+    consistent(w, "fielddoc-vs-scoredoc", td(1, true, fd(1, 1f, 3)), td(1, true, sd(1, 1f)));
+    consistent(w, "scoredoc-vs-fielddoc", td(1, true, sd(1, 1f)), td(1, true, fd(1, 1f, 3, 2.5f)));
+  }
+
+
+  static void ram(PrintWriter w, String label, Object o) {
+    w.println(label + "\t" + RamUsageTester.ramUsed(o) + "\t" + RamUsageTester.humanSizeOf(o));
+  }
+
+  static void ramUsage(PrintWriter w) {
+    w.println("# case\tramUsed\thumanSizeOf");
+    for (int n : new int[] {0, 1, 7, 8, 9, 100, 1000}) {
+      ram(w, "byte[" + n + "]", new byte[n]);
+    }
+    ram(w, "boolean[9]", new boolean[9]);
+    ram(w, "char[5]", new char[5]);
+    ram(w, "short[3]", new short[3]);
+    ram(w, "int[3]", new int[3]);
+    ram(w, "float[2]", new float[2]);
+    ram(w, "long[5]", new long[5]);
+    ram(w, "double[3]", new double[3]);
+    ram(w, "int[100000]", new int[100000]);
+    ram(w, "string()", "");
+    ram(w, "string(a)", "a");
+    ram(w, "string(abcdefgh)", "abcdefgh");
+    ram(w, "string(x*100)", "x".repeat(100));
+    ram(w, "string(U+10000)", "𐀀");
+    ram(w, "bytesref()", new BytesRef());
+    ram(w, "bytesref(byte[10])", new BytesRef(new byte[10]));
+    ram(w, "bytesref(hello)", new BytesRef("hello"));
+    String a = "a";
+    ram(w, "object[](a,a,b,null)", new Object[] {a, a, "b", null});
+    ram(w, "object[0]", new Object[0]);
+    ram(w, "int[][](2,1)", new int[][] {{1, 2}, {3}});
+    java.util.ArrayList<String> list = new java.util.ArrayList<>();
+    list.add("one");
+    list.add("two");
+    list.add("three");
+    ram(w, "arraylist(one,two,three)", list);
+    java.util.HashMap<String, String> map = new java.util.HashMap<>();
+    map.put("k1", "v1");
+    map.put("key2", "value2");
+    ram(w, "hashmap(k1=v1,key2=value2)", map);
+    RamUsageTester.Accumulator shallowArrays =
+        new RamUsageTester.Accumulator() {
+          @Override
+          public long accumulateArray(
+              Object array, long shallowSize, java.util.List<Object> values,
+              java.util.Collection<Object> queue) {
+            return shallowSize;
+          }
+        };
+    w.println(
+        "shallowArrays:object[](a,a,b,null)\t"
+            + RamUsageTester.ramUsed(new Object[] {a, a, "b", null}, shallowArrays)
+            + "\t-");
+    w.println(
+        "shallowArrays:bytesref(hello)\t"
+            + RamUsageTester.ramUsed(new BytesRef("hello"), shallowArrays)
+            + "\t-");
+  }
+
   public static void main(String[] args) throws Exception {
     File out = new File(args[0], "rucene-test-framework");
     out.mkdirs();
@@ -543,6 +870,12 @@ public final class TestUtilOracle {
     }
     try (PrintWriter w = new PrintWriter(new File(out, "testutil_compare.tsv"), "UTF-8")) {
       compare(w);
+    }
+    try (PrintWriter w = new PrintWriter(new File(out, "testutil_members.tsv"), "UTF-8")) {
+      members(w);
+    }
+    try (PrintWriter w = new PrintWriter(new File(out, "testutil_ramusage.tsv"), "UTF-8")) {
+      ramUsage(w);
     }
     try (PrintWriter w = new PrintWriter(new File(out, "testutil_english.tsv"), "UTF-8")) {
       w.println("# method\tvalue\tresult");

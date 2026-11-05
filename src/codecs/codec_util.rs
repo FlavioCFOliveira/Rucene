@@ -614,6 +614,17 @@ pub fn retrieve_checksum_expected_length(
 /// footer — naming `input` itself, not its clone, as Java does — or when the
 /// footer or the checksum is not valid, and propagates any I/O error.
 pub fn checksum_entire_file(input: &mut dyn IndexInput) -> Result<i64> {
+    checksum_entire_file_shared(input)
+}
+
+/// [`checksum_entire_file`] over an input the caller only shares (an input
+/// held behind an `Arc`): Java's `checksumEntireFile` reads a clone, never
+/// `input` itself, so a shared reference is all it needs.
+///
+/// # Errors
+///
+/// As [`checksum_entire_file`].
+pub fn checksum_entire_file_shared(input: &dyn IndexInput) -> Result<i64> {
     let mut clone = input.clone_input()?;
     clone.seek(0)?;
     let mut checksum_input = BufferedChecksumIndexInput::new(clone);

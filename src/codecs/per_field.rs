@@ -103,6 +103,12 @@ impl PerFieldPostingsFormat {
 }
 
 impl PostingsFormat for PerFieldPostingsFormat {
+    /// This format answers with itself: Java's `instanceof PerFieldPostingsFormat` on it is
+    /// `true`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         PER_FIELD_POSTINGS_NAME
     }
@@ -607,6 +613,12 @@ impl PerFieldDocValuesFormat {
 }
 
 impl DocValuesFormat for PerFieldDocValuesFormat {
+    /// This format answers with itself: Java's `instanceof PerFieldDocValuesFormat` on it is
+    /// `true`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         PER_FIELD_DOC_VALUES_NAME
     }

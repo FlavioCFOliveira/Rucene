@@ -192,6 +192,10 @@ pub struct Lucene104PostingsWriter {
     max_impact_num_bytes_at_level0: i32,
     max_num_impacts_at_level1: i32,
     max_impact_num_bytes_at_level1: i32,
+    /// Set once [`close`](PostingsWriterBase::close) ran: Java nulls the four
+    /// outputs in its `finally` (`Lucene104PostingsWriter.java:737`), so a
+    /// second close finds them null and does nothing.
+    closed: bool,
 }
 
 impl std::fmt::Debug for Lucene104PostingsWriter {
@@ -316,6 +320,7 @@ impl Lucene104PostingsWriter {
             max_impact_num_bytes_at_level0: 0,
             max_num_impacts_at_level1: 0,
             max_impact_num_bytes_at_level1: 0,
+            closed: false,
         })
     }
 }
@@ -585,7 +590,15 @@ impl PushPostingsWriterBase for Lucene104PostingsWriter {
         Ok(())
     }
 
+    /// Equivalent to `Lucene104PostingsWriter.close()`
+    /// (`Lucene104PostingsWriter.java:700-739`): the outputs are nulled in the
+    /// outer `finally` (`:737`) whatever the outcome, so a second call does
+    /// nothing.
     fn close(&mut self) -> Result<()> {
+        if self.closed {
+            return Ok(());
+        }
+        self.closed = true;
         let result: Result<()> = (|| {
             write_footer(self.doc_out.as_mut())?;
             if let Some(pos_out) = self.pos_out.as_mut() {
@@ -1686,6 +1699,26 @@ mod close_family_tests {
         Lucene104PostingsWriter::new(&write_state(&dir, &info, &fis)).unwrap_err();
         assert_eq!(log.close_count("_0.psm"), 1);
         assert_eq!(tracking.inner.file_length("_0.psm").unwrap(), 0);
+    }
+
+    /// `close()` nulls the four outputs in its outer `finally`
+    /// (`Lucene104PostingsWriter.java:737`): a second close does nothing, so
+    /// no output is closed twice and the files keep the first close's bytes.
+    #[test]
+    fn close_twice_is_a_no_op() {
+        let (dir, tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 10);
+        let fis = FieldInfos::default();
+        let mut writer = Lucene104PostingsWriter::new(&write_state(&dir, &info, &fis)).unwrap();
+        writer.close().unwrap();
+        let lengths = ["_0.psm", "_0.doc"].map(|n| tracking.inner.file_length(n).unwrap());
+        writer.close().unwrap();
+        assert_eq!(
+            ["_0.psm", "_0.doc"].map(|n| tracking.inner.file_length(n).unwrap()),
+            lengths
+        );
+        assert_eq!(log.close_count("_0.psm"), 1);
+        assert_eq!(log.close_count("_0.doc"), 1);
     }
 
     /// `close()` ends with `IOUtils.close(metaOut, docOut, posOut, payOut)`

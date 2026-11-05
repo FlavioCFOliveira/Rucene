@@ -213,8 +213,12 @@ impl std::fmt::Display for SortValue {
             SortValue::Null => f.write_str("null"),
             SortValue::Int(value) => write!(f, "{value}"),
             SortValue::Long(value) => write!(f, "{value}"),
-            SortValue::Float(value) => write!(f, "{value}"),
-            SortValue::Double(value) => write!(f, "{value}"),
+            // `Float.toString` / `Double.toString`, not Rust's shortest form
+            // (`1.0` renders as `1.0`, not `1`).
+            SortValue::Float(value) => f.write_str(&crate::util::java_fmt::float_to_string(*value)),
+            SortValue::Double(value) => {
+                f.write_str(&crate::util::java_fmt::double_to_string(*value))
+            }
             SortValue::Bytes(value) => write!(f, "{value}"),
         }
     }

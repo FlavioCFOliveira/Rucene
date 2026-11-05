@@ -129,21 +129,10 @@ const TMD_ID_CORE_DEFECT: (&str, &str, &str) = (
      (resource=BufferedChecksumIndexInput(NIOFSIndexInput(path=\"$D/_5_Direct_0.tmd\")))",
 );
 
-/// Core defect 4, outside this crate: `Lucene103BlockTreeTermsReader`'s
-/// `check_integrity` (`src/codecs/lucene103/blocktree.rs`) checks only the
-/// postings reader, where Java first runs `CodecUtil.checksumEntireFile` on
-/// `.tip` and `.tim` (`Lucene103BlockTreeTermsReader.java:304-313`).
-/// `DirectPostingsFormat` checks integrity on open, so a flipped checksum
-/// byte in `.tim` fails Lucene's open and not Rucene's.
-const TIM_CHECKSUM_CORE_DEFECT: (&str, &str, &str) = ("tim-checksum", "none", "-");
-
 #[test]
 fn direct_corrupted_files_raise_lucenes_errors() {
     assert!(DIRECT
-        .assert_corrupted_files_raise_lucenes_errors_but(&[
-            TMD_ID_CORE_DEFECT,
-            TIM_CHECKSUM_CORE_DEFECT
-        ])
+        .assert_corrupted_files_raise_lucenes_errors_but(&[TMD_ID_CORE_DEFECT])
         .is_empty());
 }
 

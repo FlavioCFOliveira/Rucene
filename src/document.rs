@@ -2318,6 +2318,12 @@ impl KeywordField {
 }
 
 impl IndexableField for KeywordField {
+    /// This field answers with itself: Java's `instanceof KeywordField` on it is
+    /// `true`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -4625,6 +4631,12 @@ impl IntField {
 }
 
 impl IndexableField for IntField {
+    /// This field answers with itself: Java's `instanceof IntField` on it is
+    /// `true`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }

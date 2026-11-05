@@ -268,6 +268,14 @@ impl SortingCodecReader {
 }
 
 impl LeafReader for SortingCodecReader {
+    /// This reader is a `CodecReader`: Java's `instanceof CodecReader` on it
+    /// is `true`.
+    fn as_codec_reader(
+        self: Arc<Self>,
+    ) -> Option<Arc<dyn crate::index::codec_reader::CodecReader>> {
+        Some(self)
+    }
+
     fn core(&self) -> &IndexReaderCore {
         self.inner.core()
     }
@@ -533,6 +541,14 @@ impl std::fmt::Display for AlreadySortedCodecReader {
 }
 
 impl LeafReader for AlreadySortedCodecReader {
+    /// This reader is a `CodecReader`: Java's `instanceof CodecReader` on it
+    /// is `true`.
+    fn as_codec_reader(
+        self: Arc<Self>,
+    ) -> Option<Arc<dyn crate::index::codec_reader::CodecReader>> {
+        Some(self)
+    }
+
     fn core(&self) -> &IndexReaderCore {
         self.inner.core()
     }
@@ -1317,6 +1333,14 @@ fn remap(field_infos: &FieldInfos, info: &FieldInfo) -> Result<FieldInfo> {
 }
 
 impl LeafReader for SlowCompositeCodecReaderWrapper {
+    /// This reader is a `CodecReader`: Java's `instanceof CodecReader` on it
+    /// is `true`.
+    fn as_codec_reader(
+        self: Arc<Self>,
+    ) -> Option<Arc<dyn crate::index::codec_reader::CodecReader>> {
+        Some(self)
+    }
+
     fn core(&self) -> &IndexReaderCore {
         &self.core
     }

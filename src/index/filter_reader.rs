@@ -640,6 +640,14 @@ impl FilterCodecReader {
 }
 
 impl LeafReader for FilterCodecReader {
+    /// This reader is a `CodecReader`: Java's `instanceof CodecReader` on it
+    /// is `true`.
+    fn as_codec_reader(
+        self: Arc<Self>,
+    ) -> Option<Arc<dyn crate::index::codec_reader::CodecReader>> {
+        Some(self)
+    }
+
     fn core(&self) -> &IndexReaderCore {
         self.inner.core()
     }
@@ -860,6 +868,14 @@ impl Bits for ArcBits {
 }
 
 impl LeafReader for LiveDocsCodecReader {
+    /// This reader is a `CodecReader`: Java's `instanceof CodecReader` on it
+    /// is `true`.
+    fn as_codec_reader(
+        self: Arc<Self>,
+    ) -> Option<Arc<dyn crate::index::codec_reader::CodecReader>> {
+        Some(self)
+    }
+
     fn core(&self) -> &IndexReaderCore {
         self.inner.core()
     }

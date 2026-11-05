@@ -290,6 +290,18 @@ pub trait DocValuesFormat: Send + Sync + fmt::Debug {
         &self,
         state: &SegmentReadState<'a>,
     ) -> Result<Box<dyn DocValuesProducer>>;
+
+    /// This format as [`Any`](std::any::Any), for the `instanceof` tests Java
+    /// code makes on a `DocValuesFormat` (`TestUtil.getDocValuesFormat(Codec, String)` narrows
+    /// to `PerFieldDocValuesFormat`, `TestUtil.java:1409-1416`).
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** Java tests the run-time
+    /// class of any object; a Rust trait object exposes its concrete type only
+    /// through `Any`, which an implementation opts into by returning
+    /// `Some(self)`. The default, `None`, answers `false` to every such test.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
 }
 
 impl fmt::Display for dyn DocValuesFormat + '_ {

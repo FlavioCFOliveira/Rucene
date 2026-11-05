@@ -92,7 +92,12 @@ impl ChildSaveStrategy {
                 let word_index = bit_index >> 6;
                 let word_fp = offset + i64::from(word_index << 3);
                 let word = input.read_long_at(word_fp)? as u64;
-                let mask = 1u64 << bit_index;
+                // `1L << bitIndex` (`TrieBuilder.java:530`): Java takes a
+                // `long` shift distance modulo 64, so a label past the
+                // node's first word tests its bit within the word
+                // `wordIndex` selects. `wrapping_shl` masks the distance the
+                // same way, where `<<` would overflow (a panic in debug).
+                let mask = 1u64.wrapping_shl(bit_index as u32);
                 if word & mask == 0 {
                     return Ok(None);
                 }
@@ -432,5 +437,43 @@ impl TrieReader {
         child.label = target_label;
         Self::load_node(self.input.as_mut(), &mut child, parent.fp - delta as i64)?;
         Ok(Some(child))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ChildSaveStrategy;
+    use crate::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT};
+
+    /// `BITS.lookup` (`TrieBuilder.java:520-540`) builds its mask with
+    /// `1L << bitIndex`, a `long` shift Java takes modulo 64: a label 64 or
+    /// more past the node's minimum tests its bit within the word
+    /// `bitIndex >>> 6` selects. A node of two words (16 strategy bytes)
+    /// holding labels 0, 1, 3, 66 and 100 finds 66 and 100 at positions 3 and
+    /// 4, and misses 64 and 101.
+    #[test]
+    fn bits_lookup_past_the_first_word_shifts_modulo_64_as_java() {
+        let dir = ByteBuffersDirectory::new();
+        let word0: u64 = 0b1011;
+        let word1: u64 = (1 << 36) | (1 << 2);
+        {
+            let mut out = dir.create_output("t", &*DEFAULT_IO_CONTEXT).unwrap();
+            out.write_long(word0 as i64).unwrap();
+            out.write_long(word1 as i64).unwrap();
+            out.close().unwrap();
+        }
+        let input = dir.open_input("t", &*DEFAULT_IO_CONTEXT).unwrap();
+        let mut access = input.random_access_slice(0, 16).unwrap();
+        let lookup = |label: i32, access: &mut dyn crate::store::RandomAccessInput| {
+            ChildSaveStrategy::Bits
+                .lookup(label, access, 0, 16, 0)
+                .unwrap()
+        };
+        assert_eq!(lookup(3, access.as_mut()), Some(2));
+        assert_eq!(lookup(66, access.as_mut()), Some(3));
+        assert_eq!(lookup(100, access.as_mut()), Some(4));
+        assert_eq!(lookup(64, access.as_mut()), None);
+        assert_eq!(lookup(101, access.as_mut()), None);
+        assert_eq!(lookup(128, access.as_mut()), None);
     }
 }

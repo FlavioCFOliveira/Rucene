@@ -626,7 +626,7 @@ fn delete_all_aborts_a_running_merge() {
     });
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
-    let mut policy = LogMergePolicy::by_doc_count();
+    let policy = LogMergePolicy::by_doc_count();
     policy.set_merge_factor(2).unwrap();
     config.set_merge_policy(Arc::new(policy)).unwrap();
     config
@@ -1430,7 +1430,7 @@ fn a_rollback_aborts_every_pending_merge_and_raises_the_first_failure() {
     ensure_codec();
     let log = Arc::new(IwLog::default());
     let finished: Arc<Mutex<Vec<String>>> = Arc::default();
-    let mut inner = LogMergePolicy::by_doc_count();
+    let inner = LogMergePolicy::by_doc_count();
     inner.set_merge_factor(2).unwrap();
     let recorded = Arc::clone(&finished);
     let policy = OneMergeWrappingMergePolicy::new(
@@ -1597,7 +1597,7 @@ fn hooked_policy(
     fail_wrap: bool,
     merge_factor: i32,
 ) -> Arc<dyn MergePolicy> {
-    let mut inner = LogMergePolicy::by_doc_count();
+    let inner = LogMergePolicy::by_doc_count();
     inner.set_merge_factor(merge_factor).unwrap();
     let finished = Arc::clone(finished);
     Arc::new(OneMergeWrappingMergePolicy::new(
@@ -1952,7 +1952,7 @@ fn a_failure_registering_a_merge_propagates_as_lucene_does() {
         writer.commit().unwrap();
     }
     dir.delete_file("_0.fdt").unwrap();
-    let mut policy = LogMergePolicy::by_doc_count();
+    let policy = LogMergePolicy::by_doc_count();
     policy.set_merge_factor(2).unwrap();
     let policy: Arc<dyn MergePolicy> = Arc::new(policy);
     let merged = writer.maybe_merge_with(&policy, MergeTrigger::Explicit, -1);

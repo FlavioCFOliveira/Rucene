@@ -36,7 +36,7 @@ use crate::codecs::stub::{FieldInfo, FieldInfos, SegmentInfo};
 use crate::codecs::term_vectors::{TermVectorsFormat, TermVectorsReader, TermVectorsWriter};
 use crate::error::{LuceneError, Result};
 use crate::index::leaf_reader::TermVectors;
-use crate::index::postings_enum::{Impacts, ImpactsEnum, ImpactsSource, PostingsEnum};
+use crate::index::postings_enum::{ImpactsEnum, PostingsEnum};
 use crate::index::terms::{Fields, SeekStatus, TermState, Terms, TermsEnum};
 use crate::index::{segment_file_name, DocIDMerger, DocIDMergerSub, DocMap, MergeState};
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
@@ -3209,9 +3209,13 @@ impl TermsEnum for TVTermsEnum {
         Ok(Box::new(postings))
     }
 
-    fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {
-        let postings = self.postings(None, flags)?;
-        Ok(Box::new(SlowImpactsEnum::new(postings)))
+    /// Equivalent to `TVTermsEnum.impacts(int)`
+    /// (`Lucene90CompressingTermVectorsReader.java:1200-1204`): a
+    /// `SlowImpactsEnum` over `postings(null, PostingsEnum.FREQS)`, whatever
+    /// `flags` asks.
+    fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
+        let postings = self.postings(None, crate::index::postings_enum::POSTINGS_ENUM_FREQS)?;
+        Ok(Box::new(crate::index::SlowImpactsEnum::new(postings)))
     }
 
     fn term_state(&mut self) -> Result<Box<dyn TermState>> {
@@ -3348,8 +3352,12 @@ impl DocIdSetIterator for TVPostingsEnum {
         Ok(self.doc)
     }
 
-    fn advance(&mut self, _target: i32) -> Result<i32> {
-        self.next_doc()
+    /// Equivalent to `TVPostingsEnum.advance(int)`: `slowAdvance(target)`,
+    /// `nextDoc()` until the doc reaches `target`
+    /// (`Lucene90CompressingTermVectorsReader.java:1336-1338`), so a target
+    /// past the only document (doc 0) exhausts the enum.
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        self.slow_advance(target)
     }
 
     fn cost(&self) -> i64 {
@@ -3375,11 +3383,14 @@ impl std::fmt::Display for TVPostingsEnum {
 }
 
 impl PostingsEnum for TVPostingsEnum {
+    /// Equivalent to `TVPostingsEnum.freq()`: `checkDoc()`
+    /// (`Lucene90CompressingTermVectorsReader.java:1246-1252`), then the
+    /// term's frequency.
     fn freq(&self) -> Result<i32> {
-        if self.doc == NO_MORE_DOCS || self.doc == -1 {
-            return Err(LuceneError::illegal_state(
-                "freq called on unpositioned postings enum".to_string(),
-            ));
+        if self.doc == NO_MORE_DOCS {
+            return Err(LuceneError::illegal_state("DocsEnum exhausted"));
+        } else if self.doc == -1 {
+            return Err(LuceneError::illegal_state("DocsEnum not started"));
         }
         Ok(self.term_freq)
     }
@@ -3391,9 +3402,7 @@ impl PostingsEnum for TVPostingsEnum {
             ));
         }
         if self.i >= self.term_freq - 1 {
-            return Err(LuceneError::illegal_state(
-                "read past last position".to_string(),
-            ));
+            return Err(LuceneError::illegal_state("Read past last position"));
         }
         self.i += 1;
         if let Some(ref idx) = self.payload_index {
@@ -3464,107 +3473,6 @@ impl PostingsEnum for TVPostingsEnum {
             return Ok(None);
         }
         Ok(Some(self.payload.slice()))
-    }
-}
-
-// SlowImpactsEnum wraps a PostingsEnum and reports a single impact level.
-struct SlowImpactsEnum {
-    postings: Box<dyn PostingsEnum>,
-}
-
-impl SlowImpactsEnum {
-    fn new(postings: Box<dyn PostingsEnum>) -> Self {
-        Self { postings }
-    }
-}
-
-impl DocIdSetIterator for SlowImpactsEnum {
-    fn doc_id(&self) -> i32 {
-        self.postings.doc_id()
-    }
-
-    fn next_doc(&mut self) -> Result<i32> {
-        self.postings.next_doc()
-    }
-
-    fn advance(&mut self, target: i32) -> Result<i32> {
-        self.postings.advance(target)
-    }
-
-    fn cost(&self) -> i64 {
-        self.postings.cost()
-    }
-}
-
-impl std::fmt::Display for SlowImpactsEnum {
-    /// `org.apache.lucene.index.SlowImpactsEnum` declares no `toString()` in Lucene 10.5.0, so
-    /// `java.lang.Object`'s applies: the binary class name, `@`, and the
-    /// identity hash. See
-    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
-    /// for why only the hexadecimal suffix diverges.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&crate::index::index_reader::java_object_to_string(
-            "org.apache.lucene.index.SlowImpactsEnum",
-            self,
-        ))
-    }
-}
-
-impl PostingsEnum for SlowImpactsEnum {
-    fn freq(&self) -> Result<i32> {
-        self.postings.freq()
-    }
-
-    fn next_position(&mut self) -> Result<i32> {
-        self.postings.next_position()
-    }
-
-    fn start_offset(&self) -> i32 {
-        self.postings.start_offset()
-    }
-
-    fn end_offset(&self) -> i32 {
-        self.postings.end_offset()
-    }
-
-    fn get_payload(&self) -> Result<Option<&[u8]>> {
-        self.postings.get_payload()
-    }
-}
-
-impl ImpactsSource for SlowImpactsEnum {
-    fn advance_shallow(&mut self, _target: i32) -> Result<()> {
-        Ok(())
-    }
-
-    fn get_impacts(&mut self) -> Result<Box<dyn Impacts>> {
-        let freq = self.postings.freq()?;
-        Ok(Box::new(SingleImpact { freq }))
-    }
-}
-
-impl ImpactsEnum for SlowImpactsEnum {}
-
-struct SingleImpact {
-    freq: i32,
-}
-
-impl Impacts for SingleImpact {
-    fn num_levels(&self) -> i32 {
-        1
-    }
-
-    fn doc_id_up_to(&self, _level: i32) -> i32 {
-        NO_MORE_DOCS
-    }
-
-    fn get_impacts(&self, _level: i32) -> crate::index::postings_enum::FreqAndNormBuffer {
-        let mut buf = crate::index::postings_enum::FreqAndNormBuffer::new();
-        buf.grow_no_copy(1);
-        buf.freqs[0] = self.freq;
-        buf.norms[0] = 1;
-        buf.size = 1;
-        buf
     }
 }
 
@@ -3995,6 +3903,94 @@ mod tests {
         assert!(it.next().unwrap().is_none());
 
         reader.check_integrity().unwrap();
+    }
+
+    /// `TVTermsEnum.impacts` is a `SlowImpactsEnum` whose `getImpacts()`
+    /// reads nothing from the postings (one level, freq `Integer.MAX_VALUE`,
+    /// norm 1, `SlowImpactsEnum.java:96-118`), so `CheckIndex` may ask for it
+    /// before `nextDoc()`; `TVPostingsEnum.advance` is `slowAdvance`
+    /// (`Lucene90CompressingTermVectorsReader.java:1336-1338`), so a target
+    /// past doc 0 exhausts the enum; `freq()` before `nextDoc()` fails as
+    /// `checkDoc()` does (`:1246-1252`).
+    #[test]
+    fn term_vector_impacts_and_advance_are_lucenes() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut tags = RealFieldInfo::new("tags", 0);
+        tags.index_options = IndexOptions::DOCS_AND_FREQS_AND_POSITIONS;
+        let field_infos = FieldInfos::new(vec![tags]).unwrap();
+        let segment_info = test_segment_info(Arc::clone(&dir), "_0", 1);
+        let format = Lucene90CompressingTermVectorsFormat::new(
+            VECTORS_CODEC_NAME,
+            "",
+            Arc::clone(&compressing::FAST),
+            1 << 12,
+            128,
+            10,
+        )
+        .unwrap();
+        {
+            let mut writer = format
+                .vectors_writer(&dir, &segment_info, &*DEFAULT_IO_CONTEXT)
+                .unwrap();
+            writer.start_document(1).unwrap();
+            writer
+                .start_field(
+                    field_infos.field_info("tags").unwrap(),
+                    1,
+                    true,
+                    false,
+                    false,
+                )
+                .unwrap();
+            writer
+                .start_term(&BytesRef::new(b"alpha".to_vec()), 2)
+                .unwrap();
+            writer.add_position(0, 0, 0, None).unwrap();
+            writer.add_position(3, 0, 0, None).unwrap();
+            writer.finish_term().unwrap();
+            writer.finish_field().unwrap();
+            writer.finish_document().unwrap();
+            writer.finish(1).unwrap();
+            writer.close().unwrap();
+        }
+        let reader = format
+            .vectors_reader(
+                dir.as_ref(),
+                &segment_info,
+                &field_infos,
+                &*DEFAULT_IO_CONTEXT,
+            )
+            .unwrap();
+        let fields = reader.get(0).unwrap().expect("doc 0 has vectors");
+        let terms = fields.terms("tags").unwrap().expect("tags terms");
+        let mut it = terms.iterator().unwrap();
+        it.next().unwrap().expect("alpha");
+
+        let mut impacts = it.impacts(POSTINGS_ENUM_POSITIONS).unwrap();
+        let read = impacts.get_impacts().unwrap();
+        assert_eq!(read.num_levels(), 1);
+        assert_eq!(read.doc_id_up_to(0), NO_MORE_DOCS);
+        let buffer = read.get_impacts(0);
+        assert_eq!(
+            (buffer.size, buffer.freqs[0], buffer.norms[0]),
+            (1, i32::MAX, 1)
+        );
+        assert_eq!(
+            impacts.freq().unwrap_err().to_string(),
+            "illegal state: DocsEnum not started"
+        );
+
+        let mut postings = it.postings(None, POSTINGS_ENUM_POSITIONS).unwrap();
+        assert_eq!(postings.advance(NO_MORE_DOCS).unwrap(), NO_MORE_DOCS);
+        assert_eq!(
+            postings.freq().unwrap_err().to_string(),
+            "illegal state: DocsEnum exhausted"
+        );
+        let mut postings = it.postings(None, POSTINGS_ENUM_POSITIONS).unwrap();
+        assert_eq!(postings.advance(1).unwrap(), NO_MORE_DOCS);
+        let mut postings = it.postings(None, POSTINGS_ENUM_POSITIONS).unwrap();
+        assert_eq!(postings.advance(0).unwrap(), 0);
+        assert_eq!(postings.freq().unwrap(), 2);
     }
 
     #[test]

@@ -12281,7 +12281,7 @@ mod tests {
             writer.add_document(&doc).unwrap();
             writer.commit().unwrap();
         }
-        let mut policy = crate::index::merge_policy::LogMergePolicy::by_doc_count();
+        let policy = crate::index::merge_policy::LogMergePolicy::by_doc_count();
         policy.set_merge_factor(2).unwrap();
         writer
             .update_pending_merges_with_policy(

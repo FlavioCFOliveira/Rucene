@@ -1701,6 +1701,18 @@ pub trait MergePolicy: Send + Sync + std::fmt::Display {
         );
         Ok(true)
     }
+
+    /// This policy as [`Any`](std::any::Any), for the `instanceof` tests Java
+    /// code makes on a `MergePolicy` (`TestUtil.reduceOpenFiles` narrows to
+    /// `LogMergePolicy` or `TieredMergePolicy`, `TestUtil.java:1460-1466`).
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** Java tests the run-time
+    /// class of any object; a Rust trait object exposes its concrete type only
+    /// through `Any`, which an implementation opts into by returning
+    /// `Some(self)`. The default, `None`, answers `false` to every such test.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
 }
 
 /// Returns the byte size of `info`, prorated by the fraction of its documents
@@ -2218,6 +2230,65 @@ struct SegmentSizeAndDocs {
     max_doc: i32,
 }
 
+/// An `int` setting of a merge policy that Java's public setter can change on
+/// the live policy, through any alias of it.
+///
+/// Java's `LogMergePolicy.setMergeFactor` and
+/// `TieredMergePolicy.setMaxMergeAtOnce` write a plain field of the policy the
+/// `IndexWriterConfig` holds (`TestUtil.reduceOpenFiles` calls them on
+/// `w.getConfig().getMergePolicy()`, `TestUtil.java:1456-1471`). The config
+/// holds the policy behind an `Arc`, so the setting is held in an atomic and
+/// written through `&self`, as [`CfsSettings`] does for `noCFSRatio`. Reads
+/// and writes are `Relaxed`: Java's fields are plain, not `volatile`.
+#[derive(Debug)]
+struct LiveI32(std::sync::atomic::AtomicI32);
+
+impl LiveI32 {
+    fn new(v: i32) -> Self {
+        Self(std::sync::atomic::AtomicI32::new(v))
+    }
+
+    fn get(&self) -> i32 {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    fn set(&self, v: i32) {
+        self.0.store(v, Ordering::Relaxed);
+    }
+}
+
+impl Clone for LiveI32 {
+    fn clone(&self) -> Self {
+        Self::new(self.get())
+    }
+}
+
+/// A `double` setting of a merge policy that Java's public setter can change
+/// on the live policy (`TieredMergePolicy.setSegmentsPerTier`), held as the
+/// bit pattern of an `f64`; see [`LiveI32`].
+#[derive(Debug)]
+struct LiveF64(std::sync::atomic::AtomicU64);
+
+impl LiveF64 {
+    fn new(v: f64) -> Self {
+        Self(std::sync::atomic::AtomicU64::new(v.to_bits()))
+    }
+
+    fn get(&self) -> f64 {
+        f64::from_bits(self.0.load(Ordering::Relaxed))
+    }
+
+    fn set(&self, v: f64) {
+        self.0.store(v.to_bits(), Ordering::Relaxed);
+    }
+}
+
+impl Clone for LiveF64 {
+    fn clone(&self) -> Self {
+        Self::new(self.get())
+    }
+}
+
 /// Selects merges by grouping segments into size tiers.
 ///
 /// Equivalent to `org.apache.lucene.index.TieredMergePolicy`, the default merge
@@ -2226,10 +2297,10 @@ struct SegmentSizeAndDocs {
 /// than `max_merged_segment_bytes` unless deletes make it worthwhile.
 #[derive(Debug, Clone)]
 pub struct TieredMergePolicy {
-    max_merge_at_once: i32,
+    max_merge_at_once: LiveI32,
     max_merged_segment_bytes: i64,
     floor_segment_bytes: i64,
-    segs_per_tier: f64,
+    segs_per_tier: LiveF64,
     force_merge_deletes_pct_allowed: f64,
     deletes_pct_allowed: f64,
     target_search_concurrency: i32,
@@ -2246,10 +2317,10 @@ impl TieredMergePolicy {
     /// Creates the policy with Lucene 10.5.0's defaults.
     pub fn new() -> Self {
         Self {
-            max_merge_at_once: 10,
+            max_merge_at_once: LiveI32::new(10),
             max_merged_segment_bytes: 5 * 1024 * 1024 * 1024,
             floor_segment_bytes: 16 * 1024 * 1024,
-            segs_per_tier: 8.0,
+            segs_per_tier: LiveF64::new(8.0),
             force_merge_deletes_pct_allowed: 10.0,
             deletes_pct_allowed: 20.0,
             target_search_concurrency: 1,
@@ -2258,13 +2329,21 @@ impl TieredMergePolicy {
     }
 
     /// Sets how many segments may be merged at once.
-    pub fn set_max_merge_at_once(&mut self, v: i32) -> Result<&mut Self> {
+    ///
+    /// Equivalent to `TieredMergePolicy.setMaxMergeAtOnce(int)`. It takes
+    /// `&self` because Java changes the live policy an `IndexWriterConfig`
+    /// holds (see [`LiveI32`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns `IllegalArgument` when `v` is below 2.
+    pub fn set_max_merge_at_once(&self, v: i32) -> Result<&Self> {
         if v < 2 {
             return Err(crate::error::LuceneError::IllegalArgument(format!(
                 "maxMergeAtOnce must be > 1 (got {v})"
             )));
         }
-        self.max_merge_at_once = v;
+        self.max_merge_at_once.set(v);
         Ok(self)
     }
 
@@ -2308,13 +2387,21 @@ impl TieredMergePolicy {
     }
 
     /// Sets how many segments are allowed per tier.
-    pub fn set_segments_per_tier(&mut self, v: f64) -> Result<&mut Self> {
+    ///
+    /// Equivalent to `TieredMergePolicy.setSegmentsPerTier(double)`. It takes
+    /// `&self` because Java changes the live policy an `IndexWriterConfig`
+    /// holds (see [`LiveI32`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns `IllegalArgument` when `v` is below 2.0.
+    pub fn set_segments_per_tier(&self, v: f64) -> Result<&Self> {
         if v < 2.0 {
             return Err(crate::error::LuceneError::IllegalArgument(format!(
                 "segmentsPerTier must be >= 2.0 (got {v})"
             )));
         }
-        self.segs_per_tier = v;
+        self.segs_per_tier.set(v);
         Ok(self)
     }
 
@@ -2380,7 +2467,7 @@ impl TieredMergePolicy {
     ///
     /// Equivalent to `TieredMergePolicy.getMaxMergeAtOnce()`.
     pub fn get_max_merge_at_once(&self) -> i32 {
-        self.max_merge_at_once
+        self.max_merge_at_once.get()
     }
 
     /// Returns the largest merged segment, in megabytes.
@@ -2395,7 +2482,7 @@ impl TieredMergePolicy {
     ///
     /// Equivalent to `TieredMergePolicy.getSegmentsPerTier()`.
     pub fn get_segments_per_tier(&self) -> f64 {
-        self.segs_per_tier
+        self.segs_per_tier.get()
     }
 
     /// Returns how many search-concurrency slices the policy aims for.
@@ -2488,7 +2575,8 @@ impl TieredMergePolicy {
             // Pretend the merge has perfect skew; skew doesn't matter in this
             // case because this merge will not "cascade" and so it cannot lead
             // to N^2 merge cost over time.
-            let merge_factor = (self.max_merge_at_once as f64).min(self.segs_per_tier) as i32;
+            let merge_factor =
+                (self.max_merge_at_once.get() as f64).min(self.segs_per_tier.get()) as i32;
             1.0 / f64::from(merge_factor)
         } else {
             self.floor_size(candidate[0].size_in_bytes) as f64
@@ -2563,7 +2651,7 @@ impl TieredMergePolicy {
 
                 let mut idx = start_idx;
                 while idx < eligible.len()
-                    && (candidate.len() as i32) < self.max_merge_at_once
+                    && (candidate.len() as i32) < self.max_merge_at_once.get()
                     && ((candidate.len() as i32) < merge_factor
                         || bytes_this_merge < self.floor_segment_bytes)
                     && bytes_this_merge < self.max_merged_segment_bytes
@@ -2669,6 +2757,13 @@ impl TieredMergePolicy {
 }
 
 impl MergePolicy for TieredMergePolicy {
+    /// This policy answers with itself: Java's `instanceof` on it is `true`
+    /// (also for `LogByteSizeMergePolicy` and `LogDocMergePolicy`, which this
+    /// port builds as a `LogMergePolicy`).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn find_merges(
         &self,
         _merge_trigger: MergeTrigger,
@@ -2741,7 +2836,8 @@ impl MergePolicy for TieredMergePolicy {
         });
 
         allowed_del_count = allowed_del_count.max(0);
-        let merge_factor = (self.max_merge_at_once as f64).min(self.segs_per_tier) as i32;
+        let merge_factor =
+            (self.max_merge_at_once.get() as f64).min(self.segs_per_tier.get()) as i32;
 
         if min_segment_bytes == i64::MAX {
             min_segment_bytes = self.floor_segment_bytes;
@@ -2750,18 +2846,20 @@ impl MergePolicy for TieredMergePolicy {
         let mut bytes_left = tot_index_bytes;
         loop {
             let seg_count_level = bytes_left as f64 / level_size as f64;
-            if seg_count_level < self.segs_per_tier || level_size == self.max_merged_segment_bytes {
+            if seg_count_level < self.segs_per_tier.get()
+                || level_size == self.max_merged_segment_bytes
+            {
                 allowed_seg_count += seg_count_level.ceil();
                 break;
             }
-            allowed_seg_count += self.segs_per_tier;
-            bytes_left -= (self.segs_per_tier * level_size as f64) as i64;
+            allowed_seg_count += self.segs_per_tier.get();
+            bytes_left -= (self.segs_per_tier.get() * level_size as f64) as i64;
             level_size = self
                 .max_merged_segment_bytes
                 .min(level_size.saturating_mul(i64::from(merge_factor.max(1))));
         }
         // The count may dip below one tier when every segment is under the floor.
-        allowed_seg_count = allowed_seg_count.max(self.segs_per_tier);
+        allowed_seg_count = allowed_seg_count.max(self.segs_per_tier.get());
         allowed_seg_count =
             allowed_seg_count.max(f64::from(self.target_search_concurrency - too_big_count));
 
@@ -3204,7 +3302,7 @@ struct SegmentInfoAndLevel {
 /// selection are unchanged.
 #[derive(Debug, Clone)]
 pub struct LogMergePolicy {
-    merge_factor: i32,
+    merge_factor: LiveI32,
     min_merge_size: i64,
     max_merge_size: i64,
     max_merge_size_for_forced_merge: i64,
@@ -3225,7 +3323,7 @@ impl LogMergePolicy {
     /// `long` fields do, and a subclass sets them.
     pub fn new(size: Arc<dyn LogMergeSize>) -> Self {
         Self {
-            merge_factor: DEFAULT_MERGE_FACTOR,
+            merge_factor: LiveI32::new(DEFAULT_MERGE_FACTOR),
             min_merge_size: 0,
             max_merge_size: 0,
             max_merge_size_for_forced_merge: i64::MAX,
@@ -3264,19 +3362,27 @@ impl LogMergePolicy {
     }
 
     /// Sets how many segments are merged at once.
-    pub fn set_merge_factor(&mut self, v: i32) -> Result<&mut Self> {
+    ///
+    /// Equivalent to `LogMergePolicy.setMergeFactor(int)`. It takes `&self`
+    /// because Java changes the live policy an `IndexWriterConfig` holds (see
+    /// [`LiveI32`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns `IllegalArgument` when `v` is below 2.
+    pub fn set_merge_factor(&self, v: i32) -> Result<&Self> {
         if v < 2 {
             return Err(crate::error::LuceneError::IllegalArgument(format!(
                 "mergeFactor cannot be less than 2 (got {v})"
             )));
         }
-        self.merge_factor = v;
+        self.merge_factor.set(v);
         Ok(self)
     }
 
     /// Returns the merge factor.
     pub fn get_merge_factor(&self) -> i32 {
-        self.merge_factor
+        self.merge_factor.get()
     }
 
     /// Sets the cap on documents in a merged segment.
@@ -3555,7 +3661,7 @@ impl LogMergePolicy {
                     spec.add(OneMerge::new(segments[start + 1..last].to_vec())?);
                 }
                 last = start;
-            } else if last - start == self.merge_factor as usize {
+            } else if last - start == self.merge_factor.get() as usize {
                 // mergeFactor eligible segments were found; add them as a merge.
                 spec.add(OneMerge::new(segments[start..last].to_vec())?);
                 last = start;
@@ -3588,7 +3694,7 @@ impl LogMergePolicy {
     ) -> Result<Option<MergeSpecification>> {
         let mut spec = MergeSpecification::new();
         let segments = infos.as_slice();
-        let merge_factor = self.merge_factor as usize;
+        let merge_factor = self.merge_factor.get() as usize;
 
         // First enrol all "full" merges — mergeFactor segments each — so they
         // can run concurrently.
@@ -3642,6 +3748,13 @@ impl LogMergePolicy {
 }
 
 impl MergePolicy for LogMergePolicy {
+    /// This policy answers with itself: Java's `instanceof` on it is `true`
+    /// (also for `LogByteSizeMergePolicy` and `LogDocMergePolicy`, which this
+    /// port builds as a `LogMergePolicy`).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn find_merges(
         &self,
         _merge_trigger: MergeTrigger,
@@ -3656,7 +3769,7 @@ impl MergePolicy for LogMergePolicy {
 
         // A segment's level is the log of its size, base mergeFactor. Java
         // computes it in `float` (`LogMergePolicy.java:94-110`).
-        let norm = f64::from(self.merge_factor).ln() as f32;
+        let norm = f64::from(self.merge_factor.get()).ln() as f32;
         let mut levels: Vec<SegmentInfoAndLevel> = Vec::with_capacity(num_segments);
         let mut total_doc_count = 0i64;
         for index in 0..num_segments {
@@ -3712,7 +3825,7 @@ impl MergePolicy for LogMergePolicy {
                 + i64::from(total_doc_count.rem_euclid(i64::from(concurrency)) != 0);
             let max_merge_docs = i64::from(self.max_merge_docs).min(per_slice);
 
-            let mut end = start + self.merge_factor as usize;
+            let mut end = start + self.merge_factor.get() as usize;
             while end as i64 <= 1 + upto {
                 let mut any_merging = false;
                 let mut merge_size = 0i64;
@@ -3739,7 +3852,7 @@ impl MergePolicy for LogMergePolicy {
                     i += 1;
                 }
 
-                if end - start >= self.merge_factor as usize
+                if end - start >= self.merge_factor.get() as usize
                     && self.min_merge_size < self.max_merge_size
                     && merge_size < self.min_merge_size
                     && !any_merging
@@ -3773,7 +3886,7 @@ impl MergePolicy for LogMergePolicy {
                 }
 
                 start = end;
-                end = start + self.merge_factor as usize;
+                end = start + self.merge_factor.get() as usize;
             }
             start = (1 + upto) as usize;
         }
@@ -3881,7 +3994,7 @@ impl MergePolicy for LogMergePolicy {
             }
             if merge_context.num_deletes_to_merge(info)? > 0 {
                 batch.push(info.clone());
-                if batch.len() as i32 == self.merge_factor {
+                if batch.len() as i32 == self.merge_factor.get() {
                     spec.add(OneMerge::new(std::mem::take(&mut batch))?);
                 }
             }
@@ -5854,7 +5967,7 @@ impl std::fmt::Display for LogMergePolicy {
              maxMergeSizeForForcedMerge={}, calibrateSizeByDeletes={}, maxMergeDocs={}, \
              maxCFSSegmentSizeMB={}, noCFSRatio={}]",
             self.min_merge_size,
-            self.merge_factor,
+            self.merge_factor.get(),
             self.max_merge_size,
             self.max_merge_size_for_forced_merge,
             self.calibrate_size_by_deletes,
@@ -5878,11 +5991,11 @@ impl std::fmt::Display for TieredMergePolicy {
             "[TieredMergePolicy: maxMergeAtOnce={}, maxMergedSegmentMB={}, floorSegmentMB={}, \
              forceMergeDeletesPctAllowed={}, segmentsPerTier={}, maxCFSSegmentSizeMB={}, \
              noCFSRatio={}, deletesPctAllowed={}, targetSearchConcurrency={}",
-            self.max_merge_at_once,
+            self.max_merge_at_once.get(),
             double_to_string(self.max_merged_segment_bytes as f64 / 1024. / 1024.),
             double_to_string(self.floor_segment_bytes as f64 / 1024. / 1024.),
             double_to_string(self.force_merge_deletes_pct_allowed),
-            double_to_string(self.segs_per_tier),
+            double_to_string(self.segs_per_tier.get()),
             double_to_string(self.cfs.get_max_cfs_segment_size_mb()),
             double_to_string(self.cfs.get_no_cfs_ratio()),
             double_to_string(self.deletes_pct_allowed),

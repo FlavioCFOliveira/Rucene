@@ -94,5 +94,10 @@ write the fixtures (`../*.tsv`) the crate's parity tests (`src/tests/`) read.
   (`_linefiledocs.tsv`), `AutomatonTestUtil` (`_automaton.tsv`, with
   `randomSingleAutomaton` called by reflection), `FSTTester.doTest`
   (`_fsttester.tsv`: FST bytes, node and arc counts, random state) and the
-  comparators and ULP checks (`_compare.tsv`). The Rust side is
-  `crates/rucene-test-framework/tests/test_util_oracle.rs`.
+  comparators and ULP checks (`_compare.tsv`), the other `TestUtil` members
+  (`_members.tsv`: `reduceOpenFiles` on a live writer per merge policy and
+  scheduler, `getPostingsFormat`/`getDocValuesFormat` per codec,
+  `cloneDocument`, `addIndexesSlowly`, `assertConsistent` messages) and
+  `RamUsageTester` (`_ramusage.tsv`). The Rust side is
+  `crates/rucene-test-framework/tests/test_util_oracle.rs`, `test_util_index.rs`
+  (`_members.tsv`) and `ram_usage_tester_oracle.rs` (`_ramusage.tsv`).

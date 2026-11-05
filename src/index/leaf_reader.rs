@@ -220,6 +220,23 @@ pub trait LeafReader: AsIndexReader + Send + Sync + Debug + Display + 'static {
         None
     }
 
+    /// Returns this reader as a [`CodecReader`](crate::index::codec_reader::CodecReader)
+    /// when it is one, and `None` otherwise.
+    ///
+    /// Equivalent to Java's `reader instanceof CodecReader` followed by the
+    /// cast `(CodecReader) reader`, which `TestUtil.checkReader(LeafReader,
+    /// int)` performs (`TestUtil.java:376-382`).
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** Java tests the run-time
+    /// class of any object; a Rust trait object cannot be narrowed to another
+    /// trait object, so each port of a `CodecReader` answers with itself. The
+    /// default, `None`, is what `instanceof` answers for every other reader.
+    fn as_codec_reader(
+        self: Arc<Self>,
+    ) -> Option<Arc<dyn crate::index::codec_reader::CodecReader>> {
+        None
+    }
+
     /// Returns a [`TermVectors`] reader for this leaf.
     fn term_vectors(&self) -> Result<Box<dyn TermVectors>>;
 

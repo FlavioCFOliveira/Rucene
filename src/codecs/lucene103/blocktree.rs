@@ -2541,7 +2541,18 @@ impl Fields for Lucene103BlockTreeTermsReader {
 }
 
 impl FieldsProducer for Lucene103BlockTreeTermsReader {
+    /// Equivalent to `Lucene103BlockTreeTermsReader.checkIntegrity()`
+    /// (`Lucene103BlockTreeTermsReader.java:303-313`): the checksums of the
+    /// terms index (`.tip`) and the terms dictionary (`.tim`), then the
+    /// postings reader's.
     fn check_integrity(&self) -> Result<()> {
+        // terms index
+        codec_util::checksum_entire_file_shared(&*self.shared.index_in)?;
+
+        // term dictionary
+        codec_util::checksum_entire_file_shared(&*self.shared.terms_in)?;
+
+        // postings
         self.shared.postings_reader.check_integrity()
     }
 

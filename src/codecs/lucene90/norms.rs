@@ -119,6 +119,10 @@ pub struct Lucene90NormsConsumer {
     data: Box<dyn IndexOutput>,
     meta: Box<dyn IndexOutput>,
     max_doc: i32,
+    /// Set once [`close`](NormsConsumer::close) ran: Java nulls `meta` and
+    /// `data` in its `finally` (`Lucene90NormsConsumer.java:86`), so a second
+    /// close does nothing.
+    closed: bool,
 }
 
 impl fmt::Debug for Lucene90NormsConsumer {
@@ -185,6 +189,7 @@ impl Lucene90NormsConsumer {
             data: data.expect(expect),
             meta: meta.expect(expect),
             max_doc,
+            closed: false,
         })
     }
 
@@ -292,8 +297,14 @@ impl NormsConsumer for Lucene90NormsConsumer {
     }
 
     /// Equivalent to `Lucene90NormsConsumer.close()`
-    /// (`Lucene90NormsConsumer.java:68-88`).
+    /// (`Lucene90NormsConsumer.java:68-88`): the outputs are nulled in the
+    /// `finally` (`:86`), whatever the outcome, so a second call finds them
+    /// null and does nothing.
     fn close(&mut self) -> Result<()> {
+        if self.closed {
+            return Ok(());
+        }
+        self.closed = true;
         Self::close_outputs(Some(&mut self.data), Some(&mut self.meta))
     }
 }
@@ -1274,6 +1285,35 @@ mod tests {
         assert_eq!(collected, vec![Some(1), Some(2), Some(3), Some(4), Some(5)]);
         producer.check_integrity().unwrap();
         let _merge = producer.get_merge_instance().unwrap();
+        producer.close().unwrap();
+    }
+
+    /// `close()` nulls `meta` and `data` in its `finally`
+    /// (`Lucene90NormsConsumer.java:86`), so the second close of
+    /// `AssertingNormsConsumer.close` (`AssertingNormsFormat.java:78-79`) does
+    /// nothing: no error, and both files keep the bytes of the first close.
+    #[test]
+    fn close_twice_is_a_no_op() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
+        let info = test_segment_info("_0", 2);
+        let body = norm_field("body", 0);
+        let fis = field_infos(vec![body.clone()]);
+        let values = VecNormsProducer::new(HashMap::from([(0, vec![(0, 3), (1, 4)])]));
+        let mut consumer = Lucene90NormsFormat::new()
+            .norms_consumer(&write_state(&dir, &info, &fis))
+            .unwrap();
+        consumer.add_norms_field(&body, &values).unwrap();
+        consumer.close().unwrap();
+        let lengths = |dir: &Arc<dyn Directory>| {
+            ["_0.nvd", "_0.nvm"].map(|name| dir.file_length(name).unwrap())
+        };
+        let first = lengths(&dir);
+        consumer.close().unwrap();
+        assert_eq!(lengths(&dir), first);
+        let mut producer = Lucene90NormsFormat::new()
+            .norms_producer(&read_state(&dir, &info, &fis))
+            .unwrap();
+        producer.check_integrity().unwrap();
         producer.close().unwrap();
     }
 
