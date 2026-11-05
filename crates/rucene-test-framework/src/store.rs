@@ -17,6 +17,8 @@
 
 //! Port of `org.apache.lucene.tests.store`.
 
+pub mod base_directory_wrapper;
 pub mod mock_directory_wrapper;
 
+pub use base_directory_wrapper::BaseDirectoryWrapper;
 pub use mock_directory_wrapper::Throttling;

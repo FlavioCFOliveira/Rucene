@@ -569,6 +569,72 @@ impl LuceneTestCase {
         TestUtil::next_int(random, min, max)
     }
 
+    /// `newIOContext(random)`: `newIOContext(random, IOContext.DEFAULT)`.
+    pub fn new_io_context(random: &dyn Random) -> Box<dyn rucene::store::IOContext> {
+        Self::new_io_context_from(random, &*rucene::store::DEFAULT_IO_CONTEXT)
+    }
+
+    /// `newIOContext(random, oldContext)`: `oldContext` itself when it holds
+    /// the `ReadOnceHint`; else a random context that keeps at least the
+    /// estimated size of `oldContext`'s flush or merge information, or, for
+    /// neither, a random one of `DEFAULT`, a merge context and a flush
+    /// context.
+    ///
+    /// **Divergence.** Java returns `oldContext` itself; a Rust trait object
+    /// cannot be returned by value from a reference, so the port returns a
+    /// context with the same hints, merge and flush information.
+    pub fn new_io_context_from(
+        random: &dyn Random,
+        old_context: &dyn rucene::store::IOContext,
+    ) -> Box<dyn rucene::store::IOContext> {
+        use rucene::store::{
+            flush_io_context, hints_of, merge_io_context, DefaultIOContext, FlushInfo, MergeInfo,
+            ReadOnceHint,
+        };
+        if !hints_of::<ReadOnceHint>(old_context).is_empty() {
+            // just return as-is
+            return match (old_context.merge_info(), old_context.flush_info()) {
+                (Some(m), _) => merge_io_context(m),
+                (_, Some(f)) => flush_io_context(f),
+                _ => Box::new(
+                    DefaultIOContext::with_hints_slice(old_context.hints())
+                        .expect("INVARIANT: the hints of a valid context are valid"),
+                ),
+            };
+        }
+        let random_num_docs = random.next_int_bound(4192);
+        let size = random.next_int_bound(512).wrapping_mul(random_num_docs);
+        if let Some(flush) = old_context.flush_info() {
+            // Always return at least the estimatedSegmentSize of
+            // the incoming IOContext:
+            flush_io_context(FlushInfo::new(
+                random_num_docs,
+                flush.estimated_segment_size.max(i64::from(size)),
+            ))
+        } else if let Some(merge) = old_context.merge_info() {
+            // Always return at least the estimatedMergeBytes of
+            // the incoming IOContext:
+            let estimated = merge.estimated_merge_bytes.max(i64::from(size));
+            let is_external = random.next_boolean();
+            merge_io_context(MergeInfo::new(
+                random_num_docs,
+                estimated,
+                is_external,
+                TestUtil::next_int(random, 1, 100),
+            ))
+        } else {
+            // Make a totally random IOContext
+            match random.next_int_bound(3) {
+                1 => merge_io_context(MergeInfo::new(random_num_docs, i64::from(size), true, -1)),
+                2 => flush_io_context(FlushInfo::new(random_num_docs, i64::from(size))),
+                _ => Box::new(
+                    DefaultIOContext::with_hints_slice(&[])
+                        .expect("INVARIANT: no hints are valid hints"),
+                ),
+            }
+        }
+    }
+
     /// `atLeast(i)`: `atLeast(random(), i)`.
     pub fn at_least(i: i32) -> i32 {
         Self::at_least_with(&*Self::random(), i)

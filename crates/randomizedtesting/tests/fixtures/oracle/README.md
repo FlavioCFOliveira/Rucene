@@ -84,3 +84,15 @@ write the fixtures (`../*.tsv`) the crate's parity tests (`src/tests/`) read.
   `fixture()` reads a crate's own fixture, or `rucene-codecs`' when the crate
   has none of that name. To refresh only these fixtures, run
   `TestCodecsOracle` alone (as `regenerate.sh` does) and copy the new files.
+* **The helpers of `org.apache.lucene.tests.util` (rmp #342):**
+  `org.apache.lucene.tests.util.TestUtilOracle` writes
+  `crates/rucene-test-framework/tests/fixtures/testutil_*.tsv`: `English`
+  (`_english.tsv`), every `TestUtil` random generator per parameter set and
+  seed (`_generators.tsv`: digest of 40 results, the `nextLong()` left next,
+  the first result of the first seed), the `randomPattern` sequences
+  (`_patterns.tsv`), `LineFileDocs` over the embedded `europarl.lines.txt.gz`
+  (`_linefiledocs.tsv`), `AutomatonTestUtil` (`_automaton.tsv`, with
+  `randomSingleAutomaton` called by reflection), `FSTTester.doTest`
+  (`_fsttester.tsv`: FST bytes, node and arc counts, random state) and the
+  comparators and ULP checks (`_compare.tsv`). The Rust side is
+  `crates/rucene-test-framework/tests/test_util_oracle.rs`.

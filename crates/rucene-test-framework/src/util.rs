@@ -17,8 +17,12 @@
 
 //! Port of `org.apache.lucene.tests.util`.
 
+pub mod automaton;
+pub mod closeable_directory;
 pub mod english;
 pub mod fail_on_non_bulk_merges_info_stream;
+pub mod fst;
+pub mod line_file_docs;
 pub mod lucene_test_case;
 pub mod null_info_stream;
 pub mod remove_upon_close;
@@ -32,8 +36,10 @@ pub mod test_util;
 pub mod throttled_index_output;
 pub mod time_units;
 
+pub use closeable_directory::CloseableDirectory;
 pub use english::English;
 pub use fail_on_non_bulk_merges_info_stream::FailOnNonBulkMergesInfoStream;
+pub use line_file_docs::LineFileDocs;
 pub use lucene_test_case::LuceneTestCase;
 pub use null_info_stream::NullInfoStream;
 pub use remove_upon_close::RemoveUponClose;

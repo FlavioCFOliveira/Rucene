@@ -9,8 +9,10 @@
 //! Ported so far: [`mockfile`] (the fault-injecting filesystems), the static
 //! environment and randomness API of [`util::LuceneTestCase`], the test
 //! codecs of [`codecs`] (`asserting`, `cheapbastard`, `compressing`,
-//! `cranky`, `vector`), and the members of other classes they call. The rest
-//! of the module is ported by later tasks.
+//! `cranky`, `vector`), the helpers of [`util`] (`TestUtil`, `LineFileDocs`,
+//! `automaton::AutomatonTestUtil`, `fst::FSTTester`, `CloseableDirectory`,
+//! ...), and the members of other classes they call. The rest of the module
+//! is ported by later tasks.
 
 /// Java's `assert condition [: message];` under `-ea` in a method that
 /// returns [`rucene::error::Result`]: a failed assertion returns
