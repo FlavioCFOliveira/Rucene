@@ -36,7 +36,7 @@ mod oracle;
 use std::collections::BTreeMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{Arc, Mutex, MutexGuard, Once};
 
 use oracle::*;
 use randomizedtesting::jdk::exception::{panic_message, QuietPanics};
@@ -1142,6 +1142,7 @@ const ROT13_ORACLES: [usize; 2] = [4, 5];
 fn postings_formats_write_lucenes_bytes() {
     register_codecs();
     for oracle in &POSTINGS_ORACLES {
+        let _serial = rot13_serial(oracle);
         // Lucene writes a `.blm`'s filters in `HashMap<FieldInfo, ?>` order
         // (identity hash codes); Rucene in field order (`rucene-codecs`'
         // declared divergence): the filters are compared in Rucene's order.
@@ -1178,6 +1179,7 @@ fn mock_random_seeds_pick_every_terms_dictionary() {
 fn postings_formats_read_what_lucene_reads() {
     register_codecs();
     for oracle in &POSTINGS_ORACLES {
+        let _serial = rot13_serial(oracle);
         oracle.assert_reads_what_lucene_reads();
     }
 }
@@ -1215,6 +1217,7 @@ fn postings_formats_enum_trace_matches_lucenes() {
     let mut panics = [0usize; 2];
     let mut state_next_differs = 0;
     for oracle in &POSTINGS_ORACLES {
+        let _serial = rot13_serial(oracle);
         for case in ["nocfs", "cfs", "edge"] {
             let expected: Vec<String> = rows(&format!("{}_enum.tsv", oracle.prefix))
                 .into_iter()
@@ -1257,6 +1260,7 @@ fn postings_formats_enum_trace_matches_lucenes() {
 fn lucene_reads_what_postings_formats_write() {
     register_codecs();
     for oracle in &POSTINGS_ORACLES {
+        let _serial = rot13_serial(oracle);
         oracle.assert_lucene_reads_what_rucene_writes();
     }
 }
@@ -1269,6 +1273,7 @@ fn postings_formats_corrupted_files_raise_lucenes_errors() {
     // suppressed (`CodecUtil.java:506-508`), as in `rucene-codecs`'
     // blockterms oracle.
     for o in &POSTINGS_ORACLES {
+        let _serial = rot13_serial(o);
         o.assert_corrupted_files_raise_lucenes_errors();
     }
 }
@@ -1280,6 +1285,7 @@ fn rot13_shared_case_matches_lucene() {
     register_codecs();
     for i in ROT13_ORACLES {
         let f = &POSTINGS_ORACLES[i];
+        let _serial = rot13_serial(f);
         let write = |path: &Path| write_shared(path, (f.codec)());
         assert!(
             f.assert_case_writes_lucenes_bytes("shared", write, |_, java, _| java) > 0,
@@ -1385,8 +1391,20 @@ fn test_framework_services_resolve() {
     }
 }
 
-/// Serializes the tests that read or reset the Rot13 formats' static flags.
+/// Serializes the tests that write, read or reset through the Rot13 formats:
+/// their encoder and decoder record calls in process-wide static flags (as
+/// Java's static fields), so a concurrent write or read through either format
+/// changes what `rot13_encoding_flags_are_lucenes` observes.
 static ROT13_FLAGS: Mutex<()> = Mutex::new(());
+
+/// Holds [`ROT13_FLAGS`] while `oracle` writes or reads through a Rot13
+/// format; `None` for the other formats.
+fn rot13_serial(oracle: &FormatOracle) -> Option<MutexGuard<'static, ()>> {
+    oracle
+        .format_name
+        .contains("Rot13")
+        .then(|| ROT13_FLAGS.lock().unwrap_or_else(|e| e.into_inner()))
+}
 
 /// The Rot13 formats' encoding flags after writing the `nocfs` corpus and
 /// after opening it are Lucene's (`testcodecs_rot13_flags.tsv`): the

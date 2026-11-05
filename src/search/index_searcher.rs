@@ -454,6 +454,103 @@ impl QueryVisitor for NumClausesCheckVisitor {
     }
 }
 
+/// The overridable methods of `org.apache.lucene.search.IndexSearcher` that a
+/// subclass replaces.
+///
+/// **Adaptation of Java subclassing.** A Java subclass of `IndexSearcher`
+/// overrides `createWeight`, `rewrite`, the `protected search(
+/// LeafReaderContextPartition[], Weight, Collector)`, the `protected
+/// searchLeaf`, the `protected slices` or `toString`, and calls `super.…` for
+/// the inherited body. An implementation of this trait, installed with
+/// [`IndexSearcher::set_overrides`], receives the searcher in place of `this`;
+/// each provided method is the inherited body, which an implementation reaches
+/// through the `super_…` methods of [`IndexSearcher`].
+pub trait IndexSearcherOverrides: Send + Sync + fmt::Debug {
+    /// `IndexSearcher.createWeight(Query, ScoreMode, float)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`IndexSearcher::super_create_weight`].
+    fn create_weight(
+        &self,
+        searcher: &IndexSearcher,
+        query: Arc<dyn Query>,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Arc<dyn Weight>> {
+        searcher.super_create_weight(query, score_mode, boost)
+    }
+
+    /// `IndexSearcher.rewrite(Query)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`IndexSearcher::super_rewrite`].
+    fn rewrite(
+        &self,
+        searcher: &IndexSearcher,
+        original: Arc<dyn Query>,
+    ) -> Result<Arc<dyn Query>> {
+        searcher.super_rewrite(original)
+    }
+
+    /// The `protected IndexSearcher.search(LeafReaderContextPartition[],
+    /// Weight, Collector)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`IndexSearcher::super_search_partitions`].
+    fn search_partitions(
+        &self,
+        searcher: &IndexSearcher,
+        partitions: &[LeafReaderContextPartition],
+        weight: &Arc<dyn Weight>,
+        collector: &mut dyn Collector,
+    ) -> Result<()> {
+        searcher.super_search_partitions(partitions, weight, collector)
+    }
+
+    /// The `protected IndexSearcher.searchLeaf(LeafReaderContext, int, int,
+    /// Weight, Collector)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`IndexSearcher::super_search_leaf`].
+    fn search_leaf(
+        &self,
+        searcher: &IndexSearcher,
+        ctx: &Arc<LeafReaderContext>,
+        min_doc_id: i32,
+        max_doc_id: i32,
+        weight: &Arc<dyn Weight>,
+        collector: &mut dyn Collector,
+    ) -> Result<()> {
+        searcher.super_search_leaf(ctx, min_doc_id, max_doc_id, weight, collector)
+    }
+
+    /// The `protected IndexSearcher.slices(List<LeafReaderContext>)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`IndexSearcher::default_slices`].
+    fn slices(
+        &self,
+        _searcher: &IndexSearcher,
+        leaves: &[Arc<LeafReaderContext>],
+    ) -> Result<Vec<LeafSlice>> {
+        IndexSearcher::default_slices(leaves)
+    }
+
+    /// `IndexSearcher.toString()`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the formatter's error.
+    fn fmt(&self, searcher: &IndexSearcher, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        searcher.super_fmt(f)
+    }
+}
+
 /// Implements search over a single [`IndexReader`].
 ///
 /// Equivalent to `org.apache.lucene.search.IndexSearcher`.
@@ -475,16 +572,22 @@ impl QueryVisitor for NumClausesCheckVisitor {
 /// count should build a collector manager and call
 /// [`search_with_manager`](Self::search_with_manager).
 ///
-/// **Divergence from Lucene 10.5.0.** Java's class is designed for subclassing:
-/// `slices`, `searchLeaf`, `explain`, `termStatistics` and
-/// `collectionStatistics` are `protected` and meant to be overridden — for
-/// instance to return statistics across a distributed collection. Rust has no
-/// implementation inheritance, so those are inherent methods here and the
-/// customisation points they offer are not available; a caller that needs them
-/// composes an `IndexSearcher` rather than extending it. The setters, which
-/// Java documents as "call before starting to use this searcher", take
-/// `&mut self` for the same reason no lock is needed around them.
+/// **Divergence from Lucene 10.5.0.** Java's class is designed for subclassing.
+/// Rust has no implementation inheritance, so the overridable methods that
+/// `lucene/test-framework`'s subclasses override — `createWeight`, `rewrite`,
+/// `search(LeafReaderContextPartition[], Weight, Collector)`, `searchLeaf`,
+/// `slices` and `toString` — dispatch to an optional
+/// [`IndexSearcherOverrides`] installed with
+/// [`set_overrides`](Self::set_overrides); every call site that Java makes
+/// virtual goes through that dispatch, so an override observes exactly the
+/// calls a Java subclass does. `explain(Weight, int)`, `termStatistics` and
+/// `collectionStatistics` remain inherent methods: no subclass in Lucene
+/// 10.5.0's core or test framework overrides them. The setters, which Java
+/// documents as "call before starting to use this searcher", take `&mut self`
+/// for the same reason no lock is needed around them.
 pub struct IndexSearcher {
+    /// The subclass behaviour; `None` for a plain `IndexSearcher`.
+    overrides: Option<Arc<dyn IndexSearcherOverrides>>,
     reader: Arc<dyn IndexReader>,
     reader_context: Arc<dyn IndexReaderContext>,
     leaf_contexts: Vec<Arc<LeafReaderContext>>,
@@ -517,6 +620,7 @@ impl Clone for IndexSearcher {
     /// [`TermStates`](crate::search::TermStates) compares, is shared.
     fn clone(&self) -> Self {
         Self {
+            overrides: self.overrides.clone(),
             reader: Arc::clone(&self.reader),
             reader_context: Arc::clone(&self.reader_context),
             leaf_contexts: self.leaf_contexts.clone(),
@@ -532,8 +636,23 @@ impl Clone for IndexSearcher {
 }
 
 impl fmt::Debug for IndexSearcher {
-    /// Renders as `IndexSearcher.toString()` does.
+    /// Renders as `IndexSearcher.toString()` does, through the installed
+    /// [`IndexSearcherOverrides::fmt`] when there is one.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.overrides.as_ref() {
+            Some(overrides) => IndexSearcherOverrides::fmt(&**overrides, self, f),
+            None => self.super_fmt(f),
+        }
+    }
+}
+
+impl IndexSearcher {
+    /// The inherited `IndexSearcher.toString()`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the formatter's error.
+    pub fn super_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "IndexSearcher({:?}; taskExecutor={:?})",
@@ -611,6 +730,7 @@ impl IndexSearcher {
         }
 
         Ok(Self {
+            overrides: None,
             reader,
             reader_context: context,
             leaf_contexts,
@@ -637,6 +757,21 @@ impl IndexSearcher {
     /// implementations should respect [`get_similarity`](Self::get_similarity).
     pub fn get_default_similarity() -> Arc<dyn Similarity> {
         Arc::clone(&DEFAULT_SIMILARITY)
+    }
+
+    /// Installs the subclass behaviour of this searcher.
+    ///
+    /// **Adaptation of Java subclassing**: a Java subclass's constructor runs
+    /// `super(…)` and then its own body; the Rust equivalent builds the
+    /// searcher and then installs the overrides. See
+    /// [`IndexSearcherOverrides`].
+    pub fn set_overrides(&mut self, overrides: Arc<dyn IndexSearcherOverrides>) {
+        self.overrides = Some(overrides);
+    }
+
+    /// Returns the installed subclass behaviour, if any.
+    pub fn get_overrides(&self) -> Option<&Arc<dyn IndexSearcherOverrides>> {
+        self.overrides.as_ref()
     }
 
     /// Returns the leaf contexts associated with this searcher.
@@ -955,6 +1090,16 @@ impl IndexSearcher {
         }
     }
 
+    /// The `protected IndexSearcher.slices(List<LeafReaderContext>)`,
+    /// dispatched to the installed [`IndexSearcherOverrides::slices`] when there
+    /// is one, else [`default_slices`](Self::default_slices).
+    fn slices(&self, leaves: &[Arc<LeafReaderContext>]) -> Result<Vec<LeafSlice>> {
+        match self.overrides.as_ref() {
+            Some(overrides) => overrides.slices(self, leaves),
+            None => Self::default_slices(leaves),
+        }
+    }
+
     /// Computes the leaf slices once and caches them.
     ///
     /// Equivalent to the private `synchronized
@@ -965,7 +1110,7 @@ impl IndexSearcher {
     /// `OnceLock` cannot be initialised twice.
     fn compute_and_cache_slices(&self) -> &std::result::Result<Vec<LeafSlice>, String> {
         self.leaf_slices.get_or_init(|| {
-            let slices = match Self::default_slices(&self.leaf_contexts) {
+            let slices = match self.slices(&self.leaf_contexts) {
                 Ok(slices) => slices,
                 Err(err) => return Err(err.to_string()),
             };
@@ -1211,17 +1356,12 @@ impl IndexSearcher {
         for (slice, collector) in leaf_slices.iter().zip(collectors) {
             let partitions: Vec<LeafReaderContextPartition> = slice.partitions.to_vec();
             let weight = Arc::clone(&weight);
-            let query_timeout = self.query_timeout.clone();
-            let partial_result = Arc::clone(&self.partial_result);
+            // Java's task calls the overridable `search(partitions, weight,
+            // collector)` on `this`; the clone shares every piece of state.
+            let searcher = self.clone();
             let mut collector = collector;
             tasks.push(Box::new(move || {
-                Self::search_partitions_inner(
-                    &partitions,
-                    &weight,
-                    &mut collector,
-                    query_timeout.as_ref(),
-                    &partial_result,
-                )?;
+                searcher.search_partitions(&partitions, &weight, &mut collector)?;
                 Ok(collector)
             }));
         }
@@ -1245,36 +1385,34 @@ impl IndexSearcher {
         weight: &Arc<dyn Weight>,
         collector: &mut dyn Collector,
     ) -> Result<()> {
-        Self::search_partitions_inner(
-            partitions,
-            weight,
-            collector,
-            self.query_timeout.as_ref(),
-            &self.partial_result,
-        )
+        match self.overrides.as_ref() {
+            Some(overrides) => overrides.search_partitions(self, partitions, weight, collector),
+            None => self.super_search_partitions(partitions, weight, collector),
+        }
     }
 
-    /// The body of [`search_partitions`](Self::search_partitions), free of
-    /// `&self` so that it can be moved into a task.
-    fn search_partitions_inner(
+    /// The inherited body of [`search_partitions`](Self::search_partitions)
+    /// (`super.search(partitions, weight, collector)`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while collecting.
+    pub fn super_search_partitions(
+        &self,
         partitions: &[LeafReaderContextPartition],
         weight: &Arc<dyn Weight>,
         collector: &mut dyn Collector,
-        query_timeout: Option<&Arc<dyn QueryTimeout>>,
-        partial_result: &AtomicBool,
     ) -> Result<()> {
         collector.set_weight(Arc::clone(weight));
 
         for partition in partitions {
             // Search each subreader partition.
-            Self::search_leaf_inner(
+            self.search_leaf(
                 &partition.ctx,
                 partition.min_doc_id,
                 partition.max_doc_id,
                 weight,
                 collector,
-                query_timeout,
-                partial_result,
             )?;
         }
         Ok(())
@@ -1306,28 +1444,30 @@ impl IndexSearcher {
         weight: &Arc<dyn Weight>,
         collector: &mut dyn Collector,
     ) -> Result<()> {
-        Self::search_leaf_inner(
-            ctx,
-            min_doc_id,
-            max_doc_id,
-            weight,
-            collector,
-            self.query_timeout.as_ref(),
-            &self.partial_result,
-        )
+        match self.overrides.as_ref() {
+            Some(overrides) => {
+                overrides.search_leaf(self, ctx, min_doc_id, max_doc_id, weight, collector)
+            }
+            None => self.super_search_leaf(ctx, min_doc_id, max_doc_id, weight, collector),
+        }
     }
 
-    /// The body of [`search_leaf`](Self::search_leaf), free of `&self` so that
-    /// it can be moved into a task.
-    fn search_leaf_inner(
+    /// The inherited body of [`search_leaf`](Self::search_leaf)
+    /// (`super.searchLeaf(…)`).
+    ///
+    /// # Errors
+    ///
+    /// As [`search_leaf`](Self::search_leaf).
+    pub fn super_search_leaf(
+        &self,
         ctx: &Arc<LeafReaderContext>,
         min_doc_id: i32,
         max_doc_id: i32,
         weight: &Arc<dyn Weight>,
         collector: &mut dyn Collector,
-        query_timeout: Option<&Arc<dyn QueryTimeout>>,
-        partial_result: &AtomicBool,
     ) -> Result<()> {
+        let query_timeout = self.query_timeout.as_ref();
+        let partial_result = &self.partial_result;
         let mut leaf_collector = match collector.get_leaf_collector(ctx) {
             Ok(leaf_collector) => leaf_collector,
             Err(CollectionError::CollectionTerminated) => {
@@ -1385,6 +1525,18 @@ impl IndexSearcher {
     /// [`get_max_clause_count`](Self::get_max_clause_count) clauses
     /// cumulatively, and propagates any I/O error.
     pub fn rewrite(&self, original: Arc<dyn Query>) -> Result<Arc<dyn Query>> {
+        match self.overrides.as_ref() {
+            Some(overrides) => overrides.rewrite(self, original),
+            None => self.super_rewrite(original),
+        }
+    }
+
+    /// The inherited body of [`rewrite`](Self::rewrite) (`super.rewrite(q)`).
+    ///
+    /// # Errors
+    ///
+    /// As [`rewrite`](Self::rewrite).
+    pub fn super_rewrite(&self, original: Arc<dyn Query>) -> Result<Arc<dyn Query>> {
         let mut query = original;
         while let Some(rewritten) = query.rewrite(self)? {
             query = rewritten;
@@ -1483,6 +1635,24 @@ impl IndexSearcher {
     /// [`LuceneError::UnsupportedOperation`] a query that does not implement
     /// `create_weight` returns.
     pub fn create_weight(
+        &self,
+        query: Arc<dyn Query>,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Arc<dyn Weight>> {
+        match self.overrides.as_ref() {
+            Some(overrides) => overrides.create_weight(self, query, score_mode, boost),
+            None => self.super_create_weight(query, score_mode, boost),
+        }
+    }
+
+    /// The inherited body of [`create_weight`](Self::create_weight)
+    /// (`super.createWeight(q, scoreMode, boost)`).
+    ///
+    /// # Errors
+    ///
+    /// As [`create_weight`](Self::create_weight).
+    pub fn super_create_weight(
         &self,
         query: Arc<dyn Query>,
         score_mode: ScoreMode,

@@ -366,7 +366,8 @@ pub use impacts_disi::ImpactsDISI;
 pub use index_or_doc_values_query::IndexOrDocValuesQuery;
 pub use index_priority_queue::{IndexOrder, IndexPriorityQueue};
 pub use index_searcher::{
-    IndexSearcher, LeafReaderContextPartition, LeafSlice, TooManyClauses, TooManyNestedClauses,
+    IndexSearcher, IndexSearcherOverrides, LeafReaderContextPartition, LeafSlice, TooManyClauses,
+    TooManyNestedClauses,
 };
 pub use index_sort_sorted_numeric_doc_values_range_query::IndexSortSortedNumericDocValuesRangeQuery;
 pub use indri_and_query::IndriAndQuery;

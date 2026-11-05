@@ -157,3 +157,35 @@ write the fixtures (`../*.tsv`) the crate's parity tests (`src/tests/`) read.
   `crates/rucene-test-framework/tests/index_wrappers_oracle.rs`, which replays
   every scenario and compares the rows, except those its `DECLARED` list names
   with their reason; `IW_DUMP_DIR=<dir>` makes it write each dump in full.
+* **The search wrappers of `org.apache.lucene.tests.search` (rmp #345):**
+  `org.apache.lucene.tests.search.SearchWrappersOracle` (listed after
+  `MockDirectoryWrapperOracle`, whose `mdw_corpus.tsv` it reads from the
+  output directory) writes
+  `crates/rucene-test-framework/tests/fixtures/search_wrappers.tsv`: per corpus
+  case (`nocfs`, `cfs`), scenario and step, `ok<TAB>value` or
+  `err<TAB>class<TAB>message`. The corpus scenarios run inside the suite
+  `TestSearchWrappersScenarios` under `RandomizedRunner` (`tests.seed`
+  `5EA4C4E5`), because `AssertingLeafCollector` draws `rarely()` from the test
+  context; the suite's last row is the context's next `random().nextLong()`.
+  They record the top hits (doc and score bits), total hits, count and top
+  explanation (match, value bits, description) of term, boolean (`SHOULD`,
+  `MUST`, `FILTER`, `MUST_NOT`), phrase, prefix, wildcard, point-range,
+  field-exists, constant-score, boost, disjunction-max, match-all/none and kNN
+  queries and of the `AssertingQuery`, `RandomApproximationQuery`,
+  `BlockScoreQueryWrapper` and `DisablingBulkScorerQuery` wrappers, through
+  `AssertingIndexSearcher` (seeds 1, 2, 3, each ending with the searcher's
+  next `nextLong()`), `ScorerIndexSearcher`, and an `AssertingIndexSearcher`
+  whose similarity is `AssertingSimilarity(RandomSimilarity)`; the misuse of
+  `AssertingScorer` (and of its two-phase view), `AssertingCollector`,
+  `AssertingLeafCollector`, `AssertingBulkScorer`, `AssertingWeight` and its
+  scorer supplier, `AssertingMatches`/`AssertingMatchesIterator`,
+  `AssertingQuery`, `AssertingIndexSearcher.search` and
+  `RandomApproximationQuery.RandomTwoPhaseView`, with Java's message; and
+  `FixedBitSetCollector`, `DummyTotalHitCountCollector`,
+  `BulkScorerWrapperScorer` and `DisablingBulkScorerQuery` over a term without
+  postings (Java's `NullPointerException`). Outside the runner it records
+  `RandomSimilarity`'s pick per field, its `toString()` and the next draw for a
+  grid of seeds, and `AssertingSimilarity`'s `toString()`. The Rust side is
+  `crates/rucene-test-framework/tests/search_wrappers_oracle.rs`, which
+  replays every scenario (the suite through the port's runner) and compares the
+  rows.

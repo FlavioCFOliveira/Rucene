@@ -17,8 +17,10 @@
 //! classes they call. The rest of the module is ported by later tasks.
 
 /// Java's `assert condition [: message];` under `-ea` in a method that
-/// returns [`rucene::error::Result`]: a failed assertion returns
-/// `Err(LuceneError::AssertionError(message))` from the enclosing function,
+/// returns [`rucene::error::Result`] (or a result whose error converts from
+/// [`rucene::error::LuceneError`], such as `CollectionResult`): a failed
+/// assertion returns `Err(LuceneError::AssertionError(message).into())` from
+/// the enclosing function,
 /// the error a Java `AssertionError` stands for in this port (the message is
 /// empty for an `assert` without one, Java's `null`).
 ///
@@ -27,12 +29,12 @@
 macro_rules! java_assert {
     ($cond:expr) => {
         if cfg!(debug_assertions) && !($cond) {
-            return Err(rucene::error::LuceneError::AssertionError(String::new()));
+            return Err(rucene::error::LuceneError::AssertionError(String::new()).into());
         }
     };
     ($cond:expr, $($msg:tt)+) => {
         if cfg!(debug_assertions) && !($cond) {
-            return Err(rucene::error::LuceneError::AssertionError(format!($($msg)+)));
+            return Err(rucene::error::LuceneError::AssertionError(format!($($msg)+)).into());
         }
     };
 }

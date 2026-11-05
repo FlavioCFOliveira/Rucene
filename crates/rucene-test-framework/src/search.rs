@@ -18,5 +18,46 @@
 //! Port of `org.apache.lucene.tests.search`.
 
 pub mod asserting_accept_docs;
+pub mod asserting_bulk_scorer;
+pub mod asserting_collector;
+pub mod asserting_index_searcher;
+pub mod asserting_leaf_collector;
+pub mod asserting_matches;
+pub mod asserting_matches_iterator;
+pub mod asserting_query;
+pub mod asserting_scorable;
+pub mod asserting_scorer;
+pub mod asserting_weight;
+pub mod block_score_query_wrapper;
+pub mod bulk_scorer_wrapper_scorer;
+pub mod disabling_bulk_scorer_query;
+pub mod dummy_total_hit_count_collector;
+pub mod fixed_bit_set_collector;
+pub mod query_utils;
+pub mod random_approximation_query;
+pub mod scorer_index_searcher;
+pub mod similarities;
 
 pub use asserting_accept_docs::AssertingAcceptDocs;
+pub use asserting_bulk_scorer::AssertingBulkScorer;
+pub use asserting_collector::{AssertingCollector, AssertingCollectorState, CollectorRef};
+pub use asserting_index_searcher::{AssertingIndexSearcher, AssertingIndexSearcherOverrides};
+pub use asserting_leaf_collector::AssertingLeafCollector;
+pub use asserting_matches::AssertingMatches;
+pub use asserting_matches_iterator::AssertingMatchesIterator;
+pub use asserting_query::AssertingQuery;
+pub use asserting_scorable::AssertingScorable;
+pub use asserting_scorer::{AssertingScorer, IteratorState};
+pub use asserting_weight::AssertingWeight;
+pub use block_score_query_wrapper::BlockScoreQueryWrapper;
+pub use bulk_scorer_wrapper_scorer::BulkScorerWrapperScorer;
+pub use disabling_bulk_scorer_query::DisablingBulkScorerQuery;
+pub use dummy_total_hit_count_collector::{
+    DummyTotalHitCountCollector, DummyTotalHitCountCollectorManager,
+};
+pub use fixed_bit_set_collector::{FixedBitSetCollector, FixedBitSetCollectorManager};
+pub use query_utils::QueryUtils;
+pub use random_approximation_query::{
+    ApproximatedIterator, RandomApproximation, RandomApproximationQuery, RandomTwoPhaseView,
+};
+pub use scorer_index_searcher::{ScorerIndexSearcher, ScorerIndexSearcherOverrides};

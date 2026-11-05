@@ -67,6 +67,19 @@ pub trait BulkScorer {
     /// Equivalent to `BulkScorer.cost()`, the bulk-scorer analogue of
     /// [`DocIdSetIterator::cost`].
     fn cost(&self) -> i64;
+
+    /// Returns this bulk scorer as [`Any`](std::any::Any), so that a caller can
+    /// test its concrete type, or `None` when the type does not take part in
+    /// such a test.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java tests a bulk scorer's class
+    /// with `instanceof` — `AssertingBulkScorer.wrap` returns its argument when
+    /// it already is an `AssertingBulkScorer`. Rust cannot downcast a
+    /// `dyn BulkScorer`, so the escape hatch is declared; its default answers
+    /// `None`, Java's `false` branch, and a type that is tested overrides it.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
 }
 
 /// Wraps a [`Scorer`] and performs top scoring with it.

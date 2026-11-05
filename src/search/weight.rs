@@ -68,6 +68,19 @@ pub trait Weight: SegmentCacheable + Send + Sync + Debug {
         None
     }
 
+    /// Returns this weight as [`Any`](std::any::Any), so that a caller can test
+    /// its concrete type, or `None` when the type does not take part in such a
+    /// test.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java tests a weight's class with
+    /// `instanceof` — `AssertingIndexSearcher.search` asserts
+    /// `weight instanceof AssertingWeight`. Rust cannot downcast a
+    /// `dyn Weight`, so the escape hatch is declared; its default answers
+    /// `None`, Java's `false` branch, and a type that is tested overrides it.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+
     /// Returns a [`ScorerSupplier`], which allows knowing the cost of the
     /// [`Scorer`] before building it, or `None` if no documents will be scored
     /// by this query.
