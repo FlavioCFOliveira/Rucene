@@ -25,8 +25,8 @@ use std::sync::atomic::AtomicI32;
 use std::sync::{Arc, Mutex};
 
 use crate::codecs::codec_util::{
-    check_footer, check_index_header, checksum_entire_file, retrieve_checksum, write_footer,
-    write_index_header,
+    check_footer, check_footer_with_prior, check_index_header, checksum_entire_file,
+    retrieve_checksum, write_footer, write_index_header,
 };
 use crate::codecs::compressing::{
     self, CompressionMode, Compressor, Decompressor, MatchingReaders,
@@ -1861,6 +1861,13 @@ impl Lucene90CompressingTermVectorsReader {
         ) = match opened {
             Ok(read) => read,
             Err(error) => {
+                // `catch (Throwable t) { if (metaIn != null) {
+                // CodecUtil.checkFooter(metaIn, t); ... } else { throw t; } }`
+                // (`Lucene90CompressingTermVectorsReader.java:232-238`), before the `finally` closes everything.
+                let error = match meta_in.as_mut() {
+                    Some(meta_in) => check_footer_with_prior(meta_in.as_mut(), error),
+                    None => error,
+                };
                 // `this.close()` is `IOUtils.close(indexReader, vectorsStream)`.
                 IOUtils::close_while_handling_exception([
                     IOUtils::closeable(|| {

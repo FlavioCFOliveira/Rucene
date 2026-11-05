@@ -62,9 +62,7 @@ fn lucene_reads_what_block_tree_ords_writes() {
 
 #[test]
 fn block_tree_ords_corrupted_files_raise_lucenes_errors() {
-    assert!(BLOCK_TREE_ORDS
-        .assert_corrupted_files_raise_lucenes_errors()
-        .is_empty());
+    BLOCK_TREE_ORDS.assert_corrupted_files_raise_lucenes_errors();
 }
 
 /// `PostingsFormat.forName("BlockTreeOrds")` resolves once the crate's

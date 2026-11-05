@@ -8,7 +8,10 @@
 //! wrapper built from the same seed, recorded as the same rows (call, then
 //! `ok<TAB>value` or `err<TAB>class<TAB>message`, with the cause of a
 //! `RuntimeException`). The index scenarios read the files of the index the
-//! oracle wrote (`mdw_index.tsv`).
+//! oracle wrote (`mdw_index.tsv`); the `index_read` scenarios read the corpus
+//! it wrote (`mdw_corpus.tsv`, `nocfs` and `cfs`) in full through the
+//! wrapper — a `DirectoryReader` opened and closed, `CheckIndex` — and then
+//! close the wrapper, which fails while any reader left an input open.
 //!
 //! The one deliberate difference in the scripts: before closing a wrapper,
 //! the Rust script drops the streams it still holds, since a stream keeps the
@@ -23,6 +26,8 @@ use std::sync::{Arc, Once};
 
 use randomizedtesting::jdk::random::JdkRandom;
 use rucene::error::{LuceneError, Result};
+use rucene::index::check_index::Level as CheckIndexLevel;
+use rucene::index::{directory_reader, IndexReader};
 use rucene::store::java_nio_file::{java_class_of, java_message_of};
 use rucene::store::{
     ByteArrayDataInput, ByteBuffersDirectory, ChecksumIndexInput, DataAccessHint, DataInput,
@@ -34,7 +39,7 @@ use rucene_test_framework::store::{
     RawDirectoryWrapper, SerialIOCountingDirectory, SlowClosingMockIndexInputWrapper,
     SlowOpeningMockIndexInputWrapper, Throttling,
 };
-use rucene_test_framework::util::LuceneTestCase;
+use rucene_test_framework::util::{LuceneTestCase, TestUtil};
 
 fn init() {
     static ONCE: Once = Once::new();
@@ -831,6 +836,56 @@ fn index(r: &mut Recorder, index: &ByteBuffersDirectory, sd: i64) {
     next_long(r, &d5);
 }
 
+/// The `case` (`nocfs` or `cfs`) of the corpus the oracle wrote.
+fn load_corpus(case: &str) -> ByteBuffersDirectory {
+    let dir = ByteBuffersDirectory::new();
+    for row in oracle_support::rows("mdw_corpus.tsv") {
+        if row[0] != case {
+            continue;
+        }
+        let b: Vec<u8> = (0..row[2].len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&row[2][i..i + 2], 16).unwrap())
+            .collect();
+        let mut out = dir.create_output(&row[1], default()).unwrap();
+        out.write_bytes(&b, 0, b.len()).unwrap();
+        out.close().unwrap();
+    }
+    dir
+}
+
+/// `MockDirectoryWrapperOracle.indexRead`: the corpus read in full through
+/// the wrapper, then the wrapper closed; the final `nextLong` pins how many
+/// inputs were opened (the wrapper draws on every `openInput`).
+fn index_read(r: &mut Recorder, corpus: &ByteBuffersDirectory, scenario: &'static str, sd: i64) {
+    r.begin(scenario, sd);
+    let all = corpus.list_all().unwrap();
+    let mut d = copy_index(corpus, sd, &all);
+    let mut reader: Option<Arc<dyn IndexReader>> = None;
+    r.rec("open reader", || {
+        let opened = directory_reader::open(d.as_directory())?;
+        let leaves = Arc::clone(&opened).leaves()?.len();
+        let row = format!("{}/{}/{leaves}", opened.max_doc(), opened.num_docs());
+        reader = Some(opened);
+        Ok(row)
+    });
+    r.rec_void("close reader", || {
+        reader.take().expect("the reader opened").close()
+    });
+    r.rec("checkIndex", || {
+        let status = TestUtil::check_index_with(
+            d.as_directory(),
+            CheckIndexLevel::MIN_LEVEL_FOR_SLOW_CHECKS,
+            true,
+            false,
+            None,
+        )?;
+        Ok(format!("{}/{}", status.clean, status.num_segments))
+    });
+    r.rec_void("close dir", || d.close());
+    next_long(r, &d);
+}
+
 fn unreferenced(r: &mut Recorder, index: &ByteBuffersDirectory) {
     r.begin("index_unref", 0);
     let mut d = copy_index(index, 0, &index.list_all().unwrap());
@@ -1143,32 +1198,6 @@ fn throttling(r: &mut Recorder, sd: i64) {
     close_dir(r, d);
 }
 
-/// The `close dir` rows of the index scenarios whose `CheckIndex` failure
-/// message differs from Lucene's for reasons outside `MockDirectoryWrapper`
-/// (core, not rmp #343): the metadata readers of `Lucene104PostingsReader`
-/// (`.psm`, `postings_reader.rs`) and `Lucene94FieldInfosFormat` (`.fnm`,
-/// `field_infos_format.rs`) check the header and stop where Java's
-/// `catch (Throwable t) { CodecUtil.checkFooter(metaIn, t) }` reports the
-/// footer first (`Lucene104PostingsReader.java:84-118`,
-/// `Lucene94FieldInfosFormat.java:134-246`): Java's "codec footer mismatch"
-/// is Rust's "codec header mismatch", and Java's "checksum status
-/// indeterminate" Rust's EOF `IOException`.
-const KNOWN_CORE_DIVERGENCES: &[(&str, &str, &str)] = &[
-    ("index_close_most", "0", "0"),
-    ("index_close_most", "1", "0"),
-    ("index_close_most", "-9223372036854775808", "0"),
-    ("index_close", "3735928559", "0"),
-    ("index_close_most", "81985529216486895", "0"),
-    ("index_close_most", "-81985529216486895", "0"),
-];
-
-fn known_core_divergence(key: &[&str]) -> Option<&'static str> {
-    KNOWN_CORE_DIVERGENCES
-        .iter()
-        .any(|(s, seed, step)| key == [*s, *seed, *step])
-        .then_some("core metadata readers skip CodecUtil.checkFooter(in, priorE)")
-}
-
 /// Every scenario of `MockDirectoryWrapperOracle`, in the oracle's order,
 /// row for row.
 #[test]
@@ -1210,38 +1239,26 @@ fn mock_directory_wrapper_matches_lucene() {
     for &s in &seeds[..3] {
         throttling(&mut r, s);
     }
+    let nocfs = load_corpus("nocfs");
+    for &s in &seeds[..4] {
+        index_read(&mut r, &nocfs, "index_read_nocfs", s);
+    }
+    let cfs = load_corpus("cfs");
+    for &s in &seeds[..4] {
+        index_read(&mut r, &cfs, "index_read_cfs", s);
+    }
 
     let expected: Vec<String> = oracle_support::rows("mdw_steps.tsv")
         .into_iter()
         .map(|row| row.join("\t"))
         .collect();
     let mut mismatches = Vec::new();
-    let mut known_seen = Vec::new();
     for (i, exp) in expected.iter().enumerate() {
         let act = r.rows.get(i).map(String::as_str).unwrap_or("<missing>");
-        let key: Vec<&str> = exp.splitn(4, '\t').take(3).collect();
-        if let Some(reason) = known_core_divergence(&key) {
-            // Both sides fail the close; the wrapper's draws up to the failure
-            // are pinned by the next row (`nextLong`), which must match.
-            known_seen.push(key.join(" "));
-            assert!(
-                act != exp,
-                "row {i} now matches Lucene: remove it from KNOWN_CORE_DIVERGENCES ({reason})"
-            );
-            let outcome = |row: &str| row.split('\t').nth(4).map(str::to_string);
-            assert_eq!(outcome(act), Some("err".to_string()), "row {i}: {act}");
-            assert_eq!(outcome(exp), Some("err".to_string()), "row {i}: {exp}");
-            continue;
-        }
         if act != exp {
             mismatches.push(format!("row {i}\n  java: {exp}\n  rust: {act}"));
         }
     }
-    assert_eq!(
-        known_seen.len(),
-        KNOWN_CORE_DIVERGENCES.len(),
-        "{known_seen:?}"
-    );
     if r.rows.len() > expected.len() {
         mismatches.push(format!("{} extra rows", r.rows.len() - expected.len()));
     }

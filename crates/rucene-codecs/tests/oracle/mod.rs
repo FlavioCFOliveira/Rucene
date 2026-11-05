@@ -1914,26 +1914,18 @@ pub fn mask_crc(message: &str) -> String {
     out
 }
 
-/// Two defects of Rucene's core that these tests meet but do not own
-/// (rmp #334 reports them; the tasks that own the core classes fix them):
-///
-/// 1. `BlockPostingsEnum::get_impacts` (`src/codecs/lucene104/postings_reader.rs`,
-///    `Ok(Box::new(self.impacts.clone()))`) returns a snapshot, where
-///    Lucene's `getImpacts()` returns the enum's own `Impacts` object, a view
-///    of every later `advanceShallow`. The dump's `   live` lines read such a
-///    view; every format here keeps its postings in `Lucene104PostingsWriter`'s
-///    files, so those lines differ. [`assert_same_lines_but_live`] compares
-///    every other line and requires the `live` lines to still differ, so the
-///    exclusion fails once the core is fixed.
-/// 2. `codec_util::check_footer_with_prior` (`src/codecs/codec_util.rs`)
-///    appends ` (prior error: <prior>)` to the message of the corruption it
-///    returns, where `CodecUtil.checkFooter(ChecksumIndexInput, Throwable)`
-///    adds the prior exception as suppressed and leaves `getMessage()` alone
-///    (`CodecUtil.java:506-508`). The corruption comparison strips that
-///    suffix and reports the cases it stripped.
-pub const PRIOR_ERROR_SUFFIX: &str = " (prior error: ";
+// A defect of Rucene's core that these tests meet but do not own
+// (rmp #334 reports it; the task that owns the core class fixes it):
+// `BlockPostingsEnum::get_impacts` (`src/codecs/lucene104/postings_reader.rs`,
+// `Ok(Box::new(self.impacts.clone()))`) returns a snapshot, where Lucene's
+// `getImpacts()` returns the enum's own `Impacts` object, a view of every
+// later `advanceShallow`. The dump's `   live` lines read such a view; every
+// format here keeps its postings in `Lucene104PostingsWriter`'s files, so
+// those lines differ. [`assert_same_lines_but_live`] compares every other
+// line and requires the `live` lines to still differ, so the exclusion fails
+// once the core is fixed.
 
-/// [`assert_same_lines`] except the dump's `   live` lines (core defect 1
+/// [`assert_same_lines`] except the dump's `   live` lines (the core defect
 /// above), which must still differ somewhere when `live_must_differ`.
 pub fn assert_same_lines_but_live(
     what: &str,
@@ -2161,8 +2153,8 @@ pub struct FormatOracle {
     /// format, beyond `lucene-core` and `lucene-codecs`: paths under the
     /// local Maven repository.
     pub extra_jars: &'static [&'static str],
-    /// Whether the dump's `live` lines meet core defect 1 (see
-    /// [`PRIOR_ERROR_SUFFIX`]).
+    /// Whether the dump's `live` lines meet the core defect of
+    /// [`assert_same_lines_but_live`].
     pub live_impacts_differ: bool,
 }
 
@@ -2441,10 +2433,8 @@ impl FormatOracle {
     }
 
     /// The corruptions of `PostingsFormatOracle.corrupt` of Lucene's `nocfs`
-    /// raise, on open, the exception Lucene raises, with Lucene's message;
-    /// returns the labels of the cases whose message carried core defect 2
-    /// (see [`PRIOR_ERROR_SUFFIX`]), stripped before the comparison.
-    pub fn assert_corrupted_files_raise_lucenes_errors(&self) -> Vec<String> {
+    /// raise, on open, the exception Lucene raises, with Lucene's message.
+    pub fn assert_corrupted_files_raise_lucenes_errors(&self) {
         self.assert_corrupted_files_raise_lucenes_errors_but(&[])
     }
 
@@ -2453,11 +2443,7 @@ impl FormatOracle {
     /// core defect outside the format makes Rucene raise that error instead
     /// of Lucene's, and the comparison requires it to still differ from
     /// Lucene's, so the exclusion fails once the core is fixed.
-    pub fn assert_corrupted_files_raise_lucenes_errors_but(
-        &self,
-        known: &[(&str, &str, &str)],
-    ) -> Vec<String> {
-        let mut stripped = Vec::new();
+    pub fn assert_corrupted_files_raise_lucenes_errors_but(&self, known: &[(&str, &str, &str)]) {
         install_codecs();
         let expected: BTreeMap<String, (String, String)> =
             rows(&format!("{}_errors.tsv", self.prefix))
@@ -2513,13 +2499,7 @@ impl FormatOracle {
                         if let Some(bad) = &bad_id {
                             message = message.replace(bad, "$BADID");
                         }
-                        let mut message = mask_crc(&message).replace(&id, "$ID");
-                        if let Some(at) = message.find(PRIOR_ERROR_SUFFIX) {
-                            if !expected[&label].1.contains(PRIOR_ERROR_SUFFIX) {
-                                message.truncate(at);
-                                stripped.push(label.clone());
-                            }
-                        }
+                        let message = mask_crc(&message).replace(&id, "$ID");
                         (class, message)
                     }
                 };
@@ -2543,7 +2523,6 @@ impl FormatOracle {
             }
         }
         assert_eq!(cases, expected.len());
-        stripped
     }
 
     /// The rows of `<prefix>_spi.tsv`.

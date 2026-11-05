@@ -456,16 +456,9 @@ impl Lucene90NormsProducer {
             }
             Err(error) => Err(error),
         };
-        let version = match parsed {
-            Ok(version) => {
-                codec_util::check_footer(meta.as_mut())?;
-                version
-            }
-            Err(prior) => {
-                return Err(codec_util::check_footer_with_prior(meta.as_mut(), prior));
-            }
-        };
-        drop(meta);
+        let parsed = codec_util::check_footer_after(meta.as_mut(), parsed);
+        // The try-with-resources closes `in` on every exit.
+        let version = crate::store::close_after(meta.as_mut(), parsed)?;
 
         let data_name = segment_file_name(
             &state.segment_info.name,
@@ -1912,8 +1905,9 @@ mod tests {
     #[test]
     fn a_metadata_file_whose_checksum_fails_reports_the_corruption() {
         // With the footer left alone the same patch makes the file genuinely
-        // corrupt, and then the corruption is what explains it — with the entry
-        // failure folded in rather than lost.
+        // corrupt, and then the corruption is what explains it; the entry
+        // failure is only suppressed into it (`CodecUtil.java:506-508`), so it
+        // is not part of the message.
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let body = write_one_field(&dir, 4, vec![(0, 1), (2, 2)]);
         let patched = patch_metadata(&dir, false, |body| {
@@ -1931,8 +1925,8 @@ mod tests {
             "the corruption must be the one reported, got: {message}"
         );
         assert!(
-            message.contains("Invalid bytesPerNorm"),
-            "the entry failure must be folded into the message, got: {message}"
+            !message.contains("Invalid bytesPerNorm"),
+            "the entry failure is suppressed, not in the message: {message}"
         );
     }
 
@@ -2047,6 +2041,7 @@ mod close_family_tests {
         let before = log.closed().len();
         rewrite_file(&tracking, "_0.nvd", |bytes| bytes[6] ^= 0xff);
         Lucene90NormsProducer::new(&read_state(&*dir, &info, &fis)).unwrap_err();
-        assert_eq!(log.closed()[before..], ["_0.nvd"]);
+        // The metadata input is closed first, by its try-with-resources.
+        assert_eq!(log.closed()[before..], ["_0.nvm", "_0.nvd"]);
     }
 }

@@ -428,12 +428,15 @@ pub fn check_footer(input: &mut dyn ChecksumIndexInput) -> Result<i64> {
 /// * the checksum passes, or verifying it fails with anything but a
 ///   `CorruptIndexException` — `prior` itself is rethrown, of its own type.
 ///
+/// The error returned therefore has Java's class and Java's `getMessage()`.
+///
 /// **Divergence from Lucene 10.5.0.** [`LuceneError`] has no
-/// `Throwable.addSuppressed`. Where the corruption is thrown, `prior` is kept
-/// in its message as `(prior error: ...)`; where `prior` is rethrown, it is
-/// returned unchanged, and the note Java suppresses into it ("checksum passed
-/// (...). possibly transient resource issue, or a Lucene or JVM bug", or
-/// "checksum status indeterminate: unexpected exception") is not carried.
+/// `Throwable.addSuppressed`, the port-wide divergence
+/// [`IOUtils::use_or_suppress`](crate::util::IOUtils) declares. Java's
+/// suppressed exception — `prior` under the thrown corruption, or the note
+/// ("checksum passed (...). possibly transient resource issue, or a Lucene or
+/// JVM bug", or "checksum status indeterminate: unexpected exception") under
+/// the rethrown `prior` — is dropped; neither changes the message.
 ///
 /// Returning the error rather than a `Result` mirrors the fact that this is
 /// only ever called when something has already gone wrong.
@@ -444,11 +447,15 @@ pub fn check_footer_with_prior(
     let remaining = input.length() - input.file_pointer();
     if remaining < footer_length() as i64 {
         // corruption caused us to read into the checksum footer already: we can't proceed
-        return LuceneError::CorruptIndex(format!(
-            "checksum status indeterminate: remaining={remaining}; please run \
-             checkindex for more details (resource={}) (prior error: {prior})",
-            input.resource_description()
-        ));
+        // `prior` is Java's suppressed exception, dropped (see above).
+        drop(prior);
+        return LuceneError::corrupt_index(
+            format!(
+                "checksum status indeterminate: remaining={remaining}; please run \
+                 checkindex for more details"
+            ),
+            input.resource_description(),
+        );
     }
     // Java skips the unread bytes rather than seeking, because the digest must
     // cover them; this input's `seek` is the forward-only, checksum-preserving
@@ -460,10 +467,39 @@ pub fn check_footer_with_prior(
     }
     match check_footer(input) {
         Ok(_) => prior,
-        Err(LuceneError::CorruptIndex(corruption)) => {
-            LuceneError::CorruptIndex(format!("{corruption} (prior error: {prior})"))
-        }
+        // `corruptException.addSuppressed(priorException)`: `prior` dropped.
+        Err(corruption @ LuceneError::CorruptIndex(_)) => corruption,
         Err(_) => prior,
+    }
+}
+
+/// Validates the footer of a metadata input once its entries were read,
+/// whatever reading them returned.
+///
+/// Equivalent to the idiom every Lucene 10.5.0 metadata reader writes around
+/// its entries (for example `Lucene94FieldInfosFormat.java:134-246`):
+///
+/// ```java
+/// Throwable priorE = null;
+/// try { ... } catch (Throwable exception) { priorE = exception; }
+/// finally { CodecUtil.checkFooter(in, priorE); }
+/// ```
+///
+/// `result` is the outcome of the `try` block: on success the footer is
+/// verified with [`check_footer`] and `result` is returned; on failure
+/// [`check_footer_with_prior`] picks the error to report.
+///
+/// # Errors
+///
+/// The footer's error when `result` is `Ok`, else the error
+/// [`check_footer_with_prior`] chooses.
+pub fn check_footer_after<T>(input: &mut dyn ChecksumIndexInput, result: Result<T>) -> Result<T> {
+    match result {
+        Ok(value) => {
+            check_footer(input)?;
+            Ok(value)
+        }
+        Err(prior) => Err(check_footer_with_prior(input, prior)),
     }
 }
 
@@ -980,7 +1016,8 @@ mod tests {
     /// `CodecUtil.checkFooter(in, priorException)` (`CodecUtil.java:470-516`):
     /// a passing checksum rethrows the prior exception itself, of its own
     /// type; a corrupt footer or an unreachable one is thrown as the
-    /// `CorruptIndexException`, with the prior exception carried.
+    /// `CorruptIndexException`, whose message is Java's: the prior exception
+    /// is only suppressed into it, which never reaches `getMessage()`.
     #[test]
     fn check_footer_with_prior_rethrows_the_prior_unless_the_footer_is_corrupt() {
         fn file() -> Vec<u8> {
@@ -1001,7 +1038,7 @@ mod tests {
             "{err:?}"
         );
 
-        // Corrupt checksum: the corruption, with the prior error carried.
+        // Corrupt checksum: the corruption, its message Java's alone.
         let mut bytes = file();
         let last = bytes.len() - 1;
         bytes[last] = bytes[last].wrapping_add(1);
@@ -1010,7 +1047,7 @@ mod tests {
         match &err {
             LuceneError::CorruptIndex(m) => {
                 assert!(m.starts_with("checksum failed"), "{m}");
-                assert!(m.contains("bad entry"), "{m}");
+                assert!(!m.contains("bad entry"), "{m}");
             }
             other => panic!("expected the corruption, got {other:?}"),
         }
@@ -1024,11 +1061,14 @@ mod tests {
         let err = check_footer_with_prior(&mut input, prior());
         match &err {
             LuceneError::CorruptIndex(m) => {
-                assert!(
-                    m.starts_with("checksum status indeterminate: remaining=8; please run checkindex for more details"),
-                    "{m}"
+                assert_eq!(
+                    m,
+                    &format!(
+                        "checksum status indeterminate: remaining=8; please run checkindex \
+                         for more details (resource={})",
+                        input.resource_description()
+                    )
                 );
-                assert!(m.contains("bad entry"), "{m}");
             }
             other => panic!("expected the corruption, got {other:?}"),
         }

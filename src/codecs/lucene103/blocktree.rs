@@ -2313,132 +2313,139 @@ impl Lucene103BlockTreeTermsReader {
 
         let meta_name = segment_file_name(&segment, &segment_suffix, TERMS_META_EXTENSION);
         let mut meta_in = state.directory.open_checksum_input(&meta_name)?;
-        codec_util::check_index_header(
-            meta_in.as_mut(),
-            TERMS_META_CODEC_NAME,
-            version,
-            version,
-            &state.segment_info.id(),
-            &segment_suffix,
-        )?;
-        Arc::get_mut(postings_reader)
-            .expect("INVARIANT: not shared yet")
-            .init(meta_in.as_mut(), state)?;
-        // `init` is the only method that mutates the reader, and it runs once,
-        // here. From this point it is shared, as Java shares its single
-        // `postingsReader` across every field's terms enum.
-        let shared = Arc::new(BlockTreeShared {
-            terms_in: Arc::clone(inputs[1].as_ref().expect("INVARIANT: opened above")),
-            index_in: Arc::clone(inputs[0].as_ref().expect("INVARIANT: opened above")),
-            segment: segment.clone(),
-            version,
-            postings_reader: Arc::clone(postings_reader),
-        });
+        // The `try` block of the try-with-resources over `metaIn`, whose
+        // failure `CodecUtil.checkFooter(metaIn, priorE)` weighs in the
+        // `finally` (`Lucene103BlockTreeTermsReader.java:150-246`).
+        let read = (|| -> Result<_> {
+            codec_util::check_index_header(
+                meta_in.as_mut(),
+                TERMS_META_CODEC_NAME,
+                version,
+                version,
+                &state.segment_info.id(),
+                &segment_suffix,
+            )?;
+            Arc::get_mut(postings_reader)
+                .expect("INVARIANT: not shared yet")
+                .init(meta_in.as_mut(), state)?;
+            // `init` is the only method that mutates the reader, and it runs once,
+            // here. From this point it is shared, as Java shares its single
+            // `postingsReader` across every field's terms enum.
+            let shared = Arc::new(BlockTreeShared {
+                terms_in: Arc::clone(inputs[1].as_ref().expect("INVARIANT: opened above")),
+                index_in: Arc::clone(inputs[0].as_ref().expect("INVARIANT: opened above")),
+                segment: segment.clone(),
+                version,
+                postings_reader: Arc::clone(postings_reader),
+            });
 
-        let num_fields = meta_in.read_v_int()?;
-        if num_fields < 0 {
-            return Err(LuceneError::corrupt_index(
-                format!("invalid numFields: {num_fields}"),
-                &meta_name,
-            ));
-        }
-
-        let max_doc = state.segment_info.max_doc()?;
-        let mut fields = BTreeMap::new();
-        for _ in 0..num_fields {
-            let field_number = meta_in.read_v_int()?;
-            let num_terms = meta_in.read_v_long()?;
-            if num_terms <= 0 {
+            let num_fields = meta_in.read_v_int()?;
+            if num_fields < 0 {
                 return Err(LuceneError::corrupt_index(
-                    format!("illegal numTerms for field number {field_number}"),
+                    format!("invalid numFields: {num_fields}"),
                     &meta_name,
                 ));
             }
-            let field_info = state
-                .field_infos
-                .field_info_by_number(field_number)
-                .ok_or_else(|| {
-                    LuceneError::corrupt_index(
-                        format!("invalid field number: {field_number}"),
+
+            let max_doc = state.segment_info.max_doc()?;
+            let mut fields = BTreeMap::new();
+            for _ in 0..num_fields {
+                let field_number = meta_in.read_v_int()?;
+                let num_terms = meta_in.read_v_long()?;
+                if num_terms <= 0 {
+                    return Err(LuceneError::corrupt_index(
+                        format!("illegal numTerms for field number {field_number}"),
                         &meta_name,
-                    )
-                })?
-                .clone();
+                    ));
+                }
+                let field_info = state
+                    .field_infos
+                    .field_info_by_number(field_number)
+                    .ok_or_else(|| {
+                        LuceneError::corrupt_index(
+                            format!("invalid field number: {field_number}"),
+                            &meta_name,
+                        )
+                    })?
+                    .clone();
 
-            let sum_total_term_freq = meta_in.read_v_long()?;
-            // With frequencies omitted the two sums are equal and only one is
-            // written.
-            let sum_doc_freq = if field_info.index_options == IndexOptions::DOCS {
-                sum_total_term_freq
-            } else {
-                meta_in.read_v_long()?
-            };
-            let doc_count = meta_in.read_v_int()?;
-            let min_term = read_bytes_ref(meta_in.as_mut(), &meta_name)?;
-            // The writer always emits both terms
-            // (`Lucene103BlockTreeTermsWriter.java:1091-1092`), so both must
-            // always be read. Java's `numTerms == 1` branch only *aliases*
-            // `maxTerm` to `minTerm` afterwards, to save one object on the heap;
-            // it does not skip the read. Skipping it left the max term's length
-            // and bytes in the stream, which threw off every field decoded after
-            // it and made the `.tmd` footer land in the wrong place.
-            let max_term_read = read_bytes_ref(meta_in.as_mut(), &meta_name)?;
-            let max_term = if num_terms == 1 {
-                debug_assert_eq!(max_term_read, min_term);
-                min_term.clone()
-            } else {
-                max_term_read
-            };
+                let sum_total_term_freq = meta_in.read_v_long()?;
+                // With frequencies omitted the two sums are equal and only one is
+                // written.
+                let sum_doc_freq = if field_info.index_options == IndexOptions::DOCS {
+                    sum_total_term_freq
+                } else {
+                    meta_in.read_v_long()?
+                };
+                let doc_count = meta_in.read_v_int()?;
+                let min_term = read_bytes_ref(meta_in.as_mut(), &meta_name)?;
+                // The writer always emits both terms
+                // (`Lucene103BlockTreeTermsWriter.java:1091-1092`), so both must
+                // always be read. Java's `numTerms == 1` branch only *aliases*
+                // `maxTerm` to `minTerm` afterwards, to save one object on the heap;
+                // it does not skip the read. Skipping it left the max term's length
+                // and bytes in the stream, which threw off every field decoded after
+                // it and made the `.tmd` footer land in the wrong place.
+                let max_term_read = read_bytes_ref(meta_in.as_mut(), &meta_name)?;
+                let max_term = if num_terms == 1 {
+                    debug_assert_eq!(max_term_read, min_term);
+                    min_term.clone()
+                } else {
+                    max_term_read
+                };
 
-            if doc_count < 0 || doc_count > max_doc {
-                return Err(LuceneError::corrupt_index(
-                    format!("invalid docCount: {doc_count} maxDoc: {max_doc}"),
-                    &meta_name,
-                ));
-            }
-            if sum_doc_freq < i64::from(doc_count) {
-                return Err(LuceneError::corrupt_index(
-                    format!("invalid sumDocFreq: {sum_doc_freq} docCount: {doc_count}"),
-                    &meta_name,
-                ));
-            }
-            if sum_total_term_freq < sum_doc_freq {
-                return Err(LuceneError::corrupt_index(
-                    format!(
+                if doc_count < 0 || doc_count > max_doc {
+                    return Err(LuceneError::corrupt_index(
+                        format!("invalid docCount: {doc_count} maxDoc: {max_doc}"),
+                        &meta_name,
+                    ));
+                }
+                if sum_doc_freq < i64::from(doc_count) {
+                    return Err(LuceneError::corrupt_index(
+                        format!("invalid sumDocFreq: {sum_doc_freq} docCount: {doc_count}"),
+                        &meta_name,
+                    ));
+                }
+                if sum_total_term_freq < sum_doc_freq {
+                    return Err(LuceneError::corrupt_index(
+                        format!(
                         "invalid sumTotalTermFreq: {sum_total_term_freq} sumDocFreq: {sum_doc_freq}"
                     ),
-                    &meta_name,
-                ));
+                        &meta_name,
+                    ));
+                }
+
+                let name = field_info.name.clone();
+                let reader = FieldReader::new(
+                    Arc::clone(&shared),
+                    field_info,
+                    num_terms,
+                    sum_total_term_freq,
+                    sum_doc_freq,
+                    doc_count,
+                    min_term,
+                    max_term,
+                    meta_in.as_mut(),
+                )?;
+                if fields.insert(name.clone(), reader).is_some() {
+                    return Err(LuceneError::corrupt_index(
+                        format!("duplicate field: {name}"),
+                        &meta_name,
+                    ));
+                }
             }
 
-            let name = field_info.name.clone();
-            let reader = FieldReader::new(
-                Arc::clone(&shared),
-                field_info,
-                num_terms,
-                sum_total_term_freq,
-                sum_doc_freq,
-                doc_count,
-                min_term,
-                max_term,
-                meta_in.as_mut(),
-            )?;
-            if fields.insert(name.clone(), reader).is_some() {
-                return Err(LuceneError::corrupt_index(
-                    format!("duplicate field: {name}"),
-                    &meta_name,
-                ));
-            }
-        }
-
-        // The writer records the final length of `.tip` and `.tim` here, after
-        // the field metadata. Both must be read before the footer check, and
-        // they are what lets the checksums of those two files be retrieved
-        // without scanning them.
-        let index_length = meta_in.read_long()?;
-        let terms_length = meta_in.read_long()?;
-
-        codec_util::check_footer(meta_in.as_mut())?;
+            // The writer records the final length of `.tip` and `.tim` here, after
+            // the field metadata. Both must be read before the footer check, and
+            // they are what lets the checksums of those two files be retrieved
+            // without scanning them.
+            let index_length = meta_in.read_long()?;
+            let terms_length = meta_in.read_long()?;
+            Ok((shared, fields, index_length, terms_length))
+        })();
+        let read = codec_util::check_footer_after(meta_in.as_mut(), read);
+        let (shared, fields, index_length, terms_length) =
+            crate::store::close_after(meta_in.as_mut(), read)?;
 
         // The metadata checksum has been verified, so the two lengths are
         // trustworthy. Java retrieves the checksums through the same two

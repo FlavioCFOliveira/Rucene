@@ -73,8 +73,10 @@ impl LiveDocsFormat for Lucene90LiveDocsFormat {
                 del_count as usize,
             )
         })();
-        let _ = codec_util::check_footer(input.as_mut())?;
-        result
+        // `finally { CodecUtil.checkFooter(input, priorE); }` inside the
+        // try-with-resources (`Lucene90LiveDocsFormat.java:88-105`).
+        let result = codec_util::check_footer_after(input.as_mut(), result);
+        crate::store::close_after(input.as_mut(), result)
     }
 
     fn write_live_docs(

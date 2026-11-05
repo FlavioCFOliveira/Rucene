@@ -185,10 +185,12 @@ impl CompoundFormat for SimpleTextCompoundFormat {
 
             // write bytes for file
             start_offsets[i] = out.file_pointer();
+            // `try (IndexInput in = dir.openInput(names[i], IOContext.READONCE))`
+            // (`SimpleTextCompoundFormat.java:180-182`): closed on every exit.
             let mut input = dir.open_input(name, &*READONCE_IO_CONTEXT)?;
             let length = input.length();
-            out.copy_bytes(input.as_mut(), length)?;
-            input.close()?;
+            let copied = out.copy_bytes(input.as_mut(), length);
+            rucene::store::close_after(input.as_mut(), copied)?;
             end_offsets[i] = out.file_pointer();
         }
 

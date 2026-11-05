@@ -1264,21 +1264,13 @@ fn lucene_reads_what_postings_formats_write() {
 #[test]
 fn postings_formats_corrupted_files_raise_lucenes_errors() {
     register_codecs();
-    let stripped: Vec<(&str, Vec<String>)> = POSTINGS_ORACLES
-        .iter()
-        .map(|o| (o.prefix, o.assert_corrupted_files_raise_lucenes_errors()))
-        .filter(|(_, s)| !s.is_empty())
-        .collect();
     // The variable-gap readers check `.tmv`'s footer with the prior error of
-    // its corrupted header: core defect 2 of `oracle::PRIOR_ERROR_SUFFIX`,
-    // as in `rucene-codecs`' blockterms oracle.
-    assert_eq!(
-        stripped,
-        [
-            ("vargap_fixed", vec!["tmv-id".to_string()]),
-            ("vargap_docfreq", vec!["tmv-id".to_string()])
-        ]
-    );
+    // its corrupted header; the message is Lucene's, the prior error being
+    // suppressed (`CodecUtil.java:506-508`), as in `rucene-codecs`'
+    // blockterms oracle.
+    for o in &POSTINGS_ORACLES {
+        o.assert_corrupted_files_raise_lucenes_errors();
+    }
 }
 
 /// The `shared` case of the Rot13 formats (terms in several fields, every

@@ -240,23 +240,13 @@ fn lucene_reads_what_rucene_writes() {
 }
 
 /// The variable-gap readers check `.tmv`'s footer with the prior error of
-/// its corrupted header (`CodecUtil.checkFooter(metaIn, priorE)`): the one
-/// case per variable-gap format that meets core defect 2 of
-/// `oracle::PRIOR_ERROR_SUFFIX`.
+/// its corrupted header (`CodecUtil.checkFooter(metaIn, priorE)`), whose
+/// message is Lucene's: the prior error is suppressed, not appended.
 #[test]
 fn corrupted_files_raise_lucenes_errors() {
-    let stripped: Vec<Vec<String>> = ORACLES
-        .iter()
-        .map(|o| o.assert_corrupted_files_raise_lucenes_errors())
-        .collect();
-    assert_eq!(
-        stripped,
-        [
-            vec![],
-            vec!["tmv-id".to_string()],
-            vec!["tmv-id".to_string()]
-        ]
-    );
+    for oracle in &ORACLES {
+        oracle.assert_corrupted_files_raise_lucenes_errors();
+    }
 }
 
 /// The assemblies resolve by name once the class loader is installed, as

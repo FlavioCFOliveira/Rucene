@@ -13,7 +13,8 @@
 #![allow(unsafe_code)]
 
 use crate::codecs::codec_util::{
-    check_footer, check_index_header, checksum_entire_file, retrieve_checksum_expected_length,
+    check_footer, check_footer_with_prior, check_index_header, checksum_entire_file,
+    retrieve_checksum_expected_length,
 };
 use crate::codecs::lucene104::{
     for_util::{ForUtil, BLOCK_SIZE as FOR_BLOCK_SIZE},
@@ -32,7 +33,7 @@ use crate::error::{LuceneError, Result};
 use crate::index::{FieldInfo, IndexOptions};
 use crate::index::{FreqAndNormBuffer, Impacts, ImpactsSource};
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
-use crate::store::{DataInput, IndexInput};
+use crate::store::{close_after, DataInput, IndexInput};
 use crate::util::{BitUtil, FixedBitSet, IOUtils};
 use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -191,29 +192,55 @@ impl Lucene104PostingsReader {
         let meta_name = segment_file_name(&segment_info.name, suffix, "psm");
         let mut meta_in = dir.open_checksum_input(&meta_name)?;
 
-        let mut expected_pos_file_length: i64 = -1;
-        let mut expected_pay_file_length: i64 = -1;
-
-        let version = check_index_header(
-            meta_in.as_mut(),
-            META_CODEC,
-            VERSION_START,
-            VERSION_CURRENT,
-            &id,
-            suffix,
-        )?;
-        let max_num_impacts_at_level0 = meta_in.read_int()?;
-        let max_impact_num_bytes_at_level0 = meta_in.read_int()?;
-        let max_num_impacts_at_level1 = meta_in.read_int()?;
-        let max_impact_num_bytes_at_level1 = meta_in.read_int()?;
-        let expected_doc_file_length = meta_in.read_long()?;
-        if state.field_infos.has_prox() {
-            expected_pos_file_length = meta_in.read_long()?;
-            if state.field_infos.has_payloads() || state.field_infos.has_offsets() {
-                expected_pay_file_length = meta_in.read_long()?;
+        // The `try` block, which ends with `CodecUtil.checkFooter(metaIn,
+        // null)`; its `catch (Throwable t)` hands any failure — that footer
+        // check's too — to `CodecUtil.checkFooter(metaIn, t)`, all inside the
+        // try-with-resources (`Lucene104PostingsReader.java:84-118`).
+        let read = (|| -> Result<_> {
+            let mut expected_pos_file_length: i64 = -1;
+            let mut expected_pay_file_length: i64 = -1;
+            let version = check_index_header(
+                meta_in.as_mut(),
+                META_CODEC,
+                VERSION_START,
+                VERSION_CURRENT,
+                &id,
+                suffix,
+            )?;
+            let max_num_impacts_at_level0 = meta_in.read_int()?;
+            let max_impact_num_bytes_at_level0 = meta_in.read_int()?;
+            let max_num_impacts_at_level1 = meta_in.read_int()?;
+            let max_impact_num_bytes_at_level1 = meta_in.read_int()?;
+            let expected_doc_file_length = meta_in.read_long()?;
+            if state.field_infos.has_prox() {
+                expected_pos_file_length = meta_in.read_long()?;
+                if state.field_infos.has_payloads() || state.field_infos.has_offsets() {
+                    expected_pay_file_length = meta_in.read_long()?;
+                }
             }
-        }
-        check_footer(meta_in.as_mut())?;
+            check_footer(meta_in.as_mut())?;
+            Ok((
+                version,
+                max_num_impacts_at_level0,
+                max_impact_num_bytes_at_level0,
+                max_num_impacts_at_level1,
+                max_impact_num_bytes_at_level1,
+                expected_doc_file_length,
+                expected_pos_file_length,
+                expected_pay_file_length,
+            ))
+        })()
+        .map_err(|t| check_footer_with_prior(meta_in.as_mut(), t));
+        let (
+            version,
+            max_num_impacts_at_level0,
+            max_impact_num_bytes_at_level0,
+            max_num_impacts_at_level1,
+            max_impact_num_bytes_at_level1,
+            expected_doc_file_length,
+            expected_pos_file_length,
+            expected_pay_file_length,
+        ) = close_after(meta_in.as_mut(), read)?;
 
         let doc_name = segment_file_name(&segment_info.name, suffix, "doc");
         let pos_name = segment_file_name(&segment_info.name, suffix, "pos");
@@ -2232,7 +2259,8 @@ mod close_family_tests {
         let before = log.closed().len();
         rewrite_file(&tracking, "_0.doc", |bytes| bytes[6] ^= 0xff);
         Lucene104PostingsReader::new(&read_state(&*dir, &info, &fis)).unwrap_err();
-        assert_eq!(log.closed()[before..], ["_0.doc"]);
+        // The metadata input is closed first, by its try-with-resources.
+        assert_eq!(log.closed()[before..], ["_0.psm", "_0.doc"]);
     }
 
     /// `close()` is `IOUtils.close(docIn, posIn, payIn)`

@@ -60,8 +60,10 @@ impl SegmentInfoFormat for Lucene99SegmentInfoFormat {
             )?;
             parse_segment_info(directory, input.as_mut(), segment_name, segment_id)
         })();
-        codec_util::check_footer(input.as_mut())?;
-        result
+        // `finally { CodecUtil.checkFooter(input, priorE); }` inside the
+        // try-with-resources (`Lucene99SegmentInfoFormat.java:107-122`).
+        let result = codec_util::check_footer_after(input.as_mut(), result);
+        crate::store::close_after(input.as_mut(), result)
     }
 
     fn write(

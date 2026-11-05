@@ -4897,6 +4897,34 @@ impl std::fmt::Debug for BufferedChecksum {
     }
 }
 
+/// Closes `input` once the body of a Java try-with-resources over it has
+/// produced `result`, and returns what the statement completes with.
+///
+/// **This has no counterpart in Lucene 10.5.0.** It stands for the
+/// `try (IndexInput in = ...) { ... }` statement Lucene's readers open their
+/// files with (JLS 14.20.3): the resource is closed on every exit; when the
+/// body succeeded, a failure to close is the statement's failure; when the
+/// body failed, its failure is kept and the one closing raised is suppressed
+/// into it — dropped here, as [`LuceneError`] has no suppressed list (see
+/// `IOUtils::use_or_suppress`).
+///
+/// # Errors
+///
+/// `result`'s error, else the error closing `input` returned.
+pub fn close_after<T, I: IndexInput + ?Sized>(input: &mut I, result: Result<T>) -> Result<T> {
+    match result {
+        Ok(value) => {
+            input.close()?;
+            Ok(value)
+        }
+        Err(error) => {
+            // Java: `error.addSuppressed(closeFailure)`; dropped (see above).
+            let _ = input.close();
+            Err(error)
+        }
+    }
+}
+
 /// Abstract base trait for checksum-computing inputs.
 ///
 /// Equivalent to `org.apache.lucene.store.ChecksumIndexInput`. This trait extends

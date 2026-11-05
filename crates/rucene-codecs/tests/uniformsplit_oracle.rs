@@ -186,11 +186,7 @@ fn lucene_reads_what_rucene_writes() {
 #[test]
 fn corrupted_files_raise_lucenes_errors() {
     for f in ALL {
-        assert!(
-            f.assert_corrupted_files_raise_lucenes_errors().is_empty(),
-            "{}",
-            f.prefix
-        );
+        f.assert_corrupted_files_raise_lucenes_errors();
     }
 }
 

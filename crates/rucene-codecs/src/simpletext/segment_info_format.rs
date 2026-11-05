@@ -93,155 +93,160 @@ impl SegmentInfoFormat for SimpleTextSegmentInfoFormat {
         let mut scratch = Vec::new();
         let seg_file_name = segment_file_name(segment_name, "", SI_EXTENSION);
         let mut input = directory.open_checksum_input(&seg_file_name)?;
-        read_line(input.as_mut(), &mut scratch)?;
-        debug_assert!(scratch.starts_with(SI_VERSION));
-        let version = Version::parse(&read_str(SI_VERSION.len(), &scratch)).map_err(|pe| {
-            LuceneError::corrupt_index(
-                format!("unable to parse version string: {}", java_message(&pe)),
-                input.resource_description(),
-            )
-        })?;
-
-        read_line(input.as_mut(), &mut scratch)?;
-        debug_assert!(scratch.starts_with(SI_MIN_VERSION));
-        let version_string = read_str(SI_MIN_VERSION.len(), &scratch);
-        let min_version = if version_string == "null" {
-            None
-        } else {
-            Some(Version::parse(&version_string).map_err(|pe| {
+        // `try (ChecksumIndexInput input = ...)` (`SimpleTextSegmentInfoFormat.java:82-226`).
+        let result = (|| -> Result<_> {
+            read_line(input.as_mut(), &mut scratch)?;
+            debug_assert!(scratch.starts_with(SI_VERSION));
+            let version = Version::parse(&read_str(SI_VERSION.len(), &scratch)).map_err(|pe| {
                 LuceneError::corrupt_index(
                     format!("unable to parse version string: {}", java_message(&pe)),
                     input.resource_description(),
                 )
-            })?)
-        };
-
-        read_line(input.as_mut(), &mut scratch)?;
-        debug_assert!(scratch.starts_with(SI_DOCCOUNT));
-        let doc_count = parse_int(&read_str(SI_DOCCOUNT.len(), &scratch))?;
-
-        read_line(input.as_mut(), &mut scratch)?;
-        debug_assert!(scratch.starts_with(SI_USECOMPOUND));
-        let is_compound_file = parse_boolean(&read_str(SI_USECOMPOUND.len(), &scratch));
-
-        read_line(input.as_mut(), &mut scratch)?;
-        debug_assert!(scratch.starts_with(SI_HAS_BLOCKS));
-        let has_blocks = parse_boolean(&read_str(SI_HAS_BLOCKS.len(), &scratch));
-
-        read_line(input.as_mut(), &mut scratch)?;
-        debug_assert!(scratch.starts_with(SI_NUM_DIAG));
-        let num_diag = parse_int(&read_str(SI_NUM_DIAG.len(), &scratch))?;
-        let mut diagnostics: HashMap<String, String> = HashMap::new();
-        for _ in 0..num_diag {
-            read_line(input.as_mut(), &mut scratch)?;
-            debug_assert!(scratch.starts_with(SI_DIAG_KEY));
-            let key = read_str(SI_DIAG_KEY.len(), &scratch);
+            })?;
 
             read_line(input.as_mut(), &mut scratch)?;
-            debug_assert!(scratch.starts_with(SI_DIAG_VALUE));
-            let value = read_str(SI_DIAG_VALUE.len(), &scratch);
-            diagnostics.insert(key, value);
-        }
+            debug_assert!(scratch.starts_with(SI_MIN_VERSION));
+            let version_string = read_str(SI_MIN_VERSION.len(), &scratch);
+            let min_version = if version_string == "null" {
+                None
+            } else {
+                Some(Version::parse(&version_string).map_err(|pe| {
+                    LuceneError::corrupt_index(
+                        format!("unable to parse version string: {}", java_message(&pe)),
+                        input.resource_description(),
+                    )
+                })?)
+            };
 
-        read_line(input.as_mut(), &mut scratch)?;
-        debug_assert!(scratch.starts_with(SI_NUM_ATT));
-        let num_att = parse_int(&read_str(SI_NUM_ATT.len(), &scratch))?;
-        let mut attributes: HashMap<String, String> = HashMap::new();
-        for _ in 0..num_att {
             read_line(input.as_mut(), &mut scratch)?;
-            debug_assert!(scratch.starts_with(SI_ATT_KEY));
-            let key = read_str(SI_ATT_KEY.len(), &scratch);
+            debug_assert!(scratch.starts_with(SI_DOCCOUNT));
+            let doc_count = parse_int(&read_str(SI_DOCCOUNT.len(), &scratch))?;
 
             read_line(input.as_mut(), &mut scratch)?;
-            debug_assert!(scratch.starts_with(SI_ATT_VALUE));
-            let value = read_str(SI_ATT_VALUE.len(), &scratch);
-            attributes.insert(key, value);
-        }
+            debug_assert!(scratch.starts_with(SI_USECOMPOUND));
+            let is_compound_file = parse_boolean(&read_str(SI_USECOMPOUND.len(), &scratch));
 
-        read_line(input.as_mut(), &mut scratch)?;
-        debug_assert!(scratch.starts_with(SI_NUM_FILES));
-        let num_files = parse_int(&read_str(SI_NUM_FILES.len(), &scratch))?;
-        // `HashSet.newHashSet(numFiles)`, filled in file order; `setFiles`
-        // then walks it in its own iteration order.
-        let mut files = JavaHashSet::with_initial_capacity(hash_map_capacity(num_files));
-        for _ in 0..num_files {
             read_line(input.as_mut(), &mut scratch)?;
-            debug_assert!(scratch.starts_with(SI_FILE));
-            let file_name = read_str(SI_FILE.len(), &scratch);
-            files.insert(file_name);
-        }
+            debug_assert!(scratch.starts_with(SI_HAS_BLOCKS));
+            let has_blocks = parse_boolean(&read_str(SI_HAS_BLOCKS.len(), &scratch));
 
-        read_line(input.as_mut(), &mut scratch)?;
-        debug_assert!(scratch.starts_with(SI_ID));
-        let id = util::from_bytes_ref_string(&read_str(SI_ID.len(), &scratch))?
-            .slice()
-            .to_vec();
+            read_line(input.as_mut(), &mut scratch)?;
+            debug_assert!(scratch.starts_with(SI_NUM_DIAG));
+            let num_diag = parse_int(&read_str(SI_NUM_DIAG.len(), &scratch))?;
+            let mut diagnostics: HashMap<String, String> = HashMap::new();
+            for _ in 0..num_diag {
+                read_line(input.as_mut(), &mut scratch)?;
+                debug_assert!(scratch.starts_with(SI_DIAG_KEY));
+                let key = read_str(SI_DIAG_KEY.len(), &scratch);
 
-        if segment_id != id.as_slice() {
-            return Err(LuceneError::corrupt_index(
-                format!(
-                    "file mismatch, expected: {}, got: {}",
-                    StringHelper::id_to_string(Some(segment_id)),
+                read_line(input.as_mut(), &mut scratch)?;
+                debug_assert!(scratch.starts_with(SI_DIAG_VALUE));
+                let value = read_str(SI_DIAG_VALUE.len(), &scratch);
+                diagnostics.insert(key, value);
+            }
+
+            read_line(input.as_mut(), &mut scratch)?;
+            debug_assert!(scratch.starts_with(SI_NUM_ATT));
+            let num_att = parse_int(&read_str(SI_NUM_ATT.len(), &scratch))?;
+            let mut attributes: HashMap<String, String> = HashMap::new();
+            for _ in 0..num_att {
+                read_line(input.as_mut(), &mut scratch)?;
+                debug_assert!(scratch.starts_with(SI_ATT_KEY));
+                let key = read_str(SI_ATT_KEY.len(), &scratch);
+
+                read_line(input.as_mut(), &mut scratch)?;
+                debug_assert!(scratch.starts_with(SI_ATT_VALUE));
+                let value = read_str(SI_ATT_VALUE.len(), &scratch);
+                attributes.insert(key, value);
+            }
+
+            read_line(input.as_mut(), &mut scratch)?;
+            debug_assert!(scratch.starts_with(SI_NUM_FILES));
+            let num_files = parse_int(&read_str(SI_NUM_FILES.len(), &scratch))?;
+            // `HashSet.newHashSet(numFiles)`, filled in file order; `setFiles`
+            // then walks it in its own iteration order.
+            let mut files = JavaHashSet::with_initial_capacity(hash_map_capacity(num_files));
+            for _ in 0..num_files {
+                read_line(input.as_mut(), &mut scratch)?;
+                debug_assert!(scratch.starts_with(SI_FILE));
+                let file_name = read_str(SI_FILE.len(), &scratch);
+                files.insert(file_name);
+            }
+
+            read_line(input.as_mut(), &mut scratch)?;
+            debug_assert!(scratch.starts_with(SI_ID));
+            let id = util::from_bytes_ref_string(&read_str(SI_ID.len(), &scratch))?
+                .slice()
+                .to_vec();
+
+            if segment_id != id.as_slice() {
+                return Err(LuceneError::corrupt_index(
+                    format!(
+                        "file mismatch, expected: {}, got: {}",
+                        StringHelper::id_to_string(Some(segment_id)),
+                        StringHelper::id_to_string(Some(&id))
+                    ),
+                    input.resource_description(),
+                ));
+            }
+
+            read_line(input.as_mut(), &mut scratch)?;
+            debug_assert!(scratch.starts_with(SI_SORT));
+            let num_sort_fields = parse_int(&read_str(SI_SORT.len(), &scratch))?;
+            let mut sort_fields = Vec::with_capacity(num_sort_fields.max(0) as usize);
+            for _ in 0..num_sort_fields {
+                read_line(input.as_mut(), &mut scratch)?;
+                debug_assert!(scratch.starts_with(SI_SORT_NAME));
+                let provider = read_str(SI_SORT_NAME.len(), &scratch);
+
+                read_line(input.as_mut(), &mut scratch)?;
+                debug_assert!(scratch.starts_with(SI_SORT_TYPE));
+
+                read_line(input.as_mut(), &mut scratch)?;
+                debug_assert!(scratch.starts_with(SI_SORT_BYTES));
+                let serialized_sort =
+                    util::from_bytes_ref_string(&read_str(SI_SORT_BYTES.len(), &scratch))?;
+                let mut bytes = ByteArrayDataInput::new(serialized_sort.slice());
+                sort_fields
+                    .push(sort_field_provider_for_name(&provider)?.read_sort_field(&mut bytes)?);
+                debug_assert!(bytes.eof());
+            }
+
+            let index_sort = if sort_fields.is_empty() {
+                // Java's `null` index sort; the port's "unsorted" is the relevance
+                // sort, as `Lucene99SegmentInfoFormat` reads it.
+                Sort::new()
+            } else {
+                Sort::new_fields(sort_fields)?
+            };
+
+            util::check_footer(input.as_mut())?;
+
+            let mut id_array = [0u8; rucene::util::string_helper::ID_LENGTH];
+            if id.len() != id_array.len() {
+                return Err(LuceneError::IllegalArgument(format!(
+                    "invalid id: {}",
                     StringHelper::id_to_string(Some(&id))
-                ),
-                input.resource_description(),
-            ));
-        }
-
-        read_line(input.as_mut(), &mut scratch)?;
-        debug_assert!(scratch.starts_with(SI_SORT));
-        let num_sort_fields = parse_int(&read_str(SI_SORT.len(), &scratch))?;
-        let mut sort_fields = Vec::with_capacity(num_sort_fields.max(0) as usize);
-        for _ in 0..num_sort_fields {
-            read_line(input.as_mut(), &mut scratch)?;
-            debug_assert!(scratch.starts_with(SI_SORT_NAME));
-            let provider = read_str(SI_SORT_NAME.len(), &scratch);
-
-            read_line(input.as_mut(), &mut scratch)?;
-            debug_assert!(scratch.starts_with(SI_SORT_TYPE));
-
-            read_line(input.as_mut(), &mut scratch)?;
-            debug_assert!(scratch.starts_with(SI_SORT_BYTES));
-            let serialized_sort =
-                util::from_bytes_ref_string(&read_str(SI_SORT_BYTES.len(), &scratch))?;
-            let mut bytes = ByteArrayDataInput::new(serialized_sort.slice());
-            sort_fields.push(sort_field_provider_for_name(&provider)?.read_sort_field(&mut bytes)?);
-            debug_assert!(bytes.eof());
-        }
-
-        let index_sort = if sort_fields.is_empty() {
-            // Java's `null` index sort; the port's "unsorted" is the relevance
-            // sort, as `Lucene99SegmentInfoFormat` reads it.
-            Sort::new()
-        } else {
-            Sort::new_fields(sort_fields)?
-        };
-
-        util::check_footer(input.as_mut())?;
-
-        let mut id_array = [0u8; rucene::util::string_helper::ID_LENGTH];
-        if id.len() != id_array.len() {
-            return Err(LuceneError::IllegalArgument(format!(
-                "invalid id: {}",
-                StringHelper::id_to_string(Some(&id))
-            )));
-        }
-        id_array.copy_from_slice(&id);
-        let info = SegmentInfo::new_without_codec(
-            directory,
-            version,
-            min_version,
-            segment_name.to_string(),
-            doc_count,
-            is_compound_file,
-            has_blocks,
-            diagnostics,
-            id_array,
-            attributes,
-            index_sort,
-        )?;
-        info.set_files(files.iter().cloned().collect::<Vec<_>>())?;
-        Ok(info)
+                )));
+            }
+            id_array.copy_from_slice(&id);
+            let info = SegmentInfo::new_without_codec(
+                directory,
+                version,
+                min_version,
+                segment_name.to_string(),
+                doc_count,
+                is_compound_file,
+                has_blocks,
+                diagnostics,
+                id_array,
+                attributes,
+                index_sort,
+            )?;
+            info.set_files(files.iter().cloned().collect::<Vec<_>>())?;
+            Ok(info)
+        })();
+        rucene::store::close_after(input.as_mut(), result)
     }
 
     /// Port of `SimpleTextSegmentInfoFormat.write`.

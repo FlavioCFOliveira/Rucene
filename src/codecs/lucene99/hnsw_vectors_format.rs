@@ -14,7 +14,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::codecs::codec_util::{
-    check_footer, check_index_header, checksum_entire_file, retrieve_checksum, write_footer,
+    check_footer_after, check_index_header, checksum_entire_file, retrieve_checksum, write_footer,
     write_index_header,
 };
 use crate::codecs::hnsw::flat_vectors::{
@@ -1996,16 +1996,23 @@ impl Lucene99HnswVectorsReader {
             META_EXTENSION,
         );
         let mut meta_checksum = state.directory.open_checksum_input(&meta_file_name)?;
-        let version_meta = check_index_header(
-            meta_checksum.as_mut(),
-            META_CODEC_NAME,
-            VERSION_START,
-            VERSION_CURRENT,
-            &state.segment_info.id(),
-            &state.segment_suffix,
-        )?;
-        let fields = read_fields(meta_checksum.as_mut(), state.field_infos)?;
-        check_footer(meta_checksum.as_mut())?;
+        // The `try` block of the try-with-resources over `meta`, whose failure
+        // `CodecUtil.checkFooter(meta, priorE)` weighs in the `finally`
+        // (`Lucene99HnswVectorsReader.java:97-112`).
+        let read = (|| -> Result<_> {
+            let version_meta = check_index_header(
+                meta_checksum.as_mut(),
+                META_CODEC_NAME,
+                VERSION_START,
+                VERSION_CURRENT,
+                &state.segment_info.id(),
+                &state.segment_suffix,
+            )?;
+            let fields = read_fields(meta_checksum.as_mut(), state.field_infos)?;
+            Ok((version_meta, fields))
+        })();
+        let read = check_footer_after(meta_checksum.as_mut(), read);
+        let (version_meta, fields) = crate::store::close_after(meta_checksum.as_mut(), read)?;
 
         // Even though this input is referred to as `indexIn`, it does not
         // qualify as `FileTypeHint.INDEX` since it is a large file
@@ -3967,7 +3974,8 @@ mod close_family_tests {
         Lucene99HnswVectorsFormat::new()
             .fields_reader(&read_state(&*dir, &info, &fis))
             .unwrap_err();
-        assert_eq!(closed_of(&log, &ALL)[before..], ["_0.vec"]);
+        // The metadata input is closed first, by its try-with-resources.
+        assert_eq!(closed_of(&log, &ALL)[before..], ["_0.vemf", "_0.vec"]);
     }
 
     /// A bad `.vex` header closes the `.vex` input
@@ -3985,7 +3993,11 @@ mod close_family_tests {
         Lucene99HnswVectorsFormat::new()
             .fields_reader(&read_state(&*dir, &info, &fis))
             .unwrap_err();
-        assert_eq!(closed_of(&log, &ALL)[before..], ["_0.vex", "_0.vec"]);
+        // The metadata input is closed first, by its try-with-resources.
+        assert_eq!(
+            closed_of(&log, &ALL)[before..],
+            ["_0.vemf", "_0.vem", "_0.vex", "_0.vec"]
+        );
     }
 
     /// `close()` is `IOUtils.close(flatVectorsReader, vectorIndex)`

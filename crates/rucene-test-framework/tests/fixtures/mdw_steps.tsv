@@ -1707,7 +1707,7 @@ crash_always	-9223372036854775808	10	files	ok	_0.dat:1:af63bd4c8601b7df,_1.dat:3
 crash_always	-9223372036854775808	11	nextLong	ok	-3669548311841292153
 crash_always	-9223372036854775808	12	close dir	ok	null
 index_crash	0	0	crash	ok	null
-index_crash	0	1	files	ok	_0.fdm:0:cbf29ce484222325,_0.fdt:0:cbf29ce484222325,_0.fdx:64:40a0017d3c9d1c04,_0.fnm:124:f1043d2f7859e441,_0.nvd:59:9bc168b38d55c29f,_0.nvm:103:187ac226eaca9f46,_0.si:479:4c45f01c36728757,_0_Lucene104_0.doc:48:2b7520b1decafd87,_0_Lucene104_0.pos:49:7c4bd0f8ca2bdc47,_0_Lucene104_0.tim:154:f6abb1f819c724cd,_0_Lucene104_0.tip:92:11d1b004f84e16d5,_0_Lucene104_0.tmd:0:cbf29ce484222325,segments_1:155:9d962a8295e5f3ef
+index_crash	0	1	files	ok	_0.fdm:0:cbf29ce484222325,_0.fdt:0:cbf29ce484222325,_0.fdx:64:e831410642121db7,_0.fnm:124:61dfb12d7f5b424f,_0.nvd:59:18668b37edf835e8,_0.nvm:103:290f7f9439964fd4,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:48:1d59e261088394f5,_0_Lucene104_0.pos:49:5bf4faf647e7c699,_0_Lucene104_0.tim:154:f6abb1f819c724cd,_0_Lucene104_0.tip:92:11d1b004f84e16d5,_0_Lucene104_0.tmd:0:cbf29ce484222325,segments_1:155:99a94cf45033b569
 index_crash	0	2	nextLong	ok	3790058296146005620
 index_close	0	0	close dir	err	java.nio.file.NoSuchFileException	_0_Lucene104_0.psm
 index_close	0	1	nextLong	ok	6525378424592209593
@@ -1717,10 +1717,10 @@ index_close_clean	0	0	getLevelForCheckOnClose	ok	2
 index_close_clean	0	1	close dir	ok	null
 index_close_clean	0	2	nextLong	ok	-1212816472180894984
 index_unknown	0	0	corruptUnknownFiles	ok	null
-index_unknown	0	1	files	ok	_0.fdm:157:bb06ac13359b6278,_0.fdt:120:db3dcbf3327c09ab,_0.fdx:64:40a0017d3c9d1c04,_0.fnm:249:d801ed87cdaab5e8,_0.nvd:59:9bc168b38d55c29f,_0.nvm:103:3b1b782805c2812e,_0.si:479:4c45f01c36728757,_0_Lucene104_0.doc:97:e87aaa6c684a1689,_0_Lucene104_0.pos:99:892b56658cab96d8,_0_Lucene104_0.psm:112:eab5bfef85538d47,_0_Lucene104_0.tim:154:26bdc419fa4c905f,_0_Lucene104_0.tip:92:fa246c1941a9140d,_0_Lucene104_0.tmd:184:8a5a6e68aa985424,_9.fake:16:29f058a4552600e5,_a_Lucene90_0.dvd:16:e99d3f9aa1f83da5,other.txt:33:cdb63eb9ee74ae4e,pending_segments_7:33:feb83b9c2296ab21,segments_1:155:9d962a8295e5f3ef,write.lock:33:b12df2abdf8895f9
+index_unknown	0	1	files	ok	_0.fdm:157:9dd6a4afcf09ebff,_0.fdt:120:9e4a45cbb9915edc,_0.fdx:64:e831410642121db7,_0.fnm:249:8b45805c29f4f300,_0.nvd:59:18668b37edf835e8,_0.nvm:103:722bade820ab02fc,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:97:38c7aab46c9385ab,_0_Lucene104_0.pos:99:f9fcefdfd892d2e5,_0_Lucene104_0.psm:112:8091f29f295d3b1d,_0_Lucene104_0.tim:154:7a97e92e359a4eda,_0_Lucene104_0.tip:92:7052b9eff9137d10,_0_Lucene104_0.tmd:184:0647563bf1d02ca8,_9.fake:16:29f058a4552600e5,_a_Lucene90_0.dvd:16:e99d3f9aa1f83da5,other.txt:33:cdb63eb9ee74ae4e,pending_segments_7:33:feb83b9c2296ab21,segments_1:155:99a94cf45033b569,write.lock:33:b12df2abdf8895f9
 index_unknown	0	2	nextLong	ok	8065025346350546519
 index_crash	1	0	crash	ok	null
-index_crash	1	1	files	ok	_0.fdm:157:f88de8923783faef,_0.fdt:120:5ee59ad88a91dd2b,_0.fdx:0:cbf29ce484222325,_0.fnm:249:4f13b68b5b67d268,_0.nvd:59:9bc168b38d55c29f,_0.nvm:103:ea707954012fe527,_0.si:479:4c45f01c36728757,_0_Lucene104_0.doc:0:cbf29ce484222325,_0_Lucene104_0.pos:99:892b56658cab96d8,_0_Lucene104_0.psm:112:a4ca53d582377be5,_0_Lucene104_0.tim:154:f6abb1f819c724cd,_0_Lucene104_0.tip:92:11d1b004f84e16d5,_0_Lucene104_0.tmd:184:a098b2259cac6f85,segments_1:155:9d962a8295e5f3ef
+index_crash	1	1	files	ok	_0.fdm:157:f88de8923783faef,_0.fdt:120:bbf68ce86f0d0f5c,_0.fdx:0:cbf29ce484222325,_0.fnm:249:5c6c8d95d7107780,_0.nvd:59:18668b37edf835e8,_0.nvm:103:ea707954012fe527,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:0:cbf29ce484222325,_0_Lucene104_0.pos:99:f9fcefdfd892d2e5,_0_Lucene104_0.psm:112:a4ca53d582377be5,_0_Lucene104_0.tim:154:f6abb1f819c724cd,_0_Lucene104_0.tip:92:11d1b004f84e16d5,_0_Lucene104_0.tmd:184:a098b2259cac6f85,segments_1:155:99a94cf45033b569
 index_crash	1	2	nextLong	ok	1108000895862987641
 index_close	1	0	close dir	err	java.nio.file.NoSuchFileException	_0_Lucene104_0.psm
 index_close	1	1	nextLong	ok	2334355037483617280
@@ -1730,10 +1730,10 @@ index_close_clean	1	0	getLevelForCheckOnClose	ok	2
 index_close_clean	1	1	close dir	ok	null
 index_close_clean	1	2	nextLong	ok	-3510797727383495601
 index_unknown	1	0	corruptUnknownFiles	ok	null
-index_unknown	1	1	files	ok	_0.fdm:157:bb06ac13359b6278,_0.fdt:120:db3dcbf3327c09ab,_0.fdx:64:40a0017d3c9d1c04,_0.fnm:249:d801ed87cdaab5e8,_0.nvd:59:9bc168b38d55c29f,_0.nvm:103:3b1b782805c2812e,_0.si:479:4c45f01c36728757,_0_Lucene104_0.doc:97:e87aaa6c684a1689,_0_Lucene104_0.pos:99:892b56658cab96d8,_0_Lucene104_0.psm:112:eab5bfef85538d47,_0_Lucene104_0.tim:154:26bdc419fa4c905f,_0_Lucene104_0.tip:92:fa246c1941a9140d,_0_Lucene104_0.tmd:184:8a5a6e68aa985424,_9.fake:16:29f058a4552600e5,other.txt:33:cdb63eb9ee74ae4e,pending_segments_7:0:cbf29ce484222325,segments_1:155:9d962a8295e5f3ef,write.lock:33:b12df2abdf8895f9
+index_unknown	1	1	files	ok	_0.fdm:157:9dd6a4afcf09ebff,_0.fdt:120:9e4a45cbb9915edc,_0.fdx:64:e831410642121db7,_0.fnm:249:8b45805c29f4f300,_0.nvd:59:18668b37edf835e8,_0.nvm:103:722bade820ab02fc,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:97:38c7aab46c9385ab,_0_Lucene104_0.pos:99:f9fcefdfd892d2e5,_0_Lucene104_0.psm:112:8091f29f295d3b1d,_0_Lucene104_0.tim:154:7a97e92e359a4eda,_0_Lucene104_0.tip:92:7052b9eff9137d10,_0_Lucene104_0.tmd:184:0647563bf1d02ca8,_9.fake:16:29f058a4552600e5,other.txt:33:cdb63eb9ee74ae4e,pending_segments_7:0:cbf29ce484222325,segments_1:155:99a94cf45033b569,write.lock:33:b12df2abdf8895f9
 index_unknown	1	2	nextLong	ok	3847572860046072727
 index_crash	-1	0	crash	ok	null
-index_crash	-1	1	files	ok	_0.fdm:157:bb06ac13359b6278,_0.fdt:0:cbf29ce484222325,_0.fdx:0:cbf29ce484222325,_0.fnm:249:d801ed87cdaab5e8,_0.nvd:59:d27f3d6deb4a45d7,_0.nvm:103:37f4170b57ab3b1e,_0.si:479:4c45f01c36728757,_0_Lucene104_0.doc:97:e87aaa6c684a1689,_0_Lucene104_0.pos:99:a3924bbdb57dc740,_0_Lucene104_0.psm:112:1086c1e897f1020f,_0_Lucene104_0.tim:0:cbf29ce484222325,_0_Lucene104_0.tip:92:fa246c1941a9140d,segments_1:155:9d962a8295e5f3ef
+index_crash	-1	1	files	ok	_0.fdm:157:9dd6a4afcf09ebff,_0.fdt:0:cbf29ce484222325,_0.fdx:0:cbf29ce484222325,_0.fnm:249:8b45805c29f4f300,_0.nvd:59:d27f3d6deb4a45d7,_0.nvm:103:76ccbd312972822c,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:97:38c7aab46c9385ab,_0_Lucene104_0.pos:99:354eabbfb6dac82d,_0_Lucene104_0.psm:112:e627d49d22902ed5,_0_Lucene104_0.tim:0:cbf29ce484222325,_0_Lucene104_0.tip:92:7052b9eff9137d10,segments_1:155:99a94cf45033b569
 index_crash	-1	2	nextLong	ok	4186094981421182356
 index_close	-1	0	close dir	err	java.nio.file.NoSuchFileException	_0.fdm
 index_close	-1	1	nextLong	ok	4177201822702528388
@@ -1743,10 +1743,10 @@ index_close_clean	-1	0	getLevelForCheckOnClose	ok	2
 index_close_clean	-1	1	close dir	ok	null
 index_close_clean	-1	2	nextLong	ok	-7112000469798456162
 index_unknown	-1	0	corruptUnknownFiles	ok	null
-index_unknown	-1	1	files	ok	_0.fdm:157:bb06ac13359b6278,_0.fdt:120:db3dcbf3327c09ab,_0.fdx:64:40a0017d3c9d1c04,_0.fnm:249:d801ed87cdaab5e8,_0.nvd:59:9bc168b38d55c29f,_0.nvm:103:3b1b782805c2812e,_0.si:479:4c45f01c36728757,_0_Lucene104_0.doc:97:e87aaa6c684a1689,_0_Lucene104_0.pos:99:892b56658cab96d8,_0_Lucene104_0.psm:112:eab5bfef85538d47,_0_Lucene104_0.tim:154:26bdc419fa4c905f,_0_Lucene104_0.tip:92:fa246c1941a9140d,_0_Lucene104_0.tmd:184:8a5a6e68aa985424,_a_Lucene90_0.dvd:33:cf8394dcc82eab36,other.txt:33:cdb63eb9ee74ae4e,pending_segments_7:33:8e2ed7419caa9689,segments_1:155:9d962a8295e5f3ef,write.lock:33:b12df2abdf8895f9
+index_unknown	-1	1	files	ok	_0.fdm:157:9dd6a4afcf09ebff,_0.fdt:120:9e4a45cbb9915edc,_0.fdx:64:e831410642121db7,_0.fnm:249:8b45805c29f4f300,_0.nvd:59:18668b37edf835e8,_0.nvm:103:722bade820ab02fc,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:97:38c7aab46c9385ab,_0_Lucene104_0.pos:99:f9fcefdfd892d2e5,_0_Lucene104_0.psm:112:8091f29f295d3b1d,_0_Lucene104_0.tim:154:7a97e92e359a4eda,_0_Lucene104_0.tip:92:7052b9eff9137d10,_0_Lucene104_0.tmd:184:0647563bf1d02ca8,_a_Lucene90_0.dvd:33:cf8394dcc82eab36,other.txt:33:cdb63eb9ee74ae4e,pending_segments_7:33:8e2ed7419caa9689,segments_1:155:99a94cf45033b569,write.lock:33:b12df2abdf8895f9
 index_unknown	-1	2	nextLong	ok	-3190703235679051993
 index_crash	-9223372036854775808	0	crash	ok	null
-index_crash	-9223372036854775808	1	files	ok	_0.fdm:0:cbf29ce484222325,_0.fdt:0:cbf29ce484222325,_0.fdx:64:40a0017d3c9d1c04,_0.fnm:124:f1043d2f7859e441,_0.nvd:59:9bc168b38d55c29f,_0.nvm:103:187ac226eaca9f46,_0.si:479:4c45f01c36728757,_0_Lucene104_0.doc:48:2b7520b1decafd87,_0_Lucene104_0.pos:49:7c4bd0f8ca2bdc47,_0_Lucene104_0.tim:154:f6abb1f819c724cd,_0_Lucene104_0.tip:92:11d1b004f84e16d5,_0_Lucene104_0.tmd:0:cbf29ce484222325,segments_1:155:9d962a8295e5f3ef
+index_crash	-9223372036854775808	1	files	ok	_0.fdm:0:cbf29ce484222325,_0.fdt:0:cbf29ce484222325,_0.fdx:64:e831410642121db7,_0.fnm:124:61dfb12d7f5b424f,_0.nvd:59:18668b37edf835e8,_0.nvm:103:290f7f9439964fd4,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:48:1d59e261088394f5,_0_Lucene104_0.pos:49:5bf4faf647e7c699,_0_Lucene104_0.tim:154:f6abb1f819c724cd,_0_Lucene104_0.tip:92:11d1b004f84e16d5,_0_Lucene104_0.tmd:0:cbf29ce484222325,segments_1:155:99a94cf45033b569
 index_crash	-9223372036854775808	2	nextLong	ok	3790058296146005620
 index_close	-9223372036854775808	0	close dir	err	java.nio.file.NoSuchFileException	_0_Lucene104_0.psm
 index_close	-9223372036854775808	1	nextLong	ok	6525378424592209593
@@ -1756,10 +1756,10 @@ index_close_clean	-9223372036854775808	0	getLevelForCheckOnClose	ok	2
 index_close_clean	-9223372036854775808	1	close dir	ok	null
 index_close_clean	-9223372036854775808	2	nextLong	ok	-1212816472180894984
 index_unknown	-9223372036854775808	0	corruptUnknownFiles	ok	null
-index_unknown	-9223372036854775808	1	files	ok	_0.fdm:157:bb06ac13359b6278,_0.fdt:120:db3dcbf3327c09ab,_0.fdx:64:40a0017d3c9d1c04,_0.fnm:249:d801ed87cdaab5e8,_0.nvd:59:9bc168b38d55c29f,_0.nvm:103:3b1b782805c2812e,_0.si:479:4c45f01c36728757,_0_Lucene104_0.doc:97:e87aaa6c684a1689,_0_Lucene104_0.pos:99:892b56658cab96d8,_0_Lucene104_0.psm:112:eab5bfef85538d47,_0_Lucene104_0.tim:154:26bdc419fa4c905f,_0_Lucene104_0.tip:92:fa246c1941a9140d,_0_Lucene104_0.tmd:184:8a5a6e68aa985424,_9.fake:16:29f058a4552600e5,_a_Lucene90_0.dvd:16:e99d3f9aa1f83da5,other.txt:33:cdb63eb9ee74ae4e,pending_segments_7:33:feb83b9c2296ab21,segments_1:155:9d962a8295e5f3ef,write.lock:33:b12df2abdf8895f9
+index_unknown	-9223372036854775808	1	files	ok	_0.fdm:157:9dd6a4afcf09ebff,_0.fdt:120:9e4a45cbb9915edc,_0.fdx:64:e831410642121db7,_0.fnm:249:8b45805c29f4f300,_0.nvd:59:18668b37edf835e8,_0.nvm:103:722bade820ab02fc,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:97:38c7aab46c9385ab,_0_Lucene104_0.pos:99:f9fcefdfd892d2e5,_0_Lucene104_0.psm:112:8091f29f295d3b1d,_0_Lucene104_0.tim:154:7a97e92e359a4eda,_0_Lucene104_0.tip:92:7052b9eff9137d10,_0_Lucene104_0.tmd:184:0647563bf1d02ca8,_9.fake:16:29f058a4552600e5,_a_Lucene90_0.dvd:16:e99d3f9aa1f83da5,other.txt:33:cdb63eb9ee74ae4e,pending_segments_7:33:feb83b9c2296ab21,segments_1:155:99a94cf45033b569,write.lock:33:b12df2abdf8895f9
 index_unknown	-9223372036854775808	2	nextLong	ok	8065025346350546519
 index_crash	9223372036854775807	0	crash	ok	null
-index_crash	9223372036854775807	1	files	ok	_0.fdm:157:bb06ac13359b6278,_0.fdt:0:cbf29ce484222325,_0.fdx:0:cbf29ce484222325,_0.fnm:249:d801ed87cdaab5e8,_0.nvd:59:d27f3d6deb4a45d7,_0.nvm:103:37f4170b57ab3b1e,_0.si:479:4c45f01c36728757,_0_Lucene104_0.doc:97:e87aaa6c684a1689,_0_Lucene104_0.pos:99:a3924bbdb57dc740,_0_Lucene104_0.psm:112:1086c1e897f1020f,_0_Lucene104_0.tim:0:cbf29ce484222325,_0_Lucene104_0.tip:92:fa246c1941a9140d,segments_1:155:9d962a8295e5f3ef
+index_crash	9223372036854775807	1	files	ok	_0.fdm:157:9dd6a4afcf09ebff,_0.fdt:0:cbf29ce484222325,_0.fdx:0:cbf29ce484222325,_0.fnm:249:8b45805c29f4f300,_0.nvd:59:d27f3d6deb4a45d7,_0.nvm:103:76ccbd312972822c,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:97:38c7aab46c9385ab,_0_Lucene104_0.pos:99:354eabbfb6dac82d,_0_Lucene104_0.psm:112:e627d49d22902ed5,_0_Lucene104_0.tim:0:cbf29ce484222325,_0_Lucene104_0.tip:92:7052b9eff9137d10,segments_1:155:99a94cf45033b569
 index_crash	9223372036854775807	2	nextLong	ok	4186094981421182356
 index_close	9223372036854775807	0	close dir	err	java.nio.file.NoSuchFileException	_0.fdm
 index_close	9223372036854775807	1	nextLong	ok	4177201822702528388
@@ -1769,10 +1769,10 @@ index_close_clean	9223372036854775807	0	getLevelForCheckOnClose	ok	2
 index_close_clean	9223372036854775807	1	close dir	ok	null
 index_close_clean	9223372036854775807	2	nextLong	ok	-7112000469798456162
 index_unknown	9223372036854775807	0	corruptUnknownFiles	ok	null
-index_unknown	9223372036854775807	1	files	ok	_0.fdm:157:bb06ac13359b6278,_0.fdt:120:db3dcbf3327c09ab,_0.fdx:64:40a0017d3c9d1c04,_0.fnm:249:d801ed87cdaab5e8,_0.nvd:59:9bc168b38d55c29f,_0.nvm:103:3b1b782805c2812e,_0.si:479:4c45f01c36728757,_0_Lucene104_0.doc:97:e87aaa6c684a1689,_0_Lucene104_0.pos:99:892b56658cab96d8,_0_Lucene104_0.psm:112:eab5bfef85538d47,_0_Lucene104_0.tim:154:26bdc419fa4c905f,_0_Lucene104_0.tip:92:fa246c1941a9140d,_0_Lucene104_0.tmd:184:8a5a6e68aa985424,_a_Lucene90_0.dvd:33:cf8394dcc82eab36,other.txt:33:cdb63eb9ee74ae4e,pending_segments_7:33:8e2ed7419caa9689,segments_1:155:9d962a8295e5f3ef,write.lock:33:b12df2abdf8895f9
+index_unknown	9223372036854775807	1	files	ok	_0.fdm:157:9dd6a4afcf09ebff,_0.fdt:120:9e4a45cbb9915edc,_0.fdx:64:e831410642121db7,_0.fnm:249:8b45805c29f4f300,_0.nvd:59:18668b37edf835e8,_0.nvm:103:722bade820ab02fc,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:97:38c7aab46c9385ab,_0_Lucene104_0.pos:99:f9fcefdfd892d2e5,_0_Lucene104_0.psm:112:8091f29f295d3b1d,_0_Lucene104_0.tim:154:7a97e92e359a4eda,_0_Lucene104_0.tip:92:7052b9eff9137d10,_0_Lucene104_0.tmd:184:0647563bf1d02ca8,_a_Lucene90_0.dvd:33:cf8394dcc82eab36,other.txt:33:cdb63eb9ee74ae4e,pending_segments_7:33:8e2ed7419caa9689,segments_1:155:99a94cf45033b569,write.lock:33:b12df2abdf8895f9
 index_unknown	9223372036854775807	2	nextLong	ok	-3190703235679051993
 index_crash	42	0	crash	ok	null
-index_crash	42	1	files	ok	_0.fdm:0:cbf29ce484222325,_0.fdt:60:55e78b3cced20d63,_0.fdx:64:b3c2bcefedf495ac,_0.fnm:249:7726560b4edf77e7,_0.nvd:0:cbf29ce484222325,_0.nvm:103:ee379a2a6ae795c1,_0.si:479:4c45f01c36728757,_0_Lucene104_0.doc:0:cbf29ce484222325,_0_Lucene104_0.pos:99:7fb9ab58b0174237,_0_Lucene104_0.tip:92:d6e686d472b7198d,_0_Lucene104_0.tmd:184:8a5a6e68aa985424,segments_1:155:9d962a8295e5f3ef
+index_crash	42	1	files	ok	_0.fdm:0:cbf29ce484222325,_0.fdt:60:2fe3e7f9ac50f301,_0.fdx:64:89d55c203da064cf,_0.fnm:249:69526c83bd679553,_0.nvd:0:cbf29ce484222325,_0.nvm:103:7bfacbfd537a577f,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:0:cbf29ce484222325,_0_Lucene104_0.pos:99:7fb9ab58b0174237,_0_Lucene104_0.tip:92:74589c23d5506a90,_0_Lucene104_0.tmd:184:0647563bf1d02ca8,segments_1:155:99a94cf45033b569
 index_crash	42	2	nextLong	ok	5535764185580682149
 index_close	42	0	close dir	err	java.nio.file.NoSuchFileException	_0_Lucene104_0.pos
 index_close	42	1	nextLong	ok	7288264754483292753
@@ -1782,10 +1782,10 @@ index_close_clean	42	0	getLevelForCheckOnClose	ok	2
 index_close_clean	42	1	close dir	ok	null
 index_close_clean	42	2	nextLong	ok	-5391552614485151006
 index_unknown	42	0	corruptUnknownFiles	ok	null
-index_unknown	42	1	files	ok	_0.fdm:157:bb06ac13359b6278,_0.fdt:120:db3dcbf3327c09ab,_0.fdx:64:40a0017d3c9d1c04,_0.fnm:249:d801ed87cdaab5e8,_0.nvd:59:9bc168b38d55c29f,_0.nvm:103:3b1b782805c2812e,_0.si:479:4c45f01c36728757,_0_Lucene104_0.doc:97:e87aaa6c684a1689,_0_Lucene104_0.pos:99:892b56658cab96d8,_0_Lucene104_0.psm:112:eab5bfef85538d47,_0_Lucene104_0.tim:154:26bdc419fa4c905f,_0_Lucene104_0.tip:92:fa246c1941a9140d,_0_Lucene104_0.tmd:184:8a5a6e68aa985424,_9.fake:0:cbf29ce484222325,_a_Lucene90_0.dvd:0:cbf29ce484222325,other.txt:33:cdb63eb9ee74ae4e,pending_segments_7:33:cbf7a16bc31f675f,segments_1:155:9d962a8295e5f3ef,write.lock:33:b12df2abdf8895f9
+index_unknown	42	1	files	ok	_0.fdm:157:9dd6a4afcf09ebff,_0.fdt:120:9e4a45cbb9915edc,_0.fdx:64:e831410642121db7,_0.fnm:249:8b45805c29f4f300,_0.nvd:59:18668b37edf835e8,_0.nvm:103:722bade820ab02fc,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:97:38c7aab46c9385ab,_0_Lucene104_0.pos:99:f9fcefdfd892d2e5,_0_Lucene104_0.psm:112:8091f29f295d3b1d,_0_Lucene104_0.tim:154:7a97e92e359a4eda,_0_Lucene104_0.tip:92:7052b9eff9137d10,_0_Lucene104_0.tmd:184:0647563bf1d02ca8,_9.fake:0:cbf29ce484222325,_a_Lucene90_0.dvd:0:cbf29ce484222325,other.txt:33:cdb63eb9ee74ae4e,pending_segments_7:33:cbf7a16bc31f675f,segments_1:155:99a94cf45033b569,write.lock:33:b12df2abdf8895f9
 index_unknown	42	2	nextLong	ok	-4975055954812816718
 index_crash	25214903917	0	crash	ok	null
-index_crash	25214903917	1	files	ok	_0.fdm:157:7da1de00b450250a,_0.fdt:120:de9fa0da6fc22a85,_0.fdx:64:b9b23f3a46fd0825,_0.fnm:124:f1043d2f7859e441,_0.nvd:0:cbf29ce484222325,_0.nvm:0:cbf29ce484222325,_0.si:479:4c45f01c36728757,_0_Lucene104_0.pos:0:cbf29ce484222325,_0_Lucene104_0.psm:0:cbf29ce484222325,_0_Lucene104_0.tim:77:e8c0e7adfd5206b6,_0_Lucene104_0.tip:92:fa246c1941a9140d,_0_Lucene104_0.tmd:184:a098b2259cac6f85,segments_1:155:9d962a8295e5f3ef
+index_crash	25214903917	1	files	ok	_0.fdm:157:b0170e9f86bf8471,_0.fdt:120:de9fa0da6fc22a85,_0.fdx:64:b9b23f3a46fd0825,_0.fnm:124:61dfb12d7f5b424f,_0.nvd:0:cbf29ce484222325,_0.nvm:0:cbf29ce484222325,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.pos:0:cbf29ce484222325,_0_Lucene104_0.psm:0:cbf29ce484222325,_0_Lucene104_0.tim:77:70586aa07cfbe574,_0_Lucene104_0.tip:92:7052b9eff9137d10,_0_Lucene104_0.tmd:184:a098b2259cac6f85,segments_1:155:99a94cf45033b569
 index_crash	25214903917	2	nextLong	ok	-1497613613979078270
 index_close	25214903917	0	close dir	err	java.nio.file.NoSuchFileException	_0.fdm
 index_close	25214903917	1	nextLong	ok	-2319452971287571658
@@ -1795,10 +1795,10 @@ index_close_clean	25214903917	0	getLevelForCheckOnClose	ok	2
 index_close_clean	25214903917	1	close dir	ok	null
 index_close_clean	25214903917	2	nextLong	ok	214993804815738645
 index_unknown	25214903917	0	corruptUnknownFiles	ok	null
-index_unknown	25214903917	1	files	ok	_0.fdm:157:bb06ac13359b6278,_0.fdt:120:db3dcbf3327c09ab,_0.fdx:64:40a0017d3c9d1c04,_0.fnm:249:d801ed87cdaab5e8,_0.nvd:59:9bc168b38d55c29f,_0.nvm:103:3b1b782805c2812e,_0.si:479:4c45f01c36728757,_0_Lucene104_0.doc:97:e87aaa6c684a1689,_0_Lucene104_0.pos:99:892b56658cab96d8,_0_Lucene104_0.psm:112:eab5bfef85538d47,_0_Lucene104_0.tim:154:26bdc419fa4c905f,_0_Lucene104_0.tip:92:fa246c1941a9140d,_0_Lucene104_0.tmd:184:8a5a6e68aa985424,_9.fake:16:29f058a4552600e5,_a_Lucene90_0.dvd:33:cbf7a16bc31f675f,other.txt:33:cdb63eb9ee74ae4e,segments_1:155:9d962a8295e5f3ef,write.lock:33:b12df2abdf8895f9
+index_unknown	25214903917	1	files	ok	_0.fdm:157:9dd6a4afcf09ebff,_0.fdt:120:9e4a45cbb9915edc,_0.fdx:64:e831410642121db7,_0.fnm:249:8b45805c29f4f300,_0.nvd:59:18668b37edf835e8,_0.nvm:103:722bade820ab02fc,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:97:38c7aab46c9385ab,_0_Lucene104_0.pos:99:f9fcefdfd892d2e5,_0_Lucene104_0.psm:112:8091f29f295d3b1d,_0_Lucene104_0.tim:154:7a97e92e359a4eda,_0_Lucene104_0.tip:92:7052b9eff9137d10,_0_Lucene104_0.tmd:184:0647563bf1d02ca8,_9.fake:16:29f058a4552600e5,_a_Lucene90_0.dvd:33:cbf7a16bc31f675f,other.txt:33:cdb63eb9ee74ae4e,segments_1:155:99a94cf45033b569,write.lock:33:b12df2abdf8895f9
 index_unknown	25214903917	2	nextLong	ok	8922140309403778699
 index_crash	3735928559	0	crash	ok	null
-index_crash	3735928559	1	files	ok	_0.fdm:78:7110805b0f0eb04f,_0.fdt:0:cbf29ce484222325,_0.fdx:64:fc260033905dda88,_0.fnm:0:cbf29ce484222325,_0.nvd:0:cbf29ce484222325,_0.nvm:51:f83c0f07d743a3c1,_0.si:479:4c45f01c36728757,_0_Lucene104_0.doc:48:2b7520b1decafd87,_0_Lucene104_0.pos:99:7fb9ab58b0174237,_0_Lucene104_0.psm:112:eab5bfef85538d47,_0_Lucene104_0.tim:0:cbf29ce484222325,_0_Lucene104_0.tip:92:cc7e4003c97c40cd,_0_Lucene104_0.tmd:92:c728f93a013e8591,segments_1:155:9d962a8295e5f3ef
+index_crash	3735928559	1	files	ok	_0.fdm:78:780188fd822ee941,_0.fdt:0:cbf29ce484222325,_0.fdx:64:28cf91cb10b772cb,_0.fnm:0:cbf29ce484222325,_0.nvd:0:cbf29ce484222325,_0.nvm:51:f25702a50d915327,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:48:1d59e261088394f5,_0_Lucene104_0.pos:99:7fb9ab58b0174237,_0_Lucene104_0.psm:112:8091f29f295d3b1d,_0_Lucene104_0.tim:0:cbf29ce484222325,_0_Lucene104_0.tip:92:6354ba04522746d0,_0_Lucene104_0.tmd:92:ff754bf26fb82e03,segments_1:155:99a94cf45033b569
 index_crash	3735928559	2	nextLong	ok	-5753874118973108495
 index_close	3735928559	0	close dir	err	org.apache.lucene.index.CorruptIndexException	codec footer mismatch (file truncated?): actual footer=0 vs expected footer=-1071082520 (resource=BufferedChecksumIndexInput(MockIndexInputWrapper((clone of) ByteBuffersIndexInput (file=_0.fnm, buffers=249 bytes, block size: 1, blocks: 1, position: 0))))
 index_close	3735928559	1	nextLong	ok	1576193463215707178
@@ -1808,10 +1808,10 @@ index_close_clean	3735928559	0	getLevelForCheckOnClose	ok	2
 index_close_clean	3735928559	1	close dir	ok	null
 index_close_clean	3735928559	2	nextLong	ok	9134149123525203959
 index_unknown	3735928559	0	corruptUnknownFiles	ok	null
-index_unknown	3735928559	1	files	ok	_0.fdm:157:bb06ac13359b6278,_0.fdt:120:db3dcbf3327c09ab,_0.fdx:64:40a0017d3c9d1c04,_0.fnm:249:d801ed87cdaab5e8,_0.nvd:59:9bc168b38d55c29f,_0.nvm:103:3b1b782805c2812e,_0.si:479:4c45f01c36728757,_0_Lucene104_0.doc:97:e87aaa6c684a1689,_0_Lucene104_0.pos:99:892b56658cab96d8,_0_Lucene104_0.psm:112:eab5bfef85538d47,_0_Lucene104_0.tim:154:26bdc419fa4c905f,_0_Lucene104_0.tip:92:fa246c1941a9140d,_0_Lucene104_0.tmd:184:8a5a6e68aa985424,_9.fake:33:a9594281f7d3369c,_a_Lucene90_0.dvd:33:cf8394dcc82eab36,other.txt:33:cdb63eb9ee74ae4e,pending_segments_7:33:cbf7a16bc31f675f,segments_1:155:9d962a8295e5f3ef,write.lock:33:b12df2abdf8895f9
+index_unknown	3735928559	1	files	ok	_0.fdm:157:9dd6a4afcf09ebff,_0.fdt:120:9e4a45cbb9915edc,_0.fdx:64:e831410642121db7,_0.fnm:249:8b45805c29f4f300,_0.nvd:59:18668b37edf835e8,_0.nvm:103:722bade820ab02fc,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:97:38c7aab46c9385ab,_0_Lucene104_0.pos:99:f9fcefdfd892d2e5,_0_Lucene104_0.psm:112:8091f29f295d3b1d,_0_Lucene104_0.tim:154:7a97e92e359a4eda,_0_Lucene104_0.tip:92:7052b9eff9137d10,_0_Lucene104_0.tmd:184:0647563bf1d02ca8,_9.fake:33:a9594281f7d3369c,_a_Lucene90_0.dvd:33:cf8394dcc82eab36,other.txt:33:cdb63eb9ee74ae4e,pending_segments_7:33:cbf7a16bc31f675f,segments_1:155:99a94cf45033b569,write.lock:33:b12df2abdf8895f9
 index_unknown	3735928559	2	nextLong	ok	-4218520335350436198
 index_crash	81985529216486895	0	crash	ok	null
-index_crash	81985529216486895	1	files	ok	_0.fdm:0:cbf29ce484222325,_0.fdt:120:e918562972790a0b,_0.fdx:64:b298208c409b1a16,_0.fnm:0:cbf29ce484222325,_0.nvd:59:9bc168b38d55c29f,_0.nvm:103:b6371dfe124a096e,_0.si:479:4c45f01c36728757,_0_Lucene104_0.doc:97:d880de56815d9fa9,_0_Lucene104_0.pos:99:892b56658cab96d8,_0_Lucene104_0.psm:0:cbf29ce484222325,_0_Lucene104_0.tip:92:db3eb716a2021692,_0_Lucene104_0.tmd:92:c728f93a013e8591,segments_1:155:9d962a8295e5f3ef
+index_crash	81985529216486895	1	files	ok	_0.fdm:0:cbf29ce484222325,_0.fdt:120:583551c005c31fbc,_0.fdx:64:0b3b78e9903698c9,_0.fnm:0:cbf29ce484222325,_0.nvd:59:18668b37edf835e8,_0.nvm:103:ff7786ce0dbd32bc,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:97:bfb5577031e30d4b,_0_Lucene104_0.pos:99:f9fcefdfd892d2e5,_0_Lucene104_0.psm:0:cbf29ce484222325,_0_Lucene104_0.tip:92:2c36a224d67f8c27,_0_Lucene104_0.tmd:92:ff754bf26fb82e03,segments_1:155:99a94cf45033b569
 index_crash	81985529216486895	2	nextLong	ok	-1187596488909051506
 index_close	81985529216486895	0	close dir	err	java.nio.file.NoSuchFileException	_0.fdm
 index_close	81985529216486895	1	nextLong	ok	4639694067824381432
@@ -1821,10 +1821,10 @@ index_close_clean	81985529216486895	0	getLevelForCheckOnClose	ok	2
 index_close_clean	81985529216486895	1	close dir	ok	null
 index_close_clean	81985529216486895	2	nextLong	ok	3487982587713267814
 index_unknown	81985529216486895	0	corruptUnknownFiles	ok	null
-index_unknown	81985529216486895	1	files	ok	_0.fdm:157:bb06ac13359b6278,_0.fdt:120:db3dcbf3327c09ab,_0.fdx:64:40a0017d3c9d1c04,_0.fnm:249:d801ed87cdaab5e8,_0.nvd:59:9bc168b38d55c29f,_0.nvm:103:3b1b782805c2812e,_0.si:479:4c45f01c36728757,_0_Lucene104_0.doc:97:e87aaa6c684a1689,_0_Lucene104_0.pos:99:892b56658cab96d8,_0_Lucene104_0.psm:112:eab5bfef85538d47,_0_Lucene104_0.tim:154:26bdc419fa4c905f,_0_Lucene104_0.tip:92:fa246c1941a9140d,_0_Lucene104_0.tmd:184:8a5a6e68aa985424,_9.fake:16:29f058a4552600e5,_a_Lucene90_0.dvd:16:e99d3f9aa1f83da5,other.txt:33:cdb63eb9ee74ae4e,pending_segments_7:33:feb83b9c2296ab21,segments_1:155:9d962a8295e5f3ef,write.lock:33:b12df2abdf8895f9
+index_unknown	81985529216486895	1	files	ok	_0.fdm:157:9dd6a4afcf09ebff,_0.fdt:120:9e4a45cbb9915edc,_0.fdx:64:e831410642121db7,_0.fnm:249:8b45805c29f4f300,_0.nvd:59:18668b37edf835e8,_0.nvm:103:722bade820ab02fc,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:97:38c7aab46c9385ab,_0_Lucene104_0.pos:99:f9fcefdfd892d2e5,_0_Lucene104_0.psm:112:8091f29f295d3b1d,_0_Lucene104_0.tim:154:7a97e92e359a4eda,_0_Lucene104_0.tip:92:7052b9eff9137d10,_0_Lucene104_0.tmd:184:0647563bf1d02ca8,_9.fake:16:29f058a4552600e5,_a_Lucene90_0.dvd:16:e99d3f9aa1f83da5,other.txt:33:cdb63eb9ee74ae4e,pending_segments_7:33:feb83b9c2296ab21,segments_1:155:99a94cf45033b569,write.lock:33:b12df2abdf8895f9
 index_unknown	81985529216486895	2	nextLong	ok	3869773081761970520
 index_crash	-81985529216486895	0	crash	ok	null
-index_crash	-81985529216486895	1	files	ok	_0.fdm:0:cbf29ce484222325,_0.fdt:0:cbf29ce484222325,_0.fdx:0:cbf29ce484222325,_0.fnm:249:d801ed87cdaab5e8,_0.nvd:29:468375b473206e05,_0.nvm:103:3b1b782805c2812e,_0.si:479:4c45f01c36728757,_0_Lucene104_0.doc:97:e87aaa6c684a1689,_0_Lucene104_0.pos:99:7fb9ab58b0174237,_0_Lucene104_0.psm:112:2c1368e42f62ce97,_0_Lucene104_0.tim:154:8624a9ebf4bea02f,_0_Lucene104_0.tip:92:fa246c1941a9140d,_0_Lucene104_0.tmd:92:c728f93a013e8591,segments_1:155:9d962a8295e5f3ef
+index_crash	-81985529216486895	1	files	ok	_0.fdm:0:cbf29ce484222325,_0.fdt:0:cbf29ce484222325,_0.fdx:0:cbf29ce484222325,_0.fnm:249:8b45805c29f4f300,_0.nvd:29:9cc947b4a3e43ea9,_0.nvm:103:722bade820ab02fc,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:97:38c7aab46c9385ab,_0_Lucene104_0.pos:99:7fb9ab58b0174237,_0_Lucene104_0.psm:112:88dd30cce346d44d,_0_Lucene104_0.tim:154:367262c06646680a,_0_Lucene104_0.tip:92:7052b9eff9137d10,_0_Lucene104_0.tmd:92:ff754bf26fb82e03,segments_1:155:99a94cf45033b569
 index_crash	-81985529216486895	2	nextLong	ok	4169234214637358091
 index_close	-81985529216486895	0	close dir	err	java.nio.file.NoSuchFileException	_0.fdt
 index_close	-81985529216486895	1	nextLong	ok	662353544642463202
@@ -1834,7 +1834,7 @@ index_close_clean	-81985529216486895	0	getLevelForCheckOnClose	ok	2
 index_close_clean	-81985529216486895	1	close dir	ok	null
 index_close_clean	-81985529216486895	2	nextLong	ok	1212444908702580265
 index_unknown	-81985529216486895	0	corruptUnknownFiles	ok	null
-index_unknown	-81985529216486895	1	files	ok	_0.fdm:157:bb06ac13359b6278,_0.fdt:120:db3dcbf3327c09ab,_0.fdx:64:40a0017d3c9d1c04,_0.fnm:249:d801ed87cdaab5e8,_0.nvd:59:9bc168b38d55c29f,_0.nvm:103:3b1b782805c2812e,_0.si:479:4c45f01c36728757,_0_Lucene104_0.doc:97:e87aaa6c684a1689,_0_Lucene104_0.pos:99:892b56658cab96d8,_0_Lucene104_0.psm:112:eab5bfef85538d47,_0_Lucene104_0.tim:154:26bdc419fa4c905f,_0_Lucene104_0.tip:92:fa246c1941a9140d,_0_Lucene104_0.tmd:184:8a5a6e68aa985424,_9.fake:33:4342b2b1a5b4d8e2,_a_Lucene90_0.dvd:0:cbf29ce484222325,other.txt:33:cdb63eb9ee74ae4e,pending_segments_7:33:ef2cd7bf6c5abe71,segments_1:155:9d962a8295e5f3ef,write.lock:33:b12df2abdf8895f9
+index_unknown	-81985529216486895	1	files	ok	_0.fdm:157:9dd6a4afcf09ebff,_0.fdt:120:9e4a45cbb9915edc,_0.fdx:64:e831410642121db7,_0.fnm:249:8b45805c29f4f300,_0.nvd:59:18668b37edf835e8,_0.nvm:103:722bade820ab02fc,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:97:38c7aab46c9385ab,_0_Lucene104_0.pos:99:f9fcefdfd892d2e5,_0_Lucene104_0.psm:112:8091f29f295d3b1d,_0_Lucene104_0.tim:154:7a97e92e359a4eda,_0_Lucene104_0.tip:92:7052b9eff9137d10,_0_Lucene104_0.tmd:184:0647563bf1d02ca8,_9.fake:33:4342b2b1a5b4d8e2,_a_Lucene90_0.dvd:0:cbf29ce484222325,other.txt:33:cdb63eb9ee74ae4e,pending_segments_7:33:ef2cd7bf6c5abe71,segments_1:155:99a94cf45033b569,write.lock:33:b12df2abdf8895f9
 index_unknown	-81985529216486895	2	nextLong	ok	6483078611593827636
 index_unref	0	0	close dir	err	java.lang.RuntimeException	unreferenced files: before delete:\n    [_0.fdm, _0.fdt, _0.fdx, _0.fnm, _0.nvd, _0.nvm, _0.si, _0_Lucene104_0.doc, _0_Lucene104_0.pos, _0_Lucene104_0.psm, _0_Lucene104_0.tim, _0_Lucene104_0.tip, _0_Lucene104_0.tmd, _77.fdt, segments_1]\n  after delete:\n    [_0.fdm, _0.fdt, _0.fdx, _0.fnm, _0.nvd, _0.nvm, _0.si, _0_Lucene104_0.doc, _0_Lucene104_0.pos, _0_Lucene104_0.psm, _0_Lucene104_0.tim, _0_Lucene104_0.tip, _0_Lucene104_0.tmd, segments_1]\n\nThese files were removed: [_77.fdt]
 index_unref	1	0	close dir	ok	null
@@ -1944,3 +1944,43 @@ throttling	-1	9	createOutput s4	ok	null
 throttling	-1	10	files	ok	s0:0:cbf29ce484222325,s1:0:cbf29ce484222325,s2:0:cbf29ce484222325,s3:0:cbf29ce484222325,s4:0:cbf29ce484222325,t:10:b4b3221e5bf9b520
 throttling	-1	11	nextLong	ok	-7533709660417447326
 throttling	-1	12	close dir	ok	null
+index_read_nocfs	0	0	open reader	ok	310/309/3
+index_read_nocfs	0	1	close reader	ok	null
+index_read_nocfs	0	2	checkIndex	ok	true/3
+index_read_nocfs	0	3	close dir	ok	null
+index_read_nocfs	0	4	nextLong	ok	3195275996525186237
+index_read_nocfs	1	0	open reader	ok	310/309/3
+index_read_nocfs	1	1	close reader	ok	null
+index_read_nocfs	1	2	checkIndex	ok	true/3
+index_read_nocfs	1	3	close dir	ok	null
+index_read_nocfs	1	4	nextLong	ok	8623799148090662288
+index_read_nocfs	-1	0	open reader	ok	310/309/3
+index_read_nocfs	-1	1	close reader	ok	null
+index_read_nocfs	-1	2	checkIndex	ok	true/3
+index_read_nocfs	-1	3	close dir	ok	null
+index_read_nocfs	-1	4	nextLong	ok	-6497529741238179998
+index_read_nocfs	-9223372036854775808	0	open reader	ok	310/309/3
+index_read_nocfs	-9223372036854775808	1	close reader	ok	null
+index_read_nocfs	-9223372036854775808	2	checkIndex	ok	true/3
+index_read_nocfs	-9223372036854775808	3	close dir	ok	null
+index_read_nocfs	-9223372036854775808	4	nextLong	ok	3195275996525186237
+index_read_cfs	0	0	open reader	ok	310/309/3
+index_read_cfs	0	1	close reader	ok	null
+index_read_cfs	0	2	checkIndex	ok	true/3
+index_read_cfs	0	3	close dir	ok	null
+index_read_cfs	0	4	nextLong	ok	-3813860926218116020
+index_read_cfs	1	0	open reader	ok	310/309/3
+index_read_cfs	1	1	close reader	ok	null
+index_read_cfs	1	2	checkIndex	ok	true/3
+index_read_cfs	1	3	close dir	ok	null
+index_read_cfs	1	4	nextLong	ok	4472331633702997153
+index_read_cfs	-1	0	open reader	ok	310/309/3
+index_read_cfs	-1	1	close reader	ok	null
+index_read_cfs	-1	2	checkIndex	ok	true/3
+index_read_cfs	-1	3	close dir	ok	null
+index_read_cfs	-1	4	nextLong	ok	-576781411832242354
+index_read_cfs	-9223372036854775808	0	open reader	ok	310/309/3
+index_read_cfs	-9223372036854775808	1	close reader	ok	null
+index_read_cfs	-9223372036854775808	2	checkIndex	ok	true/3
+index_read_cfs	-9223372036854775808	3	close dir	ok	null
+index_read_cfs	-9223372036854775808	4	nextLong	ok	-3813860926218116020

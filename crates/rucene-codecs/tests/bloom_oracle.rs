@@ -107,9 +107,7 @@ fn lucene_reads_what_bloom_writes() {
 
 #[test]
 fn bloom_corrupted_files_raise_lucenes_errors() {
-    assert!(BLOOM
-        .assert_corrupted_files_raise_lucenes_errors()
-        .is_empty());
+    BLOOM.assert_corrupted_files_raise_lucenes_errors();
 }
 
 /// `PostingsFormat.forName("BloomFilter")` resolves once the crate's service

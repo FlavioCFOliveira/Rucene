@@ -668,13 +668,16 @@ impl SegmentInfos {
         min_supported_major_version: i32,
     ) -> Result<Self> {
         let generation = Self::generation_from_segments_file_name(segment_file_name)?;
+        // `try (ChecksumIndexInput input = directory.openChecksumInput(...))`
+        // (`SegmentInfos.java:296-304`): the input is closed on every exit.
         let mut input = directory.open_checksum_input(segment_file_name)?;
-        Self::read_commit_input(
+        let read = Self::read_commit_input(
             directory,
             input.as_mut(),
             generation,
             min_supported_major_version,
-        )
+        );
+        crate::store::close_after(input.as_mut(), read)
     }
 
     /// Reads a commit from an already opened checksum input.

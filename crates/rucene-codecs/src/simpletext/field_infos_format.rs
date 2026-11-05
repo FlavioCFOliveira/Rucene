@@ -191,127 +191,133 @@ impl FieldInfosFormat for SimpleTextFieldInfosFormat {
         let file_name =
             segment_file_name(&segment_info.name, segment_suffix, FIELD_INFOS_EXTENSION);
         let mut input = directory.open_checksum_input(&file_name)?;
-        let mut scratch = Vec::new();
-
-        read_line(input.as_mut(), &mut scratch)?;
-        debug_assert!(scratch.starts_with(NUMFIELDS));
-        let size = parse_int(&read_str(NUMFIELDS.len(), &scratch))?;
-        let mut infos = Vec::with_capacity(size.max(0) as usize);
-
-        for _ in 0..size {
-            read_line(input.as_mut(), &mut scratch)?;
-            debug_assert!(scratch.starts_with(NAME));
-            let name = read_str(NAME.len(), &scratch);
+        // `success ? input.close() : IOUtils.closeWhileHandlingException(input)`
+        // in the `finally` (`SimpleTextFieldInfosFormat.java:85-218`).
+        let result = (|| -> Result<_> {
+            let mut scratch = Vec::new();
 
             read_line(input.as_mut(), &mut scratch)?;
-            debug_assert!(scratch.starts_with(NUMBER));
-            let field_number = parse_int(&read_str(NUMBER.len(), &scratch))?;
+            debug_assert!(scratch.starts_with(NUMFIELDS));
+            let size = parse_int(&read_str(NUMFIELDS.len(), &scratch))?;
+            let mut infos = Vec::with_capacity(size.max(0) as usize);
 
-            read_line(input.as_mut(), &mut scratch)?;
-            debug_assert!(scratch.starts_with(INDEXOPTIONS));
-            let s = read_str(INDEXOPTIONS.len(), &scratch);
-            let index_options = index_options_value_of(&s)?;
-
-            read_line(input.as_mut(), &mut scratch)?;
-            debug_assert!(scratch.starts_with(STORETV));
-            let store_term_vector = parse_boolean(&read_str(STORETV.len(), &scratch));
-
-            read_line(input.as_mut(), &mut scratch)?;
-            debug_assert!(scratch.starts_with(PAYLOADS));
-            let store_payloads = parse_boolean(&read_str(PAYLOADS.len(), &scratch));
-
-            read_line(input.as_mut(), &mut scratch)?;
-            debug_assert!(scratch.starts_with(NORMS));
-            let omit_norms = !parse_boolean(&read_str(NORMS.len(), &scratch));
-
-            read_line(input.as_mut(), &mut scratch)?;
-            debug_assert!(scratch.starts_with(DOCVALUES));
-            let dv_type = read_str(DOCVALUES.len(), &scratch);
-            let doc_values_type = self.doc_values_type(&dv_type)?;
-
-            read_line(input.as_mut(), &mut scratch)?;
-            debug_assert!(scratch.starts_with(DOCVALUES_SKIP_INDEX));
-            let doc_value_skipper =
-                self.doc_values_skip_index_type(&read_str(DOCVALUES_SKIP_INDEX.len(), &scratch))?;
-
-            read_line(input.as_mut(), &mut scratch)?;
-            debug_assert!(scratch.starts_with(DOCVALUES_GEN));
-            let dv_gen = parse_long(&read_str(DOCVALUES_GEN.len(), &scratch))?;
-
-            read_line(input.as_mut(), &mut scratch)?;
-            debug_assert!(scratch.starts_with(NUM_ATTS));
-            let num_atts = parse_int(&read_str(NUM_ATTS.len(), &scratch))?;
-            let mut atts = JavaHashMap::new();
-
-            for _ in 0..num_atts {
+            for _ in 0..size {
                 read_line(input.as_mut(), &mut scratch)?;
-                debug_assert!(scratch.starts_with(ATT_KEY));
-                let key = read_str(ATT_KEY.len(), &scratch);
+                debug_assert!(scratch.starts_with(NAME));
+                let name = read_str(NAME.len(), &scratch);
 
                 read_line(input.as_mut(), &mut scratch)?;
-                debug_assert!(scratch.starts_with(ATT_VALUE));
-                let value = read_str(ATT_VALUE.len(), &scratch);
-                atts.insert(key, value);
+                debug_assert!(scratch.starts_with(NUMBER));
+                let field_number = parse_int(&read_str(NUMBER.len(), &scratch))?;
+
+                read_line(input.as_mut(), &mut scratch)?;
+                debug_assert!(scratch.starts_with(INDEXOPTIONS));
+                let s = read_str(INDEXOPTIONS.len(), &scratch);
+                let index_options = index_options_value_of(&s)?;
+
+                read_line(input.as_mut(), &mut scratch)?;
+                debug_assert!(scratch.starts_with(STORETV));
+                let store_term_vector = parse_boolean(&read_str(STORETV.len(), &scratch));
+
+                read_line(input.as_mut(), &mut scratch)?;
+                debug_assert!(scratch.starts_with(PAYLOADS));
+                let store_payloads = parse_boolean(&read_str(PAYLOADS.len(), &scratch));
+
+                read_line(input.as_mut(), &mut scratch)?;
+                debug_assert!(scratch.starts_with(NORMS));
+                let omit_norms = !parse_boolean(&read_str(NORMS.len(), &scratch));
+
+                read_line(input.as_mut(), &mut scratch)?;
+                debug_assert!(scratch.starts_with(DOCVALUES));
+                let dv_type = read_str(DOCVALUES.len(), &scratch);
+                let doc_values_type = self.doc_values_type(&dv_type)?;
+
+                read_line(input.as_mut(), &mut scratch)?;
+                debug_assert!(scratch.starts_with(DOCVALUES_SKIP_INDEX));
+                let doc_value_skipper = self
+                    .doc_values_skip_index_type(&read_str(DOCVALUES_SKIP_INDEX.len(), &scratch))?;
+
+                read_line(input.as_mut(), &mut scratch)?;
+                debug_assert!(scratch.starts_with(DOCVALUES_GEN));
+                let dv_gen = parse_long(&read_str(DOCVALUES_GEN.len(), &scratch))?;
+
+                read_line(input.as_mut(), &mut scratch)?;
+                debug_assert!(scratch.starts_with(NUM_ATTS));
+                let num_atts = parse_int(&read_str(NUM_ATTS.len(), &scratch))?;
+                let mut atts = JavaHashMap::new();
+
+                for _ in 0..num_atts {
+                    read_line(input.as_mut(), &mut scratch)?;
+                    debug_assert!(scratch.starts_with(ATT_KEY));
+                    let key = read_str(ATT_KEY.len(), &scratch);
+
+                    read_line(input.as_mut(), &mut scratch)?;
+                    debug_assert!(scratch.starts_with(ATT_VALUE));
+                    let value = read_str(ATT_VALUE.len(), &scratch);
+                    atts.insert(key, value);
+                }
+
+                read_line(input.as_mut(), &mut scratch)?;
+                debug_assert!(scratch.starts_with(DATA_DIM_COUNT));
+                let dimensional_count = parse_int(&read_str(DATA_DIM_COUNT.len(), &scratch))?;
+
+                read_line(input.as_mut(), &mut scratch)?;
+                debug_assert!(scratch.starts_with(INDEX_DIM_COUNT));
+                let index_dimensional_count =
+                    parse_int(&read_str(INDEX_DIM_COUNT.len(), &scratch))?;
+
+                read_line(input.as_mut(), &mut scratch)?;
+                debug_assert!(scratch.starts_with(DIM_NUM_BYTES));
+                let dimensional_num_bytes = parse_int(&read_str(DIM_NUM_BYTES.len(), &scratch))?;
+
+                read_line(input.as_mut(), &mut scratch)?;
+                debug_assert!(scratch.starts_with(VECTOR_NUM_DIMS));
+                let vector_num_dimensions = parse_int(&read_str(VECTOR_NUM_DIMS.len(), &scratch))?;
+
+                read_line(input.as_mut(), &mut scratch)?;
+                debug_assert!(scratch.starts_with(VECTOR_ENCODING));
+                let encoding = read_str(VECTOR_ENCODING.len(), &scratch);
+                let vector_encoding = self.vector_encoding(&encoding)?;
+
+                read_line(input.as_mut(), &mut scratch)?;
+                debug_assert!(scratch.starts_with(VECTOR_SIMILARITY));
+                let score_function = read_str(VECTOR_SIMILARITY.len(), &scratch);
+                let vector_dist_func = self.distance_function(&score_function)?;
+
+                read_line(input.as_mut(), &mut scratch)?;
+                debug_assert!(scratch.starts_with(SOFT_DELETES));
+                let is_soft_deletes_field = parse_boolean(&read_str(SOFT_DELETES.len(), &scratch));
+                read_line(input.as_mut(), &mut scratch)?;
+                debug_assert!(scratch.starts_with(PARENT));
+                let is_parent_field = parse_boolean(&read_str(PARENT.len(), &scratch));
+
+                infos.push(FieldInfo::new_full(
+                    name,
+                    field_number,
+                    store_term_vector,
+                    omit_norms,
+                    store_payloads,
+                    index_options,
+                    doc_values_type,
+                    doc_value_skipper,
+                    dv_gen,
+                    JavaStringMap::Hash(atts),
+                    dimensional_count,
+                    index_dimensional_count,
+                    dimensional_num_bytes,
+                    vector_num_dimensions,
+                    vector_encoding,
+                    vector_dist_func,
+                    is_soft_deletes_field,
+                    is_parent_field,
+                )?);
             }
 
-            read_line(input.as_mut(), &mut scratch)?;
-            debug_assert!(scratch.starts_with(DATA_DIM_COUNT));
-            let dimensional_count = parse_int(&read_str(DATA_DIM_COUNT.len(), &scratch))?;
+            util::check_footer(input.as_mut())?;
 
-            read_line(input.as_mut(), &mut scratch)?;
-            debug_assert!(scratch.starts_with(INDEX_DIM_COUNT));
-            let index_dimensional_count = parse_int(&read_str(INDEX_DIM_COUNT.len(), &scratch))?;
-
-            read_line(input.as_mut(), &mut scratch)?;
-            debug_assert!(scratch.starts_with(DIM_NUM_BYTES));
-            let dimensional_num_bytes = parse_int(&read_str(DIM_NUM_BYTES.len(), &scratch))?;
-
-            read_line(input.as_mut(), &mut scratch)?;
-            debug_assert!(scratch.starts_with(VECTOR_NUM_DIMS));
-            let vector_num_dimensions = parse_int(&read_str(VECTOR_NUM_DIMS.len(), &scratch))?;
-
-            read_line(input.as_mut(), &mut scratch)?;
-            debug_assert!(scratch.starts_with(VECTOR_ENCODING));
-            let encoding = read_str(VECTOR_ENCODING.len(), &scratch);
-            let vector_encoding = self.vector_encoding(&encoding)?;
-
-            read_line(input.as_mut(), &mut scratch)?;
-            debug_assert!(scratch.starts_with(VECTOR_SIMILARITY));
-            let score_function = read_str(VECTOR_SIMILARITY.len(), &scratch);
-            let vector_dist_func = self.distance_function(&score_function)?;
-
-            read_line(input.as_mut(), &mut scratch)?;
-            debug_assert!(scratch.starts_with(SOFT_DELETES));
-            let is_soft_deletes_field = parse_boolean(&read_str(SOFT_DELETES.len(), &scratch));
-            read_line(input.as_mut(), &mut scratch)?;
-            debug_assert!(scratch.starts_with(PARENT));
-            let is_parent_field = parse_boolean(&read_str(PARENT.len(), &scratch));
-
-            infos.push(FieldInfo::new_full(
-                name,
-                field_number,
-                store_term_vector,
-                omit_norms,
-                store_payloads,
-                index_options,
-                doc_values_type,
-                doc_value_skipper,
-                dv_gen,
-                JavaStringMap::Hash(atts),
-                dimensional_count,
-                index_dimensional_count,
-                dimensional_num_bytes,
-                vector_num_dimensions,
-                vector_encoding,
-                vector_dist_func,
-                is_soft_deletes_field,
-                is_parent_field,
-            )?);
-        }
-
-        util::check_footer(input.as_mut())?;
-
-        FieldInfos::new(infos)
+            FieldInfos::new(infos)
+        })();
+        rucene::store::close_after(input.as_mut(), result)
     }
 
     /// Port of `SimpleTextFieldInfosFormat.write`.

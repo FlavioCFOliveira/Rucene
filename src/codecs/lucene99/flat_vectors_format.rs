@@ -16,7 +16,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use crate::codecs::codec_util::{
-    check_footer, check_index_header, checksum_entire_file, retrieve_checksum, write_footer,
+    check_footer_after, check_index_header, checksum_entire_file, retrieve_checksum, write_footer,
     write_index_header,
 };
 use crate::codecs::hnsw::flat_vectors::{
@@ -942,16 +942,23 @@ impl Lucene99FlatVectorsReader {
             META_EXTENSION,
         );
         let mut meta_checksum = state.directory.open_checksum_input(&meta_file_name)?;
-        let version_meta = check_index_header(
-            meta_checksum.as_mut(),
-            META_CODEC_NAME,
-            VERSION_START,
-            VERSION_CURRENT,
-            &state.segment_info.id(),
-            &state.segment_suffix,
-        )?;
-        let fields = read_fields(meta_checksum.as_mut(), state.field_infos)?;
-        check_footer(meta_checksum.as_mut())?;
+        // The `try` block of the try-with-resources over `meta`, whose failure
+        // `CodecUtil.checkFooter(meta, priorE)` weighs in the `finally`
+        // (`Lucene99FlatVectorsReader.java:115-131`).
+        let read = (|| -> Result<_> {
+            let version_meta = check_index_header(
+                meta_checksum.as_mut(),
+                META_CODEC_NAME,
+                VERSION_START,
+                VERSION_CURRENT,
+                &state.segment_info.id(),
+                &state.segment_suffix,
+            )?;
+            let fields = read_fields(meta_checksum.as_mut(), state.field_infos)?;
+            Ok((version_meta, fields))
+        })();
+        let read = check_footer_after(meta_checksum.as_mut(), read);
+        let (version_meta, fields) = crate::store::close_after(meta_checksum.as_mut(), read)?;
         Ok((version_meta, fields))
     }
 

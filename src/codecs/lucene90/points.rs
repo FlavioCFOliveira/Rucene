@@ -28,7 +28,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use crate::codecs::codec_util::{
-    check_footer, check_index_header, checksum_entire_file, retrieve_checksum,
+    check_footer_after, check_index_header, checksum_entire_file, retrieve_checksum,
     retrieve_checksum_expected_length, write_footer, write_index_header,
 };
 use crate::codecs::points::{
@@ -683,32 +683,39 @@ impl Lucene90PointsReader {
             META_EXTENSION,
         );
         let mut meta_in = state.directory.open_checksum_input(&meta_name)?;
-        check_index_header(
-            &mut *meta_in,
-            META_CODEC_NAME,
-            VERSION_START,
-            VERSION_CURRENT,
-            &state.segment_info.id(),
-            &state.segment_suffix,
-        )?;
+        // The `try` block of the try-with-resources over `metaIn`, whose
+        // failure `CodecUtil.checkFooter(metaIn, priorE)` weighs in the
+        // `finally` (`Lucene90PointsReader.java:91-119`).
+        let read = (|| -> Result<_> {
+            check_index_header(
+                &mut *meta_in,
+                META_CODEC_NAME,
+                VERSION_START,
+                VERSION_CURRENT,
+                &state.segment_info.id(),
+                &state.segment_suffix,
+            )?;
 
-        let mut readers: HashMap<i32, BkdPointValues> = HashMap::new();
-        loop {
-            let field_number = meta_in.read_int()?;
-            if field_number == -1 {
-                break;
+            let mut readers: HashMap<i32, BkdPointValues> = HashMap::new();
+            loop {
+                let field_number = meta_in.read_int()?;
+                if field_number == -1 {
+                    break;
+                }
+                if field_number < 0 {
+                    return Err(LuceneError::CorruptIndex(format!(
+                        "illegal field number in points meta file: {field_number}"
+                    )));
+                }
+                let reader = BKDReader::new(meta_in.as_mut(), index_in.as_mut(), data_in.as_mut())?;
+                readers.insert(field_number, BkdPointValues::new(reader));
             }
-            if field_number < 0 {
-                return Err(LuceneError::CorruptIndex(format!(
-                    "illegal field number in points meta file: {field_number}"
-                )));
-            }
-            let reader = BKDReader::new(meta_in.as_mut(), index_in.as_mut(), data_in.as_mut())?;
-            readers.insert(field_number, BkdPointValues::new(reader));
-        }
-        let index_length = meta_in.read_long()?;
-        let data_length = meta_in.read_long()?;
-        check_footer(&mut *meta_in)?;
+            let index_length = meta_in.read_long()?;
+            let data_length = meta_in.read_long()?;
+            Ok((readers, index_length, data_length))
+        })();
+        let read = check_footer_after(&mut *meta_in, read);
+        let (readers, index_length, data_length) = crate::store::close_after(&mut *meta_in, read)?;
 
         let _ = retrieve_checksum_expected_length(&mut **index_in, index_length)?;
         let _ = retrieve_checksum_expected_length(&mut **data_in, data_length)?;

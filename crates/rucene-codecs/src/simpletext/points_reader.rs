@@ -25,6 +25,7 @@ use rucene::error::{LuceneError, Result};
 use rucene::index::index_file_names::segment_file_name;
 use rucene::index::{FieldInfos, PointValues};
 use rucene::store::{BufferedChecksumIndexInput, IndexInput, DEFAULT_IO_CONTEXT};
+use rucene::util::IOUtils;
 
 use super::bkd_reader::{SharedDataIn, SimpleTextBKDReader};
 use super::points_format::{POINT_EXTENSION, POINT_INDEX_EXTENSION};
@@ -94,17 +95,22 @@ impl SimpleTextPointsReader {
         );
         let mut scratch = Vec::new();
         {
+            // `try (ChecksumIndexInput in = ...)` (`SimpleTextPointsReader.java:73-84`).
             let mut input = read_state.directory.open_checksum_input(&index_file_name)?;
-            read_line(input.as_mut(), &mut scratch)?;
-            let count = parse_int_prefix(&scratch, FIELD_COUNT)?;
-            for _ in 0..count {
+            let read = (|| -> Result<()> {
                 read_line(input.as_mut(), &mut scratch)?;
-                let field_name = strip_prefix(&scratch, FIELD_FP_NAME);
-                read_line(input.as_mut(), &mut scratch)?;
-                let fp = parse_long_prefix(&scratch, FIELD_FP)?;
-                field_to_file_offset.insert(field_name, fp);
-            }
-            util::check_footer(input.as_mut())?;
+                let count = parse_int_prefix(&scratch, FIELD_COUNT)?;
+                for _ in 0..count {
+                    read_line(input.as_mut(), &mut scratch)?;
+                    let field_name = strip_prefix(&scratch, FIELD_FP_NAME);
+                    read_line(input.as_mut(), &mut scratch)?;
+                    let fp = parse_long_prefix(&scratch, FIELD_FP)?;
+                    field_to_file_offset.insert(field_name, fp);
+                }
+                util::check_footer(input.as_mut())?;
+                Ok(())
+            })();
+            rucene::store::close_after(input.as_mut(), read)?;
         }
 
         let file_name = segment_file_name(
@@ -119,8 +125,19 @@ impl SimpleTextPointsReader {
             input: Mutex::new(Some(data_in)),
         });
         let mut readers = HashMap::new();
-        for (name, fp) in &field_to_file_offset {
-            readers.insert(name.clone(), Self::init_reader(&shared, *fp, &mut scratch)?);
+        let initialized = (|| -> Result<()> {
+            for (name, fp) in &field_to_file_offset {
+                readers.insert(name.clone(), Self::init_reader(&shared, *fp, &mut scratch)?);
+            }
+            Ok(())
+        })();
+        if let Err(error) = initialized {
+            // `IOUtils.closeWhileHandlingException(this)` in the `finally`
+            // (`SimpleTextPointsReader.java:93-102`); `close()` is
+            // `dataIn.close()`.
+            let data_in = shared.input.lock().ok().and_then(|mut input| input.take());
+            IOUtils::close_while_handling_exception([data_in.map(|mut i| move || i.close())])?;
+            return Err(error);
         }
 
         Ok(Self {

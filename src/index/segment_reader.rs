@@ -513,12 +513,13 @@ impl SegmentDocValues {
             (&*si.info.directory, radix36(gen))
         };
 
-        // The read state lists only the fields relevant to this generation.
+        // The read state lists only the fields relevant to this generation;
+        // its context is `IOContext.DEFAULT` (`SegmentDocValues.java:48-49`).
         let state = crate::codecs::state::SegmentReadState::with_suffix(
             dv_dir,
             &si.info,
             infos,
-            &*READONCE_IO_CONTEXT,
+            &*crate::store::DEFAULT_IO_CONTEXT,
             segment_suffix,
         );
 

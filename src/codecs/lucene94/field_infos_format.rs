@@ -55,23 +55,30 @@ impl FieldInfosFormat for Lucene94FieldInfosFormat {
         let file_name = segment_file_name(&segment_info.name, segment_suffix, FIELD_INFO_EXTENSION);
         let mut input = directory.open_checksum_input(&file_name)?;
 
-        let format = codec_util::check_index_header(
-            input.as_mut(),
-            CODEC_NAME,
-            FORMAT_START,
-            FORMAT_CURRENT,
-            &segment_info.id(),
-            segment_suffix,
-        )?;
+        // The `try` block, whose failure `CodecUtil.checkFooter(input,
+        // priorE)` weighs in the `finally`, all inside the try-with-resources
+        // (`Lucene94FieldInfosFormat.java:134-246`).
+        let read = (|| -> Result<Vec<FieldInfo>> {
+            let format = codec_util::check_index_header(
+                input.as_mut(),
+                CODEC_NAME,
+                FORMAT_START,
+                FORMAT_CURRENT,
+                &segment_info.id(),
+                segment_suffix,
+            )?;
 
-        let size = input.read_v_int()?;
-        let mut infos = Vec::with_capacity(size as usize);
-        for _ in 0..size {
-            infos.push(read_field_info(input.as_mut(), format)?);
-        }
-
-        codec_util::check_footer(input.as_mut())?;
-        FieldInfos::new(infos)
+            let size = input.read_v_int()?;
+            let mut infos = Vec::with_capacity(size as usize);
+            for _ in 0..size {
+                infos.push(read_field_info(input.as_mut(), format)?);
+            }
+            Ok(infos)
+        })();
+        let read = codec_util::check_footer_after(input.as_mut(), read);
+        // `return new FieldInfos(infos)`, still inside the try-with-resources.
+        let result = read.and_then(FieldInfos::new);
+        crate::store::close_after(input.as_mut(), result)
     }
 
     fn write(

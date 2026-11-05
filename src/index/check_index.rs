@@ -1604,9 +1604,11 @@ impl CheckIndex {
 
         let mut to_lose_doc_count = max_doc;
 
-        // Java closes the `SegmentReader` in a `finally` block; here the reader
-        // is dropped when this closure returns, on both the success and the
+        // Java closes the `SegmentReader` in the `finally` block
+        // (`CheckIndex.java:1155-1157`); the reader the `try` block opens is
+        // kept here to be closed after it, on both the success and the
         // failure path.
+        let mut opened: Option<Arc<SegmentReader>> = None;
         let outcome = (|| -> Result<()> {
             msg(info_stream, &format!("    version={version}"));
             let id = info.info.id();
@@ -1680,6 +1682,7 @@ impl CheckIndex {
                 sis.index_created_version_major(),
                 &*DEFAULT_IO_CONTEXT,
             )?);
+            opened = Some(Arc::clone(&reader));
             msg(
                 info_stream,
                 &format!(
@@ -1914,23 +1917,30 @@ impl CheckIndex {
             Ok(())
         })();
 
-        if let Err(error) = outcome {
-            if self.fail_fast {
-                return Err(error);
+        let result = match outcome {
+            Err(error) if self.fail_fast => Err(error),
+            Err(error) => {
+                seg_info_stat.to_lose_doc_count = to_lose_doc_count;
+                msg(info_stream, "FAILED");
+                msg(
+                    info_stream,
+                    "    WARNING: exorcise_index() would remove reference to this segment; full \
+                     exception:",
+                );
+                msg(info_stream, &format!("{error}"));
+                seg_info_stat.error = Some(error);
+                msg(info_stream, "");
+                Ok(())
             }
-            seg_info_stat.to_lose_doc_count = to_lose_doc_count;
-            msg(info_stream, "FAILED");
-            msg(
-                info_stream,
-                "    WARNING: exorcise_index() would remove reference to this segment; full \
-                 exception:",
-            );
-            msg(info_stream, &format!("{error}"));
-            seg_info_stat.error = Some(error);
-            msg(info_stream, "");
+            Ok(()) => Ok(()),
+        };
+        // `finally { if (reader != null) reader.close(); }`: a failure closing
+        // the reader replaces the outcome, as an exception thrown from a
+        // `finally` block does.
+        if let Some(reader) = opened {
+            crate::index::index_reader::IndexReader::close(reader.as_ref())?;
         }
-
-        Ok(seg_info_stat)
+        result.map(|()| seg_info_stat)
     }
 
     /// Repairs the index from a [`Status`] previously returned by

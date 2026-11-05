@@ -10,10 +10,14 @@ import java.util.Random;
 import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
+import org.apache.lucene.codecs.Codec;
+import org.apache.lucene.codecs.simpletext.SimpleTextOracle;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.StringField;
 import org.apache.lucene.document.TextField;
+import org.apache.lucene.index.CheckIndex;
+import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.NoMergePolicy;
@@ -26,6 +30,7 @@ import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.tests.util.LuceneTestCase;
+import org.apache.lucene.tests.util.TestUtil;
 
 /**
  * The oracle of {@code org.apache.lucene.tests.store} (rmp #343), for {@code
@@ -37,6 +42,11 @@ import org.apache.lucene.tests.util.LuceneTestCase;
  *       Lucene 10.5.0's default codec (5 documents, an indexed stored {@code StringField} and a
  *       {@code TextField}, no compound files, no doc values), which both sides load into a {@code
  *       ByteBuffersDirectory}.
+ *   <li>{@code mdw_corpus.tsv}: the files (case, name, hex bytes) of the corpus of {@code
+ *       SimpleTextOracle.writeCorpus} written with Lucene 10.5.0's default codec, without ({@code
+ *       nocfs}) and with ({@code cfs}) compound files: every kind of data (postings with
+ *       positions, offsets and payloads, stored fields, term vectors, norms, every doc-values
+ *       type with updates, points, float and byte vectors, deletions), several segments.
  *   <li>{@code mdw_steps.tsv}: per scenario, seed and step, the call and its outcome ({@code
  *       ok<TAB>value}, or {@code err<TAB>class<TAB>message}, with {@code <TAB>cause=class: message}
  *       for a {@code RuntimeException} with a cause), identity hashes masked as {@code @HASH}.
@@ -48,7 +58,11 @@ import org.apache.lucene.tests.util.LuceneTestCase;
  *       and the unreferenced-files check over the index ({@code index}); {@code
  *       SerialIOCountingDirectory} counts on a fixed read pattern ({@code serial_io}); {@code
  *       CorruptingIndexOutput} ({@code corrupting}); the slow open/closers ({@code slow}); {@code
- *       RawDirectoryWrapper} ({@code raw}); throttling ({@code throttling}). Each scenario that
+ *       RawDirectoryWrapper} ({@code raw}); throttling ({@code throttling}); the corpus opened and
+ *       closed through a {@code DirectoryReader}, read by {@code CheckIndex} at {@code
+ *       MIN_LEVEL_FOR_SLOW_CHECKS} through the wrapper, then the wrapper closed ({@code
+ *       index_read_nocfs}, {@code index_read_cfs}), which fails if a reader left an input
+ *       open. Each scenario that
  *       draws ends with the wrapper's next {@code randomState.nextLong()}, which pins the number
  *       of draws.
  * </ul>
@@ -686,6 +700,40 @@ public final class MockDirectoryWrapperOracle {
     rec("close dir", () -> { d.close(); return null; });
   }
 
+  static Directory writeCorpus(boolean compound) throws Exception {
+    Directory dir = new ByteBuffersDirectory();
+    SimpleTextOracle.writeCorpus(dir, compound, Codec.getDefault());
+    return dir;
+  }
+
+  /**
+   * The corpus read in full through the wrapper: a {@code DirectoryReader} opened and closed,
+   * {@code CheckIndex} at {@code MIN_LEVEL_FOR_SLOW_CHECKS}, the wrapper closed (refused while an
+   * input is open). The wrapper draws on every {@code openInput} (the slow-opener coin), so the
+   * final {@code nextLong} also pins how many inputs were opened.
+   */
+  static void indexRead(Directory corpus, String label, long sd) throws Exception {
+    begin("index_read_" + label, sd);
+    MockDirectoryWrapper d = copyIndex(corpus, sd, corpus.listAll());
+    DirectoryReader[] reader = new DirectoryReader[1];
+    rec(
+        "open reader",
+        () -> {
+          reader[0] = DirectoryReader.open(d);
+          return reader[0].maxDoc() + "/" + reader[0].numDocs() + "/" + reader[0].leaves().size();
+        });
+    rec("close reader", () -> { reader[0].close(); return null; });
+    rec(
+        "checkIndex",
+        () -> {
+          CheckIndex.Status status =
+              TestUtil.checkIndex(d, CheckIndex.Level.MIN_LEVEL_FOR_SLOW_CHECKS, true, false, null);
+          return status.clean + "/" + status.numSegments;
+        });
+    rec("close dir", () -> { d.close(); return null; });
+    nextLong(d);
+  }
+
   public static void main(String[] args) throws Exception {
     File out = new File(args[0], "rucene-test-framework");
     out.mkdirs();
@@ -695,6 +743,17 @@ public final class MockDirectoryWrapperOracle {
       iw.println("# name\thex bytes: the index MockDirectoryWrapperOracle's index scenarios copy");
       for (String name : index.listAll()) {
         iw.println(name + "\t" + hex(read(index, name)));
+      }
+    }
+    Directory nocfs = writeCorpus(false);
+    Directory cfs = writeCorpus(true);
+    try (PrintWriter cw = new PrintWriter(new File(out, "mdw_corpus.tsv"), "UTF-8")) {
+      cw.println("# case\tname\thex bytes: the corpus MockDirectoryWrapperOracle's index_read scenarios copy");
+      for (String name : nocfs.listAll()) {
+        cw.println("nocfs\t" + name + "\t" + hex(read(nocfs, name)));
+      }
+      for (String name : cfs.listAll()) {
+        cw.println("cfs\t" + name + "\t" + hex(read(cfs, name)));
       }
     }
     try (PrintWriter pw = new PrintWriter(new File(out, "mdw_steps.tsv"), "UTF-8")) {
@@ -714,6 +773,8 @@ public final class MockDirectoryWrapperOracle {
       for (int i = 0; i < 4; i++) slow(seeds[i]);
       raw();
       for (int i = 0; i < 3; i++) throttling(seeds[i]);
+      for (int i = 0; i < 4; i++) indexRead(nocfs, "nocfs", seeds[i]);
+      for (int i = 0; i < 4; i++) indexRead(cfs, "cfs", seeds[i]);
     }
   }
 }

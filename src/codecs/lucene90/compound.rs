@@ -142,25 +142,29 @@ fn write_compound_file(
         // align file start offset
         let start_offset = data.align_file_pointer(ALIGNMENT_BYTES)?;
         // write bytes for file
+        // `try (ChecksumIndexInput in = dir.openChecksumInput(file))`
+        // (`Lucene90CompoundFormat.java:121-138`): closed on every exit.
         let mut input = dir.open_checksum_input(&file)?;
+        let copied = (|| -> Result<()> {
+            // just copies the index header, verifying that its id matches what we expect
+            codec_util::verify_and_copy_index_header(input.as_mut(), data, &segment_info.id())?;
 
-        // just copies the index header, verifying that its id matches what we expect
-        codec_util::verify_and_copy_index_header(input.as_mut(), data, &segment_info.id())?;
+            // copy all bytes except the footer
+            let num_bytes_to_copy =
+                input.length() - codec_util::footer_length() as i64 - input.file_pointer();
+            data.copy_bytes(input.as_mut(), num_bytes_to_copy)?;
 
-        // copy all bytes except the footer
-        let num_bytes_to_copy =
-            input.length() - codec_util::footer_length() as i64 - input.file_pointer();
-        data.copy_bytes(input.as_mut(), num_bytes_to_copy)?;
+            // verify footer (checksum) matches for the incoming file we are copying
+            let checksum = codec_util::check_footer(input.as_mut())?;
 
-        // verify footer (checksum) matches for the incoming file we are copying
-        let checksum = codec_util::check_footer(input.as_mut())?;
-
-        // this is poached from CodecUtil.writeFooter, but we need to use our own
-        // checksum, not data.getChecksum()
-        codec_util::write_be_int(data, codec_util::FOOTER_MAGIC)?;
-        codec_util::write_be_int(data, 0)?;
-        codec_util::write_be_long(data, checksum)?;
-        input.close()?;
+            // this is poached from CodecUtil.writeFooter, but we need to use our own
+            // checksum, not data.getChecksum()
+            codec_util::write_be_int(data, codec_util::FOOTER_MAGIC)?;
+            codec_util::write_be_int(data, 0)?;
+            codec_util::write_be_long(data, checksum)?;
+            Ok(())
+        })();
+        crate::store::close_after(input.as_mut(), copied)?;
 
         let end_offset = data.file_pointer();
         let length = end_offset - start_offset;
@@ -293,16 +297,9 @@ fn read_entries(
         )?;
         Ok((version, read_mapping(entries_stream.as_mut())?))
     })();
-    match read {
-        Ok(read) => {
-            codec_util::check_footer(entries_stream.as_mut())?;
-            Ok(read)
-        }
-        Err(prior) => Err(codec_util::check_footer_with_prior(
-            entries_stream.as_mut(),
-            prior,
-        )),
-    }
+    let read = codec_util::check_footer_after(entries_stream.as_mut(), read);
+    // `try (ChecksumIndexInput entriesStream = ...)`: closed on every exit.
+    crate::store::close_after(entries_stream.as_mut(), read)
 }
 
 /// Equivalent to `Lucene90CompoundReader.readMapping`

@@ -72,24 +72,28 @@ impl LiveDocsFormat for SimpleTextLiveDocsFormat {
 
         let file_name = generation_file_name(&info.info.name, info.get_del_gen())?;
         let mut input = dir.open_checksum_input(&file_name)?;
-
-        read_line(input.as_mut(), &mut scratch)?;
-        debug_assert!(scratch.starts_with(SIZE));
-        let size = parse_int_at(&scratch, SIZE.len())?;
-
-        let mut bits = JavaBitSet::new(size);
-
-        read_line(input.as_mut(), &mut scratch)?;
-        while scratch.as_slice() != END {
-            debug_assert!(scratch.starts_with(DOC));
-            let docid = parse_int_at(&scratch, DOC.len())?;
-            bits.set(docid)?;
+        // `success ? IOUtils.close(in) : IOUtils.closeWhileHandlingException(in)`
+        // in the `finally` (`SimpleTextLiveDocsFormat.java:62-90`).
+        let result = (|| -> Result<_> {
             read_line(input.as_mut(), &mut scratch)?;
-        }
+            debug_assert!(scratch.starts_with(SIZE));
+            let size = parse_int_at(&scratch, SIZE.len())?;
 
-        util::check_footer(input.as_mut())?;
+            let mut bits = JavaBitSet::new(size);
 
-        Ok(Box::new(SimpleTextBits { bits, size }))
+            read_line(input.as_mut(), &mut scratch)?;
+            while scratch.as_slice() != END {
+                debug_assert!(scratch.starts_with(DOC));
+                let docid = parse_int_at(&scratch, DOC.len())?;
+                bits.set(docid)?;
+                read_line(input.as_mut(), &mut scratch)?;
+            }
+
+            util::check_footer(input.as_mut())?;
+
+            Ok(Box::new(SimpleTextBits { bits, size }) as Box<dyn Bits>)
+        })();
+        rucene::store::close_after(input.as_mut(), result)
     }
 
     /// Port of `SimpleTextLiveDocsFormat.writeLiveDocs`.

@@ -59,9 +59,7 @@ fn lucene_reads_what_fst50_writes() {
 
 #[test]
 fn fst50_corrupted_files_raise_lucenes_errors() {
-    assert!(FST50
-        .assert_corrupted_files_raise_lucenes_errors()
-        .is_empty());
+    FST50.assert_corrupted_files_raise_lucenes_errors();
 }
 
 /// `PostingsFormat.forName("FST50")` resolves once the crate's service
@@ -115,25 +113,9 @@ fn lucene_reads_what_direct_writes() {
     DIRECT.assert_lucene_reads_what_rucene_writes();
 }
 
-/// Core defect 3, outside this crate: `Lucene103BlockTreeTermsReader`
-/// (`src/codecs/lucene103/blocktree.rs`, the `.tmd` header check) returns the
-/// header's error at once, where Java catches it and runs
-/// `CodecUtil.checkFooter(metaIn, priorE)`, which reports the checksum
-/// failure of the corrupted file (`Lucene103BlockTreeTermsReader.java:144-229`).
-/// A flipped id in `.tmd` therefore raises `file mismatch` in Rucene and
-/// `checksum failed` in Lucene.
-const TMD_ID_CORE_DEFECT: (&str, &str, &str) = (
-    "tmd-id",
-    "org.apache.lucene.index.CorruptIndexException",
-    "file mismatch, expected id=$ID, got=$BADID \
-     (resource=BufferedChecksumIndexInput(NIOFSIndexInput(path=\"$D/_5_Direct_0.tmd\")))",
-);
-
 #[test]
 fn direct_corrupted_files_raise_lucenes_errors() {
-    assert!(DIRECT
-        .assert_corrupted_files_raise_lucenes_errors_but(&[TMD_ID_CORE_DEFECT])
-        .is_empty());
+    DIRECT.assert_corrupted_files_raise_lucenes_errors();
 }
 
 /// `PostingsFormat.forName("Direct")` resolves once the crate's service

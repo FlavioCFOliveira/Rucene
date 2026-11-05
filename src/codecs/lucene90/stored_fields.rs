@@ -57,8 +57,8 @@ use std::sync::atomic::AtomicI32;
 use std::sync::{Arc, Mutex};
 
 use crate::codecs::codec_util::{
-    check_footer, check_footer_with_prior, check_header, check_index_header, checksum_entire_file,
-    retrieve_checksum, write_footer, write_header, write_index_header,
+    check_footer, check_footer_after, check_footer_with_prior, check_header, check_index_header,
+    checksum_entire_file, retrieve_checksum, write_footer, write_header, write_index_header,
 };
 use crate::codecs::compressing::{
     self, CompressionMode, Compressor, Decompressor, MatchingReaders,
@@ -974,36 +974,40 @@ impl FieldsIndexWriter {
             .expect("INVARIANT: the doc ids file exists until finish deletes it");
         {
             let mut docs_in = self.dir.open_checksum_input(&docs_name)?;
-            check_header(
+            let read = check_header(
                 docs_in.as_mut(),
                 &format!("{codec_name}Docs"),
                 INDEX_VERSION_CURRENT,
                 INDEX_VERSION_CURRENT,
-            )?;
-            let read = (|| -> Result<()> {
-                let mut docs =
-                    DirectMonotonicWriter::new(meta_out, data_out, num_values, self.block_shift)?;
-                let mut doc = 0i64;
-                docs.add(doc)?;
-                for _ in 0..self.total_chunks {
-                    doc += i64::from(docs_in.read_v_int()?);
+            )
+            .map(|_| ());
+            let read = read.and_then(|()| {
+                let read = (|| -> Result<()> {
+                    let mut docs = DirectMonotonicWriter::new(
+                        meta_out,
+                        data_out,
+                        num_values,
+                        self.block_shift,
+                    )?;
+                    let mut doc = 0i64;
                     docs.add(doc)?;
-                }
-                docs.finish()?;
-                if doc != i64::from(self.total_docs) {
-                    return Err(LuceneError::CorruptIndex(format!(
-                        "Docs don't add up (resource={docs_name})"
-                    )));
-                }
-                Ok(())
-            })();
-            // `CodecUtil.checkFooter(docsIn, priorE)`.
-            match read {
-                Ok(()) => {
-                    check_footer(docs_in.as_mut())?;
-                }
-                Err(prior) => return Err(check_footer_with_prior(docs_in.as_mut(), prior)),
-            }
+                    for _ in 0..self.total_chunks {
+                        doc += i64::from(docs_in.read_v_int()?);
+                        docs.add(doc)?;
+                    }
+                    docs.finish()?;
+                    if doc != i64::from(self.total_docs) {
+                        return Err(LuceneError::CorruptIndex(format!(
+                            "Docs don't add up (resource={docs_name})"
+                        )));
+                    }
+                    Ok(())
+                })();
+                // `CodecUtil.checkFooter(docsIn, priorE)`, inside the
+                // try-with-resources over `docsIn`, which closes it on every exit.
+                check_footer_after(docs_in.as_mut(), read)
+            });
+            crate::store::close_after(docs_in.as_mut(), read)?;
         }
         self.dir.delete_file(&docs_name)?;
         self.docs_out_name = None;
@@ -1015,37 +1019,40 @@ impl FieldsIndexWriter {
             .expect("INVARIANT: the file pointers file exists until finish deletes it");
         {
             let mut file_pointers_in = self.dir.open_checksum_input(&file_pointers_name)?;
-            check_header(
+            let read = check_header(
                 file_pointers_in.as_mut(),
                 &format!("{codec_name}FilePointers"),
                 INDEX_VERSION_CURRENT,
                 INDEX_VERSION_CURRENT,
-            )?;
-            let read = (|| -> Result<()> {
-                let mut file_pointers =
-                    DirectMonotonicWriter::new(meta_out, data_out, num_values, self.block_shift)?;
-                let mut fp = 0i64;
-                for _ in 0..self.total_chunks {
-                    fp += file_pointers_in.read_v_long()?;
-                    file_pointers.add(fp)?;
-                }
-                if max_pointer < fp {
-                    return Err(LuceneError::CorruptIndex(format!(
-                        "File pointers don't add up (resource={file_pointers_name})"
-                    )));
-                }
-                file_pointers.add(max_pointer)?;
-                file_pointers.finish()?;
-                Ok(())
-            })();
-            match read {
-                Ok(()) => {
-                    check_footer(file_pointers_in.as_mut())?;
-                }
-                Err(prior) => {
-                    return Err(check_footer_with_prior(file_pointers_in.as_mut(), prior));
-                }
-            }
+            )
+            .map(|_| ());
+            let read = read.and_then(|()| {
+                let read = (|| -> Result<()> {
+                    let mut file_pointers = DirectMonotonicWriter::new(
+                        meta_out,
+                        data_out,
+                        num_values,
+                        self.block_shift,
+                    )?;
+                    let mut fp = 0i64;
+                    for _ in 0..self.total_chunks {
+                        fp += file_pointers_in.read_v_long()?;
+                        file_pointers.add(fp)?;
+                    }
+                    if max_pointer < fp {
+                        return Err(LuceneError::CorruptIndex(format!(
+                            "File pointers don't add up (resource={file_pointers_name})"
+                        )));
+                    }
+                    file_pointers.add(max_pointer)?;
+                    file_pointers.finish()?;
+                    Ok(())
+                })();
+                // `CodecUtil.checkFooter(filePointersIn, priorE)`, inside the
+                // try-with-resources over `filePointersIn`.
+                check_footer_after(file_pointers_in.as_mut(), read)
+            });
+            crate::store::close_after(file_pointers_in.as_mut(), read)?;
         }
         self.dir.delete_file(&file_pointers_name)?;
         self.file_pointers_out_name = None;
@@ -2445,6 +2452,13 @@ impl Lucene90CompressingStoredFieldsReader {
         ) = match opened {
             Ok(read) => read,
             Err(error) => {
+                // `catch (Throwable t) { if (metaIn != null) {
+                // CodecUtil.checkFooter(metaIn, t); ... } else { throw t; } }`
+                // (`Lucene90CompressingStoredFieldsReader.java:230-236`), before the `finally` closes everything.
+                let error = match meta_in.as_mut() {
+                    Some(meta_in) => check_footer_with_prior(meta_in.as_mut(), error),
+                    None => error,
+                };
                 // `this.close()` is `IOUtils.close(indexReader, fieldsStream)`.
                 IOUtils::close_while_handling_exception([
                     IOUtils::closeable(|| {

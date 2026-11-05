@@ -1811,19 +1811,9 @@ impl Lucene104ScalarQuantizedVectorsReader {
                 Self::read_fields(meta.as_mut(), state.field_infos)?,
             ))
         })();
-        let (version_meta, fields) = match read {
-            Ok(read) => {
-                crate::codecs::codec_util::check_footer(meta.as_mut())?;
-                read
-            }
-            Err(prior) => {
-                return Err(crate::codecs::codec_util::check_footer_with_prior(
-                    meta.as_mut(),
-                    prior,
-                ))
-            }
-        };
-        meta.close()?;
+        let read = crate::codecs::codec_util::check_footer_after(meta.as_mut(), read);
+        // The try-with-resources closes `meta` on every exit.
+        let (version_meta, fields) = crate::store::close_after(meta.as_mut(), read)?;
 
         let mut hints: Vec<Arc<dyn crate::store::FileOpenHint>> = vec![
             Arc::new(crate::store::FileTypeHint::Data),
@@ -5034,6 +5024,10 @@ mod close_family_tests {
             .unwrap_err();
         // `meta` closes as its `try`-with-resources ends, before the `.veq`
         // is opened.
-        assert_eq!(closed_of(&log)[before..], ["_0.vemq", "_0.veq", "_0.vec"]);
+        // The metadata input is closed first, by its try-with-resources.
+        assert_eq!(
+            closed_of(&log)[before..],
+            ["_0.vemf", "_0.vemq", "_0.veq", "_0.vec"]
+        );
     }
 }

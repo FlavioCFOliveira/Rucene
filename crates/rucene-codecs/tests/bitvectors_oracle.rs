@@ -58,34 +58,9 @@ fn lucene_reads_what_bitvectors_writes() {
     BITVECTORS.assert_lucene_reads_what_rucene_writes();
 }
 
-/// Core defect 6, outside this crate: `Lucene99HnswVectorsReader`'s `open`
-/// (`src/codecs/lucene99/hnsw_vectors_format.rs`) and
-/// `Lucene99FlatVectorsReader`'s `read_metadata`
-/// (`src/codecs/lucene99/flat_vectors_format.rs`) return the `.vem` / `.vemf`
-/// header's error at once, where Java catches it and runs
-/// `CodecUtil.checkFooter(meta, priorE)`, which reports the checksum failure
-/// of the corrupted file (`Lucene99HnswVectorsReader.java:96-113`,
-/// `Lucene99FlatVectorsReader.java:114-131`).
-const META_ID_CORE_DEFECTS: [(&str, &str, &str); 2] = [
-    (
-        "vem-id",
-        "org.apache.lucene.index.CorruptIndexException",
-        "file mismatch, expected id=$ID, got=$BADID \
-         (resource=BufferedChecksumIndexInput(NIOFSIndexInput(path=\"$D/_5_HnswBitVectorsFormat_0.vem\")))",
-    ),
-    (
-        "vemf-id",
-        "org.apache.lucene.index.CorruptIndexException",
-        "file mismatch, expected id=$ID, got=$BADID \
-         (resource=BufferedChecksumIndexInput(NIOFSIndexInput(path=\"$D/_5_HnswBitVectorsFormat_0.vemf\")))",
-    ),
-];
-
 #[test]
 fn bitvectors_corrupted_files_raise_lucenes_errors() {
-    assert!(BITVECTORS
-        .assert_corrupted_files_raise_lucenes_errors_but(&META_ID_CORE_DEFECTS)
-        .is_empty());
+    BITVECTORS.assert_corrupted_files_raise_lucenes_errors();
 }
 
 /// `KnnVectorsFormat.forName("HnswBitVectorsFormat")` resolves once the

@@ -63,7 +63,17 @@ impl VariableGapTermsIndexReader {
             TERMS_INDEX_EXTENSION,
         );
         let mut meta_in = state.directory.open_checksum_input(&meta_file_name)?;
-        let mut index_in = state.directory.open_checksum_input(&index_file_name)?;
+        // The second resource of the try-with-resources: when it cannot be
+        // opened, the first one is closed (`VariableGapTermsIndexReader.java:57-58`).
+        let mut index_in = match state.directory.open_checksum_input(&index_file_name) {
+            Ok(index_in) => index_in,
+            Err(error) => {
+                // A failure closing `metaIn` is suppressed into `error` in
+                // Java; dropped here, as `rucene::store::close_after` does.
+                let _ = meta_in.close();
+                return Err(error);
+            }
+        };
         let read = Self::read(state, meta_in.as_mut(), index_in.as_mut());
         let result = match read {
             Ok(fields) => check_footer(meta_in.as_mut())

@@ -3919,8 +3919,15 @@ impl BKDWriter {
                 .get_created_files()
                 .contains(&temp_file_name)
             {
+                // `try (ChecksumIndexInput in = ...)`: closed on every exit.
                 return match self.temp_dir.open_checksum_input(&temp_file_name) {
-                    Ok(mut input) => check_footer_with_prior(&mut *input, prior_exception),
+                    Ok(mut input) => {
+                        let error = check_footer_with_prior(&mut *input, prior_exception);
+                        // A failure closing it is suppressed into `error` in Java, dropped
+                        // here (see `close_after`).
+                        let _ = input.close();
+                        error
+                    }
                     Err(open_error) => open_error,
                 };
             }
@@ -6310,8 +6317,11 @@ mod tests {
         ));
         read_all(&mut offline, 1, 9).expect("a slice is read without its checksum");
         match writer.verify_checksum(prior(), &mut offline) {
+            // `CodecUtil.checkFooter(in, priorE)`: the corruption, its message
+            // Lucene's; the prior exception is only suppressed into it.
             LuceneError::CorruptIndex(message) => {
-                assert!(message.contains("prior error"), "{message}")
+                assert!(message.starts_with("checksum failed"), "{message}");
+                assert!(!message.contains("prior"), "{message}");
             }
             other => panic!("expected the corrupt checksum to be reported, got {other:?}"),
         }

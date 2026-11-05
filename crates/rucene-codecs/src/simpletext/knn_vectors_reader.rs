@@ -131,22 +131,28 @@ impl SimpleTextKnnVectorsReader {
             VECTOR_EXTENSION,
         );
 
+        // `try (ChecksumIndexInput in = ...)`, whose body also opens `dataIn`
+        // (`SimpleTextKnnVectorsReader.java:82-114`); on failure `this` — so
+        // far nothing — is closed.
         let mut input = read_state.directory.open_checksum_input(&meta_file_name)?;
-        let mut scratch = Vec::new();
-        let mut field_entries: HashMap<i32, Arc<FieldEntry>> = HashMap::new();
-        let mut field_number = read_int(input.as_mut(), &mut scratch, FIELD_NUMBER)?;
-        while field_number != -1 {
-            let field_name = read_string(input.as_mut(), &mut scratch, FIELD_NAME)?;
-            let vector_data_offset = read_long(input.as_mut(), &mut scratch, VECTOR_DATA_OFFSET)?;
-            let vector_data_length = read_long(input.as_mut(), &mut scratch, VECTOR_DATA_LENGTH)?;
-            let dimension = read_int(input.as_mut(), &mut scratch, VECTOR_DIMENSION)?;
-            let size = read_int(input.as_mut(), &mut scratch, SIZE)?;
-            let mut doc_ids = Vec::with_capacity(size.max(0) as usize);
-            for _ in 0..size {
-                doc_ids.push(read_int(input.as_mut(), &mut scratch, EMPTY)?);
-            }
-            debug_assert!(!field_entries.contains_key(&field_number));
-            let similarity_function = read_state
+        let read = (|| -> Result<_> {
+            let mut scratch = Vec::new();
+            let mut field_entries: HashMap<i32, Arc<FieldEntry>> = HashMap::new();
+            let mut field_number = read_int(input.as_mut(), &mut scratch, FIELD_NUMBER)?;
+            while field_number != -1 {
+                let field_name = read_string(input.as_mut(), &mut scratch, FIELD_NAME)?;
+                let vector_data_offset =
+                    read_long(input.as_mut(), &mut scratch, VECTOR_DATA_OFFSET)?;
+                let vector_data_length =
+                    read_long(input.as_mut(), &mut scratch, VECTOR_DATA_LENGTH)?;
+                let dimension = read_int(input.as_mut(), &mut scratch, VECTOR_DIMENSION)?;
+                let size = read_int(input.as_mut(), &mut scratch, SIZE)?;
+                let mut doc_ids = Vec::with_capacity(size.max(0) as usize);
+                for _ in 0..size {
+                    doc_ids.push(read_int(input.as_mut(), &mut scratch, EMPTY)?);
+                }
+                debug_assert!(!field_entries.contains_key(&field_number));
+                let similarity_function = read_state
                 .field_infos
                 .field_info(&field_name)
                 .map(FieldInfo::get_vector_similarity_function)
@@ -157,23 +163,26 @@ impl SimpleTextKnnVectorsReader {
                          is null",
                     )
                 })?;
-            field_entries.insert(
-                field_number,
-                Arc::new(FieldEntry {
-                    dimension,
-                    vector_data_offset,
-                    vector_data_length,
-                    ord_to_doc: doc_ids,
-                    similarity_function,
-                }),
-            );
-            field_number = read_int(input.as_mut(), &mut scratch, FIELD_NUMBER)?;
-        }
-        util::check_footer(input.as_mut())?;
+                field_entries.insert(
+                    field_number,
+                    Arc::new(FieldEntry {
+                        dimension,
+                        vector_data_offset,
+                        vector_data_length,
+                        ord_to_doc: doc_ids,
+                        similarity_function,
+                    }),
+                );
+                field_number = read_int(input.as_mut(), &mut scratch, FIELD_NUMBER)?;
+            }
+            util::check_footer(input.as_mut())?;
 
-        let data_in = read_state
-            .directory
-            .open_input(&vector_file_name, &*DEFAULT_IO_CONTEXT)?;
+            let data_in = read_state
+                .directory
+                .open_input(&vector_file_name, &*DEFAULT_IO_CONTEXT)?;
+            Ok((field_entries, data_in))
+        })();
+        let (field_entries, data_in) = rucene::store::close_after(input.as_mut(), read)?;
         Ok(Self {
             field_infos: Arc::new(read_state.field_infos.clone()),
             data_in: Arc::new(Mutex::new(Some(data_in))),

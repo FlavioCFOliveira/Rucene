@@ -599,8 +599,16 @@ impl OfflineSorter {
     ///
     /// Equivalent to the private `OfflineSorter.verifyChecksum`.
     fn verify_checksum(&self, prior: LuceneError, name: &str) -> LuceneError {
+        // `try (ChecksumIndexInput in = dir.openChecksumInput(reader.name))`:
+        // closed on every exit.
         match self.dir.open_checksum_input(name) {
-            Ok(mut input) => codec_util::check_footer_with_prior(input.as_mut(), prior),
+            Ok(mut input) => {
+                let error = codec_util::check_footer_with_prior(input.as_mut(), prior);
+                // A failure closing it is suppressed into `error` in Java, dropped
+                // here (see `close_after`).
+                let _ = crate::store::IndexInput::close(input.as_mut());
+                error
+            }
             Err(e) => e,
         }
     }

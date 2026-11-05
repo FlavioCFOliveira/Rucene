@@ -781,8 +781,15 @@ impl SimpleTextBKDWriter {
         if let Some(offline) = writer.as_any_mut().downcast_mut::<OfflinePointWriter>() {
             // We are reading from a temp file; go verify the checksum:
             let temp_file_name = offline.name().to_string();
+            // `try (ChecksumIndexInput in = ...)`: closed on every exit.
             return match self.temp_dir.open_checksum_input(&temp_file_name) {
-                Ok(mut input) => check_footer_with_prior(&mut *input, prior_exception),
+                Ok(mut input) => {
+                    let error = check_footer_with_prior(&mut *input, prior_exception);
+                    // A failure closing it is suppressed into `error` in Java, dropped
+                    // here (see `close_after`).
+                    let _ = rucene::store::IndexInput::close(input.as_mut());
+                    error
+                }
                 Err(error) => error,
             };
         }

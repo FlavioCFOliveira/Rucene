@@ -23,7 +23,8 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::codecs::codec_util::{
-    check_index_header, checksum_entire_file, retrieve_checksum, write_footer, write_index_header,
+    check_footer_after, check_index_header, checksum_entire_file, retrieve_checksum, write_footer,
+    write_index_header,
 };
 use crate::codecs::doc_values::{
     BinaryDocValues, DocValuesConsumer, DocValuesFormat, DocValuesProducer, DocValuesSkipper,
@@ -1922,24 +1923,32 @@ impl Lucene90DocValuesProducer {
             &state.segment_suffix,
             META_EXTENSION,
         );
-        let mut meta = state.directory.open_input(&meta_name, state.context)?;
-        let version = check_index_header(
-            &mut *meta,
-            META_CODEC,
-            VERSION_START,
-            VERSION_CURRENT,
-            &state.segment_info.id(),
-            &state.segment_suffix,
-        )?;
-
         let max_doc = state.segment_info.max_doc()?;
-        let (entries, mut skippers) = Self::read_fields(&mut *meta, state.field_infos, version)?;
+        // `try (ChecksumIndexInput in = state.directory.openChecksumInput(
+        // metaName))`, whose `try` block's failure `CodecUtil.checkFooter(in,
+        // priorE)` weighs in the `finally`
+        // (`Lucene90DocValuesProducer.java:96-120`).
+        let mut meta = state.directory.open_checksum_input(&meta_name)?;
+        let read = (|| -> Result<_> {
+            let version = check_index_header(
+                &mut *meta,
+                META_CODEC,
+                VERSION_START,
+                VERSION_CURRENT,
+                &state.segment_info.id(),
+                &state.segment_suffix,
+            )?;
 
-        if version < VERSION_SKIPPER_MAX_VALUE_COUNT {
-            Self::infer_max_value_counts(&mut skippers, &entries, state.field_infos);
-        }
+            let (entries, mut skippers) =
+                Self::read_fields(&mut *meta, state.field_infos, version)?;
 
-        let _ = retrieve_checksum(&mut *meta)?;
+            if version < VERSION_SKIPPER_MAX_VALUE_COUNT {
+                Self::infer_max_value_counts(&mut skippers, &entries, state.field_infos);
+            }
+            Ok((version, entries, skippers))
+        })();
+        let read = check_footer_after(&mut *meta, read);
+        let (version, entries, skippers) = crate::store::close_after(&mut *meta, read)?;
 
         // The data file is opened once the metadata is read, as Java does
         // (`Lucene90DocValuesProducer.java:131-152`).
@@ -6229,7 +6238,8 @@ mod close_family_tests {
         let before = log.closed().len();
         rewrite_file(&tracking, "_0.dvd", |bytes| bytes[6] ^= 0xff);
         Lucene90DocValuesProducer::new(&read_state(&*dir, &info, &fis)).unwrap_err();
-        assert_eq!(log.closed()[before..], ["_0.dvd"]);
+        // The metadata input is closed first, by its try-with-resources.
+        assert_eq!(log.closed()[before..], ["_0.dvm", "_0.dvd"]);
     }
 
     /// A bad `.dvs` header closes the data and skip inputs and raises the
@@ -6249,6 +6259,7 @@ mod close_family_tests {
             matches!(error, crate::error::LuceneError::CorruptIndex(_)),
             "{error:?}"
         );
-        assert_eq!(log.closed()[before..], ["_0.dvd", "_0.dvs"]);
+        // The metadata input is closed first, by its try-with-resources.
+        assert_eq!(log.closed()[before..], ["_0.dvm", "_0.dvd", "_0.dvs"]);
     }
 }
