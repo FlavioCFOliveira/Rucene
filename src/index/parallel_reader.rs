@@ -54,30 +54,29 @@ use crate::util::Bits;
 // ParallelLeafReader
 // ---------------------------------------------------------------------------
 
-/// Increments the reference count of a leaf sub-reader held as `dyn LeafReader`.
+/// `IndexReader.incRef()` on a leaf sub-reader held as `dyn LeafReader`.
 ///
-/// The `IndexReader` trait provides `inc_ref`/`dec_ref`/`close`, but the
-/// sub-readers here are stored as `Arc<dyn LeafReader>` and Rust cannot upcast
-/// `Arc<dyn LeafReader>` to `Arc<dyn IndexReader>` (the two traits are related
-/// only by a blanket impl, not by inheritance — see the note in
-/// `leaf_reader.rs`). These helpers replicate the `IndexReader` lifecycle
-/// methods directly from `core()` and `do_close()`, which are `LeafReader`
-/// methods. They are `pub(crate)` so [`ParallelCompositeReader`]'s synthetic
-/// leaves are handled uniformly.
+/// The sub-readers are stored as `Arc<dyn LeafReader>`; [`AsIndexReader`]
+/// hands out the very same allocation as `Arc<dyn IndexReader>`, so the three
+/// helpers below run `IndexReader`'s own `incRef`/`decRef`/`close`. In
+/// particular `decRef` runs `notifyReaderClosedListeners()` after `doClose()`
+/// and reports the close to the parent readers (`IndexReader.java:246-264`),
+/// as Java's sub-reader `decRef()`/`close()` calls in
+/// `ParallelLeafReader.doClose()` (`ParallelLeafReader.java:378-394`) do.
+///
+/// [`AsIndexReader`]: crate::index::leaf_reader::AsIndexReader
 fn leaf_inc_ref(r: &Arc<dyn LeafReader>) -> Result<()> {
-    r.core().inc_ref()
+    Arc::clone(r).as_index_reader().inc_ref()
 }
 
+/// `IndexReader.decRef()` on a leaf sub-reader; see [`leaf_inc_ref`].
 fn leaf_dec_ref(r: &Arc<dyn LeafReader>) -> Result<()> {
-    r.core().dec_ref_with_close(|| r.do_close())
+    Arc::clone(r).as_index_reader().dec_ref()
 }
 
+/// `IndexReader.close()` on a leaf sub-reader; see [`leaf_inc_ref`].
 fn leaf_close(r: &Arc<dyn LeafReader>) -> Result<()> {
-    if !r.core().is_closed() {
-        leaf_dec_ref(r)?;
-        r.core().set_closed();
-    }
-    Ok(())
+    Arc::clone(r).as_index_reader().close()
 }
 
 /// A [`LeafReader`] that reads multiple, parallel indexes over the same doc-ID
@@ -959,9 +958,19 @@ impl ParallelCompositeReader {
             max_doc += LeafReader::max_doc(r) as i64;
             LeafReader::core(r).register_parent_core(&core)?;
         }
-        let max_doc = i32::try_from(max_doc).map_err(|_| {
-            LuceneError::IllegalArgument(format!("Composite reader maxDoc {max_doc} overflows i32"))
-        })?;
+        // `if (maxDoc > IndexWriter.getActualMaxDocs())`
+        // (`BaseCompositeReader.java:90-109`): a ParallelCompositeReader is not
+        // a DirectoryReader, so the excess is an IllegalArgumentException.
+        let actual_max_docs = i64::from(crate::index::index_writer::get_actual_max_docs());
+        if max_doc > actual_max_docs {
+            return Err(LuceneError::IllegalArgument(format!(
+                "Too many documents: composite IndexReaders cannot exceed {actual_max_docs} \
+                 but readers have total maxDoc={max_doc}"
+            )));
+        }
+        // `this.maxDoc = Math.toIntExact(maxDoc)` (`BaseCompositeReader.java:111`),
+        // which the check above leaves nothing to refuse.
+        let max_doc = crate::error::to_int_exact(max_doc)?;
 
         // Identity-deduplicated union of the original composites (NOT the
         // synthetic leaves): these are what we close/decRef on do_close.

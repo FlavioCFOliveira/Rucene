@@ -1929,6 +1929,37 @@ impl fmt::Debug for Lucene90CompressingTermVectorsReader {
     }
 }
 
+impl Lucene90CompressingTermVectorsReader {
+    /// The clone constructor `Lucene90CompressingTermVectorsReader(reader)`
+    /// (`Lucene90CompressingTermVectorsReader.java:107-127`), fallible as
+    /// Java's is: it clones `vectorsStream` first, then `indexReader`, so a
+    /// reader whose inputs are closed fails with the `.tvd` input's
+    /// `AlreadyClosedException` (`Already closed.` for a heap input).
+    fn try_clone(&self) -> Result<Self> {
+        let vectors_stream = self.vectors_stream.clone_input()?;
+        let index_reader = self.index_reader.clone_index()?;
+        Ok(Self {
+            field_infos: FieldInfos::new(self.field_infos.iter().cloned().collect())?,
+            index_reader,
+            version: self.version,
+            packed_ints_version: self.packed_ints_version,
+            compression_mode: Arc::clone(&self.compression_mode),
+            decompressor: Mutex::new(self.compression_mode.new_decompressor()),
+            chunk_size: self.chunk_size,
+            num_docs: self.num_docs,
+            num_chunks: self.num_chunks,
+            num_dirty_chunks: self.num_dirty_chunks,
+            num_dirty_docs: self.num_dirty_docs,
+            max_pointer: self.max_pointer,
+            vectors_stream,
+            block_state: Mutex::new(BlockState::new()),
+            prefetched_block_id_cache: Mutex::new([-1; PREFETCH_CACHE_SIZE]),
+            prefetched_block_id_cache_index: AtomicI32::new(0),
+            closed: false,
+        })
+    }
+}
+
 impl Clone for Lucene90CompressingTermVectorsReader {
     fn clone(&self) -> Self {
         Self {
@@ -1970,8 +2001,11 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
         Ok(())
     }
 
+    /// `clone()` (`Lucene90CompressingTermVectorsReader.java:322-325`), which
+    /// does not call `ensureOpen()`: a closed reader fails in cloning its
+    /// closed `.tvd` input.
     fn clone_reader(&self) -> Result<Box<dyn TermVectorsReader>> {
-        Ok(Box::new(self.clone()))
+        Ok(Box::new(self.try_clone()?))
     }
 
     fn get_merge_instance(&self) -> Result<Box<dyn TermVectorsReader>> {

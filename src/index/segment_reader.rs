@@ -25,7 +25,6 @@ use crate::codecs::norms::NormsProducer;
 use crate::codecs::points::PointsReader;
 use crate::codecs::postings::FieldsProducer;
 use crate::codecs::stored_fields::StoredFieldsReader;
-use crate::codecs::stub::StoredFieldVisitor;
 use crate::codecs::term_vectors::TermVectorsReader;
 use crate::codecs::DocValuesSkipper;
 use crate::error::{LuceneError, Result};
@@ -283,6 +282,15 @@ impl SegmentCoreReaders {
     /// cfsReader, normsProducer, pointsReader, knnVectorsReader)`
     /// (`SegmentCoreReaders.java:172-179`): every one is closed, in Java's
     /// order, and the first failure is returned.
+    ///
+    /// Java's fields are `final`: a closed producer stays where it is, and a
+    /// `SegmentReader` whose own `doClose()` ran without it being closed (a
+    /// `FilterCodecReader` calls its delegate's `doClose()`,
+    /// `FilterCodecReader.java:123-126`) still hands it out — cloning a closed
+    /// stored-fields reader throws `this FieldsReader is closed`, cloning a
+    /// closed term-vectors reader throws its closed input's `Already closed.`,
+    /// and `checkIntegrity()` reaches the closed postings first. The producers
+    /// are therefore closed in place, never taken out of their slots.
     fn close_producers(&self) -> Result<()> {
         use crate::util::IOUtils;
         IOUtils::close([
@@ -291,13 +299,7 @@ impl SegmentCoreReaders {
                 close_lock(&self.term_vectors_reader_orig, |reader| reader.close())
             }),
             IOUtils::closeable(|| close_lock(&self.fields_reader_orig, |reader| reader.close())),
-            IOUtils::closeable(|| match self.cfs_reader.write() {
-                Ok(mut guard) => match guard.take() {
-                    Some(mut reader) => reader.close(),
-                    None => Ok(()),
-                },
-                Err(_) => Ok(()),
-            }),
+            IOUtils::closeable(|| close_lock(&self.cfs_reader, |reader| reader.close())),
             IOUtils::closeable(|| {
                 close_lock_arc(&self.norms_producer, |producer| producer.close())
             }),
@@ -319,7 +321,8 @@ impl SegmentCoreReaders {
     }
 }
 
-/// Closes the value stored in `lock`, taking ownership of it.
+/// Closes the value stored in `lock` in place: the closed value stays in its
+/// slot, as Java's `final` field keeps the closed producer.
 ///
 /// The helper is generic over a sized `T` (e.g. `Box<dyn StoredFieldsReader>`)
 /// so that it works through a concrete `RwLock` without trait-object
@@ -331,13 +334,14 @@ fn close_lock<T>(
     let mut guard = lock
         .write()
         .map_err(|_| LuceneError::illegal_state("codec reader lock poisoned".to_string()))?;
-    if let Some(mut value) = guard.take() {
-        close(&mut value)?;
+    if let Some(value) = guard.as_mut() {
+        close(value)?;
     }
     Ok(())
 }
 
-/// Closes a producer held behind an `Arc`, taking it out of `lock` first.
+/// Closes a producer held behind an `Arc` in place: the closed producer stays
+/// in its slot, as Java's `final` field keeps it.
 ///
 /// The producers a `SegmentCoreReaders` owns are shared through `Arc` so that
 /// [`CodecReader`](crate::index::CodecReader) can hand them out, which mirrors
@@ -351,21 +355,8 @@ fn close_lock_arc<T: ?Sized>(
     let mut guard = lock
         .write()
         .map_err(|_| LuceneError::illegal_state("codec reader lock poisoned".to_string()))?;
-    if let Some(mut value) = guard.take() {
-        if let Some(inner) = Arc::get_mut(&mut value) {
-            close(inner)?;
-        }
-    }
-    Ok(())
-}
-
-/// Checks the integrity of the value stored in `lock`.
-fn check_lock<T>(lock: &RwLock<Option<T>>, mut check: impl FnMut(&T) -> Result<()>) -> Result<()> {
-    let guard = lock
-        .read()
-        .map_err(|_| LuceneError::illegal_state("codec reader lock poisoned".to_string()))?;
-    if let Some(ref value) = *guard {
-        check(value)?;
+    if let Some(inner) = guard.as_mut().and_then(Arc::get_mut) {
+        close(inner)?;
     }
     Ok(())
 }
@@ -1680,21 +1671,11 @@ impl LeafReader for SegmentReader {
         self.max_doc
     }
 
+    /// `CodecReader.storedFields()`, `final` (`CodecReader.java:86-104`):
+    /// a view over the clone [`get_fields_reader`](SegmentReader::get_fields_reader)
+    /// answers, which checks the document bounds before it dispatches.
     fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
-        self.ensure_open()?;
-        let guard = self.core_readers.fields_reader_orig.read().map_err(|_| {
-            LuceneError::illegal_state("stored fields reader lock poisoned".to_string())
-        })?;
-        if let Some(_reader) = guard.as_ref() {
-            Ok(Box::new(CodecStoredFields {
-                core: Arc::clone(&self.core_readers),
-                max_doc: self.max_doc,
-            }))
-        } else {
-            Err(LuceneError::already_closed(
-                "stored fields reader is closed".to_string(),
-            ))
-        }
+        crate::index::codec_reader::final_members::stored_fields(self)
     }
 
     fn do_close(&self) -> Result<()> {
@@ -1992,30 +1973,11 @@ impl LeafReader for SegmentReader {
         guard.get_values(field)
     }
 
+    /// Equivalent to `SegmentReader.checkIntegrity()`
+    /// (`SegmentReader.java:399-405`): `CodecReader.checkIntegrity()` through
+    /// this reader's own accessors, in Java's order, then the compound file.
     fn check_integrity(&self) -> Result<()> {
-        self.ensure_open()?;
-        check_lock(&self.core_readers.fields, |producer| {
-            producer.check_integrity()
-        })?;
-        check_lock(&self.core_readers.norms_producer, |producer| {
-            producer.check_integrity()
-        })?;
-        if let Some(ref producer) = self.doc_values_producer {
-            producer.check_integrity()?;
-        }
-        check_lock(&self.core_readers.fields_reader_orig, |reader| {
-            reader.check_integrity()
-        })?;
-        check_lock(&self.core_readers.term_vectors_reader_orig, |reader| {
-            reader.check_integrity()
-        })?;
-        check_lock(&self.core_readers.points_reader, |producer| {
-            producer.check_integrity()
-        })?;
-        check_lock(&self.core_readers.knn_vectors_reader, |producer| {
-            producer.check_integrity()
-        })?;
-
+        crate::index::codec_reader::final_members::check_integrity(self)?;
         if let Ok(guard) = self.core_readers.cfs_reader.read() {
             if let Some(reader) = guard.as_ref() {
                 reader.check_integrity()?;
@@ -2265,58 +2227,6 @@ impl LiveDocs for SharedLiveDocs {
     }
 }
 
-/// `StoredFields` implementation used by `SegmentReader` that performs
-/// document-id bounds checks before delegating to the codec reader.
-#[derive(Debug)]
-struct CodecStoredFields {
-    core: Arc<SegmentCoreReaders>,
-    max_doc: i32,
-}
-
-impl StoredFields for CodecStoredFields {
-    fn prefetch(&mut self, doc_id: i32) -> Result<()> {
-        check_index(doc_id, self.max_doc)?;
-        let guard = self.core.fields_reader_orig.read().map_err(|_| {
-            LuceneError::illegal_state("stored fields reader lock poisoned".to_string())
-        })?;
-        if let Some(reader) = guard.as_ref() {
-            reader.prefetch(doc_id)
-        } else {
-            Err(LuceneError::already_closed(
-                "stored fields reader is closed".to_string(),
-            ))
-        }
-    }
-
-    fn document_with_visitor(
-        &self,
-        doc_id: i32,
-        visitor: &mut dyn StoredFieldVisitor,
-    ) -> Result<()> {
-        check_index(doc_id, self.max_doc)?;
-        let guard = self.core.fields_reader_orig.read().map_err(|_| {
-            LuceneError::illegal_state("stored fields reader lock poisoned".to_string())
-        })?;
-        if let Some(reader) = guard.as_ref() {
-            reader.document(doc_id, visitor)
-        } else {
-            Err(LuceneError::already_closed(
-                "stored fields reader is closed".to_string(),
-            ))
-        }
-    }
-}
-
-/// Checks that `doc_id` is in the range `[0, max_doc)`.
-///
-/// Equivalent to the `Objects.checkIndex(docID, maxDoc())` of the
-/// `StoredFields` view `CodecReader.storedFields()` returns
-/// (`CodecReader.java:86-104`), which `SegmentReader` inherits: a
-/// `java.lang.IndexOutOfBoundsException` with the JDK's message.
-fn check_index(doc_id: i32, max_doc: i32) -> Result<()> {
-    crate::index::codec_reader::final_members::check_index(doc_id, max_doc)
-}
-
 // -----------------------------------------------------------------------------
 // Cache helpers
 // -----------------------------------------------------------------------------
@@ -2509,6 +2419,7 @@ mod tests {
     use crate::codecs::stored_fields::{
         StoredFieldsFormat, StoredFieldsReader, StoredFieldsWriter,
     };
+    use crate::codecs::stub::StoredFieldVisitor;
     use crate::codecs::term_vectors::{TermVectorsFormat, TermVectorsReader, TermVectorsWriter};
     use crate::codecs::tests::{
         test_segment_commit_info, test_segment_info, DummyCodec, DummyFormat,
@@ -4072,6 +3983,90 @@ mod core_close_order_tests {
         assert!(
             seen.lock().unwrap().is_some(),
             "the core-closed listeners run after the panic"
+        );
+        Ok(())
+    }
+    /// The `AlreadyClosedException` message of `error`, or a panic.
+    fn already_closed_message(error: LuceneError) -> String {
+        match error {
+            LuceneError::AlreadyClosed { message, .. } => message,
+            other => panic!("expected an AlreadyClosedException, got {other:?}"),
+        }
+    }
+
+    /// `SegmentCoreReaders.decRef()` closes its producers but keeps them in
+    /// its `final` fields (`SegmentCoreReaders.java:168-182`). A
+    /// `SegmentReader` whose `doClose()` ran while it stays open — what
+    /// `FilterCodecReader.doClose()` does to its delegate
+    /// (`FilterCodecReader.java:123-126`) — still hands the closed producers
+    /// out: `getFieldsReader()` clones the closed stored-fields reader, which
+    /// throws `this FieldsReader is closed`; `getTermVectorsReader()` clones the
+    /// closed term-vectors reader, whose closed `.tvd` input throws
+    /// `Already closed.`; `checkIntegrity()` reaches the closed postings first
+    /// (`CodecReader.java:294-332`). Measured against `lucene-core-10.5.0.jar`
+    /// by `IndexWrappersOracle` (`core_filter_codec wrapper_closed.*`).
+    #[test]
+    fn a_closed_core_keeps_its_closed_producers() -> Result<()> {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(crate::store::ByteBuffersDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new())?;
+        let mut doc = Document::new();
+        let mut term_vectors = crate::document::FieldType::new();
+        term_vectors.set_tokenized(true)?;
+        term_vectors.set_index_options(crate::index::IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)?;
+        term_vectors.set_store_term_vectors(true)?;
+        term_vectors.set_stored(true)?;
+        term_vectors.freeze();
+        doc.add(Box::new(crate::document::Field::new(
+            "body",
+            "some words".to_string(),
+            term_vectors,
+        )?));
+        writer.add_document(&doc)?;
+        writer.commit()?;
+        writer.close()?;
+
+        let infos = SegmentInfos::read_latest_commit(Arc::clone(&dir))?;
+        let reader = SegmentReader::new(
+            infos.info(0).clone(),
+            Version::LATEST.major as i32,
+            &*DEFAULT_IO_CONTEXT,
+        )?;
+        // Open, the reader answers.
+        assert!(reader.get_fields_reader()?.is_some());
+        assert!(reader.get_term_vectors_reader()?.is_some());
+        LeafReader::check_integrity(&reader)?;
+
+        LeafReader::do_close(&reader)?;
+        assert_eq!(reader.core_readers().ref_count(), 0);
+        assert_eq!(
+            crate::index::index_reader::IndexReader::get_ref_count(&reader),
+            1,
+            "the reader itself stays open"
+        );
+        assert!(
+            reader.get_postings_reader()?.is_some(),
+            "the closed producers stay in place"
+        );
+        assert_eq!(
+            already_closed_message(reader.get_fields_reader().unwrap_err()),
+            "this FieldsReader is closed"
+        );
+        assert_eq!(
+            already_closed_message(LeafReader::stored_fields(&reader).unwrap_err()),
+            "this FieldsReader is closed"
+        );
+        assert_eq!(
+            already_closed_message(reader.get_term_vectors_reader().unwrap_err()),
+            "Already closed."
+        );
+        assert_eq!(
+            already_closed_message(LeafReader::term_vectors(&reader).unwrap_err()),
+            "Already closed."
+        );
+        assert_eq!(
+            already_closed_message(LeafReader::check_integrity(&reader).unwrap_err()),
+            "Already closed."
         );
         Ok(())
     }

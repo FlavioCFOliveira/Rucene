@@ -715,9 +715,12 @@ impl IndexReader for StandardDirectoryReader {
             starts.push(doc_base);
             doc_base += LeafReader::max_doc(reader.as_ref());
         }
+        // `starts[subReaders.length] = this.maxDoc` (`BaseCompositeReader.java:112`)
+        starts.push(doc_base);
         Ok(Box::new(CompositeTermVectors {
             sub_readers: self.segment_readers.clone(),
             starts,
+            max_doc: doc_base,
             sub_vectors: Mutex::new(sub_vectors),
         }))
     }
@@ -748,9 +751,12 @@ impl IndexReader for StandardDirectoryReader {
             starts.push(doc_base);
             doc_base += LeafReader::max_doc(reader.as_ref());
         }
+        // `starts[subReaders.length] = this.maxDoc` (`BaseCompositeReader.java:112`)
+        starts.push(doc_base);
         Ok(Box::new(CompositeStoredFields {
             sub_readers: self.segment_readers.clone(),
             starts,
+            max_doc: doc_base,
             sub_fields: Mutex::new(sub_fields),
         }))
     }
@@ -931,25 +937,22 @@ impl IndexReader for StandardDirectoryReader {
 #[derive(Debug)]
 struct CompositeTermVectors {
     sub_readers: Vec<Arc<SegmentReader>>,
-    /// First document id of each sub-reader, i.e. Java's `starts`.
+    /// First document id of each sub-reader, then `maxDoc`: Java's `starts`.
     starts: Vec<i32>,
+    /// The composite's `maxDoc`, which `readerIndex` bounds the id by.
+    max_doc: i32,
     sub_vectors: Mutex<Vec<Option<Box<dyn TermVectors>>>>,
 }
 
 impl CompositeTermVectors {
     /// Returns the index of the sub-reader holding `doc_id`.
     ///
-    /// Equivalent to `BaseCompositeReader.readerIndex(int)`.
+    /// Equivalent to `BaseCompositeReader.readerIndex(int)`
+    /// (`BaseCompositeReader.java:262-268`): the bounds check, then
+    /// `ReaderUtil.subIndex(docID, starts)`.
     fn reader_index(&self, doc_id: i32) -> Result<usize> {
-        if doc_id < 0 || self.starts.is_empty() {
-            return Err(LuceneError::IllegalArgument(format!(
-                "docID must be >= 0 and < maxDoc; got {doc_id}"
-            )));
-        }
-        Ok(match self.starts.binary_search(&doc_id) {
-            Ok(index) => index,
-            Err(insertion) => insertion - 1,
-        })
+        crate::index::multi_reader::resolve_sub(doc_id, self.max_doc, &self.starts)
+            .map(|(index, _)| index)
     }
 
     /// Runs `body` against the [`TermVectors`] of the sub-reader owning
@@ -990,29 +993,22 @@ impl TermVectors for CompositeTermVectors {
 #[derive(Debug)]
 struct CompositeStoredFields {
     sub_readers: Vec<Arc<SegmentReader>>,
-    /// First document id of each sub-reader, i.e. Java's `starts`.
+    /// First document id of each sub-reader, then `maxDoc`: Java's `starts`.
     starts: Vec<i32>,
+    /// The composite's `maxDoc`, which `readerIndex` bounds the id by.
+    max_doc: i32,
     sub_fields: Mutex<Vec<Option<Box<dyn StoredFields>>>>,
 }
 
 impl CompositeStoredFields {
     /// Returns the index of the sub-reader holding `doc_id`.
     ///
-    /// Equivalent to `BaseCompositeReader.readerIndex(int)`, which Java
-    /// implements as a binary search over `starts`
-    /// (`BaseCompositeReader.java:96-104`, `ReaderUtil.subIndex`).
+    /// Equivalent to `BaseCompositeReader.readerIndex(int)`
+    /// (`BaseCompositeReader.java:262-268`): the bounds check, then
+    /// `ReaderUtil.subIndex(docID, starts)`.
     fn reader_index(&self, doc_id: i32) -> Result<usize> {
-        if doc_id < 0 || self.starts.is_empty() {
-            return Err(LuceneError::IllegalArgument(format!(
-                "docID must be >= 0 and < maxDoc; got {doc_id}"
-            )));
-        }
-        // `starts` is ascending, so the owning sub-reader is the last one whose
-        // start is <= doc_id.
-        Ok(match self.starts.binary_search(&doc_id) {
-            Ok(index) => index,
-            Err(insertion) => insertion - 1,
-        })
+        crate::index::multi_reader::resolve_sub(doc_id, self.max_doc, &self.starts)
+            .map(|(index, _)| index)
     }
 
     /// Runs `body` against the [`StoredFields`] of the sub-reader owning

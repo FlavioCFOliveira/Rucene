@@ -871,6 +871,79 @@ public final class IndexWrappersOracle {
       rec(c, s, what + ".numDocs", () -> w.numDocs() + "/" + w.maxDoc());
       rec(c, s, what + ".version", () -> w.getVersion() > 0);
     }
+    coreRound3(c, corpus);
+  }
+
+  /**
+   * The last core items of rmp #344 (round 3): BaseCompositeReader.readerIndex bounds the
+   * document id by maxDoc in a DirectoryReader's stored fields and term vectors; a
+   * ParallelCompositeReader over more than IndexWriter.getActualMaxDocs() documents is refused
+   * as BaseCompositeReader's constructor refuses a MultiReader; ParallelLeafReader closes or
+   * dereferences its sub-readers with IndexReader.decRef, which notifies their reader-closed
+   * listeners.
+   */
+  static void coreRound3(String c, File corpus) throws Exception {
+    {
+      DirectoryReader reader = DirectoryReader.open(loadCorpus(corpus, c));
+      String s = "core_directory_bounds";
+      int max = reader.maxDoc();
+      StoredFieldVisitor visitor = new org.apache.lucene.document.DocumentStoredFieldVisitor();
+      rec(c, s, "storedFields.last", () -> { reader.storedFields().document(max - 1, visitor); return "doc"; });
+      rec(c, s, "storedFields.maxDoc", () -> { reader.storedFields().document(max, visitor); return "doc"; });
+      rec(c, s, "storedFields.minus1", () -> { reader.storedFields().document(-1, visitor); return "doc"; });
+      rec(c, s, "storedFields.prefetch.maxDoc", () -> { reader.storedFields().prefetch(max); return "prefetch"; });
+      rec(c, s, "termVectors.last", () -> reader.termVectors().get(max - 1) == null ? "null" : "fields");
+      rec(c, s, "termVectors.maxDoc", () -> { reader.termVectors().get(max); return "fields"; });
+      rec(c, s, "termVectors.minus1", () -> { reader.termVectors().get(-1); return "fields"; });
+      rec(c, s, "termVectors.prefetch.maxDoc", () -> { reader.termVectors().prefetch(max); return "prefetch"; });
+      reader.close();
+    }
+    {
+      DirectoryReader reader = DirectoryReader.open(loadCorpus(corpus, c));
+      String s = "core_max_docs";
+      // IndexWriter.setMaxDocs is package-private (tests lower the limit through it)
+      java.lang.reflect.Method setMaxDocs =
+          IndexWriter.class.getDeclaredMethod("setMaxDocs", int.class);
+      setMaxDocs.setAccessible(true);
+      setMaxDocs.invoke(null, reader.maxDoc() - 1);
+      try {
+        rec(c, s, "parallel_composite", () -> new org.apache.lucene.index.ParallelCompositeReader(false, reader).maxDoc());
+        rec(c, s, "multi", () -> new org.apache.lucene.index.MultiReader(new IndexReader[] {reader}, false).maxDoc());
+      } finally {
+        setMaxDocs.invoke(null, IndexWriter.MAX_DOCS);
+      }
+      rec(c, s, "refCount", () -> reader.getRefCount());
+      rec(c, s, "close", () -> { reader.close(); return reader.getRefCount(); });
+    }
+    for (boolean closeSubs : new boolean[] {true, false}) {
+      DirectoryReader reader = DirectoryReader.open(loadCorpus(corpus, c));
+      LeafReader seg = reader.leaves().get(0).reader();
+      AtomicInteger readerClosed = new AtomicInteger();
+      AtomicInteger coreClosed = new AtomicInteger();
+      seg.getReaderCacheHelper().addClosedListener(k -> readerClosed.incrementAndGet());
+      seg.getCoreCacheHelper().addClosedListener(k -> coreClosed.incrementAndGet());
+      LeafReader w = new org.apache.lucene.index.ParallelLeafReader(closeSubs, seg);
+      String s = "core_parallel_leaf_listeners_" + (closeSubs ? "close" : "decref");
+      Callable<Object> state =
+          () -> readerClosed.get() + "/" + coreClosed.get() + "/" + seg.getRefCount();
+      rec(c, s, "wrapper_close", () -> { w.close(); return state.call(); });
+      rec(c, s, "reader_close", () -> { reader.close(); return state.call(); });
+    }
+    // the wrapper's decRef is the sub-reader's last: it closes the sub-reader
+    {
+      DirectoryReader reader = DirectoryReader.open(loadCorpus(corpus, c));
+      LeafReader seg = reader.leaves().get(0).reader();
+      AtomicInteger readerClosed = new AtomicInteger();
+      AtomicInteger coreClosed = new AtomicInteger();
+      seg.getReaderCacheHelper().addClosedListener(k -> readerClosed.incrementAndGet());
+      seg.getCoreCacheHelper().addClosedListener(k -> coreClosed.incrementAndGet());
+      LeafReader w = new org.apache.lucene.index.ParallelLeafReader(false, seg);
+      String s = "core_parallel_leaf_listeners_decref_last";
+      Callable<Object> state =
+          () -> readerClosed.get() + "/" + coreClosed.get() + "/" + seg.getRefCount();
+      rec(c, s, "reader_close", () -> { reader.close(); return state.call(); });
+      rec(c, s, "wrapper_close", () -> { w.close(); return state.call(); });
+    }
   }
 
   // -------------------------------------------------------------------------------------------

@@ -91,32 +91,7 @@ const DECLARED: &[(&str, &str, &str)] = &[
         "skip",
         "a doc-values iterator is not Send: Rust refuses to hand it to another thread",
     ),
-    (
-        "\tcore_filter_codec\twrapper_closed.storedFields",
-        "skip",
-        SEGMENT_CORE_CLOSED_PRODUCERS,
-    ),
-    (
-        "\tcore_filter_codec\twrapper_closed.termVectors",
-        "skip",
-        SEGMENT_CORE_CLOSED_PRODUCERS,
-    ),
-    (
-        "\tcore_filter_codec\twrapper_closed.checkIntegrity",
-        "skip",
-        SEGMENT_CORE_CLOSED_PRODUCERS,
-    ),
 ];
-
-/// The reason of the rows that read a segment through a `FilterCodecReader`
-/// after its `doClose()` closed the segment's core readers
-/// (`FilterCodecReader.java:123-126`).
-const SEGMENT_CORE_CLOSED_PRODUCERS: &str =
-    "core defect out of scope: SegmentCoreReaders drops each producer when it closes it \
-     (close_lock takes the Option), so a closed segment's getFieldsReader() and \
-     getTermVectorsReader() answer null instead of cloning a closed reader, which Java \
-     refuses (\"this FieldsReader is closed\", \"Already closed.\"), and its checkIntegrity() \
-     reaches the closed doc-values producer before the postings";
 
 const PROBE_FIELDS: [&str; 13] = [
     "id",
@@ -1013,6 +988,171 @@ fn core_lifecycle(rows: &mut Rows, c: &str) {
         });
         rows.rec(c, s, &format!("{what}.version"), || {
             Ok((w.version()? > 0).to_string())
+        });
+    }
+    core_round3(rows, c);
+}
+
+/// Restores `IndexWriter`'s document limit when dropped, as the oracle's
+/// `finally { setMaxDocs(IndexWriter.MAX_DOCS); }` does (the limit it had).
+struct RestoreMaxDocs(i32);
+
+impl Drop for RestoreMaxDocs {
+    fn drop(&mut self) {
+        rucene::index::index_writer::set_max_docs(self.0).unwrap();
+    }
+}
+
+/// `IndexWrappersOracle.coreRound3`: the last core items of rmp #344 (round 3).
+fn core_round3(rows: &mut Rows, c: &str) {
+    // BaseCompositeReader.readerIndex bounds the document id by maxDoc
+    {
+        let reader = directory_reader::open(load_corpus(c)).unwrap();
+        let s = "core_directory_bounds";
+        let max = reader.max_doc();
+        let mut visitor = rucene::document::DocumentStoredFieldVisitor::new();
+        for (step, doc) in [
+            ("storedFields.last", max - 1),
+            ("storedFields.maxDoc", max),
+            ("storedFields.minus1", -1),
+        ] {
+            rows.rec(c, s, step, || {
+                reader
+                    .stored_fields()?
+                    .document_with_visitor(doc, &mut visitor)?;
+                Ok("doc".to_string())
+            });
+        }
+        rows.rec(c, s, "storedFields.prefetch.maxDoc", || {
+            reader.stored_fields()?.prefetch(max)?;
+            Ok("prefetch".to_string())
+        });
+        rows.rec(c, s, "termVectors.last", || {
+            Ok(if reader.term_vectors()?.get(max - 1)?.is_none() {
+                "null"
+            } else {
+                "fields"
+            }
+            .to_string())
+        });
+        for (step, doc) in [("termVectors.maxDoc", max), ("termVectors.minus1", -1)] {
+            rows.rec(c, s, step, || {
+                reader.term_vectors()?.get(doc)?;
+                Ok("fields".to_string())
+            });
+        }
+        rows.rec(c, s, "termVectors.prefetch.maxDoc", || {
+            reader.term_vectors()?.prefetch(max)?;
+            Ok("prefetch".to_string())
+        });
+        reader.close().unwrap();
+    }
+    // A ParallelCompositeReader over more documents than the limit is refused
+    // as a MultiReader is (BaseCompositeReader's constructor)
+    {
+        let reader = directory_reader::open(load_corpus(c)).unwrap();
+        let s = "core_max_docs";
+        {
+            let _restore = RestoreMaxDocs(rucene::index::index_writer::get_actual_max_docs());
+            rucene::index::index_writer::set_max_docs(reader.max_doc() - 1).unwrap();
+            rows.rec(c, s, "parallel_composite", || {
+                Ok(rucene::index::ParallelCompositeReader::with_close_flag(
+                    false,
+                    vec![Arc::clone(&reader)
+                        as Arc<dyn rucene::index::index_reader::CompositeReader>],
+                )?
+                .max_doc()
+                .to_string())
+            });
+            rows.rec(c, s, "multi", || {
+                Ok(rucene::index::MultiReader::new(
+                    vec![Arc::clone(&reader) as Arc<dyn IndexReader>],
+                    false,
+                )?
+                .max_doc()
+                .to_string())
+            });
+        }
+        rows.rec(c, s, "refCount", || Ok(reader.get_ref_count().to_string()));
+        rows.rec(c, s, "close", || {
+            reader.close()?;
+            Ok(reader.get_ref_count().to_string())
+        });
+    }
+    // ParallelLeafReader closes or dereferences its sub-readers with
+    // IndexReader.decRef, which notifies their reader-closed listeners
+    for close_subs in [true, false] {
+        let reader = directory_reader::open(load_corpus(c)).unwrap();
+        let seg = Arc::clone(&reader).leaves().unwrap()[0].leaf_reader();
+        let reader_closed = Arc::new(AtomicI32::new(0));
+        let core_closed = Arc::new(AtomicI32::new(0));
+        seg.get_reader_cache_helper()
+            .unwrap()
+            .add_closed_listener(Box::new(Counting(Arc::clone(&reader_closed))));
+        seg.get_core_cache_helper()
+            .unwrap()
+            .add_closed_listener(Box::new(Counting(Arc::clone(&core_closed))));
+        let w: Arc<dyn LeafReader> = Arc::new(
+            rucene::index::ParallelLeafReader::with_close_flag(close_subs, vec![Arc::clone(&seg)])
+                .unwrap(),
+        );
+        let s = format!(
+            "core_parallel_leaf_listeners_{}",
+            if close_subs { "close" } else { "decref" }
+        );
+        let ir = as_index_reader(&seg);
+        let state = || {
+            format!(
+                "{}/{}/{}",
+                reader_closed.load(Ordering::SeqCst),
+                core_closed.load(Ordering::SeqCst),
+                ir.get_ref_count()
+            )
+        };
+        let wr = as_index_reader(&w);
+        rows.rec(c, &s, "wrapper_close", || {
+            wr.close()?;
+            Ok(state())
+        });
+        rows.rec(c, &s, "reader_close", || {
+            reader.close()?;
+            Ok(state())
+        });
+    }
+    // the wrapper's decRef is the sub-reader's last: it closes the sub-reader
+    {
+        let reader = directory_reader::open(load_corpus(c)).unwrap();
+        let seg = Arc::clone(&reader).leaves().unwrap()[0].leaf_reader();
+        let reader_closed = Arc::new(AtomicI32::new(0));
+        let core_closed = Arc::new(AtomicI32::new(0));
+        seg.get_reader_cache_helper()
+            .unwrap()
+            .add_closed_listener(Box::new(Counting(Arc::clone(&reader_closed))));
+        seg.get_core_cache_helper()
+            .unwrap()
+            .add_closed_listener(Box::new(Counting(Arc::clone(&core_closed))));
+        let w: Arc<dyn LeafReader> = Arc::new(
+            rucene::index::ParallelLeafReader::with_close_flag(false, vec![Arc::clone(&seg)])
+                .unwrap(),
+        );
+        let s = "core_parallel_leaf_listeners_decref_last";
+        let ir = as_index_reader(&seg);
+        let state = || {
+            format!(
+                "{}/{}/{}",
+                reader_closed.load(Ordering::SeqCst),
+                core_closed.load(Ordering::SeqCst),
+                ir.get_ref_count()
+            )
+        };
+        let wr = as_index_reader(&w);
+        rows.rec(c, s, "reader_close", || {
+            reader.close()?;
+            Ok(state())
+        });
+        rows.rec(c, s, "wrapper_close", || {
+            wr.close()?;
+            Ok(state())
         });
     }
 }

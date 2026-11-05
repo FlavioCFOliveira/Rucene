@@ -837,6 +837,24 @@ nocfs	core_filter_directory	wrapper_closed.docFreq	err	org.apache.lucene.store.A
 nocfs	core_filter_directory	wrapper_closed.storedFields	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
 nocfs	core_filter_directory	wrapper_closed.numDocs	ok	309/310
 nocfs	core_filter_directory	wrapper_closed.version	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_directory_bounds	storedFields.last	ok	doc
+nocfs	core_directory_bounds	storedFields.maxDoc	err	java.lang.IllegalArgumentException	docID must be >= 0 and < maxDoc=310 (got docID=310)
+nocfs	core_directory_bounds	storedFields.minus1	err	java.lang.IllegalArgumentException	docID must be >= 0 and < maxDoc=310 (got docID=-1)
+nocfs	core_directory_bounds	storedFields.prefetch.maxDoc	err	java.lang.IllegalArgumentException	docID must be >= 0 and < maxDoc=310 (got docID=310)
+nocfs	core_directory_bounds	termVectors.last	ok	fields
+nocfs	core_directory_bounds	termVectors.maxDoc	err	java.lang.IllegalArgumentException	docID must be >= 0 and < maxDoc=310 (got docID=310)
+nocfs	core_directory_bounds	termVectors.minus1	err	java.lang.IllegalArgumentException	docID must be >= 0 and < maxDoc=310 (got docID=-1)
+nocfs	core_directory_bounds	termVectors.prefetch.maxDoc	err	java.lang.IllegalArgumentException	docID must be >= 0 and < maxDoc=310 (got docID=310)
+nocfs	core_max_docs	parallel_composite	err	java.lang.IllegalArgumentException	Too many documents: composite IndexReaders cannot exceed 309 but readers have total maxDoc=310
+nocfs	core_max_docs	multi	err	java.lang.IllegalArgumentException	Too many documents: composite IndexReaders cannot exceed 309 but readers have total maxDoc=310
+nocfs	core_max_docs	refCount	ok	1
+nocfs	core_max_docs	close	ok	0
+nocfs	core_parallel_leaf_listeners_close	wrapper_close	ok	1/1/0
+nocfs	core_parallel_leaf_listeners_close	reader_close	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_parallel_leaf_listeners_decref	wrapper_close	ok	0/0/1
+nocfs	core_parallel_leaf_listeners_decref	reader_close	ok	1/1/0
+nocfs	core_parallel_leaf_listeners_decref_last	reader_close	ok	0/0/1
+nocfs	core_parallel_leaf_listeners_decref_last	wrapper_close	ok	1/1/0
 cfs	plain	docs	ok	310/309/3
 cfs	plain	toString	ok	StandardDirectoryReader(segments_5:21 _5(10.5.0):C150 _1(10.5.0):c120/1 _4(10.5.0):c40)
 cfs	plain	leaf0.toString	ok	_5(10.5.0):C150
@@ -1675,6 +1693,24 @@ cfs	core_filter_directory	wrapper_closed.docFreq	err	org.apache.lucene.store.Alr
 cfs	core_filter_directory	wrapper_closed.storedFields	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
 cfs	core_filter_directory	wrapper_closed.numDocs	ok	309/310
 cfs	core_filter_directory	wrapper_closed.version	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_directory_bounds	storedFields.last	ok	doc
+cfs	core_directory_bounds	storedFields.maxDoc	err	java.lang.IllegalArgumentException	docID must be >= 0 and < maxDoc=310 (got docID=310)
+cfs	core_directory_bounds	storedFields.minus1	err	java.lang.IllegalArgumentException	docID must be >= 0 and < maxDoc=310 (got docID=-1)
+cfs	core_directory_bounds	storedFields.prefetch.maxDoc	err	java.lang.IllegalArgumentException	docID must be >= 0 and < maxDoc=310 (got docID=310)
+cfs	core_directory_bounds	termVectors.last	ok	fields
+cfs	core_directory_bounds	termVectors.maxDoc	err	java.lang.IllegalArgumentException	docID must be >= 0 and < maxDoc=310 (got docID=310)
+cfs	core_directory_bounds	termVectors.minus1	err	java.lang.IllegalArgumentException	docID must be >= 0 and < maxDoc=310 (got docID=-1)
+cfs	core_directory_bounds	termVectors.prefetch.maxDoc	err	java.lang.IllegalArgumentException	docID must be >= 0 and < maxDoc=310 (got docID=310)
+cfs	core_max_docs	parallel_composite	err	java.lang.IllegalArgumentException	Too many documents: composite IndexReaders cannot exceed 309 but readers have total maxDoc=310
+cfs	core_max_docs	multi	err	java.lang.IllegalArgumentException	Too many documents: composite IndexReaders cannot exceed 309 but readers have total maxDoc=310
+cfs	core_max_docs	refCount	ok	1
+cfs	core_max_docs	close	ok	0
+cfs	core_parallel_leaf_listeners_close	wrapper_close	ok	1/1/0
+cfs	core_parallel_leaf_listeners_close	reader_close	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_parallel_leaf_listeners_decref	wrapper_close	ok	0/0/1
+cfs	core_parallel_leaf_listeners_decref	reader_close	ok	1/1/0
+cfs	core_parallel_leaf_listeners_decref_last	reader_close	ok	0/0/1
+cfs	core_parallel_leaf_listeners_decref_last	wrapper_close	ok	1/1/0
 points	tracker	p.compares	ok	99a3aebbcb741b3d/29 1,2,3,4,5,6,5,6,4,5,6,5,6,3,4,5,4,5,2,3,4,5,4,5,3,4,5,4,5
 points	tracker	p.stack	ok	8000000080000000-8000271680002718 800000008000180a-8000271680002718 800014ab8000180a-8000271680002718 80001f158000180a-8000271680002718 80001f158000180b-800026ee80002715 
 points	tracker	p.contains	ok	true false
