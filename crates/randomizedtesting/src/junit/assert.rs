@@ -39,6 +39,54 @@ impl Assert {
         Assert::assert_true(!condition)
     }
 
+    /// `assertFalse(message, condition)`.
+    pub fn assert_false_msg(message: &str, condition: bool) {
+        Assert::assert_true_msg(message, !condition)
+    }
+
+    /// `assertEquals(message, float expected, float actual, float delta)`:
+    /// fails unless `Float.compare(expected, actual) == 0` or
+    /// `Math.abs(expected - actual) <= delta`, with
+    /// `message expected:<x> but was:<y>` (`Float.toString`).
+    pub fn assert_equals_float_msg(message: Option<&str>, expected: f32, actual: f32, delta: f32) {
+        let same = expected.to_bits() == actual.to_bits()
+            || (expected.is_nan() && actual.is_nan())
+            || (expected - actual).abs() <= delta;
+        if !same {
+            Assert::fail_not_equals(
+                message,
+                &crate::jdk::lang::float_to_string(expected),
+                &crate::jdk::lang::float_to_string(actual),
+            )
+        }
+    }
+
+    /// `assertEquals(message, double expected, double actual, double delta)`:
+    /// as [`assert_equals_float_msg`](Self::assert_equals_float_msg) over
+    /// doubles (`Double.compare`, `Double.toString`).
+    pub fn assert_equals_double_msg(message: Option<&str>, expected: f64, actual: f64, delta: f64) {
+        let same = expected.to_bits() == actual.to_bits()
+            || (expected.is_nan() && actual.is_nan())
+            || (expected - actual).abs() <= delta;
+        if !same {
+            Assert::fail_not_equals(
+                message,
+                &crate::jdk::lang::double_to_string(expected),
+                &crate::jdk::lang::double_to_string(actual),
+            )
+        }
+    }
+
+    /// The private `failNotEquals(message, expected, actual)` over the two
+    /// values' strings, which differ for every caller of this module.
+    fn fail_not_equals(message: Option<&str>, expected: &str, actual: &str) -> ! {
+        let prefix = match message {
+            Some(m) if !m.is_empty() => format!("{m} "),
+            _ => String::new(),
+        };
+        Assert::fail(&format!("{prefix}expected:<{expected}> but was:<{actual}>"))
+    }
+
     /// `assertEquals(message, expected, actual)` for non-`String` objects:
     /// `message expected:<x> but was:<y>`.
     pub fn assert_equals_msg<T: PartialEq + Display>(

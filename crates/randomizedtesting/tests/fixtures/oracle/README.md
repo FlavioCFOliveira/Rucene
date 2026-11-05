@@ -185,7 +185,23 @@ write the fixtures (`../*.tsv`) the crate's parity tests (`src/tests/`) read.
   `BulkScorerWrapperScorer` and `DisablingBulkScorerQuery` over a term without
   postings (Java's `NullPointerException`). Outside the runner it records
   `RandomSimilarity`'s pick per field, its `toString()` and the next draw for a
-  grid of seeds, and `AssertingSimilarity`'s `toString()`. The Rust side is
-  `crates/rucene-test-framework/tests/search_wrappers_oracle.rs`, which
-  replays every scenario (the suite through the port's runner) and compares the
-  rows.
+  grid of seeds, and `AssertingSimilarity`'s `toString()`. After the suite's
+  `ctx` row, `SearcherChecksOracle` (rows written last, after the `sim` rows;
+  `nocfs` corpus; run with the class's shared executor set to `null` and no
+  default query cache, so that every draw happens on the test thread) records:
+  the searcher `LuceneTestCase.newSearcher` builds for a sequence of calls of
+  each overload (asserting or plain, reader wrapped or not, leaves, timeout,
+  caching policy, slices), the reader `wrapReader`/`maybeWrapReader` returns
+  (class kind, leaves, counts, hits of a term); `QueryUtils.check(random, q,
+  s)` for the query set, pass or Java's message; `CheckHits` on correct and
+  deliberately wrong expectations (`checkHitCollector`, `checkHits`,
+  `checkDocIds`, `checkHitsQuery`, `checkEqual`, `hits2str`, `topdocsString`,
+  `checkNoMatchExplanations`, deep `checkExplanations`, `checkMatches`,
+  `checkTopScores` per query, `verifyExplanation` within and outside its
+  tolerances); and the `Scorer` branch of `AssertingLeafCollector` (a `Scorer`
+  reaching a collector, a score read during a batch, the `AssertingScorer`
+  state carried across calls, an `AssertingScorer` passed through unchanged,
+  nested collectors); each group ends with the context's next draw. The Rust
+  side is `crates/rucene-test-framework/tests/search_wrappers_oracle.rs`,
+  which replays every scenario (the suite through the port's runner) and
+  compares the rows.

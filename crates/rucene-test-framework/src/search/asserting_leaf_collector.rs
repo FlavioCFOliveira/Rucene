@@ -20,12 +20,13 @@
 use rucene::error::Result;
 use rucene::search::{
     CheckedIntConsumer, CollectionError, CollectionResult, DocIdSetIterator, DocIdStream,
-    LeafCollector, Scorable, NO_MORE_DOCS,
+    LeafCollector, Scorable, Scorer, TwoPhaseIterator, NO_MORE_DOCS,
 };
 use rucene::util::FixedBitSet;
 
 use crate::search::asserting_collector::AssertingCollectorState;
 use crate::search::asserting_scorable::AssertingScorable;
+use crate::search::asserting_scorer::AssertingScorerState;
 use crate::util::lucene_test_case::LuceneTestCase;
 
 /// The global-order checks of the anonymous subclass
@@ -47,13 +48,16 @@ pub(crate) struct GlobalOrder<'a> {
 /// and the end-of-leaf flag set by `finish` — is the same type built with
 /// [`new_for_collector`](Self::new_for_collector).
 ///
-/// **Divergence.** Java's `setScorer` wraps a scorable that is a `Scorer` in a
-/// `FilterScorer` over `AssertingScorer.wrap(scorer, true, true)` that also
-/// fails a `score()` read during `collect(DocIdStream)` or `collectRange`.
-/// A `&mut dyn Scorable` cannot be tested for being a `Scorer` in this port,
-/// so every scorable takes the `AssertingScorable` branch (see
-/// [`AssertingScorable`]); the batch depth that only the `Scorer` branch reads
-/// is not kept.
+/// `setScorer` wraps the scorable with [`AssertingScorable::wrap`]; when the
+/// result is a `Scorer`, the wrapped collector receives Java's anonymous
+/// `FilterScorer` over it, which fails a `score()` read during
+/// `collect(DocIdStream)` or `collectRange`.
+///
+/// This port lends the scorable to every collection call instead of letting
+/// the wrapped collector keep the one `setScorer` received (see
+/// [`LeafCollector`]), so each call re-applies the same wrapping to the
+/// scorable it receives, and the state machine of the `AssertingScorer` that
+/// `setScorer` built is carried from call to call.
 pub struct AssertingLeafCollector<'a> {
     /// `in`.
     inner: Box<dyn LeafCollector + 'a>,
@@ -69,6 +73,11 @@ pub struct AssertingLeafCollector<'a> {
     doc_buffer: Option<Vec<i32>>,
     /// The anonymous subclass of `AssertingCollector`, when this is one.
     global: Option<GlobalOrder<'a>>,
+    /// `batchCollectionDepth`.
+    batch_collection_depth: i32,
+    /// The state of the `AssertingScorer` that `setScorer` built, when it
+    /// built one.
+    scorer_state: Option<AssertingScorerState>,
 }
 
 impl<'a> AssertingLeafCollector<'a> {
@@ -82,6 +91,8 @@ impl<'a> AssertingLeafCollector<'a> {
             finish_called: false,
             doc_buffer: None,
             global: None,
+            batch_collection_depth: 0,
+            scorer_state: None,
         }
     }
 
@@ -106,8 +117,11 @@ impl<'a> AssertingLeafCollector<'a> {
         );
         java_assert!(doc >= self.min, "Out of range: {} < {}", doc, self.min);
         java_assert!(doc < self.max, "Out of range: {} >= {}", doc, self.max);
-        self.inner
-            .collect(doc, &mut AssertingScorable::wrap(scorer))?;
+        let depth = self.batch_collection_depth;
+        let inner = &mut self.inner;
+        with_wrapped(&mut self.scorer_state, scorer, depth, |s| {
+            inner.collect(doc, s)
+        })?;
         self.last_collected = doc;
         Ok(())
     }
@@ -115,7 +129,12 @@ impl<'a> AssertingLeafCollector<'a> {
 
 impl LeafCollector for AssertingLeafCollector<'_> {
     fn set_scorer(&mut self, scorer: &mut dyn Scorable) -> Result<()> {
-        self.inner.set_scorer(&mut AssertingScorable::wrap(scorer))
+        self.scorer_state = None;
+        let depth = self.batch_collection_depth;
+        let inner = &mut self.inner;
+        with_wrapped(&mut self.scorer_state, scorer, depth, |s| {
+            inner.set_scorer(s)
+        })
     }
 
     fn collect(&mut self, doc: i32, scorer: &mut dyn Scorable) -> CollectionResult<()> {
@@ -161,6 +180,7 @@ impl LeafCollector for AssertingLeafCollector<'_> {
             self.doc_buffer = Some(doc_buffer);
             result
         } else {
+            self.batch_collection_depth += 1;
             let mut asserting = AssertingDocIdStream {
                 stream,
                 last_up_to: -1,
@@ -168,8 +188,13 @@ impl LeafCollector for AssertingLeafCollector<'_> {
                 min: self.min,
                 max: self.max,
             };
-            self.inner
-                .collect_stream(&mut asserting, &mut AssertingScorable::wrap(scorer))
+            let depth = self.batch_collection_depth;
+            let inner = &mut self.inner;
+            let result = with_wrapped(&mut self.scorer_state, scorer, depth, |s| {
+                inner.collect_stream(&mut asserting, s)
+            });
+            self.batch_collection_depth -= 1;
+            result
         }
     }
 
@@ -183,8 +208,14 @@ impl LeafCollector for AssertingLeafCollector<'_> {
         java_assert!(max > min);
         java_assert!(min >= self.min, "Out of range: {} < {}", min, self.min);
         java_assert!(max <= self.max, "Out of range: {} >= {}", max - 1, self.max);
-        self.inner
-            .collect_range(min, max, &mut AssertingScorable::wrap(scorer))?;
+        self.batch_collection_depth += 1;
+        let depth = self.batch_collection_depth;
+        let inner = &mut self.inner;
+        let result = with_wrapped(&mut self.scorer_state, scorer, depth, |s| {
+            inner.collect_range(min, max, s)
+        });
+        self.batch_collection_depth -= 1;
+        result?;
         self.last_collected = max - 1;
         Ok(())
     }
@@ -208,6 +239,93 @@ impl LeafCollector for AssertingLeafCollector<'_> {
         java_assert!(!self.finish_called);
         self.finish_called = true;
         self.inner.finish()
+    }
+}
+
+/// Applies `setScorer`'s wrapping to the scorable lent to one call and hands
+/// the result to `call`: [`AssertingScorable::wrap`], then, when the wrapped
+/// scorable is a `Scorer`, the batch-checking [`BatchCheckingScorer`].
+fn with_wrapped<R>(
+    scorer_state: &mut Option<AssertingScorerState>,
+    scorer: &mut dyn Scorable,
+    batch_collection_depth: i32,
+    call: impl FnOnce(&mut dyn Scorable) -> R,
+) -> R {
+    let mut wrapped = AssertingScorable::wrap_with_state(scorer, *scorer_state);
+    let result = if wrapped.as_scorer().is_some() {
+        let wrapped_scorer = wrapped
+            .as_scorer()
+            .expect("INVARIANT: as_scorer answered Some on the line above");
+        call(&mut BatchCheckingScorer {
+            inner: wrapped_scorer,
+            batch_collection_depth,
+        })
+    } else {
+        // Some bulk scorers install synthetic Scorables that are deliberately safe to score during
+        // batching, so only iterator-backed Scorers get the batch-position assertion above.
+        call(wrapped.as_scorable())
+    };
+    if let Some(state) = wrapped.scorer_state() {
+        *scorer_state = Some(state);
+    }
+    result
+}
+
+/// The anonymous `FilterScorer` of `setScorer`, over a wrapped scorable that
+/// is a `Scorer`: `score()` fails during a batch collection.
+struct BatchCheckingScorer<'s> {
+    inner: &'s mut dyn Scorer,
+    /// The enclosing collector's `batchCollectionDepth` during this call.
+    batch_collection_depth: i32,
+}
+
+impl Scorable for BatchCheckingScorer<'_> {
+    fn score(&mut self) -> Result<f32> {
+        java_assert!(
+            self.batch_collection_depth == 0,
+            "Scorable.score() must not be called inside collect(DocIdStream) or \
+             collectRange() since the scorer is not positioned on individual \
+             documents during batch collection"
+        );
+        self.inner.score()
+    }
+
+    fn set_min_competitive_score(&mut self, min_score: f32) -> Result<()> {
+        self.inner.set_min_competitive_score(min_score)
+    }
+
+    /// A `FilterScorer` is a `Scorer`.
+    fn as_scorer(&mut self) -> Option<&mut dyn Scorer> {
+        Some(self)
+    }
+}
+
+impl Scorer for BatchCheckingScorer<'_> {
+    fn as_scorable(&mut self) -> &mut dyn Scorable {
+        self
+    }
+
+    /// `FilterScorer.docID()`.
+    fn doc_id(&self) -> i32 {
+        self.inner.doc_id()
+    }
+
+    /// `FilterScorer.iterator()`.
+    fn iterator(&mut self) -> &mut dyn DocIdSetIterator {
+        self.inner.iterator()
+    }
+
+    /// `FilterScorer.twoPhaseIterator()`.
+    fn two_phase_iterator(&mut self) -> Option<&mut dyn TwoPhaseIterator> {
+        self.inner.two_phase_iterator()
+    }
+
+    fn advance_shallow(&mut self, target: i32) -> Result<i32> {
+        self.inner.advance_shallow(target)
+    }
+
+    fn get_max_score(&mut self, up_to: i32) -> Result<f32> {
+        self.inner.get_max_score(up_to)
     }
 }
 

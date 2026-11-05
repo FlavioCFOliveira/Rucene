@@ -12,7 +12,7 @@ use crate::search::constant_score_scorer::ConstantScoreScorer;
 use crate::search::dense_conjunction_bulk_scorer::WINDOW_SIZE;
 use crate::search::doc_id_set_iterator::DocIdSetIterator;
 use crate::search::score_mode::ScoreMode;
-use crate::search::scorer::Scorer;
+use crate::search::scorer::{Scorer, ScorerAsScorable};
 use crate::search::two_phase_iterator::TwoPhaseIterator;
 use crate::util::{Bits, FixedBitSet, MathUtil};
 
@@ -199,7 +199,7 @@ impl ConstantScoreBulkScorer {
                 true
             };
             if confirmed {
-                collector.collect(doc, self.scorer.as_scorable())?;
+                collector.collect(doc, &mut ScorerAsScorable::new(&mut self.scorer))?;
             }
 
             doc = approximation(&mut self.scorer, two_phase).next_doc()?;
@@ -243,7 +243,7 @@ impl ConstantScoreBulkScorer {
 
             {
                 let mut stream = BitSetDocIdStream::new(window_matches, window_base);
-                collector.collect_stream(&mut stream, scorer.as_scorable())?;
+                collector.collect_stream(&mut stream, &mut ScorerAsScorable::new(scorer))?;
             }
             window_matches.clear_all();
 
@@ -265,7 +265,7 @@ impl BulkScorer for ConstantScoreBulkScorer {
         min: i32,
         max: i32,
     ) -> CollectionResult<i32> {
-        collector.set_scorer(self.scorer.as_scorable())?;
+        collector.set_scorer(&mut ScorerAsScorable::new(&mut self.scorer))?;
         let competitive_iterator = collector.competitive_iterator()?;
         match competitive_iterator {
             Some(mut competitive_iterator) => {

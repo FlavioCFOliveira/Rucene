@@ -53,6 +53,7 @@
 //! The messages that embed the wrapped scorer's `toString()` (`" " + in`) end
 //! with `<scorer>`: Rust's [`Scorer`] has no string form.
 
+use std::any::TypeId;
 use std::fmt;
 
 use rucene::error::Result;
@@ -92,9 +93,9 @@ impl fmt::Display for IteratorState {
 }
 
 /// The fields of Java's `AssertingScorer`, shared by its views.
-struct Core {
+struct Core<'a> {
     /// `in`.
-    inner: Box<dyn Scorer>,
+    inner: Box<dyn Scorer + 'a>,
     /// `canScore`.
     can_score: bool,
     /// `canSetMinCompetitiveScore`.
@@ -111,15 +112,97 @@ struct Core {
     cost: i64,
 }
 
+/// The mutable fields of Java's `AssertingScorer` that a collector carries
+/// from one loan of its scorer to the next (see
+/// [`AssertingScorer::wrap_borrowed`]).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AssertingScorerState {
+    state: IteratorState,
+    doc: i32,
+    min_competitive_score: f32,
+    last_shallow_target: i32,
+}
+
+/// A borrowed [`Scorer`] lent to an [`AssertingScorer`] for one collection
+/// call: every call is forwarded.
+struct BorrowedScorer<'a> {
+    inner: &'a mut dyn Scorer,
+}
+
+impl Scorable for BorrowedScorer<'_> {
+    fn score(&mut self) -> Result<f32> {
+        self.inner.score()
+    }
+
+    fn smoothing_score(&mut self, doc_id: i32) -> Result<f32> {
+        self.inner.smoothing_score(doc_id)
+    }
+
+    fn set_min_competitive_score(&mut self, min_score: f32) -> Result<()> {
+        self.inner.set_min_competitive_score(min_score)
+    }
+
+    fn children(&mut self) -> Result<Vec<ChildScorable<'_>>> {
+        self.inner.children()
+    }
+
+    fn as_scorer(&mut self) -> Option<&mut dyn Scorer> {
+        Some(self)
+    }
+
+    fn class_id(&self) -> Option<TypeId> {
+        self.inner.class_id()
+    }
+}
+
+impl Scorer for BorrowedScorer<'_> {
+    fn as_indri_scorer(&mut self) -> Option<&mut dyn rucene::search::indri_scorer::IndriScorer> {
+        self.inner.as_indri_scorer()
+    }
+
+    fn as_scorable(&mut self) -> &mut dyn Scorable {
+        self
+    }
+
+    fn doc_id(&self) -> i32 {
+        self.inner.doc_id()
+    }
+
+    fn iterator(&mut self) -> &mut dyn DocIdSetIterator {
+        self.inner.iterator()
+    }
+
+    fn two_phase_iterator(&mut self) -> Option<&mut dyn TwoPhaseIterator> {
+        self.inner.two_phase_iterator()
+    }
+
+    fn advance_shallow(&mut self, target: i32) -> Result<i32> {
+        self.inner.advance_shallow(target)
+    }
+
+    fn get_max_score(&mut self, up_to: i32) -> Result<f32> {
+        self.inner.get_max_score(up_to)
+    }
+
+    fn next_docs_and_scores(
+        &mut self,
+        up_to: i32,
+        live_docs: Option<&dyn Bits>,
+        buffer: &mut DocAndFloatFeatureBuffer,
+    ) -> Result<()> {
+        self.inner.next_docs_and_scores(up_to, live_docs, buffer)
+    }
+}
+
 /// The approximation of the two-phase view: Java's anonymous
 /// `FilterDocIdSetIterator` over `in.twoPhaseIterator().approximation()`.
-struct AssertingApproximation {
-    core: Core,
+struct AssertingApproximation<'a> {
+    core: Core<'a>,
     /// `inApproximation.cost()`, read by `two_phase_iterator()`.
     cost: i64,
 }
 
-impl AssertingApproximation {
+impl AssertingApproximation<'_> {
     fn in_approximation(&mut self) -> &mut dyn DocIdSetIterator {
         self.core
             .inner
@@ -129,7 +212,7 @@ impl AssertingApproximation {
     }
 }
 
-impl DocIdSetIterator for AssertingApproximation {
+impl DocIdSetIterator for AssertingApproximation<'_> {
     fn doc_id(&self) -> i32 {
         // `inApproximation.docID()`: the wrapped scorer's position, which a
         // two-phase scorer shares with its approximation.
@@ -194,13 +277,13 @@ impl DocIdSetIterator for AssertingApproximation {
 }
 
 /// Java's anonymous `TwoPhaseIterator` of `twoPhaseIterator()`.
-struct AssertingTwoPhase {
-    approximation: AssertingApproximation,
+struct AssertingTwoPhase<'a> {
+    approximation: AssertingApproximation<'a>,
     /// `in.matchCost()`, read by `two_phase_iterator()`.
     match_cost: f32,
 }
 
-impl TwoPhaseIterator for AssertingTwoPhase {
+impl TwoPhaseIterator for AssertingTwoPhase<'_> {
     fn approximation(&mut self) -> &mut dyn DocIdSetIterator {
         &mut self.approximation
     }
@@ -239,7 +322,7 @@ impl TwoPhaseIterator for AssertingTwoPhase {
     }
 }
 
-impl fmt::Debug for AssertingTwoPhase {
+impl fmt::Debug for AssertingTwoPhase<'_> {
     /// `"AssertingScorer@asTwoPhaseIterator(" + in + ")"`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "AssertingScorer@asTwoPhaseIterator({IN})")
@@ -253,36 +336,36 @@ impl fmt::Debug for AssertingTwoPhase {
 /// Equivalent to `org.apache.lucene.tests.search.AssertingScorer`. The scorer
 /// is its own iterator view (`iterator()`, Java's `FilterDocIdSetIterator`);
 /// see the module documentation for the layout and the divergences.
-pub struct AssertingScorer {
-    two_phase: AssertingTwoPhase,
+pub struct AssertingScorer<'a> {
+    two_phase: AssertingTwoPhase<'a>,
 }
 
-impl fmt::Debug for AssertingScorer {
+impl fmt::Debug for AssertingScorer<'_> {
     /// `"AssertingScorer(" + in + ")"`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "AssertingScorer({IN})")
     }
 }
 
-impl AssertingScorer {
+impl<'a> AssertingScorer<'a> {
     /// `AssertingScorer.wrap(other, canScore, canSetMinCompetitiveScore)`.
     ///
     /// Java's `wrap(null, …)` returns `null`; a caller holding an
     /// `Option<Box<dyn Scorer>>` maps it.
     pub fn wrap(
-        other: Box<dyn Scorer>,
+        other: Box<dyn Scorer + 'a>,
         can_score: bool,
         can_set_min_competitive_score: bool,
-    ) -> Box<dyn Scorer> {
+    ) -> Box<dyn Scorer + 'a> {
         Box::new(Self::new(other, can_score, can_set_min_competitive_score))
     }
 
     /// The private constructor: `doc` starts at `in.docID()`.
     fn new(
-        mut inner: Box<dyn Scorer>,
+        mut inner: Box<dyn Scorer + 'a>,
         can_score: bool,
         can_set_min_competitive_score: bool,
-    ) -> AssertingScorer {
+    ) -> AssertingScorer<'a> {
         let doc = inner.doc_id();
         let cost = inner.iterator().cost();
         AssertingScorer {
@@ -305,12 +388,47 @@ impl AssertingScorer {
         }
     }
 
-    fn core(&self) -> &Core {
+    fn core(&self) -> &Core<'a> {
         &self.two_phase.approximation.core
     }
 
-    fn core_mut(&mut self) -> &mut Core {
+    fn core_mut(&mut self) -> &mut Core<'a> {
         &mut self.two_phase.approximation.core
+    }
+
+    /// Wraps a borrowed scorer with the state machine `state` carries over
+    /// from an earlier wrapper of the same scorer.
+    ///
+    /// Java's `AssertingLeafCollector.setScorer` builds one
+    /// `AssertingScorer.wrap(scorer, true, true)` that the wrapped collector
+    /// keeps; this port lends the scorer to every collection call, so the
+    /// collector keeps the wrapper's state ([`AssertingScorerState`]) and
+    /// rebuilds the wrapper around each loan.
+    pub(crate) fn wrap_borrowed(
+        other: &'a mut dyn Scorer,
+        state: Option<AssertingScorerState>,
+    ) -> AssertingScorer<'a> {
+        let mut scorer = Self::new(Box::new(BorrowedScorer { inner: other }), true, true);
+        if let Some(state) = state {
+            let core = scorer.core_mut();
+            core.state = state.state;
+            core.doc = state.doc;
+            core.min_competitive_score = state.min_competitive_score;
+            core.last_shallow_target = state.last_shallow_target;
+        }
+        scorer
+    }
+
+    /// The state machine of this wrapper (see
+    /// [`wrap_borrowed`](Self::wrap_borrowed)).
+    pub(crate) fn state_snapshot(&self) -> AssertingScorerState {
+        let core = self.core();
+        AssertingScorerState {
+            state: core.state,
+            doc: core.doc,
+            min_competitive_score: core.min_competitive_score,
+            last_shallow_target: core.last_shallow_target,
+        }
     }
 
     /// `getIn()`.
@@ -335,7 +453,7 @@ impl AssertingScorer {
     }
 }
 
-impl Scorable for AssertingScorer {
+impl Scorable for AssertingScorer<'_> {
     fn score(&mut self) -> Result<f32> {
         java_assert!(self.core().can_score);
         let state = self.core().state;
@@ -377,9 +495,19 @@ impl Scorable for AssertingScorer {
             "SHOULD",
         )])
     }
+
+    /// An `AssertingScorer` is a `Scorer` (`instanceof Scorer`).
+    fn as_scorer(&mut self) -> Option<&mut dyn Scorer> {
+        Some(self)
+    }
+
+    /// `instanceof AssertingScorer` (see [`Scorable::class_id`]).
+    fn class_id(&self) -> Option<TypeId> {
+        Some(TypeId::of::<AssertingScorer<'static>>())
+    }
 }
 
-impl Scorer for AssertingScorer {
+impl Scorer for AssertingScorer<'_> {
     fn as_scorable(&mut self) -> &mut dyn Scorable {
         self
     }
@@ -471,7 +599,7 @@ impl Scorer for AssertingScorer {
 
 /// The iterator view: Java's anonymous `FilterDocIdSetIterator` of
 /// `iterator()`.
-impl DocIdSetIterator for AssertingScorer {
+impl DocIdSetIterator for AssertingScorer<'_> {
     fn doc_id(&self) -> i32 {
         Scorer::doc_id(self)
     }

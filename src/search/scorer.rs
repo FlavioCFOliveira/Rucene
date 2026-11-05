@@ -143,6 +143,59 @@ pub trait Scorer: Scorable {
     }
 }
 
+/// A [`Scorable`] view of a borrowed [`Scorer`] that keeps its `Scorer`
+/// identity: [`Scorable::as_scorer`] answers the scorer.
+///
+/// **Divergence from Lucene 10.5.0.** Java hands the `Scorer` itself to
+/// `LeafCollector.setScorer`/`collect`, and a collector may test it with
+/// `instanceof Scorer`. [`Scorer::as_scorable`] returns the scorer as a plain
+/// `dyn Scorable`, whose [`Scorable::as_scorer`] is `None`, so the bulk scorers
+/// that pass a `Scorer` to a collector (`DefaultBulkScorer`,
+/// `ConstantScoreBulkScorer`, `BooleanScorer`'s single-clause window) pass this
+/// view instead. Every other call is forwarded unchanged.
+pub struct ScorerAsScorable<'a> {
+    scorer: &'a mut dyn Scorer,
+}
+
+impl<'a> ScorerAsScorable<'a> {
+    /// Wraps the given scorer.
+    pub fn new(scorer: &'a mut dyn Scorer) -> Self {
+        Self { scorer }
+    }
+}
+
+impl std::fmt::Debug for ScorerAsScorable<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ScorerAsScorable")
+    }
+}
+
+impl Scorable for ScorerAsScorable<'_> {
+    fn score(&mut self) -> Result<f32> {
+        self.scorer.score()
+    }
+
+    fn smoothing_score(&mut self, doc_id: i32) -> Result<f32> {
+        self.scorer.smoothing_score(doc_id)
+    }
+
+    fn set_min_competitive_score(&mut self, min_score: f32) -> Result<()> {
+        self.scorer.set_min_competitive_score(min_score)
+    }
+
+    fn children(&mut self) -> Result<Vec<ChildScorable<'_>>> {
+        self.scorer.children()
+    }
+
+    fn as_scorer(&mut self) -> Option<&mut dyn Scorer> {
+        Some(&mut *self.scorer)
+    }
+
+    fn class_id(&self) -> Option<std::any::TypeId> {
+        self.scorer.class_id()
+    }
+}
+
 /// A [`DocIdSetIterator`] that owns the [`Scorer`] it iterates.
 ///
 /// **Divergence from Lucene 10.5.0.** Java writes `scorer.iterator()` and hands

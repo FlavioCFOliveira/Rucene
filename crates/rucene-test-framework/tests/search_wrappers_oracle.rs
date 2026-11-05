@@ -841,6 +841,690 @@ fn similarities() {
     });
 }
 
+// ---------------------------------------------------------------------------
+// SearcherChecksOracle: newSearcher/wrapReader, QueryUtils, CheckHits and the
+// Scorer branch of AssertingLeafCollector
+// ---------------------------------------------------------------------------
+
+mod searcher_checks {
+    use super::*;
+    use rucene::index::DirectoryReader;
+    use rucene::search::{DocIdStream, ScoreDoc, ScorerAsScorable};
+    use rucene_test_framework::search::{CheckHits, QueryUtils};
+    use rucene_test_framework::util::lucene_test_case::{
+        Concurrency, TestReader, MAYBE_CACHE_POLICY,
+    };
+
+    const C: &str = "nocfs";
+
+    fn searcher_shape(s: &IndexSearcher, r: &Arc<dyn IndexReader>) -> Result<String> {
+        let mut sb = String::new();
+        let asserting = format!("{s:?}").starts_with("AssertingIndexSearcher(");
+        sb.push_str(if asserting { "asserting" } else { "plain" });
+        let same = std::ptr::addr_eq(Arc::as_ptr(s.get_index_reader()), Arc::as_ptr(r));
+        sb.push_str(if same { " same" } else { " wrapped" });
+        let reader = s.get_index_reader();
+        sb.push_str(&format!(" leaves={}", Arc::clone(reader).leaves()?.len()));
+        sb.push_str(&format!(" maxDoc={}", reader.max_doc()));
+        sb.push_str(&format!(" numDocs={}", reader.num_docs()));
+        sb.push_str(&format!(" timeout={}", s.get_timeout().is_some()));
+        let maybe = s
+            .get_query_caching_policy()
+            .is_some_and(|p| Arc::ptr_eq(p, &MAYBE_CACHE_POLICY));
+        sb.push_str(&format!(" maybeCache={maybe}"));
+        sb.push_str(" slices=");
+        for slice in s.get_slices()? {
+            sb.push('[');
+            for p in slice.partitions() {
+                sb.push_str(&format!(
+                    "{}:{}-{} ",
+                    p.ctx.ord(),
+                    p.min_doc_id,
+                    p.max_doc_id
+                ));
+            }
+            sb.push(']');
+        }
+        Ok(sb)
+    }
+
+    fn reader_shape(r: &TestReader) -> Result<String> {
+        let kind = match r {
+            TestReader::Leaf(_) => "leaf",
+            TestReader::Directory(_) => "directory",
+            TestReader::Composite(_) => "composite",
+        };
+        let reader = r.index_reader();
+        let count = IndexSearcher::new(Arc::clone(&reader))?.count(term("w7"))?;
+        Ok(format!(
+            "{kind} leaves={} maxDoc={} numDocs={} w7={count}",
+            Arc::clone(&reader).leaves()?.len(),
+            reader.max_doc(),
+            reader.num_docs()
+        ))
+    }
+
+    fn next() -> Result<String> {
+        Ok(LuceneTestCase::random().next_long().to_string())
+    }
+
+    fn pass(f: impl FnOnce() -> Result<()>) -> Result<String> {
+        f()?;
+        Ok("pass".to_string())
+    }
+
+    /// `SearcherChecksOracle.run`.
+    pub(super) fn run() {
+        let default_cache = IndexSearcher::get_default_query_cache();
+        let default_policy = IndexSearcher::get_default_query_caching_policy();
+        IndexSearcher::set_default_query_cache(None);
+        // `LuceneTestCase.overrideDefaultQueryCache()` (`@BeforeClass`, `@Before`).
+        IndexSearcher::set_default_query_caching_policy(Some(Arc::clone(&MAYBE_CACHE_POLICY)));
+        LuceneTestCase::set_class_env_similarity(Some(Arc::new(BM25Similarity::default())));
+        let directory = directory_reader::open(load_corpus(C)).unwrap();
+        let reader: Arc<dyn IndexReader> = Arc::clone(&directory) as Arc<dyn IndexReader>;
+        new_searcher_grid(&directory, &reader);
+        wrap_reader_grid(&directory);
+        query_utils_checks(&reader);
+        check_hits(&reader);
+        scorer_branch(&reader);
+        reader.close().unwrap();
+        LuceneTestCase::set_class_env_similarity(None);
+        IndexSearcher::set_default_query_cache(default_cache);
+        IndexSearcher::set_default_query_caching_policy(default_policy);
+    }
+
+    fn new_searcher_grid(directory: &Arc<dyn DirectoryReader>, reader: &Arc<dyn IndexReader>) {
+        let d = || TestReader::Directory(Arc::clone(directory));
+        for i in 0..12 {
+            rec(C, "new_searcher", &format!("plain{i}"), || {
+                searcher_shape(&LuceneTestCase::new_searcher(d()), reader)
+            });
+        }
+        for i in 0..4 {
+            rec(C, "new_searcher", &format!("no_wrap{i}"), || {
+                searcher_shape(&LuceneTestCase::new_searcher_wrap(d(), false), reader)
+            });
+            rec(C, "new_searcher", &format!("no_assert{i}"), || {
+                searcher_shape(
+                    &LuceneTestCase::new_searcher_assert(d(), true, false),
+                    reader,
+                )
+            });
+            rec(C, "new_searcher", &format!("inter{i}"), || {
+                searcher_shape(
+                    &LuceneTestCase::new_searcher_concurrency(
+                        d(),
+                        true,
+                        true,
+                        Concurrency::InterSegment,
+                    ),
+                    reader,
+                )
+            });
+            rec(C, "new_searcher", &format!("intra{i}"), || {
+                searcher_shape(
+                    &LuceneTestCase::new_searcher_concurrency(
+                        d(),
+                        false,
+                        false,
+                        Concurrency::IntraSegment,
+                    ),
+                    reader,
+                )
+            });
+            rec(C, "new_searcher", &format!("none{i}"), || {
+                searcher_shape(
+                    &LuceneTestCase::new_searcher_concurrency(d(), true, true, Concurrency::None),
+                    reader,
+                )
+            });
+        }
+        rec(C, "new_searcher", "next", next);
+    }
+
+    fn wrap_reader_grid(directory: &Arc<dyn DirectoryReader>) {
+        let d = || TestReader::Directory(Arc::clone(directory));
+        let leaf = || {
+            let reader = Arc::clone(directory) as Arc<dyn IndexReader>;
+            TestReader::Leaf(reader.leaves().unwrap()[0].leaf_reader())
+        };
+        for i in 0..10 {
+            rec(C, "wrap_reader", &format!("directory{i}"), || {
+                reader_shape(&LuceneTestCase::wrap_reader(d())?)
+            });
+            rec(C, "wrap_reader", &format!("leaf{i}"), || {
+                reader_shape(&LuceneTestCase::wrap_reader(leaf())?)
+            });
+        }
+        for i in 0..20 {
+            rec(C, "wrap_reader", &format!("maybe{i}"), || {
+                reader_shape(&LuceneTestCase::maybe_wrap_reader(d())?)
+            });
+        }
+        rec(C, "wrap_reader", "next", next);
+    }
+
+    fn fixed_searcher(reader: &Arc<dyn IndexReader>, seed: i64) -> IndexSearcher {
+        let r = JdkRandom::new(seed);
+        let mut s =
+            rucene_test_framework::search::AssertingIndexSearcher::new(&r, Arc::clone(reader))
+                .unwrap();
+        s.set_similarity(Arc::new(BM25Similarity::default()));
+        s
+    }
+
+    fn query_utils_checks(reader: &Arc<dyn IndexReader>) {
+        let s = fixed_searcher(reader, 21);
+        for (name, q) in queries(&JdkRandom::new(22)) {
+            rec(C, "qu_check", name, || {
+                QueryUtils::check_searcher(&JdkRandom::new(23), &q, Some(&s));
+                Ok("pass".to_string())
+            });
+            rec(C, "qu_check", &format!("{name}/next"), next);
+        }
+        rec(C, "qu_check", "null_searcher", || {
+            QueryUtils::check_searcher(&JdkRandom::new(24), &term("w7"), None);
+            Ok("pass".to_string())
+        });
+    }
+
+    fn hit_docs(s: &IndexSearcher, q: &Arc<dyn Query>) -> Vec<i32> {
+        let td = s.search(Arc::clone(q), 1000).unwrap();
+        td.score_docs.iter().map(|sd| sd.doc).collect()
+    }
+
+    fn check_hits(reader: &Arc<dyn IndexReader>) {
+        let s = fixed_searcher(reader, 31);
+        let w7 = term("w7");
+        let should = should_w1_w2();
+        let w7_docs = hit_docs(&s, &w7);
+        let mut wrong = w7_docs.clone();
+        let last = reader.max_doc() - 1;
+        wrong.push(if last == *w7_docs.last().unwrap() {
+            0
+        } else {
+            last
+        });
+        rec(C, "check_hits", "hit_collector", || {
+            pass(|| {
+                CheckHits::check_hit_collector(&JdkRandom::new(32), &w7, Some("body"), &s, &w7_docs)
+            })
+        });
+        rec(C, "check_hits", "hit_collector/next", next);
+        rec(C, "check_hits", "hit_collector_wrong", || {
+            pass(|| {
+                CheckHits::check_hit_collector(&JdkRandom::new(33), &w7, Some("body"), &s, &wrong)
+            })
+        });
+        rec(C, "check_hits", "hits", || {
+            pass(|| CheckHits::check_hits(&JdkRandom::new(34), &w7, Some("body"), &s, &w7_docs))
+        });
+        rec(C, "check_hits", "hits/next", next);
+        rec(C, "check_hits", "hits_wrong", || {
+            pass(|| CheckHits::check_hits(&JdkRandom::new(35), &w7, Some("body"), &s, &wrong))
+        });
+        let hits = s.search(Arc::clone(&should), 10).unwrap().score_docs;
+        let order: Vec<i32> = hits.iter().map(|h| h.doc).collect();
+        rec(C, "check_hits", "doc_ids", || {
+            pass(|| {
+                CheckHits::check_doc_ids("m", &order, &hits);
+                Ok(())
+            })
+        });
+        rec(C, "check_hits", "doc_ids_count", || {
+            pass(|| {
+                CheckHits::check_doc_ids("m", &[order[0]], &hits);
+                Ok(())
+            })
+        });
+        rec(C, "check_hits", "doc_ids_order", || {
+            pass(|| {
+                let mut swapped = order.clone();
+                swapped.swap(0, 1);
+                CheckHits::check_doc_ids("m", &swapped, &hits);
+                Ok(())
+            })
+        });
+        let shifted: Vec<ScoreDoc> = hits
+            .iter()
+            .enumerate()
+            .map(|(i, h)| ScoreDoc::new(h.doc, h.score + if i == 2 { 1e-3 } else { 0.0 }))
+            .collect();
+        rec(C, "check_hits", "hits_query", || {
+            pass(|| {
+                CheckHits::check_hits_query(&*should, &hits, &hits, &order);
+                Ok(())
+            })
+        });
+        rec(C, "check_hits", "equal_score", || {
+            pass(|| {
+                CheckHits::check_equal(&*should, &hits, &shifted);
+                Ok(())
+            })
+        });
+        rec(C, "check_hits", "equal_length", || {
+            pass(|| {
+                CheckHits::check_equal(&*should, &hits, &hits[..1]);
+                Ok(())
+            })
+        });
+        rec(C, "check_hits", "equal_doc", || {
+            pass(|| {
+                let mut other = hits.clone();
+                other[1] = ScoreDoc::new(hits[1].doc + 1, hits[1].score);
+                CheckHits::check_equal(&*should, &hits, &other);
+                Ok(())
+            })
+        });
+        rec(C, "check_hits", "hits2str", || {
+            Ok(CheckHits::hits2str(Some(&hits), Some(&hits[..1]), 0, 0))
+        });
+        rec(C, "check_hits", "topdocs", || {
+            Ok(CheckHits::topdocs_string(
+                &s.search(Arc::clone(&should), 5)?,
+                1,
+                3,
+            ))
+        });
+        rec(C, "check_hits", "no_match", || {
+            pass(|| CheckHits::check_no_match_explanations(&w7, Some("body"), &s, &w7_docs))
+        });
+        rec(C, "check_hits", "no_match_wrong", || {
+            pass(|| CheckHits::check_no_match_explanations(&w7, Some("body"), &s, &[w7_docs[0]]))
+        });
+        for (name, q) in queries(&JdkRandom::new(36)) {
+            rec(C, "check_hits", &format!("explanations/{name}"), || {
+                pass(|| CheckHits::check_explanations_deep(&q, Some("body"), &s, true))
+            });
+            rec(C, "check_hits", &format!("matches/{name}"), || {
+                pass(|| CheckHits::check_matches(&q, &s))
+            });
+            rec(C, "check_hits", &format!("top_scores/{name}"), || {
+                pass(|| CheckHits::check_top_scores(&JdkRandom::new(37), &q, &s))
+            });
+        }
+        rec(C, "check_hits", "explanations/next", next);
+
+        let a = || Explanation::matched(1.0f32, "a", vec![]);
+        let b = || Explanation::matched(2.0f32, "b", vec![]);
+        let c = || Explanation::matched(0.1f32, "c", vec![]);
+        let verify = |step: &str, score: f32, deep: bool, e: Explanation| {
+            rec(C, "verify", step, || {
+                pass(|| {
+                    CheckHits::verify_explanation("q", 3, score, deep, &e);
+                    Ok(())
+                })
+            });
+        };
+        verify("shallow", 1.0, false, a());
+        verify("shallow_wrong", 0.1, false, a());
+        verify(
+            "sum",
+            3.0,
+            true,
+            Explanation::matched(3.0f32, "sum of:", vec![a(), b()]),
+        );
+        verify(
+            "sum_wrong",
+            3.5,
+            true,
+            Explanation::matched(3.5f32, "sum of:", vec![a(), b()]),
+        );
+        let v = f32::from_bits(3.1f32.to_bits() + 1); // Math.nextUp(3.1f)
+        verify(
+            "sum_ulp",
+            v,
+            true,
+            Explanation::matched(v, "sum of:", vec![a(), b(), c()]),
+        );
+        verify(
+            "product",
+            0.2,
+            true,
+            Explanation::matched(0.2f32, "product of:", vec![b(), c()]),
+        );
+        verify(
+            "max",
+            2.0,
+            true,
+            Explanation::matched(2.0f32, "max of:", vec![a(), b(), c()]),
+        );
+        let v = (2.0f64 + 0.5f64 * (3.1f64 - 2.0f64)) as f32;
+        verify(
+            "max_plus",
+            v,
+            true,
+            Explanation::matched(v, "max plus 0.5 times others of:", vec![a(), b(), c()]),
+        );
+        verify(
+            "max_plus_wrong",
+            2.0,
+            true,
+            Explanation::matched(2.0f32, "max plus 0.5 times others of:", vec![a(), b(), c()]),
+        );
+        verify(
+            "max_plus_unterminated",
+            2.0,
+            true,
+            Explanation::matched(2.0f32, "max plus 0.5", vec![a(), b()]),
+        );
+        verify(
+            "computed",
+            7.0,
+            true,
+            Explanation::matched(7.0f32, "weight, computed as w * x from:", vec![a(), b()]),
+        );
+        verify(
+            "bad_description",
+            3.0,
+            true,
+            Explanation::matched(3.0f32, "combined:", vec![a(), b()]),
+        );
+        verify(
+            "single",
+            1.0,
+            true,
+            Explanation::matched(1.0f32, "wrapper", vec![a()]),
+        );
+        verify(
+            "single_wrong",
+            1.0,
+            true,
+            Explanation::matched(1.0f32, "wrapper", vec![b()]),
+        );
+        verify(
+            "freq",
+            1.0,
+            true,
+            Explanation::matched(1.0f32, "x, with freq of:", vec![b()]),
+        );
+        verify(
+            "child_docs",
+            1.0,
+            true,
+            Explanation::matched(1.0f32, "Score based on 3 child docs in range", vec![]),
+        );
+        verify(
+            "computed_from",
+            1.0,
+            true,
+            Explanation::matched(1.0f32, "computed from:", vec![b(), c()]),
+        );
+        verify(
+            "no_match",
+            0.0,
+            true,
+            Explanation::no_match("nothing", vec![b(), c()]),
+        );
+    }
+
+    type Action = Box<dyn FnMut(&mut dyn Scorable) -> Result<()>>;
+
+    /// `SearcherChecksOracle.probe`: callbacks running an action on the
+    /// scorable they receive.
+    struct Probe {
+        on_set_scorer: Action,
+        on_collect: Action,
+        on_batch: Action,
+    }
+
+    fn none() -> Action {
+        Box::new(|_| Ok(()))
+    }
+
+    impl LeafCollector for Probe {
+        fn set_scorer(&mut self, s: &mut dyn Scorable) -> Result<()> {
+            (self.on_set_scorer)(s)
+        }
+
+        fn collect(&mut self, _doc: i32, s: &mut dyn Scorable) -> CollectionResult<()> {
+            (self.on_collect)(s)?;
+            Ok(())
+        }
+
+        fn collect_stream(
+            &mut self,
+            stream: &mut dyn DocIdStream,
+            s: &mut dyn Scorable,
+        ) -> CollectionResult<()> {
+            (self.on_batch)(s)?;
+            stream.for_each(&mut |_doc: i32| Ok(()))
+        }
+
+        fn collect_range(
+            &mut self,
+            _min: i32,
+            _max: i32,
+            s: &mut dyn Scorable,
+        ) -> CollectionResult<()> {
+            (self.on_batch)(s)?;
+            Ok(())
+        }
+    }
+
+    fn probe(on_set_scorer: Action, on_collect: Action, on_batch: Action) -> Box<Probe> {
+        Box::new(Probe {
+            on_set_scorer,
+            on_collect,
+            on_batch,
+        })
+    }
+
+    fn score_action() -> Action {
+        Box::new(|s| s.score().map(|_| ()))
+    }
+
+    fn lift<T>(r: CollectionResult<T>) -> Result<T> {
+        r.map_err(|e| e.into_lucene_error())
+    }
+
+    fn scorer_branch(reader: &Arc<dyn IndexReader>) {
+        let mut plain = IndexSearcher::new(Arc::clone(reader)).unwrap();
+        plain.set_query_cache(None);
+        let ctx = Arc::clone(&plain.get_leaf_contexts()[0]);
+        let max_doc = ctx.leaf_reader().max_doc();
+        let w7 = || term_scorer(&plain, &ctx, "w7");
+        rec(C, "scorer_branch", "is_scorer", || {
+            let mut sc = w7();
+            let seen = Arc::new(Mutex::new((false, false)));
+            let seen2 = Arc::clone(&seen);
+            let mut lc = AssertingLeafCollector::new(
+                probe(
+                    Box::new(move |x| {
+                        let is_scorer = x.as_scorer().is_some();
+                        let is_asserting = x.as_scorer().is_some_and(|s| {
+                            s.class_id() == Some(std::any::TypeId::of::<AssertingScorer<'static>>())
+                        });
+                        *seen2.lock().unwrap() = (is_scorer, is_asserting);
+                        Ok(())
+                    }),
+                    none(),
+                    none(),
+                ),
+                0,
+                max_doc,
+            );
+            lc.set_scorer(&mut ScorerAsScorable::new(&mut *sc))?;
+            let (a, b) = *seen.lock().unwrap();
+            Ok(format!("{a} {b}"))
+        });
+        rec(C, "scorer_branch", "scorable_not_scorer", || {
+            let seen = Arc::new(Mutex::new(false));
+            let seen2 = Arc::clone(&seen);
+            let mut lc = AssertingLeafCollector::new(
+                probe(
+                    Box::new(move |x| {
+                        *seen2.lock().unwrap() = x.as_scorer().is_some();
+                        Ok(())
+                    }),
+                    none(),
+                    none(),
+                ),
+                0,
+                max_doc,
+            );
+            let mut scorable = SimpleScorable::new();
+            scorable.set_score(1.0);
+            lc.set_scorer(&mut scorable)?;
+            let seen = *seen.lock().unwrap();
+            Ok(seen.to_string())
+        });
+        rec(C, "scorer_branch", "unpositioned_score", || {
+            let mut sc = w7();
+            let mut lc =
+                AssertingLeafCollector::new(probe(score_action(), none(), none()), 0, max_doc);
+            lc.set_scorer(&mut ScorerAsScorable::new(&mut *sc))?;
+            Ok("null".to_string())
+        });
+        rec(C, "scorer_branch", "score_in_range", || {
+            let mut sc = w7();
+            sc.iterator().next_doc()?;
+            let mut lc =
+                AssertingLeafCollector::new(probe(none(), none(), score_action()), 0, max_doc);
+            lc.set_scorer(&mut ScorerAsScorable::new(&mut *sc))?;
+            lift(lc.collect_range(0, 5, &mut ScorerAsScorable::new(&mut *sc)))?;
+            Ok("null".to_string())
+        });
+        let score_capture = |cell: &Arc<Mutex<f32>>| -> Action {
+            let cell = Arc::clone(cell);
+            Box::new(move |x| {
+                *cell.lock().unwrap() = x.score()?;
+                Ok(())
+            })
+        };
+        rec(C, "scorer_branch", "score_in_collect", || {
+            let mut sc = w7();
+            let doc = sc.iterator().next_doc()?;
+            let score = Arc::new(Mutex::new(0f32));
+            let mut lc = AssertingLeafCollector::new(
+                probe(none(), score_capture(&score), none()),
+                0,
+                max_doc,
+            );
+            lc.set_scorer(&mut ScorerAsScorable::new(&mut *sc))?;
+            lift(lc.collect(doc, &mut ScorerAsScorable::new(&mut *sc)))?;
+            let score = *score.lock().unwrap();
+            Ok(bits(score))
+        });
+        rec(C, "scorer_branch", "min_competitive_across_calls", || {
+            let mut sc = w7();
+            let doc = sc.iterator().next_doc()?;
+            let mut lc = AssertingLeafCollector::new(
+                probe(
+                    Box::new(|x| x.set_min_competitive_score(1.0)),
+                    Box::new(|x| x.set_min_competitive_score(0.5)),
+                    none(),
+                ),
+                0,
+                max_doc,
+            );
+            lc.set_scorer(&mut ScorerAsScorable::new(&mut *sc))?;
+            lift(lc.collect(doc, &mut ScorerAsScorable::new(&mut *sc)))?;
+            Ok("null".to_string())
+        });
+        rec(
+            C,
+            "scorer_branch",
+            "min_competitive_reset_by_set_scorer",
+            || {
+                let mut sc = w7();
+                let doc = sc.iterator().next_doc()?;
+                let mut lc = AssertingLeafCollector::new(
+                    probe(
+                        none(),
+                        Box::new(|x| x.set_min_competitive_score(1.0)),
+                        none(),
+                    ),
+                    0,
+                    max_doc,
+                );
+                lc.set_scorer(&mut ScorerAsScorable::new(&mut *sc))?;
+                lift(lc.collect(doc, &mut ScorerAsScorable::new(&mut *sc)))?;
+                lc.set_scorer(&mut ScorerAsScorable::new(&mut *sc))?;
+                let doc2 = sc.iterator().next_doc()?;
+                lift(lc.collect(doc2, &mut ScorerAsScorable::new(&mut *sc)))?;
+                Ok(format!("{doc} {doc2}"))
+            },
+        );
+        rec(C, "scorer_branch", "asserting_scorer_unchanged", || {
+            let mut sc = AssertingScorer::wrap(w7(), true, false);
+            sc.iterator().next_doc()?;
+            let mut lc = AssertingLeafCollector::new(
+                probe(
+                    Box::new(|x| x.set_min_competitive_score(1.0)),
+                    none(),
+                    none(),
+                ),
+                0,
+                max_doc,
+            );
+            lc.set_scorer(&mut ScorerAsScorable::new(&mut *sc))?;
+            Ok("null".to_string())
+        });
+        rec(C, "scorer_branch", "asserting_identity", || {
+            let mut sc = AssertingScorer::wrap(w7(), false, false);
+            let doc = sc.iterator().advance(10)?;
+            let mut lc = AssertingLeafCollector::new(
+                probe(
+                    Box::new(move |x| {
+                        x.as_scorer()
+                            .expect("the scorable is a Scorer")
+                            .advance_shallow(doc - 1)
+                            .map(|_| ())
+                    }),
+                    none(),
+                    none(),
+                ),
+                0,
+                max_doc,
+            );
+            lc.set_scorer(&mut ScorerAsScorable::new(&mut *sc))?;
+            Ok("null".to_string())
+        });
+        rec(C, "scorer_branch", "nested", || {
+            let mut sc = w7();
+            let doc = sc.iterator().next_doc()?;
+            let score = Arc::new(Mutex::new(0f32));
+            let inner = AssertingLeafCollector::new(
+                probe(none(), score_capture(&score), none()),
+                0,
+                max_doc,
+            );
+            let mut lc = AssertingLeafCollector::new(Box::new(inner), 0, max_doc);
+            lc.set_scorer(&mut ScorerAsScorable::new(&mut *sc))?;
+            lift(lc.collect(doc, &mut ScorerAsScorable::new(&mut *sc)))?;
+            let score = *score.lock().unwrap();
+            Ok(bits(score))
+        });
+        rec(C, "scorer_branch", "nested_range", || {
+            let mut sc = w7();
+            sc.iterator().next_doc()?;
+            let inner =
+                AssertingLeafCollector::new(probe(none(), none(), score_action()), 0, max_doc);
+            let mut lc = AssertingLeafCollector::new(Box::new(inner), 0, max_doc);
+            lc.set_scorer(&mut ScorerAsScorable::new(&mut *sc))?;
+            lift(lc.collect_range(0, 5, &mut ScorerAsScorable::new(&mut *sc)))?;
+            Ok("null".to_string())
+        });
+        rec(C, "scorer_branch", "search", || {
+            let (mut s, _) = asserting_searcher(41, reader);
+            s.set_query_cache(None);
+            let qs: Vec<Arc<dyn Query>> = vec![
+                term("w7"),
+                should_w1_w2(),
+                Arc::new(ConstantScoreQuery::new(term("w7"))),
+            ];
+            let mut sb = String::new();
+            for q in qs {
+                sb.push_str(&format!("{};", s.search(q, 3)?.total_hits));
+            }
+            Ok(sb)
+        });
+        rec(C, "scorer_branch", "next", next);
+    }
+}
+
 #[test]
 fn search_wrappers_match_lucene() {
     let class = Class::builder("org.apache.lucene.tests.search.TestSearchWrappersScenarios")
@@ -861,6 +1545,7 @@ fn search_wrappers_match_lucene() {
                     rec("ctx", "context", "next", || {
                         Ok(LuceneTestCase::random().next_long().to_string())
                     });
+                    searcher_checks::run();
                 }),
         )
         .build();

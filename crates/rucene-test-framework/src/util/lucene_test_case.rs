@@ -18,8 +18,9 @@
 //! Port of the static environment and randomness API of
 //! `org.apache.lucene.tests.util.LuceneTestCase` (task #338): the
 //! `tests.*`-derived constants every framework class reads, `random()` and
-//! the static helpers built on them. The rules, the index and searcher
-//! factories and the remaining members are ported by later tasks.
+//! the static helpers built on them; and the searcher factory `newSearcher`
+//! with what it calls (task #345, under the sprint's cycle rule). The rules,
+//! the index factories and the remaining members are ported by later tasks.
 
 use std::collections::HashSet;
 use std::fmt::Display;
@@ -40,13 +41,26 @@ use randomizedtesting::jdk::reflect::{quote_member, Class, JavaAnnotation};
 use randomizedtesting::jdk::system;
 use randomizedtesting::junit::Assert;
 use randomizedtesting::{RandomizedContext, RandomizedTest};
-use rucene::search::{Query, QueryCachingPolicy};
+use rucene::index::{
+    CompositeReader, DirectoryReader, IndexReader, LeafReader, LeafReaderContext, MultiReader,
+    ParallelCompositeReader, ParallelLeafReader, QueryTimeout,
+};
+use rucene::search::similarities::Similarity;
+use rucene::search::{
+    Collector, IndexSearcher, IndexSearcherOverrides, LeafReaderContextPartition, LeafSlice, Query,
+    QueryCachingPolicy, ScoreMode, Weight,
+};
 use rucene::store::java_nio_file::{Files, IntoNioPath, Path};
 use rucene::util::BytesRef;
 
 use crate::hamcrest::{Matcher, MatcherAssert};
+use crate::index::{
+    AssertingDirectoryReader, AssertingLeafReader, FieldFilterLeafReader, MergingCodecReader,
+    MergingDirectoryReaderWrapper, MismatchedDirectoryReader, MismatchedLeafReader,
+};
 use crate::jdk::locale::Locale;
 use crate::jdk::{time_zone_available_ids, RUNTIME_VERSION_FEATURE};
+use crate::search::AssertingIndexSearcher;
 use crate::store::Throttling;
 use crate::util::test_rule_mark_failure::TestRuleMarkFailure;
 use crate::util::test_rule_store_class_name::TestRuleStoreClassName;
@@ -1252,5 +1266,846 @@ impl LuceneTestCase {
             Some(path) if Files::is_regular_file(&path, &[]) => Files::read_all_lines(&path),
             _ => exception::throw(ASSERTION_ERROR, "JVM fork arguments are not present."),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The searcher factory (`newSearcher`) and what it calls (`maybeWrapReader`,
+// `wrapReader`, `Concurrency`, the shared executor, the `slices` override),
+// ported in full by task #345 under the sprint's cycle rule.
+// ---------------------------------------------------------------------------
+
+/// Java's `IndexReader` argument of `wrapReader`/`maybeWrapReader`/
+/// `newSearcher`, typed by the run-time classes those methods test with
+/// `instanceof`.
+///
+/// **Divergence.** Java passes an `IndexReader` and tests `instanceof
+/// LeafReader`, `CompositeReader`, `DirectoryReader` and `CodecReader`. An
+/// `Arc<dyn IndexReader>` cannot be narrowed to the other reader traits, so
+/// the caller states the class: a leaf (a `CodecReader` is a leaf whose
+/// [`LeafReader::as_codec_reader`] answers), a `DirectoryReader`, or another
+/// `CompositeReader`. The conversions from each reader trait object build it.
+#[derive(Clone)]
+pub enum TestReader {
+    /// `r instanceof LeafReader`.
+    Leaf(Arc<dyn LeafReader>),
+    /// `r instanceof DirectoryReader` (also a `CompositeReader`).
+    Directory(Arc<dyn DirectoryReader>),
+    /// `r instanceof CompositeReader`, not a `DirectoryReader`.
+    Composite(Arc<dyn CompositeReader>),
+}
+
+impl std::fmt::Debug for TestReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&*self.index_reader(), f)
+    }
+}
+
+impl TestReader {
+    /// The reader as an `IndexReader`.
+    pub fn index_reader(&self) -> Arc<dyn IndexReader> {
+        match self {
+            TestReader::Leaf(r) => Arc::clone(r).as_index_reader(),
+            TestReader::Directory(r) => Arc::clone(r) as Arc<dyn IndexReader>,
+            TestReader::Composite(r) => Arc::clone(r) as Arc<dyn IndexReader>,
+        }
+    }
+
+    /// The reader as a `CompositeReader` (`(CompositeReader) r`), when it is
+    /// one.
+    fn composite(&self) -> Option<Arc<dyn CompositeReader>> {
+        match self {
+            TestReader::Leaf(_) => None,
+            TestReader::Directory(r) => Some(Arc::clone(r) as Arc<dyn CompositeReader>),
+            TestReader::Composite(r) => Some(Arc::clone(r)),
+        }
+    }
+}
+
+impl From<Arc<dyn LeafReader>> for TestReader {
+    fn from(r: Arc<dyn LeafReader>) -> Self {
+        TestReader::Leaf(r)
+    }
+}
+
+impl From<Arc<dyn DirectoryReader>> for TestReader {
+    fn from(r: Arc<dyn DirectoryReader>) -> Self {
+        TestReader::Directory(r)
+    }
+}
+
+impl From<Arc<dyn CompositeReader>> for TestReader {
+    fn from(r: Arc<dyn CompositeReader>) -> Self {
+        TestReader::Composite(r)
+    }
+}
+
+impl From<Arc<MultiReader>> for TestReader {
+    fn from(r: Arc<MultiReader>) -> Self {
+        TestReader::Composite(r)
+    }
+}
+
+/// `LuceneTestCase.Concurrency`: what level of concurrency is supported by the
+/// searcher being created.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Concurrency {
+    /// No concurrency, meaning an executor won't be provided to the searcher.
+    None,
+    /// Inter-segment concurrency, meaning an executor will be provided to the
+    /// searcher and slices will be randomly created to concurrently search
+    /// entire segments.
+    InterSegment,
+    /// Intra-segment concurrency, meaning an executor will be provided to the
+    /// searcher and slices will be randomly created to concurrently search
+    /// segment partitions.
+    IntraSegment,
+}
+
+/// The `ThreadPoolExecutor` of `setUpExecutorService`: `threads` core and
+/// maximum threads, no keep-alive, an unbounded `LinkedBlockingQueue` and a
+/// `NamedThreadFactory("LuceneTestCase")`.
+///
+/// As `ThreadPoolExecutor.execute`, a submitted task starts a new core thread
+/// while fewer than `threads` are running, and is queued otherwise. The
+/// threads are randomizedtesting [`Thread`](randomizedtesting::jdk::thread::Thread)s,
+/// started from the creating thread's group, so that tasks run inside the
+/// test's randomized context as Java's do.
+///
+/// **Divergence.** A task that panics does not end its worker: Java's pool
+/// lets the worker die, reports the exception to the thread's uncaught
+/// exception handler and replaces the worker. The tasks submitted by the
+/// port's `TaskExecutor` (wrapped as Java's `FutureTask`s) catch their own
+/// failures, so the difference is never reached through `newSearcher`.
+pub struct LuceneTestCaseExecutor {
+    shared: Arc<ExecutorShared>,
+    threads: usize,
+    thread_factory: rucene::util::NamedThreadFactory,
+}
+
+struct ExecutorShared {
+    state: std::sync::Mutex<ExecutorState>,
+    /// Signalled when a task is queued or the pool shuts down.
+    work_available: std::sync::Condvar,
+    /// Signalled when a worker exits.
+    terminated: std::sync::Condvar,
+}
+
+struct ExecutorState {
+    queue: std::collections::VecDeque<rucene::search::Command>,
+    shutdown: bool,
+    started: usize,
+    live: usize,
+}
+
+impl std::fmt::Debug for LuceneTestCaseExecutor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LuceneTestCaseExecutor")
+            .field("threads", &self.threads)
+            .finish_non_exhaustive()
+    }
+}
+
+impl LuceneTestCaseExecutor {
+    /// `new ThreadPoolExecutor(threads, threads, 0L, MILLISECONDS, new
+    /// LinkedBlockingQueue<>(), new NamedThreadFactory("LuceneTestCase"))`.
+    pub fn new(threads: usize) -> LuceneTestCaseExecutor {
+        LuceneTestCaseExecutor {
+            shared: Arc::new(ExecutorShared {
+                state: std::sync::Mutex::new(ExecutorState {
+                    queue: std::collections::VecDeque::new(),
+                    shutdown: false,
+                    started: 0,
+                    live: 0,
+                }),
+                work_available: std::sync::Condvar::new(),
+                terminated: std::sync::Condvar::new(),
+            }),
+            threads,
+            thread_factory: rucene::util::NamedThreadFactory::new("LuceneTestCase"),
+        }
+    }
+
+    /// The number of core (and maximum) threads.
+    pub fn threads(&self) -> usize {
+        self.threads
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, ExecutorState> {
+        self.shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The worker loop: the first task, then queued tasks until the pool is
+    /// shut down and the queue is empty.
+    fn run_worker(shared: Arc<ExecutorShared>, first: rucene::search::Command) {
+        let mut task = Some(first);
+        loop {
+            if let Some(command) = task.take() {
+                // A panicking task does not end the worker: ThreadPoolExecutor
+                // replaces a worker whose task throws, which is equivalent here.
+                let _ = catch_unwind(AssertUnwindSafe(command));
+            }
+            let mut state = shared
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            loop {
+                if let Some(next) = state.queue.pop_front() {
+                    task = Some(next);
+                    break;
+                }
+                if state.shutdown {
+                    state.live -= 1;
+                    shared.terminated.notify_all();
+                    return;
+                }
+                state = shared
+                    .work_available
+                    .wait(state)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+        }
+    }
+}
+
+impl rucene::search::Executor for LuceneTestCaseExecutor {
+    fn execute(
+        &self,
+        command: rucene::search::Command,
+    ) -> std::result::Result<(), rucene::search::RejectedExecutionException> {
+        let mut state = self.lock();
+        if state.shutdown {
+            return Err(rucene::search::RejectedExecutionException {
+                command,
+                // `"Task " + r + " rejected from " + executor`: neither has a
+                // string form here.
+                message: "Task <task> rejected from <LuceneTestCase executor>".to_string(),
+            });
+        }
+        if state.started < self.threads {
+            state.started += 1;
+            state.live += 1;
+            drop(state);
+            let shared = Arc::clone(&self.shared);
+            let name = self.thread_factory.next_thread_name();
+            randomizedtesting::jdk::thread::Thread::new(name, move || {
+                Self::run_worker(shared, command)
+            })
+            .start();
+        } else {
+            state.queue.push_back(command);
+            drop(state);
+            self.shared.work_available.notify_one();
+        }
+        Ok(())
+    }
+}
+
+impl crate::jdk::executor_service::ExecutorService for LuceneTestCaseExecutor {
+    fn shutdown(&self) {
+        self.lock().shutdown = true;
+        self.shared.work_available.notify_all();
+    }
+
+    fn await_termination(
+        &self,
+        timeout: std::time::Duration,
+    ) -> std::result::Result<bool, rucene::util::InterruptedException> {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut state = self.lock();
+        while state.live != 0 {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return Ok(false);
+            }
+            state = self
+                .shared
+                .terminated
+                .wait_timeout(state, deadline - now)
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
+        }
+        Ok(true)
+    }
+}
+
+/// `LuceneTestCase.executor`, set by `setUpExecutorService` and cleared by
+/// `shutdownExecutorService`.
+static EXECUTOR: std::sync::Mutex<Option<Arc<LuceneTestCaseExecutor>>> =
+    std::sync::Mutex::new(None);
+
+/// `classEnvRule.similarity`: the similarity `TestRuleSetupAndRestoreClassEnv`
+/// draws for the class (`new AssertingSimilarity(new
+/// RandomSimilarity(random()))`), which `newSearcher` installs.
+///
+/// **Divergence (pending task #348).** The rule's `before()`, which draws it
+/// after the codec, locale and time zone of the class, is ported by task
+/// #348; until then the class sets it with
+/// [`LuceneTestCase::set_class_env_similarity`].
+static CLASS_ENV_SIMILARITY: std::sync::Mutex<Option<Arc<dyn Similarity>>> =
+    std::sync::Mutex::new(None);
+
+/// The anonymous subclasses of `IndexSearcher` and `AssertingIndexSearcher`
+/// that `newSearcher` builds with an executor: `slices(leaves)` returns
+/// `LuceneTestCase.slices(leaves, maxDocPerSlice, maxSegmentsPerSlice,
+/// concurrency)`; every other method is the superclass's.
+#[derive(Debug)]
+pub struct NewSearcherSlices {
+    /// The superclass's overrides: `AssertingIndexSearcher`'s, or none for an
+    /// `IndexSearcher`.
+    parent: Option<Arc<dyn IndexSearcherOverrides>>,
+    max_doc_per_slice: i32,
+    max_segments_per_slice: i32,
+    concurrency: Concurrency,
+}
+
+impl IndexSearcherOverrides for NewSearcherSlices {
+    fn create_weight(
+        &self,
+        searcher: &IndexSearcher,
+        query: Arc<dyn Query>,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> rucene::error::Result<Arc<dyn Weight>> {
+        match &self.parent {
+            Some(parent) => parent.create_weight(searcher, query, score_mode, boost),
+            None => searcher.super_create_weight(query, score_mode, boost),
+        }
+    }
+
+    fn rewrite(
+        &self,
+        searcher: &IndexSearcher,
+        original: Arc<dyn Query>,
+    ) -> rucene::error::Result<Arc<dyn Query>> {
+        match &self.parent {
+            Some(parent) => parent.rewrite(searcher, original),
+            None => searcher.super_rewrite(original),
+        }
+    }
+
+    fn search_partitions(
+        &self,
+        searcher: &IndexSearcher,
+        partitions: &[LeafReaderContextPartition],
+        weight: &Arc<dyn Weight>,
+        collector: &mut dyn Collector,
+    ) -> rucene::error::Result<()> {
+        match &self.parent {
+            Some(parent) => parent.search_partitions(searcher, partitions, weight, collector),
+            None => searcher.super_search_partitions(partitions, weight, collector),
+        }
+    }
+
+    fn search_leaf(
+        &self,
+        searcher: &IndexSearcher,
+        ctx: &Arc<LeafReaderContext>,
+        min_doc_id: i32,
+        max_doc_id: i32,
+        weight: &Arc<dyn Weight>,
+        collector: &mut dyn Collector,
+    ) -> rucene::error::Result<()> {
+        match &self.parent {
+            Some(parent) => {
+                parent.search_leaf(searcher, ctx, min_doc_id, max_doc_id, weight, collector)
+            }
+            None => searcher.super_search_leaf(ctx, min_doc_id, max_doc_id, weight, collector),
+        }
+    }
+
+    fn slices(
+        &self,
+        _searcher: &IndexSearcher,
+        leaves: &[Arc<LeafReaderContext>],
+    ) -> rucene::error::Result<Vec<LeafSlice>> {
+        LuceneTestCase::slices(
+            leaves,
+            self.max_doc_per_slice,
+            self.max_segments_per_slice,
+            self.concurrency,
+        )
+    }
+
+    fn fmt(&self, searcher: &IndexSearcher, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.parent {
+            Some(parent) => IndexSearcherOverrides::fmt(&**parent, searcher, f),
+            None => searcher.super_fmt(f),
+        }
+    }
+}
+
+impl NewSearcherSlices {
+    /// The `concurrency` argument of `newSearcher`.
+    pub fn concurrency(&self) -> Concurrency {
+        self.concurrency
+    }
+
+    /// `maxDocPerSlice`.
+    pub fn max_doc_per_slice(&self) -> i32 {
+        self.max_doc_per_slice
+    }
+
+    /// `maxSegmentsPerSlice`.
+    pub fn max_segments_per_slice(&self) -> i32 {
+        self.max_segments_per_slice
+    }
+}
+
+/// The `QueryTimeout` `() -> false` that `newSearcher` sometimes installs.
+#[derive(Debug)]
+pub struct NeverTimeout;
+
+impl QueryTimeout for NeverTimeout {
+    fn should_exit(&self) -> bool {
+        false
+    }
+}
+
+impl LuceneTestCase {
+    /// `setUpExecutorService()` (`@BeforeClass`): creates the shared executor
+    /// with `TestUtil.nextInt(random(), 1, 2)` threads.
+    pub fn set_up_executor_service() {
+        let threads = TestUtil::next_int(&*Self::random(), 1, 2);
+        let executor = Arc::new(LuceneTestCaseExecutor::new(threads as usize));
+        if *VERBOSE {
+            println!("NOTE: Created shared ExecutorService with {threads} threads");
+        }
+        *EXECUTOR
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(executor);
+    }
+
+    /// `shutdownExecutorService()` (`@AfterClass`).
+    pub fn shutdown_executor_service() {
+        let executor = EXECUTOR
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        TestUtil::shutdown_executor_service(
+            executor
+                .as_deref()
+                .map(|e| e as &dyn crate::jdk::executor_service::ExecutorService),
+        );
+    }
+
+    /// The shared executor, when `setUpExecutorService` created it.
+    pub fn executor() -> Option<Arc<LuceneTestCaseExecutor>> {
+        EXECUTOR
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// `classEnvRule.similarity`: the similarity `TestRuleSetupAndRestoreClassEnv`
+    /// draws for the class, which `newSearcher` installs.
+    ///
+    /// **Divergence (pending task #348).** The rule's `before()` is ported by
+    /// task #348; until then the class sets it with
+    /// [`set_class_env_similarity`](Self::set_class_env_similarity).
+    ///
+    /// # Panics
+    ///
+    /// When the class environment has not set it.
+    pub fn class_env_similarity() -> Arc<dyn Similarity> {
+        CLASS_ENV_SIMILARITY
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .expect(
+                "classEnvRule.similarity is set by TestRuleSetupAndRestoreClassEnv.before() \
+                 (task #348); set it with LuceneTestCase::set_class_env_similarity",
+            )
+    }
+
+    /// Sets `classEnvRule.similarity` (see
+    /// [`class_env_similarity`](Self::class_env_similarity)).
+    pub fn set_class_env_similarity(similarity: Option<Arc<dyn Similarity>>) {
+        *CLASS_ENV_SIMILARITY
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = similarity;
+    }
+
+    /// `wrapReader(r)`: wraps the reader one to six times, each time with a
+    /// random choice of `ParallelLeafReader`/`ParallelCompositeReader`, a
+    /// `ParallelLeafReader` over two complementary `FieldFilterLeafReader`s,
+    /// `AssertingLeafReader`/`AssertingDirectoryReader`,
+    /// `MismatchedLeafReader`/`MismatchedDirectoryReader`, or
+    /// `MergingCodecReader`/`MergingDirectoryReaderWrapper`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the wrappers' construction errors.
+    pub fn wrap_reader(r: TestReader) -> rucene::error::Result<TestReader> {
+        let random = Self::random();
+        let mut r = r;
+
+        let c = random.next_int_bound(6) + 1;
+        for _ in 0..c {
+            match random.next_int_bound(5) {
+                0 => {
+                    // will create no FC insanity in atomic case, as ParallelLeafReader has own
+                    // cache key:
+                    if *VERBOSE {
+                        println!(
+                            "NOTE: LuceneTestCase.wrapReader: wrapping previous reader={r:?} \
+                             with ParallelLeaf/CompositeReader"
+                        );
+                    }
+                    r =
+                        match r.composite() {
+                            None => {
+                                let TestReader::Leaf(leaf) = r else {
+                                    unreachable!("a reader that is not composite is a leaf")
+                                };
+                                TestReader::Leaf(Arc::new(ParallelLeafReader::new(vec![leaf])?))
+                            }
+                            Some(composite) => TestReader::Composite(Arc::new(
+                                ParallelCompositeReader::new(vec![composite])?,
+                            )),
+                        };
+                }
+                1 => {
+                    if let TestReader::Leaf(ar) = &r {
+                        let mut all_fields: Vec<String> = ar
+                            .get_field_infos()
+                            .iter()
+                            .map(|fi| fi.name.clone())
+                            .collect();
+                        randomizedtesting::jdk::util::shuffle(&mut all_fields, &*random);
+                        let end = if all_fields.is_empty() {
+                            0
+                        } else {
+                            random.next_int_bound(all_fields.len() as i32) as usize
+                        };
+                        let fields: HashSet<String> = all_fields[..end].iter().cloned().collect();
+                        // will create no FC insanity as ParallelLeafReader has own cache key:
+                        if *VERBOSE {
+                            println!(
+                                "NOTE: LuceneTestCase.wrapReader: wrapping previous reader={r:?} \
+                                 with ParallelLeafReader"
+                            );
+                        }
+                        let kept: Arc<dyn LeafReader> = Arc::new(FieldFilterLeafReader::new(
+                            Arc::clone(ar),
+                            fields.iter().cloned(),
+                            false,
+                        )?);
+                        let negated: Arc<dyn LeafReader> = Arc::new(FieldFilterLeafReader::new(
+                            Arc::clone(ar),
+                            fields.iter().cloned(),
+                            true,
+                        )?);
+                        r = TestReader::Leaf(Arc::new(ParallelLeafReader::new(vec![
+                            kept, negated,
+                        ])?));
+                    }
+                }
+                2 => {
+                    // Häckidy-Hick-Hack: a standard Reader will cause FC insanity, so we use
+                    // QueryUtils' reader with a fake cache key, so insanity checker cannot walk
+                    // along our reader:
+                    if *VERBOSE {
+                        println!(
+                            "NOTE: LuceneTestCase.wrapReader: wrapping previous reader={r:?} \
+                             with AssertingLeaf/DirectoryReader"
+                        );
+                    }
+                    match &r {
+                        TestReader::Leaf(leaf) => {
+                            r = TestReader::Leaf(Arc::new(AssertingLeafReader::new(Arc::clone(
+                                leaf,
+                            ))?));
+                        }
+                        TestReader::Directory(dr) => {
+                            r = TestReader::Directory(Arc::new(AssertingDirectoryReader::new(
+                                Arc::clone(dr),
+                            )?));
+                        }
+                        TestReader::Composite(_) => {}
+                    }
+                }
+                3 => {
+                    if *VERBOSE {
+                        println!(
+                            "NOTE: LuceneTestCase.wrapReader: wrapping previous reader={r:?} \
+                             with MismatchedLeaf/Directory/CodecReader"
+                        );
+                    }
+                    // `r instanceof CodecReader` is never reached: a CodecReader is a
+                    // LeafReader, which the first branch takes.
+                    match &r {
+                        TestReader::Leaf(leaf) => {
+                            r = TestReader::Leaf(Arc::new(MismatchedLeafReader::new(
+                                Arc::clone(leaf),
+                                &*random,
+                            )?));
+                        }
+                        TestReader::Directory(dr) => {
+                            r = TestReader::Directory(Arc::new(MismatchedDirectoryReader::new(
+                                Arc::clone(dr),
+                                Arc::clone(&random),
+                            )?));
+                        }
+                        TestReader::Composite(_) => {}
+                    }
+                }
+                4 => {
+                    if *VERBOSE {
+                        println!(
+                            "NOTE: LuceneTestCase.wrapReader: wrapping previous reader={r:?} \
+                             with MergingCodecReader"
+                        );
+                    }
+                    match &r {
+                        TestReader::Leaf(leaf) => {
+                            if let Some(codec) = Arc::clone(leaf).as_codec_reader() {
+                                r = TestReader::Leaf(Arc::new(MergingCodecReader::new(codec)));
+                            }
+                        }
+                        TestReader::Directory(dr) => {
+                            let mut all_leaves_are_codec_readers = true;
+                            for ctx in r.index_reader().leaves()? {
+                                if ctx.leaf_reader().as_codec_reader().is_none() {
+                                    all_leaves_are_codec_readers = false;
+                                    break;
+                                }
+                            }
+                            if all_leaves_are_codec_readers {
+                                r = TestReader::Directory(Arc::new(
+                                    MergingDirectoryReaderWrapper::new(Arc::clone(dr))?,
+                                ));
+                            }
+                        }
+                        TestReader::Composite(_) => {}
+                    }
+                }
+                _ => Assert::fail("should not get here"),
+            }
+        }
+
+        if *VERBOSE {
+            println!("wrapReader wrapped: {r:?}");
+        }
+
+        Ok(r)
+    }
+
+    /// `maybeWrapReader(r)`: sometimes (`rarely()`) wraps the reader with
+    /// [`wrap_reader`](Self::wrap_reader).
+    ///
+    /// # Errors
+    ///
+    /// As [`wrap_reader`](Self::wrap_reader).
+    pub fn maybe_wrap_reader(r: TestReader) -> rucene::error::Result<TestReader> {
+        if Self::rarely() {
+            return Self::wrap_reader(r);
+        }
+        Ok(r)
+    }
+
+    /// `newSearcher(r)`: `newSearcher(r, true)`.
+    pub fn new_searcher(r: impl Into<TestReader>) -> IndexSearcher {
+        Self::new_searcher_wrap(r, true)
+    }
+
+    /// `newSearcher(r, maybeWrap)`: `newSearcher(r, maybeWrap, true)`.
+    pub fn new_searcher_wrap(r: impl Into<TestReader>, maybe_wrap: bool) -> IndexSearcher {
+        Self::new_searcher_assert(r, maybe_wrap, true)
+    }
+
+    /// `newSearcher(r, maybeWrap, wrapWithAssertions)`: with threads when
+    /// `randomBoolean()`.
+    pub fn new_searcher_assert(
+        r: impl Into<TestReader>,
+        maybe_wrap: bool,
+        wrap_with_assertions: bool,
+    ) -> IndexSearcher {
+        Self::new_searcher_threads(
+            r,
+            maybe_wrap,
+            wrap_with_assertions,
+            RandomizedTest::random_boolean(),
+        )
+    }
+
+    /// `newSearcher(r, maybeWrap, wrapWithAssertions, useThreads)`:
+    /// `Concurrency.INTRA_SEGMENT` with threads, `Concurrency.NONE` without.
+    pub fn new_searcher_threads(
+        r: impl Into<TestReader>,
+        maybe_wrap: bool,
+        wrap_with_assertions: bool,
+        use_threads: bool,
+    ) -> IndexSearcher {
+        let concurrency = if use_threads {
+            Concurrency::IntraSegment
+        } else {
+            Concurrency::None
+        };
+        Self::new_searcher_concurrency(r, maybe_wrap, wrap_with_assertions, concurrency)
+    }
+
+    /// `newSearcher(r, maybeWrap, wrapWithAssertions, concurrency)`: a
+    /// searcher, an `AssertingIndexSearcher` when `wrapWithAssertions` and a
+    /// coin says so, over the reader (maybe wrapped, without concurrency),
+    /// with the class similarity; with concurrency, maybe the shared
+    /// executor, random slices, `MAYBE_CACHE_POLICY` and maybe a timeout that
+    /// never expires.
+    ///
+    /// # Panics
+    ///
+    /// As Java (`Rethrow.rethrow`), the I/O errors of wrapping, checking or
+    /// opening the reader.
+    pub fn new_searcher_concurrency(
+        r: impl Into<TestReader>,
+        maybe_wrap: bool,
+        wrap_with_assertions: bool,
+        concurrency: Concurrency,
+    ) -> IndexSearcher {
+        let random = Self::random();
+        let mut r: TestReader = r.into();
+        let rethrow = |e: rucene::error::LuceneError| -> ! {
+            panic!("{e}");
+        };
+        if concurrency == Concurrency::None {
+            if maybe_wrap {
+                r = Self::maybe_wrap_reader(r).unwrap_or_else(|e| rethrow(e));
+            }
+            // TODO: this whole check is a coverage hack, we should move it to tests for various
+            // filterreaders.
+            // ultimately whatever you do will be checkIndex'd at the end anyway.
+            if random.next_int_bound(500) == 0 && matches!(r, TestReader::Leaf(_)) {
+                // TODO: not useful to check DirectoryReader (redundant with checkindex)
+                // but maybe sometimes run this on the other crazy readers maybeWrapReader creates?
+                TestUtil::check_reader(&r.index_reader()).unwrap_or_else(|e| rethrow(e));
+            }
+            let reader = r.index_reader();
+            let mut ret = if wrap_with_assertions {
+                if random.next_boolean() {
+                    AssertingIndexSearcher::new(&*random, reader)
+                } else {
+                    Arc::clone(&reader)
+                        .get_context()
+                        .and_then(|context| AssertingIndexSearcher::from_context(&*random, context))
+                }
+            } else if random.next_boolean() {
+                IndexSearcher::new(reader)
+            } else {
+                Arc::clone(&reader)
+                    .get_context()
+                    .and_then(|context| IndexSearcher::from_context(context, None))
+            }
+            .unwrap_or_else(|e| rethrow(e));
+            ret.set_similarity(Self::class_env_similarity());
+            ret
+        } else {
+            let ex: Option<Arc<dyn rucene::search::Executor>> = if random.next_boolean() {
+                None
+            } else {
+                if *VERBOSE {
+                    println!("NOTE: newSearcher using shared ExecutorService");
+                }
+                Self::executor().map(|e| e as Arc<dyn rucene::search::Executor>)
+            };
+            let max_doc_per_slice = if random.next_boolean() {
+                1
+            } else {
+                1 + random.next_int_bound(1000)
+            };
+            let max_segments_per_slice = if random.next_boolean() {
+                1
+            } else {
+                1 + random.next_int_bound(10)
+            };
+            let reader = r.index_reader();
+            let mut ret = if wrap_with_assertions {
+                if random.next_boolean() {
+                    AssertingIndexSearcher::with_executor(&*random, reader, ex)
+                } else {
+                    Arc::clone(&reader).get_context().and_then(|context| {
+                        AssertingIndexSearcher::from_context_with_executor(&*random, context, ex)
+                    })
+                }
+            } else {
+                IndexSearcher::with_executor(reader, ex)
+            }
+            .unwrap_or_else(|e| rethrow(e));
+            let parent = ret.get_overrides().cloned();
+            ret.set_overrides(Arc::new(NewSearcherSlices {
+                parent,
+                max_doc_per_slice,
+                max_segments_per_slice,
+                concurrency,
+            }));
+            ret.set_similarity(Self::class_env_similarity());
+            ret.set_query_caching_policy(Arc::clone(&MAYBE_CACHE_POLICY));
+            if Self::random().next_boolean() {
+                ret.set_timeout(Some(Arc::new(NeverTimeout)));
+            }
+            ret
+        }
+    }
+
+    /// The private `slices(leaves, maxDocsPerSlice, maxSegmentsPerSlice,
+    /// concurrency)`: leaf slices according to the concurrency argument, that
+    /// optionally leverage intra-segment concurrency by splitting segments
+    /// into multiple partitions according to `maxDocsPerSlice`.
+    ///
+    /// # Errors
+    ///
+    /// As [`IndexSearcher::compute_slices`].
+    fn slices(
+        leaves: &[Arc<LeafReaderContext>],
+        max_docs_per_slice: i32,
+        max_segments_per_slice: i32,
+        concurrency: Concurrency,
+    ) -> rucene::error::Result<Vec<LeafSlice>> {
+        exception::java_assert_no_message(concurrency != Concurrency::None);
+        // Rarely test slices without partitions even though intra-segment concurrency is supported
+        IndexSearcher::compute_slices(
+            leaves,
+            max_docs_per_slice,
+            max_segments_per_slice as usize,
+            concurrency == Concurrency::IntraSegment && RandomizedTest::frequently(),
+        )
+    }
+}
+
+#[cfg(test)]
+mod executor_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use rucene::search::Executor;
+
+    use super::LuceneTestCaseExecutor;
+    use crate::jdk::executor_service::ExecutorService;
+
+    /// The pool runs every submitted task on at most `threads` workers,
+    /// terminates after `shutdown`, and rejects (handing the command back)
+    /// once shut down.
+    #[test]
+    fn runs_tasks_then_terminates_and_rejects() {
+        let executor = LuceneTestCaseExecutor::new(2);
+        let done = Arc::new(AtomicUsize::new(0));
+        for _ in 0..50 {
+            let done = Arc::clone(&done);
+            executor
+                .execute(Box::new(move || {
+                    done.fetch_add(1, Ordering::SeqCst);
+                }))
+                .unwrap();
+        }
+        assert!(executor.lock().started <= 2);
+        ExecutorService::shutdown(&executor);
+        assert!(executor.await_termination(Duration::from_secs(30)).unwrap());
+        assert_eq!(done.load(Ordering::SeqCst), 50);
+        let rejected = executor.execute(Box::new(|| {})).unwrap_err();
+        assert!(rejected.message.starts_with("Task "));
+        (rejected.command)();
     }
 }

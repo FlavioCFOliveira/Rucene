@@ -12,7 +12,7 @@ use crate::search::collector::LeafCollector;
 use crate::search::disi_wrapper::DisiWrapper;
 use crate::search::index_priority_queue::{IndexOrder, IndexPriorityQueue};
 use crate::search::scorable::SimpleScorable;
-use crate::search::scorer::Scorer;
+use crate::search::scorer::{Scorer, ScorerAsScorable};
 use crate::search::scorer_util::ScorerUtil;
 use crate::util::{Bits, FixedBitSet};
 
@@ -417,10 +417,10 @@ impl BooleanScorer {
         if doc < window_min {
             doc = self.wrappers[w].iterator().advance(window_min)?;
         }
-        collector.set_scorer(self.wrappers[w].scorable())?;
+        collector.set_scorer(&mut ScorerAsScorable::new(self.wrappers[w].scorer()))?;
         while doc < end {
             if accept_docs.is_none_or(|bits| bits.get(doc as usize)) {
-                collector.collect(doc, self.wrappers[w].scorable())?;
+                collector.collect(doc, &mut ScorerAsScorable::new(self.wrappers[w].scorer()))?;
             }
             doc = self.wrappers[w].iterator().next_doc()?;
         }

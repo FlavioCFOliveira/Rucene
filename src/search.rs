@@ -467,7 +467,8 @@ pub use score_caching_wrapping_scorer::{
 pub use score_doc::ScoreDoc;
 pub use score_mode::ScoreMode;
 pub use scorer::{
-    into_scorer_iterator, FilterScorer, Scorer, ScorerAsIterator, ScorerAsTwoPhaseIterator,
+    into_scorer_iterator, FilterScorer, Scorer, ScorerAsIterator, ScorerAsScorable,
+    ScorerAsTwoPhaseIterator,
 };
 pub use scorer_supplier::ScorerSupplier;
 pub use scorer_util::{DocAndScoreAccBuffer, FilterBits, LikelyLiveDocs, ScorerUtil};

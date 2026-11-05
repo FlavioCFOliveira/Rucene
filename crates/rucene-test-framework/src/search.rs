@@ -30,6 +30,7 @@ pub mod asserting_scorer;
 pub mod asserting_weight;
 pub mod block_score_query_wrapper;
 pub mod bulk_scorer_wrapper_scorer;
+pub mod check_hits;
 pub mod disabling_bulk_scorer_query;
 pub mod dummy_total_hit_count_collector;
 pub mod fixed_bit_set_collector;
@@ -46,11 +47,14 @@ pub use asserting_leaf_collector::AssertingLeafCollector;
 pub use asserting_matches::AssertingMatches;
 pub use asserting_matches_iterator::AssertingMatchesIterator;
 pub use asserting_query::AssertingQuery;
-pub use asserting_scorable::AssertingScorable;
+pub use asserting_scorable::{AssertingScorable, WrappedScorable};
 pub use asserting_scorer::{AssertingScorer, IteratorState};
 pub use asserting_weight::AssertingWeight;
 pub use block_score_query_wrapper::BlockScoreQueryWrapper;
 pub use bulk_scorer_wrapper_scorer::BulkScorerWrapperScorer;
+pub use check_hits::{
+    CheckHits, ExplanationAsserter, ExplanationAssertingSearcher, MatchesAsserter, SetCollector,
+};
 pub use disabling_bulk_scorer_query::DisablingBulkScorerQuery;
 pub use dummy_total_hit_count_collector::{
     DummyTotalHitCountCollector, DummyTotalHitCountCollectorManager,

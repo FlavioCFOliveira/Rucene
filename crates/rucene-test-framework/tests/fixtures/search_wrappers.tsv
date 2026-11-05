@@ -836,3 +836,227 @@ sim	random123456789	f5	ok	DFR I(F)L2
 sim	random123456789	toString	ok	RandomSimilarity(queryNorm=true): {tv=DFR I(F)L1, p_int=IB LL-L3(800.0), dv_num=DFR I(F)LZ(0.3), f0=DFR I(ne)L3(800.0), f1=DFR I(n)LZ(0.3), id=DFR I(ne)L2, f2=DFR I(n)L3(800.0), body=F1EXP, f3=DFR GB2, f4=DFR I(F)LZ(0.3), f5=DFR I(F)L2}
 sim	random123456789	next	ok	1687937037493770139
 sim	asserting	toString	ok	Asserting(BM25(k1=1.2,b=0.75))
+nocfs	new_searcher	plain0	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	plain1	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	plain2	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=true maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	plain3	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=true maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	plain4	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	plain5	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	plain6	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=true maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	plain7	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=true maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	plain8	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	plain9	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	plain10	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	plain11	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=true maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	no_wrap0	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	no_assert0	ok	plain same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	inter0	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	intra0	ok	plain same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	none0	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	no_wrap1	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	no_assert1	ok	plain same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	inter1	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=true maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	intra1	ok	plain same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	none1	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	no_wrap2	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	no_assert2	ok	plain same leaves=3 maxDoc=310 numDocs=309 timeout=true maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	inter2	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=true maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	intra2	ok	plain same leaves=3 maxDoc=310 numDocs=309 timeout=true maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	none2	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	no_wrap3	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	no_assert3	ok	plain same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	inter3	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	intra3	ok	plain same leaves=3 maxDoc=310 numDocs=309 timeout=true maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	none3	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	next	ok	1882806726941124786
+nocfs	wrap_reader	directory0	ok	composite leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	leaf0	ok	leaf leaves=1 maxDoc=150 numDocs=150 w7=14
+nocfs	wrap_reader	directory1	ok	composite leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	leaf1	ok	leaf leaves=1 maxDoc=150 numDocs=150 w7=14
+nocfs	wrap_reader	directory2	ok	composite leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	leaf2	ok	leaf leaves=1 maxDoc=150 numDocs=150 w7=14
+nocfs	wrap_reader	directory3	ok	composite leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	leaf3	ok	leaf leaves=1 maxDoc=150 numDocs=150 w7=14
+nocfs	wrap_reader	directory4	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	leaf4	ok	leaf leaves=1 maxDoc=150 numDocs=150 w7=14
+nocfs	wrap_reader	directory5	ok	composite leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	leaf5	ok	leaf leaves=1 maxDoc=150 numDocs=150 w7=14
+nocfs	wrap_reader	directory6	ok	composite leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	leaf6	ok	leaf leaves=1 maxDoc=150 numDocs=150 w7=14
+nocfs	wrap_reader	directory7	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	leaf7	ok	leaf leaves=1 maxDoc=150 numDocs=150 w7=14
+nocfs	wrap_reader	directory8	ok	composite leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	leaf8	ok	leaf leaves=1 maxDoc=150 numDocs=150 w7=14
+nocfs	wrap_reader	directory9	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	leaf9	ok	leaf leaves=1 maxDoc=150 numDocs=150 w7=14
+nocfs	wrap_reader	maybe0	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe1	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe2	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe3	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe4	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe5	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe6	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe7	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe8	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe9	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe10	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe11	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe12	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe13	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe14	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe15	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe16	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe17	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe18	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe19	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	next	ok	-902774450806835151
+nocfs	qu_check	term	ok	pass
+nocfs	qu_check	term/next	ok	-5421417846664176405
+nocfs	qu_check	should	ok	pass
+nocfs	qu_check	should/next	ok	-4013672400767132450
+nocfs	qu_check	must_should	ok	pass
+nocfs	qu_check	must_should/next	ok	-2687358463040063112
+nocfs	qu_check	must_filter	ok	pass
+nocfs	qu_check	must_filter/next	ok	6582798577213824741
+nocfs	qu_check	should_not	ok	pass
+nocfs	qu_check	should_not/next	ok	-972665041469751218
+nocfs	qu_check	phrase	ok	pass
+nocfs	qu_check	phrase/next	ok	-2838766412589483319
+nocfs	qu_check	prefix	ok	pass
+nocfs	qu_check	prefix/next	ok	-5525817708371752241
+nocfs	qu_check	wildcard	ok	pass
+nocfs	qu_check	wildcard/next	ok	-2164996932202953902
+nocfs	qu_check	point_range	ok	pass
+nocfs	qu_check	point_range/next	ok	-2166460434984409361
+nocfs	qu_check	exists	err	java.lang.AssertionError	query collected 51 but advance(50) got to 50 expected:<51> but was:<50>
+nocfs	qu_check	exists/next	ok	-6028560556305669696
+nocfs	qu_check	constant	ok	pass
+nocfs	qu_check	constant/next	ok	8469228098842297918
+nocfs	qu_check	boost	ok	pass
+nocfs	qu_check	boost/next	ok	-7739511957399525051
+nocfs	qu_check	dismax	ok	pass
+nocfs	qu_check	dismax/next	ok	-924975933260027452
+nocfs	qu_check	all	err	java.lang.AssertionError	query collected 51 but advance(50) got to 50 expected:<51> but was:<50>
+nocfs	qu_check	all/next	ok	2729367417937755850
+nocfs	qu_check	none	ok	pass
+nocfs	qu_check	none/next	ok	-973911806537903113
+nocfs	qu_check	knn	err	java.lang.AssertionError	query's last doc was 65 but advance(66) got to 99
+nocfs	qu_check	knn/next	ok	8512836842361142337
+nocfs	qu_check	asserting	ok	pass
+nocfs	qu_check	asserting/next	ok	-1410437360590161524
+nocfs	qu_check	random_approx	ok	pass
+nocfs	qu_check	random_approx/next	ok	3113063630184228444
+nocfs	qu_check	block_score	ok	pass
+nocfs	qu_check	block_score/next	ok	-6276153101170789410
+nocfs	qu_check	disabling_bulk	err	java.lang.NullPointerException	Cannot invoke "org.apache.lucene.search.ScorerSupplier.get(long)" because "this.val$scorerSupplier" is null
+nocfs	qu_check	disabling_bulk/next	ok	3893544209719391853
+nocfs	qu_check	null_searcher	ok	pass
+nocfs	check_hits	hit_collector	ok	pass
+nocfs	check_hits	hit_collector/next	ok	-4557066722824285629
+nocfs	check_hits	hit_collector_wrong	err	java.lang.AssertionError	Simple: w7 expected:<[0, 7, 34, 41, 48, 55, 76, 87, 93, 100, 107, 112, 119, 127, 177, 220, 227, 263, 276, 283, 290, 297, 309]> but was:<[0, 7, 34, 41, 48, 55, 76, 87, 93, 100, 107, 112, 119, 127, 177, 220, 227, 263, 276, 283, 290, 297]>
+nocfs	check_hits	hits	ok	pass
+nocfs	check_hits	hits/next	ok	-2507566549822600913
+nocfs	check_hits	hits_wrong	err	java.lang.AssertionError	w7 expected:<[0, 7, 34, 41, 48, 55, 76, 87, 93, 100, 107, 112, 119, 127, 177, 220, 227, 263, 276, 283, 290, 297, 309]> but was:<[0, 7, 34, 41, 48, 55, 76, 87, 93, 100, 107, 112, 119, 127, 177, 220, 227, 263, 276, 283, 290, 297]>
+nocfs	check_hits	doc_ids	ok	pass
+nocfs	check_hits	doc_ids_count	err	java.lang.AssertionError	m nr of hits expected:<10> but was:<1>
+nocfs	check_hits	doc_ids_order	err	java.lang.AssertionError	m doc nrs for hit 0 expected:<244> but was:<201>
+nocfs	check_hits	hits_query	ok	pass
+nocfs	check_hits	equal_score	err	java.lang.AssertionError	Hit 2, doc nrs 251 and 251\nunequal       : 2.0453794\n           and: 2.0463793\nfor query:body:w1 body:w2
+nocfs	check_hits	equal_length	err	java.lang.AssertionError	Unequal lengths: hits1=10,hits2=1
+nocfs	check_hits	equal_doc	err	java.lang.AssertionError	Hit 1 docnumbers don't match\nHits length1=10\tlength2=10\nhit=0: doc201=2.2547655 shardIndex=-1,\t doc201=2.2547655 shardIndex=-1\nhit=1: doc244=2.0453794 shardIndex=-1,\t doc245=2.0453794 shardIndex=-1\nhit=2: doc251=2.0453794 shardIndex=-1,\t doc251=2.0453794 shardIndex=-1\nhit=3: doc15=1.8715776 shardIndex=-1,\t doc15=1.8715776 shardIndex=-1\nhit=4: doc22=1.8715776 shardIndex=-1,\t doc22=1.8715776 shardIndex=-1\nhit=5: doc29=1.8715776 shardIndex=-1,\t doc29=1.8715776 shardIndex=-1\nhit=6: doc58=1.7249993 shardIndex=-1,\t doc58=1.7249993 shardIndex=-1\nhit=7: doc65=1.7249993 shardIndex=-1,\t doc65=1.7249993 shardIndex=-1\nhit=8: doc71=1.7249993 shardIndex=-1,\t doc71=1.7249993 shardIndex=-1\nhit=9: doc271=1.7249993 shardIndex=-1,\t doc271=1.7249993 shardIndex=-1\nfor query:body:w1 body:w2
+nocfs	check_hits	hits2str	ok	Hits length1=10\tlength2=1\nhit=0: doc201=2.2547655 shardIndex=-1,\t doc201=2.2547655 shardIndex=-1\nhit=1: doc244=2.0453794 shardIndex=-1,\t\nhit=2: doc251=2.0453794 shardIndex=-1,\t\nhit=3: doc15=1.8715776 shardIndex=-1,\t\nhit=4: doc22=1.8715776 shardIndex=-1,\t\nhit=5: doc29=1.8715776 shardIndex=-1,\t\nhit=6: doc58=1.7249993 shardIndex=-1,\t\nhit=7: doc65=1.7249993 shardIndex=-1,\t\nhit=8: doc71=1.7249993 shardIndex=-1,\t\nhit=9: doc271=1.7249993 shardIndex=-1,\t\n
+nocfs	check_hits	topdocs	ok	TopDocs totalHits=41 hits top=5\n\t1) doc=244\tscore=2.0453794\n\t2) doc=251\tscore=2.0453794\n
+nocfs	check_hits	no_match	ok	pass
+nocfs	check_hits	no_match_wrong	err	java.lang.AssertionError	Explanation of [[w7]] for #0 doesn't indicate non-match: 1.329027 = weight(body:w7 in 0) [BM25Similarity], result of:\n  1.329027 = score(freq=1.0), computed as boost * idf * tf from:\n    2.6262777 = idf, computed as log(1 + (N - n + 0.5) / (n + 0.5)) from:\n      22 = n, number of documents containing term\n      310 = N, total number of documents with field\n    0.5060497 = tf, computed as freq / (freq + k1 * (1 - b + b * dl / avgdl)) from:\n      1.0 = freq, occurrences of term within document\n      1.2 = k1, term saturation parameter\n      0.75 = b, length normalization parameter\n      3.0 = dl, length of field\n      3.9935484 = avgdl, average length of field\n
+nocfs	check_hits	explanations/term	ok	pass
+nocfs	check_hits	matches/term	ok	pass
+nocfs	check_hits	top_scores/term	ok	pass
+nocfs	check_hits	explanations/should	ok	pass
+nocfs	check_hits	matches/should	ok	pass
+nocfs	check_hits	top_scores/should	ok	pass
+nocfs	check_hits	explanations/must_should	ok	pass
+nocfs	check_hits	matches/must_should	ok	pass
+nocfs	check_hits	top_scores/must_should	ok	pass
+nocfs	check_hits	explanations/must_filter	ok	pass
+nocfs	check_hits	matches/must_filter	ok	pass
+nocfs	check_hits	top_scores/must_filter	ok	pass
+nocfs	check_hits	explanations/should_not	ok	pass
+nocfs	check_hits	matches/should_not	ok	pass
+nocfs	check_hits	top_scores/should_not	ok	pass
+nocfs	check_hits	explanations/phrase	ok	pass
+nocfs	check_hits	matches/phrase	ok	pass
+nocfs	check_hits	top_scores/phrase	ok	pass
+nocfs	check_hits	explanations/prefix	ok	pass
+nocfs	check_hits	matches/prefix	ok	pass
+nocfs	check_hits	top_scores/prefix	ok	pass
+nocfs	check_hits	explanations/wildcard	ok	pass
+nocfs	check_hits	matches/wildcard	ok	pass
+nocfs	check_hits	top_scores/wildcard	ok	pass
+nocfs	check_hits	explanations/point_range	ok	pass
+nocfs	check_hits	matches/point_range	ok	pass
+nocfs	check_hits	top_scores/point_range	ok	pass
+nocfs	check_hits	explanations/exists	ok	pass
+nocfs	check_hits	matches/exists	err	java.lang.AssertionError	Unexpected non-null Matches object in non-matching doc51 for query FieldExistsQuery [field=dv_num] expected null, but was:<org.apache.lucene.tests.search.AssertingMatches@HASH>
+nocfs	check_hits	top_scores/exists	ok	pass
+nocfs	check_hits	explanations/constant	ok	pass
+nocfs	check_hits	matches/constant	ok	pass
+nocfs	check_hits	top_scores/constant	ok	pass
+nocfs	check_hits	explanations/boost	ok	pass
+nocfs	check_hits	matches/boost	ok	pass
+nocfs	check_hits	top_scores/boost	ok	pass
+nocfs	check_hits	explanations/dismax	ok	pass
+nocfs	check_hits	matches/dismax	ok	pass
+nocfs	check_hits	top_scores/dismax	ok	pass
+nocfs	check_hits	explanations/all	ok	pass
+nocfs	check_hits	matches/all	err	java.lang.AssertionError	Unexpected non-null Matches object in non-matching doc51 for query *:* expected null, but was:<org.apache.lucene.tests.search.AssertingMatches@HASH>
+nocfs	check_hits	top_scores/all	ok	pass
+nocfs	check_hits	explanations/none	ok	pass
+nocfs	check_hits	matches/none	ok	pass
+nocfs	check_hits	top_scores/none	ok	pass
+nocfs	check_hits	explanations/knn	ok	pass
+nocfs	check_hits	matches/knn	ok	pass
+nocfs	check_hits	top_scores/knn	ok	pass
+nocfs	check_hits	explanations/asserting	ok	pass
+nocfs	check_hits	matches/asserting	ok	pass
+nocfs	check_hits	top_scores/asserting	ok	pass
+nocfs	check_hits	explanations/random_approx	ok	pass
+nocfs	check_hits	matches/random_approx	ok	pass
+nocfs	check_hits	top_scores/random_approx	err	java.lang.AssertionError	expected:<2> but was:<0>
+nocfs	check_hits	explanations/block_score	ok	pass
+nocfs	check_hits	matches/block_score	ok	pass
+nocfs	check_hits	top_scores/block_score	ok	pass
+nocfs	check_hits	explanations/disabling_bulk	ok	pass
+nocfs	check_hits	matches/disabling_bulk	ok	pass
+nocfs	check_hits	top_scores/disabling_bulk	ok	pass
+nocfs	check_hits	explanations/next	ok	1490301162865944154
+nocfs	verify	shallow	ok	pass
+nocfs	verify	shallow_wrong	err	java.lang.AssertionError	expected:<0.10000000149011612> but was:<1.0>
+nocfs	verify	sum	ok	pass
+nocfs	verify	sum_wrong	err	java.lang.AssertionError	expected:<3.0> but was:<3.5>
+nocfs	verify	sum_ulp	ok	pass
+nocfs	verify	product	ok	pass
+nocfs	verify	max	ok	pass
+nocfs	verify	max_plus	ok	pass
+nocfs	verify	max_plus_wrong	err	java.lang.AssertionError	expected:<2.549999952316284> but was:<2.0>
+nocfs	verify	max_plus_unterminated	err	java.lang.StringIndexOutOfBoundsException	Range [9, -1) out of bounds for length 12
+nocfs	verify	computed	ok	pass
+nocfs	verify	bad_description	err	java.lang.AssertionError	q: multi valued explanation description="combined:" must be 'max of plus x times others', 'computed as x from:' or end with 'product of' or 'sum of:' or 'max of:' - 3.0 = combined:\n  1.0 = a\n  2.0 = b\n
+nocfs	verify	single	ok	pass
+nocfs	verify	single_wrong	err	java.lang.AssertionError	expected:<1.0> but was:<2.0>
+nocfs	verify	freq	ok	pass
+nocfs	verify	child_docs	err	java.lang.AssertionError	Child doc explanations are missing
+nocfs	verify	computed_from	ok	pass
+nocfs	verify	no_match	ok	pass
+nocfs	scorer_branch	is_scorer	ok	true false
+nocfs	scorer_branch	scorable_not_scorer	ok	false
+nocfs	scorer_branch	unpositioned_score	err	java.lang.AssertionError	ITERATING
+nocfs	scorer_branch	score_in_range	err	java.lang.AssertionError	Scorable.score() must not be called inside collect(DocIdStream) or collectRange() since the scorer is not positioned on individual documents during batch collection
+nocfs	scorer_branch	score_in_collect	ok	3faa1d8f
+nocfs	scorer_branch	min_competitive_across_calls	err	java.lang.AssertionError	<null>
+nocfs	scorer_branch	min_competitive_reset_by_set_scorer	ok	0 7
+nocfs	scorer_branch	asserting_scorer_unchanged	err	java.lang.AssertionError	<null>
+nocfs	scorer_branch	asserting_identity	err	java.lang.AssertionError	<null>
+nocfs	scorer_branch	nested	ok	3faa1d8f
+nocfs	scorer_branch	nested_range	err	java.lang.AssertionError	Scorable.score() must not be called inside collect(DocIdStream) or collectRange() since the scorer is not positioned on individual documents during batch collection
+nocfs	scorer_branch	search	ok	22 hits;41 hits;22 hits;
+nocfs	scorer_branch	next	ok	3852050599904813758

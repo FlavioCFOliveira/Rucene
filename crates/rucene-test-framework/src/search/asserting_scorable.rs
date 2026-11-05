@@ -17,9 +17,13 @@
 
 //! Port of `org.apache.lucene.tests.search.AssertingScorable`.
 
+use std::any::TypeId;
+
 use rucene::error::Result;
-use rucene::search::{ChildScorable, Scorable};
+use rucene::search::{ChildScorable, Scorable, Scorer};
 use rucene::util::java_fmt::float_to_string;
+
+use crate::search::asserting_scorer::{AssertingScorer, AssertingScorerState};
 
 /// Wraps a [`Scorable`] to make sure its scores are not negative (nor NaN).
 ///
@@ -28,20 +32,53 @@ use rucene::util::java_fmt::float_to_string;
 /// every collection call instead of letting the collector keep it (see
 /// [`rucene::search::LeafCollector`]).
 ///
-/// **Divergences.**
+/// The `instanceof` tests of [`wrap`](Self::wrap) read
+/// [`Scorable::class_id`] and [`Scorable::as_scorer`].
 ///
-/// * Java's `wrap` returns its argument when it already is an
-///   `AssertingScorable` or an `AssertingScorer`, and wraps a `Scorer` with
-///   `AssertingScorer.wrap(scorer, true, true)` instead. A `&mut dyn Scorable`
-///   can be tested for neither in this port, so [`wrap`](Self::wrap) always
-///   builds this wrapper: a second wrapper repeats the same check, and the
-///   `Scorer` branch's checks (the scorer is positioned, the score is not NaN
-///   and below the max score after `advanceShallow`, and is not read during a
-///   batch collection) are not made.
-/// * The failure message ends with `in=<scorable>`: Rust's [`Scorable`] has no
-///   string form.
+/// **Divergence.** The failure message ends with `in=<scorable>`: Rust's
+/// [`Scorable`] has no string form.
 pub struct AssertingScorable<'a> {
     inner: &'a mut dyn Scorable,
+}
+
+/// What [`AssertingScorable::wrap`] returns: Java's `Scorable`, which is the
+/// argument itself, a new `AssertingScorer`, or a new `AssertingScorable`.
+pub enum WrappedScorable<'a> {
+    /// The argument, already an `AssertingScorable` or an `AssertingScorer`.
+    Unchanged(&'a mut dyn Scorable),
+    /// `AssertingScorer.wrap(scorer, true, true)` over a `Scorer` argument.
+    Scorer(AssertingScorer<'a>),
+    /// `new AssertingScorable(in)`.
+    Scorable(AssertingScorable<'a>),
+}
+
+impl WrappedScorable<'_> {
+    /// The wrapped scorable as a [`Scorer`] (`wrappedScorer instanceof
+    /// Scorer`).
+    pub fn as_scorer(&mut self) -> Option<&mut dyn Scorer> {
+        match self {
+            WrappedScorable::Unchanged(scorable) => scorable.as_scorer(),
+            WrappedScorable::Scorer(scorer) => Some(scorer),
+            WrappedScorable::Scorable(_) => None,
+        }
+    }
+
+    /// The wrapped scorable as a [`Scorable`].
+    pub fn as_scorable(&mut self) -> &mut dyn Scorable {
+        match self {
+            WrappedScorable::Unchanged(scorable) => &mut **scorable,
+            WrappedScorable::Scorer(scorer) => scorer,
+            WrappedScorable::Scorable(scorable) => scorable,
+        }
+    }
+
+    /// The state of the new `AssertingScorer`, if one was built.
+    pub(crate) fn scorer_state(&self) -> Option<AssertingScorerState> {
+        match self {
+            WrappedScorable::Scorer(scorer) => Some(scorer.state_snapshot()),
+            _ => None,
+        }
+    }
 }
 
 impl<'a> AssertingScorable<'a> {
@@ -50,9 +87,35 @@ impl<'a> AssertingScorable<'a> {
         AssertingScorable { inner }
     }
 
-    /// `AssertingScorable.wrap(in)` (see the divergences).
-    pub fn wrap(inner: &'a mut dyn Scorable) -> AssertingScorable<'a> {
-        AssertingScorable::new(inner)
+    /// `AssertingScorable.wrap(in)`.
+    pub fn wrap(inner: &'a mut dyn Scorable) -> WrappedScorable<'a> {
+        Self::wrap_with_state(inner, None)
+    }
+
+    /// [`wrap`](Self::wrap), whose new `AssertingScorer` (if any) resumes the
+    /// state machine of an earlier wrapper of the same scorer (see
+    /// [`AssertingScorer`]'s `wrap_borrowed`).
+    pub(crate) fn wrap_with_state(
+        inner: &'a mut dyn Scorable,
+        state: Option<AssertingScorerState>,
+    ) -> WrappedScorable<'a> {
+        let class = inner.class_id();
+        if class == Some(TypeId::of::<AssertingScorable<'static>>())
+            || class == Some(TypeId::of::<AssertingScorer<'static>>())
+        {
+            return WrappedScorable::Unchanged(inner);
+        }
+
+        // If `in` is Scorer, we need to wrap it as a Scorer instead of Scorable because
+        // NumericComparator uses the iterator cost of a Scorer in sort optimization.
+        if inner.as_scorer().is_some() {
+            let scorer = inner
+                .as_scorer()
+                .expect("INVARIANT: as_scorer answered Some on the line above");
+            WrappedScorable::Scorer(AssertingScorer::wrap_borrowed(scorer, state))
+        } else {
+            WrappedScorable::Scorable(AssertingScorable::new(inner))
+        }
     }
 }
 
@@ -76,5 +139,10 @@ impl Scorable for AssertingScorable<'_> {
     /// `FilterScorable.getChildren()`.
     fn children(&mut self) -> Result<Vec<ChildScorable<'_>>> {
         Ok(vec![ChildScorable::new(&mut *self.inner, "FILTER")])
+    }
+
+    /// `instanceof AssertingScorable` (see [`Scorable::class_id`]).
+    fn class_id(&self) -> Option<TypeId> {
+        Some(TypeId::of::<AssertingScorable<'static>>())
     }
 }

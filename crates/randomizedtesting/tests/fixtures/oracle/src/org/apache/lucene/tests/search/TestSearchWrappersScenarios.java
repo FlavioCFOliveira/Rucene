@@ -9,5 +9,6 @@ public class TestSearchWrappersScenarios extends LuceneTestCase {
   public void testScenarios() throws Exception {
     SearchWrappersOracle.scenarios();
     SearchWrappersOracle.rec("ctx", "context", "next", () -> random().nextLong());
+    SearcherChecksOracle.run("nocfs");
   }
 }

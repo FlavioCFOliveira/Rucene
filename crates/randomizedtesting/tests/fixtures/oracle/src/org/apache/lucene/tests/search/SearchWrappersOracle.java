@@ -556,6 +556,7 @@ public final class SearchWrappersOracle {
     out.mkdirs();
     corpus = new File(out, "mdw_corpus.tsv");
     ROWS.clear();
+    SearcherChecksOracle.ROWS.clear();
     System.setProperty("tests.seed", SEED);
     Result r = new JUnitCore().run(TestSearchWrappersScenarios.class);
     System.clearProperty("tests.seed");
@@ -566,6 +567,9 @@ public final class SearchWrappersOracle {
         w.println("# failure " + f.toString().replace("\n", "\\n"));
       }
       for (String row : ROWS) {
+        w.println(row);
+      }
+      for (String row : SearcherChecksOracle.ROWS) {
         w.println(row);
       }
     }

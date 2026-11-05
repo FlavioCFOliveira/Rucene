@@ -14,7 +14,7 @@ use crate::error::Result;
 use crate::search::collection_terminated_exception::CollectionResult;
 use crate::search::collector::LeafCollector;
 use crate::search::doc_id_set_iterator::DocIdSetIterator;
-use crate::search::scorer::Scorer;
+use crate::search::scorer::{Scorer, ScorerAsScorable};
 use crate::util::Bits;
 
 /// Scores a range of documents at once.
@@ -208,7 +208,7 @@ impl DefaultBulkScorer {
         let mut doc = self.lead_doc_id();
         while doc < max {
             if Self::accepted(accept_docs, doc) {
-                collector.collect(doc, self.scorer.as_scorable())?;
+                collector.collect(doc, &mut ScorerAsScorable::new(&mut *self.scorer))?;
             }
             doc = self.lead_next_doc()?;
         }
@@ -225,7 +225,7 @@ impl DefaultBulkScorer {
         let mut doc = self.lead_doc_id();
         while doc < max {
             if Self::accepted(accept_docs, doc) && self.matches()? {
-                collector.collect(doc, self.scorer.as_scorable())?;
+                collector.collect(doc, &mut ScorerAsScorable::new(&mut *self.scorer))?;
             }
             doc = self.lead_next_doc()?;
         }
@@ -252,7 +252,7 @@ impl DefaultBulkScorer {
             }
 
             if Self::accepted(accept_docs, doc) {
-                collector.collect(doc, self.scorer.as_scorable())?;
+                collector.collect(doc, &mut ScorerAsScorable::new(&mut *self.scorer))?;
             }
 
             doc = self.lead_next_doc()?;
@@ -280,7 +280,7 @@ impl DefaultBulkScorer {
             }
 
             if Self::accepted(accept_docs, doc) && self.matches()? {
-                collector.collect(doc, self.scorer.as_scorable())?;
+                collector.collect(doc, &mut ScorerAsScorable::new(&mut *self.scorer))?;
             }
 
             doc = self.lead_next_doc()?;
@@ -301,7 +301,7 @@ impl BulkScorer for DefaultBulkScorer {
         min: i32,
         max: i32,
     ) -> CollectionResult<i32> {
-        collector.set_scorer(self.scorer.as_scorable())?;
+        collector.set_scorer(&mut ScorerAsScorable::new(&mut *self.scorer))?;
         let mut competitive_iterator = collector.competitive_iterator()?;
 
         let mut min = min;
