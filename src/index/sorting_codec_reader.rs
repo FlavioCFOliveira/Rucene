@@ -1061,6 +1061,10 @@ impl std::fmt::Display for SimpleMergedSegmentWarmer {
 }
 
 impl crate::index::index_writer_config::MergedSegmentWarmer for SimpleMergedSegmentWarmer {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     /// Touches the terms and norms of every indexed field, the doc values of
     /// every doc-values field, and the stored fields and term vectors of the
     /// first document.

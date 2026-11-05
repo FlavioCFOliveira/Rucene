@@ -1124,7 +1124,7 @@ impl IndexableField for LongColumnAdapter<'_> {
         None
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn std::io::Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -1382,7 +1382,7 @@ impl IndexableField for BinaryColumnAdapter<'_> {
         }
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn std::io::Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 

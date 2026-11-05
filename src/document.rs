@@ -25,11 +25,10 @@ pub mod spatial_query;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
-use std::io::Read;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::analysis::{Analyzer, TokenStream};
+use crate::analysis::{Analyzer, CharReader, TokenStream};
 use crate::document::doc_values_queries::{
     SortedNumericDocValuesRangeQuery, SortedNumericDocValuesSetQuery, SortedSetDocValuesRangeQuery,
 };
@@ -888,8 +887,13 @@ impl IndexableFieldType for FieldType {
 pub enum FieldData {
     /// A string value.
     String(String),
-    /// A byte-oriented reader value.
-    Reader(Box<dyn Read>),
+    /// A reader value: a `java.io.Reader`, a reader of characters.
+    ///
+    /// Java's field keeps the reference to the `Reader` it was given and
+    /// hands that very object to `Analyzer.tokenStream(String, Reader)`; the
+    /// reader is shared here so that `reader_value()` still returns it after
+    /// [`IndexableField::token_stream`] handed it to the analyzer.
+    Reader(SharedReader),
     /// A pre-analyzed token stream.
     TokenStream(Rc<RefCell<dyn TokenStream>>),
     /// A binary value.
@@ -926,6 +930,38 @@ impl Debug for FieldData {
                 .finish_non_exhaustive(),
         }
     }
+}
+
+/// The reader value of a field: the `java.io.Reader` Java's `Field` keeps a
+/// reference to (`Field.readerValue()`).
+pub type SharedReader = Rc<RefCell<Box<dyn CharReader>>>;
+
+/// The [`CharReader`] [`IndexableField::token_stream`] hands to the analyzer
+/// for a field's [`SharedReader`]: the same reader, as Java passes the
+/// `Reader` object itself (`Field.java:519`).
+#[derive(Debug)]
+struct SharedCharReader(SharedReader);
+
+impl CharReader for SharedCharReader {
+    fn read(&mut self, buf: &mut [char]) -> Result<usize> {
+        self.0.borrow_mut().read(buf)
+    }
+
+    fn close(&mut self) -> Result<()> {
+        self.0.borrow_mut().close()
+    }
+}
+
+/// `analyzer.tokenStream(name, readerValue())`.
+fn reader_token_stream(
+    analyzer: &dyn Analyzer,
+    name: &str,
+    reader: &SharedReader,
+) -> Box<dyn TokenStream> {
+    let stream = analyzer
+        .token_stream(name, Box::new(SharedCharReader(Rc::clone(reader))))
+        .expect("analyzer produced a token stream");
+    Box::new(crate::analysis::SharedTokenStream::new(stream))
 }
 
 /// A field in a document.
@@ -972,9 +1008,11 @@ impl Field {
     }
 
     /// Creates a field with a reader value.
+    ///
+    /// Equivalent to `Field(String, Reader, IndexableFieldType)`.
     pub fn new_with_reader(
         name: &str,
-        reader: Box<dyn Read>,
+        reader: Box<dyn CharReader>,
         field_type: FieldType,
     ) -> Result<Self> {
         Self::validate_name_and_type(name, &field_type)?;
@@ -991,7 +1029,7 @@ impl Field {
         Ok(Self {
             name: name.to_string(),
             field_type,
-            fields_data: FieldData::Reader(reader),
+            fields_data: FieldData::Reader(Rc::new(RefCell::new(reader))),
         })
     }
 
@@ -1095,9 +1133,9 @@ impl Field {
     }
 
     /// Returns the reader value, if the field holds one.
-    pub fn reader_value(&mut self) -> Option<&mut dyn Read> {
-        match &mut self.fields_data {
-            FieldData::Reader(r) => Some(r.as_mut()),
+    pub fn reader_value(&self) -> Option<SharedReader> {
+        match &self.fields_data {
+            FieldData::Reader(r) => Some(Rc::clone(r)),
             _ => None,
         }
     }
@@ -1145,10 +1183,10 @@ impl Field {
     }
 
     /// Changes the reader value of this field.
-    pub fn set_reader_value(&mut self, value: Box<dyn Read>) -> Result<()> {
+    pub fn set_reader_value(&mut self, value: Box<dyn CharReader>) -> Result<()> {
         match &self.fields_data {
             FieldData::Reader(_) => {
-                self.fields_data = FieldData::Reader(value);
+                self.fields_data = FieldData::Reader(Rc::new(RefCell::new(value)));
                 Ok(())
             }
             _ => Err(LuceneError::IllegalArgument(
@@ -1379,6 +1417,9 @@ impl IndexableField for Field {
         if let Some(ts) = self.token_stream_value() {
             return Box::new(crate::analysis::SharedTokenStream::new(ts));
         }
+        if let FieldData::Reader(reader) = &self.fields_data {
+            return reader_token_stream(analyzer, &self.name, reader);
+        }
         if let Some(s) = self.string_value() {
             let stream = analyzer
                 .token_stream_from_str(&self.name, &s)
@@ -1399,7 +1440,7 @@ impl IndexableField for Field {
         self.string_value()
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         self.reader_value()
     }
 
@@ -1783,7 +1824,7 @@ impl IndexableField for StringField {
         }
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -1838,12 +1879,22 @@ pub struct TextField {
 }
 
 impl TextField {
+    /// `TextField.TYPE_NOT_STORED`: "Indexed, tokenized, not stored."
+    pub fn type_not_stored() -> &'static FieldType {
+        text_field_type_not_stored()
+    }
+
+    /// `TextField.TYPE_STORED`: "Indexed, tokenized, stored."
+    pub fn type_stored() -> &'static FieldType {
+        text_field_type_stored()
+    }
+
     /// Creates a new un-stored TextField with a reader value.
-    pub fn new_with_reader(name: &str, reader: Box<dyn Read>) -> Result<Self> {
+    pub fn new_with_reader(name: &str, reader: Box<dyn CharReader>) -> Result<Self> {
         Ok(Self {
             name: name.to_string(),
             field_type: text_field_type_not_stored().clone(),
-            fields_data: FieldData::Reader(reader),
+            fields_data: FieldData::Reader(Rc::new(RefCell::new(reader))),
             stored_value: None,
         })
     }
@@ -1900,6 +1951,7 @@ impl IndexableField for TextField {
             FieldData::TokenStream(ts) => {
                 Box::new(crate::analysis::SharedTokenStream::new(Rc::clone(ts)))
             }
+            FieldData::Reader(reader) => reader_token_stream(analyzer, &self.name, reader),
             FieldData::String(s) => {
                 let stream = analyzer
                     .token_stream_from_str(&self.name, s)
@@ -1921,9 +1973,9 @@ impl IndexableField for TextField {
         }
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
-        match &mut self.fields_data {
-            FieldData::Reader(r) => Some(r.as_mut()),
+    fn reader_value(&self) -> Option<SharedReader> {
+        match &self.fields_data {
+            FieldData::Reader(r) => Some(Rc::clone(r)),
             _ => None,
         }
     }
@@ -2026,7 +2078,7 @@ impl IndexableField for StoredField {
         self.0.string_value()
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         self.0.reader_value()
     }
 
@@ -2356,7 +2408,7 @@ impl IndexableField for KeywordField {
         }
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -2685,7 +2737,7 @@ impl IndexableField for IntPoint {
         None
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -2921,7 +2973,7 @@ impl IndexableField for LongPoint {
         None
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -3240,7 +3292,7 @@ impl IndexableField for FloatPoint {
         None
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -3487,7 +3539,7 @@ impl IndexableField for DoublePoint {
         None
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -3646,7 +3698,7 @@ impl IndexableField for BinaryPoint {
         None
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -3851,7 +3903,7 @@ impl IndexableField for NumericDocValuesField {
         Some(self.value.to_string())
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -3938,7 +3990,7 @@ impl IndexableField for FloatDocValuesField {
         self.inner.string_value()
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -4003,7 +4055,7 @@ impl IndexableField for DoubleDocValuesField {
         self.inner.string_value()
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -4121,7 +4173,7 @@ impl IndexableField for SortedDocValuesField {
         String::from_utf8(self.value.slice().to_vec()).ok()
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -4240,7 +4292,7 @@ impl IndexableField for SortedSetDocValuesField {
         String::from_utf8(self.value.slice().to_vec()).ok()
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -4341,7 +4393,7 @@ impl IndexableField for SortedNumericDocValuesField {
         Some(self.value.to_string())
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -4404,7 +4456,7 @@ impl IndexableField for BinaryDocValuesField {
         String::from_utf8(self.value.slice().to_vec()).ok()
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -4666,7 +4718,7 @@ impl IndexableField for IntField {
         Some(self.value.to_string())
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -4850,7 +4902,7 @@ impl IndexableField for LongField {
         Some(self.value.to_string())
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -5007,7 +5059,7 @@ impl IndexableField for FloatField {
         Some(self.value.to_string())
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -5162,7 +5214,7 @@ impl IndexableField for DoubleField {
         Some(self.value.to_string())
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -5603,7 +5655,7 @@ impl IndexableField for KnnFloatVectorField {
         None
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -5806,7 +5858,7 @@ impl IndexableField for KnnByteVectorField {
         None
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 

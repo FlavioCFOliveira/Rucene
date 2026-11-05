@@ -18,23 +18,73 @@
 //! Port of `org.apache.lucene.tests.util.CloseableDirectory`: attempts to
 //! close a [`BaseDirectoryWrapper`].
 
+use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::store::BaseDirectoryWrapper;
 use crate::util::TestRuleMarkFailure;
 
+/// What [`CloseableDirectory`] reads of the `BaseDirectoryWrapper` it
+/// watches: `isOpen()` and `toString()`.
+///
+/// Java's `CloseableDirectory` keeps a reference to the wrapper itself. A
+/// `MockDirectoryWrapper` copy that is alive when the wrapper is closed keeps
+/// its delegate from being closed (see its module docs), so the wrappers
+/// `LuceneTestCase.wrapDirectory` registers are watched through a
+/// [`DirectoryOpenProbe`], which shares only their open flag.
+pub trait DirectoryOpenState: fmt::Display + Send + Sync {
+    /// `isOpen()`.
+    fn is_open(&self) -> bool;
+}
+
+impl DirectoryOpenState for BaseDirectoryWrapper {
+    fn is_open(&self) -> bool {
+        BaseDirectoryWrapper::is_open(self)
+    }
+}
+
+/// The open flag of a directory wrapper and its `toString()` at the time the
+/// probe was taken.
+pub struct DirectoryOpenProbe {
+    is_open: Arc<AtomicBool>,
+    rendered: String,
+}
+
+impl DirectoryOpenProbe {
+    /// A probe over the wrapper's shared open flag.
+    pub fn new(is_open: Arc<AtomicBool>, rendered: String) -> Self {
+        DirectoryOpenProbe { is_open, rendered }
+    }
+}
+
+impl DirectoryOpenState for DirectoryOpenProbe {
+    fn is_open(&self) -> bool {
+        self.is_open.load(Ordering::SeqCst)
+    }
+}
+
+impl fmt::Display for DirectoryOpenProbe {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.rendered)
+    }
+}
+
 /// Port of `org.apache.lucene.tests.util.CloseableDirectory` (package-private
 /// in Java).
 pub struct CloseableDirectory {
-    dir: Arc<BaseDirectoryWrapper>,
+    dir: Arc<dyn DirectoryOpenState>,
     failure_marker: Arc<TestRuleMarkFailure>,
 }
 
 impl CloseableDirectory {
     /// `new CloseableDirectory(dir, failureMarker)`.
-    pub fn new(dir: Arc<BaseDirectoryWrapper>, failure_marker: Arc<TestRuleMarkFailure>) -> Self {
+    pub fn new<D: DirectoryOpenState + 'static>(
+        dir: Arc<D>,
+        failure_marker: Arc<TestRuleMarkFailure>,
+    ) -> Self {
         CloseableDirectory {
-            dir,
+            dir: dir as Arc<dyn DirectoryOpenState>,
             failure_marker,
         }
     }
@@ -54,5 +104,13 @@ impl CloseableDirectory {
         }
         // TODO: perform real close of the delegate: LUCENE-4058
         // dir.close();
+    }
+}
+
+impl randomizedtesting::jdk::io::Closeable for CloseableDirectory {
+    /// [`CloseableDirectory::close`].
+    fn close(&self) -> std::io::Result<()> {
+        CloseableDirectory::close(self);
+        Ok(())
     }
 }

@@ -522,7 +522,7 @@ pub trait IndexableField: std::fmt::Display {
     }
 
     /// Non-null if this field has a Reader value.
-    fn reader_value(&mut self) -> Option<&mut dyn std::io::Read>;
+    fn reader_value(&self) -> Option<crate::document::SharedReader>;
 
     /// Non-null if this field has a numeric value.
     fn numeric_value(&self) -> Option<NumericValue>;

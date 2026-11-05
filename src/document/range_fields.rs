@@ -4,7 +4,6 @@
 //! document can answer "does my interval intersect, contain, or fall within
 //! yours" — which a point field cannot express.
 
-use std::io::Read;
 use std::sync::Arc;
 
 use crate::analysis::{Analyzer, TokenStream};
@@ -421,7 +420,7 @@ macro_rules! range_field {
                 None
             }
 
-            fn reader_value(&mut self) -> Option<&mut dyn Read> {
+            fn reader_value(&self) -> Option<crate::document::SharedReader> {
                 None
             }
 
@@ -666,7 +665,7 @@ impl IndexableField for BinaryRangeDocValuesField {
         None
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 

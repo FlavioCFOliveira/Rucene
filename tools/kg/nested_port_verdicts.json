@@ -343,9 +343,9 @@
    "rustName": "ByteBufferRecycler"
   },
   "org.apache.lucene.util.AttributeSource$State": {
-   "evidence": "src/util/attribute.rs:399, the linked-list node `AttributeSource` captures and restores.",
+   "evidence": "src/util/attribute.rs:400, `CapturedState`, the state `captureState()` returns and `restoreState()` takes (the linked-list `State` node was removed at 5dd91c4 when the attribute maps became shared).",
    "rustFile": "src/util/attribute.rs",
-   "rustName": "State"
+   "rustName": "CapturedState"
   },
   "org.apache.lucene.util.Bits$MatchAllBits": {
    "evidence": "src/util.rs:2985.",

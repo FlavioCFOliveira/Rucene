@@ -16,7 +16,8 @@
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::fmt::{self, Debug, Formatter};
-use std::sync::{Arc, OnceLock, Weak};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering as AtomicOrdering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock, Weak};
 
 use crate::analysis::{Analyzer, StandardAnalyzer};
 use crate::codecs::{get_default, Codec};
@@ -45,6 +46,14 @@ use crate::util::InfoStream;
 /// `IndexWriter.mergeMiddle` calls once per merged segment, with a pooled
 /// reader over it, when reader pooling is enabled (`IndexWriter.java:5562-5574`).
 pub trait MergedSegmentWarmer: Send + Sync + Debug + fmt::Display {
+    /// Returns this warmer as `&dyn Any`, for the `instanceof` test
+    /// `LuceneTestCase.maybeChangeLiveIndexWriterConfig` makes
+    /// (`curWarmer instanceof SimpleMergedSegmentWarmer`); `None` for a
+    /// warmer that does not offer it.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+
     /// Warms `reader`, a reader over the newly merged segment.
     ///
     /// Equivalent to `IndexReaderWarmer.warm(LeafReader)`.
@@ -151,11 +160,23 @@ impl IndexWriterEventListener for NoOpIndexWriterEventListener {
 /// effect on the next document add/update/delete or merge.
 ///
 /// Equivalent to `org.apache.lucene.index.LiveIndexWriterConfig`.
+///
+/// The settings Java declares `volatile` and that `LuceneTestCase.
+/// maybeChangeLiveIndexWriterConfig` changes on an open writer —
+/// `maxBufferedDocs`, `ramBufferSizeMB`, `mergedSegmentWarmer` and
+/// `useCompoundFile` — are held with interior mutability, so their setters
+/// take `&self` and reach the writer's shared configuration. The two flush
+/// setters share one monitor, Java's `synchronized` methods
+/// (`LiveIndexWriterConfig.java:183, 218`); see
+/// [`synchronized_flush_settings`](Self::synchronized_flush_settings).
 pub struct LiveIndexWriterConfig {
     analyzer: Arc<dyn Analyzer>,
-    max_buffered_docs: i32,
-    ram_buffer_size_mb: f64,
-    merged_segment_warmer: Option<Arc<dyn MergedSegmentWarmer>>,
+    max_buffered_docs: AtomicI32,
+    /// `ramBufferSizeMB`, held as the bit pattern of an `f64`.
+    ram_buffer_size_mb: AtomicU64,
+    /// The monitor of the `synchronized` flush setters.
+    flush_monitor: Mutex<()>,
+    merged_segment_warmer: RwLock<Option<Arc<dyn MergedSegmentWarmer>>>,
 
     del_policy: Arc<dyn IndexDeletionPolicy>,
     commit: Option<Arc<dyn IndexCommit>>,
@@ -169,7 +190,7 @@ pub struct LiveIndexWriterConfig {
     reader_pooling: bool,
     flush_policy: Arc<dyn FlushPolicy>,
     per_thread_hard_limit_mb: i32,
-    use_compound_file: bool,
+    use_compound_file: AtomicBool,
     commit_on_close: bool,
     index_sort: Option<Sort>,
     index_sort_fields: HashSet<String>,
@@ -249,9 +270,10 @@ impl LiveIndexWriterConfig {
 
         Self {
             analyzer,
-            max_buffered_docs: Self::DEFAULT_MAX_BUFFERED_DOCS,
-            ram_buffer_size_mb: Self::DEFAULT_RAM_BUFFER_SIZE_MB,
-            merged_segment_warmer: None,
+            max_buffered_docs: AtomicI32::new(Self::DEFAULT_MAX_BUFFERED_DOCS),
+            ram_buffer_size_mb: AtomicU64::new(Self::DEFAULT_RAM_BUFFER_SIZE_MB.to_bits()),
+            flush_monitor: Mutex::new(()),
+            merged_segment_warmer: RwLock::new(None),
             del_policy: Arc::new(KeepOnlyLastCommitDeletionPolicy::new()),
             commit: None,
             open_mode: OpenMode::CREATE_OR_APPEND,
@@ -266,7 +288,7 @@ impl LiveIndexWriterConfig {
             reader_pooling: Self::DEFAULT_READER_POOLING,
             flush_policy: Arc::new(FlushByRamOrCountsPolicy::new()),
             per_thread_hard_limit_mb: Self::DEFAULT_RAM_PER_THREAD_HARD_LIMIT_MB,
-            use_compound_file: Self::DEFAULT_USE_COMPOUND_FILE_SYSTEM,
+            use_compound_file: AtomicBool::new(Self::DEFAULT_USE_COMPOUND_FILE_SYSTEM),
             commit_on_close: Self::DEFAULT_COMMIT_ON_CLOSE,
             index_sort: None,
             index_sort_fields: HashSet::new(),
@@ -318,60 +340,69 @@ impl LiveIndexWriterConfig {
     ///
     /// Pass [`Self::DISABLE_AUTO_FLUSH`] to disable RAM-based flushing.
     ///
+    /// Equivalent to the `synchronized` `setRAMBufferSizeMB(double)`
+    /// (`LiveIndexWriterConfig.java:183-195`); it takes effect on an open
+    /// writer.
+    ///
     /// # Errors
     ///
     /// Returns `LuceneError::IllegalArgument` if the value is non-positive when
     /// enabled, or if both RAM and document-count flushing would be disabled.
-    pub fn set_ram_buffer_size_mb(&mut self, ram_buffer_size_mb: f64) -> Result<&mut Self> {
-        if ram_buffer_size_mb != Self::DISABLE_AUTO_FLUSH as f64 && ram_buffer_size_mb <= 0.0 {
-            return Err(LuceneError::IllegalArgument(
-                "ramBufferSize should be > 0.0 MB when enabled".to_string(),
-            ));
-        }
-        if ram_buffer_size_mb == Self::DISABLE_AUTO_FLUSH as f64
-            && self.max_buffered_docs == Self::DISABLE_AUTO_FLUSH
-        {
-            return Err(LuceneError::IllegalArgument(
-                "at least one of ramBufferSize and maxBufferedDocs must be enabled".to_string(),
-            ));
-        }
-        self.ram_buffer_size_mb = ram_buffer_size_mb;
+    pub fn set_ram_buffer_size_mb(&self, ram_buffer_size_mb: f64) -> Result<&Self> {
+        self.synchronized_flush_settings(|settings| {
+            settings.set_ram_buffer_size_mb(ram_buffer_size_mb)
+        })?;
         Ok(self)
     }
 
     /// Returns the RAM buffer size in megabytes.
     pub fn ram_buffer_size_mb(&self) -> f64 {
-        self.ram_buffer_size_mb
+        f64::from_bits(self.ram_buffer_size_mb.load(AtomicOrdering::SeqCst))
     }
 
     /// Sets the maximum number of buffered documents before flushing.
     ///
     /// Pass [`Self::DISABLE_AUTO_FLUSH`] to disable document-count flushing.
     ///
+    /// Equivalent to the `synchronized` `setMaxBufferedDocs(int)`
+    /// (`LiveIndexWriterConfig.java:218-230`); it takes effect on an open
+    /// writer.
+    ///
     /// # Errors
     ///
     /// Returns `LuceneError::IllegalArgument` if the value is enabled but less
     /// than 2, or if both flushing triggers would be disabled.
-    pub fn set_max_buffered_docs(&mut self, max_buffered_docs: i32) -> Result<&mut Self> {
-        if max_buffered_docs != Self::DISABLE_AUTO_FLUSH && max_buffered_docs < 2 {
-            return Err(LuceneError::IllegalArgument(
-                "maxBufferedDocs must at least be 2 when enabled".to_string(),
-            ));
-        }
-        if max_buffered_docs == Self::DISABLE_AUTO_FLUSH
-            && self.ram_buffer_size_mb == Self::DISABLE_AUTO_FLUSH as f64
-        {
-            return Err(LuceneError::IllegalArgument(
-                "at least one of ramBufferSize and maxBufferedDocs must be enabled".to_string(),
-            ));
-        }
-        self.max_buffered_docs = max_buffered_docs;
+    pub fn set_max_buffered_docs(&self, max_buffered_docs: i32) -> Result<&Self> {
+        self.synchronized_flush_settings(|settings| {
+            settings.set_max_buffered_docs(max_buffered_docs)
+        })?;
         Ok(self)
     }
 
     /// Returns the maximum number of buffered documents before flushing.
     pub fn max_buffered_docs(&self) -> i32 {
-        self.max_buffered_docs
+        self.max_buffered_docs.load(AtomicOrdering::SeqCst)
+    }
+
+    /// Runs `body` holding the monitor of the two `synchronized` flush
+    /// setters, as Java's `synchronized (c) { ... }` does around a pair of
+    /// them (`LuceneTestCase.maybeChangeLiveIndexWriterConfig`,
+    /// `LuceneTestCase.java:1175-1203`): Java's monitor is re-entrant, so the
+    /// setters called inside take it again; here `body` calls them through
+    /// the [`LiveFlushSettings`] it receives.
+    pub fn synchronized_flush_settings<R>(
+        &self,
+        body: impl FnOnce(&LiveFlushSettings<'_>) -> R,
+    ) -> R {
+        let guard = self
+            .flush_monitor
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let settings = LiveFlushSettings {
+            config: self,
+            _monitor: guard,
+        };
+        body(&settings)
     }
 
     /// Sets the merge policy.
@@ -385,18 +416,25 @@ impl LiveIndexWriterConfig {
         Arc::clone(&self.merge_policy)
     }
 
-    /// Sets the merged-segment warmer.
+    /// Sets the merged-segment warmer; it takes effect on an open writer.
     pub fn set_merged_segment_warmer(
-        &mut self,
+        &self,
         merge_segment_warmer: Option<Arc<dyn MergedSegmentWarmer>>,
-    ) -> &mut Self {
-        self.merged_segment_warmer = merge_segment_warmer;
+    ) -> &Self {
+        *self
+            .merged_segment_warmer
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = merge_segment_warmer;
         self
     }
 
     /// Returns the merged-segment warmer, if any.
     pub fn merged_segment_warmer(&self) -> Option<Arc<dyn MergedSegmentWarmer>> {
-        self.merged_segment_warmer.as_ref().map(Arc::clone)
+        self.merged_segment_warmer
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map(Arc::clone)
     }
 
     /// Returns the open mode.
@@ -485,15 +523,17 @@ impl LiveIndexWriterConfig {
         Arc::clone(&self.flush_policy)
     }
 
-    /// Sets whether newly flushed segments are written as compound files.
-    pub fn set_use_compound_file(&mut self, use_compound_file: bool) -> &mut Self {
-        self.use_compound_file = use_compound_file;
+    /// Sets whether newly flushed segments are written as compound files; it
+    /// takes effect on an open writer.
+    pub fn set_use_compound_file(&self, use_compound_file: bool) -> &Self {
+        self.use_compound_file
+            .store(use_compound_file, AtomicOrdering::SeqCst);
         self
     }
 
     /// Returns whether newly flushed segments are written as compound files.
     pub fn use_compound_file(&self) -> bool {
-        self.use_compound_file
+        self.use_compound_file.load(AtomicOrdering::SeqCst)
     }
 
     /// Returns whether `IndexWriter.close()` should commit first.
@@ -584,10 +624,10 @@ impl fmt::Display for LiveIndexWriterConfig {
         writeln!(
             f,
             "ramBufferSizeMB={}",
-            crate::util::java_fmt::double_to_string(self.ram_buffer_size_mb)
+            crate::util::java_fmt::double_to_string(self.ram_buffer_size_mb())
         )?;
-        writeln!(f, "maxBufferedDocs={}", self.max_buffered_docs)?;
-        match self.merged_segment_warmer.as_ref() {
+        writeln!(f, "maxBufferedDocs={}", self.max_buffered_docs())?;
+        match self.merged_segment_warmer().as_ref() {
             Some(warmer) => writeln!(f, "mergedSegmentWarmer={warmer}")?,
             None => writeln!(f, "mergedSegmentWarmer=null")?,
         }
@@ -604,7 +644,7 @@ impl fmt::Display for LiveIndexWriterConfig {
         writeln!(f, "mergePolicy={}", self.merge_policy)?;
         writeln!(f, "readerPooling={}", self.reader_pooling)?;
         writeln!(f, "perThreadHardLimitMB={}", self.per_thread_hard_limit_mb)?;
-        writeln!(f, "useCompoundFile={}", self.use_compound_file)?;
+        writeln!(f, "useCompoundFile={}", self.use_compound_file())?;
         writeln!(f, "commitOnClose={}", self.commit_on_close)?;
         match self.index_sort.as_ref() {
             Some(sort) => writeln!(f, "indexSort={sort}")?,
@@ -1152,6 +1192,63 @@ impl Default for IndexWriterConfig {
     }
 }
 
+/// The two flush setters of a [`LiveIndexWriterConfig`] while its monitor is
+/// held; see [`LiveIndexWriterConfig::synchronized_flush_settings`].
+pub struct LiveFlushSettings<'a> {
+    config: &'a LiveIndexWriterConfig,
+    _monitor: MutexGuard<'a, ()>,
+}
+
+impl LiveFlushSettings<'_> {
+    /// The body of `setRAMBufferSizeMB(double)`
+    /// (`LiveIndexWriterConfig.java:183-195`).
+    ///
+    /// # Errors
+    ///
+    /// As [`LiveIndexWriterConfig::set_ram_buffer_size_mb`].
+    pub fn set_ram_buffer_size_mb(&self, ram_buffer_size_mb: f64) -> Result<()> {
+        let disable = LiveIndexWriterConfig::DISABLE_AUTO_FLUSH;
+        if ram_buffer_size_mb != disable as f64 && ram_buffer_size_mb <= 0.0 {
+            return Err(LuceneError::IllegalArgument(
+                "ramBufferSize should be > 0.0 MB when enabled".to_string(),
+            ));
+        }
+        if ram_buffer_size_mb == disable as f64 && self.config.max_buffered_docs() == disable {
+            return Err(LuceneError::IllegalArgument(
+                "at least one of ramBufferSize and maxBufferedDocs must be enabled".to_string(),
+            ));
+        }
+        self.config
+            .ram_buffer_size_mb
+            .store(ram_buffer_size_mb.to_bits(), AtomicOrdering::SeqCst);
+        Ok(())
+    }
+
+    /// The body of `setMaxBufferedDocs(int)`
+    /// (`LiveIndexWriterConfig.java:218-230`).
+    ///
+    /// # Errors
+    ///
+    /// As [`LiveIndexWriterConfig::set_max_buffered_docs`].
+    pub fn set_max_buffered_docs(&self, max_buffered_docs: i32) -> Result<()> {
+        let disable = LiveIndexWriterConfig::DISABLE_AUTO_FLUSH;
+        if max_buffered_docs != disable && max_buffered_docs < 2 {
+            return Err(LuceneError::IllegalArgument(
+                "maxBufferedDocs must at least be 2 when enabled".to_string(),
+            ));
+        }
+        if max_buffered_docs == disable && self.config.ram_buffer_size_mb() == disable as f64 {
+            return Err(LuceneError::IllegalArgument(
+                "at least one of ramBufferSize and maxBufferedDocs must be enabled".to_string(),
+            ));
+        }
+        self.config
+            .max_buffered_docs
+            .store(max_buffered_docs, AtomicOrdering::SeqCst);
+        Ok(())
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Manual Debug implementations (InfoStream is the only trait object that does
 // not require Debug, so we cannot derive it).
@@ -1161,9 +1258,9 @@ impl Debug for LiveIndexWriterConfig {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LiveIndexWriterConfig")
             .field("analyzer", &"<dyn Analyzer>")
-            .field("max_buffered_docs", &self.max_buffered_docs)
-            .field("ram_buffer_size_mb", &self.ram_buffer_size_mb)
-            .field("merged_segment_warmer", &self.merged_segment_warmer)
+            .field("max_buffered_docs", &self.max_buffered_docs())
+            .field("ram_buffer_size_mb", &self.ram_buffer_size_mb())
+            .field("merged_segment_warmer", &self.merged_segment_warmer())
             .field("del_policy", &"<dyn IndexDeletionPolicy>")
             .field("commit", &self.commit)
             .field("open_mode", &self.open_mode)
@@ -1176,7 +1273,7 @@ impl Debug for LiveIndexWriterConfig {
             .field("reader_pooling", &self.reader_pooling)
             .field("flush_policy", &"<dyn FlushPolicy>")
             .field("per_thread_hard_limit_mb", &self.per_thread_hard_limit_mb)
-            .field("use_compound_file", &self.use_compound_file)
+            .field("use_compound_file", &self.use_compound_file())
             .field("commit_on_close", &self.commit_on_close)
             .field("index_sort", &self.index_sort)
             .field("index_sort_fields", &self.index_sort_fields)

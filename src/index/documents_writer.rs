@@ -6822,7 +6822,7 @@ mod tests {
     /// Builds a live config with auto-flush fully under the test's control.
     fn config(max_buffered_docs: i32, ram_buffer_size_mb: f64) -> Arc<LiveIndexWriterConfig> {
         ensure_default_codec();
-        let mut config = LiveIndexWriterConfig::new(Arc::new(StandardAnalyzer::new()));
+        let config = LiveIndexWriterConfig::new(Arc::new(StandardAnalyzer::new()));
         if max_buffered_docs != LiveIndexWriterConfig::DISABLE_AUTO_FLUSH {
             config
                 .set_max_buffered_docs(max_buffered_docs)

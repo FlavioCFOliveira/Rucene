@@ -3,7 +3,6 @@
 //! The fields that index a location, in both the geographic and the cartesian
 //! coordinate systems, as points for a BKD lookup or as doc values for a scan.
 
-use std::io::Read;
 use std::sync::Arc;
 
 use crate::analysis::{Analyzer, TokenStream};
@@ -568,7 +567,7 @@ impl IndexableField for LatLonPoint {
         None
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -827,7 +826,7 @@ impl IndexableField for LatLonDocValuesField {
         None
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -970,7 +969,7 @@ impl IndexableField for XYPointField {
         None
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -1165,7 +1164,7 @@ impl IndexableField for XYDocValuesField {
         None
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -1522,7 +1521,7 @@ impl IndexableField for InetAddressPoint {
         None
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -1778,7 +1777,7 @@ impl IndexableField for InetAddressRange {
         None
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 

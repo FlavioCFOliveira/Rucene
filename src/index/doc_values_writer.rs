@@ -4274,7 +4274,7 @@ mod tests {
             None
         }
 
-        fn reader_value(&mut self) -> Option<&mut dyn std::io::Read> {
+        fn reader_value(&self) -> Option<crate::document::SharedReader> {
             None
         }
 

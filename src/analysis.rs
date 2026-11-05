@@ -769,22 +769,43 @@ impl TokenStream for SharedTokenStream {
 
 /// Emits a single token containing a fixed string.
 ///
-/// Equivalent to the private `Analyzer.StringTokenStream` in Lucene.
+/// Equivalent to the private `Analyzer.StringTokenStream` in Lucene, and to
+/// `Field.StringTokenStream`, its twin over the default token attribute
+/// factory ([`new`](Self::new)). The term and offset attributes are held by
+/// interface, as Java's `addAttribute(CharTermAttribute.class)` and
+/// `addAttribute(OffsetAttribute.class)` fields are, whatever implementation
+/// the factory chooses; the offsets count UTF-16 code units, Java's `char`s.
 #[derive(Debug)]
 pub struct StringTokenStream {
     source: AttributeSource,
     value: String,
-    length: usize,
+    length: i32,
     used: bool,
 }
 
 impl StringTokenStream {
-    /// Creates a stream that will emit `value` as a single token.
+    /// Creates a stream that will emit `value` as a single token whose end
+    /// offset is `value.length()`, over the default token attribute factory.
+    ///
+    /// Equivalent to `Field.StringTokenStream` (`Field.java:592-635`).
     pub fn new(value: String) -> Result<Self> {
-        let factory = default_token_attribute_factory();
-        let mut source = AttributeSource::new_with_factory(factory);
-        source.add_attribute::<PackedTokenAttributeImpl>()?;
-        let length = value.chars().count();
+        let length = value.encode_utf16().count() as i32;
+        Self::new_with_factory(default_token_attribute_factory(), value, length)
+    }
+
+    /// Creates a stream over `attribute_factory` that will emit `value` as a
+    /// single token with the offsets `0` and `length`.
+    ///
+    /// Equivalent to `Analyzer.StringTokenStream(AttributeFactory, String,
+    /// int)` (`Analyzer.java:540-575`).
+    pub fn new_with_factory(
+        attribute_factory: Arc<dyn AttributeFactory>,
+        value: String,
+        length: i32,
+    ) -> Result<Self> {
+        let mut source = AttributeSource::new_with_factory(attribute_factory);
+        source.add_attribute_interface::<dyn CharTermAttribute>()?;
+        source.add_attribute_interface::<dyn OffsetAttribute>()?;
         Ok(Self {
             source,
             value,
@@ -800,12 +821,14 @@ impl TokenStream for StringTokenStream {
             return Ok(false);
         }
         self.source.clear_attributes();
-        let mut term = self
-            .source
-            .get_attribute_mut::<PackedTokenAttributeImpl>()
-            .unwrap();
-        term.append_string(&self.value);
-        term.set_offset(0, self.length as i32);
+        self.source
+            .get_attribute_interface_mut::<dyn CharTermAttribute>()
+            .expect("INVARIANT: added by the constructor")
+            .append_string(&self.value);
+        self.source
+            .get_attribute_interface_mut::<dyn OffsetAttribute>()
+            .expect("INVARIANT: added by the constructor")
+            .set_offset(0, self.length);
         self.used = true;
         Ok(true)
     }
@@ -817,11 +840,10 @@ impl TokenStream for StringTokenStream {
 
     fn end(&mut self) -> Result<()> {
         self.source.end_attributes();
-        let mut term = self
-            .source
-            .get_attribute_mut::<PackedTokenAttributeImpl>()
-            .unwrap();
-        term.set_offset(self.length as i32, self.length as i32);
+        self.source
+            .get_attribute_interface_mut::<dyn OffsetAttribute>()
+            .expect("INVARIANT: added by the constructor")
+            .set_offset(self.length, self.length);
         Ok(())
     }
 
@@ -1301,8 +1323,16 @@ pub trait Analyzer: Debug + Send + Sync {
             builder
         };
 
-        let string_stream = Box::new(StringTokenStream::new(filtered_text.clone())?);
+        let attribute_factory = self.attribute_factory(field_name);
+        let string_stream = Box::new(StringTokenStream::new_with_factory(
+            attribute_factory,
+            filtered_text,
+            text.encode_utf16().count() as i32,
+        )?);
         let mut token_stream = self.normalize_token_stream(field_name, string_stream);
+        token_stream
+            .attribute_source_mut()
+            .add_attribute_interface::<dyn TermToBytesRefAttribute>()?;
 
         token_stream.reset()?;
         if !token_stream.increment_token()? {
@@ -1313,10 +1343,8 @@ pub trait Analyzer: Debug + Send + Sync {
         }
         let term = token_stream
             .attribute_source()
-            .get_attribute::<PackedTokenAttributeImpl>()
-            .ok_or_else(|| {
-                LuceneError::illegal_state("missing TermToBytesRefAttribute".to_string())
-            })?
+            .get_attribute_interface::<dyn TermToBytesRefAttribute>()
+            .expect("INVARIANT: added above")
             .get_bytes_ref();
         let term = BytesRef::deep_copy_of(&term);
         if token_stream.increment_token()? {
@@ -1346,6 +1374,26 @@ pub trait Analyzer: Debug + Send + Sync {
 pub trait AnalyzerWrapperLogic: Debug + Send + Sync {
     /// Returns the analyzer to delegate to for `field_name`.
     fn get_wrapped_analyzer(&self, field_name: &str) -> &dyn Analyzer;
+
+    /// The wrapper's position increment gap for `field_name`.
+    ///
+    /// Equivalent to `AnalyzerWrapper.getPositionIncrementGap(String)`
+    /// (`AnalyzerWrapper.java:129-132`), which a subclass may override
+    /// (LUCENE-5324); the default asks the wrapped analyzer.
+    fn get_position_increment_gap(&self, field_name: &str) -> i32 {
+        self.get_wrapped_analyzer(field_name)
+            .get_position_increment_gap(field_name)
+    }
+
+    /// The wrapper's offset gap for `field_name`.
+    ///
+    /// Equivalent to `AnalyzerWrapper.getOffsetGap(String)`
+    /// (`AnalyzerWrapper.java:134-137`), which a subclass may override
+    /// (LUCENE-5324); the default asks the wrapped analyzer.
+    fn get_offset_gap(&self, field_name: &str) -> i32 {
+        self.get_wrapped_analyzer(field_name)
+            .get_offset_gap(field_name)
+    }
 
     /// Wraps the components produced by the wrapped analyzer.
     ///
@@ -1461,15 +1509,11 @@ impl Analyzer for AnalyzerWrapper {
     }
 
     fn get_position_increment_gap(&self, field_name: &str) -> i32 {
-        self.logic
-            .get_wrapped_analyzer(field_name)
-            .get_position_increment_gap(field_name)
+        self.logic.get_position_increment_gap(field_name)
     }
 
     fn get_offset_gap(&self, field_name: &str) -> i32 {
-        self.logic
-            .get_wrapped_analyzer(field_name)
-            .get_offset_gap(field_name)
+        self.logic.get_offset_gap(field_name)
     }
 }
 
@@ -1481,6 +1525,26 @@ impl Analyzer for AnalyzerWrapper {
 pub trait DelegatingAnalyzerWrapperLogic: Debug + Send + Sync {
     /// Returns the analyzer to delegate to for `field_name`.
     fn get_wrapped_analyzer(&self, field_name: &str) -> &dyn Analyzer;
+
+    /// The wrapper's position increment gap for `field_name`.
+    ///
+    /// Equivalent to `AnalyzerWrapper.getPositionIncrementGap(String)`
+    /// (`AnalyzerWrapper.java:129-132`), which a subclass may override
+    /// (LUCENE-5324); the default asks the wrapped analyzer.
+    fn get_position_increment_gap(&self, field_name: &str) -> i32 {
+        self.get_wrapped_analyzer(field_name)
+            .get_position_increment_gap(field_name)
+    }
+
+    /// The wrapper's offset gap for `field_name`.
+    ///
+    /// Equivalent to `AnalyzerWrapper.getOffsetGap(String)`
+    /// (`AnalyzerWrapper.java:134-137`), which a subclass may override
+    /// (LUCENE-5324); the default asks the wrapped analyzer.
+    fn get_offset_gap(&self, field_name: &str) -> i32 {
+        self.get_wrapped_analyzer(field_name)
+            .get_offset_gap(field_name)
+    }
 }
 
 /// An analyzer wrapper that delegates all work to another analyzer without
@@ -1555,15 +1619,11 @@ impl Analyzer for DelegatingAnalyzerWrapper {
     }
 
     fn get_position_increment_gap(&self, field_name: &str) -> i32 {
-        self.logic
-            .get_wrapped_analyzer(field_name)
-            .get_position_increment_gap(field_name)
+        self.logic.get_position_increment_gap(field_name)
     }
 
     fn get_offset_gap(&self, field_name: &str) -> i32 {
-        self.logic
-            .get_wrapped_analyzer(field_name)
-            .get_offset_gap(field_name)
+        self.logic.get_offset_gap(field_name)
     }
 
     fn token_stream(

@@ -24,7 +24,10 @@
 //! [`MergingDirectoryReaderWrapper`], [`MismatchedCodecReader`],
 //! [`MismatchedDirectoryReader`], [`MismatchedLeafReader`],
 //! [`OwnCacheKeyMultiReader`], [`PointsStackTracker`] and
-//! [`PerThreadPKLookup`].
+//! [`PerThreadPKLookup`]. The writer side the analysis tests' indexing branch
+//! needs: [`RandomIndexWriter`] and the merge policies and listener
+//! `LuceneTestCase.newIndexWriterConfig` draws from, [`MockRandomMergePolicy`],
+//! [`AlcoholicMergePolicy`] and [`MockIndexWriterEventListener`].
 //!
 //! **Subclassing.** Java's `FilterLeafReader` and `FilterCodecReader` are
 //! abstract classes their subclasses extend, overriding some members and
@@ -412,6 +415,7 @@ pub(crate) fn ensure_open_unchecked(core: &rucene::index::index_reader::IndexRea
     core.ensure_open_unchecked();
 }
 
+pub mod alcoholic_merge_policy;
 pub mod all_deleted_filter_reader;
 pub mod asserting_directory_reader;
 pub mod asserting_leaf_reader;
@@ -422,11 +426,15 @@ pub mod merging_directory_reader_wrapper;
 pub mod mismatched_codec_reader;
 pub mod mismatched_directory_reader;
 pub mod mismatched_leaf_reader;
+pub mod mock_index_writer_event_listener;
+pub mod mock_random_merge_policy;
 pub mod own_cache_key_multi_reader;
 pub mod per_thread_pk_lookup;
 pub mod points_stack_tracker;
+pub mod random_index_writer;
 mod shared_producers;
 
+pub use alcoholic_merge_policy::AlcoholicMergePolicy;
 pub use all_deleted_filter_reader::AllDeletedFilterReader;
 pub use asserting_directory_reader::AssertingDirectoryReader;
 pub use asserting_leaf_reader::AssertingLeafReader;
@@ -437,6 +445,9 @@ pub use merging_directory_reader_wrapper::MergingDirectoryReaderWrapper;
 pub use mismatched_codec_reader::MismatchedCodecReader;
 pub use mismatched_directory_reader::MismatchedDirectoryReader;
 pub use mismatched_leaf_reader::MismatchedLeafReader;
+pub use mock_index_writer_event_listener::MockIndexWriterEventListener;
+pub use mock_random_merge_policy::MockRandomMergePolicy;
 pub use own_cache_key_multi_reader::OwnCacheKeyMultiReader;
 pub use per_thread_pk_lookup::PerThreadPKLookup;
 pub use points_stack_tracker::PointsStackTracker;
+pub use random_index_writer::RandomIndexWriter;

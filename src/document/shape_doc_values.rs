@@ -1746,7 +1746,7 @@ macro_rules! shape_doc_values_field_delegates {
                 None
             }
 
-            fn reader_value(&mut self) -> Option<&mut dyn std::io::Read> {
+            fn reader_value(&self) -> Option<crate::document::SharedReader> {
                 None
             }
 

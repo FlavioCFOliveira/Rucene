@@ -840,7 +840,7 @@ fn tiered_merge_score_and_explanation_match_lucene() {
             )
             .unwrap();
     }
-    let mut policy = TieredMergePolicy::new();
+    let policy = TieredMergePolicy::new();
     policy.set_floor_segment_mb(0.002).unwrap();
     policy.set_max_merged_segment_mb(0.06).unwrap();
     policy.set_segments_per_tier(3.0).unwrap();

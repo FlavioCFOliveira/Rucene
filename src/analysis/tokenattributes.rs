@@ -376,6 +376,22 @@ impl Write for CharTermAttributeImpl {
 }
 
 impl AttributeImpl for CharTermAttributeImpl {
+    fn as_char_term_attribute(&self) -> Option<&dyn CharTermAttribute> {
+        Some(self)
+    }
+
+    fn as_char_term_attribute_mut(&mut self) -> Option<&mut dyn CharTermAttribute> {
+        Some(self)
+    }
+
+    fn as_term_to_bytes_ref_attribute(&self) -> Option<&dyn TermToBytesRefAttribute> {
+        Some(self)
+    }
+
+    fn as_term_to_bytes_ref_attribute_mut(&mut self) -> Option<&mut dyn TermToBytesRefAttribute> {
+        Some(self)
+    }
+
     fn clear(&mut self) {
         self.term_length = 0;
     }
@@ -525,6 +541,14 @@ impl OffsetAttribute for OffsetAttributeImpl {
 }
 
 impl AttributeImpl for OffsetAttributeImpl {
+    fn as_offset_attribute(&self) -> Option<&dyn OffsetAttribute> {
+        Some(self)
+    }
+
+    fn as_offset_attribute_mut(&mut self) -> Option<&mut dyn OffsetAttribute> {
+        Some(self)
+    }
+
     fn clear(&mut self) {
         self.start_offset = 0;
         self.end_offset = 0;
@@ -649,6 +673,16 @@ impl PositionIncrementAttribute for PositionIncrementAttributeImpl {
 }
 
 impl AttributeImpl for PositionIncrementAttributeImpl {
+    fn as_position_increment_attribute(&self) -> Option<&dyn PositionIncrementAttribute> {
+        Some(self)
+    }
+
+    fn as_position_increment_attribute_mut(
+        &mut self,
+    ) -> Option<&mut dyn PositionIncrementAttribute> {
+        Some(self)
+    }
+
     fn clear(&mut self) {
         self.position_increment = 1;
     }
@@ -775,6 +809,14 @@ impl PositionLengthAttribute for PositionLengthAttributeImpl {
 }
 
 impl AttributeImpl for PositionLengthAttributeImpl {
+    fn as_position_length_attribute(&self) -> Option<&dyn PositionLengthAttribute> {
+        Some(self)
+    }
+
+    fn as_position_length_attribute_mut(&mut self) -> Option<&mut dyn PositionLengthAttribute> {
+        Some(self)
+    }
+
     fn clear(&mut self) {
         self.position_length = 1;
     }
@@ -895,6 +937,14 @@ impl TypeAttribute for TypeAttributeImpl {
 }
 
 impl AttributeImpl for TypeAttributeImpl {
+    fn as_type_attribute(&self) -> Option<&dyn TypeAttribute> {
+        Some(self)
+    }
+
+    fn as_type_attribute_mut(&mut self) -> Option<&mut dyn TypeAttribute> {
+        Some(self)
+    }
+
     fn clear(&mut self) {
         self.type_value = DEFAULT_TYPE.to_string();
     }
@@ -1152,6 +1202,64 @@ impl Hash for PackedTokenAttributeImpl {
 }
 
 impl AttributeImpl for PackedTokenAttributeImpl {
+    fn as_char_term_attribute(&self) -> Option<&dyn CharTermAttribute> {
+        Some(self)
+    }
+
+    fn as_char_term_attribute_mut(&mut self) -> Option<&mut dyn CharTermAttribute> {
+        Some(self)
+    }
+
+    fn as_term_to_bytes_ref_attribute(&self) -> Option<&dyn TermToBytesRefAttribute> {
+        Some(self)
+    }
+
+    fn as_term_to_bytes_ref_attribute_mut(&mut self) -> Option<&mut dyn TermToBytesRefAttribute> {
+        Some(self)
+    }
+
+    fn as_offset_attribute(&self) -> Option<&dyn OffsetAttribute> {
+        Some(self)
+    }
+
+    fn as_offset_attribute_mut(&mut self) -> Option<&mut dyn OffsetAttribute> {
+        Some(self)
+    }
+
+    fn as_position_increment_attribute(&self) -> Option<&dyn PositionIncrementAttribute> {
+        Some(self)
+    }
+
+    fn as_position_increment_attribute_mut(
+        &mut self,
+    ) -> Option<&mut dyn PositionIncrementAttribute> {
+        Some(self)
+    }
+
+    fn as_position_length_attribute(&self) -> Option<&dyn PositionLengthAttribute> {
+        Some(self)
+    }
+
+    fn as_position_length_attribute_mut(&mut self) -> Option<&mut dyn PositionLengthAttribute> {
+        Some(self)
+    }
+
+    fn as_type_attribute(&self) -> Option<&dyn TypeAttribute> {
+        Some(self)
+    }
+
+    fn as_type_attribute_mut(&mut self) -> Option<&mut dyn TypeAttribute> {
+        Some(self)
+    }
+
+    fn as_term_frequency_attribute(&self) -> Option<&dyn TermFrequencyAttribute> {
+        Some(self)
+    }
+
+    fn as_term_frequency_attribute_mut(&mut self) -> Option<&mut dyn TermFrequencyAttribute> {
+        Some(self)
+    }
+
     fn clear(&mut self) {
         self.term.clear();
         self.start_offset = 0;
@@ -1354,6 +1462,14 @@ impl TermFrequencyAttribute for TermFrequencyAttributeImpl {
 }
 
 impl AttributeImpl for TermFrequencyAttributeImpl {
+    fn as_term_frequency_attribute(&self) -> Option<&dyn TermFrequencyAttribute> {
+        Some(self)
+    }
+
+    fn as_term_frequency_attribute_mut(&mut self) -> Option<&mut dyn TermFrequencyAttribute> {
+        Some(self)
+    }
+
     fn clear(&mut self) {
         self.term_frequency = 1;
     }
@@ -1467,6 +1583,14 @@ impl Hash for KeywordAttributeImpl {
 }
 
 impl AttributeImpl for KeywordAttributeImpl {
+    fn as_keyword_attribute(&self) -> Option<&dyn KeywordAttribute> {
+        Some(self)
+    }
+
+    fn as_keyword_attribute_mut(&mut self) -> Option<&mut dyn KeywordAttribute> {
+        Some(self)
+    }
+
     fn clear(&mut self) {
         self.keyword = false;
     }
@@ -1571,6 +1695,14 @@ impl FlagsAttribute for FlagsAttributeImpl {
 }
 
 impl AttributeImpl for FlagsAttributeImpl {
+    fn as_flags_attribute(&self) -> Option<&dyn FlagsAttribute> {
+        Some(self)
+    }
+
+    fn as_flags_attribute_mut(&mut self) -> Option<&mut dyn FlagsAttribute> {
+        Some(self)
+    }
+
     fn clear(&mut self) {
         self.flags = 0;
     }
@@ -1687,6 +1819,14 @@ impl Clone for PayloadAttributeImpl {
 }
 
 impl AttributeImpl for PayloadAttributeImpl {
+    fn as_payload_attribute(&self) -> Option<&dyn PayloadAttribute> {
+        Some(self)
+    }
+
+    fn as_payload_attribute_mut(&mut self) -> Option<&mut dyn PayloadAttribute> {
+        Some(self)
+    }
+
     fn clear(&mut self) {
         self.payload = None;
     }
@@ -1823,6 +1963,22 @@ impl Clone for BytesTermAttributeImpl {
 }
 
 impl AttributeImpl for BytesTermAttributeImpl {
+    fn as_bytes_term_attribute(&self) -> Option<&dyn BytesTermAttribute> {
+        Some(self)
+    }
+
+    fn as_bytes_term_attribute_mut(&mut self) -> Option<&mut dyn BytesTermAttribute> {
+        Some(self)
+    }
+
+    fn as_term_to_bytes_ref_attribute(&self) -> Option<&dyn TermToBytesRefAttribute> {
+        Some(self)
+    }
+
+    fn as_term_to_bytes_ref_attribute_mut(&mut self) -> Option<&mut dyn TermToBytesRefAttribute> {
+        Some(self)
+    }
+
     fn clear(&mut self) {
         self.bytes = None;
     }

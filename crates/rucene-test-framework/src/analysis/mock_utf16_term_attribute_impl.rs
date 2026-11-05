@@ -117,6 +117,22 @@ impl TermToBytesRefAttribute for MockUTF16TermAttributeImpl {
 }
 
 impl AttributeImpl for MockUTF16TermAttributeImpl {
+    fn as_char_term_attribute(&self) -> Option<&dyn CharTermAttribute> {
+        Some(self)
+    }
+
+    fn as_char_term_attribute_mut(&mut self) -> Option<&mut dyn CharTermAttribute> {
+        Some(self)
+    }
+
+    fn as_term_to_bytes_ref_attribute(&self) -> Option<&dyn TermToBytesRefAttribute> {
+        Some(self)
+    }
+
+    fn as_term_to_bytes_ref_attribute_mut(&mut self) -> Option<&mut dyn TermToBytesRefAttribute> {
+        Some(self)
+    }
+
     fn clear(&mut self) {
         self.inner.clear();
     }

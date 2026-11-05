@@ -693,6 +693,34 @@ impl SorterDocMap {
         self.new_to_old.get(i64::from(doc_id)) as i32
     }
 
+    /// Builds the map whose `oldToNew(i)` is `old_to_new[i]`, a permutation of
+    /// `0..old_to_new.len()`; `newToOld` is its inverse.
+    ///
+    /// Java lets any class subclass the abstract `Sorter.DocMap` with its own
+    /// `oldToNew`/`newToOld` (for example the reversing map of the test
+    /// framework's `MockRandomMergePolicy.reverse`, `MockRandomMergePolicy.java:
+    /// 266-312`); here every map is a `SorterDocMap`, so such a map is
+    /// materialised from its values, which it answers identically.
+    ///
+    /// # Errors
+    ///
+    /// `IllegalArgument` when `old_to_new` is not a permutation, and the error
+    /// building the packed values raises.
+    pub fn from_old_to_new(old_to_new: Vec<i32>) -> Result<Self> {
+        let max_doc = old_to_new.len();
+        let mut new_to_old = vec![-1i32; max_doc];
+        for (old, &new) in old_to_new.iter().enumerate() {
+            if new < 0 || new as usize >= max_doc || new_to_old[new as usize] != -1 {
+                return Err(crate::error::LuceneError::IllegalArgument(format!(
+                    "oldToNew is not a permutation: oldToNew({old})={new}"
+                )));
+            }
+            new_to_old[new as usize] = old as i32;
+        }
+        let new_to_old = build_monotonic(new_to_old.into_iter().map(i64::from))?;
+        Ok(Self::unpacked(old_to_new, new_to_old, max_doc as i32))
+    }
+
     /// Returns how many documents the map covers.
     ///
     /// Equivalent to `PackableDocMap.size()`.

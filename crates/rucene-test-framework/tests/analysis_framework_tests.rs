@@ -10,7 +10,10 @@ use std::sync::Arc;
 
 use randomizedtesting::jdk::exception::Throwable;
 use randomizedtesting::jdk::reflect::{Class, Constructor, Field, Method, Value};
-use randomizedtesting::junit::{Assert, ClassRule, JUnitCore, Request, Test};
+use randomizedtesting::junit::{
+    AfterClass, Assert, BeforeClass, ClassRule, JUnitCore, Request, Rule, Test,
+};
+use randomizedtesting::rules::TestRuleAdapterRule;
 use rucene::analysis::tokenattributes::{
     CharTermAttribute, FlagsAttribute, OffsetAttribute, PayloadAttribute,
     PositionIncrementAttribute, PositionLengthAttribute, TermFrequencyAttribute, TypeAttribute,
@@ -41,9 +44,14 @@ use rucene_test_framework::analysis::{
     components, shared, sink, tokenizer_components, BaseTokenStreamTestCase as B, MockAnalyzer,
     MockCharFilter, MockRandomLookaheadTokenFilter, MockSynonymFilter, MockTokenizer, Token,
 };
+use rucene_test_framework::search::similarities::{AssertingSimilarity, RandomSimilarity};
 use rucene_test_framework::util::automaton::AutomatonTestUtil;
 use rucene_test_framework::util::lucene_test_case::{
-    LuceneTestCase, CLASS_NAME_RULE, RANDOM_MULTIPLIER, TEST_NIGHTLY,
+    LiveIWCFlushMode, LuceneTestCase, CLASS_NAME_RULE, RANDOM_MULTIPLIER, SUITE_FAILURE_MARKER,
+    TEMP_FILES_CLEANUP_RULE, TEST_NIGHTLY,
+};
+use rucene_test_framework::util::test_rule_mark_failure::{
+    TestRuleMarkFailure, TestRuleMarkFailureRule,
 };
 use rucene_test_framework::util::TestUtil;
 
@@ -59,12 +67,72 @@ fn run_suite(name: &str, methods: &[(&'static str, TestFn)]) {
     let mut builder = Class::builder(name)
         .constructor(Constructor::no_args(|| ()))
         .field(
+            Field::new_static("suiteFailureMarker", "org.junit.rules.TestRule", || {
+                Value::TestRule(
+                    Arc::new(TestRuleMarkFailureRule(Arc::clone(&SUITE_FAILURE_MARKER)))
+                        as Arc<dyn randomizedtesting::junit::TestRule>,
+                )
+            })
+            .annotate(ClassRule),
+        )
+        .field(
             Field::new_static("classNameRule", "org.junit.rules.TestRule", || {
                 Value::TestRule(
                     Arc::clone(&CLASS_NAME_RULE) as Arc<dyn randomizedtesting::junit::TestRule>
                 )
             })
             .annotate(ClassRule),
+        )
+        .field(
+            Field::new_static("tempFilesCleanupRule", "org.junit.rules.TestRule", || {
+                Value::TestRule(
+                    Arc::new(TestRuleAdapterRule(Arc::clone(&TEMP_FILES_CLEANUP_RULE)))
+                        as Arc<dyn randomizedtesting::junit::TestRule>,
+                )
+            })
+            .annotate(ClassRule),
+        )
+        // `testFailureMarker = new TestRuleMarkFailure(suiteFailureMarker)`, the
+        // outer rule of the test rule chain.
+        .field(
+            Field::new_instance::<()>("testFailureMarker", "org.junit.rules.TestRule", |_| {
+                Value::TestRule(Arc::new(TestRuleMarkFailureRule(Arc::new(
+                    TestRuleMarkFailure::new(vec![Arc::clone(&SUITE_FAILURE_MARKER)]),
+                )))
+                    as Arc<dyn randomizedtesting::junit::TestRule>)
+            })
+            .annotate(Rule),
+        )
+        // The class environment `TestRuleSetupAndRestoreClassEnv.before()`
+        // sets up (task #348 ports the rule): the time zone, the similarity
+        // and the live flush mode the writer side reads, drawn as it draws
+        // them.
+        .method(
+            Method::new("setUpClassEnv")
+                .annotate(BeforeClass)
+                .static_body(|| {
+                    let random = LuceneTestCase::random();
+                    LuceneTestCase::set_class_env_time_zone(Some(
+                        LuceneTestCase::random_time_zone(&*random),
+                    ));
+                    LuceneTestCase::set_class_env_similarity(Some(Arc::new(
+                        AssertingSimilarity::new(Arc::new(RandomSimilarity::new(&*random))),
+                    )));
+                    LuceneTestCase::set_live_iwc_flush_mode(Some(match random.next_int_bound(3) {
+                        0 => LiveIWCFlushMode::ByRam,
+                        1 => LiveIWCFlushMode::ByDocs,
+                        _ => LiveIWCFlushMode::Either,
+                    }));
+                }),
+        )
+        .method(
+            Method::new("restoreClassEnv")
+                .annotate(AfterClass)
+                .static_body(|| {
+                    LuceneTestCase::set_class_env_time_zone(None);
+                    LuceneTestCase::set_class_env_similarity(None);
+                    LuceneTestCase::set_live_iwc_flush_mode(None);
+                }),
         );
     for (method, body) in methods {
         let body = *body;
@@ -433,6 +501,99 @@ mod test_mock_analyzer {
         );
         B::check_one_term(&a, "abc", "aabc")
     }
+
+    /// The anonymous `DelegatingAnalyzerWrapper` of `testChangeGaps`.
+    #[derive(Debug)]
+    struct ChangeGaps {
+        delegate: Arc<dyn Analyzer>,
+        position_gap: i32,
+        offset_gap: i32,
+    }
+
+    impl rucene::analysis::DelegatingAnalyzerWrapperLogic for ChangeGaps {
+        fn get_wrapped_analyzer(&self, _field_name: &str) -> &dyn Analyzer {
+            &*self.delegate
+        }
+        fn get_position_increment_gap(&self, _field_name: &str) -> i32 {
+            self.position_gap
+        }
+        fn get_offset_gap(&self, _field_name: &str) -> i32 {
+            self.offset_gap
+        }
+    }
+
+    pub fn test_change_gaps() -> Result<()> {
+        use rucene::document::{Document, Field as DocField, FieldType};
+        use rucene::index::{IndexOptions, IndexReader, POSTINGS_ENUM_ALL};
+        use rucene_test_framework::index::RandomIndexWriter;
+
+        // LUCENE-5324: check that it is possible to change the wrapper's gaps
+        let position_gap = random().next_int_bound(1000);
+        let offset_gap = random().next_int_bound(1000);
+        let delegate: Arc<dyn Analyzer> = Arc::new(MockAnalyzer::new(&*random()));
+        // delegate.getReuseStrategy(): MockAnalyzer's PER_FIELD_REUSE_STRATEGY
+        let a: Arc<dyn Analyzer> = Arc::new(rucene::analysis::DelegatingAnalyzerWrapper::new(
+            Box::new(PerFieldReuseStrategy),
+            Box::new(ChangeGaps {
+                delegate,
+                position_gap,
+                offset_gap,
+            }),
+        ));
+
+        let mut dir = LuceneTestCase::new_directory();
+        let writer = RandomIndexWriter::new(&*random(), dir.as_directory(), a)?;
+        let mut doc = Document::new();
+        let mut ft = FieldType::new();
+        ft.set_index_options(IndexOptions::DOCS)?;
+        ft.set_tokenized(true)?;
+        ft.set_store_term_vectors(true)?;
+        ft.set_store_term_vector_positions(true)?;
+        ft.set_store_term_vector_offsets(true)?;
+        doc.add(Box::new(DocField::new("f", "a".to_string(), ft.clone())?));
+        doc.add(Box::new(DocField::new("f", "a".to_string(), ft)?));
+        writer.add_document(&doc)?;
+        let directory_reader = writer.get_reader()?;
+        let reader = LuceneTestCase::get_only_leaf_reader(
+            Arc::clone(&directory_reader) as Arc<dyn IndexReader>
+        )?;
+        let fields = reader
+            .term_vectors()?
+            .get(0)?
+            .expect("term vectors of doc 0");
+        let terms = fields.terms("f")?.expect("terms of f");
+        let mut te = terms.iterator()?;
+        let next = te.next()?;
+        Assert::assert_true_msg("expected:<[61]> but was:<null>", next.is_some());
+        Assert::assert_equals(LuceneTestCase::new_bytes_ref_str("a"), next.unwrap());
+        let mut dpe = te.postings(None, POSTINGS_ENUM_ALL)?;
+        Assert::assert_equals(0, dpe.next_doc()?);
+        Assert::assert_equals(2, dpe.freq()?);
+        Assert::assert_equals(0, dpe.next_position()?);
+        Assert::assert_equals(0, dpe.start_offset());
+        let end_offset = dpe.end_offset();
+        Assert::assert_equals(1 + position_gap, dpe.next_position()?);
+        Assert::assert_equals(1 + end_offset + offset_gap, dpe.end_offset());
+        let next = te.next()?;
+        Assert::assert_true_msg(
+            &format!(
+                "expected:<null> but was:<{}>",
+                next.as_ref().map(ToString::to_string).unwrap_or_default()
+            ),
+            next.is_none(),
+        );
+        drop(dpe);
+        drop(te);
+        drop(terms);
+        drop(fields);
+        drop(reader);
+        directory_reader.close()?;
+        drop(directory_reader);
+        writer.close()?;
+        // `writer.w.getDirectory().close()`: the writer's handle goes first.
+        drop(writer);
+        dir.close()
+    }
 }
 
 #[test]
@@ -457,6 +618,7 @@ fn test_mock_analyzer() {
             ("testRandomRegexps", test_random_regexps),
             ("testForwardOffsets", test_forward_offsets),
             ("testWrapReader", test_wrap_reader),
+            ("testChangeGaps", test_change_gaps),
         ],
     );
 }
@@ -1113,5 +1275,192 @@ fn test_lookahead_token_filter() {
             ("testNeverCallingPeek", test_never_calling_peek),
             ("testMissedFirstToken", test_missed_first_token),
         ],
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Core regressions the indexing branch of `checkRandomData` and
+// `testChangeGaps` depend on, each on one factory pick or value kind.
+// ---------------------------------------------------------------------------
+
+/// Indexes `field` in a one-document index and returns the term vector of
+/// field `f` of document 0 as `(term bytes, start offsets, end offsets)` per
+/// term.
+fn index_and_read_vectors(
+    field: rucene::document::Field,
+    analyzer: Arc<dyn Analyzer>,
+) -> Vec<(Vec<u8>, Vec<i32>, Vec<i32>)> {
+    use rucene::document::Document;
+    use rucene::index::index_writer::IndexWriter;
+    use rucene::index::index_writer_config::IndexWriterConfig;
+    use rucene::index::{directory_reader, IndexReader, POSTINGS_ENUM_ALL};
+    use rucene::store::{ByteBuffersDirectory, Directory};
+
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+    let writer =
+        IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::with_analyzer(analyzer)).unwrap();
+    let mut doc = Document::new();
+    doc.add(Box::new(field));
+    writer.add_document(&doc).unwrap();
+    writer.commit().unwrap();
+    writer.close().unwrap();
+    let reader = directory_reader::open(dir).unwrap();
+    let leaves = (Arc::clone(&reader) as Arc<dyn IndexReader>)
+        .leaves()
+        .unwrap();
+    let leaf = leaves[0].leaf_reader();
+    let fields = leaf.term_vectors().unwrap().get(0).unwrap().unwrap();
+    let terms = fields.terms("f").unwrap().unwrap();
+    let mut te = terms.iterator().unwrap();
+    let mut out = Vec::new();
+    while let Some(term) = te.next().unwrap() {
+        let mut postings = te.postings(None, POSTINGS_ENUM_ALL).unwrap();
+        postings.next_doc().unwrap();
+        let (mut starts, mut ends) = (Vec::new(), Vec::new());
+        for _ in 0..postings.freq().unwrap() {
+            postings.next_position().unwrap();
+            starts.push(postings.start_offset());
+            ends.push(postings.end_offset());
+        }
+        out.push((term.slice().to_vec(), starts, ends));
+    }
+    reader.close().unwrap();
+    out
+}
+
+fn vectors_type() -> rucene::document::FieldType {
+    let mut ft =
+        rucene::document::FieldType::new_from(rucene::document::TextField::type_not_stored());
+    ft.set_store_term_vectors(true).unwrap();
+    ft.set_store_term_vector_positions(true).unwrap();
+    ft.set_store_term_vector_offsets(true).unwrap();
+    ft
+}
+
+/// A stream whose attributes are one `Token` (`Token.TOKEN_ATTRIBUTE_FACTORY`)
+/// is indexed through the attribute interfaces, as Java's
+/// `FieldInvertState` reads `TermToBytesRefAttribute`, `OffsetAttribute` and
+/// `PositionIncrementAttribute` whatever their implementation.
+#[test]
+fn token_factory_stream_is_indexed_by_interface() {
+    let tokens = vec![
+        Token::with_offsets("ab", 0, 2),
+        Token::with_offsets("cd", 3, 5),
+    ];
+    let stream = Rc::new(RefCell::new(
+        rucene_test_framework::analysis::CannedTokenStream::new(tokens),
+    ));
+    let field =
+        rucene::document::Field::new_with_token_stream("f", stream, vectors_type()).unwrap();
+    let vectors =
+        index_and_read_vectors(field, Arc::new(rucene::analysis::StandardAnalyzer::new()));
+    assert_eq!(
+        vectors,
+        vec![
+            (b"ab".to_vec(), vec![0], vec![2]),
+            (b"cd".to_vec(), vec![3], vec![5]),
+        ]
+    );
+}
+
+/// A field whose value is a `Reader` is analyzed from that reader, as
+/// `Field.tokenStream` does with `analyzer.tokenStream(name(),
+/// readerValue())`.
+#[test]
+fn reader_valued_field_is_analyzed_from_its_reader() {
+    let field = rucene::document::Field::new_with_reader(
+        "f",
+        Box::new(StringCharReader::new("ab cd")),
+        vectors_type(),
+    )
+    .unwrap();
+    let vectors =
+        index_and_read_vectors(field, Arc::new(rucene::analysis::StandardAnalyzer::new()));
+    assert_eq!(
+        vectors,
+        vec![
+            (b"ab".to_vec(), vec![0], vec![2]),
+            (b"cd".to_vec(), vec![3], vec![5]),
+        ]
+    );
+}
+
+/// `Analyzer.normalize` builds its stream over `attributeFactory(fieldName)`:
+/// `MockBytesAnalyzer`'s `MockUTF16TermAttributeImpl` turns the term into its
+/// UTF-16LE bytes.
+#[test]
+fn normalize_uses_the_field_attribute_factory() {
+    let a = rucene_test_framework::analysis::MockBytesAnalyzer::new();
+    let bytes = a.normalize("f", "ab").unwrap();
+    assert_eq!(bytes.slice(), &[0x61, 0x00, 0x62, 0x00]);
+}
+
+/// `RandomIndexWriter.mockIndexWriter`'s writer has its test points enabled
+/// (`isEnableTestPoints()` overridden to `true`): the `TP` messages reach the
+/// `TestPoint` through the `TestPointInfoStream`.
+#[test]
+fn mock_index_writer_enables_test_points() {
+    use rucene::document::{Document, Store, StringField};
+    use rucene::index::index_writer_config::IndexWriterConfig;
+    use rucene::store::{ByteBuffersDirectory, Directory};
+    use rucene_test_framework::index::random_index_writer::TestPoint;
+    use rucene_test_framework::index::RandomIndexWriter;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Counting(AtomicUsize);
+    impl TestPoint for Counting {
+        fn apply(&self, _message: &str) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    let counting = Arc::new(Counting(AtomicUsize::new(0)));
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+    let writer = RandomIndexWriter::mock_index_writer_with_test_point(
+        &randomizedtesting::jdk::random::JdkRandom::new(7),
+        dir,
+        IndexWriterConfig::new(),
+        Arc::clone(&counting) as Arc<dyn TestPoint>,
+    )
+    .unwrap();
+    Assert::assert_true(writer.is_enable_test_points());
+    let mut doc = Document::new();
+    doc.add(Box::new(
+        StringField::new("id", "1".to_string(), Store::NO).unwrap(),
+    ));
+    writer.add_document(&doc).unwrap();
+    writer.commit().unwrap();
+    writer.close().unwrap();
+    Assert::assert_true_msg(
+        "no test point reached the TestPoint",
+        counting.0.load(Ordering::Relaxed) > 0,
+    );
+}
+
+/// `MockBytesAnalyzer` indexes the UTF-16LE bytes its
+/// `MockUTF16TermAttributeImpl` gives for the term (`TermToBytesRefAttribute`
+/// read by interface), as in Java. Its `MockTokenizer` draws from the
+/// randomized context, so the check runs as a suite.
+fn mock_bytes_analyzer_indexes_utf16_bytes() -> Result<()> {
+    let mut ft = vectors_type();
+    ft.set_store_term_vector_offsets(false)?;
+    let field = rucene::document::Field::new("f", "ab".to_string(), ft)?;
+    let vectors = index_and_read_vectors(
+        field,
+        Arc::new(rucene_test_framework::analysis::MockBytesAnalyzer::new()),
+    );
+    Assert::assert_equals(1, vectors.len() as i32);
+    Assert::assert_true(vectors[0].0 == [0x61, 0x00, 0x62, 0x00]);
+    Ok(())
+}
+
+#[test]
+fn test_mock_bytes_analyzer_indexing() {
+    run_suite(
+        "org.apache.lucene.tests.analysis.MockBytesAnalyzerIndexing",
+        &[(
+            "testIndexesUtf16Bytes",
+            mock_bytes_analyzer_indexes_utf16_bytes,
+        )],
     );
 }

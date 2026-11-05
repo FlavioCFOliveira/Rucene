@@ -364,6 +364,24 @@ pub type DoMergeOverride = Arc<
 /// [`DoMergeOverride`] overrides `doMerge`.
 pub type HandleMergeExceptionOverride = Arc<dyn Fn(LuceneError) + Send + Sync>;
 
+/// Overrides `ConcurrentMergeScheduler.maybeStall(MergeSource)`, as
+/// [`DoMergeOverride`] overrides `doMerge`.
+///
+/// Java's `maybeStall` is `synchronized`; the hook runs while the scheduler's
+/// lock is held, so it must not call a method of the scheduler that takes it.
+/// The one override Lucene's test framework writes returns `true`
+/// (`LuceneTestCase.newIndexWriterConfig`, `LuceneTestCase.java:983-989`).
+pub type MaybeStallOverride = Arc<dyn Fn(&Arc<dyn MergeSource>) -> Result<bool> + Send + Sync>;
+
+/// Overrides `ConcurrentMergeScheduler.getIntraMergeExecutor(OneMerge)`, as
+/// [`DoMergeOverride`] overrides `doMerge`. The closure receives the
+/// scheduler so it can read
+/// [`ConcurrentMergeScheduler::intra_merge_executor`], Java's protected
+/// `intraMergeExecutor` field.
+pub type IntraMergeExecutorOverride = Arc<
+    dyn Fn(&ConcurrentMergeScheduler, &OneMerge) -> Result<Option<Arc<dyn Executor>>> + Send + Sync,
+>;
+
 /// A scheduler that runs each merge on a background thread of its own.
 ///
 /// Equivalent to `org.apache.lucene.index.ConcurrentMergeScheduler`:
@@ -421,6 +439,10 @@ struct CmsShared {
     do_merge_override: Mutex<Option<DoMergeOverride>>,
     /// The `handleMergeException` override, if one was installed.
     handle_merge_exception_override: Mutex<Option<HandleMergeExceptionOverride>>,
+    /// See [`MaybeStallOverride`].
+    maybe_stall_override: Mutex<Option<MaybeStallOverride>>,
+    /// See [`IntraMergeExecutorOverride`].
+    intra_merge_executor_override: Mutex<Option<IntraMergeExecutorOverride>>,
     /// The executor big merges run their intra-merge work on, created by
     /// `initialize` and shut down by `close`.
     ///
@@ -663,6 +685,8 @@ impl ConcurrentMergeScheduler {
                 suppress_exceptions: AtomicBool::new(false),
                 do_merge_override: Mutex::new(None),
                 handle_merge_exception_override: Mutex::new(None),
+                maybe_stall_override: Mutex::new(None),
+                intra_merge_executor_override: Mutex::new(None),
                 intra_merge_executor: Mutex::new(None),
                 executor: Arc::new(SameThreadExecutorService::new()),
             }),
@@ -748,6 +772,41 @@ impl ConcurrentMergeScheduler {
             .handle_merge_exception_override
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = hook;
+    }
+
+    /// Installs, or with `None` removes, the override of `maybeStall`.
+    ///
+    /// See [`MaybeStallOverride`].
+    pub fn set_maybe_stall_override(&self, hook: Option<MaybeStallOverride>) {
+        *self
+            .shared
+            .maybe_stall_override
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = hook;
+    }
+
+    /// Installs, or with `None` removes, the override of
+    /// `getIntraMergeExecutor`.
+    ///
+    /// See [`IntraMergeExecutorOverride`].
+    pub fn set_intra_merge_executor_override(&self, hook: Option<IntraMergeExecutorOverride>) {
+        *self
+            .shared
+            .intra_merge_executor_override
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = hook;
+    }
+
+    /// The protected field `ConcurrentMergeScheduler.intraMergeExecutor`
+    /// (`ConcurrentMergeScheduler.java:105`): the executor `initialize`
+    /// creates, `None` before it.
+    pub fn intra_merge_executor(&self) -> Option<Arc<dyn Executor>> {
+        self.shared
+            .intra_merge_executor
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .map(|executor| executor as Arc<dyn Executor>)
     }
 
     /// Sets how many merges may run at once and how many may be queued.
@@ -1157,6 +1216,15 @@ impl ConcurrentMergeScheduler {
         mut state: MutexGuard<'a, CmsState>,
         merge_source: &Arc<dyn MergeSource>,
     ) -> (MutexGuard<'a, CmsState>, Result<bool>) {
+        let hook = self
+            .shared
+            .maybe_stall_override
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some(hook) = hook {
+            return (state, hook(merge_source));
+        }
         let mut start_stall_time: i64 = 0;
         loop {
             let has_pending_merges = match merge_source.has_pending_merges() {
@@ -1839,6 +1907,15 @@ impl MergeScheduler for ConcurrentMergeScheduler {
     ///
     /// Never fails; the `Result` is the base method's.
     fn get_intra_merge_executor(&self, merge: &OneMerge) -> Result<Option<Arc<dyn Executor>>> {
+        let hook = self
+            .shared
+            .intra_merge_executor_override
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some(hook) = hook {
+            return hook(self, merge);
+        }
         let executor = self
             .shared
             .intra_merge_executor

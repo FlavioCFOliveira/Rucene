@@ -414,14 +414,11 @@ impl FieldsReader {
         let result = (|| -> Result<()> {
             for fi in read_state.field_infos.iter() {
                 if fi.index_options != IndexOptions::NONE {
-                    let format_name =
-                        fi.get_attribute(PER_FIELD_POSTINGS_FORMAT_KEY)
-                            .ok_or_else(|| {
-                                LuceneError::illegal_state(format!(
-                            "missing attribute: {PER_FIELD_POSTINGS_FORMAT_KEY} for field: {}",
-                            fi.name
-                        ))
-                            })?;
+                    // null formatName means the field is in fieldInfos, but has no postings!
+                    // (`PerFieldPostingsFormat.java:305-307`)
+                    let Some(format_name) = fi.get_attribute(PER_FIELD_POSTINGS_FORMAT_KEY) else {
+                        continue;
+                    };
                     let suffix =
                         fi.get_attribute(PER_FIELD_POSTINGS_SUFFIX_KEY)
                             .ok_or_else(|| {

@@ -4,7 +4,6 @@
 //! boost, a popularity score — inside the term frequency, so a query can
 //! combine it into the score without a doc-values lookup.
 
-use std::io::Read;
 use std::sync::Arc;
 
 use crate::analysis::tokenattributes::{
@@ -536,7 +535,7 @@ impl IndexableField for FeatureField {
         None
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 

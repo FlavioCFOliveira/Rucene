@@ -1039,3 +1039,35 @@ fn advance_into_a_bit_set_block_reads_each_documents_frequency() {
         );
     }
 }
+
+/// A field indexed with no token at all (`""` through the standard analyzer)
+/// is in the segment's field infos with no postings, so it carries no
+/// `PerFieldPostingsFormat.format` attribute: `PerFieldPostingsFormat.
+/// FieldsReader` skips it ("null formatName means the field is in
+/// fieldInfos, but has no postings!", `PerFieldPostingsFormat.java:305-307`)
+/// instead of failing to open the segment.
+#[test]
+fn indexed_field_without_postings_opens() {
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+    let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+    let mut doc = Document::new();
+    doc.add(Box::new(
+        TextField::new("empty", String::new(), Store::NO).unwrap(),
+    ));
+    doc.add(Box::new(
+        TextField::new("body", "some words".to_string(), Store::NO).unwrap(),
+    ));
+    writer.add_document(&doc).unwrap();
+    writer.commit().unwrap();
+    writer.close().unwrap();
+
+    let reader = directory_reader::open(Arc::clone(&dir)).unwrap();
+    let leaves = Arc::clone(&reader).leaves().unwrap();
+    assert_eq!(leaves.len(), 1);
+    let leaf = leaves[0].leaf_reader();
+    let info = leaf.get_field_infos().field_info("empty").cloned().unwrap();
+    assert_ne!(info.index_options, IndexOptions::NONE);
+    assert!(leaf.terms("empty").unwrap().is_none());
+    assert!(leaf.terms("body").unwrap().is_some());
+    reader.close().unwrap();
+}

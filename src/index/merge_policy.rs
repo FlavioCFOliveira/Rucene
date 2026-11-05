@@ -2289,6 +2289,59 @@ impl Clone for LiveF64 {
     }
 }
 
+/// A `long` setting of a merge policy that Java's public setter can change
+/// on the live policy (`TieredMergePolicy.setMaxMergedSegmentMB`,
+/// `setFloorSegmentMB`), which `LuceneTestCase.maybeChangeLiveIndexWriterConfig`
+/// changes on an open writer; see [`LiveI32`].
+#[derive(Debug)]
+struct LiveI64(std::sync::atomic::AtomicI64);
+
+impl LiveI64 {
+    fn new(v: i64) -> Self {
+        Self(std::sync::atomic::AtomicI64::new(v))
+    }
+
+    fn get(&self) -> i64 {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    fn set(&self, v: i64) {
+        self.0.store(v, Ordering::Relaxed);
+    }
+}
+
+impl Clone for LiveI64 {
+    fn clone(&self) -> Self {
+        Self::new(self.get())
+    }
+}
+
+/// A `boolean` setting of a merge policy that Java's public setter can
+/// change on the live policy (`LogMergePolicy.setCalibrateSizeByDeletes`);
+/// see [`LiveI32`].
+#[derive(Debug)]
+struct LiveBool(std::sync::atomic::AtomicBool);
+
+impl LiveBool {
+    fn new(v: bool) -> Self {
+        Self(std::sync::atomic::AtomicBool::new(v))
+    }
+
+    fn get(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    fn set(&self, v: bool) {
+        self.0.store(v, Ordering::Relaxed);
+    }
+}
+
+impl Clone for LiveBool {
+    fn clone(&self) -> Self {
+        Self::new(self.get())
+    }
+}
+
 /// Selects merges by grouping segments into size tiers.
 ///
 /// Equivalent to `org.apache.lucene.index.TieredMergePolicy`, the default merge
@@ -2298,11 +2351,11 @@ impl Clone for LiveF64 {
 #[derive(Debug, Clone)]
 pub struct TieredMergePolicy {
     max_merge_at_once: LiveI32,
-    max_merged_segment_bytes: i64,
-    floor_segment_bytes: i64,
+    max_merged_segment_bytes: LiveI64,
+    floor_segment_bytes: LiveI64,
     segs_per_tier: LiveF64,
-    force_merge_deletes_pct_allowed: f64,
-    deletes_pct_allowed: f64,
+    force_merge_deletes_pct_allowed: LiveF64,
+    deletes_pct_allowed: LiveF64,
     target_search_concurrency: i32,
     cfs: CfsSettings,
 }
@@ -2318,11 +2371,11 @@ impl TieredMergePolicy {
     pub fn new() -> Self {
         Self {
             max_merge_at_once: LiveI32::new(10),
-            max_merged_segment_bytes: 5 * 1024 * 1024 * 1024,
-            floor_segment_bytes: 16 * 1024 * 1024,
+            max_merged_segment_bytes: LiveI64::new(5 * 1024 * 1024 * 1024),
+            floor_segment_bytes: LiveI64::new(16 * 1024 * 1024),
             segs_per_tier: LiveF64::new(8.0),
-            force_merge_deletes_pct_allowed: 10.0,
-            deletes_pct_allowed: 20.0,
+            force_merge_deletes_pct_allowed: LiveF64::new(10.0),
+            deletes_pct_allowed: LiveF64::new(20.0),
             target_search_concurrency: 1,
             cfs: CfsSettings::new(TIERED_DEFAULT_NO_CFS_RATIO, DEFAULT_MAX_CFS_SEGMENT_SIZE),
         }
@@ -2348,30 +2401,30 @@ impl TieredMergePolicy {
     }
 
     /// Sets the largest merged segment, in megabytes.
-    pub fn set_max_merged_segment_mb(&mut self, v: f64) -> Result<&mut Self> {
+    pub fn set_max_merged_segment_mb(&self, v: f64) -> Result<&Self> {
         if v < 0.0 {
             return Err(crate::error::LuceneError::IllegalArgument(format!(
                 "maxMergedSegmentMB must be >= 0.0 (got {v})"
             )));
         }
         let bytes = (v * 1024.0 * 1024.0).min(i64::MAX as f64);
-        self.max_merged_segment_bytes = bytes as i64;
+        self.max_merged_segment_bytes.set(bytes as i64);
         Ok(self)
     }
 
     /// Sets the size below which segments are treated as equally small.
-    pub fn set_floor_segment_mb(&mut self, v: f64) -> Result<&mut Self> {
+    pub fn set_floor_segment_mb(&self, v: f64) -> Result<&Self> {
         if v <= 0.0 {
             return Err(crate::error::LuceneError::IllegalArgument(format!(
                 "floorSegmentMB must be > 0.0 (got {v})"
             )));
         }
         let bytes = v * 1024.0 * 1024.0;
-        self.floor_segment_bytes = if bytes > i64::MAX as f64 {
+        self.floor_segment_bytes.set(if bytes > i64::MAX as f64 {
             i64::MAX
         } else {
             bytes as i64
-        };
+        });
         Ok(self)
     }
 
@@ -2383,7 +2436,7 @@ impl TieredMergePolicy {
     /// that survived the `double`-to-`long` truncation in the setter, not the
     /// one that was passed in.
     pub fn get_floor_segment_mb(&self) -> f64 {
-        self.floor_segment_bytes as f64 / (1024.0 * 1024.0)
+        self.floor_segment_bytes.get() as f64 / (1024.0 * 1024.0)
     }
 
     /// Sets how many segments are allowed per tier.
@@ -2407,13 +2460,13 @@ impl TieredMergePolicy {
 
     /// Sets the percentage of deleted documents the index may carry before the
     /// policy starts merging to reclaim them.
-    pub fn set_deletes_pct_allowed(&mut self, v: f64) -> Result<&mut Self> {
+    pub fn set_deletes_pct_allowed(&self, v: f64) -> Result<&Self> {
         if v <= 0.0 || v > 50.0 {
             return Err(crate::error::LuceneError::IllegalArgument(format!(
                 "indexPctDeletedTarget must be > 0 and <= 50 (got {v})"
             )));
         }
-        self.deletes_pct_allowed = v;
+        self.deletes_pct_allowed.set(v);
         Ok(self)
     }
 
@@ -2422,7 +2475,7 @@ impl TieredMergePolicy {
     ///
     /// Equivalent to `TieredMergePolicy.getDeletesPctAllowed()`.
     pub fn get_deletes_pct_allowed(&self) -> f64 {
-        self.deletes_pct_allowed
+        self.deletes_pct_allowed.get()
     }
 
     /// Sets the delete percentage above which `forceMergeDeletes` rewrites a
@@ -2434,13 +2487,13 @@ impl TieredMergePolicy {
     ///
     /// Returns [`LuceneError`](crate::error::LuceneError)`::IllegalArgument`
     /// when `v` is outside `[0.0, 100.0]`.
-    pub fn set_force_merge_deletes_pct_allowed(&mut self, v: f64) -> Result<&mut Self> {
+    pub fn set_force_merge_deletes_pct_allowed(&self, v: f64) -> Result<&Self> {
         if !(0.0..=100.0).contains(&v) {
             return Err(crate::error::LuceneError::IllegalArgument(format!(
                 "forceMergeDeletesPctAllowed must be between 0.0 and 100.0 inclusive (got {v})"
             )));
         }
-        self.force_merge_deletes_pct_allowed = v;
+        self.force_merge_deletes_pct_allowed.set(v);
         Ok(self)
     }
 
@@ -2449,7 +2502,7 @@ impl TieredMergePolicy {
     ///
     /// Equivalent to `TieredMergePolicy.getForceMergeDeletesPctAllowed()`.
     pub fn get_force_merge_deletes_pct_allowed(&self) -> f64 {
-        self.force_merge_deletes_pct_allowed
+        self.force_merge_deletes_pct_allowed.get()
     }
 
     /// Sets how many search-concurrency slices the policy aims for.
@@ -2475,7 +2528,7 @@ impl TieredMergePolicy {
     /// Equivalent to `TieredMergePolicy.getMaxMergedSegmentMB()`, which divides
     /// the stored byte count by `1024.0 / 1024.0`.
     pub fn get_max_merged_segment_mb(&self) -> f64 {
-        self.max_merged_segment_bytes as f64 / 1024.0 / 1024.0
+        self.max_merged_segment_bytes.get() as f64 / 1024.0 / 1024.0
     }
 
     /// Returns how many segments are allowed per tier.
@@ -2494,7 +2547,7 @@ impl TieredMergePolicy {
 
     /// Raises `bytes` to the floor segment size.
     fn floor_size(&self, bytes: i64) -> i64 {
-        self.floor_segment_bytes.max(bytes)
+        self.floor_segment_bytes.get().max(bytes)
     }
 
     /// Returns how many live documents a merged segment may hold.
@@ -2653,21 +2706,21 @@ impl TieredMergePolicy {
                 while idx < eligible.len()
                     && (candidate.len() as i32) < self.max_merge_at_once.get()
                     && ((candidate.len() as i32) < merge_factor
-                        || bytes_this_merge < self.floor_segment_bytes)
-                    && bytes_this_merge < self.max_merged_segment_bytes
-                    && (bytes_this_merge < self.floor_segment_bytes
+                        || bytes_this_merge < self.floor_segment_bytes.get())
+                    && bytes_this_merge < self.max_merged_segment_bytes.get()
+                    && (bytes_this_merge < self.floor_segment_bytes.get()
                         || doc_count_this_merge <= i64::from(allowed_doc_count))
                 {
                     let segment = eligible[idx];
                     let seg_bytes = segment.size_in_bytes;
                     let seg_doc_count = i64::from(segment.max_doc - segment.del_count);
 
-                    if bytes_this_merge + seg_bytes > self.max_merged_segment_bytes
-                        || (bytes_this_merge > self.floor_segment_bytes
+                    if bytes_this_merge + seg_bytes > self.max_merged_segment_bytes.get()
+                        || (bytes_this_merge > self.floor_segment_bytes.get()
                             && doc_count_this_merge + seg_doc_count > i64::from(allowed_doc_count))
                     {
                         hit_too_large |=
-                            bytes_this_merge + seg_bytes > self.max_merged_segment_bytes;
+                            bytes_this_merge + seg_bytes > self.max_merged_segment_bytes.get();
                         if !candidate.is_empty() {
                             // Keep going so smaller segments can still be packed
                             // into this merge.
@@ -2690,7 +2743,7 @@ impl TieredMergePolicy {
                     && natural
                     && (bytes_this_merge as f64) < biggest.size_in_bytes as f64 * 1.5
                     && (biggest.del_count as f64)
-                        < biggest.max_doc as f64 * self.deletes_pct_allowed / 100.0
+                        < biggest.max_doc as f64 * self.deletes_pct_allowed.get() / 100.0
                 {
                     // Reject a merge whose output is not at least 50% larger than
                     // its biggest input: rewriting it again and again is the
@@ -2803,7 +2856,7 @@ impl MergePolicy for TieredMergePolicy {
 
         let total_del_pct = 100.0 * f64::from(total_del_docs) / f64::from(total_max_doc);
         let mut allowed_del_count =
-            (self.deletes_pct_allowed * f64::from(total_max_doc) / 100.0) as i32;
+            (self.deletes_pct_allowed.get() * f64::from(total_max_doc) / 100.0) as i32;
 
         let mut too_big_count = 0i32;
         let mut concurrency_count = 0i32;
@@ -2815,9 +2868,9 @@ impl MergePolicy for TieredMergePolicy {
             } else {
                 100.0 * f64::from(segment.del_count) / f64::from(segment.max_doc)
             };
-            if segment.size_in_bytes > self.max_merged_segment_bytes / 2
-                && (total_del_pct <= self.deletes_pct_allowed
-                    || seg_del_pct <= self.deletes_pct_allowed)
+            if segment.size_in_bytes > self.max_merged_segment_bytes.get() / 2
+                && (total_del_pct <= self.deletes_pct_allowed.get()
+                    || seg_del_pct <= self.deletes_pct_allowed.get())
             {
                 too_big_count += 1;
                 tot_index_bytes -= segment.size_in_bytes;
@@ -2840,14 +2893,14 @@ impl MergePolicy for TieredMergePolicy {
             (self.max_merge_at_once.get() as f64).min(self.segs_per_tier.get()) as i32;
 
         if min_segment_bytes == i64::MAX {
-            min_segment_bytes = self.floor_segment_bytes;
+            min_segment_bytes = self.floor_segment_bytes.get();
         }
-        let mut level_size = min_segment_bytes.max(self.floor_segment_bytes);
+        let mut level_size = min_segment_bytes.max(self.floor_segment_bytes.get());
         let mut bytes_left = tot_index_bytes;
         loop {
             let seg_count_level = bytes_left as f64 / level_size as f64;
             if seg_count_level < self.segs_per_tier.get()
-                || level_size == self.max_merged_segment_bytes
+                || level_size == self.max_merged_segment_bytes.get()
             {
                 allowed_seg_count += seg_count_level.ceil();
                 break;
@@ -2856,6 +2909,7 @@ impl MergePolicy for TieredMergePolicy {
             bytes_left -= (self.segs_per_tier.get() * level_size as f64) as i64;
             level_size = self
                 .max_merged_segment_bytes
+                .get()
                 .min(level_size.saturating_mul(i64::from(merge_factor.max(1))));
         }
         // The count may dip below one tier when every segment is under the floor.
@@ -2874,7 +2928,7 @@ impl MergePolicy for TieredMergePolicy {
             allowed_del_count,
             allowed_doc_count,
             true,
-            merging_bytes >= self.max_merged_segment_bytes,
+            merging_bytes >= self.max_merged_segment_bytes.get(),
         )
     }
 
@@ -2952,7 +3006,7 @@ impl MergePolicy for TieredMergePolicy {
             }
         });
 
-        let mut max_merge_bytes = self.max_merged_segment_bytes;
+        let mut max_merge_bytes = self.max_merged_segment_bytes.get();
 
         // Set the maximum segment size based on how many segments have been
         // specified.
@@ -2960,7 +3014,7 @@ impl MergePolicy for TieredMergePolicy {
             max_merge_bytes = i64::MAX;
         } else if max_num_segments != i32::MAX {
             max_merge_bytes = ((total_merge_bytes as f64 / f64::from(max_num_segments)) as i64)
-                .max(self.max_merged_segment_bytes);
+                .max(self.max_merged_segment_bytes.get());
             // Fudge this up a bit so we have a better chance of not having to
             // do a second pass of merging to get down to the requested target
             // segment count.
@@ -3108,7 +3162,7 @@ impl MergePolicy for TieredMergePolicy {
                 &format!(
                     "findForcedDeletesMerges infos={} forceMergeDeletesPctAllowed={}",
                     seg_string(merge_context, segment_infos.iter()),
-                    double_to_string(self.force_merge_deletes_pct_allowed)
+                    double_to_string(self.force_merge_deletes_pct_allowed.get())
                 ),
                 merge_context,
             );
@@ -3127,7 +3181,7 @@ impl MergePolicy for TieredMergePolicy {
             // first, then the quotient, as Java evaluates it.
             let pct_deletes = 100.0 * f64::from(del_count) / f64::from(info.info.max_doc()?);
             have_work = have_work
-                || (pct_deletes > self.force_merge_deletes_pct_allowed
+                || (pct_deletes > self.force_merge_deletes_pct_allowed.get()
                     && !merging.contains(&info.info.name));
         }
 
@@ -3141,7 +3195,8 @@ impl MergePolicy for TieredMergePolicy {
             // quotient comes first. A segment with `maxDoc == 0` yields NaN and
             // stays, as in Java.
             let pct_deletes = 100.0 * (f64::from(seg.del_count) / f64::from(seg.max_doc));
-            !(merging.contains(&seg.name) || pct_deletes <= self.force_merge_deletes_pct_allowed)
+            !(merging.contains(&seg.name)
+                || pct_deletes <= self.force_merge_deletes_pct_allowed.get())
         });
 
         if mp_verbose(merge_context) {
@@ -3166,7 +3221,7 @@ impl MergePolicy for TieredMergePolicy {
     /// Equivalent to `TieredMergePolicy.maxFullFlushMergeSize()`
     /// (`TieredMergePolicy.java:225-228`).
     fn max_full_flush_merge_size(&self) -> i64 {
-        self.floor_segment_bytes
+        self.floor_segment_bytes.get()
     }
 
     fn get_no_cfs_ratio(&self) -> f64 {
@@ -3307,7 +3362,7 @@ pub struct LogMergePolicy {
     max_merge_size: i64,
     max_merge_size_for_forced_merge: i64,
     max_merge_docs: i32,
-    calibrate_size_by_deletes: bool,
+    calibrate_size_by_deletes: LiveBool,
     target_search_concurrency: i32,
     size: Arc<dyn LogMergeSize>,
     cfs: CfsSettings,
@@ -3328,7 +3383,7 @@ impl LogMergePolicy {
             max_merge_size: 0,
             max_merge_size_for_forced_merge: i64::MAX,
             max_merge_docs: DEFAULT_MAX_MERGE_DOCS,
-            calibrate_size_by_deletes: true,
+            calibrate_size_by_deletes: LiveBool::new(true),
             target_search_concurrency: 1,
             size,
             cfs: CfsSettings::new(LOG_DEFAULT_NO_CFS_RATIO, DEFAULT_MAX_CFS_SEGMENT_SIZE),
@@ -3399,8 +3454,8 @@ impl LogMergePolicy {
     }
 
     /// Sets whether a segment's size discounts its deleted documents.
-    pub fn set_calibrate_size_by_deletes(&mut self, v: bool) -> &mut Self {
-        self.calibrate_size_by_deletes = v;
+    pub fn set_calibrate_size_by_deletes(&self, v: bool) -> &Self {
+        self.calibrate_size_by_deletes.set(v);
         self
     }
 
@@ -3408,7 +3463,7 @@ impl LogMergePolicy {
     ///
     /// Equivalent to `LogMergePolicy.getCalibrateSizeByDeletes()`.
     pub fn get_calibrate_size_by_deletes(&self) -> bool {
-        self.calibrate_size_by_deletes
+        self.calibrate_size_by_deletes.get()
     }
 
     /// Sets how many search-concurrency slices the policy aims for.
@@ -3436,6 +3491,17 @@ impl LogMergePolicy {
     /// Equivalent to `LogMergePolicy.getTargetSearchConcurrency()`.
     pub fn get_target_search_concurrency(&self) -> i32 {
         self.target_search_concurrency
+    }
+
+    /// Sets the largest segment, in bytes, that may be merged with other
+    /// segments.
+    ///
+    /// Equivalent to a subclass writing the protected field
+    /// `LogMergePolicy.maxMergeSize` (`LogMergePolicy.java:77`), as
+    /// `AlcoholicMergePolicy`'s constructor does.
+    pub fn set_max_merge_size(&mut self, max_merge_size: i64) -> &mut Self {
+        self.max_merge_size = max_merge_size;
+        self
     }
 
     /// Sets the largest segment, in MB, that may be merged with other segments.
@@ -3541,7 +3607,7 @@ impl LogMergePolicy {
         info: &SegmentCommitInfo,
         merge_context: &dyn MergeContext,
     ) -> Result<i64> {
-        if self.calibrate_size_by_deletes {
+        if self.calibrate_size_by_deletes.get() {
             let del_count = merge_context.num_deletes_to_merge(info)?;
             debug_assert!(MergePolicy::assert_del_count(self, del_count, info)?);
             Ok(i64::from(info.info.max_doc()?) - i64::from(del_count))
@@ -3564,7 +3630,7 @@ impl LogMergePolicy {
         info: &SegmentCommitInfo,
         merge_context: &dyn MergeContext,
     ) -> Result<i64> {
-        if self.calibrate_size_by_deletes {
+        if self.calibrate_size_by_deletes.get() {
             // `super.size(info, mergeContext)`: `MergePolicy.size`, not this
             // policy's override.
             return merge_policy_size(self, info, merge_context);
@@ -5749,7 +5815,7 @@ mod merge_policy_setting_tests {
     /// reads back `0.0`; with the clamp this port read back 9.5367431640625e-7.
     #[test]
     fn floor_segment_mb_below_one_byte_truncates_to_zero_like_lucene() {
-        let mut p = TieredMergePolicy::new();
+        let p = TieredMergePolicy::new();
         p.set_floor_segment_mb(1.0 / (1024.0 * 1024.0 * 2.0))
             .unwrap();
         assert_eq!(p.get_floor_segment_mb(), 0.0);
@@ -5761,7 +5827,7 @@ mod merge_policy_setting_tests {
     /// back; this port rejected it.
     #[test]
     fn deletes_pct_allowed_accepts_everything_above_zero() {
-        let mut p = TieredMergePolicy::new();
+        let p = TieredMergePolicy::new();
         p.set_deletes_pct_allowed(1.0).unwrap();
         assert_eq!(p.get_deletes_pct_allowed(), 1.0);
         let err = p.set_deletes_pct_allowed(0.0).unwrap_err().to_string();
@@ -5775,7 +5841,7 @@ mod merge_policy_setting_tests {
 
     #[test]
     fn force_merge_deletes_pct_allowed_bounds_match_lucene() {
-        let mut p = TieredMergePolicy::new();
+        let p = TieredMergePolicy::new();
         assert!(p.set_force_merge_deletes_pct_allowed(0.0).is_ok());
         assert!(p.set_force_merge_deletes_pct_allowed(100.0).is_ok());
         let err = p
@@ -5970,7 +6036,7 @@ impl std::fmt::Display for LogMergePolicy {
             self.merge_factor.get(),
             self.max_merge_size,
             self.max_merge_size_for_forced_merge,
-            self.calibrate_size_by_deletes,
+            self.calibrate_size_by_deletes.get(),
             self.max_merge_docs,
             double_to_string(self.cfs.get_max_cfs_segment_size_mb()),
             double_to_string(self.cfs.get_no_cfs_ratio()),
@@ -5992,13 +6058,13 @@ impl std::fmt::Display for TieredMergePolicy {
              forceMergeDeletesPctAllowed={}, segmentsPerTier={}, maxCFSSegmentSizeMB={}, \
              noCFSRatio={}, deletesPctAllowed={}, targetSearchConcurrency={}",
             self.max_merge_at_once.get(),
-            double_to_string(self.max_merged_segment_bytes as f64 / 1024. / 1024.),
-            double_to_string(self.floor_segment_bytes as f64 / 1024. / 1024.),
-            double_to_string(self.force_merge_deletes_pct_allowed),
+            double_to_string(self.max_merged_segment_bytes.get() as f64 / 1024. / 1024.),
+            double_to_string(self.floor_segment_bytes.get() as f64 / 1024. / 1024.),
+            double_to_string(self.force_merge_deletes_pct_allowed.get()),
             double_to_string(self.segs_per_tier.get()),
             double_to_string(self.cfs.get_max_cfs_segment_size_mb()),
             double_to_string(self.cfs.get_no_cfs_ratio()),
-            double_to_string(self.deletes_pct_allowed),
+            double_to_string(self.deletes_pct_allowed.get()),
             self.target_search_concurrency,
         )
     }
@@ -6256,7 +6322,7 @@ mod log_merge_policy_size_tests {
     #[test]
     fn size_bytes_prorates_as_merge_policy_size_does() {
         let info = segment(10, 10);
-        let mut policy = LogMergePolicy::by_byte_size();
+        let policy = LogMergePolicy::by_byte_size();
         assert_eq!(policy.size_bytes(&info, &Deletes(9)).unwrap(), 0);
         assert_eq!(MergePolicy::size(&policy, &info, &Deletes(9)).unwrap(), 0);
         assert_eq!(policy.size_bytes(&info, &Deletes(0)).unwrap(), 10);
@@ -6269,7 +6335,7 @@ mod log_merge_policy_size_tests {
     #[test]
     fn size_docs_subtracts_deletes_only_when_calibrating() {
         let info = segment(10, 1);
-        let mut policy = LogMergePolicy::by_doc_count();
+        let policy = LogMergePolicy::by_doc_count();
         assert_eq!(policy.size_docs(&info, &Deletes(4)).unwrap(), 6);
         assert_eq!(MergePolicy::size(&policy, &info, &Deletes(4)).unwrap(), 6);
         policy.set_calibrate_size_by_deletes(false);

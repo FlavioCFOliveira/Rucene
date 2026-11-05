@@ -317,7 +317,7 @@ pub(crate) struct Core {
     throttle_bytes_per_second: i32,
     throttle_delay_millis: i64,
     // BaseDirectoryWrapper's state.
-    is_open: AtomicBool,
+    is_open: Arc<AtomicBool>,
     check_index_on_close: AtomicBool,
     level_for_check_on_close: AtomicI32,
     // MockDirectoryWrapper's fields.
@@ -390,7 +390,7 @@ impl MockDirectoryWrapper {
                 random_state,
                 throttle_bytes_per_second: bytes_per_second,
                 throttle_delay_millis: delay,
-                is_open: AtomicBool::new(true),
+                is_open: Arc::new(AtomicBool::new(true)),
                 check_index_on_close: AtomicBool::new(true),
                 level_for_check_on_close: AtomicI32::new(Level::MIN_LEVEL_FOR_SLOW_CHECKS),
                 max_size: AtomicI64::new(0),
@@ -454,6 +454,16 @@ impl MockDirectoryWrapper {
     /// `isOpen()`.
     pub fn is_open(&self) -> bool {
         self.core.is_open.load(Ordering::SeqCst)
+    }
+
+    /// A probe of [`is_open`](Self::is_open) that, unlike a copy of the
+    /// wrapper, does not keep its delegate from being closed (see the module
+    /// docs), for [`CloseableDirectory`](crate::util::CloseableDirectory).
+    pub fn open_probe(&self) -> crate::util::closeable_directory::DirectoryOpenProbe {
+        crate::util::closeable_directory::DirectoryOpenProbe::new(
+            Arc::clone(&self.core.is_open),
+            self.to_string(),
+        )
     }
 
     /// `setCheckIndexOnClose(value)`: whether `CheckIndex` runs on close.

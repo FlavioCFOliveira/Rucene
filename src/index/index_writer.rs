@@ -404,6 +404,14 @@ pub struct IndexWriter {
     /// live inside the writer's own pending merges, and a strong handle there
     /// would keep the writer alive for ever.
     self_ref: OnceLock<Weak<IndexWriter>>,
+    /// What [`is_enable_test_points`](Self::is_enable_test_points) answers.
+    ///
+    /// Java's `isEnableTestPoints()` is a protected method that returns
+    /// `false` and that tests override in an anonymous subclass
+    /// (`RandomIndexWriter.mockIndexWriter`, `RandomIndexWriter.java:91-97`).
+    /// Rust has no subclassing, so the override is chosen at construction
+    /// ([`new_with_test_points`](Self::new_with_test_points)).
+    enable_test_points: bool,
 }
 
 impl std::fmt::Debug for IndexWriter {
@@ -760,6 +768,31 @@ impl IndexWriter {
     /// Java rejects with `IllegalArgumentException`, and whatever reading the
     /// index raises.
     pub fn new(d: Arc<dyn Directory>, config: IndexWriterConfig) -> Result<Arc<Self>> {
+        Self::new_impl(d, config, false)
+    }
+
+    /// Creates a writer whose [`is_enable_test_points`](Self::is_enable_test_points)
+    /// returns `true`, as [`new`](Self::new) otherwise.
+    ///
+    /// Equivalent to `new IndexWriter(dir, conf) { protected boolean
+    /// isEnableTestPoints() { return true; } }`, the anonymous subclass of
+    /// `RandomIndexWriter.mockIndexWriter` (`RandomIndexWriter.java:91-97`).
+    ///
+    /// # Errors
+    ///
+    /// As [`new`](Self::new).
+    pub fn new_with_test_points(
+        d: Arc<dyn Directory>,
+        config: IndexWriterConfig,
+    ) -> Result<Arc<Self>> {
+        Self::new_impl(d, config, true)
+    }
+
+    fn new_impl(
+        d: Arc<dyn Directory>,
+        config: IndexWriterConfig,
+        enable_test_points: bool,
+    ) -> Result<Arc<Self>> {
         // `infoStream = config.getInfoStream()` (`IndexWriter.java:953`).
         let info_stream = config.info_stream();
         // Obtain the write.lock. If the user configured a timeout, we wrap
@@ -775,7 +808,7 @@ impl IndexWriter {
             write_lock: Some(Arc::clone(&write_lock)),
             info_stream: &info_stream,
         };
-        match Self::init(d, config, write_lock, &info_stream) {
+        match Self::init(d, config, write_lock, &info_stream, enable_test_points) {
             Ok(writer) => {
                 release_on_failure.disarm();
                 Ok(writer)
@@ -795,6 +828,7 @@ impl IndexWriter {
         config: IndexWriterConfig,
         write_lock: Arc<dyn Lock>,
         info_stream: &Arc<dyn InfoStream>,
+        enable_test_points: bool,
     ) -> Result<Arc<Self>> {
         // `directoryOrig = d; directory = new LockValidatingDirectoryWrapper(d,
         // writeLock);` (`IndexWriter.java:962-963`). The wrapper takes its
@@ -1122,6 +1156,7 @@ impl IndexWriter {
             write_doc_values_lock: Mutex::new(()),
             pending_seq_no: AtomicI64::new(0),
             self_ref: OnceLock::new(),
+            enable_test_points,
         };
         let writer = Arc::new(writer);
         // `OnceLock::set` fails only when the cell is already filled, which
@@ -6786,9 +6821,10 @@ impl IndexWriter {
     /// Returns whether the test points are enabled.
     ///
     /// Equivalent to `IndexWriter.isEnableTestPoints()`, which returns `false`
-    /// and which tests override.
+    /// and which tests override: `true` for a writer created with
+    /// [`new_with_test_points`](Self::new_with_test_points).
     pub fn is_enable_test_points(&self) -> bool {
-        false
+        self.enable_test_points
     }
 
     /// Emits a test point to the info stream, when they are enabled.

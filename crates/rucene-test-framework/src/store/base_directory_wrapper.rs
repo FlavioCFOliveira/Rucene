@@ -46,7 +46,7 @@ pub struct BaseDirectoryWrapper {
     delegate: Arc<dyn Directory>,
     check_index_on_close: AtomicBool,
     level_for_check_on_close: AtomicI32,
-    is_open: AtomicBool,
+    is_open: Arc<AtomicBool>,
 }
 
 impl BaseDirectoryWrapper {
@@ -56,7 +56,7 @@ impl BaseDirectoryWrapper {
             delegate,
             check_index_on_close: AtomicBool::new(true),
             level_for_check_on_close: AtomicI32::new(Level::MIN_LEVEL_FOR_SLOW_CHECKS),
-            is_open: AtomicBool::new(true),
+            is_open: Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -68,6 +68,21 @@ impl BaseDirectoryWrapper {
     /// `isOpen()`.
     pub fn is_open(&self) -> bool {
         self.is_open.load(Ordering::SeqCst)
+    }
+
+    /// The shared flag [`is_open`](Self::is_open) reads, for the probe of a
+    /// subclass that renders itself.
+    pub fn open_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.is_open)
+    }
+
+    /// A probe of [`is_open`](Self::is_open) that does not keep the wrapper
+    /// alive, for [`CloseableDirectory`](crate::util::CloseableDirectory).
+    pub fn open_probe(&self) -> crate::util::closeable_directory::DirectoryOpenProbe {
+        crate::util::closeable_directory::DirectoryOpenProbe::new(
+            Arc::clone(&self.is_open),
+            self.to_string(),
+        )
     }
 
     /// `setCheckIndexOnClose(value)`: whether `CheckIndex` runs on close.

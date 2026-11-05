@@ -256,6 +256,80 @@ impl PayloadAttribute for Token {
 }
 
 impl AttributeImpl for Token {
+    fn as_char_term_attribute(&self) -> Option<&dyn CharTermAttribute> {
+        Some(self)
+    }
+
+    fn as_char_term_attribute_mut(&mut self) -> Option<&mut dyn CharTermAttribute> {
+        Some(self)
+    }
+
+    fn as_term_to_bytes_ref_attribute(&self) -> Option<&dyn TermToBytesRefAttribute> {
+        Some(self)
+    }
+
+    fn as_term_to_bytes_ref_attribute_mut(&mut self) -> Option<&mut dyn TermToBytesRefAttribute> {
+        Some(self)
+    }
+
+    fn as_offset_attribute(&self) -> Option<&dyn OffsetAttribute> {
+        Some(self)
+    }
+
+    fn as_offset_attribute_mut(&mut self) -> Option<&mut dyn OffsetAttribute> {
+        Some(self)
+    }
+
+    fn as_position_increment_attribute(&self) -> Option<&dyn PositionIncrementAttribute> {
+        Some(self)
+    }
+
+    fn as_position_increment_attribute_mut(
+        &mut self,
+    ) -> Option<&mut dyn PositionIncrementAttribute> {
+        Some(self)
+    }
+
+    fn as_position_length_attribute(&self) -> Option<&dyn PositionLengthAttribute> {
+        Some(self)
+    }
+
+    fn as_position_length_attribute_mut(&mut self) -> Option<&mut dyn PositionLengthAttribute> {
+        Some(self)
+    }
+
+    fn as_type_attribute(&self) -> Option<&dyn TypeAttribute> {
+        Some(self)
+    }
+
+    fn as_type_attribute_mut(&mut self) -> Option<&mut dyn TypeAttribute> {
+        Some(self)
+    }
+
+    fn as_term_frequency_attribute(&self) -> Option<&dyn TermFrequencyAttribute> {
+        Some(self)
+    }
+
+    fn as_term_frequency_attribute_mut(&mut self) -> Option<&mut dyn TermFrequencyAttribute> {
+        Some(self)
+    }
+
+    fn as_flags_attribute(&self) -> Option<&dyn FlagsAttribute> {
+        Some(self)
+    }
+
+    fn as_flags_attribute_mut(&mut self) -> Option<&mut dyn FlagsAttribute> {
+        Some(self)
+    }
+
+    fn as_payload_attribute(&self) -> Option<&dyn PayloadAttribute> {
+        Some(self)
+    }
+
+    fn as_payload_attribute_mut(&mut self) -> Option<&mut dyn PayloadAttribute> {
+        Some(self)
+    }
+
     /// Resets the term text, payload, flags, positionIncrement,
     /// positionLength, startOffset, endOffset and token type to default.
     fn clear(&mut self) {

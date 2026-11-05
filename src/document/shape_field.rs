@@ -5,8 +5,6 @@
 //! point whose first four dimensions are its bounding box — which is what lets
 //! a BKD tree prune whole subtrees of a polygon.
 
-use std::io::Read;
-
 use crate::analysis::{Analyzer, TokenStream};
 use crate::document::{
     binary_doc_values_field_type, FieldData, FieldType, InvertableType, NumericValue, StoredValue,
@@ -612,7 +610,7 @@ impl IndexableField for Triangle {
         None
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -788,7 +786,7 @@ impl IndexableField for LateInteractionField {
         None
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 

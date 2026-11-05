@@ -33,7 +33,9 @@ use rucene::analysis::{
     default_attribute_factory, default_token_attribute_factory, Analyzer, CharReader,
     StringCharReader, TokenStream,
 };
+use rucene::document::{Document, Field, FieldType, SharedReader, TextField};
 use rucene::error::{LuceneError, Result};
+use rucene::index::{IndexOptions, IndexableFieldType};
 use rucene::util::attribute::{Attribute, AttributeFactory, AttributeImpl, AttributeReflector};
 use rucene::util::fst::Util;
 use rucene::util::{BytesRef, BytesRefBuilder, IntsRef};
@@ -47,8 +49,9 @@ use super::mock_reader_wrapper::MockReaderWrapper;
 use super::mock_tokenizer::{MockTokenizer, KEYWORD, WHITESPACE};
 use super::token::Token;
 use super::token_stream_to_dot::TokenStreamToDot;
+use crate::index::RandomIndexWriter;
 use crate::util::automaton::AutomatonTestUtil;
-use crate::util::lucene_test_case::VERBOSE;
+use crate::util::lucene_test_case::{TestDirectory, VERBOSE};
 use crate::util::{LuceneTestCase, TestUtil};
 
 /// Attribute that records if it was cleared or not. This is used for testing
@@ -197,11 +200,6 @@ fn rethrow(e: &LuceneError) -> ! {
 /// arrays and boxed integers are `Option`s. Assertion failures panic with
 /// JUnit's `AssertionError`/`ComparisonFailure` and Java's message, and the
 /// errors of the stream are returned.
-///
-/// **Divergence from Lucene 10.5.0.** `checkRandomData`'s indexing branch
-/// (`rarely(random)` with a codec that is not `SimpleText`) needs
-/// `RandomIndexWriter` and `newFSDirectory`, which rmp #347 ports; until
-/// then the branch fails with `UnsupportedOperationException` naming it.
 pub struct BaseTokenStreamTestCase;
 
 #[allow(clippy::too_many_arguments)]
@@ -1742,15 +1740,68 @@ impl BaseTokenStreamTestCase {
         Self::check_reset_exception(&**a, "best effort")?;
         let seed = random.next_long();
         let use_char_filter = random.next_boolean();
+        let mut dir: Option<TestDirectory> = None;
+        let mut iw: Option<Arc<RandomIndexWriter>> = None;
         let postings_format = TestUtil::get_postings_format("dummy");
         let codec_ok =
             iterations.wrapping_mul(max_word_length) < 100000 && postings_format != "SimpleText";
         if LuceneTestCase::rarely_with(random) && codec_ok {
-            return Err(LuceneError::UnsupportedOperation(
-                "checkRandomData's indexing branch needs RandomIndexWriter and newFSDirectory, which rmp #347 ports"
-                    .to_string(),
-            ));
+            let d =
+                LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix("bttc"));
+            iw = Some(Arc::new(RandomIndexWriter::new(
+                &JdkRandom::new(seed),
+                d.as_directory(),
+                Arc::clone(a),
+            )?));
+            dir = Some(d);
         }
+        let result = Self::check_random_data_threads(
+            seed,
+            a,
+            iterations,
+            max_word_length,
+            use_char_filter,
+            simple,
+            graph_offsets_are_correct,
+            random,
+            &mut iw,
+        );
+        // The writer's handle on the directory goes with it: a
+        // `MockDirectoryWrapper` closes its delegate only once no copy of it
+        // is alive.
+        drop(iw);
+        match result {
+            Ok(()) => {
+                // `IOUtils.close(dir)`
+                if let Some(mut dir) = dir {
+                    dir.close()?;
+                }
+                Ok(())
+            }
+            Err(e) => {
+                // `IOUtils.closeWhileHandlingException(dir); // checkindex`
+                if let Some(mut dir) = dir {
+                    let _ = dir.close();
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// The `try` block of `checkRandomData(random, a, iterations,
+    /// maxWordLength, simple, graphOffsetsAreCorrect)`: the checks on the
+    /// calling thread, then on 2 to 4 threads, then `iw.close()`.
+    fn check_random_data_threads(
+        seed: i64,
+        a: &Arc<dyn Analyzer>,
+        iterations: i32,
+        max_word_length: i32,
+        use_char_filter: bool,
+        simple: bool,
+        graph_offsets_are_correct: bool,
+        random: &dyn Random,
+        iw: &mut Option<Arc<RandomIndexWriter>>,
+    ) -> Result<()> {
         Self::check_random_data_inner(
             &(Arc::new(JdkRandom::new(seed)) as Arc<dyn Random>),
             &**a,
@@ -1759,6 +1810,7 @@ impl BaseTokenStreamTestCase {
             use_char_filter,
             simple,
             graph_offsets_are_correct,
+            iw.as_deref(),
         )?;
         // now test with multiple threads: note we do the EXACT same thing we did before in each
         // thread,
@@ -1777,6 +1829,7 @@ impl BaseTokenStreamTestCase {
                 use_char_filter,
                 simple,
                 graph_offsets_are_correct,
+                iw: iw.clone(),
                 failed: Arc::clone(&failed),
             };
             threads.push((Thread::unnamed(move || thread.run()), failed));
@@ -1800,9 +1853,18 @@ impl BaseTokenStreamTestCase {
                 ));
             }
         }
+        drop(threads);
+        if let Some(iw) = iw.as_ref() {
+            iw.close()?;
+        }
         Ok(())
     }
 
+    /// The private `checkRandomData(random, a, iterations, maxWordLength,
+    /// useCharFilter, simple, graphOffsetsAreCorrect, iw)`: the checks over
+    /// `iterations` random texts, each also indexed through `iw` when there is
+    /// one.
+    #[allow(clippy::too_many_arguments)]
     fn check_random_data_inner(
         random: &Arc<dyn Random>,
         a: &dyn Analyzer,
@@ -1811,7 +1873,40 @@ impl BaseTokenStreamTestCase {
         use_char_filter: bool,
         simple: bool,
         graph_offsets_are_correct: bool,
+        iw: Option<&RandomIndexWriter>,
     ) -> Result<()> {
+        // `doc`, the field type of `field`, and the reader cell of
+        // `currentField`: `field.setReaderValue(r)` replaces what the cell
+        // holds. Java's `field` is put back into the document after a
+        // multivalued pile-up; its reader is always replaced before the next
+        // `addDocument`, so a new field of the same type stands for it.
+        let mut indexing: Option<(Document, FieldType, SharedReader)> = None;
+        if iw.is_some() {
+            let mut doc = Document::new();
+            let mut ft = FieldType::new_from(TextField::type_not_stored());
+            if random.next_boolean() {
+                ft.set_store_term_vectors(true)?;
+                ft.set_store_term_vector_offsets(random.next_boolean())?;
+                ft.set_store_term_vector_positions(random.next_boolean())?;
+                if ft.store_term_vector_positions() {
+                    ft.set_store_term_vector_payloads(random.next_boolean())?;
+                }
+            }
+            if random.next_boolean() {
+                ft.set_omit_norms(true)?;
+            }
+            match random.next_int_bound(4) {
+                0 => ft.set_index_options(IndexOptions::DOCS)?,
+                1 => ft.set_index_options(IndexOptions::DOCS_AND_FREQS)?,
+                2 => ft.set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)?,
+                _ => {
+                    ft.set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)?
+                }
+            }
+            let current_field = Self::new_dummy_field(&mut doc, &ft)?;
+            indexing = Some((doc, ft, current_field));
+        }
+
         for _ in 0..iterations {
             let text = TestUtil::random_analysis_string(&**random, max_word_length, simple);
 
@@ -1825,13 +1920,28 @@ impl BaseTokenStreamTestCase {
                 );
             };
             match catch_unwind(AssertUnwindSafe(|| {
-                Self::check_analysis_consistency_graph(
+                Self::check_analysis_consistency_field(
                     random,
                     a,
                     use_char_filter,
                     &text,
                     graph_offsets_are_correct,
-                )
+                    indexing.as_ref().map(|(_, _, current_field)| current_field),
+                )?;
+                if let (Some(iw), Some((doc, ft, current_field))) = (iw, indexing.as_mut()) {
+                    if random.next_int_bound(7) == 0 {
+                        // pile up a multivalued field
+                        *current_field = Self::new_dummy_field(doc, ft)?;
+                    } else {
+                        iw.add_document(doc)?;
+                        if doc.get_fields().len() > 1 {
+                            // back to 1 field
+                            doc.remove_fields("dummy");
+                            *current_field = Self::new_dummy_field(doc, ft)?;
+                        }
+                    }
+                }
+                Ok(())
             })) {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => {
@@ -1845,6 +1955,19 @@ impl BaseTokenStreamTestCase {
             }
         }
         Ok(())
+    }
+
+    /// `new Field("dummy", bogus, ft)` added to `doc`: the reader cell of the
+    /// new field (Java's fields share the empty `StringReader` `bogus`, which
+    /// is replaced before every use).
+    fn new_dummy_field(doc: &mut Document, ft: &FieldType) -> Result<SharedReader> {
+        let field =
+            Field::new_with_reader("dummy", Box::new(StringCharReader::new("")), ft.clone())?;
+        let reader = field
+            .reader_value()
+            .expect("INVARIANT: a field built with a reader has a reader value");
+        doc.add(Box::new(field));
+        Ok(reader)
     }
 
     /// `escape(String)`: the string with `\n`, `\r`, `"` and `\` escaped and
@@ -1921,6 +2044,28 @@ impl BaseTokenStreamTestCase {
         use_char_filter: bool,
         text: &str,
         graph_offsets_are_correct: bool,
+    ) -> Result<()> {
+        Self::check_analysis_consistency_field(
+            random,
+            a,
+            use_char_filter,
+            text,
+            graph_offsets_are_correct,
+            None,
+        )
+    }
+
+    /// The private `checkAnalysisConsistency(random, a, useCharFilter, text,
+    /// graphOffsetsAreCorrect, field)`: the checks, then, when there is a
+    /// field, its reader is set to `text` (through the same char filter and,
+    /// one time in 30, a spoon-feeding reader).
+    fn check_analysis_consistency_field(
+        random: &Arc<dyn Random>,
+        a: &dyn Analyzer,
+        use_char_filter: bool,
+        text: &str,
+        graph_offsets_are_correct: bool,
+        field: Option<&SharedReader>,
     ) -> Result<()> {
         if *VERBOSE {
             println!(
@@ -2195,6 +2340,27 @@ impl BaseTokenStreamTestCase {
         a.normalize("dummy", text)?;
         // TODO: what can we do besides testing that the above method does not throw?
 
+        if let Some(field) = field {
+            let mut reader: Box<dyn CharReader> = Box::new(StringCharReader::new(text));
+            let random = JdkRandom::new(seed);
+            if random.next_int_bound(30) == 7 {
+                if *VERBOSE {
+                    println!(
+                        "{:?}: NOTE: BaseTokenStreamTestCase: indexing using spoon-feed reader",
+                        std::thread::current().name()
+                    );
+                }
+
+                reader = Box::new(MockReaderWrapper::new(Arc::new(random), reader));
+            }
+
+            // `field.setReaderValue(...)`
+            *field.borrow_mut() = if use_char_filter {
+                Box::new(MockCharFilter::new(reader, remainder)?)
+            } else {
+                reader
+            };
+        }
         Ok(())
     }
 
@@ -2452,6 +2618,7 @@ struct AnalysisThread {
     use_char_filter: bool,
     simple: bool,
     graph_offsets_are_correct: bool,
+    iw: Option<Arc<RandomIndexWriter>>,
     // NOTE: not volatile because we don't want the tests to
     // add memory barriers (ie alter how threads
     // interact)... so this is just "best effort":
@@ -2484,6 +2651,7 @@ impl AnalysisThread {
             self.use_char_filter,
             self.simple,
             self.graph_offsets_are_correct,
+            self.iw.as_deref(),
         );
         match result {
             Ok(()) => success.1 = true,

@@ -2950,7 +2950,7 @@ impl rucene::index::IndexableField for BinaryInvertedField {
     fn string_value(&self) -> Option<String> {
         self.0.string_value()
     }
-    fn reader_value(&mut self) -> Option<&mut dyn std::io::Read> {
+    fn reader_value(&self) -> Option<rucene::document::SharedReader> {
         None
     }
     fn numeric_value(&self) -> Option<rucene::document::NumericValue> {

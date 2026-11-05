@@ -2109,3 +2109,872 @@ mod executor_tests {
         (rejected.command)();
     }
 }
+
+// -----------------------------------------------------------------------------
+// The writer and directory members `BaseTokenStreamTestCase.checkRandomData`'s
+// indexing branch and `TestMockAnalyzer.testChangeGaps` call, ported in full
+// under the sprint's cycle rule.
+// -----------------------------------------------------------------------------
+
+/// Port of the nested enum `LuceneTestCase.LiveIWCFlushMode`: "Flush mode for
+/// live IW config", what `maybeChangeLiveIndexWriterConfig` changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LiveIWCFlushMode {
+    /// `BY_RAM`.
+    ByRam,
+    /// `BY_DOCS`.
+    ByDocs,
+    /// `EITHER`.
+    Either,
+}
+
+/// `liveIWCFlushMode`, which `TestRuleSetupAndRestoreClassEnv` sets.
+static LIVE_IWC_FLUSH_MODE: std::sync::Mutex<Option<LiveIWCFlushMode>> =
+    std::sync::Mutex::new(None);
+
+/// `classEnvRule.timeZone`, which `TestRuleSetupAndRestoreClassEnv` sets.
+static CLASS_ENV_TIME_ZONE: std::sync::Mutex<Option<TimeZone>> = std::sync::Mutex::new(None);
+
+/// `FS_DIRECTORIES`: "Filesystem-based Directory implementations."
+const FS_DIRECTORIES: [&str; 2] = ["NIOFSDirectory", "MMapDirectory"];
+
+/// `CORE_DIRECTORIES`: "All Directory implementations", `FS_DIRECTORIES` and
+/// `ByteBuffersDirectory`.
+const CORE_DIRECTORIES: [&str; 3] = ["NIOFSDirectory", "MMapDirectory", "ByteBuffersDirectory"];
+
+/// `ByteBuffersDirectory.class.getName()`.
+const BYTE_BUFFERS_DIRECTORY: &str = "org.apache.lucene.store.ByteBuffersDirectory";
+
+/// The `BaseDirectoryWrapper` `newDirectory`, `newFSDirectory` and
+/// `wrapDirectory` return: a [`MockDirectoryWrapper`](crate::store::MockDirectoryWrapper)
+/// or, for a bare directory, a [`RawDirectoryWrapper`](crate::store::RawDirectoryWrapper).
+///
+/// Java returns the abstract class `BaseDirectoryWrapper`; Rust has no class
+/// hierarchy, so the two subclasses are the variants. A writer or a reader
+/// takes [`as_directory`](Self::as_directory); [`close`](Self::close) is
+/// `Directory.close()`.
+pub enum TestDirectory {
+    /// A `MockDirectoryWrapper`.
+    Mock(crate::store::MockDirectoryWrapper),
+    /// A `RawDirectoryWrapper` (a bare directory).
+    Raw(Arc<crate::store::RawDirectoryWrapper>),
+}
+
+impl TestDirectory {
+    /// The wrapper as the `Arc<dyn Directory>` a writer or a reader takes.
+    pub fn as_directory(&self) -> Arc<dyn rucene::store::Directory> {
+        match self {
+            TestDirectory::Mock(mock) => mock.as_directory(),
+            TestDirectory::Raw(raw) => Arc::clone(raw) as Arc<dyn rucene::store::Directory>,
+        }
+    }
+
+    /// `isOpen()`.
+    pub fn is_open(&self) -> bool {
+        match self {
+            TestDirectory::Mock(mock) => mock.is_open(),
+            TestDirectory::Raw(raw) => raw.base().is_open(),
+        }
+    }
+
+    /// The `MockDirectoryWrapper`, when the wrapper is one.
+    pub fn as_mock(&self) -> Option<&crate::store::MockDirectoryWrapper> {
+        match self {
+            TestDirectory::Mock(mock) => Some(mock),
+            TestDirectory::Raw(_) => None,
+        }
+    }
+
+    /// `close()`.
+    ///
+    /// # Errors
+    ///
+    /// What the wrapper's `close()` throws; a `RawDirectoryWrapper` another
+    /// handle still shares fails as `BaseDirectoryWrapper.close()` does for a
+    /// shared delegate.
+    pub fn close(&mut self) -> rucene::error::Result<()> {
+        use rucene::store::Directory;
+        match self {
+            TestDirectory::Mock(mock) => mock.close(),
+            TestDirectory::Raw(raw) => match Arc::get_mut(raw) {
+                Some(raw) => raw.close(),
+                None => Err(rucene::error::LuceneError::illegal_state(
+                    "RawDirectoryWrapper: the wrapper is still shared and cannot be closed",
+                )),
+            },
+        }
+    }
+
+    /// `closeAfterSuite(new CloseableDirectory(this, suiteFailureMarker))`.
+    fn close_after_suite(&self) {
+        let probe = match self {
+            TestDirectory::Mock(mock) => mock.open_probe(),
+            TestDirectory::Raw(raw) => crate::util::closeable_directory::DirectoryOpenProbe::new(
+                raw.base().open_flag(),
+                raw.to_string(),
+            ),
+        };
+        RandomizedTest::close_after_suite(Arc::new(crate::util::CloseableDirectory::new(
+            Arc::new(probe),
+            Arc::clone(&SUITE_FAILURE_MARKER),
+        )));
+    }
+}
+
+impl std::fmt::Display for TestDirectory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TestDirectory::Mock(mock) => mock.fmt(f),
+            TestDirectory::Raw(raw) => raw.fmt(f),
+        }
+    }
+}
+
+/// `Rethrow.rethrow(e)` of a checked exception a reflective constructor
+/// threw: the error as the Java throwable.
+fn rethrow_lucene_error(e: &rucene::error::LuceneError) -> ! {
+    let (class, message) = crate::analysis::base_token_stream_test_case::java_class_and_message(e);
+    Throwable::new(class, message).throw()
+}
+
+impl LuceneTestCase {
+    /// `setLiveIWCFlushMode(flushMode)` (package-private), which
+    /// `TestRuleSetupAndRestoreClassEnv.before()` calls.
+    ///
+    /// **Divergence (pending task #348).** The rule's `before()` is ported by
+    /// task #348; until then the class sets the mode, as it sets
+    /// [`set_class_env_similarity`](Self::set_class_env_similarity).
+    pub fn set_live_iwc_flush_mode(flush_mode: Option<LiveIWCFlushMode>) {
+        *LIVE_IWC_FLUSH_MODE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = flush_mode;
+    }
+
+    /// `liveIWCFlushMode`.
+    ///
+    /// # Panics
+    ///
+    /// When the class environment has not set it, where Java's `switch` over
+    /// the `null` field throws `NullPointerException`.
+    fn live_iwc_flush_mode() -> LiveIWCFlushMode {
+        LIVE_IWC_FLUSH_MODE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .expect(
+                "liveIWCFlushMode is set by TestRuleSetupAndRestoreClassEnv.before() \
+                 (task #348); set it with LuceneTestCase::set_live_iwc_flush_mode",
+            )
+    }
+
+    /// `classEnvRule.timeZone`: the time zone `TestRuleSetupAndRestoreClassEnv`
+    /// draws for the class.
+    ///
+    /// **Divergence (pending task #348).** As
+    /// [`class_env_similarity`](Self::class_env_similarity).
+    ///
+    /// # Panics
+    ///
+    /// When the class environment has not set it.
+    pub fn class_env_time_zone() -> TimeZone {
+        CLASS_ENV_TIME_ZONE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .expect(
+                "classEnvRule.timeZone is set by TestRuleSetupAndRestoreClassEnv.before() \
+                 (task #348); set it with LuceneTestCase::set_class_env_time_zone",
+            )
+    }
+
+    /// Sets `classEnvRule.timeZone` (see
+    /// [`class_env_time_zone`](Self::class_env_time_zone)).
+    pub fn set_class_env_time_zone(time_zone: Option<TimeZone>) {
+        *CLASS_ENV_TIME_ZONE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = time_zone;
+    }
+
+    /// `getOnlyLeafReader(reader)`: "Some tests expect the directory to contain
+    /// a single segment, and want to do tests on that segment's reader. This is
+    /// an utility method to help them."
+    ///
+    /// # Errors
+    ///
+    /// `IllegalArgumentException` (`… has N segments instead of exactly one`),
+    /// and what listing the leaves throws.
+    pub fn get_only_leaf_reader(
+        reader: Arc<dyn IndexReader>,
+    ) -> rucene::error::Result<Arc<dyn rucene::index::LeafReader>> {
+        let sub_readers = Arc::clone(&reader).leaves()?;
+        if sub_readers.len() != 1 {
+            return Err(rucene::error::LuceneError::IllegalArgument(format!(
+                "{} has {} segments instead of exactly one",
+                reader,
+                sub_readers.len()
+            )));
+        }
+        Ok(sub_readers[0].leaf_reader())
+    }
+
+    /// `newIndexWriterConfig()`: "create a new index writer config with random
+    /// defaults", over a `new MockAnalyzer(random())`.
+    pub fn new_index_writer_config() -> rucene::index::index_writer_config::IndexWriterConfig {
+        let random = Self::random();
+        Self::new_index_writer_config_analyzer(Arc::new(crate::analysis::MockAnalyzer::new(
+            &*random,
+        )))
+    }
+
+    /// `newIndexWriterConfig(a)`: "create a new index writer config with random
+    /// defaults".
+    pub fn new_index_writer_config_analyzer(
+        a: Arc<dyn rucene::analysis::Analyzer>,
+    ) -> rucene::index::index_writer_config::IndexWriterConfig {
+        let random = Self::random();
+        Self::new_index_writer_config_with(&*random, a)
+    }
+
+    /// `newIndexWriterConfig(r, a)`: "create a new index writer config with
+    /// random defaults using the specified random".
+    ///
+    /// # Panics
+    ///
+    /// When the class environment has not set `classEnvRule.similarity` (or,
+    /// when the merge policy drawn is an `AlcoholicMergePolicy`,
+    /// `classEnvRule.timeZone`), and on the failures Java's setters throw for
+    /// the values drawn, which never happen.
+    pub fn new_index_writer_config_with(
+        r: &dyn Random,
+        a: Arc<dyn rucene::analysis::Analyzer>,
+    ) -> rucene::index::index_writer_config::IndexWriterConfig {
+        use rucene::index::merge_scheduler::{ConcurrentMergeScheduler, SerialMergeScheduler};
+        const INVARIANT: &str = "INVARIANT: the drawn value is in the setter's range";
+
+        let mut c = rucene::index::index_writer_config::IndexWriterConfig::with_analyzer(a);
+        c.set_similarity(Self::class_env_similarity())
+            .expect(INVARIANT);
+        if *VERBOSE {
+            // Even though TestRuleSetupAndRestoreClassEnv calls
+            // InfoStream.setDefault, we do it again here so that
+            // the PrintStreamInfoStream.messageID increments so
+            // that when there are separate instances of
+            // IndexWriter created we see "IW 0", "IW 1", "IW 2",
+            // ... instead of just always "IW 0":
+            c.set_info_stream(Arc::new(
+                crate::util::test_rule_setup_and_restore_class_env::ThreadNameFixingPrintStreamInfoStream::new_system_out(),
+            ))
+            .expect(INVARIANT);
+        }
+
+        if Self::rarely_with(r) {
+            c.set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+                .expect(INVARIANT);
+        } else if Self::rarely_with(r) {
+            let cms = if r.next_boolean() {
+                Self::new_test_concurrent_merge_scheduler()
+            } else {
+                let cms = Self::new_test_concurrent_merge_scheduler();
+                cms.set_maybe_stall_override(Some(Arc::new(|_merge_source| Ok(true))));
+                cms
+            };
+            let max_thread_count = TestUtil::next_int(r, 1, 4);
+            let max_merge_count = TestUtil::next_int(r, max_thread_count, max_thread_count + 4);
+            cms.set_max_merges_and_threads(max_merge_count, max_thread_count)
+                .expect(INVARIANT);
+            if Self::random().next_boolean() {
+                cms.disable_auto_io_throttle().expect(INVARIANT);
+                Assert::assert_false(cms.get_auto_io_throttle());
+            }
+            cms.set_force_merge_mb_per_sec(10.0 + 10.0 * Self::random().next_double())
+                .expect(INVARIANT);
+            c.set_merge_scheduler(Arc::new(cms)).expect(INVARIANT);
+        } else {
+            // Always use consistent settings, else CMS's dynamic (SSD or not)
+            // defaults can change, hurting reproducibility:
+            let cms = if RandomizedTest::random_boolean() {
+                Self::new_test_concurrent_merge_scheduler()
+            } else {
+                ConcurrentMergeScheduler::new()
+            };
+
+            // Only 1 thread can run at once (should maybe help reproducibility),
+            // with up to 3 pending merges before segment-producing threads are
+            // stalled:
+            cms.set_max_merges_and_threads(3, 1).expect(INVARIANT);
+            c.set_merge_scheduler(Arc::new(cms)).expect(INVARIANT);
+        }
+
+        if r.next_boolean() {
+            if Self::rarely_with(r) {
+                // crazy value
+                c.set_max_buffered_docs(TestUtil::next_int(r, 2, 15))
+                    .expect(INVARIANT);
+            } else {
+                // reasonable value
+                c.set_max_buffered_docs(TestUtil::next_int(r, 16, 1000))
+                    .expect(INVARIANT);
+            }
+        }
+
+        c.set_merge_policy(Self::new_merge_policy_with(r))
+            .expect(INVARIANT);
+
+        if Self::rarely_with(r) {
+            let info_stream = c.info_stream();
+            c.set_merged_segment_warmer(Some(Arc::new(
+                rucene::index::sorting_codec_reader::SimpleMergedSegmentWarmer::new(info_stream),
+            )))
+            .expect(INVARIANT);
+        }
+        c.set_use_compound_file(r.next_boolean()).expect(INVARIANT);
+        c.set_reader_pooling(r.next_boolean());
+        if Self::rarely_with(r) {
+            c.set_check_pending_flush_update(false).expect(INVARIANT);
+        }
+
+        if Self::rarely_with(r) {
+            c.set_index_writer_event_listener(Arc::new(
+                crate::index::MockIndexWriterEventListener::new(),
+            ));
+        }
+        match r.next_int_bound(3) {
+            0 => {
+                // Disable merge on refresh
+                c.set_max_full_flush_merge_wait_millis(0);
+            }
+            1 => {
+                // Very low timeout, merges will likely not be able to run in time
+                c.set_max_full_flush_merge_wait_millis(1);
+            }
+            _ => {
+                // Very long timeout, merges will almost always be able to run in time
+                c.set_max_full_flush_merge_wait_millis(1000);
+            }
+        }
+
+        let wait = if Self::rarely() {
+            Self::at_least_with(r, 1000)
+        } else {
+            Self::at_least_with(r, 200)
+        };
+        c.set_max_full_flush_merge_wait_millis(i64::from(wait));
+        c
+    }
+
+    /// `new TestConcurrentMergeScheduler()`: the package-private
+    /// `LuceneTestCase.TestConcurrentMergeScheduler extends
+    /// ConcurrentMergeScheduler`, whose `getIntraMergeExecutor` "Always do[es]
+    /// the intra merge executor to ensure we test it". The override is the
+    /// scheduler's hook, as every `ConcurrentMergeScheduler` subclass is in
+    /// this port.
+    pub fn new_test_concurrent_merge_scheduler(
+    ) -> rucene::index::merge_scheduler::ConcurrentMergeScheduler {
+        let cms = rucene::index::merge_scheduler::ConcurrentMergeScheduler::new();
+        cms.set_intra_merge_executor_override(Some(Arc::new(|cms, _merge| {
+            let executor = cms.intra_merge_executor();
+            randomizedtesting::jdk::exception::java_assert(executor.is_some(), || {
+                "scaledExecutor is not initialized".to_string()
+            });
+            // Always do the intra merge executor to ensure we test it
+            Ok(executor)
+        })));
+        cms
+    }
+
+    /// `newMergePolicy(r)`: `newMergePolicy(r, true)`.
+    pub fn new_merge_policy_with(
+        r: &dyn Random,
+    ) -> Arc<dyn rucene::index::merge_policy::MergePolicy> {
+        Self::new_merge_policy_include_mock(r, true)
+    }
+
+    /// `newMergePolicy(r, includeMockMP)`.
+    pub fn new_merge_policy_include_mock(
+        r: &dyn Random,
+        include_mock_mp: bool,
+    ) -> Arc<dyn rucene::index::merge_policy::MergePolicy> {
+        if include_mock_mp && Self::rarely_with(r) {
+            Arc::new(crate::index::MockRandomMergePolicy::new(r))
+        } else if r.next_boolean() {
+            Arc::new(Self::new_tiered_merge_policy_with(r))
+        } else if Self::rarely_with(r) {
+            Arc::new(Self::new_alcoholic_merge_policy_with(
+                r,
+                Self::class_env_time_zone(),
+            ))
+        } else {
+            Arc::new(Self::new_log_merge_policy_with(r))
+        }
+    }
+
+    /// `newMergePolicy()`: `newMergePolicy(random())`.
+    pub fn new_merge_policy() -> Arc<dyn rucene::index::merge_policy::MergePolicy> {
+        Self::new_merge_policy_with(&*Self::random())
+    }
+
+    /// `newAlcoholicMergePolicy(r, tz)`: `new AlcoholicMergePolicy(tz, new
+    /// Random(r.nextLong()))`.
+    pub fn new_alcoholic_merge_policy_with(
+        r: &dyn Random,
+        tz: TimeZone,
+    ) -> rucene::index::merge_policy::LogMergePolicy {
+        crate::index::AlcoholicMergePolicy::new(
+            tz,
+            randomizedtesting::jdk::random::JdkRandom::new(r.next_long()),
+        )
+    }
+
+    /// `newLogMergePolicy(r)`.
+    pub fn new_log_merge_policy_with(
+        r: &dyn Random,
+    ) -> rucene::index::merge_policy::LogMergePolicy {
+        use rucene::index::merge_policy::LogMergePolicy;
+        const INVARIANT: &str = "INVARIANT: the drawn value is in the setter's range";
+        let mut logmp = if r.next_boolean() {
+            LogMergePolicy::by_doc_count()
+        } else {
+            LogMergePolicy::by_byte_size()
+        };
+        logmp.set_calibrate_size_by_deletes(r.next_boolean());
+        logmp
+            .set_target_search_concurrency(TestUtil::next_int(&*Self::random(), 1, 16))
+            .expect(INVARIANT);
+        if Self::rarely_with(r) {
+            logmp
+                .set_merge_factor(TestUtil::next_int(r, 2, 9))
+                .expect(INVARIANT);
+        } else {
+            logmp
+                .set_merge_factor(TestUtil::next_int(r, 10, 50))
+                .expect(INVARIANT);
+        }
+        Self::configure_random(r, &logmp);
+        logmp
+    }
+
+    /// `configureRandom(r, mergePolicy)` (private).
+    fn configure_random(
+        r: &dyn Random,
+        merge_policy: &dyn rucene::index::merge_policy::MergePolicy,
+    ) {
+        const INVARIANT: &str = "INVARIANT: the drawn value is in the setter's range";
+        if r.next_boolean() {
+            merge_policy
+                .set_no_cfs_ratio(0.1 + r.next_double() * 0.8)
+                .expect(INVARIANT);
+        } else {
+            merge_policy
+                .set_no_cfs_ratio(if r.next_boolean() { 1.0 } else { 0.0 })
+                .expect(INVARIANT);
+        }
+
+        if Self::rarely_with(r) {
+            merge_policy
+                .set_max_cfs_segment_size_mb(0.2 + r.next_double() * 2.0)
+                .expect(INVARIANT);
+        } else {
+            merge_policy
+                .set_max_cfs_segment_size_mb(f64::INFINITY)
+                .expect(INVARIANT);
+        }
+    }
+
+    /// `newTieredMergePolicy(r)`.
+    pub fn new_tiered_merge_policy_with(
+        r: &dyn Random,
+    ) -> rucene::index::merge_policy::TieredMergePolicy {
+        const INVARIANT: &str = "INVARIANT: the drawn value is in the setter's range";
+        let mut tmp = rucene::index::merge_policy::TieredMergePolicy::new();
+        if Self::rarely_with(r) {
+            tmp.set_max_merge_at_once(TestUtil::next_int(r, 2, 9))
+                .expect(INVARIANT);
+        } else {
+            tmp.set_max_merge_at_once(TestUtil::next_int(r, 10, 50))
+                .expect(INVARIANT);
+        }
+        if Self::rarely_with(r) {
+            tmp.set_max_merged_segment_mb(0.2 + r.next_double() * 2.0)
+                .expect(INVARIANT);
+        } else {
+            tmp.set_max_merged_segment_mb(10.0 + r.next_double() * 100.0)
+                .expect(INVARIANT);
+        }
+        tmp.set_floor_segment_mb(0.2 + r.next_double() * 2.0)
+            .expect(INVARIANT);
+        tmp.set_force_merge_deletes_pct_allowed(0.0 + r.next_double() * 30.0)
+            .expect(INVARIANT);
+        if Self::rarely_with(r) {
+            tmp.set_segments_per_tier(f64::from(TestUtil::next_int(r, 2, 20)))
+                .expect(INVARIANT);
+        } else {
+            tmp.set_segments_per_tier(f64::from(TestUtil::next_int(r, 10, 50)))
+                .expect(INVARIANT);
+        }
+        if Self::rarely_with(r) {
+            tmp.set_target_search_concurrency(TestUtil::next_int(r, 10, 50))
+                .expect(INVARIANT);
+        } else {
+            tmp.set_target_search_concurrency(TestUtil::next_int(r, 2, 20))
+                .expect(INVARIANT);
+        }
+
+        Self::configure_random(r, &tmp);
+        tmp.set_deletes_pct_allowed(20.0 + Self::random().next_double() * 30.0)
+            .expect(INVARIANT);
+        tmp
+    }
+
+    /// `maybeChangeLiveIndexWriterConfig(r, c)`: "if you want it in
+    /// LiveIndexWriterConfig: it must and will be tested here."
+    ///
+    /// # Panics
+    ///
+    /// When the class environment has not set `liveIWCFlushMode` and the
+    /// flush parameters are drawn to change.
+    pub fn maybe_change_live_index_writer_config(
+        r: &dyn Random,
+        c: &rucene::index::index_writer_config::LiveIndexWriterConfig,
+    ) {
+        use rucene::index::index_writer_config::LiveIndexWriterConfig;
+        use rucene::index::merge_policy::{LogMergePolicy, TieredMergePolicy};
+        use rucene::index::merge_scheduler::ConcurrentMergeScheduler;
+        const INVARIANT: &str = "INVARIANT: the drawn value is in the setter's range";
+
+        let mut did_change = false;
+
+        let previous = c.to_string();
+
+        if Self::rarely_with(r) {
+            // change flush parameters:
+            // this is complicated because the api requires you "invoke setters in a magical order!"
+            // LUCENE-5661: workaround for race conditions in the API
+            c.synchronized_flush_settings(|settings| {
+                let flush_by_ram = match Self::live_iwc_flush_mode() {
+                    LiveIWCFlushMode::ByRam => true,
+                    LiveIWCFlushMode::ByDocs => false,
+                    LiveIWCFlushMode::Either => r.next_boolean(),
+                };
+                if flush_by_ram {
+                    settings
+                        .set_ram_buffer_size_mb(f64::from(TestUtil::next_int(r, 1, 10)))
+                        .expect(INVARIANT);
+                    settings
+                        .set_max_buffered_docs(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH)
+                        .expect(INVARIANT);
+                } else {
+                    if Self::rarely_with(r) {
+                        // crazy value
+                        settings
+                            .set_max_buffered_docs(TestUtil::next_int(r, 2, 15))
+                            .expect(INVARIANT);
+                    } else {
+                        // reasonable value
+                        settings
+                            .set_max_buffered_docs(TestUtil::next_int(r, 16, 1000))
+                            .expect(INVARIANT);
+                    }
+                    settings
+                        .set_ram_buffer_size_mb(f64::from(
+                            LiveIndexWriterConfig::DISABLE_AUTO_FLUSH,
+                        ))
+                        .expect(INVARIANT);
+                }
+            });
+            did_change = true;
+        }
+
+        if Self::rarely_with(r) {
+            let cur_warmer = c.merged_segment_warmer();
+            if cur_warmer.as_ref().is_none_or(|warmer| {
+                rucene::index::index_writer_config::MergedSegmentWarmer::as_any(&**warmer)
+                    .is_some_and(|any| {
+                        any.is::<rucene::index::sorting_codec_reader::SimpleMergedSegmentWarmer>()
+                    })
+            }) {
+                // change warmer parameters
+                if r.next_boolean() {
+                    c.set_merged_segment_warmer(Some(Arc::new(
+                        rucene::index::sorting_codec_reader::SimpleMergedSegmentWarmer::new(
+                            c.info_stream(),
+                        ),
+                    )));
+                } else {
+                    c.set_merged_segment_warmer(None);
+                }
+            }
+            did_change = true;
+        }
+
+        if Self::rarely_with(r) {
+            // change CFS flush parameters
+            c.set_use_compound_file(r.next_boolean());
+            did_change = true;
+        }
+
+        if Self::rarely_with(r) {
+            // change CMS merge parameters
+            let ms = c.merge_scheduler();
+            if let Some(cms) = ms
+                .as_any()
+                .and_then(|any| any.downcast_ref::<ConcurrentMergeScheduler>())
+            {
+                let max_thread_count = TestUtil::next_int(r, 1, 4);
+                let max_merge_count = TestUtil::next_int(r, max_thread_count, max_thread_count + 4);
+                let enable_auto_io_throttle = Self::random().next_boolean();
+                if enable_auto_io_throttle {
+                    cms.enable_auto_io_throttle().expect(INVARIANT);
+                } else {
+                    cms.disable_auto_io_throttle().expect(INVARIANT);
+                }
+                cms.set_max_merges_and_threads(max_merge_count, max_thread_count)
+                    .expect(INVARIANT);
+                did_change = true;
+            }
+        }
+
+        if Self::rarely_with(r) {
+            let mp = c.merge_policy();
+            Self::configure_random(r, &*mp);
+            let any = mp.as_any();
+            if let Some(logmp) = any.and_then(|any| any.downcast_ref::<LogMergePolicy>()) {
+                logmp.set_calibrate_size_by_deletes(r.next_boolean());
+                if Self::rarely_with(r) {
+                    logmp
+                        .set_merge_factor(TestUtil::next_int(r, 2, 9))
+                        .expect(INVARIANT);
+                } else {
+                    logmp
+                        .set_merge_factor(TestUtil::next_int(r, 10, 50))
+                        .expect(INVARIANT);
+                }
+            } else if let Some(tmp) = any.and_then(|any| any.downcast_ref::<TieredMergePolicy>()) {
+                if Self::rarely_with(r) {
+                    tmp.set_max_merge_at_once(TestUtil::next_int(r, 2, 9))
+                        .expect(INVARIANT);
+                } else {
+                    tmp.set_max_merge_at_once(TestUtil::next_int(r, 10, 50))
+                        .expect(INVARIANT);
+                }
+                if Self::rarely_with(r) {
+                    tmp.set_max_merged_segment_mb(0.2 + r.next_double() * 2.0)
+                        .expect(INVARIANT);
+                } else {
+                    tmp.set_max_merged_segment_mb(r.next_double() * 100.0)
+                        .expect(INVARIANT);
+                }
+                tmp.set_floor_segment_mb(0.2 + r.next_double() * 2.0)
+                    .expect(INVARIANT);
+                tmp.set_force_merge_deletes_pct_allowed(0.0 + r.next_double() * 30.0)
+                    .expect(INVARIANT);
+                if Self::rarely_with(r) {
+                    tmp.set_segments_per_tier(f64::from(TestUtil::next_int(r, 2, 20)))
+                        .expect(INVARIANT);
+                } else {
+                    tmp.set_segments_per_tier(f64::from(TestUtil::next_int(r, 10, 50)))
+                        .expect(INVARIANT);
+                }
+                Self::configure_random(r, tmp);
+                tmp.set_deletes_pct_allowed(20.0 + Self::random().next_double() * 30.0)
+                    .expect(INVARIANT);
+            }
+            did_change = true;
+        }
+        if *VERBOSE && did_change {
+            let current = c.to_string();
+            let previous_lines: Vec<&str> = previous.split('\n').collect();
+            let current_lines: Vec<&str> = current.split('\n').collect();
+            let mut diff = String::new();
+
+            // this should always be the case, diff each line
+            if previous_lines.len() == current_lines.len() {
+                for (previous_line, current_line) in previous_lines.iter().zip(&current_lines) {
+                    if previous_line != current_line {
+                        diff.push_str(&format!("- {previous_line}\n"));
+                        diff.push_str(&format!("+ {current_line}\n"));
+                    }
+                }
+            } else {
+                // but just in case of something ridiculous...
+                diff.push_str(&current);
+            }
+
+            // its possible to be empty, if we "change" a value to what it had before.
+            if !diff.is_empty() {
+                println!("NOTE: LuceneTestCase: randomly changed IWC's live settings:");
+                println!("{diff}");
+            }
+        }
+    }
+
+    /// `newDirectory()`: "Returns a new Directory instance. Use this when the
+    /// test does not care about the specific Directory implementation (most
+    /// tests)."
+    pub fn new_directory() -> TestDirectory {
+        Self::new_directory_with(&*Self::random())
+    }
+
+    /// `newDirectory(r)`: "Returns a new Directory instance, using the
+    /// specified random."
+    pub fn new_directory_with(r: &dyn Random) -> TestDirectory {
+        let directory = Self::new_directory_impl(r, &TEST_DIRECTORY);
+        let bare = Self::rarely_with(r);
+        Self::wrap_directory(r, directory, bare, false)
+    }
+
+    /// `newFSDirectory(f)`: "Returns a new FSDirectory instance over the given
+    /// file, which must be a folder.", with `FSLockFactory.getDefault()`.
+    pub fn new_fs_directory(f: &Path) -> TestDirectory {
+        let bare = Self::rarely();
+        Self::new_fs_directory_bare(f, bare)
+    }
+
+    /// The private `newFSDirectory(f, lf, bare)`, with
+    /// `FSLockFactory.getDefault()`.
+    fn new_fs_directory_bare(f: &Path, bare: bool) -> TestDirectory {
+        use rucene::util::command_line_util::CommandLineUtil;
+        let random = Self::random();
+        let mut fsdir_class = TEST_DIRECTORY.clone();
+        if fsdir_class == "random" {
+            fsdir_class = RandomPicks::random_from(&*random, &FS_DIRECTORIES).to_string();
+        }
+
+        let clazz = match CommandLineUtil::load_fs_directory_class(&fsdir_class) {
+            Ok(clazz) => clazz,
+            // TEST_DIRECTORY is not a sub-class of FSDirectory, so draw one at random
+            // (`CommandLineUtil.loadFSDirectoryClass`'s `ClassCastException`
+            // carries `Class.toString()`, `class <name>` or `interface <name>`).
+            Err(rucene::error::LuceneError::Other(message))
+                if message.starts_with("class ") || message.starts_with("interface ") =>
+            {
+                fsdir_class = RandomPicks::random_from(&*random, &FS_DIRECTORIES).to_string();
+                CommandLineUtil::load_fs_directory_class(&fsdir_class)
+                    .unwrap_or_else(|e| rethrow_lucene_error(&e))
+            }
+            Err(e) => rethrow_lucene_error(&e),
+        };
+
+        let fsdir = Self::new_fs_directory_impl(clazz, f);
+        Self::wrap_directory(&*random, fsdir, bare, true)
+    }
+
+    /// `newFSDirectoryImpl(clazz, path, lf)` (private), with
+    /// `FSLockFactory.getDefault()`.
+    fn new_fs_directory_impl(
+        clazz: rucene::util::command_line_util::FSDirectoryKind,
+        path: &Path,
+    ) -> Box<dyn rucene::store::Directory> {
+        use rucene::util::command_line_util::CommandLineUtil;
+        // `FSLockFactory.getDefault()`: `NativeFSLockFactory.INSTANCE`.
+        match CommandLineUtil::new_fs_directory_of_kind(
+            clazz,
+            path.as_std_path(),
+            Box::new(rucene::store::NativeFSLockFactory),
+        ) {
+            Ok(d) => d,
+            Err(e) => rethrow_lucene_error(&e),
+        }
+    }
+
+    /// `newDirectoryImpl(random, clazzName)` (package-private), with
+    /// `FSLockFactory.getDefault()`.
+    fn new_directory_impl(
+        random: &dyn Random,
+        clazz_name: &str,
+    ) -> Box<dyn rucene::store::Directory> {
+        use rucene::util::command_line_util::CommandLineUtil;
+        let mut clazz_name = clazz_name.to_string();
+        if clazz_name == "random" {
+            if Self::rarely_with(random) {
+                clazz_name = RandomPicks::random_from(random, &CORE_DIRECTORIES).to_string();
+            } else if Self::rarely_with(random) {
+                let clazz_name1 = if Self::rarely_with(random) {
+                    RandomPicks::random_from(random, &CORE_DIRECTORIES).to_string()
+                } else {
+                    BYTE_BUFFERS_DIRECTORY.to_string()
+                };
+                let clazz_name2 = if Self::rarely_with(random) {
+                    RandomPicks::random_from(random, &CORE_DIRECTORIES).to_string()
+                } else {
+                    BYTE_BUFFERS_DIRECTORY.to_string()
+                };
+                let dir1 = Self::new_directory_impl(random, &clazz_name1);
+                let dir2 = Self::new_directory_impl(random, &clazz_name2);
+                return Self::new_file_switch_directory(random, dir1, dir2);
+            } else {
+                clazz_name = BYTE_BUFFERS_DIRECTORY.to_string();
+            }
+        }
+
+        let clazz = CommandLineUtil::load_directory_class(&clazz_name)
+            .unwrap_or_else(|e| rethrow_lucene_error(&e));
+        // If it is a FSDirectory type, try its ctor(Path)
+        if let Ok(kind) = CommandLineUtil::load_fs_directory_class(&clazz) {
+            let dir = Self::create_temp_dir_prefix(&format!("index-{clazz_name}"));
+            return Self::new_fs_directory_impl(kind, &dir);
+        }
+
+        // See if it has a Path/LockFactory ctor even though it's not an
+        // FSDir subclass: no other directory of the store package has one.
+        // the remaining dirs are no longer filesystem based, so we must check that the
+        // passedLockFactory is not file based: the default lock factory is.
+        // try empty ctor
+        if clazz == BYTE_BUFFERS_DIRECTORY {
+            return Box::new(rucene::store::ByteBuffersDirectory::new());
+        }
+        rethrow_lucene_error(&rucene::error::LuceneError::unchecked(
+            "java.lang.NoSuchMethodException",
+            format!("{clazz}.<init>()"),
+        ))
+    }
+
+    /// `newFileSwitchDirectory(random, dir1, dir2)` (private).
+    fn new_file_switch_directory(
+        random: &dyn Random,
+        dir1: Box<dyn rucene::store::Directory>,
+        dir2: Box<dyn rucene::store::Directory>,
+    ) -> Box<dyn rucene::store::Directory> {
+        let mut file_extensions = vec![
+            "fdt", "fdx", "tim", "tip", "si", "fnm", "pos", "dii", "dim", "nvm", "nvd", "dvm",
+            "dvd",
+        ];
+        randomizedtesting::jdk::util::shuffle(&mut file_extensions, random);
+        let len = 1 + random.next_int_bound(file_extensions.len() as i32) as usize;
+        file_extensions.truncate(len);
+        let extensions: HashSet<String> = file_extensions.iter().map(|e| e.to_string()).collect();
+        match rucene::store::FileSwitchDirectory::new(extensions, dir1, dir2, true) {
+            Ok(d) => Box::new(d),
+            Err(e) => rethrow_lucene_error(&e),
+        }
+    }
+
+    /// `wrapDirectory(random, directory, bare, filesystem)` (private).
+    fn wrap_directory(
+        random: &dyn Random,
+        directory: Box<dyn rucene::store::Directory>,
+        bare: bool,
+        filesystem: bool,
+    ) -> TestDirectory {
+        let mut directory = directory;
+        // IOContext randomization might make NRTCachingDirectory make bad decisions, so avoid
+        // using it if the user requested a filesystem directory.
+        if Self::rarely_with(random) && !bare && !filesystem {
+            let max_merge_size_mb = random.next_double();
+            let max_cached_mb = random.next_double();
+            directory = Box::new(rucene::store::NRTCachingDirectory::new(
+                directory,
+                max_merge_size_mb,
+                max_cached_mb,
+            ));
+        }
+
+        let directory: Arc<dyn rucene::store::Directory> = Arc::from(directory);
+        let wrapped = if bare {
+            TestDirectory::Raw(Arc::new(crate::store::RawDirectoryWrapper::new(directory)))
+        } else {
+            let mock = crate::store::MockDirectoryWrapper::new(random, directory);
+            mock.set_throttling(*TEST_THROTTLING);
+            TestDirectory::Mock(mock)
+        };
+        wrapped.close_after_suite();
+        wrapped
+    }
+}

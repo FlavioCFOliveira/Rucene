@@ -19,6 +19,11 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use crate::analysis::tokenattributes::{
+    BytesTermAttribute, CharTermAttribute, FlagsAttribute, KeywordAttribute, OffsetAttribute,
+    PayloadAttribute, PositionIncrementAttribute, PositionLengthAttribute, TermFrequencyAttribute,
+    TermToBytesRefAttribute, TypeAttribute,
+};
 use crate::error::LuceneError;
 
 /// Base marker trait for all Lucene attributes.
@@ -132,6 +137,149 @@ pub trait AttributeImpl: Attribute + Debug + Send + Sync + 'static {
     /// Returns the [`TypeId`]s of all [`Attribute`] interfaces this
     /// implementation supports.
     fn attribute_interfaces(&self) -> &'static [TypeId];
+
+    // -- Interface casts -----------------------------------------------------
+    //
+    // Java holds an attribute by its interface (`CharTermAttribute termAtt =
+    // addAttribute(CharTermAttribute.class)`), whatever class the factory
+    // chose to implement it with. Rust cannot cast a `dyn AttributeImpl` to
+    // another trait object, so every implementation answers, for each token
+    // attribute interface it implements, the cast to it; see
+    // [`AttributeInterface`] and [`AttributeSource::get_attribute_interface`].
+
+    /// This implementation as a `CharTermAttribute`, Java's cast `(CharTermAttribute) impl`;
+    /// `None` when it does not implement the interface.
+    fn as_char_term_attribute(&self) -> Option<&dyn CharTermAttribute> {
+        None
+    }
+
+    /// This implementation mutably as a `CharTermAttribute`; see
+    /// [`as_char_term_attribute`](Self::as_char_term_attribute).
+    fn as_char_term_attribute_mut(&mut self) -> Option<&mut dyn CharTermAttribute> {
+        None
+    }
+
+    /// This implementation as a `TermToBytesRefAttribute`, Java's cast `(TermToBytesRefAttribute) impl`;
+    /// `None` when it does not implement the interface.
+    fn as_term_to_bytes_ref_attribute(&self) -> Option<&dyn TermToBytesRefAttribute> {
+        None
+    }
+
+    /// This implementation mutably as a `TermToBytesRefAttribute`; see
+    /// [`as_term_to_bytes_ref_attribute`](Self::as_term_to_bytes_ref_attribute).
+    fn as_term_to_bytes_ref_attribute_mut(&mut self) -> Option<&mut dyn TermToBytesRefAttribute> {
+        None
+    }
+
+    /// This implementation as a `BytesTermAttribute`, Java's cast `(BytesTermAttribute) impl`;
+    /// `None` when it does not implement the interface.
+    fn as_bytes_term_attribute(&self) -> Option<&dyn BytesTermAttribute> {
+        None
+    }
+
+    /// This implementation mutably as a `BytesTermAttribute`; see
+    /// [`as_bytes_term_attribute`](Self::as_bytes_term_attribute).
+    fn as_bytes_term_attribute_mut(&mut self) -> Option<&mut dyn BytesTermAttribute> {
+        None
+    }
+
+    /// This implementation as a `OffsetAttribute`, Java's cast `(OffsetAttribute) impl`;
+    /// `None` when it does not implement the interface.
+    fn as_offset_attribute(&self) -> Option<&dyn OffsetAttribute> {
+        None
+    }
+
+    /// This implementation mutably as a `OffsetAttribute`; see
+    /// [`as_offset_attribute`](Self::as_offset_attribute).
+    fn as_offset_attribute_mut(&mut self) -> Option<&mut dyn OffsetAttribute> {
+        None
+    }
+
+    /// This implementation as a `PositionIncrementAttribute`, Java's cast `(PositionIncrementAttribute) impl`;
+    /// `None` when it does not implement the interface.
+    fn as_position_increment_attribute(&self) -> Option<&dyn PositionIncrementAttribute> {
+        None
+    }
+
+    /// This implementation mutably as a `PositionIncrementAttribute`; see
+    /// [`as_position_increment_attribute`](Self::as_position_increment_attribute).
+    fn as_position_increment_attribute_mut(
+        &mut self,
+    ) -> Option<&mut dyn PositionIncrementAttribute> {
+        None
+    }
+
+    /// This implementation as a `PositionLengthAttribute`, Java's cast `(PositionLengthAttribute) impl`;
+    /// `None` when it does not implement the interface.
+    fn as_position_length_attribute(&self) -> Option<&dyn PositionLengthAttribute> {
+        None
+    }
+
+    /// This implementation mutably as a `PositionLengthAttribute`; see
+    /// [`as_position_length_attribute`](Self::as_position_length_attribute).
+    fn as_position_length_attribute_mut(&mut self) -> Option<&mut dyn PositionLengthAttribute> {
+        None
+    }
+
+    /// This implementation as a `TypeAttribute`, Java's cast `(TypeAttribute) impl`;
+    /// `None` when it does not implement the interface.
+    fn as_type_attribute(&self) -> Option<&dyn TypeAttribute> {
+        None
+    }
+
+    /// This implementation mutably as a `TypeAttribute`; see
+    /// [`as_type_attribute`](Self::as_type_attribute).
+    fn as_type_attribute_mut(&mut self) -> Option<&mut dyn TypeAttribute> {
+        None
+    }
+
+    /// This implementation as a `TermFrequencyAttribute`, Java's cast `(TermFrequencyAttribute) impl`;
+    /// `None` when it does not implement the interface.
+    fn as_term_frequency_attribute(&self) -> Option<&dyn TermFrequencyAttribute> {
+        None
+    }
+
+    /// This implementation mutably as a `TermFrequencyAttribute`; see
+    /// [`as_term_frequency_attribute`](Self::as_term_frequency_attribute).
+    fn as_term_frequency_attribute_mut(&mut self) -> Option<&mut dyn TermFrequencyAttribute> {
+        None
+    }
+
+    /// This implementation as a `PayloadAttribute`, Java's cast `(PayloadAttribute) impl`;
+    /// `None` when it does not implement the interface.
+    fn as_payload_attribute(&self) -> Option<&dyn PayloadAttribute> {
+        None
+    }
+
+    /// This implementation mutably as a `PayloadAttribute`; see
+    /// [`as_payload_attribute`](Self::as_payload_attribute).
+    fn as_payload_attribute_mut(&mut self) -> Option<&mut dyn PayloadAttribute> {
+        None
+    }
+
+    /// This implementation as a `FlagsAttribute`, Java's cast `(FlagsAttribute) impl`;
+    /// `None` when it does not implement the interface.
+    fn as_flags_attribute(&self) -> Option<&dyn FlagsAttribute> {
+        None
+    }
+
+    /// This implementation mutably as a `FlagsAttribute`; see
+    /// [`as_flags_attribute`](Self::as_flags_attribute).
+    fn as_flags_attribute_mut(&mut self) -> Option<&mut dyn FlagsAttribute> {
+        None
+    }
+
+    /// This implementation as a `KeywordAttribute`, Java's cast `(KeywordAttribute) impl`;
+    /// `None` when it does not implement the interface.
+    fn as_keyword_attribute(&self) -> Option<&dyn KeywordAttribute> {
+        None
+    }
+
+    /// This implementation mutably as a `KeywordAttribute`; see
+    /// [`as_keyword_attribute`](Self::as_keyword_attribute).
+    fn as_keyword_attribute_mut(&mut self) -> Option<&mut dyn KeywordAttribute> {
+        None
+    }
 
     /// Returns this attribute as [`Any`] for immutable downcasting.
     ///
@@ -413,6 +561,131 @@ impl Clone for CapturedState {
     }
 }
 
+/// A token attribute interface, `dyn CharTermAttribute` and its siblings:
+/// what Java names with `XAttribute.class`.
+///
+/// An [`AttributeSource`] keys its attributes by the interface's [`TypeId`]
+/// (`TypeId::of::<dyn CharTermAttribute>()`); [`cast`](Self::cast) turns the
+/// implementation found there into the interface, through the casts every
+/// [`AttributeImpl`] answers.
+pub trait AttributeInterface: 'static {
+    /// Casts `att` to this interface.
+    fn cast(att: &dyn AttributeImpl) -> Option<&Self>;
+
+    /// Casts `att` mutably to this interface.
+    fn cast_mut(att: &mut dyn AttributeImpl) -> Option<&mut Self>;
+}
+
+impl AttributeInterface for dyn CharTermAttribute {
+    fn cast(att: &dyn AttributeImpl) -> Option<&Self> {
+        att.as_char_term_attribute()
+    }
+
+    fn cast_mut(att: &mut dyn AttributeImpl) -> Option<&mut Self> {
+        att.as_char_term_attribute_mut()
+    }
+}
+
+impl AttributeInterface for dyn TermToBytesRefAttribute {
+    fn cast(att: &dyn AttributeImpl) -> Option<&Self> {
+        att.as_term_to_bytes_ref_attribute()
+    }
+
+    fn cast_mut(att: &mut dyn AttributeImpl) -> Option<&mut Self> {
+        att.as_term_to_bytes_ref_attribute_mut()
+    }
+}
+
+impl AttributeInterface for dyn BytesTermAttribute {
+    fn cast(att: &dyn AttributeImpl) -> Option<&Self> {
+        att.as_bytes_term_attribute()
+    }
+
+    fn cast_mut(att: &mut dyn AttributeImpl) -> Option<&mut Self> {
+        att.as_bytes_term_attribute_mut()
+    }
+}
+
+impl AttributeInterface for dyn OffsetAttribute {
+    fn cast(att: &dyn AttributeImpl) -> Option<&Self> {
+        att.as_offset_attribute()
+    }
+
+    fn cast_mut(att: &mut dyn AttributeImpl) -> Option<&mut Self> {
+        att.as_offset_attribute_mut()
+    }
+}
+
+impl AttributeInterface for dyn PositionIncrementAttribute {
+    fn cast(att: &dyn AttributeImpl) -> Option<&Self> {
+        att.as_position_increment_attribute()
+    }
+
+    fn cast_mut(att: &mut dyn AttributeImpl) -> Option<&mut Self> {
+        att.as_position_increment_attribute_mut()
+    }
+}
+
+impl AttributeInterface for dyn PositionLengthAttribute {
+    fn cast(att: &dyn AttributeImpl) -> Option<&Self> {
+        att.as_position_length_attribute()
+    }
+
+    fn cast_mut(att: &mut dyn AttributeImpl) -> Option<&mut Self> {
+        att.as_position_length_attribute_mut()
+    }
+}
+
+impl AttributeInterface for dyn TypeAttribute {
+    fn cast(att: &dyn AttributeImpl) -> Option<&Self> {
+        att.as_type_attribute()
+    }
+
+    fn cast_mut(att: &mut dyn AttributeImpl) -> Option<&mut Self> {
+        att.as_type_attribute_mut()
+    }
+}
+
+impl AttributeInterface for dyn TermFrequencyAttribute {
+    fn cast(att: &dyn AttributeImpl) -> Option<&Self> {
+        att.as_term_frequency_attribute()
+    }
+
+    fn cast_mut(att: &mut dyn AttributeImpl) -> Option<&mut Self> {
+        att.as_term_frequency_attribute_mut()
+    }
+}
+
+impl AttributeInterface for dyn PayloadAttribute {
+    fn cast(att: &dyn AttributeImpl) -> Option<&Self> {
+        att.as_payload_attribute()
+    }
+
+    fn cast_mut(att: &mut dyn AttributeImpl) -> Option<&mut Self> {
+        att.as_payload_attribute_mut()
+    }
+}
+
+impl AttributeInterface for dyn FlagsAttribute {
+    fn cast(att: &dyn AttributeImpl) -> Option<&Self> {
+        att.as_flags_attribute()
+    }
+
+    fn cast_mut(att: &mut dyn AttributeImpl) -> Option<&mut Self> {
+        att.as_flags_attribute_mut()
+    }
+}
+
+impl AttributeInterface for dyn KeywordAttribute {
+    fn cast(att: &dyn AttributeImpl) -> Option<&Self> {
+        att.as_keyword_attribute()
+    }
+
+    fn cast_mut(att: &mut dyn AttributeImpl) -> Option<&mut Self> {
+        att.as_keyword_attribute_mut()
+    }
+}
+
 /// A shared, mutable attribute implementation held by an [`AttributeSource`].
 pub type AttributeCell = Rc<RefCell<Box<dyn AttributeImpl>>>;
 
@@ -671,6 +944,62 @@ impl AttributeSource {
                 .downcast_ref::<A>()
                 .expect("attribute type mismatch")
         }))
+    }
+
+    /// Returns the instance of the attribute interface `I` this source holds,
+    /// whatever implementation provides it, or `None`.
+    ///
+    /// Equivalent to `getAttribute(XAttribute.class)` (`AttributeSource.java:
+    /// 323-325`), which returns the instance as the interface.
+    ///
+    /// # Panics
+    ///
+    /// When the implementation is borrowed mutably, or does not answer the
+    /// cast to `I` it is registered for.
+    pub fn get_attribute_interface<I: AttributeInterface + ?Sized>(&self) -> Option<Ref<'_, I>> {
+        let rc = self.attributes.get(&TypeId::of::<I>())?;
+        Some(Ref::map(rc.borrow(), |att| {
+            I::cast(&**att).expect("INVARIANT: an implementation answers the casts it is keyed by")
+        }))
+    }
+
+    /// Returns the instance of the attribute interface `I` mutably; see
+    /// [`get_attribute_interface`](Self::get_attribute_interface).
+    ///
+    /// # Panics
+    ///
+    /// When the implementation is borrowed, or does not answer the cast to
+    /// `I` it is registered for.
+    pub fn get_attribute_interface_mut<I: AttributeInterface + ?Sized>(
+        &self,
+    ) -> Option<RefMut<'_, I>> {
+        let rc = self.attributes.get(&TypeId::of::<I>())?;
+        Some(RefMut::map(rc.borrow_mut(), |att| {
+            I::cast_mut(&mut **att)
+                .expect("INVARIANT: an implementation answers the casts it is keyed by")
+        }))
+    }
+
+    /// Returns whether this source holds the attribute interface `I`.
+    ///
+    /// Equivalent to `hasAttribute(XAttribute.class)`.
+    pub fn has_attribute_interface<I: AttributeInterface + ?Sized>(&self) -> bool {
+        self.has_attribute_by_id(TypeId::of::<I>())
+    }
+
+    /// Adds the attribute interface `I`, creating its implementation with
+    /// this source's factory when the source does not hold it yet.
+    ///
+    /// Equivalent to `addAttribute(XAttribute.class)` (`AttributeSource.java:
+    /// 214-234`).
+    ///
+    /// # Errors
+    ///
+    /// What the factory raises for an interface it cannot implement.
+    pub fn add_attribute_interface<I: AttributeInterface + ?Sized>(
+        &mut self,
+    ) -> Result<(), LuceneError> {
+        self.add_attribute_by_id(TypeId::of::<I>()).map(|_| ())
     }
 
     /// Returns a mutable borrowed reference to attribute `A`, if present.

@@ -70,9 +70,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
 use crate::analysis::tokenattributes::{
-    BytesTermAttributeImpl, CharTermAttributeImpl, OffsetAttribute, OffsetAttributeImpl,
-    PackedTokenAttributeImpl, PayloadAttribute, PayloadAttributeImpl, PositionIncrementAttribute,
-    PositionIncrementAttributeImpl, TermFrequencyAttribute, TermFrequencyAttributeImpl,
+    OffsetAttribute, PayloadAttribute, PositionIncrementAttribute, TermFrequencyAttribute,
     TermToBytesRefAttribute,
 };
 use crate::analysis::Analyzer;
@@ -934,40 +932,38 @@ impl FieldSchema {
     }
 }
 
-/// Which attributes a field instance's token stream actually carries.
+/// Which attribute interfaces a field instance's token stream actually
+/// carries.
 ///
 /// Resolved once per field instance, exactly where Lucene caches its
-/// `Attribute` references in `FieldInvertState.setAttributeSource`.
+/// `Attribute` references in `FieldInvertState.setAttributeSource`
+/// (`FieldInvertState.java:95-111`). The attributes are held by interface, as
+/// Java's fields are, whatever implementation the stream's factory chose.
 #[derive(Debug, Default, Clone, Copy)]
 struct TokenAttributeLayout {
-    packed: bool,
-    bytes_term: bool,
-    char_term: bool,
+    term: bool,
     position_increment: bool,
     offset: bool,
     payload: bool,
-    /// The stream carries a [`TermFrequencyAttributeImpl`] of its own.
+    /// The stream carries a `TermFrequencyAttribute`.
     ///
-    /// Without one the frequency is read from the [`PackedTokenAttributeImpl`]:
     /// `FieldInvertState.setAttributeSource` calls
-    /// `addAttribute(TermFrequencyAttribute.class)`
-    /// (`FieldInvertState.java:95-111`), which under the default
-    /// `PackedTokenAttributeImpl` factory resolves to the very instance that
-    /// holds the term, and otherwise adds a fresh `TermFrequencyAttributeImpl`
-    /// whose frequency stays at its default of one.
+    /// `addAttribute(TermFrequencyAttribute.class)`, which resolves to the
+    /// stream's own instance when it has one (the `PackedTokenAttributeImpl`
+    /// of the default factory implements the interface) and otherwise adds a
+    /// fresh `TermFrequencyAttributeImpl` whose frequency stays at its
+    /// default of one.
     term_freq: bool,
 }
 
 impl TokenAttributeLayout {
     fn resolve(source: &AttributeSource) -> Self {
         Self {
-            packed: source.has_attribute::<PackedTokenAttributeImpl>(),
-            bytes_term: source.has_attribute::<BytesTermAttributeImpl>(),
-            char_term: source.has_attribute::<CharTermAttributeImpl>(),
-            position_increment: source.has_attribute::<PositionIncrementAttributeImpl>(),
-            offset: source.has_attribute::<OffsetAttributeImpl>(),
-            payload: source.has_attribute::<PayloadAttributeImpl>(),
-            term_freq: source.has_attribute::<TermFrequencyAttributeImpl>(),
+            term: source.has_attribute_interface::<dyn TermToBytesRefAttribute>(),
+            position_increment: source.has_attribute_interface::<dyn PositionIncrementAttribute>(),
+            offset: source.has_attribute_interface::<dyn OffsetAttribute>(),
+            payload: source.has_attribute_interface::<dyn PayloadAttribute>(),
+            term_freq: source.has_attribute_interface::<dyn TermFrequencyAttribute>(),
         }
     }
 }
@@ -993,19 +989,9 @@ struct RawToken {
 /// defaults here (increment one, offsets zero, frequency one) match the
 /// attribute defaults.
 fn read_token(source: &AttributeSource, layout: &TokenAttributeLayout) -> Result<RawToken> {
-    let term = if layout.packed {
+    let term = if layout.term {
         source
-            .get_attribute::<PackedTokenAttributeImpl>()
-            .expect("INVARIANT: presence checked in TokenAttributeLayout::resolve")
-            .get_bytes_ref()
-    } else if layout.bytes_term {
-        source
-            .get_attribute::<BytesTermAttributeImpl>()
-            .expect("INVARIANT: presence checked in TokenAttributeLayout::resolve")
-            .get_bytes_ref()
-    } else if layout.char_term {
-        source
-            .get_attribute::<CharTermAttributeImpl>()
+            .get_attribute_interface::<dyn TermToBytesRefAttribute>()
             .expect("INVARIANT: presence checked in TokenAttributeLayout::resolve")
             .get_bytes_ref()
     } else {
@@ -1014,28 +1000,18 @@ fn read_token(source: &AttributeSource, layout: &TokenAttributeLayout) -> Result
         ));
     };
 
-    let position_increment = if layout.packed {
+    let position_increment = if layout.position_increment {
         source
-            .get_attribute::<PackedTokenAttributeImpl>()
-            .expect("INVARIANT: presence checked above")
-            .get_position_increment()
-    } else if layout.position_increment {
-        source
-            .get_attribute::<PositionIncrementAttributeImpl>()
+            .get_attribute_interface::<dyn PositionIncrementAttribute>()
             .expect("INVARIANT: presence checked above")
             .get_position_increment()
     } else {
         1
     };
 
-    let (start_offset, end_offset) = if layout.packed {
+    let (start_offset, end_offset) = if layout.offset {
         let attribute = source
-            .get_attribute::<PackedTokenAttributeImpl>()
-            .expect("INVARIANT: presence checked above");
-        (attribute.start_offset(), attribute.end_offset())
-    } else if layout.offset {
-        let attribute = source
-            .get_attribute::<OffsetAttributeImpl>()
+            .get_attribute_interface::<dyn OffsetAttribute>()
             .expect("INVARIANT: presence checked above");
         (attribute.start_offset(), attribute.end_offset())
     } else {
@@ -1044,7 +1020,7 @@ fn read_token(source: &AttributeSource, layout: &TokenAttributeLayout) -> Result
 
     let payload = if layout.payload {
         source
-            .get_attribute::<PayloadAttributeImpl>()
+            .get_attribute_interface::<dyn PayloadAttribute>()
             .expect("INVARIANT: presence checked above")
             .get_payload()
             .cloned()
@@ -1054,12 +1030,7 @@ fn read_token(source: &AttributeSource, layout: &TokenAttributeLayout) -> Result
 
     let term_freq = if layout.term_freq {
         source
-            .get_attribute::<TermFrequencyAttributeImpl>()
-            .expect("INVARIANT: presence checked above")
-            .get_term_frequency()
-    } else if layout.packed {
-        source
-            .get_attribute::<PackedTokenAttributeImpl>()
+            .get_attribute_interface::<dyn TermFrequencyAttribute>()
             .expect("INVARIANT: presence checked above")
             .get_term_frequency()
     } else {
@@ -1082,27 +1053,17 @@ fn read_token(source: &AttributeSource, layout: &TokenAttributeLayout) -> Result
 
 /// Reads the end-of-stream position increment and end offset.
 fn read_stream_end(source: &AttributeSource, layout: &TokenAttributeLayout) -> (i32, i32) {
-    let position_increment = if layout.packed {
+    let position_increment = if layout.position_increment {
         source
-            .get_attribute::<PackedTokenAttributeImpl>()
-            .map(|attribute| attribute.get_position_increment())
-            .unwrap_or(0)
-    } else if layout.position_increment {
-        source
-            .get_attribute::<PositionIncrementAttributeImpl>()
+            .get_attribute_interface::<dyn PositionIncrementAttribute>()
             .map(|attribute| attribute.get_position_increment())
             .unwrap_or(0)
     } else {
         0
     };
-    let end_offset = if layout.packed {
+    let end_offset = if layout.offset {
         source
-            .get_attribute::<PackedTokenAttributeImpl>()
-            .map(|attribute| attribute.end_offset())
-            .unwrap_or(0)
-    } else if layout.offset {
-        source
-            .get_attribute::<OffsetAttributeImpl>()
+            .get_attribute_interface::<dyn OffsetAttribute>()
             .map(|attribute| attribute.end_offset())
             .unwrap_or(0)
     } else {
@@ -4707,7 +4668,7 @@ mod tests {
 
     use super::*;
     use crate::analysis::tokenattributes::{
-        CharTermAttribute, PayloadAttributeImpl as PayloadImpl,
+        CharTermAttribute, PackedTokenAttributeImpl, PayloadAttributeImpl as PayloadImpl,
     };
     use crate::analysis::{default_token_attribute_factory, StandardAnalyzer, TokenStream};
     use crate::codecs::{register_codec, Codec, Lucene104Codec};
@@ -5406,7 +5367,7 @@ mod tests {
         fn string_value(&self) -> Option<String> {
             None
         }
-        fn reader_value(&mut self) -> Option<&mut dyn std::io::Read> {
+        fn reader_value(&self) -> Option<crate::document::SharedReader> {
             None
         }
         fn numeric_value(&self) -> Option<crate::document::NumericValue> {
