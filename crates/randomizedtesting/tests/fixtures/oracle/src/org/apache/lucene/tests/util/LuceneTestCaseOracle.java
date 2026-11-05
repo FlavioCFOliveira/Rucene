@@ -2,8 +2,9 @@
 // LuceneTestCase's static environment under tests.* property sets (one child
 // JVM per set, as the constants are computed once per JVM), its random
 // helpers under RandomizedRunner for fixed seeds, and its deterministic
-// statics. Writes <out>/rucene-test-framework/ltc_env.tsv, ltc_draws.tsv,
-// ltc_statics.tsv and ltc_locales.tsv, and the JDK data list
+// statics; and (task #349) custom time-zone IDs and the remaining members
+// (TestLtcMembers). Writes <out>/rucene-test-framework/ltc_env.tsv, ltc_draws.tsv,
+// ltc_statics.tsv, ltc_locales.tsv and ltc_members.tsv, and the JDK data list
 // <out>/rucene-test-framework/available_time_zone_ids.txt.
 package org.apache.lucene.tests.util;
 
@@ -75,6 +76,7 @@ public class LuceneTestCaseOracle {
     statics(out);
     locales(out);
     draws(out);
+    members(out);
   }
 
   static void env(File out) throws Exception {
@@ -211,6 +213,43 @@ public class LuceneTestCaseOracle {
         Result r = new JUnitCore().run(TestLtcDraws.class);
         for (Failure f : r.getFailures()) w.println("# failure " + f.toString().replace("\n", "\\n"));
         for (String d : DRAWS) w.println(seed + "\t" + d);
+      }
+      System.clearProperty("tests.seed");
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Task #349: custom time-zone IDs and the remaining members.
+  // ---------------------------------------------------------------------------
+
+  static final String[] TZ_PREFIXES = {"GMT", "gmt", "UTC", "GMT "};
+  static final String[] TZ_SIGNS = {"+", "-", "", "*"};
+  static final String[] TZ_BODIES = {
+    "", "0", "00", "5", "05", "12", "23", "24", "123", "0530", "2359", "2360", "12345", "5:30",
+    "05:30", "5:3", "05:300", "12:60", ":30", "1::2", "23:59", "0:00", "00:00", "99999999999",
+    "4294967296", "2147483647", "429496729600", "5a", "00000", "0005", "0000", "5:", ":", "005:30",
+    "0:30", "00:000"
+  };
+
+  static void members(File out) throws Exception {
+    try (PrintWriter w = new PrintWriter(new File(out, "ltc_members.tsv"), "UTF-8")) {
+      w.println("# tz\tid\tTimeZone.getTimeZone(id).getID()\tgetRawOffset()");
+      for (String prefix : TZ_PREFIXES) {
+        for (String sign : TZ_SIGNS) {
+          for (String body : TZ_BODIES) {
+            String id = prefix + sign + body;
+            TimeZone tz = TimeZone.getTimeZone(id);
+            w.println("tz\t" + id + "\t" + tz.getID() + "\t" + tz.getRawOffset());
+          }
+        }
+      }
+      w.println("# members\tseed\tdraws of TestLtcMembers.testMembers under RandomizedRunner (tests.seed=seed)");
+      for (String seed : new String[] {"DEADBEEF", "0", "1", "CAFEBABE", "123456789ABCDEF", "7FFFFFFFFFFFFFFF", "1BADC0DE", "42"}) {
+        DRAWS.clear();
+        System.setProperty("tests.seed", seed);
+        Result r = new JUnitCore().run(TestLtcMembers.class);
+        for (Failure f : r.getFailures()) w.println("# failure " + f.toString().replace("\n", "\\n"));
+        for (String d : DRAWS) w.println("members\t" + seed + "\t" + d);
       }
       System.clearProperty("tests.seed");
     }

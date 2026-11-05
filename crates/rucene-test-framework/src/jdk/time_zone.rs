@@ -127,7 +127,36 @@ pub fn zone_info(id: &str) -> Option<&'static ZoneInfo> {
         .map(|i| &RULES[IDS[i].1])
 }
 
+/// The `ZoneInfo` of a custom time zone of offset `raw_offset`, as
+/// `ZoneInfoFile.getCustomTimeZone(id, gmtOffset)` builds it: `new
+/// ZoneInfo(toCustomID(gmtOffset), gmtOffset)`, a zone with no transitions
+/// and no rule, whose offset is always `raw_offset`. One value per offset is
+/// kept for the life of the process.
+pub fn custom_zone_info(raw_offset: i32) -> &'static ZoneInfo {
+    static CUSTOM: std::sync::Mutex<Vec<&'static ZoneInfo>> = std::sync::Mutex::new(Vec::new());
+    let mut custom = CUSTOM
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(zone) = custom.iter().find(|z| z.raw_offset == raw_offset) {
+        return zone;
+    }
+    let zone: &'static ZoneInfo = Box::leak(Box::new(ZoneInfo {
+        raw_offset,
+        transitions: None,
+        offsets: &[],
+        last_rule: None,
+    }));
+    custom.push(zone);
+    zone
+}
+
 impl ZoneInfo {
+    /// `getRawOffset()`: the GMT offset of the last standard time, in
+    /// milliseconds.
+    pub fn raw_offset(&self) -> i32 {
+        self.raw_offset
+    }
+
     /// Returns the total offset from UTC, in milliseconds, at the UTC instant
     /// `date`.
     ///

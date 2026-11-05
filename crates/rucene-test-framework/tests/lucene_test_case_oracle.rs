@@ -12,13 +12,13 @@ use std::sync::{Arc, Mutex};
 use oracle_support::{assert_same, labelled, rows};
 use randomizedtesting::jdk::exception::Throwable;
 use randomizedtesting::jdk::random::JdkRandom;
-use randomizedtesting::jdk::reflect::{Class, Constructor, Field, Method, Value};
+use randomizedtesting::jdk::reflect::{Class, Constructor, Method};
 use randomizedtesting::jdk::system;
-use randomizedtesting::junit::{ClassRule, JUnitCore, Request, Test};
+use randomizedtesting::junit::{JUnitCore, Request};
 use rucene::util::BytesRef;
 use rucene_test_framework::hamcrest::{equal_to, is};
 use rucene_test_framework::util::lucene_test_case::{
-    LuceneTestCase as Ltc, StaticEnvironment, CLASS_NAME_RULE, MAYBE_CACHE_POLICY,
+    LuceneTestCase as Ltc, StaticEnvironment, TimeZone, MAYBE_CACHE_POLICY,
 };
 use rucene_test_framework::util::TestUtil;
 
@@ -572,17 +572,13 @@ static DRAWS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 #[test]
 fn random_helpers_match_lucene_under_the_runner() {
     let _guard = PROPS.lock().unwrap_or_else(|e| e.into_inner());
+    // `TestLtcDraws extends LuceneTestCase`: the class and test rule chains
+    // are `LuceneTestCase`'s, and `LuceneJUnit3MethodProvider` finds
+    // `testDraws`.
     let class = Class::builder("org.apache.lucene.tests.util.TestLtcDraws")
+        .extends(&Ltc::class())
         .constructor(Constructor::no_args(|| ()))
-        .field(
-            Field::new_static("classNameRule", "org.junit.rules.TestRule", || {
-                Value::TestRule(
-                    Arc::clone(&CLASS_NAME_RULE) as Arc<dyn randomizedtesting::junit::TestRule>
-                )
-            })
-            .annotate(ClassRule),
-        )
-        .method(Method::new("testDraws").annotate(Test::new()).body_any(|| {
+        .method(Method::new("testDraws").body_any(|| {
             let d = test_draws();
             DRAWS.lock().unwrap().push(d);
         }))
@@ -604,4 +600,252 @@ fn random_helpers_match_lucene_under_the_runner() {
     }
     system::clear_property("tests.seed");
     assert_same("random helpers", &expected, &actual);
+}
+
+// ---------------------------------------------------------------------------
+// Task #349: custom time-zone IDs and the remaining members
+// (`tests/fixtures/ltc_members.tsv`, `LuceneTestCaseOracle.members`).
+// ---------------------------------------------------------------------------
+
+/// `TimeZone.getTimeZone(id)` parses custom `GMT±h[h][:mm]` IDs as JDK 25
+/// does: the normalized ID and the raw offset of every ID of the oracle's
+/// grid (prefixes × signs × bodies), and `GMT` for the IDs it rejects.
+#[test]
+fn custom_time_zone_ids_match_lucene() {
+    let mut expected = BTreeMap::new();
+    let mut actual = BTreeMap::new();
+    for r in rows("ltc_members.tsv").into_iter().filter(|r| r[0] == "tz") {
+        expected.insert(r[1].clone(), format!("{}\t{}", r[2], r[3]));
+        let tz = TimeZone::get_time_zone(&r[1]);
+        actual.insert(
+            r[1].clone(),
+            format!("{}\t{}", tz.get_id(), tz.get_raw_offset()),
+        );
+    }
+    assert_eq!(expected.len(), 576);
+    assert_same("custom time zones", &expected, &actual);
+}
+
+/// `TestLtcMembers.check`.
+fn check(sb: &mut String, label: &str, op: impl FnOnce()) {
+    sb.push_str(&format!(" {label}="));
+    match catch_unwind(AssertUnwindSafe(op)) {
+        Ok(()) => sb.push_str("ok"),
+        Err(p) => {
+            let t = Throwable::from_panic(p);
+            sb.push_str(&format!(
+                "{}:{}",
+                t.class_name(),
+                t.message().unwrap_or("null").replace('\n', "\\n")
+            ));
+        }
+    }
+}
+
+/// `TestLtcMembers.reader`.
+fn members_reader(
+    ids: &[&str],
+    ns: &[i64],
+    ps: &[i32],
+    extra: bool,
+    delete: Option<&str>,
+) -> Arc<dyn rucene::index::IndexReader> {
+    use rucene::analysis::standard::StandardAnalyzer;
+    use rucene::document::{Document, IntPoint, NumericDocValuesField, Store, StringField};
+    use rucene::index::index_writer::IndexWriter;
+    use rucene::index::index_writer_config::IndexWriterConfig;
+    use rucene::index::terms::Term;
+    use rucene::store::{ByteBuffersDirectory, Directory};
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+    let w = IndexWriter::new(
+        Arc::clone(&dir),
+        IndexWriterConfig::with_analyzer(Arc::new(StandardAnalyzer::new())),
+    )
+    .unwrap();
+    for i in 0..ids.len() {
+        let mut d = Document::new();
+        d.add(Box::new(
+            StringField::new("id", ids[i].to_string(), Store::YES).unwrap(),
+        ));
+        d.add(Box::new(NumericDocValuesField::new("n", ns[i])));
+        d.add(Box::new(IntPoint::new("p", &[ps[i]]).unwrap()));
+        if extra {
+            d.add(Box::new(
+                StringField::new("x", "y".to_string(), Store::NO).unwrap(),
+            ));
+        }
+        w.add_document(&d).unwrap();
+    }
+    if let Some(delete) = delete {
+        w.delete_documents_by_terms(vec![Term::new("id", BytesRef::from_char_sequence(delete))])
+            .unwrap();
+    }
+    w.close().unwrap();
+    rucene::index::directory_reader::open(dir).unwrap() as Arc<dyn rucene::index::IndexReader>
+}
+
+/// The body of `TestLtcMembers.testMembers`.
+fn test_members() -> String {
+    use rucene::document::{FieldType, Store, StringField, TextField};
+    use rucene::index::IndexOptions;
+    use rucene_test_framework::util::lucene_test_case::NewFieldValue;
+    let mut sb = String::new();
+    sb.push_str(&format!(
+        "name={} thread={}",
+        Ltc::get_test_name().unwrap_or_else(|| "null".to_string()),
+        Ltc::is_test_thread()
+    ));
+    for i in 0..6 {
+        let store = if i % 2 == 0 { Store::YES } else { Store::NO };
+        let f = Ltc::new_string_field(&format!("s{}", i % 3), "v", store);
+        sb.push_str(&format!(" ns={}", f.field_type()));
+    }
+    for i in 0..6 {
+        let store = if i % 2 == 0 { Store::YES } else { Store::NO };
+        let f = Ltc::new_text_field(&format!("t{}", i % 4), "some text", store);
+        sb.push_str(&format!(" nt={}", f.field_type()));
+    }
+    for i in 0..4 {
+        let f = Ltc::new_string_field_bytes_with(
+            &*Ltc::random(),
+            &format!("b{i}"),
+            BytesRef::new(vec![1, 2]),
+            Store::NO,
+        );
+        sb.push_str(&format!(
+            " nb={}|{}",
+            f.field_type(),
+            f.binary_value().unwrap()
+        ));
+    }
+    let mut custom = FieldType::new();
+    custom
+        .set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
+        .unwrap();
+    custom.set_tokenized(false).unwrap();
+    for i in 0..4 {
+        sb.push_str(&format!(
+            " nf={}",
+            Ltc::new_field(&format!("c{i}"), "x", &custom).field_type()
+        ));
+        sb.push_str(&format!(
+            " nfs={}",
+            Ltc::new_field(&format!("d{i}"), "x", StringField::type_stored()).field_type()
+        ));
+        sb.push_str(&format!(
+            " nft={}",
+            Ltc::new_field_with(
+                &*Ltc::random(),
+                &format!("e{i}"),
+                NewFieldValue::String("x".to_string()),
+                TextField::type_not_stored()
+            )
+            .field_type()
+        ));
+    }
+    sb.push_str(&format!(" lmp={}", Ltc::new_log_merge_policy_use_cfs(true)));
+    sb.push_str(&format!(
+        " lmp2={}",
+        Ltc::new_log_merge_policy_use_cfs_merge_factor(false, 7).unwrap()
+    ));
+    sb.push_str(&format!(
+        " lmp3={}",
+        Ltc::new_log_merge_policy_merge_factor(9).unwrap()
+    ));
+    sb.push_str(&format!(" tmp={}", Ltc::new_tiered_merge_policy()));
+    sb.push_str(&format!(" lmp4={}", Ltc::new_log_merge_policy()));
+
+    let l = members_reader(&["a", "b"], &[1, 2], &[1, 2], false, None);
+    let l2 = members_reader(&["a", "b"], &[1, 2], &[1, 2], false, None);
+    let one = members_reader(&["a"], &[1], &[1], false, None);
+    let ids = members_reader(&["a", "c"], &[1, 2], &[1, 2], false, None);
+    let dvs = members_reader(&["a", "b"], &[1, 3], &[1, 2], false, None);
+    let extra = members_reader(&["a", "b"], &[1, 2], &[1, 2], true, None);
+    let pts = members_reader(&["a", "b"], &[1, 2], &[1, 5], false, None);
+    let del_a = members_reader(&["a", "b"], &[1, 2], &[1, 2], false, Some("a"));
+    let del_b = members_reader(&["a", "b"], &[1, 2], &[1, 2], false, Some("b"));
+    check(&mut sb, "same", || {
+        Ltc::assert_reader_equals("info", &l, &l2)
+    });
+    check(&mut sb, "stats", || {
+        Ltc::assert_reader_statistics_equals("info", &l, &one)
+    });
+    check(&mut sb, "stored", || {
+        Ltc::assert_stored_fields_equals("info", &l, &ids)
+    });
+    check(&mut sb, "terms", || {
+        Ltc::assert_terms_equals("info", &l, &ids, true)
+    });
+    check(&mut sb, "dv", || {
+        Ltc::assert_doc_values_equals("info", &l, &dvs)
+    });
+    check(&mut sb, "fieldInfos", || {
+        Ltc::assert_field_infos_equals("info", &l, &extra)
+    });
+    check(&mut sb, "termsFields", || {
+        Ltc::assert_terms_equals("info", &l, &extra, false)
+    });
+    check(&mut sb, "norms", || {
+        Ltc::assert_norms_equals("info", &l, &extra)
+    });
+    check(&mut sb, "dvFields", || {
+        Ltc::assert_doc_values_equals("info", &extra, &l)
+    });
+    check(&mut sb, "points", || {
+        Ltc::assert_points_equals("info", &l, &pts)
+    });
+    check(&mut sb, "deleted", || {
+        Ltc::assert_deleted_docs_equals("info", &del_a, &del_b)
+    });
+    check(&mut sb, "deletedCount", || {
+        Ltc::assert_deleted_docs_equals("info", &l, &del_b)
+    });
+    check(&mut sb, "tv", || {
+        Ltc::assert_term_vectors_equals("info", &l, &ids)
+    });
+    for r in [l, l2, one, ids, dvs, extra, pts, del_a, del_b] {
+        r.close().unwrap();
+    }
+    sb.push_str(&format!(" last={}", Ltc::random().next_long()));
+    sb
+}
+
+/// The remaining `LuceneTestCase` members (`newField` family, merge-policy
+/// overloads, `getTestName`, `isTestThread`, the `assert*Equals` family on
+/// equal and deliberately different readers) draw and fail as Java's do in
+/// `TestLtcMembers extends LuceneTestCase`, for every seed of the oracle.
+#[test]
+fn members_match_lucene_under_the_runner() {
+    static MEMBERS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    let _guard = PROPS.lock().unwrap_or_else(|e| e.into_inner());
+    let class = Arc::new(
+        Class::builder("org.apache.lucene.tests.util.TestLtcMembers")
+            .extends(&Ltc::class())
+            .constructor(Constructor::no_args(|| ()))
+            .method(Method::new("testMembers").body_any(|| {
+                let d = test_members();
+                MEMBERS.lock().unwrap().push(d);
+            }))
+            .build(),
+    );
+    let mut actual = BTreeMap::new();
+    let mut expected = BTreeMap::new();
+    for r in rows("ltc_members.tsv")
+        .into_iter()
+        .filter(|r| r[0] == "members")
+    {
+        expected.insert(r[1].clone(), r[2].clone());
+    }
+    assert_eq!(expected.len(), 8);
+    for seed in expected.keys() {
+        MEMBERS.lock().unwrap().clear();
+        system::set_property("tests.seed", seed);
+        let result = JUnitCore::new().run(&Request::a_class(&class));
+        if let Some(f) = result.failures().first() {
+            panic!("seed {seed}: {}\n{}", f.exception(), f.trace());
+        }
+        actual.insert(seed.clone(), MEMBERS.lock().unwrap().join(""));
+    }
+    system::clear_property("tests.seed");
+    assert_same("members", &expected, &actual);
 }

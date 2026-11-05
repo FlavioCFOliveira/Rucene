@@ -614,8 +614,13 @@ fn query_ram_bytes_used(_query: &dyn Query) -> i64 {
 /// **Divergence from Lucene 10.5.0.** Java keys the per-leaf caches on an
 /// `IdentityHashMap<IndexReader.CacheKey, LeafCache>`. This port's
 /// [`CacheKey`] carries no data, so identity is the address of the key the
-/// helper hands out — which every reader keeps in one place for the life of its
-/// core, exactly as Java's instance is.
+/// helper hands out. A zero-sized value's address alone identifies nothing —
+/// Rust may place it one past the end of its holder, where another object
+/// starts — so every core key a leaf hands out is held in a
+/// [`SharedCacheKey`](crate::index::filter_directory_reader::SharedCacheKey),
+/// whose key lies strictly inside a heap cell of its own that lives as long as
+/// the core: the address neither moves nor is reused while the core is open,
+/// exactly as Java's instance is (rmp #261).
 fn cache_key_identity(cache_helper: &dyn CacheHelper) -> usize {
     cache_helper.get_key() as *const CacheKey as usize
 }
@@ -1525,5 +1530,74 @@ mod child_resources_tests {
             assert_eq!(*kids, 0);
         }
         assert_eq!((described[0].1, described[1].1), (40, 152));
+    }
+}
+
+#[cfg(test)]
+mod cache_key_identity_tests {
+    use super::*;
+    use crate::index::filter_directory_reader::SharedCacheKey;
+
+    /// rmp #261, the hazard: two distinct zero-sized keys, one at the end of
+    /// its holder and one at the start of the next object, have the same
+    /// address, so an address-keyed map cannot tell them apart. This is why a
+    /// bare `CacheKey` field cannot serve as a cache identity.
+    #[test]
+    fn a_zero_sized_field_does_not_identify_its_holder() {
+        #[repr(C)]
+        struct KeyAtEnd {
+            _payload: u64,
+            key: CacheKey,
+        }
+        #[repr(C)]
+        struct KeyAtStart {
+            key: CacheKey,
+            _payload: u64,
+        }
+        #[repr(C)]
+        struct Adjacent {
+            first: KeyAtEnd,
+            second: KeyAtStart,
+        }
+        let adjacent = Adjacent {
+            first: KeyAtEnd {
+                _payload: 1,
+                key: CacheKey,
+            },
+            second: KeyAtStart {
+                key: CacheKey,
+                _payload: 2,
+            },
+        };
+        assert!(std::ptr::eq(&adjacent.first.key, &adjacent.second.key));
+    }
+
+    /// rmp #261, the guarantee: a [`SharedCacheKey`]'s key lies strictly
+    /// inside its own non-empty heap cell, so live keys never share an
+    /// address, whatever is allocated next to them.
+    #[test]
+    fn shared_cache_keys_lie_inside_their_own_cells() {
+        let mut keys = Vec::new();
+        let mut neighbours = Vec::new();
+        for i in 0..256u64 {
+            keys.push(SharedCacheKey::new());
+            neighbours.push(Box::new(i));
+        }
+        let mut addresses: Vec<usize> = keys
+            .iter()
+            .map(|key| {
+                let address = key.key() as *const CacheKey as usize;
+                let (start, end) = key.cell_bounds();
+                assert!(
+                    (start..end).contains(&address),
+                    "key {address:#x} outside its cell [{start:#x}, {end:#x})"
+                );
+                address
+            })
+            .collect();
+        addresses.sort_unstable();
+        addresses.dedup();
+        assert_eq!(addresses.len(), keys.len());
+        drop(neighbours);
     }
 }

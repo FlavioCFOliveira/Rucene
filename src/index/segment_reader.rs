@@ -68,7 +68,11 @@ pub struct SegmentCoreReaders {
     segment: String,
     core_field_infos: FieldInfos,
     ref_count: AtomicI32,
-    core_cache_key: CacheKey,
+    /// Java's `coreCacheKey`, an object whose identity neither moves nor is
+    /// reused while referenced: a [`SharedCacheKey`], whose key lies inside its
+    /// own heap cell rather than at a layout-dependent offset of this struct
+    /// (task #261).
+    core_cache_key: SharedCacheKey,
     core_closed_listeners: Mutex<Vec<Box<dyn ClosedListener>>>,
 }
 
@@ -115,7 +119,7 @@ impl SegmentCoreReaders {
             segment: si.info.name.clone(),
             core_field_infos: FieldInfos::empty(),
             ref_count: AtomicI32::new(1),
-            core_cache_key: CacheKey,
+            core_cache_key: SharedCacheKey::new(),
             core_closed_listeners: Mutex::new(Vec::new()),
         };
 
@@ -381,7 +385,7 @@ impl CacheHelper for SegmentCoreReaders {
     /// object to hold a borrow of it — which is why there is no `get_cache_helper`
     /// to call.
     fn get_key(&self) -> &CacheKey {
-        &self.core_cache_key
+        self.core_cache_key.key()
     }
 
     /// The `addClosedListener` of the same anonymous `CacheHelper`, which
@@ -2474,6 +2478,42 @@ mod tests {
         assert_eq!(reader.core_readers().ref_count(), 1);
         reader.close().unwrap();
         assert_eq!(reader.core_readers().ref_count(), 0);
+    }
+
+    /// rmp #261: the core cache key `LRUQueryCache` keys its leaves on is a
+    /// [`SharedCacheKey`], so its address lies strictly inside a heap cell of
+    /// its own and differs from every other live core's key — the identity
+    /// Java's `coreCacheKey` object has. A zero-sized field of
+    /// `SegmentCoreReaders` would sit wherever rustc's unspecified layout put
+    /// it, possibly one past the end of the struct.
+    #[test]
+    fn core_cache_keys_are_distinct_and_inside_their_own_cells() {
+        let readers: Vec<SegmentReader> = (0..4)
+            .map(|i| {
+                SegmentReader::new(
+                    test_segment_commit_info(&format!("_{i}"), 5),
+                    Version::LATEST.major as i32,
+                    &*DEFAULT_IO_CONTEXT,
+                )
+                .unwrap()
+            })
+            .collect();
+        let mut addresses = Vec::new();
+        for reader in &readers {
+            let core = reader.core_readers();
+            let address = core.get_key() as *const CacheKey as usize;
+            let (start, end) = core.core_cache_key.cell_bounds();
+            assert!(
+                (start..end).contains(&address),
+                "key {address:#x} outside its cell [{start:#x}, {end:#x})"
+            );
+            let helper = reader.get_core_cache_helper().unwrap();
+            assert_eq!(helper.get_key() as *const CacheKey as usize, address);
+            addresses.push(address);
+        }
+        addresses.sort_unstable();
+        addresses.dedup();
+        assert_eq!(addresses.len(), readers.len());
     }
 
     #[test]

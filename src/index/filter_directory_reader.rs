@@ -218,6 +218,14 @@ impl SharedCacheKey {
     pub fn key(&self) -> &CacheKey {
         &self.0.key
     }
+
+    /// The address range `[start, end)` of this key's heap cell, so that a test
+    /// can check the key's address lies strictly inside it.
+    #[cfg(test)]
+    pub(crate) fn cell_bounds(&self) -> (usize, usize) {
+        let start = Arc::as_ptr(&self.0) as usize;
+        (start, start + std::mem::size_of::<SharedCacheKeyCell>())
+    }
 }
 
 impl std::fmt::Debug for SharedCacheKey {

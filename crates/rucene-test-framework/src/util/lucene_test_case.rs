@@ -554,28 +554,196 @@ const DEPRECATED_TIME_ZONE_IDS_JDK25: [&str; 28] = [
     "SST", "VST",
 ];
 
-/// A `java.util.TimeZone` of JDK 25's available IDs, as
-/// `TimeZone.getTimeZone(id)` returns it.
+/// A `java.util.TimeZone` as `TimeZone.getTimeZone(id)` returns it: a zone of
+/// JDK 25's available IDs, or a custom `GMT±hh:mm` zone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TimeZone {
+    /// `getID()`.
     id: &'static str,
+    /// Where the zone's rules come from.
+    rules: ZoneRules,
+}
+
+/// The rules of a [`TimeZone`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum ZoneRules {
+    /// The `ZoneInfo` of an available ID (`GMT`'s for `GMT+00:00` and
+    /// `GMT-00:00`, which Java builds by renaming a copy of it).
+    Available(&'static str),
+    /// `ZoneInfoFile.getCustomTimeZone(id, gmtOffset)`: a fixed offset, in
+    /// milliseconds.
+    Custom(i32),
+}
+
+/// The length of `"GMT"`, `TimeZone.GMT_ID_LENGTH`.
+const GMT_ID_LENGTH: usize = 3;
+
+/// Returns a `&'static str` equal to `id`, one allocation per distinct
+/// custom zone ID for the life of the process (a [`TimeZone`] is `Copy`).
+fn intern_custom_id(id: String) -> &'static str {
+    static IDS: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+    let mut ids = IDS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(interned) = ids.iter().find(|i| **i == id) {
+        return interned;
+    }
+    let interned: &'static str = Box::leak(id.into_boxed_str());
+    ids.push(interned);
+    interned
 }
 
 impl TimeZone {
-    /// `TimeZone.getTimeZone(id)`: the zone of an available ID, otherwise
-    /// `GMT` ("the specified TimeZone, or the GMT zone if the given ID cannot
-    /// be understood").
-    ///
-    /// **Divergence.** Java also parses custom `GMT±hh[:mm]` IDs into zones
-    /// of that offset; this `TimeZone` holds an available ID only, so they
-    /// give `GMT`.
+    /// `TimeZone.getTimeZone(id)`: "the specified TimeZone, or the GMT zone
+    /// if the given ID cannot be understood" — the zone of an available ID,
+    /// else the custom zone `parseCustomTimeZone(id)` parses, else `GMT`.
     pub fn get_time_zone(id: &str) -> TimeZone {
-        let id = time_zone_available_ids()
-            .iter()
-            .find(|z| **z == id)
-            .copied()
-            .unwrap_or("GMT");
-        TimeZone { id }
+        if let Some(available) = time_zone_available_ids().iter().find(|z| **z == id) {
+            return TimeZone {
+                id: available,
+                rules: ZoneRules::Available(available),
+            };
+        }
+        Self::parse_custom_time_zone(id).unwrap_or(TimeZone {
+            id: "GMT",
+            rules: ZoneRules::Available("GMT"),
+        })
+    }
+
+    /// `TimeZone.parseCustomTimeZone(id)` (private): a custom ID of the form
+    /// `GMT` followed by a sign and either `h`, `hh`, `hmm`, `hhmm` or
+    /// `h[h]:mm`, with at most 23 hours and 59 minutes, as a zone of that
+    /// offset whose ID is the normalized `GMT±hh:mm`
+    /// (`ZoneInfoFile.toCustomID`); a zero offset is `GMT`'s rules under the
+    /// ID `GMT+00:00` or `GMT-00:00`. `None` when `id` is not such an ID.
+    ///
+    /// The JDK 25 source is not available here; the grammar was determined
+    /// empirically against the JDK 25 oracle, whose `ltc_members.tsv` grid
+    /// pins it: a `:` needs one or two digits before it, and a body without
+    /// one has at most four digits.
+    fn parse_custom_time_zone(id: &str) -> Option<TimeZone> {
+        let chars: Vec<u16> = id.encode_utf16().collect();
+        let length = chars.len();
+        // Error if the length of id isn't long enough or id doesn't
+        // start with "GMT".
+        if length < GMT_ID_LENGTH + 2 || !id.starts_with("GMT") {
+            return None;
+        }
+        // `ZoneInfoFile.getZoneInfo(id)`: an available ID was handled by the
+        // caller.
+        let mut index = GMT_ID_LENGTH;
+        let mut c = chars[index];
+        index += 1;
+        let negative = if c == u16::from(b'-') {
+            true
+        } else if c == u16::from(b'+') {
+            false
+        } else {
+            return None;
+        };
+
+        let mut hours: i32 = 0;
+        let mut num: i32 = 0;
+        let mut count_delim = 0;
+        let mut len = 0;
+        while index < length {
+            c = chars[index];
+            index += 1;
+            if c == u16::from(b':') {
+                if count_delim > 0 {
+                    return None;
+                }
+                if len == 0 || len > 2 {
+                    return None;
+                }
+                hours = num;
+                count_delim += 1;
+                num = 0;
+                len = 0;
+                continue;
+            }
+            if !(u16::from(b'0')..=u16::from(b'9')).contains(&c) {
+                return None;
+            }
+            num = num
+                .wrapping_mul(10)
+                .wrapping_add(i32::from(c - u16::from(b'0')));
+            len += 1;
+        }
+        if count_delim == 0 {
+            if len <= 2 {
+                hours = num;
+                num = 0;
+            } else if len <= 4 {
+                hours = num / 100;
+                num %= 100;
+            } else {
+                return None;
+            }
+        } else if len != 2 {
+            return None;
+        }
+        if hours > 23 || num > 59 {
+            return None;
+        }
+        let gmt_offset = hours
+            .wrapping_mul(60)
+            .wrapping_add(num)
+            .wrapping_mul(60)
+            .wrapping_mul(1000);
+        if gmt_offset == 0 {
+            let id = if negative { "GMT-00:00" } else { "GMT+00:00" };
+            return Some(TimeZone {
+                id,
+                rules: ZoneRules::Available("GMT"),
+            });
+        }
+        let offset = if negative {
+            gmt_offset.wrapping_neg()
+        } else {
+            gmt_offset
+        };
+        let custom_id = Self::to_custom_id(offset);
+        Some(TimeZone {
+            id: intern_custom_id(custom_id),
+            rules: ZoneRules::Custom(offset),
+        })
+    }
+
+    /// `ZoneInfoFile.toCustomID(gmtOffset)`: `GMT`, the sign, two hour
+    /// digits, `:` and two minute digits, each digit built by adding to `'0'`
+    /// as Java's `char` arithmetic does.
+    fn to_custom_id(gmt_offset: i32) -> String {
+        let mut offset = gmt_offset / 60_000;
+        let sign = if offset >= 0 {
+            u16::from(b'+')
+        } else {
+            offset = offset.wrapping_neg();
+            u16::from(b'-')
+        };
+        let hh = offset / 60;
+        let mm = offset % 60;
+        let zero = u16::from(b'0');
+        let mut buf: [u16; 9] = [
+            u16::from(b'G'),
+            u16::from(b'M'),
+            u16::from(b'T'),
+            sign,
+            zero,
+            zero,
+            u16::from(b':'),
+            zero,
+            zero,
+        ];
+        if hh >= 10 {
+            buf[4] = buf[4].wrapping_add((hh / 10) as u16);
+        }
+        buf[5] = buf[5].wrapping_add((hh % 10) as u16);
+        if mm != 0 {
+            buf[7] = buf[7].wrapping_add((mm / 10) as u16);
+            buf[8] = buf[8].wrapping_add((mm % 10) as u16);
+        }
+        String::from_utf16_lossy(&buf)
     }
 
     /// `getID()`.
@@ -586,14 +754,25 @@ impl TimeZone {
     /// The `sun.util.calendar.ZoneInfo` `TimeZone.getTimeZone(id)` returns,
     /// whose rules give the offsets.
     pub fn zone_info(&self) -> &'static crate::jdk::time_zone::ZoneInfo {
-        crate::jdk::time_zone::zone_info(self.id)
-            .expect("INVARIANT: a TimeZone holds an ID of TimeZone.getAvailableIDs()")
+        match self.rules {
+            ZoneRules::Available(id) => crate::jdk::time_zone::zone_info(id)
+                .expect("INVARIANT: the rules of an ID of TimeZone.getAvailableIDs()"),
+            ZoneRules::Custom(offset) => crate::jdk::time_zone::custom_zone_info(offset),
+        }
     }
 
     /// `getOffset(long date)`: the offset from UTC, in milliseconds, at the
     /// UTC instant `date`, daylight saving time included.
     pub fn get_offset(&self, date: i64) -> i32 {
         self.zone_info().get_offset(date)
+    }
+
+    /// `getRawOffset()`: the offset of standard time, in milliseconds.
+    pub fn get_raw_offset(&self) -> i32 {
+        match self.rules {
+            ZoneRules::Available(_) => self.zone_info().raw_offset(),
+            ZoneRules::Custom(offset) => offset,
+        }
     }
 }
 
@@ -1194,9 +1373,7 @@ impl LuceneTestCase {
         if RUNTIME_VERSION_FEATURE >= 25 {
             tz_ids.retain(|id| !DEPRECATED_TIME_ZONE_IDS_JDK25.contains(id));
         }
-        TimeZone {
-            id: RandomPicks::random_from_list(random, &tz_ids),
-        }
+        TimeZone::get_time_zone(RandomPicks::random_from_list(random, &tz_ids))
     }
 
     /// `newBytesRef(String)`: a `BytesRef` holding the UTF-8 bytes of `s`, that
@@ -2933,7 +3110,7 @@ impl LuceneTestCase {
     /// `newDirectory(r)`: "Returns a new Directory instance, using the
     /// specified random."
     pub fn new_directory_with(r: &dyn Random) -> TestDirectory {
-        let directory = Self::new_directory_impl(r, &TEST_DIRECTORY);
+        let directory = Self::new_directory_impl(r, &TEST_DIRECTORY, &LockFactoryArg::Default);
         let bare = Self::rarely_with(r);
         Self::wrap_directory(r, directory, bare, false)
     }
@@ -2942,12 +3119,11 @@ impl LuceneTestCase {
     /// file, which must be a folder.", with `FSLockFactory.getDefault()`.
     pub fn new_fs_directory(f: &Path) -> TestDirectory {
         let bare = Self::rarely();
-        Self::new_fs_directory_bare(f, bare)
+        Self::new_fs_directory_bare(f, &LockFactoryArg::Default, bare)
     }
 
-    /// The private `newFSDirectory(f, lf, bare)`, with
-    /// `FSLockFactory.getDefault()`.
-    fn new_fs_directory_bare(f: &Path, bare: bool) -> TestDirectory {
+    /// The private `newFSDirectory(f, lf, bare)`.
+    fn new_fs_directory_bare(f: &Path, lf: &LockFactoryArg, bare: bool) -> TestDirectory {
         use rucene::util::command_line_util::CommandLineUtil;
         let random = Self::random();
         let mut fsdir_class = TEST_DIRECTORY.clone();
@@ -2970,33 +3146,30 @@ impl LuceneTestCase {
             Err(e) => rethrow_lucene_error(&e),
         };
 
-        let fsdir = Self::new_fs_directory_impl(clazz, f);
+        let fsdir = Self::new_fs_directory_impl(clazz, f, lf);
         Self::wrap_directory(&*random, fsdir, bare, true)
     }
 
-    /// `newFSDirectoryImpl(clazz, path, lf)` (private), with
-    /// `FSLockFactory.getDefault()`.
+    /// `newFSDirectoryImpl(clazz, path, lf)` (private).
     fn new_fs_directory_impl(
         clazz: rucene::util::command_line_util::FSDirectoryKind,
         path: &Path,
+        lf: &LockFactoryArg,
     ) -> Box<dyn rucene::store::Directory> {
         use rucene::util::command_line_util::CommandLineUtil;
-        // `FSLockFactory.getDefault()`: `NativeFSLockFactory.INSTANCE`.
-        match CommandLineUtil::new_fs_directory_of_kind(
-            clazz,
-            path.as_std_path(),
-            Box::new(rucene::store::NativeFSLockFactory),
-        ) {
+        match CommandLineUtil::new_fs_directory_of_kind(clazz, path.as_std_path(), lf.instance()) {
             Ok(d) => d,
             Err(e) => rethrow_lucene_error(&e),
         }
     }
 
-    /// `newDirectoryImpl(random, clazzName)` (package-private), with
-    /// `FSLockFactory.getDefault()`.
+    /// `newDirectoryImpl(random, clazzName)` and `newDirectoryImpl(random,
+    /// clazzName, lf)` (package-private); [`LockFactoryArg::Default`] is the
+    /// first overload's `FSLockFactory.getDefault()`.
     fn new_directory_impl(
         random: &dyn Random,
         clazz_name: &str,
+        lf: &LockFactoryArg,
     ) -> Box<dyn rucene::store::Directory> {
         use rucene::util::command_line_util::CommandLineUtil;
         let mut clazz_name = clazz_name.to_string();
@@ -3014,8 +3187,8 @@ impl LuceneTestCase {
                 } else {
                     BYTE_BUFFERS_DIRECTORY.to_string()
                 };
-                let dir1 = Self::new_directory_impl(random, &clazz_name1);
-                let dir2 = Self::new_directory_impl(random, &clazz_name2);
+                let dir1 = Self::new_directory_impl(random, &clazz_name1, lf);
+                let dir2 = Self::new_directory_impl(random, &clazz_name2, lf);
                 return Self::new_file_switch_directory(random, dir1, dir2);
             } else {
                 clazz_name = BYTE_BUFFERS_DIRECTORY.to_string();
@@ -3027,15 +3200,21 @@ impl LuceneTestCase {
         // If it is a FSDirectory type, try its ctor(Path)
         if let Ok(kind) = CommandLineUtil::load_fs_directory_class(&clazz) {
             let dir = Self::create_temp_dir_prefix(&format!("index-{clazz_name}"));
-            return Self::new_fs_directory_impl(kind, &dir);
+            return Self::new_fs_directory_impl(kind, &dir, lf);
         }
 
         // See if it has a Path/LockFactory ctor even though it's not an
         // FSDir subclass: no other directory of the store package has one.
         // the remaining dirs are no longer filesystem based, so we must check that the
-        // passedLockFactory is not file based: the default lock factory is.
-        // try empty ctor
+        // passedLockFactory is not file based:
         if clazz == BYTE_BUFFERS_DIRECTORY {
+            if !lf.is_fs_lock_factory() {
+                // try ctor with only LockFactory
+                return Box::new(rucene::store::ByteBuffersDirectory::with_lock_factory(
+                    lf.instance(),
+                ));
+            }
+            // try empty ctor
             return Box::new(rucene::store::ByteBuffersDirectory::new());
         }
         rethrow_lucene_error(&rucene::error::LuceneError::unchecked(
@@ -3094,5 +3273,2093 @@ impl LuceneTestCase {
         };
         wrapped.close_after_suite();
         wrapped
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Task #349: the remaining members of `LuceneTestCase`.
+// ---------------------------------------------------------------------------
+
+/// The `LockFactory lf` argument of the directory factories: Java's
+/// `FSLockFactory.getDefault()` for the overloads without one, or the factory
+/// the caller passed.
+#[derive(Clone)]
+pub enum LockFactoryArg {
+    /// `FSLockFactory.getDefault()`: `NativeFSLockFactory.INSTANCE`.
+    Default,
+    /// The caller's factory, shared by every directory built with it as
+    /// Java shares the one instance.
+    Given(Arc<dyn rucene::store::LockFactory>),
+}
+
+impl LockFactoryArg {
+    /// The factory as the `Box` a directory constructor takes.
+    fn instance(&self) -> Box<dyn rucene::store::LockFactory> {
+        match self {
+            LockFactoryArg::Default => Box::new(rucene::store::NativeFSLockFactory),
+            LockFactoryArg::Given(lf) => Box::new(SharedLockFactory(Arc::clone(lf))),
+        }
+    }
+
+    /// `lf instanceof FSLockFactory`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** A `dyn LockFactory` cannot be asked
+    /// whether it implements [`rucene::store::FSLockFactory`]; the port
+    /// recognises the two `FSLockFactory` subclasses Lucene ships,
+    /// `NativeFSLockFactory` and `SimpleFSLockFactory`, by their type name.
+    fn is_fs_lock_factory(&self) -> bool {
+        match self {
+            LockFactoryArg::Default => true,
+            LockFactoryArg::Given(lf) => {
+                let name = lf.directory_type_name();
+                name.ends_with("::NativeFSLockFactory") || name.ends_with("::SimpleFSLockFactory")
+            }
+        }
+    }
+}
+
+/// A [`rucene::store::LockFactory`] that forwards to a shared one, so that
+/// several directories hold the same factory instance.
+struct SharedLockFactory(Arc<dyn rucene::store::LockFactory>);
+
+impl rucene::store::LockFactory for SharedLockFactory {
+    fn obtain_lock(
+        &self,
+        dir: &dyn rucene::store::Directory,
+        lock_name: &str,
+    ) -> rucene::error::Result<Box<dyn rucene::store::Lock>> {
+        self.0.obtain_lock(dir, lock_name)
+    }
+
+    fn directory_type_name(&self) -> &'static str {
+        self.0.directory_type_name()
+    }
+
+    fn lock_factory_to_string(&self) -> String {
+        self.0.lock_factory_to_string()
+    }
+}
+
+/// The `Object value` of `newField(random, name, value, type)`: a `String`
+/// or a `BytesRef` (Java's `createField` rejects anything else with
+/// `IllegalArgumentException("value must be String or BytesRef")`, which the
+/// type makes unrepresentable).
+#[derive(Clone, Debug)]
+pub enum NewFieldValue {
+    /// A `String` value.
+    String(String),
+    /// A `BytesRef` value.
+    BytesRef(BytesRef),
+}
+
+/// The order in which a `java.util.HashMap` (or `HashSet`) whose table has
+/// `table_length` buckets iterates entries with the given hash codes, inserted
+/// in the given order: by bucket `(h ^ (h >>> 16)) & (n - 1)`, then by
+/// insertion order (a resize keeps each chain's relative order). A bucket
+/// grown to a tree is not reproduced.
+fn java_hash_order<T>(entries: Vec<(i32, T)>, table_length: usize) -> Vec<T> {
+    let mut keyed: Vec<(usize, T)> = entries
+        .into_iter()
+        .map(|(h, t)| {
+            let spread = h ^ ((h as u32) >> 16) as i32;
+            ((spread as u32 as usize) & (table_length - 1), t)
+        })
+        .collect();
+    keyed.sort_by_key(|(bucket, _)| *bucket);
+    keyed.into_iter().map(|(_, t)| t).collect()
+}
+
+/// The table length of a `java.util.HashMap` built with `new HashMap<>()` (or
+/// `new HashSet<>()`) after `size` insertions: 16, doubled whenever the size
+/// exceeds three quarters of it.
+fn java_default_table_length(size: usize) -> usize {
+    let mut n = 16usize;
+    while size > n * 3 / 4 {
+        n *= 2;
+    }
+    n
+}
+
+/// The table length of `new HashSet<>(collection)` over `size` elements:
+/// `tableSizeFor(max((int) (size / .75f) + 1, 16))`.
+fn java_copy_table_length(size: usize) -> usize {
+    let cap = std::cmp::max((size as f32 / 0.75f32) as usize + 1, 16);
+    cap.next_power_of_two()
+}
+
+/// `AbstractCollection.toString()` of a `HashSet<String>` built as
+/// `new HashSet<>(collection)`: `[a, b]` in Java's iteration order.
+fn java_copied_string_set_to_string(set: &HashSet<String>) -> String {
+    let mut names: Vec<&String> = set.iter().collect();
+    names.sort();
+    let entries = names
+        .into_iter()
+        .map(|n| {
+            (
+                randomizedtesting::jdk::lang::string_hash_code(n),
+                n.as_str(),
+            )
+        })
+        .collect();
+    let ordered = java_hash_order(entries, java_copy_table_length(set.len()));
+    format!("[{}]", ordered.join(", "))
+}
+
+/// JUnit's `assertEquals(message, Object, Object)` for two `HashSet<String>`
+/// that `assertTermsEquals`, `assertNormsEquals` and `assertDocValuesEquals`
+/// compare.
+fn assert_string_sets_equal(info: &str, left: &HashSet<String>, right: &HashSet<String>) {
+    if left != right {
+        Assert::fail(&format!(
+            "{} expected:<{}> but was:<{}>",
+            info,
+            java_copied_string_set_to_string(left),
+            java_copied_string_set_to_string(right)
+        ));
+    }
+}
+
+/// `Assert.assertEquals(message, Object, Object)` for nullable values
+/// (`None` is `null`).
+fn assert_option_equals<T: PartialEq + Display>(
+    message: Option<&str>,
+    expected: Option<&T>,
+    actual: Option<&T>,
+) {
+    if expected == actual {
+        return;
+    }
+    let show = |v: Option<&T>| v.map_or_else(|| "null".to_string(), |v| v.to_string());
+    let prefix = match message {
+        Some(m) if !m.is_empty() => format!("{m} "),
+        _ => String::new(),
+    };
+    Assert::fail(&format!(
+        "{prefix}expected:<{}> but was:<{}>",
+        show(expected),
+        show(actual)
+    ))
+}
+
+/// `Assert.assertNull(message, object)`: `message expected null, but
+/// was:<object>`.
+fn assert_null<T: Display>(message: Option<&str>, object: Option<&T>) {
+    if let Some(object) = object {
+        let prefix = match message {
+            Some(m) => format!("{m} "),
+            None => String::new(),
+        };
+        Assert::fail(&format!("{prefix}expected null, but was:<{object}>"))
+    }
+}
+
+/// `Assert.assertNotNull(message, object)`: `assertTrue(message, object !=
+/// null)`, an `AssertionError` carrying `message` (or none).
+fn assert_not_null(message: Option<&str>, present: bool) {
+    if !present {
+        match message {
+            Some(m) => Assert::fail(m),
+            None => Assert::fail_without_message(),
+        }
+    }
+}
+
+/// Unwraps a `Result` the way a Java method declared `throws IOException`
+/// lets the exception propagate: the error is thrown.
+fn io<T>(result: rucene::error::Result<T>) -> T {
+    result.unwrap_or_else(|e| rethrow_lucene_error(&e))
+}
+
+/// The string `PostingsEnum.getPayload()` renders as in a failure message:
+/// `BytesRef.toString()`, or `null`.
+fn payload_of(docs: &dyn rucene::index::postings_enum::PostingsEnum) -> Option<BytesRef> {
+    io(docs.get_payload()).map(|p| BytesRef::new(p.to_vec()))
+}
+
+/// `SeekStatus.toString()`: the constant's name.
+struct SeekStatusName(rucene::index::terms::SeekStatus);
+
+impl PartialEq for SeekStatusName {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl Display for SeekStatusName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use rucene::index::terms::SeekStatus;
+        f.write_str(match self.0 {
+            SeekStatus::FOUND => "FOUND",
+            SeekStatus::NOT_FOUND => "NOT_FOUND",
+            SeekStatus::END => "END",
+        })
+    }
+}
+
+impl LuceneTestCase {
+    /// `newLogMergePolicy()`: `newLogMergePolicy(random())`.
+    pub fn new_log_merge_policy() -> rucene::index::merge_policy::LogMergePolicy {
+        Self::new_log_merge_policy_with(&*Self::random())
+    }
+
+    /// `newTieredMergePolicy()`: `newTieredMergePolicy(random())`.
+    pub fn new_tiered_merge_policy() -> rucene::index::merge_policy::TieredMergePolicy {
+        Self::new_tiered_merge_policy_with(&*Self::random())
+    }
+
+    /// `newAlcoholicMergePolicy()`: `newAlcoholicMergePolicy(random(),
+    /// classEnvRule.timeZone)`.
+    pub fn new_alcoholic_merge_policy() -> rucene::index::merge_policy::LogMergePolicy {
+        let tz = Self::get_default_time_zone()
+            .unwrap_or_else(|| exception::throw_without_message(exception::NULL_POINTER_EXCEPTION));
+        Self::new_alcoholic_merge_policy_with(&*Self::random(), tz)
+    }
+
+    /// `newLogMergePolicy(useCFS)`: `newLogMergePolicy()` with
+    /// `setNoCFSRatio(useCFS ? 1.0 : 0.0)`.
+    pub fn new_log_merge_policy_use_cfs(
+        use_cfs: bool,
+    ) -> Arc<dyn rucene::index::merge_policy::MergePolicy> {
+        use rucene::index::merge_policy::MergePolicy;
+        let logmp = Self::new_log_merge_policy();
+        logmp
+            .set_no_cfs_ratio(if use_cfs { 1.0 } else { 0.0 })
+            .expect("INVARIANT: 0.0 and 1.0 are valid no-CFS ratios");
+        Arc::new(logmp)
+    }
+
+    /// `newLogMergePolicy(useCFS, mergeFactor)`.
+    ///
+    /// # Errors
+    ///
+    /// `setMergeFactor`'s `IllegalArgumentException` for a `mergeFactor`
+    /// below 2.
+    pub fn new_log_merge_policy_use_cfs_merge_factor(
+        use_cfs: bool,
+        merge_factor: i32,
+    ) -> rucene::error::Result<rucene::index::merge_policy::LogMergePolicy> {
+        use rucene::index::merge_policy::MergePolicy;
+        let logmp = Self::new_log_merge_policy();
+        logmp.set_no_cfs_ratio(if use_cfs { 1.0 } else { 0.0 })?;
+        logmp.set_merge_factor(merge_factor)?;
+        Ok(logmp)
+    }
+
+    /// `newLogMergePolicy(mergeFactor)`.
+    ///
+    /// # Errors
+    ///
+    /// `setMergeFactor`'s `IllegalArgumentException` for a `mergeFactor`
+    /// below 2.
+    pub fn new_log_merge_policy_merge_factor(
+        merge_factor: i32,
+    ) -> rucene::error::Result<rucene::index::merge_policy::LogMergePolicy> {
+        let logmp = Self::new_log_merge_policy();
+        logmp.set_merge_factor(merge_factor)?;
+        Ok(logmp)
+    }
+
+    /// `newSnapshotIndexWriterConfig(analyzer)`: "create a new index writer
+    /// config with a snapshot deletion policy" over
+    /// `NoDeletionPolicy.INSTANCE`.
+    pub fn new_snapshot_index_writer_config(
+        analyzer: Arc<dyn rucene::analysis::Analyzer>,
+    ) -> rucene::index::index_writer_config::IndexWriterConfig {
+        use rucene::index::index_deletion_policy::{NoDeletionPolicy, SnapshotDeletionPolicy};
+        let mut c = Self::new_index_writer_config_analyzer(analyzer);
+        c.set_index_deletion_policy(Arc::new(SnapshotDeletionPolicy::new(
+            NoDeletionPolicy::instance(),
+        )))
+        .expect("INVARIANT: a deletion policy is never null");
+        c
+    }
+
+    /// `ensureSaneIWCOnNightly(conf)` (protected): under `tests.nightly`,
+    /// caps the merged segment size, turns compound files on for flushes and
+    /// keeps the no-CFS ratio at 0.25 or more.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java casts the configuration's merge
+    /// policy to `LogByteSizeMergePolicy` or `LogMergePolicy` and calls
+    /// `setMaxMergeMB` or `setMaxMergeDocs` on that shared instance. This
+    /// port's [`LogMergePolicy`](rucene::index::merge_policy::LogMergePolicy)
+    /// takes those two settings through `&mut self`, so the port sets them on
+    /// a copy of the policy and installs the copy in `conf`; the policy `conf`
+    /// holds afterwards is the same as Java's.
+    pub fn ensure_sane_iwc_on_nightly(
+        conf: &mut rucene::index::index_writer_config::IndexWriterConfig,
+    ) -> &mut rucene::index::index_writer_config::IndexWriterConfig {
+        use rucene::index::merge_policy::{LogMergePolicy, TieredMergePolicy};
+        if *TEST_NIGHTLY {
+            const INVARIANT: &str = "INVARIANT: the value is in the setter's range";
+            // newIWConfig makes smallish max seg size, which
+            // results in tons and tons of segments for this test
+            // when run nightly:
+            let mut mp = conf.merge_policy();
+            let any = mp.as_any();
+            if let Some(tmp) = any.and_then(|any| any.downcast_ref::<TieredMergePolicy>()) {
+                tmp.set_max_merged_segment_mb(5000.0).expect(INVARIANT);
+            } else if let Some(logmp) = any.and_then(|any| any.downcast_ref::<LogMergePolicy>()) {
+                let mut copy = logmp.clone();
+                // `instanceof LogByteSizeMergePolicy`: its `toString()`
+                // starts with that simple name.
+                if copy.to_string().starts_with("[LogByteSizeMergePolicy:") {
+                    copy.set_max_merge_mb(1000.0);
+                } else {
+                    copy.set_max_merge_docs(100000);
+                }
+                mp = Arc::new(copy);
+                conf.set_merge_policy(Arc::clone(&mp)).expect(INVARIANT);
+            }
+            // when running nightly, merging can still have crazy parameters,
+            // and might use many per-field codecs. turn on CFS for IW flushes
+            // and ensure CFS ratio is reasonable to keep it contained.
+            conf.set_use_compound_file(true).expect(INVARIANT);
+            mp.set_no_cfs_ratio(f64::max(0.25, mp.get_no_cfs_ratio()))
+                .expect(INVARIANT);
+        }
+        conf
+    }
+
+    /// `closeAfterTest(resource)`: "Registers a `Closeable` resource that
+    /// should be closed after the test completes." Returns `resource`.
+    pub fn close_after_test<T: randomizedtesting::jdk::io::Closeable + 'static>(
+        resource: Arc<T>,
+    ) -> Arc<T> {
+        RandomizedContext::current().close_at_end(resource, randomizedtesting::LifecycleScope::Test)
+    }
+
+    /// `closeAfterSuite(resource)`: "Registers a `Closeable` resource that
+    /// should be closed after the suite completes." Returns `resource`.
+    pub fn close_after_suite<T: randomizedtesting::jdk::io::Closeable + 'static>(
+        resource: Arc<T>,
+    ) -> Arc<T> {
+        RandomizedContext::current()
+            .close_at_end(resource, randomizedtesting::LifecycleScope::Suite)
+    }
+
+    /// `overrideTestDefaultQueryCache()` (`@Before`): "Make sure each test
+    /// method has its own cache" — `overrideDefaultQueryCache()`.
+    pub fn override_test_default_query_cache() {
+        Self::override_default_query_cache();
+    }
+
+    /// `getTestName()`: "Return the name of the currently executing test
+    /// case" (`threadAndTestNameRule.testMethodName`); `None` outside a test.
+    pub fn get_test_name() -> Option<String> {
+        Self::current_test_rules()
+            .and_then(|rules| rules.thread_and_test_name_rule.test_method_name())
+    }
+
+    /// `isTestThread()` (protected): "Returns true if and only if the
+    /// calling thread is the primary thread executing the test case."
+    ///
+    /// # Panics
+    ///
+    /// `AssertionError("Test case thread not set?")` outside a test.
+    pub fn is_test_thread() -> bool {
+        let thread = Self::current_test_rules()
+            .and_then(|rules| rules.thread_and_test_name_rule.test_case_thread());
+        assert_not_null(Some("Test case thread not set?"), thread.is_some());
+        thread == Some(randomizedtesting::jdk::thread::Thread::current())
+    }
+
+    /// `newMaybeVirusCheckingDirectory()`: "Like `newDirectory` except
+    /// randomly the `VirusCheckingFS` may be installed".
+    pub fn new_maybe_virus_checking_directory() -> TestDirectory {
+        if Self::random().next_int_bound(5) == 4 {
+            let path = Self::add_virus_checker(&Self::create_temp_dir());
+            Self::new_fs_directory(&path)
+        } else {
+            Self::new_directory_with(&*Self::random())
+        }
+    }
+
+    /// `newDirectory(r, lf)`.
+    pub fn new_directory_lock_factory(
+        r: &dyn Random,
+        lf: Arc<dyn rucene::store::LockFactory>,
+    ) -> TestDirectory {
+        let directory = Self::new_directory_impl(r, &TEST_DIRECTORY, &LockFactoryArg::Given(lf));
+        let bare = Self::rarely_with(r);
+        Self::wrap_directory(r, directory, bare, false)
+    }
+
+    /// `newMockDirectory()`.
+    pub fn new_mock_directory() -> crate::store::MockDirectoryWrapper {
+        Self::new_mock_directory_with(&*Self::random())
+    }
+
+    /// `newMockDirectory(r)`.
+    pub fn new_mock_directory_with(r: &dyn Random) -> crate::store::MockDirectoryWrapper {
+        let directory = Self::new_directory_impl(r, &TEST_DIRECTORY, &LockFactoryArg::Default);
+        Self::into_mock(Self::wrap_directory(r, directory, false, false))
+    }
+
+    /// `newMockDirectory(r, lf)`.
+    pub fn new_mock_directory_lock_factory(
+        r: &dyn Random,
+        lf: Arc<dyn rucene::store::LockFactory>,
+    ) -> crate::store::MockDirectoryWrapper {
+        let directory = Self::new_directory_impl(r, &TEST_DIRECTORY, &LockFactoryArg::Given(lf));
+        Self::into_mock(Self::wrap_directory(r, directory, false, false))
+    }
+
+    /// `newMockFSDirectory(f)`: `newFSDirectory(f, FSLockFactory.getDefault(),
+    /// false)`.
+    pub fn new_mock_fs_directory(f: &Path) -> crate::store::MockDirectoryWrapper {
+        Self::into_mock(Self::new_fs_directory_bare(
+            f,
+            &LockFactoryArg::Default,
+            false,
+        ))
+    }
+
+    /// `newMockFSDirectory(f, lf)`.
+    pub fn new_mock_fs_directory_lock_factory(
+        f: &Path,
+        lf: Arc<dyn rucene::store::LockFactory>,
+    ) -> crate::store::MockDirectoryWrapper {
+        Self::into_mock(Self::new_fs_directory_bare(
+            f,
+            &LockFactoryArg::Given(lf),
+            false,
+        ))
+    }
+
+    /// The `(MockDirectoryWrapper)` cast of a wrapper built with `bare ==
+    /// false`, which is always a mock.
+    fn into_mock(directory: TestDirectory) -> crate::store::MockDirectoryWrapper {
+        match directory {
+            TestDirectory::Mock(mock) => mock,
+            TestDirectory::Raw(_) => unreachable!("a wrapper built with bare == false is a mock"),
+        }
+    }
+
+    /// `addVirusChecker(path)`: wraps `path` in a `VirusCheckingFS` salted
+    /// with `random().nextLong()`, unless its filesystem already has one.
+    pub fn add_virus_checker(path: &Path) -> Path {
+        use crate::mockfile::FilterFileSystemProvider;
+        if !TestUtil::has_virus_checker_path(path) {
+            let fs = crate::mockfile::VirusCheckingFS::new(
+                Arc::clone(path.get_file_system()),
+                Self::random().next_long(),
+            );
+            return fs.wrap_path(path);
+        }
+        path.clone()
+    }
+
+    /// `newDirectory(d)`: "Returns a new Directory instance, with contents
+    /// copied from the provided directory."
+    ///
+    /// # Errors
+    ///
+    /// What listing or copying `d`'s files raises.
+    pub fn new_directory_copy(
+        d: &dyn rucene::store::Directory,
+    ) -> rucene::error::Result<TestDirectory> {
+        Self::new_directory_copy_with(&*Self::random(), d)
+    }
+
+    /// `newMaybeVirusCheckingFSDirectory(f)`: "Like `newFSDirectory(Path)`,
+    /// but randomly insert `VirusCheckingFS`".
+    pub fn new_maybe_virus_checking_fs_directory(f: &Path) -> TestDirectory {
+        let mut f = f.clone();
+        if Self::random().next_int_bound(5) == 4 {
+            f = Self::add_virus_checker(&f);
+        }
+        Self::new_fs_directory_lock_factory_arg(&f, &LockFactoryArg::Default)
+    }
+
+    /// `newFSDirectory(f, lf)`: `newFSDirectory(f, lf, rarely())`.
+    pub fn new_fs_directory_lock_factory(
+        f: &Path,
+        lf: Arc<dyn rucene::store::LockFactory>,
+    ) -> TestDirectory {
+        Self::new_fs_directory_lock_factory_arg(f, &LockFactoryArg::Given(lf))
+    }
+
+    /// `newFSDirectory(f, lf)` over either kind of lock factory argument.
+    fn new_fs_directory_lock_factory_arg(f: &Path, lf: &LockFactoryArg) -> TestDirectory {
+        let bare = Self::rarely();
+        Self::new_fs_directory_bare(f, lf, bare)
+    }
+
+    /// `newDirectory(r, d)`: "Returns a new Directory instance, using the
+    /// specified random with contents copied from the provided directory":
+    /// the `segments*` files and every codec file.
+    ///
+    /// # Errors
+    ///
+    /// What listing or copying `d`'s files raises.
+    pub fn new_directory_copy_with(
+        r: &dyn Random,
+        d: &dyn rucene::store::Directory,
+    ) -> rucene::error::Result<TestDirectory> {
+        use rucene::index::index_file_names;
+        let imp = Self::new_directory_impl(r, &TEST_DIRECTORY, &LockFactoryArg::Default);
+        for file in d.list_all()? {
+            if file.starts_with(index_file_names::SEGMENTS)
+                || index_file_names::is_codec_file(&file)
+            {
+                imp.copy_from(d, &file, &file, &*Self::new_io_context(r))?;
+            }
+        }
+        let bare = Self::rarely_with(r);
+        Ok(Self::wrap_directory(r, imp, bare, false))
+    }
+
+    /// `newStringField(name, value, stored)`.
+    pub fn new_string_field(
+        name: &str,
+        value: &str,
+        stored: rucene::document::Store,
+    ) -> rucene::document::Field {
+        Self::new_string_field_with(&*Self::random(), name, value, stored)
+    }
+
+    /// `newStringField(name, BytesRef value, stored)`.
+    pub fn new_string_field_bytes(
+        name: &str,
+        value: BytesRef,
+        stored: rucene::document::Store,
+    ) -> rucene::document::Field {
+        Self::new_string_field_bytes_with(&*Self::random(), name, value, stored)
+    }
+
+    /// `newTextField(name, value, stored)`.
+    pub fn new_text_field(
+        name: &str,
+        value: &str,
+        stored: rucene::document::Store,
+    ) -> rucene::document::Field {
+        Self::new_text_field_with(&*Self::random(), name, value, stored)
+    }
+
+    /// `newStringField(random, name, value, stored)`.
+    pub fn new_string_field_with(
+        random: &dyn Random,
+        name: &str,
+        value: &str,
+        stored: rucene::document::Store,
+    ) -> rucene::document::Field {
+        Self::new_field_with(
+            random,
+            name,
+            NewFieldValue::String(value.to_string()),
+            Self::string_field_type(stored),
+        )
+    }
+
+    /// `newStringField(random, name, BytesRef value, stored)`.
+    pub fn new_string_field_bytes_with(
+        random: &dyn Random,
+        name: &str,
+        value: BytesRef,
+        stored: rucene::document::Store,
+    ) -> rucene::document::Field {
+        Self::new_field_with(
+            random,
+            name,
+            NewFieldValue::BytesRef(value),
+            Self::string_field_type(stored),
+        )
+    }
+
+    /// `newTextField(random, name, value, stored)`.
+    pub fn new_text_field_with(
+        random: &dyn Random,
+        name: &str,
+        value: &str,
+        stored: rucene::document::Store,
+    ) -> rucene::document::Field {
+        use rucene::document::{Store, TextField};
+        let field_type = if stored == Store::YES {
+            TextField::type_stored()
+        } else {
+            TextField::type_not_stored()
+        };
+        Self::new_field_with(
+            random,
+            name,
+            NewFieldValue::String(value.to_string()),
+            field_type,
+        )
+    }
+
+    /// `stored == Store.YES ? StringField.TYPE_STORED :
+    /// StringField.TYPE_NOT_STORED`.
+    fn string_field_type(stored: rucene::document::Store) -> &'static rucene::document::FieldType {
+        use rucene::document::{Store, StringField};
+        if stored == Store::YES {
+            StringField::type_stored()
+        } else {
+            StringField::type_not_stored()
+        }
+    }
+
+    /// `newField(name, value, type)`: `newField(random(), name, value,
+    /// type)`.
+    pub fn new_field(
+        name: &str,
+        value: &str,
+        field_type: &rucene::document::FieldType,
+    ) -> rucene::document::Field {
+        Self::new_field_with(
+            &*Self::random(),
+            name,
+            NewFieldValue::String(value.to_string()),
+            field_type,
+        )
+    }
+
+    /// `newField(random, name, value, type)` (`synchronized`): the field
+    /// with the type chosen for `name` the first time it was asked for — a
+    /// copy of `type` randomly stored, and, when indexed, randomly given term
+    /// vectors with random positions, payloads and (for a `String` value)
+    /// offsets. `tearDown()` forgets the choices.
+    ///
+    /// # Panics
+    ///
+    /// What `new Field(name, value, type)` throws for an invalid
+    /// combination.
+    pub fn new_field_with(
+        random: &dyn Random,
+        name: &str,
+        value: NewFieldValue,
+        field_type: &rucene::document::FieldType,
+    ) -> rucene::document::Field {
+        use rucene::index::{IndexOptions, IndexableFieldType};
+        const INVARIANT: &str = "INVARIANT: the copied type is not frozen";
+        // The lock is `synchronized`'s class monitor.
+        let mut field_to_type = FIELD_TO_TYPE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        if let Some(prev_type) = field_to_type.get(name) {
+            // always use the same fieldType for the same field name
+            return Self::create_field(name, value, prev_type.clone());
+        }
+
+        let mut new_type = rucene::document::FieldType::new_from(field_type);
+        if !new_type.stored() && random.next_boolean() {
+            new_type.set_stored(true).expect(INVARIANT); // randomly store it
+        }
+        if new_type.index_options() != IndexOptions::NONE
+            && new_type.index_options() != IndexOptions::DOCS_AND_CUSTOM_FREQS
+            && !new_type.store_term_vectors()
+            && random.next_boolean()
+        {
+            new_type.set_store_term_vectors(true).expect(INVARIANT);
+            if !new_type.store_term_vector_positions() {
+                new_type
+                    .set_store_term_vector_positions(random.next_boolean())
+                    .expect(INVARIANT);
+                if new_type.store_term_vector_positions() && !new_type.store_term_vector_payloads()
+                {
+                    new_type
+                        .set_store_term_vector_payloads(random.next_boolean())
+                        .expect(INVARIANT);
+                }
+            }
+            // Check for strings as offsets are disallowed on binary fields
+            if matches!(value, NewFieldValue::String(_)) && !new_type.store_term_vector_offsets() {
+                new_type
+                    .set_store_term_vector_offsets(random.next_boolean())
+                    .expect(INVARIANT);
+            }
+            if *VERBOSE {
+                println!("NOTE: LuceneTestCase: upgrade name={name} type={new_type}");
+            }
+        }
+        new_type.freeze();
+        field_to_type.insert(name.to_string(), new_type.clone());
+
+        Self::create_field(name, value, new_type)
+    }
+
+    /// `createField(name, value, fieldType)` (private).
+    fn create_field(
+        name: &str,
+        value: NewFieldValue,
+        field_type: rucene::document::FieldType,
+    ) -> rucene::document::Field {
+        let field = match value {
+            NewFieldValue::String(value) => rucene::document::Field::new(name, value, field_type),
+            NewFieldValue::BytesRef(value) => {
+                rucene::document::Field::new_with_bytes(name, value, field_type)
+            }
+        };
+        io(field)
+    }
+
+    /// `getDataPath(name)` (protected): "Gets a resource from the test's
+    /// classpath as `Path`."
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java resolves `name` with
+    /// `getClass().getResource(name)`, relative to the test class's package
+    /// on the classpath. Rust has no classpath: `class_resources` is the
+    /// directory that stands for that package (a test passes the directory
+    /// its resources live in, such as one under `CARGO_MANIFEST_DIR`), and a
+    /// leading `/` makes `name` relative to the classpath root, which the
+    /// port takes as `class_resources` too.
+    ///
+    /// # Errors
+    ///
+    /// `IOUtils.requireResourceNonNull`'s `NoSuchFileException("Cannot find
+    /// resource: " + name)` when there is no such resource.
+    pub fn get_data_path(
+        class_resources: &std::path::Path,
+        name: &str,
+    ) -> rucene::error::Result<std::path::PathBuf> {
+        let path = class_resources.join(name.trim_start_matches('/'));
+        if path.exists() {
+            Ok(path)
+        } else {
+            Err(rucene::error::LuceneError::unchecked(
+                "java.nio.file.NoSuchFileException",
+                format!("Cannot find resource: {name}"),
+            ))
+        }
+    }
+
+    /// `getDataInputStream(name)` (protected): "Gets a resource from the
+    /// test's classpath as `InputStream`", resolved as
+    /// [`get_data_path`](Self::get_data_path) does.
+    ///
+    /// # Errors
+    ///
+    /// The `NoSuchFileException` of [`get_data_path`](Self::get_data_path),
+    /// and what opening the file raises.
+    pub fn get_data_input_stream(
+        class_resources: &std::path::Path,
+        name: &str,
+    ) -> rucene::error::Result<std::fs::File> {
+        let path = Self::get_data_path(class_resources, name)?;
+        std::fs::File::open(path).map_err(rucene::error::LuceneError::from)
+    }
+
+    /// `runWithRestrictedPermissions(action, permissions...)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java first assumes
+    /// `System.getSecurityManager() != null` and runs the action in an
+    /// `AccessControlContext` restricted to `permissions`. Rust has no
+    /// security manager, so the assumption always fails, as it does in Java
+    /// on a JVM without one: the test is skipped with
+    /// `runWithRestrictedPermissions requires a SecurityManager enabled`,
+    /// and the action never runs.
+    pub fn run_with_restricted_permissions<T>(_action: impl FnOnce() -> T) -> T {
+        Self::assume_true(
+            "runWithRestrictedPermissions requires a SecurityManager enabled",
+            false,
+        );
+        unreachable!("assumeTrue(false) throws AssumptionViolatedException")
+    }
+
+    /// `supportsVectorEncoding(format, vectorEncoding)` (private):
+    /// `HnswBitVectorsFormat` "only supports BYTE".
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java tests `format instanceof
+    /// HnswBitVectorsFormat`; a `dyn KnnVectorsFormat` has no class, so the
+    /// port compares the SPI name that class (`final`) registers.
+    fn supports_vector_encoding(
+        format: &dyn rucene::codecs::knn_vectors::KnnVectorsFormat,
+        vector_encoding: rucene::index::VectorEncoding,
+    ) -> bool {
+        if format.name() == "HnswBitVectorsFormat" {
+            // special case, this only supports BYTE
+            return vector_encoding == rucene::index::VectorEncoding::BYTE;
+        }
+        true
+    }
+
+    /// `supportsVectorSearch(format)` (private): `format instanceof
+    /// FlatVectorsFormat == false`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** A `dyn KnnVectorsFormat` has no
+    /// class hierarchy; the port recognises the `FlatVectorsFormat`
+    /// subclasses of Lucene's core and codecs modules,
+    /// `Lucene99FlatVectorsFormat` and `Lucene104ScalarQuantizedVectorsFormat`,
+    /// by the SPI names they register.
+    fn supports_vector_search(format: &dyn rucene::codecs::knn_vectors::KnnVectorsFormat) -> bool {
+        !matches!(
+            format.name(),
+            "Lucene99FlatVectorsFormat" | "Lucene104ScalarQuantizedVectorsFormat"
+        )
+    }
+
+    /// `randomVectorFormat(vectorEncoding)` (protected): a random one of the
+    /// registered KNN-vectors formats that supports `vector_encoding` and
+    /// vector search, in the order of `availableKnnVectorsFormats()`.
+    pub fn random_vector_format(
+        vector_encoding: rucene::index::VectorEncoding,
+    ) -> Arc<dyn rucene::codecs::knn_vectors::KnnVectorsFormat> {
+        use rucene::codecs::knn_vectors::{available_knn_vectors_formats, knn_vectors_for_name};
+        let available_formats: Vec<Arc<dyn rucene::codecs::knn_vectors::KnnVectorsFormat>> =
+            available_knn_vectors_formats()
+                .iter()
+                .map(|name| {
+                    knn_vectors_for_name(name).unwrap_or_else(|| {
+                        rethrow_lucene_error(&rucene::error::LuceneError::IllegalArgument(
+                            format!("An SPI class of type org.apache.lucene.codecs.KnnVectorsFormat with name '{name}' does not exist."),
+                        ))
+                    })
+                })
+                .filter(|format| Self::supports_vector_encoding(format.as_ref(), vector_encoding))
+                .filter(|format| Self::supports_vector_search(format.as_ref()))
+                .collect();
+        Arc::clone(RandomPicks::random_from(
+            &*Self::random(),
+            &available_formats,
+        ))
+    }
+}
+
+/// The UTF-16 order of `String.compareTo`.
+fn java_string_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    a.encode_utf16().cmp(b.encode_utf16())
+}
+
+/// The class name and the `toString()` of a stored field's `numericValue()`.
+fn numeric_value_parts(value: &rucene::document::NumericValue) -> (&'static str, String) {
+    use rucene::document::NumericValue;
+    let class = match value {
+        NumericValue::Int(_) => "java.lang.Integer",
+        NumericValue::Long(_) => "java.lang.Long",
+        NumericValue::Float(_) => "java.lang.Float",
+        NumericValue::Double(_) => "java.lang.Double",
+    };
+    (class, value.to_string())
+}
+
+/// `Assert.assertEquals(message, Object, Object)` for two boxed numbers:
+/// `Number.equals` (same class and value), and `Assert.format`'s message,
+/// which adds the class names when both values print the same.
+fn assert_numeric_values_equal(
+    message: &str,
+    expected: Option<&rucene::document::NumericValue>,
+    actual: Option<&rucene::document::NumericValue>,
+) {
+    let parts_e = expected.map(numeric_value_parts);
+    let parts_a = actual.map(numeric_value_parts);
+    if parts_e == parts_a {
+        return;
+    }
+    let prefix = if message.is_empty() {
+        String::new()
+    } else {
+        format!("{message} ")
+    };
+    let show = |p: &Option<(&str, String)>| p.as_ref().map_or("null".to_string(), |p| p.1.clone());
+    let (e, a) = (show(&parts_e), show(&parts_a));
+    if e == a {
+        let class = |p: &Option<(&'static str, String)>| p.as_ref().map_or("null", |p| p.0);
+        Assert::fail(&format!(
+            "{prefix}expected: {}<{e}> but was: {}<{a}>",
+            class(&parts_e),
+            class(&parts_a)
+        ))
+    }
+    Assert::fail(&format!("{prefix}expected:<{e}> but was:<{a}>"))
+}
+
+/// `Assert.assertEquals(message, long, long)`.
+fn assert_long_equals(message: Option<&str>, expected: i64, actual: i64) {
+    Assert::assert_equals_msg(message, expected, actual)
+}
+
+/// `Assert.assertEquals(message, Object, Object)` for two `Boolean`s.
+fn assert_bool_equals(message: &str, expected: bool, actual: bool) {
+    Assert::assert_equals_msg(Some(message), expected, actual)
+}
+
+/// The packed values of each document of a point field, as the private
+/// `uninvert` collects them: a `HashMap<Integer, Set<BytesRef>>`, kept here in
+/// insertion order so that the failure message can be rendered in Java's
+/// iteration order.
+type UninvertedPoints = Vec<(i32, Vec<BytesRef>)>;
+
+/// The visitor of `uninvert`: "We pretend our query shape is so hairy that it
+/// crosses every single cell".
+struct UninvertVisitor<'a> {
+    doc_base: i32,
+    doc_values: &'a mut UninvertedPoints,
+}
+
+impl rucene::index::point_values::IntersectVisitor for UninvertVisitor<'_> {
+    fn visit(&mut self, _doc_id: i32) -> rucene::error::Result<()> {
+        Err(rucene::error::LuceneError::UnsupportedOperation(
+            String::new(),
+        ))
+    }
+
+    fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) -> rucene::error::Result<()> {
+        let top_doc_id = self.doc_base + doc_id;
+        let value = BytesRef::new(packed_value.to_vec());
+        match self.doc_values.iter_mut().find(|(d, _)| *d == top_doc_id) {
+            Some((_, set)) => {
+                if !set.contains(&value) {
+                    set.push(value);
+                }
+            }
+            None => self.doc_values.push((top_doc_id, vec![value])),
+        }
+        Ok(())
+    }
+
+    fn compare(
+        &self,
+        _min_packed_value: &[u8],
+        _max_packed_value: &[u8],
+    ) -> rucene::error::Result<rucene::index::point_values::Relation> {
+        Ok(rucene::index::point_values::Relation::CellCrossesQuery)
+    }
+}
+
+/// `AbstractMap.toString()` of `uninvert`'s `HashMap<Integer,
+/// Set<BytesRef>>` in Java's iteration order: `{doc=[bytes, ...], ...}`, each
+/// set a `new HashSet<>()` ordered by `BytesRef.hashCode()`.
+fn uninverted_to_string(points: &UninvertedPoints) -> String {
+    let entries: Vec<(i32, &(i32, Vec<BytesRef>))> = points.iter().map(|e| (e.0, e)).collect();
+    let ordered = java_hash_order(entries, java_default_table_length(points.len()));
+    let rendered: Vec<String> = ordered
+        .into_iter()
+        .map(|(doc, set)| {
+            let values: Vec<(i32, String)> =
+                set.iter().map(|b| (b.hash_code(), b.to_string())).collect();
+            let values = java_hash_order(values, java_default_table_length(set.len()));
+            format!("{doc}=[{}]", values.join(", "))
+        })
+        .collect();
+    format!("{{{}}}", rendered.join(", "))
+}
+
+/// `Map.equals` of two `uninvert` results.
+fn uninverted_equal(left: &UninvertedPoints, right: &UninvertedPoints) -> bool {
+    left.len() == right.len()
+        && left.iter().all(|(doc, set)| {
+            right
+                .iter()
+                .any(|(d, s)| d == doc && s.len() == set.len() && set.iter().all(|v| s.contains(v)))
+        })
+}
+
+impl LuceneTestCase {
+    /// `assertReaderEquals(info, leftReader, rightReader)`: every check
+    /// below, in Java's order.
+    pub fn assert_reader_equals(
+        info: &str,
+        left_reader: &Arc<dyn IndexReader>,
+        right_reader: &Arc<dyn IndexReader>,
+    ) {
+        Self::assert_reader_statistics_equals(info, left_reader, right_reader);
+        Self::assert_terms_equals(info, left_reader, right_reader, true);
+        Self::assert_norms_equals(info, left_reader, right_reader);
+        Self::assert_stored_fields_equals(info, left_reader, right_reader);
+        Self::assert_term_vectors_equals(info, left_reader, right_reader);
+        Self::assert_doc_values_equals(info, left_reader, right_reader);
+        Self::assert_deleted_docs_equals(info, left_reader, right_reader);
+        Self::assert_field_infos_equals(info, left_reader, right_reader);
+        Self::assert_points_equals(info, left_reader, right_reader);
+    }
+
+    /// `assertReaderStatisticsEquals`: "checks that reader-level statistics
+    /// are the same".
+    pub fn assert_reader_statistics_equals(
+        info: &str,
+        left_reader: &Arc<dyn IndexReader>,
+        right_reader: &Arc<dyn IndexReader>,
+    ) {
+        // Somewhat redundant: we never delete docs
+        let info = Some(info);
+        assert_long_equals(
+            info,
+            left_reader.max_doc().into(),
+            right_reader.max_doc().into(),
+        );
+        assert_long_equals(
+            info,
+            left_reader.num_docs().into(),
+            right_reader.num_docs().into(),
+        );
+        assert_long_equals(
+            info,
+            left_reader.num_deleted_docs().into(),
+            right_reader.num_deleted_docs().into(),
+        );
+        Assert::assert_equals_msg(
+            info,
+            left_reader.has_deletions(),
+            right_reader.has_deletions(),
+        );
+    }
+
+    /// `assertTermsEquals(info, leftReader, rightReader, deep)`: "Fields api
+    /// equivalency".
+    pub fn assert_terms_equals(
+        info: &str,
+        left_reader: &Arc<dyn IndexReader>,
+        right_reader: &Arc<dyn IndexReader>,
+        deep: bool,
+    ) {
+        use rucene::index::multi_fields::MultiTerms;
+        let left_fields = io(rucene::index::FieldInfos::get_indexed_fields(Arc::clone(
+            left_reader,
+        )));
+        let right_fields = io(rucene::index::FieldInfos::get_indexed_fields(Arc::clone(
+            right_reader,
+        )));
+        assert_string_sets_equal(info, &left_fields, &right_fields);
+
+        for field in Self::java_copied_set_order(&left_fields) {
+            Self::assert_terms_equals_terms(
+                info,
+                left_reader,
+                io(MultiTerms::get_terms(left_reader, &field)).as_deref(),
+                io(MultiTerms::get_terms(right_reader, &field)).as_deref(),
+                deep,
+            );
+        }
+    }
+
+    /// The iteration order of `new HashSet<>(fields)`.
+    fn java_copied_set_order(set: &HashSet<String>) -> Vec<String> {
+        let mut names: Vec<&String> = set.iter().collect();
+        names.sort();
+        let entries = names
+            .into_iter()
+            .map(|n| (randomizedtesting::jdk::lang::string_hash_code(n), n.clone()))
+            .collect();
+        java_hash_order(entries, java_copy_table_length(set.len()))
+    }
+
+    /// `assertTermsEquals(info, leftReader, leftTerms, rightTerms, deep)`:
+    /// "Terms api equivalency".
+    pub fn assert_terms_equals_terms(
+        info: &str,
+        left_reader: &Arc<dyn IndexReader>,
+        left_terms: Option<&dyn rucene::index::terms::Terms>,
+        right_terms: Option<&dyn rucene::index::terms::Terms>,
+        deep: bool,
+    ) {
+        use rucene::util::automaton::compiled_automaton::{AutomatonType, CompiledAutomaton};
+        use rucene::util::automaton::operations::{Operations, DEFAULT_DETERMINIZE_WORK_LIMIT};
+        use rucene::util::automaton::reg_exp::RegExp;
+        let (Some(left_terms), Some(right_terms)) = (left_terms, right_terms) else {
+            assert_null(Some(info), left_terms.map(|_| "Terms").as_ref());
+            assert_null(Some(info), right_terms.map(|_| "Terms").as_ref());
+            return;
+        };
+        Self::assert_terms_statistics_equals(info, left_terms, right_terms);
+        assert_bool_equals(
+            "hasOffsets",
+            left_terms.has_offsets(),
+            right_terms.has_offsets(),
+        );
+        assert_bool_equals(
+            "hasPositions",
+            left_terms.has_positions(),
+            right_terms.has_positions(),
+        );
+        assert_bool_equals(
+            "hasPayloads",
+            left_terms.has_payloads(),
+            right_terms.has_payloads(),
+        );
+
+        let mut left_terms_enum = io(left_terms.iterator());
+        let mut right_terms_enum = io(right_terms.iterator());
+        Self::assert_terms_enum_equals(
+            info,
+            left_reader,
+            left_terms_enum.as_mut(),
+            right_terms_enum.as_mut(),
+            true,
+        );
+
+        Self::assert_terms_seeking_equals(info, left_terms, right_terms);
+
+        if deep {
+            let num_intersections = Self::at_least(3);
+            for _ in 0..num_intersections {
+                let re = crate::util::automaton::AutomatonTestUtil::random_regexp(&*Self::random());
+                let a = io(io(RegExp::with_flags(&re, RegExp::NONE)).to_automaton());
+                let a = Operations::determinize(&a, DEFAULT_DETERMINIZE_WORK_LIMIT)
+                    .unwrap_or_else(|e| rethrow_lucene_error(&e.into()));
+                let automaton = io(CompiledAutomaton::new(a, false, true, false));
+                if automaton.automaton_type == AutomatonType::Normal {
+                    // TODO: test start term too
+                    let mut left_intersection = io(left_terms.intersect(&automaton, None));
+                    let mut right_intersection = io(right_terms.intersect(&automaton, None));
+                    let deep = Self::rarely();
+                    Self::assert_terms_enum_equals(
+                        info,
+                        left_reader,
+                        left_intersection.as_mut(),
+                        right_intersection.as_mut(),
+                        deep,
+                    );
+                }
+            }
+        }
+    }
+
+    /// `assertTermsStatisticsEquals`: "checks collection-level statistics on
+    /// Terms".
+    pub fn assert_terms_statistics_equals(
+        info: &str,
+        left_terms: &dyn rucene::index::terms::Terms,
+        right_terms: &dyn rucene::index::terms::Terms,
+    ) {
+        let info = Some(info);
+        assert_long_equals(
+            info,
+            io(left_terms.doc_count()).into(),
+            io(right_terms.doc_count()).into(),
+        );
+        assert_long_equals(
+            info,
+            io(left_terms.sum_doc_freq()),
+            io(right_terms.sum_doc_freq()),
+        );
+        assert_long_equals(
+            info,
+            io(left_terms.sum_total_term_freq()),
+            io(right_terms.sum_total_term_freq()),
+        );
+        let (left_size, right_size) = (io(left_terms.size()), io(right_terms.size()));
+        if left_size != -1 && right_size != -1 {
+            assert_long_equals(info, left_size, right_size);
+        }
+    }
+
+    /// `assertTermsEnumEquals`: "checks the terms enum sequentially if deep is
+    /// false, it does a 'shallow' test that doesnt go down to the docsenums".
+    pub fn assert_terms_enum_equals(
+        info: &str,
+        left_reader: &Arc<dyn IndexReader>,
+        left_terms_enum: &mut dyn rucene::index::terms::TermsEnum,
+        right_terms_enum: &mut dyn rucene::index::terms::TermsEnum,
+        deep: bool,
+    ) {
+        use rucene::index::postings_enum::{
+            POSTINGS_ENUM_ALL, POSTINGS_ENUM_FREQS, POSTINGS_ENUM_NONE,
+        };
+        let mut left_positions = None;
+        let mut right_positions = None;
+        let mut left_docs = None;
+        let mut right_docs = None;
+
+        while let Some(term) = io(left_terms_enum.next()) {
+            let right_term = io(right_terms_enum.next());
+            assert_option_equals(Some(info), Some(&term), right_term.as_ref());
+            Self::assert_term_stats_equals(info, left_terms_enum, right_terms_enum);
+            if deep {
+                let mut lp = io(left_terms_enum.postings(left_positions.take(), POSTINGS_ENUM_ALL));
+                let mut rp =
+                    io(right_terms_enum.postings(right_positions.take(), POSTINGS_ENUM_ALL));
+                Self::assert_docs_and_positions_enum_equals(
+                    info,
+                    Some(lp.as_mut()),
+                    Some(rp.as_mut()),
+                );
+
+                let doc_freq = io(left_terms_enum.doc_freq());
+                let mut lp = io(left_terms_enum.postings(Some(lp), POSTINGS_ENUM_ALL));
+                let mut rp = io(right_terms_enum.postings(Some(rp), POSTINGS_ENUM_ALL));
+                Self::assert_positions_skipping_equals(
+                    info,
+                    left_reader,
+                    doc_freq,
+                    Some(lp.as_mut()),
+                    Some(rp.as_mut()),
+                );
+                left_positions = Some(lp);
+                right_positions = Some(rp);
+
+                // with freqs:
+                let mut ld = io(left_terms_enum.postings(left_docs.take(), POSTINGS_ENUM_FREQS));
+                let mut rd = io(right_terms_enum.postings(right_docs.take(), POSTINGS_ENUM_FREQS));
+                Self::assert_docs_enum_equals(info, Some(ld.as_mut()), Some(rd.as_mut()), true);
+
+                // w/o freqs:
+                let mut ld = io(left_terms_enum.postings(Some(ld), POSTINGS_ENUM_NONE));
+                let mut rd = io(right_terms_enum.postings(Some(rd), POSTINGS_ENUM_NONE));
+                Self::assert_docs_enum_equals(info, Some(ld.as_mut()), Some(rd.as_mut()), false);
+
+                // with freqs:
+                let doc_freq = io(left_terms_enum.doc_freq());
+                let mut ld = io(left_terms_enum.postings(Some(ld), POSTINGS_ENUM_FREQS));
+                let mut rd = io(right_terms_enum.postings(Some(rd), POSTINGS_ENUM_FREQS));
+                Self::assert_docs_skipping_equals(
+                    info,
+                    left_reader,
+                    doc_freq,
+                    Some(ld.as_mut()),
+                    Some(rd.as_mut()),
+                    true,
+                );
+
+                // w/o freqs:
+                let doc_freq = io(left_terms_enum.doc_freq());
+                let mut ld = io(left_terms_enum.postings(Some(ld), POSTINGS_ENUM_NONE));
+                let mut rd = io(right_terms_enum.postings(Some(rd), POSTINGS_ENUM_NONE));
+                Self::assert_docs_skipping_equals(
+                    info,
+                    left_reader,
+                    doc_freq,
+                    Some(ld.as_mut()),
+                    Some(rd.as_mut()),
+                    false,
+                );
+                left_docs = Some(ld);
+                right_docs = Some(rd);
+            }
+        }
+        assert_null(Some(info), io(right_terms_enum.next()).as_ref());
+    }
+
+    /// `assertDocsAndPositionsEnumEquals`: "checks docs + freqs + positions
+    /// + payloads, sequentially".
+    pub fn assert_docs_and_positions_enum_equals(
+        info: &str,
+        left_docs: Option<&mut dyn rucene::index::postings_enum::PostingsEnum>,
+        right_docs: Option<&mut dyn rucene::index::postings_enum::PostingsEnum>,
+    ) {
+        use rucene::search::NO_MORE_DOCS;
+        assert_not_null(None, left_docs.is_some());
+        assert_not_null(None, right_docs.is_some());
+        let (Some(left_docs), Some(right_docs)) = (left_docs, right_docs) else {
+            unreachable!("both are present")
+        };
+        let i = Some(info);
+        assert_long_equals(i, -1, left_docs.doc_id().into());
+        assert_long_equals(i, -1, right_docs.doc_id().into());
+        loop {
+            let docid = io(left_docs.next_doc());
+            if docid == NO_MORE_DOCS {
+                break;
+            }
+            assert_long_equals(i, docid.into(), io(right_docs.next_doc()).into());
+            let freq = io(left_docs.freq());
+            assert_long_equals(i, freq.into(), io(right_docs.freq()).into());
+            for _ in 0..freq {
+                assert_long_equals(
+                    i,
+                    io(left_docs.next_position()).into(),
+                    io(right_docs.next_position()).into(),
+                );
+                assert_option_equals(
+                    i,
+                    payload_of(left_docs).as_ref(),
+                    payload_of(right_docs).as_ref(),
+                );
+                assert_long_equals(
+                    i,
+                    left_docs.start_offset().into(),
+                    right_docs.start_offset().into(),
+                );
+                assert_long_equals(
+                    i,
+                    left_docs.end_offset().into(),
+                    right_docs.end_offset().into(),
+                );
+            }
+        }
+        assert_long_equals(i, NO_MORE_DOCS.into(), io(right_docs.next_doc()).into());
+    }
+
+    /// `assertDocsEnumEquals`: "checks docs + freqs, sequentially".
+    pub fn assert_docs_enum_equals(
+        info: &str,
+        left_docs: Option<&mut dyn rucene::index::postings_enum::PostingsEnum>,
+        right_docs: Option<&mut dyn rucene::index::postings_enum::PostingsEnum>,
+        has_freqs: bool,
+    ) {
+        use rucene::search::NO_MORE_DOCS;
+        let Some(left_docs) = left_docs else {
+            assert_null(None, right_docs.map(|d| d.to_string()).as_ref());
+            return;
+        };
+        let right_docs = right_docs
+            .unwrap_or_else(|| exception::throw_without_message(exception::NULL_POINTER_EXCEPTION));
+        let i = Some(info);
+        assert_long_equals(i, -1, left_docs.doc_id().into());
+        assert_long_equals(i, -1, right_docs.doc_id().into());
+        loop {
+            let docid = io(left_docs.next_doc());
+            if docid == NO_MORE_DOCS {
+                break;
+            }
+            assert_long_equals(i, docid.into(), io(right_docs.next_doc()).into());
+            if has_freqs {
+                assert_long_equals(i, io(left_docs.freq()).into(), io(right_docs.freq()).into());
+            }
+        }
+        assert_long_equals(i, NO_MORE_DOCS.into(), io(right_docs.next_doc()).into());
+    }
+
+    /// The `advance` target of `assertDocsSkippingEquals` and
+    /// `assertPositionsSkippingEquals`: `docid + (int)
+    /// Math.ceil(Math.abs(skipInterval + random().nextGaussian() *
+    /// averageGap))`.
+    fn skip_target(docid: i32, average_gap: i32) -> i32 {
+        let skip_interval = 16;
+        let gap = (f64::from(skip_interval)
+            + Self::random().next_gaussian() * f64::from(average_gap))
+        .abs()
+        .ceil() as i32;
+        docid.wrapping_add(gap)
+    }
+
+    /// `assertDocsSkippingEquals`: "checks advancing docs".
+    pub fn assert_docs_skipping_equals(
+        info: &str,
+        left_reader: &Arc<dyn IndexReader>,
+        doc_freq: i32,
+        left_docs: Option<&mut dyn rucene::index::postings_enum::PostingsEnum>,
+        right_docs: Option<&mut dyn rucene::index::postings_enum::PostingsEnum>,
+        has_freqs: bool,
+    ) {
+        use rucene::search::NO_MORE_DOCS;
+        let Some(left_docs) = left_docs else {
+            assert_null(None, right_docs.map(|d| d.to_string()).as_ref());
+            return;
+        };
+        let right_docs = right_docs
+            .unwrap_or_else(|| exception::throw_without_message(exception::NULL_POINTER_EXCEPTION));
+        let i = Some(info);
+        let mut docid;
+        let average_gap = left_reader.max_doc() / (1 + doc_freq);
+        docid = -1;
+        loop {
+            if Self::random().next_boolean() {
+                // nextDoc()
+                docid = io(left_docs.next_doc());
+                assert_long_equals(i, docid.into(), io(right_docs.next_doc()).into());
+            } else {
+                // advance()
+                let skip = Self::skip_target(docid, average_gap);
+                docid = io(left_docs.advance(skip));
+                assert_long_equals(i, docid.into(), io(right_docs.advance(skip)).into());
+            }
+
+            if docid == NO_MORE_DOCS {
+                return;
+            }
+            if has_freqs {
+                assert_long_equals(i, io(left_docs.freq()).into(), io(right_docs.freq()).into());
+            }
+        }
+    }
+
+    /// `assertPositionsSkippingEquals`: "checks advancing docs + positions".
+    pub fn assert_positions_skipping_equals(
+        info: &str,
+        left_reader: &Arc<dyn IndexReader>,
+        doc_freq: i32,
+        left_docs: Option<&mut dyn rucene::index::postings_enum::PostingsEnum>,
+        right_docs: Option<&mut dyn rucene::index::postings_enum::PostingsEnum>,
+    ) {
+        use rucene::search::NO_MORE_DOCS;
+        let (Some(left_docs), Some(right_docs)) = (left_docs, right_docs) else {
+            // `assertNull(leftDocs); assertNull(rightDocs);`: one side is
+            // null, so at most one of them fails.
+            Assert::fail("expected null, but was:<PostingsEnum>")
+        };
+        let i = Some(info);
+        let mut docid = -1;
+        let average_gap = left_reader.max_doc() / (1 + doc_freq);
+        loop {
+            if Self::random().next_boolean() {
+                // nextDoc()
+                docid = io(left_docs.next_doc());
+                assert_long_equals(i, docid.into(), io(right_docs.next_doc()).into());
+            } else {
+                // advance()
+                let skip = Self::skip_target(docid, average_gap);
+                docid = io(left_docs.advance(skip));
+                assert_long_equals(i, docid.into(), io(right_docs.advance(skip)).into());
+            }
+
+            if docid == NO_MORE_DOCS {
+                return;
+            }
+            let freq = io(left_docs.freq());
+            assert_long_equals(i, freq.into(), io(right_docs.freq()).into());
+            for _ in 0..freq {
+                assert_long_equals(
+                    i,
+                    io(left_docs.next_position()).into(),
+                    io(right_docs.next_position()).into(),
+                );
+                assert_option_equals(
+                    i,
+                    payload_of(left_docs).as_ref(),
+                    payload_of(right_docs).as_ref(),
+                );
+            }
+        }
+    }
+
+    /// `assertTermsSeekingEquals` (private): seeks both sides to terms drawn
+    /// from the left side, truncations of them, offset copies, and terms
+    /// before the first, past the last and random.
+    fn assert_terms_seeking_equals(
+        info: &str,
+        left_terms: &dyn rucene::index::terms::Terms,
+        right_terms: &dyn rucene::index::terms::Terms,
+    ) {
+        use rucene::index::terms::SeekStatus;
+        // just an upper bound
+        let num_tests = Self::at_least(20);
+        let random = Self::random();
+
+        let mut left_enum = None;
+
+        // collect this number of terms from the left side; a `HashSet`,
+        // kept in insertion order and re-ordered as Java iterates it below.
+        let mut tests: Vec<BytesRef> = Vec::new();
+        let add = |tests: &mut Vec<BytesRef>, b: BytesRef| {
+            if !tests.contains(&b) {
+                tests.push(b);
+            }
+        };
+        let mut num_passes = 0;
+        while num_passes < 10 && (tests.len() as i32) < num_tests {
+            let mut e = io(left_terms.iterator());
+            while let Some(term) = io(e.next()) {
+                let code = random.next_int_bound(10);
+                if code == 0 {
+                    // the term
+                    add(&mut tests, BytesRef::deep_copy_of(&term));
+                } else if code == 1 {
+                    // truncated subsequence of term
+                    let mut term = BytesRef::deep_copy_of(&term);
+                    if term.length > 0 {
+                        // truncate it
+                        term.length = random.next_int_bound(term.length as i32) as usize;
+                    }
+                } else if code == 2 {
+                    // term, but ensure a non-zero offset
+                    let mut newbytes = vec![0u8; term.length + 5];
+                    newbytes[5..5 + term.length]
+                        .copy_from_slice(&term.bytes[term.offset..term.offset + term.length]);
+                    let mut b = BytesRef::new(newbytes);
+                    b.offset = 5;
+                    b.length = term.length;
+                    add(&mut tests, b);
+                } else if code == 3 {
+                    match Self::random().next_int_bound(3) {
+                        0 => add(&mut tests, BytesRef::new(Vec::new())), // before the first term
+                        1 => add(&mut tests, BytesRef::new(vec![0xFF, 0xFF])), // past the last term
+                        2 => add(
+                            &mut tests,
+                            BytesRef::from_char_sequence(&TestUtil::random_simple_string(
+                                &*Self::random(),
+                            )),
+                        ), // random term
+                        _ => exception::throw_without_message(exception::ASSERTION_ERROR),
+                    }
+                }
+            }
+            left_enum = Some(e);
+            num_passes += 1;
+        }
+
+        let mut right_enum = io(right_terms.iterator());
+
+        // `new ArrayList<>(tests)`: the `HashSet`'s iteration order.
+        let entries = tests
+            .into_iter()
+            .map(|b| (b.hash_code(), b))
+            .collect::<Vec<_>>();
+        let len = entries.len();
+        let mut shuffled_tests = java_hash_order(entries, java_default_table_length(len));
+        randomizedtesting::jdk::util::shuffle(&mut shuffled_tests, &*random);
+
+        let mut left_enum = left_enum
+            .unwrap_or_else(|| exception::throw_without_message(exception::NULL_POINTER_EXCEPTION));
+        let i = Some(info);
+        for b in &shuffled_tests {
+            if Self::rarely() {
+                // make new enums
+                left_enum = io(left_terms.iterator());
+                right_enum = io(right_terms.iterator());
+            }
+
+            let seek_exact = Self::random().next_boolean();
+
+            if seek_exact {
+                Assert::assert_equals_msg(
+                    i,
+                    io(left_enum.seek_exact(b)),
+                    io(right_enum.seek_exact(b)),
+                );
+            } else {
+                let left_status = io(left_enum.seek_ceil(b));
+                let right_status = io(right_enum.seek_ceil(b));
+                Assert::assert_equals_msg(
+                    i,
+                    SeekStatusName(left_status),
+                    SeekStatusName(right_status),
+                );
+                if left_status != SeekStatus::END {
+                    Assert::assert_equals_msg(i, io(left_enum.term()), io(right_enum.term()));
+                    Self::assert_term_stats_equals(info, left_enum.as_mut(), right_enum.as_mut());
+                }
+            }
+        }
+    }
+
+    /// `assertTermStatsEquals`: "checks term-level statistics".
+    pub fn assert_term_stats_equals(
+        info: &str,
+        left_terms_enum: &mut dyn rucene::index::terms::TermsEnum,
+        right_terms_enum: &mut dyn rucene::index::terms::TermsEnum,
+    ) {
+        let i = Some(info);
+        assert_long_equals(
+            i,
+            io(left_terms_enum.doc_freq()).into(),
+            io(right_terms_enum.doc_freq()).into(),
+        );
+        assert_long_equals(
+            i,
+            io(left_terms_enum.total_term_freq()),
+            io(right_terms_enum.total_term_freq()),
+        );
+    }
+
+    /// `assertNormsEquals`: "checks that norms are the same across all
+    /// fields".
+    pub fn assert_norms_equals(
+        info: &str,
+        left_reader: &Arc<dyn IndexReader>,
+        right_reader: &Arc<dyn IndexReader>,
+    ) {
+        use rucene::index::multi_doc_values::MultiDocValues;
+        let left_fields = io(rucene::index::FieldInfos::get_indexed_fields(Arc::clone(
+            left_reader,
+        )));
+        let right_fields = io(rucene::index::FieldInfos::get_indexed_fields(Arc::clone(
+            right_reader,
+        )));
+        assert_string_sets_equal(info, &left_fields, &right_fields);
+
+        for field in Self::java_copied_set_order(&left_fields) {
+            let left_norms = io(MultiDocValues::get_norm_values(left_reader, &field));
+            let right_norms = io(MultiDocValues::get_norm_values(right_reader, &field));
+            match (left_norms, right_norms) {
+                (Some(mut l), Some(mut r)) => Self::assert_numeric_doc_values_equals(
+                    info,
+                    left_reader.max_doc(),
+                    Some(l.as_mut()),
+                    Some(r.as_mut()),
+                ),
+                (l, r) => {
+                    assert_null(Some(info), l.map(|_| "NumericDocValues").as_ref());
+                    assert_null(Some(info), r.map(|_| "NumericDocValues").as_ref());
+                }
+            }
+        }
+    }
+
+    /// `assertStoredFieldsEquals`: "checks that stored fields of all documents
+    /// are the same", each document's fields sorted (stably) by name.
+    pub fn assert_stored_fields_equals(
+        info: &str,
+        left_reader: &Arc<dyn IndexReader>,
+        right_reader: &Arc<dyn IndexReader>,
+    ) {
+        exception::java_assert_no_message(left_reader.max_doc() == right_reader.max_doc());
+        let left_stored_fields = io(left_reader.stored_fields());
+        let right_stored_fields = io(right_reader.stored_fields());
+        for i in 0..left_reader.max_doc() {
+            let left_doc = io(left_stored_fields.document(i));
+            let right_doc = io(right_stored_fields.document(i));
+
+            // TODO: I think this is bogus because we don't document what the order should be
+            // from these iterators, etc. I think the codec/IndexReader should be free to order this stuff
+            // in whatever way it wants (e.g. maybe it packs related fields together or something)
+            // To fix this, we sort the fields in both documents by name, but
+            // we still assume that all instances with same name are in order:
+            let mut left_fields: Vec<&dyn rucene::index::IndexableField> =
+                left_doc.get_fields().iter().map(|f| f.as_ref()).collect();
+            let mut right_fields: Vec<&dyn rucene::index::IndexableField> =
+                right_doc.get_fields().iter().map(|f| f.as_ref()).collect();
+            left_fields.sort_by(|a, b| java_string_cmp(a.name(), b.name()));
+            right_fields.sort_by(|a, b| java_string_cmp(a.name(), b.name()));
+
+            let mut right_iterator = right_fields.into_iter();
+            for left in left_fields {
+                let right = right_iterator.next();
+                Assert::assert_true_msg(info, right.is_some());
+                Self::assert_stored_field_equals(info, left, right.expect("checked above"));
+            }
+            Assert::assert_false_msg(info, right_iterator.next().is_some());
+        }
+    }
+
+    /// `assertStoredFieldEquals`: "checks that two stored fields are
+    /// equivalent" — name, binary, string and numeric values.
+    pub fn assert_stored_field_equals(
+        info: &str,
+        left_field: &dyn rucene::index::IndexableField,
+        right_field: &dyn rucene::index::IndexableField,
+    ) {
+        Assert::assert_equals_str(
+            Some(info),
+            Some(left_field.name()),
+            Some(right_field.name()),
+        );
+        assert_option_equals(
+            Some(info),
+            left_field.binary_value().as_ref(),
+            right_field.binary_value().as_ref(),
+        );
+        Assert::assert_equals_str(
+            Some(info),
+            left_field.string_value().as_deref(),
+            right_field.string_value().as_deref(),
+        );
+        assert_numeric_values_equal(
+            info,
+            left_field.numeric_value().as_ref(),
+            right_field.numeric_value().as_ref(),
+        );
+        // TODO: should we check the FT at all?
+    }
+
+    /// `assertTermVectorsEquals`: "checks that term vectors across all fields
+    /// are equivalent". As in Java, the check stops at the first document
+    /// whose vectors are null on both sides.
+    pub fn assert_term_vectors_equals(
+        info: &str,
+        left_reader: &Arc<dyn IndexReader>,
+        right_reader: &Arc<dyn IndexReader>,
+    ) {
+        exception::java_assert_no_message(left_reader.max_doc() == right_reader.max_doc());
+        let left_vectors = io(left_reader.term_vectors());
+        let right_vectors = io(right_reader.term_vectors());
+        for i in 0..left_reader.max_doc() {
+            let left_fields = io(left_vectors.get(i));
+            let right_fields = io(right_vectors.get(i));
+
+            // Fields could be null if there are no postings,
+            // but then it must be null for both
+            let (Some(left_fields), Some(right_fields)) = (&left_fields, &right_fields) else {
+                assert_null(Some(info), left_fields.as_ref().map(|_| "Fields").as_ref());
+                assert_null(Some(info), right_fields.as_ref().map(|_| "Fields").as_ref());
+                return;
+            };
+            if left_fields.size() != -1 && right_fields.size() != -1 {
+                assert_long_equals(
+                    Some(info),
+                    left_fields.size().into(),
+                    right_fields.size().into(),
+                );
+            }
+
+            let mut right_enum = right_fields.iterator();
+            for field in left_fields.iterator() {
+                Assert::assert_equals_str(Some(info), Some(&field), right_enum.next().as_deref());
+                let left_terms = io(left_fields.terms(&field));
+                let right_terms = io(right_fields.terms(&field));
+                let deep = Self::rarely();
+                Self::assert_terms_equals_terms(
+                    info,
+                    left_reader,
+                    left_terms.as_deref(),
+                    right_terms.as_deref(),
+                    deep,
+                );
+            }
+            Assert::assert_false(right_enum.next().is_some());
+        }
+    }
+
+    /// `getDVFields(reader)` (private): the fields with doc values, as a
+    /// `new HashSet<>()` filled in field-info order.
+    fn get_dv_fields(reader: &Arc<dyn IndexReader>) -> HashSet<String> {
+        let mut fields = HashSet::new();
+        for fi in io(rucene::index::FieldInfos::get_merged_field_infos(
+            Arc::clone(reader),
+        ))
+        .iter()
+        {
+            if fi.get_doc_values_type() != rucene::index::DocValuesType::NONE {
+                fields.insert(fi.name.clone());
+            }
+        }
+        fields
+    }
+
+    /// `assertDocValuesEquals(info, leftReader, rightReader)`: "checks that
+    /// docvalues across all fields are equivalent".
+    pub fn assert_doc_values_equals(
+        info: &str,
+        left_reader: &Arc<dyn IndexReader>,
+        right_reader: &Arc<dyn IndexReader>,
+    ) {
+        use rucene::index::multi_doc_values::MultiDocValues;
+        use rucene::search::NO_MORE_DOCS;
+        let left_fields = Self::get_dv_fields(left_reader);
+        let right_fields = Self::get_dv_fields(right_reader);
+        assert_string_sets_equal(info, &left_fields, &right_fields);
+        let i = Some(info);
+
+        let entries: Vec<(i32, String)> = {
+            // `getDVFields` fills a `new HashSet<>()` element by element.
+            let mut names: Vec<&String> = left_fields.iter().collect();
+            names.sort();
+            names
+                .into_iter()
+                .map(|n| (randomizedtesting::jdk::lang::string_hash_code(n), n.clone()))
+                .collect()
+        };
+        let len = entries.len();
+        for field in java_hash_order(entries, java_default_table_length(len)) {
+            // TODO: clean this up... very messy
+            {
+                let left_values = io(MultiDocValues::get_numeric_values(left_reader, &field));
+                let right_values = io(MultiDocValues::get_numeric_values(right_reader, &field));
+                match (left_values, right_values) {
+                    (Some(mut l), Some(mut r)) => Self::assert_numeric_doc_values_equals(
+                        info,
+                        left_reader.max_doc(),
+                        Some(l.as_mut()),
+                        Some(r.as_mut()),
+                    ),
+                    (l, r) => {
+                        Assert::assert_true_msg(
+                            &format!("{info}: left numeric doc values for field=\"{field}\" are not null"),
+                            l.is_none_or(|mut l| io(l.next_doc()) == NO_MORE_DOCS),
+                        );
+                        Assert::assert_true_msg(
+                            &format!("{info}: right numeric doc values for field=\"{field}\" are not null"),
+                            r.is_none_or(|mut r| io(r.next_doc()) == NO_MORE_DOCS),
+                        );
+                    }
+                }
+            }
+
+            {
+                let left_values = io(MultiDocValues::get_binary_values(left_reader, &field));
+                let right_values = io(MultiDocValues::get_binary_values(right_reader, &field));
+                match (left_values, right_values) {
+                    (Some(mut l), Some(mut r)) => loop {
+                        let doc_id = io(l.next_doc());
+                        assert_long_equals(None, doc_id.into(), io(r.next_doc()).into());
+                        if doc_id == NO_MORE_DOCS {
+                            break;
+                        }
+                        Assert::assert_equals(io(l.binary_value()), io(r.binary_value()));
+                    },
+                    (l, r) => {
+                        Assert::assert_true_msg(
+                            info,
+                            l.is_none_or(|mut l| io(l.next_doc()) == NO_MORE_DOCS),
+                        );
+                        Assert::assert_true_msg(
+                            info,
+                            r.is_none_or(|mut r| io(r.next_doc()) == NO_MORE_DOCS),
+                        );
+                    }
+                }
+            }
+
+            {
+                let left_values = io(MultiDocValues::get_sorted_values(left_reader, &field));
+                let right_values = io(MultiDocValues::get_sorted_values(right_reader, &field));
+                match (left_values, right_values) {
+                    (Some(mut l), Some(mut r)) => {
+                        // numOrds
+                        let value_count = io(l.get_value_count());
+                        assert_long_equals(i, value_count.into(), io(r.get_value_count()).into());
+                        // ords
+                        for ord in 0..value_count {
+                            let left = BytesRef::deep_copy_of(&io(l.lookup_ord(ord)));
+                            let right = io(r.lookup_ord(ord));
+                            Assert::assert_equals_msg(i, left, right);
+                        }
+                        // bytes
+                        loop {
+                            let doc_id = io(l.next_doc());
+                            assert_long_equals(None, doc_id.into(), io(r.next_doc()).into());
+                            if doc_id == NO_MORE_DOCS {
+                                break;
+                            }
+                            let left = BytesRef::deep_copy_of(&io(l.lookup_ord(io(l.ord_value()))));
+                            let right = io(r.lookup_ord(io(r.ord_value())));
+                            Assert::assert_equals_msg(i, left, right);
+                        }
+                    }
+                    (l, r) => {
+                        assert_null(i, l.map(|_| "SortedDocValues").as_ref());
+                        assert_null(i, r.map(|_| "SortedDocValues").as_ref());
+                    }
+                }
+            }
+
+            {
+                let left_values = io(MultiDocValues::get_sorted_set_values(left_reader, &field));
+                let right_values = io(MultiDocValues::get_sorted_set_values(right_reader, &field));
+                match (left_values, right_values) {
+                    (Some(mut l), Some(mut r)) => {
+                        // numOrds
+                        let value_count = io(l.get_value_count());
+                        assert_long_equals(i, value_count, io(r.get_value_count()));
+                        // ords
+                        for ord in 0..value_count {
+                            let left = BytesRef::deep_copy_of(&io(l.lookup_ord(ord)));
+                            let right = io(r.lookup_ord(ord));
+                            Assert::assert_equals_msg(i, left, right);
+                        }
+                        // ord lists
+                        loop {
+                            let doc_id = io(l.next_doc());
+                            assert_long_equals(None, doc_id.into(), io(r.next_doc()).into());
+                            if doc_id == NO_MORE_DOCS {
+                                break;
+                            }
+                            let count = io(l.doc_value_count());
+                            assert_long_equals(i, count.into(), io(r.doc_value_count()).into());
+                            for _ in 0..count {
+                                assert_long_equals(i, io(l.next_ord()), io(r.next_ord()));
+                            }
+                        }
+                    }
+                    (l, r) => {
+                        assert_null(i, l.map(|_| "SortedSetDocValues").as_ref());
+                        assert_null(i, r.map(|_| "SortedSetDocValues").as_ref());
+                    }
+                }
+            }
+
+            {
+                let left_values = io(MultiDocValues::get_sorted_numeric_values(
+                    left_reader,
+                    &field,
+                ));
+                let right_values = io(MultiDocValues::get_sorted_numeric_values(
+                    right_reader,
+                    &field,
+                ));
+                match (left_values, right_values) {
+                    (Some(mut l), Some(mut r)) => loop {
+                        let doc_id = io(l.next_doc());
+                        assert_long_equals(None, doc_id.into(), io(r.next_doc()).into());
+                        if doc_id == NO_MORE_DOCS {
+                            break;
+                        }
+                        let count = io(l.doc_value_count());
+                        assert_long_equals(i, count.into(), io(r.doc_value_count()).into());
+                        for _ in 0..count {
+                            assert_long_equals(i, io(l.next_value()), io(r.next_value()));
+                        }
+                    },
+                    (l, r) => {
+                        assert_null(i, l.map(|_| "SortedNumericDocValues").as_ref());
+                        assert_null(i, r.map(|_| "SortedNumericDocValues").as_ref());
+                    }
+                }
+            }
+        }
+    }
+
+    /// `assertDocValuesEquals(info, num, leftDocValues, rightDocValues)`.
+    pub fn assert_numeric_doc_values_equals(
+        info: &str,
+        _num: i32,
+        left_doc_values: Option<&mut dyn rucene::index::doc_values::NumericDocValues>,
+        right_doc_values: Option<&mut dyn rucene::index::doc_values::NumericDocValues>,
+    ) {
+        use rucene::search::NO_MORE_DOCS;
+        assert_not_null(Some(info), left_doc_values.is_some());
+        assert_not_null(Some(info), right_doc_values.is_some());
+        let (Some(left), Some(right)) = (left_doc_values, right_doc_values) else {
+            unreachable!("both are present")
+        };
+        loop {
+            let left_doc_id = io(left.next_doc());
+            let right_doc_id = io(right.next_doc());
+            assert_long_equals(None, left_doc_id.into(), right_doc_id.into());
+            if left_doc_id == NO_MORE_DOCS {
+                return;
+            }
+            assert_long_equals(None, io(left.long_value()), io(right.long_value()));
+        }
+    }
+
+    /// `assertDeletedDocsEquals`: the live docs of both readers, bit by bit.
+    pub fn assert_deleted_docs_equals(
+        info: &str,
+        left_reader: &Arc<dyn IndexReader>,
+        right_reader: &Arc<dyn IndexReader>,
+    ) {
+        use rucene::index::multi_bits::MultiBits;
+        exception::java_assert_no_message(
+            left_reader.num_deleted_docs() == right_reader.num_deleted_docs(),
+        );
+        let left_bits = io(MultiBits::get_live_docs(left_reader));
+        let right_bits = io(MultiBits::get_live_docs(right_reader));
+
+        let (Some(left_bits), Some(right_bits)) = (&left_bits, &right_bits) else {
+            assert_null(
+                Some(info),
+                left_bits.as_ref().map(|b| format!("{b:?}")).as_ref(),
+            );
+            assert_null(
+                Some(info),
+                right_bits.as_ref().map(|b| format!("{b:?}")).as_ref(),
+            );
+            return;
+        };
+
+        exception::java_assert_no_message(left_reader.max_doc() == right_reader.max_doc());
+        assert_long_equals(
+            Some(info),
+            left_bits.length() as i64,
+            right_bits.length() as i64,
+        );
+        for i in 0..left_reader.max_doc() as usize {
+            Assert::assert_equals_msg(Some(info), left_bits.get(i), right_bits.get(i));
+        }
+    }
+
+    /// `assertFieldInfosEquals`: the names of the merged field infos, as two
+    /// `TreeSet`s.
+    pub fn assert_field_infos_equals(
+        info: &str,
+        left_reader: &Arc<dyn IndexReader>,
+        right_reader: &Arc<dyn IndexReader>,
+    ) {
+        let left_infos = io(rucene::index::FieldInfos::get_merged_field_infos(
+            Arc::clone(left_reader),
+        ));
+        let right_infos = io(rucene::index::FieldInfos::get_merged_field_infos(
+            Arc::clone(right_reader),
+        ));
+
+        // TODO: would be great to verify more than just the names of the fields!
+        let tree_set = |infos: &rucene::index::FieldInfos| {
+            let mut names: Vec<String> = infos.iter().map(|fi| fi.name.clone()).collect();
+            names.sort_by(|a, b| java_string_cmp(a, b));
+            names.dedup();
+            names
+        };
+        let left = tree_set(&left_infos);
+        let right = tree_set(&right_infos);
+        if left != right {
+            Assert::fail(&format!(
+                "{info} expected:<[{}]> but was:<[{}]>",
+                left.join(", "),
+                right.join(", ")
+            ));
+        }
+    }
+
+    /// `uninvert(fieldName, reader)` (private): "naive silly memory heavy
+    /// uninversion!! maps docID -> packed values".
+    fn uninvert(field_name: &str, reader: &Arc<dyn IndexReader>) -> UninvertedPoints {
+        let mut doc_values = UninvertedPoints::new();
+        for ctx in io(Arc::clone(reader).leaves()) {
+            let Some(points) = io(ctx.leaf_reader().get_point_values(field_name)) else {
+                continue;
+            };
+            io(points.intersect(&mut UninvertVisitor {
+                doc_base: ctx.doc_base(),
+                doc_values: &mut doc_values,
+            }));
+        }
+        doc_values
+    }
+
+    /// `assertPointsEquals`: the point dimensions of every point field, and
+    /// the uninverted values of each field of the left reader.
+    ///
+    /// As in Java, the first loop compares the right reader's dimensions with
+    /// themselves.
+    pub fn assert_points_equals(
+        info: &str,
+        left_reader: &Arc<dyn IndexReader>,
+        right_reader: &Arc<dyn IndexReader>,
+    ) {
+        let field_infos1 = io(rucene::index::FieldInfos::get_merged_field_infos(
+            Arc::clone(left_reader),
+        ));
+        let field_infos2 = io(rucene::index::FieldInfos::get_merged_field_infos(
+            Arc::clone(right_reader),
+        ));
+        let i = Some(info);
+        let npe = || -> &rucene::index::FieldInfo {
+            exception::throw_without_message(exception::NULL_POINTER_EXCEPTION)
+        };
+        for field_info1 in field_infos1.iter() {
+            if field_info1.get_point_dimension_count() != 0 {
+                let field_info2 = field_infos2
+                    .field_info(&field_info1.name)
+                    .unwrap_or_else(npe);
+                // same data dimension count?
+                assert_long_equals(
+                    i,
+                    field_info2.get_point_dimension_count().into(),
+                    field_info2.get_point_dimension_count().into(),
+                );
+                // same index dimension count?
+                assert_long_equals(
+                    i,
+                    field_info2.get_point_index_dimension_count().into(),
+                    field_info2.get_point_index_dimension_count().into(),
+                );
+                // same bytes per dimension?
+                assert_long_equals(
+                    i,
+                    field_info2.get_point_num_bytes().into(),
+                    field_info2.get_point_num_bytes().into(),
+                );
+
+                let left = Self::uninvert(&field_info1.name, left_reader);
+                let right = Self::uninvert(&field_info1.name, right_reader);
+                if !uninverted_equal(&left, &right) {
+                    Assert::fail(&format!(
+                        "{info} field={} expected:<{}> but was:<{}>",
+                        field_info1.name,
+                        uninverted_to_string(&left),
+                        uninverted_to_string(&right)
+                    ));
+                }
+            }
+        }
+
+        // make sure FieldInfos2 doesn't have any point fields that FieldInfo1 didn't have
+        for field_info2 in field_infos2.iter() {
+            if field_info2.get_point_dimension_count() != 0 {
+                let field_info1 = field_infos1
+                    .field_info(&field_info2.name)
+                    .unwrap_or_else(npe);
+                // same data dimension count?
+                assert_long_equals(
+                    i,
+                    field_info2.get_point_dimension_count().into(),
+                    field_info1.get_point_dimension_count().into(),
+                );
+                // same index dimension count?
+                assert_long_equals(
+                    i,
+                    field_info2.get_point_index_dimension_count().into(),
+                    field_info1.get_point_index_dimension_count().into(),
+                );
+                // same bytes per dimension?
+                assert_long_equals(
+                    i,
+                    field_info2.get_point_num_bytes().into(),
+                    field_info1.get_point_num_bytes().into(),
+                );
+
+                // we don't need to uninvert and compare here ... we did that in the first loop above
+            }
+        }
     }
 }

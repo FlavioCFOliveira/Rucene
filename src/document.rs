@@ -1744,6 +1744,18 @@ pub struct StringField {
 }
 
 impl StringField {
+    /// `StringField.TYPE_NOT_STORED`: "Indexed, not tokenized, omits norms,
+    /// indexes DOCS_ONLY, not stored."
+    pub fn type_not_stored() -> &'static FieldType {
+        string_field_type_not_stored()
+    }
+
+    /// `StringField.TYPE_STORED`: "Indexed, not tokenized, omits norms,
+    /// indexes DOCS_ONLY, stored"
+    pub fn type_stored() -> &'static FieldType {
+        string_field_type_stored()
+    }
+
     /// Creates a new textual StringField.
     pub fn new(name: &str, value: String, stored: Store) -> Result<Self> {
         let field_type = if stored == Store::YES {

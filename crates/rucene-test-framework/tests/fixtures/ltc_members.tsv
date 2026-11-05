@@ -1,0 +1,586 @@
+# tz	id	TimeZone.getTimeZone(id).getID()	getRawOffset()
+tz	GMT+	GMT	0
+tz	GMT+0	GMT+00:00	0
+tz	GMT+00	GMT+00:00	0
+tz	GMT+5	GMT+05:00	18000000
+tz	GMT+05	GMT+05:00	18000000
+tz	GMT+12	GMT+12:00	43200000
+tz	GMT+23	GMT+23:00	82800000
+tz	GMT+24	GMT	0
+tz	GMT+123	GMT+01:23	4980000
+tz	GMT+0530	GMT+05:30	19800000
+tz	GMT+2359	GMT+23:59	86340000
+tz	GMT+2360	GMT	0
+tz	GMT+12345	GMT	0
+tz	GMT+5:30	GMT+05:30	19800000
+tz	GMT+05:30	GMT+05:30	19800000
+tz	GMT+5:3	GMT	0
+tz	GMT+05:300	GMT	0
+tz	GMT+12:60	GMT	0
+tz	GMT+:30	GMT	0
+tz	GMT+1::2	GMT	0
+tz	GMT+23:59	GMT+23:59	86340000
+tz	GMT+0:00	GMT+00:00	0
+tz	GMT+00:00	GMT+00:00	0
+tz	GMT+99999999999	GMT	0
+tz	GMT+4294967296	GMT	0
+tz	GMT+2147483647	GMT	0
+tz	GMT+429496729600	GMT	0
+tz	GMT+5a	GMT	0
+tz	GMT+00000	GMT	0
+tz	GMT+0005	GMT+00:05	300000
+tz	GMT+0000	GMT+00:00	0
+tz	GMT+5:	GMT	0
+tz	GMT+:	GMT	0
+tz	GMT+005:30	GMT	0
+tz	GMT+0:30	GMT+00:30	1800000
+tz	GMT+00:000	GMT	0
+tz	GMT-	GMT	0
+tz	GMT-0	GMT-00:00	0
+tz	GMT-00	GMT-00:00	0
+tz	GMT-5	GMT-05:00	-18000000
+tz	GMT-05	GMT-05:00	-18000000
+tz	GMT-12	GMT-12:00	-43200000
+tz	GMT-23	GMT-23:00	-82800000
+tz	GMT-24	GMT	0
+tz	GMT-123	GMT-01:23	-4980000
+tz	GMT-0530	GMT-05:30	-19800000
+tz	GMT-2359	GMT-23:59	-86340000
+tz	GMT-2360	GMT	0
+tz	GMT-12345	GMT	0
+tz	GMT-5:30	GMT-05:30	-19800000
+tz	GMT-05:30	GMT-05:30	-19800000
+tz	GMT-5:3	GMT	0
+tz	GMT-05:300	GMT	0
+tz	GMT-12:60	GMT	0
+tz	GMT-:30	GMT	0
+tz	GMT-1::2	GMT	0
+tz	GMT-23:59	GMT-23:59	-86340000
+tz	GMT-0:00	GMT-00:00	0
+tz	GMT-00:00	GMT-00:00	0
+tz	GMT-99999999999	GMT	0
+tz	GMT-4294967296	GMT	0
+tz	GMT-2147483647	GMT	0
+tz	GMT-429496729600	GMT	0
+tz	GMT-5a	GMT	0
+tz	GMT-00000	GMT	0
+tz	GMT-0005	GMT-00:05	-300000
+tz	GMT-0000	GMT-00:00	0
+tz	GMT-5:	GMT	0
+tz	GMT-:	GMT	0
+tz	GMT-005:30	GMT	0
+tz	GMT-0:30	GMT-00:30	-1800000
+tz	GMT-00:000	GMT	0
+tz	GMT	GMT	0
+tz	GMT0	GMT0	0
+tz	GMT00	GMT	0
+tz	GMT5	GMT	0
+tz	GMT05	GMT	0
+tz	GMT12	GMT	0
+tz	GMT23	GMT	0
+tz	GMT24	GMT	0
+tz	GMT123	GMT	0
+tz	GMT0530	GMT	0
+tz	GMT2359	GMT	0
+tz	GMT2360	GMT	0
+tz	GMT12345	GMT	0
+tz	GMT5:30	GMT	0
+tz	GMT05:30	GMT	0
+tz	GMT5:3	GMT	0
+tz	GMT05:300	GMT	0
+tz	GMT12:60	GMT	0
+tz	GMT:30	GMT	0
+tz	GMT1::2	GMT	0
+tz	GMT23:59	GMT	0
+tz	GMT0:00	GMT	0
+tz	GMT00:00	GMT	0
+tz	GMT99999999999	GMT	0
+tz	GMT4294967296	GMT	0
+tz	GMT2147483647	GMT	0
+tz	GMT429496729600	GMT	0
+tz	GMT5a	GMT	0
+tz	GMT00000	GMT	0
+tz	GMT0005	GMT	0
+tz	GMT0000	GMT	0
+tz	GMT5:	GMT	0
+tz	GMT:	GMT	0
+tz	GMT005:30	GMT	0
+tz	GMT0:30	GMT	0
+tz	GMT00:000	GMT	0
+tz	GMT*	GMT	0
+tz	GMT*0	GMT	0
+tz	GMT*00	GMT	0
+tz	GMT*5	GMT	0
+tz	GMT*05	GMT	0
+tz	GMT*12	GMT	0
+tz	GMT*23	GMT	0
+tz	GMT*24	GMT	0
+tz	GMT*123	GMT	0
+tz	GMT*0530	GMT	0
+tz	GMT*2359	GMT	0
+tz	GMT*2360	GMT	0
+tz	GMT*12345	GMT	0
+tz	GMT*5:30	GMT	0
+tz	GMT*05:30	GMT	0
+tz	GMT*5:3	GMT	0
+tz	GMT*05:300	GMT	0
+tz	GMT*12:60	GMT	0
+tz	GMT*:30	GMT	0
+tz	GMT*1::2	GMT	0
+tz	GMT*23:59	GMT	0
+tz	GMT*0:00	GMT	0
+tz	GMT*00:00	GMT	0
+tz	GMT*99999999999	GMT	0
+tz	GMT*4294967296	GMT	0
+tz	GMT*2147483647	GMT	0
+tz	GMT*429496729600	GMT	0
+tz	GMT*5a	GMT	0
+tz	GMT*00000	GMT	0
+tz	GMT*0005	GMT	0
+tz	GMT*0000	GMT	0
+tz	GMT*5:	GMT	0
+tz	GMT*:	GMT	0
+tz	GMT*005:30	GMT	0
+tz	GMT*0:30	GMT	0
+tz	GMT*00:000	GMT	0
+tz	gmt+	GMT	0
+tz	gmt+0	GMT	0
+tz	gmt+00	GMT	0
+tz	gmt+5	GMT	0
+tz	gmt+05	GMT	0
+tz	gmt+12	GMT	0
+tz	gmt+23	GMT	0
+tz	gmt+24	GMT	0
+tz	gmt+123	GMT	0
+tz	gmt+0530	GMT	0
+tz	gmt+2359	GMT	0
+tz	gmt+2360	GMT	0
+tz	gmt+12345	GMT	0
+tz	gmt+5:30	GMT	0
+tz	gmt+05:30	GMT	0
+tz	gmt+5:3	GMT	0
+tz	gmt+05:300	GMT	0
+tz	gmt+12:60	GMT	0
+tz	gmt+:30	GMT	0
+tz	gmt+1::2	GMT	0
+tz	gmt+23:59	GMT	0
+tz	gmt+0:00	GMT	0
+tz	gmt+00:00	GMT	0
+tz	gmt+99999999999	GMT	0
+tz	gmt+4294967296	GMT	0
+tz	gmt+2147483647	GMT	0
+tz	gmt+429496729600	GMT	0
+tz	gmt+5a	GMT	0
+tz	gmt+00000	GMT	0
+tz	gmt+0005	GMT	0
+tz	gmt+0000	GMT	0
+tz	gmt+5:	GMT	0
+tz	gmt+:	GMT	0
+tz	gmt+005:30	GMT	0
+tz	gmt+0:30	GMT	0
+tz	gmt+00:000	GMT	0
+tz	gmt-	GMT	0
+tz	gmt-0	GMT	0
+tz	gmt-00	GMT	0
+tz	gmt-5	GMT	0
+tz	gmt-05	GMT	0
+tz	gmt-12	GMT	0
+tz	gmt-23	GMT	0
+tz	gmt-24	GMT	0
+tz	gmt-123	GMT	0
+tz	gmt-0530	GMT	0
+tz	gmt-2359	GMT	0
+tz	gmt-2360	GMT	0
+tz	gmt-12345	GMT	0
+tz	gmt-5:30	GMT	0
+tz	gmt-05:30	GMT	0
+tz	gmt-5:3	GMT	0
+tz	gmt-05:300	GMT	0
+tz	gmt-12:60	GMT	0
+tz	gmt-:30	GMT	0
+tz	gmt-1::2	GMT	0
+tz	gmt-23:59	GMT	0
+tz	gmt-0:00	GMT	0
+tz	gmt-00:00	GMT	0
+tz	gmt-99999999999	GMT	0
+tz	gmt-4294967296	GMT	0
+tz	gmt-2147483647	GMT	0
+tz	gmt-429496729600	GMT	0
+tz	gmt-5a	GMT	0
+tz	gmt-00000	GMT	0
+tz	gmt-0005	GMT	0
+tz	gmt-0000	GMT	0
+tz	gmt-5:	GMT	0
+tz	gmt-:	GMT	0
+tz	gmt-005:30	GMT	0
+tz	gmt-0:30	GMT	0
+tz	gmt-00:000	GMT	0
+tz	gmt	GMT	0
+tz	gmt0	GMT	0
+tz	gmt00	GMT	0
+tz	gmt5	GMT	0
+tz	gmt05	GMT	0
+tz	gmt12	GMT	0
+tz	gmt23	GMT	0
+tz	gmt24	GMT	0
+tz	gmt123	GMT	0
+tz	gmt0530	GMT	0
+tz	gmt2359	GMT	0
+tz	gmt2360	GMT	0
+tz	gmt12345	GMT	0
+tz	gmt5:30	GMT	0
+tz	gmt05:30	GMT	0
+tz	gmt5:3	GMT	0
+tz	gmt05:300	GMT	0
+tz	gmt12:60	GMT	0
+tz	gmt:30	GMT	0
+tz	gmt1::2	GMT	0
+tz	gmt23:59	GMT	0
+tz	gmt0:00	GMT	0
+tz	gmt00:00	GMT	0
+tz	gmt99999999999	GMT	0
+tz	gmt4294967296	GMT	0
+tz	gmt2147483647	GMT	0
+tz	gmt429496729600	GMT	0
+tz	gmt5a	GMT	0
+tz	gmt00000	GMT	0
+tz	gmt0005	GMT	0
+tz	gmt0000	GMT	0
+tz	gmt5:	GMT	0
+tz	gmt:	GMT	0
+tz	gmt005:30	GMT	0
+tz	gmt0:30	GMT	0
+tz	gmt00:000	GMT	0
+tz	gmt*	GMT	0
+tz	gmt*0	GMT	0
+tz	gmt*00	GMT	0
+tz	gmt*5	GMT	0
+tz	gmt*05	GMT	0
+tz	gmt*12	GMT	0
+tz	gmt*23	GMT	0
+tz	gmt*24	GMT	0
+tz	gmt*123	GMT	0
+tz	gmt*0530	GMT	0
+tz	gmt*2359	GMT	0
+tz	gmt*2360	GMT	0
+tz	gmt*12345	GMT	0
+tz	gmt*5:30	GMT	0
+tz	gmt*05:30	GMT	0
+tz	gmt*5:3	GMT	0
+tz	gmt*05:300	GMT	0
+tz	gmt*12:60	GMT	0
+tz	gmt*:30	GMT	0
+tz	gmt*1::2	GMT	0
+tz	gmt*23:59	GMT	0
+tz	gmt*0:00	GMT	0
+tz	gmt*00:00	GMT	0
+tz	gmt*99999999999	GMT	0
+tz	gmt*4294967296	GMT	0
+tz	gmt*2147483647	GMT	0
+tz	gmt*429496729600	GMT	0
+tz	gmt*5a	GMT	0
+tz	gmt*00000	GMT	0
+tz	gmt*0005	GMT	0
+tz	gmt*0000	GMT	0
+tz	gmt*5:	GMT	0
+tz	gmt*:	GMT	0
+tz	gmt*005:30	GMT	0
+tz	gmt*0:30	GMT	0
+tz	gmt*00:000	GMT	0
+tz	UTC+	GMT	0
+tz	UTC+0	GMT	0
+tz	UTC+00	GMT	0
+tz	UTC+5	GMT	0
+tz	UTC+05	GMT	0
+tz	UTC+12	GMT	0
+tz	UTC+23	GMT	0
+tz	UTC+24	GMT	0
+tz	UTC+123	GMT	0
+tz	UTC+0530	GMT	0
+tz	UTC+2359	GMT	0
+tz	UTC+2360	GMT	0
+tz	UTC+12345	GMT	0
+tz	UTC+5:30	GMT	0
+tz	UTC+05:30	GMT	0
+tz	UTC+5:3	GMT	0
+tz	UTC+05:300	GMT	0
+tz	UTC+12:60	GMT	0
+tz	UTC+:30	GMT	0
+tz	UTC+1::2	GMT	0
+tz	UTC+23:59	GMT	0
+tz	UTC+0:00	GMT	0
+tz	UTC+00:00	GMT	0
+tz	UTC+99999999999	GMT	0
+tz	UTC+4294967296	GMT	0
+tz	UTC+2147483647	GMT	0
+tz	UTC+429496729600	GMT	0
+tz	UTC+5a	GMT	0
+tz	UTC+00000	GMT	0
+tz	UTC+0005	GMT	0
+tz	UTC+0000	GMT	0
+tz	UTC+5:	GMT	0
+tz	UTC+:	GMT	0
+tz	UTC+005:30	GMT	0
+tz	UTC+0:30	GMT	0
+tz	UTC+00:000	GMT	0
+tz	UTC-	GMT	0
+tz	UTC-0	GMT	0
+tz	UTC-00	GMT	0
+tz	UTC-5	GMT	0
+tz	UTC-05	GMT	0
+tz	UTC-12	GMT	0
+tz	UTC-23	GMT	0
+tz	UTC-24	GMT	0
+tz	UTC-123	GMT	0
+tz	UTC-0530	GMT	0
+tz	UTC-2359	GMT	0
+tz	UTC-2360	GMT	0
+tz	UTC-12345	GMT	0
+tz	UTC-5:30	GMT	0
+tz	UTC-05:30	GMT	0
+tz	UTC-5:3	GMT	0
+tz	UTC-05:300	GMT	0
+tz	UTC-12:60	GMT	0
+tz	UTC-:30	GMT	0
+tz	UTC-1::2	GMT	0
+tz	UTC-23:59	GMT	0
+tz	UTC-0:00	GMT	0
+tz	UTC-00:00	GMT	0
+tz	UTC-99999999999	GMT	0
+tz	UTC-4294967296	GMT	0
+tz	UTC-2147483647	GMT	0
+tz	UTC-429496729600	GMT	0
+tz	UTC-5a	GMT	0
+tz	UTC-00000	GMT	0
+tz	UTC-0005	GMT	0
+tz	UTC-0000	GMT	0
+tz	UTC-5:	GMT	0
+tz	UTC-:	GMT	0
+tz	UTC-005:30	GMT	0
+tz	UTC-0:30	GMT	0
+tz	UTC-00:000	GMT	0
+tz	UTC	UTC	0
+tz	UTC0	GMT	0
+tz	UTC00	GMT	0
+tz	UTC5	GMT	0
+tz	UTC05	GMT	0
+tz	UTC12	GMT	0
+tz	UTC23	GMT	0
+tz	UTC24	GMT	0
+tz	UTC123	GMT	0
+tz	UTC0530	GMT	0
+tz	UTC2359	GMT	0
+tz	UTC2360	GMT	0
+tz	UTC12345	GMT	0
+tz	UTC5:30	GMT	0
+tz	UTC05:30	GMT	0
+tz	UTC5:3	GMT	0
+tz	UTC05:300	GMT	0
+tz	UTC12:60	GMT	0
+tz	UTC:30	GMT	0
+tz	UTC1::2	GMT	0
+tz	UTC23:59	GMT	0
+tz	UTC0:00	GMT	0
+tz	UTC00:00	GMT	0
+tz	UTC99999999999	GMT	0
+tz	UTC4294967296	GMT	0
+tz	UTC2147483647	GMT	0
+tz	UTC429496729600	GMT	0
+tz	UTC5a	GMT	0
+tz	UTC00000	GMT	0
+tz	UTC0005	GMT	0
+tz	UTC0000	GMT	0
+tz	UTC5:	GMT	0
+tz	UTC:	GMT	0
+tz	UTC005:30	GMT	0
+tz	UTC0:30	GMT	0
+tz	UTC00:000	GMT	0
+tz	UTC*	GMT	0
+tz	UTC*0	GMT	0
+tz	UTC*00	GMT	0
+tz	UTC*5	GMT	0
+tz	UTC*05	GMT	0
+tz	UTC*12	GMT	0
+tz	UTC*23	GMT	0
+tz	UTC*24	GMT	0
+tz	UTC*123	GMT	0
+tz	UTC*0530	GMT	0
+tz	UTC*2359	GMT	0
+tz	UTC*2360	GMT	0
+tz	UTC*12345	GMT	0
+tz	UTC*5:30	GMT	0
+tz	UTC*05:30	GMT	0
+tz	UTC*5:3	GMT	0
+tz	UTC*05:300	GMT	0
+tz	UTC*12:60	GMT	0
+tz	UTC*:30	GMT	0
+tz	UTC*1::2	GMT	0
+tz	UTC*23:59	GMT	0
+tz	UTC*0:00	GMT	0
+tz	UTC*00:00	GMT	0
+tz	UTC*99999999999	GMT	0
+tz	UTC*4294967296	GMT	0
+tz	UTC*2147483647	GMT	0
+tz	UTC*429496729600	GMT	0
+tz	UTC*5a	GMT	0
+tz	UTC*00000	GMT	0
+tz	UTC*0005	GMT	0
+tz	UTC*0000	GMT	0
+tz	UTC*5:	GMT	0
+tz	UTC*:	GMT	0
+tz	UTC*005:30	GMT	0
+tz	UTC*0:30	GMT	0
+tz	UTC*00:000	GMT	0
+tz	GMT +	GMT	0
+tz	GMT +0	GMT	0
+tz	GMT +00	GMT	0
+tz	GMT +5	GMT	0
+tz	GMT +05	GMT	0
+tz	GMT +12	GMT	0
+tz	GMT +23	GMT	0
+tz	GMT +24	GMT	0
+tz	GMT +123	GMT	0
+tz	GMT +0530	GMT	0
+tz	GMT +2359	GMT	0
+tz	GMT +2360	GMT	0
+tz	GMT +12345	GMT	0
+tz	GMT +5:30	GMT	0
+tz	GMT +05:30	GMT	0
+tz	GMT +5:3	GMT	0
+tz	GMT +05:300	GMT	0
+tz	GMT +12:60	GMT	0
+tz	GMT +:30	GMT	0
+tz	GMT +1::2	GMT	0
+tz	GMT +23:59	GMT	0
+tz	GMT +0:00	GMT	0
+tz	GMT +00:00	GMT	0
+tz	GMT +99999999999	GMT	0
+tz	GMT +4294967296	GMT	0
+tz	GMT +2147483647	GMT	0
+tz	GMT +429496729600	GMT	0
+tz	GMT +5a	GMT	0
+tz	GMT +00000	GMT	0
+tz	GMT +0005	GMT	0
+tz	GMT +0000	GMT	0
+tz	GMT +5:	GMT	0
+tz	GMT +:	GMT	0
+tz	GMT +005:30	GMT	0
+tz	GMT +0:30	GMT	0
+tz	GMT +00:000	GMT	0
+tz	GMT -	GMT	0
+tz	GMT -0	GMT	0
+tz	GMT -00	GMT	0
+tz	GMT -5	GMT	0
+tz	GMT -05	GMT	0
+tz	GMT -12	GMT	0
+tz	GMT -23	GMT	0
+tz	GMT -24	GMT	0
+tz	GMT -123	GMT	0
+tz	GMT -0530	GMT	0
+tz	GMT -2359	GMT	0
+tz	GMT -2360	GMT	0
+tz	GMT -12345	GMT	0
+tz	GMT -5:30	GMT	0
+tz	GMT -05:30	GMT	0
+tz	GMT -5:3	GMT	0
+tz	GMT -05:300	GMT	0
+tz	GMT -12:60	GMT	0
+tz	GMT -:30	GMT	0
+tz	GMT -1::2	GMT	0
+tz	GMT -23:59	GMT	0
+tz	GMT -0:00	GMT	0
+tz	GMT -00:00	GMT	0
+tz	GMT -99999999999	GMT	0
+tz	GMT -4294967296	GMT	0
+tz	GMT -2147483647	GMT	0
+tz	GMT -429496729600	GMT	0
+tz	GMT -5a	GMT	0
+tz	GMT -00000	GMT	0
+tz	GMT -0005	GMT	0
+tz	GMT -0000	GMT	0
+tz	GMT -5:	GMT	0
+tz	GMT -:	GMT	0
+tz	GMT -005:30	GMT	0
+tz	GMT -0:30	GMT	0
+tz	GMT -00:000	GMT	0
+tz	GMT 	GMT	0
+tz	GMT 0	GMT	0
+tz	GMT 00	GMT	0
+tz	GMT 5	GMT	0
+tz	GMT 05	GMT	0
+tz	GMT 12	GMT	0
+tz	GMT 23	GMT	0
+tz	GMT 24	GMT	0
+tz	GMT 123	GMT	0
+tz	GMT 0530	GMT	0
+tz	GMT 2359	GMT	0
+tz	GMT 2360	GMT	0
+tz	GMT 12345	GMT	0
+tz	GMT 5:30	GMT	0
+tz	GMT 05:30	GMT	0
+tz	GMT 5:3	GMT	0
+tz	GMT 05:300	GMT	0
+tz	GMT 12:60	GMT	0
+tz	GMT :30	GMT	0
+tz	GMT 1::2	GMT	0
+tz	GMT 23:59	GMT	0
+tz	GMT 0:00	GMT	0
+tz	GMT 00:00	GMT	0
+tz	GMT 99999999999	GMT	0
+tz	GMT 4294967296	GMT	0
+tz	GMT 2147483647	GMT	0
+tz	GMT 429496729600	GMT	0
+tz	GMT 5a	GMT	0
+tz	GMT 00000	GMT	0
+tz	GMT 0005	GMT	0
+tz	GMT 0000	GMT	0
+tz	GMT 5:	GMT	0
+tz	GMT :	GMT	0
+tz	GMT 005:30	GMT	0
+tz	GMT 0:30	GMT	0
+tz	GMT 00:000	GMT	0
+tz	GMT *	GMT	0
+tz	GMT *0	GMT	0
+tz	GMT *00	GMT	0
+tz	GMT *5	GMT	0
+tz	GMT *05	GMT	0
+tz	GMT *12	GMT	0
+tz	GMT *23	GMT	0
+tz	GMT *24	GMT	0
+tz	GMT *123	GMT	0
+tz	GMT *0530	GMT	0
+tz	GMT *2359	GMT	0
+tz	GMT *2360	GMT	0
+tz	GMT *12345	GMT	0
+tz	GMT *5:30	GMT	0
+tz	GMT *05:30	GMT	0
+tz	GMT *5:3	GMT	0
+tz	GMT *05:300	GMT	0
+tz	GMT *12:60	GMT	0
+tz	GMT *:30	GMT	0
+tz	GMT *1::2	GMT	0
+tz	GMT *23:59	GMT	0
+tz	GMT *0:00	GMT	0
+tz	GMT *00:00	GMT	0
+tz	GMT *99999999999	GMT	0
+tz	GMT *4294967296	GMT	0
+tz	GMT *2147483647	GMT	0
+tz	GMT *429496729600	GMT	0
+tz	GMT *5a	GMT	0
+tz	GMT *00000	GMT	0
+tz	GMT *0005	GMT	0
+tz	GMT *0000	GMT	0
+tz	GMT *5:	GMT	0
+tz	GMT *:	GMT	0
+tz	GMT *005:30	GMT	0
+tz	GMT *0:30	GMT	0
+tz	GMT *00:000	GMT	0
+# members	seed	draws of TestLtcMembers.testMembers under RandomizedRunner (tests.seed=seed)
+members	DEADBEEF	name=testMembers thread=true ns=stored,indexed,omitNorms,indexOptions=DOCS ns=indexed,termVector,termVectorOffsets,omitNorms,indexOptions=DOCS ns=stored,indexed,termVector,omitNorms,indexOptions=DOCS ns=stored,indexed,omitNorms,indexOptions=DOCS ns=indexed,termVector,termVectorOffsets,omitNorms,indexOptions=DOCS ns=stored,indexed,termVector,omitNorms,indexOptions=DOCS nt=stored,indexed,tokenized,termVector,termVectorOffsets nt=stored,indexed,tokenized,termVector,termVectorOffsets nt=stored,indexed,tokenized nt=indexed,tokenized,termVector,termVectorPosition nt=stored,indexed,tokenized,termVector,termVectorOffsets nt=stored,indexed,tokenized,termVector,termVectorOffsets nb=indexed,termVector,termVectorPosition,termVectorPayloads,omitNorms,indexOptions=DOCS|[1 2] nb=indexed,termVector,termVectorPosition,termVectorPayloads,omitNorms,indexOptions=DOCS|[1 2] nb=stored,indexed,omitNorms,indexOptions=DOCS|[1 2] nb=indexed,omitNorms,indexOptions=DOCS|[1 2] nf=indexed nfs=stored,indexed,omitNorms,indexOptions=DOCS nft=stored,indexed,tokenized nf=stored,indexed nfs=stored,indexed,termVector,termVectorOffsets,omitNorms,indexOptions=DOCS nft=indexed,tokenized nf=stored,indexed,termVector nfs=stored,indexed,termVector,termVectorOffsets,termVectorPosition,omitNorms,indexOptions=DOCS nft=indexed,tokenized,termVector nf=indexed,termVector nfs=stored,indexed,omitNorms,indexOptions=DOCS nft=indexed,tokenized,termVector,termVectorOffsets,termVectorPosition,termVectorPayloads lmp=[LogDocMergePolicy: minMergeSize=1000, mergeFactor=37, maxMergeSize=9223372036854775807, maxMergeSizeForForcedMerge=9223372036854775807, calibrateSizeByDeletes=true, maxMergeDocs=2147483647, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=1.0] lmp2=[LogByteSizeMergePolicy: minMergeSize=16777216, mergeFactor=7, maxMergeSize=2147483648, maxMergeSizeForForcedMerge=9223372036854775807, calibrateSizeByDeletes=true, maxMergeDocs=2147483647, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=0.0] lmp3=[LogByteSizeMergePolicy: minMergeSize=16777216, mergeFactor=9, maxMergeSize=2147483648, maxMergeSizeForForcedMerge=9223372036854775807, calibrateSizeByDeletes=false, maxMergeDocs=2147483647, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=0.7398777475240123] tmp=[TieredMergePolicy: maxMergeAtOnce=40, maxMergedSegmentMB=12.938860893249512, floorSegmentMB=1.8116035461425781, forceMergeDeletesPctAllowed=11.269174927066773, segmentsPerTier=22.0, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=0.87841343155303, deletesPctAllowed=36.45154880999199, targetSearchConcurrency=12 lmp4=[LogDocMergePolicy: minMergeSize=1000, mergeFactor=22, maxMergeSize=9223372036854775807, maxMergeSizeForForcedMerge=9223372036854775807, calibrateSizeByDeletes=true, maxMergeDocs=2147483647, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=0.4796972368253022] same=ok stats=java.lang.AssertionError:info expected:<2> but was:<1> stored=org.junit.ComparisonFailure:info expected:<[b]> but was:<[c]> terms=java.lang.AssertionError:info expected:<[62]> but was:<[63]> dv=java.lang.AssertionError:expected:<2> but was:<3> fieldInfos=java.lang.AssertionError:info expected:<[id, n, p]> but was:<[id, n, p, x]> termsFields=java.lang.AssertionError:info expected:<[id]> but was:<[x, id]> norms=java.lang.AssertionError:info expected:<[id]> but was:<[x, id]> dvFields=ok points=java.lang.AssertionError:info field=p expected:<{0=[[80 0 0 1]], 1=[[80 0 0 2]]}> but was:<{0=[[80 0 0 1]], 1=[[80 0 0 5]]}> deleted=ok deletedCount=ok tv=ok last=211441628887405916
+members	0	name=testMembers thread=true ns=stored,indexed,termVector,termVectorPosition,omitNorms,indexOptions=DOCS ns=stored,indexed,omitNorms,indexOptions=DOCS ns=stored,indexed,termVector,omitNorms,indexOptions=DOCS ns=stored,indexed,termVector,termVectorPosition,omitNorms,indexOptions=DOCS ns=stored,indexed,omitNorms,indexOptions=DOCS ns=stored,indexed,termVector,omitNorms,indexOptions=DOCS nt=stored,indexed,tokenized nt=stored,indexed,tokenized,termVector,termVectorPosition,termVectorPayloads nt=stored,indexed,tokenized nt=stored,indexed,tokenized,termVector nt=stored,indexed,tokenized nt=stored,indexed,tokenized,termVector,termVectorPosition,termVectorPayloads nb=indexed,termVector,omitNorms,indexOptions=DOCS|[1 2] nb=stored,indexed,omitNorms,indexOptions=DOCS|[1 2] nb=stored,indexed,termVector,omitNorms,indexOptions=DOCS|[1 2] nb=indexed,termVector,omitNorms,indexOptions=DOCS|[1 2] nf=stored,indexed,termVector nfs=stored,indexed,termVector,termVectorPosition,omitNorms,indexOptions=DOCS nft=stored,indexed,tokenized nf=indexed,termVector,termVectorOffsets,termVectorPosition nfs=stored,indexed,omitNorms,indexOptions=DOCS nft=indexed,tokenized,termVector,termVectorOffsets nf=indexed,termVector nfs=stored,indexed,termVector,termVectorOffsets,termVectorPosition,omitNorms,indexOptions=DOCS nft=indexed,tokenized nf=stored,indexed,termVector,termVectorPosition,termVectorPayloads nfs=stored,indexed,omitNorms,indexOptions=DOCS nft=stored,indexed,tokenized lmp=[LogByteSizeMergePolicy: minMergeSize=16777216, mergeFactor=14, maxMergeSize=2147483648, maxMergeSizeForForcedMerge=9223372036854775807, calibrateSizeByDeletes=false, maxMergeDocs=2147483647, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=1.0] lmp2=[LogByteSizeMergePolicy: minMergeSize=16777216, mergeFactor=7, maxMergeSize=2147483648, maxMergeSizeForForcedMerge=9223372036854775807, calibrateSizeByDeletes=false, maxMergeDocs=2147483647, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=0.0] lmp3=[LogByteSizeMergePolicy: minMergeSize=16777216, mergeFactor=9, maxMergeSize=2147483648, maxMergeSizeForForcedMerge=9223372036854775807, calibrateSizeByDeletes=true, maxMergeDocs=2147483647, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=0.0] tmp=[TieredMergePolicy: maxMergeAtOnce=15, maxMergedSegmentMB=87.4690294265747, floorSegmentMB=1.8865070343017578, forceMergeDeletesPctAllowed=8.469018365119585, segmentsPerTier=25.0, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=0.19804413806249146, deletesPctAllowed=29.56661394198189, targetSearchConcurrency=5 lmp4=[LogByteSizeMergePolicy: minMergeSize=16777216, mergeFactor=16, maxMergeSize=2147483648, maxMergeSizeForForcedMerge=9223372036854775807, calibrateSizeByDeletes=true, maxMergeDocs=2147483647, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=0.40976842531961666] same=ok stats=java.lang.AssertionError:info expected:<2> but was:<1> stored=org.junit.ComparisonFailure:info expected:<[b]> but was:<[c]> terms=java.lang.AssertionError:info expected:<[62]> but was:<[63]> dv=java.lang.AssertionError:expected:<2> but was:<3> fieldInfos=java.lang.AssertionError:info expected:<[id, n, p]> but was:<[id, n, p, x]> termsFields=java.lang.AssertionError:info expected:<[id]> but was:<[x, id]> norms=java.lang.AssertionError:info expected:<[id]> but was:<[x, id]> dvFields=ok points=java.lang.AssertionError:info field=p expected:<{0=[[80 0 0 1]], 1=[[80 0 0 2]]}> but was:<{0=[[80 0 0 1]], 1=[[80 0 0 5]]}> deleted=ok deletedCount=ok tv=ok last=2665121946825304526
+members	1	name=testMembers thread=true ns=stored,indexed,termVector,termVectorOffsets,omitNorms,indexOptions=DOCS ns=indexed,omitNorms,indexOptions=DOCS ns=stored,indexed,termVector,termVectorOffsets,termVectorPosition,termVectorPayloads,omitNorms,indexOptions=DOCS ns=stored,indexed,termVector,termVectorOffsets,omitNorms,indexOptions=DOCS ns=indexed,omitNorms,indexOptions=DOCS ns=stored,indexed,termVector,termVectorOffsets,termVectorPosition,termVectorPayloads,omitNorms,indexOptions=DOCS nt=stored,indexed,tokenized,termVector nt=stored,indexed,tokenized,termVector,termVectorPosition nt=stored,indexed,tokenized,termVector,termVectorOffsets,termVectorPosition nt=indexed,tokenized nt=stored,indexed,tokenized,termVector nt=stored,indexed,tokenized,termVector,termVectorPosition nb=indexed,omitNorms,indexOptions=DOCS|[1 2] nb=stored,indexed,termVector,omitNorms,indexOptions=DOCS|[1 2] nb=indexed,omitNorms,indexOptions=DOCS|[1 2] nb=stored,indexed,omitNorms,indexOptions=DOCS|[1 2] nf=indexed nfs=stored,indexed,omitNorms,indexOptions=DOCS nft=indexed,tokenized nf=indexed,termVector,termVectorOffsets nfs=stored,indexed,omitNorms,indexOptions=DOCS nft=indexed,tokenized nf=indexed,termVector,termVectorPosition nfs=stored,indexed,omitNorms,indexOptions=DOCS nft=stored,indexed,tokenized nf=indexed nfs=stored,indexed,omitNorms,indexOptions=DOCS nft=indexed,tokenized lmp=[LogDocMergePolicy: minMergeSize=1000, mergeFactor=16, maxMergeSize=9223372036854775807, maxMergeSizeForForcedMerge=9223372036854775807, calibrateSizeByDeletes=true, maxMergeDocs=2147483647, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=1.0] lmp2=[LogByteSizeMergePolicy: minMergeSize=16777216, mergeFactor=7, maxMergeSize=2147483648, maxMergeSizeForForcedMerge=9223372036854775807, calibrateSizeByDeletes=false, maxMergeDocs=2147483647, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=0.0] lmp3=[LogDocMergePolicy: minMergeSize=1000, mergeFactor=9, maxMergeSize=9223372036854775807, maxMergeSizeForForcedMerge=9223372036854775807, calibrateSizeByDeletes=true, maxMergeDocs=2147483647, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=0.36223354285498155] tmp=[TieredMergePolicy: maxMergeAtOnce=37, maxMergedSegmentMB=58.00513935089111, floorSegmentMB=1.5285043716430664, forceMergeDeletesPctAllowed=10.838781717047855, segmentsPerTier=31.0, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=0.7537376430633622, deletesPctAllowed=42.586440713242204, targetSearchConcurrency=16 lmp4=[LogByteSizeMergePolicy: minMergeSize=16777216, mergeFactor=19, maxMergeSize=2147483648, maxMergeSizeForForcedMerge=9223372036854775807, calibrateSizeByDeletes=true, maxMergeDocs=2147483647, maxCFSSegmentSizeMB=1.6267194747924805, noCFSRatio=0.0] same=ok stats=java.lang.AssertionError:info expected:<2> but was:<1> stored=org.junit.ComparisonFailure:info expected:<[b]> but was:<[c]> terms=java.lang.AssertionError:info expected:<[62]> but was:<[63]> dv=java.lang.AssertionError:expected:<2> but was:<3> fieldInfos=java.lang.AssertionError:info expected:<[id, n, p]> but was:<[id, n, p, x]> termsFields=java.lang.AssertionError:info expected:<[id]> but was:<[x, id]> norms=java.lang.AssertionError:info expected:<[id]> but was:<[x, id]> dvFields=ok points=java.lang.AssertionError:info field=p expected:<{0=[[80 0 0 1]], 1=[[80 0 0 2]]}> but was:<{0=[[80 0 0 1]], 1=[[80 0 0 5]]}> deleted=ok deletedCount=ok tv=ok last=-6396962360222450370
+members	CAFEBABE	name=testMembers thread=true ns=stored,indexed,omitNorms,indexOptions=DOCS ns=indexed,omitNorms,indexOptions=DOCS ns=stored,indexed,omitNorms,indexOptions=DOCS ns=stored,indexed,omitNorms,indexOptions=DOCS ns=indexed,omitNorms,indexOptions=DOCS ns=stored,indexed,omitNorms,indexOptions=DOCS nt=stored,indexed,tokenized,termVector,termVectorPosition nt=indexed,tokenized,termVector nt=stored,indexed,tokenized,termVector nt=stored,indexed,tokenized,termVector,termVectorOffsets,termVectorPosition nt=stored,indexed,tokenized,termVector,termVectorPosition nt=indexed,tokenized,termVector nb=stored,indexed,omitNorms,indexOptions=DOCS|[1 2] nb=stored,indexed,omitNorms,indexOptions=DOCS|[1 2] nb=indexed,termVector,omitNorms,indexOptions=DOCS|[1 2] nb=indexed,omitNorms,indexOptions=DOCS|[1 2] nf=stored,indexed nfs=stored,indexed,termVector,termVectorOffsets,termVectorPosition,termVectorPayloads,omitNorms,indexOptions=DOCS nft=indexed,tokenized,termVector,termVectorPosition,termVectorPayloads nf=stored,indexed,termVector,termVectorPosition,termVectorPayloads nfs=stored,indexed,omitNorms,indexOptions=DOCS nft=stored,indexed,tokenized,termVector,termVectorOffsets nf=indexed nfs=stored,indexed,omitNorms,indexOptions=DOCS nft=indexed,tokenized,termVector nf=stored,indexed,termVector,termVectorOffsets nfs=stored,indexed,omitNorms,indexOptions=DOCS nft=indexed,tokenized lmp=[LogByteSizeMergePolicy: minMergeSize=16777216, mergeFactor=12, maxMergeSize=2147483648, maxMergeSizeForForcedMerge=9223372036854775807, calibrateSizeByDeletes=true, maxMergeDocs=2147483647, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=1.0] lmp2=[LogByteSizeMergePolicy: minMergeSize=16777216, mergeFactor=7, maxMergeSize=2147483648, maxMergeSizeForForcedMerge=9223372036854775807, calibrateSizeByDeletes=true, maxMergeDocs=2147483647, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=0.0] lmp3=[LogByteSizeMergePolicy: minMergeSize=16777216, mergeFactor=9, maxMergeSize=2147483648, maxMergeSizeForForcedMerge=9223372036854775807, calibrateSizeByDeletes=true, maxMergeDocs=2147483647, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=0.0] tmp=[TieredMergePolicy: maxMergeAtOnce=34, maxMergedSegmentMB=104.19902992248535, floorSegmentMB=0.3284730911254883, forceMergeDeletesPctAllowed=10.551103320977921, segmentsPerTier=13.0, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=1.0, deletesPctAllowed=42.868937459089636, targetSearchConcurrency=15 lmp4=[LogByteSizeMergePolicy: minMergeSize=16777216, mergeFactor=31, maxMergeSize=2147483648, maxMergeSizeForForcedMerge=9223372036854775807, calibrateSizeByDeletes=false, maxMergeDocs=2147483647, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=0.3013511404144228] same=ok stats=java.lang.AssertionError:info expected:<2> but was:<1> stored=org.junit.ComparisonFailure:info expected:<[b]> but was:<[c]> terms=java.lang.AssertionError:info expected:<[62]> but was:<[63]> dv=java.lang.AssertionError:expected:<2> but was:<3> fieldInfos=java.lang.AssertionError:info expected:<[id, n, p]> but was:<[id, n, p, x]> termsFields=java.lang.AssertionError:info expected:<[id]> but was:<[x, id]> norms=java.lang.AssertionError:info expected:<[id]> but was:<[x, id]> dvFields=ok points=java.lang.AssertionError:info field=p expected:<{0=[[80 0 0 1]], 1=[[80 0 0 2]]}> but was:<{0=[[80 0 0 1]], 1=[[80 0 0 5]]}> deleted=ok deletedCount=ok tv=ok last=-6228838370872214484
+members	123456789ABCDEF	name=testMembers thread=true ns=stored,indexed,termVector,omitNorms,indexOptions=DOCS ns=stored,indexed,omitNorms,indexOptions=DOCS ns=stored,indexed,termVector,omitNorms,indexOptions=DOCS ns=stored,indexed,termVector,omitNorms,indexOptions=DOCS ns=stored,indexed,omitNorms,indexOptions=DOCS ns=stored,indexed,termVector,omitNorms,indexOptions=DOCS nt=stored,indexed,tokenized,termVector,termVectorPosition nt=stored,indexed,tokenized nt=stored,indexed,tokenized,termVector,termVectorPosition nt=indexed,tokenized nt=stored,indexed,tokenized,termVector,termVectorPosition nt=stored,indexed,tokenized nb=stored,indexed,omitNorms,indexOptions=DOCS|[1 2] nb=indexed,termVector,termVectorPosition,termVectorPayloads,omitNorms,indexOptions=DOCS|[1 2] nb=stored,indexed,omitNorms,indexOptions=DOCS|[1 2] nb=indexed,omitNorms,indexOptions=DOCS|[1 2] nf=indexed nfs=stored,indexed,termVector,termVectorOffsets,termVectorPosition,termVectorPayloads,omitNorms,indexOptions=DOCS nft=indexed,tokenized,termVector nf=indexed nfs=stored,indexed,termVector,termVectorPosition,omitNorms,indexOptions=DOCS nft=indexed,tokenized nf=stored,indexed,termVector nfs=stored,indexed,termVector,termVectorOffsets,omitNorms,indexOptions=DOCS nft=indexed,tokenized nf=stored,indexed nfs=stored,indexed,termVector,termVectorOffsets,termVectorPosition,omitNorms,indexOptions=DOCS nft=stored,indexed,tokenized,termVector,termVectorPosition,termVectorPayloads lmp=[LogDocMergePolicy: minMergeSize=1000, mergeFactor=44, maxMergeSize=9223372036854775807, maxMergeSizeForForcedMerge=9223372036854775807, calibrateSizeByDeletes=false, maxMergeDocs=2147483647, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=1.0] lmp2=[LogDocMergePolicy: minMergeSize=1000, mergeFactor=7, maxMergeSize=9223372036854775807, maxMergeSizeForForcedMerge=9223372036854775807, calibrateSizeByDeletes=false, maxMergeDocs=2147483647, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=0.0] lmp3=[LogByteSizeMergePolicy: minMergeSize=16777216, mergeFactor=9, maxMergeSize=2147483648, maxMergeSizeForForcedMerge=9223372036854775807, calibrateSizeByDeletes=true, maxMergeDocs=2147483647, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=1.0] tmp=[TieredMergePolicy: maxMergeAtOnce=23, maxMergedSegmentMB=102.36549377441406, floorSegmentMB=0.42978382110595703, forceMergeDeletesPctAllowed=29.4347749828615, segmentsPerTier=26.0, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=0.0, deletesPctAllowed=48.8336936714139, targetSearchConcurrency=12 lmp4=[LogDocMergePolicy: minMergeSize=1000, mergeFactor=13, maxMergeSize=9223372036854775807, maxMergeSizeForForcedMerge=9223372036854775807, calibrateSizeByDeletes=true, maxMergeDocs=2147483647, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=1.0] same=ok stats=java.lang.AssertionError:info expected:<2> but was:<1> stored=org.junit.ComparisonFailure:info expected:<[b]> but was:<[c]> terms=java.lang.AssertionError:info expected:<[62]> but was:<[63]> dv=java.lang.AssertionError:expected:<2> but was:<3> fieldInfos=java.lang.AssertionError:info expected:<[id, n, p]> but was:<[id, n, p, x]> termsFields=java.lang.AssertionError:info expected:<[id]> but was:<[x, id]> norms=java.lang.AssertionError:info expected:<[id]> but was:<[x, id]> dvFields=ok points=java.lang.AssertionError:info field=p expected:<{0=[[80 0 0 1]], 1=[[80 0 0 2]]}> but was:<{0=[[80 0 0 1]], 1=[[80 0 0 5]]}> deleted=ok deletedCount=ok tv=ok last=-3759463679934504604
+members	7FFFFFFFFFFFFFFF	name=testMembers thread=true ns=stored,indexed,omitNorms,indexOptions=DOCS ns=stored,indexed,omitNorms,indexOptions=DOCS ns=stored,indexed,termVector,termVectorOffsets,omitNorms,indexOptions=DOCS ns=stored,indexed,omitNorms,indexOptions=DOCS ns=stored,indexed,omitNorms,indexOptions=DOCS ns=stored,indexed,termVector,termVectorOffsets,omitNorms,indexOptions=DOCS nt=stored,indexed,tokenized,termVector,termVectorOffsets nt=indexed,tokenized nt=stored,indexed,tokenized,termVector,termVectorPosition nt=stored,indexed,tokenized nt=stored,indexed,tokenized,termVector,termVectorOffsets nt=indexed,tokenized nb=indexed,termVector,omitNorms,indexOptions=DOCS|[1 2] nb=stored,indexed,termVector,omitNorms,indexOptions=DOCS|[1 2] nb=indexed,termVector,omitNorms,indexOptions=DOCS|[1 2] nb=stored,indexed,termVector,termVectorPosition,omitNorms,indexOptions=DOCS|[1 2] nf=stored,indexed,termVector,termVectorOffsets nfs=stored,indexed,omitNorms,indexOptions=DOCS nft=stored,indexed,tokenized nf=indexed,termVector,termVectorOffsets,termVectorPosition,termVectorPayloads nfs=stored,indexed,omitNorms,indexOptions=DOCS nft=stored,indexed,tokenized nf=stored,indexed,termVector,termVectorOffsets nfs=stored,indexed,termVector,termVectorOffsets,omitNorms,indexOptions=DOCS nft=stored,indexed,tokenized nf=stored,indexed,termVector nfs=stored,indexed,omitNorms,indexOptions=DOCS nft=stored,indexed,tokenized,termVector,termVectorPosition lmp=[LogByteSizeMergePolicy: minMergeSize=16777216, mergeFactor=45, maxMergeSize=2147483648, maxMergeSizeForForcedMerge=9223372036854775807, calibrateSizeByDeletes=true, maxMergeDocs=2147483647, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=1.0] lmp2=[LogDocMergePolicy: minMergeSize=1000, mergeFactor=7, maxMergeSize=9223372036854775807, maxMergeSizeForForcedMerge=9223372036854775807, calibrateSizeByDeletes=false, maxMergeDocs=2147483647, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=0.0] lmp3=[LogByteSizeMergePolicy: minMergeSize=16777216, mergeFactor=9, maxMergeSize=2147483648, maxMergeSizeForForcedMerge=9223372036854775807, calibrateSizeByDeletes=true, maxMergeDocs=2147483647, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=1.0] tmp=[TieredMergePolicy: maxMergeAtOnce=13, maxMergedSegmentMB=66.51948356628418, floorSegmentMB=1.2796602249145508, forceMergeDeletesPctAllowed=21.927811672796075, segmentsPerTier=30.0, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=0.32001301525945147, deletesPctAllowed=20.56697718751142, targetSearchConcurrency=15 lmp4=[LogDocMergePolicy: minMergeSize=1000, mergeFactor=23, maxMergeSize=9223372036854775807, maxMergeSizeForForcedMerge=9223372036854775807, calibrateSizeByDeletes=false, maxMergeDocs=2147483647, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=0.0] same=ok stats=java.lang.AssertionError:info expected:<2> but was:<1> stored=org.junit.ComparisonFailure:info expected:<[b]> but was:<[c]> terms=java.lang.AssertionError:info expected:<[62]> but was:<[63]> dv=java.lang.AssertionError:expected:<2> but was:<3> fieldInfos=java.lang.AssertionError:info expected:<[id, n, p]> but was:<[id, n, p, x]> termsFields=java.lang.AssertionError:info expected:<[id]> but was:<[x, id]> norms=java.lang.AssertionError:info expected:<[id]> but was:<[x, id]> dvFields=ok points=java.lang.AssertionError:info field=p expected:<{0=[[80 0 0 1]], 1=[[80 0 0 2]]}> but was:<{0=[[80 0 0 1]], 1=[[80 0 0 5]]}> deleted=ok deletedCount=ok tv=ok last=-8878680540651095924
+members	1BADC0DE	name=testMembers thread=true ns=stored,indexed,termVector,omitNorms,indexOptions=DOCS ns=stored,indexed,termVector,termVectorOffsets,omitNorms,indexOptions=DOCS ns=stored,indexed,omitNorms,indexOptions=DOCS ns=stored,indexed,termVector,omitNorms,indexOptions=DOCS ns=stored,indexed,termVector,termVectorOffsets,omitNorms,indexOptions=DOCS ns=stored,indexed,omitNorms,indexOptions=DOCS nt=stored,indexed,tokenized,termVector nt=indexed,tokenized,termVector,termVectorOffsets nt=stored,indexed,tokenized nt=stored,indexed,tokenized nt=stored,indexed,tokenized,termVector nt=indexed,tokenized,termVector,termVectorOffsets nb=stored,indexed,termVector,termVectorPosition,omitNorms,indexOptions=DOCS|[1 2] nb=indexed,termVector,termVectorPosition,omitNorms,indexOptions=DOCS|[1 2] nb=indexed,omitNorms,indexOptions=DOCS|[1 2] nb=stored,indexed,omitNorms,indexOptions=DOCS|[1 2] nf=indexed nfs=stored,indexed,termVector,termVectorPosition,omitNorms,indexOptions=DOCS nft=stored,indexed,tokenized nf=stored,indexed,termVector,termVectorOffsets nfs=stored,indexed,omitNorms,indexOptions=DOCS nft=stored,indexed,tokenized nf=stored,indexed,termVector,termVectorOffsets nfs=stored,indexed,omitNorms,indexOptions=DOCS nft=indexed,tokenized,termVector,termVectorOffsets,termVectorPosition,termVectorPayloads nf=stored,indexed nfs=stored,indexed,omitNorms,indexOptions=DOCS nft=indexed,tokenized,termVector,termVectorOffsets lmp=[LogDocMergePolicy: minMergeSize=1000, mergeFactor=23, maxMergeSize=9223372036854775807, maxMergeSizeForForcedMerge=9223372036854775807, calibrateSizeByDeletes=false, maxMergeDocs=2147483647, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=1.0] lmp2=[LogByteSizeMergePolicy: minMergeSize=16777216, mergeFactor=7, maxMergeSize=2147483648, maxMergeSizeForForcedMerge=9223372036854775807, calibrateSizeByDeletes=false, maxMergeDocs=2147483647, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=0.0] lmp3=[LogDocMergePolicy: minMergeSize=1000, mergeFactor=9, maxMergeSize=9223372036854775807, maxMergeSizeForForcedMerge=9223372036854775807, calibrateSizeByDeletes=false, maxMergeDocs=2147483647, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=0.2540339692636966] tmp=[TieredMergePolicy: maxMergeAtOnce=10, maxMergedSegmentMB=67.1396598815918, floorSegmentMB=1.3223323822021484, forceMergeDeletesPctAllowed=11.183641595079814, segmentsPerTier=48.0, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=0.752547626230118, deletesPctAllowed=24.760752827345918, targetSearchConcurrency=12 lmp4=[LogDocMergePolicy: minMergeSize=1000, mergeFactor=45, maxMergeSize=9223372036854775807, maxMergeSizeForForcedMerge=9223372036854775807, calibrateSizeByDeletes=true, maxMergeDocs=2147483647, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=0.0] same=ok stats=java.lang.AssertionError:info expected:<2> but was:<1> stored=org.junit.ComparisonFailure:info expected:<[b]> but was:<[c]> terms=java.lang.AssertionError:info expected:<[62]> but was:<[63]> dv=java.lang.AssertionError:expected:<2> but was:<3> fieldInfos=java.lang.AssertionError:info expected:<[id, n, p]> but was:<[id, n, p, x]> termsFields=java.lang.AssertionError:info expected:<[id]> but was:<[x, id]> norms=java.lang.AssertionError:info expected:<[id]> but was:<[x, id]> dvFields=ok points=java.lang.AssertionError:info field=p expected:<{0=[[80 0 0 1]], 1=[[80 0 0 2]]}> but was:<{0=[[80 0 0 1]], 1=[[80 0 0 5]]}> deleted=ok deletedCount=ok tv=ok last=-4800776994849304660
+members	42	name=testMembers thread=true ns=stored,indexed,omitNorms,indexOptions=DOCS ns=indexed,omitNorms,indexOptions=DOCS ns=stored,indexed,termVector,termVectorPosition,termVectorPayloads,omitNorms,indexOptions=DOCS ns=stored,indexed,omitNorms,indexOptions=DOCS ns=indexed,omitNorms,indexOptions=DOCS ns=stored,indexed,termVector,termVectorPosition,termVectorPayloads,omitNorms,indexOptions=DOCS nt=stored,indexed,tokenized,termVector,termVectorPosition,termVectorPayloads nt=stored,indexed,tokenized nt=stored,indexed,tokenized nt=stored,indexed,tokenized,termVector,termVectorOffsets nt=stored,indexed,tokenized,termVector,termVectorPosition,termVectorPayloads nt=stored,indexed,tokenized nb=stored,indexed,omitNorms,indexOptions=DOCS|[1 2] nb=indexed,termVector,termVectorPosition,omitNorms,indexOptions=DOCS|[1 2] nb=stored,indexed,omitNorms,indexOptions=DOCS|[1 2] nb=indexed,omitNorms,indexOptions=DOCS|[1 2] nf=indexed nfs=stored,indexed,omitNorms,indexOptions=DOCS nft=stored,indexed,tokenized,termVector,termVectorPosition,termVectorPayloads nf=stored,indexed nfs=stored,indexed,omitNorms,indexOptions=DOCS nft=stored,indexed,tokenized,termVector nf=stored,indexed,termVector nfs=stored,indexed,omitNorms,indexOptions=DOCS nft=indexed,tokenized,termVector,termVectorOffsets nf=indexed,termVector,termVectorPosition nfs=stored,indexed,omitNorms,indexOptions=DOCS nft=indexed,tokenized lmp=[LogByteSizeMergePolicy: minMergeSize=16777216, mergeFactor=16, maxMergeSize=2147483648, maxMergeSizeForForcedMerge=9223372036854775807, calibrateSizeByDeletes=false, maxMergeDocs=2147483647, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=1.0] lmp2=[LogDocMergePolicy: minMergeSize=1000, mergeFactor=7, maxMergeSize=9223372036854775807, maxMergeSizeForForcedMerge=9223372036854775807, calibrateSizeByDeletes=false, maxMergeDocs=2147483647, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=0.0] lmp3=[LogDocMergePolicy: minMergeSize=1000, mergeFactor=9, maxMergeSize=9223372036854775807, maxMergeSizeForForcedMerge=9223372036854775807, calibrateSizeByDeletes=false, maxMergeDocs=2147483647, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=1.0] tmp=[TieredMergePolicy: maxMergeAtOnce=42, maxMergedSegmentMB=49.76653575897217, floorSegmentMB=2.16397762298584, forceMergeDeletesPctAllowed=12.128586036667757, segmentsPerTier=26.0, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=0.7297400544521383, deletesPctAllowed=38.378298348479106, targetSearchConcurrency=8 lmp4=[LogByteSizeMergePolicy: minMergeSize=16777216, mergeFactor=35, maxMergeSize=2147483648, maxMergeSizeForForcedMerge=9223372036854775807, calibrateSizeByDeletes=true, maxMergeDocs=2147483647, maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=1.0] same=ok stats=java.lang.AssertionError:info expected:<2> but was:<1> stored=org.junit.ComparisonFailure:info expected:<[b]> but was:<[c]> terms=java.lang.AssertionError:info expected:<[62]> but was:<[63]> dv=java.lang.AssertionError:expected:<2> but was:<3> fieldInfos=java.lang.AssertionError:info expected:<[id, n, p]> but was:<[id, n, p, x]> termsFields=java.lang.AssertionError:info expected:<[id]> but was:<[x, id]> norms=java.lang.AssertionError:info expected:<[id]> but was:<[x, id]> dvFields=ok points=java.lang.AssertionError:info field=p expected:<{0=[[80 0 0 1]], 1=[[80 0 0 2]]}> but was:<{0=[[80 0 0 1]], 1=[[80 0 0 5]]}> deleted=ok deletedCount=ok tv=ok last=5476104318311346450
