@@ -17,9 +17,13 @@ crate="$(dirname "$(dirname "$fixtures")")"
 m2="${M2_REPO:-$HOME/.m2/repository}"
 cp="$m2/com/carrotsearch/randomizedtesting/randomizedtesting-runner/2.8.1/randomizedtesting-runner-2.8.1.jar"
 junit="$m2/junit/junit/4.13.1/junit-4.13.1.jar"
-lucene="$m2/org/apache/lucene/lucene-test-framework/10.5.0/lucene-test-framework-10.5.0.jar"
-lucene="$lucene:$m2/org/apache/lucene/lucene-core/10.5.0/lucene-core-10.5.0.jar"
+# lucene-core, lucene-codecs, lucene-test-framework: the class-path order of the
+# port's class loaders (each a child of the previous one, parents scanned
+# first), so that SPI scans list the providers in the order the crates do
+# (`availableKnnVectorsFormats()` behind `LuceneTestCase.randomVectorFormat`).
+lucene="$m2/org/apache/lucene/lucene-core/10.5.0/lucene-core-10.5.0.jar"
 lucene="$lucene:$m2/org/apache/lucene/lucene-codecs/10.5.0/lucene-codecs-10.5.0.jar"
+lucene="$lucene:$m2/org/apache/lucene/lucene-test-framework/10.5.0/lucene-test-framework-10.5.0.jar"
 # The Lucene oracles run on Lucene 10.5.0's own Hamcrest (2.2); the others keep
 # junit 4.13.1's hamcrest-core 1.3.
 lucene_cp="$cp:$junit:$m2/org/hamcrest/hamcrest/2.2/hamcrest-2.2.jar:$lucene"

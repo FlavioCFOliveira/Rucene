@@ -10461,8 +10461,8 @@ impl crate::internal::tests_hooks::IndexWriterAccess for IndexWriterAccessImpl {
 struct IndexPackageAccessImpl;
 
 impl crate::internal::tests_hooks::IndexPackageAccess for IndexPackageAccessImpl {
-    fn new_cache_key(&self) -> crate::index::CacheKey {
-        crate::index::CacheKey
+    fn new_cache_key(&self) -> crate::index::filter_directory_reader::SharedCacheKey {
+        crate::index::filter_directory_reader::SharedCacheKey::new()
     }
 
     fn set_index_writer_max_docs(&self, limit: i32) -> Result<()> {

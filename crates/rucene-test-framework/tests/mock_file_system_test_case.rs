@@ -2,26 +2,21 @@
 //! `TestLeakFS`, `TestHandleLimitFS`, `TestWindowsFS`, `TestVirusCheckingFS`,
 //! `TestShuffleFS`, `TestExtrasFS`, `TestDisableFsyncFS` and `TestVerboseFS`
 //! (lucene/test-framework/src/test) run it through their `wrap`: each suite
-//! is `@SuppressFileSystems("*")`, runs under the `RandomizedRunner` with
-//! `LuceneTestCase`'s failure marker and temporary-files rule, and starts every
-//! test from `LuceneTestCase.createTempDir()`.
+//! extends `MockFileSystemTestCase` (`@SuppressFileSystems("*")`, `extends
+//! LuceneTestCase`), runs under the `RandomizedRunner` with `LuceneTestCase`'s
+//! rule chain, and starts every test from `LuceneTestCase.createTempDir()`.
 
 use std::sync::Arc;
 
 use randomizedtesting::jdk::exception::Throwable;
-use randomizedtesting::jdk::reflect::{Class, Constructor, Field, Method, Value};
-use randomizedtesting::junit::{ClassRule, JUnitCore, Request, Test, TestRule};
-use randomizedtesting::rules::TestRuleAdapterRule;
+use randomizedtesting::jdk::reflect::{Class, Constructor, Method};
+use randomizedtesting::junit::{JUnitCore, Request};
 use rucene::store::java_nio_file::{default_file_system, FileSystemProvider, Path};
 use rucene::util::InfoStream;
 use rucene_test_framework::mockfile::{
     DisableFsyncFS, ExtrasFS, HandleLimitFS, LeakFS, MockFileSystemTestCase, ShuffleFS, VerboseFS,
     VirusCheckingFS, WindowsFS,
 };
-use rucene_test_framework::util::lucene_test_case::{
-    SuppressFileSystems, SUITE_FAILURE_MARKER, TEMP_FILES_CLEANUP_RULE,
-};
-use rucene_test_framework::util::test_rule_mark_failure::TestRuleMarkFailureRule;
 
 type Wrap = Arc<dyn Fn(&Path) -> Path + Send + Sync>;
 
@@ -125,34 +120,15 @@ fn mock_file_system_test_case_passes_for_every_filesystem() {
         }),
     ];
     for (name, wrap) in cases() {
+        // `Test<FS> extends MockFileSystemTestCase`, which is
+        // `@SuppressFileSystems("*")` and `extends LuceneTestCase`.
         let mut builder = Class::builder(format!("org.apache.lucene.tests.mockfile.{name}"))
-            .annotate(SuppressFileSystems {
-                value: vec!["*".to_string()],
-            })
-            .constructor(Constructor::no_args(|| ()))
-            .field(
-                Field::new_static("suiteFailureMarker", "org.junit.rules.TestRule", || {
-                    Value::TestRule(Arc::new(TestRuleMarkFailureRule(Arc::clone(
-                        &SUITE_FAILURE_MARKER,
-                    ))) as Arc<dyn TestRule>)
-                })
-                .annotate(ClassRule),
-            )
-            .field(
-                Field::new_static("tempFilesCleanupRule", "org.junit.rules.TestRule", || {
-                    Value::TestRule(Arc::new(TestRuleAdapterRule(Arc::clone(
-                        &TEMP_FILES_CLEANUP_RULE,
-                    ))) as Arc<dyn TestRule>)
-                })
-                .annotate(ClassRule),
-            );
+            .extends(&rucene_test_framework::mockfile::mock_file_system_test_case::class())
+            .constructor(Constructor::no_args(|| ()));
         for (method, body) in tests {
             let wrap = Arc::clone(&wrap);
-            builder = builder.method(
-                Method::new(method)
-                    .annotate(Test::new())
-                    .body_any(move || body(&Case(Arc::clone(&wrap)))),
-            );
+            builder = builder
+                .method(Method::new(method).body_any(move || body(&Case(Arc::clone(&wrap)))));
         }
         let class = builder.build();
         let result = JUnitCore::new().run(&Request::a_class(&class));

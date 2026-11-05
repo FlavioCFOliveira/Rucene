@@ -26,6 +26,26 @@ use rucene::store::java_nio_file::{Files, Path};
 use super::filter_path::FilterPath;
 use crate::util::lucene_test_case::LuceneTestCase;
 
+/// The declaration of `org.apache.lucene.tests.mockfile.MockFileSystemTestCase`
+/// (`@SuppressFileSystems("*") public abstract class MockFileSystemTestCase
+/// extends LuceneTestCase`) for the suites that extend it; the tests it
+/// declares are the methods of [`MockFileSystemTestCase`].
+pub fn class() -> std::sync::Arc<randomizedtesting::jdk::reflect::Class> {
+    use randomizedtesting::jdk::reflect::{modifier, Class};
+    use std::sync::{Arc, LazyLock};
+    static CLASS: LazyLock<Arc<Class>> = LazyLock::new(|| {
+        Class::builder("org.apache.lucene.tests.mockfile.MockFileSystemTestCase")
+            .modifiers(modifier::PUBLIC | modifier::ABSTRACT)
+            // we suppress random filesystems and do tests explicitly.
+            .annotate(crate::util::lucene_test_case::SuppressFileSystems {
+                value: vec!["*".to_string()],
+            })
+            .extends(&LuceneTestCase::class())
+            .build()
+    });
+    Arc::clone(&CLASS)
+}
+
 /// Port of `org.apache.lucene.tests.mockfile.MockFileSystemTestCase`: the base
 /// class for testing mock filesystems. This tests things that really need to
 /// work: `Path` `equals()`/`hashCode()`, directory listing glob and

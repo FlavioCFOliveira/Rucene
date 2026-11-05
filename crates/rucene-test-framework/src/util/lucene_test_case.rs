@@ -2347,6 +2347,109 @@ impl LuceneTestCase {
 }
 
 #[cfg(test)]
+mod ensure_sane_iwc_tests {
+    use std::sync::Arc;
+
+    use rucene::index::index_writer_config::IndexWriterConfig;
+    use rucene::index::merge_policy::{LogMergePolicy, MergePolicy, TieredMergePolicy};
+
+    use super::LuceneTestCase;
+
+    /// `ensureSaneIWCOnNightly`'s body changes the merge policy the
+    /// configuration already holds — the same instance, not a copy — as
+    /// Java's casts and setters do. Expected strings measured with
+    /// `lucene-core-10.5.0.jar` (JDK 25) running the same body on
+    /// `new LogByteSizeMergePolicy()`, `new LogDocMergePolicy()` and
+    /// `new TieredMergePolicy()` after `setNoCFSRatio(0.1)`: the policy held is
+    /// `==` the one installed, `getUseCompoundFile()` is `true`, and
+    /// `toString()` is the string below (Lucene 10.5.0's
+    /// `TieredMergePolicy.toString` has no closing `]`).
+    #[test]
+    fn mutates_the_installed_policy_as_lucene_does() {
+        let policies: [(Arc<dyn MergePolicy>, &str); 3] = [
+            (
+                Arc::new(LogMergePolicy::by_byte_size()),
+                "[LogByteSizeMergePolicy: minMergeSize=16777216, mergeFactor=10, \
+                 maxMergeSize=1048576000, maxMergeSizeForForcedMerge=9223372036854775807, \
+                 calibrateSizeByDeletes=true, maxMergeDocs=2147483647, \
+                 maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=0.25]",
+            ),
+            (
+                Arc::new(LogMergePolicy::by_doc_count()),
+                "[LogDocMergePolicy: minMergeSize=1000, mergeFactor=10, \
+                 maxMergeSize=9223372036854775807, maxMergeSizeForForcedMerge=9223372036854775807, \
+                 calibrateSizeByDeletes=true, maxMergeDocs=100000, \
+                 maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=0.25]",
+            ),
+            (
+                Arc::new(TieredMergePolicy::new()),
+                "[TieredMergePolicy: maxMergeAtOnce=10, maxMergedSegmentMB=5000.0, \
+                 floorSegmentMB=16.0, forceMergeDeletesPctAllowed=10.0, segmentsPerTier=8.0, \
+                 maxCFSSegmentSizeMB=8.796093022208E12, noCFSRatio=0.25, deletesPctAllowed=20.0, \
+                 targetSearchConcurrency=1",
+            ),
+        ];
+        for (mp, expected) in policies {
+            let mut conf = IndexWriterConfig::new();
+            conf.set_merge_policy(Arc::clone(&mp)).unwrap();
+            mp.set_no_cfs_ratio(0.1).unwrap();
+            LuceneTestCase::ensure_sane_iwc(&mut conf);
+            assert!(Arc::ptr_eq(&conf.merge_policy(), &mp));
+            assert!(conf.use_compound_file());
+            assert_eq!(mp.to_string(), expected);
+        }
+    }
+}
+
+#[cfg(test)]
+mod vector_format_support_tests {
+    use rucene::codecs::knn_vectors::{knn_vectors_for_name, reload_knn_vectors_format};
+    use rucene::index::VectorEncoding;
+
+    use super::LuceneTestCase;
+
+    /// `supportsVectorEncoding(format, BYTE)`, `(format, FLOAT32)` and
+    /// `supportsVectorSearch(format)` answer as Java's for every KNN-vectors
+    /// format on the oracle's class path (`vfmt` rows of `ltc_members.tsv`,
+    /// recorded by reflection on `LuceneTestCase` under `lucene-core`,
+    /// `lucene-codecs` and `lucene-test-framework` 10.5.0).
+    #[test]
+    fn support_predicates_match_lucene() {
+        reload_knn_vectors_format(crate::class_loader()).unwrap();
+        reload_knn_vectors_format(rucene_codecs::class_loader()).unwrap();
+        let fixture = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/ltc_members.tsv"
+        ))
+        .unwrap();
+        let mut rows = 0;
+        for line in fixture.lines().filter(|l| l.starts_with("vfmt\t")) {
+            let r: Vec<&str> = line.split('\t').collect();
+            let format = knn_vectors_for_name(r[1]).unwrap_or_else(|| panic!("{} missing", r[1]));
+            let actual = (
+                format!(
+                    "{},{}",
+                    LuceneTestCase::supports_vector_encoding(format.as_ref(), VectorEncoding::BYTE),
+                    LuceneTestCase::supports_vector_encoding(
+                        format.as_ref(),
+                        VectorEncoding::FLOAT32
+                    )
+                ),
+                LuceneTestCase::supports_vector_search(format.as_ref()).to_string(),
+            );
+            assert_eq!(
+                (actual.0.as_str(), actual.1.as_str()),
+                (r[2], r[3]),
+                "{}",
+                r[1]
+            );
+            rows += 1;
+        }
+        assert_eq!(rows, 5);
+    }
+}
+
+#[cfg(test)]
 mod executor_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -3575,49 +3678,46 @@ impl LuceneTestCase {
     }
 
     /// `ensureSaneIWCOnNightly(conf)` (protected): under `tests.nightly`,
-    /// caps the merged segment size, turns compound files on for flushes and
-    /// keeps the no-CFS ratio at 0.25 or more.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java casts the configuration's merge
-    /// policy to `LogByteSizeMergePolicy` or `LogMergePolicy` and calls
-    /// `setMaxMergeMB` or `setMaxMergeDocs` on that shared instance. This
-    /// port's [`LogMergePolicy`](rucene::index::merge_policy::LogMergePolicy)
-    /// takes those two settings through `&mut self`, so the port sets them on
-    /// a copy of the policy and installs the copy in `conf`; the policy `conf`
-    /// holds afterwards is the same as Java's.
+    /// caps the merged segment size of the configuration's own merge policy,
+    /// turns compound files on for flushes and keeps the no-CFS ratio at 0.25
+    /// or more.
     pub fn ensure_sane_iwc_on_nightly(
         conf: &mut rucene::index::index_writer_config::IndexWriterConfig,
     ) -> &mut rucene::index::index_writer_config::IndexWriterConfig {
-        use rucene::index::merge_policy::{LogMergePolicy, TieredMergePolicy};
         if *TEST_NIGHTLY {
-            const INVARIANT: &str = "INVARIANT: the value is in the setter's range";
-            // newIWConfig makes smallish max seg size, which
-            // results in tons and tons of segments for this test
-            // when run nightly:
-            let mut mp = conf.merge_policy();
-            let any = mp.as_any();
-            if let Some(tmp) = any.and_then(|any| any.downcast_ref::<TieredMergePolicy>()) {
-                tmp.set_max_merged_segment_mb(5000.0).expect(INVARIANT);
-            } else if let Some(logmp) = any.and_then(|any| any.downcast_ref::<LogMergePolicy>()) {
-                let mut copy = logmp.clone();
-                // `instanceof LogByteSizeMergePolicy`: its `toString()`
-                // starts with that simple name.
-                if copy.to_string().starts_with("[LogByteSizeMergePolicy:") {
-                    copy.set_max_merge_mb(1000.0);
-                } else {
-                    copy.set_max_merge_docs(100000);
-                }
-                mp = Arc::new(copy);
-                conf.set_merge_policy(Arc::clone(&mp)).expect(INVARIANT);
-            }
-            // when running nightly, merging can still have crazy parameters,
-            // and might use many per-field codecs. turn on CFS for IW flushes
-            // and ensure CFS ratio is reasonable to keep it contained.
-            conf.set_use_compound_file(true).expect(INVARIANT);
-            mp.set_no_cfs_ratio(f64::max(0.25, mp.get_no_cfs_ratio()))
-                .expect(INVARIANT);
+            Self::ensure_sane_iwc(conf);
         }
         conf
+    }
+
+    /// The body of [`ensure_sane_iwc_on_nightly`](Self::ensure_sane_iwc_on_nightly)
+    /// under `if (LuceneTestCase.TEST_NIGHTLY)`, so that a test can run it
+    /// whatever `tests.nightly` is.
+    fn ensure_sane_iwc(conf: &mut rucene::index::index_writer_config::IndexWriterConfig) {
+        use rucene::index::merge_policy::{LogMergePolicy, TieredMergePolicy};
+        const INVARIANT: &str = "INVARIANT: the value is in the setter's range";
+        // newIWConfig makes smallish max seg size, which
+        // results in tons and tons of segments for this test
+        // when run nightly:
+        let mp = conf.merge_policy();
+        let any = mp.as_any();
+        if let Some(tmp) = any.and_then(|any| any.downcast_ref::<TieredMergePolicy>()) {
+            tmp.set_max_merged_segment_mb(5000.0).expect(INVARIANT);
+        } else if let Some(logmp) = any.and_then(|any| any.downcast_ref::<LogMergePolicy>()) {
+            // `instanceof LogByteSizeMergePolicy`: its `toString()` starts
+            // with that simple name.
+            if logmp.to_string().starts_with("[LogByteSizeMergePolicy:") {
+                logmp.set_max_merge_mb(1000.0);
+            } else {
+                logmp.set_max_merge_docs(100000);
+            }
+        }
+        // when running nightly, merging can still have crazy parameters,
+        // and might use many per-field codecs. turn on CFS for IW flushes
+        // and ensure CFS ratio is reasonable to keep it contained.
+        conf.set_use_compound_file(true).expect(INVARIANT);
+        mp.set_no_cfs_ratio(f64::max(0.25, mp.get_no_cfs_ratio()))
+            .expect(INVARIANT);
     }
 
     /// `closeAfterTest(resource)`: "Registers a `Closeable` resource that
@@ -4006,21 +4106,15 @@ impl LuceneTestCase {
     ///
     /// # Errors
     ///
-    /// `IOUtils.requireResourceNonNull`'s `NoSuchFileException("Cannot find
-    /// resource: " + name)` when there is no such resource.
+    /// `IOUtils.requireResourceNonNull`'s `FileNotFoundException("The
+    /// resource '" + name + "' was not found.")` when there is no such
+    /// resource.
     pub fn get_data_path(
         class_resources: &std::path::Path,
         name: &str,
     ) -> rucene::error::Result<std::path::PathBuf> {
         let path = class_resources.join(name.trim_start_matches('/'));
-        if path.exists() {
-            Ok(path)
-        } else {
-            Err(rucene::error::LuceneError::unchecked(
-                "java.nio.file.NoSuchFileException",
-                format!("Cannot find resource: {name}"),
-            ))
-        }
+        rucene::util::IOUtils::require_resource_non_null(path.exists().then_some(path), name)
     }
 
     /// `getDataInputStream(name)` (protected): "Gets a resource from the
@@ -4029,7 +4123,7 @@ impl LuceneTestCase {
     ///
     /// # Errors
     ///
-    /// The `NoSuchFileException` of [`get_data_path`](Self::get_data_path),
+    /// The `FileNotFoundException` of [`get_data_path`](Self::get_data_path),
     /// and what opening the file raises.
     pub fn get_data_input_stream(
         class_resources: &std::path::Path,

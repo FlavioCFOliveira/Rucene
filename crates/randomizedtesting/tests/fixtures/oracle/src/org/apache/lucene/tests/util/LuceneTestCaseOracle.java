@@ -252,6 +252,27 @@ public class LuceneTestCaseOracle {
         for (String d : DRAWS) w.println("members\t" + seed + "\t" + d);
       }
       System.clearProperty("tests.seed");
+      w.println("# dirs\tseed\tdraws of TestLtcDirs.testDirs under RandomizedRunner (tests.seed=seed)");
+      for (String seed : new String[] {"DEADBEEF", "0", "1", "CAFEBABE", "123456789ABCDEF", "7FFFFFFFFFFFFFFF", "1BADC0DE", "42"}) {
+        DRAWS.clear();
+        System.setProperty("tests.seed", seed);
+        Result r = new JUnitCore().run(TestLtcDirs.class);
+        for (Failure f : r.getFailures()) w.println("# failure " + f.toString().replace("\n", "\\n"));
+        for (String d : DRAWS) w.println("dirs\t" + seed + "\t" + d);
+      }
+      System.clearProperty("tests.seed");
+      w.println("# vfmt\tname\tsupportsVectorEncoding(BYTE),(FLOAT32)\tsupportsVectorSearch");
+      java.lang.reflect.Method enc = LuceneTestCase.class.getDeclaredMethod(
+          "supportsVectorEncoding", org.apache.lucene.codecs.KnnVectorsFormat.class, org.apache.lucene.index.VectorEncoding.class);
+      java.lang.reflect.Method search = LuceneTestCase.class.getDeclaredMethod(
+          "supportsVectorSearch", org.apache.lucene.codecs.KnnVectorsFormat.class);
+      enc.setAccessible(true);
+      search.setAccessible(true);
+      for (String name : org.apache.lucene.codecs.KnnVectorsFormat.availableKnnVectorsFormats()) {
+        org.apache.lucene.codecs.KnnVectorsFormat f = org.apache.lucene.codecs.KnnVectorsFormat.forName(name);
+        w.println("vfmt\t" + name + "\t" + enc.invoke(null, f, org.apache.lucene.index.VectorEncoding.BYTE) + ","
+            + enc.invoke(null, f, org.apache.lucene.index.VectorEncoding.FLOAT32) + "\t" + search.invoke(null, f));
+      }
     }
   }
 }

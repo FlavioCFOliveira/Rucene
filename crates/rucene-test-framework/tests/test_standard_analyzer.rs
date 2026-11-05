@@ -3,13 +3,14 @@
 //! `testUnicodeWordBreaks` (`WordBreakTestUnicode_12_1_0.test(a)`) and
 //! `testUnicodeEmojiTests` (`EmojiTokenizationTestUnicode_12_1.test(a)`),
 //! with the `setUp`/`tearDown` that build and close their analyzer, run as a
-//! suite by the ported runner against core `StandardTokenizer`.
+//! suite extending `BaseTokenStreamTestCase` by the ported runner against
+//! core `StandardTokenizer`.
 
-use std::sync::Arc;
+use std::cell::RefCell;
 
 use randomizedtesting::jdk::exception::Throwable;
-use randomizedtesting::jdk::reflect::{Class, Constructor, Field, Method, Value};
-use randomizedtesting::junit::{ClassRule, JUnitCore, Request, Test};
+use randomizedtesting::jdk::reflect::{Class, Constructor, Method};
+use randomizedtesting::junit::{After, Before, JUnitCore, Request};
 use rucene::analysis::{
     new_standard_tokenizer_with_factory, Analyzer, AnalyzerState, GlobalReuseStrategy,
     TokenStreamComponents,
@@ -20,7 +21,7 @@ use rucene_test_framework::analysis::standard::{
     EmojiTokenizationTestUnicode_12_1, WordBreakTestUnicode_12_1_0,
 };
 use rucene_test_framework::analysis::{tokenizer_components, BaseTokenStreamTestCase};
-use rucene_test_framework::util::lucene_test_case::CLASS_NAME_RULE;
+use rucene_test_framework::util::LuceneTestCase;
 
 /// `TestStandardAnalyzer.a`: the anonymous `Analyzer` of `setUp`, whose
 /// components are a `StandardTokenizer(newAttributeFactory())`.
@@ -47,14 +48,34 @@ impl Analyzer for StandardTokenizerAnalyzer {
     }
 }
 
-/// `setUp()`, the test body, then `tearDown()` (`a.close()`).
+thread_local! {
+    /// `TestStandardAnalyzer.a`, the instance field `setUp` sets and
+    /// `tearDown` closes; `setUp`, the test and `tearDown` run on the test's
+    /// thread.
+    static A: RefCell<Option<StandardTokenizerAnalyzer>> = const { RefCell::new(None) };
+}
+
+/// `setUp()`: `super.setUp()`, then the analyzer.
+fn set_up() {
+    LuceneTestCase::super_set_up();
+    A.with(|a| {
+        *a.borrow_mut() = Some(StandardTokenizerAnalyzer {
+            state: AnalyzerState::new(Box::new(GlobalReuseStrategy)),
+        })
+    });
+}
+
+/// `tearDown()`: `a.close()`, then `super.tearDown()`.
+fn tear_down() {
+    if let Some(a) = A.with(|a| a.borrow_mut().take()) {
+        a.close();
+    }
+    LuceneTestCase::super_tear_down();
+}
+
+/// The body of a test over `a`.
 fn with_analyzer(body: fn(&dyn Analyzer) -> Result<()>) -> Result<()> {
-    let a = StandardTokenizerAnalyzer {
-        state: AnalyzerState::new(Box::new(GlobalReuseStrategy)),
-    };
-    let result = body(&a);
-    a.close();
-    result
+    A.with(|a| body(a.borrow().as_ref().expect("setUp created the analyzer")))
 }
 
 /// `testUnicodeWordBreaks`.
@@ -69,6 +90,10 @@ fn test_unicode_emoji_tests() -> Result<()> {
 
 type TestFn = fn() -> Result<()>;
 
+/// `TestStandardAnalyzer extends BaseTokenStreamTestCase`, its two Unicode
+/// data tests found as `LuceneTestCase`'s JUnit 3 provider finds them, with
+/// its `setUp`/`tearDown` overrides, under the full `LuceneTestCase` rule
+/// chain.
 #[test]
 fn test_standard_analyzer_unicode_data() {
     let methods: [(&'static str, TestFn); 2] = [
@@ -76,24 +101,34 @@ fn test_standard_analyzer_unicode_data() {
         ("testUnicodeEmojiTests", test_unicode_emoji_tests),
     ];
     let mut builder = Class::builder("org.apache.lucene.analysis.standard.TestStandardAnalyzer")
+        .extends(&BaseTokenStreamTestCase::class())
         .constructor(Constructor::no_args(|| ()))
-        .field(
-            Field::new_static("classNameRule", "org.junit.rules.TestRule", || {
-                Value::TestRule(
-                    Arc::clone(&CLASS_NAME_RULE) as Arc<dyn randomizedtesting::junit::TestRule>
-                )
-            })
-            .annotate(ClassRule),
+        // Java's overrides carry no `@Before`/`@After`: the runner invokes
+        // `LuceneTestCase.setUp`, which dispatches to the override. The
+        // declared `Method::invoke` runs the declaring class's body, so the
+        // overrides carry the annotations and are the leaf hooks the runner
+        // invokes instead; each calls `super`, so the same bodies run.
+        .method(
+            Method::new("setUp")
+                .throws(&["java.lang.Exception"])
+                .annotate(Before)
+                .body_any(set_up),
+        )
+        .method(
+            Method::new("tearDown")
+                .throws(&["java.lang.Exception"])
+                .annotate(After)
+                .body_any(tear_down),
         );
     for (method, body) in methods {
-        builder = builder.method(Method::new(method).annotate(Test::new()).body_any(move || {
+        builder = builder.method(Method::new(method).body_any(move || {
             if let Err(e) = body() {
                 let (class, message) = java_class_and_message(&e);
                 Throwable::new(class, message).throw();
             }
         }));
     }
-    let class = Arc::new(builder.build());
+    let class = builder.build();
     let result = JUnitCore::new().run(&Request::a_class(&class));
     let failures: Vec<String> = result
         .failures()

@@ -3359,9 +3359,9 @@ struct SegmentInfoAndLevel {
 pub struct LogMergePolicy {
     merge_factor: LiveI32,
     min_merge_size: i64,
-    max_merge_size: i64,
+    max_merge_size: LiveI64,
     max_merge_size_for_forced_merge: i64,
-    max_merge_docs: i32,
+    max_merge_docs: LiveI32,
     calibrate_size_by_deletes: LiveBool,
     target_search_concurrency: i32,
     size: Arc<dyn LogMergeSize>,
@@ -3380,9 +3380,9 @@ impl LogMergePolicy {
         Self {
             merge_factor: LiveI32::new(DEFAULT_MERGE_FACTOR),
             min_merge_size: 0,
-            max_merge_size: 0,
+            max_merge_size: LiveI64::new(0),
             max_merge_size_for_forced_merge: i64::MAX,
-            max_merge_docs: DEFAULT_MAX_MERGE_DOCS,
+            max_merge_docs: LiveI32::new(DEFAULT_MAX_MERGE_DOCS),
             calibrate_size_by_deletes: LiveBool::new(true),
             target_search_concurrency: 1,
             size,
@@ -3397,7 +3397,7 @@ impl LogMergePolicy {
     pub fn by_byte_size() -> Self {
         Self {
             min_merge_size: 16 * 1024 * 1024,
-            max_merge_size: 2048 * 1024 * 1024,
+            max_merge_size: LiveI64::new(2048 * 1024 * 1024),
             max_merge_size_for_forced_merge: i64::MAX,
             ..Self::new(Arc::new(LogByteSize))
         }
@@ -3410,7 +3410,7 @@ impl LogMergePolicy {
     pub fn by_doc_count() -> Self {
         Self {
             min_merge_size: 1000,
-            max_merge_size: i64::MAX,
+            max_merge_size: LiveI64::new(i64::MAX),
             max_merge_size_for_forced_merge: i64::MAX,
             ..Self::new(Arc::new(LogDocSize))
         }
@@ -3441,8 +3441,12 @@ impl LogMergePolicy {
     }
 
     /// Sets the cap on documents in a merged segment.
-    pub fn set_max_merge_docs(&mut self, v: i32) -> &mut Self {
-        self.max_merge_docs = v;
+    ///
+    /// Equivalent to `LogMergePolicy.setMaxMergeDocs(int)`, which changes the
+    /// live policy every holder shares (as `LuceneTestCase.ensureSaneIWCOnNightly`
+    /// relies on): the setting is held in an atomic and written through `&self`.
+    pub fn set_max_merge_docs(&self, v: i32) -> &Self {
+        self.max_merge_docs.set(v);
         self
     }
 
@@ -3450,7 +3454,7 @@ impl LogMergePolicy {
     ///
     /// Equivalent to `LogMergePolicy.getMaxMergeDocs()`.
     pub fn get_max_merge_docs(&self) -> i32 {
-        self.max_merge_docs
+        self.max_merge_docs.get()
     }
 
     /// Sets whether a segment's size discounts its deleted documents.
@@ -3500,7 +3504,7 @@ impl LogMergePolicy {
     /// `LogMergePolicy.maxMergeSize` (`LogMergePolicy.java:77`), as
     /// `AlcoholicMergePolicy`'s constructor does.
     pub fn set_max_merge_size(&mut self, max_merge_size: i64) -> &mut Self {
-        self.max_merge_size = max_merge_size;
+        self.max_merge_size.set(max_merge_size);
         self
     }
 
@@ -3511,8 +3515,10 @@ impl LogMergePolicy {
     /// how long a merge can pause it; larger values suit batch indexing and
     /// faster searches. [`set_max_merge_docs`](Self::set_max_merge_docs) caps
     /// the same thing by document count, and either bound can stop a merge.
-    pub fn set_max_merge_mb(&mut self, mb: f64) -> &mut Self {
-        self.max_merge_size = Self::mb_to_bytes(mb);
+    /// Like Java's, it changes the live policy every holder shares: the
+    /// setting is held in an atomic and written through `&self`.
+    pub fn set_max_merge_mb(&self, mb: f64) -> &Self {
+        self.max_merge_size.set(Self::mb_to_bytes(mb));
         self
     }
 
@@ -3521,7 +3527,7 @@ impl LogMergePolicy {
     ///
     /// Equivalent to `LogByteSizeMergePolicy.getMaxMergeMB()`.
     pub fn get_max_merge_mb(&self) -> f64 {
-        self.max_merge_size as f64 / 1024. / 1024.
+        self.max_merge_size.get() as f64 / 1024. / 1024.
     }
 
     /// Sets the largest segment, in MB, that may be merged during a forced
@@ -3707,13 +3713,13 @@ impl LogMergePolicy {
             start -= 1;
             let info = infos.info(start);
             if self.size(info, merge_context)? > self.max_merge_size_for_forced_merge
-                || self.size_docs(info, merge_context)? > i64::from(self.max_merge_docs)
+                || self.size_docs(info, merge_context)? > i64::from(self.max_merge_docs.get())
             {
                 if mp_verbose(merge_context) {
                     mp_message(
                         &format!(
                             "findForcedMergesSizeLimit: skip segment={}: size is > maxMergeSize ({}) or sizeDocs is > maxMergeDocs ({})",
-                            info.info.name, self.max_merge_size_for_forced_merge, self.max_merge_docs
+                            info.info.name, self.max_merge_size_for_forced_merge, self.max_merge_docs.get()
                         ),
                         merge_context,
                     );
@@ -3889,7 +3895,7 @@ impl MergePolicy for LogMergePolicy {
             let concurrency = self.target_search_concurrency.max(1);
             let per_slice = total_doc_count.div_euclid(i64::from(concurrency))
                 + i64::from(total_doc_count.rem_euclid(i64::from(concurrency)) != 0);
-            let max_merge_docs = i64::from(self.max_merge_docs).min(per_slice);
+            let max_merge_docs = i64::from(self.max_merge_docs.get()).min(per_slice);
 
             let mut end = start + self.merge_factor.get() as usize;
             while end as i64 <= 1 + upto {
@@ -3906,7 +3912,7 @@ impl MergePolicy for LogMergePolicy {
                     }
                     let segment_size = self.size(info, merge_context)?;
                     let segment_docs = self.size_docs(info, merge_context)?;
-                    if merge_size + segment_size > self.max_merge_size
+                    if merge_size + segment_size > self.max_merge_size.get()
                         || merge_docs + segment_docs > max_merge_docs
                     {
                         // The merge is full; stop adding to it.
@@ -3919,7 +3925,7 @@ impl MergePolicy for LogMergePolicy {
                 }
 
                 if end - start >= self.merge_factor.get() as usize
-                    && self.min_merge_size < self.max_merge_size
+                    && self.min_merge_size < self.max_merge_size.get()
                     && merge_size < self.min_merge_size
                     && !any_merging
                 {
@@ -4026,7 +4032,7 @@ impl MergePolicy for LogMergePolicy {
         for i in 0..last {
             let info = segment_infos.info(i);
             if self.size(info, merge_context)? > self.max_merge_size_for_forced_merge
-                || self.size_docs(info, merge_context)? > i64::from(self.max_merge_docs)
+                || self.size_docs(info, merge_context)? > i64::from(self.max_merge_docs.get())
             {
                 any_too_large = true;
                 break;
@@ -6034,10 +6040,10 @@ impl std::fmt::Display for LogMergePolicy {
              maxCFSSegmentSizeMB={}, noCFSRatio={}]",
             self.min_merge_size,
             self.merge_factor.get(),
-            self.max_merge_size,
+            self.max_merge_size.get(),
             self.max_merge_size_for_forced_merge,
             self.calibrate_size_by_deletes.get(),
-            self.max_merge_docs,
+            self.max_merge_docs.get(),
             double_to_string(self.cfs.get_max_cfs_segment_size_mb()),
             double_to_string(self.cfs.get_no_cfs_ratio()),
         )

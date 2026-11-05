@@ -849,3 +849,178 @@ fn members_match_lucene_under_the_runner() {
     system::clear_property("tests.seed");
     assert_same("members", &expected, &actual);
 }
+
+/// `TestLtcDirs.describe`: the directory's `toString()` (the temporary root
+/// as `$D`, identity hashes as `@HASH`), then the outcome of a second
+/// `obtainLock` of a held lock, after which the directory is closed.
+fn describe_dir(
+    mut d: rucene_test_framework::util::lucene_test_case::TestDirectory,
+    masks: &[String],
+) -> String {
+    let mut s = d.to_string();
+    for m in masks {
+        s = s.replace(m.as_str(), "$D");
+    }
+    let s = oracle_support::mask(&s, "\u{0}", None);
+    let dir = d.as_directory();
+    let again = {
+        let l = dir.obtain_lock("t.lock").unwrap();
+        let again = match dir.obtain_lock("t.lock") {
+            Ok(l2) => {
+                l2.close().unwrap();
+                "again".to_string()
+            }
+            Err(e) => e.java_simple_name().to_string(),
+        };
+        l.close().unwrap();
+        again
+    };
+    drop(dir);
+    d.close().unwrap();
+    format!("{s}|{again}")
+}
+
+/// `TestLtcDirs.testDirs`.
+fn test_dirs() -> String {
+    use rucene::index::VectorEncoding;
+    use rucene::store::{
+        LockFactory, NativeFSLockFactory, NoLockFactory, SimpleFSLockFactory,
+        SingleInstanceLockFactory,
+    };
+    use rucene_test_framework::util::lucene_test_case::TestDirectory;
+    let lock_factories = || -> Vec<Arc<dyn LockFactory>> {
+        vec![
+            Arc::new(*NoLockFactory::instance()),
+            Arc::new(SingleInstanceLockFactory::new()),
+            Arc::new(*NativeFSLockFactory::instance()),
+            Arc::new(*SimpleFSLockFactory::instance()),
+        ]
+    };
+    let fs_lock_factories = || -> Vec<Arc<dyn LockFactory>> {
+        vec![
+            Arc::new(*NativeFSLockFactory::instance()),
+            Arc::new(*SimpleFSLockFactory::instance()),
+            Arc::new(*NoLockFactory::instance()),
+        ]
+    };
+    let mut sb = String::new();
+    let base = Ltc::create_temp_dir_prefix("base").get_parent().unwrap();
+    let masks = [
+        base.to_real_path(&[]).unwrap().to_string(),
+        base.to_string(),
+    ];
+    for _ in 0..3 {
+        for lf in lock_factories() {
+            let d = Ltc::new_directory_lock_factory(&*Ltc::random(), Arc::clone(&lf));
+            sb.push_str(&format!(" nd={}", describe_dir(d, &masks)));
+            let m = Ltc::new_mock_directory_lock_factory(&*Ltc::random(), lf);
+            sb.push_str(&format!(
+                " nmd={}",
+                describe_dir(TestDirectory::Mock(m), &masks)
+            ));
+        }
+    }
+    for lf in fs_lock_factories() {
+        let d =
+            Ltc::new_fs_directory_lock_factory(&Ltc::create_temp_dir_prefix("fs"), Arc::clone(&lf));
+        sb.push_str(&format!(" nfs={}", describe_dir(d, &masks)));
+        let m = Ltc::new_mock_fs_directory(&Ltc::create_temp_dir_prefix("mfs"));
+        sb.push_str(&format!(
+            " nmfs={}",
+            describe_dir(TestDirectory::Mock(m), &masks)
+        ));
+        let m = Ltc::new_mock_fs_directory_lock_factory(&Ltc::create_temp_dir_prefix("mfsl"), lf);
+        sb.push_str(&format!(
+            " nmfsl={}",
+            describe_dir(TestDirectory::Mock(m), &masks)
+        ));
+    }
+    for (label, e) in [
+        ("BYTE", VectorEncoding::BYTE),
+        ("FLOAT32", VectorEncoding::FLOAT32),
+    ] {
+        let names: Vec<String> = (0..12)
+            .map(|_| Ltc::random_vector_format(e).name().to_string())
+            .collect();
+        sb.push_str(&format!(" rvf{label}={}", names.join(",")));
+    }
+    let resources = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let not_found = |e: rucene::error::LuceneError| match e {
+        rucene::error::LuceneError::NotFound(m) => format!("java.io.FileNotFoundException:{m}"),
+        other => format!("unexpected:{other}"),
+    };
+    for name in ["nope.txt", "/nope.txt"] {
+        match Ltc::get_data_path(&resources, name) {
+            Ok(_) => sb.push_str(" dp=found"),
+            Err(e) => sb.push_str(&format!(" dp={}", not_found(e))),
+        }
+        match Ltc::get_data_input_stream(&resources, name) {
+            Ok(_) => sb.push_str(" dis=found"),
+            Err(e) => sb.push_str(&format!(" dis={}", not_found(e))),
+        }
+    }
+    sb.push_str(&format!(" last={}", Ltc::random().next_long()));
+    sb
+}
+
+/// The lock-factory `newDirectory`/`newMockDirectory`/`newFSDirectory`
+/// overloads, `newMockFSDirectory` with and without a lock factory,
+/// `randomVectorFormat` and the missing-resource errors of
+/// `getDataPath`/`getDataInputStream` draw, render and lock as Java's do in
+/// `TestLtcDirs extends LuceneTestCase`, for every seed of the oracle.
+#[test]
+fn directories_and_vector_formats_match_lucene_under_the_runner() {
+    static DIRS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    let _guard = PROPS.lock().unwrap_or_else(|e| e.into_inner());
+    let class = Arc::new(
+        Class::builder("org.apache.lucene.tests.util.TestLtcDirs")
+            .extends(&Ltc::class())
+            .constructor(Constructor::no_args(|| ()))
+            .method(Method::new("testDirs").body_any(|| {
+                let d = test_dirs();
+                DIRS.lock().unwrap().push(d);
+            }))
+            .build(),
+    );
+    let mut actual = BTreeMap::new();
+    let mut expected = BTreeMap::new();
+    for r in rows("ltc_members.tsv")
+        .into_iter()
+        .filter(|r| r[0] == "dirs")
+    {
+        expected.insert(r[1].clone(), r[2].clone());
+    }
+    assert_eq!(expected.len(), 8);
+    for seed in expected.keys() {
+        DIRS.lock().unwrap().clear();
+        system::set_property("tests.seed", seed);
+        let result = JUnitCore::new().run(&Request::a_class(&class));
+        if let Some(f) = result.failures().first() {
+            panic!("seed {seed}: {}\n{}", f.exception(), f.trace());
+        }
+        actual.insert(seed.clone(), DIRS.lock().unwrap().join(""));
+    }
+    system::clear_property("tests.seed");
+    assert_same("dirs", &expected, &actual);
+}
+
+/// `getDataPath`/`getDataInputStream` find a resource that exists under the
+/// directory standing for the test class's package, with or without a
+/// leading `/`.
+#[test]
+fn data_path_finds_an_existing_resource() {
+    use std::io::Read;
+    let resources = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    for name in ["ltc_members.tsv", "/ltc_members.tsv"] {
+        assert_eq!(
+            Ltc::get_data_path(&resources, name).unwrap(),
+            resources.join("ltc_members.tsv")
+        );
+        let mut head = [0u8; 4];
+        Ltc::get_data_input_stream(&resources, name)
+            .unwrap()
+            .read_exact(&mut head)
+            .unwrap();
+        assert_eq!(&head, b"# tz");
+    }
+}

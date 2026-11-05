@@ -202,6 +202,22 @@ fn rethrow(e: &LuceneError) -> ! {
 /// errors of the stream are returned.
 pub struct BaseTokenStreamTestCase;
 
+impl BaseTokenStreamTestCase {
+    /// The declaration of `org.apache.lucene.tests.analysis.BaseTokenStreamTestCase`
+    /// (`public abstract class BaseTokenStreamTestCase extends LuceneTestCase`,
+    /// which adds no rule, hook or annotation) for suites that extend it.
+    pub fn class() -> Arc<randomizedtesting::jdk::reflect::Class> {
+        use randomizedtesting::jdk::reflect::{modifier, Class};
+        static CLASS: std::sync::LazyLock<Arc<Class>> = std::sync::LazyLock::new(|| {
+            Class::builder("org.apache.lucene.tests.analysis.BaseTokenStreamTestCase")
+                .modifiers(modifier::PUBLIC | modifier::ABSTRACT)
+                .extends(&LuceneTestCase::class())
+                .build()
+        });
+        Arc::clone(&CLASS)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 impl BaseTokenStreamTestCase {
     // graphOffsetsAreCorrect validates:

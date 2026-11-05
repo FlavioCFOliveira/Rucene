@@ -5,23 +5,15 @@
 
 use std::sync::{Arc, Mutex};
 
-use randomizedtesting::annotations::{SeedDecoratorClass, SeedDecorators};
-use randomizedtesting::jdk::reflect::{
-    Class, Constructor, Field, JavaAnnotation, Marker, Method, Value,
-};
-use randomizedtesting::junit::{Assert, ClassRule, Rule, Test, TestRule};
-use randomizedtesting::rules::TestRuleAdapterRule;
+use randomizedtesting::jdk::reflect::{Class, Constructor, Marker, Method};
+use randomizedtesting::junit::Assert;
 use rucene::store::java_nio_file::{FileSystemProvider, Files, Path};
 use rucene_test_framework::mockfile::{
     DisableFsyncFS, ExtrasFS, FilterFileSystemProvider, HandleLimitFS, LeakFS, MaxOpenHandles,
     ShuffleFS, VerboseFS, WindowsFS,
 };
 use rucene_test_framework::util::lucene_test_case::{
-    LuceneTestCase, SuppressFileSystems, SUITE_FAILURE_MARKER, SUPPRESS_FSYNC,
-    TEMP_FILES_CLEANUP_RULE,
-};
-use rucene_test_framework::util::test_rule_mark_failure::{
-    TestRuleMarkFailure, TestRuleMarkFailureRule,
+    LuceneTestCase, SuppressFileSystems, SUPPRESS_FSYNC,
 };
 
 pub static ROWS: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -125,10 +117,8 @@ pub fn suite(simple: &str) -> Arc<Class> {
     } else {
         format!("org.apache.lucene.tests.util.TestTempFilesSuite${simple}")
     };
-    // `LuceneTestCase` is `@SeedDecorators({MixWithSuiteName.class})`.
-    let mut b = Class::builder(name).annotate(SeedDecorators {
-        value: vec![SeedDecoratorClass::mix_with_suite_name()],
-    });
+    // Each suite `extends LuceneTestCase` (the nested classes are `static`).
+    let mut b = Class::builder(name).extends(&LuceneTestCase::class());
     match simple {
         "TestSuppressed" => {
             b = b.annotate(SuppressFileSystems {
@@ -148,46 +138,13 @@ pub fn suite(simple: &str) -> Arc<Class> {
         _ => {}
     }
     let failing = simple == "TestFailing";
-    let _ = |a: &dyn JavaAnnotation| a.to_java_string();
     b.constructor(Constructor::no_args(|| ()))
-        .field(
-            Field::new_static("suiteFailureMarker", "org.junit.rules.TestRule", || {
-                Value::TestRule(
-                    Arc::new(TestRuleMarkFailureRule(Arc::clone(&SUITE_FAILURE_MARKER)))
-                        as Arc<dyn TestRule>,
-                )
-            })
-            .annotate(ClassRule),
-        )
-        .field(
-            Field::new_static("tempFilesCleanupRule", "org.junit.rules.TestRule", || {
-                Value::TestRule(
-                    Arc::new(TestRuleAdapterRule(Arc::clone(&TEMP_FILES_CLEANUP_RULE)))
-                        as Arc<dyn TestRule>,
-                )
-            })
-            .annotate(ClassRule),
-        )
-        // `LuceneTestCase.testRules`' `testFailureMarker`, chained to the
-        // suite marker.
-        .field(
-            Field::new_instance::<()>("testFailureMarker", "org.junit.rules.TestRule", |_| {
-                Value::TestRule(Arc::new(TestRuleMarkFailureRule(Arc::new(
-                    TestRuleMarkFailure::new(vec![Arc::clone(&SUITE_FAILURE_MARKER)]),
-                ))) as Arc<dyn TestRule>)
-            })
-            .annotate(Rule),
-        )
-        .method(
-            Method::new("testRecord")
-                .annotate(Test::new())
-                .body_any(move || {
-                    ROWS.lock().unwrap().push(record());
-                    if failing {
-                        Assert::fail("boom");
-                    }
-                }),
-        )
+        .method(Method::new("testRecord").body_any(move || {
+            ROWS.lock().unwrap().push(record());
+            if failing {
+                Assert::fail("boom");
+            }
+        }))
         .build()
 }
 

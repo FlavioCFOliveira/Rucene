@@ -15,9 +15,9 @@ use std::sync::{Arc, Mutex};
 use oracle_support::{assert_same, rows};
 use randomizedtesting::jdk::exception::{QuietPanics, Throwable};
 use randomizedtesting::jdk::random::{JdkRandom, Random};
-use randomizedtesting::jdk::reflect::{Class, Constructor, Field, Method, Value};
+use randomizedtesting::jdk::reflect::{Class, Constructor, Method};
 use randomizedtesting::jdk::system;
-use randomizedtesting::junit::{ClassRule, JUnitCore, Request, Test};
+use randomizedtesting::junit::{JUnitCore, Request};
 use randomizedtesting::{default_supplier, RandomizedContext, Randomness};
 use rucene::analysis::{
     new_standard_tokenizer, Analyzer, AnalyzerState, GlobalReuseStrategy, StandardAnalyzer,
@@ -47,7 +47,7 @@ use rucene_test_framework::analysis::{
     MockTokenFilter, MockTokenizer, MockUTF16TermAttributeImpl, MockVariableLengthPayloadFilter,
     SimplePayloadFilter, Token, TokenStreamToDot, ValidatingTokenFilter,
 };
-use rucene_test_framework::util::lucene_test_case::{LuceneTestCase, CLASS_NAME_RULE};
+use rucene_test_framework::util::lucene_test_case::LuceneTestCase;
 use rucene_test_framework::util::TestUtil;
 
 const SEED: &str = "1DB1C0DE";
@@ -1757,23 +1757,12 @@ fn scenarios() {
 
 #[test]
 fn analysis_mocks_match_lucene() {
+    // `TestAnalysisMocksScenarios extends BaseTokenStreamTestCase`.
     let class = Class::builder("org.apache.lucene.tests.analysis.TestAnalysisMocksScenarios")
+        .extends(&B::class())
         .constructor(Constructor::no_args(|| ()))
-        .field(
-            Field::new_static("classNameRule", "org.junit.rules.TestRule", || {
-                Value::TestRule(
-                    Arc::clone(&CLASS_NAME_RULE) as Arc<dyn randomizedtesting::junit::TestRule>
-                )
-            })
-            .annotate(ClassRule),
-        )
-        .method(
-            Method::new("testScenarios")
-                .annotate(Test::new())
-                .body_any(scenarios),
-        )
+        .method(Method::new("testScenarios").body_any(scenarios))
         .build();
-    let class = Arc::new(class);
     ROWS.lock().unwrap().clear();
     system::set_property("tests.seed", SEED);
     let quiet = QuietPanics::new();
