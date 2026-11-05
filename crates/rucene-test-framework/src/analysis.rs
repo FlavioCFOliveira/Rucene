@@ -16,8 +16,10 @@
  */
 
 //! Port of `org.apache.lucene.tests.analysis`: mock tokenizers, filters and
-//! analyzers, canned token streams, and [`BaseTokenStreamTestCase`], the
-//! assertions every analysis test is built on.
+//! analyzers, canned token streams, [`BaseTokenStreamTestCase`], the
+//! assertions every analysis test is built on, [`BaseTokenStreamFactoryTestCase`]
+//! for the analysis factories and [`CollationTestBase`] for collating
+//! analyzers.
 //!
 //! The mocks hold their attributes by interface through [`attributes::Att`],
 //! so that they work over each factory
@@ -35,9 +37,11 @@ use rucene::analysis::{CharReader, SharedTokenStream, TokenStream, TokenStreamCo
 use rucene::error::Result;
 
 pub mod attributes;
+pub mod base_token_stream_factory_test_case;
 pub mod base_token_stream_test_case;
 pub mod canned_binary_token_stream;
 pub mod canned_token_stream;
+pub mod collation_test_base;
 pub mod cranky_token_filter;
 pub mod lookahead_token_filter;
 pub mod mock_analyzer;
@@ -63,9 +67,11 @@ pub mod token_stream_to_dot;
 pub mod validating_token_filter;
 pub mod vocabulary_assert;
 
+pub use base_token_stream_factory_test_case::BaseTokenStreamFactoryTestCase;
 pub use base_token_stream_test_case::BaseTokenStreamTestCase;
 pub use canned_binary_token_stream::{BinaryToken, CannedBinaryTokenStream};
 pub use canned_token_stream::CannedTokenStream;
+pub use collation_test_base::CollationTestBase;
 pub use cranky_token_filter::CrankyTokenFilter;
 pub use lookahead_token_filter::{
     LookaheadLogic, LookaheadPosition, LookaheadTokenFilter, Position,

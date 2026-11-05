@@ -492,6 +492,19 @@ impl TimeZone {
     pub fn get_id(&self) -> &'static str {
         self.id
     }
+
+    /// The `sun.util.calendar.ZoneInfo` `TimeZone.getTimeZone(id)` returns,
+    /// whose rules give the offsets.
+    pub fn zone_info(&self) -> &'static crate::jdk::time_zone::ZoneInfo {
+        crate::jdk::time_zone::zone_info(self.id)
+            .expect("INVARIANT: a TimeZone holds an ID of TimeZone.getAvailableIDs()")
+    }
+
+    /// `getOffset(long date)`: the offset from UTC, in milliseconds, at the
+    /// UTC instant `date`, daylight saving time included.
+    pub fn get_offset(&self, date: i64) -> i32 {
+        self.zone_info().get_offset(date)
+    }
 }
 
 /// `availableLanguageTags`: the language tags of the available locales,

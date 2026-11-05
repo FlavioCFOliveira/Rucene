@@ -101,6 +101,23 @@ write the fixtures (`../*.tsv`) the crate's parity tests (`src/tests/`) read.
   `RamUsageTester` (`_ramusage.tsv`). The Rust side is
   `crates/rucene-test-framework/tests/test_util_oracle.rs`, `test_util_index.rs`
   (`_members.tsv`) and `ram_usage_tester_oracle.rs` (`_ramusage.tsv`).
+* **The time-zone rules (rmp #357 block 5):**
+  `org.apache.lucene.tests.util.TimeZoneOracle` (run with `--add-opens
+  java.base/sun.util.calendar=ALL-UNNAMED`, which `regenerate.sh` passes)
+  writes `crates/rucene-test-framework/tests/fixtures/time_zone_hours.tsv`:
+  per ID of `TimeZone.getAvailableIDs()`, sorted, the number of instants of
+  the zone's grid and the FNV-1a digest of each (instant, `HOUR_OF_DAY`)
+  pair, the hour read from a new `GregorianCalendar` over a fresh
+  `TimeZone`. The grid is the extremes of `long`, `t - 1, t, t + 1` for every
+  instant of the zone's `ZoneInfo` transition table, `e - 1, e` for every
+  offset change of its last rule found in the years of `YEARS`, and 64 draws
+  of `TestUtil.nextLong(new Random(row), 0, Long.MAX_VALUE)`. It also writes
+  `alcoholic_hours.tsv`: per seed, `LuceneTestCase.randomTimeZone(new
+  Random(seed))` and the `HOUR_OF_DAY` and `maxMergeSize` of `new
+  AlcoholicMergePolicy(tz, new Random(seed))`. The Rust side is
+  `crates/rucene-test-framework/tests/time_zone_oracle.rs` and the unit test
+  of `src/index/alcoholic_merge_policy.rs`; the rules themselves come from
+  `tools/gen/TimeZoneRules.java`.
 * **The store wrappers of `org.apache.lucene.tests.store` (rmp #343):**
   `org.apache.lucene.tests.store.MockDirectoryWrapperOracle` writes
   `crates/rucene-test-framework/tests/fixtures/mdw_index.tsv` (the files, as

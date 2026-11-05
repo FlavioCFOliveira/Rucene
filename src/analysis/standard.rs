@@ -257,15 +257,23 @@ pub fn new_standard_tokenizer() -> StandardTokenizer {
 pub fn new_standard_tokenizer_with_factory(
     factory: Arc<dyn crate::util::attribute::AttributeFactory>,
 ) -> Result<StandardTokenizer> {
+    Ok(StandardTokenizer::with_source(
+        standard_tokenizer_source(factory)?,
+        StandardTokenizerLogic::new(),
+    ))
+}
+
+/// The source of a `StandardTokenizer` over `factory`, holding the attributes
+/// its fields add, in their declaration order (`StandardTokenizer.java:140-144`).
+fn standard_tokenizer_source(
+    factory: Arc<dyn crate::util::attribute::AttributeFactory>,
+) -> Result<AttributeSource> {
     let mut source = AttributeSource::new_with_factory(factory);
     source.add_attribute_interface::<dyn CharTermAttribute>()?;
     source.add_attribute_interface::<dyn OffsetAttribute>()?;
     source.add_attribute_interface::<dyn PositionIncrementAttribute>()?;
     source.add_attribute_interface::<dyn TypeAttribute>()?;
-    Ok(StandardTokenizer::with_source(
-        source,
-        StandardTokenizerLogic::new(),
-    ))
+    Ok(source)
 }
 
 // -----------------------------------------------------------------------------
@@ -1048,9 +1056,17 @@ impl crate::analysis::factories::TokenizerFactory for StandardTokenizerFactory {
         "org.apache.lucene.analysis.standard.StandardTokenizerFactory"
     }
 
-    fn create(&self) -> crate::error::Result<Box<dyn crate::analysis::TokenizerLogic>> {
+    /// Equivalent to `StandardTokenizerFactory.create(AttributeFactory)`: a
+    /// `new StandardTokenizer(factory)` whose maximum token length is set.
+    fn create_with_factory(
+        &self,
+        factory: Arc<dyn crate::util::attribute::AttributeFactory>,
+    ) -> crate::error::Result<crate::analysis::factories::FactoryTokenizer> {
         let mut logic = StandardTokenizerLogic::new();
         logic.set_max_token_length(self.max_token_length)?;
-        Ok(Box::new(logic))
+        Ok(Tokenizer::with_source(
+            standard_tokenizer_source(factory)?,
+            Box::new(logic),
+        ))
     }
 }

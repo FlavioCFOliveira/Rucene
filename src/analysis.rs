@@ -440,6 +440,34 @@ pub trait TokenizerLogic: Debug {
     }
 }
 
+/// A boxed logic is a logic: what lets a [`Tokenizer`] hold a logic chosen at
+/// run time, as the `Tokenizer` a `TokenizerFactory` creates does.
+impl<T: TokenizerLogic + ?Sized> TokenizerLogic for Box<T> {
+    fn increment_token(
+        &mut self,
+        source: &mut AttributeSource,
+        reader: &mut dyn CharReader,
+    ) -> Result<bool> {
+        (**self).increment_token(source, reader)
+    }
+
+    fn end(&mut self, source: &mut AttributeSource, input: Option<&dyn CharReader>) -> Result<()> {
+        (**self).end(source, input)
+    }
+
+    fn reset(&mut self, source: &mut AttributeSource, reader: &mut dyn CharReader) -> Result<()> {
+        (**self).reset(source, reader)
+    }
+
+    fn close(&mut self, reader: &mut dyn CharReader) -> Result<()> {
+        (**self).close(reader)
+    }
+
+    fn set_reader_test_point(&mut self) -> Result<()> {
+        (**self).set_reader_test_point()
+    }
+}
+
 /// A `TokenStream` whose input is a [`CharReader`], equivalent to
 /// `org.apache.lucene.analysis.Tokenizer`.
 ///

@@ -7,12 +7,15 @@
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, RwLock};
 
-use crate::analysis::{CharFilter, TokenFilterLogic, TokenizerLogic};
+use crate::analysis::{
+    default_token_attribute_factory, CharFilter, TokenFilterLogic, Tokenizer, TokenizerLogic,
+};
 use crate::error::{LuceneError, Result};
+use crate::util::attribute::AttributeFactory;
 use crate::util::automaton::case_folding;
 use crate::util::extra::Version;
 use crate::util::java_collections::JavaHashSet;
-use crate::util::resource_loader::{ClassLoader, ClassLoaderUtils};
+use crate::util::resource_loader::{ClassLoader, ClassLoaderUtils, ResourceLoaderAware};
 use crate::util::spi::{load_service_classes, lucene_core_class_loader, ServiceClass};
 
 /// Configuration key naming the Lucene version a factory should behave as.
@@ -897,11 +900,46 @@ pub trait TokenizerFactory: Send + Sync + std::fmt::Debug {
     /// every factory states its own.
     fn java_class_name(&self) -> &'static str;
 
-    /// Creates the tokenizer.
+    /// Creates a tokenizer over the default attribute factory.
     ///
-    /// Equivalent to `TokenizerFactory.create(AttributeFactory)`.
-    fn create(&self) -> Result<Box<dyn TokenizerLogic>>;
+    /// Equivalent to the final `TokenizerFactory.create()`,
+    /// `create(TokenStream.DEFAULT_TOKEN_ATTRIBUTE_FACTORY)`. Rust traits
+    /// cannot make a provided method final; implementors only provide
+    /// [`create_with_factory`](Self::create_with_factory).
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever [`create_with_factory`](Self::create_with_factory)
+    /// returns.
+    fn create(&self) -> Result<FactoryTokenizer> {
+        self.create_with_factory(default_token_attribute_factory())
+    }
+
+    /// Creates a tokenizer whose attributes come from `factory`.
+    ///
+    /// Equivalent to the abstract `TokenizerFactory.create(AttributeFactory)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns what the tokenizer's construction and configuration return.
+    fn create_with_factory(&self, factory: Arc<dyn AttributeFactory>) -> Result<FactoryTokenizer>;
+    /// Returns this factory as a [`ResourceLoaderAware`], or `None` when it is
+    /// not one.
+    ///
+    /// Stands in for Java's `factory instanceof ResourceLoaderAware` and the
+    /// cast that follows (`BaseTokenStreamFactoryTestCase.analysisFactory`
+    /// informs such a factory with its loader). The default answers `None`;
+    /// a factory that loads resources overrides it to return itself. No
+    /// factory of `lucene-core` does.
+    fn as_resource_loader_aware(&mut self) -> Option<&mut dyn ResourceLoaderAware> {
+        None
+    }
 }
+
+/// The `Tokenizer` a [`TokenizerFactory`] creates: a [`Tokenizer`] whose logic
+/// is the factory's own, behind a box, as Java's `create` returns the
+/// tokenizer through its `Tokenizer` supertype.
+pub type FactoryTokenizer = Tokenizer<Box<dyn TokenizerLogic>>;
 
 /// Builds a token filter from a configuration.
 ///
@@ -937,6 +975,17 @@ pub trait TokenFilterFactory: Send + Sync + std::fmt::Debug {
     fn normalize(&self, input: Box<dyn TokenFilterLogic>) -> Result<Box<dyn TokenFilterLogic>> {
         Ok(input)
     }
+    /// Returns this factory as a [`ResourceLoaderAware`], or `None` when it is
+    /// not one.
+    ///
+    /// Stands in for Java's `factory instanceof ResourceLoaderAware` and the
+    /// cast that follows (`BaseTokenStreamFactoryTestCase.analysisFactory`
+    /// informs such a factory with its loader). The default answers `None`;
+    /// a factory that loads resources overrides it to return itself. No
+    /// factory of `lucene-core` does.
+    fn as_resource_loader_aware(&mut self) -> Option<&mut dyn ResourceLoaderAware> {
+        None
+    }
 }
 
 /// Builds a character filter from a configuration.
@@ -971,6 +1020,17 @@ pub trait CharFilterFactory: Send + Sync + std::fmt::Debug {
     /// Equivalent to `org.apache.lucene.analysis.CharFilterFactory#normalize`.
     fn normalize(&self, input: Box<dyn CharFilter>) -> Result<Box<dyn CharFilter>> {
         Ok(input)
+    }
+    /// Returns this factory as a [`ResourceLoaderAware`], or `None` when it is
+    /// not one.
+    ///
+    /// Stands in for Java's `factory instanceof ResourceLoaderAware` and the
+    /// cast that follows (`BaseTokenStreamFactoryTestCase.analysisFactory`
+    /// informs such a factory with its loader). The default answers `None`;
+    /// a factory that loads resources overrides it to return itself. No
+    /// factory of `lucene-core` does.
+    fn as_resource_loader_aware(&mut self) -> Option<&mut dyn ResourceLoaderAware> {
+        None
     }
 }
 
@@ -1025,6 +1085,21 @@ impl<T: ?Sized> AnalysisFactoryClass<T> {
     /// Returns the class's binary name, Java's `Class.getName()`.
     pub fn get_name(&self) -> &'static str {
         self.name
+    }
+
+    /// Returns the class's public `Map<String, String>` constructor.
+    ///
+    /// Equivalent to `Class.getConstructor(Map.class)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns, for a class without one, the `NoSuchMethodException` Java
+    /// throws, as [`LuceneError::NoSuchMethod`] with its message
+    /// `<class>.<init>(java.util.Map)`.
+    pub fn get_constructor(&self) -> Result<AnalysisFactoryConstructor<T>> {
+        self.map_constructor.ok_or_else(|| {
+            LuceneError::NoSuchMethod(format!("{}.<init>(java.util.Map)", self.name))
+        })
     }
 
     /// Returns what reflection finds for the class's `NAME` field.
@@ -1740,12 +1815,16 @@ mod spi_tests {
 
         /// Refuses to create when the version was marked explicit, so that a
         /// test can observe the flag through the trait.
-        fn create(&self) -> Result<Box<dyn TokenizerLogic>> {
+        fn create_with_factory(
+            &self,
+            factory: Arc<dyn crate::util::attribute::AttributeFactory>,
+        ) -> Result<FactoryTokenizer> {
             if self.base.is_explicit_lucene_match_version() {
                 return Err(LuceneError::illegal_state("explicit version"));
             }
-            Ok(Box::new(
-                crate::analysis::standard::StandardTokenizerLogic::new(),
+            Ok(crate::analysis::Tokenizer::with_factory(
+                factory,
+                Box::new(crate::analysis::standard::StandardTokenizerLogic::new()),
             ))
         }
     }

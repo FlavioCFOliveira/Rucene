@@ -42,9 +42,11 @@ grep -v '^#' "$here/oracles.txt" | while read -r main extra; do
   extra="${extra//@RANDOMIZEDTESTING_SRC@/$rt_src}"
   main_cp="$cp"
   case "$main" in org.apache.lucene.*) main_cp="$lucene_cp" ;; esac
-  # --add-opens: ZigguratOracle reads RandomSupport.DoubleZigguratTables.
+  # --add-opens: ZigguratOracle reads RandomSupport.DoubleZigguratTables,
+  # TimeZoneOracle the transition table of sun.util.calendar.ZoneInfo.
   # shellcheck disable=SC2086 # `extra` holds the further arguments.
   java -ea --add-opens java.base/jdk.internal.util.random=ALL-UNNAMED \
+    --add-opens java.base/sun.util.calendar=ALL-UNNAMED \
     -cp "$work/classes:$main_cp" "$main" "$work/out" $extra 2>/dev/null
 done
 cp "$work/out"/*.tsv "$fixtures/"
