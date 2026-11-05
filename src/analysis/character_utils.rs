@@ -7,7 +7,10 @@
 //! character takes two slots; the port's are `char`s, Unicode scalar values,
 //! one slot each. The helpers therefore apply Java's per-code-point rules to
 //! one slot at a time, and the conversions between code points and characters
-//! are copies.
+//! are copies: `to_code_points` and `to_chars` take and return counts of
+//! slots, where Java's `srcLen` of `toCodePoints` and the result of `toChars`
+//! count UTF-16 units. [`fill`] keeps Java's budget, which counts UTF-16
+//! units.
 
 #![deny(unsafe_code)]
 
@@ -22,6 +25,16 @@ pub struct CharacterBuffer {
     buffer: Vec<char>,
     offset: usize,
     length: usize,
+    /// Characters read from the reader that did not fit the UTF-16 budget of
+    /// the last [`fill`]; the next `fill` installs them first.
+    ///
+    /// Java's `lastTrailingHighSurrogate` holds the high surrogate of a pair
+    /// that would end a full buffer, and the characters past the budget stay
+    /// in Java's reader, which hands out `char`s. A [`CharReader`] hands out
+    /// whole `char`s, so a read can return more UTF-16 units than requested;
+    /// those characters, and a supplementary character straddling the budget,
+    /// wait here.
+    pending: Vec<char>,
 }
 
 impl CharacterBuffer {
@@ -31,6 +44,7 @@ impl CharacterBuffer {
             buffer,
             offset,
             length,
+            pending: Vec::new(),
         }
     }
 
@@ -45,6 +59,10 @@ impl CharacterBuffer {
     }
 
     /// Returns the length of valid data starting at [`Self::offset`].
+    ///
+    /// The length counts the buffer's slots, `char`s, where Java's
+    /// `getLength()` counts UTF-16 code units: it bounds the data a caller
+    /// walks, which is what Java's callers use it for.
     pub fn length(&self) -> usize {
         self.length
     }
@@ -53,6 +71,7 @@ impl CharacterBuffer {
     pub fn reset(&mut self) {
         self.offset = 0;
         self.length = 0;
+        self.pending.clear();
     }
 }
 
@@ -179,18 +198,22 @@ pub fn to_chars(
     Ok(src_len)
 }
 
-/// Fills `buffer` with up to `num_chars` characters from `reader`.
+/// Fills `buffer` with up to `num_chars` UTF-16 code units of characters
+/// from `reader`.
 ///
-/// Equivalent to `CharacterUtils.fill(CharacterBuffer, Reader, int)`. In Java
-/// this method is careful not to split a surrogate pair across buffer
-/// boundaries. Rust `char`s are complete scalar values, so no special handling
-/// is required.
+/// Equivalent to `CharacterUtils.fill(CharacterBuffer, Reader, int)`
+/// (`CharacterUtils.java:140-174`). `num_chars` counts UTF-16 code units, as
+/// Java's `char`s do, so a supplementary character takes two of them. A
+/// supplementary character that would straddle the budget is held back for
+/// the next call, as Java holds back the high surrogate that would end a full
+/// buffer, and the call still reports a full buffer; the buffer then holds
+/// `num_chars - 1` units.
 ///
 /// # Errors
 ///
 /// Returns `LuceneError::IllegalArgument` with Lucene's message,
 /// `numChars must be >= 2 and <= the buffer size`, if `num_chars` is out of
-/// range.
+/// range, and any error of `reader`.
 pub fn fill(
     buffer: &mut CharacterBuffer,
     reader: &mut dyn CharReader,
@@ -202,9 +225,44 @@ pub fn fill(
         ));
     }
     buffer.offset = 0;
-    let read = read_fully(reader, &mut buffer.buffer, 0, num_chars)?;
-    buffer.length = read;
-    Ok(buffer.length == num_chars)
+    // Install the characters a previous call read but could not hold.
+    let mut incoming = std::mem::take(&mut buffer.pending);
+    let mut length = 0;
+    let mut units = 0;
+    loop {
+        for (i, &c) in incoming.iter().enumerate() {
+            let next = units + c.len_utf16();
+            if next > num_chars {
+                // Past the budget: Java's reader would still hold these. A
+                // supplementary character crossing the budget fills Java's
+                // buffer with its high surrogate, which Java then holds back.
+                if units < num_chars {
+                    units = num_chars;
+                }
+                buffer.pending.extend_from_slice(&incoming[i..]);
+                break;
+            }
+            buffer.buffer[length] = c;
+            length += 1;
+            units = next;
+        }
+        if units >= num_chars {
+            break;
+        }
+        // `readFully(reader, charBuffer, offset, numChars - offset)`: each
+        // character takes at least one unit, so asking for the remaining
+        // units in characters never misses one Java would read.
+        let want = num_chars - units;
+        let mut scratch = vec!['\0'; want];
+        let read = reader.read(&mut scratch)?;
+        if read == 0 {
+            break;
+        }
+        scratch.truncate(read);
+        incoming = scratch;
+    }
+    buffer.length = length;
+    Ok(units == num_chars)
 }
 
 /// Convenience equivalent of [`fill(buffer, reader, buffer.buffer.len())`](fill).
@@ -212,23 +270,6 @@ pub fn fill(
 /// Equivalent to the overload `CharacterUtils.fill(CharacterBuffer, Reader)`.
 pub fn fill_buffer(buffer: &mut CharacterBuffer, reader: &mut dyn CharReader) -> Result<bool> {
     fill(buffer, reader, buffer.buffer.len())
-}
-
-fn read_fully(
-    reader: &mut dyn CharReader,
-    dest: &mut [char],
-    offset: usize,
-    len: usize,
-) -> Result<usize> {
-    let mut read = 0;
-    while read < len {
-        let n = reader.read(&mut dest[offset + read..offset + len])?;
-        if n == 0 {
-            break;
-        }
-        read += n;
-    }
-    Ok(read)
 }
 
 #[cfg(test)]
@@ -335,6 +376,63 @@ mod tests {
 
         let full = fill(&mut buf, &mut reader, 5).unwrap();
         assert!(!full);
+        assert_eq!(buf.length(), 0);
+    }
+
+    fn data(buf: &CharacterBuffer) -> String {
+        buf.buffer()[buf.offset()..buf.offset() + buf.length()]
+            .iter()
+            .collect()
+    }
+
+    /// `TestCharacterUtils.testFillNoHighSurrogate`.
+    #[test]
+    fn fill_no_high_surrogate() {
+        let mut reader = crate::analysis::StringCharReader::new("helloworld");
+        let mut buf = new_character_buffer(6).unwrap();
+        assert!(fill_buffer(&mut buf, &mut reader).unwrap());
+        assert_eq!(buf.offset(), 0);
+        assert_eq!(buf.length(), 6);
+        assert_eq!(data(&buf), "hellow");
+        assert!(!fill_buffer(&mut buf, &mut reader).unwrap());
+        assert_eq!(buf.length(), 4);
+        assert_eq!(buf.offset(), 0);
+        assert_eq!(data(&buf), "orld");
+        assert!(!fill_buffer(&mut buf, &mut reader).unwrap());
+    }
+
+    /// `TestCharacterUtils.testFill` over paired surrogates only (a `&str`
+    /// cannot hold the lone ones of Lucene's input): the budget counts UTF-16
+    /// units, and a supplementary character straddling it waits for the next
+    /// call while the call reports a full buffer.
+    #[test]
+    fn fill_counts_utf16_units_and_holds_a_straddling_pair() {
+        let mut reader = crate::analysis::StringCharReader::new("1234\u{1041C}789123\u{1041C}");
+        let mut buf = new_character_buffer(5).unwrap();
+        assert!(fill_buffer(&mut buf, &mut reader).unwrap());
+        assert_eq!(data(&buf), "1234");
+        assert!(fill_buffer(&mut buf, &mut reader).unwrap());
+        assert_eq!(data(&buf), "\u{1041C}789");
+        assert!(fill_buffer(&mut buf, &mut reader).unwrap());
+        assert_eq!(data(&buf), "123\u{1041C}");
+        assert!(!fill_buffer(&mut buf, &mut reader).unwrap());
+        assert_eq!(buf.length(), 0);
+    }
+
+    /// A read that returns more UTF-16 units than the budget keeps the
+    /// characters past it for the next call, as Java's reader would.
+    #[test]
+    fn fill_keeps_characters_read_past_the_budget() {
+        let text = "\u{1F4A9}\u{1F4A9}\u{1F4A9}ab";
+        let mut reader = crate::analysis::StringCharReader::new(text);
+        let mut buf = new_character_buffer(4).unwrap();
+        assert!(fill_buffer(&mut buf, &mut reader).unwrap());
+        assert_eq!(data(&buf), "\u{1F4A9}\u{1F4A9}");
+        assert!(fill_buffer(&mut buf, &mut reader).unwrap());
+        assert_eq!(data(&buf), "\u{1F4A9}ab");
+        assert!(!fill_buffer(&mut buf, &mut reader).unwrap());
+        assert_eq!(buf.length(), 0);
+        buf.reset();
         assert_eq!(buf.length(), 0);
     }
 }

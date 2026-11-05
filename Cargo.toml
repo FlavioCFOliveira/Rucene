@@ -275,3 +275,7 @@ path = "tests/portability/prefix_coded_terms.rs"
 [[test]]
 name = "portability_index_interop"
 path = "tests/portability/index_interop.rs"
+
+[[test]]
+name = "portability_utf16_offsets"
+path = "tests/portability/utf16_offsets.rs"

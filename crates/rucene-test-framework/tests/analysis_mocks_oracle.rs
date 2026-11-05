@@ -20,8 +20,9 @@ use randomizedtesting::jdk::system;
 use randomizedtesting::junit::{ClassRule, JUnitCore, Request, Test};
 use randomizedtesting::{default_supplier, RandomizedContext, Randomness};
 use rucene::analysis::{
-    new_standard_tokenizer, Analyzer, AnalyzerState, GlobalReuseStrategy, StringCharReader,
-    TokenFilter, TokenFilterLogic, TokenStream, TokenStreamComponents, Tokenizer, TokenizerLogic,
+    new_standard_tokenizer, Analyzer, AnalyzerState, GlobalReuseStrategy, StandardAnalyzer,
+    StringCharReader, TokenFilter, TokenFilterLogic, TokenStream, TokenStreamComponents, Tokenizer,
+    TokenizerLogic,
 };
 use rucene::error::Result;
 use rucene::util::attribute::AttributeSource;
@@ -1277,6 +1278,406 @@ fn core() {
     });
 }
 
+// ---------------------------------------------------------------------------
+// u16
+// ---------------------------------------------------------------------------
+
+const U16: [&str; 13] = [
+    CORPUS[4],
+    CORPUS[6],
+    "\u{29B05}\u{8271}\u{935F}\u{43F9}\u{612F}\u{701B}",
+    "\u{1F4A9} \u{1F4A9}\u{1F4A9}",
+    "poo\u{1F4A9}poo",
+    "\u{1F4A9}\u{4E2D}\u{570B}\u{1F4A9}",
+    "\u{1F469}\u{200D}\u{2764}\u{FE0F}\u{200D}\u{1F469}",
+    "\u{1F468}\u{1F3FC}\u{200D}\u{2695}\u{FE0F}",
+    "\u{1F1FA}\u{1F1F8}\u{1F1FA}\u{1F1F8}",
+    "12345678\u{10300}",
+    "ab cd toolong xy z",
+    CORPUS[1],
+    CORPUS[8],
+];
+
+/// The `u16` rows where Rucene's `StandardTokenizer` still differs from
+/// Lucene's, by causes outside the UTF-16 accounting these rows pin, all in
+/// the scanner's declared divergence (a UAX #29 segmentation plus a token-type
+/// heuristic instead of the JFlex automaton of `StandardTokenizerImpl`):
+///
+/// * A: emoji sequences (ZWJ sequences, modifiers, regional-indicator pairs
+///   cut by the buffer) are split or kept where the JFlex grammar does not;
+/// * B: a token mixing digits and a supplementary letter is typed `<NUM>`
+///   (the heuristic tests ASCII letters only) where Lucene says
+///   `<ALPHANUM>`;
+/// * C: the scanner reads its whole input at `reset`, so a `MockCharFilter`
+///   has recorded every offset correction before the first token, while the
+///   JFlex buffer of 1 or 2 `char`s has read only up to the token, and
+///   Lucene corrects the offset with the corrections recorded so far.
+///
+/// The test requires each of them to still differ, so the list shrinks with
+/// the scanner.
+const U16_STANDARD_DIVERGENT: &[&str] = &[
+    // A
+    "sa.c6.m255",
+    "sa.c6.m3",
+    "sa.c7.m255",
+    "sa.c7.m3",
+    "sa.c8.m3",
+    "std.c6.r0.m2",
+    "std.c6.r0.m255",
+    "std.c6.r0.m5",
+    "std.c6.r1.m2",
+    "std.c6.r1.m255",
+    "std.c6.r1.m5",
+    "std.c6.r2.m2",
+    "std.c6.r2.m255",
+    "std.c6.r2.m5",
+    "std.c6.r3.m2",
+    "std.c6.r3.m255",
+    "std.c6.r3.m5",
+    "std.c7.r0.m2",
+    "std.c7.r0.m255",
+    "std.c7.r0.m5",
+    "std.c7.r1.m2",
+    "std.c7.r1.m255",
+    "std.c7.r1.m5",
+    "std.c7.r2.m2",
+    "std.c7.r2.m255",
+    "std.c7.r2.m5",
+    "std.c7.r3.m2",
+    "std.c7.r3.m255",
+    "std.c7.r3.m5",
+    "std.c8.r0.m2",
+    "std.c8.r1.m2",
+    "std.c8.r2.m2",
+    "std.c8.r3.m2",
+    // B
+    "sa.c9.m255",
+    "std.c9.r0.m255",
+    "std.c9.r0.m5",
+    "std.c9.r1.m255",
+    "std.c9.r2.m255",
+    "std.c9.r3.m255",
+    "std.c9.r3.m5",
+    // C
+    "std.c0.r1.m1",
+    "std.c1.r2.m1",
+    "std.c4.r2.m1",
+    "std.c9.r1.m1",
+    "std.c9.r1.m2",
+    "std.c9.r2.m1",
+    "std.c9.r2.m2",
+    "std.c10.r1.m1",
+    "std.c10.r1.m2",
+    "std.c10.r2.m1",
+    "std.c10.r3.m1",
+    "std.c11.r1.m1",
+    "std.c11.r1.m2",
+    "std.c11.r2.m1",
+    "std.c11.r2.m2",
+    "std.c11.r3.m1",
+    "std.c11.r3.m2",
+    "std.c12.r1.m1",
+    "std.c12.r1.m2",
+    "std.c12.r2.m1",
+    "std.c12.r3.m1",
+    "std.c12.r3.m2",
+];
+
+/// The reader of `u16` case `r`: plain, or behind a `MockCharFilter` of
+/// remainder 0, 2, 7.
+fn u16_reader(r: usize, text: &str) -> Box<dyn rucene::analysis::CharReader> {
+    if r == 0 {
+        reader(text)
+    } else {
+        Box::new(MockCharFilter::new(reader(text), [0, 0, 2, 7][r]).unwrap())
+    }
+}
+
+fn utf16() {
+    let maxes = [255, 5, 2, 1];
+    for (c, text) in U16.iter().enumerate() {
+        for r in 0..4 {
+            for max in maxes {
+                row(
+                    "u16",
+                    0,
+                    &format!("std.c{c}.r{r}.m{max}"),
+                    ctx(seeds()[0], || {
+                        let mut st = new_standard_tokenizer();
+                        st.logic_mut().set_max_token_length(max).unwrap();
+                        st.set_reader(u16_reader(r, text)).unwrap();
+                        dump(&mut st)
+                    }),
+                );
+            }
+            for (pi, pattern) in [&WHITESPACE, &SIMPLE, &KEYWORD].into_iter().enumerate() {
+                row(
+                    "u16",
+                    0,
+                    &format!("mock.c{c}.r{r}.p{pi}"),
+                    ctx(seeds()[0], || {
+                        let mut t =
+                            MockTokenizer::with_max_token_length(Arc::clone(pattern), false, 3)
+                                .unwrap();
+                        t.set_reader(u16_reader(r, text)).unwrap();
+                        dump(&mut t)
+                    }),
+                );
+            }
+        }
+        for max in [255, 3] {
+            row(
+                "u16",
+                0,
+                &format!("sa.c{c}.m{max}"),
+                ctx(seeds()[0], || {
+                    let mut a = StandardAnalyzer::new();
+                    a.set_max_token_length(max);
+                    let first = dump_rc(&a.token_stream_from_str("f", text).unwrap());
+                    let twice = format!("{text} {text}");
+                    let second = dump_rc(&a.token_stream_from_str("f", &twice).unwrap());
+                    format!("{first}\t{second}")
+                }),
+            );
+        }
+        for seed in [seeds()[0], seeds()[3], seeds()[12]] {
+            row(
+                "u16",
+                seed,
+                &format!("ma.c{c}"),
+                ctx(seed, || {
+                    let a = MockAnalyzer::new(&*random());
+                    let ts = a.token_stream_from_str("f", text).unwrap();
+                    let name = impl_name(ts.borrow().attribute_source());
+                    format!("{}\t{}", name, dump_rc(&ts))
+                }),
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// fac
+// ---------------------------------------------------------------------------
+
+fn factory(f: usize) -> Arc<dyn rucene::util::attribute::AttributeFactory> {
+    match f {
+        0 => rucene::analysis::default_token_attribute_factory(),
+        1 => Token::token_attribute_factory(),
+        _ => rucene::analysis::default_attribute_factory(),
+    }
+}
+
+fn chain(t: Box<dyn TokenStream>, syn: bool) -> Result<Box<dyn TokenStream>> {
+    let stops = rucene::analysis::CharArraySet::from_iter(["the", "a", "and", "is", "it"], false);
+    let ts: Box<dyn TokenStream> = Box::new(rucene::analysis::new_stop_filter(
+        Box::new(rucene::analysis::new_lower_case_filter(t)?),
+        stops,
+    )?);
+    Ok(if syn {
+        Box::new(MockSynonymFilter::new(ts)?)
+    } else {
+        ts
+    })
+}
+
+fn standard(f: usize, text: &str) -> Result<rucene::analysis::StandardTokenizer> {
+    let mut t = rucene::analysis::new_standard_tokenizer_with_factory(factory(f))?;
+    t.set_reader(reader(text))?;
+    Ok(t)
+}
+
+/// Consumes the stream up to `end()`, without closing it.
+fn pass(ts: &mut dyn TokenStream) -> Result<String> {
+    let mut sb = String::new();
+    ts.reset()?;
+    while ts.increment_token()? {
+        sb.push_str(&tok(ts.attribute_source()));
+        sb.push(' ');
+    }
+    ts.end()?;
+    sb.push_str("end:");
+    sb.push_str(&tok(ts.attribute_source()));
+    Ok(sb)
+}
+
+/// `Paths.walk()`: every base token, then each of its graphs.
+fn walk(g: &mut rucene::analysis::graph_token_filter::GraphTokenFilter) -> Result<String> {
+    g.attribute_source_mut()
+        .add_attribute_interface::<dyn rucene::analysis::CharTermAttribute>()?;
+    let term = |g: &rucene::analysis::graph_token_filter::GraphTokenFilter| {
+        let t = g
+            .attribute_source()
+            .get_attribute_interface::<dyn rucene::analysis::CharTermAttribute>()
+            .unwrap();
+        units(&t.buffer()[..t.length()].iter().collect::<String>())
+    };
+    let mut sb = String::new();
+    g.reset()?;
+    while g.increment_base_token()? {
+        sb.push('[');
+        sb.push_str(&term(g));
+        loop {
+            sb.push_str(" {");
+            while g.increment_graph_token()? {
+                sb.push_str(&term(g));
+                sb.push(',');
+            }
+            sb.push('}');
+            if !g.increment_graph()? {
+                break;
+            }
+        }
+        sb.push_str("] ");
+    }
+    g.end()?;
+    sb.push_str(&format!(
+        "end:{} {}",
+        tok(g.attribute_source()),
+        g.get_trailing_positions()
+    ));
+    g.close()?;
+    Ok(sb)
+}
+
+#[derive(Debug)]
+struct FacAnalyzer {
+    state: AnalyzerState,
+    f: usize,
+}
+
+impl Analyzer for FacAnalyzer {
+    fn analyzer_state(&self) -> &AnalyzerState {
+        &self.state
+    }
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.tests.analysis.AnalysisMocksOracle$2"
+    }
+    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+        let t = Rc::new(RefCell::new(
+            rucene::analysis::new_standard_tokenizer_with_factory(factory(self.f))?,
+        ));
+        let ts = chain(shared(&t), true)?;
+        let ts: Rc<RefCell<dyn TokenStream>> = Rc::new(RefCell::new(BoxedStream(ts)));
+        Ok(components(t, ts))
+    }
+}
+
+/// A boxed stream as a sized `TokenStream`.
+#[derive(Debug)]
+struct BoxedStream(Box<dyn TokenStream>);
+
+impl TokenStream for BoxedStream {
+    fn increment_token(&mut self) -> Result<bool> {
+        self.0.increment_token()
+    }
+    fn end(&mut self) -> Result<()> {
+        self.0.end()
+    }
+    fn reset(&mut self) -> Result<()> {
+        self.0.reset()
+    }
+    fn close(&mut self) -> Result<()> {
+        self.0.close()
+    }
+    fn attribute_source(&self) -> &AttributeSource {
+        self.0.attribute_source()
+    }
+    fn attribute_source_mut(&mut self) -> &mut AttributeSource {
+        self.0.attribute_source_mut()
+    }
+}
+
+fn query_string(q: Result<Option<Arc<dyn rucene::search::Query>>>) -> String {
+    match q.unwrap() {
+        Some(q) => q.to_query_string(""),
+        None => "null".to_string(),
+    }
+}
+
+fn factories() {
+    for f in 0..3 {
+        for c in [1, 4, 7, 9] {
+            let text = CORPUS[c];
+            let p = format!("f{f}.c{c}.");
+            row(
+                "fac",
+                0,
+                &format!("{p}std"),
+                ctx(seeds()[0], || {
+                    let mut t = standard(f, text).unwrap();
+                    format!("{}\t{}", impl_name(t.attribute_source()), dump(&mut t))
+                }),
+            );
+            row(
+                "fac",
+                0,
+                &format!("{p}lcstop"),
+                ctx(seeds()[0], || {
+                    dump(&mut *chain(Box::new(standard(f, text).unwrap()), false).unwrap())
+                }),
+            );
+            row(
+                "fac",
+                0,
+                &format!("{p}syn"),
+                ctx(seeds()[0], || {
+                    dump(&mut *chain(Box::new(standard(f, text).unwrap()), true).unwrap())
+                }),
+            );
+            row(
+                "fac",
+                0,
+                &format!("{p}cache"),
+                ctx(seeds()[0], || {
+                    let mut cf = rucene::analysis::CachingTokenFilter::new(
+                        chain(Box::new(standard(f, text).unwrap()), true).unwrap(),
+                    );
+                    let first = pass(&mut cf).unwrap();
+                    let second = pass(&mut cf).unwrap();
+                    cf.close().unwrap();
+                    format!("{first}\t{second}")
+                }),
+            );
+            row(
+                "fac",
+                0,
+                &format!("{p}graph"),
+                ctx(seeds()[0], || {
+                    let mut g = rucene::analysis::graph_token_filter::GraphTokenFilter::new(
+                        chain(Box::new(standard(f, text).unwrap()), true).unwrap(),
+                    )
+                    .unwrap();
+                    walk(&mut g).unwrap()
+                }),
+            );
+            row(
+                "fac",
+                0,
+                &format!("{p}qb"),
+                ctx(seeds()[0], || {
+                    use rucene::util::query_builder::{QueryBuilder, QueryBuilderOps};
+                    let a: Arc<dyn Analyzer> = Arc::new(FacAnalyzer {
+                        state: AnalyzerState::new(Box::new(GlobalReuseStrategy)),
+                        f,
+                    });
+                    let qb = QueryBuilder::new(a);
+                    format!(
+                        "{}\t{}\t{}",
+                        query_string(qb.create_boolean_query("f", text)),
+                        query_string(qb.create_phrase_query("f", text)),
+                        query_string(qb.create_boolean_query_with_operator(
+                            "f",
+                            text,
+                            rucene::search::Occur::MUST
+                        ))
+                    )
+                }),
+            );
+        }
+    }
+}
+
 fn scenarios() {
     tokenizers();
     lengths();
@@ -1287,6 +1688,8 @@ fn scenarios() {
     misuse();
     check_random_data_parity();
     core();
+    utf16();
+    factories();
 }
 
 #[test]
@@ -1327,6 +1730,16 @@ fn analysis_mocks_match_lucene() {
     for line in ROWS.lock().unwrap().iter() {
         let r: Vec<String> = line.split('\t').map(str::to_string).collect();
         actual.insert(key(&r), r[3..].join("\t"));
+    }
+    for &step in U16_STANDARD_DIVERGENT {
+        let k = format!("u16\t0\t{step}");
+        let (Some(e), Some(a)) = (expected.remove(&k), actual.remove(&k)) else {
+            panic!("missing row {k}");
+        };
+        assert_ne!(
+            e, a,
+            "{k} now matches Lucene: remove it from U16_STANDARD_DIVERGENT"
+        );
     }
     assert_same("analysis mocks", &expected, &actual);
 }

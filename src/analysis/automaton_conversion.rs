@@ -6,14 +6,32 @@
 //! through a synonym expansion.
 
 use crate::analysis::tokenattributes::{
-    CharTermAttribute, OffsetAttribute, PackedTokenAttributeImpl, PositionIncrementAttribute,
-    PositionLengthAttribute, TermToBytesRefAttribute,
+    CharTermAttribute, OffsetAttribute, PositionIncrementAttribute, PositionLengthAttribute,
+    TermToBytesRefAttribute,
 };
 use crate::analysis::TokenStream;
 use crate::error::{LuceneError, Result};
 use crate::util::automaton::{Automaton, AutomatonBuilder};
 use crate::util::ring_buffer::{Resettable, RollingBuffer};
 use crate::util::{AttributeSource, BytesRef};
+
+/// The attribute interface `I` of `source`, which the caller added.
+fn interface<I: crate::util::attribute::AttributeInterface + ?Sized>(
+    source: &AttributeSource,
+) -> std::cell::Ref<'_, I> {
+    source
+        .get_attribute_interface::<I>()
+        .expect("INVARIANT: the attribute was added before the stream was read")
+}
+
+/// The attribute interface `I` of `source`, mutably; see [`interface`].
+fn interface_mut<I: crate::util::attribute::AttributeInterface + ?Sized>(
+    source: &AttributeSource,
+) -> std::cell::RefMut<'_, I> {
+    source
+        .get_attribute_interface_mut::<I>()
+        .expect("INVARIANT: the attribute was added before the stream was read")
+}
 
 /// Arc label separating one position from the next.
 ///
@@ -173,6 +191,15 @@ impl TokenStreamToAutomaton {
         let mut builder = AutomatonBuilder::new();
         builder.create_state();
 
+        // `TokenStreamToAutomaton.java:112-115`.
+        {
+            let source = input.attribute_source_mut();
+            source.add_attribute_interface::<dyn TermToBytesRefAttribute>()?;
+            source.add_attribute_interface::<dyn PositionIncrementAttribute>()?;
+            source.add_attribute_interface::<dyn PositionLengthAttribute>()?;
+            source.add_attribute_interface::<dyn OffsetAttribute>()?;
+        }
+
         input.reset()?;
 
         // Only temporarily holds states ahead of our current position.
@@ -184,15 +211,13 @@ impl TokenStreamToAutomaton {
         while input.increment_token()? {
             let (term_bytes, mut pos_inc, pos_len, end_offset) = {
                 let source = input.attribute_source();
-                match source.get_attribute::<PackedTokenAttributeImpl>() {
-                    Some(att) => (
-                        att.get_bytes_ref(),
-                        att.get_position_increment(),
-                        att.get_position_length(),
-                        att.end_offset(),
-                    ),
-                    None => (BytesRef::default(), 1, 1, 0),
-                }
+                let term_bytes = interface::<dyn TermToBytesRefAttribute>(source).get_bytes_ref();
+                (
+                    term_bytes,
+                    interface::<dyn PositionIncrementAttribute>(source).get_position_increment(),
+                    interface::<dyn PositionLengthAttribute>(source).get_position_length(),
+                    interface::<dyn OffsetAttribute>(source).end_offset(),
+                )
             };
             if !self.preserve_position_increments && pos_inc > 1 {
                 pos_inc = 1;
@@ -277,10 +302,10 @@ impl TokenStreamToAutomaton {
 
         let (mut end_pos_inc, final_end_offset) = {
             let source = input.attribute_source();
-            match source.get_attribute::<PackedTokenAttributeImpl>() {
-                Some(att) => (att.get_position_increment(), att.end_offset()),
-                None => (0, 0),
-            }
+            (
+                interface::<dyn PositionIncrementAttribute>(source).get_position_increment(),
+                interface::<dyn OffsetAttribute>(source).end_offset(),
+            )
         };
         if end_pos_inc == 0 && self.final_offset_gap_as_hole && final_end_offset > max_offset {
             end_pos_inc = 1;
@@ -358,8 +383,14 @@ impl std::fmt::Debug for TopoTokenStream {
 
 impl TopoTokenStream {
     fn new(edges_by_pos: Vec<Vec<EdgeToken>>) -> Result<Self> {
-        let mut source = AttributeSource::new();
-        source.add_attribute::<PackedTokenAttributeImpl>()?;
+        // `TokenStream()` builds over `DEFAULT_TOKEN_ATTRIBUTE_FACTORY`; the
+        // fields add the four attributes (`AutomatonToTokenStream.java:120-123`).
+        let mut source =
+            AttributeSource::new_with_factory(crate::analysis::default_token_attribute_factory());
+        source.add_attribute_interface::<dyn CharTermAttribute>()?;
+        source.add_attribute_interface::<dyn PositionIncrementAttribute>()?;
+        source.add_attribute_interface::<dyn PositionLengthAttribute>()?;
+        source.add_attribute_interface::<dyn OffsetAttribute>()?;
         Ok(Self {
             edges_by_pos,
             current_pos: 0,
@@ -386,15 +417,17 @@ impl TokenStream for TopoTokenStream {
         let pos = self.current_pos;
         let first_of_layer = self.current_edge_index == 0;
         self.source.clear_attributes();
-        if let Some(mut att) = self.source.get_attribute_mut::<PackedTokenAttributeImpl>() {
-            if let Some(c) = char::from_u32(edge.value as u32) {
-                att.append_char(c);
-            }
-            // Only the first arc of a layer advances the position.
-            att.set_position_increment(if first_of_layer { 1 } else { 0 });
-            att.set_position_length((edge.destination - pos) as i32);
-            att.set_offset(pos as i32, edge.destination as i32);
+        let source = &self.source;
+        if let Some(c) = char::from_u32(edge.value as u32) {
+            interface_mut::<dyn CharTermAttribute>(source).append_char(c);
         }
+        // Only the first arc of a layer advances the position.
+        interface_mut::<dyn PositionIncrementAttribute>(source)
+            .set_position_increment(if first_of_layer { 1 } else { 0 });
+        interface_mut::<dyn PositionLengthAttribute>(source)
+            .set_position_length((edge.destination - pos) as i32);
+        interface_mut::<dyn OffsetAttribute>(source)
+            .set_offset(pos as i32, edge.destination as i32);
         self.current_edge_index += 1;
         Ok(true)
     }
@@ -408,10 +441,8 @@ impl TokenStream for TopoTokenStream {
     fn end(&mut self) -> Result<()> {
         let last = self.edges_by_pos.len().saturating_sub(1) as i32;
         self.source.clear_attributes();
-        if let Some(mut att) = self.source.get_attribute_mut::<PackedTokenAttributeImpl>() {
-            att.set_position_increment(0);
-            att.set_offset(last, last);
-        }
+        interface_mut::<dyn PositionIncrementAttribute>(&self.source).set_position_increment(0);
+        interface_mut::<dyn OffsetAttribute>(&self.source).set_offset(last, last);
         Ok(())
     }
 

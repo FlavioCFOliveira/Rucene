@@ -19,15 +19,22 @@ import java.io.Reader;
 import java.io.StringReader;
 import java.io.StringWriter;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.Callable;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import org.apache.lucene.analysis.Analyzer;
+import org.apache.lucene.analysis.CachingTokenFilter;
+import org.apache.lucene.analysis.CharArraySet;
+import org.apache.lucene.analysis.GraphTokenFilter;
+import org.apache.lucene.analysis.LowerCaseFilter;
+import org.apache.lucene.analysis.StopFilter;
 import org.apache.lucene.analysis.TokenFilter;
 import org.apache.lucene.analysis.TokenStream;
 import org.apache.lucene.analysis.Tokenizer;
+import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.analysis.standard.StandardTokenizer;
 import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
 import org.apache.lucene.analysis.tokenattributes.FlagsAttribute;
@@ -40,7 +47,10 @@ import org.apache.lucene.analysis.tokenattributes.TermFrequencyAttribute;
 import org.apache.lucene.analysis.tokenattributes.TermToBytesRefAttribute;
 import org.apache.lucene.analysis.tokenattributes.TypeAttribute;
 import org.apache.lucene.tests.util.TestUtil;
+import org.apache.lucene.search.BooleanClause;
+import org.apache.lucene.util.AttributeFactory;
 import org.apache.lucene.util.BytesRef;
+import org.apache.lucene.util.QueryBuilder;
 import org.apache.lucene.util.automaton.CharacterRunAutomaton;
 import org.apache.lucene.util.automaton.RegExp;
 import org.junit.runner.JUnitCore;
@@ -806,6 +816,227 @@ public final class AnalysisMocksOracle {
         });
   }
 
+
+  // ---------------------------------------------------------------------------
+  // u16: offsets, finalOffset and length limits in UTF-16 units over supplementary text; the
+  // inputs are CORPUS[4], CORPUS[6] and those of Lucene's TestStandardAnalyzer (testSupplementary,
+  // testEmoji*, testSplitSurrogatePairWithSpoonFeedReader, testMaxTokenLengthNonDefault), then CORPUS[1] and
+  // CORPUS[8] for the final offset after trailing and leading whitespace
+  // ---------------------------------------------------------------------------
+
+  public static final String[] U16 = {
+    CORPUS[4],
+    CORPUS[6],
+    "\uD866\uDF05\u8271\u935F\u43F9\u612F\u701B",
+    "\uD83D\uDCA9 \uD83D\uDCA9\uD83D\uDCA9",
+    "poo\uD83D\uDCA9poo",
+    "\uD83D\uDCA9\u4E2D\u570B\uD83D\uDCA9",
+    "\uD83D\uDC69\u200D\u2764\uFE0F\u200D\uD83D\uDC69",
+    "\uD83D\uDC68\uD83C\uDFFC\u200D\u2695\uFE0F",
+    "\uD83C\uDDFA\uD83C\uDDF8\uD83C\uDDFA\uD83C\uDDF8",
+    "12345678\uD800\uDF00",
+    "ab cd toolong xy z",
+    CORPUS[1],
+    CORPUS[8],
+  };
+
+  /** The reader of u16 case {@code r}: plain, or behind a MockCharFilter of remainder 0, 2, 7. */
+  static Reader u16Reader(int r, String text) {
+    Reader in = new StringReader(text);
+    return r == 0 ? in : new MockCharFilter(in, new int[] {0, 0, 2, 7}[r]);
+  }
+
+  static void utf16() throws Exception {
+    int[] maxes = {StandardAnalyzer.DEFAULT_MAX_TOKEN_LENGTH, 5, 2, 1};
+    for (int c = 0; c < U16.length; c++) {
+      for (int r = 0; r < 4; r++) {
+        for (int m = 0; m < maxes.length; m++) {
+          final int fc = c, fr = r, fm = m;
+          row(
+              "u16",
+              0,
+              "std.c" + c + ".r" + r + ".m" + maxes[m],
+              ctx(
+                  SEEDS[0],
+                  () -> {
+                    StandardTokenizer st = new StandardTokenizer();
+                    st.setMaxTokenLength(maxes[fm]);
+                    st.setReader(u16Reader(fr, U16[fc]));
+                    return dump(st);
+                  }));
+        }
+        final int fc = c, fr = r;
+        for (int pi = 0; pi < 3; pi++) {
+          final int fpi = pi;
+          row(
+              "u16",
+              0,
+              "mock.c" + c + ".r" + r + ".p" + pi,
+              ctx(
+                  SEEDS[0],
+                  () -> {
+                    MockTokenizer t =
+                        new MockTokenizer(
+                            new CharacterRunAutomaton[] {
+                              MockTokenizer.WHITESPACE, MockTokenizer.SIMPLE, MockTokenizer.KEYWORD
+                            }[fpi],
+                            false,
+                            3);
+                    t.setReader(u16Reader(fr, U16[fc]));
+                    return dump(t);
+                  }));
+        }
+      }
+      for (int m : new int[] {StandardAnalyzer.DEFAULT_MAX_TOKEN_LENGTH, 3}) {
+        final int fc = c, fm = m;
+        row(
+            "u16",
+            0,
+            "sa.c" + c + ".m" + m,
+            ctx(
+                SEEDS[0],
+                () -> {
+                  StandardAnalyzer a = new StandardAnalyzer();
+                  a.setMaxTokenLength(fm);
+                  return dump(a.tokenStream("f", U16[fc]))
+                      + "\t"
+                      + dump(a.tokenStream("f", U16[fc] + " " + U16[fc]));
+                }));
+      }
+      for (long seed : new long[] {SEEDS[0], SEEDS[3], SEEDS[12]}) {
+        final int fc = c;
+        row(
+            "u16",
+            seed,
+            "ma.c" + c,
+            ctx(
+                seed,
+                () -> {
+                  MockAnalyzer a = new MockAnalyzer(random());
+                  TokenStream ts = a.tokenStream("f", U16[fc]);
+                  return impl(ts) + "\t" + dump(ts);
+                }));
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // fac: the core filters, GraphTokenFilter and QueryBuilder over a StandardTokenizer built with
+  // each of the three factories newAttributeFactory picks
+  // ---------------------------------------------------------------------------
+
+  static AttributeFactory factory(int f) {
+    switch (f) {
+      case 0:
+        return TokenStream.DEFAULT_TOKEN_ATTRIBUTE_FACTORY;
+      case 1:
+        return Token.TOKEN_ATTRIBUTE_FACTORY;
+      default:
+        return AttributeFactory.DEFAULT_ATTRIBUTE_FACTORY;
+    }
+  }
+
+  static TokenStream chain(Tokenizer t, boolean syn) {
+    TokenStream ts =
+        new StopFilter(
+            new LowerCaseFilter(t),
+            new CharArraySet(Arrays.asList("the", "a", "and", "is", "it"), false));
+    return syn ? new MockSynonymFilter(ts) : ts;
+  }
+
+  static Tokenizer standard(int f, String text) {
+    StandardTokenizer t = new StandardTokenizer(factory(f));
+    t.setReader(new StringReader(text));
+    return t;
+  }
+
+  /** Consumes the stream up to end(), without closing it. */
+  static String pass(TokenStream ts) throws IOException {
+    StringBuilder sb = new StringBuilder();
+    ts.reset();
+    while (ts.incrementToken()) {
+      sb.append(tok(ts)).append(' ');
+    }
+    ts.end();
+    return sb.append("end:").append(tok(ts)).toString();
+  }
+
+  static final class Paths extends GraphTokenFilter {
+    Paths(TokenStream in) {
+      super(in);
+    }
+
+    @Override
+    public boolean incrementToken() {
+      return false;
+    }
+
+    /** Every base token, then each of its graphs as the terms incrementGraphToken reaches. */
+    String walk() throws IOException {
+      CharTermAttribute term = addAttribute(CharTermAttribute.class);
+      StringBuilder sb = new StringBuilder();
+      reset();
+      while (incrementBaseToken()) {
+        sb.append('[').append(OracleSupport.units(term.toString()));
+        do {
+          sb.append(" {");
+          while (incrementGraphToken()) {
+            sb.append(OracleSupport.units(term.toString())).append(',');
+          }
+          sb.append('}');
+        } while (incrementGraph());
+        sb.append("] ");
+      }
+      end();
+      sb.append("end:").append(tok(this)).append(' ').append(getTrailingPositions());
+      close();
+      return sb.toString();
+    }
+  }
+
+  static void factories() throws Exception {
+    int[] inputs = {1, 4, 7, 9};
+    for (int f = 0; f < 3; f++) {
+      for (int c : inputs) {
+        final int ff = f;
+        final String text = CORPUS[c];
+        String p = "f" + f + ".c" + c + ".";
+        row("fac", 0, p + "std", ctx(SEEDS[0], () -> {
+          Tokenizer t = standard(ff, text);
+          return impl(t) + "\t" + dump(t);
+        }));
+        row("fac", 0, p + "lcstop", ctx(SEEDS[0], () -> dump(chain(standard(ff, text), false))));
+        row("fac", 0, p + "syn", ctx(SEEDS[0], () -> dump(chain(standard(ff, text), true))));
+        row("fac", 0, p + "cache", ctx(SEEDS[0], () -> {
+          CachingTokenFilter cf = new CachingTokenFilter(chain(standard(ff, text), true));
+          String first = pass(cf);
+          String second = pass(cf);
+          cf.close();
+          return first + "\t" + second;
+        }));
+        row("fac", 0, p + "graph", ctx(SEEDS[0], () -> {
+          return new Paths(chain(standard(ff, text), true)).walk();
+        }));
+        row("fac", 0, p + "qb", ctx(SEEDS[0], () -> {
+          Analyzer a =
+              new Analyzer() {
+                @Override
+                protected TokenStreamComponents createComponents(String fieldName) {
+                  StandardTokenizer t = new StandardTokenizer(factory(ff));
+                  return new TokenStreamComponents(t, chain(t, true));
+                }
+              };
+          QueryBuilder qb = new QueryBuilder(a);
+          return qb.createBooleanQuery("f", text)
+              + "\t"
+              + qb.createPhraseQuery("f", text)
+              + "\t"
+              + qb.createBooleanQuery("f", text, BooleanClause.Occur.MUST);
+        }));
+      }
+    }
+  }
+
   public static void scenarios() throws Exception {
     tokenizers();
     lengths();
@@ -816,6 +1047,8 @@ public final class AnalysisMocksOracle {
     misuse();
     checkRandomDataParity();
     core();
+    utf16();
+    factories();
   }
 
   public static void main(String[] args) throws Exception {

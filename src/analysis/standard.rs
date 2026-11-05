@@ -25,7 +25,7 @@ use crate::analysis::{
     TokenStreamComponents, Tokenizer, TokenizerLogic, TypeAttribute,
 };
 use crate::error::{LuceneError, Result};
-use crate::util::attribute::{AttributeImpl, AttributeSource};
+use crate::util::attribute::AttributeSource;
 use crate::util::IOUtils;
 
 /// Alpha/numeric token type.
@@ -90,9 +90,32 @@ pub const DEFAULT_MAX_TOKEN_LENGTH: usize = 255;
 /// above has no counterpart here by construction, because there is no generated
 /// automaton for it to drive. `yychar`, `get_next_token` and the token-type
 /// classification — the surface a caller uses — are ported.
+///
+/// Positions count UTF-16 code units, as Java's `char` positions do: `yychar`,
+/// `yylength`, the offsets and the final offset. The JFlex buffer is
+/// `maxTokenLength` `char`s, so the tokenizer cuts a longer token at that
+/// many units without splitting a supplementary character, and with a buffer
+/// of one `char` it ends the stream at a supplementary character, as
+/// `zzRefill` (`StandardTokenizerImpl.java:761-814`) does.
+///
+/// Where the two still differ (measured by the `u16` rows of
+/// `crates/rucene-test-framework/tests/analysis_mocks_oracle.rs`,
+/// `U16_STANDARD_DIVERGENT`):
+///
+/// * emoji sequences (ZWJ sequences, modifiers, regional-indicator pairs) and
+///   the token types of the heuristic (a supplementary letter counts as no
+///   letter) follow the segmentation and the heuristic, not the JFlex grammar;
+/// * the scanner reads its whole input at `reset`, while the JFlex buffer
+///   reads `maxTokenLength` `char`s at a time; a char filter that records its
+///   offset corrections as it is read (`MockCharFilter`) has recorded all of
+///   them before the first token here, so with a buffer shorter than the
+///   input Lucene corrects some offsets with fewer corrections than the port.
 #[derive(Debug)]
 pub struct StandardTokenizerImpl {
     pub(crate) text: Vec<char>,
+    /// `units[i]` is the number of UTF-16 code units in `text[..i]`: Java's
+    /// `char` positions, which `yychar` and `yylength` count.
+    units: Vec<usize>,
     /// Word boundary offsets in character indices.
     word_bounds: Vec<usize>,
     current_word: usize,
@@ -104,6 +127,7 @@ impl StandardTokenizerImpl {
     pub fn new() -> Self {
         Self {
             text: Vec::new(),
+            units: vec![0],
             word_bounds: Vec::new(),
             current_word: 0,
             max_token_length: DEFAULT_MAX_TOKEN_LENGTH,
@@ -151,6 +175,14 @@ impl StandardTokenizerImpl {
             self.text.extend_from_slice(&buf[..n]);
         }
 
+        self.units.clear();
+        self.units.push(0);
+        let mut total = 0;
+        for c in &self.text {
+            total += c.len_utf16();
+            self.units.push(total);
+        }
+
         let s: String = self.text.iter().collect();
         let mut valid_bounds = Vec::new();
         for (byte_idx, segment) in s.split_word_bound_indices() {
@@ -178,22 +210,50 @@ impl StandardTokenizerImpl {
         Ok(())
     }
 
-    /// Returns the number of characters processed so far.
+    /// Returns the position of the current token, in UTF-16 code units.
+    ///
+    /// Java's `yychar` counts `char`s, so a supplementary character counts
+    /// two.
     pub fn yychar(&self) -> i32 {
-        if self.current_word == 0 || self.current_word < 2 {
-            0
-        } else {
-            self.word_bounds[self.current_word - 2] as i32
-        }
+        self.units[self.token_start()] as i32
     }
 
-    /// Returns the length of the current token in characters.
+    /// Returns the length of the current token, in UTF-16 code units.
+    ///
+    /// Java's `yylength` counts `char`s, so a supplementary character counts
+    /// two.
     pub fn yylength(&self) -> usize {
+        self.units[self.token_end()] - self.units[self.token_start()]
+    }
+
+    /// The index in `text` where the current token starts (0 before the
+    /// first token).
+    pub(crate) fn token_start(&self) -> usize {
         if self.current_word < 2 {
             0
         } else {
-            self.word_bounds[self.current_word - 1] - self.word_bounds[self.current_word - 2]
+            self.word_bounds[self.current_word - 2]
         }
+    }
+
+    /// The index in `text` where the current token ends (0 before the first
+    /// token).
+    pub(crate) fn token_end(&self) -> usize {
+        if self.current_word < 2 {
+            0
+        } else {
+            self.word_bounds[self.current_word - 1]
+        }
+    }
+
+    /// The number of UTF-16 code units in `text[..index]`.
+    pub(crate) fn units_before(&self, index: usize) -> usize {
+        self.units[index]
+    }
+
+    /// The number of UTF-16 code units of the whole input.
+    pub(crate) fn total_units(&self) -> usize {
+        self.units[self.text.len()]
     }
 
     /// Advances to the next token and returns its type index, or `None` at
@@ -366,8 +426,8 @@ fn is_emoji_start(c: char) -> bool {
 }
 
 /// State for a token that is being chopped because it exceeds the maximum
-/// length. `(token_start, token_end, token_type, next_piece_start)`.
-type LongTokenState = (usize, usize, usize, usize);
+/// length: `(token_end, next_piece_start)`, as indices in the scanner's text.
+type LongTokenState = (usize, usize);
 
 /// The body of [`StandardTokenizer`]: what Lucene's `StandardTokenizer` adds to
 /// `Tokenizer`.
@@ -379,6 +439,12 @@ pub struct StandardTokenizerLogic {
     scanner: StandardTokenizerImpl,
     skipped_positions: i32,
     long_token: Option<LongTokenState>,
+    /// `yychar + yylength` of the scanner's last match, in UTF-16 code units:
+    /// the end of the last token, or the end of the consumed input once the
+    /// scanner reached its end.
+    final_units: usize,
+    /// Set once the scanner reached its end; see [`Self::next_piece`].
+    at_eof: bool,
 }
 
 impl StandardTokenizerLogic {
@@ -388,6 +454,8 @@ impl StandardTokenizerLogic {
             scanner: StandardTokenizerImpl::new(),
             skipped_positions: 0,
             long_token: None,
+            final_units: 0,
+            at_eof: false,
         }
     }
 
@@ -430,6 +498,35 @@ impl Default for StandardTokenizerLogic {
     }
 }
 
+impl StandardTokenizerLogic {
+    /// The end of the piece of `text[start..end]` that starts at `start`:
+    /// the longest prefix of at most `maxTokenLength` UTF-16 code units that
+    /// does not split a supplementary character, or `None` when not even its
+    /// first character fits.
+    ///
+    /// Lucene sizes the JFlex buffer to `maxTokenLength` `char`s
+    /// (`StandardTokenizer.setMaxTokenLength` calls `scanner.setBufferSize`),
+    /// so a longer token is cut at the end of the buffer, and `zzRefill`
+    /// (`StandardTokenizerImpl.java:790-807`) holds back a high surrogate that
+    /// would end a full buffer. With a buffer of one `char` that hold-back
+    /// leaves the read empty, `zzRefill` reports the end of the input, and the
+    /// stream ends at that supplementary character.
+    fn next_piece(&self, start: usize, end: usize) -> Option<usize> {
+        let max_len = self.scanner.max_token_length();
+        let mut piece_end = start;
+        let mut units = 0;
+        while piece_end < end {
+            let next = units + self.scanner.text[piece_end].len_utf16();
+            if next > max_len {
+                break;
+            }
+            units = next;
+            piece_end += 1;
+        }
+        (piece_end > start).then_some(piece_end)
+    }
+}
+
 impl TokenizerLogic for StandardTokenizerLogic {
     fn increment_token(
         &mut self,
@@ -438,85 +535,70 @@ impl TokenizerLogic for StandardTokenizerLogic {
     ) -> Result<bool> {
         // `offsetAtt.setOffset(correctOffset(start), correctOffset(start +
         // termAtt.length()))` (`StandardTokenizer.incrementToken`): offsets
-        // are mapped back through the input's char filters.
+        // are mapped back through the input's char filters, and count UTF-16
+        // code units, as Java's `char` positions do.
         let input: &dyn CharReader = reader;
-        let correct = |offset: i32| Tokenizer::<Self>::correct_offset_of(Some(input), offset);
-        let mut att = source
-            .get_attribute_mut::<crate::analysis::PackedTokenAttributeImpl>()
-            .ok_or_else(|| {
-                LuceneError::illegal_state("missing PackedTokenAttribute".to_string())
-            })?;
-
-        att.clear();
-
-        // Continue chopping a previously discovered long token.
-        if let Some((token_start, token_end, token_type, mut next_start)) = self.long_token {
-            let max_len = self.scanner.max_token_length();
-            let piece_end = (next_start + max_len).min(token_end);
-            let length = (piece_end - next_start) as i32;
-            att.copy_buffer(&self.scanner.text, next_start, piece_end - next_start);
-            att.set_position_increment(1);
-            att.set_offset(
-                correct(next_start as i32),
-                correct(next_start as i32 + length),
-            );
-            att.set_type(TOKEN_TYPES[token_type].to_string());
-            next_start = piece_end;
-            if next_start >= token_end {
-                self.long_token = None;
-            } else {
-                self.long_token = Some((token_start, token_end, token_type, next_start));
-            }
-            return Ok(true);
+        let correct =
+            |offset: usize| Tokenizer::<Self>::correct_offset_of(Some(input), offset as i32);
+        // `clearAttributes()` (`StandardTokenizer.java:155`).
+        source.clear_attributes();
+        if self.at_eof {
+            return Ok(false);
         }
 
-        let token_type = match self.scanner.get_next_token() {
-            Some(t) => t,
-            None => return Ok(false),
+        // The piece to emit: the rest of a token being chopped, or the next
+        // token (whole, or its first piece when it exceeds the maximum).
+        let (start, end) = match self.long_token {
+            Some((token_end, next_start)) => (next_start, token_end),
+            None => match self.scanner.get_next_token() {
+                Some(_) => (self.scanner.token_start(), self.scanner.token_end()),
+                None => {
+                    self.final_units = self.scanner.total_units();
+                    self.at_eof = true;
+                    return Ok(false);
+                }
+            },
         };
+        let Some(piece_end) = self.next_piece(start, end) else {
+            // A one-`char` buffer cannot hold a supplementary character: the
+            // scanner reports the end of the input there.
+            self.long_token = None;
+            self.final_units = self.scanner.units_before(start);
+            self.at_eof = true;
+            return Ok(false);
+        };
+        self.long_token = (piece_end < end).then_some((end, piece_end));
 
-        let start = self.scanner.yychar() as usize;
-        let end = start + self.scanner.yylength();
-        let max_len = self.scanner.max_token_length();
-
-        if end - start <= max_len {
-            att.set_position_increment(self.skipped_positions + 1);
-            self.scanner.get_text(&mut *att);
-            let length = att.length() as i32;
-            att.set_offset(correct(start as i32), correct(start as i32 + length));
-            att.set_type(TOKEN_TYPES[token_type].to_string());
-            self.skipped_positions = 0;
-            return Ok(true);
-        }
-
-        // Token exceeds max length: emit the first chunk and remember the
-        // rest for subsequent calls.
-        let piece_end = start + max_len;
-        att.copy_buffer(&self.scanner.text, start, max_len);
-        att.set_position_increment(self.skipped_positions + 1);
-        att.set_offset(correct(start as i32), correct(piece_end as i32));
-        att.set_type(TOKEN_TYPES[token_type].to_string());
-        self.long_token = Some((start, end, token_type, piece_end));
+        // Each piece is scanned afresh from the start of the buffer, so its
+        // type is the type of the piece itself.
+        let token_type = classify_token(&self.scanner.text[start..piece_end]);
+        let start_units = self.scanner.units_before(start);
+        let end_units = self.scanner.units_before(piece_end);
+        interface_mut::<dyn PositionIncrementAttribute>(source)?
+            .set_position_increment(self.skipped_positions + 1);
+        interface_mut::<dyn CharTermAttribute>(source)?.copy_buffer(
+            &self.scanner.text,
+            start,
+            piece_end - start,
+        );
+        interface_mut::<dyn OffsetAttribute>(source)?
+            .set_offset(correct(start_units), correct(end_units));
+        interface_mut::<dyn TypeAttribute>(source)?.set_type(TOKEN_TYPES[token_type].to_string());
         self.skipped_positions = 0;
+        self.final_units = end_units;
         Ok(true)
     }
 
     fn end(&mut self, source: &mut AttributeSource, input: Option<&dyn CharReader>) -> Result<()> {
-        let mut att = source
-            .get_attribute_mut::<crate::analysis::PackedTokenAttributeImpl>()
-            .ok_or_else(|| {
-                LuceneError::illegal_state("missing PackedTokenAttribute".to_string())
-            })?;
-
         // `int finalOffset = correctOffset(scanner.yychar() +
-        // scanner.yylength())` (`StandardTokenizer.end`).
-        let final_offset = Tokenizer::<Self>::correct_offset_of(
-            input,
-            self.scanner.yychar() + self.scanner.yylength() as i32,
-        );
-        att.set_offset(final_offset, final_offset);
-        let current = att.get_position_increment();
-        att.set_position_increment(current + self.skipped_positions);
+        // scanner.yylength())` (`StandardTokenizer.end`): the end of the
+        // scanner's last match, which once the input is exhausted includes
+        // the trailing characters no token covers.
+        let final_offset = Tokenizer::<Self>::correct_offset_of(input, self.final_units as i32);
+        interface_mut::<dyn OffsetAttribute>(source)?.set_offset(final_offset, final_offset);
+        let mut pos_incr_att = interface_mut::<dyn PositionIncrementAttribute>(source)?;
+        let current = pos_incr_att.get_position_increment();
+        pos_incr_att.set_position_increment(current + self.skipped_positions);
         Ok(())
     }
 
@@ -524,6 +606,8 @@ impl TokenizerLogic for StandardTokenizerLogic {
         self.scanner.reset(reader)?;
         self.skipped_positions = 0;
         self.long_token = None;
+        self.final_units = 0;
+        self.at_eof = false;
         Ok(())
     }
 }
@@ -533,9 +617,51 @@ impl TokenizerLogic for StandardTokenizerLogic {
 /// Equivalent to `org.apache.lucene.analysis.standard.StandardTokenizer`.
 pub type StandardTokenizer = Tokenizer<StandardTokenizerLogic>;
 
+/// The attribute interface `I` of a `StandardTokenizer`'s source, which
+/// [`new_standard_tokenizer_with_factory`] added.
+fn interface_mut<I: crate::util::attribute::AttributeInterface + ?Sized>(
+    source: &AttributeSource,
+) -> Result<std::cell::RefMut<'_, I>> {
+    source.get_attribute_interface_mut::<I>().ok_or_else(|| {
+        LuceneError::illegal_state(format!(
+            "the StandardTokenizer's source lacks {}",
+            std::any::type_name::<I>()
+        ))
+    })
+}
+
 /// Creates a new `StandardTokenizer` with default settings.
+///
+/// Equivalent to `StandardTokenizer()`, whose attributes come from
+/// `TokenStream.DEFAULT_TOKEN_ATTRIBUTE_FACTORY`.
 pub fn new_standard_tokenizer() -> StandardTokenizer {
-    StandardTokenizer::new(StandardTokenizerLogic::new())
+    new_standard_tokenizer_with_factory(crate::analysis::default_token_attribute_factory())
+        .expect("INVARIANT: the default token attribute factory implements the core attributes")
+}
+
+/// Creates a new `StandardTokenizer` whose attributes come from `factory`.
+///
+/// Equivalent to `StandardTokenizer(AttributeFactory)`: the fields add the
+/// `CharTermAttribute`, the `OffsetAttribute`, the
+/// `PositionIncrementAttribute` and the `TypeAttribute`, in that order
+/// (`StandardTokenizer.java:140-144`).
+///
+/// # Errors
+///
+/// What `factory` raises for an interface it cannot implement, as Java's
+/// `addAttribute` throws.
+pub fn new_standard_tokenizer_with_factory(
+    factory: Arc<dyn crate::util::attribute::AttributeFactory>,
+) -> Result<StandardTokenizer> {
+    let mut source = AttributeSource::new_with_factory(factory);
+    source.add_attribute_interface::<dyn CharTermAttribute>()?;
+    source.add_attribute_interface::<dyn OffsetAttribute>()?;
+    source.add_attribute_interface::<dyn PositionIncrementAttribute>()?;
+    source.add_attribute_interface::<dyn TypeAttribute>()?;
+    Ok(StandardTokenizer::with_source(
+        source,
+        StandardTokenizerLogic::new(),
+    ))
 }
 
 // -----------------------------------------------------------------------------
@@ -724,8 +850,8 @@ impl Analyzer for StandardAnalyzer {
             tokenizer.set_reader(reader)
         });
         let shared = SharedTokenStream::new(tokenizer);
-        let lower = new_lower_case_filter(Box::new(shared));
-        let stop = new_stop_filter(Box::new(lower), self.base.stopwords().clone());
+        let lower = new_lower_case_filter(Box::new(shared))?;
+        let stop = new_stop_filter(Box::new(lower), self.base.stopwords().clone())?;
         let sink: Rc<RefCell<dyn TokenStream>> = Rc::new(RefCell::new(stop));
         Ok(TokenStreamComponents::new(source, sink))
     }
@@ -735,13 +861,30 @@ impl Analyzer for StandardAnalyzer {
         _field_name: &str,
         input: Box<dyn TokenStream>,
     ) -> Box<dyn TokenStream> {
-        Box::new(new_lower_case_filter(input))
+        // `Analyzer.normalize` hands this a `StringTokenStream`, which holds
+        // the `CharTermAttribute` already, so the filter's `addAttribute`
+        // finds it and cannot fail.
+        Box::new(
+            new_lower_case_filter(input)
+                .expect("INVARIANT: the normalization input holds the CharTermAttribute"),
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `CharTermAttribute.toString()`: the term text.
+    trait TermText {
+        fn term(&self) -> String;
+    }
+
+    impl<T: CharTermAttribute + ?Sized> TermText for T {
+        fn term(&self) -> String {
+            self.buffer()[..self.length()].iter().collect()
+        }
+    }
     use crate::analysis::{
         OffsetAttribute, PositionIncrementAttribute, ReusableStringReader, TokenStream,
         TypeAttribute,
@@ -786,19 +929,19 @@ mod tests {
         while tokenizer.increment_token().unwrap() {
             let source = tokenizer.attribute_source();
             let term = source
-                .get_attribute::<crate::analysis::PackedTokenAttributeImpl>()
+                .get_attribute_interface::<dyn CharTermAttribute>()
                 .unwrap()
                 .term();
             let start = source
-                .get_attribute::<crate::analysis::PackedTokenAttributeImpl>()
+                .get_attribute_interface::<dyn OffsetAttribute>()
                 .unwrap()
                 .start_offset();
             let end = source
-                .get_attribute::<crate::analysis::PackedTokenAttributeImpl>()
+                .get_attribute_interface::<dyn OffsetAttribute>()
                 .unwrap()
                 .end_offset();
             let type_value = source
-                .get_attribute::<crate::analysis::PackedTokenAttributeImpl>()
+                .get_attribute_interface::<dyn TypeAttribute>()
                 .unwrap()
                 .type_value()
                 .to_string();
@@ -871,11 +1014,11 @@ mod tests {
         while tokenizer.increment_token().unwrap() {
             let source = tokenizer.attribute_source();
             let term = source
-                .get_attribute::<crate::analysis::PackedTokenAttributeImpl>()
+                .get_attribute_interface::<dyn CharTermAttribute>()
                 .unwrap()
                 .term();
             let pos = source
-                .get_attribute::<crate::analysis::PackedTokenAttributeImpl>()
+                .get_attribute_interface::<dyn PositionIncrementAttribute>()
                 .unwrap()
                 .get_position_increment();
             terms.push((term, pos));
@@ -902,7 +1045,7 @@ mod tests {
 
         let source = tokenizer.attribute_source();
         let att = source
-            .get_attribute::<crate::analysis::PackedTokenAttributeImpl>()
+            .get_attribute_interface::<dyn OffsetAttribute>()
             .unwrap();
         assert_eq!(att.start_offset(), 11);
         assert_eq!(att.end_offset(), 11);
@@ -925,27 +1068,42 @@ mod tests {
         while tokenizer.increment_token().unwrap() {}
         {
             // a consumer's leftovers, which end() must clear as Java's does
-            let mut att = tokenizer
-                .attribute_source()
-                .get_attribute_mut::<crate::analysis::PackedTokenAttributeImpl>()
-                .unwrap();
-            att.append_string("leftover");
-            att.set_type("<ALPHANUM>".to_string());
-            crate::analysis::PositionLengthAttribute::set_position_length(&mut *att, 3);
+            let source = tokenizer.attribute_source();
+            source
+                .get_attribute_interface_mut::<dyn CharTermAttribute>()
+                .unwrap()
+                .append_string("leftover");
+            source
+                .get_attribute_interface_mut::<dyn TypeAttribute>()
+                .unwrap()
+                .set_type("<ALPHANUM>".to_string());
+            source
+                .get_attribute_interface_mut::<dyn crate::analysis::PositionLengthAttribute>()
+                .unwrap()
+                .set_position_length(3);
         }
         tokenizer.end().unwrap();
-        let att = tokenizer
-            .attribute_source()
-            .get_attribute::<crate::analysis::PackedTokenAttributeImpl>()
+        let source = tokenizer.attribute_source();
+        let term = source
+            .get_attribute_interface::<dyn CharTermAttribute>()
             .unwrap();
-        assert_eq!(att.term(), "");
-        assert_eq!(att.type_value(), "word");
-        assert_eq!((att.start_offset(), att.end_offset()), (11, 11));
-        assert_eq!(att.get_position_increment(), 0);
-        assert_eq!(
-            crate::analysis::PositionLengthAttribute::get_position_length(&*att),
-            1
-        );
+        let type_att = source
+            .get_attribute_interface::<dyn TypeAttribute>()
+            .unwrap();
+        let offset = source
+            .get_attribute_interface::<dyn OffsetAttribute>()
+            .unwrap();
+        let pos_inc = source
+            .get_attribute_interface::<dyn PositionIncrementAttribute>()
+            .unwrap();
+        let pos_len = source
+            .get_attribute_interface::<dyn crate::analysis::PositionLengthAttribute>()
+            .unwrap();
+        assert_eq!(term.term(), "");
+        assert_eq!(type_att.type_value(), "word");
+        assert_eq!((offset.start_offset(), offset.end_offset()), (11, 11));
+        assert_eq!(pos_inc.get_position_increment(), 0);
+        assert_eq!(pos_len.get_position_length(), 1);
     }
 
     fn analyze(analyzer: &dyn Analyzer, text: &str) -> Vec<String> {
@@ -956,7 +1114,7 @@ mod tests {
         while stream.increment_token().unwrap() {
             let term = stream
                 .attribute_source()
-                .get_attribute::<crate::analysis::PackedTokenAttributeImpl>()
+                .get_attribute_interface::<dyn CharTermAttribute>()
                 .unwrap()
                 .term();
             terms.push(term);
@@ -1021,13 +1179,16 @@ mod tests {
         let stream = analyzer.token_stream_from_str("f", text)?;
         let mut stream = stream.borrow_mut();
         let render = |stream: &dyn TokenStream, term: Option<String>| {
-            let att = stream
-                .attribute_source()
-                .get_attribute::<crate::analysis::PackedTokenAttributeImpl>()
+            let source = stream.attribute_source();
+            let term_att = source
+                .get_attribute_interface::<dyn CharTermAttribute>()
+                .unwrap();
+            let att = source
+                .get_attribute_interface::<dyn OffsetAttribute>()
                 .unwrap();
             format!(
                 "{}({},{})",
-                term.unwrap_or_else(|| att.term()),
+                term.unwrap_or_else(|| term_att.term()),
                 att.start_offset(),
                 att.end_offset()
             )
@@ -1149,13 +1310,16 @@ mod tests {
             .unwrap();
         tokenizer.reset().unwrap();
         let render = |tokenizer: &StandardTokenizer, term: Option<&str>| {
-            let att = tokenizer
-                .attribute_source()
-                .get_attribute::<crate::analysis::PackedTokenAttributeImpl>()
+            let source = tokenizer.attribute_source();
+            let term_att = source
+                .get_attribute_interface::<dyn CharTermAttribute>()
+                .unwrap();
+            let att = source
+                .get_attribute_interface::<dyn OffsetAttribute>()
                 .unwrap();
             format!(
                 "{}({},{})",
-                term.map_or_else(|| att.term(), str::to_string),
+                term.map_or_else(|| term_att.term(), str::to_string),
                 att.start_offset(),
                 att.end_offset()
             )

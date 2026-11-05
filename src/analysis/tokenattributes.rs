@@ -61,6 +61,24 @@ fn java_string_hash_code(s: &str) -> i32 {
 ///
 /// This trait exposes a growable character buffer and append-style builders
 /// similar to Java's `CharSequence` / `Appendable` combination.
+///
+/// # Divergence from Lucene 10.5.0: the buffer holds `char`s
+///
+/// Java's buffer is a `char[]` of UTF-16 code units, where a supplementary
+/// character takes two slots; this buffer holds Rust `char`s, one slot per
+/// Unicode scalar value. The indices and lengths of this trait
+/// ([`length`](Self::length), [`set_length`](Self::set_length),
+/// [`char_at`](Self::char_at), [`sub_sequence`](Self::sub_sequence),
+/// [`append_string_range`](Self::append_string_range), the buffer methods)
+/// therefore count `char`s, where Java's count UTF-16 units. The quantities
+/// Java exposes beyond the buffer count UTF-16 units in the port as in Java:
+/// the offsets a tokenizer computes from a term's length, `finalOffset`,
+/// and the token length limits (`StandardTokenizer`, `MockTokenizer`,
+/// `CharacterUtils.fill`). The one Java state the port cannot hold is a
+/// term or input holding a lone surrogate: a Rust `&str` cannot carry one,
+/// so a Java `setLength` or `subSequence` that cuts a surrogate pair (which
+/// `UnicodeUtil.UTF16toUTF8` would then index as U+FFFD) has no
+/// counterpart; no `lucene-core` component cuts a pair.
 pub trait CharTermAttribute: Attribute {
     /// Copies `length` characters from `buffer` starting at `offset` into the
     /// internal term buffer and sets the term length to `length`.

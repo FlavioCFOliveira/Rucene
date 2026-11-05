@@ -9,8 +9,7 @@
 use std::rc::Rc;
 
 use crate::analysis::tokenattributes::{
-    PackedTokenAttributeImpl, PositionIncrementAttribute, PositionLengthAttribute,
-    TermToBytesRefAttribute,
+    PositionIncrementAttribute, PositionLengthAttribute, TermToBytesRefAttribute,
 };
 use crate::analysis::TokenStream;
 use crate::error::{LuceneError, Result};
@@ -133,16 +132,9 @@ impl FiniteStringsTokenStreams<'_> {
 /// Equivalent to `org.apache.lucene.util.graph.GraphTokenStreamFiniteStrings`. This
 /// class also provides helpers to explore the different paths of the automaton.
 ///
-/// # Divergences from Lucene 10.5.0
+/// # Divergence from Lucene 10.5.0
 ///
-/// * Java reads the position increment and position length through
-///   `in.addAttribute(PositionIncrementAttribute.class)`, which installs the
-///   attribute when the stream lacks it, so an absent attribute reads as the
-///   defaults `1` and `1`. This port reads
-///   [`PackedTokenAttributeImpl`]
-///   and falls back to the same defaults, which is the convention the rest of the
-///   crate's analysis chain already follows.
-/// * Java stores the cloned token attributes in an array that may hold trailing
+/// Java stores the cloned token attributes in an array that may hold trailing
 ///   `null`s; this port stores exactly one entry per token, which is the filled
 ///   prefix Java indexes into.
 pub struct GraphTokenStreamFiniteStrings {
@@ -210,7 +202,7 @@ impl GraphTokenStreamFiniteStrings {
             .into_iter()
             .map(|s| {
                 let bytes = s
-                    .get_attribute::<PackedTokenAttributeImpl>()
+                    .get_attribute_interface::<dyn TermToBytesRefAttribute>()
                     .map(|att| att.get_bytes_ref())
                     .unwrap_or_default();
                 Term::new(field, bytes)
@@ -286,6 +278,13 @@ impl GraphTokenStreamFiniteStrings {
         let mut builder = AutomatonBuilder::new();
         let mut tokens: Vec<AttributeSource> = Vec::new();
 
+        // `GraphTokenStreamFiniteStrings.java:194-195`.
+        {
+            let source = input.attribute_source_mut();
+            source.add_attribute_interface::<dyn PositionIncrementAttribute>()?;
+            source.add_attribute_interface::<dyn PositionLengthAttribute>()?;
+        }
+
         input.reset()?;
 
         let mut pos: i32 = -1;
@@ -295,10 +294,15 @@ impl GraphTokenStreamFiniteStrings {
         while input.increment_token()? {
             let (current_incr, pos_length) = {
                 let source = input.attribute_source();
-                match source.get_attribute::<PackedTokenAttributeImpl>() {
-                    Some(att) => (att.get_position_increment(), att.get_position_length()),
-                    None => (1, 1),
-                }
+                let current_incr = source
+                    .get_attribute_interface::<dyn PositionIncrementAttribute>()
+                    .expect("INVARIANT: build added the PositionIncrementAttribute")
+                    .get_position_increment();
+                let pos_length = source
+                    .get_attribute_interface::<dyn PositionLengthAttribute>()
+                    .expect("INVARIANT: build added the PositionLengthAttribute")
+                    .get_position_length();
+                (current_incr, pos_length)
             };
 
             if pos == -1 && current_incr < 1 {
@@ -331,14 +335,21 @@ impl GraphTokenStreamFiniteStrings {
             // We always produce linear token graphs from get_finite_strings(), so we
             // need to adjust posLength and posIncrement accordingly.
             {
+                // `tokens[id].addAttribute(PositionLengthAttribute.class)`
+                // (`GraphTokenStreamFiniteStrings.java:236-240`): the clone
+                // holds the attributes of the stream, which `build` added.
                 let token = &tokens[id as usize];
-                if let Some(mut att) = token.get_attribute_mut::<PackedTokenAttributeImpl>() {
-                    att.set_position_length(1);
-                    if current_incr == 0 {
-                        // A stacked token should have the same increment as the
-                        // original token at this position.
-                        att.set_position_increment(prev_incr);
-                    }
+                token
+                    .get_attribute_interface_mut::<dyn PositionLengthAttribute>()
+                    .expect("INVARIANT: the clone holds the PositionLengthAttribute")
+                    .set_position_length(1);
+                if current_incr == 0 {
+                    // A stacked token should have the same increment as the
+                    // original token at this position.
+                    token
+                        .get_attribute_interface_mut::<dyn PositionIncrementAttribute>()
+                        .expect("INVARIANT: the clone holds the PositionIncrementAttribute")
+                        .set_position_increment(prev_incr);
                 }
             }
 
@@ -409,5 +420,35 @@ impl GraphTokenStreamFiniteStrings {
             points.push(state);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::analysis::{default_attribute_factory, new_standard_tokenizer_with_factory};
+    use crate::analysis::{StringCharReader, Tokenizer};
+
+    /// `getTerms(String, int)` (`GraphTokenStreamFiniteStrings.java:120-124`)
+    /// reads the `TermToBytesRefAttribute` of each token, whatever implements
+    /// it: over `AttributeFactory.DEFAULT_ATTRIBUTE_FACTORY` that is a
+    /// `CharTermAttributeImpl`, not the packed implementation.
+    #[test]
+    fn get_terms_for_field_reads_the_term_interface() {
+        let mut tokenizer: Tokenizer<_> =
+            new_standard_tokenizer_with_factory(default_attribute_factory()).unwrap();
+        tokenizer
+            .set_reader(Box::new(StringCharReader::new("fast car")))
+            .unwrap();
+        let graph = GraphTokenStreamFiniteStrings::new(&mut tokenizer).unwrap();
+        let text = |state: i32| -> Vec<String> {
+            graph
+                .get_terms_for_field("f", state)
+                .iter()
+                .map(|t| t.text())
+                .collect()
+        };
+        assert_eq!(text(0), ["fast"]);
+        assert_eq!(text(1), ["car"]);
     }
 }

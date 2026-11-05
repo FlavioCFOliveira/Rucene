@@ -243,6 +243,16 @@ write the fixtures (`../*.tsv`) the crate's parity tests (`src/tests/`) read.
   on the calling thread, its outcome and the next draws, and
   `TestUtil.randomAnalysisString`; `core`, `StandardTokenizer`'s attributes
   after `end()` and the attribute sharing between a tokenizer and its
-  filters. The Rust side is
+  filters; `u16`, offsets, final offsets and length limits in UTF-16 units
+  over supplementary text (`StandardTokenizer` with maximum token lengths
+  255, 5, 2 and 1, `MockTokenizer` with a limit of 3, both plain and behind
+  `MockCharFilter`, `StandardAnalyzer` and `MockAnalyzer`, on two corpus
+  texts and the inputs of Lucene's `TestStandardAnalyzer`); `fac`, the core
+  filters (`LowerCaseFilter`, `StopFilter`, `MockSynonymFilter` over them,
+  `CachingTokenFilter` replayed, a `GraphTokenFilter` walk) and `QueryBuilder`
+  over a `StandardTokenizer` built with each of the three factories
+  `newAttributeFactory` picks. The Rust side is
   `crates/rucene-test-framework/tests/analysis_mocks_oracle.rs`, which replays
-  every scenario through the port's runner and compares the rows.
+  every scenario through the port's runner and compares the rows; the `u16`
+  rows where the port's `StandardTokenizer` still differs, by causes its
+  documentation declares, are listed there and required to differ.

@@ -6,7 +6,7 @@
 use std::collections::VecDeque;
 
 use crate::analysis::tokenattributes::{
-    OffsetAttribute, PackedTokenAttributeImpl, PositionIncrementAttribute, PositionLengthAttribute,
+    OffsetAttribute, PositionIncrementAttribute, PositionLengthAttribute,
 };
 use crate::analysis::TokenStream;
 use crate::error::{LuceneError, Result};
@@ -63,6 +63,14 @@ pub struct GraphTokenFilter {
     cache_size: usize,
 }
 
+/// The position increment of the stream's current token.
+fn pos_inc_of(source: &crate::util::attribute::AttributeSource) -> i32 {
+    source
+        .get_attribute_interface::<dyn PositionIncrementAttribute>()
+        .expect("INVARIANT: the constructor added the PositionIncrementAttribute")
+        .get_position_increment()
+}
+
 impl std::fmt::Debug for GraphTokenFilter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GraphTokenFilter")
@@ -73,9 +81,18 @@ impl std::fmt::Debug for GraphTokenFilter {
 }
 
 impl GraphTokenFilter {
-    /// Wraps `input`.
-    pub fn new(input: Box<dyn TokenStream>) -> Self {
-        Self {
+    /// Wraps `input`, adding the `PositionIncrementAttribute` and the
+    /// `OffsetAttribute` to it (`GraphTokenFilter.java:64-68`).
+    ///
+    /// # Errors
+    ///
+    /// What the input's attribute factory raises for an interface it cannot
+    /// implement, as Java's `addAttribute` throws.
+    pub fn new(mut input: Box<dyn TokenStream>) -> Result<Self> {
+        let source = input.attribute_source_mut();
+        source.add_attribute_interface::<dyn PositionIncrementAttribute>()?;
+        source.add_attribute_interface::<dyn OffsetAttribute>()?;
+        Ok(Self {
             input,
             tokens: Vec::new(),
             token_pool: VecDeque::new(),
@@ -87,7 +104,32 @@ impl GraphTokenFilter {
             final_offsets: -1,
             stack_size: 0,
             cache_size: 0,
-        }
+        })
+    }
+
+    /// The attributes of the stream, which are its input's: Java's
+    /// `GraphTokenFilter` is a `TokenFilter`, whose `AttributeSource` shares
+    /// the input's attributes.
+    pub fn attribute_source(&self) -> &crate::util::attribute::AttributeSource {
+        self.input.attribute_source()
+    }
+
+    /// The attributes of the stream, mutably; see
+    /// [`attribute_source`](Self::attribute_source).
+    pub fn attribute_source_mut(&mut self) -> &mut crate::util::attribute::AttributeSource {
+        self.input.attribute_source_mut()
+    }
+
+    /// Closes the input.
+    ///
+    /// Equivalent to the inherited `TokenFilter.close()`, which closes the
+    /// input.
+    ///
+    /// # Errors
+    ///
+    /// What the input's `close` raises.
+    pub fn close(&mut self) -> Result<()> {
+        self.input.close()
     }
 
     /// Returns the position increment the stream reported at its end.
@@ -116,14 +158,14 @@ impl GraphTokenFilter {
             let state = source.capture_state().ok_or_else(|| {
                 LuceneError::illegal_state("token stream has no attributes to capture".to_string())
             })?;
-            match source.get_attribute::<PackedTokenAttributeImpl>() {
-                Some(att) => (
-                    state,
-                    att.get_position_increment(),
-                    att.get_position_length(),
-                ),
-                None => (state, 1, 1),
-            }
+            // `Token(AttributeSource)` (`GraphTokenFilter.java:247-251`): the
+            // position length is 1 when the stream has no
+            // `PositionLengthAttribute`.
+            let pos_inc = pos_inc_of(source);
+            let pos_length = source
+                .get_attribute_interface::<dyn PositionLengthAttribute>()
+                .map_or(1, |att| att.get_position_length());
+            (state, pos_inc, pos_length)
         };
 
         if let Some(index) = self.token_pool.pop_front() {
@@ -176,13 +218,11 @@ impl GraphTokenFilter {
         if !self.input.increment_token()? {
             self.input.end()?;
             let source = self.input.attribute_source();
-            if let Some(att) = source.get_attribute::<PackedTokenAttributeImpl>() {
-                self.trailing_positions = att.get_position_increment();
-                self.final_offsets = att.end_offset();
-            } else {
-                self.trailing_positions = 0;
-                self.final_offsets = 0;
-            }
+            self.trailing_positions = pos_inc_of(source);
+            self.final_offsets = source
+                .get_attribute_interface::<dyn OffsetAttribute>()
+                .expect("INVARIANT: the constructor added the OffsetAttribute")
+                .end_offset();
             return Ok(None);
         }
         let new_index = self.new_token()?;
@@ -327,20 +367,22 @@ impl GraphTokenFilter {
         if self.trailing_positions == -1 {
             self.input.end()?;
             let source = self.input.attribute_source();
-            if let Some(att) = source.get_attribute::<PackedTokenAttributeImpl>() {
-                self.trailing_positions = att.get_position_increment();
-                self.final_offsets = att.end_offset();
-            } else {
-                self.trailing_positions = 0;
-                self.final_offsets = 0;
-            }
+            self.trailing_positions = pos_inc_of(source);
+            self.final_offsets = source
+                .get_attribute_interface::<dyn OffsetAttribute>()
+                .expect("INVARIANT: the constructor added the OffsetAttribute")
+                .end_offset();
         } else {
             let source = self.input.attribute_source();
             source.end_attributes();
-            if let Some(mut att) = source.get_attribute_mut::<PackedTokenAttributeImpl>() {
-                att.set_position_increment(self.trailing_positions);
-                att.set_offset(self.final_offsets, self.final_offsets);
-            }
+            source
+                .get_attribute_interface_mut::<dyn PositionIncrementAttribute>()
+                .expect("INVARIANT: the constructor added the PositionIncrementAttribute")
+                .set_position_increment(self.trailing_positions);
+            source
+                .get_attribute_interface_mut::<dyn OffsetAttribute>()
+                .expect("INVARIANT: the constructor added the OffsetAttribute")
+                .set_offset(self.final_offsets, self.final_offsets);
         }
         Ok(())
     }
@@ -390,8 +432,17 @@ mod tests {
         fn new(text: &str) -> Self {
             let mut source = AttributeSource::new_with_factory(default_token_attribute_factory());
             source
-                .add_attribute::<PackedTokenAttributeImpl>()
-                .expect("packed token attribute");
+                .add_attribute_interface::<dyn CharTermAttribute>()
+                .expect("the default token factory implements CharTermAttribute");
+            source
+                .add_attribute_interface::<dyn OffsetAttribute>()
+                .expect("the default token factory implements OffsetAttribute");
+            source
+                .add_attribute_interface::<dyn PositionIncrementAttribute>()
+                .expect("the default token factory implements PositionIncrementAttribute");
+            source
+                .add_attribute_interface::<dyn PositionLengthAttribute>()
+                .expect("the default token factory implements PositionLengthAttribute");
             let mut tokens = Vec::new();
             let (mut pos, mut offset) = (0i32, 0i32);
             for part in text.split(' ') {
@@ -432,14 +483,23 @@ mod tests {
             let (term, start, end, pos_inc, pos_length) = self.tokens[self.upto].clone();
             self.upto += 1;
             self.source.clear_attributes();
-            let mut att = self
-                .source
-                .get_attribute_mut::<PackedTokenAttributeImpl>()
-                .expect("packed token attribute");
-            att.append_string(&term);
-            att.set_offset(start, end);
-            att.set_position_increment(pos_inc);
-            att.set_position_length(pos_length);
+            let source = &self.source;
+            source
+                .get_attribute_interface_mut::<dyn CharTermAttribute>()
+                .expect("added at construction")
+                .append_string(&term);
+            source
+                .get_attribute_interface_mut::<dyn OffsetAttribute>()
+                .expect("added at construction")
+                .set_offset(start, end);
+            source
+                .get_attribute_interface_mut::<dyn PositionIncrementAttribute>()
+                .expect("added at construction")
+                .set_position_increment(pos_inc);
+            source
+                .get_attribute_interface_mut::<dyn PositionLengthAttribute>()
+                .expect("added at construction")
+                .set_position_length(pos_length);
             Ok(true)
         }
 
@@ -464,12 +524,12 @@ mod tests {
 
     /// The term the filter currently exposes.
     fn term(graph: &GraphTokenFilter) -> String {
-        graph
+        let term_att = graph
             .input
             .attribute_source()
-            .get_attribute::<PackedTokenAttributeImpl>()
-            .expect("packed token attribute")
-            .term()
+            .get_attribute_interface::<dyn CharTermAttribute>()
+            .expect("added at construction");
+        term_att.buffer()[..term_att.length()].iter().collect()
     }
 
     /// `cachedTokenCount` counts the tokens the lookahead cache has allocated,
@@ -479,7 +539,8 @@ mod tests {
     #[test]
     fn cached_token_count_follows_lucene_graph_token_stream_test() {
         let mut graph =
-            GraphTokenFilter::new(Box::new(GraphTokenizer::new("a b/c d e/f:3 g/h i j k")));
+            GraphTokenFilter::new(Box::new(GraphTokenizer::new("a b/c d e/f:3 g/h i j k")))
+                .unwrap();
         graph.input.reset().unwrap();
 
         let step = |graph: &mut GraphTokenFilter, op: &str, expected: Option<&str>| {
@@ -595,7 +656,7 @@ mod tests {
     #[test]
     fn cached_token_count_is_capped_and_cleared_by_reset() {
         let text = vec!["a"; MAX_TOKEN_CACHE_SIZE + 5].join(" ");
-        let mut graph = GraphTokenFilter::new(Box::new(GraphTokenizer::new(&text)));
+        let mut graph = GraphTokenFilter::new(Box::new(GraphTokenizer::new(&text))).unwrap();
         graph.reset().unwrap();
         graph.increment_base_token().unwrap();
         let err = loop {
@@ -633,8 +694,9 @@ mod tests {
         let stop = crate::analysis::new_stop_filter(
             Box::new(tokenizer),
             crate::analysis::CharArraySet::from_iter(["the"], false),
-        );
-        let mut graph = GraphTokenFilter::new(Box::new(stop));
+        )
+        .unwrap();
+        let mut graph = GraphTokenFilter::new(Box::new(stop)).unwrap();
         graph.reset().unwrap();
         let mut tokens = 0;
         while graph.increment_base_token().unwrap() {
@@ -642,26 +704,25 @@ mod tests {
         }
         assert_eq!(tokens, 2);
         let state = |graph: &GraphTokenFilter| {
-            let att = graph
-                .input
-                .attribute_source()
-                .get_attribute::<PackedTokenAttributeImpl>()
+            let source = graph.input.attribute_source();
+            let pos_inc = pos_inc_of(source);
+            let offset = source
+                .get_attribute_interface::<dyn OffsetAttribute>()
                 .unwrap();
-            (
-                att.get_position_increment(),
-                att.start_offset(),
-                att.end_offset(),
-            )
+            (pos_inc, offset.start_offset(), offset.end_offset())
         };
         graph.end().unwrap();
         assert_eq!(state(&graph), (1, 7, 7));
         {
             let source = graph.input.attribute_source();
-            let mut att = source
-                .get_attribute_mut::<PackedTokenAttributeImpl>()
-                .unwrap();
-            att.set_position_increment(5);
-            att.set_offset(1, 2);
+            source
+                .get_attribute_interface_mut::<dyn PositionIncrementAttribute>()
+                .unwrap()
+                .set_position_increment(5);
+            source
+                .get_attribute_interface_mut::<dyn OffsetAttribute>()
+                .unwrap()
+                .set_offset(1, 2);
         }
         graph.end().unwrap();
         assert_eq!(state(&graph), (1, 7, 7));

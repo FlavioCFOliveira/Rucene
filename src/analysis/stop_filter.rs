@@ -8,7 +8,7 @@ use crate::analysis::filtering_token_filter::{
     new_filtering_token_filter, FilteringTokenFilter, FilteringTokenFilterLogic,
 };
 use crate::analysis::tokenattributes::CharTermAttribute;
-use crate::analysis::{CharArraySet, PackedTokenAttributeImpl, TokenStream};
+use crate::analysis::{CharArraySet, TokenStream};
 use crate::error::Result;
 use crate::util::attribute::AttributeSource;
 
@@ -27,7 +27,11 @@ impl StopFilterLogic {
 
 impl FilteringTokenFilterLogic for StopFilterLogic {
     fn accept(&mut self, source: &AttributeSource) -> Result<bool> {
-        let term_att = source.get_attribute::<PackedTokenAttributeImpl>().unwrap();
+        // `!stopWords.contains(termAtt.buffer(), 0, termAtt.length())`
+        // (`StopFilter.java:96-98`).
+        let term_att = source
+            .get_attribute_interface::<dyn CharTermAttribute>()
+            .expect("INVARIANT: the constructor added the CharTermAttribute");
         let buffer = term_att.buffer();
         let length = term_att.length();
         Ok(!self.stop_words.contains_chars(buffer, 0, length))
@@ -40,9 +44,22 @@ pub type StopFilter = FilteringTokenFilter<StopFilterLogic>;
 /// Creates a [`StopFilter`] over `input` using the supplied stop-word set.
 ///
 /// Equivalent to `StopFilter(TokenStream, CharArraySet)`, whose `super(in)`
-/// is [`new_filtering_token_filter`].
-pub fn new_stop_filter(input: Box<dyn TokenStream>, stop_words: CharArraySet) -> StopFilter {
-    new_filtering_token_filter(input, StopFilterLogic::new(stop_words))
+/// is [`new_filtering_token_filter`], then adds the `CharTermAttribute`
+/// (`StopFilter.java:28`).
+///
+/// # Errors
+///
+/// What the stream's attribute factory raises for an interface it cannot
+/// implement, as Java's `addAttribute` throws.
+pub fn new_stop_filter(
+    input: Box<dyn TokenStream>,
+    stop_words: CharArraySet,
+) -> Result<StopFilter> {
+    let mut filter = new_filtering_token_filter(input, StopFilterLogic::new(stop_words))?;
+    filter
+        .attribute_source_mut()
+        .add_attribute_interface::<dyn CharTermAttribute>()?;
+    Ok(filter)
 }
 
 /// Builds a stop-word set from an iterable of string-like items.

@@ -45,9 +45,10 @@ pub use filtering_token_filter::{
 pub use lower_case_filter::{new_lower_case_filter, LowerCaseFilter, LowerCaseFilterLogic};
 pub use reusable_string_reader::ReusableStringReader;
 pub use standard::{
-    new_standard_tokenizer, StandardAnalyzer, StandardTokenizer, StandardTokenizerLogic,
-    StopwordAnalyzerBase, ALPHANUM, DEFAULT_MAX_TOKEN_LENGTH, EMOJI, HANGUL, HIRAGANA, IDEOGRAPHIC,
-    KATAKANA, MAX_TOKEN_LENGTH_LIMIT, NUM, SOUTHEAST_ASIAN, TOKEN_TYPES,
+    new_standard_tokenizer, new_standard_tokenizer_with_factory, StandardAnalyzer,
+    StandardTokenizer, StandardTokenizerLogic, StopwordAnalyzerBase, ALPHANUM,
+    DEFAULT_MAX_TOKEN_LENGTH, EMOJI, HANGUL, HIRAGANA, IDEOGRAPHIC, KATAKANA,
+    MAX_TOKEN_LENGTH_LIMIT, NUM, SOUTHEAST_ASIAN, TOKEN_TYPES,
 };
 pub use stop_filter::{make_stop_set, new_stop_filter, StopFilter, StopFilterLogic};
 pub use tokenattributes::{
@@ -459,16 +460,17 @@ impl<T: TokenizerLogic> Tokenizer<T> {
     /// Creates a tokenizer with no input, awaiting a call to [`Self::set_reader`].
     ///
     /// The source is built over [`default_token_attribute_factory`] and holds
-    /// a [`PackedTokenAttributeImpl`], the implementation the crate's own
-    /// tokenizer logics read.
+    /// the `CharTermAttribute`, which that factory implements with a
+    /// [`PackedTokenAttributeImpl`] serving every core token attribute: what
+    /// a Java subclass's fields add (`termAtt = addAttribute(...)`). A logic
+    /// that adds other attributes, or adds them in its own order, builds its
+    /// source and calls [`Self::with_source`].
     pub fn new(logic: T) -> Self {
         let mut tokenizer = Self::with_factory(default_token_attribute_factory(), logic);
         tokenizer
             .source
-            .add_attribute::<PackedTokenAttributeImpl>()
-            .expect(
-                "INVARIANT: the default token attribute factory provides the packed implementation",
-            );
+            .add_attribute_interface::<dyn CharTermAttribute>()
+            .expect("INVARIANT: the default token attribute factory implements CharTermAttribute");
         tokenizer
     }
 
@@ -1662,6 +1664,17 @@ mod tests {
     use std::any::TypeId;
 
     use super::*;
+
+    /// `CharTermAttribute.toString()`: the term text.
+    trait TermText {
+        fn term(&self) -> String;
+    }
+
+    impl<T: CharTermAttribute + ?Sized> TermText for T {
+        fn term(&self) -> String {
+            self.buffer()[..self.length()].iter().collect()
+        }
+    }
     use crate::util::attribute::unwrap_all;
 
     #[derive(Debug, Default)]
@@ -1683,7 +1696,7 @@ mod tests {
             let word = &self.words[self.index];
             self.index += 1;
             source
-                .get_attribute_mut::<PackedTokenAttributeImpl>()
+                .get_attribute_interface_mut::<dyn CharTermAttribute>()
                 .unwrap()
                 .append_string(word);
             Ok(true)
@@ -1741,16 +1754,16 @@ mod tests {
                 return Ok(false);
             }
             let term = source
-                .get_attribute_mut::<PackedTokenAttributeImpl>()
+                .get_attribute_interface_mut::<dyn CharTermAttribute>()
                 .unwrap()
                 .term()
                 .to_uppercase();
             source
-                .get_attribute_mut::<PackedTokenAttributeImpl>()
+                .get_attribute_interface_mut::<dyn CharTermAttribute>()
                 .unwrap()
                 .set_empty();
             source
-                .get_attribute_mut::<PackedTokenAttributeImpl>()
+                .get_attribute_interface_mut::<dyn CharTermAttribute>()
                 .unwrap()
                 .append_string(&term);
             Ok(true)
@@ -1760,7 +1773,7 @@ mod tests {
     fn term_of(stream: &dyn TokenStream) -> String {
         stream
             .attribute_source()
-            .get_attribute::<PackedTokenAttributeImpl>()
+            .get_attribute_interface::<dyn CharTermAttribute>()
             .unwrap()
             .term()
     }
@@ -1915,7 +1928,7 @@ mod tests {
             _input: Option<&dyn CharReader>,
         ) -> Result<()> {
             source
-                .get_attribute_mut::<PackedTokenAttributeImpl>()
+                .get_attribute_interface_mut::<dyn OffsetAttribute>()
                 .unwrap()
                 .set_offset(3, 3);
             Ok(())
@@ -1949,17 +1962,23 @@ mod tests {
         assert!(tokenizer.increment_token().unwrap());
         tokenizer
             .attribute_source()
-            .get_attribute_mut::<PackedTokenAttributeImpl>()
+            .get_attribute_interface_mut::<dyn CharTermAttribute>()
             .unwrap()
             .append_string("x");
         tokenizer.end().unwrap();
-        let att = tokenizer
-            .attribute_source()
-            .get_attribute::<PackedTokenAttributeImpl>()
+        let source = tokenizer.attribute_source();
+        let offset = source
+            .get_attribute_interface::<dyn OffsetAttribute>()
             .unwrap();
-        assert_eq!((att.start_offset(), att.end_offset()), (3, 3));
-        assert_eq!(att.term(), "");
-        assert_eq!(att.get_position_increment(), 0);
+        assert_eq!((offset.start_offset(), offset.end_offset()), (3, 3));
+        let term = source
+            .get_attribute_interface::<dyn CharTermAttribute>()
+            .unwrap();
+        assert_eq!(term.term(), "");
+        let pos_inc = source
+            .get_attribute_interface::<dyn PositionIncrementAttribute>()
+            .unwrap();
+        assert_eq!(pos_inc.get_position_increment(), 0);
     }
 
     #[test]
@@ -1985,7 +2004,9 @@ mod tests {
     fn default_factory_creates_packed_token_attribute() {
         let factory = default_token_attribute_factory();
         let mut source = AttributeSource::new_with_factory(factory);
-        source.add_attribute::<PackedTokenAttributeImpl>().unwrap();
+        source
+            .add_attribute_interface::<dyn CharTermAttribute>()
+            .unwrap();
 
         assert!(source.has_attribute::<PackedTokenAttributeImpl>());
         assert!(source.has_attribute_by_id(TypeId::of::<dyn OffsetAttribute>()));
@@ -2038,7 +2059,7 @@ mod tests {
     fn lower_case_filter_ascii_and_unicode() -> Result<()> {
         let mut tokenizer = Tokenizer::new(WhitespaceTokenizer::default());
         tokenizer.set_reader(Box::new(StringCharReader::new("HELLO Ω É ß")))?;
-        let mut filter = new_lower_case_filter(Box::new(tokenizer));
+        let mut filter = new_lower_case_filter(Box::new(tokenizer)).unwrap();
         filter.reset()?;
 
         assert!(filter.increment_token()?);
@@ -2068,7 +2089,7 @@ mod tests {
     impl FilteringTokenFilterLogic for RejectShortLogic {
         fn accept(&mut self, source: &AttributeSource) -> Result<bool> {
             let len = source
-                .get_attribute::<PackedTokenAttributeImpl>()
+                .get_attribute_interface::<dyn CharTermAttribute>()
                 .unwrap()
                 .length();
             Ok(len >= self.min_len)
@@ -2080,7 +2101,8 @@ mod tests {
         let mut tokenizer = Tokenizer::new(WhitespaceTokenizer::default());
         tokenizer.set_reader(Box::new(StringCharReader::new("a big cat")))?;
         let mut filter =
-            new_filtering_token_filter(Box::new(tokenizer), RejectShortLogic { min_len: 3 });
+            new_filtering_token_filter(Box::new(tokenizer), RejectShortLogic { min_len: 3 })
+                .unwrap();
         filter.reset()?;
 
         // 'a' is rejected, 'big' is accepted with position increment 2.
@@ -2089,7 +2111,7 @@ mod tests {
         assert_eq!(
             filter
                 .attribute_source()
-                .get_attribute::<PackedTokenAttributeImpl>()
+                .get_attribute_interface::<dyn PositionIncrementAttribute>()
                 .unwrap()
                 .get_position_increment(),
             2
@@ -2100,7 +2122,7 @@ mod tests {
         assert_eq!(
             filter
                 .attribute_source()
-                .get_attribute::<PackedTokenAttributeImpl>()
+                .get_attribute_interface::<dyn PositionIncrementAttribute>()
                 .unwrap()
                 .get_position_increment(),
             1
@@ -2111,7 +2133,7 @@ mod tests {
         assert_eq!(
             filter
                 .attribute_source()
-                .get_attribute::<PackedTokenAttributeImpl>()
+                .get_attribute_interface::<dyn PositionIncrementAttribute>()
                 .unwrap()
                 .get_position_increment(),
             0
@@ -2129,7 +2151,7 @@ mod tests {
         let stop_words = make_stop_set(["is", "a", "the"], false);
         let mut tokenizer = Tokenizer::new(WhitespaceTokenizer::default());
         tokenizer.set_reader(Box::new(StringCharReader::new("the quick is a fox")))?;
-        let mut filter = new_stop_filter(Box::new(tokenizer), stop_words);
+        let mut filter = new_stop_filter(Box::new(tokenizer), stop_words).unwrap();
         filter.reset()?;
 
         assert!(filter.increment_token()?);
@@ -2148,7 +2170,7 @@ mod tests {
         let stop_words = make_stop_set(["The"], true);
         let mut tokenizer = Tokenizer::new(WhitespaceTokenizer::default());
         tokenizer.set_reader(Box::new(StringCharReader::new("the cat")))?;
-        let mut filter = new_stop_filter(Box::new(tokenizer), stop_words);
+        let mut filter = new_stop_filter(Box::new(tokenizer), stop_words).unwrap();
         filter.reset()?;
 
         assert!(filter.increment_token()?);
@@ -2232,7 +2254,7 @@ mod tests {
         while stream.increment_token()? {
             let term = stream
                 .attribute_source()
-                .get_attribute::<PackedTokenAttributeImpl>()
+                .get_attribute_interface::<dyn CharTermAttribute>()
                 .unwrap()
                 .term();
             terms.push(term);

@@ -30,20 +30,11 @@
 //!   an `IOException` from the analysis chain in a `RuntimeException`; here it
 //!   propagates as [`LuceneError`]. The argument checks that Java raises as
 //!   `IllegalArgumentException` return [`LuceneError::IllegalArgument`].
-//! * **Attributes are read through the concrete implementations.** Java asks the
-//!   stream for an interface (`getAttribute(TermToBytesRefAttribute.class)`);
-//!   this crate's `AttributeSource` is keyed by implementation type, so the
-//!   helpers below try [`PackedTokenAttributeImpl`] — the implementation the
-//!   default factory installs for all four attributes — and fall back to the
-//!   stand-alone implementations. The answer is the same one Java's lookup
-//!   gives for any stream built by this crate's analysis chain.
 
 use std::sync::Arc;
 
 use crate::analysis::tokenattributes::{
-    BytesTermAttributeImpl, PackedTokenAttributeImpl, PositionIncrementAttribute,
-    PositionIncrementAttributeImpl, PositionLengthAttribute, PositionLengthAttributeImpl,
-    TermToBytesRefAttribute,
+    PositionIncrementAttribute, PositionLengthAttribute, TermToBytesRefAttribute,
 };
 use crate::analysis::{Analyzer, CachingTokenFilter, SharedTokenStream, TokenStream};
 use crate::error::{LuceneError, Result};
@@ -369,7 +360,15 @@ pub trait QueryBuilderOps {
         // Build an appropriate query based on the analysis chain.
         let mut stream = CachingTokenFilter::new(source);
 
-        if !has_term_attribute(stream.attribute_source()) {
+        // `QueryBuilder.java:300-306`: the stream's term attribute, if any,
+        // and the position attributes, which `addAttribute` creates.
+        let has_term = has_term_attribute(stream.attribute_source());
+        {
+            let atts = stream.attribute_source_mut();
+            atts.add_attribute_interface::<dyn PositionIncrementAttribute>()?;
+            atts.add_attribute_interface::<dyn PositionLengthAttribute>()?;
+        }
+        if !has_term {
             return Ok(None);
         }
 
@@ -838,47 +837,33 @@ fn add_min_should_match_to_boolean(query: &BooleanQuery, fraction: f32) -> Resul
 }
 
 // ---------------------------------------------------------------------------
-// Attribute access
-//
-// Java asks the stream for an interface; this crate's AttributeSource is keyed
-// by implementation type, so each helper tries the implementation the default
-// factory installs for every attribute and then the stand-alone one.
+// Attribute access: the interfaces, as Java's `getAttribute(X.class)` asks
 // ---------------------------------------------------------------------------
 
 /// Returns `true` when the stream carries a `TermToBytesRefAttribute`.
 ///
 /// Equivalent to `stream.getAttribute(TermToBytesRefAttribute.class) != null`.
 fn has_term_attribute(atts: &AttributeSource) -> bool {
-    atts.has_attribute::<PackedTokenAttributeImpl>()
-        || atts.has_attribute::<BytesTermAttributeImpl>()
+    atts.has_attribute_interface::<dyn TermToBytesRefAttribute>()
 }
 
 /// Reads the current term bytes, or `None` when the stream carries no
 /// `TermToBytesRefAttribute`.
 fn term_bytes_of(atts: &AttributeSource) -> Option<BytesRef> {
-    if let Some(att) = atts.get_attribute::<PackedTokenAttributeImpl>() {
-        return Some(att.get_bytes_ref());
-    }
-    atts.get_attribute::<BytesTermAttributeImpl>()
+    atts.get_attribute_interface::<dyn TermToBytesRefAttribute>()
         .map(|att| att.get_bytes_ref())
 }
 
 /// Reads the current position increment, defaulting to Lucene's `1` when the
 /// attribute is absent — the value `addAttribute` would have created.
 fn position_increment_of(atts: &AttributeSource) -> i32 {
-    if let Some(att) = atts.get_attribute::<PackedTokenAttributeImpl>() {
-        return att.get_position_increment();
-    }
-    atts.get_attribute::<PositionIncrementAttributeImpl>()
+    atts.get_attribute_interface::<dyn PositionIncrementAttribute>()
         .map_or(1, |att| att.get_position_increment())
 }
 
 /// Reads the current position length, defaulting to Lucene's `1` when the
 /// attribute is absent — the value `addAttribute` would have created.
 fn position_length_of(atts: &AttributeSource) -> i32 {
-    if let Some(att) = atts.get_attribute::<PackedTokenAttributeImpl>() {
-        return att.get_position_length();
-    }
-    atts.get_attribute::<PositionLengthAttributeImpl>()
+    atts.get_attribute_interface::<dyn PositionLengthAttribute>()
         .map_or(1, |att| att.get_position_length())
 }
