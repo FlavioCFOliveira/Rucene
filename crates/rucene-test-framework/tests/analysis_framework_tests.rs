@@ -9,11 +9,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use randomizedtesting::jdk::exception::Throwable;
-use randomizedtesting::jdk::reflect::{Class, Constructor, Field, Method, Value};
-use randomizedtesting::junit::{
-    AfterClass, Assert, BeforeClass, ClassRule, JUnitCore, Request, Rule, Test,
-};
-use randomizedtesting::rules::TestRuleAdapterRule;
+use randomizedtesting::jdk::reflect::{Class, Constructor, Method};
+use randomizedtesting::junit::{Assert, JUnitCore, Request, Test};
 use rucene::analysis::tokenattributes::{
     CharTermAttribute, FlagsAttribute, OffsetAttribute, PayloadAttribute,
     PositionIncrementAttribute, PositionLengthAttribute, TermFrequencyAttribute, TypeAttribute,
@@ -44,14 +41,9 @@ use rucene_test_framework::analysis::{
     components, shared, sink, tokenizer_components, BaseTokenStreamTestCase as B, MockAnalyzer,
     MockCharFilter, MockRandomLookaheadTokenFilter, MockSynonymFilter, MockTokenizer, Token,
 };
-use rucene_test_framework::search::similarities::{AssertingSimilarity, RandomSimilarity};
 use rucene_test_framework::util::automaton::AutomatonTestUtil;
 use rucene_test_framework::util::lucene_test_case::{
-    LiveIWCFlushMode, LuceneTestCase, CLASS_NAME_RULE, RANDOM_MULTIPLIER, SUITE_FAILURE_MARKER,
-    TEMP_FILES_CLEANUP_RULE, TEST_NIGHTLY,
-};
-use rucene_test_framework::util::test_rule_mark_failure::{
-    TestRuleMarkFailure, TestRuleMarkFailureRule,
+    LuceneTestCase, RANDOM_MULTIPLIER, TEST_NIGHTLY,
 };
 use rucene_test_framework::util::TestUtil;
 
@@ -65,75 +57,8 @@ fn run_suite(name: &str, methods: &[(&'static str, TestFn)]) {
     static SUITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _one_at_a_time = SUITES.lock().unwrap_or_else(|e| e.into_inner());
     let mut builder = Class::builder(name)
-        .constructor(Constructor::no_args(|| ()))
-        .field(
-            Field::new_static("suiteFailureMarker", "org.junit.rules.TestRule", || {
-                Value::TestRule(
-                    Arc::new(TestRuleMarkFailureRule(Arc::clone(&SUITE_FAILURE_MARKER)))
-                        as Arc<dyn randomizedtesting::junit::TestRule>,
-                )
-            })
-            .annotate(ClassRule),
-        )
-        .field(
-            Field::new_static("classNameRule", "org.junit.rules.TestRule", || {
-                Value::TestRule(
-                    Arc::clone(&CLASS_NAME_RULE) as Arc<dyn randomizedtesting::junit::TestRule>
-                )
-            })
-            .annotate(ClassRule),
-        )
-        .field(
-            Field::new_static("tempFilesCleanupRule", "org.junit.rules.TestRule", || {
-                Value::TestRule(
-                    Arc::new(TestRuleAdapterRule(Arc::clone(&TEMP_FILES_CLEANUP_RULE)))
-                        as Arc<dyn randomizedtesting::junit::TestRule>,
-                )
-            })
-            .annotate(ClassRule),
-        )
-        // `testFailureMarker = new TestRuleMarkFailure(suiteFailureMarker)`, the
-        // outer rule of the test rule chain.
-        .field(
-            Field::new_instance::<()>("testFailureMarker", "org.junit.rules.TestRule", |_| {
-                Value::TestRule(Arc::new(TestRuleMarkFailureRule(Arc::new(
-                    TestRuleMarkFailure::new(vec![Arc::clone(&SUITE_FAILURE_MARKER)]),
-                )))
-                    as Arc<dyn randomizedtesting::junit::TestRule>)
-            })
-            .annotate(Rule),
-        )
-        // The class environment `TestRuleSetupAndRestoreClassEnv.before()`
-        // sets up (task #348 ports the rule): the time zone, the similarity
-        // and the live flush mode the writer side reads, drawn as it draws
-        // them.
-        .method(
-            Method::new("setUpClassEnv")
-                .annotate(BeforeClass)
-                .static_body(|| {
-                    let random = LuceneTestCase::random();
-                    LuceneTestCase::set_class_env_time_zone(Some(
-                        LuceneTestCase::random_time_zone(&*random),
-                    ));
-                    LuceneTestCase::set_class_env_similarity(Some(Arc::new(
-                        AssertingSimilarity::new(Arc::new(RandomSimilarity::new(&*random))),
-                    )));
-                    LuceneTestCase::set_live_iwc_flush_mode(Some(match random.next_int_bound(3) {
-                        0 => LiveIWCFlushMode::ByRam,
-                        1 => LiveIWCFlushMode::ByDocs,
-                        _ => LiveIWCFlushMode::Either,
-                    }));
-                }),
-        )
-        .method(
-            Method::new("restoreClassEnv")
-                .annotate(AfterClass)
-                .static_body(|| {
-                    LuceneTestCase::set_class_env_time_zone(None);
-                    LuceneTestCase::set_class_env_similarity(None);
-                    LuceneTestCase::set_live_iwc_flush_mode(None);
-                }),
-        );
+        .extends(&LuceneTestCase::class())
+        .constructor(Constructor::no_args(|| ()));
     for (method, body) in methods {
         let body = *body;
         builder = builder.method(
@@ -1457,7 +1382,7 @@ fn mock_bytes_analyzer_indexes_utf16_bytes() -> Result<()> {
 #[test]
 fn test_mock_bytes_analyzer_indexing() {
     run_suite(
-        "org.apache.lucene.tests.analysis.MockBytesAnalyzerIndexing",
+        "org.apache.lucene.tests.analysis.TestMockBytesAnalyzerIndexing",
         &[(
             "testIndexesUtf16Bytes",
             mock_bytes_analyzer_indexes_utf16_bytes,

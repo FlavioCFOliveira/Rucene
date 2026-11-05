@@ -17,6 +17,8 @@ org.apache.lucene.tests.codecs.TestCodecsOracle
 # The helpers of org.apache.lucene.tests.util (rmp #342)
 org.apache.lucene.tests.util.TestUtilOracle
 org.apache.lucene.tests.util.TimeZoneOracle
+# LuceneTestCase's class environment, rule chains and reproduce line, StringHelper.randomId (rmp #348, #226)
+org.apache.lucene.tests.util.ClassEnvOracle
 # The store wrappers of org.apache.lucene.tests.store (rmp #343)
 org.apache.lucene.tests.store.MockDirectoryWrapperOracle
 # The index readers and wrappers of org.apache.lucene.tests.index (rmp #344); reads the

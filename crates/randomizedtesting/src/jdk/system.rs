@@ -73,6 +73,16 @@ pub fn set_err(sink: Option<PrintSink>) -> Option<PrintSink> {
     std::mem::replace(&mut *ERR.write().unwrap_or_else(|e| e.into_inner()), sink)
 }
 
+/// `System.out`: the current sink, `None` for the process's standard output.
+pub fn out() -> Option<PrintSink> {
+    OUT.read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// `System.err`: the current sink, `None` for the process's standard error.
+pub fn err() -> Option<PrintSink> {
+    ERR.read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
 /// `System.out.print(text)`.
 pub fn out_print(text: &str) {
     let sink = OUT.read().unwrap_or_else(|e| e.into_inner()).clone();

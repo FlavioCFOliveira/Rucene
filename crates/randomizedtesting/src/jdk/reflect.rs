@@ -597,6 +597,25 @@ impl Field {
         }
     }
 
+    /// An instance field of type `type_name` whose value `getter` gives for
+    /// any instance: a field a superclass declares, which reads per-instance
+    /// state the superclass keeps itself, whatever the subclass's instance
+    /// type.
+    pub fn new_instance_any(
+        name: impl Into<String>,
+        type_name: impl Into<String>,
+        getter: impl Fn() -> Value + Send + Sync + 'static,
+    ) -> Field {
+        Field {
+            declaring_class: String::new(),
+            name: name.into(),
+            modifiers: modifier::PUBLIC,
+            type_name: type_name.into(),
+            annotations: Vec::new(),
+            access: FieldAccess::Instance(Arc::new(move |_| getter())),
+        }
+    }
+
     /// Sets the modifiers; `STATIC` follows the accessor.
     pub fn modifiers(mut self, modifiers: i32) -> Field {
         let is_static = matches!(self.access, FieldAccess::Static(_));

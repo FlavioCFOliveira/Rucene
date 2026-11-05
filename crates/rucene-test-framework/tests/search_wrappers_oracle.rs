@@ -24,9 +24,9 @@ use std::sync::{Arc, Mutex};
 use oracle_support::{assert_same, rows};
 use randomizedtesting::jdk::exception::QuietPanics;
 use randomizedtesting::jdk::random::{JdkRandom, Random};
-use randomizedtesting::jdk::reflect::{Class, Constructor, Field, Method, Value};
+use randomizedtesting::jdk::reflect::{Class, Constructor, Method};
 use randomizedtesting::jdk::system;
-use randomizedtesting::junit::{ClassRule, JUnitCore, Request, Test};
+use randomizedtesting::junit::{JUnitCore, Request, Test};
 use rucene::document::IntPoint;
 use rucene::error::{LuceneError, Result};
 use rucene::index::directory_reader;
@@ -49,7 +49,7 @@ use rucene_test_framework::search::{
     DummyTotalHitCountCollector, FixedBitSetCollector, RandomApproximationQuery,
     RandomTwoPhaseView, ScorerIndexSearcher,
 };
-use rucene_test_framework::util::lucene_test_case::{LuceneTestCase, CLASS_NAME_RULE};
+use rucene_test_framework::util::lucene_test_case::LuceneTestCase;
 
 const SEED: &str = "5EA4C4E5";
 
@@ -924,12 +924,11 @@ mod searcher_checks {
 
     /// `SearcherChecksOracle.run`.
     pub(super) fn run() {
+        // `SearcherChecksOracle.runScenarios`: no shared executor, no default
+        // query cache.
+        let executor = LuceneTestCase::replace_executor(None);
         let default_cache = IndexSearcher::get_default_query_cache();
-        let default_policy = IndexSearcher::get_default_query_caching_policy();
         IndexSearcher::set_default_query_cache(None);
-        // `LuceneTestCase.overrideDefaultQueryCache()` (`@BeforeClass`, `@Before`).
-        IndexSearcher::set_default_query_caching_policy(Some(Arc::clone(&MAYBE_CACHE_POLICY)));
-        LuceneTestCase::set_class_env_similarity(Some(Arc::new(BM25Similarity::default())));
         let directory = directory_reader::open(load_corpus(C)).unwrap();
         let reader: Arc<dyn IndexReader> = Arc::clone(&directory) as Arc<dyn IndexReader>;
         new_searcher_grid(&directory, &reader);
@@ -939,9 +938,8 @@ mod searcher_checks {
         scorer_branch(&reader);
         sorted_search(&reader);
         reader.close().unwrap();
-        LuceneTestCase::set_class_env_similarity(None);
         IndexSearcher::set_default_query_cache(default_cache);
-        IndexSearcher::set_default_query_caching_policy(default_policy);
+        LuceneTestCase::replace_executor(executor);
     }
 
     fn new_searcher_grid(directory: &Arc<dyn DirectoryReader>, reader: &Arc<dyn IndexReader>) {
@@ -1724,15 +1722,8 @@ mod searcher_checks {
 #[test]
 fn search_wrappers_match_lucene() {
     let class = Class::builder("org.apache.lucene.tests.search.TestSearchWrappersScenarios")
+        .extends(&LuceneTestCase::class())
         .constructor(Constructor::no_args(|| ()))
-        .field(
-            Field::new_static("classNameRule", "org.junit.rules.TestRule", || {
-                Value::TestRule(
-                    Arc::clone(&CLASS_NAME_RULE) as Arc<dyn randomizedtesting::junit::TestRule>
-                )
-            })
-            .annotate(ClassRule),
-        )
         .method(
             Method::new("testScenarios")
                 .annotate(Test::new())

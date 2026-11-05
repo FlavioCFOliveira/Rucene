@@ -19,8 +19,10 @@
 //! `org.apache.lucene.tests.util.LuceneTestCase` (task #338): the
 //! `tests.*`-derived constants every framework class reads, `random()` and
 //! the static helpers built on them; and the searcher factory `newSearcher`
-//! with what it calls (task #345, under the sprint's cycle rule). The rules,
-//! the index factories and the remaining members are ported by later tasks.
+//! with what it calls (task #345, under the sprint's cycle rule). The class
+//! declaration with its class and test rule chains (task #348) is in
+//! [`crate::util::lucene_test_case_rules`]; the remaining members are ported
+//! by later tasks.
 
 use std::collections::HashSet;
 use std::fmt::Display;
@@ -243,6 +245,78 @@ impl JavaAnnotation for SuppressTempFileChecks {
         self
     }
 }
+
+/// `@SuppressCodecs` (`LuceneTestCase.SuppressCodecs`, `@Inherited`):
+/// "annotation for test classes that should avoid certain codec types
+/// (because they are expensive, for example)."
+pub static SUPPRESS_CODECS: AnnotationType = AnnotationType::plain(
+    "org.apache.lucene.tests.util.LuceneTestCase$SuppressCodecs",
+    "SuppressCodecs",
+    true,
+);
+
+/// An `@SuppressCodecs(value)` annotation value.
+#[derive(Debug, Clone, Default)]
+pub struct SuppressCodecs {
+    /// `value()`.
+    pub value: Vec<String>,
+}
+
+impl JavaAnnotation for SuppressCodecs {
+    fn annotation_type(&self) -> &'static AnnotationType {
+        &SUPPRESS_CODECS
+    }
+    fn to_java_string(&self) -> String {
+        let items: Vec<String> = self.value.iter().map(|v| quote_member(v)).collect();
+        format!(
+            "@org.apache.lucene.tests.util.LuceneTestCase.SuppressCodecs({{{}}})",
+            items.join(", ")
+        )
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// `LuceneTestCase.SuppressSysoutChecks.class.getName()`.
+pub const SUPPRESS_SYSOUT_CHECKS_NAME: &str =
+    "org.apache.lucene.tests.util.LuceneTestCase$SuppressSysoutChecks";
+
+/// `@SuppressSysoutChecks` (`LuceneTestCase.SuppressSysoutChecks`,
+/// `@Inherited`): "ignore `TestRuleLimitSysouts` for any suite which is known
+/// to print over the default limit of bytes to `System.out` or `System.err`."
+pub static SUPPRESS_SYSOUT_CHECKS: AnnotationType =
+    AnnotationType::plain(SUPPRESS_SYSOUT_CHECKS_NAME, "SuppressSysoutChecks", true);
+
+/// An `@SuppressSysoutChecks(bugUrl)` annotation value.
+#[derive(Debug, Clone, Default)]
+pub struct SuppressSysoutChecks {
+    /// `bugUrl()`: "point to JIRA entry."
+    pub bug_url: String,
+}
+
+impl JavaAnnotation for SuppressSysoutChecks {
+    fn annotation_type(&self) -> &'static AnnotationType {
+        &SUPPRESS_SYSOUT_CHECKS
+    }
+    fn to_java_string(&self) -> String {
+        format!(
+            "@org.apache.lucene.tests.util.LuceneTestCase.SuppressSysoutChecks(bugUrl={})",
+            quote_member(&self.bug_url)
+        )
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// `@SuppressReproduceLine` (`LuceneTestCase.SuppressReproduceLine`,
+/// `@Inherited`): "suppress the default `reproduce with: ant test...`."
+pub static SUPPRESS_REPRODUCE_LINE: AnnotationType = AnnotationType::plain(
+    "org.apache.lucene.tests.util.LuceneTestCase$SuppressReproduceLine",
+    "SuppressReproduceLine",
+    true,
+);
 
 /// `suiteFailureMarker`: the suite's failure marker, in `LuceneTestCase`'s
 /// class rules (task #348).
@@ -488,6 +562,22 @@ pub struct TimeZone {
 }
 
 impl TimeZone {
+    /// `TimeZone.getTimeZone(id)`: the zone of an available ID, otherwise
+    /// `GMT` ("the specified TimeZone, or the GMT zone if the given ID cannot
+    /// be understood").
+    ///
+    /// **Divergence.** Java also parses custom `GMT±hh[:mm]` IDs into zones
+    /// of that offset; this `TimeZone` holds an available ID only, so they
+    /// give `GMT`.
+    pub fn get_time_zone(id: &str) -> TimeZone {
+        let id = time_zone_available_ids()
+            .iter()
+            .find(|z| **z == id)
+            .copied()
+            .unwrap_or("GMT");
+        TimeZone { id }
+    }
+
     /// `getID()`.
     pub fn get_id(&self) -> &'static str {
         self.id
@@ -559,6 +649,10 @@ impl LuceneTestCase {
     /// `JENKINS_LARGE_LINE_DOCS_FILE`: a random sample from enwiki used in
     /// tests.
     pub const JENKINS_LARGE_LINE_DOCS_FILE: &'static str = "enwiki.random.lines.txt";
+
+    /// `assertsAreEnabled`: "true if assertions (-ea) are enabled (at least
+    /// for this class)"; `debug_assertions`, the Rust counterpart of `-ea`.
+    pub const ASSERTS_ARE_ENABLED: bool = cfg!(debug_assertions);
 
     /// `defaultRandomMultiplier()`: the default of the random multiplier,
     /// based on `TEST_NIGHTLY`.
@@ -1550,17 +1644,6 @@ impl crate::jdk::executor_service::ExecutorService for LuceneTestCaseExecutor {
 static EXECUTOR: std::sync::Mutex<Option<Arc<LuceneTestCaseExecutor>>> =
     std::sync::Mutex::new(None);
 
-/// `classEnvRule.similarity`: the similarity `TestRuleSetupAndRestoreClassEnv`
-/// draws for the class (`new AssertingSimilarity(new
-/// RandomSimilarity(random()))`), which `newSearcher` installs.
-///
-/// **Divergence (pending task #348).** The rule's `before()`, which draws it
-/// after the codec, locale and time zone of the class, is ported by task
-/// #348; until then the class sets it with
-/// [`LuceneTestCase::set_class_env_similarity`].
-static CLASS_ENV_SIMILARITY: std::sync::Mutex<Option<Arc<dyn Similarity>>> =
-    std::sync::Mutex::new(None);
-
 /// The anonymous subclasses of `IndexSearcher` and `AssertingIndexSearcher`
 /// that `newSearcher` builds with an executor: `slices(leaves)` returns
 /// `LuceneTestCase.slices(leaves, maxDocPerSlice, maxSegmentsPerSlice,
@@ -1705,6 +1788,19 @@ impl LuceneTestCase {
         );
     }
 
+    /// Replaces the `executor` field and returns the previous value: what the
+    /// oracles do reflectively (`Field.set(null, executor)`).
+    pub fn replace_executor(
+        executor: Option<Arc<LuceneTestCaseExecutor>>,
+    ) -> Option<Arc<LuceneTestCaseExecutor>> {
+        std::mem::replace(
+            &mut *EXECUTOR
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            executor,
+        )
+    }
+
     /// The shared executor, when `setUpExecutorService` created it.
     pub fn executor() -> Option<Arc<LuceneTestCaseExecutor>> {
         EXECUTOR
@@ -1714,32 +1810,18 @@ impl LuceneTestCase {
     }
 
     /// `classEnvRule.similarity`: the similarity `TestRuleSetupAndRestoreClassEnv`
-    /// draws for the class, which `newSearcher` installs.
-    ///
-    /// **Divergence (pending task #348).** The rule's `before()` is ported by
-    /// task #348; until then the class sets it with
-    /// [`set_class_env_similarity`](Self::set_class_env_similarity).
+    /// draws for the class (`new AssertingSimilarity(new
+    /// RandomSimilarity(random()))`), which `newSearcher` installs.
     ///
     /// # Panics
     ///
-    /// When the class environment has not set it.
+    /// `NullPointerException` before the rule drew it, where Java's
+    /// `setSimilarity(null)` would leave the searcher unusable.
     pub fn class_env_similarity() -> Arc<dyn Similarity> {
-        CLASS_ENV_SIMILARITY
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-            .expect(
-                "classEnvRule.similarity is set by TestRuleSetupAndRestoreClassEnv.before() \
-                 (task #348); set it with LuceneTestCase::set_class_env_similarity",
-            )
-    }
-
-    /// Sets `classEnvRule.similarity` (see
-    /// [`class_env_similarity`](Self::class_env_similarity)).
-    pub fn set_class_env_similarity(similarity: Option<Arc<dyn Similarity>>) {
-        *CLASS_ENV_SIMILARITY
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = similarity;
+        match crate::util::lucene_test_case_rules::CLASS_ENV_RULE.similarity() {
+            Some(similarity) => similarity,
+            None => exception::throw_without_message(exception::NULL_POINTER_EXCEPTION),
+        }
     }
 
     /// `wrapReader(r)`: wraps the reader one to six times, each time with a
@@ -2141,12 +2223,20 @@ pub enum LiveIWCFlushMode {
     Either,
 }
 
+/// `fieldToType`: the field types `newField` chose per field name, which
+/// `tearDown()` clears.
+static FIELD_TO_TYPE: LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, rucene::document::FieldType>>,
+> = LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
 /// `liveIWCFlushMode`, which `TestRuleSetupAndRestoreClassEnv` sets.
 static LIVE_IWC_FLUSH_MODE: std::sync::Mutex<Option<LiveIWCFlushMode>> =
     std::sync::Mutex::new(None);
 
-/// `classEnvRule.timeZone`, which `TestRuleSetupAndRestoreClassEnv` sets.
-static CLASS_ENV_TIME_ZONE: std::sync::Mutex<Option<TimeZone>> = std::sync::Mutex::new(None);
+/// `TimeZone.getDefault()`, which `TestRuleSetupAndRestoreClassEnv` sets
+/// (`TimeZone.setDefault(timeZone)`); `None` until it is set (see
+/// [`LuceneTestCase::get_default_time_zone`]).
+static DEFAULT_TIME_ZONE: std::sync::Mutex<Option<TimeZone>> = std::sync::Mutex::new(None);
 
 /// `FS_DIRECTORIES`: "Filesystem-based Directory implementations."
 const FS_DIRECTORIES: [&str; 2] = ["NIOFSDirectory", "MMapDirectory"];
@@ -2252,11 +2342,8 @@ fn rethrow_lucene_error(e: &rucene::error::LuceneError) -> ! {
 
 impl LuceneTestCase {
     /// `setLiveIWCFlushMode(flushMode)` (package-private), which
-    /// `TestRuleSetupAndRestoreClassEnv.before()` calls.
-    ///
-    /// **Divergence (pending task #348).** The rule's `before()` is ported by
-    /// task #348; until then the class sets the mode, as it sets
-    /// [`set_class_env_similarity`](Self::set_class_env_similarity).
+    /// `TestRuleSetupAndRestoreClassEnv.before()` calls. Package-private in
+    /// Java; public for the oracles, which set the field reflectively.
     pub fn set_live_iwc_flush_mode(flush_mode: Option<LiveIWCFlushMode>) {
         *LIVE_IWC_FLUSH_MODE
             .lock()
@@ -2269,39 +2356,55 @@ impl LuceneTestCase {
     ///
     /// When the class environment has not set it, where Java's `switch` over
     /// the `null` field throws `NullPointerException`.
-    fn live_iwc_flush_mode() -> LiveIWCFlushMode {
+    pub fn live_iwc_flush_mode() -> LiveIWCFlushMode {
         LIVE_IWC_FLUSH_MODE
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .expect(
-                "liveIWCFlushMode is set by TestRuleSetupAndRestoreClassEnv.before() \
-                 (task #348); set it with LuceneTestCase::set_live_iwc_flush_mode",
-            )
+            .unwrap_or_else(|| exception::throw_without_message(exception::NULL_POINTER_EXCEPTION))
     }
 
-    /// `classEnvRule.timeZone`: the time zone `TestRuleSetupAndRestoreClassEnv`
-    /// draws for the class.
-    ///
-    /// **Divergence (pending task #348).** As
-    /// [`class_env_similarity`](Self::class_env_similarity).
+    /// `fieldToType.clear()`, as `tearDown()` calls it.
+    pub(crate) fn clear_field_to_type() {
+        FIELD_TO_TYPE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+    }
+
+    /// `setIndexWriterMaxDocs(limit)`: "tells `IndexWriter` to enforce the
+    /// specified limit as the maximum number of documents in one index; call
+    /// `restoreIndexWriterMaxDocs` once your test is done."
     ///
     /// # Panics
     ///
-    /// When the class environment has not set it.
-    pub fn class_env_time_zone() -> TimeZone {
-        CLASS_ENV_TIME_ZONE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .expect(
-                "classEnvRule.timeZone is set by TestRuleSetupAndRestoreClassEnv.before() \
-                 (task #348); set it with LuceneTestCase::set_class_env_time_zone",
-            )
+    /// `IllegalArgumentException` for a limit above `IndexWriter.MAX_DOCS`.
+    pub fn set_index_writer_max_docs(limit: i32) {
+        if let Err(e) = rucene::index::index_writer::set_max_docs(limit) {
+            exception::illegal_argument(e)
+        }
     }
 
-    /// Sets `classEnvRule.timeZone` (see
-    /// [`class_env_time_zone`](Self::class_env_time_zone)).
-    pub fn set_class_env_time_zone(time_zone: Option<TimeZone>) {
-        *CLASS_ENV_TIME_ZONE
+    /// `restoreIndexWriterMaxDocs()`: "returns to the default
+    /// `IndexWriter.MAX_DOCS` limit."
+    pub fn restore_index_writer_max_docs() {
+        Self::set_index_writer_max_docs(rucene::index::documents_writer::MAX_DOCS);
+    }
+
+    /// `TimeZone.getDefault()`: the time zone `TestRuleSetupAndRestoreClassEnv`
+    /// set for the class.
+    ///
+    /// **Divergence.** A Rust process has no JVM default time zone: before
+    /// the rule set one, this is `None` where Java returns the platform's.
+    pub fn get_default_time_zone() -> Option<TimeZone> {
+        *DEFAULT_TIME_ZONE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// `TimeZone.setDefault(timeZone)` (see
+    /// [`get_default_time_zone`](Self::get_default_time_zone)).
+    pub(crate) fn set_default_time_zone(time_zone: Option<TimeZone>) {
+        *DEFAULT_TIME_ZONE
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = time_zone;
     }
@@ -2512,7 +2615,9 @@ impl LuceneTestCase {
         } else if Self::rarely_with(r) {
             Arc::new(Self::new_alcoholic_merge_policy_with(
                 r,
-                Self::class_env_time_zone(),
+                Self::get_default_time_zone().unwrap_or_else(|| {
+                    exception::throw_without_message(exception::NULL_POINTER_EXCEPTION)
+                }),
             ))
         } else {
             Arc::new(Self::new_log_merge_policy_with(r))

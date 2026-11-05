@@ -29,10 +29,9 @@ use oracle_support::{assert_same, rows};
 use randomizedtesting::jdk::exception::Throwable;
 use randomizedtesting::jdk::lang::double_to_string;
 use randomizedtesting::jdk::random::{JdkRandom, Random};
-use randomizedtesting::jdk::reflect::{Class, Constructor, Field, Method, Value};
+use randomizedtesting::jdk::reflect::{Class, Constructor, Method};
 use randomizedtesting::jdk::system;
-use randomizedtesting::junit::{ClassRule, JUnitCore, Request, Rule, Test};
-use randomizedtesting::rules::TestRuleAdapterRule;
+use randomizedtesting::junit::{JUnitCore, Request, Test};
 use rucene::analysis::standard::StandardAnalyzer;
 use rucene::codecs::Codec;
 use rucene::document::{
@@ -57,13 +56,7 @@ use rucene_test_framework::index::random_postings_tester::{TestOption, TestOptio
 use rucene_test_framework::index::{
     DocHelper, RandomCodec, RandomIndexWriter, RandomPostingsTester,
 };
-use rucene_test_framework::util::lucene_test_case::{
-    LiveIWCFlushMode, LuceneTestCase, CLASS_NAME_RULE, SUITE_FAILURE_MARKER,
-    TEMP_FILES_CLEANUP_RULE,
-};
-use rucene_test_framework::util::test_rule_mark_failure::{
-    TestRuleMarkFailure, TestRuleMarkFailureRule,
-};
+use rucene_test_framework::util::lucene_test_case::{LiveIWCFlushMode, LuceneTestCase};
 use rucene_test_framework::util::TestUtil;
 
 /// The fields whose per-field formats `random_codec.tsv` records.
@@ -692,42 +685,8 @@ fn random_postings_test_full_matches_lucene_under_the_runner() {
     setup();
     let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
     let class = Class::builder("org.apache.lucene.tests.index.TestRandomPostingsFull")
+        .extends(&LuceneTestCase::class())
         .constructor(Constructor::no_args(|| ()))
-        .field(
-            Field::new_static("suiteFailureMarker", "org.junit.rules.TestRule", || {
-                Value::TestRule(
-                    Arc::new(TestRuleMarkFailureRule(Arc::clone(&SUITE_FAILURE_MARKER)))
-                        as Arc<dyn randomizedtesting::junit::TestRule>,
-                )
-            })
-            .annotate(ClassRule),
-        )
-        .field(
-            Field::new_static("classNameRule", "org.junit.rules.TestRule", || {
-                Value::TestRule(
-                    Arc::clone(&CLASS_NAME_RULE) as Arc<dyn randomizedtesting::junit::TestRule>
-                )
-            })
-            .annotate(ClassRule),
-        )
-        .field(
-            Field::new_static("tempFilesCleanupRule", "org.junit.rules.TestRule", || {
-                Value::TestRule(
-                    Arc::new(TestRuleAdapterRule(Arc::clone(&TEMP_FILES_CLEANUP_RULE)))
-                        as Arc<dyn randomizedtesting::junit::TestRule>,
-                )
-            })
-            .annotate(ClassRule),
-        )
-        .field(
-            Field::new_instance::<()>("testFailureMarker", "org.junit.rules.TestRule", |_| {
-                Value::TestRule(Arc::new(TestRuleMarkFailureRule(Arc::new(
-                    TestRuleMarkFailure::new(vec![Arc::clone(&SUITE_FAILURE_MARKER)]),
-                )))
-                    as Arc<dyn randomizedtesting::junit::TestRule>)
-            })
-            .annotate(Rule),
-        )
         .method(
             Method::new("testFull")
                 .annotate(Test::new())

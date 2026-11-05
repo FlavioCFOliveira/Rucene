@@ -302,3 +302,17 @@ write the fixtures (`../*.tsv`) the crate's parity tests (`src/tests/`) read.
   `testFull` over the default codec, `FST50` and `BlockTreeOrds` followed by
   `random().nextLong()` (`random_postings_full.tsv`). The Rust side is
   `crates/rucene-test-framework/tests/random_index_oracle.rs`.
+* **The class environment:** `org.apache.lucene.tests.util.ClassEnvOracle`
+  writes `crates/rucene-test-framework/tests/fixtures/class_env.tsv`: for 15
+  `tests.*` configurations (one child JVM each) and the
+  `OracleSupport.seeds()` grid plus sixty seeds of `SplittableRandom(348)`,
+  what `TestRuleSetupAndRestoreClassEnv` sets up (codec, similarity, locale,
+  time zone, `InfoStream`, flush mode), what `LuceneTestCase`'s hooks set
+  (query cache and policy, core count, executor), the order of a suite's own
+  rules and hooks inside `LuceneTestCase`'s chains with each scope's draws
+  (`TestClassEnvProbe`), the reproduce line and test params of a failing
+  suite, the effect of `@SuppressCodecs` and what `after()` restores; and
+  `string_helper_ids.tsv`, the first three `StringHelper.randomId()` for fixed
+  `tests.seed` values (one child JVM each). The Rust side,
+  `crates/rucene-test-framework/tests/class_env_oracle.rs`, runs one child
+  process per configuration too.

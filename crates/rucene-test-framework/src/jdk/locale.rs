@@ -539,3 +539,24 @@ impl fmt::Display for Locale {
         f.write_str(&result)
     }
 }
+
+/// `Locale.getDefault()`, as `Locale.setDefault` set it.
+static DEFAULT_LOCALE: std::sync::RwLock<Option<Locale>> = std::sync::RwLock::new(None);
+
+/// `Locale.getDefault()`: the default `TestRuleSetupAndRestoreClassEnv` set.
+///
+/// **Divergence.** A Rust process has no JVM default locale: before one is
+/// set, this is `None` where Java returns the platform's.
+pub fn get_default() -> Option<Locale> {
+    DEFAULT_LOCALE
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+/// `Locale.setDefault(locale)`; `None` restores the unset state.
+pub fn set_default(locale: Option<Locale>) {
+    *DEFAULT_LOCALE
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = locale;
+}
