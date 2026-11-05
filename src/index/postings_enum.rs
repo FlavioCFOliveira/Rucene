@@ -86,18 +86,7 @@ pub trait PostingsEnum: DocIdSetIterator + std::fmt::Display {
     ///
     /// The default implementation copies at most 16 `(doc, freq)` pairs.
     fn next_postings(&mut self, up_to: i32, buffer: &mut DocAndFloatFeatureBuffer) -> Result<()> {
-        let batch_size = 16;
-        buffer.grow_no_copy(batch_size);
-        let mut size = 0;
-        let mut doc = self.doc_id();
-        while doc < up_to && size < batch_size {
-            buffer.docs[size] = doc;
-            buffer.features[size] = self.freq()? as f32;
-            size += 1;
-            doc = self.next_doc()?;
-        }
-        buffer.size = size;
-        Ok(())
+        default_next_postings(self, up_to, buffer)
     }
 
     /// Returns this enum as [`std::any::Any`], so that a caller can test it for
@@ -124,6 +113,32 @@ pub trait PostingsEnum: DocIdSetIterator + std::fmt::Display {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         None
     }
+}
+
+/// The body of `PostingsEnum.nextPostings(int, DocAndFloatFeatureBuffer)`
+/// (`PostingsEnum.java:134-144`), which an override reaches as
+/// `super.nextPostings(upTo, buffer)`: at most 16 `(doc, freq)` pairs.
+///
+/// # Errors
+///
+/// What the enum's `freq` and `next_doc` throw.
+pub fn default_next_postings<P: PostingsEnum + ?Sized>(
+    pe: &mut P,
+    up_to: i32,
+    buffer: &mut DocAndFloatFeatureBuffer,
+) -> Result<()> {
+    let batch_size = 16; // arbitrary
+    buffer.grow_no_copy(batch_size);
+    let mut size = 0;
+    let mut doc = pe.doc_id();
+    while doc < up_to && size < batch_size {
+        buffer.docs[size] = doc;
+        buffer.features[size] = pe.freq()? as f32;
+        size += 1;
+        doc = pe.next_doc()?;
+    }
+    buffer.size = size;
+    Ok(())
 }
 
 /// Buffer of doc IDs paired with float-valued features.

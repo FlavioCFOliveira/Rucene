@@ -15,30 +15,37 @@
  * limitations under the License.
  */
 
-//! The members of `org.apache.lucene.tests.index.RandomIndexWriter` that
-//! `BaseTokenStreamTestCase.checkRandomData`'s indexing branch and
-//! `TestMockAnalyzer.testChangeGaps` call, ported in full under the sprint's
-//! cycle rule; rmp #347 ports the rest of the class.
+//! Port of `org.apache.lucene.tests.index.RandomIndexWriter`.
 
 use std::fmt;
+use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use randomizedtesting::jdk::random::{JdkRandom, Random};
 use rucene::analysis::Analyzer;
-use rucene::document::Document;
-use rucene::error::Result;
+use rucene::document::{Document, Field, FieldType, NumericValue};
+use rucene::error::{LuceneError, Result};
+use rucene::index::codec_reader::CodecReader;
 use rucene::index::directory_reader::{self, DirectoryReader};
 use rucene::index::filter_directory_reader::{
     DirectoryReaderWrapper, SoftDeletesDirectoryReaderWrapper,
 };
+use rucene::index::index_writer::DocStats;
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::{IndexWriterConfig, LiveIndexWriterConfig, OpenMode};
+use rucene::index::merge_policy::MergeObserver;
 use rucene::index::merge_policy::{NoMergePolicy, TieredMergePolicy};
+use rucene::index::terms::Term;
+use rucene::index::DocValuesType;
 use rucene::internal::tests_hooks::{IndexWriterAccess, TestSecrets};
+use rucene::search::term_query::TermQuery;
+use rucene::search::Query;
 use rucene::store::Directory;
+use rucene::util::BytesRef;
 use rucene::util::InfoStream;
 
+use crate::analysis::MockAnalyzer;
 use crate::util::lucene_test_case::{LuceneTestCase, VERBOSE};
 use crate::util::{NullInfoStream, TestUtil};
 
@@ -199,6 +206,20 @@ impl RandomIndexWriter {
             }
         }
         iw
+    }
+
+    /// `new RandomIndexWriter(r, dir)`: "create a RandomIndexWriter with a
+    /// random config: Uses MockAnalyzer", which it closes on [`close`](Self::close).
+    ///
+    /// # Errors
+    ///
+    /// What opening the writer throws.
+    pub fn new_with_mock_analyzer(r: &dyn Random, dir: Arc<dyn Directory>) -> Result<Self> {
+        // Java evaluates the arguments of `this(...)` left to right.
+        let analyzer: Arc<dyn Analyzer> = Arc::new(MockAnalyzer::new(r));
+        let c = LuceneTestCase::new_index_writer_config_with(r, analyzer);
+        let use_soft_deletes = r.next_boolean();
+        Self::new_private(r, dir, c, true, use_soft_deletes)
     }
 
     /// `new RandomIndexWriter(r, dir, a)`: "create a RandomIndexWriter with a
@@ -374,6 +395,299 @@ impl RandomIndexWriter {
             }
         }
         Ok(())
+    }
+
+    /// `addDocuments(docs)`.
+    ///
+    /// # Errors
+    ///
+    /// What the writer throws.
+    pub fn add_documents(&self, docs: &[Document]) -> Result<i64> {
+        LuceneTestCase::maybe_change_live_index_writer_config(&self.r, &self.config);
+        let seq_no = self.w.add_documents(docs)?;
+        self.maybe_flush_or_commit()?;
+        Ok(seq_no)
+    }
+
+    /// `updateDocuments(delTerm, docs)`.
+    ///
+    /// # Errors
+    ///
+    /// What the writer throws.
+    pub fn update_documents(&self, del_term: Term, docs: &[Document]) -> Result<i64> {
+        LuceneTestCase::maybe_change_live_index_writer_config(&self.r, &self.config);
+        let seq_no = if self.use_soft_deletes() {
+            self.w
+                .soft_update_documents(del_term, docs, &[self.soft_deletes_field()?])?
+        } else if self.r.next_int_bound(10) < 3 {
+            // 30% chance
+            let query: Arc<dyn Query> = Arc::new(TermQuery::new(del_term));
+            self.w.update_documents_by_query(Some(query), docs)?
+        } else {
+            self.w.update_documents(del_term, docs)?
+        };
+        self.maybe_flush_or_commit()?;
+        Ok(seq_no)
+    }
+
+    /// `useSoftDeletes()`: `r.nextDouble() < softDeletesRatio`.
+    fn use_soft_deletes(&self) -> bool {
+        self.r.next_double() < self.soft_deletes_ratio
+    }
+
+    /// `new NumericDocValuesField(config.getSoftDeletesField(), 1)`, as the
+    /// `Field` the writer's soft updates take.
+    fn soft_deletes_field(&self) -> Result<Field> {
+        // Java passes `config.getSoftDeletesField()` even when it is null,
+        // which `NumericDocValuesField`'s constructor rejects; a soft update
+        // only runs with a positive `softDeletesRatio`, which sets the field.
+        let name = self
+            .config
+            .soft_deletes_field()
+            .ok_or_else(|| LuceneError::IllegalArgument("name must not be null".to_string()))?;
+        let mut field_type = FieldType::new();
+        field_type.set_doc_values_type(DocValuesType::NUMERIC)?;
+        field_type.freeze();
+        Field::new_with_number(name, NumericValue::Long(1), field_type)
+    }
+
+    /// `updateDocument(t, doc)`: "Updates a document."
+    ///
+    /// # Errors
+    ///
+    /// What the writer throws.
+    pub fn update_document(&self, t: Term, doc: &Document) -> Result<i64> {
+        LuceneTestCase::maybe_change_live_index_writer_config(&self.r, &self.config);
+        let seq_no = if self.use_soft_deletes() {
+            if self.r.next_int_bound(5) == 3 {
+                self.w.soft_update_documents(
+                    t,
+                    std::slice::from_ref(doc),
+                    &[self.soft_deletes_field()?],
+                )?
+            } else {
+                self.w
+                    .soft_update_document(t, doc, &[self.soft_deletes_field()?])?
+            }
+        } else if self.r.next_int_bound(5) == 3 {
+            self.w.update_documents(t, std::slice::from_ref(doc))?
+        } else {
+            self.w.update_document(t, doc)?
+        };
+        self.maybe_flush_or_commit()?;
+
+        Ok(seq_no)
+    }
+
+    /// `addIndexes(Directory... dirs)`.
+    ///
+    /// # Errors
+    ///
+    /// What the writer throws.
+    pub fn add_indexes_dirs(&self, dirs: &[Arc<dyn Directory>]) -> Result<i64> {
+        LuceneTestCase::maybe_change_live_index_writer_config(&self.r, &self.config);
+        self.w.add_indexes_dirs(dirs)
+    }
+
+    /// `addIndexes(CodecReader... readers)`.
+    ///
+    /// # Errors
+    ///
+    /// What the writer throws.
+    pub fn add_indexes_codec_readers(&self, readers: &[Arc<dyn CodecReader>]) -> Result<i64> {
+        LuceneTestCase::maybe_change_live_index_writer_config(&self.r, &self.config);
+        self.w.add_indexes_codec_readers(readers)
+    }
+
+    /// `updateNumericDocValue(term, field, value)`.
+    ///
+    /// # Errors
+    ///
+    /// What the writer throws.
+    pub fn update_numeric_doc_value(&self, term: Term, field: &str, value: i64) -> Result<i64> {
+        LuceneTestCase::maybe_change_live_index_writer_config(&self.r, &self.config);
+        self.w.update_numeric_doc_value(term, field, value)
+    }
+
+    /// `updateBinaryDocValue(term, field, value)`.
+    ///
+    /// # Errors
+    ///
+    /// What the writer throws.
+    pub fn update_binary_doc_value(&self, term: Term, field: &str, value: BytesRef) -> Result<i64> {
+        LuceneTestCase::maybe_change_live_index_writer_config(&self.r, &self.config);
+        self.w.update_binary_doc_value(term, field, value)
+    }
+
+    /// `updateDocValues(term, updates...)`.
+    ///
+    /// # Errors
+    ///
+    /// What the writer throws.
+    pub fn update_doc_values(&self, term: Term, updates: &[Field]) -> Result<i64> {
+        LuceneTestCase::maybe_change_live_index_writer_config(&self.r, &self.config);
+        self.w.update_doc_values(term, updates)
+    }
+
+    /// `deleteDocuments(Term term)`.
+    ///
+    /// # Errors
+    ///
+    /// What the writer throws.
+    pub fn delete_documents(&self, term: Term) -> Result<i64> {
+        LuceneTestCase::maybe_change_live_index_writer_config(&self.r, &self.config);
+        self.w.delete_documents_by_terms(vec![term])
+    }
+
+    /// `deleteDocuments(Query q)`.
+    ///
+    /// # Errors
+    ///
+    /// What the writer throws.
+    pub fn delete_documents_by_query(&self, q: Arc<dyn Query>) -> Result<i64> {
+        LuceneTestCase::maybe_change_live_index_writer_config(&self.r, &self.config);
+        self.w.delete_documents_by_queries(vec![q])
+    }
+
+    /// `commit()`: `commit(r.nextInt(10) == 0)`.
+    ///
+    /// # Errors
+    ///
+    /// What the writer throws.
+    pub fn commit(&self) -> Result<i64> {
+        let flush_concurrently = self.r.next_int_bound(10) == 0;
+        self.commit_with(flush_concurrently)
+    }
+
+    /// `commit(flushConcurrently)`: when `flushConcurrently`, a second thread
+    /// runs `flushAllBuffersSequentially()` while this one commits.
+    ///
+    /// Java's `return w.commit()` inside the `try` returns once the thread is
+    /// joined, whatever the thread threw; when the commit throws, the first
+    /// throwable recorded (the thread's or the commit's) is rethrown. Java
+    /// adds the later ones to it as suppressed exceptions, which
+    /// [`LuceneError`] cannot hold: they are dropped.
+    ///
+    /// # Errors
+    ///
+    /// What the writer throws.
+    pub fn commit_with(&self, flush_concurrently: bool) -> Result<i64> {
+        LuceneTestCase::maybe_change_live_index_writer_config(&self.r, &self.config);
+        if flush_concurrently {
+            enum Thrown {
+                Error(LuceneError),
+                Panic(Box<dyn std::any::Any + Send>),
+            }
+            let throwable_list: Mutex<Vec<Thrown>> = Mutex::new(Vec::new());
+            let committed = std::thread::scope(|scope| {
+                let thread = scope.spawn(|| {
+                    let doc_count = self
+                        .counters
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .doc_count;
+                    match catch_unwind(AssertUnwindSafe(|| {
+                        self.flush_all_buffers_sequentially(doc_count)
+                    })) {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => throwable_list
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .push(Thrown::Error(e)),
+                        Err(payload) => throwable_list
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .push(Thrown::Panic(payload)),
+                    }
+                });
+                let committed = match catch_unwind(AssertUnwindSafe(|| self.w.commit())) {
+                    Ok(Ok(seq_no)) => Some(seq_no),
+                    Ok(Err(e)) => {
+                        throwable_list
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .push(Thrown::Error(e));
+                        None
+                    }
+                    Err(payload) => {
+                        throwable_list
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .push(Thrown::Panic(payload));
+                        None
+                    }
+                };
+                // make sure we wait for the thread to join otherwise it might
+                // still be processing events and the IW won't be fully closed
+                // in the case of a fatal exception
+                let _ = thread.join();
+                committed
+            });
+            if let Some(seq_no) = committed {
+                return Ok(seq_no);
+            }
+            let mut throwable_list = throwable_list
+                .into_inner()
+                .unwrap_or_else(PoisonError::into_inner);
+            if !throwable_list.is_empty() {
+                match throwable_list.swap_remove(0) {
+                    Thrown::Error(e) => return Err(e),
+                    Thrown::Panic(payload) => resume_unwind(payload),
+                }
+            }
+        }
+        self.w.commit()
+    }
+
+    /// `getDocStats()`.
+    ///
+    /// # Errors
+    ///
+    /// What the writer throws.
+    pub fn get_doc_stats(&self) -> Result<DocStats> {
+        self.w.get_doc_stats()
+    }
+
+    /// `deleteAll()`.
+    ///
+    /// # Errors
+    ///
+    /// What the writer throws.
+    pub fn delete_all(&self) -> Result<i64> {
+        self.w.delete_all()
+    }
+
+    /// `forceMergeDeletes(doWait)`.
+    ///
+    /// # Errors
+    ///
+    /// What the writer throws.
+    pub fn force_merge_deletes_with(&self, do_wait: bool) -> Result<MergeObserver> {
+        LuceneTestCase::maybe_change_live_index_writer_config(&self.r, &self.config);
+        self.w.force_merge_deletes_with(do_wait)
+    }
+
+    /// `forceMergeDeletes()`.
+    ///
+    /// # Errors
+    ///
+    /// What the writer throws.
+    pub fn force_merge_deletes(&self) -> Result<MergeObserver> {
+        LuceneTestCase::maybe_change_live_index_writer_config(&self.r, &self.config);
+        self.w.force_merge_deletes()
+    }
+
+    /// `forceMerge(maxSegmentCount)`: "Forces a forceMerge.
+    ///
+    /// NOTE: this should be avoided in tests unless absolutely necessary, as
+    /// it will result in less test coverage."
+    ///
+    /// # Errors
+    ///
+    /// What the writer throws.
+    pub fn force_merge(&self, max_segment_count: i32) -> Result<()> {
+        LuceneTestCase::maybe_change_live_index_writer_config(&self.r, &self.config);
+        self.w.force_merge(max_segment_count)
     }
 
     /// `getReader()`: `getReader(true, false)`.

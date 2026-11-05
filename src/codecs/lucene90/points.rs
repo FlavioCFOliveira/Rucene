@@ -40,7 +40,7 @@ use crate::codecs::stub::FieldInfo;
 use crate::error::{LuceneError, Result};
 use crate::index::{segment_file_name, FieldInfos};
 use crate::store::{DataInput, Directory, IndexInput, IndexOutput};
-use crate::util::bkd::{BKDConfig, BKDFinalizer, BKDReader, BKDWriter};
+use crate::util::bkd::{BKDConfig, BKDFinalizer, BKDReader, BKDSplitOverride, BKDWriter};
 use crate::util::IOUtils;
 
 // -----------------------------------------------------------------------------
@@ -152,9 +152,34 @@ pub struct Lucene90PointsWriter {
     index_out: Option<Box<dyn IndexOutput>>,
     data_out: Option<Box<dyn IndexOutput>>,
     finished: bool,
+    /// The `writeField` override `RandomCodec` installs; see
+    /// [`Lucene90PointsWriter::set_split_override_for_field`].
+    split_override_for_field: Option<SplitOverrideForField>,
 }
 
+/// Makes the [`BKDSplitOverride`] of the `BKDWriter` that writes one field;
+/// see [`Lucene90PointsWriter::set_split_override_for_field`].
+pub type SplitOverrideForField = Box<dyn Fn(&FieldInfo) -> BKDSplitOverride + Send + Sync>;
+
 impl Lucene90PointsWriter {
+    /// Installs the `writeField` override of the anonymous
+    /// `Lucene90PointsWriter` subclass of `RandomCodec.pointsFormat()`
+    /// (`RandomCodec.java:83-134`, `lucene/test-framework`): every field is
+    /// written by adding each point of `reader.getValues(name).getPointTree()`
+    /// through `visitDocValues` to a `BKDWriter` whose `split` is
+    /// `make(fieldInfo)` — never by the `MutablePointTree` shortcut — and the
+    /// finalizer is written as the base `writeField` writes it.
+    ///
+    /// Java overrides `writeField` in a subclass, which `mergeOneField` and the
+    /// default `merge` also reach; a Rust struct has no subclass, so the
+    /// override is a mode of the writer that its own
+    /// [`PointsWriter::write_field`] takes. The one-dimensional bulk merge,
+    /// which creates its `BKDWriter` inline in Java
+    /// (`Lucene90PointsWriter.java:249-257`), keeps the default `split`.
+    pub fn set_split_override_for_field(&mut self, make: SplitOverrideForField) {
+        self.split_override_for_field = Some(make);
+    }
+
     /// Creates a new writer with default leaf size and heap budget.
     pub fn new(state: &SegmentWriteState<'_>, version: i32) -> Result<Self> {
         Self::with_config(
@@ -264,6 +289,7 @@ impl Lucene90PointsWriter {
             index_out,
             data_out: Some(data_out),
             finished: false,
+            split_override_for_field: None,
         })
     }
 }
@@ -346,6 +372,22 @@ impl PointsWriter for Lucene90PointsWriter {
         let mut tree = values.point_tree()?;
 
         let mut writer = self.bkd_writer(field_info, tree.size()?)?;
+
+        // `RandomCodec`'s override (`RandomCodec.java:83-134`) always adds the
+        // points one by one to a randomly splitting writer.
+        if let Some(make) = &self.split_override_for_field {
+            writer.set_split_override(make(field_info));
+            tree.visit_doc_values(&mut AddToBkdWriter {
+                writer: &mut writer,
+            })?;
+            let data_out = self
+                .data_out
+                .as_mut()
+                .expect("INVARIANT: open until finish");
+            let finalizer = writer.finish(data_out.as_mut())?;
+            self.write_finalizer(field_info.number, finalizer)?;
+            return writer.close();
+        }
 
         // Java tests `values instanceof MutablePointTree` and, when it holds,
         // hands the tree straight to `BKDWriter.writeField`, which sorts and

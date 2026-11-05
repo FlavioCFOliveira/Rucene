@@ -94,6 +94,11 @@ impl fmt::Display for TestBloomFilteredLucenePostings {
 }
 
 impl PostingsFormat for TestBloomFilteredLucenePostings {
+    /// `toString()`: this format's [`fmt::Display`].
+    fn to_java_string(&self) -> String {
+        self.to_string()
+    }
+
     fn name(&self) -> &str {
         "TestBloomFilteredLucenePostings"
     }

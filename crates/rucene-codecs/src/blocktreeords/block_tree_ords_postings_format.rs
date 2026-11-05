@@ -89,6 +89,11 @@ impl fmt::Display for BlockTreeOrdsPostingsFormat {
 }
 
 impl PostingsFormat for BlockTreeOrdsPostingsFormat {
+    /// `toString()`: this format's [`fmt::Display`].
+    fn to_java_string(&self) -> String {
+        self.to_string()
+    }
+
     fn name(&self) -> &str {
         "BlockTreeOrds"
     }

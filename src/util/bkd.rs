@@ -3198,7 +3198,21 @@ pub struct BKDWriter {
     docs_seen: HashSet<i32>,
     point_count: i64,
     finished: bool,
+    /// The override of `split` a subclass installs, `None` for `BKDWriter`'s
+    /// own choice of the widest dimension; see [`BKDSplitOverride`].
+    split_override: Option<BKDSplitOverride>,
 }
+
+/// A replacement for `BKDWriter.split(byte[] minPackedValue, byte[]
+/// maxPackedValue, int[] parentSplits)` (`BKDWriter.java:1592`): it receives
+/// the cell bounds, the per-dimension split counts and the writer's
+/// [`BKDConfig`], and returns the dimension to split on.
+///
+/// Java overrides the `protected` method in a subclass —
+/// `RandomCodec.RandomlySplittingBKDWriter` of `lucene/test-framework` is the
+/// one Lucene ships; a Rust struct has no subclass, so the overriding body is
+/// installed on the writer with [`BKDWriter::set_split_override`].
+pub type BKDSplitOverride = Box<dyn FnMut(&[u8], &[u8], &[i32], &BKDConfig) -> usize + Send>;
 
 impl BKDWriter {
     /// Minimum supported BKD format version, written by Lucene 7.0.
@@ -3439,7 +3453,15 @@ impl BKDWriter {
             docs_seen: HashSet::new(),
             point_count: 0,
             finished: false,
+            split_override: None,
         })
+    }
+
+    /// Replaces `split` with `split_override`, as a subclass overriding
+    /// `BKDWriter.split` does (`BKDWriter.java:1592`); see
+    /// [`BKDSplitOverride`].
+    pub fn set_split_override(&mut self, split_override: BKDSplitOverride) {
+        self.split_override = Some(split_override);
     }
 
     /// Returns the number of points that have been added so far.
@@ -4586,6 +4608,14 @@ impl BKDWriter {
         max_packed_value: &[u8],
         parent_splits: &[i32],
     ) -> Result<usize> {
+        if let Some(split_override) = self.split_override.as_mut() {
+            return Ok(split_override(
+                min_packed_value,
+                max_packed_value,
+                parent_splits,
+                &self.config,
+            ));
+        }
         let mut max_num_splits = 0;
         for &num_splits in parent_splits {
             max_num_splits = max_num_splits.max(num_splits);

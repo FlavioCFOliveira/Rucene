@@ -27,6 +27,8 @@ org.apache.lucene.tests.index.IndexWrappersOracle
 org.apache.lucene.tests.search.SearchWrappersOracle
 # The analysis mocks of org.apache.lucene.tests.analysis and BaseTokenStreamTestCase (rmp #346, #357)
 org.apache.lucene.tests.analysis.AnalysisMocksOracle
+# RandomCodec, RandomIndexWriter, RandomPostingsTester and DocHelper of org.apache.lucene.tests.index (rmp #347)
+org.apache.lucene.tests.index.RandomIndexOracle
 # The other lucene/codecs formats: PostingsFormatOracle <prefix> <kind> <format> <extensions>
 org.apache.lucene.codecs.simpletext.PostingsFormatOracle fst50 postings FST50 tfp
 org.apache.lucene.codecs.simpletext.PostingsFormatOracle fixedgap postings LuceneFixedGap tib tii

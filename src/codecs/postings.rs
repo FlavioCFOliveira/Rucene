@@ -340,17 +340,22 @@ pub trait PostingsFormat: Send + Sync + fmt::Debug {
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         None
     }
+
+    /// `PostingsFormat.toString()`: `"PostingsFormat(name=" + name + ")"`,
+    /// which a format overrides as Java's subclass overrides `toString()`
+    /// (`FSTPostingsFormat`, `BlockTreeOrdsPostingsFormat`, the bloom
+    /// formats).
+    fn to_java_string(&self) -> String {
+        format!("PostingsFormat(name={})", self.name())
+    }
 }
 
 impl fmt::Display for dyn PostingsFormat + '_ {
-    /// Port of the concrete `PostingsFormat.toString()`, which every
-    /// implementation inherits: `"PostingsFormat(name=" + name + ")"`.
-    ///
-    /// It hangs off the trait object because Rust cannot give
-    /// [`fmt::Display`] a default body, but Java's method is concrete on the
-    /// abstract class.
+    /// `toString()` of the format behind the trait object:
+    /// [`PostingsFormat::to_java_string`], Java's virtual call, so an override
+    /// is seen through `dyn PostingsFormat` too.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "PostingsFormat(name={})", self.name())
+        f.write_str(&self.to_java_string())
     }
 }
 

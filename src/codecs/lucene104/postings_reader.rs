@@ -1531,6 +1531,22 @@ impl BlockPostingsEnum {
     }
 }
 
+impl BlockPostingsEnum {
+    /// Equivalent to `BlockPostingsEnum.computeBufferEndBoundary(int)`
+    /// (`Lucene104PostingsReader.java:1082-1090`): the index of the first
+    /// buffered doc at or above `up_to`.
+    fn compute_buffer_end_boundary(&self, up_to: i32) -> usize {
+        let size = self.doc_buffer_size as usize;
+        if size != 0 && self.doc_buffer[size - 1] < up_to {
+            // All docs in the buffer are under upTo
+            size
+        } else {
+            // Find the index of the first doc that is greater than or equal to upTo
+            find_next_geq(&self.doc_buffer, up_to, self.doc_buffer_upto as usize, size)
+        }
+    }
+}
+
 impl DocIdSetIterator for BlockPostingsEnum {
     fn doc_id(&self) -> i32 {
         self.doc
@@ -1720,6 +1736,67 @@ impl PostingsEnum for BlockPostingsEnum {
             let end = start + self.payload_length as usize;
             Ok(Some(&self.payload_bytes[start..end]))
         }
+    }
+
+    /// Equivalent to `BlockPostingsEnum.nextPostings(int,
+    /// DocAndFloatFeatureBuffer)` (`Lucene104PostingsReader.java:1036-1080`):
+    /// without frequencies, the default batches of 16; otherwise the docs and
+    /// frequencies of the current block that are below `up_to`, after which
+    /// the enum advances to `up_to`.
+    fn next_postings(
+        &mut self,
+        up_to: i32,
+        buffer: &mut crate::index::postings_enum::DocAndFloatFeatureBuffer,
+    ) -> Result<()> {
+        debug_assert!(!self.needs_refilling);
+
+        if !self.needs_freq {
+            return crate::index::postings_enum::default_next_postings(self, up_to, buffer);
+        }
+
+        buffer.size = 0;
+        if self.doc >= up_to {
+            return Ok(());
+        }
+
+        // Only return docs from the current block
+        // +1 to make FixedBitSet#intoArray perform a bit faster, it uses a slower path if it doesn't
+        // have a free slot after the last element
+        buffer.grow_no_copy(BS + 1);
+        let up_to = i64::from(up_to).min(i64::from(self.level0_last_doc_id) + 1) as i32;
+
+        // Frequencies are decoded lazily, calling freq() makes sure that the freq block is decoded
+        self.freq()?;
+
+        let start = (self.doc_buffer_upto - 1) as usize;
+        match self.encoding {
+            DeltaEncoding::Packed => {
+                let end = self.compute_buffer_end_boundary(up_to);
+                buffer.size = end - start;
+                buffer.docs[..buffer.size].copy_from_slice(&self.doc_buffer[start..end]);
+            }
+            DeltaEncoding::Unary => {
+                buffer.size = self.doc_bit_set.into_array(
+                    (self.doc - self.doc_bit_set_base) as usize,
+                    (up_to - self.doc_bit_set_base) as usize,
+                    self.doc_bit_set_base,
+                    &mut buffer.docs,
+                );
+                // buffer's capacity is BLOCK_SIZE+1
+                debug_assert!(buffer.size < buffer.docs.len());
+            }
+        }
+
+        debug_assert!(buffer.size > 0);
+        {
+            let freqs = self.freq_buffer.borrow();
+            for i in 0..buffer.size {
+                buffer.features[i] = freqs[start + i] as f32;
+            }
+        }
+
+        self.advance(up_to)?;
+        Ok(())
     }
 
     /// This enum answers with itself: it is the `true` arm of Java's

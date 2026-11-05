@@ -280,3 +280,25 @@ write the fixtures (`../*.tsv`) the crate's parity tests (`src/tests/`) read.
   Rust side is `crates/rucene-test-framework/tests/analysis_mocks_oracle.rs`,
   which replays every scenario through the port's runner and compares the
   rows.
+* **`RandomCodec`, `RandomIndexWriter`, `RandomPostingsTester` and `DocHelper`
+  (rmp #347):** `org.apache.lucene.tests.index.RandomIndexOracle` writes
+  `crates/rucene-test-framework/tests/fixtures/random_*.tsv` and
+  `doc_helper.tsv`. Without a runner it sets `LuceneTestCase.liveIWCFlushMode`
+  to `EITHER` (reflection) and records: per seed of `OracleSupport.seeds()`,
+  `new RandomCodec(new Random(seed)[, avoid])`'s shuffled formats, names,
+  parameters, per-field picks, `toString` and next draw (`random_codec.tsv`);
+  the point trees it writes flushed and after `forceMerge(1)`
+  (`random_codec_points.tsv`) and the files of one document of ten postings
+  and ten doc values fields before and after doc values updates
+  (`random_codec_files.tsv`); a scripted `RandomIndexWriter` session over
+  `RandomCodec`, `SerialMergeScheduler` and `LogDocMergePolicy` (reader
+  counts, doc stats, segments, point trees, file list, next draw;
+  `random_iw.tsv`); the fields, terms and every posting
+  `new RandomPostingsTester(new Random(seed))` generates (`random_postings.tsv`);
+  `buildIndex` + `testFields` + `testTerms` over the default codec, `FST50`,
+  `BlockTreeOrds` and `Direct` for every index option and payload setting, with
+  the tester's next draw (`random_postings_terms.tsv`); and, under
+  `RandomizedRunner` (`TestRandomPostingsFull`, `tests.seed` fixed),
+  `testFull` over the default codec, `FST50` and `BlockTreeOrds` followed by
+  `random().nextLong()` (`random_postings_full.tsv`). The Rust side is
+  `crates/rucene-test-framework/tests/random_index_oracle.rs`.

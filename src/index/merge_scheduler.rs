@@ -1505,8 +1505,19 @@ impl ConcurrentMergeScheduler {
             .clone();
         match hook {
             Some(hook) => hook(exc),
-            None => panic!("{}", LuceneError::Merge(exc.to_string())),
+            None => Self::default_handle_merge_exception(exc),
         }
+    }
+
+    /// `ConcurrentMergeScheduler.handleMergeException(Throwable)` itself,
+    /// which an override reaches as `super.handleMergeException(exc)`:
+    /// `throw new MergePolicy.MergeException(exc)`.
+    ///
+    /// # Panics
+    ///
+    /// Always, with the merge exception, as Java throws it.
+    pub fn default_handle_merge_exception(exc: LuceneError) -> ! {
+        panic!("{}", LuceneError::Merge(exc.to_string()))
     }
 
     /// Swallows merge failures instead of reporting them.

@@ -125,6 +125,17 @@ impl PostingsFormat for PerFieldPostingsFormat {
     }
 }
 
+/// The identity of a format instance: Java keys the per-field writers' maps by
+/// the format object (`Map<PostingsFormat, FieldsGroup>`,
+/// `Map<DocValuesFormat, ConsumerAndSuffix>`), whose `equals` is identity, so
+/// two instances of one format name get two suffixes
+/// (`PerFieldPostingsFormat.java:207-245`, `PerFieldDocValuesFormat.java:186-230`).
+/// The group holds a clone of the `Arc`, so the address cannot be reused while
+/// the key is in use.
+fn format_identity<T: ?Sized>(format: &Arc<T>) -> usize {
+    Arc::as_ptr(format) as *const () as usize
+}
+
 fn get_suffix(format_name: &str, suffix: i32) -> String {
     format!("{}_{}", format_name, suffix)
 }
@@ -194,9 +205,9 @@ impl<'a> FieldsWriter<'a> {
     fn build_groups(
         &mut self,
         field_names: impl Iterator<Item = impl AsRef<str>>,
-    ) -> Result<HashMap<String, FieldsGroup<'a>>> {
+    ) -> Result<HashMap<usize, FieldsGroup<'a>>> {
         let mut suffixes: HashMap<String, i32> = HashMap::new();
-        let mut groups: HashMap<String, FieldsGroup<'a>> = HashMap::new();
+        let mut groups: HashMap<usize, FieldsGroup<'a>> = HashMap::new();
 
         for field_ref in field_names {
             let field = field_ref.as_ref();
@@ -209,28 +220,28 @@ impl<'a> FieldsWriter<'a> {
                 })?;
             let format = (self.resolver)(field);
             let format_name = format.name().to_string();
+            let identity = format_identity(&format);
 
-            if !groups.contains_key(&format_name) {
-                let suffix = suffixes.get(&format_name).copied().unwrap_or(0);
-                suffixes.insert(format_name.clone(), suffix + 1);
-                let segment_suffix = get_full_segment_suffix_postings(
-                    field,
-                    &self.write_state.segment_suffix,
-                    &get_suffix(&format_name, suffix),
-                )?;
-                let state = self.write_state.with_new_suffix(segment_suffix);
-                groups.insert(
-                    format_name.clone(),
-                    FieldsGroup {
+            let group = match groups.entry(identity) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    // First time we are seeing this format; create a new instance
+                    let suffix = suffixes.get(&format_name).copied().unwrap_or(0);
+                    suffixes.insert(format_name.clone(), suffix + 1);
+                    let segment_suffix = get_full_segment_suffix_postings(
+                        field,
+                        &self.write_state.segment_suffix,
+                        &get_suffix(&format_name, suffix),
+                    )?;
+                    let state = self.write_state.with_new_suffix(segment_suffix);
+                    entry.insert(FieldsGroup {
                         suffix,
                         fields: Vec::new(),
                         format: Arc::clone(&format),
                         state,
-                    },
-                );
-            }
-
-            let group = groups.get_mut(&format_name).expect("group just inserted");
+                    })
+                }
+            };
             group.fields.push(field.to_string());
             field_info.put_attribute(PER_FIELD_POSTINGS_FORMAT_KEY, &format_name);
             field_info.put_attribute(PER_FIELD_POSTINGS_SUFFIX_KEY, group.suffix.to_string());
@@ -256,7 +267,7 @@ impl<'a> FieldsWriter<'a> {
     /// succeeded.
     fn run_groups(
         &mut self,
-        groups: &HashMap<String, FieldsGroup<'a>>,
+        groups: &HashMap<usize, FieldsGroup<'a>>,
         mut work: impl FnMut(&mut dyn FieldsConsumer, &FieldsGroup<'a>) -> Result<()>,
     ) -> Result<()> {
         let mut outcome = Ok(());
@@ -644,7 +655,10 @@ struct ConsumerAndSuffix<'a> {
 struct DvFieldsWriter<'a> {
     segment_write_state: SegmentWriteState<'a>,
     resolver: Arc<dyn Fn(&str) -> Arc<dyn DocValuesFormat> + Send + Sync>,
-    formats: HashMap<String, ConsumerAndSuffix<'a>>,
+    /// Keyed by the format instance, as Java's `formats` map (see
+    /// [`format_identity`]).
+    formats: HashMap<usize, ConsumerAndSuffix<'a>>,
+    /// The last suffix used per format name, as Java's `suffixes` map.
     suffixes: HashMap<String, i32>,
 }
 
@@ -729,23 +743,26 @@ impl<'a> DvFieldsWriter<'a> {
 
         let format_name = format.name().to_string();
         self.record_attribute(field, PER_FIELD_DOC_VALUES_FORMAT_KEY, &format_name);
+        let identity = format_identity(&format);
 
-        if !self.formats.contains_key(&format_name) {
+        if let std::collections::hash_map::Entry::Vacant(vacant) = self.formats.entry(identity) {
+            // First time we are seeing this format; create a new instance
             let suffix = if field.doc_values_gen != -1 {
                 let suffix_att = if ignore_current_format {
                     None
                 } else {
                     field.get_attribute(PER_FIELD_DOC_VALUES_SUFFIX_KEY)
                 };
+                // even when dvGen is != -1, it can still be a new field, that never
+                // existed in the segment, and therefore doesn't have the recorded
+                // attributes yet.
                 suffix_att.and_then(|s| s.parse::<i32>().ok())
             } else {
                 None
             }
-            .unwrap_or_else(|| {
-                let next = self.suffixes.get(&format_name).copied().unwrap_or(0);
-                self.suffixes.insert(format_name.clone(), next + 1);
-                next
-            });
+            // bump the suffix
+            .unwrap_or_else(|| self.suffixes.get(&format_name).map_or(0, |s| s + 1));
+            self.suffixes.insert(format_name.clone(), suffix);
 
             let segment_suffix = get_full_segment_suffix(
                 &self.segment_write_state.segment_suffix,
@@ -753,19 +770,16 @@ impl<'a> DvFieldsWriter<'a> {
             );
             let state = self.segment_write_state.with_new_suffix(segment_suffix);
             let consumer = format.fields_consumer(&state)?;
-            self.formats.insert(
-                format_name.clone(),
-                ConsumerAndSuffix {
-                    suffix,
-                    consumer,
-                    _phantom: std::marker::PhantomData,
-                },
-            );
+            vacant.insert(ConsumerAndSuffix {
+                suffix,
+                consumer,
+                _phantom: std::marker::PhantomData,
+            });
         }
 
         let entry = self
             .formats
-            .get_mut(&format_name)
+            .get_mut(&identity)
             .expect("consumer just inserted");
         let suffix = entry.suffix.to_string();
         // `entry` borrows `self.formats` mutably, so the shared field info is
@@ -774,9 +788,22 @@ impl<'a> DvFieldsWriter<'a> {
         self.record_shared_attribute(&field.name, PER_FIELD_DOC_VALUES_SUFFIX_KEY, &suffix);
         Ok(&mut self
             .formats
-            .get_mut(&format_name)
+            .get_mut(&identity)
             .expect("consumer just inserted")
             .consumer)
+    }
+
+    /// The key of the consumer `get_instance_with_ignore` returned for
+    /// `field` last: the identity of the format it resolved.
+    fn instance_key(&mut self, field: &FieldInfo, ignore_current_format: bool) -> Result<usize> {
+        let consumer: *const (dyn DocValuesConsumer + 'a) =
+            &**self.get_instance_with_ignore(field, ignore_current_format)?;
+        Ok(self
+            .formats
+            .iter()
+            .find(|(_, entry)| std::ptr::addr_eq(&*entry.consumer, consumer))
+            .map(|(key, _)| *key)
+            .expect("INVARIANT: the consumer was just returned from `formats`"))
     }
 }
 
@@ -824,41 +851,28 @@ impl<'a> DocValuesConsumer for DvFieldsWriter<'a> {
     }
 
     fn merge(&mut self, merge_state: &MergeState) -> Result<()> {
-        let mut consumers_to_fields: HashMap<String, Vec<String>> = HashMap::new();
+        // `IdentityHashMap<DocValuesConsumer, Collection<String>>`: one
+        // consumer per format instance.
+        let mut consumers_to_fields: HashMap<usize, Vec<String>> = HashMap::new();
 
+        // Group each consumer by the fields it handles
         for fi in merge_state.merge_field_infos.iter() {
             if fi.doc_values_type == DocValuesType::NONE {
                 continue;
             }
-            let consumer_key = {
-                // Ensure the concrete consumer for this field exists and record
-                // the chosen format name on the field info.
-                let _ = self.get_instance_with_ignore(fi, true)?;
-                let format_name = fi
-                    .get_attribute(PER_FIELD_DOC_VALUES_FORMAT_KEY)
-                    .ok_or_else(|| {
-                        LuceneError::illegal_state(format!(
-                            "missing attribute: {PER_FIELD_DOC_VALUES_FORMAT_KEY} for field: {}",
-                            fi.name
-                        ))
-                    })?;
-                if !self.formats.contains_key(&format_name) {
-                    return Err(LuceneError::illegal_state(format!(
-                        "consumer missing for format {format_name}"
-                    )));
-                }
-                format_name
-            };
+            // merge should ignore current format for the fields being merged
+            let consumer_key = self.instance_key(fi, true)?;
             consumers_to_fields
                 .entry(consumer_key)
                 .or_default()
                 .push(fi.name.clone());
         }
 
-        for (format_name, fields) in consumers_to_fields {
+        // Delegate the merge to the appropriate consumer
+        for (consumer_key, fields) in consumers_to_fields {
             let restricted = PerFieldMergeState::restrict_fields(merge_state, &fields)?;
             self.formats
-                .get_mut(&format_name)
+                .get_mut(&consumer_key)
                 .expect("consumer present")
                 .consumer
                 .merge(&restricted)?;
@@ -2638,7 +2652,7 @@ mod close_family_tests {
         let mut writer = DvFieldsWriter {
             segment_write_state: crate::codecs::tests::write_state(&dir, &info, &fis),
             resolver: Arc::new(|_: &str| -> Arc<dyn DocValuesFormat> { unreachable!() }),
-            formats: HashMap::from([("a".to_string(), entry(a)), ("b".to_string(), entry(b))]),
+            formats: HashMap::from([(1usize, entry(a)), (2usize, entry(b))]),
             suffixes: HashMap::new(),
         };
         writer.close().unwrap_err();

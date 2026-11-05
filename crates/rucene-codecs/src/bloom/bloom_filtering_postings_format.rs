@@ -155,6 +155,11 @@ impl fmt::Display for BloomFilteringPostingsFormat {
 }
 
 impl PostingsFormat for BloomFilteringPostingsFormat {
+    /// `toString()`: this format's [`fmt::Display`].
+    fn to_java_string(&self) -> String {
+        self.to_string()
+    }
+
     fn name(&self) -> &str {
         BLOOM_CODEC_NAME
     }

@@ -56,6 +56,11 @@ impl fmt::Display for FSTPostingsFormat {
 }
 
 impl PostingsFormat for FSTPostingsFormat {
+    /// `toString()`: this format's [`fmt::Display`].
+    fn to_java_string(&self) -> String {
+        self.to_string()
+    }
+
     fn name(&self) -> &str {
         "FST50"
     }
