@@ -211,3 +211,38 @@ write the fixtures (`../*.tsv`) the crate's parity tests (`src/tests/`) read.
   side is `crates/rucene-test-framework/tests/search_wrappers_oracle.rs`,
   which replays every scenario (the suite through the port's runner) and
   compares the rows.
+* **The analysis mocks of `org.apache.lucene.tests.analysis` (rmp #346) and
+  `BaseTokenStreamTestCase` (rmp #357):**
+  `org.apache.lucene.tests.analysis.AnalysisMocksOracle` writes
+  `crates/rucene-test-framework/tests/fixtures/analysis_mocks.tsv`, one row
+  per scenario, seed and step (`scenario<TAB>seed<TAB>step<TAB>value...`). It
+  runs inside the suite `TestAnalysisMocksScenarios` under `RandomizedRunner`
+  (`tests.seed` `1DB1C0DE`), and every scenario that draws from the test
+  context runs in `runWithPrivateRandomness(new Randomness(seed,
+  RandomSupplier.DEFAULT))`, so its draws depend on the seed of the grid
+  only. A token stream is dumped as its tokens (term, start and end offset,
+  position increment and length, type, payload, flags, term frequency and
+  keyword flag, `-` for an absent attribute, strings as hex UTF-16 units),
+  `end:` and the attributes after `end()`, an exception ending the dump with
+  `!class<TAB>message`. The scenarios: `tok`, `MockTokenizer` over six
+  patterns (`WHITESPACE`, `KEYWORD`, `SIMPLE`, `[A-Z][a-z]*`, `..`, `.`) and
+  a ten-text corpus (empty input, supplementary characters, a 36-character
+  token, case mapping, stop words, control whitespace), with the
+  implementation `newAttributeFactory` picked and the context's next
+  `nextLong()`; `rd`, `MockReaderWrapper` (spoon-feeding and
+  `throwExcAfterChar`) and `MockCharFilter` (remainders 0, 2, 7) under the
+  tokenizer; `an`, five `MockAnalyzer` configurations over three fields
+  (`normalize` and the next draw included); `fl`, every filter (fixed and
+  variable payloads, holes, graph, random lookahead, synonyms, lower-casing,
+  stop set, cranky, validating, simple payload) with the next draw of the
+  filter's own random and of the context; `fx`, the canned streams, the
+  payload, bytes and synonym analyzers and `TokenStreamToDot`; `mis`,
+  `MockTokenizer` workflow violations with and without checks, the analyzer
+  misuses and the assertion messages of `BaseTokenStreamTestCase`
+  (`ComparisonFailure` included); `crd`, the strings `checkRandomData` reads
+  on the calling thread, its outcome and the next draws, and
+  `TestUtil.randomAnalysisString`; `core`, `StandardTokenizer`'s attributes
+  after `end()` and the attribute sharing between a tokenizer and its
+  filters. The Rust side is
+  `crates/rucene-test-framework/tests/analysis_mocks_oracle.rs`, which replays
+  every scenario through the port's runner and compares the rows.

@@ -13,8 +13,11 @@
 //! `automaton::AutomatonTestUtil`, `fst::FSTTester`, `CloseableDirectory`,
 //! ...), the index readers and reader wrappers of [`index`] (`AssertingLeafReader`,
 //! `AssertingDirectoryReader`, `FieldFilterLeafReader`, the `Mismatched*` and
-//! `Merging*` wrappers, `PerThreadPKLookup`, ...), and the members of other
-//! classes they call. The rest of the module is ported by later tasks.
+//! `Merging*` wrappers, `PerThreadPKLookup`, ...), the analysis mocks of
+//! [`analysis`] (`MockTokenizer`, `MockAnalyzer`, the mock filters, the canned
+//! streams, `LookaheadTokenFilter`, `TokenStreamToDot`, ...) with
+//! `BaseTokenStreamTestCase`, and the members of other classes they call. The
+//! rest of the module is ported by later tasks.
 
 /// Java's `assert condition [: message];` under `-ea` in a method that
 /// returns [`rucene::error::Result`] (or a result whose error converts from
@@ -57,6 +60,7 @@ macro_rules! java_assert_unchecked {
     };
 }
 
+pub mod analysis;
 pub mod codecs;
 pub mod hamcrest;
 pub mod index;

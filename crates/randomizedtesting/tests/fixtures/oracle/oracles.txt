@@ -24,6 +24,8 @@ org.apache.lucene.tests.index.IndexWrappersOracle
 # The search wrappers, similarities and collectors of org.apache.lucene.tests.search (rmp #345);
 # reads the mdw_corpus.tsv MockDirectoryWrapperOracle writes before it
 org.apache.lucene.tests.search.SearchWrappersOracle
+# The analysis mocks of org.apache.lucene.tests.analysis and BaseTokenStreamTestCase (rmp #346, #357)
+org.apache.lucene.tests.analysis.AnalysisMocksOracle
 # The other lucene/codecs formats: PostingsFormatOracle <prefix> <kind> <format> <extensions>
 org.apache.lucene.codecs.simpletext.PostingsFormatOracle fst50 postings FST50 tfp
 org.apache.lucene.codecs.simpletext.PostingsFormatOracle fixedgap postings LuceneFixedGap tib tii

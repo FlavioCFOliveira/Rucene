@@ -908,6 +908,46 @@ mod tests {
         assert_eq!(att.end_offset(), 11);
     }
 
+    /// After `end()` every attribute holds its `end()` value: Java's
+    /// `PackedTokenAttributeImpl.end()` clears the term and the type and
+    /// sets the position increment to `0`, then `StandardTokenizer.end()`
+    /// sets the final offset and adds the skipped positions (oracle row
+    /// `core 0 standard.end` of `analysis_mocks.tsv`: `end:-,11,11,0,1,word`).
+    #[test]
+    fn end_leaves_the_attributes_of_javas_end() {
+        let mut tokenizer = new_standard_tokenizer();
+        tokenizer
+            .set_reader(Box::new(crate::analysis::StringCharReader::new(
+                "hello world",
+            )))
+            .unwrap();
+        tokenizer.reset().unwrap();
+        while tokenizer.increment_token().unwrap() {}
+        {
+            // a consumer's leftovers, which end() must clear as Java's does
+            let mut att = tokenizer
+                .attribute_source()
+                .get_attribute_mut::<crate::analysis::PackedTokenAttributeImpl>()
+                .unwrap();
+            att.append_string("leftover");
+            att.set_type("<ALPHANUM>".to_string());
+            crate::analysis::PositionLengthAttribute::set_position_length(&mut *att, 3);
+        }
+        tokenizer.end().unwrap();
+        let att = tokenizer
+            .attribute_source()
+            .get_attribute::<crate::analysis::PackedTokenAttributeImpl>()
+            .unwrap();
+        assert_eq!(att.term(), "");
+        assert_eq!(att.type_value(), "word");
+        assert_eq!((att.start_offset(), att.end_offset()), (11, 11));
+        assert_eq!(att.get_position_increment(), 0);
+        assert_eq!(
+            crate::analysis::PositionLengthAttribute::get_position_length(&*att),
+            1
+        );
+    }
+
     fn analyze(analyzer: &dyn Analyzer, text: &str) -> Vec<String> {
         let stream = analyzer.token_stream_from_str("field", text).unwrap();
         let mut stream = stream.borrow_mut();

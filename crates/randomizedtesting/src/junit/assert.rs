@@ -107,6 +107,87 @@ impl Assert {
     pub fn assert_equals<T: PartialEq + Display>(expected: T, actual: T) {
         Assert::assert_equals_msg(None, expected, actual)
     }
+
+    /// `assertEquals(message, expected, actual)` for two `String`s (`None`
+    /// standing for `null`): when they differ, JUnit throws
+    /// `org.junit.ComparisonFailure`, whose message brackets the differing
+    /// middle of each string between their shared prefix and suffix, each
+    /// shortened to 20 characters of context behind `...`
+    /// (`ComparisonFailure.ComparisonCompactor`), as in `term 0
+    /// expected:<[foo]> but was:<[bar]>`.
+    ///
+    /// The strings are compared as UTF-16 code units, as Java's `charAt`
+    /// does; a bracket that would split a surrogate pair renders the lone
+    /// half as U+FFFD, which a Rust `String` cannot hold.
+    pub fn assert_equals_str(message: Option<&str>, expected: Option<&str>, actual: Option<&str>) {
+        if expected == actual {
+            return;
+        }
+        let message = message.unwrap_or("");
+        let (expected, actual) = match (expected, actual) {
+            (Some(e), Some(a)) => (e, a),
+            (e, a) => {
+                // `ComparisonFailure` with a null side: `Assert.format` of
+                // the plain values.
+                let show = |v: Option<&str>| v.unwrap_or("null").to_string();
+                Throwable::new(
+                    COMPARISON_FAILURE,
+                    format_values(message, &show(e), &show(a)),
+                )
+                .throw()
+            }
+        };
+        let e: Vec<u16> = expected.encode_utf16().collect();
+        let a: Vec<u16> = actual.encode_utf16().collect();
+        let end = e.len().min(a.len());
+        let prefix_len = (0..end).find(|&i| e[i] != a[i]).unwrap_or(end);
+        let max_suffix = e.len().min(a.len()) as isize - prefix_len as isize - 1;
+        let mut suffix_len = 0usize;
+        while (suffix_len as isize) <= max_suffix
+            && e[e.len() - 1 - suffix_len] == a[a.len() - 1 - suffix_len]
+        {
+            suffix_len += 1;
+        }
+        let s = |units: &[u16]| String::from_utf16_lossy(units);
+        let prefix = &e[..prefix_len];
+        let suffix = &e[e.len() - suffix_len..];
+        let compact_prefix = if prefix.len() <= MAX_CONTEXT_LENGTH {
+            s(prefix)
+        } else {
+            format!("...{}", s(&prefix[prefix.len() - MAX_CONTEXT_LENGTH..]))
+        };
+        let compact_suffix = if suffix.len() <= MAX_CONTEXT_LENGTH {
+            s(suffix)
+        } else {
+            format!("{}...", s(&suffix[..MAX_CONTEXT_LENGTH]))
+        };
+        let diff = |units: &[u16]| format!("[{}]", s(&units[prefix_len..units.len() - suffix_len]));
+        Throwable::new(
+            COMPARISON_FAILURE,
+            format_values(
+                message,
+                &format!("{compact_prefix}{}{compact_suffix}", diff(&e)),
+                &format!("{compact_prefix}{}{compact_suffix}", diff(&a)),
+            ),
+        )
+        .throw()
+    }
+}
+
+/// `org.junit.ComparisonFailure`.
+pub const COMPARISON_FAILURE: &str = "org.junit.ComparisonFailure";
+
+/// `ComparisonFailure.MAX_CONTEXT_LENGTH`.
+const MAX_CONTEXT_LENGTH: usize = 20;
+
+/// `Assert.format(message, expected, actual)` for two different strings.
+fn format_values(message: &str, expected: &str, actual: &str) -> String {
+    let prefix = if message.is_empty() {
+        String::new()
+    } else {
+        format!("{message} ")
+    };
+    format!("{prefix}expected:<{expected}> but was:<{actual}>")
 }
 
 /// `org.junit.Assume`.

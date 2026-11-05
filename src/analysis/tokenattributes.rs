@@ -1162,7 +1162,14 @@ impl AttributeImpl for PackedTokenAttributeImpl {
         self.type_value = DEFAULT_TYPE.to_string();
     }
 
+    /// Resets every field, then sets the position increment to `0`.
+    ///
+    /// Equivalent to `PackedTokenAttributeImpl.end()`
+    /// (`PackedTokenAttributeImpl.java:182-187`): `super.end()` is
+    /// `AttributeImpl.end()`, which calls the overridden `clear()`, and only
+    /// the value that differs from `clear()` is set afterwards.
     fn end(&mut self) {
+        AttributeImpl::clear(self);
         self.position_increment = 0;
     }
 

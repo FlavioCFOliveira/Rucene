@@ -393,14 +393,6 @@ pub fn get_static_implementation<A: AttributeImpl + Default>(
     }
 }
 
-/// Internal linked-list node used by [`AttributeSource`] to represent the
-/// current attribute state.
-#[derive(Clone, Debug)]
-struct State {
-    attribute: Rc<RefCell<Box<dyn AttributeImpl>>>,
-    next: Option<Box<State>>,
-}
-
 /// Captured state of an [`AttributeSource`], suitable for later restoration.
 ///
 /// This is the Rust equivalent of Lucene's `AttributeSource.State`.
@@ -421,6 +413,38 @@ impl Clone for CapturedState {
     }
 }
 
+/// A shared, mutable attribute implementation held by an [`AttributeSource`].
+pub type AttributeCell = Rc<RefCell<Box<dyn AttributeImpl>>>;
+
+/// The attribute maps every [`AttributeSource`] of one chain shares.
+///
+/// Java's `AttributeSource(AttributeSource input)` constructor assigns the
+/// very `attributes` and `attributeImpls` maps (and the `currentState` array)
+/// of `input` to the new source (`AttributeSource.java:105-114`), so an
+/// attribute any source of a token stream chain adds is seen by every other:
+/// a consumer that adds an attribute to the outermost filter has it cleared by
+/// the tokenizer's `clearAttributes()`. This structure is those shared maps;
+/// `impls` keeps the insertion order of Java's `LinkedHashMap`, which is the
+/// order `getCurrentState()` walks.
+#[derive(Debug, Default)]
+struct SharedAttributes {
+    /// Attribute interface (or implementation) `TypeId` -> implementation.
+    attributes: HashMap<TypeId, AttributeCell>,
+    /// The keys of `attributes`, in insertion order.
+    interface_order: Vec<TypeId>,
+    /// Concrete implementation `TypeId` -> implementation, in insertion order.
+    impls: Vec<(TypeId, AttributeCell)>,
+}
+
+impl SharedAttributes {
+    fn impl_of(&self, impl_type: TypeId) -> Option<&AttributeCell> {
+        self.impls
+            .iter()
+            .find(|(id, _)| *id == impl_type)
+            .map(|(_, cell)| cell)
+    }
+}
+
 /// Port of `org.apache.lucene.util.AttributeSource`.
 ///
 /// Container that stores a set of attribute implementations and provides
@@ -428,14 +452,30 @@ impl Clone for CapturedState {
 ///
 /// Each attribute interface can appear at most once in a source. Adding an
 /// attribute that is already present returns the existing instance.
+///
+/// A source built with [`AttributeSource::new_from`] (or cloned) shares its
+/// attribute maps with its input, exactly as Java's sources share theirs: an
+/// attribute either one adds is seen by the other's
+/// [`clear_attributes`](Self::clear_attributes),
+/// [`end_attributes`](Self::end_attributes), state capture and restoration,
+/// copying, reflection, [`has_attribute`](Self::has_attribute) and
+/// [`get_attribute_by_id`](Self::get_attribute_by_id), and is the instance
+/// [`add_attribute`](Self::add_attribute) returns to the other.
+///
+/// **Divergence from Lucene 10.5.0.** [`get_attribute`](Self::get_attribute)
+/// and [`get_attribute_mut`](Self::get_attribute_mut) return a guard borrowed
+/// from the source itself, which a map shared behind a `RefCell` cannot lend
+/// without `unsafe`; they read the source's own view of the shared map, which
+/// is brought up to date by every `add_attribute*` call on that source. An
+/// attribute another source of the chain added afterwards is therefore found
+/// by [`get_attribute_by_id`](Self::get_attribute_by_id) and `has_attribute`,
+/// but not by those two until this source adds any attribute.
 #[derive(Clone, Debug)]
 pub struct AttributeSource {
-    /// Maps attribute interface TypeId -> shared implementation.
-    attributes: HashMap<TypeId, Rc<RefCell<Box<dyn AttributeImpl>>>>,
-    /// Maps concrete implementation TypeId -> shared implementation.
-    attribute_impls: HashMap<TypeId, Rc<RefCell<Box<dyn AttributeImpl>>>>,
-    /// Lazily-built linked list of the current implementations.
-    current_state: RefCell<Option<Box<State>>>,
+    /// This source's view of `shared.attributes`, for the borrowed getters.
+    attributes: HashMap<TypeId, AttributeCell>,
+    /// The maps shared with every source of the chain.
+    shared: Rc<RefCell<SharedAttributes>>,
     /// Factory used to create missing attributes.
     factory: Arc<dyn AttributeFactory>,
 }
@@ -450,8 +490,7 @@ impl AttributeSource {
     pub fn new_with_factory(factory: Arc<dyn AttributeFactory>) -> Self {
         Self {
             attributes: HashMap::new(),
-            attribute_impls: HashMap::new(),
-            current_state: RefCell::new(None),
+            shared: Rc::new(RefCell::new(SharedAttributes::default())),
             factory,
         }
     }
@@ -462,9 +501,8 @@ impl AttributeSource {
     /// Lucene's `AttributeSource(AttributeSource input)` constructor.
     pub fn new_from(input: &Self) -> Self {
         Self {
-            attributes: input.attributes.clone(),
-            attribute_impls: input.attribute_impls.clone(),
-            current_state: RefCell::new(None),
+            attributes: input.shared.borrow().attributes.clone(),
+            shared: Rc::clone(&input.shared),
             factory: Arc::clone(&input.factory),
         }
     }
@@ -474,6 +512,18 @@ impl AttributeSource {
     /// Equivalent to `org.apache.lucene.util.AttributeSource#getAttributeFactory`.
     pub fn factory(&self) -> &dyn AttributeFactory {
         self.factory.as_ref()
+    }
+
+    /// Brings this source's view up to date with the shared maps.
+    fn sync_view(&mut self) {
+        let shared = self.shared.borrow();
+        if self.attributes.len() != shared.attributes.len() {
+            for (id, cell) in &shared.attributes {
+                self.attributes
+                    .entry(*id)
+                    .or_insert_with(|| Rc::clone(cell));
+            }
+        }
     }
 
     /// Equivalent to `AttributeSource.addAttributeImpl(AttributeImpl)`
@@ -488,37 +538,39 @@ impl AttributeSource {
     /// `getAttributeInterfaces`, so it never decides whether the
     /// implementation is registered.
     fn add_attribute_impl(&mut self, att: Box<dyn AttributeImpl>) {
-        let type_id = att.impl_type_id();
-        if self.attribute_impls.contains_key(&type_id) {
-            return;
-        }
-
-        let interfaces = att.attribute_interfaces().to_vec();
-        let attribute_interfaces: Vec<TypeId> = interfaces
-            .iter()
-            .copied()
-            .filter(|interface_id| *interface_id != type_id)
-            .collect();
-        let deciding = if attribute_interfaces.is_empty() {
-            &interfaces
-        } else {
-            &attribute_interfaces
-        };
-        if deciding
-            .iter()
-            .all(|interface_id| self.attributes.contains_key(interface_id))
         {
-            return;
-        }
-        let rc = Rc::new(RefCell::new(att));
-
-        for interface_id in interfaces {
-            if !self.attributes.contains_key(&interface_id) {
-                *self.current_state.borrow_mut() = None;
-                self.attributes.insert(interface_id, rc.clone());
+            let mut shared = self.shared.borrow_mut();
+            let type_id = att.impl_type_id();
+            if shared.impl_of(type_id).is_none() {
+                let interfaces = att.attribute_interfaces().to_vec();
+                let attribute_interfaces: Vec<TypeId> = interfaces
+                    .iter()
+                    .copied()
+                    .filter(|interface_id| *interface_id != type_id)
+                    .collect();
+                let deciding = if attribute_interfaces.is_empty() {
+                    &interfaces
+                } else {
+                    &attribute_interfaces
+                };
+                if !deciding
+                    .iter()
+                    .all(|interface_id| shared.attributes.contains_key(interface_id))
+                {
+                    let rc: AttributeCell = Rc::new(RefCell::new(att));
+                    for interface_id in interfaces {
+                        if let std::collections::hash_map::Entry::Vacant(slot) =
+                            shared.attributes.entry(interface_id)
+                        {
+                            slot.insert(Rc::clone(&rc));
+                            shared.interface_order.push(interface_id);
+                        }
+                    }
+                    shared.impls.push((type_id, rc));
+                }
             }
         }
-        self.attribute_impls.insert(type_id, rc);
+        self.sync_view();
     }
 
     /// Adds an attribute of type `A`, creating it through the factory if
@@ -530,6 +582,7 @@ impl AttributeSource {
     /// attribute.
     pub fn add_attribute<A: Attribute>(&mut self) -> Result<Ref<'_, A>, LuceneError> {
         let id = TypeId::of::<A>();
+        self.sync_view();
         if !self.attributes.contains_key(&id) {
             let new_impl = self.factory.create_attribute_instance(id)?;
             self.add_attribute_impl(new_impl);
@@ -542,38 +595,72 @@ impl AttributeSource {
         }))
     }
 
-    /// Adds an attribute by its concrete [`TypeId`] and returns the shared
-    /// implementation handle.
+    /// Adds an attribute by its [`TypeId`] (an attribute interface, such as
+    /// `TypeId::of::<dyn CharTermAttribute>()`, or an implementation) and
+    /// returns the shared implementation handle.
+    ///
+    /// Equivalent to `org.apache.lucene.util.AttributeSource#addAttribute(Class)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `LuceneError::IllegalArgument` if the factory cannot create the
+    /// attribute.
     pub fn add_attribute_by_id(
         &mut self,
         attribute_type: TypeId,
-    ) -> Result<Rc<RefCell<Box<dyn AttributeImpl>>>, LuceneError> {
+    ) -> Result<AttributeCell, LuceneError> {
+        self.sync_view();
         if !self.attributes.contains_key(&attribute_type) {
             let new_impl = self.factory.create_attribute_instance(attribute_type)?;
             self.add_attribute_impl(new_impl);
         }
-        Ok(Rc::clone(self.attributes.get(&attribute_type).unwrap()))
+        Ok(Rc::clone(self.attributes.get(&attribute_type).ok_or_else(
+            || {
+                LuceneError::IllegalArgument(format!(
+                    "the factory's implementation does not provide TypeId {:?}",
+                    attribute_type
+                ))
+            },
+        )?))
     }
 
     /// Adds a pre-built [`AttributeImpl`] instance to this source.
+    ///
+    /// Equivalent to `org.apache.lucene.util.AttributeSource#addAttributeImpl`.
     pub fn add_attribute_impl_instance(&mut self, att: Box<dyn AttributeImpl>) {
         self.add_attribute_impl(att);
     }
 
     /// Returns true if this source contains attribute `A`.
     pub fn has_attribute<A: Attribute>(&self) -> bool {
-        self.attributes.contains_key(&TypeId::of::<A>())
+        self.has_attribute_by_id(TypeId::of::<A>())
     }
 
     /// Returns true if this source contains the attribute with the given
     /// [`TypeId`].
     pub fn has_attribute_by_id(&self, attribute_type: TypeId) -> bool {
-        self.attributes.contains_key(&attribute_type)
+        self.shared
+            .borrow()
+            .attributes
+            .contains_key(&attribute_type)
     }
 
     /// Returns true if this source has any attributes.
     pub fn has_attributes(&self) -> bool {
-        !self.attributes.is_empty()
+        !self.shared.borrow().attributes.is_empty()
+    }
+
+    /// Returns the implementation of the attribute with the given [`TypeId`]
+    /// (an attribute interface or an implementation), if present.
+    ///
+    /// Equivalent to `org.apache.lucene.util.AttributeSource#getAttribute(Class)`,
+    /// which returns `null` for an absent attribute.
+    pub fn get_attribute_by_id(&self, attribute_type: TypeId) -> Option<AttributeCell> {
+        self.shared
+            .borrow()
+            .attributes
+            .get(&attribute_type)
+            .map(Rc::clone)
     }
 
     /// Returns a borrowed reference to attribute `A`, if present.
@@ -596,33 +683,43 @@ impl AttributeSource {
         }))
     }
 
+    /// The implementations, in insertion order (Java's `getCurrentState()`
+    /// walk).
+    fn impl_cells(&self) -> Vec<AttributeCell> {
+        self.shared
+            .borrow()
+            .impls
+            .iter()
+            .map(|(_, cell)| Rc::clone(cell))
+            .collect()
+    }
+
     /// Clears every attribute in this source.
     pub fn clear_attributes(&self) {
-        if let Some(state) = self.get_current_state() {
-            let mut cur = Some(state);
-            while let Some(s) = cur {
-                s.attribute.borrow_mut().clear();
-                cur = s.next;
-            }
+        for cell in self.impl_cells() {
+            cell.borrow_mut().clear();
         }
     }
 
     /// Calls [`AttributeImpl::end`] on every attribute.
     pub fn end_attributes(&self) {
-        if let Some(state) = self.get_current_state() {
-            let mut cur = Some(state);
-            while let Some(s) = cur {
-                s.attribute.borrow_mut().end();
-                cur = s.next;
-            }
+        for cell in self.impl_cells() {
+            cell.borrow_mut().end();
         }
     }
 
-    /// Removes every attribute and implementation from this source.
+    /// Removes every attribute and implementation from this source, and from
+    /// every source sharing its maps.
+    ///
+    /// Equivalent to `org.apache.lucene.util.AttributeSource#removeAllAttributes`.
     pub fn remove_all_attributes(&mut self) {
+        {
+            let mut shared = self.shared.borrow_mut();
+            shared.attributes.clear();
+            shared.interface_order.clear();
+            shared.impls.clear();
+        }
         self.attributes.clear();
-        self.attribute_impls.clear();
-        *self.current_state.borrow_mut() = None;
     }
 
     /// Returns an iterator over the attribute interface [`TypeId`]s in
@@ -630,36 +727,35 @@ impl AttributeSource {
     ///
     /// Equivalent to `org.apache.lucene.util.AttributeSource#getAttributeClassesIterator`.
     pub fn attribute_classes(&self) -> impl Iterator<Item = TypeId> + '_ {
-        self.attributes.keys().copied()
+        self.shared.borrow().interface_order.clone().into_iter()
     }
 
     /// Returns an iterator over the unique attribute implementations in this
-    /// source.
+    /// source, in insertion order.
     ///
     /// This may yield fewer entries than [`Self::attribute_classes`], when one
     /// implementation covers more than one attribute interface.
     ///
     /// Equivalent to `org.apache.lucene.util.AttributeSource#getAttributeImplsIterator`.
-    pub fn attribute_impls_iter(
-        &self,
-    ) -> impl Iterator<Item = Rc<RefCell<Box<dyn AttributeImpl>>>> + '_ {
-        self.attribute_impls.values().cloned()
+    pub fn attribute_impls_iter(&self) -> impl Iterator<Item = AttributeCell> + '_ {
+        self.impl_cells().into_iter()
     }
 
     /// Captures the current state of all attributes as a deep snapshot.
     ///
     /// Returns `None` when this source has no attributes.
     pub fn capture_state(&self) -> Option<CapturedState> {
-        let current = self.get_current_state()?;
-
-        let mut attributes = Vec::new();
-        let mut cur = Some(&current);
-        while let Some(state) = cur {
-            let att = state.attribute.borrow();
-            attributes.push((att.impl_type_id(), att.clone_box()));
-            cur = state.next.as_ref();
+        let cells = self.impl_cells();
+        if cells.is_empty() {
+            return None;
         }
-
+        let attributes = cells
+            .iter()
+            .map(|cell| {
+                let att = cell.borrow();
+                (att.impl_type_id(), att.clone_box())
+            })
+            .collect();
         Some(CapturedState { attributes })
     }
 
@@ -674,12 +770,17 @@ impl AttributeSource {
     /// implementation not present in this source.
     pub fn restore_state(&self, state: &CapturedState) -> Result<(), LuceneError> {
         for (type_id, captured) in &state.attributes {
-            let target_rc = self.attribute_impls.get(type_id).ok_or_else(|| {
-                LuceneError::IllegalArgument(format!(
-                    "state contains AttributeImpl with TypeId {:?} not present in target",
-                    type_id
-                ))
-            })?;
+            let target_rc = self
+                .shared
+                .borrow()
+                .impl_of(*type_id)
+                .map(Rc::clone)
+                .ok_or_else(|| {
+                    LuceneError::IllegalArgument(format!(
+                        "State contains AttributeImpl of type {:?} that is not in in this AttributeSource",
+                        type_id
+                    ))
+                })?;
             captured.copy_to(&mut **target_rc.borrow_mut());
         }
         Ok(())
@@ -692,20 +793,23 @@ impl AttributeSource {
     /// Returns `LuceneError::IllegalArgument` if `target` lacks a matching
     /// implementation.
     pub fn copy_to(&self, target: &AttributeSource) -> Result<(), LuceneError> {
-        if let Some(state) = self.get_current_state() {
-            let mut cur = Some(state);
-            while let Some(s) = cur {
-                let src = s.attribute.borrow();
-                let type_id = src.impl_type_id();
-                let target_rc = target.attribute_impls.get(&type_id).ok_or_else(|| {
+        for cell in self.impl_cells() {
+            let type_id = cell.borrow().impl_type_id();
+            let target_rc = target
+                .shared
+                .borrow()
+                .impl_of(type_id)
+                .map(Rc::clone)
+                .ok_or_else(|| {
                     LuceneError::IllegalArgument(format!(
-                        "source contains AttributeImpl with TypeId {:?} not in target",
+                        "This AttributeSource contains AttributeImpl of type {:?} that is not in the target",
                         type_id
                     ))
                 })?;
-                src.copy_to(&mut **target_rc.borrow_mut());
-                cur = s.next;
+            if Rc::ptr_eq(&cell, &target_rc) {
+                continue;
             }
+            cell.borrow().copy_to(&mut **target_rc.borrow_mut());
         }
         Ok(())
     }
@@ -714,46 +818,33 @@ impl AttributeSource {
     /// implementations.
     pub fn clone_attributes(&self) -> AttributeSource {
         let mut clone = AttributeSource::new_with_factory(Arc::clone(&self.factory));
-        if let Some(state) = self.get_current_state() {
-            let mut cur = Some(state);
-            while let Some(s) = cur {
-                let att = s.attribute.borrow();
-                clone.add_attribute_impl(att.clone_box());
-                cur = s.next;
-            }
+        for cell in self.impl_cells() {
+            let att = cell.borrow().clone_box();
+            clone.add_attribute_impl(att);
         }
         clone
     }
 
-    /// Reflects every attribute implementation through `reflector`.
+    /// Reflects every attribute implementation through `reflector`, in
+    /// insertion order.
     pub fn reflect_with(&self, reflector: &mut dyn AttributeReflector) {
-        if let Some(state) = self.get_current_state() {
-            let mut cur = Some(state);
-            while let Some(s) = cur {
-                s.attribute.borrow().reflect_with(reflector);
-                cur = s.next;
-            }
+        for cell in self.impl_cells() {
+            cell.borrow().reflect_with(reflector);
         }
     }
 
     /// Returns a hash code combining the hash codes of every attribute
     /// implementation this source holds.
     ///
-    /// Equivalent to `org.apache.lucene.util.AttributeSource#hashCode`.
-    ///
-    /// Divergence: Lucene folds the implementations with `code = code * 31 +
-    /// state.attribute.hashCode()` while walking the state list, whose order is
-    /// the insertion order of the `LinkedHashMap` backing `attributeImpls`
-    /// (`AttributeSource.java` lines 335-341). This port's `attribute_impls` is
-    /// a [`HashMap`], which has no insertion order and whose iteration order
-    /// differs between two instances holding the same entries, so a positional
-    /// fold could not agree with [`PartialEq`]. The implementations' hash codes
-    /// are therefore summed, which is order-independent; the resulting value
-    /// differs from Java's, but it is not part of any index format.
+    /// Equivalent to `org.apache.lucene.util.AttributeSource#hashCode`
+    /// (`AttributeSource.java:335-341`): `code = code * 31 +
+    /// attribute.hashCode()` over the implementations in insertion order.
     pub fn hash_code(&self) -> i32 {
         let mut code: i32 = 0;
-        for att in self.attribute_impls.values() {
-            code = code.wrapping_add(att.borrow().hash_code());
+        for cell in self.impl_cells() {
+            code = code
+                .wrapping_mul(31)
+                .wrapping_add(cell.borrow().hash_code());
         }
         code
     }
@@ -772,22 +863,12 @@ impl AttributeSource {
     }
 }
 
-/// Equivalent to `org.apache.lucene.util.AttributeSource#equals`.
+/// Equivalent to `org.apache.lucene.util.AttributeSource#equals`
+/// (`AttributeSource.java:343-377`).
 ///
 /// Two sources are equal when neither holds any attribute, or when both hold
-/// the same number of implementations and every implementation is of the same
-/// concrete type and equal to its counterpart.
-///
-/// Divergence: Lucene walks both state lists in step and requires the
-/// implementations to match pairwise *in insertion order*
-/// (`AttributeSource.java` lines 343-377). This port's `attribute_impls` is a
-/// [`HashMap`], which has no insertion order and whose iteration order differs
-/// between two instances holding the same entries, so a pairwise walk would not
-/// even be deterministic. The counterpart is therefore looked up by concrete
-/// implementation type — the very key Lucene's `attributeImpls` map uses, so
-/// the class check is subsumed by the lookup. The two answers agree except when
-/// the same implementations were added in different orders, which Lucene
-/// reports unequal and this reports equal.
+/// the same number of implementations and, walking both in insertion order,
+/// each pair is of the same concrete type and equal.
 impl PartialEq for AttributeSource {
     fn eq(&self, other: &Self) -> bool {
         if !self.has_attributes() {
@@ -796,17 +877,16 @@ impl PartialEq for AttributeSource {
         if !other.has_attributes() {
             return false;
         }
-        if self.attribute_impls.len() != other.attribute_impls.len() {
+        let this_cells = self.impl_cells();
+        let other_cells = other.impl_cells();
+        if this_cells.len() != other_cells.len() {
             return false;
         }
-        // it is only equal if all attribute impls are the same
-        for (impl_type, att) in &self.attribute_impls {
-            let Some(other_att) = other.attribute_impls.get(impl_type) else {
-                return false;
-            };
-            let this_att = att.borrow();
-            let that_att = other_att.borrow();
-            if !that_att.equals(&**this_att) {
+        // it is only equal if all attribute impls are the same in the same order
+        for (this_cell, other_cell) in this_cells.iter().zip(other_cells.iter()) {
+            let this_att = this_cell.borrow();
+            let that_att = other_cell.borrow();
+            if that_att.impl_type_id() != this_att.impl_type_id() || !that_att.equals(&**this_att) {
                 return false;
             }
         }
@@ -837,37 +917,6 @@ impl AttributeReflector for ReflectAsString {
         self.buffer.push_str(key);
         self.buffer.push('=');
         self.buffer.push_str(&format!("{:?}", value));
-    }
-}
-
-impl AttributeSource {
-    fn get_current_state(&self) -> Option<Box<State>> {
-        if self.current_state.borrow().is_none() && self.has_attributes() {
-            let mut head: Option<Box<State>> = None;
-            let mut tail: Option<&mut Box<State>> = None;
-
-            for rc in self.attribute_impls.values() {
-                let node = Box::new(State {
-                    attribute: rc.clone(),
-                    next: None,
-                });
-
-                match tail {
-                    None => {
-                        head = Some(node);
-                        tail = head.as_mut();
-                    }
-                    Some(t) => {
-                        t.next = Some(node);
-                        tail = t.next.as_mut();
-                    }
-                }
-            }
-
-            *self.current_state.borrow_mut() = head;
-        }
-
-        self.current_state.borrow().clone()
     }
 }
 
@@ -1016,7 +1065,7 @@ mod tests {
         source.add_attribute::<PackedTokenAttributeImpl>().unwrap();
         source.add_attribute_impl_instance(Box::new(TermFrequencyAttributeImpl::new()));
         assert!(!source.has_attribute::<TermFrequencyAttributeImpl>());
-        assert_eq!(source.attribute_impls.len(), 1);
+        assert_eq!(source.attribute_impls_iter().count(), 1);
     }
 
     #[derive(Clone, Debug, Default)]
@@ -1284,6 +1333,77 @@ mod tests {
         let shared = AttributeSource::new_from(&source);
         shared.get_attribute_mut::<TestAttribute>().unwrap().value = 111;
         assert_eq!(source.get_attribute::<TestAttribute>().unwrap().value, 111);
+    }
+
+    /// `AttributeSource(AttributeSource input)` shares the very maps of its
+    /// input (`AttributeSource.java:105-114`): an attribute added through the
+    /// derived source is cleared by the input's `clearAttributes()` and is the
+    /// instance `addAttribute` returns on the input. Lucene's
+    /// `BaseTokenStreamTestCase` relies on it: it adds
+    /// `CheckClearAttributesAttribute` to the outermost filter and expects the
+    /// tokenizer to clear it (oracle row `core 0 shared.clear` of
+    /// `analysis_mocks.tsv`: the flags set on the filter read `0` after the
+    /// tokenizer's `clearAttributes()`).
+    #[test]
+    fn an_attribute_added_through_a_derived_source_is_shared_with_the_input() {
+        let mut input = AttributeSource::new_with_factory(test_factory());
+        input.add_attribute::<TestAttribute>().unwrap();
+        let mut derived = AttributeSource::new_from(&input);
+        drop(derived.add_attribute::<OtherAttribute>().unwrap());
+        derived.get_attribute_mut::<OtherAttribute>().unwrap().text = "x".to_string();
+
+        assert!(input.has_attribute::<OtherAttribute>());
+        input.clear_attributes();
+        assert_eq!(derived.get_attribute::<OtherAttribute>().unwrap().text, "");
+
+        let from_input = input
+            .add_attribute_by_id(TypeId::of::<OtherAttribute>())
+            .unwrap();
+        let from_derived = derived
+            .get_attribute_by_id(TypeId::of::<OtherAttribute>())
+            .unwrap();
+        assert!(Rc::ptr_eq(&from_input, &from_derived));
+        assert_eq!(input.attribute_impls_iter().count(), 2);
+    }
+
+    /// `copyTo` onto a source sharing the same implementations copies each
+    /// implementation onto itself, which changes nothing.
+    #[test]
+    fn copy_to_a_source_sharing_the_implementations_changes_nothing() {
+        let mut source = AttributeSource::new_with_factory(test_factory());
+        source.add_attribute::<TestAttribute>().unwrap();
+        source.get_attribute_mut::<TestAttribute>().unwrap().value = 5;
+        let shared = AttributeSource::new_from(&source);
+        source.copy_to(&shared).unwrap();
+        assert_eq!(shared.get_attribute::<TestAttribute>().unwrap().value, 5);
+    }
+
+    /// `equals` walks both sources in insertion order
+    /// (`AttributeSource.java:343-377`): the same implementations added in a
+    /// different order are not equal.
+    #[test]
+    fn equality_walks_the_implementations_in_insertion_order() {
+        use crate::analysis::{FlagsAttributeImpl, KeywordAttributeImpl};
+        let factory: Arc<dyn AttributeFactory> = {
+            let mut f = DefaultAttributeFactory::new();
+            f.register_self::<FlagsAttributeImpl>();
+            f.register_self::<KeywordAttributeImpl>();
+            Arc::new(f)
+        };
+        let source = |first_flags: bool| {
+            let mut s = AttributeSource::new_with_factory(Arc::clone(&factory));
+            if first_flags {
+                drop(s.add_attribute::<FlagsAttributeImpl>().unwrap());
+                drop(s.add_attribute::<KeywordAttributeImpl>().unwrap());
+            } else {
+                drop(s.add_attribute::<KeywordAttributeImpl>().unwrap());
+                drop(s.add_attribute::<FlagsAttributeImpl>().unwrap());
+            }
+            s
+        };
+        assert!(source(true) == source(true));
+        assert!(source(true) != source(false));
+        assert_ne!(source(true).hash_code(), source(false).hash_code());
     }
 
     #[test]

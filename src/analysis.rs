@@ -274,6 +274,15 @@ pub trait TokenStream: Debug {
     fn as_unwrappable(&self) -> Option<&dyn Unwrappable<dyn TokenStream>> {
         None
     }
+
+    /// Returns this stream as [`Any`], for the `instanceof` tests Java code
+    /// performs on a `TokenStream`, when the implementation offers it.
+    ///
+    /// The default is `None`: a stream that a consumer must recognize
+    /// overrides this with `Some(self)`.
+    fn as_any(&self) -> Option<&dyn Any> {
+        None
+    }
 }
 
 impl AsUnwrappable<dyn TokenStream> for dyn TokenStream {
@@ -290,13 +299,93 @@ impl AsUnwrappable<dyn TokenStream> for dyn TokenStream {
 /// implementation serves every token attribute interface it implements and
 /// the delegate serves the others.
 pub fn default_token_attribute_factory() -> Arc<dyn AttributeFactory> {
-    Arc::new(crate::util::attribute::get_static_implementation::<
-        PackedTokenAttributeImpl,
-    >(Arc::new(DefaultAttributeFactory::new())))
+    static FACTORY: std::sync::OnceLock<Arc<dyn AttributeFactory>> = std::sync::OnceLock::new();
+    Arc::clone(FACTORY.get_or_init(|| {
+        Arc::new(crate::util::attribute::get_static_implementation::<
+            PackedTokenAttributeImpl,
+        >(default_attribute_factory()))
+    }))
 }
 
-fn illegal_state_message() -> String {
-    "TokenStream contract violation: reset()/close() call missing, reset() called multiple times, or subclass does not call super.reset().".to_string()
+/// Returns Lucene's default attribute factory, which creates the
+/// implementation `XImpl` of each attribute interface `X`.
+///
+/// Equivalent to `AttributeFactory.DEFAULT_ATTRIBUTE_FACTORY`
+/// (`AttributeFactory.java:66-95`). Java finds the class `X.getName() +
+/// "Impl"` by reflection the first time an interface is asked for; Rust has
+/// no reflection, so every implementation `lucene-core` defines is registered
+/// up front under its interface (and under its own type, the key a
+/// [`AttributeSource::add_attribute`] by implementation uses). The pairs are
+/// those Java's naming rule yields: `CharTermAttribute`, `OffsetAttribute`,
+/// `PositionIncrementAttribute`, `PositionLengthAttribute`, `TypeAttribute`,
+/// `FlagsAttribute`, `PayloadAttribute`, `KeywordAttribute`,
+/// `TermFrequencyAttribute`, `SentenceAttribute` and `BytesTermAttribute`
+/// (`org.apache.lucene.analysis.tokenattributes`), `BoostAttribute` and
+/// `MaxNonCompetitiveBoostAttribute` (`org.apache.lucene.search`).
+/// `TermToBytesRefAttribute` has no `TermToBytesRefAttributeImpl`, so asking
+/// for it fails, as Java's lookup does.
+///
+/// **Divergence from Lucene 10.5.0.** An attribute defined outside the crate
+/// cannot be discovered; a caller registers it in its own
+/// [`DefaultAttributeFactory`].
+pub fn default_attribute_factory() -> Arc<dyn AttributeFactory> {
+    static FACTORY: std::sync::OnceLock<Arc<dyn AttributeFactory>> = std::sync::OnceLock::new();
+    Arc::clone(FACTORY.get_or_init(|| {
+        use crate::search::{
+            BoostAttribute, BoostAttributeImpl, MaxNonCompetitiveBoostAttribute,
+            MaxNonCompetitiveBoostAttributeImpl,
+        };
+        use std::any::TypeId;
+        use tokenattributes::{SentenceAttribute, SentenceAttributeImpl};
+        let mut f = DefaultAttributeFactory::new();
+        macro_rules! register {
+            ($($iface:ident => $imp:ident),* $(,)?) => {
+                $(
+                    f.register(TypeId::of::<dyn $iface>(), $imp::default);
+                    f.register_self::<$imp>();
+                )*
+            };
+        }
+        register!(
+            CharTermAttribute => CharTermAttributeImpl,
+            OffsetAttribute => OffsetAttributeImpl,
+            PositionIncrementAttribute => PositionIncrementAttributeImpl,
+            PositionLengthAttribute => PositionLengthAttributeImpl,
+            TypeAttribute => TypeAttributeImpl,
+            FlagsAttribute => FlagsAttributeImpl,
+            PayloadAttribute => PayloadAttributeImpl,
+            KeywordAttribute => KeywordAttributeImpl,
+            TermFrequencyAttribute => TermFrequencyAttributeImpl,
+            SentenceAttribute => SentenceAttributeImpl,
+            BytesTermAttribute => BytesTermAttributeImpl,
+            BoostAttribute => BoostAttributeImpl,
+            MaxNonCompetitiveBoostAttribute => MaxNonCompetitiveBoostAttributeImpl,
+        );
+        f.register_self::<PackedTokenAttributeImpl>();
+        Arc::new(f)
+    }))
+}
+
+/// The message of the `IllegalStateException` Java's `ILLEGAL_STATE_READER`
+/// throws on every read (`Tokenizer.java:117-126`).
+const ILLEGAL_STATE_READER_MESSAGE: &str = "TokenStream contract violation: reset()/close() call missing, reset() called multiple times, or subclass does not call super.reset(). Please see Javadocs of TokenStream class for more information about the correct consuming workflow.";
+
+/// The reader a [`Tokenizer`] holds while it has no real input: every read
+/// fails with Java's contract-violation message, and closing does nothing.
+///
+/// Equivalent to the private `Tokenizer.ILLEGAL_STATE_READER`
+/// (`Tokenizer.java:113-127`).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct IllegalStateReader;
+
+impl CharReader for IllegalStateReader {
+    fn read(&mut self, _buf: &mut [char]) -> Result<usize> {
+        Err(LuceneError::illegal_state(ILLEGAL_STATE_READER_MESSAGE))
+    }
+
+    fn close(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -345,11 +434,19 @@ pub trait TokenizerLogic: Debug {
     /// logic a [`Tokenizer`] is built from.
     ///
     /// Equivalent to `org.apache.lucene.analysis.Tokenizer#setReaderTestPoint`.
-    fn set_reader_test_point(&mut self) {}
+    fn set_reader_test_point(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// A `TokenStream` whose input is a [`CharReader`], equivalent to
 /// `org.apache.lucene.analysis.Tokenizer`.
+///
+/// Java holds the private `ILLEGAL_STATE_READER` in `input` and
+/// `inputPending` while no real reader is installed; here `None` stands for
+/// it, and [`IllegalStateReader`] is what the logic reads from then, so that
+/// a read outside the `setReader`/`reset` workflow fails exactly where and
+/// how Java's does.
 #[derive(Debug)]
 pub struct Tokenizer<T: TokenizerLogic> {
     source: AttributeSource,
@@ -360,10 +457,38 @@ pub struct Tokenizer<T: TokenizerLogic> {
 
 impl<T: TokenizerLogic> Tokenizer<T> {
     /// Creates a tokenizer with no input, awaiting a call to [`Self::set_reader`].
+    ///
+    /// The source is built over [`default_token_attribute_factory`] and holds
+    /// a [`PackedTokenAttributeImpl`], the implementation the crate's own
+    /// tokenizer logics read.
     pub fn new(logic: T) -> Self {
-        let factory = default_token_attribute_factory();
-        let mut source = AttributeSource::new_with_factory(factory);
-        source.add_attribute::<PackedTokenAttributeImpl>().unwrap();
+        let mut tokenizer = Self::with_factory(default_token_attribute_factory(), logic);
+        tokenizer
+            .source
+            .add_attribute::<PackedTokenAttributeImpl>()
+            .expect(
+                "INVARIANT: the default token attribute factory provides the packed implementation",
+            );
+        tokenizer
+    }
+
+    /// Creates a tokenizer whose attributes come from `factory`.
+    ///
+    /// Equivalent to the constructor `Tokenizer(AttributeFactory)`. No
+    /// attribute is added: the logic adds the ones it uses, as a Java
+    /// subclass's field initializers do.
+    pub fn with_factory(factory: Arc<dyn AttributeFactory>, logic: T) -> Self {
+        Self::with_source(AttributeSource::new_with_factory(factory), logic)
+    }
+
+    /// Creates a tokenizer over a source already holding the attributes the
+    /// logic uses.
+    ///
+    /// A Java subclass's field initializers (`termAtt =
+    /// addAttribute(CharTermAttribute.class)`) run right after
+    /// `Tokenizer(AttributeFactory)`; a logic that keeps its attribute handles
+    /// adds them to `source` first and is then given to this constructor.
+    pub fn with_source(source: AttributeSource, logic: T) -> Self {
         Self {
             source,
             input: None,
@@ -385,8 +510,12 @@ impl<T: TokenizerLogic> Tokenizer<T> {
             ));
         }
         self.input_pending = Some(reader);
-        self.logic.set_reader_test_point();
-        Ok(())
+        self.logic.set_reader_test_point()
+    }
+
+    /// Returns a reference to the tokenizer logic.
+    pub fn logic(&self) -> &T {
+        &self.logic
     }
 
     /// Returns a mutable reference to the tokenizer logic.
@@ -438,40 +567,47 @@ impl<T: TokenizerLogic> Tokenizer<T> {
 
 impl<T: TokenizerLogic> TokenStream for Tokenizer<T> {
     fn increment_token(&mut self) -> Result<bool> {
-        let reader = self
-            .input
-            .as_mut()
-            .ok_or_else(|| LuceneError::illegal_state(illegal_state_message()))?;
-        self.logic
-            .increment_token(&mut self.source, reader.as_mut())
+        let mut illegal = IllegalStateReader;
+        let reader: &mut dyn CharReader = match self.input.as_mut() {
+            Some(reader) => reader.as_mut(),
+            None => &mut illegal,
+        };
+        self.logic.increment_token(&mut self.source, reader)
     }
 
+    /// `TokenStream.end()` — `endAttributes()` — and then the logic's own
+    /// end-of-stream work, the order of a Java subclass's `end()`, which
+    /// calls `super.end()` first and sets the final offset afterwards.
     fn end(&mut self) -> Result<()> {
-        self.logic.end(&mut self.source, self.input.as_deref())?;
         self.source.end_attributes();
-        Ok(())
+        self.logic.end(&mut self.source, self.input.as_deref())
     }
 
+    /// `Tokenizer.reset()`: `input = inputPending; inputPending =
+    /// ILLEGAL_STATE_READER;` — which cannot fail, a missing reader being the
+    /// illegal one — and then the logic's reset.
     fn reset(&mut self) -> Result<()> {
-        // The base TokenStream::reset default is a no-op; the Java Tokenizer
-        // contracts the reader move before delegating to subclass state reset.
-        let reader = self
-            .input_pending
-            .take()
-            .ok_or_else(|| LuceneError::illegal_state(illegal_state_message()))?;
-        self.input = Some(reader);
-        let reader = self.input.as_mut().unwrap();
-        self.logic.reset(&mut self.source, reader.as_mut())
+        self.input = self.input_pending.take();
+        let mut illegal = IllegalStateReader;
+        let reader: &mut dyn CharReader = match self.input.as_mut() {
+            Some(reader) => reader.as_mut(),
+            None => &mut illegal,
+        };
+        self.logic.reset(&mut self.source, reader)
     }
 
+    /// `Tokenizer.close()`: `input.close(); inputPending = input =
+    /// ILLEGAL_STATE_READER;`, and then the logic's close, which, like a Java
+    /// subclass's code after `super.close()`, sees the illegal reader.
     fn close(&mut self) -> Result<()> {
-        if let Some(reader) = self.input.as_mut() {
-            self.logic.close(reader.as_mut())?;
-            reader.close()?;
-        }
+        let closed = match self.input.as_mut() {
+            Some(reader) => reader.close(),
+            None => Ok(()),
+        };
         self.input = None;
         self.input_pending = None;
-        Ok(())
+        closed?;
+        self.logic.close(&mut IllegalStateReader)
     }
 
     fn attribute_source(&self) -> &AttributeSource {
@@ -529,6 +665,16 @@ impl<T: TokenFilterLogic> TokenFilter<T> {
             input,
             logic,
         }
+    }
+
+    /// Returns a reference to the filter logic.
+    pub fn logic(&self) -> &T {
+        &self.logic
+    }
+
+    /// Returns a mutable reference to the filter logic.
+    pub fn logic_mut(&mut self) -> &mut T {
+        &mut self.logic
     }
 }
 
@@ -1663,6 +1809,97 @@ mod tests {
         // Without close, set_reader must be rejected.
         let result = tokenizer.set_reader(Box::new(StringCharReader::new("b")));
         assert!(matches!(result, Err(LuceneError::IllegalState { .. })));
+    }
+
+    /// Java's `Tokenizer.reset()` cannot fail: without a reader it installs
+    /// `ILLEGAL_STATE_READER`, and the first read throws its message
+    /// (`Tokenizer.java:94-127`; oracle row `mis 0 nochecks.noreader` of
+    /// `analysis_mocks.tsv`).
+    #[test]
+    fn tokenizer_reset_without_a_reader_fails_on_the_first_read() {
+        let mut tokenizer = Tokenizer::new(WhitespaceTokenizer::default());
+        let reset = tokenizer.reset();
+        assert!(matches!(
+            reset,
+            Err(LuceneError::IllegalState { ref message, .. }) if message == ILLEGAL_STATE_READER_MESSAGE
+        ));
+        let mut tokenizer = Tokenizer::new(CountingLogic::default());
+        tokenizer.reset().unwrap();
+        match tokenizer.increment_token() {
+            Err(LuceneError::IllegalState { message, .. }) => {
+                assert_eq!(message, ILLEGAL_STATE_READER_MESSAGE)
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A logic that reads one character per token and counts its hooks.
+    #[derive(Debug, Default)]
+    struct CountingLogic {
+        closes: usize,
+    }
+
+    impl TokenizerLogic for CountingLogic {
+        fn increment_token(
+            &mut self,
+            _source: &mut AttributeSource,
+            reader: &mut dyn CharReader,
+        ) -> Result<bool> {
+            let mut c = ['\0'; 1];
+            Ok(reader.read(&mut c)? == 1)
+        }
+
+        fn end(
+            &mut self,
+            source: &mut AttributeSource,
+            _input: Option<&dyn CharReader>,
+        ) -> Result<()> {
+            source
+                .get_attribute_mut::<PackedTokenAttributeImpl>()
+                .unwrap()
+                .set_offset(3, 3);
+            Ok(())
+        }
+
+        fn close(&mut self, _reader: &mut dyn CharReader) -> Result<()> {
+            self.closes += 1;
+            Ok(())
+        }
+    }
+
+    /// `Tokenizer.close()` runs whatever the reader state (Java's subclass
+    /// code after `super.close()` always runs; oracle row `mis 0
+    /// checks.closenoreset`), and `end()` is `endAttributes()` followed by
+    /// the subclass's work, so the final offset the logic sets survives.
+    #[test]
+    fn tokenizer_close_and_end_reach_the_logic_in_javas_order() {
+        let mut tokenizer = Tokenizer::new(CountingLogic::default());
+        tokenizer.close().unwrap();
+        assert_eq!(tokenizer.logic().closes, 1);
+        tokenizer
+            .set_reader(Box::new(StringCharReader::new("ab")))
+            .unwrap();
+        tokenizer.close().unwrap();
+        assert_eq!(tokenizer.logic().closes, 2);
+
+        tokenizer
+            .set_reader(Box::new(StringCharReader::new("ab")))
+            .unwrap();
+        tokenizer.reset().unwrap();
+        assert!(tokenizer.increment_token().unwrap());
+        tokenizer
+            .attribute_source()
+            .get_attribute_mut::<PackedTokenAttributeImpl>()
+            .unwrap()
+            .append_string("x");
+        tokenizer.end().unwrap();
+        let att = tokenizer
+            .attribute_source()
+            .get_attribute::<PackedTokenAttributeImpl>()
+            .unwrap();
+        assert_eq!((att.start_offset(), att.end_offset()), (3, 3));
+        assert_eq!(att.term(), "");
+        assert_eq!(att.get_position_increment(), 0);
     }
 
     #[test]
