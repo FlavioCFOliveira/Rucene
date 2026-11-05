@@ -140,8 +140,15 @@ pub trait StoredFields: Send + Sync + Debug {
 /// [`IndexReaderCore`] is created. Children register a `Weak` to it, which
 /// keeps the parent collectable exactly like Java's weak-keyed
 /// `parentReaders` set.
+///
+/// The reference count lives here too, so that an object the reader hands out
+/// before it is complete — `SegmentReader`'s cache helpers, whose
+/// `addClosedListener` calls the reader's `ensureOpen()`
+/// (`SegmentReader.java:339-343, 363-367`) — can check the reader's state
+/// through an [`EnsureOpen`] handle without holding the reader itself.
 #[derive(Debug)]
 struct ReaderLink {
+    ref_count: AtomicI32,
     closed_by_child: AtomicBool,
     parents: Mutex<Vec<Weak<ReaderLink>>>,
 }
@@ -149,9 +156,26 @@ struct ReaderLink {
 impl ReaderLink {
     fn new() -> Self {
         Self {
+            ref_count: AtomicI32::new(1),
             closed_by_child: AtomicBool::new(false),
             parents: Mutex::new(Vec::new()),
         }
+    }
+
+    /// The body of `IndexReader.ensureOpen()` (`IndexReader.java:270-280`).
+    fn ensure_open(&self) -> Result<()> {
+        if self.ref_count.load(Ordering::SeqCst) <= 0 {
+            return Err(LuceneError::already_closed(
+                "this IndexReader is closed".to_string(),
+            ));
+        }
+        if self.closed_by_child.load(Ordering::SeqCst) {
+            return Err(LuceneError::already_closed(
+                "this IndexReader cannot be used anymore as one of its child readers was closed"
+                    .to_string(),
+            ));
+        }
+        Ok(())
     }
 
     /// Marks every registered parent as closed-by-child, transitively.
@@ -178,8 +202,53 @@ impl ReaderLink {
 /// (`refCount`, `closed`, `parentReaders`, etc.).
 pub struct IndexReaderCore {
     closed: AtomicBool,
-    ref_count: AtomicI32,
     link: Arc<ReaderLink>,
+}
+
+/// A handle on a reader's open state that `ensureOpen()` can be called
+/// through, for an object that belongs to the reader but cannot hold it.
+///
+/// Equivalent to the implicit `IndexReader.this` an anonymous inner class of a
+/// reader captures to call `ensureOpen()` — as the two cache helpers of
+/// `SegmentReader` do (`SegmentReader.java:339-343, 363-367`). A Rust reader is
+/// built by value and placed in an `Arc` afterwards, so an object built
+/// alongside it takes this handle instead, from
+/// [`IndexReaderCore::ensure_open_handle`]. It holds the reader's state
+/// strongly, which keeps the answer exact after the reader is dropped: a
+/// dropped reader has a reference count that never reached zero only if it was
+/// never closed, which is also what Java's would report.
+#[derive(Debug, Clone)]
+pub struct EnsureOpen(Arc<ReaderLink>);
+
+impl EnsureOpen {
+    /// `ensureOpen()` on the reader this handle was taken from.
+    ///
+    /// # Errors
+    ///
+    /// As [`IndexReaderCore::ensure_open`].
+    pub fn ensure_open(&self) -> Result<()> {
+        self.0.ensure_open()
+    }
+
+    /// As [`IndexReaderCore::ensure_open_unchecked`].
+    ///
+    /// # Panics
+    ///
+    /// As [`IndexReaderCore::ensure_open_unchecked`].
+    pub fn ensure_open_unchecked(&self) {
+        throw_if_closed(self.0.ensure_open());
+    }
+}
+
+/// Throws the `AlreadyClosedException` of a failed `ensureOpen()` from a
+/// signature that cannot fail.
+fn throw_if_closed(result: Result<()>) {
+    if let Err(LuceneError::AlreadyClosed { message, .. }) = result {
+        crate::store::java_nio_file::throw_unchecked(
+            "org.apache.lucene.store.AlreadyClosedException",
+            Some(&message),
+        )
+    }
 }
 
 impl Default for IndexReaderCore {
@@ -191,7 +260,7 @@ impl Default for IndexReaderCore {
 impl Debug for IndexReaderCore {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IndexReaderCore")
-            .field("ref_count", &self.ref_count.load(Ordering::SeqCst))
+            .field("ref_count", &self.link.ref_count.load(Ordering::SeqCst))
             .field("closed", &self.closed.load(Ordering::SeqCst))
             .finish()
     }
@@ -202,21 +271,20 @@ impl IndexReaderCore {
     pub fn new() -> Self {
         Self {
             closed: AtomicBool::new(false),
-            ref_count: AtomicI32::new(1),
             link: Arc::new(ReaderLink::new()),
         }
     }
 
     /// Returns the current reference count.
     pub fn ref_count(&self) -> i32 {
-        self.ref_count.load(Ordering::SeqCst)
+        self.link.ref_count.load(Ordering::SeqCst)
     }
 
     /// Increments the reference count, returning `false` if the reader is closed.
     pub fn try_inc_ref(&self) -> bool {
-        let mut count = self.ref_count.load(Ordering::SeqCst);
+        let mut count = self.link.ref_count.load(Ordering::SeqCst);
         while count > 0 {
-            match self.ref_count.compare_exchange_weak(
+            match self.link.ref_count.compare_exchange_weak(
                 count,
                 count + 1,
                 Ordering::SeqCst,
@@ -256,12 +324,12 @@ impl IndexReaderCore {
     where
         F: FnOnce() -> Result<()>,
     {
-        if self.ref_count.load(Ordering::SeqCst) <= 0 {
+        if self.link.ref_count.load(Ordering::SeqCst) <= 0 {
             return Err(LuceneError::already_closed(
                 "this IndexReader is closed".to_string(),
             ));
         }
-        let rc = self.ref_count.fetch_sub(1, Ordering::SeqCst) - 1;
+        let rc = self.link.ref_count.fetch_sub(1, Ordering::SeqCst) - 1;
         if rc == 0 {
             self.set_closed();
             let close_result = on_zero();
@@ -278,18 +346,13 @@ impl IndexReaderCore {
 
     /// Throws an error if this reader or any of its child readers is closed.
     pub fn ensure_open(&self) -> Result<()> {
-        if self.ref_count.load(Ordering::SeqCst) <= 0 {
-            return Err(LuceneError::already_closed(
-                "this IndexReader is closed".to_string(),
-            ));
-        }
-        if self.link.closed_by_child.load(Ordering::SeqCst) {
-            return Err(LuceneError::already_closed(
-                "this IndexReader cannot be used anymore as one of its child readers was closed"
-                    .to_string(),
-            ));
-        }
-        Ok(())
+        self.link.ensure_open()
+    }
+
+    /// Returns a handle `ensureOpen()` can be called through by an object
+    /// that belongs to this reader but cannot hold it; see [`EnsureOpen`].
+    pub fn ensure_open_handle(&self) -> EnsureOpen {
+        EnsureOpen(Arc::clone(&self.link))
     }
 
     /// Registers a parent reader that should be marked closed when this reader
@@ -297,8 +360,13 @@ impl IndexReaderCore {
     ///
     /// Equivalent to `IndexReader.registerParentReader(IndexReader)`. Only a
     /// weak link is kept, so registration never keeps the parent alive.
-    pub fn register_parent_reader(&self, parent: Arc<dyn IndexReader>) {
-        self.register_parent_core(parent.core());
+    ///
+    /// # Errors
+    ///
+    /// [`LuceneError::AlreadyClosed`] from the `ensureOpen()` Java calls on
+    /// this (child) reader first (`IndexReader.java:162-165`).
+    pub fn register_parent_reader(&self, parent: Arc<dyn IndexReader>) -> Result<()> {
+        self.register_parent_core(parent.core())
     }
 
     /// Registers a parent by its [`IndexReaderCore`], for composite readers
@@ -311,10 +379,36 @@ impl IndexReaderCore {
     /// the reader by value. The link is taken against the parent core's
     /// internal, heap-allocated state, so it stays valid when the parent is
     /// subsequently moved into an `Arc` (or anywhere else).
-    pub fn register_parent_core(&self, parent: &IndexReaderCore) {
+    ///
+    /// # Errors
+    ///
+    /// [`LuceneError::AlreadyClosed`] when this (child) reader is closed:
+    /// `registerParentReader` calls `ensureOpen()` before it records the
+    /// parent (`IndexReader.java:162-165`).
+    pub fn register_parent_core(&self, parent: &IndexReaderCore) -> Result<()> {
+        self.ensure_open()?;
         if let Ok(mut parents) = self.link.parents.lock() {
             parents.push(Arc::downgrade(&parent.link));
         }
+        Ok(())
+    }
+
+    /// `ensureOpen()` inside a member whose Rust signature cannot fail
+    /// (`getLiveDocs()`, `getFieldInfos()`, `getMetaData()`).
+    ///
+    /// Java's `AlreadyClosedException` is unchecked, so those members throw it
+    /// although they declare nothing. The port throws it the same way: a panic
+    /// whose payload is the Java exception's `toString()`
+    /// (`org.apache.lucene.store.AlreadyClosedException: <message>`), the form
+    /// [`throw_unchecked`](crate::store::java_nio_file::throw_unchecked)
+    /// gives every unchecked Java exception the port throws from an
+    /// infallible signature.
+    ///
+    /// # Panics
+    ///
+    /// When [`ensure_open`](Self::ensure_open) fails, with its message.
+    pub fn ensure_open_unchecked(&self) {
+        throw_if_closed(self.ensure_open());
     }
 
     /// Marks registered parents as closed by child and recurses.
@@ -443,7 +537,7 @@ pub trait IndexReader: Send + Sync + Debug + Display + 'static {
                 "this IndexReader is closed".to_string(),
             ));
         }
-        let rc = self.core().ref_count.fetch_sub(1, Ordering::SeqCst) - 1;
+        let rc = self.core().link.ref_count.fetch_sub(1, Ordering::SeqCst) - 1;
         if rc == 0 {
             self.core().set_closed();
             let close_result = self.do_close();
@@ -465,8 +559,15 @@ pub trait IndexReader: Send + Sync + Debug + Display + 'static {
     }
 
     /// Registers a parent reader to be closed when this reader closes.
-    fn register_parent_reader(&self, parent: Arc<dyn IndexReader>) {
-        self.core().register_parent_reader(parent);
+    ///
+    /// Equivalent to `IndexReader.registerParentReader(IndexReader)`.
+    ///
+    /// # Errors
+    ///
+    /// [`LuceneError::AlreadyClosed`] when this reader is closed
+    /// (`IndexReader.java:162-165`).
+    fn register_parent_reader(&self, parent: Arc<dyn IndexReader>) -> Result<()> {
+        self.core().register_parent_reader(parent)
     }
 
     /// Returns the number of deleted documents.
@@ -657,4 +758,63 @@ pub fn java_object_to_string<T: ?Sized>(class_name: &str, identity: &T) -> Strin
         class_name,
         std::ptr::from_ref(identity).cast::<()>() as usize
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `registerParentReader` calls `ensureOpen()` on the child first
+    /// (`IndexReader.java:162-165`): a closed child refuses a parent, and an
+    /// open child marks every registered parent closed-by-child when it
+    /// closes, transitively (`IndexReader.java:176-187`).
+    #[test]
+    fn a_closed_child_refuses_a_parent_and_a_closing_child_poisons_its_parents() {
+        let child = IndexReaderCore::new();
+        let parent = IndexReaderCore::new();
+        let grand_parent = IndexReaderCore::new();
+        child.register_parent_core(&parent).unwrap();
+        parent.register_parent_core(&grand_parent).unwrap();
+        // The handle sees the state of the reader it was taken from.
+        let handle = parent.ensure_open_handle();
+        assert!(handle.ensure_open().is_ok());
+
+        child.dec_ref_with_close(|| Ok(())).unwrap();
+        let closed_by_child =
+            "this IndexReader cannot be used anymore as one of its child readers was closed";
+        for core in [&parent, &grand_parent] {
+            match core.ensure_open() {
+                Err(LuceneError::AlreadyClosed { message, .. }) => {
+                    assert_eq!(message, closed_by_child)
+                }
+                other => panic!("expected AlreadyClosed, got {other:?}"),
+            }
+        }
+        assert!(handle.ensure_open().is_err());
+
+        match child.register_parent_core(&IndexReaderCore::new()) {
+            Err(LuceneError::AlreadyClosed { message, .. }) => {
+                assert_eq!(message, "this IndexReader is closed")
+            }
+            other => panic!("expected AlreadyClosed, got {other:?}"),
+        }
+    }
+
+    /// `ensureOpen()` from a member that cannot fail throws the unchecked
+    /// `AlreadyClosedException` as a panic carrying its `toString()`.
+    #[test]
+    fn ensure_open_unchecked_throws_the_java_exception() {
+        let core = IndexReaderCore::new();
+        core.ensure_open_unchecked();
+        core.dec_ref_with_close(|| Ok(())).unwrap();
+        let payload = std::panic::catch_unwind(|| core.ensure_open_unchecked()).unwrap_err();
+        let text = payload
+            .downcast_ref::<String>()
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(
+            text,
+            "org.apache.lucene.store.AlreadyClosedException: this IndexReader is closed"
+        );
+    }
 }

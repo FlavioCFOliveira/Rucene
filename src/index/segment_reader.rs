@@ -32,7 +32,8 @@ use crate::error::{LuceneError, Result};
 use crate::index::codec_reader::CodecReader;
 use crate::index::filter_directory_reader::SharedCacheKey;
 use crate::index::index_reader::{
-    java_object_to_string, CacheHelper, CacheKey, ClosedListener, IndexReaderCore, StoredFields,
+    java_object_to_string, CacheHelper, CacheKey, ClosedListener, EnsureOpen, IndexReaderCore,
+    StoredFields,
 };
 use crate::index::leaf_reader::{LeafMetaData, LeafReader, TermVectors};
 use crate::index::{
@@ -1306,12 +1307,19 @@ impl SegmentReader {
                 )?;
                 drop(cfs_dir_guard);
 
-                let reader_cache_helper = SegmentReaderCacheHelper::new();
-                let core_cache_helper =
-                    SegmentReaderCoreCacheHelper::new(Arc::clone(&core_readers));
+                // The two helpers are anonymous inner classes in Java, whose
+                // `addClosedListener` calls this reader's `ensureOpen()`
+                // (`SegmentReader.java:339-343, 363-367`); they reach the
+                // reader's state through a handle on its core.
+                let core = IndexReaderCore::new();
+                let reader_cache_helper = SegmentReaderCacheHelper::new(core.ensure_open_handle());
+                let core_cache_helper = SegmentReaderCoreCacheHelper::new(
+                    Arc::clone(&core_readers),
+                    core.ensure_open_handle(),
+                );
 
                 Ok(Self {
-                    core: IndexReaderCore::new(),
+                    core,
                     segment_info: si,
                     original_segment_info: original_si_for_closure,
                     meta_data,
@@ -1416,12 +1424,19 @@ impl SegmentReader {
                 )?;
                 drop(cfs_dir_guard);
 
-                let reader_cache_helper = SegmentReaderCacheHelper::new();
-                let core_cache_helper =
-                    SegmentReaderCoreCacheHelper::new(Arc::clone(&core_readers));
+                // The two helpers are anonymous inner classes in Java, whose
+                // `addClosedListener` calls this reader's `ensureOpen()`
+                // (`SegmentReader.java:339-343, 363-367`); they reach the
+                // reader's state through a handle on its core.
+                let core = IndexReaderCore::new();
+                let reader_cache_helper = SegmentReaderCacheHelper::new(core.ensure_open_handle());
+                let core_cache_helper = SegmentReaderCoreCacheHelper::new(
+                    Arc::clone(&core_readers),
+                    core.ensure_open_handle(),
+                );
 
                 Ok(Self {
-                    core: IndexReaderCore::new(),
+                    core,
                     segment_info: si,
                     original_segment_info: original_si_for_closure,
                     meta_data: parent.meta_data.clone(),
@@ -1610,8 +1625,11 @@ impl SegmentReader {
     }
 
     /// Returns the underlying KNN vectors reader.
+    ///
+    /// Equivalent to `SegmentReader.getVectorReader()` (`SegmentReader.java:282-285`),
+    /// the one producer accessor of the class that does not call
+    /// `ensureOpen()`.
     pub fn get_vector_reader(&self) -> Result<Option<Arc<dyn KnnVectorsReader>>> {
-        self.ensure_open()?;
         let guard = self.core_readers.knn_vectors_reader.read().map_err(|_| {
             LuceneError::illegal_state("knn vectors reader lock poisoned".to_string())
         })?;
@@ -1925,17 +1943,35 @@ impl LeafReader for SegmentReader {
         }
     }
 
+    /// Equivalent to `SegmentReader.getFieldInfos()` (`SegmentReader.java:233-237`),
+    /// which calls `ensureOpen()` first.
+    ///
+    /// # Panics
+    ///
+    /// The unchecked `AlreadyClosedException` once the reader is closed.
     fn get_field_infos(&self) -> FieldInfos {
+        self.core.ensure_open_unchecked();
         self.field_infos.clone()
     }
 
+    /// Equivalent to `SegmentReader.getLiveDocs()` (`SegmentReader.java:213-217`),
+    /// which calls `ensureOpen()` first.
+    ///
+    /// # Panics
+    ///
+    /// The unchecked `AlreadyClosedException` once the reader is closed.
     fn get_live_docs(&self) -> Option<Box<dyn Bits>> {
+        self.core.ensure_open_unchecked();
         self.live_docs
             .as_ref()
             .map(|bits| Box::new(bits.clone()) as Box<dyn Bits>)
     }
 
+    /// Equivalent to `CodecReader.getPointValues(String)`
+    /// (`CodecReader.java:221-231`), which calls `ensureOpen()` before it
+    /// looks at the field.
     fn get_point_values(&self, field: &str) -> Result<Option<Box<dyn IndexPointValues>>> {
+        self.ensure_open()?;
         // A field has point values iff its FieldInfo declares a non-zero
         // `point_dimension_count` (set when the field is first indexed with a
         // point value). Fields without points return `None`, matching Lucene's
@@ -2272,13 +2308,13 @@ impl StoredFields for CodecStoredFields {
 }
 
 /// Checks that `doc_id` is in the range `[0, max_doc)`.
+///
+/// Equivalent to the `Objects.checkIndex(docID, maxDoc())` of the
+/// `StoredFields` view `CodecReader.storedFields()` returns
+/// (`CodecReader.java:86-104`), which `SegmentReader` inherits: a
+/// `java.lang.IndexOutOfBoundsException` with the JDK's message.
 fn check_index(doc_id: i32, max_doc: i32) -> Result<()> {
-    if doc_id < 0 || doc_id >= max_doc {
-        return Err(LuceneError::IllegalArgument(format!(
-            "docID must be 0..{max_doc} but was {doc_id}"
-        )));
-    }
-    Ok(())
+    crate::index::codec_reader::final_members::check_index(doc_id, max_doc)
 }
 
 // -----------------------------------------------------------------------------
@@ -2299,6 +2335,8 @@ struct SegmentReaderCacheHelper {
     key: SharedCacheKey,
     listeners: Arc<Mutex<Vec<Box<dyn ClosedListener>>>>,
     closed: Arc<AtomicBool>,
+    /// The owning reader's `ensureOpen()`.
+    reader: EnsureOpen,
 }
 
 impl Debug for SegmentReaderCacheHelper {
@@ -2310,11 +2348,12 @@ impl Debug for SegmentReaderCacheHelper {
 }
 
 impl SegmentReaderCacheHelper {
-    fn new() -> Self {
+    fn new(reader: EnsureOpen) -> Self {
         Self {
             key: SharedCacheKey::new(),
             listeners: Arc::new(Mutex::new(Vec::new())),
             closed: Arc::new(AtomicBool::new(false)),
+            reader,
         }
     }
 
@@ -2337,7 +2376,15 @@ impl CacheHelper for SegmentReaderCacheHelper {
         self.key.key()
     }
 
+    /// Equivalent to the anonymous helper's `addClosedListener`
+    /// (`SegmentReader.java:338-343`): `ensureOpen()` on the reader, then the
+    /// listener is recorded.
+    ///
+    /// # Panics
+    ///
+    /// The unchecked `AlreadyClosedException` once the reader is closed.
     fn add_closed_listener(&self, listener: Box<dyn ClosedListener>) {
+        self.reader.ensure_open_unchecked();
         if let Ok(mut listeners) = self.listeners.lock() {
             listeners.push(listener);
         }
@@ -2345,14 +2392,20 @@ impl CacheHelper for SegmentReaderCacheHelper {
 }
 
 /// Wrapper around the core cache helper used by `SegmentReader`.
+///
+/// Equivalent to `SegmentReader.coreCacheHelper` (`SegmentReader.java:350-369`),
+/// which wraps the core's helper "to add ensureOpen() calls that make sure
+/// users do not register closed listeners on closed indices".
 #[derive(Clone, Debug)]
 struct SegmentReaderCoreCacheHelper {
     core: Arc<SegmentCoreReaders>,
+    /// The owning reader's `ensureOpen()`.
+    reader: EnsureOpen,
 }
 
 impl SegmentReaderCoreCacheHelper {
-    fn new(core: Arc<SegmentCoreReaders>) -> Self {
-        Self { core }
+    fn new(core: Arc<SegmentCoreReaders>, reader: EnsureOpen) -> Self {
+        Self { core, reader }
     }
 }
 
@@ -2361,7 +2414,14 @@ impl CacheHelper for SegmentReaderCoreCacheHelper {
         self.core.get_key()
     }
 
+    /// `ensureOpen()` on the reader, then the core helper's
+    /// `addClosedListener` (`SegmentReader.java:362-367`).
+    ///
+    /// # Panics
+    ///
+    /// The unchecked `AlreadyClosedException` once the reader is closed.
     fn add_closed_listener(&self, listener: Box<dyn ClosedListener>) {
+        self.reader.ensure_open_unchecked();
         self.core.add_closed_listener(listener);
     }
 }

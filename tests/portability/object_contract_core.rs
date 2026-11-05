@@ -1299,7 +1299,9 @@ fn readers(m: &Measured, index_dir: &std::path::Path) {
     );
 
     assert_eq!(
-        FilterLeafReader::new(Arc::clone(&leaf0)).to_string(),
+        FilterLeafReader::new(Arc::clone(&leaf0))
+            .unwrap()
+            .to_string(),
         m.get("FilterLeafReader.toString/over-segment-0"),
         "Lucene hardcodes the name `FilterLeafReader`, it does not ask for its own"
     );

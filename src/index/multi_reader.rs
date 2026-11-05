@@ -482,7 +482,9 @@ impl MultiReader {
         for r in &sub_readers {
             starts.push(max_doc as i32);
             max_doc += r.max_doc() as i64;
-            r.core().register_parent_core(&core);
+            // `registerParentReader` calls `ensureOpen()` on the sub-reader
+            // first (`IndexReader.java:162-165`): a closed sub-reader fails.
+            r.core().register_parent_core(&core)?;
         }
 
         // Guard against the `IndexWriter.getActualMaxDocs()` ceiling, matching

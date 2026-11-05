@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use randomizedtesting::jdk::lang::string_hash_code;
 use rucene::error::Result;
-use rucene::index::index_reader::{CacheHelper, IndexReaderCore, StoredFields};
+use rucene::index::index_reader::{CacheHelper, StoredFields};
 use rucene::index::leaf_reader::TermVectors;
 use rucene::index::{
     BinaryDocValues, FieldInfo, FieldInfos, Fields, LeafReader, NumericDocValues, SortedDocValues,
@@ -92,7 +92,11 @@ fn java_hash_set_order(fields: Vec<String>) -> Vec<String> {
 /// vector accessors, which therefore still answer for a filtered-out field.
 /// The reader has neither a core nor a reader cache helper.
 pub struct FieldFilterLeafReader {
-    core: IndexReaderCore,
+    /// The `FilterLeafReader` this class extends: the reader state of this
+    /// reader (its own core, registered as a parent of `in`) and the members
+    /// it inherits.
+    base: rucene::index::filter_reader::FilterLeafReader,
+    /// Java's protected `in`: the reader `base` wraps.
     r#in: Arc<dyn LeafReader>,
     filter: Arc<FieldFilter>,
     field_infos: FieldInfos,
@@ -115,6 +119,8 @@ impl FieldFilterLeafReader {
         fields: impl IntoIterator<Item = impl Into<String>>,
         negate: bool,
     ) -> Result<Self> {
+        // `super(in)`
+        let base = rucene::index::filter_reader::FilterLeafReader::new(Arc::clone(&r#in))?;
         let fields = java_hash_set_order(fields.into_iter().map(Into::into).collect());
         let contains = fields.iter().cloned().collect();
         let filter = Arc::new(FieldFilter {
@@ -130,7 +136,7 @@ impl FieldFilterLeafReader {
             .collect();
         let field_infos = FieldInfos::new(filtered_infos)?;
         Ok(FieldFilterLeafReader {
-            core: super::filter_leaf_core(&r#in),
+            base,
             r#in,
             filter,
             field_infos,
@@ -169,7 +175,7 @@ impl fmt::Display for FieldFilterLeafReader {
 }
 
 impl LeafReader for FieldFilterLeafReader {
-    forward_leaf_reader!(filter r#in;
+    forward_leaf_reader!(filter base;
         core,
         filter_leaf_reader_delegate,
         num_docs,
@@ -192,7 +198,7 @@ impl LeafReader for FieldFilterLeafReader {
     }
 
     fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
-        self.core.ensure_open()?;
+        LeafReader::core(&self.base).ensure_open()?;
         Ok(Box::new(FieldFilterTermVectors {
             orig: self.r#in.term_vectors()?,
             filter: Arc::clone(&self.filter),
@@ -200,7 +206,7 @@ impl LeafReader for FieldFilterLeafReader {
     }
 
     fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
-        self.core.ensure_open()?;
+        LeafReader::core(&self.base).ensure_open()?;
         Ok(Box::new(FieldFilterStoredFields {
             orig: self.r#in.stored_fields()?,
             filter: Arc::clone(&self.filter),
@@ -209,7 +215,7 @@ impl LeafReader for FieldFilterLeafReader {
 
     fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
         if self.has_field(field) {
-            self.core.ensure_open()?;
+            LeafReader::core(&self.base).ensure_open()?;
             self.r#in.terms(field)
         } else {
             Ok(None)
@@ -218,7 +224,7 @@ impl LeafReader for FieldFilterLeafReader {
 
     fn get_binary_doc_values(&self, field: &str) -> Result<Option<Box<dyn BinaryDocValues>>> {
         if self.has_field(field) {
-            self.core.ensure_open()?;
+            LeafReader::core(&self.base).ensure_open()?;
             self.r#in.get_binary_doc_values(field)
         } else {
             Ok(None)
@@ -227,7 +233,7 @@ impl LeafReader for FieldFilterLeafReader {
 
     fn get_sorted_doc_values(&self, field: &str) -> Result<Option<Box<dyn SortedDocValues>>> {
         if self.has_field(field) {
-            self.core.ensure_open()?;
+            LeafReader::core(&self.base).ensure_open()?;
             self.r#in.get_sorted_doc_values(field)
         } else {
             Ok(None)
@@ -239,7 +245,7 @@ impl LeafReader for FieldFilterLeafReader {
         field: &str,
     ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
         if self.has_field(field) {
-            self.core.ensure_open()?;
+            LeafReader::core(&self.base).ensure_open()?;
             self.r#in.get_sorted_numeric_doc_values(field)
         } else {
             Ok(None)
@@ -251,7 +257,7 @@ impl LeafReader for FieldFilterLeafReader {
         field: &str,
     ) -> Result<Option<Box<dyn SortedSetDocValues>>> {
         if self.has_field(field) {
-            self.core.ensure_open()?;
+            LeafReader::core(&self.base).ensure_open()?;
             self.r#in.get_sorted_set_doc_values(field)
         } else {
             Ok(None)
@@ -260,7 +266,7 @@ impl LeafReader for FieldFilterLeafReader {
 
     fn get_norm_values(&self, field: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
         if self.has_field(field) {
-            self.core.ensure_open()?;
+            LeafReader::core(&self.base).ensure_open()?;
             self.r#in.get_norm_values(field)
         } else {
             Ok(None)

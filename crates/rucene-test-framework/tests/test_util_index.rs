@@ -941,7 +941,7 @@ fn check_reader_checks_the_reader_api() {
     TestUtil::check_leaf_reader(Arc::clone(&leaf), 3).unwrap();
     let r: Arc<dyn IndexReader> = Arc::clone(&leaf).as_index_reader();
     TestUtil::check_reader(&r).unwrap();
-    let filtered: Arc<dyn LeafReader> = Arc::new(FilterLeafReader::new(Arc::clone(&leaf)));
+    let filtered: Arc<dyn LeafReader> = Arc::new(FilterLeafReader::new(Arc::clone(&leaf)).unwrap());
     assert!(Arc::clone(&filtered).as_codec_reader().is_none());
     TestUtil::check_leaf_reader(filtered, 3).unwrap();
 
@@ -958,7 +958,7 @@ fn check_reader_checks_the_reader_api() {
         ),
     ] {
         let liar: Arc<dyn LeafReader> = Arc::new(Liar {
-            inner: FilterLeafReader::new(Arc::clone(&leaf)),
+            inner: FilterLeafReader::new(Arc::clone(&leaf)).unwrap(),
             lie,
         });
         match TestUtil::check_leaf_reader(liar, 3).unwrap_err() {

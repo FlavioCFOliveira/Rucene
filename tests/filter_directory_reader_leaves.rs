@@ -245,14 +245,14 @@ fn filter_leaf_reader_unwrap_reaches_the_wrapped_segment_reader() {
     let segment = Arc::clone(&reader).leaves().unwrap()[0].leaf_reader();
     assert!(Arc::ptr_eq(&FilterLeafReader::unwrap(&segment), &segment));
 
-    let once: Arc<dyn LeafReader> = Arc::new(FilterLeafReader::new(Arc::clone(&segment)));
-    let twice: Arc<dyn LeafReader> = Arc::new(FilterLeafReader::new(once));
+    let once: Arc<dyn LeafReader> = Arc::new(FilterLeafReader::new(Arc::clone(&segment)).unwrap());
+    let twice: Arc<dyn LeafReader> = Arc::new(FilterLeafReader::new(once).unwrap());
     assert!(Arc::ptr_eq(&FilterLeafReader::unwrap(&twice), &segment));
 
     let exitable = ExitableDirectoryReaderWrapper::new(Arc::new(NeverTimesOut))
         .wrap(Arc::clone(&reader))
         .expect("wrap as an exitable reader");
     let exitable_leaf = Arc::clone(&exitable).leaves().unwrap()[0].leaf_reader();
-    let wrapped: Arc<dyn LeafReader> = Arc::new(FilterLeafReader::new(exitable_leaf));
+    let wrapped: Arc<dyn LeafReader> = Arc::new(FilterLeafReader::new(exitable_leaf).unwrap());
     assert!(Arc::ptr_eq(&FilterLeafReader::unwrap(&wrapped), &segment));
 }

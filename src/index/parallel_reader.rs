@@ -380,21 +380,23 @@ impl ParallelLeafReader {
         let meta_data =
             LeafMetaData::new(created_version_major, min_version, index_sort, has_blocks)?;
 
-        // Finally, adjust ref-counts exactly as Lucene does: when the sub-readers
-        // must outlive this ParallelLeafReader, incRef each one; and register this
-        // reader as a parent so a child close propagates. (Registration of a parent
-        // reader requires an `Arc<dyn IndexReader>` view of `self`, which is not
-        // available until the value is constructed and wrapped; the registration
-        // is therefore deferred to the caller-adjacent path — see
-        // `register_with_subs` used by the construction sites below.)
-        if !close_sub_readers {
-            for r in &complete_reader_set {
+        // Do this finally so any error raised before does not affect
+        // ref-counts (`ParallelLeafReader.java:194-201`): when the sub-readers
+        // must outlive this reader, incRef each one, and register this reader
+        // as a parent of each, so that closing one makes this reader fail
+        // `ensureOpen()`. The registration is taken against this reader's
+        // core, which exists before the reader does; see
+        // `IndexReaderCore::register_parent_core`.
+        let core = IndexReaderCore::new();
+        for r in &complete_reader_set {
+            if !close_sub_readers {
                 leaf_inc_ref(r)?;
             }
+            r.core().register_parent_core(&core)?;
         }
 
         Ok(Self {
-            core: IndexReaderCore::new(),
+            core,
             parallel_readers: readers,
             stored_fields_readers,
             complete_reader_set,
@@ -633,7 +635,14 @@ impl LeafReader for ParallelLeafReader {
         self.field_infos.clone()
     }
 
+    /// Equivalent to `ParallelLeafReader.getLiveDocs()`
+    /// (`ParallelLeafReader.java:252-256`), which calls `ensureOpen()` first.
+    ///
+    /// # Panics
+    ///
+    /// The unchecked `AlreadyClosedException` once this reader is closed.
     fn get_live_docs(&self) -> Option<Box<dyn Bits>> {
+        self.core.ensure_open_unchecked();
         // Deletions are taken from the first parallel reader, matching Lucene.
         if self.has_deletions {
             self.parallel_readers
@@ -941,9 +950,14 @@ impl ParallelCompositeReader {
         // ParallelLeafReaders, mirroring BaseCompositeReader's constructor.
         let mut starts = Vec::with_capacity(prepared.len());
         let mut max_doc: i64 = 0;
+        // `super(prepareLeafReaders(...), null)`: `BaseCompositeReader`'s
+        // constructor registers this reader as a parent of each synthetic leaf
+        // (`r.registerParentReader(this)`, `BaseCompositeReader.java:86`).
+        let core = IndexReaderCore::new();
         for r in &prepared {
             starts.push(max_doc as i32);
             max_doc += LeafReader::max_doc(r) as i64;
+            LeafReader::core(r).register_parent_core(&core)?;
         }
         let max_doc = i32::try_from(max_doc).map_err(|_| {
             LuceneError::IllegalArgument(format!("Composite reader maxDoc {max_doc} overflows i32"))
@@ -976,7 +990,7 @@ impl ParallelCompositeReader {
             .collect();
 
         Ok(Self {
-            core: IndexReaderCore::new(),
+            core,
             sub_readers,
             starts,
             max_doc,

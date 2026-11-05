@@ -150,23 +150,25 @@ pub mod final_members {
 
     impl CodecStoredFields {
         /// Equivalent to `Objects.checkIndex(docID, maxDoc())`, then the
-        /// dereference of the possibly-null fields reader.
-        fn checked(&self, doc_id: i32) -> Result<&dyn StoredFieldsReader> {
-            if doc_id < 0 || doc_id >= self.max_doc {
-                return Err(LuceneError::IllegalArgument(format!(
-                    "Index {doc_id} out of bounds for length {}",
-                    self.max_doc
-                )));
-            }
+        /// dereference of the possibly-null fields reader, which fails with
+        /// the JDK's helpful `NullPointerException` naming the `invoked`
+        /// method of `StoredFields` and the captured `reader` variable.
+        fn checked(&self, doc_id: i32, invoked: &str) -> Result<&dyn StoredFieldsReader> {
+            check_index(doc_id, self.max_doc)?;
             self.reader.as_deref().ok_or_else(|| {
-                LuceneError::illegal_state("this reader has no stored fields reader".to_string())
+                LuceneError::unchecked(
+                    "java.lang.NullPointerException",
+                    format!(
+                        "Cannot invoke \"org.apache.lucene.index.StoredFields.{invoked}\" because \"this.val$reader\" is null"
+                    ),
+                )
             })
         }
     }
 
     impl StoredFields for CodecStoredFields {
         fn prefetch(&mut self, doc_id: i32) -> Result<()> {
-            self.checked(doc_id)?.prefetch(doc_id)
+            self.checked(doc_id, "prefetch(int)")?.prefetch(doc_id)
         }
 
         fn document_with_visitor(
@@ -174,8 +176,34 @@ pub mod final_members {
             doc_id: i32,
             visitor: &mut dyn StoredFieldVisitor,
         ) -> Result<()> {
-            self.checked(doc_id)?.document(doc_id, visitor)
+            self.checked(
+                doc_id,
+                "document(int, org.apache.lucene.index.StoredFieldVisitor)",
+            )?
+            .document(doc_id, visitor)
         }
+    }
+
+    /// Equivalent to `Objects.checkIndex(docID, maxDoc())`, which every access
+    /// of the `StoredFields` view of `CodecReader.storedFields()` runs first
+    /// (`index/CodecReader.java:91-102`): a `java.lang.IndexOutOfBoundsException`
+    /// with the JDK's message.
+    ///
+    /// Measured against `lucene-core-10.5.0.jar` on JDK 25:
+    /// `Index 2 out of bounds for length 2`, and `Index -1 out of bounds for
+    /// length 2`.
+    ///
+    /// # Errors
+    ///
+    /// The `IndexOutOfBoundsException` when `doc_id` is outside `0..max_doc`.
+    pub fn check_index(doc_id: i32, max_doc: i32) -> Result<()> {
+        if doc_id < 0 || doc_id >= max_doc {
+            return Err(LuceneError::unchecked(
+                "java.lang.IndexOutOfBoundsException",
+                format!("Index {doc_id} out of bounds for length {max_doc}"),
+            ));
+        }
+        Ok(())
     }
 
     /// Equivalent to `CodecReader.storedFields()` (`index/CodecReader.java:86-104`).
@@ -536,5 +564,89 @@ pub mod final_members {
             vectors.check_integrity()?;
         }
         Ok(())
+    }
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// The `StoredFields` view over a null fields reader, measured against
+        /// `lucene-core-10.5.0.jar` on JDK 25 (a `FilterCodecReader` whose
+        /// `getFieldsReader()` returns `null`, over a two-document segment):
+        /// the bounds are checked first, then the dereference fails with the
+        /// JDK's helpful `NullPointerException` naming the captured `reader`.
+        #[test]
+        fn a_null_fields_reader_fails_as_the_jdk_does() {
+            let mut view = CodecStoredFields {
+                reader: None,
+                max_doc: 2,
+            };
+            let class_message = |e: LuceneError| match e {
+                LuceneError::Unchecked { class, message, .. } => (class, message.unwrap()),
+                other => panic!("expected an unchecked exception, got {other:?}"),
+            };
+            let mut visitor = crate::document::DocumentStoredFieldVisitor::new();
+            assert_eq!(
+                class_message(view.document_with_visitor(0, &mut visitor).unwrap_err()),
+                (
+                    "java.lang.NullPointerException",
+                    "Cannot invoke \"org.apache.lucene.index.StoredFields.document(int, \
+                     org.apache.lucene.index.StoredFieldVisitor)\" because \"this.val$reader\" \
+                     is null"
+                        .to_string()
+                )
+            );
+            assert_eq!(
+                class_message(view.prefetch(0).unwrap_err()),
+                (
+                    "java.lang.NullPointerException",
+                    "Cannot invoke \"org.apache.lucene.index.StoredFields.prefetch(int)\" \
+                     because \"this.val$reader\" is null"
+                        .to_string()
+                )
+            );
+            assert_eq!(
+                class_message(view.document_with_visitor(5, &mut visitor).unwrap_err()),
+                (
+                    "java.lang.IndexOutOfBoundsException",
+                    "Index 5 out of bounds for length 2".to_string()
+                )
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::final_members::check_index;
+    use crate::error::LuceneError;
+
+    fn unchecked(e: LuceneError) -> (String, Option<String>) {
+        match e {
+            LuceneError::Unchecked { class, message, .. } => (class.to_string(), message),
+            other => panic!("expected an unchecked exception, got {other:?}"),
+        }
+    }
+
+    /// `Objects.checkIndex(docID, maxDoc())` of `CodecReader.storedFields()`
+    /// (`CodecReader.java:91-102`), measured against `lucene-core-10.5.0.jar`
+    /// on JDK 25 over a two-document segment: `Index 2 out of bounds for
+    /// length 2` and `Index -1 out of bounds for length 2`, both
+    /// `java.lang.IndexOutOfBoundsException`.
+    #[test]
+    fn check_index_raises_the_jdk_index_out_of_bounds_exception() {
+        assert!(check_index(0, 2).is_ok());
+        assert!(check_index(1, 2).is_ok());
+        for (doc, message) in [
+            (2, "Index 2 out of bounds for length 2"),
+            (-1, "Index -1 out of bounds for length 2"),
+        ] {
+            assert_eq!(
+                unchecked(check_index(doc, 2).unwrap_err()),
+                (
+                    "java.lang.IndexOutOfBoundsException".to_string(),
+                    Some(message.to_string())
+                )
+            );
+        }
     }
 }

@@ -2219,7 +2219,11 @@ use crate::search::asserting_accept_docs::AssertingAcceptDocs;
 /// identity cannot be tested: the listeners are registered, as in Java, and
 /// check nothing.
 pub struct AssertingLeafReader {
-    core: rucene::index::index_reader::IndexReaderCore,
+    /// The `FilterLeafReader` this class extends: the reader state of this
+    /// reader (its own core, registered as a parent of `in`) and the members
+    /// it inherits.
+    base: rucene::index::filter_reader::FilterLeafReader,
+    /// Java's protected `in`: the reader `base` wraps.
     r#in: Arc<dyn LeafReader>,
 }
 
@@ -2242,6 +2246,8 @@ impl AssertingLeafReader {
     ///
     /// The `AssertionError` (no message) of a failed sanity `assert`.
     pub fn new(r#in: Arc<dyn LeafReader>) -> Result<Self> {
+        // `super(in)`
+        let base = rucene::index::filter_reader::FilterLeafReader::new(Arc::clone(&r#in))?;
         let reader = Arc::clone(&r#in).as_index_reader();
         // check some basic reader sanity
         java_assert!(reader.max_doc() >= 0);
@@ -2257,10 +2263,7 @@ impl AssertingLeafReader {
         if let Some(reader_cache_helper) = r#in.get_reader_cache_helper() {
             reader_cache_helper.add_closed_listener(Box::new(KeyCheckListener));
         }
-        Ok(AssertingLeafReader {
-            core: crate::index::filter_leaf_core(&r#in),
-            r#in,
-        })
+        Ok(AssertingLeafReader { base, r#in })
     }
 
     /// `getDelegate()`: the wrapped reader.
@@ -2290,7 +2293,7 @@ impl fmt::Display for AssertingLeafReader {
 }
 
 impl LeafReader for AssertingLeafReader {
-    forward_leaf_reader!(filter r#in;
+    forward_leaf_reader!(filter base;
         core,
         filter_leaf_reader_delegate,
         num_docs,
@@ -2304,7 +2307,7 @@ impl LeafReader for AssertingLeafReader {
     );
 
     fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
-        self.core.ensure_open()?;
+        LeafReader::core(&self.base).ensure_open()?;
         Ok(self
             .r#in
             .terms(field)?
@@ -2312,21 +2315,21 @@ impl LeafReader for AssertingLeafReader {
     }
 
     fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
-        self.core.ensure_open()?;
+        LeafReader::core(&self.base).ensure_open()?;
         Ok(Box::new(AssertingTermVectors::new(
             self.r#in.term_vectors()?,
         )))
     }
 
     fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
-        self.core.ensure_open()?;
+        LeafReader::core(&self.base).ensure_open()?;
         Ok(Box::new(AssertingStoredFields::new(
             self.r#in.stored_fields()?,
         )))
     }
 
     fn get_numeric_doc_values(&self, field: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
-        self.core.ensure_open()?;
+        LeafReader::core(&self.base).ensure_open()?;
         let dv = self.r#in.get_numeric_doc_values(field)?;
         let fi = self.field_info(field);
         match dv {
@@ -2348,7 +2351,7 @@ impl LeafReader for AssertingLeafReader {
     }
 
     fn get_binary_doc_values(&self, field: &str) -> Result<Option<Box<dyn BinaryDocValues>>> {
-        self.core.ensure_open()?;
+        LeafReader::core(&self.base).ensure_open()?;
         let dv = self.r#in.get_binary_doc_values(field)?;
         let fi = self.field_info(field);
         match dv {
@@ -2370,7 +2373,7 @@ impl LeafReader for AssertingLeafReader {
     }
 
     fn get_sorted_doc_values(&self, field: &str) -> Result<Option<Box<dyn SortedDocValues>>> {
-        self.core.ensure_open()?;
+        LeafReader::core(&self.base).ensure_open()?;
         let dv = self.r#in.get_sorted_doc_values(field)?;
         let fi = self.field_info(field);
         match dv {
@@ -2396,7 +2399,7 @@ impl LeafReader for AssertingLeafReader {
         field: &str,
     ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
         let fi = self.field_info(field);
-        self.core.ensure_open()?;
+        LeafReader::core(&self.base).ensure_open()?;
         let dv = self.r#in.get_sorted_numeric_doc_values(field)?;
         match dv {
             Some(dv) => {
@@ -2424,7 +2427,7 @@ impl LeafReader for AssertingLeafReader {
         &self,
         field: &str,
     ) -> Result<Option<Box<dyn SortedSetDocValues>>> {
-        self.core.ensure_open()?;
+        LeafReader::core(&self.base).ensure_open()?;
         let dv = self.r#in.get_sorted_set_doc_values(field)?;
         let fi = self.field_info(field);
         match dv {
@@ -2451,7 +2454,7 @@ impl LeafReader for AssertingLeafReader {
     /// without a null check: under `-ea`, a skipper for a field the infos do
     /// not know throws the `NullPointerException`.
     fn get_doc_values_skipper(&self, field: &str) -> Result<Option<Box<dyn DocValuesSkipper>>> {
-        self.core.ensure_open()?;
+        LeafReader::core(&self.base).ensure_open()?;
         let skipper = self.r#in.get_doc_values_skipper(field)?;
         let fi = self.field_info(field);
         match skipper {
@@ -2474,7 +2477,7 @@ impl LeafReader for AssertingLeafReader {
     }
 
     fn get_norm_values(&self, field: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
-        self.core.ensure_open()?;
+        LeafReader::core(&self.base).ensure_open()?;
         let dv = self.r#in.get_norm_values(field)?;
         let fi = self.field_info(field);
         match dv {
@@ -2508,7 +2511,7 @@ impl LeafReader for AssertingLeafReader {
     /// [`LiveDocs`], the plain bits are asked for again (a getter without side
     /// effects) and wrapped in an [`AssertingBits`].
     fn get_live_docs(&self) -> Option<Box<dyn Bits>> {
-        crate::index::ensure_open_unchecked(&self.core);
+        LeafReader::core(&self.base).ensure_open_unchecked();
         match self.r#in.get_live_docs() {
             Some(live_docs) => {
                 java_assert_unchecked!(self.max_doc() as usize == live_docs.length());

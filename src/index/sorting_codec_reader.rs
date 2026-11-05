@@ -59,7 +59,12 @@ use crate::util::{BitSet, BitSetIterator, Bits, BytesRef, FixedBitSet, InfoStrea
 /// which reads through the wrapped producers above
 /// (`CodecReader.java:86-290`). The [`LeafReader`] members here forward to the
 /// same bodies in [`final_members`].
+///
+/// As every `FilterCodecReader`, it is an `IndexReader` of its own, with its
+/// own [`IndexReaderCore`] (`FilterCodecReader.java:58-60`).
 pub struct SortingCodecReader {
+    /// This reader's own state.
+    core: IndexReaderCore,
     inner: Arc<dyn CodecReader>,
     doc_map: Arc<SorterDocMap>,
     /// Equivalent to `SortingCodecReader.metaData`: the wrapped reader's
@@ -132,6 +137,7 @@ impl SortingCodecReader {
             cache: Mutex::new(SortedViewCache::default()),
         });
         Ok(Self {
+            core: IndexReaderCore::new(),
             inner,
             doc_map,
             meta_data,
@@ -172,6 +178,7 @@ impl SortingCodecReader {
                     meta_data.has_blocks(),
                 )?;
                 Ok(Arc::new(AlreadySortedCodecReader {
+                    core: IndexReaderCore::new(),
                     inner: reader,
                     meta_data,
                 }))
@@ -277,7 +284,7 @@ impl LeafReader for SortingCodecReader {
     }
 
     fn core(&self) -> &IndexReaderCore {
-        self.inner.core()
+        &self.core
     }
 
     /// `CodecReader.termVectors()`, over this reader's sorted term vectors.
@@ -519,7 +526,12 @@ impl CodecReader for SortingCodecReader {
 /// come from the delegate, and the leaf view is `CodecReader`'s `final` one
 /// over them. javac names the class `org.apache.lucene.index.SortingCodecReader$1`
 /// (measured from `lucene-core-10.5.0.jar`).
+///
+/// A `FilterCodecReader`, so a reader of its own, with its own
+/// [`IndexReaderCore`].
 pub struct AlreadySortedCodecReader {
+    /// This reader's own state.
+    core: IndexReaderCore,
     inner: Arc<dyn CodecReader>,
     meta_data: LeafMetaData,
 }
@@ -550,7 +562,7 @@ impl LeafReader for AlreadySortedCodecReader {
     }
 
     fn core(&self) -> &IndexReaderCore {
-        self.inner.core()
+        &self.core
     }
 
     fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {

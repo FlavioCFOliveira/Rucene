@@ -33,7 +33,7 @@ use rucene::codecs::stored_fields::StoredFieldsReader;
 use rucene::codecs::term_vectors::TermVectorsReader;
 use rucene::error::{LuceneError, Result};
 use rucene::index::codec_reader::CodecReader;
-use rucene::index::index_reader::{CacheHelper, IndexReaderCore};
+use rucene::index::index_reader::CacheHelper;
 use rucene::index::LeafReader;
 
 use super::asserting_leaf_reader::npe;
@@ -82,7 +82,10 @@ impl<T: Clone> PerThread<T> {
 /// per thread (`// TODO: other formats too`), and every leaf query goes
 /// through them as through the `final` members of Java's `CodecReader`.
 pub struct MergingCodecReader {
-    core: IndexReaderCore,
+    /// The `FilterCodecReader` this class extends: the reader state of this
+    /// reader (its own core) and the members it inherits.
+    base: rucene::index::filter_reader::FilterCodecReader,
+    /// Java's protected `in`: the reader `base` wraps.
     r#in: Arc<dyn CodecReader>,
     fields_reader: PerThread<Arc<dyn StoredFieldsReader>>,
     norms_reader: PerThread<Option<Arc<dyn NormsProducer>>>,
@@ -93,7 +96,8 @@ impl MergingCodecReader {
     /// `new MergingCodecReader(in)`: wraps the given instance.
     pub fn new(r#in: Arc<dyn CodecReader>) -> Self {
         MergingCodecReader {
-            core: IndexReaderCore::new(),
+            // `super(in)`
+            base: rucene::index::filter_reader::FilterCodecReader::new(Arc::clone(&r#in)),
             r#in,
             fields_reader: PerThread::new(),
             norms_reader: PerThread::new(),
@@ -125,7 +129,7 @@ impl fmt::Display for MergingCodecReader {
 }
 
 impl LeafReader for MergingCodecReader {
-    forward_leaf_reader!(codec r#in;
+    forward_leaf_reader!(codec base;
         core,
         num_docs,
         max_doc,

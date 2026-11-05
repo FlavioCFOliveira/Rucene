@@ -40,14 +40,19 @@ use rucene::document::{Document, IntPoint, LongPoint, Store, StringField};
 use rucene::error::{LuceneError, Result};
 use rucene::index::codec_reader::CodecReader;
 use rucene::index::directory_reader::{self, DirectoryReader};
+use rucene::index::filter_directory_reader::{
+    DirectoryReaderWrapper, ExitableDirectoryReaderWrapper, SlowCodecReaderWrapper,
+};
+use rucene::index::filter_reader::{FilterCodecReader, FilterLeafReader};
 use rucene::index::index_reader::{CacheHelper, CacheKey, ClosedListener, StoredFields};
+use rucene::index::index_utilities::QueryTimeout;
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::IndexWriterConfig;
 use rucene::index::leaf_reader::TermVectors;
 use rucene::index::merge_scheduler::SerialMergeScheduler;
 use rucene::index::{
     FieldInfo, FieldInfos, IndexReader, IntersectVisitor, LeafReader, Relation, StoredFieldVisitor,
-    StoredFieldVisitorStatus, POSTINGS_ENUM_FREQS,
+    StoredFieldVisitorStatus, Term, POSTINGS_ENUM_FREQS,
 };
 use rucene::search::NO_MORE_DOCS;
 use rucene::store::java_nio_file::{java_class_of, java_message_of};
@@ -72,51 +77,9 @@ fn test_class_loader() -> &'static Arc<ClassLoader> {
 /// (`skip`).
 const DECLARED: &[(&str, &str, &str)] = &[
     (
-        "\tmergewrapper_close\tclose",
-        "skip",
-        "core defect out of scope: StandardDirectoryReader does not register itself as its \
-         segment readers' parent (BaseCompositeReader.java:86), so closing a segment reader \
-         does not make the directory reader fail ensureOpen()",
-    ),
-    (
         "\tmisuse\tmerging_dir_cast",
         "class",
         "the ClassCastException message names run-time classes the port does not have",
-    ),
-    (
-        "\tlifecycle_asserting\tinner_closed.fieldInfos",
-        "skip",
-        SEGMENT_READER_ENSURE_OPEN,
-    ),
-    (
-        "\tlifecycle_asserting\twrapper_closed.fieldInfos",
-        "skip",
-        SEGMENT_READER_ENSURE_OPEN,
-    ),
-    (
-        "\tlifecycle_alldeleted\tinner_closed.fieldInfos",
-        "skip",
-        SEGMENT_READER_ENSURE_OPEN,
-    ),
-    (
-        "\tlifecycle_alldeleted\twrapper_closed.fieldInfos",
-        "skip",
-        SEGMENT_READER_ENSURE_OPEN,
-    ),
-    (
-        "\tlifecycle_merging_codec\tinner_closed.fieldInfos",
-        "skip",
-        SEGMENT_READER_ENSURE_OPEN,
-    ),
-    (
-        "\tlifecycle_merging_codec\tinner_closed.liveDocs",
-        "skip",
-        SEGMENT_READER_ENSURE_OPEN,
-    ),
-    (
-        "\tlifecycle_mismatched_codec\tinner_closed.liveDocs",
-        "skip",
-        SEGMENT_READER_ENSURE_OPEN,
     ),
     (
         "\tmergewrapper\tskipper",
@@ -128,13 +91,32 @@ const DECLARED: &[(&str, &str, &str)] = &[
         "skip",
         "a doc-values iterator is not Send: Rust refuses to hand it to another thread",
     ),
+    (
+        "\tcore_filter_codec\twrapper_closed.storedFields",
+        "skip",
+        SEGMENT_CORE_CLOSED_PRODUCERS,
+    ),
+    (
+        "\tcore_filter_codec\twrapper_closed.termVectors",
+        "skip",
+        SEGMENT_CORE_CLOSED_PRODUCERS,
+    ),
+    (
+        "\tcore_filter_codec\twrapper_closed.checkIntegrity",
+        "skip",
+        SEGMENT_CORE_CLOSED_PRODUCERS,
+    ),
 ];
 
-/// The reason of the `lifecycle_*` rows that read a closed segment reader's
-/// field infos or live docs through a wrapper that forwards them.
-const SEGMENT_READER_ENSURE_OPEN: &str =
-    "core defect out of scope: SegmentReader.getFieldInfos() and getLiveDocs() do not call \
-     ensureOpen() (SegmentReader.java:214-237), so a closed segment reader still answers";
+/// The reason of the rows that read a segment through a `FilterCodecReader`
+/// after its `doClose()` closed the segment's core readers
+/// (`FilterCodecReader.java:123-126`).
+const SEGMENT_CORE_CLOSED_PRODUCERS: &str =
+    "core defect out of scope: SegmentCoreReaders drops each producer when it closes it \
+     (close_lock takes the Option), so a closed segment's getFieldsReader() and \
+     getTermVectorsReader() answer null instead of cloning a closed reader, which Java \
+     refuses (\"this FieldsReader is closed\", \"Already closed.\"), and its checkIntegrity() \
+     reaches the closed doc-values producer before the postings";
 
 const PROBE_FIELDS: [&str; 13] = [
     "id",
@@ -753,6 +735,298 @@ fn pk_lookup(rows: &mut Rows, c: &str, reader: &Arc<dyn DirectoryReader>) {
     });
 }
 
+/// `IndexWrappersOracle.probeClosed`: each member's `ensureOpen()` outcome.
+fn probe_closed(rows: &mut Rows, c: &str, s: &str, what: &str, r: &Arc<dyn LeafReader>) {
+    let present = |o: bool, yes: &str| if o { yes } else { "null" }.to_string();
+    rows.rec(c, s, &format!("{what}.terms"), || {
+        Ok(present(r.terms("body")?.is_some(), "terms"))
+    });
+    rows.rec(c, s, &format!("{what}.numeric"), || {
+        Ok(present(r.get_numeric_doc_values("dv_num")?.is_some(), "dv"))
+    });
+    rows.rec(c, s, &format!("{what}.norms"), || {
+        Ok(present(r.get_norm_values("body")?.is_some(), "norms"))
+    });
+    rows.rec(c, s, &format!("{what}.points"), || {
+        Ok(present(r.get_point_values("p_int")?.is_some(), "points"))
+    });
+    rows.rec(c, s, &format!("{what}.pointsMissing"), || {
+        Ok(present(r.get_point_values("nope")?.is_some(), "points"))
+    });
+    rows.rec(c, s, &format!("{what}.floatVectors"), || {
+        Ok(present(
+            r.get_float_vector_values("vf")?.is_some(),
+            "vectors",
+        ))
+    });
+    rows.rec(c, s, &format!("{what}.storedFields"), || {
+        LeafReader::stored_fields(r.as_ref())?;
+        Ok("storedFields".to_string())
+    });
+    rows.rec(c, s, &format!("{what}.termVectors"), || {
+        LeafReader::term_vectors(r.as_ref())?;
+        Ok("termVectors".to_string())
+    });
+    rows.rec(c, s, &format!("{what}.liveDocs"), || {
+        Ok(present(r.get_live_docs().is_some(), "bits"))
+    });
+    rows.rec(c, s, &format!("{what}.fieldInfos"), || {
+        Ok(r.get_field_infos().size().to_string())
+    });
+    rows.rec(c, s, &format!("{what}.metaData"), || {
+        Ok(r.get_meta_data().created_version_major().to_string())
+    });
+    rows.rec(c, s, &format!("{what}.checkIntegrity"), || {
+        r.check_integrity()?;
+        Ok("checked".to_string())
+    });
+    rows.rec(c, s, &format!("{what}.numDocs"), || {
+        Ok(format!("{}/{}", r.num_docs(), r.max_doc()))
+    });
+    rows.rec(c, s, &format!("{what}.leaves"), || {
+        Ok(as_index_reader(r).leaves()?.len().to_string())
+    });
+}
+
+/// A listener that does nothing: Java's `k -> {}`.
+struct Nothing;
+
+impl ClosedListener for Nothing {
+    fn on_close(&self, _key: CacheKey) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// The term the composite scenarios count.
+fn the() -> Term {
+    Term::from_text("body", "the")
+}
+
+/// `IndexWrappersOracle.coreLifecycle`: the reader state of the core readers
+/// (rmp #344 round 2).
+fn core_lifecycle(rows: &mut Rows, c: &str) {
+    // SegmentReader: the bounds of CodecReader.storedFields(), then every
+    // member once closed
+    {
+        let reader = directory_reader::open(load_corpus(c)).unwrap();
+        let seg = Arc::clone(&reader).leaves().unwrap()[0].leaf_reader();
+        let core = seg.get_core_cache_helper().unwrap();
+        let mine = seg.get_reader_cache_helper().unwrap();
+        let s = "core_segment";
+        let max_doc = seg.max_doc();
+        let mut visitor = rucene::document::DocumentStoredFieldVisitor::new();
+        rows.rec(c, s, "doc.maxDoc", || {
+            LeafReader::stored_fields(seg.as_ref())?
+                .document_with_visitor(max_doc, &mut visitor)?;
+            Ok("doc".to_string())
+        });
+        rows.rec(c, s, "doc.minus1", || {
+            LeafReader::stored_fields(seg.as_ref())?.document_with_visitor(-1, &mut visitor)?;
+            Ok("doc".to_string())
+        });
+        rows.rec(c, s, "prefetch.maxDoc", || {
+            LeafReader::stored_fields(seg.as_ref())?.prefetch(max_doc)?;
+            Ok("prefetch".to_string())
+        });
+        let ir = as_index_reader(&seg);
+        rows.rec(c, s, "close", || {
+            reader.close()?;
+            Ok(format!("{}/{}", ir.get_ref_count(), reader.get_ref_count()))
+        });
+        probe_closed(rows, c, s, "closed", &seg);
+        rows.rec(c, s, "closed.coreHelper.add", || {
+            core.add_closed_listener(Box::new(Nothing));
+            Ok("added".to_string())
+        });
+        rows.rec(c, s, "closed.readerHelper.add", || {
+            mine.add_closed_listener(Box::new(Nothing));
+            Ok("added".to_string())
+        });
+        // registerParentReader calls ensureOpen() on the closed child
+        rows.rec(c, s, "closed.multiReader", || {
+            Ok(
+                rucene::index::MultiReader::new_closing(vec![Arc::clone(&ir)])?
+                    .max_doc()
+                    .to_string(),
+            )
+        });
+        rows.rec(c, s, "closed.filterLeaf", || {
+            Ok(LeafReader::max_doc(&FilterLeafReader::new(Arc::clone(&seg))?).to_string())
+        });
+        rows.rec(c, s, "closed.parallelLeaf", || {
+            Ok(
+                LeafReader::max_doc(&rucene::index::ParallelLeafReader::new(vec![Arc::clone(
+                    &seg,
+                )])?)
+                .to_string(),
+            )
+        });
+    }
+    // StandardDirectoryReader is a parent of its segment readers
+    {
+        let reader = directory_reader::open(load_corpus(c)).unwrap();
+        let seg = as_index_reader(&Arc::clone(&reader).leaves().unwrap()[0].leaf_reader());
+        let s = "core_directory";
+        rows.rec(c, s, "child_close", || {
+            seg.close()?;
+            Ok(format!(
+                "{}/{}",
+                seg.get_ref_count(),
+                reader.get_ref_count()
+            ))
+        });
+        rows.rec(c, s, "leaves", || {
+            Ok(Arc::clone(&reader).leaves()?.len().to_string())
+        });
+        rows.rec(c, s, "docFreq", || Ok(reader.doc_freq(&the())?.to_string()));
+        rows.rec(c, s, "storedFields", || {
+            reader.stored_fields()?;
+            Ok("storedFields".to_string())
+        });
+        rows.rec(c, s, "termVectors", || {
+            reader.term_vectors()?;
+            Ok("termVectors".to_string())
+        });
+        rows.rec(c, s, "numDocs", || {
+            Ok(format!("{}/{}", reader.num_docs(), reader.max_doc()))
+        });
+        rows.rec(c, s, "close", || {
+            reader.close()?;
+            Ok("closed".to_string())
+        });
+    }
+    // MultiReader and ParallelCompositeReader are parents of their
+    // sub-readers, transitively
+    for name in ["multi", "parallel_composite"] {
+        let reader = directory_reader::open(load_corpus(c)).unwrap();
+        let composite: Arc<dyn IndexReader> = if name == "multi" {
+            Arc::new(
+                rucene::index::MultiReader::new_closing(vec![
+                    Arc::clone(&reader) as Arc<dyn IndexReader>
+                ])
+                .unwrap(),
+            )
+        } else {
+            Arc::new(
+                rucene::index::ParallelCompositeReader::new(vec![
+                    Arc::clone(&reader) as Arc<dyn rucene::index::index_reader::CompositeReader>
+                ])
+                .unwrap(),
+            )
+        };
+        let s = format!("core_{name}");
+        rows.rec(c, &s, "child_close", || {
+            reader.close()?;
+            Ok(format!(
+                "{}/{}",
+                composite.get_ref_count(),
+                reader.get_ref_count()
+            ))
+        });
+        rows.rec(c, &s, "leaves", || {
+            Ok(Arc::clone(&composite).leaves()?.len().to_string())
+        });
+        rows.rec(c, &s, "docFreq", || {
+            Ok(composite.doc_freq(&the())?.to_string())
+        });
+        rows.rec(c, &s, "storedFields", || {
+            composite.stored_fields()?;
+            Ok("storedFields".to_string())
+        });
+        rows.rec(c, &s, "close", || {
+            composite.close()?;
+            Ok(format!(
+                "{}/{}",
+                composite.get_ref_count(),
+                reader.get_ref_count()
+            ))
+        });
+    }
+    // FilterLeafReader, ParallelLeafReader (parents of the wrapped reader,
+    // close it when closed), FilterCodecReader (calls its doClose) and
+    // SlowCodecReaderWrapper (does nothing on close)
+    for name in ["filter_leaf", "parallel_leaf", "filter_codec", "slow_codec"] {
+        for what in ["inner_closed", "wrapper_closed"] {
+            let reader = directory_reader::open(load_corpus(c)).unwrap();
+            let r#in = Arc::clone(&reader).leaves().unwrap()[0].leaf_reader();
+            let w: Arc<dyn LeafReader> = match name {
+                "filter_leaf" => Arc::new(FilterLeafReader::new(Arc::clone(&r#in)).unwrap()),
+                "parallel_leaf" => Arc::new(
+                    rucene::index::ParallelLeafReader::new(vec![Arc::clone(&r#in)]).unwrap(),
+                ),
+                "filter_codec" => Arc::new(FilterCodecReader::new(codec(&r#in))),
+                _ => {
+                    let filter: Arc<dyn LeafReader> =
+                        Arc::new(FilterLeafReader::new(Arc::clone(&r#in)).unwrap());
+                    let slow = SlowCodecReaderWrapper::wrap(filter).unwrap();
+                    slow as Arc<dyn LeafReader>
+                }
+            };
+            let s = format!("core_{name}");
+            let wr = as_index_reader(&w);
+            let ir = as_index_reader(&r#in);
+            rows.rec(c, &s, &format!("{what}.close"), || {
+                if what == "inner_closed" {
+                    reader.close()?;
+                } else {
+                    wr.close()?;
+                }
+                Ok(format!("{}/{}", wr.get_ref_count(), ir.get_ref_count()))
+            });
+            probe_closed(rows, c, &s, what, &w);
+            if what == "wrapper_closed" {
+                rows.rec(c, &s, &format!("{what}.reader_close"), || {
+                    reader.close()?;
+                    Ok("closed".to_string())
+                });
+            }
+        }
+    }
+    // FilterDirectoryReader (ExitableDirectoryReader): a parent of its
+    // wrapped leaves, closes the wrapped reader when closed
+    for what in ["inner_closed", "wrapper_closed"] {
+        let reader = directory_reader::open(load_corpus(c)).unwrap();
+        let w = ExitableDirectoryReaderWrapper::new(Arc::new(NeverExits))
+            .wrap(Arc::clone(&reader))
+            .unwrap();
+        let s = "core_filter_directory";
+        rows.rec(c, s, &format!("{what}.close"), || {
+            if what == "inner_closed" {
+                reader.close()?;
+            } else {
+                w.close()?;
+            }
+            Ok(format!("{}/{}", w.get_ref_count(), reader.get_ref_count()))
+        });
+        rows.rec(c, s, &format!("{what}.leaves"), || {
+            Ok(Arc::clone(&w).leaves()?.len().to_string())
+        });
+        rows.rec(c, s, &format!("{what}.docFreq"), || {
+            Ok(w.doc_freq(&the())?.to_string())
+        });
+        rows.rec(c, s, &format!("{what}.storedFields"), || {
+            w.stored_fields()?;
+            Ok("storedFields".to_string())
+        });
+        rows.rec(c, s, &format!("{what}.numDocs"), || {
+            Ok(format!("{}/{}", w.num_docs(), w.max_doc()))
+        });
+        rows.rec(c, s, &format!("{what}.version"), || {
+            Ok((w.version()? > 0).to_string())
+        });
+    }
+}
+
+/// `() -> false`: a timeout that never fires.
+#[derive(Debug)]
+struct NeverExits;
+
+impl QueryTimeout for NeverExits {
+    fn should_exit(&self) -> bool {
+        false
+    }
+}
+
 struct Counting(Arc<AtomicI32>);
 
 impl ClosedListener for Counting {
@@ -1118,6 +1392,7 @@ fn lifecycle(rows: &mut Rows, c: &str) {
         .to_string())
     });
     reader.close().unwrap();
+    core_lifecycle(rows, c);
 }
 
 /// `IndexWrappersOracle.pkDuplicates`: two segments holding the same ids; the
@@ -1339,6 +1614,12 @@ fn index_wrappers_match_the_java_oracle() {
             else {
                 panic!("declared row {key} missing");
             };
+            // A declared row that starts matching is no longer a divergence:
+            // its declaration must go.
+            assert_ne!(
+                a, e,
+                "{key} now matches the oracle: remove it from DECLARED"
+            );
             if *how == "class" {
                 let class = |s: &str| s.split('\t').take(2).collect::<Vec<_>>().join("\t");
                 assert_eq!(class(&a), class(&e), "{key}: the error class differs");

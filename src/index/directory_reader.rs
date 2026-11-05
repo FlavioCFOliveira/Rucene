@@ -255,10 +255,19 @@ impl StandardDirectoryReader {
         // with `this instanceof DirectoryReader`: a single index with too many
         // documents is corrupt, and the resource is
         // `Arrays.toString(subReaders)`.
-        let max_doc: i64 = segment_readers
-            .iter()
-            .map(|r| i64::from(LeafReader::max_doc(r.as_ref())))
-            .sum();
+        // The loop of `BaseCompositeReader`'s constructor
+        // (`BaseCompositeReader.java:83-88`): each segment reader's `maxDoc` is
+        // summed, and each registers this reader as a parent
+        // (`r.registerParentReader(this)`), so that closing a segment reader
+        // makes this reader fail `ensureOpen()`. The registration is taken
+        // against this reader's core, which exists before the reader does; see
+        // `IndexReaderCore::register_parent_core`.
+        let core = IndexReaderCore::new();
+        let mut max_doc: i64 = 0;
+        for reader in &segment_readers {
+            max_doc += i64::from(LeafReader::max_doc(reader.as_ref()));
+            LeafReader::core(reader.as_ref()).register_parent_core(&core)?;
+        }
         let actual_max_docs = crate::index::index_writer::get_actual_max_docs();
         if max_doc > i64::from(actual_max_docs) {
             let sub_readers = segment_readers
@@ -274,7 +283,7 @@ impl StandardDirectoryReader {
             ));
         }
         Ok(Self {
-            core: IndexReaderCore::new(),
+            core,
             directory,
             segment_readers,
             segment_infos,
@@ -694,7 +703,10 @@ impl IndexReader for StandardDirectoryReader {
         &self.core
     }
 
+    /// Equivalent to `BaseCompositeReader.termVectors()`
+    /// (`BaseCompositeReader.java:115-139`), which calls `ensureOpen()` first.
     fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
+        self.ensure_open()?;
         let mut sub_vectors = Vec::with_capacity(self.segment_readers.len());
         let mut starts = Vec::with_capacity(self.segment_readers.len());
         let mut doc_base = 0;
@@ -724,7 +736,10 @@ impl IndexReader for StandardDirectoryReader {
             .sum()
     }
 
+    /// Equivalent to `BaseCompositeReader.storedFields()`
+    /// (`BaseCompositeReader.java:170-194`), which calls `ensureOpen()` first.
     fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
+        self.ensure_open()?;
         let mut sub_fields = Vec::with_capacity(self.segment_readers.len());
         let mut starts = Vec::with_capacity(self.segment_readers.len());
         let mut doc_base = 0;

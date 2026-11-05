@@ -14,7 +14,7 @@ use crate::codecs::postings::FieldsProducer;
 use crate::codecs::stored_fields::StoredFieldsReader;
 use crate::codecs::term_vectors::TermVectorsReader;
 use crate::error::Result;
-use crate::index::codec_reader::CodecReader;
+use crate::index::codec_reader::{final_members, CodecReader};
 use crate::index::index_reader::{CacheHelper, IndexReaderCore, StoredFields};
 use crate::index::leaf_reader::{LeafMetaData, LeafReader, TermVectors};
 use crate::index::postings_enum::{ImpactsEnum, PostingsEnum};
@@ -43,7 +43,20 @@ use crate::util::{BytesRef, IOBooleanSupplier};
 /// `FilterTerms`, `FilterTermsEnum` and `FilterPostingsEnum` — are ported the
 /// same way, as [`FilterFields`], [`FilterTerms`], [`FilterTermsEnum`] and
 /// [`FilterPostingsEnum`].
+///
+/// As in Java, the filter is an `IndexReader` of its own: it has its own
+/// [`IndexReaderCore`] (reference count, closed state, parents), registers
+/// itself as a parent of the wrapped reader when it is built
+/// (`in.registerParentReader(this)`, `FilterLeafReader.java:332-339`), so that
+/// closing the wrapped reader makes this one fail `ensureOpen()`, and closes
+/// the wrapped reader when it closes (`doClose()` is `in.close()`,
+/// `FilterLeafReader.java:404-407`). Every member calls `ensureOpen()` on
+/// this reader first exactly where Java's does: not `numDocs()`, `maxDoc()`,
+/// `getFieldInfos()`, the points and vectors accessors, nor the cache
+/// helpers.
 pub struct FilterLeafReader {
+    /// This reader's own state.
+    core: IndexReaderCore,
     /// The wrapped reader.
     pub(crate) inner: Arc<dyn LeafReader>,
 }
@@ -68,9 +81,21 @@ impl std::fmt::Display for FilterLeafReader {
 }
 
 impl FilterLeafReader {
-    /// Wraps `inner`.
-    pub fn new(inner: Arc<dyn LeafReader>) -> Self {
-        Self { inner }
+    /// Wraps `inner`, registering the new reader as a parent of `inner`.
+    ///
+    /// Equivalent to `FilterLeafReader(LeafReader)` (`FilterLeafReader.java:332-339`).
+    /// Java refuses a null delegate with a `NullPointerException`; Rust's type
+    /// system refuses it at compile time.
+    ///
+    /// # Errors
+    ///
+    /// [`LuceneError::AlreadyClosed`](crate::error::LuceneError::AlreadyClosed)
+    /// when `inner` is closed: `registerParentReader` calls `ensureOpen()` on
+    /// it (`IndexReader.java:162-165`).
+    pub fn new(inner: Arc<dyn LeafReader>) -> Result<Self> {
+        let core = IndexReaderCore::new();
+        inner.core().register_parent_core(&core)?;
+        Ok(Self { core, inner })
     }
 
     /// Returns the wrapped reader.
@@ -97,7 +122,7 @@ impl FilterLeafReader {
 
 impl LeafReader for FilterLeafReader {
     fn core(&self) -> &IndexReaderCore {
-        self.inner.core()
+        &self.core
     }
 
     /// `this instanceof FilterLeafReader`: the delegate `getDelegate()` returns.
@@ -106,23 +131,29 @@ impl LeafReader for FilterLeafReader {
     }
 
     fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
+        self.core.ensure_open()?;
         self.inner.term_vectors()
     }
 
     fn num_docs(&self) -> i32 {
+        // Don\'t call ensureOpen() here (it could affect performance)
         self.inner.num_docs()
     }
 
     fn max_doc(&self) -> i32 {
+        // Don\'t call ensureOpen() here (it could affect performance)
         self.inner.max_doc()
     }
 
     fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
+        self.core.ensure_open()?;
         self.inner.stored_fields()
     }
 
+    /// Equivalent to `FilterLeafReader.doClose()`: `in.close()`, the wrapped
+    /// reader's own `close()`, which decrements its reference count.
     fn do_close(&self) -> Result<()> {
-        self.inner.do_close()
+        Arc::clone(&self.inner).as_index_reader().close()
     }
 
     fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
@@ -134,18 +165,22 @@ impl LeafReader for FilterLeafReader {
     }
 
     fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+        self.core.ensure_open()?;
         self.inner.terms(field)
     }
 
     fn get_numeric_doc_values(&self, field: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
+        self.core.ensure_open()?;
         self.inner.get_numeric_doc_values(field)
     }
 
     fn get_binary_doc_values(&self, field: &str) -> Result<Option<Box<dyn BinaryDocValues>>> {
+        self.core.ensure_open()?;
         self.inner.get_binary_doc_values(field)
     }
 
     fn get_sorted_doc_values(&self, field: &str) -> Result<Option<Box<dyn SortedDocValues>>> {
+        self.core.ensure_open()?;
         self.inner.get_sorted_doc_values(field)
     }
 
@@ -153,6 +188,7 @@ impl LeafReader for FilterLeafReader {
         &self,
         field: &str,
     ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+        self.core.ensure_open()?;
         self.inner.get_sorted_numeric_doc_values(field)
     }
 
@@ -160,14 +196,17 @@ impl LeafReader for FilterLeafReader {
         &self,
         field: &str,
     ) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+        self.core.ensure_open()?;
         self.inner.get_sorted_set_doc_values(field)
     }
 
     fn get_norm_values(&self, field: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
+        self.core.ensure_open()?;
         self.inner.get_norm_values(field)
     }
 
     fn get_doc_values_skipper(&self, field: &str) -> Result<Option<Box<dyn DocValuesSkipper>>> {
+        self.core.ensure_open()?;
         self.inner.get_doc_values_skipper(field)
     }
 
@@ -183,7 +222,12 @@ impl LeafReader for FilterLeafReader {
         self.inner.get_field_infos()
     }
 
+    /// # Panics
+    ///
+    /// The unchecked `AlreadyClosedException` of `ensureOpen()` once this
+    /// reader is closed (`FilterLeafReader.java:341-345`).
     fn get_live_docs(&self) -> Option<Box<dyn Bits>> {
+        self.core.ensure_open_unchecked();
         self.inner.get_live_docs()
     }
 
@@ -192,10 +236,16 @@ impl LeafReader for FilterLeafReader {
     }
 
     fn check_integrity(&self) -> Result<()> {
+        self.core.ensure_open()?;
         self.inner.check_integrity()
     }
 
+    /// # Panics
+    ///
+    /// The unchecked `AlreadyClosedException` of `ensureOpen()` once this
+    /// reader is closed (`FilterLeafReader.java:465-469`).
     fn get_meta_data(&self) -> LeafMetaData {
+        self.core.ensure_open_unchecked();
         self.inner.get_meta_data()
     }
 
@@ -568,7 +618,19 @@ impl TermsEnum for FilterTermsEnum {
 /// they do not change themselves, and report their delegate through
 /// [`CodecReader::filter_codec_reader_delegate`] so that
 /// [`unwrap`](Self::unwrap) sees through them as Java's `instanceof` does.
+///
+/// As in Java, the filter is an `IndexReader` of its own, with its own
+/// [`IndexReaderCore`]: unlike `FilterLeafReader` it does not register itself
+/// as a parent of the wrapped reader, and its `doClose()` is the wrapped
+/// reader's `doClose()`, not its `close()` (`FilterCodecReader.java:58-60,
+/// 123-126`). The members `CodecReader` declares `final` — the postings, doc
+/// values, norms, points, vectors, stored fields and term vectors — answer
+/// through this reader's own producer accessors
+/// ([`final_members`]), after `ensureOpen()` on this reader, as Java's
+/// inherited members do.
 pub struct FilterCodecReader {
+    /// This reader's own state.
+    core: IndexReaderCore,
     /// The wrapped codec reader.
     pub(crate) inner: Arc<dyn CodecReader>,
 }
@@ -592,8 +654,14 @@ impl std::fmt::Display for FilterCodecReader {
 
 impl FilterCodecReader {
     /// Wraps `inner`.
+    ///
+    /// Equivalent to `FilterCodecReader(CodecReader)` (`FilterCodecReader.java:58-60`),
+    /// which records the delegate and nothing else.
     pub fn new(inner: Arc<dyn CodecReader>) -> Self {
-        Self { inner }
+        Self {
+            core: IndexReaderCore::new(),
+            inner,
+        }
     }
 
     /// Returns the wrapped reader.
@@ -618,6 +686,7 @@ impl FilterCodecReader {
         num_docs: i32,
     ) -> LiveDocsCodecReader {
         LiveDocsCodecReader {
+            core: IndexReaderCore::new(),
             inner: reader,
             live_docs,
             num_docs,
@@ -649,11 +718,13 @@ impl LeafReader for FilterCodecReader {
     }
 
     fn core(&self) -> &IndexReaderCore {
-        self.inner.core()
+        &self.core
     }
 
+    /// `CodecReader.termVectors()`, `final`: through this reader's own
+    /// [`get_term_vectors_reader`](CodecReader::get_term_vectors_reader).
     fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
-        self.inner.term_vectors()
+        final_members::term_vectors(self)
     }
 
     fn num_docs(&self) -> i32 {
@@ -664,8 +735,10 @@ impl LeafReader for FilterCodecReader {
         self.inner.max_doc()
     }
 
+    /// `CodecReader.storedFields()`, `final`: through this reader's own
+    /// [`get_fields_reader`](CodecReader::get_fields_reader).
     fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
-        self.inner.stored_fields()
+        final_members::stored_fields(self)
     }
 
     fn do_close(&self) -> Result<()> {
@@ -681,49 +754,49 @@ impl LeafReader for FilterCodecReader {
     }
 
     fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
-        self.inner.terms(field)
+        final_members::terms(self, field)
     }
 
     fn get_numeric_doc_values(&self, field: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
-        self.inner.get_numeric_doc_values(field)
+        final_members::numeric_doc_values(self, field)
     }
 
     fn get_binary_doc_values(&self, field: &str) -> Result<Option<Box<dyn BinaryDocValues>>> {
-        self.inner.get_binary_doc_values(field)
+        final_members::binary_doc_values(self, field)
     }
 
     fn get_sorted_doc_values(&self, field: &str) -> Result<Option<Box<dyn SortedDocValues>>> {
-        self.inner.get_sorted_doc_values(field)
+        final_members::sorted_doc_values(self, field)
     }
 
     fn get_sorted_numeric_doc_values(
         &self,
         field: &str,
     ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
-        self.inner.get_sorted_numeric_doc_values(field)
+        final_members::sorted_numeric_doc_values(self, field)
     }
 
     fn get_sorted_set_doc_values(
         &self,
         field: &str,
     ) -> Result<Option<Box<dyn SortedSetDocValues>>> {
-        self.inner.get_sorted_set_doc_values(field)
+        final_members::sorted_set_doc_values(self, field)
     }
 
     fn get_norm_values(&self, field: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
-        self.inner.get_norm_values(field)
+        final_members::norm_values(self, field)
     }
 
     fn get_doc_values_skipper(&self, field: &str) -> Result<Option<Box<dyn DocValuesSkipper>>> {
-        self.inner.get_doc_values_skipper(field)
+        final_members::doc_values_skipper(self, field)
     }
 
     fn get_float_vector_values(&self, field: &str) -> Result<Option<Box<dyn FloatVectorValues>>> {
-        self.inner.get_float_vector_values(field)
+        final_members::float_vector_values(self, field)
     }
 
     fn get_byte_vector_values(&self, field: &str) -> Result<Option<Box<dyn ByteVectorValues>>> {
-        self.inner.get_byte_vector_values(field)
+        final_members::byte_vector_values(self, field)
     }
 
     fn get_field_infos(&self) -> FieldInfos {
@@ -735,7 +808,7 @@ impl LeafReader for FilterCodecReader {
     }
 
     fn get_point_values(&self, field: &str) -> Result<Option<Box<dyn PointValues>>> {
-        self.inner.get_point_values(field)
+        final_members::point_values(self, field)
     }
 
     fn check_integrity(&self) -> Result<()> {
@@ -753,8 +826,7 @@ impl LeafReader for FilterCodecReader {
         collector: &mut dyn KnnCollector,
         accept_docs: &mut dyn AcceptDocs,
     ) -> Result<()> {
-        self.inner
-            .search_nearest_vectors(field, target, collector, accept_docs)
+        final_members::search_nearest_vectors(self, field, target, collector, accept_docs)
     }
 
     fn search_nearest_vectors_byte(
@@ -764,8 +836,7 @@ impl LeafReader for FilterCodecReader {
         collector: &mut dyn KnnCollector,
         accept_docs: &mut dyn AcceptDocs,
     ) -> Result<()> {
-        self.inner
-            .search_nearest_vectors_byte(field, target, collector, accept_docs)
+        final_members::search_nearest_vectors_byte(self, field, target, collector, accept_docs)
     }
 }
 
@@ -810,7 +881,12 @@ impl CodecReader for FilterCodecReader {
 ///
 /// Equivalent to the anonymous `FilterCodecReader`
 /// `FilterCodecReader.wrapLiveDocs` returns.
+///
+/// A reader of its own, as every `FilterCodecReader` is; see
+/// [`FilterCodecReader`].
 pub struct LiveDocsCodecReader {
+    /// This reader's own state.
+    core: IndexReaderCore,
     inner: Arc<dyn CodecReader>,
     live_docs: Option<Arc<dyn Bits>>,
     num_docs: i32,
@@ -877,11 +953,13 @@ impl LeafReader for LiveDocsCodecReader {
     }
 
     fn core(&self) -> &IndexReaderCore {
-        self.inner.core()
+        &self.core
     }
 
+    /// `CodecReader.termVectors()`, `final`: through this reader's own
+    /// [`get_term_vectors_reader`](CodecReader::get_term_vectors_reader).
     fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
-        self.inner.term_vectors()
+        final_members::term_vectors(self)
     }
 
     fn num_docs(&self) -> i32 {
@@ -892,8 +970,10 @@ impl LeafReader for LiveDocsCodecReader {
         self.inner.max_doc()
     }
 
+    /// `CodecReader.storedFields()`, `final`: through this reader's own
+    /// [`get_fields_reader`](CodecReader::get_fields_reader).
     fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
-        self.inner.stored_fields()
+        final_members::stored_fields(self)
     }
 
     fn do_close(&self) -> Result<()> {
@@ -910,49 +990,49 @@ impl LeafReader for LiveDocsCodecReader {
     }
 
     fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
-        self.inner.terms(field)
+        final_members::terms(self, field)
     }
 
     fn get_numeric_doc_values(&self, field: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
-        self.inner.get_numeric_doc_values(field)
+        final_members::numeric_doc_values(self, field)
     }
 
     fn get_binary_doc_values(&self, field: &str) -> Result<Option<Box<dyn BinaryDocValues>>> {
-        self.inner.get_binary_doc_values(field)
+        final_members::binary_doc_values(self, field)
     }
 
     fn get_sorted_doc_values(&self, field: &str) -> Result<Option<Box<dyn SortedDocValues>>> {
-        self.inner.get_sorted_doc_values(field)
+        final_members::sorted_doc_values(self, field)
     }
 
     fn get_sorted_numeric_doc_values(
         &self,
         field: &str,
     ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
-        self.inner.get_sorted_numeric_doc_values(field)
+        final_members::sorted_numeric_doc_values(self, field)
     }
 
     fn get_sorted_set_doc_values(
         &self,
         field: &str,
     ) -> Result<Option<Box<dyn SortedSetDocValues>>> {
-        self.inner.get_sorted_set_doc_values(field)
+        final_members::sorted_set_doc_values(self, field)
     }
 
     fn get_norm_values(&self, field: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
-        self.inner.get_norm_values(field)
+        final_members::norm_values(self, field)
     }
 
     fn get_doc_values_skipper(&self, field: &str) -> Result<Option<Box<dyn DocValuesSkipper>>> {
-        self.inner.get_doc_values_skipper(field)
+        final_members::doc_values_skipper(self, field)
     }
 
     fn get_float_vector_values(&self, field: &str) -> Result<Option<Box<dyn FloatVectorValues>>> {
-        self.inner.get_float_vector_values(field)
+        final_members::float_vector_values(self, field)
     }
 
     fn get_byte_vector_values(&self, field: &str) -> Result<Option<Box<dyn ByteVectorValues>>> {
-        self.inner.get_byte_vector_values(field)
+        final_members::byte_vector_values(self, field)
     }
 
     fn get_field_infos(&self) -> FieldInfos {
@@ -966,7 +1046,7 @@ impl LeafReader for LiveDocsCodecReader {
     }
 
     fn get_point_values(&self, field: &str) -> Result<Option<Box<dyn PointValues>>> {
-        self.inner.get_point_values(field)
+        final_members::point_values(self, field)
     }
 
     fn check_integrity(&self) -> Result<()> {
@@ -984,8 +1064,7 @@ impl LeafReader for LiveDocsCodecReader {
         collector: &mut dyn KnnCollector,
         accept_docs: &mut dyn AcceptDocs,
     ) -> Result<()> {
-        self.inner
-            .search_nearest_vectors(field, target, collector, accept_docs)
+        final_members::search_nearest_vectors(self, field, target, collector, accept_docs)
     }
 
     fn search_nearest_vectors_byte(
@@ -995,8 +1074,7 @@ impl LeafReader for LiveDocsCodecReader {
         collector: &mut dyn KnnCollector,
         accept_docs: &mut dyn AcceptDocs,
     ) -> Result<()> {
-        self.inner
-            .search_nearest_vectors_byte(field, target, collector, accept_docs)
+        final_members::search_nearest_vectors_byte(self, field, target, collector, accept_docs)
     }
 }
 

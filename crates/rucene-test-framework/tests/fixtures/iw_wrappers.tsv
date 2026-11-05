@@ -661,6 +661,182 @@ nocfs	asserting_fieldfilter	numeric	err	java.lang.AssertionError	<null>
 nocfs	asserting_fieldfilter	binary	ok	null
 nocfs	asserting_fieldfilter	norms	ok	null
 nocfs	asserting_fieldfilter	points	ok	points
+nocfs	core_segment	doc.maxDoc	err	java.lang.IndexOutOfBoundsException	Index 150 out of bounds for length 150
+nocfs	core_segment	doc.minus1	err	java.lang.IndexOutOfBoundsException	Index -1 out of bounds for length 150
+nocfs	core_segment	prefetch.maxDoc	err	java.lang.IndexOutOfBoundsException	Index 150 out of bounds for length 150
+nocfs	core_segment	close	ok	0/0
+nocfs	core_segment	closed.terms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_segment	closed.numeric	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_segment	closed.norms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_segment	closed.points	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_segment	closed.pointsMissing	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_segment	closed.floatVectors	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_segment	closed.storedFields	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_segment	closed.termVectors	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_segment	closed.liveDocs	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_segment	closed.fieldInfos	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_segment	closed.metaData	ok	10
+nocfs	core_segment	closed.checkIntegrity	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_segment	closed.numDocs	ok	150/150
+nocfs	core_segment	closed.leaves	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_segment	closed.coreHelper.add	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_segment	closed.readerHelper.add	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_segment	closed.multiReader	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_segment	closed.filterLeaf	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_segment	closed.parallelLeaf	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_directory	child_close	ok	0/1
+nocfs	core_directory	leaves	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_directory	docFreq	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_directory	storedFields	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_directory	termVectors	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_directory	numDocs	ok	309/310
+nocfs	core_directory	close	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_multi	child_close	ok	1/0
+nocfs	core_multi	leaves	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_multi	docFreq	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_multi	storedFields	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_multi	close	ok	0/0
+nocfs	core_parallel_composite	child_close	ok	1/0
+nocfs	core_parallel_composite	leaves	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_parallel_composite	docFreq	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_parallel_composite	storedFields	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_parallel_composite	close	ok	0/0
+nocfs	core_filter_leaf	inner_closed.close	ok	1/0
+nocfs	core_filter_leaf	inner_closed.terms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_filter_leaf	inner_closed.numeric	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_filter_leaf	inner_closed.norms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_filter_leaf	inner_closed.points	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_leaf	inner_closed.pointsMissing	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_leaf	inner_closed.floatVectors	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_leaf	inner_closed.storedFields	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_filter_leaf	inner_closed.termVectors	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_filter_leaf	inner_closed.liveDocs	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_filter_leaf	inner_closed.fieldInfos	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_leaf	inner_closed.metaData	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_filter_leaf	inner_closed.checkIntegrity	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_filter_leaf	inner_closed.numDocs	ok	150/150
+nocfs	core_filter_leaf	inner_closed.leaves	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_filter_leaf	wrapper_closed.close	ok	0/0
+nocfs	core_filter_leaf	wrapper_closed.terms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_leaf	wrapper_closed.numeric	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_leaf	wrapper_closed.norms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_leaf	wrapper_closed.points	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_leaf	wrapper_closed.pointsMissing	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_leaf	wrapper_closed.floatVectors	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_leaf	wrapper_closed.storedFields	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_leaf	wrapper_closed.termVectors	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_leaf	wrapper_closed.liveDocs	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_leaf	wrapper_closed.fieldInfos	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_leaf	wrapper_closed.metaData	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_leaf	wrapper_closed.checkIntegrity	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_leaf	wrapper_closed.numDocs	ok	150/150
+nocfs	core_filter_leaf	wrapper_closed.leaves	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_leaf	wrapper_closed.reader_close	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_parallel_leaf	inner_closed.close	ok	1/0
+nocfs	core_parallel_leaf	inner_closed.terms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_parallel_leaf	inner_closed.numeric	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_parallel_leaf	inner_closed.norms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_parallel_leaf	inner_closed.points	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_parallel_leaf	inner_closed.pointsMissing	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_parallel_leaf	inner_closed.floatVectors	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_parallel_leaf	inner_closed.storedFields	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_parallel_leaf	inner_closed.termVectors	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_parallel_leaf	inner_closed.liveDocs	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_parallel_leaf	inner_closed.fieldInfos	ok	21
+nocfs	core_parallel_leaf	inner_closed.metaData	ok	10
+nocfs	core_parallel_leaf	inner_closed.checkIntegrity	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_parallel_leaf	inner_closed.numDocs	ok	150/150
+nocfs	core_parallel_leaf	inner_closed.leaves	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_parallel_leaf	wrapper_closed.close	ok	0/0
+nocfs	core_parallel_leaf	wrapper_closed.terms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_parallel_leaf	wrapper_closed.numeric	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_parallel_leaf	wrapper_closed.norms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_parallel_leaf	wrapper_closed.points	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_parallel_leaf	wrapper_closed.pointsMissing	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_parallel_leaf	wrapper_closed.floatVectors	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_parallel_leaf	wrapper_closed.storedFields	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_parallel_leaf	wrapper_closed.termVectors	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_parallel_leaf	wrapper_closed.liveDocs	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_parallel_leaf	wrapper_closed.fieldInfos	ok	21
+nocfs	core_parallel_leaf	wrapper_closed.metaData	ok	10
+nocfs	core_parallel_leaf	wrapper_closed.checkIntegrity	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_parallel_leaf	wrapper_closed.numDocs	ok	150/150
+nocfs	core_parallel_leaf	wrapper_closed.leaves	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_parallel_leaf	wrapper_closed.reader_close	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_codec	inner_closed.close	ok	1/0
+nocfs	core_filter_codec	inner_closed.terms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_codec	inner_closed.numeric	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_codec	inner_closed.norms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_codec	inner_closed.points	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_codec	inner_closed.pointsMissing	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_codec	inner_closed.floatVectors	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_codec	inner_closed.storedFields	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_codec	inner_closed.termVectors	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_codec	inner_closed.liveDocs	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_codec	inner_closed.fieldInfos	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_codec	inner_closed.metaData	ok	10
+nocfs	core_filter_codec	inner_closed.checkIntegrity	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_codec	inner_closed.numDocs	ok	150/150
+nocfs	core_filter_codec	inner_closed.leaves	ok	1
+nocfs	core_filter_codec	wrapper_closed.close	ok	0/1
+nocfs	core_filter_codec	wrapper_closed.terms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_codec	wrapper_closed.numeric	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_codec	wrapper_closed.norms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_codec	wrapper_closed.points	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_codec	wrapper_closed.pointsMissing	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_codec	wrapper_closed.floatVectors	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_codec	wrapper_closed.storedFields	err	org.apache.lucene.store.AlreadyClosedException	this FieldsReader is closed
+nocfs	core_filter_codec	wrapper_closed.termVectors	err	org.apache.lucene.store.AlreadyClosedException	Already closed.
+nocfs	core_filter_codec	wrapper_closed.liveDocs	ok	null
+nocfs	core_filter_codec	wrapper_closed.fieldInfos	ok	21
+nocfs	core_filter_codec	wrapper_closed.metaData	ok	10
+nocfs	core_filter_codec	wrapper_closed.checkIntegrity	err	org.apache.lucene.store.AlreadyClosedException	Already closed.
+nocfs	core_filter_codec	wrapper_closed.numDocs	ok	150/150
+nocfs	core_filter_codec	wrapper_closed.leaves	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_codec	wrapper_closed.reader_close	err	java.lang.AssertionError	gen=-1
+nocfs	core_slow_codec	inner_closed.close	ok	1/0
+nocfs	core_slow_codec	inner_closed.terms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_slow_codec	inner_closed.numeric	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_slow_codec	inner_closed.norms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_slow_codec	inner_closed.points	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_slow_codec	inner_closed.pointsMissing	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_slow_codec	inner_closed.floatVectors	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_slow_codec	inner_closed.storedFields	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_slow_codec	inner_closed.termVectors	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_slow_codec	inner_closed.liveDocs	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_slow_codec	inner_closed.fieldInfos	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_slow_codec	inner_closed.metaData	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_slow_codec	inner_closed.checkIntegrity	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_slow_codec	inner_closed.numDocs	ok	150/150
+nocfs	core_slow_codec	inner_closed.leaves	ok	1
+nocfs	core_slow_codec	wrapper_closed.close	ok	0/1
+nocfs	core_slow_codec	wrapper_closed.terms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_slow_codec	wrapper_closed.numeric	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_slow_codec	wrapper_closed.norms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_slow_codec	wrapper_closed.points	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_slow_codec	wrapper_closed.pointsMissing	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_slow_codec	wrapper_closed.floatVectors	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_slow_codec	wrapper_closed.storedFields	ok	storedFields
+nocfs	core_slow_codec	wrapper_closed.termVectors	ok	termVectors
+nocfs	core_slow_codec	wrapper_closed.liveDocs	ok	null
+nocfs	core_slow_codec	wrapper_closed.fieldInfos	ok	21
+nocfs	core_slow_codec	wrapper_closed.metaData	ok	10
+nocfs	core_slow_codec	wrapper_closed.checkIntegrity	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_slow_codec	wrapper_closed.numDocs	ok	150/150
+nocfs	core_slow_codec	wrapper_closed.leaves	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_slow_codec	wrapper_closed.reader_close	ok	closed
+nocfs	core_filter_directory	inner_closed.close	ok	1/0
+nocfs	core_filter_directory	inner_closed.leaves	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_filter_directory	inner_closed.docFreq	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_filter_directory	inner_closed.storedFields	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+nocfs	core_filter_directory	inner_closed.numDocs	ok	309/310
+nocfs	core_filter_directory	inner_closed.version	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_directory	wrapper_closed.close	ok	0/0
+nocfs	core_filter_directory	wrapper_closed.leaves	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_directory	wrapper_closed.docFreq	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_directory	wrapper_closed.storedFields	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+nocfs	core_filter_directory	wrapper_closed.numDocs	ok	309/310
+nocfs	core_filter_directory	wrapper_closed.version	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
 cfs	plain	docs	ok	310/309/3
 cfs	plain	toString	ok	StandardDirectoryReader(segments_5:21 _5(10.5.0):C150 _1(10.5.0):c120/1 _4(10.5.0):c40)
 cfs	plain	leaf0.toString	ok	_5(10.5.0):C150
@@ -1323,6 +1499,182 @@ cfs	asserting_fieldfilter	numeric	err	java.lang.AssertionError	<null>
 cfs	asserting_fieldfilter	binary	ok	null
 cfs	asserting_fieldfilter	norms	ok	null
 cfs	asserting_fieldfilter	points	ok	points
+cfs	core_segment	doc.maxDoc	err	java.lang.IndexOutOfBoundsException	Index 150 out of bounds for length 150
+cfs	core_segment	doc.minus1	err	java.lang.IndexOutOfBoundsException	Index -1 out of bounds for length 150
+cfs	core_segment	prefetch.maxDoc	err	java.lang.IndexOutOfBoundsException	Index 150 out of bounds for length 150
+cfs	core_segment	close	ok	0/0
+cfs	core_segment	closed.terms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_segment	closed.numeric	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_segment	closed.norms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_segment	closed.points	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_segment	closed.pointsMissing	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_segment	closed.floatVectors	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_segment	closed.storedFields	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_segment	closed.termVectors	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_segment	closed.liveDocs	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_segment	closed.fieldInfos	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_segment	closed.metaData	ok	10
+cfs	core_segment	closed.checkIntegrity	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_segment	closed.numDocs	ok	150/150
+cfs	core_segment	closed.leaves	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_segment	closed.coreHelper.add	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_segment	closed.readerHelper.add	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_segment	closed.multiReader	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_segment	closed.filterLeaf	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_segment	closed.parallelLeaf	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_directory	child_close	ok	0/1
+cfs	core_directory	leaves	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_directory	docFreq	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_directory	storedFields	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_directory	termVectors	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_directory	numDocs	ok	309/310
+cfs	core_directory	close	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_multi	child_close	ok	1/0
+cfs	core_multi	leaves	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_multi	docFreq	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_multi	storedFields	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_multi	close	ok	0/0
+cfs	core_parallel_composite	child_close	ok	1/0
+cfs	core_parallel_composite	leaves	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_parallel_composite	docFreq	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_parallel_composite	storedFields	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_parallel_composite	close	ok	0/0
+cfs	core_filter_leaf	inner_closed.close	ok	1/0
+cfs	core_filter_leaf	inner_closed.terms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_filter_leaf	inner_closed.numeric	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_filter_leaf	inner_closed.norms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_filter_leaf	inner_closed.points	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_leaf	inner_closed.pointsMissing	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_leaf	inner_closed.floatVectors	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_leaf	inner_closed.storedFields	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_filter_leaf	inner_closed.termVectors	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_filter_leaf	inner_closed.liveDocs	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_filter_leaf	inner_closed.fieldInfos	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_leaf	inner_closed.metaData	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_filter_leaf	inner_closed.checkIntegrity	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_filter_leaf	inner_closed.numDocs	ok	150/150
+cfs	core_filter_leaf	inner_closed.leaves	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_filter_leaf	wrapper_closed.close	ok	0/0
+cfs	core_filter_leaf	wrapper_closed.terms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_leaf	wrapper_closed.numeric	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_leaf	wrapper_closed.norms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_leaf	wrapper_closed.points	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_leaf	wrapper_closed.pointsMissing	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_leaf	wrapper_closed.floatVectors	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_leaf	wrapper_closed.storedFields	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_leaf	wrapper_closed.termVectors	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_leaf	wrapper_closed.liveDocs	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_leaf	wrapper_closed.fieldInfos	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_leaf	wrapper_closed.metaData	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_leaf	wrapper_closed.checkIntegrity	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_leaf	wrapper_closed.numDocs	ok	150/150
+cfs	core_filter_leaf	wrapper_closed.leaves	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_leaf	wrapper_closed.reader_close	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_parallel_leaf	inner_closed.close	ok	1/0
+cfs	core_parallel_leaf	inner_closed.terms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_parallel_leaf	inner_closed.numeric	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_parallel_leaf	inner_closed.norms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_parallel_leaf	inner_closed.points	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_parallel_leaf	inner_closed.pointsMissing	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_parallel_leaf	inner_closed.floatVectors	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_parallel_leaf	inner_closed.storedFields	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_parallel_leaf	inner_closed.termVectors	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_parallel_leaf	inner_closed.liveDocs	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_parallel_leaf	inner_closed.fieldInfos	ok	21
+cfs	core_parallel_leaf	inner_closed.metaData	ok	10
+cfs	core_parallel_leaf	inner_closed.checkIntegrity	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_parallel_leaf	inner_closed.numDocs	ok	150/150
+cfs	core_parallel_leaf	inner_closed.leaves	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_parallel_leaf	wrapper_closed.close	ok	0/0
+cfs	core_parallel_leaf	wrapper_closed.terms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_parallel_leaf	wrapper_closed.numeric	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_parallel_leaf	wrapper_closed.norms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_parallel_leaf	wrapper_closed.points	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_parallel_leaf	wrapper_closed.pointsMissing	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_parallel_leaf	wrapper_closed.floatVectors	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_parallel_leaf	wrapper_closed.storedFields	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_parallel_leaf	wrapper_closed.termVectors	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_parallel_leaf	wrapper_closed.liveDocs	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_parallel_leaf	wrapper_closed.fieldInfos	ok	21
+cfs	core_parallel_leaf	wrapper_closed.metaData	ok	10
+cfs	core_parallel_leaf	wrapper_closed.checkIntegrity	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_parallel_leaf	wrapper_closed.numDocs	ok	150/150
+cfs	core_parallel_leaf	wrapper_closed.leaves	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_parallel_leaf	wrapper_closed.reader_close	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_codec	inner_closed.close	ok	1/0
+cfs	core_filter_codec	inner_closed.terms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_codec	inner_closed.numeric	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_codec	inner_closed.norms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_codec	inner_closed.points	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_codec	inner_closed.pointsMissing	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_codec	inner_closed.floatVectors	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_codec	inner_closed.storedFields	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_codec	inner_closed.termVectors	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_codec	inner_closed.liveDocs	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_codec	inner_closed.fieldInfos	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_codec	inner_closed.metaData	ok	10
+cfs	core_filter_codec	inner_closed.checkIntegrity	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_codec	inner_closed.numDocs	ok	150/150
+cfs	core_filter_codec	inner_closed.leaves	ok	1
+cfs	core_filter_codec	wrapper_closed.close	ok	0/1
+cfs	core_filter_codec	wrapper_closed.terms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_codec	wrapper_closed.numeric	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_codec	wrapper_closed.norms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_codec	wrapper_closed.points	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_codec	wrapper_closed.pointsMissing	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_codec	wrapper_closed.floatVectors	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_codec	wrapper_closed.storedFields	err	org.apache.lucene.store.AlreadyClosedException	this FieldsReader is closed
+cfs	core_filter_codec	wrapper_closed.termVectors	err	org.apache.lucene.store.AlreadyClosedException	Already closed.
+cfs	core_filter_codec	wrapper_closed.liveDocs	ok	null
+cfs	core_filter_codec	wrapper_closed.fieldInfos	ok	21
+cfs	core_filter_codec	wrapper_closed.metaData	ok	10
+cfs	core_filter_codec	wrapper_closed.checkIntegrity	err	org.apache.lucene.store.AlreadyClosedException	Already closed.
+cfs	core_filter_codec	wrapper_closed.numDocs	ok	150/150
+cfs	core_filter_codec	wrapper_closed.leaves	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_codec	wrapper_closed.reader_close	err	java.lang.AssertionError	gen=-1
+cfs	core_slow_codec	inner_closed.close	ok	1/0
+cfs	core_slow_codec	inner_closed.terms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_slow_codec	inner_closed.numeric	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_slow_codec	inner_closed.norms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_slow_codec	inner_closed.points	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_slow_codec	inner_closed.pointsMissing	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_slow_codec	inner_closed.floatVectors	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_slow_codec	inner_closed.storedFields	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_slow_codec	inner_closed.termVectors	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_slow_codec	inner_closed.liveDocs	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_slow_codec	inner_closed.fieldInfos	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_slow_codec	inner_closed.metaData	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_slow_codec	inner_closed.checkIntegrity	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_slow_codec	inner_closed.numDocs	ok	150/150
+cfs	core_slow_codec	inner_closed.leaves	ok	1
+cfs	core_slow_codec	wrapper_closed.close	ok	0/1
+cfs	core_slow_codec	wrapper_closed.terms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_slow_codec	wrapper_closed.numeric	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_slow_codec	wrapper_closed.norms	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_slow_codec	wrapper_closed.points	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_slow_codec	wrapper_closed.pointsMissing	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_slow_codec	wrapper_closed.floatVectors	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_slow_codec	wrapper_closed.storedFields	ok	storedFields
+cfs	core_slow_codec	wrapper_closed.termVectors	ok	termVectors
+cfs	core_slow_codec	wrapper_closed.liveDocs	ok	null
+cfs	core_slow_codec	wrapper_closed.fieldInfos	ok	21
+cfs	core_slow_codec	wrapper_closed.metaData	ok	10
+cfs	core_slow_codec	wrapper_closed.checkIntegrity	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_slow_codec	wrapper_closed.numDocs	ok	150/150
+cfs	core_slow_codec	wrapper_closed.leaves	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_slow_codec	wrapper_closed.reader_close	ok	closed
+cfs	core_filter_directory	inner_closed.close	ok	1/0
+cfs	core_filter_directory	inner_closed.leaves	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_filter_directory	inner_closed.docFreq	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_filter_directory	inner_closed.storedFields	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader cannot be used anymore as one of its child readers was closed
+cfs	core_filter_directory	inner_closed.numDocs	ok	309/310
+cfs	core_filter_directory	inner_closed.version	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_directory	wrapper_closed.close	ok	0/0
+cfs	core_filter_directory	wrapper_closed.leaves	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_directory	wrapper_closed.docFreq	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_directory	wrapper_closed.storedFields	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
+cfs	core_filter_directory	wrapper_closed.numDocs	ok	309/310
+cfs	core_filter_directory	wrapper_closed.version	err	org.apache.lucene.store.AlreadyClosedException	this IndexReader is closed
 points	tracker	p.compares	ok	99a3aebbcb741b3d/29 1,2,3,4,5,6,5,6,4,5,6,5,6,3,4,5,4,5,2,3,4,5,4,5,3,4,5,4,5
 points	tracker	p.stack	ok	8000000080000000-8000271680002718 800000008000180a-8000271680002718 800014ab8000180a-8000271680002718 80001f158000180a-8000271680002718 80001f158000180b-800026ee80002715 
 points	tracker	p.contains	ok	true false

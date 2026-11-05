@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
-use crate::index::index_reader::{IndexReader, StoredFields};
+use crate::index::index_reader::{IndexReader, IndexReaderCore, StoredFields};
 use crate::index::leaf_reader::TermVectors;
 use crate::index::multi_reader::{MultiStoredFields, MultiTermVectors};
 use crate::index::terms::TermsEnum;
@@ -44,12 +44,31 @@ impl BaseCompositeReader {
     /// `is_directory_reader` selects which failure Lucene raises when the total
     /// document count overflows: a corrupt index for a `DirectoryReader`, an
     /// illegal argument for a `MultiReader` the caller assembled.
-    pub fn new(sub_readers: Vec<Arc<dyn IndexReader>>, is_directory_reader: bool) -> Result<Self> {
+    ///
+    /// `parent` is the [`IndexReaderCore`] of the composite reader being built:
+    /// each sub-reader registers it as a parent while the doc bases are
+    /// computed, as Java's constructor does with `r.registerParentReader(this)`
+    /// (`BaseCompositeReader.java:83-88`), so that closing a sub-reader makes
+    /// the composite fail `ensureOpen()`. The composite's own core exists
+    /// before the composite does, which is what lets the registration happen
+    /// here, inside the constructor, as in Java.
+    ///
+    /// # Errors
+    ///
+    /// [`LuceneError::AlreadyClosed`] when a sub-reader is closed (its
+    /// `registerParentReader` calls `ensureOpen()`), then the document-limit
+    /// failures described above.
+    pub fn new(
+        sub_readers: Vec<Arc<dyn IndexReader>>,
+        is_directory_reader: bool,
+        parent: &IndexReaderCore,
+    ) -> Result<Self> {
         let mut starts = vec![0i32; sub_readers.len() + 1];
         let mut max_doc: i64 = 0;
         for (i, reader) in sub_readers.iter().enumerate() {
             starts[i] = max_doc as i32;
             max_doc += i64::from(reader.max_doc());
+            reader.core().register_parent_core(parent)?;
         }
 
         // `if (maxDoc > IndexWriter.getActualMaxDocs())`
@@ -271,7 +290,7 @@ impl<T: TermsEnum + ?Sized> BaseTermsEnum for T {}
 mod tests {
     use super::*;
     use crate::codecs::stub::StoredFieldVisitor;
-    use crate::index::index_reader::{CacheHelper, IndexReaderCore};
+    use crate::index::index_reader::CacheHelper;
     use crate::index::reader_context::IndexReaderContext;
     use crate::index::terms::EmptyFields;
     use crate::index::Fields;
@@ -383,7 +402,8 @@ mod tests {
     }
 
     fn base_of(sizes: &[i32]) -> BaseCompositeReader {
-        BaseCompositeReader::new(stubs(sizes), false).expect("composite over stub readers")
+        BaseCompositeReader::new(stubs(sizes), false, &IndexReaderCore::new())
+            .expect("composite over stub readers")
     }
 
     /// The document limit is `IndexWriter.getActualMaxDocs()`, read when the
@@ -409,7 +429,8 @@ mod tests {
         set_max_docs(LIMIT).unwrap();
 
         let sizes = [1_000_000_000, 1_000_000_001];
-        let composite = BaseCompositeReader::new(stubs(&sizes), false).unwrap_err();
+        let composite =
+            BaseCompositeReader::new(stubs(&sizes), false, &IndexReaderCore::new()).unwrap_err();
         assert_eq!(
             composite.to_string(),
             LuceneError::IllegalArgument(
@@ -421,7 +442,8 @@ mod tests {
         );
         // A directory reader's failure names `Arrays.toString(subReaders)` as
         // its resource (`BaseCompositeReader.java:94-99`).
-        let directory = BaseCompositeReader::new(stubs(&sizes), true).unwrap_err();
+        let directory =
+            BaseCompositeReader::new(stubs(&sizes), true, &IndexReaderCore::new()).unwrap_err();
         assert_eq!(
             directory.to_string(),
             LuceneError::corrupt_index(

@@ -22,7 +22,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use rucene::error::Result;
-use rucene::index::index_reader::{CacheHelper, IndexReaderCore};
+use rucene::index::index_reader::CacheHelper;
 use rucene::index::LeafReader;
 use rucene::util::{Bits, MatchNoBits};
 
@@ -32,7 +32,11 @@ use rucene::util::{Bits, MatchNoBits};
 /// `numDocs()` is 0), and the reader has no reader cache helper, since its
 /// live documents differ from the wrapped reader's.
 pub struct AllDeletedFilterReader {
-    core: IndexReaderCore,
+    /// The `FilterLeafReader` this class extends: the reader state of this
+    /// reader (its own core, registered as a parent of `in`) and the members
+    /// it inherits.
+    base: rucene::index::filter_reader::FilterLeafReader,
+    /// Java's protected `in`: the reader `base` wraps.
     r#in: Arc<dyn LeafReader>,
     live_docs: MatchNoBits,
 }
@@ -44,9 +48,11 @@ impl AllDeletedFilterReader {
     ///
     /// The `AssertionError` of `assert maxDoc() == 0 || hasDeletions()`.
     pub fn new(r#in: Arc<dyn LeafReader>) -> Result<Self> {
+        // `super(in)`
+        let base = rucene::index::filter_reader::FilterLeafReader::new(Arc::clone(&r#in))?;
         let live_docs = MatchNoBits::new(r#in.max_doc() as usize);
         let reader = AllDeletedFilterReader {
-            core: super::filter_leaf_core(&r#in),
+            base,
             r#in,
             live_docs,
         };
@@ -75,7 +81,7 @@ impl fmt::Display for AllDeletedFilterReader {
 }
 
 impl LeafReader for AllDeletedFilterReader {
-    forward_leaf_reader!(filter r#in;
+    forward_leaf_reader!(filter base;
         core,
         filter_leaf_reader_delegate,
         term_vectors,

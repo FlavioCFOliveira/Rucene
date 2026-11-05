@@ -709,6 +709,168 @@ public final class IndexWrappersOracle {
     rec(c, "asserting_fieldfilter", "norms", () -> a.getNormValues("tv"));
     rec(c, "asserting_fieldfilter", "points", () -> a.getPointValues("p_int") == null ? "null" : "points");
     reader.close();
+    coreLifecycle(c, corpus);
+  }
+
+  /** What a reader answers once closed: each member reports its ensureOpen() outcome. */
+  static void probeClosed(String c, String s, String what, LeafReader r) {
+    rec(c, s, what + ".terms", () -> r.terms("body") == null ? "null" : "terms");
+    rec(c, s, what + ".numeric", () -> r.getNumericDocValues("dv_num") == null ? "null" : "dv");
+    rec(c, s, what + ".norms", () -> r.getNormValues("body") == null ? "null" : "norms");
+    rec(c, s, what + ".points", () -> r.getPointValues("p_int") == null ? "null" : "points");
+    rec(c, s, what + ".pointsMissing", () -> r.getPointValues("nope") == null ? "null" : "points");
+    rec(c, s, what + ".floatVectors", () -> r.getFloatVectorValues("vf") == null ? "null" : "vectors");
+    rec(c, s, what + ".storedFields", () -> { r.storedFields(); return "storedFields"; });
+    rec(c, s, what + ".termVectors", () -> { r.termVectors(); return "termVectors"; });
+    rec(c, s, what + ".liveDocs", () -> r.getLiveDocs() == null ? "null" : "bits");
+    rec(c, s, what + ".fieldInfos", () -> r.getFieldInfos().size());
+    rec(c, s, what + ".metaData", () -> r.getMetaData().createdVersionMajor());
+    rec(c, s, what + ".checkIntegrity", () -> { r.checkIntegrity(); return "checked"; });
+    rec(c, s, what + ".numDocs", () -> r.numDocs() + "/" + r.maxDoc());
+    rec(c, s, what + ".leaves", () -> r.leaves().size());
+  }
+
+  /** A FilterLeafReader of core: the class is abstract, its subclasses supply the cache helpers. */
+  static LeafReader coreFilter(LeafReader in) {
+    return new org.apache.lucene.index.FilterLeafReader(in) {
+      @Override
+      public CacheHelper getCoreCacheHelper() {
+        return in.getCoreCacheHelper();
+      }
+
+      @Override
+      public CacheHelper getReaderCacheHelper() {
+        return in.getReaderCacheHelper();
+      }
+    };
+  }
+
+  /** A FilterCodecReader of core, as {@link #coreFilter}. */
+  static CodecReader coreCodecFilter(CodecReader in) {
+    return new org.apache.lucene.index.FilterCodecReader(in) {
+      @Override
+      public CacheHelper getCoreCacheHelper() {
+        return in.getCoreCacheHelper();
+      }
+
+      @Override
+      public CacheHelper getReaderCacheHelper() {
+        return in.getReaderCacheHelper();
+      }
+    };
+  }
+
+  /**
+   * The reader state of the core readers (rmp #344 round 2): every IndexReader has its own
+   * refCount and closed state; a composite (BaseCompositeReader), a FilterLeafReader and a
+   * ParallelLeafReader register as parents of their sub-readers; SegmentReader and CodecReader
+   * call ensureOpen() where Java's members do.
+   */
+  static void coreLifecycle(String c, File corpus) throws Exception {
+    // SegmentReader: the bounds of CodecReader.storedFields(), then every member once closed
+    {
+      DirectoryReader reader = DirectoryReader.open(loadCorpus(corpus, c));
+      CodecReader seg = (CodecReader) reader.leaves().get(0).reader();
+      IndexReader.CacheHelper core = seg.getCoreCacheHelper();
+      IndexReader.CacheHelper mine = seg.getReaderCacheHelper();
+      String s = "core_segment";
+      rec(c, s, "doc.maxDoc", () -> { seg.storedFields().document(seg.maxDoc()); return "doc"; });
+      rec(c, s, "doc.minus1", () -> { seg.storedFields().document(-1); return "doc"; });
+      rec(c, s, "prefetch.maxDoc", () -> { seg.storedFields().prefetch(seg.maxDoc()); return "prefetch"; });
+      rec(c, s, "close", () -> {
+        reader.close();
+        return seg.getRefCount() + "/" + reader.getRefCount();
+      });
+      probeClosed(c, s, "closed", seg);
+      rec(c, s, "closed.coreHelper.add", () -> { core.addClosedListener(k -> {}); return "added"; });
+      rec(c, s, "closed.readerHelper.add", () -> { mine.addClosedListener(k -> {}); return "added"; });
+      // registerParentReader calls ensureOpen() on the closed child
+      rec(c, s, "closed.multiReader", () -> new org.apache.lucene.index.MultiReader(seg).maxDoc());
+      rec(c, s, "closed.filterLeaf", () -> coreFilter(seg).maxDoc());
+      rec(c, s, "closed.parallelLeaf", () -> new org.apache.lucene.index.ParallelLeafReader(seg).maxDoc());
+    }
+    // StandardDirectoryReader is a parent of its segment readers
+    {
+      DirectoryReader reader = DirectoryReader.open(loadCorpus(corpus, c));
+      LeafReader seg = reader.leaves().get(0).reader();
+      String s = "core_directory";
+      rec(c, s, "child_close", () -> {
+        seg.close();
+        return seg.getRefCount() + "/" + reader.getRefCount();
+      });
+      rec(c, s, "leaves", () -> reader.leaves().size());
+      rec(c, s, "docFreq", () -> reader.docFreq(new org.apache.lucene.index.Term("body", "the")));
+      rec(c, s, "storedFields", () -> { reader.storedFields(); return "storedFields"; });
+      rec(c, s, "termVectors", () -> { reader.termVectors(); return "termVectors"; });
+      rec(c, s, "numDocs", () -> reader.numDocs() + "/" + reader.maxDoc());
+      rec(c, s, "close", () -> { reader.close(); return "closed"; });
+    }
+    // MultiReader and ParallelCompositeReader are parents of their sub-readers, transitively
+    for (String name : new String[] {"multi", "parallel_composite"}) {
+      DirectoryReader reader = DirectoryReader.open(loadCorpus(corpus, c));
+      IndexReader composite =
+          name.equals("multi")
+              ? new org.apache.lucene.index.MultiReader(reader)
+              : new org.apache.lucene.index.ParallelCompositeReader(reader);
+      String s = "core_" + name;
+      rec(c, s, "child_close", () -> {
+        reader.close();
+        return composite.getRefCount() + "/" + reader.getRefCount();
+      });
+      rec(c, s, "leaves", () -> composite.leaves().size());
+      rec(c, s, "docFreq", () -> composite.docFreq(new org.apache.lucene.index.Term("body", "the")));
+      rec(c, s, "storedFields", () -> { composite.storedFields(); return "storedFields"; });
+      rec(c, s, "close", () -> { composite.close(); return composite.getRefCount() + "/" + reader.getRefCount(); });
+    }
+    // FilterLeafReader, ParallelLeafReader (parents of the wrapped reader, close it when closed),
+    // FilterCodecReader (calls its doClose) and SlowCodecReaderWrapper (does nothing on close)
+    String[] names = {"filter_leaf", "parallel_leaf", "filter_codec", "slow_codec"};
+    for (String name : names) {
+      for (String what : new String[] {"inner_closed", "wrapper_closed"}) {
+        DirectoryReader reader = DirectoryReader.open(loadCorpus(corpus, c));
+        LeafReader in = reader.leaves().get(0).reader();
+        LeafReader w =
+            switch (name) {
+              case "filter_leaf" -> coreFilter(in);
+              case "parallel_leaf" -> new org.apache.lucene.index.ParallelLeafReader(in);
+              case "filter_codec" -> coreCodecFilter((CodecReader) in);
+              default -> org.apache.lucene.index.SlowCodecReaderWrapper.wrap(coreFilter(in));
+            };
+        String s = "core_" + name;
+        rec(c, s, what + ".close", () -> {
+          if (what.equals("inner_closed")) {
+            reader.close();
+          } else {
+            w.close();
+          }
+          return w.getRefCount() + "/" + in.getRefCount();
+        });
+        probeClosed(c, s, what, w);
+        if (what.equals("wrapper_closed")) {
+          rec(c, s, what + ".reader_close", () -> { reader.close(); return "closed"; });
+        }
+      }
+    }
+    // FilterDirectoryReader (ExitableDirectoryReader): a parent of its wrapped leaves, closes the
+    // wrapped reader when closed
+    for (String what : new String[] {"inner_closed", "wrapper_closed"}) {
+      DirectoryReader reader = DirectoryReader.open(loadCorpus(corpus, c));
+      DirectoryReader w = org.apache.lucene.index.ExitableDirectoryReader.wrap(reader, () -> false);
+      String s = "core_filter_directory";
+      rec(c, s, what + ".close", () -> {
+        if (what.equals("inner_closed")) {
+          reader.close();
+        } else {
+          w.close();
+        }
+        return w.getRefCount() + "/" + reader.getRefCount();
+      });
+      rec(c, s, what + ".leaves", () -> w.leaves().size());
+      rec(c, s, what + ".docFreq", () -> w.docFreq(new org.apache.lucene.index.Term("body", "the")));
+      rec(c, s, what + ".storedFields", () -> { w.storedFields(); return "storedFields"; });
+      rec(c, s, what + ".numDocs", () -> w.numDocs() + "/" + w.maxDoc());
+      rec(c, s, what + ".version", () -> w.getVersion() > 0);
+    }
   }
 
   // -------------------------------------------------------------------------------------------

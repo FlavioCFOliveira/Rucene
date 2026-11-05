@@ -25,7 +25,7 @@ use std::sync::Arc;
 use randomizedtesting::jdk::random::Random;
 use randomizedtesting::jdk::util::shuffle;
 use rucene::error::{LuceneError, Result};
-use rucene::index::index_reader::{CacheHelper, IndexReaderCore, StoredFields};
+use rucene::index::index_reader::{CacheHelper, StoredFields};
 use rucene::index::{
     FieldInfo, FieldInfos, LeafReader, StoredFieldVisitor, StoredFieldVisitorStatus,
 };
@@ -35,7 +35,11 @@ use rucene::index::{
 /// renumbered in a random order, and its stored fields reporting the
 /// renumbered infos.
 pub struct MismatchedLeafReader {
-    core: IndexReaderCore,
+    /// The `FilterLeafReader` this class extends: the reader state of this
+    /// reader (its own core, registered as a parent of `in`) and the members
+    /// it inherits.
+    base: rucene::index::filter_reader::FilterLeafReader,
+    /// Java's protected `in`: the reader `base` wraps.
     r#in: Arc<dyn LeafReader>,
     shuffled: Arc<FieldInfos>,
 }
@@ -48,9 +52,11 @@ impl MismatchedLeafReader {
     ///
     /// What [`shuffle_infos`] raises.
     pub fn new(r#in: Arc<dyn LeafReader>, random: &dyn Random) -> Result<Self> {
+        // `super(in)`
+        let base = rucene::index::filter_reader::FilterLeafReader::new(Arc::clone(&r#in))?;
         let shuffled = Arc::new(shuffle_infos(&r#in.get_field_infos(), random)?);
         Ok(MismatchedLeafReader {
-            core: super::filter_leaf_core(&r#in),
+            base,
             r#in,
             shuffled,
         })
@@ -119,7 +125,7 @@ impl fmt::Display for MismatchedLeafReader {
 }
 
 impl LeafReader for MismatchedLeafReader {
-    forward_leaf_reader!(filter r#in;
+    forward_leaf_reader!(filter base;
         core,
         filter_leaf_reader_delegate,
         term_vectors,
