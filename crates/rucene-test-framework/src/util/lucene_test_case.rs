@@ -1156,6 +1156,44 @@ impl LuceneTestCase {
         it
     }
 
+    /// `slowFileExists(dir, fileName)`: whether `fileName` exists, found by
+    /// opening it with `IOContext.READONCE` (and closing it): `false` on a
+    /// `NoSuchFileException` or `FileNotFoundException`.
+    ///
+    /// Ported ahead of rmp #348 under the sprint's cycle rule:
+    /// `MockDirectoryWrapper.openInput` (rmp #343) calls it.
+    ///
+    /// # Errors
+    ///
+    /// Any other failure opening or closing the file.
+    pub fn slow_file_exists(
+        dir: &dyn rucene::store::Directory,
+        file_name: &str,
+    ) -> rucene::error::Result<bool> {
+        use rucene::error::LuceneError;
+        use rucene::store::java_nio_file::{java_class_of, NO_SUCH_FILE_EXCEPTION};
+        match dir.open_input(file_name, &*rucene::store::READONCE_IO_CONTEXT) {
+            Ok(mut input) => {
+                input.close()?;
+                Ok(true)
+            }
+            // An `io::Error` of kind `NotFound` that carries no Java class
+            // stands for one of the two (an OS error the port did not name).
+            Err(LuceneError::Io(e))
+                if matches!(
+                    java_class_of(&e),
+                    NO_SUCH_FILE_EXCEPTION | "java.io.FileNotFoundException"
+                ) || (e.kind() == std::io::ErrorKind::NotFound
+                    && rucene::store::java_nio_file::java_exception_of(&e).is_none()) =>
+            {
+                Ok(false)
+            }
+            // `IndexNotFoundException extends FileNotFoundException`.
+            Err(LuceneError::IndexNotFound(_)) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
     /// `createTempDir()`: `createTempDir("tempDir")`.
     ///
     /// # Panics

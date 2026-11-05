@@ -101,3 +101,27 @@ write the fixtures (`../*.tsv`) the crate's parity tests (`src/tests/`) read.
   `RamUsageTester` (`_ramusage.tsv`). The Rust side is
   `crates/rucene-test-framework/tests/test_util_oracle.rs`, `test_util_index.rs`
   (`_members.tsv`) and `ram_usage_tester_oracle.rs` (`_ramusage.tsv`).
+* **The store wrappers of `org.apache.lucene.tests.store` (rmp #343):**
+  `org.apache.lucene.tests.store.MockDirectoryWrapperOracle` writes
+  `crates/rucene-test-framework/tests/fixtures/mdw_index.tsv` (the files, as
+  hex, of a small index written with the default codec: 5 documents, a stored
+  `StringField` and a `TextField`, no compound files, no doc values) and
+  `mdw_steps.tsv`: per scenario, seed and step, the call and its outcome
+  (`ok<TAB>value` or `err<TAB>class<TAB>message`, plus the cause of a plain
+  `RuntimeException`). The scenarios drive `MockDirectoryWrapper` over a
+  `ByteBuffersDirectory` with fixed seeds: random `IOException`s on write and
+  on open, open-file tracking and the close-time checks, `Failure`s (counting
+  the failure points of each call, and firing on a `deleteFile` stack frame),
+  disk full, `crash()` of synthetic unsynced files (`alwaysCorrupt` too),
+  `crash()`, `checkIndexOnClose`, `corruptUnknownFiles` and the
+  unreferenced-files check over the index, the slow open/closers and
+  throttling; and `SerialIOCountingDirectory` counts on a fixed read pattern,
+  `CorruptingIndexOutput` and `RawDirectoryWrapper`. Each scenario that draws
+  ends with the wrapper's next `randomState.nextLong()`, which pins the number
+  of draws. The Rust side is
+  `crates/rucene-test-framework/tests/mock_directory_wrapper_oracle.rs`, which
+  replays every scenario and compares the rows; its `KNOWN_CORE_DIVERGENCES`
+  lists the `close dir` rows whose `CheckIndex` message differs for core
+  reasons, and fails when one of them starts to match. The index's segment id
+  is random, so the two files change together on every run and must be
+  copied together.

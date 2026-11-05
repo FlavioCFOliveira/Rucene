@@ -16,6 +16,8 @@ org.apache.lucene.codecs.simpletext.SimpleTextOracle
 org.apache.lucene.tests.codecs.TestCodecsOracle
 # The helpers of org.apache.lucene.tests.util (rmp #342)
 org.apache.lucene.tests.util.TestUtilOracle
+# The store wrappers of org.apache.lucene.tests.store (rmp #343)
+org.apache.lucene.tests.store.MockDirectoryWrapperOracle
 # The other lucene/codecs formats: PostingsFormatOracle <prefix> <kind> <format> <extensions>
 org.apache.lucene.codecs.simpletext.PostingsFormatOracle fst50 postings FST50 tfp
 org.apache.lucene.codecs.simpletext.PostingsFormatOracle fixedgap postings LuceneFixedGap tib tii

@@ -1049,9 +1049,12 @@ impl SegmentCommitInfo {
         if self.size_in_bytes != -1 {
             return Ok(self.size_in_bytes);
         }
+        // `for (final String fileName : files())`: Java's `HashSet` order,
+        // which decides the order of the `fileLength` calls and so which
+        // missing file is reported first.
         let mut sum = 0i64;
-        for file in self.files()? {
-            sum += self.info.directory.file_length(&file)?;
+        for file in self.files_ordered()?.iter() {
+            sum += self.info.directory.file_length(file)?;
         }
         Ok(sum)
     }
@@ -1061,9 +1064,11 @@ impl SegmentCommitInfo {
     /// Equivalent to `SegmentCommitInfo.sizeInBytes()`.
     pub fn size_in_bytes(&mut self) -> Result<i64> {
         if self.size_in_bytes == -1 {
+            // `for (final String fileName : files())`, in Java's `HashSet`
+            // order (`SegmentCommitInfo.java:226-236`).
             let mut sum = 0i64;
-            for file in self.files()? {
-                sum += self.info.directory.file_length(&file)?;
+            for file in self.files_ordered()?.iter() {
+                sum += self.info.directory.file_length(file)?;
             }
             self.size_in_bytes = sum;
         }

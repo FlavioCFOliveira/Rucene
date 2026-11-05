@@ -4989,11 +4989,14 @@ impl std::fmt::Debug for BufferedChecksumIndexInput {
 
 impl BufferedChecksumIndexInput {
     /// Wraps `main` so that all bytes read update an internal CRC-32.
+    ///
+    /// The resource description is `"BufferedChecksumIndexInput(" + main +
+    /// ")"` (`BufferedChecksumIndexInput.java:36`), whose `main` is
+    /// `main.toString()`: [`DataInput::to_java_string`], which differs from
+    /// the resource description for an input that overrides `toString()`
+    /// (`MockIndexInputWrapper`).
     pub fn new(main: Box<dyn IndexInput>) -> Self {
-        let resource_description = format!(
-            "BufferedChecksumIndexInput({})",
-            main.resource_description()
-        );
+        let resource_description = format!("BufferedChecksumIndexInput({})", main.to_java_string());
         Self {
             main,
             digest: BufferedChecksum::new(),
@@ -5198,6 +5201,13 @@ pub trait Directory: Send + Sync {
     /// Copies `src` from `from` into a new file `dest` in this directory.
     ///
     /// The supplied `context` is used only for opening the destination file.
+    ///
+    /// Equivalent to `Directory.copyFrom` (`Directory.java:177-189`): the
+    /// input and the output are the resources of one `try`, closed in reverse
+    /// order (output, then input) whatever happens, with the first failure
+    /// winning; `dest` is deleted, ignoring failures, unless the copy itself
+    /// succeeded (a failure closing a stream after a successful copy keeps
+    /// the file).
     fn copy_from(
         &self,
         from: &dyn Directory,
@@ -5205,17 +5215,25 @@ pub trait Directory: Send + Sync {
         dest: &str,
         context: &dyn IOContext,
     ) -> Result<()> {
+        let mut success = false;
         let result: Result<()> = (|| {
-            let mut src_input = from.open_input(src, &*READONCE_IO_CONTEXT)?;
-            let len = src_input.length();
-            let mut dest_output = self.create_output(dest, context)?;
-            dest_output.copy_bytes(&mut *src_input, len)?;
-            drop(src_input);
-            dest_output.close()?;
-            Ok(())
+            let mut is = from.open_input(src, &*READONCE_IO_CONTEXT)?;
+            let mut os = match self.create_output(dest, context) {
+                Ok(os) => os,
+                Err(e) => {
+                    let _suppressed = is.close();
+                    return Err(e);
+                }
+            };
+            let len = is.length();
+            let copied = os.copy_bytes(&mut *is, len);
+            success = copied.is_ok();
+            let os_closed = os.close();
+            let is_closed = is.close();
+            copied.and(os_closed).and(is_closed)
         })();
-        if result.is_err() {
-            // Best-effort cleanup of a partial destination file on failure.
+        if !success {
+            // IOUtils.deleteFilesIgnoringExceptions(this, dest)
             let _ = self.delete_file(dest);
         }
         result
@@ -7895,13 +7913,12 @@ impl FileEntry {
     fn open_input(&self) -> Result<Box<dyn IndexInput>> {
         let content = self.content.lock().expect("content mutex poisoned");
         let input = content.as_ref().ok_or_else(|| {
-            LuceneError::Io(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                format!(
-                    "Can't open a file still open for writing: {}",
-                    self.file_name
-                ),
-            ))
+            // `new AccessDeniedException("Can't open a file still open for
+            // writing: " + fileName)` (`ByteBuffersDirectory.java:244`).
+            LuceneError::Io(nio::access_denied_exception(format!(
+                "Can't open a file still open for writing: {}",
+                self.file_name
+            )))
         })?;
         input.clone_input()
     }
@@ -7990,10 +8007,8 @@ impl Directory for ByteBuffersDirectory {
         self.ensure_open()?;
         let mut files = self.files.lock().expect("files mutex poisoned");
         if files.remove(name).is_none() {
-            return Err(LuceneError::Io(io::Error::new(
-                io::ErrorKind::NotFound,
-                name,
-            )));
+            // `new NoSuchFileException(name)` (`ByteBuffersDirectory.java:134`).
+            return Err(LuceneError::Io(nio::no_such_file_exception(name)));
         }
         Ok(())
     }
@@ -8001,9 +8016,10 @@ impl Directory for ByteBuffersDirectory {
     fn file_length(&self, name: &str) -> Result<i64> {
         self.ensure_open()?;
         let files = self.files.lock().expect("files mutex poisoned");
+        // `new NoSuchFileException(name)` (`ByteBuffersDirectory.java:143`).
         let entry = files
             .get(name)
-            .ok_or_else(|| LuceneError::Io(io::Error::new(io::ErrorKind::NotFound, name)))?;
+            .ok_or_else(|| LuceneError::Io(nio::no_such_file_exception(name)))?;
         Ok(entry.length())
     }
 
@@ -8013,8 +8029,9 @@ impl Directory for ByteBuffersDirectory {
         {
             let mut files = self.files.lock().expect("files mutex poisoned");
             if files.contains_key(name) {
-                return Err(LuceneError::Io(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
+                // `new FileAlreadyExistsException("File already exists: " +
+                // name)` (`ByteBuffersDirectory.java:159`).
+                return Err(LuceneError::Io(nio::file_already_exists_exception(
                     format!("File already exists: {name}"),
                 )));
             }
@@ -8062,15 +8079,14 @@ impl Directory for ByteBuffersDirectory {
     fn rename(&self, source: &str, dest: &str) -> Result<()> {
         self.ensure_open()?;
         let mut files = self.files.lock().expect("files mutex poisoned");
+        // `new NoSuchFileException(source)` and `new
+        // FileAlreadyExistsException(dest)` (`ByteBuffersDirectory.java:183-186`).
         let source_entry = files
             .get(source)
             .cloned()
-            .ok_or_else(|| LuceneError::Io(io::Error::new(io::ErrorKind::NotFound, source)))?;
+            .ok_or_else(|| LuceneError::Io(nio::no_such_file_exception(source)))?;
         if files.contains_key(dest) {
-            return Err(LuceneError::Io(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                dest,
-            )));
+            return Err(LuceneError::Io(nio::file_already_exists_exception(dest)));
         }
         files.insert(dest.to_string(), source_entry);
         if files.remove(source).is_none() {
@@ -8084,9 +8100,10 @@ impl Directory for ByteBuffersDirectory {
     fn open_input(&self, name: &str, _context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
         self.ensure_open()?;
         let files = self.files.lock().expect("files mutex poisoned");
+        // `new NoSuchFileException(name)` (`ByteBuffersDirectory.java:209`).
         let entry = files
             .get(name)
-            .ok_or_else(|| LuceneError::Io(io::Error::new(io::ErrorKind::NotFound, name)))?;
+            .ok_or_else(|| LuceneError::Io(nio::no_such_file_exception(name)))?;
         entry.open_input()
     }
 
@@ -11740,6 +11757,270 @@ mod tests {
         let mut buf = [0u8; 5];
         input.read_bytes(&mut buf, 0, 5).unwrap();
         assert_eq!(buf, [1, 2, 3, 4, 5]);
+    }
+
+    /// `Directory.copyFrom` closes the source input and the destination
+    /// output as the resources of one `try` (`Directory.java:177-189`): the
+    /// input is closed on success and when `createOutput` fails, and `dest`
+    /// is deleted only when the copy did not succeed. Regression test for the
+    /// port dropping the input without closing it, which left a
+    /// `MockDirectoryWrapper` input tracked as open.
+    #[test]
+    fn directory_copy_from_closes_its_input() {
+        use std::sync::atomic::AtomicUsize;
+
+        struct Tracked {
+            inner: FilterIndexInput,
+            closes: Arc<AtomicUsize>,
+        }
+        impl DataInput for Tracked {
+            fn to_java_string(&self) -> String {
+                self.inner.to_java_string()
+            }
+            fn read_byte(&mut self) -> Result<u8> {
+                self.inner.read_byte()
+            }
+            fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+                self.inner.read_bytes(b, offset, len)
+            }
+            fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
+                self.inner.skip_bytes(num_bytes)
+            }
+        }
+        impl IndexInput for Tracked {
+            fn close(&mut self) -> Result<()> {
+                self.closes.fetch_add(1, Ordering::SeqCst);
+                self.inner.close()
+            }
+            fn file_pointer(&self) -> i64 {
+                self.inner.file_pointer()
+            }
+            fn length(&self) -> i64 {
+                self.inner.length()
+            }
+            fn seek(&mut self, pos: i64) -> Result<()> {
+                self.inner.seek(pos)
+            }
+            fn slice(&self, d: &str, offset: i64, length: i64) -> Result<Box<dyn IndexInput>> {
+                self.inner.slice(d, offset, length)
+            }
+            fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
+                self.inner.clone_input()
+            }
+            fn resource_description(&self) -> &str {
+                self.inner.resource_description()
+            }
+        }
+        struct TrackingSource {
+            dir: ByteBuffersDirectory,
+            closes: Arc<AtomicUsize>,
+        }
+        impl Directory for TrackingSource {
+            fn list_all(&self) -> Result<Vec<String>> {
+                self.dir.list_all()
+            }
+            fn delete_file(&self, name: &str) -> Result<()> {
+                self.dir.delete_file(name)
+            }
+            fn file_length(&self, name: &str) -> Result<i64> {
+                self.dir.file_length(name)
+            }
+            fn create_output(&self, name: &str, c: &dyn IOContext) -> Result<Box<dyn IndexOutput>> {
+                self.dir.create_output(name, c)
+            }
+            fn create_temp_output(
+                &self,
+                p: &str,
+                s: &str,
+                c: &dyn IOContext,
+            ) -> Result<Box<dyn IndexOutput>> {
+                self.dir.create_temp_output(p, s, c)
+            }
+            fn sync(&self, names: &[String]) -> Result<()> {
+                self.dir.sync(names)
+            }
+            fn sync_metadata(&self) -> Result<()> {
+                self.dir.sync_metadata()
+            }
+            fn rename(&self, source: &str, dest: &str) -> Result<()> {
+                self.dir.rename(source, dest)
+            }
+            fn open_input(&self, name: &str, c: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
+                Ok(Box::new(Tracked {
+                    inner: FilterIndexInput::new("tracked", self.dir.open_input(name, c)?),
+                    closes: Arc::clone(&self.closes),
+                }))
+            }
+            fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
+                self.dir.obtain_lock(name)
+            }
+            fn close(&mut self) -> Result<()> {
+                self.dir.close()
+            }
+            fn get_pending_deletions(&self) -> Result<HashSet<String>> {
+                self.dir.get_pending_deletions()
+            }
+        }
+
+        let ctx: &dyn IOContext = &*DEFAULT_IO_CONTEXT;
+        let src = TrackingSource {
+            dir: ByteBuffersDirectory::new(),
+            closes: Arc::new(AtomicUsize::new(0)),
+        };
+        let mut out = src.dir.create_output("a.bin", ctx).unwrap();
+        out.write_bytes(&[7, 8, 9], 0, 3).unwrap();
+        out.close().unwrap();
+
+        let dst = ByteBuffersDirectory::new();
+        dst.copy_from(&src, "a.bin", "b.bin", ctx).unwrap();
+        assert_eq!(
+            src.closes.load(Ordering::SeqCst),
+            1,
+            "copy closes its input"
+        );
+        assert_eq!(dst.file_length("b.bin").unwrap(), 3);
+
+        // `createOutput` fails: the input is still closed, and `dest` is
+        // deleted (here, the file that was already there).
+        let err = dst.copy_from(&src, "a.bin", "b.bin", ctx).unwrap_err();
+        assert!(
+            matches!(&err, LuceneError::Io(e) if e.kind() == io::ErrorKind::AlreadyExists),
+            "{err}"
+        );
+        assert_eq!(
+            src.closes.load(Ordering::SeqCst),
+            2,
+            "a failed copy closes its input"
+        );
+        assert!(dst.file_length("b.bin").is_err());
+    }
+
+    /// `ByteBuffersDirectory` throws the `java.nio.file` exceptions Lucene
+    /// throws (`ByteBuffersDirectory.java:134-244`): `NoSuchFileException`,
+    /// `FileAlreadyExistsException` and `AccessDeniedException`, each with
+    /// its message and the `io::ErrorKind` that stands for its class.
+    /// Regression test for the plain `io::Error`s the port raised, whose
+    /// class read back as `java.io.IOException`.
+    #[test]
+    fn byte_buffers_directory_throws_lucenes_exception_classes() {
+        let dir = ByteBuffersDirectory::new();
+        let ctx: &dyn IOContext = &*DEFAULT_IO_CONTEXT;
+        let class_and_message = |e: LuceneError| match e {
+            LuceneError::Io(io) => (
+                nio::java_class_of(&io).to_string(),
+                nio::java_message_of(&io).unwrap(),
+                io.kind(),
+            ),
+            other => panic!("not an IOException: {other}"),
+        };
+        let not_found = |m: &str| {
+            (
+                nio::NO_SUCH_FILE_EXCEPTION.to_string(),
+                m.to_string(),
+                io::ErrorKind::NotFound,
+            )
+        };
+        assert_eq!(
+            class_and_message(dir.delete_file("a").unwrap_err()),
+            not_found("a")
+        );
+        assert_eq!(
+            class_and_message(dir.file_length("b").unwrap_err()),
+            not_found("b")
+        );
+        assert_eq!(
+            class_and_message(dir.open_input("c", ctx).err().unwrap()),
+            not_found("c")
+        );
+        assert_eq!(
+            class_and_message(dir.rename("d", "e").unwrap_err()),
+            not_found("d")
+        );
+
+        let mut out = dir.create_output("f", ctx).unwrap();
+        assert_eq!(
+            class_and_message(dir.open_input("f", ctx).err().unwrap()),
+            (
+                nio::ACCESS_DENIED_EXCEPTION.to_string(),
+                "Can't open a file still open for writing: f".to_string(),
+                io::ErrorKind::PermissionDenied
+            )
+        );
+        out.close().unwrap();
+        let exists = |m: &str| {
+            (
+                nio::FILE_ALREADY_EXISTS_EXCEPTION.to_string(),
+                m.to_string(),
+                io::ErrorKind::AlreadyExists,
+            )
+        };
+        assert_eq!(
+            class_and_message(dir.create_output("f", ctx).err().unwrap()),
+            exists("File already exists: f")
+        );
+        dir.create_output("g", ctx).unwrap().close().unwrap();
+        assert_eq!(
+            class_and_message(dir.rename("f", "g").unwrap_err()),
+            exists("g")
+        );
+    }
+
+    /// `BufferedChecksumIndexInput`'s resource description quotes
+    /// `main.toString()` (`BufferedChecksumIndexInput.java:36`), not the
+    /// resource description of `main`; they differ for an input that
+    /// overrides `toString()`.
+    #[test]
+    fn buffered_checksum_index_input_quotes_main_to_string() {
+        struct Renamed(FilterIndexInput);
+        impl DataInput for Renamed {
+            fn to_java_string(&self) -> String {
+                "Renamed(toString)".to_string()
+            }
+            fn read_byte(&mut self) -> Result<u8> {
+                self.0.read_byte()
+            }
+            fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+                self.0.read_bytes(b, offset, len)
+            }
+            fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
+                self.0.skip_bytes(num_bytes)
+            }
+        }
+        impl IndexInput for Renamed {
+            fn close(&mut self) -> Result<()> {
+                self.0.close()
+            }
+            fn file_pointer(&self) -> i64 {
+                self.0.file_pointer()
+            }
+            fn length(&self) -> i64 {
+                self.0.length()
+            }
+            fn seek(&mut self, pos: i64) -> Result<()> {
+                self.0.seek(pos)
+            }
+            fn slice(&self, d: &str, offset: i64, length: i64) -> Result<Box<dyn IndexInput>> {
+                self.0.slice(d, offset, length)
+            }
+            fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
+                self.0.clone_input()
+            }
+            fn resource_description(&self) -> &str {
+                "Renamed(resourceDescription)"
+            }
+        }
+        let dir = ByteBuffersDirectory::new();
+        dir.create_output("a", &*DEFAULT_IO_CONTEXT)
+            .unwrap()
+            .close()
+            .unwrap();
+        let main = dir.open_input("a", &*DEFAULT_IO_CONTEXT).unwrap();
+        let input =
+            BufferedChecksumIndexInput::new(Box::new(Renamed(FilterIndexInput::new("x", main))));
+        assert_eq!(
+            input.resource_description(),
+            "BufferedChecksumIndexInput(Renamed(toString))"
+        );
     }
 
     /// Verifies the IOContext factory functions and hint semantics.

@@ -30,7 +30,7 @@ use crate::internal::tests_hooks::{
 ///   on the getters and setters makes `std::panic::Location::caller()` inside
 ///   the two checks resolve to the call site of the getter or setter, which is
 ///   the very frame Java's `skip(2).limit(1)` selects. The comparison is then
-///   made against a *source file* rather than a class name — [`TEST_FRAMEWORK_DIR`]
+///   made against a *source file* rather than a class name — [`TEST_FRAMEWORK_DIRS`]
 ///   for the getters, [`Owner::file`] for the setters. The *set-once* half of
 ///   `ensureCallerForSetter` is reproduced exactly.
 /// * **Registration is run on first use, not by the class loader.** Java calls
@@ -123,9 +123,13 @@ const FILTER_INDEX_INPUT: Owner = Owner {
     init: crate::store::register_test_secrets,
 };
 
-/// The directory a getter's caller must live in, standing in for the
-/// `org.apache.lucene.tests.` package prefix of Lucene's test framework.
-const TEST_FRAMEWORK_DIR: &str = "tests/";
+/// The directories a getter's caller may live in, standing in for the
+/// `org.apache.lucene.tests.` package prefix of Lucene's test framework: the
+/// test framework crate itself (`crates/rucene-test-framework/`, the port of
+/// `lucene/test-framework`, whose classes all live under that package — for
+/// example `MockIndexInputWrapper`'s static initializer, which calls
+/// `getFilterInputIndexAccess()`), and this crate's own `tests/`.
+const TEST_FRAMEWORK_DIRS: &[&str] = &["tests/", "crates/rucene-test-framework/"];
 
 /// Normalises the path `Location::caller()` reports so that a host which spells
 /// it with backslashes compares equal to the forward-slash paths recorded above.
@@ -179,7 +183,7 @@ impl TestSecrets {
     /// Equivalent to `TestSecrets.ensureCallerForGetter()`. Java accepts a
     /// caller whose class name starts with `org.apache.lucene.tests.`, plus the
     /// single class `org.apache.lucene.index.TestClassloadingDeadlock`; this
-    /// port accepts a call site under [`TEST_FRAMEWORK_DIR`], and has no
+    /// port accepts a call site under one of [`TEST_FRAMEWORK_DIRS`], and has no
     /// counterpart for that one named test class.
     ///
     /// # Errors
@@ -189,7 +193,10 @@ impl TestSecrets {
     /// framework.
     #[track_caller]
     fn ensure_caller_for_getter() -> Result<()> {
-        let valid_caller = caller_file(Location::caller()).starts_with(TEST_FRAMEWORK_DIR);
+        let caller = caller_file(Location::caller());
+        let valid_caller = TEST_FRAMEWORK_DIRS
+            .iter()
+            .any(|dir| caller.starts_with(dir));
         if !valid_caller {
             return Err(LuceneError::illegal_state(
                 "Lucene TestSecrets can only be used by the test-framework.".to_string(),
