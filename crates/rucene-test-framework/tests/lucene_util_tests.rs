@@ -179,7 +179,7 @@ fn test_setup_teardown_chaining() {
             .constructor(Constructor::no_args(|| ()))
             .method(
                 Method::new("setUp")
-                    .annotate(Before)
+                    .throws(&["java.lang.Exception"])
                     .body_any(|| system::out_println("Hello.")),
             )
             .method(test("testMe", || {}))
@@ -189,7 +189,11 @@ fn test_setup_teardown_chaining() {
     )
     .extends(&abstract_nested_test())
     .constructor(Constructor::no_args(|| ()))
-    .method(Method::new("tearDown").annotate(After).body_any(|| {}))
+    .method(
+        Method::new("tearDown")
+            .throws(&["java.lang.Exception"])
+            .body_any(|| {}),
+    )
     .method(test("testMe", || {}))
     .build();
     run_outer(

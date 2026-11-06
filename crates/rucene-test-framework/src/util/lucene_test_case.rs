@@ -21,8 +21,8 @@
 //! the static helpers built on them; and the searcher factory `newSearcher`
 //! with what it calls (task #345, under the sprint's cycle rule). The class
 //! declaration with its class and test rule chains (task #348) is in
-//! [`crate::util::lucene_test_case_rules`]; the remaining members are ported
-//! by later tasks.
+//! [`crate::util::lucene_test_case_rules`]; task #349 ports the remaining
+//! members (`collate` over [`crate::jdk::collator`]).
 
 use std::collections::HashSet;
 use std::fmt::Display;
@@ -3675,6 +3675,28 @@ impl LuceneTestCase {
         )))
         .expect("INVARIANT: a deletion policy is never null");
         c
+    }
+
+    /// `collate(collator, s1, s2)`: "compares two strings with a collator,
+    /// also looking to see if the strings are impacted by jdk bugs"
+    /// (JDK-8071862): `collator.compare(s1, s2)`, after assuming that the
+    /// collation keys of `s1` and `s2` compare with the same sign.
+    ///
+    /// The collator is the port of `java.text.RuleBasedCollator`
+    /// ([`crate::jdk::collator`]), Java's only `Collator` implementation.
+    ///
+    /// # Panics
+    ///
+    /// `AssumptionViolatedException` (`hit JDK collator bug`) when the signs
+    /// differ.
+    pub fn collate(collator: &crate::jdk::collator::RuleBasedCollator, s1: &str, s2: &str) -> i32 {
+        let v1 = collator.compare(s1, s2);
+        let v2 = collator
+            .get_collation_key(s1)
+            .compare_to(&collator.get_collation_key(s2));
+        // if collation keys don't really respect collation order, things are screwed.
+        Self::assume_true("hit JDK collator bug", v1.signum() == v2.signum());
+        v1
     }
 
     /// `ensureSaneIWCOnNightly(conf)` (protected): under `tests.nightly`,

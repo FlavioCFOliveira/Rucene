@@ -118,6 +118,18 @@ write the fixtures (`../*.tsv`) the crate's parity tests (`src/tests/`) read.
   `crates/rucene-test-framework/tests/time_zone_oracle.rs` and the unit test
   of `src/index/alcoholic_merge_policy.rs`; the rules themselves come from
   `tools/gen/TimeZoneRules.java`.
+* **The collator (rmp #349):** `org.apache.lucene.tests.util.CollatorOracle`
+  writes `crates/rucene-test-framework/tests/fixtures/collator.tsv`: the
+  rules of `Collator.getInstance(Locale.ROOT)`; a grid of strings compared
+  with each other by the root collator and by `new RuleBasedCollator(rules)`
+  for the rule sets of `RuleBasedCollator`'s javadoc and one set per rule
+  feature (contraction, expansion, `@`, `!`, reordering and quoting by the
+  rules' canonical decomposition), at every strength and decomposition; the
+  collation keys; the rules that do not parse; and 4000 random pairs of
+  `TestUtil.randomUnicodeString` / `randomRealisticUnicodeString` with the
+  root collator's results and `LuceneTestCase.collate`. Read by
+  `crates/rucene-test-framework/tests/collator_oracle.rs`; the collator's data
+  comes from `tools/gen/CollatorData.java`.
 * **The store wrappers of `org.apache.lucene.tests.store` (rmp #343):**
   `org.apache.lucene.tests.store.MockDirectoryWrapperOracle` writes
   `crates/rucene-test-framework/tests/fixtures/mdw_index.tsv` (the files, as

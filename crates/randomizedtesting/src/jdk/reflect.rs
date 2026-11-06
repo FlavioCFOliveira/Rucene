@@ -23,16 +23,21 @@
 //!   type is an [`AnnotationType`] constant, and `Class.getAnnotation`
 //!   is [`Class::get_annotation`] (which includes `@Inherited` annotations
 //!   of superclasses, as Java does).
-//! * An instance of a suite class is a boxed Rust value ([`Instance`]);
-//!   instance method bodies receive it as `&mut T`. Invoking a body holds
-//!   the instance's lock for the call.
+//! * An instance of a suite class is a boxed Rust value with its runtime
+//!   class ([`Instance`]); instance method bodies receive the value as
+//!   `&mut T`. Invoking a body holds the instance's lock for the call.
+//!   [`Method::invoke`] selects the body as the JVM selects it for
+//!   `Method.invoke` (the receiver's most-derived override); an override is
+//!   matched by name and parameter types, the Java-language rule that the
+//!   JVM implements through the bridge methods `javac` emits for covariant
+//!   returns, which a declaration does not declare.
 //! * Constructor and factory arguments are [`Value`]s, the `Object`s a Java
 //!   parameterized suite passes; `String.valueOf` of a value is its
 //!   [`Display`](std::fmt::Display).
 
 use std::any::Any;
 use std::fmt;
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 
 use super::exception::{self, Throwable};
 pub use crate::annotations::AnnotationType;
@@ -260,13 +265,37 @@ impl fmt::Debug for Value {
     }
 }
 
-/// An instance of a declared class: the Rust value its constructor built.
-pub type Instance = Arc<Mutex<Box<dyn Any + Send>>>;
+/// An instance of a declared class: the Rust value its constructor built,
+/// and its runtime class (`getClass()`). Cloning shares the object (a Java
+/// reference copy).
+#[derive(Clone)]
+pub struct Instance {
+    object: Arc<Mutex<Box<dyn Any + Send>>>,
+    class: Arc<Class>,
+}
+
+impl fmt::Debug for Instance {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "instance of {}", self.class.name)
+    }
+}
+
+impl Instance {
+    /// `getClass()`.
+    pub fn get_class(&self) -> &Arc<Class> {
+        &self.class
+    }
+
+    /// Whether `a` and `b` are the same object (`a == b`).
+    pub fn ptr_eq(a: &Instance, b: &Instance) -> bool {
+        Arc::ptr_eq(&a.object, &b.object)
+    }
+}
 
 /// Locks an instance (a poisoned lock is still usable: the panic that
 /// poisoned it is the test's failure, reported elsewhere).
 pub fn lock_instance(instance: &Instance) -> MutexGuard<'_, Box<dyn Any + Send>> {
-    instance.lock().unwrap_or_else(|e| e.into_inner())
+    instance.object.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 type StaticBody = Arc<dyn Fn(&[Value]) -> Value + Send + Sync>;
@@ -496,30 +525,107 @@ impl Method {
         b
     }
 
-    /// `invoke(instance, args)`: runs the body; a throwable it throws
-    /// propagates unchanged (Java wraps it in `InvocationTargetException`,
-    /// which the runner unwraps).
+    /// `invoke(instance, args)`: runs the body the JVM selects; a throwable
+    /// it throws propagates unchanged (Java wraps it in
+    /// `InvocationTargetException`, which the runner unwraps).
+    ///
+    /// As JDK 25's `DirectMethodHandleAccessor`, which invokes a handle
+    /// from `findStatic` or `findVirtual`: a `static` method ignores the
+    /// instance and runs its own body; an instance method checks the
+    /// receiver (`checkReceiver`) and then, unless it is `private` (invoked
+    /// directly), runs the receiver's most-derived override (JVMS 5.4.6
+    /// method selection, with JVMS 5.4.5's overriding rule).
     ///
     /// # Panics
     ///
     /// `NullPointerException` for an instance method without an instance;
-    /// `IllegalArgumentException` for an abstract method.
+    /// `IllegalArgumentException` (`object of type C is not an instance of
+    /// D`) for a receiver outside the declaring class;
+    /// `AbstractMethodError` when the selected method is abstract.
     pub fn invoke(&self, instance: Option<&Instance>, args: &[Value]) -> Value {
-        match &self.body {
-            MethodBody::Static(f) => f(args),
-            MethodBody::Instance(f) => match instance {
-                Some(i) => {
-                    let mut guard = lock_instance(i);
-                    f(&mut **guard, args)
-                }
-                None => exception::throw_without_message(exception::NULL_POINTER_EXCEPTION),
-            },
-            MethodBody::Abstract => exception::throw(
+        if let MethodBody::Static(f) = &self.body {
+            return f(args);
+        }
+        let Some(receiver) = instance else {
+            exception::throw_without_message(exception::NULL_POINTER_EXCEPTION)
+        };
+        // `checkReceiver`: the receiver's class chain, up to the declaring
+        // class.
+        let mut chain: Vec<&Class> = Vec::new();
+        let mut c: Option<&Class> = Some(&receiver.class);
+        while let Some(k) = c {
+            chain.push(k);
+            if k.name == self.declaring_class {
+                break;
+            }
+            c = k.superclass.as_deref();
+        }
+        if chain.last().map(|k| k.name.as_str()) != Some(self.declaring_class.as_str()) {
+            exception::illegal_argument(format!(
+                "object of type {} is not an instance of {}",
+                receiver.class.name, self.declaring_class
+            ));
+        }
+        // A `private` method is never overridden (JVMS 5.4.5), so it
+        // selects itself, as its direct handle invokes it.
+        let selected = select_override(&chain, self);
+        match &selected.body {
+            MethodBody::Instance(f) => {
+                let mut guard = lock_instance(receiver);
+                f(&mut **guard, args)
+            }
+            MethodBody::Static(_) | MethodBody::Abstract => exception::throw(
                 "java.lang.AbstractMethodError",
-                format!("{}.{}", self.declaring_class, self.name),
+                format!("{}.{}", selected.declaring_class, selected.name),
             ),
         }
     }
+
+    /// Whether `self` has the name and parameter types of `other` and is an
+    /// instance method that is not `private`: a candidate override.
+    fn may_override(&self, other: &Method) -> bool {
+        self.modifiers & (modifier::STATIC | modifier::PRIVATE) == 0
+            && self.name == other.name
+            && self.parameter_types == other.parameter_types
+    }
+}
+
+/// JVMS 5.4.6 method selection for a resolved instance method `resolved` of `chain`'s last class and a receiver of `chain`'s
+/// first class (`chain` runs from the receiver's class up to the declaring
+/// class): the declaration in the most-derived class that overrides
+/// `resolved`, else `resolved` itself.
+fn select_override<'a>(chain: &[&'a Class], resolved: &'a Method) -> &'a Method {
+    let top = chain.len() - 1;
+    for (ci, class) in chain.iter().enumerate().take(top) {
+        for m in &class.methods {
+            if m.may_override(resolved) && overrides(chain, ci, m, top, resolved) {
+                return m;
+            }
+        }
+    }
+    resolved
+}
+
+/// JVMS 5.4.5: whether `mc`, declared by `chain[ci]`, overrides `ma`,
+/// declared by its superclass `chain[ai]`: same name and parameter types,
+/// `mc` not `private`, and `ma` `public` or `protected`, or package access
+/// with `chain[ci]` in `ma`'s package, or `mc` overriding a method `m'` of
+/// an intermediate class that overrides `ma`.
+fn overrides(chain: &[&Class], ci: usize, mc: &Method, ai: usize, ma: &Method) -> bool {
+    if !mc.may_override(ma) || ma.modifiers & (modifier::PRIVATE | modifier::STATIC) != 0 {
+        return false;
+    }
+    if ma.modifiers & (modifier::PUBLIC | modifier::PROTECTED) != 0
+        || chain[ci].package_name() == chain[ai].package_name()
+    {
+        return true;
+    }
+    (ci + 1..ai).any(|bi| {
+        chain[bi]
+            .methods
+            .iter()
+            .any(|mb| overrides(chain, ci, mc, bi, mb) && overrides(chain, bi, mb, ai, ma))
+    })
 }
 
 /// `Modifier.methodModifiers()`.
@@ -731,6 +837,8 @@ type ConstructorBody = Arc<dyn Fn(&[Value]) -> Box<dyn Any + Send> + Send + Sync
 /// `java.lang.reflect.Constructor`, declared.
 #[derive(Clone)]
 pub struct Constructor {
+    /// The declaring class, set when the class is built.
+    class: Weak<Class>,
     modifiers: i32,
     parameter_types: Vec<String>,
     /// The `@Name` of each parameter, if any.
@@ -742,6 +850,7 @@ impl Constructor {
     /// A public constructor without parameters.
     pub fn no_args<T: Any + Send>(make: impl Fn() -> T + Send + Sync + 'static) -> Constructor {
         Constructor {
+            class: Weak::new(),
             modifiers: modifier::PUBLIC,
             parameter_types: Vec::new(),
             parameter_names: Vec::new(),
@@ -755,6 +864,7 @@ impl Constructor {
         make: impl Fn(&[Value]) -> T + Send + Sync + 'static,
     ) -> Constructor {
         Constructor {
+            class: Weak::new(),
             modifiers: modifier::PUBLIC,
             parameter_types: params.iter().map(|(t, _)| t.to_string()).collect(),
             parameter_names: params.iter().map(|(_, n)| n.map(str::to_string)).collect(),
@@ -789,7 +899,8 @@ impl Constructor {
     ///
     /// `IllegalArgumentException` (`wrong number of arguments`) when the
     /// argument count differs from the parameter count; a throwable the
-    /// body throws propagates.
+    /// body throws propagates. Panics as well for a constructor that was
+    /// never declared by a built class (a declaration error).
     pub fn new_instance(&self, args: &[Value]) -> Instance {
         if args.len() != self.parameter_types.len() {
             exception::illegal_argument(format!(
@@ -798,7 +909,14 @@ impl Constructor {
                 self.parameter_types.len()
             ));
         }
-        Arc::new(Mutex::new((self.body)(args)))
+        let class = self
+            .class
+            .upgrade()
+            .expect("a constructor is invoked through the built class that declares it");
+        Instance {
+            object: Arc::new(Mutex::new((self.body)(args))),
+            class,
+        }
     }
 }
 
@@ -1039,6 +1157,12 @@ impl ClassBuilder {
 
     /// Ends the declaration.
     pub fn build(self) -> Arc<Class> {
-        Arc::new(self.class)
+        let mut class = self.class;
+        Arc::new_cyclic(|me| {
+            for c in &mut class.constructors {
+                c.class = Weak::clone(me);
+            }
+            class
+        })
     }
 }

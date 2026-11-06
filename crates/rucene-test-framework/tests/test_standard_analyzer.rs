@@ -10,7 +10,7 @@ use std::cell::RefCell;
 
 use randomizedtesting::jdk::exception::Throwable;
 use randomizedtesting::jdk::reflect::{Class, Constructor, Method};
-use randomizedtesting::junit::{After, Before, JUnitCore, Request};
+use randomizedtesting::junit::{JUnitCore, Request};
 use rucene::analysis::{
     new_standard_tokenizer_with_factory, Analyzer, AnalyzerState, GlobalReuseStrategy,
     TokenStreamComponents,
@@ -103,21 +103,16 @@ fn test_standard_analyzer_unicode_data() {
     let mut builder = Class::builder("org.apache.lucene.analysis.standard.TestStandardAnalyzer")
         .extends(&BaseTokenStreamTestCase::class())
         .constructor(Constructor::no_args(|| ()))
-        // Java's overrides carry no `@Before`/`@After`: the runner invokes
-        // `LuceneTestCase.setUp`, which dispatches to the override. The
-        // declared `Method::invoke` runs the declaring class's body, so the
-        // overrides carry the annotations and are the leaf hooks the runner
-        // invokes instead; each calls `super`, so the same bodies run.
+        // As in Java, the overrides carry no `@Before`/`@After`: the runner
+        // invokes `LuceneTestCase.setUp`/`tearDown`, which dispatch to them.
         .method(
             Method::new("setUp")
                 .throws(&["java.lang.Exception"])
-                .annotate(Before)
                 .body_any(set_up),
         )
         .method(
             Method::new("tearDown")
                 .throws(&["java.lang.Exception"])
-                .annotate(After)
                 .body_any(tear_down),
         );
     for (method, body) in methods {

@@ -1276,6 +1276,45 @@ failure testOne(com.carrotsearch.randomizedtesting.RunnerOracle$OverrideSub) | j
 reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$OverrideSub -Dtests.method=testOne -Dtests.prefix=tests -Dfile.encoding=UTF-8
 finished testOne(com.carrotsearch.randomizedtesting.RunnerOracle$OverrideSub)
 runFinished run=1 fail=1 ignore=0 assumption=0
+=== virtual-dispatch-super
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$VirtualSuper
+desc   testOne(com.carrotsearch.randomizedtesting.RunnerOracle$VirtualSuper)
+started testOne(com.carrotsearch.randomizedtesting.RunnerOracle$VirtualSuper)
+super setUp
+super privateHook
+super packageHook
+testOne
+super tearDown
+finished testOne(com.carrotsearch.randomizedtesting.RunnerOracle$VirtualSuper)
+runFinished run=1 fail=0 ignore=0 assumption=0
+=== virtual-dispatch-sub
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$VirtualSub
+desc   testOne(com.carrotsearch.randomizedtesting.RunnerOracle$VirtualSub)
+started testOne(com.carrotsearch.randomizedtesting.RunnerOracle$VirtualSub)
+sub setUp
+super setUp
+super privateHook
+sub packageHook
+testOne
+super tearDown
+sub tearDown
+finished testOne(com.carrotsearch.randomizedtesting.RunnerOracle$VirtualSub)
+runFinished run=1 fail=0 ignore=0 assumption=0
+=== virtual-dispatch-subsub
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$VirtualSubSub
+desc   testOne(com.carrotsearch.randomizedtesting.RunnerOracle$VirtualSubSub)
+started testOne(com.carrotsearch.randomizedtesting.RunnerOracle$VirtualSubSub)
+subsub setUp
+super privateHook
+sub packageHook
+testOne
+super tearDown
+sub tearDown
+finished testOne(com.carrotsearch.randomizedtesting.RunnerOracle$VirtualSubSub)
+runFinished run=1 fail=0 ignore=0 assumption=0
 === rule-static-fields-exceeding
 runStarted tests=1
 desc com.carrotsearch.randomizedtesting.RunnerOracle$StaticFields$Exceeding

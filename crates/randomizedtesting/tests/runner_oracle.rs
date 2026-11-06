@@ -1093,6 +1093,64 @@ static OVERRIDE_SUB: LazyLock<Arc<Class>> = LazyLock::new(|| {
         .build()
 });
 
+// `Method.invoke` dispatches virtually: the runner invokes the topmost
+// annotated hook, which runs the receiver's most-derived override (an
+// override without the annotation included); a private method is not
+// overridden.
+fn virtual_super_set_up() {
+    log("super setUp");
+}
+
+fn virtual_super_tear_down() {
+    log("super tearDown");
+}
+
+static VIRTUAL_SUPER: LazyLock<Arc<Class>> = LazyLock::new(|| {
+    cls("VirtualSuper")
+        .constructor(unit())
+        .method(hook("setUp", Before, virtual_super_set_up))
+        .method(hook("packageHook", Before, || log("super packageHook")).modifiers(0))
+        .method(
+            hook("privateHook", Before, || log("super privateHook")).modifiers(modifier::PRIVATE),
+        )
+        .method(hook("tearDown", After, virtual_super_tear_down))
+        .method(test("testOne", || log("testOne")))
+        .build()
+});
+
+static VIRTUAL_SUB: LazyLock<Arc<Class>> = LazyLock::new(|| {
+    cls("VirtualSub")
+        .extends(&VIRTUAL_SUPER)
+        .constructor(unit())
+        .method(Method::new("setUp").body_any(|| {
+            log("sub setUp");
+            virtual_super_set_up();
+        }))
+        .method(
+            Method::new("packageHook")
+                .modifiers(0)
+                .body_any(|| log("sub packageHook")),
+        )
+        .method(
+            Method::new("privateHook")
+                .modifiers(modifier::PRIVATE)
+                .body_any(|| log("sub privateHook")),
+        )
+        .method(Method::new("tearDown").body_any(|| {
+            virtual_super_tear_down();
+            log("sub tearDown");
+        }))
+        .build()
+});
+
+static VIRTUAL_SUB_SUB: LazyLock<Arc<Class>> = LazyLock::new(|| {
+    cls("VirtualSubSub")
+        .extends(&VIRTUAL_SUB)
+        .constructor(unit())
+        .method(Method::new("setUp").body_any(|| log("subsub setUp")))
+        .build()
+});
+
 static SF_BASE: LazyLock<Arc<Class>> = LazyLock::new(|| {
     cls("StaticFields$Base")
         .constructor(unit())
@@ -1482,6 +1540,19 @@ fn run_scenarios() -> String {
         w,
         "rule-no-instance-hooks-overrides",
         &OVERRIDE_SUB,
+        &[(s, "DEADBEEF")],
+    );
+    scenario(
+        w,
+        "virtual-dispatch-super",
+        &VIRTUAL_SUPER,
+        &[(s, "DEADBEEF")],
+    );
+    scenario(w, "virtual-dispatch-sub", &VIRTUAL_SUB, &[(s, "DEADBEEF")]);
+    scenario(
+        w,
+        "virtual-dispatch-subsub",
+        &VIRTUAL_SUB_SUB,
         &[(s, "DEADBEEF")],
     );
     scenario(

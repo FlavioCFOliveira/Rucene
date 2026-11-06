@@ -530,6 +530,30 @@ public class RunnerOracle {
     @Before @Override public void init() { log("sub init"); }
   }
 
+  // Method.invoke dispatches virtually: the runner invokes the topmost
+  // annotated hook, which runs the receiver's most-derived override (an
+  // override without the annotation included); a private method is not
+  // overridden.
+  @RunWith(RandomizedRunner.class)
+  public static class VirtualSuper {
+    @Before public void setUp() { log("super setUp"); }
+    @Before void packageHook() { log("super packageHook"); }
+    @Before private void privateHook() { log("super privateHook"); }
+    @After public void tearDown() { log("super tearDown"); }
+    @Test public void testOne() { log("testOne"); }
+  }
+
+  public static class VirtualSub extends VirtualSuper {
+    @Override public void setUp() { log("sub setUp"); super.setUp(); }
+    @Override void packageHook() { log("sub packageHook"); }
+    private void privateHook() { log("sub privateHook"); }
+    @Override public void tearDown() { super.tearDown(); log("sub tearDown"); }
+  }
+
+  public static class VirtualSubSub extends VirtualSub {
+    @Override public void setUp() { log("subsub setUp"); }
+  }
+
   public static class StaticFields {
     @RunWith(RandomizedRunner.class)
     public static class Base {
@@ -685,6 +709,9 @@ public class RunnerOracle {
       scenario(dir, w, "rule-no-shadow-pass", ShadowSuper.class, S, "DEADBEEF");
       scenario(dir, w, "rule-no-class-hooks-shadowing", ShadowSub.class, S, "DEADBEEF");
       scenario(dir, w, "rule-no-instance-hooks-overrides", OverrideSub.class, S, "DEADBEEF");
+      scenario(dir, w, "virtual-dispatch-super", VirtualSuper.class, S, "DEADBEEF");
+      scenario(dir, w, "virtual-dispatch-sub", VirtualSub.class, S, "DEADBEEF");
+      scenario(dir, w, "virtual-dispatch-subsub", VirtualSubSub.class, S, "DEADBEEF");
       scenario(dir, w, "rule-static-fields-exceeding", StaticFields.Exceeding.class, S, "DEADBEEF");
       scenario(dir, w, "rule-static-fields-under", StaticFields.Under.class, S, "DEADBEEF");
       scenario(dir, w, "rule-static-fields-unmeasurable", StaticFields.Unmeasurable.class, S, "DEADBEEF");

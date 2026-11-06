@@ -17,6 +17,7 @@ mod generators;
 mod helpers;
 mod java_lang;
 mod random_draws;
+mod reflect_dispatch;
 mod runner_parts;
 mod seed_chain;
 mod to_string;

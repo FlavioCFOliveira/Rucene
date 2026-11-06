@@ -165,7 +165,7 @@ impl InstanceProvider for SameInstanceProvider {
         if i.is_none() {
             *i = Some(self.delegate.new_instance());
         }
-        Arc::clone(i.as_ref().expect("instance"))
+        i.as_ref().expect("instance").clone()
     }
 }
 
@@ -1141,7 +1141,7 @@ impl RandomizedRunner {
         let r = try_run(|| {
             let instance = c.instance_provider.new_instance();
             let method = Arc::clone(&c.method);
-            let inst = Arc::clone(&instance);
+            let inst = instance.clone();
             let mut s = Statement::new(move || {
                 method.invoke(Some(&inst), &[]);
             });
@@ -1169,7 +1169,7 @@ impl RandomizedRunner {
         let befores = self.get_shuffled_methods(&BEFORE);
         if !befores.is_empty() {
             let after_befores = s;
-            let inst = Arc::clone(instance);
+            let inst = instance.clone();
             s = Statement::new(move || {
                 for m in &befores {
                     m.invoke(Some(&inst), &[]);
@@ -1180,7 +1180,7 @@ impl RandomizedRunner {
         let afters = self.get_shuffled_methods(&AFTER);
         if !afters.is_empty() {
             let before_afters = s;
-            let inst = Arc::clone(instance);
+            let inst = instance.clone();
             s = Statement::new(move || {
                 let mut cumulative = Vec::new();
                 if let Err(t) = try_run(|| before_afters.evaluate()) {
