@@ -33,6 +33,8 @@ org.apache.lucene.tests.search.SearchWrappersOracle
 org.apache.lucene.tests.analysis.AnalysisMocksOracle
 # RandomCodec, RandomIndexWriter, RandomPostingsTester and DocHelper of org.apache.lucene.tests.index (rmp #347)
 org.apache.lucene.tests.index.RandomIndexOracle
+# Lucene's own lucene/test-framework tests (rmp #359), compiled from $LUCENE_SRC
+org.apache.lucene.tests.util.FrameworkTestsOracle
 # The other lucene/codecs formats: PostingsFormatOracle <prefix> <kind> <format> <extensions>
 org.apache.lucene.codecs.simpletext.PostingsFormatOracle fst50 postings FST50 tfp
 org.apache.lucene.codecs.simpletext.PostingsFormatOracle fixedgap postings LuceneFixedGap tib tii

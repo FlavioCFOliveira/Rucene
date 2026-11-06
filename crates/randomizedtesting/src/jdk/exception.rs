@@ -186,6 +186,72 @@ static CLASS_PARENTS: LazyLock<RwLock<HashMap<String, String>>> = LazyLock::new(
             "java.lang.ReflectiveOperationException",
         ),
         (IO_EXCEPTION, EXCEPTION),
+        // The `java.io` and `java.nio` exceptions the port's `java.nio.file`
+        // shim raises (JDK 25 superclasses, read with `javap`), so that a
+        // `catch (IOException e)` or `expectThrows(IOException.class, ...)`
+        // sees them as Java does.
+        ("java.io.FileNotFoundException", IO_EXCEPTION),
+        ("java.io.EOFException", IO_EXCEPTION),
+        ("java.io.IOError", ERROR),
+        ("java.nio.file.FileSystemException", IO_EXCEPTION),
+        (
+            "java.nio.file.AccessDeniedException",
+            "java.nio.file.FileSystemException",
+        ),
+        (
+            "java.nio.file.AtomicMoveNotSupportedException",
+            "java.nio.file.FileSystemException",
+        ),
+        (
+            "java.nio.file.DirectoryNotEmptyException",
+            "java.nio.file.FileSystemException",
+        ),
+        (
+            "java.nio.file.FileAlreadyExistsException",
+            "java.nio.file.FileSystemException",
+        ),
+        (
+            "java.nio.file.FileSystemLoopException",
+            "java.nio.file.FileSystemException",
+        ),
+        (
+            "java.nio.file.NoSuchFileException",
+            "java.nio.file.FileSystemException",
+        ),
+        (
+            "java.nio.file.NotDirectoryException",
+            "java.nio.file.FileSystemException",
+        ),
+        (
+            "java.nio.file.NotLinkException",
+            "java.nio.file.FileSystemException",
+        ),
+        (
+            "java.nio.file.InvalidPathException",
+            ILLEGAL_ARGUMENT_EXCEPTION,
+        ),
+        (
+            "java.nio.file.ProviderMismatchException",
+            ILLEGAL_ARGUMENT_EXCEPTION,
+        ),
+        (
+            "java.nio.file.ClosedFileSystemException",
+            ILLEGAL_STATE_EXCEPTION,
+        ),
+        ("java.nio.channels.ClosedChannelException", IO_EXCEPTION),
+        (
+            "java.nio.channels.NonWritableChannelException",
+            ILLEGAL_STATE_EXCEPTION,
+        ),
+        (
+            "java.nio.channels.NonReadableChannelException",
+            ILLEGAL_STATE_EXCEPTION,
+        ),
+        ("java.nio.charset.CharacterCodingException", IO_EXCEPTION),
+        (
+            "java.nio.charset.MalformedInputException",
+            "java.nio.charset.CharacterCodingException",
+        ),
         ("java.io.UncheckedIOException", RUNTIME_EXCEPTION),
         ("java.util.concurrent.TimeoutException", EXCEPTION),
         ("java.util.concurrent.ExecutionException", EXCEPTION),

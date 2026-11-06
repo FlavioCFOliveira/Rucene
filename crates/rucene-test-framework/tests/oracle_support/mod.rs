@@ -154,3 +154,96 @@ pub fn assert_same(
         diffs.join("\n")
     );
 }
+
+/// The first line of a message, tabs escaped, as `FrameworkTestsOracle.firstLine`.
+fn first_line(s: Option<&str>) -> String {
+    let v = s.unwrap_or("null");
+    v.split('\n')
+        .next()
+        .unwrap_or("")
+        .replace('\t', "\\t")
+        .replace('\r', "")
+}
+
+/// The `RunListener` of `FrameworkTestsOracle`: one row per event.
+struct OutcomeListener(std::sync::Mutex<Vec<String>>);
+
+impl randomizedtesting::junit::RunListener for OutcomeListener {
+    fn test_started(&self, d: &std::sync::Arc<randomizedtesting::junit::Description>) {
+        let m = d.method_name().unwrap_or_else(|| "null".into());
+        self.0.lock().unwrap().push(format!("{m}\tS\t-"));
+    }
+    fn test_failure(&self, f: &randomizedtesting::junit::Failure) {
+        let m = f
+            .description()
+            .method_name()
+            .unwrap_or_else(|| "null".into());
+        let t = f.exception();
+        self.0.lock().unwrap().push(format!(
+            "{m}\tF\t{}: {}",
+            t.class_name(),
+            first_line(t.message())
+        ));
+    }
+    fn test_assumption_failure(&self, f: &randomizedtesting::junit::Failure) {
+        let m = f
+            .description()
+            .method_name()
+            .unwrap_or_else(|| "null".into());
+        self.0
+            .lock()
+            .unwrap()
+            .push(format!("{m}\tA\t{}", first_line(f.message())));
+    }
+    fn test_ignored(&self, d: &std::sync::Arc<randomizedtesting::junit::Description>) {
+        let m = d.method_name().unwrap_or_else(|| "null".into());
+        self.0.lock().unwrap().push(format!("{m}\tI\t-"));
+    }
+}
+
+/// Runs a suite with `JUnitCore` as `FrameworkTestsOracle` does and returns
+/// the rows it records for the class: the `#counts` row, then the sorted
+/// event rows, each `method\tevent\tdetail`.
+pub fn framework_outcomes(
+    class: &std::sync::Arc<randomizedtesting::jdk::reflect::Class>,
+) -> Vec<String> {
+    let listener = std::sync::Arc::new(OutcomeListener(std::sync::Mutex::new(Vec::new())));
+    let mut core = randomizedtesting::junit::JUnitCore::new();
+    core.add_listener(std::sync::Arc::clone(&listener)
+        as std::sync::Arc<dyn randomizedtesting::junit::RunListener>);
+    let r = core.run(&randomizedtesting::junit::Request::a_class(class));
+    let mut events = listener.0.lock().unwrap().clone();
+    events.sort();
+    let mut rows = vec![format!(
+        "#counts\trun={} fail={} ignore={} assume={}\t-",
+        r.run_count(),
+        r.failure_count(),
+        r.ignore_count(),
+        r.assumption_failure_count()
+    )];
+    rows.extend(events);
+    rows
+}
+
+/// The rows `framework_tests.tsv` records for the Java test class `name`.
+pub fn java_framework_outcomes(name: &str) -> Vec<String> {
+    rows("framework_tests.tsv")
+        .into_iter()
+        .filter(|r| r[0] == name)
+        .map(|r| r[1..].join("\t"))
+        .collect()
+}
+
+/// Runs the suite and asserts it reports exactly what Lucene's own test
+/// class reported on the JVM (`framework_tests.tsv`).
+pub fn assert_framework_outcomes(class: &std::sync::Arc<randomizedtesting::jdk::reflect::Class>) {
+    let name = class.name().to_string();
+    let expected = java_framework_outcomes(&name);
+    assert!(!expected.is_empty(), "{name} is not in framework_tests.tsv");
+    let actual = framework_outcomes(class);
+    assert_eq!(
+        actual.join("\n"),
+        expected.join("\n"),
+        "{name}: rust (left) and java (right) outcomes differ"
+    );
+}

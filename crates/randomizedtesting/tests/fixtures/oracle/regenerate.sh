@@ -7,9 +7,12 @@
 # org.apache.lucene) also lucene-core, lucene-codecs and lucene-test-framework
 # 10.5.0 and hamcrest 2.2; for self_tests.tsv also assertj-core 2.2.0
 # and RANDOMIZEDTESTING_SRC, a checkout of randomizedtesting tag release/2.8.1
-# (without it SelfTestsOracle keeps the committed self_tests.tsv).
+# (without it SelfTestsOracle keeps the committed self_tests.tsv); for
+# framework_tests.tsv LUCENE_SRC, a checkout of Lucene tag
+# releases/lucene/10.5.0 (without it FrameworkTestsOracle keeps the committed
+# file).
 #
-# Usage: [RANDOMIZEDTESTING_SRC=dir] crates/randomizedtesting/tests/fixtures/oracle/regenerate.sh
+# Usage: [RANDOMIZEDTESTING_SRC=dir] [LUCENE_SRC=dir] crates/randomizedtesting/tests/fixtures/oracle/regenerate.sh
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 fixtures="$(dirname "$here")"
@@ -39,6 +42,13 @@ if [ -n "$rt_src" ]; then
   mapfile -t rt_tests < <(find "$rt_src/randomized-runner/src/test/java" -name '*.java' | sort)
   java -m jdk.compiler/com.sun.tools.javac.Main -nowarn -cp "$cp" -d "$work/rt-tests" "${rt_tests[@]}"
   cp="$cp:$work/rt-tests"
+fi
+# Lucene's own lucene/test-framework tests (FrameworkTestsOracle runs them).
+lucene_src="${LUCENE_SRC:-}"
+if [ -n "$lucene_src" ]; then
+  mapfile -t lt_tests < <(find "$lucene_src/lucene/test-framework/src/test" -name '*.java' | sort)
+  java -m jdk.compiler/com.sun.tools.javac.Main -nowarn -cp "$lucene_cp" -d "$work/lucene-tests" "${lt_tests[@]}"
+  lucene_cp="$lucene_cp:$work/lucene-tests"
 fi
 mkdir -p "$work/out"
 grep -v '^#' "$here/oracles.txt" | while read -r main extra; do

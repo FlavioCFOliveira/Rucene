@@ -222,3 +222,20 @@ pub fn assert_failure_count(expected: usize, result: &JUnitResult) {
         );
     }
 }
+
+/// `prevSysOut.println(text)`: the stream `System.out` was before
+/// [`with_nested_tests`]'s `before()` captured it.
+pub fn prev_sys_out_println(text: &str) {
+    let sink = {
+        let s = STREAMS.lock().unwrap();
+        s.as_ref().and_then(|s| s.prev_sys_out.clone())
+    };
+    match sink {
+        Some(sink) => sink(&format!("{text}\n")),
+        None => {
+            use std::io::Write;
+            let mut out = std::io::stdout().lock();
+            let _ = writeln!(out, "{text}");
+        }
+    }
+}

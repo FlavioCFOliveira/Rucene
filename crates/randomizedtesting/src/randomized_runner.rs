@@ -1981,14 +1981,20 @@ fn wrap_expected_exceptions(s: Statement, c: &TestCandidate) -> Statement {
 }
 
 /// `withCloseContextResources(s, scope)`: closes the context's resources
-/// of `scope` after `s`, a failure to close becoming a
-/// `ResourceDisposalError`.
+/// of `scope` after `s`, any throwable of `close()` (`catch (Throwable t)`,
+/// `RandomizedRunner.java:791-801`: the `IOException` it returns, or a
+/// panic such as an `AssertionError`) becoming a `ResourceDisposalError`.
 fn with_close_context_resources(s: Statement, scope: LifecycleScope) -> Statement {
     StatementAdapter::new(s)
         .after_always(move |errors| {
             RandomizedContext::current().close_resources(
                 |info: crate::closeable_resource_info::CloseableResourceInfo| {
-                    if let Err(e) = info.get_resource().close() {
+                    let failure = match try_run(|| info.get_resource().close()) {
+                        Ok(Ok(())) => None,
+                        Ok(Err(e)) => Some(Throwable::new(exception::IO_EXCEPTION, e.to_string())),
+                        Err(t) => Some(t),
+                    };
+                    if let Some(e) = failure {
                         let mut err = crate::resource_disposal_error::ResourceDisposalError::new(
                             format!(
                                 "Resource in scope {} failed to close. Resource was registered \
@@ -1996,7 +2002,7 @@ fn with_close_context_resources(s: Statement, scope: LifecycleScope) -> Statemen
                                 info.get_scope().name(),
                                 info.get_thread_name()
                             ),
-                            Box::new(e),
+                            e,
                         );
                         err.set_stack_trace(std::sync::Arc::clone(info.get_allocation_stack()));
                         errors.push(err.to_throwable());

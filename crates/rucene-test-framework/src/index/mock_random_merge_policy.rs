@@ -79,6 +79,20 @@ impl MockRandomMergePolicy {
         self.do_non_bulk_merges.load(Ordering::Relaxed)
     }
 
+    /// `static Sorter.DocMap reverse(CodecReader reader)`
+    /// (`MockRandomMergePolicy.java:274-312`): the map that reverses the doc
+    /// ID order, keeping the documents of each parent block together and in
+    /// order. Java's method is package-private, for the same-package
+    /// `TestMockRandomMergePolicy`; it is public here so that the crate's
+    /// tests reach it.
+    ///
+    /// # Errors
+    ///
+    /// What reading the parent field's doc values throws.
+    pub fn reverse(reader: &dyn CodecReader) -> Result<SorterDocMap> {
+        reverse(reader)
+    }
+
     /// `new MockRandomOneMerge(segments, random.nextLong())` or `new
     /// OneMerge(segments)`, as the call sites choose.
     fn new_merge(&self, segments: Vec<SegmentCommitInfo>) -> Result<OneMerge> {

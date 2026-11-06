@@ -6,6 +6,8 @@ use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
 
+use crate::jdk::exception::Throwable;
+
 /// Thrown when a resource registered with `RandomizedContext.closeAtEnd`
 /// could not be released: `ResourceDisposalError extends Error`
 /// (package-private). The runner builds it with the resource's registration
@@ -13,13 +15,16 @@ use std::sync::Arc;
 #[derive(Debug)]
 pub(crate) struct ResourceDisposalError {
     message: String,
-    cause: Box<dyn Error + Send + Sync>,
+    /// The throwable `close()` threw: the `IOException` it declares, or any
+    /// other throwable (`catch (Throwable t)`), such as the `AssertionError`
+    /// of Lucene's `CloseableDirectory`.
+    cause: Throwable,
     stack: Option<Arc<Backtrace>>,
 }
 
 impl ResourceDisposalError {
     /// `new ResourceDisposalError(msg, cause)`.
-    pub(crate) fn new(message: String, cause: Box<dyn Error + Send + Sync>) -> Self {
+    pub(crate) fn new(message: String, cause: Throwable) -> Self {
         ResourceDisposalError {
             message,
             cause,
@@ -34,15 +39,12 @@ impl ResourceDisposalError {
 
     /// The error as the runner reports it: a
     /// `com.carrotsearch.randomizedtesting.ResourceDisposalError` throwable
-    /// caused by the resource's `IOException`.
-    pub(crate) fn to_throwable(&self) -> crate::jdk::exception::Throwable {
-        crate::jdk::exception::Throwable::with_cause(
+    /// caused by what the resource's `close()` threw.
+    pub(crate) fn to_throwable(&self) -> Throwable {
+        Throwable::with_cause(
             crate::randomized_runner::RESOURCE_DISPOSAL_ERROR,
             Some(self.message.clone()),
-            crate::jdk::exception::Throwable::new(
-                crate::jdk::exception::IO_EXCEPTION,
-                self.cause.to_string(),
-            ),
+            self.cause.clone(),
         )
     }
 
@@ -70,9 +72,4 @@ impl fmt::Display for ResourceDisposalError {
     }
 }
 
-impl Error for ResourceDisposalError {
-    /// `getCause()`.
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        Some(self.cause.as_ref())
-    }
-}
+impl Error for ResourceDisposalError {}

@@ -78,6 +78,13 @@ impl WindowsFS {
         this
     }
 
+    /// `openFiles.size()`: the number of open file keys. Java's field is
+    /// package-private, read by the same-package `TestWindowsFS`; the port
+    /// exposes its size for the crate's tests.
+    pub fn open_files_size(&self) -> usize {
+        self.lock().len()
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<OpenFileKey, HashMap<Path, i32>>> {
         self.open_files
             .lock()

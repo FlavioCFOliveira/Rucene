@@ -328,3 +328,19 @@ write the fixtures (`../*.tsv`) the crate's parity tests (`src/tests/`) read.
   `tests.seed` values (one child JVM each). The Rust side,
   `crates/rucene-test-framework/tests/class_env_oracle.rs`, runs one child
   process per configuration too.
+* **Lucene's own `lucene/test-framework` tests (rmp #359):**
+  `org.apache.lucene.tests.util.FrameworkTestsOracle` runs, with `JUnitCore`
+  in one JVM, the test classes of `lucene/test-framework/src/test` that
+  `crates/rucene-test-framework/tests/` ports (`util`, `index`, `search`,
+  `mockfile`; the list is `CLASSES`) and writes
+  `crates/rucene-test-framework/tests/fixtures/framework_tests.tsv`: per class
+  a `#counts` row (run, failure, ignore and assumption-failure counts) and the
+  sorted listener events (`S` started, `F` failure with the exception class
+  and the first line of its message, `A` assumption failure with its message,
+  `I` ignored; method `null` for a suite-level event). `regenerate.sh`
+  compiles those classes from `$LUCENE_SRC` (a checkout of tag
+  `releases/lucene/10.5.0`); without it the oracle writes nothing and the
+  committed fixture stays. The Rust side is `assert_framework_outcomes` in
+  `crates/rucene-test-framework/tests/oracle_support/mod.rs`, called by
+  `lucene_util_tests.rs`, `lucene_index_tests.rs`, `lucene_search_tests.rs`
+  and `mock_file_system_test_case.rs` for each suite they port.
