@@ -845,6 +845,11 @@ pub struct SegmentTermsEnum {
     trie: TrieReader,
     /// The frame stack. Frame `n` holds a block whose prefix is `n` bytes deep.
     stack: Vec<SegmentTermsEnumFrame>,
+    /// Java's `staticFrame` (ord `-1`): the current frame while no seek state
+    /// is held ([`started`](Self::started) is `false`), which
+    /// `seekExact(BytesRef, TermState)` fills from the given state
+    /// (`SegmentTermsEnum.java:40, 63, 1016-1035`).
+    static_frame: SegmentTermsEnumFrame,
     /// Index of the frame the cursor is positioned in.
     current: usize,
     /// The trie node reached at each stack depth.
@@ -855,7 +860,8 @@ pub struct SegmentTermsEnum {
     term_exists: bool,
     /// Whether the cursor has run past the last term.
     eof: bool,
-    /// Whether the first frame has been pushed.
+    /// Whether the current frame is a frame of the stack: Java's
+    /// `currentFrame != staticFrame`.
     started: bool,
     /// How long a prefix of the current term the last seek left valid in the
     /// index; a later seek can re-use the frames covering it.
@@ -887,6 +893,7 @@ impl SegmentTermsEnum {
             terms_in: None,
             trie,
             stack: Vec::new(),
+            static_frame: SegmentTermsEnumFrame::new(0, BlockTermState::default()),
             current: 0,
             nodes: Vec::new(),
             term: Vec::new(),
@@ -1610,7 +1617,27 @@ impl SegmentTermsEnum {
     fn decode_meta_data(&mut self) -> Result<()> {
         let field_info = self.field.field_info().clone();
         let reader = Arc::clone(&self.field.shared().postings_reader);
-        self.stack[self.current].decode_meta_data(&field_info, reader.as_ref())
+        self.current_frame_mut()
+            .decode_meta_data(&field_info, reader.as_ref())
+    }
+
+    /// Java's `currentFrame`: the frame of the stack the cursor stands in, or
+    /// [`static_frame`](Self::static_frame) while no seek state is held.
+    fn current_frame(&self) -> &SegmentTermsEnumFrame {
+        if self.started {
+            &self.stack[self.current]
+        } else {
+            &self.static_frame
+        }
+    }
+
+    /// The mutable form of [`current_frame`](Self::current_frame).
+    fn current_frame_mut(&mut self) -> &mut SegmentTermsEnumFrame {
+        if self.started {
+            &mut self.stack[self.current]
+        } else {
+            &mut self.static_frame
+        }
     }
 }
 
@@ -1634,12 +1661,27 @@ impl TermsEnum for SegmentTermsEnum {
     }
 
     fn next(&mut self) -> Result<Option<BytesRef>> {
-        if !self.started {
+        if self.terms_in.is_none() {
+            // Fresh TermsEnum; seek to first term.
             self.start()?;
         }
-        self.target_before_current_length = self.current as i64;
+        self.target_before_current_length = if self.started {
+            self.current as i64
+        } else {
+            -1
+        };
         if self.eof {
             return Ok(None);
+        }
+        if !self.started {
+            // If seek was previously called and the term was cached, or
+            // seek(TermState) was called, usually caller is just going to pull
+            // a D/&PEnum or get docFreq, etc. But, if they then call next(),
+            // this method catches up all internal state so next() works
+            // properly (`SegmentTermsEnum.java:900-912`).
+            let term = BytesRef::new(self.term.clone());
+            let result = self.seek_exact(&term)?;
+            debug_assert!(result);
         }
 
         loop {
@@ -1858,19 +1900,19 @@ impl TermsEnum for SegmentTermsEnum {
         // built with, which is what made every term look absent.
         debug_assert!(!self.eof);
         self.decode_meta_data()?;
-        Ok(self.stack[self.current].state.doc_freq)
+        Ok(self.current_frame().state.doc_freq)
     }
 
     fn total_term_freq(&mut self) -> Result<i64> {
         debug_assert!(!self.eof);
         self.decode_meta_data()?;
-        Ok(self.stack[self.current].state.total_term_freq)
+        Ok(self.current_frame().state.total_term_freq)
     }
 
     fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {
         self.decode_meta_data()?;
         let field_info = self.field.field_info().clone();
-        let state = self.stack[self.current].state;
+        let state = self.current_frame().state;
         let reader = Arc::clone(&self.field.shared().postings_reader);
         reader.impacts(&field_info, &state, flags)
     }
@@ -1882,13 +1924,36 @@ impl TermsEnum for SegmentTermsEnum {
     ) -> Result<Box<dyn PostingsEnum>> {
         self.decode_meta_data()?;
         let field_info = self.field.field_info().clone();
-        let state = self.stack[self.current].state;
+        let state = self.current_frame().state;
         let reader = Arc::clone(&self.field.shared().postings_reader);
         reader.postings(&field_info, &state, reuse, flags)
     }
 
     fn term_state(&mut self) -> Result<Box<dyn TermState>> {
+        debug_assert!(!self.eof);
         self.decode_meta_data()?;
-        Ok(Box::new(self.stack[self.current].state.clone()))
+        Ok(Box::new(self.current_frame().state))
+    }
+
+    /// Equivalent to `SegmentTermsEnum.seekExact(BytesRef, TermState)`
+    /// (`SegmentTermsEnum.java:1016-1035`): unless already on `target`, the
+    /// cursor drops its seek state, takes `state` into the static frame and
+    /// `target` as its term, with every term of the state's block decoded, so
+    /// that the statistics and postings come from `state` without reading the
+    /// terms file; a later [`next`](TermsEnum::next) re-seeks to the term.
+    fn seek_term_state(&mut self, target: &BytesRef, state: &dyn TermState) -> Result<()> {
+        debug_assert!(self.clear_eof());
+        self.clear_eof();
+        if target.slice() != self.term.as_slice() || !self.term_exists {
+            debug_assert!(state.as_any().downcast_ref::<BlockTermState>().is_some());
+            self.started = false;
+            TermState::copy_from(&mut self.static_frame.state, state);
+            self.term.clear();
+            self.term.extend_from_slice(target.slice());
+            self.static_frame.meta_data_upto = self.static_frame.get_term_block_ord();
+            debug_assert!(self.static_frame.meta_data_upto > 0);
+            self.valid_index_prefix = 0;
+        }
+        Ok(())
     }
 }

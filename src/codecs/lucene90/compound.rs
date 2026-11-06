@@ -65,31 +65,45 @@ impl CompoundFormat for Lucene90CompoundFormat {
         let entries_file =
             segment_file_name(&segment_info.name, "", COMPOUND_FILE_ENTRIES_EXTENSION);
 
+        // `try (IndexOutput data = dir.createOutput(dataFile, context);
+        //      IndexOutput entries = dir.createOutput(entriesFile, context))`
+        // (`Lucene90CompoundFormat.java:97-106`): both outputs are closed on
+        // every exit, `entries` first; an exception of the body (or of
+        // creating `entries`) wins over those of the closes, which Java
+        // suppresses, and the first failing close wins over the second.
         let mut data = dir.create_output(&data_file, context)?;
-        let mut entries = dir.create_output(&entries_file, context)?;
+        let mut entries = match dir.create_output(&entries_file, context) {
+            Ok(entries) => entries,
+            Err(e) => {
+                let _ = data.close();
+                return Err(e);
+            }
+        };
 
-        codec_util::write_index_header(
-            data.as_mut(),
-            DATA_CODEC,
-            VERSION_CURRENT,
-            &segment_info.id(),
-            "",
-        )?;
-        codec_util::write_index_header(
-            entries.as_mut(),
-            ENTRY_CODEC,
-            VERSION_CURRENT,
-            &segment_info.id(),
-            "",
-        )?;
+        let body = (|| -> Result<()> {
+            codec_util::write_index_header(
+                data.as_mut(),
+                DATA_CODEC,
+                VERSION_CURRENT,
+                &segment_info.id(),
+                "",
+            )?;
+            codec_util::write_index_header(
+                entries.as_mut(),
+                ENTRY_CODEC,
+                VERSION_CURRENT,
+                &segment_info.id(),
+                "",
+            )?;
 
-        write_compound_file(entries.as_mut(), data.as_mut(), dir, segment_info)?;
+            write_compound_file(entries.as_mut(), data.as_mut(), dir, segment_info)?;
 
-        codec_util::write_footer(data.as_mut())?;
-        codec_util::write_footer(entries.as_mut())?;
-        data.close()?;
-        entries.close()?;
-        Ok(())
+            codec_util::write_footer(data.as_mut())?;
+            codec_util::write_footer(entries.as_mut())
+        })();
+        let closed_entries = entries.close();
+        let closed_data = data.close();
+        body.and(closed_entries).and(closed_data)
     }
 }
 
@@ -510,6 +524,28 @@ mod tests {
             .write(dir, &info, &*crate::store::DEFAULT_IO_CONTEXT)
             .unwrap();
         info
+    }
+
+    /// Regression: a failing `write` closes both outputs, as Java's
+    /// try-with-resources does (`Lucene90CompoundFormat.java:97-106`); the
+    /// headers written before the failure reach the files only through
+    /// `close()`. The segment names a file that does not exist, so
+    /// `writeCompoundFile` fails on its length.
+    #[test]
+    fn a_failing_write_closes_both_outputs() {
+        let dir = ByteBuffersDirectory::new();
+        let info = test_segment_info("_0", 10);
+        info.set_files(HashSet::from(["_0.fdt".to_string()]))
+            .unwrap();
+        let result =
+            Lucene90CompoundFormat::new().write(&dir, &info, &*crate::store::DEFAULT_IO_CONTEXT);
+        assert!(result.is_err(), "the missing _0.fdt fails the write");
+        for name in ["_0.cfs", "_0.cfe"] {
+            assert!(
+                dir.file_length(name).unwrap() > 0,
+                "{name} was closed with its index header"
+            );
+        }
     }
 
     /// Replaces `name` in `dir` with `bytes`.

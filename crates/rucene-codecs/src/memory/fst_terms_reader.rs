@@ -263,6 +263,20 @@ impl Fields for FSTTermsReader {
     }
 }
 
+impl Drop for FSTTermsReader {
+    /// Runs [`close`](FieldsProducer::close) (`FSTTermsReader.java:169-175`) when this reader, or
+    /// one of its merge instances, goes away (rmp #351). Java's
+    /// `getMergeInstance()` is `this`, so closing the reader closes the files
+    /// a merge instance reads; here a merge instance shares them, the
+    /// reader's `close()` only closes what it holds alone, and the last
+    /// holder to go away closes the rest. `close()` takes what it closes, so
+    /// a reader closed already closes nothing again. A failure is dropped: no
+    /// caller is left to receive it.
+    fn drop(&mut self) {
+        let _ = FieldsProducer::close(self);
+    }
+}
+
 impl FieldsProducer for FSTTermsReader {
     fn check_integrity(&self) -> Result<()> {
         match &self.postings_reader {

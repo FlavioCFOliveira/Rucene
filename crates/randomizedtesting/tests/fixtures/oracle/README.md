@@ -55,6 +55,18 @@ write the fixtures (`../*.tsv`) the crate's parity tests (`src/tests/`) read.
   test file per format family; its `java -cp` run of `SimpleTextReadOracle.java`
   adds `lucene-test-framework` (with randomizedtesting and JUnit) for the
   blockterms assemblies, which only that jar registers.
+* **The `Base…FormatTestCase` suites (rmp #351):**
+  `org.apache.lucene.tests.index.BaseFormatSuitesOracle` runs
+  `TestPostingsSuiteDraws` (the inherited cases of `BaseIndexFileFormatTestCase`
+  and `BasePostingsFormatTestCase` on `TestUtil.alwaysPostingsFormat(new
+  Lucene104PostingsFormat())`, as `TestLucene104PostingsFormat` binds them) with
+  `JUnitCore` on the master seeds `DEADBEEF`, `1` and `C0FFEE`, and writes
+  `crates/rucene-test-framework/tests/fixtures/base_postings_draws.tsv`: per seed,
+  the next `random().nextLong()` of each test's randomness after the test (in
+  `tearDown()`, before `super.tearDown()`), that of the class randomness after the
+  class, the failures and assumption failures and the `#counts` row. The Rust
+  side is `crates/rucene-test-framework/tests/base_postings_format_suites.rs`
+  (`test_postings_suite_draws_match_lucene`).
 * **The test codecs:** `org.apache.lucene.tests.codecs.TestCodecsOracle`
   writes `crates/rucene-test-framework/tests/fixtures/testcodecs_*.tsv`: the
   `nocfs` and `cfs` corpus of `SimpleTextOracle.writeCorpus` (public for it)

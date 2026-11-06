@@ -374,6 +374,10 @@ impl IntersectTermsEnumFrame {
     }
 
     /// Decodes the statistics and postings metadata of every term passed so far.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene103.blocktree.IntersectTermsEnumFrame#decodeMetaData`
+    /// (`IntersectTermsEnumFrame.java:277-323`).
     pub fn decode_meta_data(
         &mut self,
         field_info: &crate::index::FieldInfo,
@@ -422,6 +426,11 @@ impl IntersectTermsEnumFrame {
             self.meta_data_upto += 1;
             absolute = false;
         }
+        // `termState.termBlockOrd = metaDataUpto`
+        // (`IntersectTermsEnumFrame.java:322`): a state taken from this frame
+        // records how many terms of the block it decoded, which
+        // `SegmentTermsEnum.seekExact(BytesRef, TermState)` reads back.
+        self.state_data.term_block_ord = self.meta_data_upto;
         Ok(())
     }
 }
@@ -1031,7 +1040,12 @@ impl TermsEnum for IntersectTermsEnum {
         reader.postings(&field_info, &state, reuse, flags)
     }
 
+    /// Equivalent to `IntersectTermsEnum.termState()`
+    /// (`IntersectTermsEnum.java:133-136`): the frame's metadata is decoded
+    /// first, so the state carries the term's statistics, file pointers and
+    /// `termBlockOrd`, which a seek by this state reads back.
     fn term_state(&mut self) -> Result<Box<dyn TermState>> {
+        self.decode_current_meta_data()?;
         let cur = self
             .current
             .ok_or_else(|| LuceneError::illegal_state("no current term".to_string()))?;

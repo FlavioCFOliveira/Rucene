@@ -16,6 +16,15 @@
 //!   the port panicked. The Java side is measured on `ForUtil` directly; the
 //!   Rust side on a `.doc` file whose full block was corrupted, which is the
 //!   path that reaches it (`Lucene104PostingsReader.java:594-597`).
+//! * **rmp #351.** A level's impacts are the bytes its last skip entry
+//!   read, `levelNSerializedImpacts.length = numImpactBytes`
+//!   (`Lucene104PostingsReader.java:702, 751, 850`), decoded from
+//!   `scratch.reset(bytes, 0, length)` (line 1398). The port decoded the
+//!   whole buffer, so a block with fewer impact bytes than an earlier one
+//!   returned the earlier block's tail as extra, unordered impacts. The test
+//!   reads a Lucene-written index whose level-0 and level-1 blocks alternate
+//!   many and one competitive pairs, and compares every level's impacts after
+//!   each `advanceShallow`.
 //!
 //! # Where the expected values come from
 //!
@@ -67,6 +76,8 @@ const TARGETS: [i32; 16] = [
 /// What the fixture printed, and the index it wrote.
 struct JavaRun {
     dir: PathBuf,
+    /// `PostingsSkipFixture.writeAndReadImpacts`'s index.
+    impacts_dir: PathBuf,
     lines: Vec<String>,
     _tmp: tempfile::TempDir,
 }
@@ -93,11 +104,13 @@ fn java_run() -> &'static JavaRun {
         );
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("index");
+        let impacts_dir = tmp.path().join("impacts");
         let output = Command::new("java")
             .arg("-cp")
             .arg(lucene_jar())
             .arg(&fixture)
             .arg(&dir)
+            .arg(&impacts_dir)
             .output()
             .expect("a JDK is required to run the Lucene oracle");
         assert!(
@@ -112,6 +125,7 @@ fn java_run() -> &'static JavaRun {
             .collect();
         JavaRun {
             dir,
+            impacts_dir,
             lines,
             _tmp: tmp,
         }
@@ -206,6 +220,68 @@ fn advance_reads_the_position_skip_data_lucene_wrote() {
         java_lines("walk"),
         "the interleaved walk must match"
     );
+}
+
+/// `PostingsSkipFixture.IMPACT_TARGETS`.
+const IMPACT_TARGETS: [i32; 22] = [
+    0, 100, 255, 256, 300, 511, 512, 513, 1000, 8191, 8192, 8193, 9000, 16383, 16384, 16385, 16700,
+    17000, 24575, 24576, 25000, 25575,
+];
+
+/// `PostingsSkipFixture.describe(Impacts)`: `level:docIdUpTo:freq/norm,...`
+/// per level.
+fn describe_impacts(impacts: &dyn rucene::index::Impacts) -> String {
+    let mut out = String::new();
+    for level in 0..impacts.num_levels() {
+        let buffer = impacts.get_impacts(level);
+        if level > 0 {
+            out.push(' ');
+        }
+        out.push_str(&format!("{level}:{}:", impacts.doc_id_up_to(level)));
+        for k in 0..buffer.size {
+            if k > 0 {
+                out.push(',');
+            }
+            out.push_str(&format!("{}/{}", buffer.freqs[k], buffer.norms[k]));
+        }
+    }
+    out
+}
+
+/// rmp #351: every level's impacts after each `advanceShallow` over the
+/// Lucene-written index of alternating rich and poor blocks are Lucene's,
+/// so a poor block never shows the tail of the rich block read before it
+/// (`Lucene104PostingsReader.java:702, 751, 850, 1398`).
+#[test]
+fn impacts_of_each_level_match_lucene() {
+    let _ = register_codec("Lucene104", Lucene104Codec::new());
+    let directory: Arc<dyn Directory> =
+        Arc::new(NIOFSDirectory::open(&java_run().impacts_dir).unwrap());
+    let reader = directory_reader::open(directory).unwrap();
+    assert!(java_run().lines.iter().any(|l| l == "impacts leaves=1"));
+    let searcher = IndexSearcher::new(reader as Arc<dyn IndexReader>).unwrap();
+    let leaves = searcher.get_leaf_contexts();
+    assert_eq!(leaves.len(), 1);
+    let terms = leaves[0].leaf_reader().terms("imp").unwrap().unwrap();
+    let mut terms_enum = terms.iterator().unwrap();
+    assert!(terms_enum
+        .seek_exact(&BytesRef::new(b"a".to_vec()))
+        .unwrap());
+    let mut impacts = terms_enum.impacts(POSTINGS_ENUM_FREQS).unwrap();
+    let mut rust = Vec::new();
+    for target in IMPACT_TARGETS {
+        impacts.advance_shallow(target).unwrap();
+        rust.push(format!(
+            "{target} {}",
+            describe_impacts(impacts.get_impacts().unwrap().as_ref())
+        ));
+    }
+    let java: Vec<String> = java_lines("impacts")
+        .into_iter()
+        .filter(|l| !l.starts_with("leaves="))
+        .collect();
+    assert_eq!(java.len(), IMPACT_TARGETS.len());
+    assert_eq!(rust, java, "every level's impacts must match Lucene's");
 }
 
 /// Round 2, item 3: a docs-and-freqs enumeration walks every block through

@@ -1144,6 +1144,7 @@ pub(crate) mod tests {
         fail_open: std::sync::Mutex<std::collections::HashSet<String>>,
         panic_open: std::sync::Mutex<std::collections::HashSet<String>>,
         fail_sync: std::sync::atomic::AtomicBool,
+        fail_write: std::sync::Mutex<std::collections::HashSet<String>>,
     }
 
     impl CloseLog {
@@ -1192,6 +1193,21 @@ pub(crate) mod tests {
         /// port's form of an unchecked throwable.
         pub(crate) fn panic_open(&self, name: &str) {
             self.panic_open.lock().unwrap().insert(name.to_string());
+        }
+
+        /// Makes every later write to an output of `name` fail, as
+        /// `MockDirectoryWrapper`'s random `IOException` on a write does.
+        pub(crate) fn fail_write(&self, name: &str) {
+            self.fail_write.lock().unwrap().insert(name.to_string());
+        }
+
+        fn check_write(&self, name: &str) -> Result<()> {
+            if self.fail_write.lock().unwrap().contains(name) {
+                return Err(crate::error::LuceneError::Io(std::io::Error::other(
+                    format!("write failed: {name}"),
+                )));
+            }
+            Ok(())
         }
 
         /// Makes every later `sync` fail.
@@ -1310,10 +1326,12 @@ pub(crate) mod tests {
 
     impl crate::store::DataOutput for TrackedOutput {
         fn write_byte(&mut self, b: u8) -> Result<()> {
+            self.log.check_write(&self.name)?;
             self.inner.write_byte(b)
         }
 
         fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()> {
+            self.log.check_write(&self.name)?;
             self.inner.write_bytes(b, offset, len)
         }
     }

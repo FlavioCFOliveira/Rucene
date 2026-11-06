@@ -271,6 +271,20 @@ impl Fields for BlockTermsReader {
     }
 }
 
+impl Drop for BlockTermsReader {
+    /// Runs [`close`](FieldsProducer::close) (`BlockTermsReader.java:191-205`) when this reader, or
+    /// one of its merge instances, goes away (rmp #351). Java's
+    /// `getMergeInstance()` is `this`, so closing the reader closes the files
+    /// a merge instance reads; here a merge instance shares them, the
+    /// reader's `close()` only closes what it holds alone, and the last
+    /// holder to go away closes the rest. `close()` takes what it closes, so
+    /// a reader closed already closes nothing again. A failure is dropped: no
+    /// caller is left to receive it.
+    fn drop(&mut self) {
+        let _ = FieldsProducer::close(self);
+    }
+}
+
 impl FieldsProducer for BlockTermsReader {
     fn check_integrity(&self) -> Result<()> {
         let shared = self.shared()?;

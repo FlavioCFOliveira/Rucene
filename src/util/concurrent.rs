@@ -12,7 +12,8 @@
 //! [`InterruptHandle`] is a thread's interrupt status (`Thread.interrupt`,
 //! `Thread.isInterrupted`, `Thread.interrupted`), [`wait_interruptibly`] is
 //! `Object.wait` on a monitor, and [`InterruptedException`] is the exception
-//! that wait throws.
+//! that wait throws. [`set_thread_start_hook`] models what a Java thread
+//! inherits from the thread that creates it.
 
 #![deny(unsafe_code)]
 
@@ -332,8 +333,55 @@ impl NamedThreadFactory {
         let name = self.next_thread_name();
         std::thread::Builder::new()
             .name(name)
-            .spawn(r)
+            .spawn(with_thread_start_context(r))
             .map_err(LuceneError::Io)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Thread creation context
+// ---------------------------------------------------------------------------
+
+/// What a [`ThreadStartHook`] hands from a creating thread to the thread it
+/// creates: run on the new thread before its body.
+pub type ThreadStartContext = Box<dyn FnOnce() + Send>;
+
+/// Captures, on the creating thread, the context a new thread inherits.
+pub type ThreadStartHook = fn() -> ThreadStartContext;
+
+/// The hook [`set_thread_start_hook`] installed, once per process.
+static THREAD_START_HOOK: OnceLock<ThreadStartHook> = OnceLock::new();
+
+/// Installs the hook every thread this crate starts runs: it is called on
+/// the creating thread, and what it returns runs first on the new thread.
+///
+/// This models what a Java `Thread` takes from the thread that constructs
+/// it — its `ThreadGroup`, which the JVM gives every thread Lucene starts
+/// (`ConcurrentMergeScheduler`'s merge threads, its intra-merge executor's
+/// workers, `NamedThreadFactory`'s threads, `ControlledRealTimeReopenThread`).
+/// A Rust thread inherits nothing from its creator; a test runner that keys
+/// state by thread group (randomizedtesting's `RandomizedContext`) installs
+/// this hook so that code running on those threads finds its context, as it
+/// does on the JVM. Without a hook, threads start with nothing to run first.
+///
+/// Returns `false`, leaving the installed hook in place, when one is already
+/// installed.
+pub fn set_thread_start_hook(hook: ThreadStartHook) -> bool {
+    THREAD_START_HOOK.set(hook).is_ok()
+}
+
+/// Wraps `body`, on the creating thread, so that the new thread first runs
+/// what the installed [`ThreadStartHook`] captured.
+pub(crate) fn with_thread_start_context<F>(body: F) -> impl FnOnce() + Send + 'static
+where
+    F: FnOnce() + Send + 'static,
+{
+    let context = THREAD_START_HOOK.get().map(|hook| hook());
+    move || {
+        if let Some(context) = context {
+            context();
+        }
+        body();
     }
 }
 

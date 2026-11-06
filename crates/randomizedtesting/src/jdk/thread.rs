@@ -11,11 +11,16 @@
 //! carries them.
 //!
 //! **Divergences.**
-//! * A Java thread inherits its creator's group. Only a thread created with
+//! * A Java thread inherits its creator's group. Here a thread created with
 //!   [`Thread::new`] / [`Thread::with_group`] and started with
-//!   [`Thread::start`] does so here; any other thread (for example one from
-//!   `std::thread::spawn`) is adopted on first use in the `main` group,
-//!   whose parent is `system`, as the JVM's main thread is.
+//!   [`Thread::start`] does so, and so does a thread whose creator captured
+//!   [`Thread::start_context`] and which runs it first (`rucene` runs it on
+//!   every thread it starts once the hook is installed with
+//!   `rucene::util::concurrent::set_thread_start_hook`); it is then adopted
+//!   in its creator's group, with its creator's daemon status. Any other
+//!   thread (for example one from a bare `std::thread::spawn`) is adopted on
+//!   first use in the `main` group, whose parent is `system`, as the JVM's
+//!   main thread is.
 //! * [`ThreadGroup::enumerate`] (`ThreadGroup.enumerate(Thread[], true)`)
 //!   sees only the threads started with [`Thread::start`]: an adopted thread
 //!   is not enumerated, so threads the Rust test harness owns never count as
@@ -314,6 +319,39 @@ impl Thread {
                 Thread::create(name, Arc::clone(ThreadGroup::main()), State::Runnable, None);
             *slot = Some(CurrentSlot(thread.clone()));
             thread
+        })
+    }
+
+    /// Captures, on the calling (creating) thread, what a Java thread takes
+    /// from its creator — its `ThreadGroup` and daemon status — and returns
+    /// what the created thread runs first to take them: it adopts that
+    /// thread, named after its OS thread name, in the creator's group.
+    ///
+    /// An adopted thread is not enumerated by [`ThreadGroup::enumerate`]
+    /// (see the module's divergences). A thread that already has a
+    /// [`Thread`] handle keeps it.
+    pub fn start_context() -> Box<dyn FnOnce() + Send> {
+        let creator = Thread::current();
+        let group = creator
+            .thread_group()
+            .unwrap_or_else(|| Arc::clone(ThreadGroup::main()));
+        let daemon = creator.is_daemon();
+        Box::new(move || {
+            CURRENT.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                if slot.is_some() {
+                    return;
+                }
+                let name = std::thread::current()
+                    .name()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| {
+                        format!("Thread-{}", NEXT_THREAD_NUM.fetch_add(1, Ordering::Relaxed))
+                    });
+                let thread = Thread::create(name, group, State::Runnable, None);
+                thread.0.daemon.store(daemon, Ordering::Relaxed);
+                *slot = Some(CurrentSlot(thread));
+            });
         })
     }
 

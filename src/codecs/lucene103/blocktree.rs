@@ -2112,11 +2112,21 @@ impl<'a> FieldsConsumer for Lucene103BlockTreeTermsWriter<'a> {
                 continue;
             };
             let mut terms_enum = terms.iterator()?;
+            // `new TermsWriter(fieldInfos.fieldInfo(field))`
+            // (`Lucene103BlockTreeTermsWriter.java:382`): a field the segment's
+            // `FieldInfos` does not know is a `null` `FieldInfo`, which the
+            // `TermsWriter` constructor dereferences
+            // (`fieldInfo.getIndexOptions()`, line 975) and throws
+            // `NullPointerException`, this crate's `IllegalState`.
             let field_info = self
                 .field_infos
                 .field_info(&field)
                 .cloned()
-                .unwrap_or_default();
+                .ok_or_else(|| {
+                    LuceneError::illegal_state(format!(
+                        "java.lang.NullPointerException: no FieldInfo for field \"{field}\""
+                    ))
+                })?;
             let postings_writer: &mut dyn PostingsWriterBase = self.postings_writer.as_mut();
             postings_writer.set_field(&field_info)?;
             let mut terms_writer = TermsWriter::new(
@@ -2337,6 +2347,7 @@ impl Lucene103BlockTreeTermsReader {
                 segment: segment.clone(),
                 version,
                 postings_reader: Arc::clone(postings_reader),
+                closed: false,
             });
 
             let num_fields = meta_in.read_v_int()?;
@@ -2593,8 +2604,8 @@ impl FieldsProducer for Lucene103BlockTreeTermsReader {
     /// `&mut`, which no holder of a shared reference can give. The field
     /// readers are dropped first, which no caller can observe, and each of the
     /// three is closed only when this reader is its last holder; otherwise it
-    /// is released by `Drop` when the last `TermsEnum` (or merge instance)
-    /// goes away. The files are closed once nothing is reading them, and
+    /// is closed by [`BlockTreeShared`]'s `Drop` when the last `TermsEnum` (or
+    /// merge instance) goes away. The files are closed once nothing is reading them, and
     /// unlike Java this cannot pull a file out from under a live `TermsEnum`.
     fn close(&mut self) -> Result<()> {
         self.fields.clear();
@@ -2602,6 +2613,7 @@ impl FieldsProducer for Lucene103BlockTreeTermsReader {
         let Some(shared) = Arc::get_mut(&mut self.shared) else {
             return Ok(());
         };
+        shared.closed = true;
         IOUtils::close([
             Arc::get_mut(&mut shared.index_in).and_then(|i| IOUtils::closeable(move || i.close())),
             Arc::get_mut(&mut shared.terms_in).and_then(|i| IOUtils::closeable(move || i.close())),
@@ -3091,6 +3103,34 @@ mod tests {
         assert!(Lucene103BlockTreeTermsWriter::validate_settings(25, 24).is_err());
         assert!(Lucene103BlockTreeTermsWriter::validate_settings(25, 25).is_err());
         assert!(Lucene103BlockTreeTermsWriter::validate_settings(25, 48).is_ok());
+    }
+
+    /// Regression (rmp #252): a field the segment's `FieldInfos` does not
+    /// know fails the write, as Java's `new TermsWriter(null)` throws
+    /// `NullPointerException` (`Lucene103BlockTreeTermsWriter.java:382, 975`),
+    /// instead of being written under a default `FieldInfo`.
+    #[test]
+    fn write_refuses_a_field_missing_from_the_field_infos() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
+        let segment_info = test_segment_info("_0", 10);
+        let field_infos = FieldInfos::default();
+        let state = test_write_state(&dir, &segment_info, &field_infos);
+        let postings_writer: Box<dyn PostingsWriterBase> = Box::new(StubPostingsWriter);
+        let mut writer = Lucene103BlockTreeTermsWriter::new(&state, postings_writer, 25, 48)
+            .expect("writer should be created");
+        let fields = TestFields {
+            field: "unknown".to_string(),
+            terms: vec![BytesRef::from_char_sequence("a")],
+        };
+        let error = writer
+            .write(&fields, None)
+            .expect_err("no FieldInfo for the field");
+        assert!(
+            matches!(&error, LuceneError::IllegalState { message, .. }
+                if message.contains("NullPointerException")),
+            "{error:?}"
+        );
+        let _ = writer.close();
     }
 
     /// A [`Fields`] implementation that yields a deterministic list of terms.
@@ -3648,6 +3688,53 @@ mod close_family_tests {
             .cloned()
             .collect();
         assert_eq!(closed, ["_0.tip", "_0.tim", "_0.doc"]);
+    }
+
+    /// Regression (rmp #351): Java's `getMergeInstance()` is `this`, so
+    /// `close()` closes the files a merge instance reads
+    /// (`FieldsProducer.java:50-53`, `Lucene103BlockTreeTermsReader.java:275-284`).
+    /// Here a merge instance shares them; when the reader is closed first, the
+    /// merge instance closes them when it goes away, each exactly once.
+    #[test]
+    fn a_merge_instance_outliving_close_closes_the_files_once() {
+        let (dir, _tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 10);
+        let fis = FieldInfos::default();
+        write_empty_terms(&dir, &info, &fis);
+        let before = log.closed().len();
+        let mut producer = Lucene104PostingsFormat::new()
+            .fields_producer(&read_state(&*dir, &info, &fis))
+            .unwrap();
+        let merge_instance = producer.get_merge_instance().unwrap();
+        producer.close().unwrap();
+        drop(producer);
+        let count = |name: &str| log.closed()[before..].iter().filter(|n| *n == name).count();
+        assert_eq!(count("_0.tim"), 0, "still read by the merge instance");
+        drop(merge_instance);
+        assert_eq!(count("_0.tip"), 1);
+        assert_eq!(count("_0.tim"), 1);
+        assert_eq!(count("_0.doc"), 1);
+    }
+
+    /// A reader closed while it is the only holder closes its files then,
+    /// and dropping it later closes nothing again.
+    #[test]
+    fn dropping_a_closed_reader_closes_nothing_twice() {
+        let (dir, _tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 10);
+        let fis = FieldInfos::default();
+        write_empty_terms(&dir, &info, &fis);
+        let before = log.closed().len();
+        let mut producer = Lucene104PostingsFormat::new()
+            .fields_producer(&read_state(&*dir, &info, &fis))
+            .unwrap();
+        producer.close().unwrap();
+        drop(producer);
+        let count = |name: &str| log.closed()[before..].iter().filter(|n| *n == name).count();
+        assert_eq!(
+            [count("_0.tip"), count("_0.tim"), count("_0.doc")],
+            [1, 1, 1]
+        );
     }
 
     /// A constructor that fails runs `IOUtils.closeWhileHandlingException(this)`

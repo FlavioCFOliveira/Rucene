@@ -12,7 +12,7 @@ use crate::index::index_file_names::{segment_file_name, FIELD_INFO_EXTENSION};
 use crate::index::{
     DocValuesSkipIndexType, DocValuesType, IndexOptions, VectorEncoding, VectorSimilarityFunction,
 };
-use crate::store::{DataInput, Directory, IOContext, IndexInput};
+use crate::store::{DataInput, Directory, IOContext, IndexInput, IndexOutput};
 
 const CODEC_NAME: &str = "Lucene94FieldInfos";
 const FORMAT_START: i32 = 0;
@@ -90,9 +90,27 @@ impl FieldInfosFormat for Lucene94FieldInfosFormat {
         context: &dyn IOContext,
     ) -> Result<()> {
         let file_name = segment_file_name(&segment_info.name, segment_suffix, FIELD_INFO_EXTENSION);
+        // `try (IndexOutput output = directory.createOutput(fileName, context))`
+        // (`Lucene94FieldInfosFormat.java:420`): the output is closed on every
+        // exit; an exception of the body wins over one of the close, which
+        // Java suppresses.
         let mut output = directory.create_output(&file_name, context)?;
+        let body = Self::write_body(output.as_mut(), segment_info, segment_suffix, infos);
+        let closed = output.close();
+        body.and(closed)
+    }
+}
+
+impl Lucene94FieldInfosFormat {
+    /// The body of `write`'s try-with-resources block.
+    fn write_body(
+        output: &mut dyn IndexOutput,
+        segment_info: &SegmentInfo,
+        segment_suffix: &str,
+        infos: &FieldInfos,
+    ) -> Result<()> {
         codec_util::write_index_header(
-            output.as_mut(),
+            output,
             CODEC_NAME,
             FORMAT_CURRENT,
             &segment_info.id(),
@@ -141,9 +159,7 @@ impl FieldInfosFormat for Lucene94FieldInfosFormat {
             output.write_byte(dist_func_to_ord(fi.vector_similarity_function)?)?;
         }
 
-        codec_util::write_footer(output.as_mut())?;
-        output.close()?;
-        Ok(())
+        codec_util::write_footer(output)
     }
 }
 

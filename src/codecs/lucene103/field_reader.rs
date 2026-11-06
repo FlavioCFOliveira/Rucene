@@ -21,6 +21,11 @@ use crate::util::BytesRef;
 /// its `Lucene103BlockTreeTermsReader` parent and reaches the shared inputs
 /// through it. Rust cannot hold that back-reference without a cycle, so the
 /// shared parts are extracted into this struct and shared by `Arc`.
+///
+/// When the terms reader is closed while another holder (a merge instance or
+/// a terms enum) still shares this struct, the three cannot be closed then;
+/// the last holder to go away closes them, through this struct's `Drop`, so
+/// every file Java closes is closed (rmp #351).
 pub struct BlockTreeShared {
     /// The `.tim` file, holding the term blocks.
     pub terms_in: Arc<dyn IndexInput>,
@@ -38,6 +43,30 @@ pub struct BlockTreeShared {
     /// shared rather than cloned — a per-enum copy would duplicate the `.doc`,
     /// `.pos` and `.pay` handles Lucene opens once.
     pub postings_reader: Arc<dyn crate::codecs::postings::PostingsReaderBase>,
+    /// Whether `Lucene103BlockTreeTermsReader::close` closed the three
+    /// already, so that `Drop` does not close them twice.
+    pub closed: bool,
+}
+
+impl Drop for BlockTreeShared {
+    /// Closes the `.tip` and `.tim` inputs and the postings reader, as
+    /// `IOUtils.close(indexIn, termsIn, postingsReader)` does
+    /// (`Lucene103BlockTreeTermsReader.java:275-284`), when the terms reader's
+    /// `close` could not because another holder shared them. A failure is
+    /// dropped: no caller is left to receive it.
+    fn drop(&mut self) {
+        if self.closed {
+            return;
+        }
+        let _ = crate::util::IOUtils::close([
+            Arc::get_mut(&mut self.index_in)
+                .and_then(|i| crate::util::IOUtils::closeable(move || i.close())),
+            Arc::get_mut(&mut self.terms_in)
+                .and_then(|i| crate::util::IOUtils::closeable(move || i.close())),
+            Arc::get_mut(&mut self.postings_reader)
+                .and_then(|r| crate::util::IOUtils::closeable(move || r.close())),
+        ]);
+    }
 }
 
 impl std::fmt::Debug for BlockTreeShared {

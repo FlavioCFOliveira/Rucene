@@ -104,10 +104,10 @@ fn read_impacts(serialized: &[u8], buffer: &mut FreqAndNormBuffer) -> Result<()>
     while input.position() < input.length() {
         let freq_delta = input.read_v_int()?;
         if (freq_delta & 0x01) != 0 {
-            freq += 1 + (freq_delta >> 1);
+            freq += 1 + ((freq_delta as u32) >> 1) as i32;
             norm += 1 + input.read_z_long()?;
         } else {
-            freq += 1 + (freq_delta >> 1);
+            freq += 1 + ((freq_delta as u32) >> 1) as i32;
             norm += 1;
         }
         buffer.add(freq, norm);
@@ -582,12 +582,18 @@ pub struct BlockPostingsEnum {
     level0_pay_end_fp: i64,
     level0_block_pay_upto: i32,
     level0_serialized_impacts: Vec<u8>,
+    /// `level0SerializedImpacts.length`: how many leading bytes of
+    /// [`level0_serialized_impacts`](Self::level0_serialized_impacts) the
+    /// last read filled (`Lucene104PostingsReader.java:751, 850`).
+    level0_serialized_impacts_length: usize,
 
     level1_pos_end_fp: i64,
     level1_block_pos_upto: i32,
     level1_pay_end_fp: i64,
     level1_block_pay_upto: i32,
     level1_serialized_impacts: Vec<u8>,
+    /// `level1SerializedImpacts.length` (`Lucene104PostingsReader.java:702`).
+    level1_serialized_impacts_length: usize,
 
     impacts: BlockImpacts,
 
@@ -691,7 +697,9 @@ impl BlockPostingsEnum {
             level0_last_doc_id: -1,
             level1_last_doc_id: -1,
             level0_serialized_impacts: level0_serialized_impacts.clone(),
+            level0_serialized_impacts_length: 0,
             level1_serialized_impacts: level1_serialized_impacts.clone(),
+            level1_serialized_impacts_length: 0,
             impact_buffer: impact_buffer.clone(),
         };
 
@@ -761,11 +769,14 @@ impl BlockPostingsEnum {
             level0_pay_end_fp: 0,
             level0_block_pay_upto: 0,
             level0_serialized_impacts,
+            // `new BytesRef(capacity)` has length 0.
+            level0_serialized_impacts_length: 0,
             level1_pos_end_fp: 0,
             level1_block_pos_upto: 0,
             level1_pay_end_fp: 0,
             level1_block_pay_upto: 0,
             level1_serialized_impacts,
+            level1_serialized_impacts_length: 0,
             impacts,
             needs_refilling: false,
         })
@@ -1075,6 +1086,7 @@ impl BlockPostingsEnum {
                 let num_impact_bytes = doc_in.read_short()? as usize;
                 if self.needs_impacts && self.level1_last_doc_id >= target {
                     doc_in.read_bytes(&mut self.level1_serialized_impacts, 0, num_impact_bytes)?;
+                    self.level1_serialized_impacts_length = num_impact_bytes;
                 } else {
                     doc_in.skip_bytes(num_impact_bytes as i64)?;
                 }
@@ -1131,6 +1143,7 @@ impl BlockPostingsEnum {
                 let num_impact_bytes = doc_in.read_v_int()? as usize;
                 if self.needs_impacts {
                     doc_in.read_bytes(&mut self.level0_serialized_impacts, 0, num_impact_bytes)?;
+                    self.level0_serialized_impacts_length = num_impact_bytes;
                 } else {
                     doc_in.skip_bytes(num_impact_bytes as i64)?;
                 }
@@ -1266,6 +1279,7 @@ impl BlockPostingsEnum {
                                 0,
                                 num_impact_bytes,
                             )?;
+                            self.level0_serialized_impacts_length = num_impact_bytes;
                         } else {
                             doc_in.skip_bytes(num_impact_bytes as i64)?;
                         }
@@ -1525,9 +1539,11 @@ impl BlockPostingsEnum {
         self.impacts
             .level0_serialized_impacts
             .clone_from(&self.level0_serialized_impacts);
+        self.impacts.level0_serialized_impacts_length = self.level0_serialized_impacts_length;
         self.impacts
             .level1_serialized_impacts
             .clone_from(&self.level1_serialized_impacts);
+        self.impacts.level1_serialized_impacts_length = self.level1_serialized_impacts_length;
     }
 }
 
@@ -1625,6 +1641,122 @@ impl DocIdSetIterator for BlockPostingsEnum {
 
     fn cost(&self) -> i64 {
         self.doc_freq as i64
+    }
+
+    /// Equivalent to `BlockPostingsEnum.intoBitSet(int, FixedBitSet, int)`
+    /// (`Lucene104PostingsReader.java:970-1033`): the current doc, then whole
+    /// blocks at a time, the docs of a packed block through the buffer, those
+    /// of a unary block by `FixedBitSet.orRange`; the enum is left on the
+    /// first doc at or above `up_to`.
+    fn into_bit_set(&mut self, up_to: i32, bit_set: &mut FixedBitSet, offset: i32) -> Result<()> {
+        if self.doc >= up_to {
+            return Ok(());
+        }
+
+        // Handle the current doc separately, it may be on the previous docBuffer.
+        bit_set.set((self.doc - offset) as usize);
+
+        loop {
+            if self.doc == self.level0_last_doc_id {
+                // refill
+                self.move_to_next_level0_block()?;
+            }
+
+            match self.encoding {
+                DeltaEncoding::Packed => {
+                    let start = self.doc_buffer_upto as usize;
+                    let end = self.compute_buffer_end_boundary(up_to);
+                    if end != 0 {
+                        self.buffer_into_bit_set(start, end, bit_set, offset);
+                        self.doc = self.doc_buffer[end - 1];
+                    }
+                    self.doc_buffer_upto = end as i32;
+                    if end != BS {
+                        // Either the block is a tail block, or the block did not fully match,
+                        // we're done.
+                        self.next_doc()?;
+                        debug_assert!(self.doc >= up_to);
+                        return Ok(());
+                    }
+                }
+                DeltaEncoding::Unary => {
+                    let source_from = if self.doc_buffer_upto == 0 {
+                        // start from beginning
+                        0
+                    } else {
+                        // start after the current doc
+                        self.doc - self.doc_bit_set_base + 1
+                    };
+
+                    let dest_from = self.doc_bit_set_base - offset + source_from;
+
+                    debug_assert!(self.level0_last_doc_id != NO_MORE_DOCS);
+                    let source_to = up_to.min(self.level0_last_doc_id + 1) - self.doc_bit_set_base;
+
+                    if source_to > source_from {
+                        FixedBitSet::or_range(
+                            &self.doc_bit_set,
+                            source_from as usize,
+                            bit_set,
+                            dest_from as usize,
+                            (source_to - source_from) as usize,
+                        );
+                    }
+                    if self.doc_bit_set_base + source_to <= self.level0_last_doc_id {
+                        // We stopped before the end of the current bit set, which means that
+                        // we're done. Set the current doc before returning.
+                        self.advance(self.doc_bit_set_base + source_to)?;
+                        return Ok(());
+                    }
+                    self.doc = self.level0_last_doc_id;
+                    self.doc_buffer_upto = BS as i32;
+                }
+            }
+        }
+    }
+
+    /// Equivalent to `BlockPostingsEnum.docIDRunEnd()`
+    /// (`Lucene104PostingsReader.java:1100-1128`): in a dense unary block,
+    /// the end of the level-1 block when that is dense too, else of the
+    /// level-0 block; otherwise `DocIdSetIterator.docIDRunEnd()`.
+    fn doc_id_run_end(&self) -> Result<i32> {
+        if self.encoding == DeltaEncoding::Unary {
+            // Note: this assumes that BLOCK_SIZE == 256, this bit of the code would need to be
+            // changed if the block size was changed.
+            debug_assert_eq!(BS as i64, 4 * 64);
+            let bits = self.doc_bit_set.get_bits();
+            let level0_is_dense =
+                (0..4).all(|i| bits[i].load(std::sync::atomic::Ordering::Relaxed) == u64::MAX);
+            if level0_is_dense {
+                let level0_doc_count_upto = self.doc_freq - self.doc_count_left;
+                let level1_is_dense = self.level1_last_doc_id - self.level0_last_doc_id
+                    == self.level1_doc_count_upto - level0_doc_count_upto;
+                if level1_is_dense {
+                    return Ok(self.level1_last_doc_id + 1);
+                }
+                return Ok(self.level0_last_doc_id + 1);
+            }
+        }
+
+        debug_assert!(self.doc != NO_MORE_DOCS);
+        Ok(self.doc + 1)
+    }
+}
+
+impl BlockPostingsEnum {
+    /// Equivalent to `BlockPostingsEnum.bufferIntoBitSet(int, int,
+    /// FixedBitSet, int)` (`Lucene104PostingsReader.java:1092-1098`).
+    fn buffer_into_bit_set(
+        &self,
+        start: usize,
+        end: usize,
+        bit_set: &mut FixedBitSet,
+        offset: i32,
+    ) {
+        // bitSet#set and `doc - offset` get auto-vectorized
+        for &doc in &self.doc_buffer[start..end] {
+            bit_set.set((doc - offset) as usize);
+        }
     }
 }
 
@@ -1830,7 +1962,11 @@ struct BlockImpacts {
     level0_last_doc_id: i32,
     level1_last_doc_id: i32,
     level0_serialized_impacts: Vec<u8>,
+    /// `level0SerializedImpacts.length`.
+    level0_serialized_impacts_length: usize,
     level1_serialized_impacts: Vec<u8>,
+    /// `level1SerializedImpacts.length`.
+    level1_serialized_impacts_length: usize,
     impact_buffer: FreqAndNormBuffer,
 }
 
@@ -1866,13 +2002,22 @@ impl Impacts for BlockImpacts {
             return buffer;
         }
         if level == 0 && self.level0_last_doc_id != NO_MORE_DOCS {
-            read_impacts(&self.level0_serialized_impacts, &mut buffer)
-                .expect("impacts from memory");
+            // `scratch.reset(serialized.bytes, 0, serialized.length)`
+            // (`Lucene104PostingsReader.java:1398`): only the bytes the last
+            // read filled, never the stale tail of the buffer.
+            read_impacts(
+                &self.level0_serialized_impacts[..self.level0_serialized_impacts_length],
+                &mut buffer,
+            )
+            .expect("impacts from memory");
             return buffer;
         }
         if level == 1 {
-            read_impacts(&self.level1_serialized_impacts, &mut buffer)
-                .expect("impacts from memory");
+            read_impacts(
+                &self.level1_serialized_impacts[..self.level1_serialized_impacts_length],
+                &mut buffer,
+            )
+            .expect("impacts from memory");
             return buffer;
         }
         buffer.size = 1;

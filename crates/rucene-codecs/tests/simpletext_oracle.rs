@@ -1326,3 +1326,43 @@ fn unchecked_exceptions_are_lucenes() {
         assert_eq!(actual, want, "{name}");
     }
 }
+
+/// Regression (rmp #351): `SimpleTextCompoundFormat.write` writes inside a
+/// try-with-resources over the `.scf` output
+/// (`SimpleTextCompoundFormat.java:171-212`), so a body that fails — here
+/// the segment names a file that does not exist — still closes the output:
+/// `MockDirectoryWrapper` then lets it be deleted, which it refuses for an
+/// open file.
+#[test]
+fn a_failed_compound_write_closes_the_output() {
+    use randomizedtesting::jdk::random::JdkRandom;
+    use rucene::codecs::CompoundFormat;
+    use rucene::index::SegmentInfo;
+    use rucene::store::{ByteBuffersDirectory, DEFAULT_IO_CONTEXT};
+    use rucene_test_framework::store::MockDirectoryWrapper;
+
+    let mdw = MockDirectoryWrapper::new(&JdkRandom::new(0), Arc::new(ByteBuffersDirectory::new()));
+    mdw.set_assert_no_delete_open_file(true);
+    let dir = mdw.as_directory();
+    let info = SegmentInfo::new(
+        Arc::clone(&dir),
+        rucene::util::Version::LATEST,
+        Some(rucene::util::Version::LATEST),
+        "_0".to_string(),
+        1,
+        false,
+        false,
+        Arc::new(SimpleTextCodec::new()),
+        std::collections::HashMap::new(),
+        [0u8; 16],
+        std::collections::HashMap::new(),
+        Sort::default(),
+    )
+    .unwrap();
+    info.set_files(["_0.missing".to_string()]).unwrap();
+    rucene_codecs::simpletext::compound_format::SimpleTextCompoundFormat::new()
+        .write(dir.as_ref(), &info, &*DEFAULT_IO_CONTEXT)
+        .expect_err("the segment's file does not exist");
+    dir.delete_file("_0.scf")
+        .expect("the .scf output was closed");
+}

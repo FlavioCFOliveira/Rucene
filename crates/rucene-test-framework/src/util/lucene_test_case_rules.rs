@@ -361,6 +361,12 @@ impl LuceneTestCase {
                     hard_limit: TestRuleLimitSysouts::DEFAULT_HARD_LIMIT,
                 })
                 .static_init(|| {
+                    // The JVM gives every thread `lucene-core` starts (merge
+                    // threads among them) its creator's thread group, where
+                    // `RandomizedContext` finds the suite's context.
+                    let _ = rucene::util::concurrent::set_thread_start_hook(
+                        randomizedtesting::jdk::thread::Thread::start_context,
+                    );
                     // `lucene-test-framework.jar` on the class path.
                     let loader = crate::class_loader();
                     let _ = rucene::codecs::reload_codecs(loader);

@@ -1359,10 +1359,11 @@ impl ConcurrentMergeScheduler {
         thread.set_life(ThreadLife::Alive);
         let scheduler = self.handle();
         let body = Arc::clone(thread);
-        match std::thread::Builder::new()
-            .name(thread.name.clone())
-            .spawn(move || scheduler.run_merge_thread(body))
-        {
+        match std::thread::Builder::new().name(thread.name.clone()).spawn(
+            crate::util::concurrent::with_thread_start_context(move || {
+                scheduler.run_merge_thread(body)
+            }),
+        ) {
             Ok(handle) => {
                 // The handle is dropped, detaching the thread, as Java's daemon
                 // merge threads are never joined except through `sync`.
@@ -2125,10 +2126,12 @@ impl CachedThreadPool {
             drop(worker);
             Err(std::io::Error::other("injected thread start failure"))
         } else {
-            std::thread::Builder::new().spawn(worker)
+            std::thread::Builder::new()
+                .spawn(crate::util::concurrent::with_thread_start_context(worker))
         };
         #[cfg(not(test))]
-        let started = std::thread::Builder::new().spawn(worker);
+        let started = std::thread::Builder::new()
+            .spawn(crate::util::concurrent::with_thread_start_context(worker));
         if let Err(error) = started {
             // `addWorkerFailed`, then `reject(command)`.
             self.state

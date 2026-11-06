@@ -1184,24 +1184,6 @@ fn postings_formats_read_what_lucene_reads() {
     }
 }
 
-/// `actual` is `expected` but for `  state` lines (the term-state replay of
-/// `PostingsFormatOracle.enumTrace`), which may differ; returns how many do.
-fn assert_same_lines_but_state(what: &str, actual: &[String], expected: &[String]) -> usize {
-    assert_eq!(actual.len(), expected.len(), "{what}: line count");
-    let mut differ = 0;
-    for (i, (a, e)) in actual.iter().zip(expected).enumerate() {
-        if a != e {
-            assert!(
-                a.starts_with("  state") && e.starts_with("  state"),
-                "{what}: line {i} differs\n  left: {a}\n right: {e}"
-            );
-            eprintln!("{what}: line {i} (state) differs\n  left: {a}\n right: {e}");
-            differ += 1;
-        }
-    }
-    differ
-}
-
 /// Core defect 5 of `rucene-codecs`' bloom oracle, outside this crate: the
 /// intersection of `Lucene103`'s terms dictionary (the bloom format's
 /// delegate, and the `MockRandom` segments whose seed picks the block tree)
@@ -1215,7 +1197,6 @@ fn postings_formats_enum_trace_matches_lucenes() {
     register_codecs();
     // Per side (Lucene's files, Rucene's), the core panics met.
     let mut panics = [0usize; 2];
-    let mut state_next_differs = 0;
     for oracle in &POSTINGS_ORACLES {
         let _serial = rot13_serial(oracle);
         for case in ["nocfs", "cfs", "edge"] {
@@ -1235,18 +1216,10 @@ fn postings_formats_enum_trace_matches_lucenes() {
                 let known = cfg!(debug_assertions).then_some(LUCENE103_INTERSECT_PANIC);
                 let trace = enum_trace_with(dir, known, &mut panics[i]);
                 let what = format!("{}: {case}: enum trace of {side} files", oracle.prefix);
-                if oracle.prefix.starts_with("tc_mockrandom") {
-                    state_next_differs += assert_same_lines_but_state(&what, &trace, &expected);
-                } else {
-                    assert_same_lines(&what, &trace, &expected);
-                }
+                assert_same_lines(&what, &trace, &expected);
             }
         }
     }
-    assert!(
-        state_next_differs > 0,
-        "no `state` line differs: the core is fixed, remove the exclusion"
-    );
     if cfg!(debug_assertions) {
         assert!(
             panics.iter().all(|&p| p > 0),

@@ -975,15 +975,12 @@ pub struct Field {
 }
 
 impl Field {
-    fn validate_name_and_type(name: &str, field_type: &FieldType) -> Result<()> {
-        if name.is_empty() {
-            return Err(LuceneError::IllegalArgument(
-                "name must not be empty".to_string(),
-            ));
-        }
-        if field_type.is_frozen() {
-            // Allow frozen types to be used, just not modified.
-        }
+    /// The argument checks every `Field` constructor makes: Java's are
+    /// `name == null` and `type == null` (`Field.java:81-90`), which a Rust
+    /// `&str` and `FieldType` can never be, so none fails. An empty name is a
+    /// valid field name, as in Java (`BasePostingsFormatTestCase.testJustEmptyField`
+    /// indexes one).
+    fn validate_name_and_type(_name: &str, _field_type: &FieldType) -> Result<()> {
         Ok(())
     }
 
@@ -6390,6 +6387,24 @@ impl std::hash::Hash for FieldType {
 mod tests {
     use super::*;
     use crate::index::IndexableFieldType;
+
+    /// Regression: `Field` accepts an empty name, as Java's constructors
+    /// only reject `null` (`Field.java:81-90`); every constructor that
+    /// validates the name is covered.
+    #[test]
+    fn field_accepts_an_empty_name() {
+        let mut ft = FieldType::new();
+        ft.set_index_options(IndexOptions::DOCS).unwrap();
+        ft.set_tokenized(false).unwrap();
+        let field = Field::new("", "something".to_string(), ft.clone()).unwrap();
+        assert_eq!(field.name(), "");
+        let mut stored = FieldType::new();
+        stored.set_stored(true).unwrap();
+        assert!(Field::new_with_bytes("", BytesRef::new(vec![1]), stored.clone()).is_ok());
+        assert!(Field::new_with_number("", NumericValue::Int(1), stored).is_ok());
+        assert!(StringField::new("", String::new(), Store::NO).is_ok());
+        assert!(TextField::new("", "x".to_string(), Store::NO).is_ok());
+    }
 
     #[test]
     fn field_type_defaults() {

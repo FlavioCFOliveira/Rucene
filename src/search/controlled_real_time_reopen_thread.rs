@@ -212,9 +212,11 @@ where
         let manager = Arc::clone(&self.manager);
         let target_max_stale_ns = self.target_max_stale_ns;
         let target_min_stale_ns = self.target_min_stale_ns;
-        self.handle = Some(std::thread::spawn(move || {
-            run(shared, manager, target_max_stale_ns, target_min_stale_ns);
-        }));
+        self.handle = Some(std::thread::spawn(
+            crate::util::concurrent::with_thread_start_context(move || {
+                run(shared, manager, target_max_stale_ns, target_min_stale_ns);
+            }),
+        ));
     }
 
     /// Returns the generation the current searcher is guaranteed to include.

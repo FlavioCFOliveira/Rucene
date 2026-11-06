@@ -175,55 +175,63 @@ impl CompoundFormat for SimpleTextCompoundFormat {
         let mut start_offsets = vec![0i64; num_files];
         let mut end_offsets = vec![0i64; num_files];
 
+        // `try (IndexOutput out = dir.createOutput(dataFile, context))`
+        // (`SimpleTextCompoundFormat.java:171-212`): the output is closed
+        // whether or not the body throws; a failure of the body wins, and the
+        // failure of the close it triggers is suppressed.
         let mut output = dir.create_output(&data_file, context)?;
-        let out: &mut dyn IndexOutput = output.as_mut();
-        for (i, name) in names.iter().enumerate() {
-            // write header for file
-            util::write_bytes(out, HEADER)?;
-            util::write_str(out, name)?;
+        let written = (|| -> Result<()> {
+            let out: &mut dyn IndexOutput = output.as_mut();
+            for (i, name) in names.iter().enumerate() {
+                // write header for file
+                util::write_bytes(out, HEADER)?;
+                util::write_str(out, name)?;
+                util::write_newline(out)?;
+
+                // write bytes for file
+                start_offsets[i] = out.file_pointer();
+                // `try (IndexInput in = dir.openInput(names[i], IOContext.READONCE))`
+                // (`SimpleTextCompoundFormat.java:180-182`): closed on every exit.
+                let mut input = dir.open_input(name, &*READONCE_IO_CONTEXT)?;
+                let length = input.length();
+                let copied = out.copy_bytes(input.as_mut(), length);
+                rucene::store::close_after(input.as_mut(), copied)?;
+                end_offsets[i] = out.file_pointer();
+            }
+
+            let toc_pos = out.file_pointer();
+
+            // write CFS table
+            util::write_bytes(out, TABLE)?;
+            util::write_str(out, &num_files.to_string())?;
             util::write_newline(out)?;
 
-            // write bytes for file
-            start_offsets[i] = out.file_pointer();
-            // `try (IndexInput in = dir.openInput(names[i], IOContext.READONCE))`
-            // (`SimpleTextCompoundFormat.java:180-182`): closed on every exit.
-            let mut input = dir.open_input(name, &*READONCE_IO_CONTEXT)?;
-            let length = input.length();
-            let copied = out.copy_bytes(input.as_mut(), length);
-            rucene::store::close_after(input.as_mut(), copied)?;
-            end_offsets[i] = out.file_pointer();
-        }
+            for (i, name) in names.iter().enumerate() {
+                util::write_bytes(out, TABLENAME)?;
+                util::write_str(out, name)?;
+                util::write_newline(out)?;
 
-        let toc_pos = out.file_pointer();
+                util::write_bytes(out, TABLESTART)?;
+                util::write_str(out, &start_offsets[i].to_string())?;
+                util::write_newline(out)?;
 
-        // write CFS table
-        util::write_bytes(out, TABLE)?;
-        util::write_str(out, &num_files.to_string())?;
-        util::write_newline(out)?;
+                util::write_bytes(out, TABLEEND)?;
+                util::write_str(out, &end_offsets[i].to_string())?;
+                util::write_newline(out)?;
+            }
 
-        for (i, name) in names.iter().enumerate() {
-            util::write_bytes(out, TABLENAME)?;
-            util::write_str(out, name)?;
-            util::write_newline(out)?;
-
-            util::write_bytes(out, TABLESTART)?;
-            util::write_str(out, &start_offsets[i].to_string())?;
-            util::write_newline(out)?;
-
-            util::write_bytes(out, TABLEEND)?;
-            util::write_str(out, &end_offsets[i].to_string())?;
-            util::write_newline(out)?;
-        }
-
-        // `new DecimalFormat(OFFSETPATTERN, ROOT).format(tocPos)`: zero-padded
-        // to the pattern's 19 digits.
-        util::write_bytes(out, TABLEPOS)?;
-        util::write_str(
-            out,
-            &format!("{toc_pos:0width$}", width = OFFSETPATTERN_LEN),
-        )?;
-        util::write_newline(out)?;
-        output.close()
+            // `new DecimalFormat(OFFSETPATTERN, ROOT).format(tocPos)`: zero-padded
+            // to the pattern's 19 digits.
+            util::write_bytes(out, TABLEPOS)?;
+            util::write_str(
+                out,
+                &format!("{toc_pos:0width$}", width = OFFSETPATTERN_LEN),
+            )?;
+            util::write_newline(out)
+        })();
+        let closed = output.close();
+        written?;
+        closed
     }
 }
 

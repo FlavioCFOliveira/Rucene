@@ -1401,6 +1401,44 @@ mod tests {
         assert!(files.contains("segments_1"));
     }
 
+    /// Regression (rmp #351): a new `SegmentInfos` has generation 0, so its
+    /// segments file is `segments` and not `null` (`SegmentInfos.java:132-133,
+    /// 169-179`); the deleter of a writer that opens a directory with no
+    /// commit yet therefore scans it, pushes the segment counter past the
+    /// files it finds and deletes those no commit references
+    /// (`IndexFileDeleter.java:139-225`), such as the files a tragically
+    /// aborted segment left behind.
+    #[test]
+    fn init_over_a_new_segment_infos_deletes_unreferenced_files() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        touch(dir.as_ref(), "_0.fdm");
+        touch(dir.as_ref(), "_0.fdt");
+        let mut sis = SegmentInfos::new(10).unwrap();
+        assert_eq!(sis.segments_file_name().as_deref(), Some("segments"));
+
+        // `new IndexFileDeleter(files, ..., segmentInfos, ..., indexExists =
+        // false, ...)`, as `IndexWriter`'s constructor builds it over a
+        // directory without a commit.
+        let files = dir.list_all().unwrap();
+        let _d = IndexFileDeleter::new(
+            &files,
+            Arc::clone(&dir),
+            Arc::clone(&dir),
+            Arc::new(KeepOnlyLastCommitDeletionPolicy),
+            &mut sis,
+            info_stream(),
+            &names,
+            false,
+            false,
+        )
+        .unwrap();
+
+        let files = listing(dir.as_ref());
+        assert!(!files.contains("_0.fdm"), "{files:?}");
+        assert!(!files.contains("_0.fdt"), "{files:?}");
+        assert_eq!(sis.counter, 1, "the next segment is not named _0 again");
+    }
+
     #[test]
     fn init_leaves_unknown_non_codec_files_alone() {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());

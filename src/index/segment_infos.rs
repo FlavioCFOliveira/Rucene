@@ -140,9 +140,14 @@ impl SegmentInfos {
                 "indexCreatedVersionMajor must be >= 6, got: {index_created_version_major}"
             )));
         }
+        // `generation` and `lastGeneration` are left at Java's field default,
+        // 0 (`SegmentInfos.java:132-133, 169-179`): a new instance's segments
+        // file name is `segments`, so an `IndexFileDeleter` built on it scans
+        // the directory and removes the files no commit references
+        // (`IndexFileDeleter.java:139-225`).
         Ok(Self {
-            generation: -1,
-            last_generation: -1,
+            generation: 0,
+            last_generation: 0,
             counter: 0,
             version: 0,
             user_data: JavaStringMap::default(),

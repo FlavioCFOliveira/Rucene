@@ -34,7 +34,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::Bound;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
 use randomizedtesting::jdk::random::{JdkRandom, Random};
 use randomizedtesting::jdk::util::shuffle;
@@ -74,10 +74,21 @@ use crate::util::automaton::automaton_test_util::{AutomatonTestUtil, RandomAccep
 use crate::util::lucene_test_case::{LuceneTestCase, RANDOM_MULTIPLIER, TEST_NIGHTLY, VERBOSE};
 use crate::util::TestUtil;
 
-/// `INDEX_PACKAGE_ACCESS = TestSecrets.getIndexPackageAccess()`.
-fn index_package_access() -> Arc<dyn IndexPackageAccess> {
+/// `private static final IndexPackageAccess INDEX_PACKAGE_ACCESS =
+/// TestSecrets.getIndexPackageAccess()`, read once, when the class is
+/// initialized: [`RandomPostingsTester::new`] forces it, as the JVM
+/// initializes the class before its first instance is built, so the
+/// `testTerms` threads only read the value. Reading `TestSecrets` from each
+/// of them instead raced with `IndexWriter`'s static initializer, which
+/// registers `IndexWriterAccess` before `IndexPackageAccess`: a thread that
+/// saw the first registered and the second not yet got no accessor.
+static INDEX_PACKAGE_ACCESS: LazyLock<Arc<dyn IndexPackageAccess>> = LazyLock::new(|| {
     TestSecrets::get_index_package_access()
         .expect("the index package registers its IndexPackageAccess with TestSecrets")
+});
+
+fn index_package_access() -> Arc<dyn IndexPackageAccess> {
+    Arc::clone(&INDEX_PACKAGE_ACCESS)
 }
 
 /// `DOC_TO_NORM = doc -> 1 + (doc & 0x0f)`.
@@ -964,6 +975,8 @@ impl RandomPostingsTester {
     ///
     /// What building the `FieldInfos` throws.
     pub fn new(random: Arc<dyn Random>) -> Result<Self> {
+        // Class initialization, before the first instance.
+        LazyLock::force(&INDEX_PACKAGE_ACCESS);
         let mut fields: PostingsMap = BTreeMap::new();
 
         let num_fields = TestUtil::next_int(&*random, 1, 5);
@@ -1108,6 +1121,19 @@ impl RandomPostingsTester {
     /// The package-private `maxDoc`: one past the largest generated docID.
     pub fn max_doc(&self) -> i32 {
         self.max_doc
+    }
+
+    /// `Collections.shuffle(postingsTester.allTerms, random)`: shuffles the
+    /// shared list in place, as `BasePostingsFormatTestCase.testPostingsEnumReuse`
+    /// does to the public field.
+    pub fn shuffle_all_terms(&self, random: &dyn Random) {
+        shuffle(
+            &mut self
+                .all_terms
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+            random,
+        );
     }
 
     /// The package-private `allTerms`, in its current order.

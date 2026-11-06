@@ -1257,6 +1257,14 @@ impl<T: DocIdSetIterator + ?Sized> DocIdSetIterator for Box<T> {
         (&mut **self).into_bit_set(up_to, bit_set, offset)
     }
 
+    /// Forwarded as every overridable member is: Java calls the iterator's
+    /// own `docIDRunEnd()` (`BlockPostingsEnum` overrides it,
+    /// `Lucene104PostingsReader.java:1100-1128`), which the trait default
+    /// would hide behind the box.
+    fn doc_id_run_end(&self) -> Result<i32> {
+        (**self).doc_id_run_end()
+    }
+
     /// The box is a Rust handle Java does not have: the boxed iterator is the
     /// one Java's `instanceof` tests.
     fn disi_as_any(&self) -> Option<&dyn std::any::Any> {

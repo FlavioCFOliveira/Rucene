@@ -73,22 +73,29 @@ impl SegmentInfoFormat for Lucene99SegmentInfoFormat {
         context: &dyn IOContext,
     ) -> Result<()> {
         let file_name = segment_file_name(&info.name, "", SEGMENT_INFO_EXTENSION);
+        // `try (IndexOutput output = dir.createOutput(fileName, ioContext))`
+        // (`Lucene99SegmentInfoFormat.java:174-183`): the output is closed
+        // whether or not the body throws; a failure of the body wins, and the
+        // failure of the close it triggers is suppressed.
         let mut output = directory.create_output(&file_name, context)?;
-        // Only add the file once we've successfully created it, else IFD
-        // assert can trip (`Lucene99SegmentInfoFormat.java:175-176`).
-        info.add_file(file_name.clone())?;
+        let body = (|| -> Result<()> {
+            // Only add the file once we've successfully created it, else IFD
+            // assert can trip (`Lucene99SegmentInfoFormat.java:175-176`).
+            info.add_file(file_name.clone())?;
 
-        codec_util::write_index_header(
-            output.as_mut(),
-            CODEC_NAME,
-            VERSION_CURRENT,
-            &info.id(),
-            "",
-        )?;
-        write_segment_info(output.as_mut(), info)?;
-        codec_util::write_footer(output.as_mut())?;
-        output.close()?;
-        Ok(())
+            codec_util::write_index_header(
+                output.as_mut(),
+                CODEC_NAME,
+                VERSION_CURRENT,
+                &info.id(),
+                "",
+            )?;
+            write_segment_info(output.as_mut(), info)?;
+            codec_util::write_footer(output.as_mut())
+        })();
+        let closed = output.close();
+        body?;
+        closed
     }
 }
 
@@ -256,6 +263,38 @@ mod tests {
     use crate::search::{Sort, SortField, SortFieldType};
     use crate::store::ByteBuffersDirectory;
     use std::collections::HashSet;
+
+    /// Regression (rmp #351): `write` is a try-with-resources over the
+    /// output (`Lucene99SegmentInfoFormat.java:174-183`), so a body that
+    /// throws still closes the `.si` output, and its failure is the one
+    /// raised.
+    #[test]
+    fn a_failed_write_closes_the_output() {
+        let (dir, _tracking, log) = crate::codecs::tests::tracking_directory();
+        let info = SegmentInfo::new(
+            Arc::new(ByteBuffersDirectory::default()),
+            Version::from_bits(6, 0, 0).unwrap(),
+            None,
+            "_0".to_string(),
+            1,
+            false,
+            false,
+            Arc::new(crate::codecs::tests::DummyCodec::new("Dummy")),
+            std::collections::HashMap::new(),
+            [0u8; crate::util::string_helper::ID_LENGTH],
+            std::collections::HashMap::new(),
+            Sort::default(),
+        )
+        .unwrap();
+        let error = Lucene99SegmentInfoFormat::new()
+            .write(dir.as_ref(), &info, &*crate::store::DEFAULT_IO_CONTEXT)
+            .unwrap_err();
+        assert!(
+            matches!(&error, LuceneError::IllegalArgument(m) if m.contains("invalid major version")),
+            "{error:?}"
+        );
+        assert_eq!(log.close_count("_0.si"), 1);
+    }
 
     #[test]
     fn round_trip_segment_info() {

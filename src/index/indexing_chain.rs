@@ -4569,23 +4569,14 @@ impl IndexingChain for DefaultIndexingChain {
             )?;
         }
 
-        // `termsHash.flush` finishes the term vectors first, through its
-        // `nextTermsHash` (`TermsHash.java:63-69`).
-        if let Some(consumer) = self.term_vectors_consumer.as_mut() {
-            consumer.flush_segment(
-                state.segment_info,
-                state.field_infos,
-                state.context,
-                sort_map.as_ref(),
-            )?;
-        }
-
-        // `termsHash.flush(fieldsToFlush, state, sortMap, normsMergeInstance)`
-        // (`IndexingChain.java:358-370`): when the segment has norms, the
-        // postings writer reads them back through the merge instance of a
-        // norms producer opened over the files `write_norms` has just written,
-        // because it folds each document's norm into the impact blocks; the
-        // postings are written in the sorted order through
+        // `try (NormsProducer norms = ...) { termsHash.flush(fieldsToFlush,
+        // state, sortMap, normsMergeInstance); }` (`IndexingChain.java:361-370`):
+        // when the segment has norms, a norms producer is opened over the files
+        // `write_norms` has just written before anything else is flushed,
+        // because the postings writer folds each document's norm into the
+        // impact blocks; then `termsHash.flush` finishes the term vectors
+        // first, through its `nextTermsHash` (`TermsHash.java:63-69`), and the
+        // postings after them, in the sorted order through
         // `FreqProxTermsWriter.SortingTerms`.
         let mut norms = if state.field_infos.has_norms() {
             let read_state = crate::codecs::state::SegmentReadState::new(
@@ -4607,10 +4598,20 @@ impl IndexingChain for DefaultIndexingChain {
         // terms off `state.segUpdates` (`FreqProxTermsWriter.java:43-46`).
         let delete_terms = state.seg_updates.delete_terms();
         let flushed = (|| -> Result<()> {
+            // Use the merge instance in order to reuse the same IndexInput for
+            // all terms.
             let norms_merge_instance = norms
                 .as_ref()
                 .map(|norms| norms.get_merge_instance())
                 .transpose()?;
+            if let Some(consumer) = self.term_vectors_consumer.as_mut() {
+                consumer.flush_segment(
+                    state.segment_info,
+                    state.field_infos,
+                    state.context,
+                    sort_map.as_ref(),
+                )?;
+            }
             self.terms_writer.flush(
                 state,
                 &delete_terms,
@@ -6762,6 +6763,93 @@ mod tests {
             });
         }
         Some(decoded)
+    }
+
+    /// Regression (rmp #351): `IndexingChain.flush` opens the norms producer
+    /// before `termsHash.flush` finishes the term vectors
+    /// (`IndexingChain.java:361-370`, `TermsHash.java:63-69`), so the norms
+    /// metadata is read back, and its input closed, before the term-vectors
+    /// files are closed; the order of the file operations is what
+    /// `MockDirectoryWrapper`'s random draws follow.
+    #[test]
+    fn flush_opens_the_norms_before_it_finishes_the_term_vectors() {
+        let codec = ensure_codec();
+        let (inner, _closes, log) = crate::codecs::tests::tracking_directory();
+        let tracking = Arc::new(TrackingDirectoryWrapper::new(Box::new(
+            crate::index::documents_writer::SharedDirectory(inner),
+        )));
+        let directory: Arc<dyn Directory> = Arc::clone(&tracking) as Arc<dyn Directory>;
+        let make_info = |max_doc| {
+            SegmentInfo::new(
+                Arc::clone(&directory),
+                Version::LATEST,
+                Some(Version::LATEST),
+                "_0".to_string(),
+                max_doc,
+                false,
+                false,
+                Arc::clone(&codec),
+                HashMap::new(),
+                [7u8; 16],
+                HashMap::new(),
+                Default::default(),
+            )
+            .expect("segment info")
+        };
+        let mut chain =
+            DefaultIndexingChain::new_for_segment(config(), Arc::clone(&tracking), &make_info(-1))
+                .expect("bind segment");
+        let mut field_type = FieldType::new();
+        field_type.set_tokenized(true).expect("tokenized");
+        field_type.set_omit_norms(false).expect("keep norms");
+        field_type
+            .set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
+            .expect("index options");
+        field_type
+            .set_store_term_vectors(true)
+            .expect("store term vectors");
+        field_type.freeze();
+        let mut field_infos = builder();
+        for doc_id in 0..2 {
+            let stream: Rc<RefCell<dyn TokenStream>> =
+                Rc::new(RefCell::new(ScriptedTokenStream::new(vec![
+                    Tok::new("a", 1, 0, 1),
+                    Tok::new("b", 1, 2, 3),
+                ])));
+            let mut document = Document::new();
+            document.add(Box::new(
+                Field::new_with_token_stream("f", stream, field_type.clone())
+                    .expect("token stream field"),
+            ));
+            chain
+                .process_document(doc_id, &document, true, &mut field_infos)
+                .expect("process document");
+        }
+        let finished = field_infos.finish().expect("field infos");
+        let segment_info = make_info(2);
+        let info_stream = NoOutputInfoStream;
+        let context = flush_io_context(FlushInfo::new(2, 0));
+        let seg_updates = segment_updates(&[]);
+        let mut state = SegmentWriteState::new(
+            &info_stream,
+            Arc::clone(&tracking) as Arc<dyn Directory>,
+            &segment_info,
+            &finished,
+            &seg_updates,
+            context.as_ref(),
+        );
+        chain.flush(&mut state).expect("flush");
+
+        let closed = log.closed();
+        let norms_meta_read = closed
+            .iter()
+            .rposition(|name| name == "_0.nvm")
+            .expect("norms metadata closed");
+        let vectors_closed = closed
+            .iter()
+            .position(|name| name == "_0.tvd")
+            .expect("term vectors closed");
+        assert!(norms_meta_read < vectors_closed, "{closed:?}");
     }
 
     /// Indexes `documents`, flushes them, and returns the decoded term vectors

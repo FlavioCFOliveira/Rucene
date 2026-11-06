@@ -48,6 +48,27 @@ pub(crate) struct Shared {
     /// The number of fields, for `OrdsSegmentTermsEnum.toString()`, which
     /// prints the reader (`seg=` + `fr.parent`).
     pub(crate) description: String,
+    /// Whether the reader's `close()` closed `input` and the postings reader
+    /// already, so that `Drop` does not close them twice.
+    pub(crate) closed: bool,
+}
+
+impl Drop for Shared {
+    /// `IOUtils.close(in, postingsReader)` (`OrdsBlockTreeTermsReader.java:207-215`),
+    /// run by the last holder when the reader's `close()` found
+    /// them still shared by a merge instance or an enum (rmp #351). A failure
+    /// is dropped: no caller is left to receive it.
+    fn drop(&mut self) {
+        if self.closed {
+            return;
+        }
+        if let Some(input) = Arc::get_mut(&mut self.input) {
+            let _ = input.close();
+        }
+        if let Some(reader) = Arc::get_mut(&mut self.postings_reader) {
+            let _ = reader.close();
+        }
+    }
 }
 
 /// See [`OrdsBlockTreeTermsWriter`](super::OrdsBlockTreeTermsWriter).
@@ -57,8 +78,9 @@ pub(crate) struct Shared {
 /// `String.compareTo` order.
 ///
 /// `close()` closes `in` and the postings reader when this reader is their
-/// last holder; one a live enum still shares is released when that enum is
-/// dropped (see `Lucene103BlockTreeTermsReader`).
+/// last holder; ones a live enum or merge instance still shares are closed
+/// by `Shared`'s `Drop` when the last of them is dropped (see
+/// `Lucene103BlockTreeTermsReader`).
 pub struct OrdsBlockTreeTermsReader {
     shared: Option<Arc<Shared>>,
     fields: HashMap<String, Arc<FieldData>>,
@@ -113,6 +135,7 @@ impl OrdsBlockTreeTermsReader {
                         input: Arc::new(input),
                         postings_reader: Arc::from(postings_reader),
                         description,
+                        closed: false,
                     })),
                     fields,
                     field_names,
@@ -363,6 +386,7 @@ impl FieldsProducer for OrdsBlockTreeTermsReader {
         let Some(shared) = Arc::get_mut(&mut shared) else {
             return Ok(());
         };
+        shared.closed = true;
         // IOUtils.close(in, postingsReader)
         let input = Arc::get_mut(&mut shared.input).map_or(Ok(()), |i| i.close());
         let postings = Arc::get_mut(&mut shared.postings_reader).map_or(Ok(()), |r| r.close());

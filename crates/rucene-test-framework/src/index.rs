@@ -419,6 +419,8 @@ pub mod alcoholic_merge_policy;
 pub mod all_deleted_filter_reader;
 pub mod asserting_directory_reader;
 pub mod asserting_leaf_reader;
+pub mod base_index_file_format_test_case;
+pub mod base_postings_format_test_case;
 pub mod doc_helper;
 pub mod field_filter_leaf_reader;
 pub mod force_merge_policy;

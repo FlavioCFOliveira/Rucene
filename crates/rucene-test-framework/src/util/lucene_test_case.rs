@@ -90,6 +90,23 @@ pub const NIGHTLY: AnnotationType = AnnotationType {
     inherited: true,
 };
 
+/// An `@LuceneTestCase.Nightly` annotation value (the annotation has no
+/// members), for the tests and suites Lucene marks with it.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Nightly;
+
+impl JavaAnnotation for Nightly {
+    fn annotation_type(&self) -> &'static AnnotationType {
+        &NIGHTLY
+    }
+    fn to_java_string(&self) -> String {
+        "@org.apache.lucene.tests.util.LuceneTestCase.Nightly()".to_string()
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 /// Port of the annotation `LuceneTestCase.Weekly`: tests that should only be
 /// run during weekly builds (`@TestGroup(enabled = false, sysProperty =
 /// SYSPROP_WEEKLY)`).
