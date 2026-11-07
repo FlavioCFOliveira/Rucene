@@ -3141,9 +3141,18 @@ pub trait FlushPolicy: Send + Sync + Debug {
 /// Flushes on buffered-document count or on buffered RAM, whichever hits first.
 ///
 /// Equivalent to `org.apache.lucene.index.FlushByRamOrCountsPolicy`.
+///
+/// Java's `FlushPolicy.init` keeps a strong reference to the writer's
+/// `LiveIndexWriterConfig`, which itself holds this policy; the garbage
+/// collector reclaims that cycle. With reference counting it would keep the
+/// config — and whatever it holds, such as the `IndexCommit` a writer was
+/// opened on, with that commit's reader and directory — alive after the
+/// writer is gone, so the policy keeps a [`Weak`](std::sync::Weak) reference,
+/// upgraded on use (the config outlives every flush decision, which the
+/// writer makes while it holds the config).
 #[derive(Debug, Default)]
 pub struct FlushByRamOrCountsPolicy {
-    config: OnceLock<Arc<LiveIndexWriterConfig>>,
+    config: OnceLock<std::sync::Weak<LiveIndexWriterConfig>>,
 }
 
 impl FlushByRamOrCountsPolicy {
@@ -3154,16 +3163,22 @@ impl FlushByRamOrCountsPolicy {
 
     /// Returns `true` when flushing by buffered document count is enabled.
     pub fn flush_on_doc_count(&self) -> bool {
-        self.config.get().is_some_and(|config| {
-            config.max_buffered_docs() != LiveIndexWriterConfig::DISABLE_AUTO_FLUSH
-        })
+        self.config
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+            .is_some_and(|config| {
+                config.max_buffered_docs() != LiveIndexWriterConfig::DISABLE_AUTO_FLUSH
+            })
     }
 
     /// Returns `true` when flushing by buffered RAM is enabled.
     pub fn flush_on_ram(&self) -> bool {
-        self.config.get().is_some_and(|config| {
-            config.ram_buffer_size_mb() != f64::from(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH)
-        })
+        self.config
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+            .is_some_and(|config| {
+                config.ram_buffer_size_mb() != f64::from(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH)
+            })
     }
 
     fn flush_deletes(&self, control: &FlushControlHandle<'_>, config: &LiveIndexWriterConfig) {
@@ -3220,7 +3235,7 @@ impl FlushPolicy for FlushByRamOrCountsPolicy {
         control: &mut FlushControlHandle<'_>,
         per_thread: Option<&DocumentsWriterPerThread>,
     ) {
-        let Some(config) = self.config.get().cloned() else {
+        let Some(config) = self.config.get().and_then(std::sync::Weak::upgrade) else {
             debug_assert!(false, "FlushPolicy::init must be called before on_change");
             return;
         };
@@ -3255,7 +3270,7 @@ impl FlushPolicy for FlushByRamOrCountsPolicy {
     }
 
     fn init(&self, config: Arc<LiveIndexWriterConfig>) {
-        let _ = self.config.set(config);
+        let _ = self.config.set(Arc::downgrade(&config));
     }
 }
 

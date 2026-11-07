@@ -14,8 +14,11 @@ import org.junit.runner.notification.RunListener;
 /**
  * The seeded-draw oracle of rmp #351: runs {@link TestPostingsSuiteDraws} (the inherited cases of
  * {@code BaseIndexFileFormatTestCase} and {@code BasePostingsFormatTestCase} on {@code
- * TestUtil.alwaysPostingsFormat(new Lucene104PostingsFormat())}) with {@code JUnitCore} on fixed
- * master seeds and writes {@code <out>/rucene-test-framework/base_postings_draws.tsv}: per seed,
+ * TestUtil.alwaysPostingsFormat(new Lucene104PostingsFormat())}) and {@link
+ * TestStoredFieldsSuiteDraws} (those of {@code BaseStoredFieldsFormatTestCase} on {@code
+ * TestUtil.getDefaultCodec()}) with {@code JUnitCore} on fixed master seeds and writes {@code
+ * <out>/rucene-test-framework/base_postings_draws.tsv} and {@code base_stored_fields_draws.tsv}:
+ * per seed,
  * the {@code #counts} row, one row per test with the next {@code random().nextLong()} of its
  * randomness after the test, the class row with the next draw of the class randomness, and one row
  * per failure or assumption failure (class and first line of the message). Rows are sorted within a
@@ -34,10 +37,22 @@ public class BaseFormatSuitesOracle {
   public static void main(String[] args) throws Exception {
     File out = new File(args[0], "rucene-test-framework");
     out.mkdirs();
-    try (PrintWriter w = new PrintWriter(new File(out, "base_postings_draws.tsv"), "UTF-8")) {
+    write(
+        new File(out, "base_postings_draws.tsv"),
+        TestPostingsSuiteDraws.class,
+        "TestPostingsSuiteDraws");
+    write(
+        new File(out, "base_stored_fields_draws.tsv"),
+        TestStoredFieldsSuiteDraws.class,
+        "TestStoredFieldsSuiteDraws");
+  }
+
+  static void write(File file, Class<?> suite, String name) throws Exception {
+    try (PrintWriter w = new PrintWriter(file, "UTF-8")) {
       w.println(
-          "# seed\tmethod\tkind\tvalue (BaseFormatSuitesOracle, Lucene 10.5.0, JDK 25):"
-              + " TestPostingsSuiteDraws, next random().nextLong() after each test and the class");
+          "# seed\tmethod\tkind\tvalue (BaseFormatSuitesOracle, Lucene 10.5.0, JDK 25): "
+              + name
+              + ", next random().nextLong() after each test and the class");
       for (String seed : SEEDS) {
         System.setProperty("tests.seed", seed);
         DRAWS.clear();
@@ -62,7 +77,7 @@ public class BaseFormatSuitesOracle {
                     f.getDescription().getMethodName() + "\tA\t" + firstLine(f.getMessage()));
               }
             });
-        Result r = core.run(TestPostingsSuiteDraws.class);
+        Result r = core.run(suite);
         List<String> rows = new ArrayList<>(DRAWS);
         rows.addAll(events);
         rows.add(

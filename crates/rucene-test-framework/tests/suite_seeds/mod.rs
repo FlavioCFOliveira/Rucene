@@ -95,7 +95,11 @@ pub fn run_suite(class: fn() -> Arc<Class>) {
             class.name(),
             seed.unwrap_or("-"),
             r.run_count(),
-            r.run_count() - r.failure_count() - r.assumption_failure_count(),
+            // A suite-level failure (an uncaught exception reported after a
+            // test) counts as a failure without a test run of its own.
+            r.run_count()
+                .saturating_sub(r.failure_count())
+                .saturating_sub(r.assumption_failure_count()),
             r.assumption_failure_count(),
             r.ignore_count(),
             r.failure_count()

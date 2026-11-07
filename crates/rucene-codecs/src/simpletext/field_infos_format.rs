@@ -332,102 +332,114 @@ impl FieldInfosFormat for SimpleTextFieldInfosFormat {
         let file_name =
             segment_file_name(&segment_info.name, segment_suffix, FIELD_INFOS_EXTENSION);
         let mut output = directory.create_output(&file_name, context)?;
-        let out = output.as_mut();
-        util::write_bytes(out, NUMFIELDS)?;
-        util::write_str(out, &infos.size().to_string())?;
-        util::write_newline(out)?;
-
-        for fi in infos.iter() {
-            util::write_bytes(out, NAME)?;
-            util::write_str(out, &fi.name)?;
+        // `success ? IOUtils.close(out) : IOUtils.closeWhileHandlingException(out)` (`SimpleTextFieldInfosFormat.java:350-357`): the output is closed
+        // whether or not writing it failed, a failure to close it suppressed
+        // by the write's own.
+        let result = (|| -> Result<()> {
+            let out = output.as_mut();
+            util::write_bytes(out, NUMFIELDS)?;
+            util::write_str(out, &infos.size().to_string())?;
             util::write_newline(out)?;
 
-            util::write_bytes(out, NUMBER)?;
-            util::write_str(out, &fi.number.to_string())?;
-            util::write_newline(out)?;
-
-            util::write_bytes(out, INDEXOPTIONS)?;
-            let index_options = fi.get_index_options();
-            debug_assert!(
-                index_options.subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
-                    || !fi.has_payloads()
-            );
-            util::write_str(out, &enum_name(index_options))?;
-            util::write_newline(out)?;
-
-            util::write_bytes(out, STORETV)?;
-            util::write_str(out, bool_str(fi.has_term_vectors()))?;
-            util::write_newline(out)?;
-
-            util::write_bytes(out, PAYLOADS)?;
-            util::write_str(out, bool_str(fi.has_payloads()))?;
-            util::write_newline(out)?;
-
-            util::write_bytes(out, NORMS)?;
-            util::write_str(out, bool_str(!fi.omits_norms()))?;
-            util::write_newline(out)?;
-
-            util::write_bytes(out, DOCVALUES)?;
-            util::write_str(out, &enum_name(fi.get_doc_values_type()))?;
-            util::write_newline(out)?;
-
-            util::write_bytes(out, DOCVALUES_SKIP_INDEX)?;
-            util::write_str(out, &enum_name(fi.doc_values_skip_index_type()))?;
-            util::write_newline(out)?;
-
-            util::write_bytes(out, DOCVALUES_GEN)?;
-            util::write_str(out, &fi.get_doc_values_gen().to_string())?;
-            util::write_newline(out)?;
-
-            let atts = fi.attributes();
-            let num_atts = atts.len();
-            util::write_bytes(out, NUM_ATTS)?;
-            util::write_str(out, &num_atts.to_string())?;
-            util::write_newline(out)?;
-
-            for (key, value) in atts.iter() {
-                util::write_bytes(out, ATT_KEY)?;
-                util::write_str(out, key)?;
+            for fi in infos.iter() {
+                util::write_bytes(out, NAME)?;
+                util::write_str(out, &fi.name)?;
                 util::write_newline(out)?;
 
-                util::write_bytes(out, ATT_VALUE)?;
-                util::write_str(out, value)?;
+                util::write_bytes(out, NUMBER)?;
+                util::write_str(out, &fi.number.to_string())?;
+                util::write_newline(out)?;
+
+                util::write_bytes(out, INDEXOPTIONS)?;
+                let index_options = fi.get_index_options();
+                debug_assert!(
+                    index_options.subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
+                        || !fi.has_payloads()
+                );
+                util::write_str(out, &enum_name(index_options))?;
+                util::write_newline(out)?;
+
+                util::write_bytes(out, STORETV)?;
+                util::write_str(out, bool_str(fi.has_term_vectors()))?;
+                util::write_newline(out)?;
+
+                util::write_bytes(out, PAYLOADS)?;
+                util::write_str(out, bool_str(fi.has_payloads()))?;
+                util::write_newline(out)?;
+
+                util::write_bytes(out, NORMS)?;
+                util::write_str(out, bool_str(!fi.omits_norms()))?;
+                util::write_newline(out)?;
+
+                util::write_bytes(out, DOCVALUES)?;
+                util::write_str(out, &enum_name(fi.get_doc_values_type()))?;
+                util::write_newline(out)?;
+
+                util::write_bytes(out, DOCVALUES_SKIP_INDEX)?;
+                util::write_str(out, &enum_name(fi.doc_values_skip_index_type()))?;
+                util::write_newline(out)?;
+
+                util::write_bytes(out, DOCVALUES_GEN)?;
+                util::write_str(out, &fi.get_doc_values_gen().to_string())?;
+                util::write_newline(out)?;
+
+                let atts = fi.attributes();
+                let num_atts = atts.len();
+                util::write_bytes(out, NUM_ATTS)?;
+                util::write_str(out, &num_atts.to_string())?;
+                util::write_newline(out)?;
+
+                for (key, value) in atts.iter() {
+                    util::write_bytes(out, ATT_KEY)?;
+                    util::write_str(out, key)?;
+                    util::write_newline(out)?;
+
+                    util::write_bytes(out, ATT_VALUE)?;
+                    util::write_str(out, value)?;
+                    util::write_newline(out)?;
+                }
+
+                util::write_bytes(out, DATA_DIM_COUNT)?;
+                util::write_str(out, &fi.get_point_dimension_count().to_string())?;
+                util::write_newline(out)?;
+
+                util::write_bytes(out, INDEX_DIM_COUNT)?;
+                util::write_str(out, &fi.get_point_index_dimension_count().to_string())?;
+                util::write_newline(out)?;
+
+                util::write_bytes(out, DIM_NUM_BYTES)?;
+                util::write_str(out, &fi.get_point_num_bytes().to_string())?;
+                util::write_newline(out)?;
+
+                util::write_bytes(out, VECTOR_NUM_DIMS)?;
+                util::write_str(out, &fi.get_vector_dimension().to_string())?;
+                util::write_newline(out)?;
+
+                util::write_bytes(out, VECTOR_ENCODING)?;
+                util::write_str(out, &enum_name(fi.get_vector_encoding()))?;
+                util::write_newline(out)?;
+
+                util::write_bytes(out, VECTOR_SIMILARITY)?;
+                util::write_str(out, &enum_name(fi.get_vector_similarity_function()))?;
+                util::write_newline(out)?;
+
+                util::write_bytes(out, SOFT_DELETES)?;
+                util::write_str(out, bool_str(fi.is_soft_deletes_field()))?;
+                util::write_newline(out)?;
+
+                util::write_bytes(out, PARENT)?;
+                util::write_str(out, bool_str(fi.is_parent_field()))?;
                 util::write_newline(out)?;
             }
-
-            util::write_bytes(out, DATA_DIM_COUNT)?;
-            util::write_str(out, &fi.get_point_dimension_count().to_string())?;
-            util::write_newline(out)?;
-
-            util::write_bytes(out, INDEX_DIM_COUNT)?;
-            util::write_str(out, &fi.get_point_index_dimension_count().to_string())?;
-            util::write_newline(out)?;
-
-            util::write_bytes(out, DIM_NUM_BYTES)?;
-            util::write_str(out, &fi.get_point_num_bytes().to_string())?;
-            util::write_newline(out)?;
-
-            util::write_bytes(out, VECTOR_NUM_DIMS)?;
-            util::write_str(out, &fi.get_vector_dimension().to_string())?;
-            util::write_newline(out)?;
-
-            util::write_bytes(out, VECTOR_ENCODING)?;
-            util::write_str(out, &enum_name(fi.get_vector_encoding()))?;
-            util::write_newline(out)?;
-
-            util::write_bytes(out, VECTOR_SIMILARITY)?;
-            util::write_str(out, &enum_name(fi.get_vector_similarity_function()))?;
-            util::write_newline(out)?;
-
-            util::write_bytes(out, SOFT_DELETES)?;
-            util::write_str(out, bool_str(fi.is_soft_deletes_field()))?;
-            util::write_newline(out)?;
-
-            util::write_bytes(out, PARENT)?;
-            util::write_str(out, bool_str(fi.is_parent_field()))?;
-            util::write_newline(out)?;
+            util::write_checksum(out)?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => output.close(),
+            Err(error) => {
+                let _ = output.close();
+                Err(error)
+            }
         }
-        util::write_checksum(out)?;
-        output.close()
     }
 }

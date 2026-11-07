@@ -33,10 +33,11 @@
 //!   constructor builds, a [`FormatTestInstance`] holding the subclass as a
 //!   trait object.
 //!
-//! The suites that extend it (`BasePostingsFormatTestCase`) declare their
-//! classes the same way and reach their own trait through
-//! [`BaseIndexFileFormatTestCase::as_postings`], Rust's stand-in for the cast
-//! a Java subclass needs none of.
+//! The suites that extend it (`BasePostingsFormatTestCase`,
+//! `BaseStoredFieldsFormatTestCase`) declare their classes the same way and
+//! reach their own trait through [`BaseIndexFileFormatTestCase::as_postings`]
+//! and [`BaseIndexFileFormatTestCase::as_stored_fields`], Rust's stand-in for
+//! the cast a Java subclass needs none of.
 //!
 //! **Divergences** (declared, each confined to the member named):
 //! * `ReadBytesDirectoryWrapper.openChecksumInput`: the port's
@@ -372,6 +373,15 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
     fn as_postings(
         &self,
     ) -> Option<&dyn crate::index::base_postings_format_test_case::BasePostingsFormatTestCase> {
+        None
+    }
+
+    /// The subclass as a `BaseStoredFieldsFormatTestCase`, when it is one.
+    fn as_stored_fields(
+        &self,
+    ) -> Option<
+        &dyn crate::index::base_stored_fields_format_test_case::BaseStoredFieldsFormatTestCase,
+    > {
         None
     }
 

@@ -262,111 +262,123 @@ impl SegmentInfoFormat for SimpleTextSegmentInfoFormat {
         // Only add the file once we've successfully created it, else IFD
         // assert can trip:
         si.add_file(seg_file_name)?;
-        let out = output.as_mut();
+        // try-with-resources (`SimpleTextSegmentInfoFormat.java:239`): the output is closed
+        // whether or not writing it failed, a failure to close it suppressed
+        // by the write's own.
+        let result = (|| -> Result<()> {
+            let out = output.as_mut();
 
-        util::write_bytes(out, SI_VERSION)?;
-        util::write_str(out, &si.version().to_string())?;
-        util::write_newline(out)?;
-
-        util::write_bytes(out, SI_MIN_VERSION)?;
-        match si.min_version() {
-            None => util::write_str(out, "null")?,
-            Some(min_version) => util::write_str(out, &min_version.to_string())?,
-        }
-        util::write_newline(out)?;
-
-        util::write_bytes(out, SI_DOCCOUNT)?;
-        util::write_str(out, &si.max_doc()?.to_string())?;
-        util::write_newline(out)?;
-
-        util::write_bytes(out, SI_USECOMPOUND)?;
-        util::write_str(out, util::bool_str(si.get_use_compound_file()))?;
-        util::write_newline(out)?;
-
-        util::write_bytes(out, SI_HAS_BLOCKS)?;
-        util::write_str(out, util::bool_str(si.get_has_blocks()))?;
-        util::write_newline(out)?;
-
-        let diagnostics = si.get_diagnostics();
-        let num_diagnostics = diagnostics.len();
-        util::write_bytes(out, SI_NUM_DIAG)?;
-        util::write_str(out, &num_diagnostics.to_string())?;
-        util::write_newline(out)?;
-
-        for (key, value) in diagnostics.iter() {
-            util::write_bytes(out, SI_DIAG_KEY)?;
-            util::write_str(out, key)?;
+            util::write_bytes(out, SI_VERSION)?;
+            util::write_str(out, &si.version().to_string())?;
             util::write_newline(out)?;
 
-            util::write_bytes(out, SI_DIAG_VALUE)?;
-            util::write_str(out, value)?;
-            util::write_newline(out)?;
-        }
-
-        let attributes = si.get_attributes_ordered();
-        util::write_bytes(out, SI_NUM_ATT)?;
-        util::write_str(out, &attributes.len().to_string())?;
-        util::write_newline(out)?;
-
-        for (key, value) in attributes.iter() {
-            util::write_bytes(out, SI_ATT_KEY)?;
-            util::write_str(out, key)?;
+            util::write_bytes(out, SI_MIN_VERSION)?;
+            match si.min_version() {
+                None => util::write_str(out, "null")?,
+                Some(min_version) => util::write_str(out, &min_version.to_string())?,
+            }
             util::write_newline(out)?;
 
-            util::write_bytes(out, SI_ATT_VALUE)?;
-            util::write_str(out, value)?;
+            util::write_bytes(out, SI_DOCCOUNT)?;
+            util::write_str(out, &si.max_doc()?.to_string())?;
             util::write_newline(out)?;
-        }
 
-        let files = si.files_ordered()?;
-        util::write_bytes(out, SI_NUM_FILES)?;
-        util::write_str(out, &files.len().to_string())?;
-        util::write_newline(out)?;
-
-        for file_name in files.iter() {
-            util::write_bytes(out, SI_FILE)?;
-            util::write_str(out, file_name)?;
+            util::write_bytes(out, SI_USECOMPOUND)?;
+            util::write_str(out, util::bool_str(si.get_use_compound_file()))?;
             util::write_newline(out)?;
-        }
 
-        util::write_bytes(out, SI_ID)?;
-        util::write_str(out, &BytesRef::new(si.id().to_vec()).to_string())?;
-        util::write_newline(out)?;
+            util::write_bytes(out, SI_HAS_BLOCKS)?;
+            util::write_str(out, util::bool_str(si.get_has_blocks()))?;
+            util::write_newline(out)?;
 
-        // Java's `getIndexSort()` is `null` for an unsorted segment, which the
-        // port represents as the relevance sort.
-        let index_sort = si.index_sort();
-        let sort_fields: &[rucene::search::SortField] = if *index_sort == Sort::new() {
-            &[]
-        } else {
-            index_sort.fields()
-        };
-        util::write_bytes(out, SI_SORT)?;
-        util::write_str(out, &sort_fields.len().to_string())?;
-        util::write_newline(out)?;
-        for sort_field in sort_fields {
-            let Some(sorter) = sort_field.get_index_sorter() else {
-                return Err(LuceneError::illegal_state(format!(
-                    "Cannot serialize sort {sort_field}"
-                )));
+            let diagnostics = si.get_diagnostics();
+            let num_diagnostics = diagnostics.len();
+            util::write_bytes(out, SI_NUM_DIAG)?;
+            util::write_str(out, &num_diagnostics.to_string())?;
+            util::write_newline(out)?;
+
+            for (key, value) in diagnostics.iter() {
+                util::write_bytes(out, SI_DIAG_KEY)?;
+                util::write_str(out, key)?;
+                util::write_newline(out)?;
+
+                util::write_bytes(out, SI_DIAG_VALUE)?;
+                util::write_str(out, value)?;
+                util::write_newline(out)?;
+            }
+
+            let attributes = si.get_attributes_ordered();
+            util::write_bytes(out, SI_NUM_ATT)?;
+            util::write_str(out, &attributes.len().to_string())?;
+            util::write_newline(out)?;
+
+            for (key, value) in attributes.iter() {
+                util::write_bytes(out, SI_ATT_KEY)?;
+                util::write_str(out, key)?;
+                util::write_newline(out)?;
+
+                util::write_bytes(out, SI_ATT_VALUE)?;
+                util::write_str(out, value)?;
+                util::write_newline(out)?;
+            }
+
+            let files = si.files_ordered()?;
+            util::write_bytes(out, SI_NUM_FILES)?;
+            util::write_str(out, &files.len().to_string())?;
+            util::write_newline(out)?;
+
+            for file_name in files.iter() {
+                util::write_bytes(out, SI_FILE)?;
+                util::write_str(out, file_name)?;
+                util::write_newline(out)?;
+            }
+
+            util::write_bytes(out, SI_ID)?;
+            util::write_str(out, &BytesRef::new(si.id().to_vec()).to_string())?;
+            util::write_newline(out)?;
+
+            // Java's `getIndexSort()` is `null` for an unsorted segment, which the
+            // port represents as the relevance sort.
+            let index_sort = si.index_sort();
+            let sort_fields: &[rucene::search::SortField] = if *index_sort == Sort::new() {
+                &[]
+            } else {
+                index_sort.fields()
             };
-
-            util::write_bytes(out, SI_SORT_NAME)?;
-            util::write_str(out, sorter.get_provider_name())?;
+            util::write_bytes(out, SI_SORT)?;
+            util::write_str(out, &sort_fields.len().to_string())?;
             util::write_newline(out)?;
+            for sort_field in sort_fields {
+                let Some(sorter) = sort_field.get_index_sorter() else {
+                    return Err(LuceneError::illegal_state(format!(
+                        "Cannot serialize sort {sort_field}"
+                    )));
+                };
 
-            util::write_bytes(out, SI_SORT_TYPE)?;
-            util::write_str(out, &sort_field.to_string())?;
-            util::write_newline(out)?;
+                util::write_bytes(out, SI_SORT_NAME)?;
+                util::write_str(out, sorter.get_provider_name())?;
+                util::write_newline(out)?;
 
-            util::write_bytes(out, SI_SORT_BYTES)?;
-            let mut b = BytesRefOutput::default();
-            write_sort_field(sort_field, &mut b)?;
-            util::write_str(out, &BytesRef::new(b.bytes).to_string())?;
-            util::write_newline(out)?;
+                util::write_bytes(out, SI_SORT_TYPE)?;
+                util::write_str(out, &sort_field.to_string())?;
+                util::write_newline(out)?;
+
+                util::write_bytes(out, SI_SORT_BYTES)?;
+                let mut b = BytesRefOutput::default();
+                write_sort_field(sort_field, &mut b)?;
+                util::write_str(out, &BytesRef::new(b.bytes).to_string())?;
+                util::write_newline(out)?;
+            }
+            util::write_checksum(out)?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => output.close(),
+            Err(error) => {
+                let _ = output.close();
+                Err(error)
+            }
         }
-        util::write_checksum(out)?;
-        output.close()
     }
 }
 

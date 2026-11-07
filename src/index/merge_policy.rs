@@ -1818,6 +1818,14 @@ impl NoMergePolicy {
 }
 
 impl MergePolicy for NoMergePolicy {
+    /// The concrete policy, so that a caller can test `instanceof
+    /// NoMergePolicy` (`RandomIndexWriter`'s constructor draws
+    /// `doRandomForceMerge` only when it is not one,
+    /// `RandomIndexWriter.java:177`).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn find_merges(
         &self,
         _merge_trigger: MergeTrigger,
@@ -5778,6 +5786,13 @@ fn now_millis() -> i64 {
 #[cfg(test)]
 mod merge_policy_setting_tests {
     use super::*;
+
+    /// `NoMergePolicy` answers `instanceof NoMergePolicy` through `as_any`.
+    #[test]
+    fn no_merge_policy_is_an_instance_of_itself() {
+        let policy: Arc<dyn MergePolicy> = Arc::new(NoMergePolicy::new());
+        assert!(policy.as_any().is_some_and(|any| any.is::<NoMergePolicy>()));
+    }
 
     // Every expected value below was measured by running the getters of the real
     // `lucene-core-10.5.0.jar` (see the task record for the harness), not derived

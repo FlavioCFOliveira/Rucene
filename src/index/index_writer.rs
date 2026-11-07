@@ -5888,24 +5888,40 @@ impl IndexWriter {
         let mut merge = merge;
         let merge_policy = self.config.merge_policy();
 
-        let outcome = self.merge_init(&mut merge).and_then(|()| {
-            if self.info_stream.is_enabled(IW) {
-                self.info_stream.message(
-                    IW,
-                    &format!(
-                        "now merge\n  merge={}\n  index={}",
-                        self.seg_string_infos(&merge.segments)?,
-                        self.seg_string()?
-                    ),
-                );
-            }
-            self.merge_middle(&mut merge, merge_policy.as_ref())?;
-            self.merge_success(&merge);
-            Ok(())
-        });
+        // `catch (Throwable t) { handleMergeException(t, merge); }`
+        // (`IndexWriter.java:4851-4864`): an error, or a panic — this port's
+        // carrier of Java's unchecked throwables, assertions included — is
+        // recorded on the merge, and the `finally` below finishes the merge
+        // either way, so that a waiter (`forceMerge`, `waitForMerges`) never
+        // waits for a merge that left the running set by unwinding.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.merge_init(&mut merge).and_then(|()| {
+                if self.info_stream.is_enabled(IW) {
+                    self.info_stream.message(
+                        IW,
+                        &format!(
+                            "now merge\n  merge={}\n  index={}",
+                            self.seg_string_infos(&merge.segments)?,
+                            self.seg_string()?
+                        ),
+                    );
+                }
+                self.merge_middle(&mut merge, merge_policy.as_ref())?;
+                self.merge_success(&merge);
+                Ok(())
+            })
+        }));
+        // The panic Java's `throw t` (`IndexWriter.java:4890`) rethrows once
+        // the merge is finished and the tragedy recorded.
+        let mut thrown: Option<Box<dyn std::any::Any + Send>> = None;
         let mut result = match outcome {
-            Ok(()) => Ok(()),
-            Err(error) => self.handle_merge_exception(error, &mut merge),
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => self.handle_merge_exception(error, &mut merge),
+            Err(payload) => {
+                let error = crate::util::concurrent::panic_to_error(&*payload);
+                thrown = Some(payload);
+                self.handle_merge_exception(error, &mut merge)
+            }
         };
         let success = result.is_ok();
 
@@ -5948,8 +5964,10 @@ impl IndexWriter {
                         // `OneMerge.mergeFinished` both throw): the merge
                         // thread's stack is `merge:4890` → `tragicEvent` →
                         // `rollbackInternal:2550` → `abortMerges:2827`
-                        // `doWait`.
+                        // `doWait`. The failure replaces the merge's own,
+                        // a panic included.
                         result = Err(close_error);
+                        thrown = None;
                     }
                     Ok(()) => {
                         self.finish_merge_under_lock(&mut state, &mut merge, success, &mut result)
@@ -5966,6 +5984,10 @@ impl IndexWriter {
             // Important that this runs after `merge_finish`, or a waiter blocks
             // on a merge that never leaves the running set.
             self.tragic_event(error, "merge")?;
+        }
+        if let (Err(_), Some(payload)) = (result.as_ref(), thrown) {
+            // `throw t`: the original throwable, a panic, is rethrown.
+            std::panic::resume_unwind(payload);
         }
         result
     }

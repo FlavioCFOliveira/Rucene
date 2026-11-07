@@ -33,7 +33,7 @@ org.apache.lucene.tests.search.SearchWrappersOracle
 org.apache.lucene.tests.analysis.AnalysisMocksOracle
 # RandomCodec, RandomIndexWriter, RandomPostingsTester and DocHelper of org.apache.lucene.tests.index (rmp #347)
 org.apache.lucene.tests.index.RandomIndexOracle
-# The seeded draws of the BasePostingsFormatTestCase suite on Lucene104 (rmp #351)
+# The seeded draws of the BasePostingsFormatTestCase and BaseStoredFieldsFormatTestCase suites (rmp #351)
 org.apache.lucene.tests.index.BaseFormatSuitesOracle
 # Lucene's own lucene/test-framework tests (rmp #359), compiled from $LUCENE_SRC
 org.apache.lucene.tests.util.FrameworkTestsOracle

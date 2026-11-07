@@ -367,6 +367,14 @@ impl LuceneTestCase {
                     let _ = rucene::util::concurrent::set_thread_start_hook(
                         randomizedtesting::jdk::thread::Thread::start_context,
                     );
+                    // The throwables of this runner are panics carrying a
+                    // `Throwable`: `lucene-core` records the one that escapes
+                    // a merge with its Java class and message.
+                    let _ = rucene::util::concurrent::set_panic_describer(|payload| {
+                        payload
+                            .downcast_ref::<randomizedtesting::jdk::exception::Throwable>()
+                            .map(ToString::to_string)
+                    });
                     // `lucene-test-framework.jar` on the class path.
                     let loader = crate::class_loader();
                     let _ = rucene::codecs::reload_codecs(loader);

@@ -1392,7 +1392,10 @@ impl ConcurrentMergeScheduler {
             return;
         };
 
-        let result = (|| -> Result<()> {
+        // `catch (Throwable exc)` (`ConcurrentMergeScheduler.java:756`): an
+        // error, or a panic — this port's carrier of Java's unchecked
+        // throwables — goes to `handleMergeException`.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
             if self.verbose() {
                 self.message(&format!("merge thread {} start", thread.get_name()));
             }
@@ -1417,7 +1420,11 @@ impl ConcurrentMergeScheduler {
                 self.message(&format!("merge thread {} end", thread.get_name()));
             }
             Ok(())
-        })();
+        }));
+        let result = match outcome {
+            Ok(result) => result,
+            Err(payload) => Err(crate::util::concurrent::panic_to_error(&*payload)),
+        };
 
         drop(merge_source);
         if let Err(exc) = result {
@@ -1518,7 +1525,13 @@ impl ConcurrentMergeScheduler {
     ///
     /// Always, with the merge exception, as Java throws it.
     pub fn default_handle_merge_exception(exc: LuceneError) -> ! {
-        panic!("{}", LuceneError::Merge(exc.to_string()))
+        // `new MergePolicy.MergeException(exc)`: its message is
+        // `exc.toString()`, and the panic carries the exception's own
+        // `toString()`, which a runner reads back as that class.
+        panic!(
+            "org.apache.lucene.index.MergePolicy$MergeException: {}",
+            crate::util::concurrent::throwable_to_string(&exc)
+        )
     }
 
     /// Swallows merge failures instead of reporting them.

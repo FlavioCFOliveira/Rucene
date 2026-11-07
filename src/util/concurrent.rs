@@ -343,8 +343,13 @@ impl NamedThreadFactory {
 // ---------------------------------------------------------------------------
 
 /// What a [`ThreadStartHook`] hands from a creating thread to the thread it
-/// creates: run on the new thread before its body.
-pub type ThreadStartContext = Box<dyn FnOnce() + Send>;
+/// creates: it runs on the new thread and runs the thread's body, which it
+/// receives.
+///
+/// It runs the body rather than only running before it so that it can also
+/// stand for what the JVM does when a throwable escapes a thread's `run()`:
+/// hand it to the thread's uncaught-exception handler (its `ThreadGroup`).
+pub type ThreadStartContext = Box<dyn FnOnce(Box<dyn FnOnce() + Send>) + Send>;
 
 /// Captures, on the creating thread, the context a new thread inherits.
 pub type ThreadStartHook = fn() -> ThreadStartContext;
@@ -353,16 +358,19 @@ pub type ThreadStartHook = fn() -> ThreadStartContext;
 static THREAD_START_HOOK: OnceLock<ThreadStartHook> = OnceLock::new();
 
 /// Installs the hook every thread this crate starts runs: it is called on
-/// the creating thread, and what it returns runs first on the new thread.
+/// the creating thread, and what it returns runs the new thread's body.
 ///
 /// This models what a Java `Thread` takes from the thread that constructs
 /// it — its `ThreadGroup`, which the JVM gives every thread Lucene starts
 /// (`ConcurrentMergeScheduler`'s merge threads, its intra-merge executor's
-/// workers, `NamedThreadFactory`'s threads, `ControlledRealTimeReopenThread`).
-/// A Rust thread inherits nothing from its creator; a test runner that keys
-/// state by thread group (randomizedtesting's `RandomizedContext`) installs
-/// this hook so that code running on those threads finds its context, as it
-/// does on the JVM. Without a hook, threads start with nothing to run first.
+/// workers, `NamedThreadFactory`'s threads, `ControlledRealTimeReopenThread`)
+/// and which receives the throwables that escape the thread
+/// (`ThreadGroup.uncaughtException`). A Rust thread inherits nothing from its
+/// creator; a test runner that keys state by thread group
+/// (randomizedtesting's `RandomizedContext`) and fails a suite on an uncaught
+/// exception (`RunnerThreadGroup`) installs this hook so that code running on
+/// those threads finds its context, and their panics reach the runner, as on
+/// the JVM. Without a hook, threads run their body alone.
 ///
 /// Returns `false`, leaving the installed hook in place, when one is already
 /// installed.
@@ -370,18 +378,131 @@ pub fn set_thread_start_hook(hook: ThreadStartHook) -> bool {
     THREAD_START_HOOK.set(hook).is_ok()
 }
 
-/// Wraps `body`, on the creating thread, so that the new thread first runs
-/// what the installed [`ThreadStartHook`] captured.
+/// Wraps `body`, on the creating thread, so that the new thread runs it
+/// through what the installed [`ThreadStartHook`] captured.
 pub(crate) fn with_thread_start_context<F>(body: F) -> impl FnOnce() + Send + 'static
 where
     F: FnOnce() + Send + 'static,
 {
     let context = THREAD_START_HOOK.get().map(|hook| hook());
-    move || {
-        if let Some(context) = context {
-            context();
+    move || match context {
+        Some(context) => context(Box::new(body)),
+        None => body(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Panics as Java's unchecked throwables
+// ---------------------------------------------------------------------------
+
+/// Renders a panic payload as the `Throwable.toString()` of the Java
+/// throwable it stands for, when the payload is of a type this crate cannot
+/// see (a test runner's throwable).
+pub type PanicDescriber = fn(&(dyn std::any::Any + Send)) -> Option<String>;
+
+/// The describer [`set_panic_describer`] installed, once per process.
+static PANIC_DESCRIBER: OnceLock<PanicDescriber> = OnceLock::new();
+
+/// Installs the function [`panic_to_error`] asks first for the text of a
+/// panic payload. A test runner whose unchecked throwables are panics with
+/// their own payload type (randomizedtesting's `Throwable`) installs it, so
+/// that a panic that escapes a merge is recorded with Java's class and
+/// message.
+///
+/// Returns `false`, leaving the installed describer in place, when one is
+/// already installed.
+pub fn set_panic_describer(describer: PanicDescriber) -> bool {
+    PANIC_DESCRIBER.set(describer).is_ok()
+}
+
+/// The text of a panic payload: the installed [`PanicDescriber`]'s, or the
+/// payload's own text when it is a string.
+pub fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(text) = PANIC_DESCRIBER.get().and_then(|describe| describe(payload)) {
+        return text;
+    }
+    if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else if let Some(s) = payload.downcast_ref::<&'static str>() {
+        (*s).to_string()
+    } else {
+        "<non-string panic payload>".to_string()
+    }
+}
+
+/// Whether `s` is a Java binary class name (`java.lang.AssertionError`,
+/// `org.apache.lucene.index.MergePolicy$MergeException`): two or more
+/// dot-separated identifiers.
+fn is_java_class_name(s: &str) -> bool {
+    let mut parts = 0;
+    for part in s.split('.') {
+        let mut chars = part.chars();
+        match chars.next() {
+            Some(c) if c.is_alphabetic() || c == '_' || c == '$' => {}
+            _ => return false,
         }
-        body();
+        if !chars.all(|c| c.is_alphanumeric() || c == '_' || c == '$') {
+            return false;
+        }
+        parts += 1;
+    }
+    parts >= 2
+}
+
+/// A class name with a `'static` lifetime, as [`LuceneError::Unchecked`]
+/// holds one: each distinct name is leaked once and reused.
+fn intern_class_name(class: &str) -> &'static str {
+    static NAMES: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+    let mut names = NAMES.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(name) = names.iter().find(|name| **name == class) {
+        return name;
+    }
+    let name: &'static str = Box::leak(class.to_string().into_boxed_str());
+    names.push(name);
+    name
+}
+
+/// The error a panic stands for, where Lucene records the throwable it
+/// caught (`OneMerge.setException`, `IndexWriter.tragicEvent`).
+///
+/// A panic is this crate's carrier of Java's unchecked throwables. Its text
+/// ([`panic_text`]) is the throwable's `Throwable.toString()` — the class,
+/// then `": "` and the message — when it names a Java class: a
+/// `java.lang.AssertionError` becomes [`LuceneError::AssertionError`], this
+/// crate's counterpart of Java's `Error`, and any other class a
+/// [`LuceneError::Unchecked`] of that class. Any other text (a plain Rust
+/// panic) is an `AssertionError` with that message, as randomizedtesting
+/// reads a string panic.
+pub fn panic_to_error(payload: &(dyn std::any::Any + Send)) -> LuceneError {
+    const ASSERTION_ERROR: &str = "java.lang.AssertionError";
+    let text = panic_text(payload);
+    let (class, message) = match text.split_once(": ") {
+        Some((class, message)) if is_java_class_name(class) => (class, Some(message.to_string())),
+        _ if is_java_class_name(&text) => (text.as_str(), None),
+        _ => return LuceneError::AssertionError(text.clone()),
+    };
+    if class == ASSERTION_ERROR {
+        return LuceneError::AssertionError(message.unwrap_or_default());
+    }
+    LuceneError::Unchecked {
+        class: intern_class_name(class),
+        message,
+        cause: None,
+    }
+}
+
+/// `Throwable.toString()` of the Java throwable `error` stands for, as a
+/// wrapping exception's message (`new MergeException(exc)`) renders it: the
+/// class and message of a [`LuceneError::AssertionError`] (no message when
+/// it is empty, as `new AssertionError()` has none) or of a
+/// [`LuceneError::Unchecked`], and the error's own rendering otherwise.
+pub fn throwable_to_string(error: &LuceneError) -> String {
+    match error {
+        LuceneError::AssertionError(message) if message.is_empty() => {
+            "java.lang.AssertionError".to_string()
+        }
+        LuceneError::AssertionError(message) => format!("java.lang.AssertionError: {message}"),
+        other => other.to_string(),
     }
 }
 
@@ -793,6 +914,42 @@ impl<K, V> Default for WeakIdentityMap<K, V> {
 #[cfg(test)]
 mod interrupt_tests {
     use super::*;
+
+    /// A panic is read as the Java throwable whose `toString()` it carries:
+    /// `java.lang.AssertionError` as this crate's `AssertionError`, any other
+    /// class as an unchecked exception of that class, and plain text as an
+    /// `AssertionError` with that message; `throwable_to_string` renders the
+    /// first two back.
+    #[test]
+    fn panics_read_as_java_throwables() {
+        let error = panic_to_error(&String::from("java.lang.IllegalStateException: boom"));
+        assert!(matches!(
+            &error,
+            LuceneError::Unchecked { class: "java.lang.IllegalStateException", message: Some(m), .. }
+                if m == "boom"
+        ));
+        assert_eq!(
+            throwable_to_string(&error),
+            "java.lang.IllegalStateException: boom"
+        );
+        let error = panic_to_error(&"java.lang.AssertionError: boom");
+        assert!(matches!(&error, LuceneError::AssertionError(m) if m == "boom"));
+        assert_eq!(
+            throwable_to_string(&error),
+            "java.lang.AssertionError: boom"
+        );
+        let error = panic_to_error(&String::from("index out of bounds: 3"));
+        assert!(matches!(&error, LuceneError::AssertionError(m) if m == "index out of bounds: 3"));
+        let error = panic_to_error(&String::from("java.lang.NullPointerException"));
+        assert!(matches!(
+            &error,
+            LuceneError::Unchecked {
+                class: "java.lang.NullPointerException",
+                message: None,
+                ..
+            }
+        ));
+    }
     use std::sync::mpsc;
 
     /// A monitor: Java's object with its intrinsic lock and wait set.

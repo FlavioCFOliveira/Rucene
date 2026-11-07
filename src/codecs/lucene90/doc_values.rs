@@ -2774,7 +2774,12 @@ impl DocsCursor {
 
     fn advance_exact(&mut self, target: i32) -> Result<bool> {
         match self {
-            Self::Empty { .. } => Ok(false),
+            // `DocValues.empty*().advanceExact` (`DocValues.java:79-82` and the
+            // other empty iterators): `doc = target; return false;`.
+            Self::Empty { doc } => {
+                *doc = target;
+                Ok(false)
+            }
             // `DenseNumericDocValues.advanceExact` (`Lucene90DocValuesProducer
             // .java:703-707`) sets the document and answers `true` without
             // testing anything: every document of a dense field has a value by
@@ -4649,6 +4654,19 @@ mod tests {
     }
 
     use super::*;
+
+    /// An empty field's iterator stands on the target after `advanceExact`,
+    /// as `DocValues.emptyNumeric().advanceExact` sets `doc = target`
+    /// (`DocValues.java:79-82`); `CheckIndex.checkBulkFetch` (through
+    /// `AssertingNumericDocValues`) asserts `docID() == target`.
+    #[test]
+    fn empty_cursor_advance_exact_moves_to_the_target() {
+        let mut cursor = DocsCursor::Empty { doc: -1 };
+        assert!(!cursor.advance_exact(3).unwrap());
+        assert_eq!(cursor.doc_id(), 3);
+        assert!(!cursor.advance_exact(7).unwrap());
+        assert_eq!(cursor.doc_id(), 7);
+    }
     use crate::codecs::stub::{BufferedUpdates, SegmentInfo};
     use crate::codecs::tests::DummyCodec;
     use crate::index::FieldInfos;

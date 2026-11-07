@@ -1,0 +1,64 @@
+# seed	method	kind	value (BaseFormatSuitesOracle, Lucene 10.5.0, JDK 25): TestStoredFieldsSuiteDraws, next random().nextLong() after each test and the class
+DEADBEEF	#class	next	-7557631857235080187
+DEADBEEF	#counts	run=19 fail=0 assume=1	-
+DEADBEEF	testBigDocuments	A	'nightly' test group is disabled (@org.apache.lucene.tests.util.LuceneTestCase.Nightly())
+DEADBEEF	testBinaryFieldOffsetLength	next	6159157935720936016
+DEADBEEF	testBulkMergeWithDeletes	next	-8515275182908180139
+DEADBEEF	testCheckIntegrityReadsAllBytes	next	6211142953431962766
+DEADBEEF	testConcurrentReads	next	-8705719820472438555
+DEADBEEF	testEmptyDocs	next	868443943225703680
+DEADBEEF	testIndexedBit	next	-8480207278406745137
+DEADBEEF	testLineFileDocs	next	-4158656946723872734
+DEADBEEF	testMergeFilterReader	next	-7983105378873835429
+DEADBEEF	testMergeStability	next	7116235772683823569
+DEADBEEF	testMismatchedFields	next	3653710666485536694
+DEADBEEF	testMultiClose	next	939768549329737948
+DEADBEEF	testNumericField	next	3418400048586948478
+DEADBEEF	testRandomExceptions	next	-8436744506567449220
+DEADBEEF	testRandomStoredFields	next	5888979380099065033
+DEADBEEF	testRandomStoredFieldsWithIndexSort	next	3313258998141098754
+DEADBEEF	testReadSkip	next	3446224901000394203
+DEADBEEF	testStoredFieldsOrder	next	4348619208443759918
+DEADBEEF	testWriteReadMerge	next	282211736291233784
+1	#class	next	6047103807463497748
+1	#counts	run=19 fail=0 assume=1	-
+1	testBigDocuments	A	'nightly' test group is disabled (@org.apache.lucene.tests.util.LuceneTestCase.Nightly())
+1	testBinaryFieldOffsetLength	next	2096467061788097568
+1	testBulkMergeWithDeletes	next	-8017806508863188641
+1	testCheckIntegrityReadsAllBytes	next	-5283204635565840499
+1	testConcurrentReads	next	-447803852020330946
+1	testEmptyDocs	next	5583749887156700300
+1	testIndexedBit	next	-2360775820017387652
+1	testLineFileDocs	next	2888466428803084212
+1	testMergeFilterReader	next	3176579986867540345
+1	testMergeStability	next	994879394820011700
+1	testMismatchedFields	next	4439237010104936322
+1	testMultiClose	next	5023695660192295173
+1	testNumericField	next	-4214886956164675464
+1	testRandomExceptions	next	-428498026863847926
+1	testRandomStoredFields	next	-134948125691200923
+1	testRandomStoredFieldsWithIndexSort	next	-2029439085743097752
+1	testReadSkip	next	-7769051063271686480
+1	testStoredFieldsOrder	next	-1196689115000079512
+1	testWriteReadMerge	next	4779118039666762192
+C0FFEE	#class	next	-1581692295681432432
+C0FFEE	#counts	run=19 fail=0 assume=1	-
+C0FFEE	testBigDocuments	A	'nightly' test group is disabled (@org.apache.lucene.tests.util.LuceneTestCase.Nightly())
+C0FFEE	testBinaryFieldOffsetLength	next	-4120584998953874344
+C0FFEE	testBulkMergeWithDeletes	next	-4591876719122436989
+C0FFEE	testCheckIntegrityReadsAllBytes	next	-8414938768955824507
+C0FFEE	testConcurrentReads	next	6873472544100801870
+C0FFEE	testEmptyDocs	next	106045077884707092
+C0FFEE	testIndexedBit	next	-4513411929718223426
+C0FFEE	testLineFileDocs	next	-4348627162461611324
+C0FFEE	testMergeFilterReader	next	-877642739585048990
+C0FFEE	testMergeStability	next	-8709434473641538835
+C0FFEE	testMismatchedFields	next	-481188119240024578
+C0FFEE	testMultiClose	next	39453275133403513
+C0FFEE	testNumericField	next	7904884952447097722
+C0FFEE	testRandomExceptions	next	-6637848335475691229
+C0FFEE	testRandomStoredFields	next	4761149424137596555
+C0FFEE	testRandomStoredFieldsWithIndexSort	next	-3346477302585253785
+C0FFEE	testReadSkip	next	3256909387052966885
+C0FFEE	testStoredFieldsOrder	next	7619514791856938304
+C0FFEE	testWriteReadMerge	next	7841605400091130414

@@ -109,23 +109,35 @@ impl LiveDocsFormat for SimpleTextLiveDocsFormat {
 
         let file_name = generation_file_name(&info.info.name, info.get_next_del_gen())?;
         let mut output = dir.create_output(&file_name, context)?;
-        let out = output.as_mut();
-        util::write_bytes(out, SIZE)?;
-        util::write_str(out, &size.to_string())?;
-        util::write_newline(out)?;
+        // `success ? IOUtils.close(out) : IOUtils.closeWhileHandlingException(out)` (`SimpleTextLiveDocsFormat.java:127-133`): the output is closed
+        // whether or not writing it failed, a failure to close it suppressed
+        // by the write's own.
+        let result = (|| -> Result<()> {
+            let out = output.as_mut();
+            util::write_bytes(out, SIZE)?;
+            util::write_str(out, &size.to_string())?;
+            util::write_newline(out)?;
 
-        for i in 0..size {
-            if bits.try_get(i)? {
-                util::write_bytes(out, DOC)?;
-                util::write_str(out, &i.to_string())?;
-                util::write_newline(out)?;
+            for i in 0..size {
+                if bits.try_get(i)? {
+                    util::write_bytes(out, DOC)?;
+                    util::write_str(out, &i.to_string())?;
+                    util::write_newline(out)?;
+                }
+            }
+
+            util::write_bytes(out, END)?;
+            util::write_newline(out)?;
+            util::write_checksum(out)?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => output.close(),
+            Err(error) => {
+                let _ = output.close();
+                Err(error)
             }
         }
-
-        util::write_bytes(out, END)?;
-        util::write_newline(out)?;
-        util::write_checksum(out)?;
-        output.close()
     }
 
     /// Port of `SimpleTextLiveDocsFormat.files`.

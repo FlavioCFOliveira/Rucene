@@ -66,7 +66,12 @@ write the fixtures (`../*.tsv`) the crate's parity tests (`src/tests/`) read.
   `tearDown()`, before `super.tearDown()`), that of the class randomness after the
   class, the failures and assumption failures and the `#counts` row. The Rust
   side is `crates/rucene-test-framework/tests/base_postings_format_suites.rs`
-  (`test_postings_suite_draws_match_lucene`).
+  (`test_postings_suite_draws_match_lucene`). It runs `TestStoredFieldsSuiteDraws`
+  the same way (the inherited cases of `BaseStoredFieldsFormatTestCase` on
+  `TestUtil.getDefaultCodec()`, as `TestLucene90StoredFieldsFormat` binds them)
+  and writes `base_stored_fields_draws.tsv`, read by
+  `crates/rucene-test-framework/tests/base_stored_fields_format_suites.rs`
+  (`test_stored_fields_suite_draws_match_lucene`).
 * **The test codecs:** `org.apache.lucene.tests.codecs.TestCodecsOracle`
   writes `crates/rucene-test-framework/tests/fixtures/testcodecs_*.tsv`: the
   `nocfs` and `cfs` corpus of `SimpleTextOracle.writeCorpus` (public for it)

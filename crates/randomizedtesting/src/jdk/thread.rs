@@ -14,8 +14,8 @@
 //! * A Java thread inherits its creator's group. Here a thread created with
 //!   [`Thread::new`] / [`Thread::with_group`] and started with
 //!   [`Thread::start`] does so, and so does a thread whose creator captured
-//!   [`Thread::start_context`] and which runs it first (`rucene` runs it on
-//!   every thread it starts once the hook is installed with
+//!   [`Thread::start_context`] and which runs its body through it (`rucene`
+//!   does so on every thread it starts once the hook is installed with
 //!   `rucene::util::concurrent::set_thread_start_hook`); it is then adopted
 //!   in its creator's group, with its creator's daemon status. Any other
 //!   thread (for example one from a bare `std::thread::spawn`) is adopted on
@@ -324,19 +324,25 @@ impl Thread {
 
     /// Captures, on the calling (creating) thread, what a Java thread takes
     /// from its creator — its `ThreadGroup` and daemon status — and returns
-    /// what the created thread runs first to take them: it adopts that
-    /// thread, named after its OS thread name, in the creator's group.
+    /// what the created thread runs its body with: it adopts that thread,
+    /// named after its OS thread name, in the creator's group, then runs the
+    /// body; a throwable that escapes the body (a panic) goes to the thread's
+    /// uncaught-exception handler, as the JVM dispatches it
+    /// (`Thread.dispatchUncaughtException` → `ThreadGroup.uncaughtException`,
+    /// where the runner's `RunnerThreadGroup` records it), and then ends the
+    /// thread with the same payload.
     ///
     /// An adopted thread is not enumerated by [`ThreadGroup::enumerate`]
     /// (see the module's divergences). A thread that already has a
     /// [`Thread`] handle keeps it.
-    pub fn start_context() -> Box<dyn FnOnce() + Send> {
+    #[allow(clippy::type_complexity)]
+    pub fn start_context() -> Box<dyn FnOnce(Box<dyn FnOnce() + Send>) + Send> {
         let creator = Thread::current();
         let group = creator
             .thread_group()
             .unwrap_or_else(|| Arc::clone(ThreadGroup::main()));
         let daemon = creator.is_daemon();
-        Box::new(move || {
+        Box::new(move |body: Box<dyn FnOnce() + Send>| {
             CURRENT.with(|slot| {
                 let mut slot = slot.borrow_mut();
                 if slot.is_some() {
@@ -352,6 +358,18 @@ impl Thread {
                 thread.0.daemon.store(daemon, Ordering::Relaxed);
                 *slot = Some(CurrentSlot(thread));
             });
+            if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) {
+                let t = match payload.downcast_ref::<Throwable>() {
+                    Some(t) => t.clone(),
+                    None => Throwable::from_text(&exception::panic_message(&*payload)),
+                };
+                let me = Thread::current();
+                let handler = me.get_uncaught_exception_handler();
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    handler.dispatch(&me, t)
+                }));
+                std::panic::resume_unwind(payload);
+            }
         })
     }
 

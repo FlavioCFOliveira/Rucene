@@ -2102,6 +2102,12 @@ impl IndexableField for StoredField {
     fn invertable_type(&self) -> Option<InvertableType> {
         self.0.invertable_type()
     }
+
+    /// The concrete field, so that a caller can test `instanceof
+    /// StoredField` (`BaseStoredFieldsFormatTestCase.testNumericField`).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -7097,6 +7103,22 @@ mod tests {
 
     fn info(name: &str, number: i32) -> FieldInfo {
         FieldInfo::new(name, number)
+    }
+
+    /// `DocumentStoredFieldVisitor` adds a `StoredField` for every value
+    /// (`DocumentStoredFieldVisitor.java:61-96`), which a caller can test
+    /// with `instanceof StoredField`
+    /// (`BaseStoredFieldsFormatTestCase.testNumericField`).
+    #[test]
+    fn the_document_visitor_adds_stored_field_instances() {
+        let mut visitor = DocumentStoredFieldVisitor::new();
+        visitor.string_field(&info("s", 0), "text").unwrap();
+        visitor.float_field(&info("f", 1), 0.5).unwrap();
+        visitor.binary_field(&info("b", 2), &[7]).unwrap();
+        let document = visitor.into_document();
+        for field in document.get_fields() {
+            assert!(field.as_any().is_some_and(|a| a.is::<StoredField>()));
+        }
     }
 
     #[test]
