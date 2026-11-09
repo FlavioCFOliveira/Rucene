@@ -1588,6 +1588,23 @@ impl ReadersAndUpdates {
             .clone()
     }
 
+    /// Replaces the segment commit info this entry holds with `info`, another
+    /// copy of the same segment's commit.
+    ///
+    /// Java's `ReadersAndUpdates.info` is the very `SegmentCommitInfo` object
+    /// its creator passed (`ReadersAndUpdates.java:90-95`): when that is
+    /// `merge.info`, `IndexWriter.commitMergedDeletesAndUpdates` stamping the
+    /// buffered-deletes generation on `merge.info` (`IndexWriter.java:4600`)
+    /// stamps it on this entry's `info` too. This port holds a copy, so the
+    /// writer hands the stamped commit over here, keeping the two equal where
+    /// Java has one object.
+    pub(crate) fn set_info(&self, info: SegmentCommitInfo) {
+        let mut state = self.state.lock().expect("state mutex poisoned");
+        debug_assert_eq!(state.info.info.name, info.info.name);
+        debug_assert_eq!(state.info.get_del_gen(), info.get_del_gen());
+        state.info = info;
+    }
+
     /// Returns the segment name.
     pub fn segment_name(&self) -> String {
         self.state

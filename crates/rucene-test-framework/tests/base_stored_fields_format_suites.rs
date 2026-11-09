@@ -5,6 +5,9 @@
 //!
 //! * `org.apache.lucene.codecs.lucene90.TestLucene90StoredFieldsFormat`
 //!   (`lucene/core/src/test`): `TestUtil.getDefaultCodec()`;
+//! * `org.apache.lucene.codecs.lucene90.TestLucene90StoredFieldsFormatMergeInstance`
+//!   (`lucene/core/src/test`): extends `TestLucene90StoredFieldsFormat`,
+//!   overriding `shouldTestMergeInstance()` to return `true`;
 //! * `org.apache.lucene.codecs.lucene90.TestLucene90StoredFieldsFormatHighCompression`
 //!   (`lucene/core/src/test`): `new Lucene104Codec(Mode.BEST_COMPRESSION)`;
 //! * `org.apache.lucene.codecs.lucene90.compressing.TestCompressingStoredFieldsFormat`
@@ -13,8 +16,10 @@
 //! * `org.apache.lucene.tests.codecs.asserting.TestAssertingStoredFieldsFormat`
 //!   (`lucene/test-framework/src/test`, ported in full): `AssertingCodec`.
 //!
-//! The extra test methods of the three core classes belong to the core-test
-//! port (sprint 7) and are not declared here.
+//! The extra test methods of the core classes (those of
+//! `TestLucene90StoredFieldsFormat` included, which
+//! `TestLucene90StoredFieldsFormatMergeInstance` inherits) belong to the
+//! core-test port (sprint 7) and are not declared here.
 //!
 //! Each suite runs once on the seed `tests.seed` names (a random one when it
 //! is unset); `RUCENE_SUITE_SEEDS=<n>` runs it on the first `n` seeds of
@@ -40,15 +45,20 @@ use rucene_test_framework::util::{LuceneTestCase, TestUtil};
 mod suite_seeds;
 use suite_seeds::run_suite;
 
-/// A stored-fields suite that only overrides `getCodec()`, which `codec`
-/// answers.
+/// A stored-fields suite that overrides `getCodec()`, which `codec`
+/// answers, and `shouldTestMergeInstance()` when `merge_instance` is set.
 struct StoredFieldsSuite {
     codec: fn() -> Arc<dyn Codec>,
+    merge_instance: bool,
 }
 
 impl BaseIndexFileFormatTestCase for StoredFieldsSuite {
     fn get_codec(&self) -> Arc<dyn Codec> {
         (self.codec)()
+    }
+
+    fn should_test_merge_instance(&self) -> bool {
+        self.merge_instance
     }
 
     fn add_random_fields(&self, doc: &mut Document) {
@@ -68,7 +78,10 @@ fn suite_class(name: &str, codec: fn() -> Arc<dyn Codec>) -> Arc<Class> {
     Class::builder(name)
         .extends(&base_stored_fields_format_test_case::class())
         .constructor(Constructor::no_args(move || {
-            FormatTestInstance::new(Arc::new(StoredFieldsSuite { codec }))
+            FormatTestInstance::new(Arc::new(StoredFieldsSuite {
+                codec,
+                merge_instance: false,
+            }))
         }))
         .build()
 }
@@ -84,6 +97,21 @@ fn lucene90_class() -> Arc<Class> {
         "org.apache.lucene.codecs.lucene90.TestLucene90StoredFieldsFormat",
         lucene90_codec,
     )
+}
+
+/// `TestLucene90StoredFieldsFormatMergeInstance`: `extends
+/// TestLucene90StoredFieldsFormat` (whose `getCodec()` it inherits) and
+/// overrides `shouldTestMergeInstance()` to return `true`.
+fn merge_instance_class() -> Arc<Class> {
+    Class::builder("org.apache.lucene.codecs.lucene90.TestLucene90StoredFieldsFormatMergeInstance")
+        .extends(&lucene90_class())
+        .constructor(Constructor::no_args(|| {
+            FormatTestInstance::new(Arc::new(StoredFieldsSuite {
+                codec: lucene90_codec,
+                merge_instance: true,
+            }))
+        }))
+        .build()
 }
 
 /// `TestLucene90StoredFieldsFormatHighCompression` (`getCodec()` only):
@@ -161,6 +189,7 @@ fn draws_class() -> Arc<Class> {
         .constructor(Constructor::no_args(|| {
             FormatTestInstance::new(Arc::new(StoredFieldsSuite {
                 codec: lucene90_codec,
+                merge_instance: false,
             }))
         }))
         .method(
@@ -304,6 +333,12 @@ static SUITES: Mutex<()> = Mutex::new(());
 fn test_lucene90_stored_fields_format() {
     let _one = SUITES.lock().unwrap_or_else(|e| e.into_inner());
     run_suite(lucene90_class);
+}
+
+#[test]
+fn test_lucene90_stored_fields_format_merge_instance() {
+    let _one = SUITES.lock().unwrap_or_else(|e| e.into_inner());
+    run_suite(merge_instance_class);
 }
 
 #[test]

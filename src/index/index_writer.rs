@@ -4028,6 +4028,18 @@ impl IndexWriter {
                 }
                 return Err(err);
             }
+            // Java's `mergedUpdates.info` is `merge.info` itself, so the live
+            // docs `release` just wrote for the deletes carried over (a new
+            // `delGen`, `delCount` and `softDelCount`) are already on the
+            // object `applyMergeChanges` inserts below. `release_with` copies
+            // them back into `segment_infos` only for a segment that is live,
+            // which the merged one is not yet; without this copy the merged
+            // segment would enter the infos without its carried-over deletes,
+            // and its next live-docs write would reuse the generation just
+            // written (`FileAlreadyExistsException` on `_N_1.liv`).
+            if let Some(info) = merge.info().as_mut() {
+                *info = rld.info();
+            }
         }
 
         // Must be done after releasing into the pool, in case an exception is
@@ -5225,6 +5237,14 @@ impl IndexWriter {
 
         if let Some(info) = merge.info().as_mut() {
             info.set_buffered_deletes_gen(min_gen)?;
+            // `merge.info.setBufferedDeletesGen(minGen)` (`IndexWriter.java:4600`)
+            // sets it on the object `mergedDeletesAndUpdates` holds as its
+            // `info`, since `getPooledInstance(merge.info, true)` pooled that
+            // very object. The pooled entry holds a copy here, so it takes the
+            // stamped commit; otherwise a later copy-back from the pool
+            // (`write_reader_pool_with`) would reset the merged segment's
+            // buffered-deletes generation to `-1`.
+            merged_deletes_and_updates.set_info(info.clone());
         }
 
         Ok(Some(merged_deletes_and_updates))
@@ -14644,5 +14664,176 @@ mod tests {
             .filter(|name| !name.ends_with(".tmp"))
             .collect();
         assert_eq!(closed, ["_0.fdm", "_0.fdt", "_0.tvm", "_0.tvd"]);
+    }
+
+    // -- rmp #351: the merged segment's commit is one object in Java ---------
+
+    /// An info stream that, the first time the writer reaches the test point
+    /// `startCommitMerge`, deletes `id:a` and flushes with every delete
+    /// applied, so the delete resolves against a segment being merged and
+    /// `commitMergedDeletesAndUpdates` carries it over to the merged segment.
+    #[derive(Default)]
+    struct DeleteAtCommitMerge {
+        writer: std::sync::OnceLock<std::sync::Weak<IndexWriter>>,
+        fired: std::sync::atomic::AtomicBool,
+    }
+
+    impl std::fmt::Debug for DeleteAtCommitMerge {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("DeleteAtCommitMerge")
+        }
+    }
+
+    impl InfoStream for DeleteAtCommitMerge {
+        fn java_class_name(&self) -> &'static str {
+            "org.apache.lucene.tests.util.DeleteAtCommitMerge"
+        }
+
+        fn message(&self, component: &str, message: &str) {
+            if component == "TP"
+                && message == "startCommitMerge"
+                && !self.fired.swap(true, Ordering::SeqCst)
+            {
+                let writer = self
+                    .writer
+                    .get()
+                    .and_then(std::sync::Weak::upgrade)
+                    .unwrap();
+                writer
+                    .delete_documents_by_terms(vec![Term::from_text("id", "a")])
+                    .unwrap();
+                writer.flush_with(false, true).unwrap();
+            }
+        }
+
+        fn is_enabled(&self, component: &str) -> bool {
+            component == "TP"
+        }
+
+        fn close(&self) {}
+    }
+
+    /// A test-point writer over a fresh directory, soft deletes on (as the
+    /// stored-fields suites that exposed the defect run), and two flushed
+    /// segments `{a, b}` and `{c, d}`.
+    fn two_segments_deleting_at_commit_merge() -> (
+        Arc<dyn Directory>,
+        Arc<DeleteAtCommitMerge>,
+        Arc<IndexWriter>,
+    ) {
+        register_default_codec();
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let stream = Arc::new(DeleteAtCommitMerge::default());
+        let mut config = IndexWriterConfig::new();
+        config.set_soft_deletes_field(Some("soft".to_string()));
+        // Not pooled, so `commitMerge`'s `release` writes the merged segment's
+        // live docs at once (`ReaderPool.java:216-237`).
+        config.set_reader_pooling(false);
+        // A merge policy that merges a lone segment only when forced, so the
+        // merged segment survives the commits below.
+        config
+            .set_merge_policy(Arc::new(
+                crate::index::merge_policy::LogMergePolicy::by_doc_count(),
+            ))
+            .unwrap();
+        config
+            .set_info_stream(Arc::clone(&stream) as Arc<dyn InfoStream>)
+            .unwrap();
+        let writer = IndexWriter::new_with_test_points(Arc::clone(&dir), config).unwrap();
+        stream.writer.set(Arc::downgrade(&writer)).unwrap();
+        for ids in [["a", "b"], ["c", "d"]] {
+            for id in ids {
+                writer.add_document(&id_body_doc(id)).unwrap();
+            }
+            writer.flush().unwrap();
+        }
+        (dir, stream, writer)
+    }
+
+    /// `commitMerge` releases the merged segment's pooled entry before
+    /// `applyMergeChanges` inserts `merge.info` (`IndexWriter.java:4737-4759`).
+    /// Java's entry holds `merge.info` itself, so the live docs `release`
+    /// writes for a delete carried over during the merge (`_2_1.liv`) are on
+    /// the inserted segment. A copy left stale lost the carried-over delete
+    /// and made the next live-docs write of the merged segment reuse
+    /// generation 1 (`FileAlreadyExistsException: File already exists:
+    /// _2_1.liv`), the failure of `TestCompressingStoredFieldsFormat`
+    /// `.testRandomStoredFields` at seed `ABF465B26D93736F`.
+    #[test]
+    fn a_delete_carried_over_by_a_merge_reaches_the_merged_segment() {
+        let (dir, stream, writer) = two_segments_deleting_at_commit_merge();
+        writer.force_merge(1).unwrap();
+        assert!(stream.fired.load(Ordering::SeqCst));
+        {
+            let state = writer.state().unwrap();
+            let merged = state.segment_infos.as_slice();
+            assert_eq!(merged.len(), 1);
+            assert_eq!(merged[0].info.name, "_2");
+            assert_eq!(merged[0].get_del_gen(), 1, "the carried-over delete's .liv");
+            assert_eq!(merged[0].get_next_write_del_gen(), 2);
+            assert_eq!(merged[0].get_del_count(), 1);
+        }
+        assert!(dir.list_all().unwrap().iter().any(|f| f == "_2_1.liv"));
+        // A second delete of the merged segment writes the next generation.
+        writer
+            .delete_documents_by_terms(vec![Term::from_text("id", "c")])
+            .unwrap();
+        writer.commit().unwrap();
+        {
+            let state = writer.state().unwrap();
+            let merged = &state.segment_infos.as_slice()[0];
+            assert_eq!(merged.info.name, "_2");
+            assert_eq!(merged.get_del_gen(), 2);
+            assert_eq!(merged.get_del_count(), 2);
+        }
+        assert!(dir.list_all().unwrap().iter().any(|f| f == "_2_2.liv"));
+        writer.close().unwrap();
+        let reader = crate::index::directory_reader::open(Arc::clone(&dir)).unwrap();
+        assert_eq!(reader.num_docs(), 2);
+        IndexReader::close(reader.as_ref()).unwrap();
+    }
+
+    /// `commitMergedDeletesAndUpdates` stamps the buffered-deletes generation
+    /// on `merge.info` (`IndexWriter.java:4600`), which is the `info` of the
+    /// merged segment's pooled entry. With readers pooled (an NRT reader
+    /// open), that entry stays pooled, and writing its live docs later copies
+    /// its commit back into the writer's infos; the copy must carry the
+    /// stamped generation, not the `-1` of a commit copied before the stamp.
+    #[test]
+    fn a_pooled_merged_segment_keeps_its_buffered_deletes_gen() {
+        register_default_codec();
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut config = IndexWriterConfig::new();
+        config
+            .set_merge_policy(Arc::new(
+                crate::index::merge_policy::LogMergePolicy::by_doc_count(),
+            ))
+            .unwrap();
+        let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+        for ids in [["a", "b"], ["c", "d"]] {
+            for id in ids {
+                writer.add_document(&id_body_doc(id)).unwrap();
+            }
+            writer.flush().unwrap();
+        }
+        let nrt = crate::index::directory_reader::open_with_writer(writer.as_ref()).unwrap();
+        writer.force_merge(1).unwrap();
+        let stamped = {
+            let state = writer.state().unwrap();
+            state.segment_infos.as_slice()[0].get_buffered_deletes_gen()
+        };
+        assert_ne!(stamped, -1);
+        writer
+            .delete_documents_by_terms(vec![Term::from_text("id", "c")])
+            .unwrap();
+        writer.commit().unwrap();
+        {
+            let state = writer.state().unwrap();
+            let merged = &state.segment_infos.as_slice()[0];
+            assert_eq!(merged.get_del_count(), 1, "the delete was written");
+            assert_eq!(merged.get_buffered_deletes_gen(), stamped);
+        }
+        IndexReader::close(nrt.as_ref()).unwrap();
+        writer.close().unwrap();
     }
 }

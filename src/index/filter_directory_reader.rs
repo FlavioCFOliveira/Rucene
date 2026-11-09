@@ -3244,15 +3244,11 @@ impl SoftDeletesSubReaderWrapper {
 
     /// Wraps `reader`, hiding the documents `field` marks as soft-deleted.
     ///
-    /// Equivalent to `SoftDeletesDirectoryReaderWrapper.wrap(LeafReader, String)`.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java branches to a
-    /// `SoftDeletesFilterCodecReader` when `reader instanceof CodecReader`, to
-    /// keep the wrapped reader's codec-level accessors available to merges.
-    /// Rust cannot downcast a `dyn LeafReader` to a `dyn CodecReader` — the
-    /// same constraint `SlowCodecReaderWrapper::wrap` meets in this file — so
-    /// this always returns a
-    /// [`SoftDeletesFilterLeafReader`]; reads are identical either way.
+    /// Equivalent to `SoftDeletesDirectoryReaderWrapper.wrap(LeafReader, String)`:
+    /// `reader instanceof CodecReader ? new SoftDeletesFilterCodecReader(...)
+    /// : new SoftDeletesFilterLeafReader(...)`
+    /// (`SoftDeletesDirectoryReaderWrapper.java:150-152`), the `instanceof`
+    /// being [`LeafReader::as_codec_reader`].
     ///
     /// # Errors
     ///
@@ -3273,6 +3269,13 @@ impl SoftDeletesSubReaderWrapper {
             num_soft_deletes,
             reader.as_ref()
         )?);
+        if let Some(codec_reader) = Arc::clone(&reader).as_codec_reader() {
+            return Ok(Arc::new(SoftDeletesFilterCodecReader::new(
+                codec_reader,
+                bits,
+                num_docs,
+            )));
+        }
         Ok(Arc::new(SoftDeletesFilterLeafReader::new(
             reader, bits, num_docs,
         )?))
@@ -3374,9 +3377,9 @@ impl Bits for SoftDeletesBits {
 /// is a [`DelegatingCacheHelper`] over the wrapped reader's, built once in the
 /// constructor as Java builds it: the live documents differ from the wrapped
 /// reader's, so the wrap needs its own cache identity. Its core cache helper is
-/// the wrapped reader's, because the segment's data is unchanged. See
-/// [`SoftDeletesSubReaderWrapper::wrap_leaf_reader`] for the codec-reader
-/// divergence.
+/// the wrapped reader's, because the segment's data is unchanged. A wrapped
+/// `CodecReader` gets a [`SoftDeletesFilterCodecReader`] instead
+/// ([`SoftDeletesSubReaderWrapper::wrap_leaf_reader`]).
 struct SoftDeletesFilterLeafReader {
     inner: FilterLeafReader,
     bits: Arc<crate::util::FixedBitSet>,
@@ -3550,6 +3553,235 @@ impl LeafReader for SoftDeletesFilterLeafReader {
 
     fn get_meta_data(&self) -> LeafMetaData {
         self.inner.get_meta_data()
+    }
+}
+
+/// Hides the documents a soft-deletes field marks as deleted from a codec
+/// reader, reporting `bits`/`num_docs` in place of the wrapped reader's own,
+/// and remaining a `CodecReader` itself.
+///
+/// Equivalent to
+/// `SoftDeletesDirectoryReaderWrapper.SoftDeletesFilterCodecReader`
+/// (`SoftDeletesDirectoryReaderWrapper.java:227-263`), which `extends
+/// FilterCodecReader`: as there, it is a reader of its own (it does not
+/// register itself as a parent of the wrapped reader, and its `doClose()` is
+/// the wrapped reader's `doClose()`, `FilterCodecReader.java:58-60, 123-126`);
+/// the members `CodecReader` declares `final` answer through this reader's
+/// producer accessors, which forward to the wrapped reader's. Its reader cache
+/// helper is a [`DelegatingCacheHelper`] over the wrapped reader's, built once
+/// in the constructor; its core cache helper is the wrapped reader's.
+struct SoftDeletesFilterCodecReader {
+    /// This reader's own state.
+    core: IndexReaderCore,
+    /// The wrapped reader: Java's `FilterCodecReader.in` and the subclass's
+    /// own `reader` field, the same object.
+    inner: Arc<dyn CodecReader>,
+    bits: Arc<crate::util::FixedBitSet>,
+    num_docs: i32,
+    reader_cache_helper: Option<Arc<DelegatingCacheHelper>>,
+}
+
+impl SoftDeletesFilterCodecReader {
+    /// `SoftDeletesFilterCodecReader(CodecReader, FixedBitSet, int)`
+    /// (`SoftDeletesDirectoryReaderWrapper.java:233-243`).
+    fn new(reader: Arc<dyn CodecReader>, bits: crate::util::FixedBitSet, num_docs: i32) -> Self {
+        let reader_cache_helper = delegating_cache_helper(reader.get_reader_cache_helper());
+        Self {
+            core: IndexReaderCore::new(),
+            inner: reader,
+            bits: Arc::new(bits),
+            num_docs,
+            reader_cache_helper,
+        }
+    }
+}
+
+impl std::fmt::Debug for SoftDeletesFilterCodecReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SoftDeletesFilterCodecReader")
+            .field("num_docs", &self.num_docs)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for SoftDeletesFilterCodecReader {
+    /// Neither the class nor `FilterCodecReader` declares a `toString()`, so
+    /// `Object`'s applies.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.SoftDeletesDirectoryReaderWrapper$SoftDeletesFilterCodecReader",
+            self,
+        ))
+    }
+}
+
+impl LeafReader for SoftDeletesFilterCodecReader {
+    /// This reader is a `CodecReader`: Java's `instanceof CodecReader` on it
+    /// is `true`.
+    fn as_codec_reader(self: Arc<Self>) -> Option<Arc<dyn CodecReader>> {
+        Some(self)
+    }
+
+    fn core(&self) -> &IndexReaderCore {
+        &self.core
+    }
+
+    /// `CodecReader.termVectors()`, `final`.
+    fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
+        final_members::term_vectors(self)
+    }
+
+    fn num_docs(&self) -> i32 {
+        self.num_docs
+    }
+
+    fn max_doc(&self) -> i32 {
+        self.inner.max_doc()
+    }
+
+    /// `CodecReader.storedFields()`, `final`.
+    fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
+        final_members::stored_fields(self)
+    }
+
+    fn do_close(&self) -> Result<()> {
+        self.inner.do_close()
+    }
+
+    /// `SoftDeletesFilterCodecReader.getReaderCacheHelper()`: the
+    /// [`DelegatingCacheHelper`] built in the constructor.
+    fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
+        self.reader_cache_helper
+            .as_ref()
+            .map(|helper| Box::new(Arc::clone(helper)) as Box<dyn CacheHelper>)
+    }
+
+    /// `SoftDeletesFilterCodecReader.getCoreCacheHelper()`:
+    /// `reader.getCoreCacheHelper()`.
+    fn get_core_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
+        self.inner.get_core_cache_helper()
+    }
+
+    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+        final_members::terms(self, field)
+    }
+
+    fn get_numeric_doc_values(&self, field: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
+        final_members::numeric_doc_values(self, field)
+    }
+
+    fn get_binary_doc_values(&self, field: &str) -> Result<Option<Box<dyn BinaryDocValues>>> {
+        final_members::binary_doc_values(self, field)
+    }
+
+    fn get_sorted_doc_values(&self, field: &str) -> Result<Option<Box<dyn SortedDocValues>>> {
+        final_members::sorted_doc_values(self, field)
+    }
+
+    fn get_sorted_numeric_doc_values(
+        &self,
+        field: &str,
+    ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+        final_members::sorted_numeric_doc_values(self, field)
+    }
+
+    fn get_sorted_set_doc_values(
+        &self,
+        field: &str,
+    ) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+        final_members::sorted_set_doc_values(self, field)
+    }
+
+    fn get_norm_values(&self, field: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
+        final_members::norm_values(self, field)
+    }
+
+    fn get_doc_values_skipper(&self, field: &str) -> Result<Option<Box<dyn DocValuesSkipper>>> {
+        final_members::doc_values_skipper(self, field)
+    }
+
+    fn get_float_vector_values(&self, field: &str) -> Result<Option<Box<dyn FloatVectorValues>>> {
+        final_members::float_vector_values(self, field)
+    }
+
+    fn get_byte_vector_values(&self, field: &str) -> Result<Option<Box<dyn ByteVectorValues>>> {
+        final_members::byte_vector_values(self, field)
+    }
+
+    fn get_field_infos(&self) -> FieldInfos {
+        self.inner.get_field_infos()
+    }
+
+    /// `SoftDeletesFilterCodecReader.getLiveDocs()`: `bits`.
+    fn get_live_docs(&self) -> Option<Box<dyn Bits>> {
+        Some(Box::new(SoftDeletesBits(Arc::clone(&self.bits))))
+    }
+
+    fn get_point_values(&self, field: &str) -> Result<Option<Box<dyn PointValues>>> {
+        final_members::point_values(self, field)
+    }
+
+    fn check_integrity(&self) -> Result<()> {
+        self.inner.check_integrity()
+    }
+
+    fn get_meta_data(&self) -> LeafMetaData {
+        self.inner.get_meta_data()
+    }
+
+    fn search_nearest_vectors(
+        &self,
+        field: &str,
+        target: &[f32],
+        collector: &mut dyn KnnCollector,
+        accept_docs: &mut dyn AcceptDocs,
+    ) -> Result<()> {
+        final_members::search_nearest_vectors(self, field, target, collector, accept_docs)
+    }
+
+    fn search_nearest_vectors_byte(
+        &self,
+        field: &str,
+        target: &[u8],
+        collector: &mut dyn KnnCollector,
+        accept_docs: &mut dyn AcceptDocs,
+    ) -> Result<()> {
+        final_members::search_nearest_vectors_byte(self, field, target, collector, accept_docs)
+    }
+}
+
+impl CodecReader for SoftDeletesFilterCodecReader {
+    fn get_fields_reader(&self) -> Result<Option<Box<dyn StoredFieldsReader>>> {
+        self.inner.get_fields_reader()
+    }
+
+    /// A `FilterCodecReader`: its `getDelegate()`.
+    fn filter_codec_reader_delegate(&self) -> Option<&Arc<dyn CodecReader>> {
+        Some(&self.inner)
+    }
+
+    fn get_term_vectors_reader(&self) -> Result<Option<Box<dyn TermVectorsReader>>> {
+        self.inner.get_term_vectors_reader()
+    }
+
+    fn get_norms_reader(&self) -> Result<Option<Arc<dyn NormsProducer>>> {
+        self.inner.get_norms_reader()
+    }
+
+    fn get_doc_values_reader(&self) -> Result<Option<Arc<dyn DocValuesProducer>>> {
+        self.inner.get_doc_values_reader()
+    }
+
+    fn get_postings_reader(&self) -> Result<Option<Arc<dyn FieldsProducer>>> {
+        self.inner.get_postings_reader()
+    }
+
+    fn get_points_reader(&self) -> Result<Option<Arc<dyn PointsReader>>> {
+        self.inner.get_points_reader()
+    }
+
+    fn get_vector_reader(&self) -> Result<Option<Arc<dyn KnnVectorsReader>>> {
+        self.inner.get_vector_reader()
     }
 }
 

@@ -256,3 +256,45 @@ fn filter_leaf_reader_unwrap_reaches_the_wrapped_segment_reader() {
     let wrapped: Arc<dyn LeafReader> = Arc::new(FilterLeafReader::new(exitable_leaf).unwrap());
     assert!(Arc::ptr_eq(&FilterLeafReader::unwrap(&wrapped), &segment));
 }
+
+/// `SoftDeletesDirectoryReaderWrapper.wrap(LeafReader, String)` keeps a codec
+/// reader a codec reader: `reader instanceof CodecReader ? new
+/// SoftDeletesFilterCodecReader(...) : new SoftDeletesFilterLeafReader(...)`
+/// (`SoftDeletesDirectoryReaderWrapper.java:150-152`). A `SegmentReader`
+/// leaf is wrapped as a `FilterCodecReader`, so a consumer that needs codec
+/// readers (`MergingDirectoryReaderWrapper`, `IndexWriter.addIndexes`) can
+/// take the soft-deletes view; `FilterCodecReader.unwrap` reaches the segment
+/// and `FilterLeafReader.unwrap`, which only steps through
+/// `FilterLeafReader`s, does not move (rmp #351).
+#[test]
+fn soft_deletes_wrapper_keeps_a_codec_reader_a_codec_reader() {
+    use rucene::index::filter_reader::{FilterCodecReader, FilterLeafReader};
+
+    let reader = build_index("rucene-351-soft-deletes-codec", 6, true);
+    let segment = Arc::clone(&reader).leaves().unwrap()[0].leaf_reader();
+    let wrapped = SoftDeletesDirectoryReaderWrapper::new(SOFT_DELETES_FIELD)
+        .wrap(Arc::clone(&reader))
+        .expect("wrap as a soft-deletes reader");
+    let leaf = Arc::clone(&wrapped).leaves().unwrap()[0].leaf_reader();
+    assert!(
+        leaf.to_string().starts_with(
+            "org.apache.lucene.index.SoftDeletesDirectoryReaderWrapper$SoftDeletesFilterCodecReader@"
+        ),
+        "{leaf}"
+    );
+    assert!(Arc::ptr_eq(&FilterLeafReader::unwrap(&leaf), &leaf));
+    let codec = Arc::clone(&leaf)
+        .as_codec_reader()
+        .expect("the soft-deletes view of a segment reader is a codec reader");
+    let innermost: Arc<dyn rucene::index::LeafReader> = FilterCodecReader::unwrap(&codec);
+    assert!(Arc::ptr_eq(&innermost, &segment));
+    assert_eq!(leaf.num_docs(), 3);
+    let live_docs = leaf
+        .get_live_docs()
+        .expect("live docs hide the soft deletes");
+    let live: Vec<usize> = (0..6).filter(|d| live_docs.get(*d)).collect();
+    assert_eq!(live, vec![0, 2, 4]);
+    // The stored fields answer through the codec reader's own producers.
+    let stored = leaf.stored_fields().unwrap();
+    assert_eq!(stored.document(2).unwrap().get_values("id"), vec!["doc-2"]);
+}
