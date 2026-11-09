@@ -1,0 +1,25 @@
+# seed	method	kind	value (BaseSuitesDrawsOracle, Lucene 10.5.0, JDK 25): TestRangeFieldSuiteDraws, next random().nextLong() after each test and the class
+DEADBEEF	#class	next	4490130021668781514
+DEADBEEF	#counts	run=6 fail=0 assume=1	-
+DEADBEEF	testAllEqual	next	6033010887792848090
+DEADBEEF	testLowCardinality	next	7773438095319407517
+DEADBEEF	testMultiValued	next	6018041601928351429
+DEADBEEF	testRandomBig	A	'nightly' test group is disabled (@org.apache.lucene.tests.util.LuceneTestCase.Nightly())
+DEADBEEF	testRandomMedium	next	-2502194538045183314
+DEADBEEF	testRandomTiny	next	-4141294491535479681
+1	#class	next	-6675782448738574920
+1	#counts	run=6 fail=0 assume=1	-
+1	testAllEqual	next	5802652576900518484
+1	testLowCardinality	next	-772578325410145558
+1	testMultiValued	next	4141072273700108412
+1	testRandomBig	A	'nightly' test group is disabled (@org.apache.lucene.tests.util.LuceneTestCase.Nightly())
+1	testRandomMedium	next	4669815187706252064
+1	testRandomTiny	next	-3743958000766290002
+C0FFEE	#class	next	4262373037039570392
+C0FFEE	#counts	run=6 fail=0 assume=1	-
+C0FFEE	testAllEqual	next	-6553120640980726800
+C0FFEE	testLowCardinality	next	3918766086588078002
+C0FFEE	testMultiValued	next	-1002866017895908860
+C0FFEE	testRandomBig	A	'nightly' test group is disabled (@org.apache.lucene.tests.util.LuceneTestCase.Nightly())
+C0FFEE	testRandomMedium	next	-3838826014426080218
+C0FFEE	testRandomTiny	next	-7937116185352262558

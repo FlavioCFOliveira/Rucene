@@ -5906,3 +5906,101 @@ mod pass_e_fixed_bit_set_sharing_tests {
         assert_eq!(clone.get_bits().len(), set.get_bits().len());
     }
 }
+
+#[cfg(test)]
+mod fixed_bit_set_copy_of_tests {
+    use super::*;
+    use std::time::Instant;
+
+    /// A `Bits` that is neither a `FixedBitSet` nor a `FixedBits`: the
+    /// `else` branch of `FixedBitSet.copyOf` (`FixedBitSet.java:874-882`),
+    /// which copies bit by bit.
+    #[derive(Debug)]
+    struct PlainBits<'a>(&'a FixedBitSet);
+
+    impl Bits for PlainBits<'_> {
+        fn get(&self, index: usize) -> bool {
+            self.0.get(index)
+        }
+        fn length(&self) -> usize {
+            self.0.length()
+        }
+    }
+
+    fn random_set(num_bits: usize, seed: u64) -> FixedBitSet {
+        let mut set = FixedBitSet::new(num_bits);
+        let mut x = seed | 1;
+        for i in 0..num_bits {
+            // xorshift64: a fixed, dependency-free bit pattern.
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            if x & 3 == 0 {
+                set.set(i);
+            }
+        }
+        set
+    }
+
+    fn assert_same_bits(a: &FixedBitSet, b: &FixedBitSet) {
+        assert_eq!(a.length(), b.length());
+        assert_eq!(a.cardinality(), b.cardinality());
+        for i in 0..a.length() {
+            assert_eq!(a.get(i), b.get(i), "bit {i}");
+        }
+    }
+
+    /// rmp #253: `FixedBitSet.copyOf(Bits)` (`FixedBitSet.java:866-883`)
+    /// restores the `FixedBitSet` behind a `FixedBits`, clones a
+    /// `FixedBitSet` word by word (`clone()`, `FixedBitSet.java:829-834`),
+    /// and copies any other `Bits` bit by bit. The three paths give equal
+    /// sets, and the two word copies equal words.
+    #[test]
+    fn copy_of_is_equal_on_every_path() {
+        for num_bits in [0usize, 1, 63, 64, 65, 1000, 4097] {
+            let set = random_set(num_bits, 0x9E37_79B9 + num_bits as u64);
+            let from_set = FixedBitSet::copy_of(&set);
+            let from_view = FixedBitSet::copy_of(&set.as_read_only_bits());
+            let from_plain = FixedBitSet::copy_of(&PlainBits(&set));
+            assert_same_bits(&set, &from_set);
+            assert_same_bits(&set, &from_view);
+            assert_same_bits(&set, &from_plain);
+            let words = |s: &FixedBitSet| -> Vec<u64> {
+                s.get_bits()
+                    .iter()
+                    .map(|w| w.load(AtomicOrdering::Relaxed))
+                    .collect()
+            };
+            assert_eq!(words(&from_set), words(&set));
+            assert_eq!(words(&from_view), words(&set));
+        }
+    }
+
+    /// rmp #253 measurement: the word copy of a `FixedBitSet` against the
+    /// bit-by-bit copy of the same bits seen through a plain `Bits`. Prints
+    /// the mean time per copy; the two results are equal.
+    #[test]
+    fn copy_of_word_copy_measurement() {
+        const NUM_BITS: usize = 1 << 20;
+        const ROUNDS: u32 = 16;
+        let set = random_set(NUM_BITS, 0xC0FF_EE00);
+        let start = Instant::now();
+        let mut words = FixedBitSet::new(0);
+        for _ in 0..ROUNDS {
+            words = std::hint::black_box(FixedBitSet::copy_of(std::hint::black_box(&set)));
+        }
+        let word_copy = start.elapsed() / ROUNDS;
+        let plain = PlainBits(&set);
+        let start = Instant::now();
+        let mut bitwise = FixedBitSet::new(0);
+        for _ in 0..ROUNDS {
+            bitwise = std::hint::black_box(FixedBitSet::copy_of(std::hint::black_box(&plain)));
+        }
+        let bit_copy = start.elapsed() / ROUNDS;
+        assert_same_bits(&words, &bitwise);
+        println!(
+            "FixedBitSet::copy_of({NUM_BITS} bits): word copy {word_copy:?}, \
+             bit-by-bit copy {bit_copy:?}"
+        );
+    }
+}

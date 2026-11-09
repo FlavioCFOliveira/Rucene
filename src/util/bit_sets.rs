@@ -76,6 +76,26 @@ fn oversize(s: usize) -> usize {
 }
 
 impl SparseFixedBitSet {
+    /// The package-private field `indices` (`SparseFixedBitSet.java:52`),
+    /// which `TestSparseFixedBitSet` reads to check the set's invariants.
+    pub fn indices(&self) -> &[u64] {
+        &self.indices
+    }
+
+    /// The package-private field `bits` (`SparseFixedBitSet.java:53`), a
+    /// `null` block as `None`, which `TestSparseFixedBitSet` reads to check
+    /// the set's invariants.
+    pub fn bits_blocks(&self) -> &[Option<Vec<u64>>] {
+        &self.bits
+    }
+
+    /// The package-private field `nonZeroLongCount`
+    /// (`SparseFixedBitSet.java:55`), which `TestSparseFixedBitSet` reads to
+    /// check the set's invariants.
+    pub fn non_zero_long_count(&self) -> usize {
+        self.non_zero_long_count
+    }
+
     /// Creates a sparse bit set that can hold bits in `[0, length)`.
     ///
     /// Equivalent to `SparseFixedBitSet(int)`.
@@ -1222,11 +1242,54 @@ impl DocIdSetIterator for RoaringBitSetIter {
     }
 }
 
+/// What `docIdSets[i]` of a `RoaringDocIdSet` holds, as the reflective walk
+/// of `org.apache.lucene.tests.util.RamUsageTester` reads it.
+///
+/// **Divergence from Lucene 10.5.0.** Java's `RamUsageTester` reads the
+/// private `docIdSets` array by reflection; Rust has none, so
+/// [`RoaringDocIdSet::block_layouts`] exposes the classes and array lengths
+/// that walk sees, and nothing else.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoaringBlockLayout {
+    /// `AllDocIdSet.INSTANCE`, the shared singleton.
+    All,
+    /// A `RangeDocIdSet` (two `short` fields).
+    Range,
+    /// A `ShortArrayDocIdSet` whose `docIDs` array has this length.
+    ShortArray(usize),
+    /// A `BitDocIdSet` over a `FixedBitSet` whose `bits` array has this
+    /// many words.
+    BitSet(usize),
+    /// A `NotDocIdSet` over a `ShortArrayDocIdSet` whose `docIDs` array has
+    /// this length.
+    NotShortArray(usize),
+}
+
 impl RoaringDocIdSet {
     /// Creates a builder for a `RoaringDocIdSet` that can hold doc ids in
     /// `[0, max_doc)`.
     pub fn builder(max_doc: usize) -> RoaringDocIdSetBuilder {
         RoaringDocIdSetBuilder::new(max_doc)
+    }
+
+    /// The layout of each element of the private `docIdSets` array, `null`
+    /// as `None`: what `RamUsageTester`'s reflective walk reads (see
+    /// [`RoaringBlockLayout`]).
+    pub fn block_layouts(&self) -> Vec<Option<RoaringBlockLayout>> {
+        self.blocks
+            .iter()
+            .map(|b| {
+                b.as_ref().map(|b| match b {
+                    RoaringBlock::All => RoaringBlockLayout::All,
+                    RoaringBlock::Range { .. } => RoaringBlockLayout::Range,
+                    RoaringBlock::Array(docs) => RoaringBlockLayout::ShortArray(docs.doc_ids.len()),
+                    RoaringBlock::BitSet(bits) => RoaringBlockLayout::BitSet(bits.get_bits().len()),
+                    RoaringBlock::Not { excluded, .. } => {
+                        RoaringBlockLayout::NotShortArray(excluded.doc_ids.len())
+                    }
+                })
+            })
+            .collect()
     }
 
     /// Returns the number of documents in the set.
@@ -1256,6 +1319,17 @@ impl RoaringDocIdSet {
     /// Returns an iterator over the doc ids in this set.
     pub fn iter(&self) -> RoaringDocIdSetIterator {
         RoaringDocIdSetIterator::new(self.clone())
+    }
+}
+
+/// `RoaringDocIdSet extends DocIdSet` (`RoaringDocIdSet.java:34`).
+impl DocIdSet for RoaringDocIdSet {
+    /// Equivalent to `RoaringDocIdSet.iterator()` (`RoaringDocIdSet.java:394-397`).
+    /// Java returns `null` for an empty set; the port's `DocIdSet.iterator()`
+    /// cannot return `null`, so an empty set gives an exhausted iterator, as
+    /// every other set of the port does.
+    fn iterator(&self) -> Result<Box<dyn DocIdSetIterator>> {
+        Ok(Box::new(self.iter()))
     }
 }
 

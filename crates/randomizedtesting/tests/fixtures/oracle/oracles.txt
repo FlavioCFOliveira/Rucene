@@ -35,6 +35,8 @@ org.apache.lucene.tests.analysis.AnalysisMocksOracle
 org.apache.lucene.tests.index.RandomIndexOracle
 # The seeded draws of the Base{Postings,StoredFields,TermVectors,Norms,Compound,LiveDocs,DocValues}FormatTestCase suites (rmp #351-#353)
 org.apache.lucene.tests.index.BaseFormatSuitesOracle
+# The seeded draws of the bit set, DocIdSet, directory, lock factory, similarity and range field suites (rmp #350, #356)
+org.apache.lucene.tests.util.BaseSuitesDrawsOracle
 # Lucene's own lucene/test-framework tests (rmp #359), compiled from $LUCENE_SRC
 org.apache.lucene.tests.util.FrameworkTestsOracle
 # The other lucene/codecs formats: PostingsFormatOracle <prefix> <kind> <format> <extensions>

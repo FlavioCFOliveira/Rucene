@@ -161,7 +161,10 @@ macro_rules! forward_mock_index_input {
     };
 }
 
+pub mod base_chunked_directory_test_case;
+pub mod base_directory_test_case;
 pub mod base_directory_wrapper;
+pub mod base_lock_factory_test_case;
 pub mod corrupting_index_output;
 pub mod mock_directory_wrapper;
 pub mod mock_index_input_wrapper;

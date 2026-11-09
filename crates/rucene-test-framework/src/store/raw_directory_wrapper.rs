@@ -55,6 +55,11 @@ impl RawDirectoryWrapper {
 }
 
 impl Directory for RawDirectoryWrapper {
+    /// `instanceof` (see [`Directory::as_any`]).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn list_all(&self) -> Result<Vec<String>> {
         self.base.list_all()
     }

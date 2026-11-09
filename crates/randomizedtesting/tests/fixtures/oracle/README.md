@@ -385,5 +385,17 @@ write the fixtures (`../*.tsv`) the crate's parity tests (`src/tests/`) read.
   `releases/lucene/10.5.0`); without it the oracle writes nothing and the
   committed fixture stays. The Rust side is `assert_framework_outcomes` in
   `crates/rucene-test-framework/tests/oracle_support/mod.rs`, called by
-  `lucene_util_tests.rs`, `lucene_index_tests.rs`, `lucene_search_tests.rs`
-  and `mock_file_system_test_case.rs` for each suite they port.
+  `lucene_util_tests.rs`, `lucene_index_tests.rs`, `lucene_search_tests.rs`,
+  `lucene_search_explanation_tests.rs`, `lucene_store_tests.rs` and
+  `mock_file_system_test_case.rs` for each suite they port.
+* **The other base suites (rmp #350, #356):**
+  `org.apache.lucene.tests.util.BaseSuitesDrawsOracle` runs, as
+  `BaseFormatSuitesOracle` does and in its format, one draws class per base
+  suite (`Test…Draws`, under `src/org/apache/lucene/util/`,
+  `src/org/apache/lucene/tests/store/`, `src/org/apache/lucene/tests/search/`
+  and `src/org/apache/lucene/tests/search/similarities/`, each with the
+  overrides of the Lucene class the Rust suite binds) and writes
+  `crates/rucene-test-framework/tests/fixtures/base_{sparse_fixed_bit_set,fixed_bit_set,roaring_doc_id_set,sparse_fixed_bit_doc_id_set,directory,chunked_directory,lock_factory,similarity,range_field}_draws.tsv`,
+  read by `base_bit_set_suites.rs`, `base_doc_id_set_suites.rs`,
+  `base_directory_suites.rs`, `base_lock_factory_suites.rs`,
+  `base_similarity_suites.rs` and `base_range_field_query_suites.rs`.

@@ -5312,6 +5312,21 @@ pub trait Directory: Send + Sync {
         None
     }
 
+    /// Returns this directory as [`std::any::Any`], for a caller that tests
+    /// its class, or `None` when it does not take part in such tests.
+    ///
+    /// Equivalent to Java's `dir instanceof X` and the cast `(X) dir` for the
+    /// classes `BaseDirectoryTestCase.testIsLoaded` tests
+    /// (`BaseDirectoryTestCase.java:1636-1679`): `FileSwitchDirectory`,
+    /// `MMapDirectory` and `NRTCachingDirectory`, which answer themselves.
+    /// Rust cannot narrow a `dyn Directory` to a concrete type, so the
+    /// question is asked of the directory itself, as
+    /// [`as_fs_directory`](Self::as_fs_directory) is; the default answers
+    /// `None`, the `false` branch of `instanceof`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+
     /// Returns the concrete type name of this directory implementation.
     ///
     /// Useful for diagnostic messages; the default implementation reports
@@ -6032,6 +6047,11 @@ impl FileSwitchDirectory {
 }
 
 impl Directory for FileSwitchDirectory {
+    /// `instanceof` (see [`Directory::as_any`]).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn list_all(&self) -> Result<Vec<String>> {
         let mut files = Vec::new();
         let mut primary_err: Option<LuceneError> = None;
@@ -6423,6 +6443,11 @@ impl crate::util::Accountable for NRTCachingDirectory {
 }
 
 impl Directory for NRTCachingDirectory {
+    /// `instanceof` (see [`Directory::as_any`]).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn list_all(&self) -> Result<Vec<String>> {
         let _monitor = self.shared.enter();
         let mut files: BTreeSet<String> = BTreeSet::new();
@@ -6658,9 +6683,9 @@ const DEFAULT_MIN_BITS_PER_BLOCK: usize = 10; // 1024 bytes
 
 /// Default maximum block size bits for [`ByteBuffersDataOutput`].
 const DEFAULT_MAX_BITS_PER_BLOCK: usize = 26; // 64 MiB
-
-/// Smallest allowed `min_bits_per_block`.
-const LIMIT_MIN_BITS_PER_BLOCK: usize = 1;
+/// Smallest allowed `min_bits_per_block`. Equivalent to
+/// `ByteBuffersDataOutput.LIMIT_MIN_BITS_PER_BLOCK`.
+pub const LIMIT_MIN_BITS_PER_BLOCK: usize = 1;
 
 /// Largest allowed `max_bits_per_block`.
 const LIMIT_MAX_BITS_PER_BLOCK: usize = 31;

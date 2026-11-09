@@ -117,7 +117,11 @@ pub struct MMapDirectory {
     /// (`MMapDirectory.java:317-318`), so a later
     /// [`set_read_advice`](Self::set_read_advice) reaches inputs already open.
     read_advice: Arc<std::sync::RwLock<ReadAdvicePolicy>>,
-    preload: PreloadPredicate,
+    /// The preload policy. Java's `setPreload` assigns a field of a directory
+    /// that may already be shared, so the policy sits behind a lock and the
+    /// setter takes `&self`, as [`set_read_advice`](Self::set_read_advice)
+    /// does.
+    preload: std::sync::RwLock<PreloadPredicate>,
     grouping_function: GroupingFunction,
 }
 
@@ -184,7 +188,7 @@ impl MMapDirectory {
             chunk_size_power,
             attachment: Self::lookup_provider().attachment(),
             read_advice: Arc::new(std::sync::RwLock::new(Box::new(|_filename, _context| None))),
-            preload: Self::no_files(),
+            preload: std::sync::RwLock::new(Self::no_files()),
             grouping_function: Self::group_by_segment(),
         })
     }
@@ -305,8 +309,11 @@ impl MMapDirectory {
     /// operating-system dependent.
     ///
     /// Equivalent to `org.apache.lucene.store.MMapDirectory#setPreload`.
-    pub fn set_preload(&mut self, preload: PreloadPredicate) {
-        self.preload = preload;
+    pub fn set_preload(&self, preload: PreloadPredicate) {
+        *self
+            .preload
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = preload;
     }
 
     /// Configures the [`ReadAdvice`] certain files are opened with. The default
@@ -365,6 +372,11 @@ impl MMapDirectory {
 }
 
 impl Directory for MMapDirectory {
+    /// `instanceof` (see [`Directory::as_any`]).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn list_all(&self) -> Result<Vec<String>> {
         self.inner.list_all()
     }
@@ -429,7 +441,10 @@ impl Directory for MMapDirectory {
             to_read_advice,
             // `context.hints().contains(ReadOnceHint.INSTANCE)`
             !hints_of::<ReadOnceHint>(context).is_empty(),
-            (self.preload)(name, context),
+            (self
+                .preload
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner))(name, context),
             (self.grouping_function)(name).as_deref(),
             &self.attachment,
         )?;

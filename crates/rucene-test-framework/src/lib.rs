@@ -62,6 +62,7 @@ macro_rules! java_assert_unchecked {
 
 pub mod analysis;
 pub mod codecs;
+pub mod geo;
 pub mod hamcrest;
 pub mod index;
 pub mod jdk;

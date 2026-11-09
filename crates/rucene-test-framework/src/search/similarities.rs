@@ -18,6 +18,7 @@
 //! Port of `org.apache.lucene.tests.search.similarities`.
 
 pub mod asserting_similarity;
+pub mod base_similarity_test_case;
 pub mod random_similarity;
 
 pub use asserting_similarity::AssertingSimilarity;

@@ -19,11 +19,14 @@
 
 pub mod abstract_before_after_rule;
 pub mod automaton;
+pub mod base_bit_set_test_case;
+pub mod base_doc_id_set_test_case;
 pub mod closeable_directory;
 pub mod english;
 pub mod fail_on_non_bulk_merges_info_stream;
 pub mod failure_marker;
 pub mod fst;
+pub mod java_exceptions;
 pub mod line_file_docs;
 pub mod lucene_junit3_method_provider;
 pub mod lucene_test_case;

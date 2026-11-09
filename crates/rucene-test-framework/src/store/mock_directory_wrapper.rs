@@ -1385,6 +1385,11 @@ impl MockDirectoryWrapper {
 }
 
 impl Directory for MockDirectoryWrapper {
+    /// `instanceof` (see [`Directory::as_any`]).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     /// `listAll()`.
     fn list_all(&self) -> Result<Vec<String>> {
         let _monitor = self.core.monitor.enter();
