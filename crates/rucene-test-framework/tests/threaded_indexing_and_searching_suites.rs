@@ -996,11 +996,29 @@ fn draws_class() -> Arc<Class> {
 static SUITES: Mutex<()> = Mutex::new(());
 
 /// Seeded-draw parity with Lucene (rmp #355): every row of
-/// `threaded_draws.tsv` (`BaseFormatSuitesOracle`) must be equal.
+/// `threaded_draws.tsv` (`BaseFormatSuitesOracle`) must be equal, run under
+/// the JVM system properties the fixture records.
+///
+/// Two rows are left out: the `next` rows of `testNRTThreads` on DEADBEEF and
+/// on `1`. Java itself does not reproduce them: in 8 Java runs (5 at once on
+/// all cores, 3 pinned to 1, 1 and 2 cores) DEADBEEF gave 6 different values,
+/// and `1` gave -6132905986733097946 seven times and -9113230656829955279
+/// once (on 2 cores); the Rust runs give values from the same sets. The
+/// cause is inferred, not traced: the merged-segment warmer `runTest`
+/// installs (`ThreadedIndexingAndSearchingTestCase.java:538-562`) calls
+/// `newSearcher(reader, false)`, which draws from `random()` of whichever
+/// thread runs the merge, the main thread or an indexing thread, depending
+/// on timing. The test still runs, and its failure and `#counts` rows are
+/// still compared.
 #[test]
 fn test_threaded_suite_draws_match_lucene() {
     let _one = SUITES.lock().unwrap_or_else(|e| e.into_inner());
-    suite_draws::assert_draws_match("threaded_draws.tsv", draws_class, &DRAWS);
+    suite_draws::assert_draws_match_excluding(
+        "threaded_draws.tsv",
+        draws_class,
+        &DRAWS,
+        &[("DEADBEEF", "testNRTThreads"), ("1", "testNRTThreads")],
+    );
 }
 
 #[test]
