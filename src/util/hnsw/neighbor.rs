@@ -391,7 +391,10 @@ impl NeighborArray {
     }
 
     /// Test helper: insert a node and immediately sort it.
-    #[cfg(test)]
+    ///
+    /// Equivalent to the package-private `NeighborArray.insertSorted(int,
+    /// float)`; public for the port of `TestNeighborArray` (same Java
+    /// package).
     pub fn insert_sorted(&self, new_node: i32, new_score: f32) -> Result<()> {
         self.add_out_of_order(new_node, new_score)?;
         let _ = self.insert_sorted_internal(&mut DummyScorer)?;
@@ -562,11 +565,10 @@ impl NeighborArray {
     }
 }
 
-/// A simple `RandomVectorScorer` used only by the test-only `insert_sorted`.
-#[cfg(test)]
+/// A simple `RandomVectorScorer` used only by the test helper
+/// `insert_sorted`, standing for the `null` scorer Java passes.
 struct DummyScorer;
 
-#[cfg(test)]
 impl RandomVectorScorer for DummyScorer {
     fn score(&mut self, _node: i32) -> Result<f32> {
         Ok(0.0)

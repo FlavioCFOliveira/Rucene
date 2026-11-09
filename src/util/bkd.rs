@@ -1410,6 +1410,85 @@ impl DocIdsWriter {
         }
     }
 
+    /// Reads `count` doc IDs and hands them to `visitor`: a run of
+    /// consecutive IDs and a bit set as a [`DocIdSetIterator`], the
+    /// legacy delta-vInt encoding one `visit(int)` per ID, every other
+    /// encoding decoded into `buffer` (or a scratch array) and passed as an
+    /// [`IntsRef`].
+    ///
+    /// Equivalent to `DocIdsWriter.readInts(IndexInput, int,
+    /// IntersectVisitor, int[])` (`DocIdsWriter.java:443-533`), with the
+    /// writer's `version` passed in as Rucene's [`DocIdsWriter`] is
+    /// stateless.
+    ///
+    /// # Errors
+    ///
+    /// The I/O error of a read, and [`LuceneError::CorruptIndex`]
+    /// (`Unsupported number of bits per value: …`) for an unknown encoding.
+    pub fn read_doc_ids_visitor(
+        in_: &mut dyn IndexInput,
+        count: usize,
+        visitor: &mut dyn IntersectVisitor,
+        buffer: &mut [i32],
+        version: i32,
+    ) -> Result<()> {
+        let bpv = in_.read_byte()? as i8;
+        // `scratchIntsRef` of Java, over `scratch` or `buffer`.
+        let visit_ints = |visitor: &mut dyn IntersectVisitor, ints: &[i32]| -> Result<()> {
+            visitor.visit_ints_ref(&IntsRef::with_offset_length(ints.to_vec(), 0, count))
+        };
+        match bpv {
+            CONTINUOUS_IDS => {
+                let start = in_.read_v_int()?;
+                let mut iterator = crate::search::doc_id_set_iterator::range(
+                    start,
+                    start.wrapping_add(count as i32),
+                )?;
+                visitor.visit_iterator(&mut iterator)
+            }
+            BITSET_IDS => {
+                let mut iterator = Self::read_bit_set_iterator(in_, count)?;
+                visitor.visit_iterator(&mut iterator)
+            }
+            DELTA_BPV_16 => {
+                let mut scratch = vec![0i32; count];
+                Self::read_delta16(in_, count, &mut scratch)?;
+                visit_ints(visitor, &scratch[..count])
+            }
+            BPV_21 => {
+                Self::read_ints21(in_, count, buffer)?;
+                visit_ints(visitor, &buffer[..count])
+            }
+            BPV_24 => {
+                if version < VERSION_VECTORIZE_BPV24_AND_INTRODUCE_BPV21 {
+                    let mut scratch = vec![0i32; count];
+                    Self::read_scalar_ints24(in_, count, &mut scratch)?;
+                    visit_ints(visitor, &scratch[..count])
+                } else {
+                    Self::read_ints24(in_, count, buffer)?;
+                    visit_ints(visitor, &buffer[..count])
+                }
+            }
+            BPV_32 => {
+                let mut scratch = vec![0i32; count];
+                Self::read_ints32(in_, count, &mut scratch)?;
+                visit_ints(visitor, &scratch[..count])
+            }
+            LEGACY_DELTA_VINT => {
+                let mut doc = 0i32;
+                for _ in 0..count {
+                    doc = doc.wrapping_add(in_.read_v_int()?);
+                    visitor.visit(doc)?;
+                }
+                Ok(())
+            }
+            _ => Err(LuceneError::CorruptIndex(format!(
+                "Unsupported number of bits per value: {}",
+                bpv
+            ))),
+        }
+    }
+
     fn read_continuous_ids(in_: &mut dyn IndexInput, count: usize, out: &mut [i32]) -> Result<()> {
         let start = in_.read_v_int()?;
         for (i, slot) in out.iter_mut().enumerate().take(count) {

@@ -1007,7 +1007,11 @@ impl Operations {
     /// operations like concatenation need to connect accept states of an automaton
     /// with the start state of the next one, so having fewer accept states makes the
     /// produced automata simpler.
-    pub(crate) fn merge_accept_states_with_no_transition(a: &Automaton) -> Automaton {
+    ///
+    /// Equivalent to `Operations.mergeAcceptStatesWithNoTransition(Automaton)`
+    /// (`Operations.java`), package-private in Java; public here so that the
+    /// port of `TestOperations` (same Java package) can call it.
+    pub fn merge_accept_states_with_no_transition(a: &Automaton) -> Automaton {
         let num_states = a.get_num_states();
 
         let mut accept_states_with_no_transition: Vec<i32> = Vec::new();
@@ -1293,7 +1297,11 @@ impl Operations {
 
     /// Returns a new automaton accepting the same language with added transitions to
     /// a dead state so that from every state and every label there is a transition.
-    pub(crate) fn totalize(a: &Automaton) -> Automaton {
+    ///
+    /// Equivalent to `Operations.totalize(Automaton)` (`Operations.java`),
+    /// package-private in Java; public here so that the test helper
+    /// `MinimizationOperations` (same Java package) can call it.
+    pub fn totalize(a: &Automaton) -> Automaton {
         let mut result = Automaton::new();
         let num_states = a.get_num_states();
         for i in 0..num_states {

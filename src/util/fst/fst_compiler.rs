@@ -862,12 +862,13 @@ impl<'a, O: Outputs> FSTCompiler<'a, O> {
 
     /// Serializes a new node by appending its bytes to the end of the stream.
     ///
-    /// Equivalent to the package-private `FSTCompiler.addNode`.
+    /// Equivalent to the package-private `FSTCompiler.addNode`; public for
+    /// the port of `TestFSTs` (same Java package).
     ///
     /// # Errors
     ///
     /// Propagates any error raised while writing.
-    pub(crate) fn add_node(&mut self, node_in: &UnCompiledNode<O::Output>) -> Result<i64> {
+    pub fn add_node(&mut self, node_in: &UnCompiledNode<O::Output>) -> Result<i64> {
         if node_in.num_arcs == 0 {
             return Ok(if node_in.is_final {
                 FINAL_END_NODE
@@ -1504,7 +1505,16 @@ impl<'a, O: Outputs> FSTCompiler<'a, O> {
     /// Records the start node and the total size.
     ///
     /// Equivalent to the package-private `FSTCompiler.finish`.
-    fn finish(&mut self, new_start_node: i64) -> Result<()> {
+    /// Records the start node and the number of bytes written, and freezes
+    /// the sink.
+    ///
+    /// Equivalent to the package-private `FSTCompiler.finish(long)`; public
+    /// for the port of `TestFSTs` (same Java package).
+    ///
+    /// # Errors
+    ///
+    /// [`LuceneError::IllegalState`] (`already finished`).
+    pub fn finish(&mut self, new_start_node: i64) -> Result<()> {
         debug_assert!(new_start_node <= self.num_bytes_written);
         if self.fst.metadata.start_node != -1 {
             return Err(LuceneError::illegal_state("already finished".to_string()));
@@ -1520,6 +1530,15 @@ impl<'a, O: Outputs> FSTCompiler<'a, O> {
         // Freeze the sink if applicable.
         self.data_output.freeze();
         Ok(())
+    }
+
+    /// The metadata of the FST being built.
+    ///
+    /// Equivalent to the package-private field access
+    /// `fstCompiler.fst.metadata`, which the port of `TestFSTs` (same Java
+    /// package) reads after [`FSTCompiler::finish`].
+    pub fn fst_metadata(&self) -> &FSTMetadata<O> {
+        &self.fst.metadata
     }
 
     /// Returns the metadata of the final FST, or `None` when nothing at all is

@@ -1089,3 +1089,23 @@ macro_rules! delegate_random {
 // stream methods, which need a sized receiver, work on `Arc<dyn Random>` and
 // `&dyn Random`).
 delegate_random!(Arc<R>, &R);
+
+/// `random.ints(streamSize, origin, bound)` on a `Random` trait object (the
+/// `Random` that `LuceneTestCase.random()` returns): the same stream as
+/// [`Random::ints_sized_range`], which needs a sized receiver.
+///
+/// # Panics
+///
+/// `IllegalArgumentException` for a negative size or an empty range.
+pub fn ints_sized_range_dyn<'a>(
+    rng: &'a (dyn Random + 'a),
+    stream_size: i64,
+    origin: i32,
+    bound: i32,
+) -> Ints<'a, dyn Random + 'a> {
+    check_size(stream_size);
+    if origin >= bound {
+        illegal_argument(BAD_RANGE);
+    }
+    Ints::new(rng, Some(stream_size), Some((origin, bound)))
+}

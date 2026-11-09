@@ -19,8 +19,16 @@ use crate::store::{DataInput, DataOutput};
 pub const LZ4_MAX_DISTANCE: usize = 1 << 16;
 
 const LZ4_MEMORY_USAGE: usize = 14;
-const LZ4_MIN_MATCH: usize = 4;
-const LZ4_LAST_LITERALS: usize = 5;
+/// Minimum length of a match.
+///
+/// Equivalent to `org.apache.lucene.util.compress.LZ4.MIN_MATCH`
+/// (package-private in Java; public here for the port of `LZ4TestCase`).
+pub const LZ4_MIN_MATCH: usize = 4;
+/// The last 5 bytes must be encoded as literals.
+///
+/// Equivalent to `org.apache.lucene.util.compress.LZ4.LAST_LITERALS`
+/// (package-private in Java; public here for the port of `LZ4TestCase`).
+pub const LZ4_LAST_LITERALS: usize = 5;
 const LZ4_HASH_LOG_HC: u32 = 15;
 const LZ4_HASH_TABLE_SIZE_HC: usize = 1 << LZ4_HASH_LOG_HC;
 const LZ4_MAX_ATTEMPTS: usize = 256;
@@ -145,6 +153,12 @@ pub trait Lz4HashTable: Send + Sync {
     /// offsets. A return value of `None` indicates that no other index could
     /// be found.
     fn previous(&mut self, bytes: &[u8], off: usize) -> Option<usize>;
+    /// Whether this table is fully reset: an assertion helper, which panics
+    /// (Java's `assert`) on a slot still holding a previous content.
+    ///
+    /// Equivalent to `LZ4.HashTable.assertReset()` (`LZ4.java:216`),
+    /// package-private in Java; public here for the port of `LZ4TestCase`.
+    fn assert_reset(&self) -> bool;
 }
 
 enum OffsetTable {
@@ -284,6 +298,12 @@ impl Lz4HashTable for FastCompressionHashTable {
     fn previous(&mut self, _bytes: &[u8], _off: usize) -> Option<usize> {
         None
     }
+
+    /// Equivalent to `FastCompressionHashTable.assertReset()`
+    /// (`LZ4.java:380-382`).
+    fn assert_reset(&self) -> bool {
+        true
+    }
 }
 
 /// Higher-precision hash table that stores up to 256 occurrences of 4-byte
@@ -342,6 +362,15 @@ impl HighCompressionHashTable {
 }
 
 impl Lz4HashTable for HighCompressionHashTable {
+    /// Equivalent to `HighCompressionHashTable.assertReset()`
+    /// (`LZ4.java:500-505`): every chain slot is `(short) 0xFFFF`.
+    fn assert_reset(&self) -> bool {
+        for (i, &slot) in self.chain_table.iter().enumerate() {
+            assert!(slot == 0xFFFF, "{i}");
+        }
+        true
+    }
+
     fn reset(&mut self, bytes: &[u8], off: usize, len: usize) -> Result<()> {
         if off
             .checked_add(len)

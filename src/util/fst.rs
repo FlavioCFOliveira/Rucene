@@ -115,7 +115,7 @@ pub use fst_reader::FSTReader;
 pub use growable_byte_array_data_output::GrowableByteArrayDataOutput;
 pub use int_sequence_outputs::IntSequenceOutputs;
 pub use no_outputs::NoOutputs;
-pub use node_hash::NodeHash;
+pub use node_hash::{NodeHash, PagedGrowableHash};
 pub use off_heap_fst_store::OffHeapFSTStore;
 pub use on_heap_fst_store::OnHeapFSTStore;
 pub use outputs::Outputs;
@@ -142,8 +142,9 @@ pub use fst_compiler::{
 };
 
 pub use util::{
-    DefaultTopNSearcherHooks, FSTPath, OutputComparator, PathComparator, PathResult, TopNSearcher,
-    TopNSearcherHooks, TopResults, Util,
+    binary_search, tie_break_by_input_comparator, DefaultTopNSearcherHooks, FSTPath,
+    OutputComparator, PathComparator, PathResult, TopNSearcher, TopNSearcherHooks, TopResults,
+    Util,
 };
 
 // Lucene nests `InputOutput` inside each enum class; Rust has no nested types,

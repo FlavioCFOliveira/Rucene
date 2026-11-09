@@ -207,8 +207,10 @@ where
 /// Builds the default path comparator: compare with `comparator` first, then
 /// break ties on the path input.
 ///
-/// Equivalent to the record `Util.TieBreakByInputComparator<T>`.
-fn tie_break_by_input_comparator<T: Clone + Default + 'static>(
+/// Equivalent to the record `Util.TieBreakByInputComparator<T>`
+/// (package-private in Java; public for the port of `TestFSTs`, whose
+/// anonymous `TopNSearcher` subclasses use it as their default).
+pub fn tie_break_by_input_comparator<T: Clone + Default + 'static>(
     comparator: OutputComparator<T>,
 ) -> PathComparator<T> {
     Rc::new(move |a: &FSTPath<T>, b: &FSTPath<T>| {
@@ -1024,7 +1026,8 @@ impl Util {
 /// index of the arc carrying `target_label`, or `-1 - idx` where `idx` is the
 /// index of the arc with the next highest label, or the total number of arcs
 /// when the target label exceeds the maximum.
-pub(crate) fn binary_search<O: Outputs>(
+/// Public (Java: package-private) for the port of the FST `TestUtil`.
+pub fn binary_search<O: Outputs>(
     fst: &FST<O>,
     arc: &Arc<O::Output>,
     target_label: i32,

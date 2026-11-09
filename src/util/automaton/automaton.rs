@@ -33,7 +33,10 @@ pub struct Transition {
     pub max: i32,
     /// Remembers where we are in the iteration; init to `-1` to provoke exception
     /// if `next` is called without first `init_transition`.
-    pub(crate) transition_upto: i32,
+    ///
+    /// Java's `transitionUpto` is package-private; public here so that the
+    /// test helper `MinimizationOperations` (same Java package) can reset it.
+    pub transition_upto: i32,
 }
 
 impl Transition {
