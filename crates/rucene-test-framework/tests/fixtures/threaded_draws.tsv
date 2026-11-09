@@ -1,0 +1,10 @@
+# seed	method	kind	value (BaseFormatSuitesOracle, Lucene 10.5.0, JDK 25): TestThreadedSuiteDraws, next random().nextLong() after each test and the class
+DEADBEEF	#class	next	-2483782781765934065
+DEADBEEF	#counts	run=1 fail=0 assume=0	-
+DEADBEEF	testNRTThreads	next	-4023355265639850675
+1	#class	next	2034571845181138390
+1	#counts	run=1 fail=0 assume=0	-
+1	testNRTThreads	next	-9113230656829955279
+C0FFEE	#class	next	-3736135947231168812
+C0FFEE	#counts	run=1 fail=0 assume=0	-
+C0FFEE	testNRTThreads	next	-5112528913527594816

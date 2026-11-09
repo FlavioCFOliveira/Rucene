@@ -1,0 +1,73 @@
+# seed	method	kind	value (BaseFormatSuitesOracle, Lucene 10.5.0, JDK 25): TestPointsSuiteDraws, next random().nextLong() after each test and the class
+DEADBEEF	#class	next	31779356704664825
+DEADBEEF	#counts	run=21 fail=0 assume=2	-
+DEADBEEF	testAddIndexes	next	-7822869509655501606
+DEADBEEF	testAllEqual	next	5345279382422167868
+DEADBEEF	testAllPointDocsDeletedInSegment	next	-674800749354526653
+DEADBEEF	testBasic	next	3178081699487709509
+DEADBEEF	testBigIntNDims	next	-6807702880744920157
+DEADBEEF	testCheckIntegrityReadsAllBytes	next	6678308133114299650
+DEADBEEF	testDocCountEdgeCases	next	-3409451773747389762
+DEADBEEF	testMerge	next	-1864088456795208485
+DEADBEEF	testMergeMissing	next	4784702897178789571
+DEADBEEF	testMergeStability	A	merge is not stable
+DEADBEEF	testMergeStability	next	6026678469593314916
+DEADBEEF	testMismatchedFields	next	7549669152846099231
+DEADBEEF	testMultiClose	next	939768549329737948
+DEADBEEF	testMultiValued	next	2018196782136502296
+DEADBEEF	testOneDimEqual	next	1055080871229655269
+DEADBEEF	testOneDimTwoValues	next	-3174245598683110303
+DEADBEEF	testRandomBinaryBig	A	'nightly' test group is disabled (@org.apache.lucene.tests.util.LuceneTestCase.Nightly())
+DEADBEEF	testRandomBinaryMedium	next	-4918913747156464144
+DEADBEEF	testRandomBinaryTiny	next	189408208065710463
+DEADBEEF	testRandomDocCount	next	-5697997622566523475
+DEADBEEF	testRandomExceptions	next	2156830069469578749
+DEADBEEF	testWithExceptions	next	5630438714473960751
+1	#class	next	4309819665965801053
+1	#counts	run=21 fail=0 assume=2	-
+1	testAddIndexes	next	6103080666383548072
+1	testAllEqual	next	-2783600967691585465
+1	testAllPointDocsDeletedInSegment	next	5443670679004422084
+1	testBasic	next	-6489179818977205461
+1	testBigIntNDims	next	5585451724047296831
+1	testCheckIntegrityReadsAllBytes	next	5112311603848178413
+1	testDocCountEdgeCases	next	-7773365577288302171
+1	testMerge	next	-1357383626000454970
+1	testMergeMissing	next	6201864383449781711
+1	testMergeStability	A	merge is not stable
+1	testMergeStability	next	-7192816207580791821
+1	testMismatchedFields	next	8218330013273692336
+1	testMultiClose	next	5023695660192295173
+1	testMultiValued	next	1168140569977145927
+1	testOneDimEqual	next	6295263095127090354
+1	testOneDimTwoValues	next	4900515803917084923
+1	testRandomBinaryBig	A	'nightly' test group is disabled (@org.apache.lucene.tests.util.LuceneTestCase.Nightly())
+1	testRandomBinaryMedium	next	-5029226170721268239
+1	testRandomBinaryTiny	next	-2894022920169615794
+1	testRandomDocCount	next	3024362789737308943
+1	testRandomExceptions	next	-9189812308474268294
+1	testWithExceptions	next	-371933883679809505
+C0FFEE	#class	next	-5626094191534047964
+C0FFEE	#counts	run=21 fail=0 assume=2	-
+C0FFEE	testAddIndexes	next	-1085593311180151842
+C0FFEE	testAllEqual	next	-4375963519728392407
+C0FFEE	testAllPointDocsDeletedInSegment	next	-1417364616652675653
+C0FFEE	testBasic	next	-8588023771982826010
+C0FFEE	testBigIntNDims	next	8340800683841331975
+C0FFEE	testCheckIntegrityReadsAllBytes	next	9072129124134391017
+C0FFEE	testDocCountEdgeCases	next	9212343768202090292
+C0FFEE	testMerge	next	-1776112610169017012
+C0FFEE	testMergeMissing	next	-3513652956214805782
+C0FFEE	testMergeStability	A	merge is not stable
+C0FFEE	testMergeStability	next	4691409957106869562
+C0FFEE	testMismatchedFields	next	3844639056127627413
+C0FFEE	testMultiClose	next	39453275133403513
+C0FFEE	testMultiValued	next	4837206349601160737
+C0FFEE	testOneDimEqual	next	348262471710326377
+C0FFEE	testOneDimTwoValues	next	-5243467423645920710
+C0FFEE	testRandomBinaryBig	A	'nightly' test group is disabled (@org.apache.lucene.tests.util.LuceneTestCase.Nightly())
+C0FFEE	testRandomBinaryMedium	next	-2794738395700957550
+C0FFEE	testRandomBinaryTiny	next	4355571155046989842
+C0FFEE	testRandomDocCount	next	-6247840593270753150
+C0FFEE	testRandomExceptions	next	8856027206418972011
+C0FFEE	testWithExceptions	next	6425570988594228221

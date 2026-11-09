@@ -4722,7 +4722,8 @@ impl IndexWriter {
                         ))
                     })?;
                 let sr = rld.get_reader(&*crate::store::DEFAULT_IO_CONTEXT)?;
-                let warmed = merged_segment_warmer.warm(sr.as_ref());
+                let warmed = merged_segment_warmer
+                    .warm(&(Arc::clone(&sr) as Arc<dyn crate::index::LeafReader>));
                 let released = {
                     let mut state = self.state()?;
                     rld.release(&sr)

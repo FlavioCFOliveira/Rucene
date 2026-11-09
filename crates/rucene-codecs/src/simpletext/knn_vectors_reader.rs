@@ -267,6 +267,13 @@ fn null_info() -> LuceneError {
 }
 
 impl KnnVectorsReader for SimpleTextKnnVectorsReader {
+    /// This reader answers with itself: Java's `instanceof
+    /// SimpleTextKnnVectorsReader` on it is `true`
+    /// (`BaseKnnVectorsFormatTestCase.assertOffHeapByteSize`).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     /// Port of `SimpleTextKnnVectorsReader.checkIntegrity`.
     fn check_integrity(&self) -> Result<()> {
         let guard = self.data_in.lock().map_err(poisoned)?;

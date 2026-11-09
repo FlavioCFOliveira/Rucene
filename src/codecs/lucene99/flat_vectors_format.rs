@@ -22,7 +22,7 @@ use crate::codecs::codec_util::{
 use crate::codecs::hnsw::flat_vectors::{
     DefaultFlatFieldVectorsWriter, DefaultFlatVectorScorer, DocsWithFieldSet,
     FlatFieldVectorWriter, FlatFieldVectorsWriter, FlatVectorsFormat, FlatVectorsReader,
-    FlatVectorsScorer, FlatVectorsWriter,
+    FlatVectorsScorer, FlatVectorsWriter, SharedFlatFieldVectorsWriter,
 };
 use crate::codecs::knn_vectors::{
     FieldVectorWriter, KnnVectorsFormat, KnnVectorsReader, KnnVectorsWriter, MergedVectorValues,
@@ -169,6 +169,9 @@ pub struct Lucene99FlatVectorsWriter {
     meta: Option<Box<dyn IndexOutput>>,
     vector_data: Option<Box<dyn IndexOutput>>,
     vector_scorer: Arc<dyn FlatVectorsScorer>,
+    /// `fieldWriterFactory`: builds the per-field storage `addField` hands
+    /// out and `flush` writes.
+    field_writer_factory: FlatFieldWriterFactory,
     fields: Vec<FieldWriterEntry>,
     /// `maxDoc` of the segment being written, or `None` when it was not set
     /// yet at the moment this writer was created.
@@ -200,15 +203,38 @@ impl fmt::Debug for Lucene99FlatVectorsWriter {
     }
 }
 
+/// The per-field storage factory of a [`Lucene99FlatVectorsWriter`]: Java's
+/// `IOFunction<FieldInfo, FlatFieldVectorsWriter<?>> strategyFactory`
+/// (`Lucene99FlatVectorsWriter.java:62, 96-103`), whose answer's element type
+/// follows the field's encoding.
+pub type FlatFieldWriterFactory =
+    Arc<dyn Fn(&FieldInfo) -> Result<FlatFieldVectorWriter> + Send + Sync>;
+
+/// `DefaultFieldWriter::create` (`Lucene99FlatVectorsWriter.java:374-391`):
+/// the factory of the writer built without one, which keeps every vector on
+/// the heap.
+fn default_field_writer(field_info: &FieldInfo) -> Result<FlatFieldVectorWriter> {
+    Ok(match field_info.vector_encoding {
+        VectorEncoding::FLOAT32 => {
+            FlatFieldVectorWriter::Float(Arc::new(Mutex::new(DefaultFlatFieldVectorsWriter::<
+                Vec<f32>,
+            >::new(
+                field_info.clone()
+            ))))
+        }
+        VectorEncoding::BYTE => {
+            FlatFieldVectorWriter::Byte(Arc::new(Mutex::new(DefaultFlatFieldVectorsWriter::<
+                Vec<u8>,
+            >::new(field_info.clone()))))
+        }
+    })
+}
+
+/// Java's `record FieldData(FlatFieldVectorsWriter<?> fieldWriter, FieldInfo
+/// fieldInfo)`, split by element type.
 enum FieldWriterEntry {
-    Float(
-        Arc<Mutex<DefaultFlatFieldVectorsWriter<Vec<f32>>>>,
-        FieldInfo,
-    ),
-    Byte(
-        Arc<Mutex<DefaultFlatFieldVectorsWriter<Vec<u8>>>>,
-        FieldInfo,
-    ),
+    Float(SharedFlatFieldVectorsWriter<Vec<f32>>, FieldInfo),
+    Byte(SharedFlatFieldVectorsWriter<Vec<u8>>, FieldInfo),
 }
 
 impl fmt::Debug for FieldWriterEntry {
@@ -221,10 +247,38 @@ impl fmt::Debug for FieldWriterEntry {
 }
 
 impl Lucene99FlatVectorsWriter {
-    /// Creates a new writer for the given segment write state.
+    /// Constructs a writer that uses the default factory to build per-field
+    /// vector storage, which stores vector data as a list of on-heap arrays,
+    /// one per vector.
+    ///
+    /// Equivalent to `Lucene99FlatVectorsWriter(SegmentWriteState,
+    /// FlatVectorsScorer)`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of creating the two outputs and writing their headers.
     pub fn new(
         state: &SegmentWriteState<'_>,
         vectors_scorer: Arc<dyn FlatVectorsScorer>,
+    ) -> Result<Self> {
+        Self::with_field_writer_factory(state, vectors_scorer, Arc::new(default_field_writer))
+    }
+
+    /// Constructs a writer that uses `strategy_factory` to build per-field
+    /// vector storage. The factory is consulted on every `add_field` call;
+    /// merges write directly to the new segment and do not go through it.
+    ///
+    /// Equivalent to `Lucene99FlatVectorsWriter(SegmentWriteState,
+    /// FlatVectorsScorer, IOFunction<FieldInfo, FlatFieldVectorsWriter<?>>)`
+    /// (`Lucene99FlatVectorsWriter.java:96-136`).
+    ///
+    /// # Errors
+    ///
+    /// The errors of creating the two outputs and writing their headers.
+    pub fn with_field_writer_factory(
+        state: &SegmentWriteState<'_>,
+        vectors_scorer: Arc<dyn FlatVectorsScorer>,
+        strategy_factory: FlatFieldWriterFactory,
     ) -> Result<Self> {
         let meta_file_name = segment_file_name(
             &state.segment_info.name,
@@ -281,6 +335,7 @@ impl Lucene99FlatVectorsWriter {
             meta: meta_opt,
             vector_data: vector_data_opt,
             vector_scorer: vectors_scorer,
+            field_writer_factory: strategy_factory,
             fields: Vec::new(),
             segment_max_doc: state.segment_info.max_doc().ok(),
             finished: false,
@@ -289,7 +344,7 @@ impl Lucene99FlatVectorsWriter {
 
     fn write_field_float(
         &mut self,
-        field_writer: &mut DefaultFlatFieldVectorsWriter<Vec<f32>>,
+        field_writer: &mut dyn FlatFieldVectorsWriter<Vec<f32>>,
         field_info: &FieldInfo,
         max_doc: i32,
     ) -> Result<()> {
@@ -299,7 +354,7 @@ impl Lucene99FlatVectorsWriter {
         let vector_data_offset = align_output(vector_data.as_mut(), VectorEncoding::FLOAT32)?;
         Self::write_float32_vectors(vector_data.as_mut(), field_writer, field_info)?;
         let vector_data_length = vector_data.file_pointer() - vector_data_offset;
-        let docs_with_field = field_writer.docs_with_field_set().clone();
+        let docs_with_field = field_writer.docs_with_field_set().into_owned();
 
         let meta = self.meta.as_mut().ok_or_else(|| {
             LuceneError::illegal_state("Lucene99FlatVectorsWriter is already closed".to_string())
@@ -323,12 +378,12 @@ impl Lucene99FlatVectorsWriter {
     /// multiplying, exactly as for an unsorted segment.
     fn write_sorting_field_float(
         &mut self,
-        field_writer: &mut DefaultFlatFieldVectorsWriter<Vec<f32>>,
+        field_writer: &mut dyn FlatFieldVectorsWriter<Vec<f32>>,
         field_info: &FieldInfo,
         max_doc: i32,
         sort_map: &SorterDocMap,
     ) -> Result<()> {
-        let old_doc_ids = docs_with_field_to_docs(field_writer.docs_with_field_set())?;
+        let old_doc_ids = docs_with_field_to_docs(&field_writer.docs_with_field_set())?;
         let (_old_to_new, ord_map) =
             crate::codecs::knn_vectors::map_old_ord_to_new_ord(&old_doc_ids, sort_map)?;
         let new_docs_with_field = new_docs_with_field(&old_doc_ids, sort_map)?;
@@ -360,12 +415,12 @@ impl Lucene99FlatVectorsWriter {
     /// `BYTE` encoding.
     fn write_sorting_field_byte(
         &mut self,
-        field_writer: &mut DefaultFlatFieldVectorsWriter<Vec<u8>>,
+        field_writer: &mut dyn FlatFieldVectorsWriter<Vec<u8>>,
         field_info: &FieldInfo,
         max_doc: i32,
         sort_map: &SorterDocMap,
     ) -> Result<()> {
-        let old_doc_ids = docs_with_field_to_docs(field_writer.docs_with_field_set())?;
+        let old_doc_ids = docs_with_field_to_docs(&field_writer.docs_with_field_set())?;
         let (_old_to_new, ord_map) =
             crate::codecs::knn_vectors::map_old_ord_to_new_ord(&old_doc_ids, sort_map)?;
         let new_docs_with_field = new_docs_with_field(&old_doc_ids, sort_map)?;
@@ -405,11 +460,11 @@ impl Lucene99FlatVectorsWriter {
     /// `org.apache.lucene.codecs.lucene99.Lucene99FlatVectorsWriter#writeFloat32Vectors`.
     fn write_float32_vectors(
         vector_data: &mut dyn IndexOutput,
-        field_writer: &DefaultFlatFieldVectorsWriter<Vec<f32>>,
+        field_writer: &dyn FlatFieldVectorsWriter<Vec<f32>>,
         field_info: &FieldInfo,
     ) -> Result<()> {
         let _ = field_info;
-        for vector in field_writer.vectors() {
+        for vector in field_writer.vectors().iter() {
             vector_data.write_floats(vector, 0, vector.len())?;
         }
         Ok(())
@@ -422,9 +477,9 @@ impl Lucene99FlatVectorsWriter {
     /// `org.apache.lucene.codecs.lucene99.Lucene99FlatVectorsWriter#writeByteVectors`.
     fn write_byte_vectors(
         vector_data: &mut dyn IndexOutput,
-        field_writer: &DefaultFlatFieldVectorsWriter<Vec<u8>>,
+        field_writer: &dyn FlatFieldVectorsWriter<Vec<u8>>,
     ) -> Result<()> {
-        for vector in field_writer.vectors() {
+        for vector in field_writer.vectors().iter() {
             vector_data.write_bytes(vector, 0, vector.len())?;
         }
         Ok(())
@@ -498,11 +553,13 @@ impl Lucene99FlatVectorsWriter {
     /// Equivalent to `Lucene99FlatVectorsWriter.writeSortedFloat32Vectors(FlatFieldVectorsWriter, FieldInfo, int[])`.
     fn write_sorted_float32_vectors(
         vector_data: &mut dyn IndexOutput,
-        field_writer: &DefaultFlatFieldVectorsWriter<Vec<f32>>,
+        field_writer: &dyn FlatFieldVectorsWriter<Vec<f32>>,
         ord_map: &[i32],
     ) -> Result<()> {
+        // `fieldWriter.getVectors().get(ordinal)`, the list read once.
+        let vectors = field_writer.vectors();
         for &ordinal in ord_map {
-            let vector = &field_writer.vectors()[ordinal as usize];
+            let vector = &vectors[ordinal as usize];
             vector_data.write_floats(vector, 0, vector.len())?;
         }
         Ok(())
@@ -513,11 +570,13 @@ impl Lucene99FlatVectorsWriter {
     /// Equivalent to `Lucene99FlatVectorsWriter.writeSortedByteVectors(FlatFieldVectorsWriter, int[])`.
     fn write_sorted_byte_vectors(
         vector_data: &mut dyn IndexOutput,
-        field_writer: &DefaultFlatFieldVectorsWriter<Vec<u8>>,
+        field_writer: &dyn FlatFieldVectorsWriter<Vec<u8>>,
         ord_map: &[i32],
     ) -> Result<()> {
+        // `fieldWriter.getVectors().get(ordinal)`, the list read once.
+        let vectors = field_writer.vectors();
         for &ordinal in ord_map {
-            let vector = &field_writer.vectors()[ordinal as usize];
+            let vector = &vectors[ordinal as usize];
             vector_data.write_bytes(vector, 0, vector.len())?;
         }
         Ok(())
@@ -525,7 +584,7 @@ impl Lucene99FlatVectorsWriter {
 
     fn write_field_byte(
         &mut self,
-        field_writer: &mut DefaultFlatFieldVectorsWriter<Vec<u8>>,
+        field_writer: &mut dyn FlatFieldVectorsWriter<Vec<u8>>,
         field_info: &FieldInfo,
         max_doc: i32,
     ) -> Result<()> {
@@ -535,7 +594,7 @@ impl Lucene99FlatVectorsWriter {
         let vector_data_offset = align_output(vector_data.as_mut(), VectorEncoding::BYTE)?;
         Self::write_byte_vectors(vector_data.as_mut(), field_writer)?;
         let vector_data_length = vector_data.file_pointer() - vector_data_offset;
-        let docs_with_field = field_writer.docs_with_field_set().clone();
+        let docs_with_field = field_writer.docs_with_field_set().into_owned();
 
         let meta = self.meta.as_mut().ok_or_else(|| {
             LuceneError::illegal_state("Lucene99FlatVectorsWriter is already closed".to_string())
@@ -571,9 +630,9 @@ impl KnnVectorsWriter for Lucene99FlatVectorsWriter {
                     })?;
                     match sort_map {
                         Some(sort_map) => {
-                            self.write_sorting_field_float(&mut guard, &info, max_doc, sort_map)?
+                            self.write_sorting_field_float(&mut *guard, &info, max_doc, sort_map)?
                         }
-                        None => self.write_field_float(&mut guard, &info, max_doc)?,
+                        None => self.write_field_float(&mut *guard, &info, max_doc)?,
                     }
                     guard.finish()?;
                 }
@@ -585,9 +644,9 @@ impl KnnVectorsWriter for Lucene99FlatVectorsWriter {
                     })?;
                     match sort_map {
                         Some(sort_map) => {
-                            self.write_sorting_field_byte(&mut guard, &info, max_doc, sort_map)?
+                            self.write_sorting_field_byte(&mut *guard, &info, max_doc, sort_map)?
                         }
-                        None => self.write_field_byte(&mut guard, &info, max_doc)?,
+                        None => self.write_field_byte(&mut *guard, &info, max_doc)?,
                     }
                     guard.finish()?;
                 }
@@ -663,28 +722,19 @@ impl FlatVectorsWriter for Lucene99FlatVectorsWriter {
                 "Lucene99FlatVectorsWriter is already finished".to_string(),
             ));
         }
-        match field_info.vector_encoding {
-            VectorEncoding::FLOAT32 => {
-                let writer = Arc::new(Mutex::new(DefaultFlatFieldVectorsWriter::<Vec<f32>>::new(
-                    field_info.clone(),
-                )));
-                self.fields.push(FieldWriterEntry::Float(
-                    Arc::clone(&writer),
-                    field_info.clone(),
-                ));
-                Ok(FlatFieldVectorWriter::Float(writer))
-            }
-            VectorEncoding::BYTE => {
-                let writer = Arc::new(Mutex::new(DefaultFlatFieldVectorsWriter::<Vec<u8>>::new(
-                    field_info.clone(),
-                )));
-                self.fields.push(FieldWriterEntry::Byte(
-                    Arc::clone(&writer),
-                    field_info.clone(),
-                ));
-                Ok(FlatFieldVectorWriter::Byte(writer))
-            }
+        // `var newFieldWriter = fieldWriterFactory.apply(fieldInfo)`
+        let new_field_writer = (self.field_writer_factory)(field_info)?;
+        match &new_field_writer {
+            FlatFieldVectorWriter::Float(writer) => self.fields.push(FieldWriterEntry::Float(
+                Arc::clone(writer),
+                field_info.clone(),
+            )),
+            FlatFieldVectorWriter::Byte(writer) => self.fields.push(FieldWriterEntry::Byte(
+                Arc::clone(writer),
+                field_info.clone(),
+            )),
         }
+        Ok(new_field_writer)
     }
 
     fn get_flat_vector_scorer(&self) -> &dyn FlatVectorsScorer {

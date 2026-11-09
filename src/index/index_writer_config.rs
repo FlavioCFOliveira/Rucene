@@ -56,13 +56,16 @@ pub trait MergedSegmentWarmer: Send + Sync + Debug + fmt::Display {
 
     /// Warms `reader`, a reader over the newly merged segment.
     ///
-    /// Equivalent to `IndexReaderWarmer.warm(LeafReader)`.
+    /// Equivalent to `IndexReaderWarmer.warm(LeafReader)`. The reader is
+    /// lent as the shared handle the writer pools, so that a warmer can
+    /// build an `IndexSearcher` over it, as Java's warmers do
+    /// (`ThreadedIndexingAndSearchingTestCase.runTest`).
     ///
     /// # Errors
     ///
     /// Whatever the warmer raises fails the merge, as Java's `IOException`
     /// does.
-    fn warm(&self, reader: &dyn LeafReader) -> crate::error::Result<()>;
+    fn warm(&self, reader: &Arc<dyn LeafReader>) -> crate::error::Result<()>;
 }
 
 /// The `java.util.Comparator<LeafReader>` that sorts the leaves of a

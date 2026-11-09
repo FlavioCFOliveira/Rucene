@@ -192,6 +192,13 @@ impl AssertingKnnVectorsReader {
 }
 
 impl KnnVectorsReader for AssertingKnnVectorsReader {
+    /// This reader answers with itself: Java's `instanceof
+    /// AssertingKnnVectorsFormat.AssertingKnnVectorsReader` on it is `true`
+    /// (`BaseKnnVectorsFormatTestCase.hasQuantized`, `hasHNSW`).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn check_integrity(&self) -> Result<()> {
         self.delegate.check_integrity()
     }

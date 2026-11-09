@@ -1,0 +1,19 @@
+# seed	method	kind	value (BaseFormatSuitesOracle, Lucene 10.5.0, JDK 25): TestCheckIndexSuiteDraws, next random().nextLong() after each test and the class
+DEADBEEF	#class	next	5493027159562385240
+DEADBEEF	#counts	run=4 fail=0 assume=0	-
+DEADBEEF	testChecksumsOnly	next	-7407310417376366724
+DEADBEEF	testChecksumsOnlyVerbose	next	506473966133560704
+DEADBEEF	testDeletedDocs	next	1354828516830138320
+DEADBEEF	testObtainsLock	next	7700023079213206843
+1	#class	next	-2246461708161310316
+1	#counts	run=4 fail=0 assume=0	-
+1	testChecksumsOnly	next	-3988918158505047996
+1	testChecksumsOnlyVerbose	next	-8510107894690414347
+1	testDeletedDocs	next	7808585708766866549
+1	testObtainsLock	next	-5738245690373257673
+C0FFEE	#class	next	-2841738266834459503
+C0FFEE	#counts	run=4 fail=0 assume=0	-
+C0FFEE	testChecksumsOnly	next	-2720790969080466059
+C0FFEE	testChecksumsOnlyVerbose	next	-3129024389183306665
+C0FFEE	testDeletedDocs	next	6400242916368925042
+C0FFEE	testObtainsLock	next	-396697214772786864

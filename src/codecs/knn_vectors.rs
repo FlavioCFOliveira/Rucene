@@ -1938,6 +1938,13 @@ pub trait KnnVectorsReader: Send + Sync + fmt::Debug {
     fn close(&mut self) -> Result<()>;
 }
 
+/// The maximum number of dimensions a vector may have, unless a format
+/// says otherwise.
+///
+/// Equivalent to `KnnVectorsFormat.DEFAULT_MAX_DIMENSIONS`
+/// (`KnnVectorsFormat.java:39`).
+pub const DEFAULT_MAX_DIMENSIONS: i32 = 1024;
+
 /// Merges two off-heap byte-size reports, summing the entries they share.
 ///
 /// Equivalent to the static
@@ -1987,6 +1994,15 @@ pub trait KnnVectorsFormat: Send + Sync + fmt::Debug {
     /// Returns the maximum number of vector dimensions supported for the given
     /// field name.
     fn get_max_dimensions(&self, _field_name: &str) -> i32;
+
+    /// Returns this format as [`std::any::Any`], so that a caller can test it
+    /// for a concrete type, Java's `instanceof` on a `KnnVectorsFormat`
+    /// (`BaseKnnVectorsFormatTestCase.testMergingWithDifferentKnnFields`:
+    /// `codec.knnVectorsFormat() instanceof PerFieldKnnVectorsFormat`). The
+    /// default, `None`, answers `false`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -2469,6 +2485,11 @@ mod tests {
             reader.search_byte("f", &[1, 2], &mut collector, &mut accept_docs),
             Err(LuceneError::UnsupportedOperation(_))
         ));
+        // `getOffHeapByteSize` is `Map.of()` and `checkIntegrity` does
+        // nothing (`codecs/KnnVectorsFormat.java:128-129, 153-156`) — rmp #231.
+        assert!(reader
+            .get_off_heap_byte_size(&FieldInfo::default())
+            .is_empty());
         reader.check_integrity().unwrap();
         let _merge = reader.get_merge_instance().unwrap();
         reader.finish_merge().unwrap();

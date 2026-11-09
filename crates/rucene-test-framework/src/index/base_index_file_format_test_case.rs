@@ -424,6 +424,37 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
         None
     }
 
+    /// The subclass as a `BasePointsFormatTestCase`, when it is one.
+    fn as_points(
+        &self,
+    ) -> Option<&dyn crate::index::base_points_format_test_case::BasePointsFormatTestCase> {
+        None
+    }
+
+    /// The subclass as a `BaseKnnVectorsFormatTestCase`, when it is one.
+    fn as_knn_vectors(
+        &self,
+    ) -> Option<&dyn crate::index::base_knn_vectors_format_test_case::BaseKnnVectorsFormatTestCase>
+    {
+        None
+    }
+
+    /// The subclass as a `BaseFieldInfoFormatTestCase`, when it is one.
+    fn as_field_infos(
+        &self,
+    ) -> Option<&dyn crate::index::base_field_info_format_test_case::BaseFieldInfoFormatTestCase>
+    {
+        None
+    }
+
+    /// The subclass as a `BaseSegmentInfoFormatTestCase`, when it is one.
+    fn as_segment_infos(
+        &self,
+    ) -> Option<&dyn crate::index::base_segment_info_format_test_case::BaseSegmentInfoFormatTestCase>
+    {
+        None
+    }
+
     /// `applyCreatedVersionMajor(d)` (`final`): set the created version of
     /// the given directory (Java returns it).
     ///
@@ -1725,5 +1756,44 @@ impl Directory for ReadBytesDirectoryWrapper {
 
     fn as_filter_directory(&self) -> Option<&dyn Directory> {
         Some(&*self.r#in)
+    }
+}
+
+/// JUnit's `assertNotNull(object)`: an `AssertionError` without a message
+/// when the object is `null` (`present` is false).
+pub fn assert_not_null(present: bool) {
+    if !present {
+        randomizedtesting::jdk::exception::throw_without_message("java.lang.AssertionError")
+    }
+}
+
+/// JUnit's `assertNotNull(message, object)`.
+pub fn assert_not_null_msg(message: &str, present: bool) {
+    if !present {
+        Throwable::new("java.lang.AssertionError", message).throw()
+    }
+}
+
+/// JUnit's `assertNull(object)`: `expected null, but was:<object>` when the
+/// object (rendered by its `toString()`) is not `null`.
+pub fn assert_null(actual: Option<String>) {
+    if let Some(actual) = actual {
+        Throwable::new(
+            "java.lang.AssertionError",
+            format!("expected null, but was:<{actual}>"),
+        )
+        .throw()
+    }
+}
+
+/// JUnit's `assertEquals(expected, actual)` over two objects whose
+/// `toString()` the port renders with `Debug`: `expected:<…> but was:<…>`.
+pub fn assert_equals_debug<T: PartialEq + fmt::Debug>(expected: &T, actual: &T) {
+    if expected != actual {
+        Throwable::new(
+            "java.lang.AssertionError",
+            format!("expected:<{expected:?}> but was:<{actual:?}>"),
+        )
+        .throw()
     }
 }

@@ -766,10 +766,6 @@ mod legacy_values_tests {
             Ok(&self.vector)
         }
 
-        fn get_score_correction_constant(&mut self, _ord: i32) -> Result<f32> {
-            Ok(0.0)
-        }
-
         fn size(&self) -> i32 {
             3
         }
@@ -790,6 +786,10 @@ mod legacy_values_tests {
     impl LegacyQuantizedByteVectorValues for Logged {
         fn scalar_quantizer(&self) -> &ScalarQuantizer {
             &self.quantizer
+        }
+
+        fn get_score_correction_constant(&mut self, _ord: i32) -> Result<f32> {
+            Ok(0.0)
         }
 
         fn copy_legacy(&self) -> Result<Box<dyn LegacyQuantizedByteVectorValues>> {

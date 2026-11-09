@@ -80,7 +80,7 @@ pub use test_rule_setup_teardown_chained::TestRuleSetupTeardownChained;
 pub use test_rule_store_class_name::TestRuleStoreClassName;
 pub use test_rule_temporary_files_cleanup::TestRuleTemporaryFilesCleanup;
 pub use test_rule_thread_and_test_name::TestRuleThreadAndTestName;
-pub use test_util::TestUtil;
+pub use test_util::{PrintStreamLines, TestUtil};
 pub use throttled_index_output::ThrottledIndexOutput;
 pub use time_units::TimeUnits;
 pub use verify_test_class_naming_convention::VerifyTestClassNamingConvention;

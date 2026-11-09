@@ -80,7 +80,24 @@ write the fixtures (`../*.tsv`) the crate's parity tests (`src/tests/`) read.
   `base_compound_draws.tsv`, `base_live_docs_draws.tsv` and
   `base_doc_values_draws.tsv`, read by the matching
   `crates/rucene-test-framework/tests/base_*_format_suites.rs` through
-  `tests/suite_draws/mod.rs` (`assert_draws_match`).
+  `tests/suite_draws/mod.rs` (`assert_draws_match`). For rmp #354 and #355 it
+  also runs `TestPointsSuiteDraws`, `TestKnnVectorsSuiteDraws`,
+  `TestFieldInfosSuiteDraws`, `TestSegmentInfosSuiteDraws` (each on
+  `TestUtil.getDefaultCodec()`, with the members of the core subclass they
+  name), `TestCheckIndexSuiteDraws` (the members of `TestCheckIndex`),
+  `TestThreadedSuiteDraws` (the members of `TestNRTThreads`) and
+  `org.apache.lucene.index.TestMergePolicySuiteDraws` (the members of
+  `TestTieredMergePolicy`, in that package for the package-private
+  `TieredMergePolicy.getMaxAllowedDocs`; `DRAWS` is public for it), and
+  writes `base_points_draws.tsv`, `base_knn_vectors_draws.tsv`,
+  `base_field_infos_draws.tsv`, `base_segment_infos_draws.tsv`,
+  `base_merge_policy_draws.tsv`, `base_check_index_draws.tsv` and
+  `threaded_draws.tsv`, read by `base_points_format_suites.rs`,
+  `base_knn_vectors_format_suites.rs`, `base_field_info_format_suites.rs`,
+  `base_segment_info_format_suites.rs`, `base_merge_policy_suites.rs`,
+  `base_test_check_index_suites.rs` and
+  `threaded_indexing_and_searching_suites.rs`. Further arguments after the
+  output directory name the files to write (all of them when there are none).
 * **The test codecs:** `org.apache.lucene.tests.codecs.TestCodecsOracle`
   writes `crates/rucene-test-framework/tests/fixtures/testcodecs_*.tsv`: the
   `nocfs` and `cfs` corpus of `SimpleTextOracle.writeCorpus` (public for it)

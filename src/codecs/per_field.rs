@@ -1184,11 +1184,20 @@ impl KnnVectorsFormat for PerFieldKnnVectorsFormat {
         self.get_knn_vectors_format_for_field(field_name)
             .get_max_dimensions(field_name)
     }
+
+    /// This format answers with itself: Java's `instanceof
+    /// PerFieldKnnVectorsFormat` on it is `true`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
 }
 
 struct WriterAndSuffix {
     suffix: i32,
     writer: Box<dyn KnnVectorsWriter>,
+    /// The format the writer came from, held so that its address — the key
+    /// of [`KnnFieldsWriter::formats`] — cannot be reused while it is a key.
+    _format: Arc<dyn KnnVectorsFormat>,
 }
 
 /// Equivalent to `PerFieldKnnVectorsFormat.FieldsWriter`.
@@ -1203,7 +1212,12 @@ struct WriterAndSuffix {
 struct KnnFieldsWriter {
     segment_write_state: OwnedSegmentWriteState,
     resolver: Arc<dyn Fn(&str) -> Arc<dyn KnnVectorsFormat> + Send + Sync>,
-    formats: HashMap<String, WriterAndSuffix>,
+    /// Keyed by the format instance, as Java's `Map<KnnVectorsFormat,
+    /// WriterAndSuffix> formats` (`PerFieldKnnVectorsFormat.java:103`), whose
+    /// keys compare by identity (see [`format_identity`]): two instances of
+    /// one format name get two writers and two suffixes (rmp #228).
+    formats: HashMap<usize, WriterAndSuffix>,
+    /// The last suffix used per format name, as Java's `suffixes` map.
     suffixes: HashMap<String, i32>,
 }
 
@@ -1235,23 +1249,32 @@ impl KnnFieldsWriter {
         let format_name = format.name().to_string();
 
         field.put_attribute(PER_FIELD_KNN_VECTORS_FORMAT_KEY, &format_name);
+        let identity = format_identity(&format);
 
-        if !self.formats.contains_key(&format_name) {
-            let suffix = self.suffixes.get(&format_name).copied().unwrap_or(0);
-            self.suffixes.insert(format_name.clone(), suffix + 1);
+        if !self.formats.contains_key(&identity) {
+            // First time we are seeing this format; create a new instance
+            let suffix = self.suffixes.get(&format_name).map_or(0, |s| s + 1);
+            self.suffixes.insert(format_name.clone(), suffix);
             let segment_suffix = get_full_segment_suffix(
                 &self.segment_write_state.segment_suffix,
                 &get_suffix(&format_name, suffix),
             );
             let state = self.segment_write_state.with_new_suffix(segment_suffix);
             let writer = format.fields_writer(&state)?;
-            self.formats
-                .insert(format_name.clone(), WriterAndSuffix { suffix, writer });
+            self.formats.insert(
+                identity,
+                WriterAndSuffix {
+                    suffix,
+                    writer,
+                    _format: Arc::clone(&format),
+                },
+            );
         }
 
+        // we've already seen this format, so just grab its suffix
         let entry = self
             .formats
-            .get_mut(&format_name)
+            .get_mut(&identity)
             .expect("writer just inserted");
         field.put_attribute(PER_FIELD_KNN_VECTORS_SUFFIX_KEY, entry.suffix.to_string());
         Ok(&mut entry.writer)
@@ -2670,11 +2693,14 @@ mod close_family_tests {
         let entry = |c: Closing| WriterAndSuffix {
             suffix: 0,
             writer: Box::new(c),
+            _format: Arc::new(crate::codecs::knn_vectors::EmptyKnnVectorsFormat::new(
+                "Empty",
+            )),
         };
         let mut writer = KnnFieldsWriter {
             segment_write_state: crate::codecs::tests::owned_write_state(&dir, &info),
             resolver: Arc::new(|_: &str| -> Arc<dyn KnnVectorsFormat> { unreachable!() }),
-            formats: HashMap::from([("a".to_string(), entry(a)), ("b".to_string(), entry(b))]),
+            formats: HashMap::from([(1, entry(a)), (2, entry(b))]),
             suffixes: HashMap::new(),
         };
         writer.close().unwrap_err();

@@ -253,11 +253,6 @@ pub trait QuantizedByteVectorValues: Send + Sync {
     /// Equivalent to `QuantizedByteVectorValues.vectorValue(int)`.
     fn vector_value(&mut self, ord: i32) -> Result<&[u8]>;
 
-    /// Returns the corrective offset stored for `ord`.
-    ///
-    /// Equivalent to `QuantizedByteVectorValues.getScoreCorrectionConstant(int)`.
-    fn get_score_correction_constant(&mut self, ord: i32) -> Result<f32>;
-
     /// Returns how many vectors the sequence holds.
     fn size(&self) -> i32;
 
@@ -539,6 +534,15 @@ pub trait LegacyQuantizedByteVectorValues: QuantizedByteVectorValues {
     /// which the base class refuses; a legacy reader always has one.
     fn scalar_quantizer(&self) -> &ScalarQuantizer;
 
+    /// Returns the corrective offset stored for `ord`.
+    ///
+    /// Equivalent to `LegacyQuantizedByteVectorValues.getScoreCorrectionConstant(int)`
+    /// (`LegacyQuantizedByteVectorValues.java:33`). Lucene 10.5.0 declares it on
+    /// the legacy class only; `QuantizedByteVectorValues`
+    /// (`QuantizedByteVectorValues.java:205-234`) has corrective terms
+    /// instead (rmp #230).
+    fn get_score_correction_constant(&mut self, ord: i32) -> Result<f32>;
+
     /// Returns a second view of the same vectors, keeping the legacy accessors.
     ///
     /// Equivalent to `LegacyQuantizedByteVectorValues.copy()`, whose covariant
@@ -599,10 +603,6 @@ mod scorer_tests {
             Ok(&self.bytes[start..start + dim])
         }
 
-        fn get_score_correction_constant(&mut self, _ord: i32) -> Result<f32> {
-            Ok(0.0)
-        }
-
         fn size(&self) -> i32 {
             self.base.size
         }
@@ -620,10 +620,6 @@ mod scorer_tests {
     impl QuantizedByteVectorValues for Quantized {
         fn vector_value(&mut self, _ord: i32) -> Result<&[u8]> {
             Ok(&[])
-        }
-
-        fn get_score_correction_constant(&mut self, _ord: i32) -> Result<f32> {
-            Ok(0.0)
         }
 
         fn size(&self) -> i32 {
@@ -721,10 +717,6 @@ mod scorer_tests {
     impl QuantizedByteVectorValues for Scoring {
         fn vector_value(&mut self, _ord: i32) -> Result<&[u8]> {
             Ok(&[])
-        }
-
-        fn get_score_correction_constant(&mut self, _ord: i32) -> Result<f32> {
-            Ok(0.0)
         }
 
         fn size(&self) -> i32 {

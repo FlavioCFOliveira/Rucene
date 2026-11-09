@@ -535,7 +535,7 @@ fn a_merge_exception_reaches_the_writer_and_the_merge_thread() {
         }
     }
     impl MergedSegmentWarmer for FailingWarmer {
-        fn warm(&self, _reader: &dyn LeafReader) -> Result<()> {
+        fn warm(&self, _reader: &Arc<dyn LeafReader>) -> Result<()> {
             Err(LuceneError::Io(std::io::Error::other(
                 "warmer failed on purpose",
             )))
@@ -889,7 +889,7 @@ impl std::fmt::Display for CountingWarmer {
 }
 
 impl MergedSegmentWarmer for CountingWarmer {
-    fn warm(&self, reader: &dyn LeafReader) -> Result<()> {
+    fn warm(&self, reader: &Arc<dyn LeafReader>) -> Result<()> {
         self.inner.warm(reader)?;
         self.warmed.lock().unwrap().push(reader.max_doc());
         Ok(())

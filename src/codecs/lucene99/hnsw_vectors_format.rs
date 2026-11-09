@@ -93,7 +93,11 @@ pub const DEFAULT_NUM_MERGE_WORKER: i32 = 1;
 /// `Lucene99HnswVectorsFormat.HNSW_GRAPH_THRESHOLD`.
 pub const HNSW_GRAPH_THRESHOLD: i32 = 100;
 const DIRECT_MONOTONIC_BLOCK_SHIFT: i32 = 16;
-const EXHAUSTIVE_BULK_SCORE_ORDS: usize = 64;
+/// How many ordinals an exhaustive search scores in one bulk call.
+///
+/// Equivalent to `Lucene99HnswVectorsReader.EXHAUSTIVE_BULK_SCORE_ORDS`,
+/// which `BaseKnnVectorsFormatTestCase.testSearchWithVisitedLimit` reads.
+pub const EXHAUSTIVE_BULK_SCORE_ORDS: usize = 64;
 
 // -----------------------------------------------------------------------------
 // Global format registration
@@ -2401,6 +2405,14 @@ impl HnswGraphProvider for Lucene99HnswVectorsReader {
 }
 
 impl KnnVectorsReader for Lucene99HnswVectorsReader {
+    /// This reader answers with itself: Java's `instanceof
+    /// Lucene99HnswVectorsReader`, `instanceof HnswGraphProvider` and
+    /// `instanceof QuantizedVectorsReader` on it are `true`
+    /// (`BaseKnnVectorsFormatTestCase.hasHNSW`, `hasQuantized`).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn check_integrity(&self) -> Result<()> {
         self.flat_vectors_reader.check_integrity()?;
         let mut data = self.vector_index.clone_input()?;

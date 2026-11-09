@@ -430,7 +430,7 @@ impl std::fmt::Display for FailingWarmer {
 }
 
 impl MergedSegmentWarmer for FailingWarmer {
-    fn warm(&self, _reader: &dyn LeafReader) -> Result<()> {
+    fn warm(&self, _reader: &Arc<dyn LeafReader>) -> Result<()> {
         Err(LuceneError::Io(std::io::Error::other(
             "warmer failed on purpose",
         )))
@@ -2432,7 +2432,7 @@ impl std::fmt::Display for RollbackWarmer {
 }
 
 impl MergedSegmentWarmer for RollbackWarmer {
-    fn warm(&self, _reader: &dyn LeafReader) -> Result<()> {
+    fn warm(&self, _reader: &Arc<dyn LeafReader>) -> Result<()> {
         let writer = self.writer.lock().unwrap().clone().expect("the writer");
         *self.rollback.lock().unwrap() = Some(start_rollback(&writer));
         let merge = self.captured.lock().unwrap().clone().expect("the merge");

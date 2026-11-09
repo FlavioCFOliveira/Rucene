@@ -1678,3 +1678,34 @@ fn a_flush_writes_lucenes_vector_files_with_every_format() {
         assert_eq!(first, expected, "{format} sorted={sorted}: the raw vectors");
     }
 }
+
+/// rmp #222: a segment flushed with `Lucene104HnswScalarQuantizedVectorsFormat`
+/// (`Lucene104HnswBinaryQuantizedVectorsFormat` on disk) reads its own float
+/// vectors back. `Lucene99HnswVectorsReader.getFloatVectorValues` delegates
+/// to its flat reader (`Lucene99HnswVectorsReader.java:240-243`), the
+/// `Lucene104ScalarQuantizedVectorsReader`, which pairs the raw vectors its
+/// delegate holds with the quantized ones
+/// (`Lucene104ScalarQuantizedVectorsReader.java:230-275`): every document
+/// of `f` and `c` answers the vector it was indexed with.
+#[test]
+fn a_hnsw_quantized_segment_reads_every_float_vector_back() {
+    let dir = flush_vectors("Lucene104HnswBinaryQuantizedVectorsFormat", false);
+    let reader = directory_reader::open(Arc::clone(&dir)).unwrap();
+    for field in ["f", "c"] {
+        let read = float_vectors(&reader, field);
+        assert_eq!(
+            read.len(),
+            FLUSH_DOCS as usize,
+            "{field}: one vector per document"
+        );
+        for (doc, vector) in read {
+            let expected = flush_doc(doc);
+            let indexed = expected
+                .get_field(field)
+                .and_then(|f| f.float_vector_value())
+                .map(<[f32]>::to_vec)
+                .expect("the document carries the field");
+            assert_eq!(vector, indexed, "{field}: doc {doc}");
+        }
+    }
+}

@@ -643,9 +643,7 @@ pub(crate) mod merge_path_probe {
 pub struct Lucene90PointsReader {
     readers: HashMap<i32, BkdPointValues>,
     field_infos: FieldInfos,
-    #[allow(dead_code)]
     index_in: Box<dyn IndexInput>,
-    #[allow(dead_code)]
     data_in: Box<dyn IndexInput>,
 }
 
@@ -1672,6 +1670,84 @@ mod tests {
             })
             .unwrap();
         assert_eq!(found, points);
+    }
+
+    /// rmp #227: `checkIntegrity` checksums the index and the data file
+    /// (`Lucene90PointsReader.java:148-152`). Flipping the last byte of
+    /// either file's CRC footer keeps the footer well-formed, so the reader
+    /// opens, and `check_integrity` then reports the mismatch; the untouched
+    /// segment passes (positive control).
+    #[test]
+    fn check_integrity_checksums_index_and_data_files() {
+        for ext in ["kdd", "kdi"] {
+            let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
+            let segment_info = test_segment_info("points_test", 5);
+            let field = int_point_field("int_point", 0, 1);
+            let field_infos = FieldInfos::new(vec![field.clone()]).unwrap();
+            let write_state = SegmentWriteState::new(
+                &crate::util::NoOutputInfoStream,
+                Arc::clone(&dir),
+                &segment_info,
+                &field_infos,
+                Box::leak(Box::new(crate::codecs::stub::BufferedUpdates::default())),
+                &*crate::store::DEFAULT_IO_CONTEXT,
+            );
+            let mut writer = Lucene90PointsWriter::new(&write_state, VERSION_CURRENT).unwrap();
+            let values = VecPointValues::new(
+                "int_point",
+                1,
+                1,
+                4,
+                (0..5).map(|d| (d, packed_int(d * 7))).collect(),
+            );
+            writer
+                .write_field(&field, &VecPointsReader::new(vec![values]))
+                .unwrap();
+            writer.finish().unwrap();
+            writer.close().unwrap();
+
+            let read_state = SegmentReadState::new(
+                &*dir,
+                &segment_info,
+                &field_infos,
+                &*crate::store::DEFAULT_IO_CONTEXT,
+            );
+            Lucene90PointsReader::new(&read_state)
+                .unwrap()
+                .check_integrity()
+                .expect("an intact segment passes");
+
+            let name = dir
+                .list_all()
+                .unwrap()
+                .into_iter()
+                .find(|f| f.ends_with(&format!(".{ext}")))
+                .unwrap();
+            let mut input = dir
+                .open_input(&name, &*crate::store::DEFAULT_IO_CONTEXT)
+                .unwrap();
+            let len = input.length() as usize;
+            let mut bytes = vec![0u8; len];
+            input.read_bytes(&mut bytes, 0, len).unwrap();
+            drop(input);
+            bytes[len - 1] ^= 0x01;
+            dir.delete_file(&name).unwrap();
+            let mut out = dir
+                .create_output(&name, &*crate::store::DEFAULT_IO_CONTEXT)
+                .unwrap();
+            out.write_bytes(&bytes, 0, len).unwrap();
+            out.close().unwrap();
+
+            let reader = Lucene90PointsReader::new(&read_state).unwrap();
+            let err = reader
+                .check_integrity()
+                .expect_err("a corrupted file fails its checksum");
+            assert!(
+                matches!(err, LuceneError::CorruptIndex(_)),
+                "{ext}: {err:?}"
+            );
+            assert!(err.to_string().contains("checksum failed"), "{ext}: {err}");
+        }
     }
 
     #[test]

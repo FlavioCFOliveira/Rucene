@@ -359,10 +359,6 @@ impl QuantizedByteVectorValues for MemoryQuantizedVectorValues {
         Ok(&self.vectors[ord as usize])
     }
 
-    fn get_score_correction_constant(&mut self, ord: i32) -> Result<f32> {
-        Ok(self.offsets[ord as usize])
-    }
-
     fn size(&self) -> i32 {
         self.vectors.len() as i32
     }
@@ -379,6 +375,10 @@ impl QuantizedByteVectorValues for MemoryQuantizedVectorValues {
 impl LegacyQuantizedByteVectorValues for MemoryQuantizedVectorValues {
     fn scalar_quantizer(&self) -> &ScalarQuantizer {
         &self.quantizer
+    }
+
+    fn get_score_correction_constant(&mut self, ord: i32) -> Result<f32> {
+        Ok(self.offsets[ord as usize])
     }
 
     fn copy_legacy(&self) -> Result<Box<dyn LegacyQuantizedByteVectorValues>> {
@@ -512,10 +512,6 @@ impl QuantizedByteVectorValues for RecordingLegacyValues {
         self.inner.vector_value(ord)
     }
 
-    fn get_score_correction_constant(&mut self, ord: i32) -> Result<f32> {
-        self.inner.get_score_correction_constant(ord)
-    }
-
     fn size(&self) -> i32 {
         self.inner.size()
     }
@@ -540,6 +536,10 @@ impl QuantizedByteVectorValues for RecordingLegacyValues {
 impl LegacyQuantizedByteVectorValues for RecordingLegacyValues {
     fn scalar_quantizer(&self) -> &ScalarQuantizer {
         self.inner.scalar_quantizer()
+    }
+
+    fn get_score_correction_constant(&mut self, ord: i32) -> Result<f32> {
+        self.inner.get_score_correction_constant(ord)
     }
 
     fn copy_legacy(&self) -> Result<Box<dyn LegacyQuantizedByteVectorValues>> {

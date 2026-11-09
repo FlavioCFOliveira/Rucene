@@ -2281,7 +2281,9 @@ fn matches_codec_file_pattern(file: &str) -> bool {
 
 /// A `PrintStream` over a byte buffer, as `CheckIndex`'s info stream: each
 /// message is one line.
-struct PrintStreamLines(Arc<Mutex<Vec<u8>>>);
+/// A `java.io.PrintStream` over a `ByteArrayOutputStream`, as `CheckIndex`
+/// reports to it: each message is one line of the buffer.
+pub struct PrintStreamLines(pub Arc<Mutex<Vec<u8>>>);
 
 impl rucene::util::InfoStream for PrintStreamLines {
     fn message(&self, _component: &str, message: &str) {

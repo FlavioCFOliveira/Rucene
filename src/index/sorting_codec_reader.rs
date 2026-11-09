@@ -1071,7 +1071,7 @@ impl crate::index::index_writer_config::MergedSegmentWarmer for SimpleMergedSegm
     ///
     /// Equivalent to `SimpleMergedSegmentWarmer.warm(LeafReader)`
     /// (`SimpleMergedSegmentWarmer.java:35-90`).
-    fn warm(&self, reader: &dyn LeafReader) -> Result<()> {
+    fn warm(&self, reader: &Arc<dyn LeafReader>) -> Result<()> {
         let start_time = crate::index::merge_scheduler::current_time_millis();
         let mut indexed_count = 0;
         let mut doc_values_count = 0;

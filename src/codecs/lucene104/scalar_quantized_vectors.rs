@@ -452,11 +452,6 @@ impl QuantizedByteVectorValues for OffHeapScalarQuantizedVectorValues {
         Ok(&self.vector)
     }
 
-    fn get_score_correction_constant(&mut self, ord: i32) -> Result<f32> {
-        self.ensure_loaded(ord)?;
-        Ok(self.corrections.additional_correction)
-    }
-
     fn size(&self) -> i32 {
         self.entry.size
     }
@@ -4178,15 +4173,6 @@ impl QuantizedByteVectorValues for QuantizedFloatVectorValues {
                 self.last_ord
             ))),
         }
-    }
-
-    /// The port's trait requires this accessor, which
-    /// `QuantizedByteVectorValues` in Lucene 10.5.0 does not declare
-    /// (`QuantizedByteVectorValues.java:205-234`); this view has no such value.
-    fn get_score_correction_constant(&mut self, _ord: i32) -> Result<f32> {
-        Err(LuceneError::UnsupportedOperation(
-            "QuantizedFloatVectorValues has no score correction constant".to_string(),
-        ))
     }
 
     fn size(&self) -> i32 {

@@ -19,11 +19,19 @@ import org.junit.runner.notification.RunListener;
  * TestUtil.getDefaultCodec()}), and the term vectors, norms, compound, live docs and doc values
  * suites ({@link TestTermVectorsSuiteDraws}, {@link TestNormsSuiteDraws}, {@link
  * TestCompoundSuiteDraws}, {@link TestLiveDocsSuiteDraws}, {@link TestDocValuesSuiteDraws}, each on
- * {@code TestUtil.getDefaultCodec()}) with {@code JUnitCore} on fixed master seeds and writes {@code
+ * {@code TestUtil.getDefaultCodec()}), and the points, kNN vectors, field infos, segment infos,
+ * merge policy, CheckIndex and threaded suites (rmp #354, #355: {@link TestPointsSuiteDraws},
+ * {@link TestKnnVectorsSuiteDraws}, {@link TestFieldInfosSuiteDraws}, {@link
+ * TestSegmentInfosSuiteDraws}, {@code org.apache.lucene.index.TestMergePolicySuiteDraws}, {@link
+ * TestCheckIndexSuiteDraws}, {@link TestThreadedSuiteDraws}, each with the members of the core
+ * subclass it names) with {@code JUnitCore} on fixed master seeds and writes {@code
  * <out>/rucene-test-framework/base_postings_draws.tsv}, {@code base_stored_fields_draws.tsv},
  * {@code base_term_vectors_draws.tsv}, {@code base_norms_draws.tsv}, {@code
- * base_compound_draws.tsv}, {@code base_live_docs_draws.tsv} and {@code base_doc_values_draws.tsv}:
- * per seed,
+ * base_compound_draws.tsv}, {@code base_live_docs_draws.tsv} and {@code base_doc_values_draws.tsv},
+ * {@code base_points_draws.tsv}, {@code base_knn_vectors_draws.tsv}, {@code
+ * base_field_infos_draws.tsv}, {@code base_segment_infos_draws.tsv}, {@code
+ * base_merge_policy_draws.tsv}, {@code base_check_index_draws.tsv} and {@code threaded_draws.tsv}
+ * (further arguments name the files to write; all of them when there are none): per seed,
  * the {@code #counts} row, one row per test with the next {@code random().nextLong()} of its
  * randomness after the test, the class row with the next draw of the class randomness, and one row
  * per failure or assumption failure (class and first line of the message). Rows are sorted within a
@@ -31,7 +39,7 @@ import org.junit.runner.notification.RunListener;
  */
 public class BaseFormatSuitesOracle {
   static final String[] SEEDS = {"DEADBEEF", "1", "C0FFEE"};
-  static final List<String> DRAWS = Collections.synchronizedList(new ArrayList<>());
+  public static final List<String> DRAWS = Collections.synchronizedList(new ArrayList<>());
 
   static String firstLine(String s) {
     String v = String.valueOf(s);
@@ -39,9 +47,15 @@ public class BaseFormatSuitesOracle {
     return (nl < 0 ? v : v.substring(0, nl)).replace("\t", "\\t").replace("\r", "");
   }
 
+  /** The file names further arguments select; all files when there are none. */
+  static java.util.Set<String> only = Collections.emptySet();
+
   public static void main(String[] args) throws Exception {
     File out = new File(args[0], "rucene-test-framework");
     out.mkdirs();
+    if (args.length > 1) {
+      only = new java.util.HashSet<>(java.util.Arrays.asList(args).subList(1, args.length));
+    }
     write(
         new File(out, "base_postings_draws.tsv"),
         TestPostingsSuiteDraws.class,
@@ -67,9 +81,34 @@ public class BaseFormatSuitesOracle {
         new File(out, "base_doc_values_draws.tsv"),
         TestDocValuesSuiteDraws.class,
         "TestDocValuesSuiteDraws");
+    write(new File(out, "base_points_draws.tsv"), TestPointsSuiteDraws.class, "TestPointsSuiteDraws");
+    write(
+        new File(out, "base_knn_vectors_draws.tsv"),
+        TestKnnVectorsSuiteDraws.class,
+        "TestKnnVectorsSuiteDraws");
+    write(
+        new File(out, "base_field_infos_draws.tsv"),
+        TestFieldInfosSuiteDraws.class,
+        "TestFieldInfosSuiteDraws");
+    write(
+        new File(out, "base_segment_infos_draws.tsv"),
+        TestSegmentInfosSuiteDraws.class,
+        "TestSegmentInfosSuiteDraws");
+    write(
+        new File(out, "base_merge_policy_draws.tsv"),
+        org.apache.lucene.index.TestMergePolicySuiteDraws.class,
+        "TestMergePolicySuiteDraws");
+    write(
+        new File(out, "base_check_index_draws.tsv"),
+        TestCheckIndexSuiteDraws.class,
+        "TestCheckIndexSuiteDraws");
+    write(new File(out, "threaded_draws.tsv"), TestThreadedSuiteDraws.class, "TestThreadedSuiteDraws");
   }
 
   static void write(File file, Class<?> suite, String name) throws Exception {
+    if (!only.isEmpty() && !only.contains(file.getName())) {
+      return;
+    }
     try (PrintWriter w = new PrintWriter(file, "UTF-8")) {
       w.println(
           "# seed\tmethod\tkind\tvalue (BaseFormatSuitesOracle, Lucene 10.5.0, JDK 25): "
