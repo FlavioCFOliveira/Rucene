@@ -26,7 +26,7 @@
 //! build.
 
 /// `java.util.BitSet`: a vector of bits that grows as needed.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default)]
 pub struct JavaBitSet {
     words: Vec<u64>,
 }
@@ -182,5 +182,43 @@ impl JavaBitSet {
             }
         }
         -1
+    }
+}
+
+/// The words up to the last non-zero one (`wordsInUse`).
+fn words_in_use(words: &[u64]) -> &[u64] {
+    let used = words.iter().rposition(|&w| w != 0).map_or(0, |i| i + 1);
+    &words[..used]
+}
+
+impl PartialEq for JavaBitSet {
+    /// `equals(Object)`: the same bits are set; the capacity (`size()`) does
+    /// not take part, as Java compares the `wordsInUse` words only.
+    fn eq(&self, other: &Self) -> bool {
+        words_in_use(&self.words) == words_in_use(&other.words)
+    }
+}
+
+impl Eq for JavaBitSet {}
+
+impl std::fmt::Display for JavaBitSet {
+    /// `toString()`: the indices of the set bits in ascending order, as
+    /// `{i, j, k}`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("{")?;
+        let mut first = true;
+        for (u, &word) in self.words.iter().enumerate() {
+            let mut w = word;
+            while w != 0 {
+                let bit = u * 64 + w.trailing_zeros() as usize;
+                if !first {
+                    f.write_str(", ")?;
+                }
+                write!(f, "{bit}")?;
+                first = false;
+                w &= w - 1;
+            }
+        }
+        f.write_str("}")
     }
 }

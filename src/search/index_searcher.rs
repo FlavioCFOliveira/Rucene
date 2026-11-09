@@ -465,8 +465,10 @@ impl QueryVisitor for NumClausesCheckVisitor {
 /// **Adaptation of Java subclassing.** A Java subclass of `IndexSearcher`
 /// overrides `createWeight`, `rewrite`, the `protected search(
 /// LeafReaderContextPartition[], Weight, Collector)`, the `protected
-/// searchLeaf`, the `protected slices`, the sorted `search` and `searchAfter`
-/// methods or `toString`, and calls `super.…` for the inherited body. An
+/// searchLeaf`, the `protected slices`, `search(Query, int)`,
+/// `searchAfter(ScoreDoc, Query, int)`, the sorted `search` and `searchAfter`
+/// methods, `termStatistics`, `collectionStatistics` or `toString`, and calls
+/// `super.…` for the inherited body. An
 /// implementation of this trait, installed with
 /// [`IndexSearcher::set_overrides`], receives the searcher in place of `this`;
 /// each provided method is the inherited body, which an implementation reaches
@@ -532,6 +534,58 @@ pub trait IndexSearcherOverrides: Send + Sync + fmt::Debug {
         collector: &mut dyn Collector,
     ) -> Result<()> {
         searcher.super_search_leaf(ctx, min_doc_id, max_doc_id, weight, collector)
+    }
+
+    /// `IndexSearcher.search(Query, int)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`IndexSearcher::super_search`].
+    fn search(&self, searcher: &IndexSearcher, query: Arc<dyn Query>, n: i32) -> Result<TopDocs> {
+        searcher.super_search(query, n)
+    }
+
+    /// `IndexSearcher.searchAfter(ScoreDoc, Query, int)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`IndexSearcher::super_search_after`].
+    fn search_after(
+        &self,
+        searcher: &IndexSearcher,
+        after: Option<ScoreDoc>,
+        query: Arc<dyn Query>,
+        num_hits: i32,
+    ) -> Result<TopDocs> {
+        searcher.super_search_after(after, query, num_hits)
+    }
+
+    /// `IndexSearcher.termStatistics(Term, int, long)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`IndexSearcher::super_term_statistics`].
+    fn term_statistics(
+        &self,
+        searcher: &IndexSearcher,
+        term: &Term,
+        doc_freq: i32,
+        total_term_freq: i64,
+    ) -> Result<TermStatistics> {
+        searcher.super_term_statistics(term, doc_freq, total_term_freq)
+    }
+
+    /// `IndexSearcher.collectionStatistics(String)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`IndexSearcher::super_collection_statistics`].
+    fn collection_statistics(
+        &self,
+        searcher: &IndexSearcher,
+        field: &str,
+    ) -> Result<Option<CollectionStatistics>> {
+        searcher.super_collection_statistics(field)
     }
 
     /// `IndexSearcher.search(Query, int, Sort)`.
@@ -652,15 +706,17 @@ pub trait IndexSearcherOverrides: Send + Sync + fmt::Debug {
 /// Rust has no implementation inheritance, so the overridable methods that
 /// `lucene/test-framework`'s subclasses override — `createWeight`, `rewrite`,
 /// `search(LeafReaderContextPartition[], Weight, Collector)`, `searchLeaf`,
-/// `slices`, `search(Query, int, Sort)` and `toString` — and the other sorted
+/// `slices`, `search(Query, int, Sort)` and `toString` — the other sorted
 /// `search`/`searchAfter` methods, which `search(Query, int, Sort)` calls
-/// virtually, dispatch to an optional
+/// virtually, and the methods `ShardSearchingTestBase.NodeState.ShardIndexSearcher`
+/// overrides — `search(Query, int)`, `searchAfter(ScoreDoc, Query, int)`,
+/// `termStatistics` and `collectionStatistics` — dispatch to an optional
 /// [`IndexSearcherOverrides`] installed with
 /// [`set_overrides`](Self::set_overrides); every call site that Java makes
 /// virtual goes through that dispatch, so an override observes exactly the
-/// calls a Java subclass does. `explain(Weight, int)`, `termStatistics` and
-/// `collectionStatistics` remain inherent methods: no subclass in Lucene
-/// 10.5.0's core or test framework overrides them. The setters, which Java
+/// calls a Java subclass does. `explain(Weight, int)` remains an inherent
+/// method: no subclass in Lucene 10.5.0's core or test framework overrides
+/// it. The setters, which Java
 /// documents as "call before starting to use this searcher", take `&mut self`
 /// for the same reason no lock is needed around them.
 pub struct IndexSearcher {
@@ -1293,6 +1349,24 @@ impl IndexSearcher {
         query: Arc<dyn Query>,
         num_hits: i32,
     ) -> Result<TopDocs> {
+        match self.overrides.as_ref() {
+            Some(overrides) => overrides.search_after(self, after, query, num_hits),
+            None => self.super_search_after(after, query, num_hits),
+        }
+    }
+
+    /// The inherited body of [`search_after`](Self::search_after)
+    /// (`super.searchAfter(after, query, numHits)`).
+    ///
+    /// # Errors
+    ///
+    /// As [`search_after`](Self::search_after).
+    pub fn super_search_after(
+        &self,
+        after: Option<ScoreDoc>,
+        query: Arc<dyn Query>,
+        num_hits: i32,
+    ) -> Result<TopDocs> {
         let limit = self.reader.max_doc().max(1);
         if let Some(after) = after.as_ref() {
             if after.doc >= limit {
@@ -1554,6 +1628,20 @@ impl IndexSearcher {
     ///
     /// As [`search_after`](Self::search_after).
     pub fn search(&self, query: Arc<dyn Query>, n: i32) -> Result<TopDocs> {
+        match self.overrides.as_ref() {
+            Some(overrides) => overrides.search(self, query, n),
+            None => self.super_search(query, n),
+        }
+    }
+
+    /// The inherited body of [`search`](Self::search) (`super.search(query,
+    /// n)`), which calls the virtual [`search_after`](Self::search_after)
+    /// (`IndexSearcher.java:629-631`).
+    ///
+    /// # Errors
+    ///
+    /// As [`search_after`](Self::search_after).
+    pub fn super_search(&self, query: Arc<dyn Query>, n: i32) -> Result<TopDocs> {
         self.search_after(None, query, n)
     }
 
@@ -1995,6 +2083,24 @@ impl IndexSearcher {
         doc_freq: i32,
         total_term_freq: i64,
     ) -> Result<TermStatistics> {
+        match self.overrides.as_ref() {
+            Some(overrides) => overrides.term_statistics(self, term, doc_freq, total_term_freq),
+            None => self.super_term_statistics(term, doc_freq, total_term_freq),
+        }
+    }
+
+    /// The inherited body of [`term_statistics`](Self::term_statistics)
+    /// (`super.termStatistics(term, docFreq, totalTermFreq)`).
+    ///
+    /// # Errors
+    ///
+    /// As [`term_statistics`](Self::term_statistics).
+    pub fn super_term_statistics(
+        &self,
+        term: &Term,
+        doc_freq: i32,
+        total_term_freq: i64,
+    ) -> Result<TermStatistics> {
         // This constructor fails if docFreq <= 0.
         TermStatistics::new(term.bytes().clone(), i64::from(doc_freq), total_term_freq)
     }
@@ -2009,6 +2115,20 @@ impl IndexSearcher {
     /// Propagates any I/O error raised while reading the terms, and the
     /// [`CollectionStatistics`] validation error.
     pub fn collection_statistics(&self, field: &str) -> Result<Option<CollectionStatistics>> {
+        match self.overrides.as_ref() {
+            Some(overrides) => overrides.collection_statistics(self, field),
+            None => self.super_collection_statistics(field),
+        }
+    }
+
+    /// The inherited body of
+    /// [`collection_statistics`](Self::collection_statistics)
+    /// (`super.collectionStatistics(field)`).
+    ///
+    /// # Errors
+    ///
+    /// As [`collection_statistics`](Self::collection_statistics).
+    pub fn super_collection_statistics(&self, field: &str) -> Result<Option<CollectionStatistics>> {
         let mut doc_count: i64 = 0;
         let mut sum_total_term_freq: i64 = 0;
         let mut sum_doc_freq: i64 = 0;
@@ -2157,5 +2277,128 @@ mod sorted_search_dispatch_tests {
                 "searchAfter(false, 6, false)",
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod shard_search_dispatch_tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::{IndexSearcher, IndexSearcherOverrides};
+    use crate::error::Result;
+    use crate::index::{IndexReader, MultiReader, Term};
+    use crate::search::similarities::{CollectionStatistics, TermStatistics};
+    use crate::search::{MatchAllDocsQuery, Query, ScoreDoc, TopDocs};
+
+    /// Records which of the overrides `ShardSearchingTestBase`'s
+    /// `ShardIndexSearcher` relies on each call reached.
+    #[derive(Debug, Default)]
+    struct Recording {
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl Recording {
+        fn record(&self, call: String) {
+            self.calls.lock().unwrap().push(call);
+        }
+    }
+
+    impl IndexSearcherOverrides for Recording {
+        fn search(
+            &self,
+            searcher: &IndexSearcher,
+            query: Arc<dyn Query>,
+            n: i32,
+        ) -> Result<TopDocs> {
+            self.record(format!("search({n})"));
+            searcher.super_search(query, n)
+        }
+
+        fn search_after(
+            &self,
+            searcher: &IndexSearcher,
+            after: Option<ScoreDoc>,
+            query: Arc<dyn Query>,
+            num_hits: i32,
+        ) -> Result<TopDocs> {
+            self.record(format!("searchAfter({}, {num_hits})", after.is_some()));
+            searcher.super_search_after(after, query, num_hits)
+        }
+
+        fn term_statistics(
+            &self,
+            searcher: &IndexSearcher,
+            term: &Term,
+            doc_freq: i32,
+            total_term_freq: i64,
+        ) -> Result<TermStatistics> {
+            self.record(format!("termStatistics({doc_freq}, {total_term_freq})"));
+            // A subclass answering distributed statistics, as
+            // `ShardIndexSearcher.termStatistics` does.
+            searcher.super_term_statistics(term, doc_freq * 3, total_term_freq * 3)
+        }
+
+        fn collection_statistics(
+            &self,
+            searcher: &IndexSearcher,
+            field: &str,
+        ) -> Result<Option<CollectionStatistics>> {
+            self.record(format!("collectionStatistics({field})"));
+            searcher.super_collection_statistics(field)
+        }
+    }
+
+    fn empty_searcher() -> IndexSearcher {
+        let reader: Arc<dyn IndexReader> = Arc::new(MultiReader::new(Vec::new(), false).unwrap());
+        IndexSearcher::new(reader).unwrap()
+    }
+
+    /// `search(Query, int)` and `searchAfter(ScoreDoc, Query, int)` are
+    /// virtual, and `search(Query, int)` reaches `searchAfter` virtually
+    /// (`IndexSearcher.java:593-631`); `termStatistics` and
+    /// `collectionStatistics` are virtual too (`IndexSearcher.java:1142-1157`),
+    /// as `ShardSearchingTestBase.NodeState.ShardIndexSearcher` requires.
+    #[test]
+    fn shard_searcher_overrides_dispatch_as_java_virtual_calls() {
+        let mut searcher = empty_searcher();
+        let recording = Arc::new(Recording::default());
+        searcher.set_overrides(Arc::clone(&recording) as Arc<dyn IndexSearcherOverrides>);
+        let query = || Arc::new(MatchAllDocsQuery) as Arc<dyn Query>;
+        searcher.search(query(), 3).unwrap();
+        searcher.search_after(None, query(), 4).unwrap();
+        let term = Term::new("body", crate::util::BytesRef::from_char_sequence("x"));
+        let stats = searcher.term_statistics(&term, 2, 5).unwrap();
+        assert_eq!((stats.doc_freq(), stats.total_term_freq()), (6, 15));
+        assert!(searcher.collection_statistics("body").unwrap().is_none());
+        assert_eq!(
+            *recording.calls.lock().unwrap(),
+            [
+                "search(3)",
+                "searchAfter(false, 3)",
+                "searchAfter(false, 4)",
+                "termStatistics(2, 5)",
+                "collectionStatistics(body)",
+            ]
+        );
+    }
+
+    /// Without overrides the four methods answer the inherited bodies, as
+    /// before the dispatch existed.
+    #[test]
+    fn plain_searcher_answers_the_inherited_bodies() {
+        let searcher = empty_searcher();
+        let term = Term::new("body", crate::util::BytesRef::from_char_sequence("x"));
+        let stats = searcher.term_statistics(&term, 2, 5).unwrap();
+        let inherited = searcher.super_term_statistics(&term, 2, 5).unwrap();
+        assert_eq!(
+            (stats.doc_freq(), stats.total_term_freq()),
+            (inherited.doc_freq(), inherited.total_term_freq())
+        );
+        assert!(searcher.term_statistics(&term, 0, 0).is_err());
+        assert!(searcher.collection_statistics("body").unwrap().is_none());
+        let hits = searcher
+            .search(Arc::new(MatchAllDocsQuery) as Arc<dyn Query>, 1)
+            .unwrap();
+        assert_eq!(hits.score_docs.len(), 0);
     }
 }

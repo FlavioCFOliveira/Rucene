@@ -11,7 +11,7 @@ import org.junit.runner.notification.Failure;
 import org.junit.runner.notification.RunListener;
 
 /**
- * The seeded-draw oracle of rmp #350 and #356: runs, with {@code JUnitCore} on fixed master seeds,
+ * The seeded-draw oracle of rmp #350, #356 and #358: runs, with {@code JUnitCore} on fixed master seeds,
  * one draws class per base suite (a subclass with the overrides of the Lucene class the Rust suite
  * binds, whose {@code tearDown()} records the next {@code random().nextLong()} of each test's
  * randomness before {@code super.tearDown()}, and whose {@code @AfterClass} records that of the class
@@ -64,6 +64,8 @@ public class BaseSuitesDrawsOracle {
         "base_similarity_draws.tsv",
         "org.apache.lucene.tests.search.similarities.TestSimilaritySuiteDraws");
     write(out, "base_range_field_draws.tsv", "org.apache.lucene.tests.search.TestRangeFieldSuiteDraws");
+    write(out, "base_geo_point_draws.tsv", "org.apache.lucene.tests.geo.TestGeoPointSuiteDraws");
+    write(out, "base_xy_point_draws.tsv", "org.apache.lucene.tests.geo.TestXYPointSuiteDraws");
   }
 
   static void write(File dir, String fileName, String className) throws Exception {

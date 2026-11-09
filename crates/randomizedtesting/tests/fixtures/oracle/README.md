@@ -388,14 +388,16 @@ write the fixtures (`../*.tsv`) the crate's parity tests (`src/tests/`) read.
   `lucene_util_tests.rs`, `lucene_index_tests.rs`, `lucene_search_tests.rs`,
   `lucene_search_explanation_tests.rs`, `lucene_store_tests.rs` and
   `mock_file_system_test_case.rs` for each suite they port.
-* **The other base suites (rmp #350, #356):**
+* **The other base suites (rmp #350, #356, #358):**
   `org.apache.lucene.tests.util.BaseSuitesDrawsOracle` runs, as
   `BaseFormatSuitesOracle` does and in its format, one draws class per base
   suite (`Test…Draws`, under `src/org/apache/lucene/util/`,
-  `src/org/apache/lucene/tests/store/`, `src/org/apache/lucene/tests/search/`
-  and `src/org/apache/lucene/tests/search/similarities/`, each with the
-  overrides of the Lucene class the Rust suite binds) and writes
-  `crates/rucene-test-framework/tests/fixtures/base_{sparse_fixed_bit_set,fixed_bit_set,roaring_doc_id_set,sparse_fixed_bit_doc_id_set,directory,chunked_directory,lock_factory,similarity,range_field}_draws.tsv`,
+  `src/org/apache/lucene/tests/store/`, `src/org/apache/lucene/tests/search/`,
+  `src/org/apache/lucene/tests/search/similarities/` and
+  `src/org/apache/lucene/tests/geo/`, each with the overrides of the Lucene
+  class the Rust suite binds) and writes
+  `crates/rucene-test-framework/tests/fixtures/base_{sparse_fixed_bit_set,fixed_bit_set,roaring_doc_id_set,sparse_fixed_bit_doc_id_set,directory,chunked_directory,lock_factory,similarity,range_field,geo_point,xy_point}_draws.tsv`,
   read by `base_bit_set_suites.rs`, `base_doc_id_set_suites.rs`,
   `base_directory_suites.rs`, `base_lock_factory_suites.rs`,
-  `base_similarity_suites.rs` and `base_range_field_query_suites.rs`.
+  `base_similarity_suites.rs`, `base_range_field_query_suites.rs` and
+  `base_geo_point_suites.rs`.

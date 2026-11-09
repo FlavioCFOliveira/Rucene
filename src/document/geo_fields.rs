@@ -11,7 +11,7 @@ use crate::document::distance_sort::{LatLonPointSortField, XYPointSortField};
 use crate::document::nearest_neighbor;
 use crate::document::point_queries::{
     LatLonDocValuesBoxQuery, LatLonDocValuesQuery, LatLonPointDistanceQuery, LatLonPointQuery,
-    XYDocValuesPointInGeometryQuery,
+    XYDocValuesPointInGeometryQuery, XYPointInGeometryQuery,
 };
 use crate::document::range_fields::{RangeFieldQuery, RangeQueryType, RangeValueKind};
 use crate::document::shape_field::QueryRelation;
@@ -19,7 +19,7 @@ use crate::document::spatial_query::{LatLonGeometryValue, XYGeometryValue};
 use crate::document::{FieldData, FieldType, InvertableType, NumericValue, StoredValue};
 use crate::error::{LuceneError, Result};
 use crate::geo::encoding::{GeoEncodingUtils, GeoUtils, XYEncodingUtils};
-use crate::geo::geometry::{Circle, Polygon, Rectangle, XYCircle, XYRectangle};
+use crate::geo::geometry::{Circle, Polygon, Rectangle, XYCircle, XYPolygon, XYRectangle};
 use crate::index::{DocValuesType, IndexableField, IndexableFieldType, PointValues};
 use crate::search::boolean_query::Builder as BooleanQueryBuilder;
 use crate::search::boost_query::BoostQuery;
@@ -938,6 +938,82 @@ impl XYPointField {
             COORDINATE_BYTES,
         );
         Ok((lower, upper))
+    }
+
+    /// Creates a query for matching a bounding box.
+    ///
+    /// Equivalent to `XYPointField.newBoxQuery(String, float, float, float,
+    /// float)` (`XYPointField.java`), which builds an `XYRectangle` and an
+    /// `XYPointInGeometryQuery` over it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the box has invalid
+    /// coordinates, as `new XYRectangle(minX, maxX, minY, maxY)` throws.
+    pub fn new_box_query(
+        field: &str,
+        min_x: f32,
+        max_x: f32,
+        min_y: f32,
+        max_y: f32,
+    ) -> Result<Arc<dyn Query>> {
+        let rectangle = XYRectangle::new(min_x, max_x, min_y, max_y)?;
+        Ok(Arc::new(XYPointInGeometryQuery::new(
+            field,
+            vec![XYGeometryValue::Rectangle(rectangle)],
+        )?))
+    }
+
+    /// Creates a query for matching points within the specified distance of
+    /// the supplied location.
+    ///
+    /// Equivalent to `XYPointField.newDistanceQuery(String, float, float,
+    /// float)`, which builds an `XYCircle` and an `XYPointInGeometryQuery`
+    /// over it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the center has invalid
+    /// coordinates or the radius is invalid, as `new XYCircle(x, y, radius)`
+    /// throws.
+    pub fn new_distance_query(field: &str, x: f32, y: f32, radius: f32) -> Result<Arc<dyn Query>> {
+        let circle = XYCircle::new(x, y, radius)?;
+        Ok(Arc::new(XYPointInGeometryQuery::new(
+            field,
+            vec![XYGeometryValue::Circle(circle)],
+        )?))
+    }
+
+    /// Creates a query for matching one or more polygons.
+    ///
+    /// Equivalent to `XYPointField.newPolygonQuery(String, XYPolygon...)`,
+    /// which is `newGeometryQuery(field, polygons)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`new_geometry_query`](Self::new_geometry_query).
+    pub fn new_polygon_query(field: &str, polygons: Vec<XYPolygon>) -> Result<Arc<dyn Query>> {
+        Self::new_geometry_query(
+            field,
+            polygons.into_iter().map(XYGeometryValue::Polygon).collect(),
+        )
+    }
+
+    /// Creates a query to find all indexed points that intersect a provided
+    /// geometry collection.
+    ///
+    /// Equivalent to `XYPointField.newGeometryQuery(String, XYGeometry...)`,
+    /// which is `new XYPointInGeometryQuery(field, xyGeometries)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns what [`XYPointInGeometryQuery::new`] returns for an invalid
+    /// geometry collection.
+    pub fn new_geometry_query(
+        field: &str,
+        xy_geometries: Vec<XYGeometryValue>,
+    ) -> Result<Arc<dyn Query>> {
+        Ok(Arc::new(XYPointInGeometryQuery::new(field, xy_geometries)?))
     }
 }
 
@@ -2037,5 +2113,61 @@ impl std::fmt::Display for InetAddressPoint {
             }
         }
         f.write_str(">")
+    }
+}
+
+#[cfg(test)]
+mod xy_point_field_query_tests {
+    use super::*;
+
+    /// `XYPointField.newBoxQuery`, `newDistanceQuery`, `newPolygonQuery` and
+    /// `newGeometryQuery` all build an `XYPointInGeometryQuery`
+    /// (`XYPointField.java`), so each equals the query built directly over
+    /// the same geometry.
+    #[test]
+    fn factories_build_the_point_in_geometry_query() {
+        let rect = XYRectangle::new(-1.0, 2.0, -3.0, 4.0).unwrap();
+        let direct: Arc<dyn Query> = Arc::new(
+            XYPointInGeometryQuery::new("f", vec![XYGeometryValue::Rectangle(rect)]).unwrap(),
+        );
+        let boxed = XYPointField::new_box_query("f", -1.0, 2.0, -3.0, 4.0).unwrap();
+        assert!(boxed.query_eq(direct.as_ref()));
+        assert_eq!(boxed.query_hash(), direct.query_hash());
+        assert!(!boxed.query_eq(
+            XYPointField::new_box_query("g", -1.0, 2.0, -3.0, 4.0)
+                .unwrap()
+                .as_ref()
+        ));
+
+        let circle = XYCircle::new(1.0, 2.0, 3.0).unwrap();
+        let direct: Arc<dyn Query> = Arc::new(
+            XYPointInGeometryQuery::new("f", vec![XYGeometryValue::Circle(circle)]).unwrap(),
+        );
+        let distance = XYPointField::new_distance_query("f", 1.0, 2.0, 3.0).unwrap();
+        assert!(distance.query_eq(direct.as_ref()));
+
+        let polygon = XYPolygon::new(
+            vec![0.0, 1.0, 1.0, 0.0, 0.0],
+            vec![0.0, 0.0, 1.0, 1.0, 0.0],
+            Vec::new(),
+        )
+        .unwrap();
+        let by_polygon = XYPointField::new_polygon_query("f", vec![polygon.clone()]).unwrap();
+        let by_geometry =
+            XYPointField::new_geometry_query("f", vec![XYGeometryValue::Polygon(polygon)]).unwrap();
+        assert!(by_polygon.query_eq(by_geometry.as_ref()));
+    }
+
+    /// The geometry constructors reject what Java's reject: a NaN box and a
+    /// negative, NaN or infinite radius throw `IllegalArgumentException`.
+    #[test]
+    fn factories_reject_invalid_geometries() {
+        assert!(XYPointField::new_box_query("f", f32::NAN, f32::NAN, f32::NAN, f32::NAN).is_err());
+        for radius in [-1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(matches!(
+                XYPointField::new_distance_query("f", 18.0, 19.0, radius),
+                Err(LuceneError::IllegalArgument(_))
+            ));
+        }
     }
 }

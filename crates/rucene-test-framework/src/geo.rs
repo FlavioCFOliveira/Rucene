@@ -17,7 +17,9 @@
 
 //! Port of `org.apache.lucene.tests.geo` (rmp #358): [`geo_test_util`]
 //! (`GeoTestUtil`), [`shape_test_util`] (`ShapeTestUtil`),
-//! [`earth_debugger`] (`EarthDebugger`).
+//! [`earth_debugger`] (`EarthDebugger`), [`base_geo_point_test_case`]
+//! (`BaseGeoPointTestCase`), [`base_xy_point_test_case`]
+//! (`BaseXYPointTestCase`).
 //!
 //! The shape resources of the package
 //! (`lucene/test-framework/src/resources/org/apache/lucene/tests/geo/*.gz`,
@@ -25,6 +27,8 @@
 //! Lucene `NOTICE.txt`) are copied unchanged under `src/geo/resources/` and
 //! read by [`geo_test_util::read_shape`].
 
+pub mod base_geo_point_test_case;
+pub mod base_xy_point_test_case;
 pub mod earth_debugger;
 pub mod geo_test_util;
 pub mod shape_test_util;

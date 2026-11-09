@@ -41,6 +41,7 @@ pub mod query_utils;
 pub mod random_approximation_query;
 pub mod scorer_index_searcher;
 pub mod search_equivalence_test_base;
+pub mod shard_searching_test_base;
 pub mod similarities;
 
 pub use asserting_accept_docs::AssertingAcceptDocs;
