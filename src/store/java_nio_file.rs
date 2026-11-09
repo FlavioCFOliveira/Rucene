@@ -256,10 +256,17 @@ pub fn java_exception_of(error: &io::Error) -> Option<&JavaIoException> {
 }
 
 /// `getClass().getName()` of the `IOException` `error` stands for:
-/// [`JavaIoException::class_name`] when it carries one, `java.io.IOException`
-/// otherwise.
+/// [`JavaIoException::class_name`] when it carries one; otherwise
+/// `java.io.EOFException` for an [`io::ErrorKind::UnexpectedEof`] error (the
+/// kind the store inputs raise where Lucene throws `EOFException`, e.g.
+/// `ByteBuffersDataInput.java:102`, `BufferedIndexInput.java:113`), and
+/// `java.io.IOException` for any other.
 pub fn java_class_of(error: &io::Error) -> &str {
-    java_exception_of(error).map_or(IO_EXCEPTION, JavaIoException::class_name)
+    match java_exception_of(error) {
+        Some(exception) => exception.class_name(),
+        None if error.kind() == io::ErrorKind::UnexpectedEof => EOF_EXCEPTION,
+        None => IO_EXCEPTION,
+    }
 }
 
 /// `getMessage()` of the `IOException` `error` stands for:

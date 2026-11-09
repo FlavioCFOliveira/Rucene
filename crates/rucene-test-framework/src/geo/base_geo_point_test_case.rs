@@ -32,9 +32,9 @@
 //! methods a subclass implements.
 //!
 //! **Adaptations** (declared, each confined to the member named):
-//! * `String field` of the abstract query factories may be `null` in Java
-//!   (`testBoxNull`, `testDistanceNull`, `testPolygonNullField`); the port
-//!   passes `Option<&str>`, `None` standing for `null`.
+//! * `String field` of the abstract query factories is `&str`: Rust cannot
+//!   pass `null`, so `testBoxNull`, `testDistanceNull` and
+//!   `testPolygonNullField` are assumption failures (see each).
 //! * `LatLonGeometry` and `LatLonGeometry[]` are the port's
 //!   [`LatLonGeometryValue`] and `Vec<LatLonGeometryValue>`; `Polygon...`
 //!   is `Vec<Polygon>`.
@@ -262,8 +262,9 @@ fn polygon(lats: &[f64], lons: &[f64], holes: Vec<Polygon>) -> Result<Polygon> {
 }
 
 /// `IOUtils.close(r, dir)`: closes both, then throws the first failure.
-fn close_all(r: &Arc<dyn IndexReader>, dir: &mut TestDirectory) -> Result<()> {
+fn close_all(r: Arc<dyn IndexReader>, dir: &mut TestDirectory) -> Result<()> {
     let first = r.close();
+    drop(r);
     let second = dir.close();
     first.and(second)
 }
@@ -428,6 +429,10 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
 
     /// `newRectQuery(String field, double minLat, double maxLat, double
     /// minLon, double maxLon)` (`protected abstract`).
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>` in `newRectQuery`, `newDistanceQuery` and
+    /// `newPolygonQuery`; `None` is Java's `null`.
     fn new_rect_query(
         &self,
         field: Option<&str>,
@@ -459,7 +464,7 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
     /// (`protected abstract`).
     fn new_geometry_query(
         &self,
-        field: Option<&str>,
+        field: &str,
         geometry: Vec<LatLonGeometryValue>,
     ) -> Result<Arc<dyn Query>>;
 
@@ -563,11 +568,13 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
 
         drop(searcher);
         reader.close()?;
+        drop(reader);
         writer.close()?;
+        drop(writer);
         dir.close()
     }
 
-    /// `testBoxNull()`: null field name not allowed.
+    /// `testBoxNull()`: null field name not allowed (`BaseGeoPointTestCase.java:261-269`).
     fn test_box_null(&self) -> Result<()> {
         let expected = expect_throws("java.lang.IllegalArgumentException", || {
             self.new_rect_query(None, 18.0, 19.0, -66.0, -65.0)
@@ -604,11 +611,13 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
 
         drop(searcher);
         reader.close()?;
+        drop(reader);
         writer.close()?;
+        drop(writer);
         dir.close()
     }
 
-    /// `testDistanceNull()`: null field name not allowed.
+    /// `testDistanceNull()`: null field name not allowed (`BaseGeoPointTestCase.java:301-309`).
     fn test_distance_null(&self) -> Result<()> {
         let expected = expect_throws("java.lang.IllegalArgumentException", || {
             self.new_distance_query(None, 18.0, -65.0, 50_000.0)
@@ -692,7 +701,9 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
 
         drop(searcher);
         reader.close()?;
+        drop(reader);
         writer.close()?;
+        drop(writer);
         dir.close()
     }
 
@@ -727,7 +738,9 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
 
         drop(searcher);
         reader.close()?;
+        drop(reader);
         writer.close()?;
+        drop(writer);
         dir.close()
     }
 
@@ -762,7 +775,9 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
 
         drop(searcher);
         reader.close()?;
+        drop(reader);
         writer.close()?;
+        drop(writer);
         dir.close()
     }
 
@@ -796,11 +811,13 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
 
         drop(searcher);
         reader.close()?;
+        drop(reader);
         writer.close()?;
+        drop(writer);
         dir.close()
     }
 
-    /// `testPolygonNullField()`: null field name not allowed.
+    /// `testPolygonNullField()`: null field name not allowed (`BaseGeoPointTestCase.java:472-483`).
     fn test_polygon_null_field(&self) -> Result<()> {
         let expected = expect_throws("java.lang.IllegalArgumentException", || {
             self.new_polygon_query(
@@ -1016,6 +1033,7 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
         let dr = w.get_reader()?;
         let r: Arc<dyn IndexReader> = Arc::clone(&dr) as Arc<dyn IndexReader>;
         w.close()?;
+        drop(w);
 
         let s = LuceneTestCase::new_searcher(Arc::clone(&dr));
 
@@ -1080,7 +1098,9 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
             }
         }
         drop(s);
+        drop(dr);
         r.close()?;
+        drop(r);
         dir.close()
     }
 
@@ -1240,6 +1260,7 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
 
         let r = directory_reader::open_with_writer(&*w)?;
         w.close()?;
+        drop(w);
         Ok((dir, r))
     }
 
@@ -1304,7 +1325,8 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
 
         drop(s);
         drop(live_docs);
-        close_all(&r, &mut dir)
+        drop(dr);
+        close_all(r, &mut dir)
     }
 
     /// `verifyRandomDistances(double[] lats, double[] lons)` (`protected`).
@@ -1393,7 +1415,8 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
 
         drop(s);
         drop(live_docs);
-        close_all(&r, &mut dir)
+        drop(dr);
+        close_all(r, &mut dir)
     }
 
     /// `verifyRandomPolygons(double[] lats, double[] lons)` (`protected`).
@@ -1452,7 +1475,8 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
 
         drop(s);
         drop(live_docs);
-        close_all(&r, &mut dir)
+        drop(dr);
+        close_all(r, &mut dir)
     }
 
     /// `verifyRandomGeometries(double[] lats, double[] lons)` (`protected`).
@@ -1475,7 +1499,7 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
 
             // Polygon
             let geometries = self.next_geometry();
-            let query = self.new_geometry_query(Some(FIELD_NAME), geometries.clone())?;
+            let query = self.new_geometry_query(FIELD_NAME, geometries.clone())?;
 
             if *VERBOSE {
                 println!("  query={}", query.to_query_string(""));
@@ -1513,7 +1537,8 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
 
         drop(s);
         drop(live_docs);
-        close_all(&r, &mut dir)
+        drop(dr);
+        close_all(r, &mut dir)
     }
 
     /// `indexPoints(double[] lats, double[] lons, Set<Integer> deleted,
@@ -1601,12 +1626,12 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
         }
         let r = w.get_reader()?;
         let s = LuceneTestCase::new_searcher_wrap(Arc::clone(&r), false);
-        let field = Some(FIELD_NAME);
+        let field = FIELD_NAME;
         // exact edge cases
         Assert::assert_equals(
             8,
             s.count(self.new_rect_query(
-                field,
+                Some(field),
                 rect.min_lat(),
                 rect.max_lat(),
                 rect.min_lon(),
@@ -1619,7 +1644,7 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
             Assert::assert_equals(
                 8,
                 s.count(self.new_rect_query(
-                    field,
+                    Some(field),
                     rect.min_lat().next_down(),
                     rect.max_lat(),
                     rect.min_lon(),
@@ -1631,7 +1656,7 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
             Assert::assert_equals(
                 8,
                 s.count(self.new_rect_query(
-                    field,
+                    Some(field),
                     rect.min_lat(),
                     rect.max_lat().next_up(),
                     rect.min_lon(),
@@ -1643,7 +1668,7 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
             Assert::assert_equals(
                 8,
                 s.count(self.new_rect_query(
-                    field,
+                    Some(field),
                     rect.min_lat(),
                     rect.max_lat(),
                     rect.min_lon().next_down(),
@@ -1655,7 +1680,7 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
             Assert::assert_equals(
                 8,
                 s.count(self.new_rect_query(
-                    field,
+                    Some(field),
                     rect.min_lat(),
                     rect.max_lat(),
                     rect.min_lon(),
@@ -1678,7 +1703,7 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
             Assert::assert_equals(
                 0,
                 s.count(self.new_rect_query(
-                    field,
+                    Some(field),
                     rect.min_lat().next_up(),
                     rect.max_lat().next_down(),
                     rect.min_lon().next_up(),
@@ -1689,7 +1714,9 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
 
         drop(s);
         r.close()?;
+        drop(r);
         w.close()?;
+        drop(w);
         dir.close()
     }
 
@@ -1797,8 +1824,11 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
             }
         }
         drop(searcher);
+        drop(stored_fields);
         reader.close()?;
+        drop(reader);
         writer.close()?;
+        drop(writer);
         dir.close()
     }
 
@@ -1917,11 +1947,13 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
 
         let reader = writer.get_reader()?;
         writer.close()?;
+        drop(writer);
 
         let searcher = LuceneTestCase::new_searcher(Arc::clone(&reader));
         let top_docs = searcher.search(query, size)?;
         drop(searcher);
         reader.close()?;
+        drop(reader);
         directory.close()?;
         Ok(top_docs)
     }
@@ -2138,7 +2170,9 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
         drop(s);
         // IOUtils.close(w, reader, dir)
         let first = w.close();
+        drop(w);
         let second = reader.close();
+        drop(reader);
         let third = dir.close();
         first.and(second).and(third)
     }

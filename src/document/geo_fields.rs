@@ -106,6 +106,24 @@ fn xy_doc_values_field_type() -> &'static FieldType {
     TYPE.get_or_init(new_doc_values_field_type)
 }
 
+/// Java's `IllegalArgumentException("field must not be null")`, thrown by
+/// the point query constructors (`PointRangeQuery.java:108`,
+/// `LatLonPointDistanceQuery.java:60`, `SpatialQuery.java:76`,
+/// `XYPointInGeometryQuery.java:56`, the doc-values point queries) and
+/// `LatLonPoint.nearest` (`LatLonPoint.java:415`).
+fn field_must_not_be_null() -> LuceneError {
+    LuceneError::IllegalArgument("field must not be null".to_string())
+}
+
+/// The `if (field == null) throw ...` of the point query constructors.
+///
+/// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+/// field is `Option<&str>` in the point query factories; `None` is Java's
+/// `null` and fails exactly where Java fails.
+fn require_field(field: Option<&str>) -> Result<&str> {
+    field.ok_or_else(field_must_not_be_null)
+}
+
 /// A latitude/longitude pair indexed as a point.
 ///
 /// Equivalent to `org.apache.lucene.document.LatLonPoint`.
@@ -215,8 +233,13 @@ impl LatLonPoint {
     /// A box crossing the date line becomes the union of two boxes, each with
     /// an open longitude bound, under a constant score — so a multi-valued
     /// document matching both is not boosted for it.
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>`; `None` fails with Java's
+    /// `IllegalArgumentException("field must not be null")` at the point
+    /// Java throws it, so the behaviour is identical.
     pub fn new_box_query(
-        field: &str,
+        field: Option<&str>,
         min_latitude: f64,
         max_latitude: f64,
         mut min_longitude: f64,
@@ -277,7 +300,9 @@ impl LatLonPoint {
     /// Equivalent to `LatLonPoint.newBoxInternal(String, byte[], byte[])`,
     /// whose anonymous subclass exists only to print dimension 0 as a latitude
     /// and dimension 1 as a longitude.
-    fn new_box_internal(field: &str, min: Vec<u8>, max: Vec<u8>) -> Result<Arc<dyn Query>> {
+    fn new_box_internal(field: Option<&str>, min: Vec<u8>, max: Vec<u8>) -> Result<Arc<dyn Query>> {
+        // `PointRangeQuery.checkArgs` (`PointRangeQuery.java:107-109`).
+        let field = require_field(field)?;
         Ok(Arc::new(PointRangeQuery::new(
             field,
             min,
@@ -290,12 +315,19 @@ impl LatLonPoint {
     /// Matches documents within `radius_meters` of a point.
     ///
     /// Equivalent to `LatLonPoint.newDistanceQuery(String, double, double, double)`.
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>`; `None` fails with Java's
+    /// `IllegalArgumentException("field must not be null")` at the point
+    /// Java throws it, so the behaviour is identical.
     pub fn new_distance_query(
-        field: &str,
+        field: Option<&str>,
         latitude: f64,
         longitude: f64,
         radius_meters: f64,
     ) -> Result<Arc<dyn Query>> {
+        // `LatLonPointDistanceQuery.java:59-61`.
+        let field = require_field(field)?;
         Ok(Arc::new(LatLonPointDistanceQuery::new(
             field,
             latitude,
@@ -307,8 +339,13 @@ impl LatLonPoint {
     /// Matches documents whose point intersects any of the given polygons.
     ///
     /// Equivalent to `LatLonPoint.newPolygonQuery(String, Polygon...)`.
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>`; `None` fails with Java's
+    /// `IllegalArgumentException("field must not be null")` at the point
+    /// Java throws it, so the behaviour is identical.
     pub fn new_polygon_query(
-        field: &str,
+        field: Option<&str>,
         polygons: Vec<LatLonGeometryValue>,
     ) -> Result<Arc<dyn Query>> {
         Self::new_geometry_query(field, QueryRelation::Intersects, polygons)
@@ -320,8 +357,13 @@ impl LatLonPoint {
     /// Equivalent to `LatLonPoint.newGeometryQuery(String, ShapeField.QueryRelation, LatLonGeometry...)`.
     /// A single rectangle or circle under `Intersects` is rewritten into the
     /// box or the distance query, which read the BKD tree more cheaply.
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>`; `None` fails with Java's
+    /// `IllegalArgumentException("field must not be null")` at the point
+    /// Java throws it, so the behaviour is identical.
     pub fn new_geometry_query(
-        field: &str,
+        field: Option<&str>,
         query_relation: QueryRelation,
         geometries: Vec<LatLonGeometryValue>,
     ) -> Result<Arc<dyn Query>> {
@@ -350,6 +392,8 @@ impl LatLonPoint {
         if query_relation == QueryRelation::Contains {
             return Self::make_contains_geometry_query(field, geometries);
         }
+        // `SpatialQuery.java:75-77`.
+        let field = require_field(field)?;
         Ok(Arc::new(LatLonPointQuery::new(
             field,
             query_relation,
@@ -362,7 +406,7 @@ impl LatLonPoint {
     /// Equivalent to `LatLonPoint.makeContainsGeometryQuery(String, LatLonGeometry...)`.
     /// A point can only contain a point, so anything else matches nothing.
     fn make_contains_geometry_query(
-        field: &str,
+        field: Option<&str>,
         geometries: Vec<LatLonGeometryValue>,
     ) -> Result<Arc<dyn Query>> {
         let mut builder = BooleanQueryBuilder::new();
@@ -372,6 +416,8 @@ impl LatLonPoint {
                     "Contains LatLonPoint.newGeometryQuery with non-point geometries",
                 )));
             }
+            // `SpatialQuery.java:75-77`.
+            let field = require_field(field)?;
             builder.add(
                 Arc::new(LatLonPointQuery::new(
                     field,
@@ -489,9 +535,14 @@ impl LatLonPoint {
     /// Returns [`LuceneError::IllegalArgument`] for an out-of-bounds latitude
     /// or longitude and for `n < 1`, and propagates whatever reading the point
     /// trees raises.
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>`; `None` fails with Java's
+    /// `IllegalArgumentException("field must not be null")` at the point
+    /// Java throws it, so the behaviour is identical.
     pub fn nearest(
         searcher: &IndexSearcher,
-        field: &str,
+        field: Option<&str>,
         latitude: f64,
         longitude: f64,
         n: i32,
@@ -503,6 +554,8 @@ impl LatLonPoint {
                 "n must be at least 1; got {n}"
             )));
         }
+        // `LatLonPoint.java:414-416`.
+        let field = require_field(field)?;
         let mut readers: Vec<Box<dyn PointValues>> = Vec::new();
         let mut doc_bases: Vec<i32> = Vec::new();
         let mut live_docs: Vec<Option<Box<dyn Bits>>> = Vec::new();
@@ -642,8 +695,13 @@ impl LatLonDocValuesField {
     /// # Errors
     ///
     /// Propagates whatever building the query raises.
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>`; `None` fails with Java's
+    /// `IllegalArgumentException("field must not be null")` at the point
+    /// Java throws it, so the behaviour is identical.
     pub fn new_slow_box_query(
-        field: &str,
+        field: Option<&str>,
         min_latitude: f64,
         max_latitude: f64,
         mut min_longitude: f64,
@@ -666,6 +724,15 @@ impl LatLonDocValuesField {
                 min_longitude = -180.0;
             }
         }
+        // `LatLonDocValuesBoxQuery.java:48-54`: the coordinates are checked
+        // before the field.
+        let Some(field) = field else {
+            GeoUtils::check_latitude(min_latitude)?;
+            GeoUtils::check_latitude(max_latitude)?;
+            GeoUtils::check_longitude(min_longitude)?;
+            GeoUtils::check_longitude(max_longitude)?;
+            return Err(field_must_not_be_null());
+        };
         Ok(Arc::new(LatLonDocValuesBoxQuery::new(
             field,
             min_latitude,
@@ -683,8 +750,13 @@ impl LatLonDocValuesField {
     /// # Errors
     ///
     /// Propagates whatever building the circle or the query raises.
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>`; `None` fails with Java's
+    /// `IllegalArgumentException("field must not be null")` at the point
+    /// Java throws it, so the behaviour is identical.
     pub fn new_slow_distance_query(
-        field: &str,
+        field: Option<&str>,
         latitude: f64,
         longitude: f64,
         radius_meters: f64,
@@ -705,7 +777,15 @@ impl LatLonDocValuesField {
     /// # Errors
     ///
     /// Propagates whatever building the query raises.
-    pub fn new_slow_polygon_query(field: &str, polygons: Vec<Polygon>) -> Result<Arc<dyn Query>> {
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>`; `None` fails with Java's
+    /// `IllegalArgumentException("field must not be null")` at the point
+    /// Java throws it, so the behaviour is identical.
+    pub fn new_slow_polygon_query(
+        field: Option<&str>,
+        polygons: Vec<Polygon>,
+    ) -> Result<Arc<dyn Query>> {
         Self::new_slow_geometry_query(
             field,
             QueryRelation::Intersects,
@@ -726,8 +806,13 @@ impl LatLonDocValuesField {
     /// # Errors
     ///
     /// Propagates whatever building the query raises.
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>`; `None` fails with Java's
+    /// `IllegalArgumentException("field must not be null")` at the point
+    /// Java throws it, so the behaviour is identical.
     pub fn new_slow_geometry_query(
-        field: &str,
+        field: Option<&str>,
         query_relation: QueryRelation,
         geometries: Vec<LatLonGeometryValue>,
     ) -> Result<Arc<dyn Query>> {
@@ -751,6 +836,8 @@ impl LatLonDocValuesField {
                 "Contains LatLonDocValuesField.newSlowGeometryQuery with non-point geometries",
             )));
         }
+        // `LatLonDocValuesQuery.java:57-59`.
+        let field = require_field(field)?;
         Ok(Arc::new(LatLonDocValuesQuery::new(
             field,
             query_relation,
@@ -950,14 +1037,21 @@ impl XYPointField {
     ///
     /// Returns [`LuceneError::IllegalArgument`] when the box has invalid
     /// coordinates, as `new XYRectangle(minX, maxX, minY, maxY)` throws.
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>`; `None` fails with Java's
+    /// `IllegalArgumentException("field must not be null")` at the point
+    /// Java throws it, so the behaviour is identical.
     pub fn new_box_query(
-        field: &str,
+        field: Option<&str>,
         min_x: f32,
         max_x: f32,
         min_y: f32,
         max_y: f32,
     ) -> Result<Arc<dyn Query>> {
         let rectangle = XYRectangle::new(min_x, max_x, min_y, max_y)?;
+        // `XYPointInGeometryQuery.java:55-57`.
+        let field = require_field(field)?;
         Ok(Arc::new(XYPointInGeometryQuery::new(
             field,
             vec![XYGeometryValue::Rectangle(rectangle)],
@@ -976,8 +1070,20 @@ impl XYPointField {
     /// Returns [`LuceneError::IllegalArgument`] when the center has invalid
     /// coordinates or the radius is invalid, as `new XYCircle(x, y, radius)`
     /// throws.
-    pub fn new_distance_query(field: &str, x: f32, y: f32, radius: f32) -> Result<Arc<dyn Query>> {
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>`; `None` fails with Java's
+    /// `IllegalArgumentException("field must not be null")` at the point
+    /// Java throws it, so the behaviour is identical.
+    pub fn new_distance_query(
+        field: Option<&str>,
+        x: f32,
+        y: f32,
+        radius: f32,
+    ) -> Result<Arc<dyn Query>> {
         let circle = XYCircle::new(x, y, radius)?;
+        // `XYPointInGeometryQuery.java:55-57`.
+        let field = require_field(field)?;
         Ok(Arc::new(XYPointInGeometryQuery::new(
             field,
             vec![XYGeometryValue::Circle(circle)],
@@ -992,7 +1098,15 @@ impl XYPointField {
     /// # Errors
     ///
     /// As [`new_geometry_query`](Self::new_geometry_query).
-    pub fn new_polygon_query(field: &str, polygons: Vec<XYPolygon>) -> Result<Arc<dyn Query>> {
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>`; `None` fails with Java's
+    /// `IllegalArgumentException("field must not be null")` at the point
+    /// Java throws it, so the behaviour is identical.
+    pub fn new_polygon_query(
+        field: Option<&str>,
+        polygons: Vec<XYPolygon>,
+    ) -> Result<Arc<dyn Query>> {
         Self::new_geometry_query(
             field,
             polygons.into_iter().map(XYGeometryValue::Polygon).collect(),
@@ -1009,10 +1123,17 @@ impl XYPointField {
     ///
     /// Returns what [`XYPointInGeometryQuery::new`] returns for an invalid
     /// geometry collection.
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>`; `None` fails with Java's
+    /// `IllegalArgumentException("field must not be null")` at the point
+    /// Java throws it, so the behaviour is identical.
     pub fn new_geometry_query(
-        field: &str,
+        field: Option<&str>,
         xy_geometries: Vec<XYGeometryValue>,
     ) -> Result<Arc<dyn Query>> {
+        // `XYPointInGeometryQuery.java:55-57`.
+        let field = require_field(field)?;
         Ok(Arc::new(XYPointInGeometryQuery::new(field, xy_geometries)?))
     }
 }
@@ -1115,8 +1236,13 @@ impl XYDocValuesField {
     /// # Errors
     ///
     /// Propagates whatever building the rectangle or the query raises.
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>`; `None` fails with Java's
+    /// `IllegalArgumentException("field must not be null")` at the point
+    /// Java throws it, so the behaviour is identical.
     pub fn new_slow_box_query(
-        field: &str,
+        field: Option<&str>,
         min_x: f32,
         max_x: f32,
         min_y: f32,
@@ -1134,8 +1260,13 @@ impl XYDocValuesField {
     /// # Errors
     ///
     /// Propagates whatever building the circle or the query raises.
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>`; `None` fails with Java's
+    /// `IllegalArgumentException("field must not be null")` at the point
+    /// Java throws it, so the behaviour is identical.
     pub fn new_slow_distance_query(
-        field: &str,
+        field: Option<&str>,
         x: f32,
         y: f32,
         radius: f32,
@@ -1152,8 +1283,13 @@ impl XYDocValuesField {
     /// # Errors
     ///
     /// Propagates whatever building the query raises.
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>`; `None` fails with Java's
+    /// `IllegalArgumentException("field must not be null")` at the point
+    /// Java throws it, so the behaviour is identical.
     pub fn new_slow_polygon_query(
-        field: &str,
+        field: Option<&str>,
         polygons: Vec<crate::geo::geometry::XYPolygon>,
     ) -> Result<Arc<dyn Query>> {
         Self::new_slow_geometry_query(
@@ -1170,10 +1306,17 @@ impl XYDocValuesField {
     /// # Errors
     ///
     /// Propagates whatever building the query raises.
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>`; `None` fails with Java's
+    /// `IllegalArgumentException("field must not be null")` at the point
+    /// Java throws it, so the behaviour is identical.
     pub fn new_slow_geometry_query(
-        field: &str,
+        field: Option<&str>,
         geometries: Vec<XYGeometryValue>,
     ) -> Result<Arc<dyn Query>> {
+        // `XYDocValuesPointInGeometryQuery.java:45-47`.
+        let field = require_field(field)?;
         Ok(Arc::new(XYDocValuesPointInGeometryQuery::new(
             field, geometries,
         )?))
@@ -2130,11 +2273,11 @@ mod xy_point_field_query_tests {
         let direct: Arc<dyn Query> = Arc::new(
             XYPointInGeometryQuery::new("f", vec![XYGeometryValue::Rectangle(rect)]).unwrap(),
         );
-        let boxed = XYPointField::new_box_query("f", -1.0, 2.0, -3.0, 4.0).unwrap();
+        let boxed = XYPointField::new_box_query(Some("f"), -1.0, 2.0, -3.0, 4.0).unwrap();
         assert!(boxed.query_eq(direct.as_ref()));
         assert_eq!(boxed.query_hash(), direct.query_hash());
         assert!(!boxed.query_eq(
-            XYPointField::new_box_query("g", -1.0, 2.0, -3.0, 4.0)
+            XYPointField::new_box_query(Some("g"), -1.0, 2.0, -3.0, 4.0)
                 .unwrap()
                 .as_ref()
         ));
@@ -2143,7 +2286,7 @@ mod xy_point_field_query_tests {
         let direct: Arc<dyn Query> = Arc::new(
             XYPointInGeometryQuery::new("f", vec![XYGeometryValue::Circle(circle)]).unwrap(),
         );
-        let distance = XYPointField::new_distance_query("f", 1.0, 2.0, 3.0).unwrap();
+        let distance = XYPointField::new_distance_query(Some("f"), 1.0, 2.0, 3.0).unwrap();
         assert!(distance.query_eq(direct.as_ref()));
 
         let polygon = XYPolygon::new(
@@ -2152,20 +2295,100 @@ mod xy_point_field_query_tests {
             Vec::new(),
         )
         .unwrap();
-        let by_polygon = XYPointField::new_polygon_query("f", vec![polygon.clone()]).unwrap();
+        let by_polygon = XYPointField::new_polygon_query(Some("f"), vec![polygon.clone()]).unwrap();
         let by_geometry =
-            XYPointField::new_geometry_query("f", vec![XYGeometryValue::Polygon(polygon)]).unwrap();
+            XYPointField::new_geometry_query(Some("f"), vec![XYGeometryValue::Polygon(polygon)])
+                .unwrap();
         assert!(by_polygon.query_eq(by_geometry.as_ref()));
+    }
+
+    /// The point query factories take Java's nullable field as
+    /// `Option<&str>`: `None` throws `IllegalArgumentException("field must
+    /// not be null")` where Java throws it (`PointRangeQuery.java:108`,
+    /// `LatLonPointDistanceQuery.java:60`, `SpatialQuery.java:76`,
+    /// `XYPointInGeometryQuery.java:56`, `LatLonDocValuesBoxQuery.java:53`,
+    /// `LatLonDocValuesQuery.java:58`, `XYDocValuesPointInGeometryQuery.java:46`),
+    /// and the coordinate checks that precede it in Java still win.
+    #[test]
+    fn a_none_field_is_javas_null_field() {
+        use crate::geo::geometry::Polygon;
+        fn is_null_field(r: Result<Arc<dyn Query>>) -> bool {
+            matches!(r, Err(LuceneError::IllegalArgument(m)) if m == "field must not be null")
+        }
+        let polygon = Polygon::new(
+            vec![18.0, 18.0, 19.0, 19.0, 18.0],
+            vec![-66.0, -65.0, -65.0, -66.0, -66.0],
+            Vec::new(),
+        )
+        .unwrap();
+        let xy_polygon = XYPolygon::new(
+            vec![0.0, 1.0, 1.0, 0.0, 0.0],
+            vec![0.0, 0.0, 1.0, 1.0, 0.0],
+            Vec::new(),
+        )
+        .unwrap();
+        assert!(is_null_field(LatLonPoint::new_box_query(
+            None, 18.0, 19.0, -66.0, -65.0
+        )));
+        assert!(is_null_field(LatLonPoint::new_distance_query(
+            None, 18.0, -65.0, 50_000.0
+        )));
+        assert!(is_null_field(LatLonPoint::new_polygon_query(
+            None,
+            vec![LatLonGeometryValue::Polygon(polygon.clone())]
+        )));
+        assert!(is_null_field(LatLonDocValuesField::new_slow_box_query(
+            None, 18.0, 19.0, -66.0, -65.0
+        )));
+        assert!(is_null_field(
+            LatLonDocValuesField::new_slow_distance_query(None, 18.0, -65.0, 50_000.0)
+        ));
+        assert!(is_null_field(LatLonDocValuesField::new_slow_polygon_query(
+            None,
+            vec![polygon]
+        )));
+        assert!(is_null_field(XYPointField::new_box_query(
+            None, 18.0, 19.0, -66.0, -65.0
+        )));
+        assert!(is_null_field(XYPointField::new_distance_query(
+            None, 18.0, -65.0, 50_000.0
+        )));
+        assert!(is_null_field(XYPointField::new_polygon_query(
+            None,
+            vec![xy_polygon.clone()]
+        )));
+        assert!(is_null_field(XYDocValuesField::new_slow_box_query(
+            None, 18.0, 19.0, -66.0, -65.0
+        )));
+        assert!(is_null_field(XYDocValuesField::new_slow_distance_query(
+            None, 18.0, -65.0, 50_000.0
+        )));
+        assert!(is_null_field(XYDocValuesField::new_slow_polygon_query(
+            None,
+            vec![xy_polygon]
+        )));
+        // Java checks the coordinates first: `newBoxQuery(null, 91, ...)`
+        // fails on the latitude, not on the field.
+        assert!(!is_null_field(LatLonPoint::new_box_query(
+            None, 91.0, 92.0, -66.0, -65.0
+        )));
+        assert!(!is_null_field(LatLonDocValuesField::new_slow_box_query(
+            None, 18.0, 91.0, -66.0, -65.0
+        )));
+        // `minLatitude == 90.0` short-circuits before any check, as in Java.
+        assert!(LatLonPoint::new_box_query(None, 90.0, 90.0, -66.0, -65.0).is_ok());
     }
 
     /// The geometry constructors reject what Java's reject: a NaN box and a
     /// negative, NaN or infinite radius throw `IllegalArgumentException`.
     #[test]
     fn factories_reject_invalid_geometries() {
-        assert!(XYPointField::new_box_query("f", f32::NAN, f32::NAN, f32::NAN, f32::NAN).is_err());
+        assert!(
+            XYPointField::new_box_query(Some("f"), f32::NAN, f32::NAN, f32::NAN, f32::NAN).is_err()
+        );
         for radius in [-1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             assert!(matches!(
-                XYPointField::new_distance_query("f", 18.0, 19.0, radius),
+                XYPointField::new_distance_query(Some("f"), 18.0, 19.0, radius),
                 Err(LuceneError::IllegalArgument(_))
             ));
         }

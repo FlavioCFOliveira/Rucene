@@ -588,7 +588,10 @@ pub fn do_test_scoring(
 
     // check score(term-1), given the same freq/norm it should be >= score(term) [scores
     // non-decreasing as terms get rarer]
-    if term.doc_freq() > 1 && f64::from(freq) < term.total_term_freq() as f64 {
+    // `freq < term.totalTermFreq()` compares a `float` with a `long`, so Java
+    // converts the `long` to `float` (JLS 5.6.2): an `f64` comparison answers
+    // differently once the `long` exceeds `float` precision.
+    if term.doc_freq() > 1 && freq < term.total_term_freq() as f32 {
         let prev_term = TermStatistics::new(
             term.term().clone(),
             term.doc_freq() - 1,

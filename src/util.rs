@@ -2935,7 +2935,15 @@ impl Constants {
     fn platform_prop(property: &str) -> Option<String> {
         match property {
             "os.name" => Some(env::consts::OS.to_string()),
-            "os.arch" => Some(env::consts::ARCH.to_string()),
+            "os.arch" => Some(
+                Self::jvm_os_arch(
+                    env::consts::ARCH,
+                    env::consts::OS,
+                    cfg!(target_endian = "little"),
+                    cfg!(target_pointer_width = "32"),
+                )
+                .to_string(),
+            ),
             "sun.arch.data.model" => Some(if cfg!(target_pointer_width = "64") {
                 "64".to_string()
             } else {
@@ -3001,13 +3009,46 @@ impl Constants {
         env::consts::OS == "freebsd"
     }
 
-    /// Operating-system architecture.
+    /// Operating-system architecture: the `os.arch` system property, or
+    /// `Unknown`.
     ///
-    /// Equivalent to `Constants.OS_ARCH`. Java spells x86-64 `amd64`; the Rust
-    /// runtime spells the same architecture `x86_64`, and the crate compares
-    /// against the Rust spelling throughout.
-    pub fn os_arch() -> &'static str {
-        env::consts::ARCH
+    /// Equivalent to `Constants.OS_ARCH` (`Constants.java:57`). The platform
+    /// value is the JVM's name for the architecture (see
+    /// [`jvm_os_arch`](Self::jvm_os_arch)), so the comparisons Lucene makes
+    /// against `"amd64"` and `"aarch64"` hold as they do in Java.
+    pub fn os_arch() -> String {
+        Self::get_sys_prop_or("os.arch", Self::UNKNOWN)
+    }
+
+    /// The JVM's `os.arch` for a Rust target: `arch` is
+    /// `std::env::consts::ARCH`, `os` is `std::env::consts::OS`.
+    ///
+    /// JDK 25 sets `os.arch` from its build CPU name
+    /// (`make/autoconf/platform.m4`, `PLATFORM_EXTRACT_VARS_FROM_CPU` and
+    /// `OPENJDK_$1_CPU_OSARCH`): the CPU name is the GNU one, with
+    /// `powerpc*` renamed `ppc*`, `sparc64` renamed `sparcv9` and the
+    /// little-endian MIPS and PowerPC 64 variants suffixed `el`/`le`; then
+    /// `x86` is renamed `i386` on Linux and `x86_64` is renamed `amd64` on
+    /// every OS but macOS (and is `x32` under the 32-bit x86-64 ABI). Rust
+    /// names the remaining architectures as the JVM does.
+    pub fn jvm_os_arch(
+        arch: &'static str,
+        os: &str,
+        little_endian: bool,
+        pointer_width_32: bool,
+    ) -> &'static str {
+        match arch {
+            "x86" if os == "linux" => "i386",
+            "x86_64" if pointer_width_32 => "x32",
+            "x86_64" if os != "macos" => "amd64",
+            "mips" if little_endian => "mipsel",
+            "mips64" if little_endian => "mips64el",
+            "powerpc" => "ppc",
+            "powerpc64" if little_endian => "ppc64le",
+            "powerpc64" => "ppc64",
+            "sparc64" => "sparcv9",
+            other => other,
+        }
     }
 
     /// Operating-system version.
@@ -3135,7 +3176,7 @@ impl Constants {
                     return true;
                 }
                 // intel has their act together
-                if Self::os_arch() == "x86_64" && !Self::has_sse4a() {
+                if Self::os_arch() == "amd64" && !Self::has_sse4a() {
                     return true;
                 }
             } else {
@@ -3165,7 +3206,7 @@ impl Constants {
                     return true;
                 }
                 // intel has their act together
-                if Self::os_arch() == "x86_64" && !Self::has_sse4a() {
+                if Self::os_arch() == "amd64" && !Self::has_sse4a() {
                     return true;
                 }
             } else {
@@ -3183,7 +3224,7 @@ impl Constants {
         if Self::os_arch() == "aarch64" && Self::has_sve() {
             return true;
         }
-        if Self::os_arch() == "x86_64" && Self::has_avx2() {
+        if Self::os_arch() == "amd64" && Self::has_avx2() {
             return true;
         }
         false
@@ -5323,6 +5364,42 @@ mod tests {
         assert!(!stream.is_enabled("component"));
         stream.message("component", "should be ignored");
         stream.close();
+    }
+
+    /// `os.arch` is the JVM's name for the architecture (JDK 25
+    /// `make/autoconf/platform.m4`): `IndexWriter` records it in every
+    /// segment's diagnostics and Lucene compares it with `"amd64"`.
+    #[test]
+    fn os_arch_is_the_jvm_name_of_the_architecture() {
+        let jvm = Constants::jvm_os_arch;
+        assert_eq!(jvm("x86_64", "linux", true, false), "amd64");
+        assert_eq!(jvm("x86_64", "windows", true, false), "amd64");
+        assert_eq!(jvm("x86_64", "macos", true, false), "x86_64");
+        assert_eq!(jvm("x86_64", "linux", true, true), "x32");
+        assert_eq!(jvm("x86", "linux", true, true), "i386");
+        assert_eq!(jvm("x86", "windows", true, true), "x86");
+        assert_eq!(jvm("aarch64", "linux", true, false), "aarch64");
+        assert_eq!(jvm("aarch64", "macos", true, false), "aarch64");
+        assert_eq!(jvm("arm", "linux", true, true), "arm");
+        assert_eq!(jvm("powerpc", "linux", false, true), "ppc");
+        assert_eq!(jvm("powerpc64", "linux", false, false), "ppc64");
+        assert_eq!(jvm("powerpc64", "linux", true, false), "ppc64le");
+        assert_eq!(jvm("mips", "linux", false, true), "mips");
+        assert_eq!(jvm("mips", "linux", true, true), "mipsel");
+        assert_eq!(jvm("mips64", "linux", false, false), "mips64");
+        assert_eq!(jvm("mips64", "linux", true, false), "mips64el");
+        assert_eq!(jvm("sparc64", "linux", false, false), "sparcv9");
+        assert_eq!(jvm("s390x", "linux", false, false), "s390x");
+        assert_eq!(jvm("riscv64", "linux", true, false), "riscv64");
+        assert_eq!(jvm("loongarch64", "linux", true, false), "loongarch64");
+        if cfg!(all(
+            target_arch = "x86_64",
+            target_os = "linux",
+            target_pointer_width = "64"
+        )) && std::env::var_os("os.arch").is_none()
+        {
+            assert_eq!(Constants::os_arch(), "amd64");
+        }
     }
 
     #[test]

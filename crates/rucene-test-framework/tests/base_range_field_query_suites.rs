@@ -18,7 +18,8 @@
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
-use randomizedtesting::jdk::reflect::{Class, Constructor};
+use randomizedtesting::jdk::reflect::{modifier, Class, Constructor, Method};
+use randomizedtesting::junit::{AfterClass, BeforeClass};
 use rucene::document::geo_fields::{InetAddressPoint, InetAddressRange};
 use rucene::document::range_fields::{DoubleRange, FloatRange, IntRange, LongRange};
 use rucene::error::Result;
@@ -27,7 +28,7 @@ use rucene::search::query::Query;
 use rucene_test_framework::search::base_range_field_query_test_case::{
     self, range_test, BaseRangeFieldQueryTestCase, Range, RangeTestInstance, RangeValue,
 };
-use rucene_test_framework::util::lucene_test_case::Nightly;
+use rucene_test_framework::util::lucene_test_case::{LuceneTestCaseExecutor, Nightly};
 use rucene_test_framework::util::{LuceneTestCase, TestUtil};
 
 mod draw_hooks;
@@ -670,19 +671,46 @@ fn inet_address_class() -> Arc<Class> {
 
 static DRAWS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
+/// The shared executor `searchOnTestThread` sets aside, restored by
+/// `recordClassDraw`.
+static SHARED_EXECUTOR: Mutex<Option<Arc<LuceneTestCaseExecutor>>> = Mutex::new(None);
+
 /// `TestRangeFieldSuiteDraws` of `BaseSuitesDrawsOracle`: the cases on
-/// `TestIntRangeFieldQueries`' ranges.
+/// `TestIntRangeFieldQueries`' ranges. As the Java class does, it runs with
+/// `LuceneTestCase`'s shared executor set to `null` (its `@BeforeClass
+/// searchOnTestThread`), so that every `MAYBE_CACHE_POLICY` draw of a
+/// search happens on the test thread: with the executor, the thread that
+/// runs each slice, and so the randomness drawn, is a race in Java.
 fn draws_class() -> Arc<Class> {
     Class::builder("org.apache.lucene.tests.search.TestRangeFieldSuiteDraws")
         .extends(&base_range_field_query_test_case::class())
         .constructor(Constructor::no_args(|| {
             RangeTestInstance::new(NumericRangeBinding::<i32>::new())
         }))
+        .method(
+            Method::new("searchOnTestThread")
+                .modifiers(modifier::PUBLIC | modifier::STATIC)
+                .annotate(BeforeClass)
+                .static_body(|| {
+                    *SHARED_EXECUTOR.lock().unwrap() = LuceneTestCase::replace_executor(None);
+                }),
+        )
         .method(draw_hooks::record_tear_down(
             &DRAWS,
             draw_hooks::lucene_tear_down::<RangeTestInstance>,
         ))
-        .method(draw_hooks::record_class_draw(&DRAWS))
+        .method(
+            Method::new("recordClassDraw")
+                .modifiers(modifier::PUBLIC | modifier::STATIC)
+                .annotate(AfterClass)
+                .static_body(|| {
+                    DRAWS.lock().unwrap().push(format!(
+                        "#class\tnext\t{}",
+                        LuceneTestCase::random().next_long()
+                    ));
+                    LuceneTestCase::replace_executor(SHARED_EXECUTOR.lock().unwrap().take());
+                }),
+        )
         .build()
 }
 

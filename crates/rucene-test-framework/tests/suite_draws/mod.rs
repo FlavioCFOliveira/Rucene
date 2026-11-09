@@ -79,13 +79,78 @@ pub fn draw_rows(seed: &str, class: fn() -> Arc<Class>, draws: &Mutex<Vec<String
 
 /// Asserts that, on the seeds of the fixture `fixture` (a file of
 /// `tests/fixtures/`), every row of the draws class equals Java's.
+// Each test binary includes this module and calls one of the two entry points.
+#[allow(dead_code)]
 pub fn assert_draws_match(fixture: &str, class: fn() -> Arc<Class>, draws: &Mutex<Vec<String>>) {
+    assert_draws_match_excluding(fixture, class, draws, &[]);
+}
+
+/// The JVM system properties a fixture records (`# property\t<key>\t<value>`
+/// lines, written by `BaseFormatSuitesOracle`), set as the process
+/// environment `rucene::util::Constants` reads them from while the guard
+/// lives, and restored when it drops.
+///
+/// They reach the draws through `IndexWriter.setDiagnostics`: the `.si` of
+/// every segment records `os.arch`, `os.version`, `java.vendor` and
+/// `java.runtime.version`, so its length, the segment's size and the order
+/// `TieredMergePolicy` merges segments in depend on them.
+struct OracleProperties(Vec<(String, Option<std::ffi::OsString>)>);
+
+impl OracleProperties {
+    fn set(lines: &[String]) -> OracleProperties {
+        let mut saved = Vec::new();
+        for line in lines {
+            let mut parts = line.splitn(3, '\t');
+            if parts.next() != Some("# property") {
+                continue;
+            }
+            let (Some(key), Some(value)) = (parts.next(), parts.next()) else {
+                panic!("malformed property line: {line}");
+            };
+            saved.push((key.to_string(), std::env::var_os(key)));
+            std::env::set_var(key, value);
+        }
+        OracleProperties(saved)
+    }
+}
+
+impl Drop for OracleProperties {
+    fn drop(&mut self) {
+        for (key, previous) in self.0.drain(..).rev() {
+            match previous {
+                Some(value) => std::env::set_var(&key, value),
+                None => std::env::remove_var(&key),
+            }
+        }
+    }
+}
+
+/// [`assert_draws_match`], leaving out of the comparison the `next` row of
+/// each `(seed, method)` of `excluded` (on both sides): rows Java itself
+/// does not reproduce from run to run. The method still runs, and its
+/// failure and `#counts` rows are still compared.
+pub fn assert_draws_match_excluding(
+    fixture: &str,
+    class: fn() -> Arc<Class>,
+    draws: &Mutex<Vec<String>>,
+    excluded: &[(&str, &str)],
+) {
     let path = format!("{}/tests/fixtures/{fixture}", env!("CARGO_MANIFEST_DIR"));
-    let java: Vec<String> = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("{path}: {e}"))
-        .lines()
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+    let lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let is_excluded = |row: &String| {
+        let mut f = row.split('\t');
+        let (seed, method, kind) = (f.next(), f.next(), f.next());
+        kind == Some("next")
+            && excluded
+                .iter()
+                .any(|(s, m)| seed == Some(*s) && method == Some(*m))
+    };
+    let java: Vec<String> = lines
+        .iter()
         .filter(|l| !l.starts_with('#'))
-        .map(str::to_string)
+        .filter(|l| !is_excluded(l))
+        .cloned()
         .collect();
     let mut seeds: Vec<String> = Vec::new();
     for row in &java {
@@ -94,10 +159,13 @@ pub fn assert_draws_match(fixture: &str, class: fn() -> Arc<Class>, draws: &Mute
             seeds.push(seed);
         }
     }
+    let properties = OracleProperties::set(&lines);
     let mut rust: Vec<String> = Vec::new();
     for seed in &seeds {
         rust.extend(draw_rows(seed, class, draws));
     }
+    drop(properties);
+    rust.retain(|r| !is_excluded(r));
     let only_java: Vec<&String> = java.iter().filter(|r| !rust.contains(r)).collect();
     let only_rust: Vec<&String> = rust.iter().filter(|r| !java.contains(r)).collect();
     println!(

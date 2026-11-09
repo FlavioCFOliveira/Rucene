@@ -153,9 +153,7 @@ impl KnnVectorsFormat for HnswBitVectorsFormat {
     }
 
     fn fields_writer(&self, state: &OwnedSegmentWriteState) -> Result<Box<dyn KnnVectorsWriter>> {
-        let flat_vector_writer = self
-            .flat_vectors_format
-            .fields_writer_flat(&state.borrow())?;
+        let flat_vector_writer = self.flat_vectors_format.fields_writer_flat(state)?;
         Ok(Box::new(FlatBitVectorsWriter {
             delegate: Box::new(Lucene99HnswVectorsWriter::with_flat_format(
                 state,

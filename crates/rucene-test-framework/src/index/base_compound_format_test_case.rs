@@ -391,23 +391,25 @@ fn assert_read_only(
     let testfile = "_123.test";
 
     let mut dir = LuceneTestCase::new_directory();
-    let directory = dir.as_directory();
-    if write_test_file {
-        write_int_file(&*directory, testfile)?;
+    {
+        let directory = dir.as_directory();
+        if write_test_file {
+            write_int_file(&*directory, testfile)?;
+        }
+
+        let si = new_segment_info(&directory, "_123")?;
+        si.set_files(Vec::<String>::new())?;
+        write_compound(&*directory, &si, &*DEFAULT_IO_CONTEXT)?;
+        let mut cfs = compound_reader(&*directory, &si)?;
+        expect_throws_lucene(
+            "java.lang.UnsupportedOperationException",
+            is_unsupported_operation,
+            || op(&*cfs, testfile),
+        );
+
+        cfs.close()?;
+        drop(directory);
     }
-
-    let si = new_segment_info(&directory, "_123")?;
-    si.set_files(Vec::<String>::new())?;
-    write_compound(&*directory, &si, &*DEFAULT_IO_CONTEXT)?;
-    let mut cfs = compound_reader(&*directory, &si)?;
-    expect_throws_lucene(
-        "java.lang.UnsupportedOperationException",
-        is_unsupported_operation,
-        || op(&*cfs, testfile),
-    );
-
-    cfs.close()?;
-    drop(directory);
     dir.close()
 }
 
@@ -532,15 +534,17 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testEmpty()`: test that empty CFS is empty.
     fn test_empty(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let directory = dir.as_directory();
+        {
+            let directory = dir.as_directory();
 
-        let si = new_segment_info(&directory, "_123")?;
-        si.set_files(Vec::<String>::new())?;
-        write_compound(&*directory, &si, &*DEFAULT_IO_CONTEXT)?;
-        let mut cfs = compound_reader(&*directory, &si)?;
-        Assert::assert_equals(0, cfs.list_all()?.len() as i64);
-        cfs.close()?;
-        drop(directory);
+            let si = new_segment_info(&directory, "_123")?;
+            si.set_files(Vec::<String>::new())?;
+            write_compound(&*directory, &si, &*DEFAULT_IO_CONTEXT)?;
+            let mut cfs = compound_reader(&*directory, &si)?;
+            Assert::assert_equals(0, cfs.list_all()?.len() as i64);
+            cfs.close()?;
+            drop(directory);
+        }
         dir.close()
     }
 
@@ -551,22 +555,24 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
         for (i, &size) in data.iter().enumerate() {
             let testfile = format!("_{i}.test");
             let mut dir = LuceneTestCase::new_directory();
-            let directory = dir.as_directory();
-            let si = new_segment_info(&directory, &format!("_{i}"))?;
-            create_sequence_file(&*directory, &testfile, 0, size, &si.id(), "suffix")?;
+            {
+                let directory = dir.as_directory();
+                let si = new_segment_info(&directory, &format!("_{i}"))?;
+                create_sequence_file(&*directory, &testfile, 0, size, &si.id(), "suffix")?;
 
-            si.set_files([testfile.clone()])?;
-            write_compound(&*directory, &si, &*DEFAULT_IO_CONTEXT)?;
-            let mut cfs = compound_reader(&*directory, &si)?;
+                si.set_files([testfile.clone()])?;
+                write_compound(&*directory, &si, &*DEFAULT_IO_CONTEXT)?;
+                let mut cfs = compound_reader(&*directory, &si)?;
 
-            let mut expected = directory.open_input(&testfile, &*random_io_context())?;
-            let mut actual = cfs.open_input(&testfile, &*random_io_context())?;
-            assert_same_streams(&testfile, expected.as_mut(), actual.as_mut())?;
-            assert_same_seek_behavior(&testfile, expected.as_mut(), actual.as_mut())?;
-            expected.close()?;
-            actual.close()?;
-            cfs.close()?;
-            drop(directory);
+                let mut expected = directory.open_input(&testfile, &*random_io_context())?;
+                let mut actual = cfs.open_input(&testfile, &*random_io_context())?;
+                assert_same_streams(&testfile, expected.as_mut(), actual.as_mut())?;
+                assert_same_seek_behavior(&testfile, expected.as_mut(), actual.as_mut())?;
+                expected.close()?;
+                actual.close()?;
+                cfs.close()?;
+                drop(directory);
+            }
             dir.close()?;
         }
         Ok(())
@@ -576,26 +582,28 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
     fn test_two_files(&self) -> Result<()> {
         let files = ["_123.d1".to_string(), "_123.d2".to_string()];
         let mut dir = LuceneTestCase::new_directory();
-        let directory = dir.as_directory();
-        let si = new_segment_info(&directory, "_123")?;
-        create_sequence_file(&*directory, &files[0], 0, 15, &si.id(), "suffix")?;
-        create_sequence_file(&*directory, &files[1], 0, 114, &si.id(), "suffix")?;
+        {
+            let directory = dir.as_directory();
+            let si = new_segment_info(&directory, "_123")?;
+            create_sequence_file(&*directory, &files[0], 0, 15, &si.id(), "suffix")?;
+            create_sequence_file(&*directory, &files[1], 0, 114, &si.id(), "suffix")?;
 
-        si.set_files(files.clone())?;
-        write_compound(&*directory, &si, &*DEFAULT_IO_CONTEXT)?;
-        let mut cfs = compound_reader(&*directory, &si)?;
+            si.set_files(files.clone())?;
+            write_compound(&*directory, &si, &*DEFAULT_IO_CONTEXT)?;
+            let mut cfs = compound_reader(&*directory, &si)?;
 
-        for file in &files {
-            let mut expected = directory.open_input(file, &*random_io_context())?;
-            let mut actual = cfs.open_input(file, &*random_io_context())?;
-            assert_same_streams(file, expected.as_mut(), actual.as_mut())?;
-            assert_same_seek_behavior(file, expected.as_mut(), actual.as_mut())?;
-            expected.close()?;
-            actual.close()?;
+            for file in &files {
+                let mut expected = directory.open_input(file, &*random_io_context())?;
+                let mut actual = cfs.open_input(file, &*random_io_context())?;
+                assert_same_streams(file, expected.as_mut(), actual.as_mut())?;
+                assert_same_seek_behavior(file, expected.as_mut(), actual.as_mut())?;
+                expected.close()?;
+                actual.close()?;
+            }
+
+            cfs.close()?;
+            drop(directory);
         }
-
-        cfs.close()?;
-        drop(directory);
         dir.close()
     }
 
@@ -605,17 +613,19 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
         let testfile = "_123.test";
 
         let mut dir = LuceneTestCase::new_directory();
-        let directory = dir.as_directory();
-        let si = new_segment_info(&directory, "_123")?;
-        write_header_int_footer(&*directory, testfile, &si.id(), &*DEFAULT_IO_CONTEXT)?;
+        {
+            let directory = dir.as_directory();
+            let si = new_segment_info(&directory, "_123")?;
+            write_header_int_footer(&*directory, testfile, &si.id(), &*DEFAULT_IO_CONTEXT)?;
 
-        si.set_files([testfile.to_string()])?;
-        write_compound(&*directory, &si, &*DEFAULT_IO_CONTEXT)?;
-        let mut cfs = compound_reader(&*directory, &si)?;
-        Assert::assert_equals(1, cfs.list_all()?.len() as i64);
-        cfs.close()?;
-        cfs.close()?; // second close should not throw exception
-        drop(directory);
+            si.set_files([testfile.to_string()])?;
+            write_compound(&*directory, &si, &*DEFAULT_IO_CONTEXT)?;
+            let mut cfs = compound_reader(&*directory, &si)?;
+            Assert::assert_equals(1, cfs.list_all()?.len() as i64);
+            cfs.close()?;
+            cfs.close()?; // second close should not throw exception
+            drop(directory);
+        }
         dir.close()
     }
 
@@ -637,7 +647,7 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
         write_compound(&*directory, &si, my_context)?;
         drop(si);
         drop(directory);
-        dir.close_owned()
+        close_shared(dir)
     }
 
     /// `testLargeCFS()`: LUCENE-5724: actually test we play nice with
@@ -678,51 +688,53 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
     /// listAll.
     fn test_list_all(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let directory = dir.as_directory();
-        // riw should sometimes create docvalues fields, etc
-        let riw = RandomIndexWriter::new_with_mock_analyzer(
-            &*LuceneTestCase::random(),
-            Arc::clone(&directory),
-        )?;
-        // these fields should sometimes get term vectors, etc
-        let id_field = LuceneTestCase::new_string_field("id", "", Store::NO);
-        let body_field = LuceneTestCase::new_text_field("body", "", Store::NO);
-        for i in 0..100 {
-            let mut doc = Document::new();
-            doc.add(Box::new(rucene::document::Field::new(
-                id_field.name(),
-                i.to_string(),
-                id_field.field_type().clone(),
-            )?));
-            doc.add(Box::new(rucene::document::Field::new(
-                body_field.name(),
-                TestUtil::random_unicode_string(&*LuceneTestCase::random()),
-                body_field.field_type().clone(),
-            )?));
-            riw.add_document(&doc)?;
-            if LuceneTestCase::random().next_int_bound(7) == 0 {
-                riw.commit()?;
+        {
+            let directory = dir.as_directory();
+            // riw should sometimes create docvalues fields, etc
+            let riw = RandomIndexWriter::new_with_mock_analyzer(
+                &*LuceneTestCase::random(),
+                Arc::clone(&directory),
+            )?;
+            // these fields should sometimes get term vectors, etc
+            let id_field = LuceneTestCase::new_string_field("id", "", Store::NO);
+            let body_field = LuceneTestCase::new_text_field("body", "", Store::NO);
+            for i in 0..100 {
+                let mut doc = Document::new();
+                doc.add(Box::new(rucene::document::Field::new(
+                    id_field.name(),
+                    i.to_string(),
+                    id_field.field_type().clone(),
+                )?));
+                doc.add(Box::new(rucene::document::Field::new(
+                    body_field.name(),
+                    TestUtil::random_unicode_string(&*LuceneTestCase::random()),
+                    body_field.field_type().clone(),
+                )?));
+                riw.add_document(&doc)?;
+                if LuceneTestCase::random().next_int_bound(7) == 0 {
+                    riw.commit()?;
+                }
             }
-        }
-        riw.close()?;
-        drop(riw);
-        let infos = SegmentInfos::read_latest_commit(Arc::clone(&directory))?;
-        for si in infos.iter() {
-            if si.info.get_use_compound_file() {
-                let mut cfs_dir = compound_reader(&*directory, &si.info)?;
-                let listed = (|| -> Result<()> {
-                    for cfs_file in cfs_dir.list_all()? {
-                        let mut cfs_in = cfs_dir.open_input(&cfs_file, &*DEFAULT_IO_CONTEXT)?;
-                        cfs_in.close()?;
-                    }
-                    Ok(())
-                })();
-                let closed = cfs_dir.close();
-                listed?;
-                closed?;
+            riw.close()?;
+            drop(riw);
+            let infos = SegmentInfos::read_latest_commit(Arc::clone(&directory))?;
+            for si in infos.iter() {
+                if si.info.get_use_compound_file() {
+                    let mut cfs_dir = compound_reader(&*directory, &si.info)?;
+                    let listed = (|| -> Result<()> {
+                        for cfs_file in cfs_dir.list_all()? {
+                            let mut cfs_in = cfs_dir.open_input(&cfs_file, &*DEFAULT_IO_CONTEXT)?;
+                            cfs_in.close()?;
+                        }
+                        Ok(())
+                    })();
+                    let closed = cfs_dir.close();
+                    listed?;
+                    closed?;
+                }
             }
+            drop(directory);
         }
-        drop(directory);
         dir.close()
     }
 
@@ -761,46 +773,48 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
     /// internally by the compound file logic.
     fn test_random_files(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let directory = dir.as_directory();
-        // Setup the test segment
-        let segment = "_123";
-        let chunk = 1024; // internal buffer size used by the stream
-        let si = new_segment_info(&directory, "_123")?;
-        let seg_id = si.id();
-        let d = &*directory;
-        create_random_file(d, &format!("{segment}.zero"), 0, &seg_id)?;
-        create_random_file(d, &format!("{segment}.one"), 1, &seg_id)?;
-        create_random_file(d, &format!("{segment}.ten"), 10, &seg_id)?;
-        create_random_file(d, &format!("{segment}.hundred"), 100, &seg_id)?;
-        create_random_file(d, &format!("{segment}.big1"), chunk, &seg_id)?;
-        create_random_file(d, &format!("{segment}.big2"), chunk - 1, &seg_id)?;
-        create_random_file(d, &format!("{segment}.big3"), chunk + 1, &seg_id)?;
-        create_random_file(d, &format!("{segment}.big4"), 3 * chunk, &seg_id)?;
-        create_random_file(d, &format!("{segment}.big5"), 3 * chunk - 1, &seg_id)?;
-        create_random_file(d, &format!("{segment}.big6"), 3 * chunk + 1, &seg_id)?;
-        create_random_file(d, &format!("{segment}.big7"), 1000 * chunk, &seg_id)?;
+        {
+            let directory = dir.as_directory();
+            // Setup the test segment
+            let segment = "_123";
+            let chunk = 1024; // internal buffer size used by the stream
+            let si = new_segment_info(&directory, "_123")?;
+            let seg_id = si.id();
+            let d = &*directory;
+            create_random_file(d, &format!("{segment}.zero"), 0, &seg_id)?;
+            create_random_file(d, &format!("{segment}.one"), 1, &seg_id)?;
+            create_random_file(d, &format!("{segment}.ten"), 10, &seg_id)?;
+            create_random_file(d, &format!("{segment}.hundred"), 100, &seg_id)?;
+            create_random_file(d, &format!("{segment}.big1"), chunk, &seg_id)?;
+            create_random_file(d, &format!("{segment}.big2"), chunk - 1, &seg_id)?;
+            create_random_file(d, &format!("{segment}.big3"), chunk + 1, &seg_id)?;
+            create_random_file(d, &format!("{segment}.big4"), 3 * chunk, &seg_id)?;
+            create_random_file(d, &format!("{segment}.big5"), 3 * chunk - 1, &seg_id)?;
+            create_random_file(d, &format!("{segment}.big6"), 3 * chunk + 1, &seg_id)?;
+            create_random_file(d, &format!("{segment}.big7"), 1000 * chunk, &seg_id)?;
 
-        let mut files = Vec::new();
-        for file in directory.list_all()? {
-            if file.starts_with(segment) {
-                files.push(file);
+            let mut files = Vec::new();
+            for file in directory.list_all()? {
+                if file.starts_with(segment) {
+                    files.push(file);
+                }
             }
-        }
 
-        si.set_files(files.clone())?;
-        write_compound(&*directory, &si, &*DEFAULT_IO_CONTEXT)?;
-        let mut cfs = compound_reader(&*directory, &si)?;
+            si.set_files(files.clone())?;
+            write_compound(&*directory, &si, &*DEFAULT_IO_CONTEXT)?;
+            let mut cfs = compound_reader(&*directory, &si)?;
 
-        for file in &files {
-            let mut check = directory.open_input(file, &*random_io_context())?;
-            let mut test = cfs.open_input(file, &*random_io_context())?;
-            assert_same_streams(file, check.as_mut(), test.as_mut())?;
-            assert_same_seek_behavior(file, check.as_mut(), test.as_mut())?;
-            test.close()?;
-            check.close()?;
+            for file in &files {
+                let mut check = directory.open_input(file, &*random_io_context())?;
+                let mut test = cfs.open_input(file, &*random_io_context())?;
+                assert_same_streams(file, check.as_mut(), test.as_mut())?;
+                assert_same_seek_behavior(file, check.as_mut(), test.as_mut())?;
+                test.close()?;
+                check.close()?;
+            }
+            cfs.close()?;
+            drop(directory);
         }
-        cfs.close()?;
-        drop(directory);
         dir.close()
     }
 
@@ -866,25 +880,27 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testClonedStreamsClosing()`.
     fn test_cloned_streams_closing(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let directory = dir.as_directory();
-        let mut cr = create_large_cfs(&directory)?;
+        {
+            let directory = dir.as_directory();
+            let mut cr = create_large_cfs(&directory)?;
 
-        // basic clone
-        let mut expected = directory.open_input("_123.f11", &*random_io_context())?;
+            // basic clone
+            let mut expected = directory.open_input("_123.f11", &*random_io_context())?;
 
-        let mut one = cr.open_input("_123.f11", &*random_io_context())?;
+            let mut one = cr.open_input("_123.f11", &*random_io_context())?;
 
-        let mut two = one.clone_input()?;
+            let mut two = one.clone_input()?;
 
-        assert_same_streams("basic clone one", expected.as_mut(), one.as_mut())?;
-        expected.seek(0)?;
-        assert_same_streams("basic clone two", expected.as_mut(), two.as_mut())?;
+            assert_same_streams("basic clone one", expected.as_mut(), one.as_mut())?;
+            expected.seek(0)?;
+            assert_same_streams("basic clone two", expected.as_mut(), two.as_mut())?;
 
-        // Now close the compound reader
-        cr.close()?;
-        expected.close()?;
-        drop((one, two));
-        drop(directory);
+            // Now close the compound reader
+            cr.close()?;
+            expected.close()?;
+            drop((one, two));
+            drop(directory);
+        }
         dir.close()
     }
 
@@ -893,24 +909,26 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
     /// other.
     fn test_random_access(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let directory = dir.as_directory();
-        let mut cr = create_large_cfs(&directory)?;
+        {
+            let directory = dir.as_directory();
+            let mut cr = create_large_cfs(&directory)?;
 
-        // Open two files
-        let mut e1 = directory.open_input("_123.f11", &*random_io_context())?;
-        let mut e2 = directory.open_input("_123.f3", &*random_io_context())?;
+            // Open two files
+            let mut e1 = directory.open_input("_123.f11", &*random_io_context())?;
+            let mut e2 = directory.open_input("_123.f3", &*random_io_context())?;
 
-        let mut a1 = cr.open_input("_123.f11", &*random_io_context())?;
-        let mut a2 = directory.open_input("_123.f3", &*random_io_context())?;
+            let mut a1 = cr.open_input("_123.f11", &*random_io_context())?;
+            let mut a2 = directory.open_input("_123.f3", &*random_io_context())?;
 
-        assert_independent_positions(e1.as_mut(), e2.as_mut(), a1.as_mut(), a2.as_mut())?;
+            assert_independent_positions(e1.as_mut(), e2.as_mut(), a1.as_mut(), a2.as_mut())?;
 
-        e1.close()?;
-        e2.close()?;
-        a1.close()?;
-        a2.close()?;
-        cr.close()?;
-        drop(directory);
+            e1.close()?;
+            e2.close()?;
+            a1.close()?;
+            a2.close()?;
+            cr.close()?;
+            drop(directory);
+        }
         dir.close()
     }
 
@@ -919,69 +937,75 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
     /// other.
     fn test_random_access_clones(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let directory = dir.as_directory();
-        let mut cr = create_large_cfs(&directory)?;
+        {
+            let directory = dir.as_directory();
+            let mut cr = create_large_cfs(&directory)?;
 
-        // Open two files
-        let mut e1 = cr.open_input("_123.f11", &*random_io_context())?;
-        let mut e2 = cr.open_input("_123.f3", &*random_io_context())?;
+            // Open two files
+            let mut e1 = cr.open_input("_123.f11", &*random_io_context())?;
+            let mut e2 = cr.open_input("_123.f3", &*random_io_context())?;
 
-        let mut a1 = e1.clone_input()?;
-        let mut a2 = e2.clone_input()?;
+            let mut a1 = e1.clone_input()?;
+            let mut a2 = e2.clone_input()?;
 
-        assert_independent_positions(e1.as_mut(), e2.as_mut(), a1.as_mut(), a2.as_mut())?;
+            assert_independent_positions(e1.as_mut(), e2.as_mut(), a1.as_mut(), a2.as_mut())?;
 
-        e1.close()?;
-        e2.close()?;
-        a1.close()?;
-        a2.close()?;
-        cr.close()?;
-        drop(directory);
+            e1.close()?;
+            e2.close()?;
+            a1.close()?;
+            a2.close()?;
+            cr.close()?;
+            drop(directory);
+        }
         dir.close()
     }
 
     /// `testFileNotFound()`.
     fn test_file_not_found(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let directory = dir.as_directory();
-        let mut cr = create_large_cfs(&directory)?;
+        {
+            let directory = dir.as_directory();
+            let mut cr = create_large_cfs(&directory)?;
 
-        // Open bogus file
-        expect_throws_lucene("java.io.IOException", LuceneError::is_io_exception, || {
-            cr.open_input("bogus", &*random_io_context())
-        });
+            // Open bogus file
+            expect_throws_lucene("java.io.IOException", LuceneError::is_io_exception, || {
+                cr.open_input("bogus", &*random_io_context())
+            });
 
-        cr.close()?;
-        drop(directory);
+            cr.close()?;
+            drop(directory);
+        }
         dir.close()
     }
 
     /// `testReadPastEOF()`.
     fn test_read_past_eof(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let directory = dir.as_directory();
-        let mut cr = create_large_cfs(&directory)?;
-        let mut is = cr.open_input("_123.f2", &*random_io_context())?;
-        let length = is.length();
-        is.seek(length - 10)?;
-        let mut b = vec![0u8; 100];
-        is.read_bytes(&mut b, 0, 10)?;
+        {
+            let directory = dir.as_directory();
+            let mut cr = create_large_cfs(&directory)?;
+            let mut is = cr.open_input("_123.f2", &*random_io_context())?;
+            let length = is.length();
+            is.seek(length - 10)?;
+            let mut b = vec![0u8; 100];
+            is.read_bytes(&mut b, 0, 10)?;
 
-        // Single byte read past end of file
-        expect_throws_lucene("java.io.IOException", LuceneError::is_io_exception, || {
-            is.read_byte()
-        });
+            // Single byte read past end of file
+            expect_throws_lucene("java.io.IOException", LuceneError::is_io_exception, || {
+                is.read_byte()
+            });
 
-        is.seek(length - 10)?;
+            is.seek(length - 10)?;
 
-        // Block read past end of file
-        expect_throws_lucene("java.io.IOException", LuceneError::is_io_exception, || {
-            is.read_bytes(&mut b, 0, 50)
-        });
+            // Block read past end of file
+            expect_throws_lucene("java.io.IOException", LuceneError::is_io_exception, || {
+                is.read_bytes(&mut b, 0, 50)
+            });
 
-        is.close()?;
-        cr.close()?;
-        drop(directory);
+            is.close()?;
+            cr.close()?;
+            drop(directory);
+        }
         dir.close()
     }
 
@@ -990,111 +1014,121 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
     /// compound file.
     fn test_resource_name_inside_compound_file(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let directory = dir.as_directory();
-        let sub_file = "_123.xyz";
-        let si = new_segment_info(&directory, "_123")?;
-        create_sequence_file(&*directory, sub_file, 0, 10, &si.id(), "suffix")?;
+        {
+            let directory = dir.as_directory();
+            let sub_file = "_123.xyz";
+            let si = new_segment_info(&directory, "_123")?;
+            create_sequence_file(&*directory, sub_file, 0, 10, &si.id(), "suffix")?;
 
-        si.set_files([sub_file.to_string()])?;
-        write_compound(&*directory, &si, &*DEFAULT_IO_CONTEXT)?;
-        let mut cfs = compound_reader(&*directory, &si)?;
-        let r#in = cfs.open_input(sub_file, &*DEFAULT_IO_CONTEXT)?;
-        let desc = r#in.to_java_string();
-        Assert::assert_true_msg(
-            &format!("resource description hides that it's inside a compound file: {desc}"),
-            desc.contains(&format!("[slice={sub_file}]")),
-        );
-        drop(r#in);
-        cfs.close()?;
-        drop(directory);
+            si.set_files([sub_file.to_string()])?;
+            write_compound(&*directory, &si, &*DEFAULT_IO_CONTEXT)?;
+            let mut cfs = compound_reader(&*directory, &si)?;
+            let r#in = cfs.open_input(sub_file, &*DEFAULT_IO_CONTEXT)?;
+            let desc = r#in.to_java_string();
+            Assert::assert_true_msg(
+                &format!("resource description hides that it's inside a compound file: {desc}"),
+                desc.contains(&format!("[slice={sub_file}]")),
+            );
+            drop(r#in);
+            cfs.close()?;
+            drop(directory);
+        }
         dir.close()
     }
 
     /// `testMissingCodecHeadersAreCaught()`.
     fn test_missing_codec_headers_are_caught(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let directory = dir.as_directory();
-        let sub_file = "_123.xyz";
+        {
+            let directory = dir.as_directory();
+            let sub_file = "_123.xyz";
 
-        // missing codec header
-        let mut os = directory.create_output(sub_file, &*random_io_context())?;
-        let written = (|| -> Result<()> {
-            for i in 0..1024 {
-                os.write_byte(i as u8)?;
-            }
-            Ok(())
-        })();
-        close_output(os.as_mut(), written)?;
+            // missing codec header
+            let mut os = directory.create_output(sub_file, &*random_io_context())?;
+            let written = (|| -> Result<()> {
+                for i in 0..1024 {
+                    os.write_byte(i as u8)?;
+                }
+                Ok(())
+            })();
+            close_output(os.as_mut(), written)?;
 
-        let si = new_segment_info(&directory, "_123")?;
-        si.set_files([sub_file.to_string()])?;
-        let e = expect_throws_lucene(
-            "org.apache.lucene.index.CorruptIndexException",
-            is_corrupt_index,
-            || write_compound(&*directory, &si, &*DEFAULT_IO_CONTEXT),
-        );
-        Assert::assert_true(exception_message(&e).contains("codec header mismatch"));
-        drop(directory);
+            let si = new_segment_info(&directory, "_123")?;
+            si.set_files([sub_file.to_string()])?;
+            let e = expect_throws_lucene(
+                "org.apache.lucene.index.CorruptIndexException",
+                is_corrupt_index,
+                || write_compound(&*directory, &si, &*DEFAULT_IO_CONTEXT),
+            );
+            Assert::assert_true(exception_message(&e).contains("codec header mismatch"));
+            drop(directory);
+        }
         dir.close()
     }
 
     /// `testCorruptFilesAreCaught()`.
     fn test_corrupt_files_are_caught(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let directory = dir.as_directory();
-        let sub_file = "_123.xyz";
+        {
+            let directory = dir.as_directory();
+            let sub_file = "_123.xyz";
 
-        // wrong checksum
-        let si = new_segment_info(&directory, "_123")?;
-        // write footer w/ wrong checksum
-        write_with_footer_checksum(&*directory, sub_file, &si.id(), 1)?;
+            // wrong checksum
+            let si = new_segment_info(&directory, "_123")?;
+            // write footer w/ wrong checksum
+            write_with_footer_checksum(&*directory, sub_file, &si.id(), 1)?;
 
-        si.set_files([sub_file.to_string()])?;
-        let e = expect_throws_lucene(
-            "org.apache.lucene.index.CorruptIndexException",
-            is_corrupt_index,
-            || write_compound(&*directory, &si, &*DEFAULT_IO_CONTEXT),
-        );
-        Assert::assert_true(exception_message(&e).contains("checksum failed (hardware problem?)"));
-        drop(directory);
+            si.set_files([sub_file.to_string()])?;
+            let e = expect_throws_lucene(
+                "org.apache.lucene.index.CorruptIndexException",
+                is_corrupt_index,
+                || write_compound(&*directory, &si, &*DEFAULT_IO_CONTEXT),
+            );
+            Assert::assert_true(
+                exception_message(&e).contains("checksum failed (hardware problem?)"),
+            );
+            drop(directory);
+        }
         dir.close()
     }
 
     /// `testCheckIntegrity()`.
     fn test_check_integrity(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let directory = dir.as_directory();
-        let sub_file = "_123.xyz";
-        let si = new_segment_info(&directory, "_123")?;
-        write_with_footer_checksum(&*directory, sub_file, &si.id(), 0)?;
+        {
+            let directory = dir.as_directory();
+            let sub_file = "_123.xyz";
+            let si = new_segment_info(&directory, "_123")?;
+            write_with_footer_checksum(&*directory, sub_file, &si.id(), 0)?;
 
-        si.set_files([sub_file.to_string()])?;
+            si.set_files([sub_file.to_string()])?;
 
-        let write_tracking_dir = FileTrackingDirectoryWrapper::new(Arc::clone(&directory));
-        write_compound(&write_tracking_dir, &si, &*DEFAULT_IO_CONTEXT)?;
-        let created_files: HashSet<String> = write_tracking_dir.get_files();
+            let write_tracking_dir = FileTrackingDirectoryWrapper::new(Arc::clone(&directory));
+            write_compound(&write_tracking_dir, &si, &*DEFAULT_IO_CONTEXT)?;
+            let created_files: HashSet<String> = write_tracking_dir.get_files();
 
-        let read_tracking_dir = ReadBytesDirectoryWrapper::new(Arc::clone(&directory));
-        let mut compound_dir = compound_reader(&read_tracking_dir, &si)?;
-        compound_dir.check_integrity()?;
-        let read_bytes = read_tracking_dir.get_read_bytes();
-        Assert::assert_equals(
-            JavaStringSet(created_files),
-            JavaStringSet(read_bytes.keys().cloned().collect()),
-        );
-        for (file, bits) in &read_bytes {
-            let mut set = bits.clone();
-            let len = set.length();
-            set.flip_range(0, len);
-            let next = set.next_set_bit(0);
-            Assert::assert_equals_msg(
-                Some(&format!("Byte at offset {next} of {file} was not read")),
-                NO_MORE_DOCS,
-                next,
+            let read_tracking_dir = ReadBytesDirectoryWrapper::new(Arc::clone(&directory));
+            let mut compound_dir = compound_reader(&read_tracking_dir, &si)?;
+            compound_dir.check_integrity()?;
+            let read_bytes = read_tracking_dir.get_read_bytes();
+            Assert::assert_equals(
+                JavaStringSet(created_files),
+                JavaStringSet(read_bytes.keys().cloned().collect()),
             );
+            for (file, bits) in &read_bytes {
+                let mut set = bits.clone();
+                let len = set.length();
+                set.flip_range(0, len);
+                let next = set.next_set_bit(0);
+                Assert::assert_equals_msg(
+                    Some(&format!("Byte at offset {next} of {file} was not read")),
+                    NO_MORE_DOCS,
+                    next,
+                );
+            }
+            compound_dir.close()?;
+            drop(directory);
         }
-        compound_dir.close()?;
-        drop(directory);
         dir.close()
     }
 }
@@ -1125,7 +1159,10 @@ fn close_shared<D: Directory + 'static>(dir: Arc<D>) -> Result<()> {
 /// very `IOContext`, as the anonymous `FilterDirectory` of
 /// `testPassIOContext` does.
 struct OwningTestDirectory {
-    r#in: Arc<dyn Directory>,
+    /// The owned directory as `Arc<dyn Directory>` (`FilterDirectory.in`);
+    /// released by `close()` before the owner closes, so the owner's
+    /// wrapper is no longer shared.
+    r#in: Option<Arc<dyn Directory>>,
     owner: Mutex<Option<TestDirectory>>,
     expected_context: Option<usize>,
 }
@@ -1133,14 +1170,22 @@ struct OwningTestDirectory {
 impl OwningTestDirectory {
     fn new(owner: TestDirectory, expected_context: Option<usize>) -> Self {
         OwningTestDirectory {
-            r#in: owner.as_directory(),
+            r#in: Some(owner.as_directory()),
             owner: Mutex::new(Some(owner)),
             expected_context,
         }
     }
 
-    /// `close()` through a shared handle: closes the owned test directory.
-    fn close_owned(&self) -> Result<()> {
+    /// `in`: the owned directory, `AlreadyClosedException` once closed.
+    fn delegate(&self) -> Result<&Arc<dyn Directory>> {
+        self.r#in
+            .as_ref()
+            .ok_or_else(|| LuceneError::already_closed("this Directory is closed"))
+    }
+
+    /// Closes the owned test directory.
+    fn close_owned(&mut self) -> Result<()> {
+        self.r#in = None;
         let owner = self
             .owner
             .lock()
@@ -1155,15 +1200,15 @@ impl OwningTestDirectory {
 
 impl Directory for OwningTestDirectory {
     fn list_all(&self) -> Result<Vec<String>> {
-        self.r#in.list_all()
+        self.delegate()?.list_all()
     }
 
     fn delete_file(&self, name: &str) -> Result<()> {
-        self.r#in.delete_file(name)
+        self.delegate()?.delete_file(name)
     }
 
     fn file_length(&self, name: &str) -> Result<i64> {
-        self.r#in.file_length(name)
+        self.delegate()?.file_length(name)
     }
 
     fn create_output(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexOutput>> {
@@ -1175,7 +1220,7 @@ impl Directory for OwningTestDirectory {
                 ));
             }
         }
-        self.r#in.create_output(name, context)
+        self.delegate()?.create_output(name, context)
     }
 
     fn create_temp_output(
@@ -1184,31 +1229,31 @@ impl Directory for OwningTestDirectory {
         suffix: &str,
         context: &dyn IOContext,
     ) -> Result<Box<dyn IndexOutput>> {
-        self.r#in.create_temp_output(prefix, suffix, context)
+        self.delegate()?.create_temp_output(prefix, suffix, context)
     }
 
     fn sync(&self, names: &[String]) -> Result<()> {
-        self.r#in.sync(names)
+        self.delegate()?.sync(names)
     }
 
     fn sync_metadata(&self) -> Result<()> {
-        self.r#in.sync_metadata()
+        self.delegate()?.sync_metadata()
     }
 
     fn rename(&self, source: &str, dest: &str) -> Result<()> {
-        self.r#in.rename(source, dest)
+        self.delegate()?.rename(source, dest)
     }
 
     fn open_input(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
-        self.r#in.open_input(name, context)
+        self.delegate()?.open_input(name, context)
     }
 
     fn open_checksum_input(&self, name: &str) -> Result<Box<BufferedChecksumIndexInput>> {
-        self.r#in.open_checksum_input(name)
+        self.delegate()?.open_checksum_input(name)
     }
 
     fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
-        self.r#in.obtain_lock(name)
+        self.delegate()?.obtain_lock(name)
     }
 
     fn close(&mut self) -> Result<()> {
@@ -1216,16 +1261,22 @@ impl Directory for OwningTestDirectory {
     }
 
     fn get_pending_deletions(&self) -> Result<HashSet<String>> {
-        self.r#in.get_pending_deletions()
+        self.delegate()?.get_pending_deletions()
     }
 
     fn as_filter_directory(&self) -> Option<&dyn Directory> {
-        Some(&*self.r#in)
+        self.r#in.as_deref()
     }
 }
 
 impl fmt::Display for OwningTestDirectory {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "FilterDirectory({})", self.r#in.directory_type_name())
+        write!(
+            f,
+            "FilterDirectory({})",
+            self.r#in
+                .as_ref()
+                .map_or("closed", |d| d.directory_type_name())
+        )
     }
 }

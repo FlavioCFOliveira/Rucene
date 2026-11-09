@@ -296,11 +296,27 @@ fn draws_class() -> Arc<Class> {
 static SUITES: Mutex<()> = Mutex::new(());
 
 /// Seeded-draw parity with Lucene (rmp #353): every row of
-/// `base_doc_values_draws.tsv` (`BaseFormatSuitesOracle`) must be equal.
+/// `base_doc_values_draws.tsv` (`BaseFormatSuitesOracle`) must be equal,
+/// run under the JVM system properties the fixture records (they set the
+/// `.si` diagnostics, hence segment sizes and `TieredMergePolicy`'s merge
+/// order, hence the merged doc order `testSortedSetVariableLengthSingleValuedVsStoredFields`
+/// draws over on DEADBEEF).
+///
+/// One row is left out: the `next` row of `testNumericDocValuesWithSkipperMedium`
+/// on C0FFEE. Java itself does not reproduce it: the test's
+/// `RandomIndexWriter` config can pick `ConcurrentMergeScheduler`, whose
+/// background merge timing changes the segments the reader sees and so the
+/// draws (5 Java runs of that seed gave 5 different values, none the
+/// fixture's). The test still runs, and its failure rows are still compared.
 #[test]
 fn test_doc_values_suite_draws_match_lucene() {
     let _one = SUITES.lock().unwrap_or_else(|e| e.into_inner());
-    suite_draws::assert_draws_match("base_doc_values_draws.tsv", draws_class, &DRAWS);
+    suite_draws::assert_draws_match_excluding(
+        "base_doc_values_draws.tsv",
+        draws_class,
+        &DRAWS,
+        &[("C0FFEE", "testNumericDocValuesWithSkipperMedium")],
+    );
 }
 
 #[test]

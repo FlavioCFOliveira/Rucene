@@ -1056,12 +1056,32 @@ fn handle_fake_io_exception(e: LuceneError, exception_stream: &mut String) {
 /// `expected_type` when `is_instance` says so. Returns it; panics with
 /// JUnit's `AssertionFailedError` when nothing is thrown or the error is of
 /// another class, as `LuceneTestCase.expectThrows` does.
+///
+/// Java's `expectThrows` catches every `Throwable` the runnable throws,
+/// the `AssertionError` of a Java `assert` included
+/// (`LuceneTestCase._expectThrows`, `LuceneTestCase.java:3080-3096`); the port's `assert`s panic, so a panic
+/// of the runnable is caught too and checked the same way (an instance of
+/// `expected_type` is returned as an unchecked error of its class).
 pub fn expect_throws_lucene<T>(
     expected_type: &str,
     is_instance: impl Fn(&LuceneError) -> bool,
     runnable: impl FnOnce() -> Result<T>,
 ) -> LuceneError {
-    match runnable() {
+    let outcome = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(runnable)) {
+        Ok(outcome) => outcome,
+        Err(payload) => {
+            let t = Throwable::from_panic(payload);
+            if t.is_instance(expected_type) {
+                return LuceneError::unchecked(
+                    interned_class_name(t.class_name()),
+                    t.message().unwrap_or_default().to_string(),
+                );
+            }
+            LuceneTestCase::expect_throws(expected_type, || Err(t));
+            unreachable!("expectThrows throws for an exception of another class")
+        }
+    };
+    match outcome {
         Err(e) if is_instance(&e) => e,
         Err(e) => {
             let (class, message) =
@@ -1074,6 +1094,19 @@ pub fn expect_throws_lucene<T>(
             unreachable!("expectThrows throws when nothing is thrown")
         }
     }
+}
+
+/// The `'static` name [`LuceneError::unchecked`] needs for a Java class
+/// name: each distinct name is leaked once.
+fn interned_class_name(name: &str) -> &'static str {
+    static NAMES: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+    let mut names = NAMES.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(n) = names.iter().find(|n| **n == name) {
+        return n;
+    }
+    let n: &'static str = Box::leak(name.to_string().into_boxed_str());
+    names.push(n);
+    n
 }
 
 /// `assertArrayEquals(expecteds, actuals)` over two arrays of primitives

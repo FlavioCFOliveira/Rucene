@@ -204,27 +204,29 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testFiles()`: test files map.
     fn test_files(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let codec = self.get_codec();
-        let id = StringHelper::random_id();
-        let info = self.new_info(
-            dir.as_directory(),
-            false,
-            HashMap::new(),
-            id,
-            HashMap::new(),
-            Sort::default(),
-        );
-        set_no_files(&info);
-        codec
-            .segment_info_format()
-            .write(&*dir.as_directory(), &info, &*DEFAULT_IO_CONTEXT)?;
-        let info2 = codec.segment_info_format().read(
-            dir.as_directory(),
-            "_123",
-            &id,
-            &*DEFAULT_IO_CONTEXT,
-        )?;
-        assert_equals_debug(&info.files()?, &info2.files()?);
+        {
+            let codec = self.get_codec();
+            let id = StringHelper::random_id();
+            let info = self.new_info(
+                dir.as_directory(),
+                false,
+                HashMap::new(),
+                id,
+                HashMap::new(),
+                Sort::default(),
+            );
+            set_no_files(&info);
+            codec
+                .segment_info_format()
+                .write(&*dir.as_directory(), &info, &*DEFAULT_IO_CONTEXT)?;
+            let info2 = codec.segment_info_format().read(
+                dir.as_directory(),
+                "_123",
+                &id,
+                &*DEFAULT_IO_CONTEXT,
+            )?;
+            assert_equals_debug(&info.files()?, &info2.files()?);
+        }
         dir.close()
     }
 
@@ -236,141 +238,146 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
         );
 
         let mut dir = LuceneTestCase::new_directory();
-        let codec = self.get_codec();
-        let id = StringHelper::random_id();
-        let info = self.new_info(
-            dir.as_directory(),
-            random().next_boolean(),
-            HashMap::new(),
-            id,
-            HashMap::new(),
-            Sort::default(),
-        );
-        set_no_files(&info);
-        codec
-            .segment_info_format()
-            .write(&*dir.as_directory(), &info, &*DEFAULT_IO_CONTEXT)?;
-        let info2 = codec.segment_info_format().read(
-            dir.as_directory(),
-            "_123",
-            &id,
-            &*DEFAULT_IO_CONTEXT,
-        )?;
-        Assert::assert_equals(info.get_has_blocks(), info2.get_has_blocks());
+        {
+            let codec = self.get_codec();
+            let id = StringHelper::random_id();
+            let info = self.new_info(
+                dir.as_directory(),
+                random().next_boolean(),
+                HashMap::new(),
+                id,
+                HashMap::new(),
+                Sort::default(),
+            );
+            set_no_files(&info);
+            codec
+                .segment_info_format()
+                .write(&*dir.as_directory(), &info, &*DEFAULT_IO_CONTEXT)?;
+            let info2 = codec.segment_info_format().read(
+                dir.as_directory(),
+                "_123",
+                &id,
+                &*DEFAULT_IO_CONTEXT,
+            )?;
+            Assert::assert_equals(info.get_has_blocks(), info2.get_has_blocks());
+        }
         dir.close()
     }
 
     /// `testAddsSelfToFiles()`: tests SI writer adds itself to files...
     fn test_adds_self_to_files(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let codec = self.get_codec();
-        let id = StringHelper::random_id();
-        let info = self.new_info(
-            dir.as_directory(),
-            false,
-            HashMap::new(),
-            id,
-            HashMap::new(),
-            Sort::default(),
-        );
-        let original_files: HashSet<String> = ["_123.a".to_string()].into_iter().collect();
-        info.set_files(original_files.iter().cloned())?;
-        codec
-            .segment_info_format()
-            .write(&*dir.as_directory(), &info, &*DEFAULT_IO_CONTEXT)?;
+        {
+            let codec = self.get_codec();
+            let id = StringHelper::random_id();
+            let info = self.new_info(
+                dir.as_directory(),
+                false,
+                HashMap::new(),
+                id,
+                HashMap::new(),
+                Sort::default(),
+            );
+            let original_files: HashSet<String> = ["_123.a".to_string()].into_iter().collect();
+            info.set_files(original_files.iter().cloned())?;
+            codec
+                .segment_info_format()
+                .write(&*dir.as_directory(), &info, &*DEFAULT_IO_CONTEXT)?;
 
-        let modified_files = info.files()?;
-        Assert::assert_true(original_files.is_subset(&modified_files));
-        Assert::assert_true_msg(
-            "did you forget to add yourself to files()",
-            modified_files.len() > original_files.len(),
-        );
+            let modified_files = info.files()?;
+            Assert::assert_true(original_files.is_subset(&modified_files));
+            Assert::assert_true_msg(
+                "did you forget to add yourself to files()",
+                modified_files.len() > original_files.len(),
+            );
 
-        let info2 = codec.segment_info_format().read(
-            dir.as_directory(),
-            "_123",
-            &id,
-            &*DEFAULT_IO_CONTEXT,
-        )?;
-        assert_equals_debug(&info.files()?, &info2.files()?);
+            let info2 = codec.segment_info_format().read(
+                dir.as_directory(),
+                "_123",
+                &id,
+                &*DEFAULT_IO_CONTEXT,
+            )?;
+            assert_equals_debug(&info.files()?, &info2.files()?);
 
-        // files set should be immutable: `files()` hands out a copy, so the
-        // segment keeps its files.
-        let mut copy = info2.files()?;
-        copy.insert("bogus".to_string());
-        Assert::assert_false(info2.files()?.contains("bogus"));
-
+            // files set should be immutable: `files()` hands out a copy, so the
+            // segment keeps its files.
+            let mut copy = info2.files()?;
+            copy.insert("bogus".to_string());
+            Assert::assert_false(info2.files()?.contains("bogus"));
+        }
         dir.close()
     }
 
     /// `testDiagnostics()`: test diagnostics map.
     fn test_diagnostics(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let codec = self.get_codec();
-        let id = StringHelper::random_id();
-        let mut diagnostics = HashMap::new();
-        diagnostics.insert("key1".to_string(), "value1".to_string());
-        diagnostics.insert("key2".to_string(), "value2".to_string());
-        let info = self.new_info(
-            dir.as_directory(),
-            false,
-            diagnostics.clone(),
-            id,
-            HashMap::new(),
-            Sort::default(),
-        );
-        set_no_files(&info);
-        codec
-            .segment_info_format()
-            .write(&*dir.as_directory(), &info, &*DEFAULT_IO_CONTEXT)?;
-        let info2 = codec.segment_info_format().read(
-            dir.as_directory(),
-            "_123",
-            &id,
-            &*DEFAULT_IO_CONTEXT,
-        )?;
-        assert_equals_debug(&diagnostics, &info2.get_diagnostics().to_std());
+        {
+            let codec = self.get_codec();
+            let id = StringHelper::random_id();
+            let mut diagnostics = HashMap::new();
+            diagnostics.insert("key1".to_string(), "value1".to_string());
+            diagnostics.insert("key2".to_string(), "value2".to_string());
+            let info = self.new_info(
+                dir.as_directory(),
+                false,
+                diagnostics.clone(),
+                id,
+                HashMap::new(),
+                Sort::default(),
+            );
+            set_no_files(&info);
+            codec
+                .segment_info_format()
+                .write(&*dir.as_directory(), &info, &*DEFAULT_IO_CONTEXT)?;
+            let info2 = codec.segment_info_format().read(
+                dir.as_directory(),
+                "_123",
+                &id,
+                &*DEFAULT_IO_CONTEXT,
+            )?;
+            assert_equals_debug(&diagnostics, &info2.get_diagnostics().to_std());
 
-        // diagnostics map should be immutable: the reference has no mutator.
-        Assert::assert_false(info2.get_diagnostics().get("bogus").is_some());
-
+            // diagnostics map should be immutable: the reference has no mutator.
+            Assert::assert_false(info2.get_diagnostics().get("bogus").is_some());
+        }
         dir.close()
     }
 
     /// `testAttributes()`: test attributes map.
     fn test_attributes(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let codec = self.get_codec();
-        let id = StringHelper::random_id();
-        let mut attributes = HashMap::new();
-        attributes.insert("key1".to_string(), "value1".to_string());
-        attributes.insert("key2".to_string(), "value2".to_string());
-        let info = self.new_info(
-            dir.as_directory(),
-            false,
-            HashMap::new(),
-            id,
-            attributes.clone(),
-            Sort::default(),
-        );
-        set_no_files(&info);
-        codec
-            .segment_info_format()
-            .write(&*dir.as_directory(), &info, &*DEFAULT_IO_CONTEXT)?;
-        let info2 = codec.segment_info_format().read(
-            dir.as_directory(),
-            "_123",
-            &id,
-            &*DEFAULT_IO_CONTEXT,
-        )?;
-        assert_equals_debug(&attributes, &info2.get_attributes());
+        {
+            let codec = self.get_codec();
+            let id = StringHelper::random_id();
+            let mut attributes = HashMap::new();
+            attributes.insert("key1".to_string(), "value1".to_string());
+            attributes.insert("key2".to_string(), "value2".to_string());
+            let info = self.new_info(
+                dir.as_directory(),
+                false,
+                HashMap::new(),
+                id,
+                attributes.clone(),
+                Sort::default(),
+            );
+            set_no_files(&info);
+            codec
+                .segment_info_format()
+                .write(&*dir.as_directory(), &info, &*DEFAULT_IO_CONTEXT)?;
+            let info2 = codec.segment_info_format().read(
+                dir.as_directory(),
+                "_123",
+                &id,
+                &*DEFAULT_IO_CONTEXT,
+            )?;
+            assert_equals_debug(&attributes, &info2.get_attributes());
 
-        // attributes map should be immutable: `get_attributes()` hands out a
-        // copy, so the segment keeps its attributes.
-        let mut copy = info2.get_attributes();
-        copy.insert("bogus".to_string(), "bogus".to_string());
-        Assert::assert_false(info2.get_attributes().contains_key("bogus"));
-
+            // attributes map should be immutable: `get_attributes()` hands out a
+            // copy, so the segment keeps its attributes.
+            let mut copy = info2.get_attributes();
+            copy.insert("bogus".to_string(), "bogus".to_string());
+            Assert::assert_false(info2.get_attributes().contains_key("bogus"));
+        }
         dir.close()
     }
 
@@ -378,26 +385,28 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
     fn test_unique_id(&self) -> Result<()> {
         let codec = self.get_codec();
         let mut dir = LuceneTestCase::new_directory();
-        let id = StringHelper::random_id();
-        let info = self.new_info(
-            dir.as_directory(),
-            false,
-            HashMap::new(),
-            id,
-            HashMap::new(),
-            Sort::default(),
-        );
-        set_no_files(&info);
-        codec
-            .segment_info_format()
-            .write(&*dir.as_directory(), &info, &*DEFAULT_IO_CONTEXT)?;
-        let info2 = codec.segment_info_format().read(
-            dir.as_directory(),
-            "_123",
-            &id,
-            &*DEFAULT_IO_CONTEXT,
-        )?;
-        assert_array_equals(&id, &info2.id());
+        {
+            let id = StringHelper::random_id();
+            let info = self.new_info(
+                dir.as_directory(),
+                false,
+                HashMap::new(),
+                id,
+                HashMap::new(),
+                Sort::default(),
+            );
+            set_no_files(&info);
+            codec
+                .segment_info_format()
+                .write(&*dir.as_directory(), &info, &*DEFAULT_IO_CONTEXT)?;
+            let info2 = codec.segment_info_format().read(
+                dir.as_directory(),
+                "_123",
+                &id,
+                &*DEFAULT_IO_CONTEXT,
+            )?;
+            assert_array_equals(&id, &info2.id());
+        }
         dir.close()
     }
 
@@ -407,38 +416,40 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
         for v in self.get_versions() {
             for min_v in [Some(v), None] {
                 let mut dir = LuceneTestCase::new_directory();
-                let id = StringHelper::random_id();
-                let info = SegmentInfo::new(
-                    dir.as_directory(),
-                    v,
-                    min_v,
-                    "_123".to_string(),
-                    1,
-                    false,
-                    false,
-                    Arc::clone(&codec),
-                    HashMap::new(),
-                    id,
-                    HashMap::new(),
-                    Sort::default(),
-                )?;
-                set_no_files(&info);
-                codec.segment_info_format().write(
-                    &*dir.as_directory(),
-                    &info,
-                    &*DEFAULT_IO_CONTEXT,
-                )?;
-                let info2 = codec.segment_info_format().read(
-                    dir.as_directory(),
-                    "_123",
-                    &id,
-                    &*DEFAULT_IO_CONTEXT,
-                )?;
-                Assert::assert_equals(info2.version(), v);
-                if self.supports_min_version() {
-                    assert_equals_debug(&info2.min_version(), &min_v);
-                } else {
-                    assert_equals_debug(&info2.min_version(), &None);
+                {
+                    let id = StringHelper::random_id();
+                    let info = SegmentInfo::new(
+                        dir.as_directory(),
+                        v,
+                        min_v,
+                        "_123".to_string(),
+                        1,
+                        false,
+                        false,
+                        Arc::clone(&codec),
+                        HashMap::new(),
+                        id,
+                        HashMap::new(),
+                        Sort::default(),
+                    )?;
+                    set_no_files(&info);
+                    codec.segment_info_format().write(
+                        &*dir.as_directory(),
+                        &info,
+                        &*DEFAULT_IO_CONTEXT,
+                    )?;
+                    let info2 = codec.segment_info_format().read(
+                        dir.as_directory(),
+                        "_123",
+                        &id,
+                        &*DEFAULT_IO_CONTEXT,
+                    )?;
+                    Assert::assert_equals(info2.version(), v);
+                    if self.supports_min_version() {
+                        assert_equals_debug(&info2.min_version(), &min_v);
+                    } else {
+                        assert_equals_debug(&info2.min_version(), &None);
+                    }
                 }
                 dir.close()?;
             }
@@ -593,27 +604,31 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
             };
 
             let mut dir = LuceneTestCase::new_directory();
-            let codec = self.get_codec();
-            let id = StringHelper::random_id();
-            let info = self.new_info(
-                dir.as_directory(),
-                false,
-                HashMap::new(),
-                id,
-                HashMap::new(),
-                sort.clone(),
-            );
-            set_no_files(&info);
-            codec
-                .segment_info_format()
-                .write(&*dir.as_directory(), &info, &*DEFAULT_IO_CONTEXT)?;
-            let info2 = codec.segment_info_format().read(
-                dir.as_directory(),
-                "_123",
-                &id,
-                &*DEFAULT_IO_CONTEXT,
-            )?;
-            assert_equals_debug(&sort, info2.index_sort());
+            {
+                let codec = self.get_codec();
+                let id = StringHelper::random_id();
+                let info = self.new_info(
+                    dir.as_directory(),
+                    false,
+                    HashMap::new(),
+                    id,
+                    HashMap::new(),
+                    sort.clone(),
+                );
+                set_no_files(&info);
+                codec.segment_info_format().write(
+                    &*dir.as_directory(),
+                    &info,
+                    &*DEFAULT_IO_CONTEXT,
+                )?;
+                let info2 = codec.segment_info_format().read(
+                    dir.as_directory(),
+                    "_123",
+                    &id,
+                    &*DEFAULT_IO_CONTEXT,
+                )?;
+                assert_equals_debug(&sort, info2.index_sort());
+            }
             dir.close()?;
         }
         Ok(())
@@ -651,16 +666,18 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
     /// file handle leaks, etc.
     fn test_exception_on_create_output(&self) -> Result<()> {
         let (mut dir, fail, info, _id) = self.exception_fixture("create_output");
-        let codec = self.get_codec();
+        {
+            let codec = self.get_codec();
 
-        fail.set_do_fail();
-        expect_fake_io_exception(|| {
-            codec
-                .segment_info_format()
-                .write(&dir, &info, &*DEFAULT_IO_CONTEXT)
-        });
-        fail.clear_do_fail();
-
+            fail.set_do_fail();
+            expect_fake_io_exception(|| {
+                codec
+                    .segment_info_format()
+                    .write(&dir, &info, &*DEFAULT_IO_CONTEXT)
+            });
+            fail.clear_do_fail();
+        }
+        drop((fail, info, _id));
         dir.close()
     }
 
@@ -669,16 +686,18 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
     /// leaks, etc.
     fn test_exception_on_close_output(&self) -> Result<()> {
         let (mut dir, fail, info, _id) = self.exception_fixture("close");
-        let codec = self.get_codec();
+        {
+            let codec = self.get_codec();
 
-        fail.set_do_fail();
-        expect_fake_io_exception(|| {
-            codec
-                .segment_info_format()
-                .write(&dir, &info, &*DEFAULT_IO_CONTEXT)
-        });
-        fail.clear_do_fail();
-
+            fail.set_do_fail();
+            expect_fake_io_exception(|| {
+                codec
+                    .segment_info_format()
+                    .write(&dir, &info, &*DEFAULT_IO_CONTEXT)
+            });
+            fail.clear_do_fail();
+        }
+        drop((fail, info, _id));
         dir.close()
     }
 
@@ -687,19 +706,24 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
     /// file handle leaks, etc.
     fn test_exception_on_open_input(&self) -> Result<()> {
         let (mut dir, fail, info, id) = self.exception_fixture("open_input");
-        let codec = self.get_codec();
-        codec
-            .segment_info_format()
-            .write(&dir, &info, &*DEFAULT_IO_CONTEXT)?;
-
-        fail.set_do_fail();
-        expect_fake_io_exception(|| {
+        {
+            let codec = self.get_codec();
             codec
                 .segment_info_format()
-                .read(dir.as_directory(), "_123", &id, &*DEFAULT_IO_CONTEXT)
-        });
-        fail.clear_do_fail();
+                .write(&dir, &info, &*DEFAULT_IO_CONTEXT)?;
 
+            fail.set_do_fail();
+            expect_fake_io_exception(|| {
+                codec.segment_info_format().read(
+                    dir.as_directory(),
+                    "_123",
+                    &id,
+                    &*DEFAULT_IO_CONTEXT,
+                )
+            });
+            fail.clear_do_fail();
+        }
+        drop((fail, info, id));
         dir.close()
     }
 
@@ -708,19 +732,24 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
     /// leaks, etc.
     fn test_exception_on_close_input(&self) -> Result<()> {
         let (mut dir, fail, info, id) = self.exception_fixture("close");
-        let codec = self.get_codec();
-        codec
-            .segment_info_format()
-            .write(&dir, &info, &*DEFAULT_IO_CONTEXT)?;
-
-        fail.set_do_fail();
-        expect_fake_io_exception(|| {
+        {
+            let codec = self.get_codec();
             codec
                 .segment_info_format()
-                .read(dir.as_directory(), "_123", &id, &*DEFAULT_IO_CONTEXT)
-        });
-        fail.clear_do_fail();
+                .write(&dir, &info, &*DEFAULT_IO_CONTEXT)?;
 
+            fail.set_do_fail();
+            expect_fake_io_exception(|| {
+                codec.segment_info_format().read(
+                    dir.as_directory(),
+                    "_123",
+                    &id,
+                    &*DEFAULT_IO_CONTEXT,
+                )
+            });
+            fail.clear_do_fail();
+        }
+        drop((fail, info, id));
         dir.close()
     }
 
@@ -731,75 +760,79 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
         let versions = self.get_versions();
         for _ in 0..10 {
             let mut dir = LuceneTestCase::new_directory();
-            let version = versions[random().next_int_bound(versions.len() as i32) as usize];
-            // `Math.abs(random().nextLong())`: `Long.MIN_VALUE` stays negative.
-            let random_segment_index = random().next_long().wrapping_abs();
-            let name = format!(
-                "_{}",
-                if random_segment_index != i64::MIN {
-                    to_string_radix36(random_segment_index)
-                } else {
-                    to_string_radix36(i64::from(random().next_int_bound(i32::MAX)))
+            {
+                // Java's `dir`: one handle, so `assertSame(expected.dir,
+                // actual.dir)` compares the same reference.
+                let directory = dir.as_directory();
+                let version = versions[random().next_int_bound(versions.len() as i32) as usize];
+                // `Math.abs(random().nextLong())`: `Long.MIN_VALUE` stays negative.
+                let random_segment_index = random().next_long().wrapping_abs();
+                let name = format!(
+                    "_{}",
+                    if random_segment_index != i64::MIN {
+                        to_string_radix36(random_segment_index)
+                    } else {
+                        to_string_radix36(i64::from(random().next_int_bound(i32::MAX)))
+                    }
+                );
+                let doc_count = TestUtil::next_int(&*random(), 1, MAX_DOCS);
+                let is_compound_file = random().next_boolean();
+                // `new HashSet<>()`, iterated in the JDK's order.
+                let mut files = rucene::util::java_collections::JavaHashSet::new();
+                let num_files = random().next_int_bound(10);
+                for j in 0..num_files {
+                    let file = index_file_names::segment_file_name(&name, "", &j.to_string());
+                    files.insert(file.clone());
+                    directory
+                        .create_output(&file, &*DEFAULT_IO_CONTEXT)?
+                        .close()?;
                 }
-            );
-            let doc_count = TestUtil::next_int(&*random(), 1, MAX_DOCS);
-            let is_compound_file = random().next_boolean();
-            // `new HashSet<>()`, iterated in the JDK's order.
-            let mut files = rucene::util::java_collections::JavaHashSet::new();
-            let num_files = random().next_int_bound(10);
-            for j in 0..num_files {
-                let file = index_file_names::segment_file_name(&name, "", &j.to_string());
-                files.insert(file.clone());
-                dir.as_directory()
-                    .create_output(&file, &*DEFAULT_IO_CONTEXT)?
-                    .close()?;
-            }
-            let mut diagnostics = HashMap::new();
-            let num_diags = random().next_int_bound(10);
-            for _ in 0..num_diags {
-                diagnostics.insert(
-                    TestUtil::random_unicode_string(&*random()),
-                    TestUtil::random_unicode_string(&*random()),
-                );
-            }
-            let mut id = [0u8; ID_LENGTH];
-            random().next_bytes(&mut id);
+                let mut diagnostics = HashMap::new();
+                let num_diags = random().next_int_bound(10);
+                for _ in 0..num_diags {
+                    diagnostics.insert(
+                        TestUtil::random_unicode_string(&*random()),
+                        TestUtil::random_unicode_string(&*random()),
+                    );
+                }
+                let mut id = [0u8; ID_LENGTH];
+                random().next_bytes(&mut id);
 
-            let mut attributes = HashMap::new();
-            let num_attributes = random().next_int_bound(10);
-            for _ in 0..num_attributes {
-                attributes.insert(
-                    TestUtil::random_unicode_string(&*random()),
-                    TestUtil::random_unicode_string(&*random()),
-                );
+                let mut attributes = HashMap::new();
+                let num_attributes = random().next_int_bound(10);
+                for _ in 0..num_attributes {
+                    attributes.insert(
+                        TestUtil::random_unicode_string(&*random()),
+                        TestUtil::random_unicode_string(&*random()),
+                    );
+                }
+
+                let info = SegmentInfo::new(
+                    Arc::clone(&directory),
+                    version,
+                    None,
+                    name.clone(),
+                    doc_count,
+                    is_compound_file,
+                    false,
+                    Arc::clone(&codec),
+                    diagnostics,
+                    id,
+                    attributes,
+                    Sort::default(),
+                )?;
+                info.set_files(files.iter().cloned())?;
+                codec
+                    .segment_info_format()
+                    .write(&*directory, &info, &*DEFAULT_IO_CONTEXT)?;
+                let info2 = codec.segment_info_format().read(
+                    Arc::clone(&directory),
+                    &name,
+                    &id,
+                    &*DEFAULT_IO_CONTEXT,
+                )?;
+                self.assert_segment_info_equal(&info, &info2)?;
             }
-
-            let info = SegmentInfo::new(
-                dir.as_directory(),
-                version,
-                None,
-                name.clone(),
-                doc_count,
-                is_compound_file,
-                false,
-                Arc::clone(&codec),
-                diagnostics,
-                id,
-                attributes,
-                Sort::default(),
-            )?;
-            info.set_files(files.iter().cloned())?;
-            codec
-                .segment_info_format()
-                .write(&*dir.as_directory(), &info, &*DEFAULT_IO_CONTEXT)?;
-            let info2 = codec.segment_info_format().read(
-                dir.as_directory(),
-                &name,
-                &id,
-                &*DEFAULT_IO_CONTEXT,
-            )?;
-            self.assert_segment_info_equal(&info, &info2)?;
-
             dir.close()?;
         }
         Ok(())

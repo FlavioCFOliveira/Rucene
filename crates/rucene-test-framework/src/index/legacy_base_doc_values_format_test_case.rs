@@ -581,15 +581,18 @@ fn one_doc_search_test<C: BaseIndexFileFormatTestCase + ?Sized>(
     per_hit: impl Fn(&dyn LeafReader, i32) -> Result<()>,
 ) -> Result<()> {
     let mut directory = LuceneTestCase::new_directory();
-    let iwriter = RandomIndexWriter::new_with_mock_analyzer(&*random(), directory.as_directory())?;
-    one_doc_search_test_with(
-        case,
-        &mut directory,
-        iwriter,
-        long_term,
-        add_fields,
-        per_hit,
-    )?;
+    {
+        let iwriter =
+            RandomIndexWriter::new_with_mock_analyzer(&*random(), directory.as_directory())?;
+        one_doc_search_test_with(
+            case,
+            &mut directory,
+            iwriter,
+            long_term,
+            add_fields,
+            per_hit,
+        )?;
+    }
     directory.close()
 }
 
@@ -686,27 +689,30 @@ fn two_numbers_merged<C: BaseIndexFileFormatTestCase + ?Sized>(
     second: i64,
 ) -> Result<()> {
     let (mut directory, iwriter) = log_mp_writer()?;
-    let mut doc = Document::new();
-    doc.add(Box::new(NumericDocValuesField::new("dv", first)));
-    iwriter.add_document(&doc)?;
-    let mut doc = Document::new();
-    doc.add(Box::new(NumericDocValuesField::new("dv", second)));
-    iwriter.add_document(&doc)?;
-    iwriter.force_merge(1)?;
-    iwriter.close()?;
-    drop(iwriter);
+    {
+        let iwriter = iwriter;
+        let mut doc = Document::new();
+        doc.add(Box::new(NumericDocValuesField::new("dv", first)));
+        iwriter.add_document(&doc)?;
+        let mut doc = Document::new();
+        doc.add(Box::new(NumericDocValuesField::new("dv", second)));
+        iwriter.add_document(&doc)?;
+        iwriter.force_merge(1)?;
+        iwriter.close()?;
+        drop(iwriter);
 
-    // Now search the index:
-    let ireader = open_reader(case, &directory)?; // read-only=true
-    let leaf = only_leaf(&ireader)?;
-    let mut dv = npe(leaf.get_numeric_doc_values("dv")?);
-    aeq(0, dv.next_doc()?);
-    aeq(first, dv.long_value()?);
-    aeq(1, dv.next_doc()?);
-    aeq(second, dv.long_value()?);
+        // Now search the index:
+        let ireader = open_reader(case, &directory)?; // read-only=true
+        let leaf = only_leaf(&ireader)?;
+        let mut dv = npe(leaf.get_numeric_doc_values("dv")?);
+        aeq(0, dv.next_doc()?);
+        aeq(first, dv.long_value()?);
+        aeq(1, dv.next_doc()?);
+        aeq(second, dv.long_value()?);
 
-    drop((dv, leaf));
-    ireader.close()?;
+        drop((dv, leaf));
+        ireader.close()?;
+    }
     directory.close()
 }
 
@@ -718,40 +724,42 @@ pub(crate) fn merge_away_all_values(
     check: impl FnOnce(&dyn LeafReader) -> Result<()>,
 ) -> Result<()> {
     let mut directory = LuceneTestCase::new_directory();
-    let analyzer = mock_analyzer();
-    let mut iwconfig = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
-    iwconfig.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
-    let iwriter =
-        RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), iwconfig)?;
+    {
+        let analyzer = mock_analyzer();
+        let mut iwconfig = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
+        iwconfig.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+        let iwriter =
+            RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), iwconfig)?;
 
-    let mut doc = Document::new();
-    doc.add(Box::new(StringField::new(
-        "id",
-        "0".to_string(),
-        Store::NO,
-    )?));
-    iwriter.add_document(&doc)?;
-    let mut doc = Document::new();
-    doc.add(Box::new(StringField::new(
-        "id",
-        "1".to_string(),
-        Store::NO,
-    )?));
-    doc.add(field());
-    iwriter.add_document(&doc)?;
-    iwriter.commit()?;
-    iwriter.delete_documents(term("id", "1"))?;
-    iwriter.force_merge(1)?;
+        let mut doc = Document::new();
+        doc.add(Box::new(StringField::new(
+            "id",
+            "0".to_string(),
+            Store::NO,
+        )?));
+        iwriter.add_document(&doc)?;
+        let mut doc = Document::new();
+        doc.add(Box::new(StringField::new(
+            "id",
+            "1".to_string(),
+            Store::NO,
+        )?));
+        doc.add(field());
+        iwriter.add_document(&doc)?;
+        iwriter.commit()?;
+        iwriter.delete_documents(term("id", "1"))?;
+        iwriter.force_merge(1)?;
 
-    let ireader = iwriter.get_reader()?;
-    iwriter.close()?;
-    drop(iwriter);
+        let ireader = iwriter.get_reader()?;
+        iwriter.close()?;
+        drop(iwriter);
 
-    let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ireader) as _)?;
-    check(&*leaf)?;
+        let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ireader) as _)?;
+        check(&*leaf)?;
 
-    drop(leaf);
-    ireader.close()?;
+        drop(leaf);
+        ireader.close()?;
+    }
     directory.close()
 }
 
@@ -763,37 +771,39 @@ pub(crate) fn merge_away_all_values_large_segment(
     check: impl FnOnce(&dyn LeafReader) -> Result<()>,
 ) -> Result<()> {
     let mut directory = LuceneTestCase::new_directory();
-    let analyzer = mock_analyzer();
-    let mut iwconfig = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
-    iwconfig.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
-    let iwriter =
-        RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), iwconfig)?;
+    {
+        let analyzer = mock_analyzer();
+        let mut iwconfig = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
+        iwconfig.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+        let iwriter =
+            RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), iwconfig)?;
 
-    let mut doc = Document::new();
-    doc.add(Box::new(StringField::new(
-        "id",
-        "1".to_string(),
-        Store::NO,
-    )?));
-    doc.add(field());
-    iwriter.add_document(&doc)?;
-    let num_empty_docs = LuceneTestCase::at_least(1024);
-    for _ in 0..num_empty_docs {
-        iwriter.add_document(&Document::new())?;
+        let mut doc = Document::new();
+        doc.add(Box::new(StringField::new(
+            "id",
+            "1".to_string(),
+            Store::NO,
+        )?));
+        doc.add(field());
+        iwriter.add_document(&doc)?;
+        let num_empty_docs = LuceneTestCase::at_least(1024);
+        for _ in 0..num_empty_docs {
+            iwriter.add_document(&Document::new())?;
+        }
+        iwriter.commit()?;
+        iwriter.delete_documents(term("id", "1"))?;
+        iwriter.force_merge(1)?;
+
+        let ireader = iwriter.get_reader()?;
+        iwriter.close()?;
+        drop(iwriter);
+
+        let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ireader) as _)?;
+        check(&*leaf)?;
+
+        drop(leaf);
+        ireader.close()?;
     }
-    iwriter.commit()?;
-    iwriter.delete_documents(term("id", "1"))?;
-    iwriter.force_merge(1)?;
-
-    let ireader = iwriter.get_reader()?;
-    iwriter.close()?;
-    drop(iwriter);
-
-    let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ireader) as _)?;
-    check(&*leaf)?;
-
-    drop(leaf);
-    ireader.close()?;
     directory.close()
 }
 
@@ -801,28 +811,31 @@ pub(crate) fn merge_away_all_values_large_segment(
 /// document with `hello` and `world`, added in the order `values` gives.
 fn sorted_set_two_values(values: &[&str]) -> Result<()> {
     let (mut directory, iwriter) = sorted_set_writer(false)?;
-    iwriter.add_document(&sorted_set_doc("field", values))?;
+    {
+        let iwriter = iwriter;
+        iwriter.add_document(&sorted_set_doc("field", values))?;
 
-    let ireader = iwriter.get_reader()?;
-    iwriter.close()?;
-    drop(iwriter);
+        let ireader = iwriter.get_reader()?;
+        iwriter.close()?;
+        drop(iwriter);
 
-    let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ireader) as _)?;
-    let mut dv = npe(leaf.get_sorted_set_doc_values("field")?);
-    aeq(0, dv.next_doc()?);
+        let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ireader) as _)?;
+        let mut dv = npe(leaf.get_sorted_set_doc_values("field")?);
+        aeq(0, dv.next_doc()?);
 
-    aeq(2, dv.doc_value_count()?);
-    aeq(0, dv.next_ord()?);
-    aeq(1, dv.next_ord()?);
+        aeq(2, dv.doc_value_count()?);
+        aeq(0, dv.next_ord()?);
+        aeq(1, dv.next_ord()?);
 
-    let bytes = dv.lookup_ord(0)?;
-    Assert::assert_equals(nbr("hello"), bytes);
+        let bytes = dv.lookup_ord(0)?;
+        Assert::assert_equals(nbr("hello"), bytes);
 
-    let bytes = dv.lookup_ord(1)?;
-    Assert::assert_equals(nbr("world"), bytes);
+        let bytes = dv.lookup_ord(1)?;
+        Assert::assert_equals(nbr("world"), bytes);
 
-    drop((dv, leaf));
-    ireader.close()?;
+        drop((dv, leaf));
+        ireader.close()?;
+    }
     directory.close()
 }
 
@@ -831,38 +844,41 @@ fn sorted_set_two_values(values: &[&str]) -> Result<()> {
 /// `last_missing`), committed between the two when `merge`.
 fn sorted_set_one_missing(last_missing: bool, merge: bool) -> Result<()> {
     let (mut directory, iwriter) = sorted_set_writer(true)?;
-    if last_missing {
-        iwriter.add_document(&sorted_set_doc("field", &["hello"]))?;
-        if merge {
-            iwriter.commit()?;
+    {
+        let iwriter = iwriter;
+        if last_missing {
+            iwriter.add_document(&sorted_set_doc("field", &["hello"]))?;
+            if merge {
+                iwriter.commit()?;
+            }
+            iwriter.add_document(&Document::new())?;
+        } else {
+            iwriter.add_document(&Document::new())?;
+            if merge {
+                iwriter.commit()?;
+            }
+            iwriter.add_document(&sorted_set_doc("field", &["hello"]))?;
         }
-        iwriter.add_document(&Document::new())?;
-    } else {
-        iwriter.add_document(&Document::new())?;
-        if merge {
-            iwriter.commit()?;
-        }
-        iwriter.add_document(&sorted_set_doc("field", &["hello"]))?;
+        iwriter.force_merge(1)?;
+
+        let ireader = iwriter.get_reader()?;
+        iwriter.close()?;
+        drop(iwriter);
+
+        let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ireader) as _)?;
+        let mut dv = npe(leaf.get_sorted_set_doc_values("field")?);
+        aeq(1, dv.get_value_count()?);
+        aeq(if last_missing { 0 } else { 1 }, dv.next_doc()?);
+
+        aeq(1, dv.doc_value_count()?);
+        aeq(0, dv.next_ord()?);
+
+        let bytes = dv.lookup_ord(0)?;
+        Assert::assert_equals(nbr("hello"), bytes);
+
+        drop((dv, leaf));
+        ireader.close()?;
     }
-    iwriter.force_merge(1)?;
-
-    let ireader = iwriter.get_reader()?;
-    iwriter.close()?;
-    drop(iwriter);
-
-    let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ireader) as _)?;
-    let mut dv = npe(leaf.get_sorted_set_doc_values("field")?);
-    aeq(1, dv.get_value_count()?);
-    aeq(if last_missing { 0 } else { 1 }, dv.next_doc()?);
-
-    aeq(1, dv.doc_value_count()?);
-    aeq(0, dv.next_ord()?);
-
-    let bytes = dv.lookup_ord(0)?;
-    Assert::assert_equals(nbr("hello"), bytes);
-
-    drop((dv, leaf));
-    ireader.close()?;
     directory.close()
 }
 
@@ -944,56 +960,58 @@ fn numbers_one_missing<C: BaseIndexFileFormatTestCase + ?Sized>(
     three: bool,
 ) -> Result<()> {
     let mut directory = LuceneTestCase::new_directory();
-    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(null_analyzer());
-    conf.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
-    let iw = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), conf)?;
-    let mut doc = Document::new();
-    doc.add(Box::new(StringField::new(
-        "id",
-        "0".to_string(),
-        Store::YES,
-    )?));
-    doc.add(Box::new(NumericDocValuesField::new("dv1", 0)));
-    iw.add_document(&doc)?;
-    if merging && !three {
-        iw.commit()?;
-    }
-    let mut doc = Document::new();
-    doc.add(Box::new(StringField::new(
-        "id",
-        "1".to_string(),
-        Store::YES,
-    )?));
-    iw.add_document(&doc)?;
-    if three {
-        iw.commit()?;
+    {
+        let mut conf = LuceneTestCase::new_index_writer_config_analyzer(null_analyzer());
+        conf.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+        let iw = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), conf)?;
         let mut doc = Document::new();
         doc.add(Box::new(StringField::new(
             "id",
-            "2".to_string(),
+            "0".to_string(),
             Store::YES,
         )?));
-        doc.add(Box::new(NumericDocValuesField::new("dv1", 5)));
+        doc.add(Box::new(NumericDocValuesField::new("dv1", 0)));
         iw.add_document(&doc)?;
-    }
-    iw.force_merge(1)?;
-    iw.close()?;
-    drop(iw);
+        if merging && !three {
+            iw.commit()?;
+        }
+        let mut doc = Document::new();
+        doc.add(Box::new(StringField::new(
+            "id",
+            "1".to_string(),
+            Store::YES,
+        )?));
+        iw.add_document(&doc)?;
+        if three {
+            iw.commit()?;
+            let mut doc = Document::new();
+            doc.add(Box::new(StringField::new(
+                "id",
+                "2".to_string(),
+                Store::YES,
+            )?));
+            doc.add(Box::new(NumericDocValuesField::new("dv1", 5)));
+            iw.add_document(&doc)?;
+        }
+        iw.force_merge(1)?;
+        iw.close()?;
+        drop(iw);
 
-    let ir = open_reader(case, &directory)?;
-    aeq(1, Arc::clone(&ir).leaves()?.len() as i64);
-    let ar = Arc::clone(&ir).leaves()?[0].leaf_reader();
-    let mut dv = npe(ar.get_numeric_doc_values("dv1")?);
-    aeq(0, dv.next_doc()?);
-    aeq(0, dv.long_value()?);
-    if three {
-        aeq(2, dv.next_doc()?);
-        aeq(5, dv.long_value()?);
-    } else {
-        aeq(NO_MORE_DOCS, dv.next_doc()?);
+        let ir = open_reader(case, &directory)?;
+        aeq(1, Arc::clone(&ir).leaves()?.len() as i64);
+        let ar = Arc::clone(&ir).leaves()?[0].leaf_reader();
+        let mut dv = npe(ar.get_numeric_doc_values("dv1")?);
+        aeq(0, dv.next_doc()?);
+        aeq(0, dv.long_value()?);
+        if three {
+            aeq(2, dv.next_doc()?);
+            aeq(5, dv.long_value()?);
+        } else {
+            aeq(NO_MORE_DOCS, dv.next_doc()?);
+        }
+        drop((dv, ar));
+        ir.close()?;
     }
-    drop((dv, ar));
-    ir.close()?;
     directory.close()
 }
 
@@ -1004,58 +1022,60 @@ fn bytes_one_missing<C: BaseIndexFileFormatTestCase + ?Sized>(
     three: bool,
 ) -> Result<()> {
     let mut directory = LuceneTestCase::new_directory();
-    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(null_analyzer());
-    conf.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
-    let iw = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), conf)?;
-    let mut doc = Document::new();
-    doc.add(Box::new(StringField::new(
-        "id",
-        "0".to_string(),
-        Store::YES,
-    )?));
-    doc.add(Box::new(BinaryDocValuesField::new(
-        "dv1",
-        LuceneTestCase::new_bytes_ref(),
-    )));
-    iw.add_document(&doc)?;
-    if merging && !three {
-        iw.commit()?;
-    }
-    let mut doc = Document::new();
-    doc.add(Box::new(StringField::new(
-        "id",
-        "1".to_string(),
-        Store::YES,
-    )?));
-    iw.add_document(&doc)?;
-    if three {
-        iw.commit()?;
+    {
+        let mut conf = LuceneTestCase::new_index_writer_config_analyzer(null_analyzer());
+        conf.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+        let iw = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), conf)?;
         let mut doc = Document::new();
         doc.add(Box::new(StringField::new(
             "id",
-            "2".to_string(),
+            "0".to_string(),
             Store::YES,
         )?));
-        doc.add(Box::new(BinaryDocValuesField::new("dv1", nbr("boo"))));
+        doc.add(Box::new(BinaryDocValuesField::new(
+            "dv1",
+            LuceneTestCase::new_bytes_ref(),
+        )));
         iw.add_document(&doc)?;
-    }
-    iw.force_merge(1)?;
-    iw.close()?;
-    drop(iw);
+        if merging && !three {
+            iw.commit()?;
+        }
+        let mut doc = Document::new();
+        doc.add(Box::new(StringField::new(
+            "id",
+            "1".to_string(),
+            Store::YES,
+        )?));
+        iw.add_document(&doc)?;
+        if three {
+            iw.commit()?;
+            let mut doc = Document::new();
+            doc.add(Box::new(StringField::new(
+                "id",
+                "2".to_string(),
+                Store::YES,
+            )?));
+            doc.add(Box::new(BinaryDocValuesField::new("dv1", nbr("boo"))));
+            iw.add_document(&doc)?;
+        }
+        iw.force_merge(1)?;
+        iw.close()?;
+        drop(iw);
 
-    let ir = open_reader(case, &directory)?;
-    aeq(1, Arc::clone(&ir).leaves()?.len() as i64);
-    let ar = Arc::clone(&ir).leaves()?[0].leaf_reader();
-    let mut dv = npe(ar.get_binary_doc_values("dv1")?);
-    aeq(0, dv.next_doc()?);
-    Assert::assert_equals(LuceneTestCase::new_bytes_ref(), dv.binary_value()?);
-    if three {
-        aeq(2, dv.next_doc()?);
-        Assert::assert_equals(nbr("boo"), dv.binary_value()?);
+        let ir = open_reader(case, &directory)?;
+        aeq(1, Arc::clone(&ir).leaves()?.len() as i64);
+        let ar = Arc::clone(&ir).leaves()?[0].leaf_reader();
+        let mut dv = npe(ar.get_binary_doc_values("dv1")?);
+        aeq(0, dv.next_doc()?);
+        Assert::assert_equals(LuceneTestCase::new_bytes_ref(), dv.binary_value()?);
+        if three {
+            aeq(2, dv.next_doc()?);
+            Assert::assert_equals(nbr("boo"), dv.binary_value()?);
+        }
+        aeq(NO_MORE_DOCS, dv.next_doc()?);
+        drop((dv, ar));
+        ir.close()?;
     }
-    aeq(NO_MORE_DOCS, dv.next_doc()?);
-    drop((dv, ar));
-    ir.close()?;
     directory.close()
 }
 
@@ -1068,25 +1088,28 @@ fn two_sorted_numbers<C: BaseIndexFileFormatTestCase + ?Sized>(
     expected: &[i64; 2],
 ) -> Result<()> {
     let mut directory = LuceneTestCase::new_directory();
-    let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), directory.as_directory())?;
-    let mut doc = Document::new();
-    doc.add(Box::new(SortedNumericDocValuesField::new("dv", first)));
-    doc.add(Box::new(SortedNumericDocValuesField::new("dv", second)));
-    writer.add_document(&doc)?;
-    writer.close()?;
-    drop(writer);
+    {
+        let writer =
+            RandomIndexWriter::new_with_mock_analyzer(&*random(), directory.as_directory())?;
+        let mut doc = Document::new();
+        doc.add(Box::new(SortedNumericDocValuesField::new("dv", first)));
+        doc.add(Box::new(SortedNumericDocValuesField::new("dv", second)));
+        writer.add_document(&doc)?;
+        writer.close()?;
+        drop(writer);
 
-    // Now search the index:
-    let reader = open_reader(case, &directory)?;
-    let leaf = only_leaf(&reader)?;
-    let mut dv = npe(leaf.get_sorted_numeric_doc_values("dv")?);
-    aeq(0, dv.next_doc()?);
-    aeq(2, dv.doc_value_count()?);
-    aeq(expected[0], dv.next_value()?);
-    aeq(expected[1], dv.next_value()?);
+        // Now search the index:
+        let reader = open_reader(case, &directory)?;
+        let leaf = only_leaf(&reader)?;
+        let mut dv = npe(leaf.get_sorted_numeric_doc_values("dv")?);
+        aeq(0, dv.next_doc()?);
+        aeq(2, dv.doc_value_count()?);
+        aeq(expected[0], dv.next_value()?);
+        aeq(expected[1], dv.next_value()?);
 
-    drop((dv, leaf));
-    reader.close()?;
+        drop((dv, leaf));
+        reader.close()?;
+    }
     directory.close()
 }
 
@@ -1320,60 +1343,66 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testVariouslyCompressibleBinaryValues()`.
     fn test_variously_compressible_binary_values(&self) -> Result<()> {
         let mut directory = LuceneTestCase::new_directory();
-        let iwriter =
-            RandomIndexWriter::new_with_mock_analyzer(&*random(), directory.as_directory())?;
-        let num_docs = 1 + random().next_int_bound(100);
+        {
+            let iwriter =
+                RandomIndexWriter::new_with_mock_analyzer(&*random(), directory.as_directory())?;
+            let num_docs = 1 + random().next_int_bound(100);
 
-        let mut written_values: HashMap<i32, BytesRef> = HashMap::new();
+            let mut written_values: HashMap<i32, BytesRef> = HashMap::new();
 
-        // Small vocabulary ranges will be highly compressible
-        let vocab_range = 1 + random().next_int_bound(i32::from(i8::MAX) - 1);
+            // Small vocabulary ranges will be highly compressible
+            let vocab_range = 1 + random().next_int_bound(i32::from(i8::MAX) - 1);
 
-        for i in 0..num_docs {
-            let mut doc = Document::new();
+            for i in 0..num_docs {
+                let mut doc = Document::new();
 
-            // Generate random-sized byte array with random choice of bytes in vocab range
-            let mut value = vec![0u8; (500 + random().next_int_bound(1024)) as usize];
-            for b in value.iter_mut() {
-                *b = random().next_int_bound(vocab_range) as u8;
+                // Generate random-sized byte array with random choice of bytes in vocab range
+                let mut value = vec![0u8; (500 + random().next_int_bound(1024)) as usize];
+                for b in value.iter_mut() {
+                    *b = random().next_int_bound(vocab_range) as u8;
+                }
+                let bytes_ref = LuceneTestCase::new_bytes_ref_bytes(&value);
+                written_values.insert(i, bytes_ref.clone());
+                doc.add(Box::new(LuceneTestCase::new_text_field(
+                    "id",
+                    &i.to_string(),
+                    Store::YES,
+                )));
+                doc.add(Box::new(BinaryDocValuesField::new("dv1", bytes_ref)));
+                iwriter.add_document(&doc)?;
             }
-            let bytes_ref = LuceneTestCase::new_bytes_ref_bytes(&value);
-            written_values.insert(i, bytes_ref.clone());
-            doc.add(Box::new(LuceneTestCase::new_text_field(
-                "id",
-                &i.to_string(),
-                Store::YES,
-            )));
-            doc.add(Box::new(BinaryDocValuesField::new("dv1", bytes_ref)));
-            iwriter.add_document(&doc)?;
+            iwriter.force_merge(1)?;
+            iwriter.close()?;
+            drop(iwriter);
+
+            // Now search the index:
+            let ireader = open_reader(self, &directory)?; // read-only=true
+            let isearcher = IndexSearcher::new(Arc::clone(&ireader))?;
+            let stored_fields = isearcher.stored_fields()?;
+
+            for i in 0..num_docs {
+                let id = i.to_string();
+                let query = term_query("id", &id);
+                let hits = isearcher.search(query, 1)?;
+                aeq(1, hits.total_hits.value());
+                // Iterate through the results:
+                let hit_doc_id = hits.score_docs[0].doc;
+                let hit_doc = stored_fields.document(hit_doc_id)?;
+                Assert::assert_equals_str(
+                    None,
+                    Some(id.as_str()),
+                    doc_get(&hit_doc, "id").as_deref(),
+                );
+                let leaf = only_leaf(&ireader)?;
+                let mut dv = npe(leaf.get_binary_doc_values("dv1")?);
+                aeq(hit_doc_id, dv.advance(hit_doc_id)?);
+                let scratch = dv.binary_value()?;
+                Assert::assert_equals(Boxed(written_values.get(&i).cloned()), Boxed(Some(scratch)));
+            }
+
+            drop((stored_fields, isearcher));
+            ireader.close()?;
         }
-        iwriter.force_merge(1)?;
-        iwriter.close()?;
-        drop(iwriter);
-
-        // Now search the index:
-        let ireader = open_reader(self, &directory)?; // read-only=true
-        let isearcher = IndexSearcher::new(Arc::clone(&ireader))?;
-        let stored_fields = isearcher.stored_fields()?;
-
-        for i in 0..num_docs {
-            let id = i.to_string();
-            let query = term_query("id", &id);
-            let hits = isearcher.search(query, 1)?;
-            aeq(1, hits.total_hits.value());
-            // Iterate through the results:
-            let hit_doc_id = hits.score_docs[0].doc;
-            let hit_doc = stored_fields.document(hit_doc_id)?;
-            Assert::assert_equals_str(None, Some(id.as_str()), doc_get(&hit_doc, "id").as_deref());
-            let leaf = only_leaf(&ireader)?;
-            let mut dv = npe(leaf.get_binary_doc_values("dv1")?);
-            aeq(hit_doc_id, dv.advance(hit_doc_id)?);
-            let scratch = dv.binary_value()?;
-            Assert::assert_equals(Boxed(written_values.get(&i).cloned()), Boxed(Some(scratch)));
-        }
-
-        drop((stored_fields, isearcher));
-        ireader.close()?;
         directory.close()
     }
 
@@ -1473,72 +1502,78 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testTwoDocumentsNumeric()`.
     fn test_two_documents_numeric(&self) -> Result<()> {
         let (mut directory, iwriter) = log_mp_writer()?;
-        let mut doc = Document::new();
-        doc.add(Box::new(NumericDocValuesField::new("dv", 1)));
-        iwriter.add_document(&doc)?;
-        let mut doc = Document::new();
-        doc.add(Box::new(NumericDocValuesField::new("dv", 2)));
-        iwriter.add_document(&doc)?;
-        iwriter.force_merge(1)?;
-        iwriter.close()?;
-        drop(iwriter);
+        {
+            let iwriter = iwriter;
+            let mut doc = Document::new();
+            doc.add(Box::new(NumericDocValuesField::new("dv", 1)));
+            iwriter.add_document(&doc)?;
+            let mut doc = Document::new();
+            doc.add(Box::new(NumericDocValuesField::new("dv", 2)));
+            iwriter.add_document(&doc)?;
+            iwriter.force_merge(1)?;
+            iwriter.close()?;
+            drop(iwriter);
 
-        // Now search the index:
-        let ireader = open_reader(self, &directory)?; // read-only=true
-        let leaf = only_leaf(&ireader)?;
-        let mut dv = npe(leaf.get_numeric_doc_values("dv")?);
-        aeq(0, dv.next_doc()?);
-        aeq(1, dv.long_value()?);
-        aeq(1, dv.next_doc()?);
-        aeq(2, dv.long_value()?);
+            // Now search the index:
+            let ireader = open_reader(self, &directory)?; // read-only=true
+            let leaf = only_leaf(&ireader)?;
+            let mut dv = npe(leaf.get_numeric_doc_values("dv")?);
+            aeq(0, dv.next_doc()?);
+            aeq(1, dv.long_value()?);
+            aeq(1, dv.next_doc()?);
+            aeq(2, dv.long_value()?);
 
-        drop((dv, leaf));
-        ireader.close()?;
+            drop((dv, leaf));
+            ireader.close()?;
+        }
         directory.close()
     }
 
     /// `testTwoDocumentsMerged()`.
     fn test_two_documents_merged(&self) -> Result<()> {
         let (mut directory, iwriter) = log_mp_writer()?;
-        let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_field(
-            "id",
-            "0",
-            StringField::type_stored(),
-        )));
-        doc.add(Box::new(NumericDocValuesField::new("dv", -10)));
-        iwriter.add_document(&doc)?;
-        iwriter.commit()?;
-        let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_field(
-            "id",
-            "1",
-            StringField::type_stored(),
-        )));
-        doc.add(Box::new(NumericDocValuesField::new("dv", 99)));
-        iwriter.add_document(&doc)?;
-        iwriter.force_merge(1)?;
-        iwriter.close()?;
-        drop(iwriter);
+        {
+            let iwriter = iwriter;
+            let mut doc = Document::new();
+            doc.add(Box::new(LuceneTestCase::new_field(
+                "id",
+                "0",
+                StringField::type_stored(),
+            )));
+            doc.add(Box::new(NumericDocValuesField::new("dv", -10)));
+            iwriter.add_document(&doc)?;
+            iwriter.commit()?;
+            let mut doc = Document::new();
+            doc.add(Box::new(LuceneTestCase::new_field(
+                "id",
+                "1",
+                StringField::type_stored(),
+            )));
+            doc.add(Box::new(NumericDocValuesField::new("dv", 99)));
+            iwriter.add_document(&doc)?;
+            iwriter.force_merge(1)?;
+            iwriter.close()?;
+            drop(iwriter);
 
-        // Now search the index:
-        let ireader = open_reader(self, &directory)?; // read-only=true
-        let leaf = only_leaf(&ireader)?;
-        let mut dv = npe(leaf.get_numeric_doc_values("dv")?);
-        let stored_fields = leaf.stored_fields()?;
-        for i in 0..2 {
-            let doc2 = stored_fields.document(i)?;
-            let expected = if npe(doc_get(&doc2, "id")) == "0" {
-                -10
-            } else {
-                99
-            };
-            aeq(i, dv.next_doc()?);
-            aeq(expected, dv.long_value()?);
+            // Now search the index:
+            let ireader = open_reader(self, &directory)?; // read-only=true
+            let leaf = only_leaf(&ireader)?;
+            let mut dv = npe(leaf.get_numeric_doc_values("dv")?);
+            let stored_fields = leaf.stored_fields()?;
+            for i in 0..2 {
+                let doc2 = stored_fields.document(i)?;
+                let expected = if npe(doc_get(&doc2, "id")) == "0" {
+                    -10
+                } else {
+                    99
+                };
+                aeq(i, dv.next_doc()?);
+                aeq(expected, dv.long_value()?);
+            }
+
+            drop((dv, stored_fields, leaf));
+            ireader.close()?;
         }
-
-        drop((dv, stored_fields, leaf));
-        ireader.close()?;
         directory.close()
     }
 
@@ -1556,76 +1591,81 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
     fn test_bytes(&self) -> Result<()> {
         let analyzer = mock_analyzer();
         let mut directory = LuceneTestCase::new_directory();
-        let conf = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
-        let iwriter =
-            RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), conf)?;
-        one_doc_search_test_with(
-            self,
-            &mut directory,
-            iwriter,
-            LONG_TERM,
-            |doc| {
-                doc.add(Box::new(BinaryDocValuesField::new(
-                    "dv",
-                    nbr("hello world"),
-                )));
-                Ok(())
-            },
-            |leaf, hit_doc_id| {
-                let mut dv = npe(leaf.get_binary_doc_values("dv")?);
-                aeq(hit_doc_id, dv.advance(hit_doc_id)?);
-                Assert::assert_equals(nbr("hello world"), dv.binary_value()?);
-                Ok(())
-            },
-        )?;
+        {
+            let conf = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
+            let iwriter =
+                RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), conf)?;
+            one_doc_search_test_with(
+                self,
+                &mut directory,
+                iwriter,
+                LONG_TERM,
+                |doc| {
+                    doc.add(Box::new(BinaryDocValuesField::new(
+                        "dv",
+                        nbr("hello world"),
+                    )));
+                    Ok(())
+                },
+                |leaf, hit_doc_id| {
+                    let mut dv = npe(leaf.get_binary_doc_values("dv")?);
+                    aeq(hit_doc_id, dv.advance(hit_doc_id)?);
+                    Assert::assert_equals(nbr("hello world"), dv.binary_value()?);
+                    Ok(())
+                },
+            )?;
+        }
         directory.close()
     }
 
     /// `testBytesTwoDocumentsMerged()`.
     fn test_bytes_two_documents_merged(&self) -> Result<()> {
         let (mut directory, iwriter) = log_mp_writer()?;
-        let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_field(
-            "id",
-            "0",
-            StringField::type_stored(),
-        )));
-        doc.add(Box::new(BinaryDocValuesField::new(
-            "dv",
-            nbr("hello world 1"),
-        )));
-        iwriter.add_document(&doc)?;
-        iwriter.commit()?;
-        let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_field(
-            "id",
-            "1",
-            StringField::type_stored(),
-        )));
-        doc.add(Box::new(BinaryDocValuesField::new("dv", nbr("hello 2"))));
-        iwriter.add_document(&doc)?;
-        iwriter.force_merge(1)?;
-        iwriter.close()?;
-        drop(iwriter);
+        {
+            let iwriter = iwriter;
+            let mut doc = Document::new();
+            doc.add(Box::new(LuceneTestCase::new_field(
+                "id",
+                "0",
+                StringField::type_stored(),
+            )));
+            doc.add(Box::new(BinaryDocValuesField::new(
+                "dv",
+                nbr("hello world 1"),
+            )));
+            iwriter.add_document(&doc)?;
+            iwriter.commit()?;
+            let mut doc = Document::new();
+            doc.add(Box::new(LuceneTestCase::new_field(
+                "id",
+                "1",
+                StringField::type_stored(),
+            )));
+            doc.add(Box::new(BinaryDocValuesField::new("dv", nbr("hello 2"))));
+            iwriter.add_document(&doc)?;
+            iwriter.force_merge(1)?;
+            iwriter.close()?;
+            drop(iwriter);
 
-        // Now search the index:
-        let ireader = open_reader(self, &directory)?; // read-only=true
-        let leaf = only_leaf(&ireader)?;
-        let mut dv = npe(leaf.get_binary_doc_values("dv")?);
-        let stored_fields = leaf.stored_fields()?;
-        for i in 0..2 {
-            let doc2 = stored_fields.document(i)?;
-            let expected = if npe(doc_get(&doc2, "id")) == "0" {
-                "hello world 1"
-            } else {
-                "hello 2"
-            };
-            aeq(i, dv.next_doc()?);
-            Assert::assert_equals(expected.to_string(), dv.binary_value()?.utf8_to_string()?);
+            // Now search the index:
+            let ireader = open_reader(self, &directory)?; // read-only=true
+            let leaf = only_leaf(&ireader)?;
+            let mut dv = npe(leaf.get_binary_doc_values("dv")?);
+            let stored_fields = leaf.stored_fields()?;
+            for i in 0..2 {
+                let doc2 = stored_fields.document(i)?;
+                let expected = if npe(doc_get(&doc2, "id")) == "0" {
+                    "hello world 1"
+                } else {
+                    "hello 2"
+                };
+                aeq(i, dv.next_doc()?);
+                Assert::assert_equals(expected.to_string(), dv.binary_value()?.utf8_to_string()?);
+            }
+
+            drop((dv, stored_fields, leaf));
+            ireader.close()?;
         }
-
-        drop((dv, stored_fields, leaf));
-        ireader.close()?;
         directory.close()
     }
 
@@ -1645,157 +1685,168 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
     fn test_sorted_bytes(&self) -> Result<()> {
         let analyzer = mock_analyzer();
         let mut directory = LuceneTestCase::new_directory();
-        let conf = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
-        let iwriter =
-            RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), conf)?;
-        one_doc_search_test_with(
-            self,
-            &mut directory,
-            iwriter,
-            LONG_TERM,
-            |doc| {
-                doc.add(Box::new(SortedDocValuesField::new(
-                    "dv",
-                    nbr("hello world"),
-                )));
-                Ok(())
-            },
-            |leaf, doc_id| {
-                let mut dv = npe(leaf.get_sorted_doc_values("dv")?);
-                aeq(doc_id, dv.advance(doc_id)?);
-                let scratch = dv.lookup_ord(dv.ord_value()?)?;
-                Assert::assert_equals(nbr("hello world"), scratch);
-                Ok(())
-            },
-        )?;
+        {
+            let conf = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
+            let iwriter =
+                RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), conf)?;
+            one_doc_search_test_with(
+                self,
+                &mut directory,
+                iwriter,
+                LONG_TERM,
+                |doc| {
+                    doc.add(Box::new(SortedDocValuesField::new(
+                        "dv",
+                        nbr("hello world"),
+                    )));
+                    Ok(())
+                },
+                |leaf, doc_id| {
+                    let mut dv = npe(leaf.get_sorted_doc_values("dv")?);
+                    aeq(doc_id, dv.advance(doc_id)?);
+                    let scratch = dv.lookup_ord(dv.ord_value()?)?;
+                    Assert::assert_equals(nbr("hello world"), scratch);
+                    Ok(())
+                },
+            )?;
+        }
         directory.close()
     }
 
     /// `testSortedBytesTwoDocuments()`.
     fn test_sorted_bytes_two_documents(&self) -> Result<()> {
         let (mut directory, iwriter) = log_mp_writer()?;
-        let mut doc = Document::new();
-        doc.add(Box::new(SortedDocValuesField::new(
-            "dv",
-            nbr("hello world 1"),
-        )));
-        iwriter.add_document(&doc)?;
-        let mut doc = Document::new();
-        doc.add(Box::new(SortedDocValuesField::new(
-            "dv",
-            nbr("hello world 2"),
-        )));
-        iwriter.add_document(&doc)?;
-        iwriter.force_merge(1)?;
-        iwriter.close()?;
-        drop(iwriter);
+        {
+            let iwriter = iwriter;
+            let mut doc = Document::new();
+            doc.add(Box::new(SortedDocValuesField::new(
+                "dv",
+                nbr("hello world 1"),
+            )));
+            iwriter.add_document(&doc)?;
+            let mut doc = Document::new();
+            doc.add(Box::new(SortedDocValuesField::new(
+                "dv",
+                nbr("hello world 2"),
+            )));
+            iwriter.add_document(&doc)?;
+            iwriter.force_merge(1)?;
+            iwriter.close()?;
+            drop(iwriter);
 
-        // Now search the index:
-        let ireader = open_reader(self, &directory)?; // read-only=true
-        let leaf = only_leaf(&ireader)?;
-        let mut dv = npe(leaf.get_sorted_doc_values("dv")?);
-        aeq(0, dv.next_doc()?);
-        let scratch = dv.lookup_ord(dv.ord_value()?)?;
-        Assert::assert_equals("hello world 1".to_string(), scratch.utf8_to_string()?);
-        aeq(1, dv.next_doc()?);
-        let scratch = dv.lookup_ord(dv.ord_value()?)?;
-        Assert::assert_equals("hello world 2".to_string(), scratch.utf8_to_string()?);
+            // Now search the index:
+            let ireader = open_reader(self, &directory)?; // read-only=true
+            let leaf = only_leaf(&ireader)?;
+            let mut dv = npe(leaf.get_sorted_doc_values("dv")?);
+            aeq(0, dv.next_doc()?);
+            let scratch = dv.lookup_ord(dv.ord_value()?)?;
+            Assert::assert_equals("hello world 1".to_string(), scratch.utf8_to_string()?);
+            aeq(1, dv.next_doc()?);
+            let scratch = dv.lookup_ord(dv.ord_value()?)?;
+            Assert::assert_equals("hello world 2".to_string(), scratch.utf8_to_string()?);
 
-        drop((dv, leaf));
-        ireader.close()?;
+            drop((dv, leaf));
+            ireader.close()?;
+        }
         directory.close()
     }
 
     /// `testSortedBytesThreeDocuments()`.
     fn test_sorted_bytes_three_documents(&self) -> Result<()> {
         let (mut directory, iwriter) = log_mp_writer()?;
-        for value in ["hello world 1", "hello world 2", "hello world 1"] {
-            let mut doc = Document::new();
-            doc.add(Box::new(SortedDocValuesField::new("dv", nbr(value))));
-            iwriter.add_document(&doc)?;
+        {
+            let iwriter = iwriter;
+            for value in ["hello world 1", "hello world 2", "hello world 1"] {
+                let mut doc = Document::new();
+                doc.add(Box::new(SortedDocValuesField::new("dv", nbr(value))));
+                iwriter.add_document(&doc)?;
+            }
+            iwriter.force_merge(1)?;
+            iwriter.close()?;
+            drop(iwriter);
+
+            // Now search the index:
+            let ireader = open_reader(self, &directory)?; // read-only=true
+            let leaf = only_leaf(&ireader)?;
+            let mut dv = npe(leaf.get_sorted_doc_values("dv")?);
+            aeq(2, dv.get_value_count()?);
+            aeq(0, dv.next_doc()?);
+            aeq(0, dv.ord_value()?);
+            let scratch = dv.lookup_ord(0)?;
+            Assert::assert_equals("hello world 1".to_string(), scratch.utf8_to_string()?);
+            aeq(1, dv.next_doc()?);
+            aeq(1, dv.ord_value()?);
+            let scratch = dv.lookup_ord(1)?;
+            Assert::assert_equals("hello world 2".to_string(), scratch.utf8_to_string()?);
+            aeq(2, dv.next_doc()?);
+            aeq(0, dv.ord_value()?);
+
+            drop((dv, leaf));
+            ireader.close()?;
         }
-        iwriter.force_merge(1)?;
-        iwriter.close()?;
-        drop(iwriter);
-
-        // Now search the index:
-        let ireader = open_reader(self, &directory)?; // read-only=true
-        let leaf = only_leaf(&ireader)?;
-        let mut dv = npe(leaf.get_sorted_doc_values("dv")?);
-        aeq(2, dv.get_value_count()?);
-        aeq(0, dv.next_doc()?);
-        aeq(0, dv.ord_value()?);
-        let scratch = dv.lookup_ord(0)?;
-        Assert::assert_equals("hello world 1".to_string(), scratch.utf8_to_string()?);
-        aeq(1, dv.next_doc()?);
-        aeq(1, dv.ord_value()?);
-        let scratch = dv.lookup_ord(1)?;
-        Assert::assert_equals("hello world 2".to_string(), scratch.utf8_to_string()?);
-        aeq(2, dv.next_doc()?);
-        aeq(0, dv.ord_value()?);
-
-        drop((dv, leaf));
-        ireader.close()?;
         directory.close()
     }
 
     /// `testSortedBytesTwoDocumentsMerged()`.
     fn test_sorted_bytes_two_documents_merged(&self) -> Result<()> {
         let (mut directory, iwriter) = log_mp_writer()?;
-        let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_field(
-            "id",
-            "0",
-            StringField::type_stored(),
-        )));
-        doc.add(Box::new(SortedDocValuesField::new(
-            "dv",
-            nbr("hello world 1"),
-        )));
-        iwriter.add_document(&doc)?;
-        iwriter.commit()?;
-        let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_field(
-            "id",
-            "1",
-            StringField::type_stored(),
-        )));
-        doc.add(Box::new(SortedDocValuesField::new(
-            "dv",
-            nbr("hello world 2"),
-        )));
-        iwriter.add_document(&doc)?;
-        iwriter.force_merge(1)?;
-        iwriter.close()?;
-        drop(iwriter);
+        {
+            let iwriter = iwriter;
+            let mut doc = Document::new();
+            doc.add(Box::new(LuceneTestCase::new_field(
+                "id",
+                "0",
+                StringField::type_stored(),
+            )));
+            doc.add(Box::new(SortedDocValuesField::new(
+                "dv",
+                nbr("hello world 1"),
+            )));
+            iwriter.add_document(&doc)?;
+            iwriter.commit()?;
+            let mut doc = Document::new();
+            doc.add(Box::new(LuceneTestCase::new_field(
+                "id",
+                "1",
+                StringField::type_stored(),
+            )));
+            doc.add(Box::new(SortedDocValuesField::new(
+                "dv",
+                nbr("hello world 2"),
+            )));
+            iwriter.add_document(&doc)?;
+            iwriter.force_merge(1)?;
+            iwriter.close()?;
+            drop(iwriter);
 
-        // Now search the index:
-        let ireader = open_reader(self, &directory)?; // read-only=true
-        let leaf = only_leaf(&ireader)?;
-        let mut dv = npe(leaf.get_sorted_doc_values("dv")?);
-        aeq(2, dv.get_value_count()?); // 2 ords
-        aeq(0, dv.next_doc()?);
-        let scratch = dv.lookup_ord(dv.ord_value()?)?;
-        Assert::assert_equals(nbr("hello world 1"), scratch);
-        let scratch = dv.lookup_ord(1)?;
-        Assert::assert_equals(nbr("hello world 2"), scratch);
-        let stored_fields = leaf.stored_fields()?;
-        for i in 0..2 {
-            let doc2 = stored_fields.document(i)?;
-            let expected = if npe(doc_get(&doc2, "id")) == "0" {
-                "hello world 1"
-            } else {
-                "hello world 2"
-            };
-            if dv.doc_id() < i {
-                aeq(i, dv.next_doc()?);
-            }
+            // Now search the index:
+            let ireader = open_reader(self, &directory)?; // read-only=true
+            let leaf = only_leaf(&ireader)?;
+            let mut dv = npe(leaf.get_sorted_doc_values("dv")?);
+            aeq(2, dv.get_value_count()?); // 2 ords
+            aeq(0, dv.next_doc()?);
             let scratch = dv.lookup_ord(dv.ord_value()?)?;
-            Assert::assert_equals(expected.to_string(), scratch.utf8_to_string()?);
-        }
+            Assert::assert_equals(nbr("hello world 1"), scratch);
+            let scratch = dv.lookup_ord(1)?;
+            Assert::assert_equals(nbr("hello world 2"), scratch);
+            let stored_fields = leaf.stored_fields()?;
+            for i in 0..2 {
+                let doc2 = stored_fields.document(i)?;
+                let expected = if npe(doc_get(&doc2, "id")) == "0" {
+                    "hello world 1"
+                } else {
+                    "hello world 2"
+                };
+                if dv.doc_id() < i {
+                    aeq(i, dv.next_doc()?);
+                }
+                let scratch = dv.lookup_ord(dv.ord_value()?)?;
+                Assert::assert_equals(expected.to_string(), scratch.utf8_to_string()?);
+            }
 
-        drop((dv, stored_fields, leaf));
-        ireader.close()?;
+            drop((dv, stored_fields, leaf));
+            ireader.close()?;
+        }
         directory.close()
     }
 
@@ -1825,465 +1876,495 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testBytesWithNewline()`.
     fn test_bytes_with_newline(&self) -> Result<()> {
         let (mut directory, iwriter) = log_mp_writer()?;
-        let mut doc = Document::new();
-        doc.add(Box::new(BinaryDocValuesField::new(
-            "dv",
-            nbr("hello\nworld\r1"),
-        )));
-        iwriter.add_document(&doc)?;
-        iwriter.close()?;
-        drop(iwriter);
+        {
+            let iwriter = iwriter;
+            let mut doc = Document::new();
+            doc.add(Box::new(BinaryDocValuesField::new(
+                "dv",
+                nbr("hello\nworld\r1"),
+            )));
+            iwriter.add_document(&doc)?;
+            iwriter.close()?;
+            drop(iwriter);
 
-        // Now search the index:
-        let ireader = open_reader(self, &directory)?; // read-only=true
-        let leaf = only_leaf(&ireader)?;
-        let mut dv = npe(leaf.get_binary_doc_values("dv")?);
-        aeq(0, dv.next_doc()?);
-        Assert::assert_equals(nbr("hello\nworld\r1"), dv.binary_value()?);
+            // Now search the index:
+            let ireader = open_reader(self, &directory)?; // read-only=true
+            let leaf = only_leaf(&ireader)?;
+            let mut dv = npe(leaf.get_binary_doc_values("dv")?);
+            aeq(0, dv.next_doc()?);
+            Assert::assert_equals(nbr("hello\nworld\r1"), dv.binary_value()?);
 
-        drop((dv, leaf));
-        ireader.close()?;
+            drop((dv, leaf));
+            ireader.close()?;
+        }
         directory.close()
     }
 
     /// `testMissingSortedBytes()`.
     fn test_missing_sorted_bytes(&self) -> Result<()> {
         let (mut directory, iwriter) = log_mp_writer()?;
-        let mut doc = Document::new();
-        doc.add(Box::new(SortedDocValuesField::new(
-            "dv",
-            nbr("hello world 2"),
-        )));
-        iwriter.add_document(&doc)?;
-        // 2nd doc missing the DV field
-        iwriter.add_document(&Document::new())?;
-        iwriter.close()?;
-        drop(iwriter);
+        {
+            let iwriter = iwriter;
+            let mut doc = Document::new();
+            doc.add(Box::new(SortedDocValuesField::new(
+                "dv",
+                nbr("hello world 2"),
+            )));
+            iwriter.add_document(&doc)?;
+            // 2nd doc missing the DV field
+            iwriter.add_document(&Document::new())?;
+            iwriter.close()?;
+            drop(iwriter);
 
-        // Now search the index:
-        let ireader = open_reader(self, &directory)?; // read-only=true
-        let leaf = only_leaf(&ireader)?;
-        let mut dv = npe(leaf.get_sorted_doc_values("dv")?);
-        aeq(0, dv.next_doc()?);
-        let scratch = dv.lookup_ord(dv.ord_value()?)?;
-        Assert::assert_equals(nbr("hello world 2"), scratch);
-        aeq(NO_MORE_DOCS, dv.next_doc()?);
-        drop((dv, leaf));
-        ireader.close()?;
+            // Now search the index:
+            let ireader = open_reader(self, &directory)?; // read-only=true
+            let leaf = only_leaf(&ireader)?;
+            let mut dv = npe(leaf.get_sorted_doc_values("dv")?);
+            aeq(0, dv.next_doc()?);
+            let scratch = dv.lookup_ord(dv.ord_value()?)?;
+            Assert::assert_equals(nbr("hello world 2"), scratch);
+            aeq(NO_MORE_DOCS, dv.next_doc()?);
+            drop((dv, leaf));
+            ireader.close()?;
+        }
         directory.close()
     }
 
     /// `testSortedTermsEnum()`.
     fn test_sorted_terms_enum(&self) -> Result<()> {
         let mut directory = LuceneTestCase::new_directory();
-        let analyzer = mock_analyzer();
-        let mut iwconfig = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
-        iwconfig.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
-        let iwriter =
-            RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), iwconfig)?;
+        {
+            let analyzer = mock_analyzer();
+            let mut iwconfig = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
+            iwconfig.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+            let iwriter =
+                RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), iwconfig)?;
 
-        for value in ["hello", "world", "beer"] {
-            let mut doc = Document::new();
-            doc.add(Box::new(SortedDocValuesField::new("field", nbr(value))));
-            iwriter.add_document(&doc)?;
+            for value in ["hello", "world", "beer"] {
+                let mut doc = Document::new();
+                doc.add(Box::new(SortedDocValuesField::new("field", nbr(value))));
+                iwriter.add_document(&doc)?;
+            }
+            iwriter.force_merge(1)?;
+
+            let ireader = iwriter.get_reader()?;
+            iwriter.close()?;
+            drop(iwriter);
+
+            let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ireader) as _)?;
+            let dv = npe(leaf.get_sorted_doc_values("field")?);
+            aeq(3, dv.get_value_count()?);
+
+            let mut terms_enum = dv.terms_enum()?;
+
+            // next()
+            Assert::assert_equals(
+                "beer".to_string(),
+                npe(terms_enum.next()?).utf8_to_string()?,
+            );
+            aeq(0, terms_enum.ord()?);
+            Assert::assert_equals(
+                "hello".to_string(),
+                npe(terms_enum.next()?).utf8_to_string()?,
+            );
+            aeq(1, terms_enum.ord()?);
+            Assert::assert_equals(
+                "world".to_string(),
+                npe(terms_enum.next()?).utf8_to_string()?,
+            );
+            aeq(2, terms_enum.ord()?);
+
+            // seekCeil()
+            assert_seek_status(SeekStatus::NOT_FOUND, terms_enum.seek_ceil(&nbr("ha!"))?);
+            Assert::assert_equals("hello".to_string(), terms_enum.term()?.utf8_to_string()?);
+            aeq(1, terms_enum.ord()?);
+            assert_seek_status(SeekStatus::FOUND, terms_enum.seek_ceil(&nbr("beer"))?);
+            Assert::assert_equals("beer".to_string(), terms_enum.term()?.utf8_to_string()?);
+            aeq(0, terms_enum.ord()?);
+            assert_seek_status(SeekStatus::END, terms_enum.seek_ceil(&nbr("zzz"))?);
+            assert_seek_status(SeekStatus::NOT_FOUND, terms_enum.seek_ceil(&nbr("aba"))?);
+            aeq(0, terms_enum.ord()?);
+
+            // seekExact()
+            Assert::assert_true(terms_enum.seek_exact(&nbr("beer"))?);
+            Assert::assert_equals("beer".to_string(), terms_enum.term()?.utf8_to_string()?);
+            aeq(0, terms_enum.ord()?);
+            Assert::assert_true(terms_enum.seek_exact(&nbr("hello"))?);
+            Assert::assert_equals_str(
+                Some(&default_codec_name()),
+                Some("hello"),
+                Some(&terms_enum.term()?.utf8_to_string()?),
+            );
+            aeq(1, terms_enum.ord()?);
+            Assert::assert_true(terms_enum.seek_exact(&nbr("world"))?);
+            Assert::assert_equals("world".to_string(), terms_enum.term()?.utf8_to_string()?);
+            aeq(2, terms_enum.ord()?);
+            Assert::assert_false(terms_enum.seek_exact(&nbr("bogus"))?);
+
+            // seek(ord)
+            terms_enum.seek_ord(0)?;
+            Assert::assert_equals("beer".to_string(), terms_enum.term()?.utf8_to_string()?);
+            aeq(0, terms_enum.ord()?);
+            terms_enum.seek_ord(1)?;
+            Assert::assert_equals("hello".to_string(), terms_enum.term()?.utf8_to_string()?);
+            aeq(1, terms_enum.ord()?);
+            terms_enum.seek_ord(2)?;
+            Assert::assert_equals("world".to_string(), terms_enum.term()?.utf8_to_string()?);
+            aeq(2, terms_enum.ord()?);
+
+            // NORMAL automaton
+            let dv = npe(leaf.get_sorted_doc_values("field")?);
+            let mut terms_enum = dv.intersect(&compiled(".*l.*", true)?)?;
+            Assert::assert_equals(
+                "hello".to_string(),
+                npe(terms_enum.next()?).utf8_to_string()?,
+            );
+            aeq(1, terms_enum.ord()?);
+            Assert::assert_equals(
+                "world".to_string(),
+                npe(terms_enum.next()?).utf8_to_string()?,
+            );
+            aeq(2, terms_enum.ord()?);
+            assert_null(terms_enum.next()?);
+
+            // SINGLE automaton
+            let dv = npe(leaf.get_sorted_doc_values("field")?);
+            let mut terms_enum = dv.intersect(&compiled("hello", false)?)?;
+            Assert::assert_equals(
+                "hello".to_string(),
+                npe(terms_enum.next()?).utf8_to_string()?,
+            );
+            aeq(1, terms_enum.ord()?);
+            assert_null(terms_enum.next()?);
+
+            drop((terms_enum, leaf));
+            ireader.close()?;
         }
-        iwriter.force_merge(1)?;
-
-        let ireader = iwriter.get_reader()?;
-        iwriter.close()?;
-        drop(iwriter);
-
-        let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ireader) as _)?;
-        let dv = npe(leaf.get_sorted_doc_values("field")?);
-        aeq(3, dv.get_value_count()?);
-
-        let mut terms_enum = dv.terms_enum()?;
-
-        // next()
-        Assert::assert_equals(
-            "beer".to_string(),
-            npe(terms_enum.next()?).utf8_to_string()?,
-        );
-        aeq(0, terms_enum.ord()?);
-        Assert::assert_equals(
-            "hello".to_string(),
-            npe(terms_enum.next()?).utf8_to_string()?,
-        );
-        aeq(1, terms_enum.ord()?);
-        Assert::assert_equals(
-            "world".to_string(),
-            npe(terms_enum.next()?).utf8_to_string()?,
-        );
-        aeq(2, terms_enum.ord()?);
-
-        // seekCeil()
-        assert_seek_status(SeekStatus::NOT_FOUND, terms_enum.seek_ceil(&nbr("ha!"))?);
-        Assert::assert_equals("hello".to_string(), terms_enum.term()?.utf8_to_string()?);
-        aeq(1, terms_enum.ord()?);
-        assert_seek_status(SeekStatus::FOUND, terms_enum.seek_ceil(&nbr("beer"))?);
-        Assert::assert_equals("beer".to_string(), terms_enum.term()?.utf8_to_string()?);
-        aeq(0, terms_enum.ord()?);
-        assert_seek_status(SeekStatus::END, terms_enum.seek_ceil(&nbr("zzz"))?);
-        assert_seek_status(SeekStatus::NOT_FOUND, terms_enum.seek_ceil(&nbr("aba"))?);
-        aeq(0, terms_enum.ord()?);
-
-        // seekExact()
-        Assert::assert_true(terms_enum.seek_exact(&nbr("beer"))?);
-        Assert::assert_equals("beer".to_string(), terms_enum.term()?.utf8_to_string()?);
-        aeq(0, terms_enum.ord()?);
-        Assert::assert_true(terms_enum.seek_exact(&nbr("hello"))?);
-        Assert::assert_equals_str(
-            Some(&default_codec_name()),
-            Some("hello"),
-            Some(&terms_enum.term()?.utf8_to_string()?),
-        );
-        aeq(1, terms_enum.ord()?);
-        Assert::assert_true(terms_enum.seek_exact(&nbr("world"))?);
-        Assert::assert_equals("world".to_string(), terms_enum.term()?.utf8_to_string()?);
-        aeq(2, terms_enum.ord()?);
-        Assert::assert_false(terms_enum.seek_exact(&nbr("bogus"))?);
-
-        // seek(ord)
-        terms_enum.seek_ord(0)?;
-        Assert::assert_equals("beer".to_string(), terms_enum.term()?.utf8_to_string()?);
-        aeq(0, terms_enum.ord()?);
-        terms_enum.seek_ord(1)?;
-        Assert::assert_equals("hello".to_string(), terms_enum.term()?.utf8_to_string()?);
-        aeq(1, terms_enum.ord()?);
-        terms_enum.seek_ord(2)?;
-        Assert::assert_equals("world".to_string(), terms_enum.term()?.utf8_to_string()?);
-        aeq(2, terms_enum.ord()?);
-
-        // NORMAL automaton
-        let dv = npe(leaf.get_sorted_doc_values("field")?);
-        let mut terms_enum = dv.intersect(&compiled(".*l.*", true)?)?;
-        Assert::assert_equals(
-            "hello".to_string(),
-            npe(terms_enum.next()?).utf8_to_string()?,
-        );
-        aeq(1, terms_enum.ord()?);
-        Assert::assert_equals(
-            "world".to_string(),
-            npe(terms_enum.next()?).utf8_to_string()?,
-        );
-        aeq(2, terms_enum.ord()?);
-        assert_null(terms_enum.next()?);
-
-        // SINGLE automaton
-        let dv = npe(leaf.get_sorted_doc_values("field")?);
-        let mut terms_enum = dv.intersect(&compiled("hello", false)?)?;
-        Assert::assert_equals(
-            "hello".to_string(),
-            npe(terms_enum.next()?).utf8_to_string()?,
-        );
-        aeq(1, terms_enum.ord()?);
-        assert_null(terms_enum.next()?);
-
-        drop((terms_enum, leaf));
-        ireader.close()?;
         directory.close()
     }
 
     /// `testEmptySortedBytes()`.
     fn test_empty_sorted_bytes(&self) -> Result<()> {
         let (mut directory, iwriter) = log_mp_writer()?;
-        for _ in 0..2 {
-            let mut doc = Document::new();
-            doc.add(Box::new(SortedDocValuesField::new("dv", nbr(""))));
-            iwriter.add_document(&doc)?;
+        {
+            let iwriter = iwriter;
+            for _ in 0..2 {
+                let mut doc = Document::new();
+                doc.add(Box::new(SortedDocValuesField::new("dv", nbr(""))));
+                iwriter.add_document(&doc)?;
+            }
+            iwriter.force_merge(1)?;
+            iwriter.close()?;
+            drop(iwriter);
+
+            // Now search the index:
+            let ireader = open_reader(self, &directory)?; // read-only=true
+            let leaf = only_leaf(&ireader)?;
+            let mut dv = npe(leaf.get_sorted_doc_values("dv")?);
+            aeq(0, dv.next_doc()?);
+            aeq(0, dv.ord_value()?);
+            aeq(1, dv.next_doc()?);
+            aeq(0, dv.ord_value()?);
+            let scratch = dv.lookup_ord(0)?;
+            Assert::assert_equals(String::new(), scratch.utf8_to_string()?);
+
+            drop((dv, leaf));
+            ireader.close()?;
         }
-        iwriter.force_merge(1)?;
-        iwriter.close()?;
-        drop(iwriter);
-
-        // Now search the index:
-        let ireader = open_reader(self, &directory)?; // read-only=true
-        let leaf = only_leaf(&ireader)?;
-        let mut dv = npe(leaf.get_sorted_doc_values("dv")?);
-        aeq(0, dv.next_doc()?);
-        aeq(0, dv.ord_value()?);
-        aeq(1, dv.next_doc()?);
-        aeq(0, dv.ord_value()?);
-        let scratch = dv.lookup_ord(0)?;
-        Assert::assert_equals(String::new(), scratch.utf8_to_string()?);
-
-        drop((dv, leaf));
-        ireader.close()?;
         directory.close()
     }
 
     /// `testEmptyBytes()`.
     fn test_empty_bytes(&self) -> Result<()> {
         let (mut directory, iwriter) = log_mp_writer()?;
-        for _ in 0..2 {
-            let mut doc = Document::new();
-            doc.add(Box::new(BinaryDocValuesField::new("dv", nbr(""))));
-            iwriter.add_document(&doc)?;
+        {
+            let iwriter = iwriter;
+            for _ in 0..2 {
+                let mut doc = Document::new();
+                doc.add(Box::new(BinaryDocValuesField::new("dv", nbr(""))));
+                iwriter.add_document(&doc)?;
+            }
+            iwriter.force_merge(1)?;
+            iwriter.close()?;
+            drop(iwriter);
+
+            // Now search the index:
+            let ireader = open_reader(self, &directory)?; // read-only=true
+            let leaf = only_leaf(&ireader)?;
+            let mut dv = npe(leaf.get_binary_doc_values("dv")?);
+            aeq(0, dv.next_doc()?);
+            Assert::assert_equals(String::new(), dv.binary_value()?.utf8_to_string()?);
+            aeq(1, dv.next_doc()?);
+            Assert::assert_equals(String::new(), dv.binary_value()?.utf8_to_string()?);
+
+            drop((dv, leaf));
+            ireader.close()?;
         }
-        iwriter.force_merge(1)?;
-        iwriter.close()?;
-        drop(iwriter);
-
-        // Now search the index:
-        let ireader = open_reader(self, &directory)?; // read-only=true
-        let leaf = only_leaf(&ireader)?;
-        let mut dv = npe(leaf.get_binary_doc_values("dv")?);
-        aeq(0, dv.next_doc()?);
-        Assert::assert_equals(String::new(), dv.binary_value()?.utf8_to_string()?);
-        aeq(1, dv.next_doc()?);
-        Assert::assert_equals(String::new(), dv.binary_value()?.utf8_to_string()?);
-
-        drop((dv, leaf));
-        ireader.close()?;
         directory.close()
     }
 
     /// `testVeryLargeButLegalBytes()`.
     fn test_very_large_but_legal_bytes(&self) -> Result<()> {
         let (mut directory, iwriter) = log_mp_writer()?;
-        let mut doc = Document::new();
-        let mut bytes = vec![0u8; 32766];
-        random().next_bytes(&mut bytes);
-        let b = LuceneTestCase::new_bytes_ref_bytes(&bytes);
-        doc.add(Box::new(BinaryDocValuesField::new("dv", b)));
-        iwriter.add_document(&doc)?;
-        iwriter.close()?;
-        drop(iwriter);
+        {
+            let iwriter = iwriter;
+            let mut doc = Document::new();
+            let mut bytes = vec![0u8; 32766];
+            random().next_bytes(&mut bytes);
+            let b = LuceneTestCase::new_bytes_ref_bytes(&bytes);
+            doc.add(Box::new(BinaryDocValuesField::new("dv", b)));
+            iwriter.add_document(&doc)?;
+            iwriter.close()?;
+            drop(iwriter);
 
-        // Now search the index:
-        let ireader = open_reader(self, &directory)?; // read-only=true
-        let leaf = only_leaf(&ireader)?;
-        let mut dv = npe(leaf.get_binary_doc_values("dv")?);
-        aeq(0, dv.next_doc()?);
-        Assert::assert_equals(
-            LuceneTestCase::new_bytes_ref_bytes(&bytes),
-            dv.binary_value()?,
-        );
+            // Now search the index:
+            let ireader = open_reader(self, &directory)?; // read-only=true
+            let leaf = only_leaf(&ireader)?;
+            let mut dv = npe(leaf.get_binary_doc_values("dv")?);
+            aeq(0, dv.next_doc()?);
+            Assert::assert_equals(
+                LuceneTestCase::new_bytes_ref_bytes(&bytes),
+                dv.binary_value()?,
+            );
 
-        drop((dv, leaf));
-        ireader.close()?;
+            drop((dv, leaf));
+            ireader.close()?;
+        }
         directory.close()
     }
 
     /// `testVeryLargeButLegalSortedBytes()`.
     fn test_very_large_but_legal_sorted_bytes(&self) -> Result<()> {
         let (mut directory, iwriter) = log_mp_writer()?;
-        let mut doc = Document::new();
-        let mut bytes = vec![0u8; 32766];
-        random().next_bytes(&mut bytes);
-        let b = LuceneTestCase::new_bytes_ref_bytes(&bytes);
-        doc.add(Box::new(SortedDocValuesField::new("dv", b)));
-        iwriter.add_document(&doc)?;
-        iwriter.close()?;
-        drop(iwriter);
+        {
+            let iwriter = iwriter;
+            let mut doc = Document::new();
+            let mut bytes = vec![0u8; 32766];
+            random().next_bytes(&mut bytes);
+            let b = LuceneTestCase::new_bytes_ref_bytes(&bytes);
+            doc.add(Box::new(SortedDocValuesField::new("dv", b)));
+            iwriter.add_document(&doc)?;
+            iwriter.close()?;
+            drop(iwriter);
 
-        // Now search the index:
-        let ireader = open_reader(self, &directory)?; // read-only=true
-        let leaf = only_leaf(&ireader)?;
-        let mut dv = DocValues::get_sorted(&*leaf, "dv")?;
-        aeq(0, dv.next_doc()?);
-        Assert::assert_equals(
-            LuceneTestCase::new_bytes_ref_bytes(&bytes),
-            dv.lookup_ord(dv.ord_value()?)?,
-        );
-        drop((dv, leaf));
-        ireader.close()?;
+            // Now search the index:
+            let ireader = open_reader(self, &directory)?; // read-only=true
+            let leaf = only_leaf(&ireader)?;
+            let mut dv = DocValues::get_sorted(&*leaf, "dv")?;
+            aeq(0, dv.next_doc()?);
+            Assert::assert_equals(
+                LuceneTestCase::new_bytes_ref_bytes(&bytes),
+                dv.lookup_ord(dv.ord_value()?)?,
+            );
+            drop((dv, leaf));
+            ireader.close()?;
+        }
         directory.close()
     }
 
     /// `testCodecUsesOwnBytes()`.
     fn test_codec_uses_own_bytes(&self) -> Result<()> {
         let (mut directory, iwriter) = log_mp_writer()?;
-        let mut doc = Document::new();
-        doc.add(Box::new(BinaryDocValuesField::new("dv", nbr("boo!"))));
-        iwriter.add_document(&doc)?;
-        iwriter.close()?;
-        drop(iwriter);
+        {
+            let iwriter = iwriter;
+            let mut doc = Document::new();
+            doc.add(Box::new(BinaryDocValuesField::new("dv", nbr("boo!"))));
+            iwriter.add_document(&doc)?;
+            iwriter.close()?;
+            drop(iwriter);
 
-        // Now search the index:
-        let ireader = open_reader(self, &directory)?; // read-only=true
-        let leaf = only_leaf(&ireader)?;
-        let mut dv = npe(leaf.get_binary_doc_values("dv")?);
-        aeq(0, dv.next_doc()?);
-        Assert::assert_equals("boo!".to_string(), dv.binary_value()?.utf8_to_string()?);
+            // Now search the index:
+            let ireader = open_reader(self, &directory)?; // read-only=true
+            let leaf = only_leaf(&ireader)?;
+            let mut dv = npe(leaf.get_binary_doc_values("dv")?);
+            aeq(0, dv.next_doc()?);
+            Assert::assert_equals("boo!".to_string(), dv.binary_value()?.utf8_to_string()?);
 
-        drop((dv, leaf));
-        ireader.close()?;
+            drop((dv, leaf));
+            ireader.close()?;
+        }
         directory.close()
     }
 
     /// `testCodecUsesOwnSortedBytes()`.
     fn test_codec_uses_own_sorted_bytes(&self) -> Result<()> {
         let (mut directory, iwriter) = log_mp_writer()?;
-        let mut doc = Document::new();
-        doc.add(Box::new(SortedDocValuesField::new("dv", nbr("boo!"))));
-        iwriter.add_document(&doc)?;
-        iwriter.close()?;
-        drop(iwriter);
+        {
+            let iwriter = iwriter;
+            let mut doc = Document::new();
+            doc.add(Box::new(SortedDocValuesField::new("dv", nbr("boo!"))));
+            iwriter.add_document(&doc)?;
+            iwriter.close()?;
+            drop(iwriter);
 
-        // Now search the index:
-        let ireader = open_reader(self, &directory)?; // read-only=true
-        let leaf = only_leaf(&ireader)?;
-        let mut dv = DocValues::get_sorted(&*leaf, "dv")?;
-        let mybytes = [0u8; 20];
-        aeq(0, dv.next_doc()?);
-        Assert::assert_equals(
-            "boo!".to_string(),
-            dv.lookup_ord(dv.ord_value()?)?.utf8_to_string()?,
-        );
-        // `lookupOrd(...).bytes == mybytes`: an identity comparison.
-        let looked_up = dv.lookup_ord(dv.ord_value()?)?;
-        Assert::assert_false(std::ptr::eq(looked_up.bytes.as_ptr(), mybytes.as_ptr()));
+            // Now search the index:
+            let ireader = open_reader(self, &directory)?; // read-only=true
+            let leaf = only_leaf(&ireader)?;
+            let mut dv = DocValues::get_sorted(&*leaf, "dv")?;
+            let mybytes = [0u8; 20];
+            aeq(0, dv.next_doc()?);
+            Assert::assert_equals(
+                "boo!".to_string(),
+                dv.lookup_ord(dv.ord_value()?)?.utf8_to_string()?,
+            );
+            // `lookupOrd(...).bytes == mybytes`: an identity comparison.
+            let looked_up = dv.lookup_ord(dv.ord_value()?)?;
+            Assert::assert_false(std::ptr::eq(looked_up.bytes.as_ptr(), mybytes.as_ptr()));
 
-        drop((dv, leaf));
-        ireader.close()?;
+            drop((dv, leaf));
+            ireader.close()?;
+        }
         directory.close()
     }
 
     /// `testDocValuesSimple()`: simple test case to show how to use the API.
     fn test_doc_values_simple(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let analyzer = mock_analyzer();
-        let mut conf = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
-        conf.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
-        let writer = IndexWriter::new(dir.as_directory(), conf)?;
-        for i in 0..5 {
-            let mut doc = Document::new();
-            doc.add(Box::new(NumericDocValuesField::new("docId", i)));
-            doc.add(Box::new(TextField::new("docId", i.to_string(), Store::NO)?));
-            writer.add_document(&doc)?;
+        {
+            let analyzer = mock_analyzer();
+            let mut conf = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
+            conf.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+            let writer = IndexWriter::new(dir.as_directory(), conf)?;
+            for i in 0..5 {
+                let mut doc = Document::new();
+                doc.add(Box::new(NumericDocValuesField::new("docId", i)));
+                doc.add(Box::new(TextField::new("docId", i.to_string(), Store::NO)?));
+                writer.add_document(&doc)?;
+            }
+            writer.commit()?;
+            writer.force_merge_with(1, true)?;
+
+            writer.close()?;
+            drop(writer);
+
+            let reader =
+                self.maybe_wrap_with_merging_reader(directory_reader::open(dir.as_directory())?)?;
+            let ir: Arc<dyn IndexReader> = Arc::clone(&reader) as Arc<dyn IndexReader>;
+            aeq(1, Arc::clone(&ir).leaves()?.len() as i64);
+
+            let searcher = IndexSearcher::new(Arc::clone(&ir))?;
+
+            let mut query = BooleanQueryBuilder::new();
+            for id in ["0", "1", "2", "3", "4"] {
+                query.add(term_query("docId", id), Occur::SHOULD)?;
+            }
+
+            let search = searcher.search(Arc::new(query.build()), 10)?;
+            aeq(5, search.total_hits.value());
+            let score_docs = &search.score_docs;
+            let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ir))?;
+            let mut doc_values = npe(leaf.get_numeric_doc_values("docId")?);
+            for (i, score_doc) in score_docs.iter().enumerate() {
+                let i = i as i32;
+                aeq(i, score_doc.doc);
+                aeq(i, doc_values.advance(i)?);
+                aeq(i, doc_values.long_value()?);
+            }
+            drop((doc_values, leaf, searcher, ir));
+            reader.close()?;
+            drop(reader);
         }
-        writer.commit()?;
-        writer.force_merge_with(1, true)?;
-
-        writer.close()?;
-        drop(writer);
-
-        let reader =
-            self.maybe_wrap_with_merging_reader(directory_reader::open(dir.as_directory())?)?;
-        let ir: Arc<dyn IndexReader> = Arc::clone(&reader) as Arc<dyn IndexReader>;
-        aeq(1, Arc::clone(&ir).leaves()?.len() as i64);
-
-        let searcher = IndexSearcher::new(Arc::clone(&ir))?;
-
-        let mut query = BooleanQueryBuilder::new();
-        for id in ["0", "1", "2", "3", "4"] {
-            query.add(term_query("docId", id), Occur::SHOULD)?;
-        }
-
-        let search = searcher.search(Arc::new(query.build()), 10)?;
-        aeq(5, search.total_hits.value());
-        let score_docs = &search.score_docs;
-        let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ir))?;
-        let mut doc_values = npe(leaf.get_numeric_doc_values("docId")?);
-        for (i, score_doc) in score_docs.iter().enumerate() {
-            let i = i as i32;
-            aeq(i, score_doc.doc);
-            aeq(i, doc_values.advance(i)?);
-            aeq(i, doc_values.long_value()?);
-        }
-        drop((doc_values, leaf, searcher, ir));
-        reader.close()?;
-        drop(reader);
         dir.close()
     }
 
     /// `testRandomSortedBytes()`.
     fn test_random_sorted_bytes(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let cfg = LuceneTestCase::new_index_writer_config_analyzer(mock_analyzer());
-        let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), cfg)?;
-        let num_docs = LuceneTestCase::at_least(100);
-        let bytes_used = Arc::new(AtomicI64::new(0));
-        let mut pool = ByteBlockPool::new(Arc::clone(&bytes_used));
-        let mut hash = BytesRefHash::new(bytes_used);
-        let mut doc_to_string = JavaStringMap::new();
-        let max_length = TestUtil::next_int(&*random(), 1, 50);
-        for i in 0..num_docs {
-            let mut doc = Document::new();
-            doc.add(Box::new(LuceneTestCase::new_text_field(
-                "id",
-                &i.to_string(),
-                Store::YES,
-            )));
-            let string =
-                TestUtil::random_realistic_unicode_string_between(&*random(), 1, max_length);
-            let br = nbr(&string);
-            doc.add(Box::new(SortedDocValuesField::new("field", br.clone())));
-            hash.add(&mut pool, br.slice())?;
-            doc_to_string.put(i.to_string(), string);
-            w.add_document(&doc)?;
-        }
-        if LuceneTestCase::rarely() {
+        {
+            let cfg = LuceneTestCase::new_index_writer_config_analyzer(mock_analyzer());
+            let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), cfg)?;
+            let num_docs = LuceneTestCase::at_least(100);
+            let bytes_used = Arc::new(AtomicI64::new(0));
+            let mut pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+            let mut hash = BytesRefHash::new(bytes_used);
+            let mut doc_to_string = JavaStringMap::new();
+            let max_length = TestUtil::next_int(&*random(), 1, 50);
+            for i in 0..num_docs {
+                let mut doc = Document::new();
+                doc.add(Box::new(LuceneTestCase::new_text_field(
+                    "id",
+                    &i.to_string(),
+                    Store::YES,
+                )));
+                let string =
+                    TestUtil::random_realistic_unicode_string_between(&*random(), 1, max_length);
+                let br = nbr(&string);
+                doc.add(Box::new(SortedDocValuesField::new("field", br.clone())));
+                hash.add(&mut pool, br.slice())?;
+                doc_to_string.put(i.to_string(), string);
+                w.add_document(&doc)?;
+            }
+            if LuceneTestCase::rarely() {
+                w.commit()?;
+            }
+            let num_docs_no_value = LuceneTestCase::at_least(10);
+            for _ in 0..num_docs_no_value {
+                let mut doc = Document::new();
+                doc.add(Box::new(LuceneTestCase::new_text_field(
+                    "id",
+                    "noValue",
+                    Store::YES,
+                )));
+                w.add_document(&doc)?;
+            }
+            if LuceneTestCase::rarely() {
+                w.commit()?;
+            }
+            for i in 0..num_docs {
+                let mut doc = Document::new();
+                let id = (i + num_docs).to_string();
+                doc.add(Box::new(LuceneTestCase::new_text_field(
+                    "id",
+                    &id,
+                    Store::YES,
+                )));
+                let string =
+                    TestUtil::random_realistic_unicode_string_between(&*random(), 1, max_length);
+                let br = nbr(&string);
+                hash.add(&mut pool, br.slice())?;
+                doc_to_string.put(id, string);
+                doc.add(Box::new(SortedDocValuesField::new("field", br)));
+                w.add_document(&doc)?;
+            }
             w.commit()?;
-        }
-        let num_docs_no_value = LuceneTestCase::at_least(10);
-        for _ in 0..num_docs_no_value {
-            let mut doc = Document::new();
-            doc.add(Box::new(LuceneTestCase::new_text_field(
-                "id",
-                "noValue",
-                Store::YES,
-            )));
-            w.add_document(&doc)?;
-        }
-        if LuceneTestCase::rarely() {
-            w.commit()?;
-        }
-        for i in 0..num_docs {
-            let mut doc = Document::new();
-            let id = (i + num_docs).to_string();
-            doc.add(Box::new(LuceneTestCase::new_text_field(
-                "id",
-                &id,
-                Store::YES,
-            )));
-            let string =
-                TestUtil::random_realistic_unicode_string_between(&*random(), 1, max_length);
-            let br = nbr(&string);
-            hash.add(&mut pool, br.slice())?;
-            doc_to_string.put(id, string);
-            doc.add(Box::new(SortedDocValuesField::new("field", br)));
-            w.add_document(&doc)?;
-        }
-        w.commit()?;
-        let reader: Arc<dyn IndexReader> = w.get_reader()?;
-        let doc_values = npe(MultiDocValues::get_sorted_values(&reader, "field")?);
-        let size = hash.size();
-        let sort: Vec<i32> = hash.sort(&pool).to_vec();
-        let _expected = LuceneTestCase::new_bytes_ref();
-        aeq(size, doc_values.get_value_count()?);
-        for (i, &id) in sort.iter().enumerate().take(size as usize) {
-            let expected = BytesRef::new(hash.get(&pool, id).to_vec());
-            let actual = doc_values.lookup_ord(i as i32)?;
-            Assert::assert_equals(expected.utf8_to_string()?, actual.utf8_to_string()?);
-            let ord = doc_values.lookup_term(&expected)?;
-            aeq(i as i32, ord);
-        }
+            let reader: Arc<dyn IndexReader> = w.get_reader()?;
+            let doc_values = npe(MultiDocValues::get_sorted_values(&reader, "field")?);
+            let size = hash.size();
+            let sort: Vec<i32> = hash.sort(&pool).to_vec();
+            let _expected = LuceneTestCase::new_bytes_ref();
+            aeq(size, doc_values.get_value_count()?);
+            for (i, &id) in sort.iter().enumerate().take(size as usize) {
+                let expected = BytesRef::new(hash.get(&pool, id).to_vec());
+                let actual = doc_values.lookup_ord(i as i32)?;
+                Assert::assert_equals(expected.utf8_to_string()?, actual.utf8_to_string()?);
+                let ord = doc_values.lookup_term(&expected)?;
+                aeq(i as i32, ord);
+            }
 
-        for (key, value) in doc_to_string.entries() {
-            // pk lookup
-            let mut term_postings_enum = npe(TestUtil::docs(
-                &*random(),
-                &reader,
-                "id",
-                &nbr(&key),
-                None,
-                0,
-            )?);
-            let doc_id = term_postings_enum.next_doc()?;
-            let expected = nbr(&value);
-            let mut doc_values = npe(MultiDocValues::get_sorted_values(&reader, "field")?);
-            aeq(doc_id, doc_values.advance(doc_id)?);
-            let actual = doc_values.lookup_ord(doc_values.ord_value()?)?;
-            Assert::assert_equals(expected, actual);
-        }
+            for (key, value) in doc_to_string.entries() {
+                // pk lookup
+                let mut term_postings_enum = npe(TestUtil::docs(
+                    &*random(),
+                    &reader,
+                    "id",
+                    &nbr(&key),
+                    None,
+                    0,
+                )?);
+                let doc_id = term_postings_enum.next_doc()?;
+                let expected = nbr(&value);
+                let mut doc_values = npe(MultiDocValues::get_sorted_values(&reader, "field")?);
+                aeq(doc_id, doc_values.advance(doc_id)?);
+                let actual = doc_values.lookup_ord(doc_values.ord_value()?)?;
+                Assert::assert_equals(expected, actual);
+            }
 
-        drop(doc_values);
-        reader.close()?;
-        drop(reader);
-        w.close()?;
-        drop(w);
+            drop(doc_values);
+            reader.close()?;
+            drop(reader);
+            w.close()?;
+            drop(w);
+        }
         dir.close()
     }
 
@@ -2304,46 +2385,48 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         min_docs: i32,
     ) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let conf = LuceneTestCase::new_index_writer_config_analyzer(mock_analyzer());
-        let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), conf)?;
-        let stored_field = LuceneTestCase::new_string_field("stored", "", Store::YES);
+        {
+            let conf = LuceneTestCase::new_index_writer_config_analyzer(mock_analyzer());
+            let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), conf)?;
+            let stored_field = LuceneTestCase::new_string_field("stored", "", Store::YES);
 
-        // index some docs
-        let num_docs = LuceneTestCase::at_least((f64::from(min_docs) * 1.172) as i32);
-        // numDocs should be always > 256 so that in case of a codec that optimizes
-        // for numbers of values <= 256, all storage layouts are tested
-        java_assert_unchecked!(num_docs > 256);
-        for i in 0..num_docs {
-            if random().next_double() > density {
-                writer.add_document(&Document::new())?;
-                continue;
+            // index some docs
+            let num_docs = LuceneTestCase::at_least((f64::from(min_docs) * 1.172) as i32);
+            // numDocs should be always > 256 so that in case of a codec that optimizes
+            // for numbers of values <= 256, all storage layouts are tested
+            java_assert_unchecked!(num_docs > 256);
+            for i in 0..num_docs {
+                if random().next_double() > density {
+                    writer.add_document(&Document::new())?;
+                    continue;
+                }
+                let value = longs();
+                let mut doc = Document::new();
+                doc.add(Box::new(StringField::new("id", i.to_string(), Store::NO)?));
+                doc.add(Box::new(copy_field(&stored_field, value.to_string())?));
+                doc.add(Box::new(NumericDocValuesField::new("dv", value)));
+                writer.add_document(&doc)?;
+                if random().next_int_bound(31) == 0 {
+                    writer.commit()?;
+                }
             }
-            let value = longs();
-            let mut doc = Document::new();
-            doc.add(Box::new(StringField::new("id", i.to_string(), Store::NO)?));
-            doc.add(Box::new(copy_field(&stored_field, value.to_string())?));
-            doc.add(Box::new(NumericDocValuesField::new("dv", value)));
-            writer.add_document(&doc)?;
-            if random().next_int_bound(31) == 0 {
-                writer.commit()?;
+
+            // delete some docs
+            let num_deletions = random().next_int_bound(num_docs / 10);
+            for _ in 0..num_deletions {
+                let id = random().next_int_bound(num_docs);
+                writer.delete_documents(term("id", &id.to_string()))?;
             }
+
+            // merge some segments and ensure that at least one of them has more than
+            // max(256, minDocs) values
+            writer.force_merge(num_docs / 256.max(min_docs))?;
+
+            writer.close()?;
+            drop(writer);
+            // compare
+            self.assert_dv_iterate(&dir.as_directory())?;
         }
-
-        // delete some docs
-        let num_deletions = random().next_int_bound(num_docs / 10);
-        for _ in 0..num_deletions {
-            let id = random().next_int_bound(num_docs);
-            writer.delete_documents(term("id", &id.to_string()))?;
-        }
-
-        // merge some segments and ensure that at least one of them has more than
-        // max(256, minDocs) values
-        writer.force_merge(num_docs / 256.max(min_docs))?;
-
-        writer.close()?;
-        drop(writer);
-        // compare
-        self.assert_dv_iterate(&dir.as_directory())?;
         dir.close()
     }
 
@@ -2464,75 +2547,83 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         values: &mut dyn FnMut() -> i64,
     ) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let conf = LuceneTestCase::new_index_writer_config_analyzer(mock_analyzer());
-        let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), conf)?;
-
-        // index some docs
-        let num_docs = LuceneTestCase::at_least(300);
-        // numDocs should be always > 256 so that in case of a codec that optimizes
-        // for numbers of values <= 256, all storage layouts are tested
-        java_assert_unchecked!(num_docs > 256);
-        for i in 0..num_docs {
-            let mut doc = Document::new();
-            doc.add(Box::new(StringField::new("id", i.to_string(), Store::NO)?));
-
-            let value_count = counts() as i32;
-            let mut value_array = Vec::with_capacity(value_count.max(0) as usize);
-            for _ in 0..value_count {
-                let value = values();
-                value_array.push(value);
-                doc.add(Box::new(SortedNumericDocValuesField::new("dv", value)));
-            }
-            value_array.sort_unstable();
-            for value in &value_array {
-                doc.add(Box::new(StoredField::new_string(
-                    "stored",
-                    value.to_string(),
-                )?));
-            }
-            writer.add_document(&doc)?;
-            if random().next_int_bound(31) == 0 {
-                writer.commit()?;
-            }
-        }
-
-        // delete some docs
-        let num_deletions = random().next_int_bound(num_docs / 10);
-        for _ in 0..num_deletions {
-            let id = random().next_int_bound(num_docs);
-            writer.delete_documents(term("id", &id.to_string()))?;
-        }
-
-        writer.commit()?;
-
         {
-            let reader =
-                self.maybe_wrap_with_merging_reader(directory_reader::open(dir.as_directory())?)?;
-            let checked = TestUtil::check_reader(&(Arc::clone(&reader) as Arc<dyn IndexReader>))
-                .and_then(|_| {
-                    self.compare_stored_field_with_sorted_numerics_dv(&reader, "stored", "dv")
-                });
-            let closed = reader.close();
-            checked?;
-            closed?;
+            let conf = LuceneTestCase::new_index_writer_config_analyzer(mock_analyzer());
+            let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), conf)?;
+
+            // index some docs
+            let num_docs = LuceneTestCase::at_least(300);
+            // numDocs should be always > 256 so that in case of a codec that optimizes
+            // for numbers of values <= 256, all storage layouts are tested
+            java_assert_unchecked!(num_docs > 256);
+            for i in 0..num_docs {
+                let mut doc = Document::new();
+                doc.add(Box::new(StringField::new("id", i.to_string(), Store::NO)?));
+
+                let value_count = counts() as i32;
+                let mut value_array = Vec::with_capacity(value_count.max(0) as usize);
+                for _ in 0..value_count {
+                    let value = values();
+                    value_array.push(value);
+                    doc.add(Box::new(SortedNumericDocValuesField::new("dv", value)));
+                }
+                value_array.sort_unstable();
+                for value in &value_array {
+                    doc.add(Box::new(StoredField::new_string(
+                        "stored",
+                        value.to_string(),
+                    )?));
+                }
+                writer.add_document(&doc)?;
+                if random().next_int_bound(31) == 0 {
+                    writer.commit()?;
+                }
+            }
+
+            // delete some docs
+            let num_deletions = random().next_int_bound(num_docs / 10);
+            for _ in 0..num_deletions {
+                let id = random().next_int_bound(num_docs);
+                writer.delete_documents(term("id", &id.to_string()))?;
+            }
+
+            writer.commit()?;
+
+            {
+                let reader = self
+                    .maybe_wrap_with_merging_reader(directory_reader::open(dir.as_directory())?)?;
+                let checked =
+                    TestUtil::check_reader(&(Arc::clone(&reader) as Arc<dyn IndexReader>))
+                        .and_then(|_| {
+                            self.compare_stored_field_with_sorted_numerics_dv(
+                                &reader, "stored", "dv",
+                            )
+                        });
+                let closed = reader.close();
+                checked?;
+                closed?;
+            }
+            // merge some segments and ensure that at least one of them has more than
+            // 256 values
+            writer.force_merge(num_docs / 256)?;
+            {
+                let reader = self
+                    .maybe_wrap_with_merging_reader(directory_reader::open(dir.as_directory())?)?;
+                let checked =
+                    TestUtil::check_reader(&(Arc::clone(&reader) as Arc<dyn IndexReader>))
+                        .and_then(|_| {
+                            self.compare_stored_field_with_sorted_numerics_dv(
+                                &reader, "stored", "dv",
+                            )
+                        });
+                let closed = reader.close();
+                checked?;
+                closed?;
+            }
+            // `IOUtils.close(writer, dir)`
+            writer.close()?;
+            drop(writer);
         }
-        // merge some segments and ensure that at least one of them has more than
-        // 256 values
-        writer.force_merge(num_docs / 256)?;
-        {
-            let reader =
-                self.maybe_wrap_with_merging_reader(directory_reader::open(dir.as_directory())?)?;
-            let checked = TestUtil::check_reader(&(Arc::clone(&reader) as Arc<dyn IndexReader>))
-                .and_then(|_| {
-                    self.compare_stored_field_with_sorted_numerics_dv(&reader, "stored", "dv")
-                });
-            let closed = reader.close();
-            checked?;
-            closed?;
-        }
-        // `IOUtils.close(writer, dir)`
-        writer.close()?;
-        drop(writer);
         dir.close()
     }
 
@@ -2630,72 +2721,74 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         bytes: &mut dyn FnMut() -> Vec<u8>,
     ) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let conf = LuceneTestCase::new_index_writer_config_analyzer(mock_analyzer());
-        let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), conf)?;
-        // `new BinaryDocValuesField("dv", newBytesRef())`
-        let _ = LuceneTestCase::new_bytes_ref();
+        {
+            let conf = LuceneTestCase::new_index_writer_config_analyzer(mock_analyzer());
+            let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), conf)?;
+            // `new BinaryDocValuesField("dv", newBytesRef())`
+            let _ = LuceneTestCase::new_bytes_ref();
 
-        // index some docs
-        let num_docs = LuceneTestCase::at_least(300);
-        for i in 0..num_docs {
-            if random().next_double() > density {
-                writer.add_document(&Document::new())?;
-                continue;
+            // index some docs
+            let num_docs = LuceneTestCase::at_least(300);
+            for i in 0..num_docs {
+                if random().next_double() > density {
+                    writer.add_document(&Document::new())?;
+                    continue;
+                }
+                let buffer = bytes();
+                let mut doc = Document::new();
+                doc.add(Box::new(StringField::new("id", i.to_string(), Store::NO)?));
+                doc.add(Box::new(StoredField::new_bytes(
+                    "stored",
+                    BytesRef::new(buffer.clone()),
+                )?));
+                doc.add(Box::new(BinaryDocValuesField::new(
+                    "dv",
+                    BytesRef::new(buffer),
+                )));
+                writer.add_document(&doc)?;
+                if random().next_int_bound(31) == 0 {
+                    writer.commit()?;
+                }
             }
-            let buffer = bytes();
-            let mut doc = Document::new();
-            doc.add(Box::new(StringField::new("id", i.to_string(), Store::NO)?));
-            doc.add(Box::new(StoredField::new_bytes(
-                "stored",
-                BytesRef::new(buffer.clone()),
-            )?));
-            doc.add(Box::new(BinaryDocValuesField::new(
-                "dv",
-                BytesRef::new(buffer),
-            )));
-            writer.add_document(&doc)?;
-            if random().next_int_bound(31) == 0 {
-                writer.commit()?;
-            }
-        }
 
-        // delete some docs
-        let num_deletions = random().next_int_bound(num_docs / 10);
-        for _ in 0..num_deletions {
-            let id = random().next_int_bound(num_docs);
-            writer.delete_documents(term("id", &id.to_string()))?;
-        }
-
-        // compare
-        for merge in [false, true] {
-            if merge {
-                // compare again
-                writer.force_merge(1)?;
+            // delete some docs
+            let num_deletions = random().next_int_bound(num_docs / 10);
+            for _ in 0..num_deletions {
+                let id = random().next_int_bound(num_docs);
+                writer.delete_documents(term("id", &id.to_string()))?;
             }
-            let ir: Arc<dyn IndexReader> = writer.get_reader()?;
-            TestUtil::check_reader(&ir)?;
-            for context in Arc::clone(&ir).leaves()? {
-                let r = context.leaf_reader();
-                let stored_fields = r.stored_fields()?;
-                let mut doc_values = DocValues::get_binary(&*r, "dv")?;
-                doc_values.next_doc()?;
-                for i in 0..r.max_doc() {
-                    let binary_value = stored_fields.document(i)?.get_binary_value("stored");
-                    match binary_value {
-                        None => Assert::assert_true(doc_values.doc_id() > i),
-                        Some(binary_value) => {
-                            aeq(i, doc_values.doc_id());
-                            Assert::assert_equals(binary_value, doc_values.binary_value()?);
-                            doc_values.next_doc()?;
+
+            // compare
+            for merge in [false, true] {
+                if merge {
+                    // compare again
+                    writer.force_merge(1)?;
+                }
+                let ir: Arc<dyn IndexReader> = writer.get_reader()?;
+                TestUtil::check_reader(&ir)?;
+                for context in Arc::clone(&ir).leaves()? {
+                    let r = context.leaf_reader();
+                    let stored_fields = r.stored_fields()?;
+                    let mut doc_values = DocValues::get_binary(&*r, "dv")?;
+                    doc_values.next_doc()?;
+                    for i in 0..r.max_doc() {
+                        let binary_value = stored_fields.document(i)?.get_binary_value("stored");
+                        match binary_value {
+                            None => Assert::assert_true(doc_values.doc_id() > i),
+                            Some(binary_value) => {
+                                aeq(i, doc_values.doc_id());
+                                Assert::assert_equals(binary_value, doc_values.binary_value()?);
+                                doc_values.next_doc()?;
+                            }
                         }
                     }
+                    aeq(NO_MORE_DOCS, doc_values.doc_id());
                 }
-                aeq(NO_MORE_DOCS, doc_values.doc_id());
+                ir.close()?;
             }
-            ir.close()?;
+            writer.close()?;
+            drop(writer);
         }
-        writer.close()?;
-        drop(writer);
         dir.close()
     }
 
@@ -2901,102 +2994,111 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testSortedSetOneValue()`.
     fn test_sorted_set_one_value(&self) -> Result<()> {
         let (mut directory, iwriter) = sorted_set_writer(false)?;
-        iwriter.add_document(&sorted_set_doc("field", &["hello"]))?;
+        {
+            let iwriter = iwriter;
+            iwriter.add_document(&sorted_set_doc("field", &["hello"]))?;
 
-        let ireader = iwriter.get_reader()?;
-        iwriter.close()?;
-        drop(iwriter);
+            let ireader = iwriter.get_reader()?;
+            iwriter.close()?;
+            drop(iwriter);
 
-        let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ireader) as _)?;
-        let mut dv = npe(leaf.get_sorted_set_doc_values("field")?);
-        aeq(0, dv.next_doc()?);
+            let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ireader) as _)?;
+            let mut dv = npe(leaf.get_sorted_set_doc_values("field")?);
+            aeq(0, dv.next_doc()?);
 
-        aeq(1, dv.doc_value_count()?);
-        aeq(0, dv.next_ord()?);
+            aeq(1, dv.doc_value_count()?);
+            aeq(0, dv.next_ord()?);
 
-        let bytes = dv.lookup_ord(0)?;
-        Assert::assert_equals(nbr("hello"), bytes);
+            let bytes = dv.lookup_ord(0)?;
+            Assert::assert_equals(nbr("hello"), bytes);
 
-        drop((dv, leaf));
-        ireader.close()?;
+            drop((dv, leaf));
+            ireader.close()?;
+        }
         directory.close()
     }
 
     /// `testSortedSetTwoFields()`.
     fn test_sorted_set_two_fields(&self) -> Result<()> {
         let (mut directory, iwriter) = sorted_set_writer(false)?;
-        let mut doc = Document::new();
-        doc.add(Box::new(SortedSetDocValuesField::new(
-            "field",
-            nbr("hello"),
-        )));
-        doc.add(Box::new(SortedSetDocValuesField::new(
-            "field2",
-            nbr("world"),
-        )));
-        iwriter.add_document(&doc)?;
+        {
+            let iwriter = iwriter;
+            let mut doc = Document::new();
+            doc.add(Box::new(SortedSetDocValuesField::new(
+                "field",
+                nbr("hello"),
+            )));
+            doc.add(Box::new(SortedSetDocValuesField::new(
+                "field2",
+                nbr("world"),
+            )));
+            iwriter.add_document(&doc)?;
 
-        let ireader = iwriter.get_reader()?;
-        iwriter.close()?;
-        drop(iwriter);
+            let ireader = iwriter.get_reader()?;
+            iwriter.close()?;
+            drop(iwriter);
 
-        let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ireader) as _)?;
-        let mut dv = npe(leaf.get_sorted_set_doc_values("field")?);
-        aeq(0, dv.next_doc()?);
+            let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ireader) as _)?;
+            let mut dv = npe(leaf.get_sorted_set_doc_values("field")?);
+            aeq(0, dv.next_doc()?);
 
-        aeq(1, dv.doc_value_count()?);
-        aeq(0, dv.next_ord()?);
+            aeq(1, dv.doc_value_count()?);
+            aeq(0, dv.next_ord()?);
 
-        let bytes = dv.lookup_ord(0)?;
-        Assert::assert_equals(nbr("hello"), bytes);
+            let bytes = dv.lookup_ord(0)?;
+            Assert::assert_equals(nbr("hello"), bytes);
 
-        let mut dv = npe(leaf.get_sorted_set_doc_values("field2")?);
-        aeq(0, dv.next_doc()?);
+            let mut dv = npe(leaf.get_sorted_set_doc_values("field2")?);
+            aeq(0, dv.next_doc()?);
 
-        aeq(1, dv.doc_value_count()?);
-        aeq(0, dv.next_ord()?);
+            aeq(1, dv.doc_value_count()?);
+            aeq(0, dv.next_ord()?);
 
-        let bytes = dv.lookup_ord(0)?;
-        Assert::assert_equals(nbr("world"), bytes);
+            let bytes = dv.lookup_ord(0)?;
+            Assert::assert_equals(nbr("world"), bytes);
 
-        drop((dv, leaf));
-        ireader.close()?;
+            drop((dv, leaf));
+            ireader.close()?;
+        }
         directory.close()
     }
 
     /// `testSortedSetTwoDocumentsMerged()`.
     fn test_sorted_set_two_documents_merged(&self) -> Result<()> {
         let (mut directory, iwriter) = sorted_set_writer(true)?;
-        iwriter.add_document(&sorted_set_doc("field", &["hello"]))?;
-        iwriter.commit()?;
+        {
+            let iwriter = iwriter;
+            iwriter.add_document(&sorted_set_doc("field", &["hello"]))?;
+            iwriter.commit()?;
 
-        iwriter.add_document(&sorted_set_doc("field", &["world"]))?;
-        iwriter.force_merge(1)?;
+            iwriter.add_document(&sorted_set_doc("field", &["world"]))?;
+            iwriter.force_merge(1)?;
 
-        let ireader = iwriter.get_reader()?;
-        iwriter.close()?;
-        drop(iwriter);
+            let ireader = iwriter.get_reader()?;
+            iwriter.close()?;
+            drop(iwriter);
 
-        let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ireader) as _)?;
-        let mut dv = npe(leaf.get_sorted_set_doc_values("field")?);
-        aeq(2, dv.get_value_count()?);
+            let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ireader) as _)?;
+            let mut dv = npe(leaf.get_sorted_set_doc_values("field")?);
+            aeq(2, dv.get_value_count()?);
 
-        aeq(0, dv.next_doc()?);
-        aeq(1, dv.doc_value_count()?);
-        aeq(0, dv.next_ord()?);
+            aeq(0, dv.next_doc()?);
+            aeq(1, dv.doc_value_count()?);
+            aeq(0, dv.next_ord()?);
 
-        let bytes = dv.lookup_ord(0)?;
-        Assert::assert_equals(nbr("hello"), bytes);
+            let bytes = dv.lookup_ord(0)?;
+            Assert::assert_equals(nbr("hello"), bytes);
 
-        aeq(1, dv.next_doc()?);
-        aeq(1, dv.doc_value_count()?);
-        aeq(1, dv.next_ord()?);
+            aeq(1, dv.next_doc()?);
+            aeq(1, dv.doc_value_count()?);
+            aeq(1, dv.next_ord()?);
 
-        let bytes = dv.lookup_ord(1)?;
-        Assert::assert_equals(nbr("world"), bytes);
+            let bytes = dv.lookup_ord(1)?;
+            Assert::assert_equals(nbr("world"), bytes);
 
-        drop((dv, leaf));
-        ireader.close()?;
+            drop((dv, leaf));
+            ireader.close()?;
+        }
         directory.close()
     }
 
@@ -3013,41 +3115,44 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testSortedSetThreeValuesTwoDocs()`.
     fn test_sorted_set_three_values_two_docs(&self) -> Result<()> {
         let (mut directory, iwriter) = sorted_set_writer(true)?;
-        iwriter.add_document(&sorted_set_doc("field", &["hello", "world"]))?;
-        iwriter.commit()?;
+        {
+            let iwriter = iwriter;
+            iwriter.add_document(&sorted_set_doc("field", &["hello", "world"]))?;
+            iwriter.commit()?;
 
-        iwriter.add_document(&sorted_set_doc("field", &["hello", "beer"]))?;
-        iwriter.force_merge(1)?;
+            iwriter.add_document(&sorted_set_doc("field", &["hello", "beer"]))?;
+            iwriter.force_merge(1)?;
 
-        let ireader = iwriter.get_reader()?;
-        iwriter.close()?;
-        drop(iwriter);
+            let ireader = iwriter.get_reader()?;
+            iwriter.close()?;
+            drop(iwriter);
 
-        let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ireader) as _)?;
-        let mut dv = npe(leaf.get_sorted_set_doc_values("field")?);
-        aeq(3, dv.get_value_count()?);
+            let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ireader) as _)?;
+            let mut dv = npe(leaf.get_sorted_set_doc_values("field")?);
+            aeq(3, dv.get_value_count()?);
 
-        aeq(0, dv.next_doc()?);
-        aeq(2, dv.doc_value_count()?);
-        aeq(1, dv.next_ord()?);
-        aeq(2, dv.next_ord()?);
+            aeq(0, dv.next_doc()?);
+            aeq(2, dv.doc_value_count()?);
+            aeq(1, dv.next_ord()?);
+            aeq(2, dv.next_ord()?);
 
-        aeq(1, dv.next_doc()?);
-        aeq(2, dv.doc_value_count()?);
-        aeq(0, dv.next_ord()?);
-        aeq(1, dv.next_ord()?);
+            aeq(1, dv.next_doc()?);
+            aeq(2, dv.doc_value_count()?);
+            aeq(0, dv.next_ord()?);
+            aeq(1, dv.next_ord()?);
 
-        let bytes = dv.lookup_ord(0)?;
-        Assert::assert_equals(nbr("beer"), bytes);
+            let bytes = dv.lookup_ord(0)?;
+            Assert::assert_equals(nbr("beer"), bytes);
 
-        let bytes = dv.lookup_ord(1)?;
-        Assert::assert_equals(nbr("hello"), bytes);
+            let bytes = dv.lookup_ord(1)?;
+            Assert::assert_equals(nbr("hello"), bytes);
 
-        let bytes = dv.lookup_ord(2)?;
-        Assert::assert_equals(nbr("world"), bytes);
+            let bytes = dv.lookup_ord(2)?;
+            Assert::assert_equals(nbr("world"), bytes);
 
-        drop((dv, leaf));
-        ireader.close()?;
+            drop((dv, leaf));
+            ireader.close()?;
+        }
         directory.close()
     }
 
@@ -3097,94 +3202,97 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testSortedSetTermsEnum()`.
     fn test_sorted_set_terms_enum(&self) -> Result<()> {
         let (mut directory, iwriter) = sorted_set_writer(true)?;
-        iwriter.add_document(&sorted_set_doc("field", &["hello", "world", "beer"]))?;
+        {
+            let iwriter = iwriter;
+            iwriter.add_document(&sorted_set_doc("field", &["hello", "world", "beer"]))?;
 
-        let ireader = iwriter.get_reader()?;
-        iwriter.close()?;
-        drop(iwriter);
+            let ireader = iwriter.get_reader()?;
+            iwriter.close()?;
+            drop(iwriter);
 
-        let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ireader) as _)?;
-        let dv = npe(leaf.get_sorted_set_doc_values("field")?);
-        aeq(3, dv.get_value_count()?);
+            let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ireader) as _)?;
+            let dv = npe(leaf.get_sorted_set_doc_values("field")?);
+            aeq(3, dv.get_value_count()?);
 
-        let mut terms_enum = dv.terms_enum()?;
+            let mut terms_enum = dv.terms_enum()?;
 
-        // next()
-        Assert::assert_equals(
-            "beer".to_string(),
-            npe(terms_enum.next()?).utf8_to_string()?,
-        );
-        aeq(0, terms_enum.ord()?);
-        Assert::assert_equals(
-            "hello".to_string(),
-            npe(terms_enum.next()?).utf8_to_string()?,
-        );
-        aeq(1, terms_enum.ord()?);
-        Assert::assert_equals(
-            "world".to_string(),
-            npe(terms_enum.next()?).utf8_to_string()?,
-        );
-        aeq(2, terms_enum.ord()?);
+            // next()
+            Assert::assert_equals(
+                "beer".to_string(),
+                npe(terms_enum.next()?).utf8_to_string()?,
+            );
+            aeq(0, terms_enum.ord()?);
+            Assert::assert_equals(
+                "hello".to_string(),
+                npe(terms_enum.next()?).utf8_to_string()?,
+            );
+            aeq(1, terms_enum.ord()?);
+            Assert::assert_equals(
+                "world".to_string(),
+                npe(terms_enum.next()?).utf8_to_string()?,
+            );
+            aeq(2, terms_enum.ord()?);
 
-        // seekCeil()
-        assert_seek_status(SeekStatus::NOT_FOUND, terms_enum.seek_ceil(&nbr("ha!"))?);
-        Assert::assert_equals("hello".to_string(), terms_enum.term()?.utf8_to_string()?);
-        aeq(1, terms_enum.ord()?);
-        assert_seek_status(SeekStatus::FOUND, terms_enum.seek_ceil(&nbr("beer"))?);
-        Assert::assert_equals("beer".to_string(), terms_enum.term()?.utf8_to_string()?);
-        aeq(0, terms_enum.ord()?);
-        assert_seek_status(SeekStatus::END, terms_enum.seek_ceil(&nbr("zzz"))?);
+            // seekCeil()
+            assert_seek_status(SeekStatus::NOT_FOUND, terms_enum.seek_ceil(&nbr("ha!"))?);
+            Assert::assert_equals("hello".to_string(), terms_enum.term()?.utf8_to_string()?);
+            aeq(1, terms_enum.ord()?);
+            assert_seek_status(SeekStatus::FOUND, terms_enum.seek_ceil(&nbr("beer"))?);
+            Assert::assert_equals("beer".to_string(), terms_enum.term()?.utf8_to_string()?);
+            aeq(0, terms_enum.ord()?);
+            assert_seek_status(SeekStatus::END, terms_enum.seek_ceil(&nbr("zzz"))?);
 
-        // seekExact()
-        Assert::assert_true(terms_enum.seek_exact(&nbr("beer"))?);
-        Assert::assert_equals("beer".to_string(), terms_enum.term()?.utf8_to_string()?);
-        aeq(0, terms_enum.ord()?);
-        Assert::assert_true(terms_enum.seek_exact(&nbr("hello"))?);
-        Assert::assert_equals("hello".to_string(), terms_enum.term()?.utf8_to_string()?);
-        aeq(1, terms_enum.ord()?);
-        Assert::assert_true(terms_enum.seek_exact(&nbr("world"))?);
-        Assert::assert_equals("world".to_string(), terms_enum.term()?.utf8_to_string()?);
-        aeq(2, terms_enum.ord()?);
-        Assert::assert_false(terms_enum.seek_exact(&nbr("bogus"))?);
+            // seekExact()
+            Assert::assert_true(terms_enum.seek_exact(&nbr("beer"))?);
+            Assert::assert_equals("beer".to_string(), terms_enum.term()?.utf8_to_string()?);
+            aeq(0, terms_enum.ord()?);
+            Assert::assert_true(terms_enum.seek_exact(&nbr("hello"))?);
+            Assert::assert_equals("hello".to_string(), terms_enum.term()?.utf8_to_string()?);
+            aeq(1, terms_enum.ord()?);
+            Assert::assert_true(terms_enum.seek_exact(&nbr("world"))?);
+            Assert::assert_equals("world".to_string(), terms_enum.term()?.utf8_to_string()?);
+            aeq(2, terms_enum.ord()?);
+            Assert::assert_false(terms_enum.seek_exact(&nbr("bogus"))?);
 
-        // seek(ord)
-        terms_enum.seek_ord(0)?;
-        Assert::assert_equals("beer".to_string(), terms_enum.term()?.utf8_to_string()?);
-        aeq(0, terms_enum.ord()?);
-        terms_enum.seek_ord(1)?;
-        Assert::assert_equals("hello".to_string(), terms_enum.term()?.utf8_to_string()?);
-        aeq(1, terms_enum.ord()?);
-        terms_enum.seek_ord(2)?;
-        Assert::assert_equals("world".to_string(), terms_enum.term()?.utf8_to_string()?);
-        aeq(2, terms_enum.ord()?);
+            // seek(ord)
+            terms_enum.seek_ord(0)?;
+            Assert::assert_equals("beer".to_string(), terms_enum.term()?.utf8_to_string()?);
+            aeq(0, terms_enum.ord()?);
+            terms_enum.seek_ord(1)?;
+            Assert::assert_equals("hello".to_string(), terms_enum.term()?.utf8_to_string()?);
+            aeq(1, terms_enum.ord()?);
+            terms_enum.seek_ord(2)?;
+            Assert::assert_equals("world".to_string(), terms_enum.term()?.utf8_to_string()?);
+            aeq(2, terms_enum.ord()?);
 
-        // NORMAL automaton
-        let dv = npe(leaf.get_sorted_set_doc_values("field")?);
-        let mut terms_enum = dv.intersect(&compiled(".*l.*", true)?)?;
-        Assert::assert_equals(
-            "hello".to_string(),
-            npe(terms_enum.next()?).utf8_to_string()?,
-        );
-        aeq(1, terms_enum.ord()?);
-        Assert::assert_equals(
-            "world".to_string(),
-            npe(terms_enum.next()?).utf8_to_string()?,
-        );
-        aeq(2, terms_enum.ord()?);
-        assert_null(terms_enum.next()?);
+            // NORMAL automaton
+            let dv = npe(leaf.get_sorted_set_doc_values("field")?);
+            let mut terms_enum = dv.intersect(&compiled(".*l.*", true)?)?;
+            Assert::assert_equals(
+                "hello".to_string(),
+                npe(terms_enum.next()?).utf8_to_string()?,
+            );
+            aeq(1, terms_enum.ord()?);
+            Assert::assert_equals(
+                "world".to_string(),
+                npe(terms_enum.next()?).utf8_to_string()?,
+            );
+            aeq(2, terms_enum.ord()?);
+            assert_null(terms_enum.next()?);
 
-        // SINGLE automaton
-        let dv = npe(leaf.get_sorted_set_doc_values("field")?);
-        let mut terms_enum = dv.intersect(&compiled("hello", false)?)?;
-        Assert::assert_equals(
-            "hello".to_string(),
-            npe(terms_enum.next()?).utf8_to_string()?,
-        );
-        aeq(1, terms_enum.ord()?);
-        assert_null(terms_enum.next()?);
+            // SINGLE automaton
+            let dv = npe(leaf.get_sorted_set_doc_values("field")?);
+            let mut terms_enum = dv.intersect(&compiled("hello", false)?)?;
+            Assert::assert_equals(
+                "hello".to_string(),
+                npe(terms_enum.next()?).utf8_to_string()?,
+            );
+            aeq(1, terms_enum.ord()?);
+            assert_null(terms_enum.next()?);
 
-        drop((terms_enum, leaf));
-        ireader.close()?;
+            drop((terms_enum, leaf));
+            ireader.close()?;
+        }
         directory.close()
     }
 
@@ -3554,132 +3662,23 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
     /// (binary/numeric/sorted, no missing).
     fn test_threads(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let conf = LuceneTestCase::new_index_writer_config_analyzer(mock_analyzer());
-        let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), conf)?;
-        // `new BinaryDocValuesField("dvBin", newBytesRef())`,
-        // `new SortedDocValuesField("dvSorted", newBytesRef())`
-        let _ = LuceneTestCase::new_bytes_ref();
-        let _ = LuceneTestCase::new_bytes_ref();
+        {
+            let conf = LuceneTestCase::new_index_writer_config_analyzer(mock_analyzer());
+            let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), conf)?;
+            // `new BinaryDocValuesField("dvBin", newBytesRef())`,
+            // `new SortedDocValuesField("dvSorted", newBytesRef())`
+            let _ = LuceneTestCase::new_bytes_ref();
+            let _ = LuceneTestCase::new_bytes_ref();
 
-        // index some docs
-        let num_docs = LuceneTestCase::at_least(300);
-        for i in 0..num_docs {
-            let length = TestUtil::next_int(&*random(), 0, 8) as usize;
-            let mut buffer = vec![0u8; length];
-            random().next_bytes(&mut buffer);
-            let numeric_value = random().next_long();
-            let mut doc = Document::new();
-            doc.add(Box::new(StringField::new("id", i.to_string(), Store::NO)?));
-            doc.add(Box::new(StoredField::new_bytes(
-                "storedBin",
-                BytesRef::new(buffer.clone()),
-            )?));
-            doc.add(Box::new(BinaryDocValuesField::new(
-                "dvBin",
-                BytesRef::new(buffer.clone()),
-            )));
-            doc.add(Box::new(SortedDocValuesField::new(
-                "dvSorted",
-                BytesRef::new(buffer),
-            )));
-            doc.add(Box::new(StoredField::new_string(
-                "storedNum",
-                numeric_value.to_string(),
-            )?));
-            doc.add(Box::new(NumericDocValuesField::new("dvNum", numeric_value)));
-            writer.add_document(&doc)?;
-            if random().next_int_bound(31) == 0 {
-                writer.commit()?;
-            }
-        }
-
-        // delete some docs
-        let num_deletions = random().next_int_bound(num_docs / 10);
-        for _ in 0..num_deletions {
-            let id = random().next_int_bound(num_docs);
-            writer.delete_documents(term("id", &id.to_string()))?;
-        }
-        writer.close()?;
-        drop(writer);
-
-        // compare
-        let ir =
-            self.maybe_wrap_with_merging_reader(directory_reader::open(dir.as_directory())?)?;
-        let num_threads = TestUtil::next_int(&*random(), 2, 7);
-        let starting_gun = Arc::new(Latch::new());
-        let mut threads = Vec::with_capacity(num_threads as usize);
-        for _ in 0..num_threads {
-            let (ir, starting_gun) = (
-                Arc::clone(&ir) as Arc<dyn IndexReader>,
-                Arc::clone(&starting_gun),
-            );
-            let thread = Thread::unnamed(move || {
-                starting_gun.wait();
-                let run = (|| -> Result<()> {
-                    for context in Arc::clone(&ir).leaves()? {
-                        let r = context.leaf_reader();
-                        let stored_fields = r.stored_fields()?;
-                        let mut binaries = npe(r.get_binary_doc_values("dvBin")?);
-                        let mut sorted = npe(r.get_sorted_doc_values("dvSorted")?);
-                        let mut numerics = npe(r.get_numeric_doc_values("dvNum")?);
-                        for j in 0..r.max_doc() {
-                            let binary_value =
-                                stored_fields.document(j)?.get_binary_value("storedBin");
-                            aeq(j, binaries.next_doc()?);
-                            let scratch = binaries.binary_value()?;
-                            Assert::assert_equals(
-                                Boxed(binary_value.clone()),
-                                Boxed(Some(scratch)),
-                            );
-                            aeq(j, sorted.next_doc()?);
-                            let scratch = sorted.lookup_ord(sorted.ord_value()?)?;
-                            Assert::assert_equals(Boxed(binary_value), Boxed(Some(scratch)));
-                            let expected = doc_get(&stored_fields.document(j)?, "storedNum");
-                            aeq(j, numerics.next_doc()?);
-                            aeq(parse_long(&npe(expected)), numerics.long_value()?);
-                        }
-                    }
-                    TestUtil::check_reader(&ir)
-                })();
-                if let Err(e) = run {
-                    runtime_exception(e)
-                }
-            });
-            thread.start();
-            threads.push(thread);
-        }
-        starting_gun.count_down();
-        for t in &threads {
-            if let Err(payload) = t.join() {
-                std::panic::resume_unwind(payload);
-            }
-        }
-        ir.close()?;
-        drop(ir);
-        dir.close()
-    }
-
-    /// `testThreads2()` (`@Nightly`): tests dv against stored fields with
-    /// threads (all types + missing).
-    fn test_threads2(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
-        let conf = LuceneTestCase::new_index_writer_config_analyzer(mock_analyzer());
-        let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), conf)?;
-        // `new BinaryDocValuesField("dvBin", newBytesRef())`,
-        // `new SortedDocValuesField("dvSorted", newBytesRef())`
-        let _ = LuceneTestCase::new_bytes_ref();
-        let _ = LuceneTestCase::new_bytes_ref();
-
-        // index some docs
-        let num_docs = TestUtil::next_int(&*random(), 1025, 2047);
-        for i in 0..num_docs {
-            let length = TestUtil::next_int(&*random(), 0, 8) as usize;
-            let mut buffer = vec![0u8; length];
-            random().next_bytes(&mut buffer);
-            let numeric_value = random().next_long();
-            let mut doc = Document::new();
-            doc.add(Box::new(StringField::new("id", i.to_string(), Store::NO)?));
-            if random().next_int_bound(4) > 0 {
+            // index some docs
+            let num_docs = LuceneTestCase::at_least(300);
+            for i in 0..num_docs {
+                let length = TestUtil::next_int(&*random(), 0, 8) as usize;
+                let mut buffer = vec![0u8; length];
+                random().next_bytes(&mut buffer);
+                let numeric_value = random().next_long();
+                let mut doc = Document::new();
+                doc.add(Box::new(StringField::new("id", i.to_string(), Store::NO)?));
                 doc.add(Box::new(StoredField::new_bytes(
                     "storedBin",
                     BytesRef::new(buffer.clone()),
@@ -3692,253 +3691,368 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
                     "dvSorted",
                     BytesRef::new(buffer),
                 )));
-            }
-            if random().next_int_bound(4) > 0 {
                 doc.add(Box::new(StoredField::new_string(
                     "storedNum",
                     numeric_value.to_string(),
                 )?));
                 doc.add(Box::new(NumericDocValuesField::new("dvNum", numeric_value)));
+                writer.add_document(&doc)?;
+                if random().next_int_bound(31) == 0 {
+                    writer.commit()?;
+                }
             }
-            let num_sorted_set_fields = random().next_int_bound(3);
-            let mut values: BTreeSet<String> = BTreeSet::new();
-            for _ in 0..num_sorted_set_fields {
-                values.insert(TestUtil::random_simple_string(&*random()));
+
+            // delete some docs
+            let num_deletions = random().next_int_bound(num_docs / 10);
+            for _ in 0..num_deletions {
+                let id = random().next_int_bound(num_docs);
+                writer.delete_documents(term("id", &id.to_string()))?;
             }
-            for v in &values {
-                doc.add(Box::new(SortedSetDocValuesField::new(
-                    "dvSortedSet",
-                    nbr(v),
-                )));
-                doc.add(Box::new(StoredField::new_string(
-                    "storedSortedSet",
-                    v.clone(),
-                )?));
+            writer.close()?;
+            drop(writer);
+
+            // compare
+            let ir =
+                self.maybe_wrap_with_merging_reader(directory_reader::open(dir.as_directory())?)?;
+            let num_threads = TestUtil::next_int(&*random(), 2, 7);
+            let starting_gun = Arc::new(Latch::new());
+            let mut threads = Vec::with_capacity(num_threads as usize);
+            for _ in 0..num_threads {
+                let (ir, starting_gun) = (
+                    Arc::clone(&ir) as Arc<dyn IndexReader>,
+                    Arc::clone(&starting_gun),
+                );
+                let thread = Thread::unnamed(move || {
+                    starting_gun.wait();
+                    let run = (|| -> Result<()> {
+                        for context in Arc::clone(&ir).leaves()? {
+                            let r = context.leaf_reader();
+                            let stored_fields = r.stored_fields()?;
+                            let mut binaries = npe(r.get_binary_doc_values("dvBin")?);
+                            let mut sorted = npe(r.get_sorted_doc_values("dvSorted")?);
+                            let mut numerics = npe(r.get_numeric_doc_values("dvNum")?);
+                            for j in 0..r.max_doc() {
+                                let binary_value =
+                                    stored_fields.document(j)?.get_binary_value("storedBin");
+                                aeq(j, binaries.next_doc()?);
+                                let scratch = binaries.binary_value()?;
+                                Assert::assert_equals(
+                                    Boxed(binary_value.clone()),
+                                    Boxed(Some(scratch)),
+                                );
+                                aeq(j, sorted.next_doc()?);
+                                let scratch = sorted.lookup_ord(sorted.ord_value()?)?;
+                                Assert::assert_equals(Boxed(binary_value), Boxed(Some(scratch)));
+                                let expected = doc_get(&stored_fields.document(j)?, "storedNum");
+                                aeq(j, numerics.next_doc()?);
+                                aeq(parse_long(&npe(expected)), numerics.long_value()?);
+                            }
+                        }
+                        TestUtil::check_reader(&ir)
+                    })();
+                    if let Err(e) = run {
+                        runtime_exception(e)
+                    }
+                });
+                thread.start();
+                threads.push(thread);
             }
-            let num_sorted_numeric_fields = random().next_int_bound(3);
-            let mut num_values: BTreeSet<i64> = BTreeSet::new();
-            for _ in 0..num_sorted_numeric_fields {
-                num_values.insert(TestUtil::next_long(&*random(), i64::MIN, i64::MAX));
+            starting_gun.count_down();
+            for t in &threads {
+                if let Err(payload) = t.join() {
+                    std::panic::resume_unwind(payload);
+                }
             }
-            for l in &num_values {
-                doc.add(Box::new(SortedNumericDocValuesField::new(
-                    "dvSortedNumeric",
-                    *l,
-                )));
-                doc.add(Box::new(StoredField::new_string(
-                    "storedSortedNumeric",
-                    l.to_string(),
-                )?));
-            }
-            writer.add_document(&doc)?;
-            if random().next_int_bound(31) == 0 {
-                writer.commit()?;
-            }
+            ir.close()?;
+            drop(ir);
         }
+        dir.close()
+    }
 
-        // delete some docs
-        let num_deletions = random().next_int_bound(num_docs / 10);
-        for _ in 0..num_deletions {
-            let id = random().next_int_bound(num_docs);
-            writer.delete_documents(term("id", &id.to_string()))?;
-        }
-        writer.close()?;
-        drop(writer);
+    /// `testThreads2()` (`@Nightly`): tests dv against stored fields with
+    /// threads (all types + missing).
+    fn test_threads2(&self) -> Result<()> {
+        let mut dir = LuceneTestCase::new_directory();
+        {
+            let conf = LuceneTestCase::new_index_writer_config_analyzer(mock_analyzer());
+            let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), conf)?;
+            // `new BinaryDocValuesField("dvBin", newBytesRef())`,
+            // `new SortedDocValuesField("dvSorted", newBytesRef())`
+            let _ = LuceneTestCase::new_bytes_ref();
+            let _ = LuceneTestCase::new_bytes_ref();
 
-        // compare
-        let ir =
-            self.maybe_wrap_with_merging_reader(directory_reader::open(dir.as_directory())?)?;
-        let num_threads = TestUtil::next_int(&*random(), 2, 7);
-        let starting_gun = Arc::new(Latch::new());
-        let mut threads = Vec::with_capacity(num_threads as usize);
-        for _ in 0..num_threads {
-            let (ir, starting_gun) = (
-                Arc::clone(&ir) as Arc<dyn IndexReader>,
-                Arc::clone(&starting_gun),
-            );
-            let thread = Thread::unnamed(move || {
-                starting_gun.wait();
-                let run = (|| -> Result<()> {
-                    for context in Arc::clone(&ir).leaves()? {
-                        let r = context.leaf_reader();
-                        let stored_fields = r.stored_fields()?;
-                        let mut binaries = r.get_binary_doc_values("dvBin")?;
-                        let mut sorted = r.get_sorted_doc_values("dvSorted")?;
-                        let mut numerics = r.get_numeric_doc_values("dvNum")?;
-                        let mut sorted_set = r.get_sorted_set_doc_values("dvSortedSet")?;
-                        let mut sorted_numeric =
-                            r.get_sorted_numeric_doc_values("dvSortedNumeric")?;
-                        for j in 0..r.max_doc() {
-                            let binary_value =
-                                stored_fields.document(j)?.get_binary_value("storedBin");
-                            if let Some(binary_value) = binary_value {
-                                if let Some(binaries) = binaries.as_mut() {
-                                    aeq(j, binaries.next_doc()?);
-                                    let scratch = binaries.binary_value()?;
-                                    Assert::assert_equals(binary_value.clone(), scratch);
-                                    let sorted = npe(sorted.as_mut());
-                                    aeq(j, sorted.next_doc()?);
-                                    let scratch = sorted.lookup_ord(sorted.ord_value()?)?;
-                                    Assert::assert_equals(binary_value, scratch);
+            // index some docs
+            let num_docs = TestUtil::next_int(&*random(), 1025, 2047);
+            for i in 0..num_docs {
+                let length = TestUtil::next_int(&*random(), 0, 8) as usize;
+                let mut buffer = vec![0u8; length];
+                random().next_bytes(&mut buffer);
+                let numeric_value = random().next_long();
+                let mut doc = Document::new();
+                doc.add(Box::new(StringField::new("id", i.to_string(), Store::NO)?));
+                if random().next_int_bound(4) > 0 {
+                    doc.add(Box::new(StoredField::new_bytes(
+                        "storedBin",
+                        BytesRef::new(buffer.clone()),
+                    )?));
+                    doc.add(Box::new(BinaryDocValuesField::new(
+                        "dvBin",
+                        BytesRef::new(buffer.clone()),
+                    )));
+                    doc.add(Box::new(SortedDocValuesField::new(
+                        "dvSorted",
+                        BytesRef::new(buffer),
+                    )));
+                }
+                if random().next_int_bound(4) > 0 {
+                    doc.add(Box::new(StoredField::new_string(
+                        "storedNum",
+                        numeric_value.to_string(),
+                    )?));
+                    doc.add(Box::new(NumericDocValuesField::new("dvNum", numeric_value)));
+                }
+                let num_sorted_set_fields = random().next_int_bound(3);
+                let mut values: BTreeSet<String> = BTreeSet::new();
+                for _ in 0..num_sorted_set_fields {
+                    values.insert(TestUtil::random_simple_string(&*random()));
+                }
+                for v in &values {
+                    doc.add(Box::new(SortedSetDocValuesField::new(
+                        "dvSortedSet",
+                        nbr(v),
+                    )));
+                    doc.add(Box::new(StoredField::new_string(
+                        "storedSortedSet",
+                        v.clone(),
+                    )?));
+                }
+                let num_sorted_numeric_fields = random().next_int_bound(3);
+                let mut num_values: BTreeSet<i64> = BTreeSet::new();
+                for _ in 0..num_sorted_numeric_fields {
+                    num_values.insert(TestUtil::next_long(&*random(), i64::MIN, i64::MAX));
+                }
+                for l in &num_values {
+                    doc.add(Box::new(SortedNumericDocValuesField::new(
+                        "dvSortedNumeric",
+                        *l,
+                    )));
+                    doc.add(Box::new(StoredField::new_string(
+                        "storedSortedNumeric",
+                        l.to_string(),
+                    )?));
+                }
+                writer.add_document(&doc)?;
+                if random().next_int_bound(31) == 0 {
+                    writer.commit()?;
+                }
+            }
+
+            // delete some docs
+            let num_deletions = random().next_int_bound(num_docs / 10);
+            for _ in 0..num_deletions {
+                let id = random().next_int_bound(num_docs);
+                writer.delete_documents(term("id", &id.to_string()))?;
+            }
+            writer.close()?;
+            drop(writer);
+
+            // compare
+            let ir =
+                self.maybe_wrap_with_merging_reader(directory_reader::open(dir.as_directory())?)?;
+            let num_threads = TestUtil::next_int(&*random(), 2, 7);
+            let starting_gun = Arc::new(Latch::new());
+            let mut threads = Vec::with_capacity(num_threads as usize);
+            for _ in 0..num_threads {
+                let (ir, starting_gun) = (
+                    Arc::clone(&ir) as Arc<dyn IndexReader>,
+                    Arc::clone(&starting_gun),
+                );
+                let thread = Thread::unnamed(move || {
+                    starting_gun.wait();
+                    let run = (|| -> Result<()> {
+                        for context in Arc::clone(&ir).leaves()? {
+                            let r = context.leaf_reader();
+                            let stored_fields = r.stored_fields()?;
+                            let mut binaries = r.get_binary_doc_values("dvBin")?;
+                            let mut sorted = r.get_sorted_doc_values("dvSorted")?;
+                            let mut numerics = r.get_numeric_doc_values("dvNum")?;
+                            let mut sorted_set = r.get_sorted_set_doc_values("dvSortedSet")?;
+                            let mut sorted_numeric =
+                                r.get_sorted_numeric_doc_values("dvSortedNumeric")?;
+                            for j in 0..r.max_doc() {
+                                let binary_value =
+                                    stored_fields.document(j)?.get_binary_value("storedBin");
+                                if let Some(binary_value) = binary_value {
+                                    if let Some(binaries) = binaries.as_mut() {
+                                        aeq(j, binaries.next_doc()?);
+                                        let scratch = binaries.binary_value()?;
+                                        Assert::assert_equals(binary_value.clone(), scratch);
+                                        let sorted = npe(sorted.as_mut());
+                                        aeq(j, sorted.next_doc()?);
+                                        let scratch = sorted.lookup_ord(sorted.ord_value()?)?;
+                                        Assert::assert_equals(binary_value, scratch);
+                                    }
                                 }
-                            }
 
-                            let number = doc_get(&stored_fields.document(j)?, "storedNum");
-                            if let Some(number) = number {
-                                if let Some(numerics) = numerics.as_mut() {
-                                    aeq(j, numerics.advance(j)?);
-                                    aeq(parse_long(&number), numerics.long_value()?);
+                                let number = doc_get(&stored_fields.document(j)?, "storedNum");
+                                if let Some(number) = number {
+                                    if let Some(numerics) = numerics.as_mut() {
+                                        aeq(j, numerics.advance(j)?);
+                                        aeq(parse_long(&number), numerics.long_value()?);
+                                    }
                                 }
-                            }
 
-                            let values = stored_fields.document(j)?.get_values("storedSortedSet");
-                            if !values.is_empty() {
-                                assert_not_null(sorted_set.is_some());
-                                let sorted_set = npe(sorted_set.as_mut());
-                                aeq(j, sorted_set.next_doc()?);
-                                aeq(values.len() as i64, sorted_set.doc_value_count()?);
-                                for s in &values {
-                                    let ord = sorted_set.next_ord()?;
-                                    let value = sorted_set.lookup_ord(ord)?;
-                                    Assert::assert_equals(s.clone(), value.utf8_to_string()?);
+                                let values =
+                                    stored_fields.document(j)?.get_values("storedSortedSet");
+                                if !values.is_empty() {
+                                    assert_not_null(sorted_set.is_some());
+                                    let sorted_set = npe(sorted_set.as_mut());
+                                    aeq(j, sorted_set.next_doc()?);
+                                    aeq(values.len() as i64, sorted_set.doc_value_count()?);
+                                    for s in &values {
+                                        let ord = sorted_set.next_ord()?;
+                                        let value = sorted_set.lookup_ord(ord)?;
+                                        Assert::assert_equals(s.clone(), value.utf8_to_string()?);
+                                    }
                                 }
-                            }
 
-                            let num_values =
-                                stored_fields.document(j)?.get_values("storedSortedNumeric");
-                            if !num_values.is_empty() {
-                                assert_not_null(sorted_numeric.is_some());
-                                let sorted_numeric = npe(sorted_numeric.as_mut());
-                                aeq(j, sorted_numeric.next_doc()?);
-                                aeq(num_values.len() as i64, sorted_numeric.doc_value_count()?);
-                                for num_value in &num_values {
-                                    let v = sorted_numeric.next_value()?;
-                                    Assert::assert_equals(num_value.clone(), v.to_string());
+                                let num_values =
+                                    stored_fields.document(j)?.get_values("storedSortedNumeric");
+                                if !num_values.is_empty() {
+                                    assert_not_null(sorted_numeric.is_some());
+                                    let sorted_numeric = npe(sorted_numeric.as_mut());
+                                    aeq(j, sorted_numeric.next_doc()?);
+                                    aeq(num_values.len() as i64, sorted_numeric.doc_value_count()?);
+                                    for num_value in &num_values {
+                                        let v = sorted_numeric.next_value()?;
+                                        Assert::assert_equals(num_value.clone(), v.to_string());
+                                    }
                                 }
                             }
                         }
+                        TestUtil::check_reader(&ir)
+                    })();
+                    if let Err(e) = run {
+                        runtime_exception(e)
                     }
-                    TestUtil::check_reader(&ir)
-                })();
-                if let Err(e) = run {
-                    runtime_exception(e)
-                }
-            });
-            thread.start();
-            threads.push(thread);
-        }
-        starting_gun.count_down();
-        for t in &threads {
-            if let Err(payload) = t.join() {
-                std::panic::resume_unwind(payload);
+                });
+                thread.start();
+                threads.push(thread);
             }
+            starting_gun.count_down();
+            for t in &threads {
+                if let Err(payload) = t.join() {
+                    std::panic::resume_unwind(payload);
+                }
+            }
+            ir.close()?;
+            drop(ir);
         }
-        ir.close()?;
-        drop(ir);
         dir.close()
     }
 
     /// `testThreads3()` (`@Nightly`).
     fn test_threads3(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir());
-        let conf = LuceneTestCase::new_index_writer_config_analyzer(mock_analyzer());
-        let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), conf)?;
+        {
+            let conf = LuceneTestCase::new_index_writer_config_analyzer(mock_analyzer());
+            let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), conf)?;
 
-        let num_sorted_sets = random().next_int_bound(21);
-        let num_binaries = random().next_int_bound(21);
-        let num_sorted_nums = random().next_int_bound(21);
+            let num_sorted_sets = random().next_int_bound(21);
+            let num_binaries = random().next_int_bound(21);
+            let num_sorted_nums = random().next_int_bound(21);
 
-        let num_docs = TestUtil::next_int(&*random(), 2025, 2047);
-        for _ in 0..num_docs {
-            let mut doc = Document::new();
+            let num_docs = TestUtil::next_int(&*random(), 2025, 2047);
+            for _ in 0..num_docs {
+                let mut doc = Document::new();
 
-            for j in 0..num_sorted_sets {
-                doc.add(Box::new(SortedSetDocValuesField::new(
-                    &format!("ss{j}"),
-                    nbr(&TestUtil::random_simple_string(&*random())),
-                )));
-                doc.add(Box::new(SortedSetDocValuesField::new(
-                    &format!("ss{j}"),
-                    nbr(&TestUtil::random_simple_string(&*random())),
-                )));
+                for j in 0..num_sorted_sets {
+                    doc.add(Box::new(SortedSetDocValuesField::new(
+                        &format!("ss{j}"),
+                        nbr(&TestUtil::random_simple_string(&*random())),
+                    )));
+                    doc.add(Box::new(SortedSetDocValuesField::new(
+                        &format!("ss{j}"),
+                        nbr(&TestUtil::random_simple_string(&*random())),
+                    )));
+                }
+
+                for j in 0..num_binaries {
+                    doc.add(Box::new(BinaryDocValuesField::new(
+                        &format!("b{j}"),
+                        nbr(&TestUtil::random_simple_string(&*random())),
+                    )));
+                }
+
+                for j in 0..num_sorted_nums {
+                    doc.add(Box::new(SortedNumericDocValuesField::new(
+                        &format!("sn{j}"),
+                        TestUtil::next_long(&*random(), i64::MIN, i64::MAX),
+                    )));
+                    doc.add(Box::new(SortedNumericDocValuesField::new(
+                        &format!("sn{j}"),
+                        TestUtil::next_long(&*random(), i64::MIN, i64::MAX),
+                    )));
+                }
+                writer.add_document(&doc)?;
             }
+            writer.close()?;
+            drop(writer);
 
-            for j in 0..num_binaries {
-                doc.add(Box::new(BinaryDocValuesField::new(
-                    &format!("b{j}"),
-                    nbr(&TestUtil::random_simple_string(&*random())),
-                )));
-            }
-
-            for j in 0..num_sorted_nums {
-                doc.add(Box::new(SortedNumericDocValuesField::new(
-                    &format!("sn{j}"),
-                    TestUtil::next_long(&*random(), i64::MIN, i64::MAX),
-                )));
-                doc.add(Box::new(SortedNumericDocValuesField::new(
-                    &format!("sn{j}"),
-                    TestUtil::next_long(&*random(), i64::MIN, i64::MAX),
-                )));
-            }
-            writer.add_document(&doc)?;
-        }
-        writer.close()?;
-        drop(writer);
-
-        // now check with threads
-        for _ in 0..10 {
-            let r =
-                self.maybe_wrap_with_merging_reader(directory_reader::open(dir.as_directory())?)?;
-            let starting_gun = Arc::new(Latch::new());
-            let thread_count = TestUtil::next_int(&*random(), 4, 10);
-            let mut threads = Vec::with_capacity(thread_count as usize);
-            for _ in 0..thread_count {
-                let (r, starting_gun) = (
-                    Arc::clone(&r) as Arc<dyn IndexReader>,
-                    Arc::clone(&starting_gun),
-                );
-                threads.push(Thread::unnamed(move || {
-                    let info_stream =
-                        rucene::util::PrintStreamInfoStream::new(Box::new(Vec::<u8>::new()));
-                    starting_gun.wait();
-                    let run = (|| -> Result<()> {
-                        for leaf in Arc::clone(&r).leaves()? {
-                            let codec_reader =
-                                leaf.leaf_reader().as_codec_reader().ok_or_else(|| {
-                                    LuceneError::Unchecked {
+            // now check with threads
+            for _ in 0..10 {
+                let r = self
+                    .maybe_wrap_with_merging_reader(directory_reader::open(dir.as_directory())?)?;
+                let starting_gun = Arc::new(Latch::new());
+                let thread_count = TestUtil::next_int(&*random(), 4, 10);
+                let mut threads = Vec::with_capacity(thread_count as usize);
+                for _ in 0..thread_count {
+                    let (r, starting_gun) = (
+                        Arc::clone(&r) as Arc<dyn IndexReader>,
+                        Arc::clone(&starting_gun),
+                    );
+                    threads.push(Thread::unnamed(move || {
+                        let info_stream =
+                            rucene::util::PrintStreamInfoStream::new(Box::new(Vec::<u8>::new()));
+                        starting_gun.wait();
+                        let run = (|| -> Result<()> {
+                            for leaf in Arc::clone(&r).leaves()? {
+                                let codec_reader = leaf
+                                    .leaf_reader()
+                                    .as_codec_reader()
+                                    .ok_or_else(|| LuceneError::Unchecked {
                                         class: "java.lang.ClassCastException",
                                         message: Some("the leaf is not a CodecReader".to_string()),
                                         cause: None,
-                                    }
-                                })?;
-                            let status = rucene::index::check_index::test_doc_values(
-                                &*codec_reader,
-                                Some(&info_stream),
-                                true,
-                            )?;
-                            if let Some(error) = status.error {
-                                return Err(error);
+                                    })?;
+                                let status = rucene::index::check_index::test_doc_values(
+                                    &*codec_reader,
+                                    Some(&info_stream),
+                                    true,
+                                )?;
+                                if let Some(error) = status.error {
+                                    return Err(error);
+                                }
                             }
+                            Ok(())
+                        })();
+                        if let Err(e) = run {
+                            runtime_exception(e)
                         }
-                        Ok(())
-                    })();
-                    if let Err(e) = run {
-                        runtime_exception(e)
-                    }
-                }));
-            }
-            for thread in &threads {
-                thread.start();
-            }
-            starting_gun.count_down();
-            for thread in &threads {
-                if let Err(payload) = thread.join() {
-                    std::panic::resume_unwind(payload);
+                    }));
                 }
+                for thread in &threads {
+                    thread.start();
+                }
+                starting_gun.count_down();
+                for thread in &threads {
+                    if let Err(payload) = thread.join() {
+                        std::panic::resume_unwind(payload);
+                    }
+                }
+                r.close()?;
             }
-            r.close()?;
         }
-
         dir.close()
     }
 
@@ -3952,33 +4066,35 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
                 break;
             }
             let mut dir = LuceneTestCase::new_directory();
-            let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
-            let bytes = LuceneTestCase::new_bytes_ref_slice(&vec![0u8; 1 << i], 0, 1 << i);
-            for _ in 0..4 {
+            {
+                let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
+                let bytes = LuceneTestCase::new_bytes_ref_slice(&vec![0u8; 1 << i], 0, 1 << i);
+                for _ in 0..4 {
+                    let mut doc = Document::new();
+                    doc.add(Box::new(BinaryDocValuesField::new("field", bytes.clone())));
+                    w.add_document(&doc)?;
+                }
                 let mut doc = Document::new();
-                doc.add(Box::new(BinaryDocValuesField::new("field", bytes.clone())));
+                doc.add(Box::new(StoredField::new_string("id", "5".to_string())?));
+                doc.add(Box::new(BinaryDocValuesField::new(
+                    "field",
+                    LuceneTestCase::new_bytes_ref(),
+                )));
                 w.add_document(&doc)?;
-            }
-            let mut doc = Document::new();
-            doc.add(Box::new(StoredField::new_string("id", "5".to_string())?));
-            doc.add(Box::new(BinaryDocValuesField::new(
-                "field",
-                LuceneTestCase::new_bytes_ref(),
-            )));
-            w.add_document(&doc)?;
-            let r: Arc<dyn IndexReader> = w.get_reader()?;
-            w.close()?;
-            drop(w);
+                let r: Arc<dyn IndexReader> = w.get_reader()?;
+                w.close()?;
+                drop(w);
 
-            let mut values = npe(MultiDocValues::get_binary_values(&r, "field")?);
-            for j in 0..5 {
-                aeq(j, values.next_doc()?);
-                let result = values.binary_value()?;
-                Assert::assert_true(result.length == 0 || result.length == 1 << i);
+                let mut values = npe(MultiDocValues::get_binary_values(&r, "field")?);
+                for j in 0..5 {
+                    aeq(j, values.next_doc()?);
+                    let result = values.binary_value()?;
+                    Assert::assert_true(result.length == 0 || result.length == 1 << i);
+                }
+                drop(values);
+                r.close()?;
+                drop(r);
             }
-            drop(values);
-            r.close()?;
-            drop(r);
             dir.close()?;
         }
         Ok(())
@@ -3987,52 +4103,56 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testOneSortedNumber()`.
     fn test_one_sorted_number(&self) -> Result<()> {
         let mut directory = LuceneTestCase::new_directory();
-        let writer =
-            RandomIndexWriter::new_with_mock_analyzer(&*random(), directory.as_directory())?;
-        let mut doc = Document::new();
-        doc.add(Box::new(SortedNumericDocValuesField::new("dv", 5)));
-        writer.add_document(&doc)?;
-        writer.close()?;
-        drop(writer);
+        {
+            let writer =
+                RandomIndexWriter::new_with_mock_analyzer(&*random(), directory.as_directory())?;
+            let mut doc = Document::new();
+            doc.add(Box::new(SortedNumericDocValuesField::new("dv", 5)));
+            writer.add_document(&doc)?;
+            writer.close()?;
+            drop(writer);
 
-        // Now search the index:
-        let reader = open_reader(self, &directory)?;
-        let leaf = only_leaf(&reader)?;
-        let mut dv = npe(leaf.get_sorted_numeric_doc_values("dv")?);
-        aeq(0, dv.next_doc()?);
-        aeq(1, dv.doc_value_count()?);
-        aeq(5, dv.next_value()?);
+            // Now search the index:
+            let reader = open_reader(self, &directory)?;
+            let leaf = only_leaf(&reader)?;
+            let mut dv = npe(leaf.get_sorted_numeric_doc_values("dv")?);
+            aeq(0, dv.next_doc()?);
+            aeq(1, dv.doc_value_count()?);
+            aeq(5, dv.next_value()?);
 
-        drop((dv, leaf));
-        reader.close()?;
+            drop((dv, leaf));
+            reader.close()?;
+        }
         directory.close()
     }
 
     /// `testOneSortedNumberOneMissing()`.
     fn test_one_sorted_number_one_missing(&self) -> Result<()> {
         let mut directory = LuceneTestCase::new_directory();
-        let writer = IndexWriter::new(
-            directory.as_directory(),
-            IndexWriterConfig::with_analyzer(null_analyzer()),
-        )?;
-        let mut doc = Document::new();
-        doc.add(Box::new(SortedNumericDocValuesField::new("dv", 5)));
-        writer.add_document(&doc)?;
-        writer.add_document(&Document::new())?;
-        writer.close()?;
-        drop(writer);
+        {
+            let writer = IndexWriter::new(
+                directory.as_directory(),
+                IndexWriterConfig::with_analyzer(null_analyzer()),
+            )?;
+            let mut doc = Document::new();
+            doc.add(Box::new(SortedNumericDocValuesField::new("dv", 5)));
+            writer.add_document(&doc)?;
+            writer.add_document(&Document::new())?;
+            writer.close()?;
+            drop(writer);
 
-        // Now search the index:
-        let reader = open_reader(self, &directory)?;
-        let leaf = only_leaf(&reader)?;
-        let mut dv = npe(leaf.get_sorted_numeric_doc_values("dv")?);
-        aeq(0, dv.next_doc()?);
-        aeq(1, dv.doc_value_count()?);
-        aeq(5, dv.next_value()?);
-        aeq(NO_MORE_DOCS, dv.next_doc()?);
+            // Now search the index:
+            let reader = open_reader(self, &directory)?;
+            let leaf = only_leaf(&reader)?;
+            let mut dv = npe(leaf.get_sorted_numeric_doc_values("dv")?);
+            aeq(0, dv.next_doc()?);
+            aeq(1, dv.doc_value_count()?);
+            aeq(5, dv.next_value()?);
+            aeq(NO_MORE_DOCS, dv.next_doc()?);
 
-        drop((dv, leaf));
-        reader.close()?;
+            drop((dv, leaf));
+            reader.close()?;
+        }
         directory.close()
     }
 
@@ -4061,63 +4181,67 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testTwoSortedNumberOneMissing()`.
     fn test_two_sorted_number_one_missing(&self) -> Result<()> {
         let mut directory = LuceneTestCase::new_directory();
-        let writer = IndexWriter::new(
-            directory.as_directory(),
-            IndexWriterConfig::with_analyzer(null_analyzer()),
-        )?;
-        let mut doc = Document::new();
-        doc.add(Box::new(SortedNumericDocValuesField::new("dv", 11)));
-        doc.add(Box::new(SortedNumericDocValuesField::new("dv", -5)));
-        writer.add_document(&doc)?;
-        writer.add_document(&Document::new())?;
-        writer.close()?;
-        drop(writer);
+        {
+            let writer = IndexWriter::new(
+                directory.as_directory(),
+                IndexWriterConfig::with_analyzer(null_analyzer()),
+            )?;
+            let mut doc = Document::new();
+            doc.add(Box::new(SortedNumericDocValuesField::new("dv", 11)));
+            doc.add(Box::new(SortedNumericDocValuesField::new("dv", -5)));
+            writer.add_document(&doc)?;
+            writer.add_document(&Document::new())?;
+            writer.close()?;
+            drop(writer);
 
-        // Now search the index:
-        let reader = open_reader(self, &directory)?;
-        let leaf = only_leaf(&reader)?;
-        let mut dv = npe(leaf.get_sorted_numeric_doc_values("dv")?);
-        aeq(0, dv.next_doc()?);
-        aeq(2, dv.doc_value_count()?);
-        aeq(-5, dv.next_value()?);
-        aeq(11, dv.next_value()?);
-        aeq(NO_MORE_DOCS, dv.next_doc()?);
+            // Now search the index:
+            let reader = open_reader(self, &directory)?;
+            let leaf = only_leaf(&reader)?;
+            let mut dv = npe(leaf.get_sorted_numeric_doc_values("dv")?);
+            aeq(0, dv.next_doc()?);
+            aeq(2, dv.doc_value_count()?);
+            aeq(-5, dv.next_value()?);
+            aeq(11, dv.next_value()?);
+            aeq(NO_MORE_DOCS, dv.next_doc()?);
 
-        drop((dv, leaf));
-        reader.close()?;
+            drop((dv, leaf));
+            reader.close()?;
+        }
         directory.close()
     }
 
     /// `testSortedNumberMerge()`.
     fn test_sorted_number_merge(&self) -> Result<()> {
         let mut directory = LuceneTestCase::new_directory();
-        let mut iwc = IndexWriterConfig::with_analyzer(null_analyzer());
-        iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
-        let writer = IndexWriter::new(directory.as_directory(), iwc)?;
-        let mut doc = Document::new();
-        doc.add(Box::new(SortedNumericDocValuesField::new("dv", 11)));
-        writer.add_document(&doc)?;
-        writer.commit()?;
-        let mut doc = Document::new();
-        doc.add(Box::new(SortedNumericDocValuesField::new("dv", -5)));
-        writer.add_document(&doc)?;
-        writer.force_merge(1)?;
-        writer.close()?;
-        drop(writer);
+        {
+            let mut iwc = IndexWriterConfig::with_analyzer(null_analyzer());
+            iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+            let writer = IndexWriter::new(directory.as_directory(), iwc)?;
+            let mut doc = Document::new();
+            doc.add(Box::new(SortedNumericDocValuesField::new("dv", 11)));
+            writer.add_document(&doc)?;
+            writer.commit()?;
+            let mut doc = Document::new();
+            doc.add(Box::new(SortedNumericDocValuesField::new("dv", -5)));
+            writer.add_document(&doc)?;
+            writer.force_merge(1)?;
+            writer.close()?;
+            drop(writer);
 
-        // Now search the index:
-        let reader = open_reader(self, &directory)?;
-        let leaf = only_leaf(&reader)?;
-        let mut dv = npe(leaf.get_sorted_numeric_doc_values("dv")?);
-        aeq(0, dv.next_doc()?);
-        aeq(1, dv.doc_value_count()?);
-        aeq(11, dv.next_value()?);
-        aeq(1, dv.next_doc()?);
-        aeq(1, dv.doc_value_count()?);
-        aeq(-5, dv.next_value()?);
+            // Now search the index:
+            let reader = open_reader(self, &directory)?;
+            let leaf = only_leaf(&reader)?;
+            let mut dv = npe(leaf.get_sorted_numeric_doc_values("dv")?);
+            aeq(0, dv.next_doc()?);
+            aeq(1, dv.doc_value_count()?);
+            aeq(11, dv.next_value()?);
+            aeq(1, dv.next_doc()?);
+            aeq(1, dv.doc_value_count()?);
+            aeq(-5, dv.next_value()?);
 
-        drop((dv, leaf));
-        reader.close()?;
+            drop((dv, leaf));
+            reader.close()?;
+        }
         directory.close()
     }
 
@@ -4136,81 +4260,87 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testSortedEnumAdvanceIndependently()`.
     fn test_sorted_enum_advance_independently(&self) -> Result<()> {
         let (mut directory, iwriter) = sorted_set_writer(true)?;
+        {
+            let iwriter = iwriter;
 
-        for value in ["2", "1", "3"] {
-            let mut doc = Document::new();
-            doc.add(Box::new(SortedDocValuesField::new("field", nbr(value))));
-            iwriter.add_document(&doc)?;
+            for value in ["2", "1", "3"] {
+                let mut doc = Document::new();
+                doc.add(Box::new(SortedDocValuesField::new("field", nbr(value))));
+                iwriter.add_document(&doc)?;
+            }
+
+            iwriter.commit()?;
+            iwriter.force_merge(1)?;
+
+            let ireader = iwriter.get_reader()?;
+            iwriter.close()?;
+            drop(iwriter);
+
+            let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ireader) as _)?;
+            let dv = || -> Result<Box<dyn SortedSetDocValues>> {
+                let sorted = npe(leaf.get_sorted_doc_values("field")?);
+                Ok(Box::new(DocValues::singleton_sorted(sorted)))
+            };
+            self.do_test_sorted_set_enum_advance_independently(&dv)?;
+
+            drop(leaf);
+            ireader.close()?;
         }
-
-        iwriter.commit()?;
-        iwriter.force_merge(1)?;
-
-        let ireader = iwriter.get_reader()?;
-        iwriter.close()?;
-        drop(iwriter);
-
-        let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ireader) as _)?;
-        let dv = || -> Result<Box<dyn SortedSetDocValues>> {
-            let sorted = npe(leaf.get_sorted_doc_values("field")?);
-            Ok(Box::new(DocValues::singleton_sorted(sorted)))
-        };
-        self.do_test_sorted_set_enum_advance_independently(&dv)?;
-
-        drop(leaf);
-        ireader.close()?;
         directory.close()
     }
 
     /// `testSortedSetEnumAdvanceIndependently()`.
     fn test_sorted_set_enum_advance_independently(&self) -> Result<()> {
         let (mut directory, iwriter) = sorted_set_writer(true)?;
+        {
+            let iwriter = iwriter;
 
-        // field1 "2", field2 "3"; then field1 "1"; then field2 "2"
-        let mut values = ["2".to_string(), "3".to_string()];
-        let first = (nbr("2"), nbr("3"));
-        let mut doc = Document::new();
-        doc.add(Box::new(SortedSetDocValuesField::new("field", first.0)));
-        doc.add(Box::new(SortedSetDocValuesField::new("field", first.1)));
-        iwriter.add_document(&doc)?;
-        values[0] = "1".to_string();
-        let mut doc = Document::new();
-        doc.add(Box::new(SortedSetDocValuesField::new(
-            "field",
-            nbr(&values[0]),
-        )));
-        doc.add(Box::new(SortedSetDocValuesField::new(
-            "field",
-            BytesRef::from_char_sequence(&values[1]),
-        )));
-        iwriter.add_document(&doc)?;
-        values[1] = "2".to_string();
-        let mut doc = Document::new();
-        doc.add(Box::new(SortedSetDocValuesField::new(
-            "field",
-            BytesRef::from_char_sequence(&values[0]),
-        )));
-        doc.add(Box::new(SortedSetDocValuesField::new(
-            "field",
-            nbr(&values[1]),
-        )));
-        iwriter.add_document(&doc)?;
+            // field1 "2", field2 "3"; then field1 "1"; then field2 "2"
+            let mut values = ["2".to_string(), "3".to_string()];
+            let first = (nbr("2"), nbr("3"));
+            let mut doc = Document::new();
+            doc.add(Box::new(SortedSetDocValuesField::new("field", first.0)));
+            doc.add(Box::new(SortedSetDocValuesField::new("field", first.1)));
+            iwriter.add_document(&doc)?;
+            values[0] = "1".to_string();
+            let mut doc = Document::new();
+            doc.add(Box::new(SortedSetDocValuesField::new(
+                "field",
+                nbr(&values[0]),
+            )));
+            doc.add(Box::new(SortedSetDocValuesField::new(
+                "field",
+                BytesRef::from_char_sequence(&values[1]),
+            )));
+            iwriter.add_document(&doc)?;
+            values[1] = "2".to_string();
+            let mut doc = Document::new();
+            doc.add(Box::new(SortedSetDocValuesField::new(
+                "field",
+                BytesRef::from_char_sequence(&values[0]),
+            )));
+            doc.add(Box::new(SortedSetDocValuesField::new(
+                "field",
+                nbr(&values[1]),
+            )));
+            iwriter.add_document(&doc)?;
 
-        iwriter.commit()?;
-        iwriter.force_merge(1)?;
+            iwriter.commit()?;
+            iwriter.force_merge(1)?;
 
-        let ireader = iwriter.get_reader()?;
-        iwriter.close()?;
-        drop(iwriter);
+            let ireader = iwriter.get_reader()?;
+            iwriter.close()?;
+            drop(iwriter);
 
-        let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ireader) as _)?;
-        let dv = || -> Result<Box<dyn SortedSetDocValues>> {
-            Ok(npe(leaf.get_sorted_set_doc_values("field")?))
-        };
-        self.do_test_sorted_set_enum_advance_independently(&dv)?;
+            let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ireader) as _)?;
+            let dv = || -> Result<Box<dyn SortedSetDocValues>> {
+                Ok(npe(leaf.get_sorted_set_doc_values("field")?))
+            };
+            self.do_test_sorted_set_enum_advance_independently(&dv)?;
 
-        drop(leaf);
-        ireader.close()?;
+            drop(leaf);
+            ireader.close()?;
+        }
         directory.close()
     }
 
@@ -4436,37 +4566,40 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
             is_simple_text(&*self.get_codec()),
         );
         let mut dir = LuceneTestCase::new_directory();
-        let mut iwc = IndexWriterConfig::new();
-        iwc.set_ram_buffer_size_mb(f64::from(8 + random().next_int_bound(64)))?;
-        let writer = IndexWriter::new(dir.as_directory(), iwc)?;
-        // many docs with some of them have very high ords
-        let num_docs = 20_000 + random().next_int_bound(10_000);
-        for _ in 1..num_docs {
-            let num_ords = if random().next_int_bound(100) <= 5 {
-                1000 + random().next_int_bound(500)
-            } else {
-                random().next_int_bound(10)
-            };
-            let mut doc = Document::new();
-            for _ in 0..num_ords {
-                doc.add(Box::new(SortedSetDocValuesField::new(
-                    "sorted_set_dv",
-                    TestUtil::random_binary_term_with(&*random(), 2),
-                )));
-            }
-            writer.add_document(&doc)?;
-        }
-        writer.force_merge_with(1, true)?;
         {
-            let reader = directory_reader::open_with_writer(&*writer)?;
-            let checked = TestUtil::check_reader(&(Arc::clone(&reader) as Arc<dyn IndexReader>));
-            let closed = reader.close();
-            checked?;
-            closed?;
+            let mut iwc = IndexWriterConfig::new();
+            iwc.set_ram_buffer_size_mb(f64::from(8 + random().next_int_bound(64)))?;
+            let writer = IndexWriter::new(dir.as_directory(), iwc)?;
+            // many docs with some of them have very high ords
+            let num_docs = 20_000 + random().next_int_bound(10_000);
+            for _ in 1..num_docs {
+                let num_ords = if random().next_int_bound(100) <= 5 {
+                    1000 + random().next_int_bound(500)
+                } else {
+                    random().next_int_bound(10)
+                };
+                let mut doc = Document::new();
+                for _ in 0..num_ords {
+                    doc.add(Box::new(SortedSetDocValuesField::new(
+                        "sorted_set_dv",
+                        TestUtil::random_binary_term_with(&*random(), 2),
+                    )));
+                }
+                writer.add_document(&doc)?;
+            }
+            writer.force_merge_with(1, true)?;
+            {
+                let reader = directory_reader::open_with_writer(&*writer)?;
+                let checked =
+                    TestUtil::check_reader(&(Arc::clone(&reader) as Arc<dyn IndexReader>));
+                let closed = reader.close();
+                checked?;
+                closed?;
+            }
+            // `IOUtils.close(writer, dir)`
+            writer.close()?;
+            drop(writer);
         }
-        // `IOUtils.close(writer, dir)`
-        writer.close()?;
-        drop(writer);
         dir.close()
     }
 
@@ -4475,82 +4608,84 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         let analyzer = mock_analyzer();
 
         let mut directory = LuceneTestCase::new_directory();
-        let mut conf = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
-        conf.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
-        let w = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), conf)?;
-        let num_chunks = LuceneTestCase::at_least(10);
-        let mut id = 0i32;
-        let mut missing_set: HashSet<i32> = HashSet::new();
-        for _ in 0..num_chunks {
-            // change sparseness for each chunk
-            let sparse_chance = random().next_double();
-            let doc_count = LuceneTestCase::at_least(1000);
-            for _ in 0..doc_count {
-                let mut doc = Document::new();
-                doc.add(Box::new(StoredField::new_number(
-                    "id",
-                    NumericValue::Int(id),
-                )?));
-                if random().next_double() > sparse_chance {
-                    doc.add((field_creator.next)());
-                } else {
-                    missing_set.insert(id);
-                }
-                id += 1;
-                w.add_document(&doc)?;
-            }
-        }
-
-        if random().next_boolean() {
-            w.force_merge(1)?;
-        }
-
-        // Now search the index:
-        let r: Arc<dyn IndexReader> = w.get_reader()?;
-        let stored_fields = r.stored_fields()?;
-        let mut missing = FixedBitSet::new(r.max_doc() as usize);
-        for doc_id in 0..r.max_doc() {
-            let doc = stored_fields.document(doc_id)?;
-            let value = npe(npe(doc.get_field("id")).numeric_value());
-            if let NumericValue::Int(value) = value {
-                if missing_set.contains(&value) {
-                    missing.set(doc_id as usize);
-                }
-            }
-        }
-
-        let num_iters = LuceneTestCase::at_least(10);
-        for _ in 0..num_iters {
-            let mut values = (field_creator.iterator)(&r)?;
-            aeq(-1, values.doc_id());
-
-            loop {
-                let doc_id = if random().next_boolean() {
-                    values.next_doc()?
-                } else {
-                    let range = if random().next_int_bound(10) == 7 {
-                        // big jump
-                        r.max_doc() - values.doc_id()
+        {
+            let mut conf = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
+            conf.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+            let w = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), conf)?;
+            let num_chunks = LuceneTestCase::at_least(10);
+            let mut id = 0i32;
+            let mut missing_set: HashSet<i32> = HashSet::new();
+            for _ in 0..num_chunks {
+                // change sparseness for each chunk
+                let sparse_chance = random().next_double();
+                let doc_count = LuceneTestCase::at_least(1000);
+                for _ in 0..doc_count {
+                    let mut doc = Document::new();
+                    doc.add(Box::new(StoredField::new_number(
+                        "id",
+                        NumericValue::Int(id),
+                    )?));
+                    if random().next_double() > sparse_chance {
+                        doc.add((field_creator.next)());
                     } else {
-                        // small jump
-                        25
-                    };
-                    let inc = TestUtil::next_int(&*random(), 1, range);
-                    values.advance(values.doc_id() + inc)?
-                };
-                if doc_id == NO_MORE_DOCS {
-                    break;
+                        missing_set.insert(id);
+                    }
+                    id += 1;
+                    w.add_document(&doc)?;
                 }
-                Assert::assert_false(missing.get(doc_id as usize));
             }
-        }
 
-        // `IOUtils.close(r, w, directory)`
-        drop(stored_fields);
-        r.close()?;
-        drop(r);
-        w.close()?;
-        drop(w);
+            if random().next_boolean() {
+                w.force_merge(1)?;
+            }
+
+            // Now search the index:
+            let r: Arc<dyn IndexReader> = w.get_reader()?;
+            let stored_fields = r.stored_fields()?;
+            let mut missing = FixedBitSet::new(r.max_doc() as usize);
+            for doc_id in 0..r.max_doc() {
+                let doc = stored_fields.document(doc_id)?;
+                let value = npe(npe(doc.get_field("id")).numeric_value());
+                if let NumericValue::Int(value) = value {
+                    if missing_set.contains(&value) {
+                        missing.set(doc_id as usize);
+                    }
+                }
+            }
+
+            let num_iters = LuceneTestCase::at_least(10);
+            for _ in 0..num_iters {
+                let mut values = (field_creator.iterator)(&r)?;
+                aeq(-1, values.doc_id());
+
+                loop {
+                    let doc_id = if random().next_boolean() {
+                        values.next_doc()?
+                    } else {
+                        let range = if random().next_int_bound(10) == 7 {
+                            // big jump
+                            r.max_doc() - values.doc_id()
+                        } else {
+                            // small jump
+                            25
+                        };
+                        let inc = TestUtil::next_int(&*random(), 1, range);
+                        values.advance(values.doc_id() + inc)?
+                    };
+                    if doc_id == NO_MORE_DOCS {
+                        break;
+                    }
+                    Assert::assert_false(missing.get(doc_id as usize));
+                }
+            }
+
+            // `IOUtils.close(r, w, directory)`
+            drop(stored_fields);
+            r.close()?;
+            drop(r);
+            w.close()?;
+            drop(w);
+        }
         directory.close()
     }
 

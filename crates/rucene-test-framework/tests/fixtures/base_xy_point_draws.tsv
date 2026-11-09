@@ -1,12 +1,12 @@
 # seed	method	kind	value (BaseSuitesDrawsOracle, Lucene 10.5.0, JDK 25): TestXYPointSuiteDraws, next random().nextLong() after each test and the class
 DEADBEEF	#class	next	6250338813176270698
 DEADBEEF	#counts	run=38 fail=0 assume=2	-
-DEADBEEF	testAllXEqual	next	-3640931373855942106
+DEADBEEF	testAllXEqual	next	7353935854572820542
 DEADBEEF	testAllYEqual	next	-4084103950619879758
 DEADBEEF	testBoxBasics	next	481410453445332256
 DEADBEEF	testBoxInvalidCoordinates	next	2289958836970433107
 DEADBEEF	testBoxNull	next	4234411800243799393
-DEADBEEF	testDistanceBasics	next	7961003995520950344
+DEADBEEF	testDistanceBasics	next	-3177932468446072514
 DEADBEEF	testDistanceIllegal	next	7053712622106662301
 DEADBEEF	testDistanceInf	next	-9075246639758851313
 DEADBEEF	testDistanceNaN	next	3537421145518672377
@@ -26,23 +26,23 @@ DEADBEEF	testPolygonNullField	next	9000292079704441678
 DEADBEEF	testRandomBig	A	'nightly' test group is disabled (@org.apache.lucene.tests.util.LuceneTestCase.Nightly())
 DEADBEEF	testRandomDistance	next	-2459670265038194933
 DEADBEEF	testRandomDistanceHuge	A	'nightly' test group is disabled (@org.apache.lucene.tests.util.LuceneTestCase.Nightly())
-DEADBEEF	testRandomMedium	next	-3962355196179362481
+DEADBEEF	testRandomMedium	next	-7673492056613471603
 DEADBEEF	testRandomTiny	next	8969453353514886513
 DEADBEEF	testRectBoundariesAreInclusive	next	-1744110041832091199
-DEADBEEF	testSamePointManyTimes	next	-5040680591523788710
+DEADBEEF	testSamePointManyTimes	next	6968731542192020562
 DEADBEEF	testSmallSetDistance	next	-2954212526827683704
 DEADBEEF	testSmallSetHugeDistance	next	6887082010335718007
 DEADBEEF	testSmallSetMultiValued	next	-7746151134593665916
-DEADBEEF	testSmallSetPoly	next	3099238700030544778
-DEADBEEF	testSmallSetPolyWholeSpace	next	3348722877740252702
+DEADBEEF	testSmallSetPoly	next	6172686608395410724
+DEADBEEF	testSmallSetPolyWholeSpace	next	-8747609653316994373
 DEADBEEF	testSmallSetRect	next	-7418827894457996220
 DEADBEEF	testSmallSetRect2	next	5794753088713444770
-DEADBEEF	testSmallSetTinyDistance	next	-7406830009658111588
+DEADBEEF	testSmallSetTinyDistance	next	-7680331304719348218
 DEADBEEF	testSmallSetWholeSpace	next	1018085894079136800
 1	#class	next	5038102495029988895
 1	#counts	run=38 fail=0 assume=2	-
-1	testAllXEqual	next	-9137158655560011736
-1	testAllYEqual	next	-6040719129053311569
+1	testAllXEqual	next	928151488960954346
+1	testAllYEqual	next	5301314683997242617
 1	testBoxBasics	next	5850949814280786392
 1	testBoxInvalidCoordinates	next	5093958461400373975
 1	testBoxNull	next	-103972710543681555
@@ -56,33 +56,33 @@ DEADBEEF	testSmallSetWholeSpace	next	1018085894079136800
 1	testIndexExtremeValues	next	5664561446634829681
 1	testIndexInfValues	next	-6278468595311808372
 1	testIndexNaNValues	next	5676376477451274156
-1	testLowCardinality	next	-2391012143462198537
+1	testLowCardinality	next	6674494595557478817
 1	testMultiPolygonBasics	next	7623232402804195269
 1	testMultiValued	next	-5566710670585502639
 1	testPolygonBasics	next	2685520844312579059
 1	testPolygonHole	next	3000445480989364812
-1	testPolygonHoleExcludes	next	5784411386974055587
+1	testPolygonHoleExcludes	next	-8743332022338204666
 1	testPolygonNullField	next	6108579286532891613
 1	testRandomBig	A	'nightly' test group is disabled (@org.apache.lucene.tests.util.LuceneTestCase.Nightly())
 1	testRandomDistance	next	-3249220198103008493
 1	testRandomDistanceHuge	A	'nightly' test group is disabled (@org.apache.lucene.tests.util.LuceneTestCase.Nightly())
 1	testRandomMedium	next	731756597015544542
-1	testRandomTiny	next	-5910115182245700637
+1	testRandomTiny	next	-3296393945878600195
 1	testRectBoundariesAreInclusive	next	1696201402887109335
-1	testSamePointManyTimes	next	6989593635432633757
+1	testSamePointManyTimes	next	1214105349924537009
 1	testSmallSetDistance	next	-3162539429104776857
-1	testSmallSetHugeDistance	next	1859582549318660687
+1	testSmallSetHugeDistance	next	-1481326922884513179
 1	testSmallSetMultiValued	next	5842559281292463692
 1	testSmallSetPoly	next	4624724397135628131
 1	testSmallSetPolyWholeSpace	next	3699724821318163035
-1	testSmallSetRect	next	-5687899206326793530
+1	testSmallSetRect	next	-5564789277577170139
 1	testSmallSetRect2	next	-4785081216558415574
 1	testSmallSetTinyDistance	next	-4476299486834050486
 1	testSmallSetWholeSpace	next	-6934429590484270798
 C0FFEE	#class	next	-7512795397160156389
 C0FFEE	#counts	run=38 fail=0 assume=2	-
 C0FFEE	testAllXEqual	next	-8432366090648770641
-C0FFEE	testAllYEqual	next	-1440350563893638335
+C0FFEE	testAllYEqual	next	5707297615051554999
 C0FFEE	testBoxBasics	next	-4166438377361300833
 C0FFEE	testBoxInvalidCoordinates	next	5628113262146289333
 C0FFEE	testBoxNull	next	-5537550484466276710
@@ -96,25 +96,25 @@ C0FFEE	testEquals	next	6069796029549062448
 C0FFEE	testIndexExtremeValues	next	4881152738587253202
 C0FFEE	testIndexInfValues	next	-5143125525052619184
 C0FFEE	testIndexNaNValues	next	5611176308937756028
-C0FFEE	testLowCardinality	next	-2269960516010639309
+C0FFEE	testLowCardinality	next	3959964296910756606
 C0FFEE	testMultiPolygonBasics	next	7704017996149297759
-C0FFEE	testMultiValued	next	8835463624503887393
-C0FFEE	testPolygonBasics	next	-477537777586273695
+C0FFEE	testMultiValued	next	7826524077474294071
+C0FFEE	testPolygonBasics	next	7440356703421726077
 C0FFEE	testPolygonHole	next	608142575434385449
 C0FFEE	testPolygonHoleExcludes	next	6496125848227297379
 C0FFEE	testPolygonNullField	next	3578735072866608618
 C0FFEE	testRandomBig	A	'nightly' test group is disabled (@org.apache.lucene.tests.util.LuceneTestCase.Nightly())
 C0FFEE	testRandomDistance	next	541220856128781836
 C0FFEE	testRandomDistanceHuge	A	'nightly' test group is disabled (@org.apache.lucene.tests.util.LuceneTestCase.Nightly())
-C0FFEE	testRandomMedium	next	905647497414102932
+C0FFEE	testRandomMedium	next	3268734858909411589
 C0FFEE	testRandomTiny	next	-9148120296207805270
 C0FFEE	testRectBoundariesAreInclusive	next	907562466616857964
-C0FFEE	testSamePointManyTimes	next	8986861806579178280
+C0FFEE	testSamePointManyTimes	next	-2794314548111559023
 C0FFEE	testSmallSetDistance	next	5115510619360314405
-C0FFEE	testSmallSetHugeDistance	next	-5504547786055399994
+C0FFEE	testSmallSetHugeDistance	next	-3263278873776513435
 C0FFEE	testSmallSetMultiValued	next	8177907754681519675
 C0FFEE	testSmallSetPoly	next	-8775422087007494213
-C0FFEE	testSmallSetPolyWholeSpace	next	4136583364985582392
+C0FFEE	testSmallSetPolyWholeSpace	next	5874815170002492504
 C0FFEE	testSmallSetRect	next	-1020087960979491231
 C0FFEE	testSmallSetRect2	next	-1400930489237919652
 C0FFEE	testSmallSetTinyDistance	next	-5282450317524943084

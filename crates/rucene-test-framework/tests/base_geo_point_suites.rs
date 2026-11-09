@@ -25,7 +25,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use randomizedtesting::jdk::reflect::{Class, Constructor};
+use randomizedtesting::jdk::reflect::{modifier, Class, Constructor, Method};
+use randomizedtesting::junit::{AfterClass, BeforeClass};
 use rucene::document::geo_fields::{
     LatLonDocValuesField, LatLonPoint, XYDocValuesField, XYPointField,
 };
@@ -42,17 +43,13 @@ use rucene_test_framework::geo::base_xy_point_test_case::{
     self, BaseXYPointTestCase, XYPointTestInstance,
 };
 use rucene_test_framework::util::java_exceptions::rethrow_java;
+use rucene_test_framework::util::lucene_test_case::LuceneTestCaseExecutor;
+use rucene_test_framework::util::LuceneTestCase;
 
 mod draw_hooks;
 mod suite_draws;
 mod suite_seeds;
 use suite_seeds::run_suite;
-
-/// The field name handed to Rucene's query factories: Java's `null`
-/// (`None`) has no `&str` counterpart, so it becomes `""`.
-fn field_name(field: Option<&str>) -> &str {
-    field.unwrap_or("")
-}
 
 /// `GeoEncodingUtils.decodeLatitude(GeoEncodingUtils.encodeLatitude(latRaw))`.
 fn quantize_lat(lat_raw: f64) -> f64 {
@@ -89,7 +86,7 @@ impl BaseGeoPointTestCase for TestLatLonPointQueries {
         min_lon: f64,
         max_lon: f64,
     ) -> Result<Arc<dyn Query>> {
-        LatLonPoint::new_box_query(field_name(field), min_lat, max_lat, min_lon, max_lon)
+        LatLonPoint::new_box_query(field, min_lat, max_lat, min_lon, max_lon)
     }
 
     fn new_distance_query(
@@ -99,7 +96,7 @@ impl BaseGeoPointTestCase for TestLatLonPointQueries {
         center_lon: f64,
         radius_meters: f64,
     ) -> Result<Arc<dyn Query>> {
-        LatLonPoint::new_distance_query(field_name(field), center_lat, center_lon, radius_meters)
+        LatLonPoint::new_distance_query(field, center_lat, center_lon, radius_meters)
     }
 
     fn new_polygon_query(
@@ -108,7 +105,7 @@ impl BaseGeoPointTestCase for TestLatLonPointQueries {
         polygons: Vec<Polygon>,
     ) -> Result<Arc<dyn Query>> {
         LatLonPoint::new_polygon_query(
-            field_name(field),
+            field,
             polygons
                 .into_iter()
                 .map(LatLonGeometryValue::Polygon)
@@ -118,10 +115,10 @@ impl BaseGeoPointTestCase for TestLatLonPointQueries {
 
     fn new_geometry_query(
         &self,
-        field: Option<&str>,
+        field: &str,
         geometry: Vec<LatLonGeometryValue>,
     ) -> Result<Arc<dyn Query>> {
-        LatLonPoint::new_geometry_query(field_name(field), QueryRelation::Intersects, geometry)
+        LatLonPoint::new_geometry_query(Some(field), QueryRelation::Intersects, geometry)
     }
 
     fn quantize_lat(&self, lat_raw: f64) -> f64 {
@@ -154,13 +151,7 @@ impl BaseGeoPointTestCase for TestLatLonDocValuesQueries {
         min_lon: f64,
         max_lon: f64,
     ) -> Result<Arc<dyn Query>> {
-        LatLonDocValuesField::new_slow_box_query(
-            field_name(field),
-            min_lat,
-            max_lat,
-            min_lon,
-            max_lon,
-        )
+        LatLonDocValuesField::new_slow_box_query(field, min_lat, max_lat, min_lon, max_lon)
     }
 
     fn new_distance_query(
@@ -170,12 +161,7 @@ impl BaseGeoPointTestCase for TestLatLonDocValuesQueries {
         center_lon: f64,
         radius_meters: f64,
     ) -> Result<Arc<dyn Query>> {
-        LatLonDocValuesField::new_slow_distance_query(
-            field_name(field),
-            center_lat,
-            center_lon,
-            radius_meters,
-        )
+        LatLonDocValuesField::new_slow_distance_query(field, center_lat, center_lon, radius_meters)
     }
 
     fn new_polygon_query(
@@ -183,16 +169,16 @@ impl BaseGeoPointTestCase for TestLatLonDocValuesQueries {
         field: Option<&str>,
         polygons: Vec<Polygon>,
     ) -> Result<Arc<dyn Query>> {
-        LatLonDocValuesField::new_slow_polygon_query(field_name(field), polygons)
+        LatLonDocValuesField::new_slow_polygon_query(field, polygons)
     }
 
     fn new_geometry_query(
         &self,
-        field: Option<&str>,
+        field: &str,
         geometry: Vec<LatLonGeometryValue>,
     ) -> Result<Arc<dyn Query>> {
         LatLonDocValuesField::new_slow_geometry_query(
-            field_name(field),
+            Some(field),
             QueryRelation::Intersects,
             geometry,
         )
@@ -228,7 +214,7 @@ impl BaseXYPointTestCase for TestXYPointQueries {
         min_y: f32,
         max_y: f32,
     ) -> Result<Arc<dyn Query>> {
-        XYPointField::new_box_query(field_name(field), min_x, max_x, min_y, max_y)
+        XYPointField::new_box_query(field, min_x, max_x, min_y, max_y)
     }
 
     fn new_distance_query(
@@ -238,7 +224,7 @@ impl BaseXYPointTestCase for TestXYPointQueries {
         center_y: f32,
         radius: f32,
     ) -> Result<Arc<dyn Query>> {
-        XYPointField::new_distance_query(field_name(field), center_x, center_y, radius)
+        XYPointField::new_distance_query(field, center_x, center_y, radius)
     }
 
     fn new_polygon_query(
@@ -246,15 +232,15 @@ impl BaseXYPointTestCase for TestXYPointQueries {
         field: Option<&str>,
         polygons: Vec<XYPolygon>,
     ) -> Result<Arc<dyn Query>> {
-        XYPointField::new_polygon_query(field_name(field), polygons)
+        XYPointField::new_polygon_query(field, polygons)
     }
 
     fn new_geometry_query(
         &self,
-        field: Option<&str>,
+        field: &str,
         geometries: Vec<XYGeometryValue>,
     ) -> Result<Arc<dyn Query>> {
-        XYPointField::new_geometry_query(field_name(field), geometries)
+        XYPointField::new_geometry_query(Some(field), geometries)
     }
 }
 
@@ -279,7 +265,7 @@ impl BaseXYPointTestCase for TestXYDocValuesQueries {
         min_y: f32,
         max_y: f32,
     ) -> Result<Arc<dyn Query>> {
-        XYDocValuesField::new_slow_box_query(field_name(field), min_x, max_x, min_y, max_y)
+        XYDocValuesField::new_slow_box_query(field, min_x, max_x, min_y, max_y)
     }
 
     fn new_distance_query(
@@ -289,7 +275,7 @@ impl BaseXYPointTestCase for TestXYDocValuesQueries {
         center_y: f32,
         radius: f32,
     ) -> Result<Arc<dyn Query>> {
-        XYDocValuesField::new_slow_distance_query(field_name(field), center_x, center_y, radius)
+        XYDocValuesField::new_slow_distance_query(field, center_x, center_y, radius)
     }
 
     fn new_polygon_query(
@@ -297,15 +283,15 @@ impl BaseXYPointTestCase for TestXYDocValuesQueries {
         field: Option<&str>,
         polygons: Vec<XYPolygon>,
     ) -> Result<Arc<dyn Query>> {
-        XYDocValuesField::new_slow_polygon_query(field_name(field), polygons)
+        XYDocValuesField::new_slow_polygon_query(field, polygons)
     }
 
     fn new_geometry_query(
         &self,
-        field: Option<&str>,
+        field: &str,
         geometries: Vec<XYGeometryValue>,
     ) -> Result<Arc<dyn Query>> {
-        XYDocValuesField::new_slow_geometry_query(field_name(field), geometries)
+        XYDocValuesField::new_slow_geometry_query(Some(field), geometries)
     }
 }
 
@@ -356,35 +342,70 @@ fn xy_doc_values_queries_class() -> Arc<Class> {
 static GEO_DRAWS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static XY_DRAWS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
+/// The shared executor `searchOnTestThread` sets aside, restored by
+/// `recordClassDraw` (one draws class runs at a time, under `SUITES`).
+static SHARED_EXECUTOR: Mutex<Option<Arc<LuceneTestCaseExecutor>>> = Mutex::new(None);
+
+/// `@BeforeClass searchOnTestThread()` of both draws classes: sets
+/// `LuceneTestCase`'s shared executor to `null`, so that every
+/// `MAYBE_CACHE_POLICY` draw of a search happens on the test thread. With the
+/// executor, the thread that runs each slice, and so the randomness drawn, is
+/// a race in Java (three runs of the oracle gave three different fixtures).
+fn search_on_test_thread() -> Method {
+    Method::new("searchOnTestThread")
+        .modifiers(modifier::PUBLIC | modifier::STATIC)
+        .annotate(BeforeClass)
+        .static_body(|| {
+            *SHARED_EXECUTOR.lock().unwrap() = LuceneTestCase::replace_executor(None);
+        })
+}
+
+/// `@AfterClass recordClassDraw()` of both draws classes: records the class
+/// randomness's next draw, then restores the shared executor.
+fn record_class_draw(draws: &'static Mutex<Vec<String>>) -> Method {
+    Method::new("recordClassDraw")
+        .modifiers(modifier::PUBLIC | modifier::STATIC)
+        .annotate(AfterClass)
+        .static_body(move || {
+            draws.lock().unwrap().push(format!(
+                "#class\tnext\t{}",
+                LuceneTestCase::random().next_long()
+            ));
+            LuceneTestCase::replace_executor(SHARED_EXECUTOR.lock().unwrap().take());
+        })
+}
+
 /// `TestGeoPointSuiteDraws` of `BaseSuitesDrawsOracle`: the cases on
-/// `TestLatLonPointQueries`' overrides.
+/// `TestLatLonPointQueries`' overrides, with the shared executor set aside.
 fn geo_draws_class() -> Arc<Class> {
     Class::builder("org.apache.lucene.tests.geo.TestGeoPointSuiteDraws")
         .extends(&base_geo_point_test_case::class())
         .constructor(Constructor::no_args(|| {
             GeoPointTestInstance::new(TestLatLonPointQueries)
         }))
+        .method(search_on_test_thread())
         .method(draw_hooks::record_tear_down(
             &GEO_DRAWS,
             draw_hooks::lucene_tear_down::<GeoPointTestInstance>,
         ))
-        .method(draw_hooks::record_class_draw(&GEO_DRAWS))
+        .method(record_class_draw(&GEO_DRAWS))
         .build()
 }
 
 /// `TestXYPointSuiteDraws` of `BaseSuitesDrawsOracle`: the cases on
-/// `TestXYPointQueries`' overrides.
+/// `TestXYPointQueries`' overrides, with the shared executor set aside.
 fn xy_draws_class() -> Arc<Class> {
     Class::builder("org.apache.lucene.tests.geo.TestXYPointSuiteDraws")
         .extends(&base_xy_point_test_case::class())
         .constructor(Constructor::no_args(|| {
             XYPointTestInstance::new(TestXYPointQueries)
         }))
+        .method(search_on_test_thread())
         .method(draw_hooks::record_tear_down(
             &XY_DRAWS,
             draw_hooks::lucene_tear_down::<XYPointTestInstance>,
         ))
-        .method(draw_hooks::record_class_draw(&XY_DRAWS))
+        .method(record_class_draw(&XY_DRAWS))
         .build()
 }
 

@@ -125,6 +125,32 @@ impl DocIdSet for BitDocIdSet {
             self.cost,
         )?))
     }
+
+    /// The wrapped set, as `BitDocIdSet.bits()` (`BitDocIdSet.java:60-64`)
+    /// returns it, so that a [`NotDocIdSet`] over this set has random
+    /// access too.
+    fn bits(&self) -> Result<Option<Box<dyn Bits>>> {
+        Ok(Some(Box::new(SharedBitSetBits(Arc::clone(&self.set)))))
+    }
+}
+
+/// A shared [`BitSet`] as a boxed [`Bits`]: the object `BitDocIdSet.bits()`
+/// returns, which is the set itself in Java.
+#[derive(Debug)]
+struct SharedBitSetBits(Arc<dyn BitSet>);
+
+impl Bits for SharedBitSetBits {
+    fn get(&self, index: usize) -> bool {
+        self.0.get(index)
+    }
+
+    fn try_get(&self, index: usize) -> Result<bool> {
+        self.0.try_get(index)
+    }
+
+    fn length(&self) -> usize {
+        self.0.length()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -847,4 +873,29 @@ fn no_dups(a: &[i32], len: usize) -> bool {
         }
     }
     true
+}
+
+#[cfg(test)]
+mod bit_doc_id_set_bits_tests {
+    use super::*;
+
+    /// Regression test (rmp #350, `TestNotDocIdSet`): `BitDocIdSet.bits()`
+    /// returns its set (`BitDocIdSet.java:60-64`), so `NotDocIdSet.bits()`
+    /// is not null over it; the port answered `None`. Mirrors
+    /// `TestNotDocIdSet.testBits` (`TestNotDocIdSet.java:47-50`).
+    #[test]
+    fn not_doc_id_set_over_a_bit_doc_id_set_has_bits() {
+        let empty = NotDocIdSet::new(3, Arc::new(crate::search::doc_id_set::EmptyDocIdSet));
+        assert!(empty.bits().unwrap().is_none());
+        let mut set = FixedBitSet::new(3);
+        set.set(1);
+        let set = BitDocIdSet::from_set(Arc::new(set)).unwrap();
+        let not = NotDocIdSet::new(3, Arc::new(set));
+        let bits = not
+            .bits()
+            .unwrap()
+            .expect("bits of a NotDocIdSet over a BitDocIdSet");
+        assert_eq!(bits.length(), 3);
+        assert_eq!((bits.get(0), bits.get(1), bits.get(2)), (true, false, true));
+    }
 }

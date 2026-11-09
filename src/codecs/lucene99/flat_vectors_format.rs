@@ -145,9 +145,9 @@ impl KnnVectorsFormat for Lucene99FlatVectorsFormat {
 impl FlatVectorsFormat for Lucene99FlatVectorsFormat {
     fn fields_writer_flat(
         &self,
-        state: &SegmentWriteState<'_>,
+        state: &OwnedSegmentWriteState,
     ) -> Result<Box<dyn FlatVectorsWriter>> {
-        Ok(Box::new(self.create_writer(state)?))
+        Ok(Box::new(self.create_writer(&state.borrow())?))
     }
 
     fn fields_reader_flat(
@@ -447,14 +447,9 @@ impl Lucene99FlatVectorsWriter {
     }
 
     /// Writes every buffered float vector to the vector-data file, in the
-    /// order they were added.
-    ///
-    /// `field_info` is unused: Java needs it only to size the little-endian
-    /// `ByteBuffer` it funnels each vector through
-    /// (`Lucene99FlatVectorsWriter.java:205-215`), and
-    /// [`IndexOutput::write_floats`] writes the same little-endian bytes with
-    /// no buffer of its own. The parameter is kept so the two signatures line
-    /// up.
+    /// order they were added: each vector goes through a little-endian
+    /// buffer of `field_info.getVectorDimension() * Float.BYTES` bytes and
+    /// one `writeBytes` call (`Lucene99FlatVectorsWriter.java:205-215`).
     ///
     /// Equivalent to
     /// `org.apache.lucene.codecs.lucene99.Lucene99FlatVectorsWriter#writeFloat32Vectors`.
@@ -463,9 +458,9 @@ impl Lucene99FlatVectorsWriter {
         field_writer: &dyn FlatFieldVectorsWriter<Vec<f32>>,
         field_info: &FieldInfo,
     ) -> Result<()> {
-        let _ = field_info;
+        let mut buffer = Vec::with_capacity(field_info.vector_dimension as usize * 4);
         for vector in field_writer.vectors().iter() {
-            vector_data.write_floats(vector, 0, vector.len())?;
+            write_float_vector(vector_data, &mut buffer, vector)?;
         }
         Ok(())
     }
@@ -518,10 +513,9 @@ impl Lucene99FlatVectorsWriter {
     /// `org.apache.lucene.codecs.lucene99.Lucene99FlatVectorsWriter#writeVectorData`
     /// (`Lucene99FlatVectorsWriter.java:336-351`), which
     /// [`FlatVectorsWriter::merge_one_flat_vector_field`] calls with the merged
-    /// view [`MergedVectorValues::merge_float_vector_values`] builds. Java funnels
-    /// each vector through a little-endian `ByteBuffer` sized from
-    /// `dimension()`; [`IndexOutput::write_floats`] writes the same bytes
-    /// without one.
+    /// view [`MergedVectorValues::merge_float_vector_values`] builds. Each
+    /// vector goes through a little-endian buffer sized from `dimension()`
+    /// and one `writeBytes` call, as in Java.
     ///
     /// # Errors
     ///
@@ -533,7 +527,8 @@ impl Lucene99FlatVectorsWriter {
         output: &mut dyn IndexOutput,
         float_vector_values: &dyn FloatVectorValues,
     ) -> Result<DocsWithFieldSet> {
-        float_vector_values.try_dimension()?;
+        let dimension = float_vector_values.try_dimension()?;
+        let mut buffer = Vec::with_capacity(dimension as usize * 4);
         let mut docs_with_field = DocsWithFieldSet::new();
         let mut iter = float_vector_values.iterator()?;
         loop {
@@ -542,7 +537,7 @@ impl Lucene99FlatVectorsWriter {
                 break;
             }
             let value = float_vector_values.vector_value(iter.index())?;
-            output.write_floats(&value, 0, value.len())?;
+            write_float_vector(output, &mut buffer, &value)?;
             docs_with_field.add(doc_v)?;
         }
         Ok(docs_with_field)
@@ -558,9 +553,10 @@ impl Lucene99FlatVectorsWriter {
     ) -> Result<()> {
         // `fieldWriter.getVectors().get(ordinal)`, the list read once.
         let vectors = field_writer.vectors();
+        let mut buffer = Vec::new();
         for &ordinal in ord_map {
             let vector = &vectors[ordinal as usize];
-            vector_data.write_floats(vector, 0, vector.len())?;
+            write_float_vector(vector_data, &mut buffer, vector)?;
         }
         Ok(())
     }
@@ -794,6 +790,23 @@ impl FlatVectorsWriter for Lucene99FlatVectorsWriter {
 
 /// `Lucene99FlatVectorsWriter.close()` (`Lucene99FlatVectorsWriter.java:353-356`):
 /// `IOUtils.close(meta, vectorData)`.
+/// `buffer.asFloatBuffer().put(vector); out.writeBytes(buffer.array(),
+/// buffer.array().length)` (`Lucene99FlatVectorsWriter.java:208-213`,
+/// `247-253`, `339-347`): the vector's little-endian bytes in one
+/// `writeBytes` call. A wrapping output (e.g. `MockIndexOutputWrapper`)
+/// sees one write per vector, as in Java, not one per byte.
+fn write_float_vector(
+    out: &mut dyn IndexOutput,
+    buffer: &mut Vec<u8>,
+    vector: &[f32],
+) -> Result<()> {
+    buffer.clear();
+    for v in vector {
+        buffer.extend_from_slice(&v.to_le_bytes());
+    }
+    out.write_bytes(buffer, 0, buffer.len())
+}
+
 fn close_outputs(
     meta: &mut Option<Box<dyn IndexOutput>>,
     vector_data: &mut Option<Box<dyn IndexOutput>>,
@@ -1398,6 +1411,10 @@ struct OffHeapFloatVectorValues {
     /// `DirectMonotonicReader` the constructor builds
     /// (`OffHeapFloatVectorValues.java:225`, `OffHeapByteVectorValues.java:229`).
     ord_to_doc: Option<Arc<SharedDirectMonotonicReader>>,
+    /// The `IndexedDISI disi` of a sparse field, which every `iterator()`
+    /// call wraps (`OffHeapFloatVectorValues.java:205, 226-233, 272-274`,
+    /// `OffHeapByteVectorValues.java:229-237, 258-260`); `None` when dense.
+    disi: Option<Arc<Mutex<IndexedDISI>>>,
     /// Equivalent to the `protected final VectorSimilarityFunction
     /// similarityFunction` field.
     similarity_function: VectorSimilarityFunction,
@@ -1437,6 +1454,7 @@ impl OffHeapFloatVectorValues {
                 config: None,
                 data_input: None,
                 ord_to_doc: None,
+                disi: None,
                 similarity_function,
                 flat_vectors_scorer: Arc::clone(&flat_vectors_scorer),
             }))
@@ -1451,6 +1469,8 @@ impl OffHeapFloatVectorValues {
                 // Built only for a sparse field, as Java builds it only in the
                 // sparse constructor (`OffHeapFloatVectorValues.java:225`).
                 ord_to_doc: Some(config.get_direct_monotonic_reader(vector_data)?),
+                // `this.disi = new IndexedDISI(dataIn, ...)` of the sparse constructor.
+                disi: Some(Arc::new(Mutex::new(config.get_indexed_disi(vector_data)?))),
                 similarity_function,
                 flat_vectors_scorer: Arc::clone(&flat_vectors_scorer),
             }))
@@ -1483,6 +1503,10 @@ impl OffHeapFloatVectorValues {
                 config: Some(config.clone()),
                 data_input: Some(data_input.clone_input()?),
                 ord_to_doc: self.ord_to_doc.clone(),
+                // `copy()` builds a new sparse instance, with its own disi.
+                disi: Some(Arc::new(Mutex::new(
+                    config.get_indexed_disi(data_input.as_ref())?,
+                ))),
                 similarity_function: self.similarity_function,
                 flat_vectors_scorer: Arc::clone(&self.flat_vectors_scorer),
             }),
@@ -1494,6 +1518,7 @@ impl OffHeapFloatVectorValues {
                 config: None,
                 data_input: None,
                 ord_to_doc: None,
+                disi: None,
                 similarity_function: self.similarity_function,
                 flat_vectors_scorer: Arc::clone(&self.flat_vectors_scorer),
             }),
@@ -1533,20 +1558,12 @@ impl KnnVectorValues for OffHeapFloatVectorValues {
     }
 
     fn iterator(&self) -> Result<Box<dyn DocIndexIterator>> {
-        match &self.config {
-            Some(config) => {
-                let data_input = self
-                    .data_input
-                    .as_ref()
-                    .expect("INVARIANT: sparse values have a data input");
-                // `IndexedDISI.asDocIndexIterator(disi)` over
-                // `configuration.getIndexedDISI(dataIn)`
-                // (`OffHeapFloatVectorValues.java:273`,
-                // `OffHeapByteVectorValues.java:259`).
-                Ok(IndexedDISI::as_doc_index_iterator(
-                    config.get_indexed_disi(data_input.as_ref())?,
-                ))
-            }
+        match &self.disi {
+            // `IndexedDISI.asDocIndexIterator(disi)` over the instance's one
+            // disi (`OffHeapFloatVectorValues.java:272-274`,
+            // `OffHeapByteVectorValues.java:258-260`): successive iterators
+            // share its position.
+            Some(disi) => Ok(IndexedDISI::as_doc_index_iterator(Arc::clone(disi))),
             None => Ok(Box::new(DenseDocIndexIterator::new(self.size))),
         }
     }
@@ -1698,6 +1715,10 @@ struct OffHeapByteVectorValues {
     /// `DirectMonotonicReader` the constructor builds
     /// (`OffHeapFloatVectorValues.java:225`, `OffHeapByteVectorValues.java:229`).
     ord_to_doc: Option<Arc<SharedDirectMonotonicReader>>,
+    /// The `IndexedDISI disi` of a sparse field, which every `iterator()`
+    /// call wraps (`OffHeapFloatVectorValues.java:205, 226-233, 272-274`,
+    /// `OffHeapByteVectorValues.java:229-237, 258-260`); `None` when dense.
+    disi: Option<Arc<Mutex<IndexedDISI>>>,
     /// Equivalent to the `protected final VectorSimilarityFunction
     /// similarityFunction` field.
     similarity_function: VectorSimilarityFunction,
@@ -1737,6 +1758,7 @@ impl OffHeapByteVectorValues {
                 config: None,
                 data_input: None,
                 ord_to_doc: None,
+                disi: None,
                 similarity_function,
                 flat_vectors_scorer: Arc::clone(&flat_vectors_scorer),
             }))
@@ -1751,6 +1773,8 @@ impl OffHeapByteVectorValues {
                 // Built only for a sparse field, as Java builds it only in the
                 // sparse constructor (`OffHeapFloatVectorValues.java:225`).
                 ord_to_doc: Some(config.get_direct_monotonic_reader(vector_data)?),
+                // `this.disi = new IndexedDISI(dataIn, ...)` of the sparse constructor.
+                disi: Some(Arc::new(Mutex::new(config.get_indexed_disi(vector_data)?))),
                 similarity_function,
                 flat_vectors_scorer: Arc::clone(&flat_vectors_scorer),
             }))
@@ -1783,6 +1807,10 @@ impl OffHeapByteVectorValues {
                 config: Some(config.clone()),
                 data_input: Some(data_input.clone_input()?),
                 ord_to_doc: self.ord_to_doc.clone(),
+                // `copy()` builds a new sparse instance, with its own disi.
+                disi: Some(Arc::new(Mutex::new(
+                    config.get_indexed_disi(data_input.as_ref())?,
+                ))),
                 similarity_function: self.similarity_function,
                 flat_vectors_scorer: Arc::clone(&self.flat_vectors_scorer),
             }),
@@ -1794,6 +1822,7 @@ impl OffHeapByteVectorValues {
                 config: None,
                 data_input: None,
                 ord_to_doc: None,
+                disi: None,
                 similarity_function: self.similarity_function,
                 flat_vectors_scorer: Arc::clone(&self.flat_vectors_scorer),
             }),
@@ -1833,20 +1862,12 @@ impl KnnVectorValues for OffHeapByteVectorValues {
     }
 
     fn iterator(&self) -> Result<Box<dyn DocIndexIterator>> {
-        match &self.config {
-            Some(config) => {
-                let data_input = self
-                    .data_input
-                    .as_ref()
-                    .expect("INVARIANT: sparse values have a data input");
-                // `IndexedDISI.asDocIndexIterator(disi)` over
-                // `configuration.getIndexedDISI(dataIn)`
-                // (`OffHeapFloatVectorValues.java:273`,
-                // `OffHeapByteVectorValues.java:259`).
-                Ok(IndexedDISI::as_doc_index_iterator(
-                    config.get_indexed_disi(data_input.as_ref())?,
-                ))
-            }
+        match &self.disi {
+            // `IndexedDISI.asDocIndexIterator(disi)` over the instance's one
+            // disi (`OffHeapFloatVectorValues.java:272-274`,
+            // `OffHeapByteVectorValues.java:258-260`): successive iterators
+            // share its position.
+            Some(disi) => Ok(IndexedDISI::as_doc_index_iterator(Arc::clone(disi))),
             None => Ok(Box::new(DenseDocIndexIterator::new(self.size))),
         }
     }
@@ -2236,7 +2257,8 @@ pub(crate) mod tests {
             make_states(&dir, &seg_info, &field_infos, &seg_updates, &io_ctx);
         let format = Lucene99FlatVectorsFormat::new(DefaultFlatVectorScorer::INSTANCE);
         {
-            let mut writer = format.fields_writer_flat(&write_state)?;
+            let mut writer =
+                format.fields_writer_flat(&crate::codecs::state::owned_state(&write_state))?;
             let mut float_writer = match KnnVectorsWriter::add_field(writer.as_mut(), &field_info)?
             {
                 FieldVectorWriter::Float(w) => w,
@@ -2279,7 +2301,8 @@ pub(crate) mod tests {
 
         let format = Lucene99FlatVectorsFormat::new(DefaultFlatVectorScorer::INSTANCE);
         {
-            let mut writer = format.fields_writer_flat(&write_state)?;
+            let mut writer =
+                format.fields_writer_flat(&crate::codecs::state::owned_state(&write_state))?;
             let mut float_writer = match KnnVectorsWriter::add_field(writer.as_mut(), &field_info)?
             {
                 FieldVectorWriter::Float(w) => w,
@@ -2405,6 +2428,141 @@ pub(crate) mod tests {
         )
     }
 
+    /// A sparse field's values keep one `IndexedDISI`, which every
+    /// `iterator()` call wraps (`OffHeapFloatVectorValues.java:272-274`,
+    /// `OffHeapByteVectorValues.java:258-260`): a second iterator continues
+    /// where the first one stopped, as `BaseKnnVectorsFormatTestCase
+    /// .testSortedIndexBytes` relies on. Documents 0, 2 and 3 of 4 hold a
+    /// vector.
+    #[test]
+    fn sparse_iterators_share_one_disi() {
+        use crate::codecs::{register_codec, Lucene104Codec};
+        use crate::document::{Document, KnnByteVectorField, KnnFloatVectorField};
+        use crate::index::index_writer::IndexWriter;
+        use crate::index::index_writer_config::IndexWriterConfig;
+        let _ = register_codec("Lucene104", Lucene104Codec::new());
+        let dir: Arc<dyn crate::store::Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        for i in 0..4u8 {
+            let mut doc = Document::new();
+            if i != 1 {
+                doc.add(Box::new(
+                    KnnFloatVectorField::with_euclidean("f", &[f32::from(i), 1.0]).unwrap(),
+                ));
+                doc.add(Box::new(
+                    KnnByteVectorField::with_euclidean("b", &[i, 1]).unwrap(),
+                ));
+            }
+            writer.add_document(&doc).unwrap();
+        }
+        writer.force_merge(1).unwrap();
+        let reader = crate::index::directory_reader::open_with_writer(&*writer).unwrap();
+        let leaves = Arc::clone(&reader).leaves().unwrap();
+        let leaf = leaves[0].leaf_reader();
+        let floats = leaf.get_float_vector_values("f").unwrap().unwrap();
+        let bytes = leaf.get_byte_vector_values("b").unwrap().unwrap();
+        let mut float_docs = Vec::new();
+        let mut byte_docs = Vec::new();
+        for _ in 0..4 {
+            float_docs.push(floats.iterator().unwrap().next_doc().unwrap());
+            byte_docs.push(bytes.iterator().unwrap().next_doc().unwrap());
+        }
+        assert_eq!(float_docs, [0, 2, 3, NO_MORE_DOCS]);
+        assert_eq!(byte_docs, [0, 2, 3, NO_MORE_DOCS]);
+        drop((floats, bytes, leaves));
+        reader.close().unwrap();
+        writer.close().unwrap();
+    }
+
+    /// An output that counts the `writeByte`/`writeBytes` calls it receives:
+    /// the calls a `MockIndexOutputWrapper` draws from its random state for.
+    struct CountingOutput {
+        data: Vec<u8>,
+        calls: usize,
+    }
+
+    impl crate::store::DataOutput for CountingOutput {
+        fn write_byte(&mut self, b: u8) -> Result<()> {
+            self.calls += 1;
+            self.data.push(b);
+            Ok(())
+        }
+
+        fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()> {
+            self.calls += 1;
+            self.data.extend_from_slice(&b[offset..offset + len]);
+            Ok(())
+        }
+    }
+
+    impl IndexOutput for CountingOutput {
+        fn close(&mut self) -> Result<()> {
+            Ok(())
+        }
+
+        fn file_pointer(&self) -> i64 {
+            self.data.len() as i64
+        }
+
+        fn checksum(&self) -> Result<i64> {
+            Ok(0)
+        }
+
+        fn resource_description(&self) -> &str {
+            "counting"
+        }
+
+        fn name(&self) -> &str {
+            "counting"
+        }
+    }
+
+    /// Every float vector goes to the vector-data file through a
+    /// little-endian buffer and one `writeBytes` call
+    /// (`Lucene99FlatVectorsWriter.java:205-215`, `244-255`, `336-351`): the
+    /// flush, sorted-flush and merge paths each make one write per vector,
+    /// with the vector's little-endian bytes. One write per byte instead makes
+    /// `MockIndexOutputWrapper` draw once per byte, which shifted the random
+    /// I/O exceptions of `BaseIndexFileFormatTestCase.testRandomExceptions`
+    /// away from Java's.
+    #[test]
+    fn float_vectors_are_written_with_one_write_per_vector() {
+        let vectors = vec![vec![1.0f32, -2.5, 3.25], vec![0.5, 0.0, -1.0]];
+        let expected: Vec<u8> = vectors
+            .iter()
+            .flatten()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        let info = float_field_info("f", 0, 3).unwrap();
+        let mut field_writer = DefaultFlatFieldVectorsWriter::<Vec<f32>>::new(info.clone());
+        for (doc, vector) in vectors.iter().enumerate() {
+            field_writer.add_value(doc as i32, vector.clone()).unwrap();
+        }
+
+        let mut out = CountingOutput {
+            data: Vec::new(),
+            calls: 0,
+        };
+        Lucene99FlatVectorsWriter::write_float32_vectors(&mut out, &field_writer, &info).unwrap();
+        assert_eq!((out.calls, &out.data), (2, &expected));
+
+        let mut out = CountingOutput {
+            data: Vec::new(),
+            calls: 0,
+        };
+        Lucene99FlatVectorsWriter::write_sorted_float32_vectors(&mut out, &field_writer, &[0, 1])
+            .unwrap();
+        assert_eq!((out.calls, &out.data), (2, &expected));
+
+        let values = crate::index::vector_values::from_floats(vectors.clone(), 3);
+        let mut out = CountingOutput {
+            data: Vec::new(),
+            calls: 0,
+        };
+        Lucene99FlatVectorsWriter::write_vector_data(&mut out, &values).unwrap();
+        assert_eq!((out.calls, &out.data), (2, &expected));
+    }
+
     fn make_states<'a>(
         dir: &'a Arc<dyn crate::store::Directory>,
         seg_info: &'a SegmentInfo,
@@ -2491,7 +2649,8 @@ pub(crate) mod tests {
 
         let format = Lucene99FlatVectorsFormat::new(DefaultFlatVectorScorer::INSTANCE);
         {
-            let mut writer = format.fields_writer_flat(&write_state)?;
+            let mut writer =
+                format.fields_writer_flat(&crate::codecs::state::owned_state(&write_state))?;
             let field_writer = KnnVectorsWriter::add_field(writer.as_mut(), &field_info)?;
             let mut float_writer = match field_writer {
                 FieldVectorWriter::Float(w) => w,
@@ -2543,7 +2702,8 @@ pub(crate) mod tests {
 
         let format = Lucene99FlatVectorsFormat::new(DefaultFlatVectorScorer::INSTANCE);
         {
-            let mut writer = format.fields_writer_flat(&write_state)?;
+            let mut writer =
+                format.fields_writer_flat(&crate::codecs::state::owned_state(&write_state))?;
             let field_writer = KnnVectorsWriter::add_field(writer.as_mut(), &field_info)?;
             let mut byte_writer = match field_writer {
                 FieldVectorWriter::Byte(w) => w,
@@ -2587,7 +2747,8 @@ pub(crate) mod tests {
 
         let format = Lucene99FlatVectorsFormat::new(DefaultFlatVectorScorer::INSTANCE);
         {
-            let mut writer = format.fields_writer_flat(&write_state)?;
+            let mut writer =
+                format.fields_writer_flat(&crate::codecs::state::owned_state(&write_state))?;
             let field_writer = KnnVectorsWriter::add_field(writer.as_mut(), &field_info)?;
             let mut float_writer = match field_writer {
                 FieldVectorWriter::Float(w) => w,

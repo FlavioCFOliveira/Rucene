@@ -1381,7 +1381,9 @@ impl KnnFieldsReader {
     ///
     /// Propagates the error of a delegate reader, after closing the readers
     /// already opened, and returns [`LuceneError::IllegalState`] when a vector
-    /// field lacks its format or suffix attribute or names an unknown format.
+    /// field with a format attribute lacks its suffix attribute or names an
+    /// unknown format. A vector field without a format attribute is skipped,
+    /// as Java skips it.
     pub fn new(read_state: &SegmentReadState) -> Result<Self> {
         let mut formats: JavaHashMap<Box<dyn KnnVectorsReader>> = JavaHashMap::new();
         let mut fields: IntObjectHashMap<String> = IntObjectHashMap::new();
@@ -1391,14 +1393,12 @@ impl KnnFieldsReader {
         let result = (|| -> Result<()> {
             for fi in read_state.field_infos.iter() {
                 if fi.has_vector_values() {
-                    let format_name = fi
-                        .get_attribute(PER_FIELD_KNN_VECTORS_FORMAT_KEY)
-                        .ok_or_else(|| {
-                            LuceneError::illegal_state(format!(
-                            "missing attribute: {PER_FIELD_KNN_VECTORS_FORMAT_KEY} for field: {}",
-                            fi.name
-                        ))
-                        })?;
+                    // null formatName means the field is in fieldInfos, but
+                    // has no vectors! (`PerFieldKnnVectorsFormat.java:215-216`)
+                    let Some(format_name) = fi.get_attribute(PER_FIELD_KNN_VECTORS_FORMAT_KEY)
+                    else {
+                        continue;
+                    };
                     let suffix = fi
                         .get_attribute(PER_FIELD_KNN_VECTORS_SUFFIX_KEY)
                         .ok_or_else(|| {
@@ -2680,6 +2680,28 @@ mod close_family_tests {
         };
         writer.close().unwrap_err();
         assert_eq!(sorted(&log), ["a", "b"]);
+    }
+
+    /// A vector field without the per-field format attribute is skipped, not
+    /// rejected: "null formatName means the field is in fieldInfos, but has
+    /// no vectors!" (`PerFieldKnnVectorsFormat.java:212-233`). A segment
+    /// whose vectors a non-per-field format wrote (a `FilterCodec` keeping
+    /// the per-field codec's name) opens through the per-field reader.
+    #[test]
+    fn knn_reader_skips_a_vector_field_without_format_attribute() {
+        use crate::store::DEFAULT_IO_CONTEXT;
+
+        let dir = crate::store::ByteBuffersDirectory::default();
+        let info = crate::codecs::tests::test_segment_info("_0", 1);
+        let mut fi = crate::index::FieldInfo::new("v", 0);
+        fi.vector_dimension = 3;
+        fi.vector_encoding = crate::index::VectorEncoding::FLOAT32;
+        assert!(fi.has_vector_values());
+        let fis = crate::index::FieldInfos::new(vec![fi]).unwrap();
+        let state = SegmentReadState::new(&dir, &info, &fis, &*DEFAULT_IO_CONTEXT);
+        let reader = KnnFieldsReader::new(&state).unwrap();
+        assert!(reader.formats.is_empty());
+        assert!(!reader.fields.contains_key(0));
     }
 
     /// `PerFieldKnnVectorsFormat.FieldsWriter.close()` is

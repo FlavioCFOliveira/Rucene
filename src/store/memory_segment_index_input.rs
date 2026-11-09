@@ -967,9 +967,8 @@ impl IndexInput for MemorySegmentIndexInput {
 
         let counter = &self.shared_prefetch_counter;
         self.advise(self.layout_offset() + offset, length, move |segment| {
-            // `MemorySegment.isLoaded()` has no safe counterpart, so an unknown
-            // answer is treated as a cache miss, which is the conservative
-            // choice: the advice is only a hint.
+            // `segment.isLoaded() == false`; an unknown answer (a target
+            // without `mincore`) is treated as a cache miss.
             if segment.is_loaded() != Some(true) {
                 // We have a cache miss on at least one page, so reset the
                 // counter.
@@ -980,10 +979,23 @@ impl IndexInput for MemorySegmentIndexInput {
         })
     }
 
+    /// `MemorySegmentIndexInput.isLoaded()` (`MemorySegmentIndexInput.java:447-461`):
+    /// loaded when every segment is. Java answers `Optional.empty()` on
+    /// Windows when a segment is not loaded; this port answers `None` on
+    /// every target without `mincore`.
     fn is_loaded(&self) -> Option<bool> {
-        // `MemorySegment.isLoaded()` is backed by `mincore`, which has no safe
-        // wrapper here, so this input can make no claim either way.
-        None
+        let mut is_loaded = true;
+        for segment in &self.segments {
+            match segment.is_loaded() {
+                Some(true) => {}
+                Some(false) => {
+                    is_loaded = false;
+                    break;
+                }
+                None => return None,
+            }
+        }
+        Some(is_loaded)
     }
 
     fn random_access_slice(&self, offset: i64, length: i64) -> Result<Box<dyn RandomAccessInput>> {

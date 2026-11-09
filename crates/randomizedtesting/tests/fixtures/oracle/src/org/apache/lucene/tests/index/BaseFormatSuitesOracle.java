@@ -39,6 +39,7 @@ import org.junit.runner.notification.RunListener;
  */
 public class BaseFormatSuitesOracle {
   static final String[] SEEDS = {"DEADBEEF", "1", "C0FFEE"};
+  static final String[] PROPERTIES = {"os.arch", "os.version", "java.vendor", "java.runtime.version"};
   public static final List<String> DRAWS = Collections.synchronizedList(new ArrayList<>());
 
   static String firstLine(String s) {
@@ -114,6 +115,11 @@ public class BaseFormatSuitesOracle {
           "# seed\tmethod\tkind\tvalue (BaseFormatSuitesOracle, Lucene 10.5.0, JDK 25): "
               + name
               + ", next random().nextLong() after each test and the class");
+      // The JVM properties IndexWriter.setDiagnostics records in every .si: they set segment
+      // sizes, hence TieredMergePolicy's merge order and the draws; the Rust suites run under them.
+      for (String key : PROPERTIES) {
+        w.println("# property\t" + key + "\t" + System.getProperty(key));
+      }
       for (String seed : SEEDS) {
         System.setProperty("tests.seed", seed);
         DRAWS.clear();

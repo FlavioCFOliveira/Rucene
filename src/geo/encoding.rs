@@ -297,7 +297,9 @@ impl GeoEncodingUtils {
         let max_lat2 = i64::from(max_lat) - i64::from(i32::MIN);
         let lat_shift = Self::compute_shift(min_lat2, max_lat2);
         let lat_base = (min_lat2 >> lat_shift) as i32;
-        let max_lat_delta = (max_lat2 >> lat_shift) as i32 - lat_base + 1;
+        let max_lat_delta = ((max_lat2 >> lat_shift) as i32)
+            .wrapping_sub(lat_base)
+            .wrapping_add(1);
         debug_assert!(max_lat_delta > 0);
 
         let min_lon2 = i64::from(min_lon) - i64::from(i32::MIN);
@@ -308,16 +310,30 @@ impl GeoEncodingUtils {
         }
         let lon_shift = Self::compute_shift(min_lon2, max_lon2);
         let lon_base = (min_lon2 >> lon_shift) as i32;
-        let max_lon_delta = (max_lon2 >> lon_shift) as i32 - lon_base + 1;
+        let max_lon_delta = ((max_lon2 >> lon_shift) as i32)
+            .wrapping_sub(lon_base)
+            .wrapping_add(1);
         debug_assert!(max_lon_delta > 0);
 
         let mut relations = vec![0u8; (max_lat_delta * max_lon_delta) as usize];
         for i in 0..max_lat_delta {
             for j in 0..max_lon_delta {
-                let box_min_lat = ((lat_base + i) << lat_shift).wrapping_add(i32::MIN);
-                let box_min_lon = ((lon_base + j) << lon_shift).wrapping_add(i32::MIN);
-                let box_max_lat = box_min_lat + (1 << lat_shift) - 1;
-                let box_max_lon = box_min_lon + (1 << lon_shift) - 1;
+                // Java `int` arithmetic (`GeoEncodingUtils.java:268-271`):
+                // the sums wrap and the shift distance is taken mod 32.
+                let box_min_lat = lat_base
+                    .wrapping_add(i)
+                    .wrapping_shl(lat_shift)
+                    .wrapping_add(i32::MIN);
+                let box_min_lon = lon_base
+                    .wrapping_add(j)
+                    .wrapping_shl(lon_shift)
+                    .wrapping_add(i32::MIN);
+                let box_max_lat = box_min_lat
+                    .wrapping_add(1i32.wrapping_shl(lat_shift))
+                    .wrapping_sub(1);
+                let box_max_lon = box_min_lon
+                    .wrapping_add(1i32.wrapping_shl(lon_shift))
+                    .wrapping_sub(1);
                 let relation = box_to_relation(
                     Self::decode_latitude(box_min_lat),
                     Self::decode_latitude(box_max_lat),
@@ -719,23 +735,26 @@ impl Grid {
     ///
     /// This is the head both predicates' `test` share.
     fn cell_relation(&self, lat: i32, lon: i32) -> Option<u8> {
+        // Java `int` arithmetic (`GeoEncodingUtils.java:365-379`): the sums
+        // and differences wrap and the shift distance is taken mod 32.
         let lat2 = ((lat.wrapping_sub(i32::MIN)) as u32 >> self.lat_shift) as i32;
-        if lat2 < self.lat_base || lat2 - self.lat_base >= self.max_lat_delta {
+        if lat2 < self.lat_base || lat2.wrapping_sub(self.lat_base) >= self.max_lat_delta {
             return None;
         }
         let mut lon2 = ((lon.wrapping_sub(i32::MIN)) as u32 >> self.lon_shift) as i32;
         if lon2 < self.lon_base {
             // Wrap.
-            lon2 += 1 << (32 - self.lon_shift);
+            lon2 = lon2.wrapping_add(1i32.wrapping_shl(32 - self.lon_shift));
         }
-        debug_assert!(lon2 - self.lon_base >= 0);
-        if lon2 - self.lon_base >= self.max_lon_delta {
+        debug_assert!(lon2.wrapping_sub(self.lon_base) >= 0);
+        if lon2.wrapping_sub(self.lon_base) >= self.max_lon_delta {
             return None;
         }
-        Some(
-            self.relations
-                [((lat2 - self.lat_base) * self.max_lon_delta + (lon2 - self.lon_base)) as usize],
-        )
+        let index = lat2
+            .wrapping_sub(self.lat_base)
+            .wrapping_mul(self.max_lon_delta)
+            .wrapping_add(lon2.wrapping_sub(self.lon_base));
+        Some(self.relations[index as usize])
     }
 }
 
@@ -805,5 +824,45 @@ impl Component2DPredicate {
         } else {
             relation == relation_ordinal(Relation::CellInsideQuery)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test (rmp #358, `TestLatLonPointQueries.testRandomMedium`,
+    /// seed DEADBEEF): a component predicate grid answers a
+    /// point at longitude -180 with `lon2 - lonBase` wrapping in Java's `int`
+    /// arithmetic (`GeoEncodingUtils.java:369-376`), so the point is outside
+    /// the grid; the port panicked on the overflow. The grid is the one the
+    /// suite built (captured with gdb).
+    #[test]
+    fn grid_cell_relation_wraps_like_java() {
+        let grid = Grid {
+            lat_shift: 25,
+            lon_shift: 1,
+            lat_base: 64,
+            lon_base: 1073741824,
+            max_lat_delta: 64,
+            max_lon_delta: 1,
+            relations: vec![0; 64],
+        };
+        assert_eq!(grid.cell_relation(0, i32::MIN), None);
+    }
+
+    /// Regression test (rmp #358, `BaseGeoPointTestCase.testSmallSetDistanceNotEmpty`):
+    /// near the pole the bounding box spans every longitude, so a sub box's
+    /// `boxMinLon + (1 << lonShift) - 1` wraps; Java's `int` arithmetic wraps
+    /// (`GeoEncodingUtils.java:268-271`) where the port panicked on overflow.
+    #[test]
+    fn distance_predicate_near_the_pole_wraps_like_java() {
+        let (lat, lon) = (-88.56029371730983, -177.23537676036358);
+        let predicate =
+            GeoEncodingUtils::create_distance_predicate(lat, lon, 7757.999232959935).unwrap();
+        assert!(predicate.test(
+            GeoEncodingUtils::encode_latitude(lat).unwrap(),
+            GeoEncodingUtils::encode_longitude(lon).unwrap()
+        ));
     }
 }

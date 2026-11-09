@@ -193,3 +193,19 @@ fn glob_matcher_matches_names() {
     assert!(m.matches(&path("bx")));
     assert!(!m.matches(&path("dx")));
 }
+
+/// An `UnexpectedEof` error without a carried exception stands for Java's
+/// `EOFException` (`ByteBuffersDataInput.java:102`,
+/// `BufferedIndexInput.java:113`), as `BaseDirectoryTestCase`'s
+/// `expectThrows(EOFException.class, …)` requires; other plain errors stay
+/// `IOException`.
+#[test]
+fn unexpected_eof_stands_for_eof_exception() {
+    let eof = io::Error::new(io::ErrorKind::UnexpectedEof, "read past EOF");
+    assert_eq!(java_class_of(&eof), EOF_EXCEPTION);
+    assert_eq!(java_to_string(&eof), "java.io.EOFException: read past EOF");
+    let other = io::Error::other("boom");
+    assert_eq!(java_class_of(&other), IO_EXCEPTION);
+    let carried = io_exception("explicit");
+    assert_eq!(java_class_of(&carried), IO_EXCEPTION);
+}

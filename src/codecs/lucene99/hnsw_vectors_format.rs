@@ -434,7 +434,7 @@ impl Lucene99HnswVectorsWriter {
         version: i32,
     ) -> Result<Self> {
         let flat_vectors_format = Lucene99FlatVectorsFormat::new(DefaultFlatVectorScorer::INSTANCE);
-        let flat_vector_writer = flat_vectors_format.fields_writer_flat(&state.borrow())?;
+        let flat_vector_writer = flat_vectors_format.fields_writer_flat(state)?;
         Self::with_flat_format(
             state,
             m,

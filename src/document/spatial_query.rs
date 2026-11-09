@@ -3113,14 +3113,24 @@ pub trait SpatialMatcher: std::fmt::Debug + Send + Sync {
     }
 }
 
-/// Hands out the iterator a spatial query matched.
+/// Hands out the scorer over the iterator a spatial query matched.
 ///
 /// Equivalent to `SpatialQuery.RelationScorerSupplier`, whose `cost()` Lucene
-/// computes lazily because walking the tree to estimate it is expensive.
+/// computes lazily because walking the tree to estimate it is expensive, and
+/// to the anonymous `ScorerSupplier`s of `LatLonPointDistanceQuery`
+/// (`LatLonPointDistanceQuery.java:141-171`) and `XYPointInGeometryQuery`,
+/// and the `DefaultScorerSupplier`s of the doc-values point queries. None of
+/// them overrides `bulkScorer()`, so a bulk scorer over this supplier is
+/// `ScorerSupplier`'s default `DefaultBulkScorer` over `get(Long.MAX_VALUE)`
+/// (`ScorerSupplier.java:46-48`): the scorer's `ConstantScoreScorer`
+/// collected one document at a time, never a `ConstantScoreScorerSupplier`'s
+/// window-by-window bulk scorer.
 pub struct SpatialIteratorSupplier<M: SpatialMatcher> {
     matcher: Arc<M>,
     iterator: Option<Box<dyn DocIdSetIterator>>,
     cost: i64,
+    score: f32,
+    score_mode: crate::search::ScoreMode,
 }
 
 impl<M: SpatialMatcher> std::fmt::Debug for SpatialIteratorSupplier<M> {
@@ -3132,10 +3142,8 @@ impl<M: SpatialMatcher> std::fmt::Debug for SpatialIteratorSupplier<M> {
     }
 }
 
-impl<M: SpatialMatcher> crate::search::ConstantScoreIteratorSupplier
-    for SpatialIteratorSupplier<M>
-{
-    fn iterator(&mut self, _lead_cost: i64) -> Result<crate::search::ScorerIterator> {
+impl<M: SpatialMatcher> crate::search::ScorerSupplier for SpatialIteratorSupplier<M> {
+    fn get(&mut self, _lead_cost: i64) -> Result<Box<dyn crate::search::Scorer>> {
         // Java's supplier may be asked for its scorer only once; the iterator
         // is taken here for the same reason.
         let iterator = self.iterator.take().ok_or_else(|| {
@@ -3143,7 +3151,11 @@ impl<M: SpatialMatcher> crate::search::ConstantScoreIteratorSupplier
                 "a spatial scorer supplier may be asked for its scorer only once".to_string(),
             )
         })?;
-        Ok(crate::search::ScorerIterator::Simple(iterator))
+        Ok(Box::new(crate::search::ConstantScoreScorer::from_iterator(
+            self.score,
+            self.score_mode,
+            iterator,
+        )))
     }
 
     fn cost(&self) -> i64 {
@@ -3186,19 +3198,13 @@ impl<M: SpatialMatcher + 'static> crate::search::ConstantScoreWeightImpl for Spa
             return Ok(None);
         };
         let cost = self.matcher.spatial_cost(reader)?;
-        let inner = SpatialIteratorSupplier {
+        Ok(Some(Box::new(SpatialIteratorSupplier {
             matcher: Arc::clone(&self.matcher),
             iterator: Some(iterator),
             cost,
-        };
-        Ok(Some(Box::new(
-            crate::search::ConstantScoreScorerSupplier::new(
-                score,
-                self.score_mode,
-                reader.max_doc(),
-                inner,
-            ),
-        )))
+            score,
+            score_mode: self.score_mode,
+        })))
     }
 
     fn is_cacheable(&self, _ctx: &crate::index::LeafReaderContext) -> bool {
@@ -3366,5 +3372,105 @@ mod visit_tests {
         };
         query.visit(&mut visitor, &leaf);
         assert_eq!(visitor.leaves, 1);
+    }
+}
+
+#[cfg(test)]
+mod supplier_bulk_scorer_tests {
+    use super::*;
+    use crate::search::{
+        CollectionResult, DocIdStream, LeafCollector, Scorable, ScoreMode, ScorerSupplier,
+    };
+
+    #[derive(Debug)]
+    struct NoMatcher;
+
+    impl SpatialMatcher for NoMatcher {
+        fn spatial_field(&self) -> &str {
+            "f"
+        }
+        fn spatial_matching_docs(
+            &self,
+            _reader: &dyn LeafReader,
+        ) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+            Ok(None)
+        }
+        fn spatial_cost(&self, _reader: &dyn LeafReader) -> Result<i64> {
+            Ok(0)
+        }
+    }
+
+    /// Records how each document reached it.
+    #[derive(Default)]
+    struct Recording {
+        docs: Vec<i32>,
+        batches: usize,
+    }
+
+    impl LeafCollector for Recording {
+        fn set_scorer(&mut self, _scorer: &mut dyn Scorable) -> Result<()> {
+            Ok(())
+        }
+        fn collect(&mut self, doc: i32, _scorer: &mut dyn Scorable) -> CollectionResult<()> {
+            self.docs.push(doc);
+            Ok(())
+        }
+        fn collect_range(
+            &mut self,
+            min: i32,
+            max: i32,
+            scorer: &mut dyn Scorable,
+        ) -> CollectionResult<()> {
+            self.batches += 1;
+            for doc in min..max {
+                self.collect(doc, scorer)?;
+            }
+            Ok(())
+        }
+        fn collect_stream(
+            &mut self,
+            stream: &mut dyn DocIdStream,
+            scorer: &mut dyn Scorable,
+        ) -> CollectionResult<()> {
+            self.batches += 1;
+            let mut buffer = vec![0; 8];
+            loop {
+                let n = stream.into_array(&mut buffer);
+                if n == 0 {
+                    return Ok(());
+                }
+                for &doc in &buffer[..n] {
+                    self.collect(doc, scorer)?;
+                }
+            }
+        }
+    }
+
+    /// rmp #358 (`TestGeoPointSuiteDraws`, `testDistanceBasics`): the
+    /// suppliers of `LatLonPointDistanceQuery`
+    /// (`LatLonPointDistanceQuery.java:141-171`), `SpatialQuery`
+    /// (`SpatialQuery.java:178-205`), `XYPointInGeometryQuery` and the
+    /// doc-values point queries do not override `bulkScorer()`, so their
+    /// bulk scorer is `ScorerSupplier`'s default `DefaultBulkScorer`
+    /// (`ScorerSupplier.java:44-46`), which collects one document at a time;
+    /// the port built a `ConstantScoreScorerSupplier`, whose bulk scorer
+    /// collects window by window through `collect(DocIdStream)`.
+    #[test]
+    fn a_spatial_supplier_bulk_scores_one_document_at_a_time() {
+        let mut supplier = SpatialIteratorSupplier {
+            matcher: Arc::new(NoMatcher),
+            iterator: Some(Box::new(
+                crate::search::doc_id_set_iterator::all(3).unwrap(),
+            )),
+            cost: 3,
+            score: 1.0,
+            score_mode: ScoreMode::COMPLETE_NO_SCORES,
+        };
+        let mut bulk = supplier.bulk_scorer().unwrap();
+        let mut collector = Recording::default();
+        bulk.score(&mut collector, None, 0, crate::search::NO_MORE_DOCS)
+            .unwrap();
+        assert_eq!(collector.docs, [0, 1, 2]);
+        assert_eq!(collector.batches, 0);
     }
 }

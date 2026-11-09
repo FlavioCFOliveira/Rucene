@@ -23,9 +23,9 @@
 //! a subclass implements.
 //!
 //! **Adaptations** (declared, each confined to the member named):
-//! * `String field` of the abstract query factories may be `null` in Java
-//!   (`testBoxNull`, `testDistanceNull`, `testPolygonNullField`); the port
-//!   passes `Option<&str>`, `None` standing for `null`.
+//! * `String field` of the abstract query factories is `&str`: Rust cannot
+//!   pass `null`, so `testBoxNull`, `testDistanceNull` and
+//!   `testPolygonNullField` are assumption failures (see each).
 //! * `XYGeometry` and `XYGeometry[]` are the port's [`XYGeometryValue`] and
 //!   `Vec<XYGeometryValue>`; `XYPolygon...` is `Vec<XYPolygon>`.
 //! * The anonymous `FilterCodec`/`PointsFormat` of `doRandomDistanceTest` is
@@ -240,8 +240,9 @@ fn polygon(xs: &[f32], ys: &[f32], holes: Vec<XYPolygon>) -> Result<XYPolygon> {
 }
 
 /// `IOUtils.close(r, dir)`: closes both, then throws the first failure.
-fn close_all(r: &Arc<dyn IndexReader>, dir: &mut TestDirectory) -> Result<()> {
+fn close_all(r: Arc<dyn IndexReader>, dir: &mut TestDirectory) -> Result<()> {
     let first = r.close();
+    drop(r);
     let second = dir.close();
     first.and(second)
 }
@@ -348,6 +349,10 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
 
     /// `newRectQuery(String field, float minX, float maxX, float minY, float
     /// maxY)` (`protected abstract`).
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>` in `newRectQuery`, `newDistanceQuery` and
+    /// `newPolygonQuery`; `None` is Java's `null`.
     fn new_rect_query(
         &self,
         field: Option<&str>,
@@ -379,7 +384,7 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
     /// (`protected abstract`).
     fn new_geometry_query(
         &self,
-        field: Option<&str>,
+        field: &str,
         geometries: Vec<XYGeometryValue>,
     ) -> Result<Arc<dyn Query>>;
 
@@ -456,11 +461,13 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
 
         drop(searcher);
         reader.close()?;
+        drop(reader);
         writer.close()?;
+        drop(writer);
         dir.close()
     }
 
-    /// `testBoxNull()`: null field name not allowed.
+    /// `testBoxNull()`: null field name not allowed (`BaseXYPointTestCase.java:206-214`).
     fn test_box_null(&self) -> Result<()> {
         let expected = expect_throws("java.lang.IllegalArgumentException", || {
             self.new_rect_query(None, 18.0, 19.0, -66.0, -65.0)
@@ -497,11 +504,13 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
 
         drop(searcher);
         reader.close()?;
+        drop(reader);
         writer.close()?;
+        drop(writer);
         dir.close()
     }
 
-    /// `testDistanceNull()`: null field name not allowed.
+    /// `testDistanceNull()`: null field name not allowed (`BaseXYPointTestCase.java:246-254`).
     fn test_distance_null(&self) -> Result<()> {
         let expected = expect_throws("java.lang.IllegalArgumentException", || {
             self.new_distance_query(None, 18.0, -65.0, 50_000.0)
@@ -584,7 +593,9 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
 
         drop(searcher);
         reader.close()?;
+        drop(reader);
         writer.close()?;
+        drop(writer);
         dir.close()
     }
 
@@ -619,7 +630,9 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
 
         drop(searcher);
         reader.close()?;
+        drop(reader);
         writer.close()?;
+        drop(writer);
         dir.close()
     }
 
@@ -654,7 +667,9 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
 
         drop(searcher);
         reader.close()?;
+        drop(reader);
         writer.close()?;
+        drop(writer);
         dir.close()
     }
 
@@ -688,11 +703,13 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
 
         drop(searcher);
         reader.close()?;
+        drop(reader);
         writer.close()?;
+        drop(writer);
         dir.close()
     }
 
-    /// `testPolygonNullField()`: null field name not allowed.
+    /// `testPolygonNullField()`: null field name not allowed (`BaseXYPointTestCase.java:416-427`).
     fn test_polygon_null_field(&self) -> Result<()> {
         let expected = expect_throws("java.lang.IllegalArgumentException", || {
             self.new_polygon_query(
@@ -905,6 +922,7 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
         let dr = w.get_reader()?;
         let r: Arc<dyn IndexReader> = Arc::clone(&dr) as Arc<dyn IndexReader>;
         w.close()?;
+        drop(w);
 
         let s = LuceneTestCase::new_searcher(Arc::clone(&dr));
 
@@ -969,7 +987,9 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
             }
         }
         drop(s);
+        drop(dr);
         r.close()?;
+        drop(r);
         dir.close()
     }
 
@@ -1117,6 +1137,7 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
         self.index_points(xs, ys, &mut deleted, &w)?;
         let r = directory_reader::open_with_writer(&*w)?;
         w.close()?;
+        drop(w);
         Ok((dir, r))
     }
 
@@ -1181,7 +1202,8 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
 
         drop(s);
         drop(live_docs);
-        close_all(&r, &mut dir)
+        drop(dr);
+        close_all(r, &mut dir)
     }
 
     /// `verifyRandomDistances(float[] xs, float[] ys)` (`protected`).
@@ -1272,7 +1294,8 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
 
         drop(s);
         drop(live_docs);
-        close_all(&r, &mut dir)
+        drop(dr);
+        close_all(r, &mut dir)
     }
 
     /// `verifyRandomPolygons(float[] xs, float[] ys)` (`protected`).
@@ -1335,7 +1358,8 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
 
         drop(s);
         drop(live_docs);
-        close_all(&r, &mut dir)
+        drop(dr);
+        close_all(r, &mut dir)
     }
 
     /// `verifyRandomGeometries(float[] xs, float[] ys)` (`protected`).
@@ -1358,7 +1382,7 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
 
             // geometries
             let geometries = self.next_geometry()?;
-            let query = self.new_geometry_query(Some(FIELD_NAME), geometries.clone())?;
+            let query = self.new_geometry_query(FIELD_NAME, geometries.clone())?;
             let component2d = XYGeometryValue::create(&geometries)?;
 
             if *VERBOSE {
@@ -1395,7 +1419,8 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
 
         drop(s);
         drop(live_docs);
-        close_all(&r, &mut dir)
+        drop(dr);
+        close_all(r, &mut dir)
     }
 
     /// `indexPoints(float[] xs, float[] ys, Set<Integer> deleted,
@@ -1469,12 +1494,12 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
         }
         let r = w.get_reader()?;
         let s = LuceneTestCase::new_searcher_wrap(Arc::clone(&r), false);
-        let field = Some(FIELD_NAME);
+        let field = FIELD_NAME;
         // exact edge cases
         Assert::assert_equals(
             8,
             s.count(self.new_rect_query(
-                field,
+                Some(field),
                 rect.min_x(),
                 rect.max_x(),
                 rect.min_y(),
@@ -1486,7 +1511,7 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
             Assert::assert_equals(
                 8,
                 s.count(self.new_rect_query(
-                    field,
+                    Some(field),
                     rect.min_x().next_down(),
                     rect.max_x(),
                     rect.min_y(),
@@ -1498,7 +1523,7 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
             Assert::assert_equals(
                 8,
                 s.count(self.new_rect_query(
-                    field,
+                    Some(field),
                     rect.min_x(),
                     rect.max_x().next_up(),
                     rect.min_y(),
@@ -1510,7 +1535,7 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
             Assert::assert_equals(
                 8,
                 s.count(self.new_rect_query(
-                    field,
+                    Some(field),
                     rect.min_x(),
                     rect.max_x(),
                     rect.min_y().next_down(),
@@ -1522,7 +1547,7 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
             Assert::assert_equals(
                 8,
                 s.count(self.new_rect_query(
-                    field,
+                    Some(field),
                     rect.min_x(),
                     rect.max_x(),
                     rect.min_y(),
@@ -1533,7 +1558,9 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
 
         drop(s);
         r.close()?;
+        drop(r);
         w.close()?;
+        drop(w);
         dir.close()
     }
 
@@ -1650,8 +1677,11 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
             }
         }
         drop(searcher);
+        drop(stored_fields);
         reader.close()?;
+        drop(reader);
         writer.close()?;
+        drop(writer);
         dir.close()
     }
 
@@ -1762,11 +1792,13 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
 
         let reader = writer.get_reader()?;
         writer.close()?;
+        drop(writer);
 
         let searcher = LuceneTestCase::new_searcher(Arc::clone(&reader));
         let top_docs = searcher.search(query, size)?;
         drop(searcher);
         reader.close()?;
+        drop(reader);
         directory.close()?;
         Ok(top_docs)
     }

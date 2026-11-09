@@ -583,7 +583,10 @@ impl RandomTokenStream {
     /// A stream over data drawn before: the attributes of Java's
     /// constructor.
     pub fn over(data: Arc<RandomTokenStreamData>) -> Self {
-        let mut source = AttributeSource::new();
+        // `extends TokenStream`: the implicit `super()` builds the source
+        // over `DEFAULT_TOKEN_ATTRIBUTE_FACTORY` (`TokenStream.java:86-89`).
+        let mut source =
+            AttributeSource::new_with_factory(rucene::analysis::default_token_attribute_factory());
         source.add_attribute_impl_instance(Box::new(PermissiveOffsetAttributeImpl::default()));
 
         let term_att = Att::add(&mut source, char_term_id()).unwrap_or_else(|e| rethrow(e));
@@ -1183,79 +1186,81 @@ fn postings_enum_test(
     positions: &dyn Fn(i32) -> [PositionIs; 2],
 ) -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let iw = IndexWriter::new(dir.as_directory(), iwc())?;
-    let mut doc = Document::new();
-    doc.add(Box::new(field()?));
-    iw.add_document(&doc)?;
-    let reader = directory_reader::open_with_writer(&*iw)?;
+    {
+        let iw = IndexWriter::new(dir.as_directory(), iwc())?;
+        let mut doc = Document::new();
+        doc.add(Box::new(field()?));
+        iw.add_document(&doc)?;
+        let reader = directory_reader::open_with_writer(&*iw)?;
 
-    let terms = npe(
-        LuceneTestCase::get_only_leaf_reader(Arc::clone(&reader) as _)?
-            .term_vectors()?
-            .get_field(0, "foo")?,
-    );
-    let mut terms_enum = terms.iterator()?;
-    let bar = LuceneTestCase::new_bytes_ref_str("bar");
-    Assert::assert_equals(Boxed(Some(bar)), Boxed(terms_enum.next()?));
+        let terms = npe(
+            LuceneTestCase::get_only_leaf_reader(Arc::clone(&reader) as _)?
+                .term_vectors()?
+                .get_field(0, "foo")?,
+        );
+        let mut terms_enum = terms.iterator()?;
+        let bar = LuceneTestCase::new_bytes_ref_str("bar");
+        Assert::assert_equals(Boxed(Some(bar)), Boxed(terms_enum.next()?));
 
-    // simple use (FREQS)
-    let mut postings = terms_enum.postings(None, FREQS)?;
-    check_one_doc(&mut *postings, FreqIs::Eq(2), &[])?;
+        // simple use (FREQS)
+        let mut postings = terms_enum.postings(None, FREQS)?;
+        check_one_doc(&mut *postings, FreqIs::Eq(2), &[])?;
 
-    // termsenum reuse (FREQS)
-    let mut postings2 = terms_enum.postings(Some(postings), FREQS)?;
-    // and it had better work
-    check_one_doc(&mut *postings2, FreqIs::Eq(2), &[])?;
+        // termsenum reuse (FREQS)
+        let mut postings2 = terms_enum.postings(Some(postings), FREQS)?;
+        // and it had better work
+        check_one_doc(&mut *postings2, FreqIs::Eq(2), &[])?;
 
-    // asking for docs only: ok
-    let mut docs_only = terms_enum.postings(None, NONE)?;
-    // we don't define what it is, but if its something else, we should look into it?
-    check_one_doc(&mut *docs_only, FreqIs::OneOrTwo, &[])?;
-    // reuse that too
-    let mut docs_only2 = terms_enum.postings(Some(docs_only), NONE)?;
-    // and it had better work
-    // we don't define what it is, but if its something else, we should look into it?
-    check_one_doc(&mut *docs_only2, FreqIs::OneOrTwo, &[])?;
+        // asking for docs only: ok
+        let mut docs_only = terms_enum.postings(None, NONE)?;
+        // we don't define what it is, but if its something else, we should look into it?
+        check_one_doc(&mut *docs_only, FreqIs::OneOrTwo, &[])?;
+        // reuse that too
+        let mut docs_only2 = terms_enum.postings(Some(docs_only), NONE)?;
+        // and it had better work
+        // we don't define what it is, but if its something else, we should look into it?
+        check_one_doc(&mut *docs_only2, FreqIs::OneOrTwo, &[])?;
 
-    if flags_only {
-        // asking for any flags: ok
-        for flag in [NONE, FREQS, POSITIONS, PAYLOADS, OFFSETS, ALL] {
-            let freq = if flag != NONE {
-                FreqIs::Eq(2)
-            } else {
-                FreqIs::Unchecked
-            };
-            let mut postings = terms_enum.postings(None, flag)?;
-            check_one_doc(&mut *postings, freq, &[])?;
-            // reuse that too
-            let mut postings2 = terms_enum.postings(Some(postings), flag)?;
-            // and it had better work
-            check_one_doc(&mut *postings2, freq, &[])?;
+        if flags_only {
+            // asking for any flags: ok
+            for flag in [NONE, FREQS, POSITIONS, PAYLOADS, OFFSETS, ALL] {
+                let freq = if flag != NONE {
+                    FreqIs::Eq(2)
+                } else {
+                    FreqIs::Unchecked
+                };
+                let mut postings = terms_enum.postings(None, flag)?;
+                check_one_doc(&mut *postings, freq, &[])?;
+                // reuse that too
+                let mut postings2 = terms_enum.postings(Some(postings), flag)?;
+                // and it had better work
+                check_one_doc(&mut *postings2, freq, &[])?;
+            }
+        } else {
+            for flag in [POSITIONS, PAYLOADS, OFFSETS, ALL] {
+                let mut docs_and_positions_enum = terms_enum.postings(None, flag)?;
+                check_one_doc(
+                    &mut *docs_and_positions_enum,
+                    FreqIs::Eq(2),
+                    &positions(flag),
+                )?;
+                // now reuse
+                let mut docs_and_positions_enum2 =
+                    terms_enum.postings(Some(docs_and_positions_enum), flag)?;
+                check_one_doc(
+                    &mut *docs_and_positions_enum2,
+                    FreqIs::Eq(2),
+                    &positions(flag),
+                )?;
+            }
         }
-    } else {
-        for flag in [POSITIONS, PAYLOADS, OFFSETS, ALL] {
-            let mut docs_and_positions_enum = terms_enum.postings(None, flag)?;
-            check_one_doc(
-                &mut *docs_and_positions_enum,
-                FreqIs::Eq(2),
-                &positions(flag),
-            )?;
-            // now reuse
-            let mut docs_and_positions_enum2 =
-                terms_enum.postings(Some(docs_and_positions_enum), flag)?;
-            check_one_doc(
-                &mut *docs_and_positions_enum2,
-                FreqIs::Eq(2),
-                &positions(flag),
-            )?;
-        }
+
+        iw.close()?;
+        drop(iw);
+        drop((terms_enum, terms, postings2, docs_only2));
+        reader.close()?;
+        drop(reader);
     }
-
-    iw.close()?;
-    drop(iw);
-    drop((terms_enum, terms, postings2, docs_only2));
-    reader.close()?;
-    drop(reader);
     dir.close()
 }
 
@@ -1358,35 +1363,42 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
             let doc_with_vectors = random().next_int_bound(num_docs);
             let empty_doc = Document::new();
             let mut dir = LuceneTestCase::new_directory();
-            let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
-            let doc =
-                doc_factory.new_document(self, TestUtil::next_int(&*random(), 1, 3), 20, options);
-            for i in 0..num_docs {
-                if i == doc_with_vectors {
-                    writer.add_document(&self.add_id(doc.to_document(), "42"))?;
-                } else {
-                    writer.add_document(&empty_doc)?;
+            {
+                let writer =
+                    RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
+                let doc = doc_factory.new_document(
+                    self,
+                    TestUtil::next_int(&*random(), 1, 3),
+                    20,
+                    options,
+                );
+                for i in 0..num_docs {
+                    if i == doc_with_vectors {
+                        writer.add_document(&self.add_id(doc.to_document(), "42"))?;
+                    } else {
+                        writer.add_document(&empty_doc)?;
+                    }
                 }
-            }
-            let reader: Arc<dyn IndexReader> = writer.get_reader()?;
-            let doc_with_vectors_id = self.doc_id(&reader, "42")?;
-            let term_vectors = reader.term_vectors()?;
-            for _ in 0..10 {
-                let doc_id = random().next_int_bound(num_docs);
-                let fields = term_vectors.get(doc_id)?;
-                if doc_id == doc_with_vectors_id {
-                    self.assert_equals_doc(&doc, fields.as_deref())?;
-                } else {
-                    assert_null_msg(None, fields.map(|_| "Fields".to_string()));
+                let reader: Arc<dyn IndexReader> = writer.get_reader()?;
+                let doc_with_vectors_id = self.doc_id(&reader, "42")?;
+                let term_vectors = reader.term_vectors()?;
+                for _ in 0..10 {
+                    let doc_id = random().next_int_bound(num_docs);
+                    let fields = term_vectors.get(doc_id)?;
+                    if doc_id == doc_with_vectors_id {
+                        self.assert_equals_doc(&doc, fields.as_deref())?;
+                    } else {
+                        assert_null_msg(None, fields.map(|_| "Fields".to_string()));
+                    }
                 }
+                let fields = term_vectors.get(doc_with_vectors_id)?;
+                self.assert_equals_doc(&doc, fields.as_deref())?;
+                drop(term_vectors);
+                reader.close()?;
+                drop(reader);
+                writer.close()?;
+                drop(writer);
             }
-            let fields = term_vectors.get(doc_with_vectors_id)?;
-            self.assert_equals_doc(&doc, fields.as_deref())?;
-            drop(term_vectors);
-            reader.close()?;
-            drop(reader);
-            writer.close()?;
-            drop(writer);
             dir.close()?;
         }
         Ok(())
@@ -1400,21 +1412,24 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
                 continue;
             }
             let mut dir = LuceneTestCase::new_directory();
-            let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
-            let field_count = TestUtil::next_int(&*random(), 1, 2);
-            let doc = doc_factory.new_document(
-                self,
-                field_count,
-                LuceneTestCase::at_least(2000),
-                options,
-            );
-            writer.add_document(&doc.to_document())?;
-            let reader: Arc<dyn IndexReader> = writer.get_reader()?;
-            self.assert_equals_doc(&doc, reader.term_vectors()?.get(0)?.as_deref())?;
-            reader.close()?;
-            drop(reader);
-            writer.close()?;
-            drop(writer);
+            {
+                let writer =
+                    RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
+                let field_count = TestUtil::next_int(&*random(), 1, 2);
+                let doc = doc_factory.new_document(
+                    self,
+                    field_count,
+                    LuceneTestCase::at_least(2000),
+                    options,
+                );
+                writer.add_document(&doc.to_document())?;
+                let reader: Arc<dyn IndexReader> = writer.get_reader()?;
+                self.assert_equals_doc(&doc, reader.term_vectors()?.get(0)?.as_deref())?;
+                reader.close()?;
+                drop(reader);
+                writer.close()?;
+                drop(writer);
+            }
             dir.close()?;
         }
         Ok(())
@@ -1430,16 +1445,19 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         let doc_factory = RandomDocumentFactory::new(field_count, 10);
         for options in self.valid_options() {
             let mut dir = LuceneTestCase::new_directory();
-            let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
-            let count = TestUtil::next_int(&*random(), 5, field_count);
-            let doc = doc_factory.new_document(self, count, 5, options);
-            writer.add_document(&doc.to_document())?;
-            let reader: Arc<dyn IndexReader> = writer.get_reader()?;
-            self.assert_equals_doc(&doc, reader.term_vectors()?.get(0)?.as_deref())?;
-            reader.close()?;
-            drop(reader);
-            writer.close()?;
-            drop(writer);
+            {
+                let writer =
+                    RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
+                let count = TestUtil::next_int(&*random(), 5, field_count);
+                let doc = doc_factory.new_document(self, count, 5, options);
+                writer.add_document(&doc.to_document())?;
+                let reader: Arc<dyn IndexReader> = writer.get_reader()?;
+                self.assert_equals_doc(&doc, reader.term_vectors()?.get(0)?.as_deref())?;
+                reader.close()?;
+                drop(reader);
+                writer.close()?;
+                drop(writer);
+            }
             dir.close()?;
         }
         Ok(())
@@ -1455,21 +1473,23 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
                     continue;
                 }
                 let mut dir = LuceneTestCase::new_directory();
-                let writer =
-                    RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
-                let doc1 = doc_factory.new_document(self, num_fields, 20, options1);
-                let doc2 = doc_factory.new_document(self, num_fields, 20, options2);
-                writer.add_document(&self.add_id(doc1.to_document(), "1"))?;
-                writer.add_document(&self.add_id(doc2.to_document(), "2"))?;
-                let reader: Arc<dyn IndexReader> = writer.get_reader()?;
-                let doc1_id = self.doc_id(&reader, "1")?;
-                self.assert_equals_doc(&doc1, reader.term_vectors()?.get(doc1_id)?.as_deref())?;
-                let doc2_id = self.doc_id(&reader, "2")?;
-                self.assert_equals_doc(&doc2, reader.term_vectors()?.get(doc2_id)?.as_deref())?;
-                reader.close()?;
-                drop(reader);
-                writer.close()?;
-                drop(writer);
+                {
+                    let writer =
+                        RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
+                    let doc1 = doc_factory.new_document(self, num_fields, 20, options1);
+                    let doc2 = doc_factory.new_document(self, num_fields, 20, options2);
+                    writer.add_document(&self.add_id(doc1.to_document(), "1"))?;
+                    writer.add_document(&self.add_id(doc2.to_document(), "2"))?;
+                    let reader: Arc<dyn IndexReader> = writer.get_reader()?;
+                    let doc1_id = self.doc_id(&reader, "1")?;
+                    self.assert_equals_doc(&doc1, reader.term_vectors()?.get(doc1_id)?.as_deref())?;
+                    let doc2_id = self.doc_id(&reader, "2")?;
+                    self.assert_equals_doc(&doc2, reader.term_vectors()?.get(doc2_id)?.as_deref())?;
+                    reader.close()?;
+                    drop(reader);
+                    writer.close()?;
+                    drop(writer);
+                }
                 dir.close()?;
             }
         }
@@ -1488,21 +1508,23 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
             docs.push(doc_factory.new_document(self, field_count, max_term_count, options));
         }
         let mut dir = LuceneTestCase::new_directory();
-        let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
-        for (i, doc) in docs.iter().enumerate() {
-            writer.add_document(&self.add_id(doc.to_document(), &i.to_string()))?;
+        {
+            let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
+            for (i, doc) in docs.iter().enumerate() {
+                writer.add_document(&self.add_id(doc.to_document(), &i.to_string()))?;
+            }
+            let reader: Arc<dyn IndexReader> = writer.get_reader()?;
+            let term_vectors = reader.term_vectors()?;
+            for (i, doc) in docs.iter().enumerate() {
+                let doc_id = self.doc_id(&reader, &i.to_string())?;
+                self.assert_equals_doc(doc, term_vectors.get(doc_id)?.as_deref())?;
+            }
+            drop(term_vectors);
+            reader.close()?;
+            drop(reader);
+            writer.close()?;
+            drop(writer);
         }
-        let reader: Arc<dyn IndexReader> = writer.get_reader()?;
-        let term_vectors = reader.term_vectors()?;
-        for (i, doc) in docs.iter().enumerate() {
-            let doc_id = self.doc_id(&reader, &i.to_string())?;
-            self.assert_equals_doc(doc, term_vectors.get(doc_id)?.as_deref())?;
-        }
-        drop(term_vectors);
-        reader.close()?;
-        drop(reader);
-        writer.close()?;
-        drop(writer);
         dir.close()
     }
 
@@ -1529,95 +1551,101 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
                 inserted.push(i.to_string());
             }
             let mut dir = LuceneTestCase::new_directory();
-            let mut iwc = LuceneTestCase::new_index_writer_config();
-            if let Some(index_sort) = &index_sort {
-                iwc.set_index_sort(index_sort.clone())?;
-            }
-            let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
-            let mut live_doc_ids: Vec<String> = Vec::new();
-            let mut ids: Vec<String> = java_hash_map_key_order(&inserted, docs.len());
-            randomizedtesting::jdk::util::shuffle(&mut ids, &*random());
-            let verify_term_vectors = |live_doc_ids: &[String]| -> Result<()> {
-                let reader = self.maybe_wrap_with_merging_reader(writer.get_reader()?)?;
-                let checked = (|| -> Result<()> {
-                    let reader = Arc::clone(&reader) as Arc<dyn IndexReader>;
-                    let term_vectors = reader.term_vectors()?;
-                    for id in live_doc_ids {
-                        let doc_id = self.doc_id(&reader, id)?;
-                        self.assert_equals_doc(&docs[id], term_vectors.get(doc_id)?.as_deref())?;
-                    }
-                    Ok(())
-                })();
-                let closed = reader.close();
-                checked?;
-                closed
-            };
-            for id in &ids {
-                let mut doc = self.add_id(docs[id].to_document(), id);
+            {
+                let mut iwc = LuceneTestCase::new_index_writer_config();
                 if let Some(index_sort) = &index_sort {
-                    for sort_field in index_sort.fields() {
-                        doc.add(Box::new(NumericDocValuesField::new(
-                            npe(sort_field.field()),
-                            i64::from(TestUtil::next_int(&*random(), 0, 1024)),
-                        )));
-                    }
+                    iwc.set_index_sort(index_sort.clone())?;
                 }
-                if random().next_int_bound(100) < 5 {
-                    // add via foreign writer
-                    let mut other_iwc = LuceneTestCase::new_index_writer_config();
-                    if let Some(index_sort) = &index_sort {
-                        other_iwc.set_index_sort(index_sort.clone())?;
-                    }
-                    let mut other_dir = LuceneTestCase::new_directory();
-                    let other_iw = RandomIndexWriter::new_with_config(
-                        &*random(),
-                        other_dir.as_directory(),
-                        other_iwc,
-                    )?;
-                    let added = (|| -> Result<()> {
-                        other_iw.add_document(&doc)?;
-                        let other_reader = other_iw.get_reader()?;
-                        let slowly = TestUtil::add_indexes_slowly(
-                            writer.w(),
-                            std::slice::from_ref(&other_reader),
-                        );
-                        let closed = other_reader.close();
-                        slowly?;
-                        closed
+                let writer =
+                    RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
+                let mut live_doc_ids: Vec<String> = Vec::new();
+                let mut ids: Vec<String> = java_hash_map_key_order(&inserted, docs.len());
+                randomizedtesting::jdk::util::shuffle(&mut ids, &*random());
+                let verify_term_vectors = |live_doc_ids: &[String]| -> Result<()> {
+                    let reader = self.maybe_wrap_with_merging_reader(writer.get_reader()?)?;
+                    let checked = (|| -> Result<()> {
+                        let reader = Arc::clone(&reader) as Arc<dyn IndexReader>;
+                        let term_vectors = reader.term_vectors()?;
+                        for id in live_doc_ids {
+                            let doc_id = self.doc_id(&reader, id)?;
+                            self.assert_equals_doc(
+                                &docs[id],
+                                term_vectors.get(doc_id)?.as_deref(),
+                            )?;
+                        }
+                        Ok(())
                     })();
-                    let closed_iw = other_iw.close();
-                    drop(other_iw);
-                    let closed_dir = other_dir.close();
-                    added?;
-                    closed_iw?;
-                    closed_dir?;
-                } else {
-                    writer.add_document(&doc)?;
+                    let closed = reader.close();
+                    checked?;
+                    closed
+                };
+                for id in &ids {
+                    let mut doc = self.add_id(docs[id].to_document(), id);
+                    if let Some(index_sort) = &index_sort {
+                        for sort_field in index_sort.fields() {
+                            doc.add(Box::new(NumericDocValuesField::new(
+                                npe(sort_field.field()),
+                                i64::from(TestUtil::next_int(&*random(), 0, 1024)),
+                            )));
+                        }
+                    }
+                    if random().next_int_bound(100) < 5 {
+                        // add via foreign writer
+                        let mut other_iwc = LuceneTestCase::new_index_writer_config();
+                        if let Some(index_sort) = &index_sort {
+                            other_iwc.set_index_sort(index_sort.clone())?;
+                        }
+                        let mut other_dir = LuceneTestCase::new_directory();
+                        let other_iw = RandomIndexWriter::new_with_config(
+                            &*random(),
+                            other_dir.as_directory(),
+                            other_iwc,
+                        )?;
+                        let added = (|| -> Result<()> {
+                            other_iw.add_document(&doc)?;
+                            let other_reader = other_iw.get_reader()?;
+                            let slowly = TestUtil::add_indexes_slowly(
+                                writer.w(),
+                                std::slice::from_ref(&other_reader),
+                            );
+                            let closed = other_reader.close();
+                            slowly?;
+                            closed
+                        })();
+                        let closed_iw = other_iw.close();
+                        drop(other_iw);
+                        let closed_dir = other_dir.close();
+                        added?;
+                        closed_iw?;
+                        closed_dir?;
+                    } else {
+                        writer.add_document(&doc)?;
+                    }
+                    live_doc_ids.push(id.clone());
+                    if allow_deletes && random().next_int_bound(100) < 20 {
+                        let index = random().next_int_bound(live_doc_ids.len() as i32) as usize;
+                        let delete_id = live_doc_ids.remove(index);
+                        writer.delete_documents(Term::new(
+                            "id",
+                            BytesRef::from_char_sequence(&delete_id),
+                        ))?;
+                    }
+                    if LuceneTestCase::rarely() {
+                        writer.commit()?;
+                        verify_term_vectors(&live_doc_ids)?;
+                    }
+                    if LuceneTestCase::rarely() {
+                        writer.force_merge(1)?;
+                        verify_term_vectors(&live_doc_ids)?;
+                    }
                 }
-                live_doc_ids.push(id.clone());
-                if allow_deletes && random().next_int_bound(100) < 20 {
-                    let index = random().next_int_bound(live_doc_ids.len() as i32) as usize;
-                    let delete_id = live_doc_ids.remove(index);
-                    writer.delete_documents(Term::new(
-                        "id",
-                        BytesRef::from_char_sequence(&delete_id),
-                    ))?;
-                }
-                if LuceneTestCase::rarely() {
-                    writer.commit()?;
-                    verify_term_vectors(&live_doc_ids)?;
-                }
-                if LuceneTestCase::rarely() {
-                    writer.force_merge(1)?;
-                    verify_term_vectors(&live_doc_ids)?;
-                }
+                verify_term_vectors(&live_doc_ids)?;
+                writer.force_merge(1)?;
+                verify_term_vectors(&live_doc_ids)?;
+                // `IOUtils.close(writer, dir)`
+                writer.close()?;
+                drop(writer);
             }
-            verify_term_vectors(&live_doc_ids)?;
-            writer.force_merge(1)?;
-            verify_term_vectors(&live_doc_ids)?;
-            // `IOUtils.close(writer, dir)`
-            writer.close()?;
-            drop(writer);
             dir.close()?;
         }
         Ok(())
@@ -1663,28 +1691,30 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
             }
             let docs = Arc::new(docs);
             let mut dir = LuceneTestCase::new_directory();
-            let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
-            for (i, doc) in docs.iter().enumerate() {
-                writer.add_document(&self.add_id(doc.to_document(), &i.to_string()))?;
-            }
-            let reader: Arc<dyn IndexReader> = writer.get_reader()?;
-            let term_vectors = reader.term_vectors()?;
-            for (i, doc) in docs.iter().enumerate() {
-                let doc_id = self.doc_id(&reader, &i.to_string())?;
-                self.assert_equals_doc(doc, term_vectors.get(doc_id)?.as_deref())?;
-            }
-            drop(term_vectors);
+            let thrown = {
+                let writer =
+                    RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
+                for (i, doc) in docs.iter().enumerate() {
+                    writer.add_document(&self.add_id(doc.to_document(), &i.to_string()))?;
+                }
+                let reader: Arc<dyn IndexReader> = writer.get_reader()?;
+                let term_vectors = reader.term_vectors()?;
+                for (i, doc) in docs.iter().enumerate() {
+                    let doc_id = self.doc_id(&reader, &i.to_string())?;
+                    self.assert_equals_doc(doc, term_vectors.get(doc_id)?.as_deref())?;
+                }
+                drop(term_vectors);
 
-            let exception: Arc<Mutex<Option<Throwable>>> = Arc::new(Mutex::new(None));
-            let read_past = self.get_read_past_last_position_exception_class();
-            let mut threads: Vec<Thread> = Vec::with_capacity(2);
-            for _ in 0..2 {
-                let (reader, docs, exception) = (
-                    Arc::clone(&reader),
-                    Arc::clone(&docs),
-                    Arc::clone(&exception),
-                );
-                threads.push(Thread::unnamed(move || {
+                let exception: Arc<Mutex<Option<Throwable>>> = Arc::new(Mutex::new(None));
+                let read_past = self.get_read_past_last_position_exception_class();
+                let mut threads: Vec<Thread> = Vec::with_capacity(2);
+                for _ in 0..2 {
+                    let (reader, docs, exception) = (
+                        Arc::clone(&reader),
+                        Arc::clone(&docs),
+                        Arc::clone(&exception),
+                    );
+                    threads.push(Thread::unnamed(move || {
                     let run = std::panic::catch_unwind(AssertUnwindSafe(|| -> Result<()> {
                         let term_vectors = reader.term_vectors()?;
                         let mut i = 0;
@@ -1709,24 +1739,26 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
                         *exception.lock().unwrap_or_else(PoisonError::into_inner) = Some(t);
                     }
                 }));
-            }
-            for thread in &threads {
-                thread.start();
-            }
-            for thread in &threads {
-                if let Err(payload) = thread.join() {
-                    std::panic::resume_unwind(payload);
                 }
-            }
-            reader.close()?;
-            drop(reader);
-            writer.close()?;
-            drop(writer);
+                for thread in &threads {
+                    thread.start();
+                }
+                for thread in &threads {
+                    if let Err(payload) = thread.join() {
+                        std::panic::resume_unwind(payload);
+                    }
+                }
+                reader.close()?;
+                drop(reader);
+                writer.close()?;
+                drop(writer);
+                let thrown = exception
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take();
+                thrown
+            };
             dir.close()?;
-            let thrown = exception
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take();
             assert_null_msg(
                 Some("One thread threw an exception"),
                 thrown.map(|t| t.to_string()),

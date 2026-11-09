@@ -231,7 +231,7 @@ fn test_simple(inst: &ShardSearchingInstance) -> Result<()> {
                 while node_id < num_nodes {
                     let sub_version = local_shard_searcher.node_versions()[node_id as usize];
                     let sub = base.nodes()[node_id as usize]
-                        .searchers
+                        .searchers()
                         .acquire(sub_version)?;
                     let Some(sub) = sub else {
                         node_id -= 1;

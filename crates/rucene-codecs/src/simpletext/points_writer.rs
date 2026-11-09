@@ -180,24 +180,36 @@ impl PointsWriter for SimpleTextPointsWriter {
                 &self.segment_suffix,
                 POINT_INDEX_EXTENSION,
             );
+            // `try (IndexOutput indexOut = ...)` (`SimpleTextPointsWriter.java:139-152`):
+            // the output is closed on every exit, a failed write included.
             let mut index_out = self
                 .directory
                 .create_output(&file_name, self.context.as_ref())?;
-            let out = index_out.as_mut();
-            let count = self.index_fps.len();
-            util::write_bytes(out, FIELD_COUNT)?;
-            util::write_str(out, &count.to_string())?;
-            util::write_newline(out)?;
-            for (key, value) in self.index_fps.iter() {
-                util::write_bytes(out, FIELD_FP_NAME)?;
-                util::write_str(out, key)?;
+            let written = (|| -> Result<()> {
+                let out = index_out.as_mut();
+                let count = self.index_fps.len();
+                util::write_bytes(out, FIELD_COUNT)?;
+                util::write_str(out, &count.to_string())?;
                 util::write_newline(out)?;
-                util::write_bytes(out, FIELD_FP)?;
-                util::write_str(out, &value.to_string())?;
-                util::write_newline(out)?;
+                for (key, value) in self.index_fps.iter() {
+                    util::write_bytes(out, FIELD_FP_NAME)?;
+                    util::write_str(out, key)?;
+                    util::write_newline(out)?;
+                    util::write_bytes(out, FIELD_FP)?;
+                    util::write_str(out, &value.to_string())?;
+                    util::write_newline(out)?;
+                }
+                util::write_checksum(out)
+            })();
+            match written {
+                Ok(()) => index_out.close()?,
+                Err(error) => {
+                    // Java: `error.addSuppressed(closeFailure)`; dropped, as
+                    // `LuceneError` has no suppressed list.
+                    let _ = index_out.close();
+                    return Err(error);
+                }
             }
-            util::write_checksum(out)?;
-            index_out.close()?;
         }
         Ok(())
     }
@@ -220,5 +232,69 @@ impl IntersectVisitor for AddVisitor<'_> {
 
     fn compare(&self, _min_packed_value: &[u8], _max_packed_value: &[u8]) -> Result<Relation> {
         Ok(Relation::CellCrossesQuery)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use randomizedtesting::jdk::random::JdkRandom;
+    use rucene::index::documents_writer::BufferedUpdates;
+    use rucene::index::segment_info::SegmentInfo;
+    use rucene::index::FieldInfos;
+    use rucene::search::Sort;
+    use rucene::store::{ByteBuffersDirectory, DefaultIOContext};
+    use rucene::util::{NoOutputInfoStream, Version};
+    use rucene_test_framework::store::MockDirectoryWrapper;
+    use std::collections::HashMap;
+
+    /// `close()` writes the index file in a try-with-resources
+    /// (`SimpleTextPointsWriter.java:139-152`): when a write to it fails, the
+    /// output is still closed. `MockDirectoryWrapper` fails the first write
+    /// to `_0.dii` (random `IOException` rate 1.0) and then refuses to close
+    /// while a file is still open, as `BasePointsFormatTestCase
+    /// .testWithExceptions` did on seed A5A5A5A5.
+    #[test]
+    fn the_index_output_is_closed_when_writing_it_fails() {
+        let mut dir =
+            MockDirectoryWrapper::new(&JdkRandom::new(42), Arc::new(ByteBuffersDirectory::new()));
+        {
+            let directory = dir.as_directory();
+            let segment_info = SegmentInfo::new_without_codec(
+                Arc::clone(&directory),
+                Version::LUCENE_10_5_0,
+                None,
+                "_0".to_string(),
+                1,
+                false,
+                false,
+                HashMap::new(),
+                [0u8; 16],
+                HashMap::new(),
+                Sort::new(),
+            )
+            .unwrap();
+            let field_infos = FieldInfos::new(Vec::new()).unwrap();
+            let seg_updates = BufferedUpdates::default();
+            let context = DefaultIOContext::default();
+            let state = SegmentWriteState::new(
+                &NoOutputInfoStream,
+                directory,
+                &segment_info,
+                &field_infos,
+                &seg_updates,
+                &context,
+            );
+            let mut writer = SimpleTextPointsWriter::new(&state).unwrap();
+            dir.set_random_io_exception_rate(1.0);
+            let error = writer.close().unwrap_err();
+            assert!(
+                error.to_string().contains("a random IOException (_0.dii)"),
+                "{error}"
+            );
+            dir.set_random_io_exception_rate(0.0);
+        }
+        // The writer, the state and the segment info held the directory.
+        dir.close().unwrap();
     }
 }

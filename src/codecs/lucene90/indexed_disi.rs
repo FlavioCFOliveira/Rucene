@@ -9,6 +9,7 @@
 #![deny(unsafe_code)]
 
 use std::cmp;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::error::{LuceneError, Result};
 use crate::index::doc_values::DocValuesIterator;
@@ -353,21 +354,18 @@ impl IndexedDISI {
     /// Returns an iterator that delegates to this `IndexedDISI`. Advancing the
     /// returned iterator advances the underlying `IndexedDISI`, and vice-versa.
     ///
-    /// Divergence: Lucene wraps `disi` in an anonymous
-    /// `KnnVectorValues.DocIndexIterator` that forwards `docID`, `index`,
-    /// `nextDoc`, `advance` and `cost` to it
-    /// (`IndexedDISI.java:428-456`), because the Java `IndexedDISI` extends
-    /// `DocIdSetIterator` only. In this port `IndexedDISI` already implements
-    /// [`DocIndexIterator`] with exactly those five methods, so the forwarding
-    /// object would be pure indirection; the disi is moved into the box
-    /// instead. Rust ownership also means the caller cannot keep a second,
-    /// independently advanced handle on the same disi, which is why the value
-    /// is taken by move rather than by reference.
+    /// Lucene wraps `disi` in an anonymous `KnnVectorValues.DocIndexIterator`
+    /// that forwards `docID`, `index`, `nextDoc`, `advance` and `cost` to it
+    /// (`IndexedDISI.java:428-456`). The sparse vector values keep one `disi`
+    /// and hand out such a view on every `iterator()` call, so successive
+    /// iterators continue where the previous one stopped
+    /// (`OffHeapByteVectorValues.java:258-260`). The disi is therefore shared
+    /// behind `Arc<Mutex<_>>`: the view locks it for each forwarded call.
     ///
     /// Equivalent to
     /// `org.apache.lucene.codecs.lucene90.IndexedDISI#asDocIndexIterator`.
-    pub fn as_doc_index_iterator(disi: IndexedDISI) -> Box<dyn DocIndexIterator> {
-        Box::new(disi)
+    pub fn as_doc_index_iterator(disi: Arc<Mutex<IndexedDISI>>) -> Box<dyn DocIndexIterator> {
+        Box::new(SharedDocIndexIterator(disi))
     }
 
     fn advance_block(&mut self, target_block: i32) -> Result<()> {
@@ -630,6 +628,40 @@ impl DocIdSetIterator for IndexedDISI {
 impl DocIndexIterator for IndexedDISI {
     fn index(&self) -> i32 {
         self.index
+    }
+}
+
+/// The anonymous `DocIndexIterator` of `IndexedDISI.asDocIndexIterator`
+/// (`IndexedDISI.java:428-456`): every call is forwarded to the shared disi.
+struct SharedDocIndexIterator(Arc<Mutex<IndexedDISI>>);
+
+impl SharedDocIndexIterator {
+    fn disi(&self) -> MutexGuard<'_, IndexedDISI> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl DocIdSetIterator for SharedDocIndexIterator {
+    fn doc_id(&self) -> i32 {
+        self.disi().doc_id()
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        self.disi().next_doc()
+    }
+
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        DocIdSetIterator::advance(&mut *self.disi(), target)
+    }
+
+    fn cost(&self) -> i64 {
+        self.disi().cost()
+    }
+}
+
+impl DocIndexIterator for SharedDocIndexIterator {
+    fn index(&self) -> i32 {
+        self.disi().index
     }
 }
 

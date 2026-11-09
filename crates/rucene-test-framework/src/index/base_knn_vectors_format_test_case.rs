@@ -867,37 +867,41 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         // illegal change in the same segment
         {
             let mut dir = LuceneTestCase::new_directory();
-            let w = new_writer(dir.as_directory())?;
-            w.add_document(&float_doc(
-                "f",
-                &[0f32; 4],
-                VectorSimilarityFunction::DOT_PRODUCT,
-            )?)?;
+            {
+                let w = new_writer(dir.as_directory())?;
+                w.add_document(&float_doc(
+                    "f",
+                    &[0f32; 4],
+                    VectorSimilarityFunction::DOT_PRODUCT,
+                )?)?;
 
-            let doc2 = float_doc("f", &[0f32; 6], VectorSimilarityFunction::DOT_PRODUCT)?;
-            let expected = expect_illegal_argument(|| w.add_document(&doc2));
-            let err_msg = "Inconsistency of field data structures across documents for field [f] of doc [1]. vector dimension: expected '4', but it has '6'.";
-            Assert::assert_equals_str(None, Some(err_msg), Some(&expected));
-            w.close()?;
+                let doc2 = float_doc("f", &[0f32; 6], VectorSimilarityFunction::DOT_PRODUCT)?;
+                let expected = expect_illegal_argument(|| w.add_document(&doc2));
+                let err_msg = "Inconsistency of field data structures across documents for field [f] of doc [1]. vector dimension: expected '4', but it has '6'.";
+                Assert::assert_equals_str(None, Some(err_msg), Some(&expected));
+                w.close()?;
+            }
             dir.close()?;
         }
 
         // illegal change in a different segment
         {
             let mut dir = LuceneTestCase::new_directory();
-            let w = new_writer(dir.as_directory())?;
-            w.add_document(&float_doc(
-                "f",
-                &[0f32; 4],
-                VectorSimilarityFunction::DOT_PRODUCT,
-            )?)?;
-            w.commit()?;
+            {
+                let w = new_writer(dir.as_directory())?;
+                w.add_document(&float_doc(
+                    "f",
+                    &[0f32; 4],
+                    VectorSimilarityFunction::DOT_PRODUCT,
+                )?)?;
+                w.commit()?;
 
-            let doc2 = float_doc("f", &[0f32; 6], VectorSimilarityFunction::DOT_PRODUCT)?;
-            let expected = expect_illegal_argument(|| w.add_document(&doc2));
-            let err_msg = "cannot change field \"f\" from vector dimension=4, vector encoding=FLOAT32, vector similarity function=DOT_PRODUCT to inconsistent vector dimension=6, vector encoding=FLOAT32, vector similarity function=DOT_PRODUCT";
-            Assert::assert_equals_str(None, Some(err_msg), Some(&expected));
-            w.close()?;
+                let doc2 = float_doc("f", &[0f32; 6], VectorSimilarityFunction::DOT_PRODUCT)?;
+                let expected = expect_illegal_argument(|| w.add_document(&doc2));
+                let err_msg = "cannot change field \"f\" from vector dimension=4, vector encoding=FLOAT32, vector similarity function=DOT_PRODUCT to inconsistent vector dimension=6, vector encoding=FLOAT32, vector similarity function=DOT_PRODUCT";
+                Assert::assert_equals_str(None, Some(err_msg), Some(&expected));
+                w.close()?;
+            }
             dir.close()?;
         }
         Ok(())
@@ -908,37 +912,41 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         // illegal change in the same segment
         {
             let mut dir = LuceneTestCase::new_directory();
-            let w = new_writer(dir.as_directory())?;
-            w.add_document(&float_doc(
-                "f",
-                &[0f32; 4],
-                VectorSimilarityFunction::DOT_PRODUCT,
-            )?)?;
+            {
+                let w = new_writer(dir.as_directory())?;
+                w.add_document(&float_doc(
+                    "f",
+                    &[0f32; 4],
+                    VectorSimilarityFunction::DOT_PRODUCT,
+                )?)?;
 
-            let doc2 = float_doc("f", &[0f32; 4], VectorSimilarityFunction::EUCLIDEAN)?;
-            let expected = expect_illegal_argument(|| w.add_document(&doc2));
-            let err_msg = "Inconsistency of field data structures across documents for field [f] of doc [1]. vector similarity function: expected 'DOT_PRODUCT', but it has 'EUCLIDEAN'.";
-            Assert::assert_equals_str(None, Some(err_msg), Some(&expected));
-            w.close()?;
+                let doc2 = float_doc("f", &[0f32; 4], VectorSimilarityFunction::EUCLIDEAN)?;
+                let expected = expect_illegal_argument(|| w.add_document(&doc2));
+                let err_msg = "Inconsistency of field data structures across documents for field [f] of doc [1]. vector similarity function: expected 'DOT_PRODUCT', but it has 'EUCLIDEAN'.";
+                Assert::assert_equals_str(None, Some(err_msg), Some(&expected));
+                w.close()?;
+            }
             dir.close()?;
         }
 
         // illegal change a different segment
         {
             let mut dir = LuceneTestCase::new_directory();
-            let w = new_writer(dir.as_directory())?;
-            w.add_document(&float_doc(
-                "f",
-                &[0f32; 4],
-                VectorSimilarityFunction::DOT_PRODUCT,
-            )?)?;
-            w.commit()?;
+            {
+                let w = new_writer(dir.as_directory())?;
+                w.add_document(&float_doc(
+                    "f",
+                    &[0f32; 4],
+                    VectorSimilarityFunction::DOT_PRODUCT,
+                )?)?;
+                w.commit()?;
 
-            let doc2 = float_doc("f", &[0f32; 4], VectorSimilarityFunction::EUCLIDEAN)?;
-            let expected = expect_illegal_argument(|| w.add_document(&doc2));
-            let err_msg = "cannot change field \"f\" from vector dimension=4, vector encoding=FLOAT32, vector similarity function=DOT_PRODUCT to inconsistent vector dimension=4, vector encoding=FLOAT32, vector similarity function=EUCLIDEAN";
-            Assert::assert_equals_str(None, Some(err_msg), Some(&expected));
-            w.close()?;
+                let doc2 = float_doc("f", &[0f32; 4], VectorSimilarityFunction::EUCLIDEAN)?;
+                let expected = expect_illegal_argument(|| w.add_document(&doc2));
+                let err_msg = "cannot change field \"f\" from vector dimension=4, vector encoding=FLOAT32, vector similarity function=DOT_PRODUCT to inconsistent vector dimension=4, vector encoding=FLOAT32, vector similarity function=EUCLIDEAN";
+                Assert::assert_equals_str(None, Some(err_msg), Some(&expected));
+                w.close()?;
+            }
             dir.close()?;
         }
         Ok(())
@@ -956,17 +964,19 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
     ) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
         {
-            let w = new_writer(dir.as_directory())?;
-            w.add_document(&float_doc("f", first, first_sim)?)?;
-            w.close()?;
-        }
+            {
+                let w = new_writer(dir.as_directory())?;
+                w.add_document(&float_doc("f", first, first_sim)?)?;
+                w.close()?;
+            }
 
-        {
-            let w2 = new_writer(dir.as_directory())?;
-            let doc2 = float_doc("f", second, second_sim)?;
-            let expected = expect_illegal_argument(|| w2.add_document(&doc2));
-            Assert::assert_equals_str(None, Some(message), Some(&expected));
-            w2.close()?;
+            {
+                let w2 = new_writer(dir.as_directory())?;
+                let doc2 = float_doc("f", second, second_sim)?;
+                let expected = expect_illegal_argument(|| w2.add_document(&doc2));
+                Assert::assert_equals_str(None, Some(message), Some(&expected));
+                w2.close()?;
+            }
         }
         dir.close()
     }
@@ -1012,148 +1022,156 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testMergingWithDifferentKnnFields()`.
     fn test_merging_with_different_knn_fields(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let merge_scheduler = Arc::new(TestMergeScheduler::default());
-        let iwc = self.merging_config(Arc::clone(&merge_scheduler))?;
-        let writer = IndexWriter::new(dir.as_directory(), iwc)?;
-        for i in 0..10 {
-            let i = i as f32;
-            let mut doc = Document::new();
-            doc.add(Box::new(KnnFloatVectorField::with_euclidean(
-                "field",
-                &[i, i + 1.0, i + 2.0, i + 3.0],
-            )?));
-            writer.add_document(&doc)?;
+        {
+            let merge_scheduler = Arc::new(TestMergeScheduler::default());
+            let iwc = self.merging_config(Arc::clone(&merge_scheduler))?;
+            let writer = IndexWriter::new(dir.as_directory(), iwc)?;
+            for i in 0..10 {
+                let i = i as f32;
+                let mut doc = Document::new();
+                doc.add(Box::new(KnnFloatVectorField::with_euclidean(
+                    "field",
+                    &[i, i + 1.0, i + 2.0, i + 3.0],
+                )?));
+                writer.add_document(&doc)?;
+            }
+            writer.commit()?;
+            for i in 0..10 {
+                let i = i as f32;
+                let mut doc = Document::new();
+                doc.add(Box::new(KnnFloatVectorField::with_euclidean(
+                    "otherVector",
+                    &[i, i, i, i],
+                )?));
+                writer.add_document(&doc)?;
+            }
+            writer.commit()?;
+            writer.force_merge(1)?;
+            assert_null(
+                merge_scheduler
+                    .ex
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_ref()
+                    .map(|e| format!("{e}")),
+            );
+            writer.close()?;
         }
-        writer.commit()?;
-        for i in 0..10 {
-            let i = i as f32;
-            let mut doc = Document::new();
-            doc.add(Box::new(KnnFloatVectorField::with_euclidean(
-                "otherVector",
-                &[i, i, i, i],
-            )?));
-            writer.add_document(&doc)?;
-        }
-        writer.commit()?;
-        writer.force_merge(1)?;
-        assert_null(
-            merge_scheduler
-                .ex
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .as_ref()
-                .map(|e| format!("{e}")),
-        );
-        writer.close()?;
         dir.close()
     }
 
     /// `testMergingWithDifferentByteKnnFields()`.
     fn test_merging_with_different_byte_knn_fields(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let merge_scheduler = Arc::new(TestMergeScheduler::default());
-        let iwc = self.merging_config(Arc::clone(&merge_scheduler))?;
-        let writer = IndexWriter::new(dir.as_directory(), iwc)?;
-        for i in 0..10u8 {
-            let mut doc = Document::new();
-            doc.add(Box::new(KnnByteVectorField::with_euclidean(
-                "field",
-                &[i, i, i, i],
-            )?));
-            writer.add_document(&doc)?;
+        {
+            let merge_scheduler = Arc::new(TestMergeScheduler::default());
+            let iwc = self.merging_config(Arc::clone(&merge_scheduler))?;
+            let writer = IndexWriter::new(dir.as_directory(), iwc)?;
+            for i in 0..10u8 {
+                let mut doc = Document::new();
+                doc.add(Box::new(KnnByteVectorField::with_euclidean(
+                    "field",
+                    &[i, i, i, i],
+                )?));
+                writer.add_document(&doc)?;
+            }
+            writer.commit()?;
+            for i in 0..10u8 {
+                let mut doc = Document::new();
+                doc.add(Box::new(KnnByteVectorField::with_euclidean(
+                    "otherVector",
+                    &[i, i, i, i],
+                )?));
+                writer.add_document(&doc)?;
+            }
+            writer.commit()?;
+            writer.force_merge(1)?;
+            assert_null(
+                merge_scheduler
+                    .ex
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_ref()
+                    .map(|e| format!("{e}")),
+            );
+            writer.close()?;
         }
-        writer.commit()?;
-        for i in 0..10u8 {
-            let mut doc = Document::new();
-            doc.add(Box::new(KnnByteVectorField::with_euclidean(
-                "otherVector",
-                &[i, i, i, i],
-            )?));
-            writer.add_document(&doc)?;
-        }
-        writer.commit()?;
-        writer.force_merge(1)?;
-        assert_null(
-            merge_scheduler
-                .ex
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .as_ref()
-                .map(|e| format!("{e}")),
-        );
-        writer.close()?;
         dir.close()
     }
 
     /// `testWriterRamEstimate()`.
     fn test_writer_ram_estimate(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let codec = rucene::codecs::get_default().expect("Codec.getDefault()");
-        let state = ram_estimate_state(dir.as_directory())?;
-        let format = codec.knn_vectors_format();
-        let mut writer = format.fields_writer(&state)?;
-        let outcome = (|| -> Result<()> {
-            let ram_bytes_used = writer.ram_bytes_used();
-            let mut dim = random().next_int_bound(64) + 1;
-            if dim % 2 == 1 {
-                dim += 1;
-            }
-            let num_docs = LuceneTestCase::at_least(100);
-            let FieldVectorWriter::Float(mut field_writer) =
-                writer.add_field(&ram_estimate_field(dim, VectorEncoding::FLOAT32))?
-            else {
-                Throwable::new("java.lang.ClassCastException", "not a float writer").throw()
-            };
-            for i in 0..num_docs {
-                field_writer.add_value(i, random_vector(dim))?;
-            }
-            let ram_bytes_used2 = writer.ram_bytes_used();
-            Assert::assert_true(ram_bytes_used2 > ram_bytes_used);
-            Assert::assert_true(ram_bytes_used2 > i64::from(dim) * i64::from(num_docs) * 4);
-            Ok(())
-        })();
-        let closed = writer.close();
-        outcome?;
-        closed?;
+        {
+            let codec = rucene::codecs::get_default().expect("Codec.getDefault()");
+            let state = ram_estimate_state(dir.as_directory())?;
+            let format = codec.knn_vectors_format();
+            let mut writer = format.fields_writer(&state)?;
+            let outcome = (|| -> Result<()> {
+                let ram_bytes_used = writer.ram_bytes_used();
+                let mut dim = random().next_int_bound(64) + 1;
+                if dim % 2 == 1 {
+                    dim += 1;
+                }
+                let num_docs = LuceneTestCase::at_least(100);
+                let FieldVectorWriter::Float(mut field_writer) =
+                    writer.add_field(&ram_estimate_field(dim, VectorEncoding::FLOAT32))?
+                else {
+                    Throwable::new("java.lang.ClassCastException", "not a float writer").throw()
+                };
+                for i in 0..num_docs {
+                    field_writer.add_value(i, random_vector(dim))?;
+                }
+                let ram_bytes_used2 = writer.ram_bytes_used();
+                Assert::assert_true(ram_bytes_used2 > ram_bytes_used);
+                Assert::assert_true(ram_bytes_used2 > i64::from(dim) * i64::from(num_docs) * 4);
+                Ok(())
+            })();
+            let closed = writer.close();
+            outcome?;
+            closed?;
+        }
         dir.close()
     }
 
     /// `testWriterByteVectorRamEstimate()`.
     fn test_writer_byte_vector_ram_estimate(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let codec = rucene::codecs::get_default().expect("Codec.getDefault()");
-        let state = ram_estimate_state(dir.as_directory())?;
-        let format = codec.knn_vectors_format();
-        let mut writer = format.fields_writer(&state)?;
-        let outcome = (|| -> Result<()> {
-            let mut dim = random().next_int_bound(64) + 1;
-            if dim % 2 == 1 {
-                dim += 1;
-            }
-            let num_docs = LuceneTestCase::at_least(100);
-            let FieldVectorWriter::Byte(mut field_writer) =
-                writer.add_field(&ram_estimate_field(dim, VectorEncoding::BYTE))?
-            else {
-                Throwable::new("java.lang.ClassCastException", "not a byte writer").throw()
-            };
-            for i in 0..num_docs {
-                field_writer.add_value(i, random_vector8(dim))?;
-            }
-            // Validate the field-level RAM accounting uses correct byte sizes.
-            // The reported RAM must be at least the raw byte vector data.
-            let field_ram_bytes_used = field_writer.ram_bytes_used();
-            let raw_byte_vector_data = i64::from(dim) * i64::from(num_docs);
-            Assert::assert_true_msg(
+        {
+            let codec = rucene::codecs::get_default().expect("Codec.getDefault()");
+            let state = ram_estimate_state(dir.as_directory())?;
+            let format = codec.knn_vectors_format();
+            let mut writer = format.fields_writer(&state)?;
+            let outcome = (|| -> Result<()> {
+                let mut dim = random().next_int_bound(64) + 1;
+                if dim % 2 == 1 {
+                    dim += 1;
+                }
+                let num_docs = LuceneTestCase::at_least(100);
+                let FieldVectorWriter::Byte(mut field_writer) =
+                    writer.add_field(&ram_estimate_field(dim, VectorEncoding::BYTE))?
+                else {
+                    Throwable::new("java.lang.ClassCastException", "not a byte writer").throw()
+                };
+                for i in 0..num_docs {
+                    field_writer.add_value(i, random_vector8(dim))?;
+                }
+                // Validate the field-level RAM accounting uses correct byte sizes.
+                // The reported RAM must be at least the raw byte vector data.
+                let field_ram_bytes_used = field_writer.ram_bytes_used();
+                let raw_byte_vector_data = i64::from(dim) * i64::from(num_docs);
+                Assert::assert_true_msg(
                 &format!(
                     "Expected field ramBytesUsed ({field_ram_bytes_used}) >= raw byte vector data size ({raw_byte_vector_data})"
                 ),
                 field_ram_bytes_used >= raw_byte_vector_data,
             );
-            Ok(())
-        })();
-        let closed = writer.close();
-        outcome?;
-        closed?;
+                Ok(())
+            })();
+            let closed = writer.close();
+            outcome?;
+            closed?;
+        }
         dir.close()
     }
 
@@ -1179,25 +1197,29 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         let mut dir = LuceneTestCase::new_directory();
         let mut dir2 = LuceneTestCase::new_directory();
         {
-            let w = new_writer(dir.as_directory())?;
-            w.add_document(&doc)?;
-            w.close()?;
-        }
-        {
-            let w2 = new_writer(dir2.as_directory())?;
-            w2.add_indexes_dirs(&[dir.as_directory()])?;
-            w2.force_merge(1)?;
-            let reader = directory_reader::open_with_writer(&*w2)?;
-            let r = only_leaf(&reader)?;
-            let vector_values = r.get_float_vector_values(field_name)?.expect("vectors");
-            let mut iterator = vector_values.iterator()?;
-            Assert::assert_equals(0i64, i64::from(iterator.next_doc()?));
-            assert_float_equals(0.0, vector_values.vector_value(0)?[0], 0.0);
-            Assert::assert_equals(i64::from(NO_MORE_DOCS), i64::from(iterator.next_doc()?));
-            self.assert_off_heap_byte_size(&r, field_name)?;
-            drop(r);
-            reader.close()?;
-            w2.close()?;
+            {
+                {
+                    let w = new_writer(dir.as_directory())?;
+                    w.add_document(&doc)?;
+                    w.close()?;
+                }
+                {
+                    let w2 = new_writer(dir2.as_directory())?;
+                    w2.add_indexes_dirs(&[dir.as_directory()])?;
+                    w2.force_merge(1)?;
+                    let reader = directory_reader::open_with_writer(&*w2)?;
+                    let r = only_leaf(&reader)?;
+                    let vector_values = r.get_float_vector_values(field_name)?.expect("vectors");
+                    let mut iterator = vector_values.iterator()?;
+                    Assert::assert_equals(0i64, i64::from(iterator.next_doc()?));
+                    assert_float_equals(0.0, vector_values.vector_value(0)?[0], 0.0);
+                    Assert::assert_equals(i64::from(NO_MORE_DOCS), i64::from(iterator.next_doc()?));
+                    self.assert_off_heap_byte_size(&r, field_name)?;
+                    drop(r);
+                    reader.close()?;
+                    w2.close()?;
+                }
+            }
         }
         dir.close()?;
         dir2.close()
@@ -1210,30 +1232,34 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         let mut dir = LuceneTestCase::new_directory();
         let mut dir2 = LuceneTestCase::new_directory();
         {
-            let w = new_writer(dir.as_directory())?;
-            w.add_document(&doc)?;
-            w.close()?;
-        }
-        doc.add(Box::new(KnnFloatVectorField::new(
-            field_name,
-            &[0f32; 4],
-            VectorSimilarityFunction::DOT_PRODUCT,
-        )?));
-        {
-            let w2 = new_writer(dir2.as_directory())?;
-            w2.add_document(&doc)?;
-            w2.add_indexes_dirs(&[dir.as_directory()])?;
-            w2.force_merge(1)?;
-            let reader = directory_reader::open_with_writer(&*w2)?;
-            let r = only_leaf(&reader)?;
-            let vector_values = r.get_float_vector_values(field_name)?.expect("vectors");
-            let mut iterator = vector_values.iterator()?;
-            Assert::assert_true(iterator.next_doc()? != NO_MORE_DOCS);
-            assert_float_equals(0.0, vector_values.vector_value(iterator.index())?[0], 0.0);
-            Assert::assert_equals(i64::from(NO_MORE_DOCS), i64::from(iterator.next_doc()?));
-            drop(r);
-            reader.close()?;
-            w2.close()?;
+            {
+                {
+                    let w = new_writer(dir.as_directory())?;
+                    w.add_document(&doc)?;
+                    w.close()?;
+                }
+                doc.add(Box::new(KnnFloatVectorField::new(
+                    field_name,
+                    &[0f32; 4],
+                    VectorSimilarityFunction::DOT_PRODUCT,
+                )?));
+                {
+                    let w2 = new_writer(dir2.as_directory())?;
+                    w2.add_document(&doc)?;
+                    w2.add_indexes_dirs(&[dir.as_directory()])?;
+                    w2.force_merge(1)?;
+                    let reader = directory_reader::open_with_writer(&*w2)?;
+                    let r = only_leaf(&reader)?;
+                    let vector_values = r.get_float_vector_values(field_name)?.expect("vectors");
+                    let mut iterator = vector_values.iterator()?;
+                    Assert::assert_true(iterator.next_doc()? != NO_MORE_DOCS);
+                    assert_float_equals(0.0, vector_values.vector_value(iterator.index())?[0], 0.0);
+                    Assert::assert_equals(i64::from(NO_MORE_DOCS), i64::from(iterator.next_doc()?));
+                    drop(r);
+                    reader.close()?;
+                    w2.close()?;
+                }
+            }
         }
         dir.close()?;
         dir2.close()
@@ -1246,41 +1272,45 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         let mut dir = LuceneTestCase::new_directory();
         let mut dir2 = LuceneTestCase::new_directory();
         {
-            let w = new_writer(dir.as_directory())?;
-            w.add_document(&float_doc(
-                field_name,
-                &vector,
-                VectorSimilarityFunction::DOT_PRODUCT,
-            )?)?;
-            w.close()?;
-        }
-        {
-            let w2 = new_writer(dir2.as_directory())?;
-            vector[0] = 1.0;
-            vector[1] = 1.0;
-            // Java's document holds the array it was built over, which now
-            // reads [1, 1].
-            w2.add_document(&float_doc(
-                field_name,
-                &vector,
-                VectorSimilarityFunction::DOT_PRODUCT,
-            )?)?;
-            w2.add_indexes_dirs(&[dir.as_directory()])?;
-            w2.force_merge(1)?;
-            let reader = directory_reader::open_with_writer(&*w2)?;
-            let r = only_leaf(&reader)?;
-            let vector_values = r.get_float_vector_values(field_name)?.expect("vectors");
-            let mut iterator = vector_values.iterator()?;
-            Assert::assert_equals(0i64, i64::from(iterator.next_doc()?));
-            // The merge order is randomized, we might get 0 first, or 1
-            let mut value = vector_values.vector_value(0)?[0];
-            Assert::assert_true(value == 0.0 || value == 1.0);
-            Assert::assert_equals(1i64, i64::from(iterator.next_doc()?));
-            value += vector_values.vector_value(1)?[0];
-            assert_float_equals(1.0, value, 0.0);
-            drop(r);
-            reader.close()?;
-            w2.close()?;
+            {
+                {
+                    let w = new_writer(dir.as_directory())?;
+                    w.add_document(&float_doc(
+                        field_name,
+                        &vector,
+                        VectorSimilarityFunction::DOT_PRODUCT,
+                    )?)?;
+                    w.close()?;
+                }
+                {
+                    let w2 = new_writer(dir2.as_directory())?;
+                    vector[0] = 1.0;
+                    vector[1] = 1.0;
+                    // Java's document holds the array it was built over, which now
+                    // reads [1, 1].
+                    w2.add_document(&float_doc(
+                        field_name,
+                        &vector,
+                        VectorSimilarityFunction::DOT_PRODUCT,
+                    )?)?;
+                    w2.add_indexes_dirs(&[dir.as_directory()])?;
+                    w2.force_merge(1)?;
+                    let reader = directory_reader::open_with_writer(&*w2)?;
+                    let r = only_leaf(&reader)?;
+                    let vector_values = r.get_float_vector_values(field_name)?.expect("vectors");
+                    let mut iterator = vector_values.iterator()?;
+                    Assert::assert_equals(0i64, i64::from(iterator.next_doc()?));
+                    // The merge order is randomized, we might get 0 first, or 1
+                    let mut value = vector_values.vector_value(0)?[0];
+                    Assert::assert_true(value == 0.0 || value == 1.0);
+                    Assert::assert_equals(1i64, i64::from(iterator.next_doc()?));
+                    value += vector_values.vector_value(1)?[0];
+                    assert_float_equals(1.0, value, 0.0);
+                    drop(r);
+                    reader.close()?;
+                    w2.close()?;
+                }
+            }
         }
         dir.close()?;
         dir2.close()
@@ -1302,39 +1332,45 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         let mut dir = LuceneTestCase::new_directory();
         let mut dir2 = LuceneTestCase::new_directory();
         {
-            let w = new_writer(dir.as_directory())?;
-            w.add_document(&float_doc("f", first, first_sim)?)?;
-            w.close()?;
-        }
-        {
-            let w2 = new_writer(dir2.as_directory())?;
-            w2.add_document(&float_doc("f", second, second_sim)?)?;
-            match how {
-                AddIndexesHow::Directory => {
-                    let expected =
-                        expect_illegal_argument(|| w2.add_indexes_dirs(&[dir.as_directory()]));
-                    Assert::assert_equals_str(None, Some(message), Some(&expected));
+            {
+                {
+                    let w = new_writer(dir.as_directory())?;
+                    w.add_document(&float_doc("f", first, first_sim)?)?;
+                    w.close()?;
                 }
-                AddIndexesHow::CodecReader => {
-                    let r = directory_reader::open(dir.as_directory())?;
-                    let codec_reader = only_leaf(&r)?
-                        .as_codec_reader()
-                        .expect("a segment reader is a CodecReader");
-                    let expected =
-                        expect_illegal_argument(|| w2.add_indexes_codec_readers(&[codec_reader]));
-                    Assert::assert_equals_str(None, Some(message), Some(&expected));
-                    r.close()?;
-                }
-                AddIndexesHow::SlowCodecReader => {
-                    let r = directory_reader::open(dir.as_directory())?;
-                    let expected = expect_illegal_argument(|| {
-                        TestUtil::add_indexes_slowly(&w2, &[Arc::clone(&r)])
-                    });
-                    Assert::assert_equals_str(None, Some(message), Some(&expected));
-                    r.close()?;
+                {
+                    let w2 = new_writer(dir2.as_directory())?;
+                    w2.add_document(&float_doc("f", second, second_sim)?)?;
+                    match how {
+                        AddIndexesHow::Directory => {
+                            let expected = expect_illegal_argument(|| {
+                                w2.add_indexes_dirs(&[dir.as_directory()])
+                            });
+                            Assert::assert_equals_str(None, Some(message), Some(&expected));
+                        }
+                        AddIndexesHow::CodecReader => {
+                            let r = directory_reader::open(dir.as_directory())?;
+                            let codec_reader = only_leaf(&r)?
+                                .as_codec_reader()
+                                .expect("a segment reader is a CodecReader");
+                            let expected = expect_illegal_argument(|| {
+                                w2.add_indexes_codec_readers(&[codec_reader])
+                            });
+                            Assert::assert_equals_str(None, Some(message), Some(&expected));
+                            r.close()?;
+                        }
+                        AddIndexesHow::SlowCodecReader => {
+                            let r = directory_reader::open(dir.as_directory())?;
+                            let expected = expect_illegal_argument(|| {
+                                TestUtil::add_indexes_slowly(&w2, &[Arc::clone(&r)])
+                            });
+                            Assert::assert_equals_str(None, Some(message), Some(&expected));
+                            r.close()?;
+                        }
+                    }
+                    w2.close()?;
                 }
             }
-            w2.close()?;
         }
         dir.close()?;
         dir2.close()
@@ -1417,74 +1453,81 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testIllegalMultipleValues()`.
     fn test_illegal_multiple_values(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let w = new_writer(dir.as_directory())?;
-        let mut doc = Document::new();
-        doc.add(Box::new(KnnFloatVectorField::new(
-            "f",
-            &[0f32; 4],
-            VectorSimilarityFunction::DOT_PRODUCT,
-        )?));
-        doc.add(Box::new(KnnFloatVectorField::new(
-            "f",
-            &[0f32; 4],
-            VectorSimilarityFunction::DOT_PRODUCT,
-        )?));
-        let expected = expect_illegal_argument(|| w.add_document(&doc));
-        Assert::assert_equals_str(
+        {
+            let w = new_writer(dir.as_directory())?;
+            let mut doc = Document::new();
+            doc.add(Box::new(KnnFloatVectorField::new(
+                "f",
+                &[0f32; 4],
+                VectorSimilarityFunction::DOT_PRODUCT,
+            )?));
+            doc.add(Box::new(KnnFloatVectorField::new(
+                "f",
+                &[0f32; 4],
+                VectorSimilarityFunction::DOT_PRODUCT,
+            )?));
+            let expected = expect_illegal_argument(|| w.add_document(&doc));
+            Assert::assert_equals_str(
             None,
             Some("VectorValuesField \"f\" appears more than once in this document (only one value is allowed per field)"),
             Some(&expected),
         );
-        w.close()?;
+            w.close()?;
+        }
         dir.close()
     }
 
     /// `testIllegalDimensionTooLarge()`.
     fn test_illegal_dimension_too_large(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let w = new_writer(dir.as_directory())?;
-        let max = self.get_vectors_max_dimensions("f");
-        let too_large = vec![0f32; (max + 1) as usize];
-        let doc = float_doc("f", &too_large, VectorSimilarityFunction::DOT_PRODUCT)?;
-        let exc = expect_illegal_argument(|| w.add_document(&doc));
-        Assert::assert_true(exc.contains(&format!("vector's dimensions must be <= [{max}]")));
+        {
+            let w = new_writer(dir.as_directory())?;
+            let max = self.get_vectors_max_dimensions("f");
+            let too_large = vec![0f32; (max + 1) as usize];
+            let doc = float_doc("f", &too_large, VectorSimilarityFunction::DOT_PRODUCT)?;
+            let exc = expect_illegal_argument(|| w.add_document(&doc));
+            Assert::assert_true(exc.contains(&format!("vector's dimensions must be <= [{max}]")));
 
-        w.add_document(&float_doc(
-            "f",
-            &[0f32; 2],
-            VectorSimilarityFunction::DOT_PRODUCT,
-        )?)?;
+            w.add_document(&float_doc(
+                "f",
+                &[0f32; 2],
+                VectorSimilarityFunction::DOT_PRODUCT,
+            )?)?;
 
-        let doc3 = float_doc("f", &too_large, VectorSimilarityFunction::DOT_PRODUCT)?;
-        let exc = expect_illegal_argument(|| w.add_document(&doc3));
-        Assert::assert_true(
-            exc.contains("Inconsistency of field data structures across documents for field [f]")
-                || exc.contains(&format!("vector's dimensions must be <= [{max}]")),
-        );
-        w.flush()?;
+            let doc3 = float_doc("f", &too_large, VectorSimilarityFunction::DOT_PRODUCT)?;
+            let exc = expect_illegal_argument(|| w.add_document(&doc3));
+            Assert::assert_true(
+                exc.contains(
+                    "Inconsistency of field data structures across documents for field [f]",
+                ) || exc.contains(&format!("vector's dimensions must be <= [{max}]")),
+            );
+            w.flush()?;
 
-        let doc4 = float_doc("f", &too_large, VectorSimilarityFunction::DOT_PRODUCT)?;
-        let exc = expect_illegal_argument(|| w.add_document(&doc4));
-        Assert::assert_true(exc.contains(&format!("vector's dimensions must be <= [{max}]")));
-        w.close()?;
+            let doc4 = float_doc("f", &too_large, VectorSimilarityFunction::DOT_PRODUCT)?;
+            let exc = expect_illegal_argument(|| w.add_document(&doc4));
+            Assert::assert_true(exc.contains(&format!("vector's dimensions must be <= [{max}]")));
+            w.close()?;
+        }
         dir.close()
     }
 
     /// `testIllegalEmptyVector()`.
     fn test_illegal_empty_vector(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let w = new_writer(dir.as_directory())?;
-        let e = expect_illegal_argument(|| {
-            KnnFloatVectorField::new("f", &[], VectorSimilarityFunction::EUCLIDEAN)
-        });
-        Assert::assert_equals_str(None, Some("cannot index an empty vector"), Some(&e));
+        {
+            let w = new_writer(dir.as_directory())?;
+            let e = expect_illegal_argument(|| {
+                KnnFloatVectorField::new("f", &[], VectorSimilarityFunction::EUCLIDEAN)
+            });
+            Assert::assert_equals_str(None, Some("cannot index an empty vector"), Some(&e));
 
-        w.add_document(&float_doc(
-            "f",
-            &[0f32; 2],
-            VectorSimilarityFunction::EUCLIDEAN,
-        )?)?;
-        w.close()?;
+            w.add_document(&float_doc(
+                "f",
+                &[0f32; 2],
+                VectorSimilarityFunction::EUCLIDEAN,
+            )?)?;
+            w.close()?;
+        }
         dir.close()
     }
 
@@ -1493,25 +1536,27 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
     fn test_different_codecs1(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
         {
-            let w = new_writer(dir.as_directory())?;
-            w.add_document(&float_doc(
-                "f",
-                &[0f32; 4],
-                VectorSimilarityFunction::DOT_PRODUCT,
-            )?)?;
-            w.close()?;
-        }
-        let mut iwc = LuceneTestCase::new_index_writer_config();
-        iwc.set_codec(codec_for_name("SimpleText")?)?;
-        {
-            let w = IndexWriter::new(dir.as_directory(), iwc)?;
-            w.add_document(&float_doc(
-                "f",
-                &[0f32; 4],
-                VectorSimilarityFunction::DOT_PRODUCT,
-            )?)?;
-            w.force_merge(1)?;
-            w.close()?;
+            {
+                let w = new_writer(dir.as_directory())?;
+                w.add_document(&float_doc(
+                    "f",
+                    &[0f32; 4],
+                    VectorSimilarityFunction::DOT_PRODUCT,
+                )?)?;
+                w.close()?;
+            }
+            let mut iwc = LuceneTestCase::new_index_writer_config();
+            iwc.set_codec(codec_for_name("SimpleText")?)?;
+            {
+                let w = IndexWriter::new(dir.as_directory(), iwc)?;
+                w.add_document(&float_doc(
+                    "f",
+                    &[0f32; 4],
+                    VectorSimilarityFunction::DOT_PRODUCT,
+                )?)?;
+                w.force_merge(1)?;
+                w.close()?;
+            }
         }
         dir.close()
     }
@@ -1523,23 +1568,25 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         iwc.set_codec(codec_for_name("SimpleText")?)?;
         let mut dir = LuceneTestCase::new_directory();
         {
-            let w = IndexWriter::new(dir.as_directory(), iwc)?;
-            w.add_document(&float_doc(
-                "f",
-                &[0f32; 4],
-                VectorSimilarityFunction::DOT_PRODUCT,
-            )?)?;
-            w.close()?;
-        }
-        {
-            let w = new_writer(dir.as_directory())?;
-            w.add_document(&float_doc(
-                "f",
-                &[0f32; 4],
-                VectorSimilarityFunction::DOT_PRODUCT,
-            )?)?;
-            w.force_merge(1)?;
-            w.close()?;
+            {
+                let w = IndexWriter::new(dir.as_directory(), iwc)?;
+                w.add_document(&float_doc(
+                    "f",
+                    &[0f32; 4],
+                    VectorSimilarityFunction::DOT_PRODUCT,
+                )?)?;
+                w.close()?;
+            }
+            {
+                let w = new_writer(dir.as_directory())?;
+                w.add_document(&float_doc(
+                    "f",
+                    &[0f32; 4],
+                    VectorSimilarityFunction::DOT_PRODUCT,
+                )?)?;
+                w.force_merge(1)?;
+                w.close()?;
+            }
         }
         dir.close()
     }
@@ -1559,51 +1606,53 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testDeleteAllVectorDocs()`.
     fn test_delete_all_vector_docs(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let w = new_writer(dir.as_directory())?;
-        let mut doc = Document::new();
-        doc.add(Box::new(StringField::new(
-            "id",
-            "0".to_string(),
-            Store::NO,
-        )?));
-        doc.add(Box::new(KnnFloatVectorField::new(
-            "v",
-            &[2.0, 3.0, 5.0, 6.0],
-            VectorSimilarityFunction::DOT_PRODUCT,
-        )?));
-        w.add_document(&doc)?;
-        w.add_document(&Document::new())?;
-        w.commit()?;
-
         {
-            let r = directory_reader::open_with_writer(&*w)?;
-            let values = only_leaf(&r)?.get_float_vector_values("v")?;
-            assert_not_null(values.is_some());
-            Assert::assert_equals(1i64, i64::from(values.expect("checked").size()));
-            r.close()?;
-        }
-        w.delete_documents_by_terms(vec![Term::new("id", BytesRef::new(b"0".to_vec()))])?;
-        w.force_merge(1)?;
-        {
-            let r = directory_reader::open_with_writer(&*w)?;
-            let leaf_reader = only_leaf(&r)?;
-            let values = leaf_reader.get_float_vector_values("v")?;
-            assert_not_null(values.is_some());
-            Assert::assert_equals(0i64, i64::from(values.expect("checked").size()));
-
-            // assert that knn search doesn't fail on a field with all deleted docs
-            let results = search_nearest(
-                &*leaf_reader,
+            let w = new_writer(dir.as_directory())?;
+            let mut doc = Document::new();
+            doc.add(Box::new(StringField::new(
+                "id",
+                "0".to_string(),
+                Store::NO,
+            )?));
+            doc.add(Box::new(KnnFloatVectorField::new(
                 "v",
-                &random_normalized_vector(4),
-                1,
-                i32::MAX,
-            )?;
-            Assert::assert_equals(0i64, results.score_docs.len() as i64);
-            drop(leaf_reader);
-            r.close()?;
+                &[2.0, 3.0, 5.0, 6.0],
+                VectorSimilarityFunction::DOT_PRODUCT,
+            )?));
+            w.add_document(&doc)?;
+            w.add_document(&Document::new())?;
+            w.commit()?;
+
+            {
+                let r = directory_reader::open_with_writer(&*w)?;
+                let values = only_leaf(&r)?.get_float_vector_values("v")?;
+                assert_not_null(values.is_some());
+                Assert::assert_equals(1i64, i64::from(values.expect("checked").size()));
+                r.close()?;
+            }
+            w.delete_documents_by_terms(vec![Term::new("id", BytesRef::new(b"0".to_vec()))])?;
+            w.force_merge(1)?;
+            {
+                let r = directory_reader::open_with_writer(&*w)?;
+                let leaf_reader = only_leaf(&r)?;
+                let values = leaf_reader.get_float_vector_values("v")?;
+                assert_not_null(values.is_some());
+                Assert::assert_equals(0i64, i64::from(values.expect("checked").size()));
+
+                // assert that knn search doesn't fail on a field with all deleted docs
+                let results = search_nearest(
+                    &*leaf_reader,
+                    "v",
+                    &random_normalized_vector(4),
+                    1,
+                    i32::MAX,
+                )?;
+                Assert::assert_equals(0i64, results.score_docs.len() as i64);
+                drop(leaf_reader);
+                r.close()?;
+            }
+            w.close()?;
         }
-        w.close()?;
         dir.close()
     }
 
@@ -1656,88 +1705,90 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
             field_vector_encodings[i] = self.random_vector_encoding();
         }
         let mut dir = LuceneTestCase::new_directory();
-        let w = RandomIndexWriter::new_with_config(
-            &*random(),
-            dir.as_directory(),
-            LuceneTestCase::new_index_writer_config(),
-        )?;
-        for _ in 0..num_docs {
-            let mut doc = Document::new();
+        {
+            let w = RandomIndexWriter::new_with_config(
+                &*random(),
+                dir.as_directory(),
+                LuceneTestCase::new_index_writer_config(),
+            )?;
+            for _ in 0..num_docs {
+                let mut doc = Document::new();
+                for field in 0..num_fields {
+                    let field_name = format!("int{field}");
+                    if random().next_int_bound(100) == 17 {
+                        match field_vector_encodings[field] {
+                            VectorEncoding::BYTE => {
+                                let b = random_vector8(field_dims[field]);
+                                doc.add(Box::new(KnnByteVectorField::new(
+                                    &field_name,
+                                    &b,
+                                    field_similarity_functions[field],
+                                )?));
+                                field_totals[field] += f64::from(b[0] as i8);
+                            }
+                            VectorEncoding::FLOAT32 => {
+                                let v = random_normalized_vector(field_dims[field]);
+                                doc.add(Box::new(KnnFloatVectorField::new(
+                                    &field_name,
+                                    &v,
+                                    field_similarity_functions[field],
+                                )?));
+                                field_totals[field] += f64::from(v[0]);
+                            }
+                        }
+                        field_doc_counts[field] += 1;
+                    }
+                }
+                w.add_document(&doc)?;
+            }
+            let r = w.get_reader()?;
             for field in 0..num_fields {
+                let mut doc_count = 0i32;
+                let mut checksum = 0f64;
                 let field_name = format!("int{field}");
-                if random().next_int_bound(100) == 17 {
-                    match field_vector_encodings[field] {
-                        VectorEncoding::BYTE => {
-                            let b = random_vector8(field_dims[field]);
-                            doc.add(Box::new(KnnByteVectorField::new(
-                                &field_name,
-                                &b,
-                                field_similarity_functions[field],
-                            )?));
-                            field_totals[field] += f64::from(b[0] as i8);
-                        }
-                        VectorEncoding::FLOAT32 => {
-                            let v = random_normalized_vector(field_dims[field]);
-                            doc.add(Box::new(KnnFloatVectorField::new(
-                                &field_name,
-                                &v,
-                                field_similarity_functions[field],
-                            )?));
-                            field_totals[field] += f64::from(v[0]);
+                match field_vector_encodings[field] {
+                    VectorEncoding::BYTE => {
+                        for ctx in Arc::clone(&r).leaves()? {
+                            if let Some(byte_vector_values) =
+                                ctx.leaf_reader().get_byte_vector_values(&field_name)?
+                            {
+                                doc_count += byte_vector_values.size();
+                                let mut iterator = byte_vector_values.iterator()?;
+                                while iterator.next_doc()? != NO_MORE_DOCS {
+                                    checksum += f64::from(
+                                        byte_vector_values.vector_value(iterator.index())?[0] as i8,
+                                    );
+                                }
+                            }
                         }
                     }
-                    field_doc_counts[field] += 1;
-                }
-            }
-            w.add_document(&doc)?;
-        }
-        let r = w.get_reader()?;
-        for field in 0..num_fields {
-            let mut doc_count = 0i32;
-            let mut checksum = 0f64;
-            let field_name = format!("int{field}");
-            match field_vector_encodings[field] {
-                VectorEncoding::BYTE => {
-                    for ctx in Arc::clone(&r).leaves()? {
-                        if let Some(byte_vector_values) =
-                            ctx.leaf_reader().get_byte_vector_values(&field_name)?
-                        {
-                            doc_count += byte_vector_values.size();
-                            let mut iterator = byte_vector_values.iterator()?;
-                            while iterator.next_doc()? != NO_MORE_DOCS {
-                                checksum += f64::from(
-                                    byte_vector_values.vector_value(iterator.index())?[0] as i8,
-                                );
+                    VectorEncoding::FLOAT32 => {
+                        for ctx in Arc::clone(&r).leaves()? {
+                            if let Some(vector_values) =
+                                ctx.leaf_reader().get_float_vector_values(&field_name)?
+                            {
+                                doc_count += vector_values.size();
+                                let mut iterator = vector_values.iterator()?;
+                                while iterator.next_doc()? != NO_MORE_DOCS {
+                                    checksum +=
+                                        f64::from(vector_values.vector_value(iterator.index())?[0]);
+                                }
                             }
                         }
                     }
                 }
-                VectorEncoding::FLOAT32 => {
-                    for ctx in Arc::clone(&r).leaves()? {
-                        if let Some(vector_values) =
-                            ctx.leaf_reader().get_float_vector_values(&field_name)?
-                        {
-                            doc_count += vector_values.size();
-                            let mut iterator = vector_values.iterator()?;
-                            while iterator.next_doc()? != NO_MORE_DOCS {
-                                checksum +=
-                                    f64::from(vector_values.vector_value(iterator.index())?[0]);
-                            }
-                        }
-                    }
-                }
+                Assert::assert_equals(i64::from(field_doc_counts[field]), i64::from(doc_count));
+                // Account for quantization done when indexing fields w/BYTE encoding
+                let delta = if field_vector_encodings[field] == VectorEncoding::BYTE {
+                    f64::from(num_docs) * 0.01
+                } else {
+                    1e-5
+                };
+                Assert::assert_equals_double_msg(None, field_totals[field], checksum, delta);
             }
-            Assert::assert_equals(i64::from(field_doc_counts[field]), i64::from(doc_count));
-            // Account for quantization done when indexing fields w/BYTE encoding
-            let delta = if field_vector_encodings[field] == VectorEncoding::BYTE {
-                f64::from(num_docs) * 0.01
-            } else {
-                1e-5
-            };
-            Assert::assert_equals_double_msg(None, field_totals[field], checksum, delta);
+            r.close()?;
+            w.close()?;
         }
-        r.close()?;
-        w.close()?;
         dir.close()
     }
 
@@ -1750,75 +1801,78 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         let field_name = "field";
         let similarity_function = self.knn_state().similarity_function();
         let mut dir = LuceneTestCase::new_directory();
-        let iw = IndexWriter::new(dir.as_directory(), iwc)?;
-        let num_doc = LuceneTestCase::at_least(100);
-        let mut dimension = LuceneTestCase::at_least(10);
-        if dimension % 2 != 0 {
-            dimension += 1;
-        }
-        let mut values: Vec<Option<Vec<f32>>> = vec![None; num_doc as usize];
-        for i in 0..num_doc {
-            if random().next_int_bound(7) != 3 {
-                // usually index a vector value for a doc
-                values[i as usize] = Some(random_normalized_vector(dimension));
+        {
+            let iw = IndexWriter::new(dir.as_directory(), iwc)?;
+            let num_doc = LuceneTestCase::at_least(100);
+            let mut dimension = LuceneTestCase::at_least(10);
+            if dimension % 2 != 0 {
+                dimension += 1;
             }
-            add_float_random_key(
-                &iw,
-                field_name,
-                i,
-                values[i as usize].as_deref(),
-                similarity_function,
-            )?;
-            if random().next_int_bound(10) == 2 {
-                let id = random().next_int_bound(i + 1).to_string();
-                iw.delete_documents_by_terms(vec![Term::new(
-                    "id",
-                    BytesRef::new(id.into_bytes()),
-                )])?;
-            }
-            if random().next_int_bound(10) == 3 {
-                iw.commit()?;
-            }
-        }
-        let vector_to_score = random_normalized_vector(dimension);
-        let reader = directory_reader::open_with_writer(&*iw)?;
-        for ctx in Arc::clone(&reader).leaves()? {
-            let Some(vector_values) = ctx.leaf_reader().get_float_vector_values(field_name)? else {
-                continue;
-            };
-            if vector_values.size() == 0 {
-                Assert::assert_true(vector_values.scorer(&vector_to_score)?.is_none());
-                continue;
-            }
-            let scorer = vector_values.scorer(&vector_to_score)?;
-            assert_not_null(scorer.is_some());
-            let mut scorer = scorer.expect("checked");
-            let first = scorer.iterator() as *mut dyn DocIdSetIterator as *const ();
-            let second = scorer.iterator() as *mut dyn DocIdSetIterator as *const ();
-            Assert::assert_true(std::ptr::eq(first, second));
-            // verify scorer iteration scores are valid & iteration with vectorValues is consistent
-            let mut values_iterator = vector_values.iterator()?;
-            while scorer.iterator().next_doc()? != NO_MORE_DOCS {
-                if values_iterator.next_doc()? == NO_MORE_DOCS {
-                    break;
+            let mut values: Vec<Option<Vec<f32>>> = vec![None; num_doc as usize];
+            for i in 0..num_doc {
+                if random().next_int_bound(7) != 3 {
+                    // usually index a vector value for a doc
+                    values[i as usize] = Some(random_normalized_vector(dimension));
                 }
-                let score = scorer.score()?;
-                Assert::assert_true(score >= 0.0);
-                Assert::assert_equals(
-                    i64::from(scorer.iterator().doc_id()),
-                    i64::from(values_iterator.doc_id()),
-                );
+                add_float_random_key(
+                    &iw,
+                    field_name,
+                    i,
+                    values[i as usize].as_deref(),
+                    similarity_function,
+                )?;
+                if random().next_int_bound(10) == 2 {
+                    let id = random().next_int_bound(i + 1).to_string();
+                    iw.delete_documents_by_terms(vec![Term::new(
+                        "id",
+                        BytesRef::new(id.into_bytes()),
+                    )])?;
+                }
+                if random().next_int_bound(10) == 3 {
+                    iw.commit()?;
+                }
             }
-            // verify that a new scorer can be obtained after iteration
-            let new_scorer = vector_values.scorer(&vector_to_score)?;
-            assert_not_null(new_scorer.is_some());
-            let mut new_scorer = new_scorer.expect("checked");
-            let old = scorer.iterator() as *mut dyn DocIdSetIterator as *const ();
-            let new = new_scorer.iterator() as *mut dyn DocIdSetIterator as *const ();
-            Assert::assert_false(std::ptr::eq(old, new));
+            let vector_to_score = random_normalized_vector(dimension);
+            let reader = directory_reader::open_with_writer(&*iw)?;
+            for ctx in Arc::clone(&reader).leaves()? {
+                let Some(vector_values) = ctx.leaf_reader().get_float_vector_values(field_name)?
+                else {
+                    continue;
+                };
+                if vector_values.size() == 0 {
+                    Assert::assert_true(vector_values.scorer(&vector_to_score)?.is_none());
+                    continue;
+                }
+                let scorer = vector_values.scorer(&vector_to_score)?;
+                assert_not_null(scorer.is_some());
+                let mut scorer = scorer.expect("checked");
+                let first = scorer.iterator() as *mut dyn DocIdSetIterator as *const ();
+                let second = scorer.iterator() as *mut dyn DocIdSetIterator as *const ();
+                Assert::assert_true(std::ptr::eq(first, second));
+                // verify scorer iteration scores are valid & iteration with vectorValues is consistent
+                let mut values_iterator = vector_values.iterator()?;
+                while scorer.iterator().next_doc()? != NO_MORE_DOCS {
+                    if values_iterator.next_doc()? == NO_MORE_DOCS {
+                        break;
+                    }
+                    let score = scorer.score()?;
+                    Assert::assert_true(score >= 0.0);
+                    Assert::assert_equals(
+                        i64::from(scorer.iterator().doc_id()),
+                        i64::from(values_iterator.doc_id()),
+                    );
+                }
+                // verify that a new scorer can be obtained after iteration
+                let new_scorer = vector_values.scorer(&vector_to_score)?;
+                assert_not_null(new_scorer.is_some());
+                let mut new_scorer = new_scorer.expect("checked");
+                let old = scorer.iterator() as *mut dyn DocIdSetIterator as *const ();
+                let new = new_scorer.iterator() as *mut dyn DocIdSetIterator as *const ();
+                Assert::assert_false(std::ptr::eq(old, new));
+            }
+            reader.close()?;
+            iw.close()?;
         }
-        reader.close()?;
-        iw.close()?;
         dir.close()
     }
 
@@ -1831,134 +1885,139 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         let field_name = "field";
         let similarity_function = self.knn_state().similarity_function();
         let mut dir = LuceneTestCase::new_directory();
-        let iw = IndexWriter::new(dir.as_directory(), iwc)?;
-        let num_doc = LuceneTestCase::at_least(100);
-        let mut dimension = LuceneTestCase::at_least(10);
-        if dimension % 2 != 0 {
-            dimension += 1;
-        }
-        let mut values: Vec<Option<Vec<u8>>> = vec![None; num_doc as usize];
-        for i in 0..num_doc {
-            if random().next_int_bound(7) != 3 {
-                // usually index a vector value for a doc
-                values[i as usize] = Some(random_vector8(dimension));
+        {
+            let iw = IndexWriter::new(dir.as_directory(), iwc)?;
+            let num_doc = LuceneTestCase::at_least(100);
+            let mut dimension = LuceneTestCase::at_least(10);
+            if dimension % 2 != 0 {
+                dimension += 1;
             }
-            add_byte_random_key(
-                &iw,
-                field_name,
-                i,
-                values[i as usize].as_deref(),
-                similarity_function,
-            )?;
-            if random().next_int_bound(10) == 2 {
-                let id = random().next_int_bound(i + 1).to_string();
-                iw.delete_documents_by_terms(vec![Term::new(
-                    "id",
-                    BytesRef::new(id.into_bytes()),
-                )])?;
-            }
-            if random().next_int_bound(10) == 3 {
-                iw.commit()?;
-            }
-        }
-        let vector_to_score = random_vector8(dimension);
-        let reader = directory_reader::open_with_writer(&*iw)?;
-        for ctx in Arc::clone(&reader).leaves()? {
-            let Some(vector_values) = ctx.leaf_reader().get_byte_vector_values(field_name)? else {
-                continue;
-            };
-            if vector_values.size() == 0 {
-                Assert::assert_true(vector_values.scorer(&vector_to_score)?.is_none());
-                continue;
-            }
-            let scorer = vector_values.scorer(&vector_to_score)?;
-            assert_not_null(scorer.is_some());
-            let mut scorer = scorer.expect("checked");
-            let first = scorer.iterator() as *mut dyn DocIdSetIterator as *const ();
-            let second = scorer.iterator() as *mut dyn DocIdSetIterator as *const ();
-            Assert::assert_true(std::ptr::eq(first, second));
-            // verify scorer iteration scores are valid & iteration with vectorValues is consistent
-            let mut values_iterator = vector_values.iterator()?;
-            while scorer.iterator().next_doc()? != NO_MORE_DOCS {
-                if values_iterator.next_doc()? == NO_MORE_DOCS {
-                    break;
+            let mut values: Vec<Option<Vec<u8>>> = vec![None; num_doc as usize];
+            for i in 0..num_doc {
+                if random().next_int_bound(7) != 3 {
+                    // usually index a vector value for a doc
+                    values[i as usize] = Some(random_vector8(dimension));
                 }
-                let score = scorer.score()?;
-                Assert::assert_true(score >= 0.0);
-                Assert::assert_equals(
-                    i64::from(scorer.iterator().doc_id()),
-                    i64::from(values_iterator.doc_id()),
-                );
+                add_byte_random_key(
+                    &iw,
+                    field_name,
+                    i,
+                    values[i as usize].as_deref(),
+                    similarity_function,
+                )?;
+                if random().next_int_bound(10) == 2 {
+                    let id = random().next_int_bound(i + 1).to_string();
+                    iw.delete_documents_by_terms(vec![Term::new(
+                        "id",
+                        BytesRef::new(id.into_bytes()),
+                    )])?;
+                }
+                if random().next_int_bound(10) == 3 {
+                    iw.commit()?;
+                }
             }
-            // verify that a new scorer can be obtained after iteration
-            let new_scorer = vector_values.scorer(&vector_to_score)?;
-            assert_not_null(new_scorer.is_some());
-            let mut new_scorer = new_scorer.expect("checked");
-            let old = scorer.iterator() as *mut dyn DocIdSetIterator as *const ();
-            let new = new_scorer.iterator() as *mut dyn DocIdSetIterator as *const ();
-            Assert::assert_false(std::ptr::eq(old, new));
+            let vector_to_score = random_vector8(dimension);
+            let reader = directory_reader::open_with_writer(&*iw)?;
+            for ctx in Arc::clone(&reader).leaves()? {
+                let Some(vector_values) = ctx.leaf_reader().get_byte_vector_values(field_name)?
+                else {
+                    continue;
+                };
+                if vector_values.size() == 0 {
+                    Assert::assert_true(vector_values.scorer(&vector_to_score)?.is_none());
+                    continue;
+                }
+                let scorer = vector_values.scorer(&vector_to_score)?;
+                assert_not_null(scorer.is_some());
+                let mut scorer = scorer.expect("checked");
+                let first = scorer.iterator() as *mut dyn DocIdSetIterator as *const ();
+                let second = scorer.iterator() as *mut dyn DocIdSetIterator as *const ();
+                Assert::assert_true(std::ptr::eq(first, second));
+                // verify scorer iteration scores are valid & iteration with vectorValues is consistent
+                let mut values_iterator = vector_values.iterator()?;
+                while scorer.iterator().next_doc()? != NO_MORE_DOCS {
+                    if values_iterator.next_doc()? == NO_MORE_DOCS {
+                        break;
+                    }
+                    let score = scorer.score()?;
+                    Assert::assert_true(score >= 0.0);
+                    Assert::assert_equals(
+                        i64::from(scorer.iterator().doc_id()),
+                        i64::from(values_iterator.doc_id()),
+                    );
+                }
+                // verify that a new scorer can be obtained after iteration
+                let new_scorer = vector_values.scorer(&vector_to_score)?;
+                assert_not_null(new_scorer.is_some());
+                let mut new_scorer = new_scorer.expect("checked");
+                let old = scorer.iterator() as *mut dyn DocIdSetIterator as *const ();
+                let new = new_scorer.iterator() as *mut dyn DocIdSetIterator as *const ();
+                Assert::assert_false(std::ptr::eq(old, new));
+            }
+            reader.close()?;
+            iw.close()?;
         }
-        reader.close()?;
-        iw.close()?;
         dir.close()
     }
 
     /// The body of `testEmptyFloatVectorData` and `testEmptyByteVectorData`.
     fn empty_vector_data(&self, bytes: bool) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let w = new_writer(dir.as_directory())?;
-        let mut doc1 = Document::new();
-        doc1.add(Box::new(StringField::new(
-            "id",
-            "0".to_string(),
-            Store::NO,
-        )?));
-        if bytes {
-            doc1.add(Box::new(KnnByteVectorField::new(
-                "v",
-                &[2, 3, 5, 6],
-                VectorSimilarityFunction::DOT_PRODUCT,
+        {
+            let w = new_writer(dir.as_directory())?;
+            let mut doc1 = Document::new();
+            doc1.add(Box::new(StringField::new(
+                "id",
+                "0".to_string(),
+                Store::NO,
             )?));
-        } else {
-            doc1.add(Box::new(KnnFloatVectorField::new(
-                "v",
-                &[2.0, 3.0, 5.0, 6.0],
-                VectorSimilarityFunction::DOT_PRODUCT,
+            if bytes {
+                doc1.add(Box::new(KnnByteVectorField::new(
+                    "v",
+                    &[2, 3, 5, 6],
+                    VectorSimilarityFunction::DOT_PRODUCT,
+                )?));
+            } else {
+                doc1.add(Box::new(KnnFloatVectorField::new(
+                    "v",
+                    &[2.0, 3.0, 5.0, 6.0],
+                    VectorSimilarityFunction::DOT_PRODUCT,
+                )?));
+            }
+            w.add_document(&doc1)?;
+
+            let mut doc2 = Document::new();
+            doc2.add(Box::new(StringField::new(
+                "id",
+                "1".to_string(),
+                Store::NO,
             )?));
+            w.add_document(&doc2)?;
+
+            w.delete_documents_by_terms(vec![Term::new("id", BytesRef::new(b"0".to_vec()))])?;
+            w.commit()?;
+            w.force_merge(1)?;
+
+            let reader = directory_reader::open_with_writer(&*w)?;
+            let r = only_leaf(&reader)?;
+            if bytes {
+                let values = r.get_byte_vector_values("v")?;
+                assert_not_null(values.is_some());
+                let values = values.expect("checked");
+                Assert::assert_equals(0i64, i64::from(values.size()));
+                Assert::assert_true(values.scorer(&[2, 3, 5, 6])?.is_none());
+            } else {
+                let values = r.get_float_vector_values("v")?;
+                assert_not_null(values.is_some());
+                let values = values.expect("checked");
+                Assert::assert_equals(0i64, i64::from(values.size()));
+                Assert::assert_true(values.scorer(&[2.0, 3.0, 5.0, 6.0])?.is_none());
+            }
+            self.assert_off_heap_byte_size(&r, "v")?;
+            drop(r);
+            reader.close()?;
+            w.close()?;
         }
-        w.add_document(&doc1)?;
-
-        let mut doc2 = Document::new();
-        doc2.add(Box::new(StringField::new(
-            "id",
-            "1".to_string(),
-            Store::NO,
-        )?));
-        w.add_document(&doc2)?;
-
-        w.delete_documents_by_terms(vec![Term::new("id", BytesRef::new(b"0".to_vec()))])?;
-        w.commit()?;
-        w.force_merge(1)?;
-
-        let reader = directory_reader::open_with_writer(&*w)?;
-        let r = only_leaf(&reader)?;
-        if bytes {
-            let values = r.get_byte_vector_values("v")?;
-            assert_not_null(values.is_some());
-            let values = values.expect("checked");
-            Assert::assert_equals(0i64, i64::from(values.size()));
-            Assert::assert_true(values.scorer(&[2, 3, 5, 6])?.is_none());
-        } else {
-            let values = r.get_float_vector_values("v")?;
-            assert_not_null(values.is_some());
-            let values = values.expect("checked");
-            Assert::assert_equals(0i64, i64::from(values.size()));
-            Assert::assert_true(values.scorer(&[2.0, 3.0, 5.0, 6.0])?.is_none());
-        }
-        self.assert_off_heap_byte_size(&r, "v")?;
-        drop(r);
-        reader.close()?;
-        w.close()?;
         dir.close()
     }
 
@@ -1979,39 +2038,41 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         let field_name = "field";
         let mut v = [0f32, 0.0];
         let mut dir = LuceneTestCase::new_directory();
-        let mut iwc = LuceneTestCase::new_index_writer_config();
-        iwc.set_merge_policy(Arc::new(NoMergePolicy::new()))?;
-        iwc.set_max_buffered_docs(3)?;
-        iwc.set_ram_buffer_size_mb(-1.0)?;
-        let iw = IndexWriter::new(dir.as_directory(), iwc)?;
-        // Java's `doc1` and `doc2` hold the same array, which reads [1, 0]
-        // when they are added.
-        v[0] = 1.0;
-        let doc1 = float_doc(field_name, &v, VectorSimilarityFunction::EUCLIDEAN)?;
-        let doc2 = float_doc(field_name, &v, VectorSimilarityFunction::EUCLIDEAN)?;
-        iw.add_document(&doc1)?;
-        iw.add_document(&doc2)?;
-        v[0] = 2.0;
-        let doc3 = float_doc(field_name, &v, VectorSimilarityFunction::EUCLIDEAN)?;
-        iw.add_document(&doc3)?;
-        iw.force_merge(1)?;
-        let reader = directory_reader::open_with_writer(&*iw)?;
-        let r = only_leaf(&reader)?;
-        let vector_values = r.get_float_vector_values(field_name)?.expect("vectors");
-        Assert::assert_equals(3i64, i64::from(vector_values.size()));
-        let mut iterator = vector_values.iterator()?;
-        iterator.next_doc()?;
-        Assert::assert_equals(0i64, i64::from(iterator.index()));
-        assert_float_equals(1.0, vector_values.vector_value(0)?[0], 0.0);
-        iterator.next_doc()?;
-        Assert::assert_equals(1i64, i64::from(iterator.index()));
-        assert_float_equals(1.0, vector_values.vector_value(1)?[0], 0.0);
-        iterator.next_doc()?;
-        Assert::assert_equals(2i64, i64::from(iterator.index()));
-        assert_float_equals(2.0, vector_values.vector_value(2)?[0], 0.0);
-        drop(r);
-        reader.close()?;
-        iw.close()?;
+        {
+            let mut iwc = LuceneTestCase::new_index_writer_config();
+            iwc.set_merge_policy(Arc::new(NoMergePolicy::new()))?;
+            iwc.set_max_buffered_docs(3)?;
+            iwc.set_ram_buffer_size_mb(-1.0)?;
+            let iw = IndexWriter::new(dir.as_directory(), iwc)?;
+            // Java's `doc1` and `doc2` hold the same array, which reads [1, 0]
+            // when they are added.
+            v[0] = 1.0;
+            let doc1 = float_doc(field_name, &v, VectorSimilarityFunction::EUCLIDEAN)?;
+            let doc2 = float_doc(field_name, &v, VectorSimilarityFunction::EUCLIDEAN)?;
+            iw.add_document(&doc1)?;
+            iw.add_document(&doc2)?;
+            v[0] = 2.0;
+            let doc3 = float_doc(field_name, &v, VectorSimilarityFunction::EUCLIDEAN)?;
+            iw.add_document(&doc3)?;
+            iw.force_merge(1)?;
+            let reader = directory_reader::open_with_writer(&*iw)?;
+            let r = only_leaf(&reader)?;
+            let vector_values = r.get_float_vector_values(field_name)?.expect("vectors");
+            Assert::assert_equals(3i64, i64::from(vector_values.size()));
+            let mut iterator = vector_values.iterator()?;
+            iterator.next_doc()?;
+            Assert::assert_equals(0i64, i64::from(iterator.index()));
+            assert_float_equals(1.0, vector_values.vector_value(0)?[0], 0.0);
+            iterator.next_doc()?;
+            Assert::assert_equals(1i64, i64::from(iterator.index()));
+            assert_float_equals(1.0, vector_values.vector_value(1)?[0], 0.0);
+            iterator.next_doc()?;
+            Assert::assert_equals(2i64, i64::from(iterator.index()));
+            assert_float_equals(2.0, vector_values.vector_value(2)?[0], 0.0);
+            drop(r);
+            reader.close()?;
+            iw.close()?;
+        }
         dir.close()
     }
 
@@ -2021,42 +2082,44 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         iwc.set_index_sort(sortkey_sort()?)?;
         let field_name = "field";
         let mut dir = LuceneTestCase::new_directory();
-        let iw = IndexWriter::new(dir.as_directory(), iwc)?;
-        let euclidean = VectorSimilarityFunction::EUCLIDEAN;
-        add_float(&iw, field_name, 1, 1, Some(&[-1.0, 0.0]), euclidean)?;
-        add_float(&iw, field_name, 4, 4, Some(&[0.0, 1.0]), euclidean)?;
-        add_float(&iw, field_name, 3, 3, None, euclidean)?;
-        add_float(&iw, field_name, 2, 2, Some(&[1.0, 0.0]), euclidean)?;
-        iw.force_merge(1)?;
-        let reader = directory_reader::open_with_writer(&*iw)?;
-        let leaf = only_leaf(&reader)?;
+        {
+            let iw = IndexWriter::new(dir.as_directory(), iwc)?;
+            let euclidean = VectorSimilarityFunction::EUCLIDEAN;
+            add_float(&iw, field_name, 1, 1, Some(&[-1.0, 0.0]), euclidean)?;
+            add_float(&iw, field_name, 4, 4, Some(&[0.0, 1.0]), euclidean)?;
+            add_float(&iw, field_name, 3, 3, None, euclidean)?;
+            add_float(&iw, field_name, 2, 2, Some(&[1.0, 0.0]), euclidean)?;
+            iw.force_merge(1)?;
+            let reader = directory_reader::open_with_writer(&*iw)?;
+            let leaf = only_leaf(&reader)?;
 
-        let vector_values = leaf.get_float_vector_values(field_name)?.expect("vectors");
-        Assert::assert_equals(2i64, i64::from(vector_values.dimension()));
-        Assert::assert_equals(3i64, i64::from(vector_values.size()));
-        let mut iterator = vector_values.iterator()?;
-        Assert::assert_equals_str(
-            None,
-            Some("1"),
-            stored_get(&*leaf, iterator.next_doc()?, "id")?.as_deref(),
-        );
-        assert_float_equals(-1.0, vector_values.vector_value(0)?[0], 0.0);
-        Assert::assert_equals_str(
-            None,
-            Some("2"),
-            stored_get(&*leaf, iterator.next_doc()?, "id")?.as_deref(),
-        );
-        assert_float_equals(1.0, vector_values.vector_value(1)?[0], 0.0);
-        Assert::assert_equals_str(
-            None,
-            Some("4"),
-            stored_get(&*leaf, iterator.next_doc()?, "id")?.as_deref(),
-        );
-        assert_float_equals(0.0, vector_values.vector_value(2)?[0], 0.0);
-        Assert::assert_equals(i64::from(NO_MORE_DOCS), i64::from(iterator.next_doc()?));
-        drop(leaf);
-        reader.close()?;
-        iw.close()?;
+            let vector_values = leaf.get_float_vector_values(field_name)?.expect("vectors");
+            Assert::assert_equals(2i64, i64::from(vector_values.dimension()));
+            Assert::assert_equals(3i64, i64::from(vector_values.size()));
+            let mut iterator = vector_values.iterator()?;
+            Assert::assert_equals_str(
+                None,
+                Some("1"),
+                stored_get(&*leaf, iterator.next_doc()?, "id")?.as_deref(),
+            );
+            assert_float_equals(-1.0, vector_values.vector_value(0)?[0], 0.0);
+            Assert::assert_equals_str(
+                None,
+                Some("2"),
+                stored_get(&*leaf, iterator.next_doc()?, "id")?.as_deref(),
+            );
+            assert_float_equals(1.0, vector_values.vector_value(1)?[0], 0.0);
+            Assert::assert_equals_str(
+                None,
+                Some("4"),
+                stored_get(&*leaf, iterator.next_doc()?, "id")?.as_deref(),
+            );
+            assert_float_equals(0.0, vector_values.vector_value(2)?[0], 0.0);
+            Assert::assert_equals(i64::from(NO_MORE_DOCS), i64::from(iterator.next_doc()?));
+            drop(leaf);
+            reader.close()?;
+            iw.close()?;
+        }
         dir.close()
     }
 
@@ -2066,121 +2129,125 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         iwc.set_index_sort(sortkey_sort()?)?;
         let field_name = "field";
         let mut dir = LuceneTestCase::new_directory();
-        let iw = IndexWriter::new(dir.as_directory(), iwc)?;
-        let euclidean = VectorSimilarityFunction::EUCLIDEAN;
-        add_byte(&iw, field_name, 1, 1, Some(&[(-1i8) as u8, 0]), euclidean)?;
-        add_byte(&iw, field_name, 4, 4, Some(&[0, 1]), euclidean)?;
-        add_byte(&iw, field_name, 3, 3, None, euclidean)?;
-        add_byte(&iw, field_name, 2, 2, Some(&[1, 0]), euclidean)?;
-        iw.force_merge(1)?;
-        let reader = directory_reader::open_with_writer(&*iw)?;
-        let leaf = only_leaf(&reader)?;
+        {
+            let iw = IndexWriter::new(dir.as_directory(), iwc)?;
+            let euclidean = VectorSimilarityFunction::EUCLIDEAN;
+            add_byte(&iw, field_name, 1, 1, Some(&[(-1i8) as u8, 0]), euclidean)?;
+            add_byte(&iw, field_name, 4, 4, Some(&[0, 1]), euclidean)?;
+            add_byte(&iw, field_name, 3, 3, None, euclidean)?;
+            add_byte(&iw, field_name, 2, 2, Some(&[1, 0]), euclidean)?;
+            iw.force_merge(1)?;
+            let reader = directory_reader::open_with_writer(&*iw)?;
+            let leaf = only_leaf(&reader)?;
 
-        let vector_values = leaf.get_byte_vector_values(field_name)?.expect("vectors");
-        Assert::assert_equals(2i64, i64::from(vector_values.dimension()));
-        Assert::assert_equals(3i64, i64::from(vector_values.size()));
-        Assert::assert_equals_str(
-            None,
-            Some("1"),
-            stored_get(&*leaf, vector_values.iterator()?.next_doc()?, "id")?.as_deref(),
-        );
-        assert_float_equals(
-            -1.0,
-            f32::from(vector_values.vector_value(0)?[0] as i8),
-            0.0,
-        );
-        Assert::assert_equals_str(
-            None,
-            Some("2"),
-            stored_get(&*leaf, vector_values.iterator()?.next_doc()?, "id")?.as_deref(),
-        );
-        assert_float_equals(1.0, f32::from(vector_values.vector_value(1)?[0] as i8), 0.0);
-        Assert::assert_equals_str(
-            None,
-            Some("4"),
-            stored_get(&*leaf, vector_values.iterator()?.next_doc()?, "id")?.as_deref(),
-        );
-        assert_float_equals(0.0, f32::from(vector_values.vector_value(2)?[0] as i8), 0.0);
-        Assert::assert_equals(
-            i64::from(NO_MORE_DOCS),
-            i64::from(vector_values.iterator()?.next_doc()?),
-        );
-        drop(leaf);
-        reader.close()?;
-        iw.close()?;
+            let vector_values = leaf.get_byte_vector_values(field_name)?.expect("vectors");
+            Assert::assert_equals(2i64, i64::from(vector_values.dimension()));
+            Assert::assert_equals(3i64, i64::from(vector_values.size()));
+            Assert::assert_equals_str(
+                None,
+                Some("1"),
+                stored_get(&*leaf, vector_values.iterator()?.next_doc()?, "id")?.as_deref(),
+            );
+            assert_float_equals(
+                -1.0,
+                f32::from(vector_values.vector_value(0)?[0] as i8),
+                0.0,
+            );
+            Assert::assert_equals_str(
+                None,
+                Some("2"),
+                stored_get(&*leaf, vector_values.iterator()?.next_doc()?, "id")?.as_deref(),
+            );
+            assert_float_equals(1.0, f32::from(vector_values.vector_value(1)?[0] as i8), 0.0);
+            Assert::assert_equals_str(
+                None,
+                Some("4"),
+                stored_get(&*leaf, vector_values.iterator()?.next_doc()?, "id")?.as_deref(),
+            );
+            assert_float_equals(0.0, f32::from(vector_values.vector_value(2)?[0] as i8), 0.0);
+            Assert::assert_equals(
+                i64::from(NO_MORE_DOCS),
+                i64::from(vector_values.iterator()?.next_doc()?),
+            );
+            drop(leaf);
+            reader.close()?;
+            iw.close()?;
+        }
         dir.close()
     }
 
     /// `testIndexMultipleKnnVectorFields()`.
     fn test_index_multiple_knn_vector_fields(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let mut iwc = LuceneTestCase::new_index_writer_config();
-        iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
-        let iw = IndexWriter::new(dir.as_directory(), iwc)?;
-        let mut v = [1.0f32, 2.0];
-        let doc_with = |v: &[f32]| -> Result<Document> {
+        {
+            let mut iwc = LuceneTestCase::new_index_writer_config();
+            iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+            let iw = IndexWriter::new(dir.as_directory(), iwc)?;
+            let mut v = [1.0f32, 2.0];
+            let doc_with = |v: &[f32]| -> Result<Document> {
+                let mut doc = Document::new();
+                doc.add(Box::new(KnnFloatVectorField::new(
+                    "field1",
+                    v,
+                    VectorSimilarityFunction::EUCLIDEAN,
+                )?));
+                doc.add(Box::new(KnnFloatVectorField::new(
+                    "field2",
+                    &[1.0, 2.0, 3.0, 4.0],
+                    VectorSimilarityFunction::EUCLIDEAN,
+                )?));
+                Ok(doc)
+            };
+            iw.add_document(&doc_with(&v)?)?;
+            v[0] = 2.0;
+            iw.add_document(&doc_with(&v)?)?;
             let mut doc = Document::new();
             doc.add(Box::new(KnnFloatVectorField::new(
-                "field1",
-                v,
-                VectorSimilarityFunction::EUCLIDEAN,
-            )?));
-            doc.add(Box::new(KnnFloatVectorField::new(
-                "field2",
+                "field3",
                 &[1.0, 2.0, 3.0, 4.0],
-                VectorSimilarityFunction::EUCLIDEAN,
+                VectorSimilarityFunction::DOT_PRODUCT,
             )?));
-            Ok(doc)
-        };
-        iw.add_document(&doc_with(&v)?)?;
-        v[0] = 2.0;
-        iw.add_document(&doc_with(&v)?)?;
-        let mut doc = Document::new();
-        doc.add(Box::new(KnnFloatVectorField::new(
-            "field3",
-            &[1.0, 2.0, 3.0, 4.0],
-            VectorSimilarityFunction::DOT_PRODUCT,
-        )?));
-        iw.add_document(&doc)?;
-        iw.force_merge(1)?;
-        let reader = directory_reader::open_with_writer(&*iw)?;
-        let leaf = Arc::clone(&reader).leaves()?[0].leaf_reader();
+            iw.add_document(&doc)?;
+            iw.force_merge(1)?;
+            let reader = directory_reader::open_with_writer(&*iw)?;
+            let leaf = Arc::clone(&reader).leaves()?[0].leaf_reader();
 
-        let vector_values = leaf.get_float_vector_values("field1")?.expect("field1");
-        Assert::assert_equals(2i64, i64::from(vector_values.dimension()));
-        Assert::assert_equals(2i64, i64::from(vector_values.size()));
-        let mut iterator = vector_values.iterator()?;
-        iterator.next_doc()?;
-        assert_float_equals(1.0, vector_values.vector_value(0)?[0], 0.0);
-        iterator.next_doc()?;
-        assert_float_equals(2.0, vector_values.vector_value(1)?[0], 0.0);
-        Assert::assert_equals(i64::from(NO_MORE_DOCS), i64::from(iterator.next_doc()?));
+            let vector_values = leaf.get_float_vector_values("field1")?.expect("field1");
+            Assert::assert_equals(2i64, i64::from(vector_values.dimension()));
+            Assert::assert_equals(2i64, i64::from(vector_values.size()));
+            let mut iterator = vector_values.iterator()?;
+            iterator.next_doc()?;
+            assert_float_equals(1.0, vector_values.vector_value(0)?[0], 0.0);
+            iterator.next_doc()?;
+            assert_float_equals(2.0, vector_values.vector_value(1)?[0], 0.0);
+            Assert::assert_equals(i64::from(NO_MORE_DOCS), i64::from(iterator.next_doc()?));
 
-        let vector_values2 = leaf.get_float_vector_values("field2")?.expect("field2");
-        let mut it2 = vector_values2.iterator()?;
-        Assert::assert_equals(4i64, i64::from(vector_values2.dimension()));
-        Assert::assert_equals(2i64, i64::from(vector_values2.size()));
-        it2.next_doc()?;
-        assert_float_equals(2.0, vector_values2.vector_value(0)?[1], 0.0);
-        it2.next_doc()?;
-        assert_float_equals(2.0, vector_values2.vector_value(1)?[1], 0.0);
-        Assert::assert_equals(i64::from(NO_MORE_DOCS), i64::from(it2.next_doc()?));
+            let vector_values2 = leaf.get_float_vector_values("field2")?.expect("field2");
+            let mut it2 = vector_values2.iterator()?;
+            Assert::assert_equals(4i64, i64::from(vector_values2.dimension()));
+            Assert::assert_equals(2i64, i64::from(vector_values2.size()));
+            it2.next_doc()?;
+            assert_float_equals(2.0, vector_values2.vector_value(0)?[1], 0.0);
+            it2.next_doc()?;
+            assert_float_equals(2.0, vector_values2.vector_value(1)?[1], 0.0);
+            Assert::assert_equals(i64::from(NO_MORE_DOCS), i64::from(it2.next_doc()?));
 
-        let vector_values3 = leaf.get_float_vector_values("field3")?.expect("field3");
-        Assert::assert_equals(4i64, i64::from(vector_values3.dimension()));
-        Assert::assert_equals(1i64, i64::from(vector_values3.size()));
-        let mut it3 = vector_values3.iterator()?;
-        it3.next_doc()?;
-        Assert::assert_equals_double_msg(
-            None,
-            1.0,
-            f64::from(vector_values3.vector_value(0)?[0]),
-            0.1,
-        );
-        Assert::assert_equals(i64::from(NO_MORE_DOCS), i64::from(it3.next_doc()?));
-        drop(leaf);
-        reader.close()?;
-        iw.close()?;
+            let vector_values3 = leaf.get_float_vector_values("field3")?.expect("field3");
+            Assert::assert_equals(4i64, i64::from(vector_values3.dimension()));
+            Assert::assert_equals(1i64, i64::from(vector_values3.size()));
+            let mut it3 = vector_values3.iterator()?;
+            it3.next_doc()?;
+            Assert::assert_equals_double_msg(
+                None,
+                1.0,
+                f64::from(vector_values3.vector_value(0)?[0]),
+                0.1,
+            );
+            Assert::assert_equals(i64::from(NO_MORE_DOCS), i64::from(it3.next_doc()?));
+            drop(leaf);
+            reader.close()?;
+            iw.close()?;
+        }
         dir.close()
     }
 
@@ -2196,90 +2263,92 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         let field_name = "field";
         let similarity_function = self.knn_state().similarity_function();
         let mut dir = LuceneTestCase::new_directory();
-        let iw = IndexWriter::new(dir.as_directory(), iwc)?;
-        let num_doc = LuceneTestCase::at_least(100);
-        let mut dimension = LuceneTestCase::at_least(10);
-        if dimension % 2 != 0 {
-            dimension += 1;
-        }
-        let mut scratch = vec![0f32; dimension as usize];
-        let mut num_values = 0;
-        let mut values: Vec<Option<Vec<f32>>> = vec![None; num_doc as usize];
-        for i in 0..num_doc {
-            if random().next_int_bound(7) != 3 {
-                // usually index a vector value for a doc
-                values[i as usize] = Some(random_normalized_vector(dimension));
-                num_values += 1;
+        {
+            let iw = IndexWriter::new(dir.as_directory(), iwc)?;
+            let num_doc = LuceneTestCase::at_least(100);
+            let mut dimension = LuceneTestCase::at_least(10);
+            if dimension % 2 != 0 {
+                dimension += 1;
             }
-            if random().next_boolean() && values[i as usize].is_some() {
-                // sometimes use a shared scratch array
-                scratch.copy_from_slice(values[i as usize].as_ref().expect("checked"));
-                add_float_random_key(&iw, field_name, i, Some(&scratch), similarity_function)?;
-            } else {
-                add_float_random_key(
-                    &iw,
-                    field_name,
-                    i,
-                    values[i as usize].as_deref(),
-                    similarity_function,
-                )?;
-            }
-            if random().next_int_bound(10) == 2 {
-                // sometimes delete a random document
-                let id_to_delete = random().next_int_bound(i + 1);
-                iw.delete_documents_by_terms(vec![Term::new(
-                    "id",
-                    BytesRef::new(id_to_delete.to_string().into_bytes()),
-                )])?;
-                // and remember that it was deleted
-                if values[id_to_delete as usize].is_some() {
-                    values[id_to_delete as usize] = None;
-                    num_values -= 1;
+            let mut scratch = vec![0f32; dimension as usize];
+            let mut num_values = 0;
+            let mut values: Vec<Option<Vec<f32>>> = vec![None; num_doc as usize];
+            for i in 0..num_doc {
+                if random().next_int_bound(7) != 3 {
+                    // usually index a vector value for a doc
+                    values[i as usize] = Some(random_normalized_vector(dimension));
+                    num_values += 1;
                 }
-            }
-            if random().next_int_bound(10) == 3 {
-                iw.commit()?;
-            }
-        }
-        let mut num_deletes = 0;
-        let reader = directory_reader::open_with_writer(&*iw)?;
-        let mut value_count = 0;
-        let mut total_size = 0;
-        for ctx in Arc::clone(&reader).leaves()? {
-            let leaf = ctx.leaf_reader();
-            let Some(vector_values) = leaf.get_float_vector_values(field_name)? else {
-                continue;
-            };
-            total_size += vector_values.size();
-            let mut iterator = vector_values.iterator()?;
-            loop {
-                let doc_id = iterator.next_doc()?;
-                if doc_id == NO_MORE_DOCS {
-                    break;
-                }
-                let v = vector_values.vector_value(iterator.index())?;
-                Assert::assert_equals(i64::from(dimension), v.len() as i64);
-                let id_string = stored_get(&*leaf, doc_id, "id")?.expect("id is stored");
-                let id = parse_int(&id_string);
-                let live_docs = leaf.get_live_docs();
-                if live_docs.as_ref().is_none_or(|l| l.get(doc_id as usize)) {
-                    assert_float_array_equals(
-                        &format!("{id_string} {doc_id}"),
-                        values[id as usize].as_deref(),
-                        &v,
-                        0.0,
-                    );
-                    value_count += 1;
+                if random().next_boolean() && values[i as usize].is_some() {
+                    // sometimes use a shared scratch array
+                    scratch.copy_from_slice(values[i as usize].as_ref().expect("checked"));
+                    add_float_random_key(&iw, field_name, i, Some(&scratch), similarity_function)?;
                 } else {
-                    num_deletes += 1;
-                    assert_null(values[id as usize].as_ref().map(|v| format!("{v:?}")));
+                    add_float_random_key(
+                        &iw,
+                        field_name,
+                        i,
+                        values[i as usize].as_deref(),
+                        similarity_function,
+                    )?;
+                }
+                if random().next_int_bound(10) == 2 {
+                    // sometimes delete a random document
+                    let id_to_delete = random().next_int_bound(i + 1);
+                    iw.delete_documents_by_terms(vec![Term::new(
+                        "id",
+                        BytesRef::new(id_to_delete.to_string().into_bytes()),
+                    )])?;
+                    // and remember that it was deleted
+                    if values[id_to_delete as usize].is_some() {
+                        values[id_to_delete as usize] = None;
+                        num_values -= 1;
+                    }
+                }
+                if random().next_int_bound(10) == 3 {
+                    iw.commit()?;
                 }
             }
+            let mut num_deletes = 0;
+            let reader = directory_reader::open_with_writer(&*iw)?;
+            let mut value_count = 0;
+            let mut total_size = 0;
+            for ctx in Arc::clone(&reader).leaves()? {
+                let leaf = ctx.leaf_reader();
+                let Some(vector_values) = leaf.get_float_vector_values(field_name)? else {
+                    continue;
+                };
+                total_size += vector_values.size();
+                let mut iterator = vector_values.iterator()?;
+                loop {
+                    let doc_id = iterator.next_doc()?;
+                    if doc_id == NO_MORE_DOCS {
+                        break;
+                    }
+                    let v = vector_values.vector_value(iterator.index())?;
+                    Assert::assert_equals(i64::from(dimension), v.len() as i64);
+                    let id_string = stored_get(&*leaf, doc_id, "id")?.expect("id is stored");
+                    let id = parse_int(&id_string);
+                    let live_docs = leaf.get_live_docs();
+                    if live_docs.as_ref().is_none_or(|l| l.get(doc_id as usize)) {
+                        assert_float_array_equals(
+                            &format!("{id_string} {doc_id}"),
+                            values[id as usize].as_deref(),
+                            &v,
+                            0.0,
+                        );
+                        value_count += 1;
+                    } else {
+                        num_deletes += 1;
+                        assert_null(values[id as usize].as_ref().map(|v| format!("{v:?}")));
+                    }
+                }
+            }
+            Assert::assert_equals(i64::from(num_values), i64::from(value_count));
+            Assert::assert_equals(i64::from(num_values), i64::from(total_size - num_deletes));
+            reader.close()?;
+            iw.close()?;
         }
-        Assert::assert_equals(i64::from(num_values), i64::from(value_count));
-        Assert::assert_equals(i64::from(num_values), i64::from(total_size - num_deletes));
-        reader.close()?;
-        iw.close()?;
         dir.close()
     }
 
@@ -2295,96 +2364,98 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         let field_name = "field";
         let similarity_function = self.knn_state().similarity_function();
         let mut dir = LuceneTestCase::new_directory();
-        let iw = IndexWriter::new(dir.as_directory(), iwc)?;
-        let num_doc = LuceneTestCase::at_least(100);
-        let mut dimension = LuceneTestCase::at_least(10);
-        if dimension % 2 != 0 {
-            dimension += 1;
-        }
-        let mut scratch = vec![0u8; dimension as usize];
-        let mut num_values = 0;
-        let mut values: Vec<Option<Vec<u8>>> = vec![None; num_doc as usize];
-        for i in 0..num_doc {
-            if random().next_int_bound(7) != 3 {
-                // usually index a vector value for a doc
-                values[i as usize] = Some(random_vector8(dimension));
-                num_values += 1;
+        {
+            let iw = IndexWriter::new(dir.as_directory(), iwc)?;
+            let num_doc = LuceneTestCase::at_least(100);
+            let mut dimension = LuceneTestCase::at_least(10);
+            if dimension % 2 != 0 {
+                dimension += 1;
             }
-            if random().next_boolean() && values[i as usize].is_some() {
-                // sometimes use a shared scratch array
-                scratch.copy_from_slice(values[i as usize].as_ref().expect("checked"));
-                add_byte_random_key(&iw, field_name, i, Some(&scratch), similarity_function)?;
-            } else {
-                add_byte_random_key(
-                    &iw,
-                    field_name,
-                    i,
-                    values[i as usize].as_deref(),
-                    similarity_function,
-                )?;
-            }
-            if random().next_int_bound(10) == 2 {
-                // sometimes delete a random document
-                let id_to_delete = random().next_int_bound(i + 1);
-                iw.delete_documents_by_terms(vec![Term::new(
-                    "id",
-                    BytesRef::new(id_to_delete.to_string().into_bytes()),
-                )])?;
-                // and remember that it was deleted
-                if values[id_to_delete as usize].is_some() {
-                    values[id_to_delete as usize] = None;
-                    num_values -= 1;
+            let mut scratch = vec![0u8; dimension as usize];
+            let mut num_values = 0;
+            let mut values: Vec<Option<Vec<u8>>> = vec![None; num_doc as usize];
+            for i in 0..num_doc {
+                if random().next_int_bound(7) != 3 {
+                    // usually index a vector value for a doc
+                    values[i as usize] = Some(random_vector8(dimension));
+                    num_values += 1;
                 }
-            }
-            if random().next_int_bound(10) == 3 {
-                iw.commit()?;
-            }
-        }
-        let mut num_deletes = 0;
-        let reader = directory_reader::open_with_writer(&*iw)?;
-        let mut value_count = 0;
-        let mut total_size = 0;
-        for ctx in Arc::clone(&reader).leaves()? {
-            let leaf = ctx.leaf_reader();
-            let Some(vector_values) = leaf.get_byte_vector_values(field_name)? else {
-                continue;
-            };
-            total_size += vector_values.size();
-            let mut iterator = vector_values.iterator()?;
-            loop {
-                let doc_id = iterator.next_doc()?;
-                if doc_id == NO_MORE_DOCS {
-                    break;
-                }
-                let v = vector_values.vector_value(iterator.index())?;
-                Assert::assert_equals(i64::from(dimension), v.len() as i64);
-                let id_string = stored_get(&*leaf, doc_id, "id")?.expect("id is stored");
-                let id = parse_int(&id_string);
-                let live_docs = leaf.get_live_docs();
-                if live_docs.as_ref().is_none_or(|l| l.get(doc_id as usize)) {
-                    // `values[id].compareTo(new BytesRef(v))`: a `null`
-                    // `values[id]` is Java's NullPointerException.
-                    let expected = values[id as usize].as_ref().unwrap_or_else(|| {
-                        randomizedtesting::jdk::exception::throw_without_message(
-                            "java.lang.NullPointerException",
-                        )
-                    });
-                    Assert::assert_equals_msg(
-                        Some(&id_string),
-                        0i64,
-                        i64::from(expected.as_slice().cmp(v.as_slice()) as i32),
-                    );
-                    value_count += 1;
+                if random().next_boolean() && values[i as usize].is_some() {
+                    // sometimes use a shared scratch array
+                    scratch.copy_from_slice(values[i as usize].as_ref().expect("checked"));
+                    add_byte_random_key(&iw, field_name, i, Some(&scratch), similarity_function)?;
                 } else {
-                    num_deletes += 1;
-                    assert_null(values[id as usize].as_ref().map(|v| format!("{v:?}")));
+                    add_byte_random_key(
+                        &iw,
+                        field_name,
+                        i,
+                        values[i as usize].as_deref(),
+                        similarity_function,
+                    )?;
+                }
+                if random().next_int_bound(10) == 2 {
+                    // sometimes delete a random document
+                    let id_to_delete = random().next_int_bound(i + 1);
+                    iw.delete_documents_by_terms(vec![Term::new(
+                        "id",
+                        BytesRef::new(id_to_delete.to_string().into_bytes()),
+                    )])?;
+                    // and remember that it was deleted
+                    if values[id_to_delete as usize].is_some() {
+                        values[id_to_delete as usize] = None;
+                        num_values -= 1;
+                    }
+                }
+                if random().next_int_bound(10) == 3 {
+                    iw.commit()?;
                 }
             }
+            let mut num_deletes = 0;
+            let reader = directory_reader::open_with_writer(&*iw)?;
+            let mut value_count = 0;
+            let mut total_size = 0;
+            for ctx in Arc::clone(&reader).leaves()? {
+                let leaf = ctx.leaf_reader();
+                let Some(vector_values) = leaf.get_byte_vector_values(field_name)? else {
+                    continue;
+                };
+                total_size += vector_values.size();
+                let mut iterator = vector_values.iterator()?;
+                loop {
+                    let doc_id = iterator.next_doc()?;
+                    if doc_id == NO_MORE_DOCS {
+                        break;
+                    }
+                    let v = vector_values.vector_value(iterator.index())?;
+                    Assert::assert_equals(i64::from(dimension), v.len() as i64);
+                    let id_string = stored_get(&*leaf, doc_id, "id")?.expect("id is stored");
+                    let id = parse_int(&id_string);
+                    let live_docs = leaf.get_live_docs();
+                    if live_docs.as_ref().is_none_or(|l| l.get(doc_id as usize)) {
+                        // `values[id].compareTo(new BytesRef(v))`: a `null`
+                        // `values[id]` is Java's NullPointerException.
+                        let expected = values[id as usize].as_ref().unwrap_or_else(|| {
+                            randomizedtesting::jdk::exception::throw_without_message(
+                                "java.lang.NullPointerException",
+                            )
+                        });
+                        Assert::assert_equals_msg(
+                            Some(&id_string),
+                            0i64,
+                            i64::from(expected.as_slice().cmp(v.as_slice()) as i32),
+                        );
+                        value_count += 1;
+                    } else {
+                        num_deletes += 1;
+                        assert_null(values[id as usize].as_ref().map(|v| format!("{v:?}")));
+                    }
+                }
+            }
+            Assert::assert_equals(i64::from(num_values), i64::from(value_count));
+            Assert::assert_equals(i64::from(num_values), i64::from(total_size - num_deletes));
+            reader.close()?;
+            iw.close()?;
         }
-        Assert::assert_equals(i64::from(num_values), i64::from(value_count));
-        Assert::assert_equals(i64::from(num_values), i64::from(total_size - num_deletes));
-        reader.close()?;
-        iw.close()?;
         dir.close()
     }
 
@@ -2396,80 +2467,82 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         let iwc = LuceneTestCase::new_index_writer_config();
         let field_name = "field";
         let mut dir = LuceneTestCase::new_directory();
-        let iw = IndexWriter::new(dir.as_directory(), iwc)?;
-        let num_doc = 300;
-        let dimension = 10;
-        for i in 0..num_doc {
-            let value = if random().next_int_bound(7) != 3 {
-                // usually index a vector value for a doc
-                Some(random_normalized_vector(dimension))
-            } else {
-                None
-            };
-            add_float_random_key(
-                &iw,
-                field_name,
-                i,
-                value.as_deref(),
-                VectorSimilarityFunction::EUCLIDEAN,
-            )?;
+        {
+            let iw = IndexWriter::new(dir.as_directory(), iwc)?;
+            let num_doc = 300;
+            let dimension = 10;
+            for i in 0..num_doc {
+                let value = if random().next_int_bound(7) != 3 {
+                    // usually index a vector value for a doc
+                    Some(random_normalized_vector(dimension))
+                } else {
+                    None
+                };
+                add_float_random_key(
+                    &iw,
+                    field_name,
+                    i,
+                    value.as_deref(),
+                    VectorSimilarityFunction::EUCLIDEAN,
+                )?;
+            }
+            iw.force_merge(1)?;
+
+            // randomly delete some documents
+            for _ in 0..30 {
+                let id_to_delete = random().next_int_bound(num_doc);
+                iw.delete_documents_by_terms(vec![Term::new(
+                    "id",
+                    BytesRef::new(id_to_delete.to_string().into_bytes()),
+                )])?;
+            }
+
+            let reader = directory_reader::open_with_writer(&*iw)?;
+            for ctx in Arc::clone(&reader).leaves()? {
+                let leaf = ctx.leaf_reader();
+                let Some(vector_values) = leaf.get_float_vector_values(field_name)? else {
+                    continue;
+                };
+
+                // check the limit is hit when it's very small
+                let k = 5 + random().next_int_bound(45);
+                let visited_limit = k + random().next_int_bound(5);
+                let results = search_nearest(
+                    &*leaf,
+                    field_name,
+                    &random_normalized_vector(dimension),
+                    k,
+                    visited_limit,
+                )?;
+                Assert::assert_true(
+                    results.total_hits.relation() == TotalHitsRelation::GREATER_THAN_OR_EQUAL_TO,
+                );
+                let size = EXHAUSTIVE_BULK_SCORE_ORDS as i64;
+                // visit limit is a "best effort" limit given our bulk scoring logic; assert that we
+                // are within reasonable bounds
+                Assert::assert_true(
+                    results.total_hits.value() == i64::from(visited_limit)
+                        || results.total_hits.value()
+                            <= ((i64::from(visited_limit) + size - 1) / size) * size,
+                );
+
+                // check the limit is not hit when it clearly exceeds the number of vectors
+                let k = vector_values.size();
+                let visited_limit = k + 30;
+                let results = search_nearest(
+                    &*leaf,
+                    field_name,
+                    &random_normalized_vector(dimension),
+                    k,
+                    visited_limit,
+                )?;
+                Assert::assert_true(results.total_hits.relation() == TotalHitsRelation::EQUAL_TO);
+                Assert::assert_true(results.total_hits.value() <= i64::from(visited_limit));
+                self.assert_off_heap_byte_size(&leaf, field_name)?;
+            }
+            reader.close()?;
+            iw.close()?;
         }
-        iw.force_merge(1)?;
-
-        // randomly delete some documents
-        for _ in 0..30 {
-            let id_to_delete = random().next_int_bound(num_doc);
-            iw.delete_documents_by_terms(vec![Term::new(
-                "id",
-                BytesRef::new(id_to_delete.to_string().into_bytes()),
-            )])?;
-        }
-
-        let reader = directory_reader::open_with_writer(&*iw)?;
-        for ctx in Arc::clone(&reader).leaves()? {
-            let leaf = ctx.leaf_reader();
-            let Some(vector_values) = leaf.get_float_vector_values(field_name)? else {
-                continue;
-            };
-
-            // check the limit is hit when it's very small
-            let k = 5 + random().next_int_bound(45);
-            let visited_limit = k + random().next_int_bound(5);
-            let results = search_nearest(
-                &*leaf,
-                field_name,
-                &random_normalized_vector(dimension),
-                k,
-                visited_limit,
-            )?;
-            Assert::assert_true(
-                results.total_hits.relation() == TotalHitsRelation::GREATER_THAN_OR_EQUAL_TO,
-            );
-            let size = EXHAUSTIVE_BULK_SCORE_ORDS as i64;
-            // visit limit is a "best effort" limit given our bulk scoring logic; assert that we
-            // are within reasonable bounds
-            Assert::assert_true(
-                results.total_hits.value() == i64::from(visited_limit)
-                    || results.total_hits.value()
-                        <= ((i64::from(visited_limit) + size - 1) / size) * size,
-            );
-
-            // check the limit is not hit when it clearly exceeds the number of vectors
-            let k = vector_values.size();
-            let visited_limit = k + 30;
-            let results = search_nearest(
-                &*leaf,
-                field_name,
-                &random_normalized_vector(dimension),
-                k,
-                visited_limit,
-            )?;
-            Assert::assert_true(results.total_hits.relation() == TotalHitsRelation::EQUAL_TO);
-            Assert::assert_true(results.total_hits.value() <= i64::from(visited_limit));
-            self.assert_off_heap_byte_size(&leaf, field_name)?;
-        }
-        reader.close()?;
-        iw.close()?;
         dir.close()
     }
 
@@ -2482,93 +2555,97 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         let iwc = LuceneTestCase::new_index_writer_config();
         let field_name = "field";
         let mut dir = LuceneTestCase::new_directory();
-        let iw = IndexWriter::new(dir.as_directory(), iwc)?;
-        let num_doc = LuceneTestCase::at_least(100);
-        let mut dimension = LuceneTestCase::at_least(10);
-        if dimension % 2 != 0 {
-            dimension += 1;
-        }
-        let mut id2value: Vec<Option<Vec<f32>>> = vec![None; num_doc as usize];
-        for _ in 0..num_doc {
-            let id = random().next_int_bound(num_doc);
-            let value = if random().next_int_bound(7) != 3 {
-                // usually index a vector value for a doc
-                Some(random_normalized_vector(dimension))
-            } else {
-                None
-            };
-            id2value[id as usize] = value.clone();
-            add_float_random_key(
-                &iw,
-                field_name,
-                id,
-                value.as_deref(),
-                VectorSimilarityFunction::EUCLIDEAN,
-            )?;
-        }
-        let reader = directory_reader::open_with_writer(&*iw)?;
-        for ctx in Arc::clone(&reader).leaves()? {
-            let leaf = ctx.leaf_reader();
-            let live_docs = leaf.get_live_docs();
-            let Some(vector_values) = leaf.get_float_vector_values(field_name)? else {
-                continue;
-            };
-            let mut num_live_docs_with_vectors = 0;
-            let mut iterator = vector_values.iterator()?;
-            loop {
-                let doc_id = iterator.next_doc()?;
-                if doc_id == NO_MORE_DOCS {
-                    break;
+        {
+            let iw = IndexWriter::new(dir.as_directory(), iwc)?;
+            let num_doc = LuceneTestCase::at_least(100);
+            let mut dimension = LuceneTestCase::at_least(10);
+            if dimension % 2 != 0 {
+                dimension += 1;
+            }
+            let mut id2value: Vec<Option<Vec<f32>>> = vec![None; num_doc as usize];
+            for _ in 0..num_doc {
+                let id = random().next_int_bound(num_doc);
+                let value = if random().next_int_bound(7) != 3 {
+                    // usually index a vector value for a doc
+                    Some(random_normalized_vector(dimension))
+                } else {
+                    None
+                };
+                id2value[id as usize] = value.clone();
+                add_float_random_key(
+                    &iw,
+                    field_name,
+                    id,
+                    value.as_deref(),
+                    VectorSimilarityFunction::EUCLIDEAN,
+                )?;
+            }
+            let reader = directory_reader::open_with_writer(&*iw)?;
+            for ctx in Arc::clone(&reader).leaves()? {
+                let leaf = ctx.leaf_reader();
+                let live_docs = leaf.get_live_docs();
+                let Some(vector_values) = leaf.get_float_vector_values(field_name)? else {
+                    continue;
+                };
+                let mut num_live_docs_with_vectors = 0;
+                let mut iterator = vector_values.iterator()?;
+                loop {
+                    let doc_id = iterator.next_doc()?;
+                    if doc_id == NO_MORE_DOCS {
+                        break;
+                    }
+                    let v = vector_values.vector_value(iterator.index())?;
+                    Assert::assert_equals(i64::from(dimension), v.len() as i64);
+                    let id_string = stored_get(&*leaf, doc_id, "id")?.expect("id is stored");
+                    let id = parse_int(&id_string);
+                    if live_docs.as_ref().is_none_or(|l| l.get(doc_id as usize)) {
+                        assert_float_array_equals(
+                            &format!(
+                                "values differ for id={id_string}, docid={doc_id} leaf={}",
+                                ctx.ord()
+                            ),
+                            id2value[id as usize].as_deref(),
+                            &v,
+                            0.0,
+                        );
+                        num_live_docs_with_vectors += 1;
+                    } else if let Some(expected) = &id2value[id as usize] {
+                        Assert::assert_false(*expected == v);
+                    }
                 }
-                let v = vector_values.vector_value(iterator.index())?;
-                Assert::assert_equals(i64::from(dimension), v.len() as i64);
-                let id_string = stored_get(&*leaf, doc_id, "id")?.expect("id is stored");
-                let id = parse_int(&id_string);
-                if live_docs.as_ref().is_none_or(|l| l.get(doc_id as usize)) {
-                    assert_float_array_equals(
-                        &format!(
-                            "values differ for id={id_string}, docid={doc_id} leaf={}",
-                            ctx.ord()
-                        ),
-                        id2value[id as usize].as_deref(),
-                        &v,
-                        0.0,
+
+                if num_live_docs_with_vectors == 0 {
+                    continue;
+                }
+
+                // assert that searchNearestVectors returns the expected number of documents,
+                // in descending score order
+                let size = leaf
+                    .get_float_vector_values(field_name)?
+                    .expect("vectors")
+                    .size();
+                let mut k = random().next_int_bound(size / 10 + 1) + 1;
+                if k > num_live_docs_with_vectors {
+                    k = num_live_docs_with_vectors;
+                }
+                let results = search_nearest(
+                    &*leaf,
+                    field_name,
+                    &random_normalized_vector(dimension),
+                    k,
+                    i32::MAX,
+                )?;
+                Assert::assert_equals(i64::from(k.min(size)), results.score_docs.len() as i64);
+                for i in 0..(k - 1) as usize {
+                    Assert::assert_true(
+                        results.score_docs[i].score >= results.score_docs[i + 1].score,
                     );
-                    num_live_docs_with_vectors += 1;
-                } else if let Some(expected) = &id2value[id as usize] {
-                    Assert::assert_false(*expected == v);
                 }
+                self.assert_off_heap_byte_size(&leaf, field_name)?;
             }
-
-            if num_live_docs_with_vectors == 0 {
-                continue;
-            }
-
-            // assert that searchNearestVectors returns the expected number of documents,
-            // in descending score order
-            let size = leaf
-                .get_float_vector_values(field_name)?
-                .expect("vectors")
-                .size();
-            let mut k = random().next_int_bound(size / 10 + 1) + 1;
-            if k > num_live_docs_with_vectors {
-                k = num_live_docs_with_vectors;
-            }
-            let results = search_nearest(
-                &*leaf,
-                field_name,
-                &random_normalized_vector(dimension),
-                k,
-                i32::MAX,
-            )?;
-            Assert::assert_equals(i64::from(k.min(size)), results.score_docs.len() as i64);
-            for i in 0..(k - 1) as usize {
-                Assert::assert_true(results.score_docs[i].score >= results.score_docs[i + 1].score);
-            }
-            self.assert_off_heap_byte_size(&leaf, field_name)?;
+            reader.close()?;
+            iw.close()?;
         }
-        reader.close()?;
-        iw.close()?;
         dir.close()
     }
 
@@ -2576,48 +2653,50 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
     fn test_check_index_includes_vectors(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
         {
-            let w = new_writer(dir.as_directory())?;
-            let mut doc = Document::new();
-            doc.add(Box::new(KnnFloatVectorField::new(
-                "v1",
-                &random_normalized_vector(4),
-                VectorSimilarityFunction::EUCLIDEAN,
-            )?));
-            w.add_document(&doc)?;
+            {
+                let w = new_writer(dir.as_directory())?;
+                let mut doc = Document::new();
+                doc.add(Box::new(KnnFloatVectorField::new(
+                    "v1",
+                    &random_normalized_vector(4),
+                    VectorSimilarityFunction::EUCLIDEAN,
+                )?));
+                w.add_document(&doc)?;
 
-            doc.add(Box::new(KnnFloatVectorField::new(
-                "v2",
-                &random_normalized_vector(4),
-                VectorSimilarityFunction::EUCLIDEAN,
-            )?));
-            w.add_document(&doc)?;
-            w.close()?;
+                doc.add(Box::new(KnnFloatVectorField::new(
+                    "v2",
+                    &random_normalized_vector(4),
+                    VectorSimilarityFunction::EUCLIDEAN,
+                )?));
+                w.add_document(&doc)?;
+                w.close()?;
+            }
+
+            let mut output = Vec::new();
+            let status = TestUtil::check_index_with(
+                dir.as_directory(),
+                Level::MIN_LEVEL_FOR_INTEGRITY_CHECKS,
+                true,
+                true,
+                Some(&mut output),
+            )?;
+            Assert::assert_equals(1i64, status.segment_infos.len() as i64);
+            let seg_status = &status.segment_infos[0];
+            let vector_values_status = seg_status
+                .vector_values_status
+                .as_ref()
+                .expect("vectors were checked");
+            // total 3 vector values were indexed:
+            Assert::assert_equals(3i64, vector_values_status.total_vector_values);
+            // ... across 2 fields:
+            Assert::assert_equals(
+                2i64,
+                i64::from(vector_values_status.total_knn_vector_fields),
+            );
+
+            // Make sure CheckIndex in fact declares that it is testing vectors!
+            Assert::assert_true(String::from_utf8_lossy(&output).contains("test: vectors..."));
         }
-
-        let mut output = Vec::new();
-        let status = TestUtil::check_index_with(
-            dir.as_directory(),
-            Level::MIN_LEVEL_FOR_INTEGRITY_CHECKS,
-            true,
-            true,
-            Some(&mut output),
-        )?;
-        Assert::assert_equals(1i64, status.segment_infos.len() as i64);
-        let seg_status = &status.segment_infos[0];
-        let vector_values_status = seg_status
-            .vector_values_status
-            .as_ref()
-            .expect("vectors were checked");
-        // total 3 vector values were indexed:
-        Assert::assert_equals(3i64, vector_values_status.total_vector_values);
-        // ... across 2 fields:
-        Assert::assert_equals(
-            2i64,
-            i64::from(vector_values_status.total_knn_vector_fields),
-        );
-
-        // Make sure CheckIndex in fact declares that it is testing vectors!
-        Assert::assert_true(String::from_utf8_lossy(&output).contains("test: vectors..."));
         dir.close()
     }
 
@@ -2645,71 +2724,73 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testAdvance()`.
     fn test_advance(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let w = new_writer(dir.as_directory())?;
-        let numdocs = LuceneTestCase::at_least(1500);
-        let field_name = "field";
-        for _ in 0..numdocs {
-            let mut doc = Document::new();
-            // randomly add a vector field
-            if random().next_int_bound(4) == 3 {
-                doc.add(Box::new(KnnFloatVectorField::new(
-                    field_name,
-                    &[0f32; 4],
-                    VectorSimilarityFunction::EUCLIDEAN,
-                )?));
-            }
-            w.add_document(&doc)?;
-        }
-        w.force_merge(1)?;
-        let reader = directory_reader::open_with_writer(&*w)?;
-        let r = only_leaf(&reader)?;
-        let vector_values = r.get_float_vector_values(field_name)?.expect("vectors");
-        let mut vector_docs = vec![0i32; vector_values.size() as usize + 1];
-        let mut cur: i32 = -1;
-        let mut iterator = vector_values.iterator()?;
-        loop {
-            cur += 1;
-            if cur >= vector_values.size() + 1 {
-                break;
-            }
-            vector_docs[cur as usize] = iterator.next_doc()?;
-            if cur != 0 {
-                Assert::assert_true(vector_docs[cur as usize] > vector_docs[cur as usize - 1]);
-            }
-        }
-        let vector_values = r.get_float_vector_values(field_name)?.expect("vectors");
-        let mut iter = vector_values.iterator()?;
-        cur = -1;
-        let mut i = 0;
-        while i < numdocs {
-            // randomly advance to i
-            if random().next_int_bound(4) == 3 {
-                loop {
-                    cur += 1;
-                    if vector_docs[cur as usize] >= i {
-                        break;
-                    }
+        {
+            let w = new_writer(dir.as_directory())?;
+            let numdocs = LuceneTestCase::at_least(1500);
+            let field_name = "field";
+            for _ in 0..numdocs {
+                let mut doc = Document::new();
+                // randomly add a vector field
+                if random().next_int_bound(4) == 3 {
+                    doc.add(Box::new(KnnFloatVectorField::new(
+                        field_name,
+                        &[0f32; 4],
+                        VectorSimilarityFunction::EUCLIDEAN,
+                    )?));
                 }
-                Assert::assert_equals(
-                    i64::from(vector_docs[cur as usize]),
-                    i64::from(iter.advance(i)?),
-                );
-                Assert::assert_equals(
-                    i64::from(vector_docs[cur as usize]),
-                    i64::from(iter.doc_id()),
-                );
-                if iter.doc_id() == NO_MORE_DOCS {
+                w.add_document(&doc)?;
+            }
+            w.force_merge(1)?;
+            let reader = directory_reader::open_with_writer(&*w)?;
+            let r = only_leaf(&reader)?;
+            let vector_values = r.get_float_vector_values(field_name)?.expect("vectors");
+            let mut vector_docs = vec![0i32; vector_values.size() as usize + 1];
+            let mut cur: i32 = -1;
+            let mut iterator = vector_values.iterator()?;
+            loop {
+                cur += 1;
+                if cur >= vector_values.size() + 1 {
                     break;
                 }
-                // make i equal to docid so that it is greater than docId in the next loop iteration
-                i = iter.doc_id();
+                vector_docs[cur as usize] = iterator.next_doc()?;
+                if cur != 0 {
+                    Assert::assert_true(vector_docs[cur as usize] > vector_docs[cur as usize - 1]);
+                }
             }
-            i += 1;
+            let vector_values = r.get_float_vector_values(field_name)?.expect("vectors");
+            let mut iter = vector_values.iterator()?;
+            cur = -1;
+            let mut i = 0;
+            while i < numdocs {
+                // randomly advance to i
+                if random().next_int_bound(4) == 3 {
+                    loop {
+                        cur += 1;
+                        if vector_docs[cur as usize] >= i {
+                            break;
+                        }
+                    }
+                    Assert::assert_equals(
+                        i64::from(vector_docs[cur as usize]),
+                        i64::from(iter.advance(i)?),
+                    );
+                    Assert::assert_equals(
+                        i64::from(vector_docs[cur as usize]),
+                        i64::from(iter.doc_id()),
+                    );
+                    if iter.doc_id() == NO_MORE_DOCS {
+                        break;
+                    }
+                    // make i equal to docid so that it is greater than docId in the next loop iteration
+                    i = iter.doc_id();
+                }
+                i += 1;
+            }
+            self.assert_off_heap_byte_size(&r, field_name)?;
+            drop(r);
+            reader.close()?;
+            w.close()?;
         }
-        self.assert_off_heap_byte_size(&r, field_name)?;
-        drop(r);
-        reader.close()?;
-        w.close()?;
         dir.close()
     }
 
@@ -2727,122 +2808,128 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         let similarity_function = self.knn_state().similarity_function();
 
         let mut dir = LuceneTestCase::new_directory();
-        let w = RandomIndexWriter::new_with_config(
-            &*random(),
-            dir.as_directory(),
-            LuceneTestCase::new_index_writer_config(),
-        )?;
-        for _ in 0..num_docs {
-            let mut doc = Document::new();
-            let doc_id = random().next_int_bound(num_docs);
-            doc.add(Box::new(StoredField::new_number(
-                "id",
-                rucene::document::NumericValue::Int(doc_id),
-            )?));
-            if random().next_int_bound(4) == 3 {
-                match vector_encoding {
-                    VectorEncoding::BYTE => {
-                        let b = random_vector8(dim);
-                        field_values_check_sum += f64::from(b[0] as i8);
-                        doc.add(Box::new(KnnByteVectorField::new(
-                            "knn_vector",
-                            &b,
-                            similarity_function,
-                        )?));
+        {
+            let w = RandomIndexWriter::new_with_config(
+                &*random(),
+                dir.as_directory(),
+                LuceneTestCase::new_index_writer_config(),
+            )?;
+            for _ in 0..num_docs {
+                let mut doc = Document::new();
+                let doc_id = random().next_int_bound(num_docs);
+                doc.add(Box::new(StoredField::new_number(
+                    "id",
+                    rucene::document::NumericValue::Int(doc_id),
+                )?));
+                if random().next_int_bound(4) == 3 {
+                    match vector_encoding {
+                        VectorEncoding::BYTE => {
+                            let b = random_vector8(dim);
+                            field_values_check_sum += f64::from(b[0] as i8);
+                            doc.add(Box::new(KnnByteVectorField::new(
+                                "knn_vector",
+                                &b,
+                                similarity_function,
+                            )?));
+                        }
+                        VectorEncoding::FLOAT32 => {
+                            let v = random_normalized_vector(dim);
+                            field_values_check_sum += f64::from(v[0]);
+                            doc.add(Box::new(KnnFloatVectorField::new(
+                                "knn_vector",
+                                &v,
+                                similarity_function,
+                            )?));
+                        }
                     }
-                    VectorEncoding::FLOAT32 => {
-                        let v = random_normalized_vector(dim);
-                        field_values_check_sum += f64::from(v[0]);
-                        doc.add(Box::new(KnnFloatVectorField::new(
-                            "knn_vector",
-                            &v,
-                            similarity_function,
-                        )?));
-                    }
+                    field_doc_count += 1;
+                    field_sum_doc_ids += i64::from(doc_id);
                 }
-                field_doc_count += 1;
-                field_sum_doc_ids += i64::from(doc_id);
+                w.add_document(&doc)?;
             }
-            w.add_document(&doc)?;
-        }
 
-        if random().next_boolean() {
-            w.force_merge(1)?;
-        }
+            if random().next_boolean() {
+                w.force_merge(1)?;
+            }
 
-        let r = w.get_reader()?;
-        let mut checksum = 0f64;
-        let mut doc_count = 0i32;
-        let mut sum_doc_ids = 0i64;
-        let mut sum_ord_to_doc_ids = 0i64;
-        let stored_id = |leaf: &dyn LeafReader, doc: i32| -> Result<i64> {
-            let id = leaf
-                .stored_fields()?
-                .document_fields(doc, &["id".to_string()].into_iter().collect())?
-                .get_values("id")
-                .into_iter()
-                .next()
-                .expect("id is stored");
-            Ok(i64::from(parse_int(&id)))
-        };
-        match vector_encoding {
-            VectorEncoding::BYTE => {
-                for ctx in Arc::clone(&r).leaves()? {
-                    let leaf = ctx.leaf_reader();
-                    if let Some(byte_vector_values) = leaf.get_byte_vector_values("knn_vector")? {
-                        doc_count += byte_vector_values.size();
-                        let mut iter = byte_vector_values.iterator()?;
-                        iter.next_doc()?;
-                        while iter.doc_id() != NO_MORE_DOCS {
-                            let ord = iter.index();
-                            checksum += f64::from(byte_vector_values.vector_value(ord)?[0] as i8);
-                            sum_doc_ids += stored_id(&*leaf, iter.doc_id())?;
+            let r = w.get_reader()?;
+            let mut checksum = 0f64;
+            let mut doc_count = 0i32;
+            let mut sum_doc_ids = 0i64;
+            let mut sum_ord_to_doc_ids = 0i64;
+            let stored_id = |leaf: &dyn LeafReader, doc: i32| -> Result<i64> {
+                let id = leaf
+                    .stored_fields()?
+                    .document_fields(doc, &["id".to_string()].into_iter().collect())?
+                    .get_values("id")
+                    .into_iter()
+                    .next()
+                    .expect("id is stored");
+                Ok(i64::from(parse_int(&id)))
+            };
+            match vector_encoding {
+                VectorEncoding::BYTE => {
+                    for ctx in Arc::clone(&r).leaves()? {
+                        let leaf = ctx.leaf_reader();
+                        if let Some(byte_vector_values) =
+                            leaf.get_byte_vector_values("knn_vector")?
+                        {
+                            doc_count += byte_vector_values.size();
+                            let mut iter = byte_vector_values.iterator()?;
                             iter.next_doc()?;
+                            while iter.doc_id() != NO_MORE_DOCS {
+                                let ord = iter.index();
+                                checksum +=
+                                    f64::from(byte_vector_values.vector_value(ord)?[0] as i8);
+                                sum_doc_ids += stored_id(&*leaf, iter.doc_id())?;
+                                iter.next_doc()?;
+                            }
+                            for ord in 0..byte_vector_values.size() {
+                                sum_ord_to_doc_ids +=
+                                    stored_id(&*leaf, byte_vector_values.ord_to_doc(ord))?;
+                            }
+                            self.assert_off_heap_byte_size(&leaf, "knn_vector")?;
                         }
-                        for ord in 0..byte_vector_values.size() {
-                            sum_ord_to_doc_ids +=
-                                stored_id(&*leaf, byte_vector_values.ord_to_doc(ord))?;
+                    }
+                }
+                VectorEncoding::FLOAT32 => {
+                    for ctx in Arc::clone(&r).leaves()? {
+                        let leaf = ctx.leaf_reader();
+                        if let Some(vector_values) = leaf.get_float_vector_values("knn_vector")? {
+                            doc_count += vector_values.size();
+                            let mut iter = vector_values.iterator()?;
+                            iter.next_doc()?;
+                            while iter.doc_id() != NO_MORE_DOCS {
+                                let ord = iter.index();
+                                checksum += f64::from(vector_values.vector_value(ord)?[0]);
+                                sum_doc_ids += stored_id(&*leaf, iter.doc_id())?;
+                                iter.next_doc()?;
+                            }
+                            for ord in 0..vector_values.size() {
+                                sum_ord_to_doc_ids +=
+                                    stored_id(&*leaf, vector_values.ord_to_doc(ord))?;
+                            }
+                            self.assert_off_heap_byte_size(&leaf, "knn_vector")?;
                         }
-                        self.assert_off_heap_byte_size(&leaf, "knn_vector")?;
                     }
                 }
             }
-            VectorEncoding::FLOAT32 => {
-                for ctx in Arc::clone(&r).leaves()? {
-                    let leaf = ctx.leaf_reader();
-                    if let Some(vector_values) = leaf.get_float_vector_values("knn_vector")? {
-                        doc_count += vector_values.size();
-                        let mut iter = vector_values.iterator()?;
-                        iter.next_doc()?;
-                        while iter.doc_id() != NO_MORE_DOCS {
-                            let ord = iter.index();
-                            checksum += f64::from(vector_values.vector_value(ord)?[0]);
-                            sum_doc_ids += stored_id(&*leaf, iter.doc_id())?;
-                            iter.next_doc()?;
-                        }
-                        for ord in 0..vector_values.size() {
-                            sum_ord_to_doc_ids += stored_id(&*leaf, vector_values.ord_to_doc(ord))?;
-                        }
-                        self.assert_off_heap_byte_size(&leaf, "knn_vector")?;
-                    }
-                }
-            }
+            Assert::assert_equals_double_msg(
+                Some(&format!("encoding={vector_encoding:?}")),
+                field_values_check_sum,
+                checksum,
+                if vector_encoding == VectorEncoding::BYTE {
+                    f64::from(num_docs) * 0.2
+                } else {
+                    1e-5
+                },
+            );
+            Assert::assert_equals(i64::from(field_doc_count), i64::from(doc_count));
+            Assert::assert_equals(field_sum_doc_ids, sum_doc_ids);
+            Assert::assert_equals(field_sum_doc_ids, sum_ord_to_doc_ids);
+            r.close()?;
+            w.close()?;
         }
-        Assert::assert_equals_double_msg(
-            Some(&format!("encoding={vector_encoding:?}")),
-            field_values_check_sum,
-            checksum,
-            if vector_encoding == VectorEncoding::BYTE {
-                f64::from(num_docs) * 0.2
-            } else {
-                1e-5
-            },
-        );
-        Assert::assert_equals(i64::from(field_doc_count), i64::from(doc_count));
-        Assert::assert_equals(field_sum_doc_ids, sum_doc_ids);
-        Assert::assert_equals(field_sum_doc_ids, sum_ord_to_doc_ids);
-        r.close()?;
-        w.close()?;
         dir.close()
     }
 
@@ -2890,147 +2977,154 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         );
 
         let mut dir = LuceneTestCase::new_directory();
-        if let Some(mock) = dir.as_mock() {
-            mock.set_check_index_on_close(false);
-        } else if let crate::util::lucene_test_case::TestDirectory::Raw(raw) = &dir {
-            raw.base().set_check_index_on_close(false);
-        }
-
         {
-            let mut iwc = IndexWriterConfig::new();
-            iwc.set_max_buffered_docs(num_vectors + 1)?;
-            iwc.set_ram_buffer_size_mb(f64::from(
-                rucene::index::index_writer_config::LiveIndexWriterConfig::DISABLE_AUTO_FLUSH,
-            ))?;
-            iwc.set_merge_policy(Arc::new(NoMergePolicy::new()))?;
-            iwc.set_use_compound_file(false)?;
-            iwc.set_codec(self.get_codec_for_float_vector_fallback_test())?;
-            let w = IndexWriter::new(dir.as_directory(), iwc)?;
-            for vector in &vectors {
-                let mut doc = Document::new();
-                doc.add(Box::new(KnnFloatVectorField::new(
-                    vector_field_name,
-                    vector,
-                    similarity_function,
-                )?));
-                w.add_document(&doc)?;
+            if let Some(mock) = dir.as_mock() {
+                mock.set_check_index_on_close(false);
+            } else if let crate::util::lucene_test_case::TestDirectory::Raw(raw) = &dir {
+                raw.base().set_check_index_on_close(false);
             }
-            w.close()?;
-        }
-        self.simulate_empty_raw_vectors(&*dir.as_directory())?;
 
-        let reader = directory_reader::open(dir.as_directory())?;
-        let r = only_leaf(&reader)?;
-        if let Some(codec_reader) = Arc::clone(&r).as_codec_reader() {
-            let vectors_reader = codec_reader
-                .get_vector_reader()?
-                .expect("the segment has vectors");
-            let knn_vectors_reader = vectors_reader
-                .get_field_reader(vector_field_name)
-                .unwrap_or_else(|| {
-                    Throwable::new(
-                        "java.lang.ClassCastException",
-                        "not a PerFieldKnnVectorsFormat.FieldsReader",
-                    )
-                    .throw()
-                });
-            let float_vector_values = knn_vectors_reader
-                .get_float_vector_values(vector_field_name)?
-                .expect("float vectors");
-            if float_vector_values.size() > 0 {
-                let mut iter = float_vector_values.iterator()?;
-                let mut doc_id = iter.next_doc()?;
-                while doc_id != NO_MORE_DOCS {
-                    let dequantized_vector = float_vector_values.vector_value(iter.index())?;
-                    let mut mae = 0f32;
-                    for i in 0..dim as usize {
-                        mae += (dequantized_vector[i] - vectors[doc_id as usize][i]).abs();
+            {
+                let mut iwc = IndexWriterConfig::new();
+                iwc.set_max_buffered_docs(num_vectors + 1)?;
+                iwc.set_ram_buffer_size_mb(f64::from(
+                    rucene::index::index_writer_config::LiveIndexWriterConfig::DISABLE_AUTO_FLUSH,
+                ))?;
+                iwc.set_merge_policy(Arc::new(NoMergePolicy::new()))?;
+                iwc.set_use_compound_file(false)?;
+                iwc.set_codec(self.get_codec_for_float_vector_fallback_test())?;
+                let w = IndexWriter::new(dir.as_directory(), iwc)?;
+                for vector in &vectors {
+                    let mut doc = Document::new();
+                    doc.add(Box::new(KnnFloatVectorField::new(
+                        vector_field_name,
+                        vector,
+                        similarity_function,
+                    )?));
+                    w.add_document(&doc)?;
+                }
+                w.close()?;
+            }
+            self.simulate_empty_raw_vectors(&*dir.as_directory())?;
+
+            let reader = directory_reader::open(dir.as_directory())?;
+            let r = only_leaf(&reader)?;
+            if let Some(codec_reader) = Arc::clone(&r).as_codec_reader() {
+                let vectors_reader = codec_reader
+                    .get_vector_reader()?
+                    .expect("the segment has vectors");
+                let knn_vectors_reader = vectors_reader
+                    .get_field_reader(vector_field_name)
+                    .unwrap_or_else(|| {
+                        Throwable::new(
+                            "java.lang.ClassCastException",
+                            "not a PerFieldKnnVectorsFormat.FieldsReader",
+                        )
+                        .throw()
+                    });
+                let float_vector_values = knn_vectors_reader
+                    .get_float_vector_values(vector_field_name)?
+                    .expect("float vectors");
+                if float_vector_values.size() > 0 {
+                    let mut iter = float_vector_values.iterator()?;
+                    let mut doc_id = iter.next_doc()?;
+                    while doc_id != NO_MORE_DOCS {
+                        let dequantized_vector = float_vector_values.vector_value(iter.index())?;
+                        let mut mae = 0f32;
+                        for i in 0..dim as usize {
+                            mae += (dequantized_vector[i] - vectors[doc_id as usize][i]).abs();
+                        }
+                        mae /= dim as f32;
+                        Assert::assert_true_msg(
+                            &format!(
+                                "bits: {} mae: {mae} > eps: {eps}",
+                                self.get_quantization_bits()
+                            ),
+                            mae <= eps,
+                        );
+                        doc_id = iter.next_doc()?;
                     }
-                    mae /= dim as f32;
-                    Assert::assert_true_msg(
-                        &format!(
-                            "bits: {} mae: {mae} > eps: {eps}",
-                            self.get_quantization_bits()
-                        ),
-                        mae <= eps,
-                    );
-                    doc_id = iter.next_doc()?;
+                } else {
+                    Assert::fail("floatVectorValues size should be non zero");
                 }
             } else {
-                Assert::fail("floatVectorValues size should be non zero");
+                Assert::fail("reader is not CodecReader");
             }
-        } else {
-            Assert::fail("reader is not CodecReader");
+            drop(r);
+            reader.close()?;
         }
-        drop(r);
-        reader.close()?;
         dir.close()
     }
 
     /// `testMismatchedFields()`.
     fn test_mismatched_fields(&self) -> Result<()> {
         let mut dir1 = LuceneTestCase::new_directory();
-        let w1 = new_writer(dir1.as_directory())?;
-        let mut doc = Document::new();
-        doc.add(Box::new(KnnFloatVectorField::with_euclidean(
-            "float",
-            &[1.0, 2.0],
-        )?));
-        doc.add(Box::new(KnnByteVectorField::with_euclidean("byte", &[42])?));
-        w1.add_document(&doc)?;
+        // Created where Java creates it; declared here so it outlives the
+        // block that releases every handle on it before it closes.
+        let mut dir2;
+        {
+            let w1 = new_writer(dir1.as_directory())?;
+            let mut doc = Document::new();
+            doc.add(Box::new(KnnFloatVectorField::with_euclidean(
+                "float",
+                &[1.0, 2.0],
+            )?));
+            doc.add(Box::new(KnnByteVectorField::with_euclidean("byte", &[42])?));
+            w1.add_document(&doc)?;
 
-        let mut dir2 = LuceneTestCase::new_directory();
-        let mut iwc2 = LuceneTestCase::new_index_writer_config();
-        iwc2.set_merge_scheduler(Arc::new(SerialMergeScheduler::default()))?;
-        let w2 = IndexWriter::new(dir2.as_directory(), iwc2)?;
-        w2.add_document(&doc)?;
-        w2.commit()?;
+            dir2 = LuceneTestCase::new_directory();
+            let mut iwc2 = LuceneTestCase::new_index_writer_config();
+            iwc2.set_merge_scheduler(Arc::new(SerialMergeScheduler::default()))?;
+            let w2 = IndexWriter::new(dir2.as_directory(), iwc2)?;
+            w2.add_document(&doc)?;
+            w2.commit()?;
 
-        let reader = directory_reader::open_with_writer(&*w1)?;
-        w1.close()?;
-        let codec_reader = only_leaf(&reader)?
-            .as_codec_reader()
-            .expect("a segment reader is a CodecReader");
-        w2.add_indexes_codec_readers(&[Arc::new(MismatchedCodecReader::new(
-            codec_reader,
-            &*random(),
-        )?)])?;
-        reader.close()?;
-        w2.force_merge(1)?;
-        let reader = directory_reader::open_with_writer(&*w2)?;
-        w2.close()?;
+            let reader = directory_reader::open_with_writer(&*w1)?;
+            w1.close()?;
+            let codec_reader = only_leaf(&reader)?
+                .as_codec_reader()
+                .expect("a segment reader is a CodecReader");
+            w2.add_indexes_codec_readers(&[Arc::new(MismatchedCodecReader::new(
+                codec_reader,
+                &*random(),
+            )?)])?;
+            reader.close()?;
+            w2.force_merge(1)?;
+            let reader = directory_reader::open_with_writer(&*w2)?;
+            w2.close()?;
 
-        let leaf_reader = only_leaf(&reader)?;
+            let leaf_reader = only_leaf(&reader)?;
 
-        let byte_vectors = leaf_reader.get_byte_vector_values("byte")?;
-        assert_not_null(byte_vectors.is_some());
-        let byte_vectors = byte_vectors.expect("checked");
-        let mut iter = byte_vectors.iterator()?;
-        Assert::assert_equals(0i64, i64::from(iter.next_doc()?));
-        assert_array_equals(&[42u8], &byte_vectors.vector_value(0)?);
-        Assert::assert_equals(1i64, i64::from(iter.next_doc()?));
-        assert_array_equals(&[42u8], &byte_vectors.vector_value(1)?);
-        Assert::assert_equals(i64::from(NO_MORE_DOCS), i64::from(iter.next_doc()?));
+            let byte_vectors = leaf_reader.get_byte_vector_values("byte")?;
+            assert_not_null(byte_vectors.is_some());
+            let byte_vectors = byte_vectors.expect("checked");
+            let mut iter = byte_vectors.iterator()?;
+            Assert::assert_equals(0i64, i64::from(iter.next_doc()?));
+            assert_array_equals(&[42u8], &byte_vectors.vector_value(0)?);
+            Assert::assert_equals(1i64, i64::from(iter.next_doc()?));
+            assert_array_equals(&[42u8], &byte_vectors.vector_value(1)?);
+            Assert::assert_equals(i64::from(NO_MORE_DOCS), i64::from(iter.next_doc()?));
 
-        let float_vectors = leaf_reader.get_float_vector_values("float")?;
-        assert_not_null(float_vectors.is_some());
-        let float_vectors = float_vectors.expect("checked");
-        let mut iter = float_vectors.iterator()?;
-        Assert::assert_equals(0i64, i64::from(iter.next_doc()?));
-        let vector = float_vectors.vector_value(0)?;
-        Assert::assert_equals(2i64, vector.len() as i64);
-        assert_float_equals(1.0, vector[0], 0.0);
-        assert_float_equals(2.0, vector[1], 0.0);
-        Assert::assert_equals(1i64, i64::from(iter.next_doc()?));
-        let vector = float_vectors.vector_value(1)?;
-        Assert::assert_equals(2i64, vector.len() as i64);
-        assert_float_equals(1.0, vector[0], 0.0);
-        assert_float_equals(2.0, vector[1], 0.0);
-        Assert::assert_equals(i64::from(NO_MORE_DOCS), i64::from(iter.next_doc()?));
+            let float_vectors = leaf_reader.get_float_vector_values("float")?;
+            assert_not_null(float_vectors.is_some());
+            let float_vectors = float_vectors.expect("checked");
+            let mut iter = float_vectors.iterator()?;
+            Assert::assert_equals(0i64, i64::from(iter.next_doc()?));
+            let vector = float_vectors.vector_value(0)?;
+            Assert::assert_equals(2i64, vector.len() as i64);
+            assert_float_equals(1.0, vector[0], 0.0);
+            assert_float_equals(2.0, vector[1], 0.0);
+            Assert::assert_equals(1i64, i64::from(iter.next_doc()?));
+            let vector = float_vectors.vector_value(1)?;
+            Assert::assert_equals(2i64, vector.len() as i64);
+            assert_float_equals(1.0, vector[0], 0.0);
+            assert_float_equals(2.0, vector[1], 0.0);
+            Assert::assert_equals(i64::from(NO_MORE_DOCS), i64::from(iter.next_doc()?));
 
-        drop(leaf_reader);
-        reader.close()?;
-        w2.close()?;
+            drop(leaf_reader);
+            reader.close()?;
+            w2.close()?;
+        }
         dir1.close()?;
         dir2.close()
     }

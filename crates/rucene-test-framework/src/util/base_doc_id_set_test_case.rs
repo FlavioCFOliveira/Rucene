@@ -24,9 +24,11 @@
 //!
 //! **Divergences** (declared, each confined to the member named):
 //! * `iterator() == null`: the port's `DocIdSet.iterator()` never returns
-//!   `null` (an empty set gives an exhausted iterator), so the `null`
-//!   branches of `assertEquals` and `testIntoBitSet` are unreachable and
-//!   not ported; the non-`null` branches draw the same randomness.
+//!   `null` (an empty set gives an exhausted iterator). Java's does for
+//!   some sets (`RoaringDocIdSet.java:392-397`, an empty set), and its
+//!   `null` branches of `assertEquals` and `testIntoBitSet` then draw no
+//!   randomness; [`BaseDocIdSetTestCase::iterator_is_null`] says when Java's
+//!   `iterator()` is `null`, and those branches are ported on it.
 //! * `ramBytesUsed(DocIdSet, int)`: Java measures the copy with
 //!   `RamUsageTester`'s reflective walk; the port's walk reads the Java
 //!   layout each type describes through [`RamObject`]
@@ -149,10 +151,16 @@ pub trait BaseDocIdSetTestCase: Send + Sync + 'static {
     /// which has `length` bits.
     fn copy_of(&self, bs: &JavaBitSet, length: i32) -> Result<Self::T>;
 
+    /// Whether Java's `set.iterator()` returns `null` (see the module docs);
+    /// `false` unless the set's Java class can return `null`.
+    fn iterator_is_null(&self, _set: &Self::T) -> bool {
+        false
+    }
+
     /// `assertEquals(int numBits, BitSet ds1, T ds2)`: assert that the
     /// content of the `DocIdSet` is the same as the content of the `BitSet`.
     fn assert_equals_sets(&self, num_bits: i32, ds1: &JavaBitSet, ds2: &Self::T) -> Result<()> {
-        base_assert_equals_sets(num_bits, ds1, ds2)
+        base_assert_equals_sets(num_bits, ds1, ds2, self.iterator_is_null(ds2))
     }
 
     /// `testNoBit()`: test length=0.
@@ -278,6 +286,9 @@ pub trait BaseDocIdSetTestCase: Send + Sync + 'static {
             let from = TestUtil::next_int(&*LuceneTestCase::random(), 0, num_bits - 1);
             let to = TestUtil::next_int(&*LuceneTestCase::random(), from, num_bits + 5);
             let mut actual = FixedBitSet::new((to - from) as usize);
+            if self.iterator_is_null(&copy) {
+                continue;
+            }
             let mut it1 = copy.iterator()?;
             let from_doc = it1.advance(from)?;
             // No docs to set
@@ -352,23 +363,36 @@ fn to_throwable(e: &rucene::error::LuceneError) -> randomizedtesting::jdk::excep
 
 /// `BaseDocIdSetTestCase.assertEquals(int, BitSet, T)`, the body an override
 /// calls as `super.assertEquals`.
-pub fn base_assert_equals_sets(num_bits: i32, ds1: &JavaBitSet, ds2: &dyn DocIdSet) -> Result<()> {
+pub fn base_assert_equals_sets(
+    num_bits: i32,
+    ds1: &JavaBitSet,
+    ds2: &dyn DocIdSet,
+    iterator_is_null: bool,
+) -> Result<()> {
     let random = LuceneTestCase::random();
     // nextDoc
-    let mut it2 = ds2.iterator()?;
-    Assert::assert_equals(-1, it2.doc_id());
-    let mut doc = ds1.next_set_bit(0);
-    while doc != -1 {
-        Assert::assert_equals(doc, it2.next_doc()?);
-        Assert::assert_equals(doc, it2.doc_id());
-        doc = ds1.next_set_bit(doc as usize + 1);
+    if iterator_is_null {
+        Assert::assert_equals(-1, ds1.next_set_bit(0));
+    } else {
+        let mut it2 = ds2.iterator()?;
+        Assert::assert_equals(-1, it2.doc_id());
+        let mut doc = ds1.next_set_bit(0);
+        while doc != -1 {
+            Assert::assert_equals(doc, it2.next_doc()?);
+            Assert::assert_equals(doc, it2.doc_id());
+            doc = ds1.next_set_bit(doc as usize + 1);
+        }
+        Assert::assert_equals(NO_MORE_DOCS, it2.next_doc()?);
+        Assert::assert_equals(NO_MORE_DOCS, it2.doc_id());
     }
-    Assert::assert_equals(NO_MORE_DOCS, it2.next_doc()?);
-    Assert::assert_equals(NO_MORE_DOCS, it2.doc_id());
 
     // nextDoc / advance
+    if iterator_is_null {
+        Assert::assert_equals(-1, ds1.next_set_bit(0));
+    }
     let mut it2 = ds2.iterator()?;
-    let mut doc = -1;
+    // A `null` iterator skips the loop, as Java's `else` branch does.
+    let mut doc = if iterator_is_null { NO_MORE_DOCS } else { -1 };
     while doc != NO_MORE_DOCS {
         if random.next_boolean() {
             doc = ds1.next_set_bit((doc + 1) as usize);

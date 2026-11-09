@@ -674,38 +674,40 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
     /// points, a commit after the eleventh when `commit_at_10`.
     fn basic_or_merge(&self, commit_at_10: bool) -> Result<()> {
         let mut dir = get_directory(20);
-        let mut iwc = LuceneTestCase::new_index_writer_config();
-        iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
-        let w = IndexWriter::new(dir.as_directory(), iwc)?;
-        let mut point = [0u8; 4];
-        for i in 0..20 {
-            let mut doc = Document::new();
-            NumericUtils::int_to_sortable_bytes(i, &mut point, 0);
-            doc.add(Box::new(BinaryPoint::new(
-                "dim",
-                &[BytesRef::new(point.to_vec())],
-            )?));
-            w.add_document(&doc)?;
-            if commit_at_10 && i == 10 {
-                w.commit()?;
+        {
+            let mut iwc = LuceneTestCase::new_index_writer_config();
+            iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+            let w = IndexWriter::new(dir.as_directory(), iwc)?;
+            let mut point = [0u8; 4];
+            for i in 0..20 {
+                let mut doc = Document::new();
+                NumericUtils::int_to_sortable_bytes(i, &mut point, 0);
+                doc.add(Box::new(BinaryPoint::new(
+                    "dim",
+                    &[BytesRef::new(point.to_vec())],
+                )?));
+                w.add_document(&doc)?;
+                if commit_at_10 && i == 10 {
+                    w.commit()?;
+                }
             }
+            w.force_merge(1)?;
+            w.close()?;
+
+            let r = directory_reader::open(dir.as_directory())?;
+            let sub = LuceneTestCase::get_only_leaf_reader(Arc::clone(&r) as _)?;
+            let values = sub.get_point_values("dim")?.expect("the field has points");
+
+            // Simple test: make sure intersect can visit every doc:
+            let mut visitor = SeenVisitor {
+                seen: JavaBitSet::default(),
+            };
+            intersect(&*values, &mut visitor)?;
+            Assert::assert_equals(20i64, i64::from(visitor.seen.cardinality()));
+            drop(values);
+            drop(sub);
+            r.close()?;
         }
-        w.force_merge(1)?;
-        w.close()?;
-
-        let r = directory_reader::open(dir.as_directory())?;
-        let sub = LuceneTestCase::get_only_leaf_reader(Arc::clone(&r) as _)?;
-        let values = sub.get_point_values("dim")?.expect("the field has points");
-
-        // Simple test: make sure intersect can visit every doc:
-        let mut visitor = SeenVisitor {
-            seen: JavaBitSet::default(),
-        };
-        intersect(&*values, &mut visitor)?;
-        Assert::assert_equals(20i64, i64::from(visitor.seen.cardinality()));
-        drop(values);
-        drop(sub);
-        r.close()?;
         dir.close()
     }
 
@@ -722,93 +724,99 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testAllPointDocsDeletedInSegment()`.
     fn test_all_point_docs_deleted_in_segment(&self) -> Result<()> {
         let mut dir = get_directory(20);
-        let iwc = LuceneTestCase::new_index_writer_config();
-        let w = IndexWriter::new(dir.as_directory(), iwc)?;
-        let mut point = [0u8; 4];
-        for i in 0..10 {
-            let mut doc = Document::new();
-            NumericUtils::int_to_sortable_bytes(i, &mut point, 0);
-            doc.add(Box::new(BinaryPoint::new(
-                "dim",
-                &[BytesRef::new(point.to_vec())],
-            )?));
-            doc.add(Box::new(NumericDocValuesField::new("id", i64::from(i))));
-            doc.add(Box::new(LuceneTestCase::new_string_field(
-                "x",
-                "x",
-                Store::NO,
-            )));
-            w.add_document(&doc)?;
-        }
-        w.add_document(&Document::new())?;
-        w.delete_documents_by_terms(vec![Term::new("x", BytesRef::new(b"x".to_vec()))])?;
-        if random().next_boolean() {
-            w.force_merge(1)?;
-        }
-        w.close()?;
-        let r = directory_reader::open(dir.as_directory())?;
-        Assert::assert_equals(1i64, i64::from(r.num_docs()));
-        let ir: Arc<dyn IndexReader> = Arc::clone(&r) as _;
-        let live_docs = MultiBits::get_live_docs(&ir)?;
-
-        for ctx in Arc::clone(&ir).leaves()? {
-            let reader = ctx.leaf_reader();
-            let values = reader.get_point_values("dim")?;
-
-            let id_values = reader.get_numeric_doc_values("id")?;
-            let Some(mut id_values) = id_values else {
-                // this is (surprisingly) OK, because if the random IWC flushes all 10 docs before
-                // the 11th doc is added, and force merge runs, it will drop the 100% deleted
-                // segments, and the "id" field never exists in the final single doc segment
-                continue;
-            };
-            let mut doc_id_to_id = vec![0i32; reader.max_doc() as usize];
-            loop {
-                let doc_id = id_values.next_doc()?;
-                if doc_id == NO_MORE_DOCS {
-                    break;
-                }
-                doc_id_to_id[doc_id as usize] = id_values.long_value()? as i32;
+        {
+            let iwc = LuceneTestCase::new_index_writer_config();
+            let w = IndexWriter::new(dir.as_directory(), iwc)?;
+            let mut point = [0u8; 4];
+            for i in 0..10 {
+                let mut doc = Document::new();
+                NumericUtils::int_to_sortable_bytes(i, &mut point, 0);
+                doc.add(Box::new(BinaryPoint::new(
+                    "dim",
+                    &[BytesRef::new(point.to_vec())],
+                )?));
+                doc.add(Box::new(NumericDocValuesField::new("id", i64::from(i))));
+                doc.add(Box::new(LuceneTestCase::new_string_field(
+                    "x",
+                    "x",
+                    Store::NO,
+                )));
+                w.add_document(&doc)?;
             }
+            w.add_document(&Document::new())?;
+            w.delete_documents_by_terms(vec![Term::new("x", BytesRef::new(b"x".to_vec()))])?;
+            if random().next_boolean() {
+                w.force_merge(1)?;
+            }
+            w.close()?;
+            let r = directory_reader::open(dir.as_directory())?;
+            Assert::assert_equals(1i64, i64::from(r.num_docs()));
+            let ir: Arc<dyn IndexReader> = Arc::clone(&r) as _;
+            let live_docs = MultiBits::get_live_docs(&ir)?;
 
-            if let Some(values) = values {
-                struct DeletedVisitor<'a> {
-                    seen: JavaBitSet,
-                    live_docs: Option<&'a dyn Bits>,
-                    doc_id_to_id: &'a [i32],
-                }
-                impl IntersectVisitor for DeletedVisitor<'_> {
-                    fn visit(&mut self, _doc_id: i32) -> Result<()> {
-                        Err(illegal_state())
-                    }
-                    fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
-                        if self
-                            .live_docs
-                            .expect("one document is deleted")
-                            .get(doc_id as usize)
-                        {
-                            self.seen.set(doc_id);
-                        }
-                        Assert::assert_equals(
-                            i64::from(self.doc_id_to_id[doc_id as usize]),
-                            i64::from(NumericUtils::sortable_bytes_to_int(packed_value, 0)),
-                        );
-                        Ok(())
-                    }
-                    fn compare(&self, _min: &[u8], _max: &[u8]) -> Result<Relation> {
-                        Ok(Relation::CellCrossesQuery)
-                    }
-                }
-                let mut visitor = DeletedVisitor {
-                    seen: JavaBitSet::default(),
-                    live_docs: live_docs.as_deref(),
-                    doc_id_to_id: &doc_id_to_id,
+            for ctx in Arc::clone(&ir).leaves()? {
+                let reader = ctx.leaf_reader();
+                let values = reader.get_point_values("dim")?;
+
+                let id_values = reader.get_numeric_doc_values("id")?;
+                let Some(mut id_values) = id_values else {
+                    // this is (surprisingly) OK, because if the random IWC flushes all 10 docs before
+                    // the 11th doc is added, and force merge runs, it will drop the 100% deleted
+                    // segments, and the "id" field never exists in the final single doc segment
+                    continue;
                 };
-                intersect(&*values, &mut visitor)?;
-                Assert::assert_equals(0i64, i64::from(visitor.seen.cardinality()));
+                let mut doc_id_to_id = vec![0i32; reader.max_doc() as usize];
+                loop {
+                    let doc_id = id_values.next_doc()?;
+                    if doc_id == NO_MORE_DOCS {
+                        break;
+                    }
+                    doc_id_to_id[doc_id as usize] = id_values.long_value()? as i32;
+                }
+
+                if let Some(values) = values {
+                    struct DeletedVisitor<'a> {
+                        seen: JavaBitSet,
+                        live_docs: Option<&'a dyn Bits>,
+                        doc_id_to_id: &'a [i32],
+                    }
+                    impl IntersectVisitor for DeletedVisitor<'_> {
+                        fn visit(&mut self, _doc_id: i32) -> Result<()> {
+                            Err(illegal_state())
+                        }
+                        fn visit_with_value(
+                            &mut self,
+                            doc_id: i32,
+                            packed_value: &[u8],
+                        ) -> Result<()> {
+                            if self
+                                .live_docs
+                                .expect("one document is deleted")
+                                .get(doc_id as usize)
+                            {
+                                self.seen.set(doc_id);
+                            }
+                            Assert::assert_equals(
+                                i64::from(self.doc_id_to_id[doc_id as usize]),
+                                i64::from(NumericUtils::sortable_bytes_to_int(packed_value, 0)),
+                            );
+                            Ok(())
+                        }
+                        fn compare(&self, _min: &[u8], _max: &[u8]) -> Result<Relation> {
+                            Ok(Relation::CellCrossesQuery)
+                        }
+                    }
+                    let mut visitor = DeletedVisitor {
+                        seen: JavaBitSet::default(),
+                        live_docs: live_docs.as_deref(),
+                        doc_id_to_id: &doc_id_to_id,
+                    };
+                    intersect(&*values, &mut visitor)?;
+                    Assert::assert_equals(0i64, i64::from(visitor.seen.cardinality()));
+                }
             }
+            r.close()?;
         }
-        r.close()?;
         dir.close()
     }
 
@@ -835,44 +843,46 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
         let mut done = false;
         while !done {
             let mut dir = LuceneTestCase::new_mock_fs_directory(&LuceneTestCase::create_temp_dir());
-            let outcome = catch_unwind(AssertUnwindSafe(|| {
-                dir.set_random_io_exception_rate(0.05);
-                dir.set_random_io_exception_rate_on_open(0.05);
-                self.verify_in(
-                    dir.as_directory(),
-                    &doc_values,
-                    None,
-                    num_dims,
-                    num_index_dims,
-                    num_bytes_per_dim,
-                    true,
-                )
-            }));
-            match outcome {
-                Ok(Ok(())) => {}
-                Ok(Err(LuceneError::IllegalArgument(message))) => {
-                    // This just means we got a too-small maxMB for the maxPointsInLeafNode; just
-                    // retry w/ more heap
-                    Assert::assert_true(message.contains(
-                        "either increase maxMBSortInHeap or decrease maxPointsInLeafNode",
-                    ));
-                }
-                Ok(Err(e)) => {
-                    // `IllegalStateException` and `IOException`
-                    done = handle_possibly_fake_exception(e);
-                }
-                Err(payload) => {
-                    let ae = Throwable::from_panic(payload);
-                    if ae.is_instance("java.lang.AssertionError")
-                        && ae
-                            .message()
-                            .is_some_and(|m| m.contains("does not exist; files="))
-                    {
-                        // OK: likely we threw the random IOExc when IW was asserting the commit
-                        // files exist
-                        done = true;
-                    } else {
-                        ae.throw()
+            {
+                let outcome = catch_unwind(AssertUnwindSafe(|| {
+                    dir.set_random_io_exception_rate(0.05);
+                    dir.set_random_io_exception_rate_on_open(0.05);
+                    self.verify_in(
+                        dir.as_directory(),
+                        &doc_values,
+                        None,
+                        num_dims,
+                        num_index_dims,
+                        num_bytes_per_dim,
+                        true,
+                    )
+                }));
+                match outcome {
+                    Ok(Ok(())) => {}
+                    Ok(Err(LuceneError::IllegalArgument(message))) => {
+                        // This just means we got a too-small maxMB for the maxPointsInLeafNode; just
+                        // retry w/ more heap
+                        Assert::assert_true(message.contains(
+                            "either increase maxMBSortInHeap or decrease maxPointsInLeafNode",
+                        ));
+                    }
+                    Ok(Err(e)) => {
+                        // `IllegalStateException` and `IOException`
+                        done = handle_possibly_fake_exception(e);
+                    }
+                    Err(payload) => {
+                        let ae = Throwable::from_panic(payload);
+                        if ae.is_instance("java.lang.AssertionError")
+                            && ae
+                                .message()
+                                .is_some_and(|m| m.contains("does not exist; files="))
+                        {
+                            // OK: likely we threw the random IOExc when IW was asserting the commit
+                            // files exist
+                            done = true;
+                        } else {
+                            ae.throw()
+                        }
                     }
                 }
             }
@@ -998,105 +1008,107 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
     fn test_big_int_n_dims(&self) -> Result<()> {
         let num_docs = LuceneTestCase::at_least(200);
         let mut dir = get_directory(num_docs);
-        let num_bytes_per_dim = TestUtil::next_int(&*random(), 2, MAX_NUM_BYTES) as usize;
-        let num_dims = TestUtil::next_int(&*random(), 1, MAX_INDEX_DIMENSIONS) as usize;
-        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(
-            MockAnalyzer::new(&*random()),
-        ));
-        // We rely on docIDs not changing:
-        iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
-        let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
-        let mut docs: Vec<Vec<i128>> = Vec::with_capacity(num_docs as usize);
-
-        for doc_id in 0..num_docs {
-            let mut values = Vec::with_capacity(num_dims);
-            if *VERBOSE {
-                println!("  docID={doc_id}");
-            }
-            let mut bytes = Vec::with_capacity(num_dims);
-            for dim in 0..num_dims {
-                values.push(random_big_int(num_bytes_per_dim));
-                let mut b = vec![0u8; num_bytes_per_dim];
-                NumericUtils::big_int_to_sortable_bytes(
-                    &to_byte_array(values[dim]),
-                    num_bytes_per_dim,
-                    &mut b,
-                    0,
-                );
-                bytes.push(BytesRef::new(b));
-                if *VERBOSE {
-                    println!("    {dim} -> {}", values[dim]);
-                }
-            }
-            docs.push(values);
-            let mut doc = Document::new();
-            doc.add(Box::new(BinaryPoint::new("field", &bytes)?));
-            w.add_document(&doc)?;
-        }
-
-        let r = w.get_reader()?;
-        w.close()?;
-
-        let iters = LuceneTestCase::at_least(100);
-        for iter in 0..iters {
-            if *VERBOSE {
-                println!("\nTEST: iter={iter}");
-            }
-
-            // Random N dims rect query:
-            let mut query_min = vec![0i128; num_dims];
-            let mut query_max = vec![0i128; num_dims];
-            for dim in 0..num_dims {
-                query_min[dim] = random_big_int(num_bytes_per_dim);
-                query_max[dim] = random_big_int(num_bytes_per_dim);
-                if query_min[dim] > query_max[dim] {
-                    query_min.swap(dim, dim);
-                    let x = query_min[dim];
-                    query_min[dim] = query_max[dim];
-                    query_max[dim] = x;
-                }
-                if *VERBOSE {
-                    println!(
-                        "  {dim}\n    min={}\n    max={}",
-                        query_min[dim], query_max[dim]
-                    );
-                }
-            }
-
-            let mut hits = JavaBitSet::default();
-            for ctx in Arc::clone(&r).leaves()? {
-                let Some(dim_values) = ctx.leaf_reader().get_point_values("field")? else {
-                    continue;
-                };
-
-                let doc_base = ctx.doc_base();
-
-                let mut visitor = BigIntVisitor {
-                    hits: &mut hits,
-                    doc_base,
-                    num_dims,
-                    num_bytes_per_dim,
-                    query_min: &query_min,
-                    query_max: &query_max,
-                };
-                intersect(&*dim_values, &mut visitor)?;
-            }
+        {
+            let num_bytes_per_dim = TestUtil::next_int(&*random(), 2, MAX_NUM_BYTES) as usize;
+            let num_dims = TestUtil::next_int(&*random(), 1, MAX_INDEX_DIMENSIONS) as usize;
+            let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(
+                MockAnalyzer::new(&*random()),
+            ));
+            // We rely on docIDs not changing:
+            iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+            let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
+            let mut docs: Vec<Vec<i128>> = Vec::with_capacity(num_docs as usize);
 
             for doc_id in 0..num_docs {
-                let doc_values = &docs[doc_id as usize];
-                let mut expected = true;
+                let mut values = Vec::with_capacity(num_dims);
+                if *VERBOSE {
+                    println!("  docID={doc_id}");
+                }
+                let mut bytes = Vec::with_capacity(num_dims);
                 for dim in 0..num_dims {
-                    let x = doc_values[dim];
-                    if x < query_min[dim] || x > query_max[dim] {
-                        expected = false;
-                        break;
+                    values.push(random_big_int(num_bytes_per_dim));
+                    let mut b = vec![0u8; num_bytes_per_dim];
+                    NumericUtils::big_int_to_sortable_bytes(
+                        &to_byte_array(values[dim]),
+                        num_bytes_per_dim,
+                        &mut b,
+                        0,
+                    );
+                    bytes.push(BytesRef::new(b));
+                    if *VERBOSE {
+                        println!("    {dim} -> {}", values[dim]);
                     }
                 }
-                let actual = hits.get(doc_id);
-                Assert::assert_equals_msg(Some(&format!("docID={doc_id}")), expected, actual);
+                docs.push(values);
+                let mut doc = Document::new();
+                doc.add(Box::new(BinaryPoint::new("field", &bytes)?));
+                w.add_document(&doc)?;
             }
+
+            let r = w.get_reader()?;
+            w.close()?;
+
+            let iters = LuceneTestCase::at_least(100);
+            for iter in 0..iters {
+                if *VERBOSE {
+                    println!("\nTEST: iter={iter}");
+                }
+
+                // Random N dims rect query:
+                let mut query_min = vec![0i128; num_dims];
+                let mut query_max = vec![0i128; num_dims];
+                for dim in 0..num_dims {
+                    query_min[dim] = random_big_int(num_bytes_per_dim);
+                    query_max[dim] = random_big_int(num_bytes_per_dim);
+                    if query_min[dim] > query_max[dim] {
+                        query_min.swap(dim, dim);
+                        let x = query_min[dim];
+                        query_min[dim] = query_max[dim];
+                        query_max[dim] = x;
+                    }
+                    if *VERBOSE {
+                        println!(
+                            "  {dim}\n    min={}\n    max={}",
+                            query_min[dim], query_max[dim]
+                        );
+                    }
+                }
+
+                let mut hits = JavaBitSet::default();
+                for ctx in Arc::clone(&r).leaves()? {
+                    let Some(dim_values) = ctx.leaf_reader().get_point_values("field")? else {
+                        continue;
+                    };
+
+                    let doc_base = ctx.doc_base();
+
+                    let mut visitor = BigIntVisitor {
+                        hits: &mut hits,
+                        doc_base,
+                        num_dims,
+                        num_bytes_per_dim,
+                        query_min: &query_min,
+                        query_max: &query_max,
+                    };
+                    intersect(&*dim_values, &mut visitor)?;
+                }
+
+                for doc_id in 0..num_docs {
+                    let doc_values = &docs[doc_id as usize];
+                    let mut expected = true;
+                    for dim in 0..num_dims {
+                        let x = doc_values[dim];
+                        if x < query_min[dim] || x > query_max[dim] {
+                            expected = false;
+                            break;
+                        }
+                    }
+                    let actual = hits.get(doc_id);
+                    Assert::assert_equals_msg(Some(&format!("docID={doc_id}")), expected, actual);
+                }
+            }
+            r.close()?;
         }
-        r.close()?;
         dir.close()
     }
 
@@ -1171,28 +1183,30 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
         num_bytes_per_dim: i32,
     ) -> Result<()> {
         let mut dir = get_directory(doc_values.len() as i32);
-        loop {
-            match self.verify_in(
-                dir.as_directory(),
-                doc_values,
-                doc_ids,
-                num_data_dims,
-                num_index_dims,
-                num_bytes_per_dim,
-                false,
-            ) {
-                Ok(()) => break,
-                Err(LuceneError::IllegalArgument(message)) => {
-                    println!("java.lang.IllegalArgumentException: {message}");
-                    // This just means we got a too-small maxMB for the maxPointsInLeafNode; just
-                    // retry
-                    Assert::assert_true(message.contains(
-                        "either increase maxMBSortInHeap or decrease maxPointsInLeafNode",
-                    ));
-                }
-                Err(e) => {
-                    let _ = dir.close();
-                    return Err(e);
+        {
+            loop {
+                match self.verify_in(
+                    dir.as_directory(),
+                    doc_values,
+                    doc_ids,
+                    num_data_dims,
+                    num_index_dims,
+                    num_bytes_per_dim,
+                    false,
+                ) {
+                    Ok(()) => break,
+                    Err(LuceneError::IllegalArgument(message)) => {
+                        println!("java.lang.IllegalArgumentException: {message}");
+                        // This just means we got a too-small maxMB for the maxPointsInLeafNode; just
+                        // retry
+                        Assert::assert_true(message.contains(
+                            "either increase maxMBSortInHeap or decrease maxPointsInLeafNode",
+                        ));
+                    }
+                    Err(e) => {
+                        let _ = dir.close();
+                        return Err(e);
+                    }
                 }
             }
         }
@@ -1374,8 +1388,9 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
                 if save_w.is_some() && ord as i32 >= add_indexes_at {
                     let target = save_w.take().expect("checked above");
                     let mut d = side_dir.take().expect("the separate directory");
-                    switch_index(&w, &mut d, &target)?;
-                    w = target;
+                    // `w = saveW` after `switchIndex(w, dir, saveW)`.
+                    let old = std::mem::replace(&mut w, target);
+                    switch_index(old, &mut d, &w)?;
                 }
             }
             w.add_document(doc.as_ref().expect("at least one value"))?;
@@ -1559,45 +1574,53 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testAddIndexes()`.
     fn test_add_indexes(&self) -> Result<()> {
         let mut dir1 = LuceneTestCase::new_directory();
-        let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir1.as_directory())?;
-        let mut doc = Document::new();
-        doc.add(Box::new(IntPoint::new("int1", &[17])?));
-        w.add_document(&doc)?;
-        let mut doc = Document::new();
-        doc.add(Box::new(IntPoint::new("int2", &[42])?));
-        w.add_document(&doc)?;
-        w.close()?;
+        // Created where Java creates them; declared here so they outlive the
+        // block that releases every handle on them before they close.
+        let mut dir2;
+        let mut dir;
+        {
+            let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir1.as_directory())?;
+            let mut doc = Document::new();
+            doc.add(Box::new(IntPoint::new("int1", &[17])?));
+            w.add_document(&doc)?;
+            let mut doc = Document::new();
+            doc.add(Box::new(IntPoint::new("int2", &[42])?));
+            w.add_document(&doc)?;
+            w.close()?;
 
-        // Different field number assigments:
-        let mut dir2 = LuceneTestCase::new_directory();
-        let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir2.as_directory())?;
-        let mut doc = Document::new();
-        doc.add(Box::new(IntPoint::new("int2", &[42])?));
-        w.add_document(&doc)?;
-        let mut doc = Document::new();
-        doc.add(Box::new(IntPoint::new("int1", &[17])?));
-        w.add_document(&doc)?;
-        w.close()?;
+            // Different field number assigments:
+            dir2 = LuceneTestCase::new_directory();
+            let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir2.as_directory())?;
+            let mut doc = Document::new();
+            doc.add(Box::new(IntPoint::new("int2", &[42])?));
+            w.add_document(&doc)?;
+            let mut doc = Document::new();
+            doc.add(Box::new(IntPoint::new("int1", &[17])?));
+            w.add_document(&doc)?;
+            w.close()?;
 
-        let mut dir = LuceneTestCase::new_directory();
-        let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
-        w.add_indexes_dirs(&[dir1.as_directory(), dir2.as_directory()])?;
-        w.force_merge(1)?;
+            dir = LuceneTestCase::new_directory();
+            {
+                let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
+                w.add_indexes_dirs(&[dir1.as_directory(), dir2.as_directory()])?;
+                w.force_merge(1)?;
 
-        let r = w.get_reader()?;
-        let s = LuceneTestCase::new_searcher_wrap(Arc::clone(&r), false);
-        Assert::assert_equals(
-            2i64,
-            i64::from(s.count(IntPoint::new_exact_query("int1", 17)?)?),
-        );
-        Assert::assert_equals(
-            2i64,
-            i64::from(s.count(IntPoint::new_exact_query("int2", 42)?)?),
-        );
-        drop(s);
-        r.close()?;
-        w.close()?;
-        dir.close()?;
+                let r = w.get_reader()?;
+                let s = LuceneTestCase::new_searcher_wrap(Arc::clone(&r), false);
+                Assert::assert_equals(
+                    2i64,
+                    i64::from(s.count(IntPoint::new_exact_query("int1", 17)?)?),
+                );
+                Assert::assert_equals(
+                    2i64,
+                    i64::from(s.count(IntPoint::new_exact_query("int2", 42)?)?),
+                );
+                drop(s);
+                r.close()?;
+                w.close()?;
+            }
+            dir.close()?;
+        }
         dir1.close()?;
         dir2.close()
     }
@@ -1605,24 +1628,26 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testMergeMissing()` (LUCENE-7491).
     fn test_merge_missing(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let iwc = LuceneTestCase::new_index_writer_config();
-        let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
-        // `iwc.setMaxBufferedDocs(2)` after the writer took `iwc`: the
-        // writer's live config is that object.
-        w.w().get_config().set_max_buffered_docs(2)?;
-        for i in 0..2 {
-            let mut doc = Document::new();
-            doc.add(Box::new(IntPoint::new("int", &[i])?));
-            w.add_document(&doc)?;
-        }
-        // index has 1 segment now (with 2 docs) and that segment does have points
+        {
+            let iwc = LuceneTestCase::new_index_writer_config();
+            let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
+            // `iwc.setMaxBufferedDocs(2)` after the writer took `iwc`: the
+            // writer's live config is that object.
+            w.w().get_config().set_max_buffered_docs(2)?;
+            for i in 0..2 {
+                let mut doc = Document::new();
+                doc.add(Box::new(IntPoint::new("int", &[i])?));
+                w.add_document(&doc)?;
+            }
+            // index has 1 segment now (with 2 docs) and that segment does have points
 
-        let mut doc = Document::new();
-        doc.add(Box::new(IntPoint::new("id", &[0])?));
-        w.add_document(&doc)?;
-        // now we write another segment where the id field does have points:
-        w.force_merge(1)?;
-        w.close()?;
+            let mut doc = Document::new();
+            doc.add(Box::new(IntPoint::new("id", &[0])?));
+            w.add_document(&doc)?;
+            // now we write another segment where the id field does have points:
+            w.force_merge(1)?;
+            w.close()?;
+        }
         dir.close()
     }
 
@@ -1670,65 +1695,70 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testMismatchedFields()`.
     fn test_mismatched_fields(&self) -> Result<()> {
         let mut dir1 = LuceneTestCase::new_directory();
-        let w1 = IndexWriter::new(
-            dir1.as_directory(),
-            LuceneTestCase::new_index_writer_config(),
-        )?;
-        let mut doc = Document::new();
-        doc.add(Box::new(LongPoint::new("f", &[1])?));
-        doc.add(Box::new(LongPoint::new("g", &[42, 43])?));
-        w1.add_document(&doc)?;
+        // Created where Java creates it; declared here so it outlives the
+        // block that releases every handle on it before it closes.
+        let mut dir2;
+        {
+            let w1 = IndexWriter::new(
+                dir1.as_directory(),
+                LuceneTestCase::new_index_writer_config(),
+            )?;
+            let mut doc = Document::new();
+            doc.add(Box::new(LongPoint::new("f", &[1])?));
+            doc.add(Box::new(LongPoint::new("g", &[42, 43])?));
+            w1.add_document(&doc)?;
 
-        let mut dir2 = LuceneTestCase::new_directory();
-        let mut iwc2 = LuceneTestCase::new_index_writer_config();
-        iwc2.set_merge_scheduler(Arc::new(SerialMergeScheduler::default()))?;
-        let w2 = IndexWriter::new(dir2.as_directory(), iwc2)?;
-        w2.add_document(&doc)?;
-        w2.commit()?;
+            dir2 = LuceneTestCase::new_directory();
+            let mut iwc2 = LuceneTestCase::new_index_writer_config();
+            iwc2.set_merge_scheduler(Arc::new(SerialMergeScheduler::default()))?;
+            let w2 = IndexWriter::new(dir2.as_directory(), iwc2)?;
+            w2.add_document(&doc)?;
+            w2.commit()?;
 
-        let reader = directory_reader::open_with_writer(&*w1)?;
-        w1.close()?;
-        let codec_reader: Arc<dyn CodecReader> =
-            LuceneTestCase::get_only_leaf_reader(Arc::clone(&reader) as _)?
-                .as_codec_reader()
-                .expect("a segment reader is a CodecReader");
-        w2.add_indexes_codec_readers(&[Arc::new(MismatchedCodecReader::new(
-            codec_reader,
-            &*random(),
-        )?)])?;
-        reader.close()?;
-        w2.force_merge(1)?;
-        let reader = directory_reader::open_with_writer(&*w2)?;
-        w2.close()?;
+            let reader = directory_reader::open_with_writer(&*w1)?;
+            w1.close()?;
+            let codec_reader: Arc<dyn CodecReader> =
+                LuceneTestCase::get_only_leaf_reader(Arc::clone(&reader) as _)?
+                    .as_codec_reader()
+                    .expect("a segment reader is a CodecReader");
+            w2.add_indexes_codec_readers(&[Arc::new(MismatchedCodecReader::new(
+                codec_reader,
+                &*random(),
+            )?)])?;
+            reader.close()?;
+            w2.force_merge(1)?;
+            let reader = directory_reader::open_with_writer(&*w2)?;
+            w2.close()?;
 
-        let leaf_reader = LuceneTestCase::get_only_leaf_reader(Arc::clone(&reader) as _)?;
-        Assert::assert_equals(2i64, i64::from(leaf_reader.max_doc()));
+            let leaf_reader = LuceneTestCase::get_only_leaf_reader(Arc::clone(&reader) as _)?;
+            Assert::assert_equals(2i64, i64::from(leaf_reader.max_doc()));
 
-        let f_points = leaf_reader.get_point_values("f")?.expect("f has points");
-        Assert::assert_equals(2i64, f_points.size()?);
-        intersect(
-            &*f_points,
-            &mut ExpectedValueVisitor {
-                expected: LongPoint::pack(&[1])?,
-                expected_doc: 0,
-            },
-        )?;
+            let f_points = leaf_reader.get_point_values("f")?.expect("f has points");
+            Assert::assert_equals(2i64, f_points.size()?);
+            intersect(
+                &*f_points,
+                &mut ExpectedValueVisitor {
+                    expected: LongPoint::pack(&[1])?,
+                    expected_doc: 0,
+                },
+            )?;
 
-        let g_points = leaf_reader.get_point_values("g")?.expect("g has points");
-        Assert::assert_equals(2i64, f_points.size()?);
-        intersect(
-            &*g_points,
-            &mut ExpectedValueVisitor {
-                expected: LongPoint::pack(&[42, 43])?,
-                expected_doc: 0,
-            },
-        )?;
+            let g_points = leaf_reader.get_point_values("g")?.expect("g has points");
+            Assert::assert_equals(2i64, f_points.size()?);
+            intersect(
+                &*g_points,
+                &mut ExpectedValueVisitor {
+                    expected: LongPoint::pack(&[42, 43])?,
+                    expected_doc: 0,
+                },
+            )?;
 
-        drop(f_points);
-        drop(g_points);
-        drop(leaf_reader);
-        reader.close()?;
-        w2.close()?;
+            drop(f_points);
+            drop(g_points);
+            drop(leaf_reader);
+            reader.close()?;
+            w2.close()?;
+        }
         dir1.close()?;
         dir2.close()
     }
@@ -1796,9 +1826,10 @@ fn random_point_tree_navigation(tree: &mut dyn PointTree) -> Result<()> {
     Ok(())
 }
 
-/// `switchIndex(w, dir, saveW)` (`private`).
+/// `switchIndex(w, dir, saveW)` (`private`). Takes `w` by value: the
+/// closed writer holds `dir`, released before `dir.close()`.
 fn switch_index(
-    w: &RandomIndexWriter,
+    w: RandomIndexWriter,
     dir: &mut TestDirectory,
     save_w: &RandomIndexWriter,
 ) -> Result<()> {
@@ -1843,6 +1874,7 @@ fn switch_index(
         save_w.add_indexes_dirs(&[dir.as_directory()])?;
     }
     w.close()?;
+    drop(w);
     dir.close()
 }
 

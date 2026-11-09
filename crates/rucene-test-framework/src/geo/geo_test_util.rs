@@ -73,6 +73,24 @@ pub fn next_after(start: f64, direction: f64) -> f64 {
     }
 }
 
+/// `Math.nextAfter(float start, double direction)`: the overload Java
+/// selects for an `int` `start`, since `int` widens to `float` and `float`
+/// is more specific than `double`; the `float` result widens to `double` at
+/// the call site.
+pub fn next_after_float(start: f32, direction: f64) -> f32 {
+    let start_d = f64::from(start);
+    if start_d > direction {
+        start.next_down()
+    } else if start_d < direction {
+        start.next_up()
+    } else if start_d == direction {
+        direction as f32
+    } else {
+        // At least one is NaN.
+        start + direction as f32
+    }
+}
+
 /// `nextLatitude()`: returns next pseudorandom latitude (anywhere).
 pub fn next_latitude() -> f64 {
     next_double_internal(GeoUtils::MIN_LAT_INCL, GeoUtils::MAX_LAT_INCL)
@@ -139,10 +157,12 @@ fn next_double_internal(low: f64, high: f64) -> f64 {
 
     // either return the base value or adjust it by 1 ulp in a random direction (if possible)
     let adjust_me = random().next_int_bound(17);
+    // `Math.nextAfter(adjustMe, high)` with an `int` `adjustMe` is the
+    // `nextAfter(float, double)` overload (`GeoTestUtil.java:111-114`).
     if adjust_me == 0 {
-        next_after(f64::from(adjust_me), high)
+        f64::from(next_after_float(adjust_me as f32, high))
     } else if adjust_me == 1 {
-        next_after(f64::from(adjust_me), low)
+        f64::from(next_after_float(adjust_me as f32, low))
     } else {
         base_value
     }
@@ -962,4 +982,26 @@ pub fn read_shape(name: &str) -> Result<String> {
         builder.push_str(line.strip_suffix('\r').unwrap_or(line));
     }
     Ok(builder)
+}
+
+#[cfg(test)]
+mod next_after_tests {
+    use super::*;
+
+    /// rmp #358 (`TestGeoPointSuiteDraws`, `testSamePointManyTimes`):
+    /// `nextDoubleInternal` calls `Math.nextAfter(adjustMe, ...)` with an
+    /// `int`, which Java resolves to `nextAfter(float, double)`
+    /// (`GeoTestUtil.java:111-114`); the port used the `double` overload and
+    /// produced `0.9999999999999999` where Java produces `0.9999999403953552`.
+    /// Expected values from JDK 25: `Math.nextAfter(1, -90.0)`,
+    /// `Math.nextAfter(0, 90.0)`, `Math.nextAfter(1, 1.0)`.
+    #[test]
+    fn next_after_an_int_is_the_float_overload() {
+        assert_eq!(f64::from(next_after_float(1.0, -90.0)), 0.9999999403953552);
+        assert_eq!(
+            f64::from(next_after_float(0.0, 90.0)),
+            1.401298464324817e-45
+        );
+        assert_eq!(f64::from(next_after_float(1.0, 1.0)), 1.0);
+    }
 }

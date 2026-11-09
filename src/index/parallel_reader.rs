@@ -195,7 +195,9 @@ impl ParallelLeafReader {
         close_sub_readers: bool,
         readers: Vec<Arc<dyn LeafReader>>,
     ) -> Result<Self> {
-        Self::with_stored_fields(close_sub_readers, readers, Vec::new())
+        // `this(closeSubReaders, readers, readers)` (`ParallelLeafReader.java:74-76`).
+        let stored_fields_readers = readers.clone();
+        Self::with_stored_fields(close_sub_readers, readers, stored_fields_readers)
     }
 
     /// Expert constructor that splits the parallel sub-readers from the readers
@@ -203,8 +205,8 @@ impl ParallelLeafReader {
     ///
     /// Equivalent to
     /// `ParallelLeafReader(boolean closeSubReaders, LeafReader[] readers,
-    /// LeafReader[] storedFieldsReaders)`. When `stored_fields_readers` is
-    /// empty, stored fields and term vectors are served from `readers`.
+    /// LeafReader[] storedFieldsReaders)`. Stored fields are served from
+    /// `stored_fields_readers` only, as in Java.
     ///
     /// # Errors
     ///
@@ -918,7 +920,10 @@ impl ParallelCompositeReader {
         close_sub_readers: bool,
         readers: Vec<Arc<dyn CompositeReader>>,
     ) -> Result<Self> {
-        Self::with_stored_fields(close_sub_readers, readers, Vec::new())
+        // `this(closeSubReaders, readers, readers)`
+        // (`ParallelCompositeReader.java:60-63`).
+        let stored_fields_readers = readers.clone();
+        Self::with_stored_fields(close_sub_readers, readers, stored_fields_readers)
     }
 
     /// Expert constructor that splits the parallel sub-composites from the
@@ -1585,6 +1590,30 @@ mod tests {
         // StubLeaf returns None, so the delegate path yields None.
         assert!(plr.get_core_cache_helper().is_none());
         assert!(LeafReader::get_reader_cache_helper(&plr).is_none());
+    }
+
+    /// rmp #358 (`TestXYPointSuiteDraws`, `testSamePointManyTimes`, seed
+    /// C0FFEE): `ParallelLeafReader(boolean, LeafReader...)` and
+    /// `ParallelCompositeReader(boolean, CompositeReader...)` pass `readers`
+    /// as the stored-fields readers too (`ParallelLeafReader.java:74-76`,
+    /// `ParallelCompositeReader.java:60-63`), so a single-reader wrapper
+    /// delegates its cache helpers (`ParallelLeafReader.java:302-312`) and
+    /// serves stored fields; the port passed an empty set, which made the
+    /// wrapper uncacheable and its stored fields empty.
+    #[test]
+    fn the_short_constructors_use_the_readers_for_stored_fields() {
+        let a = leaf(3, 3, &["a"]);
+        let plr = ParallelLeafReader::with_close_flag(true, vec![Arc::clone(&a)]).unwrap();
+        assert_eq!(plr.stored_fields_readers.len(), 1);
+        assert!(Arc::ptr_eq(&plr.stored_fields_readers[0], &a));
+
+        let c0 = composite(&[(2, 2, &["a"])]);
+        let pcr = ParallelCompositeReader::with_close_flag(true, vec![c0]).unwrap();
+        assert_eq!(pcr.source_stored_fields_readers.len(), 1);
+        assert!(Arc::ptr_eq(
+            &pcr.source_readers[0],
+            &pcr.source_stored_fields_readers[0]
+        ));
     }
 
     #[test]

@@ -626,7 +626,19 @@ fn indexing_thread_body(
 
                 let max_doc_count = TestUtil::next_int(&*random(), 1, 10);
                 while (docs_list.len() as i32) < max_doc_count {
-                    let next = docs.next_doc()?;
+                    // Java's `docs.nextDoc()` returns the thread's one
+                    // `DocState.doc` (`LineFileDocs.java:295-345`), which
+                    // still holds the fields this iteration added to `doc`:
+                    // the `extra` field and `packIDField`. The port's
+                    // `next_doc` builds a fresh document, so those fields
+                    // are carried over, in the order Java's document holds
+                    // them.
+                    let mut next = docs.next_doc()?;
+                    for f in TestUtil::clone_document(&doc)?.into_fields() {
+                        if f.name() == "packID" || added_field.as_deref() == Some(f.name()) {
+                            next.add(f);
+                        }
+                    }
                     docs_list.push(TestUtil::clone_document(&next)?);
                     doc_ids.push(doc_get(&next, "docid").unwrap_or_default());
                     doc = next;

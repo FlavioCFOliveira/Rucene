@@ -6802,8 +6802,9 @@ impl IndexWriter {
     ///   `Constants.OS_NAME`, `OS_ARCH`, `OS_VERSION` and `JAVA_VENDOR`, read
     ///   through [`Constants`](crate::util::Constants), which answers the JVM
     ///   system properties from the process environment and the Rust runtime
-    ///   (`linux`/`x86_64` where a JVM says `Linux`/`amd64`, `Unknown` for a
-    ///   property nothing sets);
+    ///   (`os.arch` is the JVM's architecture name, e.g. `amd64`; `os` is
+    ///   `linux` where a JVM says `Linux`; `Unknown` for a property nothing
+    ///   sets);
     /// * `java.runtime.version` is `Runtime.version().toString()`,
     ///   [`Constants::runtime_version`](crate::util::Constants::runtime_version).
     ///

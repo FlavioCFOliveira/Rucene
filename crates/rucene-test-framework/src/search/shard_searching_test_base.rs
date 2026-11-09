@@ -344,7 +344,7 @@ impl ShardSearchingTestBase {
     ) -> Result<HashMap<Term, TermStatistics>> {
         let node = &self.nodes()[node_id as usize];
         let mut stats = HashMap::new();
-        let Some(s) = node.searchers.acquire(version)? else {
+        let Some(s) = node.searchers().acquire(version)? else {
             return Err(searcher_expired(format!(
                 "node={node_id} version={version}"
             )));
@@ -366,7 +366,7 @@ impl ShardSearchingTestBase {
             Ok(())
         })();
         // finally
-        let released = node.searchers.release(&s);
+        let released = node.searchers().release(&s);
         result?;
         released?;
         Ok(stats)
@@ -410,19 +410,22 @@ impl ShardSearchingTestBase {
 
         let mut node_versions = vec![0i64; nodes.len()];
         for node_id in 0..num_nodes as usize {
-            let s = nodes[node_id].mgr.acquire()?;
-            let recorded = nodes[node_id].searchers.record(&s);
-            let released = nodes[node_id].mgr.release(s);
+            let s = nodes[node_id].mgr().acquire()?;
+            let recorded = nodes[node_id].searchers().record(&s);
+            let released = nodes[node_id].mgr().release(s);
             node_versions[node_id] = recorded?;
             released?;
         }
 
         for node_id in 0..num_nodes as usize {
-            let s = nodes[node_id].mgr.acquire()?;
-            assert_eq!(node_versions[node_id], nodes[node_id].searchers.record(&s)?);
+            let s = nodes[node_id].mgr().acquire()?;
+            assert_eq!(
+                node_versions[node_id],
+                nodes[node_id].searchers().record(&s)?
+            );
             let result =
                 self.broadcast_node_reopen(node_id as i32, node_versions[node_id], s.searcher());
-            let released = nodes[node_id].mgr.release(s);
+            let released = nodes[node_id].mgr().release(s);
             result?;
             released?;
         }
@@ -462,6 +465,16 @@ impl ShardSearchingTestBase {
 }
 
 /// `lock()` that ignores poisoning, as Java's monitors have none.
+/// Read-locks `l`, ignoring poisoning.
+fn read<T>(l: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
+    l.read().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Write-locks `l`, ignoring poisoning.
+fn write<T>(l: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
+    l.write().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
@@ -486,7 +499,7 @@ fn change_indices_run(base: &Arc<ShardSearchingTestBase>) {
                 let what = random().next_int_bound(3);
                 let node = &nodes[random().next_int_bound(nodes.len() as i32) as usize];
                 if num_docs == 0 || what == 0 {
-                    node.writer.add_document(&docs.next_doc()?)?;
+                    node.writer().add_document(&docs.next_doc()?)?;
                     num_docs += 1;
                 } else if what == 1 {
                     let term = Term::new(
@@ -495,10 +508,10 @@ fn change_indices_run(base: &Arc<ShardSearchingTestBase>) {
                             &random().next_int_bound(num_docs).to_string(),
                         ),
                     );
-                    node.writer.update_document(term, &docs.next_doc()?)?;
+                    node.writer().update_document(term, &docs.next_doc()?)?;
                     num_docs += 1;
                 } else {
-                    node.writer.delete_documents_by_terms(vec![Term::new(
+                    node.writer().delete_documents_by_terms(vec![Term::new(
                         "docid",
                         rucene::util::BytesRef::from_char_sequence(
                             &random().next_int_bound(num_docs).to_string(),
@@ -508,7 +521,7 @@ fn change_indices_run(base: &Arc<ShardSearchingTestBase>) {
                 // TODO: doc blocks too
 
                 if random().next_int_bound(17) == 12 {
-                    node.writer.commit()?;
+                    node.writer().commit()?;
                 }
 
                 if random().next_int_bound(17) == 12 {
@@ -538,12 +551,13 @@ fn change_indices_run(base: &Arc<ShardSearchingTestBase>) {
 pub struct NodeState {
     /// `public final Directory dir`.
     pub dir: Mutex<TestDirectory>,
-    /// `public final IndexWriter writer`.
-    pub writer: Arc<IndexWriter>,
-    /// `public final SearcherLifetimeManager searchers`.
-    pub searchers: SearcherLifetimeManager,
-    /// `public final SearcherManager mgr`.
-    pub mgr: SearcherManager,
+    /// `public final IndexWriter writer`, read through [`writer`](Self::writer).
+    writer: RwLock<Option<Arc<IndexWriter>>>,
+    /// `public final SearcherLifetimeManager searchers`, read through
+    /// [`searchers`](Self::searchers).
+    searchers: RwLock<Option<Arc<SearcherLifetimeManager>>>,
+    /// `public final SearcherManager mgr`, read through [`mgr`](Self::mgr).
+    mgr: RwLock<Option<Arc<SearcherManager>>>,
     /// `public final int myNodeID`.
     pub my_node_id: i32,
     /// `public final long[] currentNodeVersions`.
@@ -603,9 +617,9 @@ impl NodeState {
         // "broadcast" by calling initSearcher:
         Ok(Arc::new(NodeState {
             dir: Mutex::new(dir),
-            writer,
-            searchers,
-            mgr,
+            writer: RwLock::new(Some(writer)),
+            searchers: RwLock::new(Some(Arc::new(searchers))),
+            mgr: RwLock::new(Some(Arc::new(mgr))),
             my_node_id: node_id,
             current_node_versions: Mutex::new(vec![0; num_nodes as usize]),
             collection_stats_cache: Arc::new(Mutex::new(HashMap::new())),
@@ -613,6 +627,33 @@ impl NodeState {
             current_shard_searcher: RwLock::new(None),
             base,
         }))
+    }
+
+    /// `writer`.
+    ///
+    /// # Panics
+    ///
+    /// After [`close`](Self::close), as Java's closed writer would throw.
+    pub fn writer(&self) -> Arc<IndexWriter> {
+        Arc::clone(read(&self.writer).as_ref().expect("NodeState is closed"))
+    }
+
+    /// `searchers`.
+    ///
+    /// # Panics
+    ///
+    /// After [`close`](Self::close).
+    pub fn searchers(&self) -> Arc<SearcherLifetimeManager> {
+        Arc::clone(read(&self.searchers).as_ref().expect("NodeState is closed"))
+    }
+
+    /// `mgr`.
+    ///
+    /// # Panics
+    ///
+    /// After [`close`](Self::close).
+    pub fn mgr(&self) -> Arc<SearcherManager> {
+        Arc::clone(read(&self.mgr).as_ref().expect("NodeState is closed"))
     }
 
     /// `new ShardIndexSearcher(nodeVersions, localReader, nodeID)` of this
@@ -636,7 +677,7 @@ impl NodeState {
 
     /// The reader of the searcher `mgr.acquire()` answers.
     fn acquire_mgr_reader(&self) -> Result<Arc<dyn IndexReader>> {
-        let managed: Arc<ManagedSearcher> = self.mgr.acquire()?;
+        let managed: Arc<ManagedSearcher> = self.mgr().acquire()?;
         Ok(Arc::clone(managed.searcher().get_index_reader()))
     }
 
@@ -727,7 +768,7 @@ impl NodeState {
     /// expired.
     pub fn acquire_versions(&self, node_versions: &[i64]) -> Result<Arc<ShardIndexSearcher>> {
         let version = node_versions[self.my_node_id as usize];
-        let Some(s) = self.searchers.acquire(version)? else {
+        let Some(s) = self.searchers().acquire(version)? else {
             return Err(searcher_expired(format!(
                 "nodeID={} version={version}",
                 self.my_node_id
@@ -746,11 +787,11 @@ impl NodeState {
     ///
     /// The errors of refreshing, recording, pruning and broadcasting.
     pub fn reopen(&self) -> Result<()> {
-        let before = self.mgr.acquire()?;
-        self.mgr.release(Arc::clone(&before))?;
+        let before = self.mgr().acquire()?;
+        self.mgr().release(Arc::clone(&before))?;
 
-        self.mgr.maybe_refresh()?;
-        let after = self.mgr.acquire()?;
+        self.mgr().maybe_refresh()?;
+        let after = self.mgr().acquire()?;
         let result = (|| -> Result<()> {
             if !Arc::ptr_eq(&after, &before) {
                 // New searcher was opened
@@ -758,8 +799,8 @@ impl NodeState {
                     .base
                     .upgrade()
                     .expect("INVARIANT: the test instance holds the base state");
-                let version = self.searchers.record(&after)?;
-                self.searchers.prune(&PruneByAge::new(f64::from(
+                let version = self.searchers().record(&after)?;
+                self.searchers().prune(&PruneByAge::new(f64::from(
                     base.max_searcher_age_seconds(),
                 ))?)?;
                 base.broadcast_node_reopen(self.my_node_id, version, after.searcher())?;
@@ -767,7 +808,7 @@ impl NodeState {
             Ok(())
         })();
         // finally
-        let released = self.mgr.release(after);
+        let released = self.mgr().release(after);
         result?;
         released
     }
@@ -778,18 +819,37 @@ impl NodeState {
     ///
     /// The errors of closing the searchers, the manager, the writer and the
     /// directory.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `close()`
+    /// (`ShardSearchingTestBase.java`, `NodeState.close`) closes the
+    /// searchers, the manager, the writer and the directory, and leaves the
+    /// closed objects to the garbage collector. The port's
+    /// `MockDirectoryWrapper` can close its delegate only once no handle
+    /// shares it, so this also drops the current shard searcher, the
+    /// searchers, the manager and the writer before closing the directory;
+    /// [`writer`](Self::writer), [`searchers`](Self::searchers) and
+    /// [`mgr`](Self::mgr) panic afterwards.
     pub fn close(&self) -> Result<()> {
         let current = self
             .current_shard_searcher
-            .read()
+            .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
+            .take();
         if let Some(current) = current {
             current.get_index_reader().dec_ref()?;
         }
-        self.searchers.close()?;
-        self.mgr.close()?;
-        self.writer.close()?;
+        let searchers = write(&self.searchers).take();
+        let mgr = write(&self.mgr).take();
+        let writer = write(&self.writer).take();
+        if let Some(searchers) = searchers {
+            searchers.close()?;
+        }
+        if let Some(mgr) = mgr {
+            mgr.close()?;
+        }
+        if let Some(writer) = writer {
+            writer.close()?;
+        }
         lock(&self.dir).close()
     }
 }

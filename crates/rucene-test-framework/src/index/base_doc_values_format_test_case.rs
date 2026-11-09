@@ -251,10 +251,17 @@ trait DocValuesWrapper {
     fn doc_value_count(&self) -> Result<i32>;
 }
 
+/// The `docValuesWrapper(leafReader)` member of a [`TestDocValueSkipper`].
+type DocValuesWrapperFn = fn(&dyn LeafReader) -> Result<Option<Box<dyn DocValuesWrapper>>>;
+
 /// Port of `BaseDocValuesFormatTestCase.TestDocValueSkipper`.
 struct TestDocValueSkipper {
     populate_doc: fn(&mut Document),
-    doc_values_wrapper: fn(&dyn LeafReader) -> Result<Box<dyn DocValuesWrapper>>,
+    /// `docValuesWrapper(leafReader)`. Java's wrapper captures the values
+    /// the reader answers, `null` included, and dereferences them only when
+    /// called; `None` stands for that `null`, dereferenced (`npe`) where the
+    /// Java wrapper is first called.
+    doc_values_wrapper: DocValuesWrapperFn,
 }
 
 impl TestDocValueSkipper {
@@ -446,9 +453,9 @@ fn numeric_skipper() -> TestDocValueSkipper {
             )));
         },
         doc_values_wrapper: |leaf| {
-            Ok(Box::new(NumericWrapper(npe(
-                leaf.get_numeric_doc_values("test")?
-            ))))
+            Ok(leaf
+                .get_numeric_doc_values("test")?
+                .map(|v| Box::new(NumericWrapper(v)) as Box<dyn DocValuesWrapper>))
         },
     }
 }
@@ -467,10 +474,12 @@ fn sorted_numeric_skipper() -> TestDocValueSkipper {
             }
         },
         doc_values_wrapper: |leaf| {
-            Ok(Box::new(SortedNumericWrapper {
-                values: npe(leaf.get_sorted_numeric_doc_values("test")?),
-                max: 0,
-                min: 0,
+            Ok(leaf.get_sorted_numeric_doc_values("test")?.map(|values| {
+                Box::new(SortedNumericWrapper {
+                    values,
+                    max: 0,
+                    min: 0,
+                }) as Box<dyn DocValuesWrapper>
             }))
         },
     }
@@ -486,9 +495,9 @@ fn sorted_skipper() -> TestDocValueSkipper {
             )));
         },
         doc_values_wrapper: |leaf| {
-            Ok(Box::new(SortedWrapper(npe(
-                leaf.get_sorted_doc_values("test")?
-            ))))
+            Ok(leaf
+                .get_sorted_doc_values("test")?
+                .map(|v| Box::new(SortedWrapper(v)) as Box<dyn DocValuesWrapper>))
         },
     }
 }
@@ -507,10 +516,12 @@ fn sorted_set_skipper() -> TestDocValueSkipper {
             }
         },
         doc_values_wrapper: |leaf| {
-            Ok(Box::new(SortedSetWrapper {
-                values: npe(leaf.get_sorted_set_doc_values("test")?),
-                max: 0,
-                min: 0,
+            Ok(leaf.get_sorted_set_doc_values("test")?.map(|values| {
+                Box::new(SortedSetWrapper {
+                    values,
+                    max: 0,
+                    min: 0,
+                }) as Box<dyn DocValuesWrapper>
             }))
         },
     }
@@ -528,76 +539,83 @@ fn assert_doc_values_with_skipper(
         _ => randomizedtesting::jdk::exception::throw_without_message("java.lang.AssertionError"),
     };
     let mut directory = LuceneTestCase::new_directory();
-    let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), directory.as_directory())?;
-    let mut num_docs = 0;
-    for _ in 0..total_docs {
-        let mut doc = Document::new();
-        if boolean_supplier() {
-            (test_doc_value_skipper.populate_doc)(&mut doc);
-            num_docs += 1;
+    {
+        let writer =
+            RandomIndexWriter::new_with_mock_analyzer(&*random(), directory.as_directory())?;
+        let mut num_docs = 0;
+        for _ in 0..total_docs {
+            let mut doc = Document::new();
+            if boolean_supplier() {
+                (test_doc_value_skipper.populate_doc)(&mut doc);
+                num_docs += 1;
+            }
+            writer.add_document(&doc)?;
+            if LuceneTestCase::rarely() {
+                writer.commit()?;
+            }
         }
-        writer.add_document(&doc)?;
-        if LuceneTestCase::rarely() {
-            writer.commit()?;
-        }
-    }
-    writer.flush()?;
+        writer.flush()?;
 
-    if random().next_boolean() {
-        writer.force_merge(1)?;
-    }
-
-    let r: Arc<dyn IndexReader> = writer.get_reader()?;
-    let mut read_docs = 0;
-    for reader_context in Arc::clone(&r).leaves()? {
-        let reader = reader_context.leaf_reader();
-        let info_stream = rucene::util::PrintStreamInfoStream::new(Box::new(Vec::<u8>::new()));
-        let codec_reader =
-            Arc::clone(&reader)
-                .as_codec_reader()
-                .ok_or_else(|| LuceneError::Unchecked {
-                    class: "java.lang.ClassCastException",
-                    message: Some("the leaf is not a CodecReader".to_string()),
-                    cause: None,
-                })?;
-        let status =
-            rucene::index::check_index::test_doc_values(&*codec_reader, Some(&info_stream), true)?;
-        if let Some(error) = status.error {
-            return Err(LuceneError::Unchecked {
-                class: "java.lang.Exception",
-                message: Some(error.to_string()),
-                cause: Some(Arc::new(error)),
-            });
+        if random().next_boolean() {
+            writer.force_merge(1)?;
         }
-        read_docs += assert_doc_values_skip_sequential(
-            (test_doc_value_skipper.doc_values_wrapper)(&*reader)?,
-            test_doc_value_skipper.doc_values_skipper(&*reader)?,
-        )?;
-        for _ in 0..10 {
-            assert_doc_values_skip_random(
+
+        let r: Arc<dyn IndexReader> = writer.get_reader()?;
+        let mut read_docs = 0;
+        for reader_context in Arc::clone(&r).leaves()? {
+            let reader = reader_context.leaf_reader();
+            let info_stream = rucene::util::PrintStreamInfoStream::new(Box::new(Vec::<u8>::new()));
+            let codec_reader =
+                Arc::clone(&reader)
+                    .as_codec_reader()
+                    .ok_or_else(|| LuceneError::Unchecked {
+                        class: "java.lang.ClassCastException",
+                        message: Some("the leaf is not a CodecReader".to_string()),
+                        cause: None,
+                    })?;
+            let status = rucene::index::check_index::test_doc_values(
+                &*codec_reader,
+                Some(&info_stream),
+                true,
+            )?;
+            if let Some(error) = status.error {
+                return Err(LuceneError::Unchecked {
+                    class: "java.lang.Exception",
+                    message: Some(error.to_string()),
+                    cause: Some(Arc::new(error)),
+                });
+            }
+            read_docs += assert_doc_values_skip_sequential(
                 (test_doc_value_skipper.doc_values_wrapper)(&*reader)?,
                 test_doc_value_skipper.doc_values_skipper(&*reader)?,
-                reader.max_doc(),
             )?;
+            for _ in 0..10 {
+                assert_doc_values_skip_random(
+                    (test_doc_value_skipper.doc_values_wrapper)(&*reader)?,
+                    test_doc_value_skipper.doc_values_skipper(&*reader)?,
+                    reader.max_doc(),
+                )?;
+            }
         }
+        aeq(num_docs, read_docs);
+        // `IOUtils.close(r, writer, directory)`
+        r.close()?;
+        drop(r);
+        writer.close()?;
+        drop(writer);
     }
-    aeq(num_docs, read_docs);
-    // `IOUtils.close(r, writer, directory)`
-    r.close()?;
-    drop(r);
-    writer.close()?;
-    drop(writer);
     directory.close()
 }
 
 /// `assertDocValuesSkipSequential(iterator, skipper)` (`private`).
 fn assert_doc_values_skip_sequential(
-    mut iterator: Box<dyn DocValuesWrapper>,
+    iterator: Option<Box<dyn DocValuesWrapper>>,
     skipper: Option<Box<dyn DocValuesSkipper>>,
 ) -> Result<i32> {
     let Some(mut skipper) = skipper else {
         return Ok(0);
     };
+    let mut iterator = npe(iterator);
 
     aeq(-1, iterator.doc_id());
     aeq(-1, skipper.min_doc_id(0));
@@ -659,13 +677,14 @@ fn assert_not_equals(unexpected: i64, actual: i64) {
 /// `assertDocValuesSkipRandom(iterator, skipper, maxDoc)` (`private
 /// static`).
 fn assert_doc_values_skip_random(
-    mut iterator: Box<dyn DocValuesWrapper>,
+    iterator: Option<Box<dyn DocValuesWrapper>>,
     skipper: Option<Box<dyn DocValuesSkipper>>,
     max_doc: i32,
 ) -> Result<()> {
     let Some(mut skipper) = skipper else {
         return Ok(());
     };
+    let mut iterator = npe(iterator);
     let mut next_level = 0;
     loop {
         let doc = random().next_int_range(skipper.max_doc_id(next_level), max_doc + 1) + 1;
@@ -827,78 +846,80 @@ pub trait BaseDocValuesFormatTestCase: LegacyBaseDocValuesFormatTestCase {
     /// `testMaxValueCountWithSkipper()`.
     fn test_max_value_count_with_skipper(&self) -> Result<()> {
         let mut directory = LuceneTestCase::new_directory();
-        let writer =
-            RandomIndexWriter::new_with_mock_analyzer(&*random(), directory.as_directory())?;
+        {
+            let writer =
+                RandomIndexWriter::new_with_mock_analyzer(&*random(), directory.as_directory())?;
 
-        let mut doc = Document::new();
-        doc.add(Box::new(NumericDocValuesField::indexed_field("numeric", 1)));
-        doc.add(Box::new(SortedDocValuesField::indexed_field(
-            "sorted",
-            nbr("a"),
-        )));
-        doc.add(Box::new(SortedNumericDocValuesField::indexed_field(
-            "sorted_numeric",
-            1,
-        )));
-        doc.add(Box::new(SortedSetDocValuesField::indexed_field(
-            "sorted_set",
-            nbr("a"),
-        )));
-        writer.add_document(&doc)?;
+            let mut doc = Document::new();
+            doc.add(Box::new(NumericDocValuesField::indexed_field("numeric", 1)));
+            doc.add(Box::new(SortedDocValuesField::indexed_field(
+                "sorted",
+                nbr("a"),
+            )));
+            doc.add(Box::new(SortedNumericDocValuesField::indexed_field(
+                "sorted_numeric",
+                1,
+            )));
+            doc.add(Box::new(SortedSetDocValuesField::indexed_field(
+                "sorted_set",
+                nbr("a"),
+            )));
+            writer.add_document(&doc)?;
 
-        let mut doc = Document::new();
-        doc.add(Box::new(NumericDocValuesField::indexed_field("numeric", 2)));
-        doc.add(Box::new(SortedDocValuesField::indexed_field(
-            "sorted",
-            nbr("b"),
-        )));
-        doc.add(Box::new(SortedNumericDocValuesField::indexed_field(
-            "sorted_numeric",
-            1,
-        )));
-        doc.add(Box::new(SortedNumericDocValuesField::indexed_field(
-            "sorted_numeric",
-            2,
-        )));
-        doc.add(Box::new(SortedNumericDocValuesField::indexed_field(
-            "sorted_numeric",
-            3,
-        )));
-        doc.add(Box::new(SortedSetDocValuesField::indexed_field(
-            "sorted_set",
-            nbr("a"),
-        )));
-        doc.add(Box::new(SortedSetDocValuesField::indexed_field(
-            "sorted_set",
-            nbr("b"),
-        )));
-        writer.add_document(&doc)?;
+            let mut doc = Document::new();
+            doc.add(Box::new(NumericDocValuesField::indexed_field("numeric", 2)));
+            doc.add(Box::new(SortedDocValuesField::indexed_field(
+                "sorted",
+                nbr("b"),
+            )));
+            doc.add(Box::new(SortedNumericDocValuesField::indexed_field(
+                "sorted_numeric",
+                1,
+            )));
+            doc.add(Box::new(SortedNumericDocValuesField::indexed_field(
+                "sorted_numeric",
+                2,
+            )));
+            doc.add(Box::new(SortedNumericDocValuesField::indexed_field(
+                "sorted_numeric",
+                3,
+            )));
+            doc.add(Box::new(SortedSetDocValuesField::indexed_field(
+                "sorted_set",
+                nbr("a"),
+            )));
+            doc.add(Box::new(SortedSetDocValuesField::indexed_field(
+                "sorted_set",
+                nbr("b"),
+            )));
+            writer.add_document(&doc)?;
 
-        writer.force_merge(1)?;
-        let reader = writer.get_reader()?;
-        writer.close()?;
-        drop(writer);
+            writer.force_merge(1)?;
+            let reader = writer.get_reader()?;
+            writer.close()?;
+            drop(writer);
 
-        let leaf_reader = LuceneTestCase::get_only_leaf_reader(Arc::clone(&reader) as _)?;
-        aeq(
-            1,
-            npe(leaf_reader.get_doc_values_skipper("numeric")?).max_value_count(),
-        );
-        aeq(
-            1,
-            npe(leaf_reader.get_doc_values_skipper("sorted")?).max_value_count(),
-        );
-        aeq(
-            3,
-            npe(leaf_reader.get_doc_values_skipper("sorted_numeric")?).max_value_count(),
-        );
-        aeq(
-            2,
-            npe(leaf_reader.get_doc_values_skipper("sorted_set")?).max_value_count(),
-        );
+            let leaf_reader = LuceneTestCase::get_only_leaf_reader(Arc::clone(&reader) as _)?;
+            aeq(
+                1,
+                npe(leaf_reader.get_doc_values_skipper("numeric")?).max_value_count(),
+            );
+            aeq(
+                1,
+                npe(leaf_reader.get_doc_values_skipper("sorted")?).max_value_count(),
+            );
+            aeq(
+                3,
+                npe(leaf_reader.get_doc_values_skipper("sorted_numeric")?).max_value_count(),
+            );
+            aeq(
+                2,
+                npe(leaf_reader.get_doc_values_skipper("sorted_set")?).max_value_count(),
+            );
 
-        drop(leaf_reader);
-        reader.close()?;
+            drop(leaf_reader);
+            reader.close()?;
+        }
         directory.close()
     }
 
@@ -974,122 +995,129 @@ pub trait BaseDocValuesFormatTestCase: LegacyBaseDocValuesFormatTestCase {
     /// `testMismatchedFields()`.
     fn test_mismatched_fields(&self) -> Result<()> {
         let mut dir1 = LuceneTestCase::new_directory();
-        let w1 = IndexWriter::new(
-            dir1.as_directory(),
-            LuceneTestCase::new_index_writer_config(),
-        )?;
-        let mut doc = Document::new();
-        doc.add(Box::new(BinaryDocValuesField::new(
-            "binary",
-            BytesRef::from_char_sequence("lucene"),
-        )));
-        doc.add(Box::new(NumericDocValuesField::new("numeric", 0)));
-        doc.add(Box::new(SortedDocValuesField::new(
-            "sorted",
-            BytesRef::from_char_sequence("search"),
-        )));
-        doc.add(Box::new(SortedNumericDocValuesField::new(
-            "sorted_numeric",
-            1,
-        )));
-        doc.add(Box::new(SortedSetDocValuesField::new(
-            "sorted_set",
-            BytesRef::from_char_sequence("engine"),
-        )));
-        w1.add_document(&doc)?;
+        // Created where Java creates it; declared here so it outlives the
+        // block that releases every handle on it before it closes.
+        let mut dir2;
+        {
+            {
+                let w1 = IndexWriter::new(
+                    dir1.as_directory(),
+                    LuceneTestCase::new_index_writer_config(),
+                )?;
+                let mut doc = Document::new();
+                doc.add(Box::new(BinaryDocValuesField::new(
+                    "binary",
+                    BytesRef::from_char_sequence("lucene"),
+                )));
+                doc.add(Box::new(NumericDocValuesField::new("numeric", 0)));
+                doc.add(Box::new(SortedDocValuesField::new(
+                    "sorted",
+                    BytesRef::from_char_sequence("search"),
+                )));
+                doc.add(Box::new(SortedNumericDocValuesField::new(
+                    "sorted_numeric",
+                    1,
+                )));
+                doc.add(Box::new(SortedSetDocValuesField::new(
+                    "sorted_set",
+                    BytesRef::from_char_sequence("engine"),
+                )));
+                w1.add_document(&doc)?;
 
-        let mut dir2 = LuceneTestCase::new_directory();
-        let mut iwc2 = LuceneTestCase::new_index_writer_config();
-        iwc2.set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))?;
-        let w2 = IndexWriter::new(dir2.as_directory(), iwc2)?;
-        w2.add_document(&doc)?;
-        w2.commit()?;
+                dir2 = LuceneTestCase::new_directory();
+                let mut iwc2 = LuceneTestCase::new_index_writer_config();
+                iwc2.set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))?;
+                let w2 = IndexWriter::new(dir2.as_directory(), iwc2)?;
+                w2.add_document(&doc)?;
+                w2.commit()?;
 
-        let reader = directory_reader::open_with_writer(&*w1)?;
-        w1.close()?;
-        drop(w1);
-        let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&reader) as _)?;
-        let codec_reader = leaf
-            .as_codec_reader()
-            .ok_or_else(|| LuceneError::Unchecked {
-                class: "java.lang.ClassCastException",
-                message: Some("the leaf is not a CodecReader".to_string()),
-                cause: None,
-            })?;
-        let mismatched = MismatchedCodecReader::new(codec_reader, &*random())?;
-        w2.add_indexes_codec_readers(&[Arc::new(mismatched)])?;
-        reader.close()?;
-        drop(reader);
-        w2.force_merge(1)?;
-        let reader = directory_reader::open_with_writer(&*w2)?;
-        w2.close()?;
-        drop(w2);
+                let reader = directory_reader::open_with_writer(&*w1)?;
+                w1.close()?;
+                drop(w1);
+                let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&reader) as _)?;
+                let codec_reader =
+                    leaf.as_codec_reader()
+                        .ok_or_else(|| LuceneError::Unchecked {
+                            class: "java.lang.ClassCastException",
+                            message: Some("the leaf is not a CodecReader".to_string()),
+                            cause: None,
+                        })?;
+                let mismatched = MismatchedCodecReader::new(codec_reader, &*random())?;
+                w2.add_indexes_codec_readers(&[Arc::new(mismatched)])?;
+                reader.close()?;
+                drop(reader);
+                w2.force_merge(1)?;
+                let reader = directory_reader::open_with_writer(&*w2)?;
+                w2.close()?;
+                drop(w2);
 
-        let leaf_reader = LuceneTestCase::get_only_leaf_reader(Arc::clone(&reader) as _)?;
+                let leaf_reader = LuceneTestCase::get_only_leaf_reader(Arc::clone(&reader) as _)?;
 
-        let bdv = leaf_reader.get_binary_doc_values("binary")?;
-        assert_not_null(bdv.is_some());
-        let mut bdv = npe(bdv);
-        aeq(0, bdv.next_doc()?);
-        Assert::assert_equals(BytesRef::from_char_sequence("lucene"), bdv.binary_value()?);
-        aeq(1, bdv.next_doc()?);
-        Assert::assert_equals(BytesRef::from_char_sequence("lucene"), bdv.binary_value()?);
-        aeq(NO_MORE_DOCS, bdv.next_doc()?);
+                let bdv = leaf_reader.get_binary_doc_values("binary")?;
+                assert_not_null(bdv.is_some());
+                let mut bdv = npe(bdv);
+                aeq(0, bdv.next_doc()?);
+                Assert::assert_equals(BytesRef::from_char_sequence("lucene"), bdv.binary_value()?);
+                aeq(1, bdv.next_doc()?);
+                Assert::assert_equals(BytesRef::from_char_sequence("lucene"), bdv.binary_value()?);
+                aeq(NO_MORE_DOCS, bdv.next_doc()?);
 
-        let ndv = leaf_reader.get_numeric_doc_values("numeric")?;
-        assert_not_null(ndv.is_some());
-        let mut ndv = npe(ndv);
-        aeq(0, ndv.next_doc()?);
-        aeq(0, ndv.long_value()?);
-        aeq(1, ndv.next_doc()?);
-        aeq(0, ndv.long_value()?);
-        aeq(NO_MORE_DOCS, ndv.next_doc()?);
+                let ndv = leaf_reader.get_numeric_doc_values("numeric")?;
+                assert_not_null(ndv.is_some());
+                let mut ndv = npe(ndv);
+                aeq(0, ndv.next_doc()?);
+                aeq(0, ndv.long_value()?);
+                aeq(1, ndv.next_doc()?);
+                aeq(0, ndv.long_value()?);
+                aeq(NO_MORE_DOCS, ndv.next_doc()?);
 
-        let sdv = leaf_reader.get_sorted_doc_values("sorted")?;
-        assert_not_null(sdv.is_some());
-        let mut sdv = npe(sdv);
-        aeq(0, sdv.next_doc()?);
-        Assert::assert_equals(
-            BytesRef::from_char_sequence("search"),
-            sdv.lookup_ord(sdv.ord_value()?)?,
-        );
-        aeq(1, sdv.next_doc()?);
-        Assert::assert_equals(
-            BytesRef::from_char_sequence("search"),
-            sdv.lookup_ord(sdv.ord_value()?)?,
-        );
-        aeq(NO_MORE_DOCS, sdv.next_doc()?);
+                let sdv = leaf_reader.get_sorted_doc_values("sorted")?;
+                assert_not_null(sdv.is_some());
+                let mut sdv = npe(sdv);
+                aeq(0, sdv.next_doc()?);
+                Assert::assert_equals(
+                    BytesRef::from_char_sequence("search"),
+                    sdv.lookup_ord(sdv.ord_value()?)?,
+                );
+                aeq(1, sdv.next_doc()?);
+                Assert::assert_equals(
+                    BytesRef::from_char_sequence("search"),
+                    sdv.lookup_ord(sdv.ord_value()?)?,
+                );
+                aeq(NO_MORE_DOCS, sdv.next_doc()?);
 
-        let sndv = leaf_reader.get_sorted_numeric_doc_values("sorted_numeric")?;
-        assert_not_null(sndv.is_some());
-        let mut sndv = npe(sndv);
-        aeq(0, sndv.next_doc()?);
-        aeq(1, sndv.next_value()?);
-        aeq(1, sndv.next_doc()?);
-        aeq(1, sndv.next_value()?);
-        aeq(NO_MORE_DOCS, sndv.next_doc()?);
+                let sndv = leaf_reader.get_sorted_numeric_doc_values("sorted_numeric")?;
+                assert_not_null(sndv.is_some());
+                let mut sndv = npe(sndv);
+                aeq(0, sndv.next_doc()?);
+                aeq(1, sndv.next_value()?);
+                aeq(1, sndv.next_doc()?);
+                aeq(1, sndv.next_value()?);
+                aeq(NO_MORE_DOCS, sndv.next_doc()?);
 
-        let ssdv = leaf_reader.get_sorted_set_doc_values("sorted_set")?;
-        assert_not_null(ssdv.is_some());
-        let mut ssdv = npe(ssdv);
-        aeq(0, ssdv.next_doc()?);
-        let ord = ssdv.next_ord()?;
-        Assert::assert_equals(
-            BytesRef::from_char_sequence("engine"),
-            ssdv.lookup_ord(ord)?,
-        );
-        aeq(1, ssdv.next_doc()?);
-        let ord = ssdv.next_ord()?;
-        Assert::assert_equals(
-            BytesRef::from_char_sequence("engine"),
-            ssdv.lookup_ord(ord)?,
-        );
-        aeq(NO_MORE_DOCS, ssdv.next_doc()?);
+                let ssdv = leaf_reader.get_sorted_set_doc_values("sorted_set")?;
+                assert_not_null(ssdv.is_some());
+                let mut ssdv = npe(ssdv);
+                aeq(0, ssdv.next_doc()?);
+                let ord = ssdv.next_ord()?;
+                Assert::assert_equals(
+                    BytesRef::from_char_sequence("engine"),
+                    ssdv.lookup_ord(ord)?,
+                );
+                aeq(1, ssdv.next_doc()?);
+                let ord = ssdv.next_ord()?;
+                Assert::assert_equals(
+                    BytesRef::from_char_sequence("engine"),
+                    ssdv.lookup_ord(ord)?,
+                );
+                aeq(NO_MORE_DOCS, ssdv.next_doc()?);
 
-        // `IOUtils.close(reader, w2, dir1, dir2)`
-        drop((bdv, ndv, sdv, sndv, ssdv, leaf_reader));
-        reader.close()?;
-        drop(reader);
+                // `IOUtils.close(reader, w2, dir1, dir2)`
+                drop((bdv, ndv, sdv, sndv, ssdv, leaf_reader));
+                reader.close()?;
+                drop(reader);
+            }
+        }
         dir1.close()?;
         dir2.close()
     }

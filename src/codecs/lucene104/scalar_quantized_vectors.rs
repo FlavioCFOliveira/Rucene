@@ -171,6 +171,10 @@ pub struct OffHeapScalarQuantizedVectorValues {
     /// Equivalent to `SparseOffHeapVectorValues.ordToDoc`
     /// (`OffHeapScalarQuantizedVectorValues.java:377`).
     ord_to_doc: Option<Arc<SharedDirectMonotonicReader>>,
+    /// The `IndexedDISI disi` of a sparse field, which every `iterator()`
+    /// call wraps (`OffHeapScalarQuantizedVectorValues.java:346, 378,
+    /// 422-424`); `None` when the field is dense or empty.
+    disi: Option<Arc<Mutex<IndexedDISI>>>,
     byte_size: usize,
     /// Scratch holding the vector last read.
     vector: Vec<u8>,
@@ -220,7 +224,7 @@ impl OffHeapScalarQuantizedVectorValues {
                     .get_direct_monotonic_reader(slice.as_ref())?,
             )
         };
-        Ok(Self::load_with_ord_to_doc(entry, slice, ord_to_doc, false))
+        Self::load_with_ord_to_doc(entry, slice, ord_to_doc, false)
     }
 
     /// Opens the dense, query-side values an asymmetric encoding writes into a
@@ -229,7 +233,7 @@ impl OffHeapScalarQuantizedVectorValues {
     ///
     /// Equivalent to `new OffHeapScalarQuantizedVectorValues.DenseOffHeapVectorValues(true, …)`
     /// (`Lucene104ScalarQuantizedVectorsReader.java:498-509`).
-    fn load_query_side(entry: &FieldEntry, size: i32, slice: Box<dyn IndexInput>) -> Self {
+    fn load_query_side(entry: &FieldEntry, size: i32, slice: Box<dyn IndexInput>) -> Result<Self> {
         let mut query_entry = entry.clone();
         query_entry.size = size;
         query_entry.vector_data_offset = 0;
@@ -240,13 +244,21 @@ impl OffHeapScalarQuantizedVectorValues {
     }
 
     /// As [`load`](Self::load), with the sparse ordinal-to-document reader
-    /// already built; `copy()` shares it this way.
+    /// already built; `copy()` shares it this way. A sparse instance builds
+    /// its own disi, as the sparse constructor does
+    /// (`OffHeapScalarQuantizedVectorValues.java:378`).
     fn load_with_ord_to_doc(
         entry: FieldEntry,
         slice: Box<dyn IndexInput>,
         ord_to_doc: Option<Arc<SharedDirectMonotonicReader>>,
         is_query_side: bool,
-    ) -> Self {
+    ) -> Result<Self> {
+        let disi = match ord_to_doc {
+            Some(_) => Some(Arc::new(Mutex::new(
+                entry.ord_to_doc.get_indexed_disi(slice.as_ref())?,
+            ))),
+            None => None,
+        };
         let dimension = entry.dimension.max(0);
         let dim_bytes = if is_query_side {
             entry.scalar_encoding.get_query_packed_length(dimension)
@@ -256,11 +268,12 @@ impl OffHeapScalarQuantizedVectorValues {
         .max(0) as usize;
         let byte_size = dim_bytes + 3 * std::mem::size_of::<f32>() + std::mem::size_of::<i32>();
         let quantizer = OptimizedScalarQuantizer::new(entry.similarity_function);
-        Self {
+        Ok(Self {
             entry,
             slice,
             quantizer,
             ord_to_doc,
+            disi,
             byte_size,
             vector: vec![0u8; dim_bytes],
             corrections: QuantizationResult {
@@ -271,7 +284,7 @@ impl OffHeapScalarQuantizedVectorValues {
             },
             loaded_ord: -1,
             is_query_side,
-        }
+        })
     }
 
     /// Returns the centroid the field was quantized against.
@@ -352,12 +365,12 @@ impl OffHeapScalarQuantizedVectorValues {
     ///
     /// Equivalent to `OffHeapScalarQuantizedVectorValues.copy()`.
     pub fn copy(&self) -> Result<Self> {
-        Ok(Self::load_with_ord_to_doc(
+        Self::load_with_ord_to_doc(
             self.entry.clone(),
             self.slice.clone_input()?,
             self.ord_to_doc.clone(),
             self.is_query_side,
-        ))
+        )
     }
 
     /// Packs a vector of four-bit components, one per byte, into half as many
@@ -537,13 +550,13 @@ impl QuantizedByteVectorValues for OffHeapScalarQuantizedVectorValues {
         if self.entry.ord_to_doc.is_dense() {
             return Ok(Box::new(DenseDocIndexIterator::new(self.entry.size)));
         }
-        // `IndexedDISI.asDocIndexIterator(disi)`
-        // (`OffHeapScalarQuantizedVectorValues.java:423`).
-        Ok(IndexedDISI::as_doc_index_iterator(
-            self.entry
-                .ord_to_doc
-                .get_indexed_disi(self.slice.as_ref())?,
-        ))
+        // `IndexedDISI.asDocIndexIterator(disi)` over the instance's one
+        // disi (`OffHeapScalarQuantizedVectorValues.java:422-424`).
+        Ok(IndexedDISI::as_doc_index_iterator(Arc::clone(
+            self.disi
+                .as_ref()
+                .expect("INVARIANT: a sparse field has its disi"),
+        )))
     }
 }
 
@@ -585,6 +598,10 @@ pub struct OffHeapScalarQuantizedFloatVectorValues {
     /// Equivalent to `SparseOffHeapVectorValues.ordToDoc`
     /// (`OffHeapScalarQuantizedFloatVectorValues.java:294`).
     ord_to_doc: Option<Arc<SharedDirectMonotonicReader>>,
+    /// The `IndexedDISI disi` of a sparse field, which every `iterator()`
+    /// call wraps (`OffHeapScalarQuantizedFloatVectorValues.java:275, 295,
+    /// 337-339`); `None` when dense.
+    disi: Option<Arc<Mutex<IndexedDISI>>>,
     /// Equivalent to the `final VectorSimilarityFunction similarityFunction`
     /// field.
     similarity_function: VectorSimilarityFunction,
@@ -648,13 +665,14 @@ impl OffHeapScalarQuantizedFloatVectorValues {
             vector_data_offset,
             vector_data_length,
         )?);
-        let (config, data_input, ord_to_doc) = if config.is_dense() {
-            (None, None, None)
+        let (config, data_input, ord_to_doc, disi) = if config.is_dense() {
+            (None, None, None, None)
         } else {
             (
                 Some(config.clone()),
                 Some(vector_data.clone_input()?),
                 Some(config.get_direct_monotonic_reader(vector_data)?),
+                Some(Arc::new(Mutex::new(config.get_indexed_disi(vector_data)?))),
             )
         };
         let _ = dims;
@@ -669,6 +687,7 @@ impl OffHeapScalarQuantizedFloatVectorValues {
             config,
             data_input,
             ord_to_doc,
+            disi,
             similarity_function,
             vectors_scorer,
         }))
@@ -701,6 +720,13 @@ impl OffHeapScalarQuantizedFloatVectorValues {
                 None => None,
             },
             ord_to_doc: self.ord_to_doc.clone(),
+            // `copy()` builds a new sparse instance, with its own disi.
+            disi: match (&self.config, &self.data_input) {
+                (Some(config), Some(input)) => Some(Arc::new(Mutex::new(
+                    config.get_indexed_disi(input.as_ref())?,
+                ))),
+                _ => None,
+            },
             similarity_function: self.similarity_function,
             vectors_scorer: Arc::clone(&self.vectors_scorer),
         })
@@ -752,17 +778,13 @@ impl KnnVectorValues for OffHeapScalarQuantizedFloatVectorValues {
 
     fn iterator(&self) -> Result<Box<dyn DocIndexIterator>> {
         match &self.config {
-            Some(config) => {
-                let data_input = self
-                    .data_input
+            // `IndexedDISI.asDocIndexIterator(disi)` over the instance's one
+            // disi (`OffHeapScalarQuantizedFloatVectorValues.java:337-339`).
+            Some(_) => Ok(IndexedDISI::as_doc_index_iterator(Arc::clone(
+                self.disi
                     .as_ref()
-                    .expect("INVARIANT: sparse values have a data input");
-                // `IndexedDISI.asDocIndexIterator(disi)`
-                // (`OffHeapScalarQuantizedFloatVectorValues.java:338`).
-                Ok(IndexedDISI::as_doc_index_iterator(
-                    config.get_indexed_disi(data_input.as_ref())?,
-                ))
-            }
+                    .expect("INVARIANT: a sparse field has its disi"),
+            ))),
             None => Ok(Box::new(DenseDocIndexIterator::new(self.size))),
         }
     }
@@ -2215,7 +2237,7 @@ impl Lucene104ScalarQuantizedVectorsReader {
                 fi,
                 docs_with_field.cardinality(),
                 values_input,
-            );
+            )?;
             let total_vector_count = vector_values.size();
             let scorer_supplier = AsymmetricQuantizedRandomVectorScorerSupplier::new(
                 score_vector_values,
@@ -2712,7 +2734,7 @@ impl KnnVectorsFormat for Lucene104ScalarQuantizedVectorsFormat {
     }
 
     fn fields_writer(&self, state: &OwnedSegmentWriteState) -> Result<Box<dyn KnnVectorsWriter>> {
-        Ok(self.fields_writer_flat_owned(state)?)
+        Ok(self.fields_writer_flat(state)?)
     }
 
     fn fields_reader<'a>(&self, state: &SegmentReadState<'a>) -> Result<Box<dyn KnnVectorsReader>> {
@@ -2727,26 +2749,10 @@ impl KnnVectorsFormat for Lucene104ScalarQuantizedVectorsFormat {
 impl FlatVectorsFormat for Lucene104ScalarQuantizedVectorsFormat {
     fn fields_writer_flat(
         &self,
-        state: &SegmentWriteState<'_>,
-    ) -> Result<Box<dyn FlatVectorsWriter>> {
-        // The borrowed state cannot lend its info stream beyond this call:
-        // see `fields_writer_flat_owned`, which every vectors chain of the
-        // port builds this writer through.
-        let raw = raw_vector_format().fields_writer_flat(state)?;
-        Ok(Box::new(Lucene104ScalarQuantizedVectorsWriter::new(
-            state,
-            Arc::new(crate::util::NoOutputInfoStream),
-            self.encoding,
-            raw,
-        )?))
-    }
-
-    fn fields_writer_flat_owned(
-        &self,
         state: &OwnedSegmentWriteState,
     ) -> Result<Box<dyn FlatVectorsWriter>> {
         let borrowed = state.borrow();
-        let raw = raw_vector_format().fields_writer_flat(&borrowed)?;
+        let raw = raw_vector_format().fields_writer_flat(state)?;
         Ok(Box::new(Lucene104ScalarQuantizedVectorsWriter::new(
             &borrowed,
             Arc::clone(&state.info_stream),
@@ -3081,7 +3087,7 @@ impl KnnVectorsFormat for Lucene104HnswScalarQuantizedVectorsFormat {
     }
 
     fn fields_writer(&self, state: &OwnedSegmentWriteState) -> Result<Box<dyn KnnVectorsWriter>> {
-        let flat_writer = self.flat.fields_writer_flat_owned(state)?;
+        let flat_writer = self.flat.fields_writer_flat(state)?;
         Ok(Box::new(
             crate::codecs::lucene99::hnsw_vectors_format::Lucene99HnswVectorsWriter::with_flat_format(
                 state,
@@ -4442,7 +4448,9 @@ mod tests {
             &*DEFAULT_IO_CONTEXT,
         );
         let format = Lucene104ScalarQuantizedVectorsFormat::new();
-        let mut writer = format.fields_writer_flat(&write_state).unwrap();
+        let mut writer = format
+            .fields_writer_flat(&crate::codecs::state::owned_state(&write_state))
+            .unwrap();
         let FieldVectorWriter::Float(mut field_writer) =
             KnnVectorsWriter::add_field(writer.as_mut(), &field_info).unwrap()
         else {
@@ -4522,7 +4530,7 @@ mod tests {
             &*DEFAULT_IO_CONTEXT,
         );
         let mut writer = Lucene104ScalarQuantizedVectorsFormat::with_encoding(encoding)
-            .fields_writer_flat(&write_state)
+            .fields_writer_flat(&crate::codecs::state::owned_state(&write_state))
             .unwrap();
         let FieldVectorWriter::Float(mut field_writer) =
             KnnVectorsWriter::add_field(writer.as_mut(), &field_info).unwrap()
@@ -4602,7 +4610,9 @@ mod tests {
             &*DEFAULT_IO_CONTEXT,
         );
         let format = Lucene104ScalarQuantizedVectorsFormat::new();
-        let mut writer = format.fields_writer_flat(&write_state).unwrap();
+        let mut writer = format
+            .fields_writer_flat(&crate::codecs::state::owned_state(&write_state))
+            .unwrap();
         let FieldVectorWriter::Float(mut field_writer) =
             KnnVectorsWriter::add_field(writer.as_mut(), &field_info).unwrap()
         else {
@@ -4896,7 +4906,7 @@ mod tests {
             &*DEFAULT_IO_CONTEXT,
         );
         let mut writer = Lucene104ScalarQuantizedVectorsFormat::new()
-            .fields_writer_flat(&write_state)
+            .fields_writer_flat(&crate::codecs::state::owned_state(&write_state))
             .unwrap();
         let FieldVectorWriter::Float(mut field_writer) =
             KnnVectorsWriter::add_field(writer.as_mut(), &field_info).unwrap()
@@ -5052,6 +5062,67 @@ mod tests {
         let format = Lucene104ScalarQuantizedVectorsFormat::new();
         let mut writer = format.fields_writer(&state).unwrap();
         let FieldVectorWriter::Float(mut field_writer) = writer.add_field(&field_info).unwrap()
+        else {
+            panic!("a float field writer");
+        };
+        for doc in [0, 2, 4] {
+            field_writer
+                .add_value(doc, vec![doc as f32, 1.0 - doc as f32])
+                .unwrap();
+        }
+        writer.flush(5, None).unwrap();
+        writer.finish().unwrap();
+        writer.close().unwrap();
+        assert_eq!(*stream.0.lock().unwrap(), vec!["Vectors' count:3"]);
+    }
+
+    /// rmp #232 (a): the writer `FlatVectorsFormat.fieldsWriter` builds holds
+    /// `state.infoStream` (`Lucene104ScalarQuantizedVectorsWriter.java:99,
+    /// 150-153`) on the flat path too, as it does through `fieldsWriter` of
+    /// the `KnnVectorsFormat`: its flush reports the vector count there.
+    #[test]
+    fn the_flat_writer_holds_the_state_info_stream() {
+        use crate::codecs::knn_vectors::FieldVectorWriter;
+        use crate::codecs::stub::BufferedUpdates;
+        use crate::index::{FieldInfos, SegmentInfo};
+        use crate::store::{ByteBuffersDirectory, DefaultIOContext, Directory};
+        use crate::util::Version;
+
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let info = SegmentInfo::new(
+            Arc::clone(&directory),
+            Version::LATEST,
+            Some(Version::LATEST),
+            "_qf".to_string(),
+            5,
+            false,
+            false,
+            crate::codecs::default_codec().unwrap(),
+            HashMap::new(),
+            [3u8; 16],
+            HashMap::new(),
+            Default::default(),
+        )
+        .unwrap();
+        let mut field_info = FieldInfo::new("v", 0);
+        field_info.vector_dimension = 2;
+        field_info.vector_encoding = VectorEncoding::FLOAT32;
+        field_info.vector_similarity_function = VectorSimilarityFunction::EUCLIDEAN;
+        let infos = FieldInfos::new(vec![field_info.clone()]).unwrap();
+        let stream = Arc::new(QvecInfoStream(Mutex::new(Vec::new())));
+        let state = OwnedSegmentWriteState::new(
+            Arc::clone(&stream) as Arc<dyn crate::util::InfoStream>,
+            Arc::clone(&directory),
+            info,
+            infos,
+            BufferedUpdates::default(),
+            Arc::new(DefaultIOContext::default()),
+        );
+        let format = Lucene104ScalarQuantizedVectorsFormat::new();
+        let mut writer = FlatVectorsFormat::fields_writer_flat(&format, &state).unwrap();
+        let FieldVectorWriter::Float(mut field_writer) =
+            KnnVectorsWriter::add_field(writer.as_mut(), &field_info).unwrap()
         else {
             panic!("a float field writer");
         };

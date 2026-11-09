@@ -182,6 +182,14 @@ impl ThreadedIndexingAndSearchingTestCase for NrtThreads {
             }
         }
         r.close()?;
+        // `fixedSearcher` keeps the closed reader, and with it the directory,
+        // alive; Java's field holds it until the instance is collected. No
+        // caller reads it after the search threads end, so it is released
+        // here, before `runTest` closes the directory.
+        *self
+            .fixed_searcher
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
 
         any_open_del_files |= self.open_deleted_files();
 

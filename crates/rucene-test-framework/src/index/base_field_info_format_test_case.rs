@@ -319,41 +319,43 @@ pub trait BaseFieldInfoFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testOneField()`: test field infos read/write with a single field.
     fn test_one_field(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let codec = self.get_codec();
-        let segment_info = new_segment_info(dir.as_directory(), "_123");
-        let fi = create_field_info();
-        self.add_attributes(&fi);
+        {
+            let codec = self.get_codec();
+            let segment_info = new_segment_info(dir.as_directory(), "_123");
+            let fi = create_field_info();
+            self.add_attributes(&fi);
 
-        let mut builder = new_field_infos_builder(None, None);
-        builder.add(&fi)?;
-        let infos = builder.finish()?;
+            let mut builder = new_field_infos_builder(None, None);
+            builder.add(&fi)?;
+            let infos = builder.finish()?;
 
-        codec.field_infos_format().write(
-            &*dir.as_directory(),
-            &segment_info,
-            "",
-            &infos,
-            &*DEFAULT_IO_CONTEXT,
-        )?;
+            codec.field_infos_format().write(
+                &*dir.as_directory(),
+                &segment_info,
+                "",
+                &infos,
+                &*DEFAULT_IO_CONTEXT,
+            )?;
 
-        let infos2 = codec.field_infos_format().read(
-            &*dir.as_directory(),
-            &segment_info,
-            "",
-            &*DEFAULT_IO_CONTEXT,
-        )?;
-        Assert::assert_equals(1i64, infos2.size() as i64);
-        let field = infos2.field_info("field");
-        assert_not_null(field.is_some());
-        let field = field.expect("checked above");
-        Assert::assert_true(field.get_index_options() != IndexOptions::NONE);
-        Assert::assert_false(field.get_doc_values_type() != DocValuesType::NONE);
-        Assert::assert_false(field.omits_norms());
-        Assert::assert_false(field.has_payloads());
-        Assert::assert_false(field.has_term_vectors());
-        Assert::assert_equals(0i64, i64::from(field.get_point_dimension_count()));
-        Assert::assert_equals(0i64, i64::from(field.get_vector_dimension()));
-        Assert::assert_false(field.is_soft_deletes_field());
+            let infos2 = codec.field_infos_format().read(
+                &*dir.as_directory(),
+                &segment_info,
+                "",
+                &*DEFAULT_IO_CONTEXT,
+            )?;
+            Assert::assert_equals(1i64, infos2.size() as i64);
+            let field = infos2.field_info("field");
+            assert_not_null(field.is_some());
+            let field = field.expect("checked above");
+            Assert::assert_true(field.get_index_options() != IndexOptions::NONE);
+            Assert::assert_false(field.get_doc_values_type() != DocValuesType::NONE);
+            Assert::assert_false(field.omits_norms());
+            Assert::assert_false(field.has_payloads());
+            Assert::assert_false(field.has_term_vectors());
+            Assert::assert_equals(0i64, i64::from(field.get_point_dimension_count()));
+            Assert::assert_equals(0i64, i64::from(field.get_vector_dimension()));
+            Assert::assert_false(field.is_soft_deletes_field());
+        }
         dir.close()
     }
 
@@ -361,41 +363,42 @@ pub trait BaseFieldInfoFormatTestCase: BaseIndexFileFormatTestCase {
     /// are not mutable (see the module docs for the divergence).
     fn test_immutable_attributes(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let codec = self.get_codec();
-        let segment_info = new_segment_info(dir.as_directory(), "_123");
-        let fi = create_field_info();
-        self.add_attributes(&fi);
-        fi.put_attribute("foo", "bar");
-        fi.put_attribute("bar", "baz");
+        {
+            let codec = self.get_codec();
+            let segment_info = new_segment_info(dir.as_directory(), "_123");
+            let fi = create_field_info();
+            self.add_attributes(&fi);
+            fi.put_attribute("foo", "bar");
+            fi.put_attribute("bar", "baz");
 
-        let mut builder = new_field_infos_builder(None, None);
-        builder.add(&fi)?;
-        let infos = builder.finish()?;
+            let mut builder = new_field_infos_builder(None, None);
+            builder.add(&fi)?;
+            let infos = builder.finish()?;
 
-        codec.field_infos_format().write(
-            &*dir.as_directory(),
-            &segment_info,
-            "",
-            &infos,
-            &*DEFAULT_IO_CONTEXT,
-        )?;
+            codec.field_infos_format().write(
+                &*dir.as_directory(),
+                &segment_info,
+                "",
+                &infos,
+                &*DEFAULT_IO_CONTEXT,
+            )?;
 
-        let infos2 = codec.field_infos_format().read(
-            &*dir.as_directory(),
-            &segment_info,
-            "",
-            &*DEFAULT_IO_CONTEXT,
-        )?;
-        Assert::assert_equals(1i64, infos2.size() as i64);
-        let field = infos2.field_info("field");
-        assert_not_null(field.is_some());
-        let attributes = field.expect("checked above").attributes();
-        // shouldn't be able to modify attributes: the map has no mutator, so
-        // what was written is what reads back.
-        Assert::assert_equals_str(None, Some("bar"), attributes.get("foo").map(String::as_str));
-        Assert::assert_equals_str(None, Some("baz"), attributes.get("bar").map(String::as_str));
-        Assert::assert_false(attributes.get("bogus").is_some());
-
+            let infos2 = codec.field_infos_format().read(
+                &*dir.as_directory(),
+                &segment_info,
+                "",
+                &*DEFAULT_IO_CONTEXT,
+            )?;
+            Assert::assert_equals(1i64, infos2.size() as i64);
+            let field = infos2.field_info("field");
+            assert_not_null(field.is_some());
+            let attributes = field.expect("checked above").attributes();
+            // shouldn't be able to modify attributes: the map has no mutator, so
+            // what was written is what reads back.
+            Assert::assert_equals_str(None, Some("bar"), attributes.get("foo").map(String::as_str));
+            Assert::assert_equals_str(None, Some("baz"), attributes.get("bar").map(String::as_str));
+            Assert::assert_false(attributes.get("bogus").is_some());
+        }
         dir.close()
     }
 
@@ -404,15 +407,20 @@ pub trait BaseFieldInfoFormatTestCase: BaseIndexFileFormatTestCase {
     /// file handle leaks, etc.
     fn test_exception_on_create_output(&self) -> Result<()> {
         let (mut dir, fail, codec, segment_info, infos) = self.exception_fixture("create_output");
-
-        fail.set_do_fail();
-        expect_fake_io_exception(|| {
-            codec
-                .field_infos_format()
-                .write(&dir, &segment_info, "", &infos, &*DEFAULT_IO_CONTEXT)
-        });
-        fail.clear_do_fail();
-
+        {
+            fail.set_do_fail();
+            expect_fake_io_exception(|| {
+                codec.field_infos_format().write(
+                    &dir,
+                    &segment_info,
+                    "",
+                    &infos,
+                    &*DEFAULT_IO_CONTEXT,
+                )
+            });
+            fail.clear_do_fail();
+        }
+        drop((fail, codec, segment_info, infos));
         dir.close()
     }
 
@@ -421,15 +429,20 @@ pub trait BaseFieldInfoFormatTestCase: BaseIndexFileFormatTestCase {
     /// leaks, etc.
     fn test_exception_on_close_output(&self) -> Result<()> {
         let (mut dir, fail, codec, segment_info, infos) = self.exception_fixture("close");
-
-        fail.set_do_fail();
-        expect_fake_io_exception(|| {
-            codec
-                .field_infos_format()
-                .write(&dir, &segment_info, "", &infos, &*DEFAULT_IO_CONTEXT)
-        });
-        fail.clear_do_fail();
-
+        {
+            fail.set_do_fail();
+            expect_fake_io_exception(|| {
+                codec.field_infos_format().write(
+                    &dir,
+                    &segment_info,
+                    "",
+                    &infos,
+                    &*DEFAULT_IO_CONTEXT,
+                )
+            });
+            fail.clear_do_fail();
+        }
+        drop((fail, codec, segment_info, infos));
         dir.close()
     }
 
@@ -438,19 +451,24 @@ pub trait BaseFieldInfoFormatTestCase: BaseIndexFileFormatTestCase {
     /// file handle leaks, etc.
     fn test_exception_on_open_input(&self) -> Result<()> {
         let (mut dir, fail, codec, segment_info, infos) = self.exception_fixture("open_input");
+        {
+            codec.field_infos_format().write(
+                &dir,
+                &segment_info,
+                "",
+                &infos,
+                &*DEFAULT_IO_CONTEXT,
+            )?;
 
-        codec
-            .field_infos_format()
-            .write(&dir, &segment_info, "", &infos, &*DEFAULT_IO_CONTEXT)?;
-
-        fail.set_do_fail();
-        expect_fake_io_exception(|| {
-            codec
-                .field_infos_format()
-                .read(&dir, &segment_info, "", &*DEFAULT_IO_CONTEXT)
-        });
-        fail.clear_do_fail();
-
+            fail.set_do_fail();
+            expect_fake_io_exception(|| {
+                codec
+                    .field_infos_format()
+                    .read(&dir, &segment_info, "", &*DEFAULT_IO_CONTEXT)
+            });
+            fail.clear_do_fail();
+        }
+        drop((fail, codec, segment_info, infos));
         dir.close()
     }
 
@@ -459,19 +477,24 @@ pub trait BaseFieldInfoFormatTestCase: BaseIndexFileFormatTestCase {
     /// leaks, etc.
     fn test_exception_on_close_input(&self) -> Result<()> {
         let (mut dir, fail, codec, segment_info, infos) = self.exception_fixture("close");
+        {
+            codec.field_infos_format().write(
+                &dir,
+                &segment_info,
+                "",
+                &infos,
+                &*DEFAULT_IO_CONTEXT,
+            )?;
 
-        codec
-            .field_infos_format()
-            .write(&dir, &segment_info, "", &infos, &*DEFAULT_IO_CONTEXT)?;
-
-        fail.set_do_fail();
-        expect_fake_io_exception(|| {
-            codec
-                .field_infos_format()
-                .read(&dir, &segment_info, "", &*DEFAULT_IO_CONTEXT)
-        });
-        fail.clear_do_fail();
-
+            fail.set_do_fail();
+            expect_fake_io_exception(|| {
+                codec
+                    .field_infos_format()
+                    .read(&dir, &segment_info, "", &*DEFAULT_IO_CONTEXT)
+            });
+            fail.clear_do_fail();
+        }
+        drop((fail, codec, segment_info, infos));
         dir.close()
     }
 
@@ -481,97 +504,100 @@ pub trait BaseFieldInfoFormatTestCase: BaseIndexFileFormatTestCase {
     /// different values.
     fn test_random(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let codec = self.get_codec();
-        let segment_info = new_segment_info(dir.as_directory(), "_123");
+        {
+            let codec = self.get_codec();
+            let segment_info = new_segment_info(dir.as_directory(), "_123");
 
-        // generate a bunch of fields
-        let num_fields = LuceneTestCase::at_least(2000);
-        // `new HashSet<>()`, iterated in the JDK's order.
-        let mut field_names = rucene::util::java_collections::JavaHashSet::new();
-        for _ in 0..num_fields {
-            field_names.insert(TestUtil::random_unicode_string(&*random()));
-        }
+            // generate a bunch of fields
+            let num_fields = LuceneTestCase::at_least(2000);
+            // `new HashSet<>()`, iterated in the JDK's order.
+            let mut field_names = rucene::util::java_collections::JavaHashSet::new();
+            for _ in 0..num_fields {
+                field_names.insert(TestUtil::random_unicode_string(&*random()));
+            }
 
-        let soft_deletes_field = if random().next_boolean() {
-            Some(TestUtil::random_unicode_string(&*random()))
-        } else {
-            None
-        };
+            let soft_deletes_field = if random().next_boolean() {
+                Some(TestUtil::random_unicode_string(&*random()))
+            } else {
+                None
+            };
 
-        let mut parent_field = if random().next_boolean() {
-            Some(TestUtil::random_unicode_string(&*random()))
-        } else {
-            None
-        };
+            let mut parent_field = if random().next_boolean() {
+                Some(TestUtil::random_unicode_string(&*random()))
+            } else {
+                None
+            };
 
-        if soft_deletes_field.is_some() && soft_deletes_field == parent_field {
-            parent_field = None;
-        }
-        let mut builder = new_field_infos_builder(soft_deletes_field.clone(), parent_field.clone());
+            if soft_deletes_field.is_some() && soft_deletes_field == parent_field {
+                parent_field = None;
+            }
+            let mut builder =
+                new_field_infos_builder(soft_deletes_field.clone(), parent_field.clone());
 
-        for field in field_names.iter() {
-            let field_type = self.random_field_type(&*random(), field);
-            let mut store_term_vectors = false;
-            let mut store_payloads = false;
-            let mut omit_norms = false;
-            if field_type.index_options() != IndexOptions::NONE {
-                store_term_vectors = field_type.store_term_vectors();
-                omit_norms = field_type.omit_norms();
-                if field_type
-                    .index_options()
-                    .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
-                {
-                    store_payloads = random().next_boolean();
+            for field in field_names.iter() {
+                let field_type = self.random_field_type(&*random(), field);
+                let mut store_term_vectors = false;
+                let mut store_payloads = false;
+                let mut omit_norms = false;
+                if field_type.index_options() != IndexOptions::NONE {
+                    store_term_vectors = field_type.store_term_vectors();
+                    omit_norms = field_type.omit_norms();
+                    if field_type
+                        .index_options()
+                        .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
+                    {
+                        store_payloads = random().next_boolean();
+                    }
                 }
+                let mut doc_values_skip_index_type = DocValuesSkipIndexType::NONE;
+                if matches!(
+                    field_type.doc_values_type(),
+                    DocValuesType::NUMERIC
+                        | DocValuesType::SORTED
+                        | DocValuesType::SORTED_NUMERIC
+                        | DocValuesType::SORTED_SET
+                ) {
+                    doc_values_skip_index_type = field_type.doc_values_skip_index_type();
+                }
+                let fi = FieldInfo::new_full(
+                    field.clone(),
+                    -1,
+                    store_term_vectors,
+                    omit_norms,
+                    store_payloads,
+                    field_type.index_options(),
+                    field_type.doc_values_type(),
+                    doc_values_skip_index_type,
+                    -1,
+                    JavaStringMap::default(),
+                    field_type.point_dimension_count(),
+                    field_type.point_index_dimension_count(),
+                    field_type.point_num_bytes(),
+                    field_type.vector_dimension(),
+                    field_type.vector_encoding(),
+                    field_type.vector_similarity_function(),
+                    soft_deletes_field.as_deref() == Some(field.as_str()),
+                    parent_field.as_deref() == Some(field.as_str()),
+                )?;
+                self.add_attributes(&fi);
+                builder.add(&fi)?;
             }
-            let mut doc_values_skip_index_type = DocValuesSkipIndexType::NONE;
-            if matches!(
-                field_type.doc_values_type(),
-                DocValuesType::NUMERIC
-                    | DocValuesType::SORTED
-                    | DocValuesType::SORTED_NUMERIC
-                    | DocValuesType::SORTED_SET
-            ) {
-                doc_values_skip_index_type = field_type.doc_values_skip_index_type();
-            }
-            let fi = FieldInfo::new_full(
-                field.clone(),
-                -1,
-                store_term_vectors,
-                omit_norms,
-                store_payloads,
-                field_type.index_options(),
-                field_type.doc_values_type(),
-                doc_values_skip_index_type,
-                -1,
-                JavaStringMap::default(),
-                field_type.point_dimension_count(),
-                field_type.point_index_dimension_count(),
-                field_type.point_num_bytes(),
-                field_type.vector_dimension(),
-                field_type.vector_encoding(),
-                field_type.vector_similarity_function(),
-                soft_deletes_field.as_deref() == Some(field.as_str()),
-                parent_field.as_deref() == Some(field.as_str()),
+            let infos = builder.finish()?;
+            codec.field_infos_format().write(
+                &*dir.as_directory(),
+                &segment_info,
+                "",
+                &infos,
+                &*DEFAULT_IO_CONTEXT,
             )?;
-            self.add_attributes(&fi);
-            builder.add(&fi)?;
+            let infos2 = codec.field_infos_format().read(
+                &*dir.as_directory(),
+                &segment_info,
+                "",
+                &*DEFAULT_IO_CONTEXT,
+            )?;
+            self.assert_field_infos_equal(&infos, &infos2);
         }
-        let infos = builder.finish()?;
-        codec.field_infos_format().write(
-            &*dir.as_directory(),
-            &segment_info,
-            "",
-            &infos,
-            &*DEFAULT_IO_CONTEXT,
-        )?;
-        let infos2 = codec.field_infos_format().read(
-            &*dir.as_directory(),
-            &segment_info,
-            "",
-            &*DEFAULT_IO_CONTEXT,
-        )?;
-        self.assert_field_infos_equal(&infos, &infos2);
         dir.close()
     }
 

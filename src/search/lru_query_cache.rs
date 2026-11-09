@@ -78,6 +78,15 @@ pub struct CacheAndCount {
     /// marker is a flag that only [`CacheAndCount::empty`] sets; it recognises
     /// exactly the values Java's `==` recognises.
     is_empty_marker: bool,
+    /// Whether `CacheAndCount.iterator()` returns `null` in Java.
+    ///
+    /// **Divergence from Lucene 10.5.0.** `CacheAndCount.iterator()` returns
+    /// `cache.iterator()`, which is `null` for a `RoaringDocIdSet` of
+    /// cardinality 0 (`RoaringDocIdSet.java:392-397`); the port's
+    /// `DocIdSet::iterator` cannot return `null`, so the set that would
+    /// answer `null` is flagged here instead, and [`CacheAndCount::iterator_or_null`]
+    /// answers `None` for exactly those values.
+    null_iterator: bool,
 }
 
 impl Debug for CacheAndCount {
@@ -97,6 +106,18 @@ impl CacheAndCount {
             cache,
             count,
             is_empty_marker: false,
+            null_iterator: false,
+        }
+    }
+
+    /// Wraps an empty `RoaringDocIdSet`, whose `iterator()` is `null` in
+    /// Java (`RoaringDocIdSet.java:392-397`).
+    fn with_null_iterator(cache: Arc<dyn DocIdSet + Send + Sync>) -> Self {
+        Self {
+            cache,
+            count: 0,
+            is_empty_marker: false,
+            null_iterator: true,
         }
     }
 
@@ -108,6 +129,7 @@ impl CacheAndCount {
             cache: Arc::new(crate::search::doc_id_set::EmptyDocIdSet),
             count: 0,
             is_empty_marker: true,
+            null_iterator: false,
         }
     }
 
@@ -120,6 +142,21 @@ impl CacheAndCount {
     /// Propagates any I/O error raised by the underlying set.
     pub fn iterator(&self) -> Result<Box<dyn DocIdSetIterator>> {
         self.cache.iterator()
+    }
+
+    /// Returns an iterator over the cached doc IDs, or `None` where Java's
+    /// `CacheAndCount.iterator()` returns `null`.
+    ///
+    /// Equivalent to `CacheAndCount.iterator()` with its `null` answer.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised by the underlying set.
+    pub fn iterator_or_null(&self) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+        if self.null_iterator {
+            return Ok(None);
+        }
+        self.cache.iterator().map(Some)
     }
 
     /// Returns the number of cached doc IDs.
@@ -1171,7 +1208,10 @@ impl ConstantScoreWeightImpl for CachingWrapperWeightImpl {
         if cached.is_empty_marker {
             return Ok(None);
         }
-        let disi = cached.iterator()?;
+        // `LRUQueryCache.java:878-881`: a null iterator means no scorer.
+        let Some(disi) = cached.iterator_or_null()? else {
+            return Ok(None);
+        };
         Ok(Some(Box::new(ConstantScoreScorerSupplier::from_iterator(
             ScorerIterator::Simple(disi),
             0.0,
@@ -1343,6 +1383,11 @@ fn cache_into_roaring_doc_id_set(
     }
     let cache = collector.builder.build();
     let cardinality = cache.cardinality() as i32;
+    if cardinality == 0 {
+        return Ok(CacheAndCount::with_null_iterator(Arc::new(
+            RoaringCachedDocIdSet(cache),
+        )));
+    }
     Ok(CacheAndCount::new(
         Arc::new(RoaringCachedDocIdSet(cache)),
         cardinality,
@@ -1599,5 +1644,81 @@ mod cache_key_identity_tests {
         addresses.dedup();
         assert_eq!(addresses.len(), keys.len());
         drop(neighbours);
+    }
+}
+
+#[cfg(test)]
+mod null_iterator_tests {
+    use super::*;
+
+    /// A bulk scorer that collects the given docs and visits `cost` docs.
+    struct DocsBulkScorer {
+        docs: Vec<i32>,
+        cost: i64,
+    }
+
+    impl BulkScorer for DocsBulkScorer {
+        fn score(
+            &mut self,
+            collector: &mut dyn LeafCollector,
+            _accept_docs: Option<&dyn crate::util::Bits>,
+            _min: i32,
+            _max: i32,
+        ) -> CollectionResult<i32> {
+            let mut scorer = crate::search::scorable::SimpleScorable::default();
+            for &doc in &self.docs {
+                collector.collect(doc, &mut scorer)?;
+            }
+            Ok(NO_MORE_DOCS)
+        }
+
+        fn cost(&self) -> i64 {
+            self.cost
+        }
+    }
+
+    /// rmp #356 (`TestRangeFieldSuiteDraws`, seed C0FFEE): a query cached
+    /// as an empty `RoaringDocIdSet` has a `null` `CacheAndCount.iterator()`
+    /// (`RoaringDocIdSet.java:392-397`), so a cache hit on it yields no
+    /// scorer supplier (`LRUQueryCache.java:878-881`); the port built one
+    /// over an exhausted iterator.
+    #[test]
+    fn an_empty_roaring_cache_has_a_null_iterator() {
+        // cost * 100 < maxDoc: cacheImpl picks the RoaringDocIdSet.
+        let empty = cache_impl(
+            Box::new(DocsBulkScorer {
+                docs: vec![],
+                cost: 0,
+            }),
+            1000,
+        )
+        .unwrap();
+        assert!(empty.iterator_or_null().unwrap().is_none());
+        assert_eq!(empty.count(), 0);
+
+        let one = cache_impl(
+            Box::new(DocsBulkScorer {
+                docs: vec![7],
+                cost: 1,
+            }),
+            1000,
+        )
+        .unwrap();
+        let mut it = one
+            .iterator_or_null()
+            .unwrap()
+            .expect("non-empty roaring set");
+        assert_eq!(it.next_doc().unwrap(), 7);
+
+        // cost * 100 >= maxDoc: a BitDocIdSet, whose iterator is never null.
+        let dense = cache_impl(
+            Box::new(DocsBulkScorer {
+                docs: vec![],
+                cost: 10,
+            }),
+            1000,
+        )
+        .unwrap();
+        assert!(dense.iterator_or_null().unwrap().is_some());
     }
 }

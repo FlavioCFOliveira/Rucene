@@ -143,8 +143,14 @@ impl BaseDocIdSetTestCase for TestRoaringDocIdSet {
         Ok(JavaShaped { set, shape })
     }
 
+    /// `RoaringDocIdSet.iterator()` returns `null` for an empty set
+    /// (`RoaringDocIdSet.java:392-397`).
+    fn iterator_is_null(&self, set: &Self::T) -> bool {
+        set.cardinality() == 0
+    }
+
     fn assert_equals_sets(&self, num_bits: i32, ds1: &JavaBitSet, ds2: &Self::T) -> Result<()> {
-        base_assert_equals_sets(num_bits, ds1, ds2)?;
+        base_assert_equals_sets(num_bits, ds1, ds2, self.iterator_is_null(ds2))?;
         Assert::assert_equals(ds1.cardinality(), ds2.cardinality());
         Ok(())
     }
@@ -203,7 +209,7 @@ impl BaseDocIdSetTestCase for TestNotDocIdSet {
     }
 
     fn assert_equals_sets(&self, num_bits: i32, ds1: &JavaBitSet, ds2: &Self::T) -> Result<()> {
-        base_assert_equals_sets(num_bits, ds1, ds2)?;
+        base_assert_equals_sets(num_bits, ds1, ds2, self.iterator_is_null(ds2))?;
         let bits2 = ds2.bits()?;
         // since we wrapped a FixedBitSet
         let bits2 = bits2.unwrap_or_else(|| Assert::fail_without_message());
@@ -255,7 +261,7 @@ impl BaseDocIdSetTestCase for TestSparseFixedBitDocIdSet {
             Assert::assert_equals(ds1.get(i), ds2.set().get(i));
         }
         Assert::assert_equals(ds1.cardinality(), ds2.set().cardinality());
-        base_assert_equals_sets(num_bits, ds1, ds2)
+        base_assert_equals_sets(num_bits, ds1, ds2, self.iterator_is_null(ds2))
     }
 }
 

@@ -1,4 +1,8 @@
 # seed	method	kind	value (BaseFormatSuitesOracle, Lucene 10.5.0, JDK 25): TestDocValuesSuiteDraws, next random().nextLong() after each test and the class
+# property	os.arch	amd64
+# property	os.version	7.0.0-42-generic
+# property	java.vendor	Ubuntu
+# property	java.runtime.version	25.0.4.1+1-1-26.04.4-Ubuntu
 DEADBEEF	#class	next	4214429466410893671
 DEADBEEF	#counts	run=145 fail=0 assume=8	-
 DEADBEEF	testBigNumericRange	next	-7574359815560993667

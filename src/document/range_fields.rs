@@ -16,13 +16,12 @@ use crate::index::{
     BinaryDocValues, DocValues, DocValuesIterator, IndexableField, IndexableFieldType,
     IntersectVisitor, LeafReaderContext, PointValues,
 };
-use crate::search::constant_score_scorer_supplier::{
-    ConstantScoreIteratorSupplier, ConstantScoreScorerSupplier,
-};
+use crate::search::constant_score_scorer_supplier::ConstantScoreScorerSupplier;
 use crate::search::constant_score_weight::{ConstantScoreWeight, ConstantScoreWeightImpl};
 use crate::search::two_phase_iterator::{ScorerIterator, TwoPhaseIterator};
 use crate::search::{
-    DocIdSetIterator, IndexSearcher, Query, QueryVisitor, ScoreMode, ScorerSupplier, Weight,
+    ConstantScoreScorer, DocIdSetIterator, IndexSearcher, Query, QueryVisitor, ScoreMode, Scorer,
+    ScorerSupplier, Weight,
 };
 use crate::util::{BytesRef, DocIdSetBuilder, IntsRef, NumericUtils};
 
@@ -43,7 +42,8 @@ pub enum RangeQueryType {
     Within,
     /// The document's interval encloses the query's.
     Contains,
-    /// The two overlap but neither contains the other.
+    /// The two overlap and the document's interval is not within the
+    /// query's; a document that contains the query crosses it too.
     Crosses,
 }
 
@@ -78,10 +78,11 @@ impl RangeQueryType {
                 let (d_min, d_max) = dim_bounds(doc_ranges, d, num_dims, bytes_per_dim);
                 d_min <= q_min && d_max >= q_max
             }),
+            // `RangeFieldQuery.java:259-269`: INTERSECTS and not WITHIN, so a
+            // document range that contains the query crosses it.
             Self::Crosses => {
                 Self::Intersects.matches(query_ranges, doc_ranges, num_dims, bytes_per_dim)
                     && !Self::Within.matches(query_ranges, doc_ranges, num_dims, bytes_per_dim)
-                    && !Self::Contains.matches(query_ranges, doc_ranges, num_dims, bytes_per_dim)
             }
         }
     }
@@ -1144,7 +1145,33 @@ impl RangeQueryType {
         bytes_per_dim: usize,
     ) -> Result<PointRelation> {
         if self == Self::Crosses {
-            // A crossing query cannot prune, so every cell must be visited.
+            // `RangeFieldQuery.java:229-257`: from the INTERSECTS and WITHIN
+            // relations of the cell.
+            let intersect_relation = Self::Intersects.compare(
+                query_packed_value,
+                min_packed_value,
+                max_packed_value,
+                num_dims,
+                bytes_per_dim,
+            )?;
+            if intersect_relation == PointRelation::CellOutsideQuery {
+                return Ok(PointRelation::CellOutsideQuery);
+            }
+            let within_relation = Self::Within.compare(
+                query_packed_value,
+                min_packed_value,
+                max_packed_value,
+                num_dims,
+                bytes_per_dim,
+            )?;
+            if within_relation == PointRelation::CellInsideQuery {
+                return Ok(PointRelation::CellOutsideQuery);
+            }
+            if intersect_relation == PointRelation::CellInsideQuery
+                && within_relation == PointRelation::CellOutsideQuery
+            {
+                return Ok(PointRelation::CellInsideQuery);
+            }
             return Ok(PointRelation::CellCrossesQuery);
         }
         let mut inside = true;
@@ -1414,16 +1441,21 @@ impl IntersectVisitor for RangeFieldVisitor<'_> {
     }
 }
 
-/// The iteration half of the scorer supplier a [`RangeFieldQuery`] builds.
+/// The scorer supplier a [`RangeFieldQuery`] builds when not every document
+/// matches.
 ///
 /// Equivalent to the anonymous `ScorerSupplier` of
-/// `RangeFieldQuery.createWeight`, which walks the BKD tree on `get(long)` and
-/// estimates its cost from the same visitor.
+/// `RangeFieldQuery.createWeight` (`RangeFieldQuery.java:481-508`), which
+/// walks the BKD tree on `get(long)` and estimates its cost from the same
+/// visitor. It is a plain `ScorerSupplier`, so its bulk scorer is the
+/// default one (`DefaultBulkScorer`), as in Java.
 struct RangeFieldIteratorSupplier {
     query: RangeFieldQuery,
     values: Box<dyn PointValues>,
     max_doc: i32,
     cost: i64,
+    score: f32,
+    score_mode: ScoreMode,
 }
 
 impl std::fmt::Debug for RangeFieldIteratorSupplier {
@@ -1445,7 +1477,13 @@ impl RangeFieldIteratorSupplier {
     /// estimate from the same visitor, and a supplier is only built when its
     /// cost is about to be asked for. This matches what
     /// [`PointRangeQuery`](crate::search::PointRangeQuery) already does.
-    fn new(query: RangeFieldQuery, values: Box<dyn PointValues>, max_doc: i32) -> Result<Self> {
+    fn new(
+        query: RangeFieldQuery,
+        values: Box<dyn PointValues>,
+        max_doc: i32,
+        score: f32,
+        score_mode: ScoreMode,
+    ) -> Result<Self> {
         let cost = {
             let mut builder = DocIdSetBuilder::from_point_values(max_doc, values.as_ref())?;
             let mut visitor = RangeFieldVisitor {
@@ -1460,12 +1498,14 @@ impl RangeFieldIteratorSupplier {
             values,
             max_doc,
             cost,
+            score,
+            score_mode,
         })
     }
 }
 
-impl ConstantScoreIteratorSupplier for RangeFieldIteratorSupplier {
-    fn iterator(&mut self, _lead_cost: i64) -> Result<ScorerIterator> {
+impl ScorerSupplier for RangeFieldIteratorSupplier {
+    fn get(&mut self, _lead_cost: i64) -> Result<Box<dyn Scorer>> {
         let mut result = DocIdSetBuilder::from_point_values(self.max_doc, self.values.as_ref())?;
         {
             let mut visitor = RangeFieldVisitor {
@@ -1474,11 +1514,44 @@ impl ConstantScoreIteratorSupplier for RangeFieldIteratorSupplier {
             };
             self.values.intersect(&mut visitor)?;
         }
-        Ok(ScorerIterator::Simple(result.build()?.iterator()?))
+        let iterator = result.build()?.iterator()?;
+        Ok(Box::new(ConstantScoreScorer::from_iterator(
+            self.score,
+            self.score_mode,
+            iterator,
+        )))
     }
 
     fn cost(&self) -> i64 {
         self.cost
+    }
+}
+
+/// The scorer supplier a [`RangeFieldQuery`] builds when every document of
+/// the segment matches.
+///
+/// Equivalent to the first anonymous `ScorerSupplier` of
+/// `RangeFieldQuery.createWeight` (`RangeFieldQuery.java:468-480`): a
+/// constant scorer over `DocIdSetIterator.all(maxDoc)`, with the default
+/// bulk scorer.
+#[derive(Debug)]
+struct RangeFieldAllDocsSupplier {
+    score: f32,
+    score_mode: ScoreMode,
+    max_doc: i32,
+}
+
+impl ScorerSupplier for RangeFieldAllDocsSupplier {
+    fn get(&mut self, _lead_cost: i64) -> Result<Box<dyn Scorer>> {
+        Ok(Box::new(ConstantScoreScorer::from_iterator(
+            self.score,
+            self.score_mode,
+            Box::new(crate::search::doc_id_set_iterator::all(self.max_doc)?),
+        )))
+    }
+
+    fn cost(&self) -> i64 {
+        i64::from(self.max_doc)
     }
 }
 
@@ -1520,19 +1593,19 @@ impl ConstantScoreWeightImpl for RangeFieldWeight {
         }
 
         if all_docs_match {
-            Ok(Some(Box::new(ConstantScoreScorerSupplier::match_all(
+            Ok(Some(Box::new(RangeFieldAllDocsSupplier {
                 score,
-                self.score_mode,
+                score_mode: self.score_mode,
                 max_doc,
-            )?)))
+            })))
         } else {
-            let inner = RangeFieldIteratorSupplier::new(self.query.clone(), values, max_doc)?;
-            Ok(Some(Box::new(ConstantScoreScorerSupplier::new(
+            Ok(Some(Box::new(RangeFieldIteratorSupplier::new(
+                self.query.clone(),
+                values,
+                max_doc,
                 score,
                 self.score_mode,
-                max_doc,
-                inner,
-            ))))
+            )?)))
         }
     }
 
@@ -2009,9 +2082,12 @@ mod tests {
         // CONTAINS: the document's range encloses [32,36].
         let q = IntRange::new_contains_query("r", &[32], &[36]).unwrap();
         assert_eq!(collect(&q, &docs), vec![2]);
-        // CROSSES: intersects, but neither within nor containing.
+        // CROSSES: intersects, but not within.
         let q = IntRange::new_crosses_query("r", &[25], &[45]).unwrap();
         assert_eq!(collect(&q, &docs), vec![1, 3]);
+        // CROSSES keeps a document that contains the query.
+        let q = IntRange::new_crosses_query("r", &[32], &[36]).unwrap();
+        assert_eq!(collect(&q, &docs), vec![2]);
         // Nothing overlaps a range beyond every document's.
         let q = IntRange::new_intersects_query("r", &[1000], &[2000]).unwrap();
         assert_eq!(collect(&q, &docs), Vec::<i32>::new());
@@ -2048,20 +2124,56 @@ mod tests {
         );
     }
 
+    /// Regression test (rmp #356, `TestIntRangeFieldQueries` and siblings):
+    /// `RangeFieldQuery.java:259-269` matches CROSSES as INTERSECTS and not
+    /// WITHIN, so a document range that contains the query crosses it
+    /// (`BaseRangeFieldQueryTestCase.expectedBBoxQueryResult` expects it); the
+    /// port also excluded CONTAINS and missed those documents.
     #[test]
-    fn range_field_query_crosses_relation_visits_every_cell() {
-        // CROSSES cannot be decided from a cell's bounds, so Java's `compare`
-        // answers CELL_CROSSES_QUERY for every cell and the walk tests each
-        // value. The visitor must not fail while doing so.
+    fn range_field_query_crosses_keeps_a_containing_document() {
+        let docs = vec![
+            (0, packed_int_range(i32::MIN, 2)),
+            (1, packed_int_range(30, 40)),
+        ];
+        let q = IntRange::new_crosses_query("r", &[i32::MIN], &[-3]).unwrap();
+        assert_eq!(collect(&q, &docs), vec![0]);
+    }
+
+    /// `RangeFieldQuery.java:229-257`: CROSSES relates a cell through its
+    /// INTERSECTS and WITHIN relations.
+    #[test]
+    fn range_field_query_crosses_relation_follows_intersects_and_within() {
         let query = IntRange::new_crosses_query("r", &[25], &[45]).unwrap();
         let mut result = DocIdSetBuilder::new(16);
         let visitor = RangeFieldVisitor {
             query: &query,
             result: &mut result,
         };
+        // Disjoint from the query: outside.
         assert_eq!(
             visitor
                 .compare(&packed_int_range(0, 5), &packed_int_range(6, 10))
+                .unwrap(),
+            PointRelation::CellOutsideQuery
+        );
+        // Every range within the query: outside.
+        assert_eq!(
+            visitor
+                .compare(&packed_int_range(30, 31), &packed_int_range(34, 35))
+                .unwrap(),
+            PointRelation::CellOutsideQuery
+        );
+        // Every range intersects and none can be within: inside.
+        assert_eq!(
+            visitor
+                .compare(&packed_int_range(0, 46), &packed_int_range(24, 80))
+                .unwrap(),
+            PointRelation::CellInsideQuery
+        );
+        // Mixed: crosses.
+        assert_eq!(
+            visitor
+                .compare(&packed_int_range(0, 5), &packed_int_range(40, 80))
                 .unwrap(),
             PointRelation::CellCrossesQuery
         );

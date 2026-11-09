@@ -20,7 +20,7 @@ use crate::codecs::knn_vectors::{
 };
 use crate::codecs::lucene99::scalar_quantized_scorer::Lucene99ScalarQuantizedVectorScorer;
 use crate::codecs::postings::MergeState;
-use crate::codecs::state::{OwnedSegmentWriteState, SegmentReadState, SegmentWriteState};
+use crate::codecs::state::{OwnedSegmentWriteState, SegmentReadState};
 use crate::codecs::stub::FieldInfo;
 use crate::error::{LuceneError, Result};
 use crate::index::vector_values::{from_bytes, from_floats, KnnVectorValues};
@@ -1177,30 +1177,18 @@ impl UpdateableRandomVectorScorer for UpdateableByteVectorScorer {
 /// Equivalent to `org.apache.lucene.codecs.hnsw.FlatVectorsFormat`.
 pub trait FlatVectorsFormat: KnnVectorsFormat {
     /// Returns a writer to write the vectors to the index.
-    fn fields_writer_flat(
-        &self,
-        state: &SegmentWriteState<'_>,
-    ) -> Result<Box<dyn FlatVectorsWriter>>;
-
-    /// Returns a writer to write the vectors to the index, from a state that
-    /// owns its info stream.
     ///
-    /// Java's writers keep the `SegmentWriteState` they receive, its
-    /// `infoStream` included (`Lucene104ScalarQuantizedVectorsWriter.java:99`);
-    /// the port's borrowed [`SegmentWriteState`] cannot outlive the call, so a
-    /// writer that reports on the info stream after its constructor
-    /// (`Lucene104ScalarQuantizedVectorsWriter.flush`) is built from the
-    /// owning [`OwnedSegmentWriteState`] the vectors chain holds. The default
-    /// is [`fields_writer_flat`](Self::fields_writer_flat) on the borrowed
-    /// state.
+    /// Takes the owning [`OwnedSegmentWriteState`], as
+    /// [`KnnVectorsFormat::fields_writer`] does: Java's writers keep the
+    /// `SegmentWriteState` they receive, its `infoStream` included
+    /// (`Lucene104ScalarQuantizedVectorsWriter.java:99, 150-153`), which a
+    /// borrowed [`SegmentWriteState`] cannot outlive.
     ///
     /// Equivalent to `FlatVectorsFormat.fieldsWriter(SegmentWriteState)`.
-    fn fields_writer_flat_owned(
+    fn fields_writer_flat(
         &self,
         state: &OwnedSegmentWriteState,
-    ) -> Result<Box<dyn FlatVectorsWriter>> {
-        self.fields_writer_flat(&state.borrow())
-    }
+    ) -> Result<Box<dyn FlatVectorsWriter>>;
 
     /// Returns a reader to read the vectors from the index.
     fn fields_reader_flat(

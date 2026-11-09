@@ -380,8 +380,12 @@ impl Lucene90DocValuesConsumer<'_> {
         let mut global_doc_count = 0i32;
         let mut global_max_value_count = 0i32;
         let mut max_doc_id = -1i32;
+        // Java's `accumulator` is the last element of `accumulators` (the same
+        // object, `Lucene90DocValuesConsumer.java:276-304`): `open` says
+        // whether it is non-null, and the open interval is widened in place
+        // as the last element of the list.
         let mut accumulators: Vec<SkipAccumulator> = Vec::new();
-        let mut accumulator: Option<SkipAccumulator> = None;
+        let mut open = false;
         let max_accumulators =
             1usize << (SKIP_INDEX_LEVEL_SHIFT as usize * (SKIP_INDEX_MAX_LEVEL - 1));
 
@@ -390,44 +394,39 @@ impl Lucene90DocValuesConsumer<'_> {
             let value_count = values.doc_value_count()?;
             let first_value = values.next_value()?;
             global_max_value_count = global_max_value_count.max(value_count);
-            if let Some(acc) = accumulator.as_ref() {
+            if open {
+                let acc = accumulators
+                    .last()
+                    .expect("INVARIANT: the open accumulator is the last element");
                 if acc.is_done(self.skip_index_interval_size, value_count, first_value, doc) {
                     global_max_value = global_max_value.max(acc.max_value);
                     global_min_value = global_min_value.min(acc.min_value);
                     global_doc_count += acc.doc_count;
                     max_doc_id = acc.max_doc_id;
-                    accumulator = None;
+                    open = false;
                     if accumulators.len() == max_accumulators {
                         self.write_levels(&accumulators)?;
                         accumulators.clear();
                     }
                 }
             }
-            if accumulator.is_none() {
-                accumulator = Some(SkipAccumulator::new(doc));
+            if !open {
+                accumulators.push(SkipAccumulator::new(doc));
+                open = true;
             }
-            let acc = accumulator
-                .as_mut()
-                .expect("INVARIANT: an accumulator was just created if there was none");
+            let acc = accumulators
+                .last_mut()
+                .expect("INVARIANT: an accumulator was just opened if there was none");
             acc.next_doc(doc);
             acc.accumulate(first_value);
             for _ in 1..value_count {
                 let value = values.next_value()?;
                 acc.accumulate(value);
             }
-            if accumulators.len() < max_accumulators {
-                // The interval is recorded once, when it is opened; the loop
-                // above keeps widening the one at the end.
-                if accumulators.last().map(|last| last.min_doc_id) != Some(acc.min_doc_id) {
-                    accumulators.push(acc.clone());
-                } else if let Some(last) = accumulators.last_mut() {
-                    *last = acc.clone();
-                }
-            }
             doc = values.next_doc()?;
         }
 
-        if let Some(acc) = accumulator.as_ref() {
+        if let Some(acc) = accumulators.last() {
             global_max_value = global_max_value.max(acc.max_value);
             global_min_value = global_min_value.min(acc.min_value);
             global_doc_count += acc.doc_count;
@@ -4700,6 +4699,59 @@ mod tests {
         writer.force_merge(1).unwrap();
         writer.close().unwrap();
         dir
+    }
+
+    /// `writeSkipIndex` widens the open interval through the list that holds
+    /// it (`accumulator` is the last element of `accumulators`,
+    /// `Lucene90DocValuesConsumer.java:276-311`), the interval that fills the
+    /// list to `maxAccumulators` (512) included: every interval's level-0
+    /// `docCount` adds up to the field's `docCount`, the check
+    /// `CheckIndex.checkDocValueSkipper` makes (`CheckIndex.java:3430-3490`).
+    /// 1 200 documents with distinct values under an interval of 2 make 600
+    /// intervals, past one full list.
+    #[test]
+    fn skip_index_intervals_add_up_to_the_doc_count() {
+        use crate::codecs::{register_codec, FilterCodec, Lucene104Codec};
+        use crate::document::{Document, NumericDocValuesField};
+        use crate::index::index_writer::IndexWriter;
+        use crate::index::index_writer_config::IndexWriterConfig;
+        let _ = register_codec("Lucene104", Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut config = IndexWriterConfig::new();
+        config
+            .set_codec(Arc::new(
+                FilterCodec::new("Lucene104".to_string(), Arc::new(Lucene104Codec::new()))
+                    .with_doc_values_format(Lucene90DocValuesFormat::with_interval(2)),
+            ))
+            .unwrap();
+        let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+        for i in 0..1200 {
+            let mut doc = Document::new();
+            doc.add(Box::new(NumericDocValuesField::indexed_field("f", i)));
+            writer.add_document(&doc).unwrap();
+        }
+        writer.force_merge(1).unwrap();
+        let reader = crate::index::directory_reader::open_with_writer(&*writer).unwrap();
+        let leaves = Arc::clone(&reader).leaves().unwrap();
+        let leaf = leaves[0].leaf_reader();
+        let mut skipper = leaf.get_doc_values_skipper("f").unwrap().unwrap();
+        assert_eq!(skipper.global_doc_count(), 1200);
+        let mut doc_count = 0;
+        let mut intervals = 0;
+        loop {
+            let target = skipper.max_doc_id(0) + 1;
+            skipper.advance(target).unwrap();
+            if skipper.max_doc_id(0) == crate::search::NO_MORE_DOCS {
+                break;
+            }
+            doc_count += skipper.doc_count(0);
+            intervals += 1;
+        }
+        assert_eq!(intervals, 600);
+        assert_eq!(doc_count, skipper.global_doc_count());
+        drop((skipper, leaves));
+        reader.close().unwrap();
+        writer.close().unwrap();
     }
 
     /// `BaseSortedDocValues.lookupTerm` seeks the dictionary with `seekCeil`

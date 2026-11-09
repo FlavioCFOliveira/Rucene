@@ -1106,9 +1106,13 @@ impl SortField {
     }
 
     /// Reads a sort field previously written with [`Self::serialize`].
+    ///
+    /// The field name is read as written, the empty name included: Java's
+    /// `SortField.Provider.readSortField` passes `in.readString()` to the
+    /// constructor (`SortField.java:216-218`), so a sort on the field `""`
+    /// reads back as that field, never as a `null` one.
     pub fn deserialize(input: &mut dyn DataInput) -> Result<Self> {
-        let field = input.read_string()?;
-        let field = if field.is_empty() { None } else { Some(field) };
+        let field = Some(input.read_string()?);
         let field_type = Self::read_type(input)?;
         let reverse = input.read_int()? == 1;
         let missing_value = if input.read_int()? == 1 {
@@ -1752,6 +1756,22 @@ mod tests {
             let round_tripped = SortField::deserialize(&mut input).unwrap();
             assert_eq!(original, round_tripped);
         }
+    }
+
+    /// `SortField.Provider.readSortField` reads the field name with
+    /// `in.readString()` (`SortField.java:216-218`): a sort on the empty
+    /// field name `""` (a name `TestUtil.randomSimpleString` can draw in
+    /// `BaseSegmentInfoFormatTestCase.testSort`) round-trips to the same
+    /// field instead of failing as a `null` field of type `INT`.
+    #[test]
+    fn sortfield_with_an_empty_field_name_round_trips() {
+        let original =
+            SortField::new_with_missing(Some(String::new()), SortFieldType::Int, true, None)
+                .unwrap();
+        let bytes = serialize_sort_field(&original);
+        let mut input = ByteArrayDataInput::new(&bytes);
+        assert_eq!(input.read_string().unwrap(), "SortField");
+        assert_eq!(SortField::deserialize(&mut input).unwrap(), original);
     }
 
     #[test]

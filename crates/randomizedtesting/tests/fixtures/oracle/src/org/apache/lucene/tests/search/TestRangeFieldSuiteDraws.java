@@ -1,17 +1,36 @@
 // The BaseRangeFieldQueryTestCase suite of BaseSuitesDrawsOracle (rmp #356): the inherited cases
 // on the ranges TestIntRangeFieldQueries binds (its nextRange and IntTestRange), recording the
-// draws BaseSuitesDrawsOracle writes.
+// draws BaseSuitesDrawsOracle writes. The class runs with LuceneTestCase's shared executor set to
+// null (as SearcherChecksOracle does): with it, IndexSearcher's TaskExecutor runs each slice on the
+// test thread or on a pool thread as the race falls, and MAYBE_CACHE_POLICY.shouldCache draws
+// random() on the thread that runs the slice, so the test randomness's next draw varied run to run.
 package org.apache.lucene.tests.search;
 
+import java.lang.reflect.Field;
 import java.util.Arrays;
+import java.util.concurrent.ExecutorService;
 import org.apache.lucene.document.IntRange;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.tests.util.BaseSuitesDrawsOracle;
+import org.apache.lucene.tests.util.LuceneTestCase;
 import org.apache.lucene.tests.util.TestUtil;
 import org.junit.AfterClass;
+import org.junit.BeforeClass;
 
 public class TestRangeFieldSuiteDraws extends BaseRangeFieldQueryTestCase {
   private static final String FIELD_NAME = "intRangeField";
+
+  /** The shared executor {@link #searchOnTestThread} sets aside; restored by the class draw. */
+  private static ExecutorService sharedExecutor;
+
+  /** Sets LuceneTestCase's shared executor to null, so every search draw is on the test thread. */
+  @BeforeClass
+  public static void searchOnTestThread() throws Exception {
+    Field f = LuceneTestCase.class.getDeclaredField("executor");
+    f.setAccessible(true);
+    sharedExecutor = (ExecutorService) f.get(null);
+    f.set(null, null);
+  }
 
   private int nextIntInternal() {
     switch (random().nextInt(5)) {
@@ -190,7 +209,11 @@ public class TestRangeFieldSuiteDraws extends BaseRangeFieldQueryTestCase {
   }
 
   @AfterClass
-  public static void recordClassDraw() {
+  public static void recordClassDraw() throws Exception {
     BaseSuitesDrawsOracle.recordClass(random().nextLong());
+    Field f = LuceneTestCase.class.getDeclaredField("executor");
+    f.setAccessible(true);
+    f.set(null, sharedExecutor);
+    sharedExecutor = null;
   }
 }

@@ -1080,14 +1080,30 @@ pub struct XYCircle {
 
 impl XYCircle {
     /// Creates the circle.
+    ///
+    /// Equivalent to `XYCircle(float x, float y, float radius)`
+    /// (`XYCircle.java:44-54`): the radius is checked first, positive then
+    /// finite, then the centre.
+    ///
+    /// # Errors
+    ///
+    /// [`LuceneError::IllegalArgument`] with Java's message for a radius that
+    /// is not positive or not finite, or an invalid centre coordinate.
     pub fn new(x: f32, y: f32, radius: f32) -> Result<Self> {
-        let x = XYEncodingUtils::check_val(x)?;
-        let y = XYEncodingUtils::check_val(y)?;
-        if radius <= 0.0 || !radius.is_finite() {
+        if radius <= 0.0 {
             return Err(LuceneError::IllegalArgument(format!(
-                "radius: '{radius}' is invalid"
+                "radius must be bigger than 0, got {}",
+                crate::util::java_fmt::float_to_string(radius)
             )));
         }
+        if !radius.is_finite() {
+            return Err(LuceneError::IllegalArgument(format!(
+                "radius must be finite, got {}",
+                crate::util::java_fmt::float_to_string(radius)
+            )));
+        }
+        let x = XYEncodingUtils::check_val(x)?;
+        let y = XYEncodingUtils::check_val(y)?;
         Ok(Self { x, y, radius })
     }
 
@@ -1957,6 +1973,28 @@ impl std::hash::Hash for XYPolygon {
 
 #[cfg(test)]
 mod signed_zero_equality_tests {
+
+    /// Regression test (rmp #358, `BaseXYPointTestCase.testDistanceInf`):
+    /// `XYCircle.java:44-54` rejects an infinite radius as not finite and a
+    /// negative one as not bigger than 0, with Java's messages.
+    #[test]
+    fn xy_circle_rejects_a_bad_radius_with_java_messages() {
+        let message = |r: f32| match XYCircle::new(18.0, 19.0, r) {
+            Err(LuceneError::IllegalArgument(m)) => m,
+            other => panic!("expected IllegalArgumentException, got {other:?}"),
+        };
+        assert_eq!(
+            message(f32::INFINITY),
+            "radius must be finite, got Infinity"
+        );
+        assert_eq!(
+            message(f32::NEG_INFINITY),
+            "radius must be bigger than 0, got -Infinity"
+        );
+        assert_eq!(message(0.0), "radius must be bigger than 0, got 0.0");
+        assert_eq!(message(f32::NAN), "radius must be finite, got NaN");
+    }
+
     use super::*;
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};

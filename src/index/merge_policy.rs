@@ -6804,6 +6804,9 @@ mod tiered_merge_policy_selection_tests {
     /// (`TieredMergePolicy.java:678-685`); a natural selection keeps one.
     /// Four 60-byte segments, each half deleted, under a 100-byte maximum:
     /// every pair is too large, so each round selects one segment alone.
+    /// The last round's candidate has no next segment to overflow it, so it
+    /// is not too large: Lucene 10.5.0 prints three `[max merge]` lines and
+    /// a plain `add merge=_3`, the lines checked here.
     #[test]
     fn forced_deletes_keep_every_too_large_merge() {
         let policy = TieredMergePolicy::new();
@@ -6829,7 +6832,12 @@ mod tiered_merge_policy_selection_tests {
                 .iter()
                 .filter(|l| l.starts_with("  add merge=") && l.ends_with(" [max merge]"))
                 .count(),
-            4,
+            3,
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l
+                == "  add merge=_3(10.5.0):C10/5 size=0.000 MB score=0.307 skew=1.000 nonDelRatio=0.500"),
             "{lines:?}"
         );
     }

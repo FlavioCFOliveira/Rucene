@@ -140,7 +140,7 @@ pub trait BaseCompressingDocValuesFormatTestCase: BaseDocValuesFormatTestCase {
             let size2 = dir_size(&*directory)?;
             // make sure the new longs did not cost 8 bytes each
             MatcherAssert::assert_that(&size2, &less_than(size1 + 8 * 20));
-            Ok(())
+            abandon(iwriter)
         })();
         close_directory(directory, outcome)
     }
@@ -170,7 +170,7 @@ pub trait BaseCompressingDocValuesFormatTestCase: BaseDocValuesFormatTestCase {
             // make sure the new longs costed less than if they had only been packed
             let bits = i64::from(PackedInts::bits_required(day)?);
             MatcherAssert::assert_that(&size2, &less_than(size1 + (bits * 50) / 8));
-            Ok(())
+            abandon(iwriter)
         })();
         close_directory(directory, outcome)
     }
@@ -192,15 +192,22 @@ pub trait BaseCompressingDocValuesFormatTestCase: BaseDocValuesFormatTestCase {
             let size2 = dir_size(&*directory)?;
             // make sure the new value did not grow the bpv for every other value
             MatcherAssert::assert_that(&size2, &less_than(size1 + (20000 * (63 - 10)) / 8));
-            Ok(())
+            abandon(iwriter)
         })();
         close_directory(directory, outcome)
     }
 }
 
+/// Java never closes `iwriter`: the test abandons it and the JVM collects
+/// it. A dropped, unclosed port writer keeps the directory referenced, so
+/// the abandoned writer is rolled back (no commit, no further files), which
+/// releases it before the directory closes.
+fn abandon(iwriter: Arc<IndexWriter>) -> Result<()> {
+    iwriter.rollback()
+}
+
 /// The try-with-resources of the directory: closed on every exit, the
-/// body's failure first. Java never closes `iwriter`; the port's writer is
-/// dropped with the closure that owns it, as the JVM collects it.
+/// body's failure first.
 fn close_directory(directory: Arc<ByteBuffersDirectory>, outcome: Result<()>) -> Result<()> {
     let closed = match Arc::try_unwrap(directory) {
         Ok(mut directory) => directory.close(),

@@ -37,6 +37,7 @@ pub fn lucene_tear_down<T>(_inst: &mut T) {
 
 /// `@AfterClass public static void recordClassDraw()`: records
 /// `#class\tnext\t<long>` into `draws`.
+#[allow(dead_code)] // Not every binary that includes this module calls it.
 pub fn record_class_draw(draws: &'static Mutex<Vec<String>>) -> Method {
     Method::new("recordClassDraw")
         .modifiers(modifier::PUBLIC | modifier::STATIC)

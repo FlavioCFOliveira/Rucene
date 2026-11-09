@@ -248,9 +248,14 @@ pub fn with_directory(
     mut dir: Box<dyn Directory>,
     body: impl FnOnce(&dyn Directory) -> Result<()>,
 ) -> Result<()> {
-    let result = body(&*dir);
+    // Java's try-with-resources closes the resource on any throwable, an
+    // assumption failure included, then rethrows it.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(&*dir)));
     let closed = dir.close();
-    result.and(closed)
+    match result {
+        Ok(result) => result.and(closed),
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
 }
 
 /// Closes a directory shared through an `Arc` once every sharer is gone.
@@ -272,18 +277,28 @@ fn with_input(
     mut input: Box<dyn IndexInput>,
     body: impl FnOnce(&mut dyn IndexInput) -> Result<()>,
 ) -> Result<()> {
-    let result = body(&mut *input);
+    // Java's try-with-resources closes the resource on any throwable, an
+    // assumption failure included, then rethrows it.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(&mut *input)));
     let closed = input.close();
-    result.and(closed)
+    match result {
+        Ok(result) => result.and(closed),
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
 }
 
 fn with_output(
     mut output: Box<dyn IndexOutput>,
     body: impl FnOnce(&mut dyn IndexOutput) -> Result<()>,
 ) -> Result<()> {
-    let result = body(&mut *output);
+    // Java's try-with-resources closes the resource on any throwable, an
+    // assumption failure included, then rethrows it.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(&mut *output)));
     let closed = output.close();
-    result.and(closed)
+    match result {
+        Ok(result) => result.and(closed),
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
 }
 
 /// Port of the members of `BaseDirectoryTestCase`: the hook a subclass

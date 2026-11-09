@@ -228,14 +228,15 @@ pub trait BaseLiveDocsFormatTestCase: Send + Sync + 'static {
             HashMap::new(),
             Sort::default(),
         )?;
-        let sci = SegmentCommitInfo::new(si.clone(), 0, 0, 0, -1, -1, StringHelper::random_id())?;
+        let sci0 = SegmentCommitInfo::new(si.clone(), 0, 0, 0, -1, -1, StringHelper::random_id())?;
         format.write_live_docs(
             bits,
             &*directory,
-            &sci,
+            &sci0,
             max_doc - num_live_docs,
             &*DEFAULT_IO_CONTEXT,
         )?;
+        drop(sci0);
 
         let sci = SegmentCommitInfo::new(
             si,
@@ -251,7 +252,11 @@ pub trait BaseLiveDocsFormatTestCase: Send + Sync + 'static {
         for i in 0..max_doc as usize {
             Assert::assert_equals(bits.get(i), bits2.get(i));
         }
+        // The segment infos hold the wrapper as `Arc<dyn Directory>`
+        // (Java's `SegmentInfo.dir`); released before `close()` so the
+        // wrapper is no longer shared (see `MockDirectoryWrapper`).
         drop(bits2);
+        drop(sci);
         drop(directory);
         dir.close()
     }

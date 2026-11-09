@@ -1225,9 +1225,11 @@ impl MockDirectoryWrapper {
     fn close_delegate(&mut self) -> Result<()> {
         match Arc::get_mut(&mut self.core).and_then(|core| Arc::get_mut(&mut core.delegate)) {
             Some(delegate) => delegate.close(),
-            None => Err(LuceneError::illegal_state(
-                "MockDirectoryWrapper: the delegate is still shared and cannot be closed",
-            )),
+            None => Err(LuceneError::illegal_state(format!(
+                "MockDirectoryWrapper: the delegate is still shared and cannot be closed B2DEBUG core={} delegate={}",
+                Arc::strong_count(&self.core),
+                Arc::strong_count(&self.core.delegate)
+            ))),
         }
     }
 
