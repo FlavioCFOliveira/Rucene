@@ -107,6 +107,64 @@ impl JavaBitSet {
         self.words.iter_mut().for_each(|w| *w = 0);
     }
 
+    /// `wordsInUse`: the words up to the highest one holding a set bit.
+    fn words_in_use(&self) -> usize {
+        self.words
+            .iter()
+            .rposition(|&w| w != 0)
+            .map_or(0, |i| i + 1)
+    }
+
+    /// `flip(bitIndex)`.
+    pub fn flip(&mut self, bit_index: usize) {
+        let w = word_index(bit_index);
+        self.ensure_capacity(w + 1);
+        self.words[w] ^= 1u64 << (bit_index & 63);
+    }
+
+    /// `flip(fromIndex, toIndex)`.
+    pub fn flip_range(&mut self, from: usize, to: usize) {
+        if from == to {
+            return;
+        }
+        self.ensure_capacity(word_index(to - 1) + 1);
+        for i in from..to {
+            self.words[word_index(i)] ^= 1u64 << (i & 63);
+        }
+    }
+
+    /// `and(set)`.
+    pub fn and(&mut self, set: &JavaBitSet) {
+        for (i, w) in self.words.iter_mut().enumerate() {
+            *w &= set.words.get(i).copied().unwrap_or(0);
+        }
+    }
+
+    /// `or(set)`: grows to the words `set` uses.
+    pub fn or(&mut self, set: &JavaBitSet) {
+        let used = set.words_in_use();
+        self.ensure_capacity(used);
+        for i in 0..used {
+            self.words[i] |= set.words[i];
+        }
+    }
+
+    /// `xor(set)`: grows to the words `set` uses.
+    pub fn xor(&mut self, set: &JavaBitSet) {
+        let used = set.words_in_use();
+        self.ensure_capacity(used);
+        for i in 0..used {
+            self.words[i] ^= set.words[i];
+        }
+    }
+
+    /// `andNot(set)`.
+    pub fn and_not(&mut self, set: &JavaBitSet) {
+        for i in 0..self.words.len().min(set.words.len()) {
+            self.words[i] &= !set.words[i];
+        }
+    }
+
     /// `cardinality()`.
     pub fn cardinality(&self) -> usize {
         self.words.iter().map(|w| w.count_ones() as usize).sum()

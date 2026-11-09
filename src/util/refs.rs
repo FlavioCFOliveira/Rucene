@@ -267,6 +267,32 @@ impl CharsRefBuilder {
         }
     }
 
+    /// Appends the characters `start..end` of `csq`, or the whole literal
+    /// `null` when `None`.
+    ///
+    /// Equivalent to `CharsRefBuilder.append(CharSequence, int, int)`
+    /// (`CharsRefBuilder.java:74-83`). `start` and `end` index the characters
+    /// of `csq` as this builder stores them ([`char`]s).
+    ///
+    /// # Panics
+    ///
+    /// When `end` exceeds the character count of `csq`, which is the
+    /// `IndexOutOfBoundsException` of Java's `csq.charAt(i)`, or when
+    /// `end < start`.
+    pub fn append_str_range(&mut self, csq: Option<&str>, start: usize, end: usize) -> &mut Self {
+        let Some(csq) = csq else {
+            return self.append_str(Some(NULL_STRING));
+        };
+        let chars: Vec<char> = csq.chars().collect();
+        self.grow(self.r.length + end - start);
+        for &c in &chars[start..end] {
+            let len = self.r.length;
+            self.set_char_at(len, c);
+            self.r.length += 1;
+        }
+        self
+    }
+
     /// Appends a single character. Equivalent to `CharsRefBuilder.append(char)`.
     pub fn append(&mut self, c: char) -> &mut Self {
         self.grow(self.r.length + 1);

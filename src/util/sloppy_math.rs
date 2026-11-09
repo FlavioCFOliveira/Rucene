@@ -161,6 +161,16 @@ static TABLES: LazyLock<Tables> = LazyLock::new(|| {
 });
 
 impl SloppyMath {
+    /// The largest magnitude [`Self::sin`] and [`Self::cos`] reduce through
+    /// their table; above it they fall back to `StrictMath`.
+    ///
+    /// Equivalent to the package-private `SloppyMath.SIN_COS_MAX_VALUE_FOR_INT_MODULO`
+    /// (`((Integer.MAX_VALUE >> 9) / SIN_COS_INDEXER) * 0.99`), made public for
+    /// `TestSloppyMath`.
+    pub fn sin_cos_max_value_for_int_modulo() -> f64 {
+        TABLES.sin_cos_max_value_for_int_modulo
+    }
+
     /// Returns the distance in metres between two points on the earth's
     /// surface, using the haversine formula.
     ///

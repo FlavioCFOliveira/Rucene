@@ -417,6 +417,27 @@ impl BytesRefHash {
         }
     }
 
+    /// [`with_bytes_start_array`](Self::with_bytes_start_array), keyed by the
+    /// pool offset of bytes another table already interned, as
+    /// [`new_by_pool_offset`](Self::new_by_pool_offset) is.
+    ///
+    /// Equivalent to `BytesRefHash(ByteBlockPool, int, BytesStartArray)`
+    /// (`BytesRefHash.java:122-142`) for a table only
+    /// [`add_by_pool_offset`](Self::add_by_pool_offset) adds to; see the
+    /// module documentation for why the key is chosen at construction.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `capacity` is zero or not a power of two.
+    pub fn with_bytes_start_array_by_pool_offset(
+        capacity: usize,
+        bytes_start_array: Box<dyn BytesStartArray>,
+    ) -> Self {
+        let mut hash = Self::with_bytes_start_array(capacity, bytes_start_array);
+        hash.keyed_by_pool_offset = true;
+        hash
+    }
+
     /// Creates an empty table with `capacity` slots whose term start offsets
     /// are kept in a `DirectBytesStartArray`: only the slot array is charged to
     /// `bytes_used`.

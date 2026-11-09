@@ -15,6 +15,12 @@ use std::sync::Mutex;
 
 use crate::util::InfoStream;
 
+/// The `log` facade [`JavaLoggingInfoStream`] writes to, re-exported so that
+/// callers can name its [`log::Level`] (Java's `java.util.logging.Level`) and
+/// query it (`Logger.isLoggable(Level)` is `log::log_enabled!`).
+#[doc(no_inline)]
+pub use log;
+
 // ---------------------------------------------------------------------------
 // PrintStreamInfoStream
 // ---------------------------------------------------------------------------

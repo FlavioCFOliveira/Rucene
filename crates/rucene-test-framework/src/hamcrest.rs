@@ -315,6 +315,15 @@ pub fn greater_than_or_equal_to<T>(value: T) -> OrderingComparison<T> {
     }
 }
 
+/// `OrderingComparison.greaterThan(value)`.
+pub fn greater_than<T>(value: T) -> OrderingComparison<T> {
+    OrderingComparison {
+        expected: value,
+        min_compare: 1,
+        max_compare: 1,
+    }
+}
+
 /// `OrderingComparison.asText(comparison)`.
 fn comparison_text(comparison: i32) -> &'static str {
     match comparison {

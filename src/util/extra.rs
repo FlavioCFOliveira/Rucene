@@ -746,6 +746,18 @@ impl<T, C: PriorityQueueComparator<T>> PriorityQueue<T, C> {
         self.heap[i] = Some(node);
     }
 
+    /// Returns an iterator over the live elements, in heap order (unspecified
+    /// to the caller).
+    ///
+    /// Equivalent to `org.apache.lucene.util.PriorityQueue#iterator()` (the
+    /// queue is `Iterable<T>`). Rust's `Iterator::next` returns `None` when
+    /// exhausted where Java's throws `NoSuchElementException`.
+    pub fn iter(&self) -> impl Iterator<Item = &T> + '_ {
+        self.heap[1..=self.size]
+            .iter()
+            .map(|e| e.as_ref().expect("INVARIANT: slots 1..=size hold elements"))
+    }
+
     /// Returns the internal heap array.
     ///
     /// The heap is one-based: slot `0` is unused and slots `1..=size` hold the
@@ -1178,6 +1190,13 @@ impl Version {
         debug_assert_eq!(i32::from(self.bugfix), (self.encoded >> 2) & 0xFF);
         debug_assert_eq!(i32::from(self.prerelease), self.encoded & 0x03);
         true
+    }
+
+    /// Returns this version's hash code: its encoded value.
+    ///
+    /// Equivalent to `Version.hashCode()` (`return encodedValue;`).
+    pub fn hash_code(&self) -> i32 {
+        self.encoded
     }
 
     /// Returns the crate's full implementation version.

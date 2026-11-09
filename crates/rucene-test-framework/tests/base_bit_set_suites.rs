@@ -9,8 +9,10 @@
 //! * `TestFixedBitSet` (`BaseBitSetTestCase<FixedBitSet>`), with its
 //!   override of `testPrevSetBit()` (and the helpers that override calls).
 //!
-//! The classes' own extra test methods belong to the core-test port
-//! (sprint 7) and are not declared here.
+//! `TestFixedBitSet`'s own test methods (sprint 9, task #402) are declared
+//! on its binding from `base_bit_set/test_fixed_bit_set.rs`, and those of
+//! `TestSparseFixedBitSet` (task #403) from
+//! `base_bit_set/test_sparse_fixed_bit_set.rs`.
 //!
 //! Each suite runs once on the seed `tests.seed` names (a random one when it
 //! is unset); `RUCENE_SUITE_SEEDS=<n>` runs it on the first `n` seeds of
@@ -32,6 +34,11 @@ use rucene_test_framework::util::base_bit_set_test_case::{
     self, base_assert_equals_sets, BaseBitSetTestCase, BitSetTestInstance,
 };
 use rucene_test_framework::util::LuceneTestCase;
+
+#[path = "base_bit_set/test_fixed_bit_set.rs"]
+mod test_fixed_bit_set;
+#[path = "base_bit_set/test_sparse_fixed_bit_set.rs"]
+mod test_sparse_fixed_bit_set;
 
 mod draw_hooks;
 mod suite_draws;
@@ -166,21 +173,27 @@ impl BaseBitSetTestCase for TestFixedBitSet {
 }
 
 fn sparse_class() -> Arc<Class> {
-    Class::builder("org.apache.lucene.util.TestSparseFixedBitSet")
+    let mut builder = Class::builder("org.apache.lucene.util.TestSparseFixedBitSet")
         .extends(&base_bit_set_test_case::class())
         .constructor(Constructor::no_args(|| {
             BitSetTestInstance::new(TestSparseFixedBitSet)
-        }))
-        .build()
+        }));
+    for m in test_sparse_fixed_bit_set::methods() {
+        builder = builder.method(m);
+    }
+    builder.build()
 }
 
 fn fixed_class() -> Arc<Class> {
-    Class::builder("org.apache.lucene.util.TestFixedBitSet")
+    let mut builder = Class::builder("org.apache.lucene.util.TestFixedBitSet")
         .extends(&base_bit_set_test_case::class())
         .constructor(Constructor::no_args(|| {
             BitSetTestInstance::new(TestFixedBitSet)
-        }))
-        .build()
+        }));
+    for m in test_fixed_bit_set::methods() {
+        builder = builder.method(m);
+    }
+    builder.build()
 }
 
 // -----------------------------------------------------------------------------

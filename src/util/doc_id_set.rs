@@ -132,6 +132,10 @@ impl DocIdSet for BitDocIdSet {
     fn bits(&self) -> Result<Option<Box<dyn Bits>>> {
         Ok(Some(Box::new(SharedBitSetBits(Arc::clone(&self.set)))))
     }
+
+    fn doc_id_set_as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
 }
 
 /// A shared [`BitSet`] as a boxed [`Bits`]: the object `BitDocIdSet.bits()`
@@ -220,6 +224,10 @@ impl DocIdSet for IntArrayDocIdSet {
             Arc::clone(&self.docs),
             self.length,
         )))
+    }
+
+    fn doc_id_set_as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 }
 

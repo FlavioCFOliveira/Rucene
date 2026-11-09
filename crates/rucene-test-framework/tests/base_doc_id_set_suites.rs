@@ -6,8 +6,10 @@
 //! and `TestFixedBitDocIdSet`, each with its `copyOf` and its override of
 //! `assertEquals(int, BitSet, T)`.
 //!
-//! The classes' own extra test methods belong to the core-test port
-//! (sprint 7) and are not declared here.
+//! The own test methods of `TestRoaringDocIdSet` and `TestNotDocIdSet`
+//! (sprint 9, task #403) are declared on their bindings from
+//! `base_doc_id_set/`; `TestIntArrayDocIdSet`, `TestSparseFixedBitDocIdSet`
+//! and `TestFixedBitDocIdSet` declare none.
 //!
 //! Each set is wrapped in a [`JavaShaped`], which describes the Java layout
 //! `RamUsageTester` measures in `testRamBytesUsed` (see
@@ -34,6 +36,13 @@ use rucene_test_framework::util::base_doc_id_set_test_case::{
     JavaShaped,
 };
 use rucene_test_framework::util::LuceneTestCase;
+
+#[path = "base_doc_id_set/doc_id_run_end.rs"]
+mod doc_id_run_end;
+#[path = "base_doc_id_set/test_not_doc_id_set.rs"]
+mod test_not_doc_id_set;
+#[path = "base_doc_id_set/test_roaring_doc_id_set.rs"]
+mod test_roaring_doc_id_set;
 
 mod draw_hooks;
 mod suite_draws;
@@ -295,10 +304,38 @@ fn binding(name: &str, make: fn() -> DocIdSetTestInstance) -> Arc<Class> {
         .build()
 }
 
+/// A public `test*` method a binding declares beside the inherited ones.
+fn own_test(name: &str, body: fn() -> Result<()>) -> randomizedtesting::jdk::reflect::Method {
+    randomizedtesting::jdk::reflect::Method::new(name)
+        .throws(&["java.lang.Exception"])
+        .body_any(move || {
+            if let Err(e) = body() {
+                rucene_test_framework::util::java_exceptions::rethrow_java(e)
+            }
+        })
+}
+
+/// [`binding`] with the binding's own methods.
+fn binding_with(
+    name: &str,
+    make: fn() -> DocIdSetTestInstance,
+    methods: Vec<randomizedtesting::jdk::reflect::Method>,
+) -> Arc<Class> {
+    let mut builder = Class::builder(name)
+        .extends(&base_doc_id_set_test_case::class())
+        .constructor(Constructor::no_args(make));
+    for m in methods {
+        builder = builder.method(m);
+    }
+    builder.build()
+}
+
 fn roaring_class() -> Arc<Class> {
-    binding("org.apache.lucene.util.TestRoaringDocIdSet", || {
-        DocIdSetTestInstance::new(TestRoaringDocIdSet)
-    })
+    binding_with(
+        "org.apache.lucene.util.TestRoaringDocIdSet",
+        || DocIdSetTestInstance::new(TestRoaringDocIdSet),
+        test_roaring_doc_id_set::methods(),
+    )
 }
 
 fn int_array_class() -> Arc<Class> {
@@ -308,9 +345,11 @@ fn int_array_class() -> Arc<Class> {
 }
 
 fn not_class() -> Arc<Class> {
-    binding("org.apache.lucene.util.TestNotDocIdSet", || {
-        DocIdSetTestInstance::new(TestNotDocIdSet)
-    })
+    binding_with(
+        "org.apache.lucene.util.TestNotDocIdSet",
+        || DocIdSetTestInstance::new(TestNotDocIdSet),
+        test_not_doc_id_set::methods(),
+    )
 }
 
 fn sparse_class() -> Arc<Class> {

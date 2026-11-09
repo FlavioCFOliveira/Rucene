@@ -131,6 +131,22 @@ fn check_args(from: usize, to: usize, k: usize) {
     assert!(k < to, "k must be < to");
 }
 
+/// Puts the `k`-th element of `[from, to)` in its place, with a recursion
+/// budget of `max_depth` before the range is shuffled.
+///
+/// Equivalent to the package-private `IntroSelector.select(int, int, int,
+/// int)` (`IntroSelector.java:48-147`), which Lucene marks "Visible for
+/// testing"; like Java, it does not check its arguments.
+pub fn intro_select_with_max_depth(
+    ops: &mut dyn PivotOps,
+    from: usize,
+    to: usize,
+    k: usize,
+    max_depth: i32,
+) {
+    intro_select_bounded(ops, from, to, k, i64::from(max_depth));
+}
+
 /// The body of `IntroSelector.select(int, int, int, int)`
 /// (`IntroSelector.java:49-147`): medians-of-medians pivot selection,
 /// Bentley-McIlroy three-way partitioning, and a specialised sort for the last

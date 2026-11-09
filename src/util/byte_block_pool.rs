@@ -72,6 +72,29 @@ pub trait Allocator: std::fmt::Debug + Send + Sync {
     }
 }
 
+/// An [`Allocator`] of [`BYTE_BLOCK_SIZE`] blocks that never recycles.
+///
+/// Equivalent to `ByteBlockPool.DirectAllocator` (`ByteBlockPool.java:74-83`).
+#[derive(Debug, Default)]
+pub struct DirectAllocator;
+
+impl DirectAllocator {
+    /// Equivalent to `new DirectAllocator()`, `super(BYTE_BLOCK_SIZE)`.
+    pub fn new() -> Self {
+        DirectAllocator
+    }
+}
+
+impl Allocator for DirectAllocator {
+    fn block_size(&self) -> usize {
+        BYTE_BLOCK_SIZE
+    }
+
+    /// Equivalent to `DirectAllocator.recycleByteBlocks`, which does
+    /// nothing.
+    fn recycle_byte_blocks(&self, _blocks: &mut [Vec<u8>], _start: usize, _end: usize) {}
+}
+
 /// The counter a [`DirectTrackingAllocator`] charges.
 #[derive(Debug)]
 enum TrackingCounter {

@@ -440,6 +440,15 @@ impl BytesRefBuilder {
         &self.inner.bytes
     }
 
+    /// Returns the full underlying byte buffer for writing.
+    ///
+    /// Equivalent to `BytesRefBuilder.bytes()` (`BytesRefBuilder.java:41-44`)
+    /// when the caller writes through the returned array, as Java callers
+    /// may.
+    pub fn bytes_mut(&mut self) -> &mut [u8] {
+        &mut self.inner.bytes
+    }
+
     /// Returns the current number of bytes in the builder.
     pub fn length(&self) -> usize {
         self.inner.length
@@ -2681,6 +2690,18 @@ impl RamUsageEstimator {
     pub fn size_of_string(s: &str) -> i64 {
         let utf16_len: i64 = s.encode_utf16().count() as i64;
         Self::align_object_size(Self::STRING_SIZE + Self::NUM_BYTES_ARRAY_HEADER + 2 * utf16_len)
+    }
+
+    /// Returns the size in bytes of a `String[]`: its shallow size plus the
+    /// size of every non-`null` string (`None` stands for Java's `null`).
+    ///
+    /// Equivalent to `RamUsageEstimator.sizeOf(String[])`.
+    pub fn size_of_string_array(arr: &[Option<&str>]) -> i64 {
+        let mut size = Self::shallow_size_of(arr);
+        for s in arr.iter().flatten() {
+            size += Self::size_of_string(s);
+        }
+        size
     }
 
     /// Returns the memory an [`Accountable`] reports.
