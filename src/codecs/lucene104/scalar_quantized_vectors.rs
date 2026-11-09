@@ -2717,7 +2717,7 @@ impl KnnVectorsFormat for Lucene104ScalarQuantizedVectorsFormat {
     }
 
     fn fields_writer(&self, state: &OwnedSegmentWriteState) -> Result<Box<dyn KnnVectorsWriter>> {
-        Ok(self.fields_writer_flat(&state.borrow())?)
+        Ok(self.fields_writer_flat_owned(state)?)
     }
 
     fn fields_reader<'a>(&self, state: &SegmentReadState<'a>) -> Result<Box<dyn KnnVectorsReader>> {
@@ -2734,9 +2734,27 @@ impl FlatVectorsFormat for Lucene104ScalarQuantizedVectorsFormat {
         &self,
         state: &SegmentWriteState<'_>,
     ) -> Result<Box<dyn FlatVectorsWriter>> {
+        // The borrowed state cannot lend its info stream beyond this call:
+        // see `fields_writer_flat_owned`, which every vectors chain of the
+        // port builds this writer through.
         let raw = raw_vector_format().fields_writer_flat(state)?;
         Ok(Box::new(Lucene104ScalarQuantizedVectorsWriter::new(
             state,
+            Arc::new(crate::util::NoOutputInfoStream),
+            self.encoding,
+            raw,
+        )?))
+    }
+
+    fn fields_writer_flat_owned(
+        &self,
+        state: &OwnedSegmentWriteState,
+    ) -> Result<Box<dyn FlatVectorsWriter>> {
+        let borrowed = state.borrow();
+        let raw = raw_vector_format().fields_writer_flat(&borrowed)?;
+        Ok(Box::new(Lucene104ScalarQuantizedVectorsWriter::new(
+            &borrowed,
+            Arc::clone(&state.info_stream),
             self.encoding,
             raw,
         )?))
@@ -3068,8 +3086,7 @@ impl KnnVectorsFormat for Lucene104HnswScalarQuantizedVectorsFormat {
     }
 
     fn fields_writer(&self, state: &OwnedSegmentWriteState) -> Result<Box<dyn KnnVectorsWriter>> {
-        let borrowed = state.borrow();
-        let flat_writer = self.flat.fields_writer_flat(&borrowed)?;
+        let flat_writer = self.flat.fields_writer_flat_owned(state)?;
         Ok(Box::new(
             crate::codecs::lucene99::hnsw_vectors_format::Lucene99HnswVectorsWriter::with_flat_format(
                 state,
@@ -3113,6 +3130,9 @@ pub struct Lucene104ScalarQuantizedVectorsWriter {
     ///
     /// Equivalent to Lucene's `final FlatVectorsWriter rawVectorDelegate`.
     raw_vector_delegate: Option<Box<dyn FlatVectorsWriter>>,
+    /// The `infoStream` of Java's `segmentWriteState`, which `flush` reports
+    /// the vector count on (`Lucene104ScalarQuantizedVectorsWriter.java:150-153`).
+    info_stream: Arc<dyn crate::util::InfoStream>,
     /// Java's `List<FieldWriter> fields`: the float fields, each shared with
     /// whoever added it (`Lucene104ScalarQuantizedVectorsWriter.java:118-129`).
     fields: Vec<Arc<Mutex<SqFieldWriter>>>,
@@ -3144,8 +3164,11 @@ impl Lucene104ScalarQuantizedVectorsWriter {
     ///
     /// Equivalent to
     /// `Lucene104ScalarQuantizedVectorsWriter(SegmentWriteState, ScalarEncoding, FlatVectorsWriter, Lucene104ScalarQuantizedVectorScorer)`.
+    /// `info_stream` is the `infoStream` of Java's `segmentWriteState`,
+    /// which the borrowed `state` cannot lend beyond this call.
     pub fn new(
         state: &SegmentWriteState<'_>,
+        info_stream: Arc<dyn crate::util::InfoStream>,
         encoding: ScalarEncoding,
         raw_vector_delegate: Box<dyn FlatVectorsWriter>,
     ) -> Result<Self> {
@@ -3211,6 +3234,7 @@ impl Lucene104ScalarQuantizedVectorsWriter {
             meta: meta_opt,
             vector_data: vector_data_opt,
             raw_vector_delegate: Some(raw_vector_delegate),
+            info_stream,
             fields: Vec::new(),
             segment_max_doc: state.segment_info.max_doc().ok(),
             finished: false,
@@ -3792,6 +3816,13 @@ impl KnnVectorsWriter for Lucene104ScalarQuantizedVectorsWriter {
                 if similarity_function == VectorSimilarityFunction::COSINE {
                     vector_util::l2normalize(&mut cluster_center, true)?;
                 }
+            }
+            // `Lucene104ScalarQuantizedVectorsWriter.java:150-153`.
+            if self.info_stream.is_enabled(QUANTIZED_VECTOR_COMPONENT) {
+                self.info_stream.message(
+                    QUANTIZED_VECTOR_COMPONENT,
+                    &format!("Vectors' count:{vector_count}"),
+                );
             }
             let docs_with_field = field.docs_with_field_set().into_owned();
             let quantizer = OptimizedScalarQuantizer::new(similarity_function);
@@ -4966,6 +4997,87 @@ mod tests {
     fn get_centroid_is_none_for_a_reader_of_another_format() {
         let reader = crate::codecs::knn_vectors::EmptyKnnVectorsReader;
         assert!(Lucene104ScalarQuantizedVectorsWriter::get_centroid(&reader, "v").is_none());
+    }
+
+    /// An info stream that keeps the `QVEC` messages.
+    struct QvecInfoStream(Mutex<Vec<String>>);
+
+    impl crate::util::InfoStream for QvecInfoStream {
+        fn java_class_name(&self) -> &'static str {
+            "org.apache.lucene.tests.util.RecordingInfoStream"
+        }
+
+        fn message(&self, component: &str, message: &str) {
+            assert_eq!(component, QUANTIZED_VECTOR_COMPONENT);
+            self.0.lock().unwrap().push(message.to_string());
+        }
+
+        fn is_enabled(&self, component: &str) -> bool {
+            component == QUANTIZED_VECTOR_COMPONENT
+        }
+
+        fn close(&self) {}
+    }
+
+    /// rmp #232 (a): the flush reports `Vectors' count:<n>` on the `QVEC`
+    /// component of the segment's info stream, as
+    /// `Lucene104ScalarQuantizedVectorsWriter.flush` does
+    /// (`Lucene104ScalarQuantizedVectorsWriter.java:150-153`), for the
+    /// writer the vectors chain builds (`fieldsWriter` on the owning state).
+    #[test]
+    fn flush_reports_the_vector_count_on_the_info_stream() {
+        use crate::codecs::knn_vectors::FieldVectorWriter;
+        use crate::codecs::stub::BufferedUpdates;
+        use crate::index::{FieldInfos, SegmentInfo};
+        use crate::store::{ByteBuffersDirectory, DefaultIOContext, Directory};
+        use crate::util::Version;
+
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let info = SegmentInfo::new(
+            Arc::clone(&directory),
+            Version::LATEST,
+            Some(Version::LATEST),
+            "_qv".to_string(),
+            5,
+            false,
+            false,
+            crate::codecs::default_codec().unwrap(),
+            HashMap::new(),
+            [3u8; 16],
+            HashMap::new(),
+            Default::default(),
+        )
+        .unwrap();
+        let mut field_info = FieldInfo::new("v", 0);
+        field_info.vector_dimension = 2;
+        field_info.vector_encoding = VectorEncoding::FLOAT32;
+        field_info.vector_similarity_function = VectorSimilarityFunction::EUCLIDEAN;
+        let infos = FieldInfos::new(vec![field_info.clone()]).unwrap();
+        let stream = Arc::new(QvecInfoStream(Mutex::new(Vec::new())));
+        let state = OwnedSegmentWriteState::new(
+            Arc::clone(&stream) as Arc<dyn crate::util::InfoStream>,
+            Arc::clone(&directory),
+            info,
+            infos,
+            BufferedUpdates::default(),
+            Arc::new(DefaultIOContext::default()),
+        );
+        let format = Lucene104ScalarQuantizedVectorsFormat::new();
+        let mut writer = format.fields_writer(&state).unwrap();
+        let FieldVectorWriter::Float(mut field_writer) = writer.add_field(&field_info).unwrap()
+        else {
+            panic!("a float field writer");
+        };
+        for doc in [0, 2, 4] {
+            field_writer
+                .add_value(doc, vec![doc as f32, 1.0 - doc as f32])
+                .unwrap();
+        }
+        writer.flush(5, None).unwrap();
+        writer.finish().unwrap();
+        writer.close().unwrap();
+        assert_eq!(*stream.0.lock().unwrap(), vec!["Vectors' count:3"]);
     }
 }
 

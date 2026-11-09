@@ -135,6 +135,29 @@ pub const MONSTER: AnnotationType = AnnotationType {
     inherited: true,
 };
 
+/// An `@LuceneTestCase.Monster(value)` annotation value, for the tests
+/// Lucene marks with it.
+#[derive(Debug, Clone, Default)]
+pub struct Monster {
+    /// `value()`: the reason the test is a monster.
+    pub value: String,
+}
+
+impl JavaAnnotation for Monster {
+    fn annotation_type(&self) -> &'static AnnotationType {
+        &MONSTER
+    }
+    fn to_java_string(&self) -> String {
+        format!(
+            "@org.apache.lucene.tests.util.LuceneTestCase.Monster({})",
+            randomizedtesting::jdk::reflect::quote_member(&self.value)
+        )
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 /// Port of the annotation `LuceneTestCase.AwaitsFix`: tests which exhibit a
 /// known issue and are temporarily disabled (`@TestGroup(enabled = false,
 /// sysProperty = SYSPROP_AWAITSFIX)`).

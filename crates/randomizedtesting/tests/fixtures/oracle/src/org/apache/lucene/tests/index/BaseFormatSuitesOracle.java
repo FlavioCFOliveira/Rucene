@@ -16,8 +16,13 @@ import org.junit.runner.notification.RunListener;
  * {@code BaseIndexFileFormatTestCase} and {@code BasePostingsFormatTestCase} on {@code
  * TestUtil.alwaysPostingsFormat(new Lucene104PostingsFormat())}) and {@link
  * TestStoredFieldsSuiteDraws} (those of {@code BaseStoredFieldsFormatTestCase} on {@code
- * TestUtil.getDefaultCodec()}) with {@code JUnitCore} on fixed master seeds and writes {@code
- * <out>/rucene-test-framework/base_postings_draws.tsv} and {@code base_stored_fields_draws.tsv}:
+ * TestUtil.getDefaultCodec()}), and the term vectors, norms, compound, live docs and doc values
+ * suites ({@link TestTermVectorsSuiteDraws}, {@link TestNormsSuiteDraws}, {@link
+ * TestCompoundSuiteDraws}, {@link TestLiveDocsSuiteDraws}, {@link TestDocValuesSuiteDraws}, each on
+ * {@code TestUtil.getDefaultCodec()}) with {@code JUnitCore} on fixed master seeds and writes {@code
+ * <out>/rucene-test-framework/base_postings_draws.tsv}, {@code base_stored_fields_draws.tsv},
+ * {@code base_term_vectors_draws.tsv}, {@code base_norms_draws.tsv}, {@code
+ * base_compound_draws.tsv}, {@code base_live_docs_draws.tsv} and {@code base_doc_values_draws.tsv}:
  * per seed,
  * the {@code #counts} row, one row per test with the next {@code random().nextLong()} of its
  * randomness after the test, the class row with the next draw of the class randomness, and one row
@@ -45,6 +50,23 @@ public class BaseFormatSuitesOracle {
         new File(out, "base_stored_fields_draws.tsv"),
         TestStoredFieldsSuiteDraws.class,
         "TestStoredFieldsSuiteDraws");
+    write(
+        new File(out, "base_term_vectors_draws.tsv"),
+        TestTermVectorsSuiteDraws.class,
+        "TestTermVectorsSuiteDraws");
+    write(new File(out, "base_norms_draws.tsv"), TestNormsSuiteDraws.class, "TestNormsSuiteDraws");
+    write(
+        new File(out, "base_compound_draws.tsv"),
+        TestCompoundSuiteDraws.class,
+        "TestCompoundSuiteDraws");
+    write(
+        new File(out, "base_live_docs_draws.tsv"),
+        TestLiveDocsSuiteDraws.class,
+        "TestLiveDocsSuiteDraws");
+    write(
+        new File(out, "base_doc_values_draws.tsv"),
+        TestDocValuesSuiteDraws.class,
+        "TestDocValuesSuiteDraws");
   }
 
   static void write(File file, Class<?> suite, String name) throws Exception {

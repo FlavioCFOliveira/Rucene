@@ -950,6 +950,57 @@ mod tests {
         );
     }
 
+    /// rmp #232 (c): a merge creates the postings consumer only when the
+    /// merged field infos have postings (`SegmentMerger.java:222-226`), so
+    /// merging stored-only segments writes no terms dictionary; segments with
+    /// an indexed field (the positive control) do get one.
+    #[test]
+    fn the_postings_are_merged_only_when_a_field_has_postings() {
+        let terms_files = |target: &Arc<dyn Directory>| -> Vec<String> {
+            target
+                .list_all()
+                .unwrap()
+                .into_iter()
+                .filter(|f| f.starts_with("_m") && (f.ends_with(".tim") || f.ends_with(".doc")))
+                .collect()
+        };
+
+        let (_dir, infos) = stored_only_segments(2);
+        let readers: Vec<Arc<dyn CodecReader>> = infos
+            .iter()
+            .map(|info| reader_with_min_version(info, Some(Version::LATEST), 10))
+            .collect();
+        let target: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut merger = merger_over(&readers, &target);
+        merger.merge().unwrap();
+        assert!(!merger.merge_state.merge_field_infos.has_postings());
+        assert_eq!(terms_files(&target), Vec::<String>::new());
+
+        // Positive control: an indexed field has postings, which are merged.
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        for i in 0..2 {
+            let mut doc = Document::new();
+            doc.add(Box::new(
+                StringField::new("id", format!("doc-{i}"), Store::NO).unwrap(),
+            ));
+            writer.add_document(&doc).unwrap();
+            writer.commit().unwrap();
+        }
+        writer.close().unwrap();
+        let infos = SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
+        let readers: Vec<Arc<dyn CodecReader>> = infos
+            .iter()
+            .map(|info| reader_with_min_version(info, Some(Version::LATEST), 10))
+            .collect();
+        let target: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut merger = merger_over(&readers, &target);
+        merger.merge().unwrap();
+        assert!(merger.merge_state.merge_field_infos.has_postings());
+        assert!(!terms_files(&target).is_empty());
+    }
+
     /// The merge state and every write state share one `SegmentInfo`: what a
     /// codec writer records on it during the merge is on the merge state's,
     /// and on the one the merger hands back.

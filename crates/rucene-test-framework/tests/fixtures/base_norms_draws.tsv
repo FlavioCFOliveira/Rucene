@@ -1,0 +1,103 @@
+# seed	method	kind	value (BaseFormatSuitesOracle, Lucene 10.5.0, JDK 25): TestNormsSuiteDraws, next random().nextLong() after each test and the class
+DEADBEEF	#class	next	-6330309812208250274
+DEADBEEF	#counts	run=31 fail=0 assume=3	-
+DEADBEEF	testAllZeros	next	-7564885969220010926
+DEADBEEF	testByteRange	next	651663234514747129
+DEADBEEF	testCheckIntegrityReadsAllBytes	next	-6085178175673476290
+DEADBEEF	testFewLargeValues	next	-6385641982816992069
+DEADBEEF	testFewSparseLargeValues	next	-7617157557847211656
+DEADBEEF	testFewSparseValues	next	-3339243095564155766
+DEADBEEF	testFewValues	next	6085015721080746399
+DEADBEEF	testFullLongRange	next	-6440400768646023341
+DEADBEEF	testIndependantIterators	next	-9105680558183822391
+DEADBEEF	testIndependantSparseIterators	next	6493543803453395770
+DEADBEEF	testLongRange	next	4192882870973867349
+DEADBEEF	testMergeStability	A	The MockRandom PF randomizes content on the fly, so we can't check it
+DEADBEEF	testMergeStability	next	6026678469593314916
+DEADBEEF	testMostZeros	next	2065583520600445211
+DEADBEEF	testMultiClose	next	939768549329737948
+DEADBEEF	testNCommon	next	-102131027710678200
+DEADBEEF	testNCommonBig	A	'nightly' test group is disabled (@org.apache.lucene.tests.util.LuceneTestCase.Nightly())
+DEADBEEF	testOutliers	next	5766116370087807156
+DEADBEEF	testOutliers2	next	5708810293452676648
+DEADBEEF	testRandomExceptions	next	553956592892583729
+DEADBEEF	testShortRange	next	-3744542038794605478
+DEADBEEF	testSparseAllZeros	next	-6747390067488556565
+DEADBEEF	testSparseByteRange	next	-3287303435945729221
+DEADBEEF	testSparseFullLongRange	next	889979269353220375
+DEADBEEF	testSparseLongRange	next	-3577399473507783251
+DEADBEEF	testSparseNCommon	next	-1054430293156284453
+DEADBEEF	testSparseNCommonBig	A	'nightly' test group is disabled (@org.apache.lucene.tests.util.LuceneTestCase.Nightly())
+DEADBEEF	testSparseOutliers	next	8301996668331880185
+DEADBEEF	testSparseOutliers2	next	4325713203490860049
+DEADBEEF	testSparseShortRange	next	3793869329187376966
+DEADBEEF	testThreads	next	-8650550879945180125
+DEADBEEF	testUndeadNorms	next	7055839131803335089
+1	#class	next	-4882303659985686171
+1	#counts	run=31 fail=0 assume=3	-
+1	testAllZeros	next	-2792481079276597143
+1	testByteRange	next	-1108275102593177091
+1	testCheckIntegrityReadsAllBytes	next	8607777886732085530
+1	testFewLargeValues	next	-7826696264315362968
+1	testFewSparseLargeValues	next	3873631851521262839
+1	testFewSparseValues	next	-5068504190412379385
+1	testFewValues	next	3120133949260560498
+1	testFullLongRange	next	1757595208743803875
+1	testIndependantIterators	next	-2997197241010922680
+1	testIndependantSparseIterators	next	-4290857694693492488
+1	testLongRange	next	-9074646046088685079
+1	testMergeStability	A	The MockRandom PF randomizes content on the fly, so we can't check it
+1	testMergeStability	next	-7192816207580791821
+1	testMostZeros	next	6191389170724885669
+1	testMultiClose	next	5023695660192295173
+1	testNCommon	next	4908274446082277355
+1	testNCommonBig	A	'nightly' test group is disabled (@org.apache.lucene.tests.util.LuceneTestCase.Nightly())
+1	testOutliers	next	2899660800739872513
+1	testOutliers2	next	3567046205934424105
+1	testRandomExceptions	next	-2234365392117006595
+1	testShortRange	next	-2424251442110521335
+1	testSparseAllZeros	next	5538662545812987759
+1	testSparseByteRange	next	6340851371215426726
+1	testSparseFullLongRange	next	-3573507792541324048
+1	testSparseLongRange	next	-7287585073108973944
+1	testSparseNCommon	next	574196371974237445
+1	testSparseNCommonBig	A	'nightly' test group is disabled (@org.apache.lucene.tests.util.LuceneTestCase.Nightly())
+1	testSparseOutliers	next	-2221880023396830679
+1	testSparseOutliers2	next	4089971811856859802
+1	testSparseShortRange	next	-1579128897428089628
+1	testThreads	next	271918800494048101
+1	testUndeadNorms	next	-3181422429694759898
+C0FFEE	#class	next	-7424182986602344225
+C0FFEE	#counts	run=31 fail=0 assume=3	-
+C0FFEE	testAllZeros	next	3754641916052832336
+C0FFEE	testByteRange	next	2334200185767523615
+C0FFEE	testCheckIntegrityReadsAllBytes	next	-5104430819820503877
+C0FFEE	testFewLargeValues	next	-4941625938681272793
+C0FFEE	testFewSparseLargeValues	next	7203653265253763425
+C0FFEE	testFewSparseValues	next	4771828067184670659
+C0FFEE	testFewValues	next	-1893668637942439994
+C0FFEE	testFullLongRange	next	3608769763386502054
+C0FFEE	testIndependantIterators	next	7660995803027338904
+C0FFEE	testIndependantSparseIterators	next	6783891820745265329
+C0FFEE	testLongRange	next	6345159019928566872
+C0FFEE	testMergeStability	A	The MockRandom PF randomizes content on the fly, so we can't check it
+C0FFEE	testMergeStability	next	4691409957106869562
+C0FFEE	testMostZeros	next	-6249684781649891475
+C0FFEE	testMultiClose	next	39453275133403513
+C0FFEE	testNCommon	next	6121215479858886086
+C0FFEE	testNCommonBig	A	'nightly' test group is disabled (@org.apache.lucene.tests.util.LuceneTestCase.Nightly())
+C0FFEE	testOutliers	next	-7874269471489490358
+C0FFEE	testOutliers2	next	1767599756786566558
+C0FFEE	testRandomExceptions	next	8485272576337894551
+C0FFEE	testShortRange	next	3759062484207698754
+C0FFEE	testSparseAllZeros	next	-2671691268392074136
+C0FFEE	testSparseByteRange	next	-7864090673814636945
+C0FFEE	testSparseFullLongRange	next	905236764893213656
+C0FFEE	testSparseLongRange	next	-525514471778622247
+C0FFEE	testSparseNCommon	next	2691888425972954353
+C0FFEE	testSparseNCommonBig	A	'nightly' test group is disabled (@org.apache.lucene.tests.util.LuceneTestCase.Nightly())
+C0FFEE	testSparseOutliers	next	-8245467693710095317
+C0FFEE	testSparseOutliers2	next	5030808255146508631
+C0FFEE	testSparseShortRange	next	9151549995180881567
+C0FFEE	testThreads	next	-8061923728136825264
+C0FFEE	testUndeadNorms	next	692025270539743256

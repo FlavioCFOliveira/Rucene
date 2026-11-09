@@ -883,7 +883,11 @@ impl Lucene90CompressingTermVectorsWriter {
     }
 
     fn flush(&mut self, force: bool) -> Result<()> {
-        debug_assert!(force || self.trigger_flush());
+        // `assert force != triggerFlush()`
+        // (`Lucene90CompressingTermVectorsWriter.java:385`): a forced flush
+        // never meets a full chunk, which `finishDocument` would have
+        // flushed already.
+        debug_assert!(force != self.trigger_flush());
         let chunk_docs = self.pending_docs.len();
         debug_assert!(chunk_docs > 0);
         self.num_chunks += 1;
@@ -3560,6 +3564,57 @@ mod tests {
         let mut title = RealFieldInfo::new("title", 1);
         title.index_options = IndexOptions::DOCS_AND_FREQS;
         FieldInfos::new(vec![body, title]).unwrap()
+    }
+
+    /// A writer of segment `_f` whose chunks hold `max_docs_per_chunk`
+    /// documents, with one empty document pending.
+    fn writer_with_one_pending_doc(
+        dir: &Arc<dyn Directory>,
+        max_docs_per_chunk: i32,
+    ) -> Lucene90CompressingTermVectorsWriter {
+        let segment_info = test_segment_info(Arc::clone(dir), "_f", 2);
+        let mut writer = Lucene90CompressingTermVectorsWriter::new(
+            dir,
+            &segment_info,
+            "",
+            &*DEFAULT_IO_CONTEXT,
+            VECTORS_CODEC_NAME,
+            Arc::clone(&compressing::FAST),
+            1 << 12,
+            max_docs_per_chunk,
+            10,
+        )
+        .unwrap();
+        writer.start_document(0).unwrap();
+        writer.finish_document().unwrap();
+        writer
+    }
+
+    /// rmp #232 (b): a forced flush of a chunk that is not full passes
+    /// Java's `assert force != triggerFlush()`
+    /// (`Lucene90CompressingTermVectorsWriter.java:385`).
+    #[test]
+    fn forced_flush_of_a_partial_chunk_passes_the_assertion() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut writer = writer_with_one_pending_doc(&dir, 2);
+        assert!(!writer.trigger_flush());
+        writer.flush(true).unwrap();
+        assert_eq!(writer.num_dirty_chunks, 1);
+    }
+
+    /// rmp #232 (b): a forced flush of a full chunk fails Java's `assert
+    /// force != triggerFlush()` (`Lucene90CompressingTermVectorsWriter.java:385`);
+    /// the former `force || triggerFlush()` accepted it.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "force != self.trigger_flush()")]
+    fn forced_flush_of_a_full_chunk_fails_the_assertion() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut writer = writer_with_one_pending_doc(&dir, 2);
+        // The chunk is full now: `finishDocument` would have flushed it.
+        writer.max_docs_per_chunk = 1;
+        assert!(writer.trigger_flush());
+        let _ = writer.flush(true);
     }
 
     fn write_read_round_trip(compression_mode: Arc<dyn CompressionMode>) {

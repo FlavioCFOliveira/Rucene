@@ -71,7 +71,16 @@ write the fixtures (`../*.tsv`) the crate's parity tests (`src/tests/`) read.
   `TestUtil.getDefaultCodec()`, as `TestLucene90StoredFieldsFormat` binds them)
   and writes `base_stored_fields_draws.tsv`, read by
   `crates/rucene-test-framework/tests/base_stored_fields_format_suites.rs`
-  (`test_stored_fields_suite_draws_match_lucene`).
+  (`test_stored_fields_suite_draws_match_lucene`). It runs, the same way and
+  on `TestUtil.getDefaultCodec()`, `TestTermVectorsSuiteDraws`,
+  `TestNormsSuiteDraws`, `TestCompoundSuiteDraws`, `TestLiveDocsSuiteDraws` and
+  `TestDocValuesSuiteDraws` (rmp #352, #353; the last extends
+  `BaseCompressingDocValuesFormatTestCase`, so it covers the three doc values
+  suites), and writes `base_term_vectors_draws.tsv`, `base_norms_draws.tsv`,
+  `base_compound_draws.tsv`, `base_live_docs_draws.tsv` and
+  `base_doc_values_draws.tsv`, read by the matching
+  `crates/rucene-test-framework/tests/base_*_format_suites.rs` through
+  `tests/suite_draws/mod.rs` (`assert_draws_match`).
 * **The test codecs:** `org.apache.lucene.tests.codecs.TestCodecsOracle`
   writes `crates/rucene-test-framework/tests/fixtures/testcodecs_*.tsv`: the
   `nocfs` and `cfs` corpus of `SimpleTextOracle.writeCorpus` (public for it)

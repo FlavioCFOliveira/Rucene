@@ -282,14 +282,11 @@ pub fn class() -> Arc<Class> {
         Class::builder("org.apache.lucene.tests.index.BaseIndexFileFormatTestCase")
             .modifiers(modifier::PUBLIC | modifier::ABSTRACT)
             .extends(&LuceneTestCase::class())
-            .method(Method::new("setUp").throws(&["java.lang.Exception"]).body(
-                |inst: &mut FormatTestInstance| {
-                    LuceneTestCase::super_set_up();
-                    // set the default codec, so adding test cases to this isn't fragile
-                    inst.saved_codec = rucene::codecs::get_default();
-                    rucene::codecs::set_default(inst.case.get_codec());
-                },
-            ))
+            .method(
+                Method::new("setUp")
+                    .throws(&["java.lang.Exception"])
+                    .body(set_up),
+            )
             .method(
                 Method::new("tearDown")
                     .throws(&["java.lang.Exception"])
@@ -308,6 +305,16 @@ pub fn class() -> Arc<Class> {
             .build()
     });
     Arc::clone(&CLASS)
+}
+
+/// `BaseIndexFileFormatTestCase.setUp()`, which a subclass overriding
+/// `setUp()` calls as `super.setUp()`: `LuceneTestCase.setUp()`, then saves
+/// the default codec and sets the subclass's.
+pub fn set_up(inst: &mut FormatTestInstance) {
+    LuceneTestCase::super_set_up();
+    // set the default codec, so adding test cases to this isn't fragile
+    inst.saved_codec = rucene::codecs::get_default();
+    rucene::codecs::set_default(inst.case.get_codec());
 }
 
 /// `BaseIndexFileFormatTestCase.tearDown()`, which a subclass overriding
@@ -382,6 +389,38 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
     ) -> Option<
         &dyn crate::index::base_stored_fields_format_test_case::BaseStoredFieldsFormatTestCase,
     > {
+        None
+    }
+
+    /// The subclass as a `BaseCompoundFormatTestCase`, when it is one.
+    fn as_compound(
+        &self,
+    ) -> Option<&dyn crate::index::base_compound_format_test_case::BaseCompoundFormatTestCase> {
+        None
+    }
+
+    /// The subclass as a `BaseNormsFormatTestCase`, when it is one.
+    fn as_norms(
+        &self,
+    ) -> Option<&dyn crate::index::base_norms_format_test_case::BaseNormsFormatTestCase> {
+        None
+    }
+
+    /// The subclass as a `BaseTermVectorsFormatTestCase`, when it is one.
+    fn as_term_vectors(
+        &self,
+    ) -> Option<&dyn crate::index::base_term_vectors_format_test_case::BaseTermVectorsFormatTestCase>
+    {
+        None
+    }
+
+    /// The subclass as a `LegacyBaseDocValuesFormatTestCase` (and so a
+    /// `BaseDocValuesFormatTestCase`), when it is one.
+    fn as_doc_values(
+        &self,
+    ) -> Option<
+        &dyn crate::index::legacy_base_doc_values_format_test_case::LegacyBaseDocValuesFormatTestCase,
+    >{
         None
     }
 
@@ -979,6 +1018,127 @@ fn handle_fake_io_exception(e: LuceneError, exception_stream: &mut String) {
     }
 
     rethrow(e)
+}
+
+/// `expectThrows(expectedType, runnable)` over a Rucene result: the error
+/// the runnable returns is the thrown exception, an instance of
+/// `expected_type` when `is_instance` says so. Returns it; panics with
+/// JUnit's `AssertionFailedError` when nothing is thrown or the error is of
+/// another class, as `LuceneTestCase.expectThrows` does.
+pub fn expect_throws_lucene<T>(
+    expected_type: &str,
+    is_instance: impl Fn(&LuceneError) -> bool,
+    runnable: impl FnOnce() -> Result<T>,
+) -> LuceneError {
+    match runnable() {
+        Err(e) if is_instance(&e) => e,
+        Err(e) => {
+            let (class, message) =
+                crate::analysis::base_token_stream_test_case::java_class_and_message(&e);
+            LuceneTestCase::expect_throws(expected_type, || Err(Throwable::new(class, message)));
+            unreachable!("expectThrows throws for an exception of another class")
+        }
+        Ok(_) => {
+            LuceneTestCase::expect_throws(expected_type, || Ok(()));
+            unreachable!("expectThrows throws when nothing is thrown")
+        }
+    }
+}
+
+/// `assertArrayEquals(expecteds, actuals)` over two arrays of primitives
+/// (JUnit 4.13's `ComparisonCriteria.arrayEquals`): an
+/// `ArrayComparisonFailure` naming the first differing index, after `array
+/// lengths differed, …` when the lengths differ.
+pub fn assert_array_equals<T: PartialEq + fmt::Display>(expecteds: &[T], actuals: &[T]) {
+    assert_array_equals_msg(None, expecteds, actuals)
+}
+
+/// `assertArrayEquals(message, expecteds, actuals)` over two arrays of
+/// primitives; see [`assert_array_equals`].
+pub fn assert_array_equals_msg<T: PartialEq + fmt::Display>(
+    message: Option<&str>,
+    expecteds: &[T],
+    actuals: &[T],
+) {
+    if expecteds == actuals {
+        return;
+    }
+    let mut header = message.map_or(String::new(), |m| format!("{m}: "));
+    if expecteds.len() != actuals.len() {
+        header.push_str(&format!(
+            "array lengths differed, expected.length={} actual.length={}",
+            expecteds.len(),
+            actuals.len()
+        ));
+    }
+    let len = expecteds.len().max(actuals.len());
+    for i in 0..len {
+        let (e, a) = (expecteds.get(i), actuals.get(i));
+        if e != a {
+            let render = |v: Option<&T>| v.map_or("end of array".to_string(), |v| v.to_string());
+            let separator = if header.is_empty() || header.ends_with(' ') {
+                ""
+            } else {
+                "; "
+            };
+            Throwable::new(
+                "org.junit.internal.ArrayComparisonFailure",
+                format!(
+                    "{header}{separator}arrays first differed at element [{i}]; expected:<{}> but was:<{}>",
+                    render(e),
+                    render(a)
+                ),
+            )
+            .throw()
+        }
+    }
+}
+
+/// Whether Java's `catch (UnsupportedOperationException e)` catches the error.
+pub fn is_unsupported_operation(e: &LuceneError) -> bool {
+    match e {
+        LuceneError::UnsupportedOperation(_)
+        | LuceneError::UnsupportedOperationWithCause { .. } => true,
+        LuceneError::Unchecked { class, .. } => *class == "java.lang.UnsupportedOperationException",
+        _ => false,
+    }
+}
+
+/// Whether the error stands for an instance of the Java class `class`
+/// (`class.isInstance(e)`), by the Java class
+/// `java_class_and_message` gives it.
+pub fn is_instance_of_java_class(e: &LuceneError, class: &str) -> bool {
+    let (actual, _) = crate::analysis::base_token_stream_test_case::java_class_and_message(e);
+    actual == class
+        || class.rsplit('.').next() == Some(actual.as_str())
+        || Throwable::new(actual, "").is_instance(class)
+}
+
+/// Whether Java's `catch (CorruptIndexException e)` catches the error.
+pub fn is_corrupt_index(e: &LuceneError) -> bool {
+    matches!(
+        e,
+        LuceneError::CorruptIndex(_)
+            | LuceneError::IndexFormatTooOld { .. }
+            | LuceneError::IndexFormatTooNew { .. }
+    )
+}
+
+/// The message of an exception, as `getMessage()` returns it.
+pub fn exception_message(e: &LuceneError) -> String {
+    crate::analysis::base_token_stream_test_case::java_class_and_message(e).1
+}
+
+/// A `Set<String>` as JUnit's `assertEquals` compares and prints it
+/// (`AbstractCollection.toString()` of a `HashSet`, in the JDK's iteration
+/// order).
+#[derive(PartialEq)]
+pub struct JavaStringSet(pub HashSet<String>);
+
+impl fmt::Display for JavaStringSet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&java_set_to_string(&self.0))
+    }
 }
 
 /// `Arrays.toString(String[])`.

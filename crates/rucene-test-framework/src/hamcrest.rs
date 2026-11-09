@@ -297,6 +297,15 @@ pub fn less_than_or_equal_to<T>(value: T) -> OrderingComparison<T> {
     }
 }
 
+/// `OrderingComparison.lessThan(value)`.
+pub fn less_than<T>(value: T) -> OrderingComparison<T> {
+    OrderingComparison {
+        expected: value,
+        min_compare: -1,
+        max_compare: -1,
+    }
+}
+
 /// `OrderingComparison.greaterThanOrEqualTo(value)`.
 pub fn greater_than_or_equal_to<T>(value: T) -> OrderingComparison<T> {
     OrderingComparison {

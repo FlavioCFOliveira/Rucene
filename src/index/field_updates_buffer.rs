@@ -791,6 +791,51 @@ mod tests {
         assert_eq!(seen, vec![(b"a".to_vec(), false), (b"b".to_vec(), true)]);
     }
 
+    /// rmp #259: a binary reset (`BinaryDocValuesUpdate` without a value)
+    /// goes through Java's binary constructor
+    /// (`FieldUpdatesBuffer.java:99-105`): the buffer is binary, takes binary
+    /// updates and refuses numeric ones, and iterates the reset without a
+    /// value; a numeric reset (the positive control) stays numeric.
+    #[test]
+    fn a_binary_reset_starts_a_binary_buffer() {
+        let reset = DocValuesUpdate {
+            doc_values_type: DocValuesType::BINARY,
+            term: term("id", "a"),
+            field: "payload".to_string(),
+            doc_id_up_to: 3,
+            value: DocValuesUpdateValue::None,
+        };
+        let mut buffer = FieldUpdatesBuffer::new(reset, 3).unwrap();
+        assert!(!buffer.is_numeric());
+        assert!(buffer.numeric_values.is_none());
+        assert!(buffer.byte_values.is_some());
+        assert!(buffer.add_numeric_update(&term("id", "c"), 1, 3).is_err());
+        buffer
+            .add_binary_update(&term("id", "b"), BytesRef::new(b"xy".to_vec()), 3)
+            .unwrap();
+        buffer.finish().unwrap();
+        let seen: Vec<(Vec<u8>, bool, Option<Vec<u8>>)> = drain(&buffer)
+            .into_iter()
+            .map(|u| {
+                (
+                    u.term_value.bytes,
+                    u.has_value,
+                    u.binary_value.map(|b| b.bytes),
+                )
+            })
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                (b"a".to_vec(), false, None),
+                (b"b".to_vec(), true, Some(b"xy".to_vec()))
+            ]
+        );
+
+        let numeric_reset = FieldUpdatesBuffer::new(numeric(term("id", "a"), None, 3), 3).unwrap();
+        assert!(numeric_reset.is_numeric());
+    }
+
     #[test]
     fn the_iterator_and_finish_enforce_the_finished_state() {
         let mut buffer = FieldUpdatesBuffer::new(numeric(term("id", "a"), None, 1), 1).unwrap();
