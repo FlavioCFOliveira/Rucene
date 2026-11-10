@@ -113,7 +113,9 @@ that establishes it.
 * **`null`.** An API that checks null takes `Option<…>` and raises Java's
   error for `None` (geo constructors, `LateInteractionField`,
   `AcceptDocs::from_iterator_supplier`). A container that holds null uses
-  `Option<T>` values in the test.
+  `Option<T>` values in the test. **Never leave a Java null check out
+  because the Rust signature cannot take null:** change the API to `Option`
+  and update its callers (rule #163; `TestIndexWriterConfig` setters, #379).
 * **Reflection** (`getMethods()`, `getDeclaredMethods()`, `getSimpleName()`):
   a declared list compares the trait's methods with the explicit
   implementations.
