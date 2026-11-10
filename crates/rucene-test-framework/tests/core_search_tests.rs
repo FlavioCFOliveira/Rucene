@@ -19,6 +19,7 @@ mod core_search {
     pub mod base_doc_values_skipper_tests;
     pub mod base_knn_vector_query_test_case;
     pub mod base_vector_similarity_query_test_case;
+    pub mod read_ahead_match_all_docs_query;
     pub mod similarities;
     pub mod test_accept_docs;
     pub mod test_approximation_search_equivalence;
@@ -148,14 +149,38 @@ mod core_search {
     pub mod test_sloppy_phrase_query;
     pub mod test_sloppy_phrase_query2;
     pub mod test_sort;
+    pub mod test_sort_optimization;
+    pub mod test_sort_random;
+    pub mod test_sort_rescorer;
     pub mod test_sorted_numeric_doc_values_range_iterator;
     pub mod test_sorted_numeric_sort_field;
     pub mod test_sorted_set_selector;
     pub mod test_sorted_set_sort_field;
+    pub mod test_synonym_query;
+    pub mod test_task_executor;
+    pub mod test_term_in_set_query;
     pub mod test_term_ord_val_comparator_adaptive_skipping;
+    pub mod test_term_query;
+    pub mod test_term_range_query;
+    pub mod test_term_scorer;
     pub mod test_time_limiting_bulk_scorer;
+    pub mod test_top_docs_collector;
+    pub mod test_top_docs_merge;
     pub mod test_top_docs_rrf;
+    pub mod test_top_field_collector;
+    pub mod test_top_field_collector_early_termination;
+    pub mod test_top_knn_results;
+    pub mod test_total_hit_count_collector;
+    pub mod test_total_hits;
     pub mod test_updateable_doc_id_set_iterator;
+    pub mod test_usage_tracking_filter_caching_policy;
+    pub mod test_vector_scorer;
+    pub mod test_vector_similarity_collector;
+    pub mod test_vector_similarity_values_source;
+    pub mod test_wand_scorer;
+    pub mod test_wildcard_query;
+    pub mod test_wildcard_random;
+    pub mod test_xy_point_distance_sort;
 }
 
 use core_search::*;
@@ -879,4 +904,124 @@ fn test_top_docs_rrf() {
 #[test]
 fn test_time_limiting_bulk_scorer() {
     run(test_time_limiting_bulk_scorer::class_def);
+}
+
+#[test]
+fn test_sort_optimization() {
+    run(test_sort_optimization::class_def);
+}
+
+#[test]
+fn test_sort_random() {
+    run(test_sort_random::class_def);
+}
+
+#[test]
+fn test_sort_rescorer() {
+    run(test_sort_rescorer::class_def);
+}
+
+#[test]
+fn test_synonym_query() {
+    run(test_synonym_query::class_def);
+}
+
+#[test]
+fn test_task_executor() {
+    run(test_task_executor::class_def);
+}
+
+#[test]
+fn test_term_in_set_query() {
+    run(test_term_in_set_query::class_def);
+}
+
+#[test]
+fn test_term_query() {
+    run(test_term_query::class_def);
+}
+
+#[test]
+fn test_term_range_query() {
+    run(test_term_range_query::class_def);
+}
+
+#[test]
+fn test_term_scorer() {
+    run(test_term_scorer::class_def);
+}
+
+#[test]
+fn test_top_docs_collector() {
+    run(test_top_docs_collector::class_def);
+}
+
+#[test]
+fn test_top_docs_merge() {
+    run(test_top_docs_merge::class_def);
+}
+
+#[test]
+fn test_top_field_collector_early_termination() {
+    run(test_top_field_collector_early_termination::class_def);
+}
+
+#[test]
+fn test_top_field_collector() {
+    run(test_top_field_collector::class_def);
+}
+
+#[test]
+fn test_top_knn_results() {
+    run(test_top_knn_results::class_def);
+}
+
+#[test]
+fn test_total_hit_count_collector() {
+    run(test_total_hit_count_collector::class_def);
+}
+
+#[test]
+fn test_total_hits() {
+    run(test_total_hits::class_def);
+}
+
+#[test]
+fn test_vector_similarity_collector() {
+    run(test_vector_similarity_collector::class_def);
+}
+
+#[test]
+fn test_usage_tracking_filter_caching_policy() {
+    run(test_usage_tracking_filter_caching_policy::class_def);
+}
+
+#[test]
+fn test_vector_scorer() {
+    run(test_vector_scorer::class_def);
+}
+
+#[test]
+fn test_vector_similarity_values_source() {
+    run(test_vector_similarity_values_source::class_def);
+}
+
+#[test]
+fn test_wand_scorer() {
+    run(test_wand_scorer::class_def);
+}
+
+#[test]
+fn test_wildcard_query() {
+    run(test_wildcard_query::class_def);
+}
+
+#[test]
+fn test_wildcard_random() {
+    run(test_wildcard_random::class_def);
+}
+
+#[test]
+fn test_xy_point_distance_sort() {
+    run(test_xy_point_distance_sort::class_def);
 }

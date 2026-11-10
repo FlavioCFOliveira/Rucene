@@ -2543,6 +2543,35 @@ impl KeywordField {
     ) -> Result<SortedSetSortField> {
         SortedSetSortField::with_selector(field, reverse, selector)
     }
+
+    /// Creates a sort over this field, reading the doc values, with an
+    /// explicit missing value.
+    ///
+    /// Equivalent to `KeywordField.newSortField(String, boolean,
+    /// SortedSetSelector.Type, Object)` (`KeywordField.java:188-193`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever
+    /// [`SortedSetSortField::with_missing_value`](crate::search::SortedSetSortField)
+    /// raises.
+    ///
+    /// # Panics
+    ///
+    /// As Java's `Objects.requireNonNull`, with
+    /// `java.lang.NullPointerException` when `field` or `selector` is `None`.
+    pub fn new_sort_field_with_missing(
+        field: Option<&str>,
+        reverse: bool,
+        selector: Option<SortedSetSelectorType>,
+        missing_value: Option<crate::search::sort::MissingValue>,
+    ) -> Result<SortedSetSortField> {
+        let field = field
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException: field must not be null"));
+        let selector = selector
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException: selector must not be null"));
+        SortedSetSortField::with_missing_value(field, reverse, selector, missing_value)
+    }
 }
 
 impl IndexableField for KeywordField {
@@ -5230,6 +5259,54 @@ impl LongField {
             return Ok(Arc::new(BoostQuery::new(query, weight)?));
         }
         Ok(query)
+    }
+
+    /// Creates a sort over this field's long values.
+    ///
+    /// Equivalent to `LongField.newSortField(String, boolean,
+    /// SortedNumericSelector.Type)` (`LongField.java:173-176`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever
+    /// [`SortedNumericSortField::with_missing_value`](crate::search::SortedNumericSortField)
+    /// raises.
+    pub fn new_sort_field(
+        field: &str,
+        reverse: bool,
+        selector: crate::search::SortedNumericSelectorType,
+    ) -> Result<crate::search::SortedNumericSortField> {
+        crate::search::SortedNumericSortField::with_missing_value(
+            field,
+            crate::search::sort::SortFieldType::Long,
+            reverse,
+            selector,
+            None,
+        )
+    }
+
+    /// Creates a sort over this field's long values, with an explicit missing
+    /// value.
+    ///
+    /// Equivalent to `LongField.newSortField(String, boolean,
+    /// SortedNumericSelector.Type, long)` (`LongField.java:186-189`).
+    ///
+    /// # Errors
+    ///
+    /// As [`new_sort_field`](Self::new_sort_field).
+    pub fn new_sort_field_with_missing(
+        field: &str,
+        reverse: bool,
+        selector: crate::search::SortedNumericSelectorType,
+        missing_value: i64,
+    ) -> Result<crate::search::SortedNumericSortField> {
+        crate::search::SortedNumericSortField::with_missing_value(
+            field,
+            crate::search::sort::SortFieldType::Long,
+            reverse,
+            selector,
+            Some(crate::search::sort::MissingValue::Long(missing_value)),
+        )
     }
 }
 

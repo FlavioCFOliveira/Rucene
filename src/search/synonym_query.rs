@@ -69,9 +69,15 @@ impl Builder {
     /// Creates a builder for the given target field.
     ///
     /// Equivalent to the sole `Builder(String)` constructor.
-    pub fn new(field: impl Into<String>) -> Self {
+    ///
+    /// # Panics
+    ///
+    /// As Java's `Objects.requireNonNull(field)` (`SynonymQuery.java`), with
+    /// `java.lang.NullPointerException` when `field` is `None`.
+    pub fn new(field: Option<&str>) -> Self {
+        let field = field.unwrap_or_else(|| panic!("java.lang.NullPointerException"));
         Self {
-            field: field.into(),
+            field: field.to_string(),
             terms: Vec::new(),
         }
     }

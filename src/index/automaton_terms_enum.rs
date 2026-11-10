@@ -381,6 +381,12 @@ impl AutomatonTermsEnum {
 }
 
 impl FilteredTermsEnumFilter for AutomatonTermsEnum {
+    /// Answers Java's class check on the enumeration
+    /// (`getClass().getSimpleName()`, `TestWildcardQuery.testPrefixTerm`).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn accept(&mut self, term: &BytesRef) -> Result<AcceptStatus> {
         let suffix_ok = self
             .common_suffix_ref

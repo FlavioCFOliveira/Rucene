@@ -464,7 +464,7 @@ fn test_wildcards_no_positions(inst: &mut Inst) -> Result<()> {
 /// `new SynonymQuery.Builder(field).addTerm(w1).addTerm(w2).build()`.
 fn synonym_w1_w2(field: &str) -> Result<Arc<dyn Query>> {
     Ok(Arc::new(
-        SynonymQueryBuilder::new(field)
+        SynonymQueryBuilder::new(Some(field))
             .add_term(&term(field, "w1"))?
             .add_term(&term(field, "w2"))?
             .build(),

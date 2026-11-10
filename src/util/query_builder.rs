@@ -762,7 +762,7 @@ pub trait QueryBuilderOps {
     /// Propagates the errors of `SynonymQuery`'s builder, which rejects a boost
     /// outside `(0, 1]`.
     fn new_synonym_query(&self, field: &str, terms: &[TermAndBoost]) -> Result<Arc<dyn Query>> {
-        let mut builder = synonym_query::Builder::new(field);
+        let mut builder = synonym_query::Builder::new(Some(field));
         for t in terms {
             builder.add_bytes(t.term().clone(), t.boost())?;
         }

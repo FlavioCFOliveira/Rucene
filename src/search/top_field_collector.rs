@@ -259,6 +259,14 @@ impl TopFieldCollector {
         self.lock().total_hits_threshold
     }
 
+    /// Returns the accumulator of the minimum competitive score this collector
+    /// shares with its siblings, if any.
+    ///
+    /// Equivalent to reading the package-private `minScoreAcc` field.
+    pub fn min_score_acc(&self) -> Option<Arc<MaxScoreAccumulator>> {
+        self.lock().min_score_acc.clone()
+    }
+
     /// Returns whether collection terminated early.
     ///
     /// Equivalent to `TopFieldCollector.isEarlyTerminated()`.

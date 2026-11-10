@@ -801,7 +801,7 @@ pub fn test_multi_field_b_qof_pq7(c: &dyn ExplanationsCase) -> Result<()> {
 
 /// `testSynonymQuery()`.
 pub fn test_synonym_query(c: &dyn ExplanationsCase) -> Result<()> {
-    let query = SynonymQueryBuilder::new(FIELD)
+    let query = SynonymQueryBuilder::new(Some(FIELD))
         .add_term(&Term::new(FIELD, BytesRef::from_char_sequence("w1")))?
         .add_term(&Term::new(FIELD, BytesRef::from_char_sequence("w2")))?
         .build();

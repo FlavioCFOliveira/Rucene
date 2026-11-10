@@ -250,3 +250,15 @@ pub fn assert_query_not_equals(unexpected: &Arc<dyn Query>, actual: &Arc<dyn Que
         ));
     }
 }
+
+/// `assertEquals(expected, actual)` over `Query.equals`, with JUnit's
+/// `expected:<…> but was:<…>` message.
+pub fn assert_query_equals(expected: &dyn Query, actual: &dyn Query) {
+    if !expected.query_eq(actual) {
+        randomizedtesting::junit::Assert::fail(&format!(
+            "expected:<{}> but was:<{}>",
+            rucene::search::query_to_string(expected),
+            rucene::search::query_to_string(actual)
+        ));
+    }
+}

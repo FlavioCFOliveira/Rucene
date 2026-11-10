@@ -339,7 +339,7 @@ fn test_boolean_or_vs_synonym() -> Result<()> {
     let t1 = random_term();
     let t2 = random_term();
     assert_equals(t1.field(), t2.field());
-    let mut q1 = SynonymQueryBuilder::new(t1.field());
+    let mut q1 = SynonymQueryBuilder::new(Some(t1.field()));
     q1.add_term(&t1)?;
     q1.add_term(&t2)?;
     let q1: Arc<dyn Query> = Arc::new(q1.build());

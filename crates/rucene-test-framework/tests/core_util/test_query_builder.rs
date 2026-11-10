@@ -120,7 +120,7 @@ fn tq(field: &str, text: &str) -> Arc<dyn Query> {
 
 /// `new SynonymQuery.Builder(field).addTerm(t1).addTerm(t2).build()`.
 fn synonym(field: &str, t1: &str, t2: &str) -> Result<Arc<dyn Query>> {
-    let mut b = synonym_query::Builder::new(field);
+    let mut b = synonym_query::Builder::new(Some(field));
     b.add_term(&term(field, t1))?;
     b.add_term(&term(field, t2))?;
     Ok(Arc::new(b.build()))
@@ -951,7 +951,7 @@ fn test_token_stream_boosts() -> Result<()> {
 
     let builder = QueryBuilder::new(a);
     let q = builder.create_boolean_query("field", "hot dogs")?;
-    let mut syn = synonym_query::Builder::new("field");
+    let mut syn = synonym_query::Builder::new(Some("field"));
     syn.add_term(&term("field", "dogs"))?;
     syn.add_term_with_boost(&term("field", "dog"), 0.5)?;
     let mut b = boolean_query::Builder::new();

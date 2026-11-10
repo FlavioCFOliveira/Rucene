@@ -144,11 +144,17 @@ const STORED_FIELDS_INTS_BLOCK_SIZE: usize = 128;
 ///
 /// Packed integer encoding for the per-chunk `numStoredFields` and
 /// `lengths` arrays.
-struct StoredFieldsInts;
+///
+/// Package-private in Java; public here because Rust has no package
+/// visibility and `TestStoredFieldsInt` calls it.
+pub struct StoredFieldsInts;
 
 impl StoredFieldsInts {
     /// Writes `count` non-negative integers from `values[start..]`.
-    fn write_ints(
+    ///
+    /// Equivalent to the package-private static
+    /// `StoredFieldsInts.writeInts(int[], int, int, DataOutput)`.
+    pub fn write_ints(
         values: &[i32],
         start: usize,
         count: usize,
@@ -282,7 +288,10 @@ impl StoredFieldsInts {
 
     /// Reads `count` integers into `values[offset..]`. Each value is
     /// guaranteed to fit in an unsigned 32-bit range.
-    fn read_ints(
+    ///
+    /// Equivalent to the package-private static
+    /// `StoredFieldsInts.readInts(IndexInput, int, long[], int)`.
+    pub fn read_ints(
         input: &mut dyn DataInput,
         count: usize,
         values: &mut [i64],

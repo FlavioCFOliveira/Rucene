@@ -5,12 +5,17 @@
 //!
 //! **Divergence.** The JDK class takes any `BlockingQueue`; this port's queue
 //! is the unbounded `LinkedBlockingQueue` those tests pass, whose `offer`
-//! never fails. `execute` therefore follows the JDK's three steps with the
-//! third one unreachable: below `corePoolSize` a new worker starts with the
+//! never fails, or the bounded `ArrayBlockingQueue(capacity)` of
+//! [`ThreadPoolExecutor::with_array_blocking_queue`]. `execute` follows the
+//! JDK's three steps: below `corePoolSize` a new worker starts with the
 //! command; otherwise the command is queued, and a worker is started when
-//! none is alive. Core threads never time out (`allowCoreThreadTimeOut`
-//! is `false`), so `keepAliveTime` only bounds threads above the core size,
-//! which this queue never starts.
+//! none is alive; when a bounded queue is full, a worker above the core size
+//! starts with the command while fewer than `maximumPoolSize` are alive, and
+//! the command is rejected otherwise (`AbortPolicy`). Core threads never time
+//! out (`allowCoreThreadTimeOut` is `false`); a worker above the core size
+//! does not time out either, so `keepAliveTime` is not modelled: the tests
+//! that bound the queue pass `maximumPoolSize == corePoolSize`, which starts
+//! no such worker.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
@@ -42,6 +47,11 @@ struct Pool {
     /// Signalled when the last worker exits (`termination`).
     termination: Condvar,
     core_pool_size: usize,
+    /// `maximumPoolSize`.
+    maximum_pool_size: usize,
+    /// The capacity of a bounded `ArrayBlockingQueue`, `None` for the
+    /// unbounded `LinkedBlockingQueue`.
+    queue_capacity: Option<usize>,
     thread_factory: NamedThreadFactory,
 }
 
@@ -77,6 +87,54 @@ impl ThreadPoolExecutor {
         if core_pool_size < 0 || maximum_pool_size <= 0 || maximum_pool_size < core_pool_size {
             panic!("java.lang.IllegalArgumentException");
         }
+        Self::with_queue(
+            core_pool_size,
+            maximum_pool_size,
+            keep_alive_time,
+            None,
+            thread_factory,
+        )
+    }
+
+    /// `new ThreadPoolExecutor(corePoolSize, maximumPoolSize, keepAliveTime,
+    /// unit, new ArrayBlockingQueue<>(capacity))`, with
+    /// `Executors.defaultThreadFactory()`, whose threads are named
+    /// `pool-N-thread-M`.
+    ///
+    /// # Panics
+    ///
+    /// As [`new`](Self::new), and `IllegalArgumentException` when
+    /// `capacity < 1` (`ArrayBlockingQueue(int)`).
+    pub fn with_array_blocking_queue(
+        core_pool_size: i32,
+        maximum_pool_size: i32,
+        keep_alive_time: Duration,
+        capacity: i32,
+    ) -> Self {
+        if capacity <= 0 {
+            panic!("java.lang.IllegalArgumentException");
+        }
+        Self::with_queue(
+            core_pool_size,
+            maximum_pool_size,
+            keep_alive_time,
+            Some(capacity as usize),
+            // `NamedThreadFactory("pool")` names its threads
+            // `pool-N-thread-M`, as the JDK's `DefaultThreadFactory` does.
+            NamedThreadFactory::new("pool"),
+        )
+    }
+
+    fn with_queue(
+        core_pool_size: i32,
+        maximum_pool_size: i32,
+        keep_alive_time: Duration,
+        queue_capacity: Option<usize>,
+        thread_factory: NamedThreadFactory,
+    ) -> Self {
+        if core_pool_size < 0 || maximum_pool_size <= 0 || maximum_pool_size < core_pool_size {
+            panic!("java.lang.IllegalArgumentException");
+        }
         let _ = keep_alive_time;
         Self {
             pool: Arc::new(Pool {
@@ -89,6 +147,8 @@ impl ThreadPoolExecutor {
                 not_empty: Condvar::new(),
                 termination: Condvar::new(),
                 core_pool_size: core_pool_size as usize,
+                maximum_pool_size: maximum_pool_size as usize,
+                queue_capacity,
                 thread_factory,
             }),
         }
@@ -188,12 +248,27 @@ impl Executor for ThreadPoolExecutor {
             self.add_worker(&mut state, Some(command));
             return Ok(());
         }
-        state.queue.push_back(command);
-        self.pool.not_empty.notify_one();
-        if state.worker_count == 0 {
-            self.add_worker(&mut state, None);
+        let queue_full = self
+            .pool
+            .queue_capacity
+            .is_some_and(|capacity| state.queue.len() >= capacity);
+        if !queue_full {
+            state.queue.push_back(command);
+            self.pool.not_empty.notify_one();
+            if state.worker_count == 0 {
+                self.add_worker(&mut state, None);
+            }
+            return Ok(());
         }
-        Ok(())
+        if state.worker_count < self.pool.maximum_pool_size {
+            self.add_worker(&mut state, Some(command));
+            return Ok(());
+        }
+        // `reject(command)` with the default `AbortPolicy`.
+        Err(RejectedExecutionException {
+            command,
+            message: "Task rejected from a ThreadPoolExecutor".to_string(),
+        })
     }
 }
 

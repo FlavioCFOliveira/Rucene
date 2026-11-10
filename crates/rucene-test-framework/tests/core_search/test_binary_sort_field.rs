@@ -454,14 +454,20 @@ fn test_nested_blocks() -> Result<()> {
                 for _c in 0..num_children {
                     let mut child = Document::new();
                     child.add(stored_int("block", b)?);
-                    child.add(Box::new(StoredField::new_string("role", "child".to_string())?));
+                    child.add(Box::new(StoredField::new_string(
+                        "role",
+                        "child".to_string(),
+                    )?));
                     block.push(child);
                 }
                 let mut parent = Document::new();
                 let val = random_bytes(1, 10);
                 parent.add(binary_dv("sort", BytesRef::new(val)));
                 parent.add(stored_int("block", b)?);
-                parent.add(Box::new(StoredField::new_string("role", "parent".to_string())?));
+                parent.add(Box::new(StoredField::new_string(
+                    "role",
+                    "parent".to_string(),
+                )?));
                 block.push(parent);
                 w.add_documents(&block)?;
                 if LuceneTestCase::rarely() {

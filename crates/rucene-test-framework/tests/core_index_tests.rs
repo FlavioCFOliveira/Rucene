@@ -186,12 +186,12 @@ mod test_index_writer_config;
 mod test_index_writer_delete;
 #[path = "core_index/test_index_writer_exceptions.rs"]
 mod test_index_writer_exceptions;
+#[path = "core_index/test_index_writer_exceptions2.rs"]
+mod test_index_writer_exceptions2;
 #[path = "core_index/test_index_writer_force_merge.rs"]
 mod test_index_writer_force_merge;
 #[path = "core_index/test_index_writer_from_reader.rs"]
 mod test_index_writer_from_reader;
-#[path = "core_index/test_index_writer_exceptions2.rs"]
-mod test_index_writer_exceptions2;
 #[path = "core_index/test_indexable_field.rs"]
 mod test_indexable_field;
 #[path = "core_index/test_indexing_sequence_numbers.rs"]
