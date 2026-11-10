@@ -26,13 +26,6 @@
 //! for how a suite runs.
 //!
 //! **Divergences** (declared, each confined to the member named):
-//! * Shared `Field` instances: `testRandomStoredFields`,
-//!   `testConcurrentReads` and `testWriteReadMerge` share or change the
-//!   field Java keeps (`Document::add_shared`, `Document::get_field_mut_as`).
-//!   `testReadSkip` and `testBigDocuments` still add a field of the same
-//!   name, type and value to each document: `testBigDocuments` changes
-//!   `idField` while three live documents hold it, which a `&mut` to a shared
-//!   field cannot express (`Document::get_field_mut`).
 //! * `docs` maps (`testRandomStoredFields`, `testRandomStoredFieldsWithIndexSort`):
 //!   Java's `HashMap<String, Document>` key order decides which document a
 //!   random index picks; the port keeps the expected values in a
@@ -437,7 +430,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
 
         let custom_type = FieldType::new_from(TextField::type_stored());
         custom_type.set_tokenized(false)?;
-        let mut id_field = Arc::new(LuceneTestCase::new_field("id", "", &custom_type));
+        let id_field = Arc::new(LuceneTestCase::new_field("id", "", &custom_type));
 
         for i in 0..field_count {
             field_ids.push(i);
@@ -455,14 +448,8 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
         for i in 0..doc_count {
             let mut doc = Document::new();
             let id = i.to_string();
-            // `doc.add(idField); idField.setStringValue(id);`: the earlier
-            // documents were indexed and dropped (the port keeps their
-            // expected values, not the documents), so the test holds
-            // `idField` alone again.
-            Arc::get_mut(&mut id_field)
-                .expect("INVARIANT: no live document holds idField")
-                .set_string_value(id.clone())?;
             doc.add_shared(Arc::clone(&id_field) as Arc<dyn IndexableField>);
+            id_field.set_string_value(id.clone())?;
             if *VERBOSE {
                 println!("TEST: add doc id={id}");
             }
@@ -762,72 +749,23 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
         let f = random().next_float();
         let d = random().next_double();
 
-        // The six fields: name, `Field.class.equals(fld.getClass())`, and a
-        // builder of the field.
-        let fields: Vec<(&str, bool, FieldBuilder)> = vec![
-            ("bytes", true, {
-                let (bytes, ft) = (bytes.clone(), ft.clone());
-                Box::new(move || {
-                    Ok(Box::new(Field::new_with_bytes(
-                        "bytes",
-                        BytesRef::new(bytes.clone()),
-                        ft.clone(),
-                    )?) as Box<dyn IndexableField>)
-                })
-            }),
-            ("string", true, {
-                let (string, ft) = (string.clone(), ft.clone());
-                Box::new(move || {
-                    Ok(Box::new(Field::new("string", string.clone(), ft.clone())?)
-                        as Box<dyn IndexableField>)
-                })
-            }),
-            (
-                "long",
-                false,
-                Box::new(move || {
-                    Ok(
-                        Box::new(StoredField::new_number("long", NumericValue::Long(l))?)
-                            as Box<dyn IndexableField>,
-                    )
-                }),
-            ),
-            (
-                "int",
-                false,
-                Box::new(move || {
-                    Ok(
-                        Box::new(StoredField::new_number("int", NumericValue::Int(i))?)
-                            as Box<dyn IndexableField>,
-                    )
-                }),
-            ),
-            (
-                "float",
-                false,
-                Box::new(move || {
-                    Ok(
-                        Box::new(StoredField::new_number("float", NumericValue::Float(f))?)
-                            as Box<dyn IndexableField>,
-                    )
-                }),
-            ),
-            (
-                "double",
-                false,
-                Box::new(move || {
-                    Ok(
-                        Box::new(StoredField::new_number("double", NumericValue::Double(d))?)
-                            as Box<dyn IndexableField>,
-                    )
-                }),
-            ),
+        let fields: Vec<Arc<dyn IndexableField>> = vec![
+            Arc::new(Field::new_with_bytes(
+                "bytes",
+                BytesRef::new(bytes),
+                ft.clone(),
+            )?),
+            Arc::new(Field::new("string", string, ft.clone())?),
+            Arc::new(StoredField::new_number("long", NumericValue::Long(l))?),
+            Arc::new(StoredField::new_number("int", NumericValue::Int(i))?),
+            Arc::new(StoredField::new_number("float", NumericValue::Float(f))?),
+            Arc::new(StoredField::new_number("double", NumericValue::Double(d))?),
         ];
 
         for _ in 0..100 {
             let mut doc = Document::new();
-            for (_, _, fld) in &fields {
-                doc.add(fld()?);
+            for fld in &fields {
+                doc.add_shared(Arc::clone(fld));
             }
             iw.w().add_document(&doc)?;
         }
@@ -837,12 +775,13 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
             self.maybe_wrap_with_merging_reader(directory_reader::open(dir.as_directory())?)?;
         let stored_fields = reader.stored_fields()?;
         let doc_id = random().next_int_bound(100);
-        for (fld_name, is_field_class, fld) in &fields {
-            let fld = fld()?;
+        for fld in &fields {
+            let fld_name = fld.name();
             let s_doc =
                 stored_fields.document_fields(doc_id, &HashSet::from([fld_name.to_string()]))?;
             let s_field = get_field(&s_doc, fld_name);
-            if *is_field_class {
+            // `Field.class.equals(fld.getClass())`
+            if fld.as_any().is_some_and(|any| any.is::<Field>()) {
                 Assert::assert_equals(
                     JavaBytes::of(fld.binary_value()),
                     JavaBytes::of(s_field.binary_value()),
@@ -1039,20 +978,14 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
         let ty = FieldType::new_from(StringField::type_stored());
         ty.set_index_options(IndexOptions::NONE)?;
         ty.freeze();
-        let mut id = Arc::new(IntPoint::new("id", &[0])?);
-        let mut id_stored = Arc::new(StoredField::new_number("id", NumericValue::Int(0))?);
+        let id = Arc::new(IntPoint::new("id", &[0])?);
+        let id_stored = Arc::new(StoredField::new_number("id", NumericValue::Int(0))?);
         for (i, fields) in data.iter().enumerate() {
             let mut doc = Document::new();
-            // The documents that held `id` and `idStored` were indexed and
-            // dropped, so the test holds them alone again.
-            Arc::get_mut(&mut id)
-                .expect("INVARIANT: no live document holds id")
-                .set_int_value(i as i32)?;
-            Arc::get_mut(&mut id_stored)
-                .expect("INVARIANT: no live document holds idStored")
-                .set_int_value(i as i32)?;
             doc.add_shared(Arc::clone(&id) as Arc<dyn IndexableField>);
             doc.add_shared(Arc::clone(&id_stored) as Arc<dyn IndexableField>);
+            id.set_int_value(i as i32)?;
+            id_stored.set_int_value(i as i32)?;
             for (j, bytes) in fields.iter().enumerate() {
                 doc.add(Box::new(Field::new_with_bytes(
                     &format!("bytes{j}"),
@@ -1248,39 +1181,46 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
 
         dir.set_throttling(Throttling::Never);
 
+        let mut empty_doc = Document::new(); // emptyDoc
+        let mut big_doc1 = Document::new(); // lot of small fields
+        let mut big_doc2 = Document::new(); // 1 very big field
+
+        let id_field = Arc::new(StringField::new("id", String::new(), Store::NO)?);
+        empty_doc.add_shared(Arc::clone(&id_field) as Arc<dyn IndexableField>);
+        big_doc1.add_shared(Arc::clone(&id_field) as Arc<dyn IndexableField>);
+        big_doc2.add_shared(Arc::clone(&id_field) as Arc<dyn IndexableField>);
+
         let only_stored = FieldType::new_from(StringField::type_stored());
         only_stored.set_index_options(IndexOptions::NONE)?;
 
-        // The documents, `emptyDoc`, `bigDoc1` (lot of small fields) and
-        // `bigDoc2` (1 very big field), each led by the shared `idField`.
-        let small_field = self.random_byte_array(random().next_int_bound(10), 256);
+        let small_field: Arc<dyn IndexableField> = Arc::new(Field::new_with_bytes(
+            "fld",
+            BytesRef::new(self.random_byte_array(random().next_int_bound(10), 256)),
+            only_stored.clone(),
+        )?);
         let num_fields = RandomNumbers::random_int_between(&*random(), 500_000, 1_000_000);
-        let big_field = self.random_byte_array(
-            RandomNumbers::random_int_between(&*random(), 1_000_000, 5_000_000),
-            2,
-        );
-        let fld_values: [Vec<&Vec<u8>>; 3] = [
-            Vec::new(),
-            vec![&small_field; num_fields as usize],
-            vec![&big_field],
-        ];
+        for _ in 0..num_fields {
+            big_doc1.add_shared(Arc::clone(&small_field));
+        }
+
+        let big_field = Field::new_with_bytes(
+            "fld",
+            BytesRef::new(self.random_byte_array(
+                RandomNumbers::random_int_between(&*random(), 1_000_000, 5_000_000),
+                2,
+            )),
+            only_stored,
+        )?;
+        big_doc2.add(Box::new(big_field));
 
         let num_docs = LuceneTestCase::at_least(5);
-        let choices = [0usize, 1, 2];
-        let docs: Vec<usize> = (0..num_docs)
+        let choices = [&empty_doc, &big_doc1, &big_doc2];
+        let docs: Vec<&Document> = (0..num_docs)
             .map(|_| *RandomPicks::random_from_list(&*random(), &choices))
             .collect();
-        for (i, &which) in docs.iter().enumerate() {
-            let mut doc = Document::new();
-            doc.add(Box::new(StringField::new("id", i.to_string(), Store::NO)?));
-            for value in &fld_values[which] {
-                doc.add(Box::new(Field::new_with_bytes(
-                    "fld",
-                    BytesRef::new((*value).clone()),
-                    only_stored.clone(),
-                )?));
-            }
-            iw.add_document(&doc)?;
+        for (i, doc) in docs.iter().enumerate() {
+            id_field.set_string_value(i.to_string())?;
+            iw.add_document(*doc)?;
             if random().next_int_bound(num_docs) == 0 {
                 iw.commit()?;
             }
@@ -1291,16 +1231,17 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
             self.maybe_wrap_with_merging_reader(directory_reader::open(dir.as_directory())?)?;
         let searcher = IndexSearcher::new(Arc::clone(&rd) as Arc<dyn IndexReader>)?;
         let stored_fields = rd.stored_fields()?;
-        for (i, &which) in docs.iter().enumerate() {
+        for (i, expected_doc) in docs.iter().enumerate() {
             let query = term_query("id", &i.to_string());
             let top_docs = searcher.search(query, 1)?;
             Assert::assert_equals_msg(Some(&i.to_string()), 1i64, top_docs.total_hits.value());
             let doc = stored_fields.document(top_docs.score_docs[0].doc)?;
             let field_values = doc.get_fields_by_name("fld");
-            Assert::assert_equals(fld_values[which].len(), field_values.len());
+            let expected_values = expected_doc.get_fields_by_name("fld");
+            Assert::assert_equals(expected_values.len(), field_values.len());
             if !field_values.is_empty() {
                 Assert::assert_equals(
-                    JavaBytes(Some(fld_values[which][0].clone())),
+                    JavaBytes::of(expected_values[0].binary_value()),
                     JavaBytes::of(field_values[0].binary_value()),
                 );
             }
@@ -1619,7 +1560,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
                     // Only keep stored fields
                     let doc = docs.next_doc()?;
                     let mut stored_doc = Document::new();
-                    for field in doc.into_fields() {
+                    for field in doc.borrow().get_fields().iter().cloned() {
                         if field.field_type().stored() {
                             let stored_field: Arc<dyn IndexableField> = match field.string_value() {
                                 // Disable indexing
@@ -1647,9 +1588,6 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
         Ok(())
     }
 }
-
-/// Builds one of `testReadSkip`'s fields, a fresh copy per document.
-type FieldBuilder = Box<dyn Fn() -> Result<Box<dyn IndexableField>>>;
 
 /// What `testMergeFilterReader` reads back for one document (`docs[id]`).
 struct MergeFilterExpected {

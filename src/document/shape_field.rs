@@ -11,6 +11,7 @@ use crate::document::{
 };
 use crate::error::{LuceneError, Result};
 use crate::index::{IndexableField, IndexableFieldType};
+use crate::util::atomic_ref_cell::{AtomicRef, AtomicRefCell};
 use crate::util::{BytesRef, NumericUtils};
 
 /// How many bytes one encoded coordinate occupies.
@@ -594,10 +595,10 @@ impl Triangle {
 }
 
 impl IndexableField for Triangle {
-    /// This field as a mutable `Any`, so that a caller can change it in
-    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
-    /// as Java changes the field object it added to a document.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
 
@@ -655,7 +656,7 @@ impl IndexableField for Triangle {
 #[derive(Clone, Debug)]
 pub struct LateInteractionField {
     name: String,
-    value: BytesRef,
+    value: AtomicRefCell<BytesRef>,
 }
 
 impl std::fmt::Display for LateInteractionField {
@@ -668,7 +669,7 @@ impl std::fmt::Display for LateInteractionField {
             f,
             crate::document::binary_doc_values_field_type(),
             &self.name,
-            &crate::document::bytes_ref_to_string(self.value.slice()),
+            &crate::document::bytes_ref_to_string(self.value.borrow().slice()),
         )
     }
 }
@@ -681,13 +682,13 @@ impl LateInteractionField {
     pub fn new(name: impl Into<String>, value: Option<&[Option<Vec<f32>>]>) -> Result<Self> {
         Ok(Self {
             name: name.into(),
-            value: Self::encode(value)?,
+            value: AtomicRefCell::new(Self::encode(value)?),
         })
     }
 
     /// Replaces the value.
-    pub fn set_value(&mut self, value: Option<&[Option<Vec<f32>>]>) -> Result<()> {
-        self.value = Self::encode(value)?;
+    pub fn set_value(&self, value: Option<&[Option<Vec<f32>>]>) -> Result<()> {
+        *self.value.borrow_mut() = Self::encode(value)?;
         Ok(())
     }
 
@@ -697,13 +698,13 @@ impl LateInteractionField {
     }
 
     /// Returns the stored bytes.
-    pub fn binary_value(&self) -> &BytesRef {
-        &self.value
+    pub fn binary_value(&self) -> AtomicRef<'_, BytesRef> {
+        self.value.borrow()
     }
 
     /// Returns the vectors the field holds.
     pub fn get_value(&self) -> Result<Vec<Vec<f32>>> {
-        Self::decode(&self.value)
+        Self::decode(&self.value.borrow())
     }
 
     /// Packs the vectors: the dimension as a little-endian int, then every
@@ -801,10 +802,10 @@ impl LateInteractionField {
 }
 
 impl IndexableField for LateInteractionField {
-    /// This field as a mutable `Any`, so that a caller can change it in
-    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
-    /// as Java changes the field object it added to a document.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
 
@@ -822,12 +823,12 @@ impl IndexableField for LateInteractionField {
         _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(Box::new(
-            crate::analysis::BinaryTokenStream::new(self.value.clone()).unwrap(),
+            crate::analysis::BinaryTokenStream::new(self.value.borrow().clone()).unwrap(),
         ))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
-        Some(self.value.clone())
+        Some(self.value.borrow().clone())
     }
 
     fn string_value(&self) -> Option<String> {

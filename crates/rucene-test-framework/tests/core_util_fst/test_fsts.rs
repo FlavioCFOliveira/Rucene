@@ -456,7 +456,7 @@ fn test_real_terms() -> Result<()> {
     let mut doc_count = 0;
     while doc_count < num_docs {
         let doc = docs.next_doc()?;
-        writer.add_document(&doc)?;
+        writer.add_document(&*doc.borrow())?;
         doc_count += 1;
     }
     let r: Arc<dyn IndexReader> = directory_reader::open_with_writer(&*writer)?;
@@ -745,7 +745,7 @@ fn format07(v: i32) -> String {
 }
 
 /// The `Field` named `name` that the Java test keeps after `doc.add`.
-fn field_mut<'a>(doc: &'a mut Document, name: &str) -> &'a mut Field {
+fn field_mut<'a>(doc: &'a mut Document, name: &str) -> &'a Field {
     doc.get_field_mut_as::<Field>(name)
         .expect("INVARIANT: the document holds the Field")
 }

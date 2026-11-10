@@ -137,9 +137,11 @@ that establishes it.
   (`crates/rucene-test-framework/tests/core_search/test_boolean_query.rs:1104-1109`, calling
   `searcher.super_count`). Wrappers for `FilterX` subclasses.
 * **Fields changed after `doc.add`.** Change the document's own field, as
-  Java does: `Document::get_field_mut` (with `IndexableField::as_any_mut`)
-  and the field's setters; a `FieldType` is shared (`Arc`) and its setters
-  take `&self`. Never rebuild the document from copies.
+  Java does: `Document::get_field_mut`/`get_field_mut_as` (downcast with
+  `as_any`) and the field's setters, which take `&self` (field values and
+  `FieldType` are interior-mutable and shared through `Arc`); a field added
+  to several documents (`Document::add_shared`) is changed through any of
+  them. Never rebuild the document from copies.
 * **UTF-16.** Java `char[]` and `CharSequence` units are `u16`
   (`CharArraySet`, `CharArrayMap`, `CharReader`, `CharacterBuffer`).
 

@@ -13,6 +13,7 @@ use rucene::analysis::{Analyzer, TokenStream};
 use rucene::document::{InvertableType, NumericValue, SharedReader, StoredValue};
 use rucene::error::Result;
 use rucene::index::{IndexableField, IndexableFieldType};
+use rucene::util::atomic_ref_cell::AtomicRef;
 use rucene::util::BytesRef;
 
 /// One Java `Field` object shared by several additions.
@@ -73,11 +74,11 @@ impl<F: IndexableField + 'static> IndexableField for SharedField<F> {
         self.0.numeric_value()
     }
 
-    fn float_vector_value(&self) -> Option<&[f32]> {
+    fn float_vector_value(&self) -> Option<AtomicRef<'_, [f32]>> {
         self.0.float_vector_value()
     }
 
-    fn byte_vector_value(&self) -> Option<&[u8]> {
+    fn byte_vector_value(&self) -> Option<AtomicRef<'_, [u8]>> {
         self.0.byte_vector_value()
     }
 

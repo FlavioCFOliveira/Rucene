@@ -75,7 +75,7 @@ fn test_() -> Result<()> {
     let num_start_docs = LuceneTestCase::at_least(20);
     let docs = Arc::new(LineFileDocs::with_default_file(&*random())?);
     for _ in 0..num_start_docs {
-        w.add_document(&docs.next_doc()?)?;
+        w.add_document(&*docs.next_doc()?.borrow())?;
     }
     let mp = w.get_config().merge_policy();
     let merge_at_once = 1 + w.clone_segment_infos()?.size() as i32;
@@ -106,7 +106,7 @@ fn test_() -> Result<()> {
                             "docid",
                             &random().next_int_bound(num_start_docs).to_string(),
                         ),
-                        &docs.next_doc()?,
+                        &*docs.next_doc()?.borrow(),
                     )?;
                     // Force deletes to apply
                     directory_reader::open_with_writer(&*w)?.close()?;

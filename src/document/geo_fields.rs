@@ -34,6 +34,7 @@ use crate::search::similarities::java_fmt;
 use crate::search::top_field_docs::TopFieldDocs;
 use crate::search::total_hits::{TotalHits, TotalHitsRelation};
 use crate::search::{Occur, Query};
+use crate::util::atomic_ref_cell::{AtomicRef, AtomicRefCell};
 use crate::util::sloppy_math::SloppyMath;
 use crate::util::{Bits, BytesRef, NumericUtils};
 
@@ -131,7 +132,7 @@ fn require_field(field: Option<&str>) -> Result<&str> {
 pub struct LatLonPoint {
     name: String,
     field_type: FieldType,
-    fields_data: FieldData,
+    fields_data: AtomicRefCell<FieldData>,
 }
 
 impl LatLonPoint {
@@ -140,10 +141,12 @@ impl LatLonPoint {
 
     /// Creates the field.
     pub fn new(name: impl Into<String>, latitude: f64, longitude: f64) -> Result<Self> {
-        let mut field = Self {
+        let field = Self {
             name: name.into(),
             field_type: lat_lon_point_type().clone(),
-            fields_data: FieldData::Bytes(BytesRef::new(vec![0u8; 2 * COORDINATE_BYTES])),
+            fields_data: AtomicRefCell::new(FieldData::Bytes(BytesRef::new(
+                vec![0u8; 2 * COORDINATE_BYTES],
+            ))),
         };
         field.set_location_value(latitude, longitude)?;
         Ok(field)
@@ -153,7 +156,7 @@ impl LatLonPoint {
     ///
     /// Equivalent to `LatLonPoint.setLocationValue(double, double)`: the two
     /// encoded coordinates are packed as sortable bytes, latitude first.
-    pub fn set_location_value(&mut self, latitude: f64, longitude: f64) -> Result<()> {
+    pub fn set_location_value(&self, latitude: f64, longitude: f64) -> Result<()> {
         let mut bytes = vec![0u8; 2 * COORDINATE_BYTES];
         NumericUtils::int_to_sortable_bytes(
             GeoEncodingUtils::encode_latitude(latitude)?,
@@ -165,7 +168,7 @@ impl LatLonPoint {
             &mut bytes,
             COORDINATE_BYTES,
         );
-        self.fields_data = FieldData::Bytes(BytesRef::new(bytes));
+        *self.fields_data.borrow_mut() = FieldData::Bytes(BytesRef::new(bytes));
         Ok(())
     }
 
@@ -180,11 +183,12 @@ impl LatLonPoint {
     }
 
     /// Returns the packed coordinates.
-    pub fn packed_value(&self) -> Option<&[u8]> {
-        match &self.fields_data {
+    pub fn packed_value(&self) -> Option<AtomicRef<'_, [u8]>> {
+        AtomicRef::filter_map(self.fields_data.borrow(), |data| match data {
             FieldData::Bytes(bytes) => Some(bytes.slice()),
             _ => None,
-        }
+        })
+        .ok()
     }
 
     /// Checks that `field_info` describes a field this point type can read.
@@ -593,10 +597,10 @@ impl LatLonPoint {
 }
 
 impl IndexableField for LatLonPoint {
-    /// This field as a mutable `Any`, so that a caller can change it in
-    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
-    /// as Java changes the field object it added to a document.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
 
@@ -613,11 +617,11 @@ impl IndexableField for LatLonPoint {
         _analyzer: Option<&dyn Analyzer>,
         _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
-        Ok(point_token_stream(self.packed_value()))
+        Ok(point_token_stream(self.packed_value().as_deref()))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
-        match &self.fields_data {
+        match &*self.fields_data.borrow() {
             FieldData::Bytes(v) => Some(v.clone()),
             _ => None,
         }
@@ -651,16 +655,16 @@ impl IndexableField for LatLonPoint {
 pub struct LatLonDocValuesField {
     name: String,
     field_type: FieldType,
-    value: i64,
+    value: AtomicRefCell<i64>,
 }
 
 impl LatLonDocValuesField {
     /// Creates the field.
     pub fn new(name: impl Into<String>, latitude: f64, longitude: f64) -> Result<Self> {
-        let mut field = Self {
+        let field = Self {
             name: name.into(),
             field_type: lat_lon_doc_values_field_type().clone(),
-            value: 0,
+            value: AtomicRefCell::new(0),
         };
         field.set_location_value(latitude, longitude)?;
         Ok(field)
@@ -670,10 +674,10 @@ impl LatLonDocValuesField {
     ///
     /// Equivalent to `LatLonDocValuesField.setLocationValue`: the two encoded
     /// coordinates are packed into one long, latitude in the high half.
-    pub fn set_location_value(&mut self, latitude: f64, longitude: f64) -> Result<()> {
+    pub fn set_location_value(&self, latitude: f64, longitude: f64) -> Result<()> {
         let lat = GeoEncodingUtils::encode_latitude(latitude)?;
         let lon = GeoEncodingUtils::encode_longitude(longitude)?;
-        self.value = (i64::from(lat) << 32) | (i64::from(lon) & 0xFFFF_FFFF);
+        *self.value.borrow_mut() = (i64::from(lat) << 32) | (i64::from(lon) & 0xFFFF_FFFF);
         Ok(())
     }
 
@@ -689,7 +693,7 @@ impl LatLonDocValuesField {
 
     /// Returns the packed value.
     pub fn numeric_value(&self) -> i64 {
-        self.value
+        *self.value.borrow()
     }
 
     /// Creates a query matching documents whose point falls in the box.
@@ -896,10 +900,10 @@ impl LatLonDocValuesField {
 }
 
 impl IndexableField for LatLonDocValuesField {
-    /// This field as a mutable `Any`, so that a caller can change it in
-    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
-    /// as Java changes the field object it added to a document.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
 
@@ -934,7 +938,7 @@ impl IndexableField for LatLonDocValuesField {
     }
 
     fn numeric_value(&self) -> Option<NumericValue> {
-        Some(NumericValue::Long(self.value))
+        Some(NumericValue::Long(*self.value.borrow()))
     }
 
     fn stored_value(&self) -> Result<Option<StoredValue>> {
@@ -953,7 +957,7 @@ impl IndexableField for LatLonDocValuesField {
 pub struct XYPointField {
     name: String,
     field_type: FieldType,
-    fields_data: FieldData,
+    fields_data: AtomicRefCell<FieldData>,
 }
 
 impl XYPointField {
@@ -962,17 +966,19 @@ impl XYPointField {
 
     /// Creates the field.
     pub fn new(name: impl Into<String>, x: f32, y: f32) -> Result<Self> {
-        let mut field = Self {
+        let field = Self {
             name: name.into(),
             field_type: xy_point_field_type().clone(),
-            fields_data: FieldData::Bytes(BytesRef::new(vec![0u8; 2 * COORDINATE_BYTES])),
+            fields_data: AtomicRefCell::new(FieldData::Bytes(BytesRef::new(
+                vec![0u8; 2 * COORDINATE_BYTES],
+            ))),
         };
         field.set_location_value(x, y)?;
         Ok(field)
     }
 
     /// Replaces the location.
-    pub fn set_location_value(&mut self, x: f32, y: f32) -> Result<()> {
+    pub fn set_location_value(&self, x: f32, y: f32) -> Result<()> {
         let mut bytes = vec![0u8; 2 * COORDINATE_BYTES];
         NumericUtils::int_to_sortable_bytes(XYEncodingUtils::encode(x)?, &mut bytes, 0);
         NumericUtils::int_to_sortable_bytes(
@@ -980,7 +986,7 @@ impl XYPointField {
             &mut bytes,
             COORDINATE_BYTES,
         );
-        self.fields_data = FieldData::Bytes(BytesRef::new(bytes));
+        *self.fields_data.borrow_mut() = FieldData::Bytes(BytesRef::new(bytes));
         Ok(())
     }
 
@@ -995,11 +1001,12 @@ impl XYPointField {
     }
 
     /// Returns the packed coordinates.
-    pub fn packed_value(&self) -> Option<&[u8]> {
-        match &self.fields_data {
+    pub fn packed_value(&self) -> Option<AtomicRef<'_, [u8]>> {
+        AtomicRef::filter_map(self.fields_data.borrow(), |data| match data {
             FieldData::Bytes(bytes) => Some(bytes.slice()),
             _ => None,
-        }
+        })
+        .ok()
     }
 
     /// Checks that `field_info` describes a field this point type can read.
@@ -1155,10 +1162,10 @@ impl XYPointField {
 }
 
 impl IndexableField for XYPointField {
-    /// This field as a mutable `Any`, so that a caller can change it in
-    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
-    /// as Java changes the field object it added to a document.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
 
@@ -1175,11 +1182,11 @@ impl IndexableField for XYPointField {
         _analyzer: Option<&dyn Analyzer>,
         _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
-        Ok(point_token_stream(self.packed_value()))
+        Ok(point_token_stream(self.packed_value().as_deref()))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
-        match &self.fields_data {
+        match &*self.fields_data.borrow() {
             FieldData::Bytes(v) => Some(v.clone()),
             _ => None,
         }
@@ -1213,26 +1220,26 @@ impl IndexableField for XYPointField {
 pub struct XYDocValuesField {
     name: String,
     field_type: FieldType,
-    value: i64,
+    value: AtomicRefCell<i64>,
 }
 
 impl XYDocValuesField {
     /// Creates the field.
     pub fn new(name: impl Into<String>, x: f32, y: f32) -> Result<Self> {
-        let mut field = Self {
+        let field = Self {
             name: name.into(),
             field_type: xy_doc_values_field_type().clone(),
-            value: 0,
+            value: AtomicRefCell::new(0),
         };
         field.set_location_value(x, y)?;
         Ok(field)
     }
 
     /// Replaces the location.
-    pub fn set_location_value(&mut self, x: f32, y: f32) -> Result<()> {
+    pub fn set_location_value(&self, x: f32, y: f32) -> Result<()> {
         let x = XYEncodingUtils::encode(x)?;
         let y = XYEncodingUtils::encode(y)?;
-        self.value = (i64::from(x) << 32) | (i64::from(y) & 0xFFFF_FFFF);
+        *self.value.borrow_mut() = (i64::from(x) << 32) | (i64::from(y) & 0xFFFF_FFFF);
         Ok(())
     }
 
@@ -1248,7 +1255,7 @@ impl XYDocValuesField {
 
     /// Returns the packed value.
     pub fn numeric_value(&self) -> i64 {
-        self.value
+        *self.value.borrow()
     }
 
     /// Creates a query matching documents whose point falls in the box.
@@ -1382,10 +1389,10 @@ impl XYDocValuesField {
 }
 
 impl IndexableField for XYDocValuesField {
-    /// This field as a mutable `Any`, so that a caller can change it in
-    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
-    /// as Java changes the field object it added to a document.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
 
@@ -1420,7 +1427,7 @@ impl IndexableField for XYDocValuesField {
     }
 
     fn numeric_value(&self) -> Option<NumericValue> {
-        Some(NumericValue::Long(self.value))
+        Some(NumericValue::Long(*self.value.borrow()))
     }
 
     fn stored_value(&self) -> Result<Option<StoredValue>> {
@@ -1439,7 +1446,7 @@ impl IndexableField for XYDocValuesField {
 pub struct InetAddressPoint {
     name: String,
     field_type: FieldType,
-    fields_data: FieldData,
+    fields_data: AtomicRefCell<FieldData>,
 }
 
 impl InetAddressPoint {
@@ -1474,7 +1481,9 @@ impl InetAddressPoint {
         Ok(Self {
             name: name.into(),
             field_type: Self::field_type_static().clone(),
-            fields_data: FieldData::Bytes(BytesRef::new(Self::encode(address)?)),
+            fields_data: AtomicRefCell::new(FieldData::Bytes(BytesRef::new(Self::encode(
+                address,
+            )?))),
         })
     }
 
@@ -1508,11 +1517,12 @@ impl InetAddressPoint {
     }
 
     /// Returns the encoded address.
-    pub fn packed_value(&self) -> Option<&[u8]> {
-        match &self.fields_data {
+    pub fn packed_value(&self) -> Option<AtomicRef<'_, [u8]>> {
+        AtomicRef::filter_map(self.fields_data.borrow(), |data| match data {
             FieldData::Bytes(bytes) => Some(bytes.slice()),
             _ => None,
-        }
+        })
+        .ok()
     }
 
     /// Replaces this field's address.
@@ -1525,8 +1535,8 @@ impl InetAddressPoint {
     ///
     /// Propagates whatever [`encode`](Self::encode) raises for an address that
     /// is neither 4 nor 16 bytes long.
-    pub fn set_inet_address_value(&mut self, value: &[u8]) -> Result<()> {
-        self.fields_data = FieldData::Bytes(BytesRef::new(Self::encode(value)?));
+    pub fn set_inet_address_value(&self, value: &[u8]) -> Result<()> {
+        *self.fields_data.borrow_mut() = FieldData::Bytes(BytesRef::new(Self::encode(value)?));
         Ok(())
     }
 
@@ -1746,10 +1756,10 @@ fn inet_address_host_address(value: &[u8]) -> String {
 }
 
 impl IndexableField for InetAddressPoint {
-    /// This field as a mutable `Any`, so that a caller can change it in
-    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
-    /// as Java changes the field object it added to a document.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
 
@@ -1766,11 +1776,11 @@ impl IndexableField for InetAddressPoint {
         _analyzer: Option<&dyn Analyzer>,
         _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
-        Ok(point_token_stream(self.packed_value()))
+        Ok(point_token_stream(self.packed_value().as_deref()))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
-        match &self.fields_data {
+        match &*self.fields_data.borrow() {
             FieldData::Bytes(v) => Some(v.clone()),
             _ => None,
         }
@@ -1804,7 +1814,7 @@ impl IndexableField for InetAddressPoint {
 pub struct InetAddressRange {
     name: String,
     field_type: FieldType,
-    fields_data: FieldData,
+    fields_data: AtomicRefCell<FieldData>,
 }
 
 impl std::fmt::Display for InetAddressRange {
@@ -1817,7 +1827,7 @@ impl std::fmt::Display for InetAddressRange {
             f,
             &self.field_type,
             &self.name,
-            &crate::document::field_data_to_string(&self.fields_data),
+            &crate::document::field_data_to_string(&*self.fields_data.borrow()),
         )
     }
 }
@@ -1845,10 +1855,13 @@ impl InetAddressRange {
 
     /// Creates the field from a minimum and a maximum address.
     pub fn new(name: impl Into<String>, min: &[u8], max: &[u8]) -> Result<Self> {
-        let mut field = Self {
+        let field = Self {
             name: name.into(),
             field_type: Self::field_type_static().clone(),
-            fields_data: FieldData::Bytes(BytesRef::new(vec![0u8; 2 * Self::BYTES])),
+            fields_data: AtomicRefCell::new(FieldData::Bytes(BytesRef::new(vec![
+                0u8;
+                2 * Self::BYTES
+            ]))),
         };
         field.set_range_values(min, max)?;
         Ok(field)
@@ -1861,8 +1874,8 @@ impl InetAddressRange {
     /// # Errors
     ///
     /// Propagates whatever [`encode`](Self::encode) raises.
-    pub fn set_range_values(&mut self, min: &[u8], max: &[u8]) -> Result<()> {
-        self.fields_data = FieldData::Bytes(BytesRef::new(Self::encode(min, max)?));
+    pub fn set_range_values(&self, min: &[u8], max: &[u8]) -> Result<()> {
+        *self.fields_data.borrow_mut() = FieldData::Bytes(BytesRef::new(Self::encode(min, max)?));
         Ok(())
     }
 
@@ -1902,11 +1915,12 @@ impl InetAddressRange {
     }
 
     /// Returns the packed range.
-    pub fn packed_value(&self) -> Option<&[u8]> {
-        match &self.fields_data {
+    pub fn packed_value(&self) -> Option<AtomicRef<'_, [u8]>> {
+        AtomicRef::filter_map(self.fields_data.borrow(), |data| match data {
             FieldData::Bytes(bytes) => Some(bytes.slice()),
             _ => None,
-        }
+        })
+        .ok()
     }
 
     /// Creates a query matching indexed ip ranges that *intersect* the given
@@ -2009,10 +2023,10 @@ impl InetAddressRange {
 }
 
 impl IndexableField for InetAddressRange {
-    /// This field as a mutable `Any`, so that a caller can change it in
-    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
-    /// as Java changes the field object it added to a document.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
 
@@ -2029,11 +2043,11 @@ impl IndexableField for InetAddressRange {
         _analyzer: Option<&dyn Analyzer>,
         _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
-        Ok(point_token_stream(self.packed_value()))
+        Ok(point_token_stream(self.packed_value().as_deref()))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
-        match &self.fields_data {
+        match &*self.fields_data.borrow() {
             FieldData::Bytes(v) => Some(v.clone()),
             _ => None,
         }
@@ -2225,9 +2239,9 @@ impl std::fmt::Display for LatLonPoint {
             write!(
                 f,
                 "{},{}",
-                java_fmt::double_to_string(GeoEncodingUtils::decode_latitude_bytes(bytes, 0)),
+                java_fmt::double_to_string(GeoEncodingUtils::decode_latitude_bytes(&bytes, 0)),
                 java_fmt::double_to_string(GeoEncodingUtils::decode_longitude_bytes(
-                    bytes,
+                    &bytes,
                     COORDINATE_BYTES
                 ))
             )?;
@@ -2244,8 +2258,8 @@ impl std::fmt::Display for LatLonDocValuesField {
             f,
             "LatLonDocValuesField <{}:{},{}>",
             self.name,
-            java_fmt::double_to_string(Self::decode_latitude(self.value)),
-            java_fmt::double_to_string(Self::decode_longitude(self.value))
+            java_fmt::double_to_string(Self::decode_latitude(*self.value.borrow())),
+            java_fmt::double_to_string(Self::decode_longitude(*self.value.borrow()))
         )
     }
 }
@@ -2258,8 +2272,8 @@ impl std::fmt::Display for XYPointField {
             write!(
                 f,
                 "{},{}",
-                java_fmt::float_to_string(XYEncodingUtils::decode_bytes(bytes, 0)),
-                java_fmt::float_to_string(XYEncodingUtils::decode_bytes(bytes, COORDINATE_BYTES))
+                java_fmt::float_to_string(XYEncodingUtils::decode_bytes(&bytes, 0)),
+                java_fmt::float_to_string(XYEncodingUtils::decode_bytes(&bytes, COORDINATE_BYTES))
             )?;
         }
         f.write_str(">")
@@ -2274,8 +2288,8 @@ impl std::fmt::Display for XYDocValuesField {
             f,
             "XYDocValuesField <{}:{},{}>",
             self.name,
-            java_fmt::float_to_string(Self::decode_x(self.value)),
-            java_fmt::float_to_string(Self::decode_y(self.value))
+            java_fmt::float_to_string(Self::decode_x(*self.value.borrow())),
+            java_fmt::float_to_string(Self::decode_y(*self.value.borrow()))
         )
     }
 }
@@ -2295,7 +2309,7 @@ impl std::fmt::Display for InetAddressPoint {
                 && bytes[..10].iter().all(|&b| b == 0)
                 && bytes[10] == 0xFF
                 && bytes[11] == 0xFF;
-            let rendered = inet_address_host_address(bytes);
+            let rendered = inet_address_host_address(&bytes);
             if is_v4 {
                 f.write_str(&rendered)?;
             } else {

@@ -149,7 +149,7 @@ impl CountDownLatch {
 pub fn field_mut<'a>(
     doc: &'a mut rucene::document::Document,
     name: &str,
-) -> &'a mut rucene::document::Field {
+) -> &'a rucene::document::Field {
     field_mut_as::<rucene::document::Field>(doc, name)
 }
 
@@ -164,7 +164,7 @@ pub fn field_mut<'a>(
 pub fn field_mut_as<'a, T: rucene::index::IndexableField + 'static>(
     doc: &'a mut rucene::document::Document,
     name: &str,
-) -> &'a mut T {
+) -> &'a T {
     doc.get_field_mut_as::<T>(name).unwrap_or_else(|| {
         randomizedtesting::jdk::exception::Throwable::new(
             "java.lang.ClassCastException",

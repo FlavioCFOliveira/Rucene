@@ -839,7 +839,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         Assert::assert_true(
             field.field_type().vector_similarity_function() == VectorSimilarityFunction::EUCLIDEAN,
         );
-        Assert::assert_true(field.vector_value() == v);
+        Assert::assert_true(*field.vector_value() == v);
         Ok(())
     }
 
@@ -852,10 +852,10 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testFieldSetValue()` (see the module docs for the `null` case).
     fn test_field_set_value(&self) -> Result<()> {
-        let mut field = KnnFloatVectorField::with_euclidean("f", &[0f32; 1])?;
+        let field = KnnFloatVectorField::with_euclidean("f", &[0f32; 1])?;
         let v1 = [0f32; 1];
         field.set_vector_value(&v1)?;
-        Assert::assert_true(field.vector_value() == v1);
+        Assert::assert_true(*field.vector_value() == v1);
         expect_illegal_argument(|| field.set_vector_value(&[0f32; 2]));
         Ok(())
     }
@@ -1594,7 +1594,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testInvalidKnnVectorFieldUsage()` (see the module docs for
     /// `setIntValue`).
     fn test_invalid_knn_vector_field_usage(&self) -> Result<()> {
-        let mut field =
+        let field =
             KnnFloatVectorField::new("field", &[0f32; 2], VectorSimilarityFunction::EUCLIDEAN)?;
 
         expect_illegal_argument(|| field.set_vector_value(&[0f32; 1]));

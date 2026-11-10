@@ -382,7 +382,7 @@ fn do_test_mixed_postings(codec: Arc<dyn Codec>) -> Result<()> {
 }
 
 /// The `Field` named `name` that the Java test keeps after `doc.add`.
-fn field_mut<'a>(doc: &'a mut Document, name: &str) -> &'a mut Field {
+fn field_mut<'a>(doc: &'a mut Document, name: &str) -> &'a Field {
     doc.get_field_mut_as::<Field>(name)
         .expect("INVARIANT: the document holds the Field")
 }

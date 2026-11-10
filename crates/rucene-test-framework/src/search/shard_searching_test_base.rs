@@ -499,7 +499,7 @@ fn change_indices_run(base: &Arc<ShardSearchingTestBase>) {
                 let what = random().next_int_bound(3);
                 let node = &nodes[random().next_int_bound(nodes.len() as i32) as usize];
                 if num_docs == 0 || what == 0 {
-                    node.writer().add_document(&docs.next_doc()?)?;
+                    node.writer().add_document(&*docs.next_doc()?.borrow())?;
                     num_docs += 1;
                 } else if what == 1 {
                     let term = Term::new(
@@ -508,7 +508,8 @@ fn change_indices_run(base: &Arc<ShardSearchingTestBase>) {
                             &random().next_int_bound(num_docs).to_string(),
                         ),
                     );
-                    node.writer().update_document(term, &docs.next_doc()?)?;
+                    node.writer()
+                        .update_document(term, &*docs.next_doc()?.borrow())?;
                     num_docs += 1;
                 } else {
                     node.writer().delete_documents_by_terms(vec![Term::new(

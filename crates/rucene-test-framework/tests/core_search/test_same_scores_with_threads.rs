@@ -41,9 +41,10 @@ fn test_same_scores_with_threads() -> Result<()> {
     let mut chars_indexed = 0;
     while chars_indexed < chars_to_index {
         let doc = docs.next_doc()?;
+        let doc = doc.borrow();
         // `doc.get("body").length()`: UTF-16 units.
         chars_indexed += doc.get("body").map_or(0, |b| b.encode_utf16().count()) as i32;
-        w.add_document(&doc)?;
+        w.add_document(&*doc)?;
     }
     let r = w.get_reader()?;
     w.close()?;

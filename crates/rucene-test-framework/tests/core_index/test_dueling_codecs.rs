@@ -241,7 +241,8 @@ pub fn create_random_index(numdocs: i32, writer: &RandomIndexWriter, seed: i64) 
     // TODO: we should add other fields that use things like docs&freqs but omit positions,
     // because linefiledocs doesn't cover all the possibilities.
     for _ in 0..numdocs {
-        let mut document = line_file_docs.next_doc()?;
+        let document = line_file_docs.next_doc()?;
+        let mut document = document.borrow_mut();
         // grab the title and add some SortedSet instances for fun
         let title = document
             .get("titleTokenized")
@@ -284,7 +285,7 @@ pub fn create_random_index(numdocs: i32, writer: &RandomIndexWriter, seed: i64) 
                 )));
             }
         }
-        writer.add_document(&document)?;
+        writer.add_document(&*document)?;
     }
 
     line_file_docs.close();

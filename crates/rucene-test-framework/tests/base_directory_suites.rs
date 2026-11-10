@@ -540,10 +540,11 @@ fn nrt_test_nrt_and_commit() -> Result<()> {
     let mut r: Option<Arc<dyn DirectoryReader>> = None;
     for doc_count in 0..num_docs {
         let doc = docs.next_doc()?;
+        let doc = doc.borrow();
         ids.push(BytesRef::from_char_sequence(
             &doc.get("docid").expect("docid"),
         ));
-        w.add_document(&doc)?;
+        w.add_document(&*doc)?;
         if rnd().next_int_bound(20) == 17 {
             match r.take() {
                 None => r = Some(directory_reader::open_with_writer(&**w.w())?),

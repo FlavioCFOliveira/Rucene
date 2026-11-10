@@ -1,11 +1,4 @@
 //! Port of `lucene/core/src/test/org/apache/lucene/document/TestPerFieldConsistency.java`.
-//!
-//! **Divergence from Lucene 10.5.0 (whole class).** Java builds each random
-//! `Field` once and adds the same instance to several documents. The port's
-//! `Document` owns its fields, so each random field is drawn once as a
-//! [`FieldSpec`] (making the same random draws, in the same order) and every
-//! document gets a fresh field built from it: the writer sees the same
-//! fields.
 
 use std::sync::Arc;
 
@@ -49,49 +42,9 @@ pub fn class_def() -> Arc<Class> {
     )
 }
 
-/// A random field of the test, drawn once and built as many times as Java
-/// adds the one instance.
-#[derive(Clone)]
-enum FieldSpec {
-    Indexed(String, FieldType),
-    LongPoint(String, i64),
-    IntPoint(String, i32),
-    DoublePoint(String, f64),
-    FloatPoint(String, f32),
-    BinaryDv(String),
-    NumericDv(String, i64),
-    DoubleDv(String, f64),
-    SortedSetDv(String),
-    KnnVector(String, Vec<f32>, VectorSimilarityFunction),
-}
-
-impl FieldSpec {
-    /// A fresh instance of the field.
-    fn build(&self) -> Result<Box<dyn IndexableField>> {
-        Ok(match self {
-            Self::Indexed(name, ft) => {
-                Box::new(Field::new(name, "randomValue".to_string(), ft.clone())?)
-            }
-            Self::LongPoint(name, v) => Box::new(LongPoint::new(name, &[*v])?),
-            Self::IntPoint(name, v) => Box::new(IntPoint::new(name, &[*v])?),
-            Self::DoublePoint(name, v) => Box::new(DoublePoint::new(name, &[*v])?),
-            Self::FloatPoint(name, v) => Box::new(FloatPoint::new(name, &[*v])?),
-            Self::BinaryDv(name) => Box::new(BinaryDocValuesField::new(
-                name,
-                BytesRef::from_char_sequence("randomValue"),
-            )),
-            Self::NumericDv(name, v) => Box::new(NumericDocValuesField::new(name, *v)),
-            Self::DoubleDv(name, v) => Box::new(DoubleDocValuesField::new(name, *v)),
-            Self::SortedSetDv(name) => Box::new(SortedSetDocValuesField::new(
-                name,
-                BytesRef::from_char_sequence("randomValue"),
-            )),
-            Self::KnnVector(name, values, sim) => {
-                Box::new(KnnFloatVectorField::new(name, values, *sim)?)
-            }
-        })
-    }
-}
+/// A random field of the test: Java builds each once and adds the same
+/// instance to several documents ([`Document::add_shared`]).
+type SharedField = Arc<dyn IndexableField>;
 
 const INDEX_OPTIONS: [IndexOptions; 5] = [
     IndexOptions::NONE,
@@ -109,7 +62,7 @@ const SIMILARITIES: [VectorSimilarityFunction; 4] = [
 ];
 
 /// `randomIndexedField(random, fieldName)`.
-fn random_indexed_field(random: &dyn Random, field_name: &str) -> Result<FieldSpec> {
+fn random_indexed_field(random: &dyn Random, field_name: &str) -> Result<SharedField> {
     let field_type = FieldType::new();
     let mut index_options = *RandomPicks::random_from(random, &INDEX_OPTIONS);
     while index_options == IndexOptions::NONE {
@@ -127,47 +80,74 @@ fn random_indexed_field(random: &dyn Random, field_name: &str) -> Result<FieldSp
     field_type.set_omit_norms(random.next_boolean())?;
     field_type.set_stored(random.next_boolean())?;
     field_type.freeze();
-    Ok(FieldSpec::Indexed(field_name.to_string(), field_type))
+    Ok(Arc::new(Field::new(
+        field_name,
+        "randomValue".to_string(),
+        field_type,
+    )?))
 }
 
 /// `randomPointField(random, fieldName)`.
-fn random_point_field(random: &dyn Random, field_name: &str) -> FieldSpec {
-    let name = field_name.to_string();
-    match random.next_int_bound(4) {
-        0 => FieldSpec::LongPoint(name, RandomizedTest::random_long()),
-        1 => FieldSpec::IntPoint(name, RandomizedTest::random_int()),
-        2 => FieldSpec::DoublePoint(name, RandomizedTest::random_double()),
-        _ => FieldSpec::FloatPoint(name, RandomizedTest::random_float()),
-    }
+fn random_point_field(random: &dyn Random, field_name: &str) -> Result<SharedField> {
+    Ok(match random.next_int_bound(4) {
+        0 => Arc::new(LongPoint::new(
+            field_name,
+            &[RandomizedTest::random_long()],
+        )?),
+        1 => Arc::new(IntPoint::new(field_name, &[RandomizedTest::random_int()])?),
+        2 => Arc::new(DoublePoint::new(
+            field_name,
+            &[RandomizedTest::random_double()],
+        )?),
+        _ => Arc::new(FloatPoint::new(
+            field_name,
+            &[RandomizedTest::random_float()],
+        )?),
+    })
 }
 
 /// `randomDocValuesField(random, fieldName)`.
-fn random_doc_values_field(random: &dyn Random, field_name: &str) -> FieldSpec {
-    let name = field_name.to_string();
+fn random_doc_values_field(random: &dyn Random, field_name: &str) -> SharedField {
     match random.next_int_bound(4) {
-        0 => FieldSpec::BinaryDv(name),
-        1 => FieldSpec::NumericDv(name, RandomizedTest::random_long()),
-        2 => FieldSpec::DoubleDv(name, RandomizedTest::random_double()),
-        _ => FieldSpec::SortedSetDv(name),
+        0 => Arc::new(BinaryDocValuesField::new(
+            field_name,
+            BytesRef::from_char_sequence("randomValue"),
+        )),
+        1 => Arc::new(NumericDocValuesField::new(
+            field_name,
+            RandomizedTest::random_long(),
+        )),
+        2 => Arc::new(DoubleDocValuesField::new(
+            field_name,
+            RandomizedTest::random_double(),
+        )),
+        _ => Arc::new(SortedSetDocValuesField::new(
+            field_name,
+            BytesRef::from_char_sequence("randomValue"),
+        )),
     }
 }
 
 /// `randomKnnVectorField(random, fieldName)`.
-fn random_knn_vector_field(random: &dyn Random, field_name: &str) -> FieldSpec {
+fn random_knn_vector_field(random: &dyn Random, field_name: &str) -> Result<SharedField> {
     let similarity_function = *RandomPicks::random_from(random, &SIMILARITIES);
     let mut values = vec![0f32; RandomizedTest::random_int_between(1, 10) as usize];
     for v in values.iter_mut() {
         *v = RandomizedTest::random_float();
     }
-    FieldSpec::KnnVector(field_name.to_string(), values, similarity_function)
+    Ok(Arc::new(KnnFloatVectorField::new(
+        field_name,
+        &values,
+        similarity_function,
+    )?))
 }
 
 /// `randomFieldsWithTheSameName(fieldName)`.
-fn random_fields_with_the_same_name(field_name: &str) -> Result<Vec<FieldSpec>> {
+fn random_fields_with_the_same_name(field_name: &str) -> Result<Vec<SharedField>> {
     let text_field = random_indexed_field(&*random(), field_name)?;
     let doc_values_field = random_doc_values_field(&*random(), field_name);
-    let point_field = random_point_field(&*random(), field_name);
-    let vector_field = random_knn_vector_field(&*random(), field_name);
+    let point_field = random_point_field(&*random(), field_name)?;
+    let vector_field = random_knn_vector_field(&*random(), field_name)?;
     Ok(vec![
         text_field,
         doc_values_field,
@@ -187,7 +167,7 @@ fn assert_message_contains(e: randomizedtesting::jdk::exception::Throwable, erro
 
 /// `doTestDocWithMissingSchemaOptionsThrowsError(fields, missing, writer, errorMsg)`.
 fn do_test_doc_with_missing_schema_options_throws_error(
-    fields: &[FieldSpec],
+    fields: &[SharedField],
     missing: usize,
     writer: &IndexWriter,
     error_msg: &str,
@@ -195,7 +175,7 @@ fn do_test_doc_with_missing_schema_options_throws_error(
     let mut doc = Document::new();
     for (i, f) in fields.iter().enumerate() {
         if i != missing {
-            doc.add(f.build()?);
+            doc.add_shared(Arc::clone(f));
         }
     }
     let exception = expect_throws(IAE, || writer.add_document(&doc));
@@ -205,14 +185,14 @@ fn do_test_doc_with_missing_schema_options_throws_error(
 
 /// `doTestDocWithExtraSchemaOptionsThrowsError(existing, extra, writer, errorMsg)`.
 fn do_test_doc_with_extra_schema_options_throws_error(
-    existing: &FieldSpec,
-    extra: &FieldSpec,
+    existing: &SharedField,
+    extra: &SharedField,
     writer: &IndexWriter,
     error_msg: &str,
 ) -> Result<()> {
     let mut doc = Document::new();
-    doc.add(existing.build()?);
-    doc.add(extra.build()?);
+    doc.add_shared(Arc::clone(existing));
+    doc.add_shared(Arc::clone(extra));
     let exception = expect_throws(IAE, || writer.add_document(&doc));
     assert_message_contains(exception, error_msg);
     Ok(())
@@ -264,7 +244,7 @@ fn test_doc_with_missing_schema_options_throws_error() -> Result<()> {
         let fields = random_fields_with_the_same_name("myfield")?;
         let mut doc0 = Document::new();
         for field in &fields {
-            doc0.add(field.build()?);
+            doc0.add_shared(Arc::clone(field));
         }
         writer.add_document(&doc0)?;
 
@@ -308,7 +288,7 @@ fn test_doc_with_extra_schema_options_throws_error() -> Result<()> {
         let mut doc0 = Document::new();
         let existing_field_idx =
             RandomizedTest::random_int_between(0, fields.len() as i32 - 1) as usize;
-        doc0.add(fields[existing_field_idx].build()?);
+        doc0.add_shared(Arc::clone(&fields[existing_field_idx]));
         writer.add_document(&doc0)?;
 
         // the same segment: indexing a field with extra field indexing options returns error

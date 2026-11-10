@@ -22,7 +22,7 @@ pub mod shape_doc_values;
 pub mod shape_field;
 pub mod spatial_query;
 
-use crate::util::atomic_ref_cell::AtomicRefCell;
+use crate::util::atomic_ref_cell::{AtomicRef, AtomicRefCell};
 use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
@@ -1174,7 +1174,7 @@ pub struct Field {
     /// The type, shared as Java shares the `FieldType` object a field holds
     /// a reference to (`Field.java:63`).
     field_type: Arc<FieldType>,
-    fields_data: FieldData,
+    fields_data: AtomicRefCell<FieldData>,
 }
 
 impl Field {
@@ -1206,7 +1206,7 @@ impl Field {
         Ok(Self {
             name: name.to_string(),
             field_type,
-            fields_data: FieldData::String(value),
+            fields_data: AtomicRefCell::new(FieldData::String(value)),
         })
     }
 
@@ -1233,7 +1233,9 @@ impl Field {
         Ok(Self {
             name: name.to_string(),
             field_type,
-            fields_data: FieldData::Reader(Arc::new(AtomicRefCell::new(reader))),
+            fields_data: AtomicRefCell::new(FieldData::Reader(Arc::new(AtomicRefCell::new(
+                reader,
+            )))),
         })
     }
 
@@ -1258,7 +1260,7 @@ impl Field {
         Ok(Self {
             name: name.to_string(),
             field_type,
-            fields_data: FieldData::TokenStream(token_stream),
+            fields_data: AtomicRefCell::new(FieldData::TokenStream(token_stream)),
         })
     }
 
@@ -1296,7 +1298,7 @@ impl Field {
         Ok(Self {
             name: name.to_string(),
             field_type,
-            fields_data: FieldData::Bytes(bytes),
+            fields_data: AtomicRefCell::new(FieldData::Bytes(bytes)),
         })
     }
 
@@ -1311,7 +1313,7 @@ impl Field {
         Ok(Self {
             name: name.to_string(),
             field_type,
-            fields_data: FieldData::Number(value),
+            fields_data: AtomicRefCell::new(FieldData::Number(value)),
         })
     }
 
@@ -1327,10 +1329,10 @@ impl Field {
         Ok(Self {
             name: name.to_string(),
             field_type,
-            fields_data: FieldData::StoredInput {
+            fields_data: AtomicRefCell::new(FieldData::StoredInput {
                 input: AtomicRefCell::new(input),
                 length,
-            },
+            }),
         })
     }
 
@@ -1341,7 +1343,7 @@ impl Field {
 
     /// Returns the string value, if the field holds one.
     pub fn string_value(&self) -> Option<String> {
-        match &self.fields_data {
+        match &*self.fields_data.borrow() {
             FieldData::String(v) => Some(v.clone()),
             FieldData::Number(v) => Some(v.to_string()),
             _ => None,
@@ -1350,7 +1352,7 @@ impl Field {
 
     /// Returns the reader value, if the field holds one.
     pub fn reader_value(&self) -> Option<SharedReader> {
-        match &self.fields_data {
+        match &*self.fields_data.borrow() {
             FieldData::Reader(r) => Some(Arc::clone(r)),
             _ => None,
         }
@@ -1358,7 +1360,7 @@ impl Field {
 
     /// Returns the token stream value, if the field holds one.
     pub fn token_stream_value(&self) -> Option<Arc<AtomicRefCell<dyn TokenStream>>> {
-        match &self.fields_data {
+        match &*self.fields_data.borrow() {
             FieldData::TokenStream(ts) => Some(Arc::clone(ts)),
             _ => None,
         }
@@ -1366,7 +1368,7 @@ impl Field {
 
     /// Returns the binary value, if the field holds one.
     pub fn binary_value(&self) -> Option<BytesRef> {
-        match &self.fields_data {
+        match &*self.fields_data.borrow() {
             FieldData::Bytes(v) => Some(v.clone()),
             _ => None,
         }
@@ -1374,7 +1376,7 @@ impl Field {
 
     /// Returns the numeric value, if the field holds one.
     pub fn numeric_value(&self) -> Option<NumericValue> {
-        match &self.fields_data {
+        match &*self.fields_data.borrow() {
             FieldData::Number(v) => Some(*v),
             _ => None,
         }
@@ -1387,61 +1389,74 @@ impl Field {
 
     /// Changes the string value of this field.
     ///
-    /// Equivalent to `Field.setStringValue(String)`: `value` is `None` for
-    /// Java's `null`, which is rejected after the value-type check with
-    /// `IllegalArgumentException("value must not be null")`
-    /// (`Field.java:304-313`). A plain `String` converts into `Some`.
-    pub fn set_string_value(&mut self, value: impl Into<Option<String>>) -> Result<()> {
-        match &self.fields_data {
-            FieldData::String(_) | FieldData::Number(_) => {
-                let Some(value) = value.into() else {
-                    return Err(LuceneError::IllegalArgument(
-                        "value must not be null".to_string(),
-                    ));
-                };
-                self.fields_data = FieldData::String(value);
-                Ok(())
-            }
-            _ => Err(LuceneError::IllegalArgument(
-                "cannot change value type to String".to_string(),
-            )),
+    /// Equivalent to `Field.setStringValue(String)` (`Field.java:304-313`):
+    /// unless the field already holds a `String`, it throws
+    /// `IllegalArgumentException("cannot change value type from X to
+    /// String")`, `X` being the simple class name of the current value; then
+    /// `value` is `None` for Java's `null`, rejected with
+    /// `IllegalArgumentException("value must not be null")`. A plain `String`
+    /// converts into `Some`.
+    ///
+    /// Every setter takes `&self`: Java changes a field through any reference
+    /// to it, so the value is interior-mutable and a field shared by several
+    /// documents ([`Document::add_shared`]) is changed for all of them.
+    pub fn set_string_value(&self, value: impl Into<Option<String>>) -> Result<()> {
+        let mut data = self.fields_data.borrow_mut();
+        if !matches!(*data, FieldData::String(_)) {
+            return Err(cannot_change_value_type(
+                fields_data_simple_name(&data),
+                "String",
+            ));
         }
+        let Some(value) = value.into() else {
+            return Err(LuceneError::IllegalArgument(
+                "value must not be null".to_string(),
+            ));
+        };
+        *data = FieldData::String(value);
+        Ok(())
     }
 
     /// Changes the reader value of this field.
-    pub fn set_reader_value(&mut self, value: Box<dyn CharReader>) -> Result<()> {
-        match &self.fields_data {
-            FieldData::Reader(_) => {
-                self.fields_data = FieldData::Reader(Arc::new(AtomicRefCell::new(value)));
-                Ok(())
-            }
-            _ => Err(LuceneError::IllegalArgument(
-                "cannot change value type to Reader".to_string(),
-            )),
+    ///
+    /// Equivalent to `Field.setReaderValue(Reader)` (`Field.java:316-322`):
+    /// unless the field already holds a `Reader`, it throws
+    /// `IllegalArgumentException("cannot change value type from X to Reader")`.
+    pub fn set_reader_value(&self, value: Box<dyn CharReader>) -> Result<()> {
+        let mut data = self.fields_data.borrow_mut();
+        if !matches!(*data, FieldData::Reader(_)) {
+            return Err(cannot_change_value_type(
+                fields_data_simple_name(&data),
+                "Reader",
+            ));
         }
+        *data = FieldData::Reader(Arc::new(AtomicRefCell::new(value)));
+        Ok(())
     }
 
     /// Changes the binary value of this field.
     ///
-    /// Equivalent to `Field.setBytesValue(BytesRef)`: `value` is `None` for
-    /// Java's `null`, which is rejected after the value-type check with
-    /// `IllegalArgumentException("value must not be null")`
-    /// (`Field.java:335-346`). A plain `BytesRef` converts into `Some`.
-    pub fn set_bytes_value(&mut self, value: impl Into<Option<BytesRef>>) -> Result<()> {
-        match &self.fields_data {
-            FieldData::Bytes(_) => {
-                let Some(value) = value.into() else {
-                    return Err(LuceneError::IllegalArgument(
-                        "value must not be null".to_string(),
-                    ));
-                };
-                self.fields_data = FieldData::Bytes(value);
-                Ok(())
-            }
-            _ => Err(LuceneError::IllegalArgument(
-                "cannot change value type to BytesRef".to_string(),
-            )),
+    /// Equivalent to `Field.setBytesValue(BytesRef)` (`Field.java:335-346`):
+    /// unless the field already holds a `BytesRef`, it throws
+    /// `IllegalArgumentException("cannot change value type from X to
+    /// BytesRef")`; then `value` is `None` for Java's `null`, rejected with
+    /// `IllegalArgumentException("value must not be null")`. A plain
+    /// `BytesRef` converts into `Some`.
+    pub fn set_bytes_value(&self, value: impl Into<Option<BytesRef>>) -> Result<()> {
+        let mut data = self.fields_data.borrow_mut();
+        if !matches!(*data, FieldData::Bytes(_)) {
+            return Err(cannot_change_value_type(
+                fields_data_simple_name(&data),
+                "BytesRef",
+            ));
         }
+        let Some(value) = value.into() else {
+            return Err(LuceneError::IllegalArgument(
+                "value must not be null".to_string(),
+            ));
+        };
+        *data = FieldData::Bytes(value);
+        Ok(())
     }
 
     /// Changes the binary value of this field to a copy-free view of a whole
@@ -1451,7 +1466,7 @@ impl Field {
     /// `setBytesValue(new BytesRef(value))` (`Field.java:325-327`): `None`
     /// is Java's `null`, on which `new BytesRef(byte[])` throws
     /// `NullPointerException` before the value-type check.
-    pub fn set_bytes_value_array(&mut self, value: Option<&[u8]>) -> Result<()> {
+    pub fn set_bytes_value_array(&self, value: Option<&[u8]>) -> Result<()> {
         let Some(value) = value else {
             // The JVM computes the helpful message; the port keeps none.
             return Err(LuceneError::Unchecked {
@@ -1464,37 +1479,19 @@ impl Field {
     }
 
     /// Changes the numeric value of this field.
-    pub fn set_number_value(&mut self, value: NumericValue) -> Result<()> {
-        match &self.fields_data {
-            FieldData::Number(_) => {
-                self.fields_data = FieldData::Number(value);
-                Ok(())
-            }
-            _ => Err(LuceneError::IllegalArgument(
-                "cannot change value type to Number".to_string(),
-            )),
-        }
-    }
-
-    /// Returns the Java simple name of the kind of value this field holds.
     ///
-    /// Equivalent to `fieldsData.getClass().getSimpleName()`, which Java's typed
-    /// setters splice into the message of the exception they throw. Java names
-    /// the *concrete* runtime class, so a reader value renders as (say)
-    /// `StringReader`; this port has one variant per kind and names the kind,
-    /// because the concrete reader sits behind a `dyn Read`.
-    fn value_type_name(&self) -> &'static str {
-        match &self.fields_data {
-            FieldData::String(_) => "String",
-            FieldData::Reader(_) => "Reader",
-            FieldData::TokenStream(_) => "TokenStream",
-            FieldData::Bytes(_) => "BytesRef",
-            FieldData::Number(NumericValue::Int(_)) => "Integer",
-            FieldData::Number(NumericValue::Long(_)) => "Long",
-            FieldData::Number(NumericValue::Float(_)) => "Float",
-            FieldData::Number(NumericValue::Double(_)) => "Double",
-            FieldData::StoredInput { .. } => "StoredFieldDataInput",
+    /// **This has no counterpart in Lucene 10.5.0**, which has one setter per
+    /// numeric class ([`set_int_value`](Self::set_int_value) and its
+    /// siblings). The field must already hold a number.
+    pub fn set_number_value(&self, value: NumericValue) -> Result<()> {
+        let mut data = self.fields_data.borrow_mut();
+        if !matches!(*data, FieldData::Number(_)) {
+            return Err(LuceneError::IllegalArgument(
+                "cannot change value type to Number".to_string(),
+            ));
         }
+        *data = FieldData::Number(value);
+        Ok(())
     }
 
     /// Changes the `byte` value of this field.
@@ -1515,11 +1512,11 @@ impl Field {
     ///
     /// Returns [`LuceneError::IllegalArgument`], as Java throws
     /// `IllegalArgumentException`, for every field this crate can construct.
-    pub fn set_byte_value(&mut self, _value: i8) -> Result<()> {
-        Err(LuceneError::IllegalArgument(format!(
-            "cannot change value type from {} to Byte",
-            self.value_type_name()
-        )))
+    pub fn set_byte_value(&self, _value: i8) -> Result<()> {
+        Err(cannot_change_value_type(
+            fields_data_simple_name(&self.fields_data.borrow()),
+            "Byte",
+        ))
     }
 
     /// Changes the `short` value of this field.
@@ -1534,115 +1531,113 @@ impl Field {
     ///
     /// Returns [`LuceneError::IllegalArgument`], as Java throws
     /// `IllegalArgumentException`, for every field this crate can construct.
-    pub fn set_short_value(&mut self, _value: i16) -> Result<()> {
-        Err(LuceneError::IllegalArgument(format!(
-            "cannot change value type from {} to Short",
-            self.value_type_name()
-        )))
+    pub fn set_short_value(&self, _value: i16) -> Result<()> {
+        Err(cannot_change_value_type(
+            fields_data_simple_name(&self.fields_data.borrow()),
+            "Short",
+        ))
     }
 
     /// Changes the `int` value of this field.
     ///
-    /// Equivalent to `Field.setIntValue(int)`. The value type cannot change:
-    /// the field must already hold an `int`.
+    /// Equivalent to `Field.setIntValue(int)` (`Field.java:367-373`). The
+    /// value type cannot change: the field must already hold an `int`.
     ///
     /// # Errors
     ///
     /// Returns [`LuceneError::IllegalArgument`] when this field holds anything
     /// but an `int`, as Java throws `IllegalArgumentException`.
-    pub fn set_int_value(&mut self, value: i32) -> Result<()> {
-        match &self.fields_data {
-            FieldData::Number(NumericValue::Int(_)) => {
-                self.fields_data = FieldData::Number(NumericValue::Int(value));
-                Ok(())
-            }
-            _ => Err(LuceneError::IllegalArgument(format!(
-                "cannot change value type from {} to Integer",
-                self.value_type_name()
-            ))),
+    pub fn set_int_value(&self, value: i32) -> Result<()> {
+        let mut data = self.fields_data.borrow_mut();
+        if !matches!(*data, FieldData::Number(NumericValue::Int(_))) {
+            return Err(cannot_change_value_type(
+                fields_data_simple_name(&data),
+                "Integer",
+            ));
         }
+        *data = FieldData::Number(NumericValue::Int(value));
+        Ok(())
     }
 
     /// Changes the `long` value of this field.
     ///
-    /// Equivalent to `Field.setLongValue(long)`. The value type cannot change:
-    /// the field must already hold a `long`.
+    /// Equivalent to `Field.setLongValue(long)` (`Field.java:376-382`). The
+    /// value type cannot change: the field must already hold a `long`.
     ///
     /// # Errors
     ///
     /// Returns [`LuceneError::IllegalArgument`] when this field holds anything
     /// but a `long`, as Java throws `IllegalArgumentException`.
-    pub fn set_long_value(&mut self, value: i64) -> Result<()> {
-        match &self.fields_data {
-            FieldData::Number(NumericValue::Long(_)) => {
-                self.fields_data = FieldData::Number(NumericValue::Long(value));
-                Ok(())
-            }
-            _ => Err(LuceneError::IllegalArgument(format!(
-                "cannot change value type from {} to Long",
-                self.value_type_name()
-            ))),
+    pub fn set_long_value(&self, value: i64) -> Result<()> {
+        let mut data = self.fields_data.borrow_mut();
+        if !matches!(*data, FieldData::Number(NumericValue::Long(_))) {
+            return Err(cannot_change_value_type(
+                fields_data_simple_name(&data),
+                "Long",
+            ));
         }
+        *data = FieldData::Number(NumericValue::Long(value));
+        Ok(())
     }
 
     /// Changes the `float` value of this field.
     ///
-    /// Equivalent to `Field.setFloatValue(float)`. The value type cannot
-    /// change: the field must already hold a `float`.
+    /// Equivalent to `Field.setFloatValue(float)` (`Field.java:385-391`). The
+    /// value type cannot change: the field must already hold a `float`.
     ///
     /// # Errors
     ///
     /// Returns [`LuceneError::IllegalArgument`] when this field holds anything
     /// but a `float`, as Java throws `IllegalArgumentException`.
-    pub fn set_float_value(&mut self, value: f32) -> Result<()> {
-        match &self.fields_data {
-            FieldData::Number(NumericValue::Float(_)) => {
-                self.fields_data = FieldData::Number(NumericValue::Float(value));
-                Ok(())
-            }
-            _ => Err(LuceneError::IllegalArgument(format!(
-                "cannot change value type from {} to Float",
-                self.value_type_name()
-            ))),
+    pub fn set_float_value(&self, value: f32) -> Result<()> {
+        let mut data = self.fields_data.borrow_mut();
+        if !matches!(*data, FieldData::Number(NumericValue::Float(_))) {
+            return Err(cannot_change_value_type(
+                fields_data_simple_name(&data),
+                "Float",
+            ));
         }
+        *data = FieldData::Number(NumericValue::Float(value));
+        Ok(())
     }
 
     /// Changes the `double` value of this field.
     ///
-    /// Equivalent to `Field.setDoubleValue(double)`. The value type cannot
-    /// change: the field must already hold a `double`.
+    /// Equivalent to `Field.setDoubleValue(double)` (`Field.java:394-400`).
+    /// The value type cannot change: the field must already hold a `double`.
     ///
     /// # Errors
     ///
     /// Returns [`LuceneError::IllegalArgument`] when this field holds anything
     /// but a `double`, as Java throws `IllegalArgumentException`.
-    pub fn set_double_value(&mut self, value: f64) -> Result<()> {
-        match &self.fields_data {
-            FieldData::Number(NumericValue::Double(_)) => {
-                self.fields_data = FieldData::Number(NumericValue::Double(value));
-                Ok(())
-            }
-            _ => Err(LuceneError::IllegalArgument(format!(
-                "cannot change value type from {} to Double",
-                self.value_type_name()
-            ))),
+    pub fn set_double_value(&self, value: f64) -> Result<()> {
+        let mut data = self.fields_data.borrow_mut();
+        if !matches!(*data, FieldData::Number(NumericValue::Double(_))) {
+            return Err(cannot_change_value_type(
+                fields_data_simple_name(&data),
+                "Double",
+            ));
         }
+        *data = FieldData::Number(NumericValue::Double(value));
+        Ok(())
     }
 
     /// Changes the token stream value of this field.
-    pub fn set_token_stream_value(
-        &mut self,
-        value: Arc<AtomicRefCell<dyn TokenStream>>,
-    ) -> Result<()> {
-        match &self.fields_data {
-            FieldData::TokenStream(_) => {
-                self.fields_data = FieldData::TokenStream(value);
-                Ok(())
-            }
-            _ => Err(LuceneError::IllegalArgument(
-                "cannot change value type to TokenStream".to_string(),
-            )),
+    ///
+    /// Equivalent to `Field.setTokenStream(TokenStream)` (`Field.java:403-411`):
+    /// unless the field already holds a `TokenStream`, it throws
+    /// `IllegalArgumentException("cannot change value type from X to
+    /// TokenStream")`.
+    pub fn set_token_stream_value(&self, value: Arc<AtomicRefCell<dyn TokenStream>>) -> Result<()> {
+        let mut data = self.fields_data.borrow_mut();
+        if !matches!(*data, FieldData::TokenStream(_)) {
+            return Err(cannot_change_value_type(
+                fields_data_simple_name(&data),
+                "TokenStream",
+            ));
         }
+        *data = FieldData::TokenStream(value);
+        Ok(())
     }
 }
 
@@ -1651,9 +1646,10 @@ impl IndexableField for Field {
         &self.name
     }
 
-    /// A `Field` answers with itself, so that a caller can mutate it in place
-    /// (see [`IndexableField::as_any_mut`]).
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
 
@@ -1708,8 +1704,8 @@ impl IndexableField for Field {
         if let Some(ts) = self.token_stream_value() {
             return Ok(Box::new(crate::analysis::SharedTokenStream::new(ts)));
         }
-        if let FieldData::Reader(reader) = &self.fields_data {
-            return reader_token_stream(analyzer, &self.name, reader);
+        if let Some(reader) = self.reader_value() {
+            return reader_token_stream(analyzer, &self.name, &reader);
         }
         if let Some(s) = self.string_value() {
             return string_token_stream(analyzer, &self.name, &s);
@@ -1767,7 +1763,7 @@ impl IndexableField for Field {
         if !self.field_type.stored() {
             return Ok(None);
         }
-        match &self.fields_data {
+        match &*self.fields_data.borrow() {
             FieldData::Number(NumericValue::Int(value)) => Ok(Some(StoredValue::Integer(*value))),
             FieldData::Number(NumericValue::Long(value)) => Ok(Some(StoredValue::Long(*value))),
             FieldData::Number(NumericValue::Float(value)) => Ok(Some(StoredValue::Float(*value))),
@@ -1917,31 +1913,22 @@ impl Document {
             .map(|f| f.as_ref())
     }
 
-    /// Returns the first field with the given name, mutable, or `None`.
+    /// Returns the first field with the given name, for a caller that
+    /// changes it, or `None`.
     ///
     /// Equivalent to `Document.getField(String)` used to mutate the returned
-    /// field: Java hands back the document's own field object, so a change
-    /// through it is seen by the document. Rust ownership routes that access
-    /// through the document; [`IndexableField::as_any_mut`] reaches the
-    /// concrete field.
-    ///
-    /// **Divergence.** `None` also answers a field the document shares with
-    /// another holder ([`Document::add_shared`]): Java changes a shared object
-    /// through any reference, while Rust forbids a `&mut` to an aliased value
-    /// and the port's fields keep their values without interior mutability.
-    /// A field added with [`Document::add`] is always reachable.
-    pub fn get_field_mut(&mut self, name: &str) -> Option<&mut dyn IndexableField> {
-        match self.fields.iter_mut().find(|f| f.name() == name) {
-            Some(f) => match Arc::get_mut(f) {
-                Some(f) => Some(f),
-                None => None,
-            },
-            None => None,
-        }
+    /// field (`Document.java:145-152`): Java hands back the document's own
+    /// field object, so a change through it is seen by the document and by
+    /// every other document holding the same field
+    /// ([`Document::add_shared`]). The field setters take `&self` (the values
+    /// are interior-mutable), so the shared reference this returns is enough;
+    /// [`IndexableField::as_any`] reaches the concrete field.
+    pub fn get_field_mut(&mut self, name: &str) -> Option<&dyn IndexableField> {
+        self.get_field(name)
     }
 
     /// Returns the first field with the given name whose concrete type is
-    /// `T`, mutable, or `None`.
+    /// `T`, for a caller that changes it, or `None`.
     ///
     /// The typed form of [`Document::get_field_mut`], for the Java code that
     /// keeps a reference to a field of a known class (`IntPoint`,
@@ -1949,34 +1936,27 @@ impl Document {
     /// place; a document may hold several fields of one name and different
     /// classes, so the type selects the one Java holds.
     ///
-    /// **This has no counterpart in Lucene 10.5.0**, for the reason given on
-    /// [`Document::get_field_mut`]; a shared field is skipped, as there.
-    pub fn get_field_mut_as<T: IndexableField + 'static>(&mut self, name: &str) -> Option<&mut T> {
+    /// **This has no counterpart in Lucene 10.5.0**: Java keeps the typed
+    /// reference itself, Rust reaches the concrete type through
+    /// [`IndexableField::as_any`].
+    pub fn get_field_mut_as<T: IndexableField + 'static>(&mut self, name: &str) -> Option<&T> {
         self.fields
-            .iter_mut()
+            .iter()
             .filter(|f| f.name() == name)
-            .filter_map(Arc::get_mut)
-            .find_map(|f| f.as_any_mut().and_then(|a| a.downcast_mut::<T>()))
+            .find_map(|f| f.as_any().and_then(|a| a.downcast_ref::<T>()))
     }
 
-    /// Returns all fields with the given name, mutable, in the order they
-    /// were added.
+    /// Returns all fields with the given name, for a caller that changes
+    /// them, in the order they were added.
     ///
-    /// The mutable form of [`Document::get_fields_by_name`], for the Java code
-    /// that keeps references to several fields of one name (two
+    /// The form of [`Document::get_fields_by_name`] for the Java code that
+    /// keeps references to several fields of one name (two
     /// `FeatureField("features", ...)`s) and changes them in place.
     ///
     /// **This has no counterpart in Lucene 10.5.0**, for the reason given on
-    /// [`Document::get_field_mut`]; shared fields are left out, as there.
-    pub fn get_fields_by_name_mut(
-        &mut self,
-        name: &str,
-    ) -> Vec<&mut (dyn IndexableField + 'static)> {
-        self.fields
-            .iter_mut()
-            .filter(|f| f.name() == name)
-            .filter_map(Arc::get_mut)
-            .collect()
+    /// [`Document::get_field_mut_as`].
+    pub fn get_fields_by_name_mut(&mut self, name: &str) -> Vec<&dyn IndexableField> {
+        self.get_fields_by_name(name)
     }
 
     /// Returns all fields with the given name.
@@ -2132,9 +2112,9 @@ fn string_field_type_stored() -> &'static FieldType {
 pub struct StringField {
     name: String,
     field_type: FieldType,
-    fields_data: FieldData,
-    binary_value: Option<BytesRef>,
-    stored_value: Option<StoredValue>,
+    fields_data: AtomicRefCell<FieldData>,
+    binary_value: AtomicRefCell<Option<BytesRef>>,
+    stored_value: AtomicRefCell<Option<StoredValue>>,
 }
 
 impl StringField {
@@ -2170,9 +2150,9 @@ impl StringField {
         Ok(Self {
             name: name.to_string(),
             field_type,
-            fields_data,
-            binary_value,
-            stored_value,
+            fields_data: AtomicRefCell::new(fields_data),
+            binary_value: AtomicRefCell::new(binary_value),
+            stored_value: AtomicRefCell::new(stored_value),
         })
     }
 
@@ -2191,9 +2171,9 @@ impl StringField {
         Ok(Self {
             name: name.to_string(),
             field_type,
-            fields_data: FieldData::Bytes(value.clone()),
-            binary_value: Some(value),
-            stored_value,
+            fields_data: AtomicRefCell::new(FieldData::Bytes(value.clone())),
+            binary_value: AtomicRefCell::new(Some(value)),
+            stored_value: AtomicRefCell::new(stored_value),
         })
     }
 
@@ -2203,31 +2183,21 @@ impl StringField {
     /// (`StringField.java:99-106`): `Field.setStringValue` (`Field.java:304-313`)
     /// checks the value type and rejects `None` (Java's `null`), then the
     /// indexed bytes and the stored value follow the new string.
-    pub fn set_string_value(&mut self, value: impl Into<Option<String>>) -> Result<()> {
-        if !matches!(self.fields_data, FieldData::String(_)) {
-            return Err(LuceneError::IllegalArgument(
-                "cannot change value type to String".to_string(),
-            ));
+    pub fn set_string_value(&self, value: impl Into<Option<String>>) -> Result<()> {
+        let value = set_string_fields_data(&self.fields_data, value.into())?;
+        *self.binary_value.borrow_mut() = Some(BytesRef::from_char_sequence(&value));
+        if let Some(stored_value) = self.stored_value.borrow_mut().as_mut() {
+            stored_value.set_string_value(value)?;
         }
-        let Some(value) = value.into() else {
-            return Err(LuceneError::IllegalArgument(
-                "value must not be null".to_string(),
-            ));
-        };
-        self.binary_value = Some(BytesRef::from_char_sequence(&value));
-        if let Some(stored_value) = self.stored_value.as_mut() {
-            stored_value.set_string_value(value.clone())?;
-        }
-        self.fields_data = FieldData::String(value);
         Ok(())
     }
 }
 
 impl IndexableField for StringField {
-    /// This field as a mutable `Any`, so that a caller can change it in
-    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
-    /// as Java changes the field object it added to a document.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
 
@@ -2246,6 +2216,7 @@ impl IndexableField for StringField {
     ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value
+            .borrow()
             .clone()
             .unwrap_or_else(|| BytesRef::new(Vec::new()));
         Ok(Box::new(
@@ -2254,11 +2225,11 @@ impl IndexableField for StringField {
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
-        self.binary_value.clone()
+        self.binary_value.borrow().clone()
     }
 
     fn string_value(&self) -> Option<String> {
-        match &self.fields_data {
+        match &*self.fields_data.borrow() {
             FieldData::String(v) => Some(v.clone()),
             _ => None,
         }
@@ -2273,7 +2244,7 @@ impl IndexableField for StringField {
     }
 
     fn stored_value(&self) -> Result<Option<StoredValue>> {
-        Ok(self.stored_value.clone())
+        Ok(self.stored_value.borrow().clone())
     }
 
     fn invertable_type(&self) -> Option<InvertableType> {
@@ -2314,8 +2285,8 @@ fn text_field_type_stored() -> &'static FieldType {
 pub struct TextField {
     name: String,
     field_type: FieldType,
-    fields_data: FieldData,
-    stored_value: Option<StoredValue>,
+    fields_data: AtomicRefCell<FieldData>,
+    stored_value: AtomicRefCell<Option<StoredValue>>,
 }
 
 impl TextField {
@@ -2334,8 +2305,10 @@ impl TextField {
         Ok(Self {
             name: name.to_string(),
             field_type: text_field_type_not_stored().clone(),
-            fields_data: FieldData::Reader(Arc::new(AtomicRefCell::new(reader))),
-            stored_value: None,
+            fields_data: AtomicRefCell::new(FieldData::Reader(Arc::new(AtomicRefCell::new(
+                reader,
+            )))),
+            stored_value: AtomicRefCell::new(None),
         })
     }
 
@@ -2354,8 +2327,8 @@ impl TextField {
         Ok(Self {
             name: name.to_string(),
             field_type,
-            fields_data: FieldData::String(value),
-            stored_value,
+            fields_data: AtomicRefCell::new(FieldData::String(value)),
+            stored_value: AtomicRefCell::new(stored_value),
         })
     }
 
@@ -2367,8 +2340,8 @@ impl TextField {
         Ok(Self {
             name: name.to_string(),
             field_type: text_field_type_not_stored().clone(),
-            fields_data: FieldData::TokenStream(token_stream),
-            stored_value: None,
+            fields_data: AtomicRefCell::new(FieldData::TokenStream(token_stream)),
+            stored_value: AtomicRefCell::new(None),
         })
     }
 
@@ -2378,30 +2351,20 @@ impl TextField {
     /// (`TextField.java:94-99`): `Field.setStringValue` (`Field.java:304-313`)
     /// checks the value type and rejects `None` (Java's `null`), then the
     /// stored value follows the new string.
-    pub fn set_string_value(&mut self, value: impl Into<Option<String>>) -> Result<()> {
-        if !matches!(self.fields_data, FieldData::String(_)) {
-            return Err(LuceneError::IllegalArgument(
-                "cannot change value type to String".to_string(),
-            ));
+    pub fn set_string_value(&self, value: impl Into<Option<String>>) -> Result<()> {
+        let value = set_string_fields_data(&self.fields_data, value.into())?;
+        if let Some(stored_value) = self.stored_value.borrow_mut().as_mut() {
+            stored_value.set_string_value(value)?;
         }
-        let Some(value) = value.into() else {
-            return Err(LuceneError::IllegalArgument(
-                "value must not be null".to_string(),
-            ));
-        };
-        if let Some(stored_value) = self.stored_value.as_mut() {
-            stored_value.set_string_value(value.clone())?;
-        }
-        self.fields_data = FieldData::String(value);
         Ok(())
     }
 }
 
 impl IndexableField for TextField {
-    /// This field as a mutable `Any`, so that a caller can change it in
-    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
-    /// as Java changes the field object it added to a document.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
 
@@ -2418,7 +2381,7 @@ impl IndexableField for TextField {
         analyzer: Option<&dyn Analyzer>,
         _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
-        match &self.fields_data {
+        match &*self.fields_data.borrow() {
             FieldData::TokenStream(ts) => Ok(Box::new(crate::analysis::SharedTokenStream::new(
                 Arc::clone(ts),
             ))),
@@ -2433,14 +2396,14 @@ impl IndexableField for TextField {
     }
 
     fn string_value(&self) -> Option<String> {
-        match &self.fields_data {
+        match &*self.fields_data.borrow() {
             FieldData::String(v) => Some(v.clone()),
             _ => None,
         }
     }
 
     fn reader_value(&self) -> Option<SharedReader> {
-        match &self.fields_data {
+        match &*self.fields_data.borrow() {
             FieldData::Reader(r) => Some(Arc::clone(r)),
             _ => None,
         }
@@ -2451,7 +2414,7 @@ impl IndexableField for TextField {
     }
 
     fn stored_value(&self) -> Result<Option<StoredValue>> {
-        Ok(self.stored_value.clone())
+        Ok(self.stored_value.borrow().clone())
     }
 
     fn invertable_type(&self) -> Option<InvertableType> {
@@ -2594,13 +2557,6 @@ impl std::ops::DerefMut for StoredField {
 }
 
 impl IndexableField for StoredField {
-    /// This field as a mutable `Any`, so that a caller can change it in
-    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
-    /// as Java changes the field object it added to a document.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        Some(self)
-    }
-
     fn name(&self) -> &str {
         self.0.name()
     }
@@ -2813,9 +2769,9 @@ fn keyword_field_type_stored() -> &'static FieldType {
 pub struct KeywordField {
     name: String,
     field_type: FieldType,
-    fields_data: FieldData,
-    binary_value: Option<BytesRef>,
-    stored_value: Option<StoredValue>,
+    fields_data: AtomicRefCell<FieldData>,
+    binary_value: AtomicRefCell<Option<BytesRef>>,
+    stored_value: AtomicRefCell<Option<StoredValue>>,
 }
 
 impl KeywordField {
@@ -2834,9 +2790,9 @@ impl KeywordField {
         Ok(Self {
             name: name.to_string(),
             field_type,
-            fields_data: FieldData::Bytes(value.clone()),
-            binary_value: Some(value),
-            stored_value,
+            fields_data: AtomicRefCell::new(FieldData::Bytes(value.clone())),
+            binary_value: AtomicRefCell::new(Some(value)),
+            stored_value: AtomicRefCell::new(stored_value),
         })
     }
 
@@ -2864,9 +2820,9 @@ impl KeywordField {
         Ok(Self {
             name: name.to_string(),
             field_type,
-            fields_data: FieldData::String(value),
-            binary_value: Some(binary_value),
-            stored_value,
+            fields_data: AtomicRefCell::new(FieldData::String(value)),
+            binary_value: AtomicRefCell::new(Some(binary_value)),
+            stored_value: AtomicRefCell::new(stored_value),
         })
     }
 
@@ -2880,18 +2836,10 @@ impl KeywordField {
     /// # Errors
     ///
     /// `IllegalArgumentException` when the field does not hold a string.
-    pub fn set_string_value(&mut self, value: String) -> Result<()> {
-        // super.setStringValue(value)
-        match &self.fields_data {
-            FieldData::String(_) => self.fields_data = FieldData::String(value.clone()),
-            _ => {
-                return Err(LuceneError::IllegalArgument(
-                    "cannot change value type to String".to_string(),
-                ))
-            }
-        }
-        self.binary_value = Some(BytesRef::from_char_sequence(&value));
-        if let Some(stored_value) = &mut self.stored_value {
+    pub fn set_string_value(&self, value: String) -> Result<()> {
+        let value = set_string_fields_data(&self.fields_data, Some(value))?;
+        *self.binary_value.borrow_mut() = Some(BytesRef::from_char_sequence(&value));
+        if let Some(stored_value) = self.stored_value.borrow_mut().as_mut() {
             stored_value.set_string_value(value)?;
         }
         Ok(())
@@ -2907,18 +2855,10 @@ impl KeywordField {
     /// # Errors
     ///
     /// `IllegalArgumentException` when the field does not hold bytes.
-    pub fn set_bytes_value(&mut self, value: BytesRef) -> Result<()> {
-        // super.setBytesValue(value)
-        match &self.fields_data {
-            FieldData::Bytes(_) => self.fields_data = FieldData::Bytes(value.clone()),
-            _ => {
-                return Err(LuceneError::IllegalArgument(
-                    "cannot change value type to BytesRef".to_string(),
-                ))
-            }
-        }
-        self.binary_value = Some(value.clone());
-        if let Some(stored_value) = &mut self.stored_value {
+    pub fn set_bytes_value(&self, value: BytesRef) -> Result<()> {
+        let value = set_bytes_fields_data(&self.fields_data, Some(value))?;
+        *self.binary_value.borrow_mut() = Some(value.clone());
+        if let Some(stored_value) = self.stored_value.borrow_mut().as_mut() {
             stored_value.set_binary_value(value)?;
         }
         Ok(())
@@ -3006,13 +2946,6 @@ impl KeywordField {
 }
 
 impl IndexableField for KeywordField {
-    /// This field as a mutable `Any`, so that a caller can change it in
-    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
-    /// as Java changes the field object it added to a document.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        Some(self)
-    }
-
     /// This field answers with itself: Java's `instanceof KeywordField` on it is
     /// `true`.
     fn as_any(&self) -> Option<&dyn std::any::Any> {
@@ -3034,6 +2967,7 @@ impl IndexableField for KeywordField {
     ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value
+            .borrow()
             .clone()
             .unwrap_or_else(|| BytesRef::new(Vec::new()));
         Ok(Box::new(
@@ -3042,11 +2976,11 @@ impl IndexableField for KeywordField {
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
-        self.binary_value.clone()
+        self.binary_value.borrow().clone()
     }
 
     fn string_value(&self) -> Option<String> {
-        match &self.fields_data {
+        match &*self.fields_data.borrow() {
             FieldData::String(v) => Some(v.clone()),
             FieldData::Bytes(v) => String::from_utf8(v.slice().to_vec()).ok(),
             _ => None,
@@ -3062,7 +2996,7 @@ impl IndexableField for KeywordField {
     }
 
     fn stored_value(&self) -> Result<Option<StoredValue>> {
-        Ok(self.stored_value.clone())
+        Ok(self.stored_value.borrow().clone())
     }
 
     fn invertable_type(&self) -> Option<InvertableType> {
@@ -3195,7 +3129,7 @@ pub fn pack_binary_point(point: &[BytesRef]) -> Result<BytesRef> {
 pub struct IntPoint {
     name: String,
     field_type: FieldType,
-    fields_data: FieldData,
+    fields_data: AtomicRefCell<FieldData>,
 }
 
 impl IntPoint {
@@ -3209,18 +3143,18 @@ impl IntPoint {
         Ok(Self {
             name: name.to_string(),
             field_type,
-            fields_data: FieldData::Bytes(packed),
+            fields_data: AtomicRefCell::new(FieldData::Bytes(packed)),
         })
     }
 
     /// Sets new values, keeping the same dimension count.
-    pub fn set_values(&mut self, point: &[i32]) -> Result<()> {
+    pub fn set_values(&self, point: &[i32]) -> Result<()> {
         if point.len() as i32 != self.field_type.point_dimension_count() {
             return Err(LuceneError::IllegalArgument(
                 "dimension count mismatch".to_string(),
             ));
         }
-        self.fields_data = FieldData::Bytes(pack_int_point(point)?);
+        *self.fields_data.borrow_mut() = FieldData::Bytes(pack_int_point(point)?);
         Ok(())
     }
 
@@ -3242,7 +3176,7 @@ impl IntPoint {
     ///
     /// Returns [`LuceneError::IllegalArgument`] when `point` has a different
     /// number of dimensions than the field was created with.
-    pub fn set_int_values(&mut self, point: &[i32]) -> Result<()> {
+    pub fn set_int_values(&self, point: &[i32]) -> Result<()> {
         self.set_values(point)
     }
 
@@ -3255,7 +3189,7 @@ impl IntPoint {
     ///
     /// Returns [`LuceneError::IllegalArgument`] when the field was created with
     /// more than one dimension, as Java throws `IllegalArgumentException`.
-    pub fn set_int_value(&mut self, value: i32) -> Result<()> {
+    pub fn set_int_value(&self, value: i32) -> Result<()> {
         self.set_int_values(&[value])
     }
 
@@ -3372,10 +3306,10 @@ impl IntPoint {
 }
 
 impl IndexableField for IntPoint {
-    /// This field as a mutable `Any`, so that a caller can change it in
-    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
-    /// as Java changes the field object it added to a document.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
 
@@ -3401,7 +3335,7 @@ impl IndexableField for IntPoint {
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
-        match &self.fields_data {
+        match &*self.fields_data.borrow() {
             FieldData::Bytes(v) => Some(v.clone()),
             _ => None,
         }
@@ -3442,7 +3376,7 @@ impl IndexableField for IntPoint {
 pub struct LongPoint {
     name: String,
     field_type: FieldType,
-    fields_data: FieldData,
+    fields_data: AtomicRefCell<FieldData>,
 }
 
 impl LongPoint {
@@ -3456,18 +3390,18 @@ impl LongPoint {
         Ok(Self {
             name: name.to_string(),
             field_type,
-            fields_data: FieldData::Bytes(packed),
+            fields_data: AtomicRefCell::new(FieldData::Bytes(packed)),
         })
     }
 
     /// Sets new values, keeping the same dimension count.
-    pub fn set_values(&mut self, point: &[i64]) -> Result<()> {
+    pub fn set_values(&self, point: &[i64]) -> Result<()> {
         if point.len() as i32 != self.field_type.point_dimension_count() {
             return Err(LuceneError::IllegalArgument(
                 "dimension count mismatch".to_string(),
             ));
         }
-        self.fields_data = FieldData::Bytes(pack_long_point(point)?);
+        *self.fields_data.borrow_mut() = FieldData::Bytes(pack_long_point(point)?);
         Ok(())
     }
 
@@ -3508,7 +3442,7 @@ impl LongPoint {
     ///
     /// Returns [`LuceneError::IllegalArgument`] when `point` has a different
     /// number of dimensions than the field was created with.
-    pub fn set_long_values(&mut self, point: &[i64]) -> Result<()> {
+    pub fn set_long_values(&self, point: &[i64]) -> Result<()> {
         self.set_values(point)
     }
 
@@ -3521,7 +3455,7 @@ impl LongPoint {
     ///
     /// Returns [`LuceneError::IllegalArgument`] when the field was created with
     /// more than one dimension, as Java throws `IllegalArgumentException`.
-    pub fn set_long_value(&mut self, value: i64) -> Result<()> {
+    pub fn set_long_value(&self, value: i64) -> Result<()> {
         self.set_long_values(&[value])
     }
 
@@ -3638,10 +3572,10 @@ impl LongPoint {
 }
 
 impl IndexableField for LongPoint {
-    /// This field as a mutable `Any`, so that a caller can change it in
-    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
-    /// as Java changes the field object it added to a document.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
 
@@ -3667,7 +3601,7 @@ impl IndexableField for LongPoint {
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
-        match &self.fields_data {
+        match &*self.fields_data.borrow() {
             FieldData::Bytes(v) => Some(v.clone()),
             _ => None,
         }
@@ -3780,7 +3714,7 @@ fn java_math_next_down_f64(value: f64) -> f64 {
 pub struct FloatPoint {
     name: String,
     field_type: FieldType,
-    fields_data: FieldData,
+    fields_data: AtomicRefCell<FieldData>,
 }
 
 impl FloatPoint {
@@ -3824,18 +3758,18 @@ impl FloatPoint {
         Ok(Self {
             name: name.to_string(),
             field_type,
-            fields_data: FieldData::Bytes(packed),
+            fields_data: AtomicRefCell::new(FieldData::Bytes(packed)),
         })
     }
 
     /// Sets new values, keeping the same dimension count.
-    pub fn set_values(&mut self, point: &[f32]) -> Result<()> {
+    pub fn set_values(&self, point: &[f32]) -> Result<()> {
         if point.len() as i32 != self.field_type.point_dimension_count() {
             return Err(LuceneError::IllegalArgument(
                 "dimension count mismatch".to_string(),
             ));
         }
-        self.fields_data = FieldData::Bytes(pack_float_point(point)?);
+        *self.fields_data.borrow_mut() = FieldData::Bytes(pack_float_point(point)?);
         Ok(())
     }
 
@@ -3857,7 +3791,7 @@ impl FloatPoint {
     ///
     /// Returns [`LuceneError::IllegalArgument`] when `point` has a different
     /// number of dimensions than the field was created with.
-    pub fn set_float_values(&mut self, point: &[f32]) -> Result<()> {
+    pub fn set_float_values(&self, point: &[f32]) -> Result<()> {
         self.set_values(point)
     }
 
@@ -3870,7 +3804,7 @@ impl FloatPoint {
     ///
     /// Returns [`LuceneError::IllegalArgument`] when the field was created with
     /// more than one dimension, as Java throws `IllegalArgumentException`.
-    pub fn set_float_value(&mut self, value: f32) -> Result<()> {
+    pub fn set_float_value(&self, value: f32) -> Result<()> {
         self.set_float_values(&[value])
     }
 
@@ -3987,10 +3921,10 @@ impl FloatPoint {
 }
 
 impl IndexableField for FloatPoint {
-    /// This field as a mutable `Any`, so that a caller can change it in
-    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
-    /// as Java changes the field object it added to a document.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
 
@@ -4016,7 +3950,7 @@ impl IndexableField for FloatPoint {
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
-        match &self.fields_data {
+        match &*self.fields_data.borrow() {
             FieldData::Bytes(v) => Some(v.clone()),
             _ => None,
         }
@@ -4057,7 +3991,7 @@ impl IndexableField for FloatPoint {
 pub struct DoublePoint {
     name: String,
     field_type: FieldType,
-    fields_data: FieldData,
+    fields_data: AtomicRefCell<FieldData>,
 }
 
 impl DoublePoint {
@@ -4101,18 +4035,18 @@ impl DoublePoint {
         Ok(Self {
             name: name.to_string(),
             field_type,
-            fields_data: FieldData::Bytes(packed),
+            fields_data: AtomicRefCell::new(FieldData::Bytes(packed)),
         })
     }
 
     /// Sets new values, keeping the same dimension count.
-    pub fn set_values(&mut self, point: &[f64]) -> Result<()> {
+    pub fn set_values(&self, point: &[f64]) -> Result<()> {
         if point.len() as i32 != self.field_type.point_dimension_count() {
             return Err(LuceneError::IllegalArgument(
                 "dimension count mismatch".to_string(),
             ));
         }
-        self.fields_data = FieldData::Bytes(pack_double_point(point)?);
+        *self.fields_data.borrow_mut() = FieldData::Bytes(pack_double_point(point)?);
         Ok(())
     }
 
@@ -4134,7 +4068,7 @@ impl DoublePoint {
     ///
     /// Returns [`LuceneError::IllegalArgument`] when `point` has a different
     /// number of dimensions than the field was created with.
-    pub fn set_double_values(&mut self, point: &[f64]) -> Result<()> {
+    pub fn set_double_values(&self, point: &[f64]) -> Result<()> {
         self.set_values(point)
     }
 
@@ -4147,7 +4081,7 @@ impl DoublePoint {
     ///
     /// Returns [`LuceneError::IllegalArgument`] when the field was created with
     /// more than one dimension, as Java throws `IllegalArgumentException`.
-    pub fn set_double_value(&mut self, value: f64) -> Result<()> {
+    pub fn set_double_value(&self, value: f64) -> Result<()> {
         self.set_double_values(&[value])
     }
 
@@ -4264,10 +4198,10 @@ impl DoublePoint {
 }
 
 impl IndexableField for DoublePoint {
-    /// This field as a mutable `Any`, so that a caller can change it in
-    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
-    /// as Java changes the field object it added to a document.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
 
@@ -4293,7 +4227,7 @@ impl IndexableField for DoublePoint {
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
-        match &self.fields_data {
+        match &*self.fields_data.borrow() {
             FieldData::Bytes(v) => Some(v.clone()),
             _ => None,
         }
@@ -4334,7 +4268,7 @@ impl IndexableField for DoublePoint {
 pub struct BinaryPoint {
     name: String,
     field_type: FieldType,
-    fields_data: FieldData,
+    fields_data: AtomicRefCell<FieldData>,
 }
 
 impl BinaryPoint {
@@ -4366,7 +4300,7 @@ impl BinaryPoint {
         Ok(Self {
             name: name.to_string(),
             field_type,
-            fields_data: FieldData::Bytes(packed),
+            fields_data: AtomicRefCell::new(FieldData::Bytes(packed)),
         })
     }
 
@@ -4386,7 +4320,7 @@ impl BinaryPoint {
         Ok(Self {
             name: name.to_string(),
             field_type,
-            fields_data: FieldData::Bytes(packed_point),
+            fields_data: AtomicRefCell::new(FieldData::Bytes(packed_point)),
         })
     }
 
@@ -4481,10 +4415,10 @@ impl BinaryPoint {
 }
 
 impl IndexableField for BinaryPoint {
-    /// This field as a mutable `Any`, so that a caller can change it in
-    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
-    /// as Java changes the field object it added to a document.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
 
@@ -4510,7 +4444,7 @@ impl IndexableField for BinaryPoint {
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
-        match &self.fields_data {
+        match &*self.fields_data.borrow() {
             FieldData::Bytes(v) => Some(v.clone()),
             _ => None,
         }
@@ -4645,7 +4579,7 @@ pub struct NumericDocValuesField {
     field_type: FieldType,
     /// `fieldsData`: `None` for the `null` value
     /// `NumericDocValuesField(String, Long)` accepts.
-    value: Option<i64>,
+    value: AtomicRefCell<Option<i64>>,
 }
 
 impl NumericDocValuesField {
@@ -4668,7 +4602,7 @@ impl NumericDocValuesField {
         Self {
             name: name.to_string(),
             field_type: numeric_doc_values_field_type().clone(),
-            value,
+            value: AtomicRefCell::new(value),
         }
     }
 
@@ -4677,13 +4611,13 @@ impl NumericDocValuesField {
         Self {
             name: name.to_string(),
             field_type: numeric_doc_values_indexed_field_type().clone(),
-            value: Some(value),
+            value: AtomicRefCell::new(Some(value)),
         }
     }
 
     /// Sets a new value.
-    pub fn set_value(&mut self, value: i64) {
-        self.value = Some(value);
+    pub fn set_value(&self, value: i64) {
+        *self.value.borrow_mut() = Some(value);
     }
 
     /// Creates a query matching values in `[lower_value, upper_value]`.
@@ -4717,10 +4651,10 @@ impl NumericDocValuesField {
 }
 
 impl IndexableField for NumericDocValuesField {
-    /// This field as a mutable `Any`, so that a caller can change it in
-    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
-    /// as Java changes the field object it added to a document.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
 
@@ -4747,7 +4681,7 @@ impl IndexableField for NumericDocValuesField {
     }
 
     fn string_value(&self) -> Option<String> {
-        self.value.map(|value| value.to_string())
+        (*self.value.borrow()).map(|value| value.to_string())
     }
 
     fn reader_value(&self) -> Option<crate::document::SharedReader> {
@@ -4755,7 +4689,7 @@ impl IndexableField for NumericDocValuesField {
     }
 
     fn numeric_value(&self) -> Option<NumericValue> {
-        self.value.map(NumericValue::Long)
+        (*self.value.borrow()).map(NumericValue::Long)
     }
 
     fn stored_value(&self) -> Result<Option<StoredValue>> {
@@ -4794,7 +4728,7 @@ impl FloatDocValuesField {
     /// `IllegalArgumentException("cannot change value type from Float to
     /// Long")`; this port exposes no such method at all, so the same misuse is
     /// refused at compile time.
-    pub fn set_value(&mut self, value: f32) {
+    pub fn set_value(&self, value: f32) {
         self.inner.set_value(raw_float_bits_as_long(value));
     }
 }
@@ -4813,10 +4747,10 @@ fn raw_float_bits_as_long(value: f32) -> i64 {
 }
 
 impl IndexableField for FloatDocValuesField {
-    /// This field as a mutable `Any`, so that a caller can change it in
-    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
-    /// as Java changes the field object it added to a document.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
 
@@ -4879,16 +4813,16 @@ impl DoubleDocValuesField {
     }
 
     /// Sets a new value.
-    pub fn set_value(&mut self, value: f64) {
+    pub fn set_value(&self, value: f64) {
         self.inner.set_value(value.to_bits() as i64);
     }
 }
 
 impl IndexableField for DoubleDocValuesField {
-    /// This field as a mutable `Any`, so that a caller can change it in
-    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
-    /// as Java changes the field object it added to a document.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
 
@@ -4940,7 +4874,7 @@ impl IndexableField for DoubleDocValuesField {
 pub struct SortedDocValuesField {
     name: String,
     field_type: FieldType,
-    value: BytesRef,
+    value: AtomicRefCell<BytesRef>,
 }
 
 impl SortedDocValuesField {
@@ -4954,7 +4888,7 @@ impl SortedDocValuesField {
         Self {
             name: name.to_string(),
             field_type: sorted_doc_values_field_type().clone(),
-            value,
+            value: AtomicRefCell::new(value),
         }
     }
 
@@ -4963,7 +4897,7 @@ impl SortedDocValuesField {
         Self {
             name: name.to_string(),
             field_type: sorted_doc_values_indexed_field_type().clone(),
-            value,
+            value: AtomicRefCell::new(value),
         }
     }
 
@@ -4972,13 +4906,13 @@ impl SortedDocValuesField {
     /// Equivalent to the inherited `Field.setBytesValue(BytesRef)`
     /// (`Field.java:335-346`): `value` is `None` for Java's `null`, rejected
     /// with `IllegalArgumentException("value must not be null")`.
-    pub fn set_bytes_value(&mut self, value: impl Into<Option<BytesRef>>) -> Result<()> {
+    pub fn set_bytes_value(&self, value: impl Into<Option<BytesRef>>) -> Result<()> {
         let Some(value) = value.into() else {
             return Err(LuceneError::IllegalArgument(
                 "value must not be null".to_string(),
             ));
         };
-        self.value = value;
+        *self.value.borrow_mut() = value;
         Ok(())
     }
 
@@ -5030,10 +4964,10 @@ impl SortedDocValuesField {
 }
 
 impl IndexableField for SortedDocValuesField {
-    /// This field as a mutable `Any`, so that a caller can change it in
-    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
-    /// as Java changes the field object it added to a document.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
 
@@ -5051,16 +4985,16 @@ impl IndexableField for SortedDocValuesField {
         _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(Box::new(
-            crate::analysis::BinaryTokenStream::new(self.value.clone()).unwrap(),
+            crate::analysis::BinaryTokenStream::new(self.value.borrow().clone()).unwrap(),
         ))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
-        Some(self.value.clone())
+        Some(self.value.borrow().clone())
     }
 
     fn string_value(&self) -> Option<String> {
-        String::from_utf8(self.value.slice().to_vec()).ok()
+        String::from_utf8(self.value.borrow().slice().to_vec()).ok()
     }
 
     fn reader_value(&self) -> Option<crate::document::SharedReader> {
@@ -5087,7 +5021,7 @@ impl IndexableField for SortedDocValuesField {
 pub struct SortedSetDocValuesField {
     name: String,
     field_type: FieldType,
-    value: BytesRef,
+    value: AtomicRefCell<BytesRef>,
 }
 
 impl SortedSetDocValuesField {
@@ -5101,7 +5035,7 @@ impl SortedSetDocValuesField {
         Self {
             name: name.to_string(),
             field_type: sorted_set_doc_values_field_type().clone(),
-            value,
+            value: AtomicRefCell::new(value),
         }
     }
 
@@ -5110,7 +5044,7 @@ impl SortedSetDocValuesField {
         Self {
             name: name.to_string(),
             field_type: sorted_set_doc_values_indexed_field_type().clone(),
-            value,
+            value: AtomicRefCell::new(value),
         }
     }
 
@@ -5119,13 +5053,13 @@ impl SortedSetDocValuesField {
     /// Equivalent to the inherited `Field.setBytesValue(BytesRef)`
     /// (`Field.java:335-346`): `value` is `None` for Java's `null`, rejected
     /// with `IllegalArgumentException("value must not be null")`.
-    pub fn set_bytes_value(&mut self, value: impl Into<Option<BytesRef>>) -> Result<()> {
+    pub fn set_bytes_value(&self, value: impl Into<Option<BytesRef>>) -> Result<()> {
         let Some(value) = value.into() else {
             return Err(LuceneError::IllegalArgument(
                 "value must not be null".to_string(),
             ));
         };
-        self.value = value;
+        *self.value.borrow_mut() = value;
         Ok(())
     }
 
@@ -5178,10 +5112,10 @@ impl SortedSetDocValuesField {
 }
 
 impl IndexableField for SortedSetDocValuesField {
-    /// This field as a mutable `Any`, so that a caller can change it in
-    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
-    /// as Java changes the field object it added to a document.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
 
@@ -5199,16 +5133,16 @@ impl IndexableField for SortedSetDocValuesField {
         _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(Box::new(
-            crate::analysis::BinaryTokenStream::new(self.value.clone()).unwrap(),
+            crate::analysis::BinaryTokenStream::new(self.value.borrow().clone()).unwrap(),
         ))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
-        Some(self.value.clone())
+        Some(self.value.borrow().clone())
     }
 
     fn string_value(&self) -> Option<String> {
-        String::from_utf8(self.value.slice().to_vec()).ok()
+        String::from_utf8(self.value.borrow().slice().to_vec()).ok()
     }
 
     fn reader_value(&self) -> Option<crate::document::SharedReader> {
@@ -5235,7 +5169,7 @@ impl IndexableField for SortedSetDocValuesField {
 pub struct SortedNumericDocValuesField {
     name: String,
     field_type: FieldType,
-    value: i64,
+    value: AtomicRefCell<i64>,
 }
 
 impl SortedNumericDocValuesField {
@@ -5249,7 +5183,7 @@ impl SortedNumericDocValuesField {
         Self {
             name: name.to_string(),
             field_type: sorted_numeric_doc_values_field_type().clone(),
-            value,
+            value: AtomicRefCell::new(value),
         }
     }
 
@@ -5258,8 +5192,8 @@ impl SortedNumericDocValuesField {
     /// Equivalent to the inherited `Field.setLongValue(long)`
     /// (`Field.java:376-382`); the value is always a `Long`, so the value-type
     /// check never fails.
-    pub fn set_long_value(&mut self, value: i64) {
-        self.value = value;
+    pub fn set_long_value(&self, value: i64) {
+        *self.value.borrow_mut() = value;
     }
 
     /// Creates a SortedNumericDocValuesField with a skip index.
@@ -5267,7 +5201,7 @@ impl SortedNumericDocValuesField {
         Self {
             name: name.to_string(),
             field_type: sorted_numeric_doc_values_indexed_field_type().clone(),
-            value,
+            value: AtomicRefCell::new(value),
         }
     }
 
@@ -5302,10 +5236,10 @@ impl SortedNumericDocValuesField {
 }
 
 impl IndexableField for SortedNumericDocValuesField {
-    /// This field as a mutable `Any`, so that a caller can change it in
-    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
-    /// as Java changes the field object it added to a document.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
 
@@ -5332,7 +5266,7 @@ impl IndexableField for SortedNumericDocValuesField {
     }
 
     fn string_value(&self) -> Option<String> {
-        Some(self.value.to_string())
+        Some(self.value.borrow().to_string())
     }
 
     fn reader_value(&self) -> Option<crate::document::SharedReader> {
@@ -5340,7 +5274,7 @@ impl IndexableField for SortedNumericDocValuesField {
     }
 
     fn numeric_value(&self) -> Option<NumericValue> {
-        Some(NumericValue::Long(self.value))
+        Some(NumericValue::Long(*self.value.borrow()))
     }
 
     fn stored_value(&self) -> Result<Option<StoredValue>> {
@@ -5361,7 +5295,7 @@ pub struct BinaryDocValuesField {
     field_type: FieldType,
     /// `fieldsData`: `None` for the `null` value
     /// `BinaryDocValuesField(String, BytesRef)` accepts.
-    value: Option<BytesRef>,
+    value: AtomicRefCell<Option<BytesRef>>,
 }
 
 impl BinaryDocValuesField {
@@ -5385,7 +5319,7 @@ impl BinaryDocValuesField {
         Self {
             name: name.to_string(),
             field_type: binary_doc_values_field_type().clone(),
-            value,
+            value: AtomicRefCell::new(value),
         }
     }
 
@@ -5396,8 +5330,8 @@ impl BinaryDocValuesField {
     /// with `IllegalArgumentException("value must not be null")`.
     /// A field built with a `null` value throws `NullPointerException` from
     /// the value-type check, as Java's `fieldsData.getClass()` does.
-    pub fn set_bytes_value(&mut self, value: impl Into<Option<BytesRef>>) -> Result<()> {
-        if self.value.is_none() {
+    pub fn set_bytes_value(&self, value: impl Into<Option<BytesRef>>) -> Result<()> {
+        if self.value.borrow().is_none() {
             // `fieldsData.getClass()` on a `null` value.
             return Err(LuceneError::Unchecked {
                 class: "java.lang.NullPointerException",
@@ -5410,16 +5344,16 @@ impl BinaryDocValuesField {
                 "value must not be null".to_string(),
             ));
         };
-        self.value = Some(value);
+        *self.value.borrow_mut() = Some(value);
         Ok(())
     }
 }
 
 impl IndexableField for BinaryDocValuesField {
-    /// This field as a mutable `Any`, so that a caller can change it in
-    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
-    /// as Java changes the field object it added to a document.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
 
@@ -5439,6 +5373,7 @@ impl IndexableField for BinaryDocValuesField {
         Ok(Box::new(
             crate::analysis::BinaryTokenStream::new(
                 self.value
+                    .borrow()
                     .clone()
                     .unwrap_or_else(|| panic!("java.lang.NullPointerException")),
             )
@@ -5447,11 +5382,12 @@ impl IndexableField for BinaryDocValuesField {
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
-        self.value.clone()
+        self.value.borrow().clone()
     }
 
     fn string_value(&self) -> Option<String> {
         self.value
+            .borrow()
             .as_ref()
             .and_then(|value| String::from_utf8(value.slice().to_vec()).ok())
     }
@@ -5589,8 +5525,8 @@ fn double_combined_field_type(stored: bool) -> FieldType {
 pub struct IntField {
     name: String,
     field_type: FieldType,
-    value: i32,
-    stored_value: Option<StoredValue>,
+    value: AtomicRefCell<i32>,
+    stored_value: AtomicRefCell<Option<StoredValue>>,
 }
 
 impl IntField {
@@ -5604,8 +5540,8 @@ impl IntField {
         Self {
             name: name.to_string(),
             field_type: int_combined_field_type(stored == Store::YES),
-            value,
-            stored_value,
+            value: AtomicRefCell::new(value),
+            stored_value: AtomicRefCell::new(stored_value),
         }
     }
 
@@ -5613,9 +5549,9 @@ impl IntField {
     ///
     /// Mirrors Lucene's setter, which also refreshes the stored value so a
     /// reused field instance stores what it indexes.
-    pub fn set_value(&mut self, value: i32) {
-        self.value = value;
-        if let Some(stored) = self.stored_value.as_mut() {
+    pub fn set_value(&self, value: i32) {
+        *self.value.borrow_mut() = value;
+        if let Some(stored) = self.stored_value.borrow_mut().as_mut() {
             stored
                 .set_int_value(value)
                 .expect("INVARIANT: the stored value was built from this same type");
@@ -5683,13 +5619,6 @@ impl IntField {
 }
 
 impl IndexableField for IntField {
-    /// This field as a mutable `Any`, so that a caller can change it in
-    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
-    /// as Java changes the field object it added to a document.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        Some(self)
-    }
-
     /// This field answers with itself: Java's `instanceof IntField` on it is
     /// `true`.
     fn as_any(&self) -> Option<&dyn std::any::Any> {
@@ -5719,12 +5648,12 @@ impl IndexableField for IntField {
 
     fn binary_value(&self) -> Option<BytesRef> {
         let mut bytes = vec![0u8; 4];
-        IntPoint::encode_dimension(self.value, &mut bytes, 0);
+        IntPoint::encode_dimension(*self.value.borrow(), &mut bytes, 0);
         Some(BytesRef::new(bytes))
     }
 
     fn string_value(&self) -> Option<String> {
-        Some(self.value.to_string())
+        Some(self.value.borrow().to_string())
     }
 
     fn reader_value(&self) -> Option<crate::document::SharedReader> {
@@ -5732,11 +5661,11 @@ impl IndexableField for IntField {
     }
 
     fn numeric_value(&self) -> Option<NumericValue> {
-        Some(NumericValue::Int(self.value))
+        Some(NumericValue::Int(*self.value.borrow()))
     }
 
     fn stored_value(&self) -> Result<Option<StoredValue>> {
-        Ok(self.stored_value.clone())
+        Ok(self.stored_value.borrow().clone())
     }
 
     fn invertable_type(&self) -> Option<InvertableType> {
@@ -5752,8 +5681,8 @@ impl IndexableField for IntField {
 pub struct LongField {
     name: String,
     field_type: FieldType,
-    value: i64,
-    stored_value: Option<StoredValue>,
+    value: AtomicRefCell<i64>,
+    stored_value: AtomicRefCell<Option<StoredValue>>,
 }
 
 impl LongField {
@@ -5767,8 +5696,8 @@ impl LongField {
         Self {
             name: name.to_string(),
             field_type: long_combined_field_type(stored == Store::YES),
-            value,
-            stored_value,
+            value: AtomicRefCell::new(value),
+            stored_value: AtomicRefCell::new(stored_value),
         }
     }
 
@@ -5776,9 +5705,9 @@ impl LongField {
     ///
     /// Mirrors Lucene's setter, which also refreshes the stored value so a
     /// reused field instance stores what it indexes.
-    pub fn set_value(&mut self, value: i64) {
-        self.value = value;
-        if let Some(stored) = self.stored_value.as_mut() {
+    pub fn set_value(&self, value: i64) {
+        *self.value.borrow_mut() = value;
+        if let Some(stored) = self.stored_value.borrow_mut().as_mut() {
             stored
                 .set_long_value(value)
                 .expect("INVARIANT: the stored value was built from this same type");
@@ -5930,10 +5859,10 @@ impl LongField {
 }
 
 impl IndexableField for LongField {
-    /// This field as a mutable `Any`, so that a caller can change it in
-    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
-    /// as Java changes the field object it added to a document.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
 
@@ -5960,12 +5889,12 @@ impl IndexableField for LongField {
 
     fn binary_value(&self) -> Option<BytesRef> {
         let mut bytes = vec![0u8; 8];
-        LongPoint::encode_dimension(self.value, &mut bytes, 0);
+        LongPoint::encode_dimension(*self.value.borrow(), &mut bytes, 0);
         Some(BytesRef::new(bytes))
     }
 
     fn string_value(&self) -> Option<String> {
-        Some(self.value.to_string())
+        Some(self.value.borrow().to_string())
     }
 
     fn reader_value(&self) -> Option<crate::document::SharedReader> {
@@ -5973,11 +5902,11 @@ impl IndexableField for LongField {
     }
 
     fn numeric_value(&self) -> Option<NumericValue> {
-        Some(NumericValue::Long(self.value))
+        Some(NumericValue::Long(*self.value.borrow()))
     }
 
     fn stored_value(&self) -> Result<Option<StoredValue>> {
-        Ok(self.stored_value.clone())
+        Ok(self.stored_value.borrow().clone())
     }
 
     fn invertable_type(&self) -> Option<InvertableType> {
@@ -5993,8 +5922,8 @@ impl IndexableField for LongField {
 pub struct FloatField {
     name: String,
     field_type: FieldType,
-    value: f32,
-    stored_value: Option<StoredValue>,
+    value: AtomicRefCell<f32>,
+    stored_value: AtomicRefCell<Option<StoredValue>>,
 }
 
 impl FloatField {
@@ -6008,8 +5937,8 @@ impl FloatField {
         Self {
             name: name.to_string(),
             field_type: float_combined_field_type(stored == Store::YES),
-            value,
-            stored_value,
+            value: AtomicRefCell::new(value),
+            stored_value: AtomicRefCell::new(stored_value),
         }
     }
 
@@ -6017,9 +5946,9 @@ impl FloatField {
     ///
     /// Mirrors Lucene's setter, which also refreshes the stored value so a
     /// reused field instance stores what it indexes.
-    pub fn set_value(&mut self, value: f32) {
-        self.value = value;
-        if let Some(stored) = self.stored_value.as_mut() {
+    pub fn set_value(&self, value: f32) {
+        *self.value.borrow_mut() = value;
+        if let Some(stored) = self.stored_value.borrow_mut().as_mut() {
             stored
                 .set_float_value(value)
                 .expect("INVARIANT: the stored value was built from this same type");
@@ -6027,7 +5956,7 @@ impl FloatField {
     }
 
     fn value_as_sortable_bits(&self) -> i32 {
-        crate::util::NumericUtils::float_to_sortable_int(self.value)
+        crate::util::NumericUtils::float_to_sortable_int(*self.value.borrow())
     }
 
     /// Returns the field's value.
@@ -6036,7 +5965,7 @@ impl FloatField {
     /// the sortable int the field stores; this port keeps the value itself, so
     /// the decode is unnecessary.
     fn get_value_as_float(&self) -> f32 {
-        self.value
+        *self.value.borrow()
     }
 
     /// Creates a query matching an exact value.
@@ -6095,10 +6024,10 @@ impl FloatField {
 }
 
 impl IndexableField for FloatField {
-    /// This field as a mutable `Any`, so that a caller can change it in
-    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
-    /// as Java changes the field object it added to a document.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
 
@@ -6131,7 +6060,7 @@ impl IndexableField for FloatField {
     }
 
     fn string_value(&self) -> Option<String> {
-        Some(self.value.to_string())
+        Some(self.value.borrow().to_string())
     }
 
     fn reader_value(&self) -> Option<crate::document::SharedReader> {
@@ -6143,7 +6072,7 @@ impl IndexableField for FloatField {
     }
 
     fn stored_value(&self) -> Result<Option<StoredValue>> {
-        Ok(self.stored_value.clone())
+        Ok(self.stored_value.borrow().clone())
     }
 
     fn invertable_type(&self) -> Option<InvertableType> {
@@ -6159,8 +6088,8 @@ impl IndexableField for FloatField {
 pub struct DoubleField {
     name: String,
     field_type: FieldType,
-    value: f64,
-    stored_value: Option<StoredValue>,
+    value: AtomicRefCell<f64>,
+    stored_value: AtomicRefCell<Option<StoredValue>>,
 }
 
 impl DoubleField {
@@ -6174,8 +6103,8 @@ impl DoubleField {
         Self {
             name: name.to_string(),
             field_type: double_combined_field_type(stored == Store::YES),
-            value,
-            stored_value,
+            value: AtomicRefCell::new(value),
+            stored_value: AtomicRefCell::new(stored_value),
         }
     }
 
@@ -6183,9 +6112,9 @@ impl DoubleField {
     ///
     /// Mirrors Lucene's setter, which also refreshes the stored value so a
     /// reused field instance stores what it indexes.
-    pub fn set_value(&mut self, value: f64) {
-        self.value = value;
-        if let Some(stored) = self.stored_value.as_mut() {
+    pub fn set_value(&self, value: f64) {
+        *self.value.borrow_mut() = value;
+        if let Some(stored) = self.stored_value.borrow_mut().as_mut() {
             stored
                 .set_double_value(value)
                 .expect("INVARIANT: the stored value was built from this same type");
@@ -6193,7 +6122,7 @@ impl DoubleField {
     }
 
     fn value_as_sortable_bits(&self) -> i64 {
-        crate::util::NumericUtils::double_to_sortable_long(self.value)
+        crate::util::NumericUtils::double_to_sortable_long(*self.value.borrow())
     }
 
     /// Returns the field's value.
@@ -6202,7 +6131,7 @@ impl DoubleField {
     /// decodes the sortable long the field stores; this port keeps the value
     /// itself, so the decode is unnecessary.
     fn get_value_as_double(&self) -> f64 {
-        self.value
+        *self.value.borrow()
     }
 
     /// Creates a query matching an exact value.
@@ -6259,10 +6188,10 @@ impl DoubleField {
 }
 
 impl IndexableField for DoubleField {
-    /// This field as a mutable `Any`, so that a caller can change it in
-    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
-    /// as Java changes the field object it added to a document.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
 
@@ -6295,7 +6224,7 @@ impl IndexableField for DoubleField {
     }
 
     fn string_value(&self) -> Option<String> {
-        Some(self.value.to_string())
+        Some(self.value.borrow().to_string())
     }
 
     fn reader_value(&self) -> Option<crate::document::SharedReader> {
@@ -6307,7 +6236,7 @@ impl IndexableField for DoubleField {
     }
 
     fn stored_value(&self) -> Result<Option<StoredValue>> {
-        Ok(self.stored_value.clone())
+        Ok(self.stored_value.borrow().clone())
     }
 
     fn invertable_type(&self) -> Option<InvertableType> {
@@ -6571,7 +6500,7 @@ fn check_knn_vector_against_type(
 pub struct KnnFloatVectorField {
     name: String,
     field_type: FieldType,
-    vector: Vec<f32>,
+    vector: AtomicRefCell<Vec<f32>>,
 }
 
 impl KnnFloatVectorField {
@@ -6588,7 +6517,7 @@ impl KnnFloatVectorField {
         Ok(Self {
             name: name.to_string(),
             field_type,
-            vector: vector.to_vec(),
+            vector: AtomicRefCell::new(vector.to_vec()),
         })
     }
 
@@ -6684,13 +6613,17 @@ impl KnnFloatVectorField {
         Ok(Self {
             name: name.to_string(),
             field_type,
-            vector: vector.to_vec(),
+            vector: AtomicRefCell::new(vector.to_vec()),
         })
     }
 
     /// Returns this field's vector value.
-    pub fn vector_value(&self) -> &[f32] {
-        &self.vector
+    ///
+    /// Equivalent to `KnnFloatVectorField.vectorValue()`: a borrow of the
+    /// field's own vector, which [`set_vector_value`](Self::set_vector_value)
+    /// replaces through any reference to the field.
+    pub fn vector_value(&self) -> AtomicRef<'_, [f32]> {
+        AtomicRef::map(self.vector.borrow(), Vec::as_slice)
     }
 
     /// Replaces this field's vector value.
@@ -6703,7 +6636,7 @@ impl KnnFloatVectorField {
     /// the field's dimension count, when the value is zero under
     /// [`VectorSimilarityFunction::COSINE`], and when a component is
     /// non-finite.
-    pub fn set_vector_value(&mut self, value: &[f32]) -> Result<()> {
+    pub fn set_vector_value(&self, value: &[f32]) -> Result<()> {
         if value.len() as i32 != self.field_type.vector_dimension() {
             return Err(LuceneError::IllegalArgument(format!(
                 "value length {} must match field dimension {}",
@@ -6719,17 +6652,18 @@ impl KnnFloatVectorField {
             ));
         }
         crate::util::vector_util::check_finite(value)?;
-        self.vector.clear();
-        self.vector.extend_from_slice(value);
+        let mut vector = self.vector.borrow_mut();
+        vector.clear();
+        vector.extend_from_slice(value);
         Ok(())
     }
 }
 
 impl IndexableField for KnnFloatVectorField {
-    /// This field as a mutable `Any`, so that a caller can change it in
-    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
-    /// as Java changes the field object it added to a document.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
 
@@ -6777,8 +6711,8 @@ impl IndexableField for KnnFloatVectorField {
         None
     }
 
-    fn float_vector_value(&self) -> Option<&[f32]> {
-        Some(&self.vector)
+    fn float_vector_value(&self) -> Option<AtomicRef<'_, [f32]>> {
+        Some(self.vector_value())
     }
 }
 
@@ -6792,7 +6726,7 @@ impl IndexableField for KnnFloatVectorField {
 pub struct KnnByteVectorField {
     name: String,
     field_type: FieldType,
-    vector: Vec<u8>,
+    vector: AtomicRefCell<Vec<u8>>,
 }
 
 impl KnnByteVectorField {
@@ -6807,7 +6741,7 @@ impl KnnByteVectorField {
         Ok(Self {
             name: name.to_string(),
             field_type,
-            vector: vector.to_vec(),
+            vector: AtomicRefCell::new(vector.to_vec()),
         })
     }
 
@@ -6897,13 +6831,17 @@ impl KnnByteVectorField {
         Ok(Self {
             name: name.to_string(),
             field_type,
-            vector: vector.to_vec(),
+            vector: AtomicRefCell::new(vector.to_vec()),
         })
     }
 
     /// Returns this field's vector value.
-    pub fn vector_value(&self) -> &[u8] {
-        &self.vector
+    ///
+    /// Equivalent to `KnnByteVectorField.vectorValue()`: a borrow of the
+    /// field's own vector, which [`set_vector_value`](Self::set_vector_value)
+    /// replaces through any reference to the field.
+    pub fn vector_value(&self) -> AtomicRef<'_, [u8]> {
+        AtomicRef::map(self.vector.borrow(), Vec::as_slice)
     }
 
     /// Replaces this field's vector value.
@@ -6915,7 +6853,7 @@ impl KnnByteVectorField {
     /// Returns [`LuceneError::IllegalArgument`] when the length does not match
     /// the field's dimension count and when the value is zero under
     /// [`VectorSimilarityFunction::COSINE`].
-    pub fn set_vector_value(&mut self, value: &[u8]) -> Result<()> {
+    pub fn set_vector_value(&self, value: &[u8]) -> Result<()> {
         if value.len() as i32 != self.field_type.vector_dimension() {
             return Err(LuceneError::IllegalArgument(format!(
                 "value length {} must match field dimension {}",
@@ -6930,17 +6868,18 @@ impl KnnByteVectorField {
                 "zero vector not allowed with cosine similarity function".to_string(),
             ));
         }
-        self.vector.clear();
-        self.vector.extend_from_slice(value);
+        let mut vector = self.vector.borrow_mut();
+        vector.clear();
+        vector.extend_from_slice(value);
         Ok(())
     }
 }
 
 impl IndexableField for KnnByteVectorField {
-    /// This field as a mutable `Any`, so that a caller can change it in
-    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
-    /// as Java changes the field object it added to a document.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
 
@@ -6989,8 +6928,8 @@ impl IndexableField for KnnByteVectorField {
         None
     }
 
-    fn byte_vector_value(&self) -> Option<&[u8]> {
-        Some(&self.vector)
+    fn byte_vector_value(&self) -> Option<AtomicRef<'_, [u8]>> {
+        Some(self.vector_value())
     }
 }
 
@@ -7093,7 +7032,7 @@ impl std::fmt::Display for IntPoint {
             "IntPoint",
             &self.name,
             &self.field_type,
-            &self.fields_data,
+            &*self.fields_data.borrow(),
             4,
             |bytes, offset| IntPoint::decode_dimension(bytes, offset).to_string(),
         )
@@ -7108,7 +7047,7 @@ impl std::fmt::Display for LongPoint {
             "LongPoint",
             &self.name,
             &self.field_type,
-            &self.fields_data,
+            &*self.fields_data.borrow(),
             8,
             |bytes, offset| LongPoint::decode_dimension(bytes, offset).to_string(),
         )
@@ -7123,7 +7062,7 @@ impl std::fmt::Display for FloatPoint {
             "FloatPoint",
             &self.name,
             &self.field_type,
-            &self.fields_data,
+            &*self.fields_data.borrow(),
             4,
             |bytes, offset| java_fmt::float_to_string(FloatPoint::decode_dimension(bytes, offset)),
         )
@@ -7138,7 +7077,7 @@ impl std::fmt::Display for DoublePoint {
             "DoublePoint",
             &self.name,
             &self.field_type,
-            &self.fields_data,
+            &*self.fields_data.borrow(),
             8,
             |bytes, offset| {
                 java_fmt::double_to_string(DoublePoint::decode_dimension(bytes, offset))
@@ -7150,14 +7089,14 @@ impl std::fmt::Display for DoublePoint {
 impl std::fmt::Display for IntField {
     /// Equivalent to `IntField.toString()`.
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "IntField <{}:{}>", self.name, self.value)
+        write!(f, "IntField <{}:{}>", self.name, (*self.value.borrow()))
     }
 }
 
 impl std::fmt::Display for LongField {
     /// Equivalent to `LongField.toString()`.
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "LongField <{}:{}>", self.name, self.value)
+        write!(f, "LongField <{}:{}>", self.name, (*self.value.borrow()))
     }
 }
 
@@ -7204,7 +7143,7 @@ impl std::fmt::Display for StringField {
             f,
             &self.field_type,
             &self.name,
-            &field_data_to_string(&self.fields_data),
+            &field_data_to_string(&*self.fields_data.borrow()),
         )
     }
 }
@@ -7216,7 +7155,7 @@ impl std::fmt::Display for TextField {
             f,
             &self.field_type,
             &self.name,
-            &field_data_to_string(&self.fields_data),
+            &field_data_to_string(&*self.fields_data.borrow()),
         )
     }
 }
@@ -7235,7 +7174,7 @@ impl std::fmt::Display for KeywordField {
             f,
             &self.field_type,
             &self.name,
-            &field_data_to_string(&self.fields_data),
+            &field_data_to_string(&*self.fields_data.borrow()),
         )
     }
 }
@@ -7249,7 +7188,7 @@ impl std::fmt::Display for BinaryPoint {
             f,
             &self.field_type,
             &self.name,
-            &field_data_to_string(&self.fields_data),
+            &field_data_to_string(&*self.fields_data.borrow()),
         )
     }
 }
@@ -7261,7 +7200,9 @@ impl std::fmt::Display for NumericDocValuesField {
             f,
             &self.field_type,
             &self.name,
-            &self.value.map(|v| v.to_string()).unwrap_or_default(),
+            &(*self.value.borrow())
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
         )
     }
 }
@@ -7291,7 +7232,7 @@ impl std::fmt::Display for SortedDocValuesField {
             f,
             &self.field_type,
             &self.name,
-            &bytes_ref_to_string(self.value.slice()),
+            &bytes_ref_to_string(self.value.borrow().slice()),
         )
     }
 }
@@ -7303,7 +7244,7 @@ impl std::fmt::Display for SortedSetDocValuesField {
             f,
             &self.field_type,
             &self.name,
-            &bytes_ref_to_string(self.value.slice()),
+            &bytes_ref_to_string(self.value.borrow().slice()),
         )
     }
 }
@@ -7311,7 +7252,12 @@ impl std::fmt::Display for SortedSetDocValuesField {
 impl std::fmt::Display for SortedNumericDocValuesField {
     /// `docValuesType=SORTED_NUMERIC<s:17>`.
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        field_to_string(f, &self.field_type, &self.name, &self.value.to_string())
+        field_to_string(
+            f,
+            &self.field_type,
+            &self.name,
+            &self.value.borrow().to_string(),
+        )
     }
 }
 
@@ -7324,6 +7270,7 @@ impl std::fmt::Display for BinaryDocValuesField {
             &self.name,
             &self
                 .value
+                .borrow()
                 .as_ref()
                 .map(|v| bytes_ref_to_string(v.slice()))
                 .unwrap_or_default(),
@@ -7346,7 +7293,10 @@ impl std::fmt::Display for KnnFloatVectorField {
             f,
             &self.field_type,
             &self.name,
-            &crate::index::index_reader::java_object_to_string("[F", self.vector.as_slice()),
+            &crate::index::index_reader::java_object_to_string(
+                "[F",
+                self.vector.borrow().as_slice(),
+            ),
         )
     }
 }
@@ -7359,7 +7309,10 @@ impl std::fmt::Display for KnnByteVectorField {
             f,
             &self.field_type,
             &self.name,
-            &crate::index::index_reader::java_object_to_string("[B", self.vector.as_slice()),
+            &crate::index::index_reader::java_object_to_string(
+                "[B",
+                self.vector.borrow().as_slice(),
+            ),
         )
     }
 }
@@ -7373,7 +7326,7 @@ impl std::fmt::Display for Field {
             "{}<{}:{}>",
             self.field_type,
             self.name,
-            field_data_to_string(&self.fields_data)
+            field_data_to_string(&*self.fields_data.borrow())
         )
     }
 }
@@ -7502,7 +7455,12 @@ impl std::hash::Hash for FieldType {
 // The setters every `Field` subclass inherits
 // ---------------------------------------------------------------------------
 
-/// `fieldsData.getClass().getSimpleName()` for a [`FieldData`].
+/// `fieldsData.getClass().getSimpleName()` for a [`FieldData`], which Java's
+/// typed setters splice into the message of the exception they throw.
+///
+/// Java names the *concrete* runtime class, so a reader value renders as (say)
+/// `StringReader`; this port has one variant per kind and names the kind,
+/// because the concrete reader sits behind a `dyn CharReader`.
 fn fields_data_simple_name(data: &FieldData) -> &'static str {
     match data {
         FieldData::String(_) => "String",
@@ -7520,6 +7478,53 @@ fn fields_data_simple_name(data: &FieldData) -> &'static str {
 /// `new IllegalArgumentException("cannot change value type from " + from + " to " + to)`.
 fn cannot_change_value_type(from: &str, to: &str) -> LuceneError {
     LuceneError::IllegalArgument(format!("cannot change value type from {from} to {to}"))
+}
+
+/// `Field.setStringValue(String)` (`Field.java:304-313`) on a field's value
+/// cell: the value-type check, then the null check, then the assignment.
+/// Returns the new string, for the subclass overrides that copy it into their
+/// own state (`StringField.java:100-106`, `TextField.java:94-99`,
+/// `KeywordField.java:117-123`).
+fn set_string_fields_data(
+    fields_data: &AtomicRefCell<FieldData>,
+    value: Option<String>,
+) -> Result<String> {
+    let mut data = fields_data.borrow_mut();
+    if !matches!(*data, FieldData::String(_)) {
+        return Err(cannot_change_value_type(
+            fields_data_simple_name(&data),
+            "String",
+        ));
+    }
+    let Some(value) = value else {
+        return Err(LuceneError::IllegalArgument(
+            "value must not be null".to_string(),
+        ));
+    };
+    *data = FieldData::String(value.clone());
+    Ok(value)
+}
+
+/// `Field.setBytesValue(BytesRef)` (`Field.java:335-346`) on a field's value
+/// cell, as [`set_string_fields_data`] is for strings.
+fn set_bytes_fields_data(
+    fields_data: &AtomicRefCell<FieldData>,
+    value: Option<BytesRef>,
+) -> Result<BytesRef> {
+    let mut data = fields_data.borrow_mut();
+    if !matches!(*data, FieldData::Bytes(_)) {
+        return Err(cannot_change_value_type(
+            fields_data_simple_name(&data),
+            "BytesRef",
+        ));
+    }
+    let Some(value) = value else {
+        return Err(LuceneError::IllegalArgument(
+            "value must not be null".to_string(),
+        ));
+    };
+    *data = FieldData::Bytes(value.clone());
+    Ok(value)
 }
 
 /// The value setters every subclass of `org.apache.lucene.document.Field`
@@ -7541,18 +7546,18 @@ pub trait FieldValueSetters {
     fn fields_data_class(&self) -> &'static str;
 
     /// `Field.setStringValue(String)`.
-    fn set_string_value(&mut self, _value: String) -> Result<()> {
+    fn set_string_value(&self, _value: String) -> Result<()> {
         Err(cannot_change_value_type(self.fields_data_class(), "String"))
     }
 
     /// `Field.setReaderValue(Reader)`.
-    fn set_reader_value(&mut self, _value: Box<dyn CharReader>) -> Result<()> {
+    fn set_reader_value(&self, _value: Box<dyn CharReader>) -> Result<()> {
         Err(cannot_change_value_type(self.fields_data_class(), "Reader"))
     }
 
     /// `Field.setBytesValue(BytesRef)` (`setBytesValue(byte[])` is
     /// `setBytesValue(new BytesRef(value))`).
-    fn set_bytes_value(&mut self, _value: BytesRef) -> Result<()> {
+    fn set_bytes_value(&self, _value: BytesRef) -> Result<()> {
         Err(cannot_change_value_type(
             self.fields_data_class(),
             "BytesRef",
@@ -7560,17 +7565,17 @@ pub trait FieldValueSetters {
     }
 
     /// `Field.setByteValue(byte)`.
-    fn set_byte_value(&mut self, _value: i8) -> Result<()> {
+    fn set_byte_value(&self, _value: i8) -> Result<()> {
         Err(cannot_change_value_type(self.fields_data_class(), "Byte"))
     }
 
     /// `Field.setShortValue(short)`.
-    fn set_short_value(&mut self, _value: i16) -> Result<()> {
+    fn set_short_value(&self, _value: i16) -> Result<()> {
         Err(cannot_change_value_type(self.fields_data_class(), "Short"))
     }
 
     /// `Field.setIntValue(int)`.
-    fn set_int_value(&mut self, _value: i32) -> Result<()> {
+    fn set_int_value(&self, _value: i32) -> Result<()> {
         Err(cannot_change_value_type(
             self.fields_data_class(),
             "Integer",
@@ -7578,22 +7583,22 @@ pub trait FieldValueSetters {
     }
 
     /// `Field.setLongValue(long)`.
-    fn set_long_value(&mut self, _value: i64) -> Result<()> {
+    fn set_long_value(&self, _value: i64) -> Result<()> {
         Err(cannot_change_value_type(self.fields_data_class(), "Long"))
     }
 
     /// `Field.setFloatValue(float)`.
-    fn set_float_value(&mut self, _value: f32) -> Result<()> {
+    fn set_float_value(&self, _value: f32) -> Result<()> {
         Err(cannot_change_value_type(self.fields_data_class(), "Float"))
     }
 
     /// `Field.setDoubleValue(double)`.
-    fn set_double_value(&mut self, _value: f64) -> Result<()> {
+    fn set_double_value(&self, _value: f64) -> Result<()> {
         Err(cannot_change_value_type(self.fields_data_class(), "Double"))
     }
 
     /// `Field.setTokenStream(TokenStream)`.
-    fn set_token_stream(&mut self, _value: Arc<AtomicRefCell<dyn TokenStream>>) -> Result<()> {
+    fn set_token_stream(&self, _value: Arc<AtomicRefCell<dyn TokenStream>>) -> Result<()> {
         Err(cannot_change_value_type(
             self.fields_data_class(),
             "TokenStream",
@@ -7603,54 +7608,47 @@ pub trait FieldValueSetters {
 
 impl FieldValueSetters for Field {
     fn fields_data_class(&self) -> &'static str {
-        fields_data_simple_name(&self.fields_data)
+        fields_data_simple_name(&*self.fields_data.borrow())
     }
 
-    fn set_string_value(&mut self, value: String) -> Result<()> {
+    fn set_string_value(&self, value: String) -> Result<()> {
         Field::set_string_value(self, value)
     }
 
-    fn set_reader_value(&mut self, value: Box<dyn CharReader>) -> Result<()> {
+    fn set_reader_value(&self, value: Box<dyn CharReader>) -> Result<()> {
         Field::set_reader_value(self, value)
     }
 
-    fn set_bytes_value(&mut self, value: BytesRef) -> Result<()> {
+    fn set_bytes_value(&self, value: BytesRef) -> Result<()> {
         Field::set_bytes_value(self, value)
     }
 
-    fn set_byte_value(&mut self, value: i8) -> Result<()> {
+    fn set_byte_value(&self, value: i8) -> Result<()> {
         Field::set_byte_value(self, value)
     }
 
-    fn set_short_value(&mut self, value: i16) -> Result<()> {
+    fn set_short_value(&self, value: i16) -> Result<()> {
         Field::set_short_value(self, value)
     }
 
-    fn set_int_value(&mut self, value: i32) -> Result<()> {
+    fn set_int_value(&self, value: i32) -> Result<()> {
         Field::set_int_value(self, value)
     }
 
-    fn set_long_value(&mut self, value: i64) -> Result<()> {
+    fn set_long_value(&self, value: i64) -> Result<()> {
         Field::set_long_value(self, value)
     }
 
-    fn set_float_value(&mut self, value: f32) -> Result<()> {
+    fn set_float_value(&self, value: f32) -> Result<()> {
         Field::set_float_value(self, value)
     }
 
-    fn set_double_value(&mut self, value: f64) -> Result<()> {
+    fn set_double_value(&self, value: f64) -> Result<()> {
         Field::set_double_value(self, value)
     }
 
-    fn set_token_stream(&mut self, value: Arc<AtomicRefCell<dyn TokenStream>>) -> Result<()> {
-        if !matches!(self.fields_data, FieldData::TokenStream(_)) {
-            return Err(cannot_change_value_type(
-                self.fields_data_class(),
-                "TokenStream",
-            ));
-        }
-        self.fields_data = FieldData::TokenStream(value);
-        Ok(())
+    fn set_token_stream(&self, value: Arc<AtomicRefCell<dyn TokenStream>>) -> Result<()> {
+        Field::set_token_stream_value(self, value)
     }
 }
 
@@ -7660,44 +7658,44 @@ impl FieldValueSetters for StoredField {
         self.0.fields_data_class()
     }
 
-    fn set_string_value(&mut self, value: String) -> Result<()> {
-        FieldValueSetters::set_string_value(&mut self.0, value)
+    fn set_string_value(&self, value: String) -> Result<()> {
+        FieldValueSetters::set_string_value(&self.0, value)
     }
 
-    fn set_reader_value(&mut self, value: Box<dyn CharReader>) -> Result<()> {
-        FieldValueSetters::set_reader_value(&mut self.0, value)
+    fn set_reader_value(&self, value: Box<dyn CharReader>) -> Result<()> {
+        FieldValueSetters::set_reader_value(&self.0, value)
     }
 
-    fn set_bytes_value(&mut self, value: BytesRef) -> Result<()> {
-        FieldValueSetters::set_bytes_value(&mut self.0, value)
+    fn set_bytes_value(&self, value: BytesRef) -> Result<()> {
+        FieldValueSetters::set_bytes_value(&self.0, value)
     }
 
-    fn set_byte_value(&mut self, value: i8) -> Result<()> {
-        FieldValueSetters::set_byte_value(&mut self.0, value)
+    fn set_byte_value(&self, value: i8) -> Result<()> {
+        FieldValueSetters::set_byte_value(&self.0, value)
     }
 
-    fn set_short_value(&mut self, value: i16) -> Result<()> {
-        FieldValueSetters::set_short_value(&mut self.0, value)
+    fn set_short_value(&self, value: i16) -> Result<()> {
+        FieldValueSetters::set_short_value(&self.0, value)
     }
 
-    fn set_int_value(&mut self, value: i32) -> Result<()> {
-        FieldValueSetters::set_int_value(&mut self.0, value)
+    fn set_int_value(&self, value: i32) -> Result<()> {
+        FieldValueSetters::set_int_value(&self.0, value)
     }
 
-    fn set_long_value(&mut self, value: i64) -> Result<()> {
-        FieldValueSetters::set_long_value(&mut self.0, value)
+    fn set_long_value(&self, value: i64) -> Result<()> {
+        FieldValueSetters::set_long_value(&self.0, value)
     }
 
-    fn set_float_value(&mut self, value: f32) -> Result<()> {
-        FieldValueSetters::set_float_value(&mut self.0, value)
+    fn set_float_value(&self, value: f32) -> Result<()> {
+        FieldValueSetters::set_float_value(&self.0, value)
     }
 
-    fn set_double_value(&mut self, value: f64) -> Result<()> {
-        FieldValueSetters::set_double_value(&mut self.0, value)
+    fn set_double_value(&self, value: f64) -> Result<()> {
+        FieldValueSetters::set_double_value(&self.0, value)
     }
 
-    fn set_token_stream(&mut self, value: Arc<AtomicRefCell<dyn TokenStream>>) -> Result<()> {
-        FieldValueSetters::set_token_stream(&mut self.0, value)
+    fn set_token_stream(&self, value: Arc<AtomicRefCell<dyn TokenStream>>) -> Result<()> {
+        FieldValueSetters::set_token_stream(&self.0, value)
     }
 }
 
@@ -7708,16 +7706,16 @@ macro_rules! point_field_value_setters {
     ($($ty:ty => $prim:literal, $setter:ident, $num:ty);*) => {
         $(impl FieldValueSetters for $ty {
             fn fields_data_class(&self) -> &'static str {
-                fields_data_simple_name(&self.fields_data)
+                fields_data_simple_name(&*self.fields_data.borrow())
             }
 
             /// The point's own one-dimension setter (`IntPoint.setIntValue`
             /// and its siblings), which Java's override routes through.
-            fn $setter(&mut self, value: $num) -> Result<()> {
+            fn $setter(&self, value: $num) -> Result<()> {
                 <$ty>::$setter(self, value)
             }
 
-            fn set_bytes_value(&mut self, _value: BytesRef) -> Result<()> {
+            fn set_bytes_value(&self, _value: BytesRef) -> Result<()> {
                 Err(cannot_change_value_type($prim, "BytesRef"))
             }
         })*
@@ -7737,7 +7735,7 @@ impl FieldValueSetters for IntField {
     }
 
     /// `IntField.setIntValue(int)`.
-    fn set_int_value(&mut self, value: i32) -> Result<()> {
+    fn set_int_value(&self, value: i32) -> Result<()> {
         self.set_value(value);
         Ok(())
     }
@@ -7749,7 +7747,7 @@ impl FieldValueSetters for LongField {
     }
 
     /// `LongField.setLongValue(long)`.
-    fn set_long_value(&mut self, value: i64) -> Result<()> {
+    fn set_long_value(&self, value: i64) -> Result<()> {
         self.set_value(value);
         Ok(())
     }
@@ -7762,13 +7760,13 @@ impl FieldValueSetters for FloatField {
     }
 
     /// `FloatField.setFloatValue(float)`.
-    fn set_float_value(&mut self, value: f32) -> Result<()> {
+    fn set_float_value(&self, value: f32) -> Result<()> {
         self.set_value(value);
         Ok(())
     }
 
     /// `FloatField.setLongValue(long)` (`FloatField.java:112-114`).
-    fn set_long_value(&mut self, _value: i64) -> Result<()> {
+    fn set_long_value(&self, _value: i64) -> Result<()> {
         Err(cannot_change_value_type("Float", "Long"))
     }
 }
@@ -7780,13 +7778,13 @@ impl FieldValueSetters for DoubleField {
     }
 
     /// `DoubleField.setDoubleValue(double)`.
-    fn set_double_value(&mut self, value: f64) -> Result<()> {
+    fn set_double_value(&self, value: f64) -> Result<()> {
         self.set_value(value);
         Ok(())
     }
 
     /// `DoubleField.setLongValue(long)` (`DoubleField.java:112-114`).
-    fn set_long_value(&mut self, _value: i64) -> Result<()> {
+    fn set_long_value(&self, _value: i64) -> Result<()> {
         Err(cannot_change_value_type("Double", "Long"))
     }
 }
@@ -7797,7 +7795,7 @@ impl FieldValueSetters for NumericDocValuesField {
     }
 
     /// `Field.setLongValue(long)`: `fieldsData` is a `Long`.
-    fn set_long_value(&mut self, value: i64) -> Result<()> {
+    fn set_long_value(&self, value: i64) -> Result<()> {
         self.set_value(value);
         Ok(())
     }
@@ -7810,13 +7808,13 @@ impl FieldValueSetters for DoubleDocValuesField {
     }
 
     /// `DoubleDocValuesField.setDoubleValue(double)`.
-    fn set_double_value(&mut self, value: f64) -> Result<()> {
+    fn set_double_value(&self, value: f64) -> Result<()> {
         self.set_value(value);
         Ok(())
     }
 
     /// `DoubleDocValuesField.setLongValue(long)` (`DoubleDocValuesField.java:48-50`).
-    fn set_long_value(&mut self, _value: i64) -> Result<()> {
+    fn set_long_value(&self, _value: i64) -> Result<()> {
         Err(cannot_change_value_type("Double", "Long"))
     }
 }
@@ -7828,13 +7826,13 @@ impl FieldValueSetters for FloatDocValuesField {
     }
 
     /// `FloatDocValuesField.setFloatValue(float)`.
-    fn set_float_value(&mut self, value: f32) -> Result<()> {
+    fn set_float_value(&self, value: f32) -> Result<()> {
         self.set_value(value);
         Ok(())
     }
 
     /// `FloatDocValuesField.setLongValue(long)` (`FloatDocValuesField.java:49-51`).
-    fn set_long_value(&mut self, _value: i64) -> Result<()> {
+    fn set_long_value(&self, _value: i64) -> Result<()> {
         Err(cannot_change_value_type("Float", "Long"))
     }
 }
@@ -7845,8 +7843,8 @@ impl FieldValueSetters for SortedDocValuesField {
     }
 
     /// `Field.setBytesValue(BytesRef)`: `fieldsData` is a `BytesRef`.
-    fn set_bytes_value(&mut self, value: BytesRef) -> Result<()> {
-        self.value = value;
+    fn set_bytes_value(&self, value: BytesRef) -> Result<()> {
+        *self.value.borrow_mut() = value;
         Ok(())
     }
 }
@@ -7857,73 +7855,56 @@ impl FieldValueSetters for BinaryDocValuesField {
     }
 
     /// `Field.setBytesValue(BytesRef)`: `fieldsData` is a `BytesRef`.
-    fn set_bytes_value(&mut self, value: BytesRef) -> Result<()> {
-        self.value = Some(value);
+    fn set_bytes_value(&self, value: BytesRef) -> Result<()> {
+        *self.value.borrow_mut() = Some(value);
         Ok(())
     }
 }
 
 impl FieldValueSetters for StringField {
     fn fields_data_class(&self) -> &'static str {
-        fields_data_simple_name(&self.fields_data)
+        fields_data_simple_name(&*self.fields_data.borrow())
     }
 
     /// `StringField.setStringValue(String)`: `super.setStringValue(value);
     /// binaryValue = new BytesRef(value); storedValue.setStringValue(value)`.
-    fn set_string_value(&mut self, value: String) -> Result<()> {
-        if !matches!(self.fields_data, FieldData::String(_)) {
-            return Err(cannot_change_value_type(self.fields_data_class(), "String"));
-        }
-        self.binary_value = Some(BytesRef::from_char_sequence(&value));
-        if let Some(stored) = self.stored_value.as_mut() {
-            stored.set_string_value(value.clone())?;
-        }
-        self.fields_data = FieldData::String(value);
-        Ok(())
+    fn set_string_value(&self, value: String) -> Result<()> {
+        StringField::set_string_value(self, value)
     }
 
     /// `StringField.setBytesValue(BytesRef)`: `super.setBytesValue(value);
     /// binaryValue = value; storedValue.setBinaryValue(value)`.
-    fn set_bytes_value(&mut self, value: BytesRef) -> Result<()> {
-        if !matches!(self.fields_data, FieldData::Bytes(_)) {
-            return Err(cannot_change_value_type(
-                self.fields_data_class(),
-                "BytesRef",
-            ));
+    fn set_bytes_value(&self, value: BytesRef) -> Result<()> {
+        let value = set_bytes_fields_data(&self.fields_data, Some(value))?;
+        *self.binary_value.borrow_mut() = Some(value.clone());
+        if let Some(stored) = self.stored_value.borrow_mut().as_mut() {
+            stored.set_binary_value(value)?;
         }
-        self.binary_value = Some(value.clone());
-        if let Some(stored) = self.stored_value.as_mut() {
-            stored.set_binary_value(value.clone())?;
-        }
-        self.fields_data = FieldData::Bytes(value);
         Ok(())
     }
 }
 
 impl FieldValueSetters for TextField {
     fn fields_data_class(&self) -> &'static str {
-        fields_data_simple_name(&self.fields_data)
+        fields_data_simple_name(&*self.fields_data.borrow())
     }
 
     /// `TextField.setStringValue(String)`: `super.setStringValue(value);
     /// storedValue.setStringValue(value)`.
-    fn set_string_value(&mut self, value: String) -> Result<()> {
-        if !matches!(self.fields_data, FieldData::String(_)) {
-            return Err(cannot_change_value_type(self.fields_data_class(), "String"));
-        }
-        if let Some(stored) = self.stored_value.as_mut() {
-            stored.set_string_value(value.clone())?;
-        }
-        self.fields_data = FieldData::String(value);
-        Ok(())
+    fn set_string_value(&self, value: String) -> Result<()> {
+        TextField::set_string_value(self, value)
     }
 
     /// `Field.setReaderValue(Reader)`.
-    fn set_reader_value(&mut self, value: Box<dyn CharReader>) -> Result<()> {
-        if !matches!(self.fields_data, FieldData::Reader(_)) {
-            return Err(cannot_change_value_type(self.fields_data_class(), "Reader"));
+    fn set_reader_value(&self, value: Box<dyn CharReader>) -> Result<()> {
+        let mut data = self.fields_data.borrow_mut();
+        if !matches!(*data, FieldData::Reader(_)) {
+            return Err(cannot_change_value_type(
+                fields_data_simple_name(&data),
+                "Reader",
+            ));
         }
-        self.fields_data = FieldData::Reader(Arc::new(AtomicRefCell::new(value)));
+        *data = FieldData::Reader(Arc::new(AtomicRefCell::new(value)));
         Ok(())
     }
 }
@@ -8220,7 +8201,7 @@ mod tests {
                 Some(NumericValue::Long(expected)),
                 "constructor disagrees with Lucene for {value}"
             );
-            let mut field = FloatDocValuesField::new("score", 1.0f32);
+            let field = FloatDocValuesField::new("score", 1.0f32);
             field.set_value(value);
             assert_eq!(
                 field.numeric_value(),
@@ -8252,7 +8233,7 @@ mod tests {
                 Some(NumericValue::Long(expected)),
                 "constructor disagrees with Lucene for {value}"
             );
-            let mut field = DoubleDocValuesField::new("score", 1.0f64);
+            let field = DoubleDocValuesField::new("score", 1.0f64);
             field.set_value(value);
             assert_eq!(
                 field.numeric_value(),
@@ -8626,14 +8607,14 @@ mod tests {
 
     #[test]
     fn changing_a_numeric_field_value_also_changes_what_it_stores() {
-        let mut field = IntField::new("i", 1, Store::YES);
+        let field = IntField::new("i", 1, Store::YES);
         field.set_value(42);
         assert_eq!(
             IndexableField::stored_value(&field).unwrap(),
             Some(StoredValue::Integer(42))
         );
 
-        let mut unstored = IntField::new("i", 1, Store::NO);
+        let unstored = IntField::new("i", 1, Store::NO);
         unstored.set_value(42);
         assert!(IndexableField::stored_value(&unstored).unwrap().is_none());
     }
@@ -8950,5 +8931,72 @@ mod pass_d_char_sequence_binary_value_tests {
         let keyword = KeywordField::new("f", "abcd".to_string(), Store::NO).unwrap();
         let bytes = keyword.binary_value().unwrap();
         assert_eq!((bytes.bytes.len(), bytes.slice()), (12, &b"abcd"[..]));
+    }
+}
+
+#[cfg(test)]
+mod shared_mutable_field_tests {
+    use super::*;
+
+    /// A field held by several documents is changed through any of them, as
+    /// Java changes the one object (`Field.java:304-313`).
+    #[test]
+    fn a_shared_field_changed_through_one_document_is_seen_by_all() {
+        let field: Arc<dyn IndexableField> =
+            Arc::new(StringField::new("id", "a".to_string(), Store::YES).unwrap());
+        let mut first = Document::new();
+        let mut second = Document::new();
+        first.add_shared(Arc::clone(&field));
+        second.add_shared(Arc::clone(&field));
+        first
+            .get_field_mut_as::<StringField>("id")
+            .expect("the document holds the field")
+            .set_string_value("b".to_string())
+            .unwrap();
+        assert_eq!(second.get("id").as_deref(), Some("b"));
+        assert_eq!(
+            field.binary_value(),
+            Some(BytesRef::from_char_sequence("b"))
+        );
+        assert!(matches!(
+            field.stored_value().unwrap(),
+            Some(StoredValue::String(ref s)) if s == "b"
+        ));
+    }
+
+    /// `Field.setStringValue` refuses any value class but `String`, naming
+    /// it (`Field.java:305-308`); the sibling setters do the same.
+    #[test]
+    fn typed_setters_reject_another_value_type_with_javas_message() {
+        let ft = FieldType::new();
+        ft.set_stored(true).unwrap();
+        let number = Field::new_with_number("n", NumericValue::Int(1), ft.clone()).unwrap();
+        let message = |r: Result<()>| match r {
+            Err(LuceneError::IllegalArgument(m)) => m,
+            other => panic!("expected IllegalArgumentException, got {other:?}"),
+        };
+        assert_eq!(
+            message(number.set_string_value("x".to_string())),
+            "cannot change value type from Integer to String"
+        );
+        assert_eq!(
+            message(number.set_bytes_value(BytesRef::new(vec![1]))),
+            "cannot change value type from Integer to BytesRef"
+        );
+        assert_eq!(
+            message(number.set_long_value(1)),
+            "cannot change value type from Integer to Long"
+        );
+        let string = Field::new("s", "x".to_string(), ft).unwrap();
+        assert_eq!(
+            message(string.set_int_value(1)),
+            "cannot change value type from String to Integer"
+        );
+        assert_eq!(
+            message(string.set_string_value(None)),
+            "value must not be null"
+        );
+        string.set_string_value("y".to_string()).unwrap();
+        assert_eq!(string.string_value().as_deref(), Some("y"));
     }
 }

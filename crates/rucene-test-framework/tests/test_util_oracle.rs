@@ -396,7 +396,7 @@ fn line_file_docs_are_lucenes() {
         let mut body = String::new();
         let mut others = Vec::new();
         let (mut title, mut date) = (String::new(), String::new());
-        for f in doc.get_fields() {
+        for f in doc.borrow().get_fields() {
             let value = match f.numeric_value() {
                 Some(n) => n.to_string(),
                 None => f.string_value().unwrap(),
@@ -413,7 +413,7 @@ fn line_file_docs_are_lucenes() {
             title,
             date,
             body_digest(&body),
-            doc.get_fields().len().to_string(),
+            doc.borrow().get_fields().len().to_string(),
             others.join(";"),
         ];
         assert_eq!(&got[..], &row[2..], "seed {} doc {k}", row[0]);
@@ -422,7 +422,7 @@ fn line_file_docs_are_lucenes() {
         }
     }
     let first_doc = first_doc.unwrap();
-    for (f, row) in first_doc.get_fields().iter().zip(&type_rows) {
+    for (f, row) in first_doc.borrow().get_fields().iter().zip(&type_rows) {
         let t = f.field_type();
         let got = format!(
             "{},{},{:?},{},{},{},{},{},{:?},{},{},{}",

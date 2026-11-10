@@ -1083,7 +1083,7 @@ fn sq_test_search(suite: &KnnSuite) -> Result<()> {
     let dims = LuceneTestCase::random().next_int_range(4, 65);
     let vector = random_vector(dims);
     let similarity_function = suite.random_similarity();
-    let mut knn_field = KnnFloatVectorField::new(field_name, &vector, similarity_function)?;
+    let knn_field = KnnFloatVectorField::new(field_name, &vector, similarity_function)?;
     let iwc = LuceneTestCase::new_index_writer_config();
     let mut dir = LuceneTestCase::new_directory();
     {
@@ -1148,7 +1148,7 @@ fn sq_test_quantized_vectors_write_and_read(suite: &KnnSuite) -> Result<()> {
 
     let vector = random_vector(dims);
     let similarity_function = suite.random_similarity();
-    let mut knn_field = KnnFloatVectorField::new(field_name, &vector, similarity_function)?;
+    let knn_field = KnnFloatVectorField::new(field_name, &vector, similarity_function)?;
     let mut dir = LuceneTestCase::new_directory();
     {
         let w = IndexWriter::new(

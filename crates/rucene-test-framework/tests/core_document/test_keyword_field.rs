@@ -39,7 +39,7 @@ fn test_set_bytes_value() -> Result<()> {
         KeywordField::new_with_bytes("name", new_bytes_ref("value"), Store::NO)?,
         KeywordField::new_with_bytes("name", new_bytes_ref("value"), Store::YES)?,
     ];
-    for mut field in fields {
+    for field in fields {
         assert_equals(&Some(new_bytes_ref("value")), &field.binary_value());
         assert_null(&field.string_value());
         if field.field_type().stored() {
@@ -71,7 +71,7 @@ fn test_set_string_value() -> Result<()> {
         KeywordField::new("name", "value".to_string(), Store::NO)?,
         KeywordField::new("name", "value".to_string(), Store::YES)?,
     ];
-    for mut field in fields {
+    for field in fields {
         assert_equals(&Some("value".to_string()), &field.string_value());
         assert_equals(&Some(new_bytes_ref("value")), &field.binary_value());
         if field.field_type().stored() {

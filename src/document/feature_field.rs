@@ -37,6 +37,7 @@ use crate::search::term_scorer::TermScorer;
 use crate::search::weight::Weight;
 use crate::search::DocIdSetIterator;
 use crate::search::{SortField, SortFieldKind, SortFieldType};
+use crate::util::atomic_ref_cell::AtomicRefCell;
 use crate::util::attribute::DefaultAttributeFactory;
 use crate::util::{AttributeSource, BytesRef};
 
@@ -389,7 +390,7 @@ impl FeatureField {
 pub struct FeatureField {
     name: String,
     feature_name: String,
-    feature_value: f32,
+    feature_value: AtomicRefCell<f32>,
     field_type: FieldType,
 }
 
@@ -478,10 +479,10 @@ impl FeatureField {
             Self::field_type_static().clone()
         };
 
-        let mut field = Self {
+        let field = Self {
             name,
             feature_name,
-            feature_value: 0.0,
+            feature_value: AtomicRefCell::new(0.0),
             field_type,
         };
         field.set_feature_value(feature_value)?;
@@ -491,7 +492,7 @@ impl FeatureField {
     /// Replaces the feature value.
     ///
     /// Equivalent to `FeatureField.setFeatureValue(float)`.
-    pub fn set_feature_value(&mut self, feature_value: f32) -> Result<()> {
+    pub fn set_feature_value(&self, feature_value: f32) -> Result<()> {
         if !feature_value.is_finite() {
             return Err(LuceneError::IllegalArgument(format!(
                 "featureValue must be finite, got: {feature_value} for feature {} on field {}",
@@ -505,13 +506,13 @@ impl FeatureField {
                 self.feature_name, self.name
             )));
         }
-        self.feature_value = feature_value;
+        *self.feature_value.borrow_mut() = feature_value;
         Ok(())
     }
 
     /// Returns the feature value.
     pub fn get_feature_value(&self) -> f32 {
-        self.feature_value
+        *self.feature_value.borrow()
     }
 
     /// Returns the field's name.
@@ -534,7 +535,10 @@ impl FeatureField {
     /// Equivalent to what `FeatureField.tokenStream` emits: one token, whose
     /// term is the feature name and whose frequency carries the value.
     pub fn token(&self) -> (&str, i32) {
-        (&self.feature_name, encode_feature_value(self.feature_value))
+        (
+            &self.feature_name,
+            encode_feature_value(*self.feature_value.borrow()),
+        )
     }
 
     /// Returns the stored form of the feature name.
@@ -544,10 +548,10 @@ impl FeatureField {
 }
 
 impl IndexableField for FeatureField {
-    /// This field as a mutable `Any`, so that a caller can change it in
-    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
-    /// as Java changes the field object it added to a document.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
 
@@ -566,7 +570,7 @@ impl IndexableField for FeatureField {
     ) -> Result<Box<dyn TokenStream>> {
         Ok(Box::new(FeatureTokenStream::new(
             self.feature_name.clone(),
-            encode_feature_value(self.feature_value),
+            encode_feature_value(*self.feature_value.borrow()),
         )))
     }
 

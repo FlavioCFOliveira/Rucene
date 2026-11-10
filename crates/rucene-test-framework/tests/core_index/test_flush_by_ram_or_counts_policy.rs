@@ -376,7 +376,7 @@ fn index_thread(
             let mut ram_size = 0i64;
             while pending_docs.fetch_sub(1, Ordering::SeqCst) - 1 > -1 {
                 let doc = docs.next_doc()?;
-                writer.add_document(&doc)?;
+                writer.add_document(&*doc.borrow())?;
                 let new_ram_size = writer.ram_bytes_used()?;
                 if new_ram_size != ram_size {
                     ram_size = new_ram_size;

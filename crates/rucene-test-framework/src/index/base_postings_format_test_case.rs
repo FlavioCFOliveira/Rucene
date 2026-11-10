@@ -999,10 +999,15 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         let mut bytes_indexed: i64 = 0;
         while bytes_indexed < bytes_to_index {
             let doc = docs.next_doc()?;
-            let body = npe(doc.get_field("body"));
+            let body = npe(doc
+                .borrow()
+                .get_fields()
+                .iter()
+                .find(|field| field.name() == "body")
+                .cloned());
             let body_value = body.string_value().unwrap_or_default();
             let mut just_body_doc = Document::new();
-            just_body_doc.add(Box::new(clone_text_field(body)?));
+            just_body_doc.add_shared(body);
             w.add_document(&just_body_doc)?;
             bytes_indexed += RamUsageTester::ram_used(&JustBodyDoc::new(&body_value));
         }
@@ -1348,6 +1353,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
                 // Only keep the body field, and don't index term vectors on it, we only care
                 // about postings
                 let doc = docs.next_doc()?;
+                let doc = doc.borrow();
                 let body = doc.get_field("body");
                 Assert::assert_true(body.is_some());
                 let body = npe(body);
@@ -1619,17 +1625,6 @@ impl fmt::Display for JavaBytesRef {
             Some(b) => write!(f, "{b}"),
         }
     }
-}
-
-/// A copy of the `body` field of a `LineFileDocs` document as Java adds it
-/// to `justBodyDoc` (the same `Field`, an indexed, stored text field with
-/// term vectors).
-fn clone_text_field(body: &dyn rucene::index::IndexableField) -> Result<Field> {
-    Field::new(
-        "body",
-        body.string_value().unwrap_or_default(),
-        FieldType::new_from(body.field_type()),
-    )
 }
 
 // -----------------------------------------------------------------------------

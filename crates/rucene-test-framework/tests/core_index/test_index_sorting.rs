@@ -2680,7 +2680,7 @@ fn test_index_sort_with_sparse_field() -> Result<()> {
         SortField::new_reverse(Some("dense_int".to_string()), SortFieldType::Int, true)?;
     iwc.set_index_sort(sort_of(vec![sort_field])?)?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
-    let mut text_field = Arc::new(LuceneTestCase::new_text_field("sparse_text", "", Store::NO));
+    let text_field = Arc::new(LuceneTestCase::new_text_field("sparse_text", "", Store::NO));
     for i in 0..128 {
         let mut doc = Document::new();
         doc.add(ndv("dense_int", i));
@@ -2690,11 +2690,7 @@ fn test_index_sort_with_sparse_field() -> Result<()> {
                 "sparse_binary",
                 bytes_ref(&i.to_string()),
             )));
-            // The documents that held `textField` were indexed and dropped,
-            // so the test holds it alone again.
-            Arc::get_mut(&mut text_field)
-                .expect("INVARIANT: no live document holds textField")
-                .set_string_value("foo".to_string())?;
+            text_field.set_string_value("foo".to_string())?;
             doc.add_shared(Arc::clone(&text_field) as Arc<dyn rucene::index::IndexableField>);
         }
         w.add_document(&doc)?;

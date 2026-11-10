@@ -848,7 +848,7 @@ fn test_knn_vector_field() -> Result<()> {
         let b = vec![0u8; 5];
         let field = KnnByteVectorField::new("binary", &b, VectorSimilarityFunction::EUCLIDEAN)?;
         assert_null(&field.binary_value());
-        assert_array_equals(&b, field.vector_value());
+        assert_array_equals(&b, &field.vector_value());
         // `(FieldType) field.fieldType()`: the field's own (frozen) type.
         let byte_type = FieldType::new_from(IndexableField::field_type(&field));
         expect_throws(IAE, || {
@@ -937,7 +937,7 @@ fn test_knn_field_zero_vectors() -> Result<()> {
 /// Port of `testKnnFieldSetVectorValueZeroVectors`.
 fn test_knn_field_set_vector_value_zero_vectors() -> Result<()> {
     // Float vector field: setVectorValue with zero vector on COSINE field should fail
-    let mut float_field = KnnFloatVectorField::new(
+    let float_field = KnnFloatVectorField::new(
         "knnFloats",
         &[1.0, 2.0, 3.0, 4.0, 5.0],
         VectorSimilarityFunction::COSINE,
@@ -949,7 +949,7 @@ fn test_knn_field_set_vector_value_zero_vectors() -> Result<()> {
     float_field.set_vector_value(&[5.0, 4.0, 3.0, 2.0, 1.0])?;
 
     // Byte vector field: setVectorValue with zero vector on COSINE field should fail
-    let mut byte_field = KnnByteVectorField::new(
+    let byte_field = KnnByteVectorField::new(
         "knnBytes",
         &[1, 2, 3, 4, 5],
         VectorSimilarityFunction::COSINE,
@@ -959,13 +959,13 @@ fn test_knn_field_set_vector_value_zero_vectors() -> Result<()> {
     byte_field.set_vector_value(&[5, 4, 3, 2, 1])?;
 
     // EUCLIDEAN fields should allow zero vectors via setVectorValue
-    let mut euclidean_float_field = KnnFloatVectorField::new(
+    let euclidean_float_field = KnnFloatVectorField::new(
         "knnFloatsEuc",
         &[1.0, 2.0, 3.0, 4.0, 5.0],
         VectorSimilarityFunction::EUCLIDEAN,
     )?;
     euclidean_float_field.set_vector_value(&[0.0; 5])?;
-    let mut euclidean_byte_field = KnnByteVectorField::new(
+    let euclidean_byte_field = KnnByteVectorField::new(
         "knnBytesEuc",
         &[1, 2, 3, 4, 5],
         VectorSimilarityFunction::EUCLIDEAN,
@@ -973,7 +973,7 @@ fn test_knn_field_set_vector_value_zero_vectors() -> Result<()> {
     euclidean_byte_field.set_vector_value(&[0; 5])?;
 
     // Float vector field: setVectorValue with NaN should fail
-    let mut nan_field = KnnFloatVectorField::new(
+    let nan_field = KnnFloatVectorField::new(
         "knnFloatsNaN",
         &[1.0, 2.0, 3.0, 4.0, 5.0],
         VectorSimilarityFunction::EUCLIDEAN,

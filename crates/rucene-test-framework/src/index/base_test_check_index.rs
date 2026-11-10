@@ -170,7 +170,7 @@ fn checksums_only(dir: Arc<dyn Directory>) -> Result<()> {
         LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(&analyzer) as _)),
     )?;
     for _ in 0..100 {
-        iw.add_document(&lf.next_doc()?)?;
+        iw.add_document(&*lf.next_doc()?.borrow())?;
     }
     iw.add_document(&Document::new())?;
     iw.commit()?;

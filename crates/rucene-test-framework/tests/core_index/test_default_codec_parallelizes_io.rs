@@ -69,7 +69,7 @@ fn before_class() -> Result<()> {
             let num_docs = LuceneTestCase::at_least(10_000);
             for _ in 0..num_docs {
                 let doc = docs.next_doc()?;
-                w.add_document(&doc)?;
+                w.add_document(&*doc.borrow())?;
             }
             w.force_merge(1)
         };

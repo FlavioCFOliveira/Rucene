@@ -567,11 +567,12 @@ fn indexing_thread_body(
         // Maybe add randomly named field
         let added_field = if random().next_boolean() {
             let added_field = format!("extra{}", random().next_int_bound(40));
-            doc.add(Box::new(LuceneTestCase::new_text_field(
-                &added_field,
-                "a random field",
-                Store::YES,
-            )));
+            doc.borrow_mut()
+                .add(Box::new(LuceneTestCase::new_text_field(
+                    &added_field,
+                    "a random field",
+                    Store::YES,
+                )));
             Some(added_field)
         } else {
             None
@@ -620,28 +621,15 @@ fn indexing_thread_body(
                 let mut doc_ids: Vec<String> = Vec::new();
                 let mut docs_list: Vec<Document> = Vec::new();
 
-                doc.add(Box::new(pack_id_field));
-                docs_list.push(TestUtil::clone_document(&doc)?);
-                doc_ids.push(doc_get(&doc, "docid").unwrap_or_default());
+                doc.borrow_mut().add(Box::new(pack_id_field));
+                docs_list.push(TestUtil::clone_document(&doc.borrow())?);
+                doc_ids.push(doc_get(&doc.borrow(), "docid").unwrap_or_default());
 
                 let max_doc_count = TestUtil::next_int(&*random(), 1, 10);
                 while (docs_list.len() as i32) < max_doc_count {
-                    // Java's `docs.nextDoc()` returns the thread's one
-                    // `DocState.doc` (`LineFileDocs.java:295-345`), which
-                    // still holds the fields this iteration added to `doc`:
-                    // the `extra` field and `packIDField`. The port's
-                    // `next_doc` builds a fresh document, so those fields
-                    // are carried over, in the order Java's document holds
-                    // them.
-                    let mut next = docs.next_doc()?;
-                    for f in TestUtil::clone_document(&doc)?.into_fields() {
-                        if f.name() == "packID" || added_field.as_deref() == Some(f.name()) {
-                            next.add_shared(f);
-                        }
-                    }
-                    docs_list.push(TestUtil::clone_document(&next)?);
-                    doc_ids.push(doc_get(&next, "docid").unwrap_or_default());
-                    doc = next;
+                    doc = docs.next_doc()?;
+                    docs_list.push(TestUtil::clone_document(&doc.borrow())?);
+                    doc_ids.push(doc_get(&doc.borrow(), "docid").unwrap_or_default());
                 }
                 let sub_docs = Arc::new(SubDocs {
                     pack_id: pack_id.clone(),
@@ -686,7 +674,7 @@ fn indexing_thread_body(
                     }
                     case.add_documents(pack_id_term, &docs_list)?;
                 }
-                doc.remove_field("packID");
+                doc.borrow_mut().remove_field("packID");
 
                 if random().next_int_bound(5) == 2 {
                     if *VERBOSE {
@@ -696,11 +684,11 @@ fn indexing_thread_body(
                 }
             } else {
                 // Add single doc
-                let docid = doc_get(&doc, "docid").unwrap_or_default();
+                let docid = doc_get(&doc.borrow(), "docid").unwrap_or_default();
                 if *VERBOSE {
                     println!("{}: add doc docid:{docid}", thread_name());
                 }
-                case.add_document(term("docid", &docid), &doc)?;
+                case.add_document(term("docid", &docid), &doc.borrow())?;
                 state.add_count.fetch_add(1, Ordering::SeqCst);
 
                 if random().next_int_bound(5) == 3 {
@@ -714,11 +702,11 @@ fn indexing_thread_body(
             // Update single doc, but we never re-use
             // and ID so the delete will never
             // actually happen:
-            let docid = doc_get(&doc, "docid").unwrap_or_default();
+            let docid = doc_get(&doc.borrow(), "docid").unwrap_or_default();
             if *VERBOSE {
                 println!("{}: update doc id:{docid}", thread_name());
             }
-            case.update_document(term("docid", &docid), &doc)?;
+            case.update_document(term("docid", &docid), &doc.borrow())?;
             state.add_count.fetch_add(1, Ordering::SeqCst);
 
             if random().next_int_bound(5) == 3 {
@@ -777,7 +765,7 @@ fn indexing_thread_body(
             }
         }
         if let Some(added_field) = &added_field {
-            doc.remove_field(added_field);
+            doc.borrow_mut().remove_field(added_field);
         }
     }
     Ok(())
@@ -1333,7 +1321,7 @@ pub fn run_test(
 
     // Verify: make sure all not-deleted docs are in fact
     // not deleted:
-    let end_id: i32 = doc_get(&docs.next_doc()?, "docid")
+    let end_id: i32 = doc_get(&docs.next_doc()?.borrow(), "docid")
         .unwrap_or_default()
         .parse()
         .unwrap_or_else(|_| Throwable::new("java.lang.NumberFormatException", "docid").throw());

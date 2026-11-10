@@ -59,7 +59,7 @@ fn line_docs_index(seed: i64) -> (Arc<dyn Directory>, String) {
     let w = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     let docs = LineFileDocs::new(&random, "europarl.lines.txt.gz").unwrap();
     for i in 0..60 {
-        w.add_document(&docs.next_doc().unwrap()).unwrap();
+        w.add_document(&*docs.next_doc().unwrap().borrow()).unwrap();
         if i == 29 {
             w.commit().unwrap();
         }
@@ -1085,7 +1085,7 @@ fn check_index_reports_a_corrupt_terms_index_or_dictionary() {
         let w = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         let docs = LineFileDocs::new(&JdkRandom::new(42), "europarl.lines.txt.gz").unwrap();
         for _ in 0..60 {
-            w.add_document(&docs.next_doc().unwrap()).unwrap();
+            w.add_document(&*docs.next_doc().unwrap().borrow()).unwrap();
         }
         w.close().unwrap();
         let name = dir

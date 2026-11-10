@@ -59,7 +59,7 @@ fn test_setter_getter() -> Result<()> {
     for _i in 0..n {
         value.push(random_vector(dim));
     }
-    let mut field = LateInteractionField::new("test", Some(&rows(&value)))?;
+    let field = LateInteractionField::new("test", Some(&rows(&value)))?;
     let n2 = random().next_int_range(3, 12);
     let mut value2 = Vec::with_capacity(n2 as usize);
     for _i in 0..n2 {

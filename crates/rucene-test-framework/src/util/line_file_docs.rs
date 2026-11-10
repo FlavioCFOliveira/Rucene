@@ -21,7 +21,7 @@
 
 use std::io::{self, BufRead, BufReader, Read};
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use randomizedtesting::jdk::random::{JdkRandom, Random};
 use rucene::document::{
@@ -30,6 +30,8 @@ use rucene::document::{
 };
 use rucene::error::{LuceneError, Result};
 use rucene::index::{IndexOptions, IndexableField};
+use rucene::util::atomic_ref_cell::AtomicRefCell;
+use rucene::util::CloseableThreadLocal;
 
 use crate::jdk::gzip::GzipInputStream;
 use crate::util::lucene_test_case::{TEST_LINE_DOCS_FILE, VERBOSE};
@@ -136,20 +138,23 @@ fn decode(line: Vec<u8>) -> io::Result<String> {
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Input length = 1"))
 }
 
+/// The document [`LineFileDocs::next_doc`] returns: the calling thread's one
+/// `DocState.doc`, shared with the caller as Java returns the same object on
+/// every call from a thread (fields the caller adds stay in it).
+pub type SharedDocument = Arc<AtomicRefCell<Document>>;
+
 /// Port of `org.apache.lucene.tests.util.LineFileDocs`.
 ///
-/// **Divergence.** Java reuses one `Document` per thread
-/// (`CloseableThreadLocal<DocState>`) and resets its fields' values on each
-/// `nextDoc`, so the returned instance changes under the caller; a sparse
-/// document is a new `Document` holding those same field instances. Rust's
-/// `Document` owns its fields, so [`next_doc`](Self::next_doc) builds a new
-/// document with the same fields, in the same order, holding the values the
-/// reused one would hold.
+/// Java reuses one `Document` per thread (`CloseableThreadLocal<DocState>`)
+/// and resets its fields' values on each `nextDoc`, so the returned instance
+/// changes under the caller; so does this port ([`SharedDocument`]).
 pub struct LineFileDocs {
     reader: Mutex<Option<LineReader>>,
     id: AtomicI32,
     path: String,
     random: JdkRandom,
+    /// `threadDocs`.
+    thread_docs: CloseableThreadLocal<Option<Arc<DocState>>>,
 }
 
 impl LineFileDocs {
@@ -165,6 +170,7 @@ impl LineFileDocs {
             id: AtomicI32::new(0),
             path: path.to_string(),
             random: JdkRandom::new(random.next_long()),
+            thread_docs: CloseableThreadLocal::new(|| None),
         };
         let reader = docs.open()?;
         *docs.lock() = Some(reader);
@@ -184,9 +190,10 @@ impl LineFileDocs {
         self.reader.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// `close()`.
+    /// `close()`: `IOUtils.close(reader, threadDocs)`.
     pub fn close(&self) {
         *self.lock() = None;
+        self.thread_docs.close();
     }
 
     /// `randomSeekPos(random, size)`.
@@ -301,7 +308,7 @@ impl LineFileDocs {
     ///
     /// The file's errors; `RuntimeException` (`line: [...] is in an invalid
     /// format !`) for a line without two tabs.
-    pub fn next_doc(&self) -> Result<Document> {
+    pub fn next_doc(&self) -> Result<SharedDocument> {
         let line = {
             let mut guard = self.lock();
             let reader = guard
@@ -328,6 +335,19 @@ impl LineFileDocs {
             }
         };
 
+        let doc_state = {
+            let slot = self.thread_docs.get();
+            let mut slot = slot.borrow_mut();
+            match slot.as_ref() {
+                Some(doc_state) => Arc::clone(doc_state),
+                None => {
+                    let doc_state = Arc::new(DocState::new()?);
+                    *slot = Some(Arc::clone(&doc_state));
+                    doc_state
+                }
+            }
+        };
+
         let invalid = || LuceneError::Unchecked {
             class: "java.lang.RuntimeException",
             message: Some(format!("line: [{line}] is in an invalid format !")),
@@ -339,27 +359,37 @@ impl LineFileDocs {
             .map(|i| i + spot + 1)
             .ok_or_else(invalid)?;
 
-        let body = &line[spot2 + 1..];
+        doc_state
+            .body
+            .set_string_value(line[spot2 + 1..].to_string())?;
         let title = &line[..spot];
-        let date = &line[spot + 1..spot2];
+        doc_state.title.set_string_value(title.to_string())?;
+        doc_state
+            .title_tokenized
+            .set_string_value(title.to_string())?;
+        doc_state
+            .date
+            .set_string_value(line[spot + 1..spot2].to_string())?;
         let i = self.id.fetch_add(1, Ordering::SeqCst);
-        let page_views = self.random.next_int_bound(10_000);
+        doc_state.id.set_string_value(i.to_string())?;
+        doc_state.id_num.set_value(i);
+        doc_state
+            .page_views
+            .set_value(i64::from(self.random.next_int_bound(10_000)));
 
-        let doc = doc_state(title, body, date, i, page_views)?;
         if self.random.next_int_bound(5) == 4 {
             // Make some sparse fields
-            //
-            // Java copies the document's fields into a new `Document`, adds
-            // the sparse fields to it, and then returns `docState.doc`, not
-            // that document: the draws happen, the sparse fields are dropped.
-            // The port draws the same values and drops the same fields.
-            let mut sparse = Document::new();
+            let mut doc = Document::new();
+            for field in doc_state.doc.borrow().get_fields() {
+                doc.add_shared(Arc::clone(field));
+            }
+
             // String.length(), in UTF-16 code units.
             let line_length = line.encode_utf16().count() as i32;
             let title_length = title.encode_utf16().count() as i32;
             if self.random.next_int_bound(3) == 1 {
                 let x = self.random.next_int_bound(4);
-                sparse.add(Box::new(IntPoint::new(
+                doc.add(Box::new(IntPoint::new(
                     &format!("docLength{x}"),
                     &[line_length],
                 )?));
@@ -367,7 +397,7 @@ impl LineFileDocs {
 
             if self.random.next_int_bound(3) == 1 {
                 let x = self.random.next_int_bound(4);
-                sparse.add(Box::new(IntPoint::new(
+                doc.add(Box::new(IntPoint::new(
                     &format!("docTitleLength{x}"),
                     &[title_length],
                 )?));
@@ -375,62 +405,80 @@ impl LineFileDocs {
 
             if self.random.next_int_bound(3) == 1 {
                 let x = self.random.next_int_bound(4);
-                sparse.add(Box::new(NumericDocValuesField::new(
+                doc.add(Box::new(NumericDocValuesField::new(
                     &format!("docLength{x}"),
                     i64::from(line_length),
                 )));
             }
 
             // TODO: more random sparse fields here too
-            drop(sparse);
         }
-        Ok(doc)
+
+        Ok(Arc::clone(&doc_state.doc))
     }
 }
 
-/// The `DocState` document holding one line's values: `title`
-/// (`KeywordField`), `titleTokenized` and `body` (`TextField.TYPE_STORED`
-/// with positions and term vectors with offsets and positions), `docid`
-/// (`StringField`, stored), `docid_int` (`IntField`), `date` (`StringField`,
-/// stored), `page_views` (`NumericDocValuesField`).
-fn doc_state(title: &str, body: &str, date: &str, id: i32, page_views: i32) -> Result<Document> {
-    let mut doc = Document::new();
-    doc.add(Box::new(KeywordField::new(
-        "title",
-        title.to_string(),
-        Store::NO,
-    )?));
+/// `DocState`: the per-thread document and the fields `nextDoc` changes in
+/// place.
+struct DocState {
+    doc: SharedDocument,
+    title_tokenized: Arc<Field>,
+    title: Arc<KeywordField>,
+    body: Arc<Field>,
+    id: Arc<StringField>,
+    id_num: Arc<IntField>,
+    date: Arc<StringField>,
+    page_views: Arc<NumericDocValuesField>,
+}
 
-    let text_stored = TextField::new("", String::new(), Store::YES)?;
-    let ft = FieldType::new_from(text_stored.field_type());
-    ft.set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)?;
-    ft.set_store_term_vectors(true)?;
-    ft.set_store_term_vector_offsets(true)?;
-    ft.set_store_term_vector_positions(true)?;
+impl DocState {
+    /// `new DocState()`.
+    fn new() -> Result<Self> {
+        let mut doc = Document::new();
 
-    doc.add(Box::new(Field::new(
-        "titleTokenized",
-        title.to_string(),
-        ft.clone(),
-    )?));
-    doc.add(Box::new(Field::new("body", body.to_string(), ft)?));
-    doc.add(Box::new(StringField::new(
-        "docid",
-        id.to_string(),
-        Store::YES,
-    )?));
-    doc.add(Box::new(IntField::new("docid_int", id, Store::NO)));
-    doc.add(Box::new(StringField::new(
-        "date",
-        date.to_string(),
-        Store::YES,
-    )?));
-    // A numeric DV field that can be used for DV updates
-    doc.add(Box::new(NumericDocValuesField::new(
-        "page_views",
-        i64::from(page_views),
-    )));
-    Ok(doc)
+        let title = Arc::new(KeywordField::new("title", String::new(), Store::NO)?);
+        doc.add_shared(Arc::clone(&title) as Arc<dyn IndexableField>);
+
+        let ft = Arc::new(FieldType::new_from(TextField::type_stored()));
+        ft.set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)?;
+        ft.set_store_term_vectors(true)?;
+        ft.set_store_term_vector_offsets(true)?;
+        ft.set_store_term_vector_positions(true)?;
+
+        let title_tokenized = Arc::new(Field::new(
+            "titleTokenized",
+            String::new(),
+            Arc::clone(&ft),
+        )?);
+        doc.add_shared(Arc::clone(&title_tokenized) as Arc<dyn IndexableField>);
+
+        let body = Arc::new(Field::new("body", String::new(), ft)?);
+        doc.add_shared(Arc::clone(&body) as Arc<dyn IndexableField>);
+
+        let id = Arc::new(StringField::new("docid", String::new(), Store::YES)?);
+        doc.add_shared(Arc::clone(&id) as Arc<dyn IndexableField>);
+
+        let id_num = Arc::new(IntField::new("docid_int", 0, Store::NO));
+        doc.add_shared(Arc::clone(&id_num) as Arc<dyn IndexableField>);
+
+        let date = Arc::new(StringField::new("date", String::new(), Store::YES)?);
+        doc.add_shared(Arc::clone(&date) as Arc<dyn IndexableField>);
+
+        // A numeric DV field that can be used for DV updates
+        let page_views = Arc::new(NumericDocValuesField::new("page_views", 0));
+        doc.add_shared(Arc::clone(&page_views) as Arc<dyn IndexableField>);
+
+        Ok(Self {
+            doc: Arc::new(AtomicRefCell::new(doc)),
+            title_tokenized,
+            title,
+            body,
+            id,
+            id_num,
+            date,
+            page_views,
+        })
+    }
 }
 
 /// `java.time.LocalDateTime`, the values

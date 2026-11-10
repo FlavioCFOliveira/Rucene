@@ -80,8 +80,8 @@ fn set_features(doc: &mut Document, values: &[f32]) -> Result<()> {
     let fields = doc.get_fields_by_name_mut("features");
     for (field, value) in fields.into_iter().zip(values) {
         field
-            .as_any_mut()
-            .and_then(|any| any.downcast_mut::<FeatureField>())
+            .as_any()
+            .and_then(|any| any.downcast_ref::<FeatureField>())
             .expect("INVARIANT: the document holds FeatureFields named `features`")
             .set_feature_value(*value)?;
     }

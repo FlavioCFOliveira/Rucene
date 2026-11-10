@@ -488,24 +488,16 @@ fn doc_get(doc: &Document, name: &str) -> Option<String> {
     doc.get_values(name).into_iter().next()
 }
 
-/// A field the Java test keeps and adds to every document, changed between
-/// documents: the documents that held it were indexed and dropped, so the
-/// test holds it alone again (Rust forbids a `&mut` to a field a live
-/// document shares; see `Document::get_field_mut`).
-fn exclusive<T>(field: &mut Arc<T>) -> &mut T {
-    Arc::get_mut(field).expect("INVARIANT: no live document holds the field")
-}
-
 /// `field1` (`i == 0`) or `field2` (`i == 1`) of
 /// `testSortedSetEnumAdvanceIndependently`: the `i`-th
 /// `SortedSetDocValuesField` named "field" that the Java test keeps after
 /// `doc.add`.
-fn sorted_set_field(doc: &mut Document, i: usize) -> &mut SortedSetDocValuesField {
+fn sorted_set_field(doc: &mut Document, i: usize) -> &SortedSetDocValuesField {
     doc.get_fields_by_name_mut("field")
         .into_iter()
         .nth(i)
-        .and_then(|f| f.as_any_mut())
-        .and_then(|a| a.downcast_mut::<SortedSetDocValuesField>())
+        .and_then(|f| f.as_any())
+        .and_then(|a| a.downcast_ref::<SortedSetDocValuesField>())
         .expect("INVARIANT: the document holds two SortedSetDocValuesFields")
 }
 
@@ -3808,36 +3800,36 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         {
             let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(mock_analyzer()));
             let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), conf)?;
-            let mut id_field = Arc::new(StringField::new("id", String::new(), Store::NO)?);
-            let mut stored_bin_field = Arc::new(StoredField::new_bytes(
+            let id_field = Arc::new(StringField::new("id", String::new(), Store::NO)?);
+            let stored_bin_field = Arc::new(StoredField::new_bytes(
                 "storedBin",
                 BytesRef::new(Vec::new()),
             )?);
-            let mut dv_bin_field = Arc::new(BinaryDocValuesField::new(
+            let dv_bin_field = Arc::new(BinaryDocValuesField::new(
                 "dvBin",
                 LuceneTestCase::new_bytes_ref(),
             ));
-            let mut dv_sorted_field = Arc::new(SortedDocValuesField::new(
+            let dv_sorted_field = Arc::new(SortedDocValuesField::new(
                 "dvSorted",
                 LuceneTestCase::new_bytes_ref(),
             ));
-            let mut stored_numeric_field =
+            let stored_numeric_field =
                 Arc::new(StoredField::new_string("storedNum", String::new())?);
-            let mut dv_numeric_field = Arc::new(NumericDocValuesField::new("dvNum", 0));
+            let dv_numeric_field = Arc::new(NumericDocValuesField::new("dvNum", 0));
 
             // index some docs
             let num_docs = TestUtil::next_int(&*random(), 1025, 2047);
             for i in 0..num_docs {
-                exclusive(&mut id_field).set_string_value(i.to_string())?;
+                id_field.set_string_value(i.to_string())?;
                 let length = TestUtil::next_int(&*random(), 0, 8) as usize;
                 let mut buffer = vec![0u8; length];
                 random().next_bytes(&mut buffer);
-                exclusive(&mut stored_bin_field).set_bytes_value(BytesRef::new(buffer.clone()))?;
-                exclusive(&mut dv_bin_field).set_bytes_value(BytesRef::new(buffer.clone()))?;
-                exclusive(&mut dv_sorted_field).set_bytes_value(BytesRef::new(buffer))?;
+                stored_bin_field.set_bytes_value(BytesRef::new(buffer.clone()))?;
+                dv_bin_field.set_bytes_value(BytesRef::new(buffer.clone()))?;
+                dv_sorted_field.set_bytes_value(BytesRef::new(buffer))?;
                 let numeric_value = random().next_long();
-                exclusive(&mut stored_numeric_field).set_string_value(numeric_value.to_string())?;
-                exclusive(&mut dv_numeric_field).set_value(numeric_value);
+                stored_numeric_field.set_string_value(numeric_value.to_string())?;
+                dv_numeric_field.set_value(numeric_value);
                 let mut doc = Document::new();
                 doc.add_shared(Arc::clone(&id_field) as Arc<dyn IndexableField>);
                 if random().next_int_bound(4) > 0 {

@@ -123,7 +123,7 @@ pub fn add_line_file_docs(riw: &rucene_test_framework::index::RandomIndexWriter)
     // tested, e.g. IntPoint was recently added to it:
     let docs = rucene_test_framework::util::LineFileDocs::with_default_file(&*random())?;
     for i in 0..100 {
-        riw.add_document(&docs.next_doc()?)?;
+        riw.add_document(&*docs.next_doc()?.borrow())?;
         if random().next_int_bound(7) == 0 {
             riw.commit()?;
         }
@@ -1291,7 +1291,7 @@ impl rucene::index::merge_scheduler::MergeScheduler for PrologueMergeScheduler {
 pub fn field_mut<'a>(
     doc: &'a mut rucene::document::Document,
     name: &str,
-) -> &'a mut rucene::document::Field {
+) -> &'a rucene::document::Field {
     field_mut_as::<rucene::document::Field>(doc, name)
 }
 
@@ -1306,7 +1306,7 @@ pub fn field_mut<'a>(
 pub fn field_mut_as<'a, T: rucene::index::IndexableField + 'static>(
     doc: &'a mut rucene::document::Document,
     name: &str,
-) -> &'a mut T {
+) -> &'a T {
     doc.get_field_mut_as::<T>(name).unwrap_or_else(|| {
         randomizedtesting::jdk::exception::Throwable::new(
             "java.lang.ClassCastException",

@@ -226,19 +226,19 @@ fn pack_rejects_a_point_of_no_dimensions() {
 
 #[test]
 fn point_single_value_setters_rewrite_the_packed_bytes() {
-    let mut int_point = IntPoint::new("count", &[7]).unwrap();
+    let int_point = IntPoint::new("count", &[7]).unwrap();
     int_point.set_int_value(42).unwrap();
     assert_eq!(hex(&int_point.binary_value().unwrap()), "8000002a");
 
-    let mut long_point = LongPoint::new("ts", &[7i64]).unwrap();
+    let long_point = LongPoint::new("ts", &[7i64]).unwrap();
     long_point.set_long_value(123456789i64).unwrap();
     assert_eq!(hex(&long_point.binary_value().unwrap()), "80000000075bcd15");
 
-    let mut float_point = FloatPoint::new("temp", &[7.0f32]).unwrap();
+    let float_point = FloatPoint::new("temp", &[7.0f32]).unwrap();
     float_point.set_float_value(2.5f32).unwrap();
     assert_eq!(hex(&float_point.binary_value().unwrap()), "c0200000");
 
-    let mut double_point = DoublePoint::new("temp", &[7.0f64]).unwrap();
+    let double_point = DoublePoint::new("temp", &[7.0f64]).unwrap();
     double_point.set_double_value(2.5f64).unwrap();
     assert_eq!(
         hex(&double_point.binary_value().unwrap()),
@@ -250,7 +250,7 @@ fn point_single_value_setters_rewrite_the_packed_bytes() {
 fn point_single_value_setter_refuses_a_multi_dimensional_field() {
     // Java's `setIntValue` delegates to `setIntValues(value)`, whose dimension
     // check throws for a field created with more than one dimension.
-    let mut field = IntPoint::new("box", &[1, 2]).unwrap();
+    let field = IntPoint::new("box", &[1, 2]).unwrap();
     assert!(field.set_int_value(3).is_err());
     assert_eq!(hex(&field.binary_value().unwrap()), "8000000180000002");
 }
@@ -272,19 +272,19 @@ fn numeric_field(value: NumericValue) -> Field {
 
 #[test]
 fn field_typed_setters_replace_a_value_of_the_same_type() {
-    let mut field = numeric_field(NumericValue::Int(1));
+    let field = numeric_field(NumericValue::Int(1));
     field.set_int_value(42).unwrap();
     assert_eq!(field.numeric_value(), Some(NumericValue::Int(42)));
 
-    let mut field = numeric_field(NumericValue::Long(1));
+    let field = numeric_field(NumericValue::Long(1));
     field.set_long_value(123456789).unwrap();
     assert_eq!(field.numeric_value(), Some(NumericValue::Long(123456789)));
 
-    let mut field = numeric_field(NumericValue::Float(1.0));
+    let field = numeric_field(NumericValue::Float(1.0));
     field.set_float_value(2.5).unwrap();
     assert_eq!(field.numeric_value(), Some(NumericValue::Float(2.5)));
 
-    let mut field = numeric_field(NumericValue::Double(1.0));
+    let field = numeric_field(NumericValue::Double(1.0));
     field.set_double_value(2.5).unwrap();
     assert_eq!(field.numeric_value(), Some(NumericValue::Double(2.5)));
 }
@@ -292,7 +292,7 @@ fn field_typed_setters_replace_a_value_of_the_same_type() {
 #[test]
 fn field_typed_setters_refuse_to_change_the_value_type() {
     // Java: "cannot change value type from Integer to Long".
-    let mut field = numeric_field(NumericValue::Int(1));
+    let field = numeric_field(NumericValue::Int(1));
     let error = field.set_long_value(1).unwrap_err().to_string();
     assert!(
         error.contains("cannot change value type from Integer to Long"),
@@ -301,14 +301,14 @@ fn field_typed_setters_refuse_to_change_the_value_type() {
     // The rejected call left the value alone.
     assert_eq!(field.numeric_value(), Some(NumericValue::Int(1)));
 
-    let mut field = numeric_field(NumericValue::Double(1.0));
+    let field = numeric_field(NumericValue::Double(1.0));
     let error = field.set_float_value(1.0).unwrap_err().to_string();
     assert!(
         error.contains("cannot change value type from Double to Float"),
         "unexpected message: {error}"
     );
 
-    let mut field = Field::new("s", "text".to_string(), {
+    let field = Field::new("s", "text".to_string(), {
         let ft = FieldType::new();
         ft.set_stored(true).unwrap();
         ft
@@ -328,7 +328,7 @@ fn field_byte_and_short_setters_refuse_every_constructible_field() {
     // Lucene Core, and each demands one be there already: no constructor and no
     // subclass ever puts one there, so both always throw. They answer the same
     // way here.
-    let mut field = numeric_field(NumericValue::Int(1));
+    let field = numeric_field(NumericValue::Int(1));
     let error = field.set_byte_value(1).unwrap_err().to_string();
     assert!(
         error.contains("cannot change value type from Integer to Byte"),
@@ -371,7 +371,7 @@ fn float_doc_values_field_matches_java_raw_bits() {
             "FloatDocValuesField({value}) must encode as Lucene does"
         );
 
-        let mut reused = FloatDocValuesField::new("score", 1.0f32);
+        let reused = FloatDocValuesField::new("score", 1.0f32);
         reused.set_value(value);
         assert_eq!(
             reused.numeric_value(),
@@ -396,7 +396,7 @@ fn double_doc_values_field_matches_java_raw_bits() {
             "DoubleDocValuesField({value}) must encode as Lucene does"
         );
 
-        let mut reused = DoubleDocValuesField::new("score", 1.0f64);
+        let reused = DoubleDocValuesField::new("score", 1.0f64);
         reused.set_value(value);
         assert_eq!(
             reused.numeric_value(),
@@ -413,7 +413,7 @@ fn typed_field_setters_refresh_both_the_indexed_and_the_stored_value() {
     // refresh `storedValue`, so a reused field instance stores what it indexes.
     // The float and double families index the *sortable* encoding while storing
     // the value itself, which is why the two numbers differ.
-    let mut int_field = IntField::new("i", 1, Store::YES);
+    let int_field = IntField::new("i", 1, Store::YES);
     int_field.set_value(42);
     assert_eq!(int_field.numeric_value(), Some(NumericValue::Int(42)));
     assert_eq!(
@@ -421,7 +421,7 @@ fn typed_field_setters_refresh_both_the_indexed_and_the_stored_value() {
         Some(StoredValue::Integer(42))
     );
 
-    let mut float_field = FloatField::new("f", 1.0f32, Store::YES);
+    let float_field = FloatField::new("f", 1.0f32, Store::YES);
     float_field.set_value(-2.5f32);
     assert_eq!(
         float_field.numeric_value(),
@@ -432,7 +432,7 @@ fn typed_field_setters_refresh_both_the_indexed_and_the_stored_value() {
         Some(StoredValue::Float(-2.5f32))
     );
 
-    let mut double_field = DoubleField::new("d", 1.0f64, Store::YES);
+    let double_field = DoubleField::new("d", 1.0f64, Store::YES);
     double_field.set_value(-2.5f64);
     assert_eq!(
         double_field.numeric_value(),

@@ -311,10 +311,10 @@ static CUSTOM5: LazyLock<FieldType> = LazyLock::new(|| {
 });
 
 /// `idField`: the `id` field the indexer thread's document holds.
-fn id_field_of(doc: &mut Document) -> &mut Field {
+fn id_field_of(doc: &mut Document) -> &Field {
     doc.get_field_mut("id")
-        .and_then(|field| field.as_any_mut())
-        .and_then(|any| any.downcast_mut::<Field>())
+        .and_then(|field| field.as_any())
+        .and_then(|any| any.downcast_ref::<Field>())
         .expect("INVARIANT: the document holds the Field `id`")
 }
 
@@ -2330,7 +2330,7 @@ fn test_null_stored_bytes_field_reuse() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
     let iw = plain_mock_writer(&dir)?;
     // add good document
-    let mut the_field = stored_bytes_field("foo", BytesRef::from_char_sequence("hello"))?;
+    let the_field = stored_bytes_field("foo", BytesRef::from_char_sequence("hello"))?;
     let mut doc = Document::new();
     doc.add(Box::new(copy_bytes_field(&the_field)?));
     iw.add_document(&doc)?;
@@ -2372,7 +2372,7 @@ fn test_null_stored_bytes_ref_field_reuse() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
     let iw = plain_mock_writer(&dir)?;
     // add good document
-    let mut the_field = stored_bytes_field("foo", BytesRef::from_char_sequence("hello"))?;
+    let the_field = stored_bytes_field("foo", BytesRef::from_char_sequence("hello"))?;
     let mut doc = Document::new();
     doc.add(Box::new(copy_bytes_field(&the_field)?));
     iw.add_document(&doc)?;

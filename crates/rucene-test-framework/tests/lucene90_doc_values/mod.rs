@@ -64,24 +64,16 @@ fn npe(what: &str) -> ! {
     Throwable::new("java.lang.NullPointerException", format!("{what} is null")).throw()
 }
 
-/// The field the Java test keeps and adds to every document, changed between
-/// documents: the documents that held it were indexed and dropped, so the
-/// test holds it alone again (Rust forbids a `&mut` to a field a live
-/// document shares; see `Document::get_field_mut`).
-fn exclusive<T>(field: &mut Arc<T>) -> &mut T {
-    Arc::get_mut(field).expect("INVARIANT: no live document holds the field")
-}
-
 /// The `i`-th field of class `T` named `name` that the Java test keeps after
 /// `doc.add` (`field1`, `field2`, ...), reached through the document.
 fn nth_field_mut<'a, T: rucene::index::IndexableField + 'static>(
     doc: &'a mut Document,
     name: &str,
     i: usize,
-) -> &'a mut T {
+) -> &'a T {
     doc.get_fields_by_name_mut(name)
         .into_iter()
-        .filter_map(|f| f.as_any_mut().and_then(|a| a.downcast_mut::<T>()))
+        .filter_map(|f| f.as_any().and_then(|a| a.downcast_ref::<T>()))
         .nth(i)
         .expect("INVARIANT: the document holds the field the test keeps")
 }
@@ -91,7 +83,7 @@ fn nth_field_mut<'a, T: rucene::index::IndexableField + 'static>(
 fn field_mut<'a, T: rucene::index::IndexableField + 'static>(
     doc: &'a mut Document,
     name: &str,
-) -> &'a mut T {
+) -> &'a T {
     nth_field_mut::<T>(doc, name, 0)
 }
 
@@ -1040,20 +1032,20 @@ fn test_numeric_field_jump_tables(suite: &CompressingDocValuesSuite) -> Result<(
     let mut dir = LuceneTestCase::new_directory();
     let iw = create_fast_index_writer(&dir.as_directory(), max_doc)?;
 
-    let mut id_field = Arc::new(LuceneTestCase::new_string_field("id", "", Store::NO));
-    let mut stored_field = Arc::new(LuceneTestCase::new_string_field("stored", "", Store::YES));
-    let mut dv_field = Arc::new(NumericDocValuesField::new("dv", 0));
+    let id_field = Arc::new(LuceneTestCase::new_string_field("id", "", Store::NO));
+    let stored_field = Arc::new(LuceneTestCase::new_string_field("stored", "", Store::YES));
+    let dv_field = Arc::new(NumericDocValuesField::new("dv", 0));
 
     for i in 0..max_doc {
         let mut doc = Document::new();
-        exclusive(&mut id_field).set_string_value(format!("{i:b}"))?;
+        id_field.set_string_value(format!("{i:b}"))?;
         doc.add_shared(Arc::clone(&id_field) as Arc<dyn IndexableField>);
         if random().next_int_bound(100) > 10 {
             // Skip 10% to make DENSE blocks
             let value = random().next_int_bound(100000);
-            exclusive(&mut stored_field).set_string_value(value.to_string())?;
+            stored_field.set_string_value(value.to_string())?;
             doc.add_shared(Arc::clone(&stored_field) as Arc<dyn IndexableField>);
-            exclusive(&mut dv_field).set_value(i64::from(value));
+            dv_field.set_value(i64::from(value));
             doc.add_shared(Arc::clone(&dv_field) as Arc<dyn IndexableField>);
         }
         iw.add_document(&doc)?;

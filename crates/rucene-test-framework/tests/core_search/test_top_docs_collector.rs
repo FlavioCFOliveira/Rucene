@@ -861,7 +861,7 @@ fn test_realistic_concurrent_minimum_score(_f: &mut TopDocsCollectorTest) -> Res
         let result = (|| -> Result<()> {
             let num_docs = LuceneTestCase::at_least(100);
             for _i in 0..num_docs {
-                writer.add_document(&docs.next_doc()?)?;
+                writer.add_document(&*docs.next_doc()?.borrow())?;
             }
             Ok(())
         })();

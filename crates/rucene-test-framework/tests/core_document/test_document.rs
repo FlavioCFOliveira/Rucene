@@ -364,7 +364,7 @@ fn do_assert(doc: &Document, from_index: bool) {
 }
 
 /// `field`: the `StringField` "id" the Java test keeps after `doc.add`.
-fn id_field(doc: &mut Document) -> &mut StringField {
+fn id_field(doc: &mut Document) -> &StringField {
     doc.get_field_mut_as::<StringField>("id")
         .expect("INVARIANT: the document holds the StringField `id`")
 }

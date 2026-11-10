@@ -17,12 +17,10 @@
 
 //! Port of `org.apache.lucene.tests.index.DocHelper`.
 //!
-//! **Declared divergence.** Java's fields (`textField1`, `fields`, the maps
-//! `all`, `indexed`, …) are `static` instances shared by every document
-//! `setupDoc` fills. A Rust [`Document`] owns its fields, so each accessor here
-//! builds new instances with the same name, value and type; a test that
-//! mutates a Java static field and expects another document to see it has no
-//! counterpart.
+//! Java's field types and fields (`customType`, `textField1`, `fields`, …) are
+//! `static` instances shared by every document `setupDoc` fills; here each is
+//! a lazily built `static` shared through an [`Arc`], and `setupDoc` adds the
+//! same objects ([`Document::add_shared`]).
 
 use std::sync::{Arc, LazyLock};
 
@@ -136,246 +134,339 @@ fn frozen(ft: FieldType) -> FieldType {
     ft
 }
 
-/// `Field.setXxx` on a type that is not frozen cannot fail.
+/// A setter call on a field type that is not frozen yet.
 fn set(r: Result<()>) {
     r.expect("INVARIANT: the field type is not frozen yet");
 }
 
+/// A `static final` of `DocHelper`: one instance, built on first use and
+/// shared by every caller, as Java's static initializer builds it once.
+type Static<T> = LazyLock<Arc<T>>;
+
+/// `new Field(name, value, type)` for DocHelper's fields.
+fn new_field(name: &str, value: &str, ft: &Arc<FieldType>) -> Field {
+    Field::new(name, value.to_string(), Arc::clone(ft))
+        .expect("INVARIANT: DocHelper's fields are valid")
+}
+
+static CUSTOM_TYPE: Static<FieldType> =
+    LazyLock::new(|| Arc::new(FieldType::new_from(TextField::type_stored())));
+
+static TEXT_TYPE_STORED_WITH_TVS: Static<FieldType> = LazyLock::new(|| {
+    let ft = FieldType::new_from(TextField::type_stored());
+    set(ft.set_store_term_vectors(true));
+    set(ft.set_store_term_vector_positions(true));
+    set(ft.set_store_term_vector_offsets(true));
+    Arc::new(frozen(ft))
+});
+
+static CUSTOM_TYPE3: Static<FieldType> = LazyLock::new(|| {
+    let ft = FieldType::new_from(TextField::type_stored());
+    set(ft.set_omit_norms(true));
+    Arc::new(ft)
+});
+
+static CUSTOM_TYPE5: Static<FieldType> = LazyLock::new(|| {
+    let ft = FieldType::new_from(TextField::type_stored());
+    set(ft.set_omit_norms(true));
+    set(ft.set_tokenized(false));
+    Arc::new(ft)
+});
+
+static CUSTOM_TYPE6: Static<FieldType> = LazyLock::new(|| {
+    let ft = FieldType::new_from(TextField::type_stored());
+    set(ft.set_index_options(IndexOptions::DOCS));
+    Arc::new(ft)
+});
+
+static CUSTOM_TYPE7: Static<FieldType> = LazyLock::new(|| {
+    let ft = FieldType::new();
+    set(ft.set_stored(true));
+    Arc::new(ft)
+});
+
+static STRING_TYPE_STORED_WITH_TVS: Static<FieldType> = LazyLock::new(|| {
+    let ft = FieldType::new_from(StringField::type_stored());
+    set(ft.set_store_term_vectors(true));
+    set(ft.set_store_term_vector_positions(true));
+    set(ft.set_store_term_vector_offsets(true));
+    Arc::new(frozen(ft))
+});
+
+static CUSTOM_TYPE8: Static<FieldType> = LazyLock::new(|| {
+    let ft = FieldType::new_from(TextField::type_not_stored());
+    set(ft.set_store_term_vectors(true));
+    Arc::new(ft)
+});
+
+static TEXT_FIELD1: Static<Field> =
+    LazyLock::new(|| Arc::new(new_field(TEXT_FIELD_1_KEY, FIELD_1_TEXT, &CUSTOM_TYPE)));
+
+static TEXT_FIELD2: Static<Field> = LazyLock::new(|| {
+    Arc::new(new_field(
+        TEXT_FIELD_2_KEY,
+        FIELD_2_TEXT,
+        &TEXT_TYPE_STORED_WITH_TVS,
+    ))
+});
+
+static TEXT_FIELD3: Static<Field> =
+    LazyLock::new(|| Arc::new(new_field(TEXT_FIELD_3_KEY, FIELD_3_TEXT, &CUSTOM_TYPE3)));
+
+static KEY_FIELD: Static<StringField> = LazyLock::new(|| {
+    Arc::new(
+        StringField::new(KEYWORD_FIELD_KEY, KEYWORD_TEXT.to_string(), Store::YES)
+            .expect("INVARIANT: DocHelper's fields are valid"),
+    )
+});
+
+static NO_NORMS_FIELD: Static<Field> =
+    LazyLock::new(|| Arc::new(new_field(NO_NORMS_KEY, NO_NORMS_TEXT, &CUSTOM_TYPE5)));
+
+static NO_TF_FIELD: Static<Field> =
+    LazyLock::new(|| Arc::new(new_field(NO_TF_KEY, NO_TF_TEXT, &CUSTOM_TYPE6)));
+
+static UN_IND_FIELD: Static<Field> = LazyLock::new(|| {
+    Arc::new(new_field(
+        UNINDEXED_FIELD_KEY,
+        UNINDEXED_FIELD_TEXT,
+        &CUSTOM_TYPE7,
+    ))
+});
+
+static UN_STORED_FIELD1: Static<TextField> = LazyLock::new(|| {
+    Arc::new(
+        TextField::new(
+            UNSTORED_FIELD_1_KEY,
+            UNSTORED_1_FIELD_TEXT.to_string(),
+            Store::NO,
+        )
+        .expect("INVARIANT: DocHelper's fields are valid"),
+    )
+});
+
+static UN_STORED_FIELD2: Static<Field> = LazyLock::new(|| {
+    Arc::new(new_field(
+        UNSTORED_FIELD_2_KEY,
+        UNSTORED_2_FIELD_TEXT,
+        &CUSTOM_TYPE8,
+    ))
+});
+
+static LAZY_FIELD_BINARY: Static<StoredField> = LazyLock::new(|| {
+    Arc::new(
+        StoredField::new_bytes(
+            LAZY_FIELD_BINARY_KEY,
+            BytesRef::new(LAZY_FIELD_BINARY_BYTES.to_vec()),
+        )
+        .expect("INVARIANT: DocHelper's fields are valid"),
+    )
+});
+
+static LAZY_FIELD: Static<Field> =
+    LazyLock::new(|| Arc::new(new_field(LAZY_FIELD_KEY, LAZY_FIELD_TEXT, &CUSTOM_TYPE)));
+
+static LARGE_LAZY_FIELD: Static<Field> = LazyLock::new(|| {
+    Arc::new(new_field(
+        LARGE_LAZY_FIELD_KEY,
+        &LARGE_LAZY_FIELD_TEXT,
+        &CUSTOM_TYPE,
+    ))
+});
+
+static TEXT_UTF_FIELD1: Static<Field> = LazyLock::new(|| {
+    Arc::new(new_field(
+        TEXT_FIELD_UTF1_KEY,
+        FIELD_UTF1_TEXT,
+        &CUSTOM_TYPE,
+    ))
+});
+
+static TEXT_UTF_FIELD2: Static<Field> = LazyLock::new(|| {
+    Arc::new(new_field(
+        TEXT_FIELD_UTF2_KEY,
+        FIELD_UTF2_TEXT,
+        &TEXT_TYPE_STORED_WITH_TVS,
+    ))
+});
+
+/// `fields`, in Java's order.
+static FIELDS: LazyLock<Vec<Arc<dyn IndexableField>>> = LazyLock::new(|| {
+    vec![
+        DocHelper::text_field1(),
+        DocHelper::text_field2(),
+        DocHelper::text_field3(),
+        DocHelper::key_field(),
+        DocHelper::no_norms_field(),
+        DocHelper::no_tf_field(),
+        DocHelper::un_ind_field(),
+        DocHelper::un_stored_field1(),
+        DocHelper::un_stored_field2(),
+        DocHelper::text_utf_field1(),
+        DocHelper::text_utf_field2(),
+        DocHelper::lazy_field(),
+        DocHelper::lazy_field_binary(),
+        DocHelper::large_lazy_field(),
+    ]
+});
+
 impl DocHelper {
     /// `customType`: `new FieldType(TextField.TYPE_STORED)`.
-    pub fn custom_type() -> FieldType {
-        FieldType::new_from(TextField::type_stored())
+    pub fn custom_type() -> Arc<FieldType> {
+        Arc::clone(&CUSTOM_TYPE)
     }
 
     /// `TEXT_TYPE_STORED_WITH_TVS`: `TextField.TYPE_STORED` with term vectors,
     /// their positions and offsets, frozen.
-    pub fn text_type_stored_with_tvs() -> FieldType {
-        let ft = FieldType::new_from(TextField::type_stored());
-        set(ft.set_store_term_vectors(true));
-        set(ft.set_store_term_vector_positions(true));
-        set(ft.set_store_term_vector_offsets(true));
-        frozen(ft)
+    pub fn text_type_stored_with_tvs() -> Arc<FieldType> {
+        Arc::clone(&TEXT_TYPE_STORED_WITH_TVS)
     }
 
     /// `customType3`: `TextField.TYPE_STORED` omitting norms.
-    pub fn custom_type3() -> FieldType {
-        let ft = FieldType::new_from(TextField::type_stored());
-        set(ft.set_omit_norms(true));
-        ft
+    pub fn custom_type3() -> Arc<FieldType> {
+        Arc::clone(&CUSTOM_TYPE3)
     }
 
     /// `customType5`: `TextField.TYPE_STORED` omitting norms, not tokenized.
-    pub fn custom_type5() -> FieldType {
-        let ft = FieldType::new_from(TextField::type_stored());
-        set(ft.set_omit_norms(true));
-        set(ft.set_tokenized(false));
-        ft
+    pub fn custom_type5() -> Arc<FieldType> {
+        Arc::clone(&CUSTOM_TYPE5)
     }
 
     /// `customType6`: `TextField.TYPE_STORED` indexing `DOCS` only.
-    pub fn custom_type6() -> FieldType {
-        let ft = FieldType::new_from(TextField::type_stored());
-        set(ft.set_index_options(IndexOptions::DOCS));
-        ft
+    pub fn custom_type6() -> Arc<FieldType> {
+        Arc::clone(&CUSTOM_TYPE6)
     }
 
     /// `customType7`: a stored, unindexed `new FieldType()`.
-    pub fn custom_type7() -> FieldType {
-        let ft = FieldType::new();
-        set(ft.set_stored(true));
-        ft
+    pub fn custom_type7() -> Arc<FieldType> {
+        Arc::clone(&CUSTOM_TYPE7)
     }
 
     /// `STRING_TYPE_STORED_WITH_TVS`: `StringField.TYPE_STORED` with term
     /// vectors, their positions and offsets, frozen.
-    pub fn string_type_stored_with_tvs() -> FieldType {
-        let string_field = StringField::new("", String::new(), Store::YES)
-            .expect("INVARIANT: a StringField of an empty value is valid");
-        let ft = FieldType::new_from(string_field.field_type());
-        set(ft.set_store_term_vectors(true));
-        set(ft.set_store_term_vector_positions(true));
-        set(ft.set_store_term_vector_offsets(true));
-        frozen(ft)
+    pub fn string_type_stored_with_tvs() -> Arc<FieldType> {
+        Arc::clone(&STRING_TYPE_STORED_WITH_TVS)
     }
 
     /// `customType8`: `TextField.TYPE_NOT_STORED` with term vectors.
-    pub fn custom_type8() -> FieldType {
-        let ft = FieldType::new_from(TextField::type_not_stored());
-        set(ft.set_store_term_vectors(true));
-        ft
-    }
-
-    fn field(name: &str, value: &str, ft: FieldType) -> Box<dyn IndexableField> {
-        Box::new(
-            Field::new(name, value.to_string(), ft)
-                .expect("INVARIANT: DocHelper's fields are valid"),
-        )
+    pub fn custom_type8() -> Arc<FieldType> {
+        Arc::clone(&CUSTOM_TYPE8)
     }
 
     /// `textField1`.
-    pub fn text_field1() -> Box<dyn IndexableField> {
-        Self::field(TEXT_FIELD_1_KEY, FIELD_1_TEXT, Self::custom_type())
+    pub fn text_field1() -> Arc<Field> {
+        Arc::clone(&TEXT_FIELD1)
     }
 
     /// `textField2`.
-    pub fn text_field2() -> Box<dyn IndexableField> {
-        Self::field(
-            TEXT_FIELD_2_KEY,
-            FIELD_2_TEXT,
-            Self::text_type_stored_with_tvs(),
-        )
+    pub fn text_field2() -> Arc<Field> {
+        Arc::clone(&TEXT_FIELD2)
     }
 
     /// `textField3`.
-    pub fn text_field3() -> Box<dyn IndexableField> {
-        Self::field(TEXT_FIELD_3_KEY, FIELD_3_TEXT, Self::custom_type3())
+    pub fn text_field3() -> Arc<Field> {
+        Arc::clone(&TEXT_FIELD3)
     }
 
     /// `keyField`: `new StringField(KEYWORD_FIELD_KEY, KEYWORD_TEXT,
     /// Field.Store.YES)`.
-    pub fn key_field() -> Box<dyn IndexableField> {
-        Box::new(
-            StringField::new(KEYWORD_FIELD_KEY, KEYWORD_TEXT.to_string(), Store::YES)
-                .expect("INVARIANT: DocHelper's fields are valid"),
-        )
+    pub fn key_field() -> Arc<StringField> {
+        Arc::clone(&KEY_FIELD)
     }
 
     /// `noNormsField`.
-    pub fn no_norms_field() -> Box<dyn IndexableField> {
-        Self::field(NO_NORMS_KEY, NO_NORMS_TEXT, Self::custom_type5())
+    pub fn no_norms_field() -> Arc<Field> {
+        Arc::clone(&NO_NORMS_FIELD)
     }
 
     /// `noTFField`.
-    pub fn no_tf_field() -> Box<dyn IndexableField> {
-        Self::field(NO_TF_KEY, NO_TF_TEXT, Self::custom_type6())
+    pub fn no_tf_field() -> Arc<Field> {
+        Arc::clone(&NO_TF_FIELD)
     }
 
     /// `unIndField`.
-    pub fn un_ind_field() -> Box<dyn IndexableField> {
-        Self::field(
-            UNINDEXED_FIELD_KEY,
-            UNINDEXED_FIELD_TEXT,
-            Self::custom_type7(),
-        )
+    pub fn un_ind_field() -> Arc<Field> {
+        Arc::clone(&UN_IND_FIELD)
     }
 
     /// `unStoredField1`: `new TextField(UNSTORED_FIELD_1_KEY,
     /// UNSTORED_1_FIELD_TEXT, Field.Store.NO)`.
-    pub fn un_stored_field1() -> Box<dyn IndexableField> {
-        Box::new(
-            TextField::new(
-                UNSTORED_FIELD_1_KEY,
-                UNSTORED_1_FIELD_TEXT.to_string(),
-                Store::NO,
-            )
-            .expect("INVARIANT: DocHelper's fields are valid"),
-        )
+    pub fn un_stored_field1() -> Arc<TextField> {
+        Arc::clone(&UN_STORED_FIELD1)
     }
 
     /// `unStoredField2`.
-    pub fn un_stored_field2() -> Box<dyn IndexableField> {
-        Self::field(
-            UNSTORED_FIELD_2_KEY,
-            UNSTORED_2_FIELD_TEXT,
-            Self::custom_type8(),
-        )
+    pub fn un_stored_field2() -> Arc<Field> {
+        Arc::clone(&UN_STORED_FIELD2)
     }
 
     /// `lazyFieldBinary`: `new StoredField(LAZY_FIELD_BINARY_KEY,
     /// LAZY_FIELD_BINARY_BYTES)`.
-    pub fn lazy_field_binary() -> Box<dyn IndexableField> {
-        Box::new(
-            StoredField::new_bytes(
-                LAZY_FIELD_BINARY_KEY,
-                BytesRef::new(LAZY_FIELD_BINARY_BYTES.to_vec()),
-            )
-            .expect("INVARIANT: DocHelper's fields are valid"),
-        )
+    pub fn lazy_field_binary() -> Arc<StoredField> {
+        Arc::clone(&LAZY_FIELD_BINARY)
     }
 
     /// `lazyField`.
-    pub fn lazy_field() -> Box<dyn IndexableField> {
-        Self::field(LAZY_FIELD_KEY, LAZY_FIELD_TEXT, Self::custom_type())
+    pub fn lazy_field() -> Arc<Field> {
+        Arc::clone(&LAZY_FIELD)
     }
 
     /// `largeLazyField`.
-    pub fn large_lazy_field() -> Box<dyn IndexableField> {
-        Self::field(
-            LARGE_LAZY_FIELD_KEY,
-            &LARGE_LAZY_FIELD_TEXT,
-            Self::custom_type(),
-        )
+    pub fn large_lazy_field() -> Arc<Field> {
+        Arc::clone(&LARGE_LAZY_FIELD)
     }
 
     /// `textUtfField1`.
-    pub fn text_utf_field1() -> Box<dyn IndexableField> {
-        Self::field(TEXT_FIELD_UTF1_KEY, FIELD_UTF1_TEXT, Self::custom_type())
+    pub fn text_utf_field1() -> Arc<Field> {
+        Arc::clone(&TEXT_UTF_FIELD1)
     }
 
     /// `textUtfField2`.
-    pub fn text_utf_field2() -> Box<dyn IndexableField> {
-        Self::field(
-            TEXT_FIELD_UTF2_KEY,
-            FIELD_UTF2_TEXT,
-            Self::text_type_stored_with_tvs(),
-        )
+    pub fn text_utf_field2() -> Arc<Field> {
+        Arc::clone(&TEXT_UTF_FIELD2)
     }
 
     /// `fields`: "ordered list of all the fields...", the binary field second
-    /// to last and the large one last.
-    pub fn fields() -> Vec<Box<dyn IndexableField>> {
-        vec![
-            Self::text_field1(),
-            Self::text_field2(),
-            Self::text_field3(),
-            Self::key_field(),
-            Self::no_norms_field(),
-            Self::no_tf_field(),
-            Self::un_ind_field(),
-            Self::un_stored_field1(),
-            Self::un_stored_field2(),
-            Self::text_utf_field1(),
-            Self::text_utf_field2(),
-            Self::lazy_field(),
-            Self::lazy_field_binary(),
-            Self::large_lazy_field(),
-        ]
+    /// to last and the large one last; the same field objects every document
+    /// [`setup_doc`](Self::setup_doc) fills holds.
+    pub fn fields() -> Vec<Arc<dyn IndexableField>> {
+        FIELDS.clone()
     }
 
     /// The `HashMap` of the fields of `fields` that `keep` accepts, keyed by
     /// name: the static initializer's `add(map, f)` calls.
-    fn map_of(keep: impl Fn(&dyn IndexableField) -> bool) -> JavaHashMap<Box<dyn IndexableField>> {
+    fn map_of(keep: impl Fn(&dyn IndexableField) -> bool) -> JavaHashMap<Arc<dyn IndexableField>> {
         let mut map = JavaHashMap::new();
-        for f in Self::fields() {
-            if keep(&*f) {
-                map.insert(f.name().to_string(), f);
+        for f in FIELDS.iter() {
+            if keep(&**f) {
+                map.insert(f.name().to_string(), Arc::clone(f));
             }
         }
         map
     }
 
     /// `all`.
-    pub fn all() -> JavaHashMap<Box<dyn IndexableField>> {
+    pub fn all() -> JavaHashMap<Arc<dyn IndexableField>> {
         Self::map_of(|_| true)
     }
 
     /// `indexed`: the fields whose index options are not `NONE`.
-    pub fn indexed() -> JavaHashMap<Box<dyn IndexableField>> {
+    pub fn indexed() -> JavaHashMap<Arc<dyn IndexableField>> {
         Self::map_of(|f| f.field_type().index_options() != IndexOptions::NONE)
     }
 
     /// `unindexed`.
-    pub fn unindexed() -> JavaHashMap<Box<dyn IndexableField>> {
+    pub fn unindexed() -> JavaHashMap<Arc<dyn IndexableField>> {
         Self::map_of(|f| f.field_type().index_options() == IndexOptions::NONE)
     }
 
     /// `termvector`.
-    pub fn termvector() -> JavaHashMap<Box<dyn IndexableField>> {
+    pub fn termvector() -> JavaHashMap<Arc<dyn IndexableField>> {
         Self::map_of(|f| f.field_type().store_term_vectors())
     }
 
     /// `notermvector`: indexed fields without term vectors.
-    pub fn notermvector() -> JavaHashMap<Box<dyn IndexableField>> {
+    pub fn notermvector() -> JavaHashMap<Arc<dyn IndexableField>> {
         Self::map_of(|f| {
             f.field_type().index_options() != IndexOptions::NONE
                 && !f.field_type().store_term_vectors()
@@ -383,28 +474,28 @@ impl DocHelper {
     }
 
     /// `stored`.
-    pub fn stored() -> JavaHashMap<Box<dyn IndexableField>> {
+    pub fn stored() -> JavaHashMap<Arc<dyn IndexableField>> {
         Self::map_of(|f| f.field_type().stored())
     }
 
     /// `unstored`.
-    pub fn unstored() -> JavaHashMap<Box<dyn IndexableField>> {
+    pub fn unstored() -> JavaHashMap<Arc<dyn IndexableField>> {
         Self::map_of(|f| !f.field_type().stored())
     }
 
     /// `noTf`: the fields indexing `DOCS` only.
-    pub fn no_tf() -> JavaHashMap<Box<dyn IndexableField>> {
+    pub fn no_tf() -> JavaHashMap<Arc<dyn IndexableField>> {
         Self::map_of(|f| f.field_type().index_options() == IndexOptions::DOCS)
     }
 
     /// `noNorms`.
-    pub fn no_norms() -> JavaHashMap<Box<dyn IndexableField>> {
+    pub fn no_norms() -> JavaHashMap<Arc<dyn IndexableField>> {
         Self::map_of(|f| f.field_type().omit_norms())
     }
 
     /// `lazy`: always empty (Java's `if (f.isLazy()) add(lazy, f)` is
     /// commented out).
-    pub fn lazy() -> JavaHashMap<Box<dyn IndexableField>> {
+    pub fn lazy() -> JavaHashMap<Arc<dyn IndexableField>> {
         JavaHashMap::new()
     }
 
@@ -443,8 +534,8 @@ impl DocHelper {
 
     /// `setupDoc(doc)`: "Adds the fields above to a document".
     pub fn setup_doc(doc: &mut Document) {
-        for field in Self::fields() {
-            doc.add(field);
+        for field in FIELDS.iter() {
+            doc.add_shared(Arc::clone(field));
         }
     }
 
@@ -505,31 +596,31 @@ impl DocHelper {
         let mut sb = String::new();
 
         let mut doc = Document::new();
-        doc.add(Self::field(
+        doc.add(Box::new(new_field(
             "id",
             &n.to_string(),
-            Self::string_type_stored_with_tvs(),
-        ));
-        doc.add(Self::field(
+            &STRING_TYPE_STORED_WITH_TVS,
+        )));
+        doc.add(Box::new(new_field(
             "indexname",
             index_name,
-            Self::string_type_stored_with_tvs(),
-        ));
+            &STRING_TYPE_STORED_WITH_TVS,
+        )));
         sb.push('a');
         sb.push_str(&n.to_string());
-        doc.add(Self::field(
+        doc.add(Box::new(new_field(
             "field1",
             &sb,
-            Self::text_type_stored_with_tvs(),
-        ));
+            &TEXT_TYPE_STORED_WITH_TVS,
+        )));
         sb.push_str(" b");
         sb.push_str(&n.to_string());
         for i in 1..num_fields {
-            doc.add(Self::field(
+            doc.add(Box::new(new_field(
                 &format!("field{}", i + 1),
                 &sb,
-                Self::text_type_stored_with_tvs(),
-            ));
+                &TEXT_TYPE_STORED_WITH_TVS,
+            )));
         }
         doc
     }

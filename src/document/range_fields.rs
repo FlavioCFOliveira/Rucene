@@ -23,6 +23,7 @@ use crate::search::{
     ConstantScoreScorer, DocIdSetIterator, IndexSearcher, Query, QueryVisitor, ScoreMode, Scorer,
     ScorerSupplier, Weight,
 };
+use crate::util::atomic_ref_cell::{AtomicRef, AtomicRefCell};
 use crate::util::{BytesRef, DocIdSetBuilder, IntsRef, NumericUtils};
 
 /// Largest number of dimensions a range field may have.
@@ -153,7 +154,7 @@ macro_rules! range_field {
         pub struct $name {
             name: String,
             field_type: FieldType,
-            fields_data: FieldData,
+            fields_data: AtomicRefCell<FieldData>,
         }
 
         impl $name {
@@ -168,14 +169,14 @@ macro_rules! range_field {
                 Ok(Self {
                     name: name.to_string(),
                     field_type,
-                    fields_data: FieldData::Bytes(BytesRef::new(packed)),
+                    fields_data: AtomicRefCell::new(FieldData::Bytes(BytesRef::new(packed))),
                 })
             }
 
             /// Replaces the intervals, keeping the same dimension count.
             ///
             #[doc = concat!("Equivalent to `", $doc_equiv, ".setRangeValues`.")]
-            pub fn set_range_values(&mut self, min: &[$prim], max: &[$prim]) -> Result<()> {
+            pub fn set_range_values(&self, min: &[$prim], max: &[$prim]) -> Result<()> {
                 check_args(min, max, $kind)?;
                 let dims = IndexableFieldType::point_dimension_count(&self.field_type) / 2;
                 if min.len() as i32 != dims {
@@ -185,7 +186,7 @@ macro_rules! range_field {
                         min.len()
                     )));
                 }
-                self.fields_data = FieldData::Bytes(BytesRef::new(Self::encode(min, max)?));
+                *self.fields_data.borrow_mut() = FieldData::Bytes(BytesRef::new(Self::encode(min, max)?));
                 Ok(())
             }
 
@@ -212,7 +213,7 @@ macro_rules! range_field {
                         "dimension {dimension} is out of range for {dims} dimensions"
                     )));
                 }
-                let FieldData::Bytes(bytes) = &self.fields_data else {
+                let FieldData::Bytes(bytes) = &*self.fields_data.borrow() else {
                     return Err(LuceneError::illegal_state(
                         "range field has no packed value".to_string(),
                     ));
@@ -229,7 +230,7 @@ macro_rules! range_field {
                         "dimension {dimension} is out of range for {dims} dimensions"
                     )));
                 }
-                let FieldData::Bytes(bytes) = &self.fields_data else {
+                let FieldData::Bytes(bytes) = &*self.fields_data.borrow() else {
                     return Err(LuceneError::illegal_state(
                         "range field has no packed value".to_string(),
                     ));
@@ -248,11 +249,12 @@ macro_rules! range_field {
             }
 
             /// Returns the packed intervals.
-            pub fn packed_value(&self) -> Option<&[u8]> {
-                match &self.fields_data {
+            pub fn packed_value(&self) -> Option<AtomicRef<'_, [u8]>> {
+                AtomicRef::filter_map(self.fields_data.borrow(), |data| match data {
                     FieldData::Bytes(bytes) => Some(bytes.slice()),
                     _ => None,
-                }
+                })
+                .ok()
             }
 
             /// Decodes the minimum of `dimension` from an encoded range.
@@ -411,7 +413,7 @@ macro_rules! range_field {
             }
 
             fn binary_value(&self) -> Option<BytesRef> {
-                match &self.fields_data {
+                match &*self.fields_data.borrow() {
                     FieldData::Bytes(v) => Some(v.clone()),
                     _ => None,
                 }
@@ -448,7 +450,7 @@ macro_rules! range_field {
             /// the observable string and is reproduced here.
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 write!(f, "{} <{}:", $kind, self.name)?;
-                if let FieldData::Bytes(bytes) = &self.fields_data {
+                if let FieldData::Bytes(bytes) = &*self.fields_data.borrow() {
                     let dims =
                         IndexableFieldType::point_dimension_count(&self.field_type) / 2;
                     for d in 0..dims as usize {
@@ -642,10 +644,10 @@ impl std::fmt::Display for BinaryRangeDocValuesField {
 }
 
 impl IndexableField for BinaryRangeDocValuesField {
-    /// This field as a mutable `Any`, so that a caller can change it in
-    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
-    /// as Java changes the field object it added to a document.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
 

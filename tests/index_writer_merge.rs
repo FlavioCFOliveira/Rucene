@@ -1703,7 +1703,7 @@ fn a_hnsw_quantized_segment_reads_every_float_vector_back() {
             let indexed = expected
                 .get_field(field)
                 .and_then(|f| f.float_vector_value())
-                .map(<[f32]>::to_vec)
+                .map(|v| v.to_vec())
                 .expect("the document carries the field");
             assert_eq!(vector, indexed, "{field}: doc {doc}");
         }

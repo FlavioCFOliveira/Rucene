@@ -46,7 +46,8 @@ fn test_float_norms() -> Result<()> {
     let docs = LineFileDocs::with_default_file(&*random())?;
     let num = LuceneTestCase::at_least(100);
     for _ in 0..num {
-        let mut doc = docs.next_doc()?;
+        let doc = docs.next_doc()?;
+        let mut doc = doc.borrow_mut();
         let boost = TestUtil::next_int(&*random(), 1, 10);
         let value = (0..boost)
             .map(|_| boost.to_string())
@@ -55,7 +56,7 @@ fn test_float_norms() -> Result<()> {
         let f = TextField::new(FLOAT_TEST_FIELD, value, Store::YES)?;
 
         doc.add(Box::new(f));
-        writer.add_document(&doc)?;
+        writer.add_document(&*doc)?;
         doc.remove_field(FLOAT_TEST_FIELD);
         if LuceneTestCase::rarely() {
             writer.commit()?;
