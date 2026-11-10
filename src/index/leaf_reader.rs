@@ -206,6 +206,17 @@ pub trait LeafReader: AsIndexReader + Send + Sync + Debug + Display + 'static {
         None
     }
 
+    /// Returns this reader as a
+    /// [`ParallelLeafReader`](crate::index::parallel_reader::ParallelLeafReader),
+    /// when it is one: `reader instanceof ParallelLeafReader`, answered as
+    /// [`as_segment_reader`](Self::as_segment_reader) answers for
+    /// `SegmentReader`.
+    fn as_parallel_leaf_reader(
+        &self,
+    ) -> Option<&crate::index::parallel_reader::ParallelLeafReader> {
+        None
+    }
+
     /// Returns the reader this one wraps when it is a `FilterLeafReader`, and
     /// `None` otherwise.
     ///

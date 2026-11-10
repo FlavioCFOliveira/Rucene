@@ -442,12 +442,12 @@ fn info_stream() -> Option<Arc<dyn rucene::util::InfoStream>> {
 /// hooks.
 fn my_merge_scheduler() -> Arc<ConcurrentMergeScheduler> {
     let cms = ConcurrentMergeScheduler::new();
-    cms.set_get_merge_thread_override(Some(Arc::new(|merge_source, merge| {
+    cms.set_get_merge_thread_override(Some(Arc::new(|_super, merge_source, merge| {
         // `new MyMergeThread(mergeSource, merge)`, then `setDaemon(true)`
         // and `setName("MyMergeThread")`.
         let thread = MergeThread::new(merge_source, merge, "MyMergeThread".to_string());
         MERGE_THREAD_CREATED.store(true, Ordering::SeqCst);
-        Ok(thread)
+        Ok(Arc::new(thread))
     })));
     cms.set_handle_merge_exception_override(Some(Arc::new(|_t| {
         EXC_CALLED.store(true, Ordering::SeqCst);

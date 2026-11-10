@@ -274,6 +274,17 @@ pub mod hamcrest {
         }
     }
 
+    /// `assertThat(actual, lessThan(value))`.
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
+    pub fn assert_less_than<T: PartialOrd + Display>(actual: T, value: T) {
+        if !(actual < value) {
+            fail(
+                &format!("a value less than <{value}>"),
+                &format!("<{actual}> was greater than or equal to <{value}>"),
+            )
+        }
+    }
+
     /// `assertThat(actual, equalTo(value))`.
     pub fn assert_equal_to<T: PartialEq + Display>(actual: T, value: T) {
         if actual != value {

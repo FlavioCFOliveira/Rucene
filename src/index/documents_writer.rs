@@ -1049,6 +1049,23 @@ impl FrozenBufferedUpdates {
         !self.updates.any()
     }
 
+    /// `deleteTerms.iterator()`: the frozen delete terms
+    /// (`FrozenBufferedUpdates.deleteTerms`, package private in Java).
+    pub fn delete_terms_iterator(&self) -> crate::index::terms::PrefixCodedTermsIterator {
+        self.delete_terms
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iterator()
+    }
+
+    /// `deleteTerms.size()`: how many delete terms were frozen.
+    pub fn delete_terms_size(&self) -> i64 {
+        self.delete_terms
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .size()
+    }
+
     /// Records the generation this packet was pushed with.
     ///
     /// Equivalent to `FrozenBufferedUpdates.setDelGen(long)`, which also
@@ -2111,6 +2128,18 @@ impl DeleteSlice {
         Arc::ptr_eq(&self.tail, node)
     }
 
+    /// Returns `true` if this slice's tail holds the batch of terms whose
+    /// elements start at `terms`: Java's `isTailItem(Object)`
+    /// (`DocumentsWriterDeleteQueue.java:404-406`), `tail.item == object`,
+    /// asked of the `Term[]` handed to `addDelete(Term...)`.
+    ///
+    /// The batch moves into its node with its heap buffer unchanged, so the
+    /// address of its first element is the identity Java compares. Package
+    /// private in Java; `pub` for `TestDocumentsWriterDeleteQueue`.
+    pub fn is_tail_item_terms(&self, terms: *const Term) -> bool {
+        matches!(&self.tail.item, DeleteItem::Terms(t) if std::ptr::eq(t.as_ptr(), terms))
+    }
+
     /// Returns `true` when the slice holds no unapplied deletes.
     pub fn is_empty(&self) -> bool {
         Arc::ptr_eq(&self.head, &self.tail)
@@ -2349,7 +2378,15 @@ impl DocumentsWriterDeleteQueue {
         }
     }
 
-    fn try_apply_global_slice(&self) -> Result<()> {
+    /// Applies the global slice to the global buffer when its lock is free.
+    ///
+    /// Equivalent to `DocumentsWriterDeleteQueue.tryApplyGlobalSlice()`;
+    /// package private in Java, `pub` for `TestDocumentsWriterDeleteQueue`.
+    ///
+    /// # Errors
+    ///
+    /// What applying the slice raises.
+    pub fn try_apply_global_slice(&self) -> Result<()> {
         if self.closed.load(Ordering::Acquire) {
             return Ok(());
         }
@@ -2596,6 +2633,13 @@ impl DocumentsWriterDeleteQueue {
         self.tail
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Takes `globalBufferLock`, held until the returned guard is dropped
+    /// (Java's `globalBufferLock.lock()` … `unlock()`); package private in
+    /// Java, `pub` for `TestDocumentsWriterDeleteQueue`.
+    pub fn global_buffer_lock(&self) -> impl Sized + '_ {
+        self.lock_global()
     }
 
     fn lock_global(&self) -> MutexGuard<'_, GlobalBuffer> {

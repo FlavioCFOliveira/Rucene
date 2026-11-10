@@ -390,8 +390,34 @@ pub type IntraMergeExecutorOverride = Arc<
 /// Java's `getMergeThread` is `synchronized`; the hook runs while the
 /// scheduler's lock is held, so it must not call a method of the scheduler
 /// that takes it.
-pub type GetMergeThreadOverride =
-    Arc<dyn Fn(Arc<dyn MergeSource>, OneMerge) -> Result<MergeThread> + Send + Sync>;
+///
+/// Its first argument is Java's `super.getMergeThread(mergeSource, merge)`:
+/// the default, which names the thread `Lucene Merge Thread #N`.
+pub type GetMergeThreadOverride = Arc<
+    dyn Fn(
+            &mut dyn FnMut(Arc<dyn MergeSource>, OneMerge) -> Result<Arc<MergeThread>>,
+            Arc<dyn MergeSource>,
+            OneMerge,
+        ) -> Result<Arc<MergeThread>>
+        + Send
+        + Sync,
+>;
+
+/// Overrides `ConcurrentMergeScheduler.doStall()`
+/// (`ConcurrentMergeScheduler.java:653-660`), as [`DoMergeOverride`]
+/// overrides `doMerge`.
+///
+/// Java's `doStall` is `synchronized`; the hook runs while the scheduler's
+/// lock is held, so it must not call a method of the scheduler that takes it.
+/// Its argument is Java's `super.doStall()`: the default stall, which waits
+/// on the scheduler's monitor.
+pub type DoStallOverride = Arc<dyn Fn(&mut dyn FnMut() -> Result<()>) -> Result<()> + Send + Sync>;
+
+/// The body of a [`MergeThread`] that overrides `run()`, as Java's anonymous
+/// subclass `mergeScheduler.new MergeThread(mergeSource, merge) { public void
+/// run() { … } }` does (`TestConcurrentMergeScheduler.java:282-299`). It
+/// receives the thread object, Java's `this`.
+pub type MergeThreadRun = Box<dyn FnOnce(&Arc<MergeThread>) + Send>;
 
 /// A scheduler that runs each merge on a background thread of its own.
 ///
@@ -416,11 +442,14 @@ pub type GetMergeThreadOverride =
 ///
 /// **Divergences from Lucene 10.5.0.**
 ///
-/// * Java's protected `doMerge`, `handleMergeException` and
-///   `getMergeThread` are overridden by subclassing; here they are overridden
+/// * Java's protected `doMerge`, `handleMergeException`, `getMergeThread`
+///   and `doStall` are overridden by subclassing; here they are overridden
 ///   with [`set_do_merge_override`](Self::set_do_merge_override),
-///   [`set_handle_merge_exception_override`](Self::set_handle_merge_exception_override)
-///   and [`set_get_merge_thread_override`](Self::set_get_merge_thread_override).
+///   [`set_handle_merge_exception_override`](Self::set_handle_merge_exception_override),
+///   [`set_get_merge_thread_override`](Self::set_get_merge_thread_override)
+///   and [`set_do_stall_override`](Self::set_do_stall_override); a
+///   `MergeThread` subclass overriding `run()` is
+///   [`MergeThread::with_run`].
 /// * The `lucene.cms.override_core_count` system property Java's tests use to
 ///   override the core count has no counterpart.
 pub struct ConcurrentMergeScheduler {
@@ -457,6 +486,8 @@ struct CmsShared {
     intra_merge_executor_override: Mutex<Option<IntraMergeExecutorOverride>>,
     /// See [`GetMergeThreadOverride`].
     get_merge_thread_override: Mutex<Option<GetMergeThreadOverride>>,
+    /// See [`DoStallOverride`].
+    do_stall_override: Mutex<Option<DoStallOverride>>,
     /// The executor big merges run their intra-merge work on, created by
     /// `initialize` and shut down by `close`.
     ///
@@ -543,6 +574,9 @@ pub struct MergeThread {
     life: Mutex<ThreadLife>,
     /// Signalled when the thread terminates.
     terminated: Condvar,
+    /// The overriding `run()` body, if this thread was built with
+    /// [`with_run`](Self::with_run); taken when the thread runs.
+    run_override: Mutex<Option<MergeThreadRun>>,
 }
 
 impl fmt::Debug for MergeThread {
@@ -574,7 +608,25 @@ impl MergeThread {
             thread_id: OnceLock::new(),
             life: Mutex::new(ThreadLife::New),
             terminated: Condvar::new(),
+            run_override: Mutex::new(None),
         }
+    }
+
+    /// Creates a thread object whose `run()` is `run` instead of the merge
+    /// loop: Java's anonymous subclass of the inner class `MergeThread` that
+    /// overrides `run()` (see [`MergeThreadRun`]).
+    pub fn with_run(
+        merge_source: Arc<dyn MergeSource>,
+        merge: OneMerge,
+        name: String,
+        run: MergeThreadRun,
+    ) -> Self {
+        let thread = Self::new(merge_source, merge, name);
+        *thread
+            .run_override
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(run);
+        thread
     }
 
     fn life(&self) -> ThreadLife {
@@ -624,7 +676,7 @@ impl MergeThread {
     /// Returns whether this is the calling thread.
     ///
     /// Equivalent to comparing with `Thread.currentThread()`.
-    fn is_current_thread(&self) -> bool {
+    pub fn is_current_thread(&self) -> bool {
         self.thread_id.get() == Some(&std::thread::current().id())
     }
 
@@ -705,6 +757,7 @@ impl ConcurrentMergeScheduler {
                 maybe_stall_override: Mutex::new(None),
                 intra_merge_executor_override: Mutex::new(None),
                 get_merge_thread_override: Mutex::new(None),
+                do_stall_override: Mutex::new(None),
                 intra_merge_executor: Mutex::new(None),
                 executor: Arc::new(SameThreadExecutorService::new()),
             }),
@@ -810,6 +863,17 @@ impl ConcurrentMergeScheduler {
         *self
             .shared
             .get_merge_thread_override
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = hook;
+    }
+
+    /// Installs, or with `None` removes, the override of `doStall`.
+    ///
+    /// See [`DoStallOverride`].
+    pub fn set_do_stall_override(&self, hook: Option<DoStallOverride>) {
+        *self
+            .shared
+            .do_stall_override
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = hook;
     }
@@ -1029,6 +1093,13 @@ impl ConcurrentMergeScheduler {
     /// Equivalent to reading the protected `ConcurrentMergeScheduler.mergeThreads`.
     pub fn merge_threads(&self) -> Vec<Arc<MergeThread>> {
         self.lock().merge_threads.clone()
+    }
+
+    /// `mergeThreads.add(thread)` on the protected list, as
+    /// `TestConcurrentMergeScheduler.testIntraMergeThreadPoolIsLimitedByMaxThreads`
+    /// does.
+    pub fn add_merge_thread(&self, thread: Arc<MergeThread>) {
+        self.lock().merge_threads.push(thread);
     }
 
     /// Removes the calling thread from the active merge threads.
@@ -1317,6 +1388,36 @@ impl ConcurrentMergeScheduler {
         &'a self,
         state: MutexGuard<'a, CmsState>,
     ) -> (MutexGuard<'a, CmsState>, Result<()>) {
+        let hook = self
+            .shared
+            .do_stall_override
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let Some(hook) = hook else {
+            return self.default_do_stall_locked(state);
+        };
+        let mut slot = Some(state);
+        let result = hook(&mut || {
+            let state = slot
+                .take()
+                .expect("INVARIANT: the monitor guard is back in its slot between calls");
+            let (state, stalled) = self.default_do_stall_locked(state);
+            slot = Some(state);
+            stalled
+        });
+        (
+            slot.expect("INVARIANT: the monitor guard is back in its slot after the hook"),
+            result,
+        )
+    }
+
+    /// The body of `ConcurrentMergeScheduler.doStall()`, which a
+    /// [`DoStallOverride`] calls as `super.doStall()`.
+    fn default_do_stall_locked<'a>(
+        &'a self,
+        state: MutexGuard<'a, CmsState>,
+    ) -> (MutexGuard<'a, CmsState>, Result<()>) {
         // Defensively wait for only .25 seconds in case we are missing a
         // .notify/All somewhere.
         let (state, waited) = wait_interruptibly(
@@ -1390,15 +1491,47 @@ impl ConcurrentMergeScheduler {
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
         if let Some(hook) = hook {
-            return hook(merge_source, merge).map(Arc::new);
+            return hook(
+                &mut |merge_source, merge| {
+                    Ok(Self::default_get_merge_thread_locked(
+                        state,
+                        merge_source,
+                        merge,
+                    ))
+                },
+                merge_source,
+                merge,
+            );
         }
+        Ok(Self::default_get_merge_thread_locked(
+            state,
+            merge_source,
+            merge,
+        ))
+    }
+
+    /// The body of `ConcurrentMergeScheduler.getMergeThread(MergeSource,
+    /// OneMerge)` (`ConcurrentMergeScheduler.java:667-673`), which a
+    /// [`GetMergeThreadOverride`] calls as `super.getMergeThread`.
+    fn default_get_merge_thread_locked(
+        state: &mut CmsState,
+        merge_source: Arc<dyn MergeSource>,
+        merge: OneMerge,
+    ) -> Arc<MergeThread> {
         let name = format!("Lucene Merge Thread #{}", state.merge_thread_counter);
         state.merge_thread_counter += 1;
-        Ok(Arc::new(MergeThread::new(merge_source, merge, name)))
+        Arc::new(MergeThread::new(merge_source, merge, name))
     }
 
     /// Starts `thread`: Java's `Thread.start()` on a `MergeThread`.
-    fn start_merge_thread(&self, thread: &Arc<MergeThread>) -> Result<()> {
+    ///
+    /// `pub` for `TestConcurrentMergeScheduler`, which starts the threads it
+    /// added with [`add_merge_thread`](Self::add_merge_thread).
+    ///
+    /// # Errors
+    ///
+    /// The I/O error of a thread the OS could not spawn.
+    pub fn start_merge_thread(&self, thread: &Arc<MergeThread>) -> Result<()> {
         thread.set_life(ThreadLife::Alive);
         let scheduler = self.handle();
         let body = Arc::clone(thread);
@@ -1431,6 +1564,15 @@ impl ConcurrentMergeScheduler {
         let _ = thread.thread_id.set(std::thread::current().id());
         CURRENT_MERGE_THREAD.with(|current| *current.borrow_mut() = Some(Arc::clone(&thread)));
         let _terminate = TerminateOnDrop(Arc::clone(&thread));
+        let run_override = thread
+            .run_override
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(run) = run_override {
+            run(&thread);
+            return;
+        }
         let Some(merge_source) = thread.merge_source() else {
             return;
         };

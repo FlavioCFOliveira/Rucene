@@ -135,6 +135,24 @@ pub struct ParallelLeafReader {
     /// created by [`ParallelCompositeReader`] whose `doClose()` is overridden
     /// to do nothing, making the synthetic reader invisible to ref-counting.
     suppress_close: bool,
+    /// The overrides of an anonymous subclass, if any; see
+    /// [`ParallelLeafReaderOverrides`].
+    overrides: Option<Arc<dyn ParallelLeafReaderOverrides>>,
+}
+
+/// The methods an anonymous `ParallelLeafReader` subclass overrides, as
+/// `TestDemoParallelLeafReader.ReindexingReader.getCurrentReader` does with
+/// `getLiveDocs()` and `numDocs()` (`TestDemoParallelLeafReader.java:183-193`).
+///
+/// Rust has no subclassing of the concrete reader; installed with
+/// [`ParallelLeafReader::with_overrides`], each method replaces the
+/// reader's own and receives the reader, Java's `this`.
+pub trait ParallelLeafReaderOverrides: Send + Sync {
+    /// Overrides `getLiveDocs()`.
+    fn get_live_docs(&self, this: &ParallelLeafReader) -> Option<Box<dyn Bits>>;
+
+    /// Overrides `numDocs()`.
+    fn num_docs(&self, this: &ParallelLeafReader) -> i32;
 }
 
 impl Debug for ParallelLeafReader {
@@ -411,7 +429,15 @@ impl ParallelLeafReader {
             meta_data,
             close_sub_readers,
             suppress_close,
+            overrides: None,
         })
+    }
+
+    /// Installs the overrides of an anonymous subclass; see
+    /// [`ParallelLeafReaderOverrides`].
+    pub fn with_overrides(mut self, overrides: Arc<dyn ParallelLeafReaderOverrides>) -> Self {
+        self.overrides = Some(overrides);
+        self
     }
 
     /// Returns the parallel sub-readers passed at construction.
@@ -457,8 +483,15 @@ impl LeafReader for ParallelLeafReader {
     }
 
     fn num_docs(&self) -> i32 {
+        if let Some(overrides) = &self.overrides {
+            return overrides.num_docs(self);
+        }
         // Don't call ensureOpen() here — mirror Lucene.
         self.num_docs
+    }
+
+    fn as_parallel_leaf_reader(&self) -> Option<&ParallelLeafReader> {
+        Some(self)
     }
 
     fn max_doc(&self) -> i32 {
@@ -643,6 +676,9 @@ impl LeafReader for ParallelLeafReader {
     ///
     /// The unchecked `AlreadyClosedException` once this reader is closed.
     fn get_live_docs(&self) -> Option<Box<dyn Bits>> {
+        if let Some(overrides) = &self.overrides {
+            return overrides.get_live_docs(self);
+        }
         self.core.ensure_open_unchecked();
         // Deletions are taken from the first parallel reader, matching Lucene.
         if self.has_deletions {

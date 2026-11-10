@@ -449,6 +449,17 @@ impl DocValuesFieldUpdates {
         }
     }
 
+    /// Records an update with a value for `doc` without writing the value,
+    /// and returns its index.
+    ///
+    /// Equivalent to `DocValuesFieldUpdates.add(int)`
+    /// (`DocValuesFieldUpdates.java:366-368`), `addInternal(doc,
+    /// HAS_VALUE_MASK)`; package private in Java, `pub` for
+    /// `TestDocValuesFieldUpdates`.
+    pub fn add_doc(&mut self, doc: i32) -> usize {
+        self.add_internal(doc, HAS_VALUE_MASK)
+    }
+
     /// Resets (clears) the value for `doc`.
     ///
     /// Equivalent to `DocValuesFieldUpdates.reset(int)`.

@@ -267,6 +267,14 @@ impl<T> ConcurrentApproximatePriorityQueue<T> {
         self.queues.len()
     }
 
+    /// The shards: Java's package-private `locks` and `queues` arrays, the
+    /// lock `locks[i]` guarding `queues[i]` being `queues()[i]` itself. `pub`
+    /// for `TestConcurrentApproximatePriorityQueue`, which reads a shard and
+    /// holds its lock.
+    pub fn queues(&self) -> &[Mutex<ApproximatePriorityQueue<T>>] {
+        &self.queues
+    }
+
     /// Seeds the shard scan so entries spread across shards with a little thread
     /// affinity, as Java does with the thread's hash code.
     fn seed(&self) -> usize {

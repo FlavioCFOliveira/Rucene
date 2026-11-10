@@ -59,6 +59,13 @@ pub trait Executor: Send + Sync {
     /// Returns [`RejectedExecutionException`], carrying the command back, when
     /// the executor cannot accept it — for example once it is shut down.
     fn execute(&self, command: Command) -> std::result::Result<(), RejectedExecutionException>;
+
+    /// The executor as [`Any`](std::any::Any), for Java's `instanceof` on an
+    /// `Executor`: `None` by default, `Some(self)` for the concrete types a
+    /// caller tests ([`SameThreadExecutorService`]).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
 }
 
 impl Executor for SameThreadExecutorService {
@@ -74,6 +81,10 @@ impl Executor for SameThreadExecutorService {
         }
         command();
         Ok(())
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 }
 

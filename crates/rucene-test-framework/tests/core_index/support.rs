@@ -225,6 +225,30 @@ impl CountDownLatch {
         }
     }
 
+    /// `latch.await(millis, TimeUnit.MILLISECONDS)`: whether the count
+    /// reached zero before the wait timed out.
+    pub fn await_millis(&self, millis: u64) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(millis);
+        let mut count = self.count.lock().unwrap_or_else(|e| e.into_inner());
+        while *count > 0 {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            count = self
+                .cond
+                .wait_timeout(count, deadline - now)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+        true
+    }
+
+    /// `latch.getCount()`.
+    pub fn get_count(&self) -> i64 {
+        *self.count.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// `latch.countDown()`.
     pub fn count_down(&self) {
         let mut count = self.count.lock().unwrap_or_else(|e| e.into_inner());
@@ -254,4 +278,61 @@ pub fn static_hook(
                 rucene_test_framework::util::java_exceptions::rethrow_java(e)
             }
         })
+}
+
+/// `assertNull(message, object)`.
+pub fn assert_null_msg<T: std::fmt::Debug>(message: &str, object: &Option<T>) {
+    if let Some(o) = object {
+        randomizedtesting::junit::Assert::fail(&format!("{message} expected null, but was:<{o:?}>"))
+    }
+}
+
+/// `assertNotNull(message, object)`.
+pub fn assert_not_null_msg<T>(message: &str, object: &Option<T>) {
+    if object.is_none() {
+        randomizedtesting::junit::Assert::fail(message)
+    }
+}
+
+/// `TestIndexWriter.assertNoUnreferencedFiles(dir, message)`
+/// (`TestIndexWriter.java:218-234`), which other index tests call.
+pub fn assert_no_unreferenced_files(
+    dir: &Arc<dyn rucene::store::Directory>,
+    message: &str,
+) -> Result<()> {
+    let mut start_files = dir.list_all()?;
+    rucene::index::index_writer::IndexWriter::new(
+        Arc::clone(dir),
+        IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random()))),
+    )?
+    .rollback()?;
+    let mut end_files = dir.list_all()?;
+
+    start_files.sort();
+    end_files.sort();
+
+    if start_files != end_files {
+        randomizedtesting::junit::Assert::fail(&format!(
+            "{message}: before delete:\n    {}\n  after delete:\n    {}",
+            start_files.join("\n    "),
+            end_files.join("\n    ")
+        ));
+    }
+    Ok(())
+}
+
+/// The same `Field` object added to a document again: a field with the same
+/// name, current string value and type.
+///
+/// **Divergence from Lucene 10.5.0.** Java tests keep a reference to a field
+/// they added to a `Document`, call `setStringValue` on it and add the
+/// document again; a Rucene `Document` owns its fields, so the test keeps the
+/// field and rebuilds the document from copies of it, in the same order and
+/// without drawing again (guide section 6).
+pub fn copy_field(field: &rucene::document::Field) -> Result<rucene::document::Field> {
+    rucene::document::Field::new(
+        field.name(),
+        field.string_value().unwrap_or_default(),
+        rucene::document::FieldType::new_from(field.field_type()),
+    )
 }

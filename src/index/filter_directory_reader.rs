@@ -128,6 +128,27 @@ pub trait DirectoryReaderWrapper: Send + Sync {
     fn uses_delegating_cache_helper(&self) -> bool {
         false
     }
+
+    /// Whether the `FilterDirectoryReader` subclass this wrapper stands for
+    /// answers `getReaderCacheHelper()` with `null`, as
+    /// `TestDemoParallelLeafReader.ParallelLeafDirectoryReader` does
+    /// (`TestDemoParallelLeafReader.java:259-262`). The default is `false`.
+    fn reader_cache_helper_is_null(&self) -> bool {
+        false
+    }
+
+    /// The `doClose()` of the `FilterDirectoryReader` subclass this wrapper
+    /// stands for; the default is `FilterDirectoryReader.doClose()`,
+    /// `in.close()` (`FilterDirectoryReader.java:161-164`). A subclass that
+    /// overrides it, as `TestDemoParallelLeafReader.ParallelLeafDirectoryReader`
+    /// does, overrides this.
+    ///
+    /// # Errors
+    ///
+    /// What closing raises.
+    fn do_close(&self, reader: &FilterDirectoryReader) -> Result<()> {
+        reader.get_delegate().close()
+    }
 }
 
 /// A [`CacheHelper`] with its own [`CacheKey`] that forwards closed listeners
@@ -408,6 +429,13 @@ impl FilterDirectoryReader {
         })
     }
 
+    /// The wrapped leaves, as the `LeafReader`s they are: Java's
+    /// `getSequentialSubReaders()`, whose elements a `FilterDirectoryReader`
+    /// subclass tests with `instanceof` (`TestDemoParallelLeafReader.java:232-245`).
+    pub fn wrapped_leaves(&self) -> &[Arc<dyn LeafReader>] {
+        &self.wrapped_leaves
+    }
+
     /// Returns the wrapped reader.
     ///
     /// Equivalent to `FilterDirectoryReader.getDelegate()`.
@@ -508,13 +536,16 @@ impl IndexReader for FilterDirectoryReader {
     /// [`DelegatingCacheHelper`] over the delegate's helper learns that the
     /// wrapped reader closed.
     fn do_close(&self) -> Result<()> {
-        self.inner.close()
+        self.directory_wrapper.do_close(self)
     }
 
     /// Equivalent to the subclass's `getReaderCacheHelper()`: the wrapped
     /// reader's helper, or the [`DelegatingCacheHelper`] the subclass built over
     /// it; see [`DirectoryReaderWrapper::uses_delegating_cache_helper`].
     fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
+        if self.directory_wrapper.reader_cache_helper_is_null() {
+            return None;
+        }
         if self.owns_reader_cache_helper {
             self.reader_cache_helper
                 .as_ref()

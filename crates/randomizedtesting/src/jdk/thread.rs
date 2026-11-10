@@ -237,6 +237,8 @@ struct ThreadInner {
     daemon: AtomicBool,
     body: Mutex<Option<Body>>,
     handle: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// The OS thread's identity, once started.
+    os_thread_id: std::sync::OnceLock<std::thread::ThreadId>,
     signals: Mutex<Signals>,
     wake: Condvar,
     handler: Mutex<Option<Arc<dyn UncaughtExceptionHandler>>>,
@@ -301,6 +303,7 @@ impl Thread {
             daemon: AtomicBool::new(false),
             body: Mutex::new(body),
             handle: Mutex::new(None),
+            os_thread_id: std::sync::OnceLock::new(),
             signals: Mutex::new(Signals::default()),
             wake: Condvar::new(),
             handler: Mutex::new(None),
@@ -466,7 +469,16 @@ impl Thread {
                 me.terminate();
             })
             .expect("spawn thread");
+        let _ = self.0.os_thread_id.set(handle.thread().id());
         *self.0.handle.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
+    }
+
+    /// The identity of the OS thread this `Thread` runs on, once started:
+    /// what code that keys threads by `std::thread::ThreadId` (Lucene's
+    /// identity maps of `Thread`s, such as
+    /// `DocumentsWriterStallControl.waiting`) knows the thread by.
+    pub fn os_thread_id(&self) -> Option<std::thread::ThreadId> {
+        self.0.os_thread_id.get().copied()
     }
 
     /// `Thread.join()`: waits for the thread; `Err` carries the throwable
