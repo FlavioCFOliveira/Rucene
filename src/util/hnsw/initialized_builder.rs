@@ -9,7 +9,6 @@ use crate::util::FixedBitSet;
 
 use super::builder::{
     pop_to_scratch, GraphBuilderKnnCollector, HnswBuilder, HnswGraphBuilder, SplittableRandom,
-    DEFAULT_RAND_SEED,
 };
 use super::on_heap::{OnHeapGraphReader, OnHeapHnswGraph};
 use super::scorer::RandomVectorScorerSupplier;
@@ -99,7 +98,7 @@ impl InitializedHnswGraphBuilder {
         let builder = Self::from_graph(
             scorer_supplier,
             beam_width,
-            DEFAULT_RAND_SEED,
+            HnswGraphBuilder::rand_seed(),
             initializer_graph,
             new_ord_map,
             None,

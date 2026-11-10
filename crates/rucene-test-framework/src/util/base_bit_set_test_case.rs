@@ -492,6 +492,10 @@ impl Bits for JavaUtilBitSet {
         self.bit_set.get(index)
     }
 
+    fn as_bit_set(&self) -> Option<&dyn BitSet> {
+        Some(self)
+    }
+
     fn length(&self) -> usize {
         self.num_bits as usize
     }

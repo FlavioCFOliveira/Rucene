@@ -13,7 +13,7 @@ use crate::index::VectorEncoding;
 use crate::search::NO_MORE_DOCS;
 use crate::util::{Bits, FixedBitSet, InfoStream};
 
-use super::builder::{HnswBuilder, HnswGraphBuilder, DEFAULT_RAND_SEED};
+use super::builder::{HnswBuilder, HnswGraphBuilder};
 use super::merger::HnswGraphMerger;
 use super::merging_builder::MergingHnswGraphBuilder;
 use super::on_heap::OnHeapHnswGraph;
@@ -154,7 +154,7 @@ impl IncrementalHnswGraphMerger {
                 self.scorer_supplier.as_ref(),
                 self.m,
                 self.beam_width,
-                DEFAULT_RAND_SEED,
+                HnswGraphBuilder::rand_seed(),
                 max_ord,
             )?));
         };
@@ -187,7 +187,7 @@ impl IncrementalHnswGraphMerger {
             self.scorer_supplier.as_ref(),
             self.m,
             self.beam_width,
-            DEFAULT_RAND_SEED,
+            HnswGraphBuilder::rand_seed(),
             graphs,
             ord_maps,
             max_ord,

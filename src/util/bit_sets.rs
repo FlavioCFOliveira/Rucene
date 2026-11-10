@@ -820,6 +820,10 @@ impl Bits for SparseFixedBitSet {
         self.get(index)
     }
 
+    fn as_bit_set(&self) -> Option<&dyn crate::util::bit_set::BitSet> {
+        Some(self)
+    }
+
     fn length(&self) -> usize {
         self.length()
     }

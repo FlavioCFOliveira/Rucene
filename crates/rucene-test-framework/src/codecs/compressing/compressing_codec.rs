@@ -268,6 +268,10 @@ impl Codec for CompressingCodec {
         self.name
     }
 
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn to_java_string(&self) -> String {
         self.to_string()
     }

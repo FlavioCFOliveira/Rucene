@@ -149,6 +149,18 @@ pub trait Codec: Send + Sync + fmt::Debug {
     /// Returns this codec's name.
     fn name(&self) -> &str;
 
+    /// Answers Java's `codec instanceof X` with the cast: `Some(self)` for the
+    /// codecs a caller narrows (test codecs such as `CompressingCodec`),
+    /// `None` (the default) for every other codec.
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** Java tests the runtime
+    /// class of any object; a Rust trait object cannot be narrowed without
+    /// this opt-in. Needed by `Test2BPostingsBytes` (`getCodec() instanceof
+    /// CompressingCodec`).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+
     /// Returns the postings format used by this codec.
     fn postings_format(&self) -> &dyn PostingsFormat;
 

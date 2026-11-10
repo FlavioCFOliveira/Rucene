@@ -161,6 +161,31 @@ impl Lucene99HnswVectorsFormat {
         )
     }
 
+    /// Constructs a format using the given graph construction parameters.
+    ///
+    /// Equivalent to `Lucene99HnswVectorsFormat(int maxConn, int beamWidth, int
+    /// tinySegmentsThreshold)` (`Lucene99HnswVectorsFormat.java:194-205`):
+    /// `this(maxConn, beamWidth, DEFAULT_NUM_MERGE_WORKER, null,
+    /// tinySegmentsThreshold, VERSION_CURRENT)`.
+    ///
+    /// # Panics
+    ///
+    /// As [`with_params`](Self::with_params).
+    pub fn with_max_conn_beam_width_threshold(
+        max_conn: i32,
+        beam_width: i32,
+        tiny_segments_threshold: i32,
+    ) -> Self {
+        Self::with_params(
+            max_conn,
+            beam_width,
+            DEFAULT_NUM_MERGE_WORKER,
+            None,
+            tiny_segments_threshold,
+            VERSION_CURRENT,
+        )
+    }
+
     /// Creates a format whose writers merge with `num_merge_workers` workers,
     /// on `merge_exec` when one is given and otherwise on the merge
     /// scheduler's intra-merge executor.
@@ -1577,7 +1602,13 @@ fn build_hnsw_graph_float(
     if count > 0 && should_create_graph(tiny_segments_threshold, count) {
         let supplier =
             scorer.get_random_vector_scorer_supplier_float(similarity, Box::new(values.clone()))?;
-        let mut builder = HnswGraphBuilder::create(&*supplier, m, beam_width, 42, count)?;
+        let mut builder = HnswGraphBuilder::create(
+            &*supplier,
+            m,
+            beam_width,
+            HnswGraphBuilder::rand_seed(),
+            count,
+        )?;
         builder.build(count)?;
         Ok(Some(builder.into_graph()?))
     } else {
@@ -1598,7 +1629,13 @@ fn build_hnsw_graph_byte(
     if count > 0 && should_create_graph(tiny_segments_threshold, count) {
         let supplier =
             scorer.get_random_vector_scorer_supplier_byte(similarity, Box::new(values.clone()))?;
-        let mut builder = HnswGraphBuilder::create(&*supplier, m, beam_width, 42, count)?;
+        let mut builder = HnswGraphBuilder::create(
+            &*supplier,
+            m,
+            beam_width,
+            HnswGraphBuilder::rand_seed(),
+            count,
+        )?;
         builder.build(count)?;
         Ok(Some(builder.into_graph()?))
     } else {

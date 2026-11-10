@@ -30,6 +30,18 @@ pub const DEFAULT_BEAM_WIDTH: i32 = 100;
 /// Default seed for reproducible level generation.
 pub const DEFAULT_RAND_SEED: u64 = 42;
 
+/// Random seed for level generation; public to expose for testing.
+///
+/// Equivalent to the mutable `public static long randSeed =
+/// DEFAULT_RAND_SEED` of `HnswGraphBuilder` (`HnswGraphBuilder.java:63-65`),
+/// which `Lucene99HnswVectorsWriter`, `HnswConcurrentMergeBuilder`,
+/// `IncrementalHnswGraphMerger` and `InitializedHnswGraphBuilder.initGraph`
+/// read and `HnswGraphTestCase` assigns. Java's `long` is kept as its bits
+/// in a `u64`, the seed type of this port; a Java static field needs a
+/// process-wide atomic in Rust.
+static RAND_SEED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(DEFAULT_RAND_SEED);
+
 const MAX_BULK_SCORE_NODES: usize = 8;
 
 /// Builder interface for `OnHeapHnswGraph`.
@@ -153,6 +165,16 @@ pub(crate) fn check_params(m: i32, beam_width: i32) -> Result<()> {
 }
 
 impl HnswGraphBuilder {
+    /// Reads `HnswGraphBuilder.randSeed`; see [`RAND_SEED`].
+    pub fn rand_seed() -> u64 {
+        RAND_SEED.load(Ordering::Relaxed)
+    }
+
+    /// Assigns `HnswGraphBuilder.randSeed = seed`; see [`RAND_SEED`].
+    pub fn set_rand_seed(seed: u64) {
+        RAND_SEED.store(seed, Ordering::Relaxed);
+    }
+
     /// Creates a builder with a known graph size (-1 means unbounded).
     pub fn create(
         scorer_supplier: &dyn RandomVectorScorerSupplier,

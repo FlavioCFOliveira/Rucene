@@ -3707,6 +3707,19 @@ pub trait Bits: Send + Sync + Debug {
     /// Returns the value of the bit at `index`.
     fn get(&self, index: usize) -> bool;
 
+    /// Answers `this instanceof BitSet` with the cast: `Some(self)` for a
+    /// [`BitSet`](crate::util::bit_set::BitSet) implementation, `None` (the
+    /// default) for every other `Bits`.
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** Java tests the runtime
+    /// class of any object; a Rust trait object cannot be narrowed to another
+    /// trait, so each `BitSet` answers with itself. Needed by
+    /// `HnswGraphSearcher.search(RandomVectorScorer, KnnCollector, HnswGraph,
+    /// Bits)` (`HnswGraphSearcher.java:95-105`).
+    fn as_bit_set(&self) -> Option<&dyn crate::util::bit_set::BitSet> {
+        None
+    }
+
     /// Returns the value of the bit at `index`, or the error a wrapper raises
     /// while answering.
     ///
@@ -5089,6 +5102,10 @@ impl FixedBitSet {
 impl Bits for FixedBitSet {
     fn get(&self, index: usize) -> bool {
         self.get(index)
+    }
+
+    fn as_bit_set(&self) -> Option<&dyn crate::util::bit_set::BitSet> {
+        Some(self)
     }
 
     fn length(&self) -> usize {

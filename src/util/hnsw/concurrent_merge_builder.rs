@@ -9,9 +9,7 @@ use crate::internal::hppc::IntHashSet;
 use crate::search::TaskExecutor;
 use crate::util::{FixedBitSet, InfoStream};
 
-use super::builder::{
-    check_params, HnswBuilder, HnswGraphBuilder, DEFAULT_RAND_SEED, HNSW_COMPONENT,
-};
+use super::builder::{check_params, HnswBuilder, HnswGraphBuilder, HNSW_COMPONENT};
 use super::on_heap::OnHeapHnswGraph;
 use super::scorer::RandomVectorScorerSupplier;
 use super::HnswLock;
@@ -66,6 +64,10 @@ pub struct HnswConcurrentMergeBuilder {
     initialized_nodes: Option<Arc<FixedBitSet>>,
     batch_size: i32,
     num_worker: i32,
+    /// `HnswGraphBuilder.randSeed` as the constructor read it, the seed
+    /// Java hands each worker it constructs
+    /// (`HnswConcurrentMergeBuilder.java:66-75`).
+    rand_seed: u64,
     /// Where this builder reports the merge as a whole.
     ///
     /// Equivalent to `HnswConcurrentMergeBuilder.infoStream`, which defaults
@@ -112,6 +114,7 @@ impl HnswConcurrentMergeBuilder {
             initialized_nodes: initialized_nodes.map(Arc::new),
             batch_size: DEFAULT_BATCH_SIZE,
             num_worker,
+            rand_seed: HnswGraphBuilder::rand_seed(),
             info_stream: crate::util::default_info_stream(),
             frozen: false,
         })
@@ -218,12 +221,13 @@ impl HnswBuilder for HnswConcurrentMergeBuilder {
                 let info_stream = Arc::clone(&self.info_stream);
                 let cumulative_work_time_ns = Arc::clone(&cumulative_work_time_ns);
                 let (m, beam_width, batch_size) = (self.m, self.beam_width, self.batch_size);
+                let rand_seed = self.rand_seed;
                 Box::new(move || {
                     let mut builder = HnswGraphBuilder::with_shared_graph(
                         scorer_supplier.scorer()?,
                         m,
                         beam_width,
-                        DEFAULT_RAND_SEED,
+                        rand_seed,
                         hnsw,
                         Some(hnsw_lock),
                     )?;

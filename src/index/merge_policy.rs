@@ -3521,6 +3521,18 @@ impl LogMergePolicy {
         }
     }
 
+    /// Answers `policy instanceof LogByteSizeMergePolicy`: whether this
+    /// policy is the one [`by_byte_size`](Self::by_byte_size) models.
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** Java tests the runtime
+    /// subclass; this port models the subclass as the policy's
+    /// [`LogMergeSize`], so the test reads its simple name. Needed by
+    /// `Test2BPoints`, `Test2BPositions`, … (`if (mp instanceof
+    /// LogByteSizeMergePolicy)`).
+    pub fn is_log_byte_size_merge_policy(&self) -> bool {
+        self.size.simple_name() == "LogByteSizeMergePolicy"
+    }
+
     /// Creates a policy measuring segments by bytes.
     ///
     /// Equivalent to `org.apache.lucene.index.LogByteSizeMergePolicy()`
