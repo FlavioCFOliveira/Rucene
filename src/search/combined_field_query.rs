@@ -365,6 +365,11 @@ impl Query for CombinedFieldQuery {
         self
     }
 
+    /// The Java class implements `Accountable`.
+    fn as_accountable(&self) -> Option<&dyn crate::util::Accountable> {
+        Some(self)
+    }
+
     fn rewrite(&self, _index_searcher: &IndexSearcher) -> Result<Option<Arc<dyn Query>>> {
         if self.field_and_weights.is_empty() {
             return Ok(Some(Arc::new(BooleanQueryBuilder::new().build())));

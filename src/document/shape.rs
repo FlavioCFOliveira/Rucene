@@ -32,18 +32,16 @@ use crate::util::BytesRef;
 /// What a geographic shape query factory produces.
 ///
 /// Equivalent to the `org.apache.lucene.search.Query` the `LatLonShape`
-/// factories return, which is one of three shapes: a bounding-box query, a
-/// general shape query, or a conjunction of both kinds wrapped in a
-/// `ConstantScoreQuery`.
+/// factories return, which is one of four shapes: a bounding-box query, a
+/// general shape query, the bare `BooleanQuery` of two bounding-box queries
+/// that `newBoxQuery` builds for a `CONTAINS` box crossing the dateline
+/// (`LatLonShape.java:247-256`), or the conjunction `newGeometryQuery` wraps
+/// in a `ConstantScoreQuery` (`LatLonShape.java:369`).
 ///
 /// **Divergence from Lucene 10.5.0.** Java names that union with the common
-/// supertype `Query`, and builds the conjunction with `BooleanQuery.Builder`
-/// plus `ConstantScoreQuery`. Neither `BooleanQuery` nor `ConstantScoreQuery`
-/// is part of this crate's public search surface yet, so the union is named
-/// explicitly here and the conjunction is carried as its clauses. Which
-/// documents match is unchanged: [`Self::Conjunction`] is exactly a
-/// `BooleanQuery` whose every clause is `MUST`, wrapped in a
-/// `ConstantScoreQuery`.
+/// supertype `Query`. The factories here name it explicitly and carry each
+/// conjunction as its clauses; [`Self::into_query`] builds exactly the
+/// `BooleanQuery` (and `ConstantScoreQuery`) Java returns.
 #[derive(Clone, Debug)]
 pub enum LatLonShapeQueryPlan {
     /// A bounding-box query.
@@ -52,6 +50,9 @@ pub enum LatLonShapeQueryPlan {
     Shape(Box<LatLonShapeQuery>),
     /// A conjunction: every clause must match, and the whole scores constant.
     Conjunction(Vec<LatLonShapeQueryPlan>),
+    /// A bare `BooleanQuery` whose every clause is `MUST`, without the
+    /// constant-score wrapper.
+    Boolean(Vec<LatLonShapeQueryPlan>),
 }
 
 /// What a cartesian shape query factory produces.
@@ -331,8 +332,9 @@ impl LatLonShape {
     ) -> Result<LatLonShapeQueryPlan> {
         if query_relation == QueryRelation::Contains && min_longitude > max_longitude {
             // A `CONTAINS` query over a box that crosses the dateline must
-            // match both halves, so Lucene builds a conjunction of the two.
-            return Ok(LatLonShapeQueryPlan::Conjunction(vec![
+            // match both halves, so Lucene returns the bare `BooleanQuery`
+            // of the two (`LatLonShape.java:247-256`).
+            return Ok(LatLonShapeQueryPlan::Boolean(vec![
                 Self::new_box_query(
                     field,
                     query_relation,
@@ -376,8 +378,9 @@ impl LatLonShape {
     ) -> Result<LatLonShapeDocValuesBoxPlan> {
         if query_relation == QueryRelation::Contains && min_longitude > max_longitude {
             // Java falls back to `newBoxQuery` for both halves here, not to the
-            // doc-values query.
-            return Ok(LatLonShapeDocValuesBoxPlan::Conjunction(vec![
+            // doc-values query, and returns the bare `BooleanQuery` of the
+            // two (`LatLonShape.java:271-280`).
+            return Ok(LatLonShapeDocValuesBoxPlan::Boolean(vec![
                 Self::new_box_query(
                     field,
                     query_relation,
@@ -589,9 +592,9 @@ impl LatLonShape {
 pub enum LatLonShapeDocValuesBoxPlan {
     /// The doc-values query.
     DocValues(Box<LatLonShapeDocValuesQuery>),
-    /// A conjunction of points queries, for a `CONTAINS` box crossing the
-    /// dateline.
-    Conjunction(Vec<LatLonShapeQueryPlan>),
+    /// The bare `BooleanQuery` of two points queries, every clause `MUST`, for
+    /// a `CONTAINS` box crossing the dateline.
+    Boolean(Vec<LatLonShapeQueryPlan>),
 }
 
 // -----------------------------------------------------------------------------
@@ -1057,18 +1060,25 @@ fn decode_indexable_fields(indexable_fields: &[Triangle]) -> Result<Vec<DecodedT
 // Plans as queries
 // -----------------------------------------------------------------------------
 
-/// Builds Java's `new ConstantScoreQuery(builder.build())` over `clauses`, each
-/// added with `BooleanClause.Occur.MUST`.
-fn constant_score_conjunction(
+/// Builds Java's `builder.build()` over `clauses`, each added with
+/// `BooleanClause.Occur.MUST`.
+fn must_conjunction(
     clauses: Vec<Arc<dyn crate::search::Query>>,
 ) -> Result<Arc<dyn crate::search::Query>> {
     let mut builder = crate::search::BooleanQueryBuilder::new();
     for clause in clauses {
         builder.add(clause, crate::search::Occur::MUST)?;
     }
-    let conjunction: Arc<dyn crate::search::Query> = Arc::new(builder.build());
+    Ok(Arc::new(builder.build()))
+}
+
+/// Builds Java's `new ConstantScoreQuery(builder.build())` over `clauses`, each
+/// added with `BooleanClause.Occur.MUST`.
+fn constant_score_conjunction(
+    clauses: Vec<Arc<dyn crate::search::Query>>,
+) -> Result<Arc<dyn crate::search::Query>> {
     Ok(Arc::new(crate::search::ConstantScoreQuery::new(
-        conjunction,
+        must_conjunction(clauses)?,
     )))
 }
 
@@ -1084,6 +1094,12 @@ impl LatLonShapeQueryPlan {
             Self::BoundingBox(query) => Arc::new(*query),
             Self::Shape(query) => Arc::new(*query),
             Self::Conjunction(clauses) => constant_score_conjunction(
+                clauses
+                    .into_iter()
+                    .map(Self::into_query)
+                    .collect::<Result<Vec<_>>>()?,
+            )?,
+            Self::Boolean(clauses) => must_conjunction(
                 clauses
                     .into_iter()
                     .map(Self::into_query)
@@ -1123,7 +1139,7 @@ impl LatLonShapeDocValuesBoxPlan {
     pub fn into_query(self) -> Result<Arc<dyn crate::search::Query>> {
         Ok(match self {
             Self::DocValues(query) => Arc::new(*query),
-            Self::Conjunction(clauses) => constant_score_conjunction(
+            Self::Boolean(clauses) => must_conjunction(
                 clauses
                     .into_iter()
                     .map(LatLonShapeQueryPlan::into_query)

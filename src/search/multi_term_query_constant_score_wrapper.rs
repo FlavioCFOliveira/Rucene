@@ -95,6 +95,11 @@ impl Query for MultiTermQueryConstantScoreWrapper {
         self
     }
 
+    /// The Java class implements `Accountable`.
+    fn as_accountable(&self) -> Option<&dyn crate::util::Accountable> {
+        Some(self)
+    }
+
     fn create_weight(
         &self,
         searcher: &IndexSearcher,

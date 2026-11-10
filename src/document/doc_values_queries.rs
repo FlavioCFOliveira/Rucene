@@ -989,6 +989,11 @@ impl Query for SortedNumericDocValuesSetQuery {
         self
     }
 
+    /// The Java class implements `Accountable`.
+    fn as_accountable(&self) -> Option<&dyn crate::util::Accountable> {
+        Some(self)
+    }
+
     fn rewrite(&self, _searcher: &IndexSearcher) -> Result<Option<Arc<dyn Query>>> {
         if self.values.size() == 0 {
             return Ok(Some(Arc::new(MatchNoDocsQuery::new(""))));

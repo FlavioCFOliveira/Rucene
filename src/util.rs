@@ -2514,16 +2514,43 @@ impl Accountable for NullAccountable {
 /// runtime class that its chain of `instanceof` tests recognises
 /// (`RamUsageEstimator.java:396-432`).
 ///
-/// Holds the classes the crate's ported callers of `sizeOfObject` pass; a
-/// `null` argument is `None` at the call.
+/// Holds every class of that chain, in its order; a `null` argument is `None`
+/// at the call.
 #[derive(Clone, Copy)]
 pub enum SizedObject<'a> {
     /// An `Accountable`, sized by its own `ramBytesUsed()`.
     Accountable(&'a dyn Accountable),
     /// A `String`, sized by `RamUsageEstimator.sizeOf(String)`.
     String(&'a str),
+    /// A `boolean[]`, sized by `RamUsageEstimator.sizeOf(boolean[])`.
+    BoolArray(&'a [bool]),
+    /// A `byte[]`, sized by `RamUsageEstimator.sizeOf(byte[])`.
+    ByteArray(&'a [u8]),
+    /// A `char[]`, sized by `RamUsageEstimator.sizeOf(char[])`.
+    CharArray(&'a [u16]),
+    /// A `double[]`, sized by `RamUsageEstimator.sizeOf(double[])`.
+    DoubleArray(&'a [f64]),
+    /// A `float[]`, sized by `RamUsageEstimator.sizeOf(float[])`.
+    FloatArray(&'a [f32]),
     /// An `int[]`, sized by `RamUsageEstimator.sizeOf(int[])`.
     IntArray(&'a [i32]),
+    /// A boxed `Integer`, sized by `RamUsageEstimator.sizeOf(Integer)`.
+    Integer(i32),
+    /// A boxed `Long`, sized by `RamUsageEstimator.sizeOf(Long)`.
+    Long(i64),
+    /// A `long[]`, sized by `RamUsageEstimator.sizeOf(long[])`.
+    LongArray(&'a [i64]),
+    /// A `short[]`, sized by `RamUsageEstimator.sizeOf(short[])`.
+    ShortArray(&'a [i16]),
+    /// A `String[]`, sized by `RamUsageEstimator.sizeOf(String[])`.
+    StringArray(&'a [Option<&'a str>]),
+    /// A `Query`, sized by `RamUsageEstimator.sizeOf(Query, long)`.
+    Query(&'a dyn crate::search::Query),
+    /// A `Map`, sized by `RamUsageEstimator.sizeOfMap(Map, int, long)`.
+    Map(&'a dyn SizedMap),
+    /// A `Collection`, sized by
+    /// `RamUsageEstimator.sizeOfCollection(Collection, int, long)`.
+    Collection(&'a dyn SizedCollection),
     /// An instance of a class the `instanceof` chain does not know, such as
     /// `BytesRef`, with the shallow size `RamUsageEstimator.shallowSizeOf`
     /// would measure for it.
@@ -2538,12 +2565,129 @@ impl Debug for SizedObject<'_> {
         match self {
             Self::Accountable(_) => f.write_str("Accountable"),
             Self::String(s) => f.debug_tuple("String").field(s).finish(),
+            Self::BoolArray(arr) => f.debug_tuple("BoolArray").field(&arr.len()).finish(),
+            Self::ByteArray(arr) => f.debug_tuple("ByteArray").field(&arr.len()).finish(),
+            Self::CharArray(arr) => f.debug_tuple("CharArray").field(&arr.len()).finish(),
+            Self::DoubleArray(arr) => f.debug_tuple("DoubleArray").field(&arr.len()).finish(),
+            Self::FloatArray(arr) => f.debug_tuple("FloatArray").field(&arr.len()).finish(),
             Self::IntArray(arr) => f.debug_tuple("IntArray").field(&arr.len()).finish(),
+            Self::Integer(v) => f.debug_tuple("Integer").field(v).finish(),
+            Self::Long(v) => f.debug_tuple("Long").field(v).finish(),
+            Self::LongArray(arr) => f.debug_tuple("LongArray").field(&arr.len()).finish(),
+            Self::ShortArray(arr) => f.debug_tuple("ShortArray").field(&arr.len()).finish(),
+            Self::StringArray(arr) => f.debug_tuple("StringArray").field(&arr.len()).finish(),
+            Self::Query(q) => f.debug_tuple("Query").field(q).finish(),
+            Self::Map(_) => f.write_str("Map"),
+            Self::Collection(_) => f.write_str("Collection"),
             Self::Unknown { shallow_size } => f
                 .debug_struct("Unknown")
                 .field("shallow_size", shallow_size)
                 .finish(),
         }
+    }
+}
+
+/// A `java.util.Map` as `RamUsageEstimator.sizeOfMap` reads it.
+///
+/// Java reads the map's shallow size and its entries' by reflection
+/// (`shallowSizeOf(map)`, `shallowSizeOf(entry)`); Rust has none, so the map
+/// declares both, with its keys and values.
+pub trait SizedMap {
+    /// `RamUsageEstimator.shallowSizeOf(map)`.
+    fn shallow_size(&self) -> i64;
+
+    /// `RamUsageEstimator.shallowSizeOf(entry)` of one `Map.Entry`.
+    fn entry_shallow_size(&self) -> i64;
+
+    /// `map.entrySet()`: each key and value, `null` as `None`.
+    fn entries(&self) -> Vec<(Option<SizedObject<'_>>, Option<SizedObject<'_>>)>;
+}
+
+/// A `java.util.Collection` as `RamUsageEstimator.sizeOfCollection` reads it.
+///
+/// Java reads the collection's shallow size by reflection
+/// (`shallowSizeOf(collection)`); Rust has none, so the collection declares
+/// it, with its elements.
+pub trait SizedCollection {
+    /// `RamUsageEstimator.shallowSizeOf(collection)`.
+    fn shallow_size(&self) -> i64;
+
+    /// The elements in iteration order, `null` as `None`; their count is
+    /// `collection.size()`.
+    fn elements(&self) -> Vec<Option<SizedObject<'_>>>;
+}
+
+/// The visitor `RamUsageEstimator.sizeOf(Query, long)` sums a query tree's
+/// size with.
+///
+/// Equivalent to the private `RamUsageEstimator.RamUsageQueryVisitor`
+/// (`RamUsageEstimator.java:303-352`). `query == root` is an identity test:
+/// the data addresses of the two queries are compared.
+struct RamUsageQueryVisitor {
+    total: i64,
+    def_size: i64,
+    root: *const (),
+}
+
+impl RamUsageQueryVisitor {
+    fn new(root: &dyn crate::search::Query, def_size: i64) -> Self {
+        let total = if def_size > 0 {
+            def_size
+        } else {
+            RamUsageEstimator::shallow_size_of_object(root)
+        };
+        Self {
+            total,
+            def_size,
+            root: root as *const dyn crate::search::Query as *const (),
+        }
+    }
+
+    fn is_root(&self, query: &dyn crate::search::Query) -> bool {
+        std::ptr::eq(
+            query as *const dyn crate::search::Query as *const (),
+            self.root,
+        )
+    }
+}
+
+impl crate::search::QueryVisitor for RamUsageQueryVisitor {
+    fn consume_terms(&mut self, query: &dyn crate::search::Query, terms: &[crate::index::Term]) {
+        if !self.is_root(query) {
+            if self.def_size > 0 {
+                self.total += self.def_size;
+            } else {
+                self.total += RamUsageEstimator::shallow_size_of_object(query);
+            }
+        }
+        // `if (terms != null)`: a slice is never `null`.
+        let accountables: Vec<&dyn Accountable> =
+            terms.iter().map(|t| t as &dyn Accountable).collect();
+        self.total += RamUsageEstimator::size_of_accountables(&accountables);
+    }
+
+    fn visit_leaf(&mut self, query: &dyn crate::search::Query) {
+        if self.is_root(query) {
+            return;
+        }
+        if let Some(accountable) = query.as_accountable() {
+            self.total += accountable.ram_bytes_used();
+        } else if self.def_size > 0 {
+            self.total += self.def_size;
+        } else {
+            self.total += RamUsageEstimator::shallow_size_of_object(query);
+        }
+    }
+
+    fn get_sub_visitor<'a>(
+        &'a mut self,
+        _occur: crate::search::Occur,
+        _parent: &dyn crate::search::Query,
+    ) -> Box<dyn crate::search::QueryVisitor + 'a>
+    where
+        Self: 'a,
+    {
+        Box::new(self)
     }
 }
 
@@ -2562,6 +2706,21 @@ impl RamUsageEstimator {
     pub const ONE_MB: i64 = Self::ONE_KB * Self::ONE_KB;
     /// One gigabyte.
     pub const ONE_GB: i64 = Self::ONE_KB * Self::ONE_MB;
+
+    /// True, iff compressed references (oops) are enabled by this JVM.
+    ///
+    /// Equivalent to `RamUsageEstimator.COMPRESSED_REFS_ENABLED`, which Java
+    /// reads from the running HotSpot VM at class initialisation. This port's
+    /// layout is fixed to a 64-bit HotSpot VM with compressed references (see
+    /// the type documentation), so the constant is `true`.
+    pub const COMPRESSED_REFS_ENABLED: bool = true;
+
+    /// True, iff the running VM is a 64-bit HotSpot VM; for testing only.
+    ///
+    /// Equivalent to the package-private
+    /// `RamUsageEstimator.JVM_IS_HOTSPOT_64BIT`; `true` for the fixed layout
+    /// this port models.
+    pub const JVM_IS_HOTSPOT_64BIT: bool = true;
 
     /// Assumed reference size in bytes on a 64-bit compressed-oop JVM.
     pub const NUM_BYTES_OBJECT_REF: i64 = 4;
@@ -2645,6 +2804,34 @@ impl RamUsageEstimator {
     pub const STRING_SIZE: i64 = Self::align_object_size(
         Self::NUM_BYTES_OBJECT_HEADER + Self::NUM_BYTES_OBJECT_REF + 1 + 4 + 1,
     );
+
+    /// Shallow size of an `Integer` instance.
+    ///
+    /// Equivalent to the package-private `RamUsageEstimator.INTEGER_SIZE`,
+    /// `shallowSizeOfInstance(Integer.class)`: the object header and the `int
+    /// value` field, aligned.
+    pub const INTEGER_SIZE: i64 = Self::align_object_size(Self::NUM_BYTES_OBJECT_HEADER + 4);
+
+    /// Shallow size of a `Long` instance.
+    ///
+    /// Equivalent to the package-private `RamUsageEstimator.LONG_SIZE`,
+    /// `shallowSizeOfInstance(Long.class)`: the object header and the `long
+    /// value` field, aligned.
+    pub const LONG_SIZE: i64 = Self::align_object_size(Self::NUM_BYTES_OBJECT_HEADER + 8);
+
+    /// Returns the shallow size of an `Integer`, ignoring the `IntegerCache`.
+    ///
+    /// Equivalent to `RamUsageEstimator.sizeOf(Integer)`.
+    pub fn size_of_integer(_ignored: i32) -> i64 {
+        Self::INTEGER_SIZE
+    }
+
+    /// Returns the shallow size of a `Long`, ignoring the `LongCache`.
+    ///
+    /// Equivalent to `RamUsageEstimator.sizeOf(Long)`.
+    pub fn size_of_long_object(_ignored: i64) -> i64 {
+        Self::LONG_SIZE
+    }
 
     /// Returns the size in bytes of a `bool` array.
     ///
@@ -2757,6 +2944,141 @@ impl RamUsageEstimator {
         Self::align_object_size(size)
     }
 
+    /// Returns the size in bytes of a `Map`, including the sizes of its keys
+    /// and values, charging [`UNKNOWN_DEFAULT_RAM_BYTES_USED`](Self::UNKNOWN_DEFAULT_RAM_BYTES_USED)
+    /// for a type the estimate does not know; recurses up to
+    /// [`MAX_DEPTH`](Self::MAX_DEPTH).
+    ///
+    /// Equivalent to `RamUsageEstimator.sizeOfMap(Map)`.
+    pub fn size_of_java_map(map: Option<&dyn SizedMap>) -> i64 {
+        Self::size_of_map_at_depth(map, 0, Self::UNKNOWN_DEFAULT_RAM_BYTES_USED)
+    }
+
+    /// Returns the size in bytes of a `Map`, charging `def_size` for a type the
+    /// estimate does not know.
+    ///
+    /// Equivalent to `RamUsageEstimator.sizeOfMap(Map, long)`.
+    pub fn size_of_java_map_with_def_size(map: Option<&dyn SizedMap>, def_size: i64) -> i64 {
+        Self::size_of_map_at_depth(map, 0, def_size)
+    }
+
+    /// Equivalent to the private `RamUsageEstimator.sizeOfMap(Map, int, long)`
+    /// (`RamUsageEstimator.java:249-266`).
+    fn size_of_map_at_depth(map: Option<&dyn SizedMap>, depth: i32, def_size: i64) -> i64 {
+        let Some(map) = map else {
+            return 0;
+        };
+        let mut size = map.shallow_size();
+        if depth > Self::MAX_DEPTH {
+            return size;
+        }
+        let mut size_of_entry = -1;
+        for (key, value) in map.entries() {
+            if size_of_entry == -1 {
+                size_of_entry = map.entry_shallow_size();
+            }
+            size += size_of_entry;
+            size += Self::size_of_object_at_depth(key, depth, def_size);
+            size += Self::size_of_object_at_depth(value, depth, def_size);
+        }
+        Self::align_object_size(size)
+    }
+
+    /// Returns the size in bytes of a `Collection`, including the sizes of its
+    /// values, charging [`UNKNOWN_DEFAULT_RAM_BYTES_USED`](Self::UNKNOWN_DEFAULT_RAM_BYTES_USED)
+    /// for a type the estimate does not know; recurses up to
+    /// [`MAX_DEPTH`](Self::MAX_DEPTH).
+    ///
+    /// Equivalent to `RamUsageEstimator.sizeOfCollection(Collection)`.
+    pub fn size_of_java_collection(collection: Option<&dyn SizedCollection>) -> i64 {
+        Self::size_of_collection_at_depth(collection, 0, Self::UNKNOWN_DEFAULT_RAM_BYTES_USED)
+    }
+
+    /// Returns the size in bytes of a `Collection`, charging `def_size` for a
+    /// type the estimate does not know.
+    ///
+    /// Equivalent to `RamUsageEstimator.sizeOfCollection(Collection, long)`.
+    pub fn size_of_java_collection_with_def_size(
+        collection: Option<&dyn SizedCollection>,
+        def_size: i64,
+    ) -> i64 {
+        Self::size_of_collection_at_depth(collection, 0, def_size)
+    }
+
+    /// Equivalent to the private
+    /// `RamUsageEstimator.sizeOfCollection(Collection, int, long)`
+    /// (`RamUsageEstimator.java:287-301`).
+    fn size_of_collection_at_depth(
+        collection: Option<&dyn SizedCollection>,
+        depth: i32,
+        def_size: i64,
+    ) -> i64 {
+        let Some(collection) = collection else {
+            return 0;
+        };
+        let mut size = collection.shallow_size();
+        if depth > Self::MAX_DEPTH {
+            return size;
+        }
+        let elements = collection.elements();
+        // assume array-backed collection and add per-object references
+        size += Self::NUM_BYTES_ARRAY_HEADER + elements.len() as i64 * Self::NUM_BYTES_OBJECT_REF;
+        for o in elements {
+            size += Self::size_of_object_at_depth(o, depth, def_size);
+        }
+        Self::align_object_size(size)
+    }
+
+    /// Returns the size in bytes of a query; an unknown query type is
+    /// estimated as [`QUERY_DEFAULT_RAM_BYTES_USED`](Self::QUERY_DEFAULT_RAM_BYTES_USED).
+    ///
+    /// Equivalent to `RamUsageEstimator.sizeOf(Query)`.
+    pub fn size_of_query(q: &dyn crate::search::Query) -> i64 {
+        Self::size_of_query_with_def_size(q, Self::QUERY_DEFAULT_RAM_BYTES_USED)
+    }
+
+    /// Returns the size in bytes of a query; an unknown query type is
+    /// estimated with its shallow size, or `def_size` when that is positive.
+    ///
+    /// Equivalent to `RamUsageEstimator.sizeOf(Query, long)`
+    /// (`RamUsageEstimator.java:367-375`); `q instanceof Accountable` is
+    /// [`Query::as_accountable`](crate::search::Query::as_accountable).
+    pub fn size_of_query_with_def_size(q: &dyn crate::search::Query, def_size: i64) -> i64 {
+        if let Some(accountable) = q.as_accountable() {
+            accountable.ram_bytes_used()
+        } else {
+            let mut visitor = RamUsageQueryVisitor::new(q, def_size);
+            q.visit(&mut visitor);
+            Self::align_object_size(visitor.total)
+        }
+    }
+
+    /// Returns the shallow size of `obj`.
+    ///
+    /// Equivalent to `RamUsageEstimator.shallowSizeOf(Object)` over an object
+    /// that is not an array, `shallowSizeOfInstance(obj.getClass())`; see the
+    /// divergence note on [`shallow_size_of_instance`](Self::shallow_size_of_instance),
+    /// whose measure this applies to the value's dynamic type.
+    pub fn shallow_size_of_object<T: ?Sized>(obj: &T) -> i64 {
+        Self::align_object_size(Self::NUM_BYTES_OBJECT_HEADER + size_of_val(obj) as i64)
+    }
+
+    /// Returns the shallow size of an instance of a Java class whose non-static
+    /// fields, its own and its superclasses', have the given widths.
+    ///
+    /// Equivalent to `RamUsageEstimator.shallowSizeOfInstance(Class)` over a
+    /// conventional class: the object header plus
+    /// [`adjust_for_field`](Self::adjust_for_field) of every field, aligned.
+    /// Java reads the fields by reflection; the caller declares them here, a
+    /// reference field as [`NUM_BYTES_OBJECT_REF`](Self::NUM_BYTES_OBJECT_REF).
+    pub fn shallow_size_of_declared_instance(field_sizes: &[i64]) -> i64 {
+        let mut size = Self::NUM_BYTES_OBJECT_HEADER;
+        for field_size in field_sizes {
+            size = Self::adjust_for_field(size, *field_size);
+        }
+        Self::align_object_size(size)
+    }
+
     /// Returns the shallow size of an instance of `T`.
     ///
     /// Equivalent to `RamUsageEstimator.shallowSizeOfInstance(Class)`.
@@ -2830,15 +3152,37 @@ impl RamUsageEstimator {
     ///
     /// Java dispatches on the runtime class with a chain of `instanceof`
     /// tests. Rust has no runtime class to test, so the caller names it with
-    /// a [`SizedObject`] variant, which holds the cases of that chain the
-    /// crate's callers pass (`Term.java:191`, `BytesRefHash.java:508`,
-    /// `CompiledAutomaton.java:540`); the branch taken for each is Java's.
+    /// a [`SizedObject`] variant, one per case of that chain; the branch taken
+    /// for each is Java's.
     pub fn size_of_object_with_def_size(o: Option<SizedObject<'_>>, def_size: i64) -> i64 {
+        Self::size_of_object_at_depth(o, 0, def_size)
+    }
+
+    /// Equivalent to the private `RamUsageEstimator.sizeOfObject(Object, int,
+    /// long)` (`RamUsageEstimator.java:396-441`).
+    fn size_of_object_at_depth(o: Option<SizedObject<'_>>, depth: i32, def_size: i64) -> i64 {
         Self::do_privileged(|| match o {
             None => 0,
             Some(SizedObject::Accountable(accountable)) => accountable.ram_bytes_used(),
             Some(SizedObject::String(s)) => Self::size_of_string(s),
+            Some(SizedObject::BoolArray(arr)) => Self::size_of_bool(arr),
+            Some(SizedObject::ByteArray(arr)) => Self::size_of(arr),
+            Some(SizedObject::CharArray(arr)) => Self::size_of_char(arr),
+            Some(SizedObject::DoubleArray(arr)) => Self::size_of_double(arr),
+            Some(SizedObject::FloatArray(arr)) => Self::size_of_float(arr),
             Some(SizedObject::IntArray(arr)) => Self::size_of_int(arr),
+            Some(SizedObject::Integer(v)) => Self::size_of_integer(v),
+            Some(SizedObject::Long(v)) => Self::size_of_long_object(v),
+            Some(SizedObject::LongArray(arr)) => Self::size_of_long(arr),
+            Some(SizedObject::ShortArray(arr)) => Self::size_of_short(arr),
+            Some(SizedObject::StringArray(arr)) => Self::size_of_string_array(arr),
+            Some(SizedObject::Query(q)) => Self::size_of_query_with_def_size(q, def_size),
+            Some(SizedObject::Map(map)) => {
+                Self::size_of_map_at_depth(Some(map), depth + 1, def_size)
+            }
+            Some(SizedObject::Collection(collection)) => {
+                Self::size_of_collection_at_depth(Some(collection), depth + 1, def_size)
+            }
             Some(SizedObject::Unknown { shallow_size }) => {
                 if def_size > 0 {
                     def_size

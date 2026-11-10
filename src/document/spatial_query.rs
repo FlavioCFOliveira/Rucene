@@ -2748,28 +2748,49 @@ impl BaseShapeDocValuesQuery {
         Ok(false)
     }
 
-    /// Returns the documents of `reader` this query matches.
+    /// Returns the scorer supplier over the documents of `reader`, or `None`
+    /// when the segment holds no value for the field.
     ///
     /// Equivalent to
-    /// `BaseShapeDocValuesQuery.getScorerSupplier(LeafReader, SpatialVisitor, ScoreMode, float, float)`.
+    /// `BaseShapeDocValuesQuery.getScorerSupplier(LeafReader, SpatialVisitor, ScoreMode, float, float)`
+    /// (`BaseShapeDocValuesQuery.java:56-99`): a [`ConstantScoreScorer`]
+    /// scoring `boost` over a [`TwoPhaseIterator`] whose approximation is the
+    /// `BinaryDocValues` iterator and whose `matches()` runs
+    /// [`Self::match_shape`], with a cost of `reader.max_doc()`.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java returns a `ConstantScoreScorer`
-    /// over a `TwoPhaseIterator` whose approximation is the `BinaryDocValues`
-    /// iterator and whose `matches()` runs [`Self::match_shape`]. Neither
-    /// `Scorer` nor `TwoPhaseIterator` is part of this crate's public search
-    /// surface yet, so the two phases are collapsed into a single filtering
-    /// [`DocIdSetIterator`]: the same documents are produced, in the same
-    /// order, but a consumer cannot defer the expensive check the way a
-    /// two-phase scorer can. The cost is still `reader.max_doc()`, as Java's
-    /// `ScorerSupplier.cost()` reports.
+    /// [`ConstantScoreScorer`]: crate::search::ConstantScoreScorer
+    /// [`TwoPhaseIterator`]: crate::search::TwoPhaseIterator
     ///
     /// # Errors
     ///
     /// Propagates whatever reading the doc values raises.
-    pub fn matching_docs(
+    pub fn get_scorer_supplier(
         &self,
         reader: &dyn LeafReader,
-    ) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+        score_mode: crate::search::ScoreMode,
+        boost: f32,
+    ) -> Result<Option<Box<dyn crate::search::ScorerSupplier>>> {
+        let Some(two_phase) = self.two_phase_iterator(reader)? else {
+            return Ok(None);
+        };
+        Ok(Some(Box::new(ShapeDocValuesScorerSupplier {
+            iterator: Some(two_phase),
+            boost,
+            score_mode,
+            max_doc: reader.max_doc(),
+        })))
+    }
+
+    /// Returns the two-phase iterator [`Self::get_scorer_supplier`] scores, or
+    /// `None` when the segment holds no value for the field.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading the doc values raises.
+    fn two_phase_iterator(
+        &self,
+        reader: &dyn LeafReader,
+    ) -> Result<Option<Box<dyn crate::search::TwoPhaseIterator>>> {
         let Some(values) = reader.get_binary_doc_values(self.query.get_field())? else {
             return Ok(None);
         };
@@ -2778,65 +2799,99 @@ impl BaseShapeDocValuesQuery {
             .field_info(self.query.get_field())
             .is_none()
         {
-            // No document in this segment indexed this field at all.
+            // No docs in this segment indexed this field at all
             return Ok(None);
         }
-        Ok(Some(Box::new(ShapeDocValuesMatchIterator {
+        Ok(Some(Box::new(ShapeDocValuesTwoPhaseIterator {
             values,
             query: self.clone(),
-            cost: i64::from(reader.max_doc()),
         })))
+    }
+
+    /// Returns the documents of `reader` this query matches: the two-phase
+    /// iterator of [`Self::get_scorer_supplier`] seen as a confirming
+    /// iterator, as `TwoPhaseIterator.asDocIdSetIterator` presents it.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading the doc values raises.
+    pub fn matching_docs(
+        &self,
+        reader: &dyn LeafReader,
+    ) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+        Ok(self.two_phase_iterator(reader)?.map(|two_phase| {
+            Box::new(crate::search::TwoPhaseIteratorAsDocIdSetIterator::new(
+                two_phase,
+            )) as Box<dyn DocIdSetIterator>
+        }))
     }
 }
 
-/// Filters a `BinaryDocValues` iterator down to the documents whose stored
-/// shape matches.
-///
-/// See the divergence note on [`BaseShapeDocValuesQuery::matching_docs`].
-struct ShapeDocValuesMatchIterator {
+/// The anonymous `TwoPhaseIterator` of
+/// `BaseShapeDocValuesQuery.getScorerSupplier`.
+struct ShapeDocValuesTwoPhaseIterator {
     values: Box<dyn crate::index::BinaryDocValues>,
     query: BaseShapeDocValuesQuery,
-    cost: i64,
 }
 
-impl ShapeDocValuesMatchIterator {
-    /// Equivalent to the `matches()` of the `TwoPhaseIterator` Java builds.
-    fn matches(&self) -> Result<bool> {
+impl crate::search::TwoPhaseIterator for ShapeDocValuesTwoPhaseIterator {
+    fn approximation(&mut self) -> &mut dyn DocIdSetIterator {
+        self.values.as_mut()
+    }
+
+    fn approximation_ref(&self) -> &dyn DocIdSetIterator {
+        self.values.as_ref()
+    }
+
+    fn matches(&mut self) -> Result<bool> {
         let binary_value = self.values.binary_value()?;
         let shape =
             ShapeDocValues::from_binary_value(binary_value, self.query.coordinate_system())?;
         self.query.match_shape(&shape)
     }
 
-    /// Advances past the documents that do not match.
-    fn confirm(&mut self, mut doc: i32) -> Result<i32> {
-        while doc != NO_MORE_DOCS {
-            if self.matches()? {
-                return Ok(doc);
-            }
-            doc = self.values.next_doc()?;
-        }
-        Ok(NO_MORE_DOCS)
+    fn match_cost(&self) -> f32 {
+        self.query.match_cost()
     }
 }
 
-impl DocIdSetIterator for ShapeDocValuesMatchIterator {
-    fn doc_id(&self) -> i32 {
-        self.values.doc_id()
-    }
+/// The anonymous `ScorerSupplier` of
+/// `BaseShapeDocValuesQuery.getScorerSupplier`.
+struct ShapeDocValuesScorerSupplier {
+    iterator: Option<Box<dyn crate::search::TwoPhaseIterator>>,
+    boost: f32,
+    score_mode: crate::search::ScoreMode,
+    max_doc: i32,
+}
 
-    fn next_doc(&mut self) -> Result<i32> {
-        let doc = self.values.next_doc()?;
-        self.confirm(doc)
+impl std::fmt::Debug for ShapeDocValuesScorerSupplier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ShapeDocValuesScorerSupplier")
+            .field("max_doc", &self.max_doc)
+            .finish_non_exhaustive()
     }
+}
 
-    fn advance(&mut self, target: i32) -> Result<i32> {
-        let doc = self.values.advance(target)?;
-        self.confirm(doc)
+impl crate::search::ScorerSupplier for ShapeDocValuesScorerSupplier {
+    fn get(&mut self, _lead_cost: i64) -> Result<Box<dyn crate::search::Scorer>> {
+        // Java hands every scorer the one iterator it built; a scorer supplier
+        // is asked for its scorer at most once, so the iterator moves here.
+        let iterator = self.iterator.take().ok_or_else(|| {
+            LuceneError::illegal_state(
+                "a spatial scorer supplier may be asked for its scorer only once".to_string(),
+            )
+        })?;
+        Ok(Box::new(
+            crate::search::ConstantScoreScorer::from_two_phase(
+                self.boost,
+                self.score_mode,
+                iterator,
+            ),
+        ))
     }
 
     fn cost(&self) -> i64 {
-        self.cost
+        i64::from(self.max_doc)
     }
 }
 
@@ -3111,6 +3166,30 @@ pub trait SpatialMatcher: std::fmt::Debug + Send + Sync {
     fn spatial_is_cacheable(&self) -> bool {
         true
     }
+
+    /// Returns the scorer supplier of a query that overrides
+    /// `SpatialQuery.getScorerSupplier`, or `None` when the query keeps
+    /// `SpatialQuery`'s own, which iterates
+    /// [`spatial_matching_docs`](Self::spatial_matching_docs).
+    ///
+    /// The inner `Option` is the overriding method's return value: `None` is
+    /// Java's `null`, a leaf where nothing matches.
+    ///
+    /// Equivalent to the `getScorerSupplier(LeafReader, SpatialVisitor,
+    /// ScoreMode, float, float)` override of `BaseShapeDocValuesQuery`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the overriding method raises.
+    #[allow(clippy::type_complexity)]
+    fn spatial_scorer_supplier_override(
+        &self,
+        _reader: &dyn LeafReader,
+        _score_mode: crate::search::ScoreMode,
+        _boost: f32,
+    ) -> Result<Option<Option<Box<dyn crate::search::ScorerSupplier>>>> {
+        Ok(None)
+    }
 }
 
 /// Hands out the scorer over the iterator a spatial query matched.
@@ -3172,16 +3251,20 @@ impl<M: SpatialMatcher> crate::search::ScorerSupplier for SpatialIteratorSupplie
 pub struct SpatialWeight<M: SpatialMatcher> {
     matcher: Arc<M>,
     score_mode: crate::search::ScoreMode,
+    boost: f32,
 }
 
 impl<M: SpatialMatcher> SpatialWeight<M> {
     /// Creates the weight over `matcher`; its score is the enclosing
     /// [`ConstantScoreWeight`](crate::search::ConstantScoreWeight)'s, as Java's
     /// anonymous subclass reads `score()`.
-    pub fn new(matcher: Arc<M>, score_mode: crate::search::ScoreMode) -> Self {
+    /// `boost` is the one `SpatialQuery.createWeight` received, which Java's
+    /// `getScorerSupplier` is passed beside `score()`.
+    pub fn new(matcher: Arc<M>, score_mode: crate::search::ScoreMode, boost: f32) -> Self {
         Self {
             matcher,
             score_mode,
+            boost,
         }
     }
 }
@@ -3194,6 +3277,12 @@ impl<M: SpatialMatcher + 'static> crate::search::ConstantScoreWeightImpl for Spa
     ) -> Result<Option<Box<dyn crate::search::ScorerSupplier>>> {
         let leaf = context.leaf_reader();
         let reader = leaf.as_ref();
+        if let Some(supplier) =
+            self.matcher
+                .spatial_scorer_supplier_override(reader, self.score_mode, self.boost)?
+        {
+            return Ok(supplier);
+        }
         let Some(iterator) = self.matcher.spatial_matching_docs(reader)? else {
             return Ok(None);
         };
@@ -3225,7 +3314,7 @@ pub fn spatial_create_weight<M>(
 where
     M: SpatialMatcher + 'static,
 {
-    let inner = SpatialWeight::new(matcher, score_mode);
+    let inner = SpatialWeight::new(matcher, score_mode, boost);
     Ok(Arc::new(crate::search::ConstantScoreWeight::new(
         query, boost, inner,
     )))
@@ -3237,22 +3326,48 @@ where
 //
 // Java's `LatLonShapeQuery`, `LatLonShapeBoundingBoxQuery`, `XYShapeQuery` and
 // the shape doc-values queries are `Query` subclasses: `SpatialQuery` supplies
-// the `ConstantScoreWeight` of the first three, and `ShapeDocValuesQuery`
-// (`ShapeDocValuesQuery.java`) a `ConstantScoreWeight` over a two-phase
-// iterator of the last two. Rust has no implementation inheritance, so each
-// states how it iterates through [`SpatialMatcher`] and the weight is built
-// once by [`spatial_create_weight`].
-//
-// **Divergence from Lucene 10.5.0.** The doc-values queries run through the
-// same constant-score weight as the point-tree queries: their iterator is the
-// doc-values match iterator [`BaseShapeDocValuesQuery::matching_docs`] builds,
-// not a `TwoPhaseIterator` over all documents, and their cost is the
-// segment's `maxDoc` (Java's `DocIdSetIterator.all(maxDoc)` cost). Which
-// documents match, and their constant score, are unchanged.
+// the `ConstantScoreWeight` of all five, and `BaseShapeDocValuesQuery`
+// overrides its `getScorerSupplier` with a two-phase scorer over the binary
+// doc values. Rust has no implementation inheritance, so each states how it
+// iterates through [`SpatialMatcher`] — the doc-values queries through
+// [`SpatialMatcher::spatial_scorer_supplier_override`] — and the weight is
+// built once by [`spatial_create_weight`].
 
 /// Implements [`SpatialMatcher`] and [`Query`] for a shape query whose shared
 /// state is at `self.$sq` and whose geometries are at `self.$geoms`.
 macro_rules! impl_shape_query_exec {
+    (doc_values $ty:ident, [$($sq:ident).+], $geoms:ident) => {
+        impl SpatialMatcher for $ty {
+            fn spatial_field(&self) -> &str {
+                self.$($sq).+.get_field()
+            }
+
+            fn spatial_matching_docs(
+                &self,
+                reader: &dyn LeafReader,
+            ) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+                self.matching_docs(reader)
+            }
+
+            /// Equivalent to the `cost()` of the supplier
+            /// `BaseShapeDocValuesQuery.getScorerSupplier` returns.
+            fn spatial_cost(&self, reader: &dyn LeafReader) -> Result<i64> {
+                Ok(i64::from(reader.max_doc()))
+            }
+
+            /// Equivalent to `BaseShapeDocValuesQuery.getScorerSupplier`.
+            fn spatial_scorer_supplier_override(
+                &self,
+                reader: &dyn LeafReader,
+                score_mode: crate::search::ScoreMode,
+                boost: f32,
+            ) -> Result<Option<Option<Box<dyn crate::search::ScorerSupplier>>>> {
+                Ok(Some(self.base.get_scorer_supplier(reader, score_mode, boost)?))
+            }
+        }
+
+        impl_shape_query_exec!(@query $ty, [$($sq).+], $geoms);
+    };
     ($ty:ident, [$($sq:ident).+], $geoms:ident, |$this:ident, $reader:ident| $cost:block) => {
         impl SpatialMatcher for $ty {
             fn spatial_field(&self) -> &str {
@@ -3272,6 +3387,9 @@ macro_rules! impl_shape_query_exec {
             }
         }
 
+        impl_shape_query_exec!(@query $ty, [$($sq).+], $geoms);
+    };
+    (@query $ty:ident, [$($sq:ident).+], $geoms:ident) => {
         impl Query for $ty {
             fn to_query_string(&self, field: &str) -> String {
                 $ty::to_query_string(self, field)
@@ -3345,18 +3463,8 @@ impl_shape_query_exec!(
 impl_shape_query_exec!(XYShapeQuery, [query], geometries, |q, reader| {
     shape_tree_cost(&q.query, reader, &q.visitor)
 });
-impl_shape_query_exec!(
-    LatLonShapeDocValuesQuery,
-    [base.query],
-    geometries,
-    |_q, reader| { Ok(i64::from(reader.max_doc())) }
-);
-impl_shape_query_exec!(
-    XYShapeDocValuesQuery,
-    [base.query],
-    geometries,
-    |_q, reader| { Ok(i64::from(reader.max_doc())) }
-);
+impl_shape_query_exec!(doc_values LatLonShapeDocValuesQuery, [base.query], geometries);
+impl_shape_query_exec!(doc_values XYShapeDocValuesQuery, [base.query], geometries);
 
 #[cfg(test)]
 mod visit_tests {

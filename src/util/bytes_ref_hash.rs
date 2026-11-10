@@ -488,6 +488,24 @@ impl BytesRefHash {
         self.keyed_by_pool_offset
     }
 
+    /// Returns the term start offsets, `None` where Java's `bytesStart` is
+    /// `null`.
+    ///
+    /// Reads the package-private field `BytesRefHash.bytesStart`, which
+    /// `RamUsageTester` reaches by reflection.
+    pub fn bytes_start(&self) -> Option<&[i32]> {
+        self.bytes_start.as_deref()
+    }
+
+    /// Returns the hash slots; empty where Java's `ids` is `null`, after
+    /// [`close`](Self::close).
+    ///
+    /// Reads the private field `BytesRefHash.ids`, which `RamUsageTester`
+    /// reaches by reflection.
+    pub fn ids(&self) -> &[i32] {
+        &self.ids
+    }
+
     /// Returns the number of distinct terms in this table.
     pub fn size(&self) -> i32 {
         self.count

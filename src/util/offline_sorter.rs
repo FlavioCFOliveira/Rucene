@@ -13,16 +13,9 @@
 //!
 //! # Divergences from Lucene 10.5.0
 //!
-//! * **Concurrency.** Java's eight-argument constructor accepts an
-//!   `ExecutorService` and bounds the partitions held in RAM with a
-//!   `Semaphore`; when none is supplied it installs a
-//!   `SameThreadExecutorService` and forces `maxPartitionsInRAM` to 1. This
-//!   port always runs that second configuration — every partition is sorted and
-//!   every merge performed on the calling thread — because handing partitions
-//!   to another thread would require the [`Directory`] and the comparator to be
-//!   shared across threads, which is a design decision for the crate rather
-//!   than for this module. The *sequence* of reads, sorts, cascading merges and
-//!   final merges is unchanged, so the file produced is identical.
+//! * **Overridable methods.** Java subclasses override the protected
+//!   `getWriter` and `getReader`; a sorter here holds an
+//!   [`OfflineSorterHooks`] instead (see [`OfflineSorter::with_hooks`]).
 //! * **`BufferSize::automatic`.** Java sizes the buffer from
 //!   `Runtime.maxMemory()`, `totalMemory()` and `freeMemory()`. A Rust process
 //!   has no managed heap to interrogate, so this port returns the same floor
@@ -38,11 +31,12 @@
 
 use std::collections::HashSet;
 use std::fmt::{self, Display, Formatter};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
 use crate::codecs::codec_util;
 use crate::error::{LuceneError, Result};
+use crate::search::Executor;
 use crate::store::{ChecksumIndexInput, Directory, IndexOutput};
 use crate::util::bytes_ref_array::{
     BytesRefArray, BytesRefIterator, FixedLengthBytesRefArray, SortableBytesRefArray,
@@ -225,13 +219,49 @@ impl ByteSequencesWriter {
     }
 }
 
+/// The methods a subclass of `ByteSequencesReader` overrides: `next()` and
+/// `close()`.
+///
+/// Java's subclass passes its `in` to the super constructor and may hand the
+/// same input to another reader it delegates to; Rust cannot hold one input in
+/// two readers, so the overriding object owns it and exposes it as the `in`
+/// field through [`input`](Self::input).
+pub trait ByteSequencesReaderOverride: Send + Sync {
+    /// The overriding `next()`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates what the override raises.
+    fn next(&mut self) -> Result<Option<BytesRef>>;
+
+    /// The overriding `close()`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates what the override raises.
+    fn close(&mut self) -> Result<()>;
+
+    /// The field `in`.
+    fn input(&mut self) -> &mut dyn ChecksumIndexInput;
+}
+
+/// What a [`ByteSequencesReader`] reads through.
+enum ReaderBody {
+    /// Java's own `next()` and `close()` over `in`, up to `end`.
+    Base {
+        input: Box<dyn ChecksumIndexInput>,
+        end: i64,
+    },
+    /// A subclass's.
+    Override(Box<dyn ByteSequencesReaderOverride>),
+}
+
 /// Reads the length-prefixed byte sequences [`ByteSequencesWriter`] produced.
 ///
 /// Port of the nested class `OfflineSorter.ByteSequencesReader`.
 pub struct ByteSequencesReader {
     name: String,
-    input: Box<dyn ChecksumIndexInput>,
-    end: i64,
+    body: ReaderBody,
 }
 
 impl ByteSequencesReader {
@@ -240,8 +270,18 @@ impl ByteSequencesReader {
         let end = input.length() - codec_util::footer_length() as i64;
         Self {
             name: name.into(),
-            input,
-            end,
+            body: ReaderBody::Base { input, end },
+        }
+    }
+
+    /// The reader of a subclass that overrides `next()` and `close()`.
+    pub fn with_override(
+        name: impl Into<String>,
+        overriding: Box<dyn ByteSequencesReaderOverride>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            body: ReaderBody::Override(overriding),
         }
     }
 
@@ -252,7 +292,10 @@ impl ByteSequencesReader {
 
     /// Returns the underlying input, so that the footer can be checked.
     pub fn input(&mut self) -> &mut dyn ChecksumIndexInput {
-        self.input.as_mut()
+        match &mut self.body {
+            ReaderBody::Base { input, .. } => input.as_mut(),
+            ReaderBody::Override(overriding) => overriding.input(),
+        }
     }
 
     /// Closes the underlying input.
@@ -263,18 +306,25 @@ impl ByteSequencesReader {
     ///
     /// Propagates the failure of closing the input.
     pub fn close(&mut self) -> Result<()> {
-        self.input.close()
+        match &mut self.body {
+            ReaderBody::Base { input, .. } => input.close(),
+            ReaderBody::Override(overriding) => overriding.close(),
+        }
     }
 }
 
 impl BytesRefIterator for ByteSequencesReader {
     fn next(&mut self) -> Result<Option<BytesRef>> {
-        if self.input.file_pointer() >= self.end {
+        let (input, end) = match &mut self.body {
+            ReaderBody::Base { input, end } => (input, *end),
+            ReaderBody::Override(overriding) => return overriding.next(),
+        };
+        if input.file_pointer() >= end {
             return Ok(None);
         }
-        let length = self.input.read_short()? as usize;
+        let length = input.read_short()? as usize;
         let mut bytes = vec![0u8; length];
-        self.input.read_bytes(&mut bytes, 0, length)?;
+        input.read_bytes(&mut bytes, 0, length)?;
         Ok(Some(BytesRef::new(bytes)))
     }
 }
@@ -331,14 +381,14 @@ fn natural_compare(a: &BytesRef, b: &BytesRef) -> i32 {
 ///
 /// Port of the nested class `OfflineSorter.Partition`.
 struct Partition {
-    buffer: Option<Box<dyn SortableBytesRefArray>>,
+    buffer: Option<Box<dyn SortableBytesRefArray + Send>>,
     exhausted: bool,
     count: i64,
     file_name: Option<String>,
 }
 
 impl Partition {
-    fn in_memory(buffer: Box<dyn SortableBytesRefArray>, exhausted: bool) -> Self {
+    fn in_memory(buffer: Box<dyn SortableBytesRefArray + Send>, exhausted: bool) -> Self {
         let count = buffer.size() as i64;
         Self {
             buffer: Some(buffer),
@@ -376,223 +426,217 @@ impl PriorityQueueComparator<FileAndTop> for FileAndTopComparator {
     }
 }
 
-/// Sorts a file of byte sequences with an external merge sort.
+/// The overridable methods of `OfflineSorter`: `getWriter(IndexOutput,
+/// long)` and `getReader(ChecksumIndexInput, String)`.
 ///
-/// Port of `org.apache.lucene.util.OfflineSorter`.
-pub struct OfflineSorter {
-    dir: Arc<dyn Directory>,
-    value_length: i32,
-    temp_file_name_prefix: String,
-    ram_buffer_size: BufferSize,
-    max_temp_files: usize,
-    comparator: OfflineSorterComparator,
-    sort_info: SortInfo,
-    /// Files created during the current `sort`, so that a failure can remove
-    /// them. Stands in for `TrackingDirectoryWrapper.getCreatedFiles()`.
-    created_files: HashSet<String>,
+/// Java subclasses `OfflineSorter` and overrides these protected methods;
+/// Rust has no implementation inheritance, so a sorter holds an implementation
+/// of this trait, whose defaults are Java's bodies.
+pub trait OfflineSorterHooks: Send + Sync {
+    /// Subclasses can override to change how byte sequences are written to
+    /// disk.
+    ///
+    /// Equivalent to the protected `OfflineSorter.getWriter`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates what the override raises.
+    fn get_writer(
+        &self,
+        out: Box<dyn IndexOutput>,
+        item_count: i64,
+    ) -> Result<ByteSequencesWriter> {
+        let _ = item_count;
+        Ok(ByteSequencesWriter::new(out))
+    }
+
+    /// Subclasses can override to change how byte sequences are read from
+    /// disk.
+    ///
+    /// Equivalent to the protected `OfflineSorter.getReader`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates what the override raises.
+    fn get_reader(
+        &self,
+        input: Box<dyn ChecksumIndexInput>,
+        name: &str,
+    ) -> Result<ByteSequencesReader> {
+        Ok(ByteSequencesReader::new(input, name))
+    }
 }
 
-impl OfflineSorter {
-    /// Creates a sorter with the default comparator, an automatic buffer size,
-    /// [`MAX_TEMPFILES`] temporary files and variable-length values.
-    ///
-    /// Equivalent to `new OfflineSorter(Directory, String)`.
-    ///
-    /// # Errors
-    ///
-    /// Propagates the errors of [`OfflineSorter::with_options`].
-    pub fn new(dir: Arc<dyn Directory>, temp_file_name_prefix: &str) -> Result<Self> {
-        Self::with_options(
-            dir,
-            temp_file_name_prefix,
-            OfflineSorterComparator::Natural,
-            BufferSize::automatic()?,
-            MAX_TEMPFILES,
-            -1,
-        )
-    }
+/// The hooks of a sorter that overrides nothing.
+#[derive(Debug, Default)]
+pub struct DefaultOfflineSorterHooks;
 
-    /// Creates a sorter with the given comparator and otherwise default
-    /// settings.
-    ///
-    /// Equivalent to `new OfflineSorter(Directory, String, Comparator)`.
-    ///
-    /// # Errors
-    ///
-    /// Propagates the errors of [`OfflineSorter::with_options`].
-    pub fn with_comparator(
-        dir: Arc<dyn Directory>,
-        temp_file_name_prefix: &str,
-        comparator: OfflineSorterComparator,
-    ) -> Result<Self> {
-        Self::with_options(
-            dir,
-            temp_file_name_prefix,
-            comparator,
-            BufferSize::automatic()?,
-            MAX_TEMPFILES,
-            -1,
-        )
-    }
+impl OfflineSorterHooks for DefaultOfflineSorterHooks {}
 
-    /// Creates a fully configured sorter.
-    ///
-    /// `value_length` is `-1` for variable-length values, or the exact length
-    /// every value has. See the module documentation for the two constructor
-    /// parameters Java has that this port does not.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalArgument`] when the buffer is below
-    /// [`ABSOLUTE_MIN_SORT_BUFFER_SIZE`], when `max_tempfiles` is below 2, or
-    /// when `value_length` is neither `-1` nor in `1..=i16::MAX`.
-    pub fn with_options(
-        dir: Arc<dyn Directory>,
-        temp_file_name_prefix: &str,
-        comparator: OfflineSorterComparator,
-        ram_buffer_size: BufferSize,
-        max_tempfiles: usize,
-        value_length: i32,
-    ) -> Result<Self> {
-        if (ram_buffer_size.bytes as i64) < ABSOLUTE_MIN_SORT_BUFFER_SIZE {
-            return Err(LuceneError::IllegalArgument(format!(
-                "{MIN_BUFFER_SIZE_MSG}: {}",
-                ram_buffer_size.bytes
-            )));
+/// `java.util.concurrent.Semaphore`, the permits bounding the partitions held
+/// in RAM.
+#[derive(Debug)]
+struct Semaphore {
+    permits: Mutex<i32>,
+    available: Arc<Condvar>,
+}
+
+impl Semaphore {
+    /// `new Semaphore(permits)`.
+    fn new(permits: i32) -> Self {
+        Self {
+            permits: Mutex::new(permits),
+            available: Arc::new(Condvar::new()),
         }
-        if max_tempfiles < 2 {
-            return Err(LuceneError::IllegalArgument(
-                "maxTempFiles must be >= 2".to_string(),
-            ));
+    }
+
+    /// `acquire()`: waits for a permit; interruptible.
+    fn acquire(&self) -> std::result::Result<(), crate::util::InterruptedException> {
+        let mut permits = self
+            .permits
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while *permits <= 0 {
+            let (reacquired, waited) =
+                crate::util::wait_interruptibly(&self.available, permits, None)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+            permits = reacquired;
+            waited?;
         }
-        if value_length != -1 && (value_length == 0 || value_length > i16::MAX as i32) {
-            return Err(LuceneError::IllegalArgument(format!(
-                "valueLength must be 1 .. {}; got: {value_length}",
-                i16::MAX
-            )));
+        *permits -= 1;
+        Ok(())
+    }
+
+    /// `release()`.
+    fn release(&self) {
+        let mut permits = self
+            .permits
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *permits += 1;
+        self.available.notify_one();
+    }
+}
+
+/// What a submitted task produced: its value, the error it raised, or the
+/// panic it threw.
+enum TaskOutcome {
+    Value(Partition),
+    Error(LuceneError),
+    Panic(Box<dyn std::any::Any + Send>),
+}
+
+/// The `Future<Partition>` `ExecutorService.submit(Callable)` returns.
+///
+/// **Divergence from Lucene 10.5.0.** Java's future rethrows the very same
+/// cause on every `get()`. [`LuceneError`] cannot be copied, so the first
+/// `get()` of a failed task returns its error and any later one an error
+/// carrying its text; no code path of the sorter gets a failed future twice.
+#[derive(Clone)]
+struct PartitionFuture {
+    state: Arc<(Mutex<Option<TaskOutcome>>, Arc<Condvar>)>,
+}
+
+impl PartitionFuture {
+    fn new() -> Self {
+        Self {
+            state: Arc::new((Mutex::new(None), Arc::new(Condvar::new()))),
         }
-        Ok(Self {
-            dir,
-            value_length,
-            temp_file_name_prefix: temp_file_name_prefix.to_string(),
-            ram_buffer_size,
-            max_temp_files: max_tempfiles,
-            comparator,
-            sort_info: SortInfo::new(ram_buffer_size.bytes),
-            created_files: HashSet::new(),
-        })
     }
 
-    /// Returns the directory this sorter writes its temporary files to.
-    pub fn get_directory(&self) -> &Arc<dyn Directory> {
-        &self.dir
-    }
-
-    /// Returns the prefix of every temporary file this sorter creates.
-    pub fn get_temp_file_name_prefix(&self) -> &str {
-        &self.temp_file_name_prefix
-    }
-
-    /// Returns the comparator this sorter orders by.
-    pub fn get_comparator(&self) -> &OfflineSorterComparator {
-        &self.comparator
-    }
-
-    /// Returns the statistics of the last [`OfflineSorter::sort`] run.
-    pub fn sort_info(&self) -> &SortInfo {
-        &self.sort_info
-    }
-
-    /// Sorts `input_file_name` and returns the name of the sorted file.
-    ///
-    /// # Errors
-    ///
-    /// Propagates I/O and corruption errors; any partial output is deleted
-    /// first.
-    pub fn sort(&mut self, input_file_name: &str) -> Result<String> {
-        self.sort_info = SortInfo::new(self.ram_buffer_size.bytes);
-        self.created_files.clear();
-        let start = Instant::now();
-
-        let outcome = self.sort_inner(input_file_name, start);
-        if outcome.is_err() {
-            // Remove any partially written temp file, as Java's `finally` does.
-            let files: Vec<String> = self.created_files.iter().cloned().collect();
-            for name in files {
-                let _ = self.dir.delete_file(&name);
-            }
-        }
-        outcome
-    }
-
-    fn sort_inner(&mut self, input_file_name: &str, start: Instant) -> Result<String> {
-        let mut segments: Vec<Partition> = Vec::new();
-        let mut level_counts: Vec<i32> = vec![0];
-
-        let mut is = self.get_reader(input_file_name)?;
-        loop {
-            let part = self.read_partition(&mut is)?;
-            if part.count == 0 {
-                debug_assert!(part.exhausted);
-                break;
-            }
-            let exhausted = part.exhausted;
-            let count = part.count;
-
-            let sorted = self.sort_partition_task(part)?;
-            segments.push(sorted);
-            self.sort_info.temp_merge_files += 1;
-            self.sort_info.line_count += count;
-            level_counts[0] += 1;
-
-            // Handle intermediate merges; the loop cascades them when needed.
-            let mut merge_level = 0usize;
-            while level_counts[merge_level] == self.max_temp_files as i32 {
-                self.merge_partitions(&mut segments)?;
-                if merge_level + 2 > level_counts.len() {
-                    level_counts.resize(merge_level + 2, 0);
-                }
-                level_counts[merge_level + 1] += 1;
-                level_counts[merge_level] = 0;
-                merge_level += 1;
-            }
-
-            if exhausted {
-                break;
-            }
-        }
-
-        // Merge all partitions down to one, i.e. a forceMerge(1).
-        while segments.len() > 1 {
-            self.merge_partitions(&mut segments)?;
-        }
-
-        let result = if segments.is_empty() {
-            let mut out = self.dir.create_temp_output(
-                &self.temp_file_name_prefix,
-                "sort",
-                &*crate::store::DEFAULT_IO_CONTEXT,
-            )?;
-            let name = out.name().to_string();
-            self.created_files.insert(name.clone());
-            // Write the empty file footer.
-            codec_util::write_footer(out.as_mut())?;
-            out.close()?;
-            name
-        } else {
-            segments[0]
-                .file_name
-                .clone()
-                .expect("INVARIANT: a merged partition always has a file")
+    /// Completes the future with what `task` produced.
+    fn run(&self, task: impl FnOnce() -> Result<Partition>) {
+        let outcome = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(task)) {
+            Ok(Ok(partition)) => TaskOutcome::Value(partition),
+            Ok(Err(error)) => TaskOutcome::Error(error),
+            Err(payload) => TaskOutcome::Panic(payload),
         };
+        let (slot, done) = &*self.state;
+        *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(outcome);
+        done.notify_all();
+    }
 
-        debug_assert!(self.created_files.len() == 1 && self.created_files.contains(&result));
+    /// Equivalent to the private `OfflineSorter.getPartition(Future)`:
+    /// `future.get()`, an interrupt as `ThreadInterruptedException`, and the
+    /// task's own failure rethrown (`IOUtils.rethrowAlways(cause)`).
+    fn get_partition(&self) -> Result<PartitionInfo> {
+        let (slot, done) = &*self.state;
+        let mut outcome = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        while outcome.is_none() {
+            let (reacquired, waited) = crate::util::wait_interruptibly(done, outcome, None)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            outcome = reacquired;
+            waited.map_err(LuceneError::thread_interrupted)?;
+        }
+        match outcome.as_ref() {
+            Some(TaskOutcome::Value(partition)) => Ok(PartitionInfo {
+                file_name: partition.file_name.clone(),
+                count: partition.count,
+            }),
+            Some(TaskOutcome::Error(error)) => {
+                let text = error.to_string();
+                match outcome.replace(TaskOutcome::Error(LuceneError::illegal_state(text))) {
+                    Some(TaskOutcome::Error(error)) => Err(error),
+                    _ => unreachable!("INVARIANT: the slot held an error"),
+                }
+            }
+            Some(TaskOutcome::Panic(_)) => match outcome.take() {
+                Some(TaskOutcome::Panic(payload)) => std::panic::resume_unwind(payload),
+                _ => unreachable!("INVARIANT: the slot held a panic"),
+            },
+            None => unreachable!("INVARIANT: the wait ends with an outcome"),
+        }
+    }
+}
 
-        self.sort_info.total_time_ms = start.elapsed().as_millis() as i64;
+/// What `getPartition` hands back of a finished task: an on-disk partition.
+struct PartitionInfo {
+    file_name: Option<String>,
+    count: i64,
+}
 
-        codec_util::check_footer(is.input())?;
+/// The state the sorter shares with the tasks it submits: Java's inner
+/// classes read their enclosing `OfflineSorter`'s fields.
+struct Shared {
+    dir: Arc<dyn Directory>,
+    temp_file_name_prefix: String,
+    comparator: OfflineSorterComparator,
+    partitions_in_ram: Semaphore,
+    hooks: Arc<dyn OfflineSorterHooks>,
+    sort_info: Mutex<SortInfo>,
+    /// Files created during the current `sort`, so that a failure can remove
+    /// them. Stands in for `TrackingDirectoryWrapper.getCreatedFiles()`.
+    created_files: Mutex<HashSet<String>>,
+}
 
-        Ok(result)
+impl Shared {
+    fn sort_info(&self) -> std::sync::MutexGuard<'_, SortInfo> {
+        self.sort_info
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn created_files(&self) -> std::sync::MutexGuard<'_, HashSet<String>> {
+        self.created_files
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// `trackingDir.createTempOutput(prefix, "sort", IOContext.DEFAULT)`.
+    fn create_tracked_temp_output(&self) -> Result<Box<dyn IndexOutput>> {
+        let out = self.dir.create_temp_output(
+            &self.temp_file_name_prefix,
+            "sort",
+            &*crate::store::DEFAULT_IO_CONTEXT,
+        )?;
+        self.created_files().insert(out.name().to_string());
+        Ok(out)
+    }
+
+    /// `getReader(dir.openChecksumInput(name), name)`.
+    fn open_reader(&self, name: &str) -> Result<ByteSequencesReader> {
+        let input = self.dir.open_checksum_input(name)?;
+        self.hooks.get_reader(input, name)
     }
 
     /// Verifies the checksum of a reader whose `next()` already failed.
@@ -613,151 +657,63 @@ impl OfflineSorter {
         }
     }
 
-    /// Merges the newest partitions into one.
-    ///
-    /// Equivalent to `OfflineSorter.mergePartitions`.
-    fn merge_partitions(&mut self, segments: &mut Vec<Partition>) -> Result<()> {
-        let from = segments.len().saturating_sub(self.max_temp_files);
-        let from = if segments.len() > self.max_temp_files {
-            from
-        } else {
-            0
-        };
-        let to_merge: Vec<Partition> = segments.drain(from..).collect();
-
-        self.sort_info.merge_rounds += 1;
-
-        let merged = self.merge_partitions_task(to_merge)?;
-        segments.push(merged);
-
-        self.sort_info.temp_merge_files += 1;
-        Ok(())
-    }
-
-    /// Reads one partition of the input into memory.
-    ///
-    /// Equivalent to `OfflineSorter.readPartition`.
-    fn read_partition(&mut self, reader: &mut ByteSequencesReader) -> Result<Partition> {
-        let start = Instant::now();
-        let mut exhausted = false;
-        let buffer: Box<dyn SortableBytesRefArray> = if self.value_length != -1 {
-            // Fixed-length case.
-            let value_length = self.value_length as usize;
-            let mut buffer = FixedLengthBytesRefArray::new(value_length);
-            let limit = self.ram_buffer_size.bytes / value_length;
-            for _ in 0..limit {
-                let item = match reader.next() {
-                    Ok(item) => item,
-                    Err(e) => {
-                        let name = reader.name().to_string();
-                        return Err(self.verify_checksum(e, &name));
-                    }
-                };
-                match item {
-                    None => {
-                        exhausted = true;
-                        break;
-                    }
-                    Some(item) => {
-                        buffer.append(&item)?;
-                    }
-                }
-            }
-            Box::new(buffer)
-        } else {
-            let buffer_bytes_used = Arc::new(Counter::new_counter());
-            let mut buffer = BytesRefArray::new(Arc::clone(&buffer_bytes_used));
-            loop {
-                let item = match reader.next() {
-                    Ok(item) => item,
-                    Err(e) => {
-                        let name = reader.name().to_string();
-                        return Err(self.verify_checksum(e, &name));
-                    }
-                };
-                match item {
-                    None => {
-                        exhausted = true;
-                        break;
-                    }
-                    Some(item) => {
-                        buffer.append(&item)?;
-                    }
-                }
-                // Account for the created objects; buffer slots do not count
-                // towards the buffer size.
-                if buffer_bytes_used.get() > self.ram_buffer_size.bytes as i64 {
-                    break;
-                }
-            }
-            Box::new(buffer)
-        };
-        self.sort_info.read_time_ms += start.elapsed().as_millis() as i64;
-        Ok(Partition::in_memory(buffer, exhausted))
-    }
-
-    /// Returns a writer for a temporary output.
-    ///
-    /// Equivalent to the protected `OfflineSorter.getWriter`.
-    pub fn get_writer(&self, out: Box<dyn IndexOutput>, _item_count: i64) -> ByteSequencesWriter {
-        ByteSequencesWriter::new(out)
-    }
-
-    /// Returns a reader over `name`.
-    ///
-    /// Equivalent to the protected `OfflineSorter.getReader`.
-    ///
-    /// # Errors
-    ///
-    /// Propagates the directory's open errors.
-    pub fn get_reader(&self, name: &str) -> Result<ByteSequencesReader> {
-        let input = self.dir.open_checksum_input(name)?;
-        Ok(ByteSequencesReader::new(input, name))
-    }
-
     /// Sorts one in-memory partition and spills it to a temporary file.
     ///
-    /// Equivalent to the nested `OfflineSorter.SortPartitionTask`.
-    fn sort_partition_task(&mut self, part: Partition) -> Result<Partition> {
+    /// Equivalent to `OfflineSorter.SortPartitionTask.call()`; `finally {
+    /// partitionsInRAM.release(); }`.
+    fn sort_partition_task(&self, part: Partition) -> Result<Partition> {
+        let outcome = self.sort_partition(part);
+        self.partitions_in_ram.release();
+        outcome
+    }
+
+    fn sort_partition(&self, part: Partition) -> Result<Partition> {
         let mut buffer = part
             .buffer
             .expect("INVARIANT: an unsorted partition is always in memory");
-        let out = self.dir.create_temp_output(
-            &self.temp_file_name_prefix,
-            "sort",
-            &*crate::store::DEFAULT_IO_CONTEXT,
-        )?;
-        let temp_name = out.name().to_string();
-        self.created_files.insert(temp_name.clone());
-        let mut writer = self.get_writer(out, buffer.size() as i64);
+        let temp_file = self.create_tracked_temp_output()?;
+        let temp_name = temp_file.name().to_string();
+        let mut out = self.hooks.get_writer(temp_file, buffer.size() as i64)?;
 
-        let start = Instant::now();
-        let mut count = 0i64;
-        {
+        let body = (|| -> Result<()> {
+            let start = Instant::now();
             let comparator = self.comparator.clone();
             let compare = move |a: &BytesRef, b: &BytesRef| comparator.compare(a, b);
             let mut iter = buffer.sorted_iterator(StringSorterComparator::Generic(&compare))?;
-            self.sort_info.sort_time_ms += start.elapsed().as_millis() as i64;
+            self.sort_info().sort_time_ms += start.elapsed().as_millis() as i64;
 
+            let mut count = 0i64;
             while let Some(spare) = iter.next()? {
-                writer.write(spare.slice())?;
+                out.write(spare.slice())?;
                 count += 1;
             }
+            debug_assert_eq!(count, part.count);
+            drop(iter);
+
+            codec_util::write_footer(out.out())?;
+            buffer.clear();
+            Ok(())
+        })();
+        // The try-with-resources closes the writer (and so the temp file); a
+        // failure to close is suppressed when the body failed.
+        match body {
+            Ok(()) => out.close()?,
+            Err(error) => {
+                let _ = out.close();
+                return Err(error);
+            }
         }
-        debug_assert_eq!(count, part.count);
-
-        codec_util::write_footer(writer.out())?;
-        buffer.clear();
-        writer.close()?;
-
         Ok(Partition::on_disk(temp_name, part.count))
     }
 
     /// Merges several sorted partitions into one.
     ///
-    /// Equivalent to the nested `OfflineSorter.MergePartitionsTask`.
-    fn merge_partitions_task(&mut self, segments_to_merge: Vec<Partition>) -> Result<Partition> {
-        let total_count: i64 = segments_to_merge.iter().map(|p| p.count).sum();
+    /// Equivalent to `OfflineSorter.MergePartitionsTask.call()`.
+    fn merge_partitions_task(&self, segments_to_merge: Vec<PartitionFuture>) -> Result<Partition> {
+        let mut total_count = 0i64;
+        for segment in &segments_to_merge {
+            total_count += segment.get_partition()?.count;
+        }
 
         let mut queue = PriorityQueue::new(
             segments_to_merge.len(),
@@ -767,26 +723,22 @@ impl OfflineSorter {
         )?;
 
         let start = Instant::now();
-        let out = self.dir.create_temp_output(
-            &self.temp_file_name_prefix,
-            "sort",
-            &*crate::store::DEFAULT_IO_CONTEXT,
-        )?;
-        let new_segment_name = out.name().to_string();
-        self.created_files.insert(new_segment_name.clone());
-        let mut writer = self.get_writer(out, total_count);
+        let out = self.create_tracked_temp_output()?;
+        let mut writer = self.hooks.get_writer(out, total_count)?;
+        let new_segment_name = writer.out().name().to_string();
 
         // `try (ByteSequencesWriter writer = ...) { ... } finally {
         // IOUtils.close(streams); }` (`OfflineSorter.java:701-752`).
         let mut streams: Vec<ByteSequencesReader> = Vec::with_capacity(segments_to_merge.len());
         let body = (|| -> Result<()> {
-            // Open every stream and read its first value.
+            // Open streams and read the top for each file
             for segment in &segments_to_merge {
+                let segment = segment.get_partition()?;
                 let file_name = segment
                     .file_name
                     .as_deref()
                     .expect("INVARIANT: a merged partition always has a file");
-                streams.push(self.get_reader(file_name)?);
+                streams.push(self.open_reader(file_name)?);
                 let fd = streams.len() - 1;
                 let item = match streams[fd].next() {
                     Ok(item) => item,
@@ -799,8 +751,11 @@ impl OfflineSorter {
                 queue.insert_with_overflow(FileAndTop { fd, current: item });
             }
 
-            // A priority queue keeps the merge O(n log k); the process is I/O
-            // bound anyway, as Lucene notes.
+            // Unix utility sort() uses ordered array of files to pick the next
+            // line from, updating it as it reads new lines. The PQ used here is
+            // a more elegant solution and has a nicer theoretical complexity
+            // bound :) The entire sorting process is I/O bound anyway so it
+            // shouldn't make much of a difference (didn't check).
             while let Some((fd, current)) = queue.top().map(|top| (top.fd, top.current.clone())) {
                 writer.write(current.slice())?;
                 let next = match streams[fd].next() {
@@ -826,7 +781,7 @@ impl OfflineSorter {
                 codec_util::check_footer(stream.input())?;
             }
 
-            self.sort_info.merge_time_ms += start.elapsed().as_millis() as i64;
+            self.sort_info().merge_time_ms += start.elapsed().as_millis() as i64;
             Ok(())
         })();
         // The try-with-resources closes the writer after the body; a failure
@@ -843,14 +798,495 @@ impl OfflineSorter {
         crate::util::IOUtils::close(streams.iter_mut().map(|stream| Some(|| stream.close())))?;
         body?;
 
+        let mut to_delete = Vec::with_capacity(segments_to_merge.len());
         for segment in &segments_to_merge {
-            if let Some(name) = segment.file_name.as_deref() {
-                self.dir.delete_file(name)?;
-                self.created_files.remove(name);
-            }
+            to_delete.push(segment.get_partition()?.file_name);
+        }
+        // `IOUtils.deleteFiles(dir, toDelete)` on the tracking directory.
+        for name in to_delete.into_iter().flatten() {
+            self.dir.delete_file(&name)?;
+            self.created_files().remove(&name);
         }
 
         Ok(Partition::on_disk(new_segment_name, total_count))
+    }
+}
+
+/// Sorts a file of byte sequences with an external merge sort.
+///
+/// Port of `org.apache.lucene.util.OfflineSorter`.
+pub struct OfflineSorter {
+    value_length: i32,
+    ram_buffer_size: BufferSize,
+    max_temp_files: usize,
+    exec: Arc<dyn Executor>,
+    shared: Arc<Shared>,
+}
+
+impl OfflineSorter {
+    /// Creates a sorter with the default comparator, an automatic buffer size,
+    /// [`MAX_TEMPFILES`] temporary files and variable-length values.
+    ///
+    /// Equivalent to `new OfflineSorter(Directory, String)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the errors of [`OfflineSorter::with_options`].
+    pub fn new(dir: Arc<dyn Directory>, temp_file_name_prefix: &str) -> Result<Self> {
+        Self::with_executor(
+            dir,
+            temp_file_name_prefix,
+            OfflineSorterComparator::Natural,
+            BufferSize::automatic()?,
+            MAX_TEMPFILES,
+            -1,
+            None,
+            0,
+        )
+    }
+
+    /// Creates a sorter with the given comparator and otherwise default
+    /// settings.
+    ///
+    /// Equivalent to `new OfflineSorter(Directory, String, Comparator)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the errors of [`OfflineSorter::with_options`].
+    pub fn with_comparator(
+        dir: Arc<dyn Directory>,
+        temp_file_name_prefix: &str,
+        comparator: OfflineSorterComparator,
+    ) -> Result<Self> {
+        Self::with_executor(
+            dir,
+            temp_file_name_prefix,
+            comparator,
+            BufferSize::automatic()?,
+            MAX_TEMPFILES,
+            -1,
+            None,
+            0,
+        )
+    }
+
+    /// Creates a fully configured sorter that sorts on the calling thread.
+    ///
+    /// Equivalent to the all-details constructor with a `null`
+    /// `ExecutorService`: see [`OfflineSorter::with_executor`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates the errors of [`OfflineSorter::with_executor`].
+    pub fn with_options(
+        dir: Arc<dyn Directory>,
+        temp_file_name_prefix: &str,
+        comparator: OfflineSorterComparator,
+        ram_buffer_size: BufferSize,
+        max_tempfiles: usize,
+        value_length: i32,
+    ) -> Result<Self> {
+        Self::with_executor(
+            dir,
+            temp_file_name_prefix,
+            comparator,
+            ram_buffer_size,
+            max_tempfiles,
+            value_length,
+            None,
+            0,
+        )
+    }
+
+    /// All-details constructor.
+    ///
+    /// Equivalent to `OfflineSorter(Directory, String, Comparator, BufferSize,
+    /// int, int, ExecutorService, int)` (`OfflineSorter.java:225-262`). If
+    /// `value_length` is `-1` (the default), the length of each value
+    /// differs; otherwise, all values have the specified length. A non-`None`
+    /// `exec` runs the sorting operations that can run concurrently, and
+    /// `max_partitions_in_ram` is the maximum of concurrent in-memory
+    /// partitions; without one, a `SameThreadExecutorService` runs them and
+    /// `max_partitions_in_ram` is 1. The maximum RAM this sorter uses is
+    /// therefore `max_partitions_in_ram * ram_buffer_size`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when an executor is given with
+    /// a non-positive `max_partitions_in_ram`, when the buffer is below
+    /// [`ABSOLUTE_MIN_SORT_BUFFER_SIZE`], when `max_tempfiles` is below 2, or
+    /// when `value_length` is neither `-1` nor in `1..=i16::MAX`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_executor(
+        dir: Arc<dyn Directory>,
+        temp_file_name_prefix: &str,
+        comparator: OfflineSorterComparator,
+        ram_buffer_size: BufferSize,
+        max_tempfiles: usize,
+        value_length: i32,
+        exec: Option<Arc<dyn Executor>>,
+        max_partitions_in_ram: i32,
+    ) -> Result<Self> {
+        Self::with_hooks(
+            dir,
+            temp_file_name_prefix,
+            comparator,
+            ram_buffer_size,
+            max_tempfiles,
+            value_length,
+            exec,
+            max_partitions_in_ram,
+            Arc::new(DefaultOfflineSorterHooks),
+        )
+    }
+
+    /// The all-details constructor of a subclass that overrides
+    /// [`OfflineSorterHooks`]' methods.
+    ///
+    /// # Errors
+    ///
+    /// See [`OfflineSorter::with_executor`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_hooks(
+        dir: Arc<dyn Directory>,
+        temp_file_name_prefix: &str,
+        comparator: OfflineSorterComparator,
+        ram_buffer_size: BufferSize,
+        max_tempfiles: usize,
+        value_length: i32,
+        exec: Option<Arc<dyn Executor>>,
+        max_partitions_in_ram: i32,
+        hooks: Arc<dyn OfflineSorterHooks>,
+    ) -> Result<Self> {
+        let mut max_partitions_in_ram = max_partitions_in_ram;
+        let exec: Arc<dyn Executor> = match exec {
+            Some(exec) => {
+                if max_partitions_in_ram <= 0 {
+                    return Err(LuceneError::IllegalArgument(format!(
+                        "maxPartitionsInRAM must be > 0; got {max_partitions_in_ram}"
+                    )));
+                }
+                exec
+            }
+            None => {
+                max_partitions_in_ram = 1;
+                Arc::new(crate::util::SameThreadExecutorService::new())
+            }
+        };
+        let partitions_in_ram = Semaphore::new(max_partitions_in_ram);
+
+        if (ram_buffer_size.bytes as i64) < ABSOLUTE_MIN_SORT_BUFFER_SIZE {
+            return Err(LuceneError::IllegalArgument(format!(
+                "{MIN_BUFFER_SIZE_MSG}: {}",
+                ram_buffer_size.bytes
+            )));
+        }
+        if max_tempfiles < 2 {
+            return Err(LuceneError::IllegalArgument(
+                "maxTempFiles must be >= 2".to_string(),
+            ));
+        }
+        if value_length != -1 && (value_length == 0 || value_length > i16::MAX as i32) {
+            return Err(LuceneError::IllegalArgument(format!(
+                "valueLength must be 1 .. {}; got: {value_length}",
+                i16::MAX
+            )));
+        }
+        Ok(Self {
+            value_length,
+            ram_buffer_size,
+            max_temp_files: max_tempfiles,
+            exec,
+            shared: Arc::new(Shared {
+                dir,
+                temp_file_name_prefix: temp_file_name_prefix.to_string(),
+                comparator,
+                partitions_in_ram,
+                hooks,
+                sort_info: Mutex::new(SortInfo::new(ram_buffer_size.bytes)),
+                created_files: Mutex::new(HashSet::new()),
+            }),
+        })
+    }
+
+    /// Returns the directory this sorter writes its temporary files to.
+    pub fn get_directory(&self) -> &Arc<dyn Directory> {
+        &self.shared.dir
+    }
+
+    /// Returns the prefix of every temporary file this sorter creates.
+    pub fn get_temp_file_name_prefix(&self) -> &str {
+        &self.shared.temp_file_name_prefix
+    }
+
+    /// Returns the comparator this sorter orders by.
+    pub fn get_comparator(&self) -> &OfflineSorterComparator {
+        &self.shared.comparator
+    }
+
+    /// Returns the statistics of the last [`OfflineSorter::sort`] run.
+    ///
+    /// Java reads the field `sortInfo`, whose two timing counters the tasks
+    /// update concurrently (`AtomicLong`s); the record is kept under a lock
+    /// here, and this returns a copy of it.
+    pub fn sort_info(&self) -> SortInfo {
+        self.shared.sort_info().clone()
+    }
+
+    /// Sort input to a new temp file, returning its name.
+    ///
+    /// Equivalent to `OfflineSorter.sort(String)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates I/O and corruption errors; any partial output is deleted
+    /// first.
+    pub fn sort(&mut self, input_file_name: &str) -> Result<String> {
+        *self.shared.sort_info() = SortInfo::new(self.ram_buffer_size.bytes);
+        self.shared.created_files().clear();
+        let start = Instant::now();
+
+        let outcome = self.sort_inner(input_file_name, start);
+        if outcome.is_err() {
+            // `IOUtils.deleteFilesIgnoringExceptions(trackingDir,
+            // trackingDir.getCreatedFiles())`.
+            let files: Vec<String> = self.shared.created_files().iter().cloned().collect();
+            for name in files {
+                let _ = self.shared.dir.delete_file(&name);
+            }
+        }
+        outcome
+    }
+
+    fn sort_inner(&mut self, input_file_name: &str, start: Instant) -> Result<String> {
+        let mut segments: Vec<PartitionFuture> = Vec::new();
+        let mut level_counts: Vec<i32> = vec![0];
+
+        // `try (ByteSequencesReader is = getReader(dir.openChecksumInput(
+        // inputFileName), inputFileName))`.
+        let mut is = self.shared.open_reader(input_file_name)?;
+        let body = (|| -> Result<String> {
+            loop {
+                let part = self.read_partition(&mut is)?;
+                if part.count == 0 {
+                    self.shared.partitions_in_ram.release();
+                    debug_assert!(part.exhausted);
+                    break;
+                }
+                let exhausted = part.exhausted;
+                let count = part.count;
+
+                let shared = Arc::clone(&self.shared);
+                segments.push(self.submit(move || shared.sort_partition_task(part))?);
+                {
+                    let mut sort_info = self.shared.sort_info();
+                    sort_info.temp_merge_files += 1;
+                    sort_info.line_count += count;
+                }
+                level_counts[0] += 1;
+
+                // Handle intermediate merges; we need a while loop to
+                // "cascade" the merge when necessary:
+                let mut merge_level = 0usize;
+                while level_counts[merge_level] == self.max_temp_files as i32 {
+                    self.merge_partitions(&mut segments)?;
+                    if merge_level + 2 > level_counts.len() {
+                        level_counts.resize(merge_level + 2, 0);
+                    }
+                    level_counts[merge_level + 1] += 1;
+                    level_counts[merge_level] = 0;
+                    merge_level += 1;
+                }
+
+                if exhausted {
+                    break;
+                }
+            }
+
+            // Merge all partitions down to 1 (basically a forceMerge(1)):
+            while segments.len() > 1 {
+                self.merge_partitions(&mut segments)?;
+            }
+
+            let result = if segments.is_empty() {
+                let mut out = self.shared.create_tracked_temp_output()?;
+                let name = out.name().to_string();
+                // Write empty file footer
+                let written = codec_util::write_footer(out.as_mut());
+                let closed = out.close();
+                written.and(closed)?;
+                name
+            } else {
+                segments[0]
+                    .get_partition()?
+                    .file_name
+                    .expect("INVARIANT: a merged partition always has a file")
+            };
+
+            // We should be explicitly removing all intermediate files ourselves
+            // unless there is an exception:
+            debug_assert!({
+                let created = self.shared.created_files();
+                created.len() == 1 && created.contains(&result)
+            });
+
+            self.shared.sort_info().total_time_ms = start.elapsed().as_millis() as i64;
+
+            codec_util::check_footer(is.input())?;
+
+            Ok(result)
+        })();
+        // The try-with-resources closes the reader; a failure to close is
+        // suppressed when the body failed.
+        match body {
+            Ok(result) => {
+                is.close()?;
+                Ok(result)
+            }
+            Err(error) => {
+                let _ = is.close();
+                Err(error)
+            }
+        }
+    }
+
+    /// `exec.submit(job)`: runs `job` on the executor and returns its future.
+    fn submit(
+        &self,
+        job: impl FnOnce() -> Result<Partition> + Send + 'static,
+    ) -> Result<PartitionFuture> {
+        let future = PartitionFuture::new();
+        let completer = future.clone();
+        // **Divergence from Lucene 10.5.0.** Java's `submit` throws the
+        // unchecked `RejectedExecutionException`; the error surface has no
+        // such variant, so the rejection is an `IllegalStateException`
+        // carrying its message.
+        self.exec
+            .execute(Box::new(move || completer.run(job)))
+            .map_err(|rejected| LuceneError::illegal_state(rejected.to_string()))?;
+        Ok(future)
+    }
+
+    /// Merge the most recent `maxTempFile` partitions into a new partition.
+    ///
+    /// Equivalent to `OfflineSorter.mergePartitions`.
+    fn merge_partitions(&mut self, segments: &mut Vec<PartitionFuture>) -> Result<()> {
+        let from = if segments.len() > self.max_temp_files {
+            segments.len() - self.max_temp_files
+        } else {
+            0
+        };
+
+        self.shared.sort_info().merge_rounds += 1;
+
+        let segments_to_merge: Vec<PartitionFuture> = segments.drain(from..).collect();
+        let shared = Arc::clone(&self.shared);
+        segments.push(self.submit(move || shared.merge_partitions_task(segments_to_merge))?);
+
+        self.shared.sort_info().temp_merge_files += 1;
+        Ok(())
+    }
+
+    /// Read in a single partition of data, setting `exhausted` when there are
+    /// no more items.
+    ///
+    /// Equivalent to `OfflineSorter.readPartition`: a permit of
+    /// `partitionsInRAM` is acquired first and released again on failure.
+    fn read_partition(&mut self, reader: &mut ByteSequencesReader) -> Result<Partition> {
+        self.shared
+            .partitions_in_ram
+            .acquire()
+            .map_err(LuceneError::thread_interrupted)?;
+        let outcome = self.read_partition_body(reader);
+        if outcome.is_err() {
+            self.shared.partitions_in_ram.release();
+        }
+        outcome
+    }
+
+    fn read_partition_body(&mut self, reader: &mut ByteSequencesReader) -> Result<Partition> {
+        let start = Instant::now();
+        let mut exhausted = false;
+        let buffer: Box<dyn SortableBytesRefArray + Send> = if self.value_length != -1 {
+            // fixed length case
+            let value_length = self.value_length as usize;
+            let mut buffer = FixedLengthBytesRefArray::new(value_length);
+            let limit = self.ram_buffer_size.bytes / value_length;
+            for _ in 0..limit {
+                let item = match reader.next() {
+                    Ok(item) => item,
+                    Err(e) => {
+                        let name = reader.name().to_string();
+                        return Err(self.shared.verify_checksum(e, &name));
+                    }
+                };
+                match item {
+                    None => {
+                        exhausted = true;
+                        break;
+                    }
+                    Some(item) => {
+                        buffer.append(&item)?;
+                    }
+                }
+            }
+            Box::new(buffer)
+        } else {
+            let buffer_bytes_used = Arc::new(Counter::new_counter());
+            let mut buffer = BytesRefArray::new(Arc::clone(&buffer_bytes_used));
+            loop {
+                let item = match reader.next() {
+                    Ok(item) => item,
+                    Err(e) => {
+                        let name = reader.name().to_string();
+                        return Err(self.shared.verify_checksum(e, &name));
+                    }
+                };
+                match item {
+                    None => {
+                        exhausted = true;
+                        break;
+                    }
+                    Some(item) => {
+                        buffer.append(&item)?;
+                    }
+                }
+                // Account for the created objects.
+                // (buffer slots do not account to buffer size.)
+                if buffer_bytes_used.get() > self.ram_buffer_size.bytes as i64 {
+                    break;
+                }
+            }
+            Box::new(buffer)
+        };
+        self.shared.sort_info().read_time_ms += start.elapsed().as_millis() as i64;
+        Ok(Partition::in_memory(buffer, exhausted))
+    }
+
+    /// Returns a writer for a temporary output.
+    ///
+    /// Equivalent to the protected `OfflineSorter.getWriter`, as the hooks
+    /// of this sorter define it.
+    ///
+    /// # Errors
+    ///
+    /// Propagates what the hooks raise.
+    pub fn get_writer(
+        &self,
+        out: Box<dyn IndexOutput>,
+        item_count: i64,
+    ) -> Result<ByteSequencesWriter> {
+        self.shared.hooks.get_writer(out, item_count)
+    }
+
+    /// Returns a reader over `name`: `getReader(dir.openChecksumInput(name),
+    /// name)`, as the hooks of this sorter define `getReader`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the directory's open errors and what the hooks raise.
+    pub fn get_reader(&self, name: &str) -> Result<ByteSequencesReader> {
+        self.shared.open_reader(name)
     }
 }
 

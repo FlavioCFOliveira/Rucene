@@ -703,6 +703,11 @@ impl Query for PointInSetQuery {
         self
     }
 
+    /// The Java class implements `Accountable`.
+    fn as_accountable(&self) -> Option<&dyn crate::util::Accountable> {
+        Some(self)
+    }
+
     fn create_weight(
         &self,
         _searcher: &IndexSearcher,

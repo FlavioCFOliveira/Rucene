@@ -273,6 +273,14 @@ impl ByteBlockPool {
         self.byte_offset
     }
 
+    /// Returns the length of the `byte[][] buffers` Lucene would be holding.
+    ///
+    /// Reads the private field `ByteBlockPool.buffers`' `length`, which
+    /// `RamUsageTester` reaches by reflection.
+    pub fn buffers_length(&self) -> usize {
+        self.buffers_length
+    }
+
     /// Returns the index of the head block, or `-1` if no block was allocated.
     pub fn buffer_upto(&self) -> i32 {
         self.buffer_upto

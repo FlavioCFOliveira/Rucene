@@ -34,7 +34,13 @@ pub struct CorruptingIndexOutput {
     dir: Arc<dyn Directory>,
     byte_to_corrupt: i64,
     closed: bool,
+    /// A subclass's override of `corruptFile()`, given the file's name
+    /// (`out.getName()`).
+    corrupt_file_override: Option<CorruptFileOverride>,
 }
+
+/// The body of an overriding `corruptFile()`, given `out.getName()`.
+pub type CorruptFileOverride = Box<dyn FnMut(&str) -> Result<()> + Send + Sync>;
 
 impl CorruptingIndexOutput {
     /// `CorruptingIndexOutput(dir, byteToCorrupt, out)`: resource description
@@ -46,7 +52,25 @@ impl CorruptingIndexOutput {
             dir,
             byte_to_corrupt,
             closed: false,
+            corrupt_file_override: None,
         }
+    }
+
+    /// The anonymous subclass `new CorruptingIndexOutput(dir, byteToCorrupt,
+    /// out) { protected void corruptFile() { ... } }`: `close()` runs
+    /// `corrupt_file` instead of [`corrupt_file`](Self::corrupt_file).
+    ///
+    /// Java overrides the protected method; Rust has no implementation
+    /// inheritance, so the overriding body is passed in.
+    pub fn with_corrupt_file(
+        dir: Arc<dyn Directory>,
+        byte_to_corrupt: i64,
+        out: Box<dyn IndexOutput>,
+        corrupt_file: CorruptFileOverride,
+    ) -> Self {
+        let mut output = Self::new(dir, byte_to_corrupt, out);
+        output.corrupt_file_override = Some(corrupt_file);
+        output
     }
 
     /// The field `byteToCorrupt`.
@@ -133,7 +157,13 @@ impl IndexOutput for CorruptingIndexOutput {
             // NOTE: must corrupt after file is closed, because if we corrupt "inlined" (as bytes are
             // being written) the checksum sees the wrong
             // bytes and is "correct"!!
-            self.corrupt_file()?;
+            match self.corrupt_file_override.as_mut() {
+                Some(corrupt_file) => {
+                    let name = self.out.name().to_string();
+                    corrupt_file(&name)?;
+                }
+                None => self.corrupt_file()?,
+            }
             self.closed = true;
         }
         Ok(())
