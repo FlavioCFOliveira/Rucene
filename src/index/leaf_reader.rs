@@ -231,6 +231,18 @@ pub trait LeafReader: AsIndexReader + Send + Sync + Debug + Display + 'static {
         None
     }
 
+    /// Returns this reader as [`Any`](std::any::Any), so that a caller can
+    /// test its concrete class, or `None` when the type does not take part in
+    /// such a test.
+    ///
+    /// Java tests a leaf reader's class with `instanceof`
+    /// (`TestSearcherManager.testCustomDirectoryReader` checks
+    /// `ctx.reader() instanceof MyFilterLeafReader`); a type that is tested
+    /// overrides the default, which answers `None`, Java's `false` branch.
+    fn leaf_as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+
     /// Returns this reader as a [`CodecReader`](crate::index::codec_reader::CodecReader)
     /// when it is one, and `None` otherwise.
     ///

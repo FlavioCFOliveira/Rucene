@@ -43,6 +43,15 @@ impl std::fmt::Debug for PhraseScorer {
 }
 
 impl PhraseScorer {
+    /// Returns the matcher of this scorer.
+    ///
+    /// Equivalent to the package-private field `PhraseScorer.matcher`
+    /// (`PhraseScorer.java:25`), which Java tests read; public because Rust
+    /// has no package-private visibility.
+    pub fn matcher(&mut self) -> &mut dyn PhraseMatcher {
+        &mut *self.matcher
+    }
+
     /// Creates a scorer over the given matcher.
     ///
     /// Equivalent to
@@ -181,6 +190,11 @@ impl Scorable for PhraseScorer {
 impl Scorer for PhraseScorer {
     /// This scorer answers with itself: Java tests `instanceof PhraseScorer`.
     fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    /// This scorer answers with itself: Java casts to `PhraseScorer`.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
 

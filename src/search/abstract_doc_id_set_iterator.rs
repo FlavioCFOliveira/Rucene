@@ -88,6 +88,11 @@ impl std::fmt::Debug for FilterDocIdSetIterator {
 }
 
 impl DocIdSetIterator for FilterDocIdSetIterator {
+    /// Java tests `instanceof FilterDocIdSetIterator` (`TestScorerUtil.java:76`).
+    fn disi_as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }

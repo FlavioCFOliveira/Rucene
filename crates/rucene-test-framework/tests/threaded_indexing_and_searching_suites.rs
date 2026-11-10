@@ -18,9 +18,14 @@
 //! `TestControlledRealTimeReopenThread` also carries its other test methods
 //! (`testThreadStarvationNoDeleteNRTReader`, `testEvilSearcherFactory`,
 //! `testListenerCalled`, `testCRTReopen`, `testDeleteAll`; sprint 9, #390),
-//! so that the class has one binding. The other test methods of the other
-//! classes (`testIntermediateClose`, …) belong to their core-test port and
-//! are not declared here, nor is
+//! so that the class has one binding; so does `TestSearcherManager`
+//! (`testIntermediateClose`, `testCloseTwice`, `testReferenceDecrementIllegally`,
+//! `testEnsureOpen`, `testListenerCalled`, `testEvilSearcherFactory`,
+//! `testMaybeRefreshBlockingLock`, `testCustomDirectoryReader`,
+//! `testPreviousReaderIsPassed`, `testConcurrentIndexCloseSearchAndRefresh`,
+//! `testStepWiseCommitRefresh`; sprint 9, #395). The other test methods of
+//! `TestNRTThreads` belong to its core-test port and are not declared here,
+//! nor is
 //! `TestIndexWriterOnJRECrash` (it extends `TestNRTThreads` but overrides
 //! its only test to fork and crash a child JVM).
 //!
@@ -551,7 +556,8 @@ impl ThreadedIndexingAndSearchingTestCase for SearcherManagerSuite {
     }
 }
 
-/// The members of `TestSearcherManager`: `testSearcherManager()`.
+/// The members of `TestSearcherManager`: `testSearcherManager()` and the
+/// other test methods (`sm`).
 fn searcher_manager_members(
     builder: randomizedtesting::jdk::reflect::ClassBuilder,
 ) -> randomizedtesting::jdk::reflect::ClassBuilder {
@@ -575,6 +581,41 @@ fn searcher_manager_members(
                         .unwrap_or_else(|e| rethrow(e));
                 }),
         )
+        .method(sm_test(
+            "testIntermediateClose",
+            sm::test_intermediate_close,
+        ))
+        .method(sm_test("testCloseTwice", sm::test_close_twice))
+        .method(sm_test(
+            "testReferenceDecrementIllegally",
+            sm::test_reference_decrement_illegally,
+        ))
+        .method(sm_test("testEnsureOpen", sm::test_ensure_open))
+        .method(sm_test("testListenerCalled", sm::test_listener_called))
+        .method(sm_test(
+            "testEvilSearcherFactory",
+            sm::test_evil_searcher_factory,
+        ))
+        .method(sm_test(
+            "testMaybeRefreshBlockingLock",
+            sm::test_maybe_refresh_blocking_lock,
+        ))
+        .method(sm_test(
+            "testCustomDirectoryReader",
+            sm::test_custom_directory_reader,
+        ))
+        .method(sm_test(
+            "testPreviousReaderIsPassed",
+            sm::test_previous_reader_is_passed,
+        ))
+        .method(sm_test(
+            "testConcurrentIndexCloseSearchAndRefresh",
+            sm::test_concurrent_index_close_search_and_refresh,
+        ))
+        .method(sm_test(
+            "testStepWiseCommitRefresh",
+            sm::test_step_wise_commit_refresh,
+        ))
 }
 
 fn searcher_manager_class() -> Arc<Class> {
@@ -1528,6 +1569,1085 @@ fn draws_class() -> Arc<Class> {
             }),
     )
     .build()
+}
+
+/// A `public void name() throws Exception` of `TestSearcherManager`.
+fn sm_test(
+    name: &str,
+    body: fn(&mut ThreadedInstance<SearcherManagerSuite>) -> Result<()>,
+) -> Method {
+    Method::new(name).throws(&["java.lang.Exception"]).body(
+        move |inst: &mut ThreadedInstance<SearcherManagerSuite>| {
+            body(inst).unwrap_or_else(|e| rethrow(e));
+        },
+    )
+}
+
+/// The test methods of `TestSearcherManager` that do not run `runTest`
+/// (`lucene/core/src/test/org/apache/lucene/search/TestSearcherManager.java`).
+mod sm {
+    use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use randomizedtesting::jdk::exception::Throwable;
+    use randomizedtesting::jdk::thread::Thread;
+    use randomizedtesting::junit::Assert;
+    use rucene::document::{Document, Store};
+    use rucene::error::{LuceneError, Result};
+    use rucene::index::directory_reader::{self, DirectoryReader};
+    use rucene::index::filter_directory_reader::{
+        DirectoryReaderWrapper, FilterDirectoryReader, SubReaderWrapper,
+    };
+    use rucene::index::filter_reader::FilterLeafReader;
+    use rucene::index::index_commit::IndexCommit;
+    use rucene::index::index_deletion_policy::NoDeletionPolicy;
+    use rucene::index::index_writer::{IndexWriter, MAX_TERM_LENGTH};
+    use rucene::index::index_writer_config::IndexWriterConfig;
+    use rucene::index::merge_scheduler::ConcurrentMergeScheduler;
+    use rucene::index::{CacheHelper, IndexReader, LeafReader};
+    use rucene::search::reference_manager::RefreshListener;
+    use rucene::search::refresh_commit_supplier::RefreshCommitSupplier;
+    use rucene::search::{
+        DefaultSearcherFactory, Executor, IndexSearcher, SearcherFactory, SearcherManager,
+    };
+    use rucene_test_framework::analysis::MockAnalyzer;
+    use rucene_test_framework::index::random_index_writer::RandomIndexWriter;
+    use rucene_test_framework::index::threaded_indexing_and_searching_test_case::CachedThreadPoolExecutor;
+    use rucene_test_framework::util::java_exceptions::{expect_throws, is_instance, rethrow_java};
+    use rucene_test_framework::util::lucene_test_case::{TEST_NIGHTLY, VERBOSE};
+    use rucene_test_framework::util::{LuceneTestCase, TestUtil};
+
+    use super::crt::CountDownLatch;
+    use super::{SearcherManagerSuite, ThreadedInstance};
+
+    const ACE: &str = "org.apache.lucene.store.AlreadyClosedException";
+    const ISE: &str = "java.lang.IllegalStateException";
+
+    /// `new IndexWriterConfig(null)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java passes a `null` analyzer;
+    /// Rucene's configuration always holds one, so the default
+    /// `IndexWriterConfig()` analyzer stands for it. The tests that use it
+    /// index no tokenized field, so no analyzer is ever asked for.
+    fn iwc_null_analyzer() -> IndexWriterConfig {
+        IndexWriterConfig::new()
+    }
+
+    /// `newIndexWriterConfig(new MockAnalyzer(random())).setMergeScheduler(new
+    /// ConcurrentMergeScheduler())`.
+    fn cms_config() -> Result<IndexWriterConfig> {
+        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(
+            MockAnalyzer::new(&*LuceneTestCase::random()),
+        ));
+        iwc.set_merge_scheduler(Arc::new(ConcurrentMergeScheduler::new()))?;
+        Ok(iwc)
+    }
+
+    /// The anonymous `SearcherFactory` of `testIntermediateClose`.
+    struct IntermediateCloseFactory {
+        tried_reopen: Arc<AtomicBool>,
+        await_enter_warm: Arc<CountDownLatch>,
+        await_close: Arc<CountDownLatch>,
+        es: Option<Arc<CachedThreadPoolExecutor>>,
+    }
+
+    impl std::fmt::Debug for IntermediateCloseFactory {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("IntermediateCloseFactory")
+                .finish_non_exhaustive()
+        }
+    }
+
+    impl SearcherFactory for IntermediateCloseFactory {
+        fn new_searcher(
+            &self,
+            r: Arc<dyn IndexReader>,
+            _previous: Option<Arc<dyn IndexReader>>,
+        ) -> Result<IndexSearcher> {
+            if self.tried_reopen.load(Ordering::SeqCst) {
+                self.await_enter_warm.count_down();
+                self.await_close.await_();
+            }
+            IndexSearcher::with_executor(
+                r,
+                self.es
+                    .as_ref()
+                    .map(|es| Arc::clone(es) as Arc<dyn Executor>),
+            )
+        }
+    }
+
+    /// Port of `TestSearcherManager.testIntermediateClose`.
+    pub fn test_intermediate_close(
+        _inst: &mut ThreadedInstance<SearcherManagerSuite>,
+    ) -> Result<()> {
+        let mut dir = LuceneTestCase::new_directory();
+        // Test can deadlock if we use SMS:
+        let writer = IndexWriter::new(dir.as_directory(), cms_config()?)?;
+        writer.add_document(&Document::new())?;
+        writer.commit()?;
+        let await_enter_warm = Arc::new(CountDownLatch::new(1));
+        let await_close = Arc::new(CountDownLatch::new(1));
+        let tried_reopen = Arc::new(AtomicBool::new(false));
+        let es = if LuceneTestCase::random().next_boolean() {
+            None
+        } else {
+            Some(Arc::new(CachedThreadPoolExecutor::new(
+                "testIntermediateClose",
+            )))
+        };
+        let factory: Arc<dyn SearcherFactory> = Arc::new(IntermediateCloseFactory {
+            tried_reopen: Arc::clone(&tried_reopen),
+            await_enter_warm: Arc::clone(&await_enter_warm),
+            await_close: Arc::clone(&await_close),
+            es: es.clone(),
+        });
+        let searcher_manager = Arc::new(if LuceneTestCase::random().next_boolean() {
+            SearcherManager::from_directory(dir.as_directory(), Some(Arc::clone(&factory)))?
+        } else {
+            SearcherManager::from_writer(
+                &*writer,
+                LuceneTestCase::random().next_boolean(),
+                false,
+                Some(Arc::clone(&factory)),
+                None,
+            )?
+        });
+        if *VERBOSE {
+            println!("sm created");
+        }
+        let searcher = searcher_manager.acquire()?;
+        let checked = (|| -> Result<()> {
+            assert_eq_i32(1, searcher.searcher().get_index_reader().num_docs());
+            Ok(())
+        })();
+        searcher_manager.release(searcher)?;
+        checked?;
+        writer.add_document(&Document::new())?;
+        writer.commit()?;
+        let success = Arc::new(AtomicBool::new(false));
+        let exc: Arc<Mutex<Option<Throwable>>> = Arc::new(Mutex::new(None));
+        let thread = {
+            let tried_reopen = Arc::clone(&tried_reopen);
+            let searcher_manager = Arc::clone(&searcher_manager);
+            let success = Arc::clone(&success);
+            let exc = Arc::clone(&exc);
+            Thread::unnamed(move || {
+                tried_reopen.store(true, Ordering::SeqCst);
+                if *VERBOSE {
+                    println!("NOW call maybeRefresh");
+                }
+                match searcher_manager.maybe_refresh() {
+                    Ok(_) => success.store(true, Ordering::SeqCst),
+                    Err(e) if is_instance(&e, ACE) => {
+                        // expected
+                    }
+                    Err(e) => {
+                        if *VERBOSE {
+                            println!("FAIL: unexpected exc");
+                            println!("{e}");
+                        }
+                        *exc.lock().unwrap_or_else(|p| p.into_inner()) =
+                            Some(rucene_test_framework::util::java_exceptions::java_throwable(&e));
+                        // use success as the barrier here to make sure we see the write
+                        success.store(false, Ordering::SeqCst);
+                    }
+                }
+            })
+        };
+        thread.start();
+        if *VERBOSE {
+            println!("THREAD started");
+        }
+        await_enter_warm.await_();
+        if *VERBOSE {
+            println!("NOW call close");
+        }
+        searcher_manager.close()?;
+        await_close.count_down();
+        let _ = thread.join();
+        expect_throws(ACE, || searcher_manager.acquire());
+        Assert::assert_false(success.load(Ordering::SeqCst));
+        Assert::assert_true(tried_reopen.load(Ordering::SeqCst));
+        let exc = exc.lock().unwrap_or_else(|p| p.into_inner()).take();
+        Assert::assert_true_msg(
+            &exc.as_ref().map_or("null".to_string(), |t| t.to_string()),
+            exc.is_none(),
+        );
+        writer.close()?;
+        dir.close()?;
+        if let Some(es) = es {
+            es.shutdown();
+            es.await_termination(Duration::from_secs(1));
+        }
+        Ok(())
+    }
+
+    /// `assertEquals(long expected, long actual)` over ints.
+    fn assert_eq_i32(expected: i32, actual: i32) {
+        Assert::assert_equals(expected, actual);
+    }
+
+    /// Port of `TestSearcherManager.testCloseTwice`.
+    pub fn test_close_twice(_inst: &mut ThreadedInstance<SearcherManagerSuite>) -> Result<()> {
+        // test that we can close SM twice (per Closeable's contract).
+        let mut dir = LuceneTestCase::new_directory();
+        IndexWriter::new(dir.as_directory(), iwc_null_analyzer())?.close()?;
+        let sm = SearcherManager::from_directory(dir.as_directory(), None)?;
+        sm.close()?;
+        sm.close()?;
+        dir.close()?;
+        Ok(())
+    }
+
+    /// Port of `TestSearcherManager.testReferenceDecrementIllegally`.
+    pub fn test_reference_decrement_illegally(
+        _inst: &mut ThreadedInstance<SearcherManagerSuite>,
+    ) -> Result<()> {
+        let mut dir = LuceneTestCase::new_directory();
+        let writer = IndexWriter::new(dir.as_directory(), cms_config()?)?;
+        let sm = SearcherManager::from_writer(
+            &*writer,
+            false,
+            false,
+            Some(Arc::new(DefaultSearcherFactory)),
+            None,
+        )?;
+        writer.add_document(&Document::new())?;
+        writer.commit()?;
+        sm.maybe_refresh_blocking()?;
+
+        let acquire = sm.acquire()?;
+        let acquire2 = sm.acquire()?;
+        sm.release(acquire)?;
+        sm.release(acquire2)?;
+
+        let acquire = sm.acquire()?;
+        acquire.searcher().get_index_reader().dec_ref()?;
+        sm.release(acquire)?;
+        expect_throws(ISE, || sm.acquire());
+
+        // sm.close(); -- already closed
+        writer.close()?;
+        dir.close()?;
+        Ok(())
+    }
+
+    /// Port of `TestSearcherManager.testEnsureOpen`.
+    pub fn test_ensure_open(_inst: &mut ThreadedInstance<SearcherManagerSuite>) -> Result<()> {
+        let mut dir = LuceneTestCase::new_directory();
+        IndexWriter::new(dir.as_directory(), iwc_null_analyzer())?.close()?;
+        let sm = SearcherManager::from_directory(dir.as_directory(), None)?;
+        let s = sm.acquire()?;
+        sm.close()?;
+
+        // this should succeed;
+        sm.release(s)?;
+
+        // this should fail
+        expect_throws(ACE, || sm.acquire());
+
+        // this should fail
+        expect_throws(ACE, || sm.maybe_refresh());
+
+        dir.close()?;
+        Ok(())
+    }
+
+    /// The anonymous `ReferenceManager.RefreshListener` of `testListenerCalled`.
+    struct AfterRefreshListener {
+        after_refresh_called: Arc<AtomicBool>,
+    }
+
+    impl RefreshListener for AfterRefreshListener {
+        fn before_refresh(&self) -> Result<()> {
+            Ok(())
+        }
+
+        fn after_refresh(&self, did_refresh: bool) -> Result<()> {
+            if did_refresh {
+                self.after_refresh_called.store(true, Ordering::SeqCst);
+            }
+            Ok(())
+        }
+    }
+
+    /// Port of `TestSearcherManager.testListenerCalled`.
+    pub fn test_listener_called(_inst: &mut ThreadedInstance<SearcherManagerSuite>) -> Result<()> {
+        let mut dir = LuceneTestCase::new_directory();
+        let iw = IndexWriter::new(dir.as_directory(), iwc_null_analyzer())?;
+        let after_refresh_called = Arc::new(AtomicBool::new(false));
+        let sm = SearcherManager::from_writer(
+            &*iw,
+            false,
+            false,
+            Some(Arc::new(DefaultSearcherFactory)),
+            None,
+        )?;
+        sm.add_listener(Arc::new(AfterRefreshListener {
+            after_refresh_called: Arc::clone(&after_refresh_called),
+        }));
+        iw.add_document(&Document::new())?;
+        iw.commit()?;
+        Assert::assert_false(after_refresh_called.load(Ordering::SeqCst));
+        sm.maybe_refresh_blocking()?;
+        Assert::assert_true(after_refresh_called.load(Ordering::SeqCst));
+        sm.close()?;
+        iw.close()?;
+        dir.close()?;
+        Ok(())
+    }
+
+    /// The anonymous `SearcherFactory` of `testEvilSearcherFactory`.
+    #[derive(Debug)]
+    struct EvilSearcherFactory {
+        other: Arc<dyn DirectoryReader>,
+    }
+
+    impl SearcherFactory for EvilSearcherFactory {
+        fn new_searcher(
+            &self,
+            _ignored: Arc<dyn IndexReader>,
+            _previous: Option<Arc<dyn IndexReader>>,
+        ) -> Result<IndexSearcher> {
+            Ok(LuceneTestCase::new_searcher(Arc::clone(&self.other)))
+        }
+    }
+
+    /// Port of `TestSearcherManager.testEvilSearcherFactory`.
+    pub fn test_evil_searcher_factory(
+        _inst: &mut ThreadedInstance<SearcherManagerSuite>,
+    ) -> Result<()> {
+        let random = LuceneTestCase::random();
+        let mut dir = LuceneTestCase::new_directory();
+        let w = RandomIndexWriter::new_with_mock_analyzer(&*random, dir.as_directory())?;
+        w.commit()?;
+
+        let other = directory_reader::open(dir.as_directory())?;
+
+        let the_evil_one: Arc<dyn SearcherFactory> = Arc::new(EvilSearcherFactory {
+            other: Arc::clone(&other),
+        });
+
+        expect_throws(ISE, || {
+            SearcherManager::from_directory(dir.as_directory(), Some(Arc::clone(&the_evil_one)))
+        });
+        expect_throws(ISE, || {
+            SearcherManager::from_writer(
+                &**w.w(),
+                random.next_boolean(),
+                false,
+                Some(Arc::clone(&the_evil_one)),
+                None,
+            )
+        });
+        w.close()?;
+        other.close()?;
+        dir.close()?;
+        Ok(())
+    }
+
+    /// Port of `TestSearcherManager.testMaybeRefreshBlockingLock`.
+    pub fn test_maybe_refresh_blocking_lock(
+        _inst: &mut ThreadedInstance<SearcherManagerSuite>,
+    ) -> Result<()> {
+        // make sure that maybeRefreshBlocking releases the lock, otherwise other
+        // threads cannot obtain it.
+        let mut dir = LuceneTestCase::new_directory();
+        let w = RandomIndexWriter::new_with_mock_analyzer(
+            &*LuceneTestCase::random(),
+            dir.as_directory(),
+        )?;
+        w.close()?;
+
+        let sm = Arc::new(SearcherManager::from_directory(dir.as_directory(), None)?);
+
+        let t = {
+            let sm = Arc::clone(&sm);
+            Thread::unnamed(move || {
+                // this used to not release the lock, preventing other threads from obtaining it.
+                if let Err(e) = sm.maybe_refresh_blocking() {
+                    rethrow_java(e)
+                }
+            })
+        };
+        t.start();
+        let _ = t.join();
+
+        // if maybeRefreshBlocking didn't release the lock, this will fail.
+        Assert::assert_true_msg("failde to obtain the refreshLock!", sm.maybe_refresh()?);
+
+        sm.close()?;
+        dir.close()?;
+        Ok(())
+    }
+
+    /// `private static class MyFilterLeafReader extends FilterLeafReader`.
+    struct MyFilterLeafReader {
+        /// The `FilterLeafReader` this class extends.
+        inner: FilterLeafReader,
+        /// Java's protected `in`.
+        r#in: Arc<dyn LeafReader>,
+    }
+
+    impl MyFilterLeafReader {
+        fn new(r#in: Arc<dyn LeafReader>) -> Result<Self> {
+            Ok(MyFilterLeafReader {
+                inner: FilterLeafReader::new(Arc::clone(&r#in))?,
+                r#in,
+            })
+        }
+    }
+
+    impl std::fmt::Debug for MyFilterLeafReader {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("MyFilterLeafReader").finish_non_exhaustive()
+        }
+    }
+
+    impl std::fmt::Display for MyFilterLeafReader {
+        /// The inherited `FilterLeafReader.toString()`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            std::fmt::Display::fmt(&self.inner, f)
+        }
+    }
+
+    impl LeafReader for MyFilterLeafReader {
+        fn leaf_as_any(&self) -> Option<&dyn std::any::Any> {
+            Some(self)
+        }
+        fn filter_leaf_reader_delegate(&self) -> Option<&Arc<dyn LeafReader>> {
+            Some(&self.r#in)
+        }
+        fn core(&self) -> &rucene::index::IndexReaderCore {
+            LeafReader::core(&self.inner)
+        }
+        fn term_vectors(&self) -> Result<Box<dyn rucene::index::TermVectors>> {
+            LeafReader::term_vectors(&self.inner)
+        }
+        fn num_docs(&self) -> i32 {
+            LeafReader::num_docs(&self.inner)
+        }
+        fn max_doc(&self) -> i32 {
+            LeafReader::max_doc(&self.inner)
+        }
+        fn stored_fields(&self) -> Result<Box<dyn rucene::index::StoredFields>> {
+            LeafReader::stored_fields(&self.inner)
+        }
+        fn do_close(&self) -> Result<()> {
+            LeafReader::do_close(&self.inner)
+        }
+        fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
+            self.r#in.get_reader_cache_helper()
+        }
+        fn get_core_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
+            self.r#in.get_core_cache_helper()
+        }
+        fn terms(&self, field: &str) -> Result<Option<Box<dyn rucene::index::Terms>>> {
+            self.inner.terms(field)
+        }
+        fn get_numeric_doc_values(
+            &self,
+            field: &str,
+        ) -> Result<Option<Box<dyn rucene::index::NumericDocValues>>> {
+            self.inner.get_numeric_doc_values(field)
+        }
+        fn get_binary_doc_values(
+            &self,
+            field: &str,
+        ) -> Result<Option<Box<dyn rucene::index::BinaryDocValues>>> {
+            self.inner.get_binary_doc_values(field)
+        }
+        fn get_sorted_doc_values(
+            &self,
+            field: &str,
+        ) -> Result<Option<Box<dyn rucene::index::SortedDocValues>>> {
+            self.inner.get_sorted_doc_values(field)
+        }
+        fn get_sorted_numeric_doc_values(
+            &self,
+            field: &str,
+        ) -> Result<Option<Box<dyn rucene::index::SortedNumericDocValues>>> {
+            self.inner.get_sorted_numeric_doc_values(field)
+        }
+        fn get_sorted_set_doc_values(
+            &self,
+            field: &str,
+        ) -> Result<Option<Box<dyn rucene::index::SortedSetDocValues>>> {
+            self.inner.get_sorted_set_doc_values(field)
+        }
+        fn get_norm_values(
+            &self,
+            field: &str,
+        ) -> Result<Option<Box<dyn rucene::index::NumericDocValues>>> {
+            self.inner.get_norm_values(field)
+        }
+        fn get_doc_values_skipper(
+            &self,
+            field: &str,
+        ) -> Result<Option<Box<dyn rucene::index::DocValuesSkipper>>> {
+            self.inner.get_doc_values_skipper(field)
+        }
+        fn get_float_vector_values(
+            &self,
+            field: &str,
+        ) -> Result<Option<Box<dyn rucene::index::FloatVectorValues>>> {
+            self.inner.get_float_vector_values(field)
+        }
+        fn get_byte_vector_values(
+            &self,
+            field: &str,
+        ) -> Result<Option<Box<dyn rucene::index::ByteVectorValues>>> {
+            self.inner.get_byte_vector_values(field)
+        }
+        fn search_nearest_vectors(
+            &self,
+            field: &str,
+            target: &[f32],
+            collector: &mut dyn rucene::search::knn::KnnCollector,
+            accept_docs: &mut dyn rucene::search::AcceptDocs,
+        ) -> Result<()> {
+            self.inner
+                .search_nearest_vectors(field, target, collector, accept_docs)
+        }
+        fn search_nearest_vectors_byte(
+            &self,
+            field: &str,
+            target: &[u8],
+            collector: &mut dyn rucene::search::knn::KnnCollector,
+            accept_docs: &mut dyn rucene::search::AcceptDocs,
+        ) -> Result<()> {
+            self.inner
+                .search_nearest_vectors_byte(field, target, collector, accept_docs)
+        }
+        fn get_field_infos(&self) -> rucene::index::FieldInfos {
+            self.inner.get_field_infos()
+        }
+        fn get_live_docs(&self) -> Option<Box<dyn rucene::util::Bits>> {
+            self.inner.get_live_docs()
+        }
+        fn get_point_values(
+            &self,
+            field: &str,
+        ) -> Result<Option<Box<dyn rucene::index::PointValues>>> {
+            self.inner.get_point_values(field)
+        }
+        fn check_integrity(&self) -> Result<()> {
+            self.inner.check_integrity()
+        }
+        fn get_meta_data(&self) -> rucene::index::LeafMetaData {
+            self.inner.get_meta_data()
+        }
+    }
+
+    /// The anonymous `FilterDirectoryReader.SubReaderWrapper` of
+    /// `MyFilterDirectoryReader`.
+    struct MySubReaderWrapper;
+
+    impl SubReaderWrapper for MySubReaderWrapper {
+        fn wrap(&self, reader: Arc<dyn LeafReader>) -> Result<Arc<dyn LeafReader>> {
+            let wrapped = MyFilterLeafReader::new(Arc::clone(&reader))?;
+            // `assertEquals(reader, wrapped.getDelegate())`: `LeafReader`
+            // keeps `Object.equals`.
+            Assert::assert_true(std::ptr::addr_eq(
+                Arc::as_ptr(&reader),
+                Arc::as_ptr(wrapped.filter_leaf_reader_delegate().expect("a delegate")),
+            ));
+            Ok(Arc::new(wrapped))
+        }
+    }
+
+    /// `MyFilterDirectoryReader.doWrapDirectoryReader` and its forwarding
+    /// `getReaderCacheHelper()`.
+    struct MyDirectoryReaderWrapper;
+
+    impl DirectoryReaderWrapper for MyDirectoryReaderWrapper {
+        fn wrap(&self, inner: Arc<dyn DirectoryReader>) -> Result<Arc<dyn DirectoryReader>> {
+            my_filter_directory_reader(inner)
+        }
+
+        fn subclass_simple_name(&self) -> &'static str {
+            "MyFilterDirectoryReader"
+        }
+    }
+
+    /// `new MyFilterDirectoryReader(in)`: a `FilterDirectoryReader` whose
+    /// `getReaderCacheHelper()` is `in.getReaderCacheHelper()` (the forwarding
+    /// choice of `DirectoryReaderWrapper::uses_delegating_cache_helper`).
+    fn my_filter_directory_reader(
+        r#in: Arc<dyn DirectoryReader>,
+    ) -> Result<Arc<dyn DirectoryReader>> {
+        Ok(Arc::new(FilterDirectoryReader::new(
+            r#in,
+            Arc::new(MySubReaderWrapper),
+            Arc::new(MyDirectoryReaderWrapper),
+        )?))
+    }
+
+    /// `reader instanceof MyFilterDirectoryReader`: a `FilterDirectoryReader`
+    /// built by [`my_filter_directory_reader`], whose `toString()` names the
+    /// subclass (`getClass().getSimpleName()`).
+    fn is_my_filter_directory_reader(reader: &Arc<dyn DirectoryReader>) -> bool {
+        reader.as_any().is::<FilterDirectoryReader>()
+            && reader.to_string().starts_with("MyFilterDirectoryReader(")
+    }
+
+    /// `assertEquals(a, b)` over readers, which keep `Object.equals`.
+    fn same_reader(a: &Arc<dyn DirectoryReader>, b: &Arc<dyn DirectoryReader>) -> bool {
+        std::ptr::addr_eq(Arc::as_ptr(a), Arc::as_ptr(b))
+    }
+
+    /// LUCENE-6087
+    ///
+    /// Port of `TestSearcherManager.testCustomDirectoryReader`.
+    pub fn test_custom_directory_reader(
+        _inst: &mut ThreadedInstance<SearcherManagerSuite>,
+    ) -> Result<()> {
+        let mut dir = LuceneTestCase::new_directory();
+        let w = RandomIndexWriter::new_with_mock_analyzer(
+            &*LuceneTestCase::random(),
+            dir.as_directory(),
+        )?;
+        let nrt_reader = w.get_reader()?;
+
+        let reader = my_filter_directory_reader(Arc::clone(&nrt_reader))?;
+        let filter = reader
+            .as_any()
+            .downcast_ref::<FilterDirectoryReader>()
+            .expect("a FilterDirectoryReader");
+        Assert::assert_true(same_reader(&nrt_reader, filter.get_delegate()));
+        Assert::assert_true(same_reader(
+            &FilterDirectoryReader::unwrap(Arc::clone(&nrt_reader)),
+            &FilterDirectoryReader::unwrap(Arc::clone(&reader)),
+        ));
+
+        let mgr = SearcherManager::from_reader(reader, None, None)?;
+        for _i in 0..10 {
+            w.add_document(&Document::new())?;
+            mgr.maybe_refresh()?;
+            let s = mgr.acquire()?;
+            let checked = (|| -> Result<()> {
+                Assert::assert_true(is_my_filter_directory_reader(s.reader()));
+                for ctx in Arc::clone(s.searcher().get_index_reader()).leaves()? {
+                    Assert::assert_true(
+                        ctx.leaf_reader()
+                            .leaf_as_any()
+                            .is_some_and(|a| a.is::<MyFilterLeafReader>()),
+                    );
+                }
+                Ok(())
+            })();
+            mgr.release(s)?;
+            checked?;
+        }
+        mgr.close()?;
+        w.close()?;
+        dir.close()?;
+        Ok(())
+    }
+
+    /// The state of `MySearcherFactory`, which the test reads after handing
+    /// the factory to the manager.
+    #[derive(Debug, Default)]
+    struct MySearcherFactoryState {
+        last_reader: Option<Arc<dyn IndexReader>>,
+        last_previous_reader: Option<Arc<dyn IndexReader>>,
+        called: i32,
+    }
+
+    /// `class MySearcherFactory extends SearcherFactory`.
+    #[derive(Debug, Default)]
+    struct MySearcherFactory {
+        state: Mutex<MySearcherFactoryState>,
+    }
+
+    impl MySearcherFactory {
+        fn state(&self) -> std::sync::MutexGuard<'_, MySearcherFactoryState> {
+            self.state.lock().unwrap_or_else(|p| p.into_inner())
+        }
+    }
+
+    impl SearcherFactory for MySearcherFactory {
+        fn new_searcher(
+            &self,
+            reader: Arc<dyn IndexReader>,
+            previous_reader: Option<Arc<dyn IndexReader>>,
+        ) -> Result<IndexSearcher> {
+            {
+                let mut state = self.state();
+                state.called += 1;
+                state.last_reader = Some(Arc::clone(&reader));
+                state.last_previous_reader = previous_reader.clone();
+            }
+            DefaultSearcherFactory.new_searcher(reader, previous_reader)
+        }
+    }
+
+    /// `assertSame(a, b)` over readers.
+    fn same_index_reader(a: &Arc<dyn IndexReader>, b: &Arc<dyn IndexReader>) -> bool {
+        std::ptr::addr_eq(Arc::as_ptr(a), Arc::as_ptr(b))
+    }
+
+    /// Port of `TestSearcherManager.testPreviousReaderIsPassed`.
+    pub fn test_previous_reader_is_passed(
+        _inst: &mut ThreadedInstance<SearcherManagerSuite>,
+    ) -> Result<()> {
+        let mut dir = LuceneTestCase::new_directory();
+        let w = IndexWriter::new(
+            dir.as_directory(),
+            LuceneTestCase::new_index_writer_config(),
+        )?;
+        w.add_document(&Document::new())?;
+
+        let factory = Arc::new(MySearcherFactory::default());
+        let sm = SearcherManager::from_writer(
+            &*w,
+            LuceneTestCase::random().next_boolean(),
+            false,
+            Some(Arc::clone(&factory) as Arc<dyn SearcherFactory>),
+            None,
+        )?;
+        assert_eq_i32(1, factory.state().called);
+        Assert::assert_true(factory.state().last_previous_reader.is_none());
+        Assert::assert_true(factory.state().last_reader.is_some());
+        let acquire = sm.acquire()?;
+        Assert::assert_true(same_index_reader(
+            factory.state().last_reader.as_ref().expect("asserted"),
+            acquire.searcher().get_index_reader(),
+        ));
+        sm.release(acquire)?;
+
+        let last_reader = factory.state().last_reader.clone().expect("asserted");
+        // refresh
+        w.add_document(&Document::new())?;
+        Assert::assert_true(sm.maybe_refresh()?);
+
+        let acquire = sm.acquire()?;
+        Assert::assert_true(same_index_reader(
+            factory.state().last_reader.as_ref().expect("asserted"),
+            acquire.searcher().get_index_reader(),
+        ));
+        sm.release(acquire)?;
+        Assert::assert_true(factory.state().last_previous_reader.is_some());
+        Assert::assert_true(same_index_reader(
+            &last_reader,
+            factory
+                .state()
+                .last_previous_reader
+                .as_ref()
+                .expect("asserted"),
+        ));
+        Assert::assert_false(same_index_reader(
+            factory.state().last_reader.as_ref().expect("asserted"),
+            &last_reader,
+        ));
+        assert_eq_i32(2, factory.state().called);
+        drop(last_reader);
+        w.close()?;
+        sm.close()?;
+        dir.close()?;
+        Ok(())
+    }
+
+    /// `newIndexWriterConfig(analyzer)` through `ensureSaneIWCOnNightly`.
+    fn sane_config(analyzer: &Arc<MockAnalyzer>) -> IndexWriterConfig {
+        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(
+            Arc::clone(analyzer) as Arc<dyn rucene::analysis::Analyzer>
+        );
+        LuceneTestCase::ensure_sane_iwc_on_nightly(&mut iwc);
+        iwc
+    }
+
+    /// `catch (IOException ioe) { throw new RuntimeException(ioe); }`.
+    fn runtime(e: LuceneError) -> ! {
+        rethrow_java(LuceneError::Unchecked {
+            class: "java.lang.RuntimeException",
+            message: Some(e.to_string()),
+            cause: Some(Arc::new(e)),
+        })
+    }
+
+    /// Port of `TestSearcherManager.testConcurrentIndexCloseSearchAndRefresh`.
+    pub fn test_concurrent_index_close_search_and_refresh(
+        _inst: &mut ThreadedInstance<SearcherManagerSuite>,
+    ) -> Result<()> {
+        let mut dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir());
+        let directory = dir.as_directory();
+        let analyzer = Arc::new(MockAnalyzer::new(&*LuceneTestCase::random()));
+        analyzer.set_max_token_length(MAX_TERM_LENGTH as i32);
+        let writer_ref: Arc<Mutex<Arc<IndexWriter>>> = Arc::new(Mutex::new(IndexWriter::new(
+            Arc::clone(&directory),
+            sane_config(&analyzer),
+        )?));
+
+        let first_mgr = {
+            let w = Arc::clone(&*writer_ref.lock().unwrap_or_else(|p| p.into_inner()));
+            SearcherManager::from_writer(&*w, true, false, None, None)?
+        };
+        let mgr_ref: Arc<Mutex<Option<Arc<SearcherManager>>>> =
+            Arc::new(Mutex::new(Some(Arc::new(first_mgr))));
+        let stop = Arc::new(AtomicBool::new(false));
+
+        let index_thread = {
+            let writer_ref = Arc::clone(&writer_ref);
+            let stop = Arc::clone(&stop);
+            let directory = Arc::clone(&directory);
+            let analyzer = Arc::clone(&analyzer);
+            Thread::unnamed(move || {
+                let run = || -> Result<()> {
+                    let num_docs = if *TEST_NIGHTLY {
+                        LuceneTestCase::at_least(10000)
+                    } else {
+                        LuceneTestCase::at_least(200)
+                    };
+                    for _i in 0..num_docs {
+                        let w = Arc::clone(&*writer_ref.lock().unwrap_or_else(|p| p.into_inner()));
+                        let mut doc = Document::new();
+                        doc.add(Box::new(LuceneTestCase::new_text_field(
+                            "field",
+                            &TestUtil::random_analysis_string(
+                                &*LuceneTestCase::random(),
+                                256,
+                                false,
+                            ),
+                            Store::YES,
+                        )));
+                        w.add_document(&doc)?;
+                        if LuceneTestCase::random().next_int_bound(1000) == 17 {
+                            if LuceneTestCase::random().next_boolean() {
+                                w.close()?;
+                            } else {
+                                w.rollback()?;
+                            }
+                            *writer_ref.lock().unwrap_or_else(|p| p.into_inner()) =
+                                IndexWriter::new(Arc::clone(&directory), sane_config(&analyzer))?;
+                        }
+                    }
+                    if *VERBOSE {
+                        let w = Arc::clone(&*writer_ref.lock().unwrap_or_else(|p| p.into_inner()));
+                        println!("TEST: index count={}", w.get_doc_stats()?.max_doc);
+                    }
+                    Ok(())
+                };
+                let result = run();
+                stop.store(true, Ordering::SeqCst);
+                if let Err(e) = result {
+                    runtime(e)
+                }
+            })
+        };
+
+        let search_thread = {
+            let mgr_ref = Arc::clone(&mgr_ref);
+            let stop = Arc::clone(&stop);
+            Thread::unnamed(move || {
+                let run = || -> Result<()> {
+                    let mut tot_count: i64 = 0;
+                    while !stop.load(Ordering::SeqCst) {
+                        let mgr = mgr_ref.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                        if let Some(mgr) = mgr {
+                            let searcher = match mgr.acquire() {
+                                Ok(searcher) => searcher,
+                                Err(e) if is_instance(&e, ACE) => {
+                                    // ok
+                                    continue;
+                                }
+                                Err(e) => return Err(e),
+                            };
+                            tot_count +=
+                                i64::from(searcher.searcher().get_index_reader().max_doc());
+                            mgr.release(searcher)?;
+                        }
+                    }
+                    if *VERBOSE {
+                        println!("TEST: search totCount={tot_count}");
+                    }
+                    Ok(())
+                };
+                if let Err(e) = run() {
+                    runtime(e)
+                }
+            })
+        };
+
+        let refresh_thread = {
+            let mgr_ref = Arc::clone(&mgr_ref);
+            let stop = Arc::clone(&stop);
+            Thread::unnamed(move || {
+                let run = || -> Result<()> {
+                    let mut refresh_count = 0;
+                    let mut ace_count = 0;
+                    while !stop.load(Ordering::SeqCst) {
+                        let mgr = mgr_ref.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                        if let Some(mgr) = mgr {
+                            refresh_count += 1;
+                            match mgr.maybe_refresh_blocking() {
+                                Ok(()) => {}
+                                Err(e) if is_instance(&e, ACE) => {
+                                    // ok
+                                    ace_count += 1;
+                                    continue;
+                                }
+                                Err(e) => return Err(e),
+                            }
+                        }
+                    }
+                    if *VERBOSE {
+                        println!("TEST: refresh count={refresh_count} aceCount={ace_count}");
+                    }
+                    Ok(())
+                };
+                if let Err(e) = run() {
+                    runtime(e)
+                }
+            })
+        };
+
+        let close_thread = {
+            let mgr_ref = Arc::clone(&mgr_ref);
+            let writer_ref = Arc::clone(&writer_ref);
+            let stop = Arc::clone(&stop);
+            Thread::unnamed(move || {
+                let run = || -> Result<()> {
+                    let mut close_count = 0;
+                    let mut ace_count = 0;
+                    while !stop.load(Ordering::SeqCst) {
+                        let mgr = mgr_ref.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                        debug_assert!(mgr.is_some());
+                        let mgr = mgr.unwrap_or_else(|| {
+                            randomizedtesting::jdk::exception::throw_without_message(
+                                "java.lang.NullPointerException",
+                            )
+                        });
+                        mgr.close()?;
+                        close_count += 1;
+                        while !stop.load(Ordering::SeqCst) {
+                            let w =
+                                Arc::clone(&*writer_ref.lock().unwrap_or_else(|p| p.into_inner()));
+                            match SearcherManager::from_writer(&*w, true, false, None, None) {
+                                Ok(m) => {
+                                    *mgr_ref.lock().unwrap_or_else(|p| p.into_inner()) =
+                                        Some(Arc::new(m));
+                                    break;
+                                }
+                                Err(e) if is_instance(&e, ACE) => {
+                                    // ok
+                                    ace_count += 1;
+                                }
+                                Err(e) => return Err(e),
+                            }
+                        }
+                    }
+                    if *VERBOSE {
+                        println!("TEST: close count={close_count} aceCount={ace_count}");
+                    }
+                    Ok(())
+                };
+                if let Err(e) = run() {
+                    runtime(e)
+                }
+            })
+        };
+
+        index_thread.start();
+        search_thread.start();
+        refresh_thread.start();
+        close_thread.start();
+
+        let _ = index_thread.join();
+        let _ = search_thread.join();
+        let _ = refresh_thread.join();
+        let _ = close_thread.join();
+
+        let mgr = mgr_ref.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        if let Some(mgr) = mgr {
+            mgr.close()?;
+        }
+        let w = Arc::clone(&*writer_ref.lock().unwrap_or_else(|p| p.into_inner()));
+        w.close()?;
+        drop(directory);
+        dir.close()?;
+        Ok(())
+    }
+
+    /// Returns the first commit with generation higher than current reader commit
+    ///
+    /// `public static class NextCommitSelector implements RefreshCommitSupplier`.
+    #[derive(Debug)]
+    pub struct NextCommitSelector;
+
+    impl RefreshCommitSupplier for NextCommitSelector {
+        fn get_searcher_refresh_commit(
+            &self,
+            reader: &Arc<dyn DirectoryReader>,
+        ) -> Result<Option<Arc<dyn IndexCommit>>> {
+            let commits = directory_reader::list_commits(reader.directory())?;
+            let current = reader.index_commit()?;
+            for commit in commits {
+                if commit.get_generation() > current.get_generation() {
+                    return Ok(Some(commit));
+                }
+            }
+            // we're already on latest commit
+            Ok(None)
+        }
+    }
+
+    /// Port of `TestSearcherManager.testStepWiseCommitRefresh`.
+    pub fn test_step_wise_commit_refresh(
+        _inst: &mut ThreadedInstance<SearcherManagerSuite>,
+    ) -> Result<()> {
+        let mut dir = LuceneTestCase::new_directory();
+        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(
+            MockAnalyzer::new(&*LuceneTestCase::random()),
+        ));
+        iwc.set_index_deletion_policy(NoDeletionPolicy::instance())?;
+        let w = IndexWriter::new(dir.as_directory(), iwc)?;
+        let doc_id = AtomicI32::new(0);
+        let next_doc = || {
+            let mut doc = Document::new();
+            doc.add(Box::new(LuceneTestCase::new_string_field(
+                "docId",
+                &format!("doc-{}", doc_id.fetch_add(1, Ordering::SeqCst)),
+                Store::YES,
+            )));
+            doc
+        };
+        // create initial commit
+        for _i in 0..20 {
+            w.add_document(&next_doc())?;
+        }
+        w.commit()?;
+        let sm = SearcherManager::from_reader(
+            directory_reader::open(dir.as_directory())?,
+            None,
+            Some(Arc::new(NextCommitSelector)),
+        )?;
+        let num_commits = 5;
+        for _i in 0..num_commits {
+            for _j in 0..20 {
+                w.add_document(&next_doc())?;
+            }
+            w.commit()?;
+        }
+
+        // maybeRefresh only refreshes on the next incremental commit
+        // so it takes us numCommits to get to latest
+        let mut steps_to_current = 0;
+        while !sm.is_searcher_current()? {
+            let old_gen = sm.get_searcher_commit_generation()?;
+            sm.maybe_refresh_blocking()?;
+            let new_gen = sm.get_searcher_commit_generation()?;
+            Assert::assert_true(new_gen == old_gen + 1);
+            steps_to_current += 1;
+        }
+        assert_eq_i32(num_commits, steps_to_current);
+        sm.close()?;
+        w.close()?;
+        dir.close()?;
+        Ok(())
+    }
 }
 
 /// One suite of this binary at a time: the runner's state is process-wide.

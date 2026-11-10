@@ -236,6 +236,27 @@ pub struct Seeded {
     entry_points: Arc<Mutex<Box<dyn DocIdSetIterator + Send>>>,
     number_of_entry_points: i32,
     original_strategy: Arc<KnnSearchStrategy>,
+    /// The overrides of a subclass, if any.
+    overrides: Option<Arc<dyn SeededOverrides>>,
+}
+
+/// The methods a subclass of `KnnSearchStrategy.Seeded` overrides.
+///
+/// Java tests subclass `Seeded` and override `entryPoints()` and
+/// `numberOfEntryPoints()` (`TestSeededKnnByteVectorQuery.java:313-335`);
+/// the HNSW searcher calls them on the strategy it is handed. An
+/// implementation, installed with [`Seeded::with_overrides`], sees each call;
+/// each provided method is the inherited body: `entryPoints()` returns the
+/// shared iterator, which an override observes, and `numberOfEntryPoints()`
+/// returns `inherited`.
+pub trait SeededOverrides: Send + Sync + fmt::Debug {
+    /// `Seeded.entryPoints()`, called with the iterator it returns.
+    fn entry_points(&self, _entry_points: &dyn DocIdSetIterator) {}
+
+    /// `Seeded.numberOfEntryPoints()`.
+    fn number_of_entry_points(&self, inherited: i32) -> i32 {
+        inherited
+    }
 }
 
 impl fmt::Debug for Seeded {
@@ -281,23 +302,47 @@ impl Seeded {
             entry_points: Arc::new(Mutex::new(entry_points)),
             number_of_entry_points,
             original_strategy: Arc::new(original_strategy),
+            overrides: None,
         })
+    }
+
+    /// A subclass instance over the same entry points, number of entry points
+    /// and original strategy, with `overrides`.
+    ///
+    /// Equivalent to a subclass constructed as `super(seeded.entryPoints(),
+    /// seeded.numberOfEntryPoints(), seeded.originalStrategy())`, which reuses
+    /// the very same `DocIdSetIterator` instance.
+    pub fn with_overrides(&self, overrides: Arc<dyn SeededOverrides>) -> Self {
+        Self {
+            entry_points: Arc::clone(&self.entry_points),
+            number_of_entry_points: self.number_of_entry_points,
+            original_strategy: Arc::clone(&self.original_strategy),
+            overrides: Some(overrides),
+        }
     }
 
     /// Locks and returns the iterator of valid entry points for the kNN search.
     ///
     /// Equivalent to `KnnSearchStrategy.Seeded.entryPoints()`.
     pub fn entry_points(&self) -> MutexGuard<'_, Box<dyn DocIdSetIterator + Send>> {
-        self.entry_points
+        let guard = self
+            .entry_points
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(overrides) = &self.overrides {
+            overrides.entry_points(&**guard);
+        }
+        guard
     }
 
     /// Returns the number of valid entry points for the kNN search.
     ///
     /// Equivalent to `KnnSearchStrategy.Seeded.numberOfEntryPoints()`.
     pub fn number_of_entry_points(&self) -> i32 {
-        self.number_of_entry_points
+        match &self.overrides {
+            Some(overrides) => overrides.number_of_entry_points(self.number_of_entry_points),
+            None => self.number_of_entry_points,
+        }
     }
 
     /// Returns the strategy to use after seeding.
@@ -320,6 +365,7 @@ impl Seeded {
             entry_points: Arc::clone(&self.entry_points),
             number_of_entry_points: self.number_of_entry_points,
             original_strategy: Arc::new(original_strategy),
+            overrides: None,
         }
     }
 }

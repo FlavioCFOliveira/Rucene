@@ -212,6 +212,11 @@ impl AllDocIdSetIterator {
 }
 
 impl DocIdSetIterator for AllDocIdSetIterator {
+    /// Java tests the class of this iterator (`TestPointQueries.java:2219`).
+    fn disi_as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn doc_id(&self) -> i32 {
         self.range.doc_id()
     }
@@ -275,6 +280,11 @@ impl RangeDocIdSetIterator {
 }
 
 impl DocIdSetIterator for RangeDocIdSetIterator {
+    /// Java tests the class of this iterator (`TestPointQueries.java:2219`).
+    fn disi_as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn doc_id(&self) -> i32 {
         self.doc
     }

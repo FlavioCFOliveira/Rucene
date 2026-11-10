@@ -3,6 +3,8 @@
 
 #![deny(unsafe_code)]
 
+use std::sync::Arc;
+
 use crate::error::Result;
 use crate::search::doc_id_set_iterator::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::search::scorable::{ChildScorable, Scorable};
@@ -46,6 +48,9 @@ struct ReqOptCore {
     /// State of the impact-aware approximation.
     up_to: i32,
     max_score: f32,
+
+    /// The overrides of an anonymous subclass, if any.
+    overrides: Option<Arc<dyn ReqOptSumScorerOverrides>>,
 }
 
 impl ReqOptCore {
@@ -84,8 +89,17 @@ impl ReqOptCore {
         Ok(up_to)
     }
 
-    /// Equivalent to `ReqOptSumScorer.getMaxScore(int)`.
+    /// Equivalent to `ReqOptSumScorer.getMaxScore(int)`, dispatched to the
+    /// [`ReqOptSumScorerOverrides`] of an anonymous subclass when one is set.
     fn get_max_score(&mut self, up_to: i32) -> Result<f32> {
+        match self.overrides.clone() {
+            Some(overrides) => overrides.get_max_score(up_to, &mut |u| self.super_get_max_score(u)),
+            None => self.super_get_max_score(up_to),
+        }
+    }
+
+    /// The inherited body of `ReqOptSumScorer.getMaxScore(int)`.
+    fn super_get_max_score(&mut self, up_to: i32) -> Result<f32> {
         let mut max_score = self.req_scorer.get_max_score(up_to)?;
         if self.opt_scorer.doc_id() <= up_to {
             max_score += self.opt_scorer.get_max_score(up_to)?;
@@ -274,6 +288,29 @@ impl TwoPhaseIterator for ReqOptCore {
     }
 }
 
+/// The methods an anonymous subclass of `ReqOptSumScorer` overrides.
+///
+/// Java tests subclass the scorer anonymously and override
+/// `getMaxScore(int)` (`TestReqOptSumScorer.java:378-383`), which the
+/// impact-aware approximation also calls on `this`
+/// (`ReqOptSumScorer.java:83`). An implementation, installed with
+/// [`ReqOptSumScorer::set_overrides`], receives the inherited body as
+/// `inherited`; the provided method is Lucene's behaviour.
+pub trait ReqOptSumScorerOverrides: Send + Sync + std::fmt::Debug {
+    /// `ReqOptSumScorer.getMaxScore(int)`.
+    ///
+    /// # Errors
+    ///
+    /// As the inherited body.
+    fn get_max_score(
+        &self,
+        up_to: i32,
+        inherited: &mut dyn FnMut(i32) -> Result<f32>,
+    ) -> Result<f32> {
+        inherited(up_to)
+    }
+}
+
 /// A scorer for queries with a required part and an optional part.
 ///
 /// Equivalent to `org.apache.lucene.search.ReqOptSumScorer`. It delays
@@ -370,8 +407,17 @@ impl ReqOptSumScorer {
                 opt_is_required: false,
                 up_to: -1,
                 max_score: 0.0,
+                overrides: None,
             },
         })
+    }
+
+    /// Installs the overrides of an anonymous subclass.
+    ///
+    /// Java's constructor calls no overridable method, so installing them
+    /// after construction is the same as subclassing.
+    pub fn set_overrides(&mut self, overrides: Arc<dyn ReqOptSumScorerOverrides>) {
+        self.core.overrides = Some(overrides);
     }
 
     fn confirm(&mut self, mut doc: i32) -> Result<i32> {

@@ -458,7 +458,7 @@ pub use refresh_commit_supplier::{LatestCommitSupplier, RefreshCommitSupplier};
 pub use regexp_query::{DefaultProvider, RegexpQuery};
 pub use req_excl_bulk_scorer::ReqExclBulkScorer;
 pub use req_excl_scorer::ReqExclScorer;
-pub use req_opt_sum_scorer::ReqOptSumScorer;
+pub use req_opt_sum_scorer::{ReqOptSumScorer, ReqOptSumScorerOverrides};
 pub use rescore_top_n_query::RescoreTopNQuery;
 pub use rescorer::Rescorer;
 pub use scorable::{ChildScorable, FilterScorable, Scorable, SimpleScorable};

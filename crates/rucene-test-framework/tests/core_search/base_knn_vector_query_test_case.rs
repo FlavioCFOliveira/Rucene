@@ -1414,7 +1414,7 @@ fn test_time_limiting_knn_collector_manager<C: KnnVectorCase>() -> Result<()> {
 
 /// `QueryTimeout` lambda `() -> value`.
 #[derive(Debug)]
-struct ConstantTimeout(bool);
+pub struct ConstantTimeout(pub bool);
 
 impl QueryTimeout for ConstantTimeout {
     fn should_exit(&self) -> bool {

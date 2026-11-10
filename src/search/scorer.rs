@@ -31,6 +31,18 @@ pub trait Scorer: Scorable {
         None
     }
 
+    /// Returns this scorer as a mutable [`Any`](std::any::Any), for the casts
+    /// after which Java calls a mutating method, or `None` when the type does
+    /// not take part in such a cast.
+    ///
+    /// Java casts a scorer to its class and then advances its state
+    /// (`TestSloppyPhraseQuery.MaxFreqCollector.collect` casts to
+    /// `PhraseScorer` and calls `matcher.nextMatch()`); this is the mutable
+    /// counterpart of [`as_any`](Self::as_any), with the same default.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
+
     /// Returns this scorer viewed as an [`IndriScorer`], or `None` when it is
     /// not one.
     ///

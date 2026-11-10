@@ -2789,6 +2789,26 @@ impl IntPoint {
             Arc::new(IntPointFormatter),
         )?))
     }
+
+    /// Creates a query matching any of the one-dimensional `values`, taken in
+    /// the collection's iteration order.
+    ///
+    /// Equivalent to `IntPoint.newSetQuery(String, Collection<Integer>)`, which
+    /// unboxes the collection into an array and calls
+    /// [`new_set_query`](Self::new_set_query). A Rust collection of `i32`
+    /// holds no `null`, so Java's unboxing `NullPointerException` has no
+    /// counterpart.
+    ///
+    /// # Errors
+    ///
+    /// As [`new_set_query`](Self::new_set_query).
+    pub fn new_set_query_collection(
+        field: &str,
+        values: impl IntoIterator<Item = i32>,
+    ) -> Result<Arc<dyn Query>> {
+        let unboxed: Vec<i32> = values.into_iter().collect();
+        Self::new_set_query(field, &unboxed)
+    }
 }
 
 impl IndexableField for IntPoint {
@@ -3024,6 +3044,26 @@ impl LongPoint {
             &mut stream,
             Arc::new(LongPointFormatter),
         )?))
+    }
+
+    /// Creates a query matching any of the one-dimensional `values`, taken in
+    /// the collection's iteration order.
+    ///
+    /// Equivalent to `LongPoint.newSetQuery(String, Collection<Long>)`, which
+    /// unboxes the collection into an array and calls
+    /// [`new_set_query`](Self::new_set_query). A Rust collection of `i64`
+    /// holds no `null`, so Java's unboxing `NullPointerException` has no
+    /// counterpart.
+    ///
+    /// # Errors
+    ///
+    /// As [`new_set_query`](Self::new_set_query).
+    pub fn new_set_query_collection(
+        field: &str,
+        values: impl IntoIterator<Item = i64>,
+    ) -> Result<Arc<dyn Query>> {
+        let unboxed: Vec<i64> = values.into_iter().collect();
+        Self::new_set_query(field, &unboxed)
     }
 }
 
@@ -3344,6 +3384,26 @@ impl FloatPoint {
             Arc::new(FloatPointFormatter),
         )?))
     }
+
+    /// Creates a query matching any of the one-dimensional `values`, taken in
+    /// the collection's iteration order.
+    ///
+    /// Equivalent to `FloatPoint.newSetQuery(String, Collection<Float>)`, which
+    /// unboxes the collection into an array and calls
+    /// [`new_set_query`](Self::new_set_query). A Rust collection of `f32`
+    /// holds no `null`, so Java's unboxing `NullPointerException` has no
+    /// counterpart.
+    ///
+    /// # Errors
+    ///
+    /// As [`new_set_query`](Self::new_set_query).
+    pub fn new_set_query_collection(
+        field: &str,
+        values: impl IntoIterator<Item = f32>,
+    ) -> Result<Arc<dyn Query>> {
+        let unboxed: Vec<f32> = values.into_iter().collect();
+        Self::new_set_query(field, &unboxed)
+    }
 }
 
 impl IndexableField for FloatPoint {
@@ -3591,6 +3651,26 @@ impl DoublePoint {
             Arc::new(DoublePointFormatter),
         )?))
     }
+
+    /// Creates a query matching any of the one-dimensional `values`, taken in
+    /// the collection's iteration order.
+    ///
+    /// Equivalent to `DoublePoint.newSetQuery(String, Collection<Double>)`, which
+    /// unboxes the collection into an array and calls
+    /// [`new_set_query`](Self::new_set_query). A Rust collection of `f64`
+    /// holds no `null`, so Java's unboxing `NullPointerException` has no
+    /// counterpart.
+    ///
+    /// # Errors
+    ///
+    /// As [`new_set_query`](Self::new_set_query).
+    pub fn new_set_query_collection(
+        field: &str,
+        values: impl IntoIterator<Item = f64>,
+    ) -> Result<Arc<dyn Query>> {
+        let unboxed: Vec<f64> = values.into_iter().collect();
+        Self::new_set_query(field, &unboxed)
+    }
 }
 
 impl IndexableField for DoublePoint {
@@ -3748,6 +3828,54 @@ impl BinaryPoint {
             pack_binary_point(upper_value)?.slice().to_vec(),
             lower_value.len() as i32,
             Arc::new(BinaryPointFormatter),
+        )?))
+    }
+
+    /// Creates a query matching any of the one-dimensional binary `values`.
+    ///
+    /// Equivalent to `BinaryPoint.newSetQuery(String, byte[]...)`
+    /// (`BinaryPoint.java:219-268`): every value must have the same length;
+    /// an empty set is the equivalent `MatchNoDocsQuery`; the values are sorted
+    /// in unsigned byte order, without changing the caller's slice.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when two values differ in
+    /// length, and propagates whatever
+    /// [`PointInSetQuery::new`](crate::search::PointInSetQuery) raises.
+    pub fn new_set_query(field: &str, values: &[Vec<u8>]) -> Result<Arc<dyn Query>> {
+        // Make sure all byte[] have the same length
+        let mut bytes_per_dim: i64 = -1;
+        for value in values {
+            if bytes_per_dim == -1 {
+                bytes_per_dim = value.len() as i64;
+            } else if value.len() as i64 != bytes_per_dim {
+                return Err(LuceneError::IllegalArgument(format!(
+                    "all byte[] must be the same length, but saw {bytes_per_dim} and {}",
+                    value.len()
+                )));
+            }
+        }
+
+        if bytes_per_dim == -1 {
+            // There are no points, and we cannot guess the bytesPerDim here, so
+            // we return an equivalent query:
+            return Ok(Arc::new(crate::search::MatchNoDocsQuery::new(
+                "empty BinaryPoint.newSetQuery",
+            )));
+        }
+
+        // Don't unexpectedly change the user's incoming values array:
+        let mut sorted_values = values.to_vec();
+        sorted_values.sort_by(|a, b| a.as_slice().cmp(b.as_slice()));
+
+        let mut stream = PointValueStream::new(sorted_values);
+        Ok(Arc::new(crate::search::PointInSetQuery::new(
+            field,
+            1,
+            bytes_per_dim as i32,
+            &mut stream,
+            Arc::new(BinaryPointSetFormatter),
         )?))
     }
 }
@@ -7938,6 +8066,24 @@ impl BinaryPointFormatter {
         }
         sb.push(')');
         sb
+    }
+}
+
+/// Renders a point of a `BinaryPoint` set query.
+///
+/// Equivalent to the `toString(byte[])` of the anonymous `PointInSetQuery`
+/// that `BinaryPoint.newSetQuery` returns: `new BytesRef(value).toString()`
+/// (`BinaryPoint.java:264-266`).
+#[derive(Debug)]
+struct BinaryPointSetFormatter;
+
+impl crate::search::PointFormatter for BinaryPointSetFormatter {
+    fn format(&self, value: &[u8]) -> String {
+        BytesRef::new(value.to_vec()).to_string()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 

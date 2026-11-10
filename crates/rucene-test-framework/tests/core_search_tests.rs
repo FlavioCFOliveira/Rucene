@@ -113,6 +113,8 @@ mod core_search {
     pub mod test_patience_float_vector_query;
     pub mod test_phrase_matcher_contract;
     pub mod test_phrase_prefix_query;
+    pub mod test_phrase_query;
+    pub mod test_point_queries;
     pub mod test_position_increment;
     pub mod test_positive_scores_only_collector;
     pub mod test_prefix_in_boolean_query;
@@ -125,7 +127,34 @@ mod core_search {
     pub mod test_regexp_query;
     pub mod test_regexp_random;
     pub mod test_regexp_random2;
+    pub mod test_req_excl_bulk_scorer;
+    pub mod test_req_opt_sum_scorer;
+    pub mod test_rescore_top_n_query;
+    pub mod test_same_scores_with_threads;
+    pub mod test_score_caching_wrapping_scorer;
+    pub mod test_scorer_perf;
+    pub mod test_scorer_util;
+    pub mod test_search_after;
+    pub mod test_search_with_threads;
+    pub mod test_seeded_knn_byte_vector_query;
+    pub mod test_seeded_knn_float_vector_query;
+    pub mod test_segment_cacheables;
+    pub mod test_segment_reordering;
+    pub mod test_similarity;
+    pub mod test_similarity_provider;
+    pub mod test_simple_search_equivalence;
+    pub mod test_skip_block_range_iterator;
+    pub mod test_skip_block_range_iterator_into_bit_set;
+    pub mod test_sloppy_phrase_query;
+    pub mod test_sloppy_phrase_query2;
+    pub mod test_sort;
+    pub mod test_sorted_numeric_doc_values_range_iterator;
+    pub mod test_sorted_numeric_sort_field;
+    pub mod test_sorted_set_selector;
+    pub mod test_sorted_set_sort_field;
     pub mod test_term_ord_val_comparator_adaptive_skipping;
+    pub mod test_time_limiting_bulk_scorer;
+    pub mod test_top_docs_rrf;
     pub mod test_updateable_doc_id_set_iterator;
 }
 
@@ -705,4 +734,149 @@ fn test_query_visitor() {
 #[test]
 fn test_query_rescorer() {
     run(test_query_rescorer::class_def);
+}
+
+#[test]
+fn test_phrase_query() {
+    run(test_phrase_query::class_def);
+}
+
+#[test]
+fn test_point_queries() {
+    run(test_point_queries::class_def);
+}
+
+#[test]
+fn test_req_excl_bulk_scorer() {
+    run(test_req_excl_bulk_scorer::class_def);
+}
+
+#[test]
+fn test_req_opt_sum_scorer() {
+    run(test_req_opt_sum_scorer::class_def);
+}
+
+#[test]
+fn test_similarity() {
+    run(test_similarity::class_def);
+}
+
+#[test]
+fn test_rescore_top_n_query() {
+    run(test_rescore_top_n_query::class_def);
+}
+
+#[test]
+fn test_same_scores_with_threads() {
+    run(test_same_scores_with_threads::class_def);
+}
+
+#[test]
+fn test_score_caching_wrapping_scorer() {
+    run(test_score_caching_wrapping_scorer::class_def);
+}
+
+#[test]
+fn test_scorer_perf() {
+    run(test_scorer_perf::class_def);
+}
+
+#[test]
+fn test_scorer_util() {
+    run(test_scorer_util::class_def);
+}
+
+#[test]
+fn test_simple_search_equivalence() {
+    run(test_simple_search_equivalence::class_def);
+}
+
+#[test]
+fn test_sloppy_phrase_query2() {
+    run(test_sloppy_phrase_query2::class_def);
+}
+
+#[test]
+fn test_search_with_threads() {
+    run(test_search_with_threads::class_def);
+}
+
+#[test]
+fn test_search_after() {
+    run(test_search_after::class_def);
+}
+
+#[test]
+fn test_seeded_knn_byte_vector_query() {
+    run(test_seeded_knn_byte_vector_query::class_def);
+}
+
+#[test]
+fn test_seeded_knn_float_vector_query() {
+    run(test_seeded_knn_float_vector_query::class_def);
+}
+
+#[test]
+fn test_segment_cacheables() {
+    run(test_segment_cacheables::class_def);
+}
+
+#[test]
+fn test_similarity_provider() {
+    run(test_similarity_provider::class_def);
+}
+
+#[test]
+fn test_skip_block_range_iterator() {
+    run(test_skip_block_range_iterator::class_def);
+}
+
+#[test]
+fn test_sloppy_phrase_query() {
+    run(test_sloppy_phrase_query::class_def);
+}
+
+#[test]
+fn test_segment_reordering() {
+    run(test_segment_reordering::class_def);
+}
+
+#[test]
+fn test_skip_block_range_iterator_into_bit_set() {
+    run(test_skip_block_range_iterator_into_bit_set::class_def);
+}
+
+#[test]
+fn test_sorted_numeric_doc_values_range_iterator() {
+    run(test_sorted_numeric_doc_values_range_iterator::class_def);
+}
+
+#[test]
+fn test_sorted_numeric_sort_field() {
+    run(test_sorted_numeric_sort_field::class_def);
+}
+
+#[test]
+fn test_sorted_set_selector() {
+    run(test_sorted_set_selector::class_def);
+}
+
+#[test]
+fn test_sorted_set_sort_field() {
+    run(test_sorted_set_sort_field::class_def);
+}
+
+#[test]
+fn test_sort() {
+    run(test_sort::class_def);
+}
+
+#[test]
+fn test_top_docs_rrf() {
+    run(test_top_docs_rrf::class_def);
+}
+
+#[test]
+fn test_time_limiting_bulk_scorer() {
+    run(test_time_limiting_bulk_scorer::class_def);
 }

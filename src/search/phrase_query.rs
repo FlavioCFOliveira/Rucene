@@ -170,6 +170,15 @@ impl Ord for PostingsAndFreq {
     }
 }
 
+/// The `NullPointerException` of `Objects.requireNonNull(term, "Cannot add a
+/// null term to PhraseQuery")` (`PhraseQuery.java:127,177,215,224`).
+fn null_term() -> LuceneError {
+    LuceneError::unchecked(
+        "java.lang.NullPointerException",
+        "Cannot add a null term to PhraseQuery",
+    )
+}
+
 /// A builder for phrase queries.
 ///
 /// Equivalent to `PhraseQuery.Builder`.
@@ -228,6 +237,25 @@ impl Builder {
             Some(last) => 1 + last,
         };
         self.add_at(term, position)
+    }
+
+    /// [`add`](Self::add) over a term that may be Java's `null` (`None`).
+    ///
+    /// Equivalent to `Builder.add(Term)` called with a possibly null term:
+    /// `Builder.add(Term, int)` starts with
+    /// `Objects.requireNonNull(term, "Cannot add a null term to PhraseQuery")`
+    /// (`PhraseQuery.java:127`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `java.lang.NullPointerException` (as
+    /// [`LuceneError::Unchecked`]) for `None`; otherwise as
+    /// [`add`](Self::add).
+    pub fn add_nullable(&mut self, term: Option<Term>) -> Result<&mut Self> {
+        match term {
+            Some(term) => self.add(term),
+            None => Err(null_term()),
+        }
     }
 
     /// Adds a term to the end of the query phrase at an explicit position,
@@ -407,6 +435,48 @@ impl PhraseQuery {
             .iter()
             .map(|b| Term::new(field, b.clone()))
             .collect()
+    }
+
+    /// [`from_strings`](Self::from_strings) over term strings that may be
+    /// Java's `null` (`None`).
+    ///
+    /// Equivalent to `PhraseQuery(String, String...)`, whose private
+    /// `toTerms(String, String...)` checks each string with
+    /// `Objects.requireNonNull(termStrings[i], "Cannot add a null term to
+    /// PhraseQuery")` (`PhraseQuery.java:215`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `java.lang.NullPointerException` (as
+    /// [`LuceneError::Unchecked`]) for a `None` string; otherwise as
+    /// [`new`](Self::new).
+    pub fn from_nullable_strings(field: &str, terms: &[Option<&str>]) -> Result<Self> {
+        let mut strings = Vec::with_capacity(terms.len());
+        for t in terms {
+            strings.push(t.ok_or_else(null_term)?);
+        }
+        Self::from_strings(field, &strings)
+    }
+
+    /// [`from_bytes`](Self::from_bytes) over term bytes that may be Java's
+    /// `null` (`None`).
+    ///
+    /// Equivalent to `PhraseQuery(String, BytesRef...)`, whose private
+    /// `toTerms(String, BytesRef...)` checks each term with
+    /// `Objects.requireNonNull(termBytes[i], "Cannot add a null term to
+    /// PhraseQuery")` (`PhraseQuery.java:224`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `java.lang.NullPointerException` (as
+    /// [`LuceneError::Unchecked`]) for a `None` term; otherwise as
+    /// [`new`](Self::new).
+    pub fn from_nullable_bytes(field: &str, terms: &[Option<BytesRef>]) -> Result<Self> {
+        let mut bytes = Vec::with_capacity(terms.len());
+        for t in terms {
+            bytes.push(t.clone().ok_or_else(null_term)?);
+        }
+        Self::from_bytes(field, &bytes)
     }
 
     /// Returns whether `term` is absent from `reader`.
