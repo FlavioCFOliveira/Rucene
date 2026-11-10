@@ -45,8 +45,9 @@ fn fixture_set_up(f: &mut Fixture) -> Result<()> {
     f.num_threads = if *TEST_NIGHTLY { 3 } else { 2 };
     f.num_iterations = if *TEST_NIGHTLY { 100 } else { 50 };
     let directory = LuceneTestCase::new_directory();
-    let mut iwc =
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+        MockAnalyzer::new(&*random()),
+    )));
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = IndexWriter::new(directory.as_directory(), iwc)?;
     let mut custom_type = FieldType::new_from(TextField::type_stored());

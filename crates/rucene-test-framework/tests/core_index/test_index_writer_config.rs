@@ -36,6 +36,7 @@ use rucene_test_framework::util::LuceneTestCase;
 use crate::core_support::{
     assert_equals, assert_equals_delta, assert_null, class, random, test, IAE,
 };
+use crate::support::npe;
 
 /// `TestIndexWriterConfig`.
 pub fn class_def() -> Arc<Class> {
@@ -111,10 +112,12 @@ fn is_log_doc(mp: &Arc<dyn MergePolicy>) -> bool {
 
 /// Port of `TestIndexWriterConfig.testDefaults`.
 fn test_defaults() -> Result<()> {
-    let conf = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let conf = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     assert_equals(
         "org.apache.lucene.tests.analysis.MockAnalyzer",
-        conf.analyzer().java_class_name(),
+        conf.analyzer()
+            .unwrap_or_else(|| npe("conf.getAnalyzer()"))
+            .java_class_name(),
     );
     assert_null(&conf.index_commit().map(|_| ()));
     assert_equals(
@@ -146,7 +149,7 @@ fn test_defaults() -> Result<()> {
     Assert::assert_true(
         format!("{:?}", conf.into_live().flush_policy()).starts_with("FlushByRamOrCountsPolicy"),
     );
-    let conf = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let conf = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     assert_equals(
         &LiveIndexWriterConfig::DEFAULT_RAM_PER_THREAD_HARD_LIMIT_MB,
         &conf.ram_per_thread_hard_limit_mb(),
@@ -340,7 +343,7 @@ fn test_setters_chaining() -> Result<()> {
 fn test_reuse() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     // test that IWC cannot be reused across two IWs
-    let conf = LuceneTestCase::new_index_writer_config();
+    let conf = LuceneTestCase::new_index_writer_config_analyzer(None);
     RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), conf)?.close()?;
 
     // this should fail: `conf` was moved into the first writer.
@@ -398,7 +401,8 @@ const IWC_FIELDS: &[&str] = &["writer"];
 
 /// Port of `TestIndexWriterConfig.testToString`.
 fn test_to_string() -> Result<()> {
-    let str = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random()))).to_string();
+    let str =
+        IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random())))).to_string();
     for f in IWC_FIELDS {
         if *f == "indexingChain" {
             // indexingChain is a package-private setting and thus is not output by
@@ -415,7 +419,7 @@ fn test_to_string() -> Result<()> {
 
 /// Port of `TestIndexWriterConfig.testInvalidValues`.
 fn test_invalid_values() -> Result<()> {
-    let mut conf = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut conf = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
 
     // Test IndexDeletionPolicy
     assert_equals(
@@ -482,7 +486,7 @@ fn test_invalid_values() -> Result<()> {
 /// Port of `TestIndexWriterConfig.testLiveChangeToCFS`.
 fn test_live_change_to_cfs() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     iwc.set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(true)))?;
     // Start false:
     iwc.set_use_compound_file(false)?;

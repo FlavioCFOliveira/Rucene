@@ -752,7 +752,7 @@ fn write_with_rucene(
         assert_eq!(analyzer.get_position_increment_gap(spec.name), 0);
         assert_eq!(analyzer.get_offset_gap(spec.name), 1);
     }
-    let live = Arc::new(LiveIndexWriterConfig::new(Arc::clone(&analyzer)));
+    let live = Arc::new(LiveIndexWriterConfig::new(Some(Arc::clone(&analyzer))));
 
     let directory: Box<dyn Directory> = Box::new(FSDirectory::open(out_dir).expect("directory"));
     let tracking = Arc::new(TrackingDirectoryWrapper::new(directory));
@@ -804,7 +804,8 @@ fn write_with_rucene(
         // A document-level failure drops the document and indexing continues,
         // exactly as `IndexWriter.addDocument` does when it catches an
         // `IllegalArgumentException`; the doc id is still consumed.
-        if let Err(error) = chain.process_document(doc_id as i32, &document, true, &mut field_infos)
+        if let Err(error) =
+            chain.process_document(doc_id as i32, Some(&document), true, &mut field_infos)
         {
             assert!(
                 chain.take_aborting_error().is_none(),

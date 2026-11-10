@@ -54,8 +54,9 @@ pub fn class_def() -> Arc<Class> {
 fn no_merge_writer(
     dir: &rucene_test_framework::util::lucene_test_case::TestDirectory,
 ) -> Result<Arc<IndexWriter>> {
-    let mut iwc =
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+        MockAnalyzer::new(&*random()),
+    )));
     iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     IndexWriter::new(dir.as_directory(), iwc)
 }
@@ -66,7 +67,9 @@ fn writer(
 ) -> Result<Arc<IndexWriter>> {
     IndexWriter::new(
         dir.as_directory(),
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random()))),
+        LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
+            &*random(),
+        )))),
     )
 }
 

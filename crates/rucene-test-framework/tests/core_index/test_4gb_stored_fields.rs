@@ -54,7 +54,7 @@ fn test_() -> Result<()> {
     mock.set_throttling(Throttling::Never);
     let mut dir = TestDirectory::Mock(mock);
 
-    let mut iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     iwc.set_max_buffered_docs(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH)?;
     iwc.set_ram_buffer_size_mb(256.0)?;
     iwc.set_merge_scheduler(Some(Arc::new(ConcurrentMergeScheduler::new())))?;

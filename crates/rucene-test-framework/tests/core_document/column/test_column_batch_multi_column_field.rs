@@ -101,7 +101,7 @@ fn stored_binary_type() -> Result<FieldType> {
 
 /// `newIndexWriterConfig(new MockAnalyzer(random()))`.
 fn mock_iwc() -> IndexWriterConfig {
-    LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())))
+    LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))))
 }
 
 /// `stableIwc()`.

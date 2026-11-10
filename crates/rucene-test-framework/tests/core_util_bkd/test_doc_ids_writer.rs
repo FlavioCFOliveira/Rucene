@@ -215,14 +215,9 @@ fn test_crash() -> Result<()> {
     let itrs = LuceneTestCase::at_least(100);
     for _ in 0..itrs {
         let mut dir = LuceneTestCase::new_directory();
-        // `newIndexWriterConfig(null)`: Rucene's `IndexWriterConfig` always
-        // holds an analyzer; `StandardAnalyzer` is passed, which these
-        // documents (a point and a doc values field) never ask for.
         let iw = IndexWriter::new(
             dir.as_directory(),
-            LuceneTestCase::new_index_writer_config_analyzer(Arc::new(
-                rucene::analysis::standard::StandardAnalyzer::new(),
-            )),
+            LuceneTestCase::new_index_writer_config_analyzer(None),
         )?;
         for _ in 0..20_000 {
             let mut doc = Document::new();

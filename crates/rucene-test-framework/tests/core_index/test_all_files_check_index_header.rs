@@ -35,9 +35,9 @@ pub fn class_def() -> Arc<Class> {
 /// Port of `TestAllFilesCheckIndexHeader.test`.
 fn test_() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(
+    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
         rucene_test_framework::analysis::MockAnalyzer::new(&*random()),
-    ));
+    )));
     conf.set_codec(TestUtil::get_default_codec())?;
 
     // Disable CFS 80% of the time so we can truncate individual files, but the other 20% of the

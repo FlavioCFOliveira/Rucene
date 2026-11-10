@@ -50,7 +50,7 @@ fn test_crash_corrupts_indexing() -> Result<()> {
 
 /// `newIndexWriterConfig(new MockAnalyzer(random()))`.
 fn mock_iwc() -> rucene::index::index_writer_config::IndexWriterConfig {
-    LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())))
+    LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))))
 }
 
 /// index 1 document and commit. prepare for crashing. index 1 more

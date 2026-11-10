@@ -133,14 +133,16 @@ fn single_instance_test_default_lock_factory() -> Result<()> {
 
     let writer = IndexWriter::new(
         Arc::clone(&dir),
-        IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*LuceneTestCase::random()))),
+        IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(
+            &*LuceneTestCase::random(),
+        )))),
     )?;
 
     // Create a 2nd IndexWriter.  This should fail.
     expect_throws("java.io.IOException", || {
-        let mut config = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(
+        let mut config = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(
             &*LuceneTestCase::random(),
-        )));
+        ))));
         config.set_open_mode(OpenMode::APPEND)?;
         IndexWriter::new(Arc::clone(&dir), config)
     });

@@ -744,7 +744,7 @@ fn write_with_rucene(
     let codec = mode.codec();
     let analyzer: Arc<dyn rucene::analysis::Analyzer> =
         Arc::new(rucene::analysis::StandardAnalyzer::new());
-    let mut live = LiveIndexWriterConfig::new(analyzer);
+    let mut live = LiveIndexWriterConfig::new(Some(analyzer));
     live.set_codec(Arc::clone(&codec));
     let live = Arc::new(live);
 
@@ -782,7 +782,7 @@ fn write_with_rucene(
     for (doc_id, script) in scripts.iter().enumerate() {
         let document = build_document(script);
         chain
-            .process_document(doc_id as i32, &document, true, &mut field_infos)
+            .process_document(doc_id as i32, Some(&document), true, &mut field_infos)
             .expect("process document");
     }
     let finished = field_infos.finish().expect("field infos");

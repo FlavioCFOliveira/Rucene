@@ -1222,8 +1222,11 @@ fn index_and_read_vectors(
     use rucene::store::{ByteBuffersDirectory, Directory};
 
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let writer =
-        IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::with_analyzer(analyzer)).unwrap();
+    let writer = IndexWriter::new(
+        Arc::clone(&dir),
+        IndexWriterConfig::with_analyzer(Some(analyzer)),
+    )
+    .unwrap();
     let mut doc = Document::new();
     doc.add(Box::new(field));
     writer.add_document(&doc).unwrap();

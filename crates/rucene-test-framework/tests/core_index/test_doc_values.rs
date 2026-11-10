@@ -1,10 +1,6 @@
 //! Port of `lucene/core/src/test/org/apache/lucene/index/TestDocValues.java`.
 //!
 //! Tests helper methods in DocValues
-//!
-//! `newIndexWriterConfig(null)`: Rucene's `IndexWriterConfig` always holds an
-//! analyzer; `StandardAnalyzer` is passed, which these documents (doc values
-//! and an untokenized `StringField`) never ask for.
 
 use std::sync::Arc;
 
@@ -51,9 +47,7 @@ const ISE: &str = "java.lang.IllegalStateException";
 fn null_analyzer_writer(dir: &Arc<dyn Directory>) -> Result<Arc<IndexWriter>> {
     IndexWriter::new(
         Arc::clone(dir),
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(
-            rucene::analysis::standard::StandardAnalyzer::new(),
-        )),
+        LuceneTestCase::new_index_writer_config_analyzer(None),
     )
 }
 

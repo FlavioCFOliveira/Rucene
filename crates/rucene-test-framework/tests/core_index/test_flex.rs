@@ -37,7 +37,7 @@ fn test_non_flex() -> Result<()> {
 
     const DOC_COUNT: i32 = 177;
 
-    let mut iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     iwc.set_max_buffered_docs(7)?;
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let w = IndexWriter::new(d.as_directory(), iwc)?;
@@ -91,8 +91,9 @@ fn test_non_flex() -> Result<()> {
 /// Port of `TestFlex.testTermOrd`.
 fn test_term_ord() -> Result<()> {
     let mut d = LuceneTestCase::new_directory();
-    let mut iwc =
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+        MockAnalyzer::new(&*random()),
+    )));
     iwc.set_codec(TestUtil::always_postings_format(
         TestUtil::get_default_postings_format(),
     ))?;

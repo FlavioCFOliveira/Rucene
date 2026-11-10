@@ -4260,10 +4260,12 @@ mod tests {
 
         fn token_stream(
             &self,
-            _analyzer: &dyn Analyzer,
+            _analyzer: Option<&dyn Analyzer>,
             _reuse: Option<&mut dyn TokenStream>,
-        ) -> Box<dyn TokenStream> {
-            Box::new(crate::analysis::StringTokenStream::new(String::new()).unwrap())
+        ) -> Result<Box<dyn TokenStream>> {
+            Ok(Box::new(
+                crate::analysis::StringTokenStream::new(String::new()).unwrap(),
+            ))
         }
 
         fn binary_value(&self) -> Option<BytesRef> {

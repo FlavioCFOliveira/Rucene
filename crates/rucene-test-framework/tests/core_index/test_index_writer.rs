@@ -22,7 +22,6 @@ use randomizedtesting::jdk::random::{JdkRandom, Random};
 use randomizedtesting::jdk::reflect::Class;
 use randomizedtesting::jdk::thread::Thread;
 use randomizedtesting::junit::{Assert, Ignore};
-use rucene::analysis::standard::StandardAnalyzer;
 use rucene::analysis::tokenattributes::PayloadAttribute;
 use rucene::analysis::{
     default_token_attribute_factory, Analyzer, AnalyzerState, CharReader, GlobalReuseStrategy,
@@ -70,6 +69,7 @@ use rucene::index::merge_scheduler::ConcurrentMergeScheduler;
 use rucene::index::segment_infos::SegmentInfos;
 use rucene::index::terms::Term;
 use rucene::index::{DefaultIndexingChain, DocValuesSkipIndexType, DocValuesType};
+use rucene::index::{DocumentsIterable, DocumentsIterator, IndexableFieldIterable};
 use rucene::index::{
     IndexOptions, IndexReader, IndexableField, IndexableFieldType, LeafReader, SegmentCommitInfo,
     POSTINGS_ENUM_ALL, POSTINGS_ENUM_FREQS, POSTINGS_ENUM_NONE,
@@ -89,6 +89,7 @@ use rucene::store::{IOContext, IndexOutput, Lock};
 use rucene::util::attribute::AttributeSource;
 use rucene::util::automaton::{Automata, CharacterRunAutomaton};
 use rucene::util::concurrent::InterruptedException;
+use rucene::util::java_collections::ImmutableSet;
 use rucene::util::string_helper::{StringHelper, ID_LENGTH};
 use rucene::util::InfoStream;
 use rucene::util::{Bits, SetOnce, Version};
@@ -439,7 +440,7 @@ fn stored_text_type() -> FieldType {
 
 /// `newIndexWriterConfig(new MockAnalyzer(random()))`.
 fn mock_iwc() -> IndexWriterConfig {
-    LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())))
+    LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))))
 }
 
 /// `new IndexWriter(dir, conf)`.
@@ -1236,7 +1237,7 @@ fn test_position_increment_gap_empty_field() -> Result<()> {
     analyzer.set_position_increment_gap(100);
     let w = writer(
         &d,
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(analyzer)),
+        LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(analyzer))),
     )?;
     let mut doc = Document::new();
     let mut custom_type = FieldType::new_from(TextField::type_not_stored());
@@ -1368,7 +1369,7 @@ impl IndexerThreadInterrupt {
         let adder = MockDirectoryWrapper::new(&random, Arc::new(ByteBuffersDirectory::new()));
         let mut conf = LuceneTestCase::new_index_writer_config_with(
             &random,
-            Arc::new(MockAnalyzer::new(&random)),
+            Some(Arc::new(MockAnalyzer::new(&random))),
         );
         if is_cms(&conf) {
             conf.set_merge_scheduler(Some(Arc::new(SuppressingConcurrentMergeScheduler::create(
@@ -1493,7 +1494,7 @@ impl IndexerThreadInterrupt {
             }
             let mut conf = LuceneTestCase::new_index_writer_config_with(
                 random,
-                Arc::new(MockAnalyzer::new(random)),
+                Some(Arc::new(MockAnalyzer::new(random))),
             );
             conf.set_max_buffered_docs(2)?;
             if is_cms(&conf) {
@@ -1811,10 +1812,10 @@ impl IndexableField for TokenizerField {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
+        _analyzer: Option<&dyn Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
-        shared(&self.tokenizer)
+    ) -> Result<Box<dyn TokenStream>> {
+        Ok(shared(&self.tokenizer))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -2524,7 +2525,7 @@ fn test_delete_all_nrt_leftover_files() -> Result<()> {
     let dd = d.as_directory();
     let w = writer(
         &dd,
-        IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random()))),
+        IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random())))),
     )?;
     let doc = Document::new();
     for _ in 0..20 {
@@ -2551,7 +2552,7 @@ fn test_nrt_reader_version() -> Result<()> {
     let d = dir.as_directory();
     let w = writer(
         &d,
-        IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random()))),
+        IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random())))),
     )?;
     let mut doc = Document::new();
     doc.add(Box::new(LuceneTestCase::new_string_field(
@@ -2594,14 +2595,11 @@ fn test_whether_delete_all_deletes_write_lock() -> Result<()> {
     let d = dir.as_directory();
     let w1 = RandomIndexWriter::new_with_mock_analyzer(&*random(), Arc::clone(&d))?;
     w1.delete_all()?;
-    // `newIndexWriterConfig(null)`: Rucene's `IndexWriterConfig` always holds
-    // an analyzer; `StandardAnalyzer` is passed, which this writer never
-    // asks for.
     expect_throws("org.apache.lucene.store.LockObtainFailedException", || {
         RandomIndexWriter::new_with_config(
             &*random(),
             Arc::clone(&d),
-            LuceneTestCase::new_index_writer_config_analyzer(Arc::new(StandardAnalyzer::new())),
+            LuceneTestCase::new_index_writer_config_analyzer(None),
         )
     });
 
@@ -2650,7 +2648,7 @@ fn test_has_blocks_merge_fully_del_segments() -> Result<()> {
     {
         let w = writer(
             &d,
-            IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random()))),
+            IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random())))),
         )?;
         let docs = vec![foo_bar_doc()?, foo_bar_doc()?];
         w.update_documents(Term::from_text("foo", "bar"), &docs)?;
@@ -2688,7 +2686,8 @@ fn test_single_docs_do_not_trigger_has_blocks() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     {
-        let mut iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+        let mut iwc =
+            IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
         iwc.set_max_buffered_docs(i32::MAX)?;
         iwc.set_ram_buffer_size_mb(100.0)?;
         let w = writer(&d, iwc)?;
@@ -2741,7 +2740,7 @@ fn test_carry_over_has_blocks() -> Result<()> {
     {
         let w = writer(
             &d,
-            IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random()))),
+            IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random())))),
         )?;
 
         let mut docs = vec![Document::new()];
@@ -2798,7 +2797,7 @@ fn test_prepare_commit_then_close() -> Result<()> {
     let d = dir.as_directory();
     let w = writer(
         &d,
-        IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random()))),
+        IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random())))),
     )?;
 
     w.prepare_commit()?;
@@ -2819,7 +2818,7 @@ fn test_prepare_commit_then_rollback() -> Result<()> {
     let d = dir.as_directory();
     let w = writer(
         &d,
-        IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random()))),
+        IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random())))),
     )?;
 
     w.prepare_commit()?;
@@ -2836,7 +2835,7 @@ fn test_prepare_commit_then_rollback2() -> Result<()> {
     let d = dir.as_directory();
     let w = writer(
         &d,
-        IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random()))),
+        IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random())))),
     )?;
 
     w.commit()?;
@@ -2889,7 +2888,7 @@ fn test_dont_invoke_analyzer_for_un_analyzed_fields() -> Result<()> {
     let d = dir.as_directory();
     let w = writer(
         &d,
-        LuceneTestCase::new_index_writer_config_analyzer(analyzer),
+        LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer)),
     )?;
     let mut doc = Document::new();
     let mut custom_type = FieldType::new_from(StringField::type_not_stored());
@@ -3031,11 +3030,9 @@ fn test_stopwords_pos_inc_hole2() -> Result<()> {
     )
 }
 
-/// `newIndexWriterConfig(null)`: Rucene's `IndexWriterConfig` always holds
-/// an analyzer; `StandardAnalyzer` is passed, which these writers never ask
-/// for.
+/// `newIndexWriterConfig(null)`.
 fn null_iwc() -> IndexWriterConfig {
-    LuceneTestCase::new_index_writer_config_analyzer(Arc::new(StandardAnalyzer::new()))
+    LuceneTestCase::new_index_writer_config_analyzer(None)
 }
 
 /// `new HashMap<String, String>() {{ put(key, value); }}.entrySet()`.
@@ -3127,10 +3124,9 @@ fn test_get_commit_data() -> Result<()> {
     dir.close()
 }
 
-/// `newSnapshotIndexWriterConfig(null)`, with `StandardAnalyzer` (see
-/// [`null_iwc`]).
+/// `newSnapshotIndexWriterConfig(null)`.
 fn null_snapshot_iwc() -> IndexWriterConfig {
-    LuceneTestCase::new_snapshot_index_writer_config(Arc::new(StandardAnalyzer::new()))
+    LuceneTestCase::new_snapshot_index_writer_config(None)
 }
 
 /// Port of `TestIndexWriter.testGetCommitDataFromOldSnapshot`.
@@ -3184,46 +3180,6 @@ fn test_get_commit_data_from_old_snapshot() -> Result<()> {
     dir.close()
 }
 
-/// The `null` analyzer of `newIndexWriterConfig(null)` where a test relies on
-/// it: Java's `IndexingChain` dereferences the analyzer when it inverts a
-/// tokenized field (`analyzer.tokenStream(...)`) and hits a
-/// `NullPointerException`.
-///
-/// **Divergence.** Java's `IndexWriterConfig` takes a `null` analyzer
-/// (`IndexWriterConfig.java:122`); Rucene's always holds one, so this
-/// analyzer raises Java's `NullPointerException` from `createComponents`,
-/// the call through which `analyzer.tokenStream(...)` reaches it.
-#[derive(Debug)]
-struct NullAnalyzer {
-    state: AnalyzerState,
-}
-
-impl Analyzer for NullAnalyzer {
-    fn analyzer_state(&self) -> &AnalyzerState {
-        &self.state
-    }
-
-    fn java_class_name(&self) -> &'static str {
-        "null"
-    }
-
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
-        Err(LuceneError::Unchecked {
-            class: "java.lang.NullPointerException",
-            message: None,
-            cause: None,
-        })
-    }
-
-    fn get_position_increment_gap(&self, _field_name: &str) -> i32 {
-        npe("analyzer")
-    }
-
-    fn get_offset_gap(&self, _field_name: &str) -> i32 {
-        npe("analyzer")
-    }
-}
-
 /// The three good documents `testNullAnalyzer`, `testNullDocument` and
 /// `testNullDocuments` add.
 fn add_three_good_docs(iw: &RandomIndexWriter) -> Result<()> {
@@ -3239,9 +3195,7 @@ fn add_three_good_docs(iw: &RandomIndexWriter) -> Result<()> {
 fn test_null_analyzer() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
-    let iw_conf = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(NullAnalyzer {
-        state: AnalyzerState::new(Box::new(GlobalReuseStrategy)),
-    }));
+    let iw_conf = LuceneTestCase::new_index_writer_config_analyzer(None);
     let iw = RandomIndexWriter::new_with_config(&*random(), Arc::clone(&d), iw_conf)?;
 
     // add 3 good docs
@@ -3267,21 +3221,6 @@ fn test_null_analyzer() -> Result<()> {
     dir.close()
 }
 
-/// `iw.addDocument(null)` / `iw.addDocuments(null)`: the
-/// `NullPointerException` Java raises where the writer dereferences the
-/// missing document.
-///
-/// **Divergence.** Java's `addDocument` and `addDocuments` take a `null`
-/// iterable; Rucene's take `&Document` and `&[Document]`, which cannot be
-/// null, so the call is replaced by the exception it raises.
-fn null_document_npe() -> Result<i64> {
-    Err(LuceneError::Unchecked {
-        class: "java.lang.NullPointerException",
-        message: None,
-        cause: None,
-    })
-}
-
 /// Port of `TestIndexWriter.testNullDocument`.
 fn test_null_document() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
@@ -3292,7 +3231,9 @@ fn test_null_document() -> Result<()> {
     add_three_good_docs(&iw)?;
 
     // add broken doc
-    expect_throws("java.lang.NullPointerException", null_document_npe);
+    expect_throws("java.lang.NullPointerException", || {
+        iw.add_document(None::<&Document>)
+    });
 
     // ensure good docs are still ok
     let reader = iw.get_reader()?;
@@ -3314,7 +3255,9 @@ fn test_null_documents() -> Result<()> {
     add_three_good_docs(&iw)?;
 
     // add broken doc block
-    expect_throws("java.lang.NullPointerException", null_document_npe);
+    expect_throws("java.lang.NullPointerException", || {
+        iw.add_documents(None::<&[Document]>)
+    });
 
     // ensure good docs are still ok
     let reader = iw.get_reader()?;
@@ -3335,16 +3278,9 @@ fn boom() -> LuceneError {
     }
 }
 
-/// `private static class RandomFailingIterable<T> implements Iterable<T>`:
-/// its iterator throws `RuntimeException("boom")` when asked for the element
-/// at `failOn`.
-///
-/// **Divergence.** Java's `addDocument` takes an
-/// `Iterable<? extends IndexableField>` and pulls the fields from it while it
-/// indexes; Rucene's takes a `Document`, so the iterable is materialised
-/// first: when `failOn` falls inside the list, `addDocument` is replaced by the
-/// exception the iterator raises, and the document is not indexed. Java's
-/// writer would have reserved (and deleted) a document id for it.
+/// `private static class RandomFailingIterable<T> implements Iterable<T>`,
+/// over the fields of a document: each iterator's `next()` throws
+/// `RuntimeException("boom")` when asked for the element at `failOn`.
 struct RandomFailingIterable {
     list: Vec<Box<dyn IndexableField>>,
     fail_on: usize,
@@ -3357,17 +3293,24 @@ impl RandomFailingIterable {
             fail_on: random.next_int_bound(5) as usize,
         }
     }
+}
 
-    /// `w.addDocument(iterable)`.
-    fn add_to(self, w: &IndexWriter) -> Result<i64> {
-        if self.fail_on < self.list.len() {
-            return Err(boom());
-        }
-        let mut doc = Document::new();
-        for field in self.list {
-            doc.add(field);
-        }
-        w.add_document(&doc)
+impl IndexableFieldIterable for RandomFailingIterable {
+    fn iterator(&self) -> Box<dyn Iterator<Item = Result<&dyn IndexableField>> + '_> {
+        let mut doc_iter = self.list.iter();
+        let mut count = 0;
+        Box::new(std::iter::from_fn(move || {
+            // `hasNext()`: `docIter.hasNext()`.
+            if doc_iter.len() == 0 {
+                return None;
+            }
+            // `next()`.
+            if count == self.fail_on {
+                return Some(Err(boom()));
+            }
+            count += 1;
+            doc_iter.next().map(|field| Ok(field.as_ref()))
+        }))
     }
 }
 
@@ -3396,7 +3339,7 @@ fn iterable_throws_exception() -> Result<()> {
             ];
             doc_id += 1;
 
-            match RandomFailingIterable::new(fields, &*random()).add_to(&w) {
+            match w.add_document(&RandomFailingIterable::new(fields, &*random())) {
                 Ok(_) => {
                     doc_count += 1;
                     live_ids.insert(id);
@@ -3441,16 +3384,36 @@ fn test_iterable_throws_exception() -> Result<()> {
     iterable_throws_exception()
 }
 
+/// The anonymous `Iterable<Document>` of `testIterableThrowsException2`,
+/// whose iterator always has a next element and throws
+/// `RuntimeException("boom")` when asked for it.
+struct BoomDocuments;
+
+/// The anonymous `Iterator<Document>` of [`BoomDocuments`].
+struct BoomDocumentsIterator;
+
+impl<'a> DocumentsIterator<'a> for BoomDocumentsIterator {
+    fn has_next(&mut self) -> Result<bool> {
+        Ok(true)
+    }
+
+    fn next(&mut self) -> Result<Option<&'a dyn IndexableFieldIterable>> {
+        Err(boom())
+    }
+}
+
+impl DocumentsIterable for BoomDocuments {
+    fn iterator(&self) -> Box<dyn DocumentsIterator<'_> + '_> {
+        Box::new(BoomDocumentsIterator)
+    }
+}
+
 /// Port of `TestIndexWriter.testIterableThrowsException2`.
-///
-/// **Divergence.** Java's `addDocuments` takes an iterable whose iterator's
-/// `next()` throws `RuntimeException("boom")`; Rucene's takes `&[Document]`,
-/// so the call is replaced by the exception that first `next()` raises.
 fn test_iterable_throws_exception2() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, mock_iwc())?;
-    let expected = expect_throws("java.lang.Exception", || -> Result<i64> { Err(boom()) });
+    let expected = expect_throws("java.lang.Exception", || w.add_documents(&BoomDocuments));
     assert_equals(&Some("boom"), &expected.message());
 
     w.close()?;
@@ -3626,7 +3589,7 @@ fn test_merge_all_deleted() -> Result<()> {
 fn test_delete_same_term_across_fields() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
-    let iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let w = writer(&d, iwc)?;
     let mut doc = Document::new();
     doc.add(Box::new(TextField::new("a", "foo".to_string(), Store::NO)?));
@@ -3653,7 +3616,7 @@ fn test_has_uncommitted_changes_after_exception() -> Result<()> {
     let mut directory = LuceneTestCase::new_directory();
     let d = directory.as_directory();
     // we don't use RandomIndexWriter because it might add more docvalues than we expect !!!!
-    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
+    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let iwriter = writer(&d, iwc)?;
     let mut doc = Document::new();
@@ -3759,7 +3722,7 @@ fn test_close_while_merge_is_running() -> Result<()> {
 
     let mut iwc = LuceneTestCase::new_index_writer_config_with(
         &*random(),
-        Arc::new(MockAnalyzer::new(&*random())),
+        Some(Arc::new(MockAnalyzer::new(&*random()))),
     );
     iwc.set_commit_on_close(false);
     let mp = LogMergePolicy::new(Arc::new(LogDocSize));
@@ -3800,8 +3763,7 @@ fn test_close_during_commit() -> Result<()> {
 
     let mut dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
-    // `new IndexWriterConfig(null)`: with `StandardAnalyzer` (see `null_iwc`).
-    let iwc = IndexWriterConfig::with_analyzer(Arc::new(StandardAnalyzer::new()));
+    let iwc = IndexWriterConfig::with_analyzer(None);
     // use an InfoStream that "takes a long time" to commit
     let start = Arc::clone(&start_commit);
     let iw = RandomIndexWriter::mock_index_writer_with_test_point(
@@ -3920,7 +3882,7 @@ fn test_empty_norm() -> Result<()> {
 fn test_many_separate_threads() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
-    let mut iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     iwc.set_max_buffered_docs(1000)?;
     let w = writer(&d, iwc)?;
     // Index 100 docs, each from a new thread, but always only 1 thread is in IW at once:
@@ -3964,7 +3926,7 @@ fn assert_commit(r: &Arc<dyn DirectoryReader>, generation: i64, file: &str) -> R
 fn test_nrt_segments_file() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
-    let iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let w = writer(&d, iwc)?;
     // creates segments_1
     w.commit()?;
@@ -4005,7 +3967,7 @@ fn test_nrt_segments_file() -> Result<()> {
 fn test_nrt_after_commit() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
-    let iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let w = writer(&d, iwc)?;
     w.commit()?;
 
@@ -4029,7 +3991,7 @@ fn test_nrt_after_commit() -> Result<()> {
 fn test_nrt_after_set_user_data_without_commit() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
-    let iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let w = writer(&d, iwc)?;
     w.commit()?;
 
@@ -4054,7 +4016,7 @@ fn test_nrt_after_set_user_data_without_commit() -> Result<()> {
 fn test_nrt_after_set_user_data_with_commit() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
-    let iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let w = writer(&d, iwc)?;
     w.commit()?;
 
@@ -4078,7 +4040,7 @@ fn test_nrt_after_set_user_data_with_commit() -> Result<()> {
 fn test_commit_immediately_after_nrt_reopen() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
-    let iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let w = writer(&d, iwc)?;
     w.commit()?;
 
@@ -4125,7 +4087,7 @@ fn windows_root() -> Path {
 
 /// The `IndexWriterConfig` of `testPendingDeleteDVGeneration`.
 fn pending_delete_dv_iwc() -> Result<IndexWriterConfig> {
-    let mut iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     iwc.set_use_compound_file(false)?;
     iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?; // avoid merging away the randomFile
     iwc.set_max_buffered_docs(2)?;
@@ -4209,7 +4171,7 @@ fn test_pending_deletions_rollback_with_reader() -> Result<()> {
     let dir: Arc<dyn Directory> =
         Arc::new(FilterDirectory::new(Box::new(NIOFSDirectory::open(root)?)));
     let result = (|| -> Result<()> {
-        let iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+        let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
         let w = writer(&dir, iwc)?;
         let mut d = Document::new();
         d.add(Box::new(StringField::new(
@@ -4226,11 +4188,11 @@ fn test_pending_deletions_rollback_with_reader() -> Result<()> {
         w.rollback()?;
 
         // try-delete superfluous files (some will fail due to windows-fs)
-        let iwc2 = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+        let iwc2 = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
         writer(&dir, iwc2)?.close()?;
 
         // test that we can index on top of pending deletions
-        let iwc3 = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+        let iwc3 = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
         let w = writer(&dir, iwc3)?;
         w.add_document(&d)?;
         w.commit()?;
@@ -4248,7 +4210,8 @@ fn test_with_pending_deletions() -> Result<()> {
     // MMapDirectory doesn't work because it closes its file handles after mapping!
     let dir: Arc<dyn Directory> = Arc::new(NIOFSDirectory::open(root)?);
     let result = (|| -> Result<()> {
-        let mut iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+        let mut iwc =
+            IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
         iwc.set_index_deletion_policy(Some(NoDeletionPolicy::instance()))?;
         let w = writer(&dir, iwc)?;
         w.commit()?;
@@ -4257,7 +4220,8 @@ fn test_with_pending_deletions() -> Result<()> {
         // pending
         let index_commit: Arc<dyn IndexCommit> = Arc::from(reader.index_commit()?);
         w.close()?;
-        let mut iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+        let mut iwc =
+            IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
         iwc.set_index_deletion_policy(Some(NoDeletionPolicy::instance()))?;
         let w = writer(&dir, iwc)?;
         w.add_document(&Document::new())?;
@@ -4272,7 +4236,8 @@ fn test_with_pending_deletions() -> Result<()> {
         });
 
         {
-            let mut iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+            let mut iwc =
+                IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
             iwc.set_index_commit(Some(index_commit));
             let w = writer(&dir, iwc)?;
             let body = (|| -> Result<()> {
@@ -4298,7 +4263,7 @@ fn test_pending_deletes_already_written_files() -> Result<()> {
     // MMapDirectory doesn't work because it closes its file handles after mapping!
     let dir: Arc<dyn Directory> = Arc::new(NIOFSDirectory::open(root)?);
     let result = (|| -> Result<()> {
-        let iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+        let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
         let w = writer(&dir, iwc)?;
         w.commit()?;
         let mut input = dir.open_input("segments_1", &*DEFAULT_IO_CONTEXT)?;
@@ -4313,7 +4278,7 @@ fn test_pending_deletes_already_written_files() -> Result<()> {
         });
         writer(
             &dir,
-            IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random()))),
+            IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random())))),
         )?
         .close()?;
         input.close()
@@ -4326,14 +4291,14 @@ fn test_pending_deletes_already_written_files() -> Result<()> {
 fn test_leftover_temp_files() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
-    let iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let w = writer(&d, iwc)?;
     w.close()?;
 
     let mut out = d.create_temp_output("_0", "bkd", &*DEFAULT_IO_CONTEXT)?;
     let temp_name = out.name().to_string();
     out.close()?;
-    let iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let w = writer(&d, iwc)?;
 
     // Make sure IW deleted the unref'd file:
@@ -4356,7 +4321,7 @@ fn test_leftover_temp_files() -> Result<()> {
 fn test_massive_field() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
-    let iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let w = writer(&d, iwc)?;
 
     let mut b = String::new();
@@ -7038,17 +7003,11 @@ fn test_index_writer_blocks_on_stall() -> Result<()> {
 }
 
 /// `Set.of(names…)`.
-fn set_of(names: &[&str]) -> HashSet<String> {
-    names.iter().map(|n| n.to_string()).collect()
+fn set_of(names: &[&str]) -> ImmutableSet<String> {
+    ImmutableSet::copy_of(names.iter().map(|n| n.to_string()))
 }
 
 /// Port of `TestIndexWriter.testGetFieldNames`.
-///
-/// **Divergence.** Java's `getFieldNames()` returns an unmodifiable set, whose
-/// `add` and `remove` throw `UnsupportedOperationException`; Rucene returns an
-/// owned `HashSet` copy, which the writer never sees again, so the two
-/// `assertThrows` have no Rust counterpart and only the copy's independence is
-/// asserted.
 fn test_get_field_names() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
@@ -7062,6 +7021,12 @@ fn test_get_field_names() -> Result<()> {
 
     // should be unmodifiable:
     let field_set = w.get_field_names();
+    expect_throws("java.lang.UnsupportedOperationException", || {
+        field_set.add("cannot modify".to_string())
+    });
+    expect_throws("java.lang.UnsupportedOperationException", || {
+        field_set.remove("f1")
+    });
 
     add_doc_with_field(&w, "f2")?;
     assert_equals(&set_of(&["f1", "f2"]), &w.get_field_names());
@@ -7105,7 +7070,7 @@ fn add_doc_with_field(writer: &IndexWriter, field: &str) -> Result<()> {
 
 /// `new IndexWriterConfig(new MockAnalyzer(random()))` with a parent field.
 fn parent_iwc(parent: Option<&str>) -> IndexWriterConfig {
-    let mut iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     if let Some(parent) = parent {
         iwc.set_parent_field(Some(parent.to_string()));
     }

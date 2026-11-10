@@ -216,7 +216,7 @@ fn mock_writer(
 ) -> Result<Arc<IndexWriter>> {
     IndexWriter::new(
         dir.as_directory(),
-        IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random()))),
+        IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random())))),
     )
 }
 

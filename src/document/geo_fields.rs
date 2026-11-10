@@ -603,10 +603,10 @@ impl IndexableField for LatLonPoint {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
+        _analyzer: Option<&dyn Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
-        point_token_stream(self.packed_value())
+    ) -> Result<Box<dyn TokenStream>> {
+        Ok(point_token_stream(self.packed_value()))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -899,10 +899,12 @@ impl IndexableField for LatLonDocValuesField {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
+        _analyzer: Option<&dyn Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
-        Box::new(crate::analysis::BinaryTokenStream::new(BytesRef::new(Vec::new())).unwrap())
+    ) -> Result<Box<dyn TokenStream>> {
+        Ok(Box::new(
+            crate::analysis::BinaryTokenStream::new(BytesRef::new(Vec::new())).unwrap(),
+        ))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -1149,10 +1151,10 @@ impl IndexableField for XYPointField {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
+        _analyzer: Option<&dyn Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
-        point_token_stream(self.packed_value())
+    ) -> Result<Box<dyn TokenStream>> {
+        Ok(point_token_stream(self.packed_value()))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -1369,10 +1371,12 @@ impl IndexableField for XYDocValuesField {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
+        _analyzer: Option<&dyn Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
-        Box::new(crate::analysis::BinaryTokenStream::new(BytesRef::new(Vec::new())).unwrap())
+    ) -> Result<Box<dyn TokenStream>> {
+        Ok(Box::new(
+            crate::analysis::BinaryTokenStream::new(BytesRef::new(Vec::new())).unwrap(),
+        ))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -1723,10 +1727,10 @@ impl IndexableField for InetAddressPoint {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
+        _analyzer: Option<&dyn Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
-        point_token_stream(self.packed_value())
+    ) -> Result<Box<dyn TokenStream>> {
+        Ok(point_token_stream(self.packed_value()))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -1979,10 +1983,10 @@ impl IndexableField for InetAddressRange {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
+        _analyzer: Option<&dyn Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
-        point_token_stream(self.packed_value())
+    ) -> Result<Box<dyn TokenStream>> {
+        Ok(point_token_stream(self.packed_value()))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {

@@ -11,9 +11,6 @@
 //! * `DocCopyIterator` (the same document `count` times) is a slice of
 //!   `count` rebuilt documents; a field changed after `doc.add` is rebuilt
 //!   from a copy of the field (guide section 6, `copy_field`).
-//! * `new IndexWriterConfig(null)` / `newIndexWriterConfig(null)` use a
-//!   `StandardAnalyzer`: Rucene's config always holds an analyzer; these
-//!   writers index no text.
 //! * `callStackContains(X.class, "javaName")` names the Rust frame of the
 //!   method (`sync`, `prepare_commit`, `rollback_internal`, …).
 //! * `new Throwable().printStackTrace(System.out)` prints the Rust backtrace.
@@ -247,19 +244,17 @@ fn mock_analyzer() -> Arc<dyn Analyzer> {
 
 /// `newIndexWriterConfig(new MockAnalyzer(random()))`.
 fn mock_iwc() -> IndexWriterConfig {
-    LuceneTestCase::new_index_writer_config_analyzer(mock_analyzer())
+    LuceneTestCase::new_index_writer_config_analyzer(Some(mock_analyzer()))
 }
 
-/// `newIndexWriterConfig(null)`: see the module docs.
+/// `newIndexWriterConfig(null)`.
 fn null_analyzer_iwc() -> IndexWriterConfig {
-    LuceneTestCase::new_index_writer_config_analyzer(Arc::new(
-        rucene::analysis::standard::StandardAnalyzer::new(),
-    ))
+    LuceneTestCase::new_index_writer_config_analyzer(None)
 }
 
-/// `new IndexWriterConfig(null)`: see the module docs.
+/// `new IndexWriterConfig(null)`.
 fn plain_null_analyzer_iwc() -> IndexWriterConfig {
-    IndexWriterConfig::new()
+    IndexWriterConfig::with_analyzer(None)
 }
 
 /// `TestUtil.checkIndex(dir)` over a test directory.
@@ -571,7 +566,7 @@ fn test_random_exceptions() -> Result<()> {
     let analyzer = MockAnalyzer::new(&*random());
     analyzer.set_enable_checks(false); // disable workflow checking as we forcefully close() in exceptional cases.
 
-    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(analyzer));
+    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(analyzer)));
     conf.set_ram_buffer_size_mb(0.1)?;
     conf.set_merge_scheduler(Some(Arc::new(ConcurrentMergeScheduler::new())))?;
     let writer = RandomIndexWriter::mock_index_writer_with_test_point(
@@ -606,7 +601,7 @@ fn test_random_exceptions_threads() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
     let analyzer = MockAnalyzer::new(&*random());
     analyzer.set_enable_checks(false); // disable workflow checking as we forcefully close() in exceptional cases.
-    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(analyzer));
+    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(analyzer)));
     conf.set_ram_buffer_size_mb(0.2)?;
     conf.set_merge_scheduler(Some(Arc::new(ConcurrentMergeScheduler::new())))?;
     let writer = RandomIndexWriter::mock_index_writer_with_test_point(
@@ -795,7 +790,7 @@ fn test_exception_just_before_flush() -> Result<()> {
         "org.apache.lucene.index.TestIndexWriterExceptions$1",
     ));
 
-    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
+    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
     conf.set_max_buffered_docs(2)?;
     let w = RandomIndexWriter::mock_index_writer_with_test_point(
         &*random(),
@@ -941,10 +936,11 @@ impl Analyzer for TokenStreamFailureAnalyzer {
 /// Port of `TestIndexWriterExceptions.testExceptionFromTokenStream`.
 fn test_exception_from_token_stream() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut conf =
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(TokenStreamFailureAnalyzer {
+    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+        TokenStreamFailureAnalyzer {
             state: AnalyzerState::new(Box::new(GlobalReuseStrategy)),
-        }));
+        },
+    )));
     conf.set_max_buffered_docs(3.max(conf.max_buffered_docs()))?;
     conf.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
 
@@ -1112,7 +1108,8 @@ fn test_documents_writer_exceptions() -> Result<()> {
             println!("TEST: cycle i={i}");
         }
         let mut dir = LuceneTestCase::new_directory();
-        let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Arc::clone(&analyzer));
+        let mut conf =
+            LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(&analyzer)));
         conf.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
         let writer = IndexWriter::new(dir.as_directory(), conf)?;
 
@@ -1166,7 +1163,8 @@ fn test_documents_writer_exceptions() -> Result<()> {
         }
         reader.close()?;
 
-        let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Arc::clone(&analyzer));
+        let mut conf =
+            LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(&analyzer)));
         conf.set_max_buffered_docs(10)?;
         let writer = IndexWriter::new(dir.as_directory(), conf)?;
         let mut doc = Document::new();
@@ -1206,7 +1204,8 @@ fn test_documents_writer_exception_fail_one_doc() -> Result<()> {
     ));
     for _ in 0..10 {
         let mut dir = LuceneTestCase::new_directory();
-        let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Arc::clone(&analyzer));
+        let mut conf =
+            LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(&analyzer)));
         conf.set_max_buffered_docs(-1)?;
         conf.set_ram_buffer_size_mb(if random().next_boolean() {
             0.00001
@@ -1256,7 +1255,8 @@ fn test_documents_writer_exception_threads() -> Result<()> {
     for i in 0..2 {
         let mut dir = LuceneTestCase::new_directory();
         {
-            let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Arc::clone(&analyzer));
+            let mut conf =
+                LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(&analyzer)));
             conf.set_max_buffered_docs(i32::MAX)?;
             conf.set_ram_buffer_size_mb(-1.0)?; // we don't want to flush automatically
                                                 // don't use a merge policy here they depend on the DWPThreadPool and its
@@ -1342,7 +1342,8 @@ fn test_documents_writer_exception_threads() -> Result<()> {
 
         assert_equals(&(NUM_THREAD * num_iter), &num_del);
 
-        let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Arc::clone(&analyzer));
+        let mut conf =
+            LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(&analyzer)));
         conf.set_max_buffered_docs(10)?;
         let writer = IndexWriter::new(dir.as_directory(), conf)?;
         let mut doc = Document::new();
@@ -2184,7 +2185,7 @@ fn plain_mock_writer(dir: &TestDirectory) -> Result<Arc<IndexWriter>> {
     let analyzer = mock_analyzer();
     IndexWriter::new(
         dir.as_directory(),
-        IndexWriterConfig::with_analyzer(analyzer),
+        IndexWriterConfig::with_analyzer(Some(analyzer)),
     )
 }
 
@@ -2391,7 +2392,7 @@ fn test_crazy_position_increment_gap() -> Result<()> {
     });
     let iw = IndexWriter::new(
         dir.as_directory(),
-        IndexWriterConfig::with_analyzer(analyzer),
+        IndexWriterConfig::with_analyzer(Some(analyzer)),
     )?;
     // add good document
     let mut doc = Document::new();
@@ -2565,7 +2566,7 @@ fn test_too_many_file_exception() -> Result<()> {
     mock.fail_on(Arc::clone(&failure) as Arc<dyn Failure>);
 
     // Create an index with one document
-    let iwc = IndexWriterConfig::with_analyzer(mock_analyzer());
+    let iwc = IndexWriterConfig::with_analyzer(Some(mock_analyzer()));
     let mut iw = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
     doc.add(Box::new(StringField::new(
@@ -2583,7 +2584,7 @@ fn test_too_many_file_exception() -> Result<()> {
     // Open and close the index a few times
     for i in 0..10 {
         failure.set_do_fail();
-        let iwc = IndexWriterConfig::with_analyzer(mock_analyzer());
+        let iwc = IndexWriterConfig::with_analyzer(Some(mock_analyzer()));
         match catching(|| IndexWriter::new(dir.as_directory(), iwc)) {
             Ok(opened) => iw = opened,
             Err(ex) if ex.is_instance(ASSERTION_ERROR) => {
@@ -3189,7 +3190,7 @@ fn test_exception_just_before_flush_with_point_values() -> Result<()> {
         None,
         "org.apache.lucene.index.TestIndexWriterExceptions$21",
     ));
-    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
+    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
     iwc.set_commit_on_close(false);
     iwc.set_max_buffered_docs(3)?;
     let mp = iwc.merge_policy();

@@ -135,7 +135,7 @@ impl CollationTestBase {
         let mut dir = LuceneTestCase::new_directory();
         let writer = IndexWriter::new(
             dir.as_directory(),
-            IndexWriterConfig::with_analyzer(analyzer),
+            IndexWriterConfig::with_analyzer(Some(analyzer)),
         )?;
         writer.add_document(&farsi_document(true)?)?;
         writer.close()?;
@@ -188,7 +188,7 @@ impl CollationTestBase {
         let mut dir = LuceneTestCase::new_directory();
         let writer = IndexWriter::new(
             dir.as_directory(),
-            IndexWriterConfig::with_analyzer(analyzer),
+            IndexWriterConfig::with_analyzer(Some(analyzer)),
         )?;
         // Unicode order would include U+0633 in [ U+062F - U+0698 ], but Farsi
         // orders the U+0698 character before the U+0633 character, so the
@@ -245,7 +245,7 @@ impl CollationTestBase {
         let mut farsi_index = LuceneTestCase::new_directory();
         let writer = IndexWriter::new(
             farsi_index.as_directory(),
-            IndexWriterConfig::with_analyzer(analyzer),
+            IndexWriterConfig::with_analyzer(Some(analyzer)),
         )?;
         writer.add_document(&farsi_document(true)?)?;
         writer.close()?;

@@ -137,8 +137,9 @@ fn add_docs3(writer: &IndexWriter, num_docs: i32) -> Result<()> {
 /// Port of `TestPerFieldPostingsFormat2.testMergeUnusedPerFieldCodec`.
 fn test_merge_unused_per_field_codec() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwconf =
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut iwconf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+        MockAnalyzer::new(&*random()),
+    )));
     iwconf.set_open_mode(OpenMode::CREATE)?;
     iwconf.set_codec(Arc::new(mock_codec()))?;
     let writer = new_writer(dir.as_directory(), iwconf)?;
@@ -168,8 +169,9 @@ fn test_change_codec_and_merge() -> Result<()> {
     if *VERBOSE {
         println!("TEST: make new index");
     }
-    let mut iwconf =
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut iwconf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+        MockAnalyzer::new(&*random()),
+    )));
     iwconf.set_open_mode(OpenMode::CREATE)?;
     iwconf.set_codec(Arc::new(mock_codec()))?;
     iwconf.set_max_buffered_docs(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH)?;
@@ -190,8 +192,9 @@ fn test_change_codec_and_merge() -> Result<()> {
     assert_query(Term::from_text("content", "ccc"), &dir, 10)?;
     assert_query(Term::from_text("content", "aaa"), &dir, 10)?;
 
-    let mut iwconf =
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut iwconf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+        MockAnalyzer::new(&*random()),
+    )));
     iwconf.set_open_mode(OpenMode::APPEND)?;
     iwconf.set_codec(codec)?;
     // ((LogMergePolicy) iwconf.getMergePolicy()).setNoCFSRatio(0.0);
@@ -275,7 +278,7 @@ fn test_stress_per_field_codec() -> Result<()> {
         let num = TestUtil::next_int(&*random(), 30, 60);
         let mut config = LuceneTestCase::new_index_writer_config_with(
             &*random(),
-            Arc::new(MockAnalyzer::new(&*random())),
+            Some(Arc::new(MockAnalyzer::new(&*random()))),
         );
         config.set_open_mode(OpenMode::CREATE_OR_APPEND)?;
         let writer = new_writer(Arc::clone(&dir), config)?;
@@ -357,8 +360,9 @@ fn test_same_codec_different_params() -> Result<()> {
 /// Port of `TestPerFieldPostingsFormat2.doTestMixedPostings`.
 fn do_test_mixed_postings(codec: Arc<dyn Codec>) -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc =
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+        MockAnalyzer::new(&*random()),
+    )));
     iwc.set_codec(codec)?;
     let iw = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
     let mut ft = FieldType::new_from(TextField::type_not_stored());

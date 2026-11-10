@@ -1114,7 +1114,9 @@ fn test_docs_only_freq() -> Result<()> {
     let random = random();
     let writer = IndexWriter::new(
         dir.as_directory(),
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random))),
+        LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
+            &*random,
+        )))),
     )?;
     // we don't need many documents to assert this, but don't use one document either
     let num_docs = LuceneTestCase::at_least_with(&*random, 50);

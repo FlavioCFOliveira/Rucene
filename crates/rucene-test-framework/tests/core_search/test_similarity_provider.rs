@@ -47,8 +47,9 @@ pub fn class_def() -> Arc<Class> {
 fn provider_set_up(f: &mut SimilarityProvider) -> Result<()> {
     let directory = LuceneTestCase::new_directory();
     let sim: Arc<dyn Similarity> = Arc::new(ExampleSimilarityProvider::default());
-    let mut iwc =
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+        MockAnalyzer::new(&*random()),
+    )));
     iwc.set_similarity(Some(Arc::clone(&sim)))?;
     let iw = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), iwc)?;
     // `Document doc` holding `field` and `field2`: rebuilt from them for each

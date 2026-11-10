@@ -74,8 +74,9 @@ fn writer(
     dir: &rucene_test_framework::util::lucene_test_case::TestDirectory,
     log_merge_policy: bool,
 ) -> Result<RandomIndexWriter> {
-    let mut iwc =
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+        MockAnalyzer::new(&*random()),
+    )));
     if log_merge_policy {
         iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     }

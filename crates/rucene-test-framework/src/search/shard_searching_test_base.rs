@@ -602,7 +602,7 @@ impl NodeState {
         // TODO: set warmer
         let analyzer = MockAnalyzer::new(&*random());
         analyzer.set_max_token_length(TestUtil::next_int(&*random(), 1, MAX_TERM_LENGTH as i32));
-        let mut iwc = IndexWriterConfig::with_analyzer(Arc::new(analyzer));
+        let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(analyzer)));
         iwc.set_open_mode(OpenMode::CREATE)?;
         if *VERBOSE {
             iwc.set_info_stream(Arc::new(PrintStreamInfoStream::new(Box::new(

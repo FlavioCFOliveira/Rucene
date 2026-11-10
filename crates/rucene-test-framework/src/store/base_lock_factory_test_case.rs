@@ -240,9 +240,9 @@ pub trait BaseLockFactoryTestCase: Send + Sync + 'static {
         let dir: Arc<dyn Directory> = Arc::from(self.get_directory(&temp_path)?);
 
         // First create a 1 doc index:
-        let mut config = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(
+        let mut config = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(
             &*LuceneTestCase::random(),
-        )));
+        ))));
         config.set_open_mode(OpenMode::CREATE)?;
         let w = IndexWriter::new(Arc::clone(&dir), config)?;
         add_doc(&w)?;
@@ -339,9 +339,9 @@ fn writer_thread_run(num_iteration: i32, dir: &Arc<dyn Directory>, hit_exception
             println!("TEST: WriterThread iter={i}");
         }
 
-        let mut iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(
+        let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(
             &*LuceneTestCase::random(),
-        )));
+        ))));
 
         // We only print the IW infoStream output on exc, below:
         let mut print_stream = baos.clone();

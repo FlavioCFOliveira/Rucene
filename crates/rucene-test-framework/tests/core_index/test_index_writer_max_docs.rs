@@ -1,10 +1,5 @@
 //! Port of `lucene/core/src/test/org/apache/lucene/index/TestIndexWriterMaxDocs.java`.
 //!
-//! * `new IndexWriterConfig(null)` is `IndexWriterConfig::new()`
-//!   (`iwc_null`): **divergence** (pre-existing, as in
-//!   `threaded_indexing_and_searching_suites.rs`): Java passes a `null`
-//!   analyzer; Rucene's configuration always holds one. These tests index no
-//!   tokenized field, so no analyzer is ever asked for.
 //! * `setIndexWriterMaxDocs(n); try { … } finally { restoreIndexWriterMaxDocs(); }`
 //!   is `MaxDocsGuard`, whose drop restores the limit on every exit.
 //! * `e.addSuppressed(fakeDiskFull)` on the `RuntimeException` of
@@ -101,9 +96,9 @@ pub fn class_def() -> Arc<Class> {
 
 const IAE: &str = "java.lang.IllegalArgumentException";
 
-/// `new IndexWriterConfig(null)` (see the module docs).
+/// `new IndexWriterConfig(null)`.
 fn iwc_null() -> IndexWriterConfig {
-    IndexWriterConfig::new()
+    IndexWriterConfig::with_analyzer(None)
 }
 
 /// `setIndexWriterMaxDocs(limit)`, restored (`restoreIndexWriterMaxDocs()`)

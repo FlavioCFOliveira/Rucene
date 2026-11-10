@@ -285,7 +285,7 @@ fn test_two_fields_two_formats() -> Result<()> {
 
     let mut directory = LuceneTestCase::new_directory();
     // we don't use RandomIndexWriter because it might add more docvalues than we expect !!!!1
-    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
+    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
     let fast = TestUtil::get_default_doc_values_format();
     let slow = rucene::codecs::doc_values::doc_values_for_name("Asserting").unwrap_or_else(|| {
         Throwable::new(

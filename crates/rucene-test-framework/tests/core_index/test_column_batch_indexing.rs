@@ -1553,7 +1553,7 @@ fn random_parity_doc(r: &dyn Random) -> ParityDoc {
 /// TieredMergePolicy())` with `setRAMBufferSizeMB(16)` and
 /// `setMaxBufferedDocs(DISABLE_AUTO_FLUSH)`.
 fn parity_iwc() -> Result<IndexWriterConfig> {
-    let mut iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     iwc.set_merge_policy(Some(Arc::new(TieredMergePolicy::new())))?;
     iwc.set_ram_buffer_size_mb(16.0)?;
     iwc.set_max_buffered_docs(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH)?;

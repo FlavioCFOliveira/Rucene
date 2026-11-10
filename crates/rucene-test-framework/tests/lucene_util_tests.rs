@@ -1109,11 +1109,6 @@ fn test_fail_if_directory_not_closed() {
 
 /// `TestFailIfUnreferencedFiles` (LUCENE-4456): a file no commit references
 /// fails `MockDirectoryWrapper.close()`.
-///
-/// **Divergence.** Java writes with `new IndexWriterConfig(null)`, a config
-/// without an analyzer; Rucene's `IndexWriterConfig` always holds one, so
-/// the port takes the default (`new IndexWriterConfig()`). The only document
-/// is empty, so no analyzer is ever asked for.
 #[test]
 fn test_fail_if_unreferenced_files() {
     let nested1 =
@@ -1130,8 +1125,11 @@ fn test_fail_if_unreferenced_files() {
                         use rucene::store::{Directory, IndexOutput, DEFAULT_IO_CONTEXT};
                         let mut dir = LuceneTestCase::new_mock_directory();
                         dir.set_assert_no_unrefenced_files_on_close(true);
-                        let iw = IndexWriter::new(dir.as_directory(), IndexWriterConfig::new())
-                            .unwrap_or_else(|e| rethrow_lucene(e));
+                        let iw = IndexWriter::new(
+                            dir.as_directory(),
+                            IndexWriterConfig::with_analyzer(None),
+                        )
+                        .unwrap_or_else(|e| rethrow_lucene(e));
                         iw.add_document(&Document::new())
                             .unwrap_or_else(|e| rethrow_lucene(e));
                         iw.close().unwrap_or_else(|e| rethrow_lucene(e));

@@ -1724,15 +1724,15 @@ macro_rules! shape_doc_values_field_delegates {
 
             fn token_stream(
                 &self,
-                _analyzer: &dyn crate::analysis::Analyzer,
+                _analyzer: Option<&dyn crate::analysis::Analyzer>,
                 _reuse: Option<&mut dyn crate::analysis::TokenStream>,
-            ) -> Box<dyn crate::analysis::TokenStream> {
+            ) -> Result<Box<dyn crate::analysis::TokenStream>> {
                 // Java answers `null`: token streams are not supported, and the
                 // field is never inverted because its `indexOptions` is `NONE`.
-                Box::new(
+                Ok(Box::new(
                     crate::analysis::StringTokenStream::new(String::new())
                         .expect("INVARIANT: an empty StringTokenStream is always well formed"),
-                )
+                ))
             }
 
             fn binary_value(&self) -> Option<BytesRef> {

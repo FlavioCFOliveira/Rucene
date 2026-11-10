@@ -401,13 +401,13 @@ macro_rules! range_field {
 
             fn token_stream(
                 &self,
-                _analyzer: &dyn Analyzer,
+                _analyzer: Option<&dyn Analyzer>,
                 _reuse: Option<&mut dyn TokenStream>,
-            ) -> Box<dyn TokenStream> {
+            ) -> Result<Box<dyn TokenStream>> {
                 let value = self
                     .binary_value()
                     .unwrap_or_else(|| BytesRef::new(Vec::new()));
-                Box::new(crate::analysis::BinaryTokenStream::new(value).unwrap())
+                Ok(Box::new(crate::analysis::BinaryTokenStream::new(value).unwrap()))
             }
 
             fn binary_value(&self) -> Option<BytesRef> {
@@ -652,10 +652,12 @@ impl IndexableField for BinaryRangeDocValuesField {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
+        _analyzer: Option<&dyn Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
-        Box::new(crate::analysis::BinaryTokenStream::new(self.binary_value()).unwrap())
+    ) -> Result<Box<dyn TokenStream>> {
+        Ok(Box::new(
+            crate::analysis::BinaryTokenStream::new(self.binary_value()).unwrap(),
+        ))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {

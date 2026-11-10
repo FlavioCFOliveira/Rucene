@@ -40,9 +40,6 @@
 //!   `docsOnly` as `docsOnly2`; a reused Rust enum is moved into the call
 //!   that reuses it, so the port reads the freq of `docsOnly2`, which is
 //!   the same object whenever the format reuses it.
-//! * `new IndexWriterConfig(null)` (`testPostingsEnumPayloads`,
-//!   `testPostingsEnumAll`): see the module docs of
-//!   `base_index_file_format_test_case`.
 
 use std::any::{Any, TypeId};
 use std::cell::RefCell;
@@ -1136,13 +1133,7 @@ impl Analyzer for MockTokenizerAnalyzer {
 /// `new IndexWriterConfig(new Analyzer() {...})` of the
 /// `testPostingsEnum*` tests.
 fn mock_tokenizer_config() -> IndexWriterConfig {
-    IndexWriterConfig::with_analyzer(Arc::new(MockTokenizerAnalyzer::new()))
-}
-
-/// `new IndexWriterConfig(null)` (see the module docs of
-/// `base_index_file_format_test_case`).
-fn null_analyzer() -> Arc<dyn Analyzer> {
-    Arc::new(rucene::analysis::standard::StandardAnalyzer::new())
+    IndexWriterConfig::with_analyzer(Some(Arc::new(MockTokenizerAnalyzer::new())))
 }
 
 /// The two `bar` tokens of `testPostingsEnumPayloads`/`All`, with payloads
@@ -1845,7 +1836,7 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
     fn test_postings_enum_payloads(&self) -> Result<()> {
         use OffsetIs::Eq as E;
         postings_enum_test(
-            || IndexWriterConfig::with_analyzer(null_analyzer()),
+            || IndexWriterConfig::with_analyzer(None),
             || {
                 let tokens = payload_tokens();
                 let ft = tv_type(true, false, true)?;
@@ -1875,7 +1866,7 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
     fn test_postings_enum_all(&self) -> Result<()> {
         use OffsetIs::{Either, Eq as E};
         postings_enum_test(
-            || IndexWriterConfig::with_analyzer(null_analyzer()),
+            || IndexWriterConfig::with_analyzer(None),
             || {
                 let tokens = payload_tokens();
                 let ft = tv_type(true, true, true)?;

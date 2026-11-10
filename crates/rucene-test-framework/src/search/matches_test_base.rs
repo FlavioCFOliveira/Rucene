@@ -157,8 +157,8 @@ pub fn tear_down(inst: &mut MatchesTestInstance) -> Result<()> {
 pub fn set_up(inst: &mut MatchesTestInstance) -> Result<()> {
     LuceneTestCase::super_set_up();
     let directory = LuceneTestCase::new_directory();
-    let mut config = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(
-        &*LuceneTestCase::random(),
+    let mut config = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+        MockAnalyzer::new(&*LuceneTestCase::random()),
     )));
     config.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = RandomIndexWriter::new_with_config(

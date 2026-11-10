@@ -47,7 +47,7 @@ fn test_() -> Result<()> {
 
     let iwc = LuceneTestCase::new_index_writer_config_with(
         &*random(),
-        Arc::new(MockAnalyzer::new(&*random())),
+        Some(Arc::new(MockAnalyzer::new(&*random()))),
     );
 
     let is_mock_random = iwc

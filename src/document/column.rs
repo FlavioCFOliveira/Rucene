@@ -1104,16 +1104,16 @@ impl IndexableField for LongColumnAdapter<'_> {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn crate::analysis::Analyzer,
+        _analyzer: Option<&dyn crate::analysis::Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
+    ) -> Result<Box<dyn TokenStream>> {
         // `invertable_type()` answers `None`, so the inverter never asks a long
         // column for a stream; Java's adapter does not override `tokenStream`
         // either, and the inherited `Field.tokenStream` is likewise unreachable.
-        Box::new(
+        Ok(Box::new(
             crate::analysis::StringTokenStream::new(String::new())
                 .expect("INVARIANT: an empty StringTokenStream is always well formed"),
-        )
+        ))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -1342,29 +1342,32 @@ impl IndexableField for BinaryColumnAdapter<'_> {
 
     fn token_stream(
         &self,
-        analyzer: &dyn crate::analysis::Analyzer,
+        analyzer: Option<&dyn crate::analysis::Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
+    ) -> Result<Box<dyn TokenStream>> {
         match &self.source {
             // Caller-supplied token stream: hand it straight to the inverter,
             // bypassing the analyzer.
             BinarySource::TokenStream(cursor) => {
-                Box::new(SharedTokenStream::new(Rc::clone(cursor.value())))
+                Ok(Box::new(SharedTokenStream::new(Rc::clone(cursor.value()))))
             }
             BinarySource::Bytes(_) if self.tokenized => {
                 let value = self.decoded_string().unwrap_or_default();
+                // `analyzer.tokenStream(name, stringValue())` throws
+                // `NullPointerException` for a `null` analyzer
+                // (`Field.java:497-498`, inherited by `ColumnFieldAdapter`).
                 let stream = analyzer
-                    .token_stream_from_str(&self.name, &value)
-                    .expect("INVARIANT: the analyzer produced a token stream");
-                Box::new(SharedTokenStream::new(stream))
+                    .ok_or_else(crate::error::LuceneError::null_pointer)?
+                    .token_stream_from_str(&self.name, &value)?;
+                Ok(Box::new(SharedTokenStream::new(stream)))
             }
             // Java returns null here; the inverter asks for a stream only when
             // `invertableType()` is `TOKEN_STREAM`, which a non-tokenized
             // column never answers.
-            BinarySource::Bytes(_) => Box::new(
+            BinarySource::Bytes(_) => Ok(Box::new(
                 crate::analysis::StringTokenStream::new(String::new())
                     .expect("INVARIANT: an empty StringTokenStream is always well formed"),
-            ),
+            )),
         }
     }
 

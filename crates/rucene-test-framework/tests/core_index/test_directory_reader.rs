@@ -135,7 +135,7 @@ fn aem<T: PartialEq + std::fmt::Debug + ?Sized>(message: &str, expected: &T, act
 
 /// `newIndexWriterConfig(new MockAnalyzer(random()))`.
 fn mock_iwc() -> IndexWriterConfig {
-    LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())))
+    LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))))
 }
 
 /// `(LogMergePolicy) writer.getConfig().getMergePolicy()`.
@@ -321,7 +321,7 @@ fn add_doc_to_dir(
     create: bool,
 ) -> Result<()> {
     let mut iwc =
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(random)));
+        LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(random))));
     iwc.set_open_mode(if create {
         OpenMode::CREATE
     } else {
@@ -1330,12 +1330,7 @@ fn test_prepare_commit_is_current() -> Result<()> {
 /// Port of `TestDirectoryReader.testListCommits`.
 fn test_list_commits() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    // `newIndexWriterConfig(null)`: Rucene's `IndexWriterConfig` always holds
-    // an analyzer; `StandardAnalyzer` is passed, which these empty documents
-    // never ask for.
-    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(
-        rucene::analysis::standard::StandardAnalyzer::new(),
-    ));
+    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(None);
     let sdp = Arc::new(SnapshotDeletionPolicy::new(Some(Arc::new(
         KeepOnlyLastCommitDeletionPolicy,
     ))));

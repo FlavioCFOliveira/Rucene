@@ -554,13 +554,13 @@ impl IndexableField for FeatureField {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
+        _analyzer: Option<&dyn Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
-        Box::new(FeatureTokenStream::new(
+    ) -> Result<Box<dyn TokenStream>> {
+        Ok(Box::new(FeatureTokenStream::new(
             self.feature_name.clone(),
             encode_feature_value(self.feature_value),
-        ))
+        )))
     }
 
     fn binary_value(&self) -> Option<crate::util::BytesRef> {
@@ -1688,7 +1688,7 @@ mod tests {
         // `FeatureField` could not be indexed at all.
         let field = FeatureField::new("feat", "pagerank", 3.0).unwrap();
         let analyzer = StandardAnalyzer::new();
-        let mut stream = field.token_stream(&analyzer, None);
+        let mut stream = field.token_stream(Some(&analyzer), None).unwrap();
         stream.reset().unwrap();
         assert!(stream.increment_token().unwrap());
 

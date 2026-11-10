@@ -1909,9 +1909,9 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
         let mut directory = LuceneTestCase::new_directory();
 
         // TODO: must these simple tests really rely on docid order?
-        let mut iwc: IndexWriterConfig = LuceneTestCase::new_index_writer_config_analyzer(
+        let mut iwc: IndexWriterConfig = LuceneTestCase::new_index_writer_config_analyzer(Some(
             Arc::new(MockAnalyzer::new(&*random())),
-        );
+        ));
         iwc.set_max_buffered_docs(TestUtil::next_int(&*random(), 100, 1000))?;
         iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
         // Else seeds may not reproduce:

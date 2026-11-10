@@ -348,7 +348,9 @@ fn test_filter_index_reader() -> Result<()> {
 
     let writer = IndexWriter::new(
         directory.as_directory(),
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random()))),
+        LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
+            &*random(),
+        )))),
     )?;
 
     for text in ["one two", "one three", "two four"] {
@@ -370,7 +372,9 @@ fn test_filter_index_reader() -> Result<()> {
 
     let writer = IndexWriter::new(
         target.as_directory(),
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random()))),
+        LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
+            &*random(),
+        )))),
     )?;
     {
         let reader: Arc<dyn LeafReader> = Arc::new(TestReader {

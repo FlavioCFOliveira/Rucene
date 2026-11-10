@@ -407,12 +407,6 @@ impl Analyzer for MockTokenizerAnalyzer {
     }
 }
 
-/// `new IndexWriterConfig(null)` (see the module docs of
-/// `base_index_file_format_test_case`).
-fn null_analyzer() -> Arc<dyn Analyzer> {
-    Arc::new(rucene::analysis::standard::StandardAnalyzer::new())
-}
-
 /// The two `bar` tokens of `testPostingsEnumPayloads`/`All`, with payloads
 /// `pay1` and `pay2`.
 fn payload_tokens() -> Vec<Token> {
@@ -583,7 +577,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testJustEmptyField()`.
     fn test_just_empty_field(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(null_analyzer());
+        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(None);
         iwc.set_codec(self.get_codec())?;
         let iw = RandomIndexWriter::new_with_config(
             &*LuceneTestCase::random(),
@@ -621,7 +615,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testEmptyFieldAndEmptyTerm()`.
     fn test_empty_field_and_empty_term(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(null_analyzer());
+        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(None);
         iwc.set_codec(self.get_codec())?;
         let iw = RandomIndexWriter::new_with_config(
             &*LuceneTestCase::random(),
@@ -656,9 +650,9 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testDidntWantFreqsButAskedAnyway()`.
     fn test_didnt_want_freqs_but_asked_anyway(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(
+        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
             MockAnalyzer::new(&*LuceneTestCase::random()),
-        ));
+        )));
         iwc.set_codec(self.get_codec())?;
         let iw = RandomIndexWriter::new_with_config(
             &*LuceneTestCase::random(),
@@ -694,9 +688,9 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testAskForPositionsWhenNotThere()`.
     fn test_ask_for_positions_when_not_there(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(
+        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
             MockAnalyzer::new(&*LuceneTestCase::random()),
-        ));
+        )));
         iwc.set_codec(self.get_codec())?;
         let iw = RandomIndexWriter::new_with_config(
             &*LuceneTestCase::random(),
@@ -733,7 +727,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
     // TODO: can this be improved?
     fn test_ghosts(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(null_analyzer());
+        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(None);
         iwc.set_codec(self.get_codec())?;
         iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
         let iw = RandomIndexWriter::new_with_config(
@@ -777,7 +771,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
     fn test_disorder(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
 
-        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(null_analyzer());
+        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(None);
         iwc.set_codec(self.get_codec())?;
         iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_tiered_merge_policy())))?;
         let iw = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -826,7 +820,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
     fn test_binary_search_term_leaf(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
 
-        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(null_analyzer());
+        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(None);
         iwc.set_codec(self.get_codec())?;
         iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_tiered_merge_policy())))?;
         let iw = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -900,7 +894,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
     fn test_level2_ghosts(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
 
-        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(null_analyzer());
+        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(None);
         iwc.set_codec(self.get_codec())?;
         iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
         let iw = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -972,7 +966,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
             1,
             rucene::index::index_writer::MAX_TERM_LENGTH as i32,
         ));
-        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(analyzer));
+        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(analyzer)));
 
         // Must be concurrent because thread(s) can be merging
         // while up to one thread flushes, and each of those
@@ -1076,7 +1070,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testPostingsEnumDocsOnly()`.
     fn test_postings_enum_docs_only(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let iwc = IndexWriterConfig::with_analyzer(null_analyzer());
+        let iwc = IndexWriterConfig::with_analyzer(None);
         let iw = IndexWriter::new(dir.as_directory(), iwc)?;
         let mut doc = Document::new();
         doc.add(Box::new(StringField::new(
@@ -1125,7 +1119,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testPostingsEnumFreqs()`.
     fn test_postings_enum_freqs(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let iwc = IndexWriterConfig::with_analyzer(Arc::new(MockTokenizerAnalyzer::new()));
+        let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockTokenizerAnalyzer::new())));
         let iw = IndexWriter::new(dir.as_directory(), iwc)?;
         let mut doc = Document::new();
         let mut ft = FieldType::new_from(TextField::type_not_stored());
@@ -1189,7 +1183,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testPostingsEnumPositions()`.
     fn test_postings_enum_positions(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let iwc = IndexWriterConfig::with_analyzer(Arc::new(MockTokenizerAnalyzer::new()));
+        let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockTokenizerAnalyzer::new())));
         let iw = IndexWriter::new(dir.as_directory(), iwc)?;
         let mut doc = Document::new();
         doc.add(Box::new(TextField::new(
@@ -1225,7 +1219,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testPostingsEnumOffsets()`.
     fn test_postings_enum_offsets(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let iwc = IndexWriterConfig::with_analyzer(Arc::new(MockTokenizerAnalyzer::new()));
+        let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockTokenizerAnalyzer::new())));
         let iw = IndexWriter::new(dir.as_directory(), iwc)?;
         let mut doc = Document::new();
         let mut ft = FieldType::new_from(TextField::type_not_stored());
@@ -1263,7 +1257,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testPostingsEnumPayloads()`.
     fn test_postings_enum_payloads(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let iwc = IndexWriterConfig::with_analyzer(null_analyzer());
+        let iwc = IndexWriterConfig::with_analyzer(None);
         let iw = IndexWriter::new(dir.as_directory(), iwc)?;
         let mut doc = Document::new();
         let stream: Rc<RefCell<dyn rucene::analysis::TokenStream>> =
@@ -1301,7 +1295,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testPostingsEnumAll()`.
     fn test_postings_enum_all(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let iwc = IndexWriterConfig::with_analyzer(null_analyzer());
+        let iwc = IndexWriterConfig::with_analyzer(None);
         let iw = IndexWriter::new(dir.as_directory(), iwc)?;
         let mut doc = Document::new();
         let mut ft = FieldType::new_from(TextField::type_not_stored());
@@ -1437,7 +1431,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
     fn test_doc_id_run_end(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
         for _ in 0..100 {
-            let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(null_analyzer());
+            let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(None);
             iwc.set_open_mode(OpenMode::CREATE)?;
             iwc.set_codec(self.get_codec())?;
             // Prevent randomization from slowing down indexing too much

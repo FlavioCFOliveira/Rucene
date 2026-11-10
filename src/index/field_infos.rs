@@ -1472,12 +1472,13 @@ impl FieldNumbers {
 
     /// Returns every field name this registry knows about.
     ///
-    /// Equivalent to `FieldInfos.FieldNumbers.getFieldNames()`, which hands back
-    /// an unmodifiable copy; the Rust counterpart returns an owned set for the
-    /// same reason — the caller must not be able to mutate the registry through
-    /// it, and the lock must not be held past the call.
-    pub fn get_field_names(&self) -> HashSet<String> {
-        self.lock().field_properties.keys().cloned().collect()
+    /// Equivalent to `FieldInfos.FieldNumbers.getFieldNames()`:
+    /// `Set.copyOf(fieldProperties.keySet())` (`FieldInfos.java:690-692`), an
+    /// unmodifiable copy.
+    pub fn get_field_names(&self) -> crate::util::java_collections::ImmutableSet<String> {
+        crate::util::java_collections::ImmutableSet::copy_of(
+            self.lock().field_properties.keys().cloned(),
+        )
     }
 
     /// Builds a doc-values-only [`FieldInfo`] for an existing global field, under

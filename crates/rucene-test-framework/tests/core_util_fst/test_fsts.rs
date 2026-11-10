@@ -447,7 +447,7 @@ fn test_real_terms() -> Result<()> {
     let analyzer = MockAnalyzer::new(&*random());
     analyzer.set_max_token_length(TestUtil::next_int(&*random(), 1, MAX_TERM_LENGTH as i32));
 
-    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(analyzer));
+    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(analyzer)));
     conf.set_max_buffered_docs(-1)?
         .set_ram_buffer_size_mb(64.0)?;
     let temp_dir = LuceneTestCase::create_temp_dir_prefix("fstlines");
@@ -770,9 +770,9 @@ fn test_primary_keys() -> Result<()> {
         if verbose() {
             println!("TEST: cycle={cycle}");
         }
-        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(
+        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
             MockAnalyzer::new(&*random()),
-        ));
+        )));
         iwc.set_open_mode(OpenMode::CREATE)?;
         let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
         let mut id_field = LuceneTestCase::new_string_field("id", "", Store::NO);
@@ -927,8 +927,9 @@ fn test_primary_keys() -> Result<()> {
 fn test_random_term_lookup() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
 
-    let mut iwc =
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+        MockAnalyzer::new(&*random()),
+    )));
     iwc.set_open_mode(OpenMode::CREATE)?;
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
     let mut f = LuceneTestCase::new_string_field("field", "", Store::NO);

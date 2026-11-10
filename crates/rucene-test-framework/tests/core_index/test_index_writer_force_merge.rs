@@ -61,7 +61,7 @@ pub fn class_def() -> Arc<Class> {
 /// `new IndexWriterConfig(new MockAnalyzer(random()))` through
 /// `newIndexWriterConfig`.
 fn mock_iwc() -> IndexWriterConfig {
-    LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())))
+    LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))))
 }
 
 /// `SegmentInfos.readLatestCommit(dir).size()`.
@@ -199,7 +199,7 @@ fn test_force_merge_temp_space_usage() -> Result<()> {
     let analyzer: Arc<dyn Analyzer> = Arc::new(WhitespaceAnalyzer {
         state: AnalyzerState::new(Box::new(GlobalReuseStrategy)),
     });
-    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
+    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
     conf.set_max_buffered_docs(10)?;
     conf.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = IndexWriter::new(Arc::clone(&d), conf)?;

@@ -200,9 +200,11 @@ impl IndexableField for MyField {
 
     fn token_stream(
         &self,
-        analyzer: &dyn Analyzer,
+        analyzer: Option<&dyn Analyzer>,
         _previous: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
+    ) -> Result<Box<dyn TokenStream>> {
+        // `analyzer.tokenStream(...)` on a `null` analyzer.
+        let analyzer = analyzer.ok_or_else(rucene::error::LuceneError::null_pointer)?;
         let stream = if self.reader_value().is_some() {
             analyzer.token_stream(
                 self.name(),
@@ -215,9 +217,8 @@ impl IndexableField for MyField {
                     self.string_value().unwrap_or_else(|| npe("stringValue")),
                 )),
             )
-        }
-        .unwrap_or_else(|e| rucene_test_framework::util::java_exceptions::rethrow_java(e));
-        Box::new(SharedTokenStream::new(stream))
+        }?;
+        Ok(Box::new(SharedTokenStream::new(stream)))
     }
 
     fn stored_value(&self) -> Result<Option<StoredValue>> {
@@ -454,9 +455,9 @@ impl IndexableField for CustomField {
     /// Java returns `null`.
     fn token_stream(
         &self,
-        _a: &dyn Analyzer,
+        _a: Option<&dyn Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
+    ) -> Result<Box<dyn TokenStream>> {
         npe("CustomField.tokenStream returned null")
     }
 

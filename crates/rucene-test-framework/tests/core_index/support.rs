@@ -31,7 +31,7 @@ pub fn never_throttle(dir: &TestDirectory) {
 /// .setOpenMode(IndexWriterConfig.OpenMode.CREATE)
 /// .setCodec(TestUtil.getDefaultCodec())`.
 pub fn two_b_config() -> Result<IndexWriterConfig> {
-    let mut iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     iwc.set_max_buffered_docs(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH)?;
     iwc.set_ram_buffer_size_mb(256.0)?;
     iwc.set_merge_scheduler(Some(Arc::new(ConcurrentMergeScheduler::new())))?;
@@ -303,7 +303,7 @@ pub fn assert_no_unreferenced_files(
     let mut start_files = dir.list_all()?;
     rucene::index::index_writer::IndexWriter::new(
         Arc::clone(dir),
-        IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random()))),
+        IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random())))),
     )?
     .rollback()?;
     let mut end_files = dir.list_all()?;

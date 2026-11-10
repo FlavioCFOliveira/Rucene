@@ -82,7 +82,7 @@ use crate::document::column::{
     create_column_field_adapter, BinaryColumn, ColumnBatch, ColumnFieldAdapter, ColumnValidation,
     Density, DictionaryColumn, LongColumn, NumericKind, TypedColumn, VectorColumn,
 };
-use crate::document::{Document, InvertableType, NumericDocValuesField, StoredValueType};
+use crate::document::{InvertableType, NumericDocValuesField, StoredValueType};
 use crate::error::{LuceneError, Result};
 use crate::index::doc_values_writer::DocValuesWriter;
 use crate::index::documents_writer::{
@@ -99,7 +99,8 @@ use crate::index::stored_fields_consumer::StoredFieldsConsumer;
 use crate::index::term_vectors_consumer::TermVectorsConsumer;
 use crate::index::vector_values_consumer::VectorValuesConsumer;
 use crate::index::{
-    DocValuesType, FieldInfo, IndexOptions, IndexableField, IndexableFieldType, SegmentInfo,
+    DocValuesType, FieldInfo, IndexOptions, IndexableField, IndexableFieldIterable,
+    IndexableFieldType, SegmentInfo,
 };
 use crate::index::{NumericValue, StoredValue};
 use crate::search::doc_values_iteration::{
@@ -2002,7 +2003,7 @@ impl DefaultIndexingChain {
         doc_id: i32,
         field: &dyn IndexableField,
         pf: usize,
-        analyzer: &dyn Analyzer,
+        analyzer: Option<&dyn Analyzer>,
         info_stream: &dyn InfoStream,
         field_infos: &mut FieldInfosBuilder,
     ) -> Result<bool> {
@@ -2148,7 +2149,7 @@ impl DefaultIndexingChain {
     /// and the shared byte pool are disjoint.
     #[allow(clippy::too_many_arguments)]
     fn invert(
-        analyzer: &dyn Analyzer,
+        analyzer: Option<&dyn Analyzer>,
         info_stream: &dyn InfoStream,
         terms_writer: &mut FreqProxTermsWriter,
         term_vectors: Option<&mut TermVectorsConsumer>,
@@ -2455,7 +2456,7 @@ impl DefaultIndexingChain {
     /// Equivalent to `IndexingChain.PerField.invertTokenStream`.
     #[allow(clippy::too_many_arguments)]
     fn invert_token_stream(
-        analyzer: &dyn Analyzer,
+        analyzer: Option<&dyn Analyzer>,
         info_stream: &dyn InfoStream,
         terms_writer: &mut FreqProxTermsWriter,
         term_vectors: Option<&mut TermVectorsConsumer>,
@@ -2465,9 +2466,29 @@ impl DefaultIndexingChain {
         first: bool,
         aborting_error: &mut Option<LuceneError>,
     ) -> Result<()> {
-        let analyzed = field.field_type().tokenized();
+        // `field.fieldType().tokenized() && analyzer != null`
+        // (`IndexingChain.java:1899`).
+        let analyzed = field.field_type().tokenized() && analyzer.is_some();
         let is_term_doc = per_field.field_info().is_term_doc_field();
-        let mut stream = field.token_stream(analyzer, None);
+        // `field.tokenStream(analyzer, tokenStream)` opens the
+        // try-with-resources whose `finally` logs the failure
+        // (`IndexingChain.java:1907-1908, 2039-2044`), so an exception raised
+        // by the call itself is logged as well.
+        let mut stream = match field.token_stream(analyzer, None) {
+            Ok(stream) => stream,
+            Err(error) => {
+                if info_stream.is_enabled("DW") {
+                    info_stream.message(
+                        "DW",
+                        &format!(
+                            "An exception was thrown while processing field {}",
+                            per_field.field_name
+                        ),
+                    );
+                }
+                return Err(error);
+            }
+        };
         let mut term_vectors = term_vectors;
 
         let outcome = (|| -> Result<()> {
@@ -2605,7 +2626,7 @@ impl DefaultIndexingChain {
         outcome?;
         close_outcome?;
 
-        if analyzed {
+        if let (true, Some(analyzer)) = (analyzed, analyzer) {
             per_field.invert_state.position +=
                 analyzer.get_position_increment_gap(&per_field.field_name);
             per_field.invert_state.offset += analyzer.get_offset_gap(&per_field.field_name);
@@ -3052,7 +3073,7 @@ impl DefaultIndexingChain {
                         seg_doc_id,
                         adapters[i].as_ref(),
                         pf,
-                        analyzer.as_ref(),
+                        analyzer.as_deref(),
                         info_stream.as_ref(),
                         field_infos,
                     ) {
@@ -3156,7 +3177,7 @@ impl DefaultIndexingChain {
         doc_id: i32,
         field: &dyn IndexableField,
         pf: usize,
-        analyzer: &dyn Analyzer,
+        analyzer: Option<&dyn Analyzer>,
         info_stream: &dyn InfoStream,
         field_infos: &mut FieldInfosBuilder,
     ) -> Result<bool> {
@@ -4143,7 +4164,7 @@ impl IndexingChain for DefaultIndexingChain {
     fn process_document(
         &mut self,
         doc_id: i32,
-        doc: &Document,
+        doc: Option<&dyn IndexableFieldIterable>,
         is_last_doc: bool,
         field_infos: &mut FieldInfosBuilder,
     ) -> Result<()> {
@@ -4203,8 +4224,22 @@ impl IndexingChain for DefaultIndexingChain {
         // (`IndexingChain.java:617-644`). It runs inside Java's `try`, so a
         // failure is recorded as the outcome and the `finally` tail below
         // still closes the stored-fields frame.
-        let mut doc_fields: Vec<usize> = Vec::with_capacity(doc.get_fields().len());
-        'first_pass: for field in doc.get_fields() {
+        //
+        // `for (IndexableField field : document)` dereferences a `null`
+        // document, and an exception the iterator throws leaves the pass
+        // there.
+        let mut doc_fields: Vec<usize> = Vec::new();
+        'first_pass: for item in doc
+            .map(IndexableFieldIterable::iterator)
+            .unwrap_or_else(|| Box::new(std::iter::once(Err(LuceneError::null_pointer()))))
+        {
+            let field = match item {
+                Ok(field) => field,
+                Err(error) => {
+                    outcome = Err(error);
+                    break 'first_pass;
+                }
+            };
             let field_name = field.name();
             let field_type = field.field_type();
             if let Err(error) = self.reject_reserved_parent_field(field_name) {
@@ -4259,7 +4294,7 @@ impl IndexingChain for DefaultIndexingChain {
                 doc_id,
                 &parent_field,
                 parent_pf,
-                analyzer.as_ref(),
+                analyzer.as_deref(),
                 info_stream.as_ref(),
                 field_infos,
             );
@@ -4274,22 +4309,38 @@ impl IndexingChain for DefaultIndexingChain {
             }
         }
 
-        for (field, index) in doc.get_fields().iter().zip(doc_fields.iter().copied()) {
+        // 2nd pass – document fields (`IndexingChain.java:659-667`): a new
+        // iteration over the document, whose failure leaves the pass too.
+        let second_pass = match (&outcome, doc) {
+            (Ok(()), Some(doc)) => Some(doc.iterator()),
+            _ => None,
+        };
+        let mut doc_field_idx = 0;
+        for item in second_pass.into_iter().flatten() {
             if outcome.is_err() {
                 break;
             }
+            let field = match item {
+                Ok(field) => field,
+                Err(error) => {
+                    outcome = Err(error);
+                    break;
+                }
+            };
+            let index = doc_fields[doc_field_idx];
+            doc_field_idx += 1;
             // `IndexingChain.invertAndStore` inverts first and stores second,
             // for every field instance, in document order.
             if field.field_type().index_options() != IndexOptions::NONE {
                 let first = self.per_fields[index].first;
                 let result = Self::invert(
-                    analyzer.as_ref(),
+                    analyzer.as_deref(),
                     info_stream.as_ref(),
                     &mut self.terms_writer,
                     self.term_vectors_consumer.as_deref_mut(),
                     &mut self.per_fields[index],
                     doc_id,
-                    field.as_ref(),
+                    field,
                     first,
                     &mut self.aborting_error,
                 );
@@ -4318,7 +4369,7 @@ impl IndexingChain for DefaultIndexingChain {
             }
 
             if field.field_type().stored() {
-                if let Err(error) = self.store_field(index, field.as_ref()) {
+                if let Err(error) = self.store_field(index, field) {
                     outcome = Err(error);
                     break;
                 }
@@ -4331,7 +4382,7 @@ impl IndexingChain for DefaultIndexingChain {
             if field.field_type().doc_values_type() != DocValuesType::NONE {
                 let result = self.per_fields[index].doc_values.as_mut().expect(
                     "INVARIANT: every field with a doc-values type gets a writer in get_or_add_per_field",
-                ).add_value(doc_id, field.as_ref(), &mut self.doc_values_byte_pool);
+                ).add_value(doc_id, field, &mut self.doc_values_byte_pool);
                 // `indexDocValue` runs outside any `catch`
                 // (`IndexingChain.java:1386-1391, 1660-1693`): whatever it
                 // throws is a document-level failure, never an aborting one.
@@ -4380,8 +4431,7 @@ impl IndexingChain for DefaultIndexingChain {
             // would raise for a field whose type promises a vector its class
             // cannot produce.
             if field.field_type().vector_dimension() != 0 {
-                let result =
-                    Self::index_vector_value(doc_id, &mut self.per_fields[index], field.as_ref());
+                let result = Self::index_vector_value(doc_id, &mut self.per_fields[index], field);
                 // `indexVectorValue` runs outside any `catch`
                 // (`IndexingChain.java:1396-1398, 1695-1707`): a failure is a
                 // document-level one, never an aborting one.
@@ -4695,6 +4745,8 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
+    use crate::document::Document;
+
     use super::*;
     use crate::analysis::tokenattributes::{
         CharTermAttribute, PackedTokenAttributeImpl, PayloadAttributeImpl as PayloadImpl,
@@ -4855,9 +4907,9 @@ mod tests {
 
     fn config() -> Arc<LiveIndexWriterConfig> {
         ensure_codec();
-        Arc::new(LiveIndexWriterConfig::new(
-            Arc::new(StandardAnalyzer::new()),
-        ))
+        Arc::new(LiveIndexWriterConfig::new(Some(Arc::new(
+            StandardAnalyzer::new(),
+        ))))
     }
 
     fn field_type(options: IndexOptions) -> FieldType {
@@ -4904,7 +4956,7 @@ mod tests {
                 crate::util::BytesRef::new(b"a".to_vec()),
             )));
             chain
-                .process_document(0, &document, true, &mut field_infos)
+                .process_document(0, Some(&document), true, &mut field_infos)
                 .expect("process document");
             let blocks = chain.doc_values_byte_pool.charged_block_bytes();
             assert!(blocks > 0, "interning the value allocated a block");
@@ -4937,7 +4989,7 @@ mod tests {
                 crate::util::BytesRef::new(tag.as_bytes().to_vec()),
             )));
             chain
-                .process_document(doc_id as i32, &document, true, &mut field_infos)
+                .process_document(doc_id as i32, Some(&document), true, &mut field_infos)
                 .expect("process document");
         }
 
@@ -5005,7 +5057,7 @@ mod tests {
             ],
         ));
         chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect("process document");
 
         let state = chain.field_invert_state("body").expect("invert state");
@@ -5043,7 +5095,7 @@ mod tests {
             ));
         }
         chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect("process document");
 
         let state = chain.field_invert_state("body").expect("invert state");
@@ -5065,7 +5117,7 @@ mod tests {
             StringField::new("id", "abc".to_string(), Store::NO).expect("string field"),
         ));
         chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect("process document");
 
         let state = chain.field_invert_state("id").expect("invert state");
@@ -5092,7 +5144,7 @@ mod tests {
             vec![Tok::new("alpha", 0, 0, 5)],
         ));
         let error = chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("must be rejected");
         assert!(
             format!("{error}").contains("first position increment must be > 0"),
@@ -5115,7 +5167,7 @@ mod tests {
             vec![Tok::new("alpha", 1, 10, 15), Tok::new("beta", 1, 4, 9)],
         ));
         let error = chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("must be rejected");
         assert!(
             format!("{error}").contains("offsets must not go backwards"),
@@ -5142,7 +5194,7 @@ mod tests {
             ],
         ));
         let error = chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("must be rejected");
         match &error {
             LuceneError::IllegalArgumentWithCause { message, cause } => {
@@ -5176,7 +5228,7 @@ mod tests {
             vec![Tok::new(&immense, 1, 0, 40_000)],
         ));
         let error = chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("must be rejected");
         match &error {
             LuceneError::IllegalArgumentWithCause { message, cause } => {
@@ -5215,7 +5267,7 @@ mod tests {
             vec![Tok::new("alpha", 1, 0, 5).with_payload(&[7, 7])],
         ));
         chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect("process document");
         assert!(
             field_infos
@@ -5237,7 +5289,7 @@ mod tests {
             vec![Tok::new("alpha", 1, 0, 5)],
         ));
         chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect("process document");
         assert!(!field_infos
             .field_info("body")
@@ -5261,7 +5313,7 @@ mod tests {
             vec![Tok::new("b", 1, 0, 1)],
         ));
         chain
-            .process_document(0, &first, true, &mut field_infos)
+            .process_document(0, Some(&first), true, &mut field_infos)
             .expect("doc 0");
 
         let mut second = Document::new();
@@ -5271,7 +5323,7 @@ mod tests {
             vec![Tok::new("c", 1, 0, 1)],
         ));
         chain
-            .process_document(1, &second, true, &mut field_infos)
+            .process_document(1, Some(&second), true, &mut field_infos)
             .expect("doc 1");
 
         assert_eq!(
@@ -5324,7 +5376,7 @@ mod tests {
             Field::new("meta", "value".to_string(), stored_type).expect("stored field"),
         ));
         chain
-            .process_document(0, &only_stored, true, &mut field_infos)
+            .process_document(0, Some(&only_stored), true, &mut field_infos)
             .expect("process document");
         assert_eq!(chain.field_term_count("meta"), 0);
         assert_eq!(
@@ -5385,10 +5437,12 @@ mod tests {
         }
         fn token_stream(
             &self,
-            _analyzer: &dyn Analyzer,
+            _analyzer: Option<&dyn Analyzer>,
             _reuse: Option<&mut dyn crate::analysis::TokenStream>,
-        ) -> Box<dyn crate::analysis::TokenStream> {
-            Box::new(crate::analysis::StringTokenStream::new(String::new()).expect("stream"))
+        ) -> Result<Box<dyn crate::analysis::TokenStream>> {
+            Ok(Box::new(
+                crate::analysis::StringTokenStream::new(String::new()).expect("stream"),
+            ))
         }
         fn binary_value(&self) -> Option<BytesRef> {
             None
@@ -5424,7 +5478,7 @@ mod tests {
                     .expect("float vector field"),
             ));
             chain
-                .process_document(doc, &document, true, &mut field_infos)
+                .process_document(doc, Some(&document), true, &mut field_infos)
                 .expect("process document");
         }
         let created = tracking.get_created_files();
@@ -5455,7 +5509,7 @@ mod tests {
             vec![Tok::new("a", 1, 0, 1)],
         ));
         chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect("process document");
         for name in tracking.get_created_files() {
             for extension in [".vec", ".vemf", ".vex", ".vem"] {
@@ -5482,7 +5536,7 @@ mod tests {
             KnnFloatVectorField::with_euclidean("v", &[3.0, 4.0]).expect("second"),
         ));
         let error = chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("a repeated vector field must be rejected");
         assert!(
             matches!(&error, LuceneError::IllegalArgument(message)
@@ -5508,7 +5562,7 @@ mod tests {
             KnnFloatVectorField::with_euclidean("v", &vec![1.0f32; 1025]).expect("wide vector"),
         ));
         let error = chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("an over-wide vector field must be rejected");
         assert!(
             matches!(&error, LuceneError::IllegalArgument(message)
@@ -5533,7 +5587,7 @@ mod tests {
             KnnFloatVectorField::with_euclidean("v", &vec![1.0f32; 1024]).expect("wide vector"),
         ));
         chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect("1024 dimensions must be accepted");
     }
 
@@ -5547,7 +5601,7 @@ mod tests {
             let mut document = Document::new();
             document.add(Box::new(VectorlessVectorField::new("v", encoding)));
             let error = chain
-                .process_document(0, &document, true, &mut field_infos)
+                .process_document(0, Some(&document), true, &mut field_infos)
                 .expect_err("a vector field with no value must be rejected");
             assert!(
                 matches!(&error, LuceneError::IllegalArgument(message)
@@ -5561,8 +5615,8 @@ mod tests {
     /// so a vector field must be refused rather than silently dropped.
     #[test]
     fn an_unbound_chain_refuses_a_vector_field() {
-        let mut chain = DefaultIndexingChain::new(Arc::new(LiveIndexWriterConfig::new(Arc::new(
-            StandardAnalyzer::new(),
+        let mut chain = DefaultIndexingChain::new(Arc::new(LiveIndexWriterConfig::new(Some(
+            Arc::new(StandardAnalyzer::new()),
         ))));
         let mut field_infos = builder();
         let mut document = Document::new();
@@ -5570,7 +5624,7 @@ mod tests {
             KnnFloatVectorField::with_euclidean("v", &[1.0, 2.0]).expect("vector field"),
         ));
         let error = chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("an unbound chain must refuse a vector field");
         assert!(
             matches!(&error, LuceneError::IllegalState { message, .. }
@@ -5592,7 +5646,7 @@ mod tests {
             KnnFloatVectorField::with_euclidean("v", &[1.0, 2.0, 3.0]).expect("vector field"),
         ));
         chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect("index the vector");
         let consumer = chain.vector_values_consumer.as_ref().expect("bound chain");
         let vector_bytes = consumer.ram_bytes_used();
@@ -5702,7 +5756,7 @@ mod tests {
         let mut field_infos = builder();
         for (doc_id, document) in documents.iter().enumerate() {
             chain
-                .process_document(doc_id as i32, document, true, &mut field_infos)
+                .process_document(doc_id as i32, Some(document), true, &mut field_infos)
                 .expect("process document");
         }
         let finished = field_infos.finish().expect("field infos");
@@ -5793,7 +5847,7 @@ mod tests {
     #[test]
     fn a_failed_doc_values_consumer_is_reported_over_the_field_infos_check() {
         let codec = ensure_codec();
-        let mut live = LiveIndexWriterConfig::new(Arc::new(StandardAnalyzer::new()));
+        let mut live = LiveIndexWriterConfig::new(Some(Arc::new(StandardAnalyzer::new())));
         live.set_codec(Arc::new(
             crate::codecs::FilterCodec::new("RefusingCodec", Arc::clone(&codec))
                 .with_doc_values_format(RefusingDocValuesFormat),
@@ -5828,7 +5882,7 @@ mod tests {
         let mut document = Document::new();
         document.add(Box::new(NumericDocValuesField::new("dv", 7)));
         chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect("process document");
         let finished = field_infos.finish().expect("field infos");
         let segment_info = make_info(1);
@@ -5885,7 +5939,7 @@ mod tests {
         let mut field_infos = builder();
         for (doc_id, document) in documents.iter().enumerate() {
             chain
-                .process_document(doc_id as i32, document, true, &mut field_infos)
+                .process_document(doc_id as i32, Some(document), true, &mut field_infos)
                 .expect("process document");
         }
         let finished = field_infos.finish().expect("field infos");
@@ -5963,10 +6017,10 @@ mod tests {
         let (mut chain, tracking, segment_info) = bound_chain(2);
         let mut field_infos = builder();
         chain
-            .process_document(0, &first, true, &mut field_infos)
+            .process_document(0, Some(&first), true, &mut field_infos)
             .expect("the stored-only document is fine");
         let error = chain
-            .process_document(1, &second, true, &mut field_infos)
+            .process_document(1, Some(&second), true, &mut field_infos)
             .expect_err("the schema change must be refused");
         assert!(
             matches!(error, LuceneError::IllegalArgument(ref m)
@@ -6156,7 +6210,7 @@ mod tests {
             }
         }
 
-        let mut live = LiveIndexWriterConfig::new(Arc::new(StandardAnalyzer::new()));
+        let mut live = LiveIndexWriterConfig::new(Some(Arc::new(StandardAnalyzer::new())));
         live.set_similarity(Arc::new(ZeroSimilarity));
         ensure_codec();
         let config = Arc::new(live);
@@ -6195,7 +6249,7 @@ mod tests {
         ));
         let mut field_infos = builder();
         let error = chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("a zero norm for a non-empty field must be refused");
         assert!(
             matches!(error, LuceneError::IllegalState { message: ref m, .. }
@@ -6224,7 +6278,7 @@ mod tests {
         let (_, norms) = flush_and_read_norms(config(), vec![document]);
         assert_eq!(norms, vec![("body".to_string(), 0, 2)]);
 
-        let mut live = LiveIndexWriterConfig::new(Arc::new(StandardAnalyzer::new()));
+        let mut live = LiveIndexWriterConfig::new(Some(Arc::new(StandardAnalyzer::new())));
         live.set_similarity(Arc::new(
             crate::search::BM25Similarity::with_discount_overlaps(false),
         ));
@@ -6314,7 +6368,7 @@ mod tests {
                 words(2),
             ));
             chain
-                .process_document(doc, &document, true, &mut field_infos)
+                .process_document(doc, Some(&document), true, &mut field_infos)
                 .expect("process document");
         }
         assert!(
@@ -6471,7 +6525,7 @@ mod tests {
         let mut field_infos = builder();
         for (doc_id, document) in documents.iter().enumerate() {
             chain
-                .process_document(doc_id as i32, document, true, &mut field_infos)
+                .process_document(doc_id as i32, Some(document), true, &mut field_infos)
                 .expect("process document");
         }
         let finished = field_infos.finish().expect("field infos");
@@ -6543,7 +6597,7 @@ mod tests {
         let mut field_infos = builder();
         for (doc_id, document) in documents.iter().enumerate() {
             chain
-                .process_document(doc_id as i32, document, true, &mut field_infos)
+                .process_document(doc_id as i32, Some(document), true, &mut field_infos)
                 .expect("process document");
         }
         let finished = field_infos.finish().expect("field infos");
@@ -6597,7 +6651,7 @@ mod tests {
         let mut document = Document::new();
         document.add(stored_text_field("title", "doomed"));
         chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect("process document");
         assert!(
             chain.stored_fields_consumer().expect("bound").has_writer(),
@@ -6628,7 +6682,7 @@ mod tests {
         let mut document = Document::new();
         document.add(stored_text_field("title", "value"));
         let error = chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("silently dropping stored data would corrupt the segment");
         assert!(
             matches!(error, LuceneError::IllegalState { .. }),
@@ -6648,7 +6702,7 @@ mod tests {
                 vec![Tok::new(&format!("term{doc_id}"), 1, 0, 5)],
             ));
             chain
-                .process_document(doc_id, &document, true, &mut field_infos)
+                .process_document(doc_id, Some(&document), true, &mut field_infos)
                 .expect("process document");
         }
         assert!(chain.ram_bytes_used() > 0);
@@ -6850,7 +6904,7 @@ mod tests {
                     .expect("token stream field"),
             ));
             chain
-                .process_document(doc_id, &document, true, &mut field_infos)
+                .process_document(doc_id, Some(&document), true, &mut field_infos)
                 .expect("process document");
         }
         let finished = field_infos.finish().expect("field infos");
@@ -6890,7 +6944,7 @@ mod tests {
         let mut field_infos = builder();
         for (doc_id, document) in documents.iter().enumerate() {
             chain
-                .process_document(doc_id as i32, document, true, &mut field_infos)
+                .process_document(doc_id as i32, Some(document), true, &mut field_infos)
                 .expect("process document");
         }
         let finished = field_infos.finish().expect("field infos");
@@ -7356,7 +7410,7 @@ mod tests {
             vec![Tok::new("beta", 1, 6, 10)],
         ));
         let error = bound
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("the two instances disagree on storeTermVectorPositions");
         assert!(
             matches!(error, LuceneError::IllegalArgument(_)),
@@ -7379,7 +7433,7 @@ mod tests {
             vec![Tok::new("alpha", 1, 0, 5)],
         ));
         let error = chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("payloads need positions");
         assert!(
             matches!(&error, LuceneError::IllegalArgument(message)
@@ -7408,7 +7462,7 @@ mod tests {
                 vec![Tok::new("alpha", 1, 0, 5)],
             ));
             let error = chain
-                .process_document(0, &document, true, &mut field_infos)
+                .process_document(0, Some(&document), true, &mut field_infos)
                 .expect_err("term vectors were not requested");
             assert!(
                 matches!(&error, LuceneError::IllegalArgument(message)
@@ -7433,7 +7487,7 @@ mod tests {
             Field::new("title", "value".to_string(), field_type).expect("field"),
         ));
         let error = chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("a non-indexed field cannot store term vectors");
         assert!(
             matches!(&error, LuceneError::IllegalArgument(message)
@@ -7462,7 +7516,7 @@ mod tests {
             vec![Tok::new("beta", 1, 0, 4)],
         ));
         chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect("process document");
         let finished = field_infos.finish().expect("field infos");
         assert!(finished.has_term_vectors());
@@ -7491,7 +7545,7 @@ mod tests {
             vec![Tok::new("alpha", 1, 0, 5)],
         ));
         chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect("process document");
         assert!(chain
             .term_vectors_consumer()
@@ -7524,7 +7578,7 @@ mod tests {
             vec![Tok::new("alpha", 1, 0, 5)],
         ));
         let error = chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("silently dropping term vectors would corrupt the segment");
         assert!(
             matches!(error, LuceneError::IllegalState { .. }),

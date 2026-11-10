@@ -264,9 +264,9 @@ fn replace_index() -> Result<()> {
     directory.close()?;
 
     let directory = LuceneTestCase::new_directory();
-    let mut config = LuceneTestCase::new_index_writer_config_analyzer(
+    let mut config = LuceneTestCase::new_index_writer_config_analyzer(Some(
         Arc::clone(&analyzer) as Arc<dyn Analyzer>
-    );
+    ));
     config.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = RandomIndexWriter::new_with_config(
         &*LuceneTestCase::random(),

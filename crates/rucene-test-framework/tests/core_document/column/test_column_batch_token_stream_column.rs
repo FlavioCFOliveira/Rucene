@@ -168,8 +168,8 @@ fn test_parity_with_add_document() -> Result<()> {
     let br: Arc<dyn IndexReader> = batch.reader()?;
     let batch_leaf = only_leaf(&br)?;
 
-    let docw = Ctx::open_with(LuceneTestCase::new_index_writer_config_analyzer(Arc::new(
-        MockAnalyzer::new(&*random()),
+    let docw = Ctx::open_with(LuceneTestCase::new_index_writer_config_analyzer(Some(
+        Arc::new(MockAnalyzer::new(&*random())),
     )))?;
     for doc in docs {
         let mut d = Document::new();

@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::Instant;
 
 use crate::analysis::Analyzer;
-use crate::document::{Document, Field, NumericValue};
+use crate::document::{Field, NumericValue};
 use crate::error::{LuceneError, Result};
 use crate::index::buffered_updates_stream::BufferedUpdatesStream;
 use crate::index::codec_reader::CodecReader;
@@ -39,7 +39,10 @@ use crate::index::segment_info::{SegmentCommitInfo, SegmentInfo};
 use crate::index::segment_infos::SegmentInfos;
 use crate::index::segment_merger::SegmentMerger;
 use crate::index::segment_reader::SegmentReader;
-use crate::index::{DocValuesType, IndexableFieldType, Term};
+use crate::index::{
+    DocValuesType, DocumentsIterable, DocumentsIterableRef, IndexableFieldIterable,
+    IndexableFieldType, SingleDocument, Term,
+};
 use crate::search::Sort;
 use crate::store::{
     BufferedChecksumIndexInput, Directory, IOContext, IndexInput, IndexOutput, Lock,
@@ -1520,10 +1523,11 @@ impl IndexWriter {
         &self.info_stream
     }
 
-    /// Returns the analyzer the configuration installed.
+    /// Returns the analyzer the configuration installed, `None` for Java's
+    /// `null` analyzer.
     ///
     /// Equivalent to `IndexWriter.getAnalyzer()`.
-    pub fn get_analyzer(&self) -> Result<Arc<dyn Analyzer>> {
+    pub fn get_analyzer(&self) -> Result<Option<Arc<dyn Analyzer>>> {
         self.ensure_open()?;
         Ok(self.config.analyzer_arc())
     }
@@ -1898,10 +1902,11 @@ impl IndexWriter {
         clone_infos(&self.state()?.segment_infos)
     }
 
-    /// Returns every field name visible to this writer.
+    /// Returns every field name visible to this writer, as an unmodifiable
+    /// set.
     ///
-    /// Equivalent to `IndexWriter.getFieldNames()`.
-    pub fn get_field_names(&self) -> HashSet<String> {
+    /// Equivalent to `IndexWriter.getFieldNames()` (`IndexWriter.java:2095-2098`).
+    pub fn get_field_names(&self) -> crate::util::java_collections::ImmutableSet<String> {
         self.global_field_numbers.get_field_names()
     }
 
@@ -2011,15 +2016,42 @@ impl IndexWriter {
 
     /// Adds `doc` to the index.
     ///
-    /// Equivalent to `IndexWriter.addDocument`. Returns the sequence number the
+    /// Equivalent to `IndexWriter.addDocument(Iterable<? extends
+    /// IndexableField>)`, which is `updateDocument(null, doc)`
+    /// (`IndexWriter.java:1499-1501`). Returns the sequence number the
     /// operation was assigned.
-    pub fn add_document(&self, doc: &Document) -> Result<i64> {
-        self.ensure_open()?;
-        let outcome = self
-            .documents_writer
-            .update_document(doc, None)
-            .and_then(|seq_no| self.maybe_process_events(seq_no));
-        self.finish_update_documents(outcome)
+    ///
+    /// `doc` is any [`IndexableFieldIterable`] (a [`Document`], a list of
+    /// fields, or an iterable that fails mid-way); `None` is Java's `null`.
+    ///
+    /// # Errors
+    ///
+    /// `NullPointerException` for `None`, thrown by `List.of(doc)` before the
+    /// writer is checked (`IndexWriter.java:1925-1926`); what indexing the
+    /// document raises, including the failure of its iterator, after which
+    /// the document's id stays reserved and is marked deleted.
+    pub fn add_document<'d, D>(&self, doc: impl Into<Option<&'d D>>) -> Result<i64>
+    where
+        D: IndexableFieldIterable + ?Sized + 'd,
+    {
+        self.update_document_with_node(None, doc.into())
+    }
+
+    /// `updateDocuments(node, List.of(doc))`, the body of
+    /// `IndexWriter.updateDocument(Term, Iterable)` and
+    /// `softUpdateDocument(Term, Iterable, Field...)` once their delete node is
+    /// built (`IndexWriter.java:1925-1926, 1957-1958`).
+    fn update_document_with_node<D>(
+        &self,
+        del_node: Option<Arc<DeleteNode>>,
+        doc: Option<&D>,
+    ) -> Result<i64>
+    where
+        D: IndexableFieldIterable + ?Sized,
+    {
+        // `List.of(doc)` rejects a `null` element.
+        let doc = doc.ok_or_else(LuceneError::null_pointer)?;
+        self.update_documents_with_node(del_node, Some(&SingleDocument::new(doc)))
     }
 
     /// The `finally` of `IndexWriter.updateDocuments(Node, Iterable)`
@@ -2046,14 +2078,28 @@ impl IndexWriter {
 
     /// Adds `docs` as one block, so they stay adjacent in the segment.
     ///
-    /// Equivalent to `IndexWriter.addDocuments`.
-    pub fn add_documents(&self, docs: &[Document]) -> Result<i64> {
-        self.ensure_open()?;
-        let outcome = self
-            .documents_writer
-            .update_documents(docs, None)
-            .and_then(|seq_no| self.maybe_process_events(seq_no));
-        self.finish_update_documents(outcome)
+    /// Equivalent to `IndexWriter.addDocuments(Iterable<? extends Iterable<?
+    /// extends IndexableField>>)`, which is `updateDocuments(null, docs)`
+    /// (`IndexWriter.java:1531-1534`). `docs` is any [`DocumentsIterable`];
+    /// `None` is Java's `null`.
+    ///
+    /// # Errors
+    ///
+    /// `NullPointerException` for `None`, thrown when the per-thread writer
+    /// asks the block for its iterator; what indexing the block raises,
+    /// including the failure of its iterator, after which every document of
+    /// the block already reserved is marked deleted.
+    pub fn add_documents<'d, D>(&self, docs: impl Into<Option<&'d D>>) -> Result<i64>
+    where
+        D: DocumentsIterable + ?Sized + 'd,
+    {
+        self.update_documents_with_node(
+            None,
+            docs.into()
+                .map(DocumentsIterableRef)
+                .as_ref()
+                .map(|docs| docs as &dyn DocumentsIterable),
+        )
     }
 
     /// Adds a batch of documents presented column by column.
@@ -2139,21 +2185,38 @@ impl IndexWriter {
 
     /// Replaces every document matching `term` with `doc`.
     ///
-    /// Equivalent to `IndexWriter.updateDocument(Term, Iterable)`.
-    pub fn update_document(&self, term: Term, doc: &Document) -> Result<i64> {
-        self.ensure_open()?;
-        let outcome = self
-            .documents_writer
-            .update_document(doc, Some(DeleteNode::new_term(term)))
-            .and_then(|seq_no| self.maybe_process_events(seq_no));
-        self.finish_update_documents(outcome)
+    /// Equivalent to `IndexWriter.updateDocument(Term, Iterable)`; `doc` as in
+    /// [`add_document`](Self::add_document).
+    ///
+    /// # Errors
+    ///
+    /// As [`add_document`](Self::add_document).
+    pub fn update_document<'d, D>(&self, term: Term, doc: impl Into<Option<&'d D>>) -> Result<i64>
+    where
+        D: IndexableFieldIterable + ?Sized + 'd,
+    {
+        self.update_document_with_node(Some(DeleteNode::new_term(term)), doc.into())
     }
 
     /// Replaces every document matching `term` with the block `docs`.
     ///
-    /// Equivalent to `IndexWriter.updateDocuments(Term, Iterable)`.
-    pub fn update_documents(&self, term: Term, docs: &[Document]) -> Result<i64> {
-        self.update_documents_with_node(Some(DeleteNode::new_term(term)), docs)
+    /// Equivalent to `IndexWriter.updateDocuments(Term, Iterable)`; `docs` as
+    /// in [`add_documents`](Self::add_documents).
+    ///
+    /// # Errors
+    ///
+    /// As [`add_documents`](Self::add_documents).
+    pub fn update_documents<'d, D>(&self, term: Term, docs: impl Into<Option<&'d D>>) -> Result<i64>
+    where
+        D: DocumentsIterable + ?Sized + 'd,
+    {
+        self.update_documents_with_node(
+            Some(DeleteNode::new_term(term)),
+            docs.into()
+                .map(DocumentsIterableRef)
+                .as_ref()
+                .map(|docs| docs as &dyn DocumentsIterable),
+        )
     }
 
     /// Replaces every document matching `query` with the block `docs`, so an
@@ -2167,12 +2230,21 @@ impl IndexWriter {
     /// # Errors
     ///
     /// Propagates indexing, delete-queue and flush errors.
-    pub fn update_documents_by_query(
+    pub fn update_documents_by_query<'d, D>(
         &self,
         query: Option<Arc<dyn crate::search::Query>>,
-        docs: &[Document],
-    ) -> Result<i64> {
-        self.update_documents_with_node(query.map(DeleteNode::new_query), docs)
+        docs: impl Into<Option<&'d D>>,
+    ) -> Result<i64>
+    where
+        D: DocumentsIterable + ?Sized + 'd,
+    {
+        self.update_documents_with_node(
+            query.map(DeleteNode::new_query),
+            docs.into()
+                .map(DocumentsIterableRef)
+                .as_ref()
+                .map(|docs| docs as &dyn DocumentsIterable),
+        )
     }
 
     /// Equivalent to the private `IndexWriter.updateDocuments(
@@ -2182,7 +2254,7 @@ impl IndexWriter {
     fn update_documents_with_node(
         &self,
         del_node: Option<Arc<DeleteNode>>,
-        docs: &[Document],
+        docs: Option<&dyn DocumentsIterable>,
     ) -> Result<i64> {
         self.ensure_open()?;
         let outcome = self
@@ -2256,12 +2328,15 @@ impl IndexWriter {
     /// Returns [`LuceneError::IllegalArgument`] when `term` is `None` (Java's
     /// `null`, `IndexWriter.java:1679-1681`), when `soft_deletes` is empty, or
     /// when a field is not an updatable doc-values field.
-    pub fn soft_update_document(
+    pub fn soft_update_document<'d, D>(
         &self,
         term: impl Into<Option<Term>>,
-        doc: &Document,
+        doc: impl Into<Option<&'d D>>,
         soft_deletes: &[Field],
-    ) -> Result<i64> {
+    ) -> Result<i64>
+    where
+        D: IndexableFieldIterable + ?Sized + 'd,
+    {
         let Some(term) = term.into() else {
             return Err(LuceneError::IllegalArgument(
                 "term must not be null".to_string(),
@@ -2274,11 +2349,10 @@ impl IndexWriter {
         }
         self.ensure_open()?;
         let updates = self.build_doc_values_update(&term, soft_deletes)?;
-        let outcome = self
-            .documents_writer
-            .update_document(doc, Some(DeleteNode::new_doc_values_updates(updates)))
-            .and_then(|seq_no| self.maybe_process_events(seq_no));
-        self.finish_update_documents(outcome)
+        self.update_document_with_node(
+            Some(DeleteNode::new_doc_values_updates(updates)),
+            doc.into(),
+        )
     }
 
     /// Replaces every document matching `term` with the block `docs`, marking the
@@ -2291,12 +2365,15 @@ impl IndexWriter {
     /// Returns [`LuceneError::IllegalArgument`] when `term` is `None` (Java's
     /// `null`, `IndexWriter.java:1679-1681`), when `soft_deletes` is empty, or
     /// when a field is not an updatable doc-values field.
-    pub fn soft_update_documents(
+    pub fn soft_update_documents<'d, D>(
         &self,
         term: impl Into<Option<Term>>,
-        docs: &[Document],
+        docs: impl Into<Option<&'d D>>,
         soft_deletes: &[Field],
-    ) -> Result<i64> {
+    ) -> Result<i64>
+    where
+        D: DocumentsIterable + ?Sized + 'd,
+    {
         let Some(term) = term.into() else {
             return Err(LuceneError::IllegalArgument(
                 "term must not be null".to_string(),
@@ -2309,11 +2386,13 @@ impl IndexWriter {
         }
         self.ensure_open()?;
         let updates = self.build_doc_values_update(&term, soft_deletes)?;
-        let outcome = self
-            .documents_writer
-            .update_documents(docs, Some(DeleteNode::new_doc_values_updates(updates)))
-            .and_then(|seq_no| self.maybe_process_events(seq_no));
-        self.finish_update_documents(outcome)
+        self.update_documents_with_node(
+            Some(DeleteNode::new_doc_values_updates(updates)),
+            docs.into()
+                .map(DocumentsIterableRef)
+                .as_ref()
+                .map(|docs| docs as &dyn DocumentsIterable),
+        )
     }
 
     /// Sets the numeric doc-values of `field` to `value` on every document

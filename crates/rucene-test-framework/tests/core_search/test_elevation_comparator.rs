@@ -80,8 +80,9 @@ pub fn class_def() -> Arc<Class> {
 
 fn elevation_set_up(f: &mut ElevationComparator) -> Result<()> {
     let directory = LuceneTestCase::new_directory();
-    let mut config =
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut config = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+        MockAnalyzer::new(&*random()),
+    )));
     config.set_max_buffered_docs(2)?;
     config.set_merge_policy(Some(Arc::new(
         LuceneTestCase::new_log_merge_policy_merge_factor(1000)?,

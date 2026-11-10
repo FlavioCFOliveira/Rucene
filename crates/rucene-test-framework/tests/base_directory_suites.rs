@@ -527,7 +527,7 @@ fn nrt_test_nrt_and_commit() -> Result<()> {
     ));
     let analyzer = MockAnalyzer::new(&*rnd());
     analyzer.set_max_token_length(TestUtil::next_int(&*rnd(), 1, MAX_TERM_LENGTH as i32));
-    let conf = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(analyzer));
+    let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(analyzer)));
     let w = RandomIndexWriter::new_with_config(&*rnd(), Arc::clone(&cached_dir), conf)?;
     let docs = LineFileDocs::with_default_file(&*rnd())?;
     let num_docs = TestUtil::next_int(&*rnd(), 100, 400);
@@ -603,7 +603,7 @@ fn nrt_verify_compiles() -> Result<()> {
     let cached_fs_dir: Arc<dyn Directory> =
         Arc::new(NRTCachingDirectory::new(Box::new(fs_dir), 2.0, 25.0));
     let conf = match analyzer {
-        Some(a) => IndexWriterConfig::with_analyzer(a),
+        Some(a) => IndexWriterConfig::with_analyzer(Some(a)),
         None => IndexWriterConfig::new(),
     };
     let writer = IndexWriter::new(Arc::clone(&cached_fs_dir), conf)?;
@@ -1374,7 +1374,7 @@ fn file_switch_test_basic() -> Result<()> {
         true,
     )?);
     // for now we wire the default codec because we rely upon its specific impl
-    let mut config = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*rnd())));
+    let mut config = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*rnd()))));
     config.set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(false)))?;
     config.set_codec(TestUtil::get_default_codec())?;
     config.set_use_compound_file(false)?;
@@ -1835,7 +1835,7 @@ fn byte_buffers_test_build_index(case: &dyn BaseDirectoryTestCase) -> Result<()>
     // `getDirectory(null)`: the suppliers ignore the path.
     let no_path = Path::new(rucene::store::java_nio_file::FileSystems::get_default(), "");
     let dir: Arc<dyn Directory> = Arc::from(case.get_directory(&no_path)?);
-    let mut config = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*rnd())));
+    let mut config = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*rnd()))));
     config.set_open_mode(OpenMode::CREATE)?;
     let writer = IndexWriter::new(Arc::clone(&dir), config)?;
     let result = (|| -> Result<()> {

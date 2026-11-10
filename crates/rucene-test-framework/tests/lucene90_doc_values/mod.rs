@@ -358,7 +358,7 @@ fn do_test_dense_numeric_long_values_bulk_fetch(bits_per_value: i32) -> Result<(
     }
 
     let mut dir = LuceneTestCase::new_directory();
-    let mut conf = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut conf = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     conf.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
     for value in &expected {
@@ -506,8 +506,9 @@ fn do_test_sparse_doc_values_vs_stored_fields() -> Result<()> {
     }
 
     let mut dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir());
-    let mut conf =
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+        MockAnalyzer::new(&*random()),
+    )));
     conf.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
     let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), conf)?;
 
@@ -688,8 +689,9 @@ fn do_test_terms_enum_random(
     values_producer: &mut dyn FnMut() -> String,
 ) -> Result<()> {
     let mut dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir());
-    let mut conf =
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+        MockAnalyzer::new(&*random()),
+    )));
     conf.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
     // set to duel against a codec which has ordinals:
     let pf = TestUtil::get_postings_format_with_ords(&*random());
@@ -1047,8 +1049,9 @@ fn create_fast_index_writer(
     dir: &Arc<dyn Directory>,
     max_buffered_docs: i32,
 ) -> Result<Arc<IndexWriter>> {
-    let mut conf =
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+        MockAnalyzer::new(&*random()),
+    )));
     conf.set_max_buffered_docs(max_buffered_docs)?;
     conf.set_ram_buffer_size_mb(-1.0)?;
     conf.set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(
@@ -1101,8 +1104,9 @@ fn do_test_sorted_numeric_blocks_of_various_bits_per_value(
     counts: &mut dyn FnMut() -> i64,
 ) -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut conf =
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+        MockAnalyzer::new(&*random()),
+    )));
     conf.set_max_buffered_docs(LuceneTestCase::at_least(NUMERIC_BLOCK_SIZE as i32))?;
     conf.set_ram_buffer_size_mb(-1.0)?;
     conf.set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(
@@ -1182,8 +1186,9 @@ fn do_test_sparse_numeric_blocks_of_various_bits_per_value(
     density: f64,
 ) -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut conf =
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+        MockAnalyzer::new(&*random()),
+    )));
     conf.set_max_buffered_docs(LuceneTestCase::at_least(NUMERIC_BLOCK_SIZE as i32))?;
     conf.set_ram_buffer_size_mb(-1.0)?;
     conf.set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(
@@ -1296,7 +1301,7 @@ fn test_reseek_after_skip_decompression(suite: &CompressingDocValuesSuite) -> Re
     let mut directory = LuceneTestCase::new_directory();
     {
         let analyzer = Arc::new(StandardAnalyzer::new());
-        let mut config = IndexWriterConfig::with_analyzer(analyzer);
+        let mut config = IndexWriterConfig::with_analyzer(Some(analyzer));
         config.set_codec(suite.get_codec())?;
         config.set_use_compound_file(false)?;
         let writer = IndexWriter::new(directory.as_directory(), config)?;
@@ -1356,7 +1361,7 @@ fn test_large_terms_compression(suite: &CompressingDocValuesSuite) -> Result<()>
     let mut directory = LuceneTestCase::new_directory();
     {
         let analyzer = Arc::new(StandardAnalyzer::new());
-        let mut config = IndexWriterConfig::with_analyzer(analyzer);
+        let mut config = IndexWriterConfig::with_analyzer(Some(analyzer));
         config.set_codec(suite.get_codec())?;
         config.set_use_compound_file(false)?;
         let writer = IndexWriter::new(directory.as_directory(), config)?;

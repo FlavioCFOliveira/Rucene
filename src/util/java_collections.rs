@@ -5,6 +5,7 @@
 //! | --- | --- |
 //! | [`JavaHashMap`] | the `java.util.HashMap` behind `FieldInfo.attributes`, `SegmentInfo.attributes`, `SegmentInfos.userData` and `ReadersAndUpdates.pendingDVUpdates` |
 //! | [`JavaHashSet`] | the `java.util.HashSet` behind `SegmentInfo.setFiles` |
+//! | [`ImmutableSet`] | the unmodifiable set `Set.of`/`Set.copyOf` return, behind `IndexWriter.getFieldNames()` |
 //!
 //! # Why the order is part of the file
 //!
@@ -2340,6 +2341,107 @@ impl Eq for JavaStringSet {}
 impl fmt::Debug for JavaStringSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_set().entries(self.iter()).finish()
+    }
+}
+
+/// The unmodifiable set `Set.of(...)` and `Set.copyOf(...)` return
+/// (`java.util.ImmutableCollections.SetN`), which
+/// `FieldInfos.FieldNumbers.getFieldNames()` hands out (`FieldInfos.java:690-692`)
+/// and `IndexWriter.getFieldNames()` passes on (`IndexWriter.java:2095-2098`).
+///
+/// It answers every query of a `Set`; its mutators throw
+/// `UnsupportedOperationException` without a message
+/// (`ImmutableCollections.uoe()`), whatever the argument. It is a copy: later
+/// changes to the collection it was copied from do not reach it. Its
+/// iteration order, which the JDK draws from a per-JVM random salt, is
+/// unspecified, as in Java.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ImmutableSet<T: Eq + std::hash::Hash> {
+    elements: std::collections::HashSet<T>,
+}
+
+impl<T: Eq + std::hash::Hash> ImmutableSet<T> {
+    /// `Set.copyOf(coll)` / `Set.of(e...)`: an unmodifiable set of the
+    /// distinct `elements`.
+    pub fn copy_of(elements: impl IntoIterator<Item = T>) -> Self {
+        Self {
+            elements: elements.into_iter().collect(),
+        }
+    }
+
+    /// `size()`.
+    pub fn len(&self) -> usize {
+        self.elements.len()
+    }
+
+    /// `isEmpty()`.
+    pub fn is_empty(&self) -> bool {
+        self.elements.is_empty()
+    }
+
+    /// `contains(o)`.
+    pub fn contains<Q>(&self, value: &Q) -> bool
+    where
+        T: std::borrow::Borrow<Q>,
+        Q: Eq + std::hash::Hash + ?Sized,
+    {
+        self.elements.contains(value)
+    }
+
+    /// `iterator()`.
+    pub fn iter(&self) -> impl Iterator<Item = &T> {
+        self.elements.iter()
+    }
+
+    /// `add(e)`.
+    ///
+    /// # Errors
+    ///
+    /// Always `UnsupportedOperationException`.
+    pub fn add(&self, _value: T) -> crate::error::Result<bool> {
+        Err(Self::uoe())
+    }
+
+    /// `remove(o)`.
+    ///
+    /// # Errors
+    ///
+    /// Always `UnsupportedOperationException`.
+    pub fn remove<Q: ?Sized>(&self, _value: &Q) -> crate::error::Result<bool> {
+        Err(Self::uoe())
+    }
+
+    /// `clear()`.
+    ///
+    /// # Errors
+    ///
+    /// Always `UnsupportedOperationException`.
+    pub fn clear(&self) -> crate::error::Result<()> {
+        Err(Self::uoe())
+    }
+
+    /// `ImmutableCollections.uoe()`: `new UnsupportedOperationException()`.
+    fn uoe() -> crate::error::LuceneError {
+        crate::error::LuceneError::Unchecked {
+            class: "java.lang.UnsupportedOperationException",
+            message: None,
+            cause: None,
+        }
+    }
+}
+
+impl<T: Eq + std::hash::Hash + fmt::Debug> fmt::Debug for ImmutableSet<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_set().entries(self.elements.iter()).finish()
+    }
+}
+
+impl<'a, T: Eq + std::hash::Hash> IntoIterator for &'a ImmutableSet<T> {
+    type Item = &'a T;
+    type IntoIter = std::collections::hash_set::Iter<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.elements.iter()
     }
 }
 

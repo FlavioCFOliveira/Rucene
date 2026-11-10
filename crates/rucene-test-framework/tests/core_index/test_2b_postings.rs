@@ -49,7 +49,7 @@ fn test_() -> Result<()> {
         LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix("2BPostings"));
     never_throttle(&dir);
 
-    let mut iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     iwc.set_max_buffered_docs(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH)?;
     iwc.set_ram_buffer_size_mb(256.0)?;
     iwc.set_merge_scheduler(Some(Arc::new(ConcurrentMergeScheduler::new())))?;

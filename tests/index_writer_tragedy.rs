@@ -2945,9 +2945,9 @@ impl rucene::index::IndexableField for BinaryInvertedField {
     }
     fn token_stream(
         &self,
-        analyzer: &dyn rucene::analysis::Analyzer,
+        analyzer: Option<&dyn rucene::analysis::Analyzer>,
         reuse: Option<&mut dyn rucene::analysis::TokenStream>,
-    ) -> Box<dyn rucene::analysis::TokenStream> {
+    ) -> Result<Box<dyn rucene::analysis::TokenStream>> {
         self.0.token_stream(analyzer, reuse)
     }
     fn binary_value(&self) -> Option<rucene::util::BytesRef> {

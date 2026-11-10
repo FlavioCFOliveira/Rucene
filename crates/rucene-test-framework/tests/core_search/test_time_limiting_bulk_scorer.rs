@@ -39,7 +39,9 @@ fn test_time_limiting_bulk_scorer() -> Result<()> {
     let mut directory = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(
         directory.as_directory(),
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random()))),
+        LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
+            &*random(),
+        )))),
     )?;
     let n = 10000;
     for _i in 0..n {

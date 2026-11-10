@@ -1126,7 +1126,7 @@ pub fn run_test(
     *state.dir.lock().unwrap_or_else(|e| e.into_inner()) = Some(dir);
     let analyzer = Arc::new(MockAnalyzer::new(&*random()));
     analyzer.set_max_token_length(TestUtil::next_int(&*random(), 1, MAX_TERM_LENGTH as i32));
-    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
+    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
     conf.set_commit_on_close(false);
     conf.set_info_stream(Arc::new(FailOnNonBulkMergesInfoStream))?;
     if let Some(mp) = conf

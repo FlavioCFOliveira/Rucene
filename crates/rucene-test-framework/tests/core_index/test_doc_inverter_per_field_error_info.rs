@@ -135,7 +135,7 @@ impl ByteArrayOutputStream {
 /// `new IndexWriterConfig(new ThrowingAnalyzer())` logging to a
 /// `PrintStreamInfoStream` over `infoBytes`.
 fn throwing_config(info_bytes: &ByteArrayOutputStream) -> Result<IndexWriterConfig> {
-    let mut c = IndexWriterConfig::with_analyzer(Arc::new(ThrowingAnalyzer::new()));
+    let mut c = IndexWriterConfig::with_analyzer(Some(Arc::new(ThrowingAnalyzer::new())));
     let print_stream_info_stream = PrintStreamInfoStream::new(Box::new(info_bytes.clone()));
     c.set_info_stream(Arc::new(print_stream_info_stream))?;
     Ok(c)

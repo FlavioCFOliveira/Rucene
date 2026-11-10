@@ -126,7 +126,7 @@ fn whitespace_analyzer() -> Arc<dyn Analyzer> {
 
 /// `newIndexWriterConfig(new MockAnalyzer(random(), MockTokenizer.WHITESPACE, false))`.
 fn whitespace_iwc() -> IndexWriterConfig {
-    LuceneTestCase::new_index_writer_config_analyzer(whitespace_analyzer())
+    LuceneTestCase::new_index_writer_config_analyzer(Some(whitespace_analyzer()))
 }
 
 /// [`whitespace_iwc`] with `setMaxBufferedDocs(max)`.
@@ -138,7 +138,7 @@ fn whitespace_iwc_max_buffered(max: i32) -> Result<IndexWriterConfig> {
 
 /// `new IndexWriterConfig(new MockAnalyzer(random()))`.
 fn plain_iwc() -> IndexWriterConfig {
-    IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())))
+    IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))))
 }
 
 /// `new Term(field, text)`.
@@ -1293,7 +1293,7 @@ fn test_delete_null_query() -> Result<()> {
     let d = dir.as_directory();
     let modifier = IndexWriter::new(
         Arc::clone(&d),
-        IndexWriterConfig::with_analyzer(whitespace_analyzer()),
+        IndexWriterConfig::with_analyzer(Some(whitespace_analyzer())),
     )?;
 
     for i in 0..5 {
@@ -1396,7 +1396,7 @@ fn test_indexing_then_deleting() -> Result<()> {
     let analyzer: Arc<dyn Analyzer> = Arc::new(NoPayloadsAnalyzer {
         state: AnalyzerState::new(Box::new(GlobalReuseStrategy)),
     });
-    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
+    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
     iwc.set_ram_buffer_size_mb(4.0)?;
     iwc.set_max_buffered_docs(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH)?;
     let w = IndexWriter::new(Arc::clone(&d), iwc)?;
@@ -1452,8 +1452,9 @@ fn test_flush_pushed_deletes_by_ram() -> Result<()> {
     // Cannot use RandomIndexWriter because we don't want to
     // ever call commit() for this test:
     // note: tiny RAM buffer used, as with a 1MB buffer the test is too slow (flush @ 128,999)
-    let mut iwc =
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+        MockAnalyzer::new(&*random()),
+    )));
     iwc.set_ram_buffer_size_mb(0.5f32 as f64)?;
     iwc.set_max_buffered_docs(1000)?;
     iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
@@ -1534,8 +1535,9 @@ fn test_apply_deletes_on_flush() -> Result<()> {
     let docs_in_segment = Arc::new(AtomicI32::new(0));
     let closing = Arc::new(AtomicBool::new(false));
     let saw_after_flush = Arc::new(AtomicBool::new(false));
-    let mut iwc =
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+        MockAnalyzer::new(&*random()),
+    )));
     iwc.set_ram_buffer_size_mb(0.5)?;
     iwc.set_max_buffered_docs(-1)?;
     iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;

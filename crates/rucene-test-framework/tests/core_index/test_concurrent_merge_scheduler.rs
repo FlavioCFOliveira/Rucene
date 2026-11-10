@@ -95,12 +95,12 @@ const ALREADY_CLOSED: &str = "org.apache.lucene.store.AlreadyClosedException";
 
 /// `newIndexWriterConfig(new MockAnalyzer(random()))`.
 fn mock_iwc() -> IndexWriterConfig {
-    LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())))
+    LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))))
 }
 
 /// `new IndexWriterConfig(new MockAnalyzer(random()))`.
 fn plain_iwc() -> IndexWriterConfig {
-    IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())))
+    IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))))
 }
 
 /// `iwc.getMergeScheduler() instanceof ConcurrentMergeScheduler`.

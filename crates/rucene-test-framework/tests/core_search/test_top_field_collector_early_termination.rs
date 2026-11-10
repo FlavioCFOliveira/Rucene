@@ -117,7 +117,7 @@ impl Instance {
         self.terms = random_terms;
         let seed = random().next_long();
         let analyzer: Arc<dyn Analyzer> = Arc::new(MockAnalyzer::new(&JdkRandom::new(seed)));
-        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
+        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
         if iwc
             .merge_policy()
             .as_any()

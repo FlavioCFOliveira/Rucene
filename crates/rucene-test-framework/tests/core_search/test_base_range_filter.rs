@@ -162,8 +162,10 @@ fn build(
     let mut rand_field = LuceneTestCase::new_string_field_with(random, "rand", "", Store::YES);
     let mut body_field = LuceneTestCase::new_string_field_with(random, "body", "", Store::NO);
 
-    let mut config =
-        LuceneTestCase::new_index_writer_config_with(random, Arc::new(MockAnalyzer::new(random)));
+    let mut config = LuceneTestCase::new_index_writer_config_with(
+        random,
+        Some(Arc::new(MockAnalyzer::new(random))),
+    );
     config.set_open_mode(OpenMode::CREATE)?;
     config.set_max_buffered_docs(TestUtil::next_int(random, 50, 1000))?;
     config.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;

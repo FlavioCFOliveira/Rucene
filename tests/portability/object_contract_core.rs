@@ -1606,9 +1606,9 @@ fn buffered_updates(m: &Measured, index_dir: &std::path::Path) {
     let directory: Arc<dyn Directory> =
         Arc::new(rucene::store::FSDirectory::open(index_dir).expect("open the Java index"));
     let config = Arc::new(
-        rucene::index::index_writer_config::LiveIndexWriterConfig::new(Arc::new(
+        rucene::index::index_writer_config::LiveIndexWriterConfig::new(Some(Arc::new(
             rucene::analysis::standard::StandardAnalyzer::new(),
-        )),
+        ))),
     );
     let field_numbers =
         Arc::new(rucene::index::field_infos::FieldNumbers::new(None, None).expect("field numbers"));

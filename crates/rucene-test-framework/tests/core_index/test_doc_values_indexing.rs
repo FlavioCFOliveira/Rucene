@@ -159,12 +159,12 @@ const IAE: &str = "java.lang.IllegalArgumentException";
 
 /// `newIndexWriterConfig(new MockAnalyzer(random()))`.
 fn mock_iwc() -> IndexWriterConfig {
-    LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())))
+    LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))))
 }
 
 /// `newIndexWriterConfig(analyzer)` with `setMergePolicy(newLogMergePolicy())`.
 fn log_mp_iwc(analyzer: Arc<dyn Analyzer>) -> Result<IndexWriterConfig> {
-    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
+    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     Ok(iwc)
 }
@@ -353,7 +353,7 @@ fn test_length_prefix_across_two_pages() -> Result<()> {
     let mut d = LuceneTestCase::new_directory();
     let w = IndexWriter::new(
         d.as_directory(),
-        IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random()))),
+        IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random())))),
     )?;
     let mut bytes = vec![0u8; 32764];
     // `BytesRef b = new BytesRef(); b.bytes = bytes; b.length = bytes.length;`:
@@ -968,12 +968,12 @@ impl IndexableField for ThrowingTokenStreamField {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
+        _analyzer: Option<&dyn Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
-        Box::new(ThrowingTokenStream {
+    ) -> Result<Box<dyn TokenStream>> {
+        Ok(Box::new(ThrowingTokenStream {
             source: AttributeSource::new(),
-        })
+        }))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -1005,7 +1005,7 @@ impl IndexableField for ThrowingTokenStreamField {
 /// Port of `TestDocValuesIndexing.testExcIndexingDocBeforeDocValues`.
 fn test_exc_indexing_doc_before_doc_values() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut ft = FieldType::new_from(StringField::type_not_stored());
     ft.set_doc_values_type(DocValuesType::SORTED)?;

@@ -130,7 +130,9 @@ fn test_final_block() -> Result<()> {
     let mut d = LuceneTestCase::new_directory();
     let w = IndexWriter::new(
         d.as_directory(),
-        IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*LuceneTestCase::random()))),
+        IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(
+            &*LuceneTestCase::random(),
+        )))),
     )?;
     for i in 0..25u8 {
         let mut doc = Document::new();

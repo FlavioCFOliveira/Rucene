@@ -60,9 +60,6 @@
 //! * **`Failure.reset()`** returns nothing (Java returns `this` for
 //!   chaining) and [`Failure`] is a trait whose `doFail` field is reached
 //!   through [`Failure::do_fail_flag`].
-//! * **`IndexWriterConfig(null)`** (the unreferenced-files check): Rust has no
-//!   null analyzer; the config uses the default analyzer, which a writer that
-//!   only rolls back or closes never calls.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -1316,7 +1313,7 @@ impl MockDirectoryWrapper {
         }
         // now look for unreferenced files: discount ones that we tried to delete but could not
         let start_files = self.list_all()?;
-        let mut iwc = IndexWriterConfig::new();
+        let mut iwc = IndexWriterConfig::with_analyzer(None);
         iwc.set_index_deletion_policy(Some(NoDeletionPolicy::instance()))?;
 
         // We must do this before opening writer otherwise writer will be angry if there are
@@ -1370,7 +1367,7 @@ impl MockDirectoryWrapper {
         ir1.close()?;
         drop(ir1);
         // Don't commit on close, so that no merges will be scheduled.
-        let mut config = IndexWriterConfig::new();
+        let mut config = IndexWriterConfig::with_analyzer(None);
         config.set_commit_on_close(false);
         IndexWriter::new(self.as_directory(), config)?.close()?;
         let ir2 = directory_reader::open(self.as_directory())?;

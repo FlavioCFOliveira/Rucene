@@ -638,7 +638,7 @@ fn maybe_suppress_exceptions(iwc: &IndexWriterConfig) {
 /// `newIndexWriterConfig()`.
 fn verify_config(use_real_writer: bool) -> IndexWriterConfig {
     if use_real_writer {
-        IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())))
+        IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))))
     } else {
         LuceneTestCase::new_index_writer_config()
     }
@@ -1011,9 +1011,9 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
         {
             let num_bytes_per_dim = TestUtil::next_int(&*random(), 2, MAX_NUM_BYTES) as usize;
             let num_dims = TestUtil::next_int(&*random(), 1, MAX_INDEX_DIMENSIONS) as usize;
-            let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(
+            let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
                 MockAnalyzer::new(&*random()),
-            ));
+            )));
             // We rely on docIDs not changing:
             iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
             let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;

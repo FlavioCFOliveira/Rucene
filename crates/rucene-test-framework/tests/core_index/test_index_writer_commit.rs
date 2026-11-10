@@ -76,7 +76,7 @@ pub fn class_def() -> Arc<Class> {
 
 /// `newIndexWriterConfig(new MockAnalyzer(random()))`.
 fn mock_iwc() -> IndexWriterConfig {
-    LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())))
+    LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))))
 }
 
 /// `mock_iwc()` with `setMaxBufferedDocs(max)`.
@@ -291,7 +291,7 @@ fn test_commit_on_close_disk_usage() -> Result<()> {
         })
     };
 
-    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Arc::clone(&analyzer));
+    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(&analyzer)));
     iwc.set_max_buffered_docs(10)?;
     iwc.set_reader_pooling(false);
     iwc.set_merge_policy(Some(Arc::new(
@@ -307,7 +307,7 @@ fn test_commit_on_close_disk_usage() -> Result<()> {
 
     mock.set_track_disk_usage(true);
     let start_disk_usage = mock.get_max_used_size_in_bytes();
-    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Arc::clone(&analyzer));
+    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(&analyzer)));
     iwc.set_open_mode(OpenMode::APPEND)?;
     iwc.set_max_buffered_docs(10)?;
     iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;

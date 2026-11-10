@@ -1949,7 +1949,7 @@ impl BaseTokenStreamTestCase {
                         // pile up a multivalued field
                         *current_field = Self::new_dummy_field(doc, ft)?;
                     } else {
-                        iw.add_document(doc)?;
+                        iw.add_document(&*doc)?;
                         if doc.get_fields().len() > 1 {
                             // back to 1 field
                             doc.remove_fields("dummy");

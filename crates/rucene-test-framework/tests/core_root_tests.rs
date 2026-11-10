@@ -165,8 +165,10 @@ fn demo_test_demo() -> Result<()> {
         let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(index_path.as_path())?);
         let analyzer: Arc<dyn Analyzer> = Arc::new(StandardAnalyzer::new());
         {
-            let iw =
-                IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::with_analyzer(analyzer))?;
+            let iw = IndexWriter::new(
+                Arc::clone(&dir),
+                IndexWriterConfig::with_analyzer(Some(analyzer)),
+            )?;
             let mut doc = Document::new();
             doc.add(Box::new(LuceneTestCase::new_text_field(
                 "fieldname",
@@ -297,8 +299,9 @@ fn external_codecs_test_per_field_codec() -> Result<()> {
 
     let mut dir = LuceneTestCase::new_directory();
     set_check_index_on_close(&dir, false); // we use a custom codec provider
-    let mut config =
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut config = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+        MockAnalyzer::new(&*random()),
+    )));
     config.set_codec(Arc::new(custom_per_field_codec()))?;
     config.set_merge_policy(Some(Arc::new(
         LuceneTestCase::new_log_merge_policy_merge_factor(3)?,
@@ -524,8 +527,9 @@ fn merge_scheduler_external_test_subclass_concurrent_merge_scheduler() -> Result
     doc.add(Box::new(id_field));
 
     let merge_scheduler = my_merge_scheduler();
-    let mut iwc =
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+        MockAnalyzer::new(&*random()),
+    )));
     iwc.set_merge_scheduler(Some(Arc::clone(&merge_scheduler) as Arc<dyn MergeScheduler>))?;
     iwc.set_max_buffered_docs(2)?;
     iwc.set_ram_buffer_size_mb(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH as f64)?;
@@ -616,7 +620,7 @@ impl MergeScheduler for ReportingMergeScheduler {
 /// something. Therefore, don't use any random API !"
 fn merge_scheduler_external_test_custom_merge_scheduler() -> Result<()> {
     let dir: Arc<dyn Directory> = Arc::new(rucene::store::ByteBuffersDirectory::new());
-    let mut conf = IndexWriterConfig::new();
+    let mut conf = IndexWriterConfig::with_analyzer(None);
     conf.set_merge_scheduler(Some(Arc::new(ReportingMergeScheduler {
         executor: Arc::new(SameThreadExecutorService::new()),
     })))?;
@@ -686,7 +690,7 @@ fn do_test_duplicates(
 ) -> Result<()> {
     let mut directory = LuceneTestCase::new_directory();
     let analyzer: Arc<dyn Analyzer> = Arc::new(MockAnalyzer::new(random));
-    let conf = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
+    let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
     let mp = conf.merge_policy();
     mp.set_no_cfs_ratio(if use_compound_files { 1.0 } else { 0.0 })?;
     let writer = IndexWriter::new(directory.as_directory(), conf)?;
@@ -844,7 +848,7 @@ fn search_test_search() -> Result<()> {
 fn do_test_search(random: &dyn Random, out: &mut String, use_compound_file: bool) -> Result<()> {
     let mut directory = LuceneTestCase::new_directory();
     let analyzer: Arc<dyn Analyzer> = Arc::new(MockAnalyzer::new(random));
-    let conf = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
+    let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
     let mp = conf.merge_policy();
     mp.set_no_cfs_ratio(if use_compound_file { 1.0 } else { 0.0 })?;
     let writer = IndexWriter::new(directory.as_directory(), conf)?;

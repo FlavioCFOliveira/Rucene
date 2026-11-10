@@ -1265,9 +1265,9 @@ impl Ctx {
             &*rucene_test_framework::util::LuceneTestCase::random(),
         );
         Self::open_with(
-            rucene_test_framework::util::LuceneTestCase::new_index_writer_config_analyzer(
+            rucene_test_framework::util::LuceneTestCase::new_index_writer_config_analyzer(Some(
                 Arc::new(a),
-            ),
+            )),
         )
     }
 

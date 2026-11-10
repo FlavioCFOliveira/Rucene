@@ -168,12 +168,12 @@ fn mock_analyzer() -> Arc<dyn Analyzer> {
 
 /// `newIndexWriterConfig(new MockAnalyzer(random()))`.
 fn new_iwc() -> IndexWriterConfig {
-    LuceneTestCase::new_index_writer_config_analyzer(mock_analyzer())
+    LuceneTestCase::new_index_writer_config_analyzer(Some(mock_analyzer()))
 }
 
 /// `new IndexWriterConfig(new MockAnalyzer(random()))`.
 fn plain_iwc() -> IndexWriterConfig {
-    IndexWriterConfig::with_analyzer(mock_analyzer())
+    IndexWriterConfig::with_analyzer(Some(mock_analyzer()))
 }
 
 /// `new MockDirectoryWrapper(random(), new ByteBuffersDirectory())`.

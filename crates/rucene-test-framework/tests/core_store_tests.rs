@@ -2499,7 +2499,7 @@ fn lock_factory_test_custom_lock_factory() -> Result<()> {
 
     let writer = IndexWriter::new(
         dir.as_directory(),
-        IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random()))),
+        IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random())))),
     )?;
 
     // add 100 documents (so that commit lock is used)
@@ -2527,14 +2527,15 @@ fn lock_factory_test_directory_no_locking() -> Result<()> {
     );
     let writer = IndexWriter::new(
         dir.as_directory(),
-        IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random()))),
+        IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random())))),
     )?;
     writer.commit()?; // required so the second open succeed
 
     // Create a 2nd IndexWriter.  This is normally not allowed but it should run through since
     // we're not using any locks:
     let writer2;
-    let mut config = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut config =
+        IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     config.set_open_mode(OpenMode::APPEND)?;
     match IndexWriter::new(dir.as_directory(), config) {
         Ok(w) => writer2 = Some(w),

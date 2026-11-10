@@ -217,7 +217,7 @@ pub fn class_def() -> Arc<Class> {
 fn dmq_set_up(f: &mut DisjunctionMax) -> Result<()> {
     let index = LuceneTestCase::new_directory();
     let analyzer: Arc<dyn Analyzer> = Arc::new(MockAnalyzer::new(&*random()));
-    let mut config = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
+    let mut config = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
     config.set_similarity(Some(Arc::clone(&f.sim)))?;
     config.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = RandomIndexWriter::new_with_config(&*random(), index.as_directory(), config)?;
@@ -910,7 +910,7 @@ fn test_explain_match_one_non_matching_sub_query_not_included_in_explanation(
 fn do_test_random_top_docs(num_fields: usize, freqs: &[f64]) -> Result<()> {
     randomizedtesting::jdk::exception::java_assert(num_fields == freqs.len(), String::new);
     let mut dir = LuceneTestCase::new_directory();
-    let config = IndexWriterConfig::with_analyzer(Arc::new(StandardAnalyzer::new()));
+    let config = IndexWriterConfig::with_analyzer(Some(Arc::new(StandardAnalyzer::new())));
     let w = IndexWriter::new(dir.as_directory(), config)?;
 
     let num_docs = if *TEST_NIGHTLY {

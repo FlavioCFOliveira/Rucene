@@ -482,7 +482,7 @@ impl DocHelper {
         similarity: Option<Arc<dyn Similarity>>,
         doc: &Document,
     ) -> Result<Option<SegmentCommitInfo>> {
-        let mut config = IndexWriterConfig::with_analyzer(analyzer);
+        let mut config = IndexWriterConfig::with_analyzer(Some(analyzer));
         config.set_similarity(Some(
             similarity.unwrap_or_else(IndexSearcher::get_default_similarity),
         ))?;

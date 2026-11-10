@@ -25,9 +25,9 @@ pub fn class_def() -> Arc<Class> {
 /// Port of `TestAllFilesHaveChecksumFooter.test`.
 fn test_() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(
+    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
         rucene_test_framework::analysis::MockAnalyzer::new(&*random()),
-    ));
+    )));
     conf.set_codec(TestUtil::get_default_codec())?;
     let riw = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), conf)?;
     add_line_file_docs(&riw)?;

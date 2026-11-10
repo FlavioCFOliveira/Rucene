@@ -219,7 +219,7 @@ fn walk(tree: &mut dyn PointTree, depth: usize, lines: &mut Vec<String>) {
 }
 
 fn config(codec: Arc<RandomCodec>) -> IndexWriterConfig {
-    let mut c = IndexWriterConfig::with_analyzer(Arc::new(StandardAnalyzer::new()));
+    let mut c = IndexWriterConfig::with_analyzer(Some(Arc::new(StandardAnalyzer::new())));
     c.set_codec(codec).unwrap();
     c.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();

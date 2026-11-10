@@ -613,7 +613,7 @@ fn write_with_rucene(
         1,
         "the two analyzers must apply the same offset gap"
     );
-    let live = Arc::new(LiveIndexWriterConfig::new(Arc::clone(&analyzer)));
+    let live = Arc::new(LiveIndexWriterConfig::new(Some(Arc::clone(&analyzer))));
 
     let mut chain = DefaultIndexingChain::new(Arc::clone(&live));
     let numbers = Arc::new(FieldNumbers::new(None, None).expect("field numbers"));
@@ -630,7 +630,7 @@ fn write_with_rucene(
             ));
         }
         chain
-            .process_document(doc_id as i32, &document, true, &mut field_infos)
+            .process_document(doc_id as i32, Some(&document), true, &mut field_infos)
             .expect("process document");
     }
 
@@ -748,7 +748,7 @@ fn rucene_invert_states(case: &str, documents: &[Vec<Vec<OwnedTok>>]) -> Vec<Inv
     field_type.freeze();
 
     let analyzer: Arc<dyn Analyzer> = Arc::new(StandardAnalyzer::new());
-    let live = Arc::new(LiveIndexWriterConfig::new(analyzer));
+    let live = Arc::new(LiveIndexWriterConfig::new(Some(analyzer)));
     let mut chain = DefaultIndexingChain::new(live);
     let numbers = Arc::new(FieldNumbers::new(None, None).expect("field numbers"));
     let mut field_infos = FieldInfosBuilder::new(numbers);
@@ -765,7 +765,7 @@ fn rucene_invert_states(case: &str, documents: &[Vec<Vec<OwnedTok>>]) -> Vec<Inv
             ));
         }
         chain
-            .process_document(doc_id as i32, &document, true, &mut field_infos)
+            .process_document(doc_id as i32, Some(&document), true, &mut field_infos)
             .expect("process document");
         let state = chain.field_invert_state(FIELD).expect("invert state");
         if state.length() == 0 {

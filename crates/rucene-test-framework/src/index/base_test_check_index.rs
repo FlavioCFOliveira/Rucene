@@ -23,11 +23,6 @@
 //! the runner never calls them; a subclass (`TestCheckIndex`) wraps each in a
 //! test of its own. [`class()`] declares the class; the four methods are free
 //! functions taking the directory.
-//!
-//! **Divergence** (declared): `newIndexWriterConfig(null)`
-//! (`testObtainsLock`): Rucene's `IndexWriterConfig` always holds an
-//! analyzer, so the port passes `StandardAnalyzer`, which the empty document
-//! never asks for, as the suites of `BaseIndexFileFormatTestCase` do.
 
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -86,8 +81,9 @@ fn error_string(error: &Option<LuceneError>) -> Option<String> {
 /// The errors of indexing and of `CheckIndex`.
 pub fn test_deleted_docs(dir: Arc<dyn Directory>) -> Result<()> {
     let random = LuceneTestCase::random();
-    let mut config =
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random)));
+    let mut config = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+        MockAnalyzer::new(&*random),
+    )));
     config.set_max_buffered_docs(2)?;
     let writer = IndexWriter::new(Arc::clone(&dir), config)?;
     for i in 0..19 {
@@ -171,7 +167,7 @@ fn checksums_only(dir: Arc<dyn Directory>) -> Result<()> {
     analyzer.set_max_token_length(TestUtil::next_int(&*random, 1, MAX_TERM_LENGTH as i32));
     let iw = IndexWriter::new(
         Arc::clone(&dir),
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::clone(&analyzer) as _),
+        LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(&analyzer) as _)),
     )?;
     for _ in 0..100 {
         iw.add_document(&lf.next_doc()?)?;
@@ -220,9 +216,7 @@ pub fn test_checksums_only_verbose(dir: Arc<dyn Directory>) -> Result<()> {
 pub fn test_obtains_lock(dir: Arc<dyn Directory>) -> Result<()> {
     let iw = IndexWriter::new(
         Arc::clone(&dir),
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(
-            rucene::analysis::standard::StandardAnalyzer::default(),
-        )),
+        LuceneTestCase::new_index_writer_config_analyzer(None),
     )?;
     iw.add_document(&Document::new())?;
     iw.commit()?;

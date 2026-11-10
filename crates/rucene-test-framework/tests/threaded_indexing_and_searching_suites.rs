@@ -1131,9 +1131,9 @@ mod crt {
     pub fn test_thread_starvation_no_delete_nrt_reader(
         _inst: &mut ThreadedInstance<ControlledRealTimeSuite>,
     ) -> Result<()> {
-        let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(
+        let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
             MockAnalyzer::new(&*LuceneTestCase::random()),
-        ));
+        )));
         conf.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
         let mut d = LuceneTestCase::new_directory();
         let latch = Arc::new(CountDownLatch::new(1));
@@ -1303,13 +1303,8 @@ mod crt {
     }
 
     /// `new IndexWriterConfig(null)`.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java passes a `null` analyzer;
-    /// Rucene's configuration always holds one, so the default
-    /// `IndexWriterConfig()` analyzer stands for it. The tests that use it
-    /// index no tokenized field, so no analyzer is ever asked for.
     fn iwc_null_analyzer() -> IndexWriterConfig {
-        IndexWriterConfig::new()
+        IndexWriterConfig::with_analyzer(None)
     }
 
     pub fn test_listener_called(
@@ -1366,9 +1361,9 @@ mod crt {
             5.0,
             128.0,
         ));
-        let mut config = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(
+        let mut config = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(
             &*LuceneTestCase::random(),
-        )));
+        ))));
         config.set_commit_on_close(true);
         config.set_index_deletion_policy(Some(Arc::clone(&sdp) as _))?;
         config.set_open_mode(OpenMode::CREATE_OR_APPEND)?;
@@ -1625,21 +1620,16 @@ mod sm {
     const ISE: &str = "java.lang.IllegalStateException";
 
     /// `new IndexWriterConfig(null)`.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java passes a `null` analyzer;
-    /// Rucene's configuration always holds one, so the default
-    /// `IndexWriterConfig()` analyzer stands for it. The tests that use it
-    /// index no tokenized field, so no analyzer is ever asked for.
     fn iwc_null_analyzer() -> IndexWriterConfig {
-        IndexWriterConfig::new()
+        IndexWriterConfig::with_analyzer(None)
     }
 
     /// `newIndexWriterConfig(new MockAnalyzer(random())).setMergeScheduler(new
     /// ConcurrentMergeScheduler())`.
     fn cms_config() -> Result<IndexWriterConfig> {
-        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(
+        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
             MockAnalyzer::new(&*LuceneTestCase::random()),
-        ));
+        )));
         iwc.set_merge_scheduler(Some(Arc::new(ConcurrentMergeScheduler::new())))?;
         Ok(iwc)
     }
@@ -2352,9 +2342,9 @@ mod sm {
 
     /// `newIndexWriterConfig(analyzer)` through `ensureSaneIWCOnNightly`.
     fn sane_config(analyzer: &Arc<MockAnalyzer>) -> IndexWriterConfig {
-        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(
+        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(
             Arc::clone(analyzer) as Arc<dyn rucene::analysis::Analyzer>
-        );
+        ));
         LuceneTestCase::ensure_sane_iwc_on_nightly(&mut iwc);
         iwc
     }
@@ -2599,9 +2589,9 @@ mod sm {
         _inst: &mut ThreadedInstance<SearcherManagerSuite>,
     ) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(
+        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
             MockAnalyzer::new(&*LuceneTestCase::random()),
-        ));
+        )));
         iwc.set_index_deletion_policy(Some(NoDeletionPolicy::instance()))?;
         let w = IndexWriter::new(dir.as_directory(), iwc)?;
         let doc_id = AtomicI32::new(0);

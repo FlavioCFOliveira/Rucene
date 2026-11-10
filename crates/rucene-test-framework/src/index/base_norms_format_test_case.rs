@@ -711,7 +711,7 @@ pub trait BaseNormsFormatTestCase: BaseIndexFileFormatTestCase {
         let mut dir = LuceneTestCase::new_directory();
         self.apply_created_version_major(&*dir.as_directory())?;
         let analyzer = whitespace_analyzer();
-        let mut conf = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
+        let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
         let sim = Arc::new(CannedNormSimilarity::new(norms.clone()));
         conf.set_similarity(Some(sim))?;
         let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), conf)?;
@@ -821,7 +821,7 @@ pub trait BaseNormsFormatTestCase: BaseIndexFileFormatTestCase {
         let mut dir = LuceneTestCase::new_directory();
         self.apply_created_version_major(&*dir.as_directory())?;
         let analyzer = whitespace_analyzer();
-        let mut conf = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
+        let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
         conf.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
         conf.set_similarity(Some(Arc::new(CannedNormSimilarity::new(norms.clone()))))?;
         let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), conf)?;

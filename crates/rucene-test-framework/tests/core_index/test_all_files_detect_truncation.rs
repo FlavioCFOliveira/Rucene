@@ -47,9 +47,9 @@ fn test_cfs() -> Result<()> {
 /// `private void doTest(boolean cfs)`.
 fn do_test(cfs: bool) -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(
+    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
         rucene_test_framework::analysis::MockAnalyzer::new(&*random()),
-    ));
+    )));
     conf.set_codec(TestUtil::get_default_codec())?;
 
     if !cfs {

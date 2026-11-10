@@ -153,9 +153,9 @@ pub fn after_class_test_explanations() -> Result<()> {
 pub fn before_class_test_explanations() -> Result<()> {
     let directory = LuceneTestCase::new_directory();
     let analyzer = Arc::new(MockAnalyzer::new(&*LuceneTestCase::random()));
-    let mut config = LuceneTestCase::new_index_writer_config_analyzer(
+    let mut config = LuceneTestCase::new_index_writer_config_analyzer(Some(
         Arc::clone(&analyzer) as Arc<dyn Analyzer>
-    );
+    ));
     config.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = RandomIndexWriter::new_with_config(
         &*LuceneTestCase::random(),

@@ -298,9 +298,9 @@ fn test_conjunctions() -> Result<()> {
     let result = (|| -> Result<()> {
         let iw = IndexWriter::new(
             d.as_directory(),
-            LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(
+            LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
                 &*random(),
-            ))),
+            )))),
         )?;
         iw.add_document(&Document::new())?;
         iw.close()?;

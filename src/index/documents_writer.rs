@@ -81,7 +81,6 @@ use std::time::Duration;
 
 use crate::codecs::state::SegmentWriteState;
 use crate::codecs::Codec;
-use crate::document::Document;
 use crate::error::{LuceneError, Result};
 use crate::index::buffered_updates_stream::{FieldTermIterator, SegmentState};
 use crate::index::doc_values_field_updates::DocValuesFieldUpdates;
@@ -94,6 +93,7 @@ use crate::index::leaf_reader::LeafReader;
 use crate::index::postings_enum::{PostingsEnum, POSTINGS_ENUM_NONE};
 use crate::index::terms::{SeekStatus, TermsEnum};
 use crate::index::DocValuesType;
+use crate::index::{DocumentsIterable, IndexableFieldIterable, SingleDocument};
 use crate::index::{FieldInfos, SegmentCommitInfo, SegmentInfo, Term};
 use crate::search::doc_id_set_iterator::NO_MORE_DOCS;
 use crate::search::query::{query_to_string, Query, QueryKey};
@@ -1800,10 +1800,12 @@ pub trait IndexingChain: Accountable + Send + Debug {
     ///
     /// `is_last_doc` is `false` for every document of a block except the last,
     /// mirroring `IndexingChain.processDocument(int, Iterable, boolean)`.
+    /// `doc` is `None` for a `null` element of the block, which the chain
+    /// dereferences (`NullPointerException`).
     fn process_document(
         &mut self,
         doc_id: i32,
-        doc: &Document,
+        doc: Option<&dyn IndexableFieldIterable>,
         is_last_doc: bool,
         field_infos: &mut FieldInfosBuilder,
     ) -> Result<()>;
@@ -4072,7 +4074,7 @@ impl DwptGuard {
     /// index, and propagates any error raised by the indexing chain.
     pub fn update_documents<F>(
         &mut self,
-        docs: &[Document],
+        docs: Option<&dyn DocumentsIterable>,
         del_node: Option<Arc<DeleteNode>>,
         notifications: &dyn FlushNotifications,
         on_new_doc_on_ram: F,
@@ -4168,7 +4170,7 @@ impl DwptGuard {
 
     fn update_documents_inner<F>(
         &mut self,
-        docs: &[Document],
+        docs: Option<&dyn DocumentsIterable>,
         del_node: Option<Arc<DeleteNode>>,
         on_new_doc_on_ram: F,
     ) -> Result<i64>
@@ -4185,8 +4187,14 @@ impl DwptGuard {
         let docs_in_ram_before = self.dwpt.num_docs_in_ram();
         let has_index_sort = self.dwpt.index_writer_config.index_sort().is_some();
         let result = (|| -> Result<()> {
-            for (position, doc) in docs.iter().enumerate() {
-                let is_last_doc = position + 1 == docs.len();
+            // `docs.iterator()` dereferences a `null` block; `hasNext()`,
+            // `next()` and the `hasNext()` that tells the last document run in
+            // Java's order, so an iterator failure interrupts the block where
+            // Java's does (`DocumentsWriterPerThread.java:268-271`).
+            let mut iterator = docs.ok_or_else(LuceneError::null_pointer)?.iterator();
+            while iterator.has_next()? {
+                let doc = iterator.next()?;
+                let is_last_doc = !iterator.has_next()?;
                 if !self.dwpt.has_parent_field
                     && has_index_sort
                     && !is_last_doc
@@ -6279,10 +6287,10 @@ impl DocumentsWriter {
     /// Propagates indexing, delete-queue and flush errors.
     pub fn update_document(
         &self,
-        doc: &Document,
+        doc: &dyn IndexableFieldIterable,
         del_node: Option<Arc<DeleteNode>>,
     ) -> Result<i64> {
-        self.update_documents(std::slice::from_ref(doc), del_node)
+        self.update_documents(Some(&SingleDocument::new(doc)), del_node)
     }
 
     /// Indexes `docs` as one document block.
@@ -6294,7 +6302,7 @@ impl DocumentsWriter {
     /// Propagates indexing, delete-queue and flush errors.
     pub fn update_documents(
         &self,
-        docs: &[Document],
+        docs: Option<&dyn DocumentsIterable>,
         del_node: Option<Arc<DeleteNode>>,
     ) -> Result<i64> {
         let has_events = self.pre_update()?;
@@ -6898,6 +6906,7 @@ impl Drop for LockAllGuard<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::document::Document;
 
     use std::sync::atomic::AtomicUsize;
     use std::sync::Once;
@@ -6919,7 +6928,7 @@ mod tests {
     /// Builds a live config with auto-flush fully under the test's control.
     fn config(max_buffered_docs: i32, ram_buffer_size_mb: f64) -> Arc<LiveIndexWriterConfig> {
         ensure_default_codec();
-        let config = LiveIndexWriterConfig::new(Arc::new(StandardAnalyzer::new()));
+        let config = LiveIndexWriterConfig::new(Some(Arc::new(StandardAnalyzer::new())));
         if max_buffered_docs != LiveIndexWriterConfig::DISABLE_AUTO_FLUSH {
             config
                 .set_max_buffered_docs(max_buffered_docs)
@@ -6996,7 +7005,7 @@ mod tests {
         fn process_document(
             &mut self,
             doc_id: i32,
-            _doc: &Document,
+            _doc: Option<&dyn IndexableFieldIterable>,
             _is_last_doc: bool,
             _field_infos: &mut FieldInfosBuilder,
         ) -> Result<()> {
@@ -7571,7 +7580,12 @@ mod tests {
         let fixture = new_writer(config(1_000_000, 16.0));
         let mut guard = fixture.writer.flush_control().obtain_and_lock().unwrap();
         guard
-            .update_documents(&[doc("hello world")], None, &NoOpFlushNotifications, || {})
+            .update_documents(
+                Some(&[doc("hello world")]),
+                None,
+                &NoOpFlushNotifications,
+                || {},
+            )
             .unwrap();
 
         let children = guard.child_resources();
@@ -7595,7 +7609,7 @@ mod tests {
         for i in 0..5 {
             guard
                 .update_documents(
-                    &[doc(&format!("hello world {i}"))],
+                    Some(&[doc(&format!("hello world {i}"))]),
                     None,
                     &NoOpFlushNotifications,
                     || {},
@@ -7656,19 +7670,19 @@ mod tests {
 
         let mut guard = fixture.writer.flush_control().obtain_and_lock().unwrap();
         guard
-            .update_documents(&[doc("a")], None, &NoOpFlushNotifications, || {})
+            .update_documents(Some(&[doc("a")]), None, &NoOpFlushNotifications, || {})
             .unwrap();
         guard
-            .update_documents(&[doc("b")], None, &NoOpFlushNotifications, || {})
+            .update_documents(Some(&[doc("b")]), None, &NoOpFlushNotifications, || {})
             .unwrap();
         // Document 2 fails inside the chain: it stays reserved but is deleted.
         assert!(guard
-            .update_documents(&[doc("c")], None, &NoOpFlushNotifications, || {})
+            .update_documents(Some(&[doc("c")]), None, &NoOpFlushNotifications, || {})
             .is_err());
         assert_eq!(guard.deleted_doc_ids(), &[2]);
 
         guard
-            .update_documents(&[doc("d")], None, &NoOpFlushNotifications, || {})
+            .update_documents(Some(&[doc("d")]), None, &NoOpFlushNotifications, || {})
             .unwrap();
         assert_eq!(guard.num_docs_in_ram(), 4);
 
@@ -7731,10 +7745,10 @@ mod tests {
         let notifications = RecordingNotifications::default();
         let mut guard = fixture.writer.flush_control().obtain_and_lock().unwrap();
         guard
-            .update_documents(&[doc("a")], None, &notifications, || {})
+            .update_documents(Some(&[doc("a")]), None, &notifications, || {})
             .unwrap();
         assert!(guard
-            .update_documents(&[doc("b")], None, &notifications, || {})
+            .update_documents(Some(&[doc("b")]), None, &notifications, || {})
             .is_err());
 
         assert!(guard.is_aborted(), "a corrupt chain must abort its DWPT");
@@ -7756,15 +7770,20 @@ mod tests {
         let fixture = new_writer(config(1_000_000, 16.0));
         let mut guard = fixture.writer.flush_control().obtain_and_lock().unwrap();
         guard
-            .update_documents(&[doc("first")], None, &NoOpFlushNotifications, || {})
+            .update_documents(Some(&[doc("first")]), None, &NoOpFlushNotifications, || {})
             .unwrap();
         guard
-            .update_documents(&[doc("second")], None, &NoOpFlushNotifications, || {})
+            .update_documents(Some(&[doc("second")]), None, &NoOpFlushNotifications, || {})
             .unwrap();
 
         let node = DeleteNode::new_term(term("id", "1"));
         guard
-            .update_documents(&[doc("third")], Some(node), &NoOpFlushNotifications, || {})
+            .update_documents(
+                Some(&[doc("third")]),
+                Some(node),
+                &NoOpFlushNotifications,
+                || {},
+            )
             .unwrap();
 
         assert_eq!(
@@ -7808,13 +7827,13 @@ mod tests {
 
         let mut guard = fixture.writer.flush_control().obtain_and_lock().unwrap();
         guard
-            .update_documents(&[doc("a")], None, &NoOpFlushNotifications, || {})
+            .update_documents(Some(&[doc("a")]), None, &NoOpFlushNotifications, || {})
             .unwrap();
         guard
-            .update_documents(&[doc("b")], None, &NoOpFlushNotifications, || {})
+            .update_documents(Some(&[doc("b")]), None, &NoOpFlushNotifications, || {})
             .unwrap();
         let error = guard
-            .update_documents(&[doc("c")], None, &NoOpFlushNotifications, || {})
+            .update_documents(Some(&[doc("c")]), None, &NoOpFlushNotifications, || {})
             .unwrap_err();
         assert_eq!(
             error.to_string(),
@@ -7837,7 +7856,7 @@ mod tests {
         for i in 0..3 {
             guard
                 .update_documents(
-                    &[doc(&format!("{i}"))],
+                    Some(&[doc(&format!("{i}"))]),
                     None,
                     &NoOpFlushNotifications,
                     || {},
@@ -7867,7 +7886,7 @@ mod tests {
         for i in 0..2 {
             guard
                 .update_documents(
-                    &[doc(&format!("{i}"))],
+                    Some(&[doc(&format!("{i}"))]),
                     None,
                     &NoOpFlushNotifications,
                     || {},
@@ -7881,7 +7900,7 @@ mod tests {
         }
 
         guard
-            .update_documents(&[doc("2")], None, &NoOpFlushNotifications, || {})
+            .update_documents(Some(&[doc("2")]), None, &NoOpFlushNotifications, || {})
             .unwrap();
         let flushing = control
             .do_after_document(&mut guard)
@@ -7907,7 +7926,7 @@ mod tests {
 
         let mut guard = control.obtain_and_lock().unwrap();
         guard
-            .update_documents(&[doc("a")], None, &NoOpFlushNotifications, || {})
+            .update_documents(Some(&[doc("a")]), None, &NoOpFlushNotifications, || {})
             .unwrap();
         assert_eq!(guard.ram_bytes_used(), 1024 * 1024);
         let flushing = control
@@ -7925,7 +7944,7 @@ mod tests {
         let control = fixture.writer.flush_control();
         let mut guard = control.obtain_and_lock().unwrap();
         guard
-            .update_documents(&[doc("a")], None, &NoOpFlushNotifications, || {})
+            .update_documents(Some(&[doc("a")]), None, &NoOpFlushNotifications, || {})
             .unwrap();
         assert!(control.do_after_document(&mut guard).is_none());
         assert_eq!(
@@ -7950,7 +7969,7 @@ mod tests {
 
         let mut guard = control.obtain_and_lock().unwrap();
         guard
-            .update_documents(&[doc("a")], None, &NoOpFlushNotifications, || {})
+            .update_documents(Some(&[doc("a")]), None, &NoOpFlushNotifications, || {})
             .unwrap();
         let flushing = control.do_after_document(&mut guard).expect("flush is due");
         drop(guard);
@@ -8234,7 +8253,7 @@ mod tests {
         let mut field_infos = FieldInfosBuilder::new(numbers);
 
         chain
-            .process_document(0, &doc("the quick brown fox"), true, &mut field_infos)
+            .process_document(0, Some(&doc("the quick brown fox")), true, &mut field_infos)
             .unwrap();
         assert_eq!(
             chain.field_term_count("body"),

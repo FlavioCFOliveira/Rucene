@@ -523,7 +523,9 @@ fn test_min_should_match_leniency() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(
         dir.as_directory(),
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random()))),
+        LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
+            &*random(),
+        )))),
     )?;
     let mut doc = Document::new();
     doc.add(Box::new(LuceneTestCase::new_text_field(

@@ -659,7 +659,7 @@ fn members_reader(
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let w = IndexWriter::new(
         Arc::clone(&dir),
-        IndexWriterConfig::with_analyzer(Arc::new(StandardAnalyzer::new())),
+        IndexWriterConfig::with_analyzer(Some(Arc::new(StandardAnalyzer::new()))),
     )
     .unwrap();
     for i in 0..ids.len() {

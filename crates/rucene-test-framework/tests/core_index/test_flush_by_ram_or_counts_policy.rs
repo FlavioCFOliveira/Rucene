@@ -134,7 +134,7 @@ fn run_flush_by_ram(num_threads: i32, max_ram_mb: f64, ensure_not_stalled: bool)
     let analyzer = MockAnalyzer::new(&*random());
     analyzer.set_max_token_length(TestUtil::next_int(&*random(), 1, MAX_TERM_LENGTH as i32));
 
-    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(analyzer));
+    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(analyzer)));
     iwc.set_flush_policy(Arc::clone(&flush_policy) as Arc<dyn FlushPolicy>)?;
     iwc.set_ram_buffer_size_mb(max_ram_mb)?;
     iwc.set_max_buffered_docs(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH)?;
@@ -187,9 +187,9 @@ fn test_flush_doc_count() -> Result<()> {
         let num_docs = Arc::new(AtomicI32::new(num_documents_to_index));
         let mut dir = LuceneTestCase::new_directory();
         let flush_policy = Arc::new(MockDefaultFlushPolicy::default());
-        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(
+        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(
             Arc::clone(&analyzer) as Arc<dyn rucene::analysis::Analyzer>
-        );
+        ));
         iwc.set_flush_policy(Arc::clone(&flush_policy) as Arc<dyn FlushPolicy>)?;
 
         iwc.set_max_buffered_docs(2 + LuceneTestCase::at_least(10))?;
@@ -241,7 +241,7 @@ fn test_random() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let analyzer = MockAnalyzer::new(&*random());
     analyzer.set_max_token_length(TestUtil::next_int(&*random(), 1, MAX_TERM_LENGTH as i32));
-    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(analyzer));
+    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(analyzer)));
     let flush_policy = Arc::new(MockDefaultFlushPolicy::default());
     iwc.set_flush_policy(Arc::clone(&flush_policy) as Arc<dyn FlushPolicy>)?;
     let ram_buffer_size_mb = iwc.ram_buffer_size_mb();
@@ -314,9 +314,9 @@ fn test_stall_control() -> Result<()> {
         dir.as_mock()
             .unwrap_or_else(|| npe("dir"))
             .set_throttling(Throttling::Sometimes);
-        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(
+        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(
             Arc::clone(&analyzer) as Arc<dyn rucene::analysis::Analyzer>
-        );
+        ));
         iwc.set_max_buffered_docs(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH)?;
         let flush_policy: Arc<dyn FlushPolicy> = Arc::new(FlushByRamOrCountsPolicy::new());
         iwc.set_flush_policy(flush_policy)?;

@@ -4,13 +4,6 @@
 //!
 //! `assertSame`/`assertNotSame` compare the identity (address) of the token
 //! streams.
-//!
-//! **Divergence (declared).** Java passes a `null` analyzer to
-//! `Field.tokenStream(null, reuse)` and to `new IndexWriterConfig(null)`;
-//! the port's `IndexableField::token_stream` and `IndexWriterConfig` take an
-//! analyzer, so a `MockAnalyzer` and the default config stand for them. No
-//! analyzer is used: the fields are not tokenized or produce their own
-//! stream.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -20,14 +13,14 @@ use randomizedtesting::jdk::reflect::{Class, Constructor};
 use randomizedtesting::junit::Assert;
 use rucene::analysis::{Analyzer, TokenStream};
 use rucene::document::{
-    Document, Field, InvertableType, NumericValue, SharedReader, StoredValue, StringField,
+    Field, InvertableType, NumericValue, SharedReader, StoredValue, StringField,
 };
 use rucene::error::Result;
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::{IndexWriterConfig, IndexableField, IndexableFieldType};
 use rucene::util::BytesRef;
 use rucene_test_framework::analysis::token::Token;
-use rucene_test_framework::analysis::{BaseTokenStreamTestCase, CannedTokenStream, MockAnalyzer};
+use rucene_test_framework::analysis::{BaseTokenStreamTestCase, CannedTokenStream};
 use rucene_test_framework::util::LuceneTestCase;
 
 use crate::lucene_core_shims::t;
@@ -53,13 +46,7 @@ fn assert_not_same(unexpected: *const (), actual: *const ()) {
     }
 }
 
-/// The analyzer standing for Java's `null` (see the module docs).
-fn null_analyzer() -> MockAnalyzer {
-    MockAnalyzer::new(&*LuceneTestCase::random())
-}
-
 fn test_string_field() -> Result<()> {
-    let analyzer = null_analyzer();
     let mut string_field = Field::new(
         "foo",
         "bar".to_string(),
@@ -67,7 +54,7 @@ fn test_string_field() -> Result<()> {
     )?;
 
     // passing null
-    let mut ts = string_field.token_stream(&analyzer, None);
+    let mut ts = string_field.token_stream(None, None)?;
     BaseTokenStreamTestCase::assert_token_stream_contents_offsets(&mut *ts, &["bar"], &[0], &[3])?;
 
     // now reuse previous stream
@@ -77,7 +64,7 @@ fn test_string_field() -> Result<()> {
         StringField::type_not_stored().clone(),
     )?;
     let ts_identity = identity(&*ts);
-    let ts2 = string_field.token_stream(&analyzer, Some(&mut *ts));
+    let ts2 = string_field.token_stream(None, Some(&mut *ts))?;
     assert_same(ts_identity, identity(&*ts2));
     BaseTokenStreamTestCase::assert_token_stream_contents_offsets(&mut *ts, &["baz"], &[0], &[3])?;
 
@@ -89,7 +76,7 @@ fn test_string_field() -> Result<()> {
     )?;
     let mut bogus = CannedTokenStream::new(Vec::new());
     let bogus_identity = identity(&bogus);
-    ts = string_field.token_stream(&analyzer, Some(&mut bogus));
+    ts = string_field.token_stream(None, Some(&mut bogus))?;
     assert_not_same(identity(&*ts), bogus_identity);
     BaseTokenStreamTestCase::assert_token_stream_contents_offsets(&mut *ts, &["beer"], &[0], &[4])?;
     Ok(())
@@ -130,9 +117,9 @@ impl IndexableField for MyField {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
+        _analyzer: Option<&dyn Analyzer>,
         reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
+    ) -> Result<Box<dyn TokenStream>> {
         self.state
             .last_seen
             .set(reuse.map(|reuse| identity(&*reuse)));
@@ -143,7 +130,7 @@ impl IndexableField for MyField {
                 10,
             )]));
         self.state.last_returned.set(Some(identity(&*returned)));
-        returned
+        Ok(returned)
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -173,23 +160,20 @@ impl IndexableField for MyField {
 
 fn test_index_writer_actually_reuses() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let iwc = IndexWriterConfig::new();
+    let iwc = IndexWriterConfig::with_analyzer(None);
     let iw = IndexWriter::new(dir.as_directory(), iwc)?;
     let field1 = Rc::new(MyFieldState::default());
-    // `iw.addDocument(Collections.singletonList(field1))`
-    let mut doc1 = Document::new();
-    doc1.add(Box::new(MyField {
+    let doc1: Vec<Box<dyn IndexableField>> = vec![Box::new(MyField {
         state: Rc::clone(&field1),
-    }));
+    })];
     iw.add_document(&doc1)?;
     let previous = field1.last_returned.get();
     Assert::assert_true(previous.is_some());
 
     let field2 = Rc::new(MyFieldState::default());
-    let mut doc2 = Document::new();
-    doc2.add(Box::new(MyField {
+    let doc2: Vec<Box<dyn IndexableField>> = vec![Box::new(MyField {
         state: Rc::clone(&field2),
-    }));
+    })];
     iw.add_document(&doc2)?;
     match (previous, field2.last_seen.get()) {
         (Some(previous), Some(last_seen)) => assert_same(previous, last_seen),

@@ -282,8 +282,9 @@ fn keyword_doc(fields: &[(&str, &str)]) -> Document {
 /// `new IndexWriter(dir, new IndexWriterConfig(new MockAnalyzer(random()))
 /// .setMergePolicy(NoMergePolicy.INSTANCE))`.
 fn pk_writer(dir: &TestDirectory) -> Arc<IndexWriter> {
-    let mut config =
-        IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*LuceneTestCase::random())));
+    let mut config = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(
+        &*LuceneTestCase::random(),
+    ))));
     config
         .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .unwrap_or_else(|e| rethrow(e));

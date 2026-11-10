@@ -78,9 +78,9 @@ fn test_simple(_f: &mut MatchNoDocs) -> Result<()> {
 
 fn test_query(f: &mut MatchNoDocs) -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Arc::clone(
+    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(
         f.analyzer.as_ref().expect("setUp ran"),
-    ));
+    )));
     iwc.set_max_buffered_docs(2)?;
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let iw = IndexWriter::new(dir.as_directory(), iwc)?;

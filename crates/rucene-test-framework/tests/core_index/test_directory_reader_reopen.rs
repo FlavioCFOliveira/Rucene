@@ -230,7 +230,7 @@ fn same_reader(a: &Arc<dyn DirectoryReader>, b: &Arc<dyn DirectoryReader>) -> bo
 
 /// `new IndexWriterConfig(new MockAnalyzer(random()))`.
 fn plain_iwc() -> IndexWriterConfig {
-    IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())))
+    IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))))
 }
 
 /// `new IndexWriterConfig(new MockAnalyzer(random())).setMergePolicy(NoMergePolicy.INSTANCE)`.
@@ -242,7 +242,7 @@ fn no_merge_iwc() -> Result<IndexWriterConfig> {
 
 /// `newIndexWriterConfig(new MockAnalyzer(random()))`.
 fn mock_iwc() -> IndexWriterConfig {
-    LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())))
+    LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))))
 }
 
 /// `new FieldType(TextField.TYPE_STORED)`, not tokenized, omitting norms
@@ -347,7 +347,7 @@ fn reopen_with_commit_iwc(
     random: &dyn randomizedtesting::jdk::random::Random,
 ) -> Result<IndexWriterConfig> {
     let mut iwc =
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(random)));
+        LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(random))));
     iwc.set_open_mode(OpenMode::CREATE)?;
     iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
@@ -791,8 +791,10 @@ pub fn create_index(
         Arc::new(LogMergePolicy::by_doc_count())
     };
 
-    let mut iwc =
-        LuceneTestCase::new_index_writer_config_with(random, Arc::new(MockAnalyzer::new(random)));
+    let mut iwc = LuceneTestCase::new_index_writer_config_with(
+        random,
+        Some(Arc::new(MockAnalyzer::new(random))),
+    );
     iwc.set_merge_policy(Some(mp))?;
     let w = IndexWriter::new(Arc::clone(dir), iwc)?;
 

@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use randomizedtesting::jdk::random::{JdkRandom, Random};
 use rucene::analysis::Analyzer;
-use rucene::document::{Document, Field, FieldType, NumericValue};
+use rucene::document::{Field, FieldType, NumericValue};
 use rucene::error::{LuceneError, Result};
 use rucene::index::codec_reader::CodecReader;
 use rucene::index::directory_reader::{self, DirectoryReader};
@@ -37,7 +37,7 @@ use rucene::index::index_writer_config::{IndexWriterConfig, LiveIndexWriterConfi
 use rucene::index::merge_policy::MergeObserver;
 use rucene::index::merge_policy::{NoMergePolicy, TieredMergePolicy};
 use rucene::index::terms::Term;
-use rucene::index::DocValuesType;
+use rucene::index::{DocValuesType, DocumentsIterable, DocumentsIterator, IndexableFieldIterable};
 use rucene::internal::tests_hooks::{IndexWriterAccess, TestSecrets};
 use rucene::search::term_query::TermQuery;
 use rucene::search::Query;
@@ -217,7 +217,7 @@ impl RandomIndexWriter {
     pub fn new_with_mock_analyzer(r: &dyn Random, dir: Arc<dyn Directory>) -> Result<Self> {
         // Java evaluates the arguments of `this(...)` left to right.
         let analyzer: Arc<dyn Analyzer> = Arc::new(MockAnalyzer::new(r));
-        let c = LuceneTestCase::new_index_writer_config_with(r, analyzer);
+        let c = LuceneTestCase::new_index_writer_config_with(r, Some(analyzer));
         let use_soft_deletes = r.next_boolean();
         Self::new_private(r, dir, c, true, use_soft_deletes)
     }
@@ -229,7 +229,7 @@ impl RandomIndexWriter {
     ///
     /// What opening the writer throws.
     pub fn new(r: &dyn Random, dir: Arc<dyn Directory>, a: Arc<dyn Analyzer>) -> Result<Self> {
-        let c = LuceneTestCase::new_index_writer_config_with(r, a);
+        let c = LuceneTestCase::new_index_writer_config_with(r, Some(a));
         Self::new_with_config(r, dir, c)
     }
 
@@ -289,8 +289,10 @@ impl RandomIndexWriter {
         let w = Self::mock_index_writer(Arc::clone(&dir), c, r)?;
         let config = Arc::clone(w.get_config());
         let flush_at = TestUtil::next_int(r, 10, 1000);
+        // `closeAnalyzer ? w.getAnalyzer() : null`; `IOUtils.close` skips a
+        // `null` analyzer.
         let analyzer = if close_analyzer {
-            Some(w.get_analyzer()?)
+            w.get_analyzer()?
         } else {
             None
         };
@@ -325,17 +327,26 @@ impl RandomIndexWriter {
 
     /// `addDocument(doc)`: "Adds a Document."
     ///
+    /// `doc` is any `Iterable<T extends IndexableField>`; `None` is Java's
+    /// `null`, which the writer rejects.
+    ///
     /// # Errors
     ///
     /// What the writer throws.
-    pub fn add_document(&self, doc: &Document) -> Result<i64> {
+    pub fn add_document<'d, D>(&self, doc: impl Into<Option<&'d D>>) -> Result<i64>
+    where
+        D: IndexableFieldIterable + 'd,
+    {
+        let doc = doc.into();
         LuceneTestCase::maybe_change_live_index_writer_config(&self.r, &self.config);
         let seq_no = if self.r.next_int_bound(5) == 3 {
             // TODO: maybe, we should simply buffer up added docs
             // (but we need to clone them), and only when
             // getReader, commit, etc. are called, we do an
             // addDocuments?  Would be better testing.
-            self.w.add_documents(std::slice::from_ref(doc))?
+            self.w.add_documents(&SingleDocIterable(
+                doc.map(|doc| doc as &dyn IndexableFieldIterable),
+            ))?
         } else {
             self.w.add_document(doc)?
         };
@@ -402,7 +413,10 @@ impl RandomIndexWriter {
     /// # Errors
     ///
     /// What the writer throws.
-    pub fn add_documents(&self, docs: &[Document]) -> Result<i64> {
+    pub fn add_documents<'d, D>(&self, docs: impl Into<Option<&'d D>>) -> Result<i64>
+    where
+        D: DocumentsIterable + ?Sized + 'd,
+    {
         LuceneTestCase::maybe_change_live_index_writer_config(&self.r, &self.config);
         let seq_no = self.w.add_documents(docs)?;
         self.maybe_flush_or_commit()?;
@@ -414,7 +428,15 @@ impl RandomIndexWriter {
     /// # Errors
     ///
     /// What the writer throws.
-    pub fn update_documents(&self, del_term: Term, docs: &[Document]) -> Result<i64> {
+    pub fn update_documents<'d, D>(
+        &self,
+        del_term: Term,
+        docs: impl Into<Option<&'d D>>,
+    ) -> Result<i64>
+    where
+        D: DocumentsIterable + ?Sized + 'd,
+    {
+        let docs = docs.into();
         LuceneTestCase::maybe_change_live_index_writer_config(&self.r, &self.config);
         let seq_no = if self.use_soft_deletes() {
             self.w
@@ -456,21 +478,24 @@ impl RandomIndexWriter {
     /// # Errors
     ///
     /// What the writer throws.
-    pub fn update_document(&self, t: Term, doc: &Document) -> Result<i64> {
+    pub fn update_document<'d, D>(&self, t: Term, doc: impl Into<Option<&'d D>>) -> Result<i64>
+    where
+        D: IndexableFieldIterable + 'd,
+    {
+        let doc = doc.into();
+        // `Arrays.asList(doc)`, which holds a `null` element as is.
+        let as_list = SingleDocIterable(doc.map(|doc| doc as &dyn IndexableFieldIterable));
         LuceneTestCase::maybe_change_live_index_writer_config(&self.r, &self.config);
         let seq_no = if self.use_soft_deletes() {
             if self.r.next_int_bound(5) == 3 {
-                self.w.soft_update_documents(
-                    t,
-                    std::slice::from_ref(doc),
-                    &[self.soft_deletes_field()?],
-                )?
+                self.w
+                    .soft_update_documents(t, &as_list, &[self.soft_deletes_field()?])?
             } else {
                 self.w
                     .soft_update_document(t, doc, &[self.soft_deletes_field()?])?
             }
         } else if self.r.next_int_bound(5) == 3 {
-            self.w.update_documents(t, std::slice::from_ref(doc))?
+            self.w.update_documents(t, &as_list)?
         } else {
             self.w.update_document(t, doc)?
         };
@@ -854,5 +879,39 @@ impl fmt::Debug for RandomIndexWriter {
         f.debug_struct("RandomIndexWriter")
             .field("soft_deletes_ratio", &self.soft_deletes_ratio)
             .finish_non_exhaustive()
+    }
+}
+
+/// The one-document `Iterable<Iterable<T>>` `addDocument` hands to
+/// `w.addDocuments(...)` (its anonymous class) and the `Arrays.asList(doc)` of
+/// `updateDocument`: one element, which may be `null`.
+struct SingleDocIterable<'a>(Option<&'a dyn IndexableFieldIterable>);
+
+/// The iterator of [`SingleDocIterable`]: `done` flips on the one `next()`.
+struct SingleDocIterator<'a> {
+    doc: Option<&'a dyn IndexableFieldIterable>,
+    done: bool,
+}
+
+impl<'a> DocumentsIterator<'a> for SingleDocIterator<'a> {
+    fn has_next(&mut self) -> Result<bool> {
+        Ok(!self.done)
+    }
+
+    fn next(&mut self) -> Result<Option<&'a dyn IndexableFieldIterable>> {
+        if self.done {
+            return Err(LuceneError::illegal_state(String::new()));
+        }
+        self.done = true;
+        Ok(self.doc)
+    }
+}
+
+impl DocumentsIterable for SingleDocIterable<'_> {
+    fn iterator(&self) -> Box<dyn DocumentsIterator<'_> + '_> {
+        Box::new(SingleDocIterator {
+            doc: self.0,
+            done: false,
+        })
     }
 }

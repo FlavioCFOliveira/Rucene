@@ -127,7 +127,7 @@ pub fn class_def() -> Arc<Class> {
 
 /// `newIndexWriterConfig(new MockAnalyzer(random()))`.
 fn mock_iwc() -> IndexWriterConfig {
-    LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())))
+    LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))))
 }
 
 /// `new SegmentReader(info, Version.LATEST.major, newIOContext(random()))`.
@@ -250,7 +250,7 @@ fn test_position_increment_gap(inst: &Instance) -> Result<()> {
 
     let writer = IndexWriter::new(
         inst.dir(),
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(analyzer)),
+        LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(analyzer))),
     )?;
 
     let mut doc = Document::new();
@@ -383,7 +383,7 @@ fn test_token_reuse(inst: &Instance) -> Result<()> {
 
     let writer = IndexWriter::new(
         inst.dir(),
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(analyzer)),
+        LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(analyzer))),
     )?;
 
     let mut doc = Document::new();
@@ -705,9 +705,9 @@ impl IndexableField for MockIndexableField {
     /// binary value instead, so this is never called.
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
+        _analyzer: Option<&dyn Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
+    ) -> Result<Box<dyn TokenStream>> {
         crate::support::npe("MockIndexableField.tokenStream returned null")
     }
 

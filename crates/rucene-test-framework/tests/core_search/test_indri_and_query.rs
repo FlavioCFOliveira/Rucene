@@ -82,7 +82,7 @@ fn indri_set_up(f: &mut IndriAnd) -> Result<()> {
         true,
         Arc::clone(&ENGLISH_STOPSET),
     ));
-    let mut config = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
+    let mut config = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
     config.set_similarity(Some(Arc::clone(&f.sim)))?;
     config.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = RandomIndexWriter::new_with_config(&*random(), index.as_directory(), config)?;

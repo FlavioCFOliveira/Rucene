@@ -2,10 +2,6 @@
 //! test indexes 2B docs with 65k freqs each, so you get >
 //! Integer.MAX_VALUE postings data for the term.
 //!
-//! * `new IndexWriterConfig(null)`: Rucene's `IndexWriterConfig` always holds
-//!   an analyzer, so the port uses `IndexWriterConfig::new()`
-//!   (`StandardAnalyzer`), which the token-stream documents never ask for
-//!   (see `base_index_file_format_test_case`).
 //! * `Pattern.compile("maxDocsPerChunk=(\\d+), blockSize=(\\d+)")`: no regex
 //!   engine; [`find_chunk_params`] scans for the same pattern.
 //! * `tokenStream.n = …` on the stream the field holds: the stream is shared
@@ -71,9 +67,9 @@ fn find_chunk_params(s: &str) -> Option<(String, String)> {
 }
 
 fn test_() -> Result<()> {
-    let default_config = IndexWriterConfig::new();
+    let default_config = IndexWriterConfig::with_analyzer(None);
     let default_codec = default_config.codec();
-    if IndexWriterConfig::new()
+    if IndexWriterConfig::with_analyzer(None)
         .codec()
         .as_any()
         .and_then(|a| a.downcast_ref::<CompressingCodec>())
@@ -135,7 +131,7 @@ fn test_() -> Result<()> {
         "2BPostingsBytes2",
     ));
     never_throttle(&dir2);
-    let w2 = IndexWriter::new(dir2.as_directory(), IndexWriterConfig::new())?;
+    let w2 = IndexWriter::new(dir2.as_directory(), IndexWriterConfig::with_analyzer(None))?;
     TestUtil::add_indexes_slowly(&w2, &sub_readers)?;
     w2.force_merge(1)?;
     w2.close()?;
@@ -147,7 +143,7 @@ fn test_() -> Result<()> {
         "2BPostingsBytes3",
     ));
     never_throttle(&dir3);
-    let w3 = IndexWriter::new(dir3.as_directory(), IndexWriterConfig::new())?;
+    let w3 = IndexWriter::new(dir3.as_directory(), IndexWriterConfig::with_analyzer(None))?;
     TestUtil::add_indexes_slowly(&w3, &sub_readers)?;
     w3.force_merge(1)?;
     w3.close()?;

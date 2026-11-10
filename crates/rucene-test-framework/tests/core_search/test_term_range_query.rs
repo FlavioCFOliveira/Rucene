@@ -98,7 +98,7 @@ impl TermRangeQueryTest {
         values: &[&str],
         analyzer: Arc<dyn Analyzer>,
     ) -> Result<()> {
-        let mut config = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
+        let mut config = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
         config.set_open_mode(OpenMode::CREATE)?;
         let writer = IndexWriter::new(self.dir().as_directory(), config)?;
         for value in values {
@@ -116,7 +116,7 @@ impl TermRangeQueryTest {
             Arc::clone(&WHITESPACE),
             false,
         ));
-        let mut config = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
+        let mut config = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
         config.set_open_mode(OpenMode::APPEND)?;
         let writer = IndexWriter::new(self.dir().as_directory(), config)?;
         self.insert_doc(&writer, content)?;

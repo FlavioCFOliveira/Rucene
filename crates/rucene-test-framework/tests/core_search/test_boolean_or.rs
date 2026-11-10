@@ -208,7 +208,9 @@ fn test_boolean_scorer_max(_f: &mut BooleanOr) -> Result<()> {
     let riw = RandomIndexWriter::new_with_config(
         &*random(),
         dir.as_directory(),
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random()))),
+        LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
+            &*random(),
+        )))),
     )?;
     let doc_count = LuceneTestCase::at_least(10000);
 

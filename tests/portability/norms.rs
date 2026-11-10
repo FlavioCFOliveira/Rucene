@@ -686,7 +686,7 @@ fn write_with_rucene(
         assert_eq!(analyzer.get_position_increment_gap(spec.name), 0);
         assert_eq!(analyzer.get_offset_gap(spec.name), 1);
     }
-    let mut live = LiveIndexWriterConfig::new(Arc::clone(&analyzer));
+    let mut live = LiveIndexWriterConfig::new(Some(Arc::clone(&analyzer)));
     live.set_similarity(similarity(case));
     let live = Arc::new(live);
 
@@ -735,7 +735,7 @@ fn write_with_rucene(
             ));
         }
         chain
-            .process_document(doc_id as i32, &document, true, &mut field_infos)
+            .process_document(doc_id as i32, Some(&document), true, &mut field_infos)
             .unwrap_or_else(|error| panic!("document {doc_id} must index cleanly: {error}"));
     }
     let finished = field_infos.finish().expect("field infos");

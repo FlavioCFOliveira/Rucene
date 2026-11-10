@@ -153,7 +153,7 @@ fn open() -> Result<(TestDirectory, Arc<IndexWriter>)> {
     let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(
         dir.as_directory(),
-        IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random()))),
+        IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random())))),
     )?;
     Ok((dir, w))
 }
@@ -688,7 +688,7 @@ impl Similarity for NeverForgetsSimilarity {
 /// Port of `TestCustomTermFreq.testFieldInvertState`.
 fn test_field_invert_state() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     iwc.set_similarity(Some(Arc::clone(&*INSTANCE) as Arc<dyn Similarity>))?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
 

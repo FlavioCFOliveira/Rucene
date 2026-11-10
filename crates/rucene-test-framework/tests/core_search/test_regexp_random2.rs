@@ -127,7 +127,7 @@ fn regexp_random2_set_up<V>(f: &mut RegexpRandom2Fixture<V>) -> Result<()> {
         String::new()
     }; // sometimes use an empty string as field name
     let analyzer = MockAnalyzer::with_automaton(&*random(), Arc::clone(&KEYWORD), false);
-    let mut config = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(analyzer));
+    let mut config = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(analyzer)));
     config.set_max_buffered_docs(TestUtil::next_int(&*random(), 50, 1000))?;
     let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), config)?;
     let mut field: Field = LuceneTestCase::new_string_field(&f.field_name, "", Store::NO);

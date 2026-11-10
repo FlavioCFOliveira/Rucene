@@ -104,7 +104,7 @@ fn test_close_under_exception() -> Result<()> {
         dir.as_directory(),
         LuceneTestCase::new_index_writer_config_with(
             &*random(),
-            Arc::new(MockAnalyzer::new(&*random())),
+            Some(Arc::new(MockAnalyzer::new(&*random()))),
         ),
     )?;
     writer.add_document(&Document::new())?;

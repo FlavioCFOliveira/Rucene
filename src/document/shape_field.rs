@@ -592,14 +592,16 @@ impl IndexableField for Triangle {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
+        _analyzer: Option<&dyn Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
+    ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .packed_value()
             .map(|bytes| BytesRef::new(bytes.to_vec()))
             .unwrap_or_else(|| BytesRef::new(Vec::new()));
-        Box::new(crate::analysis::BinaryTokenStream::new(value).unwrap())
+        Ok(Box::new(
+            crate::analysis::BinaryTokenStream::new(value).unwrap(),
+        ))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -790,10 +792,12 @@ impl IndexableField for LateInteractionField {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
+        _analyzer: Option<&dyn Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
-        Box::new(crate::analysis::BinaryTokenStream::new(self.value.clone()).unwrap())
+    ) -> Result<Box<dyn TokenStream>> {
+        Ok(Box::new(
+            crate::analysis::BinaryTokenStream::new(self.value.clone()).unwrap(),
+        ))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {

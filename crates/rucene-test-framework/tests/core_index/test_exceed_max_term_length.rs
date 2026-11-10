@@ -99,7 +99,7 @@ fn test_token_stream(inst: &Instance) -> Result<()> {
     mock_analyzer.set_max_token_length(i32::MAX);
     let w = IndexWriter::new(
         inst.dir(),
-        LuceneTestCase::new_index_writer_config_with(&*random(), Arc::new(mock_analyzer)),
+        LuceneTestCase::new_index_writer_config_with(&*random(), Some(Arc::new(mock_analyzer))),
     )?;
     let result = (|| -> Result<()> {
         let mut ft = FieldType::new();

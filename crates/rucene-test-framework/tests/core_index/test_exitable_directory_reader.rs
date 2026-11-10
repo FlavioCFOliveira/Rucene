@@ -361,7 +361,9 @@ fn test_exitable_filter_terms_index_reader() -> Result<()> {
     let mut directory = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(
         directory.as_directory(),
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random()))),
+        LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
+            &*random(),
+        )))),
     )?;
 
     let mut d1 = Document::new();
@@ -436,9 +438,9 @@ fn test_exitable_terms_enum_sample_timeout_check() -> Result<()> {
     let result = (|| -> Result<()> {
         let writer = IndexWriter::new(
             directory.as_directory(),
-            LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(
+            LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
                 &*random(),
-            ))),
+            )))),
         )?;
         let inner = (|| -> Result<()> {
             for i in 0..50 {
@@ -494,7 +496,9 @@ fn test_exitable_point_values_index_reader() -> Result<()> {
     let mut directory = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(
         directory.as_directory(),
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random()))),
+        LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
+            &*random(),
+        )))),
     )?;
 
     for value in [10, 100, 1000] {
@@ -589,7 +593,9 @@ fn test_exitable_terms_min_and_max() -> Result<()> {
     let mut directory = LuceneTestCase::new_directory();
     let w = IndexWriter::new(
         directory.as_directory(),
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random()))),
+        LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
+            &*random(),
+        )))),
     )?;
     let mut doc = Document::new();
     let foo_field = StringField::new("foo", "bar".to_string(), Store::NO)?;
@@ -639,9 +645,9 @@ fn test_doc_values() -> Result<()> {
     let result = (|| -> Result<()> {
         let writer = IndexWriter::new(
             directory.as_directory(),
-            LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(
+            LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
                 &*random(),
-            ))),
+            )))),
         )?;
 
         let mut d1 = Document::new();
@@ -793,7 +799,9 @@ fn test_float_vector_values() -> Result<()> {
     let mut directory = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(
         directory.as_directory(),
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random()))),
+        LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
+            &*random(),
+        )))),
     )?;
 
     let num_doc = LuceneTestCase::at_least(20);
@@ -869,7 +877,9 @@ fn test_byte_vector_values() -> Result<()> {
     let mut directory = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(
         directory.as_directory(),
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random()))),
+        LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
+            &*random(),
+        )))),
     )?;
 
     let num_doc = LuceneTestCase::at_least(20);

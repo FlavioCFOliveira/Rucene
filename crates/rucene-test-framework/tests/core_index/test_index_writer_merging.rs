@@ -82,12 +82,12 @@ pub fn class_def() -> Arc<Class> {
 
 /// `newIndexWriterConfig(new MockAnalyzer(random()))`.
 fn mock_iwc() -> IndexWriterConfig {
-    LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())))
+    LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))))
 }
 
 /// `new IndexWriterConfig(new MockAnalyzer(random())).setMergePolicy(NoMergePolicy.INSTANCE)`.
 fn dont_merge_config() -> Result<IndexWriterConfig> {
-    let mut iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     Ok(iwc)
 }
@@ -198,7 +198,7 @@ fn verify_index(directory: &TestDirectory, start_at: i32) -> Result<bool> {
 /// `private void fillIndex(Random random, Directory dir, int start, int numDocs)`.
 fn fill_index(random: &dyn Random, dir: &TestDirectory, start: i32, num_docs: i32) -> Result<()> {
     let mut iwc =
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(random)));
+        LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(random))));
     iwc.set_open_mode(OpenMode::CREATE)?;
     iwc.set_max_buffered_docs(2)?;
     iwc.set_merge_policy(Some(Arc::new(

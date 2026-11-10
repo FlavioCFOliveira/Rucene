@@ -96,8 +96,9 @@ fn before_class() -> Result<()> {
         )?)?;
     }
     let dir = LuceneTestCase::new_directory();
-    let mut conf =
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+        MockAnalyzer::new(&*random()),
+    )));
     conf.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     conf.merge_policy().set_no_cfs_ratio(0.0)?;
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
@@ -373,8 +374,9 @@ fn test_exceptions() -> Result<()> {
 
     let fs_dir = LuceneTestCase::new_fs_directory(&index_dir);
     let dir = Arc::new(FaultyFSDirectory::new(fs_dir));
-    let mut iwc =
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+        MockAnalyzer::new(&*random()),
+    )));
     iwc.set_open_mode(OpenMode::CREATE)?;
     let writer = IndexWriter::new(Arc::clone(&dir) as Arc<dyn Directory>, iwc)?;
     let test_doc = test_doc();

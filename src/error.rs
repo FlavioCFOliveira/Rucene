@@ -606,6 +606,18 @@ impl LuceneError {
         }
     }
 
+    /// The `NullPointerException` the JVM raises when Java code dereferences
+    /// `null` (or `Objects.requireNonNull` rejects it): a
+    /// [`LuceneError::Unchecked`] of class `java.lang.NullPointerException`.
+    /// The JVM computes a helpful message; the port keeps none.
+    pub fn null_pointer() -> Self {
+        Self::Unchecked {
+            class: "java.lang.NullPointerException",
+            message: None,
+            cause: None,
+        }
+    }
+
     /// `new <class>(message)` for an unchecked Java exception no other
     /// variant stands for: [`LuceneError::Unchecked`] without a cause.
     pub fn unchecked(class: &'static str, message: impl Into<String>) -> Self {

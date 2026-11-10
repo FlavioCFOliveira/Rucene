@@ -68,8 +68,8 @@ impl BaseDocValuesFormatTestCase for TestSimpleTextDocValuesFormat {}
 fn test_file_is_utf8() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let result = (|| -> Result<()> {
-        let conf = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(
-            &*LuceneTestCase::random(),
+        let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+            MockAnalyzer::new(&*LuceneTestCase::random()),
         )));
         {
             let writer = RandomIndexWriter::new_with_config(

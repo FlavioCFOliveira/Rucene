@@ -333,7 +333,7 @@ impl IndexDeletionPolicy for ExpirationTimeDeletionPolicy {
 
 /// `newIndexWriterConfig(new MockAnalyzer(random()))`.
 fn mock_iwc() -> IndexWriterConfig {
-    LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())))
+    LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))))
 }
 
 /// `IndexFileNames.fileNameFromGeneration(IndexFileNames.SEGMENTS, "", gen)`.
@@ -898,7 +898,7 @@ fn test_keep_last_n_deletion_policy_with_creates() -> Result<()> {
             // this is a commit
             writer.close()?;
             let mut conf =
-                IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+                IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
             conf.set_index_deletion_policy(Some(
                 Arc::clone(&policy) as Arc<dyn IndexDeletionPolicy>
             ))?;
@@ -984,7 +984,7 @@ fn test_keep_last_n_deletion_policy_with_creates() -> Result<()> {
 /// Port of `TestDeletionPolicy.testKeepLastNCommitsDeletionPolicy`.
 fn test_keep_last_n_commits_deletion_policy() -> Result<()> {
     let num_commits_to_keep = 3;
-    let mut conf = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut conf = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     conf.set_index_deletion_policy(Some(Arc::new(KeepLastNCommitsDeletionPolicy::new(
         num_commits_to_keep,
     )?)))?;
@@ -1032,7 +1032,7 @@ fn test_keep_last_n_commits_deletion_policy() -> Result<()> {
 /// Port of `TestDeletionPolicy.testKeepLastNCommitsDeletionPolicyWithZeroCommits`.
 fn test_keep_last_n_commits_deletion_policy_with_zero_commits() -> Result<()> {
     let num_commits_to_keep = 0;
-    let mut conf = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut conf = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let expected = expect_throws(IAE, || -> Result<()> {
         conf.set_index_deletion_policy(Some(Arc::new(KeepLastNCommitsDeletionPolicy::new(
             num_commits_to_keep,

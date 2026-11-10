@@ -86,7 +86,7 @@ pub fn class_def() -> Arc<Class> {
 
 /// `new IndexWriterConfig(new MockAnalyzer(random()))`.
 fn mock_iwc() -> IndexWriterConfig {
-    IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())))
+    IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))))
 }
 
 /// `new Sort(sortField)`.

@@ -217,7 +217,7 @@ pub use readers_and_updates::{PendingDeletes, PendingSoftDeletes, ReaderPool, Re
 use crate::{
     analysis::{Analyzer, TokenStream},
     document::{InvertableType, NumericValue, StoredValue},
-    error::Result,
+    error::{LuceneError, Result},
     store::{ByteArrayDataInput, DataInput},
     util::{vector_util, BytesRef},
 };
@@ -517,11 +517,23 @@ pub trait IndexableField: std::fmt::Display {
     fn field_type(&self) -> &dyn IndexableFieldType;
 
     /// Creates the `TokenStream` used for indexing this field.
+    ///
+    /// Equivalent to `IndexableField.tokenStream(Analyzer, TokenStream)`.
+    /// `analyzer` is `None` for Java's `null`, which an `IndexWriterConfig`
+    /// built without an analyzer passes (`IndexingChain.java:1908`).
+    ///
+    /// # Errors
+    ///
+    /// The unchecked exceptions Java's implementations throw:
+    /// `NullPointerException` when the field needs the absent analyzer
+    /// (`Field.java:496-498`), `IllegalArgumentException` for a value the
+    /// field cannot tokenize (`Field.java:489, 501`), and whatever the analyzer
+    /// raises.
     fn token_stream(
         &self,
-        analyzer: &dyn Analyzer,
+        analyzer: Option<&dyn Analyzer>,
         reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream>;
+    ) -> Result<Box<dyn TokenStream>>;
 
     /// Non-null if this field has a binary value.
     fn binary_value(&self) -> Option<BytesRef>;
@@ -607,6 +619,155 @@ pub trait IndexableField: std::fmt::Display {
     /// answers that the field cannot be cast.
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         None
+    }
+}
+
+/// A document as Lucene's indexing API takes it: an
+/// `Iterable<? extends IndexableField>`.
+///
+/// `IndexWriter.addDocument`, `updateDocument` and `softUpdateDocument` take
+/// any iterable of fields, and `IndexingChain.processDocument` walks it twice,
+/// once per pass, each time with a fresh `iterator()`
+/// (`IndexingChain.java:619, 661`). An iteration may fail mid-way: an
+/// exception thrown by the iterator's `hasNext()` or `next()` leaves the
+/// indexing chain, and the document id already reserved for the document is
+/// marked deleted (`DocumentsWriterPerThread.java:283-307`). A
+/// [`Document`](crate::document::Document) never fails.
+pub trait IndexableFieldIterable {
+    /// `iterator()`: a new iteration over the fields, in order. An `Err` item
+    /// is the unchecked exception the Java iterator throws; the iteration
+    /// ends there.
+    fn iterator(&self) -> Box<dyn Iterator<Item = Result<&dyn IndexableField>> + '_>;
+}
+
+impl IndexableFieldIterable for crate::document::Document {
+    fn iterator(&self) -> Box<dyn Iterator<Item = Result<&dyn IndexableField>> + '_> {
+        Box::new(self.get_fields().iter().map(|field| Ok(field.as_ref())))
+    }
+}
+
+impl IndexableFieldIterable for [Box<dyn IndexableField>] {
+    /// A `List<IndexableField>` (for example `Collections.singletonList(field)`).
+    fn iterator(&self) -> Box<dyn Iterator<Item = Result<&dyn IndexableField>> + '_> {
+        Box::new(self.iter().map(|field| Ok(field.as_ref())))
+    }
+}
+
+impl IndexableFieldIterable for Vec<Box<dyn IndexableField>> {
+    fn iterator(&self) -> Box<dyn Iterator<Item = Result<&dyn IndexableField>> + '_> {
+        self.as_slice().iterator()
+    }
+}
+
+/// A borrowed [`IndexableFieldIterable`] of any type, sized so that it can be
+/// handed on as `&dyn IndexableFieldIterable`.
+struct FieldIterableRef<'a, D: IndexableFieldIterable + ?Sized>(&'a D);
+
+impl<D: IndexableFieldIterable + ?Sized> IndexableFieldIterable for FieldIterableRef<'_, D> {
+    fn iterator(&self) -> Box<dyn Iterator<Item = Result<&dyn IndexableField>> + '_> {
+        self.0.iterator()
+    }
+}
+
+/// The iterator of a block of documents: an
+/// `Iterator<? extends Iterable<? extends IndexableField>>`.
+///
+/// Unlike a Rust [`Iterator`], Java's `hasNext()` and `next()` are separate
+/// calls, either of which may throw, and `DocumentsWriterPerThread.updateDocuments`
+/// calls `hasNext()` again after each `next()` to learn whether the document
+/// is the last of the block (`DocumentsWriterPerThread.java:268-271`), before
+/// indexing it. Keeping the two calls apart keeps the point at which an
+/// iterator failure interrupts the block exactly Java's.
+pub trait DocumentsIterator<'a> {
+    /// `hasNext()`.
+    ///
+    /// # Errors
+    ///
+    /// The unchecked exception the Java iterator throws.
+    fn has_next(&mut self) -> Result<bool>;
+
+    /// `next()`; `None` is a `null` element, which the indexing chain
+    /// dereferences (`NullPointerException`).
+    ///
+    /// # Errors
+    ///
+    /// The unchecked exception the Java iterator throws; past the last
+    /// element, `NoSuchElementException`.
+    fn next(&mut self) -> Result<Option<&'a dyn IndexableFieldIterable>>;
+}
+
+/// A block of documents as Lucene's indexing API takes it: an
+/// `Iterable<? extends Iterable<? extends IndexableField>>`
+/// (`IndexWriter.addDocuments`, `updateDocuments`, `softUpdateDocuments`).
+pub trait DocumentsIterable {
+    /// `iterator()`: a new iteration over the documents of the block.
+    fn iterator(&self) -> Box<dyn DocumentsIterator<'_> + '_>;
+}
+
+/// The iterator of a slice of documents, which never fails.
+struct SliceDocumentsIterator<'a, T>(std::slice::Iter<'a, T>);
+
+impl<'a, T: IndexableFieldIterable> DocumentsIterator<'a> for SliceDocumentsIterator<'a, T> {
+    fn has_next(&mut self) -> Result<bool> {
+        Ok(self.0.len() > 0)
+    }
+
+    fn next(&mut self) -> Result<Option<&'a dyn IndexableFieldIterable>> {
+        match self.0.next() {
+            Some(doc) => Ok(Some(doc)),
+            None => Err(LuceneError::Unchecked {
+                class: "java.util.NoSuchElementException",
+                message: None,
+                cause: None,
+            }),
+        }
+    }
+}
+
+impl<T: IndexableFieldIterable> DocumentsIterable for [T] {
+    fn iterator(&self) -> Box<dyn DocumentsIterator<'_> + '_> {
+        Box::new(SliceDocumentsIterator(self.iter()))
+    }
+}
+
+impl<T: IndexableFieldIterable> DocumentsIterable for Vec<T> {
+    fn iterator(&self) -> Box<dyn DocumentsIterator<'_> + '_> {
+        self.as_slice().iterator()
+    }
+}
+
+impl<T: IndexableFieldIterable, const N: usize> DocumentsIterable for [T; N] {
+    fn iterator(&self) -> Box<dyn DocumentsIterator<'_> + '_> {
+        self.as_slice().iterator()
+    }
+}
+
+/// A borrowed [`DocumentsIterable`] of any type, sized so that it can be
+/// handed on as `&dyn DocumentsIterable`.
+pub(crate) struct DocumentsIterableRef<'a, D: DocumentsIterable + ?Sized>(pub(crate) &'a D);
+
+impl<D: DocumentsIterable + ?Sized> DocumentsIterable for DocumentsIterableRef<'_, D> {
+    fn iterator(&self) -> Box<dyn DocumentsIterator<'_> + '_> {
+        self.0.iterator()
+    }
+}
+
+/// `List.of(doc)`: the one-document block `IndexWriter.updateDocument` and
+/// `softUpdateDocument` hand to `updateDocuments` (`IndexWriter.java:1925-1926,
+/// 1957-1958`).
+pub(crate) struct SingleDocument<'a, D: IndexableFieldIterable + ?Sized>(FieldIterableRef<'a, D>);
+
+impl<'a, D: IndexableFieldIterable + ?Sized> SingleDocument<'a, D> {
+    /// `List.of(doc)`; the `NullPointerException` `List.of` throws for a
+    /// `null` element is the caller's to raise.
+    pub(crate) fn new(doc: &'a D) -> Self {
+        Self(FieldIterableRef(doc))
+    }
+}
+
+impl<D: IndexableFieldIterable + ?Sized> DocumentsIterable for SingleDocument<'_, D> {
+    fn iterator(&self) -> Box<dyn DocumentsIterator<'_> + '_> {
+        Box::new(SliceDocumentsIterator(std::slice::from_ref(&self.0).iter()))
     }
 }
 

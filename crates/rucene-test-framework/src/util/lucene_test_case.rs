@@ -2777,15 +2777,15 @@ impl LuceneTestCase {
     /// defaults", over a `new MockAnalyzer(random())`.
     pub fn new_index_writer_config() -> rucene::index::index_writer_config::IndexWriterConfig {
         let random = Self::random();
-        Self::new_index_writer_config_analyzer(Arc::new(crate::analysis::MockAnalyzer::new(
+        Self::new_index_writer_config_analyzer(Some(Arc::new(crate::analysis::MockAnalyzer::new(
             &*random,
-        )))
+        ))))
     }
 
     /// `newIndexWriterConfig(a)`: "create a new index writer config with random
-    /// defaults".
+    /// defaults". `None` is Java's `null` analyzer.
     pub fn new_index_writer_config_analyzer(
-        a: Arc<dyn rucene::analysis::Analyzer>,
+        a: Option<Arc<dyn rucene::analysis::Analyzer>>,
     ) -> rucene::index::index_writer_config::IndexWriterConfig {
         let random = Self::random();
         Self::new_index_writer_config_with(&*random, a)
@@ -2802,7 +2802,7 @@ impl LuceneTestCase {
     /// the values drawn, which never happen.
     pub fn new_index_writer_config_with(
         r: &dyn Random,
-        a: Arc<dyn rucene::analysis::Analyzer>,
+        a: Option<Arc<dyn rucene::analysis::Analyzer>>,
     ) -> rucene::index::index_writer_config::IndexWriterConfig {
         use rucene::index::merge_scheduler::{ConcurrentMergeScheduler, SerialMergeScheduler};
         const INVARIANT: &str = "INVARIANT: the drawn value is in the setter's range";
@@ -3728,7 +3728,7 @@ impl LuceneTestCase {
     /// config with a snapshot deletion policy" over
     /// `NoDeletionPolicy.INSTANCE`.
     pub fn new_snapshot_index_writer_config(
-        analyzer: Arc<dyn rucene::analysis::Analyzer>,
+        analyzer: Option<Arc<dyn rucene::analysis::Analyzer>>,
     ) -> rucene::index::index_writer_config::IndexWriterConfig {
         use rucene::index::index_deletion_policy::{NoDeletionPolicy, SnapshotDeletionPolicy};
         let mut c = Self::new_index_writer_config_analyzer(analyzer);

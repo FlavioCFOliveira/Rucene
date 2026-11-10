@@ -587,12 +587,7 @@ fn test_zero_pos_incr_sloppy_parsed_and() -> Result<()> {
 
 fn do_test_zero_pos_incr_sloppy(q: Arc<dyn Query>, n_expected: i64) -> Result<()> {
     let mut dir = LuceneTestCase::new_directory(); // random dir
-                                                   // `newIndexWriterConfig(null)`: Rucene's `IndexWriterConfig` always holds
-                                                   // an analyzer; `StandardAnalyzer` is passed, which this document (a
-                                                   // pre-analyzed token stream) never asks for.
-    let cfg = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(
-        rucene::analysis::standard::StandardAnalyzer::new(),
-    ));
+    let cfg = LuceneTestCase::new_index_writer_config_analyzer(None);
     let writer = IndexWriter::new(dir.as_directory(), cfg)?;
     let mut doc = Document::new();
     doc.add(canned_text_field(incr_0_doc_tokens())?);

@@ -190,12 +190,12 @@ fn doc(id: i32) -> Result<Document> {
 
 /// `newIndexWriterConfig(new MockAnalyzer(random()))`.
 fn new_iwc() -> IndexWriterConfig {
-    LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())))
+    LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))))
 }
 
 /// `newIndexWriterConfig(new MockAnalyzer(random))`.
 fn new_iwc_with(random: &dyn Random) -> IndexWriterConfig {
-    LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(random)))
+    LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(random))))
 }
 
 /// `r.getBinaryDocValues(field)`, dereferenced as Java does.
@@ -244,9 +244,9 @@ fn close_and_open_reader(
 /// Port of `TestBinaryDocValuesUpdates.testUpdatesAreFlushed`.
 fn test_updates_are_flushed() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut c = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(
+    let mut c = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
         MockAnalyzer::with_automaton(&*random(), Arc::clone(&WHITESPACE), false),
-    ));
+    )));
     c.set_ram_buffer_size_mb(0.00000001)?;
     let writer = IndexWriter::new(dir.as_directory(), c)?;
     writer.add_document(&doc(0)?)?; // val=1

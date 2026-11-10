@@ -3,8 +3,6 @@
 //! Verify we can read the pre-2.1 file format, do searches
 //! against it, and add documents to it.
 //!
-//! * `new IndexWriterConfig(null)` is `IndexWriterConfig::new()`: Rucene's
-//!   config always holds an analyzer; these writers index no text.
 //! * `si.getCodec() instanceof SimpleTextCodec` compares the codec's name
 //!   with `SimpleTextCodec`'s.
 //! * The anonymous `ConcurrentMergeScheduler` that overrides
@@ -77,7 +75,7 @@ pub fn class_def() -> Arc<Class> {
 
 /// `newIndexWriterConfig(new MockAnalyzer(random()))`.
 fn mock_iwc() -> IndexWriterConfig {
-    LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())))
+    LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))))
 }
 
 /// `si.getCodec() instanceof SimpleTextCodec`.
@@ -279,14 +277,14 @@ fn test_virus_scanner_doesnt_corrupt_index() -> Result<()> {
     TestUtil::disable_virus_checker(&*d)?;
 
     // add empty commit
-    IndexWriter::new(Arc::clone(&d), IndexWriterConfig::new())?.close()?;
+    IndexWriter::new(Arc::clone(&d), IndexWriterConfig::with_analyzer(None))?.close()?;
     // add a trash unreferenced file
     d.create_output("_0.si", &*DEFAULT_IO_CONTEXT)?.close()?;
 
     // start virus scanner
     TestUtil::enable_virus_checker(&*d)?;
 
-    let iw = IndexWriter::new(Arc::clone(&d), IndexWriterConfig::new())?;
+    let iw = IndexWriter::new(Arc::clone(&d), IndexWriterConfig::with_analyzer(None))?;
     iw.add_document(&Document::new())?;
     // stop virus scanner
     TestUtil::disable_virus_checker(&*d)?;
@@ -327,7 +325,7 @@ fn test_no_segments_dot_gen_inflation() -> Result<()> {
     let d = dir.as_directory();
 
     // empty commit
-    IndexWriter::new(Arc::clone(&d), IndexWriterConfig::new())?.close()?;
+    IndexWriter::new(Arc::clone(&d), IndexWriterConfig::with_analyzer(None))?.close()?;
 
     let mut sis = SegmentInfos::read_latest_commit(Arc::clone(&d))?;
     assert_equals(&1, &sis.generation());
@@ -347,7 +345,7 @@ fn test_segments_inflation() -> Result<()> {
     let d = dir.as_directory();
 
     // empty commit
-    IndexWriter::new(Arc::clone(&d), IndexWriterConfig::new())?.close()?;
+    IndexWriter::new(Arc::clone(&d), IndexWriterConfig::with_analyzer(None))?.close()?;
 
     let mut sis = SegmentInfos::read_latest_commit(Arc::clone(&d))?;
     assert_equals(&1, &sis.generation());
@@ -376,7 +374,7 @@ fn test_segment_name_inflation() -> Result<()> {
     let d = dir.as_directory();
 
     // empty commit
-    IndexWriter::new(Arc::clone(&d), IndexWriterConfig::new())?.close()?;
+    IndexWriter::new(Arc::clone(&d), IndexWriterConfig::with_analyzer(None))?.close()?;
 
     let mut sis = SegmentInfos::read_latest_commit(Arc::clone(&d))?;
     assert_equals(&0, &sis.counter);
@@ -406,7 +404,7 @@ fn test_segment_name_inflation() -> Result<()> {
     assert_equals(&4, &sis.counter);
 
     // ensure we write _4 segment next
-    let iw = IndexWriter::new(Arc::clone(&d), IndexWriterConfig::new())?;
+    let iw = IndexWriter::new(Arc::clone(&d), IndexWriterConfig::with_analyzer(None))?;
     iw.add_document(&Document::new())?;
     iw.commit()?;
     iw.close()?;
@@ -424,7 +422,7 @@ fn test_generation_inflation() -> Result<()> {
     let d = dir.as_directory();
 
     // initial commit
-    let iw = IndexWriter::new(Arc::clone(&d), IndexWriterConfig::new())?;
+    let iw = IndexWriter::new(Arc::clone(&d), IndexWriterConfig::with_analyzer(None))?;
     iw.add_document(&Document::new())?;
     iw.commit()?;
     iw.close()?;
@@ -460,7 +458,7 @@ fn test_trashy_file() -> Result<()> {
     let d = dir.as_directory();
 
     // empty commit
-    IndexWriter::new(Arc::clone(&d), IndexWriterConfig::new())?.close()?;
+    IndexWriter::new(Arc::clone(&d), IndexWriterConfig::with_analyzer(None))?.close()?;
 
     let mut sis = SegmentInfos::read_latest_commit(Arc::clone(&d))?;
     assert_equals(&1, &sis.generation());
@@ -483,7 +481,7 @@ fn test_trashy_gen_file() -> Result<()> {
     let d = dir.as_directory();
 
     // initial commit
-    let iw = IndexWriter::new(Arc::clone(&d), IndexWriterConfig::new())?;
+    let iw = IndexWriter::new(Arc::clone(&d), IndexWriterConfig::with_analyzer(None))?;
     iw.add_document(&Document::new())?;
     iw.commit()?;
     iw.close()?;

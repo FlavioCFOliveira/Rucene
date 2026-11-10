@@ -105,7 +105,9 @@ fn dv_doc(value: i64) -> Document {
 
 /// `new IndexWriterConfig(new MockAnalyzer(random()))`.
 fn mock_config() -> IndexWriterConfig {
-    IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*LuceneTestCase::random())))
+    IndexWriterConfig::with_analyzer(Some(Arc::new(
+        MockAnalyzer::new(&*LuceneTestCase::random()),
+    )))
 }
 
 /// Port of the members of `BaseCompressingDocValuesFormatTestCase`.

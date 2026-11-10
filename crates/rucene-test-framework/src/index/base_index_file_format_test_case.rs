@@ -53,12 +53,6 @@
 //!   `RamObject` names only the object's own class, so the check is on that
 //!   name, and no `RamObject` is a `Thread`. The class is unused in Lucene
 //!   10.5.0 (it served the removed `testRamBytesUsed`).
-//! * `newIndexWriterConfig(null)` / `new IndexWriterConfig(null)` (the
-//!   suites that extend this class): Rucene's `IndexWriterConfig` always
-//!   holds an analyzer, so the port passes `StandardAnalyzer`, which the
-//!   documents of those tests (only `StringField`s, or pre-analyzed
-//!   `TokenStream`s) never ask for; building it draws nothing from
-//!   `random()`, as Java's `null` does not.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
@@ -506,9 +500,9 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
         // ratio do not use RIW which will change things up!
         let mp = LuceneTestCase::new_tiered_merge_policy();
         mp.set_no_cfs_ratio(0.0)?;
-        let mut cfg = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(
+        let mut cfg = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(
             &*LuceneTestCase::random(),
-        )));
+        ))));
         cfg.set_use_compound_file(false)?;
         cfg.set_merge_policy(Some(Arc::new(mp)))?;
         if *VERBOSE {
@@ -533,9 +527,9 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
         self.apply_created_version_major(&*dir2.as_directory())?;
         let mp = LuceneTestCase::new_tiered_merge_policy();
         mp.set_no_cfs_ratio(0.0)?;
-        let mut cfg = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(
+        let mut cfg = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(
             &*LuceneTestCase::random(),
-        )));
+        ))));
         cfg.set_use_compound_file(false)?;
         cfg.set_merge_policy(Some(Arc::new(mp)))?;
         let w = IndexWriter::new(dir2.as_directory(), cfg)?;
@@ -565,9 +559,9 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
         self.apply_created_version_major(&*one_doc_index.as_directory())?;
         let iw = IndexWriter::new(
             one_doc_index.as_directory(),
-            IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(
+            IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(
                 &*LuceneTestCase::random(),
-            ))),
+            )))),
         )?;
         let mut one_doc = Document::new();
         let mut custom_type = FieldType::new_from(TextField::type_stored());
@@ -811,7 +805,7 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
         let new_conf =
             |analyzer: &Arc<dyn rucene::analysis::Analyzer>| -> Result<IndexWriterConfig> {
                 let mut conf =
-                    LuceneTestCase::new_index_writer_config_analyzer(Arc::clone(analyzer));
+                    LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(analyzer)));
                 // just for now, try to keep this test reproducible
                 conf.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
                 conf.set_codec(self.get_codec())?;
@@ -962,9 +956,9 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
         let dir = Arc::new(FileTrackingDirectoryWrapper::new(inner.as_directory()));
         self.apply_created_version_major(&*dir)?;
 
-        let cfg = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(
+        let cfg = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(
             &*LuceneTestCase::random(),
-        )));
+        ))));
         let w = IndexWriter::new(Arc::clone(&dir) as Arc<dyn Directory>, cfg)?;
         let num_docs = LuceneTestCase::at_least(100);
         for _ in 0..num_docs {

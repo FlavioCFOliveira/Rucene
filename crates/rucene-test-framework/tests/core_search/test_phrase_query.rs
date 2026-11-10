@@ -329,7 +329,7 @@ fn test_phrase_query_with_stop_analyzer() -> Result<()> {
     let writer = RandomIndexWriter::new_with_config(
         &*random(),
         directory.as_directory(),
-        LuceneTestCase::new_index_writer_config_analyzer(stop_analyzer),
+        LuceneTestCase::new_index_writer_config_analyzer(Some(stop_analyzer)),
     )?;
     let mut doc = Document::new();
     doc.add(text_field("field", "the stop words are here"));
@@ -385,8 +385,9 @@ fn test_phrase_query_in_conjunction_scorer() -> Result<()> {
     drop(searcher);
     reader.close()?;
 
-    let mut iwc =
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+        MockAnalyzer::new(&*random()),
+    )));
     iwc.set_open_mode(OpenMode::CREATE)?;
     let writer = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), iwc)?;
     let mut doc = Document::new();
@@ -436,8 +437,9 @@ fn test_phrase_query_in_conjunction_scorer() -> Result<()> {
 /// Port of `TestPhraseQuery.testSlopScoring`.
 fn test_slop_scoring() -> Result<()> {
     let mut directory = LuceneTestCase::new_directory();
-    let mut iwc =
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+        MockAnalyzer::new(&*random()),
+    )));
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     iwc.set_similarity(Some(Arc::new(BM25Similarity::new())))?;
     let writer = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), iwc)?;
@@ -793,7 +795,7 @@ fn test_random_phrases() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let analyzer: Arc<dyn Analyzer> = Arc::new(MockAnalyzer::new(&*random()));
 
-    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Arc::clone(&analyzer));
+    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(&analyzer)));
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
     let mut docs: Vec<Vec<String>> = Vec::new();

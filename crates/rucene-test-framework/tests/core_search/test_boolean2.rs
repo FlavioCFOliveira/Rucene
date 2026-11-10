@@ -101,7 +101,7 @@ fn copy_of(dir: &TestDirectory) -> Result<TestDirectory> {
 
 /// `newIndexWriterConfig(new MockAnalyzer(random()))`.
 fn mock_iwc() -> rucene::index::index_writer_config::IndexWriterConfig {
-    LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())))
+    LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))))
 }
 
 const DOC_FIELDS: [&str; 4] = [

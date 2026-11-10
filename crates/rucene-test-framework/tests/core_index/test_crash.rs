@@ -71,7 +71,7 @@ fn init_index(
     commit_on_close: bool,
 ) -> Result<Arc<IndexWriter>> {
     let mut iwc =
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(random)));
+        LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(random))));
     iwc.set_max_buffered_docs(10)?;
     iwc.set_merge_scheduler(Some(Arc::new(ConcurrentMergeScheduler::new())))?;
     iwc.set_commit_on_close(commit_on_close);

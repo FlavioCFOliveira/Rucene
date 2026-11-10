@@ -75,8 +75,9 @@ fn test_live_field_values() -> Result<()> {
     let mut dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix(
         "livefieldupdates",
     ));
-    let iwc =
-        LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())));
+    let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
+        &*random(),
+    ))));
 
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
 

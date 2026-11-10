@@ -65,7 +65,7 @@ fn dv_rewrite_set_up(f: &mut DocValuesRewrite) -> Result<()> {
         String::new()
     }; // sometimes use an empty string as field name
     let analyzer = MockAnalyzer::with_automaton(&*random(), Arc::clone(&KEYWORD), false);
-    let mut config = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(analyzer));
+    let mut config = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(analyzer)));
     config.set_max_buffered_docs(TestUtil::next_int(&*random(), 50, 1000))?;
     let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), config)?;
     let mut terms: Vec<String> = Vec::new();

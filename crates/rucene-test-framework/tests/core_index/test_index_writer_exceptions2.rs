@@ -126,7 +126,7 @@ fn is_fake(e: &LuceneError) -> bool {
 /// `newIndexWriterConfig(analyzer)` with a `SerialMergeScheduler` (just for
 /// now, try to keep this test reproducible) and `codec`.
 fn config(analyzer: &Arc<dyn Analyzer>, codec: &Arc<dyn Codec>) -> Result<IndexWriterConfig> {
-    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Arc::clone(analyzer));
+    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(analyzer)));
     conf.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
     conf.set_codec(Arc::clone(codec))?;
     Ok(conf)

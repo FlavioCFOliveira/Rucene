@@ -173,7 +173,8 @@ impl IndexWriterEventListener for NoOpIndexWriterEventListener {
 /// (`LiveIndexWriterConfig.java:183, 218`); see
 /// [`synchronized_flush_settings`](Self::synchronized_flush_settings).
 pub struct LiveIndexWriterConfig {
-    analyzer: Arc<dyn Analyzer>,
+    /// `analyzer`, which Java allows to be `null` (`LiveIndexWriterConfig.java:40, 120`).
+    analyzer: Option<Arc<dyn Analyzer>>,
     max_buffered_docs: AtomicI32,
     /// `ramBufferSizeMB`, held as the bit pattern of an `f64`.
     ram_buffer_size_mb: AtomicU64,
@@ -261,11 +262,16 @@ impl LiveIndexWriterConfig {
     pub const DEFAULT_MAX_FULL_FLUSH_MERGE_WAIT_MILLIS: i64 = 500;
 
     /// Creates a live config with the given analyzer and Lucene 10.5.0 defaults.
-    pub fn new(analyzer: Arc<dyn Analyzer>) -> Self {
+    ///
+    /// `None` is Java's `null` analyzer, which `LiveIndexWriterConfig(Analyzer)`
+    /// accepts (`LiveIndexWriterConfig.java:120-121`): the indexing chain then
+    /// inverts only untokenized fields, and a tokenized field that needs the
+    /// analyzer raises `NullPointerException` (`Field.java:496-498`).
+    pub fn new(analyzer: Option<Arc<dyn Analyzer>>) -> Self {
         Self::with_defaults(analyzer)
     }
 
-    fn with_defaults(analyzer: Arc<dyn Analyzer>) -> Self {
+    fn with_defaults(analyzer: Option<Arc<dyn Analyzer>>) -> Self {
         // `codec = Codec.getDefault()` (`LiveIndexWriterConfig.java:131`).
         let codec = get_default().unwrap_or_else(|| {
             panic!(
@@ -332,14 +338,15 @@ impl LiveIndexWriterConfig {
         }
     }
 
-    /// Returns the default analyzer used for indexing documents.
-    pub fn analyzer(&self) -> &dyn Analyzer {
-        self.analyzer.as_ref()
+    /// Returns the default analyzer used for indexing documents, `None` for
+    /// Java's `null` (`LiveIndexWriterConfig.getAnalyzer()`).
+    pub fn analyzer(&self) -> Option<&dyn Analyzer> {
+        self.analyzer.as_deref()
     }
 
-    /// Returns the analyzer as an `Arc`.
-    pub fn analyzer_arc(&self) -> Arc<dyn Analyzer> {
-        Arc::clone(&self.analyzer)
+    /// Returns the analyzer as an `Arc`, `None` for Java's `null`.
+    pub fn analyzer_arc(&self) -> Option<Arc<dyn Analyzer>> {
+        self.analyzer.clone()
     }
 
     /// Sets the RAM buffer size in megabytes.
@@ -650,7 +657,12 @@ impl fmt::Display for LiveIndexWriterConfig {
     /// substitution [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
     /// makes everywhere else. Every other clause is byte-identical.
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        writeln!(f, "analyzer={}", self.analyzer.java_class_name())?;
+        // `analyzer == null ? "null" : analyzer.getClass().getName()`
+        // (`LiveIndexWriterConfig.java:472-473`).
+        match &self.analyzer {
+            Some(analyzer) => writeln!(f, "analyzer={}", analyzer.java_class_name())?,
+            None => writeln!(f, "analyzer=null")?,
+        }
         writeln!(
             f,
             "ramBufferSizeMB={}",
@@ -747,11 +759,14 @@ impl IndexWriterConfig {
     /// Creates a new config using [`StandardAnalyzer`] and the default codec.
     #[allow(clippy::arc_with_non_send_sync)]
     pub fn new() -> Self {
-        Self::with_analyzer(Arc::new(StandardAnalyzer::new()))
+        Self::with_analyzer(Some(Arc::new(StandardAnalyzer::new())))
     }
 
     /// Creates a new config using the provided analyzer and the default codec.
-    pub fn with_analyzer(analyzer: Arc<dyn Analyzer>) -> Self {
+    ///
+    /// Equivalent to `IndexWriterConfig(Analyzer)`; `None` is Java's `null`
+    /// analyzer, which the constructor accepts (`IndexWriterConfig.java:144-145`).
+    pub fn with_analyzer(analyzer: Option<Arc<dyn Analyzer>>) -> Self {
         let mut live = LiveIndexWriterConfig::new(analyzer);
         // `private SetOnce<IndexWriter> writer = new SetOnce<>()`
         // (`IndexWriterConfig.java:112`).
@@ -1031,13 +1046,13 @@ impl IndexWriterConfig {
     // Delegating getters and live setters
     // -------------------------------------------------------------------------
 
-    /// Returns the analyzer.
-    pub fn analyzer(&self) -> &dyn Analyzer {
+    /// Returns the analyzer, `None` for Java's `null`.
+    pub fn analyzer(&self) -> Option<&dyn Analyzer> {
         self.live.analyzer()
     }
 
-    /// Returns the analyzer as an `Arc`.
-    pub fn analyzer_arc(&self) -> Arc<dyn Analyzer> {
+    /// Returns the analyzer as an `Arc`, `None` for Java's `null`.
+    pub fn analyzer_arc(&self) -> Option<Arc<dyn Analyzer>> {
         self.live.analyzer_arc()
     }
 

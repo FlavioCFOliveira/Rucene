@@ -952,16 +952,31 @@ impl CharReader for SharedCharReader {
     }
 }
 
+/// The analyzer a tokenized field dereferences: Java's `analyzer.tokenStream(...)`
+/// on a `null` analyzer throws `NullPointerException` (`Field.java:496-498`).
+fn require_analyzer(analyzer: Option<&dyn Analyzer>) -> Result<&dyn Analyzer> {
+    analyzer.ok_or_else(LuceneError::null_pointer)
+}
+
 /// `analyzer.tokenStream(name, readerValue())`.
 fn reader_token_stream(
-    analyzer: &dyn Analyzer,
+    analyzer: Option<&dyn Analyzer>,
     name: &str,
     reader: &SharedReader,
-) -> Box<dyn TokenStream> {
-    let stream = analyzer
-        .token_stream(name, Box::new(SharedCharReader(Rc::clone(reader))))
-        .expect("analyzer produced a token stream");
-    Box::new(crate::analysis::SharedTokenStream::new(stream))
+) -> Result<Box<dyn TokenStream>> {
+    let stream = require_analyzer(analyzer)?
+        .token_stream(name, Box::new(SharedCharReader(Rc::clone(reader))))?;
+    Ok(Box::new(crate::analysis::SharedTokenStream::new(stream)))
+}
+
+/// `analyzer.tokenStream(name, stringValue())`.
+fn string_token_stream(
+    analyzer: Option<&dyn Analyzer>,
+    name: &str,
+    value: &str,
+) -> Result<Box<dyn TokenStream>> {
+    let stream = require_analyzer(analyzer)?.token_stream_from_str(name, value)?;
+    Ok(Box::new(crate::analysis::SharedTokenStream::new(stream)))
 }
 
 /// A field in a document.
@@ -1441,37 +1456,42 @@ impl IndexableField for Field {
 
     fn token_stream(
         &self,
-        analyzer: &dyn Analyzer,
+        analyzer: Option<&dyn Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
+    ) -> Result<Box<dyn TokenStream>> {
         if self.field_type.index_options() == IndexOptions::NONE {
-            return Box::new(crate::analysis::StringTokenStream::new("".to_string()).unwrap());
+            return Ok(Box::new(
+                crate::analysis::StringTokenStream::new("".to_string()).unwrap(),
+            ));
         }
         if !self.field_type.tokenized() {
             if let Some(s) = self.string_value() {
-                return Box::new(crate::analysis::StringTokenStream::new(s).unwrap());
+                return Ok(Box::new(
+                    crate::analysis::StringTokenStream::new(s).unwrap(),
+                ));
             }
             if let Some(b) = self.binary_value() {
-                return Box::new(crate::analysis::BinaryTokenStream::new(b).unwrap());
+                return Ok(Box::new(
+                    crate::analysis::BinaryTokenStream::new(b).unwrap(),
+                ));
             }
-            panic!("Non-Tokenized Fields must have a String value");
+            return Err(LuceneError::IllegalArgument(
+                "Non-Tokenized Fields must have a String value".to_string(),
+            ));
         }
         if let Some(ts) = self.token_stream_value() {
-            return Box::new(crate::analysis::SharedTokenStream::new(ts));
+            return Ok(Box::new(crate::analysis::SharedTokenStream::new(ts)));
         }
         if let FieldData::Reader(reader) = &self.fields_data {
             return reader_token_stream(analyzer, &self.name, reader);
         }
         if let Some(s) = self.string_value() {
-            let stream = analyzer
-                .token_stream_from_str(&self.name, &s)
-                .expect("analyzer produced a token stream");
-            return Box::new(crate::analysis::SharedTokenStream::new(stream));
+            return string_token_stream(analyzer, &self.name, &s);
         }
-        panic!(
-            "Field must have either TokenStream, String, Reader or Number value; got {:?}",
-            self
-        );
+        // `"... got " + this` (`Field.java:501-502`).
+        Err(LuceneError::IllegalArgument(format!(
+            "Field must have either TokenStream, String, Reader or Number value; got {self}"
+        )))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -1882,14 +1902,16 @@ impl IndexableField for StringField {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
+        _analyzer: Option<&dyn Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
+    ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value
             .clone()
             .unwrap_or_else(|| BytesRef::new(Vec::new()));
-        Box::new(crate::analysis::BinaryTokenStream::new(value).unwrap())
+        Ok(Box::new(
+            crate::analysis::BinaryTokenStream::new(value).unwrap(),
+        ))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -2023,20 +2045,15 @@ impl IndexableField for TextField {
 
     fn token_stream(
         &self,
-        analyzer: &dyn Analyzer,
+        analyzer: Option<&dyn Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
+    ) -> Result<Box<dyn TokenStream>> {
         match &self.fields_data {
-            FieldData::TokenStream(ts) => {
-                Box::new(crate::analysis::SharedTokenStream::new(Rc::clone(ts)))
-            }
+            FieldData::TokenStream(ts) => Ok(Box::new(crate::analysis::SharedTokenStream::new(
+                Rc::clone(ts),
+            ))),
             FieldData::Reader(reader) => reader_token_stream(analyzer, &self.name, reader),
-            FieldData::String(s) => {
-                let stream = analyzer
-                    .token_stream_from_str(&self.name, s)
-                    .expect("analyzer produced a token stream");
-                Box::new(crate::analysis::SharedTokenStream::new(stream))
-            }
+            FieldData::String(s) => string_token_stream(analyzer, &self.name, s),
             _ => panic!("TextField must have a TokenStream, String or Reader value"),
         }
     }
@@ -2200,9 +2217,9 @@ impl IndexableField for StoredField {
 
     fn token_stream(
         &self,
-        analyzer: &dyn Analyzer,
+        analyzer: Option<&dyn Analyzer>,
         reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
+    ) -> Result<Box<dyn TokenStream>> {
         self.0.token_stream(analyzer, reuse)
     }
 
@@ -2611,14 +2628,16 @@ impl IndexableField for KeywordField {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
+        _analyzer: Option<&dyn Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
+    ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value
             .clone()
             .unwrap_or_else(|| BytesRef::new(Vec::new()));
-        Box::new(crate::analysis::BinaryTokenStream::new(value).unwrap())
+        Ok(Box::new(
+            crate::analysis::BinaryTokenStream::new(value).unwrap(),
+        ))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -2962,13 +2981,15 @@ impl IndexableField for IntPoint {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
+        _analyzer: Option<&dyn Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
+    ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value()
             .unwrap_or_else(|| BytesRef::new(Vec::new()));
-        Box::new(crate::analysis::BinaryTokenStream::new(value).unwrap())
+        Ok(Box::new(
+            crate::analysis::BinaryTokenStream::new(value).unwrap(),
+        ))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -3218,13 +3239,15 @@ impl IndexableField for LongPoint {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
+        _analyzer: Option<&dyn Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
+    ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value()
             .unwrap_or_else(|| BytesRef::new(Vec::new()));
-        Box::new(crate::analysis::BinaryTokenStream::new(value).unwrap())
+        Ok(Box::new(
+            crate::analysis::BinaryTokenStream::new(value).unwrap(),
+        ))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -3557,13 +3580,15 @@ impl IndexableField for FloatPoint {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
+        _analyzer: Option<&dyn Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
+    ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value()
             .unwrap_or_else(|| BytesRef::new(Vec::new()));
-        Box::new(crate::analysis::BinaryTokenStream::new(value).unwrap())
+        Ok(Box::new(
+            crate::analysis::BinaryTokenStream::new(value).unwrap(),
+        ))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -3824,13 +3849,15 @@ impl IndexableField for DoublePoint {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
+        _analyzer: Option<&dyn Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
+    ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value()
             .unwrap_or_else(|| BytesRef::new(Vec::new()));
-        Box::new(crate::analysis::BinaryTokenStream::new(value).unwrap())
+        Ok(Box::new(
+            crate::analysis::BinaryTokenStream::new(value).unwrap(),
+        ))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -4031,13 +4058,15 @@ impl IndexableField for BinaryPoint {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
+        _analyzer: Option<&dyn Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
+    ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value()
             .unwrap_or_else(|| BytesRef::new(Vec::new()));
-        Box::new(crate::analysis::BinaryTokenStream::new(value).unwrap())
+        Ok(Box::new(
+            crate::analysis::BinaryTokenStream::new(value).unwrap(),
+        ))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -4258,10 +4287,12 @@ impl IndexableField for NumericDocValuesField {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
+        _analyzer: Option<&dyn Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
-        Box::new(crate::analysis::StringTokenStream::new("".to_string()).unwrap())
+    ) -> Result<Box<dyn TokenStream>> {
+        Ok(Box::new(
+            crate::analysis::StringTokenStream::new("".to_string()).unwrap(),
+        ))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -4345,9 +4376,9 @@ impl IndexableField for FloatDocValuesField {
 
     fn token_stream(
         &self,
-        analyzer: &dyn Analyzer,
+        analyzer: Option<&dyn Analyzer>,
         reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
+    ) -> Result<Box<dyn TokenStream>> {
         self.inner.token_stream(analyzer, reuse)
     }
 
@@ -4410,9 +4441,9 @@ impl IndexableField for DoubleDocValuesField {
 
     fn token_stream(
         &self,
-        analyzer: &dyn Analyzer,
+        analyzer: Option<&dyn Analyzer>,
         reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
+    ) -> Result<Box<dyn TokenStream>> {
         self.inner.token_stream(analyzer, reuse)
     }
 
@@ -4533,10 +4564,12 @@ impl IndexableField for SortedDocValuesField {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
+        _analyzer: Option<&dyn Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
-        Box::new(crate::analysis::BinaryTokenStream::new(self.value.clone()).unwrap())
+    ) -> Result<Box<dyn TokenStream>> {
+        Ok(Box::new(
+            crate::analysis::BinaryTokenStream::new(self.value.clone()).unwrap(),
+        ))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -4657,10 +4690,12 @@ impl IndexableField for SortedSetDocValuesField {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
+        _analyzer: Option<&dyn Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
-        Box::new(crate::analysis::BinaryTokenStream::new(self.value.clone()).unwrap())
+    ) -> Result<Box<dyn TokenStream>> {
+        Ok(Box::new(
+            crate::analysis::BinaryTokenStream::new(self.value.clone()).unwrap(),
+        ))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -4763,10 +4798,12 @@ impl IndexableField for SortedNumericDocValuesField {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
+        _analyzer: Option<&dyn Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
-        Box::new(crate::analysis::StringTokenStream::new("".to_string()).unwrap())
+    ) -> Result<Box<dyn TokenStream>> {
+        Ok(Box::new(
+            crate::analysis::StringTokenStream::new("".to_string()).unwrap(),
+        ))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -4843,17 +4880,17 @@ impl IndexableField for BinaryDocValuesField {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
+        _analyzer: Option<&dyn Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
-        Box::new(
+    ) -> Result<Box<dyn TokenStream>> {
+        Ok(Box::new(
             crate::analysis::BinaryTokenStream::new(
                 self.value
                     .clone()
                     .unwrap_or_else(|| panic!("java.lang.NullPointerException")),
             )
             .unwrap(),
-        )
+        ))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -5109,13 +5146,15 @@ impl IndexableField for IntField {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
+        _analyzer: Option<&dyn Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
+    ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value()
             .unwrap_or_else(|| BytesRef::new(Vec::new()));
-        Box::new(crate::analysis::BinaryTokenStream::new(value).unwrap())
+        Ok(Box::new(
+            crate::analysis::BinaryTokenStream::new(value).unwrap(),
+        ))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -5341,13 +5380,15 @@ impl IndexableField for LongField {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
+        _analyzer: Option<&dyn Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
+    ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value()
             .unwrap_or_else(|| BytesRef::new(Vec::new()));
-        Box::new(crate::analysis::BinaryTokenStream::new(value).unwrap())
+        Ok(Box::new(
+            crate::analysis::BinaryTokenStream::new(value).unwrap(),
+        ))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -5497,13 +5538,15 @@ impl IndexableField for FloatField {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
+        _analyzer: Option<&dyn Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
+    ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value()
             .unwrap_or_else(|| BytesRef::new(Vec::new()));
-        Box::new(crate::analysis::BinaryTokenStream::new(value).unwrap())
+        Ok(Box::new(
+            crate::analysis::BinaryTokenStream::new(value).unwrap(),
+        ))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -5652,13 +5695,15 @@ impl IndexableField for DoubleField {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
+        _analyzer: Option<&dyn Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
+    ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value()
             .unwrap_or_else(|| BytesRef::new(Vec::new()));
-        Box::new(crate::analysis::BinaryTokenStream::new(value).unwrap())
+        Ok(Box::new(
+            crate::analysis::BinaryTokenStream::new(value).unwrap(),
+        ))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -6110,12 +6155,14 @@ impl IndexableField for KnnFloatVectorField {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
+        _analyzer: Option<&dyn Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
+    ) -> Result<Box<dyn TokenStream>> {
         // A vector field is never inverted: its `indexOptions` is `NONE`, so
         // `IndexingChain.invertAndStore` skips it and never asks for a stream.
-        Box::new(crate::analysis::StringTokenStream::new(String::new()).unwrap())
+        Ok(Box::new(
+            crate::analysis::StringTokenStream::new(String::new()).unwrap(),
+        ))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -6312,10 +6359,12 @@ impl IndexableField for KnnByteVectorField {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
+        _analyzer: Option<&dyn Analyzer>,
         _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
-        Box::new(crate::analysis::StringTokenStream::new(String::new()).unwrap())
+    ) -> Result<Box<dyn TokenStream>> {
+        Ok(Box::new(
+            crate::analysis::StringTokenStream::new(String::new()).unwrap(),
+        ))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
