@@ -1531,6 +1531,33 @@ impl KnnVectorValues for OffHeapFloatVectorValues {
         self.dimension
     }
 
+    /// Prefetches the vectors of the first `num_ords` ordinals of
+    /// `ords_to_prefetch`, bounded by its length; nothing for a `None`
+    /// (Java's `null`) array or a single ordinal.
+    ///
+    /// Equivalent to `OffHeapFloatVectorValues.prefetch(int[], int)`
+    /// (`OffHeapFloatVectorValues.java:89-104`).
+    fn prefetch(&self, ords_to_prefetch: Option<&[i32]>, num_ords: i32) -> Result<()> {
+        let Some(ords_to_prefetch) = ords_to_prefetch else {
+            return Ok(());
+        };
+        let final_num_ords = num_ords.min(ords_to_prefetch.len() as i32);
+        if final_num_ords <= 1 {
+            return Ok(());
+        }
+
+        // 1. calculate offset and prefetch immediately
+        let slice = self
+            .slice
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for &ord in &ords_to_prefetch[..final_num_ords as usize] {
+            let offset = i64::from(ord) * i64::from(self.byte_size);
+            slice.prefetch(offset, i64::from(self.byte_size))?;
+        }
+        Ok(())
+    }
+
     fn size(&self) -> i32 {
         self.size
     }
@@ -1833,6 +1860,33 @@ impl OffHeapByteVectorValues {
 impl KnnVectorValues for OffHeapByteVectorValues {
     fn dimension(&self) -> i32 {
         self.dimension
+    }
+
+    /// Prefetches the vectors of the first `num_ords` ordinals of
+    /// `ords_to_prefetch`, bounded by its length; nothing for a `None`
+    /// (Java's `null`) array or a single ordinal.
+    ///
+    /// Equivalent to `OffHeapByteVectorValues.prefetch(int[], int)`
+    /// (`OffHeapByteVectorValues.java:85-99`).
+    fn prefetch(&self, ords_to_prefetch: Option<&[i32]>, num_ords: i32) -> Result<()> {
+        let Some(ords_to_prefetch) = ords_to_prefetch else {
+            return Ok(());
+        };
+        let final_num_ords = num_ords.min(ords_to_prefetch.len() as i32);
+        if final_num_ords <= 1 {
+            return Ok(());
+        }
+
+        // 1. calculate offset and prefetch immediately
+        let slice = self
+            .slice
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for &ord in &ords_to_prefetch[..final_num_ords as usize] {
+            let offset = i64::from(ord) * i64::from(self.byte_size);
+            slice.prefetch(offset, i64::from(self.byte_size))?;
+        }
+        Ok(())
     }
 
     fn size(&self) -> i32 {

@@ -19,9 +19,22 @@ use crate::index::index_file_names::{
 use crate::store::{Directory, IOContext, IndexInput, IndexOutput, Lock};
 
 const DATA_CODEC: &str = "Lucene90CompoundData";
-const ENTRY_CODEC: &str = "Lucene90CompoundEntries";
-const VERSION_START: i32 = 0;
-const VERSION_CURRENT: i32 = VERSION_START;
+/// Codec name of the entries (`.cfe`) file.
+///
+/// Equivalent to the package-private `Lucene90CompoundFormat.ENTRY_CODEC`;
+/// `pub` here, as tests outside the crate read it the way Java's
+/// same-package tests do.
+pub const ENTRY_CODEC: &str = "Lucene90CompoundEntries";
+/// First version of the compound format.
+///
+/// Equivalent to the package-private `Lucene90CompoundFormat.VERSION_START`;
+/// `pub` for the same reason.
+pub const VERSION_START: i32 = 0;
+/// Current version of the compound format.
+///
+/// Equivalent to the package-private `Lucene90CompoundFormat.VERSION_CURRENT`;
+/// `pub` for the same reason.
+pub const VERSION_CURRENT: i32 = VERSION_START;
 
 /// Alignment applied to each embedded file's start offset.
 ///

@@ -736,8 +736,9 @@ fn validate_footer(input: &mut dyn IndexInput) -> Result<()> {
 
 /// Equivalent to the package-private `CodecUtil.readCRC(IndexInput)`
 /// (`CodecUtil.java:629-635`): a value with any of its upper 32 bits set is a
-/// `CorruptIndexException(String, DataInput)` naming the input.
-fn read_crc(input: &mut dyn DataInput) -> Result<i64> {
+/// `CorruptIndexException(String, DataInput)` naming the input. `pub` here,
+/// as tests outside the crate call it the way Java's same-package tests do.
+pub fn read_crc(input: &mut dyn DataInput) -> Result<i64> {
     let value = read_be_long(input)?;
     if (value as u64) > 0xFFFFFFFFu64 {
         return Err(LuceneError::corrupt_index(
@@ -748,7 +749,14 @@ fn read_crc(input: &mut dyn DataInput) -> Result<i64> {
     Ok(value)
 }
 
-fn write_crc(out: &mut dyn IndexOutput) -> Result<()> {
+/// Writes the CRC-32 of `out` as a big-endian long, refusing a checksum with
+/// any of its upper 32 bits set.
+///
+/// Equivalent to the package-private `CodecUtil.writeCRC(IndexOutput)`
+/// (`CodecUtil.java:643-650`): an `IllegalStateException` naming the output.
+/// `pub` here, as tests outside the crate call it the way Java's
+/// same-package tests do.
+pub fn write_crc(out: &mut dyn IndexOutput) -> Result<()> {
     let value = out.checksum()?;
     if (value as u64) > 0xFFFFFFFFu64 {
         return Err(LuceneError::illegal_state(format!(

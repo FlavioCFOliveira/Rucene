@@ -252,8 +252,10 @@ fn read_field_info(input: &mut dyn IndexInput, format: i32) -> Result<FieldInfo>
 /// `VectorSimilarityFunction` as of Lucene 9.10.
 ///
 /// Equivalent to
-/// `org.apache.lucene.codecs.lucene94.Lucene94FieldInfosFormat.SIMILARITY_FUNCTIONS`.
-const SIMILARITY_FUNCTIONS: [VectorSimilarityFunction; 4] = [
+/// `org.apache.lucene.codecs.lucene94.Lucene94FieldInfosFormat.SIMILARITY_FUNCTIONS`,
+/// package-private in Java; `pub` here, as tests outside the crate read it
+/// the way Java's same-package tests do.
+pub const SIMILARITY_FUNCTIONS: [VectorSimilarityFunction; 4] = [
     VectorSimilarityFunction::EUCLIDEAN,
     VectorSimilarityFunction::DOT_PRODUCT,
     VectorSimilarityFunction::COSINE,

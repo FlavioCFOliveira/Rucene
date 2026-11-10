@@ -11,9 +11,8 @@
 //!   `TestUtil.getDefaultCodec()`, and `supportDocValuesSkipIndex()` returns
 //!   `false`.
 //!
-//! The extra test method of `TestLucene94FieldInfosFormat`
-//! (`testVectorSimilarityFuncs`) belongs to the core-test port (sprint 7) and
-//! is not declared here.
+//! The own test method of `TestLucene94FieldInfosFormat`
+//! (`testVectorSimilarityFuncs`, sprint 9) is declared on its binding.
 //!
 //! Each suite runs once on the seed `tests.seed` names (a random one when it
 //! is unset); `RUCENE_SUITE_SEEDS=<n>` runs it on the first `n` seeds of
@@ -22,13 +21,15 @@
 use std::sync::{Arc, Mutex};
 
 use randomizedtesting::jdk::reflect::{modifier, Class, Constructor, Method};
+use rucene::codecs::lucene94::field_infos_format::SIMILARITY_FUNCTIONS;
 use rucene::codecs::Codec;
 use rucene::document::Document;
+use rucene::index::VectorSimilarityFunction;
 use rucene_test_framework::index::base_field_info_format_test_case::{
     self, BaseFieldInfoFormatTestCase,
 };
 use rucene_test_framework::index::base_index_file_format_test_case::{
-    tear_down, BaseIndexFileFormatTestCase, FormatTestInstance,
+    format_test, tear_down, BaseIndexFileFormatTestCase, FormatTestInstance,
 };
 use rucene_test_framework::util::{LuceneTestCase, TestUtil};
 
@@ -69,7 +70,30 @@ fn lucene94_class() -> Arc<Class> {
         .constructor(Constructor::no_args(|| {
             FormatTestInstance::new(Arc::new(FieldInfosSuite { skip_index: true }))
         }))
+        .method(format_test("testVectorSimilarityFuncs", |_| {
+            test_vector_similarity_funcs()
+        }))
         .build()
+}
+
+/// Ensures that all expected vector similarity functions are translatable
+/// in the format.
+///
+/// Port of `TestLucene94FieldInfosFormat.testVectorSimilarityFuncs`.
+fn test_vector_similarity_funcs() -> rucene::error::Result<()> {
+    // This does not necessarily have to be all similarity functions, but
+    // differences should be considered carefully.
+    let expected_values = VectorSimilarityFunction::values().to_vec();
+
+    randomizedtesting::junit::Assert::assert_true_msg(
+        &format!(
+            "expected:<{:?}> but was:<{:?}>",
+            SIMILARITY_FUNCTIONS.to_vec(),
+            expected_values
+        ),
+        SIMILARITY_FUNCTIONS.to_vec() == expected_values,
+    );
+    Ok(())
 }
 
 /// `TestLucene90FieldInfosFormat`: `supportDocValuesSkipIndex()` is `false`.

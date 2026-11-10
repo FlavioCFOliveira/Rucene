@@ -689,12 +689,13 @@ impl MergedFloat32VectorValues {
     /// when the merge sorts the index.
     ///
     /// Equivalent to the package-private constructor
-    /// `MergedFloat32VectorValues(List<FloatVectorValuesSub>, MergeState)`.
+    /// `MergedFloat32VectorValues(List<FloatVectorValuesSub>, MergeState)`; `pub` here, as tests outside the
+    /// crate build it the way Java's same-package tests do.
     ///
     /// # Errors
     ///
     /// Propagates whatever positioning the subs of a sorted merge raises.
-    pub(crate) fn new(subs: Vec<FloatVectorValuesSub>, merge_state: &MergeState) -> Result<Self> {
+    pub fn new(subs: Vec<FloatVectorValuesSub>, merge_state: &MergeState) -> Result<Self> {
         let doc_id_merger = DocIDMerger::new(subs, merge_state.needs_index_sort)?;
         let mut total_size = 0i32;
         for sub in doc_id_merger.subs() {
@@ -848,12 +849,13 @@ impl MergedByteVectorValues {
     /// when the merge sorts the index.
     ///
     /// Equivalent to the package-private constructor
-    /// `MergedByteVectorValues(List<ByteVectorValuesSub>, MergeState)`.
+    /// `MergedByteVectorValues(List<ByteVectorValuesSub>, MergeState)`; `pub` here, as tests outside the
+    /// crate build it the way Java's same-package tests do.
     ///
     /// # Errors
     ///
     /// Propagates whatever positioning the subs of a sorted merge raises.
-    pub(crate) fn new(subs: Vec<ByteVectorValuesSub>, merge_state: &MergeState) -> Result<Self> {
+    pub fn new(subs: Vec<ByteVectorValuesSub>, merge_state: &MergeState) -> Result<Self> {
         let doc_id_merger = DocIDMerger::new(subs, merge_state.needs_index_sort)?;
         let mut total_size = 0i32;
         for sub in doc_id_merger.subs() {

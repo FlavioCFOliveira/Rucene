@@ -24,7 +24,13 @@ const DENSE_BLOCK_LONGS: usize = BLOCK_SIZE / 64;
 ///
 /// A value of `9` means one rank entry is stored for every 512 bits (2^9 bits).
 pub const DEFAULT_DENSE_RANK_POWER: i8 = 9;
-const MAX_ARRAY_LENGTH: usize = (1 << 12) - 1;
+/// The largest number of documents a block stores as a sparse array of
+/// shorts; a block with more is dense or all.
+///
+/// Equivalent to the package-private `IndexedDISI.MAX_ARRAY_LENGTH`; `pub`
+/// here, as tests outside the crate read it the way Java's same-package
+/// tests do.
+pub const MAX_ARRAY_LENGTH: usize = (1 << 12) - 1;
 
 fn flush(
     block: i32,
@@ -241,9 +247,17 @@ pub fn create_jump_table(
     }
 }
 
-enum Method {
+/// How a block of an [`IndexedDISI`] stores its documents.
+///
+/// Equivalent to the package-private `IndexedDISI.Method`; `pub` here, as
+/// tests outside the crate read it the way Java's same-package tests do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Method {
+    /// At most [`MAX_ARRAY_LENGTH`] documents, as an array of shorts.
     Sparse,
+    /// More than [`MAX_ARRAY_LENGTH`] documents, as a bit set.
     Dense,
+    /// Every document of the block.
     All,
 }
 
@@ -262,7 +276,12 @@ pub struct IndexedDISI {
     block_end: i64,
     dense_bitmap_offset: i64,
     next_block_index: i32,
-    method: Method,
+    /// The storage of the current block.
+    ///
+    /// Equivalent to the package-private `IndexedDISI.method` field; `pub`
+    /// here, as tests outside the crate read it the way Java's same-package
+    /// tests do.
+    pub method: Method,
 
     index: i32,
     doc: i32,
@@ -276,6 +295,9 @@ pub struct IndexedDISI {
     word_index: i32,
     number_of_ones: i32,
     dense_origo_index: i32,
+    /// The words of the current dense block that `into_bit_set` has read,
+    /// allocated on its first use (`IndexedDISI.bitSet`).
+    bit_set: Option<FixedBitSet>,
 }
 
 impl IndexedDISI {
@@ -343,6 +365,7 @@ impl IndexedDISI {
             word_index: -1,
             number_of_ones: 0,
             dense_origo_index: 0,
+            bit_set: None,
         })
     }
 
@@ -563,6 +586,121 @@ impl IndexedDISI {
         Ok(false)
     }
 
+    /// Sets the bits of the documents of the current block up to `up_to`,
+    /// shifted down by `offset`; returns whether the iterator stopped inside
+    /// the block, on the first document at or after `up_to`.
+    ///
+    /// Equivalent to `Method.intoBitSetWithinBlock(IndexedDISI, int,
+    /// FixedBitSet, int)` of each block method (`IndexedDISI.java`).
+    fn into_bit_set_within_block(
+        &mut self,
+        up_to: i32,
+        bit_set: &mut FixedBitSet,
+        offset: i32,
+    ) -> Result<bool> {
+        match self.method {
+            Method::Sparse => {
+                bit_set.set(self.doc.wrapping_sub(offset) as usize);
+                while self.index < self.next_block_index {
+                    let doc_in_block = self.slice.read_short()? as u16 as i32;
+                    let doc = self.block | doc_in_block;
+                    self.index = self.index.wrapping_add(1);
+                    if doc >= up_to {
+                        self.doc = doc;
+                        self.exists = true;
+                        self.next_exist_doc_in_block = doc_in_block;
+                        return Ok(true);
+                    }
+                    bit_set.set(doc.wrapping_sub(offset) as usize);
+                }
+                Ok(false)
+            }
+            Method::Dense => {
+                let mut source = self
+                    .bit_set
+                    .take()
+                    .unwrap_or_else(|| FixedBitSet::new(BLOCK_SIZE));
+                let result = self.dense_into_bit_set(&mut source, up_to, bit_set, offset);
+                self.bit_set = Some(source);
+                result
+            }
+            Method::All => {
+                let block_end = self.block | 0xFFFF;
+                if up_to <= block_end {
+                    bit_set.set_range(
+                        self.doc.wrapping_sub(offset) as usize,
+                        up_to.wrapping_sub(offset) as usize,
+                    );
+                    self.advance_within_block(up_to)?;
+                    Ok(true)
+                } else {
+                    bit_set.set_range(
+                        self.doc.wrapping_sub(offset) as usize,
+                        (block_end - offset + 1) as usize,
+                    );
+                    Ok(false)
+                }
+            }
+        }
+    }
+
+    /// `DENSE.intoBitSetWithinBlock`, over the block words `source`
+    /// (`disi.bitSet`).
+    fn dense_into_bit_set(
+        &mut self,
+        source: &mut FixedBitSet,
+        up_to: i32,
+        bit_set: &mut FixedBitSet,
+        offset: i32,
+    ) -> Result<bool> {
+        let dest_from = self.doc.wrapping_sub(offset);
+        let dest_to = crate::util::math_util::MathUtil::unsigned_min(
+            up_to,
+            offset.wrapping_add(bit_set.length() as i32),
+        );
+        let source_from = self.doc & 0xFFFF;
+        let source_to = cmp::min(dest_to.wrapping_sub(self.block), BLOCK_SIZE as i32);
+
+        let fp = self.slice.file_pointer();
+        // seek back a long to include current word (disi.word).
+        self.slice.seek(fp - 8)?;
+        let word_index = self.word_index as usize;
+        let num_words = FixedBitSet::bits2words(source_to as usize) - word_index;
+        let mut words = vec![0i64; num_words];
+        self.slice.read_longs(&mut words, 0, num_words)?;
+        let bits = source.get_bits();
+        for (i, word) in words.into_iter().enumerate() {
+            bits[word_index + i].store(word as u64, std::sync::atomic::Ordering::Relaxed);
+        }
+        FixedBitSet::or_range(
+            source,
+            source_from as usize,
+            bit_set,
+            dest_from as usize,
+            (source_to - source_from) as usize,
+        );
+
+        let block_end = self.block | 0xFFFF;
+        if dest_to > block_end {
+            self.slice.seek(self.block_end)?;
+            self.index = self.index.wrapping_add(
+                source.cardinality_range(source_from as usize, source_to as usize) as i32,
+            );
+            Ok(false)
+        } else {
+            self.slice.seek(fp)?;
+            let found = self.dense_advance(dest_to)?;
+            if found && self.doc < up_to {
+                return Err(LuceneError::illegal_state(format!(
+                    "There are bits set in the source bitset that are not accounted for. \
+                     doc={} upTo={} disi.block={}",
+                    self.doc, up_to, self.block
+                )));
+            }
+            Ok(found)
+        }
+    }
+
     fn dense_advance_exact(&mut self, target: i32) -> Result<bool> {
         let target_in_block = target & 0xFFFF;
         let target_word_index = target_in_block >> 6;
@@ -622,6 +760,39 @@ impl DocIdSetIterator for IndexedDISI {
 
     fn cost(&self) -> i64 {
         self.cost
+    }
+
+    /// Equivalent to `IndexedDISI.intoBitSet(int, FixedBitSet, int)`.
+    fn into_bit_set(&mut self, up_to: i32, bit_set: &mut FixedBitSet, offset: i32) -> Result<()> {
+        debug_assert!(self.doc >= offset, "offset={offset} doc={}", self.doc);
+        while self.doc < up_to && !self.into_bit_set_within_block(up_to, bit_set, offset)? {
+            self.read_block_header()?;
+            // Java asserts the freshly read block yields its own first
+            // document, as `advance` does (`IndexedDISI.java:479-480`).
+            if !self.advance_within_block(self.block)? {
+                return Err(LuceneError::CorruptIndex(format!(
+                    "IndexedDISI block {} names no document of its own",
+                    self.block
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Equivalent to `IndexedDISI.docIDRunEnd()`, `Method.docIDRunEnd` of
+    /// the current block's method.
+    fn doc_id_run_end(&self) -> Result<i32> {
+        Ok(match self.method {
+            Method::Sparse => self.doc + 1,
+            Method::Dense => {
+                if self.word == u64::MAX {
+                    (self.doc | 0x3F) + 1
+                } else {
+                    self.doc + 1
+                }
+            }
+            Method::All => (self.doc | 0xFFFF) + 1,
+        })
     }
 }
 

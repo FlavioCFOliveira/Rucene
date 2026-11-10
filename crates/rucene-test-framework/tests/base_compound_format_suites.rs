@@ -7,9 +7,8 @@
 //!   (`lucene/core/src/test`): `private final Codec codec =
 //!   TestUtil.getDefaultCodec()`.
 //!
-//! The extra test method of `TestLucene90CompoundFormat`
-//! (`testFileLengthOrdering`) belongs to the core-test port (sprint 7) and is
-//! not declared here.
+//! The own test method of `TestLucene90CompoundFormat`
+//! (`testFileLengthOrdering`, sprint 9) is declared on its binding.
 //!
 //! Each suite runs once on the seed `tests.seed` names (a random one when it
 //! is unset); `RUCENE_SUITE_SEEDS=<n>` runs it on the first `n` seeds of
@@ -17,14 +16,23 @@
 
 use std::sync::{Arc, Mutex};
 
+use randomizedtesting::jdk::exception;
+use randomizedtesting::jdk::random::Random;
 use randomizedtesting::jdk::reflect::{modifier, Class, Constructor, Method};
+use randomizedtesting::jdk::util::shuffle;
+use randomizedtesting::junit::Assert;
+use rucene::codecs::codec_util;
+use rucene::codecs::lucene90::compound;
 use rucene::codecs::Codec;
 use rucene::document::Document;
+use rucene::error::Result;
+use rucene::index::index_file_names::{segment_file_name, COMPOUND_FILE_ENTRIES_EXTENSION};
+use rucene::store::{DataInput, IndexInput, DEFAULT_IO_CONTEXT};
 use rucene_test_framework::index::base_compound_format_test_case::{
     self, BaseCompoundFormatTestCase,
 };
 use rucene_test_framework::index::base_index_file_format_test_case::{
-    tear_down, BaseIndexFileFormatTestCase, FormatTestInstance,
+    format_test, tear_down, BaseIndexFileFormatTestCase, FormatTestInstance,
 };
 use rucene_test_framework::util::{LuceneTestCase, TestUtil};
 
@@ -70,7 +78,81 @@ fn lucene90_class() -> Arc<Class> {
                 merge_instance: false,
             }))
         }))
+        .method(format_test("testFileLengthOrdering", |_| {
+            test_file_length_ordering()
+        }))
         .build()
+}
+
+/// Port of `TestLucene90CompoundFormat.testFileLengthOrdering`.
+fn test_file_length_ordering() -> Result<()> {
+    let mut directory = LuceneTestCase::new_directory();
+    let dir = directory.as_directory();
+    // Setup the test segment
+    let segment = "_123";
+    let chunk = 1024; // internal buffer size used by the stream
+    let si = base_compound_format_test_case::new_segment_info(&dir, segment)?;
+    let seg_id = si.id();
+    let mut ordered_files: Vec<String> = Vec::new();
+    let mut random_file_size = LuceneTestCase::random().next_int_range(0, chunk);
+    for i in 0..10 {
+        let filename = format!("{segment}.{i}");
+        base_compound_format_test_case::create_random_file(
+            &*dir,
+            &filename,
+            random_file_size,
+            &seg_id,
+        )?;
+        // increase the next files size by a random amount
+        random_file_size += LuceneTestCase::random().next_int_range(1, 100);
+        ordered_files.push(filename);
+    }
+    let mut shuffled_files = ordered_files.clone();
+    shuffle(&mut shuffled_files, &*LuceneTestCase::random());
+    si.set_files(shuffled_files)?;
+    si.codec()
+        .unwrap_or_else(|| exception::throw_without_message("java.lang.NullPointerException"))
+        .compound_format()
+        .write(&*dir, &si, &*DEFAULT_IO_CONTEXT)?;
+
+    // entries file should contain files ordered by their size
+    let entries_file_name = segment_file_name(&si.name, "", COMPOUND_FILE_ENTRIES_EXTENSION);
+    {
+        let mut entries_stream = dir.open_checksum_input(&entries_file_name)?;
+        let result = (|| -> Result<()> {
+            codec_util::check_index_header(
+                &mut *entries_stream,
+                compound::ENTRY_CODEC,
+                compound::VERSION_START,
+                compound::VERSION_CURRENT,
+                &si.id(),
+                "",
+            )?;
+            let num_entries = entries_stream.read_v_int()?;
+            let mut last_offset = 0i64;
+            let mut last_length = 0i64;
+            for i in 0..num_entries as usize {
+                let id = entries_stream.read_string()?;
+                Assert::assert_equals_str(
+                    None,
+                    Some(&ordered_files[i]),
+                    Some(&format!("{segment}{id}")),
+                );
+                let offset = entries_stream.read_long()?;
+                Assert::assert_true(offset > last_offset);
+                last_offset = offset;
+                let length = entries_stream.read_long()?;
+                Assert::assert_true(length >= last_length);
+                last_length = length;
+            }
+            Ok(())
+        })();
+        // `catch (Throwable) { priorE = exception; } finally { checkFooter(entriesStream, priorE); }`
+        codec_util::check_footer_after(&mut *entries_stream, result)?;
+        entries_stream.close()?;
+    }
+    drop(dir);
+    directory.close()
 }
 
 // -----------------------------------------------------------------------------

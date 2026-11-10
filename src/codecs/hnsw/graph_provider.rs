@@ -63,7 +63,7 @@ impl KnnVectorValues for SharedFloatVectorValues {
         self.inner.get_accept_ords(accept_docs)
     }
 
-    fn prefetch(&self, ords_to_prefetch: &[i32], num_ords: i32) -> Result<()> {
+    fn prefetch(&self, ords_to_prefetch: Option<&[i32]>, num_ords: i32) -> Result<()> {
         self.inner.prefetch(ords_to_prefetch, num_ords)
     }
 
@@ -138,7 +138,7 @@ impl KnnVectorValues for SharedByteVectorValues {
         self.inner.get_accept_ords(accept_docs)
     }
 
-    fn prefetch(&self, ords_to_prefetch: &[i32], num_ords: i32) -> Result<()> {
+    fn prefetch(&self, ords_to_prefetch: Option<&[i32]>, num_ords: i32) -> Result<()> {
         self.inner.prefetch(ords_to_prefetch, num_ords)
     }
 
@@ -216,7 +216,7 @@ impl KnnVectorValues for LegacyKnnVectorValues {
         self.inner.get_accept_ords(accept_docs)
     }
 
-    fn prefetch(&self, ords_to_prefetch: &[i32], num_ords: i32) -> Result<()> {
+    fn prefetch(&self, ords_to_prefetch: Option<&[i32]>, num_ords: i32) -> Result<()> {
         self.inner.prefetch(ords_to_prefetch, num_ords)
     }
 
@@ -359,7 +359,7 @@ impl SharedVectorValues {
     /// # Errors
     ///
     /// Propagates whatever the underlying values raise.
-    fn prefetch(&self, ords_to_prefetch: &[i32], num_ords: i32) -> Result<()> {
+    fn prefetch(&self, ords_to_prefetch: Option<&[i32]>, num_ords: i32) -> Result<()> {
         match self {
             Self::Float(values) => values.prefetch(ords_to_prefetch, num_ords),
             Self::Byte(values) => values.prefetch(ords_to_prefetch, num_ords),
@@ -634,7 +634,7 @@ impl RandomVectorScorer for PrefetchableRandomVectorScorer {
     /// Equivalent to `PrefetchableRandomVectorScorer.bulkScore`, which calls
     /// `values().prefetch(nodes, numNodes)` and then `delegate.bulkScore(...)`.
     fn bulk_score(&mut self, nodes: &[i32], scores: &mut [f32], num_nodes: i32) -> Result<f32> {
-        self.vector_values.prefetch(nodes, num_nodes)?;
+        self.vector_values.prefetch(Some(nodes), num_nodes)?;
         self.delegate.bulk_score(nodes, scores, num_nodes)
     }
 
@@ -707,7 +707,7 @@ impl RandomVectorScorer for PrefetchableUpdatableRandomVectorScorer {
     /// because Rust cannot invoke a trait method's default body from an
     /// overriding implementation.
     fn bulk_score(&mut self, nodes: &[i32], scores: &mut [f32], num_nodes: i32) -> Result<f32> {
-        self.vector_values.prefetch(nodes, num_nodes)?;
+        self.vector_values.prefetch(Some(nodes), num_nodes)?;
         let mut max = f32::NEG_INFINITY;
         for i in 0..num_nodes as usize {
             scores[i] = self.score(nodes[i])?;
@@ -774,11 +774,11 @@ mod legacy_values_tests {
             2
         }
 
-        fn prefetch(&self, ords_to_prefetch: &[i32], num_ords: i32) -> Result<()> {
+        fn prefetch(&self, ords_to_prefetch: Option<&[i32]>, num_ords: i32) -> Result<()> {
             self.prefetched
                 .lock()
                 .unwrap()
-                .push(ords_to_prefetch[..num_ords as usize].to_vec());
+                .push(ords_to_prefetch.unwrap_or_default()[..num_ords as usize].to_vec());
             Ok(())
         }
     }
@@ -814,7 +814,7 @@ mod legacy_values_tests {
         assert_eq!(values.encoding(), VectorEncoding::BYTE);
         assert_eq!(values.ord_to_doc(2), 2);
         assert_eq!(values.vector_byte_length(), 2);
-        values.prefetch(&[2, 0, 1], 2).unwrap();
+        values.prefetch(Some(&[2, 0, 1]), 2).unwrap();
         assert_eq!(&*prefetched.lock().unwrap(), &[vec![2, 0]]);
 
         let copy = values.copy().unwrap();

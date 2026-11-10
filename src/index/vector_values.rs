@@ -329,12 +329,13 @@ pub trait KnnVectorValues: Send + Sync {
     /// `ords_to_prefetch` are about to be read.
     ///
     /// Equivalent to `KnnVectorValues.prefetch(int[], int)`; the default is a
-    /// no-op, as in Java.
+    /// no-op, as in Java. `None` is Java's `null` array, which the overrides
+    /// check (`OffHeapFloatVectorValues.java:89-92`).
     ///
     /// # Errors
     ///
     /// Returns an error when the underlying storage cannot be hinted.
-    fn prefetch(&self, _ords_to_prefetch: &[i32], _num_ords: i32) -> Result<()> {
+    fn prefetch(&self, _ords_to_prefetch: Option<&[i32]>, _num_ords: i32) -> Result<()> {
         Ok(())
     }
 
@@ -1228,7 +1229,7 @@ mod tests {
     #[test]
     fn prefetch_defaults_to_a_no_op() {
         let values = from_floats(vec![vec![1.0]], 1);
-        values.prefetch(&[0], 1).unwrap();
+        values.prefetch(Some(&[0]), 1).unwrap();
     }
 
     #[test]

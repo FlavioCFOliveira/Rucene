@@ -275,7 +275,7 @@ impl KnnVectorValues for SharedFloatValues {
     fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
         self.0.get_accept_ords(accept_docs)
     }
-    fn prefetch(&self, ords_to_prefetch: &[i32], num_ords: i32) -> Result<()> {
+    fn prefetch(&self, ords_to_prefetch: Option<&[i32]>, num_ords: i32) -> Result<()> {
         self.0.prefetch(ords_to_prefetch, num_ords)
     }
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
@@ -335,7 +335,7 @@ impl KnnVectorValues for SharedByteValues {
     fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
         self.0.get_accept_ords(accept_docs)
     }
-    fn prefetch(&self, ords_to_prefetch: &[i32], num_ords: i32) -> Result<()> {
+    fn prefetch(&self, ords_to_prefetch: Option<&[i32]>, num_ords: i32) -> Result<()> {
         self.0.prefetch(ords_to_prefetch, num_ords)
     }
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {

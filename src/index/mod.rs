@@ -351,6 +351,19 @@ pub enum VectorSimilarityFunction {
 }
 
 impl VectorSimilarityFunction {
+    /// Returns the constants of this enum, in declaration order.
+    ///
+    /// Equivalent to the implicit `VectorSimilarityFunction.values()` every
+    /// Java enum declares.
+    pub const fn values() -> [VectorSimilarityFunction; 4] {
+        [
+            VectorSimilarityFunction::EUCLIDEAN,
+            VectorSimilarityFunction::DOT_PRODUCT,
+            VectorSimilarityFunction::COSINE,
+            VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT,
+        ]
+    }
+
     /// Returns the similarity score between two float vectors.
     ///
     /// Higher scores correspond to closer vectors. Equivalent to

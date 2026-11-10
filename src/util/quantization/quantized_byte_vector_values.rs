@@ -348,7 +348,7 @@ pub trait QuantizedByteVectorValues: Send + Sync {
     /// # Errors
     ///
     /// The default never fails; an override propagates its own I/O errors.
-    fn prefetch(&self, ords_to_prefetch: &[i32], num_ords: i32) -> Result<()> {
+    fn prefetch(&self, ords_to_prefetch: Option<&[i32]>, num_ords: i32) -> Result<()> {
         let _ = (ords_to_prefetch, num_ords);
         Ok(())
     }

@@ -73,11 +73,11 @@ impl KnnVectorValues for RecordingFloatVectorValues {
         self.vectors.len() as i32
     }
 
-    fn prefetch(&self, ords_to_prefetch: &[i32], num_ords: i32) -> Result<()> {
+    fn prefetch(&self, ords_to_prefetch: Option<&[i32]>, num_ords: i32) -> Result<()> {
         self.prefetched
             .lock()
             .expect("the prefetch log is not poisoned")
-            .push(ords_to_prefetch[..num_ords as usize].to_vec());
+            .push(ords_to_prefetch.unwrap_or_default()[..num_ords as usize].to_vec());
         Ok(())
     }
 
@@ -520,11 +520,11 @@ impl QuantizedByteVectorValues for RecordingLegacyValues {
         self.inner.dimension()
     }
 
-    fn prefetch(&self, ords_to_prefetch: &[i32], num_ords: i32) -> Result<()> {
+    fn prefetch(&self, ords_to_prefetch: Option<&[i32]>, num_ords: i32) -> Result<()> {
         self.prefetched
             .lock()
             .expect("the prefetch log is not poisoned")
-            .push(ords_to_prefetch[..num_ords as usize].to_vec());
+            .push(ords_to_prefetch.unwrap_or_default()[..num_ords as usize].to_vec());
         Ok(())
     }
 
