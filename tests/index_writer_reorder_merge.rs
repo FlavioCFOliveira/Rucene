@@ -121,7 +121,7 @@ fn rust_merge() -> Arc<dyn Directory> {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut initial = IndexWriterConfig::new();
     initial
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), initial).unwrap();
     let mut i = 0;
@@ -141,7 +141,7 @@ fn rust_merge() -> Arc<dyn Directory> {
     );
 
     let mut config = IndexWriterConfig::new();
-    config.set_merge_policy(reversing_policy()).unwrap();
+    config.set_merge_policy(Some(reversing_policy())).unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     writer.force_merge(1).unwrap();
     writer.commit().unwrap();
@@ -415,7 +415,7 @@ fn the_reorderer_receives_the_schedulers_intra_merge_executor() {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut initial = IndexWriterConfig::new();
     initial
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), initial).unwrap();
     for i in 0..4 {
@@ -429,16 +429,16 @@ fn the_reorderer_receives_the_schedulers_intra_merge_executor() {
     let reorderer = recording_reorderer(&seen);
     let mut config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Arc::new(OneMergeWrappingMergePolicy::new(
+        .set_merge_policy(Some(Arc::new(OneMergeWrappingMergePolicy::new(
             Arc::new(TieredMergePolicy::new()),
             Arc::new(move |mut merge: OneMerge| {
                 merge.set_reorder(Arc::clone(&reorderer));
                 merge
             }),
-        )))
+        ))))
         .unwrap();
     config
-        .set_merge_scheduler(Arc::clone(&scheduler) as Arc<dyn MergeScheduler>)
+        .set_merge_scheduler(Some(Arc::clone(&scheduler) as Arc<dyn MergeScheduler>))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     writer.force_merge(1).unwrap();
@@ -456,12 +456,12 @@ fn the_reorderer_receives_the_schedulers_intra_merge_executor() {
     let dest: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Arc::new(ReorderingReadersPolicy {
+        .set_merge_policy(Some(Arc::new(ReorderingReadersPolicy {
             reorderer: recording_reorderer(&seen),
-        }))
+        })))
         .unwrap();
     config
-        .set_merge_scheduler(Arc::clone(&scheduler) as Arc<dyn MergeScheduler>)
+        .set_merge_scheduler(Some(Arc::clone(&scheduler) as Arc<dyn MergeScheduler>))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dest), config).unwrap();
     writer.add_indexes_codec_readers(&leaves).unwrap();

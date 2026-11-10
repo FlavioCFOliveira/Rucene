@@ -62,7 +62,7 @@ fn before_class() -> Result<()> {
         let docs = LineFileDocs::with_default_file(&*random())?;
         let mut iwc = IndexWriterConfig::new();
         iwc.set_use_compound_file(false)?;
-        iwc.set_merge_policy(LuceneTestCase::new_log_merge_policy_use_cfs(false))?;
+        iwc.set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(false)))?;
         iwc.set_codec(TestUtil::get_default_codec())?;
         let w = IndexWriter::new(Arc::clone(&bb_dir) as Arc<dyn Directory>, iwc)?;
         let body = || -> Result<()> {

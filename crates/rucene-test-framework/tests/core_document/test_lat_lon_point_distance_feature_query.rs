@@ -68,9 +68,9 @@ fn test_equals_and_hashcode() -> Result<()> {
 /// newIndexWriterConfig().setMergePolicy(newLogMergePolicy(random().nextBoolean())))`.
 fn writer(dir: &TestDirectory) -> Result<RandomIndexWriter> {
     let mut config = LuceneTestCase::new_index_writer_config();
-    config.set_merge_policy(LuceneTestCase::new_log_merge_policy_use_cfs(
+    config.set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(
         random().next_boolean(),
-    ))?;
+    )))?;
     RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), config)
 }
 
@@ -325,9 +325,9 @@ fn test_multi_valued() -> Result<()> {
 fn test_random() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let mut config = LuceneTestCase::new_index_writer_config();
-    config.set_merge_policy(LuceneTestCase::new_log_merge_policy_use_cfs(
+    config.set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(
         random().next_boolean(),
-    ))?;
+    )))?;
     let w = IndexWriter::new(dir.as_directory(), config)?;
     let num_docs = LuceneTestCase::at_least(1000);
     for _i in 0..num_docs {

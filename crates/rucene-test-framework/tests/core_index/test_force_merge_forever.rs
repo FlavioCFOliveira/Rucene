@@ -60,7 +60,7 @@ fn test_() -> Result<()> {
     analyzer.set_max_token_length(TestUtil::next_int(&*random(), 1, MAX_TERM_LENGTH as i32));
     let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(analyzer));
     // SMS can cause this test to run indefinitely long:
-    iwc.set_merge_scheduler(Arc::new(ConcurrentMergeScheduler::new()))?;
+    iwc.set_merge_scheduler(Some(Arc::new(ConcurrentMergeScheduler::new())))?;
 
     let w = IndexWriter::new(d.as_directory(), iwc)?;
     let merge_count = Arc::new(AtomicI32::new(0));

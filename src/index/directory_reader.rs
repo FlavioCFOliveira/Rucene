@@ -2064,7 +2064,9 @@ mod tests {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut config = IndexWriterConfig::new();
         config
-            .set_merge_policy(Arc::new(crate::index::merge_policy::NoMergePolicy::new()))
+            .set_merge_policy(Some(Arc::new(
+                crate::index::merge_policy::NoMergePolicy::new(),
+            )))
             .unwrap();
         let writer = RealIndexWriter::new(Arc::clone(&dir), config).unwrap();
         for text in ["a b c", "a a", "b"] {
@@ -2111,7 +2113,9 @@ mod tests {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut config = IndexWriterConfig::new();
         config
-            .set_merge_policy(Arc::new(crate::index::merge_policy::NoMergePolicy::new()))
+            .set_merge_policy(Some(Arc::new(
+                crate::index::merge_policy::NoMergePolicy::new(),
+            )))
             .unwrap();
         let writer = RealIndexWriter::new(Arc::clone(&dir), config).unwrap();
         for text in ["a b c", "a a"] {
@@ -2593,7 +2597,9 @@ mod tests {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut config = IndexWriterConfig::new();
         config
-            .set_merge_policy(Arc::new(crate::index::merge_policy::NoMergePolicy::new()))
+            .set_merge_policy(Some(Arc::new(
+                crate::index::merge_policy::NoMergePolicy::new(),
+            )))
             .unwrap();
         config.set_leaf_sorter(Some(Arc::new(ByMaxDocDescending)));
         let writer = RealIndexWriter::new(Arc::clone(&dir), config).unwrap();
@@ -2651,7 +2657,9 @@ mod tests {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut config = IndexWriterConfig::new();
         config
-            .set_merge_policy(Arc::new(crate::index::merge_policy::NoMergePolicy::new()))
+            .set_merge_policy(Some(Arc::new(
+                crate::index::merge_policy::NoMergePolicy::new(),
+            )))
             .unwrap();
         let writer = RealIndexWriter::new(Arc::clone(&dir), config).unwrap();
         let add = |id: &str| {

@@ -115,7 +115,7 @@ pub fn get_directory(analyzer: &Arc<dyn Analyzer>, vals: &[&str]) -> Result<Test
     let directory = LuceneTestCase::new_directory();
     let mut config = LuceneTestCase::new_index_writer_config_analyzer(Arc::clone(analyzer));
     config.set_max_buffered_docs(TestUtil::next_int(&*random(), 100, 1000))?;
-    config.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+    config.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), config)?;
 
     for s in vals {

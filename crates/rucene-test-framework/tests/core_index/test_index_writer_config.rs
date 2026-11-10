@@ -8,12 +8,8 @@
 //!   LiveIndexWriterConfig` (`src/index/index_writer_config.rs`) define, under
 //!   their Java names (a Rust getter has no `get` prefix), and the instance
 //!   fields `IndexWriterConfig.java` declares.
-//! * `setIndexDeletionPolicy(null)`, `setMergeScheduler(null)`,
-//!   `setSimilarity(null)` and `setMergePolicy(null)` cannot be called:
-//!   Rucene's setters take an `Arc`, which is never null. The
-//!   `IllegalArgumentException` checks on them are not expressible.
-//!   `new SnapshotDeletionPolicy(null)` wraps a `KeepOnlyLastCommitDeletionPolicy`
-//!   for the same reason (only its class is checked).
+//! * Java's `null` arguments are `None`: the setters and
+//!   `SnapshotDeletionPolicy::new` take an `Option`.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -22,9 +18,7 @@ use randomizedtesting::jdk::reflect::Class;
 use randomizedtesting::junit::{Assert, Test};
 use rucene::document::{Document, Store};
 use rucene::error::Result;
-use rucene::index::index_deletion_policy::{
-    KeepOnlyLastCommitDeletionPolicy, SnapshotDeletionPolicy,
-};
+use rucene::index::index_deletion_policy::SnapshotDeletionPolicy;
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::{IndexWriterConfig, LiveIndexWriterConfig, OpenMode};
 use rucene::index::merge_policy::{LogDocSize, LogMergePolicy, MergePolicy, TieredMergePolicy};
@@ -428,18 +422,18 @@ fn test_invalid_values() -> Result<()> {
         "org.apache.lucene.index.KeepOnlyLastCommitDeletionPolicy",
         conf.index_deletion_policy().java_class_name(),
     );
-    conf.set_index_deletion_policy(Arc::new(SnapshotDeletionPolicy::new(Arc::new(
-        KeepOnlyLastCommitDeletionPolicy::new(),
-    ))))?;
+    conf.set_index_deletion_policy(Some(Arc::new(SnapshotDeletionPolicy::new(None))))?;
     assert_equals(
         "org.apache.lucene.index.SnapshotDeletionPolicy",
         conf.index_deletion_policy().java_class_name(),
     );
+    expect_throws(IAE, || conf.set_index_deletion_policy(None).map(|_| ()));
 
     // Test MergeScheduler
     Assert::assert_true(merge_scheduler_is::<ConcurrentMergeScheduler>(&conf));
-    conf.set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))?;
+    conf.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
     Assert::assert_true(merge_scheduler_is::<SerialMergeScheduler>(&conf));
+    expect_throws(IAE, || conf.set_merge_scheduler(None).map(|_| ()));
 
     // Test Similarity:
     // we shouldnt assert what the default is, just that it's not null.
@@ -447,11 +441,12 @@ fn test_invalid_values() -> Result<()> {
         &IndexSearcher::get_default_similarity(),
         &conf.similarity(),
     ));
-    conf.set_similarity(Arc::new(MySimilarity::default()))?;
+    conf.set_similarity(Some(Arc::new(MySimilarity::default())))?;
     assert_equals(
         "org.apache.lucene.index.TestIndexWriterConfig$MySimilarity",
         conf.similarity().java_class_name(),
     );
+    expect_throws(IAE, || conf.set_similarity(None).map(|_| ()));
 
     expect_throws(IAE, || conf.set_max_buffered_docs(1).map(|_| ()));
 
@@ -478,8 +473,9 @@ fn test_invalid_values() -> Result<()> {
 
     // Test MergePolicy
     Assert::assert_true(is_tiered(&conf.merge_policy()));
-    conf.set_merge_policy(Arc::new(LogMergePolicy::new(Arc::new(LogDocSize))))?;
+    conf.set_merge_policy(Some(Arc::new(LogMergePolicy::new(Arc::new(LogDocSize)))))?;
     Assert::assert_true(is_log_doc(&conf.merge_policy()));
+    expect_throws(IAE, || conf.set_merge_policy(None).map(|_| ()));
     Ok(())
 }
 
@@ -487,7 +483,7 @@ fn test_invalid_values() -> Result<()> {
 fn test_live_change_to_cfs() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let mut iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
-    iwc.set_merge_policy(LuceneTestCase::new_log_merge_policy_use_cfs(true))?;
+    iwc.set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(true)))?;
     // Start false:
     iwc.set_use_compound_file(false)?;
     iwc.merge_policy().set_no_cfs_ratio(0.0)?;

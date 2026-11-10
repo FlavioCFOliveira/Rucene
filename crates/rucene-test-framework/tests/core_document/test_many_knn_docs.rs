@@ -89,7 +89,7 @@ fn test_large_segment() -> Result<()> {
     let mp = TieredMergePolicy::new();
     mp.set_max_merge_at_once(256)?; // avoid intermediate merges (waste of time with HNSW?)
     mp.set_segments_per_tier(256.0)?; // only merge once at the end when we ask
-    iwc.set_merge_policy(Arc::new(mp))?;
+    iwc.set_merge_policy(Some(Arc::new(mp)))?;
     let field_name = "field";
     let similarity_function = VectorSimilarityFunction::DOT_PRODUCT;
 

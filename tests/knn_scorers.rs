@@ -149,7 +149,7 @@ fn writer_config() -> IndexWriterConfig {
     ensure_codec();
     let mut config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .unwrap();
     config
 }

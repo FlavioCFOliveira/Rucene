@@ -789,8 +789,8 @@ fn assert_random_consistency<C: KnnVectorCase>(multi_threaded: bool) -> Result<(
     let mut d = C::new_directory_for_test()?;
     // To ensure consistency between seeded runs, remove some randomness
     let mut iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
-    iwc.set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))?;
-    iwc.set_merge_policy(Arc::new(NoMergePolicy::new()))?;
+    iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
+    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     iwc.set_max_buffered_docs(num_docs)?;
     iwc.set_ram_buffer_size_mb(f64::from(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH))?;
     let w = IndexWriter::new(d.as_directory(), iwc)?;

@@ -98,7 +98,7 @@ fn before_class() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
     let mut conf =
         LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())));
-    conf.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+    conf.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     conf.merge_policy().set_no_cfs_ratio(0.0)?;
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
     writer.add_document(&test_doc)?;

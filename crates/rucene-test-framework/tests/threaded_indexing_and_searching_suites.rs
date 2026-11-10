@@ -1134,7 +1134,7 @@ mod crt {
         let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(
             MockAnalyzer::new(&*LuceneTestCase::random()),
         ));
-        conf.set_merge_policy(Arc::new(NoMergePolicy::new()))?;
+        conf.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
         let mut d = LuceneTestCase::new_directory();
         let latch = Arc::new(CountDownLatch::new(1));
         let signal = Arc::new(CountDownLatch::new(1));
@@ -1356,9 +1356,9 @@ mod crt {
         }
         let content = builder;
 
-        let sdp = Arc::new(SnapshotDeletionPolicy::new(Arc::new(
+        let sdp = Arc::new(SnapshotDeletionPolicy::new(Some(Arc::new(
             KeepOnlyLastCommitDeletionPolicy,
-        )));
+        ))));
         let mut fs_dir =
             LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix("nrt"));
         let dir: Arc<dyn Directory> = Arc::new(NRTCachingDirectory::new(
@@ -1370,7 +1370,7 @@ mod crt {
             &*LuceneTestCase::random(),
         )));
         config.set_commit_on_close(true);
-        config.set_index_deletion_policy(Arc::clone(&sdp) as _)?;
+        config.set_index_deletion_policy(Some(Arc::clone(&sdp) as _))?;
         config.set_open_mode(OpenMode::CREATE_OR_APPEND)?;
         let iw = IndexWriter::new(Arc::clone(&dir), config)?;
         let sm = Arc::new(SearcherManager::from_writer(
@@ -1640,7 +1640,7 @@ mod sm {
         let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(
             MockAnalyzer::new(&*LuceneTestCase::random()),
         ));
-        iwc.set_merge_scheduler(Arc::new(ConcurrentMergeScheduler::new()))?;
+        iwc.set_merge_scheduler(Some(Arc::new(ConcurrentMergeScheduler::new())))?;
         Ok(iwc)
     }
 
@@ -2602,7 +2602,7 @@ mod sm {
         let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(
             MockAnalyzer::new(&*LuceneTestCase::random()),
         ));
-        iwc.set_index_deletion_policy(NoDeletionPolicy::instance())?;
+        iwc.set_index_deletion_policy(Some(NoDeletionPolicy::instance()))?;
         let w = IndexWriter::new(dir.as_directory(), iwc)?;
         let doc_id = AtomicI32::new(0);
         let next_doc = || {

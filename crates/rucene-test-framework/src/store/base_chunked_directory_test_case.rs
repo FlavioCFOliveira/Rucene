@@ -412,7 +412,7 @@ pub trait BaseChunkedDirectoryTestCase: BaseDirectoryTestCase {
         let mut dir = MockDirectoryWrapper::new(random, Arc::from(chunked_dir));
         let mut config =
             LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(random)));
-        config.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+        config.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
         let writer = RandomIndexWriter::new_with_config(random, dir.as_directory(), config)?;
         // Java adds the same two fields to one document and changes their
         // values; the port's document owns its fields, so each document

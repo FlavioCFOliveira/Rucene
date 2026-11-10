@@ -285,7 +285,7 @@ fn pk_writer(dir: &TestDirectory) -> Arc<IndexWriter> {
     let mut config =
         IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*LuceneTestCase::random())));
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .unwrap_or_else(|e| rethrow(e));
     IndexWriter::new(dir.as_directory(), config).unwrap_or_else(|e| rethrow(e))
 }

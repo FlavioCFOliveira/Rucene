@@ -713,7 +713,7 @@ fn try_write_corpus(path: &Path, codec: Arc<dyn Codec>) -> Result<()> {
     let mut config = new_config(codec);
     let policy = TieredMergePolicy::new();
     policy.set_no_cfs_ratio(0.0)?;
-    config.set_merge_policy(Arc::new(policy))?;
+    config.set_merge_policy(Some(Arc::new(policy)))?;
     config.set_use_compound_file(false)?;
     let w = IndexWriter::new(open_dir(path), config)?;
     let result = (|| -> Result<()> {
@@ -1505,7 +1505,7 @@ fn write_ram_only(path: &Path, codec: Arc<dyn Codec>, freqs: bool, merge: bool) 
     let mut config = new_config(codec);
     let policy = TieredMergePolicy::new();
     policy.set_no_cfs_ratio(0.0)?;
-    config.set_merge_policy(Arc::new(policy))?;
+    config.set_merge_policy(Some(Arc::new(policy)))?;
     config.set_use_compound_file(false)?;
     let freqs_type = shared_type(rucene::index::IndexOptions::DOCS_AND_FREQS);
     let positions = shared_type(rucene::index::IndexOptions::DOCS_AND_FREQS_AND_POSITIONS);

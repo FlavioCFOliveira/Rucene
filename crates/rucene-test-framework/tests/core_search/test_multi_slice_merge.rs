@@ -55,7 +55,7 @@ fn index(
     between: impl Fn(&RandomIndexWriter) -> Result<()>,
 ) -> Result<Arc<dyn DirectoryReader>> {
     let mut iwc = LuceneTestCase::new_index_writer_config();
-    iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+    iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let iw = RandomIndexWriter::new_with_config(&*self::random(), dir.as_directory(), iwc)?;
     for i in 0..100 {
         let mut doc = rucene::document::Document::new();

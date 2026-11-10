@@ -300,9 +300,9 @@ fn external_codecs_test_per_field_codec() -> Result<()> {
     let mut config =
         LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())));
     config.set_codec(Arc::new(custom_per_field_codec()))?;
-    config.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy_merge_factor(
-        3,
-    )?))?;
+    config.set_merge_policy(Some(Arc::new(
+        LuceneTestCase::new_log_merge_policy_merge_factor(3)?,
+    )))?;
     let w = IndexWriter::new(dir.as_directory(), config)?;
     let mut doc = Document::new();
     // uses default codec:
@@ -526,10 +526,10 @@ fn merge_scheduler_external_test_subclass_concurrent_merge_scheduler() -> Result
     let merge_scheduler = my_merge_scheduler();
     let mut iwc =
         LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())));
-    iwc.set_merge_scheduler(Arc::clone(&merge_scheduler) as Arc<dyn MergeScheduler>)?;
+    iwc.set_merge_scheduler(Some(Arc::clone(&merge_scheduler) as Arc<dyn MergeScheduler>))?;
     iwc.set_max_buffered_docs(2)?;
     iwc.set_ram_buffer_size_mb(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH as f64)?;
-    iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+    iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
 
     let baos = ByteArrayOutputStream::default();
     let info_stream: Arc<dyn rucene::util::InfoStream> =
@@ -617,9 +617,9 @@ impl MergeScheduler for ReportingMergeScheduler {
 fn merge_scheduler_external_test_custom_merge_scheduler() -> Result<()> {
     let dir: Arc<dyn Directory> = Arc::new(rucene::store::ByteBuffersDirectory::new());
     let mut conf = IndexWriterConfig::new();
-    conf.set_merge_scheduler(Arc::new(ReportingMergeScheduler {
+    conf.set_merge_scheduler(Some(Arc::new(ReportingMergeScheduler {
         executor: Arc::new(SameThreadExecutorService::new()),
-    }))?;
+    })))?;
     let writer = IndexWriter::new(Arc::clone(&dir), conf)?;
     writer.add_document(&Document::new())?;
     writer.commit()?; // trigger flush

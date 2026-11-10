@@ -1260,7 +1260,9 @@ fn a_directory_reader_reads_the_term_vectors_of_every_segment() {
     let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(temp.path()).expect("open directory"));
     let mut config = rucene::index::index_writer_config::IndexWriterConfig::new();
     config
-        .set_merge_policy(Arc::new(rucene::index::merge_policy::NoMergePolicy::new()))
+        .set_merge_policy(Some(Arc::new(
+            rucene::index::merge_policy::NoMergePolicy::new(),
+        )))
         .expect("set merge policy");
     let writer = rucene::index::index_writer::IndexWriter::new(Arc::clone(&dir), config)
         .expect("open writer");

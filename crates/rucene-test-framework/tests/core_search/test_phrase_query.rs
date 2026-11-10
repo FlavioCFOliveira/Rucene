@@ -438,8 +438,8 @@ fn test_slop_scoring() -> Result<()> {
     let mut directory = LuceneTestCase::new_directory();
     let mut iwc =
         LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())));
-    iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
-    iwc.set_similarity(Arc::new(BM25Similarity::new()))?;
+    iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
+    iwc.set_similarity(Some(Arc::new(BM25Similarity::new())))?;
     let writer = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), iwc)?;
 
     let mut doc = Document::new();
@@ -794,7 +794,7 @@ fn test_random_phrases() -> Result<()> {
     let analyzer: Arc<dyn Analyzer> = Arc::new(MockAnalyzer::new(&*random()));
 
     let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Arc::clone(&analyzer));
-    iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+    iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
     let mut docs: Vec<Vec<String>> = Vec::new();
     // `Document d` holding `Field f`: rebuilt from `f` for each `addDocument`.

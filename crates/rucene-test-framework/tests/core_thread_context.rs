@@ -101,7 +101,7 @@ fn test_merge_thread_inherits_context() {
     let observer = Arc::new(MergeThreadObserver(Mutex::new(Vec::new())));
     let mut config = IndexWriterConfig::new();
     config
-        .set_merge_scheduler(Arc::new(ConcurrentMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(ConcurrentMergeScheduler::new())))
         .unwrap();
     config
         .set_info_stream(Arc::clone(&observer) as Arc<dyn InfoStream>)

@@ -152,11 +152,11 @@ fn test_check_index_all_valid() -> Result<()> {
     config.set_soft_deletes_field(Some("soft_delete".to_string()));
     // preserves soft-deletes across merges
     let inner = config.merge_policy();
-    config.set_merge_policy(Arc::new(SoftDeletesRetentionMergePolicy::new(
+    config.set_merge_policy(Some(Arc::new(SoftDeletesRetentionMergePolicy::new(
         "soft_delete",
         Arc::new(|| Arc::new(MatchAllDocsQuery::instance()) as Arc<dyn Query>),
         inner,
-    )))?;
+    ))))?;
     {
         let w = IndexWriter::new(dir.as_directory(), config)?;
         for _ in 0..live_doc_count {
@@ -410,8 +410,8 @@ fn test_prior_broken_commit_point() -> Result<()> {
     // indices:
     set_check_index_on_close(&dir, false);
     let mut iwc = IndexWriterConfig::new();
-    iwc.set_merge_policy(Arc::new(NoMergePolicy::new()))?
-        .set_index_deletion_policy(Arc::new(DeleteNothingIndexDeletionPolicy))?;
+    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?
+        .set_index_deletion_policy(Some(Arc::new(DeleteNothingIndexDeletionPolicy)))?;
     {
         let iw = IndexWriter::new(dir.as_directory(), iwc)?;
         // create first segment, and commit point referencing only segment 0

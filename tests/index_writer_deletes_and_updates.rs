@@ -56,7 +56,7 @@ fn doc(value: &str, price: i64) -> Document {
 fn no_merges() -> IndexWriterConfig {
     let mut config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .unwrap();
     config
 }
@@ -326,13 +326,13 @@ fn updates_carried_over_by_a_merge_keep_the_value_of_the_highest_generation() {
     };
     let mut config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Arc::new(HookPolicy {
+        .set_merge_policy(Some(Arc::new(HookPolicy {
             inner: TieredMergePolicy::new(),
             hook,
-        }))
+        })))
         .unwrap();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     let _ = writer_slot.set(Arc::downgrade(&writer));

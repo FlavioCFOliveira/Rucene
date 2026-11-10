@@ -174,12 +174,16 @@ mod test_index_many_documents;
 mod test_index_options;
 #[path = "core_index/test_index_reader_close.rs"]
 mod test_index_reader_close;
+#[path = "core_index/test_index_sorting.rs"]
+mod test_index_sorting;
 #[path = "core_index/test_index_too_many_docs.rs"]
 mod test_index_too_many_docs;
 #[path = "core_index/test_index_writer_commit.rs"]
 mod test_index_writer_commit;
 #[path = "core_index/test_index_writer_config.rs"]
 mod test_index_writer_config;
+#[path = "core_index/test_index_writer_delete.rs"]
+mod test_index_writer_delete;
 #[path = "core_index/test_index_writer_exceptions2.rs"]
 mod test_index_writer_exceptions2;
 #[path = "core_index/test_indexable_field.rs"]
@@ -624,8 +628,18 @@ fn test_index_writer_config() {
 }
 
 #[test]
+fn test_index_writer_delete() {
+    run(test_index_writer_delete::class_def);
+}
+
+#[test]
 fn test_index_writer_exceptions2() {
     run(test_index_writer_exceptions2::class_def);
+}
+
+#[test]
+fn test_index_sorting() {
+    run(test_index_sorting::class_def);
 }
 
 #[test]

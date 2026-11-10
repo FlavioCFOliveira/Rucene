@@ -275,7 +275,7 @@ fn test_adaptive_disabling_does_not_fire_for_clustered_data() -> Result<()> {
 
 fn build_index(dir: &TestDirectory, value_supplier: impl Fn(i32) -> BytesRef) -> Result<()> {
     let mut config = LuceneTestCase::new_index_writer_config();
-    config.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+    config.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = IndexWriter::new(dir.as_directory(), config)?;
     let result = (|| -> Result<()> {
         for i in 0..NUM_DOCS {

@@ -268,7 +268,7 @@ fn no_deletion_writer(
     dir: &rucene_test_framework::util::lucene_test_case::TestDirectory,
 ) -> Result<Arc<IndexWriter>> {
     let mut iwc = LuceneTestCase::new_index_writer_config();
-    iwc.set_index_deletion_policy(NoDeletionPolicy::instance())?;
+    iwc.set_index_deletion_policy(Some(NoDeletionPolicy::instance()))?;
     IndexWriter::new(dir.as_directory(), iwc)
 }
 

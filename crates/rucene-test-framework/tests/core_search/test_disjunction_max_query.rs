@@ -218,8 +218,8 @@ fn dmq_set_up(f: &mut DisjunctionMax) -> Result<()> {
     let index = LuceneTestCase::new_directory();
     let analyzer: Arc<dyn Analyzer> = Arc::new(MockAnalyzer::new(&*random()));
     let mut config = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
-    config.set_similarity(Arc::clone(&f.sim))?;
-    config.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+    config.set_similarity(Some(Arc::clone(&f.sim)))?;
+    config.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = RandomIndexWriter::new_with_config(&*random(), index.as_directory(), config)?;
 
     // hed is the most important field, dek is secondary

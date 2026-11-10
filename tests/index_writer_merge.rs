@@ -510,7 +510,7 @@ fn two_segments(
     if deletable {
         // No merge runs before the test drives one itself.
         config
-            .set_merge_policy(Arc::new(NoMergePolicy::new()))
+            .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
             .unwrap();
     }
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
@@ -1174,7 +1174,7 @@ fn a_merged_field_no_source_holds_fails_the_merge_without_a_panic() {
             // the two fails, in Lucene too (`IndexWriter.tragicEvent`,
             // `IndexWriter.java:5868-5884`).
             config
-                .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+                .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
                 .unwrap();
             config
         };
@@ -1475,7 +1475,7 @@ fn flush_vectors(format: &str, sorted: bool) -> Arc<dyn Directory> {
         .unwrap();
     config.set_use_compound_file(false).unwrap();
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .unwrap();
     if sorted {
         config

@@ -240,7 +240,7 @@ fn cause_is_merge_aborted(e: &LuceneError) -> bool {
 
 /// `private IndexWriter newWriter(Directory dir, IndexWriterConfig conf)`.
 fn new_writer(dir: &Arc<dyn Directory>, mut conf: IndexWriterConfig) -> Result<Arc<IndexWriter>> {
-    conf.set_merge_policy(Arc::new(LogMergePolicy::by_doc_count()))?;
+    conf.set_merge_policy(Some(Arc::new(LogMergePolicy::by_doc_count())))?;
     IndexWriter::new(Arc::clone(dir), conf)
 }
 
@@ -370,9 +370,9 @@ fn set_up_dirs_with_id(
     let mut c = new_iwc();
     c.set_open_mode(OpenMode::CREATE)?
         .set_max_buffered_docs(1000)?
-        .set_merge_policy(Arc::new(
+        .set_merge_policy(Some(Arc::new(
             LuceneTestCase::new_log_merge_policy_use_cfs_merge_factor(false, 10)?,
-        ))?;
+        )))?;
     writer = new_writer(aux, c)?;
     // add 30 documents in 3 segments
     for i in 0..3 {
@@ -385,9 +385,9 @@ fn set_up_dirs_with_id(
         let mut c = new_iwc();
         c.set_open_mode(OpenMode::APPEND)?
             .set_max_buffered_docs(1000)?
-            .set_merge_policy(Arc::new(
+            .set_merge_policy(Some(Arc::new(
                 LuceneTestCase::new_log_merge_policy_use_cfs_merge_factor(false, 10)?,
-            ))?;
+            )))?;
         writer = new_writer(aux, c)?;
     }
     assert_equals(&30, &writer.get_doc_stats()?.max_doc);
@@ -408,9 +408,9 @@ fn iwc_append_buffered(max_buffered_docs: i32) -> Result<IndexWriterConfig> {
     let mut c = new_iwc();
     c.set_open_mode(OpenMode::APPEND)?
         .set_max_buffered_docs(max_buffered_docs)?
-        .set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy_merge_factor(
-            4,
-        )?))?;
+        .set_merge_policy(Some(Arc::new(
+            LuceneTestCase::new_log_merge_policy_merge_factor(4)?,
+        )))?;
     Ok(c)
 }
 
@@ -616,8 +616,8 @@ impl AddIndexesWithReadersSetup {
 
         let dest_dir = LuceneTestCase::new_directory();
         let mut iwc = plain_iwc();
-        iwc.set_merge_policy(mp)?;
-        iwc.set_merge_scheduler(ms)?;
+        iwc.set_merge_policy(Some(mp))?;
+        iwc.set_merge_scheduler(Some(ms))?;
         let dest_writer = IndexWriter::new(d(&dest_dir), iwc)?;
         for _ in 0..Self::INIT_DOCS {
             add_doc(&dest_writer)?;
@@ -798,7 +798,7 @@ impl RunAddIndexesThreads {
         let dir2 = LuceneTestCase::new_directory();
         let mp: Arc<dyn MergePolicy> = Arc::new(concurrent_add_indexes_merge_policy());
         let mut iwc = plain_iwc();
-        iwc.set_merge_policy(mp)?;
+        iwc.set_merge_policy(Some(mp))?;
         let writer2 = IndexWriter::new(d(&dir2), iwc)?;
         writer2.commit()?;
 
@@ -1084,7 +1084,7 @@ fn test_simple_case() -> Result<()> {
 
     let mut c = new_iwc();
     c.set_open_mode(OpenMode::CREATE)?
-        .set_merge_policy(LuceneTestCase::new_log_merge_policy_use_cfs(false))?;
+        .set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(false)))?;
     writer = new_writer(&d(&aux), c)?;
     // add 40 documents in separate files
     add_docs(&writer, 40)?;
@@ -1307,7 +1307,7 @@ fn test_add_self() -> Result<()> {
     let mut c = new_iwc();
     c.set_open_mode(OpenMode::CREATE)?
         .set_max_buffered_docs(1000)?
-        .set_merge_policy(LuceneTestCase::new_log_merge_policy_use_cfs(false))?;
+        .set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(false)))?;
     writer = new_writer(&d(&aux), c)?;
     // add 140 documents in separate files
     add_docs(&writer, 40)?;
@@ -1315,7 +1315,7 @@ fn test_add_self() -> Result<()> {
     let mut c = new_iwc();
     c.set_open_mode(OpenMode::CREATE)?
         .set_max_buffered_docs(1000)?
-        .set_merge_policy(LuceneTestCase::new_log_merge_policy_use_cfs(false))?;
+        .set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(false)))?;
     writer = new_writer(&d(&aux), c)?;
     add_docs(&writer, 100)?;
     writer.close()?;
@@ -1417,7 +1417,7 @@ fn test_merge_after_copy() -> Result<()> {
     set_up_dirs_with_id(&d(&dir), &d(&aux), true)?;
 
     let mut dont_merge_config = plain_iwc();
-    dont_merge_config.set_merge_policy(Arc::new(NoMergePolicy::new()))?;
+    dont_merge_config.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     let writer = IndexWriter::new(d(&aux), dont_merge_config)?;
     for i in 0..20 {
         writer.delete_documents_by_terms(vec![Term::from_text("id", &i.to_string())])?;
@@ -1455,9 +1455,9 @@ fn test_more_merges() -> Result<()> {
     let mut c = new_iwc();
     c.set_open_mode(OpenMode::CREATE)?
         .set_max_buffered_docs(100)?
-        .set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy_merge_factor(
-            10,
-        )?))?;
+        .set_merge_policy(Some(Arc::new(
+            LuceneTestCase::new_log_merge_policy_merge_factor(10)?,
+        )))?;
     let writer = new_writer(&d(&aux2), c)?;
     writer.add_indexes_dirs(&[d(&aux)])?;
     assert_equals(&30, &writer.get_doc_stats()?.max_doc);
@@ -1465,7 +1465,7 @@ fn test_more_merges() -> Result<()> {
     writer.close()?;
 
     let mut dont_merge_config = plain_iwc();
-    dont_merge_config.set_merge_policy(Arc::new(NoMergePolicy::new()))?;
+    dont_merge_config.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     let writer = IndexWriter::new(d(&aux), dont_merge_config)?;
     for i in 0..27 {
         writer.delete_documents_by_terms(vec![Term::from_text("id", &i.to_string())])?;
@@ -1476,7 +1476,7 @@ fn test_more_merges() -> Result<()> {
     reader.close()?;
 
     let mut dont_merge_config = plain_iwc();
-    dont_merge_config.set_merge_policy(Arc::new(NoMergePolicy::new()))?;
+    dont_merge_config.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     let writer = IndexWriter::new(d(&aux2), dont_merge_config)?;
     for i in 0..8 {
         writer.delete_documents_by_terms(vec![Term::from_text("id", &i.to_string())])?;
@@ -1505,7 +1505,7 @@ fn test_hang_on_close() -> Result<()> {
     lmp.set_merge_factor(100)?;
     let mut c = new_iwc();
     c.set_max_buffered_docs(5)?
-        .set_merge_policy(Arc::new(lmp))?;
+        .set_merge_policy(Some(Arc::new(lmp)))?;
     let writer = IndexWriter::new(d(&dir), c)?;
 
     let mut doc = Document::new();
@@ -1543,8 +1543,8 @@ fn test_hang_on_close() -> Result<()> {
     lmp.set_no_cfs_ratio(0.0)?;
     lmp.set_merge_factor(4)?;
     let mut c = new_iwc();
-    c.set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))?
-        .set_merge_policy(Arc::new(lmp))?;
+    c.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?
+        .set_merge_policy(Some(Arc::new(lmp)))?;
     let writer = IndexWriter::new(d(&dir2), c)?;
     writer.add_indexes_dirs(&[d(&dir)])?;
     writer.close()?;
@@ -1660,9 +1660,9 @@ fn test_add_indexes_with_empty_merge_spec() -> Result<()> {
 fn test_add_indexes_with_empty_readers() -> Result<()> {
     let mut dest_dir = LuceneTestCase::new_directory();
     let mut iwc = plain_iwc();
-    iwc.set_merge_policy(Arc::new(concurrent_add_indexes_merge_policy()))?;
+    iwc.set_merge_policy(Some(Arc::new(concurrent_add_indexes_merge_policy())))?;
     let ms = Arc::new(CountingSerialMergeScheduler::new());
-    iwc.set_merge_scheduler(Arc::clone(&ms) as Arc<dyn MergeScheduler>)?;
+    iwc.set_merge_scheduler(Some(Arc::clone(&ms) as Arc<dyn MergeScheduler>))?;
     let dest_writer = IndexWriter::new(d(&dest_dir), iwc)?;
     let initial_docs = 15;
     for _ in 0..initial_docs {
@@ -1719,9 +1719,9 @@ fn test_add_indexes_hitting_max_docs_limit() -> Result<()> {
     // create destination writer
     let mut dest_dir = LuceneTestCase::new_directory();
     let mut iwc = plain_iwc();
-    iwc.set_merge_policy(Arc::new(concurrent_add_indexes_merge_policy()))?;
+    iwc.set_merge_policy(Some(Arc::new(concurrent_add_indexes_merge_policy())))?;
     let ms = Arc::new(CountingSerialMergeScheduler::new());
-    iwc.set_merge_scheduler(Arc::clone(&ms) as Arc<dyn MergeScheduler>)?;
+    iwc.set_merge_scheduler(Some(Arc::clone(&ms) as Arc<dyn MergeScheduler>))?;
     let dest_writer = IndexWriter::new(d(&dest_dir), iwc)?;
     for _ in 0..writer_max_docs {
         add_doc(&dest_writer)?;
@@ -1959,7 +1959,7 @@ fn test_simple_case_custom_codec() -> Result<()> {
     c.set_open_mode(OpenMode::CREATE)?
         .set_codec(Arc::clone(&codec))?
         .set_max_buffered_docs(10)?
-        .set_merge_policy(LuceneTestCase::new_log_merge_policy_use_cfs(false))?;
+        .set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(false)))?;
     writer = new_writer(&d(&aux), c)?;
     // add 40 documents in separate files
     add_docs(&writer, 40)?;
@@ -2015,7 +2015,7 @@ fn test_non_cfs_leftovers() -> Result<()> {
 
     let mut dir = mock_byte_buffers_dir();
     let mut conf = plain_iwc();
-    conf.set_merge_policy(LuceneTestCase::new_log_merge_policy_use_cfs(true))?;
+    conf.set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(true)))?;
     let lmp = conf.merge_policy();
     // Force creation of CFS:
     lmp.set_no_cfs_ratio(1.0)?;
@@ -2567,7 +2567,7 @@ fn test_set_diagnostics() -> Result<()> {
     let mut target_dir = LuceneTestCase::new_directory();
     {
         let mut c = LuceneTestCase::new_index_writer_config();
-        c.set_merge_policy(Arc::new(my_merge_policy))?;
+        c.set_merge_policy(Some(Arc::new(my_merge_policy)))?;
         let w = IndexWriter::new(d(&target_dir), c)?;
         w.add_indexes_codec_readers(&[codec_reader])?;
         w.close()?;

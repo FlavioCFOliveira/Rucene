@@ -219,7 +219,7 @@ fn trace(kind: &str, docs: i32) -> String {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     config.set_ram_buffer_size_mb(256.0).unwrap();
     config.set_max_buffered_docs(1 << 30).unwrap();
@@ -343,10 +343,10 @@ fn files(ram_mb: f64, ops: i32, seed: i64, trace: bool) -> String {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .unwrap();
     config.set_ram_buffer_size_mb(ram_mb).unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
@@ -531,10 +531,10 @@ fn flushing(docs: i32, max_buffered_docs: i32) -> String {
     let probe = Arc::new(FlushProbe::default());
     let mut config = IndexWriterConfig::new();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .unwrap();
     config.set_max_buffered_docs(max_buffered_docs).unwrap();
     config

@@ -39,7 +39,7 @@ fn test_non_flex() -> Result<()> {
 
     let mut iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
     iwc.set_max_buffered_docs(7)?;
-    iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+    iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let w = IndexWriter::new(d.as_directory(), iwc)?;
 
     for iter in 0..2 {

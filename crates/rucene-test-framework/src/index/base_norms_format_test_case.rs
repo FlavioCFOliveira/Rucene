@@ -713,7 +713,7 @@ pub trait BaseNormsFormatTestCase: BaseIndexFileFormatTestCase {
         let analyzer = whitespace_analyzer();
         let mut conf = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
         let sim = Arc::new(CannedNormSimilarity::new(norms.clone()));
-        conf.set_similarity(sim)?;
+        conf.set_similarity(Some(sim))?;
         let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), conf)?;
         add_norms_documents(&writer, num_docs, &docs_with_field, &norms)?;
 
@@ -822,8 +822,8 @@ pub trait BaseNormsFormatTestCase: BaseIndexFileFormatTestCase {
         self.apply_created_version_major(&*dir.as_directory())?;
         let analyzer = whitespace_analyzer();
         let mut conf = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
-        conf.set_merge_policy(Arc::new(NoMergePolicy::new()))?;
-        conf.set_similarity(Arc::new(CannedNormSimilarity::new(norms.clone())))?;
+        conf.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+        conf.set_similarity(Some(Arc::new(CannedNormSimilarity::new(norms.clone()))))?;
         let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), conf)?;
         add_norms_documents(&writer, num_docs, &docs_with_field, &norms)?;
 
@@ -900,9 +900,9 @@ fn independant_iterators<C: BaseNormsFormatTestCase + ?Sized>(
 ) -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let mut conf = LuceneTestCase::new_index_writer_config();
-    conf.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+    conf.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let sim = Arc::new(CannedNormSimilarity::new(vec![42, 10, 20]));
-    conf.set_similarity(sim)?;
+    conf.set_similarity(Some(sim))?;
     let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), conf)?;
     let mut doc = Document::new();
     doc.add(Box::new(TextField::new(

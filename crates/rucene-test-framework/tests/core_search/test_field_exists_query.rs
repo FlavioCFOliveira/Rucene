@@ -494,7 +494,7 @@ fn test_doc_values_query_matches_count() -> Result<()> {
     // Test that we can't count in O(1) when there are deleted documents
     w.w()
         .get_config()
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))?;
+        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     w.delete_documents_by_query(LongPoint::new_range_query("long", &[0], &[9])?)?;
     let reader2 = w.get_reader()?;
     let searcher2 = IndexSearcher::new(Arc::clone(&reader2) as Arc<dyn IndexReader>)?;
@@ -691,7 +691,7 @@ fn test_norms_query_matches_count() -> Result<()> {
     // We can still shortcut with deleted docs
     w.w()
         .get_config()
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))?;
+        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     w.delete_documents(term("text", "text"))?; // deletes all but the first doc
     let reader2 = w.get_reader()?;
     let searcher2 = IndexSearcher::new(Arc::clone(&reader2) as Arc<dyn IndexReader>)?;
@@ -1141,7 +1141,7 @@ fn test_doc_values_count_with_deletions_all_docs_have_field() -> Result<()> {
     // Delete some documents, but every remaining doc still has the field
     w.w()
         .get_config()
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))?;
+        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     w.delete_documents(term("id", "0"))?;
     w.delete_documents(term("id", "1"))?;
 
@@ -1188,7 +1188,7 @@ fn test_vector_count_with_deletions_all_docs_have_field() -> Result<()> {
     w.force_merge(1)?;
     w.w()
         .get_config()
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))?;
+        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     w.delete_documents(term("id", "0"))?;
 
     let reader = w.get_reader()?;

@@ -385,7 +385,7 @@ fn two_reuse_segments() -> Arc<dyn DirectoryReader> {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     for _ in 0..2 {

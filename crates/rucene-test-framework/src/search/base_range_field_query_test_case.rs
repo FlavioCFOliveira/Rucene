@@ -391,7 +391,7 @@ pub trait BaseRangeFieldQueryTestCase: Send + Sync + 'static {
     fn verify(&self, ranges: &[Rc<Vec<RangeRef>>]) -> Result<()> {
         let mut iwc = LuceneTestCase::new_index_writer_config();
         // Else seeds may not reproduce:
-        iwc.set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))?;
+        iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
         // Else we can get O(N^2) merging
         let mbd = iwc.max_buffered_docs();
         if mbd != -1 && mbd < (ranges.len() / 100) as i32 {

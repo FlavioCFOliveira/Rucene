@@ -175,7 +175,9 @@ fn bitvectors_graph_of_a_large_segment_matches_lucenes() {
     let mut config = new_config(per_field_knn_codec(Arc::new(HnswBitVectorsFormat::new())));
     config.set_use_compound_file(false).unwrap();
     config
-        .set_merge_policy(Arc::new(rucene::index::merge_policy::NoMergePolicy::new()))
+        .set_merge_policy(Some(Arc::new(
+            rucene::index::merge_policy::NoMergePolicy::new(),
+        )))
         .unwrap();
     config.set_max_buffered_docs(100_000).unwrap();
     config.set_ram_buffer_size_mb(256.0).unwrap();

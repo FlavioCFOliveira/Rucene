@@ -735,7 +735,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         let mut dir = LuceneTestCase::new_directory();
         let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(null_analyzer());
         iwc.set_codec(self.get_codec())?;
-        iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+        iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
         let iw = RandomIndexWriter::new_with_config(
             &*LuceneTestCase::random(),
             dir.as_directory(),
@@ -779,7 +779,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
 
         let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(null_analyzer());
         iwc.set_codec(self.get_codec())?;
-        iwc.set_merge_policy(Arc::new(LuceneTestCase::new_tiered_merge_policy()))?;
+        iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_tiered_merge_policy())))?;
         let iw = IndexWriter::new(dir.as_directory(), iwc)?;
 
         for i in 0..10000 {
@@ -828,7 +828,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
 
         let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(null_analyzer());
         iwc.set_codec(self.get_codec())?;
-        iwc.set_merge_policy(Arc::new(LuceneTestCase::new_tiered_merge_policy()))?;
+        iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_tiered_merge_policy())))?;
         let iw = IndexWriter::new(dir.as_directory(), iwc)?;
 
         for i in 100000..=100400 {
@@ -902,7 +902,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
 
         let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(null_analyzer());
         iwc.set_codec(self.get_codec())?;
-        iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+        iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
         let iw = IndexWriter::new(dir.as_directory(), iwc)?;
 
         let mut document = Document::new();
@@ -1386,7 +1386,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
 
         let mut dir2 = LuceneTestCase::new_directory();
         let mut config2 = LuceneTestCase::new_index_writer_config();
-        config2.set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))?;
+        config2.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
         let w2 = IndexWriter::new(dir2.as_directory(), config2)?;
         w2.add_document(&doc)?;
         w2.commit()?;

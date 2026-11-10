@@ -154,7 +154,7 @@ fn an_nrt_reader_over_too_many_documents_is_corrupt() {
     let guard = MaxDocsGuard::acquire();
     let mut config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .unwrap();
     let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
     writer.add_document(&id_doc("a")).unwrap();
@@ -231,7 +231,7 @@ fn add_indexes_codec_readers_refuses_readers_over_the_limit() {
     let scheduler = Arc::new(CountingSerialMergeScheduler::default());
     let mut config = IndexWriterConfig::new();
     config
-        .set_merge_scheduler(Arc::clone(&scheduler) as Arc<dyn MergeScheduler>)
+        .set_merge_scheduler(Some(Arc::clone(&scheduler) as Arc<dyn MergeScheduler>))
         .unwrap();
     let dest_writer = IndexWriter::new(Arc::clone(&dest_dir), config).unwrap();
     for i in 0..writer_max_docs {

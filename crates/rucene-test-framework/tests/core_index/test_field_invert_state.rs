@@ -90,7 +90,7 @@ fn canned_field(name: &str, tokens: Vec<Token>) -> Result<Field> {
 /// `setSimilarity(NeverForgetsSimilarity.INSTANCE)`.
 fn config() -> Result<IndexWriterConfig> {
     let mut iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
-    iwc.set_similarity(Arc::clone(&*INSTANCE) as Arc<dyn Similarity>)?;
+    iwc.set_similarity(Some(Arc::clone(&*INSTANCE) as Arc<dyn Similarity>))?;
     Ok(iwc)
 }
 

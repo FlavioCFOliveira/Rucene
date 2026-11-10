@@ -35,7 +35,7 @@ fn leaf_with_one_deletion() -> (Arc<dyn IndexReader>, Arc<dyn LeafReader>) {
     // no merge may rewrite the segment without its deleted document
     let mut config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     for i in 0..4 {

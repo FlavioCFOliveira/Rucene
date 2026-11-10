@@ -78,7 +78,7 @@ fn every_commit_writes_the_next_generation() {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config
-        .set_index_deletion_policy(NoDeletionPolicy::instance())
+        .set_index_deletion_policy(Some(NoDeletionPolicy::instance()))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
 
@@ -223,7 +223,7 @@ fn a_failed_rename_leaves_the_previous_commit_point_intact() {
 
     let mut config = IndexWriterConfig::new();
     config
-        .set_index_deletion_policy(NoDeletionPolicy::instance())
+        .set_index_deletion_policy(Some(NoDeletionPolicy::instance()))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&as_dir), config).unwrap();
 

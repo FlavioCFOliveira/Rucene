@@ -144,9 +144,9 @@ fn index_and_merge(inst: &TestDocInstance, use_compound_file: bool) -> Result<St
         LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())));
     iwc.set_open_mode(OpenMode::CREATE)?;
     iwc.set_max_buffered_docs(-1)?;
-    iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy_merge_factor(
-        10,
-    )?))?;
+    iwc.set_merge_policy(Some(Arc::new(
+        LuceneTestCase::new_log_merge_policy_merge_factor(10)?,
+    )))?;
     let writer = IndexWriter::new(directory.as_directory(), iwc)?;
 
     let si1 = index_doc(inst, &writer, "test.txt")?;

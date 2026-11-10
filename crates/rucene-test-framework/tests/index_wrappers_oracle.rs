@@ -1347,7 +1347,7 @@ fn misuse(rows: &mut Rows, c: &str, reader: &Arc<dyn DirectoryReader>) {
 /// `addOne(dir)`: one more document committed.
 fn add_one(dir: &Arc<dyn Directory>) -> Result<()> {
     let mut config = IndexWriterConfig::with_analyzer(Arc::new(StandardAnalyzer::new()));
-    config.set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))?;
+    config.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
     let iw = IndexWriter::new(Arc::clone(dir), config)?;
     let mut d = Document::new();
     d.add(Box::new(StringField::new(
@@ -1541,7 +1541,7 @@ fn pk_duplicates(rows: &mut Rows) {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::with_analyzer(Arc::new(StandardAnalyzer::new()));
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     let iw = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     for batch in [&["a", "b"][..], &["a", "c", "d", "b"][..]] {
@@ -1573,7 +1573,7 @@ fn points_index() -> Arc<dyn Directory> {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::with_analyzer(Arc::new(StandardAnalyzer::new()));
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     let iw = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     for i in 0..5000i32 {

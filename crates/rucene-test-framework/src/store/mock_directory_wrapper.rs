@@ -1317,7 +1317,7 @@ impl MockDirectoryWrapper {
         // now look for unreferenced files: discount ones that we tried to delete but could not
         let start_files = self.list_all()?;
         let mut iwc = IndexWriterConfig::new();
-        iwc.set_index_deletion_policy(NoDeletionPolicy::instance())?;
+        iwc.set_index_deletion_policy(Some(NoDeletionPolicy::instance()))?;
 
         // We must do this before opening writer otherwise writer will be angry if there are
         // pending deletions:

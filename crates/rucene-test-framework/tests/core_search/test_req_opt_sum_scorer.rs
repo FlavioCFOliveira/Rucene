@@ -89,9 +89,9 @@ fn do_test_basics(req_occur: Occur) -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let mut iwc = LuceneTestCase::new_index_writer_config();
     // retain doc id order
-    iwc.set_merge_policy(LuceneTestCase::new_log_merge_policy_use_cfs(
+    iwc.set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(
         random().next_boolean(),
-    ))?;
+    )))?;
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
     w.add_document(&string_doc("f", &["foo"])?)?;
     w.add_document(&string_doc("f", &["foo", "bar"])?)?;
@@ -178,7 +178,7 @@ fn assert_equals_float(expected: f32, actual: f32) {
 fn test_max_block() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let mut iwc = LuceneTestCase::new_index_writer_config();
-    iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+    iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut ft = FieldType::new();
     ft.set_index_options(IndexOptions::DOCS_AND_FREQS)?;
@@ -232,7 +232,7 @@ fn test_max_block() -> Result<()> {
 fn test_max_score_segment() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let mut iwc = LuceneTestCase::new_index_writer_config();
-    iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+    iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let all_values: [&[&str]; 8] = [
         &["A"],      // 0

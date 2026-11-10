@@ -1319,7 +1319,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
         let num_docs = LuceneTestCase::at_least(200);
         let mut dir = LuceneTestCase::new_directory();
         let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(mock_analyzer());
-        iwc.set_merge_policy(Arc::new(NoMergePolicy::new()))?;
+        iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
         let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
         for i in 0..num_docs {
             let mut doc = Document::new();

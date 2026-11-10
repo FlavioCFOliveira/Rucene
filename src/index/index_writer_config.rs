@@ -417,8 +417,14 @@ impl LiveIndexWriterConfig {
     ///
     /// # Errors
     ///
-    /// Never fails; the `Result` keeps the setter chainable like the others.
-    pub fn set_merge_policy(&self, merge_policy: Arc<dyn MergePolicy>) -> Result<&Self> {
+    /// Returns `LuceneError::IllegalArgument` (`"mergePolicy must not be
+    /// null"`) if `merge_policy` is `None`, Java's `null`.
+    pub fn set_merge_policy(&self, merge_policy: Option<Arc<dyn MergePolicy>>) -> Result<&Self> {
+        let Some(merge_policy) = merge_policy else {
+            return Err(LuceneError::IllegalArgument(
+                "mergePolicy must not be null".to_string(),
+            ));
+        };
         *self
             .merge_policy
             .write()
@@ -807,12 +813,18 @@ impl IndexWriterConfig {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `del_policy` is null.
+    /// Returns `LuceneError::IllegalArgument` (`"indexDeletionPolicy must not
+    /// be null"`) if `del_policy` is `None`, Java's `null`
+    /// (`IndexWriterConfig.java:214-220`).
     pub fn set_index_deletion_policy(
         &mut self,
-        del_policy: Arc<dyn IndexDeletionPolicy>,
+        del_policy: Option<Arc<dyn IndexDeletionPolicy>>,
     ) -> Result<&mut Self> {
-        // A valid Arc can never represent a null reference.
+        let Some(del_policy) = del_policy else {
+            return Err(LuceneError::IllegalArgument(
+                "indexDeletionPolicy must not be null".to_string(),
+            ));
+        };
         self.live.del_policy = del_policy;
         Ok(self)
     }
@@ -827,10 +839,15 @@ impl IndexWriterConfig {
     ///
     /// # Errors
     ///
-    /// Java throws `IllegalArgumentException` when `similarity` is null; a
-    /// `Arc<dyn Similarity>` cannot be null, so this never fails. The `Result`
-    /// is kept so that the builder reads uniformly with its siblings.
-    pub fn set_similarity(&mut self, similarity: Arc<dyn Similarity>) -> Result<&mut Self> {
+    /// Returns `LuceneError::IllegalArgument` (`"similarity must not be
+    /// null"`) if `similarity` is `None`, Java's `null`
+    /// (`IndexWriterConfig.java:251-257`).
+    pub fn set_similarity(&mut self, similarity: Option<Arc<dyn Similarity>>) -> Result<&mut Self> {
+        let Some(similarity) = similarity else {
+            return Err(LuceneError::IllegalArgument(
+                "similarity must not be null".to_string(),
+            ));
+        };
         self.live.set_similarity(similarity);
         Ok(self)
     }
@@ -839,11 +856,18 @@ impl IndexWriterConfig {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `merge_scheduler` is null.
+    /// Returns `LuceneError::IllegalArgument` (`"mergeScheduler must not be
+    /// null"`) if `merge_scheduler` is `None`, Java's `null`
+    /// (`IndexWriterConfig.java:272-278`).
     pub fn set_merge_scheduler(
         &mut self,
-        merge_scheduler: Arc<dyn MergeScheduler>,
+        merge_scheduler: Option<Arc<dyn MergeScheduler>>,
     ) -> Result<&mut Self> {
+        let Some(merge_scheduler) = merge_scheduler else {
+            return Err(LuceneError::IllegalArgument(
+                "mergeScheduler must not be null".to_string(),
+            ));
+        };
         self.live.merge_scheduler = merge_scheduler;
         Ok(self)
     }
@@ -1039,7 +1063,18 @@ impl IndexWriterConfig {
     }
 
     /// Sets the merge policy.
-    pub fn set_merge_policy(&mut self, merge_policy: Arc<dyn MergePolicy>) -> Result<&mut Self> {
+    ///
+    /// Equivalent to `IndexWriterConfig.setMergePolicy(MergePolicy)`, which
+    /// delegates to `LiveIndexWriterConfig.setMergePolicy`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `LuceneError::IllegalArgument` (`"mergePolicy must not be
+    /// null"`) if `merge_policy` is `None`, Java's `null`.
+    pub fn set_merge_policy(
+        &mut self,
+        merge_policy: Option<Arc<dyn MergePolicy>>,
+    ) -> Result<&mut Self> {
         self.live.set_merge_policy(merge_policy)?;
         Ok(self)
     }
@@ -1473,7 +1508,9 @@ mod tests {
 
         let mut config = new_config();
         config
-            .set_index_deletion_policy(Arc::new(KeepLastNCommitsDeletionPolicy::new(2).unwrap()))
+            .set_index_deletion_policy(Some(Arc::new(
+                KeepLastNCommitsDeletionPolicy::new(2).unwrap(),
+            )))
             .unwrap();
 
         let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());

@@ -1570,9 +1570,9 @@ mod tests {
     fn a_snapshot_pins_its_commit_files_against_a_later_commit() {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut sis = commit_with(dir.as_ref(), &["_0"], 1);
-        let policy = Arc::new(SnapshotDeletionPolicy::new(Arc::new(
+        let policy = Arc::new(SnapshotDeletionPolicy::new(Some(Arc::new(
             KeepOnlyLastCommitDeletionPolicy,
-        )));
+        ))));
         let mut d = deleter(
             &dir,
             policy.clone() as Arc<dyn IndexDeletionPolicy>,

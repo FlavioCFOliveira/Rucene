@@ -103,7 +103,7 @@ fn before_class() -> Result<()> {
     let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(
         MockAnalyzer::with_automaton(&*random(), Arc::clone(&WHITESPACE), false),
     ));
-    iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+    iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = RandomIndexWriter::new_with_config(&*random(), small.as_directory(), iwc)?;
 
     let mut custom_type = FieldType::new_from(TextField::type_stored());

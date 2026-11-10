@@ -216,7 +216,7 @@ fn stored_numeric_type() -> Result<FieldType> {
 /// `setRAMBufferSizeMB(16)` and `setMaxBufferedDocs(DISABLE_AUTO_FLUSH)`.
 fn stable_iwc() -> Result<IndexWriterConfig> {
     let mut iwc = LuceneTestCase::new_index_writer_config();
-    iwc.set_merge_policy(Arc::new(TieredMergePolicy::new()))?;
+    iwc.set_merge_policy(Some(Arc::new(TieredMergePolicy::new())))?;
     iwc.set_ram_buffer_size_mb(16.0)?;
     iwc.set_max_buffered_docs(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH)?;
     Ok(iwc)
@@ -225,7 +225,7 @@ fn stable_iwc() -> Result<IndexWriterConfig> {
 /// `newIndexWriterConfig().setMergePolicy(new TieredMergePolicy())`.
 fn tiered_iwc() -> Result<IndexWriterConfig> {
     let mut iwc = LuceneTestCase::new_index_writer_config();
-    iwc.set_merge_policy(Arc::new(TieredMergePolicy::new()))?;
+    iwc.set_merge_policy(Some(Arc::new(TieredMergePolicy::new())))?;
     Ok(iwc)
 }
 
@@ -1554,7 +1554,7 @@ fn random_parity_doc(r: &dyn Random) -> ParityDoc {
 /// `setMaxBufferedDocs(DISABLE_AUTO_FLUSH)`.
 fn parity_iwc() -> Result<IndexWriterConfig> {
     let mut iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
-    iwc.set_merge_policy(Arc::new(TieredMergePolicy::new()))?;
+    iwc.set_merge_policy(Some(Arc::new(TieredMergePolicy::new())))?;
     iwc.set_ram_buffer_size_mb(16.0)?;
     iwc.set_max_buffered_docs(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH)?;
     Ok(iwc)

@@ -77,7 +77,7 @@ fn writer(
     let mut iwc =
         LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())));
     if log_merge_policy {
-        iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+        iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     }
     RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)
 }

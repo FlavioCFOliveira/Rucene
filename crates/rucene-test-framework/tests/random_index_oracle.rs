@@ -221,9 +221,9 @@ fn walk(tree: &mut dyn PointTree, depth: usize, lines: &mut Vec<String>) {
 fn config(codec: Arc<RandomCodec>) -> IndexWriterConfig {
     let mut c = IndexWriterConfig::with_analyzer(Arc::new(StandardAnalyzer::new()));
     c.set_codec(codec).unwrap();
-    c.set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+    c.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
-    c.set_merge_policy(Arc::new(LogMergePolicy::by_doc_count()))
+    c.set_merge_policy(Some(Arc::new(LogMergePolicy::by_doc_count())))
         .unwrap();
     c
 }

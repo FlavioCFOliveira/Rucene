@@ -235,7 +235,7 @@ fn a_merge_between_prepare_commit_and_commit_keeps_the_pending_commits_files() {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     for id in 0..30 {
@@ -348,10 +348,10 @@ fn the_merge_asks_use_compound_file_under_the_writers_lock() {
     });
     let mut config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Arc::clone(&policy) as Arc<dyn MergePolicy>)
+        .set_merge_policy(Some(Arc::clone(&policy) as Arc<dyn MergePolicy>))
         .unwrap();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     let _ = writer_slot.set(Arc::downgrade(&writer));

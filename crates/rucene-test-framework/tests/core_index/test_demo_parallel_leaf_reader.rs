@@ -252,10 +252,10 @@ impl ReindexingReader {
 
         let mut iwc = hooks.get_index_writer_config()?;
         let inner = iwc.merge_policy();
-        iwc.set_merge_policy(Arc::new(ReindexingMergePolicy {
+        iwc.set_merge_policy(Some(Arc::new(ReindexingMergePolicy {
             filter: FilterMergePolicy::new(inner),
             state: Arc::downgrade(&state),
-        }))?;
+        })))?;
         if DEBUG {
             println!("TEST: use IWC:\n{iwc}");
         }
@@ -1093,7 +1093,7 @@ fn tiny_floor_iwc() -> Result<IndexWriterConfig> {
     let tmp = TieredMergePolicy::new();
     // We write tiny docs, so we need tiny floor to avoid O(N^2) merging:
     tmp.set_floor_segment_mb(0.01)?;
-    iwc.set_merge_policy(Arc::new(tmp))?;
+    iwc.set_merge_policy(Some(Arc::new(tmp)))?;
     Ok(iwc)
 }
 
@@ -1112,7 +1112,7 @@ fn open_mock_fs_directory(path: &Path) -> Result<TestDirectory> {
 fn reindex_iwc() -> Result<IndexWriterConfig> {
     let mut iwc = LuceneTestCase::new_index_writer_config();
     // The order of our docIDs must precisely match incoming reader:
-    iwc.set_merge_policy(Arc::new(LogMergePolicy::by_byte_size()))?;
+    iwc.set_merge_policy(Some(Arc::new(LogMergePolicy::by_byte_size())))?;
     Ok(iwc)
 }
 

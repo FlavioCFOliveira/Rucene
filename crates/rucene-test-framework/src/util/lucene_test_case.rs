@@ -2453,7 +2453,7 @@ mod ensure_sane_iwc_tests {
         ];
         for (mp, expected) in policies {
             let mut conf = IndexWriterConfig::new();
-            conf.set_merge_policy(Arc::clone(&mp)).unwrap();
+            conf.set_merge_policy(Some(Arc::clone(&mp))).unwrap();
             mp.set_no_cfs_ratio(0.1).unwrap();
             LuceneTestCase::ensure_sane_iwc(&mut conf);
             assert!(Arc::ptr_eq(&conf.merge_policy(), &mp));
@@ -2808,7 +2808,7 @@ impl LuceneTestCase {
         const INVARIANT: &str = "INVARIANT: the drawn value is in the setter's range";
 
         let mut c = rucene::index::index_writer_config::IndexWriterConfig::with_analyzer(a);
-        c.set_similarity(Self::class_env_similarity())
+        c.set_similarity(Some(Self::class_env_similarity()))
             .expect(INVARIANT);
         if *VERBOSE {
             // Even though TestRuleSetupAndRestoreClassEnv calls
@@ -2824,7 +2824,7 @@ impl LuceneTestCase {
         }
 
         if Self::rarely_with(r) {
-            c.set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+            c.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
                 .expect(INVARIANT);
         } else if Self::rarely_with(r) {
             let cms = if r.next_boolean() {
@@ -2844,7 +2844,7 @@ impl LuceneTestCase {
             }
             cms.set_force_merge_mb_per_sec(10.0 + 10.0 * Self::random().next_double())
                 .expect(INVARIANT);
-            c.set_merge_scheduler(Arc::new(cms)).expect(INVARIANT);
+            c.set_merge_scheduler(Some(Arc::new(cms))).expect(INVARIANT);
         } else {
             // Always use consistent settings, else CMS's dynamic (SSD or not)
             // defaults can change, hurting reproducibility:
@@ -2858,7 +2858,7 @@ impl LuceneTestCase {
             // with up to 3 pending merges before segment-producing threads are
             // stalled:
             cms.set_max_merges_and_threads(3, 1).expect(INVARIANT);
-            c.set_merge_scheduler(Arc::new(cms)).expect(INVARIANT);
+            c.set_merge_scheduler(Some(Arc::new(cms))).expect(INVARIANT);
         }
 
         if r.next_boolean() {
@@ -2873,7 +2873,7 @@ impl LuceneTestCase {
             }
         }
 
-        c.set_merge_policy(Self::new_merge_policy_with(r))
+        c.set_merge_policy(Some(Self::new_merge_policy_with(r)))
             .expect(INVARIANT);
 
         if Self::rarely_with(r) {
@@ -3732,9 +3732,9 @@ impl LuceneTestCase {
     ) -> rucene::index::index_writer_config::IndexWriterConfig {
         use rucene::index::index_deletion_policy::{NoDeletionPolicy, SnapshotDeletionPolicy};
         let mut c = Self::new_index_writer_config_analyzer(analyzer);
-        c.set_index_deletion_policy(Arc::new(SnapshotDeletionPolicy::new(
+        c.set_index_deletion_policy(Some(Arc::new(SnapshotDeletionPolicy::new(Some(
             NoDeletionPolicy::instance(),
-        )))
+        )))))
         .expect("INVARIANT: a deletion policy is never null");
         c
     }

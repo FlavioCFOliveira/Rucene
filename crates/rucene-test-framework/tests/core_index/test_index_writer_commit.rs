@@ -294,9 +294,9 @@ fn test_commit_on_close_disk_usage() -> Result<()> {
     let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Arc::clone(&analyzer));
     iwc.set_max_buffered_docs(10)?;
     iwc.set_reader_pooling(false);
-    iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy_merge_factor(
-        10,
-    )?))?;
+    iwc.set_merge_policy(Some(Arc::new(
+        LuceneTestCase::new_log_merge_policy_merge_factor(10)?,
+    )))?;
     let writer = IndexWriter::new(Arc::clone(&d), iwc)?;
     for j in 0..30 {
         add_doc_with_index(&writer, j)?;
@@ -310,11 +310,11 @@ fn test_commit_on_close_disk_usage() -> Result<()> {
     let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Arc::clone(&analyzer));
     iwc.set_open_mode(OpenMode::APPEND)?;
     iwc.set_max_buffered_docs(10)?;
-    iwc.set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))?;
+    iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
     iwc.set_reader_pooling(false);
-    iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy_merge_factor(
-        10,
-    )?))?;
+    iwc.set_merge_policy(Some(Arc::new(
+        LuceneTestCase::new_log_merge_policy_merge_factor(10)?,
+    )))?;
     let writer = IndexWriter::new(Arc::clone(&d), iwc)?;
 
     for j in 0..1470 {
@@ -355,9 +355,9 @@ fn test_commit_on_close_force_merge() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let mut iwc = iwc_max_buffered(10)?;
-    iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy_merge_factor(
-        10,
-    )?))?;
+    iwc.set_merge_policy(Some(Arc::new(
+        LuceneTestCase::new_log_merge_policy_merge_factor(10)?,
+    )))?;
     let writer = IndexWriter::new(Arc::clone(&d), iwc)?;
     for j in 0..17 {
         add_doc_with_index(&writer, j)?;
@@ -429,7 +429,7 @@ fn test_commit_thread_safety() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let mut iwc = mock_iwc();
-    iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+    iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let w = Arc::new(RandomIndexWriter::new_with_config(
         &*random(),
         Arc::clone(&d),
@@ -507,9 +507,9 @@ fn test_force_commit() -> Result<()> {
     let d = dir.as_directory();
 
     let mut iwc = iwc_max_buffered(2)?;
-    iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy_merge_factor(
-        5,
-    )?))?;
+    iwc.set_merge_policy(Some(Arc::new(
+        LuceneTestCase::new_log_merge_policy_merge_factor(5)?,
+    )))?;
     let writer = IndexWriter::new(Arc::clone(&d), iwc)?;
     writer.commit()?;
 
@@ -561,7 +561,7 @@ fn test_future_commit() -> Result<()> {
     let d = dir.as_directory();
 
     let mut iwc = mock_iwc();
-    iwc.set_index_deletion_policy(NoDeletionPolicy::instance())?;
+    iwc.set_index_deletion_policy(Some(NoDeletionPolicy::instance()))?;
     let w = IndexWriter::new(Arc::clone(&d), iwc)?;
     let doc = Document::new();
     w.add_document(&doc)?;
@@ -581,7 +581,7 @@ fn test_future_commit() -> Result<()> {
     assert_not_null(&commit);
 
     let mut iwc = mock_iwc();
-    iwc.set_index_deletion_policy(NoDeletionPolicy::instance())?;
+    iwc.set_index_deletion_policy(Some(NoDeletionPolicy::instance()))?;
     iwc.set_index_commit(commit);
     let w = IndexWriter::new(Arc::clone(&d), iwc)?;
 
@@ -625,9 +625,9 @@ fn test_prepare_commit() -> Result<()> {
     let d = dir.as_directory();
 
     let mut iwc = iwc_max_buffered(2)?;
-    iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy_merge_factor(
-        5,
-    )?))?;
+    iwc.set_merge_policy(Some(Arc::new(
+        LuceneTestCase::new_log_merge_policy_merge_factor(5)?,
+    )))?;
     let writer = IndexWriter::new(Arc::clone(&d), iwc)?;
     writer.commit()?;
 
@@ -685,9 +685,9 @@ fn test_prepare_commit_rollback() -> Result<()> {
     let d = dir.as_directory();
 
     let mut iwc = iwc_max_buffered(2)?;
-    iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy_merge_factor(
-        5,
-    )?))?;
+    iwc.set_merge_policy(Some(Arc::new(
+        LuceneTestCase::new_log_merge_policy_merge_factor(5)?,
+    )))?;
     let writer = IndexWriter::new(Arc::clone(&d), iwc)?;
     writer.commit()?;
 

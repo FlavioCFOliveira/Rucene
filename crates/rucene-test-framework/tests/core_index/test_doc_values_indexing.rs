@@ -165,7 +165,7 @@ fn mock_iwc() -> IndexWriterConfig {
 /// `newIndexWriterConfig(analyzer)` with `setMergePolicy(newLogMergePolicy())`.
 fn log_mp_iwc(analyzer: Arc<dyn Analyzer>) -> Result<IndexWriterConfig> {
     let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
-    iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+    iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     Ok(iwc)
 }
 
@@ -396,7 +396,7 @@ fn test_length_prefix_across_two_pages() -> Result<()> {
 fn test_doc_values_unstored() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let mut iwconfig = mock_iwc();
-    iwconfig.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+    iwconfig.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = IndexWriter::new(dir.as_directory(), iwconfig)?;
     for i in 0..50 {
         let mut doc = Document::new();

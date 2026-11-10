@@ -57,10 +57,10 @@ fn test_() -> Result<()> {
     let mut iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
     iwc.set_max_buffered_docs(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH)?;
     iwc.set_ram_buffer_size_mb(256.0)?;
-    iwc.set_merge_scheduler(Arc::new(ConcurrentMergeScheduler::new()))?;
-    iwc.set_merge_policy(Arc::new(
+    iwc.set_merge_scheduler(Some(Arc::new(ConcurrentMergeScheduler::new())))?;
+    iwc.set_merge_policy(Some(Arc::new(
         LuceneTestCase::new_log_merge_policy_use_cfs_merge_factor(false, 10)?,
-    ))?;
+    )))?;
     iwc.set_open_mode(OpenMode::CREATE)?;
 
     // TODO: we disable "Compressing" since it likes to pick very extreme values which will be too

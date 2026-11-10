@@ -103,7 +103,7 @@ fn soft_update_document_commits_and_leaves_one_live_document() {
     // No merge, so the soft-deleted version cannot be merged away before the
     // reader looks for it.
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     writer.add_document(&doc("a", 1)).unwrap();
@@ -150,7 +150,7 @@ fn a_flushed_segment_of_self_soft_deleted_documents_is_dropped() {
     let mut config = IndexWriterConfig::new();
     config.set_soft_deletes_field(Some("soft".to_string()));
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     writer.add_document(&doc("live", 1)).unwrap();
@@ -315,10 +315,10 @@ fn num_deletes_to_merge_excludes_the_soft_deletes_the_retention_query_keeps() {
     let mut config = IndexWriterConfig::new();
     config.set_soft_deletes_field(Some("soft".to_string()));
     config
-        .set_merge_policy(Arc::new(AskingPolicy {
+        .set_merge_policy(Some(Arc::new(AskingPolicy {
             inner: retention,
             answers: Arc::clone(&answers),
-        }))
+        })))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     for i in 0..10 {

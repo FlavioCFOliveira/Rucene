@@ -100,9 +100,9 @@ fn force_merge_with(
     let mut config = IndexWriterConfig::new();
     config.set_codec(codec).unwrap();
     config
-        .set_merge_policy(Arc::new(LogMergePolicy::by_doc_count()))
+        .set_merge_policy(Some(Arc::new(LogMergePolicy::by_doc_count())))
         .unwrap();
-    config.set_merge_scheduler(scheduler).unwrap();
+    config.set_merge_scheduler(Some(scheduler)).unwrap();
     let writer = IndexWriter::new(dir, config).unwrap();
     for i in 0..2 {
         let mut doc = Document::new();

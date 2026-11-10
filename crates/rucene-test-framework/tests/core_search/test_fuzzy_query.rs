@@ -116,10 +116,10 @@ fn test_fuzziness() -> Result<()> {
     let mut directory = LuceneTestCase::new_directory();
     let analyzer: Arc<dyn Analyzer> = Arc::new(MockAnalyzer::new(&*random()));
     let mut config = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
-    config.set_merge_policy(LuceneTestCase::new_merge_policy_include_mock(
+    config.set_merge_policy(Some(LuceneTestCase::new_merge_policy_include_mock(
         &*random(),
         false,
-    ))?;
+    )))?;
     let writer = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), config)?;
     add_doc("aaaaa", &writer)?;
     add_doc("aaaab", &writer)?;

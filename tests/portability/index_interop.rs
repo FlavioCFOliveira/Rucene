@@ -256,7 +256,7 @@ fn write_corpus(path: &Path) {
     let mut config = IndexWriterConfig::new();
     config.set_open_mode(OpenMode::CREATE).unwrap();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     let w = IndexWriter::new(dir, config).unwrap();
     add_batch(&w, 0);
@@ -1172,9 +1172,9 @@ fn write_forced_deletes(path: &Path) {
     let mut config = IndexWriterConfig::new();
     config.set_open_mode(OpenMode::CREATE).unwrap();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
-    config.set_merge_policy(Arc::new(policy)).unwrap();
+    config.set_merge_policy(Some(Arc::new(policy))).unwrap();
     let w = IndexWriter::new(dir, config).unwrap();
     for s in 0..10 {
         for i in s * 20..s * 20 + 20 {

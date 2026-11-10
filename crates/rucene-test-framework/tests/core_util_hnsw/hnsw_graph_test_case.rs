@@ -375,7 +375,7 @@ fn test_random_read_write_and_merge<C: HnswCase>(this: &mut Fixture<C>) -> Resul
             m, beam_width,
         ))?;
         // set a random merge policy
-        iwc.set_merge_policy(LuceneTestCase::new_merge_policy_with(&*random()))?;
+        iwc.set_merge_policy(Some(LuceneTestCase::new_merge_policy_with(&*random())))?;
         let iw = IndexWriter::new(dir.as_directory(), iwc)?;
         let written = (|| -> Result<()> {
             for i in 0..segment_sizes.len() {
@@ -465,7 +465,7 @@ fn test_graph_merge_with_deletes<C: HnswCase>(this: &mut Fixture<C>) -> Result<(
             Lucene99HnswVectorsFormat::with_max_conn_beam_width_threshold(m, beam_width, 0),
         )?;
         // set a random merge policy
-        iwc.set_merge_policy(LuceneTestCase::new_merge_policy_with(&*random()))?;
+        iwc.set_merge_policy(Some(LuceneTestCase::new_merge_policy_with(&*random())))?;
         let w = IndexWriter::new(dir.as_directory(), iwc)?;
         let written = (|| -> Result<()> {
             for i in 0..num_vectors {

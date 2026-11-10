@@ -54,7 +54,7 @@ fn line_docs_index(seed: i64) -> (Arc<dyn Directory>, String) {
         .unwrap();
     config.set_open_mode(OpenMode::CREATE).unwrap();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     let w = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     let docs = LineFileDocs::new(&random, "europarl.lines.txt.gz").unwrap();
@@ -313,8 +313,8 @@ fn reduce_open_files_is_lucenes() {
             other => panic!("{other}"),
         };
         let mut c = Iwc::new();
-        c.set_merge_policy(mp).unwrap();
-        c.set_merge_scheduler(ms).unwrap();
+        c.set_merge_policy(Some(mp)).unwrap();
+        c.set_merge_scheduler(Some(ms)).unwrap();
         let w = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), c).unwrap();
         let describe = |w: &IndexWriter| {
             format!(
@@ -503,7 +503,7 @@ fn add_indexes_slowly_is_lucenes() {
         .collect();
     let target: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut c = Iwc::new();
-    c.set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+    c.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     let w = IndexWriter::new(Arc::clone(&target), c).unwrap();
     TestUtil::add_indexes_slowly(&w, &readers).unwrap();
@@ -1080,7 +1080,7 @@ fn check_index_reports_a_corrupt_terms_index_or_dictionary() {
         let mut config = Iwc::new();
         config.set_use_compound_file(false).unwrap();
         config
-            .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+            .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
             .unwrap();
         let w = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         let docs = LineFileDocs::new(&JdkRandom::new(42), "europarl.lines.txt.gz").unwrap();

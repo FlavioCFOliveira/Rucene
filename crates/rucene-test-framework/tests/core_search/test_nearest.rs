@@ -209,8 +209,8 @@ fn test_nearest_neighbor_random() -> Result<()> {
     let mut lons = vec![0f64; num_points as usize];
 
     let mut iwc = get_index_writer_config();
-    iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
-    iwc.set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))?;
+    iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
+    iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
     for id in 0..num_points as usize {
         lats[id] = quantize_lat(geo_test_util::next_latitude())?;

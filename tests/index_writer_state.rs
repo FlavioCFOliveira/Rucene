@@ -87,7 +87,7 @@ fn doc(id: i32) -> Document {
 fn config() -> IndexWriterConfig {
     let mut config = IndexWriterConfig::new();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     config
 }
@@ -155,7 +155,7 @@ fn writer_state_queries_match_lucene() {
         pooling.set_reader_pooling(true);
         // No merge may fold the deletion away before the question is asked.
         pooling
-            .set_merge_policy(Arc::new(NoMergePolicy::new()))
+            .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
             .unwrap();
         let w = IndexWriter::new(Arc::clone(&dir), pooling).unwrap();
         w.add_document(&doc(0)).unwrap();

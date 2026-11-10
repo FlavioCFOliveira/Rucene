@@ -279,7 +279,7 @@ fn a_failed_flush_is_a_writer_tragedy_as_lucene_does() {
     });
     let mut config = IndexWriterConfig::new();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     writer.add_document(&id_doc(0)).unwrap();
@@ -333,7 +333,7 @@ fn a_failed_auto_flush_is_a_writer_tragedy_as_lucene_does() {
     });
     let mut config = IndexWriterConfig::new();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     config.set_max_buffered_docs(2).unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
@@ -377,7 +377,7 @@ fn a_failed_flush_next_buffer_is_a_writer_tragedy_as_lucene_does() {
     });
     let mut config = IndexWriterConfig::new();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     writer.add_document(&id_doc(0)).unwrap();
@@ -505,10 +505,10 @@ fn a_tragedy_inside_commit_reenters_the_commit_lock() {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Arc::new(CommitOnlyMergePolicy))
+        .set_merge_policy(Some(Arc::new(CommitOnlyMergePolicy)))
         .unwrap();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     config.set_reader_pooling(true);
     config.set_max_full_flush_merge_wait_millis(10_000);
@@ -628,9 +628,9 @@ fn delete_all_aborts_a_running_merge() {
     let mut config = IndexWriterConfig::new();
     let policy = LogMergePolicy::by_doc_count();
     policy.set_merge_factor(2).unwrap();
-    config.set_merge_policy(Arc::new(policy)).unwrap();
+    config.set_merge_policy(Some(Arc::new(policy))).unwrap();
     config
-        .set_merge_scheduler(Arc::clone(&cms) as Arc<dyn MergeScheduler>)
+        .set_merge_scheduler(Some(Arc::clone(&cms) as Arc<dyn MergeScheduler>))
         .unwrap();
     config
         .set_info_stream(Arc::clone(&log) as Arc<dyn InfoStream>)
@@ -774,7 +774,7 @@ fn merge_index_failure(extension: &'static str) {
     });
     let mut config = IndexWriterConfig::new();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     writer.add_document(&tv_doc(0)).unwrap();
@@ -878,7 +878,7 @@ fn committed_index() -> Arc<dyn Directory> {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     let source = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     source.add_document(&id_doc(100)).unwrap();
@@ -899,7 +899,7 @@ fn an_assertion_failure_in_a_full_flush_is_a_writer_tragedy_as_lucene_under_ea()
             let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
             let mut config = IndexWriterConfig::new();
             config
-                .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+                .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
                 .unwrap();
             let log = Arc::new(TragicLog::default());
             config
@@ -1032,7 +1032,7 @@ fn a_lock_release_failure_after_add_indexes_is_raised_as_lucene_does() {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     writer.add_document(&id_doc(0)).unwrap();
@@ -1297,9 +1297,9 @@ fn rollback_during_a_failing_merge_write(
         }),
     );
     let mut config = IndexWriterConfig::new();
-    config.set_merge_policy(Arc::new(policy)).unwrap();
+    config.set_merge_policy(Some(Arc::new(policy))).unwrap();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     config
         .set_info_stream(Arc::clone(&log) as Arc<dyn InfoStream>)
@@ -1386,7 +1386,7 @@ fn a_rollback_logs_each_pending_merge_as_the_writer_renders_its_segments() {
     let log = Arc::new(IwLog::default());
     let mut config = IndexWriterConfig::new();
     config
-        .set_merge_scheduler(Arc::new(NoMergeScheduler))
+        .set_merge_scheduler(Some(Arc::new(NoMergeScheduler)))
         .unwrap();
     config
         .set_info_stream(Arc::clone(&log) as Arc<dyn InfoStream>)
@@ -1464,9 +1464,9 @@ fn a_rollback_aborts_every_pending_merge_and_raises_the_first_failure() {
         }),
     );
     let mut config = IndexWriterConfig::new();
-    config.set_merge_policy(Arc::new(policy)).unwrap();
+    config.set_merge_policy(Some(Arc::new(policy))).unwrap();
     config
-        .set_merge_scheduler(Arc::new(NoMergeScheduler))
+        .set_merge_scheduler(Some(Arc::new(NoMergeScheduler)))
         .unwrap();
     config.set_max_full_flush_merge_wait_millis(0);
     config
@@ -1545,10 +1545,10 @@ fn handle_merge_exception_logs_the_writers_rendering_of_the_merged_segments() {
     let log = Arc::new(IwLog::default());
     let mut config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Arc::new(LogMergePolicy::by_doc_count()))
+        .set_merge_policy(Some(Arc::new(LogMergePolicy::by_doc_count())))
         .unwrap();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     config
         .set_info_stream(Arc::clone(&log) as Arc<dyn InfoStream>)
@@ -1670,10 +1670,10 @@ fn a_point_in_time_merge_calls_the_hook_of_the_merge_it_wraps() {
     let finished: Arc<Mutex<Vec<String>>> = Arc::default();
     let mut config = IndexWriterConfig::new();
     config
-        .set_merge_policy(hooked_policy(&finished, Some("_0"), false, 2))
+        .set_merge_policy(Some(hooked_policy(&finished, Some("_0"), false, 2)))
         .unwrap();
     config
-        .set_merge_scheduler(Arc::new(NoMergeScheduler))
+        .set_merge_scheduler(Some(Arc::new(NoMergeScheduler)))
         .unwrap();
     let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
     for id in 0..4 {
@@ -1738,20 +1738,22 @@ fn merge_failure(in_middle: bool, hook_throws: bool) -> String {
     config.set_max_full_flush_merge_wait_millis(0);
     if in_middle {
         config
-            .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+            .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
             .unwrap();
     } else {
         config
-            .set_merge_scheduler(Arc::new(WrapFailingScheduler(SerialMergeScheduler::new())))
+            .set_merge_scheduler(Some(Arc::new(WrapFailingScheduler(
+                SerialMergeScheduler::new(),
+            ))))
             .unwrap();
     }
     config
-        .set_merge_policy(hooked_policy(
+        .set_merge_policy(Some(hooked_policy(
             &finished,
             hook_throws.then_some("*"),
             in_middle,
             10,
-        ))
+        )))
         .unwrap();
     let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
     for id in 0..3 {
@@ -1805,10 +1807,12 @@ fn a_failure_closing_the_merge_readers_hangs_the_merge_thread_as_lucene_does() {
     let mut config = IndexWriterConfig::new();
     config.set_max_full_flush_merge_wait_millis(0);
     config
-        .set_merge_scheduler(Arc::new(WrapFailingScheduler(SerialMergeScheduler::new())))
+        .set_merge_scheduler(Some(Arc::new(WrapFailingScheduler(
+            SerialMergeScheduler::new(),
+        ))))
         .unwrap();
     config
-        .set_merge_policy(hooked_policy(&finished, Some("*"), false, 10))
+        .set_merge_policy(Some(hooked_policy(&finished, Some("*"), false, 10)))
         .unwrap();
     config
         .set_info_stream(Arc::clone(&log) as Arc<dyn InfoStream>)
@@ -1937,10 +1941,12 @@ fn a_failure_registering_a_merge_propagates_as_lucene_does() {
     let mut config = IndexWriterConfig::new();
     config.set_max_full_flush_merge_wait_millis(0);
     config
-        .set_merge_scheduler(Arc::new(NoMergeScheduler))
+        .set_merge_scheduler(Some(Arc::new(NoMergeScheduler)))
         .unwrap();
     config
-        .set_merge_policy(Arc::new(rucene::index::merge_policy::NoMergePolicy::new()))
+        .set_merge_policy(Some(Arc::new(
+            rucene::index::merge_policy::NoMergePolicy::new(),
+        )))
         .unwrap();
     config.set_use_compound_file(false).unwrap();
     config
@@ -2010,10 +2016,10 @@ fn merging_segments_survive_a_rollback_as_lucene_reports_them() {
     let mut config = IndexWriterConfig::new();
     config.set_max_full_flush_merge_wait_millis(0);
     config
-        .set_merge_scheduler(Arc::new(NoMergeScheduler))
+        .set_merge_scheduler(Some(Arc::new(NoMergeScheduler)))
         .unwrap();
     config
-        .set_merge_policy(hooked_policy(&finished, Some("*"), false, 2))
+        .set_merge_policy(Some(hooked_policy(&finished, Some("*"), false, 2)))
         .unwrap();
     let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
     writer.add_document(&id_doc(0)).unwrap();
@@ -2250,7 +2256,7 @@ fn a_merge_aborted_while_building_its_compound_file_deletes_its_files_as_lucene_
         let mut config = IndexWriterConfig::new();
         config.set_max_full_flush_merge_wait_millis(0);
         config
-            .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+            .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
             .unwrap();
         // Flushed segments without compound files: only the merge builds one.
         config.set_use_compound_file(false).unwrap();
@@ -2261,13 +2267,13 @@ fn a_merge_aborted_while_building_its_compound_file_deletes_its_files_as_lucene_
         inner.set_no_cfs_ratio(1.0).unwrap();
         let capturing = Arc::clone(&captured);
         config
-            .set_merge_policy(Arc::new(OneMergeWrappingMergePolicy::new(
+            .set_merge_policy(Some(Arc::new(OneMergeWrappingMergePolicy::new(
                 Arc::new(inner),
                 Arc::new(move |merge: OneMerge| {
                     *capturing.lock().unwrap() = Some(merge.clone());
                     merge
                 }),
-            )))
+            ))))
             .unwrap();
         let writer = IndexWriter::new(Arc::clone(&dir) as Arc<dyn Directory>, config).unwrap();
         for id in 0..3 {
@@ -2371,7 +2377,7 @@ fn a_compound_file_failure_is_handled_inside_merge_middle_as_lucene_does() {
         let mut config = IndexWriterConfig::new();
         config.set_max_full_flush_merge_wait_millis(0);
         config
-            .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+            .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
             .unwrap();
         // Flushed segments without compound files: only the merge builds one.
         config.set_use_compound_file(false).unwrap();
@@ -2380,7 +2386,7 @@ fn a_compound_file_failure_is_handled_inside_merge_middle_as_lucene_does() {
             .unwrap();
         let policy = LogMergePolicy::by_doc_count();
         policy.set_no_cfs_ratio(1.0).unwrap();
-        config.set_merge_policy(Arc::new(policy)).unwrap();
+        config.set_merge_policy(Some(Arc::new(policy))).unwrap();
         let writer = IndexWriter::new(Arc::clone(&dir) as Arc<dyn Directory>, config).unwrap();
         for id in 0..3 {
             writer.add_document(&id_doc(id)).unwrap();
@@ -2455,7 +2461,7 @@ fn warmer_rollback(drop_fails: bool) -> String {
     let mut config = IndexWriterConfig::new();
     config.set_max_full_flush_merge_wait_millis(0);
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     config.set_use_compound_file(false).unwrap();
     config.set_reader_pooling(true);
@@ -2467,7 +2473,7 @@ fn warmer_rollback(drop_fails: bool) -> String {
     let capturing = Arc::clone(&captured);
     let recording = Arc::clone(&finished);
     config
-        .set_merge_policy(Arc::new(OneMergeWrappingMergePolicy::new(
+        .set_merge_policy(Some(Arc::new(OneMergeWrappingMergePolicy::new(
             Arc::new(inner),
             Arc::new(move |mut merge: OneMerge| {
                 let recording = Arc::clone(&recording);
@@ -2491,7 +2497,7 @@ fn warmer_rollback(drop_fails: bool) -> String {
                 *capturing.lock().unwrap() = Some(merge.clone());
                 merge
             }),
-        )))
+        ))))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir) as Arc<dyn Directory>, config).unwrap();
     *warmer.writer.lock().unwrap() = Some(Arc::clone(&writer));
@@ -2636,13 +2642,13 @@ fn a_point_in_time_merge_calls_the_on_merge_complete_of_the_merge_it_wraps() {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut config = IndexWriterConfig::new();
         config
-            .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+            .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
             .unwrap();
         config.set_max_full_flush_merge_wait_millis(30_000);
         config
-            .set_merge_policy(Arc::new(HookedCommitPolicy {
+            .set_merge_policy(Some(Arc::new(HookedCommitPolicy {
                 events: Arc::clone(&events),
-            }))
+            })))
             .unwrap();
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         for id in 0..2 {

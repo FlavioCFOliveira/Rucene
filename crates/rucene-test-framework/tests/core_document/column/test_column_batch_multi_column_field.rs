@@ -107,7 +107,7 @@ fn mock_iwc() -> IndexWriterConfig {
 /// `stableIwc()`.
 fn stable_iwc() -> Result<IndexWriterConfig> {
     let mut iwc = mock_iwc();
-    iwc.set_merge_policy(Arc::new(TieredMergePolicy::new()))?;
+    iwc.set_merge_policy(Some(Arc::new(TieredMergePolicy::new())))?;
     iwc.set_ram_buffer_size_mb(16.0)?;
     // Java names `IndexWriterConfig.DISABLE_AUTO_FLUSH`; the port declares it on `LiveIndexWriterConfig`.
     iwc.set_max_buffered_docs(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH)?;

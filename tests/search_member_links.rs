@@ -52,7 +52,7 @@ fn index(docs: Vec<Document>) -> Arc<dyn DirectoryReader> {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let mut config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .expect("no merges");
     let writer = IndexWriter::new(Arc::clone(&dir), config).expect("index writer");
     for doc in &docs {

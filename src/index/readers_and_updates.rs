@@ -4803,7 +4803,9 @@ mod needs_refresh_tests {
         // No merge may fold the deleted document away before the reader sees it.
         let mut config = IndexWriterConfig::new();
         config
-            .set_merge_policy(Arc::new(crate::index::merge_policy::NoMergePolicy::new()))
+            .set_merge_policy(Some(Arc::new(
+                crate::index::merge_policy::NoMergePolicy::new(),
+            )))
             .unwrap();
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         for id in ["a", "b"] {

@@ -40,17 +40,17 @@ fn test_() -> Result<()> {
     let mut iwc =
         LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())));
     // to reduce flakiness on merge clone count
-    iwc.set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))?;
+    iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
     iwc.set_max_buffered_docs(2)?;
     {
         let segments_merged = Arc::clone(&segments_merged);
-        iwc.set_merge_policy(Arc::new(OneMergeWrappingMergePolicy::new(
+        iwc.set_merge_policy(Some(Arc::new(OneMergeWrappingMergePolicy::new(
             Arc::new(tmp),
             Arc::new(move |one_merge: OneMerge| {
                 segments_merged.fetch_add(one_merge.segments.len() as i32, Ordering::SeqCst);
                 one_merge
             }),
-        )))?;
+        ))))?;
     }
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
     let num_docs = 20;

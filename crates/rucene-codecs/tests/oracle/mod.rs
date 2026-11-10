@@ -384,7 +384,7 @@ pub fn new_config(codec: Arc<dyn Codec>) -> IndexWriterConfig {
     config.set_codec(codec).unwrap();
     config.set_open_mode(OpenMode::CREATE).unwrap();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     config
 }
@@ -399,7 +399,7 @@ pub fn write_corpus(path: &Path, compound: bool, codec: Arc<dyn Codec>) {
     if !compound {
         let policy = TieredMergePolicy::new();
         policy.set_no_cfs_ratio(0.0).unwrap();
-        config.set_merge_policy(Arc::new(policy)).unwrap();
+        config.set_merge_policy(Some(Arc::new(policy))).unwrap();
         config.set_use_compound_file(false).unwrap();
     }
     let w = IndexWriter::new(open_dir(path), config).unwrap();
@@ -531,7 +531,7 @@ pub fn write_shared(path: &Path, codec: Arc<dyn Codec>) {
     let mut config = new_config(codec);
     let policy = TieredMergePolicy::new();
     policy.set_no_cfs_ratio(0.0).unwrap();
-    config.set_merge_policy(Arc::new(policy)).unwrap();
+    config.set_merge_policy(Some(Arc::new(policy))).unwrap();
     config.set_use_compound_file(false).unwrap();
     let docs = shared_type(IndexOptions::DOCS);
     let freqs = shared_type(IndexOptions::DOCS_AND_FREQS);

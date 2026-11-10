@@ -1117,7 +1117,7 @@ fn index_string_docs(
     doc_content: &[Vec<String>],
 ) -> Result<()> {
     let mut iwc = LuceneTestCase::new_index_writer_config();
-    iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+    iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let result = (|| -> Result<()> {
         for values in doc_content {

@@ -549,8 +549,8 @@ pub trait BaseMergePolicyTestCase: Send + Sync + 'static {
             let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(
                 MockAnalyzer::new(&*LuceneTestCase::random()),
             ));
-            iwc.set_merge_scheduler(merge_scheduler)?;
-            iwc.set_merge_policy(Arc::clone(&mp))?;
+            iwc.set_merge_scheduler(Some(merge_scheduler))?;
+            iwc.set_merge_policy(Some(Arc::clone(&mp)))?;
 
             let writer = IndexWriter::new(dir.as_directory(), iwc)?;
             let num_segments = TestUtil::next_int(&*LuceneTestCase::random(), 2, 20);

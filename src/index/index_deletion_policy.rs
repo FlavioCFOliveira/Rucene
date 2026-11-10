@@ -339,8 +339,10 @@ struct SnapshotState {
 /// [`IndexCommit::delete`] on the commits handed to the primary, which is the
 /// whole point of the wrapper, is explicitly supported.
 pub struct SnapshotDeletionPolicy {
-    /// The wrapped policy, applied to non-snapshotted commits.
-    primary: Arc<dyn IndexDeletionPolicy>,
+    /// The wrapped policy, applied to non-snapshotted commits; `None` is
+    /// Java's `null`, which the constructor accepts and the first callback
+    /// dereferences.
+    primary: Option<Arc<dyn IndexDeletionPolicy>>,
     /// Stands in for Java's `synchronized` monitor: serialises whole policy
     /// operations against each other.
     operation: Mutex<()>,
@@ -369,8 +371,12 @@ impl Debug for SnapshotDeletionPolicy {
 impl SnapshotDeletionPolicy {
     /// Creates a snapshot policy wrapping `primary`.
     ///
-    /// Equivalent to `SnapshotDeletionPolicy(IndexDeletionPolicy)`.
-    pub fn new(primary: Arc<dyn IndexDeletionPolicy>) -> Self {
+    /// Equivalent to `SnapshotDeletionPolicy(IndexDeletionPolicy)`
+    /// (`SnapshotDeletionPolicy.java:59-61`). Like Java, it accepts `None`
+    /// (`null`) without a check; [`IndexDeletionPolicy::on_init`] and
+    /// [`IndexDeletionPolicy::on_commit`] then raise
+    /// `java.lang.NullPointerException` where Java dereferences `primary`.
+    pub fn new(primary: Option<Arc<dyn IndexDeletionPolicy>>) -> Self {
         Self {
             primary,
             operation: Mutex::new(()),
@@ -635,6 +641,15 @@ impl SnapshotDeletionPolicy {
 }
 
 impl SnapshotDeletionPolicy {
+    /// The wrapped policy; a `None` (Java's `null`) raises
+    /// `java.lang.NullPointerException`, as Java's `primary.onInit(...)` and
+    /// `primary.onCommit(...)` do.
+    fn primary(&self) -> &dyn IndexDeletionPolicy {
+        self.primary
+            .as_deref()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"))
+    }
+
     /// [`IndexDeletionPolicy::on_init`] for a caller that already holds the
     /// operation mutex.
     pub(crate) fn on_init_locked(&self, commits: &[Arc<dyn IndexCommit>]) -> Result<()> {
@@ -647,7 +662,7 @@ impl SnapshotDeletionPolicy {
         // `release()`, exactly as Java's monitor does — but *without* the state
         // mutex: the policy calls `delete()` on the wrappers, which takes the
         // state mutex, and `std::sync::Mutex` is not reentrant.
-        self.primary.on_init(&self.wrap_commits(commits))?;
+        self.primary().on_init(&self.wrap_commits(commits))?;
 
         let mut state = self.lock();
         for commit in commits {
@@ -666,7 +681,7 @@ impl SnapshotDeletionPolicy {
     /// operation mutex.
     pub(crate) fn on_commit_locked(&self, commits: &[Arc<dyn IndexCommit>]) -> Result<()> {
         // See `on_init_locked` for which lock is held across this call and why.
-        self.primary.on_commit(&self.wrap_commits(commits))?;
+        self.primary().on_commit(&self.wrap_commits(commits))?;
 
         // Java does `lastCommit = commits.get(commits.size() - 1)`, which throws
         // `IndexOutOfBoundsException` on an empty list. Rucene reports the same
@@ -896,7 +911,7 @@ impl PersistentSnapshotDeletionPolicy {
         mode: OpenMode,
     ) -> Result<Self> {
         let policy = Self {
-            inner: SnapshotDeletionPolicy::new(primary),
+            inner: SnapshotDeletionPolicy::new(Some(primary)),
             dir,
             next_write_gen: Mutex::new(0),
         };
@@ -1469,7 +1484,7 @@ mod tests {
     // -------------------------------------------------------------------------
 
     fn snapshot_policy() -> SnapshotDeletionPolicy {
-        SnapshotDeletionPolicy::new(Arc::new(KeepOnlyLastCommitDeletionPolicy::new()))
+        SnapshotDeletionPolicy::new(Some(Arc::new(KeepOnlyLastCommitDeletionPolicy::new())))
     }
 
     #[test]
@@ -1687,7 +1702,7 @@ mod tests {
     #[test]
     fn snapshot_policy_wraps_an_arbitrary_primary_policy() {
         let dir = ram_directory();
-        let policy = SnapshotDeletionPolicy::new(NoDeletionPolicy::instance());
+        let policy = SnapshotDeletionPolicy::new(Some(NoDeletionPolicy::instance()));
         let initial = commits(&dir, &[1, 2, 3]);
 
         policy.on_init(&initial).unwrap();
@@ -1869,12 +1884,14 @@ mod tests {
         let dir = ram_directory();
         let entered = Gate::new();
         let proceed = Gate::new();
-        let policy = Arc::new(SnapshotDeletionPolicy::new(Arc::new(BlockingPrimary {
-            inner: KeepOnlyLastCommitDeletionPolicy::new(),
-            phase: Phase::OnCommit,
-            entered: Arc::clone(&entered),
-            proceed: Arc::clone(&proceed),
-        })));
+        let policy = Arc::new(SnapshotDeletionPolicy::new(Some(Arc::new(
+            BlockingPrimary {
+                inner: KeepOnlyLastCommitDeletionPolicy::new(),
+                phase: Phase::OnCommit,
+                entered: Arc::clone(&entered),
+                proceed: Arc::clone(&proceed),
+            },
+        ))));
 
         // Open the index on a single commit, so `last_commit` is generation 1.
         policy.on_init(&commits(&dir, &[1])).unwrap();
@@ -1920,12 +1937,14 @@ mod tests {
         let dir = ram_directory();
         let entered = Gate::new();
         let proceed = Gate::new();
-        let policy = Arc::new(SnapshotDeletionPolicy::new(Arc::new(BlockingPrimary {
-            inner: KeepOnlyLastCommitDeletionPolicy::new(),
-            phase: Phase::OnInit,
-            entered: Arc::clone(&entered),
-            proceed: Arc::clone(&proceed),
-        })));
+        let policy = Arc::new(SnapshotDeletionPolicy::new(Some(Arc::new(
+            BlockingPrimary {
+                inner: KeepOnlyLastCommitDeletionPolicy::new(),
+                phase: Phase::OnInit,
+                entered: Arc::clone(&entered),
+                proceed: Arc::clone(&proceed),
+            },
+        ))));
 
         // Opening an existing index: `on_init` sets `init_called`, runs the
         // primary (which deletes generation 1) and only then publishes

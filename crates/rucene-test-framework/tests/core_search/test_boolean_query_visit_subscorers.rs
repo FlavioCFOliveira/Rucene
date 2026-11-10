@@ -79,7 +79,7 @@ fn visit_set_up(f: &mut VisitSubscorers) -> Result<()> {
     let analyzer: Arc<dyn Analyzer> = Arc::new(MockAnalyzer::new(&*random()));
     let dir = LuceneTestCase::new_directory();
     let mut config = LuceneTestCase::new_index_writer_config_analyzer(Arc::clone(&analyzer));
-    config.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?; // we will use docids to validate
+    config.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?; // we will use docids to validate
     let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), config)?;
     writer.add_document(&doc(
         "lucene",

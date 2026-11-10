@@ -83,10 +83,10 @@ fn elevation_set_up(f: &mut ElevationComparator) -> Result<()> {
     let mut config =
         LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())));
     config.set_max_buffered_docs(2)?;
-    config.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy_merge_factor(
-        1000,
-    )?))?;
-    config.set_similarity(Arc::new(ClassicSimilarity::new()))?;
+    config.set_merge_policy(Some(Arc::new(
+        LuceneTestCase::new_log_merge_policy_merge_factor(1000)?,
+    )))?;
+    config.set_similarity(Some(Arc::new(ClassicSimilarity::new())))?;
     let writer = IndexWriter::new(directory.as_directory(), config)?;
     writer.add_document(&adoc(&["id", "a", "title", "ipod", "str_s", "a"])?)?;
     writer.add_document(&adoc(&["id", "b", "title", "ipod ipod", "str_s", "b"])?)?;

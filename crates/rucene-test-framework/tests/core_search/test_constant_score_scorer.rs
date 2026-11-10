@@ -201,9 +201,9 @@ impl TestConstantScoreScorerIndex {
         let directory = LuceneTestCase::new_directory();
 
         let mut config = LuceneTestCase::new_index_writer_config();
-        config.set_merge_policy(LuceneTestCase::new_log_merge_policy_use_cfs(
+        config.set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(
             random().next_boolean(),
-        ))?;
+        )))?;
         let writer =
             RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), config)?;
 
@@ -266,7 +266,7 @@ fn test_early_termination() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let mut config = LuceneTestCase::new_index_writer_config_analyzer(analyzer);
     config.set_max_buffered_docs(2)?;
-    config.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+    config.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let iw = IndexWriter::new(dir.as_directory(), config)?;
     let num_docs = 50;
     for i in 0..num_docs {

@@ -1026,7 +1026,7 @@ pub trait BaseDocValuesFormatTestCase: LegacyBaseDocValuesFormatTestCase {
 
                 dir2 = LuceneTestCase::new_directory();
                 let mut iwc2 = LuceneTestCase::new_index_writer_config();
-                iwc2.set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))?;
+                iwc2.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
                 let w2 = IndexWriter::new(dir2.as_directory(), iwc2)?;
                 w2.add_document(&doc)?;
                 w2.commit()?;

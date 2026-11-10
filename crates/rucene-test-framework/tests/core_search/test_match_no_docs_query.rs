@@ -82,7 +82,7 @@ fn test_query(f: &mut MatchNoDocs) -> Result<()> {
         f.analyzer.as_ref().expect("setUp ran"),
     ));
     iwc.set_max_buffered_docs(2)?;
-    iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+    iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let iw = IndexWriter::new(dir.as_directory(), iwc)?;
     add_doc("one", &iw)?;
     add_doc("two", &iw)?;

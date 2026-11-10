@@ -130,7 +130,7 @@ fn before_class() -> Result<()> {
 
     let mut iwc = mock_iwc();
     iwc.set_codec(TestUtil::get_default_codec())?;
-    iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+    iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), iwc)?;
     let mut ft = FieldType::new_from(TextField::type_not_stored());
     ft.set_omit_norms(true)?;
@@ -173,7 +173,7 @@ fn before_class() -> Result<()> {
 
     let mut iwc = mock_iwc();
     iwc.set_codec(TestUtil::get_default_codec())?;
-    iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+    iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     {
         let w = IndexWriter::new(single_segment_directory.as_directory(), iwc)?;
         let merged = w.force_merge_with(1, true);

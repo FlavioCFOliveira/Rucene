@@ -70,7 +70,7 @@ fn test_multiple_doc_values_delegates() -> Result<()> {
 
     let mut dir = LuceneTestCase::new_directory();
     let mut iwc = LuceneTestCase::new_index_writer_config();
-    iwc.set_merge_policy(Arc::new(NoMergePolicy::new()))?;
+    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
     doc.add(Box::new(NumericDocValuesField::new("field3", 1)));

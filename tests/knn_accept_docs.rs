@@ -97,7 +97,7 @@ fn build_index(name: &str, deleted: Option<(i32, i32)>) -> Arc<dyn DirectoryRead
     let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(&tmp).expect("open the directory"));
     let mut config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .expect("no merges, so the documents keep the ids they were written with");
     let writer = IndexWriter::new(Arc::clone(&dir), config).expect("index writer");
     for d in 0..DOC_COUNT {

@@ -676,7 +676,7 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
         let mut dir = get_directory(20);
         {
             let mut iwc = LuceneTestCase::new_index_writer_config();
-            iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+            iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
             let w = IndexWriter::new(dir.as_directory(), iwc)?;
             let mut point = [0u8; 4];
             for i in 0..20 {
@@ -1015,7 +1015,7 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
                 MockAnalyzer::new(&*random()),
             ));
             // We rely on docIDs not changing:
-            iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+            iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
             let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
             let mut docs: Vec<Vec<i128>> = Vec::with_capacity(num_docs as usize);
 
@@ -1710,7 +1710,7 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
 
             dir2 = LuceneTestCase::new_directory();
             let mut iwc2 = LuceneTestCase::new_index_writer_config();
-            iwc2.set_merge_scheduler(Arc::new(SerialMergeScheduler::default()))?;
+            iwc2.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::default())))?;
             let w2 = IndexWriter::new(dir2.as_directory(), iwc2)?;
             w2.add_document(&doc)?;
             w2.commit()?;

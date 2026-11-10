@@ -153,7 +153,7 @@ fn test_to_string() -> Result<()> {
 /// `new IndexWriterConfig()` with `similarity`.
 fn iwc_with(similarity: Arc<dyn Similarity>) -> Result<IndexWriterConfig> {
     let mut iwc = IndexWriterConfig::new();
-    iwc.set_similarity(similarity)?;
+    iwc.set_similarity(Some(similarity))?;
     Ok(iwc)
 }
 

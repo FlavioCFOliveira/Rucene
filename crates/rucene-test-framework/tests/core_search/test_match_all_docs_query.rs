@@ -52,7 +52,7 @@ fn writer(
         f.analyzer.as_ref().expect("setUp ran"),
     ));
     iwc.set_max_buffered_docs(2)?;
-    iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+    iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     IndexWriter::new(dir.as_directory(), iwc)
 }
 

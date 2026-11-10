@@ -67,7 +67,7 @@ fn get_searcher(r: &Arc<dyn DirectoryReader>) -> IndexSearcher {
 fn new_index_writer_config() -> Result<IndexWriterConfig> {
     // We rely on more tokens = lower score:
     let mut iwc = LuceneTestCase::new_index_writer_config();
-    iwc.set_similarity(Arc::new(ClassicSimilarity::new()))?;
+    iwc.set_similarity(Some(Arc::new(ClassicSimilarity::new())))?;
     Ok(iwc)
 }
 

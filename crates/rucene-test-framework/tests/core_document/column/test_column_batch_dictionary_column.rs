@@ -382,7 +382,7 @@ fn test_mixed_with_plain_document() -> Result<()> {
     // randomized tiny maxBufferedDocs can split them and TMP's size-sorted forceMerge
     // may interleave them.
     let mut iwc = LuceneTestCase::new_index_writer_config();
-    iwc.set_merge_policy(Arc::new(TieredMergePolicy::new()))?;
+    iwc.set_merge_policy(Some(Arc::new(TieredMergePolicy::new())))?;
     iwc.set_ram_buffer_size_mb(16.0)?;
     // Java names `IndexWriterConfig.DISABLE_AUTO_FLUSH`; the port declares it on `LiveIndexWriterConfig`.
     iwc.set_max_buffered_docs(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH)?;

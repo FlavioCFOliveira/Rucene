@@ -356,7 +356,7 @@ fn rucene_commit_sequence(commits: usize) -> (Vec<i64>, Vec<i64>) {
     let directory: Arc<dyn Directory> = Arc::new(rucene::store::ByteBuffersDirectory::default());
     let mut config = IndexWriterConfig::new();
     config
-        .set_index_deletion_policy(NoDeletionPolicy::instance())
+        .set_index_deletion_policy(Some(NoDeletionPolicy::instance()))
         .expect("NoDeletionPolicy is a valid deletion policy");
 
     let mut created = Vec::with_capacity(commits);
@@ -448,7 +448,8 @@ fn snapshot_deletion_policy_pins_the_same_commits_as_lucene() {
     assert_eq!(snapshotted, vec![2, 4]);
     assert_eq!(expected, vec![2, 4, 5]);
 
-    let policy = SnapshotDeletionPolicy::new(Arc::new(KeepOnlyLastCommitDeletionPolicy::new()));
+    let policy =
+        SnapshotDeletionPolicy::new(Some(Arc::new(KeepOnlyLastCommitDeletionPolicy::new())));
     let mut pinned = Vec::new();
     let surviving = replay_commits(&policy, &created, |generation| {
         // The Java fixture snapshots right after the 2nd and 4th commit.
@@ -675,7 +676,8 @@ fn release_unpins_the_same_commits_as_lucene() {
     assert_eq!((count_before, count_after), (2, 1));
     assert_eq!(snapshots_after, vec![4]);
 
-    let policy = SnapshotDeletionPolicy::new(Arc::new(KeepOnlyLastCommitDeletionPolicy::new()));
+    let policy =
+        SnapshotDeletionPolicy::new(Some(Arc::new(KeepOnlyLastCommitDeletionPolicy::new())));
     let directory: Arc<dyn Directory> = Arc::new(rucene::store::ByteBuffersDirectory::default());
     let mut live: Vec<Arc<dyn IndexCommit>> = Vec::new();
     policy.on_init(&live).unwrap();

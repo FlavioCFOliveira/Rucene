@@ -510,7 +510,7 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
             &*LuceneTestCase::random(),
         )));
         cfg.set_use_compound_file(false)?;
-        cfg.set_merge_policy(Arc::new(mp))?;
+        cfg.set_merge_policy(Some(Arc::new(mp)))?;
         if *VERBOSE {
             cfg.set_info_stream(Arc::new(rucene::util::PrintStreamInfoStream::new(
                 Box::new(std::io::stdout()),
@@ -537,7 +537,7 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
             &*LuceneTestCase::random(),
         )));
         cfg.set_use_compound_file(false)?;
-        cfg.set_merge_policy(Arc::new(mp))?;
+        cfg.set_merge_policy(Some(Arc::new(mp)))?;
         let w = IndexWriter::new(dir2.as_directory(), cfg)?;
         TestUtil::add_indexes_slowly(&w, std::slice::from_ref(&reader))?;
 
@@ -813,7 +813,7 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
                 let mut conf =
                     LuceneTestCase::new_index_writer_config_analyzer(Arc::clone(analyzer));
                 // just for now, try to keep this test reproducible
-                conf.set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))?;
+                conf.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
                 conf.set_codec(self.get_codec())?;
                 Ok(conf)
             };

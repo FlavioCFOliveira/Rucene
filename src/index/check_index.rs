@@ -4805,9 +4805,9 @@ impl IndexUpgrader {
 
         let inner_policy = self.iwc.merge_policy();
         self.iwc
-            .set_merge_policy(Arc::new(UpgradeIndexMergePolicy::new(inner_policy)))?;
+            .set_merge_policy(Some(Arc::new(UpgradeIndexMergePolicy::new(inner_policy))))?;
         self.iwc
-            .set_index_deletion_policy(Arc::new(KeepOnlyLastCommitDeletionPolicy))?;
+            .set_index_deletion_policy(Some(Arc::new(KeepOnlyLastCommitDeletionPolicy)))?;
 
         let info_stream = self.iwc.info_stream();
         let writer = IndexWriter::new(Arc::clone(&self.dir), self.iwc)?;
@@ -6340,7 +6340,7 @@ mod segment_check_pool_tests {
         let dir: Arc<dyn Directory> = Arc::new(crate::store::ByteBuffersDirectory::new());
         let mut config = IndexWriterConfig::new();
         config
-            .set_merge_policy(Arc::new(NoMergePolicy::new()))
+            .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
             .unwrap();
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         for i in 0..segments {

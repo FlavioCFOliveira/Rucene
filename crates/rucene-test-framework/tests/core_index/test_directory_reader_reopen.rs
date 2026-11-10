@@ -236,7 +236,7 @@ fn plain_iwc() -> IndexWriterConfig {
 /// `new IndexWriterConfig(new MockAnalyzer(random())).setMergePolicy(NoMergePolicy.INSTANCE)`.
 fn no_merge_iwc() -> Result<IndexWriterConfig> {
     let mut iwc = plain_iwc();
-    iwc.set_merge_policy(Arc::new(NoMergePolicy::new()))?;
+    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     Ok(iwc)
 }
 
@@ -349,8 +349,8 @@ fn reopen_with_commit_iwc(
     let mut iwc =
         LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(random)));
     iwc.set_open_mode(OpenMode::CREATE)?;
-    iwc.set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))?;
-    iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+    iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
+    iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     Ok(iwc)
 }
 
@@ -793,7 +793,7 @@ pub fn create_index(
 
     let mut iwc =
         LuceneTestCase::new_index_writer_config_with(random, Arc::new(MockAnalyzer::new(random)));
-    iwc.set_merge_policy(mp)?;
+    iwc.set_merge_policy(Some(mp))?;
     let w = IndexWriter::new(Arc::clone(dir), iwc)?;
 
     for i in 0..100 {
@@ -916,11 +916,11 @@ impl IndexDeletionPolicy for KeepAllCommits {
 /// share: only the first `open` takes the executor.
 fn reopen_on_commit(dir: &Arc<dyn Directory>, executor: &Exec) -> Result<()> {
     let mut iwc = mock_iwc();
-    iwc.set_index_deletion_policy(Arc::new(KeepAllCommits))?;
+    iwc.set_index_deletion_policy(Some(Arc::new(KeepAllCommits)))?;
     iwc.set_max_buffered_docs(-1)?;
-    iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy_merge_factor(
-        10,
-    )?))?;
+    iwc.set_merge_policy(Some(Arc::new(
+        LuceneTestCase::new_log_merge_policy_merge_factor(10)?,
+    )))?;
     let writer = IndexWriter::new(Arc::clone(dir), iwc)?;
     for i in 0..4 {
         let mut doc = Document::new();
@@ -1288,10 +1288,10 @@ fn snapshot_iwc(no_merge: bool) -> Result<(IndexWriterConfig, Arc<SnapshotDeleti
     } else {
         plain_iwc()
     };
-    let snapshotter = Arc::new(SnapshotDeletionPolicy::new(Arc::new(
+    let snapshotter = Arc::new(SnapshotDeletionPolicy::new(Some(Arc::new(
         KeepOnlyLastCommitDeletionPolicy,
-    )));
-    iwc.set_index_deletion_policy(Arc::clone(&snapshotter) as _)?;
+    ))));
+    iwc.set_index_deletion_policy(Some(Arc::clone(&snapshotter) as _))?;
     Ok((iwc, snapshotter))
 }
 
@@ -1595,7 +1595,7 @@ fn assert_not_same(a: &Option<Arc<dyn DirectoryReader>>, b: &Arc<dyn DirectoryRe
 fn reuse_unchanged_leaf_reader_on_dv_update(executor: &Exec) -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let mut index_writer_config = LuceneTestCase::new_index_writer_config();
-    index_writer_config.set_merge_policy(Arc::new(NoMergePolicy::new()))?;
+    index_writer_config.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     let writer = IndexWriter::new(dir.as_directory(), index_writer_config)?;
 
     let mut doc = Document::new();

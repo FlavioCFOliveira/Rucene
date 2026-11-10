@@ -421,7 +421,7 @@ fn writer_configs(m: &Measured) {
         )
         .expect("a sortable field type");
     tuned
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .expect("a merge policy");
     tuned.set_open_mode(OpenMode::CREATE).expect("an open mode");
     assert_eq!(

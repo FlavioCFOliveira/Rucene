@@ -117,11 +117,11 @@ fn writer(
     analyzer: MockAnalyzer,
 ) -> Result<RandomIndexWriter> {
     let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(analyzer));
-    iwc.set_similarity(Arc::new(SimpleSimilarity))?;
-    iwc.set_merge_policy(LuceneTestCase::new_merge_policy_include_mock(
+    iwc.set_similarity(Some(Arc::new(SimpleSimilarity)))?;
+    iwc.set_merge_policy(Some(LuceneTestCase::new_merge_policy_include_mock(
         &*random(),
         false,
-    ))?;
+    )))?;
     RandomIndexWriter::new_with_config(&*random(), store.as_directory(), iwc)
 }
 

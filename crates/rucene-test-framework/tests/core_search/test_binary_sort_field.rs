@@ -445,7 +445,7 @@ fn test_nested_blocks() -> Result<()> {
     with_dir(|dir| {
         let mut iwc = index_sorted_iwc(sort_of(vec![bsf("sort", reverse)?])?)?;
         iwc.set_parent_field(Some("parent".to_string()));
-        iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+        iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
         let num_blocks = LuceneTestCase::at_least(80);
         with_writer(dir, iwc, |w| {
             for b in 0..num_blocks {
@@ -628,7 +628,7 @@ fn test_multiple_binary_fields() -> Result<()> {
     with_dir(|dir| {
         let mut iwc = index_sorted_iwc(sort_of(vec![bsf("a", false)?, bsf("b", false)?])?)?;
         iwc.set_max_buffered_docs(25)?;
-        iwc.set_merge_policy(Arc::new(NoMergePolicy::new()))?; // keep the flush-sorted segments separate
+        iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?; // keep the flush-sorted segments separate
         let num_docs = 300;
         with_writer(dir, iwc, |w| {
             for _ in 0..num_docs {
@@ -687,9 +687,9 @@ fn test_mix_custom_and_default_sort_fields() -> Result<()> {
         let mut iwc = index_sorted_iwc(sort.clone())?;
         iwc.set_max_buffered_docs(25)?;
         if random().next_boolean() {
-            iwc.set_merge_policy(Arc::new(NoMergePolicy::new()))?;
+            iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
         } else {
-            iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+            iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
         }
         let num_docs = LuceneTestCase::at_least(300);
         with_writer(dir, iwc, |w| {
@@ -886,7 +886,7 @@ fn test_first_value_sort_key_index_sort() -> Result<()> {
     with_dir(|dir| {
         let mut iwc = index_sorted_iwc(sort_of(vec![first_value_sort_field("dv", reverse)?])?)?;
         iwc.set_max_buffered_docs(TestUtil::next_int(&*random(), 20, 50))?;
-        iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+        iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
         let num_docs = LuceneTestCase::at_least(200);
         with_writer(dir, iwc, |w| {
             for _ in 0..num_docs {
@@ -960,9 +960,9 @@ fn test_min_value_sort_key() -> Result<()> {
         let mut iwc = index_sorted_iwc(sort_of(vec![min_value_sort_field("dv", reverse)?])?)?;
         iwc.set_max_buffered_docs(25)?; // force frequent flushes
         if merge {
-            iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+            iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
         } else {
-            iwc.set_merge_policy(Arc::new(NoMergePolicy::new()))?;
+            iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
         }
         let num_docs = 400;
         with_writer(dir, iwc, |w| {
@@ -1048,7 +1048,7 @@ fn test_custom_comparator() -> Result<()> {
     with_dir(|dir| {
         let num_docs = LuceneTestCase::at_least(100);
         let mut iwc = LuceneTestCase::new_index_writer_config();
-        iwc.set_merge_policy(Arc::new(NoMergePolicy::new()))?;
+        iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
         with_writer(dir, iwc, |w| {
             for i in 0..num_docs {
                 let mut doc = Document::new();
@@ -1133,7 +1133,7 @@ fn test_random() -> Result<()> {
         if random().next_boolean() {
             iwc.set_max_buffered_docs(TestUtil::next_int(&*random(), 20, 80))?;
         }
-        iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+        iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
         let num_docs = LuceneTestCase::at_least(500);
         with_writer(dir, iwc, |w| {
             for i in 0..num_docs {
@@ -1278,7 +1278,7 @@ fn assert_index_sorted(multi_segment: bool, reverse: bool, missing: bool) -> Res
         let mut iwc = index_sorted_iwc(sort_of(vec![bsf_missing("dv", reverse, missing_value)?])?)?;
         if multi_segment {
             iwc.set_max_buffered_docs(TestUtil::next_int(&*random(), 20, 50))?;
-            iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+            iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
         }
         with_writer(dir, iwc, |w| {
             for i in 0..num_docs {
@@ -1339,7 +1339,7 @@ fn index_and_read_stored_order(
     with_dir(|dir| {
         let mut iwc = index_sorted_iwc(sort_of(vec![sort_field])?)?;
         iwc.set_max_buffered_docs(TestUtil::next_int(&*random(), 20, 60))?;
-        iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+        iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
         with_writer(dir, iwc, |w| {
             for (i, value) in values.iter().enumerate() {
                 let mut doc = Document::new();

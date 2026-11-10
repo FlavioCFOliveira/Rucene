@@ -286,7 +286,7 @@ fn test_term_score_is_equal_to_boost() -> Result<()> {
 fn test_phrase_score_is_equal_to_boost() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let mut config = LuceneTestCase::new_index_writer_config();
-    config.set_similarity(Arc::new(BooleanSimilarity::new()))?;
+    config.set_similarity(Some(Arc::new(BooleanSimilarity::new())))?;
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), config)?;
     let mut doc = Document::new();
     doc.add(Box::new(TextField::new(
@@ -899,7 +899,7 @@ fn test_no_norms(f: &mut Similarity2) -> Result<()> {
 fn test_no_field_skew(f: &mut Similarity2) -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let mut iw_config = LuceneTestCase::new_index_writer_config();
-    iw_config.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+    iw_config.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let iw = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iw_config)?;
     let mut doc = Document::new();
     doc.add(Box::new(LuceneTestCase::new_text_field(

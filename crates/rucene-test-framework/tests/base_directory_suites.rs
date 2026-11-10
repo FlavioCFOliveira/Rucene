@@ -1375,7 +1375,7 @@ fn file_switch_test_basic() -> Result<()> {
     )?);
     // for now we wire the default codec because we rely upon its specific impl
     let mut config = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*rnd())));
-    config.set_merge_policy(LuceneTestCase::new_log_merge_policy_use_cfs(false))?;
+    config.set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(false)))?;
     config.set_codec(TestUtil::get_default_codec())?;
     config.set_use_compound_file(false)?;
     let writer = IndexWriter::new(Arc::clone(&fsd), config)?;

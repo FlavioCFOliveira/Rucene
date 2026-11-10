@@ -118,7 +118,7 @@ fn rust_flush() -> Arc<dyn Directory> {
     config.set_parent_field(Some("_parent".to_string()));
     config.set_use_compound_file(false).unwrap();
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     for b in 0..BLOCKS {

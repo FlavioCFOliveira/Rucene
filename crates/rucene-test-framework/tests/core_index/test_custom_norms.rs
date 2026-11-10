@@ -41,7 +41,7 @@ fn test_float_norms() -> Result<()> {
 
     let mut config = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(analyzer));
     let provider: Arc<dyn Similarity> = Arc::new(MySimProvider::new());
-    config.set_similarity(provider)?;
+    config.set_similarity(Some(provider))?;
     let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), config)?;
     let docs = LineFileDocs::with_default_file(&*random())?;
     let num = LuceneTestCase::at_least(100);

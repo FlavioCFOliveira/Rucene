@@ -58,7 +58,7 @@ fn union_of(
 fn test_one_document() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let mut iwc = LuceneTestCase::new_index_writer_config();
-    iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+    iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = IndexWriter::new(dir.as_directory(), iwc)?;
 
     writer.add_document(&text("foo bar")?)?;
@@ -87,7 +87,7 @@ fn test_one_document() -> Result<()> {
 fn test_some_documents() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let mut iwc = LuceneTestCase::new_index_writer_config();
-    iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+    iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = IndexWriter::new(dir.as_directory(), iwc)?;
 
     writer.add_document(&text("foo")?)?;

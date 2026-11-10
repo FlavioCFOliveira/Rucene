@@ -44,7 +44,7 @@ fn term_query_over_on_disk_index_finds_documents() {
     let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(&tmp).unwrap());
     let mut config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     for d in 0..6 {
@@ -79,7 +79,7 @@ fn a_positioned_term_reports_its_statistics_and_postings() {
     let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(&tmp).unwrap());
     let mut config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     for d in 0..6 {

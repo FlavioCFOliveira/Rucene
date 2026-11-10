@@ -47,7 +47,7 @@ fn fixture_set_up(f: &mut Fixture) -> Result<()> {
     let directory = LuceneTestCase::new_directory();
     let mut iwc =
         LuceneTestCase::new_index_writer_config_analyzer(Arc::new(MockAnalyzer::new(&*random())));
-    iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+    iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = IndexWriter::new(directory.as_directory(), iwc)?;
     let mut custom_type = FieldType::new_from(TextField::type_stored());
     custom_type.set_tokenized(false)?;

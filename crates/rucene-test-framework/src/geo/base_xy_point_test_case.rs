@@ -880,9 +880,9 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
         let mut iwc = LuceneTestCase::new_index_writer_config();
 
         // We rely on docID order:
-        iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+        iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
         // and on seeds being able to reproduce:
-        iwc.set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))?;
+        iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
         let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
 
         for id in 0..num_points {
@@ -1116,7 +1116,7 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
     ) -> Result<(TestDirectory, Arc<dyn DirectoryReader>)> {
         let mut iwc = LuceneTestCase::new_index_writer_config();
         // Else seeds may not reproduce:
-        iwc.set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))?;
+        iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
         // Else we can get O(N^2) merging:
         let mbd = iwc.max_buffered_docs();
         if mbd != -1 && mbd < (xs.len() / 100) as i32 {
@@ -1465,7 +1465,7 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
         let mut dir = LuceneTestCase::new_directory();
         let mut iwc = LuceneTestCase::new_index_writer_config();
         // Else seeds may not reproduce:
-        iwc.set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))?;
+        iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
         let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
         for i in 0..3 {
             let y = if i == 0 {
@@ -1587,7 +1587,7 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
         let mut dir = LuceneTestCase::new_directory();
         let mut iwc = LuceneTestCase::new_index_writer_config();
         // Else seeds may not reproduce:
-        iwc.set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))?;
+        iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
         let points_in_leaf = 2 + random().next_int_bound(4);
         iwc.set_codec(leaf_size_codec(points_in_leaf))?;
         let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
@@ -1753,9 +1753,9 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
             Arc::new(MockAnalyzer::new(&*random())),
         );
         iwc.set_max_buffered_docs(TestUtil::next_int(&*random(), 100, 1000))?;
-        iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+        iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
         // Else seeds may not reproduce:
-        iwc.set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))?;
+        iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
         let writer = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), iwc)?;
 
         for p in pts {

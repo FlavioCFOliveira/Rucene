@@ -1013,9 +1013,9 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
                     .with_knn_vectors_format(SharedKnnFormat(format)),
             ))?;
         }
-        iwc.set_merge_scheduler(merge_scheduler)?;
+        iwc.set_merge_scheduler(Some(merge_scheduler))?;
         let mp = iwc.merge_policy();
-        iwc.set_merge_policy(Arc::new(ForceMergePolicy::new(mp)))?;
+        iwc.set_merge_policy(Some(Arc::new(ForceMergePolicy::new(mp))))?;
         Ok(iwc)
     }
 
@@ -2040,7 +2040,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         let mut dir = LuceneTestCase::new_directory();
         {
             let mut iwc = LuceneTestCase::new_index_writer_config();
-            iwc.set_merge_policy(Arc::new(NoMergePolicy::new()))?;
+            iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
             iwc.set_max_buffered_docs(3)?;
             iwc.set_ram_buffer_size_mb(-1.0)?;
             let iw = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -2181,7 +2181,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         let mut dir = LuceneTestCase::new_directory();
         {
             let mut iwc = LuceneTestCase::new_index_writer_config();
-            iwc.set_merge_policy(Arc::new(LuceneTestCase::new_log_merge_policy()))?;
+            iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
             let iw = IndexWriter::new(dir.as_directory(), iwc)?;
             let mut v = [1.0f32, 2.0];
             let doc_with = |v: &[f32]| -> Result<Document> {
@@ -2990,7 +2990,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
                 iwc.set_ram_buffer_size_mb(f64::from(
                     rucene::index::index_writer_config::LiveIndexWriterConfig::DISABLE_AUTO_FLUSH,
                 ))?;
-                iwc.set_merge_policy(Arc::new(NoMergePolicy::new()))?;
+                iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
                 iwc.set_use_compound_file(false)?;
                 iwc.set_codec(self.get_codec_for_float_vector_fallback_test())?;
                 let w = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -3074,7 +3074,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
 
             dir2 = LuceneTestCase::new_directory();
             let mut iwc2 = LuceneTestCase::new_index_writer_config();
-            iwc2.set_merge_scheduler(Arc::new(SerialMergeScheduler::default()))?;
+            iwc2.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::default())))?;
             let w2 = IndexWriter::new(dir2.as_directory(), iwc2)?;
             w2.add_document(&doc)?;
             w2.commit()?;

@@ -483,7 +483,9 @@ impl DocHelper {
         doc: &Document,
     ) -> Result<Option<SegmentCommitInfo>> {
         let mut config = IndexWriterConfig::with_analyzer(analyzer);
-        config.set_similarity(similarity.unwrap_or_else(IndexSearcher::get_default_similarity))?;
+        config.set_similarity(Some(
+            similarity.unwrap_or_else(IndexSearcher::get_default_similarity),
+        ))?;
         let writer = IndexWriter::new(dir, config)?;
         // writer.setNoCFSRatio(0.0);
         writer.add_document(doc)?;

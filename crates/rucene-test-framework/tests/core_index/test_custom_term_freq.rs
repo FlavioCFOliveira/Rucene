@@ -689,7 +689,7 @@ impl Similarity for NeverForgetsSimilarity {
 fn test_field_invert_state() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let mut iwc = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(&*random())));
-    iwc.set_similarity(Arc::clone(&*INSTANCE) as Arc<dyn Similarity>)?;
+    iwc.set_similarity(Some(Arc::clone(&*INSTANCE) as Arc<dyn Similarity>))?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
 
     let field_type = get_term_doc_field_type()?;
