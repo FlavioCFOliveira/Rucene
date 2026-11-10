@@ -3700,10 +3700,13 @@ impl IndexWriter {
     /// keeps apart from `updatePendingMerges` so that finding the merges and
     /// running them are two separate, separately-callable steps.
     ///
+    /// Java package-private; public for the port of
+    /// `TestIndexWriterMergePolicy.testFailAfterMergeCommitted`.
+    ///
     /// # Errors
     ///
     /// Propagates whatever the merge scheduler raises.
-    fn execute_merge(&self, trigger: MergeTrigger) -> Result<()> {
+    pub fn execute_merge(&self, trigger: MergeTrigger) -> Result<()> {
         let scheduler = self.config.merge_scheduler();
         scheduler.merge(self.merge_source()?, trigger)
     }

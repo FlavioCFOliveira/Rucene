@@ -432,6 +432,9 @@ pub struct OneMerge {
     /// Equivalent to overriding `OneMerge.setMergeInfo(SegmentCommitInfo)`;
     /// see [`SetMergeInfoHook`].
     set_merge_info_override: Option<SetMergeInfoHook>,
+    /// Equivalent to overriding `OneMerge.initMergeReaders(IOFunction)`;
+    /// see [`InitMergeReadersHook`].
+    init_merge_readers_override: Option<InitMergeReadersHook>,
 }
 
 /// Replaces [`OneMerge::set_merge_info`].
@@ -440,6 +443,20 @@ pub struct OneMerge {
 /// (`MergePolicy.java:326-328`) in a subclass; the override reaches the base
 /// behaviour through [`OneMerge::super_set_merge_info`].
 pub type SetMergeInfoHook = Arc<dyn Fn(&OneMerge, SegmentCommitInfo) + Send + Sync>;
+
+/// The reader factory [`OneMerge::init_merge_readers`] hands to an
+/// [`InitMergeReadersHook`]: Java's `IOFunction<SegmentCommitInfo, MergeReader>`.
+pub type MergeReaderFactory<'a> = dyn FnMut(&SegmentCommitInfo) -> Result<MergeReader> + 'a;
+
+/// Replaces [`OneMerge::init_merge_readers`].
+///
+/// Equivalent to overriding the package-private
+/// `MergePolicy.OneMerge.initMergeReaders(IOFunction)` (`MergePolicy.java:245-260`)
+/// in a subclass (`TestIndexWriterMergePolicy.testForceMergeDVUpdateFileWithConcurrentFlush`);
+/// the override reaches the base behaviour through
+/// [`OneMerge::super_init_merge_readers`].
+pub type InitMergeReadersHook =
+    Arc<dyn Fn(&OneMerge, &mut MergeReaderFactory<'_>) -> Result<()> + Send + Sync>;
 
 impl std::fmt::Debug for OneMerge {
     /// Renders the fields Java's `OneMerge` carries; the reader-wrapping hook is
@@ -500,7 +517,24 @@ impl OneMerge {
             on_merge_complete: None,
             init_merge_readers_once: None,
             set_merge_info_override: None,
+            init_merge_readers_override: None,
         })
+    }
+
+    /// Creates a merge that wraps `one_merge`: it takes its segments, merge
+    /// readers, document total and pooled-reader flag, with a fresh progress,
+    /// completion and no override.
+    ///
+    /// Equivalent to the protected constructor `OneMerge(OneMerge)`
+    /// ("Constructor for wrapping", `MergePolicy.java:251-258`); public so
+    /// that wrapping policies and tests can call it, as Java subclasses do.
+    pub fn wrapping(one_merge: &OneMerge) -> Self {
+        let mut merge = Self::from_codec_readers(Vec::new());
+        merge.segments = one_merge.segments.clone();
+        merge.merge_readers = Arc::new(Mutex::new(one_merge.get_merge_reader()));
+        merge.total_max_doc = one_merge.total_max_doc;
+        merge.uses_pooled_readers = one_merge.uses_pooled_readers;
+        merge
     }
 
     /// Creates a merge directly over codec readers, as
@@ -544,6 +578,7 @@ impl OneMerge {
             on_merge_complete: None,
             init_merge_readers_once: None,
             set_merge_info_override: None,
+            init_merge_readers_override: None,
         }
     }
 
@@ -561,6 +596,30 @@ impl OneMerge {
     where
         F: FnMut(&SegmentCommitInfo) -> Result<MergeReader>,
     {
+        match self.init_merge_readers_override.clone() {
+            Some(hook) => hook(self, &mut reader_factory),
+            None => self.super_init_merge_readers(&mut reader_factory),
+        }
+    }
+
+    /// Installs the override of [`init_merge_readers`](Self::init_merge_readers);
+    /// see [`InitMergeReadersHook`].
+    pub fn set_init_merge_readers_override(&mut self, hook: InitMergeReadersHook) {
+        self.init_merge_readers_override = Some(hook);
+    }
+
+    /// The base `OneMerge.initMergeReaders(IOFunction)`
+    /// (`MergePolicy.java:245-260`), which an override installed with
+    /// [`set_init_merge_readers_override`](Self::set_init_merge_readers_override)
+    /// calls as `super.initMergeReaders(readerFactory)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`init_merge_readers`](Self::init_merge_readers).
+    pub fn super_init_merge_readers(
+        &self,
+        reader_factory: &mut MergeReaderFactory<'_>,
+    ) -> Result<()> {
         // Equivalent to the `onlyOnce.compareAndSet(false, true)` guard the
         // point-in-time merge wrapper puts in front of `super.initMergeReaders`.
         // The writer claims it and opens every reader under one hold of its
@@ -1256,6 +1315,18 @@ impl MergeCompletedFuture {
         self.merges
             .iter()
             .all(|merge| merge.merged.join_until(deadline))
+    }
+
+    /// Returns whether the future completed exceptionally.
+    ///
+    /// Equivalent to `CompletableFuture.isCompletedExceptionally()` on the
+    /// `CompletableFuture.allOf` of the merges' `mergeCompleted` futures
+    /// (`MergePolicy.getMergeCompletedFutures`). Each of those is only ever
+    /// completed normally, with the merge's success flag
+    /// (`mergeCompleted.complete(success)`, `MergePolicy.java:281`), so the
+    /// answer is always `false`.
+    pub fn is_completed_exceptionally(&self) -> bool {
+        false
     }
 }
 

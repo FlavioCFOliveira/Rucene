@@ -196,6 +196,14 @@ mod test_index_writer_force_merge;
 mod test_index_writer_from_reader;
 #[path = "core_index/test_index_writer_lock_release.rs"]
 mod test_index_writer_lock_release;
+#[path = "core_index/test_index_writer_max_docs.rs"]
+mod test_index_writer_max_docs;
+#[path = "core_index/test_index_writer_merge_policy.rs"]
+mod test_index_writer_merge_policy;
+#[path = "core_index/test_index_writer_merging.rs"]
+mod test_index_writer_merging;
+#[path = "core_index/test_index_writer_nrt_is_current.rs"]
+mod test_index_writer_nrt_is_current;
 #[path = "core_index/test_indexable_field.rs"]
 mod test_indexable_field;
 #[path = "core_index/test_indexing_sequence_numbers.rs"]
@@ -675,6 +683,25 @@ fn test_index_writer() {
 #[test]
 fn test_index_writer_lock_release() {
     run(test_index_writer_lock_release::class_def);
+}
+#[test]
+fn test_index_writer_max_docs() {
+    run(test_index_writer_max_docs::class_def);
+}
+
+#[test]
+fn test_index_writer_merge_policy() {
+    run(test_index_writer_merge_policy::class_def);
+}
+
+#[test]
+fn test_index_writer_merging() {
+    run(test_index_writer_merging::class_def);
+}
+
+#[test]
+fn test_index_writer_nrt_is_current() {
+    run(test_index_writer_nrt_is_current::class_def);
 }
 
 #[test]

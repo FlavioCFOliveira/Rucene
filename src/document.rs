@@ -1429,6 +1429,12 @@ impl IndexableField for Field {
         &self.name
     }
 
+    /// A `Field` answers with itself, so that a caller can mutate it in place
+    /// (see [`IndexableField::as_any_mut`]).
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn field_type(&self) -> &dyn IndexableFieldType {
         &self.field_type
     }
@@ -1634,6 +1640,20 @@ impl Document {
             .iter()
             .find(|f| f.name() == name)
             .map(|f| f.as_ref())
+    }
+
+    /// Returns the first field with the given name, mutable, or `None`.
+    ///
+    /// Equivalent to `Document.getField(String)` used to mutate the returned
+    /// field: Java hands back the document's own field object, so a change
+    /// through it is seen by the document. Rust ownership routes that access
+    /// through the document; [`IndexableField::as_any_mut`] reaches the
+    /// concrete field.
+    pub fn get_field_mut(&mut self, name: &str) -> Option<&mut dyn IndexableField> {
+        match self.fields.iter_mut().find(|f| f.name() == name) {
+            Some(f) => Some(f.as_mut()),
+            None => None,
+        }
     }
 
     /// Returns all fields with the given name.

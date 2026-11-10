@@ -593,6 +593,21 @@ pub trait IndexableField: std::fmt::Display {
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         None
     }
+
+    /// This field as a mutable [`Any`](std::any::Any), for the Java code that
+    /// casts a field it holds in a `Document` and mutates it in place (a test
+    /// keeps `Field idField`, calls `idField.setStringValue(...)` and adds the
+    /// same document again).
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** Java shares the field
+    /// object between the document and the caller; Rust ownership gives the
+    /// caller access to the document's field only through the document
+    /// ([`Document::get_field_mut`](crate::document::Document::get_field_mut)),
+    /// and to its concrete type only through `Any`. The default, `None`,
+    /// answers that the field cannot be cast.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
 }
 
 /// A fixed size `DataInput` which includes the length of the input.

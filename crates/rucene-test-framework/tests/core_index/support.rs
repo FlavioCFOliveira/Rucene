@@ -839,3 +839,480 @@ impl CyclicBarrier {
         }
     }
 }
+
+/// A `Directory` reference the Java code shares: an `Arc<dyn Directory>` as
+/// the `Box<dyn Directory>` a wrapper (`new FilterDirectory(dir) {}`) owns.
+/// Every method delegates to the shared directory; `close()` does not close
+/// it, since its other owners still use it (the Java tests never close the
+/// wrapper).
+pub struct SharedDirectory {
+    r#in: Arc<dyn rucene::store::Directory>,
+}
+
+impl SharedDirectory {
+    /// Wraps `r#in`.
+    pub fn new(r#in: Arc<dyn rucene::store::Directory>) -> Self {
+        SharedDirectory { r#in }
+    }
+}
+
+impl rucene::store::Directory for SharedDirectory {
+    fn list_all(&self) -> Result<Vec<String>> {
+        self.r#in.list_all()
+    }
+    fn delete_file(&self, name: &str) -> Result<()> {
+        self.r#in.delete_file(name)
+    }
+    fn file_length(&self, name: &str) -> Result<i64> {
+        self.r#in.file_length(name)
+    }
+    fn create_output(
+        &self,
+        name: &str,
+        context: &dyn rucene::store::IOContext,
+    ) -> Result<Box<dyn rucene::store::IndexOutput>> {
+        self.r#in.create_output(name, context)
+    }
+    fn create_temp_output(
+        &self,
+        prefix: &str,
+        suffix: &str,
+        context: &dyn rucene::store::IOContext,
+    ) -> Result<Box<dyn rucene::store::IndexOutput>> {
+        self.r#in.create_temp_output(prefix, suffix, context)
+    }
+    fn sync(&self, names: &[String]) -> Result<()> {
+        self.r#in.sync(names)
+    }
+    fn sync_metadata(&self) -> Result<()> {
+        self.r#in.sync_metadata()
+    }
+    fn rename(&self, source: &str, dest: &str) -> Result<()> {
+        self.r#in.rename(source, dest)
+    }
+    fn open_input(
+        &self,
+        name: &str,
+        context: &dyn rucene::store::IOContext,
+    ) -> Result<Box<dyn rucene::store::IndexInput>> {
+        self.r#in.open_input(name, context)
+    }
+    fn obtain_lock(&self, name: &str) -> Result<Box<dyn rucene::store::Lock>> {
+        self.r#in.obtain_lock(name)
+    }
+    fn close(&mut self) -> Result<()> {
+        Ok(())
+    }
+    fn get_pending_deletions(&self) -> Result<std::collections::HashSet<String>> {
+        self.r#in.get_pending_deletions()
+    }
+    fn ensure_open(&self) -> Result<()> {
+        self.r#in.ensure_open()
+    }
+    fn directory_to_string(&self) -> String {
+        self.r#in.directory_to_string()
+    }
+}
+
+/// `super.findMerges(...)` / `super.findFullFlushMerges(...)` reached from an
+/// override: the overridden policy, the trigger, the infos and the context.
+pub type FindMergesFn = Arc<
+    dyn Fn(
+            &dyn rucene::index::merge_policy::MergePolicy,
+            rucene::index::merge_policy::MergeTrigger,
+            &rucene::index::SegmentInfos,
+            &dyn rucene::index::merge_policy::MergeContext,
+        ) -> Result<Option<rucene::index::merge_policy::MergeSpecification>>
+        + Send
+        + Sync,
+>;
+
+/// An anonymous subclass of a concrete `MergePolicy` (`new
+/// TieredMergePolicy() { findMerges(...) }`) that overrides `findMerges`:
+/// every other method is the wrapped policy's, except
+/// `findFullFlushMerges` and `isMerged`, which keep `MergePolicy`'s
+/// inherited bodies so that they dispatch to the overridden `findMerges`, as
+/// Java's virtual calls do. Only valid over a policy that does not override
+/// those two (`TieredMergePolicy`, `LogMergePolicy`).
+pub struct SubclassMergePolicy {
+    base: Arc<dyn rucene::index::merge_policy::MergePolicy>,
+    find_merges: FindMergesFn,
+}
+
+impl SubclassMergePolicy {
+    /// `base` with `findMerges` overridden by `find_merges`.
+    pub fn new(
+        base: Arc<dyn rucene::index::merge_policy::MergePolicy>,
+        find_merges: FindMergesFn,
+    ) -> Self {
+        SubclassMergePolicy { base, find_merges }
+    }
+}
+
+impl std::fmt::Display for SubclassMergePolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&*self.base, f)
+    }
+}
+
+impl rucene::index::merge_policy::MergePolicy for SubclassMergePolicy {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        self.base.as_any()
+    }
+    fn find_merges(
+        &self,
+        merge_trigger: rucene::index::merge_policy::MergeTrigger,
+        segment_infos: &rucene::index::SegmentInfos,
+        merge_context: &dyn rucene::index::merge_policy::MergeContext,
+    ) -> Result<Option<rucene::index::merge_policy::MergeSpecification>> {
+        (self.find_merges)(&*self.base, merge_trigger, segment_infos, merge_context)
+    }
+    fn find_merges_for_readers(
+        &self,
+        readers: &[Arc<dyn rucene::index::codec_reader::CodecReader>],
+    ) -> Result<Option<rucene::index::merge_policy::MergeSpecification>> {
+        self.base.find_merges_for_readers(readers)
+    }
+    fn find_forced_merges(
+        &self,
+        segment_infos: &rucene::index::SegmentInfos,
+        max_num_segments: i32,
+        segments_to_merge: &std::collections::HashMap<String, bool>,
+        merge_context: &dyn rucene::index::merge_policy::MergeContext,
+    ) -> Result<Option<rucene::index::merge_policy::MergeSpecification>> {
+        self.base.find_forced_merges(
+            segment_infos,
+            max_num_segments,
+            segments_to_merge,
+            merge_context,
+        )
+    }
+    fn find_forced_deletes_merges(
+        &self,
+        segment_infos: &rucene::index::SegmentInfos,
+        merge_context: &dyn rucene::index::merge_policy::MergeContext,
+    ) -> Result<Option<rucene::index::merge_policy::MergeSpecification>> {
+        self.base
+            .find_forced_deletes_merges(segment_infos, merge_context)
+    }
+    fn use_compound_file(
+        &self,
+        infos: &rucene::index::SegmentInfos,
+        merged_info: &rucene::index::SegmentCommitInfo,
+        merge_context: &dyn rucene::index::merge_policy::MergeContext,
+    ) -> Result<bool> {
+        self.base
+            .use_compound_file(infos, merged_info, merge_context)
+    }
+    fn get_no_cfs_ratio(&self) -> f64 {
+        self.base.get_no_cfs_ratio()
+    }
+    fn get_max_cfs_segment_size(&self) -> i64 {
+        self.base.get_max_cfs_segment_size()
+    }
+    fn get_max_cfs_segment_size_mb(&self) -> f64 {
+        self.base.get_max_cfs_segment_size_mb()
+    }
+    fn set_no_cfs_ratio(&self, no_cfs_ratio: f64) -> Result<()> {
+        self.base.set_no_cfs_ratio(no_cfs_ratio)
+    }
+    fn set_max_cfs_segment_size_mb(&self, v: f64) -> Result<()> {
+        self.base.set_max_cfs_segment_size_mb(v)
+    }
+    fn size(
+        &self,
+        info: &rucene::index::SegmentCommitInfo,
+        merge_context: &dyn rucene::index::merge_policy::MergeContext,
+    ) -> Result<i64> {
+        self.base.size(info, merge_context)
+    }
+    fn keep_fully_deleted_segment(
+        &self,
+        reader_supplier: &mut rucene::index::merge_policy::CodecReaderSupplier<'_>,
+    ) -> Result<bool> {
+        self.base.keep_fully_deleted_segment(reader_supplier)
+    }
+    fn num_deletes_to_merge_default(
+        &self,
+        info: &rucene::index::SegmentCommitInfo,
+        del_count: i32,
+    ) -> i32 {
+        self.base.num_deletes_to_merge_default(info, del_count)
+    }
+    fn num_deletes_to_merge_with_reader(
+        &self,
+        info: &rucene::index::SegmentCommitInfo,
+        del_count: i32,
+        reader_supplier: &mut dyn FnMut() -> Result<
+            Arc<dyn rucene::index::codec_reader::CodecReader>,
+        >,
+    ) -> Result<i32> {
+        self.base
+            .num_deletes_to_merge_with_reader(info, del_count, reader_supplier)
+    }
+    fn max_full_flush_merge_size(&self) -> i64 {
+        self.base.max_full_flush_merge_size()
+    }
+}
+
+/// An anonymous (or nested) subclass of `FilterMergePolicy` overriding
+/// `findMerges` and/or `findFullFlushMerges`; each override receives the
+/// `FilterMergePolicy` as `super`. Every other method is `FilterMergePolicy`'s.
+pub struct FilterMergePolicyOverrides {
+    filter: rucene::index::merge_policy::FilterMergePolicy,
+    find_merges: Option<FindMergesFn>,
+    find_full_flush_merges: Option<FindMergesFn>,
+}
+
+impl FilterMergePolicyOverrides {
+    /// `new FilterMergePolicy(in) { ... }` with the given overrides.
+    pub fn new(
+        r#in: Arc<dyn rucene::index::merge_policy::MergePolicy>,
+        find_merges: Option<FindMergesFn>,
+        find_full_flush_merges: Option<FindMergesFn>,
+    ) -> Self {
+        FilterMergePolicyOverrides {
+            filter: rucene::index::merge_policy::FilterMergePolicy::new(r#in),
+            find_merges,
+            find_full_flush_merges,
+        }
+    }
+}
+
+impl std::fmt::Display for FilterMergePolicyOverrides {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.filter, f)
+    }
+}
+
+impl rucene::index::merge_policy::MergePolicy for FilterMergePolicyOverrides {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        rucene::index::merge_policy::MergePolicy::as_any(&self.filter)
+    }
+    fn find_merges(
+        &self,
+        merge_trigger: rucene::index::merge_policy::MergeTrigger,
+        segment_infos: &rucene::index::SegmentInfos,
+        merge_context: &dyn rucene::index::merge_policy::MergeContext,
+    ) -> Result<Option<rucene::index::merge_policy::MergeSpecification>> {
+        match &self.find_merges {
+            Some(f) => f(&self.filter, merge_trigger, segment_infos, merge_context),
+            None => self
+                .filter
+                .find_merges(merge_trigger, segment_infos, merge_context),
+        }
+    }
+    fn find_full_flush_merges(
+        &self,
+        merge_trigger: rucene::index::merge_policy::MergeTrigger,
+        segment_infos: &rucene::index::SegmentInfos,
+        merge_context: &dyn rucene::index::merge_policy::MergeContext,
+    ) -> Result<Option<rucene::index::merge_policy::MergeSpecification>> {
+        match &self.find_full_flush_merges {
+            Some(f) => f(&self.filter, merge_trigger, segment_infos, merge_context),
+            None => self
+                .filter
+                .find_full_flush_merges(merge_trigger, segment_infos, merge_context),
+        }
+    }
+    fn find_merges_for_readers(
+        &self,
+        readers: &[Arc<dyn rucene::index::codec_reader::CodecReader>],
+    ) -> Result<Option<rucene::index::merge_policy::MergeSpecification>> {
+        self.filter.find_merges_for_readers(readers)
+    }
+    fn find_forced_merges(
+        &self,
+        segment_infos: &rucene::index::SegmentInfos,
+        max_num_segments: i32,
+        segments_to_merge: &std::collections::HashMap<String, bool>,
+        merge_context: &dyn rucene::index::merge_policy::MergeContext,
+    ) -> Result<Option<rucene::index::merge_policy::MergeSpecification>> {
+        self.filter.find_forced_merges(
+            segment_infos,
+            max_num_segments,
+            segments_to_merge,
+            merge_context,
+        )
+    }
+    fn find_forced_deletes_merges(
+        &self,
+        segment_infos: &rucene::index::SegmentInfos,
+        merge_context: &dyn rucene::index::merge_policy::MergeContext,
+    ) -> Result<Option<rucene::index::merge_policy::MergeSpecification>> {
+        self.filter
+            .find_forced_deletes_merges(segment_infos, merge_context)
+    }
+    fn use_compound_file(
+        &self,
+        infos: &rucene::index::SegmentInfos,
+        merged_info: &rucene::index::SegmentCommitInfo,
+        merge_context: &dyn rucene::index::merge_policy::MergeContext,
+    ) -> Result<bool> {
+        self.filter
+            .use_compound_file(infos, merged_info, merge_context)
+    }
+    fn get_no_cfs_ratio(&self) -> f64 {
+        self.filter.get_no_cfs_ratio()
+    }
+    fn get_max_cfs_segment_size(&self) -> i64 {
+        self.filter.get_max_cfs_segment_size()
+    }
+    fn get_max_cfs_segment_size_mb(&self) -> f64 {
+        self.filter.get_max_cfs_segment_size_mb()
+    }
+    fn set_no_cfs_ratio(&self, no_cfs_ratio: f64) -> Result<()> {
+        self.filter.set_no_cfs_ratio(no_cfs_ratio)
+    }
+    fn set_max_cfs_segment_size_mb(&self, v: f64) -> Result<()> {
+        self.filter.set_max_cfs_segment_size_mb(v)
+    }
+    fn size(
+        &self,
+        info: &rucene::index::SegmentCommitInfo,
+        merge_context: &dyn rucene::index::merge_policy::MergeContext,
+    ) -> Result<i64> {
+        self.filter.size(info, merge_context)
+    }
+    fn is_merged(
+        &self,
+        infos: &rucene::index::SegmentInfos,
+        info: &rucene::index::SegmentCommitInfo,
+        merge_context: &dyn rucene::index::merge_policy::MergeContext,
+    ) -> Result<bool> {
+        self.filter.is_merged(infos, info, merge_context)
+    }
+    fn keep_fully_deleted_segment(
+        &self,
+        reader_supplier: &mut rucene::index::merge_policy::CodecReaderSupplier<'_>,
+    ) -> Result<bool> {
+        self.filter.keep_fully_deleted_segment(reader_supplier)
+    }
+    fn num_deletes_to_merge_default(
+        &self,
+        info: &rucene::index::SegmentCommitInfo,
+        del_count: i32,
+    ) -> i32 {
+        self.filter.num_deletes_to_merge_default(info, del_count)
+    }
+    fn num_deletes_to_merge_with_reader(
+        &self,
+        info: &rucene::index::SegmentCommitInfo,
+        del_count: i32,
+        reader_supplier: &mut dyn FnMut() -> Result<
+            Arc<dyn rucene::index::codec_reader::CodecReader>,
+        >,
+    ) -> Result<i32> {
+        self.filter
+            .num_deletes_to_merge_with_reader(info, del_count, reader_supplier)
+    }
+    fn max_full_flush_merge_size(&self) -> i64 {
+        self.filter.max_full_flush_merge_size()
+    }
+}
+
+/// An anonymous subclass of a merge scheduler overriding
+/// `merge(MergeSource, MergeTrigger)` with a prologue before
+/// `super.merge(mergeSource, trigger)`; every other method is the wrapped
+/// scheduler's (`instanceof` included, through `as_any`). `synchronized`
+/// holds one lock across the prologue and `super.merge`, as a
+/// `synchronized` override does.
+pub struct PrologueMergeScheduler {
+    base: Arc<dyn rucene::index::merge_scheduler::MergeScheduler>,
+    prologue: Arc<dyn Fn() -> Result<()> + Send + Sync>,
+    monitor: Option<std::sync::Mutex<()>>,
+}
+
+impl PrologueMergeScheduler {
+    /// `base` whose `merge` first runs `prologue`.
+    pub fn new(
+        base: Arc<dyn rucene::index::merge_scheduler::MergeScheduler>,
+        synchronized: bool,
+        prologue: Arc<dyn Fn() -> Result<()> + Send + Sync>,
+    ) -> Self {
+        PrologueMergeScheduler {
+            base,
+            prologue,
+            monitor: synchronized.then(|| std::sync::Mutex::new(())),
+        }
+    }
+}
+
+impl std::fmt::Display for PrologueMergeScheduler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&*self.base, f)
+    }
+}
+
+impl rucene::index::merge_scheduler::MergeScheduler for PrologueMergeScheduler {
+    fn merge(
+        &self,
+        merge_source: Arc<dyn rucene::index::merge_scheduler::MergeSource>,
+        trigger: rucene::index::merge_policy::MergeTrigger,
+    ) -> Result<()> {
+        let _monitor = self
+            .monitor
+            .as_ref()
+            .map(|m| m.lock().unwrap_or_else(|e| e.into_inner()));
+        (self.prologue)()?;
+        self.base.merge(merge_source, trigger)
+    }
+    fn wrap_for_merge(
+        &self,
+        merge: &rucene::index::merge_policy::OneMerge,
+        directory: Arc<dyn rucene::store::Directory>,
+    ) -> Result<Arc<dyn rucene::store::Directory>> {
+        self.base.wrap_for_merge(merge, directory)
+    }
+    fn same_thread_executor(&self) -> &Arc<rucene::util::SameThreadExecutorService> {
+        self.base.same_thread_executor()
+    }
+    fn get_intra_merge_executor(
+        &self,
+        merge: &rucene::index::merge_policy::OneMerge,
+    ) -> Result<Option<Arc<dyn rucene::search::Executor>>> {
+        self.base.get_intra_merge_executor(merge)
+    }
+    fn close(&self) -> Result<()> {
+        self.base.close()
+    }
+    fn initialize(
+        &self,
+        info_stream: Arc<dyn rucene::util::InfoStream>,
+        directory: &Arc<dyn rucene::store::Directory>,
+    ) -> Result<()> {
+        self.base.initialize(info_stream, directory)
+    }
+    fn set_info_stream(&self, info_stream: Arc<dyn rucene::util::InfoStream>) {
+        self.base.set_info_stream(info_stream)
+    }
+    fn get_info_stream(&self) -> Option<Arc<dyn rucene::util::InfoStream>> {
+        self.base.get_info_stream()
+    }
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        self.base.as_any()
+    }
+}
+
+/// The `Field` named `name` that the Java test keeps a reference to after
+/// `doc.add(field)` (`idField.setStringValue(...)`), reached through the
+/// document that owns it.
+///
+/// # Panics
+///
+/// `ClassCastException` when the document has no `Field` of that name.
+pub fn field_mut<'a>(
+    doc: &'a mut rucene::document::Document,
+    name: &str,
+) -> &'a mut rucene::document::Field {
+    doc.get_field_mut(name)
+        .and_then(|f| f.as_any_mut())
+        .and_then(|a| a.downcast_mut::<rucene::document::Field>())
+        .unwrap_or_else(|| {
+            randomizedtesting::jdk::exception::Throwable::new(
+                "java.lang.ClassCastException",
+                format!("no Field named {name}"),
+            )
+            .throw()
+        })
+}
