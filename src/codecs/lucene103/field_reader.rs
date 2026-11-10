@@ -329,9 +329,29 @@ impl Terms for FieldReader {
     ///
     /// Returns whatever opening the cursor or reading a block raises.
     fn stats(&self) -> Result<String> {
+        Ok(self.get_stats()?.to_string())
+    }
+
+    /// A `FieldReader`, for the casts Java tests make on a `Terms`
+    /// (`(FieldReader) reader.terms(field)`).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+}
+
+impl FieldReader {
+    /// For debugging -- used by CheckIndex too.
+    ///
+    /// Equivalent to `FieldReader.getStats()` (`FieldReader.java:110-114`):
+    /// `new SegmentTermsEnum(this, newReader()).computeBlockStats()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever opening the cursor or reading a block raises.
+    pub fn get_stats(&self) -> Result<crate::codecs::lucene103::blocktree::Stats> {
         let mut terms_enum =
             crate::codecs::lucene103::segment_terms_enum::SegmentTermsEnum::new(self.clone())?;
-        Ok(terms_enum.compute_block_stats()?.to_string())
+        terms_enum.compute_block_stats()
     }
 }
 

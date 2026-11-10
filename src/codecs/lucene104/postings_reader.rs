@@ -54,7 +54,9 @@ static NEXT_DOC_IN_IDENTITY: AtomicU64 = AtomicU64::new(0);
 // readVLong15).
 // ---------------------------------------------------------------------------
 
-fn read_v_int15(in_: &mut dyn DataInput) -> Result<i32> {
+/// `Lucene104PostingsReader.readVInt15`; package-private in Java, `pub` for
+/// the core tests.
+pub fn read_v_int15(in_: &mut dyn DataInput) -> Result<i32> {
     let s = in_.read_short()? as i32;
     if s >= 0 {
         Ok(s)
@@ -63,7 +65,9 @@ fn read_v_int15(in_: &mut dyn DataInput) -> Result<i32> {
     }
 }
 
-fn read_v_long15(in_: &mut dyn DataInput) -> Result<i64> {
+/// `Lucene104PostingsReader.readVLong15`; package-private in Java, `pub` for
+/// the core tests.
+pub fn read_v_long15(in_: &mut dyn DataInput) -> Result<i64> {
     let s = in_.read_short()? as i64;
     if s >= 0 {
         Ok(s)
@@ -93,11 +97,27 @@ fn find_next_geq(arr: &[i32], target: i32, start: usize, end: usize) -> usize {
         .unwrap_or(end)
 }
 
-fn read_impacts(serialized: &[u8], buffer: &mut FreqAndNormBuffer) -> Result<()> {
-    let mut input = crate::store::ByteArrayDataInput::new(serialized);
+/// Decodes the impacts `input` holds into `reuse`, from its first entry.
+///
+/// Equivalent to `Lucene104PostingsReader.readImpacts(ByteArrayDataInput,
+/// FreqAndNormBuffer)` (`Lucene104PostingsReader.java:1449-1472`),
+/// package-private in Java and `pub` for the core tests: each entry is stored
+/// at its index of `reuse`'s arrays, which the caller grew beforehand (an
+/// index past them panics, as Java's store throws
+/// `ArrayIndexOutOfBoundsException`), and `reuse.size` is set at the end.
+/// Java returns `reuse`; the caller keeps its own borrow of it here.
+///
+/// # Errors
+///
+/// What reading `input` raises; Java wraps the `IOException` of `readZLong`
+/// in a `RuntimeException` ("cannot happen on a BADI").
+pub fn read_impacts(
+    input: &mut crate::store::ByteArrayDataInput<'_>,
+    reuse: &mut FreqAndNormBuffer,
+) -> Result<()> {
     let mut freq = 0i32;
     let mut norm = 0i64;
-    buffer.size = 0;
+    let mut size = 0usize;
     // Java's own bound, `while (in.getPosition() < in.length())`
     // (`Lucene104PostingsReader.java:1453`), which stops even if a read has
     // carried the position past the limit.
@@ -110,8 +130,11 @@ fn read_impacts(serialized: &[u8], buffer: &mut FreqAndNormBuffer) -> Result<()>
             freq += 1 + ((freq_delta as u32) >> 1) as i32;
             norm += 1;
         }
-        buffer.add(freq, norm);
+        reuse.freqs[size] = freq;
+        reuse.norms[size] = norm;
+        size += 1;
     }
+    reuse.size = size;
     Ok(())
 }
 
@@ -2006,7 +2029,9 @@ impl Impacts for BlockImpacts {
             // (`Lucene104PostingsReader.java:1398`): only the bytes the last
             // read filled, never the stale tail of the buffer.
             read_impacts(
-                &self.level0_serialized_impacts[..self.level0_serialized_impacts_length],
+                &mut crate::store::ByteArrayDataInput::new(
+                    &self.level0_serialized_impacts[..self.level0_serialized_impacts_length],
+                ),
                 &mut buffer,
             )
             .expect("impacts from memory");
@@ -2014,7 +2039,9 @@ impl Impacts for BlockImpacts {
         }
         if level == 1 {
             read_impacts(
-                &self.level1_serialized_impacts[..self.level1_serialized_impacts_length],
+                &mut crate::store::ByteArrayDataInput::new(
+                    &self.level1_serialized_impacts[..self.level1_serialized_impacts_length],
+                ),
                 &mut buffer,
             )
             .expect("impacts from memory");

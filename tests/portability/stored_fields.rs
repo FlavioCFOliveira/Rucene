@@ -648,7 +648,7 @@ impl Mode {
             // Not registered under a second name: the codec is only ever used
             // directly here, and its SPI name must stay "Lucene104".
             Self::BestCompression => {
-                Arc::new(Lucene104Codec::with_mode(CodecMode::BestCompression))
+                Arc::new(Lucene104Codec::with_mode(Some(CodecMode::BestCompression)).unwrap())
             }
         }
     }

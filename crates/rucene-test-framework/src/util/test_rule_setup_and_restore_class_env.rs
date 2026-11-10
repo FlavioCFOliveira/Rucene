@@ -433,7 +433,10 @@ impl AbstractBeforeAfterRule for TestRuleSetupAndRestoreClassEnv {
         {
             let mode =
                 *RandomPicks::random_from(&*random, &[Mode::BestSpeed, Mode::BestCompression]);
-            Arc::new(Lucene104Codec::with_mode(mode))
+            Arc::new(
+                Lucene104Codec::with_mode(Some(mode))
+                    .expect("INVARIANT: a mode picked from Mode.values() is not null"),
+            )
         } else if test_codec != "random" {
             codec_for_name(test_codec)
         } else if TEST_POSTINGSFORMAT.as_str() == "random" {

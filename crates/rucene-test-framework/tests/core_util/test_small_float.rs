@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use randomizedtesting::jdk::reflect::Class;
-use randomizedtesting::junit::Assert;
+use randomizedtesting::junit::{Assert, Ignore};
 use rucene::error::Result;
 use rucene::util::SmallFloat;
 use rucene_test_framework::util::test_util::TestUtil;
@@ -11,8 +11,8 @@ use rucene_test_framework::util::LuceneTestCase;
 
 use crate::core_support::{assert_equals, class, random, test};
 
-/// `TestSmallFloat`. `testAllFloats` is `@Ignore("One-time test.")`: JUnit
-/// never runs it, so it is translated below but not declared.
+/// `TestSmallFloat`. `testAllFloats` is `@Ignore("One-time test.")`: it is
+/// declared with its `@Ignore`, so JUnit reports it ignored and never runs it.
 pub fn class_def() -> Arc<Class> {
     class(
         "org.apache.lucene.util.TestSmallFloat",
@@ -21,6 +21,9 @@ pub fn class_def() -> Arc<Class> {
             test("testFloatToByte", test_float_to_byte),
             test("testInt4", test_int4),
             test("testByte4", test_byte4),
+            test("testAllFloats", test_all_floats).annotate(Ignore {
+                value: "One-time test.".to_string(),
+            }),
         ],
     )
 }
@@ -207,7 +210,6 @@ fn test_byte4() -> Result<()> {
 }
 
 // `@Ignore("One-time test.")`.
-#[allow(dead_code)]
 fn test_all_floats() -> Result<()> {
     let mut i = i32::MIN;
     loop {

@@ -247,9 +247,9 @@ impl Lucene99HnswVectorsFormat {
     ///
     /// # Panics
     ///
-    /// Panics with Java's `IllegalArgumentException` message when `max_conn`
-    /// or `beam_width` is out of range, or when `num_merge_workers` is `1` and
-    /// a `merge_exec` is given.
+    /// Panics with Java's `IllegalArgumentException` (its class and message,
+    /// as the panic text) when `max_conn` or `beam_width` is out of range, or
+    /// when `num_merge_workers` is `1` and a `merge_exec` is given.
     pub fn with_params(
         max_conn: i32,
         beam_width: i32,
@@ -259,15 +259,19 @@ impl Lucene99HnswVectorsFormat {
         write_version: i32,
     ) -> Self {
         if max_conn <= 0 || max_conn > MAXIMUM_MAX_CONN {
-            panic!("maxConn must be positive and <= {MAXIMUM_MAX_CONN}; maxConn={max_conn}");
+            panic!(
+                "java.lang.IllegalArgumentException: maxConn must be positive and less than or equal to {MAXIMUM_MAX_CONN}; maxConn={max_conn}"
+            );
         }
         if beam_width <= 0 || beam_width > MAXIMUM_BEAM_WIDTH {
             panic!(
-                "beamWidth must be positive and <= {MAXIMUM_BEAM_WIDTH}; beamWidth={beam_width}"
+                "java.lang.IllegalArgumentException: beamWidth must be positive and less than or equal to {MAXIMUM_BEAM_WIDTH}; beamWidth={beam_width}"
             );
         }
         if num_merge_workers == 1 && merge_exec.is_some() {
-            panic!("No executor service is needed as we'll use single thread to merge");
+            panic!(
+                "java.lang.IllegalArgumentException: No executor service is needed as we'll use single thread to merge"
+            );
         }
         Self {
             max_conn,
@@ -1948,6 +1952,21 @@ impl DocIndexIterator for VecDocIndexIterator {
 // -----------------------------------------------------------------------------
 // Lucene99HnswVectorsReader
 // -----------------------------------------------------------------------------
+
+impl Lucene99HnswVectorsReader {
+    /// The similarity functions in the order of their ordinals in the file
+    /// format, so that it does not depend on the declaration order of
+    /// `VectorSimilarityFunction`.
+    ///
+    /// Equivalent to `Lucene99HnswVectorsReader.SIMILARITY_FUNCTIONS`
+    /// (`Lucene99HnswVectorsReader.java:222-229`), a `List.of(...)`.
+    pub const SIMILARITY_FUNCTIONS: [VectorSimilarityFunction; 4] = [
+        VectorSimilarityFunction::EUCLIDEAN,
+        VectorSimilarityFunction::DOT_PRODUCT,
+        VectorSimilarityFunction::COSINE,
+        VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT,
+    ];
+}
 
 /// Reader for the Lucene 9.9 HNSW vector format.
 ///

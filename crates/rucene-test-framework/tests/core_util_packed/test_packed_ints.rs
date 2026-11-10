@@ -18,15 +18,15 @@
 //!   not expressible: Rucene's `build` consumes the builder.
 //!
 //! `testIntOverflow` (`@Ignore("See LUCENE-4488")`) and
-//! `testPagedGrowableWriterOverflow` (`@Ignore`) are not declared, as JUnit
-//! never runs them.
+//! `testPagedGrowableWriterOverflow` (`@Ignore`) are declared with their
+//! `@Ignore`, so JUnit reports them ignored and never runs them.
 
 use std::sync::Arc;
 
 use randomizedtesting::generators::RandomNumbers;
 use randomizedtesting::jdk::random::{JdkRandom, Random};
 use randomizedtesting::jdk::reflect::Class;
-use randomizedtesting::junit::Assert;
+use randomizedtesting::junit::{Assert, Ignore};
 use rucene::error::Result;
 use rucene::store::{ByteArrayDataInput, DataInput, DEFAULT_IO_CONTEXT, READONCE_IO_CONTEXT};
 use rucene::util::extra::LongValues;
@@ -66,6 +66,9 @@ pub fn class_def() -> Arc<Class> {
             test("testControlledEquality", test_controlled_equality),
             test("testRandomBulkCopy", test_random_bulk_copy),
             test("testRandomEquality", test_random_equality),
+            test("testIntOverflow", test_int_overflow).annotate(Ignore {
+                value: "See LUCENE-4488".to_string(),
+            }),
             test("testSecondaryBlockChange", test_secondary_block_change),
             test("testFill", test_fill),
             test("testPackedIntsNull", test_packed_ints_null),
@@ -74,6 +77,13 @@ pub fn class_def() -> Arc<Class> {
             test("testCopy", test_copy),
             test("testGrowableWriter", test_growable_writer),
             test("testPagedGrowableWriter", test_paged_growable_writer),
+            test(
+                "testPagedGrowableWriterOverflow",
+                test_paged_growable_writer_overflow,
+            )
+            .annotate(Ignore {
+                value: String::new(),
+            }),
             test("testPagedMutable", test_paged_mutable),
             test("testEncodeDecode", test_encode_decode),
             test(
@@ -533,6 +543,41 @@ fn assert_list_equality_msg(message: &str, packed_ints: &[NamedMutable]) {
     }
 }
 
+/// Port of `TestPackedInts.testIntOverflow` (`@Ignore("See LUCENE-4488")`).
+///
+/// **Divergence.** Java catches the `OutOfMemoryError` of allocating the
+/// `long[]` and skips that check (`TestPackedInts.java:443-453`, `464-470`);
+/// a failed allocation aborts the process in Rust, so there is nothing to
+/// catch and the checks always run. JUnit never runs the method.
+fn test_int_overflow() -> Result<()> {
+    let index = 2f64.powi(30) as i32 + 1;
+    let bits = 2;
+
+    let mut p64 = Packed64::new(index, bits)?;
+    p64.set(index - 1, 1);
+    assert_equals_msg(
+        Some(&format!(
+            "The value at position {} should be correct for Packed64",
+            index - 1
+        )),
+        &1,
+        &p64.get(index - 1),
+    );
+    drop(p64);
+
+    let mut p64sb = Packed64SingleBlock::create(index, bits)?;
+    p64sb.set(index - 1, 1);
+    assert_equals_msg(
+        Some(&format!(
+            "The value at position {} should be correct for Packed64SingleBlock{bits}",
+            index - 1
+        )),
+        &1,
+        &p64sb.get(index - 1),
+    );
+    Ok(())
+}
+
 fn test_secondary_block_change() -> Result<()> {
     let mut mutable = Packed64::new(26, 5)?;
     mutable.set(24, 31);
@@ -728,6 +773,27 @@ fn test_growable_writer() -> Result<()> {
         &ram_used_unmodelled("GrowableWriter"),
         &wrt.ram_bytes_used(),
     );
+    Ok(())
+}
+
+// memory hole
+/// Port of `TestPackedInts.testPagedGrowableWriterOverflow` (`@Ignore`).
+fn test_paged_growable_writer_overflow() -> Result<()> {
+    let random = random();
+    let size = TestUtil::next_long(&*random, 2 * i64::from(i32::MAX), 3 * i64::from(i32::MAX));
+    let page_size = 1usize << TestUtil::next_int(&*random, 16, 30);
+    let mut writer = PagedGrowableWriter::new(size, page_size, 1, random.next_float())?;
+    let index = TestUtil::next_long(&*random, i64::from(i32::MAX), size - 1);
+    writer.set(index, 2);
+    assert_equals(&2, &writer.get(index));
+    for _ in 0..1000000 {
+        let idx = TestUtil::next_long(&*random, 0, size);
+        if idx == index {
+            assert_equals(&2, &writer.get(idx));
+        } else {
+            assert_equals(&0, &writer.get(idx));
+        }
+    }
     Ok(())
 }
 

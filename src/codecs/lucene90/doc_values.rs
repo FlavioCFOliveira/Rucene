@@ -57,7 +57,9 @@ const DATA_CODEC: &str = "Lucene90DocValuesData";
 const META_CODEC: &str = "Lucene90DocValuesMetadata";
 const SKIP_INDEX_CODEC: &str = "Lucene90DocValuesSkipIndex";
 
-const DATA_EXTENSION: &str = "dvd";
+/// `Lucene90DocValuesFormat.DATA_EXTENSION`; package-private in Java, `pub` for the
+/// core tests.
+pub const DATA_EXTENSION: &str = "dvd";
 const META_EXTENSION: &str = "dvm";
 const SKIP_INDEX_EXTENSION: &str = "dvs";
 
@@ -74,13 +76,19 @@ const TYPE_SORTED: u8 = 2;
 const TYPE_SORTED_SET: u8 = 3;
 const TYPE_SORTED_NUMERIC: u8 = 4;
 
-const DIRECT_MONOTONIC_BLOCK_SHIFT: i32 = 16;
+/// `Lucene90DocValuesFormat.DIRECT_MONOTONIC_BLOCK_SHIFT`; package-private in Java, `pub` for the
+/// core tests.
+pub const DIRECT_MONOTONIC_BLOCK_SHIFT: i32 = 16;
 
 const NUMERIC_BLOCK_SHIFT: i32 = 14;
-const NUMERIC_BLOCK_SIZE: usize = 1 << NUMERIC_BLOCK_SHIFT;
+/// `Lucene90DocValuesFormat.NUMERIC_BLOCK_SIZE`; package-private in Java, `pub` for the
+/// core tests.
+pub const NUMERIC_BLOCK_SIZE: usize = 1 << NUMERIC_BLOCK_SHIFT;
 
 const TERMS_DICT_BLOCK_LZ4_SHIFT: i32 = 6;
-const TERMS_DICT_BLOCK_LZ4_SIZE: usize = 1 << TERMS_DICT_BLOCK_LZ4_SHIFT;
+/// `Lucene90DocValuesFormat.TERMS_DICT_BLOCK_LZ4_SIZE`; package-private in Java, `pub` for the
+/// core tests.
+pub const TERMS_DICT_BLOCK_LZ4_SIZE: usize = 1 << TERMS_DICT_BLOCK_LZ4_SHIFT;
 const TERMS_DICT_BLOCK_LZ4_MASK: usize = TERMS_DICT_BLOCK_LZ4_SIZE - 1;
 
 const TERMS_DICT_REVERSE_INDEX_SHIFT: i32 = 10;
@@ -140,11 +148,20 @@ impl Lucene90DocValuesFormat {
     }
 
     /// Creates a new format instance with the given skip-index interval size.
+    ///
+    /// Equivalent to `Lucene90DocValuesFormat(int)`
+    /// (`Lucene90DocValuesFormat.java:150-157`).
+    ///
+    /// # Panics
+    ///
+    /// With Java's `IllegalArgumentException` (its class and message, as the
+    /// panic text) when `skip_index_interval_size` is less than 2.
     pub fn with_interval(skip_index_interval_size: i32) -> Self {
-        assert!(
-            skip_index_interval_size >= 2,
-            "skipIndexIntervalSize must be >= 2"
-        );
+        if skip_index_interval_size < 2 {
+            panic!(
+                "java.lang.IllegalArgumentException: skipIndexIntervalSize must be > 1, got [{skip_index_interval_size}]"
+            );
+        }
         Self {
             skip_index_interval_size,
         }

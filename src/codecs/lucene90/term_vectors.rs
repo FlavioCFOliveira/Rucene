@@ -2752,22 +2752,25 @@ impl Lucene90CompressingTermVectorsReader {
 
     /// Returns the number of chunks in this segment.
     ///
-    /// Equivalent to `Lucene90CompressingTermVectorsReader.getNumChunks`.
-    fn num_chunks(&self) -> i64 {
+    /// Equivalent to `Lucene90CompressingTermVectorsReader.getNumChunks`;
+    /// package-private in Java, `pub` for the core tests.
+    pub fn num_chunks(&self) -> i64 {
         self.num_chunks
     }
 
     /// Returns the number of chunks that were flushed before they were full.
     ///
-    /// Equivalent to `Lucene90CompressingTermVectorsReader.getNumDirtyChunks`.
-    fn num_dirty_chunks(&self) -> i64 {
+    /// Equivalent to `Lucene90CompressingTermVectorsReader.getNumDirtyChunks`;
+    /// package-private in Java, `pub` for the core tests.
+    pub fn num_dirty_chunks(&self) -> i64 {
         self.num_dirty_chunks
     }
 
     /// Returns the number of documents held by those incomplete chunks.
     ///
-    /// Equivalent to `Lucene90CompressingTermVectorsReader.getNumDirtyDocs`.
-    fn num_dirty_docs(&self) -> i64 {
+    /// Equivalent to `Lucene90CompressingTermVectorsReader.getNumDirtyDocs`;
+    /// package-private in Java, `pub` for the core tests.
+    pub fn num_dirty_docs(&self) -> i64 {
         self.num_dirty_docs
     }
 

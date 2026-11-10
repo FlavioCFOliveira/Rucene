@@ -1616,7 +1616,9 @@ impl Lucene90CompressingStoredFieldsWriter {
         Ok(())
     }
 
-    fn write_z_float(out: &mut dyn DataOutput, value: f32) -> Result<()> {
+    /// `Lucene90CompressingStoredFieldsWriter.writeZFloat`; package-private in Java, `pub` for the
+    /// core tests.
+    pub fn write_z_float(out: &mut dyn DataOutput, value: f32) -> Result<()> {
         let int_val = value as i32;
         let float_bits = value.to_bits();
 
@@ -1636,7 +1638,9 @@ impl Lucene90CompressingStoredFieldsWriter {
         }
     }
 
-    fn write_z_double(out: &mut dyn DataOutput, value: f64) -> Result<()> {
+    /// `Lucene90CompressingStoredFieldsWriter.writeZDouble`; package-private in Java, `pub` for the
+    /// core tests.
+    pub fn write_z_double(out: &mut dyn DataOutput, value: f64) -> Result<()> {
         let int_val = value as i32;
         let double_bits = value.to_bits();
 
@@ -1660,7 +1664,9 @@ impl Lucene90CompressingStoredFieldsWriter {
         }
     }
 
-    fn write_t_long(out: &mut dyn DataOutput, mut value: i64) -> Result<()> {
+    /// `Lucene90CompressingStoredFieldsWriter.writeTLong`; package-private in Java, `pub` for the
+    /// core tests.
+    pub fn write_t_long(out: &mut dyn DataOutput, mut value: i64) -> Result<()> {
         let header: u8;
         if value % SECOND_MS != 0 {
             header = 0;
@@ -2713,22 +2719,25 @@ impl Lucene90CompressingStoredFieldsReader {
 
     /// Returns the number of chunks in this segment.
     ///
-    /// Equivalent to `Lucene90CompressingStoredFieldsReader.getNumChunks`.
-    fn num_chunks(&self) -> i64 {
+    /// Equivalent to `Lucene90CompressingStoredFieldsReader.getNumChunks`;
+    /// package-private in Java, `pub` for the core tests.
+    pub fn num_chunks(&self) -> i64 {
         self.num_chunks
     }
 
     /// Returns the number of chunks that were flushed before they were full.
     ///
-    /// Equivalent to `Lucene90CompressingStoredFieldsReader.getNumDirtyChunks`.
-    fn num_dirty_chunks(&self) -> i64 {
+    /// Equivalent to `Lucene90CompressingStoredFieldsReader.getNumDirtyChunks`;
+    /// package-private in Java, `pub` for the core tests.
+    pub fn num_dirty_chunks(&self) -> i64 {
         self.num_dirty_chunks
     }
 
     /// Returns the number of documents held by those incomplete chunks.
     ///
-    /// Equivalent to `Lucene90CompressingStoredFieldsReader.getNumDirtyDocs`.
-    fn num_dirty_docs(&self) -> i64 {
+    /// Equivalent to `Lucene90CompressingStoredFieldsReader.getNumDirtyDocs`;
+    /// package-private in Java, `pub` for the core tests.
+    pub fn num_dirty_docs(&self) -> i64 {
         self.num_dirty_docs
     }
 
@@ -2894,7 +2903,9 @@ impl Lucene90CompressingStoredFieldsReader {
         }
     }
 
-    fn read_z_float(input: &mut dyn DataInput) -> Result<f32> {
+    /// `Lucene90CompressingStoredFieldsReader.readZFloat`; package-private in Java, `pub` for the
+    /// core tests.
+    pub fn read_z_float(input: &mut dyn DataInput) -> Result<f32> {
         let b = input.read_byte()? as u32;
         if b == 0xFF {
             Ok(f32::from_bits(StoredFieldsInts::read_le_int(input)?))
@@ -2911,7 +2922,9 @@ impl Lucene90CompressingStoredFieldsReader {
         }
     }
 
-    fn read_z_double(input: &mut dyn DataInput) -> Result<f64> {
+    /// `Lucene90CompressingStoredFieldsReader.readZDouble`; package-private in Java, `pub` for the
+    /// core tests.
+    pub fn read_z_double(input: &mut dyn DataInput) -> Result<f64> {
         let b = input.read_byte()? as u64;
         if b == 0xFF {
             Ok(f64::from_bits(StoredFieldsInts::read_le_long(input)?))
@@ -2931,7 +2944,9 @@ impl Lucene90CompressingStoredFieldsReader {
         }
     }
 
-    fn read_t_long(input: &mut dyn DataInput) -> Result<i64> {
+    /// `Lucene90CompressingStoredFieldsReader.readTLong`; package-private in Java, `pub` for the
+    /// core tests.
+    pub fn read_t_long(input: &mut dyn DataInput) -> Result<i64> {
         let header = input.read_byte()? as i64;
         let mut bits = header & 0x1F;
         if (header & 0x20) != 0 {
@@ -3158,8 +3173,23 @@ impl Lucene90StoredFieldsFormat {
     }
 
     /// Creates the format with the given mode.
-    pub fn with_mode(mode: Mode) -> Self {
-        Self { mode }
+    ///
+    /// Equivalent to `Lucene90StoredFieldsFormat(Mode)`
+    /// (`Lucene90StoredFieldsFormat.java:124-126`): `None` is Java's `null`,
+    /// on which `Objects.requireNonNull(mode)` throws `NullPointerException`.
+    ///
+    /// # Errors
+    ///
+    /// `NullPointerException` (an unchecked error) when `mode` is `None`.
+    pub fn with_mode(mode: Option<Mode>) -> Result<Self> {
+        let Some(mode) = mode else {
+            return Err(LuceneError::Unchecked {
+                class: "java.lang.NullPointerException",
+                message: None,
+                cause: None,
+            });
+        };
+        Ok(Self { mode })
     }
 
     /// Returns the compressing format that implements `mode`.
@@ -3436,7 +3466,7 @@ mod tests {
         let field_infos = make_field_infos();
         let segment_info = make_segment_info(Arc::clone(&dir), "_0", 4);
 
-        let format = Lucene90StoredFieldsFormat::with_mode(mode);
+        let format = Lucene90StoredFieldsFormat::with_mode(Some(mode)).unwrap();
         {
             let mut writer = format
                 .fields_writer(&dir, &segment_info, &*DEFAULT_IO_CONTEXT)
@@ -3584,7 +3614,7 @@ mod tests {
         let format = Lucene90StoredFieldsFormat::new();
         assert_eq!(format.name(), "Lucene90StoredFieldsFormat");
 
-        let format = Lucene90StoredFieldsFormat::with_mode(Mode::BestCompression);
+        let format = Lucene90StoredFieldsFormat::with_mode(Some(Mode::BestCompression)).unwrap();
         assert_eq!(format.name(), "Lucene90StoredFieldsFormat");
     }
 
@@ -4289,7 +4319,7 @@ mod tests {
             let field_infos = make_field_infos();
             let id_field = field_infos.field_info("id").unwrap();
             let segment_info = make_segment_info(Arc::clone(&dir), "_0", 3);
-            let format = Lucene90StoredFieldsFormat::with_mode(mode);
+            let format = Lucene90StoredFieldsFormat::with_mode(Some(mode)).unwrap();
             {
                 let mut writer = format
                     .fields_writer(&dir, &segment_info, &*DEFAULT_IO_CONTEXT)

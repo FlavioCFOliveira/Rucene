@@ -484,7 +484,7 @@ fn stored_fields_impl_builds_the_format_java_builds() {
         (Mode::BestSpeed, "BEST_SPEED"),
         (Mode::BestCompression, "BEST_COMPRESSION"),
     ] {
-        let format = Lucene90StoredFieldsFormat::with_mode(mode);
+        let format = Lucene90StoredFieldsFormat::with_mode(Some(mode)).unwrap();
         assert_eq!(
             format.impl_for_mode(mode).to_string(),
             row("sfimpl", name)[0],

@@ -1250,6 +1250,12 @@ impl KnnVectorValues for ScalarQuantizedVectorValues {
         )))
     }
 
+    /// A `ScalarQuantizedVectorValues`, for the casts Java tests make on the
+    /// values a reader returns.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn encoding(&self) -> VectorEncoding {
         VectorEncoding::FLOAT32
     }

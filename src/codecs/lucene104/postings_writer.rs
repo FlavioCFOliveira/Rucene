@@ -83,13 +83,19 @@ impl DataOutput for ResettableOutput {
 // -----------------------------------------------------------------------------
 
 /// Special two-byte vint for values that fit in 15 bits.
-fn write_v_int15(out: &mut dyn DataOutput, v: i32) -> Result<()> {
+///
+/// `Lucene104PostingsWriter.writeVInt15`; package-private in Java, `pub` for
+/// the core tests.
+pub fn write_v_int15(out: &mut dyn DataOutput, v: i32) -> Result<()> {
     debug_assert!(v >= 0);
     write_v_long15(out, v as i64)
 }
 
 /// Special two-byte vlong for values that fit in 15 bits.
-fn write_v_long15(out: &mut dyn DataOutput, v: i64) -> Result<()> {
+///
+/// `Lucene104PostingsWriter.writeVLong15`; package-private in Java, `pub` for
+/// the core tests.
+pub fn write_v_long15(out: &mut dyn DataOutput, v: i64) -> Result<()> {
     debug_assert!(v >= 0);
     if (v & !0x7FFFi64) == 0 {
         out.write_short(v as i16)?;

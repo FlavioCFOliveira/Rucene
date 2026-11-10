@@ -73,6 +73,26 @@ pub trait NumericDocValues: DocValuesIterator {
     /// returned `false`.
     fn long_value(&self) -> Result<i64>;
 
+    /// Bulk retrieval of numeric doc values, reading the doc IDs from the
+    /// start of `docs` and writing the values from the start of `values`.
+    ///
+    /// Equivalent to `NumericDocValues.longValues(int, int[], long[], long)`
+    /// (`NumericDocValues.java:82-85`): `longValues(size, docs, 0, values, 0,
+    /// defaultValue)`. Rust has no overloading, hence the name.
+    ///
+    /// # Errors
+    ///
+    /// As [`long_values`](Self::long_values).
+    fn long_values_no_offsets(
+        &mut self,
+        size: i32,
+        docs: &[i32],
+        values: &mut [i64],
+        default_value: i64,
+    ) -> Result<()> {
+        self.long_values(size, docs, 0, values, 0, default_value)
+    }
+
     /// Bulk retrieval of numeric doc values.
     ///
     /// Equivalent to `NumericDocValues.longValues(int, int[], int, long[], int, long)`.

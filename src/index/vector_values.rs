@@ -349,6 +349,18 @@ pub trait KnnVectorValues: Send + Sync {
     /// Returns an error when the underlying input cannot be cloned.
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>>;
 
+    /// This instance as [`Any`](std::any::Any), for the casts Java makes on a
+    /// `KnnVectorValues` (`(Lucene104ScalarQuantizedVectorsReader.ScalarQuantizedVectorValues)
+    /// vectorValues` in `TestLucene104ScalarQuantizedVectorsFormat`).
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** Java casts any object to
+    /// its run-time class; a Rust trait object exposes its concrete type only
+    /// through `Any`, which an implementation opts into by returning
+    /// `Some(self)`. The default, `None`, makes every such cast fail.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+
     /// Returns the vector byte length.
     fn vector_byte_length(&self) -> i32 {
         self.dimension() * self.encoding().byte_size()
