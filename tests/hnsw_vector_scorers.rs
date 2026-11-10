@@ -479,7 +479,7 @@ fn quantized_supplier_to_string_matches_lucene() {
         Box::new(values),
     );
     assert_eq!(
-        supplier.to_string(),
+        RandomVectorScorerSupplier::to_string(&supplier),
         "ScalarQuantizedRandomVectorScorerSupplier(vectorSimilarityFunction=COSINE)"
     );
 }

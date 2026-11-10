@@ -84,7 +84,7 @@ impl MockReaderWrapper {
 }
 
 impl CharReader for MockReaderWrapper {
-    fn read(&mut self, buf: &mut [char]) -> Result<usize> {
+    fn read(&mut self, buf: &mut [u16]) -> Result<usize> {
         if self.throw_exc_next || (self.exc_at_char != -1 && self.read_so_far >= self.exc_at_char) {
             return Err(LuceneError::unchecked(
                 "java.lang.RuntimeException",
@@ -105,10 +105,7 @@ impl CharReader for MockReaderWrapper {
             java_assert_unchecked!(left != 0);
             read = self.input.read(&mut buf[..real_len.min(left) as usize])?;
             java_assert_unchecked!(read != 0);
-            self.read_so_far += buf[..read]
-                .iter()
-                .map(|c| c.len_utf16() as i32)
-                .sum::<i32>();
+            self.read_so_far += read as i32;
         } else {
             read = self.input.read(&mut buf[..real_len as usize])?;
         }

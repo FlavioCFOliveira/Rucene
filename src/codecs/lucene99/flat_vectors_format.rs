@@ -2015,6 +2015,72 @@ impl ByteVectorValues for EmptyOffHeapByteVectorValues {
     }
 }
 
+/// Creates the off-heap values of a dense float field, whose `size` vectors
+/// of `dimension` components are stored back to back in `slice`,
+/// `byte_size` bytes each.
+///
+/// Equivalent to the public constructor `new
+/// OffHeapFloatVectorValues.DenseOffHeapVectorValues(dimension, size, slice,
+/// byteSize, flatVectorsScorer, similarityFunction)`
+/// (`OffHeapFloatVectorValues.java:145-155`), which `load` calls for a dense
+/// configuration and Lucene's tests call directly. The values class itself
+/// is private to this module (see [`OffHeapFloatVectorValues`]), so it is
+/// handed back as the [`FloatVectorValues`] it implements.
+pub fn new_dense_off_heap_float_vector_values(
+    dimension: i32,
+    size: i32,
+    slice: Box<dyn IndexInput>,
+    byte_size: i32,
+    flat_vectors_scorer: Arc<dyn FlatVectorsScorer>,
+    similarity_function: VectorSimilarityFunction,
+) -> Box<dyn FloatVectorValues> {
+    Box::new(OffHeapFloatVectorValues {
+        dimension,
+        size,
+        byte_size,
+        slice: Mutex::new(slice),
+        config: None,
+        data_input: None,
+        ord_to_doc: None,
+        disi: None,
+        similarity_function,
+        flat_vectors_scorer,
+    })
+}
+
+/// Creates the off-heap values of a dense byte field, whose `size` vectors
+/// of `dimension` components are stored back to back in `slice`,
+/// `byte_size` bytes each.
+///
+/// Equivalent to the public constructor `new
+/// OffHeapByteVectorValues.DenseOffHeapVectorValues(dimension, size, slice,
+/// byteSize, flatVectorsScorer, vectorSimilarityFunction)`
+/// (`OffHeapByteVectorValues.java:149-158`), which `load` calls for a dense
+/// configuration and Lucene's tests call directly. The values class itself
+/// is private to this module (see [`OffHeapByteVectorValues`]), so it is
+/// handed back as the [`ByteVectorValues`] it implements.
+pub fn new_dense_off_heap_byte_vector_values(
+    dimension: i32,
+    size: i32,
+    slice: Box<dyn IndexInput>,
+    byte_size: i32,
+    flat_vectors_scorer: Arc<dyn FlatVectorsScorer>,
+    similarity_function: VectorSimilarityFunction,
+) -> Box<dyn ByteVectorValues> {
+    Box::new(OffHeapByteVectorValues {
+        dimension,
+        size,
+        byte_size,
+        slice: Mutex::new(slice),
+        config: None,
+        data_input: None,
+        ord_to_doc: None,
+        disi: None,
+        similarity_function,
+        flat_vectors_scorer,
+    })
+}
+
 /// The `getAcceptOrds(Bits)` of an off-heap values class: `acceptDocs` itself
 /// for a dense field, and for a sparse one a lazy view that asks
 /// `acceptDocs.get(ordToDoc(ord))` through a shared handle on the field's

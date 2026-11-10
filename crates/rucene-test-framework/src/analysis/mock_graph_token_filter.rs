@@ -81,7 +81,7 @@ impl LookaheadLogic for MockGraphTokenFilterLogic {
                 f.pos_len_att.pos_len_mut().set_position_length(pos_length);
                 let random = f.logic.random.as_ref().unwrap();
                 let text = TestUtil::random_unicode_string(random);
-                f.logic.term_att.char_term_mut().append_string(&text);
+                f.logic.term_att.char_term_mut().append_string(Some(&text));
                 f.pos_inc_att.pos_inc_mut().set_position_increment(0);
                 let output_pos = f.output_pos;
                 let start_offset = f.positions.get(output_pos).start_offset;

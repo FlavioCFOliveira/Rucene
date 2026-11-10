@@ -123,10 +123,6 @@ pub struct MockTokenizerLogic {
     enable_checks: bool,
     // evil: but we don't change the behavior with this random, we only switch up how we read
     random: JdkRandom,
-    /// The low surrogate of the supplementary character the last read
-    /// returned the high surrogate of (Rust-only: the reader holds whole
-    /// scalar values).
-    pending_low_surrogate: Option<u16>,
     /// The UTF-16 length of the term being built, Java's `termAtt.length()`.
     term_length16: i32,
 }
@@ -182,20 +178,12 @@ impl MockTokenizerLogic {
         // read(char[]), read(char[], int, int), read(CharBuffer) or read():
         // the same single-char read here.
         let _ = self.random.next_int_bound(10);
-        if let Some(low) = self.pending_low_surrogate.take() {
-            return Ok(i32::from(low));
-        }
-        let mut c = ['\0'; 1];
+        let mut c = [0u16; 1];
         let ret = input.read(&mut c)?;
         if ret == 0 {
             return Ok(-1);
         }
-        let mut units = [0u16; 2];
-        let encoded = c[0].encode_utf16(&mut units);
-        if encoded.len() == 2 {
-            self.pending_low_surrogate = Some(units[1]);
-        }
-        Ok(i32::from(units[0]))
+        Ok(i32::from(c[0]))
     }
 
     /// `isTokenChar(int)`.
@@ -357,7 +345,6 @@ impl TokenizerLogic for MockTokenizerLogic {
         self.off = 0;
         self.last_offset = 0;
         self.buffered_code_point = -1;
-        self.pending_low_surrogate = None;
         let result = if self.stream_state == State::Reset {
             self.fail("double reset()".to_string())
         } else {
@@ -454,7 +441,6 @@ impl MockTokenizer {
             last_offset: 0,
             enable_checks: true,
             random,
-            pending_low_surrogate: None,
             term_length16: 0,
         };
         Ok(MockTokenizer {

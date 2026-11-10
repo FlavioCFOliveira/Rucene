@@ -750,7 +750,7 @@ impl TokenizerLogic for OneX {
             return Ok(false);
         }
         self.done = true;
-        self.term.char_term_mut().append_string("x");
+        self.term.char_term_mut().append_string(Some("x"));
         Ok(true)
     }
 
@@ -1628,7 +1628,7 @@ struct SpoonFeed {
 }
 
 impl rucene::analysis::CharReader for SpoonFeed {
-    fn read(&mut self, buf: &mut [char]) -> Result<usize> {
+    fn read(&mut self, buf: &mut [u16]) -> Result<usize> {
         let n = self.max_chars.min(buf.len());
         self.input.read(&mut buf[..n])
     }

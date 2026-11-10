@@ -258,7 +258,7 @@ impl Att {
     pub fn set_term(&self, s: &str) {
         let mut t = self.char_term_mut();
         t.set_empty();
-        t.append_string(s);
+        t.append_string(Some(s));
     }
 }
 

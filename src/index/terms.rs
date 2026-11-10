@@ -75,6 +75,21 @@ impl Term {
         &self.bytes
     }
 
+    /// Returns the human-readable form of `term_text`: its UTF-8 decoding,
+    /// or, when the bytes are not well-formed UTF-8, the raw bytes as
+    /// [`BytesRef`]'s `Display` prints them.
+    ///
+    /// Equivalent to the static `Term.toString(BytesRef)`
+    /// (`Term.java:108-124`), whose decoder reports malformed input
+    /// (`CodingErrorAction.REPORT`) and then falls back to
+    /// `termText.toString()`.
+    pub fn to_string_bytes_ref(term_text: &BytesRef) -> String {
+        match std::str::from_utf8(term_text.slice()) {
+            Ok(text) => text.to_string(),
+            Err(_) => term_text.to_string(),
+        }
+    }
+
     /// Returns the term text, best-effort UTF-8 decoding.
     pub fn text(&self) -> String {
         String::from_utf8_lossy(self.bytes.slice()).into_owned()

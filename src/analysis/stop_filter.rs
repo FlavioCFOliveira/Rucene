@@ -16,12 +16,22 @@ use crate::util::attribute::AttributeSource;
 #[derive(Debug)]
 pub struct StopFilterLogic {
     stop_words: CharArraySet,
+    /// The UTF-16 units of the current term.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's term buffer is a `char[]`
+    /// that `stopWords.contains` reads directly; this port's
+    /// `CharTermAttribute` holds `char`s while `CharArraySet` keys are
+    /// UTF-16 units (as Java's are), so each term is encoded here first.
+    scratch: Vec<u16>,
 }
 
 impl StopFilterLogic {
     /// Creates a stop-word filter logic with the given set.
     pub fn new(stop_words: CharArraySet) -> Self {
-        Self { stop_words }
+        Self {
+            stop_words,
+            scratch: Vec::new(),
+        }
     }
 }
 
@@ -32,9 +42,15 @@ impl FilteringTokenFilterLogic for StopFilterLogic {
         let term_att = source
             .get_attribute_interface::<dyn CharTermAttribute>()
             .expect("INVARIANT: the constructor added the CharTermAttribute");
-        let buffer = term_att.buffer();
         let length = term_att.length();
-        Ok(!self.stop_words.contains_chars(buffer, 0, length))
+        self.scratch.clear();
+        let mut units = [0u16; 2];
+        for c in &term_att.buffer()[..length] {
+            self.scratch.extend_from_slice(c.encode_utf16(&mut units));
+        }
+        Ok(!self
+            .stop_words
+            .contains_chars(Some(&self.scratch), 0, self.scratch.len()))
     }
 }
 
@@ -81,16 +97,16 @@ mod tests {
     #[test]
     fn make_stop_set_basic() {
         let set = make_stop_set(["a", "an", "the"], false);
-        assert!(set.contains("a"));
-        assert!(set.contains("an"));
-        assert!(set.contains("the"));
-        assert!(!set.contains("and"));
+        assert!(set.contains(Some("a")));
+        assert!(set.contains(Some("an")));
+        assert!(set.contains(Some("the")));
+        assert!(!set.contains(Some("and")));
     }
 
     #[test]
     fn make_stop_set_ignore_case() {
         let set = make_stop_set(["Stop"], true);
-        assert!(set.contains("stop"));
-        assert!(set.contains("STOP"));
+        assert!(set.contains(Some("stop")));
+        assert!(set.contains(Some("STOP")));
     }
 }

@@ -45,7 +45,7 @@ fn java_split_whitespace(line: &str) -> impl Iterator<Item = &str> {
 pub fn get_word_set(lines: impl IntoIterator<Item = impl AsRef<str>>) -> CharArraySet {
     let mut result = CharArraySet::new(INITIAL_CAPACITY, false);
     get_word_set_into(lines, &mut result);
-    CharArraySet::unmodifiable_set(result)
+    CharArraySet::unmodifiable_set(Some(result))
 }
 
 /// Reads every non-blank line from `lines` into the supplied [`CharArraySet`].
@@ -91,7 +91,7 @@ pub fn get_word_set_ignoring_comments(
 ) -> CharArraySet {
     let mut result = CharArraySet::new(INITIAL_CAPACITY, false);
     get_word_set_with_comment(lines, comment, &mut result);
-    CharArraySet::unmodifiable_set(result)
+    CharArraySet::unmodifiable_set(Some(result))
 }
 
 /// Reads a stop-word list in Snowball format.
@@ -111,7 +111,7 @@ pub fn get_snowball_word_set(lines: impl IntoIterator<Item = impl AsRef<str>>) -
             result.add(word);
         }
     }
-    CharArraySet::unmodifiable_set(result)
+    CharArraySet::unmodifiable_set(Some(result))
 }
 
 /// Reads every line of `reader`.
@@ -137,16 +137,18 @@ pub fn get_snowball_word_set(lines: impl IntoIterator<Item = impl AsRef<str>>) -
 /// Equivalent to the private
 /// `org.apache.lucene.analysis.WordlistLoader#getBufferedReader`.
 pub fn get_buffered_reader(reader: &mut dyn CharReader) -> Result<Vec<String>> {
-    let mut buffer = ['\0'; 8192];
-    let mut text = String::new();
+    let mut buffer = [0u16; 8192];
+    let mut units = Vec::new();
     loop {
         let read = reader.read(&mut buffer)?;
         if read == 0 {
             break;
         }
-        text.extend(buffer[..read].iter());
+        units.extend_from_slice(&buffer[..read]);
     }
-
+    // A Rust `String` cannot hold a lone surrogate, which becomes U+FFFD
+    // (see `utf16_to_string`).
+    let text = crate::analysis::character_utils::utf16_to_string(&units);
     Ok(read_lines(&text))
 }
 
@@ -268,8 +270,8 @@ mod tests {
         let text = "  hello  \n\nworld\n  \n";
         let set = get_word_set(text.lines());
         assert_eq!(set.size(), 2);
-        assert!(set.contains("hello"));
-        assert!(set.contains("world"));
+        assert!(set.contains(Some("hello")));
+        assert!(set.contains(Some("world")));
     }
 
     #[test]
@@ -277,9 +279,9 @@ mod tests {
         let text = "alpha\n# this is a comment\nbeta\n# another\ngamma";
         let set = get_word_set_ignoring_comments(text.lines(), "#");
         assert_eq!(set.size(), 3);
-        assert!(set.contains("alpha"));
-        assert!(set.contains("beta"));
-        assert!(set.contains("gamma"));
+        assert!(set.contains(Some("alpha")));
+        assert!(set.contains(Some("beta")));
+        assert!(set.contains(Some("gamma")));
     }
 
     #[test]
@@ -288,7 +290,7 @@ mod tests {
         let set = get_snowball_word_set(text.lines());
         assert_eq!(set.size(), 7);
         for word in ["a", "an", "the", "is", "are", "was", "were"] {
-            assert!(set.contains(word));
+            assert!(set.contains(Some(word)));
         }
     }
 }

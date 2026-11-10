@@ -887,33 +887,50 @@ fn char_array_map_entry_set_writes_as_java() {
     assert_eq!(map.create_entry_set().size().to_string(), get("size"));
 
     let set_a = {
-        let mut entries = map.create_entry_set();
-        let mut entry = entries
-            .iter_mut()
-            .find(|e| e.get_key() == ['a'])
-            .expect("a is mapped");
-        let old = entry.set_value(10).unwrap();
-        format!("old={old},entry={entry}")
+        let mut iterator = map.create_entry_set().iterator();
+        let mut found = None;
+        while iterator.has_next(&map) {
+            let e = iterator.next(&map);
+            if e.get_key(&map) == [u16::from(b'a')] {
+                found = Some(e);
+                break;
+            }
+        }
+        let entry = found.expect("a is mapped");
+        let old = entry
+            .set_value(&mut map, 10)
+            .unwrap()
+            .expect("a had a value");
+        format!("old={old},entry={}", entry.to_string(&map))
     };
     assert_eq!(set_a, get("set_a"));
     assert_eq!(map.get("a").unwrap().to_string(), get("get_a"));
     assert_eq!(
-        map.create_entry_set().contains(&['a'], &10).to_string(),
+        map.create_entry_set()
+            .contains(&[u16::from(b'a')], &10)
+            .to_string(),
         get("contains_a10")
     );
     assert_eq!(
-        map.create_entry_set().contains(&['a'], &1).to_string(),
+        map.create_entry_set()
+            .contains(&[u16::from(b'a')], &1)
+            .to_string(),
         get("contains_a1")
     );
 
     let mut read_only = CharArrayMap::unmodifiable_map(map.copy());
     let set_ro = {
-        let mut entries = read_only.create_entry_set();
-        let mut entry = entries
-            .iter_mut()
-            .find(|e| e.get_key() == ['b'])
-            .expect("b is mapped");
-        match entry.set_value(20) {
+        let mut iterator = read_only.create_entry_set().iterator();
+        let mut found = None;
+        while iterator.has_next(&read_only) {
+            let e = iterator.next(&read_only);
+            if e.get_key(&read_only) == [u16::from(b'b')] {
+                found = Some(e);
+                break;
+            }
+        }
+        let entry = found.expect("b is mapped");
+        match entry.set_value(&mut read_only, 20) {
             Err(rucene::error::LuceneError::UnsupportedOperation(_)) => {
                 "UnsupportedOperationException".to_string()
             }

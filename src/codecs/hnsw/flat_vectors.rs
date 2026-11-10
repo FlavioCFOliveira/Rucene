@@ -1052,6 +1052,17 @@ impl RandomVectorScorerSupplier for FloatScoringSupplier {
             self.similarity_function,
         )))
     }
+
+    /// Equivalent to `FloatScoringSupplier.toString()`
+    /// (`DefaultFlatVectorScorer.java:166-168`):
+    /// `"FloatScoringSupplier(similarityFunction=" + similarityFunction + ")"`,
+    /// the enum constant's name.
+    fn to_string(&self) -> String {
+        format!(
+            "FloatScoringSupplier(similarityFunction={:?})",
+            self.similarity_function
+        )
+    }
 }
 
 struct UpdateableFloatVectorScorer {
@@ -1128,6 +1139,17 @@ impl RandomVectorScorerSupplier for ByteScoringSupplier {
             Arc::clone(&self.vectors),
             self.similarity_function,
         )))
+    }
+
+    /// Equivalent to `ByteScoringSupplier.toString()`
+    /// (`DefaultFlatVectorScorer.java:126-128`):
+    /// `"ByteScoringSupplier(similarityFunction=" + similarityFunction + ")"`,
+    /// the enum constant's name.
+    fn to_string(&self) -> String {
+        format!(
+            "ByteScoringSupplier(similarityFunction={:?})",
+            self.similarity_function
+        )
     }
 }
 

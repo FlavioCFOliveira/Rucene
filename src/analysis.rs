@@ -36,7 +36,7 @@ pub use char_array_map::CharArrayMap;
 pub use char_array_set::CharArraySet;
 pub use character_utils::{
     fill, fill_buffer, new_character_buffer, to_chars, to_code_points, to_lower_case,
-    to_upper_case, CharacterBuffer,
+    to_lower_case_utf16, to_upper_case, to_upper_case_utf16, CharacterBuffer,
 };
 pub use filtering_token_filter::{
     new_filtering_token_filter, FilteringTokenFilter, FilteringTokenFilterAdapter,
@@ -78,12 +78,17 @@ use crate::util::BytesRef;
 /// Character-oriented input source for tokenizers.
 ///
 /// Equivalent to `java.io.Reader`. Rust's `std::io::Read` is byte-oriented, so
-/// this trait exposes the character-level operations that tokenizers need.
+/// this trait exposes the character-level operations that tokenizers need. As
+/// Java's `Reader`, it hands out UTF-16 code units (`u16`, Java's `char`), so a
+/// supplementary character is read as its two surrogates and may be split
+/// across two reads, and a lone surrogate passes through unchanged.
 pub trait CharReader: Debug {
-    /// Reads characters into `buf`, returning the number read.
+    /// Reads UTF-16 code units into `buf`, returning the number read.
     ///
-    /// A return value of `0` indicates end-of-stream.
-    fn read(&mut self, buf: &mut [char]) -> Result<usize>;
+    /// Equivalent to `Reader.read(char[], int, int)` over the window `buf`.
+    /// A return value of `0` indicates end-of-stream, where Java's answers
+    /// `-1`; callers never ask for an empty window.
+    fn read(&mut self, buf: &mut [u16]) -> Result<usize>;
 
     /// Closes the reader and releases any resources.
     fn close(&mut self) -> Result<()>;
@@ -94,30 +99,38 @@ pub trait CharReader: Debug {
     }
 }
 
-/// A [`CharReader`] backed by an in-memory string.
+/// A [`CharReader`] backed by an in-memory string: `java.io.StringReader`.
 #[derive(Debug)]
 pub struct StringCharReader {
-    chars: Vec<char>,
+    chars: Vec<u16>,
     position: usize,
 }
 
 impl StringCharReader {
-    /// Creates a reader over the characters of `text`.
+    /// Creates a reader over the UTF-16 encoding of `text`.
     pub fn new(text: impl Into<String>) -> Self {
         Self {
-            chars: text.into().chars().collect(),
+            chars: text.into().encode_utf16().collect(),
+            position: 0,
+        }
+    }
+
+    /// Creates a reader over the UTF-16 code units `units`: `new
+    /// StringReader(s)` for a Java string that a Rust `str` cannot hold (one
+    /// with a lone surrogate).
+    pub fn from_utf16(units: impl Into<Vec<u16>>) -> Self {
+        Self {
+            chars: units.into(),
             position: 0,
         }
     }
 }
 
 impl CharReader for StringCharReader {
-    fn read(&mut self, buf: &mut [char]) -> Result<usize> {
+    fn read(&mut self, buf: &mut [u16]) -> Result<usize> {
         let remaining = self.chars.len().saturating_sub(self.position);
         let n = remaining.min(buf.len());
-        for (i, dst) in buf.iter_mut().enumerate().take(n) {
-            *dst = self.chars[self.position + i];
-        }
+        buf[..n].copy_from_slice(&self.chars[self.position..self.position + n]);
         self.position += n;
         Ok(n)
     }
@@ -186,7 +199,7 @@ impl<F> CharReader for CharFilterFn<F>
 where
     F: Fn(i32) -> i32 + Send + Sync + 'static,
 {
-    fn read(&mut self, buf: &mut [char]) -> Result<usize> {
+    fn read(&mut self, buf: &mut [u16]) -> Result<usize> {
         self.input.read(buf)
     }
 
@@ -380,7 +393,7 @@ const ILLEGAL_STATE_READER_MESSAGE: &str = "TokenStream contract violation: rese
 pub struct IllegalStateReader;
 
 impl CharReader for IllegalStateReader {
-    fn read(&mut self, _buf: &mut [char]) -> Result<usize> {
+    fn read(&mut self, _buf: &mut [u16]) -> Result<usize> {
         Err(LuceneError::illegal_state(ILLEGAL_STATE_READER_MESSAGE))
     }
 
@@ -854,7 +867,7 @@ impl TokenStream for StringTokenStream {
         self.source
             .get_attribute_interface_mut::<dyn CharTermAttribute>()
             .expect("INVARIANT: added by the constructor")
-            .append_string(&self.value);
+            .append_string(Some(&self.value));
         self.source
             .get_attribute_interface_mut::<dyn OffsetAttribute>()
             .expect("INVARIANT: added by the constructor")
@@ -1340,17 +1353,19 @@ pub trait Analyzer: Debug + Send + Sync {
         let filtered_text = {
             let mut reader = self
                 .init_reader_for_normalization(field_name, Box::new(StringCharReader::new(text)));
-            let mut buffer = ['\0'; 64];
-            let mut builder = String::new();
+            let mut buffer = [0u16; 64];
+            let mut builder = Vec::new();
             loop {
                 let n = reader.read(&mut buffer)?;
                 if n == 0 {
                     break;
                 }
-                builder.extend(buffer[..n].iter());
+                builder.extend_from_slice(&buffer[..n]);
             }
             reader.close()?;
-            builder
+            // A Rust `String` cannot hold a lone surrogate, which becomes
+            // U+FFFD (see `utf16_to_string`).
+            character_utils::utf16_to_string(&builder)
         };
 
         let attribute_factory = self.attribute_factory(field_name);
@@ -1726,7 +1741,7 @@ mod tests {
             source
                 .get_attribute_interface_mut::<dyn CharTermAttribute>()
                 .unwrap()
-                .append_string(word);
+                .append_string(Some(word));
             Ok(true)
         }
 
@@ -1736,7 +1751,7 @@ mod tests {
             reader: &mut dyn CharReader,
         ) -> Result<()> {
             let mut buffer = Vec::new();
-            let mut buf = ['\0'; 256];
+            let mut buf = [0u16; 256];
             loop {
                 let n = reader.read(&mut buf)?;
                 if n == 0 {
@@ -1744,9 +1759,7 @@ mod tests {
                 }
                 buffer.extend_from_slice(&buf[..n]);
             }
-            self.words = buffer
-                .iter()
-                .collect::<String>()
+            self.words = String::from_utf16_lossy(&buffer)
                 .split_whitespace()
                 .map(|s| s.to_string())
                 .collect();
@@ -1793,7 +1806,7 @@ mod tests {
             source
                 .get_attribute_interface_mut::<dyn CharTermAttribute>()
                 .unwrap()
-                .append_string(&term);
+                .append_string(Some(&term));
             Ok(true)
         }
     }
@@ -1946,7 +1959,7 @@ mod tests {
             _source: &mut AttributeSource,
             reader: &mut dyn CharReader,
         ) -> Result<bool> {
-            let mut c = ['\0'; 1];
+            let mut c = [0u16; 1];
             Ok(reader.read(&mut c)? == 1)
         }
 
@@ -1992,7 +2005,7 @@ mod tests {
             .attribute_source()
             .get_attribute_interface_mut::<dyn CharTermAttribute>()
             .unwrap()
-            .append_string("x");
+            .append_string(Some("x"));
         tokenizer.end().unwrap();
         let source = tokenizer.attribute_source();
         let offset = source
@@ -2070,13 +2083,13 @@ mod tests {
         let mut reader = ReusableStringReader::new();
         reader.set_value("hello world");
 
-        let mut buf = ['\0'; 5];
+        let mut buf = [0u16; 5];
         assert_eq!(reader.read(&mut buf).unwrap(), 5);
-        assert_eq!(buf.iter().collect::<String>(), "hello");
+        assert_eq!(String::from_utf16_lossy(&buf), "hello");
 
         reader.set_value("foo");
         assert_eq!(reader.read(&mut buf).unwrap(), 3);
-        assert_eq!(buf[..3].iter().collect::<String>(), "foo");
+        assert_eq!(String::from_utf16_lossy(&buf[..3]), "foo");
     }
 
     // -------------------------------------------------------------------------
@@ -2219,8 +2232,8 @@ mod tests {
         let text = "  hello  \n\nworld\n  \n";
         let set = get_word_set(text.lines());
         assert_eq!(set.size(), 2);
-        assert!(set.contains("hello"));
-        assert!(set.contains("world"));
+        assert!(set.contains(Some("hello")));
+        assert!(set.contains(Some("world")));
     }
 
     #[test]
@@ -2228,9 +2241,9 @@ mod tests {
         let text = "alpha\n# comment\nbeta\n# another\ngamma";
         let set = get_word_set_ignoring_comments(text.lines(), "#");
         assert_eq!(set.size(), 3);
-        assert!(set.contains("alpha"));
-        assert!(set.contains("beta"));
-        assert!(set.contains("gamma"));
+        assert!(set.contains(Some("alpha")));
+        assert!(set.contains(Some("beta")));
+        assert!(set.contains(Some("gamma")));
     }
 
     #[test]
@@ -2239,7 +2252,7 @@ mod tests {
         let set = get_snowball_word_set(text.lines());
         assert_eq!(set.size(), 7);
         for word in ["a", "an", "the", "is", "are", "was", "were"] {
-            assert!(set.contains(word));
+            assert!(set.contains(Some(word)));
         }
     }
 

@@ -4,8 +4,9 @@
 //! `TestVarGapDocFreqIntervalPostingsFormat`,
 //! `TestVarGapFixedIntervalPostingsFormat`, `TestDirectPostingsFormat`,
 //! `TestBloomPostingsFormat`, `TestSimpleTextPostingsFormat` (`@Nightly`),
-//! `TestFSTPostingsFormat`, `TestUniformSplitPostingFormat` and
-//! `TestOrdsBlockTree` (with its own tests).
+//! `TestFSTPostingsFormat`, `TestUniformSplitPostingFormat`, its subclass
+//! `TestSTUniformSplitPostingFormat` (rmp #361) and `TestOrdsBlockTree`
+//! (with its own tests).
 //!
 //! Each suite runs once on the seed `tests.seed` names (a random one when it
 //! is unset); `RUCENE_SUITE_SEEDS=<n>` runs it on the first `n` seeds.
@@ -29,6 +30,7 @@ use rucene::util::BytesRef;
 use rucene_codecs::blocktreeords::block_tree_ords_postings_format::BlockTreeOrdsPostingsFormat;
 use rucene_codecs::memory::{DirectPostingsFormat, FSTPostingsFormat};
 use rucene_codecs::simpletext::codec::SimpleTextCodec;
+use rucene_codecs::uniformsplit::sharedterms::st_uniform_split_postings_format::STUniformSplitPostingsFormat;
 use rucene_codecs::uniformsplit::uniform_split_postings_format::UniformSplitPostingsFormat;
 use rucene_codecs::uniformsplit::uniform_split_terms_writer::{
     DEFAULT_DELTA_NUM_LINES, DEFAULT_TARGET_NUM_BLOCK_LINES,
@@ -38,6 +40,7 @@ use rucene_test_framework::codecs::blockterms::lucene_fixed_gap::LuceneFixedGap;
 use rucene_test_framework::codecs::blockterms::lucene_var_gap_doc_freq_interval::LuceneVarGapDocFreqInterval;
 use rucene_test_framework::codecs::blockterms::lucene_var_gap_fixed_interval::LuceneVarGapFixedInterval;
 use rucene_test_framework::codecs::bloom::test_bloom_filtered_lucene_postings::TestBloomFilteredLucenePostings;
+use rucene_test_framework::codecs::uniformsplit::sharedterms::STUniformSplitRot13PostingsFormat;
 use rucene_test_framework::codecs::uniformsplit::uniform_split_rot13_postings_format::{
     self as rot13, UniformSplitRot13PostingsFormat,
 };
@@ -203,7 +206,9 @@ fn fst_class() -> Arc<Class> {
 // TestUniformSplitPostingFormat
 // -----------------------------------------------------------------------------
 
-/// `TestUniformSplitPostingFormat`.
+/// `TestUniformSplitPostingFormat`, and its subclass
+/// `TestSTUniformSplitPostingFormat` when `shared_terms` is set (the
+/// subclass overrides only `getPostingsFormat()`).
 struct TestUniformSplitPostingFormat {
     check_encoding: bool,
     codec: Arc<dyn Codec>,
@@ -214,8 +219,20 @@ impl TestUniformSplitPostingFormat {
     /// `TestUniformSplitPostingFormat()`: `checkEncoding =
     /// random().nextBoolean(); codec = alwaysPostingsFormat(getPostingsFormat())`.
     fn new() -> Self {
+        Self::with_shared_terms(false)
+    }
+
+    /// The constructor run by `TestUniformSplitPostingFormat` (`false`) or
+    /// by `TestSTUniformSplitPostingFormat` (`true`), whose override of the
+    /// virtual `getPostingsFormat()` the constructor calls.
+    fn with_shared_terms(shared_terms: bool) -> Self {
         let check_encoding = LuceneTestCase::random().next_boolean();
-        let codec = TestUtil::always_postings_format(Self::get_postings_format(check_encoding));
+        let format = if shared_terms {
+            Self::st_get_postings_format(check_encoding)
+        } else {
+            Self::get_postings_format(check_encoding)
+        };
+        let codec = TestUtil::always_postings_format(format);
         TestUniformSplitPostingFormat {
             check_encoding,
             codec,
@@ -230,6 +247,24 @@ impl TestUniformSplitPostingFormat {
         } else {
             Arc::new(
                 UniformSplitPostingsFormat::with_settings(
+                    DEFAULT_TARGET_NUM_BLOCK_LINES,
+                    DEFAULT_DELTA_NUM_LINES,
+                    None,
+                    None,
+                    LuceneTestCase::random().next_boolean(),
+                )
+                .unwrap_or_else(|e| rethrow(e)),
+            )
+        }
+    }
+
+    /// `TestSTUniformSplitPostingFormat.getPostingsFormat()`.
+    fn st_get_postings_format(check_encoding: bool) -> Arc<dyn PostingsFormat> {
+        if check_encoding {
+            Arc::new(STUniformSplitRot13PostingsFormat::new())
+        } else {
+            Arc::new(
+                STUniformSplitPostingsFormat::with_settings(
                     DEFAULT_TARGET_NUM_BLOCK_LINES,
                     DEFAULT_DELTA_NUM_LINES,
                     None,
@@ -307,6 +342,22 @@ fn uniform_split_class() -> Arc<Class> {
                 }),
         )
         .build()
+}
+
+/// `org.apache.lucene.codecs.uniformsplit.sharedterms.TestSTUniformSplitPostingFormat
+/// extends TestUniformSplitPostingFormat`: tests `STUniformSplitPostingsFormat`
+/// with block encoding using ROT13 cypher.
+fn st_uniform_split_class() -> Arc<Class> {
+    Class::builder(
+        "org.apache.lucene.codecs.uniformsplit.sharedterms.TestSTUniformSplitPostingFormat",
+    )
+    .extends(&uniform_split_class())
+    .constructor(Constructor::no_args(|| {
+        FormatTestInstance::new(Arc::new(TestUniformSplitPostingFormat::with_shared_terms(
+            true,
+        )))
+    }))
+    .build()
 }
 
 // -----------------------------------------------------------------------------
@@ -790,6 +841,7 @@ macro_rules! suite_test {
 }
 
 suite_test!(test_fixed_gap_postings_format, fixed_gap_class);
+suite_test!(test_st_uniform_split_posting_format, st_uniform_split_class);
 suite_test!(
     test_var_gap_doc_freq_interval_postings_format,
     var_gap_doc_freq_interval_class

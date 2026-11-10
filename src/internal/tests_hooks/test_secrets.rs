@@ -311,14 +311,19 @@ impl TestSecrets {
     /// For internal initialization only.
     ///
     /// Equivalent to `TestSecrets.setIndexWriterAccess(IndexWriterAccess)`.
+    /// A Java `null` argument is `None`.
     ///
     /// # Errors
     ///
     /// Returns [`LuceneError::IllegalState`] when an accessor is already
     /// registered; Java allows exactly one registration too.
     #[track_caller]
-    pub fn set_index_writer_access(access: Arc<dyn IndexWriterAccess>) -> Result<()> {
+    pub fn set_index_writer_access(access: Option<Arc<dyn IndexWriterAccess>>) -> Result<()> {
         Self::ensure_caller_for_setter(INDEX_WRITER, INDEX_WRITER_ACCESS.get().is_some())?;
+        // A Java `null` (`None`) leaves the field `null`, as it was.
+        let Some(access) = access else {
+            return Ok(());
+        };
         INDEX_WRITER_ACCESS
             .set(access)
             .map_err(|_| already_set(INDEX_WRITER.name))
@@ -327,14 +332,19 @@ impl TestSecrets {
     /// For internal initialization only.
     ///
     /// Equivalent to `TestSecrets.setIndexPackageAccess(IndexPackageAccess)`.
+    /// A Java `null` argument is `None`.
     ///
     /// # Errors
     ///
     /// Returns [`LuceneError::IllegalState`] when an accessor is already
     /// registered.
     #[track_caller]
-    pub fn set_index_package_access(access: Arc<dyn IndexPackageAccess>) -> Result<()> {
+    pub fn set_index_package_access(access: Option<Arc<dyn IndexPackageAccess>>) -> Result<()> {
         Self::ensure_caller_for_setter(INDEX_WRITER, INDEX_PACKAGE_ACCESS.get().is_some())?;
+        // A Java `null` (`None`) leaves the field `null`, as it was.
+        let Some(access) = access else {
+            return Ok(());
+        };
         INDEX_PACKAGE_ACCESS
             .set(access)
             .map_err(|_| already_set(INDEX_WRITER.name))
@@ -351,9 +361,13 @@ impl TestSecrets {
     /// registered.
     #[track_caller]
     pub fn set_concurrent_merge_scheduler_access(
-        access: Arc<dyn ConcurrentMergeSchedulerAccess>,
+        access: Option<Arc<dyn ConcurrentMergeSchedulerAccess>>,
     ) -> Result<()> {
         Self::ensure_caller_for_setter(CONCURRENT_MERGE_SCHEDULER, CMS_ACCESS.get().is_some())?;
+        // A Java `null` (`None`) leaves the field `null`, as it was.
+        let Some(access) = access else {
+            return Ok(());
+        };
         CMS_ACCESS
             .set(access)
             .map_err(|_| already_set(CONCURRENT_MERGE_SCHEDULER.name))
@@ -362,14 +376,19 @@ impl TestSecrets {
     /// For internal initialization only.
     ///
     /// Equivalent to `TestSecrets.setSegmentReaderAccess(SegmentReaderAccess)`.
+    /// A Java `null` argument is `None`.
     ///
     /// # Errors
     ///
     /// Returns [`LuceneError::IllegalState`] when an accessor is already
     /// registered.
     #[track_caller]
-    pub fn set_segment_reader_access(access: Arc<dyn SegmentReaderAccess>) -> Result<()> {
+    pub fn set_segment_reader_access(access: Option<Arc<dyn SegmentReaderAccess>>) -> Result<()> {
         Self::ensure_caller_for_setter(SEGMENT_READER, SEGMENT_READER_ACCESS.get().is_some())?;
+        // A Java `null` (`None`) leaves the field `null`, as it was.
+        let Some(access) = access else {
+            return Ok(());
+        };
         SEGMENT_READER_ACCESS
             .set(access)
             .map_err(|_| already_set(SEGMENT_READER.name))
@@ -386,11 +405,17 @@ impl TestSecrets {
     /// Returns [`LuceneError::IllegalState`] when an accessor is already
     /// registered.
     #[track_caller]
-    pub fn set_filter_input_index_access(access: Arc<dyn FilterIndexInputAccess>) -> Result<()> {
+    pub fn set_filter_input_index_access(
+        access: Option<Arc<dyn FilterIndexInputAccess>>,
+    ) -> Result<()> {
         Self::ensure_caller_for_setter(
             FILTER_INDEX_INPUT,
             FILTER_INDEX_INPUT_ACCESS.get().is_some(),
         )?;
+        // A Java `null` (`None`) leaves the field `null`, as it was.
+        let Some(access) = access else {
+            return Ok(());
+        };
         FILTER_INDEX_INPUT_ACCESS
             .set(access)
             .map_err(|_| already_set(FILTER_INDEX_INPUT.name))

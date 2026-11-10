@@ -487,7 +487,7 @@ mod tests {
             source
                 .get_attribute_interface_mut::<dyn CharTermAttribute>()
                 .expect("added at construction")
-                .append_string(&term);
+                .append_string(Some(&term));
             source
                 .get_attribute_interface_mut::<dyn OffsetAttribute>()
                 .expect("added at construction")

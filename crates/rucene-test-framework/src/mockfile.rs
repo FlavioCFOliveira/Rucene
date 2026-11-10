@@ -69,7 +69,7 @@ pub use filter_path::FilterPath;
 pub use filter_seekable_byte_channel::FilterSeekableByteChannel;
 pub use handle_limit_fs::{HandleLimitFS, MaxOpenHandles};
 pub use handle_tracking_fs::{Handle, HandleTrackingFS, HandleTrackingState};
-pub use leak_fs::LeakFS;
+pub use leak_fs::{LeakFS, LeakFSOverrides, NoLeakFSOverrides};
 pub use mock_file_system_test_case::MockFileSystemTestCase;
 pub use shuffle_fs::ShuffleFS;
 pub use verbose_fs::VerboseFS;

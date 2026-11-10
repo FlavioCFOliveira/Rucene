@@ -90,16 +90,16 @@ impl CharTermAttribute for MockUTF16TermAttributeImpl {
     fn sub_sequence(&self, start: usize, end: usize) -> String {
         self.inner.sub_sequence(start, end)
     }
-    fn append_string(&mut self, s: &str) {
+    fn append_string(&mut self, s: Option<&str>) {
         self.inner.append_string(s)
     }
-    fn append_string_range(&mut self, s: &str, start: usize, end: usize) {
+    fn append_string_range(&mut self, s: Option<&str>, start: usize, end: usize) {
         self.inner.append_string_range(s, start, end)
     }
     fn append_char(&mut self, c: char) {
         self.inner.append_char(c)
     }
-    fn append_char_term_attribute(&mut self, term_att: &dyn CharTermAttribute) {
+    fn append_char_term_attribute(&mut self, term_att: Option<&dyn CharTermAttribute>) {
         self.inner.append_char_term_attribute(term_att)
     }
 }

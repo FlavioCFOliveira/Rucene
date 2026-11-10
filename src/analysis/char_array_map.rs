@@ -3,6 +3,11 @@
 //! This is a specialized, insert-only map used by the analysis pipeline. It
 //! does not support removing individual entries, and keys are compared by their
 //! character content, optionally ignoring case.
+//!
+//! Keys are UTF-16 code units (`u16`), as Java's `char[]` keys are, so a key
+//! may hold a lone surrogate. The string-taking methods (`put`, `get`,
+//! `contains_key`) take a Rust string, which cannot hold one, and encode it
+//! to UTF-16 first, as Java's `String.toCharArray()` does.
 
 #![deny(unsafe_code)]
 
@@ -14,7 +19,7 @@ const INIT_SIZE: usize = 8;
 pub struct CharArrayMap<V> {
     ignore_case: bool,
     count: usize,
-    keys: Vec<Option<Vec<char>>>,
+    keys: Vec<Option<Vec<u16>>>,
     values: Vec<Option<V>>,
     /// Whether this map refuses every write.
     ///
@@ -41,6 +46,43 @@ impl<V> CharArrayMap<V> {
             keys: (0..size).map(|_| None).collect(),
             values: (0..size).map(|_| None).collect(),
             unmodifiable: false,
+        }
+    }
+
+    /// Creates a map from the entries of `c`.
+    ///
+    /// Equivalent to `CharArrayMap(Map, boolean)` (`CharArrayMap.java:80-83`):
+    /// `this(c.size(), ignoreCase)`, then `putAll(c)`. Java's map keys are
+    /// stored by their `toString()`; here they are strings.
+    pub fn from_map<K, I>(c: I, ignore_case: bool) -> Self
+    where
+        K: AsRef<str>,
+        I: IntoIterator<Item = (K, V)>,
+    {
+        let entries: Vec<(K, V)> = c.into_iter().collect();
+        let mut map = Self::new(entries.len(), ignore_case);
+        map.put_all(entries);
+        map
+    }
+
+    /// Copies every mapping of `m` into this map.
+    ///
+    /// Equivalent to `AbstractMap.putAll(Map)`, which `CharArrayMap` inherits:
+    /// `put(e.getKey(), e.getValue())` for each entry, in `m`'s iteration
+    /// order. Java's `put(Object, V)` stores a non-`char[]` key by its
+    /// `toString()`; here the keys are strings.
+    ///
+    /// # Panics
+    ///
+    /// Panics on the first entry when the map is unmodifiable, as
+    /// [`put`](Self::put) does.
+    pub fn put_all<K, I>(&mut self, m: I)
+    where
+        K: AsRef<str>,
+        I: IntoIterator<Item = (K, V)>,
+    {
+        for (key, value) in m {
+            self.put(key, value);
         }
     }
 
@@ -126,23 +168,25 @@ impl<V> CharArrayMap<V> {
     /// Equivalent to `CharArrayMap.getHashCode(char[], int, int)`
     /// (`CharArrayMap.java:266-279`), the hash [`get_slot`](Self::get_slot)
     /// probes from: when the map ignores case, a `31 * h + c` walk over the
-    /// code points, each replaced by `Character.toLowerCase(int)`; otherwise
-    /// `CharsRef.stringHashCode`, the same walk over the UTF-16 code units, so
-    /// a supplementary character counts as its two surrogates.
-    pub fn get_hash_code(&self, text: &[char]) -> i32 {
+    /// code points (`Character.codePointAt(text, i, stop)`, so a lone
+    /// surrogate is a code point of its own), each replaced by
+    /// `Character.toLowerCase(int)`; otherwise `CharsRef.stringHashCode`, the
+    /// same walk over the UTF-16 code units.
+    pub fn get_hash_code(&self, text: &[u16]) -> i32 {
         let mut code: i32 = 0;
         if self.ignore_case {
-            for &c in text {
+            let stop = text.len();
+            let mut i = 0;
+            while i < stop {
+                let code_point_at = crate::analysis::character_utils::code_point_at(text, i, stop);
                 code = code.wrapping_mul(31).wrapping_add(
-                    crate::util::automaton::case_folding::to_lower_case(c as i32),
+                    crate::util::automaton::case_folding::to_lower_case(code_point_at),
                 );
+                i += crate::analysis::character_utils::char_count(code_point_at);
             }
         } else {
-            let mut units = [0u16; 2];
-            for c in text {
-                for &unit in c.encode_utf16(&mut units).iter() {
-                    code = code.wrapping_mul(31).wrapping_add(i32::from(unit));
-                }
+            for &unit in text {
+                code = code.wrapping_mul(31).wrapping_add(i32::from(unit));
             }
         }
         code
@@ -153,45 +197,53 @@ impl<V> CharArrayMap<V> {
     /// Equivalent to `CharArrayMap.remove(Object)`, which throws
     /// `UnsupportedOperationException`: the open-addressed table has no tombstone,
     /// so an entry cannot be taken out without rebuilding it.
-    pub fn remove(&mut self, _key: &[char]) -> crate::error::Result<Option<V>> {
+    pub fn remove(&mut self, _key: &[u16]) -> crate::error::Result<Option<V>> {
         Err(crate::error::LuceneError::UnsupportedOperation(
             "CharArrayMap does not support removal".to_string(),
         ))
     }
 
-    /// Returns every key in the map.
+    /// Returns a live view of the map's keys.
     ///
-    /// Equivalent to `CharArrayMap.keySet()`, which in Java returns a
-    /// `CharArraySet` *view* over this map. This port returns owned keys.
+    /// Equivalent to `CharArrayMap.keySet()` (`CharArrayMap.java:339-371`):
+    /// a `CharArraySet` over this very map, whose `add` overloads throw
+    /// `UnsupportedOperationException` so that no key can be added without a
+    /// value, and whose other operations (`size`, `contains`, iteration,
+    /// `clear`, `toString`) read or write the map.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java caches the view in a field and
+    /// its callers keep the reference alive beside the map. A Rust view that
+    /// can clear the map must borrow it mutably, so each call returns a new
+    /// [`KeySet`] borrowing the map, and a caller re-acquires the view where
+    /// Java keeps its reference; every operation behaves as Java's.
     ///
     /// Java's package-private `originalKeySet()` — `return super.keySet()`,
-    /// commented "helper for CharArraySet to not produce endless recursion"
-    /// (`CharArrayMap.java:334-337`) — has no counterpart here, and not for the
-    /// reason of write-protection. It exists because `CharArraySet.iterator()`
-    /// is implemented as `map.originalKeySet().iterator()`
-    /// (`CharArraySet.java:164-167`): calling the overridden `keySet()` there
-    /// would hand back a `CharArraySet` whose own `iterator()` would call
-    /// `keySet()` again, forever. This port's [`CharArraySet::iter`] walks the
-    /// map's slots directly through [`CharArrayMap::iter`] and never consults
+    /// "helper for CharArraySet to not produce endless recursion"
+    /// (`CharArrayMap.java:334-337`) — has no counterpart: this port's
+    /// [`CharArraySet::iter`](crate::analysis::CharArraySet::iter) walks the
+    /// map's slots through [`CharArrayMap::iter`] and never consults
     /// `key_set`, so the cycle the Java helper breaks cannot form.
-    ///
-    /// [`CharArraySet::iter`]: crate::analysis::CharArraySet::iter
-    pub fn key_set(&self) -> Vec<Vec<char>> {
-        self.keys.iter().flatten().cloned().collect()
+    pub fn key_set(&mut self) -> KeySet<'_, V> {
+        KeySet { map: self }
     }
 
-    /// Returns every key with its value.
+    /// Returns a view of the map's values.
     ///
-    /// Equivalent to `CharArrayMap.entrySet()`.
-    pub fn entry_set(&self) -> Vec<(Vec<char>, &V)> {
-        self.keys
-            .iter()
-            .zip(self.values.iter())
-            .filter_map(|(key, value)| match (key, value) {
-                (Some(key), Some(value)) => Some((key.clone(), value)),
-                _ => None,
-            })
-            .collect()
+    /// Equivalent to `AbstractMap.values()`, which `CharArrayMap` inherits: a
+    /// collection backed by the map, iterated in slot order.
+    pub fn values(&self) -> Values<'_, V> {
+        Values { map: self }
+    }
+
+    /// Returns a live view of the map's entries.
+    ///
+    /// Equivalent to `CharArrayMap.entrySet()` (`CharArrayMap.java:325-331`),
+    /// which builds the view once with [`create_entry_set`](Self::create_entry_set).
+    /// The view borrows the map for the reason [`key_set`](Self::key_set)
+    /// does; its [`EntrySet::iterator`] does not, so the map stays usable
+    /// while the iterator walks it, as in Java.
+    pub fn entry_set(&mut self) -> EntrySet<'_, V> {
+        self.create_entry_set()
     }
 
     /// Returns a view of the entries through which their values can be
@@ -203,7 +255,7 @@ impl<V> CharArrayMap<V> {
     /// Java picks `EntrySet(true)` or `EntrySet(false)` by subclass, this port
     /// by [`is_unmodifiable`](Self::is_unmodifiable), so the entries of an
     /// unmodifiable map refuse [`MapEntry::set_value`] exactly as Java's refuse
-    /// `setValue`. [`entry_set`](Self::entry_set) stays the read-only snapshot.
+    /// `setValue`.
     pub fn create_entry_set(&mut self) -> EntrySet<'_, V> {
         let allow_modify = !self.unmodifiable;
         EntrySet {
@@ -212,7 +264,7 @@ impl<V> CharArrayMap<V> {
         }
     }
 
-    /// Returns the number of entries.    /// Returns the number of entries.
+    /// Returns the number of entries.
     pub fn size(&self) -> usize {
         self.count
     }
@@ -226,7 +278,7 @@ impl<V> CharArrayMap<V> {
     ///
     /// Equivalent to `CharArrayMap.get(CharSequence)`.
     pub fn get(&self, key: impl AsRef<str>) -> Option<&V> {
-        let chars: Vec<char> = key.as_ref().chars().collect();
+        let chars: Vec<u16> = key.as_ref().encode_utf16().collect();
         self.get_chars(&chars, 0, chars.len())
     }
 
@@ -234,7 +286,7 @@ impl<V> CharArrayMap<V> {
     /// at `off`, or `None` if absent.
     ///
     /// Equivalent to `CharArrayMap.get(char[], int, int)`.
-    pub fn get_chars(&self, text: &[char], off: usize, len: usize) -> Option<&V> {
+    pub fn get_chars(&self, text: &[u16], off: usize, len: usize) -> Option<&V> {
         let slot = self.get_slot(&text[off..off + len]);
         self.values[slot].as_ref()
     }
@@ -243,14 +295,14 @@ impl<V> CharArrayMap<V> {
     ///
     /// Equivalent to `CharArrayMap.containsKey(CharSequence)`.
     pub fn contains_key(&self, key: impl AsRef<str>) -> bool {
-        let chars: Vec<char> = key.as_ref().chars().collect();
+        let chars: Vec<u16> = key.as_ref().encode_utf16().collect();
         self.contains_key_chars(&chars, 0, chars.len())
     }
 
     /// Returns `true` if the `len` characters of `text` starting at `off` are present.
     ///
     /// Equivalent to `CharArrayMap.containsKey(char[], int, int)`.
-    pub fn contains_key_chars(&self, text: &[char], off: usize, len: usize) -> bool {
+    pub fn contains_key_chars(&self, text: &[u16], off: usize, len: usize) -> bool {
         self.get_chars(text, off, len).is_some()
     }
 
@@ -259,7 +311,7 @@ impl<V> CharArrayMap<V> {
     /// Equivalent to `CharArrayMap.put(String, V)`, `put(text.toCharArray(),
     /// value)`: the key is lower-cased on a copy.
     pub fn put(&mut self, key: impl AsRef<str>, value: V) -> Option<V> {
-        let mut chars: Vec<char> = key.as_ref().chars().collect();
+        let mut chars: Vec<u16> = key.as_ref().encode_utf16().collect();
         let len = chars.len();
         self.put_chars(&mut chars, 0, len, value)
     }
@@ -278,10 +330,10 @@ impl<V> CharArrayMap<V> {
     /// this Set, the text array will be directly modified." Java then keeps
     /// that array as the key, and its contract forbids the caller to modify it
     /// afterwards; this map keeps a copy of it.
-    pub fn put_chars(&mut self, text: &mut [char], off: usize, len: usize, value: V) -> Option<V> {
+    pub fn put_chars(&mut self, text: &mut [u16], off: usize, len: usize, value: V) -> Option<V> {
         self.assert_modifiable();
         if self.ignore_case {
-            crate::analysis::character_utils::to_lower_case(text, off, off + len);
+            crate::analysis::character_utils::to_lower_case_utf16(text, off, off + len);
         }
         let key = text[off..off + len].to_vec();
         let slot = self.get_slot(&key);
@@ -325,7 +377,7 @@ impl<V> CharArrayMap<V> {
     /// [`get_hash_code`](Self::get_hash_code) of the text as given, stepping by
     /// `((code >> 8) + code) | 1`, until an empty slot or a key
     /// [`equals`](Self::equals) accepts.
-    fn get_slot(&self, text: &[char]) -> usize {
+    fn get_slot(&self, text: &[u16]) -> usize {
         let mut code = self.get_hash_code(text);
         let mask = self.keys.len() - 1;
         let mut pos = (code as u32 as usize) & mask;
@@ -345,17 +397,26 @@ impl<V> CharArrayMap<V> {
     /// Equivalent to the private `CharArrayMap.equals(char[], int, int, char[])`
     /// (`CharArrayMap.java:230-246`): the UTF-16 lengths must agree, and every
     /// code point of `text`, lower-cased with `Character.toLowerCase(int)` when
-    /// the map ignores case, must equal the stored key's (stored keys are
-    /// already lower-cased).
-    fn equals(&self, text: &[char], key: &[char]) -> bool {
-        let utf16_len = |chars: &[char]| chars.iter().map(|c| c.len_utf16()).sum::<usize>();
-        if text.len() != key.len() || utf16_len(text) != utf16_len(key) {
+    /// the map ignores case, must equal the stored key's code point at the
+    /// same index (stored keys are already lower-cased); otherwise every unit
+    /// must agree.
+    fn equals(&self, text: &[u16], key: &[u16]) -> bool {
+        let len = text.len();
+        if len != key.len() {
             return false;
         }
         if self.ignore_case {
-            text.iter().zip(key).all(|(&c, &k)| {
-                crate::util::automaton::case_folding::to_lower_case(c as i32) == k as i32
-            })
+            let mut i = 0;
+            while i < len {
+                let code_point_at = crate::analysis::character_utils::code_point_at(text, i, len);
+                if crate::util::automaton::case_folding::to_lower_case(code_point_at)
+                    != crate::analysis::character_utils::code_point_at(key, i, key.len())
+                {
+                    return false;
+                }
+                i += crate::analysis::character_utils::char_count(code_point_at);
+            }
+            true
         } else {
             text == key
         }
@@ -379,11 +440,165 @@ impl<V> CharArrayMap<V> {
 }
 
 impl<'a, V> IntoIterator for &'a CharArrayMap<V> {
-    type Item = (&'a [char], &'a V);
+    type Item = (&'a [u16], &'a V);
     type IntoIter = Iter<'a, V>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.iter()
+    }
+}
+
+/// A live view of the keys of a [`CharArrayMap`].
+///
+/// Equivalent to the anonymous `CharArraySet` subclass `CharArrayMap.keySet()`
+/// returns (`CharArrayMap.java:339-371`): a set over the map itself whose `add`
+/// overloads throw `UnsupportedOperationException`.
+#[derive(Debug)]
+pub struct KeySet<'a, V> {
+    map: &'a mut CharArrayMap<V>,
+}
+
+impl<V> KeySet<'_, V> {
+    /// Returns the number of keys.
+    ///
+    /// Equivalent to `CharArraySet.size()`, `map.size()`.
+    pub fn size(&self) -> usize {
+        self.map.size()
+    }
+
+    /// Returns `true` if the map has no keys.
+    ///
+    /// Equivalent to `isEmpty()`, inherited from `AbstractCollection` as
+    /// `size() == 0`.
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    /// Returns `true` if `key` is a key of the map.
+    ///
+    /// Equivalent to `CharArraySet.contains(CharSequence)`,
+    /// `map.containsKey(cs)`.
+    pub fn contains(&self, key: impl AsRef<str>) -> bool {
+        self.map.contains_key(key)
+    }
+
+    /// Returns `true` if the `len` characters of `text` starting at `off` are
+    /// a key of the map.
+    ///
+    /// Equivalent to `CharArraySet.contains(char[], int, int)`,
+    /// `map.containsKey(text, off, len)`.
+    pub fn contains_chars(&self, text: &[u16], off: usize, len: usize) -> bool {
+        self.map.contains_key_chars(text, off, len)
+    }
+
+    /// Iterates over the keys, in slot order.
+    ///
+    /// Equivalent to `CharArraySet.iterator()`, `map.originalKeySet().iterator()`.
+    pub fn iter(&self) -> impl Iterator<Item = &[u16]> {
+        self.map.iter().map(|(key, _)| key)
+    }
+
+    /// Removes every entry of the map.
+    ///
+    /// Equivalent to `CharArraySet.clear()`, `map.clear()`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the map is unmodifiable, as [`CharArrayMap::clear`] does.
+    pub fn clear(&mut self) {
+        self.map.clear();
+    }
+
+    /// Refuses to add `text`: a key cannot be added without a value.
+    ///
+    /// Equivalent to the `add(String)`, `add(CharSequence)` and `add(Object)`
+    /// overrides of the view (`CharArrayMap.java:345-358`).
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`LuceneError::UnsupportedOperation`](crate::error::LuceneError::UnsupportedOperation),
+    /// Java's `UnsupportedOperationException`.
+    pub fn add(&mut self, text: impl AsRef<str>) -> crate::error::Result<bool> {
+        let _ = text;
+        Err(unsupported_key_set_add())
+    }
+
+    /// Refuses to add the `len` characters of `text` starting at `off`.
+    ///
+    /// Equivalent to the `add(char[])` override of the view
+    /// (`CharArrayMap.java:360-363`).
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`LuceneError::UnsupportedOperation`](crate::error::LuceneError::UnsupportedOperation),
+    /// Java's `UnsupportedOperationException`.
+    pub fn add_chars(
+        &mut self,
+        text: &mut [u16],
+        off: usize,
+        len: usize,
+    ) -> crate::error::Result<bool> {
+        let _ = (text, off, len);
+        Err(unsupported_key_set_add())
+    }
+}
+
+impl<V> std::fmt::Display for KeySet<'_, V> {
+    /// Port of `CharArraySet.toString()`: the keys, each rendered as its own
+    /// characters, separated by `", "` and wrapped in square brackets.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[")?;
+        for (i, key) in self.iter().enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            f.write_str(&crate::analysis::character_utils::utf16_to_string(key))?;
+        }
+        f.write_str("]")
+    }
+}
+
+/// The `UnsupportedOperationException` the key-set view's `add` throws.
+fn unsupported_key_set_add() -> crate::error::LuceneError {
+    crate::error::LuceneError::UnsupportedOperation(
+        "the key set of a CharArrayMap cannot add keys".to_string(),
+    )
+}
+
+/// A view of the values of a [`CharArrayMap`].
+///
+/// Equivalent to the collection `AbstractMap.values()` returns.
+#[derive(Debug)]
+pub struct Values<'a, V> {
+    map: &'a CharArrayMap<V>,
+}
+
+impl<'a, V> Values<'a, V> {
+    /// Returns the number of values.
+    ///
+    /// Equivalent to `size()`, the map's size.
+    pub fn size(&self) -> usize {
+        self.map.size()
+    }
+
+    /// Iterates over the values, in slot order.
+    pub fn iter(&self) -> impl Iterator<Item = &'a V> {
+        self.map.iter().map(|(_, value)| value)
+    }
+}
+
+impl<V: std::fmt::Display> std::fmt::Display for Values<'_, V> {
+    /// Port of `AbstractCollection.toString()`: the values, each rendered by
+    /// `String.valueOf`, separated by `", "` and wrapped in square brackets.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[")?;
+        for (i, value) in self.iter().enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "{value}")?;
+        }
+        f.write_str("]")
     }
 }
 
@@ -399,6 +614,16 @@ pub struct EntrySet<'a, V> {
 }
 
 impl<V> EntrySet<'_, V> {
+    /// Returns an iterator over the entries.
+    ///
+    /// Equivalent to `EntrySet.iterator()`, `new EntryIterator(allowModify)`.
+    /// The iterator does not borrow the map: like Java's inner class, which
+    /// reads the arrays of its enclosing map, each of its methods takes the
+    /// map it walks.
+    pub fn iterator(&self) -> EntryIterator {
+        EntryIterator::new(self.map, self.allow_modify)
+    }
+
     /// Returns the number of entries.
     ///
     /// Equivalent to `EntrySet.size()`.
@@ -410,7 +635,7 @@ impl<V> EntrySet<'_, V> {
     ///
     /// Equivalent to `EntrySet.contains(Object)` for a `Map.Entry`, which
     /// compares the value mapped to the entry's key with `equals`.
-    pub fn contains(&self, key: &[char], value: &V) -> bool
+    pub fn contains(&self, key: &[u16], value: &V) -> bool
     where
         V: PartialEq,
     {
@@ -433,51 +658,182 @@ impl<V> EntrySet<'_, V> {
         self.map.clear();
         Ok(())
     }
+}
 
-    /// Iterates over the entries, in slot order.
-    ///
-    /// Equivalent to `EntrySet.iterator()`.
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = MapEntry<'_, V>> {
-        let allow_modify = self.allow_modify;
-        self.map
-            .keys
-            .iter()
-            .zip(self.map.values.iter_mut())
-            .filter_map(move |(key, value)| match (key, value) {
-                (Some(key), Some(value)) => Some(MapEntry {
-                    key,
-                    value,
-                    allow_modify,
-                }),
-                _ => None,
-            })
+impl<V: std::fmt::Display> std::fmt::Display for EntrySet<'_, V> {
+    /// Port of `AbstractCollection.toString()` over the entries: each
+    /// rendered by `MapEntry.toString()`, separated by `", "` and wrapped in
+    /// square brackets.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[")?;
+        let mut iterator = self.iterator();
+        let mut first = true;
+        while iterator.has_next(self.map) {
+            if !first {
+                f.write_str(", ")?;
+            }
+            first = false;
+            let entry = iterator.next(self.map);
+            f.write_str(&entry.to_string(self.map))?;
+        }
+        f.write_str("]")
     }
 }
 
-/// One entry of an [`EntrySet`].
+/// An iterator over the entries of a [`CharArrayMap`], exposing the keys as
+/// character arrays.
 ///
-/// Equivalent to the private `CharArrayMap.MapEntry` (`CharArrayMap.java:433-469`).
-#[derive(Debug)]
-pub struct MapEntry<'a, V> {
-    key: &'a [char],
-    value: &'a mut V,
+/// Equivalent to the public `CharArrayMap.EntryIterator`
+/// (`CharArrayMap.java:374-431`). Java's inner class reads the `keys` and
+/// `values` arrays of its enclosing map; here each method takes that map,
+/// so the iterator holds only its position and the map can be read and
+/// written between two calls, as in Java.
+#[derive(Clone, Debug)]
+pub struct EntryIterator {
+    pos: isize,
+    last_pos: isize,
     allow_modify: bool,
 }
 
-impl<V> MapEntry<'_, V> {
+impl EntryIterator {
+    /// `EntryIterator(boolean allowModify)`: positions on the first entry.
+    fn new<V>(map: &CharArrayMap<V>, allow_modify: bool) -> Self {
+        let mut iterator = Self {
+            pos: -1,
+            last_pos: -1,
+            allow_modify,
+        };
+        iterator.go_next(map);
+        iterator
+    }
+
+    /// `goNext()`.
+    fn go_next<V>(&mut self, map: &CharArrayMap<V>) {
+        self.last_pos = self.pos;
+        self.pos += 1;
+        while (self.pos as usize) < map.keys.len() && map.keys[self.pos as usize].is_none() {
+            self.pos += 1;
+        }
+    }
+
+    /// Returns `true` if another entry follows.
+    ///
+    /// Equivalent to `EntryIterator.hasNext()`.
+    pub fn has_next<V>(&self, map: &CharArrayMap<V>) -> bool {
+        (self.pos as usize) < map.keys.len()
+    }
+
+    /// Returns the next key; the returned characters must not be modified.
+    ///
+    /// Equivalent to `EntryIterator.nextKey()`.
+    ///
+    /// # Panics
+    ///
+    /// Panics past the last entry, where Java's `keys[lastPos]` throws
+    /// `ArrayIndexOutOfBoundsException`.
+    pub fn next_key<'m, V>(&mut self, map: &'m CharArrayMap<V>) -> &'m [u16] {
+        self.go_next(map);
+        map.keys[self.last_pos as usize]
+            .as_deref()
+            .expect("INVARIANT: go_next stops only on an occupied slot")
+    }
+
+    /// Returns the next key as a new string.
+    ///
+    /// Equivalent to `EntryIterator.nextKeyString()`.
+    ///
+    /// # Panics
+    ///
+    /// As [`next_key`](Self::next_key).
+    pub fn next_key_string<V>(&mut self, map: &CharArrayMap<V>) -> String {
+        crate::analysis::character_utils::utf16_to_string(self.next_key(map))
+    }
+
+    /// Returns the value of the last key returned.
+    ///
+    /// Equivalent to `EntryIterator.currentValue()`; `None` stands for Java's
+    /// `null`.
+    ///
+    /// # Panics
+    ///
+    /// Panics before the first key, where Java's `values[-1]` throws
+    /// `ArrayIndexOutOfBoundsException`.
+    pub fn current_value<'m, V>(&self, map: &'m CharArrayMap<V>) -> Option<&'m V> {
+        map.values[self.last_pos as usize].as_ref()
+    }
+
+    /// Replaces the value of the last key returned, returning the previous
+    /// one.
+    ///
+    /// Equivalent to `EntryIterator.setValue(V)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::UnsupportedOperation`](crate::error::LuceneError::UnsupportedOperation)
+    /// when the map is unmodifiable, where Java throws
+    /// `UnsupportedOperationException`.
+    pub fn set_value<V>(
+        &self,
+        map: &mut CharArrayMap<V>,
+        value: V,
+    ) -> crate::error::Result<Option<V>> {
+        if !self.allow_modify {
+            return Err(unmodifiable_entry());
+        }
+        Ok(map.values[self.last_pos as usize].replace(value))
+    }
+
+    /// Returns the next entry.
+    ///
+    /// Equivalent to `EntryIterator.next()`, `new MapEntry(lastPos,
+    /// allowModify)`.
+    pub fn next<V>(&mut self, map: &CharArrayMap<V>) -> MapEntry {
+        self.go_next(map);
+        MapEntry {
+            pos: self.last_pos as usize,
+            allow_modify: self.allow_modify,
+        }
+    }
+
+    /// Removing an entry is not supported.
+    ///
+    /// Equivalent to `EntryIterator.remove()`.
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`LuceneError::UnsupportedOperation`](crate::error::LuceneError::UnsupportedOperation).
+    pub fn remove(&mut self) -> crate::error::Result<()> {
+        Err(crate::error::LuceneError::UnsupportedOperation(
+            "CharArrayMap entries cannot be removed".to_string(),
+        ))
+    }
+}
+
+/// One entry of a [`CharArrayMap`], designated by its slot.
+///
+/// Equivalent to the private `CharArrayMap.MapEntry` (`CharArrayMap.java:433-469`),
+/// an inner class holding the slot `pos`; each method takes the enclosing
+/// map Java's inner class reads.
+#[derive(Clone, Copy, Debug)]
+pub struct MapEntry {
+    pos: usize,
+    allow_modify: bool,
+}
+
+impl MapEntry {
     /// Returns a copy of the key.
     ///
     /// Equivalent to `MapEntry.getKey()`, which clones the key so that a
     /// caller cannot corrupt the map.
-    pub fn get_key(&self) -> Vec<char> {
-        self.key.to_vec()
+    pub fn get_key<V>(&self, map: &CharArrayMap<V>) -> Vec<u16> {
+        map.keys[self.pos].clone().unwrap_or_default()
     }
 
-    /// Returns the value.
+    /// Returns the value; `None` stands for Java's `null`.
     ///
     /// Equivalent to `MapEntry.getValue()`.
-    pub fn get_value(&self) -> &V {
-        self.value
+    pub fn get_value<'m, V>(&self, map: &'m CharArrayMap<V>) -> Option<&'m V> {
+        map.values[self.pos].as_ref()
     }
 
     /// Replaces the value, returning the previous one.
@@ -489,19 +845,30 @@ impl<V> MapEntry<'_, V> {
     /// Returns [`LuceneError::UnsupportedOperation`](crate::error::LuceneError::UnsupportedOperation)
     /// when the map is unmodifiable, where Java throws
     /// `UnsupportedOperationException`.
-    pub fn set_value(&mut self, value: V) -> crate::error::Result<V> {
+    pub fn set_value<V>(
+        &self,
+        map: &mut CharArrayMap<V>,
+        value: V,
+    ) -> crate::error::Result<Option<V>> {
         if !self.allow_modify {
             return Err(unmodifiable_entry());
         }
-        Ok(std::mem::replace(self.value, value))
+        Ok(map.values[self.pos].replace(value))
     }
-}
 
-impl<V: std::fmt::Display> std::fmt::Display for MapEntry<'_, V> {
-    /// Renders `key=value`, as `MapEntry.toString()` does for a value that is
-    /// not the map itself.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}={}", self.key.iter().collect::<String>(), self.value)
+    /// Renders `key=value`.
+    ///
+    /// Equivalent to `MapEntry.toString()` for a value that is not the map
+    /// itself: `String.valueOf(keys[pos]) + '=' + values[pos]`, `null` for an
+    /// absent value.
+    pub fn to_string<V: std::fmt::Display>(&self, map: &CharArrayMap<V>) -> String {
+        let key = crate::analysis::character_utils::utf16_to_string(
+            map.keys[self.pos].as_deref().unwrap_or_default(),
+        );
+        match &map.values[self.pos] {
+            Some(value) => format!("{key}={value}"),
+            None => format!("{key}=null"),
+        }
     }
 }
 
@@ -520,7 +887,7 @@ pub struct Iter<'a, V> {
 }
 
 impl<'a, V> Iterator for Iter<'a, V> {
-    type Item = (&'a [char], &'a V);
+    type Item = (&'a [u16], &'a V);
 
     fn next(&mut self) -> Option<Self::Item> {
         while self.pos < self.map.keys.len() && self.map.keys[self.pos].is_none() {
@@ -582,22 +949,22 @@ mod tests {
     #[test]
     fn put_chars_lower_cases_the_callers_array_when_ignoring_case() {
         let mut map = CharArrayMap::new(4, true);
-        let mut key: Vec<char> = "ABÇ\u{10400}".chars().collect();
+        let mut key: Vec<u16> = "ABÇ\u{10400}".encode_utf16().collect();
         let len = key.len();
         assert_eq!(map.put_chars(&mut key, 0, len, "v"), None);
-        assert_eq!(key.iter().collect::<String>(), "abç\u{10428}");
+        assert_eq!(String::from_utf16_lossy(&key), "abç\u{10428}");
         assert_eq!(map.get("abç\u{10428}"), Some(&"v"));
 
         let mut map = CharArrayMap::new(4, false);
-        let mut key: Vec<char> = "ABC".chars().collect();
+        let mut key: Vec<u16> = "ABC".encode_utf16().collect();
         assert_eq!(map.put_chars(&mut key, 0, 3, "v"), None);
-        assert_eq!(key.iter().collect::<String>(), "ABC");
+        assert_eq!(String::from_utf16_lossy(&key), "ABC");
     }
 
     #[test]
     fn char_array_methods() {
         let mut map = CharArrayMap::new(4, false);
-        let mut key: Vec<char> = "token".chars().collect();
+        let mut key: Vec<u16> = "token".encode_utf16().collect();
         let len = key.len();
         assert_eq!(map.put_chars(&mut key, 0, len, "value"), None);
         assert_eq!(map.get_chars(&key, 0, key.len()), Some(&"value"));
@@ -611,7 +978,10 @@ mod tests {
         map.put("second", 2);
         map.put("third", 3);
 
-        let mut keys: Vec<String> = map.iter().map(|(k, _)| k.iter().collect()).collect();
+        let mut keys: Vec<String> = map
+            .iter()
+            .map(|(k, _)| String::from_utf16_lossy(k))
+            .collect();
         keys.sort();
         assert_eq!(
             keys,
@@ -655,12 +1025,16 @@ impl<V: std::fmt::Debug> std::fmt::Display for CharArrayMap<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{{")?;
         let mut first = true;
-        for (key, value) in self.entry_set() {
+        for (key, value) in self.iter() {
             if !first {
                 write!(f, ", ")?;
             }
             first = false;
-            write!(f, "{}={value:?}", key.iter().collect::<String>())?;
+            write!(
+                f,
+                "{}={value:?}",
+                crate::analysis::character_utils::utf16_to_string(key)
+            )?;
         }
         write!(f, "}}")
     }

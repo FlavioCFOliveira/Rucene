@@ -1048,13 +1048,13 @@ fn analysis(m: &Measured) {
         term.to_string(),
         m.get("CharTermAttributeImpl.toString/empty")
     );
-    term.append_string("hello");
+    term.append_string(Some("hello"));
     assert_eq!(
         term.to_string(),
         m.get("CharTermAttributeImpl.toString/hello")
     );
     term.set_empty();
-    term.append_string("café 日本");
+    term.append_string(Some("café 日本"));
     assert_eq!(
         term.to_string(),
         m.get("CharTermAttributeImpl.toString/unicode"),

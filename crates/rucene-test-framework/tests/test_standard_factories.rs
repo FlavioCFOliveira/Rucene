@@ -165,14 +165,16 @@ impl TokenizerLogic for KeywordLogic {
         }
         source.clear_attributes();
         if self.emitted == 0 {
-            let mut buf = ['\0'; 256];
+            let mut buf = [0u16; 256];
+            let mut units = Vec::new();
             loop {
                 let n = reader.read(&mut buf)?;
                 if n == 0 {
                     break;
                 }
-                self.text.extend(&buf[..n]);
+                units.extend_from_slice(&buf[..n]);
             }
+            self.text.push_str(&String::from_utf16_lossy(&units));
         }
         self.emitted += 1;
         let text = &self.text;

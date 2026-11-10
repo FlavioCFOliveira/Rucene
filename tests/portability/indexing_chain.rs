@@ -172,7 +172,7 @@ impl TokenStream for ScriptedTokenStream {
                 .source
                 .get_attribute_mut::<PackedTokenAttributeImpl>()
                 .expect("packed token attribute");
-            packed.append_string(&token.term);
+            packed.append_string(Some(&token.term));
             packed.set_position_increment(token.pos_incr);
             packed.set_offset(token.start, token.end);
         }

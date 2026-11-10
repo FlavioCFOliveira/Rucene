@@ -943,7 +943,7 @@ pub type SharedReader = Rc<RefCell<Box<dyn CharReader>>>;
 struct SharedCharReader(SharedReader);
 
 impl CharReader for SharedCharReader {
-    fn read(&mut self, buf: &mut [char]) -> Result<usize> {
+    fn read(&mut self, buf: &mut [u16]) -> Result<usize> {
         self.0.borrow_mut().read(buf)
     }
 
@@ -1611,6 +1611,17 @@ impl Document {
         &self.fields
     }
 
+    /// Returns the string value of the first field with the given name that
+    /// has one, or `None` when no such field exists.
+    ///
+    /// Equivalent to `Document.get(String name)` (`Document.java:217-224`).
+    pub fn get(&self, name: &str) -> Option<String> {
+        self.fields
+            .iter()
+            .filter(|f| f.name() == name)
+            .find_map(|f| f.string_value())
+    }
+
     /// Returns the string values of all fields with the given name.
     pub fn get_values(&self, name: &str) -> Vec<String> {
         self.fields
@@ -1627,17 +1638,6 @@ impl Document {
             .filter(|f| f.name() == name)
             .filter_map(|f| f.binary_value())
             .collect()
-    }
-
-    /// Returns the string value of the first field with the given name that
-    /// has one, or `None` (Java's `null`).
-    ///
-    /// Equivalent to `Document.get(String)`.
-    pub fn get(&self, name: &str) -> Option<String> {
-        self.fields
-            .iter()
-            .filter(|f| f.name() == name)
-            .find_map(|f| f.string_value())
     }
 
     /// Returns the first binary value for the given name, if any.

@@ -122,6 +122,8 @@ pub const EXECUTION_EXCEPTION: &str = "java.util.concurrent.ExecutionException";
 pub struct JavaIoException {
     class: Cow<'static, str>,
     shape: Shape,
+    /// `Throwable.getSuppressed()`: the exceptions `addSuppressed` attached.
+    suppressed: Vec<JavaIoException>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,6 +142,7 @@ impl JavaIoException {
         JavaIoException {
             class: class.into(),
             shape: Shape::Message(message),
+            suppressed: Vec::new(),
         }
     }
 
@@ -158,6 +161,7 @@ impl JavaIoException {
                 other,
                 reason,
             },
+            suppressed: Vec::new(),
         }
     }
 
@@ -195,6 +199,16 @@ impl JavaIoException {
                 Some(sb)
             }
         }
+    }
+
+    /// `Throwable.addSuppressed(exception)`.
+    pub fn add_suppressed(&mut self, exception: JavaIoException) {
+        self.suppressed.push(exception);
+    }
+
+    /// `Throwable.getSuppressed()`.
+    pub fn get_suppressed(&self) -> &[JavaIoException] {
+        &self.suppressed
     }
 
     /// `FileSystemException.getFile()`.
@@ -286,6 +300,25 @@ pub fn java_to_string(error: &io::Error) -> String {
         Some(message) => format!("{}: {message}", java_class_of(error)),
         None => java_class_of(error).to_string(),
     }
+}
+
+/// The Java exception `error` stands for, as a [`JavaIoException`]: the one
+/// it carries, or else one of its [`java_class_of`] and
+/// [`java_message_of`].
+pub fn to_java_exception(error: &io::Error) -> JavaIoException {
+    match java_exception_of(error) {
+        Some(exception) => exception.clone(),
+        None => JavaIoException::new(java_class_of(error).to_string(), java_message_of(error)),
+    }
+}
+
+/// `error.addSuppressed(suppressed)`: `error`, carrying a
+/// [`JavaIoException`] that holds `suppressed`'s among its suppressed
+/// exceptions.
+pub fn add_suppressed(error: io::Error, suppressed: &io::Error) -> io::Error {
+    let mut exception = to_java_exception(&error);
+    exception.add_suppressed(to_java_exception(suppressed));
+    io::Error::new(error.kind(), exception)
 }
 
 /// `new IOException(message)`.

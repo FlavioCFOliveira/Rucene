@@ -1079,7 +1079,7 @@ impl LookaheadLogic for TrivialLookaheadFilterLogic {
                 .fact
                 .clone()
                 .unwrap_or_else(|| "null".to_string());
-            f.logic.term_att.char_term_mut().append_string(&fact);
+            f.logic.term_att.char_term_mut().append_string(Some(&fact));
             let start = f.positions.get(output_pos).position.start_offset;
             let end = f.positions.get(output_pos + 1).position.end_offset;
             f.logic.offset_att.offset_mut().set_offset(start, end);

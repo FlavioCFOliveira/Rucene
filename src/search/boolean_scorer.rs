@@ -23,7 +23,7 @@ const SHIFT: i32 = 12;
 /// The number of documents scored per batch.
 ///
 /// Equivalent to `BooleanScorer.SIZE`.
-const SIZE: i32 = 1 << SHIFT;
+pub const SIZE: i32 = 1 << SHIFT;
 /// The mask that turns a doc ID into its position inside a window.
 ///
 /// Equivalent to `BooleanScorer.MASK`.

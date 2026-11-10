@@ -38,6 +38,15 @@ pub trait MemorySegmentAccessInput: RandomAccessInput {
     ///
     /// Returns [`LuceneError::AlreadyClosed`] if the input has been closed.
     fn clone_access_input(&self) -> Result<Box<dyn MemorySegmentAccessInput>>;
+
+    /// `getClass().getSimpleName()` of this input: which implementation class
+    /// Java would have instantiated for it.
+    ///
+    /// For [`MemorySegmentIndexInput`], `"SingleSegmentImpl"` or
+    /// `"MultiSegmentImpl"` (`MemorySegmentIndexInput.java`), the two
+    /// subclasses this port folds into one type;
+    /// `TestMultiMMap.assertCorrectImpl` tells them apart by it.
+    fn class_simple_name(&self) -> &'static str;
 }
 
 /// Maps an [`IOContext`] onto the [`ReadAdvice`] a file should be read with.
@@ -1113,6 +1122,13 @@ impl RandomAccessInput for MemorySegmentIndexInput {
 }
 
 impl MemorySegmentAccessInput for MemorySegmentIndexInput {
+    fn class_simple_name(&self) -> &'static str {
+        match self.layout {
+            Layout::Single => "SingleSegmentImpl",
+            Layout::Multi { .. } => "MultiSegmentImpl",
+        }
+    }
+
     fn segment_slice_or_null(&self, pos: i64, len: i64) -> Result<Option<MemorySegment>> {
         self.ensure_open()?;
         match self.layout {

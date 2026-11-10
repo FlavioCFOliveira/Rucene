@@ -3,14 +3,12 @@
 //! These helpers provide case folding, code-point conversion, and reader
 //! buffering utilities used by tokenizers and token filters.
 //!
-//! Java's buffers are `char[]`, UTF-16 code units, where a supplementary
-//! character takes two slots; the port's are `char`s, Unicode scalar values,
-//! one slot each. The helpers therefore apply Java's per-code-point rules to
-//! one slot at a time, and the conversions between code points and characters
-//! are copies: `to_code_points` and `to_chars` take and return counts of
-//! slots, where Java's `srcLen` of `toCodePoints` and the result of `toChars`
-//! count UTF-16 units. [`fill`] keeps Java's budget, which counts UTF-16
-//! units.
+//! The case-folding helpers work on `char` buffers, Unicode scalar values,
+//! one slot per code point, where Java's work on `char[]`, UTF-16 code
+//! units; they apply Java's per-code-point rules to one slot at a time.
+//! [`CharacterBuffer`], [`fill`], [`to_code_points`], [`to_chars`] and
+//! [`to_lower_case_utf16`] hold UTF-16 code units (`u16`), as Java's `char[]`
+//! does, and [`CharReader`] hands out UTF-16 units, as Java's `Reader` does.
 
 #![deny(unsafe_code)]
 
@@ -19,59 +17,50 @@ use crate::error::{LuceneError, Result};
 
 /// A reusable character buffer used with [`fill`](crate::analysis::character_utils::fill).
 ///
-/// Equivalent to `CharacterUtils.CharacterBuffer` in Lucene.
+/// Equivalent to `CharacterUtils.CharacterBuffer` in Lucene: the buffer holds
+/// UTF-16 code units, as Java's `char[]` does.
 #[derive(Clone, Debug, Default)]
 pub struct CharacterBuffer {
-    buffer: Vec<char>,
+    buffer: Vec<u16>,
     offset: usize,
     length: usize,
-    /// Characters read from the reader that did not fit the UTF-16 budget of
-    /// the last [`fill`]; the next `fill` installs them first.
-    ///
-    /// Java's `lastTrailingHighSurrogate` holds the high surrogate of a pair
-    /// that would end a full buffer, and the characters past the budget stay
-    /// in Java's reader, which hands out `char`s. A [`CharReader`] hands out
-    /// whole `char`s, so a read can return more UTF-16 units than requested;
-    /// those characters, and a supplementary character straddling the budget,
-    /// wait here.
-    pending: Vec<char>,
+    /// `lastTrailingHighSurrogate` (`CharacterUtils.java:218`): the high
+    /// surrogate that ended the last full buffer, `0` for none.
+    last_trailing_high_surrogate: u16,
 }
 
 impl CharacterBuffer {
     /// Creates a buffer wrapping the supplied storage.
-    pub fn new(buffer: Vec<char>, offset: usize, length: usize) -> Self {
+    pub fn new(buffer: Vec<u16>, offset: usize, length: usize) -> Self {
         Self {
             buffer,
             offset,
             length,
-            pending: Vec::new(),
+            last_trailing_high_surrogate: 0,
         }
     }
 
-    /// Returns the internal buffer.
-    pub fn buffer(&self) -> &[char] {
+    /// Returns the internal buffer: `getBuffer()`.
+    pub fn buffer(&self) -> &[u16] {
         &self.buffer
     }
 
-    /// Returns the data offset in the internal buffer.
+    /// Returns the data offset in the internal buffer: `getOffset()`.
     pub fn offset(&self) -> usize {
         self.offset
     }
 
-    /// Returns the length of valid data starting at [`Self::offset`].
-    ///
-    /// The length counts the buffer's slots, `char`s, where Java's
-    /// `getLength()` counts UTF-16 code units: it bounds the data a caller
-    /// walks, which is what Java's callers use it for.
+    /// Returns the length, in UTF-16 code units, of valid data starting at
+    /// [`Self::offset`]: `getLength()`.
     pub fn length(&self) -> usize {
         self.length
     }
 
-    /// Resets the buffer to empty.
+    /// Resets the buffer to empty: `reset()`.
     pub fn reset(&mut self) {
         self.offset = 0;
         self.length = 0;
-        self.pending.clear();
+        self.last_trailing_high_surrogate = 0;
     }
 }
 
@@ -89,7 +78,7 @@ pub fn new_character_buffer(buffer_size: usize) -> Result<CharacterBuffer> {
             "buffersize must be >= 2".to_string(),
         ));
     }
-    Ok(CharacterBuffer::new(vec!['\0'; buffer_size], 0, 0))
+    Ok(CharacterBuffer::new(vec![0u16; buffer_size], 0, 0))
 }
 
 /// Lowercases each code point in `buffer[offset..limit]`, in place.
@@ -108,6 +97,86 @@ pub fn to_lower_case(buffer: &mut [char], offset: usize, limit: usize) {
     for c in &mut buffer[offset..limit] {
         *c = simple_case(*c, crate::util::automaton::case_folding::to_lower_case);
     }
+}
+
+/// Lowercases each code point in the UTF-16 units `buffer[offset..limit]`,
+/// in place.
+///
+/// Equivalent to `CharacterUtils.toLowerCase(char[], int, int)`
+/// (`CharacterUtils.java:53-61`) over Java's `char[]`, UTF-16 code units:
+/// `i += Character.toChars(Character.toLowerCase(Character.codePointAt(buffer,
+/// i, limit)), buffer, i)`, so a lone surrogate is lower-cased as a code point
+/// of its own (it maps to itself). [`to_lower_case`] is the same operation
+/// over a `char` buffer.
+pub fn to_lower_case_utf16(buffer: &mut [u16], offset: usize, limit: usize) {
+    debug_assert!(buffer.len() >= limit);
+    debug_assert!(offset <= buffer.len());
+    let mut i = offset;
+    while i < limit {
+        let lower =
+            crate::util::automaton::case_folding::to_lower_case(code_point_at(buffer, i, limit));
+        i += to_chars(&[lower], 0, 1, buffer, i)
+            .expect("INVARIANT: Character.toLowerCase maps a code point to a code point");
+    }
+}
+
+/// Uppercases each code point in the UTF-16 units `buffer[offset..limit]`,
+/// in place.
+///
+/// Equivalent to `CharacterUtils.toUpperCase(char[], int, int)`
+/// (`CharacterUtils.java:71-79`) over Java's `char[]`, with
+/// `Character.toUpperCase(int)`, the simple mapping. [`to_upper_case`] is the
+/// same operation over a `char` buffer.
+pub fn to_upper_case_utf16(buffer: &mut [u16], offset: usize, limit: usize) {
+    debug_assert!(buffer.len() >= limit);
+    debug_assert!(offset <= buffer.len());
+    let mut i = offset;
+    while i < limit {
+        let upper =
+            crate::util::automaton::case_folding::to_upper_case(code_point_at(buffer, i, limit));
+        i += to_chars(&[upper], 0, 1, buffer, i)
+            .expect("INVARIANT: Character.toUpperCase maps a code point to a code point");
+    }
+}
+
+/// `Character.codePointAt(char[] a, int index, int limit)`: the code point at
+/// `index` of the UTF-16 units `a`, joining a surrogate pair that ends before
+/// `limit`; any other unit, a lone surrogate included, is taken as is.
+///
+/// # Panics
+///
+/// Panics where Java throws `IndexOutOfBoundsException`: `index` at or past
+/// `limit` or the end of `a`.
+pub fn code_point_at(a: &[u16], index: usize, limit: usize) -> i32 {
+    assert!(
+        index < limit && limit <= a.len(),
+        "IndexOutOfBoundsException"
+    );
+    let c1 = a[index];
+    if is_high_surrogate(c1) && index + 1 < limit && is_low_surrogate(a[index + 1]) {
+        0x10000 + ((i32::from(c1) - 0xD800) << 10) + (i32::from(a[index + 1]) - 0xDC00)
+    } else {
+        i32::from(c1)
+    }
+}
+
+/// `Character.charCount(int codePoint)`: 2 for a supplementary code point,
+/// 1 otherwise.
+pub fn char_count(code_point: i32) -> usize {
+    if code_point >= 0x10000 {
+        2
+    } else {
+        1
+    }
+}
+
+/// `new String(char[])` over UTF-16 units.
+///
+/// **Divergence from Lucene 10.5.0.** A Java `String` holds any UTF-16
+/// sequence; a Rust `String` cannot hold a lone surrogate, which becomes
+/// U+FFFD here. Every well-formed sequence renders as Java's.
+pub fn utf16_to_string(units: &[u16]) -> String {
+    String::from_utf16_lossy(units)
 }
 
 /// Uppercases each code point in `buffer[offset..limit]`, in place.
@@ -130,84 +199,115 @@ fn simple_case(c: char, map: fn(i32) -> i32) -> char {
         .expect("INVARIANT: a simple case mapping maps a scalar value to a scalar value")
 }
 
-/// Converts Java-style UTF-16 character data into Unicode code points.
+/// `Character.isHighSurrogate(char)`.
+fn is_high_surrogate(unit: u16) -> bool {
+    (0xD800..=0xDBFF).contains(&unit)
+}
+
+/// `Character.isLowSurrogate(char)`.
+fn is_low_surrogate(unit: u16) -> bool {
+    (0xDC00..=0xDFFF).contains(&unit)
+}
+
+/// Converts a sequence of Java characters (UTF-16 code units) to a sequence
+/// of Unicode code points, returning the number of code points written to
+/// `dest`.
 ///
-/// Equivalent to `CharacterUtils.toCodePoints(char[], int, int, int[], int)`.
-/// Rust `char`s are already Unicode scalar values, so this is a direct copy.
+/// Equivalent to `CharacterUtils.toCodePoints(char[], int, int, int[], int)`
+/// (`CharacterUtils.java:85-97`): each code point is
+/// `Character.codePointAt(src, srcOff + i, srcOff + srcLen)`, a surrogate
+/// pair inside the range joined, any other unit (a lone surrogate included)
+/// taken as is. Java's `IllegalArgumentException` for a negative `srcLen`
+/// has no counterpart, the length being a `usize`.
 ///
 /// # Errors
 ///
-/// Returns `LuceneError::IllegalArgument` if `src_len` or the destination
-/// capacity is invalid.
+/// None; the `Result` is kept for the callers.
+///
+/// # Panics
+///
+/// Panics where Java throws `ArrayIndexOutOfBoundsException`: a range past
+/// the end of `src` or `dest`.
 pub fn to_code_points(
-    src: &[char],
+    src: &[u16],
     src_off: usize,
     src_len: usize,
     dest: &mut [i32],
     dest_off: usize,
 ) -> Result<usize> {
-    if src_len > src.len().saturating_sub(src_off) {
-        return Err(LuceneError::IllegalArgument(
-            "src_len exceeds available source length".to_string(),
-        ));
+    let limit = src_off + src_len;
+    let mut code_point_count = 0;
+    let mut i = 0;
+    while i < src_len {
+        let index = src_off + i;
+        let c1 = src[index];
+        let cp = if is_high_surrogate(c1) && index + 1 < limit && is_low_surrogate(src[index + 1]) {
+            0x10000 + (((c1 as i32) - 0xD800) << 10) + ((src[index + 1] as i32) - 0xDC00)
+        } else {
+            c1 as i32
+        };
+        let char_count = if cp >= 0x10000 { 2 } else { 1 };
+        dest[dest_off + code_point_count] = cp;
+        code_point_count += 1;
+        i += char_count;
     }
-    if dest_off + src_len > dest.len() {
-        return Err(LuceneError::IllegalArgument(
-            "destination buffer too small".to_string(),
-        ));
-    }
-    for i in 0..src_len {
-        dest[dest_off + i] = src[src_off + i] as i32;
-    }
-    Ok(src_len)
+    Ok(code_point_count)
 }
 
-/// Converts Unicode code points into Java-style UTF-16 characters.
+/// Converts a sequence of Unicode code points to a sequence of Java
+/// characters (UTF-16 code units), returning the number of units written to
+/// `dest`.
 ///
-/// Equivalent to `CharacterUtils.toChars(int[], int, int, char[], int)`.
-/// Rust `char`s already cover the full Unicode scalar range, so this is a
-/// direct copy.
+/// Equivalent to `CharacterUtils.toChars(int[], int, int, char[], int)`
+/// (`CharacterUtils.java:104-113`), with `Character.toChars(int, char[],
+/// int)` for each code point.
 ///
 /// # Errors
 ///
-/// Returns `LuceneError::IllegalArgument` if `src_len` or the destination
-/// capacity is invalid, or if a code point is not a valid Unicode scalar value.
+/// Returns `LuceneError::IllegalArgument` with the JDK's message, `Not a
+/// valid Unicode code point: 0x…`, for a value outside `0..=0x10FFFF`.
+///
+/// # Panics
+///
+/// Panics where Java throws `ArrayIndexOutOfBoundsException`: a range past
+/// the end of `src` or `dest`.
 pub fn to_chars(
     src: &[i32],
     src_off: usize,
     src_len: usize,
-    dest: &mut [char],
+    dest: &mut [u16],
     dest_off: usize,
 ) -> Result<usize> {
-    if src_len > src.len().saturating_sub(src_off) {
-        return Err(LuceneError::IllegalArgument(
-            "src_len exceeds available source length".to_string(),
-        ));
-    }
-    if dest_off + src_len > dest.len() {
-        return Err(LuceneError::IllegalArgument(
-            "destination buffer too small".to_string(),
-        ));
-    }
+    let mut written = 0;
     for i in 0..src_len {
         let cp = src[src_off + i];
-        let c = char::from_u32(cp as u32)
-            .ok_or_else(|| LuceneError::IllegalArgument(format!("invalid code point: {cp}")))?;
-        dest[dest_off + i] = c;
+        if (0..0x10000).contains(&cp) {
+            dest[dest_off + written] = cp as u16;
+            written += 1;
+        } else if (0x10000..=0x10FFFF).contains(&cp) {
+            let v = cp - 0x10000;
+            dest[dest_off + written] = (0xD800 + (v >> 10)) as u16;
+            dest[dest_off + written + 1] = (0xDC00 + (v & 0x3FF)) as u16;
+            written += 2;
+        } else {
+            return Err(LuceneError::IllegalArgument(format!(
+                "Not a valid Unicode code point: 0x{:X}",
+                cp as u32
+            )));
+        }
     }
-    Ok(src_len)
+    Ok(written)
 }
 
-/// Fills `buffer` with up to `num_chars` UTF-16 code units of characters
-/// from `reader`.
+/// Fills `buffer` with characters read from `reader`.
 ///
 /// Equivalent to `CharacterUtils.fill(CharacterBuffer, Reader, int)`
-/// (`CharacterUtils.java:140-174`). `num_chars` counts UTF-16 code units, as
-/// Java's `char`s do, so a supplementary character takes two of them. A
-/// supplementary character that would straddle the budget is held back for
-/// the next call, as Java holds back the high surrogate that would end a full
-/// buffer, and the call still reports a full buffer; the buffer then holds
-/// `num_chars - 1` units.
+/// (`CharacterUtils.java:140-174`): tries to read `num_chars` UTF-16 units
+/// into the buffer, from offset `0`, after the high surrogate the previous
+/// call held back. A full buffer that ends with a high surrogate holds it
+/// back for the next call, so the buffer then has `num_chars - 1` units.
+/// Returns `false` if and only if the reader was exhausted while trying to
+/// fill the buffer.
 ///
 /// # Errors
 ///
@@ -219,50 +319,61 @@ pub fn fill(
     reader: &mut dyn CharReader,
     num_chars: usize,
 ) -> Result<bool> {
+    debug_assert!(buffer.buffer.len() >= 2);
     if num_chars < 2 || num_chars > buffer.buffer.len() {
         return Err(LuceneError::IllegalArgument(
             "numChars must be >= 2 and <= the buffer size".to_string(),
         ));
     }
     buffer.offset = 0;
-    // Install the characters a previous call read but could not hold.
-    let mut incoming = std::mem::take(&mut buffer.pending);
-    let mut length = 0;
-    let mut units = 0;
-    loop {
-        for (i, &c) in incoming.iter().enumerate() {
-            let next = units + c.len_utf16();
-            if next > num_chars {
-                // Past the budget: Java's reader would still hold these. A
-                // supplementary character crossing the budget fills Java's
-                // buffer with its high surrogate, which Java then holds back.
-                if units < num_chars {
-                    units = num_chars;
-                }
-                buffer.pending.extend_from_slice(&incoming[i..]);
-                break;
-            }
-            buffer.buffer[length] = c;
-            length += 1;
-            units = next;
-        }
-        if units >= num_chars {
-            break;
-        }
-        // `readFully(reader, charBuffer, offset, numChars - offset)`: each
-        // character takes at least one unit, so asking for the remaining
-        // units in characters never misses one Java would read.
-        let want = num_chars - units;
-        let mut scratch = vec!['\0'; want];
-        let read = reader.read(&mut scratch)?;
-        if read == 0 {
-            break;
-        }
-        scratch.truncate(read);
-        incoming = scratch;
+    let offset;
+
+    // Install the previously saved ending high surrogate:
+    if buffer.last_trailing_high_surrogate != 0 {
+        buffer.buffer[0] = buffer.last_trailing_high_surrogate;
+        buffer.last_trailing_high_surrogate = 0;
+        offset = 1;
+    } else {
+        offset = 0;
     }
-    buffer.length = length;
-    Ok(units == num_chars)
+
+    let read = read_fully(buffer, reader, offset, num_chars - offset)?;
+
+    buffer.length = offset + read;
+    let result = buffer.length == num_chars;
+    if buffer.length < num_chars {
+        // We failed to fill the buffer. Even if the last char is a high
+        // surrogate, there is nothing we can do
+        return Ok(result);
+    }
+
+    if is_high_surrogate(buffer.buffer[buffer.length - 1]) {
+        buffer.length -= 1;
+        buffer.last_trailing_high_surrogate = buffer.buffer[buffer.length];
+    }
+    Ok(result)
+}
+
+/// `readFully(Reader, char[], int, int)` (`CharacterUtils.java:181-191`)
+/// into `buffer`'s storage.
+fn read_fully(
+    buffer: &mut CharacterBuffer,
+    reader: &mut dyn CharReader,
+    offset: usize,
+    len: usize,
+) -> Result<usize> {
+    let mut read = 0;
+    while read < len {
+        let start = offset + read;
+        let r = reader.read(&mut buffer.buffer[start..offset + len])?;
+        if r == 0 {
+            // `if (r == -1) break;`: a `CharReader` answers 0 at the end of
+            // the stream, and the request is never empty here.
+            break;
+        }
+        read += r;
+    }
+    Ok(read)
 }
 
 /// Convenience equivalent of [`fill(buffer, reader, buffer.buffer.len())`](fill).
@@ -355,14 +466,14 @@ mod tests {
 
     #[test]
     fn to_code_points_round_trip() {
-        let src: Vec<char> = "abc".chars().collect();
+        let src: Vec<u16> = "abc".encode_utf16().collect();
         let mut dest = [0_i32; 3];
         assert_eq!(to_code_points(&src, 0, 3, &mut dest, 0).unwrap(), 3);
         assert_eq!(&dest, &[97, 98, 99]);
 
-        let mut chars = ['\0'; 3];
+        let mut chars = [0u16; 3];
         assert_eq!(to_chars(&dest, 0, 3, &mut chars, 0).unwrap(), 3);
-        assert_eq!(chars.iter().collect::<String>(), "abc");
+        assert_eq!(String::from_utf16_lossy(&chars), "abc");
     }
 
     #[test]
@@ -372,7 +483,7 @@ mod tests {
         let full = fill(&mut buf, &mut reader, 5).unwrap();
         assert!(full);
         assert_eq!(buf.length(), 5);
-        assert_eq!(buf.buffer()[0..5].iter().collect::<String>(), "hello");
+        assert_eq!(String::from_utf16_lossy(&buf.buffer()[0..5]), "hello");
 
         let full = fill(&mut buf, &mut reader, 5).unwrap();
         assert!(!full);
@@ -380,9 +491,7 @@ mod tests {
     }
 
     fn data(buf: &CharacterBuffer) -> String {
-        buf.buffer()[buf.offset()..buf.offset() + buf.length()]
-            .iter()
-            .collect()
+        String::from_utf16_lossy(&buf.buffer()[buf.offset()..buf.offset() + buf.length()])
     }
 
     /// `TestCharacterUtils.testFillNoHighSurrogate`.

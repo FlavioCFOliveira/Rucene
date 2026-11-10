@@ -10560,14 +10560,14 @@ impl crate::internal::tests_hooks::FieldInfosBuilder for PackageFieldInfosBuilde
 pub(crate) fn register_test_secrets() {
     static INITIALIZED: std::sync::Once = std::sync::Once::new();
     INITIALIZED.call_once(|| {
-        crate::internal::tests_hooks::TestSecrets::set_index_writer_access(Arc::new(
+        crate::internal::tests_hooks::TestSecrets::set_index_writer_access(Some(Arc::new(
             IndexWriterAccessImpl,
-        ))
+        )))
         .expect("INVARIANT: IndexWriter's static initializer runs once, from this file");
         // Piggyback general package-scope accessors.
-        crate::internal::tests_hooks::TestSecrets::set_index_package_access(Arc::new(
+        crate::internal::tests_hooks::TestSecrets::set_index_package_access(Some(Arc::new(
             IndexPackageAccessImpl,
-        ))
+        )))
         .expect("INVARIANT: IndexWriter's static initializer runs once, from this file");
     });
 }

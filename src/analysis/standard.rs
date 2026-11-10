@@ -298,7 +298,7 @@ impl StopwordAnalyzerBase {
     /// Equivalent to `org.apache.lucene.analysis.StopwordAnalyzerBase#StopwordAnalyzerBase(CharArraySet)`.
     pub fn new(stopwords: CharArraySet) -> Self {
         Self {
-            stopwords: CharArraySet::unmodifiable_set(stopwords.copy()),
+            stopwords: CharArraySet::unmodifiable_set(Some(stopwords.copy())),
         }
     }
 
@@ -326,7 +326,7 @@ impl StopwordAnalyzerBase {
     pub fn load_stopword_set(reader: &mut dyn CharReader) -> Result<CharArraySet> {
         let lines = get_buffered_reader(reader);
         IOUtils::close([Some(|| reader.close())])?;
-        Ok(CharArraySet::unmodifiable_set(get_word_set(lines?)))
+        Ok(CharArraySet::unmodifiable_set(Some(get_word_set(lines?))))
     }
 
     /// Reads a stop-word set from the UTF-8 file at `stopwords`.
@@ -513,7 +513,7 @@ mod tests {
             closes: usize,
         }
         impl crate::analysis::CharReader for FailingReader {
-            fn read(&mut self, _buf: &mut [char]) -> Result<usize> {
+            fn read(&mut self, _buf: &mut [u16]) -> Result<usize> {
                 Err(LuceneError::Io(std::io::Error::other("read failed")))
             }
             fn close(&mut self) -> Result<()> {
@@ -686,7 +686,7 @@ mod tests {
             source
                 .get_attribute_interface_mut::<dyn CharTermAttribute>()
                 .unwrap()
-                .append_string("leftover");
+                .append_string(Some("leftover"));
             source
                 .get_attribute_interface_mut::<dyn TypeAttribute>()
                 .unwrap()

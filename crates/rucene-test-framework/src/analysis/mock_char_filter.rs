@@ -28,18 +28,15 @@ use rucene::error::{LuceneError, Result};
 /// Every character whose code modulo 10 equals `remainder` is doubled, and an
 /// offset correction is recorded for the inserted copy.
 ///
-/// Equivalent to `org.apache.lucene.tests.analysis.MockCharFilter`. Java
-/// reads one UTF-16 `char` at a time and never doubles a surrogate; here a
-/// supplementary character is read whole, advances the offset by its two
-/// code units and is never doubled, which yields the same characters and
-/// corrections.
+/// Equivalent to `org.apache.lucene.tests.analysis.MockCharFilter`: it reads
+/// one UTF-16 code unit at a time and never doubles a surrogate.
 #[derive(Debug)]
 pub struct MockCharFilter {
     input: Box<dyn CharReader>,
     remainder: i32,
     current_offset: i32,
     delta: i32,
-    buffered_ch: Option<char>,
+    buffered_ch: Option<u16>,
     corrections: BTreeMap<i32, i32>,
 }
 
@@ -74,8 +71,9 @@ impl MockCharFilter {
         Self::new(input, 0).expect("INVARIANT: 0 is a valid remainder")
     }
 
-    /// `read()`: the next character, or `None` at the end of the input.
-    fn read_one(&mut self) -> Result<Option<char>> {
+    /// `read()`: the next UTF-16 code unit, or `None` (Java's `-1`) at the
+    /// end of the input.
+    fn read_one(&mut self) -> Result<Option<u16>> {
         // we have a buffered character, add an offset correction and return it
         if let Some(ch) = self.buffered_ch.take() {
             self.current_offset += 1;
@@ -85,13 +83,16 @@ impl MockCharFilter {
         }
 
         // otherwise actually read one
-        let mut buf = ['\0'; 1];
+        let mut buf = [0u16; 1];
         if self.input.read(&mut buf)? == 0 {
             return Ok(None);
         }
         let ch = buf[0];
-        self.current_offset += ch.len_utf16() as i32;
-        if ch.len_utf16() == 2 || (ch as i32 % 10) != self.remainder {
+        self.current_offset += 1;
+        if (i32::from(ch) % 10) != self.remainder
+            || (0xD800..=0xDBFF).contains(&ch)
+            || (0xDC00..=0xDFFF).contains(&ch)
+        {
             return Ok(Some(ch));
         }
 
@@ -107,7 +108,7 @@ impl MockCharFilter {
 }
 
 impl CharReader for MockCharFilter {
-    fn read(&mut self, buf: &mut [char]) -> Result<usize> {
+    fn read(&mut self, buf: &mut [u16]) -> Result<usize> {
         let mut num_read = 0;
         for slot in buf.iter_mut() {
             match self.read_one()? {

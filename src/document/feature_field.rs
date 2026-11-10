@@ -607,7 +607,7 @@ impl TokenStream for FeatureTokenStream {
         self.source
             .get_attribute_mut::<CharTermAttributeImpl>()
             .expect("registered in new")
-            .append_string(&feature_name);
+            .append_string(Some(&feature_name));
         self.source
             .get_attribute_mut::<TermFrequencyAttributeImpl>()
             .expect("registered in new")

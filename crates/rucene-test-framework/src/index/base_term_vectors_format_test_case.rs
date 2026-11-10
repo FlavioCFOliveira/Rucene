@@ -624,7 +624,7 @@ impl TokenStream for RandomTokenStream {
             {
                 let mut term = self.term_att.char_term_mut();
                 term.set_length(0);
-                term.append_string(&self.data.terms[i]);
+                term.append_string(Some(&self.data.terms[i]));
             }
             self.pi_att
                 .pos_inc_mut()

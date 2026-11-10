@@ -205,8 +205,11 @@ impl MMapDirectory {
 
     /// Returns how many shared arenas the directory currently keeps, one per
     /// file group with an input still open.
-    #[cfg(test)]
-    pub(crate) fn shared_arena_count(&self) -> usize {
+    ///
+    /// Equivalent to `((ConcurrentHashMap<?, ?>) attachment).size()`, which
+    /// `TestMMapDirectory.testArenas` reads through the package-private
+    /// `MMapDirectory.attachment` field (`MMapDirectory.java:107`).
+    pub fn shared_arena_count(&self) -> usize {
         self.attachment
             .lock()
             .map(|arenas| arenas.len())

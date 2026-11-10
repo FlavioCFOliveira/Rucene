@@ -315,7 +315,10 @@ impl AbstractAnalysisFactory {
                 crate::util::IOUtils::get_decoding_reader(stream, crate::util::IOUtils::UTF_8)?;
             let lines = crate::analysis::wordlist_loader::read_lines(&decoded.into_inner());
             for word in crate::analysis::wordlist_loader::get_snowball_word_set(lines).iter() {
-                words.add(word.iter().collect::<String>());
+                // `words.addAll(set)` adds each `char[]` key of the set.
+                let mut word = word.to_vec();
+                let len = word.len();
+                words.add_chars(&mut word, 0, len);
             }
         }
         Ok(Some(words))
@@ -1739,7 +1742,7 @@ mod get_lines_tests {
         let words = AbstractAnalysisFactory::get_word_set(&loader, Some("stop.txt"), false)
             .expect("word set")
             .expect("a file was named");
-        let mut got: Vec<String> = words.iter().map(|w| w.iter().collect()).collect();
+        let mut got: Vec<String> = words.iter().map(String::from_utf16_lossy).collect();
         got.sort();
         assert_eq!(got, vec!["word".to_string()]);
     }
@@ -1755,7 +1758,7 @@ mod get_lines_tests {
             AbstractAnalysisFactory::get_snowball_word_set(&loader, Some("stop.txt"), false)
                 .expect("word set")
                 .expect("a file was named");
-        let mut got: Vec<String> = words.iter().map(|w| w.iter().collect()).collect();
+        let mut got: Vec<String> = words.iter().map(String::from_utf16_lossy).collect();
         got.sort();
         assert_eq!(
             got,

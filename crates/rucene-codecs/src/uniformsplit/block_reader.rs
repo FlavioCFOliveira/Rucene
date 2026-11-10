@@ -70,7 +70,9 @@ pub(crate) struct SharedTermsHooks {
 /// (`@lucene.experimental`). The two `ByteArrayDataInput`s over the block's
 /// array are the array and two read positions; the block line Java reuses,
 /// whose term is the line serializer's `currentTerm`, is a [`ReadLine`] (see
-/// there). The `sharedterms` subclasses' overrides are `SharedTermsHooks`.
+/// there). The `sharedterms` subclasses' overrides are `SharedTermsHooks`;
+/// a subclass's overrides of the protected methods are
+/// [`BlockReaderOverrides`].
 pub struct BlockReader {
     /// The block file input the reader was created with (`blockInput` until
     /// `initializeBlockReadLazily` replaces it with a clone).
@@ -137,7 +139,87 @@ pub struct BlockReader {
     pub(crate) scratch_term_state: BlockTermState,
 
     pub(crate) shared_terms: Option<SharedTermsHooks>,
+    /// The overrides of a subclass's protected methods, see
+    /// [`BlockReaderOverrides`].
+    pub(crate) overrides: Option<Arc<dyn BlockReaderOverrides>>,
     pub(crate) attributes: AttributeSource,
+}
+
+/// The protected methods of [`BlockReader`] that a Java subclass overrides,
+/// as the `MockBlockReader` of `TestTermBytesComparator` and the
+/// `MockSTBlockReader` of `TestSTBlockReader` do: `compareToMiddleAndJump`,
+/// `readLineInBlock`, `initializeHeader`, `readHeader` and `readTermState`.
+///
+/// Each method receives the reader, whose protected state the accessors of
+/// [`BlockReader`] expose; the default runs the base implementation (the
+/// `base_*` method, Java's `super.` call), which is the reader without a
+/// subclass. Every call the base class makes to one of these methods,
+/// including the calls from inside another base method, dispatches through
+/// the overrides, as Java's virtual dispatch does.
+///
+/// **Divergence (declared).** Java overrides the methods in a subclass of
+/// `BlockReader`; Rust has no subclassing, so the reader holds the overrides
+/// as an optional object ([`BlockReader::with_overrides`]) and dispatches the
+/// five methods through it. The order of the calls is Java's.
+pub trait BlockReaderOverrides: Send + Sync {
+    /// `protected int compareToMiddleAndJump(BytesRef searchedTerm)`
+    /// (`BlockReader.java:272-292`).
+    ///
+    /// # Errors
+    ///
+    /// The errors of the base implementation and of the override.
+    fn compare_to_middle_and_jump(
+        &self,
+        reader: &mut BlockReader,
+        searched_term: &[u8],
+    ) -> Result<i32> {
+        reader.base_compare_to_middle_and_jump(searched_term)
+    }
+
+    /// `protected BlockLine readLineInBlock()` (`BlockReader.java:298-307`).
+    ///
+    /// # Errors
+    ///
+    /// The errors of the base implementation and of the override.
+    fn read_line_in_block(&self, reader: &mut BlockReader) -> Result<Option<ReadLine>> {
+        reader.base_read_line_in_block()
+    }
+
+    /// `protected void initializeHeader(BytesRef searchedTerm, long
+    /// targetBlockStartFP)` (`BlockReader.java:384-410`).
+    ///
+    /// # Errors
+    ///
+    /// The errors of the base implementation and of the override.
+    fn initialize_header(
+        &self,
+        reader: &mut BlockReader,
+        searched_term: Option<&[u8]>,
+        target_block_start_fp: i64,
+    ) -> Result<()> {
+        reader.base_initialize_header(searched_term, target_block_start_fp)
+    }
+
+    /// `protected BlockHeader readHeader()` (`BlockReader.java:442-451`).
+    ///
+    /// # Errors
+    ///
+    /// The errors of the base implementation and of the override.
+    fn read_header(&self, reader: &mut BlockReader) -> Result<Option<BlockHeader>> {
+        reader.base_read_header()
+    }
+
+    /// `protected BlockTermState readTermState()`
+    /// (`BlockReader.java:484-500`): reads the current line's term state
+    /// into [`BlockReader::scratch_term_state_mut`] and returns whether it is
+    /// set (Java's non-`null` `termState`).
+    ///
+    /// # Errors
+    ///
+    /// The errors of the base implementation and of the override.
+    fn read_term_state(&self, reader: &mut BlockReader) -> Result<bool> {
+        reader.base_read_term_state()
+    }
 }
 
 impl BlockReader {
@@ -185,8 +267,78 @@ impl BlockReader {
             forced_term: None,
             scratch_term_state,
             shared_terms: None,
+            overrides: None,
             attributes: AttributeSource::new(),
         })
+    }
+
+    /// The reader with its protected methods overridden by `overrides` (a
+    /// Java subclass's overrides, see [`BlockReaderOverrides`]).
+    #[must_use]
+    pub fn with_overrides(mut self, overrides: Arc<dyn BlockReaderOverrides>) -> Self {
+        self.overrides = Some(overrides);
+        self
+    }
+
+    /// The protected field `lineIndexInBlock`: the current line index in the
+    /// block.
+    pub fn line_index_in_block(&self) -> i32 {
+        self.line_index_in_block
+    }
+
+    /// Assigns the protected field `lineIndexInBlock`.
+    pub fn set_line_index_in_block(&mut self, line_index_in_block: i32) {
+        self.line_index_in_block = line_index_in_block;
+    }
+
+    /// The protected field `blockHeader`, Java's `null` being `None`.
+    pub fn block_header(&self) -> Option<BlockHeader> {
+        self.block_header
+    }
+
+    /// Assigns the protected field `blockHeader`.
+    pub fn set_block_header(&mut self, block_header: Option<BlockHeader>) {
+        self.block_header = block_header;
+    }
+
+    /// The protected field `blockStartFP`.
+    pub fn block_start_fp(&self) -> i64 {
+        self.block_start_fp
+    }
+
+    /// Assigns the protected field `blockStartFP`.
+    pub fn set_block_start_fp(&mut self, block_start_fp: i64) {
+        self.block_start_fp = block_start_fp;
+    }
+
+    /// The protected field `fieldMetadata`.
+    pub fn field_metadata(&self) -> &FieldMetadata {
+        &self.field_metadata
+    }
+
+    /// The state the protected field `termState` references once
+    /// `readTermState()` has set it (`scratchTermState`).
+    pub fn scratch_term_state_mut(&mut self) -> &mut BlockTermState {
+        &mut self.scratch_term_state
+    }
+
+    /// Assigns the protected field `blockLine` (`blockLine = line`), Java's
+    /// `null` being `None`; returns the line as the reader holds it.
+    ///
+    /// The port keeps the current line's term in the line serializer (see
+    /// [`ReadLine`]), so the term of `line` becomes the serializer's current
+    /// term.
+    pub fn set_block_line(&mut self, line: Option<&block_line::BlockLine>) -> Option<ReadLine> {
+        self.block_line = line.map(|line| {
+            let term_bytes = line.get_term_bytes();
+            let term = term_bytes.get_term();
+            self.block_line_reader.current_term = BytesRef::new(term.slice().to_vec());
+            ReadLine {
+                mdp_length: term_bytes.get_mdp_length(),
+                term_state_relative_offset: line.get_term_state_relative_offset(),
+            }
+        });
+        self.block_line
     }
 
     /// Port of `BlockReader.seekCeil(BytesRef)`.
@@ -353,6 +505,19 @@ impl BlockReader {
     ///
     /// `CorruptIndexException` for a missing middle line; I/O errors.
     pub fn compare_to_middle_and_jump(&mut self, searched_term: &[u8]) -> Result<i32> {
+        match self.overrides.clone() {
+            Some(overrides) => overrides.compare_to_middle_and_jump(self, searched_term),
+            None => self.base_compare_to_middle_and_jump(searched_term),
+        }
+    }
+
+    /// The base implementation of `compare_to_middle_and_jump`
+    /// (`super.compareToMiddleAndJump`).
+    ///
+    /// # Errors
+    ///
+    /// `CorruptIndexException` for a missing middle line; I/O errors.
+    pub fn base_compare_to_middle_and_jump(&mut self, searched_term: &[u8]) -> Result<i32> {
         if self.line_index_in_block != 0 {
             // Don't try to compare and jump if we are not positioned at the first line.
             // This can happen if we seek in the same current block and we continue
@@ -414,6 +579,19 @@ impl BlockReader {
     ///
     /// `CorruptIndexException` for a negative term state offset; I/O errors.
     pub fn read_line_in_block(&mut self) -> Result<Option<ReadLine>> {
+        match self.overrides.clone() {
+            Some(overrides) => overrides.read_line_in_block(self),
+            None => self.base_read_line_in_block(),
+        }
+    }
+
+    /// The base implementation of `read_line_in_block`
+    /// (`super.readLineInBlock`).
+    ///
+    /// # Errors
+    ///
+    /// `CorruptIndexException` for a negative term state offset; I/O errors.
+    pub fn base_read_line_in_block(&mut self) -> Result<Option<ReadLine>> {
         let header = self.header()?;
         if self.line_index_in_block >= header.get_lines_count() {
             self.block_line = None;
@@ -560,6 +738,25 @@ impl BlockReader {
         searched_term: Option<&[u8]>,
         target_block_start_fp: i64,
     ) -> Result<()> {
+        match self.overrides.clone() {
+            Some(overrides) => {
+                overrides.initialize_header(self, searched_term, target_block_start_fp)
+            }
+            None => self.base_initialize_header(searched_term, target_block_start_fp),
+        }
+    }
+
+    /// The base implementation of `initialize_header`
+    /// (`super.initializeHeader`).
+    ///
+    /// # Errors
+    ///
+    /// `CorruptIndexException` for a missing current block; I/O errors.
+    pub fn base_initialize_header(
+        &mut self,
+        searched_term: Option<&[u8]>,
+        target_block_start_fp: i64,
+    ) -> Result<()> {
         self.initialize_block_read_lazily()?;
         if self.block_start_fp == target_block_start_fp {
             // Optimization: If the block to read is already the current block, then
@@ -621,6 +818,18 @@ impl BlockReader {
     ///
     /// `CorruptIndexException` for a bad header; I/O errors.
     pub fn read_header(&mut self) -> Result<Option<BlockHeader>> {
+        match self.overrides.clone() {
+            Some(overrides) => overrides.read_header(self),
+            None => self.base_read_header(),
+        }
+    }
+
+    /// The base implementation of `read_header` (`super.readHeader`).
+    ///
+    /// # Errors
+    ///
+    /// `CorruptIndexException` for a bad header; I/O errors.
+    pub fn base_read_header(&mut self) -> Result<Option<BlockHeader>> {
         if self.input()?.file_pointer() > self.field_metadata.get_last_block_start_fp() {
             self.block_header = None;
             return Ok(None);
@@ -701,6 +910,20 @@ impl BlockReader {
     ///
     /// The I/O errors of decoding the term state.
     pub fn read_term_state(&mut self) -> Result<bool> {
+        match self.overrides.clone() {
+            Some(overrides) => overrides.read_term_state(self),
+            None => self.base_read_term_state(),
+        }
+    }
+
+    /// The base implementation of `read_term_state` (`super.readTermState`,
+    /// with the `sharedterms` readers' override when `SharedTermsHooks` are
+    /// set).
+    ///
+    /// # Errors
+    ///
+    /// The I/O errors of decoding the term state.
+    pub fn base_read_term_state(&mut self) -> Result<bool> {
         // We reuse scratchTermState safely as the read TermState is cloned in the termState()
         // method.
         let header = self.header()?;

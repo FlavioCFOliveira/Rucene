@@ -188,6 +188,33 @@ impl<'o, L: WriterLine> BlockWriter<'o, L> {
         }
     }
 
+    /// The protected field `blockLines`: the
+    /// lines added and not yet written.
+    pub fn block_lines(&self) -> &[L] {
+        &self.block_lines
+    }
+
+    /// The protected field `lastTerm`, Java's
+    /// `null` being `None`.
+    pub fn last_term(&self) -> Option<&BytesRef> {
+        self.last_term.as_ref()
+    }
+
+    /// The protected field `blockLinesWriteBuffer`.
+    pub fn block_lines_write_buffer(&self) -> &ByteBuffersDataOutput {
+        &self.block_lines_write_buffer
+    }
+
+    /// The protected field `termStatesWriteBuffer`.
+    pub fn term_states_write_buffer(&self) -> &ByteBuffersDataOutput {
+        &self.term_states_write_buffer
+    }
+
+    /// The protected field `blockOutput`: the block file output.
+    pub fn block_output(&self) -> &dyn IndexOutput {
+        &*self.block_output
+    }
+
     /// Adds a line built by `make_line` from the term's [`TermBytes`]: the
     /// shared body of `BlockWriter.addLine` and `STBlockWriter.addLine`.
     pub(crate) fn add_term_line(

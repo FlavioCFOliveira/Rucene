@@ -22,9 +22,14 @@
 //!   first use in the `main` group, whose parent is `system`, as the JVM's
 //!   main thread is.
 //! * [`ThreadGroup::enumerate`] (`ThreadGroup.enumerate(Thread[], true)`)
-//!   sees only the threads started with [`Thread::start`]: an adopted thread
-//!   is not enumerated, so threads the Rust test harness owns never count as
-//!   leaked threads.
+//!   sees the threads started with [`Thread::start`] and the threads adopted
+//!   through [`Thread::start_context`]: as a Java `Thread` of the group, an
+//!   adopted thread is live while its body runs and leaves the live set when
+//!   the body ends (`Threads.java:103-116` of randomizedtesting enumerates
+//!   the group's live threads), so a `rucene` thread left running counts as
+//!   leaked. A thread adopted on first use by [`Thread::current`] (one the
+//!   Rust test harness owns, or a bare `std::thread::spawn`) is not
+//!   enumerated, so threads the harness owns never count as leaked threads.
 //! * Thread identifiers come from a process-wide counter starting at 1; they
 //!   are unique like Java's, but not the numbers a JVM would assign.
 //! * Only the states `NEW`, `RUNNABLE` and `TERMINATED` are observable: a
@@ -332,9 +337,10 @@ impl Thread {
     /// where the runner's `RunnerThreadGroup` records it), and then ends the
     /// thread with the same payload.
     ///
-    /// An adopted thread is not enumerated by [`ThreadGroup::enumerate`]
-    /// (see the module's divergences). A thread that already has a
-    /// [`Thread`] handle keeps it.
+    /// The adopted thread is live — enumerated by [`ThreadGroup::enumerate`]
+    /// — while the body runs, and terminates when the body returns or
+    /// panics, as a Java thread of the group does. A thread that already has
+    /// a [`Thread`] handle keeps it, and its liveness is not changed.
     #[allow(clippy::type_complexity)]
     pub fn start_context() -> Box<dyn FnOnce(Box<dyn FnOnce() + Send>) + Send> {
         let creator = Thread::current();
@@ -343,10 +349,10 @@ impl Thread {
             .unwrap_or_else(|| Arc::clone(ThreadGroup::main()));
         let daemon = creator.is_daemon();
         Box::new(move |body: Box<dyn FnOnce() + Send>| {
-            CURRENT.with(|slot| {
+            let adopted = CURRENT.with(|slot| {
                 let mut slot = slot.borrow_mut();
                 if slot.is_some() {
-                    return;
+                    return None;
                 }
                 let name = std::thread::current()
                     .name()
@@ -356,8 +362,17 @@ impl Thread {
                     });
                 let thread = Thread::create(name, group, State::Runnable, None);
                 thread.0.daemon.store(daemon, Ordering::Relaxed);
-                *slot = Some(CurrentSlot(thread));
+                // Live while the body runs, as a started Java thread is.
+                live().push(thread.clone());
+                *slot = Some(CurrentSlot(thread.clone()));
+                Some(thread)
             });
+            // The body has ended: the thread leaves the live set.
+            let end = |adopted: &Option<Thread>| {
+                if let Some(thread) = adopted {
+                    thread.terminate();
+                }
+            };
             if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) {
                 let t = match payload.downcast_ref::<Throwable>() {
                     Some(t) => t.clone(),
@@ -368,8 +383,10 @@ impl Thread {
                 let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     handler.dispatch(&me, t)
                 }));
+                end(&adopted);
                 std::panic::resume_unwind(payload);
             }
+            end(&adopted);
         })
     }
 

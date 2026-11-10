@@ -1,9 +1,10 @@
-//! The bindings of `BaseExplanationTestCase`, `SearchEquivalenceTestBase`
-//! and `MatchesTestBase` (rmp #356), as Lucene's own subclasses declare
-//! them (`lucene/core/src/test/org/apache/lucene/search/`):
+//! The bindings of `SearchEquivalenceTestBase` and `MatchesTestBase`
+//! (rmp #356), as Lucene's own subclasses declare them
+//! (`lucene/core/src/test/org/apache/lucene/search/`). The subclasses of
+//! `BaseExplanationTestCase` (`TestSimpleExplanations`,
+//! `TestComplexExplanations`) are bound once, with their test methods, in
+//! `core_search_explanations_tests.rs`:
 //!
-//! * `TestSimpleExplanations`, `TestComplexExplanations` (with its
-//!   `setUp()`/`tearDown()` overrides) over `BaseExplanationTestCase`;
 //! * `TestSloppyPhraseQuery2`, `TestSimpleSearchEquivalence`,
 //!   `TestApproximationSearchEquivalence` over `SearchEquivalenceTestBase`;
 //! * `TestMatchesIterator` over `MatchesTestBase` (its `getDocuments()`).
@@ -17,57 +18,14 @@
 
 use std::sync::{Arc, Mutex};
 
-use randomizedtesting::jdk::reflect::{Class, Constructor, Method};
-use rucene::search::index_searcher::IndexSearcher;
-use rucene::search::similarities::ClassicSimilarity;
-use rucene_test_framework::search::base_explanation_test_case::{self, ExplanationTestInstance};
+use randomizedtesting::jdk::reflect::{Class, Constructor};
 use rucene_test_framework::search::matches_test_base::{
     self, MatchesTestBase, MatchesTestInstance,
 };
 use rucene_test_framework::search::search_equivalence_test_base::{self, EquivalenceTestInstance};
-use rucene_test_framework::util::LuceneTestCase;
 
 mod suite_seeds;
 use suite_seeds::run_suite;
-
-fn simple_explanations_class() -> Arc<Class> {
-    Class::builder("org.apache.lucene.search.TestSimpleExplanations")
-        .extends(&base_explanation_test_case::class())
-        .constructor(Constructor::no_args(ExplanationTestInstance::default))
-        .build()
-}
-
-/// `TestComplexExplanations`: `setUp()` sets a `ClassicSimilarity` on the
-/// class's searcher, `tearDown()` restores the default similarity.
-fn complex_explanations_class() -> Arc<Class> {
-    Class::builder("org.apache.lucene.search.TestComplexExplanations")
-        .extends(&base_explanation_test_case::class())
-        .constructor(Constructor::no_args(ExplanationTestInstance::default))
-        .method(Method::new("setUp").throws(&["java.lang.Exception"]).body(
-            |_inst: &mut ExplanationTestInstance| {
-                LuceneTestCase::super_set_up();
-                // TODO: switch to BM25?
-                if let Some(state) = base_explanation_test_case::state().as_mut() {
-                    state
-                        .searcher
-                        .set_similarity(Arc::new(ClassicSimilarity::new()));
-                }
-            },
-        ))
-        .method(
-            Method::new("tearDown")
-                .throws(&["java.lang.Exception"])
-                .body(|_inst: &mut ExplanationTestInstance| {
-                    if let Some(state) = base_explanation_test_case::state().as_mut() {
-                        state
-                            .searcher
-                            .set_similarity(IndexSearcher::get_default_similarity());
-                    }
-                    LuceneTestCase::super_tear_down();
-                }),
-        )
-        .build()
-}
 
 fn equivalence_class(name: &str) -> Arc<Class> {
     Class::builder(name)
@@ -106,18 +64,6 @@ fn matches_iterator_class() -> Arc<Class> {
 
 /// One suite of this binary at a time: the runner's state is process-wide.
 static SUITES: Mutex<()> = Mutex::new(());
-
-#[test]
-fn test_simple_explanations() {
-    let _one = SUITES.lock().unwrap_or_else(|e| e.into_inner());
-    run_suite(simple_explanations_class);
-}
-
-#[test]
-fn test_complex_explanations() {
-    let _one = SUITES.lock().unwrap_or_else(|e| e.into_inner());
-    run_suite(complex_explanations_class);
-}
 
 #[test]
 fn test_sloppy_phrase_query2() {

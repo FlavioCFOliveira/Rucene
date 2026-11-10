@@ -71,7 +71,7 @@ impl Token {
     /// The type defaults to "word."
     pub fn with_offsets(text: &str, start: i32, end: i32) -> Token {
         let mut t = Token::new();
-        t.append_string(text);
+        t.append_string(Some(text));
         t.set_offset(start, end);
         t
     }
@@ -165,16 +165,16 @@ impl CharTermAttribute for Token {
     fn sub_sequence(&self, start: usize, end: usize) -> String {
         self.packed.sub_sequence(start, end)
     }
-    fn append_string(&mut self, s: &str) {
+    fn append_string(&mut self, s: Option<&str>) {
         self.packed.append_string(s)
     }
-    fn append_string_range(&mut self, s: &str, start: usize, end: usize) {
+    fn append_string_range(&mut self, s: Option<&str>, start: usize, end: usize) {
         self.packed.append_string_range(s, start, end)
     }
     fn append_char(&mut self, c: char) {
         self.packed.append_char(c)
     }
-    fn append_char_term_attribute(&mut self, term_att: &dyn CharTermAttribute) {
+    fn append_char_term_attribute(&mut self, term_att: Option<&dyn CharTermAttribute>) {
         self.packed.append_char_term_attribute(term_att)
     }
 }

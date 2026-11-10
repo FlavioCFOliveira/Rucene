@@ -36,6 +36,11 @@ pub trait FileChannelOverrides: Send + Sync {
         delegate.force(meta_data)
     }
 
+    /// `size()`.
+    fn size(&self, delegate: &dyn FileChannel) -> io::Result<i64> {
+        delegate.size()
+    }
+
     /// `implCloseChannel()`: "we can't call implCloseChannel, but calling this
     /// instead is \"ok\"": `delegate.close()`.
     fn impl_close_channel(&self, delegate: &dyn FileChannel) -> io::Result<()> {
@@ -115,7 +120,7 @@ impl SeekableByteChannel for FilterFileChannel {
     }
 
     fn size(&self) -> io::Result<i64> {
-        self.delegate.size()
+        self.overrides.size(&*self.delegate)
     }
 
     fn truncate(&self, size: i64) -> io::Result<()> {

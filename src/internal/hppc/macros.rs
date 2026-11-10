@@ -45,6 +45,9 @@ macro_rules! define_primitive_hash_map {
         use super::abstract_iterator::AbstractIterator;
         use super::bit_mixer::BitMixer;
         use super::buffer_allocation_exception::BufferAllocationException;
+        use std::sync::Arc;
+
+        use super::hash_containers::HashContainerOverrides;
         use super::hash_containers::{
             check_power_of_two, check_load_factor, expand_at_count, iteration_increment,
             min_buffer_size, next_buffer_size, next_iteration_seed, DEFAULT_EXPECTED_ELEMENTS,
@@ -100,6 +103,10 @@ macro_rules! define_primitive_hash_map {
             /// gives: nothing depends on the value beyond each thread seeing a
             /// sequence of varying seeds.
             iteration_seed: AtomicI32,
+
+            /// The protected methods an anonymous subclass overrides, if this
+            /// container was built as one (see [`HashContainerOverrides`]).
+            overrides: Option<Arc<dyn HashContainerOverrides>>,
         }
 
         impl $map {
@@ -130,6 +137,31 @@ macro_rules! define_primitive_hash_map {
                 expected_elements: i32,
                 load_factor: f64,
             ) -> Self {
+                Self::with_overrides_opt(expected_elements, load_factor, None)
+            }
+
+            /// New instance of an anonymous subclass that overrides the
+            /// protected `verifyLoadFactor` and `allocateBuffers` with
+            /// `overrides`: Java's `new X(expectedElements, loadFactor) { … }`.
+            ///
+            /// # Panics
+            ///
+            /// As [`Self::with_expected_elements_and_load_factor`], when the
+            /// overridden `verify_load_factor` panics.
+            pub fn with_overrides(
+                expected_elements: i32,
+                load_factor: f64,
+                overrides: Arc<dyn HashContainerOverrides>,
+            ) -> Self {
+                Self::with_overrides_opt(expected_elements, load_factor, Some(overrides))
+            }
+
+            fn with_overrides_opt(
+                expected_elements: i32,
+                load_factor: f64,
+                overrides: Option<Arc<dyn HashContainerOverrides>>,
+            ) -> Self {
+                let load_factor = Self::verify_load_factor_with(&overrides, load_factor);
                 let mut map = Self {
                     keys: Vec::new(),
                     values: Vec::new(),
@@ -137,8 +169,9 @@ macro_rules! define_primitive_hash_map {
                     mask: 0,
                     resize_at: 0,
                     has_empty_key: false,
-                    load_factor: Self::verify_load_factor(load_factor),
+                    load_factor,
                     iteration_seed: AtomicI32::new(next_iteration_seed()),
+                    overrides,
                 };
                 map.ensure_capacity(expected_elements);
                 map
@@ -505,6 +538,24 @@ macro_rules! define_primitive_hash_map {
                 self.ensure_capacity(DEFAULT_EXPECTED_ELEMENTS);
             }
 
+            /// The package-private field `assigned`: the number of stored keys,
+            /// excluding the special "empty" key, if any.
+            pub fn assigned(&self) -> i32 {
+                self.assigned
+            }
+
+            /// The package-private field `mask`: the mask for slot scans in
+            /// `keys`.
+            pub fn mask(&self) -> i32 {
+                self.mask
+            }
+
+            /// The package-private field `hasEmptyKey`: whether the "empty
+            /// slot" key marker is stored.
+            pub fn has_empty_key(&self) -> bool {
+                self.has_empty_key
+            }
+
             /// Returns the number of entries in this map.
             pub fn size(&self) -> i32 {
                 self.assigned + if self.has_empty_key { 1 } else { 0 }
@@ -614,6 +665,20 @@ macro_rules! define_primitive_hash_map {
             }
 
             /// Validates the load factor range and returns it.
+            fn verify_load_factor_with(
+                overrides: &Option<Arc<dyn HashContainerOverrides>>,
+                load_factor: f64,
+            ) -> f64 {
+                match overrides {
+                    Some(overrides) => {
+                        overrides.verify_load_factor(load_factor, &Self::verify_load_factor)
+                    }
+                    None => Self::verify_load_factor(load_factor),
+                }
+            }
+
+            /// `verifyLoadFactor(double)`: validates the load factor range and
+            /// returns it.
             fn verify_load_factor(load_factor: f64) -> f64 {
                 check_load_factor(load_factor, MIN_LOAD_FACTOR as f64, MAX_LOAD_FACTOR as f64);
                 load_factor
@@ -656,6 +721,15 @@ macro_rules! define_primitive_hash_map {
             /// cannot satisfy the request, which is where Java catches
             /// `OutOfMemoryError` and throws the same exception.
             fn allocate_buffers(&mut self, array_size: i32) {
+                match self.overrides.clone() {
+                    Some(overrides) => overrides
+                        .allocate_buffers(array_size, &mut |n| self.default_allocate_buffers(n)),
+                    None => self.default_allocate_buffers(array_size),
+                }
+            }
+
+            /// `allocateBuffers(int)`'s own body.
+            fn default_allocate_buffers(&mut self, array_size: i32) {
                 debug_assert!(array_size.count_ones() == 1);
 
                 // An extra slot holds the value of the "empty" key.
@@ -776,6 +850,7 @@ macro_rules! define_primitive_hash_map {
                     has_empty_key: self.has_empty_key,
                     load_factor: self.load_factor,
                     iteration_seed: AtomicI32::new(next_iteration_seed()),
+                    overrides: self.overrides.clone(),
                 }
             }
         }
@@ -1172,6 +1247,9 @@ macro_rules! define_object_hash_map {
         use super::abstract_iterator::AbstractIterator;
         use super::bit_mixer::BitMixer;
         use super::buffer_allocation_exception::BufferAllocationException;
+        use std::sync::Arc;
+
+        use super::hash_containers::HashContainerOverrides;
         use super::hash_containers::{
             check_power_of_two, check_load_factor, expand_at_count, iteration_increment,
             min_buffer_size, next_buffer_size, next_iteration_seed, DEFAULT_EXPECTED_ELEMENTS,
@@ -1240,6 +1318,10 @@ macro_rules! define_object_hash_map {
             /// Seed ensuring the hash iteration order differs from one
             /// iteration to another.
             iteration_seed: AtomicI32,
+
+            /// The protected methods an anonymous subclass overrides, if this
+            /// container was built as one (see [`HashContainerOverrides`]).
+            overrides: Option<Arc<dyn HashContainerOverrides>>,
         }
 
         impl<V> $map<V> {
@@ -1269,6 +1351,31 @@ macro_rules! define_object_hash_map {
                 expected_elements: i32,
                 load_factor: f64,
             ) -> Self {
+                Self::with_overrides_opt(expected_elements, load_factor, None)
+            }
+
+            /// New instance of an anonymous subclass that overrides the
+            /// protected `verifyLoadFactor` and `allocateBuffers` with
+            /// `overrides`: Java's `new X(expectedElements, loadFactor) { … }`.
+            ///
+            /// # Panics
+            ///
+            /// As [`Self::with_expected_elements_and_load_factor`], when the
+            /// overridden `verify_load_factor` panics.
+            pub fn with_overrides(
+                expected_elements: i32,
+                load_factor: f64,
+                overrides: Arc<dyn HashContainerOverrides>,
+            ) -> Self {
+                Self::with_overrides_opt(expected_elements, load_factor, Some(overrides))
+            }
+
+            fn with_overrides_opt(
+                expected_elements: i32,
+                load_factor: f64,
+                overrides: Option<Arc<dyn HashContainerOverrides>>,
+            ) -> Self {
+                let load_factor = Self::verify_load_factor_with(&overrides, load_factor);
                 let mut map = Self {
                     keys: Vec::new(),
                     values: Vec::new(),
@@ -1276,8 +1383,9 @@ macro_rules! define_object_hash_map {
                     mask: 0,
                     resize_at: 0,
                     has_empty_key: false,
-                    load_factor: Self::verify_load_factor(load_factor),
+                    load_factor,
                     iteration_seed: AtomicI32::new(next_iteration_seed()),
+                    overrides,
                 };
                 map.ensure_capacity(expected_elements);
                 map
@@ -1607,6 +1715,24 @@ macro_rules! define_object_hash_map {
                 self.ensure_capacity(DEFAULT_EXPECTED_ELEMENTS);
             }
 
+            /// The package-private field `assigned`: the number of stored keys,
+            /// excluding the special "empty" key, if any.
+            pub fn assigned(&self) -> i32 {
+                self.assigned
+            }
+
+            /// The package-private field `mask`: the mask for slot scans in
+            /// `keys`.
+            pub fn mask(&self) -> i32 {
+                self.mask
+            }
+
+            /// The package-private field `hasEmptyKey`: whether the "empty
+            /// slot" key marker is stored.
+            pub fn has_empty_key(&self) -> bool {
+                self.has_empty_key
+            }
+
             /// Returns the number of entries in this map.
             pub fn size(&self) -> i32 {
                 self.assigned + if self.has_empty_key { 1 } else { 0 }
@@ -1683,6 +1809,20 @@ macro_rules! define_object_hash_map {
             }
 
             /// Validates the load factor range and returns it.
+            fn verify_load_factor_with(
+                overrides: &Option<Arc<dyn HashContainerOverrides>>,
+                load_factor: f64,
+            ) -> f64 {
+                match overrides {
+                    Some(overrides) => {
+                        overrides.verify_load_factor(load_factor, &Self::verify_load_factor)
+                    }
+                    None => Self::verify_load_factor(load_factor),
+                }
+            }
+
+            /// `verifyLoadFactor(double)`: validates the load factor range and
+            /// returns it.
             fn verify_load_factor(load_factor: f64) -> f64 {
                 check_load_factor(load_factor, MIN_LOAD_FACTOR as f64, MAX_LOAD_FACTOR as f64);
                 load_factor
@@ -1725,6 +1865,15 @@ macro_rules! define_object_hash_map {
             /// cannot satisfy the request, which is where Java catches
             /// `OutOfMemoryError` and throws the same exception.
             fn allocate_buffers(&mut self, array_size: i32) {
+                match self.overrides.clone() {
+                    Some(overrides) => overrides
+                        .allocate_buffers(array_size, &mut |n| self.default_allocate_buffers(n)),
+                    None => self.default_allocate_buffers(array_size),
+                }
+            }
+
+            /// `allocateBuffers(int)`'s own body.
+            fn default_allocate_buffers(&mut self, array_size: i32) {
                 debug_assert!(array_size.count_ones() == 1);
 
                 // An extra slot holds the value of the "empty" key.
@@ -1889,6 +2038,7 @@ macro_rules! define_object_hash_map {
                     has_empty_key: self.has_empty_key,
                     load_factor: self.load_factor,
                     iteration_seed: AtomicI32::new(next_iteration_seed()),
+                    overrides: self.overrides.clone(),
                 }
             }
         }
@@ -2307,6 +2457,9 @@ macro_rules! define_hash_set {
         use super::abstract_iterator::AbstractIterator;
         use super::bit_mixer::BitMixer;
         use super::buffer_allocation_exception::BufferAllocationException;
+        use std::sync::Arc;
+
+        use super::hash_containers::HashContainerOverrides;
         use super::hash_containers::{
             check_power_of_two, check_load_factor, expand_at_count, iteration_increment,
             min_buffer_size, next_buffer_size, next_iteration_seed, DEFAULT_EXPECTED_ELEMENTS,
@@ -2353,6 +2506,10 @@ macro_rules! define_hash_set {
             /// Seed ensuring the hash iteration order differs from one
             /// iteration to another.
             iteration_seed: AtomicI32,
+
+            /// The protected methods an anonymous subclass overrides, if this
+            /// container was built as one (see [`HashContainerOverrides`]).
+            overrides: Option<Arc<dyn HashContainerOverrides>>,
         }
 
         impl $set {
@@ -2382,14 +2539,40 @@ macro_rules! define_hash_set {
                 expected_elements: i32,
                 load_factor: f64,
             ) -> Self {
+                Self::with_overrides_opt(expected_elements, load_factor, None)
+            }
+
+            /// New instance of an anonymous subclass that overrides the
+            /// protected `verifyLoadFactor` and `allocateBuffers` with
+            /// `overrides`: Java's `new X(expectedElements, loadFactor) { … }`.
+            ///
+            /// # Panics
+            ///
+            /// As [`Self::with_expected_elements_and_load_factor`], when the
+            /// overridden `verify_load_factor` panics.
+            pub fn with_overrides(
+                expected_elements: i32,
+                load_factor: f64,
+                overrides: Arc<dyn HashContainerOverrides>,
+            ) -> Self {
+                Self::with_overrides_opt(expected_elements, load_factor, Some(overrides))
+            }
+
+            fn with_overrides_opt(
+                expected_elements: i32,
+                load_factor: f64,
+                overrides: Option<Arc<dyn HashContainerOverrides>>,
+            ) -> Self {
+                let load_factor = Self::verify_load_factor_with(&overrides, load_factor);
                 let mut set = Self {
                     keys: Vec::new(),
                     assigned: 0,
                     mask: 0,
                     resize_at: 0,
                     has_empty_key: false,
-                    load_factor: Self::verify_load_factor(load_factor),
+                    load_factor,
                     iteration_seed: AtomicI32::new(next_iteration_seed()),
+                    overrides,
                 };
                 set.ensure_capacity(expected_elements);
                 set
@@ -2619,6 +2802,24 @@ macro_rules! define_hash_set {
                 }
             }
 
+            /// The package-private field `assigned`: the number of stored keys,
+            /// excluding the special "empty" key, if any.
+            pub fn assigned(&self) -> i32 {
+                self.assigned
+            }
+
+            /// The package-private field `mask`: the mask for slot scans in
+            /// `keys`.
+            pub fn mask(&self) -> i32 {
+                self.mask
+            }
+
+            /// The package-private field `hasEmptyKey`: whether the "empty
+            /// slot" key marker is stored.
+            pub fn has_empty_key(&self) -> bool {
+                self.has_empty_key
+            }
+
             /// Returns the number of elements in this set.
             pub fn size(&self) -> i32 {
                 self.assigned + if self.has_empty_key { 1 } else { 0 }
@@ -2822,6 +3023,20 @@ macro_rules! define_hash_set {
             }
 
             /// Validates the load factor range and returns it.
+            fn verify_load_factor_with(
+                overrides: &Option<Arc<dyn HashContainerOverrides>>,
+                load_factor: f64,
+            ) -> f64 {
+                match overrides {
+                    Some(overrides) => {
+                        overrides.verify_load_factor(load_factor, &Self::verify_load_factor)
+                    }
+                    None => Self::verify_load_factor(load_factor),
+                }
+            }
+
+            /// `verifyLoadFactor(double)`: validates the load factor range and
+            /// returns it.
             fn verify_load_factor(load_factor: f64) -> f64 {
                 check_load_factor(load_factor, MIN_LOAD_FACTOR as f64, MAX_LOAD_FACTOR as f64);
                 load_factor
@@ -2854,6 +3069,20 @@ macro_rules! define_hash_set {
             /// cannot satisfy the request, which is where Java catches
             /// `OutOfMemoryError` and throws the same exception.
             fn allocate_buffers(&mut self, array_size: i32) -> Vec<$kt> {
+                match self.overrides.clone() {
+                    Some(overrides) => {
+                        let mut prev_keys = Vec::new();
+                        overrides.allocate_buffers(array_size, &mut |n| {
+                            prev_keys = self.default_allocate_buffers(n)
+                        });
+                        prev_keys
+                    }
+                    None => self.default_allocate_buffers(array_size),
+                }
+            }
+
+            /// `allocateBuffers(int)`'s own body; returns the previous keys.
+            fn default_allocate_buffers(&mut self, array_size: i32) -> Vec<$kt> {
                 debug_assert!(array_size.count_ones() == 1);
 
                 // An extra slot stands for the "empty" key.
@@ -2956,6 +3185,7 @@ macro_rules! define_hash_set {
                     has_empty_key: self.has_empty_key,
                     load_factor: self.load_factor,
                     iteration_seed: AtomicI32::new(next_iteration_seed()),
+                    overrides: self.overrides.clone(),
                 }
             }
         }
@@ -3488,7 +3718,11 @@ macro_rules! define_array_list {
             }
 
             /// Compares index-aligned elements against another list.
-            fn equal_elements(&self, other: &Self) -> bool {
+            ///
+            /// Equivalent to the protected `equalElements`, which
+            /// `TestIntArrayList.testEqualElements` calls from the class's
+            /// package.
+            pub fn equal_elements(&self, other: &Self) -> bool {
                 let max = self.size();
                 if other.size() != max {
                     return false;

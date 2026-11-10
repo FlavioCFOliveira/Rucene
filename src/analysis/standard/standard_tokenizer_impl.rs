@@ -153,12 +153,6 @@ pub struct StandardTokenizerImpl {
     /// Whether the user-EOF-code has already been executed.
     #[allow(dead_code)] // `@SuppressWarnings("unused")`, as in Java
     zz_eof_done: bool,
-    /// The low surrogate of a supplementary character whose high surrogate
-    /// the UTF-16 view of the reader delivered last; it is the next unit the
-    /// view delivers, as a Java reader would.
-    pending_low_surrogate: Option<u16>,
-    /// Scratch space for the characters the UTF-16 view reads.
-    char_scratch: Vec<char>,
 }
 
 impl Default for StandardTokenizerImpl {
@@ -192,8 +186,6 @@ impl StandardTokenizerImpl {
             yychar: 0,
             zz_at_bol: true,
             zz_eof_done: false,
-            pending_low_surrogate: None,
-            char_scratch: Vec::new(),
         }
     }
 
@@ -318,15 +310,8 @@ impl StandardTokenizerImpl {
         Ok(true)
     }
 
-    /// `zzReader.read(zzBuffer, off, len)` through the UTF-16 view of
-    /// `reader`: the number of code units stored at `off`, or `-1` at the end
-    /// of the stream.
-    ///
-    /// Characters are read `ceil(remaining / 2)` at a time, so the reader is
-    /// never asked for more than `len` code units; a supplementary character
-    /// that finds one unit of room stores its high surrogate and leaves its
-    /// low surrogate for the next read. A short read of the reader ends the
-    /// call, as one `Reader.read` returns what it has.
+    /// `zzReader.read(zzBuffer, off, len)`: the number of code units stored
+    /// at `off`, or `-1` at the end of the stream.
     ///
     /// # Errors
     ///
@@ -346,58 +331,26 @@ impl StandardTokenizerImpl {
             });
         }
         let len = len as usize;
-        let mut n = 0usize;
-        while n < len {
-            if let Some(low) = self.pending_low_surrogate.take() {
-                self.zz_buffer[off + n] = low;
-                n += 1;
-                continue;
-            }
-            let want = (len - n).div_ceil(2);
-            self.char_scratch.clear();
-            self.char_scratch.resize(want, '\0');
-            let got = reader.read(&mut self.char_scratch)?;
-            if got == 0 {
-                break;
-            }
-            for i in 0..got {
-                let mut units = [0u16; 2];
-                for &unit in self.char_scratch[i].encode_utf16(&mut units).iter() {
-                    if n < len {
-                        self.zz_buffer[off + n] = unit;
-                        n += 1;
-                    } else {
-                        self.pending_low_surrogate = Some(unit);
-                    }
-                }
-            }
-            if got < want {
-                break;
-            }
+        if len == 0 {
+            // `Reader.read` answers 0 for an empty request.
+            return Ok(0);
         }
-        Ok(if n == 0 { -1 } else { n as i64 })
+        let got = reader.read(&mut self.zz_buffer[off..off + len])?;
+        Ok(if got == 0 { -1 } else { got as i64 })
     }
 
-    /// `zzReader.read()` through the UTF-16 view of `reader`: the next code
-    /// unit, or `-1` at the end of the stream.
+    /// `zzReader.read()`: the next code unit, or `-1` at the end of the
+    /// stream.
     ///
     /// # Errors
     ///
     /// What the reader raises.
     fn read_unit(&mut self, reader: &mut dyn CharReader) -> Result<i32> {
-        if let Some(low) = self.pending_low_surrogate.take() {
-            return Ok(i32::from(low));
-        }
-        let mut one = ['\0'; 1];
+        let mut one = [0u16; 1];
         if reader.read(&mut one)? == 0 {
             return Ok(-1);
         }
-        let mut units = [0u16; 2];
-        let encoded = one[0].encode_utf16(&mut units);
-        if encoded.len() == 2 {
-            self.pending_low_surrogate = Some(encoded[1]);
-        }
-        Ok(i32::from(encoded[0]))
+        Ok(i32::from(one[0]))
     }
 
     /// Closes the input reader.
@@ -425,11 +378,8 @@ impl StandardTokenizerImpl {
     /// grown.
     ///
     /// Equivalent to `StandardTokenizerImpl.yyreset(java.io.Reader)`; the new
-    /// reader is the one passed to the next reading call, so only the UTF-16
-    /// view's held-back low surrogate, which belongs to the old reader, is
-    /// dropped here.
+    /// reader is the one passed to the next reading call.
     pub fn yyreset(&mut self) {
-        self.pending_low_surrogate = None;
         self.zz_eof_done = false;
         self.yy_reset_position();
         self.zz_lexical_state = YYINITIAL;

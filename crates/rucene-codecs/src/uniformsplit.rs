@@ -81,7 +81,7 @@ pub use block_decoder::BlockDecoder;
 pub use block_encoder::{BlockEncoder, WritableBytes};
 pub use block_header::BlockHeader;
 pub use block_line::BlockLine;
-pub use block_reader::BlockReader;
+pub use block_reader::{BlockReader, BlockReaderOverrides};
 pub use block_writer::BlockWriter;
 pub use delta_base_term_state_serializer::DeltaBaseTermStateSerializer;
 pub use field_metadata::FieldMetadata;

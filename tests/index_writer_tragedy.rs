@@ -2716,7 +2716,7 @@ impl rucene::analysis::TokenStream for FreqTokens {
             .source
             .get_attribute_mut::<PackedTokenAttributeImpl>()
             .unwrap();
-        packed.append_string(self.terms[self.upto]);
+        packed.append_string(Some(self.terms[self.upto]));
         packed.set_term_frequency(self.freq);
         self.upto += 1;
         Ok(true)

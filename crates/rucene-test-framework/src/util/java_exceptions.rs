@@ -170,7 +170,28 @@ pub fn java_class_name(e: &LuceneError) -> String {
 pub fn java_throwable(e: &LuceneError) -> Throwable {
     register_hierarchy();
     let (_, message) = crate::analysis::base_token_stream_test_case::java_class_and_message(e);
-    Throwable::new(java_class_name(e), message)
+    let mut throwable = Throwable::new(java_class_name(e), message);
+    // `getSuppressed()` of an `IOException` that carries suppressed ones.
+    if let LuceneError::Io(io) = e {
+        if let Some(exception) = rucene::store::java_nio_file::java_exception_of(io) {
+            for suppressed in exception.get_suppressed() {
+                throwable.add_suppressed(java_io_throwable(suppressed));
+            }
+        }
+    }
+    throwable
+}
+
+/// The Java throwable a [`JavaIoException`] stands for, with its suppressed
+/// exceptions.
+///
+/// [`JavaIoException`]: rucene::store::java_nio_file::JavaIoException
+fn java_io_throwable(exception: &rucene::store::java_nio_file::JavaIoException) -> Throwable {
+    let mut throwable = Throwable::with_message(exception.class_name(), exception.get_message());
+    for suppressed in exception.get_suppressed() {
+        throwable.add_suppressed(java_io_throwable(suppressed));
+    }
+    throwable
 }
 
 /// Throws `e` out of a test method as the Java exception it stands for.

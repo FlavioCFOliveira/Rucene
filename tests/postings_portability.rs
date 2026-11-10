@@ -559,7 +559,7 @@ impl rucene::analysis::TokenStream for PayloadTokens {
         self.source
             .get_attribute_mut::<PackedTokenAttributeImpl>()
             .unwrap()
-            .append_string(term);
+            .append_string(Some(term));
         self.source
             .get_attribute_mut::<PayloadAttributeImpl>()
             .unwrap()

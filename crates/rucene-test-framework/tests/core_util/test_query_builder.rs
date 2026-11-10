@@ -511,13 +511,14 @@ impl TokenizerLogic for SimpleCJKTokenizer {
         source: &mut AttributeSource,
         reader: &mut dyn CharReader,
     ) -> Result<bool> {
-        let mut buf = ['\0'; 1];
+        let mut buf = [0u16; 1];
         // int ch = input.read(); if (ch < 0) return false;
         if reader.read(&mut buf)? == 0 {
             return Ok(false);
         }
         source.clear_attributes();
-        self.term_att.set_term(&buf[0].to_string());
+        // termAtt.setEmpty().append((char) ch): one UTF-16 unit
+        self.term_att.set_term(&String::from_utf16_lossy(&buf));
         Ok(true)
     }
 }

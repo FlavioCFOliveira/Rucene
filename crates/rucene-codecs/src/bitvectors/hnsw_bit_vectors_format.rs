@@ -180,6 +180,13 @@ impl KnnVectorsFormat for HnswBitVectorsFormat {
     fn get_max_dimensions(&self, _field_name: &str) -> i32 {
         1024
     }
+
+    /// The format itself, so that a caller holding the trait object can
+    /// reach its Java `toString()` ([`fmt::Display`]) or test
+    /// `instanceof HnswBitVectorsFormat`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
 }
 
 impl fmt::Display for HnswBitVectorsFormat {

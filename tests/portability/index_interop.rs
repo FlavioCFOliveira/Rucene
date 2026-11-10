@@ -806,7 +806,7 @@ impl TokenStream for ScriptedTokenStream {
                 .attributes
                 .get_attribute_mut::<PackedTokenAttributeImpl>()
                 .expect("packed attribute");
-            packed.append_string(&token.term);
+            packed.append_string(Some(&token.term));
             packed.set_position_increment(1);
             packed.set_offset(token.start, token.end);
         }

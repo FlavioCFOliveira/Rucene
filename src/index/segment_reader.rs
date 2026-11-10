@@ -2373,9 +2373,9 @@ impl crate::internal::tests_hooks::SegmentReaderAccess for SegmentReaderAccessIm
 pub(crate) fn register_test_secrets() {
     static INITIALIZED: std::sync::Once = std::sync::Once::new();
     INITIALIZED.call_once(|| {
-        crate::internal::tests_hooks::TestSecrets::set_segment_reader_access(Arc::new(
+        crate::internal::tests_hooks::TestSecrets::set_segment_reader_access(Some(Arc::new(
             SegmentReaderAccessImpl,
-        ))
+        )))
         .expect("INVARIANT: SegmentReader's static initializer runs once, from this file");
     });
 }

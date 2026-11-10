@@ -29,7 +29,7 @@ use rucene::util::attribute::AttributeSource;
 use rucene::util::BytesRef;
 
 use crate::uniformsplit::block_decoder::BlockDecoder;
-use crate::uniformsplit::block_reader::{BlockReader, SharedTermsHooks};
+use crate::uniformsplit::block_reader::{BlockReader, BlockReaderOverrides, SharedTermsHooks};
 use crate::uniformsplit::field_metadata::FieldMetadata;
 use crate::uniformsplit::index_dictionary::BrowserSupplier;
 
@@ -72,6 +72,20 @@ impl STBlockReader {
             bounded: true,
         });
         Ok(Self { base })
+    }
+
+    /// The reader with the protected methods of its base [`BlockReader`]
+    /// overridden by `overrides` (a Java subclass's overrides, see
+    /// [`BlockReaderOverrides`]).
+    #[must_use]
+    pub fn with_overrides(mut self, overrides: Arc<dyn BlockReaderOverrides>) -> Self {
+        self.base = self.base.with_overrides(overrides);
+        self
+    }
+
+    /// Port of `BlockReader.term()`, Java's `null` being `None`.
+    pub fn term_bytes(&self) -> Option<BytesRef> {
+        self.base.term_bytes()
     }
 
     /// Port of `STBlockReader.next()`.

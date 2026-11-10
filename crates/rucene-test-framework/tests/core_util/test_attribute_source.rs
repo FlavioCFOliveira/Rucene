@@ -107,7 +107,7 @@ fn test_capture_state() -> Result<()> {
     src.add_attribute_interface::<dyn TypeAttribute>()?;
     src.get_attribute_interface_mut::<dyn CharTermAttribute>()
         .expect("CharTermAttribute")
-        .append_string("TestTerm");
+        .append_string(Some("TestTerm"));
     set_type(&src, "TestType");
     let hash_code = src.hash_code();
 
@@ -119,7 +119,7 @@ fn test_capture_state() -> Result<()> {
             .get_attribute_interface_mut::<dyn CharTermAttribute>()
             .expect("CharTermAttribute");
         term_att.set_empty();
-        term_att.append_string("AnotherTestTerm");
+        term_att.append_string(Some("AnotherTestTerm"));
     }
     set_type(&src, "AnotherTestType");
     Assert::assert_true_msg(
@@ -327,7 +327,7 @@ fn test_lucene_3042() -> Result<()> {
     src1.add_attribute_interface::<dyn CharTermAttribute>()?;
     src1.get_attribute_interface_mut::<dyn CharTermAttribute>()
         .expect("CharTermAttribute")
-        .append_string("foo");
+        .append_string(Some("foo"));
     let hash1 = src1.hash_code(); // this triggers a cached state
     let mut src2 = AttributeSource::new_from(&src1);
     src2.add_attribute_interface::<dyn TypeAttribute>()?;

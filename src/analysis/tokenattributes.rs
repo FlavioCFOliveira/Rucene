@@ -123,20 +123,70 @@ pub trait CharTermAttribute: Attribute {
     fn sub_sequence(&self, start: usize, end: usize) -> String;
 
     /// Appends the entire string.
-    fn append_string(&mut self, s: &str);
+    ///
+    /// Equivalent to `append(String)`, `append(StringBuilder)` and
+    /// `append(CharSequence)`: a Java `null` argument is `None`, which
+    /// appends the four characters `null` ("needed for Appendable
+    /// compliance", `CharTermAttributeImpl.java:119-120, 168-169, 178-179`).
+    fn append_string(&mut self, s: Option<&str>);
 
     /// Appends a substring of `s` between `start` and `end`.
+    ///
+    /// Equivalent to `append(CharSequence csq, int start, int end)`: a Java
+    /// `null` `csq` is `None`, which stands for the string `"null"`
+    /// (`CharTermAttributeImpl.java:126-127`).
     ///
     /// # Panics
     ///
     /// Panics if the range is invalid.
-    fn append_string_range(&mut self, s: &str, start: usize, end: usize);
+    fn append_string_range(&mut self, s: Option<&str>, start: usize, end: usize);
 
     /// Appends a single character.
     fn append_char(&mut self, c: char);
 
     /// Appends the contents of another `CharTermAttribute`.
-    fn append_char_term_attribute(&mut self, term_att: &dyn CharTermAttribute);
+    ///
+    /// Equivalent to `append(CharTermAttribute)`: a Java `null` argument is
+    /// `None`, which appends the four characters `null`
+    /// (`CharTermAttributeImpl.java:188-189`).
+    fn append_char_term_attribute(&mut self, term_att: Option<&dyn CharTermAttribute>);
+
+    /// Appends the characters `start..end` of the term of `csq`.
+    ///
+    /// Equivalent to `CharTermAttributeImpl.append(CharSequence csq, int
+    /// start, int end)` (`CharTermAttributeImpl.java:125-154`) for a `csq`
+    /// that is a `CharTermAttribute`: `Objects.checkFromToIndex(start, end,
+    /// csq.length())`, then the range is copied out of `csq.buffer()` (Java's
+    /// `System.arraycopy` branch); for a range of at most four characters Java
+    /// copies the same characters one `csq.charAt` at a time. The other
+    /// `CharSequence` kinds Java accepts are Rust strings here, appended by
+    /// [`append_string_range`](Self::append_string_range).
+    ///
+    /// # Panics
+    ///
+    /// Panics when the range is outside the term of `csq`, with the message
+    /// of the JDK's `IndexOutOfBoundsException`, `Range [start, end) out of
+    /// bounds for length n`.
+    fn append_char_term_attribute_range(
+        &mut self,
+        csq: &dyn CharTermAttribute,
+        start: usize,
+        end: usize,
+    ) {
+        let csq_length = csq.length();
+        assert!(
+            start <= end && end <= csq_length,
+            "Range [{start}, {end}) out of bounds for length {csq_length}"
+        );
+        let len = end - start;
+        if len == 0 {
+            return;
+        }
+        let term_length = self.length();
+        self.resize_buffer(term_length + len)[term_length..term_length + len]
+            .copy_from_slice(&csq.buffer()[start..end]);
+        self.set_length(term_length + len);
+    }
 }
 
 /// Port of `org.apache.lucene.analysis.tokenattributes.CharTermAttributeImpl`.
@@ -177,8 +227,9 @@ impl CharTermAttributeImpl {
     ///
     /// Java's `Appendable` contract says a null `CharSequence` appends the
     /// string `"null"`, and every `append` overload routes a null argument
-    /// here. A Rust `&str` is never null, so nothing in the port reaches this
-    /// from `append`; a caller holding an absent value calls it directly.
+    /// here: [`append_string`](CharTermAttribute::append_string) and
+    /// [`append_char_term_attribute`](CharTermAttribute::append_char_term_attribute)
+    /// with `None`.
     ///
     /// Equivalent to the private
     /// `org.apache.lucene.analysis.tokenattributes.CharTermAttributeImpl#appendNull`.
@@ -275,7 +326,12 @@ impl CharTermAttribute for CharTermAttributeImpl {
         self.term_buffer[start..end].iter().collect()
     }
 
-    fn append_string(&mut self, s: &str) {
+    fn append_string(&mut self, s: Option<&str>) {
+        let Some(s) = s else {
+            // needed for Appendable compliance
+            self.append_null();
+            return;
+        };
         let len = s.chars().count();
         let start_len = self.term_length;
         {
@@ -287,7 +343,9 @@ impl CharTermAttribute for CharTermAttributeImpl {
         self.term_length += len;
     }
 
-    fn append_string_range(&mut self, s: &str, start: usize, end: usize) {
+    fn append_string_range(&mut self, s: Option<&str>, start: usize, end: usize) {
+        // needed for Appendable compliance
+        let s = s.unwrap_or("null");
         let char_count = s.chars().count();
         assert!(
             start <= end && end <= char_count,
@@ -316,7 +374,12 @@ impl CharTermAttribute for CharTermAttributeImpl {
         self.term_length += 1;
     }
 
-    fn append_char_term_attribute(&mut self, term_att: &dyn CharTermAttribute) {
+    fn append_char_term_attribute(&mut self, term_att: Option<&dyn CharTermAttribute>) {
+        let Some(term_att) = term_att else {
+            // needed for Appendable compliance
+            self.append_null();
+            return;
+        };
         let len = term_att.length();
         let start_len = self.term_length;
         {
@@ -383,7 +446,7 @@ impl Debug for CharTermAttributeImpl {
 
 impl Write for CharTermAttributeImpl {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        self.append_string(s);
+        self.append_string(Some(s));
         Ok(())
     }
 
@@ -1113,11 +1176,11 @@ impl CharTermAttribute for PackedTokenAttributeImpl {
         self.term.sub_sequence(start, end)
     }
 
-    fn append_string(&mut self, s: &str) {
+    fn append_string(&mut self, s: Option<&str>) {
         self.term.append_string(s);
     }
 
-    fn append_string_range(&mut self, s: &str, start: usize, end: usize) {
+    fn append_string_range(&mut self, s: Option<&str>, start: usize, end: usize) {
         self.term.append_string_range(s, start, end);
     }
 
@@ -1125,7 +1188,7 @@ impl CharTermAttribute for PackedTokenAttributeImpl {
         self.term.append_char(c);
     }
 
-    fn append_char_term_attribute(&mut self, term_att: &dyn CharTermAttribute) {
+    fn append_char_term_attribute(&mut self, term_att: Option<&dyn CharTermAttribute>) {
         self.term.append_char_term_attribute(term_att);
     }
 }
@@ -1953,6 +2016,18 @@ impl BytesTermAttributeImpl {
     pub fn with_bytes(bytes: BytesRef) -> Self {
         Self { bytes: Some(bytes) }
     }
+
+    /// Returns the field `bytes` itself, `None` while it is Java's `null`.
+    ///
+    /// Equivalent to `BytesTermAttributeImpl.getBytesRef()`
+    /// (`BytesTermAttributeImpl.java:37-40`), which returns the field, so
+    /// that a test can check it for `null` and for identity
+    /// (`assertNull`, `assertNotSame`). The
+    /// [`TermToBytesRefAttribute::get_bytes_ref`] of this port answers a deep
+    /// copy, and an empty `BytesRef` for `null`.
+    pub fn bytes_ref_field(&self) -> Option<&BytesRef> {
+        self.bytes.as_ref()
+    }
 }
 
 impl Attribute for BytesTermAttributeImpl {}
@@ -2190,7 +2265,7 @@ mod tests {
     #[should_panic(expected = "Index 5 out of bounds for length 3")]
     fn char_term_char_at_has_the_jdk_message() {
         let mut term = CharTermAttributeImpl::new();
-        term.append_string("abc");
+        term.append_string(Some("abc"));
         let _ = term.char_at(5);
     }
 
@@ -2200,7 +2275,7 @@ mod tests {
     #[should_panic(expected = "Range [2, 5) out of bounds for length 3")]
     fn char_term_sub_sequence_has_the_jdk_message() {
         let mut term = CharTermAttributeImpl::new();
-        term.append_string("abc");
+        term.append_string(Some("abc"));
         let _ = term.sub_sequence(2, 5);
     }
     use std::collections::hash_map::DefaultHasher;
@@ -2258,7 +2333,7 @@ mod tests {
         let mut buf = "ab".to_string();
         for _ in 0..20 {
             t.set_empty();
-            t.append_string(&buf);
+            t.append_string(Some(&buf));
             assert_eq!(t.length(), buf.chars().count());
             assert_eq!(t.term(), buf);
             buf += &t.term();
@@ -2269,7 +2344,7 @@ mod tests {
         let mut buf = "a".to_string();
         for _ in 0..20000 {
             t.set_empty();
-            t.append_string(&buf);
+            t.append_string(Some(&buf));
             assert_eq!(t.length(), buf.chars().count());
             assert_eq!(t.term(), buf);
             buf.push('a');
@@ -2284,7 +2359,7 @@ mod tests {
         t.copy_buffer(&chars, 0, 5);
         assert_eq!(t.term(), "aloha");
         t.set_empty();
-        t.append_string("hi there");
+        t.append_string(Some("hi there"));
         assert_eq!(t.term(), "hi there");
     }
 
@@ -2334,7 +2409,7 @@ mod tests {
     #[test]
     fn char_term_reflection() {
         let mut t = CharTermAttributeImpl::new();
-        t.append_string("foobar");
+        t.append_string(Some("foobar"));
         let mut entries: Vec<(TypeId, &'static str, String, String)> = Vec::new();
         t.reflect_with(
             &mut |type_id: TypeId, name: &'static str, key: &str, value: &dyn Debug| {
@@ -2351,7 +2426,7 @@ mod tests {
     fn char_term_char_sequence_interface() {
         let s = "0123456789";
         let mut t = CharTermAttributeImpl::new();
-        t.append_string(s);
+        t.append_string(Some(s));
         assert_eq!(t.length(), s.chars().count());
         assert_eq!(t.sub_sequence(1, 3), "12");
         assert_eq!(t.sub_sequence(0, s.chars().count()), s);
@@ -2365,20 +2440,20 @@ mod tests {
         let mut t = CharTermAttributeImpl::new();
         write!(t, "{}{}", 1234, 5678).unwrap();
         t.append_char('9');
-        t.append_string("0");
-        t.append_string_range("0123456789", 1, 3);
+        t.append_string(Some("0"));
+        t.append_string_range(Some("0123456789"), 1, 3);
         assert_eq!(t.term(), "123456789012");
 
         let mut t2 = CharTermAttributeImpl::new();
-        t2.append_string("test");
-        t.append_char_term_attribute(&t2);
+        t2.append_string(Some("test"));
+        t.append_char_term_attribute(Some(&t2));
         assert_eq!(t.term(), "123456789012test");
     }
 
     #[test]
     fn char_term_exceptions() {
         let mut t = CharTermAttributeImpl::new();
-        t.append_string("test");
+        t.append_string(Some("test"));
         assert_eq!(t.term(), "test");
         assert!(std::panic::catch_unwind(|| t.char_at(4)).is_err());
         assert!(std::panic::catch_unwind(|| t.sub_sequence(0, 5)).is_err());
@@ -2388,7 +2463,7 @@ mod tests {
     #[test]
     fn char_term_get_bytes_ref() {
         let mut t = CharTermAttributeImpl::new();
-        t.append_string("lucene");
+        t.append_string(Some("lucene"));
         let bytes = t.get_bytes_ref();
         assert_eq!(bytes.slice(), b"lucene");
     }
@@ -2633,7 +2708,7 @@ mod tests {
         source
             .get_attribute_mut::<CharTermAttributeImpl>()
             .unwrap()
-            .append_string("token");
+            .append_string(Some("token"));
         let att = source.get_attribute::<CharTermAttributeImpl>().unwrap();
         assert_eq!(att.term(), "token");
     }
@@ -2648,7 +2723,7 @@ mod tests {
             let mut att = source
                 .get_attribute_mut::<PackedTokenAttributeImpl>()
                 .unwrap();
-            att.append_string("hello");
+            att.append_string(Some("hello"));
             att.set_offset(0, 5);
             att.set_position_increment(1);
             att.set_position_length(1);
@@ -2666,7 +2741,7 @@ mod tests {
     #[test]
     fn packed_token_attribute_clear_and_end() {
         let mut att = PackedTokenAttributeImpl::new();
-        att.append_string("hello");
+        att.append_string(Some("hello"));
         att.set_offset(0, 5);
         att.set_position_increment(2);
         att.set_position_length(3);
@@ -2688,7 +2763,7 @@ mod tests {
     #[test]
     fn packed_token_attribute_copy_to() {
         let mut src = PackedTokenAttributeImpl::new();
-        src.append_string("hello");
+        src.append_string(Some("hello"));
         src.set_offset(0, 5);
         src.set_position_increment(2);
         src.set_position_length(2);
@@ -2715,7 +2790,7 @@ mod tests {
             let mut att = source
                 .get_attribute_mut::<PackedTokenAttributeImpl>()
                 .unwrap();
-            att.append_string("hello");
+            att.append_string(Some("hello"));
             att.set_offset(0, 5);
             att.set_position_increment(2);
             att.set_position_length(2);

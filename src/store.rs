@@ -3757,6 +3757,14 @@ pub trait Lock: Send + Sync {
     ///
     /// Returns [`LuceneError::Io`] if the lock is no longer valid.
     fn ensure_valid(&self) -> Result<()>;
+
+    /// This lock as `&dyn Any`, for the callers that narrow a lock to its
+    /// implementation as a Java cast does (`(NativeFSLock)
+    /// dir.obtainLock(name)` in `TestNativeFSLockFactory`); `None` for the
+    /// implementations that offer no such narrowing.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
 }
 
 /// A lock that never rejects acquisition and performs no actual locking.
@@ -4128,14 +4136,27 @@ impl FSLockFactory for NativeFSLockFactory {
 
         // `Files.createFile(lockFile)`: "we must create the file to have a
         // truly canonical path. if it's already created, we don't care. if it
-        // cant be created, it will fail below." Java keeps the failure only to
-        // attach it, suppressed, to a failing `toRealPath`. An existing file is
-        // not opened (`CREATE_NEW`), so no descriptor of a file this process
-        // may hold locked is opened and closed here.
-        let _ = nio::Files::create_file(&lock_file);
+        // cant be created, it will fail below." The failure is kept only to
+        // attach it, suppressed, to a failing `toRealPath`
+        // (`NativeFSLockFactory.java:82-100`). An existing file is not opened
+        // (`CREATE_NEW`), so no descriptor of a file this process may hold
+        // locked is opened and closed here.
+        let creation_exception = nio::Files::create_file(&lock_file).err();
 
         // Fails if the lock file does not exist.
-        let real_path = lock_file.to_real_path(&[])?;
+        let real_path = match lock_file.to_real_path(&[]) {
+            Ok(real_path) => real_path,
+            Err(e) => {
+                // If we couldn't resolve the lock file, it might be because we
+                // couldn't create it. So append any exception from createFile
+                // as a suppressed exception, in case it's useful.
+                return Err(match &creation_exception {
+                    Some(creation_exception) => nio::add_suppressed(e, creation_exception),
+                    None => e,
+                }
+                .into());
+            }
+        };
 
         // Used as a best-effort check, to see if the underlying file has
         // changed: read before the path is marked held
@@ -4419,9 +4440,11 @@ static NATIVE_HELD_LOCKS: std::sync::LazyLock<Mutex<HashSet<String>>> =
 
 /// A native OS-level filesystem lock.
 ///
-/// Equivalent to the private `NativeFSLock` inner class of
-/// `org.apache.lucene.store.NativeFSLockFactory`.
-struct NativeFSLock {
+/// Equivalent to the package-private `NativeFSLock` static inner class of
+/// `org.apache.lucene.store.NativeFSLockFactory`
+/// (`NativeFSLockFactory.java:140-205`). A [`Lock`] obtained from a
+/// [`NativeFSLockFactory`] narrows to it through [`Lock::as_any`].
+pub struct NativeFSLock {
     /// `NativeFSLock.lock`, the `FileLock` `channel.tryLock()` returned.
     lock: Box<dyn nio::FileLock>,
     /// `NativeFSLock.channel`, the channel the lock is held on; `None` once
@@ -4432,6 +4455,27 @@ struct NativeFSLock {
     path_str: String,
     creation_time: SystemTime,
     closed: AtomicBool,
+}
+
+impl NativeFSLock {
+    /// The package-private `final FileLock lock` field
+    /// (`NativeFSLockFactory.java:141`), which `TestNativeFSLockFactory`
+    /// releases behind the lock's back.
+    pub fn lock(&self) -> &dyn nio::FileLock {
+        &*self.lock
+    }
+
+    /// The package-private `final FileChannel channel` field
+    /// (`NativeFSLockFactory.java:142`), which `TestNativeFSLockFactory`
+    /// closes behind the lock's back; `None` once [`close`](Lock::close)
+    /// has closed it.
+    pub fn channel(&self) -> Option<Arc<dyn nio::FileChannel>> {
+        self.channel
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(Arc::clone)
+    }
 }
 
 impl std::fmt::Debug for NativeFSLock {
@@ -4547,6 +4591,10 @@ impl Lock for NativeFSLock {
         }
 
         Ok(())
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 }
 
@@ -6231,7 +6279,18 @@ pub struct NRTCachingDirectory {
     shared: Arc<NrtCacheShared>,
     max_merge_size_bytes: i64,
     max_cached_bytes: i64,
+    /// The override of the protected `doCacheWrite(String, IOContext)` an
+    /// anonymous Java subclass declares; `None` keeps Lucene's.
+    do_cache_write_override: Option<NrtDoCacheWrite>,
 }
+
+/// An override of `NRTCachingDirectory.doCacheWrite(String, IOContext)`
+/// (`NRTCachingDirectory.java:230-244`), the `protected` member a Java
+/// subclass overrides: called with the directory (whose
+/// [`NRTCachingDirectory::super_do_cache_write`] is `super.doCacheWrite`),
+/// the file name and the context.
+pub type NrtDoCacheWrite =
+    Arc<dyn Fn(&NRTCachingDirectory, &str, &dyn IOContext) -> bool + Send + Sync>;
 
 /// The part of an [`NRTCachingDirectory`] its cache directory's output-close
 /// callback reads and writes.
@@ -6304,7 +6363,23 @@ impl NRTCachingDirectory {
             shared,
             max_merge_size_bytes: (max_merge_size_mb * 1024.0 * 1024.0) as i64,
             max_cached_bytes: (max_cached_mb * 1024.0 * 1024.0) as i64,
+            do_cache_write_override: None,
         }
+    }
+
+    /// Creates a new NRT caching directory whose `doCacheWrite` is
+    /// `do_cache_write`: the anonymous subclass `new
+    /// NRTCachingDirectory(dir, maxMergeSizeMB, maxCachedMB) { protected
+    /// boolean doCacheWrite(String name, IOContext context) { ... } }`.
+    pub fn with_do_cache_write(
+        inner: Box<dyn Directory>,
+        max_merge_size_mb: f64,
+        max_cached_mb: f64,
+        do_cache_write: NrtDoCacheWrite,
+    ) -> Self {
+        let mut dir = Self::new(inner, max_merge_size_mb, max_cached_mb);
+        dir.do_cache_write_override = Some(do_cache_write);
+        dir
     }
 
     /// Returns the wrapped directory.
@@ -6359,7 +6434,7 @@ impl NRTCachingDirectory {
     /// cached, when its estimated size is at most `maxMergeSizeBytes` and the
     /// cache, with it, stays within `maxCachedBytes`. Java's `long` addition
     /// wraps, as here.
-    fn do_cache_write(&self, _name: &str, context: &dyn IOContext) -> bool {
+    pub fn super_do_cache_write(&self, _name: &str, context: &dyn IOContext) -> bool {
         let bytes = if let Some(merge_info) = context.merge_info() {
             merge_info.estimated_merge_bytes
         } else if let Some(flush_info) = context.flush_info() {
@@ -6370,6 +6445,16 @@ impl NRTCachingDirectory {
         bytes <= self.max_merge_size_bytes
             && bytes.wrapping_add(self.shared.cache_size.load(Ordering::SeqCst))
                 <= self.max_cached_bytes
+    }
+
+    /// The virtual `doCacheWrite(String, IOContext)`: the subclass override
+    /// [`with_do_cache_write`](Self::with_do_cache_write) installed, else
+    /// [`super_do_cache_write`](Self::super_do_cache_write).
+    fn do_cache_write(&self, name: &str, context: &dyn IOContext) -> bool {
+        match &self.do_cache_write_override {
+            Some(f) => f(self, name, context),
+            None => self.super_do_cache_write(name, context),
+        }
     }
 
     /// Moves `file_name` from the cache to the delegate.
@@ -6679,19 +6764,31 @@ impl std::fmt::Debug for NRTCachingDirectory {
 // -----------------------------------------------------------------------------
 
 /// Default minimum block size bits for [`ByteBuffersDataOutput`].
-const DEFAULT_MIN_BITS_PER_BLOCK: usize = 10; // 1024 bytes
+///
+/// Equivalent to `ByteBuffersDataOutput.DEFAULT_MIN_BITS_PER_BLOCK`
+/// (`public static final int`, `ByteBuffersDataOutput.java:46`).
+pub const DEFAULT_MIN_BITS_PER_BLOCK: usize = 10; // 1024 bytes
 
 /// Default maximum block size bits for [`ByteBuffersDataOutput`].
-const DEFAULT_MAX_BITS_PER_BLOCK: usize = 26; // 64 MiB
+///
+/// Equivalent to `ByteBuffersDataOutput.DEFAULT_MAX_BITS_PER_BLOCK`
+/// (`public static final int`, `ByteBuffersDataOutput.java:47`).
+pub const DEFAULT_MAX_BITS_PER_BLOCK: usize = 26; // 64 MiB
 /// Smallest allowed `min_bits_per_block`. Equivalent to
 /// `ByteBuffersDataOutput.LIMIT_MIN_BITS_PER_BLOCK`.
 pub const LIMIT_MIN_BITS_PER_BLOCK: usize = 1;
 
 /// Largest allowed `max_bits_per_block`.
-const LIMIT_MAX_BITS_PER_BLOCK: usize = 31;
+///
+/// Equivalent to `ByteBuffersDataOutput.LIMIT_MAX_BITS_PER_BLOCK`
+/// (`public static final int`, `ByteBuffersDataOutput.java:51`).
+pub const LIMIT_MAX_BITS_PER_BLOCK: usize = 31;
 
 /// Number of blocks at the current size before expanding.
-const MAX_BLOCKS_BEFORE_BLOCK_EXPANSION: usize = 100;
+///
+/// Equivalent to `ByteBuffersDataOutput.MAX_BLOCKS_BEFORE_BLOCK_EXPANSION`
+/// (`public static final int`, `ByteBuffersDataOutput.java:57`).
+pub const MAX_BLOCKS_BEFORE_BLOCK_EXPANSION: usize = 100;
 
 /// Number of characters converted at a time by
 /// `ByteBuffersDataOutput::write_long_string`.
@@ -7354,36 +7451,107 @@ fn ensure_assumptions(buffers: &[Vec<u8>]) -> Result<()> {
     Ok(())
 }
 
+/// A block allocator of [`ByteBuffersDataOutput`]: given a size, returns an
+/// empty buffer of exactly that capacity.
+///
+/// Equivalent to the `IntFunction<ByteBuffer> blockAllocate` argument of
+/// `ByteBuffersDataOutput(int, int, IntFunction<ByteBuffer>,
+/// Consumer<ByteBuffer>)` (`ByteBuffersDataOutput.java:149-153`).
+pub type BlockAllocator = Arc<dyn Fn(usize) -> Vec<u8> + Send + Sync>;
+
+/// A block reuse strategy of [`ByteBuffersDataOutput`]: receives each block
+/// [`ByteBuffersDataOutput::reset`] releases.
+///
+/// Equivalent to the `Consumer<ByteBuffer> blockReuse` argument of
+/// `ByteBuffersDataOutput(int, int, IntFunction<ByteBuffer>,
+/// Consumer<ByteBuffer>)` (`ByteBuffersDataOutput.java:149-153`).
+pub type BlockReuse = Arc<dyn Fn(Vec<u8>) + Send + Sync>;
+
+/// `ByteBuffersDataOutput.NO_REUSE` (`ByteBuffersDataOutput.java:45-48`): "A
+/// singleton instance of \"no-reuse\" buffer strategy." Every call answers
+/// the same instance, which [`ByteBuffersDataOutput::with_allocator`]
+/// recognises by identity.
+///
+/// **Divergence from Lucene 10.5.0 (pre-existing).** Java's consumer throws
+/// `RuntimeException("reset() is not allowed on this buffer.")`; an output
+/// built with this strategy drops its blocks on `reset()` instead, as the
+/// port's default outputs do.
+pub fn no_reuse() -> BlockReuse {
+    static NO_REUSE: std::sync::LazyLock<BlockReuse> =
+        std::sync::LazyLock::new(|| Arc::new(|_block: Vec<u8>| {}));
+    Arc::clone(&NO_REUSE)
+}
+
+/// `ByteBuffersDataOutput.ALLOCATE_BB_ON_HEAP` (`ByteBuffer::allocate`,
+/// `ByteBuffersDataOutput.java:43`): a heap buffer of exactly `size` bytes.
+pub fn allocate_bb_on_heap(size: usize) -> Vec<u8> {
+    Vec::with_capacity(size)
+}
+
 /// Buffer recycler used by resettable [`ByteBuffersDataOutput`] instances.
 ///
 /// Equivalent to the inner `ByteBufferRecycler` class in Lucene's
-/// `ByteBuffersDataOutput`.
-#[derive(Clone, Debug, Default)]
+/// `ByteBuffersDataOutput` (`ByteBuffersDataOutput.java:55-79`): a FIFO
+/// queue of released buffers in front of a delegate allocator.
+#[derive(Clone)]
 pub struct ByteBufferRecycler {
-    reuse: Vec<Vec<u8>>,
+    reuse: std::collections::VecDeque<Vec<u8>>,
+    delegate: BlockAllocator,
+}
+
+impl std::fmt::Debug for ByteBufferRecycler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ByteBufferRecycler")
+            .field("reuse", &self.reuse.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for ByteBufferRecycler {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ByteBufferRecycler {
-    /// Creates an empty recycler.
+    /// Creates an empty recycler over [`allocate_bb_on_heap`]
+    /// (`new ByteBufferRecycler(ALLOCATE_BB_ON_HEAP)`).
     pub fn new() -> Self {
-        Self { reuse: Vec::new() }
+        Self::with_delegate(Arc::new(allocate_bb_on_heap))
     }
 
-    /// Allocates a buffer of exactly `size` bytes, reusing a cached buffer if
-    /// one of the same capacity is available.
+    /// Creates an empty recycler that allocates through `delegate` when no
+    /// released buffer fits.
+    ///
+    /// Equivalent to `ByteBufferRecycler(IntFunction<ByteBuffer> delegate)`.
+    pub fn with_delegate(delegate: BlockAllocator) -> Self {
+        Self {
+            reuse: std::collections::VecDeque::new(),
+            delegate,
+        }
+    }
+
+    /// Allocates a buffer of exactly `size` bytes: the first released buffer
+    /// of that size, discarding the ones of another size it meets first, or
+    /// else a buffer of the delegate.
+    ///
+    /// Equivalent to `ByteBufferRecycler.allocate(int)`.
     pub fn allocate(&mut self, size: usize) -> Vec<u8> {
-        while let Some(buf) = self.reuse.pop() {
+        while let Some(buf) = self.reuse.pop_front() {
+            // If we don't have a buffer of exactly the requested size, discard it.
             if buf.capacity() == size {
                 return buf;
             }
         }
-        Vec::with_capacity(size)
+        (self.delegate)(size)
     }
 
     /// Returns a buffer to the recycler.
+    ///
+    /// Equivalent to `ByteBufferRecycler.reuse(ByteBuffer)`.
     pub fn reuse(&mut self, mut buffer: Vec<u8>) {
         buffer.clear();
-        self.reuse.push(buffer);
+        self.reuse.push_back(buffer);
     }
 }
 
@@ -7392,14 +7560,31 @@ impl ByteBufferRecycler {
 /// Equivalent to `org.apache.lucene.store.ByteBuffersDataOutput`. Blocks are
 /// heap-allocated and grow from a small initial size up to a configured
 /// maximum.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ByteBuffersDataOutput {
     min_bits: usize,
     max_bits: usize,
     block_bits: usize,
     completed: Vec<Vec<u8>>,
     current: Vec<u8>,
-    recycler: Option<ByteBufferRecycler>,
+    /// `blockAllocate`; `None` is `ALLOCATE_BB_ON_HEAP`.
+    block_allocate: Option<BlockAllocator>,
+    /// `blockReuse`; `None` is `NO_REUSE`.
+    block_reuse: Option<BlockReuse>,
+}
+
+impl std::fmt::Debug for ByteBuffersDataOutput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ByteBuffersDataOutput")
+            .field("min_bits", &self.min_bits)
+            .field("max_bits", &self.max_bits)
+            .field("block_bits", &self.block_bits)
+            .field("completed", &self.completed)
+            .field("current", &self.current)
+            .field("block_allocate", &self.block_allocate.is_some())
+            .field("block_reuse", &self.block_reuse.is_some())
+            .finish()
+    }
 }
 
 /// Accounts for the blocks this output has allocated.
@@ -7452,6 +7637,80 @@ impl ByteBuffersDataOutput {
     /// Returns [`LuceneError::IllegalArgument`] if the bit parameters are
     /// inconsistent or out of range.
     pub fn with_config(min_bits: usize, max_bits: usize, reuse: bool) -> Result<Self> {
+        if reuse {
+            let reuser = Arc::new(Mutex::new(ByteBufferRecycler::new()));
+            let allocate = Arc::clone(&reuser);
+            Self::with_allocator(
+                min_bits,
+                max_bits,
+                Some(Arc::new(move |size| {
+                    allocate
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .allocate(size)
+                })),
+                Some(Arc::new(move |block| {
+                    reuser
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .reuse(block)
+                })),
+            )
+        } else {
+            Self::with_allocator_opt(min_bits, max_bits, None, None)
+        }
+    }
+
+    /// Expert: creates a new output with custom parameters, allocating its
+    /// blocks through `block_allocate` and handing the blocks
+    /// [`reset`](Self::reset) releases to `block_reuse` ([`no_reuse`]: the
+    /// blocks are dropped).
+    ///
+    /// Equivalent to `ByteBuffersDataOutput(int minBitsPerBlock, int
+    /// maxBitsPerBlock, IntFunction<ByteBuffer> blockAllocate,
+    /// Consumer<ByteBuffer> blockReuse)` (`ByteBuffersDataOutput.java:149-183`).
+    /// A Java `null` argument is `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if the bit parameters are
+    /// inconsistent or out of range, and a `java.lang.NullPointerException`
+    /// ("Block allocator must not be null." / "Block reuse must not be
+    /// null.") for a `None` argument, as `Objects.requireNonNull` throws
+    /// after the bit checks (`ByteBuffersDataOutput.java:180-181`).
+    pub fn with_allocator(
+        min_bits: usize,
+        max_bits: usize,
+        block_allocate: Option<BlockAllocator>,
+        block_reuse: Option<BlockReuse>,
+    ) -> Result<Self> {
+        Self::with_allocator_opt(min_bits, max_bits, None, None)?;
+        let Some(block_allocate) = block_allocate else {
+            return Err(LuceneError::unchecked(
+                "java.lang.NullPointerException",
+                "Block allocator must not be null.",
+            ));
+        };
+        let Some(block_reuse) = block_reuse else {
+            return Err(LuceneError::unchecked(
+                "java.lang.NullPointerException",
+                "Block reuse must not be null.",
+            ));
+        };
+        let block_reuse = if Arc::ptr_eq(&block_reuse, &no_reuse()) {
+            None
+        } else {
+            Some(block_reuse)
+        };
+        Self::with_allocator_opt(min_bits, max_bits, Some(block_allocate), block_reuse)
+    }
+
+    fn with_allocator_opt(
+        min_bits: usize,
+        max_bits: usize,
+        block_allocate: Option<BlockAllocator>,
+        block_reuse: Option<BlockReuse>,
+    ) -> Result<Self> {
         if min_bits < LIMIT_MIN_BITS_PER_BLOCK {
             return Err(LuceneError::IllegalArgument(format!(
                 "minBitsPerBlock ({min_bits}) too small, must be at least {LIMIT_MIN_BITS_PER_BLOCK}"
@@ -7473,11 +7732,8 @@ impl ByteBuffersDataOutput {
             block_bits: min_bits,
             completed: Vec::new(),
             current: Vec::new(),
-            recycler: if reuse {
-                Some(ByteBufferRecycler::new())
-            } else {
-                None
-            },
+            block_allocate,
+            block_reuse,
         })
     }
 
@@ -7621,11 +7877,11 @@ impl ByteBuffersDataOutput {
     /// Resets this output to a clean (zero-size) state, publishing buffers to
     /// the recycler if one was configured.
     pub fn reset(&mut self) {
-        if let Some(recycler) = &mut self.recycler {
+        if let Some(reuse) = &self.block_reuse {
             for block in self.completed.drain(..) {
-                recycler.reuse(block);
+                reuse(block);
             }
-            recycler.reuse(std::mem::take(&mut self.current));
+            reuse(std::mem::take(&mut self.current));
         } else {
             self.completed.clear();
             self.current.clear();
@@ -7634,10 +7890,9 @@ impl ByteBuffersDataOutput {
     }
 
     fn allocate(&mut self, size: usize) -> Vec<u8> {
-        if let Some(recycler) = &mut self.recycler {
-            recycler.allocate(size)
-        } else {
-            Vec::with_capacity(size)
+        match &self.block_allocate {
+            Some(allocate) => allocate(size),
+            None => allocate_bb_on_heap(size),
         }
     }
 
@@ -7666,8 +7921,11 @@ impl ByteBuffersDataOutput {
 
     fn rewrite_to_block_size(&mut self, target_bits: usize) {
         assert!(target_bits <= self.max_bits);
+        // `new ByteBuffersDataOutput(targetBlockBits, targetBlockBits,
+        // blockAllocate, NO_REUSE)`.
         let mut cloned =
-            Self::with_config(target_bits, target_bits, false).expect("target bits valid");
+            Self::with_allocator_opt(target_bits, target_bits, self.block_allocate.clone(), None)
+                .expect("target bits valid");
         for block in &self.completed {
             cloned.write_bytes(block, 0, block.len()).unwrap();
         }
@@ -7676,11 +7934,11 @@ impl ByteBuffersDataOutput {
                 .write_bytes(&self.current, 0, self.current.len())
                 .unwrap();
         }
-        if let Some(recycler) = &mut self.recycler {
+        if let Some(reuse) = &self.block_reuse {
             for block in self.completed.drain(..) {
-                recycler.reuse(block);
+                reuse(block);
             }
-            recycler.reuse(std::mem::take(&mut self.current));
+            reuse(std::mem::take(&mut self.current));
         } else {
             self.completed.clear();
             self.current.clear();
@@ -10374,9 +10632,9 @@ impl Drop for TestFilterInputRegistration {
 pub(crate) fn register_test_secrets() {
     static INITIALIZED: std::sync::Once = std::sync::Once::new();
     INITIALIZED.call_once(|| {
-        crate::internal::tests_hooks::TestSecrets::set_filter_input_index_access(
+        crate::internal::tests_hooks::TestSecrets::set_filter_input_index_access(Some(
             std::sync::Arc::new(FilterIndexInputAccessImpl),
-        )
+        ))
         .expect("INVARIANT: FilterIndexInput's static initializer runs once, from this file");
     });
 }
