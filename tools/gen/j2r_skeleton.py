@@ -475,7 +475,7 @@ def main() -> None:
             if a in KNOWN_ANNOTATIONS and not args:
                 e += f".annotate({a})"
             elif a == "AwaitsFix":
-                url = re.search(r'"([^"]*)"', src[src.find("@AwaitsFix"):][:300])
+                url = re.search(r'"([^"]*)"', args or "")
                 e += f'.annotate(AwaitsFix {{ bug_url: "{url.group(1) if url else ""}".into() }})'
             else:
                 notes.append(f"@{a}{(args or '').strip()}")
