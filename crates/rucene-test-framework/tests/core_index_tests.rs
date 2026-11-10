@@ -946,3 +946,197 @@ fn test_nrt_reader_cleanup() {
 fn test_nrt_reader_with_threads() {
     run(test_nrt_reader_with_threads::class_def);
 }
+
+// Lane B (tasks #386, #385, #384).
+#[path = "core_index/test_transactions.rs"]
+mod test_transactions;
+#[test]
+fn test_transactions() {
+    run(test_transactions::class_def);
+}
+#[path = "core_index/test_try_delete.rs"]
+mod test_try_delete;
+#[test]
+fn test_try_delete() {
+    run(test_try_delete::class_def);
+}
+#[path = "core_index/test_two_phase_commit_tool.rs"]
+mod test_two_phase_commit_tool;
+#[test]
+fn test_two_phase_commit_tool() {
+    run(test_two_phase_commit_tool::class_def);
+}
+#[path = "core_index/test_unique_term_count.rs"]
+mod test_unique_term_count;
+#[test]
+fn test_unique_term_count() {
+    run(test_unique_term_count::class_def);
+}
+#[path = "core_index/test_sorting_stored_fields_consumer.rs"]
+mod test_sorting_stored_fields_consumer;
+#[test]
+fn test_sorting_stored_fields_consumer() {
+    run(test_sorting_stored_fields_consumer::class_def);
+}
+#[path = "core_index/test_stored_fields_consumer.rs"]
+mod test_stored_fields_consumer;
+#[test]
+fn test_stored_fields_consumer() {
+    run(test_stored_fields_consumer::class_def);
+}
+#[path = "core_index/test_stress_advance.rs"]
+mod test_stress_advance;
+#[test]
+fn test_stress_advance() {
+    run(test_stress_advance::class_def);
+}
+#[path = "core_index/test_stress_deletes.rs"]
+mod test_stress_deletes;
+#[test]
+fn test_stress_deletes() {
+    run(test_stress_deletes::class_def);
+}
+#[path = "core_index/test_stress_indexing2.rs"]
+mod test_stress_indexing2;
+#[test]
+fn test_stress_indexing2() {
+    run(test_stress_indexing2::class_def);
+}
+#[path = "core_index/test_stress_indexing.rs"]
+mod test_stress_indexing;
+#[test]
+fn test_stress_indexing() {
+    run(test_stress_indexing::class_def);
+}
+#[path = "core_index/test_stress_nrt.rs"]
+mod test_stress_nrt;
+#[test]
+fn test_stress_nrt() {
+    run(test_stress_nrt::class_def);
+}
+#[path = "core_index/test_sum_doc_freq.rs"]
+mod test_sum_doc_freq;
+#[test]
+fn test_sum_doc_freq() {
+    run(test_sum_doc_freq::class_def);
+}
+#[path = "core_index/test_swapped_index_files.rs"]
+mod test_swapped_index_files;
+#[test]
+fn test_swapped_index_files() {
+    run(test_swapped_index_files::class_def);
+}
+#[path = "core_index/test_temporal_merge_policy_across_buckets.rs"]
+mod test_temporal_merge_policy_across_buckets;
+#[test]
+fn test_temporal_merge_policy_across_buckets() {
+    run(test_temporal_merge_policy_across_buckets::class_def);
+}
+#[path = "core_index/test_temporal_merge_policy.rs"]
+mod test_temporal_merge_policy;
+#[test]
+fn test_temporal_merge_policy() {
+    run(test_temporal_merge_policy::class_def);
+}
+#[path = "core_index/test_termdoc_perf.rs"]
+mod test_termdoc_perf;
+#[test]
+fn test_termdoc_perf() {
+    run(test_termdoc_perf::class_def);
+}
+#[path = "core_index/test_term.rs"]
+mod test_term;
+#[test]
+fn test_term() {
+    run(test_term::class_def);
+}
+#[path = "core_index/test_terms_enum2.rs"]
+mod test_terms_enum2;
+#[test]
+fn test_terms_enum2() {
+    run(test_terms_enum2::class_def);
+}
+#[path = "core_index/test_terms_enum_index.rs"]
+mod test_terms_enum_index;
+#[test]
+fn test_terms_enum_index() {
+    run(test_terms_enum_index::class_def);
+}
+#[path = "core_index/test_terms.rs"]
+mod test_terms;
+#[test]
+fn test_terms() {
+    run(test_terms::class_def);
+}
+#[path = "core_index/test_term_states.rs"]
+mod test_term_states;
+#[test]
+fn test_term_states() {
+    run(test_term_states::class_def);
+}
+#[path = "core_index/test_terms_enum.rs"]
+mod test_terms_enum;
+#[test]
+fn test_terms_enum() {
+    run(test_terms_enum::class_def);
+}
+#[path = "core_index/test_terms_hash_per_field.rs"]
+mod test_terms_hash_per_field;
+#[test]
+fn test_terms_hash_per_field() {
+    run(test_terms_hash_per_field::class_def);
+}
+#[path = "core_index/test_term_vectors.rs"]
+mod test_term_vectors;
+#[test]
+fn test_term_vectors() {
+    run(test_term_vectors::class_def);
+}
+#[path = "core_index/test_term_vectors_reader.rs"]
+mod test_term_vectors_reader;
+#[test]
+fn test_term_vectors_reader() {
+    run(test_term_vectors_reader::class_def);
+}
+#[path = "core_index/test_term_vectors_writer.rs"]
+mod test_term_vectors_writer;
+#[test]
+fn test_term_vectors_writer() {
+    run(test_term_vectors_writer::class_def);
+}
+#[path = "core_index/test_threaded_force_merge.rs"]
+mod test_threaded_force_merge;
+#[test]
+fn test_threaded_force_merge() {
+    run(test_threaded_force_merge::class_def);
+}
+#[path = "core_index/test_tragic_index_writer_deadlock.rs"]
+mod test_tragic_index_writer_deadlock;
+#[test]
+fn test_tragic_index_writer_deadlock() {
+    run(test_tragic_index_writer_deadlock::class_def);
+}
+#[path = "core_index/test_transaction_rollback.rs"]
+mod test_transaction_rollback;
+#[test]
+fn test_transaction_rollback() {
+    run(test_transaction_rollback::class_def);
+}
+#[path = "core_index/test_pending_deletes.rs"]
+mod test_pending_deletes;
+#[test]
+fn test_pending_deletes() {
+    run(test_pending_deletes::class_def);
+}
+#[path = "core_index/test_pending_soft_deletes.rs"]
+mod test_pending_soft_deletes;
+#[test]
+fn test_pending_soft_deletes() {
+    run(test_pending_soft_deletes::class_def);
+}
+#[path = "core_index/test_per_segment_deletes.rs"]
+mod test_per_segment_deletes;
+#[test]
+fn test_per_segment_deletes() {
+    run(test_per_segment_deletes::class_def);
+}

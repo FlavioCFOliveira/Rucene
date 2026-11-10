@@ -1095,6 +1095,42 @@ impl TermsHashPerField {
         }
     }
 
+    /// [`Self::intern`] for a table whose term text lives in its own pool.
+    ///
+    /// Equivalent to `TermsHashPerField.add(BytesRef, int)` when the
+    /// `termBytePool` the table was constructed with is not its `bytePool`
+    /// (`TermsHashPerField.java:65-84,186-198`): the text is interned in
+    /// `term_pool`, the stream slices are reserved in `pool`. The indexing
+    /// chain shares one pool for both (`TermsHash.java:52-56`) and calls
+    /// [`Self::intern`]; `TestTermsHashPerField` builds a table over two.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::intern`].
+    pub fn intern_into(
+        &mut self,
+        term_pool: &mut ByteBlockPool,
+        pool: &mut ByteBlockPool,
+        int_pool: &mut IntBlockPool,
+        term_bytes: &[u8],
+        doc_id: i32,
+    ) -> Result<TermSlot> {
+        debug_assert!(self.assert_doc_id(doc_id));
+        let raw = self.bytes_hash.add(term_pool, term_bytes)?;
+        if raw >= 0 {
+            self.init_stream_slices(pool, int_pool, raw)?;
+            Ok(TermSlot {
+                term_id: raw,
+                is_new: true,
+            })
+        } else {
+            Ok(TermSlot {
+                term_id: self.position_stream_slice(raw),
+                is_new: false,
+            })
+        }
+    }
+
     /// Records an occurrence of the term already interned at `text_start` and,
     /// for a term this table has not seen yet, allocates its stream slices.
     ///

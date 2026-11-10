@@ -132,6 +132,33 @@ pub struct StoredFieldsConsumer {
     writer: Option<Box<dyn StoredFieldsWriter>>,
     last_doc: i32,
     aborted: bool,
+    /// The overrides of an anonymous Java subclass, if any.
+    overrides: Option<Arc<dyn StoredFieldsConsumerOverrides>>,
+}
+
+/// The package-private methods of `StoredFieldsConsumer` an anonymous Java
+/// subclass overrides (`TestStoredFieldsConsumer.testFinish`,
+/// `TestStoredFieldsConsumer.java:47-60`). Each default is the
+/// `StoredFieldsConsumer` method itself, so an override calls
+/// `consumer.super_<method>` for Java's `super.<method>(...)`.
+pub trait StoredFieldsConsumerOverrides: Send + Sync {
+    /// `startDocument(int)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`StoredFieldsConsumer::super_start_document`].
+    fn start_document(&self, consumer: &mut StoredFieldsConsumer, doc_id: i32) -> Result<()> {
+        consumer.super_start_document(doc_id)
+    }
+
+    /// `finishDocument()`.
+    ///
+    /// # Errors
+    ///
+    /// As [`StoredFieldsConsumer::super_finish_document`].
+    fn finish_document(&self, consumer: &mut StoredFieldsConsumer) -> Result<()> {
+        consumer.super_finish_document()
+    }
 }
 
 impl std::fmt::Debug for StoredFieldsConsumer {
@@ -162,7 +189,16 @@ impl StoredFieldsConsumer {
             writer: None,
             last_doc: -1,
             aborted: false,
+            overrides: None,
         }
+    }
+
+    /// Installs the overrides of an anonymous Java subclass: every call of
+    /// [`Self::start_document`] and [`Self::finish_document`], including the
+    /// ones [`Self::finish`] makes, dispatches to them, as Java's virtual
+    /// calls do.
+    pub fn set_overrides(&mut self, overrides: Arc<dyn StoredFieldsConsumerOverrides>) {
+        self.overrides = Some(overrides);
     }
 
     /// Creates a consumer that writes through `format` rather than the codec's
@@ -265,6 +301,19 @@ impl StoredFieldsConsumer {
     /// Returns [`LuceneError::IllegalState`] when `doc_id` does not advance —
     /// Lucene asserts `lastDoc < docID` — and propagates any I/O error.
     pub fn start_document(&mut self, doc_id: i32) -> Result<()> {
+        match self.overrides.clone() {
+            Some(overrides) => overrides.start_document(self, doc_id),
+            None => self.super_start_document(doc_id),
+        }
+    }
+
+    /// `StoredFieldsConsumer.startDocument(int)` itself, which an override
+    /// calls as `super.startDocument(docID)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::start_document`].
+    pub fn super_start_document(&mut self, doc_id: i32) -> Result<()> {
         debug_assert!(self.last_doc < doc_id);
         if self.last_doc >= doc_id {
             return Err(LuceneError::illegal_state(format!(
@@ -336,6 +385,19 @@ impl StoredFieldsConsumer {
     /// Returns [`LuceneError::IllegalState`] when no document frame was ever
     /// opened, and propagates any I/O error.
     pub fn finish_document(&mut self) -> Result<()> {
+        match self.overrides.clone() {
+            Some(overrides) => overrides.finish_document(self),
+            None => self.super_finish_document(),
+        }
+    }
+
+    /// `StoredFieldsConsumer.finishDocument()` itself, which an override
+    /// calls as `super.finishDocument()`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::finish_document`].
+    pub fn super_finish_document(&mut self) -> Result<()> {
         self.writer_mut()?.finish_document()
     }
 

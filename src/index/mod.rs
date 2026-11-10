@@ -194,7 +194,7 @@ pub use parallel_reader::{ParallelCompositeReader, ParallelLeafReader};
 pub use reader_manager::ReaderManager;
 pub use segment_reader::SegmentReader;
 pub use stored_field_visitor::{StoredFieldVisitor, StoredFieldVisitorStatus};
-pub use stored_fields_consumer::StoredFieldsConsumer;
+pub use stored_fields_consumer::{StoredFieldsConsumer, StoredFieldsConsumerOverrides};
 
 pub use terms::{
     AcceptStatus, EmptyTerms, EmptyTermsEnum, Fields, FilteredTermsEnum, FilteredTermsEnumFilter,

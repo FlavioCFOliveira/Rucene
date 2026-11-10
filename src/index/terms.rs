@@ -1422,7 +1422,12 @@ impl std::fmt::Display for TermStates {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "TermStates")?;
         for state in &self.states {
-            writeln!(f, "  state={state:?}")?;
+            // `sb.append(termState)`: the state's `toString()`, or `null`
+            // (`TermStates.java:252-256`).
+            match state {
+                Some(state) => writeln!(f, "  state={state}")?,
+                None => writeln!(f, "  state=null")?,
+            }
         }
         Ok(())
     }

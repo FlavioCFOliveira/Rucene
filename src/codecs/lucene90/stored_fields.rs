@@ -92,7 +92,9 @@ use crate::util::IOUtils;
 // Format constants
 // -----------------------------------------------------------------------------
 
-const FIELDS_EXTENSION: &str = "fdt";
+/// `Lucene90CompressingStoredFieldsWriter.FIELDS_EXTENSION`: the extension of
+/// the stored fields file.
+pub const FIELDS_EXTENSION: &str = "fdt";
 const INDEX_EXTENSION: &str = "fdx";
 const META_EXTENSION: &str = "fdm";
 

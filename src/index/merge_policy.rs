@@ -5385,7 +5385,10 @@ impl TemporalMergePolicy {
     /// # Errors
     ///
     /// Propagates whatever building a [`OneMerge`] raises.
-    fn find_merge_candidates(
+    ///
+    /// Package-private in Java; public here so the tests of the `index`
+    /// package reach it (`TestTemporalMergePolicy`).
+    pub fn find_merge_candidates(
         &self,
         buckets: BTreeMap<i64, Vec<SegmentCommitInfo>>,
         segment_date_ranges: &HashMap<String, SegmentDateRange>,

@@ -611,6 +611,14 @@ impl PendingSoftDeletes {
         }
     }
 
+    /// The `pendingDeleteCount` field, which `PendingSoftDeletes` inherits.
+    ///
+    /// Package-private in Java (read by `TestPendingSoftDeletes`); public
+    /// here so the tests of the `index` package reach it.
+    pub fn pending_delete_count(&self) -> i32 {
+        self.pending_delete_count
+    }
+
     /// `PendingDeletes.getMutableBits()`, which `PendingSoftDeletes` inherits;
     /// see [`PendingDeletes::get_mutable_bits`].
     fn get_mutable_bits(&mut self, info: &SegmentCommitInfo) -> &mut FixedBitSet {

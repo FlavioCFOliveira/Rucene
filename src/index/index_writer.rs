@@ -460,6 +460,12 @@ pub trait IndexWriterOverrides: Send + Sync {
     fn do_after_flush(&self, _writer: &IndexWriter) -> Result<()> {
         Ok(())
     }
+
+    /// `IndexWriter.mergeSuccess(MergePolicy.OneMerge)`, whose inherited
+    /// body is empty (`TestTragicIndexWriterDeadlock` throws from it).
+    fn merge_success(&self, writer: &IndexWriter, merge: &OneMerge) {
+        writer.super_merge_success(merge)
+    }
 }
 
 impl std::fmt::Debug for IndexWriter {
@@ -7162,8 +7168,18 @@ impl IndexWriter {
 
     /// Called when a merge has succeeded.
     ///
-    /// Equivalent to `IndexWriter.mergeSuccess(OneMerge)`, whose body is empty.
-    pub fn merge_success(&self, _merge: &OneMerge) {}
+    /// Equivalent to `IndexWriter.mergeSuccess(OneMerge)`, which a subclass
+    /// overrides ([`IndexWriterOverrides::merge_success`]).
+    pub fn merge_success(&self, merge: &OneMerge) {
+        match self.overrides.get() {
+            Some(overrides) => overrides.merge_success(self, merge),
+            None => self.super_merge_success(merge),
+        }
+    }
+
+    /// The body of `IndexWriter.mergeSuccess(OneMerge)`, which is empty: an
+    /// override's `super.mergeSuccess(merge)`.
+    pub fn super_merge_success(&self, _merge: &OneMerge) {}
 
     /// Returns whether the test points are enabled.
     ///

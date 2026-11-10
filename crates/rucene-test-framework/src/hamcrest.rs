@@ -407,6 +407,78 @@ impl<E> Matcher<[E]> for IsArrayWithSize {
     }
 }
 
+/// `org.hamcrest.core.StringStartsWith`: `startsWith(prefix)`.
+pub struct StringStartsWith {
+    prefix: String,
+}
+
+/// `CoreMatchers.startsWith(prefix)`.
+pub fn starts_with(prefix: &str) -> StringStartsWith {
+    StringStartsWith {
+        prefix: prefix.to_string(),
+    }
+}
+
+impl Matcher<str> for StringStartsWith {
+    /// `SubstringMatcher.matchesSafely`: `item.startsWith(substring)`.
+    fn matches(&self, item: &str) -> bool {
+        item.starts_with(self.prefix.as_str())
+    }
+
+    /// `SubstringMatcher.describeTo`: `a string starting with ` and the
+    /// prefix as a value.
+    fn describe_to(&self, description: &mut Description) {
+        description
+            .append_text("a string starting with ")
+            .append_value(&self.prefix);
+    }
+
+    /// `SubstringMatcher.describeMismatchSafely`: `was ` and the item.
+    fn describe_mismatch(&self, item: &str, description: &mut Description) {
+        description
+            .append_text("was ")
+            .append_text(&item.describe_value());
+    }
+}
+
+/// `org.hamcrest.core.AnyOf`: `anyOf(matchers...)`, which matches when any
+/// of the matchers does.
+pub struct AnyOf<T: ?Sized> {
+    matchers: Vec<Box<dyn Matcher<T>>>,
+}
+
+/// `CoreMatchers.anyOf(matchers...)`.
+pub fn any_of<T: ?Sized>(matchers: Vec<Box<dyn Matcher<T>>>) -> AnyOf<T> {
+    AnyOf { matchers }
+}
+
+impl<T: ?Sized + HamcrestValue> Matcher<T> for AnyOf<T> {
+    /// `ShortcutCombination.matches(item, true)`.
+    fn matches(&self, item: &T) -> bool {
+        self.matchers.iter().any(|m| m.matches(item))
+    }
+
+    /// `ShortcutCombination.describeTo(description, "or")`:
+    /// `appendList("(", " or ", ")", matchers)`.
+    fn describe_to(&self, description: &mut Description) {
+        description.append_text("(");
+        for (i, m) in self.matchers.iter().enumerate() {
+            if i > 0 {
+                description.append_text(" or ");
+            }
+            m.describe_to(description);
+        }
+        description.append_text(")");
+    }
+
+    /// `BaseMatcher.describeMismatch`: `was ` and the value.
+    fn describe_mismatch(&self, item: &T, description: &mut Description) {
+        description
+            .append_text("was ")
+            .append_text(&item.describe_value());
+    }
+}
+
 /// `org.hamcrest.MatcherAssert`.
 pub struct MatcherAssert;
 

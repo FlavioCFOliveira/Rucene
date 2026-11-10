@@ -11,11 +11,11 @@
 //!   with the segment-count and merge-size assertions; the simulations run
 //!   with a max merged segment of 1 to 10 GB;
 //!
-//! The classes' own test methods (`testNoMergePolicy`, `testForceMergeDeletes`,
-//! …) belong to the core-test port (sprint 9) and are not declared here.
 //! `TestLogMergePolicy` and `TestNoMergePolicy` are bound, with their own
 //! methods, in `core_index/test_log_merge_policy.rs` and
-//! `core_index/test_no_merge_policy.rs`.
+//! `core_index/test_no_merge_policy.rs`; `TestTieredMergePolicy` carries its
+//! own test methods here through `core_index/test_tiered_merge_policy.rs`
+//! (rmp #385). Each class has one binding.
 //!
 //! Each suite runs once on the seed `tests.seed` names (a random one when it
 //! is unset); `RUCENE_SUITE_SEEDS=<n>` runs it on the first `n` seeds of
@@ -38,6 +38,8 @@ use rucene_test_framework::util::{LuceneTestCase, TestUtil};
 
 mod suite_draws;
 mod suite_seeds;
+#[path = "core_index/test_tiered_merge_policy.rs"]
+mod test_tiered_merge_policy;
 use suite_seeds::run_suite;
 
 /// `(TieredMergePolicy) policy`.
@@ -313,12 +315,72 @@ impl BaseMergePolicyTestCase for TieredSuite {
     }
 }
 
+/// A test method `TestTieredMergePolicy` declares itself
+/// (`test_tiered_merge_policy`).
+fn tiered_own(name: &str, body: fn() -> Result<()>) -> Method {
+    Method::new(name).throws(&["java.lang.Exception"]).body(
+        move |_inst: &mut MergePolicyTestInstance| {
+            body().unwrap_or_else(|e| rucene_test_framework::util::java_exceptions::rethrow_java(e))
+        },
+    )
+}
+
 fn tiered_class() -> Arc<Class> {
+    use test_tiered_merge_policy as t;
     Class::builder("org.apache.lucene.index.TestTieredMergePolicy")
         .extends(&base_merge_policy_test_case::class())
         .constructor(Constructor::no_args(|| {
             MergePolicyTestInstance::new(Arc::new(TieredSuite))
         }))
+        .method(tiered_own(
+            "testForceMergeDeletes",
+            t::test_force_merge_deletes,
+        ))
+        .method(tiered_own("testPartialMerge", t::test_partial_merge))
+        .method(tiered_own(
+            "testForceMergeDeletesMaxSegSize",
+            t::test_force_merge_deletes_max_seg_size,
+        ))
+        .method(tiered_own(
+            "testForcedMergesRespectSegSize",
+            t::test_forced_merges_respect_seg_size,
+        ))
+        .method(tiered_own(
+            "testForcedMergesUseLeastNumberOfMerges",
+            t::test_forced_merges_use_least_number_of_merges,
+        ))
+        .method(tiered_own(
+            "testForcedMergeWithPending",
+            t::test_forced_merge_with_pending,
+        ))
+        .method(tiered_own("testSetters", t::test_setters))
+        .method(tiered_own(
+            "testUnbalancedMergeSelection",
+            t::test_unbalanced_merge_selection,
+        ))
+        .method(tiered_own(
+            "testManyMaxSizeSegments",
+            t::test_many_max_size_segments,
+        ))
+        .method(tiered_own(
+            "testMergePurelyToReclaimDeletes",
+            t::test_merge_purely_to_reclaim_deletes,
+        ))
+        // The overrides of `testSimulateAppendOnly` and `testSimulateUpdates`
+        // are `TieredSuite`'s; the class declares them.
+        .method(base_merge_policy_test_case::merge_policy_test(
+            "testSimulateAppendOnly",
+            |c| c.test_simulate_append_only(),
+        ))
+        .method(base_merge_policy_test_case::merge_policy_test(
+            "testSimulateUpdates",
+            |c| c.test_simulate_updates(),
+        ))
+        .method(tiered_own(
+            "testMergeSizeIsLessThanFloorSize",
+            t::test_merge_size_is_less_than_floor_size,
+        ))
+        .method(tiered_own("testFullFlushMerges", t::test_full_flush_merges))
         .build()
 }
 
